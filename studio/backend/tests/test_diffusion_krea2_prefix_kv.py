@@ -186,6 +186,8 @@ def test_a_batch_the_hook_did_not_plan_reads_its_plan_off_the_mask():
     mask[1, :5] = False
     m4 = mask[:, None, None, :]
     starts = pkv.new_starts()
+    slot = pkv._Slot(starts, None, None, True)  # a transformer whose pre-hook plans its calls
+    pkv._register(slot)
     before = dict(pkv.STATS)
     starts[0], starts[1] = 1, 3  # the hook planned one row; the batch has two
     stacked = pkv.attention(q, k, v, m4, starts)
@@ -194,7 +196,7 @@ def test_a_batch_the_hook_did_not_plan_reads_its_plan_off_the_mask():
         pkv.STATS["prefix"] == before["prefix"] + 2
         and pkv.STATS["from_mask"] == before["from_mask"] + 2
     )
-    assert pkv._MASK_MEMO["last"][1] == [3, 5]
+    assert pkv._MASK_MEMO[id(m4)][1] == [3, 5]
     starts[0], starts[1], starts[2] = 2, 3, 5
     planned = pkv.attention(q, k, v, m4, starts)
     assert pkv.STATS["prefix"] == before["prefix"] + 3
@@ -218,14 +220,24 @@ def test_a_planned_call_is_never_recorded_by_a_cuda_graph(dit):
     """The key start is fixed at capture time and follows the prompt: the graph-key hook raises for a non-zero start
     (the graph layers then run the call eager) and keys a zero start or no plan as before."""
     _install(dit)
-    with torch.no_grad():
-        dit(**_inputs((6,)))
-        with pytest.raises(pkv.PlanNotRecordable):
-            dit._unsloth_graph_key_extra()
-        dit(**_inputs((13,)))  # 13 + 3 = 16 valid rows: a full bucket, no pads, no mask
-        assert dit._unsloth_graph_key_extra() == (1, 0)
-        pkv.set_plan(dit, None)
-        assert dit._unsloth_graph_key_extra() == (0,)
+    keys = []
+
+    def key(*_):
+        try:
+            keys.append(dit._unsloth_graph_key_extra())
+        except pkv.PlanNotRecordable:
+            keys.append("unrecordable")
+
+    # read where the graph layers read it: inside the forward
+    handle = dit.transformer_blocks[0].register_forward_pre_hook(key)
+    try:
+        with torch.no_grad():
+            dit(**_inputs((6,)))
+            dit(**_inputs((13,)))  # 13 + 3 = 16 valid rows: a full bucket, no pads, no mask
+    finally:
+        handle.remove()
+    assert keys == ["unrecordable", (1, 0)]
+    assert dit._unsloth_graph_key_extra() == (0,)  # cleared after the call
 
 
 def test_one_compiled_graph_serves_every_key_start(dit):
@@ -252,12 +264,88 @@ def test_the_switch_off_keeps_the_stock_processors(dit, monkeypatch):
 
 def test_a_padded_call_after_a_planned_one_clears_the_plan(dit, monkeypatch):
     _install(dit)
+    seen = []
+    handle = dit.transformer_blocks[0].register_forward_pre_hook(
+        lambda *_: seen.append(pkv.plan_key(dit))
+    )
+    try:
+        with torch.no_grad():
+            dit(**_inputs((6,)))
+            monkeypatch.setenv(trim.TEXT_TRIM_ENV, "0")
+            dit(**_inputs((6,)))
+    finally:
+        handle.remove()
+    assert seen == [(1, 7), (0,)]
+
+
+def test_a_call_that_skips_the_hooks_never_reads_the_last_plan(dit):
+    """The plan is cleared after the call that wrote it: a direct ``forward`` with the same batch size (no pre-hook)
+    runs the masked call on its own mask, never the previous call's key start."""
+    _install(dit)
+    planned, other = _inputs((6,)), _inputs((2,))
     with torch.no_grad():
-        dit(**_inputs((6,)))
+        ref = dit.forward(**other)[0]  # no hooks: the padded, masked call
+        dit(**planned)
+        assert pkv.plan_key(dit) == (0,)
+        before = dict(pkv.STATS)
+        out = dit.forward(**other)[0]
+    assert pkv.STATS["prefix"] == before["prefix"]
+    torch.testing.assert_close(out, ref, rtol = 1e-5, atol = 1e-5)
+
+
+def test_a_cfg_replica_reads_its_own_mask_never_the_copied_plan(dit):
+    """Studio's CFG replica: ``_copy_module`` deep-copies the transformer (root hooks stripped, so the trim never runs
+    on it) and ``_mirror_hook_state`` mirrors only scalar state. The source's plan moves on after the copy; the replica
+    must not keep the key start it was copied with. It reads each plan off its own mask (mask-free, its own backend)
+    and matches the masked call; main's tree masked every call."""
+    from core.inference import diffusion_multigpu as mg
+
+    stock = _model()
+    _install(dit)
+    first, second = _inputs((6,)), _inputs((10,))  # one 16-row bucket, key starts 7 and 3
+    with torch.no_grad():
+        _, trimmed = trim._pre_hook(dit, (), dict(first))
         assert pkv.plan_key(dit) == (1, 7)
-        monkeypatch.setenv(trim.TEXT_TRIM_ENV, "0")
-        dit(**_inputs((6,)))
-    assert pkv.plan_key(dit) == (0,)
+        replica = mg._copy_module(dit, torch.device("cpu"))
+        _, changed = trim._pre_hook(dit, (), dict(second))  # the source plans the next branch
+        assert trimmed["encoder_hidden_states"].shape == changed["encoder_hidden_states"].shape
+        source_plan = pkv.plan_key(dit)
+        assert source_plan != (1, 7)
+        mg._mirror_hook_state(list(zip(dit.modules(), replica.modules())))
+        oracle = stock(**second)[0]
+        before = dict(pkv.STATS)
+        got = replica(**{k: v.clone() if torch.is_tensor(v) else v for k, v in changed.items()})[0]
+    torch.testing.assert_close(got, oracle, rtol = 1e-5, atol = 1e-5)
+    assert pkv.STATS["prefix"] == before["prefix"] + BLOCKS
+    assert pkv.STATS["from_mask"] == before["from_mask"] + BLOCKS
+    assert pkv.plan_key(dit) == source_plan  # the source's own plan is untouched
+    rstarts = replica.transformer_blocks[0].attn.processor._unsloth_starts
+    slot = pkv._slot_of(rstarts)
+    assert slot is not None and not slot.planned and slot.owner() is replica
+    assert slot.proc() is replica.transformer_blocks[0].attn.processor
+    assert all(b.attn.processor._unsloth_starts is rstarts for b in replica.transformer_blocks)
+    assert pkv._slot_of(dit.transformer_blocks[0].attn.processor._unsloth_starts).planned
+
+
+def test_a_call_that_needs_gradients_runs_the_stock_masked_attention(dit):
+    """The op has no autograd formula: with grad enabled and a trainable input or weight the processor runs the stock
+    masked attention, and every gradient matches the stock model's."""
+    stock = _model()
+    _install(dit)
+    kw = _inputs((6,))
+    # the same trimmed, pads-first call for both models
+    _, trimmed = trim._pre_hook(dit, (), dict(kw))
+    trimmed = {k: v.clone() if torch.is_tensor(v) else v for k, v in trimmed.items()}
+    stock(**trimmed)[0].square().mean().backward()
+    before = dict(pkv.STATS)
+    dit(**trimmed)[0].square().mean().backward()
+    assert pkv.STATS["prefix"] == before["prefix"]  # no op call
+    for (name, a), (_, b) in zip(stock.named_parameters(), dit.named_parameters()):
+        if a.grad is None:
+            assert b.grad is None, name
+            continue
+        torch.testing.assert_close(b.grad, a.grad, rtol = 1e-5, atol = 1e-6, msg = name)
+    assert dit.transformer_blocks[0].attn.to_q.weight.grad.abs().sum() > 0
 
 
 def test_the_int8_route_takes_the_block_attention_and_its_unmasked_calls(dit):
@@ -306,28 +394,101 @@ def test_the_int8_route_takes_the_block_attention_and_its_unmasked_calls(dit):
     assert seen == ["device"] * BLOCKS
 
 
-def test_the_mask_free_call_takes_flash_only_in_place_of_the_masked_pin(monkeypatch):
+def _cuda_card(monkeypatch, capability, kernels):
+    from core.inference import diffusion_attention as A
+
+    monkeypatch.setattr(torch.version, "hip", None)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda device = None: capability)
+    monkeypatch.setattr(torch.cuda, "is_current_stream_capturing", lambda: False)
+    asked = []
+
+    def probe(target):
+        asked.append((target.device, target.dtype))
+        return kernels
+
+    monkeypatch.setattr(A, "available_sdpa_kernels", probe)
+    monkeypatch.setattr(pkv, "_FLASH_OK", {})
+    monkeypatch.delenv(A.NATIVE_FLASH_ATTN_ENV, raising = False)
+    monkeypatch.delenv(pkv.BACKEND_ENV, raising = False)
+    return asked
+
+
+def test_the_mask_free_call_takes_flash_only_in_place_of_auto_s_masked_pin(monkeypatch):
     from diffusers.models.attention_dispatch import AttentionBackendName as N
 
     from core.inference import diffusion_int8_attention_dispatch as D
 
-    cuda = torch.device("cuda", 0)
-    monkeypatch.setattr(torch.version, "hip", None)
-    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda device = None: (8, 9))
-    assert (
-        pkv._prefix_backend(N._NATIVE_CUDNN, cuda) == N._NATIVE_FLASH
-    )  # L4: the masked-DiT pin -> flash
-    assert pkv._prefix_backend(None, cuda) == N._NATIVE_FLASH
-    assert pkv._prefix_backend(N.SAGE, cuda) == N.SAGE  # an explicit pick stays
+    cuda, bf16 = torch.device("cuda", 0), torch.bfloat16
+    asked = _cuda_card(monkeypatch, (8, 9), ("flash", "mem_efficient", "cudnn", "math"))
+    # L4, auto's cuDNN pick, flash in this build -> flash (probed once per card and dtype)
+    assert pkv._prefix_backend(N._NATIVE_CUDNN, cuda, bf16, auto_pick = True) == N._NATIVE_FLASH
+    assert pkv._prefix_backend(N._NATIVE_CUDNN, cuda, bf16, auto_pick = True) == N._NATIVE_FLASH
+    assert asked == [("cuda:0", bf16)]
+    # an explicit cudnn request stays cuDNN; native stays native (torch picks flash itself for a mask-free call)
+    assert pkv._prefix_backend(N._NATIVE_CUDNN, cuda, bf16, auto_pick = False) == N._NATIVE_CUDNN
+    assert pkv._prefix_backend(None, cuda, bf16, auto_pick = True) is None
+    assert pkv._prefix_backend(N.NATIVE, cuda, bf16, auto_pick = True) == N.NATIVE
+    assert pkv._prefix_backend(N.SAGE, cuda, bf16, auto_pick = True) == N.SAGE
     route = D.Int8Route(N._NATIVE_CUDNN, 1024, torch.bfloat16, 0, 128)
     assert (
-        pkv._prefix_backend(route, cuda) is route
-    )  # the INT8 route takes the unmasked call itself
-    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda device = None: (9, 0))
+        pkv._prefix_backend(route, cuda, bf16, auto_pick = True) is route
+    )  # the INT8 route takes it itself
     assert (
-        pkv._prefix_backend(N._NATIVE_CUDNN, cuda) == N._NATIVE_CUDNN
-    )  # unmeasured card: the pin stays
-    assert pkv._prefix_backend(N._NATIVE_CUDNN, torch.device("cpu")) == N._NATIVE_CUDNN
+        pkv._prefix_backend(N._NATIVE_CUDNN, cuda, torch.float32, auto_pick = True) == N._NATIVE_CUDNN
+    )
+    assert (
+        pkv._prefix_backend(N._NATIVE_CUDNN, torch.device("cpu"), bf16, auto_pick = True)
+        == N._NATIVE_CUDNN
+    )
+    # the native-flash kill switch keeps the pin
+    from core.inference import diffusion_attention as A
+
+    monkeypatch.setenv(A.NATIVE_FLASH_ATTN_ENV, "0")
+    assert pkv._prefix_backend(N._NATIVE_CUDNN, cuda, bf16, auto_pick = True) == N._NATIVE_CUDNN
+    monkeypatch.delenv(A.NATIVE_FLASH_ATTN_ENV)
     monkeypatch.setenv(pkv.BACKEND_ENV, "incumbent")
-    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda device = None: (8, 9))
-    assert pkv._prefix_backend(N._NATIVE_CUDNN, cuda) == N._NATIVE_CUDNN
+    assert pkv._prefix_backend(N._NATIVE_CUDNN, cuda, bf16, auto_pick = True) == N._NATIVE_CUDNN
+    monkeypatch.setenv(pkv.BACKEND_ENV, "flash")
+    assert pkv._prefix_backend(N._NATIVE_CUDNN, cuda, bf16, auto_pick = False) == N._NATIVE_FLASH
+    # an unmeasured card keeps the pin
+    _cuda_card(monkeypatch, (9, 0), ("flash", "cudnn"))
+    assert pkv._prefix_backend(N._NATIVE_CUDNN, cuda, bf16, auto_pick = True) == N._NATIVE_CUDNN
+
+
+def test_a_build_without_flash_sdpa_keeps_the_pin(monkeypatch):
+    """PyTorch Windows (MSVC) builds 2.10-2.14 ship no CUDA flash SDPA: exclusive flash would have no kernel."""
+    from diffusers.models.attention_dispatch import AttentionBackendName as N
+
+    cuda, bf16 = torch.device("cuda", 0), torch.bfloat16
+    _cuda_card(monkeypatch, (8, 9), ("mem_efficient", "cudnn", "math"))
+    assert pkv._prefix_backend(N._NATIVE_CUDNN, cuda, bf16, auto_pick = True) == N._NATIVE_CUDNN
+    _cuda_card(
+        monkeypatch, (8, 0), ()
+    )  # an unanswered probe never forces flash (and is asked again)
+    assert pkv._prefix_backend(N._NATIVE_CUDNN, cuda, bf16, auto_pick = True) == N._NATIVE_CUDNN
+    assert pkv._FLASH_OK == {}
+
+
+def test_apply_tags_auto_s_cudnn_pick_apart_from_an_explicit_request(dit):
+    from core.inference import diffusion_attention as A
+
+    pipe = _Pipe(dit)
+    assert A._apply_attention_backend(pipe, A.AUTO_CUDNN) == "_native_cudnn"
+    assert getattr(dit, A.ATTENTION_AUTO_PICK_ATTR) is True
+    assert A._apply_attention_backend(pipe, "_native_cudnn") == "_native_cudnn"
+    assert getattr(dit, A.ATTENTION_AUTO_PICK_ATTR) is False
+    A._apply_attention_backend(pipe, None)
+    assert getattr(dit, A.ATTENTION_AUTO_PICK_ATTR) is False
+
+
+def test_the_op_forwards_the_auto_pick_of_its_own_transformer(dit, monkeypatch):
+    from core.inference import diffusion_attention as A
+
+    _install(dit)
+    seen = []
+    monkeypatch.setattr(pkv, "_prefix_backend", lambda b, d, t, auto: seen.append(auto) or b)
+    with torch.no_grad():
+        dit(**_inputs((6,)))
+        setattr(dit, A.ATTENTION_AUTO_PICK_ATTR, True)
+        dit(**_inputs((6,)))
+    assert seen == [False] * BLOCKS + [True] * BLOCKS

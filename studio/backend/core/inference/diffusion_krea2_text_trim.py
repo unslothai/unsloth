@@ -25,6 +25,7 @@ TEXT_TRIM_ENV = "UNSLOTH_DIFFUSION_KREA2_TEXT_TRIM"
 CLASS_NAME = "Krea2Transformer2DModel"
 BUCKET = 128
 _HOOK_ATTR = "_unsloth_krea2_text_trim_hook"
+_POST_HOOK_ATTR = "_unsloth_krea2_text_trim_post_hook"
 _MEMO_ATTR = "_unsloth_krea2_text_trim_memo"
 _MEMO_MAX = 4  # the CFG branches of one render, and the last render's
 _OFF = ("0", "off", "false", "no")
@@ -227,18 +228,25 @@ def _pre_hook(module: Any, args: tuple, kwargs: dict) -> tuple:
         return args, kwargs
 
 
+def _post_hook(module: Any, args: tuple, kwargs: dict, output: Any) -> None:
+    """The prefix plan belongs to the call that wrote it: cleared after it, so a later call that skips the hooks (a
+    direct ``forward``) runs the masked attention."""
+    _plan_prefix(module, None)
+
+
 def installed(transformer: Any) -> bool:
     return getattr(transformer, _HOOK_ATTR, None) is not None
 
 
 def uninstall(transformer: Any) -> None:
-    handle = getattr(transformer, _HOOK_ATTR, None)
-    if handle is not None:
-        handle.remove()
-        try:
-            delattr(transformer, _HOOK_ATTR)
-        except AttributeError:
-            pass
+    for attr in (_HOOK_ATTR, _POST_HOOK_ATTR):
+        handle = getattr(transformer, attr, None)
+        if handle is not None:
+            handle.remove()
+            try:
+                delattr(transformer, attr)
+            except AttributeError:
+                pass
     if transformer is not None:
         transformer.__dict__.pop(_MEMO_ATTR, None)
         transformer.__dict__.pop(_MEMO_ATTR + "_pos", None)
@@ -265,6 +273,11 @@ def install_for_pipe(
             logger.warning("diffusion.krea2: text trim unavailable: %s", exc)
         return False
     object.__setattr__(transformer, _HOOK_ATTR, handle)
+    try:
+        post = transformer.register_forward_hook(_post_hook, with_kwargs = True, always_call = True)
+        object.__setattr__(transformer, _POST_HOOK_ATTR, post)
+    except Exception:  # noqa: BLE001 - the next call's pre-hook resets the plan
+        pass
     if logger is not None:
         logger.info(
             "diffusion.krea2: text rows trimmed to the valid prompt (multiples of %d of 512)",
