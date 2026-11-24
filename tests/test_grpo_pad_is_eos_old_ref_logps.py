@@ -14,7 +14,7 @@ compare the per-token ratio and KL at the EOS slot with an unpacked per-row refe
 from __future__ import annotations
 
 import ast
-import math
+import inspect
 import os
 import sys
 import textwrap
@@ -32,11 +32,23 @@ from _grpo_dispatch_source import load_dispatch_helpers  # noqa: E402
 
 _SOURCE = Path(__file__).resolve().parents[1] / "unsloth" / "models" / "rl_replacements.py"
 _HAS_HELPER = hasattr(zoo, "grpo_pad_is_eos_rows")
+# The scorer only uses a helper that reads TRL's completion_mask (zoo 902b034 does not).
+_HAS_MASK_HELPER = (
+    _HAS_HELPER and "completion_mask" in inspect.signature(zoo.grpo_pad_is_eos_rows).parameters
+)
 
 VOCAB, HIDDEN = 24, 6
 EOS = 2
 DISTINCT_PAD = 0
 KEEP = 4
+
+
+@pytest.fixture(autouse = True)
+def _restore_hidden_states_env(monkeypatch):
+    # The scoring tail and the zoo loss set UNSLOTH_RETURN_HIDDEN_STATES for their forwards;
+    # monkeypatch puts the caller's value back so later tests do not inherit it.
+    monkeypatch.setenv("UNSLOTH_RETURN_HIDDEN_STATES", "sentinel")
+    monkeypatch.delenv("UNSLOTH_RETURN_HIDDEN_STATES")
 
 
 class _CausalModel(torch.nn.Module):
@@ -123,6 +135,16 @@ def _scoring_tail_source():
     raise AssertionError("scoring tail not found")
 
 
+def _four_arg_completion_mask(
+    completion_input_ids, left_pad_tokens_per_prompt, max_left_pad, pad_token_id
+):
+    """The released zoo signature: no eos_rows keyword, so passing it would raise."""
+    n = completion_input_ids.shape[1]
+    idx = torch.arange(n).unsqueeze(0)
+    shift = idx >= (max_left_pad - left_pad_tokens_per_prompt).unsqueeze(1)
+    return shift & (completion_input_ids != pad_token_id)
+
+
 def _zoo_helpers(old_zoo):
     names = (
         "calculate_pad_tokens_in_prompt",
@@ -133,16 +155,7 @@ def _zoo_helpers(old_zoo):
     )
     out = {n: getattr(zoo, n) for n in names}
     if old_zoo:
-        # The released zoo signature: no eos_rows keyword, so passing it would raise.
-        def create_completion_attention_mask(
-            completion_input_ids, left_pad_tokens_per_prompt, max_left_pad, pad_token_id
-        ):
-            n = completion_input_ids.shape[1]
-            idx = torch.arange(n).unsqueeze(0)
-            shift = idx >= (max_left_pad - left_pad_tokens_per_prompt).unsqueeze(1)
-            return shift & (completion_input_ids != pad_token_id)
-
-        out["create_completion_attention_mask"] = create_completion_attention_mask
+        out["create_completion_attention_mask"] = _four_arg_completion_mask
     return out
 
 
@@ -167,15 +180,19 @@ def _score(
     packing,
     old_zoo = False,
     monkeypatch = None,
+    stale_cache = False,
 ):
-    """Run the real scoring tail; returns the [B, KEEP + max_left_pad] logprobs."""
+    """Run the real scoring tail; returns the [B, KEEP + max_left_pad] logprobs.
+
+    stale_cache: the generated trainer's copied-in mask helper predates eos_rows while the
+    installed zoo has the EOS helper (a cache kept across a zoo upgrade)."""
     if old_zoo:
         monkeypatch.delattr(zoo, "grpo_pad_is_eos_rows", raising = False)
     ns = {
         "os": os,
         "torch": torch,
         **load_dispatch_helpers(),
-        **_zoo_helpers(old_zoo),
+        **_zoo_helpers(old_zoo or stale_cache),
         "self": trainer,
         "model": model,
         "unwrapped_model": model,
@@ -292,9 +309,13 @@ def _zoo_loss_inputs(trainer, policy, ids, att, cm, old, ref):
 needs_helper = pytest.mark.skipif(
     not _HAS_HELPER, reason = "unsloth_zoo without grpo_pad_is_eos_rows"
 )
+needs_mask_helper = pytest.mark.skipif(
+    not _HAS_MASK_HELPER,
+    reason = "unsloth_zoo grpo_pad_is_eos_rows without completion_mask",
+)
 
 
-@needs_helper
+@needs_mask_helper
 @pytest.mark.parametrize("packing", [True, False])
 def test_pad_is_eos_old_and_ref_logps_score_the_eos_slot(packing):
     ids, att, cm = _batch(EOS)
@@ -311,7 +332,7 @@ def test_pad_is_eos_old_and_ref_logps_score_the_eos_slot(packing):
         lp,
         int(lp.max()),
         EOS,
-        eos_rows = zoo.grpo_pad_is_eos_rows(trainer, ids[:, -KEEP:]),
+        eos_rows = zoo.grpo_pad_is_eos_rows(trainer, ids[:, -KEEP:], completion_mask = cm),
     )
     eos_cols = with_eos & ~zoo.create_completion_attention_mask(
         packed_ids[:, -w:], lp, int(lp.max()), EOS
@@ -350,11 +371,17 @@ def test_pad_is_eos_old_and_ref_logps_score_the_eos_slot(packing):
 @pytest.mark.parametrize("packing", [True, False])
 def test_pad_is_not_eos_is_bitwise_unchanged(packing, monkeypatch):
     ids, att, _cm = _batch(DISTINCT_PAD)
-    model = _CausalModel(1)
-    head = _score(_trainer(DISTINCT_PAD), model, ids, att, packing)
-    # The same tail with the eos path unavailable runs exactly the pre-change code.
+    head = _score(_trainer(DISTINCT_PAD), _CausalModel(1), ids, att, packing)
+    # The same tail with the eos path unavailable runs exactly the pre-change code. A fresh,
+    # identical model, so both arms run the first-use per-row verifier.
     base = _score(
-        _trainer(DISTINCT_PAD), model, ids, att, packing, old_zoo = True, monkeypatch = monkeypatch
+        _trainer(DISTINCT_PAD),
+        _CausalModel(1),
+        ids,
+        att,
+        packing,
+        old_zoo = True,
+        monkeypatch = monkeypatch,
     )
     assert torch.equal(head, base)
 
@@ -379,6 +406,82 @@ def test_zoo_without_the_helper_keeps_todays_behaviour(pad, packing, monkeypatch
         assert (got[~keep] == 0).all()
     if pad == EOS:
         assert int(keep.sum()) == int(_cm.sum()) - 3
+
+
+def _stop_string_batch():
+    """_batch(EOS) with row 1 stopped by a stop string: no EOS, then pad-id (== EOS) padding."""
+    ids, att, cm = _batch(EOS)
+    ids[1, -KEEP:] = torch.tensor([17, 18, EOS, EOS])
+    cm[1] = torch.tensor([1, 1, 0, 0])
+    att[1, -KEEP:] = cm[1]
+    return ids, att, cm
+
+
+@needs_helper
+@pytest.mark.parametrize("packing", [True, False])
+def test_right_padding_without_eos_stays_out_of_the_loss(packing):
+    ids, att, cm = _stop_string_batch()
+    trainer = _trainer(EOS)
+    old = _score(trainer, _CausalModel(1), ids, att, packing)
+    ref = _score(trainer, _CausalModel(2), ids, att, packing)
+    seen = _zoo_loss_inputs(trainer, _CausalModel(3), ids, att, cm, old, ref)
+    kept = seen["mask"].sum(dim = 1).tolist()
+    # The stop-string row keeps its 2 sampled tokens, never the unsampled padding slot.
+    assert kept[1] == 2
+    assert all(k <= n for k, n in zip(kept, cm.sum(dim = 1).tolist())), (kept, cm.sum(dim = 1))
+    if _HAS_MASK_HELPER:
+        assert kept == cm.sum(dim = 1).tolist()
+
+
+@needs_helper
+@pytest.mark.parametrize("packing", [True, False])
+def test_helper_without_completion_mask_keeps_todays_behaviour(packing, monkeypatch):
+    # zoo 902b034's helper reads token ids only, so it would mark the stop-string row's padding.
+    two_arg = zoo.grpo_pad_is_eos_rows
+
+    def grpo_pad_is_eos_rows(trainer, completion_ids):
+        return two_arg(trainer, completion_ids)
+
+    ids, att, _cm = _stop_string_batch()
+    base = _score(
+        _trainer(EOS), _CausalModel(1), ids, att, packing, old_zoo = True, monkeypatch = monkeypatch
+    )
+    monkeypatch.setattr(zoo, "grpo_pad_is_eos_rows", grpo_pad_is_eos_rows, raising = False)
+    trainer = _trainer(EOS)
+    got = _score(trainer, _CausalModel(1), ids, att, packing)
+    assert not getattr(trainer, "_unsloth_grpo_logps_cover_eos", False)
+    assert torch.equal(got, base)
+
+
+@needs_mask_helper
+@pytest.mark.parametrize("packing", [True, False])
+def test_prefix_grouper_is_asked_when_no_row_ends_on_the_pad_id(packing):
+    # pad 2 is an EOS id, but every completion stopped on the other EOS id 3 (Qwen-style
+    # pad <|endoftext|>, stop <|im_end|>): there is no EOS slot to keep, so nothing changes.
+    other = 3
+    ids, att, _cm = _batch(DISTINCT_PAD)
+    comps = torch.tensor(
+        [[15, 16, other, EOS], [17, 18, 19, 20], [other, EOS, EOS, EOS], [21, other, EOS, EOS]]
+    )
+    prompts = ids[:, :-KEEP].masked_fill(ids[:, :-KEEP] == DISTINCT_PAD, EOS)
+    ids = torch.cat([prompts, comps], 1)
+    cm = torch.tensor([[1, 1, 1, 0], [1, 1, 1, 1], [1, 0, 0, 0], [1, 1, 0, 0]])
+    att = torch.cat([(prompts != EOS).int(), cm], 1)
+    trainer = _trainer(EOS)
+    trainer.eos_token_ids = [other, EOS]
+    got = _score(trainer, _CausalModel(1), ids, att, packing)
+    assert trainer.pg_asked is True, "PrefixGrouper skipped on a batch with no pad-id EOS"
+    lp = zoo.calculate_pad_tokens_in_prompt(ids, KEEP, EOS)
+    assert got.shape == (ids.shape[0], KEEP + int(lp.max()))
+
+
+@needs_mask_helper
+@pytest.mark.parametrize("packing", [True, False])
+def test_stale_cached_mask_helper_uses_the_installed_zoo(packing):
+    ids, att, _cm = _batch(EOS)
+    want = _score(_trainer(EOS), _CausalModel(1), ids, att, packing)
+    got = _score(_trainer(EOS), _CausalModel(1), ids, att, packing, stale_cache = True)
+    assert torch.equal(got, want)
 
 
 if __name__ == "__main__":
