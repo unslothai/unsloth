@@ -354,19 +354,42 @@ class _RoPE(nn.Module):
         return torch.cat((phase.sin(), phase.cos()), -2).flatten(-2).unsqueeze(0)
 
     def tables(self, height, width, text_length, device, dtype):
-        """``((cos, sin) for image + text, (cos, sin) for the text alone)`` in ``dtype``, cached per key."""
+        """``((cos, sin) for image + text, (cos, sin) for the text alone)`` in ``dtype``, cached per key.
+
+        Built fresh and left uncached while a CUDA graph records (Studio's whole-step graph): the graph reads these
+        tensors at their recorded addresses on every replay, and an entry the FIFO later evicts (a replayed key never
+        calls back here) hands its memory to the next allocation. A few renders at new prompt lengths evicted the
+        recorded uncond length's tables, so its replays read reused memory: noise or washed-out images from then on,
+        INT8 and bf16 alike. Built inside the capture they live in the graph's own pool and each replay rebuilds them."""
         device = torch.device(device)
+        if _capturing(device):
+            return self._build(height, width, text_length, device, dtype)
         key = (int(height), int(width), int(text_length), device.type, device.index, dtype)
         hit = self._tables.get(key)
         if hit is not None:
             return hit
-        rope = self.forward(height, width, text_length, device).to(dtype)
-        full = _rope_tables(rope)
-        text = _rope_tables(rope[:, height * width :])
+        full, text = self._build(height, width, text_length, device, dtype)
         if len(self._tables) >= self._MAX_CACHED:
             self._tables.pop(next(iter(self._tables)))
         entry = self._tables[key] = (full, text)
         return entry
+
+    def _build(self, height, width, text_length, device, dtype):
+        rope = self.forward(height, width, text_length, device).to(dtype)
+        return _rope_tables(rope), _rope_tables(rope[:, height * width :])
+
+
+def _capturing(device) -> bool:
+    """Whether a CUDA graph is recording on ``device``'s current stream (never while dynamo traces)."""
+    if device.type != "cuda":
+        return False
+    try:
+        if torch.compiler.is_compiling():
+            return False
+        with torch.cuda.device(device):
+            return bool(torch.cuda.is_current_stream_capturing())
+    except Exception:  # noqa: BLE001 - a build without CUDA graphs never records one
+        return False
 
 
 def _model_bases():

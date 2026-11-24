@@ -165,6 +165,29 @@ def test_rope_tables_are_cached_and_rebuilt_on_moves(transformers_pair):
     assert ours.rope.tables(4, 6, 9, "cpu", torch.bfloat16) is not a
 
 
+def test_rope_tables_recorded_by_a_cuda_graph_never_enter_the_cache(moss, monkeypatch):
+    """A whole-step CUDA graph replays the tables at their recorded addresses and never calls back, so a cached entry
+    the FIFO evicted while the graph still replayed was reused memory (noise once later prompt lengths filled the
+    cache). Under capture the tables are built fresh and kept out of the cache, equal to the cached ones bit for bit."""
+    import torch
+
+    real = moss._capturing
+    assert not real(torch.device("cpu"))
+    rope = moss._RoPE(16, 10000.0)
+    cached = rope.tables(4, 6, 9, "cpu", torch.bfloat16)
+    monkeypatch.setattr(moss, "_capturing", lambda device: True)
+    recorded = rope.tables(4, 6, 9, "cpu", torch.bfloat16)
+    fresh = rope.tables(4, 6, 11, "cpu", torch.bfloat16)
+    assert recorded is not cached
+    assert list(rope._tables) == [(4, 6, 9, "cpu", None, torch.bfloat16)]
+    held = {id(t) for entry in rope._tables.values() for pair in entry for t in pair}
+    assert not held & {id(t) for entry in (recorded, fresh) for pair in entry for t in pair}
+    for got, want in zip((*recorded[0], *recorded[1]), (*cached[0], *cached[1])):
+        assert torch.equal(got, want)
+    monkeypatch.setattr(moss, "_capturing", real)
+    assert torch.equal(rope.tables(4, 6, 11, "cpu", torch.bfloat16)[0][0], fresh[0][0])
+
+
 def test_refined_text_and_mask_are_exclusive(transformers_pair):
     import torch
 
