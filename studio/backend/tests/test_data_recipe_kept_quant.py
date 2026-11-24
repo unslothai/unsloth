@@ -24,15 +24,11 @@ def _recipe(variant):
 def twins(monkeypatch):
     monkeypatch.setattr(model_slots, "visible", lambda: [KEPT])
     resident = {None: (True, REPO, "Q4_K_M"), KEPT: (True, REPO, "Q8_0")}
-    monkeypatch.setattr(
-        jobs, "_loaded_local_model_identity", lambda: resident[routed_slot.get()]
-    )
+    monkeypatch.setattr(jobs, "_loaded_local_model_identity", lambda: resident[routed_slot.get()])
 
 
 def test_recipe_runs_on_a_quant_kept_beside_its_repo(twins):
-    assert jobs._ensure_selected_local_model_loaded(_recipe("Q8_0"), {"local"}) == (
-        f"{REPO}:Q8_0"
-    )
+    assert jobs._ensure_selected_local_model_loaded(_recipe("Q8_0"), {"local"}) == (f"{REPO}:Q8_0")
     assert jobs._ensure_selected_local_model_loaded(_recipe("Q4_K_M"), {"local"}) == (
         f"{REPO}:Q4_K_M"
     )
