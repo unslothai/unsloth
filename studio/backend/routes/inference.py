@@ -19415,8 +19415,10 @@ def _served_twice(slot) -> tuple[bool, Optional[_ExtraSlot]]:
         # template is not this load.
         intent = getattr(llama, "last_load_intent", None)
         served = tuple(getattr(intent, name, None) for name in _TWIN_SETTINGS)
+        # The resolved files too: an updated cache entry is other weights under the same quant.
+        files = getattr(llama, "_gguf_load_identity", None)
         # Case kept: two local paths differing only in case are two files on most filesystems.
-        return (str(llama.model_identifier), llama.hf_variant.casefold(), served)
+        return (str(llama.model_identifier), llama.hf_variant.casefold(), served, files)
 
     own = identity(slot.llama)
     for other in (None, *model_slots.visible()):
