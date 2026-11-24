@@ -457,19 +457,21 @@ def _check_placement(
     current = 0,
     model = None,
     at_train_start = False,
+    archs = None,
+    device_type = "cuda",
 ):
     import torch
 
     import unsloth.models._utils as model_utils
 
-    fake = _fake_torch(caps)
+    fake = _fake_torch(caps, archs)
     fake.cuda.set_device(current)
     fake.cuda.get_device_name = lambda i: f"card{i}"
     fake.device = torch.device
     fake.bfloat16, fake.float16 = torch.bfloat16, torch.float16
     disabled = []
     monkeypatch.setattr(model_utils, "torch", fake)
-    monkeypatch.setattr(model_utils, "DEVICE_TYPE", "cuda")
+    monkeypatch.setattr(model_utils, "DEVICE_TYPE", device_type)
     monkeypatch.setattr(model_utils, "DEVICE_COUNT", len(caps))
     monkeypatch.setattr(
         model_utils,
@@ -913,3 +915,40 @@ def test_an_unreadable_peer_keeps_the_cards_that_were_read(monkeypatch):
     fake.cuda.get_device_capability = get_device_capability
     namespace = _run_model_utils_chain(fake, monkeypatch)
     assert namespace["_BF16_BY_DEVICE"] == {0: True, 2: False}
+
+
+R9700_AND_IGPU = ["gfx1201", "gfx1201", "gfx1036"]
+
+
+def test_bf16_layers_on_a_gfx10_igpu_refuse_the_load(monkeypatch):
+    # device_map = "auto" spilled onto the iGPU: bf16 there ends the process in Triton (#7922).
+    import torch
+    with pytest.raises(RuntimeError, match = "bfloat16 layers on GPU 2"):
+        _check_placement(
+            monkeypatch,
+            [(12, 0)] * 3,
+            {"model.layers.0": 0, "model.layers.1": 2},
+            torch.bfloat16,
+            archs = R9700_AND_IGPU,
+            device_type = "hip",
+        )
+
+
+@pytest.mark.parametrize(
+    "device_map,dtype",
+    [
+        ({"model.layers.0": 0, "model.layers.1": 1}, "bfloat16"),  # both R9700s
+        ({"model.layers.0": 0, "model.layers.1": 2}, "float16"),  # iGPU in fp16 runs
+    ],
+)
+def test_hip_placement_without_bf16_on_gfx10_loads(monkeypatch, capsys, device_map, dtype):
+    import torch
+    _check_placement(
+        monkeypatch,
+        [(12, 0)] * 3,
+        device_map,
+        getattr(torch, dtype),
+        archs = R9700_AND_IGPU,
+        device_type = "hip",
+    )
+    assert "bfloat16" not in capsys.readouterr().out

@@ -2362,14 +2362,11 @@ def check_mixed_gpu_placement(
 
     try:
         if DEVICE_TYPE == "hip":
-            no_compile = [
-                i
-                for i in indices
-                if arch_breaks_compile(
-                    getattr(torch.cuda.get_device_properties(i), "gcnArchName", "")
-                )
-            ]
-            no_bf16 = []
+            archs = {
+                i: getattr(torch.cuda.get_device_properties(i), "gcnArchName", "") for i in indices
+            }
+            no_compile = [i for i in indices if arch_breaks_compile(archs[i])]
+            no_bf16 = [i for i in indices if arch_lacks_bf16(archs[i])]
         else:
             caps = {i: tuple(torch.cuda.get_device_capability(i)) for i in indices}
             no_compile = [i for i in indices if caps[i][0] < 7]
@@ -2385,6 +2382,13 @@ def check_mixed_gpu_placement(
         )
     if no_bf16 and dtype is None and live:
         dtype = _bf16_weights_on(model, set(no_bf16))
+    if no_bf16 and dtype == torch.bfloat16 and DEVICE_TYPE == "hip":
+        # gfx10 has no bf16 dot: Triton ends the process with no Python error (#7922), so stop here.
+        raise RuntimeError(
+            f"Unsloth: the model has bfloat16 layers on {', '.join(map(_name, no_bf16))}, which has "
+            "no bfloat16 and crashes in Triton. Load with dtype = torch.float16, or hide that GPU "
+            "with HIP_VISIBLE_DEVICES."
+        )
     if no_bf16 and dtype == torch.bfloat16:
         print(
             f"Unsloth: the model has bfloat16 layers on {', '.join(map(_name, no_bf16))}, which has "
