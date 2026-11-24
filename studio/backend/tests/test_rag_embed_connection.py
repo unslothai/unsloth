@@ -257,3 +257,21 @@ def test_requests_stay_within_the_tei_default_client_batch(monkeypatch):
 
 def test_planner_reports_the_connection_backend():
     assert embeddings.resolved_backend_for_model("connection:Scheduler/bge") == "connection"
+
+
+def test_an_edit_between_reads_never_pairs_the_new_key_with_the_old_url(monkeypatch):
+    from storage import credential_secrets, providers_db
+
+    urls = iter(["http://old.local/v1", "http://new.local/v1", "http://new.local/v1"])
+    rows = []
+
+    def _list():
+        row = {**_PROVIDERS[0], "base_url": next(urls, "http://new.local/v1")}
+        rows.append(row["base_url"])
+        return [row]
+
+    monkeypatch.setattr(providers_db, "list_providers", _list)
+    monkeypatch.setattr(credential_secrets, "get_provider_api_key", lambda pid: "sk-new")
+    client, _, _ = embed_connection._client_for("connection:Scheduler/bge")
+    assert client.base_url == "http://new.local/v1"
+    assert rows[:2] == ["http://old.local/v1", "http://new.local/v1"]

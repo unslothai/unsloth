@@ -57,18 +57,29 @@ def resolve_connection_model(name: str) -> tuple[dict, str]:
     return provider, model
 
 
-def _client_for(provider: dict):
+def _client_for(model_name: str):
     from core.inference.external_provider import ExternalProviderClient
     from storage import credential_secrets
 
+    destination = ("base_url", "provider_type", "api_type", "extra_headers")
+    for _ in range(3):
+        provider, model = resolve_connection_model(model_name)
+        api_key = credential_secrets.get_provider_api_key(provider["id"]) or ""
+        # Re-read: an edit landing between the two reads must not send the new key to the old URL.
+        again, _ = resolve_connection_model(model_name)
+        if all(provider.get(k) == again.get(k) for k in destination):
+            break
+    else:
+        raise ConnectionEmbedderError(f"The connection for {model_name!r} is being edited; retry.")
     headers = provider.get("extra_headers")
-    return ExternalProviderClient(
+    client = ExternalProviderClient(
         provider_type = provider["provider_type"],
         base_url = provider["base_url"],
-        api_key = credential_secrets.get_provider_api_key(provider["id"]) or "",
+        api_key = api_key,
         api_type = provider.get("api_type") or "chat_completions",
         **({"extra_headers": headers} if headers else {}),
     )
+    return client, provider, model
 
 
 # Each digit, symbol and newline, and each letter run, is at least one WordPiece token: an upper
@@ -102,8 +113,7 @@ class ConnectionEmbeddingBackend:
     def _post(self, model_name: str, texts: list[str]) -> list[list[float]]:
         from core.inference.external_provider import _append_provider_path
 
-        provider, model = resolve_connection_model(model_name)
-        client = _client_for(provider)
+        client, provider, model = _client_for(model_name)
         client.set_header_context(None, model)
         url = _append_provider_path(client.base_url, "embeddings")
         body = {"model": model, "input": texts, "encoding_format": "float"}
