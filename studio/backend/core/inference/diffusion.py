@@ -1537,6 +1537,25 @@ def _is_trusted_diffusion_repo(repo_id: str) -> bool:
     return rid.startswith("unsloth/") or rid in _TRUSTED_NON_GGUF_REPOS
 
 
+def _refuse_escaping_component_weights(*folders) -> None:
+    """transformers opens a component's config.json ``transformers_weights`` as given, so a local
+    pipeline (or base) could load files from anywhere; keep them inside each component folder."""
+    from utils.security.file_security import escaping_weight_references
+    for folder in folders:
+        if not isinstance(folder, str) or not folder.strip():
+            continue
+        try:
+            root = Path(folder).expanduser()
+            if not root.is_dir():
+                continue
+            components = [root, *(child for child in root.iterdir() if child.is_dir())]
+        except OSError:
+            continue
+        for component in components:
+            if escaping_weight_references(component):
+                raise ValueError("This model's weight index names files outside its folder.")
+
+
 def _assert_local_base_is_pipeline(
     base_repo: str,
     *,
@@ -9280,6 +9299,7 @@ class DiffusionBackend:
             model_kind = model_kind,
         )
         _refuse_lora_without_loader(fam, loras)
+        _refuse_escaping_component_weights(repo_id, base_repo)
         install_single_file_fp32_buffers(logger)
         kind = resolve_model_kind(gguf_filename, model_kind)
         # Validate every mode string that can raise BEFORE this load evicts the previous pipeline.

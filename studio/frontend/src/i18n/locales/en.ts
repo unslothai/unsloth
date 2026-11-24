@@ -939,6 +939,9 @@ export const en = {
     useModelScopeHint: "Search and download from ModelScope instead. You can switch back in Settings.",
     useModelScopeFailed: "Couldn't switch to ModelScope.",
     updateToken: "Update token",
+    linkedModelTitle: "Load {model}?",
+    linkedModelBody: "A link opened this page and asked to download and load this model.",
+    linkedModelLoad: "Load",
     hfToken: {
       label: "HF token",
       saved: "Saved",

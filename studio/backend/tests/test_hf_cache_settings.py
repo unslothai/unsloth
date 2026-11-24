@@ -13,6 +13,9 @@ from pathlib import Path
 
 import pytest
 
+# Every cache home here sits under tmp_path, which macOS treats as a system folder (see conftest).
+pytestmark = pytest.mark.usefixtures("tmp_cache_home_allowed")
+
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
