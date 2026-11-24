@@ -82,8 +82,7 @@ def _client_for(model_name: str):
     return client, provider, model
 
 
-# Each digit, symbol and newline, and each letter run, is at least one WordPiece token: an upper
-# bound for the 512-token BERT-family embedders, where an overflow fails the document.
+# Every digit, symbol, newline and letter run is >= 1 WordPiece token: an upper bound for 512-token embedders.
 _TOKEN_UNITS = re.compile(r"\d|[^\W\d_]+|[^\w\s]|_|\n")
 
 
