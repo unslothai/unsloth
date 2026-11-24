@@ -2938,6 +2938,87 @@ class TestHfEndpointUnreachable:
         assert result is True and (time.time() - t0) < 6.0
 
 
+class TestLatestTierKeeps4Bit:
+    """latest_tier_keeps_4bit / latest_tier_forces_16bit: the sidecar's 16-bit rule spares
+    architectures validated in 4-bit (Inkling 2) and checkpoints already quantized with bitsandbytes."""
+
+    @staticmethod
+    def _config(monkeypatch, tv, cfg):
+        monkeypatch.setattr(tv, "_remote_lora_base", lambda name, hf_token = None: None)
+        monkeypatch.setattr(tv, "_load_config_json", lambda name, hf_token = None: cfg)
+
+    def test_inkling2_mini_keeps_4bit(self, monkeypatch):
+        import utils.transformers_version as tv
+
+        cfg = {
+            "model_type": "inkling2_loop",
+            "text_config": {"model_type": "inkling2_loop_text"},
+            "quantization_config": {"quant_method": "modelopt", "quant_algo": "NVFP4"},
+        }
+        self._config(monkeypatch, tv, cfg)
+        assert tv.latest_tier_keeps_4bit("unsloth/Inkling-2-Mini") is True
+
+    def test_inkling2_small_keeps_4bit(self, monkeypatch):
+        import utils.transformers_version as tv
+        self._config(monkeypatch, tv, {"model_type": "inkling2"})
+        assert tv.latest_tier_keeps_4bit("thinkingmachines/Inkling-2-Small") is True
+
+    def test_bnb_checkpoint_keeps_4bit(self, monkeypatch):
+        """A bnb checkpoint loads 4-bit from its own quantization_config, so 16-bit would be a false claim."""
+        import utils.transformers_version as tv
+
+        cfg = {"model_type": "zaya", "quantization_config": {"quant_method": "bitsandbytes"}}
+        self._config(monkeypatch, tv, cfg)
+        assert tv.latest_tier_keeps_4bit("someone/ZAYA1-8B-bnb-4bit") is True
+
+    def test_unvalidated_architecture_does_not(self, monkeypatch):
+        import utils.transformers_version as tv
+        self._config(monkeypatch, tv, {"model_type": "zaya"})
+        assert tv.latest_tier_keeps_4bit("Zyphra/ZAYA1-8B") is False
+
+    def test_unreadable_config_does_not(self, monkeypatch):
+        import utils.transformers_version as tv
+        self._config(monkeypatch, tv, None)
+        assert tv.latest_tier_keeps_4bit("some/model") is False
+
+    def test_never_raises(self, monkeypatch):
+        import utils.transformers_version as tv
+
+        def _boom(*a, **k):
+            raise RuntimeError("config read exploded")
+
+        monkeypatch.setattr(tv, "_remote_lora_base", lambda name, hf_token = None: None)
+        monkeypatch.setattr(tv, "_load_config_json", _boom)
+        assert tv.latest_tier_keeps_4bit("some/model") is False
+
+    def test_local_adapter_is_judged_by_its_base(self, monkeypatch, tmp_path):
+        import utils.transformers_version as tv
+
+        adapter = tmp_path / "unsloth_Inkling-2-Mini_1795537324"
+        adapter.mkdir()
+        (adapter / "adapter_config.json").write_text(
+            json.dumps({"base_model_name_or_path": "unsloth/Inkling-2-Mini"}), encoding = "utf-8"
+        )
+        configs = {"unsloth/Inkling-2-Mini": {"model_type": "inkling2_loop"}}
+        monkeypatch.setattr(tv, "_load_config_json", lambda name, hf_token = None: configs.get(name))
+        assert tv.latest_tier_keeps_4bit(str(adapter)) is True
+
+    def test_forces_16bit_only_for_active_unvalidated(self, monkeypatch):
+        import utils.transformers_version as tv
+
+        configs = {
+            "unsloth/Inkling-2-Mini": {"model_type": "inkling2_loop"},
+            "Zyphra/ZAYA1-8B": {"model_type": "zaya"},
+        }
+        monkeypatch.setattr(tv, "_remote_lora_base", lambda name, hf_token = None: None)
+        monkeypatch.setattr(tv, "_load_config_json", lambda name, hf_token = None: configs.get(name))
+        monkeypatch.setattr(tv, "latest_tier_active_for", lambda name, hf_token = None: True)
+        assert tv.latest_tier_forces_16bit("unsloth/Inkling-2-Mini") is False
+        assert tv.latest_tier_forces_16bit("Zyphra/ZAYA1-8B") is True
+        monkeypatch.setattr(tv, "latest_tier_active_for", lambda name, hf_token = None: False)
+        assert tv.latest_tier_forces_16bit("Zyphra/ZAYA1-8B") is False
+
+
 class TestLatestTierActiveFor:
     """latest_tier_active_for: the 16-bit guard for the consented latest sidecar."""
 
@@ -3025,9 +3106,9 @@ class TestLatestTierForces16Bit:
 
     def test_worker_guard_present(self):
         src = self._read("core/inference/worker.py")
-        assert "latest_tier_active_for" in src, (
+        assert "latest_tier_forces_16bit" in src, (
             "core/inference/worker.py must force load_in_4bit=False when "
-            "latest_tier_active_for(model) is true: transformers' grouped-MoE "
+            "latest_tier_forces_16bit(model) is true: transformers' grouped-MoE "
             "kernels crash on bnb-quantized expert weights for brand-new "
             "architectures."
         )
@@ -3043,7 +3124,7 @@ class TestLatestTierForces16Bit:
         # Without the same flip, /validate sizes 4-bit and /load then 409s.
         src = self._read("routes/inference.py")
         body = src.split("async def validate_model", 1)[1].split("\nasync def ", 1)[0]
-        assert "latest_tier_active_for" in body, (
+        assert "latest_tier_forces_16bit" in body, (
             "validate_model must apply the latest-sidecar 16-bit flip before "
             "_guard_chat_load_against_training so /validate and /load agree."
         )

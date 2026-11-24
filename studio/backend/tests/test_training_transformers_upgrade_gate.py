@@ -418,3 +418,36 @@ def test_the_route_is_behind_authentication():
         "current_subject"
     ]
     assert subject.default is not inspect.Parameter.empty
+
+
+def _keeps_4bit(monkeypatch, value = True):
+    import utils.transformers_version as tv
+    monkeypatch.setattr(tv, "latest_tier_keeps_4bit", lambda *a, **k: value)
+
+
+def test_install_for_a_model_the_sidecar_keeps_in_4bit_reports_4bit(monkeypatch):
+    # Inkling 2: the install is offered, and the sidecar trains it in bnb 4-bit.
+    inf_mod = _stub(monkeypatch, upgrade = {**UPGRADE, "model_type": "inkling2_loop"})
+    _keeps_4bit(monkeypatch)
+    response = _call(inf_mod, model = "unsloth/Inkling-2-Mini")
+    assert response.requires_transformers_upgrade is True
+    assert response.forces_16bit is False
+    # The frontend reads this to skip its "Install switches to 16-bit" disclosure.
+    assert response.sidecar_keeps_4bit is True
+
+
+def test_active_sidecar_for_a_model_it_keeps_in_4bit_reports_4bit(monkeypatch):
+    inf_mod = _stub(monkeypatch, upgrade = None, latest_tier = True)
+    _keeps_4bit(monkeypatch)
+    response = _call(inf_mod, model = "unsloth/Inkling-2-Mini")
+    assert response.latest_tier_active is True
+    assert response.forces_16bit is False
+    assert response.sidecar_keeps_4bit is True
+
+
+def test_install_kept_in_4bit_does_not_strand_a_4bit_resume(monkeypatch):
+    inf_mod = _stub(monkeypatch, upgrade = {**UPGRADE, "model_type": "inkling2_loop"})
+    _keeps_4bit(monkeypatch)
+    monkeypatch.setattr(inf_mod, "_install_breaks_exact_resume", lambda run_id: True)
+    response = _call(inf_mod, model = "unsloth/Inkling-2-Mini", resume_run_id = "run-1")
+    assert response.install_breaks_exact_resume is False

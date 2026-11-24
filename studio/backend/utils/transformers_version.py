@@ -573,11 +573,15 @@ def latest_tier_active_for(model_name: str, hf_token: str | None = None) -> bool
         return False
 
 
-# bnb 4-bit is validated for these on the latest sidecar (core QLoRA support).
-_LATEST_TIER_4BIT_MODEL_TYPES = frozenset({"inkling2", "inkling2_loop"})
+# bnb 4-bit is validated for these on the latest sidecar (core QLoRA support, unsloth/models/inkling2.py).
+_LATEST_TIER_4BIT_MODEL_TYPES = frozenset(
+    {"inkling2", "inkling2_text", "inkling2_loop", "inkling2_loop_text"}
+)
 
 
 def latest_tier_keeps_4bit(model_name: str, hf_token: str | None = None) -> bool:
+    """Whether a latest-sidecar load stays bnb 4-bit: a validated architecture, or a checkpoint already
+    quantized with bitsandbytes (it loads 4-bit whatever the flag says). Never raises; unknown is False."""
     try:
         if _is_lora_adapter_dir(Path(model_name)):
             resolved = _resolve_base_model(model_name)
@@ -586,6 +590,9 @@ def latest_tier_keeps_4bit(model_name: str, hf_token: str | None = None) -> bool
         cfg = _load_config_json(resolved, hf_token)
         if not isinstance(cfg, dict):
             return False
+        quant = cfg.get("quantization_config")
+        if isinstance(quant, dict) and quant.get("quant_method") == "bitsandbytes":
+            return True
         return bool(_LATEST_TIER_4BIT_MODEL_TYPES.intersection(_model_types_from_config(cfg)))
     except Exception:
         return False

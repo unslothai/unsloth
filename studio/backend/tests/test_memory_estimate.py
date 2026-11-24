@@ -1092,7 +1092,7 @@ class TestEstimateMemoryRoute:
         )
         _estimate(model_path = "org/model", max_seq_length = 16384, load_in_4bit = True, hf_token = "tok")
         assert seen["load_in_4bit"] is False
-        assert asked == [("org/model", "tok")] and guarded == [tv.latest_tier_active_for]
+        assert asked == [("org/model", "tok")] and guarded == [tv.latest_tier_forces_16bit]
         monkeypatch.setattr(tv, "latest_tier_active_for", lambda *a, **kw: False)
 
         monkeypatch.setattr(
