@@ -863,6 +863,8 @@ class ManagedEngine:
                 self.stop()
                 raise
         started = self._last_output = time.monotonic()
+        from core.inference.llama_cpp import LlamaCppBackend
+
         try:
             with httpx.Client(trust_env = False, timeout = 2) as client:
                 while (
@@ -880,6 +882,12 @@ class ManagedEngine:
                         if self._mamba_blocks:
                             raise _MambaSeqLimit(message, self._mamba_blocks)
                         raise _EngineExited(message)
+                    # The port was released before the engine binds it: probe (with the key) only our own listener.
+                    if not LlamaCppBackend._health_listener_is_ours(
+                        self.process, int(self.base_url.rsplit(":", 1)[1])
+                    ):
+                        self._cancel.wait(0.25)
+                        continue
                     try:
                         response = client.get(self.base_url + "/health", headers = self.headers)
                         if response.status_code == 200:
