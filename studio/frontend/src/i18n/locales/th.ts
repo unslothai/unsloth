@@ -938,6 +938,13 @@ export const th = {
     compactEmpty: "ยังไม่มีอะไรให้ย่อ",
     compactUnsupported: "การย่อการสนทนาต้องใช้โมเดล GGUF หรือ MLX ที่รองรับเครื่องมือ",
   },
+  chatFiles: {
+    title: "ไฟล์ในแชทนี้",
+    code: "ส่วนย่อยของโค้ด",
+    showInChat: "แสดงในแชท",
+    download: "ดาวน์โหลด {name}",
+    saveFailed: "ไม่สามารถบันทึก {name} ได้",
+  },
   welcome: {
     goodToSeeYou: "ยินดีที่ได้พบคุณ",
     goodToSeeYouName: "ยินดีที่ได้พบคุณ {name}",
@@ -986,6 +993,9 @@ export const th = {
       "ค้นหาและดาวน์โหลดจาก ModelScope แทน คุณสามารถสลับกลับได้ในการตั้งค่า",
     useModelScopeFailed: "ไม่สามารถสลับไปใช้ ModelScope ได้",
     updateToken: "อัปเดตโทเค็น",
+    linkedModelTitle: "โหลด {model} หรือไม่",
+    linkedModelBody: "ลิงก์เปิดหน้านี้และขอให้ดาวน์โหลดและโหลดโมเดลนี้",
+    linkedModelLoad: "โหลด",
     hfToken: {
       label: "โทเค็น HF",
       saved: "บันทึกแล้ว",
@@ -2689,7 +2699,7 @@ export const th = {
         oldWebkitWarning:
           "WebKitGTK {version} บน Wayland: การเรนเดอร์ด้วย GPU อาจแครชตอนเปิดบน NVIDIA ที่ใช้การปรับสเกลแบบเศษส่วน (WebKit bug 280210) หากเกิดขึ้น Unsloth จะกลับไปใช้การเรนเดอร์ด้วย CPU เอง บน WebKitGTK 2.50.4 ไม่พบว่าเร็วขึ้นจากการวัด (8 fps ทั้งสองแบบ) จึงไม่แนะนำให้เปิดที่นี่",
         oldDriverWarning:
-          "ไดรเวอร์ NVIDIA {version} บน X11: Unsloth จะปิดการเรนเดอร์ด้วย GPU ไว้จนกว่าไดรเวอร์จะเป็นเวอร์ชัน 610 ขึ้นไป ไดรเวอร์รุ่นเก่ารั่วไหล file descriptor ทุกเฟรม และหน้าต่างจะหยุดวาดภายในไม่กี่นาที",
+          "ไดรเวอร์ NVIDIA {version} บน X11: Unsloth จะปิดการเรนเดอร์ด้วย GPU ไว้จนกว่าไดรเวอร์จะเป็นเวอร์ชัน 590 ขึ้นไป ไดรเวอร์รุ่นเก่ารั่วไหล file descriptor ทุกเฟรม และหน้าต่างจะหยุดวาดภายในไม่กี่นาที",
         fallbackNote:
           "การเรนเดอร์ด้วย GPU แครชตอนเปิดบนระบบนี้ Unsloth จึงใช้การเรนเดอร์ด้วย CPU",
         tryAgain: "ลองใช้ GPU อีกครั้ง",
@@ -2956,6 +2966,15 @@ export const th = {
         runningOn: "ขณะนี้ llama.cpp ทำงานบน {backend}",
         hint: "ติดตั้งบิลด์ llama.cpp สำหรับแบ็กเอนด์นี้และคงไว้เมื่ออัปเดต มีประโยชน์เมื่อตัวเลือกอัตโนมัติแครชหรือไดรเวอร์ GPU ของคุณไม่รองรับ แสดงเฉพาะแบ็กเอนด์ที่มีบิลด์สำหรับเครื่องนี้ การเทรนไม่ได้รับผลกระทบ",
         autoWith: "อัตโนมัติ ({backend})",
+        unavailableOption: "{backend} ({reason})",
+        unavailableHint: "{backend}: {hint}",
+        unavailable: {
+          rocmNotInstalled: "ไม่ได้ติดตั้ง ROCm",
+          rocmNoAccess: "ไม่มีสิทธิ์เข้าถึง GPU",
+          otherRelease: "ต้องอัปเดต llama.cpp",
+          checkFailed: "ตรวจสอบไม่ได้",
+          noBuild: "ไม่มีบิลด์สำหรับเครื่องนี้",
+        },
         apply: "ใช้",
         applying: "กำลังติดตั้ง...",
         applyHint:

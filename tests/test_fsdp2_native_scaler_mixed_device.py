@@ -66,7 +66,10 @@ def test_mixed_device_fused_adamw_skips_an_overflow_step(world_of_one, explicit_
             overflow,
             "the overflow step changed weights",
         )
-        assert float(opt.state[p]["step"]) == 0.0, (overflow, float(opt.state[p]["step"]))
+        # The skipped step never reaches the optimizer (as for foreach), so a first-step
+        # overflow leaves no state; a fused kernel call would have left step 0.
+        step = float(opt.state[p].get("step", 0.0))
+        assert step == 0.0, (overflow, step)
     assert scaler.get_scale() == 2.0**7
 
 
@@ -116,5 +119,8 @@ def test_late_device_to_host_copies_keep_the_step_right(world_of_one, explicit_u
                 overflow,
                 "the overflow step changed weights",
             )
-            assert float(opt.state[p]["step"]) == 0.0, (overflow, float(opt.state[p]["step"]))
+            # The skipped step never reaches the optimizer (as for foreach), so a first-step
+            # overflow leaves no state; a fused kernel call would have left step 0.
+            step = float(opt.state[p].get("step", 0.0))
+            assert step == 0.0, (overflow, step)
         assert scaler.get_scale() == 2.0**7

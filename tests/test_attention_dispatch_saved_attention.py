@@ -127,9 +127,10 @@ def test_replay_reuses_the_attention_output(monkeypatch, checkpointing):
 
 def test_inference_and_unset_flag_take_the_plain_call(monkeypatch, checkpointing):
     calls = []
-    # The explicit route outside a frame (on ROCm a frameless call stays plain: tested below).
+    # The explicit route inside a frame (a frameless call stays plain: tested below).
     monkeypatch.setattr(ad, "_ROCM_SDPA_GUARD", False)
     monkeypatch.setattr(ad, "_saved_attention_call", lambda fn, *t: calls.append(1) or fn(*t))
+    monkeypatch.setattr(ad, "_saved_attention_active", lambda: True)
     q = torch.randn(1, H, S, D)
     k = torch.randn(1, KV, S, D)
     monkeypatch.setattr(ad, "_SAVE_ATTENTION", False)
@@ -334,15 +335,21 @@ def test_rocm_explicit_setting_binds_from_configuration(monkeypatch):
     assert SA._ROCM_SDPA_SELECT is ad._select_rocm_saved_sdpa
 
 
-def test_rocm_explicit_routing_without_a_frame_compiles_fullgraph(monkeypatch, checkpointing):
+@pytest.fixture(params = [True, False], ids = ["rocm", "not_rocm"])
+def rocm(request):
+    """The explicit route is the same on every build: these tests run as ROCm and as CUDA / CPU."""
+    return request.param
+
+
+def test_explicit_routing_without_a_frame_compiles_fullgraph(monkeypatch, checkpointing, rocm):
     """No frame (no Unsloth checkpoint, or a device whose SDPA keeps nothing): the call stays in the
     caller's graph, so fullgraph=True training compiles; inside a checkpoint the replay still reuses."""
     if not hasattr(SA, "save_attention_requested"):
         pytest.skip(
             "unsloth_zoo without per-device ROCm eligibility keeps ROCm saved attention off"
         )
-    monkeypatch.setattr(ad, "_ROCM_SDPA_GUARD", True)
-    monkeypatch.setattr(torch.version, "hip", "7.13.0", raising = False)
+    monkeypatch.setattr(ad, "_ROCM_SDPA_GUARD", rocm)
+    monkeypatch.setattr(torch.version, "hip", "7.13.0" if rocm else None, raising = False)
     monkeypatch.setattr(ad, "_SAVE_ATTENTION", True)
     monkeypatch.setattr(ad, "_SAVE_ATTENTION_MIN_SEQ", None)
     monkeypatch.setattr(ad, "_saved_attention_call", SA.saved_attention_call)
@@ -362,24 +369,24 @@ def test_rocm_explicit_routing_without_a_frame_compiles_fullgraph(monkeypatch, c
     assert SA.SAVED_ATTENTION_STATS["reused"] == 4 and saved[2] == 2
 
 
-def _rocm_explicit_routing(monkeypatch):
+def _explicit_routing(monkeypatch, rocm):
     if not hasattr(SA, "save_attention_requested"):
         pytest.skip(
             "unsloth_zoo without per-device ROCm eligibility keeps ROCm saved attention off"
         )
-    monkeypatch.setattr(ad, "_ROCM_SDPA_GUARD", True)
-    monkeypatch.setattr(torch.version, "hip", "7.13.0", raising = False)
+    monkeypatch.setattr(ad, "_ROCM_SDPA_GUARD", rocm)
+    monkeypatch.setattr(torch.version, "hip", "7.13.0" if rocm else None, raising = False)
     monkeypatch.setattr(ad, "_SAVE_ATTENTION", True)
     monkeypatch.setattr(ad, "_SAVE_ATTENTION_MIN_SEQ", None)
     monkeypatch.setattr(ad, "_saved_attention_call", SA.saved_attention_call)
     monkeypatch.setenv("UNSLOTH_GC_SAVE_ATTENTION", "1")
 
 
-def test_rocm_explicit_routing_inside_a_frame_compiles_fullgraph(monkeypatch, checkpointing):
+def test_explicit_routing_inside_a_frame_compiles_fullgraph(monkeypatch, checkpointing, rocm):
     """A live checkpoint frame on an eligible device (CPU tensors are kept): a user's fullgraph=True
     training compile must not reach the compiler-disabled saved_attention_call. Both checkpoint passes
     stay in the graph, so forward + backward compile and the frame keeps nothing."""
-    _rocm_explicit_routing(monkeypatch)
+    _explicit_routing(monkeypatch, rocm)
     q = torch.randn(1, H, S, D, requires_grad = True)
     k = torch.randn(1, KV, S, D, requires_grad = True)
     frame = SA.new_saved_attention_frame([q])
@@ -404,13 +411,13 @@ def test_rocm_explicit_routing_inside_a_frame_compiles_fullgraph(monkeypatch, ch
     assert frame.entries == [] and SA.SAVED_ATTENTION_STATS.get("stored", 0) == 0
 
 
-def test_rocm_explicit_routing_inside_an_unsloth_block_still_reuses(monkeypatch, checkpointing):
+def test_explicit_routing_inside_an_unsloth_block_still_reuses(monkeypatch, checkpointing, rocm):
     """Unsloth's own block compile (fullgraph=False) may break the graph: there a live frame keeps the
     first pass's kernel output and the replay reuses it."""
     import sys
     import types
 
-    _rocm_explicit_routing(monkeypatch)
+    _explicit_routing(monkeypatch, rocm)
     block = types.ModuleType("unsloth.models._block_compile")
     block._IN_COMPILED_REGION = [True]
     monkeypatch.setitem(sys.modules, "unsloth.models._block_compile", block)
@@ -430,12 +437,12 @@ def test_rocm_explicit_routing_inside_an_unsloth_block_still_reuses(monkeypatch,
     assert SA.SAVED_ATTENTION_STATS["stored"] >= 1 and SA.SAVED_ATTENTION_STATS["reused"] >= 1
 
 
-def test_rocm_explicit_routing_inside_a_frame_user_compile_may_break_the_graph(
-    monkeypatch, checkpointing
+def test_explicit_routing_inside_a_frame_user_compile_may_break_the_graph(
+    monkeypatch, checkpointing, rocm
 ):
     """A user's fullgraph=False compile inside a frame may graph break, so it keeps the first pass's
     kernel output like eager code does and the replay reuses it."""
-    _rocm_explicit_routing(monkeypatch)
+    _explicit_routing(monkeypatch, rocm)
     q = torch.randn(1, H, S, D, requires_grad = True)
     k = torch.randn(1, KV, S, D, requires_grad = True)
     frame = SA.new_saved_attention_frame([q])
@@ -453,13 +460,13 @@ def test_rocm_explicit_routing_inside_a_frame_user_compile_may_break_the_graph(
 
 
 @pytest.mark.parametrize("fullgraph", [False, True])
-def test_rocm_explicit_routing_first_pass_compiled_replay_eager(
-    monkeypatch, checkpointing, fullgraph
+def test_explicit_routing_first_pass_compiled_replay_eager(
+    monkeypatch, checkpointing, rocm, fullgraph
 ):
     """A checkpoint whose first pass is traced by a fullgraph=False compile and whose replay runs eager
     (two same-shaped calls): both passes must route alike, or the replay of the first call consumes
     the second call's kept output (zoo matches by position) and the gradients are wrong."""
-    _rocm_explicit_routing(monkeypatch)
+    _explicit_routing(monkeypatch, rocm)
     attend = _attend()
     if fullgraph and not hasattr(SA, "saved_attention_skip_slot"):
         pytest.skip("unsloth_zoo without saved_attention_skip_slot")
@@ -488,7 +495,7 @@ def test_rocm_explicit_routing_first_pass_compiled_replay_eager(
         torch.testing.assert_close(got.grad, ref.grad, rtol = 1e-4, atol = 1e-6)
 
 
-def test_rocm_explicit_routing_strict_compile_falls_back_on_replay(monkeypatch, checkpointing):
+def test_explicit_routing_strict_compile_falls_back_on_replay(monkeypatch, checkpointing, rocm):
     """A fullgraph=False compile under error_on_graph_break keeps the call in the graph; at its
     recompile limit the grad replay falls back to eager and enters the saving helpers. The in-graph
     pass must still fill that call's entry, or the replay takes the second call's kept output."""
@@ -496,7 +503,7 @@ def test_rocm_explicit_routing_strict_compile_falls_back_on_replay(monkeypatch, 
         pytest.skip("unsloth_zoo without saved_attention_skip_slot")
     if not hasattr(torch._dynamo, "error_on_graph_break"):
         pytest.skip("torch without error_on_graph_break")
-    _rocm_explicit_routing(monkeypatch)
+    _explicit_routing(monkeypatch, rocm)
     attend = _attend()
 
     def strict(q, k, v):
@@ -532,6 +539,19 @@ def test_rocm_explicit_routing_strict_compile_falls_back_on_replay(monkeypatch, 
         torch._dynamo.reset()
     for got, ref in zip(args, ref_args):
         torch.testing.assert_close(got.grad, ref.grad, rtol = 1e-4, atol = 1e-6)
+
+
+@pytest.mark.parametrize("rocm", [True, False])
+def test_explicit_routing_with_an_older_zoo_routes_as_before(monkeypatch, rocm):
+    """A zoo without saved_attention_skip_slot: ROCm keeps the plain call, other builds always route."""
+    import sys
+    import types
+
+    old = types.ModuleType("unsloth_zoo.saved_attention")
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.saved_attention", old)
+    monkeypatch.setattr(ad, "_ROCM_SDPA_GUARD", rocm)
+    monkeypatch.setattr(ad, "_saved_attention_active", lambda: False)
+    assert ad._explicit_saves_attention() is (not rocm)
 
 
 def test_graph_break_is_fatal_reads_the_compile_mode():

@@ -75,6 +75,8 @@ _REQUEST_POOL = ThreadPoolExecutor(max_workers = 8, thread_name_prefix = "browse
 # Queued plus running; held until the worker ends, which a disconnect does not cut short, so a page
 # that aborts and resends can't pile request bodies up behind a stalled site.
 _PAGE_REQUEST_SLOTS = threading.BoundedSemaphore(64)
+# The same bound for page loads: each queued fetch keeps its request (up to a 1 MB body).
+_FETCH_SLOTS = threading.BoundedSemaphore(64)
 _MAX_PAGE_REQUEST_BODY = 1024 * 1024
 _MAX_PAGE_RESPONSE_BYTES = 10 * 1024 * 1024
 _HEADER_NAME_RE = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]{1,256}")
@@ -2553,6 +2555,7 @@ async def browser_fetch(
         lambda request, cancel: _fetch_and_build(request, cancel, jar_key),
         request,
         http_request,
+        slots = _FETCH_SLOTS,
     )
 
 

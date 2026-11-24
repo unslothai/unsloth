@@ -216,6 +216,9 @@ def _materialize_multi_file(
 ) -> tuple[Path, list[dict[str, str]] | None, Any]:
     """(path, rows, None) after chunking, or (path, None, the cached DataFrame) on a cache hit."""
     chunk_size, chunk_overlap = resolve_chunking(chunk_size, chunk_overlap)
+    # A file listed again adds no rows a preview or run needs; re-reading it only grows memory.
+    seen: set[Path] = set()
+    file_entries = [e for e in file_entries if not (e[0] in seen or seen.add(e[0]))]
     cache_key = _compute_multi_file_cache_key(file_entries, chunk_size, chunk_overlap)
     cached = _CACHE_DIR / f"{cache_key}.parquet"
     if cached.exists():

@@ -2974,6 +2974,117 @@ def test_our_own_wrapper_is_still_handed_straight_back():
     assert not rl._cap_still_holds(wrapper, 32, True), "a different cap must still rescan"
 
 
+def _counted_hf_stream(n, width):
+    import datasets
+
+    pulled = {"rows": 0, "batches": 0}
+
+    def gen():
+        for i in range(n):
+            pulled["rows"] += 1
+            yield {"i": i}
+
+    def tokenize(batch):
+        pulled["batches"] += 1
+        ids = [[(i * 7 + j) % 97 + 1 for j in range(width + i % 5)] for i in batch["i"]]
+        labels = [[-100] * 2 + x[2:] for x in ids]
+        return {"input_ids": ids, "attention_mask": [[1] * len(x) for x in ids], "labels": labels}
+
+    base = datasets.IterableDataset.from_generator(gen)
+    stream = base.map(tokenize, batched = True, batch_size = 1000, remove_columns = ["i"])
+    return stream, pulled
+
+
+def _chain_depth(dataset):
+    depth, step = 0, getattr(dataset, "_ex_iterable", None)
+    while step is not None:
+        depth, step = depth + 1, getattr(step, "ex_iterable", None)
+    return depth
+
+
+def test_a_streamed_eval_split_is_capped_once_per_evaluate():
+    """evaluate() and get_eval_dataloader both cap; the second must trust the first's stream view."""
+    from unsloth.models.rl import _wrap_sft_evaluate_cap
+
+    cap, n = 16, 300
+    stream, pulled = _counted_hf_stream(n, cap + 4)
+    seen = {}
+
+    class Stub:
+        def evaluate(
+            self,
+            eval_dataset = None,
+            **kw,
+        ):
+            return self.get_eval_dataloader(eval_dataset)
+
+        def get_eval_dataloader(
+            self,
+            eval_dataset = None,
+            **kw,
+        ):
+            split = self.eval_dataset if eval_dataset is None else eval_dataset
+            seen["split"] = split
+            seen["pulled_before_read"] = pulled["rows"]
+            seen["rows"] = list(split)
+            return split
+
+    _wrap_sft_evaluate_cap(Stub)
+    stub = Stub()
+    stub.args = _Args(cap, None)
+    stub.eval_dataset = stream
+    reads = []
+    for call in range(4):
+        pulled["rows"] = 0
+        if call % 2:
+            stub.evaluate(eval_dataset = stream)
+        else:
+            stub.evaluate()
+        assert seen["pulled_before_read"] == n, "the cap probed the stream more than once"
+        assert _chain_depth(seen["split"]) == _chain_depth(stream) + 2, "the cap stacked twice"
+        reads.append(seen["rows"])
+    assert stub.eval_dataset is stream, "the stored split was not restored"
+    assert all(r == reads[0] for r in reads), "consecutive evaluations yielded different rows"
+    assert reads[0] and all(len(r["input_ids"]) <= cap for r in reads[0])
+    assert all(len(r["labels"]) == len(r["input_ids"]) for r in reads[0])
+
+
+def test_only_a_stream_the_cap_built_is_trusted_without_a_fingerprint():
+    """A caller's stream can mutate under the same identity, so its mark never skips a rescan."""
+    from datasets import Dataset
+
+    from unsloth.models import rl
+
+    stream, _ = _counted_hf_stream(4, 8)
+    rl._mark_capped(stream, 16, True)
+    assert not rl._cap_still_holds(stream, 16, True), "a caller's stream was trusted by its mark"
+
+    class Plain:
+        pass
+
+    impostor = Plain()
+    impostor.__dict__[rl._CAP_OWN_STREAM_ATTR] = "yes"
+    rl._mark_capped(impostor, 16, True)
+    assert not rl._cap_still_holds(impostor, 16, True), "only the literal True flag counts"
+
+    Stub, seen = _stub_trainer_class()
+    stub = Stub()
+    stub.args = _Args(16, None)
+    stub.evaluate(eval_dataset = stream)
+    built = seen["ds"]
+    assert built is not stream and rl._is_own_stream(built)
+    assert rl._cap_still_holds(built, 16, True)
+    assert not rl._cap_still_holds(built, 32, True), "a different cap must still rescan"
+    assert not rl._cap_still_holds(built, 16, False), "predict's mode must still rescan"
+
+    rows = [{"input_ids": list(range(24)), "attention_mask": [1] * 24} for _ in range(3)]
+    stub.evaluate(eval_dataset = Dataset.from_list(rows))
+    copy = seen["ds"]
+    assert max(len(r) for r in copy["input_ids"]) <= 16
+    assert not rl._is_own_stream(copy), "a map-style copy must stay on the fingerprint path"
+    assert rl._cap_still_holds(copy, 16, True)
+
+
 def test_the_late_evaluation_memo_is_bounded():
     """Each memo entry pins the original split and its capped copy for the trainer's lifetime, so a
     fresh validation subset each epoch grew it until memory ran out; the memo is bounded."""

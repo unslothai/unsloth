@@ -42,13 +42,15 @@ _DIFFUSERS_DISPATCH = "diffusers.models.attention_dispatch"
 _ROUTED_ATTR = "_unsloth_int8_dispatch"
 # DiTs the unset switch races: kernel per-step error within their shipped INT8 weights' (rel L2 vs bf16; Z-Image-Turbo
 # 0.022/0.048 vs 0.024/0.073). LTX-2 left out: audio stream 0.010 vs 0.008, no sink to fix. Qwen-Image left out: max
-# 0.031 vs 0.013, 50-step images LPIPS 0.14 from native. HunyuanImage-2.1 and Krea-2 mask every call (nothing to route).
+# 0.031 vs 0.013, 50-step images LPIPS 0.14 from native. HunyuanImage-2.1 masks every call (nothing to route). Krea-2
+# block calls run mask-free over the valid key prefix (diffusion_krea2_prefix_kv); a masked call keeps the incumbent.
+# FLUX.1 and FLUX.2 left out (route on request): 30 prompts vs fp32 attention, INT8 minus bf16 LPIPS CI above the
+# bf16 kernel-swap floor on L4 and A100-40 (schnell +0.018 [0.010, 0.027] vs 0.006, klein 4B +0.012 vs 0.001).
 AUTO_DITS = frozenset(
     {
-        "Flux2Transformer2DModel",
         "Flux3Transformer2DModel",
+        "Krea2Transformer2DModel",
         "MOSSImageTransformer",
-        "FluxTransformer2DModel",
         "HunyuanVideo15Transformer3DModel",
         "QwenImage21Transformer2DModel",
         "WanTransformer3DModel",
@@ -73,9 +75,7 @@ def two_expert_pipeline(pipe: Any) -> bool:
 # Also race with speed unset and no profile (e.g. offloaded INT8 DiT on T4): only the families measured that way.
 SPEED_UNSET_DITS = frozenset(
     {
-        "Flux2Transformer2DModel",
         "Flux3Transformer2DModel",
-        "FluxTransformer2DModel",
         "QwenImage21Transformer2DModel",
         "ZImageTransformer2DModel",
     }
@@ -83,9 +83,8 @@ SPEED_UNSET_DITS = frozenset(
 # Accuracy measured on the CUDA kernel only: with the switch unset a Triton stand-in keeps the incumbent.
 AUTO_CUDA_ONLY = frozenset(
     {
-        "Flux2Transformer2DModel",
         "Flux3Transformer2DModel",
-        "FluxTransformer2DModel",
+        "Krea2Transformer2DModel",
         "HunyuanVideo15Transformer3DModel",
         "ZImageTransformer2DModel",
     }
@@ -595,7 +594,7 @@ def _race_wins(
 ) -> bool:
     """Whether the kernel beats the incumbent by more than ``RACE_MARGIN`` at ``tokens`` tokens on this card. Timed
     like the card race (interleaved, median); cached per card, dtype, geometry, incumbent, size and serving implementation; an out-of-memory
-    probe counts as a loss."""
+    probe is retried once, then counts as a loss for this call only (not cached, not persisted)."""
     import torch
 
     from . import diffusion_int8_attention as I8
@@ -620,27 +619,34 @@ def _race_wins(
     if isinstance(stored, bool):
         _LONG_VERDICTS[key] = stored
         return stored
-    q = k = v = None
-    timed = False
-    try:
-        # The timing events record on the current device's stream, so a secondary card must be current here.
-        with torch.no_grad(), torch.cuda.device(device):
-            q, k, v = I8.probe_inputs(device, dtype, tokens, heads, head_dim, seed = tokens)
-            ms = I8._median_ms(
-                {
-                    "incumbent": lambda: incumbent(q, k, v),
-                    "int8": lambda: I8.int8_attention(q, k, v),
-                }
-            )
-        won = ms["int8"] < I8.RACE_MARGIN * ms["incumbent"]
-        timed = True
-    except torch.OutOfMemoryError:
-        won = False
-    finally:
+    won = timed = False
+    # an out-of-memory probe is retried once (after freeing the cache); a second one counts as a loss for this call
+    # only: neither cached for the process nor persisted, so a later load races again
+    for _ in range(2):
         q = k = v = None
-        torch.cuda.empty_cache()
+        try:
+            # The timing events record on the current device's stream, so a secondary card must be current here.
+            with torch.no_grad(), torch.cuda.device(device):
+                q, k, v = I8.probe_inputs(device, dtype, tokens, heads, head_dim, seed = tokens)
+                ms = I8._median_ms(
+                    {
+                        "incumbent": lambda: incumbent(q, k, v),
+                        "int8": lambda: I8.int8_attention(q, k, v),
+                    }
+                )
+            won = ms["int8"] < I8.RACE_MARGIN * ms["incumbent"]
+            timed = True
+        except torch.OutOfMemoryError:
+            won = False
+        finally:
+            q = k = v = None
+            torch.cuda.empty_cache()
+        if timed:
+            break
+    if not timed:
+        return won
     _LONG_VERDICTS[key] = won
-    if timed and impl is not None:  # an out-of-memory loss is this moment's, not the card's
+    if impl is not None:
         try:
             I8.persisted().put(card, stored_key, won)
         except Exception:  # noqa: BLE001
