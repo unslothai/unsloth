@@ -44,8 +44,11 @@ def inject_with_loaded_model(monkeypatch, *, gguf):
     monkeypatch.setitem(
         sys.modules, "routes.inference", SimpleNamespace(get_llama_cpp_backend = lambda: llama)
     )
+    no_kept = SimpleNamespace(visible = lambda: [], in_slot = lambda slot, fn: fn())
     monkeypatch.setitem(
-        sys.modules, "core.inference", SimpleNamespace(get_inference_backend = lambda: backend)
+        sys.modules,
+        "core.inference",
+        SimpleNamespace(get_inference_backend = lambda: backend, model_slots = no_kept),
     )
     monkeypatch.setattr(
         route, "_resolve_local_v1_endpoint", lambda request: "http://127.0.0.1:8888/v1"
