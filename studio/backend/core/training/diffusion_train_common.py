@@ -1038,10 +1038,22 @@ def training_precision_preflight_error(resolved_family: str, base_precision: str
             cap = torch.cuda.get_device_capability() if torch.cuda.is_available() else None
         except Exception:  # noqa: BLE001 -- probe failure: leave it to the trainer's own check
             cap = None
+        try:
+            name = torch.cuda.get_device_name() if cap is not None else None
+        except Exception:  # noqa: BLE001 -- no name: the capability check decides
+            name = None
         if cap is not None and tuple(cap) < (7, 5):
             return (
                 f"int8 W8A8 needs int8 tensor cores (compute capability 7.5+), this GPU is "
                 f"sm{cap[0]}{cap[1]}; use base_precision='nf4' or 'auto'."
+            )
+        from core.inference.diffusion_vae_finite import lacks_tensor_cores
+
+        if cap is not None and lacks_tensor_cores(name, cap):
+            # GTX 16xx: sm75 without tensor cores, so the capability check alone lets it through.
+            return (
+                f"int8 W8A8 needs int8 tensor cores, which {name} (sm{cap[0]}{cap[1]}) does not have; use "
+                "base_precision='nf4' or 'auto'."
             )
     if fam in _FLOW_TRAIN_FAMILIES and mode in ("bf16", "int8", "fp8", "mxfp8"):
         # Dense precisions need CUDA; reject here so residents are not evicted first.

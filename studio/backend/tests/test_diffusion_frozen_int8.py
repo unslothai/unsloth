@@ -276,6 +276,84 @@ def test_fp16_preflight_refuses_w8a8_without_int8_tensor_cores(monkeypatch, cap,
     assert ("7.5+" in (reason or "")) is refused
 
 
+@pytest.mark.parametrize(
+    "name, cap, declined",
+    [
+        ("NVIDIA GeForce GTX 1660 SUPER", (7, 5), True),
+        ("NVIDIA GeForce GTX 1650", (7, 5), True),
+        ("Tesla T4", (7, 5), False),
+        ("NVIDIA GeForce RTX 2080", (7, 5), False),
+        ("Tesla V100-SXM2-16GB", (7, 0), True),
+        ("NVIDIA L4", (8, 9), False),
+    ],
+)
+def test_fp16_preflight_and_trainer_decline_cards_without_int8_tensor_cores(
+    monkeypatch, name, cap, declined
+):
+    """GTX 16xx report sm75 like a T4 but have no tensor cores: explicit int8 (W8A8 on an fp16 card) is declined
+    with a clear reason before eviction, and the trainer's GEMM check declines the same cards."""
+    import core.training.diffusion_train_common as tc
+
+    monkeypatch.setattr(tc, "bf16_unsupported_reason", lambda fam: None)
+    monkeypatch.setattr(tc, "dit_accelerator_missing_reason", lambda fam: None)
+    monkeypatch.setattr(tc, "dit_fp16_fallback", lambda fam: True)
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_INT8_TRAIN", raising = False)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a: cap)
+    monkeypatch.setattr(torch.cuda, "get_device_name", lambda *a: name)
+    reason = tc.training_precision_preflight_error("flux.2-klein", "int8") or ""
+    assert ("tensor cores" in reason) is declined
+    if declined:
+        assert "nf4" in reason
+    decline = dit._int8_gemm_decline(torch.device("cuda", 0))
+    assert (decline is not None) is declined
+    if declined:
+        assert name in decline
+
+
+def test_int8_probe_runs_on_the_operands_card_and_skips_cards_without_tensor_cores(monkeypatch):
+    seen = []
+
+    def fake_int_mm(a, b):
+        seen.append(str(a.device))
+        return torch.full((32, 32), 32, dtype = torch.int32)
+
+    monkeypatch.setattr(dit, "_INT8_MM_PROBE_OK", {})
+    monkeypatch.setattr(torch, "_int_mm", fake_int_mm)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 1)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a: (8, 9))
+    monkeypatch.setattr(torch.cuda, "get_device_name", lambda *a: "NVIDIA L4")
+    real_ones = torch.ones
+    # The probe allocates on the card it names; record that, then build the tensor on the host.
+    monkeypatch.setattr(
+        torch, "ones", lambda *a, **k: real_ones(*a, **{**k, "device": "cpu"}).requires_grad_(False)
+    )
+    # "cuda" resolves to the current card (cuda:1), and the cache keys on it.
+    assert str(dit._concrete_device("cuda")) == "cuda:1"
+    assert dit._int8_mm_probe_ok("cuda") is True
+    assert list(dit._INT8_MM_PROBE_OK) == ["cuda:1"]
+    assert (
+        dit._int8_mm_probe_ok(torch.device("cuda", 1)) is True and len(seen) == 1
+    )  # cached per card
+    monkeypatch.setattr(torch.cuda, "get_device_name", lambda *a: "NVIDIA GeForce GTX 1660 Ti")
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a: (7, 5))
+    assert (
+        dit._int8_mm_probe_ok(torch.device("cuda", 0)) is False and len(seen) == 1
+    )  # declined, never run
+
+
+def test_a_card_without_int8_tensor_cores_falls_back_with_the_reason(monkeypatch):
+    model = nn.Module()
+    model.lin = nn.Linear(32, 32, bias = False).to(torch.bfloat16).requires_grad_(False)
+    monkeypatch.setattr(
+        dit, "_int8_gemm_decline", lambda dev: "int8 W8A8 needs int8 tensor cores, which X lacks"
+    )
+    events = []
+    assert dit._apply_int8_w8a8(model, events.append, None, device = "cuda:0") is False
+    assert "tensor cores" in events[-1]["message"] and "weight-only" in events[-1]["message"]
+    assert type(model.lin) is nn.Linear
+
+
 def test_conversion_keeps_the_fp32_island_on_an_untargeted_layer():
     """fp16 path: islands are installed before the W8A8 conversion and live on the module's forward. A converted
     Z-Image feed_forward.w2 (not a LoRA target) must still run fp32 with autocast off, not fp16 / bf16."""

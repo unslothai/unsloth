@@ -514,9 +514,13 @@ def _apply_int8_w8a8(
     try:
         dev = torch.device(device) if device is not None else next(transformer.parameters()).device
         if dev.type == "cuda":
-            # _int_mm probe: an arch / build without int8 GEMMs must fall back before any layer is touched.
-            a = torch.ones((32, 32), dtype = torch.int8, device = dev)
-            torch._int_mm(a, a.t())
+            # _int_mm probe on the operands' card: an arch / build without int8 GEMMs (or without int8 tensor
+            # cores) must fall back before any layer is touched.
+            decline = _int8_gemm_decline(dev)
+            if decline:
+                raise RuntimeError(decline)
+            if not _int8_mm_probe_ok(dev):
+                raise RuntimeError("torch._int_mm does not run on this GPU")
         names = {fqn for fqn, _ in _lowp_targets(transformer, _fp8_module_filter, family)}
         done, failed = convert_frozen_int8(transformer, names, device = device)
         if not done:
@@ -686,7 +690,10 @@ def _lowp_swap_spec(
     else:
         from core.training.diffusion_frozen_int8 import convert_frozen_int8 as convert
         def probe():
-            a = torch.ones((32, 32), dtype = torch.int8, device = device)
+            decline = _int8_gemm_decline(device)
+            if decline:
+                raise RuntimeError(decline)
+            a = torch.ones((32, 32), dtype = torch.int8, device = _concrete_device(device))
             torch._int_mm(a, a.t())
 
         finish = None
@@ -1087,16 +1094,54 @@ def _auto_block_swap_wanted(
 _INT8_MM_PROBE_OK: dict[str, bool] = {}
 
 
+def _concrete_device(device):
+    """``device`` with its index filled in ("cuda" -> the current CUDA device), so a probe and its cache key name
+    the card the operands live on."""
+    import torch
+
+    dev = device if isinstance(device, torch.device) else torch.device(device)
+    if dev.type == "cuda" and dev.index is None:
+        dev = torch.device("cuda", torch.cuda.current_device())
+    return dev
+
+
+def _int8_gemm_decline(device) -> Optional[str]:
+    """Why the W8A8 base must not run on ``device``: no int8 tensor cores (below sm75, or a GTX 16xx, sm75 without
+    them, where an int8 GEMM falls off the tensor-core path). None when it may; never raises."""
+    try:
+        import torch
+
+        from core.inference.diffusion_vae_finite import lacks_tensor_cores
+
+        dev = _concrete_device(device)
+        if dev.type != "cuda":
+            return None
+        name = torch.cuda.get_device_name(dev)
+        cap = tuple(torch.cuda.get_device_capability(dev))
+    except Exception:  # noqa: BLE001 -- unknown card: the GEMM probe decides
+        return None
+    if cap < (7, 5) or lacks_tensor_cores(name, cap):
+        return f"int8 W8A8 needs int8 tensor cores, which {name} (sm{cap[0]}{cap[1]}) does not have"
+    return None
+
+
 def _int8_mm_probe_ok(device) -> bool:
-    """Whether torch._int_mm runs on ``device`` (the W8A8 base's GEMM); cached per device, never raises."""
-    key = str(device)
+    """Whether torch._int_mm runs on ``device`` (the card the W8A8 operands live on); cached per card, never
+    raises. A card without int8 tensor cores answers False without running it."""
+    try:
+        dev = _concrete_device(device)
+    except Exception:  # noqa: BLE001
+        return False
+    key = str(dev)
     if key not in _INT8_MM_PROBE_OK:
-        try:
-            import torch
-            a = torch.ones((32, 32), dtype = torch.int8, device = device)
-            ok = bool(torch._int_mm(a, a.t())[0, 0].item() == 32)
-        except Exception:  # noqa: BLE001 -- no int8 GEMM: the run would fall back to weight-only
-            ok = False
+        ok = False
+        if _int8_gemm_decline(dev) is None:
+            try:
+                import torch
+                a = torch.ones((32, 32), dtype = torch.int8, device = dev)
+                ok = bool(torch._int_mm(a, a.t())[0, 0].item() == 32)
+            except Exception:  # noqa: BLE001 -- no int8 GEMM: the run would fall back to weight-only
+                ok = False
         _INT8_MM_PROBE_OK[key] = ok
     return _INT8_MM_PROBE_OK[key]
 
@@ -3921,6 +3966,11 @@ def run_dit_lora_training(
         mode = (cfg.base_precision or "nf4").strip().lower()
         if mode not in ("nf4", "auto") and not (mode == "int8" and _int8_w8a8(cfg)):
             raise ValueError(dit_fp16_dense_reason(mode))
+        if mode == "int8":
+            # An fp16 card trains int8 only as W8A8; decline before anything loads where it cannot run.
+            decline = _int8_gemm_decline(device)
+            if decline:
+                raise ValueError(f"{decline}; use base_precision='nf4' or 'auto'.")
 
     # A local FLUX.3 pipeline is modular (modular_model_index.json, no model_index.json).
     _assert_trusted_base_model(
