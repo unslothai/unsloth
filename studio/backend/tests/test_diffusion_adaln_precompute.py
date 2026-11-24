@@ -976,3 +976,49 @@ def test_gguf_qwen_edit_streamed_render_matches_stock(monkeypatch, policy, top, 
     assert all(torch.equal(a, b) for a, b in zip(ref, out))
     assert all(torch.equal(a, b) for a, b in zip(ref, [o.cpu() for o in _run(model, calls)]))
     assert ap.installed(model) is not fallback
+
+
+@pytest.mark.parametrize("mid_capture", [False, True])
+def test_uninstall_drops_recorded_graphs_before_their_buffers(mid_capture):
+    """A graph recorded with the stand-ins replays reads of the per-layout buffers: an uninstall (an unsupported call
+    mid-session) must drop the pipe's graphs before those buffers are freed, and after a capture it ran inside ends."""
+    import gc
+    import weakref
+
+    from core.inference import diffusion_cuda_graph as cg
+
+    model = _flux()
+    calls = _flux_calls(torch.float32)
+    pipe = _pipe(len(calls))
+    assert ap.install(model, pipe, requested = ap.MODE_ON)
+    _run(model, calls)
+    st = model.__dict__[ap.STATE_ATTR]
+    bufs = [weakref.ref(buf) for buf, _views in st.layouts.values()]
+    del st
+    assert bufs
+    seen = []
+
+    class _Handle:
+        cache = {}
+
+        def reset(self):
+            gc.collect()
+            seen.append(all(r() is not None for r in bufs))
+
+    pipe._unsloth_cuda_graphs = (_Handle(),)
+    recording = getattr(cg._OUTSIDE_LOCAL, "recording", 0)
+    if mid_capture:
+        cg._OUTSIDE_LOCAL.recording = recording + 1
+    try:
+        assert ap.uninstall(model, reason = "unsupported call: test")
+        if mid_capture:
+            assert seen == []  # nothing dropped while the recording runs
+            gc.collect()
+            assert all(r() is not None for r in bufs)
+    finally:
+        cg._OUTSIDE_LOCAL.recording = recording
+    if mid_capture:
+        cg.drain_deferred_releases()
+    assert seen == [True]
+    gc.collect()
+    assert all(r() is None for r in bufs)

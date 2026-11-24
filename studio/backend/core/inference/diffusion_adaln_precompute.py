@@ -971,14 +971,46 @@ def uninstall(
                 continue
             if target is not None and str(target) not in ("cpu", "meta"):
                 orig.to(target)
+        # The per-layout buffers are what recorded CUDA graphs read: they outlive every graph of the pipe.
+        held = (dict(st.layouts), dict(st.rows))
+        pipe = st.pipe_ref() if st.pipe_ref is not None else None
         st.rows.clear()
         st.layouts.clear()
     del model.__dict__[STATE_ATTR]
     if logger is not None:
         logger.info("diffusion.adaln_precompute: removed (%s)", reason or "requested")
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
+    _drop_graphs_then_free(pipe, held, torch)
     return True
+
+
+def _drop_graphs_then_free(pipe: Any, held: tuple, torch: Any) -> None:
+    """Graphs recorded with the stand-ins replay their reads of ``held``: drop them before the buffers go (now, or
+    once the capture this runs inside ends); without a pipe to reset, the buffers stay held."""
+    if pipe is None:
+        _ORPHANED.append(held)
+        return
+    handles = tuple(getattr(pipe, "_unsloth_cuda_graphs", ()) or ())
+    from .diffusion_cuda_graph import recording_here, release_when_capture_idle, reset_all
+
+    def drop(held = held) -> None:  # the default holds the buffers until this ran
+        if handles:
+            reset_all(handles)
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    capturing = False
+    try:
+        capturing = bool(torch.cuda.is_available() and torch.cuda.is_current_stream_capturing())
+    except Exception:  # noqa: BLE001
+        pass
+    if capturing or recording_here():
+        release_when_capture_idle(drop)
+    else:
+        drop()
+
+
+# Buffers removed with no pipe to reset graphs on: kept for the process (a few MiB per layout, rare path).
+_ORPHANED: list = []
 
 
 def bind_pipe(pipe: Any) -> None:
