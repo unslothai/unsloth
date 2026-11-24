@@ -4701,8 +4701,7 @@ def _deleted_chat_message_parents(
     ).fetchall()
     deleted = {str(row["message_id"]): row["parent_id"] for row in rows}
     deleted_user_ids = {str(row["message_id"]) for row in rows if row["role"] == "user"}
-    # A reply to a deleted user turn goes with it, as on delete, and is tombstoned so later saves of its
-    # continuations still resolve; stored rows are server-managed survivors.
+    # Replies to a deleted user turn go with it, as on delete; stored ones are server-managed.
     late_replies = [
         m
         for m in incoming
