@@ -240,6 +240,28 @@ def test_ptxas_of_a_triton_that_takes_no_arch(monkeypatch, toolchain):
     assert extra["ptxas"] == "ptxas 12.4" and extra["triton"]
 
 
+def test_a_triton_without_knobs_still_keys_libdevice(monkeypatch, toolchain, tmp_path):
+    """Triton 3.2 / 3.3 (torch 2.6 / 2.7) have no ``triton.knobs``: libdevice comes from TRITON_LIBDEVICE_PATH, else
+    the bundled file, as their CUDAOptions read it, so the verdict still persists there (real 3.2.0 / 3.3.1 wheels:
+    scripts/r19308_old_triton_check.py)."""
+    import sys
+
+    import triton
+
+    monkeypatch.delattr(triton, "knobs", raising = False)
+    monkeypatch.setitem(sys.modules, "triton.knobs", None)
+    alt = tmp_path / "toolkit_libdevice.10.bc"
+    alt.write_bytes(b"toolkit libdevice")
+    monkeypatch.setenv("TRITON_LIBDEVICE_PATH", str(alt))
+    assert gemm._libdevice_path() == str(alt)
+    pinned = gemm._cfg_extra(0)["libdevice"]
+    monkeypatch.delenv("TRITON_LIBDEVICE_PATH")
+    bundled = gemm._libdevice_path()
+    assert bundled.endswith("libdevice.10.bc") and bundled != str(alt)
+    if __import__("os").path.isfile(bundled):
+        assert gemm._cfg_extra(0)["libdevice"] != pinned
+
+
 def test_fingerprint_reads_the_triton_windows_distribution(monkeypatch):
     import types
 

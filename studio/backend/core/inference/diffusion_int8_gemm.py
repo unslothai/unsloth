@@ -2056,6 +2056,22 @@ def _ptxas_version(arch: int) -> str:
     return " ".join(str(got).split())[-40:]
 
 
+def _libdevice_path() -> str:
+    """The libdevice Triton links: ``knobs.nvidia.libdevice_path`` (3.4+); before knobs (3.2 / 3.3, torch 2.6 / 2.7)
+    CUDAOptions reads TRITON_LIBDEVICE_PATH, else the bundled lib/libdevice.10.bc, which is what this mirrors."""
+    try:
+        from triton import knobs
+        lib = knobs.nvidia.libdevice_path
+    except (ImportError, AttributeError):
+        lib = os.environ.get("TRITON_LIBDEVICE_PATH")
+    if not lib:
+        from pathlib import Path
+
+        import triton.backends.nvidia.compiler as nvc
+        lib = str(Path(nvc.__file__).parent / "lib" / "libdevice.10.bc")
+    return lib
+
+
 def _cfg_extra(index: int) -> dict:
     """What the probed cubin depends on beyond the fingerprint: libdevice (torch / Studio repoint it at the CUDA
     toolkit's under emulate_precision_casts), ptxas for card ``index`` (not the thread's current card), Triton's own
@@ -2063,16 +2079,10 @@ def _cfg_extra(index: int) -> dict:
     import hashlib
 
     import triton
-    from triton import knobs
 
     import torch
 
-    lib = knobs.nvidia.libdevice_path
-    if not lib:
-        from pathlib import Path
-
-        import triton.backends.nvidia.compiler as nvc
-        lib = str(Path(nvc.__file__).parent / "lib" / "libdevice.10.bc")
+    lib = _libdevice_path()
     with open(lib, "rb") as f:
         lib_sha = hashlib.sha256(f.read()).hexdigest()[:16]
     # the probed card's ptxas (Blackwell has its own); the fingerprint already keys the card itself
