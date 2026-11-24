@@ -721,7 +721,7 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
         hf_token = _config_hf_token(config)
         load_in_4bit = _resolve_lora_4bit(mc, config.get("load_in_4bit", True))
 
-        # Latest-tier models load 16-bit unless validated in 4-bit: bnb 4-bit feeds quantized experts into unvalidated paths.
+        # Latest-tier models load 16-bit unless kept in 4-bit: bnb 4-bit feeds quantized experts into unvalidated paths.
         if load_in_4bit:
             from utils.transformers_version import latest_tier_forces_16bit
             if latest_tier_forces_16bit(config["model_name"], hf_token):

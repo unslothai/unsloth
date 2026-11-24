@@ -448,7 +448,7 @@ def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
     hf_token = hf_token_arg(cmd.get("hf_token"), allow_ambient_token = cmd.get("allow_ambient", True))
     max_seq_length = cmd.get("max_seq_length", 2048)
     load_in_4bit = cmd.get("load_in_4bit", True)
-    # Latest-sidecar checkpoints load 16-bit unless validated in 4-bit: bnb 4-bit hits unvalidated expert paths.
+    # Latest-sidecar checkpoints load 16-bit unless kept in 4-bit: bnb 4-bit hits unvalidated expert paths.
     if load_in_4bit:
         from utils.transformers_version import latest_tier_forces_16bit
 

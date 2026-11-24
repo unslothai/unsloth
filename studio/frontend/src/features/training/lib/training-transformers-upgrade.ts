@@ -28,7 +28,7 @@ export interface TrainingTransformersUpgradeNotice {
 }
 
 /** With custom code and an installable release, the fallback keeps 4-bit while Install trains
- * 16-bit. `installable && !forces16Bit` is that case, unless the sidecar keeps 4-bit anyway. */
+ * 16-bit, unless the sidecar keeps 4-bit. */
 export function trainingTransformersUpgradeNotice(
   check: TransformersUpgradeCheck,
   loadsIn4Bit: boolean,
