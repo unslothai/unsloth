@@ -5792,6 +5792,47 @@ def video_split_shortfall_message(
     return None
 
 
+# "0" prices every video decode with the flat clip estimate (``estimate_video_runtime_mib``) again.
+VIDEO_TILED_DECODE_PRICE_ENV = "UNSLOTH_VIDEO_TILED_DECODE_PRICE"
+
+
+def _video_tiled_decode_mib(
+    state: Any,
+    *,
+    width: Optional[int],
+    height: Optional[int],
+    frames: Optional[int],
+    available_mib: int,
+) -> Optional[int]:
+    """The request guard's decode-phase price from the tile the decode takes (LTX-2 wide tiles), or None (flat
+    estimate). The tiler sees what is left once only the decode-phase weights are on the card."""
+    if (os.environ.get(VIDEO_TILED_DECODE_PRICE_ENV) or "").strip().lower() in (
+        "0",
+        "off",
+        "false",
+        "no",
+    ):
+        return None
+    if not (width and height and frames):
+        return None
+    decode_floor = getattr(state, "vram_decode_floor_mib", None)
+    if decode_floor is None:
+        decode_floor = getattr(state, "vram_floor_mib", None)
+    if decode_floor is None:
+        return None
+    try:
+        from .video_ltx2_vae_tiles import admission_decode_mib
+        return admission_decode_mib(
+            getattr(getattr(state, "pipe", None), "vae", None),
+            width = int(width),
+            height = int(height),
+            frames = int(frames),
+            free_mib = int(available_mib) - int(decode_floor),
+        )
+    except Exception:  # noqa: BLE001 -- unpriced: the flat estimate stands
+        return None
+
+
 def video_offload_shortfall_message(
     *,
     family: str,
@@ -5803,28 +5844,35 @@ def video_offload_shortfall_message(
     frames: Optional[int] = None,
     decode_floor_mib: Optional[int] = None,
     measured_extra_mib: Optional[int] = None,
+    decode_mib: Optional[int] = None,
 ) -> Optional[str]:
     """Refusal when co-resident weights plus the activation headroom exceed the device, else None.
     ``measured_extra_mib``: a recorded peak (above the request's start) of a completed request at least this large
     under the same load; it replaces the estimated headroom when it asks for less (margin and slack as the Wan
     residency fit uses).
     Denoise and VAE decode are separate phases: the decoded-clip share is held only beside the weights still on the
-    device during the decode (``decode_floor_mib``, the full floor when unknown), never beside the streamed DiT."""
+    device during the decode (``decode_floor_mib``, the full floor when unknown), never beside the streamed DiT.
+    ``decode_mib``: the decode phase priced from this request's tile (``admission_decode_mib``, headroom included);
+    it replaces the base overhead and the decoded-clip share for that phase."""
     headroom = DEFAULT_BASE_OVERHEAD_MIB
     full_floor_mib = int(floor_mib)
     required = int(floor_mib) + headroom
     if width and height and frames:
+        decode_floor = int(
+            floor_mib if decode_floor_mib is None else min(decode_floor_mib, floor_mib)
+        )
         # decoded-clip share of the runtime estimate; its fixed 4 GiB denoise base over-refuses measured cells
         clip_mib = max(
             0,
             estimate_video_runtime_mib(width = width, height = height, num_frames = frames)
             - _VIDEO_DENOISE_ACTIVATION_MIB,
         )
-        decode_floor = int(
-            floor_mib if decode_floor_mib is None else min(decode_floor_mib, floor_mib)
-        )
-        if decode_floor + headroom + clip_mib > required:
-            floor_mib, headroom = decode_floor, headroom + clip_mib
+        decode_headroom = headroom + clip_mib
+        if decode_mib is not None:
+            # never above the flat estimate: what it admitted stays admitted
+            decode_headroom = min(decode_headroom, max(0, int(decode_mib)))
+        if decode_floor + decode_headroom > required:
+            floor_mib, headroom = decode_floor, decode_headroom
             required = decode_floor + headroom
     if measured_extra_mib is not None and measured_extra_mib > 0:
         from .video_stream_residency import MEASURED_PEAK_MARGIN, MEASURED_SLACK_MIB
@@ -15204,6 +15252,13 @@ class VideoBackend:
                         decode_floor_mib = getattr(state, "vram_decode_floor_mib", None),
                         measured_extra_mib = video_stream_residency.measured_extra_mib(
                             calibration, int(width) * int(height) * int(frames)
+                        ),
+                        decode_mib = _video_tiled_decode_mib(
+                            state,
+                            width = width,
+                            height = height,
+                            frames = frames,
+                            available_mib = int(available_bytes // (1024 * 1024)),
                         ),
                     )
                     if shortfall is not None:
