@@ -114,7 +114,8 @@ if triton is not None:
                 )
                 xa = tl.dot(x, a, xa)
         if LORA_IN_REDUCE:
-            # Every N tile computes the same X @ A^T slice: one of them stores it after the base partials.
+            # Every N tile computes the same X @ A^T slice: the first stores it after the base partials. The
+            # mask is a tensor comparison: a scalar pid_n == 0 term made it int32 in Triton 3.9's interpreter.
             tl.store(
                 P
                 + SPLIT_K * (BLOCK_M * N)
@@ -122,7 +123,7 @@ if triton is not None:
                 + rm[:, None] * BLOCK_R
                 + rr[None, :],
                 xa,
-                mask = (rm[:, None] < BLOCK_M) & (rr[None, :] < BLOCK_R) & (pid_n == 0),
+                mask = (rm[:, None] + pid_n * BLOCK_M < BLOCK_M) & (rr[None, :] < BLOCK_R),
             )
         elif HAS_LORA:
             b = tl.load(
@@ -304,6 +305,18 @@ def skinny_linear(
         raise ValueError("skinny_linear: A must be [R, K] and B [N, R]")
     if out is not None and tuple(out.shape) != (M, N):
         raise ValueError(f"skinny_linear: out must be [{M}, {N}]")
+    if A is not None and out is not None and out.numel() and B.numel():
+        # The reduce launch reads B while it writes out: an out sharing B's bytes reads a copy.
+        b_start, o_start = B.data_ptr(), out.data_ptr()
+        b_end = (
+            b_start
+            + ((N - 1) * B.stride(0) + (B.shape[1] - 1) * B.stride(1) + 1) * B.element_size()
+        )
+        o_end = (
+            o_start + ((M - 1) * out.stride(0) + (N - 1) * out.stride(1) + 1) * out.element_size()
+        )
+        if b_start < o_end and o_start < b_end:
+            B = B.clone()
     return _launch(X, W, A, B, scale, out, config)
 
 
@@ -382,23 +395,24 @@ def _launch(
         # The LoRA dot in the reduce needs more programs: on an L4 decode sweep 128 columns each ran 4% slower
         # than adding the term per split, 32 ran 0.8% faster.
         reduce_n = 32 if lora_in_reduce else 128
+        # A sum-only reduce gets fixed LoRA arguments, so ranks and B layouts share one compiled variant.
         _splitk_reduce_kernel[(triton.cdiv(N, reduce_n),)](
             partials,
-            B,
+            B if lora_in_reduce else partials,
             out,
             M,
             N,
-            R,
-            B.stride(0),
-            B.stride(1),
+            R if lora_in_reduce else 0,
+            B.stride(0) if lora_in_reduce else 0,
+            B.stride(1) if lora_in_reduce else 0,
             out.stride(0),
             out.stride(1),
-            float(scale),
+            float(scale) if lora_in_reduce else 0.0,
             LORA_IN_REDUCE = lora_in_reduce,
             SPLIT_K = sk,
             BLOCK_M = MAX_ROWS,
             BLOCK_N = reduce_n,
-            BLOCK_R = block_r,
+            BLOCK_R = block_r if lora_in_reduce else 16,
             num_warps = 4,
             enable_fp_fusion = True,
         )
@@ -486,7 +500,8 @@ def skinny_decode_linear(X, W, A, B, scale, out):
     if dtype not in (torch.bfloat16, torch.float16) or type(W) not in _PLAIN or W.dim() != 2:
         return None
     N = W.shape[0]
-    if W.dtype != dtype or K < 1 or N < 1 or W.shape[1] != K or N * MAX_ROWS * 64 >= _INT32:
+    # int32 scratch offsets: up to 64 splits of [16, N] base partials plus [16, <= 128] rank partials.
+    if W.dtype != dtype or K < 1 or N < 1 or W.shape[1] != K or (N + 128) * MAX_ROWS * 64 >= _INT32:
         return None
     if X.layout != _STRIDED or W.layout != _STRIDED or X.is_neg() or W.is_neg():
         return None
