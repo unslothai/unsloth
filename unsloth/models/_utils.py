@@ -2362,9 +2362,13 @@ def check_mixed_gpu_placement(
 
     try:
         if DEVICE_TYPE == "hip":
-            archs = {
-                i: getattr(torch.cuda.get_device_properties(i), "gcnArchName", "") for i in indices
-            }
+            # Per card: one unreadable card must not hide a gfx10 beside it (#7922).
+            archs = {}
+            for i in indices:
+                try:
+                    archs[i] = getattr(torch.cuda.get_device_properties(i), "gcnArchName", "")
+                except Exception:
+                    archs[i] = ""
             no_compile = [i for i in indices if arch_breaks_compile(archs[i])]
             no_bf16 = [i for i in indices if arch_lacks_bf16(archs[i])]
         else:

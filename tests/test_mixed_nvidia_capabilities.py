@@ -8,6 +8,7 @@ cache must also follow torch.cuda.set_device."""
 
 import functools
 import inspect
+import sys
 import types
 from pathlib import Path
 
@@ -952,3 +953,34 @@ def test_hip_placement_without_bf16_on_gfx10_loads(monkeypatch, capsys, device_m
         device_type = "hip",
     )
     assert "bfloat16" not in capsys.readouterr().out
+
+
+def test_an_unreadable_card_does_not_hide_a_gfx10_beside_it(monkeypatch):
+    import torch
+
+    import unsloth.models._utils as model_utils
+
+    real = _fake_torch
+
+    def flaky(caps, archs = None):
+        fake = real(caps, archs)
+        props = fake.cuda.get_device_properties
+
+        def get_device_properties(device = None):
+            if device == 1:
+                raise RuntimeError("device wedged")
+            return props(device)
+
+        fake.cuda.get_device_properties = get_device_properties
+        return fake
+
+    monkeypatch.setattr(sys.modules[__name__], "_fake_torch", flaky)
+    with pytest.raises(RuntimeError, match = "bfloat16 layers on GPU 2"):
+        _check_placement(
+            monkeypatch,
+            [(12, 0)] * 3,
+            {"model.layers.0": 0, "model.layers.1": 1, "model.layers.2": 2},
+            torch.bfloat16,
+            archs = R9700_AND_IGPU,
+            device_type = "hip",
+        )
