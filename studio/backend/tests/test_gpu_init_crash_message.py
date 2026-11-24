@@ -106,6 +106,7 @@ def _run_cpu_fallback_load(
     stall_launches = (),
     stall_kind = "no_progress",
     gpu_memory = None,
+    staged_env = None,
 ):
     """``stall_launches``: 0-based launch indexes whose child stays alive while the
     health wait reports a startup stall (a hung driver rather than a crash), ended
@@ -220,6 +221,7 @@ def _run_cpu_fallback_load(
         )
         if not available:
             return None
+        _env.update(staged_env or {})
         return ["/staged/llama-server", "--device", "none"], None, None
 
     backend._wait_for_health = _wait_for_health
@@ -913,6 +915,24 @@ class TestCpuIsolatedReplay:
         assert completed.stdout == "healthy\n"
         backend._cleanup_cpu_fallback_runtime()
         assert not staged_dir.exists()
+
+
+def test_a_cpu_replay_signal_crash_keeps_the_staged_loader_path(monkeypatch, tmp_path):
+    """The staged runtime's loader path differs from the GPU build's without any ROCm prepend."""
+    sink = {}
+    with pytest.raises(RuntimeError):
+        _run_cpu_fallback_load(
+            monkeypatch,
+            tmp_path,
+            returncodes = [-11, -11, -11, None],
+            mmproj_env = {"LD_LIBRARY_PATH": "/vulkan/bin"},
+            staged_env = {"LD_LIBRARY_PATH": "/staged"},
+            sink = sink,
+        )
+    replays = [
+        env["LD_LIBRARY_PATH"] for cmd, env in sink["launches"] if cmd[0].startswith("/staged")
+    ]
+    assert replays == ["/staged"]
 
 
 def test_confirmed_projector_failure_replays_the_text_command_on_cpu(monkeypatch, tmp_path):
@@ -1747,6 +1767,23 @@ class TestHipRocrSegfaultRetriesBundleOnly:
         assert loaded
         assert len(launches) == 3
         assert "/opt/rocm/lib" not in launches[1][1]["LD_LIBRARY_PATH"].split(":")
+        assert launches[2][1]["LD_LIBRARY_PATH"].startswith("/opt/rocm/lib")
+        assert _fit_mode(launches[2][0]) == "on"
+        assert not LlamaCppBackend._prefers_bundle_only_rocm("/fake/llama-server")
+
+    def test_a_bundle_symbol_miss_after_the_undo_keeps_the_fit_recovery(
+        self, monkeypatch, tmp_path
+    ):
+        """Recovery follows the system launch's crash, not the abandoned bundle's error."""
+        launches, loaded, error = _run_full_offload_spawns(
+            monkeypatch,
+            tmp_path,
+            outputs = ["", _HIP_ROCR_MISMATCH, ""],
+            returncodes = [-11, 127, None],
+        )
+        assert error is None
+        assert loaded
+        assert len(launches) == 3
         assert launches[2][1]["LD_LIBRARY_PATH"].startswith("/opt/rocm/lib")
         assert _fit_mode(launches[2][0]) == "on"
         assert not LlamaCppBackend._prefers_bundle_only_rocm("/fake/llama-server")
