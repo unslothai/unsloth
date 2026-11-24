@@ -522,7 +522,7 @@ export function RunPreviewCard({
               <>
                 {gpu.name}
                 {gpu.deviceCount > 1 ? (
-                  <span className="text-muted-foreground">
+                  <span className="whitespace-nowrap text-muted-foreground">
                     {" "}
                     {t("onboarding.device.moreGpus", {
                       count: gpu.deviceCount - 1,
