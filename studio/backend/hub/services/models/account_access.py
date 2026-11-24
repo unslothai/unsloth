@@ -1173,9 +1173,11 @@ def media_component_file_references(request) -> list[str | None]:
     if isinstance(vae_file, str) and vae_file:
         supplied.append(vae_file)
     root = None
+    raw_model_path = str(getattr(request, "model_path", "") or "")
     try:
-        model_path = Path(str(getattr(request, "model_path", "") or "")).expanduser()
-        if model_path.is_absolute():
+        model_path = Path(raw_model_path).expanduser()
+        # The loader roots at any model_path that exists, relative to the server's folder too.
+        if model_path.is_absolute() or (raw_model_path and model_path.exists()):
             root = model_path if model_path.is_dir() else model_path.parent
     except OSError:
         root = None
@@ -1194,6 +1196,9 @@ def media_component_file_references(request) -> list[str | None]:
         ):
             references.append(str(local.resolve()))
         elif local is None and (spec.startswith(".") or "\\" in spec or len(path.parts) < 3):
+            references.append(None)
+        elif ".." in path.parts:
+            # No Hub file is named so; the loader would open it as a local path.
             references.append(None)
         else:
             references.append("/".join(spec.replace("\\", "/").split("/")[:2]))

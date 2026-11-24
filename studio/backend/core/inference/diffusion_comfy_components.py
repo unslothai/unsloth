@@ -192,6 +192,9 @@ def parse_component_file(
             f"{what} '{spec}' is neither a local file nor owner/repo/path/to/file.safetensors"
         )
     repo_id, filename = "/".join(parts[:2]), "/".join(parts[2:])
+    # The cache joins the file name onto the snapshot folder as is, so it must stay inside it.
+    if any(part.strip() in (".", "..") or re.match(r"^[A-Za-z]:", part) for part in parts[2:]):
+        raise ComponentFileError(f"{what} '{spec}' names a file outside its Hub repo")
     if trusted_repo is not None and not trusted_repo(repo_id):
         raise ComponentFileError(
             f"{what} from the Hub is restricted to the same repos as a single-file transformer "
