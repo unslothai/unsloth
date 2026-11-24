@@ -940,8 +940,10 @@ def _authorize_adapter_base(adapter: str, hf_token: HfTokenArg) -> Optional[str]
         cached_repo_ref_for_path,
         repo_cache_has_usable_snapshot,
     )
+    from hub.services.models import account_access
     from utils.models.model_config import get_base_model_from_lora_identifier
 
+    account_access.require_listed_adapters_access(adapter)
     base = get_base_model_from_lora_identifier(adapter, account_hf_token(hf_token))
     if not base:
         return None

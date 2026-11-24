@@ -19687,6 +19687,7 @@ def _require_resolved_base_access(config) -> None:
     base = getattr(config, "base_model", None)
     if account_access.managed_account() and isinstance(base, str) and base.strip():
         account_access.require_model_access(base.strip())
+    account_access.require_listed_adapters_access(getattr(config, "identifier", None))
 
 
 async def _managed_engine_request(request):

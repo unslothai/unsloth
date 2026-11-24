@@ -1004,6 +1004,45 @@ def _model_visible(reference: str, grants, repo_type: str, offline: bool) -> boo
     return repo_visible(repo_id, repo_type, grants = grants, **access_options)
 
 
+def listed_adapters(identifier) -> list[str]:
+    """The adapters an X-LoRA adapter_config.json lists: PEFT opens each by path or Hub id, past the
+    checks that cover only the adapter and its base."""
+    config = None
+    try:
+        path = Path(str(identifier)).expanduser()
+        if path.is_dir():
+            config = json.loads((path / "adapter_config.json").read_text(encoding = "utf-8-sig"))
+        else:
+            from huggingface_hub import try_to_load_from_cache
+            from utils.hf_cache_settings import active_hf_hub_cache
+
+            cached = try_to_load_from_cache(
+                str(identifier), "adapter_config.json", cache_dir = active_hf_hub_cache()
+            )
+            if isinstance(cached, str):
+                config = json.loads(Path(cached).read_text(encoding = "utf-8-sig"))
+    except (OSError, ValueError, TypeError):
+        return []
+    if not isinstance(config, dict) or str(config.get("peft_type") or "").upper() != "XLORA":
+        return []
+    adapters = config.get("adapters")
+    entries = (
+        adapters.values()
+        if isinstance(adapters, dict)
+        else adapters
+        if isinstance(adapters, list)
+        else ()
+    )
+    return [entry.strip() for entry in entries if isinstance(entry, str) and entry.strip()]
+
+
+def require_listed_adapters_access(identifier) -> None:
+    """A managed account may load an X-LoRA adapter only if it may load every adapter it lists."""
+    if managed_account():
+        for entry in listed_adapters(identifier):
+            require_model_access(entry)
+
+
 def require_model_access(
     reference: str,
     repo_type: str = "model",
