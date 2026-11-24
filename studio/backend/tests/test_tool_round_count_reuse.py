@@ -97,7 +97,12 @@ def _count_backend():
 
 
 _MESSAGES = [{"role": "user", "content": "hello " * 200}]
-_TOOLS = [{"type": "function", "function": {"name": "lookup", "parameters": {}}}]
+_TOOLS = [
+    {
+        "type": "function",
+        "function": {"name": "lookup", "parameters": {"type": "object", "properties": {}}},
+    }
+]
 
 
 def test_an_identical_native_count_is_served_from_memory(monkeypatch):
@@ -111,13 +116,19 @@ def test_an_identical_native_count_is_served_from_memory(monkeypatch):
     assert [r[0] for r in server.requests] == [_NATIVE]
 
 
-def test_a_native_hit_still_honours_should_abort(monkeypatch):
+@pytest.mark.parametrize("prefer_native", [True, False])
+def test_a_native_hit_still_honours_should_abort(monkeypatch, prefer_native):
     _Server(monkeypatch)
     backend = _count_backend()
     backend.count_chat_tokens(_MESSAGES, None, _TOOLS, strict = True, prefer_native = True)
     with pytest.raises(llama_cpp.CountAborted):
         backend.count_chat_tokens(
-            _MESSAGES, None, _TOOLS, strict = True, prefer_native = True, should_abort = lambda: True
+            _MESSAGES,
+            None,
+            _TOOLS,
+            strict = True,
+            prefer_native = prefer_native,
+            should_abort = lambda: True,
         )
 
 
@@ -207,7 +218,9 @@ def test_a_render_count_of_a_different_prompt_still_renders(monkeypatch, change)
     elif change == "tools":
         tools = None
     elif change == "tool_key_order":
-        tools = [dict(reversed(tool.items())) for tool in _TOOLS]
+        tools = copy.deepcopy(_TOOLS)
+        params = tools[0]["function"]["parameters"]
+        tools[0]["function"]["parameters"] = dict(reversed(params.items()))
     elif change == "continue_final":
         kw = {"continue_final_message": True}
     elif change == "template_kwargs":

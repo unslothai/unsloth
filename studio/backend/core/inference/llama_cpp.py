@@ -44541,7 +44541,7 @@ class LlamaCppBackend:
                             template_body["continue_final_message"] = True
                             template_body["add_generation_prompt"] = False
                         if on_prompt is None:
-                            if prefer_native and should_abort is not None and should_abort():
+                            if should_abort is not None and should_abort():
                                 raise CountAborted()
                             # The native endpoint renders and tokenizes this same body, so a render count reuses it.
                             native_key = _count_memo_key(self, "native-input-tokens", template_body)
