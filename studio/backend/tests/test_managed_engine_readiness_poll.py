@@ -111,7 +111,6 @@ def test_ownership_runs_every_poll_before_the_keyed_probe(monkeypatch, tmp_path)
     finally:
         engine.stop()
         _close(holder)
-    # Not cached: the refused first answer is asked again, and the key goes out only after a yes.
     assert [kind for kind, _ in events] == ["own", "own", "get"]
     assert events[1] == ("own", True)
 
@@ -205,7 +204,6 @@ def test_port_accepts_ipv6_loopback():
         server.listen()
         port = server.getsockname()[1]
         assert managed_engine._port_accepts(f"http://[::1]:{port}")
-        # The IPv4 address the engine is probed on is a different listener.
         with socket.socket() as other:
             try:
                 other.bind(("127.0.0.1", port))
