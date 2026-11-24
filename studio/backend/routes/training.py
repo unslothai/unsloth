@@ -945,11 +945,14 @@ def _authorize_adapter_base(adapter: str, hf_token: HfTokenArg) -> Optional[str]
         cached_repo_ref_for_path,
         repo_cache_has_usable_snapshot,
     )
+    from hub.services.models import account_access
     from utils.models.model_config import get_base_model_from_lora_identifier
 
+    account_access.require_listed_adapters_access(adapter)
     base = get_base_model_from_lora_identifier(adapter, account_hf_token(hf_token))
     if not base:
         return None
+    account_access.require_adapter_chain_access(base)
     if is_local_path(base):
         # A managed account may only reach bases in its own workspace or the shared cache.
         account_path(base, shared_cache = True)
@@ -2470,6 +2473,7 @@ async def start_training(
 
         # before_spawn hook: runs only after start_training's guards pass.
         def _free_vram_for_training() -> None:
+            _refuse_a_foreign_export()
             try:
                 from core.export import get_export_backend
                 exp_backend = get_export_backend()
@@ -3568,6 +3572,25 @@ def diffusion_dataset_interlock():
         raise HTTPException(status_code = 409, detail = str(exc)) from exc
 
 
+def _refuse_a_foreign_export() -> None:
+    """Starting training stops the export worker; another account's running export refuses the start instead."""
+    from routes.training_vram import ManagedEngineStillRunning
+
+    try:
+        from core.export import get_export_backend
+        from core.training.account_jobs import job_is_foreign
+
+        exp_backend = get_export_backend()
+        foreign = exp_backend.is_export_active() and job_is_foreign(exp_backend)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Could not check the export worker's account: %s", e)
+        return
+    if foreign:
+        raise ManagedEngineStillRunning(
+            "Another account's export is running. Wait for it to finish, then start training."
+        )
+
+
 def _free_restyle_for_training() -> None:
     """The restyle sd-server sits outside the arbiter's owners; a running restyle refuses the start."""
     from core.inference import video_restyle
@@ -3586,6 +3609,7 @@ def _free_restyle_for_training() -> None:
 
 def _free_gpu_for_diffusion_training() -> None:
     """Frees resident GPU models first; the trainer's SDXL pipeline would OOM beside them."""
+    _refuse_a_foreign_export()
     try:
         from core.export import get_export_backend
         exp_backend = get_export_backend()

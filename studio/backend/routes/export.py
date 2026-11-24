@@ -119,6 +119,8 @@ def _authorized_adapter_base(checkpoint_path: str) -> Optional[str]:
     for name in dict.fromkeys([base, *bases]):
         if name:
             account_access.require_model_access(name)
+            account_access.require_adapter_chain_access(name)
+    account_access.require_listed_adapters_access(checkpoint_path)
     return base or None
 
 

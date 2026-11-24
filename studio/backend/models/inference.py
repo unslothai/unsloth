@@ -26,6 +26,7 @@ from pydantic import (
     model_validator,
 )
 
+from core.inference.audio_cpp_models import FILE_OPTIONS
 from core.inference.audio_workflows import status_audio_workflows
 from core.inference.diffusion_conditioning import MAX_REQUEST_SIDE
 from core.inference.llama_server_args import (
@@ -6991,8 +6992,8 @@ _AUDIO_CLIP_OPTION_ENDINGS = frozenset({"audio", "wav", "ref", "video", "image",
 
 def _names_a_file(name: str, value: Any) -> bool:
     words = re.split(r"[^a-z0-9]+", name.lower())
-    # Vevo2's target_voice is a file, but neither of its words gives that away.
-    if name.lower() == "target_voice" or any(word in _AUDIO_FILE_OPTION_WORDS for word in words):
+    # Vevo2's target_voice, VibeVoice's voice_samples: files, but no word of theirs gives that away.
+    if name.lower() in FILE_OPTIONS or any(word in _AUDIO_FILE_OPTION_WORDS for word in words):
         return True
     return isinstance(value, str) and words[-1] in _AUDIO_CLIP_OPTION_ENDINGS
 

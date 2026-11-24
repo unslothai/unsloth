@@ -2605,6 +2605,12 @@ class InferenceOrchestrator:
                         )
                         self._worker_load_settings = (self._proc, _load_settings(sub_config))
                         self.models[self.active_model_name]["parallel_slots"] = parallel_slots
+                        # Who may share an adapter must also be allowed its base, which is what answers.
+                        self.models[self.active_model_name]["base_model"] = (
+                            getattr(config, "base_model", None)
+                            if getattr(config, "is_lora", False)
+                            else None
+                        )
                         self.models[self.active_model_name]["can_batch"] = model_info.get(
                             "can_batch"
                         )
