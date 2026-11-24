@@ -938,6 +938,13 @@ export const th = {
     compactEmpty: "ยังไม่มีอะไรให้ย่อ",
     compactUnsupported: "การย่อการสนทนาต้องใช้โมเดล GGUF หรือ MLX ที่รองรับเครื่องมือ",
   },
+  chatFiles: {
+    title: "ไฟล์ในแชทนี้",
+    code: "ส่วนย่อยของโค้ด",
+    showInChat: "แสดงในแชท",
+    download: "ดาวน์โหลด {name}",
+    saveFailed: "ไม่สามารถบันทึก {name} ได้",
+  },
   welcome: {
     goodToSeeYou: "ยินดีที่ได้พบคุณ",
     goodToSeeYouName: "ยินดีที่ได้พบคุณ {name}",

@@ -991,6 +991,13 @@ export const es419 = {
     compactUnsupported:
       "La compactación requiere un modelo GGUF o MLX compatible con herramientas",
   },
+  chatFiles: {
+    title: "Archivos en este chat",
+    code: "Fragmentos de código",
+    showInChat: "Mostrar en el chat",
+    download: "Descargar {name}",
+    saveFailed: "No se pudo guardar {name}.",
+  },
   welcome: {
     goodToSeeYou: "Me alegra verte",
     goodToSeeYouName: "Me alegra verte, {name}",

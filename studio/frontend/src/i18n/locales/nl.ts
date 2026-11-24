@@ -995,6 +995,13 @@ export const nl = {
     compactUnsupported:
       "Comprimeren vereist een GGUF- of MLX-model met toolondersteuning",
   },
+  chatFiles: {
+    title: "Bestanden in deze chat",
+    code: "Codefragmenten",
+    showInChat: "Tonen in chat",
+    download: "{name} downloaden",
+    saveFailed: "Kan {name} niet opslaan.",
+  },
   welcome: {
     goodToSeeYou: "Fijn je te zien",
     goodToSeeYouName: "Fijn je te zien, {name}",

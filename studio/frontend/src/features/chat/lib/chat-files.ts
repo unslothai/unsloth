@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { getCodeFilename } from "@/components/assistant-ui/code-filename";
+import { getCodeFilename } from "../../../components/assistant-ui/code-filename.ts";
 import {
   IMAGE_SENTINEL_TOOLS,
   SANDBOX_FILE_TOOLS,
   isSandboxToolResult,
-} from "@/components/assistant-ui/sandbox-files";
-import { isRenderableRenderHtmlToolPart } from "../artifacts/html-fences";
-import { getArtifactFilename } from "../artifacts/types";
+} from "../../../components/assistant-ui/sandbox-files.ts";
+import { isRenderableRenderHtmlToolPart } from "../artifacts/html-fences.ts";
+import { getArtifactFilename } from "../artifacts/types.ts";
 
 export type ChatFileKind = "code" | "html" | "image" | "file";
 
@@ -16,11 +16,15 @@ export type ChatFile = {
   id: string;
   name: string;
   kind: ChatFileKind;
-  messageId: string;
+  /** null: in the chat folder, but no message names it (uploaded, or written by a tool that did not list it). */
+  messageId: string | null;
   text?: string;
   dataUrl?: string;
   sandbox?: { sessionId: string; name: string };
 };
+
+/** The chat folder listing (`GET /api/inference/sandbox/{id}`). */
+export type ChatFolder = { sessionId: string; names: readonly string[] };
 
 type PartLike = {
   type?: string;
@@ -38,6 +42,8 @@ type MessageLike = {
 
 const IMAGE_EXT = /\.(png|jpe?g|gif|webp|bmp|avif|svg)$/i;
 const FENCE_OPEN_RE = /^ {0,3}(`{3,}|~{3,})\s*([^\s`]*)/;
+// Mirrors _MAX_SNAPSHOT_FILES: a listing this long may be cut, so absence proves nothing.
+const FOLDER_LISTING_CAP = 2000;
 
 export function extractCodeFences(
   markdown: string,
@@ -72,7 +78,11 @@ function baseName(path: string): string {
 }
 
 function extFromMime(mime: string): string {
-  const sub = mime.split("/")[1]?.split("+")[0];
+  const sub = mime
+    .split("/")[1]
+    ?.split(/[+;]/)[0]
+    ?.toLowerCase()
+    .replace(/[^a-z0-9]/g, "");
   return sub === "jpeg" ? "jpg" : sub || "png";
 }
 
@@ -86,9 +96,24 @@ function uniqueName(name: string, used: Map<string, number>): string {
     : `${name}-${count}`;
 }
 
-type Found = { file: Omit<ChatFile, "name">; name: string; dedupeKey?: string };
+type Found = Omit<ChatFile, "name"> & { name: string };
 
 const messageCache = new WeakMap<object, Found[]>();
+
+function sandboxFound(
+  id: string,
+  messageId: string | null,
+  sessionId: string,
+  name: string,
+): Found {
+  return {
+    id,
+    name: baseName(name),
+    kind: IMAGE_EXT.test(name) ? "image" : "file",
+    messageId,
+    sandbox: { sessionId, name },
+  };
+}
 
 function collectMessageFiles(message: MessageLike): Found[] {
   const cached = messageCache.get(message);
@@ -101,13 +126,11 @@ function collectMessageFiles(message: MessageLike): Found[] {
       extractCodeFences(part.text).forEach((block, blockIndex) => {
         const isHtml = block.language?.toLowerCase() === "html";
         found.push({
-          file: {
-            id: `${base}:${blockIndex}`,
-            kind: isHtml ? "html" : "code",
-            messageId: message.id,
-            text: block.source,
-          },
+          id: `${base}:${blockIndex}`,
           name: isHtml ? "snippet.html" : getCodeFilename(block.language),
+          kind: isHtml ? "html" : "code",
+          messageId: message.id,
+          text: block.source,
         });
       });
       return;
@@ -122,13 +145,11 @@ function collectMessageFiles(message: MessageLike): Found[] {
           ? args.title
           : "page";
       found.push({
-        file: {
-          id: base,
-          kind: "html",
-          messageId: message.id,
-          text: args.code,
-        },
+        id: base,
         name: getArtifactFilename({ title }),
+        kind: "html",
+        messageId: message.id,
+        text: args.code,
       });
       return;
     }
@@ -136,6 +157,7 @@ function collectMessageFiles(message: MessageLike): Found[] {
     if (
       (SANDBOX_FILE_TOOLS.has(toolName) ||
         IMAGE_SENTINEL_TOOLS.has(toolName)) &&
+      // Hosted code execution plots live with the provider, not in the chat folder.
       toolName !== "code_execution" &&
       isSandboxToolResult(result)
     ) {
@@ -149,16 +171,9 @@ function collectMessageFiles(message: MessageLike): Found[] {
         ...images.filter((entry): entry is string => typeof entry === "string"),
       ];
       names.forEach((name, index) => {
-        found.push({
-          file: {
-            id: `${base}:${index}`,
-            kind: IMAGE_EXT.test(name) ? "image" : "file",
-            messageId: message.id,
-            sandbox: { sessionId, name },
-          },
-          name: baseName(name),
-          dedupeKey: `${sessionId}\u0000${name}`,
-        });
+        found.push(
+          sandboxFound(`${base}:${index}`, message.id, sessionId, name),
+        );
       });
       return;
     }
@@ -174,13 +189,11 @@ function collectMessageFiles(message: MessageLike): Found[] {
       };
       const mime = typeof image_mime === "string" ? image_mime : "image/png";
       found.push({
-        file: {
-          id: base,
-          kind: "image",
-          messageId: message.id,
-          dataUrl: `data:${mime};base64,${image_b64}`,
-        },
+        id: base,
         name: `generated-image.${extFromMime(mime)}`,
+        kind: "image",
+        messageId: message.id,
+        dataUrl: `data:${mime};base64,${image_b64}`,
       });
     }
   });
@@ -188,19 +201,53 @@ function collectMessageFiles(message: MessageLike): Found[] {
   return found;
 }
 
-export function collectChatFiles(messages: readonly MessageLike[]): ChatFile[] {
+const sandboxKey = (sessionId: string, name: string) =>
+  `${sessionId}\u0000${name}`;
+
+/**
+ * Everything downloadable from a chat, in message order, then folder files no message names.
+ * With the folder listed, a named file it no longer holds is dropped (its download would 404).
+ */
+export function collectChatFiles(
+  messages: readonly MessageLike[],
+  folder: ChatFolder | null = null,
+): ChatFile[] {
+  const folderId = folder?.sessionId;
+  const present = new Set(folder?.names ?? []);
+  const trustAbsence =
+    folder !== null && folder.names.length < FOLDER_LISTING_CAP;
   const seen = new Set<string>();
-  const used = new Map<string, number>();
-  const files: ChatFile[] = [];
+  const found: Found[] = [];
   for (const message of messages) {
-    if (message.role !== "assistant") continue;
-    for (const { file, name, dedupeKey } of collectMessageFiles(message)) {
-      if (dedupeKey) {
-        if (seen.has(dedupeKey)) continue;
-        seen.add(dedupeKey);
+    if (message.role !== "assistant") {
+      continue;
+    }
+    for (const file of collectMessageFiles(message)) {
+      const key = file.sandbox
+        ? sandboxKey(file.sandbox.sessionId, file.sandbox.name)
+        : null;
+      if (key !== null && seen.has(key)) {
+        continue;
       }
-      files.push({ ...file, name: uniqueName(name, used) });
+      if (key !== null) {
+        seen.add(key);
+      }
+      const gone =
+        trustAbsence &&
+        file.sandbox?.sessionId === folderId &&
+        !present.has(file.sandbox?.name ?? "");
+      if (!gone) {
+        found.push(file);
+      }
     }
   }
-  return files;
+  if (folderId !== undefined) {
+    for (const name of present) {
+      if (!seen.has(sandboxKey(folderId, name))) {
+        found.push(sandboxFound(`folder:${name}`, null, folderId, name));
+      }
+    }
+  }
+  const used = new Map<string, number>();
+  return found.map((file) => ({ ...file, name: uniqueName(file.name, used) }));
 }

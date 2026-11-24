@@ -982,6 +982,13 @@ export const fa = {
     compactUnsupported:
       "فشرده‌سازی به یک مدل GGUF یا MLX با پشتیبانی از ابزار نیاز دارد",
   },
+  chatFiles: {
+    title: "فایل‌های این گفتگو",
+    code: "قطعه‌کدها",
+    showInChat: "نمایش در گفتگو",
+    download: "دانلود {name}",
+    saveFailed: "ذخیرهٔ {name} ممکن نشد.",
+  },
   welcome: {
     goodToSeeYou: "از دیدنتان خوشحالیم",
     goodToSeeYouName: "از دیدنتان خوشحالیم، {name}",

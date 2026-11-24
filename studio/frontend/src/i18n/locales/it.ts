@@ -4013,6 +4013,13 @@ export const it = {
     compactEmpty: "Ancora niente da compattare",
     compactUnsupported: "La compattazione richiede un modello GGUF o MLX con supporto per gli strumenti",
   },
+  chatFiles: {
+    title: "File in questa chat",
+    code: "Frammenti di codice",
+    showInChat: "Mostra nella chat",
+    download: "Scarica {name}",
+    saveFailed: "Impossibile salvare {name}.",
+  },
   welcome: {
     goodToSeeYou: "Che piacere vederti",
     goodToSeeYouName: "Che piacere vederti, {name}",

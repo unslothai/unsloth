@@ -5,13 +5,18 @@ import {
   completeProgressiveMounts,
   revealProgressiveRow,
 } from "@/components/assistant-ui/progressive-messages";
-import { saveSandboxFile } from "@/components/assistant-ui/sandbox-download";
+import {
+  listSandboxFiles,
+  saveSandboxFile,
+} from "@/components/assistant-ui/sandbox-download";
+import { sandboxSessionIdFor } from "@/components/assistant-ui/sandbox-files";
 import {
   Popover,
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { Tooltip, TooltipContent } from "@/components/ui/tooltip";
+import { useT } from "@/i18n";
 import {
   downloadFile,
   downloadUrl,
@@ -31,7 +36,13 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { useEffect, useMemo, useState } from "react";
 import { create } from "zustand";
-import { type ChatFile, collectChatFiles } from "../lib/chat-files";
+import { useChatProjectScope } from "../chat-project-scope";
+import {
+  type ChatFile,
+  type ChatFolder,
+  collectChatFiles,
+} from "../lib/chat-files";
+import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import { CHAT_MENU_TRIGGER } from "./chat-header-menu";
 
 const useChatFiles = create<{ files: ChatFile[] }>(() => ({ files: [] }));
@@ -45,7 +56,33 @@ const KIND_ICON = {
 
 export function ChatFilesBridge() {
   const messages = useAuiState(({ thread }) => thread.messages);
-  const files = useMemo(() => collectChatFiles(messages), [messages]);
+  const running = useAuiState(({ thread }) => thread.isRunning);
+  const remoteId = useAuiState(({ threadListItem }) => threadListItem.remoteId);
+  const activeThreadId = useChatRuntimeStore((state) => state.activeThreadId);
+  const projectId = useChatProjectScope();
+  const sessionId = sandboxSessionIdFor(
+    remoteId ?? activeThreadId ?? undefined,
+    projectId,
+  );
+  const [folder, setFolder] = useState<ChatFolder | null>(null);
+
+  // Re-read after each run: tools write to the folder without always naming the file.
+  useEffect(() => {
+    if (!sessionId || running) return;
+    let live = true;
+    listSandboxFiles(sessionId)
+      .then((names) => live && setFolder({ sessionId, names }))
+      .catch(() => live && setFolder(null));
+    return () => {
+      live = false;
+    };
+  }, [sessionId, running]);
+
+  const current = folder?.sessionId === sessionId ? folder : null;
+  const files = useMemo(
+    () => collectChatFiles(messages, current),
+    [messages, current],
+  );
 
   useEffect(() => {
     useChatFiles.setState({ files });
@@ -99,13 +136,20 @@ async function jumpToMessage(messageId: string): Promise<void> {
 }
 
 function ChatFileRow({ file, onJump }: { file: ChatFile; onJump: () => void }) {
+  const t = useT();
+  const save = () =>
+    saveChatFile(file).catch((error) => {
+      if (!isDownloadCancelled(error)) {
+        toast.error(t("chatFiles.saveFailed", { name: file.name }));
+      }
+    });
   return (
     <li className="flex items-center gap-1 rounded-md hover:bg-accent">
       <button
         type="button"
-        onClick={onJump}
+        onClick={file.messageId ? onJump : save}
         className="flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1.5 text-left focus-visible:bg-accent focus-visible:outline-none"
-        title="Show in chat"
+        title={file.messageId ? t("chatFiles.showInChat") : undefined}
       >
         <HugeiconsIcon
           icon={KIND_ICON[file.kind]}
@@ -116,15 +160,9 @@ function ChatFileRow({ file, onJump }: { file: ChatFile; onJump: () => void }) {
       </button>
       <button
         type="button"
-        onClick={() =>
-          saveChatFile(file).catch((error) => {
-            if (!isDownloadCancelled(error)) {
-              toast.error(`Could not save ${file.name}.`);
-            }
-          })
-        }
+        onClick={save}
         className="mr-1 flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-background hover:text-foreground focus-visible:bg-background focus-visible:text-foreground focus-visible:outline-none"
-        aria-label={`Download ${file.name}`}
+        aria-label={t("chatFiles.download", { name: file.name })}
       >
         <HugeiconsIcon icon={Download01Icon} className="size-4" />
       </button>
@@ -132,11 +170,50 @@ function ChatFileRow({ file, onJump }: { file: ChatFile; onJump: () => void }) {
   );
 }
 
+function ChatFileSection({
+  label,
+  files,
+  onJump,
+}: {
+  label: string;
+  files: ChatFile[];
+  onJump: (file: ChatFile) => void;
+}) {
+  if (files.length === 0) return null;
+  return (
+    <>
+      <p className="px-2 pt-1 pb-1 text-xs font-medium text-muted-foreground">
+        {label}
+      </p>
+      <ul>
+        {files.map((file) => (
+          <ChatFileRow key={file.id} file={file} onJump={() => onJump(file)} />
+        ))}
+      </ul>
+    </>
+  );
+}
+
 export function ChatFilesMenu() {
+  const t = useT();
   const files = useChatFiles((s) => s.files);
   const [open, setOpen] = useState(false);
+  // Files first: in a coding chat the snippets would bury what was actually made.
+  const [documents, snippets] = useMemo(
+    () => [
+      files.filter((f) => f.kind !== "code"),
+      files.filter((f) => f.kind === "code"),
+    ],
+    [files],
+  );
 
   if (files.length === 0) return null;
+
+  const jump = (file: ChatFile) => {
+    setOpen(false);
+    if (file.messageId) void jumpToMessage(file.messageId);
+  };
+  const title = t("chatFiles.title");
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -146,7 +223,7 @@ export function ChatFilesMenu() {
             <button
               type="button"
               className={CHAT_MENU_TRIGGER}
-              aria-label="Files in this chat"
+              aria-label={title}
             >
               <HugeiconsIcon
                 icon={FolderDownloadIcon}
@@ -161,25 +238,18 @@ export function ChatFilesMenu() {
           sideOffset={6}
           className="tooltip-compact"
         >
-          Files in this chat
+          {title}
         </TooltipContent>
       </Tooltip>
       <PopoverContent align="end" sideOffset={6} className="w-80 gap-1 p-1.5">
-        <p className="px-2 pt-1 pb-1 text-xs font-medium text-muted-foreground">
-          Files in this chat
-        </p>
-        <ul className="max-h-80 overflow-y-auto">
-          {files.map((file) => (
-            <ChatFileRow
-              key={file.id}
-              file={file}
-              onJump={() => {
-                setOpen(false);
-                void jumpToMessage(file.messageId);
-              }}
-            />
-          ))}
-        </ul>
+        <div className="max-h-80 overflow-y-auto">
+          <ChatFileSection label={title} files={documents} onJump={jump} />
+          <ChatFileSection
+            label={t("chatFiles.code")}
+            files={snippets}
+            onJump={jump}
+          />
+        </div>
       </PopoverContent>
     </Popover>
   );

@@ -991,6 +991,13 @@ export const uk = {
     compactUnsupported:
       "Для стиснення потрібна модель GGUF або MLX з підтримкою інструментів",
   },
+  chatFiles: {
+    title: "Файли в цьому чаті",
+    code: "Фрагменти коду",
+    showInChat: "Показати в чаті",
+    download: "Завантажити {name}",
+    saveFailed: "Не вдалося зберегти {name}.",
+  },
   welcome: {
     goodToSeeYou: "Радий вас бачити",
     goodToSeeYouName: "Радий вас бачити, {name}",
