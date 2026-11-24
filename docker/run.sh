@@ -374,8 +374,8 @@ if [[ -n "${UNSLOTH_PORTS:-}" ]]; then
     PORT_FLAGS=(${UNSLOTH_PORTS})
 fi
 
-# CI and piped invocations otherwise hit "the input device is not a TTY"
-TTY_FLAG=()
+# -t only on a terminal, else "the input device is not a TTY"; -i keeps piped input
+TTY_FLAG=(-i)
 if [ -t 0 ] && [ -t 1 ]; then
     TTY_FLAG=(-it)
 fi
