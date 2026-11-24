@@ -209,6 +209,7 @@ class _Tiny(torch.nn.Module):
 
 
 def test_upcast_keeps_linear_and_conv_weights_bf16_and_computes_float32():
+    pytest.importorskip("diffusers")  # the cast hook is a diffusers hook
     torch.manual_seed(0)
     ref = _Tiny().to(torch.bfloat16)
     dense = _Tiny()
@@ -353,6 +354,7 @@ class _Native(torch.nn.Module):
 
 
 def test_upcast_never_reads_a_native_linear_weight():
+    pytest.importorskip("diffusers")  # the cast hook is a diffusers hook
     pipe = type("P", (), {})()
     pipe.transformer = torch.nn.Sequential(_Native(), torch.nn.Linear(32, 32).to(torch.bfloat16))
     lr.upcast_compute_(pipe, torch.float32)
@@ -371,6 +373,7 @@ class _Boom(torch.nn.Module):
 
 
 def test_storage_tensors_are_restored_even_when_forward_raises(monkeypatch):
+    pytest.importorskip("diffusers")  # the cast hook is a diffusers hook
     model = _Boom()
     pipe = type("P", (), {})()
     pipe.transformer = model
