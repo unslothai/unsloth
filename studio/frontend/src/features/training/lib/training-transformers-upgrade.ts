@@ -157,8 +157,7 @@ export async function confirmTrainingTransformersUpgrade({
       requiresTrustRemoteCode,
     };
   }
-  // Installed: the latest sidecar trains 16-bit unless it keeps this model in 4-bit. The custom-code
-  // fallback still loads 4-bit.
+  // Installed: 16-bit on the sidecar unless it keeps 4-bit; the custom-code fallback loads 4-bit.
   return {
     proceed: true,
     error: null,

@@ -110,7 +110,6 @@ def test_train_tab_is_not_told_inkling2_loses_4bit(monkeypatch):
     after = _upgrade_route(monkeypatch, None, True, INKLING_CFG)
     assert after.latest_tier_active is True
     assert after.forces_16bit is False
-    # The Configure card reads installable && !forces_16bit as the custom-code case unless told the sidecar keeps 4-bit.
     assert before.sidecar_keeps_4bit is True
     assert after.sidecar_keeps_4bit is True
 
@@ -168,8 +167,7 @@ def test_inkling2_masks_with_role_tokens_not_glued_auto_markers():
         calls.append(kwargs)
         return trainer
 
-    # What unsloth_zoo's auto-detect returns for Inkling 2: both markers carry the previous
-    # turn's end tokens, so no assistant turn ever trains its <|end_message|> / EOS.
+    # unsloth_zoo's auto-detect result for Inkling 2: both markers carry the previous turn's end tokens.
     def glued(processor):
         return (
             "<|end_message|><|content_model_end_sampling|><|message_user|><|content_text|>",

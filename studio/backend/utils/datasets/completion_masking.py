@@ -90,9 +90,8 @@ def _mask_tool_responses(trainer, start_id, end_id, turn_id):
     return trainer
 
 
-# Templates that close every message with shared end tokens and open each role with one special token
-# (TML Inkling). Auto-detection glues the previous turn's end tokens onto both markers, so every
-# non-final assistant turn's end-of-turn tokens were masked; the role tokens alone are exact.
+# Inkling: auto-detection glues the previous turn's end tokens onto both markers, masking every
+# non-final assistant turn's end-of-turn tokens; the bare role tokens are exact.
 _ROLE_TOKEN_MARKERS = (("<|message_user|>", "<|message_model|>"),)
 
 

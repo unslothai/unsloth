@@ -22215,7 +22215,6 @@ async def check_transformers_upgrade_route(
         )
     except Exception as exc:
         logger.debug("Latest-tier check failed for '%s': %s", model_name, exc)
-    # Architectures validated in 4-bit keep bnb on the sidecar (latest_tier_forces_16bit).
     active_forces_16bit = latest_tier_active
     if latest_tier_active:
         try:
