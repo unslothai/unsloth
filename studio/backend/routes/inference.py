@@ -6975,6 +6975,9 @@ def _display_tool_name_gate(active_tools):
     return names or None
 
 
+_SHIELD_REHEARSAL_RE = _re.compile(r"(?<!\[CALL_ID\])\b[\w-]+\[ARGS\]\s*\{")
+
+
 def _strip_tool_xml_for_display(
     text: str,
     *,
@@ -7013,11 +7016,13 @@ def _strip_tool_xml_for_display(
         if is_last:
             # Leftmost wins: a rehearsal the bracket scan kept is an example and shields markup quoted in it (never past
             # its code span), while a real call starting first takes a rehearsal quoted in its arguments with it.
-            spans = _code_spans(seg)
+            spans, si = _code_spans(seg), 0
 
-            def _examples():
-                si = 0
-                for m in _re.finditer(r"(?<!\[CALL_ID\])\b[\w-]+\[ARGS\]\s*\{", seg):
+            def _next_example(lo):
+                # Searched from the scan position, so prefixes inside a consumed example are never balanced.
+                nonlocal si
+                m = _SHIELD_REHEARSAL_RE.search(seg, lo)
+                while m is not None:
                     end = _balanced_json_span(seg, m.end() - 1)
                     while si < len(spans) and spans[si][1] <= m.start():
                         si += 1
@@ -7025,18 +7030,20 @@ def _strip_tool_xml_for_display(
                         code_end = spans[si][1] - 1
                         end = code_end if end is None else min(end, code_end)
                     if end is not None:
-                        yield m.start(), end + 1
+                        return m.start(), end + 1
+                    m = _SHIELD_REHEARSAL_RE.search(seg, m.start() + 1)
+                return None
 
-            examples, out, pos = _examples(), [], 0
-            example, call = next(examples, None), _TOOL_XML_RE.search(seg)
+            out, pos, removed = [], 0, False
+            example, call = _next_example(0), _TOOL_XML_RE.search(seg)
             while True:
-                while example is not None and example[0] < pos:
-                    example = next(examples, None)
+                if example is not None and example[0] < pos:
+                    example = _next_example(pos)
                 if call is not None and call.start() < pos:
                     call = _TOOL_XML_RE.search(seg, pos)
                 if call is not None and (example is None or call.start() < example[0]):
                     out.append(seg[pos : call.start()])
-                    pos = call.end()
+                    pos, removed = call.end(), True
                 elif example is not None:
                     out.append(seg[pos : example[1]])
                     pos = example[1]
@@ -7044,6 +7051,9 @@ def _strip_tool_xml_for_display(
                     break
             out.append(seg[pos:])
             seg = "".join(out)
+            if removed:
+                # A removed call can hold a backtick that made a later complete call read as code: rescan without it.
+                seg = _strip_bracket_tag_calls(seg, enabled_tool_names = enabled_tool_names)
             # Then the truncated rehearsal tail, gated and code-aware as in strip_segment, once outer calls are gone.
             return apply_tool_strip_patterns(seg, [_REHEARSAL_TAIL_STRIP_RE], enabled_tool_names)
         return _TOOL_XML_CLOSED_RE.sub("", seg)
