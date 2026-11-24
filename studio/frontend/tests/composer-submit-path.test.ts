@@ -360,8 +360,9 @@ test("main, edit and comparison composers use the setting and expose settings ac
   );
   assert.match(
     text,
-    /onQueueClick=\{\(\) => formRef.current\?\.requestSubmit\(\)\}/,
+    /const onRightControlsQueue = useCallback\(\s*\(\) => formRef\.current\?\.requestSubmit\(\),/,
   );
+  assert.match(text, /onQueueClick=\{onRightControlsQueue\}/);
   assert.match(text, /scrollTarget: "chat-composer"/);
   const compare = readSrc("features/chat/shared-composer.tsx");
   assert.match(
