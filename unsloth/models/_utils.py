@@ -2352,10 +2352,12 @@ def check_mixed_gpu_placement(
     """bf16 and the compile switches answer for the current device; check where the load really
     put the weights. A card that cannot compile turns Dynamo off before the first forward, and
     bf16 weights on a card without bf16 get a warning. A sole current-device placement is checked
-    too: the current device may have changed since import. One-GPU hosts never walk anything; the
-    capability reads hit the per-device cache. live: called when training starts, after a later
-    .to() or Trainer placement, so the parameters are read too (see _placed_gpu_indices)."""
-    if DEVICE_TYPE not in ("cuda", "hip") or DEVICE_COUNT <= 1:
+    too: the current device may have changed since import. One-GPU hosts walk nothing, except on
+    HIP, where a lone gfx10 still gets the bf16 check; the capability reads hit the per-device
+    cache. live: called when training starts, after a later .to() or Trainer placement, so the
+    parameters are read too (see _placed_gpu_indices)."""
+    single = DEVICE_COUNT <= 1
+    if DEVICE_TYPE not in ("cuda", "hip") or (single and DEVICE_TYPE != "hip"):
         return
     indices = sorted(_placed_gpu_indices(model, live = live))
     if not indices:
@@ -2386,7 +2388,12 @@ def check_mixed_gpu_placement(
         return
     import torch._dynamo as torch_dynamo
 
-    if no_compile and not torch_dynamo.config.disable and apply_pre_volta_compile_workaround(0):
+    if (
+        no_compile
+        and not single
+        and not torch_dynamo.config.disable
+        and apply_pre_volta_compile_workaround(0)
+    ):
         print(
             f"Unsloth: the model has layers on {', '.join(map(_name, no_compile))}, which cannot run "
             "torch.compile, so training runs without it."

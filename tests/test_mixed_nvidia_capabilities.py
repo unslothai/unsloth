@@ -1002,3 +1002,20 @@ def test_a_gfx10_placement_found_at_train_start_stops_training(monkeypatch):
             model = _ParamsOn("cuda:0", "cuda:2", dtype = torch.bfloat16),
             at_train_start = True,
         )
+
+
+def test_a_lone_gfx10_still_refuses_bf16_layers_at_train_start(monkeypatch):
+    import torch
+
+    import unsloth.models._utils as model_utils
+    with pytest.raises(model_utils.UnsupportedBf16PlacementError):
+        _check_placement(
+            monkeypatch,
+            [(10, 3)],
+            None,
+            None,
+            archs = ["gfx1032"],
+            device_type = "hip",
+            model = _ParamsOn("cuda:0", dtype = torch.bfloat16),
+            at_train_start = True,
+        )
