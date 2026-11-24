@@ -94,3 +94,21 @@ def test_single_alias_like_message_does_not_flip_custom_roles():
     result = standardize_chat_format(dataset, num_proc = 1)
     assert [m["role"] for m in result[0]["messages"]] == ["customer", "agent"]
     assert result[0]["messages"][1]["content"] == "Output"
+
+
+def test_alias_lines_in_text_do_not_outvote_lower_cardinality_roles():
+    dataset = Dataset.from_list(
+        [
+            {
+                "messages": [
+                    {"speaker": "customer", "text": "Human"},
+                    {"speaker": "agent", "text": "Assistant"},
+                    {"speaker": "customer", "text": "first prompt"},
+                    {"speaker": "agent", "text": "second prompt"},
+                ]
+            }
+        ]
+    )
+    result = standardize_chat_format(dataset, num_proc = 1)
+    roles = [m["role"] for m in result[0]["messages"]]
+    assert roles == ["customer", "agent", "customer", "agent"], roles
