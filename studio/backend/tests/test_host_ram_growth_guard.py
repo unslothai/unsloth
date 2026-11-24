@@ -10,6 +10,7 @@ prompt cache default; llama-server then grew to 10-11 GB and the machine hung.""
 
 from __future__ import annotations
 
+import inspect
 import sys
 from pathlib import Path
 
@@ -72,14 +73,16 @@ def _not_apple(monkeypatch):
     monkeypatch.setattr(hardware, "is_apple_silicon", lambda: False)
 
 
-def test_growth_is_the_cache_cap_bounded_by_one_state_per_slot_plus_the_server():
+def test_growth_is_the_configured_cache_cap_plus_the_server():
     server = lc._LLAMA_SERVER_HOST_MIB * MIB
     grow = LlamaCppBackend._llama_server_growth_bytes
-    assert grow(8192 * MIB, 1 * GIB, 4) == 4 * GIB + server
-    assert grow(8192 * MIB, 4 * GIB, 4) == 8192 * MIB + server
-    assert grow(0, 4 * GIB, 4) == server
-    # Unbounded (-1) is priced at one state per slot.
-    assert grow(None, 1 * GIB, 2) == 2 * GIB + server
+    # The cache keeps earlier prompts until its size cap is full: the cap is the price, however
+    # small one saved state is.
+    assert grow(8192 * MIB, 1 * GIB) == 8192 * MIB + server
+    assert grow(1804 * MIB, 4 * GIB) == 1804 * MIB + server
+    assert grow(0, 4 * GIB) == server
+    # Unbounded (-1) keeps at most n_ctx tokens in all: one full-context state.
+    assert grow(None, 1 * GIB) == 1 * GIB + server
 
 
 def test_the_reported_laptop_keeps_mmap(monkeypatch):
@@ -89,11 +92,8 @@ def test_the_reported_laptop_keeps_mmap(monkeypatch):
     kw = _kwargs(13.4, 7600, host_only_gib = 1.0)
     # The fit alone says none: VRAM plus available RAM holds the load.
     assert LlamaCppBackend._fit_derived_load_mode(host, **kw, announce = False) == FIT_MODE
-    growth = LlamaCppBackend._llama_server_growth_bytes(8192 * MIB, int(1.4 * GIB), 4)
+    growth = LlamaCppBackend._llama_server_growth_bytes(8192 * MIB, int(1.4 * GIB))
     assert not host._pinned_load_mode_keeps(kw, growth, announce = False)
-    # Even one slot pins more than half of the RAM.
-    growth_1 = LlamaCppBackend._llama_server_growth_bytes(8192 * MIB, int(1.4 * GIB), 1)
-    assert not host._pinned_load_mode_keeps(kw, growth_1, announce = False)
 
 
 def test_a_big_host_keeps_the_pinned_load(monkeypatch):
@@ -101,7 +101,7 @@ def test_a_big_host_keeps_the_pinned_load(monkeypatch):
     monkeypatch.setattr(sys, "platform", "linux")
     host = _Host(58000, 64000)
     kw = _kwargs(13.4, 23000)
-    growth = LlamaCppBackend._llama_server_growth_bytes(8192 * MIB, int(1.4 * GIB), 4)
+    growth = LlamaCppBackend._llama_server_growth_bytes(8192 * MIB, int(1.4 * GIB))
     assert host._pinned_load_mode_keeps(kw, growth, announce = False)
 
 
@@ -110,7 +110,7 @@ def test_a_big_spill_on_a_big_host_still_pins_under_the_safe_share(monkeypatch):
     host = _Host(58000, 64000)
     # 20 GB on the host side + 9 GB growth = 29 GB, under half of 62.5 GiB.
     kw = _kwargs(44.0, 24000, margin_mib = 0)
-    growth = LlamaCppBackend._llama_server_growth_bytes(8192 * MIB, 4 * GIB, 4)
+    growth = LlamaCppBackend._llama_server_growth_bytes(8192 * MIB, 4 * GIB)
     assert host._pinned_load_mode_keeps(kw, growth, announce = False)
 
 
@@ -130,7 +130,7 @@ def test_growth_that_no_longer_fits_available_ram_keeps_mmap(monkeypatch):
     host = _Host(9000, 128 * 1024)
     kw = _kwargs(12.0, 7600)
     assert LlamaCppBackend._fit_derived_load_mode(host, **kw, announce = False) == FIT_MODE
-    growth = LlamaCppBackend._llama_server_growth_bytes(8192 * MIB, 4 * GIB, 4)
+    growth = LlamaCppBackend._llama_server_growth_bytes(8192 * MIB, 4 * GIB)
     assert not host._pinned_load_mode_keeps(kw, growth, announce = False)
 
 
@@ -255,3 +255,82 @@ def test_the_slot_clamp_carries_the_lint_marker():
     import inspect
     src = inspect.getsource(LlamaCppBackend.load_model)
     assert "n_parallel = 1  # allow-slot-clamp: weights spill to host RAM" in src
+
+
+def _loaded(n_parallel: int, cut: bool) -> LlamaCppBackend:
+    backend = LlamaCppBackend()
+    backend._process = object()
+    backend._healthy = True
+    backend._model_identifier = "owner/repo"
+    backend._hf_variant = "UD-IQ3_XXS"
+    backend._requested_n_ctx = 8192
+    backend._requested_spec_mode = "auto"
+    backend._requested_n_parallel = n_parallel
+    backend._slots_cut_for_host_ram = cut
+    return backend
+
+
+def _slots_intent(n_parallel: int, from_default: bool) -> lc.GgufLoadIntent:
+    return lc.GgufLoadIntent(
+        model_identifier = "owner/repo",
+        hf_variant = "UD-IQ3_XXS",
+        n_ctx = 8192,
+        speculative_type = "auto",
+        n_parallel = n_parallel,
+        n_parallel_from_default = from_default,
+    )
+
+
+@pytest.mark.parametrize(
+    "cut, from_default, matches",
+    [
+        # Auto cut the default 4 slots to 1: the same Auto request reuses the server ...
+        (True, True, True),
+        # ... but 4 slots set in the UI must reload instead of getting the 1-slot server.
+        (True, False, False),
+        # No cut: an explicit 4 matches a server that runs 4.
+        (False, False, True),
+    ],
+)
+def test_a_host_ram_slot_cut_reloads_for_an_explicit_slot_count(cut, from_default, matches):
+    backend = _loaded(4, cut)
+    assert backend._runtime_matches_intent(_slots_intent(4, from_default), None) is matches
+
+
+def test_the_load_records_the_host_ram_slot_cut():
+    src = inspect.getsource(LlamaCppBackend.load_model)
+    # The cut keeps the asked count, and the commit compares the launched count against it.
+    assert "_host_ram_slots_asked = n_parallel\n" in src
+    assert (
+        "self._slots_cut_for_host_ram = (\n"
+        "                    _host_ram_slots_asked is not None and n_parallel < _host_ram_slots_asked"
+    ) in src
+    backend = LlamaCppBackend()
+    backend._slots_cut_for_host_ram = True
+    backend._reset_effective_parallel_slots()
+    assert backend._slots_cut_for_host_ram is False
+
+
+def test_a_load_on_a_small_card_marks_the_slot_cut(tmp_path, monkeypatch):
+    monkeypatch.setattr(sys, "platform", "linux")
+    backend, gguf = placement._backend(tmp_path, vulkan = False, memory = [(0, 7600, 8188)])
+    backend._get_gguf_size_bytes = lambda _path: 11 * GIB
+    backend._available_system_memory_mib = lambda: 11500
+    backend._total_system_memory_mib = lambda: 15800
+    backend.probe_server_capabilities = lambda _binary = None: {
+        "supports_cache_ram": True,
+        "supports_kv_unified": True,
+    }
+    out = placement._launch(backend, gguf, n_ctx = 8192, n_parallel = 4, n_parallel_from_default = True)
+    cmd = out["cmd"]
+    assert cmd[cmd.index("--parallel") + 1] == "1"
+    assert backend._slots_cut_for_host_ram is True
+    assert (
+        backend._runtime_matches_intent(
+            lc.GgufLoadIntent(
+                model_identifier = "test", n_ctx = 8192, n_parallel = 4, n_parallel_from_default = False
+            ),
+            None,
+        )
+        is False
+    )

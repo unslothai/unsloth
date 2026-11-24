@@ -121,19 +121,18 @@ def test_another_servers_cache_cap_is_held_back(launch, monkeypatch):
 
 
 def test_a_host_without_room_for_the_default_lowers_the_cache(launch):
-    # The default 8192 MiB no longer fits beside the load: what does fit, after the server.
-    assert last(launch(avail_mib = 9 * 1024), "--cache-ram") == str(9 * 1024 - 2048 - 1024)
+    # The default 8192 MiB no longer fits beside the load: half of what does fit, after the server.
+    assert last(launch(avail_mib = 9 * 1024), "--cache-ram") == str((9 * 1024 - 2048 - 1024) // 2)
 
 
-@pytest.mark.parametrize("sysmem, expected", [(False, 9 * 1024 - 2048 - 1024), (True, 3072)])
-def test_windows_cuda_takes_half_the_room_a_lowered_cache_could(
-    launch, monkeypatch, sysmem, expected
-):
-    # WDDM sysmem fallback spills VRAM into the same RAM: a tight host keeps half of the room free.
+@pytest.mark.parametrize("sysmem", [False, True])
+def test_a_lowered_cache_takes_half_the_room_on_every_platform(launch, monkeypatch, sysmem):
+    # The cache fills to its cap; the other half is for what the fit does not price (desktop,
+    # browser, the WDDM sysmem fallback on Windows CUDA).
     monkeypatch.setattr(
         LlamaCppBackend, "_sysmem_fallback_risk", staticmethod(lambda binary = None: sysmem)
     )
-    assert last(launch(avail_mib = 9 * 1024), "--cache-ram") == str(expected)
+    assert last(launch(avail_mib = 9 * 1024), "--cache-ram") == str((9 * 1024 - 2048 - 1024) // 2)
 
 
 def test_windows_cuda_with_room_for_the_default_is_sized_as_before(launch, monkeypatch):
