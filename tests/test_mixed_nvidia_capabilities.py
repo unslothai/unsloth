@@ -984,3 +984,21 @@ def test_an_unreadable_card_does_not_hide_a_gfx10_beside_it(monkeypatch):
             archs = R9700_AND_IGPU,
             device_type = "hip",
         )
+
+
+def test_a_gfx10_placement_found_at_train_start_stops_training(monkeypatch):
+    # Loaded safely, then moved onto the iGPU before train(): the train-start hook must not swallow it.
+    import torch
+
+    import unsloth.models._utils as model_utils
+    with pytest.raises(model_utils.UnsupportedBf16PlacementError):
+        _check_placement(
+            monkeypatch,
+            [(12, 0)] * 3,
+            None,
+            None,
+            archs = R9700_AND_IGPU,
+            device_type = "hip",
+            model = _ParamsOn("cuda:0", "cuda:2", dtype = torch.bfloat16),
+            at_train_start = True,
+        )

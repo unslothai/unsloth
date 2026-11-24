@@ -68,6 +68,7 @@ __all__ = [
     "apply_unsloth_gradient_checkpointing",
     "_unsloth_install_pretrain_detector",
     "_unsloth_reset_stray_compile_cache",
+    "UnsupportedBf16PlacementError",
     "patch_compiled_autograd",
     "process_vision_info",
     "unsloth_compile_transformers",
@@ -449,6 +450,8 @@ def _unsloth_reset_stray_compile_cache(self):
     # The model may have moved (.to(), Trainer placement) since the load-time check.
     try:
         check_mixed_gpu_placement(model, live = True)
+    except UnsupportedBf16PlacementError:
+        raise
     except Exception:
         pass
     # The detector hook can sit on any wrapper in the chain, and the probe may have run on a different one than self.model, so walk the chain.
@@ -2337,6 +2340,10 @@ def _bf16_weights_on(model, indices):
     return None
 
 
+class UnsupportedBf16PlacementError(RuntimeError):
+    """bf16 weights on a gfx10 card: train-start hooks re-raise it instead of swallowing it."""
+
+
 def check_mixed_gpu_placement(
     model,
     dtype = None,
@@ -2388,7 +2395,7 @@ def check_mixed_gpu_placement(
         dtype = _bf16_weights_on(model, set(no_bf16))
     if no_bf16 and dtype == torch.bfloat16 and DEVICE_TYPE == "hip":
         # gfx10 has no bf16 dot: Triton ends the process with no Python error (#7922), so stop here.
-        raise RuntimeError(
+        raise UnsupportedBf16PlacementError(
             f"Unsloth: the model has bfloat16 layers on {', '.join(map(_name, no_bf16))}, which has "
             "no bfloat16 and crashes in Triton. Load with dtype = torch.float16, or hide that GPU "
             "with HIP_VISIBLE_DEVICES."

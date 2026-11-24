@@ -3499,8 +3499,9 @@ def _patch_sentence_transformer_trainer():
         # A CPU-loaded model reaches its card only here: check before the deferred compile's first forward.
         try:
             check_mixed_gpu_placement(getattr(trainer, "model", None), live = True)
-        except Exception:
-            pass
+        except Exception as e:
+            if type(e).__name__ == "UnsupportedBf16PlacementError":
+                raise
 
     @wraps(_original_init)
     def _patched_init(self, *args, **kwargs):

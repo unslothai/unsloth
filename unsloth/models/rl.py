@@ -595,8 +595,9 @@ def prepare_for_training_mode(f):
         # Drop any torch.compile graph cache poisoned by a stray pre-train forward.
         try:
             _unsloth_reset_stray_compile_cache(self)
-        except Exception:
-            pass
+        except Exception as e:
+            if type(e).__name__ == "UnsupportedBf16PlacementError":
+                raise
         # Finish the previous W&B run if this is a subsequent train() call.
         # We do this at the START of train() (not the end) so that
         # evaluate() / log() still work after train() completes.
