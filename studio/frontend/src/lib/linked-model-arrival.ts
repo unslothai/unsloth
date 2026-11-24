@@ -26,7 +26,13 @@ export function modelLinkedFromOutside(wanted: string): boolean {
     const entry = performance.getEntriesByType("navigation")[0] as { name?: string } | undefined;
     if (!entry?.name) return false;
     const first = new URL(entry.name);
-    return first.origin === window.location.origin && sameModel(first.searchParams.get("model"), wanted);
+    // Opened on this same media page: a Hub page opened with ?model= hands over with Run, in the app.
+    const path = (p: string) => p.replace(/\/+$/, "");
+    return (
+      first.origin === window.location.origin &&
+      path(first.pathname) === path(window.location.pathname) &&
+      sameModel(first.searchParams.get("model"), wanted)
+    );
   } catch {
     return false;
   }

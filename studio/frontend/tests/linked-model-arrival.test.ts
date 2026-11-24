@@ -33,6 +33,9 @@ test("a pick handed over inside the app loads as before", () => {
   assert.equal(arrival.modelLinkedFromOutside("unsloth/csm-1b"), false);
   openedAt("http://127.0.0.1:8888/images");
   assert.equal(arrival.modelLinkedFromOutside("black-forest-labs/FLUX.1-dev"), false);
+  // A Hub page opened with ?model= hands the same model to the media page with Run.
+  openedAt("http://127.0.0.1:8888/hub?model=unsloth%2Fcsm-1b", "http://127.0.0.1:8888/audio?model=unsloth%2Fcsm-1b");
+  assert.equal(arrival.modelLinkedFromOutside("unsloth/csm-1b"), false);
 });
 
 test("the confirm toast starts the pick only from its action", () => {
