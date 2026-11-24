@@ -3110,8 +3110,7 @@ def set_bypass(handles: Any, on: bool) -> None:
 
 
 def wrappers_over(model: Any) -> tuple:
-    """Every live graph wrapper over ``model`` or one of its submodules, wherever its handle is stashed (a workflow
-    pipeline built from the loaded components shares the denoiser but not the owner's ``_unsloth_cuda_graphs``)."""
+    """Live graph wrappers over ``model`` or its submodules, wherever their handle is stashed."""
     try:
         ids = {id(m) for m in model.modules()} if hasattr(model, "modules") else {id(model)}
     except Exception:  # noqa: BLE001

@@ -989,8 +989,7 @@ def _keep(_held: Any) -> None:
 
 
 def _drop_graphs_then_free(model: Any, pipe: Any, held: tuple, torch: Any) -> None:
-    """Reset the graphs over ``model`` before freeing ``held`` (deferred past an active capture). Found through the
-    model, not ``pipe`` alone: ``bind_pipe`` points the state at a workflow pipeline that never stashed the handles."""
+    """Reset graphs over ``model`` before freeing ``held``; found via the model, as a bound workflow pipe lacks the handles."""
     from .diffusion_cuda_graph import (
         _holds_graphs,
         recording_here,

@@ -1033,8 +1033,7 @@ def _layout_refs(model):
 
 @pytest.mark.parametrize("via_hook", [False, True])
 def test_uninstall_from_a_workflow_pipe_resets_the_owner_graphs(via_hook):
-    """Img2Img / inpaint / ControlNet rebind the state to a workflow pipe sharing the denoiser; the graph handles
-    stay on the owner pipe, and uninstall must still reset the graph wrapping the model."""
+    """A workflow pipe sharing the denoiser lacks the handles; uninstall must still reset the model's graph."""
     import gc
     import types
     from unittest.mock import patch
