@@ -5494,11 +5494,33 @@ _CONTINUE_ARGS = {
     "dsh": [],
 }
 _OWN_HOME_AGENTS = ("claude", "opencode", "vibe")
-_REPLAYED_FLAGS = ("persist", "as_subagent", "auto_route")
+# api_key is cached per server; --yolo is never re-granted silently; --app never reaches _run.
+_NOT_REPLAYED = frozenset({"model", "api_key", "launch", "yolo", "app"})
 
 
 def _last_start_path() -> Path:
     return _studio_auth_root() / "last_start.json"
+
+
+def _typed_options(ctx) -> list:
+    args = []
+    for param in ctx.command.params:
+        opts = getattr(param, "opts", None)
+        if not opts or param.name in _NOT_REPLAYED:
+            continue
+        try:
+            source = ctx.get_parameter_source(param.name)
+        except Exception:
+            continue
+        if getattr(source, "name", None) != "COMMANDLINE":
+            continue
+        value = ctx.params.get(param.name)
+        if getattr(param, "is_flag", False):
+            flag = opts if value else getattr(param, "secondary_opts", None)
+            args += flag[:1] if flag else []
+        elif value is not None:
+            args += [opts[0], str(value)]
+    return args
 
 
 def _remember_start(entry: dict) -> None:
@@ -5508,8 +5530,8 @@ def _remember_start(entry: dict) -> None:
     last = {
         "agent": ctx.info_name,
         "model": ctx.params.get("model") or entry["id"],
-        "gguf_variant": ctx.params.get("gguf_variant"),
-        "flags": [name for name in _REPLAYED_FLAGS if ctx.params.get(name)],
+        "args": _typed_options(ctx),
+        "persist": bool(ctx.params.get("persist")),
         "server": os.environ.get("UNSLOTH_STUDIO_URL"),
     }
     try:
@@ -5534,22 +5556,24 @@ def _start_group(
         _fail(f"Put --continue after the agent: unsloth start {ctx.invoked_subcommand} --continue")
     last = _read_json_object(_last_start_path()) or {}
     agent = last.get("agent")
-    if agent not in _CONTINUE_ARGS or not last.get("model"):
+    args = last.get("args")
+    if (
+        agent not in _CONTINUE_ARGS
+        or not isinstance(last.get("model"), str)
+        or not isinstance(args, list)
+        or not all(isinstance(arg, str) for arg in args)
+    ):
         _fail("Nothing to continue yet. Start an agent first, e.g. `unsloth start claude`.")
-    flags = [name for name in last.get("flags") or [] if name in _REPLAYED_FLAGS]
-    if agent not in _OWN_HOME_AGENTS and "persist" not in flags:
+    if agent not in _OWN_HOME_AGENTS and not last.get("persist"):
         _fail(
             f"The last {agent} session was not kept, so there is nothing to resume. "
             f"Start it with `unsloth start {agent} --persist` to keep sessions you can continue."
         )
-    if last.get("server"):
+    if isinstance(last.get("server"), str):
         os.environ.setdefault("UNSLOTH_STUDIO_URL", last["server"])
-    args = ["--model", last["model"]]
-    if last.get("gguf_variant"):
-        args += ["--gguf-variant", last["gguf_variant"]]
-    args += ["--" + name.replace("_", "-") for name in flags]
     command = ctx.command.get_command(ctx, agent)
-    with command.make_context(agent, [*args, *_CONTINUE_ARGS[agent]], parent = ctx) as sub:
+    argv = ["--model", last["model"], *args, *_CONTINUE_ARGS[agent]]
+    with command.make_context(agent, argv, parent = ctx) as sub:
         command.invoke(sub)
 
 

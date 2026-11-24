@@ -10358,6 +10358,23 @@ def test_short_continue_reopens_claude_with_its_own_continue(fake_studio, monkey
     assert resumed["command"][1:] == ["--model", MODEL["id"], "--continue"]
 
 
+def test_continue_replays_typed_options_but_not_yolo(fake_studio, tmp_path, monkeypatch):
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/claude")
+    _capture_launch(
+        monkeypatch, ["claude", "--temperature", "0.3", "--no-serve", "--yolo", "--print", "hi"]
+    )
+    last = json.loads((tmp_path / "last_start.json").read_text())
+    assert last["args"] == ["--temperature", "0.3", "--no-serve"]
+    replayed = []
+    monkeypatch.setattr(
+        start, "_typed_options", lambda ctx: replayed.append(dict(ctx.params)) or []
+    )
+    _capture_launch(monkeypatch, ["--continue"])
+    assert replayed[0]["temperature"] == 0.3
+    assert replayed[0]["serve"] is False
+    assert replayed[0]["yolo"] is False
+
+
 def test_continue_refuses_a_session_that_was_not_kept(fake_studio, monkeypatch):
     monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/hermes")
     _capture_launch(monkeypatch, ["hermes"])
