@@ -4802,6 +4802,20 @@ def test_connect_loaded_ollama_model_keeps_its_tag(fake_studio):
     _assert_env_set(result.output, "ANTHROPIC_MODEL", "ollama/qwen3:8b")
 
 
+def test_connect_a_loaded_quant_alias_still_splits_for_another_quant(fake_studio):
+    repo = MODEL["id"]
+    fake_studio.state["models"] = [
+        {"id": repo, "context_length": 4096},
+        {"id": f"{repo}:Q8_0", "quant": "Q8_0", "context_length": 4096},
+    ]
+    result = CliRunner().invoke(
+        start.start_app,
+        ["claude", "--no-launch", "--model", f"{repo}:Q8_0", "--gguf-variant", "Q4_K_M"],
+    )
+    loads = [c[2] for c in fake_studio if c[1].endswith("/api/inference/load")]
+    assert loads and loads[0]["model_path"] == repo and loads[0]["gguf_variant"] == "Q4_K_M"
+
+
 def test_connect_model_variant_suffix_defers_to_server_dedup(fake_studio):
     result = CliRunner().invoke(
         start.start_app, ["claude", "--no-launch", "--model", MODEL["id"] + ":UD-Q4_K_XL"]

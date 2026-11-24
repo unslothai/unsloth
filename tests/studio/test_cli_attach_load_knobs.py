@@ -211,6 +211,26 @@ def test_another_quant_without_model_loads_with_its_saved_settings(monkeypatch):
     }
 
 
+def test_another_quant_beside_a_kept_twin_posts_the_bare_repo(monkeypatch):
+    server = FakeServer(
+        [dict(RESIDENT)],
+        {
+            "is_gguf": True,
+            "active_model": RESIDENT["id"],
+            "model_identifier": f"{RESIDENT['id']}:Q4_K_M",
+            "gguf_variant": "Q4_K_M",
+        },
+    ).install(monkeypatch)
+
+    start_cli._resolve_model(BASE, KEY, None, start_cli.LoadOptions(gguf_variant = "Q8_0"))
+
+    assert sent(server) == {
+        "model_path": RESIDENT["id"],
+        "gguf_variant": "Q8_0",
+        "use_saved_settings": True,
+    }
+
+
 def test_active_model_decides_the_resident_not_list_order(monkeypatch):
     """active_model, not catalog order, names the resident."""
     server = FakeServer(
@@ -1222,3 +1242,45 @@ def test_no_pending_retry_is_still_a_no_op(monkeypatch):
     start_cli._resolve_model(BASE, KEY, None, start_cli.LoadOptions(max_seq_length = 8192))
 
     assert "force_reload" not in server.loads[0]
+
+
+def test_a_named_quant_beside_its_twin_is_pinned_by_its_own_id():
+    repo = RESIDENT["id"]
+    twins = [
+        {"id": repo, "loaded": True, "context_length": 131072},
+        {"id": f"{repo}:Q8_0", "loaded": True, "context_length": 32768},
+    ]
+    pin = start_cli._pin_loaded_quant
+    assert pin(twins[0], twins, "Q4_K_M") == {**twins[0], "id": f"{repo}:Q4_K_M"}
+    assert pin(twins[0], twins, "Q8_0") == twins[1]
+    assert pin({"id": f"{repo}:Q8_0"}, twins, "q8_0")["id"] == f"{repo}:Q8_0"
+    assert pin({"id": repo}, twins[:1], "Q4_K_M")["id"] == repo
+    assert pin({"id": repo}, twins[:1], "Q4_K_M", gguf = True)["id"] == f"{repo}:Q4_K_M"
+    assert pin({"id": "qwen.gguf"}, [], "Q4_K_M", gguf = True)["id"] == "qwen.gguf"
+
+
+def test_a_low_disk_fallback_pins_the_quant_that_is_served(monkeypatch):
+    repo = RESIDENT["id"]
+    served = {f"{repo}:Q4_K_M": "Q4_K_M", repo: "Q4_K_M"}
+    monkeypatch.setattr(
+        start_cli,
+        "_inference_status",
+        lambda base, key, model = None: (
+            {"is_gguf": True, "active_model": repo, "gguf_variant": served[model]}
+            if model in served
+            else {"is_gguf": True, "active_model": "org/Other-GGUF", "gguf_variant": "Q8_0"}
+        ),
+    )
+    monkeypatch.setattr(
+        start_cli, "_loaded_models", lambda base, key: [{"id": repo, "loaded": True}]
+    )
+    assert start_cli._pin_served_quant(BASE, KEY, {"id": repo}, "Q8_0")["id"] == f"{repo}:Q4_K_M"
+    assert start_cli._pin_served_quant(BASE, KEY, {"id": repo}, "Q4_K_M")["id"] == f"{repo}:Q4_K_M"
+
+
+def test_a_pinned_quant_still_reads_its_own_status():
+    repo = RESIDENT["id"]
+    status = {"active_model": repo, "model_identifier": repo, "gguf_variant": "Q4_K_M"}
+    assert start_cli._status_is_for(f"{repo}:Q4_K_M", status, True)
+    assert start_cli._status_is_for(repo, status, True)
+    assert not start_cli._status_is_for(f"{repo}:Q8_0", status, True)
