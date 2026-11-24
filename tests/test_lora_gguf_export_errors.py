@@ -144,6 +144,22 @@ def test_a_failed_export_leaves_what_another_writer_added_meanwhile(tmp_path, mo
     assert (out_dir / "checkpoint-5" / "adapter_model.safetensors").read_bytes() == b"ckpt"
 
 
+def test_a_parent_directory_destination_stays_staged(tmp_path, monkeypatch):
+    out_dir = tmp_path / "export"
+    locked = out_dir / "locked"
+    locked.mkdir(parents = True)
+    (out_dir / "sub").mkdir()
+    monkeypatch.chdir(out_dir / "sub")
+    save = _writer(tmp_path, _CONVERTER_FUTURE)
+    locked.chmod(0)
+    try:
+        gguf = save(_Peft(_EXPERTS), None, "..", outtype = "q8_0")
+    finally:
+        locked.chmod(0o755)
+    assert pathlib.Path(gguf).resolve() == out_dir / "Inkling-2-Mini-lora-q8_0.gguf"
+    assert not [p for p in out_dir.iterdir() if p.name.startswith(".unsloth-lora-gguf-")]
+
+
 def test_expert_adapter_exports_once_the_converter_can_map_it(tmp_path):
     out_dir = tmp_path / "export"
     save = _writer(tmp_path, _CONVERTER_FUTURE)

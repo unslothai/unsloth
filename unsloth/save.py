@@ -6620,7 +6620,7 @@ def _unsloth_save_lora_gguf(
         created_save_dir = not os.path.isdir(save_directory)
         os.makedirs(save_directory, exist_ok = True)
         stage_dir = tempfile.mkdtemp(prefix = ".unsloth-lora-gguf-", dir = save_directory)
-        lora_dir = os.path.join(stage_dir, os.path.basename(os.path.normpath(save_directory)))
+        lora_dir = os.path.join(stage_dir, os.path.basename(os.path.abspath(save_directory)))
     exported = False
 
     try:
