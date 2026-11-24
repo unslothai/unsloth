@@ -10,7 +10,7 @@ backend runs inside the strided processor instead of the stock one); all but the
 from __future__ import annotations
 
 import contextlib
-
+import logging
 import os
 from functools import lru_cache
 from typing import Any, NamedTuple, Optional
@@ -26,11 +26,17 @@ STRIDED_SAGE_ENV = "UNSLOTH_H3_STRIDED_SAGE"
 # Measured at H3's shape (torch 2.11): flash beats cuDNN on sm80 / sm89, ties or loses on sm120; unmeasured keep cuDNN.
 H3_FLASH_FASTER_ARCHS = frozenset({(8, 0), (8, 9)})
 
-# Where H3 video's Auto keeps INT8 attention off. L4 (sm89), 12 rows at Studio defaults: the soundtrack moved past the
-# bf16 noise floor (log-mel L1 vs off 0.48 vs 0.33, 11/12 rows worse), also with the text + audio query rows kept off
-# the kernel. A100 (sm80) and RTX PRO 6000 (sm120) measured inside the floor. Unmeasured arches (sm86 included) keep
-# Auto as before. int8_attention="on" still engages the kernel there.
-H3_INT8_AUTO_OFF_ARCHS = frozenset({(8, 9)})
+# Where H3 video's Auto keeps INT8 attention off entirely (none: Auto runs it with an exact start, below).
+H3_INT8_AUTO_OFF_ARCHS: frozenset = frozenset()
+
+# Wherever Auto engages INT8 attention for H3 video, the first N denoise steps of every render run the 16-bit kernel
+# and INT8 runs after (device-generic; Auto engages it only on the CUDA kernel today, never on ROCm). INT8 on every
+# step moved frames and audio past the fp32-reference gate on L4 and A100-40 alike (its drift from off is about the
+# same on every card); teacher-forced on L4, step 0 carried 4.2x the kernel-swap floor's audio velocity error and
+# later steps 0.8-1.6x. 4 steps passed the L4 gate where 2 did not (frames); 4 keeps ~85% of INT8's denoise speedup.
+H3_INT8_EXACT_START_STEPS = 4
+# Overrides the exact-start step count under Auto (0 = INT8 on every step); unset = H3_INT8_EXACT_START_STEPS.
+H3_INT8_EXACT_STEPS_ENV = "UNSLOTH_H3_INT8_EXACT_STEPS"
 
 _CUDNN = "_native_cudnn"
 _FLASH = "_native_flash"
@@ -77,13 +83,35 @@ def h3_int8_auto_off_reason(capability: Optional[tuple]) -> Optional[str]:
     )
 
 
+def h3_int8_exact_steps() -> int:
+    """Denoise steps (from the first one a render runs) Auto keeps on 16-bit attention wherever it engages INT8: the
+    env override, else (unset, or not a count: with a warning) ``H3_INT8_EXACT_START_STEPS``."""
+    raw = (os.environ.get(H3_INT8_EXACT_STEPS_ENV) or "").strip()
+    if raw:
+        try:
+            value = int(raw)
+        except ValueError:
+            value = -1
+        if value >= 0:
+            return value
+        logging.getLogger(__name__).warning(
+            "%s=%r is not a step count; using the default %d",
+            H3_INT8_EXACT_STEPS_ENV,
+            raw,
+            H3_INT8_EXACT_START_STEPS,
+        )
+    return int(H3_INT8_EXACT_START_STEPS)
+
+
 class H3Int8Gate(NamedTuple):
     """The H3 video load's INT8 attention decision: ``forced`` installs unconditionally, ``auto`` races it, and
-    ``reason`` is the status text when nothing gets installed (None where there is nothing to explain)."""
+    ``reason`` is the status text when nothing gets installed (None where there is nothing to explain).
+    ``exact_steps``: under Auto, the first denoise steps kept on 16-bit attention (0 = INT8 on every step)."""
 
     forced: bool
     auto: bool
     reason: Optional[str]
+    exact_steps: int = 0
 
 
 def h3_int8_load_gate(
@@ -100,7 +128,8 @@ def h3_int8_load_gate(
     """``mode`` is the resolved policy (``off`` | ``auto`` | ``force``: per-load On / Off over
     ``UNSLOTH_DIFFUSION_INT8_ATTENTION_KERNEL``), ``auto_attention`` whether the load left the attention pick to Studio,
     ``capability`` the load card's (None on ROCm / unknown). Forced (On, env ``1`` or an explicit INT8 backend pick)
-    never looks at the arch; Auto runs only on the evidenced config and off ``H3_INT8_AUTO_OFF_ARCHS``."""
+    never looks at the arch and runs INT8 on every step; Auto runs only on the evidenced config and off
+    ``H3_INT8_AUTO_OFF_ARCHS``, with ``h3_int8_exact_steps()`` (installed only if Auto engages the kernel)."""
     forced = mode == "force" or (mode != "off" and _i8.requested(attention_backend))
     # Auto only on the evidenced config: Studio attention, speed on, hosted INT8 ConvRot, diffusers, no adapters
     auto_config = (
@@ -128,7 +157,8 @@ def h3_int8_load_gate(
         reason = "Auto engages it on MiniMax-H3 video only over Studio's hosted INT8 denoiser without adapters"
     else:
         reason = None
-    return H3Int8Gate(forced = forced, auto = auto, reason = reason)
+    exact = h3_int8_exact_steps() if auto else 0
+    return H3Int8Gate(forced = forced, auto = auto, reason = reason, exact_steps = exact)
 
 
 def _flash_sdpa_ready(target: Any = None) -> bool:
@@ -240,6 +270,9 @@ def _strided_processor_for(base: Any) -> Any:
         _unsloth_int8 = False
         _unsloth_int8_min_tokens = 0
         _unsloth_int8_sinks = 0
+        # set by install_int8_exact_start: INT8 calls go through the step-gated op (16-bit kernel code, _EXACT_KERNELS)
+        _unsloth_int8_exact = False
+        _unsloth_int8_exact_kernel = 0
 
         def __call__(
             self,
@@ -311,11 +344,17 @@ def _strided_processor_for(base: Any) -> Any:
                 )
             ):
                 mode = self._unsloth_int8_sinks
-                hidden_states = (
-                    _i8.int8_attention_call(query, key, value, mode)
-                    if mode
-                    else _i8.int8_attention_call(query, key, value)
-                )
+                if self._unsloth_int8_exact:
+                    # opaque op: the per-step choice is made at run time, so it never guards or recompiles a block
+                    hidden_states = torch.ops.unsloth_h3.int8_attention_exact_start(
+                        query, key, value, self._unsloth_int8_exact_kernel
+                    )
+                else:
+                    hidden_states = (
+                        _i8.int8_attention_call(query, key, value, mode)
+                        if mode
+                        else _i8.int8_attention_call(query, key, value)
+                    )
                 hidden_states = hidden_states.flatten(2, 3).type_as(query)
             elif sage:
                 # NHD in and out via guarded dispatch; calls Sage cannot take still run native.
@@ -458,6 +497,167 @@ def strided_attention_count(transformer: Any) -> int:
             return 0
         count += isinstance(getattr(m, "processor", None), cls)
     return count
+
+
+# ── INT8 attention exact start: the first denoise steps on the 16-bit kernel, INT8 after ──
+
+_EXACT_OP = "unsloth_h3::int8_attention_exact_start"
+# the processor's 16-bit kernel as an op argument: 0 = SDPA's own pick
+_EXACT_KERNELS = (None, _CUDNN, _FLASH, "_native_efficient", "_native_math")
+_EXACT_HOOK_ATTR = "_unsloth_h3_int8_exact_start"
+# the denoiser attribute diffusion_cuda_graph reads to refuse graphs (block or whole forward) for this load
+GRAPH_UNSAFE_ATTR = "_unsloth_cuda_graph_unsafe"
+EXACT_GRAPH_REASON = "INT8 attention exact start routes per denoise step (not CUDA-graph safe)"
+# True while the running forward is inside the exact start; set by the denoiser's pre-hook before every forward
+_EXACT_STATE = {"active": False}
+# calls served per path since import (engagement census; the op body runs eagerly, also under torch.compile)
+EXACT_START_STATS = {"exact": 0, "int8": 0}
+
+
+def _exact_attention(q: Any, k: Any, v: Any, kernel: int) -> Any:
+    """The strided processor's own 16-bit SDPA on ``[B, S, H, D]`` views, pinned to its kernel."""
+    import torch.nn.functional as F
+    from torch.nn.attention import SDPBackend, sdpa_kernel
+
+    name = _EXACT_KERNELS[kernel] if 0 <= kernel < len(_EXACT_KERNELS) else None
+    backend = {
+        _CUDNN: SDPBackend.CUDNN_ATTENTION,
+        _FLASH: SDPBackend.FLASH_ATTENTION,
+        "_native_efficient": SDPBackend.EFFICIENT_ATTENTION,
+        "_native_math": SDPBackend.MATH,
+    }.get(name)
+    with sdpa_kernel(backend) if backend is not None else contextlib.nullcontext():
+        out = F.scaled_dot_product_attention(
+            q.permute(0, 2, 1, 3),
+            k.permute(0, 2, 1, 3),
+            v.permute(0, 2, 1, 3),
+            dropout_p = 0.0,
+            is_causal = False,
+        )
+    return out.permute(0, 2, 1, 3).contiguous()
+
+
+def int8_attention_exact_start_impl(q: Any, k: Any, v: Any, kernel: int) -> Any:
+    """Inside the exact start the 16-bit kernel, else the INT8 kernel (``int8_attention_impl``, resolved per call)."""
+    import torch
+
+    if torch.cuda.is_available() and torch.cuda.is_current_stream_capturing():
+        # a replayed graph would freeze one path for every step: the recording fails, the block runs ungraphed
+        raise RuntimeError(EXACT_GRAPH_REASON)
+    if _EXACT_STATE["active"]:
+        EXACT_START_STATS["exact"] += 1
+        return _exact_attention(q, k, v, int(kernel))
+    EXACT_START_STATS["int8"] += 1
+    # the fake's layout (contiguous [B, S, H, D]); a no-op for the kernel's own output
+    return _i8.int8_attention_impl(q, k, v).contiguous()
+
+
+@lru_cache(maxsize = None)
+def int8_attention_exact_start_op() -> Any:
+    """Registered once per process."""
+    import torch
+
+    # explicit schema: the annotations here are strings
+    @torch.library.custom_op(
+        _EXACT_OP,
+        mutates_args = (),
+        schema = "(Tensor q, Tensor k, Tensor v, int kernel) -> Tensor",
+    )
+    def int8_attention_exact_start(q, k, v, kernel):
+        return int8_attention_exact_start_impl(q, k, v, kernel)
+
+    @int8_attention_exact_start.register_fake
+    def _(q, k, v, kernel):
+        # contiguous [B, S, H, D] in V's dtype, as unsloth_studio::int8_attention_nhd
+        return v.new_empty(q.shape)
+
+    return int8_attention_exact_start
+
+
+def _exact_start_pre_hook(module: Any, args: tuple, kwargs: dict) -> None:
+    """Per forward: exact while the render's video scheduler has taken fewer than ``steps`` steps. Its step index is
+    None before a render's first step; the first index seen after that, less one, is where the render began (0, or a
+    later grid point with a begin index / strength), so N exact steps run wherever it starts. A scheduler without a
+    step index runs INT8."""
+    state = module.__dict__.get(_EXACT_HOOK_ATTR)
+    active = False
+    if state is not None:
+        pipe = state["pipe"]()
+        scheduler = getattr(pipe, "scheduler", None) if pipe is not None else None
+        if scheduler is not None and hasattr(scheduler, "_step_index"):
+            index = getattr(scheduler, "_step_index", None)
+            if index is None:
+                state["base"] = None
+                taken = 0
+            else:
+                if state.get("base") is None:
+                    state["base"] = int(index) - 1
+                taken = int(index) - state["base"]
+            active = taken < state["steps"]
+    _EXACT_STATE["active"] = active
+    return None
+
+
+def install_int8_exact_start(
+    transformer: Any,
+    pipe: Any,
+    steps: int,
+    logger: Any = None,
+) -> int:
+    """Route the INT8 calls of ``transformer``'s strided processors through the exact-start op: the first ``steps``
+    denoise steps of each render (read off ``pipe.scheduler``, held weakly) run each processor's 16-bit kernel, the
+    rest the INT8 kernel. Returns the processors switched (0: nothing installed, INT8 on every step)."""
+    import weakref
+
+    if int(steps) <= 0 or transformer is None or pipe is None:
+        return 0
+    procs = [
+        getattr(m, "processor", None)
+        for m in _h3_attention_modules(transformer)
+        if getattr(getattr(m, "processor", None), "_unsloth_int8", False)
+        and not getattr(getattr(m, "processor", None), "_unsloth_int8_sinks", 0)
+    ]
+    if not procs:
+        return 0
+    int8_attention_exact_start_op()
+    try:
+        ref = weakref.ref(pipe)
+    except (
+        TypeError
+    ):  # not weak-referenceable: the denoiser then keeps it alive (a cycle the GC collects)
+        ref = lambda: pipe  # noqa: E731
+    state = {"pipe": ref, "steps": int(steps), "base": None}
+    for proc in procs:
+        name = _backend_value(getattr(proc, "_attention_backend", None))
+        proc._unsloth_int8_exact_kernel = (
+            _EXACT_KERNELS.index(name) if name in _EXACT_KERNELS else 0
+        )
+        proc._unsloth_int8_exact = True
+    if transformer.__dict__.get(_EXACT_HOOK_ATTR) is None:
+        import torch
+
+        # eager even if a caller compiles the whole denoiser: a traced hook would guard on the step index
+        transformer.register_forward_pre_hook(
+            torch.compiler.disable(_exact_start_pre_hook), with_kwargs = True
+        )
+    transformer.__dict__[_EXACT_HOOK_ATTR] = state
+    transformer.__dict__[GRAPH_UNSAFE_ATTR] = EXACT_GRAPH_REASON
+    if logger is not None:
+        logger.info(
+            "video.h3_attn: INT8 attention exact start: the first %d denoise steps on 16-bit attention "
+            "(%d attention modules)",
+            int(steps),
+            len(procs),
+        )
+    return len(procs)
+
+
+def int8_exact_start_count(transformer: Any) -> int:
+    """Engagement census: strided processors whose INT8 calls go through the exact-start op."""
+    return sum(
+        bool(getattr(getattr(m, "processor", None), "_unsloth_int8_exact", False))
+        for m in _h3_attention_modules(transformer)
+    )
 
 
 def strided_sage_count(transformer: Any) -> int:

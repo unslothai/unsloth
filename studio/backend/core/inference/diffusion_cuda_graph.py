@@ -181,6 +181,12 @@ _OUTSIDE_STUCK = [False]
 _OUTSIDE_PARKED = [0]
 
 
+def _graph_unsafe(module: Any) -> Optional[str]:
+    """Why ``module`` must never be recorded (``_unsloth_cuda_graph_unsafe``, set by a per-step route), or None."""
+    reason = (getattr(module, "__dict__", None) or {}).get("_unsloth_cuda_graph_unsafe")
+    return str(reason) if reason else None
+
+
 class CaptureExclusionTimeout(RuntimeError):
     """A capture or a replica-side job gave up waiting on the other side of the capture exclusion."""
 
@@ -2989,6 +2995,10 @@ def graph_eligible(
         for m in _denoiser_dits(pipe)
     ):
         return False, "SageAttention is not CUDA-graph safe"
+    # a denoiser that routes per denoise step (H3's INT8 attention exact start) would replay one route for all
+    unsafe = next((r for r in (_graph_unsafe(m) for m in _denoiser_dits(pipe)) if r), None)
+    if unsafe:
+        return False, unsafe
 
     try:
         cuda = getattr(_torch(), "cuda", None)
@@ -3426,6 +3436,12 @@ def arm_block_graphs(
         applied["cuda_graph"] = False
         pipe._unsloth_cuda_graphs = ()
         _set_reason(pipe, "SageAttention is not CUDA-graph safe")
+        return ()
+    unsafe = next((r for r in (_graph_unsafe(t) for t in _denoiser_dits(pipe)) if r), None)
+    if unsafe:
+        applied["cuda_graph"] = False
+        pipe._unsloth_cuda_graphs = ()
+        _set_reason(pipe, unsafe)
         return ()
     model_offload = any(getattr(t, "_hf_hook", None) is not None for t in _denoiser_dits(pipe))
     stays = (not hooked or bool(pinned)) and not model_offload
