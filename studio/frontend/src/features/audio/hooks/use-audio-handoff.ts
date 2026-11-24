@@ -4,6 +4,7 @@
 import { useEffect, useRef } from "react";
 import { translate } from "@/i18n";
 import { loadGalleryUntil } from "@/lib/gallery-deep-link";
+import { confirmLinkedModel, modelLinkedFromOutside } from "@/lib/linked-model-arrival";
 import { toast } from "@/lib/toast";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import {
@@ -109,6 +110,17 @@ export function useAudioHandoff({
     const key = `${wanted}|${routeSearch.quant ?? ""}|${routeSearch.ggufQuant ?? ""}|${routeSearch.task ?? ""}|${routeSearch.audioType ?? ""}|${routeSearch.loadId ?? ""}|${routeSearch.gguf ? "gguf" : ""}|${routeSearch.workflow ?? ""}`;
     if (handledRouteModel.current === key) return;
     if (busyRef.current !== null) return;
+    if (modelLinkedFromOutside(wanted)) {
+      handledRouteModel.current = key;
+      const linked = {
+        ...routeSearch,
+        workflow: isAudioWorkflowId(routeSearch.workflow) ? routeSearch.workflow : undefined,
+      };
+      // The page stays; the pick waits for the toast's action.
+      void navigateSelf({ to: "/audio", search: { workflow: committedWorkflow }, replace: true });
+      confirmLinkedModel(wanted, () => void navigateSelf({ to: "/audio", search: linked, replace: true }));
+      return;
+    }
     // Open the named page first, or a staged or failed load leaves the user on another page.
     const routedWorkflow = isAudioWorkflowId(routeSearch.workflow)
       ? routeSearch.workflow

@@ -986,6 +986,13 @@ export const vi = {
     compactUnsupported:
       "Cần mô hình GGUF hoặc MLX có hỗ trợ công cụ để thu gọn",
   },
+  chatFiles: {
+    title: "Tệp trong cuộc trò chuyện này",
+    code: "Đoạn mã",
+    showInChat: "Hiển thị trong cuộc trò chuyện",
+    download: "Tải xuống {name}",
+    saveFailed: "Không thể lưu {name}.",
+  },
   welcome: {
     goodToSeeYou: "Rất vui được gặp bạn",
     goodToSeeYouName: "Rất vui được gặp bạn, {name}",
@@ -1037,6 +1044,9 @@ export const vi = {
       "Tìm kiếm và tải xuống từ ModelScope thay thế. Bạn có thể chuyển lại trong Cài đặt.",
     useModelScopeFailed: "Không thể chuyển sang ModelScope.",
     updateToken: "Cập nhật token",
+    linkedModelTitle: "Tải {model}?",
+    linkedModelBody: "Một liên kết đã mở trang này và yêu cầu tải xuống và tải mô hình này.",
+    linkedModelLoad: "Tải",
     hfToken: {
       label: "Token HF",
       saved: "Đã lưu",
@@ -2798,7 +2808,7 @@ export const vi = {
         oldWebkitWarning:
           "WebKitGTK {version} trên Wayland: kết xuất bằng GPU có thể gây sập khi khởi chạy trên NVIDIA với tỷ lệ phóng to lẻ (lỗi WebKit 280210). Nếu xảy ra, Unsloth sẽ tự chuyển về kết xuất bằng CPU. Trên WebKitGTK 2.50.4, tùy chọn này không cho thấy tốc độ cải thiện đo được (8 fps ở cả hai chế độ), nên không khuyến nghị chọn Bật ở đây.",
         oldDriverWarning:
-          "Trình điều khiển NVIDIA {version} trên X11: Unsloth giữ tắt kết xuất bằng GPU cho đến khi trình điều khiển là bản 610 trở lên. Các trình điều khiển cũ hơn rò rỉ một bộ mô tả tệp mỗi khung hình và cửa sổ sẽ ngừng vẽ trong vài phút.",
+          "Trình điều khiển NVIDIA {version} trên X11: Unsloth giữ tắt kết xuất bằng GPU cho đến khi trình điều khiển là bản 590 trở lên. Các trình điều khiển cũ hơn rò rỉ một bộ mô tả tệp mỗi khung hình và cửa sổ sẽ ngừng vẽ trong vài phút.",
         fallbackNote:
           "Kết xuất bằng GPU đã gây sập khi khởi chạy trên hệ thống này, nên Unsloth đang dùng kết xuất bằng CPU.",
         tryAgain: "Thử lại GPU",
@@ -3073,6 +3083,15 @@ export const vi = {
         runningOn: "llama.cpp hiện đang chạy trên {backend}.",
         hint: "Cài đặt bản dựng llama.cpp cho backend này và giữ nguyên qua các lần cập nhật. Hữu ích khi lựa chọn tự động bị sập hoặc trình điều khiển GPU của bạn không hỗ trợ. Chỉ liệt kê các backend có bản dựng cho máy này; việc huấn luyện không bị ảnh hưởng.",
         autoWith: "Tự động ({backend})",
+        unavailableOption: "{backend} ({reason})",
+        unavailableHint: "{backend}: {hint}",
+        unavailable: {
+          rocmNotInstalled: "Chưa cài đặt ROCm",
+          rocmNoAccess: "không có quyền truy cập GPU",
+          otherRelease: "cần cập nhật llama.cpp",
+          checkFailed: "không thể kiểm tra",
+          noBuild: "không có bản dựng cho máy này",
+        },
         apply: "Áp dụng",
         applying: "Đang cài đặt...",
         applyHint:

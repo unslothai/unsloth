@@ -11453,6 +11453,15 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     resolve_group.add_argument(
+        "--follows-rocm-torch",
+        action = "store_true",
+        help = (
+            "Exit 0 when Automatic selection follows ROCm torch on a mixed NVIDIA+AMD "
+            "host (UNSLOTH_FORCE_ROCM_TORCH set or the installed torch is a ROCm build, "
+            "and no backend named), else 1. Lets setup.sh build llama.cpp by the same rule."
+        ),
+    )
+    resolve_group.add_argument(
         "--check-installed",
         metavar = "DIR",
         help = (
@@ -11609,9 +11618,12 @@ def resolve_backends_payload(
                     or (installed_release and entry["release_tag"] != installed_release)
                 ):
                     # Slim whisper.cpp bundles are paired to the installed release, so a switch is an update.
-                    entry["available"] = False
-                    entry["detail"] = "switching this backend would leave the installed release"
-                if not entry["available"]:
+                    entry.update(
+                        available = False,
+                        reason = "other_release",
+                        detail = "switching this backend would leave the installed release",
+                    )
+                elif not entry["available"]:
                     entry["reason"] = "no_prebuilt"
             entries.append(entry)
     if entries and all(entry.get("reason") == "error" for entry in entries):
@@ -11768,6 +11780,12 @@ def ensure_cuda_runtime_wheels(install_dir: Path) -> None:
 
 def main() -> int:
     args = parse_args()
+    if args.follows_rocm_torch:
+        backend = normalize_backend_request(args.llama_backend) or environment_backend_override(
+            os.environ.get("UNSLOTH_LLAMA_CPP_BACKEND"), os.environ.get("UNSLOTH_FORCE_VULKAN")
+        )
+        return EXIT_SUCCESS if backend in (None, "auto") and _rocm_torch_preferred() else 1
+
     if args.check_existing_install is not None:
         install_dir = Path(args.check_existing_install)
         return EXIT_SUCCESS if reusable_existing_install(install_dir, detect_host()) else 1

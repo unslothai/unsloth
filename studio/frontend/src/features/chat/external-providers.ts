@@ -8,6 +8,7 @@ import type {
   ProviderAuthStatus,
 } from "./api/providers-api";
 import { modelCatalogSupportsVision } from "./model-catalog.ts";
+import { normalizeProviderBaseUrl } from "./provider-base-url.ts";
 import {
   normalizeAutoCompactTokens,
   normalizeAutoCompactPercent,
@@ -173,6 +174,7 @@ export type ProviderModelCapability = {
   vision?: boolean;
   studio_tools?: boolean;
   thinking?: boolean;
+  thinkingByBaseUrl?: Record<string, boolean>;
 };
 
 const REGISTRY_MODEL_CAPABILITIES = new Map<
@@ -345,17 +347,29 @@ export function providerModelSupportsStudioTools(
 export function providerModelSupportsThinking(
   providerType: string | null | undefined,
   modelId: string | null | undefined,
+  baseUrl?: string | null,
 ): boolean | null {
   if (!providerType || !modelId) return null;
   hydrateProviderModelCapabilities();
+  const capability = registryCapabilitiesFor(providerType)?.[modelId];
   const value =
-    registryCapabilitiesFor(providerType)?.[modelId]?.thinking;
+    capability?.thinkingByBaseUrl?.[thinkingBaseUrlKey(baseUrl)] ??
+    capability?.thinking;
   return typeof value === "boolean" ? value : null;
+}
+
+function thinkingBaseUrlKey(baseUrl: string | null | undefined): string {
+  try {
+    return normalizeProviderBaseUrl(baseUrl ?? "", { appendOpenAiVersionPath: true }) ?? "";
+  } catch {
+    return baseUrl?.trim().replace(/\/+$/, "") ?? "";
+  }
 }
 
 export function learnCatalogModelCapabilities(
   providerType: string,
   models: readonly { id: string; capabilities?: string[] | null }[],
+  baseUrl?: string | null,
 ): void {
   if (!providerType) return;
   const stored = getProviderModelCapabilities(providerType) ?? {};
@@ -367,7 +381,10 @@ export function learnCatalogModelCapabilities(
     if (!modelId || !Array.isArray(names)) continue;
     merged[modelId] = {
       ...stored[modelId],
-      thinking: names.includes("thinking"),
+      thinkingByBaseUrl: {
+        ...stored[modelId]?.thinkingByBaseUrl,
+        [thinkingBaseUrlKey(baseUrl)]: names.includes("thinking"),
+      },
     };
     learned = true;
   }

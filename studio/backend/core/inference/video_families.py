@@ -602,6 +602,9 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         supports_torch_compile = True,
         # Near-equal inductor norm-reduction configs rendered different clips per fresh process for one seed.
         filter_reduction_configs = True,
+        # The conditioner's Qwen3-VL Conv3d patch embed reads every reference clip / keyframe: cudnn.benchmark's
+        # per-process algorithm pick moved its output (G4: two clip families per seed), so the denoiser diverged.
+        cudnn_benchmark = False,
         # CUDA graph declined: no measurable win (GPU-bound) for ~8 GB extra memory and 31 s capture.
         supports_cuda_graph = False,
         # Streamed, H3's prequant groups onload through diffusers' stream path, which waits on the host per group: a
@@ -774,8 +777,9 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         label = "Wan2.2 TI2V 5B",
         profile = FamilyProfile(
             scheme_deny = _NVFP4_GATE_FAILED,
-            # Image AUTO rule: INT8 1.18x faster than bf16 (RTX PRO 6000, both resident, compiled), so INT8.
-            auto_prequant_when_resident = frozenset({"int8"}),
+            # No auto_prequant_when_resident: Auto keeps bf16 where the DiT stays resident. Re-gate 2026-11-24 (RTX PRO
+            # 6000, Studio defaults, 8 clips): INT8 weights 0.213 mean / 0.376 max LPIPS vs bf16 (bf16 A/A 0.000), CI
+            # upper 0.289 against the 0.05 video bar, for 1.22x. INT8 stays where bf16 does not fit and on request.
             untiled_vae = UntiledVae(bytes_per_latent_pixel = 2.5 * 2**20, output_scale = (16, 4)),
             preview_factors = "wan22_5b",
             auto_static_skip = (

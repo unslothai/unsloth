@@ -891,6 +891,13 @@ export const en = {
     compactEmpty: "Nothing to compact yet",
     compactUnsupported: "Compaction requires a GGUF or MLX model with tool support",
   },
+  chatFiles: {
+    title: "Files in this chat",
+    code: "Code snippets",
+    showInChat: "Show in chat",
+    download: "Download {name}",
+    saveFailed: "Could not save {name}.",
+  },
   // The empty chat's greeting; {name} is the user's nickname or first name.
   welcome: {
     goodToSeeYou: "Good to see you",
@@ -939,6 +946,9 @@ export const en = {
     useModelScopeHint: "Search and download from ModelScope instead. You can switch back in Settings.",
     useModelScopeFailed: "Couldn't switch to ModelScope.",
     updateToken: "Update token",
+    linkedModelTitle: "Load {model}?",
+    linkedModelBody: "A link opened this page and asked to download and load this model.",
+    linkedModelLoad: "Load",
     hfToken: {
       label: "HF token",
       saved: "Saved",
@@ -2620,7 +2630,7 @@ export const en = {
         off: "Off",
         oldWebkitWarning: "WebKitGTK {version} on Wayland: GPU rendering can crash at launch on NVIDIA with fractional scaling (WebKit bug 280210). If it does, Unsloth switches back to CPU rendering on its own. On WebKitGTK 2.50.4 it gave no measured speedup (8 fps either way), so On is not recommended here.",
         oldDriverWarning:
-          "NVIDIA driver {version} on X11: Unsloth keeps GPU rendering off until the driver is 610 or newer. Older drivers leak a file descriptor per frame, and the window stops drawing within minutes.",
+          "NVIDIA driver {version} on X11: Unsloth keeps GPU rendering off until the driver is 590 or newer. Older drivers leak a file descriptor per frame, and the window stops drawing within minutes.",
         fallbackNote: "GPU rendering crashed at launch on this system, so Unsloth is using CPU rendering.",
         tryAgain: "Try GPU again",
         envOverride: "Set by the {name} environment variable. This setting has no effect until it is removed.",
@@ -2886,8 +2896,17 @@ export const en = {
         label: "Compute backend",
         description: "The backend llama.cpp uses to run GGUF models.",
         runningOn: "llama.cpp currently runs on {backend}.",
-        hint: "Installs the llama.cpp build for this backend and keeps it across updates. Useful when the automatic choice crashes or your GPU driver does not support it. Only backends with a build for this machine are listed; training is unaffected.",
+        hint: "Installs the llama.cpp build for this backend and keeps it across updates. Useful when the automatic choice crashes or your GPU driver does not support it. Backends your GPUs could use but that cannot install yet are greyed out with the reason; training is unaffected.",
         autoWith: "Automatic ({backend})",
+        unavailableOption: "{backend} ({reason})",
+        unavailableHint: "{backend}: {hint}",
+        unavailable: {
+          rocmNotInstalled: "ROCm not installed",
+          rocmNoAccess: "no access to the GPU",
+          otherRelease: "needs a llama.cpp update",
+          checkFailed: "could not check",
+          noBuild: "no build for this machine",
+        },
         apply: "Apply",
         applying: "Installing...",
         applyHint: "Downloads the new build and restarts llama.cpp. A loaded model is unloaded.",

@@ -980,6 +980,13 @@ export const tr = {
     compactUnsupported:
       "Sıkıştırma için araç desteği olan bir GGUF veya MLX modeli gerekir",
   },
+  chatFiles: {
+    title: "Bu sohbetteki dosyalar",
+    code: "Kod parçacıkları",
+    showInChat: "Sohbette göster",
+    download: "{name} dosyasını indir",
+    saveFailed: "{name} kaydedilemedi.",
+  },
   welcome: {
     goodToSeeYou: "Sizi görmek güzel",
     goodToSeeYouName: "Sizi görmek güzel, {name}",
@@ -1032,6 +1039,9 @@ export const tr = {
       "Bunun yerine ModelScope'ta arayın ve oradan indirin. Ayarlar'dan geri dönebilirsiniz.",
     useModelScopeFailed: "ModelScope'a geçilemedi.",
     updateToken: "Token'ı güncelle",
+    linkedModelTitle: "{model} yüklensin mi?",
+    linkedModelBody: "Bir bağlantı bu sayfayı açtı ve bu modelin indirilip yüklenmesini istedi.",
+    linkedModelLoad: "Yükle",
     hfToken: {
       label: "HF token",
       saved: "Kaydedildi",
@@ -2788,7 +2798,7 @@ export const tr = {
         oldWebkitWarning:
           "Wayland üzerinde WebKitGTK {version}: Kesirli ölçekleme kullanılan NVIDIA sistemlerinde GPU ile işleme başlatma sırasında çökebilir (WebKit hatası 280210). Böyle olursa Unsloth kendiliğinden CPU ile işlemeye geri döner. WebKitGTK 2.50.4 üzerinde ölçülebilir bir hızlanma sağlamadı (her iki durumda da 8 fps), bu nedenle burada Açık önerilmez.",
         oldDriverWarning:
-          "X11 üzerinde NVIDIA sürücüsü {version}: Sürücü 610 veya daha yeni olana kadar Unsloth GPU ile işlemeyi kapalı tutar. Eski sürücüler her karede bir dosya tanımlayıcısı sızdırır ve pencere birkaç dakika içinde çizim yapmayı durdurur.",
+          "X11 üzerinde NVIDIA sürücüsü {version}: Sürücü 590 veya daha yeni olana kadar Unsloth GPU ile işlemeyi kapalı tutar. Eski sürücüler her karede bir dosya tanımlayıcısı sızdırır ve pencere birkaç dakika içinde çizim yapmayı durdurur.",
         fallbackNote:
           "GPU ile işleme bu sistemde başlatma sırasında çöktüğü için Unsloth CPU ile işleme kullanıyor.",
         tryAgain: "GPU'yu yeniden dene",
@@ -3066,6 +3076,15 @@ export const tr = {
         runningOn: "llama.cpp şu anda şu arka uçta çalışıyor: {backend}.",
         hint: "Bu arka uç için llama.cpp derlemesini kurar ve güncellemeler boyunca korur. Otomatik seçim çöktüğünde veya GPU sürücünüz onu desteklemediğinde kullanışlıdır. Yalnızca bu makine için derlemesi olan arka uçlar listelenir; eğitim etkilenmez.",
         autoWith: "Otomatik ({backend})",
+        unavailableOption: "{backend} ({reason})",
+        unavailableHint: "{backend}: {hint}",
+        unavailable: {
+          rocmNotInstalled: "ROCm yüklü değil",
+          rocmNoAccess: "GPU'ya erişim yok",
+          otherRelease: "llama.cpp güncellemesi gerekiyor",
+          checkFailed: "kontrol edilemedi",
+          noBuild: "bu makine için derleme yok",
+        },
         apply: "Uygula",
         applying: "Kuruluyor...",
         applyHint:

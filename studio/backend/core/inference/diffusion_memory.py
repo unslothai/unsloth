@@ -3496,6 +3496,16 @@ def run_once_companions(pipe: Any) -> dict[str, Any]:
     }
 
 
+# Plan estimate set by refine_memory_plan_for_components when the card fits the streaming tier only with the run-once
+# companions streamed too: _apply_streaming_offload then streams them unpinned rather than resident.
+STREAM_COMPANIONS_UNPINNED_KEY = "stream_run_once_companions_unpinned"
+
+
+def streams_companions_unpinned(plan: Any) -> bool:
+    """Whether ``plan`` needs its run-once companions off the card even when the host cannot pin them."""
+    return bool((getattr(plan, "estimates", None) or {}).get(STREAM_COMPANIONS_UNPINNED_KEY))
+
+
 def _run_once_companions_pin(dit_mib: int, leaf_mib: int, companion_mib: int, device: Any) -> bool:
     """Pin budget fits the companions too; unpinned streaming is slower than resident."""
     forced = str(os.environ.get(GROUP_OFFLOAD_PIN_ENV, "")).strip().lower()
@@ -3505,6 +3515,52 @@ def _run_once_companions_pin(dit_mib: int, leaf_mib: int, companion_mib: int, de
         return True
     budget = None if _pinned_memory_capped() else _pin_budget_mib()
     return budget is not None and budget > 0 and dit_mib + leaf_mib + companion_mib <= budget
+
+
+def _stream_companion_unpinned(
+    module: Any,
+    onload: Any,
+    logger: Any = None,
+) -> bool:
+    """Leaf-level offload of a run-once companion with no copy stream: plain copies on the compute stream, nothing
+    pinned, so a refused host pin cannot surface at an onload. On failure its hooks are removed and False returned."""
+    try:
+        import inspect
+
+        import torch
+        from diffusers.hooks import apply_group_offloading
+
+        params = inspect.signature(apply_group_offloading).parameters
+        kwargs: dict[str, Any] = {
+            "onload_device": torch.device(onload),
+            "offload_device": torch.device("cpu"),
+            "offload_type": "leaf_level",
+        }
+        for key, value in (
+            ("use_stream", False),
+            ("non_blocking", False),
+            ("record_stream", False),
+            ("low_cpu_mem_usage", True),
+        ):
+            if key in params:
+                kwargs[key] = value
+        apply_group_offloading(module, **kwargs)
+    except Exception as exc:  # noqa: BLE001 -- the caller keeps it resident
+        _remove_group_offload_hooks(module)
+        if logger is not None:
+            logger.warning(
+                "diffusion.memory: unpinned leaf offload unavailable for %s (%s); keeping it resident",
+                type(module).__name__,
+                exc,
+            )
+        return False
+    if logger is not None:
+        logger.info(
+            "diffusion.memory: streaming %s leaf by leaf unpinned (host pin budget short): plain copies once per "
+            "request, off the card for the denoise and the decode",
+            type(module).__name__,
+        )
+    return True
 
 
 def _module_storage_bytes(module: Any, seen: set[int]) -> int:
@@ -3644,6 +3700,17 @@ def refine_memory_plan_for_components(
         if _pipe_denoisers_hold_torchao(pipe):
             return plan
         streamable = _streamable_components(pipe, torch)
+        # run-once companions (LTX-2 text connectors) count resident, as the streaming tier keeps them when it cannot
+        # pin them; only a card they would not fit beside the rest streams them regardless (see below)
+        companions = (
+            {}
+            if getattr(plan.device_memory, "is_unified", False)
+            else {
+                name: module
+                for name, module in run_once_companions(pipe).items()
+                if name not in streamable and isinstance(module, torch.nn.Module)
+            }
+        )
 
         sizes: dict[str, int] = {}
         mib = 1024 * 1024
@@ -3671,12 +3738,20 @@ def refine_memory_plan_for_components(
         beside = 0
     # what streaming leaves resident, all at once: over budget here means streaming OOMs too
     resident_mib = sum(m for n, m in sizes.items() if n not in streamable)
+    companions_unpinned = False
     if resident_mib > int(budget):
-        return plan
+        # Only streaming the companions as well fits: they then stream even when the host cannot pin them
+        # (STREAM_COMPANIONS_UNPINNED_KEY tells _apply_streaming_offload), never resident.
+        without = resident_mib - sum(sizes.get(n, 0) for n in companions)
+        if not companions or without > int(budget):
+            return plan
+        resident_mib, companions_unpinned = without, True
 
     estimates = dict(plan.estimates)
     estimates["largest_component_mib"] = largest_mib
     estimates["streaming_resident_mib"] = resident_mib
+    if companions_unpinned:
+        estimates[STREAM_COMPANIONS_UNPINNED_KEY] = 1
     return replace(
         plan,
         offload_policy = OFFLOAD_STREAMING,
@@ -7179,6 +7254,7 @@ def apply_memory_plan(
     elif policy == OFFLOAD_STREAMING:
         resident_mib = getattr(plan, "resident_transformer_mib", None)
         resident_te_mib = getattr(plan, "resident_text_encoder_mib", None)
+        unpinned = streams_companions_unpinned(plan)
         if resident_mib and resident_te_mib:
             _apply_streaming_offload(
                 pipe,
@@ -7186,13 +7262,18 @@ def apply_memory_plan(
                 logger,
                 resident_transformer_mib = int(resident_mib),
                 resident_text_encoder_mib = int(resident_te_mib),
+                stream_companions_unpinned = unpinned,
             )
         elif resident_mib:
             _apply_streaming_offload(
-                pipe, placement, logger, resident_transformer_mib = int(resident_mib)
+                pipe,
+                placement,
+                logger,
+                resident_transformer_mib = int(resident_mib),
+                stream_companions_unpinned = unpinned,
             )
         else:
-            _apply_streaming_offload(pipe, placement, logger)
+            _apply_streaming_offload(pipe, placement, logger, stream_companions_unpinned = unpinned)
     elif policy == OFFLOAD_SEQUENTIAL:
         try:
             pipe.enable_sequential_cpu_offload(device = placement)
@@ -10155,9 +10236,12 @@ def _apply_streaming_offload(
     *,
     resident_transformer_mib: Optional[int] = None,
     resident_text_encoder_mib: Optional[int] = None,
+    stream_companions_unpinned: bool = False,
 ) -> None:
     """Streams blocks and encoder leaves; a whole-component onload would OOM, so setup failure is fatal.
-    ``resident_text_encoder_mib``: leaf groups of the text encoders kept on the card beside the whole transformer."""
+    ``resident_text_encoder_mib``: leaf groups of the text encoders kept on the card beside the whole transformer.
+    ``stream_companions_unpinned``: run-once companions the host cannot pin stream unpinned instead of staying
+    resident (the plan fits only with them off the card, ``streams_companions_unpinned``)."""
     installed = 0
     try:
         import inspect
@@ -10248,7 +10332,12 @@ def _apply_streaming_offload(
                         companion_mib,
                     )
         for comp_name, module in companions.items():
-            if comp_name not in streamed:
+            # unpinned rather than resident only when the plan fits with them off the card alone
+            if comp_name not in streamed and not (
+                stream_companions_unpinned
+                and host_pinning_allowed(onload)
+                and _stream_companion_unpinned(module, onload, logger)
+            ):
                 module.to(onload)
         if prefetch:
             pin_dits, pin_encoders = _streamed_pin_plan(

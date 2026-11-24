@@ -158,7 +158,13 @@ def _adapter_base_changed_error(config: dict) -> str | None:
 
 def _escaping_weights_error(config: dict) -> str | None:
     from utils.security.file_security import escaping_weight_references
-    for key in ("model_name", "model_local_path", "model_snapshot_path", "adapter_base_pin"):
+    for key in (
+        "model_name",
+        "model_local_path",
+        "model_snapshot_path",
+        "adapter_base_pin",
+        "resume_from_checkpoint",
+    ):
         if config.get(key) and escaping_weight_references(config[key]):
             return "This model's weight index names files outside its folder."
     return None

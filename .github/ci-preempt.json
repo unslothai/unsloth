@@ -74,6 +74,7 @@
     ],
     "windows": [
       "studio-windows-inference-smoke.yml",
+      "studio-windows-installer-smoke.yml",
       "cross-platform-parity-ci.yml",
       "clean-machine-install-ci.yml",
       "interrupted-install-ci.yml",

@@ -778,6 +778,17 @@ def test_known_unloaded_model_switches_once(monkeypatch):
     assert backend.model_identifier == "unsloth/B-GGUF"
 
 
+def test_a_switch_into_the_primary_counts_as_its_use(monkeypatch):
+    from core.inference import model_slots
+
+    _wired(
+        monkeypatch, _FakeBackend("unsloth/A-GGUF"), ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF")
+    )
+    monkeypatch.setattr(model_slots, "primary_last_used", 0.0)
+    _run_hook("unsloth/B-GGUF:Q4_K_M")
+    assert model_slots.primary_last_used > 0.0
+
+
 def test_a_late_cancel_keeps_the_completed_switch_metadata(monkeypatch):
     backend = _FakeBackend("unsloth/A-GGUF")
     cancel_event = threading.Event()
@@ -3795,7 +3806,8 @@ def test_saved_settings_are_found_under_the_on_disk_copy(monkeypatch, named):
     request = LoadRequest(**named, use_saved_settings = True)
     filled = asyncio.run(inference_route._with_saved_settings(request))
     assert asked == [("/cache/snap/A", "org/A-GGUF", "Q4_K_M")]
-    assert (filled.model_path, filled.cache_type_kv) == (named["model_path"], "q8_0")
+    assert (filled.model_path, filled.cache_type_kv) == ("org/A-GGUF", "q8_0")
+    assert filled.gguf_variant == "q4_k_m"
 
 
 def test_a_bare_id_reads_no_quant_the_load_may_not_pick(monkeypatch):

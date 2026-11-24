@@ -13,6 +13,7 @@ the layer split engine are fakes (no weights)."""
 from __future__ import annotations
 
 import dataclasses
+import inspect
 from typing import Optional
 
 import pytest
@@ -24,6 +25,18 @@ from core.inference import diffusion_memory as dm
 from core.inference import diffusion_multigpu as mg
 
 GIB = 1024
+
+
+def _replica_need_stub(mib):
+    """Stands in for ``mg.replica_need_mib`` with its real signature: a call the real one rejects fails here too,
+    and a keyword it gains (``activations=``, #19209) is accepted instead of raising inside the placement try."""
+    signature = inspect.signature(mg.replica_need_mib)
+
+    def stub(*args, **kwargs):
+        signature.bind(*args, **kwargs)
+        return int(mib)
+
+    return stub
 
 
 @dataclasses.dataclass
@@ -725,7 +738,7 @@ def _priced(
     tokens,
     h2d = 11.0,
 ):
-    monkeypatch.setattr(mg, "replica_need_mib", lambda module: int(need_mib))
+    monkeypatch.setattr(mg, "replica_need_mib", _replica_need_stub(need_mib))
     monkeypatch.setattr(dm, "_offload_cost_measurements", lambda: (float(h2d), 30.0))
     monkeypatch.setattr(mg, "_gemm_tflops", lambda o, d: 25.0)
     priced = []

@@ -887,6 +887,13 @@ export const hi = {
     compactEmpty: "अभी कॉम्पैक्ट करने के लिए कुछ नहीं है",
     compactUnsupported: "कॉम्पैक्शन के लिए टूल सपोर्ट वाला GGUF या MLX मॉडल आवश्यक है",
   },
+  chatFiles: {
+    title: "इस चैट की फ़ाइलें",
+    code: "कोड स्निपेट",
+    showInChat: "चैट में दिखाएँ",
+    download: "{name} डाउनलोड करें",
+    saveFailed: "{name} सहेजा नहीं जा सका।",
+  },
   welcome: {
     goodToSeeYou: "आपको देखकर अच्छा लगा",
     goodToSeeYouName: "{name}, आपको देखकर अच्छा लगा",
@@ -937,6 +944,9 @@ export const hi = {
     useModelScopeHint: "इसके बजाय ModelScope से खोजें और डाउनलोड करें। आप सेटिंग्स में वापस बदल सकते हैं।",
     useModelScopeFailed: "ModelScope पर स्विच नहीं हो सका।",
     updateToken: "टोकन अपडेट करें",
+    linkedModelTitle: "{model} लोड करें?",
+    linkedModelBody: "एक लिंक ने यह पेज खोला और इस मॉडल को डाउनलोड और लोड करने के लिए कहा।",
+    linkedModelLoad: "लोड करें",
     hfToken: {
       label: "HF टोकन",
       saved: "सहेजा गया",
@@ -2606,7 +2616,7 @@ export const hi = {
         off: "बंद",
         oldWebkitWarning: "Wayland पर WebKitGTK {version}: फ़्रैक्शनल स्केलिंग वाले NVIDIA पर GPU रेंडरिंग लॉन्च के समय क्रैश हो सकती है (WebKit bug 280210)। ऐसा होने पर Unsloth अपने आप CPU रेंडरिंग पर लौट आता है। WebKitGTK 2.50.4 पर इससे कोई मापने लायक तेज़ी नहीं मिली (दोनों तरह 8 fps), इसलिए यहाँ चालू की सलाह नहीं दी जाती।",
         oldDriverWarning:
-          "X11 पर NVIDIA ड्राइवर {version}: ड्राइवर 610 या नया होने तक Unsloth GPU रेंडरिंग बंद रखता है। पुराने ड्राइवर हर फ़्रेम में एक फ़ाइल डिस्क्रिप्टर लीक करते हैं, और कुछ ही मिनटों में विंडो बनना बंद हो जाती है।",
+          "X11 पर NVIDIA ड्राइवर {version}: ड्राइवर 590 या नया होने तक Unsloth GPU रेंडरिंग बंद रखता है। पुराने ड्राइवर हर फ़्रेम में एक फ़ाइल डिस्क्रिप्टर लीक करते हैं, और कुछ ही मिनटों में विंडो बनना बंद हो जाती है।",
         fallbackNote: "इस सिस्टम पर GPU रेंडरिंग लॉन्च के समय क्रैश हो गई, इसलिए Unsloth CPU रेंडरिंग का इस्तेमाल कर रहा है।",
         tryAgain: "GPU फिर से आज़माएँ",
         envOverride: "{name} एनवायरनमेंट वेरिएबल से सेट है। जब तक इसे हटाया नहीं जाता, इस सेटिंग का कोई असर नहीं होगा।",
@@ -2874,6 +2884,15 @@ export const hi = {
         runningOn: "llama.cpp अभी {backend} पर चल रहा है।",
         hint: "इस बैकएंड के लिए llama.cpp बिल्ड इंस्टॉल करता है और अपडेट के बाद भी वही रखता है। जब स्वचालित चुनाव क्रैश हो या आपका GPU ड्राइवर उसे सपोर्ट न करे, तब उपयोगी है। केवल वही बैकएंड दिखते हैं जिनका बिल्ड इस मशीन के लिए मौजूद है; ट्रेनिंग पर कोई असर नहीं पड़ता।",
         autoWith: "स्वचालित ({backend})",
+        unavailableOption: "{backend} ({reason})",
+        unavailableHint: "{backend}: {hint}",
+        unavailable: {
+          rocmNotInstalled: "ROCm इंस्टॉल नहीं है",
+          rocmNoAccess: "GPU तक पहुंच नहीं है",
+          otherRelease: "llama.cpp अपडेट की ज़रूरत है",
+          checkFailed: "जांच नहीं हो सकी",
+          noBuild: "इस मशीन के लिए कोई बिल्ड नहीं",
+        },
         apply: "लागू करें",
         applying: "इंस्टॉल हो रहा है...",
         applyHint: "नया बिल्ड डाउनलोड करके llama.cpp को फिर से शुरू करता है। लोड किया गया मॉडल अनलोड हो जाएगा।",
