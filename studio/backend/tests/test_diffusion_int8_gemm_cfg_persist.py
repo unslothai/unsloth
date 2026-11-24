@@ -206,6 +206,7 @@ def test_one_shape_tile_error_does_not_drop_the_tile(monkeypatch, card):
 
 @pytest.fixture
 def toolchain(monkeypatch, tmp_path):
+    pytest.importorskip("triton.backends.nvidia.compiler")
     from triton import knobs
     from triton.backends.nvidia import compiler
 
@@ -227,7 +228,6 @@ def toolchain(monkeypatch, tmp_path):
 
 
 def test_ptxas_is_the_probed_cards_not_the_current_ones(monkeypatch, toolchain):
-    pytest.importorskip("triton")
     assert gemm._cfg_extra(1)["ptxas"] == "ptxas for sm120"
     assert gemm._cfg_extra(0)["ptxas"] == "ptxas for sm89"
     assert toolchain["asked"] == [120, 89]
