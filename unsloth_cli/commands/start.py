@@ -2371,6 +2371,16 @@ def _pin_loaded_quant(
     return {**entry, "id": pinned} if sibling or alone else entry
 
 
+def _status_is_for(model_id: object, status: dict, allow_casefold: bool) -> bool:
+    """Whether ``status`` describes ``model_id``, which may name its quant as ``repo:QUANT``."""
+    quant = status.get("gguf_variant")
+    names = [status.get("active_model"), status.get("model_identifier")]
+    names += [f"{name}:{quant}" for name in names if name and quant]
+    return any(
+        _model_id_matches(model_id, name, allow_casefold = allow_casefold) for name in names if name
+    )
+
+
 def _pin_served_quant(base: str, key: str, entry: dict, variant: str) -> dict:
     # A low-disk fallback can serve another quant than the one asked for: pin what runs.
     named = _inference_status(base, key, f"{entry.get('id')}:{variant}")
@@ -5439,12 +5449,8 @@ def _connect(
             entry = _pin_served_quant(base, key, entry, load.gguf_variant)
         status = _inference_status(base, key, entry["id"]) if model else {}
         # A GGUF can be active while the resolved entry is another resident model.
-        if status.get("memory_warning") and any(
-            _model_id_matches(
-                (entry or {}).get("id"), status_id, allow_casefold = is_loopback_url(base)
-            )
-            for status_id in (status.get("active_model"), status.get("model_identifier"))
-            if status_id
+        if status.get("memory_warning") and _status_is_for(
+            (entry or {}).get("id"), status, is_loopback_url(base)
         ):
             typer.echo(f"Warning: {status['memory_warning']}", err = True)
     except BaseException:
@@ -7667,11 +7673,7 @@ def _vscode_capabilities(base: str, key: str, entry: dict) -> tuple:
         status = _http_json("GET", f"{base}/api/inference/status?{query}", key)
     except Exception:
         status = {}
-    resident = any(
-        _model_id_matches(entry["id"], status_id, allow_casefold = is_loopback_url(base))
-        for status_id in (status.get("active_model"), status.get("model_identifier"))
-        if status_id
-    )
+    resident = _status_is_for(entry["id"], status, is_loopback_url(base))
     if not resident:
         # Only a status about this model can vouch for it; an older server reports nothing.
         return True, False, False
@@ -8902,11 +8904,7 @@ def vibe(
         # Vibe always sends a temperature that beats the model's recommendation; pass that on.
         status = _inference_status(base, key, entry["id"])
         recommended = (status.get("inference") or {}).get("temperature")
-        if recommended is not None and any(
-            _model_id_matches(entry["id"], status_id, allow_casefold = is_loopback_url(base))
-            for status_id in (status.get("active_model"), status.get("model_identifier"))
-            if status_id
-        ):
+        if recommended is not None and _status_is_for(entry["id"], status, is_loopback_url(base)):
             request_body = {**request_body, "temperature": recommended}
     env = {
         _VIBE_ENV_KEY: key,

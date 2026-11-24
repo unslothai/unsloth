@@ -1276,3 +1276,11 @@ def test_a_low_disk_fallback_pins_the_quant_that_is_served(monkeypatch):
     )
     assert start_cli._pin_served_quant(BASE, KEY, {"id": repo}, "Q8_0")["id"] == f"{repo}:Q4_K_M"
     assert start_cli._pin_served_quant(BASE, KEY, {"id": repo}, "Q4_K_M")["id"] == f"{repo}:Q4_K_M"
+
+
+def test_a_pinned_quant_still_reads_its_own_status():
+    repo = RESIDENT["id"]
+    status = {"active_model": repo, "model_identifier": repo, "gguf_variant": "Q4_K_M"}
+    assert start_cli._status_is_for(f"{repo}:Q4_K_M", status, True)
+    assert start_cli._status_is_for(repo, status, True)
+    assert not start_cli._status_is_for(f"{repo}:Q8_0", status, True)
