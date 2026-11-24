@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
 """Inkling-2-Mini and its pre-quantized bitsandbytes 4-bit repo: 4-bit loads resolve to
 unsloth/Inkling-2-Mini-unsloth-bnb-4bit, 16-bit loads and full finetuning to the unsloth/Inkling-2-Mini mirror of
 the original checkpoint, and a merged export of a model loaded from the pre-quantized repo reads the original."""
