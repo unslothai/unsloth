@@ -66,18 +66,26 @@ top, uid = sys.argv[1], int(sys.argv[2])
 src, src_gid = (int(sys.argv[3]), int(sys.argv[4])) if len(sys.argv) > 4 else (0, 0)
 
 
+def has_acl(fd):
+    try:
+        return bool(os.getxattr(fd, "system.posix_acl_access"))
+    except OSError:
+        return False
+
+
 def hand_over(name, dfd):
     st = os.stat(name, dir_fd = dfd, follow_symlinks = False)
-    if (st.st_uid, st.st_gid) != (src, src_gid):
-        return
-    if stat.S_ISLNK(st.st_mode):
-        os.chown(name, uid, -1, dir_fd = dfd, follow_symlinks = False)
+    # Symlinks stay root's: removing one only needs the parent directory, and a path-based lchown can be redirected.
+    if (st.st_uid, st.st_gid) != (src, src_gid) or stat.S_ISLNK(st.st_mode):
         return
     fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd = dfd)
     try:
         st = os.fstat(fd)
         is_dir = stat.S_ISDIR(st.st_mode)
         if (st.st_uid, st.st_gid) != (src, src_gid) or not (is_dir or (stat.S_ISREG(st.st_mode) and st.st_nlink == 1)):
+            return
+        # Under an ACL the group bits set the mask, not group root's entry, so the grant below would not hold.
+        if has_acl(fd):
             return
         mode = stat.S_IMODE(st.st_mode) | (0o070 if is_dir or st.st_mode & 0o111 else 0o060)
         os.fchmod(fd, mode if is_dir else mode & ~0o6000)

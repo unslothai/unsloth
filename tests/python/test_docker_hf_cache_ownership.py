@@ -79,15 +79,21 @@ def _download_as_root(hub, outside):
     os.symlink("../../blobs/f00", hub / "models--x" / "snapshots" / "abc" / "config.json")
     os.symlink(outside, hub / "models--x" / "escape")
     os.link(outside, hub / "models--x" / "hardlink")
-    return [p for p in [hub, *hub.rglob("*")] if p.name != "hardlink" and p.suffix != ".incomplete"]
+    acl = hub / "models--x" / "blobs" / "acl"
+    acl.write_text("{}")
+    if shutil.which("setfacl"):
+        subprocess.run(["setfacl", "-m", "g:2000:rw", str(acl)], check = False)
+    every = [hub, *hub.rglob("*")]
+    kept = {p for p in every if p.is_symlink() or p.name == "hardlink" or p.suffix == ".incomplete"}
+    if os.listxattr(acl, follow_symlinks = False).count("system.posix_acl_access"):
+        kept.add(acl)
+    return [p for p in every if p not in kept], sorted(kept)
 
 
 def _handed_over(path, uid):
     st = os.lstat(path)
     if st.st_uid != uid or st.st_gid != 0:
         return False
-    if stat.S_ISLNK(st.st_mode):
-        return True
     want = 0o070 if stat.S_ISDIR(st.st_mode) else 0o060
     return st.st_mode & want == want
 
@@ -102,7 +108,8 @@ def test_a_model_root_downloaded_into_a_host_owned_cache_is_handed_to_the_host_u
     hf_home.mkdir()
     os.chown(hf_home, 1000, 1000)
     outside = tmp_path / "outside"
-    entries = _download_as_root(hf_home / "hub", outside)
+    entries, kept = _download_as_root(hf_home / "hub", outside)
+    before = {p: os.lstat(p) for p in kept}
     shared = hf_home / "hub" / "shared"
     shared.mkdir()
     os.chown(shared, 1000, 2000)
@@ -118,7 +125,7 @@ def test_a_model_root_downloaded_into_a_host_owned_cache_is_handed_to_the_host_u
 
     assert [str(p) for p in entries if not _handed_over(p, 1000)] == []
     assert os.lstat(hf_home).st_gid == 1000
-    assert os.lstat(hf_home / "hub" / "models--x" / "blobs" / "f01.incomplete").st_uid == 0
+    assert [str(p) for p in kept if os.lstat(p) != before[p]] == []
     shared = hf_home / "hub" / "shared"
     blob = os.lstat(shared / "blob")
     assert (blob.st_uid, blob.st_gid, stat.S_IMODE(blob.st_mode)) == (0, 2000, 0o640)
@@ -131,9 +138,6 @@ import os, sys
 log = open(sys.argv[1], "a", buffering = 1)
 here = lambda fd: os.readlink(f"/proc/self/fd/{fd}")
 os.fchown = lambda fd, u, g: log.write(f"{here(fd)} {u}:{g}\\n")
-os.chown = lambda p, u, g, dir_fd, follow_symlinks: log.write(
-    f"{os.path.join(here(dir_fd), p)} {u}:{g} {follow_symlinks}\\n"
-)
 sys.argv = ["-", sys.argv[2], sys.argv[3], str(os.getuid()), str(os.getgid())]
 exec(compile(sys.stdin.read(), "<entrypoint>", "exec"), {"__name__": "__main__"})
 """
@@ -162,7 +166,7 @@ def test_root_written_entries_go_to_the_cache_owner_and_stay_group_root_usable(
     hf_home = tmp_path / "hf"
     hf_home.mkdir()
     outside = tmp_path / "outside"
-    entries = _download_as_root(hf_home / "hub", outside)
+    entries, _ = _download_as_root(hf_home / "hub", outside)
     bindir, calls = _recording_python(tmp_path)
 
     _boot(entrypoint, tmp_path, hf_home, bindir, lambda: len(_logged(calls)) >= len(entries))
@@ -170,9 +174,8 @@ def test_root_written_entries_go_to_the_cache_owner_and_stay_group_root_usable(
     owner = f"{os.getuid()}:-1"
     logged = _logged(calls)
     assert {str(p) for p in entries} == set(logged), sorted(logged)
-    assert {who for who, _ in logged.values()} == {owner}
-    assert all(nofollow == ["False"] for p, (_, nofollow) in logged.items() if os.path.islink(p))
-    weak = [str(p) for p in entries if not os.path.islink(p) and not _handed_over_mode(p)]
+    assert set(logged.values()) == {owner}
+    weak = [str(p) for p in entries if not _handed_over_mode(p)]
     assert weak == []
     assert stat.S_IMODE(os.stat(outside).st_mode) == 0o600
 
@@ -182,8 +185,8 @@ def _logged(calls):
         return {}
     out = {}
     for line in calls.read_text().splitlines():
-        path, who, *nofollow = line.split(" ")
-        out[path] = (who, nofollow)
+        path, who = line.split(" ")
+        out[path] = who
     return out
 
 
