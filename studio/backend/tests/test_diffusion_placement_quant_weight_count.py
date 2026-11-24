@@ -3,6 +3,8 @@
 
 """Placement prices a quantized denoiser's forward from its logical weights, not from ``parameters()``. CPU only."""
 
+import inspect
+
 import pytest
 
 torch = pytest.importorskip("torch")
@@ -11,6 +13,18 @@ from torch import nn  # noqa: E402
 
 from core.inference import diffusion_multigpu as mg  # noqa: E402
 from core.inference import diffusion_native_quant as nq  # noqa: E402
+
+
+def _replica_need_stub(mib):
+    """Stands in for ``mg.replica_need_mib`` with its real signature: a call the real one rejects fails here too,
+    and a keyword it gains (``activations=``, #19209) is accepted instead of raising inside the placement try."""
+    signature = inspect.signature(mg.replica_need_mib)
+
+    def stub(*args, **kwargs):
+        signature.bind(*args, **kwargs)
+        return int(mib)
+
+    return stub
 
 
 class Flux2Transformer2DModel(nn.Module):
@@ -115,7 +129,7 @@ def _price(monkeypatch, denoiser, streamed_mib, tokens):
     pipe = type("Pipe", (), {"transformer": denoiser, "transformer_2": None})()
     mg.note_default_request(pipe, guided = True, steps = 20, tokens = tokens, why = "default guidance 4")
     monkeypatch.setattr(mg, "_replica_card", lambda selection, need, **k: (1, "same-model card"))
-    monkeypatch.setattr(mg, "replica_need_mib", lambda m: 4000)
+    monkeypatch.setattr(mg, "replica_need_mib", _replica_need_stub(4000))
     monkeypatch.setattr(mg, "_gemm_tflops", lambda ordinal, dtype: 46.5)
     import core.inference.diffusion_bg_compile as bg
     import core.inference.diffusion_memory as mem
