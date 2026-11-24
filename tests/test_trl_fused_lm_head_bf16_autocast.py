@@ -51,8 +51,6 @@ def _load():
                 )
             ):
                 exec(compile(ast.Module([node], []), RL_SOURCE_PATH, "exec"), ns)
-        elif isinstance(node, ast.Assign) and "_bf16_autocast_fused_forward" in ast.unparse(node):
-            exec(compile(ast.Module([node], []), RL_SOURCE_PATH, "exec"), ns)
     return ns
 
 
@@ -116,9 +114,48 @@ def test_fused_forward_keeps_bf16_autocast(trl_utils):
         model(input_ids = ids, labels = ids, fused_lm_head = True).log_probs, ref_out.log_probs
     )
 
-    # Re-applying the patch does not stack wrappers.
+    # Re-applying the patch: both branches still run (the unfused one used to recurse through a shared delegate).
     trl_utils.add_fused_lm_head(model)
-    model(input_ids = ids, labels = ids, fused_lm_head = True)
+    assert model(input_ids = ids, labels = ids, fused_lm_head = True).log_probs.shape == (2, 7)
+    assert model(input_ids = ids).logits.shape == (2, 8, 64)
+    trl_utils.add_fused_lm_head(ref)
+    assert ref(input_ids = ids).logits.shape == (2, 8, 64)
+
+
+def test_fused_forward_keeps_the_forward_signature(trl_utils):
+    # generate() validates model kwargs against inspect.signature(model.forward) and only trims prefill logits
+    # when it lists logits_to_keep.
+    import inspect
+
+    _load()["patch_trl_fused_lm_head_devices"]()
+    model = _model()
+    trl_utils.add_fused_lm_head(model)
+    params = inspect.signature(model.forward).parameters
+    for name in ("input_ids", "position_ids", "logits_to_keep"):
+        assert name in params
+    ids = torch.randint(0, 64, (1, 4))
+    out = model.generate(
+        ids,
+        attention_mask = torch.ones_like(ids),
+        position_ids = torch.arange(4)[None],
+        max_new_tokens = 2,
+        min_new_tokens = 2,
+        do_sample = False,
+    )
+    assert out.shape == (1, 6)
+
+
+def test_fused_forward_after_the_autocast_subclass_is_removed(trl_utils):
+    # Re-preparing in float32 drops the autocast subclass and its marker; the instance forward must still run.
+    _load()["patch_trl_fused_lm_head_devices"]()
+    model = _model()
+    trl_utils.add_fused_lm_head(model)
+    model.float()
+    model.__class__ = type(model).__mro__[1]
+    model._unsloth_bf16_autocast_wrapped = False
+    ids = torch.randint(0, 64, (2, 8))
+    assert model(input_ids = ids, labels = ids, fused_lm_head = True).log_probs.shape == (2, 7)
+    assert model(input_ids = ids).logits.shape == (2, 8, 64)
 
 
 def test_models_without_the_autocast_wrap_keep_trl_forward(trl_utils):

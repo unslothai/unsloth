@@ -5005,14 +5005,14 @@ class _ApplyOnInputDevice:
             return self.function.apply(hidden, *args)
 
 
-def _bf16_autocast_fused_forward(self, *args, **kwargs):
+def _bf16_autocast_fused_forward(model, fused_forward, *args, **kwargs):
+    # Checked per call: re-preparing the model in float32 removes the autocast subclass but keeps this instance forward.
+    compute_dtype = getattr(type(model), "_unsloth_autocast_dtype", None)
+    if compute_dtype is None or not getattr(model, "_unsloth_bf16_autocast_wrapped", False):
+        return fused_forward(*args, **kwargs)
     from unsloth_zoo.training_utils import _call_forward_with_bf16_autocast
-    return _call_forward_with_bf16_autocast(
-        self._unsloth_fused_forward_inner, self, args, kwargs, type(self)._unsloth_autocast_dtype
-    )
 
-
-_bf16_autocast_fused_forward._unsloth_forward_delegate_attr = "_unsloth_fused_forward_inner"
+    return _call_forward_with_bf16_autocast(fused_forward, model, args, kwargs, compute_dtype)
 
 
 def _keep_bf16_autocast_on_fused_forward(model):
@@ -5020,23 +5020,31 @@ def _keep_bf16_autocast_on_fused_forward(model):
     # (unsloth_zoo.training_utils._wrap_forward_in_bf16_autocast, a class-level forward). TRL's fused head is an
     # instance forward whose fused_lm_head = True branch calls the backbone directly, skipping that autocast, so the
     # first float32 norm output reaches a bfloat16 projection: "expected mat1 and mat2 to have the same dtype".
-    # Bound methods (not closures) so a deepcopy of the model calls its own forward.
+    # A partial holding (model, fused_forward): each installation keeps its own delegate (a second add_fused_lm_head
+    # wraps the first, it does not loop back into itself), a deepcopy rebinds both to the copy, and __wrapped__
+    # keeps TRL's signature, which generate() validates model kwargs against.
     if getattr(type(model), "_unsloth_autocast_dtype", None) is None:
         return
     if not getattr(model, "_unsloth_bf16_autocast_wrapped", False):
         return
     fused_forward = model.__dict__.get("forward")
-    if (
-        fused_forward is None
-        or getattr(fused_forward, "__func__", None) is _bf16_autocast_fused_forward
+    if fused_forward is None or (
+        isinstance(fused_forward, functools.partial)
+        and fused_forward.func is _bf16_autocast_fused_forward
     ):
         return
     try:
         from unsloth_zoo.training_utils import _call_forward_with_bf16_autocast  # noqa: F401
     except ImportError:
         return
-    model._unsloth_fused_forward_inner = fused_forward
-    model.forward = types.MethodType(_bf16_autocast_fused_forward, model)
+    forward = functools.update_wrapper(
+        functools.partial(_bf16_autocast_fused_forward, model, fused_forward),
+        fused_forward,
+        updated = (),
+    )
+    # It calls fused_forward unchanged (_unsloth_forward_returns_hidden_states).
+    forward._unsloth_forward_delegate = (forward, fused_forward)
+    model.forward = forward
 
 
 def patch_trl_fused_lm_head_devices():
