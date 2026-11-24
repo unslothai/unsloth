@@ -894,7 +894,6 @@ def test_privileged_etc_secrets_are_excluded_from_the_system_grant(tmp_path, mon
         ), private
 
 
-
 def test_root_only_studio_and_cloud_init_secrets_are_excluded(tmp_path, monkeypatch):
     """A root-run Studio keeps the Docker initial password under /run/unsloth and cloud-init user-data
     (often holding UNSLOTH_STUDIO_PASSWORD) under /var/lib/cloud and /run/cloud-init: no managed tool reads them."""
@@ -936,6 +935,7 @@ def test_root_only_studio_and_cloud_init_secrets_are_excluded(tmp_path, monkeypa
         assert not any(
             p == f"{resolved}/{private}" or p.startswith(f"{resolved}/{private}/") for p in granted
         ), private
+
 
 def test_landlock_grants_device_nodes_not_the_device_tree(tmp_path):
     """Same-UID ptys, shm objects and a root deployment's disks live under /dev; tools get the pseudo-devices."""

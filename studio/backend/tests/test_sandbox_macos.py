@@ -517,9 +517,9 @@ def test_prepare_refuses_a_workdir_replaced_by_a_link_after_its_check(
     plan = ToolLaunchPlan(argv = ("/bin/echo",), workdir = str(workdir), env = {})
     with pytest.raises(WorkdirUnsafeError, match = "was replaced"):
         backend.prepare(plan)
-    assert built and str(state) in built[0], (
-        "the swap was not in the profile, so nothing was refused"
-    )
+    assert (
+        built and str(state) in built[0]
+    ), "the swap was not in the profile, so nothing was refused"
     private_tmp = re.search(r'\(subpath "([^"]*us-seatbelt-[^"]*)"\)', built[0])[1]
     assert not os.path.exists(private_tmp)
 
