@@ -29,14 +29,13 @@ _GEMMA_TEMPLATE_OPENERS = (
     _GEMMA_THOUGHT_OPEN + "\\n",
     _GEMMA_THOUGHT_OPEN + _GEMMA_THOUGHT_CLOSE,
 )
-# Inkling 2: every block is a message closed by <|end_message|>; the thought is the <|content_thinking|> one.
 _INKLING_THOUGHT_OPEN = "<|content_thinking|>"
 _INKLING_MESSAGE_END = "<|end_message|>"
 _INKLING_TOOL_CALL_OPEN = "<|content_invoke_tool_json|>"
 _INKLING_ROLE_OPEN = "<|message_model|>"
 _INKLING_TEXT_OPEN = "<|content_text|>"
 _INKLING_CONTENT_OPENS = (_INKLING_TEXT_OPEN, _INKLING_THOUGHT_OPEN, _INKLING_TOOL_CALL_OPEN)
-# A message header names at most a tool; past this the held text is content after all.
+# A header names at most a tool; a longer held header is content after all.
 _INKLING_HEADER_MAX_LEN = 128
 
 # Both header prefixes occur: the first header arrives without the prompt's "<|start|>assistant".
@@ -1944,12 +1943,9 @@ class ReasoningChannelNormalizer:
 
 
 class InklingMessageNormalizer(ReasoningChannelNormalizer):
-    """Inkling 2 writes every block as ``<|message_model|>[name]<|content_KIND|>...<|end_message|>``, and the
-    generation prompt already holds the first ``<|message_model|>``. Headers are read first: the role opener and
-    ``<|content_text|>`` are dropped, and so is a tool call's name prefix (its JSON repeats the name), which
-    otherwise showed as "python" before the reply. The thinking message then becomes ``<think>`` (the base class),
-    a tool call keeps its ``<|end_message|>`` for the tool-call parser, and a text message's closer is dropped:
-    shown, it printed ``<|end_message|>`` after every answer. A later thinking opener is dropped too."""
+    """Inkling 2 writes every block as ``<|message_model|>[name]<|content_KIND|>...<|end_message|>``. Headers
+    and text closers are dropped (a tool name prefix is repeated in its JSON); the first thought becomes
+    ``<think>``, and a tool call keeps its ``<|end_message|>`` for the tool-call parser."""
 
     _CONTROLS = (_INKLING_MESSAGE_END, _INKLING_TOOL_CALL_OPEN, _INKLING_THOUGHT_OPEN)
 
@@ -1993,7 +1989,6 @@ class InklingMessageNormalizer(ReasoningChannelNormalizer):
                         output.append(self._flush_header())
                     break
                 index, opener = min(found)
-                # The role opener's leftovers and a tool name go; the content opener decides what follows.
                 text = self._header[index + len(opener) :]
                 self._header, self._in_header = "", False
                 if opener != _INKLING_TEXT_OPEN:

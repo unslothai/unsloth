@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Inkling 2 on the transformers path: the thinking message is reasoning, and the <|end_message|> that
-closes every text message is protocol, not answer text. Pure string tests, no model."""
+"""Inkling 2 message protocol on the transformers path; pure string tests, no model."""
 
 import sys
 from pathlib import Path
@@ -109,7 +108,6 @@ def test_text_that_only_looks_like_a_marker_start_is_flushed():
 
 
 def test_headers_drop_the_role_opener_and_text_opener():
-    # The prompt holds the first <|message_model|>; later messages bring their own.
     raw = "<|content_thinking|>t<|end_message|><|message_model|><|content_text|>Red\nBlue<|end_message|>"
     out = _stream(make_reasoning_normalizer(MARKERS), _token_chunks(raw))
     assert out == "<think>t</think>Red\nBlue"
