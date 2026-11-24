@@ -199,7 +199,11 @@ def non_reentrant_checkpointing_only(model) -> Optional[bool]:
             return False
         if func.keywords.get("use_reentrant", True) is not False:
             return False
-    if not found and bool(getattr(model, "is_gradient_checkpointing", False)):
+    from unsloth.models._gc_config_default import (
+        is_activation_checkpointing as _is_activation_checkpointing,
+    )
+
+    if not found and bool(_is_activation_checkpointing(model)):
         return False
     return True if found else None
 

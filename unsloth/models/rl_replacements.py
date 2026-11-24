@@ -843,7 +843,11 @@ def _unsloth_dpo_reference_loadable(policy_sd, ref_sd):
     return True
 
 
-def _unsloth_dpo_copy_policy_into_reference(ref_model, policy_sd):
+def _unsloth_dpo_copy_policy_into_reference(
+    ref_model,
+    policy_sd,
+    policy = None,
+):
     # Recast first: load_state_dict would round FP32 norm updates into a BF16 reference; .data keeps ties.
     tensors = dict(ref_model.named_parameters(remove_duplicate = False))
     tensors.update(ref_model.named_buffers(remove_duplicate = False))
@@ -852,6 +856,15 @@ def _unsloth_dpo_copy_policy_into_reference(ref_model, policy_sd):
         if tensor is not None and tensor.dtype != value.dtype:
             tensor.data = tensor.data.to(value.dtype)
     ref_model.load_state_dict(policy_sd)
+    # bfloat16 full finetuning runs the policy's FP32 norms under a bfloat16 autocast forward; the recast reference
+    # needs the same, else its FP32 norm outputs reach BF16 projections ("mat1 and mat2 must have the same dtype").
+    compute_dtype = getattr(type(policy), "_unsloth_autocast_dtype", None)
+    if compute_dtype is not None and getattr(policy, "_unsloth_bf16_autocast_wrapped", False):
+        try:
+            from unsloth_zoo.training_utils import _wrap_forward_in_bf16_autocast
+        except ImportError:
+            return
+        _wrap_forward_in_bf16_autocast(ref_model, compute_dtype)
 
 
 def dpo_trainer_reference_snapshot(function_name, function):
@@ -871,7 +884,7 @@ def dpo_trainer_reference_snapshot(function_name, function):
             "    _unsloth_policy_sd = torch.nn.Module.state_dict(self.model)\n"
             # Checked first: load_state_dict writes matching tensors before raising on the rest.
             "    if _unsloth_dpo_reference_loadable(_unsloth_policy_sd, torch.nn.Module.state_dict(self.ref_model)):\n"
-            "        _unsloth_dpo_copy_policy_into_reference(self.ref_model, _unsloth_policy_sd)\n"
+            "        _unsloth_dpo_copy_policy_into_reference(self.ref_model, _unsloth_policy_sd, self.model)\n"
             "    else:\n"
             # Aliased: a bare `import warnings` here would shadow TRL's module-level one in all of __init__.
             "        import warnings as _unsloth_warnings\n"

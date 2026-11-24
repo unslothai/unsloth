@@ -986,6 +986,13 @@ export const vi = {
     compactUnsupported:
       "Cần mô hình GGUF hoặc MLX có hỗ trợ công cụ để thu gọn",
   },
+  chatFiles: {
+    title: "Tệp trong cuộc trò chuyện này",
+    code: "Đoạn mã",
+    showInChat: "Hiển thị trong cuộc trò chuyện",
+    download: "Tải xuống {name}",
+    saveFailed: "Không thể lưu {name}.",
+  },
   welcome: {
     goodToSeeYou: "Rất vui được gặp bạn",
     goodToSeeYouName: "Rất vui được gặp bạn, {name}",
@@ -3076,6 +3083,15 @@ export const vi = {
         runningOn: "llama.cpp hiện đang chạy trên {backend}.",
         hint: "Cài đặt bản dựng llama.cpp cho backend này và giữ nguyên qua các lần cập nhật. Hữu ích khi lựa chọn tự động bị sập hoặc trình điều khiển GPU của bạn không hỗ trợ. Chỉ liệt kê các backend có bản dựng cho máy này; việc huấn luyện không bị ảnh hưởng.",
         autoWith: "Tự động ({backend})",
+        unavailableOption: "{backend} ({reason})",
+        unavailableHint: "{backend}: {hint}",
+        unavailable: {
+          rocmNotInstalled: "Chưa cài đặt ROCm",
+          rocmNoAccess: "không có quyền truy cập GPU",
+          otherRelease: "cần cập nhật llama.cpp",
+          checkFailed: "không thể kiểm tra",
+          noBuild: "không có bản dựng cho máy này",
+        },
         apply: "Áp dụng",
         applying: "Đang cài đặt...",
         applyHint:

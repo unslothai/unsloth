@@ -321,7 +321,11 @@ def PatchRL(FastLanguageModel):
                 gather_deepspeed3_params = True,
             ):
                 unwrapped_model = accelerator.unwrap_model(model)
-                is_gc = getattr(unwrapped_model, "is_gradient_checkpointing", False)
+                from unsloth.models._gc_config_default import (
+                    is_activation_checkpointing as _is_activation_checkpointing,
+                )
+
+                is_gc = _is_activation_checkpointing(unwrapped_model)
                 if is_gc:
                     unwrapped_model.gradient_checkpointing_disable()
                 if (
@@ -1420,12 +1424,29 @@ def _mark_capped(dataset, cap, drop_unsupervised):
     return dataset
 
 
+# A stream view _cap built itself (streams have no _fingerprint): every row passes its own slice + filter, so its mark cannot go stale.
+_CAP_OWN_STREAM_ATTR = "_unsloth_cap_own_stream"
+
+
+def _mark_own_stream(dataset):
+    try:
+        setattr(dataset, _CAP_OWN_STREAM_ATTR, True)
+    except Exception:
+        pass
+    return dataset
+
+
+def _is_own_stream(dataset):
+    own = getattr(dataset, "__dict__", None)
+    return isinstance(own, dict) and own.get(_CAP_OWN_STREAM_ATTR) is True
+
+
 def _cap_still_holds(dataset, cap, drop_unsupervised):
     """Whether an earlier mark of ours still describes this split. Three of the four ``_cap`` outcomes mark the CALLER'S OWN object and hand it back, and that object can be mutated between two ``evaluate()`` calls (a ``set_transform`` yielding longer ``input_ids`` is enough), which let the mark skip the rescan. Our own wrappers hold a fixed slice and are trusted outright; anything else has to still fingerprint the way it did when marked. An unfingerprintable split is simply rescanned, which is safe because ``_column_names`` chains its probed row back on."""
     signature = _cap_signature(dataset)
     if signature is None:
         return False
-    if isinstance(dataset, _CappedBase):
+    if isinstance(dataset, _CappedBase) or _is_own_stream(dataset):
         return tuple(signature[:2]) == (cap, drop_unsupervised)
     token = _mutation_token(dataset)
     return token is not None and tuple(signature) == (cap, drop_unsupervised, token)
@@ -1870,6 +1891,9 @@ def _wrap_sft_evaluate_cap(trainer_cls):
                     new = new if len(kept) == len(new) else kept
                 except Exception:
                     new = kept
+            # Never the caller's split; map-style copies use their fingerprint.
+            if new is not dataset and _is_stream(new):
+                _mark_own_stream(new)
             return _mark_capped(new, cap, drop_unsupervised)
         except Exception:
             return dataset  # never turn an eval call into a hard error
@@ -2663,6 +2687,42 @@ _SFT_PREPARE_DATASET_REPLACEMENT = (
     r"\1    pass\n"
     r"\1train_dataset = self._prepare_dataset("
 )
+
+
+def _route_default_gradient_checkpointing(arguments, call_args):
+    """Carry a TRL config's ``gradient_checkpointing`` default under ``activation_checkpointing``.
+
+    transformers >= 5.23 renamed the field and warns ("`gradient_checkpointing` is
+    deprecated ... Use `activation_checkpointing`") whenever the old name arrives non-None
+    while the new one is None. TRL <= 1.18.0 defaults ``gradient_checkpointing = True``, and
+    the generated config mirrors that default, so every config built warned although the
+    user passed neither. The default moves to the new name only when the user sets
+    neither, which is the same value transformers would have resolved. An explicit
+    ``gradient_checkpointing = ...`` still goes through (and still warns), and an explicit
+    ``activation_checkpointing`` still wins. Returns ``(arguments, extra_args)``.
+    """
+    if not (
+        re.search(r"\bactivation_checkpointing\b", call_args)
+        and re.search(r"\bgradient_checkpointing\b", call_args)
+    ):
+        return arguments, ""
+    new_default = re.search(r"\bactivation_checkpointing = ([^,\n]+),\n", arguments)
+    if new_default is None or new_default.group(1).strip() != "None":
+        return arguments, ""
+    old_default = re.search(r"\bgradient_checkpointing = ([^,\n]+),\n", arguments)
+    if old_default is None or old_default.group(1).strip() == "None":
+        return arguments, ""
+    default = old_default.group(1).strip()
+    arguments = (
+        arguments[: old_default.start()]
+        + "gradient_checkpointing = None,\n"
+        + arguments[old_default.end() :]
+    )
+    extra_args = (
+        "if gradient_checkpointing is None and activation_checkpointing is None:\n"
+        f"    activation_checkpointing = {default}\n"
+    )
+    return arguments, extra_args
 
 
 def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
@@ -3729,6 +3789,9 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             y = f"'{v}'" if type(v) is str else f"{v}"
             y = f"{k} = {y},\n"
             arguments = re.sub(x, y, arguments)
+
+    arguments, route_checkpointing = _route_default_gradient_checkpointing(arguments, call_args)
+    extra_args += route_checkpointing
 
     if "learning_rate" in call_args:
         learning_rate_check = (
@@ -5005,6 +5068,48 @@ class _ApplyOnInputDevice:
             return self.function.apply(hidden, *args)
 
 
+def _bf16_autocast_fused_forward(model, fused_forward, *args, **kwargs):
+    # Checked per call: re-preparing the model in float32 removes the autocast subclass but keeps this instance forward.
+    compute_dtype = getattr(type(model), "_unsloth_autocast_dtype", None)
+    if compute_dtype is None or not getattr(model, "_unsloth_bf16_autocast_wrapped", False):
+        return fused_forward(*args, **kwargs)
+    from unsloth_zoo.training_utils import _call_forward_with_bf16_autocast
+
+    return _call_forward_with_bf16_autocast(fused_forward, model, args, kwargs, compute_dtype)
+
+
+def _keep_bf16_autocast_on_fused_forward(model):
+    # bfloat16 full finetuning keeps norms in float32 and runs the model's forward under bfloat16 autocast
+    # (unsloth_zoo.training_utils._wrap_forward_in_bf16_autocast, a class-level forward). TRL's fused head is an
+    # instance forward whose fused_lm_head = True branch calls the backbone directly, skipping that autocast, so the
+    # first float32 norm output reaches a bfloat16 projection: "expected mat1 and mat2 to have the same dtype".
+    # A partial holding (model, fused_forward): each installation keeps its own delegate (a second add_fused_lm_head
+    # wraps the first, it does not loop back into itself), a deepcopy rebinds both to the copy, and __wrapped__
+    # keeps TRL's signature, which generate() validates model kwargs against.
+    if getattr(type(model), "_unsloth_autocast_dtype", None) is None:
+        return
+    if not getattr(model, "_unsloth_bf16_autocast_wrapped", False):
+        return
+    fused_forward = model.__dict__.get("forward")
+    if fused_forward is None or (
+        isinstance(fused_forward, functools.partial)
+        and fused_forward.func is _bf16_autocast_fused_forward
+    ):
+        return
+    try:
+        from unsloth_zoo.training_utils import _call_forward_with_bf16_autocast  # noqa: F401
+    except ImportError:
+        return
+    forward = functools.update_wrapper(
+        functools.partial(_bf16_autocast_fused_forward, model, fused_forward),
+        fused_forward,
+        updated = (),
+    )
+    # It calls fused_forward unchanged (_unsloth_forward_returns_hidden_states).
+    forward._unsloth_forward_delegate = (forward, fused_forward)
+    model.forward = forward
+
+
 def patch_trl_fused_lm_head_devices():
     # TRL >= 1.15's fused head drops accelerate's io_same_device hook: on a split model log_probs stay on lm_head's card (#4030).
     try:
@@ -5018,6 +5123,7 @@ def patch_trl_fused_lm_head_devices():
     @functools.wraps(original)
     def add_fused_lm_head(model, *args, **kwargs):
         result = original(model, *args, **kwargs)
+        _keep_bf16_autocast_on_fused_forward(model)
         if not _spans_several_devices(model):
             return result
         kernel = getattr(_tu, "_ChunkedLogProbFunction", None)
