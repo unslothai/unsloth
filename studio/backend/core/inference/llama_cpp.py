@@ -30883,12 +30883,7 @@ class LlamaCppBackend:
                     raise RuntimeError(_metal_ctx_refusal)
                 self._record_load_warning(_metal_ctx_warning)
 
-                if (
-                    intent.refuse_partial_gpu_fit
-                    and (_placement_verdict_partial or _ctx_capped_for_vram)
-                    and gpu_memory_mode != "manual"
-                ):
-                    capped_only = _ctx_capped_for_vram and not _placement_verdict_partial
+                def _refuse_partial_fit(capped_only: bool) -> None:
                     asked_ctx = _ctx_before_fit if capped_only else effective_ctx
                     need_mib = (
                         max(1, gguf_size - _host_input_embd) + mmproj_size + _kv_bytes(asked_ctx)
@@ -30911,6 +30906,13 @@ class LlamaCppBackend:
                         gpu_indices = tuple(idx for idx, _ in gpus),
                         discrete = _shared is not None and not _shared & {idx for idx, _ in gpus},
                     )
+
+                if (
+                    intent.refuse_partial_gpu_fit
+                    and (_placement_verdict_partial or _ctx_capped_for_vram)
+                    and gpu_memory_mode != "manual"
+                ):
+                    _refuse_partial_fit(_ctx_capped_for_vram and not _placement_verdict_partial)
 
                 # Unpinnable explicit Vulkan ordinal: fail loudly rather than fit onto an unselected device; clear raw selection so it never leaks into gpu_ids
                 if _vulkan_explicit_unmatched:
@@ -31287,11 +31289,23 @@ class LlamaCppBackend:
                     if _mixed_split is not None and not _mixed_split:
                         # A pooled fit whose layers cannot be cut to fit each card would fail at
                         # load; let llama.cpp's fitter place it, as when the pool does not fit.
+                        _placement_verdict_partial = bool(_detected_gpus)
+                        # Same refusal as a pooled fit that fails, so the route can evict and retry.
+                        if intent.refuse_partial_gpu_fit and gpu_memory_mode != "manual":
+                            _refuse_partial_fit(False)
                         logger.info(
                             "No layer split over GPUs %s fits each card; using --fit on",
                             list(gpu_indices),
                         )
-                        use_fit, gpu_indices, _mixed_split = True, None, None
+                        use_fit, _mixed_split = True, None
+                        # An explicit pick stays pinned (the mask below needs gpu_indices); an
+                        # auto Vulkan fit keeps its discrete pool, as above; else every card.
+                        if not gpu_ids:
+                            gpu_indices = (
+                                sorted(idx for idx, _free in _detected_gpus)
+                                if is_vulkan_backend and _detected_gpus
+                                else None
+                            )
                 if gpu_memory_mode == "manual" and gpu_layers >= 0:
                     # --fit off: _ctx_integrity_flags must not add --fit-ctx.
                     use_fit = False

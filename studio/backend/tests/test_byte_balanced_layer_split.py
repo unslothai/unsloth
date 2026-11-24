@@ -18,6 +18,8 @@ if _BACKEND_DIR not in sys.path:
 
 import importlib as _importlib  # noqa: E402
 
+import pytest  # noqa: E402
+
 
 def _maybe_stub(name: str, builder):
     try:
@@ -174,7 +176,8 @@ def test_the_launch_lets_the_fitter_place_a_pin_no_cut_fits():
     arm = src[src.index("_mixed_split = None") :]
     arm = arm[: arm.index('if gpu_memory_mode == "manual" and gpu_layers >= 0:')]
     assert "and not use_fit" in arm
-    assert "use_fit, gpu_indices, _mixed_split = True, None, None" in arm
+    assert "use_fit, _mixed_split = True, None" in arm
+    assert "_refuse_partial_fit(False)" in arm
 
 
 def _two_card_plan(tmp_path, monkeypatch, cut_split):
@@ -212,3 +215,58 @@ def test_a_slot_cut_a_byte_split_holds_still_pins(tmp_path, monkeypatch):
 def test_a_slot_cut_llama_cpp_own_split_holds_is_unchanged(tmp_path, monkeypatch):
     got, _ = _two_card_plan(tmp_path, monkeypatch, None)
     assert (got["slots"], got["fit"]) == (2, "off")
+
+
+def _three_card_launch(tmp_path, monkeypatch, cut_split, **load_kwargs):
+    """A 13.8 GB model over 12 GB cards: two cards hold the pool, and _mixed_pin_split answers
+    ``cut_split`` for every multi-card pin."""
+    tests_dir = str(Path(__file__).resolve().parent)
+    if tests_dir not in sys.path:
+        sys.path.insert(0, tests_dir)
+    from test_llama_cpp_placement import _backend, _launch
+    from test_slot_reduction_context_refit import HYBRID, MIB, _install_slot_scaled_compute
+
+    mib = 12 * 1024
+    backend, gguf = _backend(tmp_path, vulkan = False, memory = [(i, mib, mib) for i in range(3)])
+
+    def read(_path):
+        for key, value in HYBRID.items():
+            setattr(backend, key, value)
+
+    backend._read_gguf_metadata = read
+    backend._get_gguf_size_bytes = lambda _path: 13_800 * MIB
+    del backend._can_estimate_kv
+    _install_slot_scaled_compute(backend)
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_mixed_pin_split",
+        lambda self, gpu_indices, *_a, **_k: cut_split if len(gpu_indices) > 1 else None,
+    )
+    launched = _launch(
+        backend, gguf, speculative_type = "off", n_ctx = 8192, n_parallel = 1, **load_kwargs
+    )
+    cmd = launched["cmd"]
+    return {
+        "fit": cmd[cmd.index("--fit") + 1] if "--fit" in cmd else "off",
+        "devices": (launched["env"] or {}).get("CUDA_VISIBLE_DEVICES"),
+    }
+
+
+def test_the_fitter_fallback_keeps_an_explicit_gpu_pick(tmp_path, monkeypatch):
+    got = _three_card_launch(tmp_path, monkeypatch, [], gpu_ids = [0, 1])
+    assert got == {"fit": "on", "devices": "0,1"}
+
+
+def test_an_explicit_pick_a_cut_holds_stays_pinned(tmp_path, monkeypatch):
+    got = _three_card_launch(tmp_path, monkeypatch, [7.5, 7.5], gpu_ids = [0, 1])
+    assert got == {"fit": "off", "devices": "0,1"}
+
+
+def test_the_fitter_fallback_honours_the_partial_fit_refusal(tmp_path, monkeypatch):
+    from core.inference.llama_cpp import GpuMemoryShortError
+
+    with pytest.raises(GpuMemoryShortError):
+        _three_card_launch(tmp_path, monkeypatch, [], refuse_partial_gpu_fit = True)
+    # A cut that holds is a full GPU load, not a partial one.
+    got = _three_card_launch(tmp_path, monkeypatch, [7.5, 7.5], refuse_partial_gpu_fit = True)
+    assert got["fit"] == "off"
