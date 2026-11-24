@@ -518,6 +518,227 @@ def test_a_stale_window_delete_drops_replies_it_never_saw(
     assert parents == {"u1": None, "a1": "u1"}
 
 
+def test_a_stale_full_save_does_not_restore_deleted_turns(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread())
+    turns = [_turn("u1", None, 1), _turn("a1", "u1", 2), _turn("u2", "a1", 3), _turn("a2", "u2", 4)]
+    studio_db.sync_chat_messages("thread-1", turns)
+    studio_db.sync_chat_messages(
+        "thread-1", turns[:2], prune_missing = True, deleted_message_ids = ["u2", "a2"]
+    )
+
+    messages = studio_db.sync_chat_messages(
+        "thread-1", turns + [_turn("u3", "a2", 5), _turn("a3", "u3", 6)]
+    )
+
+    parents = {message["id"]: message["parentId"] for message in messages}
+    assert parents == {"u1": None, "a1": "u1", "u3": "a1", "a3": "u3"}
+    with pytest.raises(studio_db.ChatMessageProtectedError):
+        studio_db.upsert_chat_message(turns[2])
+    assert [m["id"] for m in studio_db.list_chat_messages("thread-1")] == ["u1", "a1", "u3", "a3"]
+
+
+def test_a_late_reply_to_a_deleted_turn_is_dropped(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread())
+    turns = [_turn("u1", None, 1), _turn("a1", "u1", 2), _turn("u2", "a1", 3)]
+    studio_db.sync_chat_messages("thread-1", turns)
+    studio_db.sync_chat_messages(
+        "thread-1", turns[:2], prune_missing = True, deleted_message_ids = ["u2"]
+    )
+
+    messages = studio_db.sync_chat_messages(
+        "thread-1", turns + [_turn("a2", "u2", 4), _turn("u3", "a2", 5)]
+    )
+
+    parents = {message["id"]: message["parentId"] for message in messages}
+    assert parents == {"u1": None, "a1": "u1", "u3": "a1"}
+    with pytest.raises(studio_db.ChatMessageProtectedError):
+        studio_db.upsert_chat_message(_turn("a2b", "u2", 6))
+    studio_db.upsert_chat_message(_turn("u3", "a2", 5))
+    studio_db.upsert_chat_message(_turn("u4", "a2b", 7))
+    parents = {m["id"]: m["parentId"] for m in studio_db.list_chat_messages("thread-1")}
+    assert parents == {"u1": None, "a1": "u1", "u3": "a1", "u4": "a1"}
+
+
+def test_a_late_reply_does_not_orphan_a_turn_saved_under_it(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread())
+    turns = [_turn("u1", None, 1), _turn("a1", "u1", 2), _turn("u2", "a1", 3), _turn("a2", "u2", 4)]
+    studio_db.sync_chat_messages("thread-1", turns[:3])
+    studio_db.sync_chat_messages(
+        "thread-1", turns[:2], prune_missing = True, deleted_message_ids = ["u2"]
+    )
+    studio_db.upsert_chat_message(_turn("u3", "a2", 5))
+
+    studio_db.sync_chat_messages("thread-1", turns)
+
+    parents = {m["id"]: m["parentId"] for m in studio_db.list_chat_messages("thread-1")}
+    assert parents == {"u1": None, "a1": "u1", "u3": "a1"}
+
+
+def test_a_resent_late_reply_keeps_its_recorded_parent(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread())
+    turns = [_turn("u0", None, 1), _turn("a0", "u0", 2), _turn("u1", "a0", 3), _turn("u2", "u0", 4)]
+    studio_db.sync_chat_messages("thread-1", turns)
+    studio_db.sync_chat_messages(
+        "thread-1", turns[:2], prune_missing = True, deleted_message_ids = ["u1", "u2"]
+    )
+    studio_db.sync_chat_messages("thread-1", turns[:2] + [_turn("a1", "u1", 5)])
+
+    messages = studio_db.sync_chat_messages(
+        "thread-1", [_turn("a1", "u2", 5), _turn("u3", "a1", 6)]
+    )
+
+    assert {message["id"]: message["parentId"] for message in messages}["u3"] == "a0"
+
+
+def test_a_stale_save_after_a_delete_in_a_flat_legacy_chat_keeps_the_branch(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread())
+    # The last turn shares a timestamp; the runtime puts the prompt before its reply.
+    times = {"u1": 0, "a1": 1, "u2": 2, "a2": 2}
+    studio_db.sync_chat_messages("thread-1", [_turn(m, None, t) for m, t in times.items()])
+    # As the chat runtime loads it: each row hangs off the one before.
+    parents = {"u1": None, "a1": "u1", "u2": "a1", "a2": "u2"}
+    shown = [_turn(m, parents[m], t) for m, t in times.items()]
+    studio_db.sync_chat_messages(
+        "thread-1", shown[:3], prune_missing = True, deleted_message_ids = ["a2"]
+    )
+
+    messages = studio_db.sync_chat_messages("thread-1", shown + [_turn("u3", "a2", 4)])
+
+    parents = {message["id"]: message["parentId"] for message in messages}
+    assert parents == {"u1": None, "a1": "u1", "u2": "a1", "u3": "u2"}
+
+
+def test_a_deleted_root_edit_in_a_branched_chat_stays_a_root(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread())
+    turns = [
+        _turn("u1", None, 1),
+        _turn("a1", "u1", 2),
+        _turn("u1b", None, 3),
+        _turn("a1b", "u1b", 4),
+    ]
+    studio_db.sync_chat_messages("thread-1", turns)
+    studio_db.sync_chat_messages(
+        "thread-1", turns[:2], prune_missing = True, deleted_message_ids = ["u1b", "a1b"]
+    )
+
+    messages = studio_db.sync_chat_messages("thread-1", turns + [_turn("u2", "a1b", 5)])
+
+    assert {message["id"]: message["parentId"] for message in messages}["u2"] is None
+
+
+def test_a_run_admitted_after_its_placeholder_was_deleted_still_settles(tmp_path, monkeypatch):
+    from storage import chat_generation_runs_db as runs_db
+
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread())
+    turns = [_turn("u1", None, 1), _turn("a1", "u1", 2)]
+    studio_db.sync_chat_messages("thread-1", turns)
+    studio_db.sync_chat_messages(
+        "thread-1", turns[:1], prune_missing = True, deleted_message_ids = ["a1"]
+    )
+    runs_db.create_run(
+        run_id = "run-1",
+        owner_subject = "alice",
+        thread_id = "thread-1",
+        user_message_id = "u1",
+        assistant_message_id = "a1",
+        request_payload = {"model": "local", "messages": [{"role": "user", "content": "Hi"}]},
+    )
+    token = runs_db.get_worker_token("run-1")
+    assert runs_db.mark_running("run-1", token)
+    assert runs_db.finish_run("run-1", worker_token = token, status = "completed", finish_reason = "stop")
+    settled = studio_db.get_chat_message("thread-1", "a1")
+    settled["content"] = [{"type": "text", "text": "answer"}]
+    settled["metadata"].update(
+        generationSeq = runs_db.get_run("run-1", "alice")["lastEventSeq"],
+        generationStatus = "completed",
+        generationSettled = True,
+    )
+
+    studio_db.upsert_chat_message(settled)
+
+    assert studio_db.get_chat_message("thread-1", "a1")["content"] == settled["content"]
+
+
+def test_a_stale_save_of_a_kept_generation_reply_does_not_delete_it(tmp_path, monkeypatch):
+    from storage import chat_generation_runs_db as runs_db
+
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread())
+    turns = [_turn("u1", None, 1), _turn("a1", "u1", 2), _turn("u2", "a1", 3)]
+    studio_db.sync_chat_messages("thread-1", turns)
+    runs_db.create_run(
+        run_id = "run-1",
+        owner_subject = "alice",
+        thread_id = "thread-1",
+        user_message_id = "u2",
+        assistant_message_id = "a2",
+        request_payload = {"model": "local", "messages": [{"role": "user", "content": "Hi"}]},
+    )
+    token = runs_db.get_worker_token("run-1")
+    assert runs_db.mark_running("run-1", token)
+    assert runs_db.finish_run("run-1", worker_token = token, status = "completed", finish_reason = "stop")
+    studio_db.sync_chat_messages(
+        "thread-1", turns[:2], prune_missing = True, deleted_message_ids = ["u2"]
+    )
+    reply = studio_db.get_chat_message("thread-1", "a2")
+
+    synced = studio_db.sync_chat_messages("thread-1", turns + [{**reply, "parentId": "u2"}])
+
+    assert [(m["id"], m["parentId"]) for m in synced] == [("u1", None), ("a1", "u1"), ("a2", "a1")]
+    edited = {key: value for key, value in reply.items() if key != "metadata"}
+    edited["content"] = [{"type": "text", "text": "edited"}]
+    saved = studio_db.upsert_chat_message(edited, allow_generation_edit = True)
+    assert (saved["parentId"], saved["content"]) == ("a1", edited["content"])
+
+
+def test_a_stale_delete_does_not_reparent_onto_a_row_it_prunes(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread())
+    turns = [
+        _turn("u1", None, 1),
+        _turn("a1", "u1", 2),
+        _turn("u2", "a1", 3),
+        _turn("a2", "u2", 4),
+        _turn("u3", "a2", 5),
+    ]
+    studio_db.sync_chat_messages("thread-1", turns)
+    studio_db.sync_chat_messages(
+        "thread-1", turns[:2], prune_missing = True, deleted_message_ids = ["u2", "a2"]
+    )
+
+    messages = studio_db.sync_chat_messages(
+        "thread-1",
+        [turns[0], {**turns[2], "parentId": "u1"}, *turns[3:]],
+        prune_missing = True,
+        deleted_message_ids = ["a1"],
+    )
+
+    parents = {message["id"]: message["parentId"] for message in messages}
+    assert parents == {"u1": None, "u3": "u1"}
+
+
+def test_a_recreated_thread_can_reuse_deleted_message_ids(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread())
+    turns = [_turn("u1", None, 1), _turn("a1", "u1", 2)]
+    studio_db.sync_chat_messages("thread-1", turns)
+    studio_db.sync_chat_messages("thread-1", [], prune_missing = True, deleted_message_ids = ["u1"])
+    studio_db.delete_chat_threads(["thread-1"])
+    studio_db.lift_chat_thread_tombstones(["thread-1"])
+    studio_db.upsert_chat_thread(_thread())
+
+    messages = studio_db.sync_chat_messages("thread-1", turns)
+
+    assert [m["id"] for m in messages] == ["u1", "a1"]
+
+
 def test_a_prune_does_not_walk_the_chain_of_rows_it_deletes(tmp_path, monkeypatch):
     _reset_studio_db(tmp_path, monkeypatch)
     studio_db.upsert_chat_thread(_thread())

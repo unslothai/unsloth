@@ -96,6 +96,64 @@ def test_auto_takes_every_cached_kind_in_preference_order(cache):
     assert _resolve("ngram-mod").speculative
 
 
+def test_a_dspark_head_answers_to_its_own_kind_and_to_mtp_never_to_another(cache, monkeypatch):
+    dspark = {**_DFLASH, "architectures": ["DSparkDraftModel"]}
+    _resolve = cache({"a/Qwen3.5-4B-DFlash": _DFLASH, "s/Qwen3.5-4B-DSpark": dspark}, True)
+    monkeypatch.setattr(spec, "_builtin_head_kind", lambda model_dir: "dspark")
+    found = lambda mode: [(s.kind, s.builtin) for s in _resolve(mode).sources]
+    assert found("dspark") == [("dspark", True), ("dspark", False)]
+    assert found("mtp") == [("dspark", True)]
+    assert found("auto") == [("dspark", True), ("dflash", False), ("dspark", False)]
+    assert found("dflash") == [("dflash", False)] and found("eagle3") == []
+    # An MTP head still answers only to mtp and auto.
+    monkeypatch.setattr(spec, "_builtin_head_kind", lambda model_dir: "mtp")
+    assert found("dspark") == [("dspark", False)] and found("mtp") == [("mtp", True)]
+
+
+def test_a_head_is_dspark_only_when_mlx_vlm_builds_it_as_one(monkeypatch, tmp_path):
+    import sys
+
+    (tmp_path / "config.json").write_text(json.dumps({"model_type": "inkling2_loop"}))
+    outputs = {"inkling2_loop": "inkling2_dspark", "qwen3_5": "qwen3_5_mtp"}
+    split = lambda source_config: (
+        SimpleNamespace(output_model_type = outputs[source_config["model_type"]])
+        if source_config.get("model_type") in outputs
+        else None
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "mlx_vlm.speculative.drafters.mtp_split",
+        SimpleNamespace(get_mtp_splitter = split),
+    )
+    assert spec._builtin_head_kind(str(tmp_path)) == "dspark"
+    for config in ({"model_type": "qwen3_5"}, {"model_type": "gemma4"}):
+        (tmp_path / "config.json").write_text(json.dumps(config))
+        assert spec._builtin_head_kind(str(tmp_path)) == "mtp"
+    monkeypatch.setitem(sys.modules, "mlx_vlm.speculative.drafters.mtp_split", SimpleNamespace())
+    assert spec._builtin_head_kind(str(tmp_path)) == "mtp"
+
+
+@pytest.mark.parametrize(
+    "model_type, kind",
+    [
+        ("inkling2", "dspark"),
+        ("mistral_large4", "dspark"),
+        ("deepseek_v41", "dspark"),
+        ("qwen3_5", "mtp"),
+    ],
+)
+def test_the_installed_mlx_vlm_names_its_dspark_heads(tmp_path, model_type, kind):
+    mtp_split = pytest.importorskip("mlx_vlm.speculative.drafters.mtp_split")
+    try:
+        splitter = mtp_split.get_mtp_splitter(source_config = {"model_type": model_type})
+    except TypeError:  # mlx-vlm 0.7.1 and older resolve by base model type only
+        splitter = None
+    if splitter is None:
+        pytest.skip(f"the installed mlx-vlm splits no {model_type} head")
+    (tmp_path / "config.json").write_text(json.dumps({"model_type": model_type}))
+    assert spec._builtin_head_kind(str(tmp_path)) == kind
+
+
 def test_a_bundled_drafter_follows_the_head_and_precedes_cached_ones(cache, tmp_path):
     _resolve = cache({"g/Qwen3.5-4B-assistant": _ASSISTANT}, True)
     (draft := tmp_path / "org--Qwen3.5-4B-4bit" / "draft").mkdir()

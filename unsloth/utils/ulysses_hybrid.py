@@ -673,16 +673,22 @@ def _refuse_non_causal(module, is_causal = None) -> None:
 def _whole_sequence_mask(total, device, dtype, window, cu_seqlens):
     """Additive [1, 1, T, T] mask over the gathered sequence: causal, the sliding window (key > query - window,
     as transformers' masks), and packed documents closed off from one another (padding past
-    cu_seqlens[-1] is one more segment)."""
+    cu_seqlens[-1] is one more segment).
+
+    Peak memory is the [T, T] bool plus the output (3 bytes per element for 16-bit): every comparison
+    broadcasts two [T] vectors straight to bool, and the bool is combined and inverted in place, so no
+    [T, T] int64 difference or extra bool copy is ever allocated."""
     idx = torch.arange(total, device = device)
     allowed = idx[None, :] <= idx[:, None]
-    if window is not None:
-        allowed = allowed & (idx[:, None] - idx[None, :] < window)
+    if window is not None and window < total:
+        # key > query - window is query - key < window, with the subtraction on [T] only. A window of T or
+        # more keeps every causal key (and could not be subtracted in int64 past 2**63), so it is skipped.
+        allowed &= idx[None, :] > (idx - window)[:, None]
     if cu_seqlens is not None:
         doc = torch.bucketize(idx, cu_seqlens[1:].to(device = device, dtype = idx.dtype), right = True)
-        allowed = allowed & (doc[:, None] == doc[None, :])
+        allowed &= doc[:, None] == doc[None, :]
     mask = torch.zeros(total, total, device = device, dtype = dtype)
-    return mask.masked_fill_(~allowed, torch.finfo(dtype).min)[None, None]
+    return mask.masked_fill_(allowed.logical_not_(), torch.finfo(dtype).min)[None, None]
 
 
 def _is_flash(implementation) -> bool:

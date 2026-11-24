@@ -46,6 +46,7 @@ _MAPPER_HELPERS = {
 
 from transformers import __version__ as transformers_version
 from unsloth.models._utils import TorchAOConfig
+from ..import_fixes import unsloth_logging_enabled
 from unsloth_zoo.utils import Version, get_quant_type
 from .packed_expert_loader import quantize_moe_experts_if_requested  # noqa: F401  (re-exported)
 import gc
@@ -854,6 +855,16 @@ def _as_bytes(size):
     return None
 
 
+def _placement_report(plan):
+    """One line by default (unsloth_zoo's DeviceMapPlan.summary); the planner's full table with
+    UNSLOTH_ENABLE_LOGGING on (any value Unsloth accepts), or from an older unsloth_zoo without
+    summary()."""
+    summary = getattr(plan, "summary", None)
+    if unsloth_logging_enabled() or not callable(summary):
+        return plan.describe()
+    return summary()
+
+
 def resolve_unsloth_device_map(
     device_map,
     model_name,
@@ -996,7 +1007,8 @@ def resolve_unsloth_device_map(
             f'to train. Pass device_map = "{UNSLOTH_BALANCED_DEVICE_MAP}" to split it anyway.'
         )
         return {"": single_device}
-    print(plan.describe())
+    # A plan that does not fit raised DeviceMapInfeasible above with its whole arithmetic.
+    print(_placement_report(plan))
     return plan.device_map
 
 
@@ -1186,7 +1198,7 @@ def resolve_auto_block_swap(
     if not plan.layers:
         return 0, device_map, embedding
     if multi and plan.device_plan is not None:
-        print(plan.device_plan.describe())
+        print(_placement_report(plan.device_plan))
         return plan.layers, plan.device_plan.device_map, embedding
     return plan.layers, {"": target}, embedding
 

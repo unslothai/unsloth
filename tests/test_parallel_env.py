@@ -862,6 +862,32 @@ def test_a_shard_unaware_muon_is_refused_before_native_fsdp2_shards(clean_env):
     )
 
 
+def test_adafactor_is_refused_on_native_fsdp2_shards():
+    # Both Adafactors fail at step one on fully_shard DTensors (factored row / column statistics).
+    import types
+
+    from transformers.optimization import Adafactor
+
+    from unsloth import parallel_capabilities as caps
+    from unsloth.models import fsdp2_native
+
+    p = [torch.nn.Parameter(torch.randn(4, 4))]
+    for optimizer in (
+        Adafactor(p, lr = 1e-3, relative_step = False, scale_parameter = False),
+        torch.optim.Adafactor(p, lr = 1e-3),
+        "adafactor",
+    ):
+        with pytest.raises(
+            NotImplementedError,
+            match = r"^Unsloth: fsdp2 x optimizer: Adafactor .*Instead: adamw_torch",
+        ):
+            caps.refuse_shard_unaware_optimizer(optimizer, "fsdp2")
+    caps.check(_q(dp = 2, optim = "adafactor"))  # DDP holds whole matrices
+    with pytest.raises(ValueError, match = r"optim = 'adafactor'.*Use optim = 'adamw_torch'"):
+        fsdp2_native._refuse_projection_optim(types.SimpleNamespace(optim = "adafactor"))
+    fsdp2_native._refuse_projection_optim(types.SimpleNamespace(optim = "adamw_torch"))
+
+
 # MoE cells.
 
 

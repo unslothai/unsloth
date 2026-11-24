@@ -4,6 +4,8 @@
 import type { ThreadMessage } from "@assistant-ui/react";
 import { completeChat } from "@/features/chat/api/chat-api";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
+// eslint-disable-next-line no-restricted-imports -- Avoid the hub barrel's React and download-manager exports.
+import { servedCheckpoint } from "@/features/hub/lib/model-identity";
 import { localCompactionFields, localSamplingFields } from "@/features/chat/utils/local-request-fields";
 import { getLocale, translate } from "@/i18n";
 import { loadParticipants, promptHistoryOf, toPromptCharacter } from "../chat-runtime";
@@ -27,7 +29,8 @@ export async function writeMyReply(threadId: string, messages: readonly ThreadMe
   const { params } = state;
   const text = await completeChat(
     {
-      model: params.checkpoint,
+      // A quant loaded beside its repo's other quant answers only to its own name.
+      model: servedCheckpoint(state.loadedModels, params.checkpoint, state.activeGgufVariant),
       messages: [{ role: "system", content: prompt.system }, ...prompt.messages],
       max_tokens: 320,
       ...localSamplingFields(params),

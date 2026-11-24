@@ -13,8 +13,10 @@ const { getExternalReasoningCapabilities } = await import(
 );
 
 const {
+  getProviderModelCapabilities,
   learnCatalogModelCapabilities,
   providerModelSupportsThinking,
+  setProviderModelCapabilities,
   supportsProviderReasoningToggle,
 } = await import("../src/features/chat/external-providers.ts");
 
@@ -95,4 +97,63 @@ test("a flagged vllm connection still gets enable_thinking", () => {
   assert.equal(caps.supportsReasoning, true);
   assert.equal(caps.reasoningStyle, "enable_thinking");
   assert.equal(caps.supportsReasoningOff, true);
+});
+
+test("two ollama connections serving one tag keep their own thinking capability", () => {
+  const thinkingHost = "http://127.0.0.1:11541/v1";
+  const plainHost = "http://127.0.0.1:11542/v1";
+  const learnFrom = (baseUrl: string, thinks: boolean) =>
+    learnCatalogModelCapabilities(
+      "ollama",
+      [
+        {
+          id: "shared-tag:7b",
+          capabilities: thinks ? ["completion", "thinking"] : ["completion"],
+        },
+      ],
+      baseUrl,
+    );
+  const thinks = (baseUrl: string) =>
+    getExternalReasoningCapabilities("ollama", "shared-tag:7b", { baseUrl })
+      .supportsReasoning;
+
+  for (const order of [
+    [thinkingHost, plainHost],
+    [plainHost, thinkingHost],
+  ]) {
+    for (const host of order) {
+      learnFrom(host, host === thinkingHost);
+    }
+    assert.equal(thinks(thinkingHost), true);
+    assert.equal(thinks(plainHost), false);
+  }
+  assert.equal(thinks("http://127.0.0.1:11543/v1"), false);
+});
+
+test("a capability saved before per-connection learning still applies", () => {
+  setProviderModelCapabilities("ollama", {
+    ...getProviderModelCapabilities("ollama"),
+    "saved-earlier:latest": { thinking: true },
+  });
+  assert.equal(
+    getExternalReasoningCapabilities("ollama", "saved-earlier:latest", {
+      baseUrl: "http://127.0.0.1:11541/v1",
+    }).supportsReasoning,
+    true,
+  );
+});
+
+test("a refresh from the dialog matches the connection's saved url spelling", () => {
+  learnCatalogModelCapabilities(
+    "ollama",
+    [{ id: "spelled-tag:7b", capabilities: ["completion", "thinking"] }],
+    "http://localhost:11434/v1",
+  );
+  for (const saved of ["http://LOCALHOST:11434", "http://localhost:11434/v1/"]) {
+    assert.equal(
+      getExternalReasoningCapabilities("ollama", "spelled-tag:7b", { baseUrl: saved })
+        .supportsReasoning,
+      true,
+    );
+  }
 });

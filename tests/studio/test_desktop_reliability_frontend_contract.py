@@ -70,6 +70,7 @@ CHAT_HEADER_MENU = FRONTEND / "features/chat/components/chat-header-menu.tsx"
 BROWSER_TOGGLE = FRONTEND / "features/browser/browser-toggle.tsx"
 TRAINING_CONFIG_ACTIONS = FRONTEND / "features/studio/wizard/config-actions.tsx"
 MARKDOWN_TEXT = FRONTEND / "components/assistant-ui/markdown-text.tsx"
+CODE_FILENAME = FRONTEND / "components/assistant-ui/code-filename.ts"
 IMAGE = FRONTEND / "components/assistant-ui/image.tsx"
 AUDIO_PLAYER = FRONTEND / "components/assistant-ui/audio-player.tsx"
 
@@ -371,8 +372,12 @@ def test_generated_download_buttons_use_the_native_save_boundary():
     assert "if (!isTauri)" in helper
     assert "downloadFile(yaml, filename" in training
     assert "downloadFile(text, filename" in markdown
-    assert "fallbackExt" in markdown
-    assert 'rust: "rs"' in markdown
+    # Snippet names are shared with the chat Files menu, so they live in code-filename.ts.
+    code_filename = _ui_source(CODE_FILENAME)
+    assert 'import { getCodeFilename } from "./code-filename";' in markdown
+    assert "getCodeFilename(language)" in markdown
+    assert "fallbackExt" in code_filename
+    assert 'rust: "rs"' in code_filename
     assert "downloadUrl(part.image, filename)" in image
     assert "urlToBlob(part.image)" in image
     assert "downloadUrl(src, filename)" in audio

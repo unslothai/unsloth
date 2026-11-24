@@ -7,6 +7,7 @@ import importlib.util
 import json
 import os
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -1969,15 +1970,24 @@ class TestScannerCoversAllExecutableCode:
 
 
 class TestDiscardRemoteCodeDownload:
-    @staticmethod
-    def _fake_cache(filenames):
+    # The route narrows its scan to the one repo, as it does an HFCacheInfo: a dataclass holding hashable repos.
+    class _CachedRepo(SimpleNamespace):
+        __hash__ = object.__hash__
+
+    @dataclass
+    class _CacheScan:
+        repos: list
+        delete_revisions: MagicMock
+
+    @classmethod
+    def _fake_cache(cls, filenames):
         files = [
             SimpleNamespace(file_name = fn, file_path = f"/snap/{fn}", blob_path = f"/blob/{fn}")
             for fn in filenames
         ]
         rev = SimpleNamespace(commit_hash = "deadbeef", files = files)
-        repo = SimpleNamespace(repo_type = "model", repo_id = "evil/repo", revisions = [rev])
-        return SimpleNamespace(repos = [repo], delete_revisions = MagicMock())
+        repo = cls._CachedRepo(repo_type = "model", repo_id = "evil/repo", revisions = [rev])
+        return cls._CacheScan(repos = [repo], delete_revisions = MagicMock())
 
     def _run(
         self,

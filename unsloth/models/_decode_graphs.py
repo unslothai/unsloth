@@ -15,6 +15,7 @@ Graphs read weights and LoRA decode casts by address, so an optimizer step (in p
 UNSLOTH_DECODE_GRAPHS_KEEP_FOR_TRAINING: whether graphs and their buffers stay through a training step:
 auto (default) when that fits the memory a measured training step left free, 1 always, 0 never."""
 
+import contextlib
 import math
 import os
 import sys
@@ -45,6 +46,7 @@ __all__ = [
     "ENABLED",
     "enabled",
     "rl_generation",
+    "rl_generating",
     "studio_generation",
     "generate_scope",
     "eager_scope",
@@ -179,11 +181,21 @@ class rl_generation:
 
     def __enter__(self):
         _TLS.rl_depth = getattr(_TLS, "rl_depth", 0) + 1
+        if type(self) is rl_generation:
+            _TLS.rollout_depth = getattr(_TLS, "rollout_depth", 0) + 1
         return self
 
     def __exit__(self, *exc):
         _TLS.rl_depth -= 1
+        if type(self) is rl_generation:
+            _TLS.rollout_depth -= 1
         return False
+
+
+def rl_generating():
+    """Whether this thread is inside an RL trainer's generate() call (rl_generation itself, not the Studio /
+    plain generate() scopes built on it)."""
+    return getattr(_TLS, "rollout_depth", 0) > 0
 
 
 # Native Windows CUDA capture is unverified: Studio default off there (=1 still forces).
@@ -504,12 +516,25 @@ HELD = "_unsloth_decode_held"
 KEEP_CASTS = "_unsloth_decode_keep_casts"
 
 
-def generate_with_fallback(model, generate, graphs, args, kwargs):
+def generate_with_fallback(
+    model,
+    generate,
+    graphs,
+    args,
+    kwargs,
+    fold = None,
+):
     """On a graph-mode OOM, free graphs and redo once eagerly; caller streamer / past_key_values /
-    stopping_criteria / logits_processor may hold failed-attempt state, so those re-raise."""
+    stopping_criteria / logits_processor may hold failed-attempt state, so those re-raise.
+    fold(retry): the LoRA fold scope of one attempt, exited (weights restored) before the redo."""
     global _OOM_WARNED, EAGER_REDOS
+
+    def attempt(retry):
+        with fold(retry) if fold is not None else contextlib.nullcontext():
+            return generate(*args, **kwargs)
+
     try:
-        return generate(*args, **kwargs)
+        return attempt(False)
     except torch.cuda.OutOfMemoryError:
         if (
             not graphs
@@ -532,7 +557,7 @@ def generate_with_fallback(model, generate, graphs, args, kwargs):
     _empty_cache()
     EAGER_REDOS += 1
     with eager_scope():
-        return generate(*args, **kwargs)
+        return attempt(True)
 
 
 def keep_only(model, bsz = None):

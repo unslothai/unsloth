@@ -79,6 +79,155 @@ def test_replica_need_adds_only_a_working_set_over_the_reserve(monkeypatch):
     assert mg.replica_need_mib(small) == weights + 1200 - 1024
 
 
+# Meta-device stand-ins: real configs, weights as recorded on the Kaggle 2x T4 sweep.
+_WAN_5B = dict(
+    config = dict(num_attention_heads = 24, attention_head_dim = 128, ffn_dim = 14336, num_layers = 30),
+    weights_mib = 9558,
+    dtype = torch.float16,
+    tokens = 27280,
+)
+_MOSS = dict(
+    config = dict(dim = 3072, num_heads = 24, ffn_dim = 8192, num_layers = 42),
+    weights_mib = 4857,
+    dtype = torch.float32,
+    tokens = 4096,
+)
+
+
+class _Denoiser(torch.nn.Module):
+    def __init__(self, config, weights_mib, dtype):
+        super().__init__()
+        self.config = types.SimpleNamespace(**config) if config is not None else None
+        self.w = torch.nn.Parameter(
+            torch.empty((weights_mib << 20) // dtype.itemsize, dtype = dtype, device = "meta")
+        )
+
+
+class _Pipe:
+    pass
+
+
+def _family(spec, monkeypatch):
+    model = _Denoiser(spec["config"], spec["weights_mib"], spec["dtype"])
+    pipe = _Pipe()
+    pipe.transformer = model
+    monkeypatch.setattr(mg, "_DEFAULT_REQUESTS", mg.weakref.WeakKeyDictionary())
+    mg.note_default_request(pipe, guided = True, steps = 20, tokens = spec["tokens"])
+    return pipe, model
+
+
+def test_replica_activation_matches_the_measured_wan_peak():
+    wan = _Denoiser(_WAN_5B["config"], 1, torch.float16)
+    # Kaggle T4, 1280x704x49 (11440 tokens): replica card peaked 10956 MiB allocated over 9558 of weights
+    assert abs(mg.replica_activation_mib(wan, 11440) - (10956 - 9558)) < 100
+    assert mg.replica_activation_mib(wan, 2 * 11440) <= 2 * mg.replica_activation_mib(wan, 11440)
+
+
+def test_replica_need_prices_the_default_request_tokens(monkeypatch):
+    pipe, wan = _family(_WAN_5B, monkeypatch)
+    activation = mg.replica_activation_mib(wan, 27280)
+    assert activation > 3000
+    assert mg.replica_need_mib(wan) == 9558 + activation
+    monkeypatch.setattr(mg, "_DEFAULT_REQUESTS", mg.weakref.WeakKeyDictionary())
+    assert mg.replica_need_mib(wan) == 9558 + mg.replica_activation_mib(wan, 4096)
+
+
+@pytest.mark.parametrize(
+    "config", [None, dict(attention_head_dim = [5, 10, 20]), dict(sample_size = 128)]
+)
+def test_a_denoiser_without_a_dit_width_keeps_the_weights_only_need(config):
+    unet = _Denoiser(config, 2048, torch.float16)
+    assert mg.replica_activation_mib(unet) == 0
+    assert mg.replica_need_mib(unet) == 2048
+
+
+def _pair(total, name):
+    return [mg.DeviceProbe(o, name, total, total - 400, util_pct = 0.0) for o in (0, 1)]
+
+
+@pytest.mark.parametrize(
+    "spec, total, admitted",
+    [
+        (_MOSS, 15360, True),  # 2x T4 (the recorded host)
+        (_MOSS, 23034, True),  # 2x L4
+        (_MOSS, 40960, True),  # 2x A100-40
+        (_MOSS, 24564, True),  # 2x RTX 4090
+        (_MOSS, 12288, True),  # 2x 12 GB
+        (_WAN_5B, 15360, True),
+        (_WAN_5B, 23034, True),
+        (_WAN_5B, 40960, True),
+        (_WAN_5B, 24564, True),
+        # 9558 + 1024 fits 11888 free, but the replica peaked 11756 MiB allocated on a T4: no replica here
+        (_WAN_5B, 12288, False),
+    ],
+)
+def test_automatic_replica_admission_counts_activations(monkeypatch, spec, total, admitted):
+    _pipe, model = _family(spec, monkeypatch)
+    primary, secondary = _pair(total, f"GPU {total}")
+    pick, why = mg.automatic_partner(primary, [secondary], mg.replica_need_mib(model))
+    assert (pick == 1) is admitted, why
+    if not admitted:
+        assert "short of the" in why
+
+
+_WAN_T4 = dict(_WAN_5B, config = dict(_WAN_5B["config"], patch_size = (1, 2, 2)))
+
+
+def _wan_latent(frames):
+    # 1280x704 through the Wan 2.2 5B VAE (16x spatial, 4x temporal)
+    return torch.empty(1, 48, (frames - 1) // 4 + 1, 704 // 16, 1280 // 16, device = "meta")
+
+
+@pytest.mark.parametrize("frames, tokens", [(49, 11440), (121, 27280)])
+def test_latent_tokens_read_the_actual_request(frames, tokens):
+    model = _Denoiser(_WAN_T4["config"], 1, torch.float16)
+    assert mg.latent_tokens(model, _wan_latent(frames)) == tokens
+    assert mg.latent_tokens(model, torch.empty(1, 4096, 64, device = "meta")) == 4096
+    assert mg.latent_tokens(model, None) is None
+
+
+@pytest.mark.parametrize("force", [False, True])
+def test_an_explicit_selection_is_not_declined_on_the_default_request(monkeypatch, force):
+    # default (121 frames) needs 12915+1024 MiB; 49 frames needs 10966+1024 of 13000 free
+    pipe, model = _family(_WAN_T4, monkeypatch)
+    if force:
+        monkeypatch.setenv(mg.CFG_PARALLEL_ENV, "force")
+    else:
+        monkeypatch.delenv(mg.CFG_PARALLEL_ENV, raising = False)
+    selection = mg.MultiGpuSelection(0, (1,), automatic = False)
+    probes = {0: mg.DeviceProbe(0, "T4", 15360, 14000), 1: mg.DeviceProbe(1, "T4", 15360, 13000)}
+    monkeypatch.setattr(mg, "current_selection", lambda *a, **k: selection)
+    monkeypatch.setattr(mg, "probe_devices", lambda *a, **k: probes)
+    monkeypatch.setattr(mg, "_execution_device", lambda *a, **k: torch.device("cuda:0"))
+    assert mg.install_cfg_parallel(pipe, offload_policy = "none") is None
+    assert isinstance(model.forward, mg.CfgParallelRouter)
+
+
+@pytest.mark.parametrize("frames, built", [(49, True), (121, False)])
+def test_the_lazy_replica_build_prices_the_first_guided_branch(monkeypatch, frames, built):
+    _pipe, model = _family(_WAN_T4, monkeypatch)
+    router = mg.CfgParallelRouter(model, primary = "cpu", secondary = "cpu")
+    monkeypatch.setattr(router, "_secondary_free_total_mib", lambda: (13000, 15360))
+
+    def past_the_memory_gate(module):
+        raise RuntimeError("past the memory gate")
+
+    monkeypatch.setattr(mg, "weights_fingerprint", past_the_memory_gate)
+    router._build_replica(_wan_latent(frames))
+    if built:
+        assert "past the memory gate" in router.disabled_reason
+    else:
+        assert "replica needs 12915 MiB, 13000 MiB free" in router.disabled_reason
+
+
+def test_automatic_still_prices_the_default_request(monkeypatch):
+    monkeypatch.delenv(mg.CFG_PARALLEL_ENV, raising = False)
+    assert mg._prices_default_request(mg.MultiGpuSelection(0, (1,), automatic = True))
+    assert not mg._prices_default_request(mg.MultiGpuSelection(0, (1,), automatic = False))
+    monkeypatch.setenv(mg.CFG_PARALLEL_ENV, "force")
+    assert not mg._prices_default_request(mg.MultiGpuSelection(0, (1,), automatic = True))
+
+
 def test_video_default_tokens_follow_the_vae_and_patch():
     wan = types.SimpleNamespace(
         vae_scale_factor_spatial = 16,
