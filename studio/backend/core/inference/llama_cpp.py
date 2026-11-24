@@ -35,6 +35,7 @@ from loggers import get_logger
 from utils.gpu_memory_events import invalidate_gpu_memory as _invalidate_gpu_memory
 from utils import host_memory as _host_memory
 from utils.gpu_memory_events import invalidates_gpu_memory as _invalidates_gpu_memory
+from utils.utils import hf_env_offline
 import shutil
 import signal
 import socket
@@ -2791,15 +2792,6 @@ def _probe_dns_dead(host: Optional[str] = None, timeout: float = 2.0) -> bool:
     affected by socket.setdefaulttimeout. Defaults to the configured endpoint's host."""
     from utils.utils import dns_host_dead, hf_endpoint_host
     return dns_host_dead(host or hf_endpoint_host(), timeout)
-
-
-def _hf_env_offline() -> bool:
-    """Accepts any truthy HF_HUB_OFFLINE (1, true, yes, on) to match _env_offline, not only 1."""
-    try:
-        from utils.models.model_config import _env_offline
-        return _env_offline()
-    except Exception:
-        return os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _hf_unreachable() -> bool:
@@ -21908,7 +21900,7 @@ class LlamaCppBackend:
             # Preflight only against bytes still to download, or cached large models fail on low disk.
             already_cached_bytes = 0
             # Count only files that can resume this download.
-            offline = _hf_env_offline()
+            offline = hf_env_offline()
             # Offline split sets are reusable only when every shard shares a snapshot.
             split_needs_refetch = bool(offline and not force and gguf_extra_shards)
             if not force and not split_needs_refetch:
@@ -22156,7 +22148,7 @@ class LlamaCppBackend:
             return None
 
         # Offline: resolve_cached_repo_id_case can return a partial casing, so hf_hub_download would silently drop the companion; scan every case variant.
-        if _hf_env_offline():
+        if hf_env_offline():
             cached = _cached_hf_snapshot_file(
                 hf_repo,
                 target,
@@ -22217,7 +22209,7 @@ class LlamaCppBackend:
                 not cancel_event.is_set()
                 and type(e).__name__ not in _PERMANENT_HUB_ERRORS
                 and getattr(e, "errno", None) not in _UNRECOVERABLE_LOCAL_ERRNOS
-                and not _hf_env_offline()
+                and not hf_env_offline()
             ):
                 self._report_transient_companion_failure(on_transient_failure, label)
             return None
@@ -22361,7 +22353,7 @@ class LlamaCppBackend:
         borrowed_cached: Optional[str] = None
         if near_path:
             cached = _companion_snapshot_sibling(near_path, pick)
-            if cached and _mtp_head_borrows(cached) and not _hf_env_offline():
+            if cached and _mtp_head_borrows(cached) and not hf_env_offline():
                 # --fit cannot measure a borrowing head, so the MTP context would OOM; hf_hub_download reuses this file if nothing better is found.
                 logger.info(
                     "Cached MTP drafter borrows the target's embeddings; checking the "
@@ -22375,7 +22367,7 @@ class LlamaCppBackend:
 
         # Offline, reuse any cached drafter. Online, the download refetches a changed file, so skip
         # the probe rather than pair new weights with a stale draft.
-        if _hf_env_offline():
+        if hf_env_offline():
             cached = self._cached_repo_mtp_drafter(
                 hf_repo,
                 cache_dir = _hub_cache_dir_for_snapshot_path(near_path),
@@ -22507,7 +22499,7 @@ class LlamaCppBackend:
             caps_probe = self.probe_server_capabilities
 
         cached = _companion_snapshot_sibling(near_path, _pick_dspark) if near_path else None
-        if not cached and _hf_env_offline():
+        if not cached and hf_env_offline():
             cached = self._cached_repo_dspark_drafter(
                 hf_repo,
                 cache_dir = _hub_cache_dir_for_snapshot_path(near_path),
@@ -22718,7 +22710,7 @@ class LlamaCppBackend:
             if cached:
                 break
         # _cached_repo_dflash_drafter already header-checks its candidates.
-        if not cached and _hf_env_offline():
+        if not cached and hf_env_offline():
             cached = self._cached_repo_dflash_drafter(
                 hf_repo,
                 cache_dir = _hub_cache_dir_for_snapshot_path(near_path),

@@ -81,7 +81,7 @@ from utils.models.diffusion_lm import (
 )
 from utils.models.model_identity import restore_hf_cache_repo_identity
 from utils.models.unsloth_mirror import unsloth_public_mirror
-from utils.models.model_config import _env_offline
+from utils.utils import hf_env_offline
 from utils.datasets import format_and_template_dataset
 from utils.datasets.cells import cell_text, csv_as_text_kwargs
 from utils.datasets.chat_templates import get_training_chat_template
@@ -1342,7 +1342,7 @@ class UnslothTrainer:
                 os.environ["HF_TOKEN"] = hf_token
 
             # Gate-check the repo Unsloth will fetch, which may be a public mirror of it.
-            if "/" in model_name and not local_files_only and not _env_offline():
+            if "/" in model_name and not local_files_only and not hf_env_offline():
                 try:
                     from huggingface_hub import model_info as hf_model_info
 
