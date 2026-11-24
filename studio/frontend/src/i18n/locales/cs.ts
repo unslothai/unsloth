@@ -2814,7 +2814,7 @@ export const cs = {
         oldWebkitWarning:
           "WebKitGTK {version} na Waylandu: vykreslování pomocí GPU může při spuštění na NVIDIA se zlomkovým škálováním spadnout (chyba WebKitu 280210). Pokud k tomu dojde, Unsloth se sám vrátí k vykreslování pomocí CPU. Na WebKitGTK 2.50.4 nepřineslo žádné měřitelné zrychlení (v obou případech 8 fps), proto se zde možnost Zapnuto nedoporučuje.",
         oldDriverWarning:
-          "Ovladač NVIDIA {version} na X11: Unsloth ponechá vykreslování pomocí GPU vypnuté, dokud nebude ovladač ve verzi 610 nebo novější. Starší ovladače při každém snímku ztrácejí jeden popisovač souboru a okno se během několika minut přestane vykreslovat.",
+          "Ovladač NVIDIA {version} na X11: Unsloth ponechá vykreslování pomocí GPU vypnuté, dokud nebude ovladač ve verzi 590 nebo novější. Starší ovladače při každém snímku ztrácejí jeden popisovač souboru a okno se během několika minut přestane vykreslovat.",
         fallbackNote:
           "Vykreslování pomocí GPU v tomto systému při spuštění spadlo, proto Unsloth používá vykreslování pomocí CPU.",
         tryAgain: "Zkusit GPU znovu",

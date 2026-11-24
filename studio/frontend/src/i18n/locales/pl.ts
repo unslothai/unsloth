@@ -2830,7 +2830,7 @@ export const pl = {
         oldWebkitWarning:
           "WebKitGTK {version} w Wayland: renderowanie na GPU może powodować awarię przy uruchamianiu na kartach NVIDIA ze skalowaniem ułamkowym (błąd WebKit 280210). W takim przypadku Unsloth samoczynnie wróci do renderowania na CPU. Na WebKitGTK 2.50.4 nie dało zmierzalnego przyspieszenia (8 fps w obu przypadkach), więc opcja Włączone nie jest tu zalecana.",
         oldDriverWarning:
-          "Sterownik NVIDIA {version} w X11: Unsloth utrzymuje renderowanie na GPU wyłączone, dopóki sterownik nie będzie w wersji 610 lub nowszej. Starsze sterowniki tracą deskryptor pliku na każdą klatkę, a okno przestaje się rysować w ciągu kilku minut.",
+          "Sterownik NVIDIA {version} w X11: Unsloth utrzymuje renderowanie na GPU wyłączone, dopóki sterownik nie będzie w wersji 590 lub nowszej. Starsze sterowniki tracą deskryptor pliku na każdą klatkę, a okno przestaje się rysować w ciągu kilku minut.",
         fallbackNote:
           "Renderowanie na GPU spowodowało awarię przy uruchamianiu w tym systemie, więc Unsloth używa renderowania na CPU.",
         tryAgain: "Spróbuj ponownie z GPU",

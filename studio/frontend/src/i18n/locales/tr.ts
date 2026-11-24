@@ -2791,7 +2791,7 @@ export const tr = {
         oldWebkitWarning:
           "Wayland üzerinde WebKitGTK {version}: Kesirli ölçekleme kullanılan NVIDIA sistemlerinde GPU ile işleme başlatma sırasında çökebilir (WebKit hatası 280210). Böyle olursa Unsloth kendiliğinden CPU ile işlemeye geri döner. WebKitGTK 2.50.4 üzerinde ölçülebilir bir hızlanma sağlamadı (her iki durumda da 8 fps), bu nedenle burada Açık önerilmez.",
         oldDriverWarning:
-          "X11 üzerinde NVIDIA sürücüsü {version}: Sürücü 610 veya daha yeni olana kadar Unsloth GPU ile işlemeyi kapalı tutar. Eski sürücüler her karede bir dosya tanımlayıcısı sızdırır ve pencere birkaç dakika içinde çizim yapmayı durdurur.",
+          "X11 üzerinde NVIDIA sürücüsü {version}: Sürücü 590 veya daha yeni olana kadar Unsloth GPU ile işlemeyi kapalı tutar. Eski sürücüler her karede bir dosya tanımlayıcısı sızdırır ve pencere birkaç dakika içinde çizim yapmayı durdurur.",
         fallbackNote:
           "GPU ile işleme bu sistemde başlatma sırasında çöktüğü için Unsloth CPU ile işleme kullanıyor.",
         tryAgain: "GPU'yu yeniden dene",

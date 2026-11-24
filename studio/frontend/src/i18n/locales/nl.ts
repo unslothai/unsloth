@@ -2835,7 +2835,7 @@ export const nl = {
         oldWebkitWarning:
           "WebKitGTK {version} op Wayland: GPU-rendering kan bij het starten crashen op NVIDIA met fractionele schaling (WebKit-bug 280210). Als dat gebeurt, schakelt Unsloth vanzelf terug naar CPU-rendering. Op WebKitGTK 2.50.4 leverde het geen meetbare versnelling op (in beide gevallen 8 fps), dus Aan wordt hier niet aanbevolen.",
         oldDriverWarning:
-          "NVIDIA-stuurprogramma {version} op X11: Unsloth houdt GPU-rendering uit tot het stuurprogramma versie 610 of nieuwer is. Oudere stuurprogramma's lekken per frame een bestandsdescriptor, en het venster stopt binnen enkele minuten met tekenen.",
+          "NVIDIA-stuurprogramma {version} op X11: Unsloth houdt GPU-rendering uit tot het stuurprogramma versie 590 of nieuwer is. Oudere stuurprogramma's lekken per frame een bestandsdescriptor, en het venster stopt binnen enkele minuten met tekenen.",
         fallbackNote:
           "GPU-rendering is bij het starten gecrasht op dit systeem, dus Unsloth gebruikt CPU-rendering.",
         tryAgain: "GPU opnieuw proberen",

@@ -2679,7 +2679,7 @@ export const zhTW = {
         oldWebkitWarning:
           "Wayland 上的 WebKitGTK {version}：在使用分數縮放的 NVIDIA 環境中，GPU 繪製可能會在啟動時當機（WebKit 錯誤 280210）。若發生此情況，Unsloth 會自動切換回 CPU 繪製。在 WebKitGTK 2.50.4 上實測沒有加速效果（兩者皆為 8 fps），因此不建議在此選擇「開啟」。",
         oldDriverWarning:
-          "X11 上的 NVIDIA 驅動程式 {version}：在驅動程式更新至 610 或更新版本之前，Unsloth 會保持關閉 GPU 繪製。較舊的驅動程式每繪製一個影格就會洩漏一個檔案描述元，視窗會在幾分鐘內停止繪製。",
+          "X11 上的 NVIDIA 驅動程式 {version}：在驅動程式更新至 590 或更新版本之前，Unsloth 會保持關閉 GPU 繪製。較舊的驅動程式每繪製一個影格就會洩漏一個檔案描述元，視窗會在幾分鐘內停止繪製。",
         fallbackNote:
           "GPU 繪製在此系統啟動時當機，因此 Unsloth 目前使用 CPU 繪製。",
         tryAgain: "再試一次 GPU",

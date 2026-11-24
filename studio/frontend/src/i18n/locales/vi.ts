@@ -2801,7 +2801,7 @@ export const vi = {
         oldWebkitWarning:
           "WebKitGTK {version} trên Wayland: kết xuất bằng GPU có thể gây sập khi khởi chạy trên NVIDIA với tỷ lệ phóng to lẻ (lỗi WebKit 280210). Nếu xảy ra, Unsloth sẽ tự chuyển về kết xuất bằng CPU. Trên WebKitGTK 2.50.4, tùy chọn này không cho thấy tốc độ cải thiện đo được (8 fps ở cả hai chế độ), nên không khuyến nghị chọn Bật ở đây.",
         oldDriverWarning:
-          "Trình điều khiển NVIDIA {version} trên X11: Unsloth giữ tắt kết xuất bằng GPU cho đến khi trình điều khiển là bản 610 trở lên. Các trình điều khiển cũ hơn rò rỉ một bộ mô tả tệp mỗi khung hình và cửa sổ sẽ ngừng vẽ trong vài phút.",
+          "Trình điều khiển NVIDIA {version} trên X11: Unsloth giữ tắt kết xuất bằng GPU cho đến khi trình điều khiển là bản 590 trở lên. Các trình điều khiển cũ hơn rò rỉ một bộ mô tả tệp mỗi khung hình và cửa sổ sẽ ngừng vẽ trong vài phút.",
         fallbackNote:
           "Kết xuất bằng GPU đã gây sập khi khởi chạy trên hệ thống này, nên Unsloth đang dùng kết xuất bằng CPU.",
         tryAgain: "Thử lại GPU",

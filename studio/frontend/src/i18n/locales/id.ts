@@ -2798,7 +2798,7 @@ export const id = {
         oldWebkitWarning:
           "WebKitGTK {version} di Wayland: rendering GPU dapat mogok saat diluncurkan di NVIDIA dengan penskalaan pecahan (bug WebKit 280210). Jika terjadi, Unsloth akan kembali ke rendering CPU dengan sendirinya. Di WebKitGTK 2.50.4, tidak ada peningkatan kecepatan yang terukur (8 fps dalam kedua kasus), jadi Aktif tidak disarankan di sini.",
         oldDriverWarning:
-          "Driver NVIDIA {version} di X11: Unsloth menonaktifkan rendering GPU hingga driver versi 610 atau yang lebih baru. Driver lama membocorkan satu file descriptor per frame, dan jendela berhenti menggambar dalam hitungan menit.",
+          "Driver NVIDIA {version} di X11: Unsloth menonaktifkan rendering GPU hingga driver versi 590 atau yang lebih baru. Driver lama membocorkan satu file descriptor per frame, dan jendela berhenti menggambar dalam hitungan menit.",
         fallbackNote:
           "Rendering GPU mogok saat diluncurkan di sistem ini, jadi Unsloth menggunakan rendering CPU.",
         tryAgain: "Coba GPU lagi",
