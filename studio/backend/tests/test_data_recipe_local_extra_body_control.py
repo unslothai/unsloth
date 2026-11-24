@@ -20,7 +20,12 @@ def _inject(monkeypatch, extra_body):
         sys.modules, "routes.inference", SimpleNamespace(get_llama_cpp_backend = lambda: llama)
     )
     monkeypatch.setitem(
-        sys.modules, "core.inference", SimpleNamespace(get_inference_backend = lambda: backend)
+        sys.modules,
+        "core.inference",
+        SimpleNamespace(
+            get_inference_backend = lambda: backend,
+            model_slots = SimpleNamespace(visible = lambda: [], in_slot = lambda slot, fn: fn()),
+        ),
     )
     monkeypatch.setattr(
         route, "_resolve_local_v1_endpoint", lambda request: "http://127.0.0.1:8888/v1"
