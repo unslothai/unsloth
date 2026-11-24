@@ -218,8 +218,7 @@ def test_vram_is_tight():
 
 
 def test_accelerator_memory_counts_what_the_hip_figure_misses(monkeypatch):
-    """Linux ROCm: the kernel's free figure wins when it is lower than HIP's, which misses Vulkan users. The cap is
-    the shared one in trusted_mem_get_info, reached through the diffusion snapshot."""
+    """Linux ROCm: the kernel's free figure wins when it is lower than HIP's, which misses Vulkan users."""
     import contextlib
     import types
 

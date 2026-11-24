@@ -3124,7 +3124,7 @@ def rocm_windows_free_is_untrusted() -> bool:
 
 
 def trusted_mem_get_info(device: Any = None, *, module: Any = None) -> tuple[int, int]:
-    """``mem_get_info`` with ROCm's free over-reports capped, for guards that budget against free VRAM. Linux ROCm: hipMemGetInfo counts only compute (KFD) allocations, so free is capped at the kernel's DRM figure, which also counts Vulkan users (llama-server, sd-server) and the desktop. Windows ROCm (#8403): on WDDM an overflow does not raise, the driver satisfies it from host RAM and the process grows past the card, so free is capped at what this process's torch allocator has NOT reserved, a true upper bound but still blind to other processes, so a ceiling rather than a measurement. Elsewhere the driver's own numbers pass through untouched. ``module`` defaults to torch.cuda; exceptions propagate."""
+    """``mem_get_info`` with ROCm's free over-report capped. Linux: at the kernel DRM figure, which also counts Vulkan users and the desktop that hipMemGetInfo misses. Windows (#8403): WDDM overflows into host RAM instead of raising, so free is capped at what torch has not reserved, an upper bound blind to other processes. ``module`` defaults to torch.cuda; exceptions propagate."""
     import torch
 
     mod = module if module is not None else torch.cuda
@@ -4256,7 +4256,7 @@ def _rocm_linux_sysfs_vram_by_pci_gb() -> dict[str, tuple[float, float]]:
 
 
 def rocm_linux_kernel_free_mib(device: Any = None, *, module: Any = None) -> Optional[int]:
-    """Free MiB of a ROCm device per DRM sysfs, which counts the Vulkan users and desktop hipMemGetInfo misses on Linux, or None. Matched by PCI address. The pool read is the one whose sysfs total is closest to the driver's total (hipMemGetInfo), within 10%: VRAM, or on a known APU (Strix Halo) the GTT pool, whose free figure is shared by every amdgpu device (``amdgpu_gtt_reading``). Neither (partitioned card) is another scope. Never raises."""
+    """Free MiB of a ROCm device per DRM sysfs (counts Vulkan users and the desktop), or None. Matched by PCI address; reads the pool whose total is closest to hipMemGetInfo's, within 10%: VRAM, or on a known APU the GTT pool, shared by every amdgpu device (``amdgpu_gtt_reading``). Neither (partitioned card) is another scope. Never raises."""
     if platform.system() != "Linux":
         return None
     try:
@@ -4277,7 +4277,7 @@ def rocm_linux_kernel_free_mib(device: Any = None, *, module: Any = None) -> Opt
 
             read = lambda name: _sysfs_int(Path(dev_dir, f"mem_info_{name}"))
             pools = ["vram"] + (["gtt"] if _rocm_props_unified_status(props) is True else [])
-            # Chosen by size alone (VRAM, listed first, wins a tie as in the driver); only its use is then read.
+            # VRAM, listed first, wins a size tie, as in the driver.
             gaps = [
                 (abs(read(f"{p}_total") - torch_total), i)
                 for i, p in enumerate(pools)

@@ -99,20 +99,17 @@ def _hip(
     free,
     driver_total = None,
 ):
-    """A torch.cuda stand-in whose hipMemGetInfo reports ``free`` of ``driver_total`` (default the props total)."""
     mod = _module(bus, total)
     mod.mem_get_info = lambda *a: (free, total if driver_total is None else driver_total)
     return mod
 
 
 def test_trusted_mem_get_info_caps_hip_free_at_the_kernel_figure(tmp_path, monkeypatch, rocm_linux):
-    # A Vulkan llama-server holds 6 GiB HIP cannot see: HIP says 11.5 GiB free, the kernel 6.
     cards = [("0000:0b:00.0", 1, _card(tmp_path, "b", 6 * _GIB, 12 * _GIB))]
     monkeypatch.setattr(hardware, "_rocm_linux_amdgpu_cards", lambda: cards)
     hip = _hip(0x0B, 12 * _GIB, 11 * _GIB + _GIB // 2)
     assert hardware.trusted_mem_get_info(module = hip) == (6 * _GIB, 12 * _GIB)
     assert hardware.trusted_mem_get_info(0, module = hip) == (6 * _GIB, 12 * _GIB)
-    # The kernel figure only lowers free: a lower HIP reading stands.
     assert hardware.trusted_mem_get_info(module = _hip(0x0B, 12 * _GIB, 4 * _GIB)) == (
         4 * _GIB,
         12 * _GIB,
@@ -136,7 +133,6 @@ def test_trusted_mem_get_info_passes_cuda_through(tmp_path, monkeypatch):
 
 
 def test_segmenter_and_diffusion_planner_see_the_kernel_figure(tmp_path, monkeypatch, rocm_linux):
-    """The mask segmenter's room check and the diffusion snapshot both read the capped figure."""
     import torch
 
     from core.inference import diffusion_memory, diffusion_segment
@@ -154,7 +150,6 @@ def test_segmenter_and_diffusion_planner_see_the_kernel_figure(tmp_path, monkeyp
 
 @pytest.fixture
 def apu(monkeypatch):
-    """A part the classifier knows as an APU, whose shared GTT pool has ``apu.gtt_free`` bytes left."""
     from core.inference import video_minimax_h3
 
     state = types.SimpleNamespace(gtt_free = None)
@@ -166,8 +161,7 @@ def apu(monkeypatch):
 def test_an_apu_whose_driver_total_is_the_gtt_pool_reads_the_gtt_pool(
     tmp_path, monkeypatch, rocm_linux, apu
 ):
-    # Strix Halo as measured on gfx1151: a 512 MiB VRAM carve-out, a 100 GiB GTT pool that HIP reports as the
-    # device, and a Vulkan llama-server holding 4.8 GiB of GTT that hipMemGetInfo does not see.
+    # Strix Halo (gfx1151) as measured: 512 MiB carve-out, 100 GiB GTT, a Vulkan llama-server holding 4.8 GiB.
     cards = [
         ("0000:c3:00.0", 0, _card(tmp_path, "apu", 189 << 20, 512 << 20, 4864 << 20, 100 * _GIB))
     ]
@@ -176,12 +170,10 @@ def test_an_apu_whose_driver_total_is_the_gtt_pool_reads_the_gtt_pool(
     assert (
         hardware.rocm_linux_kernel_free_mib(module = _module(0xC3, 100 * _GIB)) == 100 * 1024 - 4864
     )
-    # A total matching neither pool is still unknown.
     assert hardware.rocm_linux_kernel_free_mib(module = _module(0xC3, 40 * _GIB)) is None
 
 
 def test_the_pool_closest_to_the_driver_total_wins(tmp_path, monkeypatch, rocm_linux, apu):
-    # Both pools within 10% of the driver total: HIP reports the 34 GiB GTT pool, not the 32 GiB carve-out.
     cards = [("0000:c3:00.0", 0, _card(tmp_path, "apu", 1 * _GIB, 32 * _GIB, 24 * _GIB, 34 * _GIB))]
     monkeypatch.setattr(hardware, "_rocm_linux_amdgpu_cards", lambda: cards)
     apu.gtt_free = 10 * _GIB
@@ -199,7 +191,6 @@ def test_gtt_is_only_read_on_a_known_apu(tmp_path, monkeypatch, rocm_linux):
 
 
 def test_vram_wins_a_size_tie_with_gtt(tmp_path, monkeypatch, rocm_linux, apu):
-    # Equal pools: the driver only prefers GTT when it is strictly larger.
     cards = [("0000:c3:00.0", 0, _card(tmp_path, "apu", 2 * _GIB, 32 * _GIB, 30 * _GIB, 32 * _GIB))]
     monkeypatch.setattr(hardware, "_rocm_linux_amdgpu_cards", lambda: cards)
     apu.gtt_free = 2 * _GIB
