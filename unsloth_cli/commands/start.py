@@ -2374,7 +2374,9 @@ def _pin_loaded_quant(
 def _pin_served_quant(base: str, key: str, entry: dict, variant: str) -> dict:
     # A low-disk fallback can serve another quant than the one asked for: pin what runs.
     named = _inference_status(base, key, f"{entry.get('id')}:{variant}")
-    if str(named.get("gguf_variant") or "").casefold() != variant.casefold():
+    # An unmatched scoped read answers with another model's status.
+    ours = _model_id_matches(named.get("active_model"), entry.get("id"), allow_casefold = True)
+    if not ours or str(named.get("gguf_variant") or "").casefold() != variant.casefold():
         named = _inference_status(base, key, entry["id"])
         variant = named.get("gguf_variant") or variant
     return _pin_loaded_quant(entry, _loaded_models(base, key), variant, bool(named.get("is_gguf")))

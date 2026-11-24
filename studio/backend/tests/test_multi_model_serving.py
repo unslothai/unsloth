@@ -1063,6 +1063,22 @@ def test_another_quant_that_does_not_fit_replaces_its_repo_and_nothing_else(
     assert (primary.model_identifier, primary.hf_variant) == ("org/A-GGUF", "Q8_0")
 
 
+def test_a_fallback_onto_a_served_quant_keeps_one_copy(backends, monkeypatch):
+    primary, extra = backends
+    loaded = LoadResponse.model_construct(status = "loaded", model = "org/A-GGUF", display_name = "A")
+    _gated_load_fakes(monkeypatch, short_fits = [], response = loaded)
+    fake = inf._run_tracked_load_model_impl
+
+    async def low_disk(request, *args, **kwargs):
+        return await fake(request.model_copy(update = {"gguf_variant": "Q4_K_M"}), *args, **kwargs)
+
+    monkeypatch.setattr(inf, "_run_tracked_load_model_impl", low_disk)
+    request = LoadRequest(model_path = "org/A-GGUF", gguf_variant = "Q8_0", alongside = True)
+    asyncio.run(inf.load_model_gated(request, None, "s"))
+    assert model_slots.slots == [extra] and _loaded() == [("org/B-GGUF", "Q8_0")]
+    assert (primary.model_identifier, primary.hf_variant) == ("org/A-GGUF", "Q4_K_M")
+
+
 def test_an_alongside_load_counts_as_activity(backends, monkeypatch):
     stamped = []
     monkeypatch.setattr(keepwarm, "_note_activity", lambda: stamped.append(True))

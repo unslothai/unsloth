@@ -1265,7 +1265,11 @@ def test_a_low_disk_fallback_pins_the_quant_that_is_served(monkeypatch):
     monkeypatch.setattr(
         start_cli,
         "_inference_status",
-        lambda base, key, model = None: {"is_gguf": True, "gguf_variant": served.get(model)},
+        lambda base, key, model = None: (
+            {"is_gguf": True, "active_model": repo, "gguf_variant": served[model]}
+            if model in served
+            else {"is_gguf": True, "active_model": "org/Other-GGUF", "gguf_variant": "Q8_0"}
+        ),
     )
     monkeypatch.setattr(
         start_cli, "_loaded_models", lambda base, key: [{"id": repo, "loaded": True}]
