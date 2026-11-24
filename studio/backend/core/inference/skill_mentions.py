@@ -220,7 +220,6 @@ def load_mentioned_skills(
         for name in names:
             if name not in known_names or name in seen:
                 continue
-            seen.add(name)
             # Historical rebuild only restores skills that are still loadable; unavailable /
             # disabled reporting stays on the latest turn that named them.
             if not is_latest and name not in loadable:
@@ -229,6 +228,17 @@ def load_mentioned_skills(
                 mode, bypass = permission_upgrade.apply(mode, bypass)
             if cancel_event is not None and cancel_event.is_set():
                 return
+            # Ask-gated loads need a latest-turn approval. A historical @mention alone
+            # must not establish that the load was authorized (deny must not reinject).
+            ask_gated = (
+                name in loadable
+                and confirm_tool_calls
+                and not bypass
+                and mode not in ("auto", "off")
+            )
+            if not is_latest and ask_gated:
+                continue
+            seen.add(name)
             event = {
                 "type": "skill_load",
                 "load_id": f"skill-load-{uuid.uuid4().hex}",
@@ -236,13 +246,7 @@ def load_mentioned_skills(
                 "resource": "SKILL.md",
             }
             # Approvals only for a skill newly named on this turn; historical rebuilds stay silent.
-            if (
-                is_latest
-                and name in loadable
-                and confirm_tool_calls
-                and not bypass
-                and mode not in ("auto", "off")
-            ):
+            if is_latest and ask_gated:
                 approval_id = new_approval_id()
                 slot = begin_tool_decision(session_id, approval_id)
                 from state.tool_approvals import bind_permission_upgrade

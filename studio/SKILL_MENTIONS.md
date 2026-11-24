@@ -30,8 +30,10 @@ is deliberately not a Markdown plugin/runtime.
 Loaded `SKILL.md` bodies are appended to the **user message that mentioned the
 skill**, not the system prompt. On later turns the same mentions are rebuilt onto
 those earlier user messages so the system prefix stays identical for llama.cpp
-prompt caching. Approval cards still fire only for skills newly named on the
-latest user turn.
+prompt caching when Ask confirmation is not required. Under Ask, a historical
+`@mention` alone cannot establish that a load was approved, so denied skills are
+never silently re-read on a follow-up. Approval cards still fire only for skills
+newly named on the latest user turn.
 
 ## Context and evidence
 

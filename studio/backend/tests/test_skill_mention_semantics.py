@@ -276,6 +276,44 @@ def test_ask_requires_actual_scoped_approval_before_read(mention_client, monkeyp
         assert events[-1]["detail"] in messages[0]["content"]
 
 
+def test_ask_deny_does_not_reinject_on_historical_rebuild(mention_client):
+    """Denied @skill must not be silently read when a later turn rebuilds history."""
+    _, _, path = mention_client
+    manifest = path.read_text()
+    first = [{"role": "user", "content": "@skill-creator"}]
+    gen = mentions.load_mentioned_skills(
+        first,
+        [READ_SKILL_TOOL],
+        permission_mode = "ask",
+        confirm_tool_calls = True,
+        session_id = "deny-then-follow-up",
+    )
+    event = next(gen)
+    assert event["status"] == "awaiting_approval"
+    from state.tool_approvals import resolve_tool_decision
+
+    assert resolve_tool_decision(event["approval_id"], "deny", session_id = "deny-then-follow-up")
+    events = list(gen)
+    assert events[-1]["status"] == "unavailable"
+    assert manifest not in first[0]["content"]
+
+    follow_up = [
+        {"role": "user", "content": "@skill-creator"},
+        {"role": "assistant", "content": "Skill was not loaded."},
+        {"role": "user", "content": "What next?"},
+    ]
+    rebuilt, rebuild_events = _load(
+        messages = follow_up,
+        permission_mode = "ask",
+        confirm_tool_calls = True,
+        session_id = "deny-then-follow-up",
+    )
+    assert rebuild_events == []
+    assert manifest not in rebuilt[0]["content"]
+    assert "Unsloth loaded Agent Skill" not in rebuilt[0]["content"]
+    assert rebuilt[2]["content"] == "What next?"
+
+
 def test_closing_parked_preload_cleans_approval_slot(mention_client):
     from state.tool_approvals import tool_decision_is_pending
 
