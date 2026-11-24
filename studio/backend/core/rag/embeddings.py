@@ -611,6 +611,9 @@ def _get(model_name: str | None = None):
             from utils.hf_cache_settings import active_hf_hub_cache
 
             _gate_st_custom_modules()
+            from utils.security import st_config_args
+
+            st_config_args.install()
 
             logger.info("loading embedding model %s on %s", name, device)
             st_kwargs = dict(
