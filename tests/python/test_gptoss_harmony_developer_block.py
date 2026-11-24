@@ -70,13 +70,17 @@ def _developer_block(text):
     return text[start : text.index("<|end|>", start) + len("<|end|>")]
 
 
+CASES = [
+    pytest.param(key, role, id = f"{case}-{role}")
+    for key, case in zip(EXPECTED, ["instr", "instr_tools", "tools"])
+    for role in (["system", "developer"] if key[0] else ["system"])
+]
+
+
 @pytest.mark.parametrize("name", ["gpt-oss", "gptoss"])
-@pytest.mark.parametrize("role", ["system", "developer"])
-@pytest.mark.parametrize("key", list(EXPECTED), ids = ["instr", "instr_tools", "tools"])
-def test_developer_block_matches_harmony(name, role, key):
+@pytest.mark.parametrize("key, role", CASES)
+def test_developer_block_matches_harmony(name, key, role):
     instructions, tools = key
-    if not instructions and role == "developer":
-        pytest.skip("no instructions: role is irrelevant")
     out = _render(name, instructions, tools, role)
     assert _developer_block(out) == EXPECTED[key]
 
