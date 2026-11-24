@@ -132,6 +132,38 @@ test("a refusal reaches every caller and the next ask requests again", async () 
   assert.deepEqual(await retry, plan());
 });
 
+test("a plan still pending past the share window is not joined", async () => {
+  requests.length = 0;
+  const realNow = Date.now;
+  const start = realNow();
+  try {
+    Date.now = () => start;
+    const stalled = inFlightMediaDownloadPlan("images", body(), 0);
+    Date.now = () => start + 4_999;
+    const joined = inFlightMediaDownloadPlan("images", body(), 0);
+    await tick();
+    assert.equal(requests.length, 1);
+    assert.equal(joined, stalled);
+    Date.now = () => start + 5_000;
+    const fresh = inFlightMediaDownloadPlan("images", body(), 0);
+    const freshJoined = inFlightMediaDownloadPlan("images", body(), 0);
+    await tick();
+    assert.equal(requests.length, 2);
+    assert.notEqual(fresh, stalled);
+    assert.equal(freshJoined, fresh);
+    // The stalled request settling late must not drop the newer entry.
+    requests[0].settle(200, plan());
+    await stalled;
+    assert.equal(inFlightMediaDownloadPlan("images", body(), 0), fresh);
+    await tick();
+    assert.equal(requests.length, 2);
+    requests[1].settle(200, plan());
+    await fresh;
+  } finally {
+    Date.now = realNow;
+  }
+});
+
 test("each caller keeps its own handling of a shared answer", async () => {
   requests.length = 0;
   // biome-ignore lint/style/useNamingConvention: API schema
