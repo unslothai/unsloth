@@ -897,7 +897,7 @@ class ManagedEngine:
                         if self._mamba_blocks:
                             raise _MambaSeqLimit(message, self._mamba_blocks)
                         raise _EngineExited(message)
-                    # Skip the costly ownership scan (and its false "not listening" error) until bound.
+                    # Skip the costly ownership scan (and its false "not listening" error) until the engine listens.
                     if not _port_accepts(self.base_url):
                         self._cancel.wait(0.25)
                         continue
