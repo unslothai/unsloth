@@ -236,6 +236,22 @@ async def video_download_plan(
                 gpu_ordinal = gpu_ordinal,
                 checkpoint_filename = request.gguf_filename,
                 checkpoint_repo = request.model_path,
+                speed_mode = request.speed_mode,
+                base_repo = request.base_repo,
+            )
+        elif fam is not None:
+            # Training holds the card, so no GPU probe; the CPU host-RAM check runs none and still applies.
+            from core.inference.video import refuse_video_cpu_host_ram
+            await asyncio.to_thread(
+                refuse_video_cpu_host_ram,
+                fam,
+                model_kind = kind,
+                text_encoder_quant = request.text_encoder_quant,
+                transformer_quant = request.transformer_quant,
+                speed_mode = request.speed_mode,
+                base_repo = request.base_repo,
+                checkpoint_filename = request.gguf_filename,
+                checkpoint_repo = request.model_path,
             )
         if fam is not None:
             from core.inference.video import refuse_without_guardrail_access
@@ -449,6 +465,8 @@ async def load_video_model_gated(
             gpu_ordinal = gpu_ordinal,
             checkpoint_filename = request.gguf_filename,
             checkpoint_repo = request.model_path,
+            speed_mode = request.speed_mode,
+            base_repo = request.base_repo,
         )
         # Speech GGUF check here, since the backend's runs after acquire_for evicts chat.
         from core.inference.diffusion_compat import assert_pick_is_not_speech

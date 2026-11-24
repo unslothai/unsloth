@@ -4,23 +4,26 @@
 """Host RAM a video load needs on CPU-only torch, priced before anything downloads.
 
 With no GPU PyTorch can use, a video pipeline resolves to the float32 CPU target: every dense component is upcast
-from its stored bf16 to float32 and held in anonymous host memory, which nothing can page out. A GGUF denoiser is read
-as views of its file mapping (page cache the kernel can drop and re-read), so it adds no anonymous floor. A host short
-of the floor is OOM-killed mid-load or mid-render, after a multi-GB download; this refuses it up front instead.
+from its stored bf16 to float32 and held in anonymous host memory, which nothing can page out. A GGUF denoiser read
+through Studio's mmap hook is views of its file mapping (page cache the kernel can drop and re-read), so it adds no
+anonymous floor; with the hook off (Windows, ``UNSLOTH_DIFFUSION_GGUF_MMAP=0``) diffusers copies the whole file. A host
+short of the floor is OOM-killed mid-load or mid-render, after a multi-GB download; this refuses it up front instead.
 
-The estimate is a floor, not a forecast, so a load that fits is never refused: unmeasured routes take the cheapest
-reading of each term (a hosted fp8 / int8 encoder at its stored size even if CPU later widens it). Calibration, Colab
-CPU-HM (8 vCPU, 50 GiB), LTX-2.5 distilled UD-Q4_K_XL GGUF at 768x512x33, 4 steps, process tree RssAnon:
-28.7 GB peak uncapped (42.1 GB RSS with the mapped GGUF), 29.2 GB peak with only 32.2 GB available (rendered).
-This module prices that load at 28.4 GB. MiniMax-H3 GGUF runs on the native engine (sd.cpp) on such a host and keeps
-its weights mapped: 5.1 GB anonymous peak at 864x480x124 (23.9 GB RSS).
+The text encoder is priced as the loader settles it (``video.settle_video_te_quant``): on CPU an automatic fp8 / int8
+pick is dropped and the released encoder loads in float32. Everything else is a floor, so a load that fits is not
+refused. Calibration, Colab CPU-HM (8 vCPU, 50 GiB), LTX-2.5 distilled UD-Q4_K_XL GGUF at 768x512x33, 4 steps,
+process tree RssAnon: 28.7 / 29.0 GB peak uncapped (42.1 GB RSS with the mapped GGUF), 29.2 GB with only 32.2 GB
+available (rendered). This module prices that load at 28.4 GB. MiniMax-H3 GGUF runs on the native engine (sd.cpp) on
+such a host and keeps its weights mapped: 5.1 GB anonymous peak at 864x480x124 (23.9 GB RSS).
 
 ``UNSLOTH_DIFFUSION_HOST_RAM_CHECK=0`` (the image and LTX-2.5 fp16 host checks' switch) turns this off."""
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
-from typing import Any, Callable, Optional
+from pathlib import Path
+from typing import Any, Optional
 
 # LTX-2.5's Gemma 4 encoder worker holding the hosted int8 ConvRot file on CPU: 8,087 MiB peak worker RSS (measured,
 # CPU-HM). Lower than the 13.1 GB file because the worker reads it through a mapping.
@@ -30,6 +33,8 @@ H3_CPU_NATIVE_HOST_GB = 5.1
 # Activations, GGUF dequant scratch and the tiled VAE decode for a short clip at the smallest size: the LTX-2.5 peak
 # above minus its resident weights (28.7 - 8.5 - 18.4 = 1.8 GB), rounded down so the estimate stays under it.
 CPU_VIDEO_WORKING_SET_GB = 1.5
+# A copied GGUF whose size cannot be read: the smallest curated quant's share of bf16 (LTX-2.5 Q2_K 8.46 / 42.0).
+GGUF_MIN_BF16_FRACTION = 0.2
 
 _MIB = 1 << 20
 _GB_PER_MIB = _MIB / 1e9
@@ -37,13 +42,15 @@ _GB_PER_MIB = _MIB / 1e9
 
 @dataclass(frozen = True)
 class CpuVideoHostNeed:
-    """Decimal GB of anonymous host memory, per term. ``denoiser_mapped``: a GGUF read from its file mapping."""
+    """Decimal GB of anonymous host memory, per term. ``denoiser_mapped``: a GGUF read from its file mapping;
+    ``denoiser_gguf_copy``: a GGUF diffusers copies into memory (the hook is off)."""
 
     denoiser_gb: float
     text_encoder_gb: float
     other_gb: float
     working_gb: float
     denoiser_mapped: bool = False
+    denoiser_gguf_copy: bool = False
     text_encoder_dense: bool = False
     text_encoder_quant_gb: Optional[float] = None
     text_encoder_quant_label: Optional[str] = None
@@ -60,41 +67,35 @@ def _sizes(fam: Any) -> Optional[tuple[float, float, float]]:
 
 
 def _text_encoder_gb(
-    fam: Any, text_encoder_quant: Optional[str], bf16_gb: float
+    fam: Any, te_scheme: Optional[str], te_hosted: bool, te_hosted_available: bool, bf16_gb: float
 ) -> tuple[float, bool, Optional[float], Optional[str]]:
-    """(host GB, priced dense, quantized alternative GB, its label). Raises ValueError for an unknown scheme."""
-    from .diffusion_precision import normalize_te_quant, te_quant_is_auto
-
+    """(host GB, priced dense, quantized alternative GB, its label) for the scheme the loader settled on."""
     if bf16_gb <= 0:
         return 0.0, False, None, None
     if getattr(fam, "name", None) == "ltx-2.5":
-        from .video_ltx25 import ltx25_te_quant_scheme
-
-        # Auto takes the hosted int8 file (the floor); none / off and an Auto that cannot confirm it read bf16,
-        # widened to float32 on the CPU host.
-        if ltx25_te_quant_scheme(text_encoder_quant):
+        if te_scheme and te_hosted:
             return LTX25_CPU_TE_INT8_HOST_GB, False, None, None
-        return bf16_gb * 2.0, True, LTX25_CPU_TE_INT8_HOST_GB, "int8"
-    auto = getattr(fam, "te_quant_auto", None)
-    hosted = bool(getattr(fam, "te_prequant_repos", None))
-    if te_quant_is_auto(text_encoder_quant):
-        scheme = normalize_te_quant(auto) if auto else None
-    else:
-        scheme = normalize_te_quant(text_encoder_quant)
-    if scheme is not None:
+        # bf16 widened to float32 on the CPU host; an int8 the worker quantizes at load reads that dense copy first.
+        alt = LTX25_CPU_TE_INT8_HOST_GB if te_hosted_available else None
+        return bf16_gb * 2.0, True, alt, ("int8" if alt is not None else None)
+    if te_scheme:
         # A pre-cast fp8 / int8 encoder stores one byte per weight; CPU may widen it later, but never below this.
         return bf16_gb / 2.0, False, None, None
-    if auto and hosted:
-        return bf16_gb * 2.0, True, bf16_gb / 2.0, str(normalize_te_quant(auto))
     return bf16_gb * 2.0, True, None, None
 
 
 def _denoiser_gb(
-    fam: Any, model_kind: str, transformer_quant: Optional[str], bf16_gb: float
+    fam: Any,
+    model_kind: str,
+    transformer_quant: Optional[str],
+    bf16_gb: float,
+    gguf_copy_gb: Optional[float],
 ) -> tuple[float, bool]:
     """(host GB, read from a file mapping). Raises ValueError for an unknown scheme."""
     if model_kind == "gguf":
-        return 0.0, True
+        if gguf_copy_gb is None:
+            return 0.0, True
+        return float(gguf_copy_gb), False
     from .diffusion_transformer_quant import normalize_transformer_quant
 
     pinned = normalize_transformer_quant(transformer_quant)
@@ -108,10 +109,15 @@ def cpu_video_host_need(
     fam: Any,
     *,
     model_kind: str,
-    text_encoder_quant: Optional[str] = None,
+    te_scheme: Optional[str] = None,
+    te_hosted: bool = False,
+    te_hosted_available: bool = False,
     transformer_quant: Optional[str] = None,
+    gguf_copy_gb: Optional[float] = None,
 ) -> Optional[CpuVideoHostNeed]:
-    """The anonymous host-RAM floor of this load on the float32 CPU target, or None when it cannot be sized."""
+    """The anonymous host-RAM floor of this load on the float32 CPU target, or None when it cannot be sized.
+    ``te_scheme``: the encoder scheme the loader runs (None = the released encoder); ``te_hosted``: LTX-2.5's hosted
+    int8 file serves it; ``gguf_copy_gb``: the GGUF denoiser's in-memory copy, None when it is read mapped."""
     if getattr(fam, "name", None) == "minimax-h3":
         # GGUF runs on the native engine with its weights mapped; a dense H3 pick is refused on CPU elsewhere.
         if model_kind != "gguf":
@@ -123,10 +129,12 @@ def cpu_video_host_need(
     if sizes is None:
         return None
     try:
-        denoiser, mapped = _denoiser_gb(fam, model_kind, transformer_quant, sizes[0])
-        te, te_dense, te_alt, te_alt_label = _text_encoder_gb(fam, text_encoder_quant, sizes[1])
+        denoiser, mapped = _denoiser_gb(fam, model_kind, transformer_quant, sizes[0], gguf_copy_gb)
     except ValueError:
         return None  # an unsupported scheme is refused by the precision checks with its own message
+    te, te_dense, te_alt, te_alt_label = _text_encoder_gb(
+        fam, te_scheme, te_hosted, te_hosted_available, sizes[1]
+    )
     # The table's third term is bf16-resident except where the family already keeps its VAE in float32.
     other = sizes[2] * (1.0 if getattr(fam, "vae_force_fp32", False) else 2.0)
     return CpuVideoHostNeed(
@@ -135,13 +143,69 @@ def cpu_video_host_need(
         other,
         CPU_VIDEO_WORKING_SET_GB,
         denoiser_mapped = mapped,
+        denoiser_gguf_copy = model_kind == "gguf" and not mapped,
         text_encoder_dense = te_dense,
         text_encoder_quant_gb = te_alt,
         text_encoder_quant_label = te_alt_label,
     )
 
 
-def _status_held_bytes(pid: int) -> Optional[int]:
+def gguf_copy_gb(
+    fam: Any,
+    repo: Optional[str],
+    filename: Optional[str],
+    *,
+    mapped: Optional[bool] = None,
+) -> Optional[float]:
+    """GB diffusers copies into memory for this GGUF denoiser, or None when Studio's mmap hook reads it mapped. The size
+    comes from a local file, the Hub cache, then the Hub; unreadable, the smallest curated quant's share of bf16. A
+    dual-expert family loads both expert files. Never raises."""
+    try:
+        if mapped is None:
+            from .diffusion_gguf_mmap import gguf_mmap_enabled
+            mapped = gguf_mmap_enabled()
+        if mapped:
+            return None
+        size = 0
+        if repo and filename:
+            local = Path(str(repo)) / str(filename)
+            if local.is_file():
+                size = local.stat().st_size
+            elif Path(str(filename)).is_file():
+                size = Path(str(filename)).stat().st_size
+            else:
+                try:
+                    from huggingface_hub import try_to_load_from_cache
+                    hit = try_to_load_from_cache(str(repo), str(filename))
+                    if isinstance(hit, str) and os.path.isfile(hit):
+                        size = os.path.getsize(hit)
+                except Exception:  # noqa: BLE001
+                    size = 0
+                if not size:
+                    from .diffusion import _hub_file_size
+                    size = _hub_file_size(str(repo), str(filename), None)
+        gb = size / 1e9 if size else None
+        if gb is None:
+            sizes = _sizes(fam)
+            gb = sizes[0] * GGUF_MIN_BF16_FRACTION if sizes else 0.0
+        return gb * (2.0 if getattr(fam, "is_moe", False) else 1.0)
+    except Exception:  # noqa: BLE001 -- unsized: price the mapped floor
+        return None
+
+
+def _pss_bytes(pid: int) -> Optional[int]:
+    """Proportional anon + shmem bytes (shared pages split between their mappers), else RssAnon + RssShmem."""
+    try:
+        with open(f"/proc/{pid}/smaps_rollup", encoding = "utf-8") as handle:
+            found = {}
+            for line in handle:
+                key, _, value = line.partition(":")
+                if key in ("Pss_Anon", "Pss_Shmem"):
+                    found[key] = int(value.split()[0])
+        if len(found) == 2:
+            return (found["Pss_Anon"] + found["Pss_Shmem"]) * 1024
+    except (OSError, ValueError, IndexError):
+        pass
     try:
         with open(f"/proc/{pid}/status", encoding = "utf-8") as handle:
             found = {}
@@ -149,19 +213,16 @@ def _status_held_bytes(pid: int) -> Optional[int]:
                 key, _, value = line.partition(":")
                 if key in ("RssAnon", "RssShmem"):
                     found[key] = int(value.split()[0])
+        return (found["RssAnon"] + found["RssShmem"]) * 1024 if len(found) == 2 else None
     except (OSError, ValueError, IndexError):
         return None
-    return (found["RssAnon"] + found["RssShmem"]) * 1024 if len(found) == 2 else None
 
 
-def _process_tree_held_mib() -> int:
-    """Anonymous + shmem MiB held by this process and its children (encoder workers, engines a load evicts). Credited
-    back to the reading so a model this load replaces is not counted against it: the bias is toward admitting."""
+def _process_tree_pss_mib() -> int:
+    """PSS (anon + shmem) MiB of this process and its children: the most a resident video model can hand back."""
     try:
         import psutil
-    except Exception:  # noqa: BLE001
-        return 0
-    try:
+
         me = psutil.Process()
         procs = [me]
         try:
@@ -172,7 +233,7 @@ def _process_tree_held_mib() -> int:
         return 0
     total = 0
     for proc in procs:
-        held = _status_held_bytes(proc.pid)
+        held = _pss_bytes(proc.pid)
         if held is None:
             try:
                 held = int(proc.memory_info().rss)
@@ -182,16 +243,20 @@ def _process_tree_held_mib() -> int:
     return total // _MIB
 
 
-def cpu_video_host_capacity_mib() -> Optional[int]:
+def cpu_video_host_capacity_mib(release_gb: float = 0.0) -> Optional[int]:
     """Host MiB a CPU video load can take: available RAM (capped by an enforcing cgroup's headroom and the
-    ``UNSLOTH_DIFFUSION_HOST_RAM_LIMIT_MIB`` test hook) plus what this process tree already holds, capped at the
-    capacity (system total or cgroup limit). None when available RAM cannot be read."""
+    ``UNSLOTH_DIFFUSION_HOST_RAM_LIMIT_MIB`` test hook) plus what the load releases, capped at the capacity (system
+    total or cgroup limit). ``release_gb``: the resident video model this load replaces (the CPU branch leaves chat
+    and images resident), credited only up to what this process tree measurably holds. None when unreadable."""
     from .diffusion_small_host import host_ram_mib
 
     total, available = host_ram_mib()
     if available is None:
         return None
-    capacity = int(available) + _process_tree_held_mib()
+    credit = 0
+    if release_gb > 0:
+        credit = min(int(release_gb * 1e9) // _MIB, _process_tree_pss_mib())
+    capacity = int(available) + credit
     if total:
         capacity = min(capacity, int(total))
     return capacity
@@ -200,28 +265,48 @@ def cpu_video_host_capacity_mib() -> Optional[int]:
 def _advice(fam: Any, need: CpuVideoHostNeed, capacity_gb: float) -> str:
     gguf_repo = getattr(fam, "gguf_repo", None)
     has_gguf = bool(gguf_repo) or bool(getattr(fam, "is_moe", False))
-    options = []
-    floor = need.total_gb
-    if not need.denoiser_mapped and has_gguf:
-        floor -= need.denoiser_gb
-        where = f" from '{gguf_repo}'" if gguf_repo else ""
-        options.append(f"load a GGUF of it{where}, whose denoiser is read from disk as it runs")
-    if need.text_encoder_dense and need.text_encoder_quant_gb is not None:
-        floor -= need.text_encoder_gb - need.text_encoder_quant_gb
-        options.append(
-            f"leave the text encoder precision on Auto for the {need.text_encoder_quant_label} text encoder "
-            f"(about {need.text_encoder_quant_gb:.1f} GB instead of {need.text_encoder_gb:.1f})"
-        )
     tail = (
         "Free memory by closing other applications or unloading other models, or use a machine with more RAM or a "
         "supported GPU."
     )
+    options = []
+    floor = need.total_gb
+    if not need.denoiser_mapped and not need.denoiser_gguf_copy and has_gguf:
+        from .diffusion_gguf_mmap import gguf_mmap_enabled
+        if gguf_mmap_enabled():
+            floor -= need.denoiser_gb
+            where = f" from '{gguf_repo}'" if gguf_repo else ""
+            options.append(f"load a GGUF of it{where}, whose denoiser is read from disk as it runs")
+    if need.text_encoder_dense and need.text_encoder_quant_gb is not None:
+        floor -= need.text_encoder_gb - need.text_encoder_quant_gb
+        options.append(
+            f"use the {need.text_encoder_quant_label} text encoder (text encoder precision Auto or "
+            f"{need.text_encoder_quant_label}, speed not Off; about {need.text_encoder_quant_gb:.1f} GB instead of "
+            f"{need.text_encoder_gb:.1f})"
+        )
     if options:
         joined = options[0] if len(options) == 1 else f"{options[0]}, and {options[1]}"
         if floor <= capacity_gb:
             return f"To fit, {joined}: about {floor:.1f} GB."
         return (
             f"Even if you {joined}, it needs about {floor:.1f} GB, more than is available. {tail}"
+        )
+    if need.denoiser_gguf_copy:
+        rest = need.total_gb - need.denoiser_gb
+        room = capacity_gb - rest
+        unmap = (
+            ""
+            if os.name == "nt"
+            else " Or unset UNSLOTH_DIFFUSION_GGUF_MMAP=0 so the GGUF is read from disk instead of copied."
+        )
+        if room >= 1.0:
+            return (
+                f"The GGUF denoiser is copied into memory here (about {need.denoiser_gb:.1f} GB): a GGUF quant of "
+                f"at most about {room:.1f} GB fits.{unmap}"
+            )
+        return (
+            f"Its text encoder, VAE and other components plus the working set need about {rest:.1f} GB in float32 "
+            f"whatever the denoiser, so a lower GGUF quant does not fit either.{unmap} {tail}"
         )
     if need.denoiser_mapped and not need.native:
         return (
@@ -235,8 +320,12 @@ def cpu_video_host_shortfall(
     fam: Any,
     *,
     model_kind: str,
-    text_encoder_quant: Optional[str] = None,
+    te_scheme: Optional[str] = None,
+    te_hosted: bool = False,
+    te_hosted_available: bool = False,
     transformer_quant: Optional[str] = None,
+    gguf_copy: Optional[float] = None,
+    release_gb: float = 0.0,
 ) -> Optional[str]:
     """The refusal when this load's CPU host floor exceeds the host RAM it can take, else None. Call only on the
     float32 CPU target. Never raises; anything it cannot read refuses nothing."""
@@ -248,12 +337,15 @@ def cpu_video_host_shortfall(
         need = cpu_video_host_need(
             fam,
             model_kind = model_kind,
-            text_encoder_quant = text_encoder_quant,
+            te_scheme = te_scheme,
+            te_hosted = te_hosted,
+            te_hosted_available = te_hosted_available,
             transformer_quant = transformer_quant,
+            gguf_copy_gb = gguf_copy,
         )
         if need is None:
             return None
-        capacity_mib = cpu_video_host_capacity_mib()
+        capacity_mib = cpu_video_host_capacity_mib(release_gb)
         if capacity_mib is None:
             return None
         capacity_gb = capacity_mib * _GB_PER_MIB
@@ -265,11 +357,12 @@ def cpu_video_host_shortfall(
             parts = f"its working set at the default size, measured: {need.working_gb:.1f}"
         else:
             how = "runs on the CPU in float32 and"
-            denoiser = (
-                "denoiser read from its GGUF file"
-                if need.denoiser_mapped
-                else f"denoiser {need.denoiser_gb:.1f}"
-            )
+            if need.denoiser_mapped:
+                denoiser = "denoiser read from its GGUF file"
+            elif need.denoiser_gguf_copy:
+                denoiser = f"GGUF denoiser copied into memory {need.denoiser_gb:.1f}"
+            else:
+                denoiser = f"denoiser {need.denoiser_gb:.1f}"
             parts = (
                 f"{denoiser}, text encoder {need.text_encoder_gb:.1f}, VAE and other components "
                 f"{need.other_gb:.1f}, working set {need.working_gb:.1f}"
@@ -289,46 +382,14 @@ def cpu_video_host_shortfall(
     )
 
 
-def refuse_cpu_video_host_shortfall(
-    fam: Any,
-    *,
-    model_kind: str,
-    text_encoder_quant: Optional[str] = None,
-    transformer_quant: Optional[str] = None,
-    logger: Any = None,
-    resolve_target: Optional[Callable[[], Any]] = None,
-) -> None:
-    """RuntimeError (the routes' 409) for a video load the CPU host cannot hold; a no-op unless the diffusion target is
-    the CPU, so GPU / MPS / XPU loads never reach the sizing. Runs before eviction and before any download.
-    ``resolve_target``: the caller's own target resolver (the one its other precision checks use)."""
-    from . import diffusion_device
-
-    # Probe-free first, so an accelerator host never runs the dtype probes; then the target the loader itself uses.
-    if not diffusion_device.diffusion_target_is_cpu():
-        return
-    target = (resolve_target or diffusion_device.resolve_diffusion_device_target)()
-    if getattr(target, "backend", None) != "cpu":
-        return
-    shortfall = cpu_video_host_shortfall(
-        fam,
-        model_kind = model_kind,
-        text_encoder_quant = text_encoder_quant,
-        transformer_quant = transformer_quant,
-    )
-    if shortfall is None:
-        return
-    if logger is not None:
-        logger.error("video.cpu_host_ram: refusing load: %s", shortfall)
-    raise RuntimeError(shortfall)
-
-
 __all__ = [
     "CPU_VIDEO_WORKING_SET_GB",
     "CpuVideoHostNeed",
+    "GGUF_MIN_BF16_FRACTION",
     "H3_CPU_NATIVE_HOST_GB",
     "LTX25_CPU_TE_INT8_HOST_GB",
     "cpu_video_host_capacity_mib",
     "cpu_video_host_need",
     "cpu_video_host_shortfall",
-    "refuse_cpu_video_host_shortfall",
+    "gguf_copy_gb",
 ]

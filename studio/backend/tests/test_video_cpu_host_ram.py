@@ -7,8 +7,11 @@ GPU / MPS targets never reach the sizing."""
 import pytest
 import torch
 
+import core.inference.diffusion as diffusion_module
 import core.inference.diffusion_device as dd
+import core.inference.diffusion_gguf_mmap as gguf_mmap
 import core.inference.diffusion_memory as dm
+import core.inference.diffusion_te_prequant as tp
 import core.inference.video as v
 from core.inference.diffusion_device import DiffusionDeviceTarget
 from core.inference.llama_cpp import LlamaCppBackend
@@ -21,6 +24,10 @@ except (
 ):  # the base arm (no CPU host check): the behaviour tests below still run against it
     vch = None
 
+_REAL_CAPACITY = dm._host_ram_capacity_mib
+_REAL_AVAILABLE = dm._available_system_memory_mib
+_REAL_MMAP = gguf_mmap.gguf_mmap_enabled
+
 FAM = {f.name: f for f in VIDEO_FAMILIES}
 LTX25, LTX2, H3 = FAM["ltx-2.5"], FAM["ltx-2"], FAM["minimax-h3"]
 WAN5B, A14B, WAN13 = FAM["wan2.2-ti2v-5b"], FAM["wan2.2-t2v-a14b"], FAM["wan2.1-t2v-1.3b"]
@@ -32,8 +39,6 @@ GB_PER_GIB = 1024**3 / 1e9
 LTX25_MEASURED_ANON_GB = 28.7
 LTX25_MEASURED_ANON_TIGHT_GB = 29.2
 LTX25_RENDERED_AVAILABLE_GB = 32.2
-# Wan2.1-T2V-1.3B pipeline on CPU, 832x480x5: 24.5 GiB peak server RSS (PR #14247).
-WAN13_MEASURED_RSS_GB = 24.5 * GB_PER_GIB
 
 
 def _target(
@@ -54,7 +59,9 @@ def _target(
 
 @pytest.fixture
 def host(monkeypatch):
-    """``host(device, total_gb, available_gb, held_gb=0)``: the diffusion target and the host RAM readings."""
+    """``host(device, total_gb, available_gb, held_gb=0)``: the diffusion target and the host RAM readings.
+    ``held_gb``: the resident video model this load replaces (its estimate and the process tree's PSS). Hermetic:
+    the Hub is never asked, the GGUF mmap hook reads as on Linux unless a test turns it off."""
     for name in (
         "UNSLOTH_DIFFUSION_SMALL_HOST",
         "UNSLOTH_DIFFUSION_HOST_RAM_CHECK",
@@ -82,7 +89,20 @@ def host(monkeypatch):
             dm, "_available_system_memory_mib", lambda: int(available_gb * 1e9 / 2**20)
         )
         if vch is not None:
-            monkeypatch.setattr(vch, "_process_tree_held_mib", lambda: int(held_gb * 1e9 / 2**20))
+            # raising = False: the previous head of this branch has neither, and its arm still runs these tests
+            monkeypatch.setattr(
+                vch, "_process_tree_pss_mib", lambda: int(held_gb * 1e9 / 2**20), raising = False
+            )
+            monkeypatch.setattr(
+                v, "_resident_video_cpu_release_gb", lambda: float(held_gb), raising = False
+            )
+            monkeypatch.setattr(
+                vch, "_process_tree_held_mib", lambda: int(held_gb * 1e9 / 2**20), raising = False
+            )
+            monkeypatch.setattr(gguf_mmap, "gguf_mmap_enabled", lambda: True)
+        # LTX-2.5's automatic int8 encoder is confirmed on the Hub; never ask it here.
+        monkeypatch.setattr(tp, "te_prequant_sources_confirmed", lambda *a, **k: True)
+        monkeypatch.setattr(diffusion_module, "_hub_file_size", lambda *a, **k: 0)
 
     return _set
 
@@ -117,14 +137,11 @@ def test_ltx25_gguf_on_a_24_gib_cgroup_is_refused_before_download(host):
 def test_real_cgroup_limit_reading_drives_the_refusal(host, monkeypatch):
     """Through the real host-RAM readers: a 24 GiB cgroup (1 GiB used, so 23 GiB left) on a huge host refuses."""
     host("cpu", 1, 1)
-    monkeypatch.undo()
-    target = _target("cpu")
-    monkeypatch.setattr(dd, "diffusion_target_is_cpu", lambda: True)
-    monkeypatch.setattr(dd, "resolve_diffusion_device_target", lambda *a, **k: target)
-    if vch is not None:
-        monkeypatch.setattr(vch, "_process_tree_held_mib", lambda: 0)
-    monkeypatch.delenv("UNSLOTH_DIFFUSION_HOST_RAM_CHECK", raising = False)
-    monkeypatch.delenv("UNSLOTH_DIFFUSION_HOST_RAM_LIMIT_MIB", raising = False)
+    # Undo only the two readings the fake cgroup must now drive; system total / available and the credit are fixed so
+    # the number is the same on every OS and runner.
+    monkeypatch.setattr(dm, "_host_ram_capacity_mib", _REAL_CAPACITY)
+    monkeypatch.setattr(dm, "_available_system_memory_mib", _REAL_AVAILABLE)
+    monkeypatch.setattr(dm, "_system_memory_mib", lambda: (2_000_000, 1_000_000))
     limit = 24 << 30
     monkeypatch.setattr(
         LlamaCppBackend,
@@ -142,22 +159,59 @@ def test_host_ram_limit_test_hook_caps_the_reading(host, monkeypatch):
     _refusal(LTX25, "gguf")
 
 
-def test_ltx25_dense_encoder_suggests_the_int8_encoder(host):
+@pytest.mark.parametrize("request_kw", [{"text_encoder_quant": "none"}, {"speed_mode": "off"}])
+def test_ltx25_dense_encoder_suggests_the_int8_encoder(host, request_kw):
+    """Encoder Off, and Speed Off with the encoder unset, both load the dense Gemma 4 in float32 (67.7 GB)."""
     host("cpu", 50 * GB_PER_GIB, 50 * GB_PER_GIB)
-    msg = _refusal(LTX25, "gguf", text_encoder_quant = "none")
-    assert "text encoder 47.8" in msg
-    assert "leave the text encoder precision on Auto for the int8 text encoder" in msg
+    msg = _refusal(LTX25, "gguf", **request_kw)
+    assert "needs about 67.7 GB" in msg and "text encoder 47.8" in msg
+    assert "use the int8 text encoder" in msg
     assert "about 28.4 GB." in msg
 
 
-def test_wan5b_dense_pipeline_suggests_its_gguf(host):
-    cap = 24 * GB_PER_GIB
-    host("cpu", cap, cap)
+def test_ltx25_speed_off_at_32_gb_is_refused(host):
+    host("cpu", 50 * GB_PER_GIB, LTX25_RENDERED_AVAILABLE_GB)
+    _refusal(LTX25, "gguf", speed_mode = "off")
+
+
+def test_ltx25_unconfirmed_hosted_encoder_prices_the_dense_one(host, monkeypatch):
+    host("cpu", 50 * GB_PER_GIB, LTX25_RENDERED_AVAILABLE_GB)
+    monkeypatch.setattr(tp, "te_prequant_sources_confirmed", lambda *a, **k: False)
+    assert "text encoder 47.8" in _refusal(LTX25, "gguf")
+
+
+def test_wan5b_auto_encoder_is_priced_dense_on_cpu(host):
+    """Auto fp8 is dropped on the CPU target and the released umT5 loads in float32: 32 GB is not enough."""
+    host("cpu", 50 * GB_PER_GIB, 32.0)
     msg = _refusal(WAN5B, "pipeline")
-    # DiT 10.0 bf16 -> 20.0 float32, hosted fp8 umT5 5.7, float32 VAE 2.8, working set 1.5
-    assert "needs about 30.0 GB" in msg and "denoiser 20.0" in msg
+    # DiT 10.0 bf16 -> 20.0 float32, umT5 11.4 -> 22.8, float32 VAE 2.8, working set 1.5
+    assert "needs about 47.1 GB" in msg and "denoiser 20.0" in msg and "text encoder 22.8" in msg
     assert "load a GGUF of it from 'unsloth/Wan2.2-TI2V-5B-GGUF'" in msg
-    assert "about 10.0 GB." in msg
+    assert "about 27.1 GB." in msg
+
+
+def test_gguf_copy_is_priced_when_the_mmap_hook_is_off(host, monkeypatch, tmp_path):
+    """Windows, or UNSLOTH_DIFFUSION_GGUF_MMAP=0: diffusers copies the whole GGUF into memory."""
+    host("cpu", 50 * GB_PER_GIB, LTX25_RENDERED_AVAILABLE_GB)
+    monkeypatch.setattr(gguf_mmap, "gguf_mmap_enabled", lambda: False)
+    name = "ltx-2.5-22b-distilled-UD-Q4_K_XL.gguf"
+    with open(tmp_path / name, "wb") as f:
+        f.truncate(14_000_234_880)  # sparse: only the size matters
+    msg = _refusal(LTX25, "gguf", checkpoint_repo = str(tmp_path), checkpoint_filename = name)
+    assert "needs about 42.4 GB" in msg and "GGUF denoiser copied into memory 14.0" in msg
+    # The copy is what a lower quant shrinks, so the advice names the size that fits.
+    assert "a GGUF quant of at most about 3.8 GB fits" in msg
+
+
+def test_gguf_copy_env_switch_reaches_the_price(host, monkeypatch):
+    host("cpu", 50 * GB_PER_GIB, LTX25_RENDERED_AVAILABLE_GB)
+    monkeypatch.setattr(gguf_mmap, "gguf_mmap_enabled", _REAL_MMAP)
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_GGUF_MMAP", "0")
+    # Unsized (no file, Hub not asked): the smallest curated quant's share of bf16, 42.0 x 0.2.
+    msg = _refusal(
+        LTX25, "gguf", checkpoint_repo = "unsloth/LTX-2.5-GGUF", checkpoint_filename = "x.gguf"
+    )
+    assert "GGUF denoiser copied into memory 8.4" in msg
 
 
 @pytest.mark.parametrize(
@@ -182,18 +236,35 @@ def test_available_not_total_is_the_ceiling(host):
     _refusal(LTX25, "gguf")
 
 
+def test_memory_the_load_keeps_is_not_credited(host, monkeypatch):
+    """16 GB available and 16 GB of chat in the process tree: the CPU branch leaves chat resident, so no credit."""
+    host("cpu", 64 * GB_PER_GIB, 16.0)
+    monkeypatch.setattr(vch, "_process_tree_pss_mib", lambda: int(16e9 / 2**20), raising = False)
+    monkeypatch.setattr(vch, "_process_tree_held_mib", lambda: int(16e9 / 2**20), raising = False)
+    _refusal(LTX25, "gguf")
+
+
+def test_resident_video_credit_is_capped_by_measured_pss(host, monkeypatch):
+    """A resident video model priced at 25 GB but holding only 4 GB of PSS credits 4 GB, not 25."""
+    host("cpu", 64 * GB_PER_GIB, 16.0, 25.0)
+    monkeypatch.setattr(vch, "_process_tree_pss_mib", lambda: int(4e9 / 2**20), raising = False)
+    _refusal(LTX25, "gguf")
+
+
 # ---- calibration and loads that fit ----------------------------------------------------------------------------
 
 
 def test_ltx25_price_sits_under_the_measured_peak_and_above_a_24_gib_cap():
-    need = vch.cpu_video_host_need(LTX25, model_kind = "gguf")
+    need = vch.cpu_video_host_need(LTX25, model_kind = "gguf", te_scheme = "int8", te_hosted = True)
     assert need.denoiser_gb == 0.0 and need.denoiser_mapped
     assert need.total_gb == pytest.approx(28.4, abs = 0.05)
     assert 24 * GB_PER_GIB < need.total_gb <= LTX25_MEASURED_ANON_GB <= LTX25_MEASURED_ANON_TIGHT_GB
 
 
-def test_wan13_price_never_exceeds_its_measured_peak():
-    assert vch.cpu_video_host_need(WAN13, model_kind = "pipeline").total_gb <= WAN13_MEASURED_RSS_GB
+def test_cpu_prices_the_dense_float32_encoder_the_loader_keeps():
+    need = vch.cpu_video_host_need(WAN13, model_kind = "pipeline")
+    # DiT 2.8 -> 5.6, umT5 11.4 -> 22.8, float32 VAE 0.5, working set 1.5
+    assert need.total_gb == pytest.approx(30.4, abs = 0.05) and need.text_encoder_dense
 
 
 @pytest.mark.parametrize(
@@ -213,8 +284,8 @@ def test_ltx25_loads_that_fit_are_not_refused(host, total_gb, available_gb, held
     _load(LTX25, "gguf", text_encoder_quant = "int8")
 
 
-def test_wan13_on_a_32_gib_host_is_not_refused(host):
-    host("cpu", 32 * GB_PER_GIB, 28.0)
+def test_wan13_on_a_32_gib_host_with_room_is_not_refused(host):
+    host("cpu", 32 * GB_PER_GIB, 31.0)
     _load(WAN13, "pipeline")
 
 
