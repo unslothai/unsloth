@@ -5005,6 +5005,40 @@ class _ApplyOnInputDevice:
             return self.function.apply(hidden, *args)
 
 
+def _bf16_autocast_fused_forward(self, *args, **kwargs):
+    from unsloth_zoo.training_utils import _call_forward_with_bf16_autocast
+    return _call_forward_with_bf16_autocast(
+        self._unsloth_fused_forward_inner, self, args, kwargs, type(self)._unsloth_autocast_dtype
+    )
+
+
+_bf16_autocast_fused_forward._unsloth_forward_delegate_attr = "_unsloth_fused_forward_inner"
+
+
+def _keep_bf16_autocast_on_fused_forward(model):
+    # bfloat16 full finetuning keeps norms in float32 and runs the model's forward under bfloat16 autocast
+    # (unsloth_zoo.training_utils._wrap_forward_in_bf16_autocast, a class-level forward). TRL's fused head is an
+    # instance forward whose fused_lm_head = True branch calls the backbone directly, skipping that autocast, so the
+    # first float32 norm output reaches a bfloat16 projection: "expected mat1 and mat2 to have the same dtype".
+    # Bound methods (not closures) so a deepcopy of the model calls its own forward.
+    if getattr(type(model), "_unsloth_autocast_dtype", None) is None:
+        return
+    if not getattr(model, "_unsloth_bf16_autocast_wrapped", False):
+        return
+    fused_forward = model.__dict__.get("forward")
+    if (
+        fused_forward is None
+        or getattr(fused_forward, "__func__", None) is _bf16_autocast_fused_forward
+    ):
+        return
+    try:
+        from unsloth_zoo.training_utils import _call_forward_with_bf16_autocast  # noqa: F401
+    except ImportError:
+        return
+    model._unsloth_fused_forward_inner = fused_forward
+    model.forward = types.MethodType(_bf16_autocast_fused_forward, model)
+
+
 def patch_trl_fused_lm_head_devices():
     # TRL >= 1.15's fused head drops accelerate's io_same_device hook: on a split model log_probs stay on lm_head's card (#4030).
     try:
@@ -5018,6 +5052,7 @@ def patch_trl_fused_lm_head_devices():
     @functools.wraps(original)
     def add_fused_lm_head(model, *args, **kwargs):
         result = original(model, *args, **kwargs)
+        _keep_bf16_autocast_on_fused_forward(model)
         if not _spans_several_devices(model):
             return result
         kernel = getattr(_tu, "_ChunkedLogProbFunction", None)

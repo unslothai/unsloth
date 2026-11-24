@@ -5628,6 +5628,9 @@ def _unsloth_forward_returns_hidden_states(model):
         code = getattr(forward, "__code__", None)
         if isinstance(delegate, tuple) and len(delegate) == 2 and delegate[0] is forward:
             forward = delegate[1]
+        elif isinstance(getattr(forward, "_unsloth_forward_delegate_attr", None), str):
+            # A bound Unsloth wrapper keeps its delegate on the instance (deepcopy-safe).
+            forward = owner.__dict__.get(forward._unsloth_forward_delegate_attr)
         elif (
             code is not None
             and code.co_name == "_fused_forward"
