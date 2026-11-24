@@ -10,7 +10,9 @@ _VISION = pathlib.Path(__file__).resolve().parents[1] / "unsloth" / "models" / "
 def _from_pretrained():
     tree = ast.parse(_VISION.read_text(encoding = "utf-8"))
     cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "FastBaseModel")
-    return next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "from_pretrained")
+    return next(
+        n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "from_pretrained"
+    )
 
 
 def _first_line(fn, predicate):
