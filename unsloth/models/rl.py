@@ -1420,12 +1420,29 @@ def _mark_capped(dataset, cap, drop_unsupervised):
     return dataset
 
 
+# A stream view _cap built itself (streams have no _fingerprint): every row passes its own slice + filter, so its mark cannot go stale.
+_CAP_OWN_STREAM_ATTR = "_unsloth_cap_own_stream"
+
+
+def _mark_own_stream(dataset):
+    try:
+        setattr(dataset, _CAP_OWN_STREAM_ATTR, True)
+    except Exception:
+        pass
+    return dataset
+
+
+def _is_own_stream(dataset):
+    own = getattr(dataset, "__dict__", None)
+    return isinstance(own, dict) and own.get(_CAP_OWN_STREAM_ATTR) is True
+
+
 def _cap_still_holds(dataset, cap, drop_unsupervised):
     """Whether an earlier mark of ours still describes this split. Three of the four ``_cap`` outcomes mark the CALLER'S OWN object and hand it back, and that object can be mutated between two ``evaluate()`` calls (a ``set_transform`` yielding longer ``input_ids`` is enough), which let the mark skip the rescan. Our own wrappers hold a fixed slice and are trusted outright; anything else has to still fingerprint the way it did when marked. An unfingerprintable split is simply rescanned, which is safe because ``_column_names`` chains its probed row back on."""
     signature = _cap_signature(dataset)
     if signature is None:
         return False
-    if isinstance(dataset, _CappedBase):
+    if isinstance(dataset, _CappedBase) or _is_own_stream(dataset):
         return tuple(signature[:2]) == (cap, drop_unsupervised)
     token = _mutation_token(dataset)
     return token is not None and tuple(signature) == (cap, drop_unsupervised, token)
@@ -1870,6 +1887,9 @@ def _wrap_sft_evaluate_cap(trainer_cls):
                     new = new if len(kept) == len(new) else kept
                 except Exception:
                     new = kept
+            # Never the caller's split; map-style copies use their fingerprint.
+            if new is not dataset and _is_stream(new):
+                _mark_own_stream(new)
             return _mark_capped(new, cap, drop_unsupervised)
         except Exception:
             return dataset  # never turn an eval call into a hard error
