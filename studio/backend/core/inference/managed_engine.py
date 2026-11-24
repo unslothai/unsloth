@@ -514,6 +514,18 @@ def _free_port(limit: int | None = _PORT_LIMIT) -> int:
     raise RuntimeError("Could not allocate an inference server port.")
 
 
+def _port_accepts(base_url: str, timeout: float = 2) -> bool:
+    """True if ``base_url``'s port accepts a TCP connect. Sends nothing, so a squatter learns no key."""
+    from urllib.parse import urlsplit
+
+    target = urlsplit(base_url)
+    try:
+        with socket.create_connection((target.hostname, target.port), timeout = timeout):
+            return True
+    except (OSError, ValueError):
+        return False
+
+
 # Measures engine silence, not total startup: a first load can compile unlogged for tens of minutes.
 STARTUP_STALL_S = 3600
 STARTUP_LIMIT_S = 4 * 3600
@@ -910,6 +922,10 @@ class ManagedEngine:
                         if self._mamba_blocks:
                             raise _MambaSeqLimit(message, self._mamba_blocks)
                         raise _EngineExited(message)
+                    # Skip the costly ownership scan (and its false "not listening" error) until the engine listens.
+                    if not _port_accepts(self.base_url):
+                        self._cancel.wait(0.25)
+                        continue
                     # The port was released before the engine binds it: probe (with the key) only our own listener.
                     if not LlamaCppBackend._health_listener_is_ours(
                         self.process, int(self.base_url.rsplit(":", 1)[1])
