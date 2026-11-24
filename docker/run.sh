@@ -35,6 +35,7 @@
 #   UNSLOTH_ALLOW_CPU=                      set to 1 to allow GPU-less runs
 #   UNSLOTH_PORTS=                          extra -p publish flags
 #   HF_HOME=$HOME/.cache/huggingface        host HF cache dir to mount
+#   HF_HUB_CACHE=$HF_HOME/hub               host HF hub cache dir to mount
 #   TRITON_CACHE_DIR=...unsloth-triton      host Triton cache dir to mount
 #   UNSLOTH_WORKDIR=$PWD                    host dir mounted at /workspace/host
 #   UNSLOTH_LMSTUDIO_DIR=<detected>         host LM Studio models dir, "none" to skip
@@ -163,7 +164,12 @@ case "$GPUS" in
     *)        GPU_FLAG=(--gpus "\"device=${GPUS}\"") ;;  # bare integer index
 esac
 fi
-HF_CACHE="${HF_HOME:-$HOME/.cache/huggingface}"
+HF_CACHE="${HF_HOME:-${XDG_CACHE_HOME:-$HOME/.cache}/huggingface}"
+HF_HUB="${HF_HUB_CACHE:-${HUGGINGFACE_HUB_CACHE:-$HF_CACHE/hub}}"
+HF_HUB_MOUNT=()
+if [ "$HF_HUB" != "$HF_CACHE/hub" ]; then
+    HF_HUB_MOUNT=(-v "$HF_HUB":/workspace/.cache/huggingface/hub)
+fi
 TRITON_CACHE="${TRITON_CACHE_DIR:-$HOME/.cache/unsloth-triton}"
 WORK_DIR="${UNSLOTH_WORKDIR:-$PWD}"
 # The image relinks its code into the volume at every start. `-`, not `:-`: an explicitly
@@ -182,7 +188,7 @@ if [ -n "$WORKSPACE_VOLUME" ]; then
     WORKSPACE_MOUNT=(-v "$WORKSPACE_VOLUME":/workspace)
 fi
 
-mkdir -p "$HF_CACHE" "$TRITON_CACHE"
+mkdir -p "$HF_CACHE" "$HF_HUB" "$TRITON_CACHE"
 
 first_dir() {
     local dir
@@ -525,6 +531,7 @@ exec docker run --rm ${TTY_FLAG[@]+"${TTY_FLAG[@]}"} \
     --ulimit stack=67108864 \
     ${WORKSPACE_MOUNT[@]+"${WORKSPACE_MOUNT[@]}"} \
     -v "$HF_CACHE":/workspace/.cache/huggingface \
+    ${HF_HUB_MOUNT[@]+"${HF_HUB_MOUNT[@]}"} \
     -v "$TRITON_CACHE":/workspace/.cache/triton \
     -v "$WORK_DIR":/workspace/host \
     ${WORKDIR_FLAG[@]+"${WORKDIR_FLAG[@]}"} \
