@@ -16,8 +16,7 @@ LTX25 = next(f for f in VIDEO_FAMILIES if f.name == "ltx-2.5")
 LTX2 = next(f for f in VIDEO_FAMILIES if f.name == "ltx-2")
 WAN = next(f for f in VIDEO_FAMILIES if f.name == "wan2.2-ti2v-5b")
 GIB = 1024
-# float32 GiB: DiT + VAEs / connectors, then the Gemma 4 encoder dense (23.9 GB) or hosted int8 (13.1 GB, its 2.3 GB of
-# dense tensors widened)
+# float32 GiB: pipeline, dense encoder, hosted int8 encoder (dense tensors widened)
 _GIB = 1e9 / 1024**3
 PIPE_GIB = (42.0 + 9.2) * 2 * _GIB
 DENSE_TE_GIB = 23.9 * 2 * _GIB
@@ -62,7 +61,6 @@ def test_t4_class_host_is_refused_before_the_load(host, host_gib, shown, quant):
     msg = str(err.value)
     assert msg.startswith("Not enough system RAM to load this model: LTX-2.5")
     assert "float32" in msg and "GGUF" in msg and "UNSLOTH_DIFFUSION_HOST_RAM_CHECK=0" in msg
-    # (42.0 + 9.2) GB x 2 bytes plus the dense encoder an unconfirmed automatic pick loads
     assert f"about {PIPE_GIB + DENSE_TE_GIB:.1f} GB of host memory" in msg
     assert f"{shown} GB is available" in msg
 

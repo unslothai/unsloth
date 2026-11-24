@@ -811,9 +811,7 @@ def ltx25_te_host_gb(
 ) -> float:
     """Host GB the encoder worker reads Gemma 4 into, loading at ``scale`` x bf16 (2.0 = float32) on the host.
 
-    The hosted int8 file keeps its codes and widens only its dense tensors (embedding, norms); the bf16 encoder, and
-    the int8 quantized at load (it reads the dense encoder first), take the whole widened size. An invalid scheme is
-    refused later with its own message, so it prices nothing here."""
+    Hosted int8 widens only its dense tensors; bf16 and load-time int8 (reads dense first) widen fully."""
     try:
         ltx25_te_quant_scheme(text_encoder_quant)
     except ValueError:

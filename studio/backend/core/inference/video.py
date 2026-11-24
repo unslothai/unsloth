@@ -1107,8 +1107,7 @@ def ltx25_fp16_host_shortfall(
 ) -> Optional[str]:
     """Why an LTX-2.5 Diffusers load cannot fit host RAM on a non-bf16 GPU, else None.
 
-    No low-RAM route serves an fp16 target, so the DiT and VAEs / connectors widen to float32 in host RAM (~95 GiB),
-    and the encoder worker, started before the pipeline builds, reads Gemma 4 at that float32 into the same host RAM.
+    fp16 targets widen the pipeline and the encoder worker's Gemma 4 to float32 in host RAM.
     Never raises; kill switches or an unreadable size refuse nothing."""
     try:
         import torch
