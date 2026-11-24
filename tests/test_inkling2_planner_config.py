@@ -26,7 +26,6 @@ def _calls(name):
 
 
 def test_inkling2_planner_config_keys_on_the_released_modelopt_marker():
-    # A merged Inkling 2 export has no marker and must keep planning (and auto block swap) from the repo.
     fn = _from_pretrained()
     marker_read = _first_line(fn, _calls("inkling2_owns_modelopt_quantization"))
     marker_dropped = _first_line(fn, _calls("check_and_disable_bitsandbytes_loading"))
