@@ -1730,25 +1730,7 @@ def _capabilities(client) -> Any:
     return getattr(client, "server_capabilities", None)
 
 
-async def _list_resources(client) -> Optional[list[dict]]:
-    capabilities = _capabilities(client)
-    if capabilities is not None and getattr(capabilities, "resources", None) is None:
-        return None
-    listed, cursors = [], set()
-    cursor = None
-    try:
-        while len(listed) < MAX_MCP_RESOURCES:
-            page = await client.list_resources_mcp(cursor = cursor)
-            listed.extend(getattr(page, "resources", None) or ())
-            cursor = getattr(page, "next_cursor", None)
-            # A repeated cursor would loop forever.
-            if not cursor or cursor in cursors:
-                break
-            cursors.add(cursor)
-    except Exception as exc:  # noqa: BLE001 - resources are optional, the tools still load
-        logger.debug("MCP resources/list failed: %s", exc)
-        if not listed:
-            raise
+def _resource_entries(listed: list) -> Optional[list[dict]]:
     resources = []
     for resource in listed:
         uri = str(getattr(resource, "uri", "") or "")
@@ -1767,6 +1749,35 @@ async def _list_resources(client) -> Optional[list[dict]]:
             {"uri": uri, **{k: v for k, v in fields.items() if isinstance(v, str) and v}}
         )
     return resources[:MAX_MCP_RESOURCES] or None
+
+
+_METHOD_NOT_FOUND = -32601
+
+
+async def _list_resources(client, tools: McpToolList) -> None:
+    """Fills tools.resources page by page; complete stays False if the listing fails or is cut off."""
+    capabilities = _capabilities(client)
+    if capabilities is not None and getattr(capabilities, "resources", None) is None:
+        return
+    listed, cursors = [], set()
+    cursor = None
+    tools.complete = False
+    try:
+        while len(listed) < MAX_MCP_RESOURCES:
+            page = await client.list_resources_mcp(cursor = cursor)
+            listed.extend(getattr(page, "resources", None) or ())
+            tools.resources = _resource_entries(listed)
+            cursor = getattr(page, "next_cursor", None)
+            # A repeated cursor would loop forever.
+            if not cursor or cursor in cursors:
+                break
+            cursors.add(cursor)
+    except Exception as exc:  # noqa: BLE001 - resources are optional, the tools still load
+        logger.debug("MCP resources/list failed: %s", exc)
+        # Method not found will not change on a retry.
+        if not (_is_protocol_error(exc) and getattr(exc.error, "code", None) == _METHOD_NOT_FOUND):
+            return
+    tools.complete = True
 
 
 async def list_tools_async(
@@ -1795,10 +1806,7 @@ async def list_tools_async(
             tools = McpToolList(t.model_dump(exclude_none = True) for t in raw_tools)
             tools.use_oauth = use_oauth
             listed.append(tools)
-            try:
-                tools.resources = await _list_resources(client)
-            except Exception:  # noqa: BLE001
-                tools.complete = False
+            await _list_resources(client, tools)
         return tools
 
     try:
@@ -1811,7 +1819,7 @@ async def list_tools_async(
         raise
 
 
-# Probe only on cache miss, off the chat send's critical path. Successful probes cached forever.
+# Probe only on cache miss, off the chat send's critical path. Complete probes cached forever.
 _tool_cache: dict[str | tuple[str, str], list[dict]] = {}
 
 # Failed server's re-probe cooloff (monotonic time); cleared on a good probe or eviction.

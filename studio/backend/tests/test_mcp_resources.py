@@ -269,6 +269,51 @@ def test_a_send_after_a_failed_resource_listing_retries_it(failure, tmp_path, mo
     assert calls == {"tools": 2, "resources": 2}
 
 
+def _paged_client(second_page):
+    from types import SimpleNamespace
+    class _Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def list_tools(self):
+            return []
+
+        async def list_resources_mcp(self, cursor = None):
+            if cursor is None:
+                return SimpleNamespace(
+                    resources = [SimpleNamespace(uri = "docs://a", name = "a")], next_cursor = "2"
+                )
+            return await second_page()
+
+    return lambda *a, **k: _Client()
+
+
+@pytest.mark.parametrize("failure", ["slow", "error"])
+def test_a_cut_off_resource_listing_keeps_its_first_page(failure, monkeypatch):
+    async def second_page():
+        if failure == "slow":
+            await asyncio.sleep(30)
+        raise RuntimeError("resources/list failed")
+
+    monkeypatch.setattr(mcp_client, "_client", _paged_client(second_page))
+    tools = asyncio.run(mcp_client.list_tools_async("https://x.example/mcp", timeout = 0.5))
+    assert tools.resources == [{"uri": "docs://a", "name": "a"}] and not tools.complete
+
+
+def test_method_not_found_on_resources_is_not_retried(monkeypatch):
+    from mcp.shared.exceptions import MCPError
+
+    async def second_page():
+        raise MCPError(-32601, "Method not found")
+
+    monkeypatch.setattr(mcp_client, "_client", _paged_client(second_page))
+    tools = asyncio.run(mcp_client.list_tools_async("https://x.example/mcp"))
+    assert tools.resources == [{"uri": "docs://a", "name": "a"}] and tools.complete
+
+
 def test_a_resource_only_server_stays_loadable_by_search(tmp_path, monkeypatch):
     _server(tmp_path, monkeypatch)
     tools = mcp_client.McpToolList()
