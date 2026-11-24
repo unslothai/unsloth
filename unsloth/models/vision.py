@@ -2587,7 +2587,11 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
     def _eager_scope():
         return _EagerDecodeSteps(self) if _eager_decodes(self) else contextlib.nullcontext()
 
-    def _run(scope, plan):
+    def _run(
+        scope,
+        plan,
+        retry = False,
+    ):
         with (
             _NonFlexGenerate(self, flex_decode = not _wants_attentions(self, kwargs)),
             decode_scope,
@@ -2595,7 +2599,8 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
             _decode_graphs.plan_scope(plan),
             _get_inference_mode_context_manager(self),
             autocaster,
-            _lora_fold_generate(self, args, kwargs),
+            # retry: the eager redo after an OOM runs unfolded.
+            _lora_fold_generate(self, args, kwargs, retry = retry),
         ):
             out = self._old_generate(*args, **kwargs)
             if isinstance(scope, _GraphDecodeSteps):
@@ -2626,7 +2631,7 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
                     _clear_generation_caches(self)
                     _generic_decode_graphs.set_rng_state(rng)
                     with _decode_graphs.eager_scope():
-                        output = _run(_eager_scope(), "eager")
+                        output = _run(_eager_scope(), "eager", retry = True)
     finally:
         _clear_generation_caches(self)
 
