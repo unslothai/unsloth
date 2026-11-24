@@ -3409,12 +3409,13 @@ def unsloth_fast_generate(self, *args, **kwargs):
                 _decode_graphs.plan_scope("graph" if graphs else "eager"),
                 _get_inference_mode_context_manager(self),
                 torch.autocast(device_type = DEVICE_TYPE_TORCH, dtype = dtype),
-                # After eager_scope: the fold's graphs-on threshold follows this call's plan.
-                _lora_fold_generate(self, args, kwargs),
             ):
+                # Inside eager_scope: the fold's graphs-on threshold follows this call's plan. Per attempt:
+                # an OOM restores the weights before the eager redo, which runs unfolded.
                 output = _decode_graphs.generate_with_fallback(
-                    self, self._old_generate, graphs, args, kwargs
-                )
+                    self, self._old_generate, graphs, args, kwargs,
+                    fold = lambda retry: _lora_fold_generate(self, args, kwargs, retry = retry),
+                )  # fmt: skip
         finally:
             if graphs:
                 _decode_graphs.end_generation()
