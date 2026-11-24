@@ -1,0 +1,182 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""RAG embedder served by a saved connection's OpenAI-compatible ``/embeddings`` endpoint.
+
+Selected by an embedding model of the form ``connection:<connection name or id>/<model id>``,
+so nothing is loaded locally and the connection's own server decides where the model runs."""
+
+from __future__ import annotations
+
+import logging
+import math
+import threading
+import time
+
+import httpx
+import numpy as np
+
+from . import config
+
+logger = logging.getLogger(__name__)
+
+_RETRY_STATUSES = frozenset({408, 429, 500, 502, 503, 504})
+_ATTEMPTS = 3
+_TIMEOUT = httpx.Timeout(120.0, connect = 10.0)
+
+
+class ConnectionEmbedderError(RuntimeError):
+    """The connection named by the embedding model is missing, disabled or answered badly."""
+
+
+def resolve_connection_model(name: str) -> tuple[dict, str]:
+    """The saved connection and remote model id ``name`` refers to, or ConnectionEmbedderError."""
+    from storage import providers_db
+
+    ref = name.strip()[len(config.CONNECTION_MODEL_PREFIX) :].strip()
+    # Longest match wins, so a connection name containing "/" still resolves.
+    best = None
+    for provider in providers_db.list_providers():
+        for label in (provider.get("display_name"), provider.get("id")):
+            label = (label or "").strip()
+            if label and ref.lower().startswith(label.lower() + "/"):
+                if best is None or len(label) > len(best[1]):
+                    best = (provider, label)
+    if best is None:
+        raise ConnectionEmbedderError(
+            f"No saved connection matches {name!r}. Use connection:<connection name>/<model id>."
+        )
+    provider, label = best
+    model = ref[len(label) + 1 :].strip()
+    if not model:
+        raise ConnectionEmbedderError(f"{name!r} names no model after the connection name.")
+    if not provider.get("is_enabled", True):
+        raise ConnectionEmbedderError(f"The connection {label!r} is disabled.")
+    return provider, model
+
+
+def _client_for(provider: dict):
+    from core.inference.external_provider import ExternalProviderClient
+    from storage import credential_secrets
+
+    headers = provider.get("extra_headers")
+    return ExternalProviderClient(
+        provider_type = provider["provider_type"],
+        base_url = provider["base_url"],
+        api_key = credential_secrets.get_provider_api_key(provider["id"]) or "",
+        api_type = provider.get("api_type") or "chat_completions",
+        **({"extra_headers": headers} if headers else {}),
+    )
+
+
+def _estimate_tokens(text: str) -> int:
+    # No tokenizer is reachable over the OpenAI API; ~3 UTF-8 bytes per token overestimates for
+    # English and code, which keeps chunks under small (512-token) embedders.
+    return max(1, math.ceil(len(text.encode("utf-8", "ignore")) / 3))
+
+
+def _remote_http_client() -> httpx.Client:
+    # Same proxy policy as chat on a connection (external_provider._create_shared_http_client, #6090).
+    try:
+        return httpx.Client(timeout = _TIMEOUT)
+    except (ImportError, ValueError) as exc:
+        if "Unknown scheme for proxy URL" not in str(exc) and "socksio" not in str(exc):
+            raise
+        return httpx.Client(timeout = _TIMEOUT, trust_env = False)
+
+
+class ConnectionEmbeddingBackend:
+    """Stateless apart from the HTTP pool and per-model widths, so one instance serves every reference."""
+
+    def __init__(self, *, attempts: int = _ATTEMPTS) -> None:
+        self._attempts = max(1, attempts)
+        self._http = _remote_http_client()
+        self._dims: dict[str, int] = {}
+        self._lock = threading.Lock()
+
+    def _post(self, model_name: str, texts: list[str]) -> list[list[float]]:
+        from core.inference.external_provider import _append_provider_path
+
+        provider, model = resolve_connection_model(model_name)
+        client = _client_for(provider)
+        client.set_header_context(None, model)
+        url = _append_provider_path(client.base_url, "embeddings")
+        body = {"model": model, "input": texts, "encoding_format": "float"}
+        label = provider.get("display_name") or provider.get("id")
+        for attempt in range(self._attempts):
+            try:
+                response = self._http.post(url, json = body, headers = client._auth_headers())
+            except httpx.TransportError as exc:
+                if attempt + 1 == self._attempts:
+                    raise ConnectionEmbedderError(
+                        f"Could not reach the connection {label!r}: {exc}"
+                    ) from exc
+            else:
+                if response.status_code not in _RETRY_STATUSES or attempt + 1 == self._attempts:
+                    break
+            time.sleep(2**attempt)
+        if response.status_code >= 400:
+            detail = response.text.strip()[:300]
+            raise ConnectionEmbedderError(
+                f"The connection {label!r} refused embeddings for {model!r} "
+                f"(HTTP {response.status_code}): {detail}"
+            )
+        try:
+            items = sorted(response.json()["data"], key = lambda d: d.get("index", 0))
+            rows = [item["embedding"] for item in items]
+        except (ValueError, KeyError, TypeError, AttributeError) as exc:
+            raise ConnectionEmbedderError(
+                f"The connection {label!r} did not return OpenAI-style embeddings for {model!r}."
+            ) from exc
+        if len(rows) != len(texts):
+            raise ConnectionEmbedderError(
+                f"The connection {label!r} returned {len(rows)} vectors for {len(texts)} inputs."
+            )
+        return rows
+
+    def encode(
+        self,
+        texts,
+        *,
+        model_name = None,
+        normalize = True,
+    ):
+        name = model_name or config.effective_embedding_model()
+        texts = list(texts)
+        if not texts:
+            return np.zeros((0, self.dim(model_name = name)), dtype = np.float32)
+        rows: list[list[float]] = []
+        batch = max(1, config.EMBED_BATCH)
+        for start in range(0, len(texts), batch):
+            rows.extend(self._post(name, texts[start : start + batch]))
+        arr = np.asarray(rows, dtype = np.float32)
+        if arr.ndim != 2 or arr.shape[1] == 0:
+            raise ConnectionEmbedderError(f"Embeddings from {name!r} have shape {arr.shape}.")
+        with self._lock:
+            self._dims[name] = int(arr.shape[1])
+        if normalize:
+            norms = np.linalg.norm(arr, axis = 1, keepdims = True)
+            norms[norms == 0] = 1.0
+            arr = arr / norms
+        return arr
+
+    def dim(self, *, model_name = None) -> int:
+        name = model_name or config.effective_embedding_model()
+        with self._lock:
+            known = self._dims.get(name)
+        if known is not None:
+            return known
+        return int(self.encode(["dimension probe"], model_name = name, normalize = False).shape[1])
+
+    def max_tokens(self, *, model_name = None):
+        return None
+
+    def token_counter(self, *, model_name = None):
+        return _estimate_tokens
+
+    def warm(self, *, model_name = None):
+        self.dim(model_name = model_name)
+
+    # Not _shutdown: an unload must not close the pool under an encode still running on it.
+    def close(self) -> None:
+        self._http.close()
