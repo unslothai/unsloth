@@ -93,6 +93,25 @@ def test_retrieve_hybrid_returns_relevant_chunk(rag_conn, bow_embeddings):
     assert hits[0].chunk_id == "d1:0"
 
 
+def test_retrieve_hybrid_keeps_lexical_hits_while_embedder_downloads(
+    rag_conn, bow_embeddings, monkeypatch
+):
+    from core.rag import embeddings
+
+    _add_doc(rag_conn, "kb_a", "d1", "f1", "h1", "alpha bravo charlie")
+    _add_doc(rag_conn, "kb_a", "d2", "f2", "h2", "golf hotel delta")
+
+    def pending(texts, **kwargs):
+        raise embeddings.EmbeddingModelDownloadRequiredError("still downloading")
+
+    monkeypatch.setattr(embeddings, "encode", pending)
+    hits = retrieval.retrieve_hybrid(rag_conn, "kb_a", "alpha bravo", k = 5)
+    assert [h.chunk_id for h in hits] == ["d1:0"]
+    assert hits[0].dense_score is None
+    with pytest.raises(embeddings.EmbeddingModelDownloadRequiredError):
+        retrieval.retrieve_hybrid(rag_conn, "kb_a", "alpha bravo", k = 5, mode = "dense")
+
+
 def test_retrieve_dense_round_trips(rag_conn, bow_embeddings):
     _add_doc(rag_conn, "kb_a", "d1", "f", "h1", "alpha alpha")
     _add_doc(rag_conn, "kb_a", "d2", "f", "h2", "hotel golf")
