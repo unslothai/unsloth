@@ -16,7 +16,7 @@ const { settingsHttp } = await import("./helpers/store-stubs/settings-http.ts");
 const { useChatRuntimeStore } = await import(
   "../src/features/chat/stores/chat-runtime-store.ts"
 );
-const { servedCheckpoint, withoutNamedQuant } = await import(
+const { pinnedCheckpoint, servedCheckpoint, withoutNamedQuant } = await import(
   "../src/features/hub/lib/model-identity.ts"
 );
 const { chatModelLoadedTarget } = await import(
@@ -130,4 +130,11 @@ test("a chat goes back to its own quant when two of its repo are loaded", () => 
     chatModelLoadedTarget({ modelId: REPO, ggufVariant: "Q4_K_M" }, slots),
     { modelId: REPO, ggufVariant: "Q4_K_M" },
   );
+});
+
+test("a long-lived run pins a hub repo's quant even while it is the only copy", () => {
+  assert.equal(pinnedCheckpoint("org/A-GGUF", "Q4_K_M"), "org/A-GGUF:Q4_K_M");
+  assert.equal(pinnedCheckpoint("org/A-GGUF:Q8_0", "Q8_0"), "org/A-GGUF:Q8_0");
+  assert.equal(pinnedCheckpoint("org/A-GGUF", null), "org/A-GGUF");
+  assert.equal(pinnedCheckpoint("/models/a.gguf", "Q4_K_M"), "/models/a.gguf");
 });

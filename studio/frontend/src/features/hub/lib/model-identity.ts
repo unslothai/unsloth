@@ -112,6 +112,16 @@ export function servedCheckpoint(
   return copy?.checkpoint ?? checkpoint;
 }
 
+/** For long-lived runs: a quant loaded later beside this one would take the bare repo id. */
+export function pinnedCheckpoint(
+  checkpoint: string,
+  variant: string | null | undefined,
+): string {
+  return variant && HUB_REPO_ID_RE.test(checkpoint)
+    ? `${checkpoint}:${variant}`
+    : checkpoint;
+}
+
 // Mirrors core/inference/model_ids.py _looks_like_path.
 const PUBLIC_ID_PATH_PREFIX_RE = /^(?:[/\\]|\.{1,2}[\\/]|~)/;
 const GGUF_SUFFIX_RE = /\.gguf$/i;

@@ -42,7 +42,10 @@ import {
 } from "@/features/hub/inventory/api";
 import { isHiddenModelId } from "@/features/hub/lib/hidden-models";
 // eslint-disable-next-line no-restricted-imports -- Avoid the hub barrel's React and download-manager exports.
-import { servedCheckpoint } from "@/features/hub/lib/model-identity";
+import {
+  pinnedCheckpoint,
+  servedCheckpoint,
+} from "@/features/hub/lib/model-identity";
 import { isTranslationHeldSlot, isTranslationOnlyRepo } from "@/lib/translation-models";
 import { isOtherCacheSnapshot } from "@/features/model-picker/inventory/local-cache-snapshot";
 import {
@@ -4882,9 +4885,12 @@ export function createOpenAIStreamAdapter(
           runtime.reasoningAlwaysOn ||
           (runtime.reasoningEnabled && runtime.reasoningEffort !== "none");
         const inferenceRequest = buildResearchInferenceRequest({
-          checkpoint: servedCheckpoint(
-            runtime.loadedModels,
-            selectedCheckpoint,
+          checkpoint: pinnedCheckpoint(
+            servedCheckpoint(
+              runtime.loadedModels,
+              selectedCheckpoint,
+              runtime.activeGgufVariant,
+            ),
             runtime.activeGgufVariant,
           ),
           external:
