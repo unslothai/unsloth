@@ -598,7 +598,7 @@ def refuse_video_cpu_host_ram(
     safe while training holds the card. Prices the encoder this loader settles on (``settle_video_te_quant``) and
     the GGUF storage path its mmap hook takes."""
     from . import diffusion_device
-    from .video_cpu_host import cpu_video_host_shortfall, gguf_copy_gb
+    from .video_cpu_host import cpu_video_host_shortfall, gguf_copy_gb, single_file_packed_gb
 
     if not diffusion_device.diffusion_target_is_cpu():
         return
@@ -629,6 +629,11 @@ def refuse_video_cpu_host_ram(
             if model_kind == "gguf"
             else None
         )
+        packed_gb = (
+            single_file_packed_gb(fam, checkpoint_repo, checkpoint_filename)
+            if model_kind == "single_file"
+            else None
+        )
     except Exception:  # noqa: BLE001 -- unsizable (an unsupported request is refused by the precision checks)
         return
     shortfall = cpu_video_host_shortfall(
@@ -639,6 +644,7 @@ def refuse_video_cpu_host_ram(
         te_hosted_available = te_hosted_available,
         transformer_quant = transformer_quant,
         gguf_copy = copy_gb,
+        single_file_packed = packed_gb,
         release_gb = _resident_video_cpu_release_gb(),
     )
     if shortfall is None:

@@ -21,6 +21,7 @@ such a host and keeps its weights mapped: 5.1 GB anonymous peak at 864x480x124 (
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
@@ -90,12 +91,16 @@ def _denoiser_gb(
     transformer_quant: Optional[str],
     bf16_gb: float,
     gguf_copy_gb: Optional[float],
+    single_file_packed_gb: Optional[float] = None,
 ) -> tuple[float, bool]:
     """(host GB, read from a file mapping). Raises ValueError for an unknown scheme."""
     if model_kind == "gguf":
         if gguf_copy_gb is None:
             return 0.0, True
         return float(gguf_copy_gb), False
+    if model_kind == "single_file" and single_file_packed_gb is not None:
+        # An fp8 checkpoint the loader keeps packed when widening would not fit (fp8_storage_wanted): its stored size.
+        return float(single_file_packed_gb), False
     from .diffusion_transformer_quant import normalize_transformer_quant
 
     pinned = normalize_transformer_quant(transformer_quant)
@@ -114,6 +119,7 @@ def cpu_video_host_need(
     te_hosted_available: bool = False,
     transformer_quant: Optional[str] = None,
     gguf_copy_gb: Optional[float] = None,
+    single_file_packed_gb: Optional[float] = None,
 ) -> Optional[CpuVideoHostNeed]:
     """The anonymous host-RAM floor of this load on the float32 CPU target, or None when it cannot be sized.
     ``te_scheme``: the encoder scheme the loader runs (None = the released encoder); ``te_hosted``: LTX-2.5's hosted
@@ -129,7 +135,9 @@ def cpu_video_host_need(
     if sizes is None:
         return None
     try:
-        denoiser, mapped = _denoiser_gb(fam, model_kind, transformer_quant, sizes[0], gguf_copy_gb)
+        denoiser, mapped = _denoiser_gb(
+            fam, model_kind, transformer_quant, sizes[0], gguf_copy_gb, single_file_packed_gb
+        )
     except ValueError:
         return None  # an unsupported scheme is refused by the precision checks with its own message
     te, te_dense, te_alt, te_alt_label = _text_encoder_gb(
@@ -150,6 +158,68 @@ def cpu_video_host_need(
     )
 
 
+def _checkpoint_size(repo: Optional[str], filename: Optional[str]) -> tuple[int, Optional[str]]:
+    """(bytes, local path) of a checkpoint: a local file, the Hub cache, then the Hub (size only). (0, None) unread."""
+    if not (repo and filename):
+        return 0, None
+    for candidate in (Path(str(repo)) / str(filename), Path(str(filename))):
+        try:
+            if candidate.is_file():
+                return candidate.stat().st_size, str(candidate)
+        except OSError:
+            pass
+    try:
+        from huggingface_hub import try_to_load_from_cache
+        hit = try_to_load_from_cache(str(repo), str(filename))
+        if isinstance(hit, str) and os.path.isfile(hit):
+            return os.path.getsize(hit), hit
+    except Exception:  # noqa: BLE001
+        pass
+    from .diffusion import _hub_file_size
+
+    return int(_hub_file_size(str(repo), str(filename), None) or 0), None
+
+
+_FP8_NAME = re.compile(r"(?<![a-z0-9])(fp8|float8|e4m3(fn)?|e5m2)(?![a-z0-9])", re.IGNORECASE)
+_FP8_DTYPES = frozenset({"F8_E4M3", "F8_E5M2"})
+
+
+def single_file_packed_gb(
+    fam: Any, repo: Optional[str], filename: Optional[str]
+) -> Optional[float]:
+    """GB an fp8 single-file denoiser holds when the loader keeps it packed (one byte per fp8 weight), else None (a
+    dense checkpoint, or fp8 storage unavailable / disabled, which widens it). fp8 is read from the safetensors header
+    when the file is local, else from its name. The stored size is the file's; unread, half the bf16 table. Never
+    raises."""
+    try:
+        from .diffusion_comfy_quant import _read_header, comfy_fp8_storage
+
+        if not comfy_fp8_storage(None):
+            return None
+        size, local = _checkpoint_size(repo, filename)
+        fp8 = None
+        if local is not None:
+            try:
+                header, _base = _read_header(local)
+                fp8 = any(
+                    isinstance(entry, dict) and entry.get("dtype") in _FP8_DTYPES
+                    for key, entry in header.items()
+                    if key != "__metadata__"
+                )
+            except Exception:  # noqa: BLE001 -- not a readable safetensors header: judge by name
+                fp8 = None
+        if fp8 is None:
+            fp8 = bool(_FP8_NAME.search(Path(str(filename or "")).name))
+        if not fp8:
+            return None
+        if size:
+            return size / 1e9
+        sizes = _sizes(fam)
+        return sizes[0] / 2.0 if sizes else None
+    except Exception:  # noqa: BLE001 -- unsized: price it dense, as before
+        return None
+
+
 def gguf_copy_gb(
     fam: Any,
     repo: Optional[str],
@@ -166,24 +236,7 @@ def gguf_copy_gb(
             mapped = gguf_mmap_enabled()
         if mapped:
             return None
-        size = 0
-        if repo and filename:
-            local = Path(str(repo)) / str(filename)
-            if local.is_file():
-                size = local.stat().st_size
-            elif Path(str(filename)).is_file():
-                size = Path(str(filename)).stat().st_size
-            else:
-                try:
-                    from huggingface_hub import try_to_load_from_cache
-                    hit = try_to_load_from_cache(str(repo), str(filename))
-                    if isinstance(hit, str) and os.path.isfile(hit):
-                        size = os.path.getsize(hit)
-                except Exception:  # noqa: BLE001
-                    size = 0
-                if not size:
-                    from .diffusion import _hub_file_size
-                    size = _hub_file_size(str(repo), str(filename), None)
+        size, _local = _checkpoint_size(repo, filename)
         gb = size / 1e9 if size else None
         if gb is None:
             sizes = _sizes(fam)
@@ -325,6 +378,7 @@ def cpu_video_host_shortfall(
     te_hosted_available: bool = False,
     transformer_quant: Optional[str] = None,
     gguf_copy: Optional[float] = None,
+    single_file_packed: Optional[float] = None,
     release_gb: float = 0.0,
 ) -> Optional[str]:
     """The refusal when this load's CPU host floor exceeds the host RAM it can take, else None. Call only on the
@@ -342,6 +396,7 @@ def cpu_video_host_shortfall(
             te_hosted_available = te_hosted_available,
             transformer_quant = transformer_quant,
             gguf_copy_gb = gguf_copy,
+            single_file_packed_gb = single_file_packed,
         )
         if need is None:
             return None
@@ -392,4 +447,5 @@ __all__ = [
     "cpu_video_host_need",
     "cpu_video_host_shortfall",
     "gguf_copy_gb",
+    "single_file_packed_gb",
 ]

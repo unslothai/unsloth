@@ -68,6 +68,8 @@ def host(monkeypatch):
         "UNSLOTH_DIFFUSION_HOST_RAM_LIMIT_MIB",
         "UNSLOTH_LTX25_TE_INT8",
         "UNSLOTH_DIFFUSION_CPU_GGUF_DIFFUSERS",
+        "UNSLOTH_DIFFUSION_FP8_STORAGE",
+        "UNSLOTH_DIFFUSION_GGUF_MMAP",
     ):
         monkeypatch.delenv(name, raising = False)
 
@@ -349,3 +351,70 @@ def test_cpu_check_follows_the_callers_target(host, sizing_must_not_run, monkeyp
     cpu = _target("cpu")
     monkeypatch.setattr(dd, "resolve_diffusion_device_target", lambda *a, **k: cpu)
     _load(WAN5B, "pipeline")
+
+
+# ---- single-file checkpoints priced as the loader keeps them -------------------------------------------------
+
+
+def _sparse_safetensors(path, dtype, nbytes):
+    """A safetensors file whose header declares one ``dtype`` tensor of ``nbytes``; sparse, so only its size is real."""
+    import json
+    import struct
+
+    header = json.dumps(
+        {
+            "blocks.0.attn.to_q.weight": {
+                "dtype": dtype,
+                "shape": [nbytes],
+                "data_offsets": [0, nbytes],
+            }
+        }
+    ).encode()
+    with open(path, "wb") as f:
+        f.write(struct.pack("<Q", len(header)) + header)
+        f.truncate(8 + len(header) + nbytes)
+    return path.name
+
+
+def test_fp8_single_file_is_priced_at_its_packed_size(host, tmp_path):
+    """An fp8 checkpoint with transformer_quant unset: the loader keeps it packed when widening would not fit
+    (fp8_storage_wanted), so it is priced at its stored 5.0 GB, not as a 20 GB float32 DiT."""
+    host("cpu", 64 * GB_PER_GIB, 34.0)
+    name = _sparse_safetensors(
+        tmp_path / "wan2.2_ti2v_5B_scaled.safetensors", "F8_E4M3", 5_000_000_000
+    )
+    _load(WAN5B, "single_file", checkpoint_repo = str(tmp_path), checkpoint_filename = name)
+    need = vch.cpu_video_host_need(
+        WAN5B,
+        model_kind = "single_file",
+        single_file_packed_gb = vch.single_file_packed_gb(WAN5B, str(tmp_path), name),
+    )
+    assert need.denoiser_gb == pytest.approx(5.0, abs = 0.01) and need.total_gb == pytest.approx(
+        32.1, abs = 0.05
+    )
+
+
+def test_fp8_single_file_by_name_without_the_file(host):
+    host("cpu", 64 * GB_PER_GIB, 34.0)
+    # Not local, Hub size unread: half the bf16 table (10.0 / 2).
+    _load(
+        WAN5B,
+        "single_file",
+        checkpoint_repo = "someone/wan",
+        checkpoint_filename = "wan2.2_ti2v_5B_fp8_scaled.safetensors",
+    )
+
+
+def test_dense_single_file_and_disabled_fp8_storage_stay_float32(host, monkeypatch, tmp_path):
+    host("cpu", 64 * GB_PER_GIB, 34.0)
+    bf16 = _sparse_safetensors(tmp_path / "wan2.2_ti2v_5B_bf16.safetensors", "BF16", 10_000_000_000)
+    assert "denoiser 20.0" in _refusal(
+        WAN5B, "single_file", checkpoint_repo = str(tmp_path), checkpoint_filename = bf16
+    )
+    fp8 = _sparse_safetensors(
+        tmp_path / "wan2.2_ti2v_5B_scaled.safetensors", "F8_E4M3", 5_000_000_000
+    )
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_FP8_STORAGE", "0")
+    assert "denoiser 20.0" in _refusal(
+        WAN5B, "single_file", checkpoint_repo = str(tmp_path), checkpoint_filename = fp8
+    )
