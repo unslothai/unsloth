@@ -4535,6 +4535,11 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
 
     if not _validate_training_worker_config(config, event_queue):
         return
+    # Multi-process plan (DDP / FSDP2 / TP / PP / CP / EP): this worker is rank 0; start the other ranks before torch
+    # or unsloth is imported, so every rank reads the same torchrun env and UNSLOTH_PARALLEL spec.
+    if (config.get("parallel") or {}).get("launcher") == "multi_process":
+        from core.training.parallel_launch import launch_ranks
+        launch_ranks(config, event_queue)
     # Before any backend dispatch: the MLX, decision and embedding runners load these weights too.
     weights_error = _escaping_weights_error(config)
     if weights_error:

@@ -368,6 +368,7 @@ def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
         "subject": values.get("subject"),
         "allow_ambient": values.get("allow_ambient", True),
         "gpu_ids": values.get("gpu_ids"),
+        "parallel": values.get("parallel"),
         "s3_config": values.get("s3_config"),
         "disable_xet": values.get("disable_xet", False),
     }
@@ -1328,6 +1329,7 @@ class TrainingBackend:
         self.current_job_id = self.current_start_request_id = None
         self._status_start_request_id = self._output_dir = None
         self.eval_enabled = False
+        self.parallel_plan = None
 
     def _require_start_request_account(self, start_request_id):
         record = self._start_requests.get(start_request_id)
@@ -2031,6 +2033,7 @@ class TrainingBackend:
             self.eval_loss_history.clear()
             self.eval_step_history.clear()
             self.eval_enabled = False
+            self.parallel_plan = config.get("parallel")
             self._output_dir = config.get("output_dir") if resume_source_run_id else None
             self._progress.output_dir = self._output_dir
             self._resume_source_run_id = resume_source_run_id

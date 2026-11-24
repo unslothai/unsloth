@@ -54,6 +54,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Callable, Union
 from datasets import Dataset
 from core.training.eval_dataset import STREAMING_EVAL_MAX_SAMPLES, evaluation_enabled
+from core.training import parallel_launch as _parallel_launch
 from utils.datasets.audio_decode import ensure_audio_decoding
 from utils.datasets.audio_rows import (
     audio_transcription_messages,
@@ -1040,6 +1041,11 @@ class UnslothTrainer:
                 )
 
             def on_step_end(self, args, state, control, **kwargs):
+                if _parallel_launch.is_multi_process():
+                    # Rank 0 holds the UI's stop; every rank must leave the loop at the same step.
+                    trainer_ref.should_stop, trainer_ref.save_on_stop = _parallel_launch.sync_stop(
+                        trainer_ref.should_stop, trainer_ref.save_on_stop
+                    )
                 if trainer_ref.should_stop:
                     logger.info(f"Stop detected at step {state.global_step}\n")
                     control.should_training_stop = True
@@ -1136,11 +1142,15 @@ class UnslothTrainer:
         label = "",
     ):
         """Save model after training and update progress. Used by all training branches."""
+        # Trainer's own saves are collective (FSDP2 gathers on every rank) and write on rank 0; Studio's files are
+        # written by rank 0 only.
+        main_rank = _parallel_launch.is_main_rank()
         if self.should_stop and self.save_on_stop:
             self.trainer._save_checkpoint(self.trainer.model, trial = None)
             self.trainer.save_model()
-            self.tokenizer.save_pretrained(output_dir)
-            self._patch_adapter_config(output_dir)
+            if main_rank:
+                self.tokenizer.save_pretrained(output_dir)
+                self._patch_adapter_config(output_dir)
             msg = f"{label} training stopped" if label else "Training stopped"
             logger.info(f"\n{msg}. Model saved to {output_dir}\n")
             self._update_progress(
@@ -1155,8 +1165,9 @@ class UnslothTrainer:
             self._update_progress(is_training = False, status_message = "Training cancelled.")
         else:
             self.trainer.save_model()
-            self.tokenizer.save_pretrained(output_dir)
-            self._patch_adapter_config(output_dir)
+            if main_rank:
+                self.tokenizer.save_pretrained(output_dir)
+                self._patch_adapter_config(output_dir)
             msg = f"{label} training completed" if label else "Training completed"
             logger.info(f"\n{msg}! Model saved to {output_dir}\n")
             self._update_progress(

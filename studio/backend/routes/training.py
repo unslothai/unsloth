@@ -121,6 +121,7 @@ from models import (
     TrainingProgress,
 )
 from models.training import (
+    ParallelPlanRequest,
     DiffusionCaptionUpdateRequest,
     DiffusionDatasetExample,
     DiffusionDatasetExamplesResponse,
@@ -1756,6 +1757,48 @@ async def get_drafter_capability(
     return {**answer, "model_name": shown}
 
 
+@router.get("/parallel/capabilities")
+async def get_parallel_capabilities(current_subject: str = Depends(get_current_subject)):
+    """Host-level multi-GPU support: GPUs, collective backend, which parallel modes can run here."""
+    from core.training import parallel_plan
+    from utils.hardware import gpu_query
+
+    with gpu_query.display_reads():
+        return await asyncio.to_thread(parallel_plan.capabilities)
+
+
+@router.post("/parallel/plan")
+async def plan_parallel_training(
+    request: ParallelPlanRequest,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+    hf_token: Optional[str] = Depends(get_hf_token),
+):
+    """What /start would launch for these settings (mode, GPUs, UNSLOTH_PARALLEL spec, per-mode availability). A
+    refused mode comes back in `error`, not as a 400, so the Train page can show it inline."""
+    from core.training import parallel_plan
+    from models.inference import resolve_inventory_handle
+
+    values = request.model_dump()
+    values["model_name"] = resolve_inventory_handle((request.model_name or "").strip())
+    managed = managed_account()
+    token = hf_token_arg(hf_token, allow_ambient_token = not (via_api_key is True or managed))
+
+    def _plan():
+        try:
+            return parallel_plan.plan_for_request(values, hf_token = token)
+        except parallel_plan.ParallelPlanError as exc:
+            host = parallel_plan.detect_host()
+            fallback = parallel_plan.plan(
+                {**values, "parallel_mode": "auto", "parallel_spec": None, "gpu_ids": None},
+                host,
+                None,
+            )
+            return {**fallback, "requested_mode": request.parallel_mode, "error": exc.payload}
+
+    return await asyncio.to_thread(_plan)
+
+
 @router.get("/hardware/visible")
 async def get_visible_hardware_utilization(current_subject: str = Depends(get_current_subject)):
     from utils.hardware import get_visible_gpu_utilization, gpu_query
@@ -2349,10 +2392,81 @@ async def _admit_training_request(
                 request.model_name,
             )
 
+    if request.parallel_mode is not None or request.parallel_spec:
+        await _plan_parallel_training(request, training_kwargs, hf_token)
+
     return _AdmittedTrainingRequest(
         training_kwargs = training_kwargs,
         hf_token = hf_token,
         resume_run = resume_run,
+    )
+
+
+def _parallel_plan_input(training_kwargs: dict, request) -> dict:
+    """The planner's view of a start: the sizing fields plus the single-process-only features."""
+    keys = (
+        "model_name",
+        "training_type",
+        "load_in_4bit",
+        "batch_size",
+        "max_seq_length",
+        "lora_r",
+        "target_modules",
+        "gradient_checkpointing",
+        "optim",
+        "gpu_ids",
+        "offload_layers",
+        "packing",
+        "is_dataset_image",
+        "is_dataset_audio",
+        "is_embedding",
+        "is_decision",
+        "batch_members",
+        "drafter",
+    )
+    values = {key: training_kwargs.get(key) for key in keys}
+    values["batch_members"] = _PENDING_BATCH.get() is not None
+    values["parallel_mode"] = request.parallel_mode
+    values["parallel_spec"] = request.parallel_spec
+    return values
+
+
+async def _plan_parallel_training(request, training_kwargs: dict, hf_token) -> None:
+    """Resolve parallel_mode before any VRAM moves: a refused layout is a 400 with the contract's error object;
+    an accepted one rides in training_kwargs["parallel"] to the worker (rank 0 starts the other ranks)."""
+    from core.training import parallel_plan
+
+    try:
+        plan = await asyncio.to_thread(
+            parallel_plan.plan_for_request,
+            _parallel_plan_input(training_kwargs, request),
+            hf_token = hf_token,
+        )
+    except parallel_plan.ParallelPlanError as exc:
+        raise HTTPException(status_code = 400, detail = exc.payload) from None
+    training_kwargs["parallel"] = {
+        key: plan[key]
+        for key in (
+            "requested_mode",
+            "mode",
+            "world_size",
+            "gpu_ids",
+            "spec",
+            "launcher",
+            "distributed_backend",
+            "reason",
+        )
+    }
+    if plan["gpu_ids"]:
+        # Multi-process ranks and an explicit single / layer split run on exactly the planned GPUs.
+        training_kwargs["gpu_ids"] = list(plan["gpu_ids"])
+    logger.info(
+        "Multi-GPU plan: mode=%s world_size=%s gpu_ids=%s spec=%s (%s)",
+        plan["mode"],
+        plan["world_size"],
+        plan["gpu_ids"],
+        plan["spec"],
+        plan["reason"],
     )
 
 
@@ -3008,6 +3122,7 @@ def _build_training_status(
         error = error_message,
         warnings = warnings,
         details = details,
+        parallel = getattr(backend, "parallel_plan", None) if exposes_owner_state else None,
         metric_history = metric_history,
     )
 

@@ -700,6 +700,23 @@ class TrainingStartRequest(BaseModel):
         ),
     )
 
+    parallel_mode: Optional[
+        Literal["auto", "single", "layer_split", "ddp", "fsdp2", "tp", "pp", "cp", "ep", "custom"]
+    ] = Field(
+        None,
+        description = (
+            "Multi-GPU layout. auto: Studio picks (DDP when the model fits each GPU, FSDP2 when it fits sharded, "
+            "expert parallel for MoE where Unsloth has it, else layers split across GPUs). single / layer_split: "
+            "one process. ddp / fsdp2 / tp / pp / cp / ep / custom: one process per GPU (Linux NVIDIA / AMD). "
+            "Omit for the behaviour before this field existed."
+        ),
+    )
+    parallel_spec: Optional[str] = Field(
+        None,
+        max_length = 200,
+        description = 'With parallel_mode "custom": the UNSLOTH_PARALLEL layout, e.g. "dp=2,tp=2".',
+    )
+
     s3_config: Optional[S3Config] = Field(
         None,
         description = 'S3 bucket configuration. Missing SDK installs on first use; preinstall offline support with: python -m pip install "unsloth[s3]"',
@@ -799,6 +816,31 @@ class TrainingStartRequest(BaseModel):
         return self
 
 
+class ParallelPlanRequest(BaseModel):
+    """POST /api/train/parallel/plan: the /start fields the multi-GPU plan reads."""
+
+    model_name: str = Field(..., max_length = 512)
+    training_type: str = "LoRA/QLoRA"
+    load_in_4bit: bool = True
+    batch_size: int = Field(4, ge = 1)
+    max_seq_length: int = Field(2048, ge = 1)
+    lora_r: int = Field(16, ge = 1)
+    target_modules: Optional[List[str]] = None
+    gradient_checkpointing: str = "unsloth"
+    optim: str = "adamw_8bit"
+    gpu_ids: Optional[List[int]] = None
+    parallel_mode: Optional[
+        Literal["auto", "single", "layer_split", "ddp", "fsdp2", "tp", "pp", "cp", "ep", "custom"]
+    ] = "auto"
+    parallel_spec: Optional[str] = Field(None, max_length = 200)
+    offload_layers: Optional[Union[int, str]] = None
+    packing: bool = False
+    is_dataset_image: bool = False
+    is_dataset_audio: bool = False
+    is_embedding: bool = False
+    is_decision: bool = False
+
+
 class TrainingJobResponse(BaseModel):
     """Immediate response when training is initiated"""
 
@@ -879,6 +921,11 @@ class TrainingStatus(BaseModel):
     )
     details: Optional[dict] = Field(
         None, description = "Phase-specific info, e.g. {'model_size': '8B'}"
+    )
+    parallel: Optional[dict] = Field(
+        None,
+        description = "Multi-GPU layout of the run (mode, world_size, gpu_ids, spec, launcher, "
+        "distributed_backend, reason); null when started without parallel_mode.",
     )
     metric_history: Optional[dict] = Field(
         None,
