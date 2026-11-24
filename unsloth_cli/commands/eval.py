@@ -402,12 +402,17 @@ def _stop_sequence(data_file: Path, target_key: str) -> str:
     if data_file.suffix.lower() == ".csv":
         import csv
         import io
-        rows = list(csv.DictReader(io.StringIO(text)))
+
+        limit = csv.field_size_limit(2**31 - 1)
+        try:
+            rows = list(csv.DictReader(io.StringIO(text)))
+        finally:
+            csv.field_size_limit(limit)
     else:
         try:
             rows = json.loads(text)
         except json.JSONDecodeError:
-            rows = [json.loads(line) for line in text.splitlines() if line.strip()]
+            rows = [json.loads(line) for line in text.split("\n") if line.strip()]
     rows = rows if isinstance(rows, list) else [rows]
     values = [row.get(target_key) for row in rows if isinstance(row, dict)]
     targets = [str(t) for v in values for t in (v if isinstance(v, list) else [v])]

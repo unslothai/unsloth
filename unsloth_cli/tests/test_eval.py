@@ -184,6 +184,18 @@ def test_single_line_dataset_still_stops_at_the_first_newline(tmp_path):
     assert _score_generation(tmp_path, rows, "2\nBecause 1+1 is 2.") == 1.0
 
 
+def test_stop_sequence_reads_long_csv_fields_and_unicode_separators(tmp_path):
+    csv_file = tmp_path / "qa.csv"
+    csv_file.write_text(f'question,answer\n"{"x" * 200_000}","red\nblue"\n', encoding = "utf-8")
+    assert evalmod._stop_sequence(csv_file, "answer") == "\n\n"
+    jsonl = tmp_path / "qa.jsonl"
+    rows = [{"question": "a\u2028b", "answer": "2"}, {"question": "c", "answer": "3"}]
+    jsonl.write_text(
+        "".join(json.dumps(r, ensure_ascii = False) + "\n" for r in rows), encoding = "utf-8"
+    )
+    assert evalmod._stop_sequence(jsonl, "answer") == "\n"
+
+
 def test_dataset_task_stays_clear_of_names_requested_alongside(tmp_path):
     (tmp_path / "gsm8k.jsonl").write_text("{}\n")
     (tmp_path / "sub").mkdir()
