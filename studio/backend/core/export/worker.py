@@ -185,6 +185,7 @@ def _offline_window_if_unreachable(step = "loading"):
     try:
         from utils.transformers_version import hf_endpoint_unreachable
         from utils.utils import hf_env_offline
+
         probe_enabled = os.environ.get("UNSLOTH_OFFLINE_PROBE", "1").strip().lower() not in (
             "0",
             "false",

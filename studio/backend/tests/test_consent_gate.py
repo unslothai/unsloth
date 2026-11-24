@@ -1279,7 +1279,9 @@ class TestIsTrustedOrgRepo:
         monkeypatch.setattr(hub_constants, "HF_HUB_OFFLINE", False)
         monkeypatch.setenv("HF_HUB_OFFLINE", " TRUE ")
         clear_cache()
-        with patch("huggingface_hub.HfApi", _fake_hfapi("someoneelse/x", author = "someoneelse")) as Api:
+        with patch(
+            "huggingface_hub.HfApi", _fake_hfapi("someoneelse/x", author = "someoneelse")
+        ) as Api:
             assert is_trusted_org_repo("unsloth/x") is False
             Api.return_value.model_info.assert_called_once()
 
@@ -1289,7 +1291,9 @@ class TestIsTrustedOrgRepo:
 
         monkeypatch.setattr(hub_constants, "HF_HUB_OFFLINE", False)
         clear_cache()
-        with patch("huggingface_hub.HfApi", _fake_hfapi("someoneelse/x", author = "someoneelse")) as Api:
+        with patch(
+            "huggingface_hub.HfApi", _fake_hfapi("someoneelse/x", author = "someoneelse")
+        ) as Api:
             with force_hf_offline():
                 assert is_trusted_org_repo("unsloth/x") is True
             Api.assert_not_called()

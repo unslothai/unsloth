@@ -2640,7 +2640,9 @@ def _top_up_optional_packages(venv_dir: str, packages: tuple[str, ...]) -> bool:
     """Installs to a scratch dir and renames in, dist-info last, so no RECORD precedes its files."""
     usable = True
     # Offline installs can only miss and the miss is remembered, unless pip has a local wheelhouse.
-    offline = hf_env_offline() or (_runtime_repair_is_offline() and not _pip_is_configured_offline())
+    offline = hf_env_offline() or (
+        _runtime_repair_is_offline() and not _pip_is_configured_offline()
+    )
     for pkg in packages:
         if not _sidecar_package_is_optional(pkg):
             continue

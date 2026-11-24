@@ -16,7 +16,11 @@ import pytest
 from core.inference import audio_cpp_models as acm
 from hub.utils import gguf
 
-OFFLINE_ENVS = [("HF_HUB_OFFLINE", "on"), ("HF_HUB_OFFLINE", " TRUE "), ("TRANSFORMERS_OFFLINE", "1")]
+OFFLINE_ENVS = [
+    ("HF_HUB_OFFLINE", "on"),
+    ("HF_HUB_OFFLINE", " TRUE "),
+    ("TRANSFORMERS_OFFLINE", "1"),
+]
 
 
 @pytest.fixture
@@ -64,7 +68,11 @@ def test_audio_download_check_trusts_the_cached_gguf_without_asking_the_hub(
 
 @pytest.mark.parametrize(
     "var, value, hub_asked",
-    [("HF_HUB_OFFLINE", "on", False), ("TRANSFORMERS_OFFLINE", "1", False), ("HF_HUB_OFFLINE", " TRUE ", True)],
+    [
+        ("HF_HUB_OFFLINE", "on", False),
+        ("TRANSFORMERS_OFFLINE", "1", False),
+        ("HF_HUB_OFFLINE", " TRUE ", True),
+    ],
 )
 def test_trusted_org_skips_verification_only_when_the_hub_client_is_offline(var, value, hub_asked):
     """A fresh process, since huggingface_hub reads the env at import: " TRUE " leaves its client online, so ownership is verified."""
@@ -76,7 +84,9 @@ def test_trusted_org_skips_verification_only_when_the_hub_client_is_offline(var,
         "with patch('huggingface_hub.HfApi', api):\n"
         "    print(is_trusted_org_repo('unsloth/Demo'), api.return_value.model_info.called)\n"
     )
-    env = {k: v for k, v in os.environ.items() if k not in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE")}
+    env = {
+        k: v for k, v in os.environ.items() if k not in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE")
+    }
     env[var] = value
     out = subprocess.run(
         [sys.executable, "-c", code],
