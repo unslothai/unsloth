@@ -2982,8 +2982,7 @@ class ChatCompletionRequest(BaseModel):
     _off_confirm_opt_out: bool = PrivateAttr(default = False)
     # Anthropic web_search allowed/blocked domains; server-side only, never a request field.
     _website_policy: Optional[dict] = PrivateAttr(default = None)
-    # Scheduled runs supply a catalog scoped to the servers selected on the task.
-    _scheduled_mcp_tools: Optional[list[dict]] = PrivateAttr(default = None)
+    # Scheduled runs restrict the MCP catalog to the servers selected on the task.
     _scheduled_mcp_server_ids: Optional[frozenset[str]] = PrivateAttr(default = None)
 
     model: str = Field(

@@ -14965,10 +14965,7 @@ async def _discover_mcp_tools(server: dict) -> list[dict]:
 
 
 async def get_enabled_mcp_tools(
-    include_stdio: bool = True,
-    server_ids: set[str] | None = None,
-    *,
-    defer_tools: bool = True,
+    include_stdio: bool = True, server_ids: set[str] | None = None
 ) -> list[dict]:
     # keep the SQLite-backed server list off the event loop.
     servers = await asyncio.to_thread(lambda: _enabled_mcp_servers(mcp_servers_db.list_servers()))
@@ -15022,8 +15019,6 @@ async def get_enabled_mcp_tools(
                 continue
             payload = [public_tool(server, tool) for tool in payload]
             listed.append((server, payload, _mcp_specs_for_server(server, payload)))
-        if not defer_tools:
-            return [spec for _, _, specs in listed for spec in specs]
         return _mcp_listing(listed)
 
     # Off the loop: pricing the listing can make several synchronous token-count calls to llama-server.

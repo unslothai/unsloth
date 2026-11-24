@@ -794,25 +794,8 @@ async def generate_answer(
                 )
             except TimeoutError:
                 raise RunFailed("timeout") from None
-            mcp_server_ids = set(task.get("mcpServerIds", ()))
+            mcp_server_ids = frozenset(task.get("mcpServerIds", ()))
             tool_fields = _tool_fields(bool(task.get("webSearch")), bool(mcp_server_ids))
-            scheduled_mcp_tools = None
-            if mcp_server_ids:
-                from core.inference.tools import get_enabled_mcp_tools
-
-                # Deferred tool search can expand to the account-wide catalog.
-                try:
-                    scheduled_mcp_tools = await asyncio.wait_for(
-                        get_enabled_mcp_tools(server_ids = mcp_server_ids, defer_tools = False),
-                        timeout = max(0.0, deadline - loop.time()),
-                    )
-                except TimeoutError:
-                    raise RunFailed("timeout") from None
-                if not scheduled_mcp_tools:
-                    raise RunFailed(
-                        message = "No tools are available from the selected MCP servers. "
-                        "Check that they are enabled and reachable."
-                    )
             payload = ChatCompletionRequest.model_validate(
                 {
                     "messages": [
@@ -842,9 +825,8 @@ async def generate_answer(
                 }
             )
 
-            if scheduled_mcp_tools is not None:
-                payload._scheduled_mcp_tools = scheduled_mcp_tools
-                payload._scheduled_mcp_server_ids = frozenset(mcp_server_ids)
+            if mcp_server_ids:
+                payload._scheduled_mcp_server_ids = mcp_server_ids
                 # Each run starts independent stateful MCP sessions.
                 payload.thread_id = run["id"]
 

@@ -1117,7 +1117,7 @@ def test_a_run_can_call_only_its_selected_stdio_mcp_server(monkeypatch, source):
         assert payload.mcp_enabled and payload.enabled_tools == []
         assert not inference_routes._confirm_gate_needs_stream(payload)
         assert payload.thread_id == f"run-{source}"
-        tools.set_mcp_listing_context_tokens(128, payload.thread_id)
+        tools.set_mcp_listing_context_tokens(4096, payload.thread_id)
         catalog = await inference_routes._select_request_tools(
             payload, tools_on = True, mcp_allowed = True, ui_events = False
         )
@@ -1151,11 +1151,65 @@ def test_a_run_can_call_only_its_selected_stdio_mcp_server(monkeypatch, source):
         mcp_client.invalidate_tool_cache()
 
 
+def test_a_run_budgets_the_catalog_without_exposing_unselected_mcp_tools(monkeypatch):
+    from core.inference import mcp_client, tools
+    from storage import mcp_servers_db
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_MCP_SEARCH_ONLY", "1")
+    for server_id in ("selected", "unselected"):
+        mcp_servers_db.create_server(server_id, server_id, f"https://{server_id}.example/mcp")
+    selected_tools = [
+        {
+            "name": f"lookup-{index}",
+            "description": "Look up RSS feed entries with optional filters.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    f"filter_{field}": {
+                        "type": "string",
+                        "description": "Filter feed entries by matching this text in the item metadata.",
+                    }
+                    for field in range(8)
+                },
+            },
+        }
+        for index in range(40)
+    ]
+    mcp_client.cache_tools("selected", selected_tools)
+    mcp_client.cache_tools("unselected", [{"name": "lookup-private"}])
+
+    async def producer(payload, request, current_subject, *, cancel_on_disconnect):
+        context_length = 4096
+        tools.set_mcp_listing_context_tokens(context_length, payload.thread_id)
+        catalog = await inference_routes._select_request_tools(
+            payload, tools_on = True, mcp_allowed = True, ui_events = False
+        )
+        assert [tool["function"]["name"] for tool in catalog] == ["mcp_tool_search"]
+        loadable = tools.mcp_loadable_specs(catalog)
+        assert len(loadable) == len(selected_tools)
+        assert tools._text_token_cost(json.dumps(loadable), context_length) > context_length
+        result = tools.mcp_tool_search_specs({"query": "mcp__selected__lookup-0", "limit": 1})
+        assert [tool["function"]["name"] for tool in result] == ["mcp__selected__lookup-0"]
+        assert tools.mcp_tool_specs({"mcp__unselected__lookup-private"}) == {}
+        return completion("Found the requested feed entries.")
+
+    try:
+        generate(monkeypatch, producer, task = make_task(mcpServerIds = ["selected"]))
+    finally:
+        mcp_client.invalidate_tool_cache()
+
+
 def test_a_run_reports_unavailable_mcp_servers(monkeypatch):
-    producer = FakeProducer(completion("unused"))
+    monkeypatch.setattr(scheduler_module, "_chat_model_loaded", lambda: True)
+
+    async def producer(payload, request, current_subject, *, cancel_on_disconnect):
+        await inference_routes._select_request_tools(
+            payload, tools_on = True, mcp_allowed = True, ui_events = False
+        )
+        pytest.fail("A scheduled run must report when its selected servers provide no tools")
+
     with pytest.raises(RunFailed, match = "No tools are available from the selected MCP servers"):
         generate(monkeypatch, producer, task = make_task(mcpServerIds = ["missing"]))
-    assert producer.payload is None
 
 
 def test_a_run_reports_when_selected_mcp_tools_are_disabled(monkeypatch):
