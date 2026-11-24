@@ -137,6 +137,10 @@ def install(
         "one_card": 0,
         "last": None,
         "automatic": automatic,
+        "plan": None,
+        "tiles": None,
+        "resized_failures": 0,
+        "resized_oom_px": None,
     }
     vae.__dict__[_ATTR] = state
     stock = _stock_tiled_decode(vae)
@@ -151,9 +155,11 @@ def install(
         if dec is None:
             state["one_card"] += 1
             state["last"] = why
+            state["plan"] = "one card"
+            state["tiles"] = _tile_plan(self)
             return stock(self, z, return_dict = return_dict)
         state["split"] += 1
-        state["last"] = "split"
+        state["last"] = why
         if not return_dict:
             return (dec,)
         from diffusers.models.autoencoders.vae import DecoderOutput
@@ -178,7 +184,12 @@ def stats(pipe: Any) -> Optional[dict]:
     vae = getattr(pipe, "vae", None)
     state = getattr(vae, "__dict__", {}).get(_ATTR) if vae is not None else None
     return (
-        None if state is None else {k: state[k] for k in ("partner", "split", "one_card", "last")}
+        None
+        if state is None
+        else {
+            k: state.get(k)
+            for k in ("partner", "split", "one_card", "last", "plan", "tiles", "resized_failures")
+        }
     )
 
 
@@ -554,6 +565,9 @@ def _try_split(vae: Any, z: Any, state: dict, logger: Any) -> tuple[Optional[Any
     if free - reserve < need:
         if partner_tiles_enabled(bool(state.get("automatic"))):
             resized = partner_sized_tiles(vae, z, free - reserve)
+            limit = state.get("resized_oom_px")
+            if resized is not None and limit is not None and resized[0] * resized[2] >= limit:
+                resized = None  # this size (or a larger one) ran out of memory before: one card
         if resized is None:
             return None, (
                 f"cuda:{partner} has {free} MiB free ({reserve} MiB kept free), the copy needs ~{need}"
@@ -561,14 +575,39 @@ def _try_split(vae: Any, z: Any, state: dict, logger: Any) -> tuple[Optional[Any
     try:
         with _tiles(vae, resized):
             out = split_tiled_decode(vae, z, partner)
-        state["resized"] = resized
+        state["plan"] = "split" if resized is None else "resized split"
+        state["tiles"] = resized if resized is not None else _tile_plan(vae)
         return out, "split" if resized is None else f"split, partner-sized tiles {resized}"
     except Exception as exc:  # noqa: BLE001 - the stock decode reruns every tile on the load card
         if sticky_cuda_error(exc):
             raise  # the context is lost: a one-card retry would fail on its first kernel
+        what = "split"
+        if resized is not None:
+            # the stock-size split never fitted: the one-card stock decode is what ran before partner tiles
+            what = f"partner-sized split {resized}"
+            state["resized_failures"] = int(state.get("resized_failures") or 0) + 1
+            if _is_oom(exc):
+                state["resized_oom_px"] = resized[0] * resized[2]
         if logger is not None:
-            logger.warning("video.vae_multigpu: split decode failed, one card: %s", exc)
-        return None, f"split failed ({type(exc).__name__}: {exc})"
+            logger.warning("video.vae_multigpu: %s decode failed, one card: %s", what, exc)
+        return None, f"{what} failed ({type(exc).__name__}: {exc})"
+
+
+def _tile_plan(vae: Any) -> Optional[tuple]:
+    try:
+        return tuple(int(getattr(vae, a)) for a in _TILE_ATTRS)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _is_oom(exc: BaseException) -> bool:
+    try:
+        import torch
+        if isinstance(exc, torch.OutOfMemoryError):
+            return True
+    except (ImportError, AttributeError):
+        pass
+    return "out of memory" in str(exc).lower()
 
 
 def _cleanup(
