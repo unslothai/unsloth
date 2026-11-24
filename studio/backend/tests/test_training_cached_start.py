@@ -289,9 +289,7 @@ def test_hf_dataset_preflight_rejects_datasets_builder_names(builder):
         patch.dict(sys.modules, _fake_hf_modules(FakeApi)),
         pytest.raises(HTTPException) as exc_info,
     ):
-        route._preflight_hf_dataset_request(
-            _request(hf_dataset = builder, dataset_known_cached = True)
-        )
+        route._preflight_hf_dataset_request(_request(hf_dataset = builder, dataset_known_cached = True))
 
     assert exc_info.value.status_code == 400
     assert exc_info.value.detail["code"] == "hf_dataset_verification_failed"

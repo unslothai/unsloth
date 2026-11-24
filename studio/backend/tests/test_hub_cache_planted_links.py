@@ -93,7 +93,9 @@ def test_chat_template_walk_does_not_read_a_linked_host_file(tmp_path, monkeypat
     snap = _snapshot(tmp_path / "hub", "model", "org/model")
     (snap / "tokenizer_config.json").symlink_to(secret)
     monkeypatch.setattr(service, "resolve_cached_repo_id_case", lambda name: name)
-    monkeypatch.setattr(service, "iter_snapshots_preferring_whole", lambda resolved, variant: [snap])
+    monkeypatch.setattr(
+        service, "iter_snapshots_preferring_whole", lambda resolved, variant: [snap]
+    )
     monkeypatch.setattr(service, "cache_reads_authorized", lambda *a, **k: True)
     monkeypatch.setattr(service, "hf_env_offline", lambda: True)
 
