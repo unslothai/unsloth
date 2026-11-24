@@ -120,8 +120,9 @@ jobs:
   connection:
     name: connection (${{ matrix.agents }})
     runs-on: ubuntu-latest
-    # Each agent keeps the old per-leg 40 minute bound; the job bound covers a shard of them.
-    timeout-minutes: 120
+    # Each agent keeps the old per-leg 40 minute bound. The job bound is 5 agents x 40 plus setup,
+    # so even a shard whose agents all hang reaches every agent and reports each one.
+    timeout-minutes: 215
     strategy:
       fail-fast: false
       matrix:
