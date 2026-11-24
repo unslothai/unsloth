@@ -563,7 +563,7 @@ def _resident_video_cpu_release_gb() -> float:
         state = getattr(_backend, "_state", None) if _backend is not None else None
         if state is None or getattr(state, "device", None) != "cpu":
             return 0.0
-        from .video_cpu_host import CPU_VIDEO_WORKING_SET_GB, cpu_video_host_need
+        from .video_cpu_host import cpu_video_host_need, cpu_video_working_set_gb
 
         fam = state.family
         scheme = getattr(state, "text_encoder_quant", None)
@@ -577,7 +577,7 @@ def _resident_video_cpu_release_gb() -> float:
             te_hosted = bool(scheme) and getattr(fam, "name", None) == "ltx-2.5",
             transformer_quant = getattr(state, "transformer_quant", None),
         )
-        return max(0.0, need.total_gb - CPU_VIDEO_WORKING_SET_GB) if need is not None else 0.0
+        return max(0.0, need.total_gb - cpu_video_working_set_gb(fam)) if need is not None else 0.0
     except Exception:  # noqa: BLE001 -- no reading credits nothing
         return 0.0
 

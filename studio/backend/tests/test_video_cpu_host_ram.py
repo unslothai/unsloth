@@ -39,6 +39,8 @@ GB_PER_GIB = 1024**3 / 1e9
 LTX25_MEASURED_ANON_GB = 28.7
 LTX25_MEASURED_ANON_TIGHT_GB = 29.2
 LTX25_RENDERED_AVAILABLE_GB = 32.2
+# Colab CPU-HM, Wan2.1-T2V-1.3B pipeline at 832x480x33, 2 steps: process-tree RssAnon / Pss_Anon peak (decimal GB).
+WAN13_MEASURED_ANON_GB = 9.45
 
 
 def _target(
@@ -264,9 +266,17 @@ def test_ltx25_price_sits_under_the_measured_peak_and_above_a_24_gib_cap():
 
 
 def test_cpu_prices_the_dense_float32_encoder_the_loader_keeps():
+    """Wan2.2 5B stores umT5 in bf16: the float32 CPU target converts it, 22.8 GB of anonymous memory."""
+    need = vch.cpu_video_host_need(WAN5B, model_kind = "pipeline")
+    assert need.text_encoder_gb == pytest.approx(22.8, abs = 0.05) and need.text_encoder_dense
+
+
+def test_wan13_price_matches_its_cpu_measurement():
+    """Wan2.1 1.3B stores umT5 and the DiT in float32; measured on Colab CPU-HM at 832x480x33: 9.45 GB anonymous peak
+    (umT5 read through its file mapping). Priced just under it."""
     need = vch.cpu_video_host_need(WAN13, model_kind = "pipeline")
-    # DiT 2.8 -> 5.6, umT5 11.4 -> 22.8, float32 VAE 0.5, working set 1.5
-    assert need.total_gb == pytest.approx(30.4, abs = 0.05) and need.text_encoder_dense
+    assert need.text_encoder_gb == 0.0
+    assert WAN13_MEASURED_ANON_GB - 0.5 <= need.total_gb <= WAN13_MEASURED_ANON_GB
 
 
 @pytest.mark.parametrize(
@@ -286,9 +296,15 @@ def test_ltx25_loads_that_fit_are_not_refused(host, total_gb, available_gb, held
     _load(LTX25, "gguf", text_encoder_quant = "int8")
 
 
-def test_wan13_on_a_32_gib_host_with_room_is_not_refused(host):
-    host("cpu", 32 * GB_PER_GIB, 31.0)
+@pytest.mark.parametrize("available_gb", [26.0, 12.0])
+def test_wan13_on_a_32_gib_host_is_not_refused(host, available_gb):
+    host("cpu", 32 * GB_PER_GIB, available_gb)
     _load(WAN13, "pipeline")
+
+
+def test_wan13_below_its_measured_floor_is_refused(host):
+    host("cpu", 32 * GB_PER_GIB, 8.0)
+    assert "text encoder read from its float32 file" in _refusal(WAN13, "pipeline")
 
 
 def test_kill_switch_lets_the_load_try(host, monkeypatch):

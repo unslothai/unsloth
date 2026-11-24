@@ -34,6 +34,21 @@ H3_CPU_NATIVE_HOST_GB = 5.1
 # Activations, GGUF dequant scratch and the tiled VAE decode for a short clip at the smallest size: the LTX-2.5 peak
 # above minus its resident weights (28.7 - 8.5 - 18.4 = 1.8 GB), rounded down so the estimate stays under it.
 CPU_VIDEO_WORKING_SET_GB = 1.5
+# Families measured on CPU at their default size, where the working set is larger. Wan2.1-T2V-1.3B pipeline at
+# 832x480x33 (2 steps + decode), Colab CPU-HM: 9.45 GB RssAnon / Pss_Anon peak = DiT 5.68 (float32 file) + VAE 0.51
+# + 3.26 working set; priced at 3.0 so the estimate (9.1 GB) stays just under the measurement.
+CPU_VIDEO_WORKING_SET_GB_BY_FAMILY = {"wan2.1-t2v-1.3b": 3.0}
+# Official Diffusers repos whose text_encoder/ is stored in float32 (umT5, 22.72 GB): the float32 CPU target reads it
+# as views of the file mapping, no conversion, so it adds no anonymous memory (Wan2.1 1.3B above: 22.8 GB RssFile).
+STORED_FP32_TEXT_ENCODER_FAMILIES = frozenset({"wan2.1-t2v-1.3b", "wan2.1-t2v-14b"})
+
+
+def cpu_video_working_set_gb(fam: Any) -> float:
+    return CPU_VIDEO_WORKING_SET_GB_BY_FAMILY.get(
+        getattr(fam, "name", None), CPU_VIDEO_WORKING_SET_GB
+    )
+
+
 # A copied GGUF whose size cannot be read: the smallest curated quant's share of bf16 (LTX-2.5 Q2_K 8.46 / 42.0).
 GGUF_MIN_BF16_FRACTION = 0.2
 
@@ -82,6 +97,8 @@ def _text_encoder_gb(
     if te_scheme:
         # A pre-cast fp8 / int8 encoder stores one byte per weight; CPU may widen it later, but never below this.
         return bf16_gb / 2.0, False, None, None
+    if getattr(fam, "name", None) in STORED_FP32_TEXT_ENCODER_FAMILIES:
+        return 0.0, False, None, None
     return bf16_gb * 2.0, True, None, None
 
 
@@ -149,7 +166,7 @@ def cpu_video_host_need(
         denoiser,
         te,
         other,
-        CPU_VIDEO_WORKING_SET_GB,
+        cpu_video_working_set_gb(fam),
         denoiser_mapped = mapped,
         denoiser_gguf_copy = model_kind == "gguf" and not mapped,
         text_encoder_dense = te_dense,
@@ -419,7 +436,14 @@ def cpu_video_host_shortfall(
             else:
                 denoiser = f"denoiser {need.denoiser_gb:.1f}"
             parts = (
-                f"{denoiser}, text encoder {need.text_encoder_gb:.1f}, VAE and other components "
+                f"{denoiser}, "
+                + (
+                    "text encoder read from its float32 file"
+                    if getattr(fam, "name", None) in STORED_FP32_TEXT_ENCODER_FAMILIES
+                    and need.text_encoder_gb == 0.0
+                    else f"text encoder {need.text_encoder_gb:.1f}"
+                )
+                + ", VAE and other components "
                 f"{need.other_gb:.1f}, working set {need.working_gb:.1f}"
             )
         advice = _advice(fam, need, capacity_gb)
@@ -439,6 +463,9 @@ def cpu_video_host_shortfall(
 
 __all__ = [
     "CPU_VIDEO_WORKING_SET_GB",
+    "CPU_VIDEO_WORKING_SET_GB_BY_FAMILY",
+    "STORED_FP32_TEXT_ENCODER_FAMILIES",
+    "cpu_video_working_set_gb",
     "CpuVideoHostNeed",
     "GGUF_MIN_BF16_FRACTION",
     "H3_CPU_NATIVE_HOST_GB",
