@@ -117,6 +117,21 @@ jobs:
               --outdir "studio_evidence_1/$(basename "$dir")"
           done
 
+      # Per account, right after its own steps, so a timeout in account 2 cannot lose account 1's
+      # evidence. continue-on-error: statuses are already posted; an artifact outage is not a
+      # collection failure.
+      - name: Upload evidence (account 1)
+        if: always() && hashFiles('kaggle_collected_1/**') != ''
+        continue-on-error: true
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: kaggle-collect-evidence-account-1
+          path: |
+            kaggle_collected_1/**
+            studio_evidence_1/**
+          retention-days: 14
+          if-no-files-found: ignore
+
       - name: Summarise (account 1)
         if: always() && hashFiles('kaggle_collected_1/collect_result.json') != ''
         run: |
@@ -202,6 +217,21 @@ jobs:
               --outdir "studio_evidence_2/$(basename "$dir")"
           done
 
+      # Per account, right after its own steps, so a timeout in account 2 cannot lose account 1's
+      # evidence. continue-on-error: statuses are already posted; an artifact outage is not a
+      # collection failure.
+      - name: Upload evidence (account 2)
+        if: always() && hashFiles('kaggle_collected_2/**') != ''
+        continue-on-error: true
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: kaggle-collect-evidence-account-2
+          path: |
+            kaggle_collected_2/**
+            studio_evidence_2/**
+          retention-days: 14
+          if-no-files-found: ignore
+
       - name: Summarise (account 2)
         if: always() && hashFiles('kaggle_collected_2/collect_result.json') != ''
         run: |
@@ -231,19 +261,3 @@ jobs:
                   if k.get("reason"):
                       print(f"- `{k['slug'].rsplit('/', 1)[-1]}`: {k['reason']}")
           PY
-
-      # One upload for both accounts, after both have run.
-      # continue-on-error: statuses are already posted; an artifact outage is not a collection failure.
-      - name: Upload evidence
-        if: always() && hashFiles('kaggle_collected_1/**', 'kaggle_collected_2/**') != ''
-        continue-on-error: true
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
-        with:
-          name: kaggle-collect-evidence
-          path: |
-            kaggle_collected_1/**
-            studio_evidence_1/**
-            kaggle_collected_2/**
-            studio_evidence_2/**
-          retention-days: 14
-          if-no-files-found: ignore

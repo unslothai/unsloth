@@ -552,6 +552,7 @@ def test_the_collector_runs_every_account_in_one_job_with_its_own_token_and_tree
             "Post the commit statuses",
             "Release the kernels whose verdicts were delivered",
             "Unpack the Playwright evidence",
+            "Upload evidence",
             "Summarise",
         }, (account, sorted(steps))
         tree = f"kaggle_collected_{account}"
@@ -1452,10 +1453,12 @@ def test_the_scheduled_collector_unpacks_and_uploads_what_it_collected():
     screenshots back and keep them somewhere."""
     steps = [(n, s) for _j, n, s in _steps(_wf(COLLECT_WF))]
     names = [n for n, _s in steps]
-    upload = steps[names.index("Upload evidence")][1]
-    assert upload["uses"].startswith("actions/upload-artifact@")
-    assert upload.get("continue-on-error") is True, "an artifact outage is not a collection failure"
     for account in ("1", "2"):
+        upload = steps[names.index(f"Upload evidence (account {account})")][1]
+        assert upload["uses"].startswith("actions/upload-artifact@")
+        assert (
+            upload.get("continue-on-error") is True
+        ), "an artifact outage is not a collection failure"
         unpack = steps[names.index(f"Unpack the Playwright evidence (account {account})")][1]
         assert f"kaggle_collected_{account}/*/" in unpack["run"]
         assert "collect_evidence.py" in unpack["run"]
@@ -1463,9 +1466,14 @@ def test_the_scheduled_collector_unpacks_and_uploads_what_it_collected():
         assert f"kaggle_collected_{account}/**" in upload["with"]["path"]
         assert f"studio_evidence_{account}/**" in upload["with"]["path"]
         assert f"'kaggle_collected_{account}/**'" in upload["if"]
-        assert names.index("Upload evidence") > names.index(
+        assert upload["with"]["name"] == f"kaggle-collect-evidence-account-{account}"
+        assert names.index(f"Upload evidence (account {account})") > names.index(
             f"Post the commit statuses (account {account})"
         )
+    # Account 1 uploads before account 2 starts, so a job timeout in account 2 keeps account 1's.
+    assert names.index("Upload evidence (account 1)") < names.index(
+        "Collect this account's kernels (account 2)"
+    )
 
 
 def test_a_listed_notebook_without_a_download_url_marks_the_evidence_incomplete(
@@ -1640,15 +1648,15 @@ def test_the_release_hands_every_delete_its_deadline(tmp_path, monkeypatch):
     assert seen and seen[0] is not None and seen[0] <= time.time() + collect.RELEASE_BUDGET_SEC
 
 
-def test_the_scheduled_collector_uploads_once_and_reports_real_deletions():
+def test_the_scheduled_collector_uploads_per_account_and_reports_real_deletions():
     steps = [(n, s) for _j, n, s in _steps(_wf(COLLECT_WF))]
     uploads = [
         s for _n, s in steps if str(s.get("uses", "")).startswith("actions/upload-artifact@")
     ]
-    assert len(uploads) == 1, "two uploads: the second one fails the job on an artifact outage"
-    assert uploads[0].get("continue-on-error") is True
-    for account in ("1", "2"):
-        assert f"kaggle_collected_{account}/**" in uploads[0]["with"]["path"]
+    assert len(uploads) == 2, "one upload per account"
+    for account, upload in zip(("1", "2"), uploads):
+        assert upload.get("continue-on-error") is True, "an artifact outage must not fail the job"
+        assert f"kaggle_collected_{account}/**" in upload["with"]["path"]
         summary = next(s for n, s in steps if n == f"Summarise (account {account})")
         assert (
             f"kaggle_collected_{account}/delete_result.json" in summary["run"]
