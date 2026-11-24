@@ -5037,6 +5037,9 @@ def _expected_torch_flavor_tag() -> str:
             return "rocm"
         if _is_cuda_family_leaf(leaf) or leaf in ("xpu", "cpu"):
             return leaf
+    # The swap _ensure_rocm_torch makes, or a manifest / NVIDIA probe would put CUDA back.
+    if IS_WINDOWS and _windows_forced_rocm_is_viable():
+        return "rocm"
     # A resolved backend is a stated choice; honoured when it agrees with the installed wheel, and ahead of
     # the manifest, which describes the previous install.
     if _TORCH_BACKEND in ("cpu", "cuda", "rocm", "xpu"):
@@ -5837,6 +5840,14 @@ def _rocm_torch_family_needs_repair(
     ) or _generic_only_target_below_floor(runtime_gfx, _installed_tag)
 
 
+def _windows_forced_rocm_is_viable() -> bool:
+    """UNSLOTH_FORCE_ROCM_TORCH beside a usable NVIDIA GPU, with an AMD card _ensure_rocm_torch can serve."""
+    if not (_rocm_torch_explicitly_requested() and _has_usable_nvidia_gpu()):
+        return False
+    gfx_arch = _detect_windows_gfx_arch()
+    return bool(gfx_arch) and _windows_rocm_index_url(gfx_arch) is not None
+
+
 def _windows_rocm_device_packs_need_dependency_pass() -> bool:
     """For setup.ps1's fast path: would _ensure_rocm_torch repair this multi-arch ROCm torch?
 
@@ -5849,7 +5860,7 @@ def _windows_rocm_device_packs_need_dependency_pass() -> bool:
             _explicit_unknown_family_torch_index_url() is not None
             or _explicit_torch_index_is_unusable()
             or _explicit_rocm_torch_index_url() is not None
-            or _has_usable_nvidia_gpu()
+            or (_has_usable_nvidia_gpu() and not _rocm_torch_explicitly_requested())
         ):
             return False
         gfx_arch = _detect_windows_gfx_arch()

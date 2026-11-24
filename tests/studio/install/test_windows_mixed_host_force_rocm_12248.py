@@ -521,3 +521,77 @@ def test_the_amd_probe_is_silent_only_where_cuda_always_wins(beside, env, heard)
     )
     assert ("PROBE" in kv) == heard
     assert kv["AFTER"] == "said"
+
+
+class TestStackWindowsForcedFlavor:
+    """A forced ROCm swap must survive the rest of a direct run: the flavor invariant and setup.ps1's
+    device-pack fast path read the flag like _ensure_rocm_torch, not the NVIDIA probe alone."""
+
+    def _patches(
+        self,
+        gfx = "gfx1201",
+        nvidia = True,
+    ):
+        return (
+            patch.object(stack_mod, "IS_WINDOWS", True),
+            patch.object(stack_mod, "IS_MACOS", False),
+            patch.object(stack_mod, "NO_TORCH", False),
+            patch.object(stack_mod, "_TORCH_BACKEND", ""),
+            patch.object(stack_mod, "_RECORDED_TORCH_TAG", "cu128"),
+            patch.object(stack_mod, "_handover_torch_flavor_tag", return_value = ""),
+            patch.object(stack_mod, "_explicit_torch_index_family", return_value = None),
+            patch.object(stack_mod, "_explicit_unknown_family_torch_index_url", return_value = None),
+            patch.object(stack_mod, "_explicit_torch_index_is_unusable", return_value = False),
+            patch.object(stack_mod, "_explicit_rocm_torch_index_url", return_value = None),
+            patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = nvidia),
+            patch.object(stack_mod, "_detect_windows_gfx_arch", return_value = gfx),
+        )
+
+    def _run(self, fn, force, **kw):
+        from contextlib import ExitStack
+        env = {"UNSLOTH_FORCE_ROCM_TORCH": "1"} if force else {}
+        with patch.dict(os.environ, env, clear = False), ExitStack() as stack:
+            if not force:
+                os.environ.pop("UNSLOTH_FORCE_ROCM_TORCH", None)
+            for p in self._patches(**kw):
+                stack.enter_context(p)
+            return fn()
+
+    @pytest.mark.parametrize(
+        "force, kw, expected",
+        [
+            (True, {}, "rocm"),
+            (False, {}, "cu128"),
+            (True, {"gfx": None}, "cu128"),
+            (True, {"gfx": "gfx803"}, "cu128"),
+        ],
+        ids = ["forced", "unforced", "no-amd-card", "no-wheel-route"],
+    )
+    def test_the_flavor_invariant_keeps_a_forced_swap(self, force, kw, expected):
+        assert self._run(stack_mod._expected_torch_flavor_tag, force, **kw) == expected
+
+    def test_a_forced_rocm_torch_is_not_reinstalled_as_cuda(self):
+        pip = MagicMock()
+        with (
+            patch.object(
+                stack_mod,
+                "_probe_torch_runtime",
+                return_value = (True, True, "2.11.0+rocm7.14.0", "7.14", None),
+            ),
+            patch.object(stack_mod, "pip_install", pip),
+            patch.object(stack_mod, "_is_win_arm64_interpreter", return_value = False),
+        ):
+            assert self._run(stack_mod._ensure_expected_torch_flavor, True) is True
+        assert not pip.called
+
+    @pytest.mark.parametrize("force, expected", [(True, True), (False, False)])
+    def test_the_device_pack_fast_path_reads_the_flag(self, force, expected):
+        with (
+            patch.object(stack_mod, "_windows_routes_multiarch", return_value = True),
+            patch.object(stack_mod, "_multiarch_device_pack_installed", return_value = False),
+            patch("importlib.metadata.version", return_value = "2.11.0+rocm7.14.0"),
+        ):
+            assert (
+                self._run(stack_mod._windows_rocm_device_packs_need_dependency_pass, force)
+                is expected
+            )
