@@ -4,7 +4,6 @@
 """Without load_in_16bit, MXFP4 LoRA must take the packed experts path; matmul_ogs has no backward."""
 
 import ast
-import functools
 import inspect
 import json
 import os
@@ -14,6 +13,9 @@ import types
 from pathlib import Path
 
 import pytest
+from source_segments import (
+    cached_source_segment,
+)  # tests/_shared, on sys.path via tests/conftest.py
 
 ROOT = Path(__file__).resolve().parents[1]
 VISION = ROOT / "unsloth" / "models" / "vision.py"
@@ -31,17 +33,13 @@ def _helper():
     raise AssertionError("_mxfp4_lora_keeps_experts_packed not found in vision.py")
 
 
-@functools.cache
 def _dequantize_branch():
-    """The `if` in FastBaseModel.from_pretrained that sets quantizer_kwargs["dequantize"].
-
-    A pure function of the module-level SRC/TREE (read once at import), so it is searched once;
-    get_source_segment re-splits vision.py for every `if` it looks at."""
+    """The `if` in FastBaseModel.from_pretrained that sets quantizer_kwargs["dequantize"]."""
     found = []
     for node in ast.walk(TREE):
         if not isinstance(node, ast.If):
             continue
-        body = "\n".join(ast.get_source_segment(SRC, stmt) or "" for stmt in node.body)
+        body = "\n".join(cached_source_segment(SRC, stmt) or "" for stmt in node.body)
         if 'quantizer_kwargs["dequantize"] = True' in body and len(node.body) == 1:
             found.append(node)
     assert len(found) == 1, "the dequantize branch moved; update this test"

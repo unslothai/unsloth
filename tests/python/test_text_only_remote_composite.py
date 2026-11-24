@@ -13,6 +13,9 @@ import textwrap
 from pathlib import Path
 
 import pytest
+from source_segments import (
+    cached_source_segment,
+)  # tests/_shared, on sys.path via tests/conftest.py
 
 torch = pytest.importorskip("torch")
 transformers = pytest.importorskip("transformers")
@@ -79,21 +82,19 @@ def _config_commit_hash_fix():
         del base._unsloth_commit_hash_patched
 
 
-@functools.lru_cache(maxsize = 4)
 def _utils_segments(
     source: str, constant_names: frozenset
 ) -> tuple[dict[str, str], tuple[str, ...]]:
-    """Top-level function sources and the _CONSTANTS assignments of _utils.py, extracted once per file
-    content and _CONSTANTS selection (both are the cache key): ast.get_source_segment re-splits the
-    14k-line file on every call. Each test still execs them into a fresh namespace."""
+    """Top-level function sources and the selected constant assignments of _utils.py. Parsed per
+    call; only the slicing is memoised (cached_source_segment). Each test execs them afresh."""
     tree = ast.parse(source)
     funcs = {
-        n.name: ast.get_source_segment(source, n)
+        n.name: cached_source_segment(source, n)
         for n in tree.body
         if isinstance(n, ast.FunctionDef)
     }
     constants = tuple(
-        ast.get_source_segment(source, n)
+        cached_source_segment(source, n)
         for n in tree.body
         if isinstance(n, ast.Assign)
         and any(isinstance(t, ast.Name) and t.id in constant_names for t in n.targets)
@@ -141,12 +142,11 @@ def _ns():
     return ns
 
 
-@functools.lru_cache(maxsize = 4)
 def _pickle_guard_segments(source: str) -> tuple[str, ...]:
-    """The two pickle-guard function sources of import_fixes.py, extracted once per file content."""
+    """The two pickle-guard function sources of import_fixes.py (parsed per call)."""
     tree = ast.parse(source)
     return tuple(
-        ast.get_source_segment(source, n)
+        cached_source_segment(source, n)
         for n in tree.body
         if isinstance(n, ast.FunctionDef)
         and n.name in ("_torch_pickle_load_unsafe", "refuse_pickle_checkpoint_on_old_torch")

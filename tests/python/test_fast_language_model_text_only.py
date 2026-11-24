@@ -1,11 +1,13 @@
 """Text-only FastLanguageModel routing for vision-capable configs."""
 
 import ast
-import functools
 import copy
 from pathlib import Path
 
 import pytest
+from source_segments import (
+    cached_source_segment,
+)  # tests/_shared, on sys.path via tests/conftest.py
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -62,12 +64,11 @@ def _param_default(method, name):
     return dict(zip([p.arg for p in params][-len(defaults) :], defaults)).get(name)
 
 
-@functools.lru_cache(maxsize = 4)
 def _function_segments(source):
-    """Top-level function sources of a file, extracted once per file content: get_source_segment
-    re-splits the 14k-line _utils.py on every call. Callers still exec them into a fresh namespace."""
+    """Top-level function sources of a file; only the slicing is memoised (cached_source_segment),
+    the parse and the caller's exec run every time."""
     return {
-        node.name: ast.get_source_segment(source, node)
+        node.name: cached_source_segment(source, node)
         for node in ast.parse(source).body
         if isinstance(node, ast.FunctionDef)
     }
