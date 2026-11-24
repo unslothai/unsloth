@@ -629,3 +629,56 @@ def test_the_notice_only_probe_never_runs_amd_smi(muted, expected):
         )
     )
     assert kv["ALLOWED"] == expected
+
+
+NAME_ARCH_TABLE = slice_between(
+    INSTALL_SRC,
+    "                $nameArchTable = @(",
+    "                foreach ($row in $nameArchTable)",
+)
+
+
+@requires_pwsh
+@pytest.mark.parametrize(
+    "names, env, arch, notice",
+    [
+        (
+            ["AMD Radeon 780M Graphics", "AMD Radeon RX 9070 XT"],
+            {"UNSLOTH_FORCE_ROCM_TORCH": "1"},
+            "gfx1201",
+            "",
+        ),
+        (["AMD Radeon 780M Graphics", "AMD Radeon RX 9070 XT"], {}, "", "gfx1201"),
+        (
+            ["AMD Radeon 780M Graphics", "AMD Radeon RX 9070 XT"],
+            {"UNSLOTH_FORCE_ROCM_TORCH": "1", "UNSLOTH_ROCM_GFX_ARCH": "gfx1103"},
+            "gfx1103",
+            "",
+        ),
+        (["AMD Radeon 780M Graphics"], {"UNSLOTH_FORCE_ROCM_TORCH": "1"}, "gfx1103", ""),
+    ],
+    ids = ["forced-picks-discrete", "notice-names-discrete", "declared-arch-wins", "igpu-only"],
+)
+def test_a_wmi_only_mixed_host_weighs_every_amd_adapter(names, env, arch, notice):
+    listed = ", ".join(repr(n) for n in names)
+    kv = _ps_kv(
+        _script(
+            COLLECT,
+            INSTALL_HELPERS,
+            INSTALL_WHEEL_MAPS,
+            NAME_ARCH_TABLE,
+            "$_hipAllArches = @()",
+            f"$wmiAmdNames = @({listed})",
+            _env(**env),
+            "$nvMaskHidesAll = Test-CudaMaskHidesNvidia",
+            "$HasNvidiaSmi = $true; $ProbeAmdBesideNvidia = $true",
+            "$ROCmGfxArch = 'gfx1103'",
+            "$AmdHasGpuWheels = $true",
+            "$HasROCm = $false; $HipSdkInstalled = $false; $ROCmGpuLabel = 'x'; $ROCmGpuName = 'x'",
+            "$ROCmUnsupportedGfxArch = $null",
+            INSTALL_DECISION,
+            'Write-Output "ARCH=$ROCmGfxArch"',
+            'Write-Output "NOTICE=$MixedHostAmdArch"',
+        )
+    )
+    assert kv["ARCH"] == arch and kv["NOTICE"] == notice

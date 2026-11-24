@@ -9406,14 +9406,19 @@ main()
     $MixedHostRoute = $null
     $MixedHostAmdArch = $null
     if ($ProbeAmdBesideNvidia) {
-        $_mixedPicked = Resolve-MixedHostShadowingArch -Picked $ROCmGfxArch -Arches $_hipAllArches
+        $_mixedArches = @($_hipAllArches)
+        if ($_mixedArches.Count -eq 0 -and $wmiAmdNames -and $nameArchTable -and -not $env:UNSLOTH_ROCM_GFX_ARCH) {
+            # WMI-only: every adapter's inferred arch, as setup.ps1 scores them, not adapter 0 alone.
+            $_mixedArches = @(foreach ($n in $wmiAmdNames) { foreach ($row in $nameArchTable) { if ($n -match $row.P) { $row.A; break } } })
+        }
+        $_mixedPicked = Resolve-MixedHostShadowingArch -Picked $ROCmGfxArch -Arches $_mixedArches
         if ($_mixedPicked -and $_mixedPicked -ne $ROCmGfxArch) {
             $ROCmGfxArch = $_mixedPicked; $ROCmGpuLabel = "AMD ROCm ($ROCmGfxArch)"; $ROCmGpuName = $null
             $AmdHasGpuWheels = $true
         }
         $MixedHostRoute = Get-MixedHostTorchRoute -AmdHasGpuWheels $AmdHasGpuWheels `
             -ForceRocm (Test-RocmTorchExplicitlyRequested) -CudaMaskHidesNvidia $nvMaskHidesAll `
-            -NoticeArch (Get-MixedHostNoticeArch -Arches (@($ROCmGfxArch) + @($_hipAllArches)))
+            -NoticeArch (Get-MixedHostNoticeArch -Arches (@($ROCmGfxArch) + @($_mixedArches)))
         if ($MixedHostRoute -eq "rocm") {
             $RocmTorchOverNvidia = $true
             $HasNvidiaSmi = $false
@@ -9423,7 +9428,7 @@ main()
             }
             if ($nvMaskHidesAll -and $null -eq $env:HIP_VISIBLE_DEVICES) { Write-CudaMaskHidesAmdWarning }
         } else {
-            if ($MixedHostRoute -eq "cuda-notice") { $MixedHostAmdArch = Get-MixedHostNoticeArch -Arches (@($ROCmGfxArch) + @($_hipAllArches)) }
+            if ($MixedHostRoute -eq "cuda-notice") { $MixedHostAmdArch = Get-MixedHostNoticeArch -Arches (@($ROCmGfxArch) + @($_mixedArches)) }
             # NVIDIA keeps torch: forget the AMD probe.
             $HasROCm = $false; $HipSdkInstalled = $false; $ROCmGpuLabel = $null; $ROCmGpuName = $null
             $ROCmVersion = $null; $ROCmVersionFull = $null; $ROCmGfxArch = $null; $ROCmUnsupportedGfxArch = $null
