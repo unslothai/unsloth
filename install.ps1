@@ -9021,7 +9021,7 @@ main()
     # Declared with its neighbours, not inside the block below: the arms that read
     # it are outside that gate, so an NVIDIA host would leave it undefined.
     $ROCmUnsupportedGfxArch = $null
-    $_hipAllArches = @(); $_smiGfxTokens = @(); $_asicGfxTokens = @()
+    $_hipAllArches = @(); $_smiGfxTokens = @(); $_asicGfxTokens = @(); $amdAdapters = @()
     # Mixed hosts are probed too (flag, mask, notice); a pin skips it, as in install.sh.
     $ProbeAmdBesideNvidia = $HasNvidiaSmi -and -not $SkipTorch -and
         [string]::IsNullOrWhiteSpace($env:UNSLOTH_TORCH_INDEX_URL) -and
@@ -9439,7 +9439,9 @@ main()
             $ROCmGfxArch = $_mixedPicked; $ROCmGpuLabel = "AMD ROCm ($ROCmGfxArch)"; $ROCmGpuName = $null
             $AmdHasGpuWheels = $true
         }
-        $MixedHostRoute = Get-MixedHostTorchRoute -AmdHasGpuWheels $AmdHasGpuWheels `
+        # UNSLOTH_ROCM_GFX_ARCH names an arch, not a card: hipinfo, amd-smi or WMI must see one.
+        $_amdSeen = $HasROCm -or @($amdAdapters).Count -gt 0 -or @($_hipAllArches + $_smiGfxTokens + $_asicGfxTokens).Count -gt 0
+        $MixedHostRoute = Get-MixedHostTorchRoute -AmdHasGpuWheels ($AmdHasGpuWheels -and $_amdSeen) `
             -ForceRocm (Test-RocmTorchExplicitlyRequested) -CudaMaskHidesNvidia $nvMaskHidesAll `
             -NoticeArch (Get-MixedHostNoticeArch -Arches (@($ROCmGfxArch) + @($_mixedArches)))
         if ($MixedHostRoute -eq "rocm") {

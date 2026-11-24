@@ -4599,7 +4599,8 @@ $_rocmWheelArches = @(
 # "AMD gets GPU wheels", not "AMD GPU present": unmapped arches install CPU torch.
 $AmdHasGpuWheels = [bool]($script:ROCmGfxArch -and ($_rocmWheelArches -contains $script:ROCmGfxArch))
 if ($script:ProbeAmdBesideNvidia) {
-    if ($AmdHasGpuWheels) {
+    # UNSLOTH_ROCM_GFX_ARCH names an arch, not a card: hipinfo, amd-smi or WMI must see one.
+    if ($AmdHasGpuWheels -and ($HasROCm -or @($script:ROCmGpuLabels).Count -gt 0)) {
         # An AMD host from here on, so the stale check keeps ROCm torch rather than restoring CUDA.
         $HasNvidiaSmi = $false
         $_rocmWhy = if (Test-RocmTorchExplicitlyRequested) { "UNSLOTH_FORCE_ROCM_TORCH is set" } else { "CUDA_VISIBLE_DEVICES hides the NVIDIA GPU" }

@@ -5849,7 +5849,19 @@ def _windows_forced_rocm_is_viable() -> bool:
     if _handover_torch_flavor_tag() not in ("", "rocm"):
         return False
     gfx_arch = _detect_windows_gfx_arch()
-    return bool(gfx_arch) and _windows_rocm_index_url(gfx_arch) is not None
+    if not gfx_arch or _windows_rocm_index_url(gfx_arch) is None:
+        return False
+    return _windows_amd_hardware_is_corroborated()
+
+
+def _windows_amd_hardware_is_corroborated() -> bool:
+    """UNSLOTH_ROCM_GFX_ARCH names an arch, not a card: hipinfo, amd-smi or WMI must see one."""
+    _override = os.environ.pop("UNSLOTH_ROCM_GFX_ARCH", None)
+    try:
+        return _override is None or bool(_detect_windows_gfx_arch())
+    finally:
+        if _override is not None:
+            os.environ["UNSLOTH_ROCM_GFX_ARCH"] = _override
 
 
 def _windows_rocm_device_packs_need_dependency_pass() -> bool:

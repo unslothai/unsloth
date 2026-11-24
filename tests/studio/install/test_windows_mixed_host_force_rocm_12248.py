@@ -79,7 +79,7 @@ INSTALL_NOTICE = slice_between(
 )
 SETUP_DECISION = slice_between(
     SETUP_SRC,
-    "if ($script:ProbeAmdBesideNvidia) {\n    if ($AmdHasGpuWheels)",
+    "if ($script:ProbeAmdBesideNvidia) {\n    # UNSLOTH_ROCM_GFX_ARCH names",
     "# Mirrors install.ps1's Intel scan",
 )
 
@@ -280,17 +280,23 @@ def test_get_torch_index_url_hands_a_forced_host_to_the_amd_route():
     assert kv["URL"] == "https://download.pytorch.org/whl/cpu"
 
 
-def _setup_decision(arch, wheels, **env):
+def _setup_decision(
+    arch,
+    wheels,
+    card = True,
+    **env,
+):
     return _ps_kv(
         _script(
             COLLECT,
             SETUP_HELPERS,
             _env(**env),
+            "$script:ROCmGpuLabels = @()",
             "$nvMaskHidesAll = Test-CudaMaskHidesNvidia",
             "$HasNvidiaSmi = $true; $script:ProbeAmdBesideNvidia = $true",
             f"$script:ROCmGfxArch = {'$null' if arch is None else repr(arch)}",
             f"$AmdHasGpuWheels = ${str(wheels).lower()}",
-            "$HasROCm = $true; $HipSdkInstalled = $true; $ROCmGpuLabel = 'x'; $ROCmGpuName = 'x'",
+            f"$HasROCm = ${str(card).lower()}; $HipSdkInstalled = $true; $ROCmGpuLabel = 'x'; $ROCmGpuName = 'x'",
             SETUP_DECISION,
             'Write-Output "NVIDIA=$HasNvidiaSmi"',
             'Write-Output "ARCH=$script:ROCmGfxArch"',
@@ -302,6 +308,16 @@ def _setup_decision(arch, wheels, **env):
 
 @requires_pwsh
 class TestSetupPs1Decision:
+    def test_a_declared_arch_with_no_card_keeps_cuda(self):
+        kv = _setup_decision(
+            "gfx1201",
+            True,
+            card = False,
+            UNSLOTH_FORCE_ROCM_TORCH = "1",
+            UNSLOTH_ROCM_GFX_ARCH = "gfx1201",
+        )
+        assert kv["NVIDIA"] == "True" and kv["ARCH"] == "" and "keeping CUDA" in kv["SAID"]
+
     def test_force_keeps_rocm_instead_of_restoring_cuda(self):
         kv = _setup_decision("gfx1201", True, UNSLOTH_FORCE_ROCM_TORCH = "1")
         assert kv["NVIDIA"] == "False" and kv["ARCH"] == "gfx1201"
@@ -840,3 +856,51 @@ def test_a_wmi_only_mixed_host_applies_the_mask_to_every_adapter(env, route, arc
         )
     )
     assert kv["ROUTE"] == route and kv["ARCH"] == arch
+
+
+@requires_pwsh
+@pytest.mark.parametrize(
+    "evidence, route",
+    [
+        ("", "cuda-forced"),
+        ("$amdAdapters = @([pscustomobject]@{ Name = 'AMD Radeon RX 9070 XT' })", "rocm"),
+    ],
+    ids = ["declared-arch-no-card", "declared-arch-with-card"],
+)
+def test_install_ps1_needs_a_card_behind_a_declared_arch(evidence, route):
+    kv = _ps_kv(
+        _script(
+            COLLECT,
+            INSTALL_HELPERS,
+            INSTALL_WHEEL_MAPS,
+            "$_hipAllArches = @(); $_smiGfxTokens = @(); $_asicGfxTokens = @(); $amdAdapters = @()",
+            evidence,
+            _env(UNSLOTH_FORCE_ROCM_TORCH = "1", UNSLOTH_ROCM_GFX_ARCH = "gfx1201"),
+            "$nvMaskHidesAll = Test-CudaMaskHidesNvidia",
+            "$HasNvidiaSmi = $true; $ProbeAmdBesideNvidia = $true",
+            "$ROCmGfxArch = 'gfx1201'; $AmdHasGpuWheels = $true",
+            "$HasROCm = $false; $HipSdkInstalled = $false; $ROCmGpuLabel = 'x'; $ROCmGpuName = 'x'",
+            "$ROCmUnsupportedGfxArch = $null",
+            INSTALL_DECISION,
+            'Write-Output "ROUTE=$MixedHostRoute"',
+        )
+    )
+    assert kv["ROUTE"] == route
+
+
+def test_the_python_forced_route_needs_a_card_behind_a_declared_arch():
+    probe = {"arch": None}
+    t = TestStackWindowsForcedFlavor()
+
+    def detect():
+        return os.environ.get("UNSLOTH_ROCM_GFX_ARCH") or probe["arch"]
+
+    def viable():
+        with patch.object(stack_mod, "_detect_windows_gfx_arch", detect):
+            return stack_mod._windows_forced_rocm_is_viable()
+
+    with patch.dict(os.environ, {"UNSLOTH_ROCM_GFX_ARCH": "gfx1201"}):
+        assert t._run(viable, True) is False
+        probe["arch"] = "gfx1201"
+        assert t._run(viable, True) is True
+        assert os.environ["UNSLOTH_ROCM_GFX_ARCH"] == "gfx1201"
