@@ -2,7 +2,8 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 # Collects Kaggle kernels the GPU workflows dispatched (they push and exit) and posts a
 # `kaggle-t4-notebook` / `kaggle-studio-gpu` commit status against the sha in the kernel slug.
-# Neither can be a required check: sampled commits get no status. One job per account, one token each.
+# Neither can be a required check: sampled commits get no status. One job, both accounts in turn,
+# one token and one output directory per account; a failed account does not skip the other.
 name: Kaggle collect
 
 on:
@@ -33,19 +34,14 @@ jobs:
   collect:
     name: Collect
     runs-on: ubuntu-latest
-    # collect.py's BUDGET_SEC (900s) + RELEASE_BUDGET_SEC (600s) + setup, so the script stops first.
-    timeout-minutes: 30
+    # Both accounts run in this one job, one after the other (each pass takes ~30 s).
+    # collect.py's BUDGET_SEC (900s) + RELEASE_BUDGET_SEC (600s) + setup fits one account; the
+    # reaper window (max age + cron interval + this timeout) must stay inside the GPU workflows'
+    # --budget-hours, so this cannot grow past 50.
+    timeout-minutes: 50
     permissions:
       contents: read
       statuses: write
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - account_id: '1'
-            secret_name: KAGGLE_API_TOKEN
-          - account_id: '2'
-            secret_name: KAGGLE_API_TOKEN_2
     steps:
       - name: Harden runner (audit)
         uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43
@@ -62,15 +58,16 @@ jobs:
           python-version: '3.12'
 
       - name: Install the Kaggle client
+        id: install
         # kaggle 1.7.4.5's authenticate() cannot read KAGGLE_API_TOKEN.
         # kaggle imports six without declaring it; python-dateutil 4.0 stopped pulling it in.
         run: python -m pip install --quiet 'kaggle==2.2.4' 'six'
 
-      - name: Collect this account's kernels
-        id: collect
+      - name: Collect this account's kernels (account 1)
+        id: collect_1
         env:
-          # Index by name: a ternary would hand over the other account's token when this one is empty.
-          KAGGLE_API_TOKEN: ${{ secrets[matrix.secret_name] }}
+          # One account's token per step: a step holding both could act for the wrong account.
+          KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
           # Through env, never ${{ }} in the script: the dispatch input is free text beside the token.
           MAX_AGE_HOURS: ${{ inputs.max_age_hours || '3' }}
         # --require-auth: a broken token here must be red; an EMPTY token (single-account repo) only warns.
@@ -81,67 +78,54 @@ jobs:
             exit 1
           fi
           python .github/scripts/kaggle_t4_ci/collect.py \
-            --outdir kaggle_collected \
+            --outdir kaggle_collected_1 \
             --require-auth \
             --no-delete \
             --max-age-hours "$MAX_AGE_HOURS" \
             --target-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
 
       # Post first, delete second, so a failed post leaves the kernel for the next pass.
-      - name: Post the commit statuses
-        id: post
-        if: always() && hashFiles('kaggle_collected/collect_result.json') != ''
+      - name: Post the commit statuses (account 1)
+        id: post_1
+        if: always() && hashFiles('kaggle_collected_1/collect_result.json') != ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           python .github/scripts/kaggle_t4_ci/post_statuses.py \
-            --result kaggle_collected/collect_result.json \
-            --out kaggle_collected/posted.json
+            --result kaggle_collected_1/collect_result.json \
+            --out kaggle_collected_1/posted.json
 
-      - name: Release the kernels whose verdicts were delivered
-        if: always() && !inputs.no_delete && hashFiles('kaggle_collected/collect_result.json') != ''
+      - name: Release the kernels whose verdicts were delivered (account 1)
+        if: always() && !inputs.no_delete && hashFiles('kaggle_collected_1/collect_result.json') != ''
         env:
-          KAGGLE_API_TOKEN: ${{ secrets[matrix.secret_name] }}
+          KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
         run: |
           python .github/scripts/kaggle_t4_ci/collect.py \
-            --outdir kaggle_collected \
-            --delete-collected kaggle_collected/collect_result.json \
-            --posted kaggle_collected/posted.json
+            --outdir kaggle_collected_1 \
+            --delete-collected kaggle_collected_1/collect_result.json \
+            --posted kaggle_collected_1/posted.json
 
       # One kernel per call: chunks from two kernels would be spliced together.
-      - name: Unpack the Playwright evidence
-        if: always() && hashFiles('kaggle_collected/**/*_output.ipynb') != ''
+      - name: Unpack the Playwright evidence (account 1)
+        if: always() && hashFiles('kaggle_collected_1/**/*_output.ipynb') != ''
         continue-on-error: true
         run: |
-          for dir in kaggle_collected/*/; do
+          for dir in kaggle_collected_1/*/; do
             [ -d "$dir" ] || continue
             python .github/scripts/kaggle_studio_ci/collect_evidence.py \
               --evidence "$dir" \
-              --outdir "studio_evidence/$(basename "$dir")"
+              --outdir "studio_evidence_1/$(basename "$dir")"
           done
 
-      # continue-on-error: statuses are already posted; an artifact outage is not a collection failure.
-      - name: Upload evidence
-        if: always() && hashFiles('kaggle_collected/**') != ''
-        continue-on-error: true
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
-        with:
-          name: kaggle-collect-evidence-account-${{ matrix.account_id }}
-          path: |
-            kaggle_collected/**
-            studio_evidence/**
-          retention-days: 14
-          if-no-files-found: ignore
-
-      - name: Summarise
-        if: always() && hashFiles('kaggle_collected/collect_result.json') != ''
+      - name: Summarise (account 1)
+        if: always() && hashFiles('kaggle_collected_1/collect_result.json') != ''
         run: |
           python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
           import json, pathlib
-          data = json.loads(pathlib.Path("kaggle_collected/collect_result.json").read_text())
+          data = json.loads(pathlib.Path("kaggle_collected_1/collect_result.json").read_text())
           # Collection runs --no-delete, so `deleted` there is always false; the
           # release step wrote the real outcome beside it.
-          release = pathlib.Path("kaggle_collected/delete_result.json")
+          release = pathlib.Path("kaggle_collected_1/delete_result.json")
           released = set(json.loads(release.read_text()).get("deleted") or []) if release.exists() else set()
           print(f"### Kaggle collect: account {data.get('owner') or '?'}\n")
           rows = data.get("kernels") or []
@@ -162,3 +146,104 @@ jobs:
                   if k.get("reason"):
                       print(f"- `{k['slug'].rsplit('/', 1)[-1]}`: {k['reason']}")
           PY
+
+      - name: Collect this account's kernels (account 2)
+        id: collect_2
+        # After account 1 whatever its outcome, as long as the client installed.
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        env:
+          KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN_2 }}
+          # Through env, never ${{ }} in the script: the dispatch input is free text beside the token.
+          MAX_AGE_HOURS: ${{ inputs.max_age_hours || '3' }}
+        # --require-auth: a broken token here must be red; an EMPTY token (single-account repo) only warns.
+        # --no-delete: the last step releases kernels after statuses post.
+        run: |
+          if ! printf '%s' "$MAX_AGE_HOURS" | grep -Eq '^[0-9]+([.][0-9]+)?$'; then
+            echo "::error::max_age_hours must be a number of hours, got '$MAX_AGE_HOURS'"
+            exit 1
+          fi
+          python .github/scripts/kaggle_t4_ci/collect.py \
+            --outdir kaggle_collected_2 \
+            --require-auth \
+            --no-delete \
+            --max-age-hours "$MAX_AGE_HOURS" \
+            --target-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+
+      # Post first, delete second, so a failed post leaves the kernel for the next pass.
+      - name: Post the commit statuses (account 2)
+        id: post_2
+        if: always() && hashFiles('kaggle_collected_2/collect_result.json') != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python .github/scripts/kaggle_t4_ci/post_statuses.py \
+            --result kaggle_collected_2/collect_result.json \
+            --out kaggle_collected_2/posted.json
+
+      - name: Release the kernels whose verdicts were delivered (account 2)
+        if: always() && !inputs.no_delete && hashFiles('kaggle_collected_2/collect_result.json') != ''
+        env:
+          KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN_2 }}
+        run: |
+          python .github/scripts/kaggle_t4_ci/collect.py \
+            --outdir kaggle_collected_2 \
+            --delete-collected kaggle_collected_2/collect_result.json \
+            --posted kaggle_collected_2/posted.json
+
+      # One kernel per call: chunks from two kernels would be spliced together.
+      - name: Unpack the Playwright evidence (account 2)
+        if: always() && hashFiles('kaggle_collected_2/**/*_output.ipynb') != ''
+        continue-on-error: true
+        run: |
+          for dir in kaggle_collected_2/*/; do
+            [ -d "$dir" ] || continue
+            python .github/scripts/kaggle_studio_ci/collect_evidence.py \
+              --evidence "$dir" \
+              --outdir "studio_evidence_2/$(basename "$dir")"
+          done
+
+      - name: Summarise (account 2)
+        if: always() && hashFiles('kaggle_collected_2/collect_result.json') != ''
+        run: |
+          python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json, pathlib
+          data = json.loads(pathlib.Path("kaggle_collected_2/collect_result.json").read_text())
+          # Collection runs --no-delete, so `deleted` there is always false; the
+          # release step wrote the real outcome beside it.
+          release = pathlib.Path("kaggle_collected_2/delete_result.json")
+          released = set(json.loads(release.read_text()).get("deleted") or []) if release.exists() else set()
+          print(f"### Kaggle collect: account {data.get('owner') or '?'}\n")
+          rows = data.get("kernels") or []
+          for k in rows:
+              k["deleted"] = bool(k.get("deleted")) or k.get("slug") in released
+          if not rows:
+              print("Nothing of ours was in flight on this account.\n")
+          else:
+              print("| kernel | commit | kind | state | verdict | deleted |")
+              print("| --- | --- | --- | --- | --- | --- |")
+              for k in rows:
+                  print("| `{}` | `{}` | {} | {} | **{}** | {} |".format(
+                      k["slug"].rsplit("/", 1)[-1], k.get("sha") or "-",
+                      k.get("kind") or "-", k.get("state") or "-",
+                      k.get("verdict") or "-", "yes" if k.get("deleted") else "no"))
+              print()
+              for k in rows:
+                  if k.get("reason"):
+                      print(f"- `{k['slug'].rsplit('/', 1)[-1]}`: {k['reason']}")
+          PY
+
+      # One upload for both accounts, after both have run.
+      # continue-on-error: statuses are already posted; an artifact outage is not a collection failure.
+      - name: Upload evidence
+        if: always() && hashFiles('kaggle_collected_1/**', 'kaggle_collected_2/**') != ''
+        continue-on-error: true
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: kaggle-collect-evidence
+          path: |
+            kaggle_collected_1/**
+            studio_evidence_1/**
+            kaggle_collected_2/**
+            studio_evidence_2/**
+          retention-days: 14
+          if-no-files-found: ignore

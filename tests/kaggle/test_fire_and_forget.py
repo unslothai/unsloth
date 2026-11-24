@@ -514,12 +514,74 @@ def test_a_scheduled_collector_exists_and_reaps():
 def test_the_collector_covers_both_accounts():
     """The gate's weighted draw decides where a session is SPENT; it must not
     decide where results are read from."""
-    wf = _wf(COLLECT_WF)
-    job = wf["jobs"]["collect"]
-    names = {e["secret_name"] for e in job["strategy"]["matrix"]["include"]}
+    names = set()
+    for _job, _name, step in _steps(_wf(COLLECT_WF)):
+        token = (step.get("env") or {}).get("KAGGLE_API_TOKEN")
+        if token:
+            m = re.fullmatch(r"\$\{\{ secrets\.(\w+) \}\}", token)
+            assert m, token
+            names.add(m.group(1))
     import gate
 
     assert names == set(gate.DEFAULT_ACCOUNT_ENVS), names
+
+
+def _collector_accounts(wf: dict) -> dict[str, dict[str, tuple[int, dict]]]:
+    """{account: {step name without the account suffix: (index, step)}} for the one-job collector."""
+    out = {}
+    for i, (_job, name, step) in enumerate(_steps(wf)):
+        m = re.fullmatch(r"(.+) \(account (\d+)\)", name)
+        if m:
+            out.setdefault(m.group(2), {})[m.group(1)] = (i, step)
+    return out
+
+
+def test_the_collector_runs_every_account_in_one_job_with_its_own_token_and_tree():
+    """One job does both accounts in turn: each account keeps its own token and output directory,
+    and the second account still runs when the first one failed."""
+    wf = _wf(COLLECT_WF)
+    assert list(wf["jobs"]) == ["collect"] and "strategy" not in wf["jobs"]["collect"]
+    accounts = _collector_accounts(wf)
+    assert sorted(accounts) == ["1", "2"], sorted(accounts)
+    import gate
+
+    tokens = {}
+    for account, steps in accounts.items():
+        assert set(steps) == {
+            "Collect this account's kernels",
+            "Post the commit statuses",
+            "Release the kernels whose verdicts were delivered",
+            "Unpack the Playwright evidence",
+            "Summarise",
+        }, (account, sorted(steps))
+        tree = f"kaggle_collected_{account}"
+        for label, (_i, step) in steps.items():
+            body = (step.get("run") or "") + (step.get("if") or "")
+            assert tree in body, (account, label)
+            others = set(re.findall(r"kaggle_collected(?:_\d+)?\b", body)) - {tree}
+            assert not others, (account, label, others)
+        tokens[account] = {
+            (s.get("env") or {}).get("KAGGLE_API_TOKEN")
+            for _i, s in steps.values()
+            if (s.get("env") or {}).get("KAGGLE_API_TOKEN")
+        }
+        assert len(tokens[account]) == 1, (account, tokens[account])
+    assert len(set().union(*tokens.values())) == len(gate.DEFAULT_ACCOUNT_ENVS), tokens
+
+    # The steps are the same commands, only the tree differs.
+    def _norm(account):
+        return {
+            label: re.sub(
+                rf"(kaggle_collected|studio_evidence)_{account}", r"\1", s.get("run") or ""
+            )
+            for label, (_i, s) in accounts[account].items()
+        }
+
+    assert _norm("1") == _norm("2")
+    second = accounts["2"]["Collect this account's kernels"][1]
+    assert "!cancelled()" in second["if"], "a failure on account 1 skips account 2"
+    first_last = max(i for i, _s in accounts["1"].values())
+    assert first_last < min(i for i, _s in accounts["2"].values())
 
 
 def test_the_collector_holds_one_token_per_job():
@@ -671,14 +733,23 @@ def test_collection_never_deletes_and_the_release_step_comes_after_posting(path)
             "--no-delete" in step["run"]
         ), f"{path.name} collects with deletion on:\n{step['run']}"
     names = [n for n, _s in steps]
-    post = next(i for i, (n, s) in enumerate(steps) if "post_statuses.py" in (s.get("run") or ""))
-    release = next(
-        i for i, (n, s) in enumerate(steps) if "--delete-collected" in (s.get("run") or "")
-    )
-    assert (
-        release > post
-    ), f"{path.name} releases kernels before posting: {names[release]!r} before {names[post]!r}"
-    assert "--posted kaggle_collected/posted.json" in steps[release][1]["run"]
+    releases = [i for i, (n, s) in enumerate(steps) if "--delete-collected" in (s.get("run") or "")]
+    assert releases, f"{path.name} never releases"
+    for release in releases:
+        m = re.search(
+            r"--posted (kaggle_collected(?:_\d+)?)/posted\.json", steps[release][1]["run"]
+        )
+        assert m, steps[release][1]["run"]
+        # The post that wrote this tree's posted.json comes first.
+        post = next(
+            i
+            for i, (n, s) in enumerate(steps)
+            if "post_statuses.py" in (s.get("run") or "")
+            and f"--out {m.group(1)}/posted.json" in s["run"]
+        )
+        assert (
+            release > post
+        ), f"{path.name} releases kernels before posting: {names[release]!r} before {names[post]!r}"
 
 
 def test_a_kernel_whose_status_did_not_post_is_KEPT_for_the_next_pass(tmp_path, monkeypatch):
@@ -1381,14 +1452,20 @@ def test_the_scheduled_collector_unpacks_and_uploads_what_it_collected():
     screenshots back and keep them somewhere."""
     steps = [(n, s) for _j, n, s in _steps(_wf(COLLECT_WF))]
     names = [n for n, _s in steps]
-    unpack = steps[names.index("Unpack the Playwright evidence")][1]
-    assert "kaggle_collected/*/" in unpack["run"] and "collect_evidence.py" in unpack["run"]
     upload = steps[names.index("Upload evidence")][1]
     assert upload["uses"].startswith("actions/upload-artifact@")
-    assert "kaggle_collected/**" in upload["with"]["path"]
-    assert "studio_evidence/**" in upload["with"]["path"]
     assert upload.get("continue-on-error") is True, "an artifact outage is not a collection failure"
-    assert names.index("Upload evidence") > names.index("Post the commit statuses")
+    for account in ("1", "2"):
+        unpack = steps[names.index(f"Unpack the Playwright evidence (account {account})")][1]
+        assert f"kaggle_collected_{account}/*/" in unpack["run"]
+        assert "collect_evidence.py" in unpack["run"]
+        assert f'studio_evidence_{account}/$(basename "$dir")' in unpack["run"]
+        assert f"kaggle_collected_{account}/**" in upload["with"]["path"]
+        assert f"studio_evidence_{account}/**" in upload["with"]["path"]
+        assert f"'kaggle_collected_{account}/**'" in upload["if"]
+        assert names.index("Upload evidence") > names.index(
+            f"Post the commit statuses (account {account})"
+        )
 
 
 def test_a_listed_notebook_without_a_download_url_marks_the_evidence_incomplete(
@@ -1570,11 +1647,12 @@ def test_the_scheduled_collector_uploads_once_and_reports_real_deletions():
     ]
     assert len(uploads) == 1, "two uploads: the second one fails the job on an artifact outage"
     assert uploads[0].get("continue-on-error") is True
-    assert "kaggle_collected/**" in uploads[0]["with"]["path"]
-    summary = next(s for n, s in steps if n == "Summarise")
-    assert (
-        "delete_result.json" in summary["run"]
-    ), "the summary reports the collect step's always-false deleted flag"
+    for account in ("1", "2"):
+        assert f"kaggle_collected_{account}/**" in uploads[0]["with"]["path"]
+        summary = next(s for n, s in steps if n == f"Summarise (account {account})")
+        assert (
+            f"kaggle_collected_{account}/delete_result.json" in summary["run"]
+        ), "the summary reports the collect step's always-false deleted flag"
 
 
 def test_a_kernel_whose_status_record_was_rejected_is_kept(tmp_path, monkeypatch):
