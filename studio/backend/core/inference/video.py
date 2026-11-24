@@ -570,7 +570,13 @@ def assert_video_precision_available(
                 if gpu_ordinal is None
                 else resolve_diffusion_device_target(ordinal = gpu_ordinal)
             )
-            shortfall = ltx25_fp16_host_shortfall(fam, target, model_kind = model_kind)
+            shortfall = ltx25_fp16_host_shortfall(
+                fam,
+                target,
+                model_kind = model_kind,
+                text_encoder_quant = text_encoder_quant,
+                base = checkpoint_repo,
+            )
         if shortfall is not None:
             logger.error("video.ltx25_host_ram: refusing load: %s", shortfall)
             raise RuntimeError(shortfall)
@@ -1091,11 +1097,19 @@ def h3_fp16_host_shortfall(
     )
 
 
-def ltx25_fp16_host_shortfall(fam: Any, target: Any, *, model_kind: str) -> Optional[str]:
+def ltx25_fp16_host_shortfall(
+    fam: Any,
+    target: Any,
+    *,
+    model_kind: str,
+    text_encoder_quant: Optional[str] = None,
+    base: Optional[str] = None,
+) -> Optional[str]:
     """Why an LTX-2.5 Diffusers load cannot fit host RAM on a non-bf16 GPU, else None.
 
-    No low-RAM route serves an fp16 target, so the DiT and VAEs / connectors widen to float32 in host RAM
-    (~95 GiB). Never raises; kill switches or an unreadable size refuse nothing."""
+    No low-RAM route serves an fp16 target, so the DiT and VAEs / connectors widen to float32 in host RAM (~95 GiB),
+    and the encoder worker, started before the pipeline builds, reads Gemma 4 at that float32 into the same host RAM.
+    Never raises; kill switches or an unreadable size refuse nothing."""
     try:
         import torch
 
@@ -1119,8 +1133,12 @@ def ltx25_fp16_host_shortfall(fam: Any, target: Any, *, model_kind: str) -> Opti
         sizes = tuple(float(x) for x in (getattr(fam, "bf16_components_gb", None) or ()))
         if len(sizes) != 3:
             return None
-        # This process only; the text encoder lives in the worker.
-        need_mib = int((sizes[0] + sizes[2]) * 2.0 * 1e9 / 1048576)
+        from .video_ltx25 import ltx25_te_host_gb
+
+        te_gb = ltx25_te_host_gb(
+            text_encoder_quant, base or getattr(fam, "base_repo", None), bf16_gb = sizes[1], scale = 2.0
+        )
+        need_mib = int(((sizes[0] + sizes[2]) * 2.0 + te_gb) * 1e9 / 1048576)
         total_mib = host_ram_mib()[0]
         if not total_mib or need_mib <= int(total_mib):
             return None
@@ -1129,9 +1147,9 @@ def ltx25_fp16_host_shortfall(fam: Any, target: Any, *, model_kind: str) -> Opti
     label = getattr(fam, "label", None) or "LTX-2.5"
     return (
         f"Not enough system RAM to load this model: {label} on this GPU (no native bfloat16) loads in float32, "
-        f"which needs about {need_mib / 1024:.1f} GB of host memory and {int(total_mib) / 1024:.1f} GB is "
-        f"available. Load the {label} GGUF build instead, use a bfloat16 GPU (NVIDIA Ampere or newer), or set "
-        f"{HOST_RAM_CHECK_ENV}=0 to try anyway."
+        f"which needs about {need_mib / 1024:.1f} GB of host memory (text encoder {te_gb * 1e9 / 1024**3:.1f}) "
+        f"and {int(total_mib) / 1024:.1f} GB is available. Load the {label} GGUF build instead, use a bfloat16 GPU "
+        f"(NVIDIA Ampere or newer), or set {HOST_RAM_CHECK_ENV}=0 to try anyway."
     )
 
 
