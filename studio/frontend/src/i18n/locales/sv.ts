@@ -2998,6 +2998,15 @@ export const sv = {
         runningOn: "llama.cpp kör för närvarande på {backend}.",
         hint: "Installerar llama.cpp-bygget för denna bakände och behåller det mellan uppdateringar. Användbart när det automatiska valet kraschar eller din GPU-drivrutin inte stöder den. Endast bakändar med ett bygge för denna dator listas; träningen påverkas inte.",
         autoWith: "Automatiskt ({backend})",
+        unavailableOption: "{backend} ({reason})",
+        unavailableHint: "{backend}: {hint}",
+        unavailable: {
+          rocmNotInstalled: "ROCm är inte installerat",
+          rocmNoAccess: "ingen åtkomst till GPU:n",
+          otherRelease: "kräver en uppdatering av llama.cpp",
+          checkFailed: "kunde inte kontrolleras",
+          noBuild: "ingen build för den här datorn",
+        },
         apply: "Tillämpa",
         applying: "Installerar ...",
         applyHint:

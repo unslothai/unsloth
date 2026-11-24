@@ -3091,6 +3091,15 @@ export const cs = {
         runningOn: "llama.cpp aktuálně běží na: {backend}.",
         hint: "Nainstaluje sestavení llama.cpp pro tento backend a zachová ho i při aktualizacích. Hodí se, když automatická volba padá nebo ji ovladač vašeho GPU nepodporuje. Zobrazují se jen backendy, pro které existuje sestavení pro tento počítač; trénování to neovlivní.",
         autoWith: "Automaticky ({backend})",
+        unavailableOption: "{backend} ({reason})",
+        unavailableHint: "{backend}: {hint}",
+        unavailable: {
+          rocmNotInstalled: "ROCm není nainstalován",
+          rocmNoAccess: "bez přístupu ke GPU",
+          otherRelease: "vyžaduje aktualizaci llama.cpp",
+          checkFailed: "nelze ověřit",
+          noBuild: "pro tento počítač není k dispozici build",
+        },
         apply: "Použít",
         applying: "Instalace...",
         applyHint:

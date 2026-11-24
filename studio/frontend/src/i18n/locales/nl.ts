@@ -3113,6 +3113,15 @@ export const nl = {
         runningOn: "llama.cpp draait momenteel op {backend}.",
         hint: "Installeert de llama.cpp-build voor deze backend en behoudt die bij updates. Handig als de automatische keuze crasht of je GPU-stuurprogramma die niet ondersteunt. Alleen backends met een build voor deze machine worden getoond; training wordt niet beïnvloed.",
         autoWith: "Automatisch ({backend})",
+        unavailableOption: "{backend} ({reason})",
+        unavailableHint: "{backend}: {hint}",
+        unavailable: {
+          rocmNotInstalled: "ROCm niet geïnstalleerd",
+          rocmNoAccess: "geen toegang tot de GPU",
+          otherRelease: "vereist een llama.cpp-update",
+          checkFailed: "kon niet worden gecontroleerd",
+          noBuild: "geen build voor deze computer",
+        },
         apply: "Toepassen",
         applying: "Installeren...",
         applyHint:

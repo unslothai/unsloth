@@ -2925,6 +2925,15 @@ export const he = {
         runningOn: "llama.cpp פועל כעת על {backend}.",
         hint: "מתקין את גרסת llama.cpp עבור סביבה זו ושומר עליה לאורך עדכונים. שימושי כאשר הבחירה האוטומטית קורסת או שמנהל ההתקן של ה-GPU אינו תומך בה. רק סביבות עם גרסה מתאימה למחשב זה מוצגות ברשימה; תהליך האימון אינו מושפע.",
         autoWith: "אוטומטי ({backend})",
+        unavailableOption: "{backend} ({reason})",
+        unavailableHint: "{backend}: {hint}",
+        unavailable: {
+          rocmNotInstalled: "ROCm לא מותקן",
+          rocmNoAccess: "אין גישה ל-GPU",
+          otherRelease: "נדרש עדכון של llama.cpp",
+          checkFailed: "לא ניתן היה לבדוק",
+          noBuild: "אין גרסה למחשב הזה",
+        },
         apply: "החל",
         applying: "מתקין...",
         applyHint:
