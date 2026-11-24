@@ -42,7 +42,6 @@ def test_scrub_secrets_masks_a_short_token_in_an_explicit_authorization_header()
     )
 
 
-
 def test_scrub_secrets_masks_the_given_token_and_hub_tokens():
     token = "plain-token-value-42"
     cleaned = scrub_secrets(f"rejected {token}; also hf_{'A' * 34}", hf_token = token)
@@ -110,4 +109,6 @@ def test_recipe_job_log_keeps_the_old_github_and_studio_key_coverage(worker):
 
 def test_a_dotted_github_app_token_is_masked_whole(worker):
     token = "ghs_123456_eyJhbGciOiJIUzI1NiJ9.eyJpc3MiOiIxMjMifQ.c2lnbmF0dXJl"
-    assert worker._sanitize_log_message(f"push failed with {token}") == "push failed with <redacted>"
+    assert (
+        worker._sanitize_log_message(f"push failed with {token}") == "push failed with <redacted>"
+    )
