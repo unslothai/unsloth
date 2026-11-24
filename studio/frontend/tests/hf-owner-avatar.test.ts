@@ -40,7 +40,7 @@ globalThis.fetch = (async (input: string) => {
 }) as typeof fetch;
 
 const {
-  _resetAvatarCacheForTest,
+  resetAvatarCacheForTests,
   expireHfOwnerAvatarUrl,
   readCachedHfOwnerAvatar,
   useHfOwnerAvatar,
@@ -51,7 +51,7 @@ const STORAGE_KEY = "unsloth:hf-owner-avatars:v1";
 
 beforeEach(() => {
   localStorage.removeItem(STORAGE_KEY);
-  _resetAvatarCacheForTest();
+  resetAvatarCacheForTests();
 });
 
 test("readCachedHfOwnerAvatar hydrates persisted URLs across cache resets", () => {
@@ -66,7 +66,7 @@ test("readCachedHfOwnerAvatar hydrates persisted URLs across cache resets", () =
       },
     ]),
   );
-  _resetAvatarCacheForTest();
+  resetAvatarCacheForTests();
 
   assert.equal(
     readCachedHfOwnerAvatar("AtomicChat"),
@@ -81,11 +81,11 @@ test("readCachedHfOwnerAvatar hydrates persisted URLs across cache resets", () =
 
 test("corrupt localStorage entries are ignored without throwing", () => {
   localStorage.setItem(STORAGE_KEY, "{not valid json");
-  _resetAvatarCacheForTest();
+  resetAvatarCacheForTests();
   assert.equal(readCachedHfOwnerAvatar("AtomicChat"), null);
 
   localStorage.setItem(STORAGE_KEY, JSON.stringify([{ bad: true }]));
-  _resetAvatarCacheForTest();
+  resetAvatarCacheForTests();
   assert.equal(readCachedHfOwnerAvatar("AtomicChat"), null);
 });
 
@@ -100,7 +100,7 @@ test("hits and 404s both survive a relaunch, so neither is asked for again", asy
   assert.equal(readCachedHfOwnerAvatar("user-owner"), "https://cdn/user.png");
 
   requests.length = 0;
-  _resetAvatarCacheForTest();
+  resetAvatarCacheForTests();
   useHfOwnerAvatar("user-owner", true);
   useHfOwnerAvatar("gone-owner", true);
   await settle();
@@ -116,7 +116,7 @@ test("a cached URL whose image failed is asked for again on the next mount", asy
       { key: `${endpoint}::user-owner`, url: "https://cdn/dead.png", expiresAt: Date.now() + 3_600_000 },
     ]),
   );
-  _resetAvatarCacheForTest();
+  resetAvatarCacheForTests();
   requests.length = 0;
   useHfOwnerAvatar("user-owner", true);
   await settle();

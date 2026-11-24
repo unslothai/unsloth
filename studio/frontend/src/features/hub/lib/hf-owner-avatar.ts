@@ -83,27 +83,16 @@ function hydratePersistedAvatars(): void {
     const parsed = JSON.parse(raw) as unknown;
     if (!Array.isArray(parsed)) return;
     for (const item of parsed) {
-      if (
-        item &&
-        typeof item === "object" &&
-        typeof (item as PersistedAvatarEntry).key === "string" &&
-        (typeof (item as PersistedAvatarEntry).url === "string" ||
-          (item as PersistedAvatarEntry).url === null) &&
-        typeof (item as PersistedAvatarEntry).expiresAt === "number"
-      ) {
-        const entry = item as PersistedAvatarEntry;
-        if (entry.url == null) {
-          if (entry.expiresAt <= Date.now()) continue;
-          persisted.set(entry.key, entry);
-          cache.set(entry.key, { kind: "miss-permanent" });
-          continue;
-        }
-        persisted.set(entry.key, entry);
-        cache.set(entry.key, {
-          kind: "url",
-          url: entry.url,
-          expiresAt: entry.expiresAt,
-        });
+      const entry = (item ?? {}) as Partial<PersistedAvatarEntry>;
+      const { key, url, expiresAt } = entry;
+      if (typeof key !== "string" || typeof expiresAt !== "number") continue;
+      if (url === null) {
+        if (expiresAt <= Date.now()) continue;
+        persisted.set(key, { key, url, expiresAt });
+        cache.set(key, { kind: "miss-permanent" });
+      } else if (typeof url === "string") {
+        persisted.set(key, { key, url, expiresAt });
+        cache.set(key, { kind: "url", url, expiresAt });
       }
     }
   } catch {
@@ -123,10 +112,12 @@ function persistAvatar(
     if (oldest === undefined) break;
     persisted.delete(oldest);
   }
-  const storage = readStorage();
-  if (!storage) return;
+  writePersisted();
+}
+
+function writePersisted(): void {
   try {
-    storage.setItem(STORAGE_KEY, JSON.stringify([...persisted.values()]));
+    readStorage()?.setItem(STORAGE_KEY, JSON.stringify([...persisted.values()]));
   } catch {
     // Ignore quota or private-mode storage errors.
   }
@@ -134,8 +125,8 @@ function persistAvatar(
 
 hydratePersistedAvatars();
 
-/** Re-hydrate from storage (intended for tests). */
-export function _resetAvatarCacheForTest(): void {
+/** Re-hydrate from storage, as a relaunch would. */
+export function resetAvatarCacheForTests(): void {
   cache.clear();
   inflight.clear();
   persisted.clear();
@@ -195,12 +186,7 @@ export function expireHfOwnerAvatarUrl(url: string): void {
     cache.set(entry.key, { kind: "url", url, expiresAt: 0 });
     changed = true;
   }
-  if (!changed) return;
-  try {
-    readStorage()?.setItem(STORAGE_KEY, JSON.stringify([...persisted.values()]));
-  } catch {
-    // Ignore quota or private-mode storage errors.
-  }
+  if (changed) writePersisted();
 }
 
 function transientMiss(name: string): AvatarCacheEntry {
@@ -299,8 +285,7 @@ export function useHfOwnerAvatar(
 
   useEffect(() => {
     if (!key) return;
-    // Sync immediately on mount/key change, and subscribe so remote={false} rows
-    // update live as soon as another view (e.g. detail inspector) fetches this owner's logo.
+    // Subscribed even when disabled, so remote={false} rows pick up a logo another view fetched.
     const syncFromCache = () => {
       const next = readCachedHfOwnerAvatar(key);
       setState((prev) =>
