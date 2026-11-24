@@ -5,6 +5,9 @@ import {
 	MATERIALS,
 	LENS_SCALE,
 	inScope,
+	LENS_CLEAR_HOSTS,
+	LENS_HOSTS,
+	glassStrengthVars,
 	lensDrawn,
 	sanitizeScope,
 	sanitizeLens,
@@ -173,6 +176,39 @@ test("the pinned Windows glass frame rounds the corner with either an image or a
 	assert.ok(css.includes(glassFrame + ' [data-windows-glass-frame] > [data-slot="sidebar-inner"] {\n  position: relative;\n  z-index: 1;\n  background: transparent;'));
 });
 
+test("the pinned caption strip stops at docked Run settings, whose glass runs to the window top", () => {
+	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+	const sheet = readFileSync(new URL("../src/features/chat/chat-settings-sheet.tsx", import.meta.url), "utf8");
+	const frame = /\[data-slot="sidebar-container"\]\[data-windows-glass-frame\]::before \{([^}]*)\}/.exec(css)?.[1] ?? "";
+	assert.ok(frame.includes("left top / calc(100% - var(--studio-chat-settings-docked-width, 0px)) var(--studio-custom-titlebar-height)"));
+	const glassFrame = 'html:is([data-glass], [data-glass-clear])[data-sidebar-glass-frame]:not(.webkit-legacy-compositor[data-glass])[data-chat-wallpaper-workspace-ready]';
+	const panel = new RegExp(glassFrame.replace(/[[\]()|]/g, "\\$&") + ' aside\\[data-slot="chat-settings-panel"\\] \\{([^}]*)\\}').exec(css)?.[1] ?? "";
+	assert.ok(panel.includes("--chat-settings-top: 0px;"), panel);
+	assert.ok(panel.includes("padding-top: var(--studio-custom-titlebar-height, 0px);"), panel);
+	assert.ok(css.includes(glassFrame + ' [data-slot="chat-settings-resize-handle"] {\n  top: var(--studio-custom-titlebar-height, 0px);'));
+	assert.ok(frame.includes("linear-gradient(black 0 0) right top / var(--studio-chat-settings-docked-width, 0px) 100% no-repeat"), frame);
+	assert.ok(frame.includes("background-attachment: fixed;"), frame);
+	assert.ok(css.includes('html:is([data-glass], [data-glass-clear])[data-sidebar-glass-frame]:not(.webkit-legacy-compositor[data-glass])[data-chat-wallpaper-workspace-ready] aside[data-slot="chat-settings-panel"] {\n  background: transparent;\n  -webkit-backdrop-filter: none;\n  backdrop-filter: none;\n  box-shadow: none;'));
+	assert.ok(css.includes('html:is([data-glass], [data-glass-clear])[data-sidebar-glass-frame]:not(.webkit-legacy-compositor[data-glass])[data-chat-wallpaper-workspace-ready] aside[data-slot="chat-settings-panel"]::before {\n  -webkit-backdrop-filter: none;\n  backdrop-filter: none;'));
+	assert.ok(frame.includes("radial-gradient(circle at left bottom, transparent calc(var(--studio-run-settings-fillet) - 1px), black var(--studio-run-settings-fillet))"), frame);
+	assert.ok(frame.includes("calc(100vw - var(--studio-chat-settings-docked-width, 0px) - var(--studio-run-settings-fillet)) var(--studio-custom-titlebar-height)"), frame);
+	assert.ok(frame.includes("--studio-run-settings-fillet: min(var(--radius-md), var(--studio-chat-settings-docked-width, 0px));"), frame);
+	assert.ok(css.includes('html:is([data-glass], [data-glass-clear])[data-sidebar-glass-frame]:not(.webkit-legacy-compositor[data-glass])[data-chat-wallpaper-workspace-ready] aside[data-slot="chat-settings-panel"] > [data-chat-settings-content] {\n  border-left-color: transparent;'));
+	assert.ok(sheet.includes('"var(--chat-settings-top, var(--studio-custom-titlebar-height, 0px))"'));
+	assert.match(sheet, /marginTop: CHAT_SETTINGS_TOP,/);
+	assert.match(sheet, /'\[data-slot="sidebar-container"\]\[data-windows-glass-frame\]'/);
+	assert.match(sheet, /frame\?\.style\.setProperty\(\n\s*CHAT_SETTINGS_DOCKED_WIDTH_VAR,\n\s*`\$\{panel\.getBoundingClientRect\(\)\.width\}px`,/);
+	const lens = readFileSync(new URL("../src/features/chat-background/lens.tsx", import.meta.url), "utf8");
+	assert.match(lens, /if \(el\.matches\(STRIP_PANEL\)\) return true;/);
+	assert.match(lens, /const source = glassSource\(host\);/);
+	assert.match(lens, /'html\[data-glass\]\[data-sidebar-glass-frame\]/);
+	assert.match(sheet, /data-chat-settings-content=""\n\s*className=\{cn\(\n\s*"h-full w-full overflow-hidden",\n\s*open && "border-l border-panel-edge"/);
+	assert.doesNotMatch(css, /chat-settings-panel"\] > div:last-child/);
+	assert.match(sheet, /attributeFilter: \["data-sidebar-glass-frame"\]/);
+	assert.doesNotMatch(sheet, /documentElement\.style\.setProperty\(CHAT_SETTINGS_DOCKED_WIDTH_VAR/);
+	assert.doesNotMatch(sheet, /root\.setProperty\(CHAT_SETTINGS_DOCKED_WIDTH_VAR/);
+});
+
 test("other pages under glass read over one tinted pane with the sidebar's floor", () => {
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
 	assert.match(css, /html\[data-glass\]\[data-chat-wallpaper-workspace-ready\] \[data-wallpaper-workspace\]\[data-wallpaper-route="page"\][^{]*> \[data-slot="sidebar-inset"\] \{\n  --glass-page-wash: color-mix\(in srgb, var\(--glass-page-bg\) min\(96%, calc\(\(max\(var\(--glass-tint\), var\(--glass-pane-floor\)\) \+ 6%\)/);
@@ -229,7 +265,7 @@ test("resetting local preferences also resets the glass theme", () => {
 
 test("the lens refreshes its tint when the composer's fill changes", () => {
 	const lens = readFileSync(new URL("../src/features/chat-background/lens.tsx", import.meta.url), "utf8");
-	assert.match(lens, /opacity,\n\s*fill\.backgroundColor,\n\s*fill\.backgroundImage,\n\s*\]\.join\(\)/);
+	assert.match(lens, /opacity,\n\s*fill\.backgroundColor,\n\s*fill\.backgroundImage,\n\s*blur,\n\s*\]\.join\(\)/);
 });
 
 test("glass off writes no strength or tone to the page", () => {
@@ -276,10 +312,68 @@ test("glass frosts the chat model controls and gives the account row the row hov
 	assert.match(page, /data-wallpaper-chrome-controls="" data-chat-model-controls=""/);
 });
 
+test("glass gives the chat header's icon buttons the model picker's glass, not a new style", () => {
+	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+	const model = String.raw`\[data-chat-model-controls\] > :is\(\.unsloth-model-selector-trigger, \[data-chat-model-notice\]\)`;
+	const actions = String.raw`:is\(\[data-chat-header-actions\] > button, \[data-chat-new-chat\], html:not\(\[data-sidebar-glass-frame\]\) \[data-titlebar-nav\]:not\(\[data-slot="sidebar"\] \*\) > button\)`;
+	for (const glass of [String.raw`\[data-glass\]`, String.raw`\[data-glass\^="liquid"\]`, String.raw`\[data-glass="liquid-3d"\]`]) {
+		const after = glass.includes("3d") ? "::before" : "";
+		assert.match(css, new RegExp(String.raw`html${glass}\[data-chat-wallpaper-ready\] ${actions}${after},\nhtml${glass}\[data-chat-wallpaper-ready\] ${model}${after},\n`));
+	}
+	assert.match(css, new RegExp(String.raw`${actions}:is\(:hover, \[aria-expanded="true"\], \[aria-pressed="true"\]\),\nhtml\[data-glass\]\[data-chat-wallpaper-ready\] ${model}:is\(:hover`));
+	assert.match(css, new RegExp(String.raw`html:not\(\.dark\)\[data-glass\]\[data-chat-wallpaper-ready\] ${actions},\nhtml:not\(\.dark\)\[data-glass\]\[data-chat-wallpaper-ready\] ${model} \{\n  box-shadow: var\(--glass-light-edge\)`));
+	assert.match(css, new RegExp(String.raw`${actions}:focus-visible,\n[^{]*:focus-visible:is\(\[class\*="focus-visible:ring"\]\) \{\n  box-shadow: var\(--tw-inset-shadow[^;]*!important;`));
+	const page = readFileSync(new URL("../src/features/chat/chat-page.tsx", import.meta.url), "utf8");
+	assert.match(page, /data-wallpaper-chrome-controls="" data-chat-header-actions="" className="pointer-events-auto ml-auto/);
+	const titlebar = readFileSync(new URL("../src/components/tauri/window-titlebar.tsx", import.meta.url), "utf8");
+	assert.match(titlebar, /role="toolbar"\n\s*aria-label=\{t\("desktopShell\.navigation"\)\}\n\s*data-titlebar-nav=""/);
+	assert.match(page, /aria-label="New chat"\n\s*data-chat-new-chat=""\n\s*onClick=\{handleDesktopNewChat\}/);
+});
+
+test("docked Run settings rounds its top corner only while no pinned sidebar strip meets it", () => {
+	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+	const panel = String.raw`html\[data-glass\]\[data-chat-wallpaper-workspace-ready\]`;
+	assert.match(css, new RegExp(String.raw`${panel} aside\[data-slot="chat-settings-panel"\] \{\n  transition: border-top-left-radius \.2s ease;`));
+	assert.match(css, new RegExp(String.raw`${panel}:not\(\[data-sidebar-glass-frame\]\) aside\[data-slot="chat-settings-panel"\] \{\n  border-top-left-radius: min\(14px, var\(--studio-custom-titlebar-height, 0px\)\);`));
+	assert.match(css, new RegExp(String.raw`${panel} aside\[data-slot="chat-settings-panel"\] > \[data-chat-settings-content\] \{\n  border-top-left-radius: inherit;`));
+	const sidebar = readFileSync(new URL("../src/components/app-sidebar.tsx", import.meta.url), "utf8");
+	assert.match(sidebar, /data-windows-glass-frame=\{\(pinned && usesCustomTitlebar\) \|\| undefined\}/);
+	assert.match(sidebar, /const glassFrame = pinned && usesCustomTitlebar;\n\s*useEffect\(\(\) => \{\n\s*const el = document\.documentElement;\n\s*el\.toggleAttribute\("data-sidebar-glass-frame", glassFrame\);\n\s*return \(\) => el\.removeAttribute\("data-sidebar-glass-frame"\);/);
+	const sheet = readFileSync(new URL("../src/features/chat/chat-settings-sheet.tsx", import.meta.url), "utf8");
+	const docked = sheet.slice(sheet.indexOf("<aside"), sheet.indexOf("</aside>"));
+	assert.match(docked, /\{settingsContent\}\n\s*<\/div>\n\s*$/);
+});
+
+test("glass tints the user's bubble and thread code blocks like the composer, with no blur", () => {
+	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+	const host = String.raw`html\[data-glass\] :is\(\[data-wallpaper-workspace\], \[data-chat-content-root\]\)\[data-wallpaper-ready\]\[data-wallpaper-ready\]`;
+	const rule = (target: string) => new RegExp(`${host} ${target} \\{([^}]*)\\}`).exec(css)?.[1] ?? "";
+	const bubble = rule(String.raw`\.aui-user-message-content`);
+	const code = rule(String.raw`\.aui-thread-root \[data-streamdown="code-block"\]`);
+	assert.match(bubble, /var\(--glass-composer-fill\)[^;]*var\(--glass-composer-floor\)\) \+ 9%\)/);
+	assert.match(code, /var\(--glass-composer-fill\)[^;]*var\(--glass-pane-floor\)\) \+ 9%\)/);
+	for (const block of [bubble, code]) assert.doesNotMatch(block, /backdrop-filter/);
+});
+
+test("the narrow window's Run settings sheet takes the docked panel's glass", () => {
+	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+	const sheet = readFileSync(new URL("../src/features/chat/chat-settings-sheet.tsx", import.meta.url), "utf8");
+	const compact = sheet.slice(sheet.indexOf("if (isCompact) {"), sheet.indexOf("</Sheet>"));
+	assert.match(compact, /<SheetContent side="right" data-chat-settings-sheet=""/);
+	assert.match(compact, /data-slot="chat-settings-panel" className="relative flex h-full flex-col"/);
+	assert.match(css, /html\[data-glass\]\[data-chat-wallpaper-workspace-ready\] \[data-chat-settings-sheet\],\nhtml\[data-glass="macos"\] \[data-chat-settings-sheet\] \{\n  background-color: transparent;/);
+	// The floating monitor measures whichever panel is shown, so it docks by the sheet's real width too.
+	const monitor = readFileSync(new URL("../src/components/floating-monitor.tsx", import.meta.url), "utf8");
+	assert.match(monitor, /document\.querySelector\('\[data-slot="chat-settings-panel"\]'\)/);
+	assert.match(monitor, /if \(!attach\(\)\) \{\n\s*setPaintedSettingsWidth\(0\);\n\s*frame = requestAnimationFrame/);
+});
+
 test("glass frosts sticky bars in panels and popups, floating buttons, and softens shared shadows", () => {
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
 	assert.match(css, /html\[data-glass\] :is\(\[data-slot="chat-settings-panel"\], \[data-slot\$="popover-content"\][^)]*\) \.sticky \{\n  -webkit-backdrop-filter: blur\(12px\)/);
-	assert.match(css, /html\[data-glass\] :is\(\[data-glass-float\], \.aui-thread-scroll-to-bottom\) \{\n  -webkit-backdrop-filter: blur\(8px\);/);
+	assert.match(css, /html\[data-glass\] :is\(\[data-glass-float\], \.aui-thread-scroll-to-bottom\) \{\n  -webkit-backdrop-filter: blur\(max\(var\(--glass-read-blur\), calc\(8px \* var\(--glass-strength, 1\)\)\)\);/);
+	// Floating controls keep the readable floor and scale their fill with strength like every other glass surface.
+	assert.match(css, /html\[data-glass\] \[data-glass-float\] \{\n  background-color: color-mix\(in srgb, color-mix\(in srgb, var\(--popover\), var\(--foreground\) 12%\) min\(96%, calc\(82% \* var\(--glass-opacity, 1\)\)\), transparent\) !important;/);
 	assert.match(css, /html\.dark\[data-glass\] \{\n  --popup-shadow: 0 16px 40px -12px rgb\(0 0 0 \/ \.52\);/);
 	const pickers = readFileSync(new URL("../src/features/model-picker/components/model-selector/pickers.tsx", import.meta.url), "utf8");
 	assert.match(pickers, /data-glass-float=""\n\s*onClick=\{\(\) => \(ejectsAll/);
@@ -347,7 +441,7 @@ test("glass sheen runs at 90% except on the composer and files panel", () => {
 
 test("grouped glass cards get more blur and a lighter fill than single controls", () => {
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
-	assert.match(css, /:is\(\.elevated-card, \.elevated-card > \[class~="bg-card"\], \.library-card\) \{\n  background-color: var\(--page-glass-card-fill, color-mix\(in srgb, color-mix\(in srgb, var\(--glass-composer-fill\), #fff 6%\)[^}]*backdrop-filter: blur\(calc\(var\(--glass-blur\) \+ 8px\)\)/);
+	assert.match(css, /:is\(\.elevated-card, \.elevated-card > \[class~="bg-card"\], \.library-card\) \{\n  background-color: var\(--page-glass-card-fill, color-mix\(in srgb, color-mix\(in srgb, var\(--glass-composer-fill\), #fff 6%\)[^}]*backdrop-filter: blur\(calc\(var\(--glass-blur\) \+ 8px \* var\(--glass-strength, 1\)\)\)/);
 	assert.ok(css.indexOf(".library-card) {") < css.indexOf(".elevated-card:has(> [class~=\"bg-card\"]) {"));
 	const surface = readFileSync(new URL("../src/features/library/surface.ts", import.meta.url), "utf8");
 	assert.match(surface, /CARD_SHADOW =\n  "library-card /);
@@ -376,7 +470,7 @@ test("light glass New chat lifts the wallpaper along a curve that still tracks t
 test("light glass pages use the white control glass and a lighter card sheet, edged with an outline and inner light", () => {
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
 	const light = String.raw`html\[data-glass\]:not\(\.dark\)\[data-chat-wallpaper-workspace-ready\] \[data-wallpaper-route="page"\] > \[data-slot="sidebar-inset"\]`;
-	assert.match(css, new RegExp(`${light} \\{\\n  --page-glass-fill: var\\(--glass-control\\);\\n  --page-glass-card-fill: rgb\\(255 255 255 / \\.45\\);\\n  --page-glass-edge: var\\(--glass-light-edge\\);`));
+	assert.match(css, new RegExp(`${light} \\{\\n  --page-glass-fill: rgb\\(255 255 255 / min\\(\\.96, calc\\(\\.3 \\* var\\(--glass-opacity, 1\\)\\)\\)\\);\\n  --page-glass-card-fill: rgb\\(255 255 255 / min\\(\\.96, calc\\(\\.45 \\* var\\(--glass-opacity, 1\\)\\)\\)\\);\\n  --page-glass-edge: var\\(--glass-light-edge\\);`));
 	assert.match(css, new RegExp(`${light} \\.elevated-card > \\[class~="bg-card"\\] \\{\\n  background-color: transparent;\\n  box-shadow: inset -1px 0 0 var\\(--page-glass-divider\\), inset 0 -1px 0 var\\(--page-glass-divider\\);`));
 	assert.match(css, new RegExp(`${light} :is\\(\\.elevated-card, \\.library-card\\) \\{\\n  box-shadow: var\\(--page-glass-card-edge\\);`));
 	assert.match(css, new RegExp(`${light} \\.glass-divider \\{\\n  border-color: var\\(--page-glass-divider\\);`));
@@ -388,7 +482,7 @@ test("light glass pages use the white control glass and a lighter card sheet, ed
 
 test("light glass API cards use a thinner fill with the outlined glass edge", () => {
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
-	assert.match(css, /html\[data-glass\]:not\(\.dark\)\[data-chat-wallpaper-workspace-ready\] \[data-wallpaper-route="page"\] > \[data-slot="sidebar-inset"\] \.api-monitor-page \{\n  --page-glass-card-fill: rgb\(255 255 255 \/ \.3\);\n  --page-glass-card-edge: var\(--glass-light-edge\);/);
+	assert.match(css, /html\[data-glass\]:not\(\.dark\)\[data-chat-wallpaper-workspace-ready\] \[data-wallpaper-route="page"\] > \[data-slot="sidebar-inset"\] \.api-monitor-page \{\n  --page-glass-card-fill: rgb\(255 255 255 \/ min\(\.96, calc\(\.3 \* var\(--glass-opacity, 1\)\)\)\);\n  --page-glass-card-edge: var\(--glass-light-edge\);/);
 	assert.match(css, /\.api-monitor-page \.elevated-card:has\(> \[class~="bg-card"\]\) \{\n  clip-path: inset\(0 1px 1px 0 round var\(--radius-2xl\)\);/);
 });
 
@@ -494,7 +588,7 @@ test("macOS glass and a plain background image leave the resting page headers cl
 
 test("the update cards that float like toasts take the glass toast surface", () => {
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
-	assert.match(css, /html\[data-glass\]\[data-glass-menus\] :is\(\[data-sonner-toast\]\[data-styled="true"\], \.toast-surface\) \{[^}]*backdrop-filter: blur\(max\(var\(--glass-blur\), 18px\)\)/);
+	assert.match(css, /html\[data-glass\]\[data-glass-menus\] :is\(\[data-sonner-toast\]\[data-styled="true"\], \.toast-surface\) \{[^}]*backdrop-filter: blur\(max\(var\(--glass-blur\), calc\(18px \* var\(--glass-strength, 1\)\)\)\)/);
 	assert.match(css, /html\[data-glass\^="liquid"\]\[data-glass-menus\] :is\(\[data-sonner-toast\]\[data-styled="true"\], \.toast-surface\) \{/);
 	// Transparent keeps toasts opaque; the cards re-resolve the palette at full alpha like the toaster.
 	assert.match(css, /html\[data-glass-clear\] #root :is\(\[data-sonner-toaster\], \.toast-surface\) \{\n\s*--clear-alpha: 100%;/);
@@ -502,4 +596,207 @@ test("the update cards that float like toasts take the glass toast surface", () 
 		const source = readFileSync(new URL(`../src/${file}`, import.meta.url), "utf8");
 		assert.match(source, /className="toast-surface /, file);
 	}
+});
+
+test("the glass lens draws into every glass surface, not only the composer", async () => {
+	const { LENS_HOSTS } = await import("../src/features/chat-background/model.ts");
+	assert.equal(typeof LENS_HOSTS, "string");
+	for (const host of [
+		".unsloth-composer-surface",
+		'[data-slot="sidebar-inner"]',
+		"[data-windows-glass-frame]",
+		'[data-slot="chat-settings-panel"]',
+		'[data-slot="sheet-content"]',
+		'[data-slot="dialog-content"]',
+		"[data-chat-model-controls] > .unsloth-model-selector-trigger",
+		'[data-wallpaper-route="page"] .unsloth-model-selector-trigger',
+		'[data-slot$="menu-content"]',
+		'[data-slot="popover-content"]',
+		".tooltip-compact",
+		".tooltip-rich",
+		"[data-glass-float]",
+		".aui-thread-scroll-to-bottom",
+	])
+		assert.ok(LENS_HOSTS.includes(host), host);
+	// A card grid would clone the wallpaper twice per card.
+	assert.doesNotMatch(LENS_HOSTS, /elevated-card|library-card/);
+	// Every surface the Glass menus blur reaches (menus, pickers, toasts) is a lens host too.
+	const glassCss = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+	for (const rule of [
+		/^html\[data-glass\]\[data-glass-menus\] :is\((\[data-slot\$="menu-content"\].*?)\) \{$/m,
+		/^html\[data-glass\]\[data-glass-menus\] :is\((\[data-sonner-toast\].*?)\) \{$/m,
+	]) {
+		const list = glassCss.match(rule)?.[1];
+		assert.ok(list, String(rule));
+		for (const selector of list.split(", ")) assert.ok(LENS_HOSTS.includes(selector), selector);
+	}
+	const lens = readFileSync(new URL("../src/features/chat-background/lens.tsx", import.meta.url), "utf8");
+	// Menus and sheets are portaled to <body>; hosts without a backdrop filter (Glass menus off, opaque sheets) are skipped.
+	assert.match(lens, /\(preview \? PREVIEW_HOSTS : LENS_HOSTS\),\n\s*\]\.filter\(\(h\) => drawsGlass\(h\) && \(!clear \|\| h\.matches\(LENS_CLEAR_HOSTS\)\)\)/);
+	// Switching glass style (liquid-only rules) changes which hosts draw glass without a DOM mutation.
+	assert.match(lens, /\}, \[workspace, on, material, menus, preview, clear\]\);/);
+	assert.match(lens, /observer\.observe\(preview \? workspace : document\.body, \{ childList: true, subtree: true \}\);/);
+	// A host that was only moving drops its lens when the motion flag clears.
+	assert.match(lens, /motion\.observe\(preview \? workspace : document\.body, \{ attributes: true, subtree: true, attributeFilter: \[GLASS_MOVING_ATTR\] \}\);/);
+	// The Desktop sidebar frame and layered panels draw their glass (and fill) on ::before.
+	assert.match(lens, /for \(const pseudo of \[null, "::before"\]\)/);
+	assert.match(lens, /const fill = !glass \|\| painted\(own\) \? own : glass;/);
+	// The copy blurs as much as the surface it sits in, not the shared --glass-blur.
+	assert.match(lens, /if \(fillCopy\) fillCopy\.style\.filter = blur \|\| \(host\.hasAttribute\(GLASS_MOVING_ATTR\) \? "none" : ""\);/);
+	// Outside the workspace the wash stops at <body>, whose opaque fill would hide the copy.
+	assert.match(lens, /node && node !== workspace && node !== document\.body;/);
+	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+	// The lens paints at z-index -1, so each host is its own stacking context.
+	assert.match(css, /\[data-glass-lens-host\] \{\n  isolation: isolate;\n\}\n\[data-glass-lens-host="static"\] \{\n  position: relative;\n\}/);
+	// The frame's ::before (z-index 1) draws its glass, so its lens sits above that and below the sidebar, without isolation.
+	assert.match(css, /\[data-windows-glass-frame\]\[data-glass-lens-host\] \{\n  isolation: auto;\n\}\n\[data-windows-glass-frame\] > \.glass-lens \{\n  z-index: 1;\n\}/);
+	assert.match(css, /\[data-windows-glass-frame\]\[data-glass-lens-host\] > \[data-slot="sidebar-inner"\] \{\n  z-index: 2;\n\}/);
+	assert.doesNotMatch(css, /:has\(> \.glass-lens\)/);
+	for (const file of ["background.tsx", "backdrop.tsx"]) {
+		const source = readFileSync(new URL(`../src/features/chat-background/${file}`, import.meta.url), "utf8");
+		assert.match(source, /<GlassLenses wallpaper=\{appWallpaper\} \/>/, file);
+	}
+	// The Appearance previews show the lens on their sample composers, over their own wallpaper.
+	const background = readFileSync(new URL("../src/features/chat-background/background.tsx", import.meta.url), "utf8");
+	assert.match(background, /\{previewWallpaper && <GlassLenses wallpaper=\{previewWallpaper\} preview \/>\}/);
+	assert.match(lens, /\(preview \? workspace : document\)\.querySelectorAll<HTMLElement>\(preview \? PREVIEW_HOSTS : LENS_HOSTS\)/);
+});
+
+test("glass strength scales the blur and the fill of every glass surface, with no fixed floors", () => {
+	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+	// Fixed blur floors and add-ons left the menus' low end and the open composer's extra blur deaf to the slider.
+	assert.doesNotMatch(css, /max\(var\(--glass-blur\), \d+px\)/);
+	assert.doesNotMatch(css, /\+ 5px \+ var\(--glass-repaint/);
+	assert.doesNotMatch(css, /calc\(var\(--glass-blur\) \+ 8px\)/);
+	// Every backdrop blur on a glass surface reads the strength, except the clear (Transparent) theme's,
+	// and sticky headers, which frost their own panel's scrolled content rather than the wallpaper.
+	const off: string[] = [];
+	for (const [, selector, body] of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+		if (!/data-glass(?!-clear)/.test(selector) || /data-glass-clear|\.sticky|data-config-header-row|data-pinned-footer|data-glass-motion/.test(selector)) continue;
+		for (const [, filter] of body.matchAll(/(?<!-webkit-)backdrop-filter: blur\(([^;]*)\)/g))
+			if (!/--glass-blur|--glass-strength/.test(filter)) off.push(selector.trim().slice(0, 120));
+	}
+	assert.deepEqual(off, []);
+	// Light pages and the macOS strip had fixed fills: the slider moved their blur but not their tint.
+	assert.match(css, /--page-glass-card-fill: rgb\(255 255 255 \/ min\(\.96, calc\(\.45 \* var\(--glass-opacity, 1\)\)\)\);/);
+	assert.match(css, /--page-glass-fill: rgb\(255 255 255 \/ min\(\.96, calc\(\.3 \* var\(--glass-opacity, 1\)\)\)\);/);
+	assert.match(css, /html\[data-glass="macos"\] :is\(\[data-slot="sidebar-inset"\], \[data-slot="window-titlebar"\]\) \{\n  background-color: color-mix\(in srgb, var\(--background\) min\(96%, calc\(52% \* var\(--glass-opacity, 1\)\)\), transparent\);/);
+});
+
+test("every glass surface keeps a readable blur floor at any strength, lens copy included", () => {
+	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+	assert.match(css, /html\[data-glass\] \{\n  --glass-tint: var\(--glass-tint-base\);\n  --glass-on: min\(1, var\(--glass-strength, 1\) \* 100\);\n  --glass-read-blur: calc\(12px \* var\(--glass-on\)\);\n  --glass-blur: calc\(max\(var\(--glass-read-blur\), var\(--glass-blur-base\) \* var\(--glass-strength, 1\)\) \+ var\(--glass-repaint, 0\) \* \.01px\);/);
+	// The open chat's composer redefines --glass-blur, so it carries the floor too.
+	assert.match(css, /--glass-blur: calc\(max\(var\(--glass-read-blur\), \(var\(--glass-blur-base\) \+ 5px\) \* var\(--glass-strength, 1\)\) \+ var\(--glass-repaint, 0\) \* \.01px\);/);
+	// Every other --glass-blur definition goes through the floor.
+	for (const [, value] of css.matchAll(/--glass-blur: ([^;]+);/g)) assert.match(value, /var\(--glass-read-blur\)/, value);
+	// The lens copy blurs with the same variable.
+	assert.match(css, /\.glass-lens-fill \.glass-lens-copy \{\n  filter: blur\(var\(--glass-blur, 12px\)\)/);
+});
+
+// Evaluates a glass blur() argument from index.css at a given --glass-strength (Liquid Glass base 10px, no repaint nudge).
+function glassBlurPx(expr: string, strength: number): number {
+	const on = Math.min(1, strength * 100);
+	const read = 12 * on;
+	const js = expr
+		.replaceAll("var(--glass-on)", String(on))
+		.replaceAll("var(--glass-strength, 1)", String(strength))
+		.replaceAll("var(--glass-read-blur)", `${read}px`)
+		.replaceAll("var(--glass-blur)", `max(${read}px, 10px * ${strength})`)
+		.replaceAll("var(--glass-blur-base)", "10px")
+		.replaceAll("var(--glass-repaint, 0)", "0")
+		.replaceAll("calc(", "(")
+		.replaceAll("max(", "Math.max(")
+		.replaceAll("min(", "Math.min(")
+		.replaceAll("px", "");
+	assert.match(js, /^[\d\s.+*(),Mathmxin-]+$/, `unexpected token in ${expr}`);
+	return Function(`return ${js}`)() as number;
+}
+
+test("glass strength 0% is clear on every surface, and 1% keeps the 12px read floor", () => {
+	assert.deepEqual(glassStrengthVars(0), { blur: 0, opacity: 0.35 });
+	assert.ok(glassStrengthVars(1).blur > 0);
+	assert.equal(glassStrengthVars(50).blur, 1);
+	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+	assert.match(css, /--glass-on: min\(1, var\(--glass-strength, 1\) \* 100\);\n  --glass-read-blur: calc\(12px \* var\(--glass-on\)\);/);
+	assert.match(css, /--glass-blur: calc\(max\(var\(--glass-read-blur\), var\(--glass-blur-base\) \* var\(--glass-strength, 1\)\) \+ var\(--glass-repaint, 0\) \* \.01px\);/);
+	const blurs = [...css.matchAll(/(?<!-webkit-)backdrop-filter: blur\(((?:[^()]|\((?:[^()]|\((?:[^()]|\([^()]*\))*\))*\))*)\)/g)]
+		.map((m) => m[1])
+		.filter((arg) => arg.includes("var(--glass-"));
+	assert.ok(blurs.length >= 10, `only ${blurs.length} glass blurs found`);
+	const at1 = glassStrengthVars(1).blur;
+	for (const arg of blurs) {
+		assert.equal(glassBlurPx(arg, 0), 0, `not clear at 0%: blur(${arg})`);
+		assert.ok(glassBlurPx(arg, at1) >= 12, `under the read floor at 1%: blur(${arg})`);
+	}
+});
+
+test("at glass strength 0% the lens stays on the composer only, as on main", () => {
+	const lens = readFileSync(new URL("../src/features/chat-background/lens.tsx", import.meta.url), "utf8");
+	assert.match(lens, /const clear = useGlassStrength\(\) === 0;/);
+	assert.match(lens, /\.filter\(\(h\) => drawsGlass\(h\) && \(!clear \|\| h\.matches\(LENS_CLEAR_HOSTS\)\)\)/);
+	assert.ok(LENS_HOSTS.split(", ").includes(".unsloth-composer-surface"));
+	assert.equal(LENS_CLEAR_HOSTS, ".unsloth-composer-surface, .wallpaper-preview-composer");
+});
+
+test("each lens portal is keyed by its host, so a host joining the list does not remount the others", () => {
+	const lens = readFileSync(new URL("../src/features/chat-background/lens.tsx", import.meta.url), "utf8");
+	assert.match(lens, /`glass-lens-\$\{hostKey\(host\)\}`/);
+	assert.doesNotMatch(lens, /`glass-lens-\$\{i\}`/);
+});
+
+test("the lens tint copies the host's fill when only its ::before carries the blur", () => {
+	const lens = readFileSync(new URL("../src/features/chat-background/lens.tsx", import.meta.url), "utf8");
+	assert.match(lens, /const fill = !glass \|\| painted\(own\) \? own : glass;/);
+	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+	assert.match(css, /:not\(\[data-glass-layers\]\) \[data-slot="dialog-content"\]\[data-settings-dialog\] \{\s*-webkit-backdrop-filter: none;/);
+});
+
+test("a lens stays on the visible box of a host that scrolls itself", () => {
+	const lens = readFileSync(new URL("../src/features/chat-background/lens.tsx", import.meta.url), "utf8");
+	assert.match(lens, /if \(el\.style\.translate\) el\.style\.translate = "";\s*const sx = host\.scrollLeft;\s*const sy = host\.scrollTop;\s*el\.style\.translate = sx \|\| sy \? `\$\{sx\}px \$\{sy\}px` : "";/);
+	assert.match(lens, /host\.addEventListener\("scroll", place, \{ passive: true \}\);/);
+	assert.match(lens, /host\.removeEventListener\("scroll", place\);/);
+});
+
+test("legacy WebKitGTK's sidebar glass takes the lens instead of the masked frame, never both", () => {
+	const lens = readFileSync(new URL("../src/features/chat-background/lens.tsx", import.meta.url), "utf8");
+	assert.match(lens, /const FRAME_SIDEBAR = '\[data-windows-glass-frame\] > \[data-slot="sidebar-inner"\]';/);
+	assert.match(lens, /document\.documentElement\.classList\.contains\("webkit-legacy-compositor"\) \? inner\.map\(\(h\) => h\.parentElement\) : inner/);
+	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+	assert.match(css, /webkit-legacy-compositor\[data-glass\]\[data-chat-wallpaper-workspace-ready\] \[data-windows-glass-frame\] > \[data-slot="sidebar-inner"\] \{[^}]*backdrop-filter: blur/);
+});
+
+test("a lens never portals into a text-only host, and the title tooltip wraps its text", () => {
+	const lens = readFileSync(new URL("../src/features/chat-background/lens.tsx", import.meta.url), "utf8");
+	assert.match(lens, /if \(width < 8 \|\| height < 8 \|\| textOnly\(el\)\) return false;/);
+	const tip = readFileSync(new URL("../src/components/ui/title-tooltip.tsx", import.meta.url), "utf8");
+	assert.match(tip, /<span>\{shown\.text\}<\/span>/);
+});
+
+test("the composer keeps its lens without a backdrop filter, as on main (Transparent)", () => {
+	const lens = readFileSync(new URL("../src/features/chat-background/lens.tsx", import.meta.url), "utf8");
+	assert.match(lens, /return el\.matches\(LENS_CLEAR_HOSTS\) \|\| el\.hasAttribute\(GLASS_MOVING_ATTR\) \|\| glassLayer\(el\) !== null;/);
+	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+	assert.match(css, /html\[data-glass-clear\] #root \* \{\s*-webkit-backdrop-filter: none !important;/);
+});
+
+test("the Appearance preview composers wrap their prompt, so a lens can mount in them", () => {
+	const controls = readFileSync(new URL("../src/features/chat-background/controls.tsx", import.meta.url), "utf8");
+	assert.match(controls, /<div className="wallpaper-preview-composer rounded-xl p-3">\s*<span>\{t\("chatBackground\.prompt"\)\}<\/span>/);
+});
+
+test("a lens copy drops its blur while its host is moving, instead of falling back to the CSS blur", () => {
+	const lens = readFileSync(new URL("../src/features/chat-background/lens.tsx", import.meta.url), "utf8");
+	assert.match(lens, /if \(fillCopy\) fillCopy\.style\.filter = blur \|\| \(host\.hasAttribute\(GLASS_MOVING_ATTR\) \? "none" : ""\);/);
+	assert.match(lens, /motion\.observe\(host, \{ attributes: true, attributeFilter: \[GLASS_MOVING_ATTR, GLASS_SETTLING_ATTR, "style"\] \}\);/);
+	assert.match(lens, /for \(let node = host\.parentElement; node && node !== document\.body; node = node\.parentElement\)\s*motion\.observe\(node, \{ attributes: true, attributeFilter: \["style"\] \}\);/);
+	assert.match(lens, /motion\.disconnect\(\);/);
+});
+
+test("only the composer draws a lens rim; other glass hosts keep their own edge instead of a doubled outline", () => {
+	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+	const rule = css.match(/\[data-glass-lens-host\]:not\(([^)]+)\) > \.glass-lens \.glass-lens-rim \{\s*display: none;\s*\}/);
+	assert.ok(rule, "lens rim is hidden on non-composer hosts");
+	assert.deepEqual(rule[1].split(",").map((s) => s.trim()).sort(), LENS_CLEAR_HOSTS.split(",").map((s) => s.trim()).sort());
 });

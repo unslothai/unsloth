@@ -483,6 +483,12 @@ def resolve_for_load(loader, args, kwargs):
         adapter = []
         base = _peft_base(name, call, revision)
         if base is not None:
+            # Before the base reaches a filesystem probe: a Hub adapter's UNC base, as the loaders refuse it.
+            from types import SimpleNamespace
+
+            from .models.loader import _refuse_network_share_adapter_base
+
+            _refuse_network_share_adapter_base(name, SimpleNamespace(base_model_name_or_path = base))
             # A PEFT adapter: the loaders load peft_config.base_model_name_or_path (mapped, no ref) and the adapter.
             adapter = _checkpoint_tensors(name, token = call.get("token"), revision = revision)
             name, revision = mapped(base, None), None

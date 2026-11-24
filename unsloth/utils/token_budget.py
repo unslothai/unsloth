@@ -76,6 +76,17 @@ def karmarkar_karp(
     return [sorted(s[1]) for s in heap[0][2]]
 
 
+def _more_even(regrouped, given, weights, size):
+    """Karmarkar-Karp is a heuristic: True unless `given` already has the smaller spread of
+    per-group sums over consecutive `size` chunks, so a regroup never ends up less even."""
+
+    def spread(order):
+        sums = [sum(weights[i] for i in order[s : s + size]) for s in range(0, len(order), size)]
+        return max(sums) - min(sums)
+
+    return spread(regrouped) <= spread(given)
+
+
 def balance_step_indices(
     indices,
     lengths,
@@ -97,21 +108,23 @@ def balance_step_indices(
         raise ValueError(f"expected {window} indices, got {len(indices)}")
     if ga * ws == 1:
         return list(indices)
+    rank_rows = [
+        [indices[(g * ws + r) * bs + j] for g in range(ga) for j in range(bs)] for r in range(ws)
+    ]
     if cross_rank and ws > 1:
         groups = karmarkar_karp([lengths[i] for i in indices], ws, equal_size = True)
-        rank_rows = [[indices[p] for p in group] for group in groups]
-    else:
-        rank_rows = [
-            [indices[(g * ws + r) * bs + j] for g in range(ga) for j in range(bs)]
-            for r in range(ws)
-        ]
+        regrouped = [[indices[p] for p in group] for group in groups]
+        if _more_even(sum(regrouped, []), sum(rank_rows, []), lengths, ga * bs):
+            rank_rows = regrouped
     out = [None] * window
     for r, rows in enumerate(rank_rows):
         slots = karmarkar_karp([lengths[i] for i in rows], ga, equal_size = True)
+        slots = [[rows[p] for p in slot] for slot in slots]
+        if not _more_even(sum(slots, []), rows, lengths, bs):
+            slots = [rows[g * bs : (g + 1) * bs] for g in range(ga)]
         for g, slot in enumerate(slots):
             base = (g * ws + r) * bs
-            for j, p in enumerate(slot):
-                out[base + j] = rows[p]
+            out[base : base + bs] = slot
     return out
 
 
@@ -129,7 +142,8 @@ def balance_label_steps(indices, label_counts, step_size):
         return list(indices)
     groups = karmarkar_karp([label_counts[i] for i in indices], steps, equal_size = True)
     groups.sort(key = lambda group: group[0])
-    return [indices[p] for group in groups for p in group]
+    out = [indices[p] for group in groups for p in group]
+    return out if _more_even(out, indices, label_counts, step_size) else list(indices)
 
 
 class TokenBalancedSampler(torch.utils.data.Sampler):
@@ -223,7 +237,12 @@ class TokenBalancedSampler(torch.utils.data.Sampler):
 def _segments_of(batch, total):
     lengths = batch.get("packed_seq_lengths")
     if isinstance(lengths, torch.Tensor):
-        lengths = [int(x) for x in lengths.tolist()]
+        # The host tuple the packing collators attach (packing._carry_host_lengths): no device read.
+        host = getattr(lengths, "_unsloth_lengths_tuple", None)
+        if isinstance(host, tuple) and len(host) == lengths.numel():
+            lengths = list(host)
+        else:
+            lengths = [int(x) for x in lengths.tolist()]
         return lengths if sum(lengths) == total else None
     position_ids = batch.get("position_ids")
     if not isinstance(position_ids, torch.Tensor) or tuple(position_ids.shape) != (1, total):
@@ -274,6 +293,8 @@ def _split_padding_free(batch, budget):
         for key, value in batch.items():
             if key == "packed_seq_lengths":
                 chunk[key] = torch.tensor(group, dtype = value.dtype, device = value.device)
+                # Each chunk's forward reads its lengths from this tuple instead of the device.
+                chunk[key]._unsloth_lengths_tuple = tuple(group)
             elif isinstance(value, torch.Tensor):
                 chunk[key] = value[:, start:stop]
             else:
@@ -374,9 +395,8 @@ def _supervised_count(
     assistant_mask,
     seq_lengths = None,
 ):
-    # Positions the shifted loss reads (1..n) that survive every mask the collator applies; in a packed row the first
-    # token of each later document is masked too (packing._mask_padding_free_boundary_labels).
-    # A dataset under set_format("torch") / ("numpy") hands back arrays: compare plain lists instead.
+    # Shifted-loss positions surviving the collator masks; packed rows mask each later document's
+    # first token (packing._mask_padding_free_boundary_labels); set_format arrays need tolist().
     labels, completion_mask, assistant_mask, seq_lengths = (
         value.tolist() if hasattr(value, "tolist") else value
         for value in (labels, completion_mask, assistant_mask, seq_lengths)

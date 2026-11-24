@@ -8,7 +8,9 @@ import {
   TRANSLATE_LANGUAGES,
   suggestedTargetLanguage,
   translateLanguageLabel,
+  translateLanguagesFor,
   translateSpeechTag,
+  translatesLanguage,
 } from "../src/features/translate/languages.ts";
 import {
   CHAT_TRANSLATE_MODEL,
@@ -256,6 +258,25 @@ test("the first target is the first browser language the model knows", () => {
   assert.equal(suggestedTargetLanguage(["fil-PH"]), "tl");
   assert.equal(suggestedTargetLanguage(["sv-SE"]), "en");
   assert.equal(suggestedTargetLanguage([]), "en");
+  // Hy-MT2, the default model, does not translate Hmong.
+  assert.equal(suggestedTargetLanguage(["hmn", "fr-FR"]), "fr");
+  assert.equal(suggestedTargetLanguage(["sw-KE", "af-ZA"]), "en");
+});
+
+test("Hy-MT2 is offered only the languages on its model card", () => {
+  const hyMt2 = translateLanguagesFor(true).map((language) => language.code);
+  assert.equal(hyMt2.length, 38);
+  assert.deepEqual(
+    TRANSLATE_LANGUAGES.filter((language) => language.chatOnly).map(
+      (language) => language.code,
+    ),
+    ["hmn", "am", "sw", "ha", "yo", "ig", "zu", "af", "so"],
+  );
+  assert.equal(translateLanguagesFor(false), TRANSLATE_LANGUAGES);
+  assert.ok(translatesLanguage("hmn", false));
+  assert.ok(!translatesLanguage("hmn", true));
+  assert.ok(translatesLanguage("fr", true));
+  assert.ok(!translatesLanguage("xx", false));
 });
 
 test("history is newest first, replaces a repeat and stays bounded", () => {

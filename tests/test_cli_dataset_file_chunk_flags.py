@@ -9,7 +9,7 @@ import sys
 import types
 from pathlib import Path
 
-import torch
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 RAW_TEXT_PATH = ROOT / "unsloth" / "dataprep" / "raw_text.py"
@@ -21,8 +21,7 @@ class _Tokenizer:
 
     def __call__(self, text, **kwargs):
         # ids from 1: EOS is 0.
-        ids = torch.arange(1, len(text.split()) + 1)
-        return {"input_ids": ids.unsqueeze(0)}
+        return {"input_ids": [list(range(1, len(text.split()) + 1))]}
 
 
 def _run_cli(monkeypatch, **overrides):
@@ -31,8 +30,25 @@ def _run_cli(monkeypatch, **overrides):
         def from_dict(data):
             return data
 
+    hub_loads = []
+
+    class _HubDataset:
+        mapped = False
+
+        def map(
+            self,
+            fn,
+            batched = False,
+        ):
+            self.mapped = True
+            return self
+
+    def _load_dataset(name, **kwargs):
+        hub_loads.append((name, kwargs))
+        return _HubDataset()
+
     datasets = types.ModuleType("datasets")
-    datasets.Dataset, datasets.load_dataset = _Dataset, None
+    datasets.Dataset, datasets.load_dataset = _Dataset, _load_dataset
     # transformers' find_spec("datasets") raises on a module without __spec__.
     datasets.__spec__ = importlib.util.spec_from_loader("datasets", loader = None)
     monkeypatch.setitem(sys.modules, "datasets", datasets)
@@ -68,13 +84,25 @@ def _run_cli(monkeypatch, **overrides):
     trl = types.ModuleType("trl")
     trl.SFTTrainer = _Trainer
     trl.SFTConfig = lambda **kwargs: types.SimpleNamespace(**kwargs)
+    transformers = types.ModuleType("transformers")
+    transformers_utils = types.ModuleType("transformers.utils")
+    transformers_utils.strtobool = lambda value: str(value).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    transformers.utils = transformers_utils
     for name, module in (
         ("unsloth", unsloth),
         ("unsloth.models", models),
         ("unsloth.models.loader_utils", loader_utils),
+        ("transformers", transformers),
+        ("transformers.utils", transformers_utils),
         ("trl", trl),
     ):
         monkeypatch.setitem(sys.modules, name, module)
+    monkeypatch.delenv("UNSLOTH_USE_MODELSCOPE", raising = False)
 
     path = ROOT / "unsloth-cli.py"
     spec = importlib.util.spec_from_file_location("unsloth_cli_chunk_flags", path)
@@ -121,7 +149,7 @@ def _run_cli(monkeypatch, **overrides):
     )
     args.update(overrides)
     cli.run(argparse.Namespace(**args))
-    return trained["train_dataset"]
+    return trained["train_dataset"], hub_loads
 
 
 def _longest_row(dataset):
@@ -131,14 +159,64 @@ def _longest_row(dataset):
 def test_dataset_text_file_honours_chunk_size_and_stride(tmp_path, monkeypatch):
     path = tmp_path / "corpus.txt"
     path.write_text(" ".join(f"w{i}" for i in range(100)), encoding = "utf-8")
-    dataset = _run_cli(monkeypatch, dataset = str(path), chunk_size = 32, stride = 8)
+    dataset, hub_loads = _run_cli(monkeypatch, dataset = str(path), chunk_size = 32, stride = 8)
+    assert hub_loads == []
     # 101 tokens at chunk 32 / step 24 = 4 windows; the ignored-flag default (2048) gives 1.
     assert len(dataset["input_ids"]) == 4
     assert _longest_row(dataset) <= 32
 
 
+def test_dataset_csv_file_uses_raw_loader(tmp_path, monkeypatch):
+    path = tmp_path / "corpus.csv"
+    path.write_text("text\n" + "\n".join(f"row{i} has words" for i in range(60)), encoding = "utf-8")
+    dataset, hub_loads = _run_cli(monkeypatch, dataset = str(path), chunk_size = 32, stride = 8)
+    assert hub_loads == []
+    assert len(dataset["input_ids"]) > 1
+    assert _longest_row(dataset) <= 32
+
+
+def test_dataset_uppercase_extension_uses_raw_loader(tmp_path, monkeypatch):
+    path = tmp_path / "corpus.TXT"
+    path.write_text(" ".join(f"w{i}" for i in range(100)), encoding = "utf-8")
+    dataset, hub_loads = _run_cli(monkeypatch, dataset = str(path), chunk_size = 32, stride = 8)
+    assert hub_loads == []
+    assert len(dataset["input_ids"]) == 4
+
+
+@pytest.mark.parametrize("hub_id", ["owner/name.v1", "owner/name.txt"])
+def test_dataset_hub_id_uses_hub_loader(monkeypatch, hub_id):
+    dataset, hub_loads = _run_cli(monkeypatch, dataset = hub_id)
+    assert hub_loads == [(hub_id, {"split": "train"})]
+    assert dataset.mapped
+
+
+def test_dataset_missing_file_uses_hub_loader(monkeypatch):
+    dataset, hub_loads = _run_cli(monkeypatch, dataset = "missing-corpus.txt")
+    assert hub_loads == [("missing-corpus.txt", {"split": "train"})]
+    assert dataset.mapped
+
+
+@pytest.mark.parametrize("relative", [False, True])
+def test_explicit_missing_local_path_reports_file_not_found(tmp_path, monkeypatch, relative):
+    monkeypatch.chdir(tmp_path)
+    path = "./missing-corpus.txt" if relative else str(tmp_path / "missing-corpus.txt")
+    with pytest.raises(FileNotFoundError):
+        _run_cli(monkeypatch, dataset = path)
+
+
+@pytest.mark.parametrize("suffix", ["", "/"])
+def test_local_dataset_directory_uses_hub_loader(tmp_path, monkeypatch, suffix):
+    # load_dataset reads a local dataset folder; the raw loader would raise IsADirectoryError.
+    folder = tmp_path / "corpus.json"
+    folder.mkdir()
+    path = str(folder) + suffix
+    dataset, hub_loads = _run_cli(monkeypatch, dataset = path)
+    assert hub_loads == [(path, {"split": "train"})]
+    assert dataset.mapped
+
+
 def test_raw_text_file_flag_still_honours_chunk_size(tmp_path, monkeypatch):
     path = tmp_path / "corpus.txt"
     path.write_text(" ".join(f"w{i}" for i in range(100)), encoding = "utf-8")
-    dataset = _run_cli(monkeypatch, raw_text_file = str(path), chunk_size = 32, stride = 8)
+    dataset, _ = _run_cli(monkeypatch, raw_text_file = str(path), chunk_size = 32, stride = 8)
     assert _longest_row(dataset) <= 32

@@ -1008,9 +1008,8 @@ def _make_lora_optimizer(
 
 
 def _drain_stop_queue(stop_queue: Any, event_queue: Any) -> Any:
-    """Drain the queue and return the last stop message (True or a dict with save=False); else False.
-    A {"vram": "lend" | "return"} message is the parent asking for the GPU room the trainer keeps idle
-    (the DiT dequant cache): served here, between steps, and acknowledged; never a stop."""
+    """Drain the queue, returning the last stop message (True or a dict with save=False) else False;
+    a vram lend/return message (idle GPU cache) is served between steps, never a stop."""
     got: Any = None
     saw = False
     try:

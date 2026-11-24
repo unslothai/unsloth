@@ -151,8 +151,7 @@ def test_flux1_arch_patched_single_block_keeps_addcmul(env, monkeypatch):
 
 
 def test_unmarked_or_unrotated_modules_keep_the_stock_path(env, monkeypatch):
-    """The GELU patches sit on shared diffusers classes: an unmarked FeedForward (another model) or an unrotated down
-    projection never reaches the fused path."""
+    """GELU patches hit shared diffusers classes; unmarked or unrotated modules stay stock."""
     torch, f1, fused, gemm = env
     from diffusers.models.attention import FeedForward
 

@@ -1364,6 +1364,49 @@ def cuda_reclaimable_bytes(device: Optional[int] = None) -> Optional[int]:
     return reclaimable - _graph_held_cache_bytes(pool_device)
 
 
+def cuda_graph_held_bytes(device: Optional[int] = None) -> int:
+    """Unused bytes this process's CUDA graph pools hold on ``device`` (the current card when None): what
+    ``cuda_reclaimable_bytes`` leaves uncredited and dropping the graphs hands back. 0 when unreadable."""
+    if device is None:
+        try:
+            import torch
+            device = int(torch.cuda.current_device())
+        except Exception:  # noqa: BLE001 - no current CUDA device: nothing to credit
+            return 0
+    return max(0, int(_graph_held_cache_bytes(device)))
+
+
+# Studio's own idle CUDA graphs may be dropped so a request the guard would otherwise refuse fits; "0" keeps them.
+GUARD_RELEASE_GRAPHS_ENV = "UNSLOTH_DIFFUSION_GUARD_RELEASE_GRAPHS"
+
+
+def guard_release_graphs_enabled() -> bool:
+    return not _env_off(GUARD_RELEASE_GRAPHS_ENV)
+
+
+def graph_release_fits(verdict_kwargs: dict, held: Callable[[], int]) -> int:
+    """The idle CUDA graph bytes to release, or 0: nonzero only when the activation guard falls short at
+    ``verdict_kwargs`` (refused, or admitted only by 'allow oversized') and crediting ``held()`` (read only then: an
+    allocator snapshot) as free makes it fit."""
+    card = verdict_kwargs.get("device_memory")
+    if card is None or getattr(card, "free_mib", None) is None:
+        return 0
+    # Both overrides off: the env one must release graphs exactly like the per-request one.
+    plain = {**verdict_kwargs, "allow_oversized": False, "env_override": False}
+    if image_activation_verdict(**plain).action != ACTIVATION_REFUSE:
+        return 0
+    held_bytes = int(held() or 0)
+    if held_bytes <= 0:
+        return 0
+    free = int(card.free_mib) + int(held_bytes) // (1024 * 1024)
+    if card.total_mib is not None:
+        free = min(free, int(card.total_mib))
+    credited = replace(card, free_mib = free)
+    if image_activation_verdict(**{**plain, "device_memory": credited}).action == ACTIVATION_REFUSE:
+        return 0
+    return held_bytes
+
+
 def cuda_reusable_cache_bytes(device: Any = None) -> int:
     """``cuda_reclaimable_bytes`` (excludes CUDA graph pools) floored at 0 for any device form; resolved to an int
     index because ``_graph_held_cache_bytes`` would silently skip the graph-pool count for a torch.device."""
@@ -9857,14 +9900,16 @@ def image_activation_verdict(
     measured_activation: Optional["CalibratedImageActivation"] = None,
     persistent_mib: int = 0,
     conditioned_denoise_mib: Optional[int] = None,
+    env_override: bool = True,
 ) -> ImageActivationVerdict:
     """Activations cannot be offloaded, so tile the VAE decode or refuse; refuse here, not in torch, since Windows WDDM spills silently; fail open when unknown.
     ``measured_activation``: the measured row a calibrated placement was sized from; it prices the tiled VAE decode.
     ``persistent_mib``: memory the denoise holds on top of its activations for the whole loop, whatever the decode
     does (``reference_kv_cache_mib``); added to the untiled and the tiled need alike, since tiling cannot shrink it.
     ``conditioned_denoise_mib``: the token-priced denoise of a request with input images (``flux3_conditioned_denoise_mib``);
-    it caps the tiled estimate's flat denoise term and is ignored without input images, so text-to-image is unchanged."""
-    override = bool(allow_oversized) or _oversized_generate_override()
+    it caps the tiled estimate's flat denoise term and is ignored without input images, so text-to-image is unchanged.
+    ``env_override``: False ignores ``UNSLOTH_DIFFUSION_ALLOW_OVERSIZED_GENERATE`` too (the un-overridden verdict)."""
+    override = bool(allow_oversized) or (env_override and _oversized_generate_override())
     try:
         # Unified memory skips the check: 'free' moves with the OS, and load-time refusal already owns it.
         if getattr(device_memory, "is_unified", False):

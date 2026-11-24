@@ -25,6 +25,8 @@ on:
       - '.github/workflows/docker-publish.yml'
       - '.pre-commit-config.yaml'
       - '.github/workflows/studio-backend-ci.yml'
+      # Its shard-layout guards (tests/test_ci_repo_cpu_shards.py) run here.
+      - '.github/workflows/distributed-cpu-ci.yml'
       # Tests this workflow collects read these files directly.
       - '.github/scripts/**'
       - '.github/ci/**'
@@ -63,6 +65,8 @@ on:
       - '.github/workflows/docker-publish.yml'
       - '.pre-commit-config.yaml'
       - '.github/workflows/studio-backend-ci.yml'
+      # Its shard-layout guards (tests/test_ci_repo_cpu_shards.py) run here.
+      - '.github/workflows/distributed-cpu-ci.yml'
       # Tests this workflow collects read these files directly.
       - '.github/scripts/**'
       - '.github/ci/**'
@@ -346,10 +350,12 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     strategy:
-      # Three shards balanced on measured runner time. `rest` is "tests/ minus the other roots"
+      # Shards balanced on measured runner time. `rest` is "tests/ minus the other roots"
       # so new files land in exactly one shard (tests/test_ci_repo_cpu_shards.py). Shard 1's
-      # roots are under tests/studio, which shards 2 and 3 exclude. Renaming a shard changes a
-      # check name: update required checks together. fail-fast off to show every red shard.
+      # roots are under tests/studio, which shards 2 and 3 exclude. The multi-rank fsdp2 / gloo
+      # shards live in distributed-cpu-ci.yml, which runs only when what they import changes;
+      # the shard guard reads both matrices. Renaming a shard changes a check name: update
+      # required checks together. fail-fast off to show every red shard.
       fail-fast: false
       matrix:
         include:
@@ -400,55 +406,6 @@ jobs:
               tests/test_[dimsu]*.py
               --deselect tests/test_model_registry.py::test_model_registration
               --deselect tests/test_model_registry.py::test_all_model_registration
-          # Native FSDP2's gloo tests spawn 2 to 4 ranks each: about ten minutes of this
-          # runner on their own, which pushed the catch-all to the 2100 s step cap. They run
-          # beside it instead.
-          # They then grew to 2092 s of the same cap on their own (364 tests by 2026-10-28)
-          # and were interrupted after passing, so they are split in two by file name: native_d
-          # onwards is about 55% of the measured time, everything else about 45%. Each glob
-          # must match a file, or bash hands pytest the literal pattern
-          # (tests/test_ci_repo_cpu_shards.py checks both).
-          - shard: fsdp2
-            selection: >-
-              tests/test_fsdp2_[!n]*.py
-              tests/test_fsdp2_n[!a]*.py
-              tests/test_fsdp2_native_[abc]*.py
-          - shard: fsdp2-native
-            selection: >-
-              tests/test_fsdp2_native_[!abc]*.py
-          # The other multi-rank gloo suites (tensor, pipeline and context parallel, float8 and
-          # fp8 under FSDP2) did the same again: with them the catch-all hit the 2100 s cap and was
-          # interrupted at 74 to 98% on most runs. Locally on 4 cores they are 578 s of the
-          # catch-all's 1258 s. The two globs are every *gloo* file except test_fs*, which is
-          # fsdp2's: an explicit file root cannot be filtered by --ignore, so the split is done in
-          # the globs themselves. A *gloo* file starting with d, i, m, s or u is rest-2's
-          # (tests/test_[dimsu]*.py), so the first glob leaves those letters out.
-          - shard: gloo
-            selection: >-
-              tests/test_[!dfimpstu]*gloo*.py
-              tests/test_f[!s]*gloo*.py
-              tests/test_parallel_[!c]*gloo*.py
-          # Gloo hit its 2100 s cap after 17886, 17930, DeepSeek-V4.1 tests; non-native TP files
-          # split off.
-          - shard: gloo-tp-env
-            selection: >-
-              tests/test_tp_[!n]*gloo*.py
-          # Issue 16407 grew the cp gloo file to a third of the shard; each gloo test spawns 2 to 8
-          # ranks, four at once peaked near 20 GB on a 16 GB runner, so 2 workers; test_p[!ap]*
-          # matches no shard.
-          - shard: gloo-cp
-            workers: 2
-            selection: >-
-              tests/test_parallel_c*gloo*.py
-          # Pipeline parallel growth (15655, 15656, 16167, 16417) hit the 2100 s cap, so TP and PP
-          # split; a gloo file named test_t[!p]* or test_tp[!_]* matches no shard and is reported
-          # dropped.
-          - shard: gloo-tp
-            selection: >-
-              tests/test_tp_n*gloo*.py
-          - shard: gloo-pp
-            selection: >-
-              tests/test_pp*gloo*.py
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:

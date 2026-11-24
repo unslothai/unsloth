@@ -6,6 +6,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.security import HTTPAuthorizationCredentials
 
+import asyncio
 import base64
 import hashlib
 import importlib.util
@@ -17,6 +18,7 @@ import sys
 import threading
 import time
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
@@ -439,6 +441,23 @@ def _login_failure_detail() -> str:
     return f"Incorrect password. To reset it, run this in your terminal, {where}: {command}"
 
 
+# PBKDF2 off the event loop, in its own pool so guesses cannot hold the shared default executor.
+_login_check_pool = ThreadPoolExecutor(max_workers = 2, thread_name_prefix = "auth-login")
+
+
+def _check_login(username: str, password: str):
+    """The account's (salt, hash, jwt_secret, must_change_password) when the password is right, else None."""
+    record = storage.get_user_and_secret(username)
+    if record is None:
+        # Per-name buckets as for real accounts: a shared unknown bucket is an existence oracle.
+        hashing.equalize_login_work(password)
+        return None
+    if username == storage.DEFAULT_ADMIN_USERNAME:
+        salt, pwd_hash, _jwt_secret, _must_change_password = record
+        return record if hashing.verify_password(password, salt, pwd_hash) else None
+    return storage.authenticate_account_login(username, password)
+
+
 @router.post("/login", response_model = Token)
 async def login(payload: AuthLoginRequest, request: Request) -> Token:
     """Login with username/password. Per-account + per-IP rate-limited."""
@@ -457,30 +476,17 @@ async def login(payload: AuthLoginRequest, request: Request) -> Token:
             headers = {"Retry-After": str(blocked_for)},
         )
 
-    record = storage.get_user_and_secret(username)
+    # Counted before awaiting the hash so a burst cannot all pass the check above; success clears it.
+    _record_login_failure(key)
+    record = await asyncio.get_running_loop().run_in_executor(
+        _login_check_pool, _check_login, username, payload.password
+    )
     if record is None:
-        # Per-name buckets as for real accounts: a shared unknown bucket is an existence oracle.
-        hashing.equalize_login_work(payload.password)
-        _record_login_failure(key)
         raise HTTPException(
             status_code = status.HTTP_401_UNAUTHORIZED,
             detail = _login_failure_detail(),
         )
-
-    if username == storage.DEFAULT_ADMIN_USERNAME:
-        salt, pwd_hash, jwt_secret, must_change_password = record
-        verified = hashing.verify_password(payload.password, salt, pwd_hash)
-    else:
-        record = storage.authenticate_account_login(username, payload.password)
-        verified = record is not None
-        if record is not None:
-            salt, pwd_hash, jwt_secret, must_change_password = record
-    if not verified:
-        _record_login_failure(key)
-        raise HTTPException(
-            status_code = status.HTTP_401_UNAUTHORIZED,
-            detail = _login_failure_detail(),
-        )
+    salt, pwd_hash, jwt_secret, must_change_password = record
 
     _clear_login_bucket(key)
     _clear_login_bucket(unknown_key)

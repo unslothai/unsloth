@@ -260,9 +260,8 @@ def batch_report_size():
 
 
 def batch_token_counts(inputs):
-    """[slots, real, supervised, rows, longest_row] int64 tensors on the batch device, or None.
-
-    supervised uses shifted labels[..., 1:] != -100 (the loss never sees a row's first label)."""
+    """Returns [slots, real, supervised, rows, longest_row] int64 tensors on the batch device, or
+    None; supervised uses labels[..., 1:] != -100 (the loss never sees a row's first label)."""
     if not hasattr(inputs, "get"):
         return None
     input_ids = inputs.get("input_ids")

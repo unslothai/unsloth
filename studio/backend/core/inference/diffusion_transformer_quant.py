@@ -1443,11 +1443,28 @@ def rdna_auto_w8a8_reason(target: Any, family: Optional[str]) -> Optional[str]:
 
 _FAMILY_RDNA_EXPLICIT_W8A8: dict[str, str] = _profile_table("rdna_explicit_w8a8", quant = True)
 
+# Only archs with measured W8A8 rows (kernels accept all gfx11/12); others stay weight-only. Widen per measurement.
+RDNA_EXPLICIT_W8A8_ARCHS = frozenset({"gfx1151"})
+
+
+def _rdna_explicit_w8a8_arch_measured(target: Any) -> bool:
+    """Whether ``target``'s own card (its ordinal, not the current device) is a measured arch. Never raises."""
+    try:
+        import torch
+
+        from .rocm_bf16 import _device_gfx_arch
+        return _device_gfx_arch(torch, getattr(target, "ordinal", None)) in RDNA_EXPLICIT_W8A8_ARCHS
+    except Exception:  # noqa: BLE001 - an unreadable arch keeps the weight-only build
+        return False
+
 
 def rdna_explicit_w8a8_reason(target: Any, family: Optional[str]) -> Optional[str]:
-    """Measured reason an explicit int8 request runs W8A8 for ``family`` on ROCm RDNA, else None (weight-only)."""
+    """Measured reason an explicit int8 request runs W8A8 for ``family`` on ROCm RDNA, else None (weight-only).
+    Only on the measured archs (``RDNA_EXPLICIT_W8A8_ARCHS``)."""
     reason = _FAMILY_RDNA_EXPLICIT_W8A8.get(str(family or "").strip().lower())
     if reason is None or rdna_explicit_int8_reason(target, family) is None:
+        return None
+    if not _rdna_explicit_w8a8_arch_measured(target):
         return None
     return reason
 

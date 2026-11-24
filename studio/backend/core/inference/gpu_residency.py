@@ -403,8 +403,10 @@ def _mlx_image_need(request: Any, fam: Any) -> Optional[tuple[int, int]]:
     from core.inference.diffusion_families import resolve_base_repo
     from core.inference.mlx_diffusion_backend import (
         decode_headroom_bytes,
+        dense_bit_options,
         fetch_base_snapshot,
         get_mlx_diffusion_backend,
+        mlx_config_for_base,
         plan_for_load,
         resolve_variant_base,
     )
@@ -424,7 +426,12 @@ def _mlx_image_need(request: Any, fam: Any) -> Optional[tuple[int, int]]:
         )
     base_dir = fetch_base_snapshot(base, None, local_files_only = True)
     headroom = decode_headroom_bytes(get_mlx_diffusion_backend()._rt())
-    plan = plan_for_load(gguf, base_dir, headroom_bytes = headroom)
+    plan = plan_for_load(
+        gguf,
+        base_dir,
+        headroom_bytes = headroom,
+        dense_options = dense_bit_options(fam, mlx_config_for_base(fam, base)),
+    )
     if plan.source != "plan":
         return None
     mib = 1024 * 1024

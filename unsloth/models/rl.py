@@ -687,7 +687,7 @@ class Unsloth{RLConfig_name}({RLConfig_name}):
         )
     unsloth_grpo_mini_batch : Optional[int] = field(
         default = None,
-        metadata = {{'help': 'Mini batch size for GRPO hidden state accumulation. Default is None unless user defines it.'}},
+        metadata = {{'help': 'Number of splits of each GRPO batch for hidden state accumulation (each forward takes ceil(rows / splits) rows). Default None sizes it from free memory.'}},
     )
     {max_seq_length_pre}
     def __init__({RLConfig_arguments},
@@ -707,11 +707,11 @@ class Unsloth{RLConfig_name}({RLConfig_name}):
         self.vllm_sampling_params = vllm_sampling_params
         self.unsloth_num_chunks = unsloth_num_chunks
         if unsloth_grpo_mini_batch is not None:
-            if self.generation_batch_size >= unsloth_grpo_mini_batch:
+            if 1 <= unsloth_grpo_mini_batch <= self.generation_batch_size:
                 self.unsloth_grpo_mini_batch = unsloth_grpo_mini_batch
             else:
                 raise ValueError(
-                    f"Unsloth GRPO mini batch size needs to be less than or equal to the effective generation batch size, "
+                    f"Unsloth GRPO mini batch (the number of splits per batch) needs to be at least 1 and at most the effective generation batch size, "
                     f"which is self.per_device_train_batch_size * gradient_accumulation_steps."
                 )
         self.unsloth_logit_chunk_multiplier = unsloth_logit_chunk_multiplier
@@ -1566,6 +1566,46 @@ _DENSE_ROUTER_AUX_LOSS_OFF = (
     "pass\n"
 )
 
+# Reentrant checkpointing runs each layer's first forward under no_grad, so the router logits transformers
+# records there carry no graph: the aux loss is logged but adds no gradient. FastModel MoE loads already
+# checkpoint non-reentrantly (vision.py, _router_aux_loss_on); a model from a plain from_pretrained still gets
+# the config's use_reentrant pin, so undo it when the aux loss is on. Gemma 3n / 4 keep reentrant, as in vision.py.
+# TRL (SFT / DPO / GRPO / KTO / RLOO / reward / distillation) forces reentrant under DeepSpeed ZeRO-3 on DeepSpeed
+# < 0.19.3 for correct training (deepspeedai/DeepSpeed#8148), so that case keeps it too. ZeRO-3 is read as TRL
+# reads it (args.deepspeed_plugin.zero_stage), falling back to transformers' is_deepspeed_zero3_enabled().
+_ROUTER_AUX_LOSS_NON_REENTRANT_GC = (
+    "def _unsloth_zero3_needs_reentrant(args):\n"
+    "    _ds_plugin = getattr(args, 'deepspeed_plugin', None)\n"
+    "    _zero3 = _ds_plugin is not None and getattr(_ds_plugin, 'zero_stage', None) == 3\n"
+    "    if not _zero3:\n"
+    "        try:\n"
+    "            from transformers.integrations import is_deepspeed_zero3_enabled as _is_z3\n"
+    "            _zero3 = bool(_is_z3())\n"
+    "        except Exception:\n"
+    "            _zero3 = False\n"
+    "    if not _zero3:\n"
+    "        return False\n"
+    "    try:\n"
+    "        from importlib.metadata import version as _ds_version\n"
+    "        from packaging.version import Version as _V\n"
+    "        return _V(_ds_version('deepspeed')) < _V('0.19.3')\n"
+    "    except Exception:\n"
+    "        return True\n"
+    "if getattr(self, 'aux_loss_enabled', False) and getattr(getattr(self, 'args', None), 'gradient_checkpointing', False):\n"
+    "    _gc_kwargs = getattr(self.args, 'gradient_checkpointing_kwargs', None)\n"
+    "    _gc_type = str(getattr(getattr(getattr(self, 'model', None), 'config', None), 'model_type', '') or '').lower()\n"
+    "    if (\n"
+    "        isinstance(_gc_kwargs, dict) and _gc_kwargs.get('use_reentrant') is True\n"
+    "        and getattr(self.args, '_unsloth_pinned_reentrant', False)\n"
+    "        and not _gc_type.startswith(('gemma3n', 'gemma4'))\n"
+    "        and not _unsloth_zero3_needs_reentrant(self.args)\n"
+    "    ):\n"
+    "        _gc_kwargs['use_reentrant'] = False\n"
+    "        if isinstance(getattr(self.args, 'activation_checkpointing_kwargs', None), dict):\n"
+    "            self.args.activation_checkpointing_kwargs['use_reentrant'] = False\n"
+    "pass\n"
+)
+
 # Matches the one assignment of `self.aux_loss_enabled` in GRPOTrainer.__init__, whatever its RHS.
 # Read without importing by tests/version_compat.
 _GRPO_AUX_LOSS_ENABLED_LINE = r"^([ \t]*)self\.aux_loss_enabled = [^\n]+$"
@@ -1689,6 +1729,25 @@ def _widen_sft_config_instance_check(patched_config):
     shim.__module__ = getattr(sft_trainer_module, "__name__", installed.__module__)
     sft_trainer_module.SFTConfig = shim
     return True
+
+
+def _sft_prediction_step_skips_unsloth(trainer_cls):
+    """First class below transformers.Trainer whose prediction_step never calls super(), else None."""
+    from transformers import Trainer
+
+    for klass in trainer_cls.__mro__:
+        if klass is Trainer:
+            return None
+        function = vars(klass).get("prediction_step")
+        if function is None:
+            continue
+        try:
+            source = inspect.getsource(function)
+        except (OSError, TypeError):
+            return klass.__qualname__
+        if "super().prediction_step" not in source:
+            return klass.__qualname__
+    return None
 
 
 def _wrap_sft_evaluate_cap(trainer_cls):
@@ -2194,6 +2253,26 @@ def _grpo_head_input_match_is_decisive(model, hidden_states):
     return _grpo_hidden_states_reproduce_logits(model, hidden_states, hidden_states) is False
 
 
+def _cp_last_hidden_state_only(target_model, original_forward, kwargs):
+    # Context parallelism gathers each requested hidden state to full length; this caller keeps the last only.
+    # Scoped to the one decoder, and only when no one else can see the other states (the caller did not ask
+    # for them, the forward is audited not to read them); otherwise every state is gathered as before.
+    import sys
+    from contextlib import nullcontext
+
+    module = sys.modules.get("unsloth.context_parallel")
+    scope = getattr(module, "last_hidden_state_scope", None)
+    if scope is None:
+        return nullcontext(None)
+    requested = kwargs.get("output_hidden_states")
+    if requested is None:
+        requested = getattr(getattr(target_model, "config", None), "output_hidden_states", False)
+    # Always a scope, even one that selects nothing: it hides a selection made by an enclosing forward on
+    # this thread. The requested / audit verdicts are rank-local, so they go into the CP vote rather than
+    # deciding locally whether this rank takes part in it.
+    return scope(target_model, original_forward, requested = bool(requested))
+
+
 def _install_grpo_hidden_states_forward_wrapper(model):
     if model is None or getattr(model, _UNSLOTH_GRPO_HIDDEN_STATES_WRAPPED_ATTR, False):
         return False
@@ -2226,6 +2305,8 @@ def _install_grpo_hidden_states_forward_wrapper(model):
             _drop_forward_kwargs_consumed_positionally(forward_signature, args, kwargs)
         )
         num_logits_to_keep = _get_num_logits_to_keep(forward_signature, args, forward_kwargs)
+        # The caller's own arguments, for the re-run that returns real logits.
+        caller_kwargs = dict(forward_kwargs)
         forward_kwargs["output_hidden_states"] = True
         forward_kwargs["return_dict"] = True
         logits_kwarg = _minimise_logits_kwarg(
@@ -2246,7 +2327,8 @@ def _install_grpo_hidden_states_forward_wrapper(model):
 
         # TRL 0.26+: Config may be in a separate *_config.py module, or reachable by walking the Trainer's MRO to the real implementation module (trl.experimental.bco).
         try:
-            outputs = original_forward(*args, **forward_kwargs)
+            with _cp_last_hidden_state_only(target_model, original_forward, kwargs) as selection:
+                outputs = original_forward(*args, **forward_kwargs)
         except TypeError as error:
             message = str(error)
             if logits_kwarg is None or logits_kwarg not in message:
@@ -2257,7 +2339,10 @@ def _install_grpo_hidden_states_forward_wrapper(model):
             forward_kwargs.pop(logits_kwarg, None)
             logits_kwarg = None
             try:
-                outputs = original_forward(*args, **forward_kwargs)
+                with _cp_last_hidden_state_only(
+                    target_model, original_forward, kwargs
+                ) as selection:
+                    outputs = original_forward(*args, **forward_kwargs)
             except TypeError as retry_error:
                 if not rejected_hidden_states(str(retry_error)):
                     raise
@@ -2270,13 +2355,13 @@ def _install_grpo_hidden_states_forward_wrapper(model):
                 f"Unsloth: GRPO fallback did not receive hidden states for unsupported model {model_name}; using logits directly.",
             )
             if logits_kwarg is None:
+                # The caller gets this object: never one whose hidden states were cut to the last (a mapping can hold them where getattr does not look).
+                if selection is not None and selection.truncated:
+                    return original_forward(*args, **forward_kwargs)
                 return outputs
-            # outputs.logits is the return value now, and one position was asked for only to throw the logits away; GRPO drops the last and slices the completion window, so restore the caller's own limit and re-run.
-            if logits_kwarg in kwargs:
-                forward_kwargs[logits_kwarg] = kwargs[logits_kwarg]
-            else:
-                forward_kwargs.pop(logits_kwarg, None)
-            return original_forward(*args, **forward_kwargs)
+            # outputs.logits is the return value now, and one position was asked for only to throw the logits away; GRPO drops the last and slices the completion window, so re-run with the caller's own arguments (its own limit, and no hidden states it did not ask for).
+            del outputs
+            return original_forward(*args, **caller_kwargs)
 
         hidden_states = hidden_states[-1]
         if divisor is not None:
@@ -2559,6 +2644,21 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
             f"{type(e).__name__}: {e}"
         )
         return
+
+
+# Zoo's sft_prepare_dataset replaces the body of TRL's _prepare_dataset, and with it TRL's main_process_first window:
+# the injected wrapper puts a rank 0 first window back around every split (file-backed ones only), so under DDP the
+# other ranks load the Arrow cache rank 0 wrote instead of tokenizing again. A Zoo without it leaves the call as is.
+_SFT_PREPARE_DATASET_PATTERN = r"([ \t]*)train_dataset = self\._prepare_dataset\("
+_SFT_PREPARE_DATASET_REPLACEMENT = (
+    r"\1self._unsloth_model_ref = model\n"
+    r"\1try:\n"
+    r"\1    from unsloth_zoo.dataset_utils import rank_zero_first_prepare as _unsloth_rank_zero_first_prepare\n"
+    r"\1    self._prepare_dataset = _unsloth_rank_zero_first_prepare(self._prepare_dataset)\n"
+    r"\1except ImportError:\n"
+    r"\1    pass\n"
+    r"\1train_dataset = self._prepare_dataset("
+)
 
 
 def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
@@ -3455,6 +3555,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
 
     if "model" in call_args:
         RLTrainer_post += _DENSE_ROUTER_AUX_LOSS_OFF
+        RLTrainer_post += _ROUTER_AUX_LOSS_NON_REENTRANT_GC
 
     # MoE CausalLMs cache router_aux_loss_coef at init, so a forward that adds its own aux loss reads the checkpoint
     # value. Hand them the trainer's resolved coefficient: TRL 1.7-1.17 also wrote it to the config, TRL >= 1.18 only
@@ -3897,6 +3998,8 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         "        if getattr(self, 'gradient_checkpointing', False):\n"
         "            _gc_kwargs = getattr(self, 'gradient_checkpointing_kwargs', None) or {}\n"
         "            if _gc_kwargs.get('context_fn') is None and not _gc_kwargs.get('debug', False):\n"
+        "                # Remember a pin the user did not ask for: the MoE router aux loss needs it undone.\n"
+        "                self._unsloth_pinned_reentrant = _gc_kwargs.get('use_reentrant') is not True\n"
         "                _gc_kwargs['use_reentrant'] = True\n"
         "                self.gradient_checkpointing_kwargs = _gc_kwargs\n"
         "                if hasattr(self, 'activation_checkpointing_kwargs'):\n"
@@ -4125,11 +4228,12 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         RLTrainer_source = _backport_vision_dataset_gate(RLTrainer_source)
 
         # Inject the model reference before _prepare_dataset for dynamic token_type_ids detection in sft_prepare_dataset.
-        _prep_pattern = r"([ \t]*)train_dataset = self\._prepare_dataset\("
-        _prep_replacement = (
-            r"\1self._unsloth_model_ref = model\n\1train_dataset = self._prepare_dataset("
+        RLTrainer_source = re.sub(
+            _SFT_PREPARE_DATASET_PATTERN,
+            _SFT_PREPARE_DATASET_REPLACEMENT,
+            RLTrainer_source,
+            count = 1,
         )
-        RLTrainer_source = re.sub(_prep_pattern, _prep_replacement, RLTrainer_source, count = 1)
 
     # Silence TRL's noisy batch_size=1 + padding-free warning, handling both the original "anihilate" typo and the corrected spelling.
     for _typo in ("anihilate", "annihilate"):
@@ -4267,6 +4371,14 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             _wrap_sft_evaluate_cap(getattr(created_module, f"Unsloth{RLTrainer_name}"))
         except Exception as e:
             logger.info(f"Unsloth: Could not wrap evaluate for {RLTrainer_name}: {e}")
+        # The sft_trainer_prediction_step edit only sees SFTTrainer's own source, so check what actually runs.
+        _skipper = _sft_prediction_step_skips_unsloth(patched_trainer)
+        if _skipper is not None:
+            logger.warning_once(
+                f"Unsloth: {_skipper}.prediction_step does not call super(), so evaluate() and predict() "
+                f"skip Unsloth's prediction_step: compute_metrics and predict() can get empty logits. "
+                f"Please report this TRL version ({trl.__version__}) to Unsloth."
+            )
 
     try:
         _wrap_full_eval_keeps_trainable_dtype(getattr(created_module, f"Unsloth{RLTrainer_name}"))
@@ -5267,6 +5379,11 @@ def _packing_honored(
         alone = hidden(ids[:, first:], arange(second), [second])[0]
         crossed = hidden(ids, arange(first + second), [first + second])[0, first:]
     finally:
+        # Through train(), not only the flag: Int4PackedLinear syncs its quant_state there and
+        # PreTrainedModel re-kernelizes under use_kernels. modules() is parent-first, so the children's
+        # own calls undo each recursion; the flags then cover a child shared by two parents.
+        for module, mode in training:
+            module.train(mode)
         for module, mode in training:
             module.training = mode
         for module, attr, value in rates:
@@ -5469,8 +5586,9 @@ _ASYNC_GRPO_TREE_GDN_COUNTS = {"conv": 0, "chunk": 0}
 _TREE_GDN_NAMES = ("causal_conv1d_fn", "torch_chunk_gated_delta_rule")
 
 
-def _tree_gdn_callers(model):
-    # The functions that look up causal_conv1d_fn / torch_chunk_gated_delta_rule as globals, reached from each module
+def _tree_gdn_callers(model, names = _TREE_GDN_NAMES):
+    # The functions that look up any of `names` (causal_conv1d_fn / torch_chunk_gated_delta_rule by default) as
+    # globals, reached from each module
     # class's forward through its wrappers and the module-level functions it calls. Unsloth's compiled modeling files
     # define their own copies of these forwards (the class forward calls `Qwen3_5GatedDeltaNet_forward`) and import
     # transformers' __name__, so `type(model).forward.__module__` names the stock module while the layers read the
@@ -5487,7 +5605,7 @@ def _tree_gdn_callers(model):
             if not isinstance(fn, types.FunctionType) or id(fn) in seen:
                 continue
             seen.add(id(fn))
-            if any(name in fn.__code__.co_names for name in _TREE_GDN_NAMES):
+            if any(name in fn.__code__.co_names for name in names):
                 callers.append(fn)
             if depth >= 4:
                 continue
@@ -5602,6 +5720,115 @@ def _unsloth_patch_tree_gdn(original):
     patch_tree_gdn._unsloth_async_grpo_patched = True
     patch_tree_gdn._unsloth_original = original
     return patch_tree_gdn
+
+
+# TRL >= 1.19 patch_tree_recurrent(model, layer_type): the module-level functions each recurrent family runs through,
+# and the TRL kernel module + tree op that replaces each one. Families are tried in TRL's order.
+_TREE_RECURRENT_FAMILIES = {
+    "conv": (("causal_conv1d_fn",),),
+    "linear_attention": (
+        ("causal_conv1d_fn", "torch_chunk_gated_delta_rule"),
+        ("causal_conv1d_fn", "mamba2_chunk_scan", "mamba2_split_conv1d_scan_combined"),
+    ),
+}
+_TREE_RECURRENT_OPS = {
+    "causal_conv1d_fn": ("tree_gated_delta_rule", "tree_causal_conv1d"),
+    "torch_chunk_gated_delta_rule": ("tree_gated_delta_rule", "tree_chunk_gated_delta_rule"),
+    "mamba2_chunk_scan": ("tree_mamba2", "tree_mamba2_chunk_scan"),
+    "mamba2_split_conv1d_scan_combined": ("tree_mamba2", "tree_mamba2_split_conv1d_scan_combined"),
+}
+_ASYNC_GRPO_TREE_RECURRENT_COUNTS = {
+    "causal_conv1d_fn": 0,
+    "torch_chunk_gated_delta_rule": 0,
+    "mamba2_chunk_scan": 0,
+    "mamba2_split_conv1d_scan_combined": 0,
+}
+
+
+def _patch_tree_recurrent_namespace(space, tree_ops):
+    # TRL's patch_tree_recurrent wrappers (tree op gets the stock op first), on a given global namespace. No
+    # functools.wraps: Unsloth's block-compile adapters read forwarded keywords through __wrapped__.
+    if not all(callable(space.get(name)) for name in tree_ops):
+        return False
+
+    def follow_tree(name, op, tree_op):
+        @torch.compiler.disable
+        def wrapper(*args, **kwargs):
+            if "tree_segment_parents" not in kwargs:
+                return op(*args, **kwargs)
+            _ASYNC_GRPO_TREE_RECURRENT_COUNTS[name] += 1
+            return tree_op(op, *args, **kwargs)
+
+        wrapper._unsloth_tree_recurrent = True
+        wrapper.__name__ = wrapper.__qualname__ = name
+        return wrapper
+
+    for name, tree_op in tree_ops.items():
+        if not getattr(space[name], "_unsloth_tree_recurrent", False):
+            space[name] = follow_tree(name, space[name], tree_op)
+    return True
+
+
+def _unsloth_patch_tree_recurrent(original):
+    # TRL >= 1.19 renamed patch_tree_gdn(model) to patch_tree_recurrent(model, layer_type) and added Mamba2 and LFM2
+    # short convolutions. It still patches sys.modules[type(model).forward.__module__], so a PEFT model is refused and
+    # an Unsloth-compiled model's layers keep reading unpatched functions from the compiled namespace. Patch the
+    # namespace each layer actually reads, as for patch_tree_gdn.
+    def patch_tree_recurrent(model, layer_type):
+        target = model.get_base_model() if hasattr(model, "get_base_model") else model
+        try:
+            stock = bool(original(target, layer_type))
+        except Exception:
+            stock = False
+        families = _TREE_RECURRENT_FAMILIES.get(layer_type)
+        if families is None:
+            return stock
+        names = tuple(dict.fromkeys(name for family in families for name in family))
+        callers = _tree_gdn_callers(target, names)
+        if not callers:
+            return stock
+        # Per namespace, the family every caller in it fully runs through. A mixer that reaches only part of a family
+        # (the conv but another scan, such as KDA) would still scan across samples.
+        plan = []
+        for fn in callers:
+            family = next(
+                (f for f in families if all(name in fn.__code__.co_names for name in f)),
+                None,
+            )
+            if family is None:
+                return False
+            for space, chosen in plan:
+                if space is fn.__globals__:
+                    if chosen != family:
+                        return False
+                    break
+            else:
+                plan.append((fn.__globals__, family))
+        package = original.__module__.rsplit(".", 1)[0]
+        errors, tree_ops = [], {}
+        for name in dict.fromkeys(name for _, family in plan for name in family):
+            module_name, attr = _TREE_RECURRENT_OPS[name]
+            for prefix in ("trl.kernels", package):
+                try:
+                    tree_ops[name] = getattr(
+                        importlib.import_module(f"{prefix}.{module_name}"), attr
+                    )
+                    break
+                except Exception as error:
+                    errors.append(f"{prefix}.{module_name}.{attr}: {error}")
+            else:
+                logger.info(
+                    f"Unsloth: TRL's tree recurrent kernels are unavailable: {'; '.join(errors)}"
+                )
+                return False
+        return all(
+            _patch_tree_recurrent_namespace(space, {name: tree_ops[name] for name in family})
+            for space, family in plan
+        )
+
+    patch_tree_recurrent._unsloth_async_grpo_patched = True
+    patch_tree_recurrent._unsloth_original = original
+    return patch_tree_recurrent
 
 
 def _unsloth_async_grpo_lm_head(
@@ -6047,7 +6274,11 @@ def patch_trl_async_grpo():
         return original_create(model_id, *args, **kwargs)
 
     async_module.create_model_from_path = create_model_from_path
-    if callable(getattr(async_module, "patch_tree_gdn", None)):
+    if callable(getattr(async_module, "patch_tree_recurrent", None)):
+        async_module.patch_tree_recurrent = _unsloth_patch_tree_recurrent(
+            async_module.patch_tree_recurrent
+        )
+    elif callable(getattr(async_module, "patch_tree_gdn", None)):
         async_module.patch_tree_gdn = _unsloth_patch_tree_gdn(async_module.patch_tree_gdn)
     tree_attention = getattr(async_module, "TREE_ATTENTION", None)
     for name, flag in heads:
