@@ -148,6 +148,8 @@ export function applyActiveModelStatusToStore(status: any, _options: any): void 
 }
 export function syncModelCapabilities(_checkpoint: string, _status: any): void {}
 export function refreshContextUsage(_options: any): void {}
+// No scenario loads two quants of one repo, so a checkpoint is served under its own name.
+export const servedCheckpoint = (_loaded: any, checkpoint: string, _variant: any) => checkpoint;
 
 // Stubbed at the module boundary it really crosses, but keeping the three refusals: "a pick
 // already landed" is what a concurrent refresh produces, and adopting anyway would hide the bug.

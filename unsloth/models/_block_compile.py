@@ -570,14 +570,36 @@ def _flex_block_mask_call(
     return False
 
 
-# Auto: graphs start when launch time exceeds GPU time by _AUTO_RATIO and all calls had one shape.
+# Auto: graphs start when launch time is at least the ratio threshold x GPU time and all calls had one shape.
+# The ratio is measured on forward block calls only; the checkpoint recompute and backward launch more
+# per GPU millisecond, so on Ampere and newer a forward ratio near 1 already gains a lot: A100 Qwen3-4B
+# QLoRA 2x1024 measured 1.14-1.51 across fresh processes and ran 310 ms/step with graphs vs 390 ms
+# without, so a 1.2 threshold split one run setup into two speeds by host jitter. A100 ratios 0.55-0.92
+# gained nothing (-1.2% to +1.0%). On T4 (sm75) graphs were 4-7% slower at ratios 0.66-1.11 (Qwen3-0.6B
+# LoRA 2x1024), so below sm80 the threshold stays 1.2.
 _AUTO_WARMUP_PASSES = 2
 _AUTO_MEASURE_CALLS = 4
 _AUTO_SLEEP_CYCLES = 20_000_000  # ~10-15 ms: the block's launches queue behind it
+_AUTO_RATIO_SM80 = 1.0
+_AUTO_RATIO_OLDER = 1.2
+# UNSLOTH_BLOCK_CUDAGRAPHS_AUTO_RATIO overrides the per-device default on every device.
 try:
-    _AUTO_RATIO = float(os.environ.get("UNSLOTH_BLOCK_CUDAGRAPHS_AUTO_RATIO", "1.2"))
-except ValueError:
-    _AUTO_RATIO = 1.2
+    _AUTO_RATIO = float(os.environ["UNSLOTH_BLOCK_CUDAGRAPHS_AUTO_RATIO"])
+except (KeyError, ValueError):
+    _AUTO_RATIO = None
+
+
+def _auto_ratio(device):
+    """The launch / GPU ratio at or above which auto mode turns graphs on for blocks on `device`."""
+    if _AUTO_RATIO is not None:
+        return _AUTO_RATIO
+    try:
+        major = torch.cuda.get_device_capability(device)[0]
+    except Exception:
+        return _AUTO_RATIO_OLDER
+    return _AUTO_RATIO_SM80 if major >= 8 else _AUTO_RATIO_OLDER
+
+
 # 2.13+: the graphed region gets its own recompile bucket (isolate_recompiles) instead of sharing
 # the stock region's cache limit. Before 2.11 FastLanguageModel LoRA blocks are not compiled at all.
 _AUTO_MIN_TORCH = "2.13"
@@ -1147,7 +1169,7 @@ def _auto_decide(auto, device):
     ratio = host / max(gpu, 1e-9)
     detail = f"block launch {host * 1e3 / len(auto['host']):.2f} ms vs GPU {gpu * 1e3 / len(auto['gpu']):.2f} ms"
     auto["ratio"] = ratio
-    if ratio < _AUTO_RATIO:
+    if ratio < _auto_ratio(device):
         _auto_off(auto, f"GPU-bound: {detail}")
         return
     try:
