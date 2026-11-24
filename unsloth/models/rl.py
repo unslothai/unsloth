@@ -321,7 +321,11 @@ def PatchRL(FastLanguageModel):
                 gather_deepspeed3_params = True,
             ):
                 unwrapped_model = accelerator.unwrap_model(model)
-                is_gc = getattr(unwrapped_model, "is_gradient_checkpointing", False)
+                from unsloth.models._gc_config_default import (
+                    is_activation_checkpointing as _is_activation_checkpointing,
+                )
+
+                is_gc = _is_activation_checkpointing(unwrapped_model)
                 if is_gc:
                     unwrapped_model.gradient_checkpointing_disable()
                 if (
@@ -2685,6 +2689,42 @@ _SFT_PREPARE_DATASET_REPLACEMENT = (
 )
 
 
+def _route_default_gradient_checkpointing(arguments, call_args):
+    """Carry a TRL config's ``gradient_checkpointing`` default under ``activation_checkpointing``.
+
+    transformers >= 5.23 renamed the field and warns ("`gradient_checkpointing` is
+    deprecated ... Use `activation_checkpointing`") whenever the old name arrives non-None
+    while the new one is None. TRL <= 1.18.0 defaults ``gradient_checkpointing = True``, and
+    the generated config mirrors that default, so every config built warned although the
+    user passed neither. The default moves to the new name only when the user sets
+    neither, which is the same value transformers would have resolved. An explicit
+    ``gradient_checkpointing = ...`` still goes through (and still warns), and an explicit
+    ``activation_checkpointing`` still wins. Returns ``(arguments, extra_args)``.
+    """
+    if not (
+        re.search(r"\bactivation_checkpointing\b", call_args)
+        and re.search(r"\bgradient_checkpointing\b", call_args)
+    ):
+        return arguments, ""
+    new_default = re.search(r"\bactivation_checkpointing = ([^,\n]+),\n", arguments)
+    if new_default is None or new_default.group(1).strip() != "None":
+        return arguments, ""
+    old_default = re.search(r"\bgradient_checkpointing = ([^,\n]+),\n", arguments)
+    if old_default is None or old_default.group(1).strip() == "None":
+        return arguments, ""
+    default = old_default.group(1).strip()
+    arguments = (
+        arguments[: old_default.start()]
+        + "gradient_checkpointing = None,\n"
+        + arguments[old_default.end() :]
+    )
+    extra_args = (
+        "if gradient_checkpointing is None and activation_checkpointing is None:\n"
+        f"    activation_checkpointing = {default}\n"
+    )
+    return arguments, extra_args
+
+
 def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
     import trl
     import trl.trainer
@@ -3749,6 +3789,9 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             y = f"'{v}'" if type(v) is str else f"{v}"
             y = f"{k} = {y},\n"
             arguments = re.sub(x, y, arguments)
+
+    arguments, route_checkpointing = _route_default_gradient_checkpointing(arguments, call_args)
+    extra_args += route_checkpointing
 
     if "learning_rate" in call_args:
         learning_rate_check = (

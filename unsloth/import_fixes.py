@@ -35,12 +35,17 @@ import functools
 import inspect
 import types
 
+# Values of UNSLOTH_ENABLE_LOGGING that turn verbose output on, everywhere in Unsloth.
+_UNSLOTH_LOGGING_ON = ("1", "True", "true")
+
+
+def unsloth_logging_enabled():
+    """UNSLOTH_ENABLE_LOGGING read now (the module constant below is read once at import)."""
+    return os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") in _UNSLOTH_LOGGING_ON
+
+
 # We cannot do from unsloth_zoo.log import logger since FBGEMM might cause seg faults.
-UNSLOTH_ENABLE_LOGGING = os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") in (
-    "1",
-    "True",
-    "true",
-)
+UNSLOTH_ENABLE_LOGGING = unsloth_logging_enabled()
 logger = logging.getLogger(__name__)
 if UNSLOTH_ENABLE_LOGGING:
     logging.basicConfig(level = logging.INFO, format = "[%(name)s|%(levelname)s]%(message)s")
@@ -3580,7 +3585,44 @@ def _carry_rope_theta_across_assignment(
     return base
 
 
+# transformers 5 warns on every `rope_scaling` write; the probe below writes it on purpose.
+_ROPE_SCALING_DEPRECATION_MESSAGE = r"`?rope_scaling`? is deprecated"
+
+
+def assign_rope_scaling(config, value):
+    """``config.rope_scaling = value`` for Unsloth's own writes, without transformers 5's FutureWarning.
+
+    The caller handed Unsloth a ``rope_scaling`` (or Unsloth extended the context itself), so
+    a warning about the config attribute's name is not something the user can act on. The
+    setter still runs (it standardises ``rope_parameters``); only that one message is
+    filtered, only for this assignment. A user's own ``config.rope_scaling = ...`` still warns.
+    """
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message = _ROPE_SCALING_DEPRECATION_MESSAGE,
+            category = FutureWarning,
+        )
+        config.rope_scaling = value
+
+
 def _transformers_rope_scaling_assignment_drops_theta():
+    """Run the probe below without printing transformers' ``rope_scaling`` FutureWarning.
+
+    The probe has to write the deprecated alias, because the alias setter is what it
+    measures, so the warning it raises at ``import unsloth`` says nothing about the
+    user's code. Only that one message is filtered, only for the probe's duration.
+    """
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message = _ROPE_SCALING_DEPRECATION_MESSAGE,
+            category = FutureWarning,
+        )
+        return _probe_rope_scaling_assignment_drops_theta()
+
+
+def _probe_rope_scaling_assignment_drops_theta():
     """Does replacing ``config.rope_scaling`` on THIS build lose the base frequency?
 
     Measured, not inferred from a version: the move into ``rope_parameters``, the alias
