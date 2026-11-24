@@ -1,6 +1,7 @@
 """Text-only FastLanguageModel routing for vision-capable configs."""
 
 import ast
+import functools
 import copy
 from pathlib import Path
 
@@ -61,6 +62,17 @@ def _param_default(method, name):
     return dict(zip([p.arg for p in params][-len(defaults) :], defaults)).get(name)
 
 
+@functools.lru_cache(maxsize = 4)
+def _function_segments(source):
+    """Top-level function sources of a file, extracted once per file content: get_source_segment
+    re-splits the 14k-line _utils.py on every call. Callers still exec them into a fresh namespace."""
+    return {
+        node.name: ast.get_source_segment(source, node)
+        for node in ast.parse(source).body
+        if isinstance(node, ast.FunctionDef)
+    }
+
+
 def _load_text_only_namespace():
     source = _source(UTILS_PATH)
     import transformers
@@ -71,11 +83,7 @@ def _load_text_only_namespace():
         "Version": Version,
         "transformers_version": transformers.__version__,
     }
-    funcs = {
-        node.name: ast.get_source_segment(source, node)
-        for node in ast.parse(source).body
-        if isinstance(node, ast.FunctionDef)
-    }
+    funcs = _function_segments(source)
     for name in (
         "_resolve_remote_model_class",
         "resolve_model_class",

@@ -4,6 +4,7 @@
 """Without load_in_16bit, MXFP4 LoRA must take the packed experts path; matmul_ogs has no backward."""
 
 import ast
+import functools
 import inspect
 import json
 import os
@@ -30,8 +31,12 @@ def _helper():
     raise AssertionError("_mxfp4_lora_keeps_experts_packed not found in vision.py")
 
 
+@functools.cache
 def _dequantize_branch():
-    """The `if` in FastBaseModel.from_pretrained that sets quantizer_kwargs["dequantize"]."""
+    """The `if` in FastBaseModel.from_pretrained that sets quantizer_kwargs["dequantize"].
+
+    A pure function of the module-level SRC/TREE (read once at import), so it is searched once;
+    get_source_segment re-splits vision.py for every `if` it looks at."""
     found = []
     for node in ast.walk(TREE):
         if not isinstance(node, ast.If):
