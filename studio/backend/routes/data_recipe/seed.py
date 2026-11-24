@@ -921,7 +921,8 @@ def _decode_base64_payload(content_base64: str) -> bytes:
 
 
 # Match the recipe's DuckDB read: inference made "007" -> 7 and a created_at number a date.
-_JSON_READ_OPTIONS = {"dtype": False, "convert_dates": False}
+# utf-8-sig: pandas cannot parse the BOM that Notepad and Windows PowerShell put at the start of a file.
+_JSON_READ_OPTIONS = {"dtype": False, "convert_dates": False, "encoding": "utf-8-sig"}
 
 
 def _read_preview_rows_from_local_file(path: Path, preview_size: int) -> list[dict[str, Any]]:

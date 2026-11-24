@@ -124,6 +124,24 @@ def test_local_json_seed_preview_keeps_its_values_as_written(monkeypatch, tmp_pa
     assert rows == records
 
 
+@pytest.mark.parametrize("filename", ["seed.jsonl", "seed.json"])
+def test_local_json_seed_preview_reads_a_utf8_bom(monkeypatch, tmp_path, filename):
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    monkeypatch.setattr(seed_route, "account_path", lambda path: None)
+    records = [{"zip": "01234", "qty": 3}, {"zip": "90210", "qty": 4}]
+    path = tmp_path / filename
+    if filename.endswith(".jsonl"):
+        body = "\n".join(json.dumps(record) for record in records)
+    else:
+        body = json.dumps(records)
+    # Notepad and Windows PowerShell write this prefix; the CSV branch already reads it.
+    path.write_bytes(b"\xef\xbb\xbf" + body.encode("utf-8"))
+
+    rows = seed_route._read_preview_rows_from_local_file(path, 10)
+
+    assert rows == records
+
+
 def test_local_parquet_seed_preview_reads_typed_rows(monkeypatch, tmp_path):
     pd = pytest.importorskip("pandas")
     pytest.importorskip("pyarrow")
