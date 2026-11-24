@@ -4187,6 +4187,17 @@ _UNSUPPORTED_LOAD_KWARGS = (
 )
 
 
+def refuse_hf_distributed_kwargs(kwargs, label, sharder):
+    """ValueError when a from_pretrained under one of Unsloth's sharded loaders also asks transformers to
+    distribute the model (tp_plan / tp_size / device_mesh / distributed_config): the two would shard it twice."""
+    key = next((k for k in _HF_DISTRIBUTED_KWARGS if kwargs.get(k)), None)
+    if key is not None:
+        raise ValueError(
+            f"Unsloth: {label} sharded loading cannot be combined with transformers' own {key}; drop it "
+            f"({sharder} shards the model)."
+        )
+
+
 def _preloaded(t):
     return None if t is None else getattr(t, _PRELOADED, None)
 
@@ -4916,6 +4927,15 @@ def _from_pretrained_sharded(original, cls, name, args, kwargs, state):
     )
 
     label = state.get("label", "tensor parallel")
+    if state.get("quantize_on_load") is not None:
+        # Native FSDP2 / tensor parallel: before the mesh, the checkpoint or any whole-load fallback.
+        refuse_hf_distributed_kwargs(
+            kwargs,
+            label,
+            "apply_tensor_parallel"
+            if state["quantize_on_load"] is _tp_load_quantizing
+            else "shard_model",
+        )
     if callable(state["mesh"]):
         state["mesh"] = state["mesh"]()
     original_kwargs = kwargs
@@ -4937,13 +4957,6 @@ def _from_pretrained_sharded(original, cls, name, args, kwargs, state):
     # right after transformers quantizes it (fsdp2_load._load_quantizing, _tp_load_quantizing) instead of the
     # whole model on every rank.
     chunked = state.get("quantize_on_load")
-    if chunked is _tp_load_quantizing:
-        key = next((k for k in _HF_DISTRIBUTED_KWARGS if original_kwargs.get(k)), None)
-        if key is not None:
-            raise ValueError(
-                f"Unsloth: {label} sharded loading cannot be combined with transformers' own {key}; drop it "
-                "(apply_tensor_parallel shards the model)."
-            )
     if chunked is not None and quantized is None and not other:
         from .fsdp2_load import bnb4_on_load, quantized_load_bytes
         if bnb4_on_load(original_kwargs):

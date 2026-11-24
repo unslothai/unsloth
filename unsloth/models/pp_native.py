@@ -126,6 +126,11 @@ _MULTI_STAGE_DP = (
     "(each FSDP2 root must be one stage's module); use one stage per rank (schedule = 'gpipe' / '1f1b') "
     "with a dp mesh, or no dp mesh."
 )
+_MODEL_PARALLEL_DIMS = (
+    "pp",
+    "tp",
+    "cp",
+)  # every other root mesh dimension of size > 1 is data parallel
 _SIMPLE = (bool, int, float, str, type(None))
 
 
@@ -234,6 +239,26 @@ def pipeline_stage_of(model):
     return None
 
 
+@functools.lru_cache(maxsize = None)
+def _forward_only_stage_class():
+    """A PipelineStage for forward-only steps (has_backward False): the in-place gradient hand-over between two
+    adjacent stages on one rank (V schedules) is a no-op, as every backward action already is there."""
+    from torch.distributed.pipelining import PipelineStage
+
+    class _ForwardOnlyStage(PipelineStage):
+        def get_local_bwd_output(self, mb_index):
+            if not self.has_backward:
+                return ()
+            return super().get_local_bwd_output(mb_index)
+
+        def set_local_bwd_input(self, next_stage_bwd_outputs, mb_index):
+            if not self.has_backward:
+                return None
+            return super().set_local_bwd_input(next_stage_bwd_outputs, mb_index)
+
+    return _ForwardOnlyStage
+
+
 # ------------------------------------------------------------------------------- composed meshes
 
 
@@ -249,6 +274,21 @@ def _root_mesh(mesh):
         return _mesh_resources.get_root_mesh(mesh)
     except Exception:
         return None
+
+
+def check_multi_stage_dp(pp_mesh, stages_per_rank):
+    """Several stages per rank do not compose with data parallel: ValueError when the root mesh of `pp_mesh`
+    has a data parallel dimension (any dimension but pp / tp / cp, e.g. dp, dp_shard, dp_replicate, of size
+    > 1). Run before the model is cut or a checkpoint is read; nothing is changed."""
+    if stages_per_rank <= 1 or pp_mesh is None:
+        return
+    root = _root_mesh(pp_mesh)
+    if root is None or root is pp_mesh:
+        return
+    names = tuple(getattr(root, "mesh_dim_names", None) or ())
+    for i, name in enumerate(names):
+        if name not in _MODEL_PARALLEL_DIMS and root.size(i) > 1:
+            raise ValueError(f"{_MULTI_STAGE_DP} (mesh dimension {name!r} of size {root.size(i)})")
 
 
 def check_mesh_composition(meshes, what = "pipeline parallel composition"):
@@ -2428,6 +2468,11 @@ class PipelineParallel:
                 (mb, seq, width), dtype = self.activation_dtype, device = "meta", requires_grad = True
             )
 
+        # eval_loss on a V schedule (ZBV / DualPipeV): the two stages on this rank are adjacent and hand over
+        # their gradients in place, which a forward-only step has none of (torch asserts there).
+        stage_cls = (
+            _forward_only_stage_class() if not train and self.spec.style == "v" else PipelineStage
+        )
         for index, module in zip(self.local_stages, self.stage_modules):
             if index == 0:
                 example_in = torch.empty((mb, seq), dtype = torch.long, device = "meta")
@@ -2460,7 +2505,7 @@ class PipelineParallel:
                 if index != self.total_stages - 1:
                     example_out = plus(example_out)
             stages.append(
-                PipelineStage(
+                stage_cls(
                     module,
                     index,
                     self.total_stages,
@@ -3159,11 +3204,7 @@ def apply_pipeline_parallel(
         _refuse_aux_with_reentrant_checkpointing(model, moe.config)
     total_stages = pp * stages_per_rank
     rank = pp_mesh.get_local_rank()
-    if stages_per_rank > 1:
-        root = _root_mesh(pp_mesh)
-        names = tuple(getattr(root, "mesh_dim_names", None) or ()) if root is not None else ()
-        if "dp" in names:
-            raise ValueError(_MULTI_STAGE_DP)
+    check_multi_stage_dp(pp_mesh, stages_per_rank)
     # The torch schedule's own checks, on placeholder stages: before anything is cut.
     props = validate_schedule(spec, pp_mesh.get_group(), pp, stages_per_rank, n_microbatches, rank)
     _check_schedule(model, spec, props)
