@@ -12,6 +12,7 @@ import io
 import tokenize
 import importlib.util
 import os
+import itertools
 import pathlib
 import re
 import stat
@@ -527,6 +528,10 @@ def repo_remote_code_files(
 
         if is_local_path(model_name):
             root = Path(normalize_path(model_name)).expanduser()
+            # A JSON file path loads as the config itself (AutoConfig reads it): scan beside it, and its auto_map.
+            config_file = root if root.is_file() else None
+            if config_file is not None:
+                root = root.parent
 
             # Walk ALL .py, not just the auto_map entry's static import closure. This is DELIBERATE: the entry can reach a sibling via an absolute import, importlib, or exec, which a relative-import closure misses, so closure-only scanning is a real bypass. A broad scan never under-scans; the cost is that a benign script can over-block, the safe direction for an RCE gate (HIGH stays approvable; only CRITICAL hard-blocks).
             def raise_walk_error(error):
@@ -558,6 +563,13 @@ def repo_remote_code_files(
                     files[str(p.relative_to(root))] = _read_python_source(p)
             # A local config can still point auto_map at an EXTERNAL Hub repo that executes on load, so fetch it; every config that can declare auto_map is checked. The external form is owner/name--module.Class.
             ext_refs = set()
+            if config_file is not None:
+                try:
+                    ext_refs |= _auto_map_refs(
+                        json.loads(config_file.read_text(encoding = "utf-8-sig"))
+                    )
+                except Exception:
+                    pass
             names = list(remote_code_config_paths(load_subdirs))
             for name in names:
                 p = root.joinpath(*pathlib.PurePosixPath(name).parts)
@@ -721,17 +733,22 @@ def external_auto_map_repos(
 
         if is_local_path(model_name):
             root = Path(normalize_path(model_name)).expanduser()
+            # A JSON file target is read as the config itself; the listed configs sit next to it.
+            direct = root if root.is_file() else None
+            if direct is not None:
+                root = root.parent
             cfg_names = list(remote_code_config_paths(load_subdirs))
-            for cfg_name in cfg_names:
-                p = root.joinpath(*pathlib.PurePosixPath(cfg_name).parts)
+            for cfg_name in itertools.chain([None] if direct is not None else [], cfg_names):
+                p = direct if cfg_name is None else root.joinpath(*pathlib.PurePosixPath(cfg_name).parts)
                 if not p.is_file():
                     continue
                 try:
                     cfg = json.loads(p.read_text(encoding = "utf-8-sig"))
                     refs = _auto_map_refs(cfg)
-                    cfg_names.extend(
-                        [n for n in versioned_config_paths(cfg_name, cfg) if n not in cfg_names]
-                    )
+                    if cfg_name is not None:
+                        cfg_names.extend(
+                            [n for n in versioned_config_paths(cfg_name, cfg) if n not in cfg_names]
+                        )
                 except Exception:
                     continue
                 repos.update(repo for repo, _fn in refs if repo)

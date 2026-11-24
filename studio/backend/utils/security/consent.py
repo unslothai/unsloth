@@ -119,9 +119,10 @@ def _is_direct_gguf_file_ref(model_name: str) -> bool:
     if not name.lower().endswith(".gguf"):
         return False
     try:
-        from utils.paths import is_local_path
+        from utils.paths import is_local_path, normalize_path
         if is_local_path(name):
-            return True
+            # A folder named *.gguf is a model folder, auto_map and all.
+            return not os.path.isdir(os.path.expanduser(normalize_path(name)))
     except Exception:
         pass
     # Remote: a file reference is repo_id ("org/name") + filename => >= 2 slashes.
@@ -145,6 +146,13 @@ def _load_remote_code_configs(
         if is_local_path(model_name):
             root = Path(normalize_path(model_name)).expanduser()
             configs = []
+            if root.is_file():
+                # A JSON file path loads as the config itself: AutoConfig reads it and imports its auto_map.
+                try:
+                    configs.append(json.loads(root.read_text(encoding = "utf-8-sig")))
+                except ValueError:
+                    pass
+                root = root.parent
             for name in names:
                 p = root.joinpath(*Path(name).parts)
                 if p.is_file():
