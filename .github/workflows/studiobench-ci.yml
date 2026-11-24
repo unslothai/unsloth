@@ -27,6 +27,8 @@ on:
       # The harness drives the shipped frontend through the real backend.
       - 'studio/frontend/**'
       - 'studio/backend/**'
+      # Backend unit tests are not part of the running Studio this workflow drives.
+      - '!studio/backend/tests/**'
       - 'install.sh'
       - 'pyproject.toml'
       - '.github/actions/install-unsloth-local/action.yml'
@@ -55,6 +57,8 @@ on:
       - 'tests/_shared/**'
       - 'studio/frontend/**'
       - 'studio/backend/**'
+      # Backend unit tests are not part of the running Studio this workflow drives.
+      - '!studio/backend/tests/**'
       - 'install.sh'
       - 'pyproject.toml'
       - '.github/actions/install-unsloth-local/action.yml'
