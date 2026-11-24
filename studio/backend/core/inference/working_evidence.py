@@ -76,6 +76,14 @@ class WorkingEvidence:
         self._with_evidence: dict | None = None
         self._without_evidence: dict | None = None
 
+    def _has_record(self, message: dict) -> bool:
+        if not self.prefix or message.get("role") != "user":
+            return False
+        content = message.get("content")
+        if isinstance(content, str):
+            return self.prefix in content
+        return isinstance(content, list) and {"type": "text", "text": self.prefix} in content
+
     def _place(
         self, conversation: list[dict], prefix: str
     ) -> tuple[list[dict], dict | None, dict | None]:
@@ -84,15 +92,12 @@ class WorkingEvidence:
             content = message.get("content")
             if message is self._with_evidence and self._without_evidence is not None:
                 message = self._without_evidence
-            elif self.prefix and message.get("role") == "user":
-                if isinstance(content, str) and content.endswith(self.prefix):
-                    message = {**message, "content": content[: -len(self.prefix)]}
-                elif (
-                    isinstance(content, list)
-                    and content
-                    and content[-1] == {"type": "text", "text": self.prefix}
-                ):
-                    message = {**message, "content": content[:-1]}
+            elif self._has_record(message):
+                if isinstance(content, str):
+                    message = {**message, "content": content.replace(self.prefix, "", 1)}
+                else:
+                    index = content.index({"type": "text", "text": self.prefix})
+                    message = {**message, "content": content[:index] + content[index + 1 :]}
             candidate.append(message)
         for index in range(len(candidate) - 1, -1, -1):
             if candidate[index].get("role") != "user":
@@ -119,9 +124,7 @@ class WorkingEvidence:
         if latest is None or _text(latest).endswith(self.prefix):
             return conversation, None
         try:
-            present = any(
-                m.get("role") == "user" and _text(m).endswith(self.prefix) for m in conversation
-            )
+            present = any(self._has_record(m) for m in conversation)
             candidate, anchor, original = self._place(conversation, self.prefix)
             if anchor is None:
                 return conversation, None

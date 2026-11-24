@@ -251,3 +251,55 @@ def test_refresh_cannot_reinsert_missing_record_without_room():
     run(state, current, before)
     refreshed, anchor = state.refresh(current, count_prompt = lambda _: 7000, prompt_budget = 6144)
     assert refreshed is current and anchor is None
+
+
+@pytest.mark.parametrize("multimodal", [False, True])
+@pytest.mark.parametrize("operation", ["preserve", "refresh"])
+def test_retry_notice_does_not_duplicate_retained_evidence(multimodal, operation):
+    from core.inference.tool_loop_controller import with_appended_text
+
+    state, current, before = case()
+    if multimodal:
+        current = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": current[0]["content"]},
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}},
+                ],
+            }
+        ]
+    updated, _ = run(state, current, before)
+    note = "\n\nAnswer from the available evidence without calling tools."
+    copied = [{**updated[0], "content": with_appended_text(updated[0]["content"], note)}]
+    snapshot = copy.deepcopy(copied)
+
+    def count(messages):
+        return len(json.dumps(messages))
+
+    if operation == "preserve":
+        record = "merged old and new evidence"
+        clean = with_appended_text(current[0]["content"], note)
+        replacement = "\n\n" + RECORD_HEADER + record + "\n\n"
+        expected = [{"role": "user", "content": with_appended_text(clean, replacement)}]
+        final, anchor = run(
+            state,
+            copied,
+            [*copied, {"role": "tool", "content": "new evidence " * 100}],
+            count_prompt = count,
+            prompt_budget = count(expected),
+            generate = lambda *args: iter([record, {"type": "metadata", "finish_reason": "stop"}]),
+        )
+        assert anchor is not None
+        assert final == expected
+    else:
+        copied.append({"role": "user", "content": "Continue."})
+        snapshot = copy.deepcopy(copied)
+        final, anchor = state.refresh(copied, count_prompt = count, prompt_budget = 1)
+        assert anchor is final[-1]
+        assert final[0]["content"] == with_appended_text(current[0]["content"], note)
+        assert state.summary in str(final[-1]["content"])
+    assert copied == snapshot
+    assert sum(str(m["content"]).count(RECORD_HEADER.splitlines()[0]) for m in final) == 1
+    if multimodal:
+        assert final[0]["content"][1] == current[0]["content"][1]

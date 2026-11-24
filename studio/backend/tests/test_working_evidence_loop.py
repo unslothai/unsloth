@@ -598,3 +598,83 @@ def test_final_respawn_prices_evidence_with_the_continuation_tail(monkeypatch, r
     assert "All findings reported." in "".join(
         e.get("text", "") for e in events if e["type"] == "content"
     )
+
+
+def test_answer_retry_replaces_evidence_before_smaller_window_respawn(monkeypatch):
+    import httpx
+    from core.inference.llama_cpp import _FINAL_ANSWER_RETRY_NUDGE
+
+    payloads = []
+    backend = _make_backend(
+        monkeypatch,
+        [
+            [
+                _tool_call_sse("python", {"code": "print('early')"}, "early"),
+                _finish("tool_calls"),
+                _done(),
+            ],
+            [
+                _tool_call_sse("python", {"code": "print('late')"}, "late"),
+                _finish("tool_calls"),
+                _done(),
+            ],
+            [
+                _tool_call_sse("python", {"code": "print('hidden')"}, "hidden"),
+                _finish("tool_calls"),
+                _done(),
+            ],
+            httpx.ConnectError("server restarted"),
+            [_sse({"content": "Completed."}), _finish("stop"), _done()],
+        ],
+        payloads,
+    )
+    backend._effective_context_length = 8192
+    backend._supports_tools = True
+    monkeypatch.setattr(backend, "_final_pass_call_opener_id", lambda: 123)
+
+    def count(messages, *args, **kwargs):
+        return 500 + sum(len(json.dumps(m)) // 4 for m in messages)
+
+    monkeypatch.setattr(backend, "count_chat_tokens", count)
+
+    def restart():
+        backend._effective_context_length = 4096
+        return True
+
+    monkeypatch.setattr(backend, "_respawn_if_dead", restart)
+    outputs = iter(
+        ["EARLY FINDING: exact exemption.\n" * 500, "LATER FINDING: second exemption.\n" * 200]
+    )
+    monkeypatch.setattr(tools, "execute_tool", lambda *a, **kw: next(outputs))
+    summaries = []
+    old_record = "EARLY FINDING: exact exemption.\n" * 60
+    new_record = "EARLY AND LATER FINDINGS: merged conditions.\n" * 55
+
+    def summary(messages, **kwargs):
+        summaries.append((messages, kwargs))
+        record = old_record if len(summaries) == 1 else new_record
+        assert len(record) // 4 <= kwargs["max_tokens"]
+        yield record
+        yield {"type": "metadata", "finish_reason": "stop", "usage": {"completion_tokens": 600}}
+
+    monkeypatch.setattr(backend, "generate_chat_completion", summary)
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [
+                {"role": "system", "content": "Preserve exact conditions and sources. " * 125},
+                {"role": "user", "content": "List every exemption."},
+            ],
+            tools = [tools.PYTHON_TOOL],
+            max_tokens = None,
+            max_tool_iterations = 2,
+            context_overflow = "truncate_oldest",
+        )
+    )
+    assert len(payloads) == 5
+    assert len(summaries) == 2
+    final = payloads[-1]["messages"]
+    assert _FINAL_ANSWER_RETRY_NUDGE in str(final)
+    assert new_record.strip() in "\n".join(str(m.get("content", "")) for m in final)
+    assert sum(str(m.get("content", "")).count(RECORD_HEADER) for m in final) == 1
+    assert count(final) <= 3072
+    assert "Completed." in "".join(e.get("text", "") for e in events if e["type"] == "content")
