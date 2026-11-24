@@ -754,3 +754,50 @@ def test_the_logger_runs_under_strict_mode(src):
         )
     )
     assert kv["OK"] == "yes"
+
+
+AMD_WMI_SCAN = slice_between(
+    INSTALL_SRC, "                $amdWmiErr = $null\n", "                $healthyAdapters = "
+)
+
+
+@requires_pwsh
+@pytest.mark.parametrize(
+    "beside, source", [(True, "bounded"), (False, "raw")], ids = ["beside-nvidia", "amd-only-host"]
+)
+def test_the_amd_wmi_scan_beside_nvidia_is_bounded(beside, source):
+    kv = _ps_kv(
+        _script(
+            "function Invoke-BoundedVideoControllerScan { [pscustomobject]@{ Ok = $true; Adapters = @([pscustomobject]@{ Name = 'AMD Radeon RX 9070 XT (bounded)' }) } }",
+            "function Get-CimInstance { [pscustomobject]@{ Name = 'AMD Radeon RX 9070 XT (raw)' } }",
+            f"$ProbeAmdBesideNvidia = ${str(beside).lower()}",
+            AMD_WMI_SCAN,
+            'Write-Output "NAME=$($amdAdapters[0].Name)"',
+            'Write-Output "SCANNED=$amdWmiScanned"',
+        )
+    )
+    assert source in kv["NAME"] and kv["SCANNED"] == "True"
+
+
+@requires_pwsh
+def test_a_forced_mixed_host_falls_back_to_a_mapped_peer_when_adapter_0_is_unknown():
+    kv = _ps_kv(
+        _script(
+            COLLECT,
+            INSTALL_HELPERS,
+            INSTALL_WHEEL_MAPS,
+            NAME_ARCH_TABLE,
+            "$_hipAllArches = @(); $_smiGfxTokens = @(); $_asicGfxTokens = @()",
+            "$wmiAmdNames = @('AMD Radeon(TM) Graphics', 'AMD Radeon RX 9070 XT')",
+            _env(UNSLOTH_FORCE_ROCM_TORCH = "1"),
+            "$nvMaskHidesAll = Test-CudaMaskHidesNvidia",
+            "$HasNvidiaSmi = $true; $ProbeAmdBesideNvidia = $true",
+            "$ROCmGfxArch = $null; $AmdHasGpuWheels = $false",
+            "$HasROCm = $false; $HipSdkInstalled = $false; $ROCmGpuLabel = 'AMD Radeon(TM) Graphics'; $ROCmGpuName = 'x'",
+            "$ROCmUnsupportedGfxArch = $null",
+            INSTALL_DECISION,
+            'Write-Output "ROUTE=$MixedHostRoute"',
+            'Write-Output "ARCH=$ROCmGfxArch"',
+        )
+    )
+    assert kv["ROUTE"] == "rocm" and kv["ARCH"] == "gfx1201"

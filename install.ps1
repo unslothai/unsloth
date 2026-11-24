@@ -8884,7 +8884,7 @@ main()
     function Resolve-MixedHostShadowingArch {
         param([AllowNull()][string]$Picked, [AllowNull()][string[]]$Arches)
         $shadowing = @("gfx90c", "gfx1013", "gfx1033", "gfx1035", "gfx1036", "gfx1103", "gfx1153")
-        if (-not $Picked -or $shadowing -notcontains $Picked) { return $Picked }
+        if ($Picked -and $shadowing -notcontains $Picked) { return $Picked }
         foreach ($mask in @($env:HIP_VISIBLE_DEVICES, $env:ROCR_VISIBLE_DEVICES, $env:CUDA_VISIBLE_DEVICES)) {
             if ($null -ne $mask) { return $Picked }
         }
@@ -9201,10 +9201,15 @@ main()
                 # routine on a muxless laptop with a parked dGPU, and there is no healthy peer
                 # to prefer. @() wraps the WHOLE if so a one-element branch stays indexable.
                 $amdWmiErr = $null
-                $amdAdapters = @(Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue -ErrorVariable amdWmiErr |
-                    Where-Object { $_.Name -match "AMD|Radeon" })
+                if ($ProbeAmdBesideNvidia) {
+                    # Beside NVIDIA the bounded, cached scan: a stalled WMI provider must not hang an install that keeps CUDA.
+                    $amdAdapters = @((Invoke-BoundedVideoControllerScan).Adapters | Where-Object { $_.Name -match "AMD|Radeon" })
+                } else {
+                    $amdAdapters = @(Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue -ErrorVariable amdWmiErr |
+                        Where-Object { $_.Name -match "AMD|Radeon" })
+                }
                 # A scan that reported an error may be partial: the peer scan then asks again, as before.
-                $amdWmiScanned = (-not $amdWmiErr)
+                $amdWmiScanned = $ProbeAmdBesideNvidia -or (-not $amdWmiErr)
                 $healthyAdapters = @($amdAdapters | Where-Object {
                     ($null -eq $_.ConfigManagerErrorCode) -or ($_.ConfigManagerErrorCode -eq 0) })
                 $wmiGpu = @(if ($healthyAdapters.Count -gt 0) { $healthyAdapters } else { $amdAdapters })[0]
