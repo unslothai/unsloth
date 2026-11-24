@@ -7009,7 +7009,7 @@ def _strip_tool_xml_for_display(
         # llama-server leaves MiniMax blocks in content when tool_choice is "none".
         seg = _strip_minimax_calls(seg, final = is_last)
         seg = _strip_lfm_calls(seg, final = is_last)
-        seg = _strip_bracket_tag_calls(seg, enabled_tool_names = enabled_tool_names)
+        seg = bracketed = _strip_bracket_tag_calls(seg, enabled_tool_names = enabled_tool_names)
         if is_last:
             seg = _strip_gemma_wrapperless_calls(seg, enabled_tool_names)
         seg = _strip_glm_calls(seg, final = is_last)
@@ -7017,30 +7017,26 @@ def _strip_tool_xml_for_display(
         if is_last:
             # Leftmost wins: a rehearsal the bracket scan kept is an example and shields markup quoted in it (never past
             # its code span), while a real call starting first takes a rehearsal quoted in its arguments with it.
-            spans, si = _code_spans(seg), 0
+            spans, si, unchanged = _code_spans(seg), 0, seg == bracketed
 
             def _next_example(lo):
-                # Searched from the scan position, so prefixes inside a consumed example are never balanced.
+                # (start, end) of the next example from lo; end None marks an unfinished call, which no example follows.
                 nonlocal si
                 m = _SHIELD_REHEARSAL_RE.search(seg, lo)
-                while m is not None:
-                    brace = m.end() - 1
-                    while si < len(spans) and spans[si][1] <= m.start():
-                        si += 1
-                    if si < len(spans) and spans[si][0] <= m.start():
-                        # Balanced within its code span only: the example never reaches past it.
-                        code_end = spans[si][1] - 1
-                        body = _balanced_json_span(seg[brace : code_end + 1], 0)
-                        return m.start(), (code_end if body is None else brace + body) + 1
-                    end = _balanced_json_span(seg, brace)
-                    if end is not None:
-                        return m.start(), end + 1
-                    if not _markerless_promotable(m.group(1), enabled_tool_names):
-                        # An unfinished inactive example is kept to the end, as the old rehearsal arm kept it.
-                        return m.start(), len(seg)
-                    # An unfinished call: the tail pass strips from it to the end, so no example follows.
+                if m is None:
                     return None
-                return None
+                while si < len(spans) and spans[si][1] <= m.start():
+                    si += 1
+                if si < len(spans) and spans[si][0] <= m.start():
+                    # The rest of its code span is quoted too, so the passes below start outside code.
+                    return m.start(), spans[si][1]
+                end = _balanced_json_span(seg, m.end() - 1)
+                if end is not None:
+                    return m.start(), end + 1
+                if not _markerless_promotable(m.group(1), enabled_tool_names):
+                    # An unfinished inactive example is kept to the end, as the old rehearsal arm kept it.
+                    return m.start(), len(seg)
+                return m.start(), None
 
             def _next_call(lo, example):
                 # Ends at the example's end, so an opener quoted in it never scans to EOS; a hit before it is re-matched whole.
@@ -7054,34 +7050,33 @@ def _strip_tool_xml_for_display(
                     lo = call.start() + 1
                 return None
 
-            out, pos, removed, example, kept_tail = [], 0, False, _next_example(0), ""
+            out, pos, removed_len, kept_end, example = [], 0, 0, 0, _next_example(0)
             while True:
                 if example is not None and example[0] < pos:
                     example = _next_example(pos)
-                call = _next_call(pos, example)
-                if call is not None and (example is None or call.start() < example[0]):
+                keep = example if example is not None and example[1] is not None else None
+                call = _next_call(pos, keep)
+                if call is not None and (keep is None or call.start() < keep[0]):
                     out.append(seg[pos : call.start()])
-                    pos, removed = call.end(), True
-                elif example is not None and example[1] == len(seg):
-                    # An example running to the end stays out of the passes below, so a prefix quoted in it cannot cut it.
-                    out.append(seg[pos : example[0]])
-                    kept_tail, pos = seg[example[0] :], len(seg)
-                    break
-                elif example is not None:
-                    out.append(seg[pos : example[1]])
-                    pos = example[1]
+                    removed_len += call.end() - call.start()
+                    pos = call.end()
+                elif keep is not None:
+                    out.append(seg[pos : keep[1]])
+                    pos = keep[1]
+                    kept_end = pos - removed_len
                 else:
                     break
             out.append(seg[pos:])
             seg = "".join(out)
-            if removed:
-                # A removed call can hold a backtick that made a later complete call read as code: rescan without it.
-                seg = _strip_bracket_tag_calls(seg, enabled_tool_names = enabled_tool_names)
-            # Then the truncated rehearsal tail, gated and code-aware as in strip_segment, once outer calls are gone.
-            return (
-                apply_tool_strip_patterns(seg, [_REHEARSAL_TAIL_STRIP_RE], enabled_tool_names)
-                + kept_tail
+            # The truncated rehearsal tail, gated and code-aware as in strip_segment, after the last example only, so a
+            # prefix quoted in an example cannot cut it.
+            seg = seg[:kept_end] + apply_tool_strip_patterns(
+                seg[kept_end:], [_REHEARSAL_TAIL_STRIP_RE], enabled_tool_names
             )
+            if unchanged and not removed_len:
+                return seg
+            # A removed call can hold a backtick that made a later complete call read as code: rescan without it.
+            return _strip_bracket_tag_calls(seg, enabled_tool_names = enabled_tool_names)
         return _TOOL_XML_CLOSED_RE.sub("", seg)
 
     # Mask blocked-call bodies and lone backticked tags (prose) so these passes do not edit them.

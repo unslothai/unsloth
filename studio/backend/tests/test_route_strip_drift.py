@@ -117,6 +117,18 @@ def test_route_strip_is_disabled_when_healing_is_off(route_strip):
             'The log ends at foo[ARGS]{"q":"web_search[ARGS]{. This is incomplete; retry.',
             'The log ends at foo[ARGS]{"q":"web_search[ARGS]{. This is incomplete; retry.',
         ),
+        (
+            '<tool_call>{"name":"search","arguments":{"q":"search[ARGS]{"}}</tool_call>foo[ARGS]{"q":"<tool_call>"} Answer.',
+            'foo[ARGS]{"q":"<tool_call>"} Answer.',
+        ),
+        (
+            "<function=web_search><parameter=query>`</parameter></function>search[ARGS]{} Answer: `42`.",
+            " Answer: `42`.",
+        ),
+        (
+            'foo[ARGS]{} foo[ARGS]{"q":"search[ARGS]{}"} Answer.',
+            'foo[ARGS]{} foo[ARGS]{"q":"search[ARGS]{}"} Answer.',
+        ),
     ],
 )
 def test_route_strip_keeps_rehearsal_and_marker_rules_apart(route_strip, text, expected):
