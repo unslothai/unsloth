@@ -424,8 +424,8 @@ _TRAIN_OWNER = object()
 def install_for_training(device: Any = None, logger: Any = None) -> bool:
     """Diffusion LoRA training reads the same validator-matched tables; it never tunes (a cold shape costs minutes).
 
-    AMD CI, gfx1151, FLUX.2-klein-base-4B LoRA (Studio defaults: nf4, 1024 px, rank 16): 8.41 -> 7.41 s/step with
-    the 43 training shapes in ``rocm_gemm_tables/``, loss within 2e-4 of the default pick, +0.15 GiB peak."""
+    AMD CI, gfx1151, FLUX.2-klein-base-4B LoRA (Studio defaults: nf4, 1024 px, rank 16): 8.34 -> 7.39 s/step with
+    the 39 training shapes in ``rocm_gemm_tables/``, loss within 2e-4 of the default pick, +0.15 GiB peak."""
     ok, why = eligible(device)
     if not ok:
         return False
