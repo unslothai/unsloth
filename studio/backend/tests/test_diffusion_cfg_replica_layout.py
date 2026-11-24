@@ -79,8 +79,7 @@ def test_replica_need_adds_only_a_working_set_over_the_reserve(monkeypatch):
     assert mg.replica_need_mib(small) == weights + 1200 - 1024
 
 
-# Denoiser stand-ins on the meta device: real configs (transformer/config.json), weights the size the Kaggle 2x T4
-# sweep recorded as replica_need_mib on main, at the default request's tokens.
+# Meta-device stand-ins: real configs, weights as recorded on the Kaggle 2x T4 sweep.
 _WAN_5B = dict(
     config = dict(num_attention_heads = 24, attention_head_dim = 128, ffn_dim = 14336, num_layers = 30),
     weights_mib = 9558,
@@ -121,7 +120,6 @@ def test_replica_activation_matches_the_measured_wan_peak():
     wan = _Denoiser(_WAN_5B["config"], 1, torch.float16)
     # Kaggle T4, 1280x704x49 (11440 tokens): replica card peaked 10956 MiB allocated over 9558 of weights
     assert abs(mg.replica_activation_mib(wan, 11440) - (10956 - 9558)) < 100
-    # one branch: linear in tokens, no batch-2 term
     assert mg.replica_activation_mib(wan, 2 * 11440) <= 2 * mg.replica_activation_mib(wan, 11440)
 
 
@@ -130,7 +128,6 @@ def test_replica_need_prices_the_default_request_tokens(monkeypatch):
     activation = mg.replica_activation_mib(wan, 27280)
     assert activation > 3000
     assert mg.replica_need_mib(wan) == 9558 + activation
-    # no default request on record: the 1024px canvas
     monkeypatch.setattr(mg, "_DEFAULT_REQUESTS", mg.weakref.WeakKeyDictionary())
     assert mg.replica_need_mib(wan) == 9558 + mg.replica_activation_mib(wan, 4096)
 
@@ -145,7 +142,6 @@ def test_a_denoiser_without_a_dit_width_keeps_the_weights_only_need(config):
 
 
 def _pair(total, name):
-    # the replay's idle pair: 400 MiB in use on each card
     return [mg.DeviceProbe(o, name, total, total - 400, util_pct = 0.0) for o in (0, 1)]
 
 

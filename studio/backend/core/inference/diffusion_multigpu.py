@@ -1152,8 +1152,7 @@ def _config_int(config: Any, *names: str) -> int:
 
 
 def _replica_tokens(module: Any) -> int:
-    """Tokens per branch of the default request of the pipeline holding ``module``, else the 1024px image canvas
-    (the same figure :func:`replica_layout` prices the step with)."""
+    """Tokens per branch of ``module``'s default request, else the 1024px canvas (as :func:`replica_layout`)."""
     with contextlib.suppress(Exception):
         for pipe, request in list(_DEFAULT_REQUESTS.items()):
             if request.tokens and any(
@@ -1166,10 +1165,7 @@ def _replica_tokens(module: Any) -> int:
 
 
 def replica_activation_mib(module: Any, tokens: Optional[int] = None) -> int:
-    """MiB one guidance branch (batch 1) of ``tokens`` holds in the replica's widest block, over its weights: the
-    per-token activation bound of the ROCm flash probe (``block_activation_bytes``, fused SDPA). Kaggle T4 Wan 2.2 5B
-    fp16 at 11440 tokens: 1408 MiB priced, 1398 MiB measured over the weights. 0 when the config names no DiT width
-    (U-Nets, custom denoisers): the weights-only need stands."""
+    """MiB one batch-1 guidance branch holds in the widest block over the weights; 0 without a DiT width (U-Nets)."""
     try:
         config = getattr(module, "config", None)
         heads = _config_int(config, "num_attention_heads", "num_heads")
@@ -1181,7 +1177,7 @@ def replica_activation_mib(module: Any, tokens: Optional[int] = None) -> int:
         dtype = getattr(module, "dtype", None)
         if not getattr(dtype, "is_floating_point", False):
             dtype = next((p.dtype for p in module.parameters() if p.is_floating_point()), None)
-        # quantized weights still compute in a 16-bit (or promoted fp32) activation dtype: never under 2 bytes
+        # quantized weights still compute in >= 16-bit activations
         elem = max(2, int(getattr(dtype, "itemsize", 2) or 2))
         from .diffusion_attention import block_activation_bytes
 
@@ -1193,8 +1189,7 @@ def replica_activation_mib(module: Any, tokens: Optional[int] = None) -> int:
 
 
 def replica_need_mib(module: Any) -> int:
-    """MiB beyond :func:`_replica_reserve_mib`: weights, one branch's activations at the default request, and the
-    block working set over the reserve."""
+    """MiB beyond :func:`_replica_reserve_mib`: weights, one branch's activations, working set over the reserve."""
     weights = sum(
         t.numel() * t.element_size() for t in (*module.parameters(), *module.buffers())
     ) // (1 << 20)

@@ -1914,8 +1914,7 @@ def _native_sdpa_fused_serves(
 
 
 def block_activation_bytes(hidden: int, inner: int, width: int, elem: int) -> tuple[int, int]:
-    """(bytes per query token, bytes per key token) a DiT block's widest activations hold at once, fused SDPA (no
-    scores): the per-token part of :func:`_rocm_flash_probe_bytes`. ``width`` = the key side's hidden size."""
+    """(per-query, per-key) token bytes of a DiT block's widest activations, fused SDPA; ``width`` = key hidden size."""
     per_query = (11 * int(hidden) + 3 * int(inner)) * int(elem) + 2 * int(inner) * 4
     per_key = (int(width) + 2 * int(inner)) * int(elem)
     return per_query, per_key
