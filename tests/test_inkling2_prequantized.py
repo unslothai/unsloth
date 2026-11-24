@@ -201,3 +201,27 @@ def test_sharded_fill_refuses_a_converted_buffer_before_reading_any_tensor(tmp_p
             model, str(tmp_path), {}, torch.device("cpu"), lambda old, reader, key: None
         )
     assert model.weight.is_meta
+
+
+def _hub_cache(root, repo_id, files):
+    snapshot = root / f"models--{repo_id.replace('/', '--')}" / "snapshots" / ("0" * 40)
+    snapshot.mkdir(parents = True)
+    (root / f"models--{repo_id.replace('/', '--')}" / "refs").mkdir()
+    (root / f"models--{repo_id.replace('/', '--')}" / "refs" / "main").write_text("0" * 40)
+    for name in files:
+        (snapshot / name).write_text("{}")
+
+
+@pytest.mark.parametrize("cached", [False, True])
+def test_inkling2_mini_4bit_offline_keeps_the_cached_original(cached, tmp_path, monkeypatch):
+    # Offline, the pre-quantized repo is used only once it is fully cached; otherwise the requested checkpoint
+    # loads with quantize-on-load, as before the remap.
+    _fake_zoo(monkeypatch, True)
+    _hub_cache(tmp_path, MIRROR, ["config.json", "model.safetensors"])
+    if cached:
+        _hub_cache(tmp_path, PREQUANTIZED, ["config.json", "model.safetensors"])
+    with patch.object(loader_utils, "_get_new_mapper", _no_remote_mapper):
+        mapped = get_model_name(
+            MIRROR, load_in_4bit = True, local_files_only = True, cache_dir = str(tmp_path)
+        )
+    assert mapped == (PREQUANTIZED if cached else MIRROR)
