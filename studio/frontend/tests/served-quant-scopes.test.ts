@@ -40,3 +40,13 @@ test("a settings reload checks the chats of the quant it reloads", () => {
     /touchesOnlySelected\s*\?\s*servedCheckpoint\(loadedNow, modelId, ggufVariant\)/,
   );
 });
+
+const CONTROLS = readSrc("features/api-monitor/components/api-model-load-controls.tsx");
+
+test("the API picker shares Chat's live settings only for the same quant", () => {
+  const resident = CONTROLS.slice(CONTROLS.indexOf("const runtimeIsResident ="));
+  assert.match(
+    resident.slice(0, 400),
+    /!\(runtimeVariant && activeGgufVariant\) \|\|\s*ggufVariantsMatch\(runtimeVariant, activeGgufVariant\)/,
+  );
+});
