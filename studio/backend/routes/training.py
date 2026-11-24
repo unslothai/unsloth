@@ -5305,10 +5305,22 @@ def _materialize_imagefolder_jsonl(entry: dict, dest: Path, cap: int) -> int:
             ],
         )
     )
+    from hub.utils.dataset_cache import resolved_dataset_snapshot_file
+
+    def _in_cache(path: Path) -> Optional[Path]:
+        # Tool sandboxes can write the Hub cache: an entry that leads out of it (a planted link) is skipped.
+        try:
+            return resolved_dataset_snapshot_file(snap, path.relative_to(snap).as_posix())
+        except ValueError:
+            return None
+
     # Map basename -> caption from every jsonl carrying file_name + caption column.
     captions: dict[str, str] = {}
     # read_text on a companion raises and fails the whole import.
     for jf in drop_appledouble_metadata(sorted(snap.rglob("*.jsonl"))):
+        jf = _in_cache(jf)
+        if jf is None:
+            continue
         for line in jf.read_text(encoding = "utf-8").split("\n"):
             line = line.strip()
             if not line:
@@ -5336,8 +5348,11 @@ def _materialize_imagefolder_jsonl(entry: dict, dest: Path, cap: int) -> int:
     for src in images:
         if written >= cap:
             break
+        resolved = _in_cache(src)
+        if resolved is None:
+            continue
         stem = f"img_{written:04d}"
-        shutil.copyfile(src, dest / f"{stem}{src.suffix.lower()}")
+        shutil.copyfile(resolved, dest / f"{stem}{src.suffix.lower()}")
         cap_text = captions.get(src.name)
         if cap_text:
             (dest / f"{stem}.txt").write_text(cap_text.strip(), encoding = "utf-8")
