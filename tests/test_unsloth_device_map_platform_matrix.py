@@ -119,11 +119,13 @@ def _build(
         ),
         "DEVICE_TYPE_TORCH": device_type,
         "is_distributed": lambda: distributed,
+        "unsloth_logging_enabled": lambda: False,
     }
     for node in ast.parse(_SRC).body:
         if isinstance(node, ast.FunctionDef) and node.name in (
             "requested_device_map",
             "resolve_unsloth_device_map",
+            "_placement_report",
             "_as_bytes",
         ):
             exec(ast.get_source_segment(_SRC, node), ns)

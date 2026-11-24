@@ -4,7 +4,8 @@
 """Load-time output a user cannot act on stays out of the default log.
 
 * `import unsloth` on transformers 5 printed `rope_scaling is deprecated`: Unsloth's own
-  rope probe writes the alias on purpose. The probe is quiet, the user's writes are not.
+  rope probe writes the alias on purpose, and so do its own loader writes (a caller's
+  `rope_scaling=` kwarg, automatic context extension). Those are quiet, the user's writes are not.
 * A preinstalled xformers built for another torch (every Kaggle image) printed three
   lines; it is one line now, the fix and the error sit behind UNSLOTH_ENABLE_LOGGING=1.
 * A multi-GPU load printed the planner's whole budget table; it is one line now.
@@ -14,10 +15,13 @@ import ast
 import inspect
 import os
 import re
+import sys
+import types
 import warnings
 from pathlib import Path
 
 import pytest
+import torch
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -28,7 +32,7 @@ def _extract(
     namespace = None,
 ):
     """Exec just the named top-level functions / assignments of a module (no package import)."""
-    tree = ast.parse((ROOT / relative_path).read_text())
+    tree = ast.parse((ROOT / relative_path).read_text(encoding = "utf-8"))
     nodes = []
     for node in tree.body:
         if isinstance(node, ast.FunctionDef) and node.name in names:
@@ -43,6 +47,13 @@ def _extract(
     namespace = {"os": os, "re": re, **(namespace or {})}
     exec(compile(ast.Module(body = nodes, type_ignores = []), str(relative_path), "exec"), namespace)
     return namespace
+
+
+def _logging_helper():
+    """import_fixes' own UNSLOTH_ENABLE_LOGGING parser, read at call time."""
+    return _extract("unsloth/import_fixes.py", "unsloth_logging_enabled", "_UNSLOTH_LOGGING_ON")[
+        "unsloth_logging_enabled"
+    ]
 
 
 # ---------------------------------------------------------------- rope_scaling
@@ -156,6 +167,7 @@ def test_unsloth_version_guard_message_is_kept():
 
 
 _GiB = 1024**3
+_LOGGING_VALUES = ["1", "True", "true"]
 
 
 class _Plan:
@@ -173,23 +185,30 @@ class _OldZooPlan(_Plan):
 
 
 class _FakeCuda:
+    def is_available(self):
+        return True
+
     def device_count(self):
         return 2
+
+    def current_device(self):
+        return 0
 
     def mem_get_info(self, index):
         return (14 * _GiB, 16 * _GiB)
 
 
-def _resolver(plan, monkeypatch):
-    import sys
-    import types
-
-    module = types.ModuleType("unsloth_zoo.device_map_planner")
-    module.plan_device_map_for_pretrained = lambda name, **kwargs: plan
-    monkeypatch.setitem(sys.modules, "unsloth_zoo.device_map_planner", module)
-    ns = _extract(
+def _loader_namespace(
+    planner_module,
+    monkeypatch,
+    *names,
+    extra = None,
+):
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.device_map_planner", planner_module)
+    return _extract(
         "unsloth/models/loader_utils.py",
-        "resolve_unsloth_device_map",
+        *names,
+        "_placement_report",
         "_as_bytes",
         "_SIZE_UNITS",
         "_PLANNED_DEVICE_MAPS",
@@ -197,11 +216,19 @@ def _resolver(plan, monkeypatch):
         "UNSLOTH_BALANCED_DEVICE_MAP",
         namespace = {
             "inspect": inspect,
-            "torch": types.SimpleNamespace(cuda = _FakeCuda()),
+            "torch": types.SimpleNamespace(cuda = _FakeCuda(), device = torch.device),
             "DEVICE_TYPE_TORCH": "cuda",
             "is_distributed": lambda: False,
+            "unsloth_logging_enabled": _logging_helper(),
+            **(extra or {}),
         },
     )
+
+
+def _resolver(plan, monkeypatch):
+    module = types.ModuleType("unsloth_zoo.device_map_planner")
+    module.plan_device_map_for_pretrained = lambda name, **kwargs: plan
+    ns = _loader_namespace(module, monkeypatch, "resolve_unsloth_device_map")
     # The balanced map always splits; "unsloth" would keep a model that fits on one card.
     return lambda: ns["resolve_unsloth_device_map"](ns["UNSLOTH_BALANCED_DEVICE_MAP"], "some/model")
 
@@ -215,8 +242,9 @@ def test_placement_is_one_line_by_default(monkeypatch, capsys):
         assert detail not in out
 
 
-def test_placement_full_table_with_logging(monkeypatch, capsys):
-    monkeypatch.setenv("UNSLOTH_ENABLE_LOGGING", "1")
+@pytest.mark.parametrize("value", _LOGGING_VALUES)
+def test_placement_full_table_with_logging(value, monkeypatch, capsys):
+    monkeypatch.setenv("UNSLOTH_ENABLE_LOGGING", value)
     _resolver(_Plan(), monkeypatch)()
     assert capsys.readouterr().out.strip() == _Plan().describe()
 
@@ -227,11 +255,74 @@ def test_placement_older_zoo_keeps_its_table(monkeypatch, capsys):
     assert capsys.readouterr().out.strip() == _Plan().describe()
 
 
-def test_loader_prints_the_summary_not_the_table():
-    source = (ROOT / "unsloth/models/loader_utils.py").read_text()
-    assert "print(plan.describe())" not in source
-    assert "print(plan.device_plan.describe())" not in source
-    assert source.count("else summary())") == 2
+class _BlockSwapPlan:
+    layers = 4
+    offload_embedding = False
+
+    def __init__(self, device_plan):
+        self.device_plan = device_plan
+
+    def describe(self):
+        return "block swap: 4 of 32 decoder layers (3.00 GiB) stay in host RAM\n" + (
+            self.device_plan.describe()
+        )
+
+
+def _block_swap(plan, monkeypatch):
+    module = types.ModuleType("unsloth_zoo.device_map_planner")
+    module.plan_block_swap = lambda name, **kwargs: plan
+    package = types.ModuleType("_quiet_block_swap_pkg")
+    package.__path__ = []
+    utils = types.ModuleType("_quiet_block_swap_pkg._utils")
+    utils.usable_cuda_bytes = lambda device: 14 * _GiB
+    utils.auto_plan_depth = lambda depth: depth
+    monkeypatch.setitem(sys.modules, "_quiet_block_swap_pkg", package)
+    monkeypatch.setitem(sys.modules, "_quiet_block_swap_pkg._utils", utils)
+    ns = _loader_namespace(
+        module,
+        monkeypatch,
+        "resolve_auto_block_swap",
+        "_BLOCK_SWAP_PLANNER_KEYS",
+        extra = {
+            "__name__": "_quiet_block_swap_pkg.loader_utils",
+            "__package__": "_quiet_block_swap_pkg",
+        },
+    )
+    return ns["resolve_auto_block_swap"]("unsloth", "some/model", max_seq_length = 2048)
+
+
+def test_block_swap_placement_is_one_line_by_default(monkeypatch, capsys):
+    monkeypatch.delenv("UNSLOTH_ENABLE_LOGGING", raising = False)
+    layers, device_map, _embedding = _block_swap(_BlockSwapPlan(_Plan()), monkeypatch)
+    assert (layers, device_map) == (4, _Plan.device_map)
+    lines = capsys.readouterr().out.strip().splitlines()
+    assert lines == [
+        "Unsloth: offload_layers = 'auto': 4 of 32 decoder layers (3.00 GiB) stay in host RAM",
+        _Plan().summary(),
+    ]
+
+
+@pytest.mark.parametrize("value", _LOGGING_VALUES)
+def test_block_swap_full_table_with_logging(value, monkeypatch, capsys):
+    monkeypatch.setenv("UNSLOTH_ENABLE_LOGGING", value)
+    _block_swap(_BlockSwapPlan(_Plan()), monkeypatch)
+    out = capsys.readouterr().out
+    assert _Plan().describe() in out and _Plan().summary() not in out
+
+
+def test_block_swap_older_zoo_keeps_its_table(monkeypatch, capsys):
+    monkeypatch.delenv("UNSLOTH_ENABLE_LOGGING", raising = False)
+    _block_swap(_BlockSwapPlan(_OldZooPlan()), monkeypatch)
+    assert _Plan().describe() in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "value, enabled",
+    [("1", True), ("True", True), ("true", True), ("0", False), ("yes", False), ("", False)],
+)
+def test_logging_helper_matches_unsloth_parser(value, enabled, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_ENABLE_LOGGING", value)
+    assert _logging_helper()() is enabled
 
 
 # ---------------------------------------------------------------- chat template without generation prompt

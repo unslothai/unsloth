@@ -35,12 +35,17 @@ import functools
 import inspect
 import types
 
+# Values of UNSLOTH_ENABLE_LOGGING that turn verbose output on, everywhere in Unsloth.
+_UNSLOTH_LOGGING_ON = ("1", "True", "true")
+
+
+def unsloth_logging_enabled():
+    """UNSLOTH_ENABLE_LOGGING read now (the module constant below is read once at import)."""
+    return os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") in _UNSLOTH_LOGGING_ON
+
+
 # We cannot do from unsloth_zoo.log import logger since FBGEMM might cause seg faults.
-UNSLOTH_ENABLE_LOGGING = os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") in (
-    "1",
-    "True",
-    "true",
-)
+UNSLOTH_ENABLE_LOGGING = unsloth_logging_enabled()
 logger = logging.getLogger(__name__)
 if UNSLOTH_ENABLE_LOGGING:
     logging.basicConfig(level = logging.INFO, format = "[%(name)s|%(levelname)s]%(message)s")
