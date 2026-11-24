@@ -404,7 +404,14 @@ def test_completion_drops_without_a_template_keep_the_template_advice():
     assert "context length" not in str(exc.value)
 
 
-def test_batch_trains_through_sft_trainer_and_saves_checkpoints(monkeypatch, tmp_path):
+@pytest.mark.parametrize(
+    "limit, kept",
+    [
+        ({}, ["checkpoint-4", "checkpoint-6"]),
+        ({"save_total_limit": 0}, ["checkpoint-2", "checkpoint-4", "checkpoint-6"]),
+    ],
+)
+def test_batch_trains_through_sft_trainer_and_saves_checkpoints(monkeypatch, tmp_path, limit, kept):
     from trl import SFTTrainer
 
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
@@ -416,7 +423,7 @@ def test_batch_trains_through_sft_trainer_and_saves_checkpoints(monkeypatch, tmp
         return built[-1]
 
     monkeypatch.setattr(mlt, "_build_sft_trainer", spy)
-    events, model, pristine = _run(monkeypatch, MEMBERS[:2], save_steps = 2)
+    events, model, pristine = _run(monkeypatch, MEMBERS[:2], save_steps = 2, **limit)
     assert isinstance(built[0], SFTTrainer) and built[0].state.global_step == 6
     found = {}
     for m in MEMBERS[:2]:
@@ -426,10 +433,7 @@ def test_batch_trains_through_sft_trainer_and_saves_checkpoints(monkeypatch, tmp
         final = load_file(os.path.join(out, "adapter_model.safetensors"))
         for key, value in load_file(last).items():
             torch.testing.assert_close(value, final[key], atol = 0, rtol = 0)
-    assert found == {
-        "job_a": ["checkpoint-2"],
-        "job_b": ["checkpoint-2", "checkpoint-4", "checkpoint-6"],
-    }
+    assert found == {"job_a": ["checkpoint-2"], "job_b": kept}
 
 
 def test_gradients_are_clipped_per_member_every_step(monkeypatch, tmp_path):

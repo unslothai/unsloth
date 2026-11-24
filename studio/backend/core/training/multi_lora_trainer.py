@@ -10,6 +10,7 @@ import copy
 import math
 import os
 import queue
+import shutil
 import time
 import traceback
 import types
@@ -785,6 +786,18 @@ def _collate(rows: list, slots: list, pad_id: int) -> dict:
     }
 
 
+def _prune_checkpoints(output_dir: str, limit) -> None:
+    if not limit or limit <= 0:
+        return
+    steps = sorted(
+        int(p.name.removeprefix("checkpoint-"))
+        for p in Path(output_dir).glob("checkpoint-*")
+        if p.is_dir() and not p.is_symlink() and p.name.removeprefix("checkpoint-").isdigit()
+    )
+    for step in steps[:-limit]:
+        shutil.rmtree(os.path.join(output_dir, f"checkpoint-{step}"), ignore_errors = True)
+
+
 def _unique_output_dir(config: dict, model_name: str, taken: set) -> str:
     from utils.paths import resolve_output_dir
     from utils.training_runs import build_default_output_dir_name
@@ -1423,6 +1436,7 @@ def _build_sft_trainer(
             name = f"checkpoint-{self.state.global_step}"
             for member in self.round:
                 export(member, os.path.join(member.output_dir, name))
+                _prune_checkpoints(member.output_dir, self.args.save_total_limit)
 
         def progress(self, member, loss, grad_norm, elapsed, lr) -> None:
             _send(

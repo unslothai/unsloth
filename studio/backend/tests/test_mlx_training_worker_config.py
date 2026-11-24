@@ -827,17 +827,13 @@ class _UnsizedStream:
         raise TypeError("a stream has no length")
 
 
-@pytest.mark.parametrize("embedding_lr_value", [5e-6, None])
-@pytest.mark.parametrize("dataset_streaming", [True, False])
-def test_mlx_trainer_config_follows_streaming_and_embedding_lr(
-    dataset_streaming, embedding_lr_value
-):
+def _exec_trainer_config(dataset_streaming, embedding_lr_value, config = None, fields = None):
     block = compile(ast.Module(body = _trainer_config_block(), type_ignores = []), "<cfg>", "exec")
     configs, schedules = [], []
     namespace = dict(vars(_worker))
     namespace.update(
         {
-            "config": {},
+            "config": config or {},
             "dataset": _UnsizedStream() if dataset_streaming else [0] * 7,
             "dataset_streaming": dataset_streaming,
             "embedding_lr_value": embedding_lr_value,
@@ -847,7 +843,7 @@ def test_mlx_trainer_config_follows_streaming_and_embedding_lr(
                 "MLXTrainingConfig",
                 (),
                 {
-                    "__dataclass_fields__": {"dataset_order": None},
+                    "__dataclass_fields__": fields or {"dataset_order": None},
                     "__init__": lambda self, **kw: configs.append(kw),
                 },
             ),
@@ -885,11 +881,28 @@ def test_mlx_trainer_config_follows_streaming_and_embedding_lr(
         }
     )
     exec(block, namespace)
+    return configs, schedules
+
+
+@pytest.mark.parametrize("embedding_lr_value", [5e-6, None])
+@pytest.mark.parametrize("dataset_streaming", [True, False])
+def test_mlx_trainer_config_follows_streaming_and_embedding_lr(
+    dataset_streaming, embedding_lr_value
+):
+    configs, schedules = _exec_trainer_config(dataset_streaming, embedding_lr_value)
 
     assert configs[0]["streaming"] is dataset_streaming
     assert configs[0]["dataset_order"] == ("sequential" if dataset_streaming else "torch_randperm")
     assert configs[0].get("embedding_learning_rate") == embedding_lr_value
     assert schedules[0][2] == (None if dataset_streaming else 7)
+
+
+@pytest.mark.parametrize(
+    "config, expected", [({}, 2), ({"save_total_limit": 5}, 5), ({"save_total_limit": 0}, 0)]
+)
+def test_mlx_trainer_config_forwards_checkpoint_limit(config, expected):
+    configs, _ = _exec_trainer_config(False, None, config, {"save_total_limit": None})
+    assert configs[0]["save_total_limit"] == expected
 
 
 def test_mlx_slice_reads_a_stream_lazily():

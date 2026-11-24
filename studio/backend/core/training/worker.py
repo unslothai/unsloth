@@ -4027,6 +4027,8 @@ def _run_mlx_training(
         mlx_config_kwargs["dataset_order"] = "sequential" if dataset_streaming else "torch_randperm"
     if "max_grad_leaf_norm" in _supported_fields:
         mlx_config_kwargs["max_grad_leaf_norm"] = max_grad_leaf_norm
+    if "save_total_limit" in _supported_fields:
+        mlx_config_kwargs["save_total_limit"] = int(config.get("save_total_limit", 2) or 0)
     if "report_grad_norm" in _supported_fields:
         # Grad norm is free under global-norm clipping; switching clip modes would change loss.
         mlx_config_kwargs["report_grad_norm"] = True
