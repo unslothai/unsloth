@@ -745,7 +745,9 @@ def test_managed_tool_fit_counts_template_and_tools_with_a_window_sized_cap():
     payload.max_tokens = engine.context
     messages = [
         {"role": role, "content": str(i)}
-        for i, role in enumerate(("user", "assistant", "user", "assistant", "user", "assistant", "user"))
+        for i, role in enumerate(
+            ("user", "assistant", "user", "assistant", "user", "assistant", "user")
+        )
     ]
     fit = _message_fitter(payload, engine, "m", tools)
     fitted, cap, line = asyncio.run(fit(messages))
@@ -863,7 +865,9 @@ def test_tokenize_receives_the_effort_inside_the_template_kwargs(monkeypatch):
 def test_managed_overflow_reports_the_window_without_copying_engine_details(message):
     from routes import inference as api
 
-    error = api._openai_passthrough_error(400, json.dumps({"error": {"message": message + " /private/path"}}))
+    error = api._openai_passthrough_error(
+        400, json.dumps({"error": {"message": message + " /private/path"}})
+    )
     assert error.status_code == 400
     detail = error.detail["error"]
     assert detail["code"] == "context_length_exceeded"
