@@ -11690,9 +11690,16 @@ class DiffusionBackend:
                             None
                             if native_scheme is not None or native_offload_scheme is not None
                             else pipeline_quant_uncompilable
-                        ) or dense_quant_blocker(
-                            pipe,
-                            allow_float16 = native_scheme is not None and fp16_card_int8_host(target),
+                        ) or (
+                            # The hosted read already is this build: nothing dense is left to quantise.
+                            None
+                            if hosted_native_scheme is not None
+                            and hosted_native_scheme == native_scheme
+                            else dense_quant_blocker(
+                                pipe,
+                                allow_float16 = native_scheme is not None
+                                and fp16_card_int8_host(target),
+                            )
                         )
                         if pipeline_quant_blocker is not None:
                             logger.info(
