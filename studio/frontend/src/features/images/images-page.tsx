@@ -4797,7 +4797,7 @@ export function ImagesPage({
     if (modelLinkedFromOutside(wanted)) {
       const linked = { model: wanted, quant: routeSearch?.quant, ggufQuant: routeSearch?.ggufQuant };
       void navigateSelf({ to: "/images", search: {}, replace: true });
-      confirmLinkedModel(wanted, () => void navigateSelf({ to: "/images", search: linked }));
+      confirmLinkedModel(wanted, () => void navigateSelf({ to: "/images", search: linked, replace: true }));
       return;
     }
     // A Download only arrival owns nothing and must leave a staging load its claim.
