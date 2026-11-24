@@ -174,7 +174,7 @@ async function ejectChatRow(entry: LoadedModelEntry): Promise<EjectOutcome> {
   const decision = await confirmStopRunningChatsIfNeeded(
     "Unloading this model",
     "unloadOne",
-    entry.name,
+    entry.label ?? entry.name,
   );
   if (!decision.proceed) return { status: "declined" };
   const { unloadedAliases, stillResident, replacedBy } = await ejectChatModel(
