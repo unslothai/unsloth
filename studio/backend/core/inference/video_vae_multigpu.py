@@ -17,6 +17,7 @@ import contextlib
 import functools
 import hashlib
 import inspect
+import math
 import os
 import textwrap
 import threading
@@ -28,10 +29,14 @@ ENV = "UNSLOTH_VIDEO_VAE_MULTIGPU"
 _ATTR = "_unsloth_vae_multigpu"
 # ast.unparse of AutoencoderKLWan.tiled_decode's body without its docstring (diffusers 0.42.1 and 0.43.0).
 _KNOWN_BODIES = frozenset({"3b78672ea534d444"})
-# Partner-card working memory above the copy's weights for one 256 x 256 px tile over every frame (fp32 Wan 2.2 VAE
-# measured 1.4 - 1.5 GiB on a T4, plus slack); scaled by tile area for wider tiles.
-_WORKING_MIB = 1792
-_WORKING_TILE_PX = 256 * 256
+# Partner-card memory the split takes (allocator reserved, which is what the card loses): the copy's weights plus a
+# fixed part plus a part per tile pixel, times a margin. Fitted on Kaggle 2x T4 (Wan 2.2 TI2V 5B, fp16 decode,
+# 1280x704x49, 1629 MiB of VAE weights), reserved peak above the split's start: 256x256 tiles 2656 MiB, 704x496
+# 6370 MiB (allocated 2422 / 5307 MiB); 704x704 allocated 6371 MiB (its reserved peak sat on cache the render had
+# already reserved), which the line predicts at 8288 MiB reserved.
+_WORKING_FIXED_MIB = 169
+_WORKING_MIB_PER_TILE_PX = 3714 / 283648  # (6370 - 2656) MiB over (704 * 496 - 256 * 256) px
+_NEED_MARGIN = 1.25
 
 
 def enabled() -> bool:
@@ -224,7 +229,8 @@ def need_mib(vae: Any) -> int:
     tile_px = int(getattr(vae, "tile_sample_min_height", 256)) * int(
         getattr(vae, "tile_sample_min_width", 256)
     )
-    return _module_mib(vae) + max(1024, _WORKING_MIB * tile_px // _WORKING_TILE_PX)
+    working = _WORKING_FIXED_MIB + _WORKING_MIB_PER_TILE_PX * tile_px
+    return int(math.ceil(_NEED_MARGIN * (_module_mib(vae) + working)))
 
 
 def _cuda_autocast_state() -> tuple:

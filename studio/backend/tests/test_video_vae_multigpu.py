@@ -153,10 +153,10 @@ def test_partner_free_memory_counts_reusable_cache_and_the_need_scales_with_the_
     vae = _vae()
     vae.tile_sample_min_height = vae.tile_sample_min_width = 256
     base = vm.need_mib(vae)
-    vae.tile_sample_min_height = vae.tile_sample_min_width = (
-        512  # wide tiles: four times the working set
-    )
-    assert vm.need_mib(vae) - base == 3 * vm._WORKING_MIB
+    vae.tile_sample_min_height = vae.tile_sample_min_width = 512  # wide tiles: more working memory
+    grown = vm.need_mib(vae) - base
+    want = vm._NEED_MARGIN * vm._WORKING_MIB_PER_TILE_PX * (512 * 512 - 256 * 256)
+    assert abs(grown - want) <= 1
 
 
 def test_a_copy_holding_tensors_on_another_card_is_detected():
@@ -598,3 +598,42 @@ def test_a_lost_context_in_the_cleanup_replaces_an_ordinary_split_failure(monkey
     monkeypatch.setattr(vm, "_cleanup", lambda *a, **k: ValueError("cleanup"))
     with torch.no_grad(), pytest.raises(ValueError, match = "cleanup"):
         vm.split_tiled_decode(vae, z, torch.device("cpu"))
+
+
+# Kaggle 2x T4, Wan 2.2 TI2V 5B (1629 MiB of VAE weights), 1280x704x49: the partner's measured peak above the split's
+# start per tile size, (reserved, allocated) MiB; 704x704's reserved peak was not separable (render 1 had cache).
+_WAN_WEIGHTS_MIB = 1629
+_MEASURED_PEAKS = {(256, 256): (2656, 2422), (704, 496): (6370, 5307), (704, 704): (None, 6371)}
+
+
+def _wan_sized(monkeypatch, h, w):
+    vae = types.SimpleNamespace(tile_sample_min_height = h, tile_sample_min_width = w)
+    monkeypatch.setattr(vm, "_module_mib", lambda module: _WAN_WEIGHTS_MIB)
+    return vae
+
+
+@pytest.mark.parametrize("tile", sorted(_MEASURED_PEAKS))
+def test_the_split_estimate_covers_every_measured_partner_peak(monkeypatch, tile):
+    reserved, allocated = _MEASURED_PEAKS[tile]
+    need = vm.need_mib(_wan_sized(monkeypatch, *tile))
+    assert need >= 1.15 * allocated
+    if reserved is not None:
+        assert need >= 1.15 * reserved
+
+
+def test_a_12_gib_partner_admits_the_704x496_split_and_a_smaller_one_does_not(monkeypatch):
+    # The 12 GiB-capped T4 partner read 11664 - 11696 MiB free at the decode (1024 MiB kept free).
+    import core.inference.diffusion_memory as dm
+
+    monkeypatch.setattr(dm, "_user_budget_reserve_mib", lambda base: 0)
+    need = vm.need_mib(_wan_sized(monkeypatch, 704, 496))
+    vae, z, state = _fake_cuda_split(monkeypatch, 11664, 12288, need)
+    monkeypatch.setattr(vm, "split_tiled_decode", lambda *a, **k: "decoded")
+    assert vm._try_split(vae, z, state, None) == ("decoded", "split")
+    # an 8 GiB card (about 7600 MiB free) keeps its reserve and is refused
+    vae, z, state = _fake_cuda_split(monkeypatch, 7600, 8192, need)
+    dec, why = vm._try_split(vae, z, state, None)
+    assert dec is None and "kept free" in why
+    # the busy partner of the uncapped run (a CFG copy on it: 5185 MiB free) is refused too
+    vae, z, state = _fake_cuda_split(monkeypatch, 5185, 15360, need)
+    assert vm._try_split(vae, z, state, None)[0] is None
