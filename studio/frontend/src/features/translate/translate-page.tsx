@@ -820,8 +820,7 @@ function pickedModelName(id: string): string {
   return name.replace(/-GGUF$/i, "");
 }
 
-// Memoized: the page renders on every source keystroke and streamed frame, and this menu
-// holds the hidden model picker, which renders all of its rows.
+// Memoized: the page re-renders per keystroke/streamed frame and the picker renders every row.
 const ModelMenu = memo(function ModelMenu({
   value,
   custom,
