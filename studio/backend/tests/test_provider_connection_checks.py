@@ -319,6 +319,28 @@ def test_a_saved_key_stays_pinned_to_the_saved_base_url(monkeypatch, tmp_path):
     assert providers_route._bind_saved_provider_target(payload).base_url == "http://a.example/v1"
 
 
+def test_editing_a_saved_custom_row_tests_the_draft_api_format(mock_http, monkeypatch, tmp_path):
+    _saved_row(monkeypatch, tmp_path, has_key = True)
+    mock_http.state["handler"] = lambda request: (
+        httpx.Response(200, json = {"data": [{"id": "m"}]})
+        if request.url.path.endswith("/models")
+        else httpx.Response(404, json = {"error": {"message": "no such route"}})
+    )
+    result = _test(
+        ProviderTestRequest(
+            provider_type = "custom", provider_id = "row", api_type = "responses", model_id = "m"
+        )
+    )
+    assert not result.success
+    assert any(request.url.path.endswith("/responses") for request in mock_http)
+    assert all(request.url.host == "a.example" for request in mock_http)
+
+    mock_http.clear()
+    result = _test(ProviderTestRequest(provider_type = "custom", provider_id = "row", model_id = "m"))
+    assert result.success
+    assert not any(request.url.path.endswith("/responses") for request in mock_http)
+
+
 def test_base_url_validation_runs_off_the_event_loop(mock_http, monkeypatch):
     threads = []
 
