@@ -30,10 +30,29 @@ from utils import process_lifetime  # noqa: E402
 
 def test_runtime_fallback_armed_without_tensor_parallel():
     src = inspect.getsource(LlamaCppBackend.load_model)
-    m = re.search(r"_mtp_active_for_launched_server = bool\(([^)]*)\)", src)
-    assert m, "load_model must record whether the launched server runs MTP"
-    assert m.group(1).strip() == "_spec_requested_mtp"
+    m = re.search(
+        r"_mtp_active_for_launched_server = bool\(\s*([^)]*?)\s*\)", src, re.DOTALL
+    )
+    assert m, "load_model must record whether the launched server runs a draft speculative mode"
+    armed = re.sub(r"\s+", " ", m.group(1)).strip()
+    assert "_spec_requested_mtp" in armed
+    assert "_spec_requested_dspark" in armed
+    assert "_spec_requested_dflash" in armed
+    assert "_spec_requested_eagle3" in armed
     assert "self._mtp_runtime_fallback_active = _mtp_active_for_launched_server" in src
+
+
+def test_dspark_mid_generation_crash_reloads_without_speculation(monkeypatch):
+    b = _armed_backend(_DeadProcess())
+    b._speculative_type = "draft-dspark"
+    loads = []
+    monkeypatch.setattr(b, "load_model", lambda intent: loads.append(intent) or True)
+    assert b._maybe_recover_from_mtp_crash(RuntimeError("connection reset")) is True
+    deadline = time.monotonic() + 5
+    while (not loads or b._mtp_runtime_fallback_in_progress) and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert loads and loads[0].speculative_type == "off"
+    assert b._spec_fallback_reason == "runtime_error"
 
 
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason = "PDEATHSIG is Linux-only")

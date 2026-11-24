@@ -449,6 +449,8 @@ function specFallbackMessage({
   switch (reason) {
     case "mla_mtp_disabled":
       return "MTP is disabled by default for this model architecture because it currently runs slower than standard decoding. Choose MTP in the model picker to force it.";
+    case "vulkan_inkling_dspark":
+      return "DSpark is off by default for Inkling on Vulkan because it can crash mid-generation on this path. Auto is using n-gram speculative decoding instead. Choose DSpark in Settings to force it.";
     case "mtp_partial_offload":
       // Not the default copy: this build supports MTP, and a Manual layer count is the user's choice.
       return "With MTP on, part of this model would have to run on the CPU, where MTP's extra state costs more than the drafting wins back, so Auto turned it off for this load. Give the GPU room for every layer to get it back, or choose MTP in Settings to force it.";
