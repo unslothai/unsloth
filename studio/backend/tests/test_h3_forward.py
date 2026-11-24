@@ -164,8 +164,7 @@ def test_cache_only_inside_a_render_and_keyed_on_the_conditioning(monkeypatch):
 
 @needs_mirror
 def test_text_rows_recorded_by_a_cuda_graph_never_come_from_the_cache(monkeypatch):
-    # A recording graph that served the render's cached rows would bake storage the render drops on exit; one that
-    # stored its own rows would leave graph-pool memory in the cache. Capture computes the rows and leaves the cache.
+    # capture computes rows itself and leaves the cache untouched
     monkeypatch.delenv(h3f.REFINER_CACHE_ENV, raising = False)
     m = _model()
     h3f.install_h3_forward(m)

@@ -980,8 +980,7 @@ def test_gguf_qwen_edit_streamed_render_matches_stock(monkeypatch, policy, top, 
 
 @pytest.mark.parametrize("mid_capture", [False, True])
 def test_uninstall_drops_recorded_graphs_before_their_buffers(mid_capture):
-    """A graph recorded with the stand-ins replays reads of the per-layout buffers: an uninstall (an unsupported call
-    mid-session) must drop the pipe's graphs before those buffers are freed, and after a capture it ran inside ends."""
+    """Uninstall resets the pipe's graphs before freeing the buffers they read, deferred past an active capture."""
     import gc
     import weakref
 

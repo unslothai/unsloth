@@ -67,7 +67,6 @@ def _compiling() -> bool:
 
 
 def _capturing() -> bool:
-    """True while a CUDA graph records on this thread's stream (False on CPU builds and under dynamo)."""
     import torch
     try:
         return bool(torch.cuda.is_available() and torch.cuda.is_current_stream_capturing())

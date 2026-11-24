@@ -971,7 +971,7 @@ def uninstall(
                 continue
             if target is not None and str(target) not in ("cpu", "meta"):
                 orig.to(target)
-        # The per-layout buffers are what recorded CUDA graphs read: they outlive every graph of the pipe.
+        # recorded CUDA graphs read these buffers: they must outlive every graph of the pipe
         held = (dict(st.layouts), dict(st.rows))
         pipe = st.pipe_ref() if st.pipe_ref is not None else None
         st.rows.clear()
@@ -984,8 +984,7 @@ def uninstall(
 
 
 def _drop_graphs_then_free(pipe: Any, held: tuple, torch: Any) -> None:
-    """Graphs recorded with the stand-ins replay their reads of ``held``: drop them before the buffers go (now, or
-    once the capture this runs inside ends); without a pipe to reset, the buffers stay held."""
+    """Reset graphs reading ``held`` before freeing it (deferred past an active capture); no pipe = keep held."""
     if pipe is None:
         _ORPHANED.append(held)
         return
@@ -1009,7 +1008,6 @@ def _drop_graphs_then_free(pipe: Any, held: tuple, torch: Any) -> None:
         drop()
 
 
-# Buffers removed with no pipe to reset graphs on: kept for the process (a few MiB per layout, rare path).
 _ORPHANED: list = []
 
 
