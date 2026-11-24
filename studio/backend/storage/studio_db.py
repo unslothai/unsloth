@@ -4034,6 +4034,13 @@ _GENERATION_TERMINAL_STATUSES = {"cancelled", "completed", "failed"}
 _GENERATION_STATUS_RANK = {"queued": 0, "running": 1, "cancelling": 2}
 
 
+def _equals_stored_json(value, stored_json: str) -> bool:
+    # Writers store default json.dumps, so equal strings mean equal values; else compare key-order-blind.
+    return json.dumps(value) == stored_json or json.dumps(value, sort_keys = True) == json.dumps(
+        json.loads(stored_json), sort_keys = True
+    )
+
+
 def _safe_generation_assistant_update(
     conn: sqlite3.Connection, thread_id: str, message: dict
 ) -> bool:
@@ -4057,20 +4064,8 @@ def _safe_generation_assistant_update(
     if int(message.get("createdAt", row["created_at"])) != int(row["created_at"]):
         return False
 
-    # Writers store default json.dumps, so equal strings mean equal values.
-    incoming_attachments = message.get("attachments")
-    if row["attachments_json"]:
-        attachments_match = json.dumps(incoming_attachments) == row["attachments_json"]
-    else:
-        attachments_match = incoming_attachments is None
-    if not attachments_match:
-        stored_attachments = (
-            json.loads(row["attachments_json"]) if row["attachments_json"] else None
-        )
-        if json.dumps(incoming_attachments, sort_keys = True) != json.dumps(
-            stored_attachments, sort_keys = True
-        ):
-            return False
+    if not _equals_stored_json(message.get("attachments"), row["attachments_json"] or "null"):
+        return False
 
     incoming = message.get("metadata")
     stored = json.loads(row["metadata_json"]) if row["metadata_json"] else {}
@@ -4092,13 +4087,10 @@ def _safe_generation_assistant_update(
         or incoming_seq > int(row["last_event_seq"])
     ):
         return False
-    if incoming_seq == stored_seq:
-        incoming_content = message.get("content", [])
-        stored_content_json = row["content_json"] or "[]"
-        if json.dumps(incoming_content) != stored_content_json and json.dumps(
-            incoming_content, sort_keys = True
-        ) != json.dumps(json.loads(stored_content_json), sort_keys = True):
-            return False
+    if incoming_seq == stored_seq and not _equals_stored_json(
+        message.get("content", []), row["content_json"] or "[]"
+    ):
+        return False
 
     # A settled terminal row is immutable; an old tab must not overwrite finish metadata.
     if stored.get("generationSettled") is True:
