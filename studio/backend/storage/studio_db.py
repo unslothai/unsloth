@@ -4610,6 +4610,7 @@ def upsert_chat_message(
             )
         deleted_parents = _deleted_chat_message_parents(conn, message["threadId"], [message])
         if message["id"] in deleted_parents:
+            conn.commit()
             raise ChatMessageProtectedError("deleted chat messages cannot be restored")
         message = _with_surviving_parent(message, deleted_parents)
         if allow_generation_edit:
@@ -4700,7 +4701,8 @@ def _deleted_chat_message_parents(
     ).fetchall()
     deleted = {str(row["message_id"]): row["parent_id"] for row in rows}
     deleted_user_ids = {str(row["message_id"]) for row in rows if row["role"] == "user"}
-    # A reply to a deleted user turn goes with it, as on delete; stored rows are server-managed survivors.
+    # A reply to a deleted user turn goes with it, as on delete, and is tombstoned so later saves of its
+    # continuations still resolve; stored rows are server-managed survivors.
     late_replies = [
         m
         for m in incoming
@@ -4713,9 +4715,13 @@ def _deleted_chat_message_parents(
                 "SELECT id FROM chat_messages WHERE thread_id = ?", (thread_id,)
             )
         }
-        deleted.update(
-            {str(m["id"]): m["parentId"] for m in late_replies if str(m["id"]) not in stored}
+        late = {str(m["id"]): m["parentId"] for m in late_replies if str(m["id"]) not in stored}
+        conn.executemany(
+            "INSERT OR IGNORE INTO chat_message_tombstones (thread_id, message_id, parent_id, role) "
+            "VALUES (?, ?, ?, 'assistant')",
+            [(thread_id, message_id, parent_id) for message_id, parent_id in late.items()],
         )
+        deleted.update(late)
     return deleted
 
 

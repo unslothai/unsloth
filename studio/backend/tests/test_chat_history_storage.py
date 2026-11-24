@@ -555,7 +555,10 @@ def test_a_late_reply_to_a_deleted_turn_is_dropped(tmp_path, monkeypatch):
     assert parents == {"u1": None, "a1": "u1", "u3": "a1"}
     with pytest.raises(studio_db.ChatMessageProtectedError):
         studio_db.upsert_chat_message(_turn("a2b", "u2", 6))
-    assert [m["id"] for m in studio_db.list_chat_messages("thread-1")] == ["u1", "a1", "u3"]
+    studio_db.upsert_chat_message(_turn("u3", "a2", 5))
+    studio_db.upsert_chat_message(_turn("u4", "a2b", 7))
+    parents = {m["id"]: m["parentId"] for m in studio_db.list_chat_messages("thread-1")}
+    assert parents == {"u1": None, "a1": "u1", "u3": "a1", "u4": "a1"}
 
 
 def test_a_recreated_thread_can_reuse_deleted_message_ids(tmp_path, monkeypatch):
