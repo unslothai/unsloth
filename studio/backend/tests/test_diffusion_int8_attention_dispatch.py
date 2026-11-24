@@ -1098,8 +1098,8 @@ def test_cuda_compiled_and_graphed_dispatch_call(monkeypatch):
 def test_auto_list_matches_the_measured_families():
     """Qwen-Image-2.1, Wan 2.2, Z-Image-Turbo, MOSS-Image, HunyuanVideo-1.5, FLUX.3 (strided processors) and Krea 2
     (mask-free valid key prefix) race by default; LTX-2 (audio output) and Qwen-Image have a per-step error with the
-    kernel above their shipped INT8 weight error, and FLUX.1 / FLUX.2 images move above the default-path LPIPS bar,
-    so they route only on request."""
+    kernel above their shipped INT8 weight error, and FLUX.1 / FLUX.2 LPIPS exceeds the kernel-swap floor, so they
+    route only on request."""
     assert D.AUTO_DITS == {
         "Flux3Transformer2DModel",
         "Krea2Transformer2DModel",

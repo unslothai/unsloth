@@ -86,8 +86,7 @@ _BF = torch.bfloat16
 # measured: kernel per-step error within the family's INT8 weights' and faster on the card (the race decides per card)
 RACED = ("HunyuanVideo15Transformer3DModel",)
 SPEED_UNSET = ()
-# routed on request only: under Auto, LPIPS against the kernel off was above the 0.02 default-path bar on L4
-# (FLUX.1 schnell 0.107 mean / 0.204 max, FLUX.2 klein 4B 0.037 / 0.081)
+# routed on request only: INT8 LPIPS above the kernel-swap floor (see AUTO_DITS)
 REQUEST_ONLY = ("FluxTransformer2DModel", "Flux2Transformer2DModel")
 
 
@@ -299,7 +298,7 @@ def test_the_measured_families_are_listed():
             and name not in D.SPEED_UNSET_DITS
             and name not in D.AUTO_CUDA_ONLY
         )
-        assert name in I.SINK_DITS  # a request still runs the attention-sink path
+        assert name in I.SINK_DITS
     assert (
         "HunyuanVideo15Transformer3DModel" not in D.SPEED_UNSET_DITS
     )  # video: speed profile only, as Wan
@@ -375,8 +374,7 @@ def test_a_triton_stand_in_keeps_the_incumbent_unless_requested(card, monkeypatc
 
 @pytest.mark.parametrize("name", REQUEST_ONLY)
 def test_flux1_flux2_route_on_request_only(card, monkeypatch, name):
-    """FLUX.1 / FLUX.2: the unset switch races nothing (speed profile or not); a request routes every module on the
-    attention-sink kernel path."""
+    """FLUX.1 / FLUX.2: unset races nothing; a request routes every module on the sink path."""
     seen = _fake_cuda(monkeypatch, found = {"ok": True, "min_tokens": 0})
     dit, kw = _build(name)
     assert D.install(_Pipe(dit), _TARGET) == 0
