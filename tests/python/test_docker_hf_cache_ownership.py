@@ -103,6 +103,12 @@ def test_a_model_root_downloaded_into_a_host_owned_cache_is_handed_to_the_host_u
     os.chown(hf_home, 1000, 1000)
     outside = tmp_path / "outside"
     entries = _download_as_root(hf_home / "hub", outside)
+    shared = hf_home / "hub" / "shared"
+    shared.mkdir()
+    os.chown(shared, 1000, 2000)
+    os.chmod(shared, 0o2750)
+    (shared / "blob").write_text("{}")
+    os.chmod(shared / "blob", 0o640)
     bindir = tmp_path / "bin"
     bindir.mkdir()
 
@@ -113,6 +119,9 @@ def test_a_model_root_downloaded_into_a_host_owned_cache_is_handed_to_the_host_u
     assert [str(p) for p in entries if not _handed_over(p, 1000)] == []
     assert os.lstat(hf_home).st_gid == 1000
     assert os.lstat(hf_home / "hub" / "models--x" / "blobs" / "f01.incomplete").st_uid == 0
+    shared = hf_home / "hub" / "shared"
+    assert (os.lstat(shared).st_gid, os.lstat(shared / "blob").st_gid) == (2000, 2000)
+    assert os.lstat(shared / "blob").st_mode & 0o060 == 0o060
     st = os.stat(outside)
     assert (st.st_uid, stat.S_IMODE(st.st_mode)) == (0, 0o600)
 
@@ -158,7 +167,7 @@ def test_root_written_entries_go_to_the_cache_owner_and_stay_group_root_usable(
 
     _boot(entrypoint, tmp_path, hf_home, bindir, lambda: len(_logged(calls)) >= len(entries))
 
-    owner = f"{os.getuid()}:0"
+    owner = f"{os.getuid()}:-1"
     logged = _logged(calls)
     assert {str(p) for p in entries} == set(logged), sorted(logged)
     assert {who for who, _ in logged.values()} == {owner}

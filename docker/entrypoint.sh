@@ -53,8 +53,8 @@ select_cuda_jit_tools() {
 select_cuda_jit_tools || true
 
 # Studio and JupyterLab run as root, so hand what they download into a host-owned HF cache mount back to its owner.
-# Group root + g+rwX keeps them usable by Studio's tool sandbox (uid 0, no capabilities, umask 077), which shares
-# this cache writable: hence descriptor-relative no-follow updates and no multi-link files, so it cannot redirect them.
+# The entry keeps its group (root, or a setgid cache's) with rwX, so Studio's tool sandbox (uid 0, no capabilities,
+# umask 077) can still use it; that sandbox writes this cache, hence fd-relative no-follow updates and no hardlinks.
 hf_cache_uid="$(stat -c '%u' "${HF_HOME:-}" 2>/dev/null || true)"
 if [[ "$(id -u)" == 0 && -n "${hf_cache_uid}" && "${hf_cache_uid}" != 0 ]] && command -v python3 >/dev/null 2>&1; then
     while :; do
@@ -70,7 +70,7 @@ def hand_over(name, dfd):
     if st.st_uid != src:
         return
     if stat.S_ISLNK(st.st_mode):
-        os.chown(name, uid, 0, dir_fd = dfd, follow_symlinks = False)
+        os.chown(name, uid, -1, dir_fd = dfd, follow_symlinks = False)
         return
     fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd = dfd)
     try:
@@ -79,7 +79,7 @@ def hand_over(name, dfd):
         if st.st_uid != src or not (is_dir or (stat.S_ISREG(st.st_mode) and st.st_nlink == 1)):
             return
         mode = stat.S_IMODE(st.st_mode) | (0o070 if is_dir or st.st_mode & 0o111 else 0o060)
-        os.fchown(fd, uid, 0)
+        os.fchown(fd, uid, -1)
         os.fchmod(fd, mode if is_dir else mode & ~0o6000)
     finally:
         os.close(fd)
