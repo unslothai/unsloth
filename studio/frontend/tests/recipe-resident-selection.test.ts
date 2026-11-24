@@ -3,7 +3,10 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { isOllamaModelId } from "../src/features/hub/lib/model-identity.ts";
+import {
+  isOllamaModelId,
+  withoutNamedQuant,
+} from "../src/features/hub/lib/model-identity.ts";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 
 type Selection = { target: string; ggufVariant: string; aliases: string[] };
@@ -30,7 +33,7 @@ const { isLocalModelAlreadyLoaded } = loadWithStubs<{
   ),
   {
     "@/features/chat": chat,
-    "@/features/hub/lib/model-identity": { isOllamaModelId },
+    "@/features/hub/lib/model-identity": { isOllamaModelId, withoutNamedQuant },
     "@/features/chat/presets/preset-policy": {},
     "@/config/env": {},
     "@/features/model-picker": {},
@@ -81,4 +84,17 @@ test("only a name that disagrees and is an Ollama one costs a request", async ()
   assert.deepEqual(chat.validated, []);
   assert.equal(await loaded("/models/mistral.gguf", true), false);
   assert.deepEqual(chat.validated, []);
+});
+
+test("the primary of two loaded quants is loaded under its repo name", async () => {
+  const repo = "unsloth/SmolLM2-135M-Instruct-GGUF";
+  // biome-ignore lint/style/useNamingConvention: api schema
+  chat.status = { model_identifier: `${repo}:Q4_K_M`, gguf_variant: "Q4_K_M" };
+  chat.validated = [];
+  const selection = { target: repo, ggufVariant: "Q4_K_M", aliases: [] };
+  assert.equal(await isLocalModelAlreadyLoaded(selection), true);
+  assert.equal(
+    await isLocalModelAlreadyLoaded({ ...selection, ggufVariant: "Q8_0" }),
+    false,
+  );
 });

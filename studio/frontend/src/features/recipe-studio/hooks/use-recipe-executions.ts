@@ -11,7 +11,7 @@ import {
 } from "@/features/chat";
 import { unpinnedLoadContext } from "@/features/chat/presets/preset-policy";
 // eslint-disable-next-line no-restricted-imports -- Avoid the hub barrel's React and download-manager exports.
-import { isOllamaModelId } from "@/features/hub/lib/model-identity";
+import { isOllamaModelId, withoutNamedQuant } from "@/features/hub/lib/model-identity";
 import { DEFAULT_MAX_SEQ_LENGTH, isServedByMlx } from "@/features/model-picker";
 import { createLoadingToastIcon, toast } from "@/lib/toast";
 import { toastError } from "@/shared/toast";
@@ -289,7 +289,10 @@ export async function isLocalModelAlreadyLoaded(
       !(await localSelectionMatchesResident({
         target,
         ggufVariant,
-        activeModel: status.model_identifier ?? status.active_model,
+        activeModel: withoutNamedQuant(
+          status.model_identifier ?? status.active_model ?? "",
+          status.gguf_variant,
+        ),
         activeVariant: status.gguf_variant?.trim() ?? "",
       }))
     ) {
