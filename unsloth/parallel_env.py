@@ -257,6 +257,15 @@ def translate(spec, environ = None):
         others = [f"{k}={v}" for k, v in sizes.items() if v > 1] + (
             ["fsdp=1"] if spec.get("fsdp") else []
         )
+        # The inherited legacy variables too: only the spec was checked, so an exported UNSLOTH_FSDP2=1 would
+        # shard (and sync rank 0's values into) every rank's own expert slices.
+        for key in ("tp", "pp", "cp", "fsdp"):
+            if key in spec:
+                continue  # the spec value is checked above; a disagreeing variable is refused below
+            current = _legacy_value(key, environ)
+            if current is None or current is False or (key in _SIZE_KEYS and current == 1):
+                continue
+            others.append(f"{_LEGACY[key]}={environ.get(_LEGACY[key])}")
         if others:
             raise ValueError(
                 f'Unsloth: {FLAG}="{given}": expert parallel (ep) cannot be combined with {", ".join(others)} yet.'
