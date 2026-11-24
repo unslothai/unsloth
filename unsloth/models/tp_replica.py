@@ -161,7 +161,8 @@ def _merge_workspace(items):
     """Peak GPU bytes to merge one CPU-staged 4-bit projection (save.py _merge_lora)."""
     peak = 0
     for p, _ in items:
-        if not tpn._is_dtensor(p):
+        # Expert stacks are gathered (in _workspace), never merged as a Linear4bit projection.
+        if not tpn._is_dtensor(p) and p._unsloth_tp_layout[0] != tpn.EXPERT_STACK:
             numel = p.data.numel() * p.data.element_size() * 2 * p._unsloth_tp_layout[3]
             peak = max(peak, _bytes(p) + numel * (2 + 4 + 4))
     return max(_workspace(items), peak)
@@ -296,8 +297,6 @@ def _full_expert_params4bit(weight, base, group, device, keep, tp):
     )
     full.module = base
     full._original_shape = shape
-    if device.type == "cpu" and weight.device.type != "cpu":
-        full._unsloth_tp_stage_device = weight.device
     return full
 
 

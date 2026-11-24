@@ -40,16 +40,20 @@ STACKS = ("gate_up_proj", "down_proj")
 TEXT = {"moe_intermediate_size": 64, "head_dim": 32, "swa_head_dim": 32}
 
 
-def _q4(value, module):
+def _q4(
+    value,
+    module,
+    blocksize = 64,
+):
     """A stacked expert tensor as zoo's Bnb4bitQuantize patch leaves it (nf4, double quantized)."""
     import bitsandbytes as bnb
 
     data, state = bnb.functional.quantize_4bit(
-        value.detach().contiguous(), blocksize = 64, compress_statistics = True, quant_type = "nf4"
+        value.detach().contiguous(), blocksize = blocksize, compress_statistics = True, quant_type = "nf4"
     )
     new = torch.Tensor._make_subclass(bnb.nn.Params4bit, data, False)
     new.quant_state = state
-    new.blocksize = 64
+    new.blocksize = blocksize
     new.compress_statistics = True
     new.quant_type = "nf4"
     new.quant_storage = torch.uint8
@@ -157,6 +161,10 @@ def _case_sharded(rank, world, tmp, loop):
     }
 
 
+# Per-stack blocksize of the on-load quantization, and a hook run after every tensor the load sets.
+_ON_LOAD = {"blocksize": {}, "hook": None}
+
+
 def _quantize_stacks_on_load():
     """Wrap set_param_for_module: a stacked 3-D expert tensor is quantized right after it is set (zoo's patch)."""
     from transformers import core_model_loading as loading
@@ -170,13 +178,20 @@ def _quantize_stacks_on_load():
             module = model.get_submodule(path)
             p = module._parameters[name]
             if p.dim() == 3 and type(p).__name__ != "Params4bit":
-                module._parameters[name] = _q4(p, module)
+                blocksize = _ON_LOAD["blocksize"].get(name, 64)
+                module._parameters[name] = _q4(p, module, blocksize)
+        if _ON_LOAD["hook"] is not None:
+            _ON_LOAD["hook"](model, target_name)
 
     loading.set_param_for_module = set_param
     return original
 
 
-def _load_4bit(ckpt):
+def _load_4bit(
+    ckpt,
+    skip_modules = None,
+    **kwargs,
+):
     from transformers import AutoModelForImageTextToText, BitsAndBytesConfig
 
     model = AutoModelForImageTextToText.from_pretrained(
@@ -186,10 +201,12 @@ def _load_4bit(ckpt):
             bnb_4bit_quant_type = "nf4",
             bnb_4bit_use_double_quant = True,
             bnb_4bit_compute_dtype = torch.float32,
+            llm_int8_skip_modules = skip_modules,
         ),
         dtype = torch.float32,
         attn_implementation = "eager",
         device_map = {"": "cpu"},
+        **kwargs,
     )
     _patch_experts_forward(model)
     return model
@@ -279,10 +296,196 @@ def _case_on_load(rank, world, tmp, loop):
     }
 
 
-def _worker(rank, world, port, tmp, case, kwargs):
+def _setup(rank, tmp):
+    """(tp_native, tp mesh, the saved Mini fake, a batch) with the on-load stack quantization installed."""
+    import torch.distributed as dist
+    from torch.distributed.device_mesh import init_device_mesh
+
+    tpn = ink._load("tp_native")
+    mesh = init_device_mesh("cpu", (dist.get_world_size(),), mesh_dim_names = ("tp",))["tp"]
+    ckpt = os.path.join(tmp, "ckpt")
+    if rank == 0:
+        source = ink.build(True, lora = False, text_overrides = TEXT)
+        source.generation_config.pad_token_id = None
+        source.save_pretrained(ckpt, safe_serialization = True)
+    dist.barrier()
+    _quantize_stacks_on_load()
+    return tpn, mesh, ckpt, ink.batch()
+
+
+def _apply_and_run(
+    tpn,
+    model,
+    mesh,
+    ids,
+    labels,
+    forward = True,
+):
+    """(MoE blocks sharded, apply error, one forward's loss)."""
+    try:
+        tpn.apply_tensor_parallel(model, mesh)
+        moe = tpn._unwrap(model).__dict__["_unsloth_tp_plan"].sharded_moe
+    except Exception as exc:
+        return None, f"{type(exc).__name__}: {exc}"[:400], None
+    if not forward:
+        return moe, None, None
+    with torch.no_grad():
+        loss = float(model(input_ids = ids, labels = labels, use_cache = False).loss)
+    return moe, None, loss
+
+
+def _case_ineligible(rank, world, tmp):
+    """Blocks apply keeps replicated must stay whole through the sharded load (both stacks, or neither)."""
+    from transformers.models.inkling2_loop import modeling_inkling2_loop as mod
+
+    tpn, mesh, ckpt, (ids, labels) = _setup(rank, tmp)
+    out = {}
+
+    def run(label, forward = True):
+        with tpn.sharded_loading(mesh):
+            model = _load_4bit(ckpt)
+        stacks = model.__dict__["_unsloth_tp_load_stats"]["sharded_expert_stacks"]
+        out[label] = (stacks,) + _apply_and_run(tpn, _lora(model), mesh, ids, labels, forward)
+
+    # down_proj in 128-wide blocks: its 64-wide rows are not whole blocks, gate_up_proj's are.
+    _ON_LOAD["blocksize"] = {"down_proj": 128}
+    try:
+        run("down_proj_blocks")
+    finally:
+        _ON_LOAD["blocksize"] = {}
+    # A structural refusal of apply (swapped expert LoRA factors).
+    mod.Inkling2LoopExperts._unsloth_expert_lora_factors_swapped = True
+    try:
+        run("swapped")
+    finally:
+        del mod.Inkling2LoopExperts._unsloth_expert_lora_factors_swapped
+
+    # The experts module declares 8 experts; the stacks hold 4.
+    def declare(model, target_name):
+        if target_name.endswith(STACKS):
+            model.get_submodule(target_name.rpartition(".")[0]).num_experts = 8
+
+    _ON_LOAD["hook"] = declare
+    try:
+        run("num_experts", forward = False)
+    finally:
+        _ON_LOAD["hook"] = None
+    return out
+
+
+def _case_refusals(
+    rank,
+    world,
+    tmp,
+    only = None,
+):
+    """A refused apply changes nothing (the model stays as loaded and a later apply succeeds). `only`: run just
+    that refusal."""
+    tpn, mesh, ckpt, (ids, labels) = _setup(rank, tmp)
+    with tpn.sharded_loading(mesh):
+        model = _load_4bit(ckpt)
+    model = _lora(model)
+    tag = tpn._EXPERT_PRELOAD
+    out = {"tp4": tpn.expert_shard_problem(tpn.derive_tp_plan(model, 2).moe_blocks[0], 4)}
+    layout = lambda: {
+        n: (id(p), type(p).__name__, tuple(p.shape)) for n, p in model.named_parameters()
+    }  # noqa: E731
+    before = layout()
+
+    def refused(label):
+        if only not in (None, label):
+            return
+        try:
+            tpn.apply_tensor_parallel(model, mesh)
+            message = None
+        except ValueError as exc:
+            message = str(exc)
+        out[label] = (message, layout() == before, tpn.is_tensor_parallel(model))
+
+    stacks = [p for e in _experts(model) for p in e._parameters.values() if getattr(p, tag, None)]
+    tags = [getattr(p, tag) for p in stacks]
+    for p, t in zip(stacks, tags):  # preloaded over the ranks in the other order
+        setattr(p, tag, t[:2] + (tuple(reversed(t[2])),))
+    refused("ranks")
+    for p, t in zip(stacks, tags):
+        setattr(p, tag, t)
+    os.environ["UNSLOTH_TP_MOE_SHARD"] = "0"
+    try:
+        refused("moe_off")
+    finally:
+        del os.environ["UNSLOTH_TP_MOE_SHARD"]
+    embed = model.get_input_embeddings().weight
+    setattr(embed, tag, tags[0])  # an expert-preloaded tensor outside every MoE block of the plan
+    refused("stray")
+    delattr(embed, tag)
+    out["retry"] = _apply_and_run(tpn, model, mesh, ids, labels)
+
+    # Expert stacks preloaded, every projection 16-bit: a weight-dependent LoRA init is still refused.
+    with tpn.sharded_loading(mesh):
+        model = _load_4bit(ckpt, skip_modules = [".*"])
+    stats = model.__dict__["_unsloth_tp_load_stats"]
+    model = _lora(model)
+    for config in model.peft_config.values():
+        config.init_lora_weights = "pissa"
+    out["pissa"] = (stats["sharded_weights"], stats["sharded_expert_stacks"]) + _apply_and_run(
+        tpn, model, mesh, ids, labels, forward = False
+    )
+    return out
+
+
+def _case_nested(rank, world, tmp):
+    """The sharded load touches only its own model: not a from_pretrained nested in it, and stacked
+    sharded_loading contexts shard once."""
+    from transformers import AutoModelForImageTextToText
+
+    tpn, mesh, ckpt, (ids, labels) = _setup(rank, tmp)
+    out = {}
+    nested = {}
+
+    def load_inside(model, target_name):
+        if not nested:
+            nested["busy"] = True
+            nested["model"] = AutoModelForImageTextToText.from_pretrained(
+                ckpt, dtype = torch.float32, device_map = {"": "cpu"}
+            )
+
+    _ON_LOAD["hook"] = load_inside
+    try:
+        with tpn.sharded_loading(mesh):
+            model = _load_4bit(ckpt)
+    finally:
+        _ON_LOAD["hook"] = None
+    inner = nested["model"]
+    out["inner"] = (
+        sorted(
+            {tuple(e._parameters[n].quant_state.shape)[0] for e in _experts(inner) for n in STACKS}
+        ),
+        sum("_unsloth_tp_load_guard" in m.__dict__ for m in inner.modules()),
+    )
+    stats = model.__dict__["_unsloth_tp_load_stats"]
+    out["outer"] = (stats["sharded_weights"], stats["sharded_expert_stacks"])
+    try:
+        with tpn.sharded_loading(mesh):
+            with tpn.sharded_loading(mesh):
+                model = _load_4bit(ckpt)
+        stats = model.__dict__["_unsloth_tp_load_stats"]
+        out["stacked"] = (
+            stats["sharded_weights"],
+            stats["sharded_expert_stacks"],
+        ) + _apply_and_run(tpn, _lora(model), mesh, ids, labels)
+    except Exception as exc:
+        out["stacked"] = f"{type(exc).__name__}: {exc}"[:400]
+    try:
+        with tpn.sharded_loading(mesh):
+            _load_4bit(ckpt, tp_plan = "auto")
+        out["tp_plan"] = None
+    except Exception as exc:
+        out["tp_plan"] = f"{type(exc).__name__}: {exc}"[:400]
+    return out
+
+
+def _worker(rank, world, tmp, case, kwargs):
     os.environ.update(
-        MASTER_ADDR = "127.0.0.1",
-        MASTER_PORT = str(port),
         RANK = str(rank),
         WORLD_SIZE = str(world),
         LOCAL_RANK = str(rank),
@@ -293,8 +496,12 @@ def _worker(rank, world, port, tmp, case, kwargs):
     import torch.distributed as dist
 
     torch.set_num_threads(2)
-    dist.init_process_group(
-        "gloo", rank = rank, world_size = world, timeout = datetime.timedelta(seconds = 300)
+    dist.init_process_group(  # a file rendezvous: no port to lose to another process
+        "gloo",
+        store = dist.FileStore(os.path.join(tmp, "rendezvous"), world),
+        rank = rank,
+        world_size = world,
+        timeout = datetime.timedelta(seconds = 300),
     )
     try:
         res = globals()[case](rank, world, tmp, **kwargs)
@@ -310,14 +517,10 @@ def _spawn(
     world = 2,
     **kwargs,
 ):
-    from tests._rendezvous_port import free_port
-
     ctx = multiprocessing.get_context("spawn")
-    port = free_port()
     with tempfile.TemporaryDirectory() as tmp:
         procs = [
-            ctx.Process(target = _worker, args = (r, world, port, tmp, case, kwargs))
-            for r in range(world)
+            ctx.Process(target = _worker, args = (r, world, tmp, case, kwargs)) for r in range(world)
         ]
         for p in procs:
             p.start()
@@ -365,3 +568,62 @@ def test_tp_quantize_on_load_keeps_rank_shards():
         assert r["compared"] > 0 and not r["diffs"], r["diffs"][:5]
         assert r["moe_sharded"] == 12
         assert r["tp"]["losses"] == r["ref"]["losses"]
+
+
+def test_on_load_keeps_unshardable_experts_whole():
+    results = _spawn("_case_ineligible")
+    assert all(r is not None and "error" not in r for r in results), results
+    for r in results:
+        for label in ("down_proj_blocks", "swapped", "num_experts"):
+            stacks, moe, error, loss = r[label]
+            # Neither stack of any block cut at load; apply keeps the experts replicated.
+            assert error is None and stacks == 0 and moe == 0, (label, r[label])
+        for label in ("down_proj_blocks", "swapped"):
+            assert r[label][3] == r[label][3], (label, r[label])  # a finite forward
+
+
+def test_refused_apply_leaves_the_model_retryable():
+    results = _spawn("_case_refusals")
+    assert all(r is not None and "error" not in r for r in results), results
+    for r in results:
+        assert r["tp4"] is not None  # a tp 2 preload is not shardable over tp 4
+        for label, match in (
+            ("ranks", "(experts, tp, ranks)"),
+            ("moe_off", "UNSLOTH_TP_MOE_SHARD=0"),
+            ("stray", "not in this tensor parallel plan"),
+        ):
+            message, unchanged, applied = r[label]
+            assert message is not None and match in message, (label, message)
+            assert unchanged and not applied, (label, r[label])
+        moe, error, loss = r["retry"]
+        assert error is None and moe == 12 and loss == loss, r["retry"]
+        weights, stacks, moe, error, _ = r["pissa"]
+        assert weights == 0 and stacks == 24, r["pissa"]
+        assert error is not None and "init_lora_weights" in error, r["pissa"]
+
+
+def test_sharded_load_touches_only_its_own_model():
+    results = _spawn("_case_nested")
+    assert all(r is not None and "error" not in r for r in results), results
+    for r in results:
+        assert r["inner"] == ([4], 0), r["inner"]  # the nested load: whole stacks, no guards
+        assert r["outer"][1] == 24, r["outer"]
+        assert isinstance(r["stacked"], tuple), r["stacked"]
+        weights, stacks, moe, error, loss = r["stacked"]
+        assert (weights, stacks) == r["outer"] and error is None and moe == 12 and loss == loss, r[
+            "stacked"
+        ]
+        assert r["tp_plan"] is not None and "tp_plan" in r["tp_plan"], r["tp_plan"]
+
+
+def test_export_staging_charges_no_merge_for_expert_stacks():
+    from types import SimpleNamespace
+
+    tpn = ink._load("tp_native")
+    rep = ink._load("tp_replica")
+    stack = torch.zeros(4096, 1, dtype = torch.uint8)
+    stack._unsloth_tp_layout = (tpn.EXPERT_STACK, (8,), 0, 2)
+    stack.quant_state = SimpleNamespace(absmax = torch.zeros(128))
+    items = [(stack, None)]
+    # Gathered (3 x the whole stack), never dequantized and merged like a Linear4bit projection.
+    assert rep._merge_workspace(items) == rep._workspace(items) == 3 * rep._bytes(stack)
