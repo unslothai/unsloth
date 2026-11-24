@@ -4842,8 +4842,8 @@ def _auto_offline_keeps_cached_seed(
 ) -> bool:
     """An offline AUTO load whose dense DiT shards are not cached keeps the cached hosted ``scheme`` checkpoint.
 
-    The dense shards count as cached in any repo the load reads them from: ``base``, its resolved fetch repo (an
-    unsloth mirror, ``_video_fetch_repo``) and ``fetch_repos`` (the load's own ``fetch_base``).
+    The dense shards count only in the repo assembly reads: the selection ``_video_fetch_repo`` makes for ``base``
+    (upstream or its unsloth mirror, by cached completeness) and ``fetch_repos`` (the load's own ``fetch_base``).
 
     Installs where an older auto staged only the hosted int8 DiT still load offline. Cache reads only, never raises."""
     try:
@@ -4853,12 +4853,8 @@ def _auto_offline_keeps_cached_seed(
             return False
         from core.inference.diffusion import DiffusionBackend
 
-        from .diffusion_families import mirror_repo
-
         dense_repos = []
-        # The mirror counts only where this load may read from it.
-        mirror = None if _video_no_mirror() else mirror_repo(base)
-        for candidate in (base, *fetch_repos, _video_fetch_repo(base, hf_token), mirror):
+        for candidate in (*fetch_repos, _video_fetch_repo(base, hf_token) or base):
             if candidate and candidate not in dense_repos:
                 dense_repos.append(candidate)
         if any(DiffusionBackend._released_transformer_cached(r) for r in dense_repos):

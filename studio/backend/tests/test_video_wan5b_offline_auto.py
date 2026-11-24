@@ -33,6 +33,9 @@ from .test_video_quantised_offload import _spoof
 
 REPO = "Wan-AI/Wan2.2-TI2V-5B-Diffusers"
 MIRROR = "unsloth/Wan2.2-TI2V-5B-FP8"
+_REAL_VIDEO_FETCH_REPO = __import__(
+    "core.inference.video", fromlist = ["_video_fetch_repo"]
+)._video_fetch_repo
 
 
 @pytest.fixture(autouse = True)
@@ -146,6 +149,31 @@ def test_offline_dense_cached_under_resolved_repo_auto_keeps_bf16(monkeypatch):
 def test_offline_no_mirror_dense_only_in_mirror_falls_back_to_int8(monkeypatch):
     # UNSLOTH_DIFFUSION_NO_MIRROR=1: dense shards cached only in the mirror are unusable, so the cached int8 loads.
     monkeypatch.setenv("UNSLOTH_DIFFUSION_NO_MIRROR", "1")
+    spy = _spoof(monkeypatch, tier_gib = 48)
+    _cache(monkeypatch, int8 = True, dense = {MIRROR})
+    _assemble(monkeypatch, dense = False, offline = True)
+    result = VideoBackend().load_pipeline(REPO, local_files_only = True, transformer_quant = "auto")
+    assert result["loaded"] and result["transformer_quant"] == "int8"
+    assert spy.seeded == ["int8"]
+
+
+@pytest.mark.usefixtures("fake_runtime")
+def test_offline_dense_only_in_unselected_mirror_falls_back_to_int8(monkeypatch):
+    # Upstream companions cached without a transformer, the dense transformer only in the mirror: _video_fetch_repo
+    # assembles from the more complete upstream, which has no dense weights, so the cached int8 loads.
+    import core.inference.video as V
+
+    monkeypatch.setattr(V, "_video_fetch_repo", _REAL_VIDEO_FETCH_REPO)
+    monkeypatch.setattr(V, "_is_gated_video_upstream", lambda repo_id: False)
+    monkeypatch.setattr(
+        V,
+        "_video_cached_completeness_detail",
+        lambda repo, **k: (4, False) if repo == REPO else (-1, False),
+    )
+    monkeypatch.setattr(
+        V, "_video_cached_completeness", lambda repo, **k: 1 if repo == MIRROR else -1
+    )
+    assert V._video_fetch_repo(REPO) == REPO
     spy = _spoof(monkeypatch, tier_gib = 48)
     _cache(monkeypatch, int8 = True, dense = {MIRROR})
     _assemble(monkeypatch, dense = False, offline = True)
