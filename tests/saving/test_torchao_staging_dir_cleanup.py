@@ -66,22 +66,28 @@ def test_torchao_staging_is_cleaned_without_touching_the_user_directory(
     monkeypatch.setattr(
         transformers, "AutoModelForCausalLM", SimpleNamespace(from_pretrained = reload)
     )
+
     def save_tokenizer(*args, **kwargs):
         pass
 
     tokenizer = SimpleNamespace(save_pretrained = save_tokenizer, push_to_hub = save_tokenizer)
     monkeypatch.setattr(
-        transformers, "AutoTokenizer",
+        transformers,
+        "AutoTokenizer",
         SimpleNamespace(from_pretrained = lambda path: tokenizer),
     )
     monkeypatch.setattr(save_mod, "sync_load_when_quantizing", lambda *args: nullcontext())
     monkeypatch.setattr(save_mod, "importlib_version", lambda *args: "0.0.0")
     monkeypatch.setattr(save_mod, "_offload_model_for_quantize_subprocess", lambda model: "state")
     monkeypatch.setattr(
-        save_mod, "_restore_model_after_quantize_subprocess", lambda model, state: restores.append(state)
+        save_mod,
+        "_restore_model_after_quantize_subprocess",
+        lambda model, state: restores.append(state),
     )
 
-    result = nullcontext() if failure is None else pytest.raises(RuntimeError, match = f"failed {failure}")
+    result = (
+        nullcontext() if failure is None else pytest.raises(RuntimeError, match = f"failed {failure}")
+    )
     model = Adapter() if push else SimpleNamespace(save_pretrained = write_merge)
     target = "owner/model" if push else str(destination)
     with result:
