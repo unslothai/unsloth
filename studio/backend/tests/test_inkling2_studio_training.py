@@ -199,3 +199,103 @@ def test_other_tokenizers_keep_auto_detection():
     assert calls == [
         {"instruction_part": "<|im_start|>user\n", "response_part": "<|im_start|>assistant\n"}
     ]
+
+
+def test_local_adapter_with_unreadable_base_reads_its_own_config(monkeypatch, tmp_path):
+    """Activation tiers a local adapter by its own config.json too; precision must read it when the base is unreachable."""
+    import json
+
+    import utils.transformers_version as tv
+
+    adapter = tmp_path / "inkling-lora"
+    adapter.mkdir()
+    (adapter / "adapter_config.json").write_text(
+        json.dumps({"base_model_name_or_path": "unreachable/base"}), encoding = "utf-8"
+    )
+    (adapter / "adapter_model.safetensors").write_bytes(b"")
+    (adapter / "config.json").write_text(json.dumps(INKLING_CFG), encoding = "utf-8")
+    real_load = tv._load_config_json
+    monkeypatch.setattr(tv, "latest_tier_active_for", lambda *a, **k: True)
+    monkeypatch.setattr(tv, "_resolve_base_model", lambda name: "unreachable/base")
+    monkeypatch.setattr(
+        tv,
+        "_load_config_json",
+        lambda name, token = None: None if name == "unreachable/base" else real_load(name, token),
+    )
+    assert tv.latest_tier_forces_16bit(str(adapter)) is False
+
+
+def test_precision_check_resolves_a_remote_adapter_once(monkeypatch):
+    """The tier lookup and the architecture read share one remote_lora_base_scope."""
+    import utils.transformers_version as tv
+
+    scoped = []
+
+    def _active(*a, **k):
+        scoped.append(tv._remote_lora_base_answers.get() is not None)
+        return True
+
+    def _base(*a, **k):
+        scoped.append(tv._remote_lora_base_answers.get() is not None)
+        return None
+
+    monkeypatch.setattr(tv, "latest_tier_active_for", _active)
+    monkeypatch.setattr(tv, "_remote_lora_base", _base)
+    monkeypatch.setattr(tv, "_load_config_json", lambda *a, **k: INKLING_CFG)
+    assert tv.latest_tier_forces_16bit(INKLING) is False
+    assert scoped == [True, True]
+
+
+def test_upgrade_check_runs_the_tier_lookup_once(monkeypatch):
+    import utils.transformers_version as tv
+
+    calls = []
+    _upgrade_route(monkeypatch, None, True, INKLING_CFG)  # installs the route stubs
+    monkeypatch.setattr(tv, "latest_tier_active_for", lambda *a, **k: calls.append(a) or True)
+    inf_mod = sys.modules["routes.inference"]
+    from models.inference import TransformersUpgradeCheckRequest
+
+    resp = asyncio.run(
+        inf_mod.check_transformers_upgrade_route(
+            TransformersUpgradeCheckRequest(model_name = INKLING), "tester"
+        )
+    )
+    assert resp.latest_tier_active is True and resp.forces_16bit is False
+    assert len(calls) == 1, calls
+
+
+def test_role_tokens_skip_a_template_that_never_renders_them():
+    """An Inkling tokenizer carrying a ChatML template renders no role tokens; masking on them trains nothing."""
+    from utils.datasets.completion_masking import apply_completion_masking
+
+    class _ChatMLInkling(_InklingTokenizer):
+        chat_template = "{% for m in messages %}<|im_start|>{{ m.role }}\n{{ m.content }}<|im_end|>\n{% endfor %}"
+
+    class _H:
+        processing_class = _ChatMLInkling()
+
+    calls = []
+    apply_completion_masking(
+        _H(),
+        INKLING,
+        lambda trainer, **kw: calls.append(kw) or trainer,
+        detect_fn = lambda p: ("<|im_start|>user\n", "<|im_start|>assistant\n"),
+    )
+    assert calls == [
+        {"instruction_part": "<|im_start|>user\n", "response_part": "<|im_start|>assistant\n"}
+    ]
+
+    class _NativeInkling(_InklingTokenizer):
+        chat_template = '{%- set role_token = {"user": "<|message_user|>", "assistant": "<|message_model|>"} -%}'
+
+    class _N:
+        processing_class = _NativeInkling()
+
+    calls.clear()
+    apply_completion_masking(
+        _N(),
+        INKLING,
+        lambda trainer, **kw: calls.append(kw) or trainer,
+        detect_fn = lambda p: ("x", "y"),
+    )
+    assert calls == [{"instruction_part": "<|message_user|>", "response_part": "<|message_model|>"}]

@@ -22133,11 +22133,7 @@ async def check_transformers_upgrade_route(
     for training. Never raises: an unreadable model reports "no upgrade needed" and the
     caller proceeds exactly as it did before.
     """
-    from utils.transformers_version import (
-        latest_tier_active_for,
-        latest_tier_forces_16bit,
-        latest_tier_keeps_4bit,
-    )
+    from utils.transformers_version import latest_tier_keeps_4bit, latest_tier_load_policy
 
     if account_access.managed_account():
         for ref in (
@@ -22204,29 +22200,18 @@ async def check_transformers_upgrade_route(
         logger.debug("Custom-code check failed for '%s': %s", model_name, exc)
 
     latest_tier_active = False
+    active_forces_16bit = False
     try:
-        latest_tier_active = await asyncio.to_thread(
+        latest_tier_active, active_forces_16bit = await asyncio.to_thread(
             _offline_guarded,
-            # latest_tier_active_for resolves a remote adapter's base itself, so fetch it too.
+            # The policy resolves a remote adapter's base itself, so fetch it too.
             tuple(targets),
-            latest_tier_active_for,
+            latest_tier_load_policy,
             load_target,
             request.hf_token,
         )
     except Exception as exc:
         logger.debug("Latest-tier check failed for '%s': %s", model_name, exc)
-    active_forces_16bit = latest_tier_active
-    if latest_tier_active:
-        try:
-            active_forces_16bit = await asyncio.to_thread(
-                _offline_guarded,
-                tuple(targets),
-                latest_tier_forces_16bit,
-                load_target,
-                request.hf_token,
-            )
-        except Exception as exc:
-            logger.debug("Latest-tier 4-bit check failed for '%s': %s", model_name, exc)
     upgrade_keeps_4bit = transformers_upgrade is not None and latest_tier_keeps_4bit(
         transformers_upgrade.model_type
     )

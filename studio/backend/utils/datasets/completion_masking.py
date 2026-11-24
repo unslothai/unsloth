@@ -97,8 +97,9 @@ _ROLE_TOKEN_MARKERS = (("<|message_user|>", "<|message_model|>"),)
 
 def role_token_markers(vocab):
     """(instruction, response) role tokens when the tokenizer's added vocab has both, else None."""
+    vocab = vocab or {}
     for instruction, response in _ROLE_TOKEN_MARKERS:
-        if instruction in (vocab or {}) and response in (vocab or {}):
+        if instruction in vocab and response in vocab:
             return instruction, response
     return None
 
@@ -185,6 +186,16 @@ def apply_completion_masking(
         )
         return trainer, True
     role_markers = role_token_markers(vocab)
+    active_template = getattr(processor, "chat_template", None) or getattr(
+        inner, "chat_template", None
+    )
+    # A replaced template (ChatML on an Inkling base) renders no role tokens, so they would mask every token.
+    if (
+        role_markers
+        and isinstance(active_template, str)
+        and any(m not in active_template for m in role_markers)
+    ):
+        role_markers = None
     if role_markers:
         trainer = train_fn(
             trainer,

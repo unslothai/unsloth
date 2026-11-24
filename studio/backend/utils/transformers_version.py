@@ -583,16 +583,33 @@ def latest_tier_keeps_4bit(model_type) -> bool:
     return isinstance(model_type, str) and model_type in LATEST_TIER_4BIT_MODEL_TYPES
 
 
+def latest_tier_load_policy(model_name: str, hf_token: str | None = None) -> tuple[bool, bool]:
+    """(latest sidecar active, it forces 16-bit), resolving a remote adapter once; never raises."""
+    with remote_lora_base_scope():
+        if not latest_tier_active_for(model_name, hf_token):
+            return False, False
+        return True, _sidecar_forces_16bit(model_name, hf_token)
+
+
 def latest_tier_forces_16bit(model_name: str, hf_token: str | None = None) -> bool:
     """latest_tier_active_for, minus architectures validated in 4-bit; never raises."""
-    if not latest_tier_active_for(model_name, hf_token):
-        return False
+    return latest_tier_load_policy(model_name, hf_token)[1]
+
+
+def _sidecar_forces_16bit(model_name: str, hf_token: str | None = None) -> bool:
     try:
         if _is_lora_adapter_dir(Path(model_name)):
             resolved = _resolve_base_model(model_name)
         else:
             resolved = _remote_lora_base(model_name, hf_token = hf_token) or model_name
         cfg = _load_config_json(resolved, hf_token)
+        # Activation also tiers by a local adapter's own config.json, so read it when the base is unreadable.
+        if (
+            not isinstance(cfg, dict)
+            and model_name != resolved
+            and _safe_is_file(Path(model_name) / "config.json")
+        ):
+            cfg = _load_config_json(model_name, hf_token)
         if not isinstance(cfg, dict):
             return True
         # A bnb-quantized checkpoint loads 4-bit from its own config whatever the flag says.
