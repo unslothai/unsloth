@@ -155,6 +155,12 @@ function HighlightedCode({
   );
 }
 
+/** Python ends a line (and a comment) at a lone carriage return, a browser does not: show ␍, and for Python
+ *  also break the row there. Bash does not end a line at CR, so its card only marks it. Display only. */
+function showCarriageReturns(code: string, language: string): string {
+  return code.replace(/\r(?!\n)/g, language === "python" ? "␍\n" : "␍");
+}
+
 export function ToolCodeCell({
   label,
   code,
@@ -181,7 +187,7 @@ export function ToolCodeCell({
       </div>
       {/* Display only: Copy and Download above keep the code as it runs. */}
       <HighlightedCode
-        code={escapeBidiControls(code)}
+        code={showCarriageReturns(escapeBidiControls(code), language)}
         language={language}
         plain={streaming}
       />

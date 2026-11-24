@@ -1,10 +1,28 @@
 """Text-only FastLanguageModel routing for vision-capable configs."""
 
 import ast
+import sys
+import importlib.util
 import copy
 from pathlib import Path
 
 import pytest
+
+
+def _load_source_segments():
+    """tests/_shared/source_segments.py, by path: collects without tests/conftest.py too."""
+    name = "unsloth_tests_shared_source_segments"
+    if name not in sys.modules:
+        spec = importlib.util.spec_from_file_location(
+            name, Path(__file__).resolve().parents[1] / "_shared" / "source_segments.py"
+        )
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
+    return sys.modules[name]
+
+
+cached_source_segment = _load_source_segments().cached_source_segment
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -61,6 +79,16 @@ def _param_default(method, name):
     return dict(zip([p.arg for p in params][-len(defaults) :], defaults)).get(name)
 
 
+def _function_segments(source):
+    """Top-level function sources of a file; only the slicing is memoised (cached_source_segment),
+    the parse and the caller's exec run every time."""
+    return {
+        node.name: cached_source_segment(source, node)
+        for node in ast.parse(source).body
+        if isinstance(node, ast.FunctionDef)
+    }
+
+
 def _load_text_only_namespace():
     source = _source(UTILS_PATH)
     import transformers
@@ -71,11 +99,7 @@ def _load_text_only_namespace():
         "Version": Version,
         "transformers_version": transformers.__version__,
     }
-    funcs = {
-        node.name: ast.get_source_segment(source, node)
-        for node in ast.parse(source).body
-        if isinstance(node, ast.FunctionDef)
-    }
+    funcs = _function_segments(source)
     for name in (
         "_resolve_remote_model_class",
         "resolve_model_class",

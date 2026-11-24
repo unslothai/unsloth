@@ -757,3 +757,48 @@ def test_hugging_face_scan_unavailable_stays_fail_open(monkeypatch):
     with _patch_status(None), patch("huggingface_hub.HfApi.list_repo_files") as listing:
         assert evaluate_file_security("org/repo").blocked is False
     listing.assert_not_called()
+
+
+# The gate reads a flagged pickle's load path the way the loader opens it.
+@pytest.mark.parametrize(
+    "shard", ["weights/./part-1.bin", "weights//part-1.bin", "weights/../weights/part-1.bin"]
+)
+@pytest.mark.parametrize("subdir", ["", "inner"])
+def test_indexed_shard_blocks_however_the_index_spells_it(shard, subdir):
+    prefix = f"{subdir}/" if subdir else ""
+    flagged = prefix + "weights/part-1.bin"
+    status = {"scansDone": False, "filesWithIssues": [{"path": flagged, "level": "unsafe"}]}
+    with (
+        _patch_status(status),
+        _patch_index({"w": shard}, index_filename = prefix + "pytorch_model.bin.index.json"),
+    ):
+        d = evaluate_file_security("evil/sharded", load_subdirs = (subdir,) if subdir else ())
+    assert d.blocked is True
+
+
+@pytest.mark.parametrize("load_subdirs", [("parts/inner", "parts"), ("parts", "parts/inner")])
+def test_flagged_pickle_under_nested_load_subdir_blocks_in_any_order(load_subdirs):
+    status = {
+        "scansDone": False,
+        "filesWithIssues": [{"path": "parts/inner/pytorch_model.bin", "level": "unsafe"}],
+    }
+    with _patch_status(status), _patch_no_index():
+        d = evaluate_file_security("org/nested-modules", load_subdirs = load_subdirs)
+    assert d.blocked is True
+
+
+@pytest.mark.parametrize("subdir", ["inner ", "inner ", " inner"])
+def test_flagged_pickle_under_load_subdir_with_whitespace_in_its_name_blocks(subdir):
+    flagged = f"{subdir}/pytorch_model.bin"
+    status = {"scansDone": True, "filesWithIssues": [{"path": flagged, "level": "unsafe"}]}
+    with _patch_status(status), _patch_no_index():
+        d = evaluate_file_security("org/embedder", load_subdirs = (subdir,))
+    assert d.blocked is True
+
+
+def test_st_module_subdirs_keep_whitespace(monkeypatch):
+    import core.rag.embeddings as embeddings
+    monkeypatch.setattr(
+        embeddings, "_repo_json", lambda *a, **k: [{"path": "inner "}, {"path": "plain/"}]
+    )
+    assert embeddings._st_module_subdirs("org/embedder", None) == ("inner ", "plain")

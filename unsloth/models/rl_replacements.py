@@ -843,7 +843,11 @@ def _unsloth_dpo_reference_loadable(policy_sd, ref_sd):
     return True
 
 
-def _unsloth_dpo_copy_policy_into_reference(ref_model, policy_sd):
+def _unsloth_dpo_copy_policy_into_reference(
+    ref_model,
+    policy_sd,
+    policy = None,
+):
     # Recast first: load_state_dict would round FP32 norm updates into a BF16 reference; .data keeps ties.
     tensors = dict(ref_model.named_parameters(remove_duplicate = False))
     tensors.update(ref_model.named_buffers(remove_duplicate = False))
@@ -852,6 +856,15 @@ def _unsloth_dpo_copy_policy_into_reference(ref_model, policy_sd):
         if tensor is not None and tensor.dtype != value.dtype:
             tensor.data = tensor.data.to(value.dtype)
     ref_model.load_state_dict(policy_sd)
+    # bfloat16 full finetuning runs the policy's FP32 norms under a bfloat16 autocast forward; the recast reference
+    # needs the same, else its FP32 norm outputs reach BF16 projections ("mat1 and mat2 must have the same dtype").
+    compute_dtype = getattr(type(policy), "_unsloth_autocast_dtype", None)
+    if compute_dtype is not None and getattr(policy, "_unsloth_bf16_autocast_wrapped", False):
+        try:
+            from unsloth_zoo.training_utils import _wrap_forward_in_bf16_autocast
+        except ImportError:
+            return
+        _wrap_forward_in_bf16_autocast(ref_model, compute_dtype)
 
 
 def dpo_trainer_reference_snapshot(function_name, function):
@@ -871,7 +884,7 @@ def dpo_trainer_reference_snapshot(function_name, function):
             "    _unsloth_policy_sd = torch.nn.Module.state_dict(self.model)\n"
             # Checked first: load_state_dict writes matching tensors before raising on the rest.
             "    if _unsloth_dpo_reference_loadable(_unsloth_policy_sd, torch.nn.Module.state_dict(self.ref_model)):\n"
-            "        _unsloth_dpo_copy_policy_into_reference(self.ref_model, _unsloth_policy_sd)\n"
+            "        _unsloth_dpo_copy_policy_into_reference(self.ref_model, _unsloth_policy_sd, self.model)\n"
             "    else:\n"
             # Aliased: a bare `import warnings` here would shadow TRL's module-level one in all of __init__.
             "        import warnings as _unsloth_warnings\n"
@@ -4205,6 +4218,9 @@ def _unsloth_vllm_sync_peft_merged(trainer):
         "server" if getattr(trainer, "vllm_client", None) is not None else "colocate"
     )
     is_main = getattr(trainer.accelerator, "is_main_process", True)
+    # TRL creates vllm_client on the main process only; the other ranks have nothing to send.
+    if mode == "server" and not is_main:
+        return None
     llm_model = None
     if mode == "colocate":
         llm_model = trainer.llm.llm_engine.model_executor.driver_worker.model_runner.model
@@ -4228,11 +4244,10 @@ def _unsloth_vllm_sync_peft_merged(trainer):
         if not frozen_sync.keep(name, tensor, param):
             continue
         if mode == "server":
-            if is_main:
-                trainer.vllm_client.update_named_param(name, tensor)
+            trainer.vllm_client.update_named_param(name, tensor)
         elif mode == "colocate":
             llm_model.load_weights([(name, tensor)])
-    if mode == "server" and is_main:
+    if mode == "server":
         trainer.vllm_client.reset_prefix_cache()
     elif mode == "colocate":
         trainer.llm.reset_prefix_cache()
@@ -4702,7 +4717,8 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     dtype_bytes,
                     self.args.unsloth_logit_chunk_multiplier,
                 )
-                B = total_rows // B
+                # Rows per forward -> split count; floor division would put more rows in one forward than fit.
+                B = max(1, -(-total_rows // B))
                 if _grpo_collective_forwards:
                     # Sized from this rank's sequence length: agree, or the forward counts differ.
                     from unsloth_zoo.rl_replacements import grpo_agree_mini_batch
@@ -4851,6 +4867,12 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     )
                     if _pg_unsafe is None:
                         _pg_unsafe = set()
+                    if (
+                        _pg_layout is not None
+                        and _pg_layout.flat_ids.shape[1] > batch_size * seq_len
+                    ):
+                        # Over one padded mini-batch's tokens: the chunked loop keeps the mini-batch cap.
+                        _pg_layout = None
                     if _pg_layout is not None and _pg_layout.signature not in _pg_unsafe:
                         _pg_sig = _pg_layout.signature
                         _pg_verified = getattr(
@@ -5263,6 +5285,8 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 zipped_inputs = []
             else:
                 _pk_hidden = _pk_sel = _pk_result = _pk_ref = None
+                # A declined PrefixGrouper layout (and the deferred forward bound to it) too.
+                _pg_layout = _pg_forward_fn = None
                 # Index buffers of a declined packed batch would otherwise live through the padded loop.
                 _pk_keep = _pk_len = _pk_flat = _pk_pos = _pk_cmask = None
                 _pk_nz_idx = _pk_within = _pk_cstart = _pk_ctgt = _pk_tgt = _pk_ids = _pk_cm = None
