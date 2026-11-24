@@ -707,6 +707,85 @@ def test_build_rag_autoinject_summary_of_long_attachment_leads_with_its_opening(
     assert injected.count("Table ") == inf_tools._autoinject_top_k()
 
 
+def _encode_as_query(monkeypatch):
+    from core.rag import embeddings
+    monkeypatch.setattr(
+        embeddings,
+        "encode",
+        lambda texts, *, model_name = None, normalize = True: [[1.0, 0.0, 0.0, 0.0] for _ in texts],
+    )
+    monkeypatch.setattr(embeddings, "dim", lambda model_name = None: len(_VEC))
+
+
+def test_build_rag_autoinject_opening_comes_from_the_matched_attachment_beside_project(
+    rag_conn, monkeypatch
+):
+    tscope = store.thread_scope("t1")
+    store.create_document(rag_conn, scope = tscope, filename = "big.pdf", sha256 = "h1", document_id = "d1")
+    store.add_chunks(
+        rag_conn,
+        tscope,
+        "d1",
+        [
+            _chunk("BIG_TITLE", 0, source_page = 0, tokens = 60),
+            _chunk("BIG_INTRO", 1, source_page = 1, tokens = 1000),
+            _chunk("MATCH_PASSAGE", 2, source_page = 2, tokens = 50_000),
+        ],
+        [[0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.6, 0.8, 0.0, 0.0]],
+    )
+    store.set_document_status(rag_conn, "d1", "completed", num_chunks = 3)
+    store.create_document(rag_conn, scope = tscope, filename = "new.pdf", sha256 = "h3", document_id = "d3")
+    store.add_chunks(
+        rag_conn, tscope, "d3", [_chunk("NEW_OPENING", 0, tokens = 1000)], [[0.0, 0.0, 0.0, 1.0]]
+    )
+    store.set_document_status(rag_conn, "d3", "completed", num_chunks = 1)
+    pscope = store.project_scope("p1")
+    store.create_document(
+        rag_conn, scope = pscope, filename = "notes.md", sha256 = "h2", document_id = "d2"
+    )
+    store.add_chunks(rag_conn, pscope, "d2", [_chunk("PROJECT_PASSAGE")], [[1.0, 0.0, 0.0, 0.0]])
+    store.set_document_status(rag_conn, "d2", "completed", num_chunks = 1)
+    _encode_as_query(monkeypatch)
+
+    result = inf_tools.build_rag_autoinject(
+        _convo("Summarize this document"),
+        {
+            "thread_id": "t1",
+            "project_id": "p1",
+            "autoinject": True,
+            "autoinject_min_score": 0.7,
+            "default_top_k": 2,
+        },
+    )
+    injected = _injected_text(result)
+    assert "NEW_OPENING" not in injected
+    assert injected.index("BIG_TITLE") < injected.index("MATCH_PASSAGE")
+    assert "PROJECT_PASSAGE" in injected
+
+
+def test_build_rag_autoinject_budget_keeps_the_match_over_the_opening(rag_conn, monkeypatch):
+    scope = store.thread_scope("t1")
+    store.create_document(rag_conn, scope = scope, filename = "big.pdf", sha256 = "h1", document_id = "d1")
+    store.add_chunks(
+        rag_conn,
+        scope,
+        "d1",
+        [
+            _chunk("FRONT_MATTER " + "x" * 4000, 0, source_page = 0, tokens = 500),
+            _chunk("MATCH_PASSAGE " + "y" * 1500, 1, source_page = 1, tokens = 50_000),
+        ],
+        [[0.0, 0.0, 1.0, 0.0], [1.0, 0.0, 0.0, 0.0]],
+    )
+    store.set_document_status(rag_conn, "d1", "completed", num_chunks = 2)
+    _encode_as_query(monkeypatch)
+
+    result = inf_tools.build_rag_autoinject(
+        _convo("Summarize this document"),
+        {"thread_id": "t1", "autoinject": False, "context_length": 4096},
+    )
+    assert "MATCH_PASSAGE" in _injected_text(result)
+
+
 def test_build_rag_autoinject_on_attachment_beside_project_keeps_lean_top_k(rag_conn, monkeypatch):
     monkeypatch.setattr(inf_tools, "_thread_document_ids", lambda thread_id: None)
 

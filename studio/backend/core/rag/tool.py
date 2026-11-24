@@ -313,10 +313,10 @@ def _sources_in_order(rows) -> list[dict]:
     return sources
 
 
-def document_opening(*, scope_thread_id: str) -> list[dict]:
+def document_opening(*, scope_thread_id: str, document_id: str) -> list[dict]:
     conn = rag_db.get_connection()
     try:
-        rows = opening_chunks(conn, thread_scope(scope_thread_id), config.CHUNK_TOKENS)
+        rows = opening_chunks(conn, thread_scope(scope_thread_id), config.CHUNK_TOKENS, document_id)
     finally:
         conn.close()
     return _sources_in_order(rows)

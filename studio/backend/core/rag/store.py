@@ -1103,13 +1103,14 @@ def all_chunks_for_scope(conn: sqlite3.Connection, scope) -> list[dict]:
     return [dict(r) for r in rows]
 
 
-def opening_chunks(conn: sqlite3.Connection, scope: str, min_tokens: int) -> list[dict]:
+def opening_chunks(
+    conn: sqlite3.Connection, scope: str, min_tokens: int, document_id: str
+) -> list[dict]:
     doc = conn.execute(
-        "SELECT id, filename FROM documents d WHERE scope=? AND status='completed' "
+        "SELECT id, filename FROM documents d WHERE scope=? AND id=? AND status='completed' "
         "AND num_chunks > 0 AND NOT EXISTS "
-        "(SELECT 1 FROM linked_folder_retired_scopes r WHERE r.scope=d.scope) "
-        "ORDER BY created_at DESC, rowid DESC LIMIT 1",
-        (scope,),
+        "(SELECT 1 FROM linked_folder_retired_scopes r WHERE r.scope=d.scope)",
+        (scope, document_id),
     ).fetchone()
     if doc is None:
         return []

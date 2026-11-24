@@ -16175,6 +16175,7 @@ def _build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> d
         return _trim(found[0], found[1], max_tokens) if found else None
 
     thread_docs = _thread_document_ids(thread_id) if whole_doc_requested and text is None else set()
+    opening_ids: set = set()
 
     def retrieve_thread_unfloored(*, max_tokens = None):
         # Lexical-only misses generic requests ("summarize this"), so retry with the dense leg.
@@ -16186,11 +16187,20 @@ def _build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> d
             found = retrieve(scope_thread_id = thread_id, min_dense_score = None, mode = "hybrid")
         if not found:
             return None
-        # A generic request ("summarize this") ranks mid-document scraps, so the file's opening leads.
-        opening = document_opening(scope_thread_id = thread_id)
+        # A generic request ("summarize this") ranks mid-document scraps, so the matched file's opening leads, beside the best match.
+        opening = document_opening(
+            scope_thread_id = thread_id, document_id = found[1][0].get("documentId")
+        )
         seen = {s["chunkId"] for s in opening}
-        merged = opening + [s for s in found[1] if s.get("chunkId") not in seen]
-        return _trim(render_sources(merged), merged, max_tokens)
+        hits = [s for s in found[1] if s.get("chunkId") not in seen]
+        merged = opening + hits
+        kept = _trim(
+            render_sources(merged), merged, max_tokens, keep_first = len(opening) + bool(hits)
+        )
+        if kept is None:
+            return _trim(found[0], found[1], max_tokens)
+        opening_ids.update(seen)
+        return kept
 
     # With auto-injection off, search the oversized attachment alone, unfloored; budget binds only here, so a small context cannot silently switch RAG off.
     if text is None and (enabled or whole_doc_requested):
@@ -16236,9 +16246,10 @@ def _build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> d
                     if thread_found and found:
                         cited = thread_docs or {s.get("documentId") for s in thread_found[1]}
                         if not any(s.get("documentId") in cited for s in found[1]):
-                            # Still the lean top_k in total, so the unbudgeted path never doubles the injection.
+                            # The lean top_k plus the opening, so the unbudgeted path never doubles the injection.
                             n_proj = min(len(found[1]), top_k // 2)
-                            merged = thread_found[1][: top_k - n_proj] + found[1][:n_proj]
+                            n_open = sum(s.get("chunkId") in opening_ids for s in thread_found[1])
+                            merged = thread_found[1][: n_open + top_k - n_proj] + found[1][:n_proj]
                             found = (render_sources(merged), merged)
                     elif thread_found:
                         found = thread_found
