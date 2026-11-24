@@ -38,6 +38,10 @@ if (_ENV != "0") if _HIP else (_CUDA_ENV != "0" and torch.version.cuda is not No
     try:
         import triton
         import triton.language as tl
+
+        # Without a Triton package, `import unsloth` binds unsloth_zoo's triton_stub here: nothing can launch.
+        if getattr(triton, "__name__", None) != "triton":
+            triton = None
     except Exception:
         triton = None
 
@@ -175,7 +179,8 @@ def _parse_config(text):
     return values
 
 
-_FORCED = _parse_config(_CONFIG_ENV) if _CONFIG_ENV else None
+# ROCm tuning only: the CUDA schedule below was measured on its own.
+_FORCED = _parse_config(_CONFIG_ENV) if _HIP and _CONFIG_ENV else None
 
 
 def pick_config(N, K):
@@ -249,6 +254,10 @@ def skinny_linear(
 ):
     """X [M, K] @ W[N, K].T (+ scale * (X @ A[R, K].T) @ B[N, R].T) into out [M, N] (strided ok).
     Raw pointers: plain dense tensors on one device only (skinny_decode_linear checks the rest)."""
+    if triton is None:
+        raise RuntimeError(
+            "skinny_linear needs Triton (missing, or disabled by the backend's kill switch)"
+        )
     M, K = X.shape
     N = W.shape[0]
     if not (1 <= M <= MAX_ROWS) or K < 1 or N < 1 or W.shape[1] != K:
@@ -370,9 +379,14 @@ def _compile_failure(error):
 
 def _warn_broken(error):
     import warnings
+    backend, blas, flag = (
+        ("ROCm", "rocBLAS", "UNSLOTH_ROCM_SKINNY_LINEAR")
+        if _HIP
+        else ("CUDA", "cuBLAS", "UNSLOTH_CUDA_SKINNY_LINEAR")
+    )
     warnings.warn(
-        f"Unsloth: the ROCm skinny decode linear failed to compile ({type(error).__name__}: {error}); "
-        "decode uses rocBLAS on this device (UNSLOTH_ROCM_SKINNY_LINEAR=0 skips the kernel).",
+        f"Unsloth: the {backend} skinny decode linear failed to compile ({type(error).__name__}: {error}); "
+        f"decode uses {blas} on this device ({flag}=0 skips the kernel).",
         stacklevel = 3,
     )
 
@@ -382,6 +396,9 @@ _STRIDED = torch.strided
 _functorch_active = getattr(torch._C, "_are_functorch_transforms_active", lambda: False)
 _forward_ad = torch.autograd.forward_ad
 _increment_version = torch.autograd.graph.increment_version
+_function_mode_on = getattr(torch._C, "_is_torch_function_mode_enabled", lambda: False)
+_dispatch_depth = getattr(torch._C, "_len_torch_dispatch_stack", lambda: 0)
+_jit_tracing = torch.jit.is_tracing
 
 
 def _autocast_changes(dtype):
@@ -400,10 +417,10 @@ def skinny_decode_linear(X, W, A, B, scale, out):
     dense tensor (the exact type: a wrapper subclass such as TorchAO's NF4Tensor reports a float dtype and a
     2D shape over packed storage and only dequantizes through its own dispatch), and out must not overlap
     itself or any operand. Lazily negated views (is_neg) keep the dispatched ops: the raw storage holds the
-    un-negated values. Forward-mode AD, torch.func transforms and a different autocast dtype need the
-    dispatched ops. A supplied out gets its version counter bumped like an out= op, so a tensor autograd saved
-    for backward still raises when backward reads it. This runs per projection per token in eager decode, so
-    the checks stay arithmetic."""
+    un-negated values. Forward-mode AD, torch.func transforms, function / dispatch modes, JIT tracing and a
+    different autocast dtype need the dispatched ops. A supplied out gets its version counter bumped like an
+    out= op, so a tensor autograd saved for backward still raises when backward reads it. This runs per
+    projection per token in eager decode, so the checks stay arithmetic."""
     if triton is None:
         return None
     if type(X) is not torch.Tensor or X.dim() != 3 or X.shape[1] != 1:
@@ -431,9 +448,14 @@ def skinny_decode_linear(X, W, A, B, scale, out):
     grad = torch.is_grad_enabled()
     if grad and (X.requires_grad or W.requires_grad):
         return None
+    # A TorchFunctionMode / TorchDispatchMode (make_fx's proxy, fake tensors) or a JIT trace would never see
+    # the raw-pointer write: they keep the dispatched ops.
     if (
         getattr(_forward_ad, "_current_level", -1) >= 0
         or _functorch_active()
+        or _function_mode_on()
+        or _dispatch_depth() != 0
+        or _jit_tracing()
         or _autocast_changes(dtype)
     ):
         return None
@@ -452,6 +474,8 @@ def skinny_decode_linear(X, W, A, B, scale, out):
             type(A) not in _PLAIN
             or type(B) not in _PLAIN
             or type(scale) not in (int, float)
+            # BLAS never reads the adapters at alpha = 0; here 0 * (a NaN or an fp16 overflow in X @ A) is NaN.
+            or scale == 0
             or A.dtype != dtype
             or B.dtype != dtype
             or A.dim() != 2
