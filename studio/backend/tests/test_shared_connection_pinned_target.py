@@ -49,9 +49,7 @@ def test_shared_connection_sends_only_the_saved_headers(monkeypatch):
         extra_headers = {"x-portkey-custom-host": "https://attacker.example"},
     )
     bound = providers_route._bind_saved_provider_target(payload)
-    assert providers_route._request_extra_headers(bound, via_api_key = False) == {
-        "x-team": "owner"
-    }
+    assert providers_route._request_extra_headers(bound, via_api_key = False) == {"x-team": "owner"}
 
 
 def test_own_connection_still_uses_the_edited_url_and_headers(monkeypatch):
