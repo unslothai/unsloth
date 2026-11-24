@@ -206,6 +206,18 @@ def processed_dataset_cache_has_artifacts(path: Path) -> bool:
     return False
 
 
+def _datasets_cache_dir_name(repo_id: str) -> str:
+    namespace, slash, name = repo_id.partition("/")
+    if not slash:
+        namespace, name = "", repo_id
+    try:
+        from datasets.naming import camelcase_to_snakecase
+        name = camelcase_to_snakecase(name)
+    except Exception:
+        pass
+    return f"{namespace}___{name}" if namespace else name
+
+
 def latest_processed_dataset_cache_path(repo_id: str) -> Optional[Path]:
     if not repo_id:
         return None
@@ -624,6 +636,11 @@ def dataset_cache_can_answer(repo_id: str) -> bool:
     try:
         if latest_processed_dataset_cache_path(repo_id) is not None:
             return True
+        # datasets opens the snake-cased name (acme/SecretData -> acme___secret_data), not the one typed.
+        spelled = _datasets_cache_dir_name(repo_id)
+        for root in hf_datasets_cache_roots():
+            if processed_dataset_cache_has_artifacts(root / spelled):
+                return True
         return latest_cached_dataset_snapshot(repo_id) is not None
     except Exception:
         # Never let the guard's own failure open the path it guards.
