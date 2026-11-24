@@ -159,6 +159,7 @@ function Install-UnslothStudio {
     # Defined before the first write.
     function Write-StudioLine {
         param([string]$Message = "", [string]$ForegroundColor)
+        if ($script:StudioMuteLines) { return }
         if ($script:StudioStdoutRedirected) {
             try { [Console]::Out.WriteLine($Message); [Console]::Out.Flush() } catch {}
             return
@@ -9030,6 +9031,9 @@ main()
     $ProbeAmdBesideNvidia = $HasNvidiaSmi -and -not $SkipTorch -and
         [string]::IsNullOrWhiteSpace($env:UNSLOTH_TORCH_INDEX_URL) -and
         [string]::IsNullOrWhiteSpace($env:UNSLOTH_TORCH_INDEX_FAMILY)
+    # Beside NVIDIA with neither flag nor hiding mask CUDA always wins: probe silently, for the notice only.
+    $script:StudioMuteLines = $ProbeAmdBesideNvidia -and -not $nvMaskHidesAll -and -not (Test-RocmTorchExplicitlyRequested)
+    try {
     if (-not $HasNvidiaSmi -or $ProbeAmdBesideNvidia) {
         # Ignore the venv hipInfo.exe: an AMD wheel, not a HIP SDK, so amd-smi still auto-elevates.
         function Test-HipinfoIsVenvInternal {
@@ -9338,6 +9342,7 @@ main()
             }
         }
     }
+    } finally { $script:StudioMuteLines = $false }
 
     # ── WSL2 needs AMD Adrenalin >= 26.2.2; AMD referrer-gates it, so only link their page. ──
     function Show-AmdWslDriverHint {

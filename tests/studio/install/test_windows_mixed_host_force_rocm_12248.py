@@ -363,7 +363,9 @@ def test_the_amd_probe_runs_beside_nvidia_only_when_it_can_matter(src, gate, env
     if expected is None:
         # install.ps1 also probes without the flag, for the notice; setup.ps1 (an update) does not.
         expected = "True" if src is INSTALL_SRC else "False"
-    stmt = slice_between(src, gate, "\nif (" if src is SETUP_SRC else "\n    if (")
+    stmt = slice_between(
+        src, gate, "\nif (" if src is SETUP_SRC else "\n    # Beside NVIDIA with neither"
+    )
     kv = _ps_kv(
         _script(
             SETUP_HELPERS,
@@ -486,3 +488,36 @@ def test_install_ps1_shadowing_list_matches_setup_ps1():
         _function_source(INSTALL_SRC, "Resolve-MixedHostShadowingArch"), "$shadowing = @(", ")"
     )
     assert re.findall(r"gfx\w+", install) == re.findall(r"gfx\w+", setup)
+
+
+PROBE_MUTE = slice_between(INSTALL_SRC, "    $script:StudioMuteLines = ", "\n")
+
+
+@requires_pwsh
+@pytest.mark.parametrize(
+    "beside, env, heard",
+    [
+        (True, {}, False),
+        (True, {"UNSLOTH_FORCE_ROCM_TORCH": "1"}, True),
+        (True, {"CUDA_VISIBLE_DEVICES": "-1"}, True),
+        (False, {}, True),
+    ],
+    ids = ["default-mixed-host", "forced", "hiding-mask", "amd-only-host"],
+)
+def test_the_amd_probe_is_silent_only_where_cuda_always_wins(beside, env, heard):
+    kv = _ps_kv(
+        _script(
+            functions(INSTALL_SRC, "Write-StudioLine"),
+            INSTALL_HELPERS,
+            _env(**env),
+            "$script:StudioStdoutRedirected = $true",
+            "$nvMaskHidesAll = Test-CudaMaskHidesNvidia",
+            f"$ProbeAmdBesideNvidia = ${str(beside).lower()}",
+            PROBE_MUTE,
+            "Write-StudioLine 'PROBE=said'",
+            "$script:StudioMuteLines = $false",
+            "Write-StudioLine 'AFTER=said'",
+        )
+    )
+    assert ("PROBE" in kv) == heard
+    assert kv["AFTER"] == "said"
