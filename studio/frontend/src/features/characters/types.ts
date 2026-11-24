@@ -51,6 +51,8 @@ export interface Character {
   scenario: string;
   firstMes: string;
   alternateGreetings: string[];
+  /** V3 greetings used only in a group; sent on a single read, not in the list. */
+  groupOnlyGreetings?: string[];
   mesExample: string;
   systemPrompt: string;
   postHistoryInstructions: string;

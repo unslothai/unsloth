@@ -50,7 +50,7 @@ def chat_title(names: list[str]) -> str:
     return f"{', '.join(names[:-1])} & {names[-1]}"
 
 
-def _group_only_greetings(character: dict) -> list[str]:
+def group_only_greetings(character: dict) -> list[str]:
     card = character.get("card")
     if not isinstance(card, dict):
         return []
@@ -85,18 +85,17 @@ def opening_messages(
 
     def greeting_texts(character: dict) -> list[tuple[int, str]]:
         source = [character["firstMes"], *character["alternateGreetings"]]
+        group_only = group_only_greetings(character) if len(characters) > 1 else []
         resolved = (greetings or {}).get(character["id"])
-        # The client resolves every macro; this covers API callers that send no greetings.
-        if resolved is None or len(resolved) != len(source):
-            resolved = [fill_names(g, character["name"], speaker_name) for g in source]
-        if len(characters) > 1:
-            # V3 group-only greetings: kept on the stored card, so only names are filled here.
+        # The client resolves every macro; this covers API callers that send none, or no group-only ones.
+        if resolved is not None and len(resolved) == len(source):
             resolved = [
                 *resolved,
-                *(
-                    fill_names(g, character["name"], speaker_name)
-                    for g in _group_only_greetings(character)
-                ),
+                *(fill_names(g, character["name"], speaker_name) for g in group_only),
+            ]
+        elif resolved is None or len(resolved) != len(source) + len(group_only):
+            resolved = [
+                fill_names(g, character["name"], speaker_name) for g in (*source, *group_only)
             ]
         # Clipped after names are filled: a field of macros can expand far past the raw limit.
         return [(i, g[:MAX_FIELD_CHARS]) for i, g in enumerate(resolved) if g and g.strip()]

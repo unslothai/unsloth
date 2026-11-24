@@ -1222,15 +1222,63 @@ def test_group_openings_use_v3_group_only_greetings(client):
     assert "Hello, Wren and friends." in texts(group["threadId"])
 
 
+def test_group_only_greetings_take_the_client_resolved_macros(client):
+    def card(name, group_only):
+        return {
+            "spec": "chara_card_v3",
+            "spec_version": "3.0",
+            "data": {
+                "name": name,
+                "first_mes": f"Hi from {name}.",
+                "group_only_greetings": group_only,
+            },
+        }
+
+    ids = [
+        client.post(
+            f"/api/characters/import?filename={name}.json",
+            content = json.dumps(card(name, extra)).encode(),
+        ).json()["character"]["id"]
+        for name, extra in (("Ada", ["{{user}}, welcome to {{group}}."]), ("Bo", []))
+    ]
+    assert client.get(f"/api/characters/{ids[0]}").json()["groupOnlyGreetings"] == [
+        "{{user}}, welcome to {{group}}."
+    ]
+    assert all(
+        "groupOnlyGreetings" not in c for c in client.get("/api/characters").json()["characters"]
+    )
+
+    def texts(greetings):
+        thread_id = client.post(
+            "/api/characters/chats",
+            json = {"characterIds": ids, "userName": "Wren", "greetings": greetings},
+        ).json()["threadId"]
+        return [
+            part["text"]
+            for m in studio_db.list_chat_messages(thread_id)
+            if m["role"] == "assistant"
+            for part in m["content"]
+        ]
+
+    resolved = texts(
+        {ids[0]: ["Hi from Ada.", "Wren, welcome to Ada and Bo."], ids[1]: ["Hi from Bo."]}
+    )
+    assert "Wren, welcome to Ada and Bo." in resolved
+    # A client that sends only [firstMes, *alternates] still gets the group-only ones, names filled.
+    assert "Wren, welcome to {{group}}." in texts(
+        {ids[0]: ["Hi from Ada."], ids[1]: ["Hi from Bo."]}
+    )
+
+
 def test_a_long_group_only_greeting_is_bounded_like_the_others():
     from core.characters.cards import MAX_FIELD_CHARS
-    from core.characters.chats import _group_only_greetings
+    from core.characters.chats import group_only_greetings
 
     card = {
         "spec": "chara_card_v3",
         "data": {"name": "Ada", "group_only_greetings": ["x" * (MAX_FIELD_CHARS + 50), 7]},
     }
-    assert _group_only_greetings({"card": card}) == ["x" * MAX_FIELD_CHARS]
+    assert group_only_greetings({"card": card}) == ["x" * MAX_FIELD_CHARS]
 
 
 def test_a_greeting_is_bounded_after_its_names_are_filled():

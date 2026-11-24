@@ -126,9 +126,10 @@ class CharacterChatCreate(BaseModel):
     userName: ShortText = ""
     projectId: Optional[str] = Field(default = None, max_length = 128)
     settings: Optional[SceneSettings] = None
-    # [firstMes, *alternateGreetings] per character, resolved by the client (its clock and locale).
+    # [firstMes, *alternateGreetings, *groupOnlyGreetings in a group] per character, resolved by
+    # the client (its clock and locale).
     greetings: Optional[
-        dict[Id, Annotated[list[LongText], Field(max_length = cards.MAX_GREETINGS + 1)]]
+        dict[Id, Annotated[list[LongText], Field(max_length = 2 * cards.MAX_GREETINGS + 1)]]
     ] = Field(default = None, max_length = db.MAX_CAST)
 
 
@@ -157,6 +158,9 @@ def _without_card(character: dict) -> dict:
     out["cardSpec"] = (
         cards.card_data(character["card"])[1] if isinstance(character.get("card"), dict) else None
     )
+    if "card" in character:
+        # Only on a single read: a group start resolves their macros on the client.
+        out["groupOnlyGreetings"] = chats.group_only_greetings(character)
     return out
 
 

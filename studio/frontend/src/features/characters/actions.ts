@@ -32,10 +32,18 @@ export async function startCharacterChat(
   const cast = [...new Set(characterIds)].map((id) => characters[id]).filter((c): c is Character => Boolean(c));
   const group = cast.map((c) => c.name);
   const now = new Date();
+  // A failed read leaves them to the server, which fills in only the names.
+  const groupOnly = await Promise.all(
+    cast.map((c) =>
+      cast.length > 1
+        ? charactersApi.getCharacter(c.id).then((full) => full.groupOnlyGreetings ?? [], () => [])
+        : [],
+    ),
+  );
   const greetings = Object.fromEntries(
-    cast.map((c) => [
+    cast.map((c, i) => [
       c.id,
-      [c.firstMes, ...c.alternateGreetings].map((text) =>
+      [c.firstMes, ...c.alternateGreetings, ...groupOnly[i]].map((text) =>
         applyMacros(text, { char: c.name, user: persona.name || "User", group, now }),
       ),
     ]),

@@ -214,7 +214,7 @@ export async function createCharacterChat(input: {
   userName?: string;
   projectId?: string | null;
   settings?: SceneSettings;
-  /** Per character, [firstMes, ...alternateGreetings] with macros resolved. */
+  /** Per character, [firstMes, ...alternateGreetings, ...groupOnlyGreetings in a group] with macros resolved. */
   greetings?: Record<string, string[]>;
 }): Promise<CreatedCharacterChat> {
   return json(
