@@ -128,6 +128,95 @@ def _save_creates_model_card(save, model, args, kwargs):
     return bound.arguments.get("create_model_card", True) is not False
 
 
+# A model's own sentence_bert_config.json feeds model_args / config_args / tokenizer_args into
+# from_pretrained. These keys run code from the repo (an unrestricted torch.load of its pickle, a Hub
+# kernel import) or reach outside it, so the repo may not set them; the caller's kwargs still can.
+_ST_CONFIG_REFUSED_ARGS = frozenset(
+    {
+        "weights_only",
+        "allow_all_kernels",
+        "use_kernels",
+        "kernel_config",
+        "offload_folder",
+        "code_revision",
+    }
+)
+_ST_PLAIN_ATTN = re.compile(r"[A-Za-z0-9_|]+")
+
+
+def _st_config_path_escapes(value):
+    if not isinstance(value, str):
+        return False
+    norm = value.replace("\\", "/")
+    return (
+        norm.startswith("/") or re.match(r"[A-Za-z]:", norm) is not None or ".." in norm.split("/")
+    )
+
+
+def _scrub_st_config_load_args(config):
+    if not isinstance(config, dict):
+        return config
+    dropped = []
+    for section in ("model_args", "config_args", "tokenizer_args"):
+        args = config.get(section)
+        if not isinstance(args, dict):
+            continue
+        for key in list(args):
+            value = args[key]
+            if (
+                key in _ST_CONFIG_REFUSED_ARGS
+                or (key == "use_safetensors" and value is not True)
+                or (
+                    key in ("attn_implementation", "_attn_implementation")
+                    and not (isinstance(value, str) and _ST_PLAIN_ATTN.fullmatch(value))
+                )
+            ):
+                args.pop(key)
+                dropped.append(f"{section}.{key}")
+    if _st_config_path_escapes(config.get("tokenizer_name_or_path")):
+        config.pop("tokenizer_name_or_path")
+        dropped.append("tokenizer_name_or_path")
+    if dropped:
+        logging.getLogger(__name__).warning(
+            "Unsloth: ignoring loader arguments set by the model's own sentence-transformers config: %s",
+            ", ".join(dropped),
+        )
+    return config
+
+
+def _install_st_config_load_args_guard():
+    """Idempotent: wrap sentence-transformers' Transformer / MLMTransformer load_config so the arguments
+    a repo sets for itself are scrubbed (also when nested in a Router or a nested SentenceTransformer)."""
+    targets = []
+    for module_name, class_name in (
+        ("sentence_transformers.models", "Transformer"),
+        ("sentence_transformers.sparse_encoder.models", "MLMTransformer"),
+    ):
+        try:
+            targets.append(getattr(importlib.import_module(module_name), class_name))
+        except Exception:
+            continue
+    for cls in targets:
+        original = vars(cls).get("load_config")
+        if not isinstance(original, classmethod):
+            continue
+        func = original.__func__
+        if getattr(func, "_unsloth_scrubs_load_args", False):
+            continue
+
+        def load_config(
+            klass,
+            *args,
+            _original = func,
+            **kwargs,
+        ):
+            return _scrub_st_config_load_args(_original(klass, *args, **kwargs))
+
+        load_config._unsloth_scrubs_load_args = True
+        load_config.__wrapped__ = func
+        cls.load_config = classmethod(load_config)
+
+
 def _install_fsdp2_collective_st_save(SentenceTransformer):
     """Under native FSDP2 (UNSLOTH_FSDP2=1) the encoder's weights are DTensor shards, and ST's `save`
     (behind `save_pretrained` and the Trainer's `_save`) reads them directly, on every rank, into the
@@ -2500,7 +2589,9 @@ class FastSentenceTransformer(FastModel):
         try:
             from sentence_transformers import SentenceTransformer
             from sentence_transformers.models import Transformer, Pooling, Normalize
+
             _install_fsdp2_collective_st_save(SentenceTransformer)
+            _install_st_config_load_args_guard()
         except ImportError:
             raise ImportError(
                 "Unsloth: To use `FastSentenceTransformer`, you must install `sentence-transformers`.\n"

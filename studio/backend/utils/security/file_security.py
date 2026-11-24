@@ -228,7 +228,8 @@ def escaping_weight_references(folder) -> list:
 
 def _normalize_repo_path(path: str) -> str:
     """Strip ``./`` prefixes and normalize separators for repo-relative comparison."""
-    p = (path or "").strip().replace("\\", "/")
+    # Whitespace is part of a file or folder name: the loader opens the path as written.
+    p = (path or "").replace("\\", "/")
     while p.startswith("./"):
         p = p[2:]
     return p
@@ -262,11 +263,13 @@ def _hf_cache_snapshot_ref(local_path: str) -> Optional[tuple[str, str, Path]]:
 
 def _load_relative_path(norm: str, load_subdirs) -> str:
     """``norm`` relative to a ``from_pretrained`` load root. Some loads read from a snapshot SUBDIRECTORY (Spark-TTS / BiCodec load ``<snapshot>/LLM``), where a file directly under the subdir is root-level, not nested. Strips the matching load-subdir prefix, or returns ``norm`` unchanged when it is not under one."""
+    relative = norm
     for subdir in load_subdirs or ():
         prefix = _normalize_repo_path(subdir).strip("/")
         if prefix and norm.startswith(prefix + "/"):
-            return norm[len(prefix) + 1 :]
-    return norm
+            # Load roots nest in the publisher's modules.json order: the innermost one decides.
+            relative = min(relative, norm[len(prefix) + 1 :], key = len)
+    return relative
 
 
 def _index_prefixes(load_subdirs) -> tuple:
@@ -331,6 +334,8 @@ def _indexed_shard_paths(
                     if prefix and not shard_norm.startswith(prefix):
                         shard_norm = prefix + shard_norm
                     paths.add(shard_norm)
+                    # The loader joins the entry onto the folder, so weights/./x.bin opens weights/x.bin.
+                    paths.add(posixpath.normpath(shard_norm))
             except Exception:
                 inconclusive = True
     # Any transient failure -> inconclusive (the shard could be listed only by the index we could not read), so fail closed. No index files -> empty set, a definitive "nothing sharded".
@@ -488,7 +493,7 @@ def _st_load_roots(snapshot: Path, load_subdirs = ()) -> list:
     for module in modules if isinstance(modules, list) else ():
         if not isinstance(module, dict):
             continue
-        path = str(module.get("path", "")).strip()
+        path = str(module.get("path", ""))
         native_path = Path(path)
         if not path:
             continue
