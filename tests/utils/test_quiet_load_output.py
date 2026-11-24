@@ -232,3 +232,203 @@ def test_loader_prints_the_summary_not_the_table():
     assert "print(plan.describe())" not in source
     assert "print(plan.device_plan.describe())" not in source
     assert source.count("else summary())") == 2
+
+
+# ---------------------------------------------------------------- chat template without generation prompt
+
+# Shape of Inkling 2's template: no add_generation_prompt branch, every turn closed with <|end_message|>.
+_INKLING2_LIKE_TEMPLATE = (
+    "{%- for m in messages -%}"
+    "{%- if m.role == 'user' -%}<|message_user|><|content_text|>{{ m.content }}<|end_message|>"
+    "{%- else -%}<|message_model|><|content_text|>{{ m.content }}<|end_message|>{%- endif -%}"
+    "{%- endfor -%}"
+)
+
+
+class _Messages(__import__("logging").Handler):
+    def __init__(self):
+        super().__init__(0)
+        self.messages = []
+
+    def emit(self, record):
+        self.messages.append(record.getMessage())
+
+
+def _template_messages(template, name, monkeypatch, strict = False):
+    import logging
+
+    from tokenizers import Tokenizer, models
+    from transformers import PreTrainedTokenizerFast
+
+    import unsloth.tokenizer_utils as tu
+
+    if strict:
+        monkeypatch.setenv("UNSLOTH_STRICT_CHAT_TEMPLATE", "1")
+    else:
+        monkeypatch.delenv("UNSLOTH_STRICT_CHAT_TEMPLATE", raising = False)
+    tokenizer = PreTrainedTokenizerFast(
+        tokenizer_object = Tokenizer(models.WordLevel({"<unk>": 0}, unk_token = "<unk>")),
+        unk_token = "<unk>",
+    )
+    tokenizer.chat_template = template
+    tokenizer.name_or_path = name  # warning_once caches per message, so one name per case
+    capture = _Messages()
+    loggers = [logging.getLogger(tu.logger.name), logging.getLogger("transformers")]
+    for one in loggers:
+        one.addHandler(capture)
+    try:
+        result = tu.fix_chat_template(tokenizer)
+    finally:
+        for one in loggers:
+            one.removeHandler(capture)
+    return result, [m for m in capture.messages if "add_generation_prompt" in m and "by design" not in m]
+
+
+def test_inkling2_template_is_not_repaired_or_warned(monkeypatch):
+    result, messages = _template_messages(_INKLING2_LIKE_TEMPLATE, "org/inkling2-case-a", monkeypatch)
+    assert result == _INKLING2_LIKE_TEMPLATE  # no marker appended
+    assert messages == []
+
+
+def test_inkling2_template_passes_strict_mode(monkeypatch):
+    result, messages = _template_messages(
+        _INKLING2_LIKE_TEMPLATE, "org/inkling2-case-b", monkeypatch, strict = True
+    )
+    assert result == _INKLING2_LIKE_TEMPLATE and messages == []
+
+
+def test_other_template_without_generation_prompt_still_warns(monkeypatch):
+    # Same shape, but not Inkling 2's markers: a genuinely incomplete template keeps its warning.
+    broken = _INKLING2_LIKE_TEMPLATE.replace("<|message_model|>", "<|assistant|>")
+    _result, messages = _template_messages(broken, "org/broken-case-c", monkeypatch)
+    assert messages, "the add_generation_prompt warning must still fire for unknown templates"
+
+
+def test_inkling2_markers_with_a_dead_generation_block_still_warn(monkeypatch):
+    # A template that has the block but ignores it is a real defect even with Inkling 2's markers.
+    dead_block = _INKLING2_LIKE_TEMPLATE + "{%- if add_generation_prompt -%}{%- endif -%}"
+    _result, messages = _template_messages(dead_block, "org/dead-block-case-d", monkeypatch)
+    assert messages
+
+
+# ---------------------------------------------------------------- is_gradient_checkpointing
+
+
+def _checkpointing_helper():
+    return _extract("unsloth/models/_gc_config_default.py", "is_activation_checkpointing")[
+        "is_activation_checkpointing"
+    ]
+
+
+def test_checkpointing_flag_read_without_deprecated_alias():
+    import torch
+    from transformers import LlamaConfig, LlamaForCausalLM
+
+    model = LlamaForCausalLM(
+        LlamaConfig(
+            hidden_size = 16, intermediate_size = 32, num_hidden_layers = 1,
+            num_attention_heads = 2, num_key_value_heads = 2, vocab_size = 32,
+        )
+    )
+    model.gradient_checkpointing_enable()
+    with warnings.catch_warnings(record = True) as record:
+        warnings.simplefilter("always")
+        on = _checkpointing_helper()(model)
+    assert on is True
+    assert not [w for w in record if "is_gradient_checkpointing" in str(w.message)]
+    model.gradient_checkpointing_disable()
+    assert _checkpointing_helper()(model) is False
+    del torch
+
+
+def test_checkpointing_flag_falls_back_to_old_name_and_default():
+    import types
+
+    helper = _checkpointing_helper()
+    # TRL < 1.0 PolicyAndValueWrapper style: a plain attribute under the old name only.
+    assert helper(types.SimpleNamespace(is_gradient_checkpointing = True)) is True
+    assert helper(object()) is False
+    assert helper(object(), default = None) is None
+
+
+def test_no_unsloth_site_reads_the_deprecated_model_alias():
+    offenders = []
+    for path in (ROOT / "unsloth").rglob("*.py"):
+        text = path.read_text(errors = "ignore")
+        for pattern in ('"is_gradient_checkpointing", False', ".encoder.is_gradient_checkpointing"):
+            if pattern in text:
+                offenders.append(f"{path.relative_to(ROOT)}: {pattern}")
+    assert offenders == []
+
+
+# ---------------------------------------------------------------- TrainingArguments.gradient_checkpointing
+
+
+def _route():
+    return _extract("unsloth/models/rl.py", "_route_default_gradient_checkpointing")[
+        "_route_default_gradient_checkpointing"
+    ]
+
+
+def _generated_config(route):
+    """A config like rl.py generates from TRL <= 1.18.0 (gradient_checkpointing defaults True)."""
+    import dataclasses
+
+    from transformers import TrainingArguments
+
+    @dataclasses.dataclass
+    class TRLConfig(TrainingArguments):
+        gradient_checkpointing: bool = True
+
+    arguments = (
+        "self,\n        output_dir = None,\n        activation_checkpointing = None,\n"
+        "        gradient_checkpointing = True,\n        gradient_checkpointing_kwargs = None,\n"
+    )
+    call_args = "output_dir = output_dir, activation_checkpointing = activation_checkpointing, gradient_checkpointing = gradient_checkpointing"
+    extra = ""
+    if route:
+        arguments, extra = _route()(arguments, call_args)
+    extra = "\n".join("    " + line for line in extra.splitlines())
+    source = (
+        f"def __init__({arguments.rstrip().rstrip(',')}, **kwargs):\n"
+        f"{extra}\n"
+        "    TRLConfig.__init__(self, output_dir = output_dir, activation_checkpointing = activation_checkpointing, "
+        "gradient_checkpointing = gradient_checkpointing, **kwargs)\n"
+    )
+    namespace = {"TRLConfig": TRLConfig}
+    exec(source, namespace)
+    return type("UnslothTRLConfig", (TRLConfig,), {"__init__": namespace["__init__"]})
+
+
+def _resolved(cls, **kwargs):
+    with warnings.catch_warnings(record = True) as record:
+        warnings.simplefilter("always")
+        args = cls(output_dir = "unused", use_cpu = True, report_to = "none", **kwargs)
+    deprecated = [w for w in record if "`gradient_checkpointing` is deprecated" in str(w.message)]
+    return (args.gradient_checkpointing, args.activation_checkpointing), bool(deprecated)
+
+
+def test_gradient_checkpointing_default_does_not_warn_and_is_unchanged():
+    from transformers import TrainingArguments
+
+    if "activation_checkpointing" not in TrainingArguments.__dataclass_fields__:
+        pytest.skip("transformers < 5.23 has no activation_checkpointing")
+    before, after = _generated_config(route = False), _generated_config(route = True)
+    # Checkpointing is on exactly when it was before, for every way of asking.
+    for kwargs in ({}, {"gradient_checkpointing": False}, {"gradient_checkpointing": True},
+                   {"activation_checkpointing": False}, {"activation_checkpointing": True}):
+        assert _resolved(after, **kwargs)[0] == _resolved(before, **kwargs)[0], kwargs
+    assert _resolved(before)[1] is True  # main warned with nothing passed
+    assert _resolved(after)[1] is False
+    assert _resolved(after)[0] == (True, True)
+    # A user passing the old name still hears about it.
+    assert _resolved(after, gradient_checkpointing = False)[1] is True
+
+
+def test_gradient_checkpointing_route_is_a_no_op_without_the_new_field():
+    route = _route()
+    arguments = "self,\n        gradient_checkpointing = True,\n"
+    assert route(arguments, "gradient_checkpointing = gradient_checkpointing") == (arguments, "")
+    # An already-None default (TRL >= 1.18.2) needs nothing either.
+    arguments = "self,\n        activation_checkpointing = None,\n        gradient_checkpointing = None,\n"
+    assert route(arguments, "activation_checkpointing, gradient_checkpointing") == (arguments, "")
