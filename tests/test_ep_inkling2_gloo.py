@@ -342,6 +342,149 @@ def _resume_arms(rank, tmp, trainer_cls, peft, data, trainer_args, ep_native, tp
     }
 
 
+def _case_entrypoints(rank, world, tmp, mode):
+    """Entry points beside trainer.save_model under UNSLOTH_PARALLEL="ep=2": a direct model.save_pretrained
+    (the 1-GPU adapter), push_to_hub (refused), load_best_model_at_end (rank-local restore) and a prebuilt
+    optimizer over a model Trainer.__init__ would shard (refused)."""
+    from test_tp_native_gloo import _import_checkout_unsloth, _Rows, _trainer_args
+
+    error = _import_checkout_unsloth()
+    if error is not None:
+        return {"skip": error}
+    import transformers
+    from peft import LoraConfig, get_peft_model
+
+    from unsloth.models import ep_native, tp_env
+    from unsloth.models._utils import patch_gradient_accumulation_fix
+
+    patch_gradient_accumulation_fix(transformers.Trainer)  # Unsloth's Trainer.__init__
+
+    def peft(model):
+        targets = [
+            n
+            for n, m in model.named_modules()
+            if ".language_model.layers." in n and n.endswith(ink.ATTENTION)
+        ]
+        config = LoraConfig(
+            r = 4,
+            lora_alpha = 8,
+            target_modules = targets,
+            target_parameters = ink.EXPERTS,
+            init_lora_weights = False,
+        )
+        torch.manual_seed(1)
+        return get_peft_model(model, config)
+
+    g = torch.Generator().manual_seed(1)
+    data = _Rows(list(torch.randint(1, 250, (8, 9), generator = g)))
+    if mode == "save":
+        from safetensors.torch import load_file
+
+        model = tp_env.tensor_parallel_env_peft(peft)(ink.build(True, lora = False))
+        out = os.path.join(tmp, f"direct_{world}")
+        model.save_pretrained(out)
+        try:
+            model.push_to_hub("unsloth-ep-test/never-created")
+            pushed = None
+        except NotImplementedError as exc:
+            pushed = str(exc)
+        except Exception as exc:  # anything else (a network attempt): not the refusal
+            pushed = f"other {type(exc).__name__}"
+        return {
+            "is_ep": ep_native.is_expert_parallel(model),
+            "adapter": load_file(os.path.join(out, "adapter_model.safetensors")),
+            "pushed": pushed,
+        }
+    if mode == "best":
+        model = tp_env.tensor_parallel_env_peft(peft)(ink.build(True, lora = False))
+        out = os.path.join(tmp, "best")
+        args = _trainer_args(
+            out,
+            1,
+            gradient_accumulation_steps = 1,
+            max_steps = 4,
+            adam_epsilon = 1e-4,
+            save_strategy = "steps",
+            save_steps = 2,
+            eval_strategy = "steps",
+            eval_steps = 2,
+            per_device_eval_batch_size = 1,
+            load_best_model_at_end = True,
+            metric_for_best_model = "eval_loss",
+        )
+        trainer = transformers.Trainer(
+            model = model, args = args, train_dataset = data, eval_dataset = _Rows(data.ids[:2])
+        )
+        trainer.train()
+        best = trainer.state.best_model_checkpoint
+        saved = torch.load(
+            os.path.join(best, ep_native._CKPT_DIR, f"rank{rank:05d}.pt"), weights_only = False
+        )
+        params = dict(trainer.model.named_parameters())
+        return {
+            "best": os.path.basename(best),
+            "worst": max(
+                float((params[k].detach() - v).abs().max()) for k, v in saved["weights"].items()
+            ),
+            "experts": sum(1 for k in saved["weights"] if ".experts." in k),
+        }
+    assert mode == "optimizer"
+    model = ink.build(True, lora = False)  # full finetuning: Trainer.__init__ shards it
+    opt = torch.optim.SGD(model.parameters(), lr = 0.01)
+    args = _trainer_args(os.path.join(tmp, "opt"), 1, gradient_accumulation_steps = 1)
+    try:
+        transformers.Trainer(model = model, args = args, train_dataset = data, optimizers = (opt, None))
+        refused = None
+    except NotImplementedError as exc:
+        refused = str(exc)
+    return {"refused": refused, "is_ep": ep_native.is_expert_parallel(model)}
+
+
+def _ep_env():
+    from tests._rendezvous_port import free_port
+    return {"UNSLOTH_PARALLEL": "ep=2", "MASTER_ADDR": "127.0.0.1", "MASTER_PORT": str(free_port())}
+
+
+def _ok(results):
+    if results[0] is not None and "skip" in results[0]:
+        pytest.skip(f"import unsloth failed on this host: {results[0]['skip']}")
+    assert all(r is not None and "error" not in r for r in results), results
+
+
+def test_ep_direct_save_pretrained_writes_one_gpu_adapter():
+    (ref,) = _spawn("_case_entrypoints", world = 1, mode = "save")
+    _ok([ref])
+    results = _spawn("_case_entrypoints", env = _ep_env(), mode = "save")
+    _ok(results)
+    assert not ref["is_ep"]
+    want = ref["adapter"]
+    for r in results:
+        assert r["is_ep"]
+        assert r["pushed"] is not None and "push_to_hub is not supported" in r["pushed"], r[
+            "pushed"
+        ]
+        got = r["adapter"]  # every rank reads the one file rank 0 wrote
+        assert sorted(got) == sorted(want) and any(".experts." in k for k in got)
+        assert all(got[k].shape == want[k].shape for k in want)
+        assert max(float((got[k] - want[k]).abs().max()) for k in want) == 0
+
+
+def test_ep_load_best_model_at_end_restores_rank_weights():
+    results = _spawn("_case_entrypoints", env = _ep_env(), mode = "best")
+    _ok(results)
+    for r in results:
+        assert r["best"].startswith("checkpoint-") and r["experts"] > 0, r
+        assert r["worst"] == 0, r
+
+
+def test_ep_trainer_refuses_prebuilt_optimizer_over_unsharded_experts():
+    results = _spawn("_case_entrypoints", env = _ep_env(), mode = "optimizer")
+    _ok(results)
+    for r in results:
+        assert r["refused"] is not None and "experts would never update" in r["refused"], r
+        assert not r["is_ep"]  # refused before anything was sharded
+
+
 def _worker(
     rank,
     world,

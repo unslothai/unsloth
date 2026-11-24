@@ -6832,7 +6832,12 @@ def patch_gradient_accumulation_fix(Trainer):
             # before native FSDP2 shards the dp dimension.
             tp_env = _tensor_parallel_env_trainer_pre(model)
             if tp_env is None and model is not None:
-                from .ep_native import ep_env_apply
+                from .ep_native import ep_env_apply, ep_refuse_prebuilt_optimizer
+                ep_refuse_prebuilt_optimizer(
+                    model,
+                    _prebuilt_optimizer(self, _original_trainer_init, args, kwargs),
+                    _optimizer_kwargs_hold_params(self, _original_trainer_init, args, kwargs),
+                )
                 ep_env_apply(
                     model
                 )  # UNSLOTH_EP_SIZE: a model get_peft_model did not shard (full finetuning)

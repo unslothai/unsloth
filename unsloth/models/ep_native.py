@@ -348,6 +348,7 @@ def apply_expert_parallel(model, mesh = None):
         level.__dict__[_EP_REP] = rep_mesh
         if callable(level.__dict__.get("generate")) or hasattr(type(level), "generate"):
             _sync_generate(level)
+        _ep_save_entrypoints(level)
         names = [n for n, _ in _ep_params(level)]
         ignored = list(getattr(level, "_ddp_params_and_buffers_to_ignore", None) or [])
         level._ddp_params_and_buffers_to_ignore = ignored + [
@@ -430,6 +431,91 @@ def _sync_generate(level):
 
     generate._unsloth_ep_generate = True
     level.generate = generate
+
+
+_SAVING = []  # inside an expert parallel save_pretrained: inner saves write what they are given
+
+
+def _ep_save_entrypoints(level):
+    """save_pretrained / push_to_hub under expert parallel: each rank holds only its experts' tensors. Every
+    rank calls save_pretrained: the expert tensors are gathered (collective) and global rank 0 writes the 1-GPU
+    files. push_to_hub is refused on every rank (save, then upload that directory from one process)."""
+    import torch.distributed as dist
+
+    prior_save = level.__dict__.get("save_pretrained") or getattr(level, "save_pretrained", None)
+    if callable(prior_save) and not getattr(prior_save, "_unsloth_ep_save", False):
+
+        def save_pretrained(*args, **kwargs):
+            if _SAVING or kwargs.get("state_dict") is not None:
+                return prior_save(*args, **kwargs)
+            if kwargs.get("push_to_hub"):
+                raise NotImplementedError(_EP_PUSH_REFUSAL)
+            from peft import PeftModel
+
+            if not isinstance(level, PeftModel) and any(
+                getattr(p, _EP)[0] == "4bit" for _, p in _ep_params(level)
+            ):
+                raise NotImplementedError(
+                    "Unsloth: save_pretrained of the whole model under expert parallel would write only this "
+                    "rank's 4-bit expert stacks. Save the adapter (the PEFT model's save_pretrained or "
+                    "trainer.save_model), or save from one process."
+                )
+            state = ep_full_adapter_state_dict(level)
+            _SAVING.append(True)
+            try:
+                out = (
+                    prior_save(*args, state_dict = state, **kwargs) if dist.get_rank() == 0 else None
+                )
+            finally:
+                _SAVING.pop()
+            dist.barrier()
+            return out
+
+        save_pretrained._unsloth_ep_save = True
+        level.save_pretrained = save_pretrained
+    if callable(getattr(level, "push_to_hub", None)):
+
+        def push_to_hub(*args, **kwargs):
+            raise NotImplementedError(_EP_PUSH_REFUSAL)
+
+        level.push_to_hub = push_to_hub
+
+
+_EP_PUSH_REFUSAL = (
+    "Unsloth: push_to_hub is not supported under expert parallel (each rank holds only its experts). Call "
+    "model.save_pretrained(directory) or trainer.save_model(directory) on every rank, which writes the 1-GPU "
+    "adapter, then upload that directory from one process (huggingface_hub upload_folder)."
+)
+
+
+def ep_refuse_prebuilt_optimizer(
+    model,
+    optimizer,
+    kwargs_params = False,
+):
+    """Trainer.__init__ before UNSLOTH_EP_SIZE shards a model handed in unsharded: sharding replaces the expert
+    parameters, so an optimizer built before it would step the old ones (the experts never train)."""
+    if ep_env_size() <= 1 or not isinstance(model, nn.Module) or is_expert_parallel(model):
+        return
+    tpn = _tpn()
+    replaced = {
+        id(p)
+        for block in tpn.moe_blocks_with_experts(model)
+        for chain in (tpn._experts_chain(block),)
+        if chain
+        for p in chain[0].parameters()
+    }
+    held = set()
+    for group in getattr(optimizer, "param_groups", None) or []:
+        held.update(id(p) for p in group.get("params", []))
+    if kwargs_params or held & replaced:
+        raise NotImplementedError(
+            f"Unsloth: {_EP_ENV} shards this model's experts in Trainer.__init__, which replaces the expert "
+            "parameters, but Trainer(optimizers = (optimizer, ...)) or optimizer_cls_and_kwargs = (cls, "
+            "{'params': ...}) already holds them, so the experts would never update. Let the Trainer build the "
+            "optimizer (TrainingArguments optim / learning_rate), override create_optimizer, or build the "
+            "optimizer after get_peft_model (which shards first)."
+        )
 
 
 def ep_sync_expert_grads(model):
@@ -680,8 +766,23 @@ def ep_trainer_setup(trainer):
             _load_rank_optimizer(model, trainer.optimizer, checkpoint)
         return out
 
+    if getattr(trainer.args, "load_best_model_at_end", False) and getattr(
+        trainer.args, "save_only_model", False
+    ):
+        # The best checkpoint's rank-local tensors are written beside the optimizer state, which
+        # save_only_model skips (transformers refuses the same pair under DeepSpeed / FSDP).
+        raise NotImplementedError(
+            "Unsloth: load_best_model_at_end with save_only_model = True is not supported under expert "
+            "parallel; unset save_only_model."
+        )
+
+    def ep_load_best_model():
+        # The checkpoint's adapter is the gathered 1-GPU one; this rank restores its own (rank-local) tensors.
+        _load_rank_weights(model, trainer.state.best_model_checkpoint)
+
     trainer._save_optimizer_and_scheduler = ep_save_optimizer_and_scheduler
     trainer._load_from_checkpoint = ep_load_from_checkpoint
+    trainer._load_best_model = ep_load_best_model
     trainer._load_optimizer_and_scheduler = ep_load_optimizer_and_scheduler
     for level in _levels(model):
         for attr in (
