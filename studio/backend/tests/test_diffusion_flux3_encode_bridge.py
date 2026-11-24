@@ -84,7 +84,12 @@ class _Face(f3._Flux3KleinPipelineMixin):
         self.tokenizer = object()
         self.transformer = self.vae = self.scheduler = None
 
-    def _set_guidance(self, mp, guidance_scale):
+    def _set_guidance(
+        self,
+        mp,
+        guidance_scale,
+        guidance_stop = None,
+    ):
         pass
 
     def progress_bar(self, total = None):

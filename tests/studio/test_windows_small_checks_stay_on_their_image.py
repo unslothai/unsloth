@@ -10,7 +10,8 @@ import pytest
 import yaml
 
 REPO = Path(__file__).resolve().parents[2]
-WORKFLOW = REPO / ".github" / "workflows" / "studio-windows-inference-smoke.yml"
+WORKFLOW = REPO / ".github" / "workflows" / "studio-windows-installer-smoke.yml"
+INFERENCE_WORKFLOW = REPO / ".github" / "workflows" / "studio-windows-inference-smoke.yml"
 JOB = "small-checks"
 
 # Kept here deliberately: a test reading this from the workflow could not catch it being wrong.
@@ -118,4 +119,6 @@ def test_a_failing_phase_still_lets_the_others_on_that_box_report():
 def test_the_merged_job_did_not_absorb_the_two_long_jobs():
     """inference-smoke and no-vs-cpu stay separate; merged, they would queue behind seconds-long checks."""
     jobs = yaml.safe_load(WORKFLOW.read_text(encoding = "utf-8"))["jobs"]
-    assert {"inference-smoke", "no-vs-cpu"} <= set(jobs), sorted(jobs)
+    assert set(jobs) == {JOB}, sorted(jobs)
+    inference = yaml.safe_load(INFERENCE_WORKFLOW.read_text(encoding = "utf-8"))["jobs"]
+    assert {"inference-smoke", "no-vs-cpu"} <= set(inference), sorted(inference)

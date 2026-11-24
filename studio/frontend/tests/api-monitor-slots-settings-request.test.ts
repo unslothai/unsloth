@@ -184,3 +184,12 @@ test("a kept HF cache snapshot opens the repo's saved settings and still loads t
   assert.equal(target.configId, "unsloth/Qwen3-0.6B");
   assert.equal(target.id, snapshot);
 });
+
+test("a kept quant beside its repo's other quant saves under the repo, not its served name", () => {
+  const request = keptRunSettingsRequest(
+    { checkpoint: "unsloth/gemma-3-270m-it-GGUF:Q8_0", quant: "Q8_0" },
+    "kept",
+  );
+  assert.equal(request.id, "unsloth/gemma-3-270m-it-GGUF");
+  assert.equal(request.meta.ggufVariant, "Q8_0");
+});

@@ -6,6 +6,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.security import HTTPAuthorizationCredentials
 
+import asyncio
 import base64
 import hashlib
 import importlib.util
@@ -17,6 +18,7 @@ import sys
 import threading
 import time
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
@@ -439,6 +441,23 @@ def _login_failure_detail() -> str:
     return f"Incorrect password. To reset it, run this in your terminal, {where}: {command}"
 
 
+# PBKDF2 off the event loop, in its own pool so guesses cannot hold the shared default executor.
+_login_check_pool = ThreadPoolExecutor(max_workers = 2, thread_name_prefix = "auth-login")
+
+
+def _check_login(username: str, password: str):
+    """The account's (salt, hash, jwt_secret, must_change_password) when the password is right, else None."""
+    record = storage.get_user_and_secret(username)
+    if record is None:
+        # Per-name buckets as for real accounts: a shared unknown bucket is an existence oracle.
+        hashing.equalize_login_work(password)
+        return None
+    if username == storage.DEFAULT_ADMIN_USERNAME:
+        salt, pwd_hash, _jwt_secret, _must_change_password = record
+        return record if hashing.verify_password(password, salt, pwd_hash) else None
+    return storage.authenticate_account_login(username, password)
+
+
 @router.post("/login", response_model = Token)
 async def login(payload: AuthLoginRequest, request: Request) -> Token:
     """Login with username/password. Per-account + per-IP rate-limited."""
@@ -457,30 +476,17 @@ async def login(payload: AuthLoginRequest, request: Request) -> Token:
             headers = {"Retry-After": str(blocked_for)},
         )
 
-    record = storage.get_user_and_secret(username)
+    # Counted before awaiting the hash so a burst cannot all pass the check above; success clears it.
+    _record_login_failure(key)
+    record = await asyncio.get_running_loop().run_in_executor(
+        _login_check_pool, _check_login, username, payload.password
+    )
     if record is None:
-        # Per-name buckets as for real accounts: a shared unknown bucket is an existence oracle.
-        hashing.equalize_login_work(payload.password)
-        _record_login_failure(key)
         raise HTTPException(
             status_code = status.HTTP_401_UNAUTHORIZED,
             detail = _login_failure_detail(),
         )
-
-    if username == storage.DEFAULT_ADMIN_USERNAME:
-        salt, pwd_hash, jwt_secret, must_change_password = record
-        verified = hashing.verify_password(payload.password, salt, pwd_hash)
-    else:
-        record = storage.authenticate_account_login(username, payload.password)
-        verified = record is not None
-        if record is not None:
-            salt, pwd_hash, jwt_secret, must_change_password = record
-    if not verified:
-        _record_login_failure(key)
-        raise HTTPException(
-            status_code = status.HTTP_401_UNAUTHORIZED,
-            detail = _login_failure_detail(),
-        )
+    salt, pwd_hash, jwt_secret, must_change_password = record
 
     _clear_login_bucket(key)
     _clear_login_bucket(unknown_key)
@@ -673,15 +679,12 @@ async def set_desktop_initial_password(
     )
 
 
-@router.post("/change-password", response_model = Token)
-async def change_password(
-    payload: ChangePasswordRequest,
-    request: Request,
-    current_subject: str = Depends(get_current_subject_allow_password_change),
-    is_desktop: bool = Depends(authenticated_via_desktop_jwt),
-    _own_credential: None = Depends(_require_a_credential_of_its_own("Changing passwords")),
-) -> Token:
-    """Allow the authenticated user to replace the default password."""
+# Both PBKDF2 runs off the event loop, in a pool of their own so repeated checks cannot hold it,
+# the shared default executor or the sign-in pool.
+_password_change_pool = ThreadPoolExecutor(max_workers = 2, thread_name_prefix = "auth-change-password")
+
+
+def _verify_and_change_password(current_subject: str, payload, is_desktop: bool):
     record = storage.get_user_and_secret(current_subject)
     if record is None:
         raise HTTPException(
@@ -709,20 +712,33 @@ async def change_password(
     # Single transaction so pre-change refresh tokens cannot survive the password commit;
     # conditional on the hash just verified so a concurrent reset-password is not overwritten.
     if current_subject == storage.DEFAULT_ADMIN_USERNAME:
-        new_secret = storage.update_password(
+        return storage.update_password(
             current_subject,
             payload.new_password,
             revoke_refresh_tokens = True,
             expect_password_hash = pwd_hash,
             preserve_desktop_secret = is_desktop,
         )
-    else:
-        new_secret = storage.update_account_password(
-            current_subject,
-            payload.new_password,
-            expect_password_hash = pwd_hash,
-            expect_secret = _jwt_secret,
-        )
+    return storage.update_account_password(
+        current_subject,
+        payload.new_password,
+        expect_password_hash = pwd_hash,
+        expect_secret = _jwt_secret,
+    )
+
+
+@router.post("/change-password", response_model = Token)
+async def change_password(
+    payload: ChangePasswordRequest,
+    request: Request,
+    current_subject: str = Depends(get_current_subject_allow_password_change),
+    is_desktop: bool = Depends(authenticated_via_desktop_jwt),
+    _own_credential: None = Depends(_require_a_credential_of_its_own("Changing passwords")),
+) -> Token:
+    """Allow the authenticated user to replace the default password."""
+    new_secret = await asyncio.get_running_loop().run_in_executor(
+        _password_change_pool, _verify_and_change_password, current_subject, payload, is_desktop
+    )
     if new_secret is None:
         raise HTTPException(
             status_code = status.HTTP_409_CONFLICT,

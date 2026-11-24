@@ -212,6 +212,60 @@ def test_near_cancellation(dora_mod, device, a_dtype, w_dtype):
         assert err <= peft_err, (err, peft_err)  # bf16 rounds W + s B A to 8 bits; fp16 keeps 11
 
 
+@pytest.mark.parametrize("device", _devices())
+def test_cross_term_transposed_weight_and_partial_tiles(dora_mod, device):
+    mod, _ = dora_mod
+    torch.manual_seed(5)
+    A = torch.randn(9, 1025, device = device)
+    # PEFT transposes the stored Conv1D weight before computing the norm.
+    W = torch.randn(1025, 97, device = device, dtype = torch.float16).t()
+    expected = A.double() @ W.double().t()
+    assert _rel(mod._cross_term_fp32(W, A).double(), expected) < 2e-6
+    # Inductor elides a float16 -> float32 cast pair, which dropped the low half of a cast-based split.
+    torch._dynamo.reset()
+    compiled = torch.compile(mod._cross_term_fp32, fullgraph = True)
+    assert _rel(compiled(W, A).double(), expected) < 2e-6
+    torch._dynamo.reset()
+
+
+def _variants(kernel):
+    # Same fallback as tests/test_triton_variant_budget.py: Triton 3.2 exposes `cache`, not `device_caches`.
+    import triton
+
+    while not isinstance(kernel, triton.runtime.jit.JITFunction):
+        kernel = kernel.fn
+    caches = getattr(kernel, "device_caches", None)
+    if caches is not None:
+        return sum(len(v[0]) for v in caches.values())
+    return sum(len(v) for v in kernel.cache.values())
+
+
+def _uses_kernel(mod, device):
+    return (
+        device == "cuda" and mod.triton is not None and torch.cuda.get_device_capability()[0] >= 8
+    )
+
+
+@pytest.mark.parametrize("device", _devices())
+def test_one_kernel_variant_across_projection_shapes(dora_mod, device):
+    mod, _ = dora_mod
+    if not _uses_kernel(mod, device):
+        pytest.skip("Triton cross term needs CUDA with compute capability 8+")
+    torch.manual_seed(6)
+    A = torch.randn(16, 2048, device = device)
+    for d_out in (512, 2048, 8192, 1000):  # k / v, q / o, gate / up, and an odd width
+        W = torch.randn(d_out, 2048, device = device, dtype = torch.bfloat16)
+        # A bfloat16 hi + lo split keeps about 16 bits of the float32 adapter.
+        assert _rel(mod._cross_term_fp32(W, A).double(), A.double() @ W.double().t()) < 1e-5
+    # 16-aligned widths share one, the odd width adds one
+    assert _variants(mod._dora_cross_kernel) <= 2
+
+
+def test_triton_off_switch(monkeypatch):
+    monkeypatch.setenv("UNSLOTH_DORA_TRITON", "0")
+    assert _load().triton is None
+
+
 def test_autocast_does_not_lower_precision(dora_mod):
     mod, _ = dora_mod
     torch.manual_seed(3)

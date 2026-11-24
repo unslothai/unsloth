@@ -893,3 +893,61 @@ def test_the_chat_load_refuses_managed_remote_code_before_the_worker_starts():
     check = src.index("managed_remote_code_refused()")
     assert check < src.index("backend.load_model,")
     assert "MANAGED_REMOTE_CODE_REFUSAL" in src[check : check + 200]
+
+
+def test_an_xlora_adapter_needs_access_to_every_adapter_it_lists(tmp_path):
+    # PEFT's XLoraModel opens each listed adapter by path or Hub id, past the adapter and base checks.
+    import json
+
+    adapter = tmp_path / "bob-xlora"
+    adapter.mkdir()
+    (adapter / "adapter_config.json").write_text(
+        json.dumps(
+            {
+                "peft_type": "XLORA",
+                "base_model_name_or_path": None,
+                "adapters": {"0": str(tmp_path / "owner" / "outputs" / "run")},
+            }
+        )
+    )
+    config = SimpleNamespace(base_model = None, identifier = str(adapter))
+    assert access.listed_adapters(str(adapter)) == [str(tmp_path / "owner" / "outputs" / "run")]
+    with pytest.raises(HTTPException):
+        run_as(BOB, inference._require_resolved_base_access, config)
+    # The owner's loads are unchanged.
+    inference._require_resolved_base_access(config)
+
+
+def test_a_plain_lora_lists_no_adapters(tmp_path):
+    import json
+
+    adapter = tmp_path / "lora"
+    adapter.mkdir()
+    (adapter / "adapter_config.json").write_text(
+        json.dumps({"peft_type": "LORA", "base_model_name_or_path": "org/public"})
+    )
+    assert access.listed_adapters(str(adapter)) == []
+
+
+def test_a_base_that_is_itself_an_adapter_needs_access_to_what_it_names(tmp_path, monkeypatch):
+    # transformers follows a base's own adapter_config.json to the model named there.
+    import json
+
+    public = tmp_path / "public-base"
+    public.mkdir()
+    (public / "adapter_config.json").write_text(
+        json.dumps(
+            {"peft_type": "LORA", "base_model_name_or_path": str(tmp_path / "owner" / "run")}
+        )
+    )
+    monkeypatch.setattr(
+        access,
+        "require_model_access",
+        lambda ref, *a, **k: None
+        if ref == str(public)
+        else (_ for _ in ()).throw(HTTPException(404)),
+    )
+    config = SimpleNamespace(base_model = str(public), identifier = "bob/adapter")
+    with pytest.raises(HTTPException):
+        run_as(BOB, inference._require_resolved_base_access, config)
+    inference._require_resolved_base_access(config)

@@ -157,6 +157,7 @@ import {
   SaveTemporaryChatMenu,
   TemporaryChatSaveBridge,
 } from "./components/temporary-chat-save";
+import { ChatFilesBridge, ChatFilesMenu } from "./components/chat-files-menu";
 import { useT } from "@/i18n";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import {
@@ -5159,6 +5160,7 @@ export function ChatPage({
                 onDiscard={toggleIncognito}
               />
             ) : null}
+            {view.mode === "single" ? <ChatFilesMenu /> : null}
             {view.mode === "single" && (
               <ChatHeaderMenu temporary={incognito} onToggleTemporary={toggleIncognito} />
             )}
@@ -5294,6 +5296,7 @@ export function ChatPage({
                       ) : (
                         <>
                           <TemporaryChatSaveBridge />
+                          <ChatFilesBridge />
                           <SingleContent threadId={baseView.threadId} />
                         </>
                       )}

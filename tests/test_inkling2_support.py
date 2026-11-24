@@ -4,6 +4,7 @@
 projections, PEFT accepts them, and the released checkpoints' "modelopt" marker skips the generic ModelOpt rewrite."""
 
 import importlib.util
+import os
 import pathlib
 import re
 from types import SimpleNamespace
@@ -289,20 +290,29 @@ def test_4bit_keeps_mini_message_gates_out_of_bitsandbytes():
     assert not (kept - gates)
 
 
-def test_fastmodel_keeps_inkling2_eager_unless_told_otherwise():
+def test_fastmodel_keeps_inkling2_eager_unless_told_otherwise(monkeypatch):
     # Compiled, Inkling 2 recompiled per sequence length (A100 Mini QLoRA: 85-840 s per step vs 4.4 s eager). The
     # branch must cover both model types, sit in the model-type chain, and leave an explicit user choice alone.
     import unsloth.models.loader as loader_module
 
-    source = pathlib.Path(loader_module.__file__).read_text()
+    source = pathlib.Path(loader_module.__file__).read_text(encoding = "utf-8")
     branch = re.search(r'elif "inkling2" in model_types_all:(.*?)\n        else:\n', source, re.S)
     assert branch
-    body = branch.group(1)
-    assert re.search(
-        r'if os\.environ\.get\("UNSLOTH_COMPILE_DISABLE", "0"\) == "0":\s*\n\s*'
-        r'os\.environ\["UNSLOTH_COMPILE_DISABLE"\] = "partial"',
-        body,
-    )
+    # The shared helper (#19073) sets "partial" and keeps a full disable full.
+    assert re.search(r"^\s*_set_partial_compile_disable\(\)\s*$", branch.group(1), re.M)
+    for before, after in (
+        (None, "partial"),
+        ("0", "partial"),
+        ("partial", "partial"),
+        ("1", "1"),
+        ("true", "1"),
+    ):
+        if before is None:
+            monkeypatch.delenv("UNSLOTH_COMPILE_DISABLE", raising = False)
+        else:
+            monkeypatch.setenv("UNSLOTH_COMPILE_DISABLE", before)
+        loader_module._set_partial_compile_disable()
+        assert os.environ["UNSLOTH_COMPILE_DISABLE"] == after, before
 
 
 @pytest.mark.parametrize(
@@ -630,7 +640,7 @@ def test_float32_export_writes_float32_merge(tmp_path):
 
 
 def test_save_pretrained_merged_forwards_dtype_to_inkling2():
-    source = (_ROOT / "unsloth" / "save.py").read_text()
+    source = (_ROOT / "unsloth" / "save.py").read_text(encoding = "utf-8")
     call = source[source.index("        save_inkling2_merged_16bit(\n") :]
     call = call[: call.index(")")]
     assert "dtype = dtype" in call

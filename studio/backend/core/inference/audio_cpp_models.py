@@ -1949,6 +1949,19 @@ CONVERT_DRIVEN_OPTIONS = frozenset(
         "style_ref_text",
     }
 )
+# Options the runtime opens host files from, though their names do not end in _file, _path or _dir:
+# a clip path (Vevo2), WAV paths per speaker (VibeVoice, MOSS-TTSD) and JSON rows that name clips
+# (Audio8, Fish Audio, Plapre). Most are typed string, so the name is what keeps them out of a run.
+FILE_OPTIONS = frozenset(
+    {
+        "target_voice",
+        "voice_samples",
+        "multi_reference_cond",
+        "references",
+        "previous_takes",
+        "pronunciations",
+    }
+)
 _RENDERABLE_TYPES = frozenset({"bool", "int", "float", "string", "enum"})
 _MAX_STRING_OPTION = 4000
 
@@ -2082,6 +2095,8 @@ def _clean_option(raw: Any) -> Optional[dict]:
     if not name or "." in name or kind not in _RENDERABLE_TYPES:
         return None
     if name in _STUDIO_DRIVEN_OPTIONS or name.endswith(("_file", "_path", "_dir")):
+        return None
+    if name in FILE_OPTIONS:
         return None
     option: dict[str, Any] = {
         "name": name,

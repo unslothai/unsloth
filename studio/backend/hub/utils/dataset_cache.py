@@ -206,6 +206,18 @@ def processed_dataset_cache_has_artifacts(path: Path) -> bool:
     return False
 
 
+def _datasets_cache_dir_name(repo_id: str) -> str:
+    namespace, slash, name = repo_id.partition("/")
+    if not slash:
+        namespace, name = "", repo_id
+    try:
+        from datasets.naming import camelcase_to_snakecase
+        name = camelcase_to_snakecase(name)
+    except Exception:
+        pass
+    return f"{namespace}___{name}" if namespace else name
+
+
 def latest_processed_dataset_cache_path(repo_id: str) -> Optional[Path]:
     if not repo_id:
         return None
@@ -295,6 +307,37 @@ def resolved_dataset_snapshot_file(snapshot: str | Path, source_path: str) -> Op
 
 def dataset_snapshot_contains_file(snapshot: str | Path, source_path: str) -> bool:
     return resolved_dataset_snapshot_file(snapshot, source_path) is not None
+
+
+def _snapshot_entry_stays_in_cache(snapshot: Path, entry: Path) -> bool:
+    """Same rule as resolved_dataset_snapshot_file: into the snapshot or to a blob file. *snapshot* is resolved."""
+    try:
+        resolved = entry.resolve(strict = False)
+    except (OSError, RuntimeError, ValueError):
+        return False
+    if resolved.is_relative_to(snapshot):
+        return True
+    repo_dir = snapshot.parent.parent
+    # A linked blob directory would be followed without its own links being looked at.
+    return not resolved.is_dir() and (
+        resolved.is_relative_to(repo_dir / "blobs")
+        or resolved.is_relative_to(repo_dir.parent / "blobs")
+    )
+
+
+def _snapshot_links_stay_in_cache(snapshot: Path) -> bool:
+    """Tool sandboxes can write the Hub cache and datasets follows every link in a folder (and globs a file
+    path it is handed), so a snapshot holding a link out of the cache is not read at all."""
+    try:
+        snapshot = snapshot.resolve(strict = True)
+    except (OSError, RuntimeError, ValueError):
+        return False
+    for directory, dirnames, filenames in os.walk(snapshot, followlinks = False):
+        for name in (*dirnames, *filenames):
+            entry = Path(directory, name)
+            if entry.is_symlink() and not _snapshot_entry_stays_in_cache(snapshot, entry):
+                return False
+    return True
 
 
 def complete_dataset_snapshot_path(local_path: Optional[str], repo_id: str) -> Optional[Path]:
@@ -488,6 +531,10 @@ def load_cached_hf_dataset(
     )
     if processed is None and snapshot is None:
         raise FileNotFoundError(f"Cached dataset path for {repo_id} is unavailable")
+    if snapshot is not None and not _snapshot_links_stay_in_cache(snapshot):
+        raise UnsafeDatasetCachePathError(
+            f"Dataset snapshot for {repo_id} holds a link that leaves the cache: {snapshot}"
+        )
 
     from datasets import DownloadConfig
 
@@ -585,6 +632,9 @@ def cached_dataset_candidates(
     extensions: tuple[str, ...],
     preferred_extensions: tuple[str, ...] = TRAINING_DATA_EXTS,
 ) -> list[Path]:
+    # Not per candidate: the loader globs a file named "*.txt" and reads the link beside it too.
+    if not _snapshot_links_stay_in_cache(snapshot):
+        return []
     try:
         files = drop_appledouble_metadata(
             [p for p in snapshot.rglob("*") if p.is_file() and p.name.lower().endswith(extensions)]
@@ -624,6 +674,11 @@ def dataset_cache_can_answer(repo_id: str) -> bool:
     try:
         if latest_processed_dataset_cache_path(repo_id) is not None:
             return True
+        # datasets opens the snake-cased name (acme/SecretData -> acme___secret_data), not the one typed.
+        spelled = _datasets_cache_dir_name(repo_id)
+        for root in hf_datasets_cache_roots():
+            if processed_dataset_cache_has_artifacts(root / spelled):
+                return True
         return latest_cached_dataset_snapshot(repo_id) is not None
     except Exception:
         # Never let the guard's own failure open the path it guards.

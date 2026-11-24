@@ -934,6 +934,13 @@ export const zhTW = {
     compactEmpty: "目前還沒有可壓縮的內容",
     compactUnsupported: "壓縮需要支援工具的 GGUF 或 MLX 模型",
   },
+  chatFiles: {
+    title: "此聊天中的檔案",
+    code: "程式碼片段",
+    showInChat: "在聊天中顯示",
+    download: "下載 {name}",
+    saveFailed: "無法儲存 {name}。",
+  },
   welcome: {
     goodToSeeYou: "很高興見到您",
     goodToSeeYouName: "很高興見到您，{name}",
@@ -983,6 +990,9 @@ export const zhTW = {
       "改從 ModelScope 搜尋和下載。您可以在「設定」中切換回來。",
     useModelScopeFailed: "無法切換到 ModelScope。",
     updateToken: "更新權杖",
+    linkedModelTitle: "載入 {model}？",
+    linkedModelBody: "某個連結開啟了此頁面，並要求下載並載入此模型。",
+    linkedModelLoad: "載入",
     hfToken: {
       label: "HF 權杖",
       saved: "已儲存",
@@ -2676,7 +2686,7 @@ export const zhTW = {
         oldWebkitWarning:
           "Wayland 上的 WebKitGTK {version}：在使用分數縮放的 NVIDIA 環境中，GPU 繪製可能會在啟動時當機（WebKit 錯誤 280210）。若發生此情況，Unsloth 會自動切換回 CPU 繪製。在 WebKitGTK 2.50.4 上實測沒有加速效果（兩者皆為 8 fps），因此不建議在此選擇「開啟」。",
         oldDriverWarning:
-          "X11 上的 NVIDIA 驅動程式 {version}：在驅動程式更新至 610 或更新版本之前，Unsloth 會保持關閉 GPU 繪製。較舊的驅動程式每繪製一個影格就會洩漏一個檔案描述元，視窗會在幾分鐘內停止繪製。",
+          "X11 上的 NVIDIA 驅動程式 {version}：在驅動程式更新至 590 或更新版本之前，Unsloth 會保持關閉 GPU 繪製。較舊的驅動程式每繪製一個影格就會洩漏一個檔案描述元，視窗會在幾分鐘內停止繪製。",
         fallbackNote:
           "GPU 繪製在此系統啟動時當機，因此 Unsloth 目前使用 CPU 繪製。",
         tryAgain: "再試一次 GPU",
@@ -2943,6 +2953,15 @@ export const zhTW = {
         runningOn: "llama.cpp 目前在 {backend} 上執行。",
         hint: "安裝適用於此後端的 llama.cpp 版本，並在更新後保留。適用於自動選擇的後端會當機，或 GPU 驅動程式不支援的情況。僅列出這台電腦有可用版本的後端；訓練不受影響。",
         autoWith: "自動（{backend}）",
+        unavailableOption: "{backend}（{reason}）",
+        unavailableHint: "{backend}：{hint}",
+        unavailable: {
+          rocmNotInstalled: "未安裝 ROCm",
+          rocmNoAccess: "無法存取 GPU",
+          otherRelease: "需要更新 llama.cpp",
+          checkFailed: "無法檢查",
+          noBuild: "沒有適用於此電腦的組建",
+        },
         apply: "套用",
         applying: "安裝中...",
         applyHint: "下載新版本並重新啟動 llama.cpp。已載入的模型將會卸載。",

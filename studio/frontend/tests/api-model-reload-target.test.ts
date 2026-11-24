@@ -39,7 +39,10 @@ test("a served NPU model reloads through the NPU loader, as the picker routes it
 test("a row reload asks to stop only the reloaded model's chats, not the selected model's", () => {
   const runtime = readSrc("features/chat/hooks/use-chat-model-runtime.ts");
   assert.match(runtime, /const touchesOnlySelected =\s*forceReload && !isExternalModelId\(modelId\) && loadedNow\.length > 1;/);
-  assert.match(runtime, /touchesOnlySelected \? modelId : undefined,/);
+  assert.match(
+    runtime,
+    /touchesOnlySelected\s*\?\s*servedCheckpoint\(loadedNow, modelId, ggufVariant\)\s*:\s*undefined,/,
+  );
   assert.doesNotMatch(runtime, /touchesOnlySelected \? \(paramsNow\.checkpoint/);
 });
 

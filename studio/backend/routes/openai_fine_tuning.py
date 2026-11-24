@@ -449,6 +449,9 @@ def _training_config(body: FineTuningJobCreate) -> dict[str, Any]:
             config.setdefault("wandb_project", wandb["project"])
     if body.seed is not None:
         config["random_seed"] = body.seed
+    # A queued or finished job keeps its request in memory; real job parameters are a few KB.
+    if len(json.dumps(config, default = str)) > _MAX_JOB_CONFIG_BYTES:
+        raise _bad_request("The fine-tuning job's parameters are too large.")
     try:
         n_epochs = hyperparameters.get("n_epochs", "auto")
         if n_epochs != "auto":
@@ -467,6 +470,8 @@ def _training_config(body: FineTuningJobCreate) -> dict[str, Any]:
 
 
 QUEUE_POLL_S = 5.0
+_MAX_JOB_CONFIG_BYTES = 1024 * 1024
+_MAX_QUEUED_PER_ACCOUNT = 64
 
 QUEUE_IDLE_CONFLICTS = 12
 _TERMINAL_KEEP = 256
@@ -1027,6 +1032,13 @@ def _next_created_ns() -> int:
 
 
 def _enqueue(request: TrainingStartRequest, current_subject: str, via_api_key: bool) -> _Queued:
+    account_id = current_account_id()
+    if sum(1 for e in _QUEUE if e.account.account_id == account_id) >= _MAX_QUEUED_PER_ACCOUNT:
+        raise _bad_request(
+            f"At most {_MAX_QUEUED_PER_ACCOUNT} fine-tuning jobs can wait in the queue per account. "
+            "Try again when some have started.",
+            429,
+        )
     entry = _Queued(
         alias = f"ftjob_q{secrets.token_hex(8)}",
         account = current_account(),

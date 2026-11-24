@@ -992,6 +992,13 @@ export const pl = {
     compactUnsupported:
       "Kompaktowanie wymaga modelu GGUF lub MLX z obsługą narzędzi",
   },
+  chatFiles: {
+    title: "Pliki w tym czacie",
+    code: "Fragmenty kodu",
+    showInChat: "Pokaż w czacie",
+    download: "Pobierz {name}",
+    saveFailed: "Nie udało się zapisać {name}.",
+  },
   welcome: {
     goodToSeeYou: "Miło Cię widzieć",
     goodToSeeYouName: "Miło Cię widzieć, {name}",
@@ -1043,6 +1050,9 @@ export const pl = {
       "Wyszukuj i pobieraj z ModelScope. Możesz wrócić w Ustawieniach.",
     useModelScopeFailed: "Nie udało się przełączyć na ModelScope.",
     updateToken: "Zaktualizuj token",
+    linkedModelTitle: "Wczytać {model}?",
+    linkedModelBody: "Link otworzył tę stronę i prosi o pobranie i wczytanie tego modelu.",
+    linkedModelLoad: "Wczytaj",
     hfToken: {
       label: "Token HF",
       saved: "Zapisano",
@@ -2827,7 +2837,7 @@ export const pl = {
         oldWebkitWarning:
           "WebKitGTK {version} w Wayland: renderowanie na GPU może powodować awarię przy uruchamianiu na kartach NVIDIA ze skalowaniem ułamkowym (błąd WebKit 280210). W takim przypadku Unsloth samoczynnie wróci do renderowania na CPU. Na WebKitGTK 2.50.4 nie dało zmierzalnego przyspieszenia (8 fps w obu przypadkach), więc opcja Włączone nie jest tu zalecana.",
         oldDriverWarning:
-          "Sterownik NVIDIA {version} w X11: Unsloth utrzymuje renderowanie na GPU wyłączone, dopóki sterownik nie będzie w wersji 610 lub nowszej. Starsze sterowniki tracą deskryptor pliku na każdą klatkę, a okno przestaje się rysować w ciągu kilku minut.",
+          "Sterownik NVIDIA {version} w X11: Unsloth utrzymuje renderowanie na GPU wyłączone, dopóki sterownik nie będzie w wersji 590 lub nowszej. Starsze sterowniki tracą deskryptor pliku na każdą klatkę, a okno przestaje się rysować w ciągu kilku minut.",
         fallbackNote:
           "Renderowanie na GPU spowodowało awarię przy uruchamianiu w tym systemie, więc Unsloth używa renderowania na CPU.",
         tryAgain: "Spróbuj ponownie z GPU",
@@ -3105,6 +3115,15 @@ export const pl = {
         runningOn: "llama.cpp działa obecnie na: {backend}.",
         hint: "Instaluje kompilację llama.cpp dla tego backendu i zachowuje ją przy aktualizacjach. Przydatne, gdy automatyczny wybór powoduje awarie lub sterownik GPU go nie obsługuje. Wyświetlane są tylko backendy z kompilacją dla tego komputera; nie wpływa to na trenowanie.",
         autoWith: "Automatycznie ({backend})",
+        unavailableOption: "{backend} ({reason})",
+        unavailableHint: "{backend}: {hint}",
+        unavailable: {
+          rocmNotInstalled: "ROCm nie jest zainstalowany",
+          rocmNoAccess: "brak dostępu do GPU",
+          otherRelease: "wymaga aktualizacji llama.cpp",
+          checkFailed: "nie udało się sprawdzić",
+          noBuild: "brak kompilacji dla tego komputera",
+        },
         apply: "Zastosuj",
         applying: "Instalowanie...",
         applyHint:

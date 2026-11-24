@@ -276,14 +276,21 @@ export function describeInferenceStatus(
         : checkpoint === activeCheckpoint || name === active;
     if (!name || (active && isActive)) continue;
     if (entries.some((entry) => entry.id === `chat:${checkpoint}`)) continue;
+    const quant = status.serving_quants?.[i];
+    const twin = quant && serving.filter((other) => other === name).length > 1;
     entries.push({
       id: `chat:${checkpoint}`,
       kind: "text",
       source: "chat",
       name,
-      detail: "Also serving",
+      ...(twin ? { label: `${name}:${quant}` } : {}),
+      detail: joinDetail(twin ? quant : null, "Also serving"),
       servingCheckpoint: checkpoint,
     });
+    const shown = entries.find((entry) => entry.id === `chat:${active}`);
+    if (twin && shown && name === active && status.gguf_variant && !shown.label) {
+      shown.label = `${active}:${status.gguf_variant}`;
+    }
   }
   // Only the Transformers backend caches past the active model, but it is memory
   // nothing else surfaces or releases.

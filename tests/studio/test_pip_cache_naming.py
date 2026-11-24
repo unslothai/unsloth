@@ -18,7 +18,11 @@ SAVE_SUFFIX = "actions/pip-cache-save"
 # Jobs that restore another job's entry and never save. Only safe when the install
 # is identical, so a borrower's extras cannot exist; consolidated-zoo runs the same
 # core-cpu-setup on the same matrix, asserted by test_zoo_suite_parallel_isolation.py.
-READ_ONLY_BORROWERS = {"consolidated-tests-ci.yml:consolidated-zoo": "consolidated"}
+READ_ONLY_BORROWERS = {
+    "consolidated-tests-ci.yml:consolidated-zoo": "consolidated",
+    # Backend CI's multi-rank shards, split into their own path-filtered workflow: same install.
+    "distributed-cpu-ci.yml:distributed-cpu-tests": "repo-cpu-tests",
+}
 
 
 def _jobs(path):
