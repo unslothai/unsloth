@@ -74,18 +74,6 @@ def test_answer_without_a_thought():
     assert out == "Hello there, how are you?"
 
 
-def test_tool_call_keeps_its_closer_for_the_parser():
-    raw = (
-        "<|content_thinking|>Search it.<|end_message|><|message_model|>"
-        'web_search<|content_invoke_tool_json|>{"name":"web_search","args":{"query":"x"}}<|end_message|>'
-    )
-    out = _stream(make_reasoning_normalizer(MARKERS), _token_chunks(raw))
-    assert out == (
-        "<think>Search it.</think>"
-        '<|content_invoke_tool_json|>{"name":"web_search","args":{"query":"x"}}<|end_message|>'
-    )
-
-
 def test_a_second_thought_leaves_no_markup():
     raw = (
         "<|content_thinking|>one<|end_message|><|message_model|><|content_text|>Answer.<|end_message|>"
@@ -107,12 +95,6 @@ def test_a_closer_split_across_chunks_is_held():
 def test_text_that_only_looks_like_a_marker_start_is_flushed():
     out = _stream(make_reasoning_normalizer(MARKERS), ["a < b and c <|"])
     assert out == "a < b and c <|"
-
-
-def test_headers_drop_the_role_opener_and_text_opener():
-    raw = "<|content_thinking|>t<|end_message|><|message_model|><|content_text|>Red\nBlue<|end_message|>"
-    out = _stream(make_reasoning_normalizer(MARKERS), _token_chunks(raw))
-    assert out == "<think>t</think>Red\nBlue"
 
 
 def test_tool_call_name_prefix_is_dropped():

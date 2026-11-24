@@ -35,6 +35,7 @@ _INKLING_TOOL_CALL_OPEN = "<|content_invoke_tool_json|>"
 _INKLING_ROLE_OPEN = "<|message_model|>"
 _INKLING_TEXT_OPEN = "<|content_text|>"
 _INKLING_CONTENT_OPENS = (_INKLING_TEXT_OPEN, _INKLING_THOUGHT_OPEN, _INKLING_TOOL_CALL_OPEN)
+_INKLING_BODY_ENDS = (_INKLING_MESSAGE_END, _INKLING_ROLE_OPEN)
 # A header names at most a tool; a longer held header is content after all.
 _INKLING_HEADER_MAX_LEN = 128
 
@@ -1942,25 +1943,119 @@ class ReasoningChannelNormalizer:
         return output
 
 
-class _InklingToolBody:
-    """A tool call's JSON body: only an ``<|end_message|>`` outside its strings closes it."""
+class InklingMessageNormalizer:
+    """Convert Inkling 2's message protocol to ``<think>``. Every block is
+    ``[<|message_model|>][name]<|content_KIND|>body<|end_message|>`` and the generation prompt ends inside the
+    first header. Headers are dropped (a tool name is repeated in its JSON), the first thought becomes
+    ``<think>``, text closers are dropped, and a tool call keeps its opener and closer for the tool-call parser.
+    A later thought shows as text, as the Gemma channel does."""
 
-    def __init__(self):
-        self.open = False
+    def __init__(
+        self,
+        *_markers,
+        in_reasoning: bool = False,
+        continued: bool = False,
+    ):
+        self._buffer = ""
+        # Where the prompt left off: an opened thought, a continued message's content, or a header.
+        self._state = "thought" if in_reasoning else "text" if continued else "header"
+        self._thought_seen = in_reasoning
+        self._think_open = False
         self._in_string = False
         self._escape = False
 
-    def start(self):
-        self.open, self._in_string, self._escape = True, False, False
+    def feed(self, text: str) -> str:
+        self._buffer += text or ""
+        return self._consume(final = False)
 
-    def take(
-        self,
-        text: str,
-        final: bool = False,
-    ) -> tuple[str, str, str]:
-        """``(body, held, rest)``: the body up to and including its closer, a partial closer to hold,
-        and the text after the closer."""
-        for i, char in enumerate(text):
+    def drain(self) -> str:
+        return self._consume(final = True)
+
+    def finish(self) -> str:
+        output = self.drain()
+        if self._think_open:
+            output += _THINK_CLOSE
+            self._think_open = False
+        return output
+
+    def _consume(self, final: bool) -> str:
+        output: list[str] = []
+        while self._buffer:
+            if self._state == "header":
+                found = [
+                    (self._buffer.find(opener), opener)
+                    for opener in _INKLING_CONTENT_OPENS
+                    if opener in self._buffer
+                ]
+                if not found:
+                    if not final and len(self._buffer) <= _INKLING_HEADER_MAX_LEN:
+                        break
+                    self._state = "text"
+                    continue
+                index, opener = min(found)
+                self._buffer = self._buffer[index + len(opener) :]
+                if opener == _INKLING_TOOL_CALL_OPEN:
+                    output.append(opener)
+                    self._state, self._in_string, self._escape = "tool", False, False
+                elif opener == _INKLING_THOUGHT_OPEN and not self._thought_seen:
+                    self._state, self._thought_seen = "thought", True
+                else:
+                    self._state = "text"
+            elif self._state == "tool":
+                index = self._tool_call_end()
+                if index < 0:
+                    # Only outside a string can the tail be the start of the closer.
+                    held = (
+                        ""
+                        if final or self._in_string
+                        else _split_partial_marker(self._buffer, _INKLING_MESSAGE_END)[1]
+                    )
+                    output.append(self._buffer[: len(self._buffer) - len(held)])
+                    self._buffer = held
+                    break
+                index += len(_INKLING_MESSAGE_END)
+                output.append(self._buffer[:index])
+                self._buffer = self._buffer[index:]
+                self._state = "header"
+            else:
+                found = [
+                    (self._buffer.find(marker), marker)
+                    for marker in _INKLING_BODY_ENDS
+                    if marker in self._buffer
+                ]
+                if not found:
+                    held = (
+                        ""
+                        if final
+                        else max(
+                            (
+                                _split_partial_marker(self._buffer, marker)[1]
+                                for marker in _INKLING_BODY_ENDS
+                            ),
+                            key = len,
+                        )
+                    )
+                    output.append(self._body(self._buffer[: len(self._buffer) - len(held)]))
+                    self._buffer = held
+                    break
+                index, marker = min(found)
+                output.append(self._body(self._buffer[:index]))
+                self._buffer = self._buffer[index + len(marker) :]
+                if self._think_open:
+                    output.append(_THINK_CLOSE)
+                    self._think_open = False
+                self._state = "header"
+        return "".join(output)
+
+    def _body(self, text: str) -> str:
+        if self._state == "thought" and text and not self._think_open:
+            self._think_open = True
+            return _THINK_OPEN + text
+        return text
+
+    def _tool_call_end(self) -> int:
+        """Index of the closer outside the call's JSON strings, or -1; quoted control text is argument text."""
+        for index, char in enumerate(self._buffer):
             if self._escape:
                 self._escape = False
             elif self._in_string:
@@ -1970,125 +2065,9 @@ class _InklingToolBody:
                     self._in_string = False
             elif char == '"':
                 self._in_string = True
-            elif text.startswith(_INKLING_MESSAGE_END, i):
-                end = i + len(_INKLING_MESSAGE_END)
-                self.open = False
-                return text[:end], "", text[end:]
-        if final or self._in_string:
-            return text, "", ""
-        body, held = _split_partial_marker(text, _INKLING_MESSAGE_END)
-        return body, held, ""
-
-
-class InklingMessageNormalizer(ReasoningChannelNormalizer):
-    """Inkling 2 writes every block as ``<|message_model|>[name]<|content_KIND|>...<|end_message|>``. Headers
-    and text closers are dropped (a tool name prefix is repeated in its JSON); the first thought becomes
-    ``<think>``, and a tool call keeps its ``<|end_message|>`` for the tool-call parser."""
-
-    _CONTROLS = (_INKLING_MESSAGE_END, _INKLING_TOOL_CALL_OPEN, _INKLING_THOUGHT_OPEN)
-
-    def __init__(
-        self,
-        *args,
-        continued: bool = False,
-        **kwargs,
-    ):
-        super().__init__(*args, **kwargs)
-        self._header = ""
-        self._role_partial = ""
-        # The generation prompt ends with <|message_model|>, so the stream starts inside a header
-        # unless the prompt already opened the thought or a continued message's content.
-        self._in_header = not (self._in_reasoning or continued)
-        self._held = ""
-        # Each stage tracks the tool call's JSON strings, so quoted control text stays argument text.
-        self._header_tool_body = _InklingToolBody()
-        self._filter_tool_body = _InklingToolBody()
-        self._body_partial = ""
-
-    def feed(self, text: str) -> str:
-        return self._filter(super().feed(self._headers(text)))
-
-    def drain(self) -> str:
-        # Also the flush inside finish(), which only adds the think closer: filtering twice would drop a tool closer.
-        return self._filter(super().feed(self._flush_header()) + super().drain(), final = True)
-
-    def _flush_header(self) -> str:
-        held = self._role_partial + self._body_partial + self._header
-        self._role_partial, self._body_partial, self._header, self._in_header = "", "", "", False
-        return held
-
-    def _headers(self, text: str) -> str:
-        output: list[str] = []
-        text = text or ""
-        while text:
-            if self._header_tool_body.open:
-                body, self._body_partial, text = self._header_tool_body.take(
-                    self._body_partial + text
-                )
-                output.append(body)
-                continue
-            if self._in_header:
-                self._header += text
-                text = ""
-                found = [
-                    (self._header.find(opener), opener)
-                    for opener in _INKLING_CONTENT_OPENS
-                    if opener in self._header
-                ]
-                if not found:
-                    if len(self._header) > _INKLING_HEADER_MAX_LEN:
-                        output.append(self._flush_header())
-                    break
-                index, opener = min(found)
-                text = self._header[index + len(opener) :]
-                self._header, self._in_header = "", False
-                if opener == _INKLING_TOOL_CALL_OPEN:
-                    self._header_tool_body.start()
-                if opener != _INKLING_TEXT_OPEN:
-                    output.append(opener)
-                continue
-            text = self._role_partial + text
-            self._role_partial = ""
-            index = text.find(_INKLING_ROLE_OPEN)
-            if index < 0:
-                stable, self._role_partial = _split_partial_marker(text, _INKLING_ROLE_OPEN)
-                output.append(stable)
-                break
-            output.append(text[:index])
-            text = text[index + len(_INKLING_ROLE_OPEN) :]
-            self._in_header = True
-        return "".join(output)
-
-    def _filter(
-        self,
-        text: str,
-        final: bool = False,
-    ) -> str:
-        text = self._held + (text or "")
-        self._held = ""
-        output: list[str] = []
-        while text:
-            if self._filter_tool_body.open:
-                body, self._held, text = self._filter_tool_body.take(text, final)
-                output.append(body)
-                continue
-            found = [(text.find(marker), marker) for marker in self._CONTROLS if marker in text]
-            if not found:
-                if not final:
-                    for marker in self._CONTROLS:
-                        _, held = _split_partial_marker(text, marker)
-                        if held and len(held) > len(self._held):
-                            self._held = held
-                    text = text[: len(text) - len(self._held)]
-                output.append(text)
-                break
-            index, marker = min(found)
-            output.append(text[:index])
-            text = text[index + len(marker) :]
-            if marker == _INKLING_TOOL_CALL_OPEN:
-                self._filter_tool_body.start()
-                output.append(marker)
-        return "".join(output)
+            elif self._buffer.startswith(_INKLING_MESSAGE_END, index):
+                return index
+        return -1
 
 
 class RecipientChannelNormalizer:
