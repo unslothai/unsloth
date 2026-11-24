@@ -630,8 +630,6 @@ def detect_multimodal_dataset(dataset):
         "pic",
         "picture",
         "visual",
-        "file_name",
-        "filename",
     ]
 
     audio_keywords = ["audio", "speech", "wav", "waveform", "sound"]

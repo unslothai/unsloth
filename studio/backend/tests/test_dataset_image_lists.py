@@ -256,6 +256,19 @@ def test_text_only_datasets_stay_text(row):
     assert format_detection.detect_multimodal_dataset(dataset)["is_image"] is False
 
 
+@pytest.mark.parametrize("column", ["filename", "file_name"])
+def test_filename_column_only_counts_as_image_when_it_names_an_image(column):
+    text_row = {"instruction": "Add 2 and 3.", "output": "5", column: "arithmetic.jsonl"}
+    image_row = {"caption": "A red square.", column: "red.png"}
+
+    text_dataset = Dataset.from_list([text_row])
+    assert dataset_format.check_dataset_format(text_dataset, is_vlm = False)["is_image"] is False
+    assert format_detection.detect_multimodal_dataset(text_dataset)["is_image"] is False
+    image_info = format_detection.detect_multimodal_dataset(Dataset.from_list([image_row]))
+    assert image_info["is_image"] is True
+    assert image_info["multimodal_columns"] == [column]
+
+
 @pytest.mark.parametrize("detector", [dataset_format, format_detection])
 def test_image_list_detection_requires_values_the_converter_can_open(detector, tmp_path):
     png_path = tmp_path / "image.png"
