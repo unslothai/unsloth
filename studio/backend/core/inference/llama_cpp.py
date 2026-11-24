@@ -40460,6 +40460,8 @@ class LlamaCppBackend:
             conversation.extend(mcp_match_exchange["messages"])
 
         _accumulated_completion_tokens = 0
+        # Unknown hidden usage consumes allowance without inventing measured token counts.
+        _unreported_evidence_tokens = 0
         _accumulated_predicted_ms = 0.0
         _accumulated_predicted_n = 0
         # GGUF buffers reasoning; emit server-side timing before answer text.
@@ -40830,7 +40832,13 @@ class LlamaCppBackend:
             window = self._effective_context_length or 0
             if window and max_tokens >= window:
                 return None
-            return max(0, max_tokens - _accumulated_completion_tokens - spent_this_attempt)
+            return max(
+                0,
+                max_tokens
+                - _accumulated_completion_tokens
+                - _unreported_evidence_tokens
+                - spent_this_attempt,
+            )
 
         from core.inference.working_evidence import WorkingEvidence
 
@@ -40863,6 +40871,8 @@ class LlamaCppBackend:
                 nonlocal _working_evidence_seconds
                 nonlocal _accumulated_completion_tokens
                 nonlocal _accumulated_predicted_ms, _accumulated_predicted_n
+                nonlocal _unreported_evidence_tokens
+                usage_reported = False
                 started = time.monotonic()
                 timer = threading.Timer(max(0.01, 60.0 - _working_evidence_seconds), expired.set)
                 timer.daemon = True
@@ -40888,6 +40898,9 @@ class LlamaCppBackend:
                                 )
                                 or {}
                             )
+                            usage_reported = (
+                                usage_reported or usage.get("completion_tokens") is not None
+                            )
                             _accumulated_completion_tokens += int(
                                 usage.get("completion_tokens") or 0
                             )
@@ -40897,6 +40910,8 @@ class LlamaCppBackend:
                         yield event
                 finally:
                     timer.cancel()
+                    if not usage_reported:
+                        _unreported_evidence_tokens += limit
                     _working_evidence_seconds += time.monotonic() - started
 
             count_prompt = archive_kwargs.get("count_tokens") or (
@@ -44266,6 +44281,12 @@ class LlamaCppBackend:
                             background = True,
                         )["counts"]
                     )
+                if _final_call_retried or _final_length_continuations:
+                    _remaining_cap = _loop_budget_left(0)
+                    if _remaining_cap is not None:
+                        stream_payload["max_tokens"] = min(
+                            stream_payload["max_tokens"], _remaining_cap
+                        )
                 # Recorded, not only forwarded, for the same reason as the iteration refit above.
                 from core.inference import context_refusal  # noqa: PLC0415
 
@@ -44362,7 +44383,7 @@ class LlamaCppBackend:
             _this_attempt = (
                 _backfill_usage_from_timings(_metadata_usage, _metadata_timings) or {}
             ).get("completion_tokens", 0) or int(stream_payload.get("max_tokens") or 0)
-            return max(0, max_tokens - _accumulated_completion_tokens - _this_attempt)
+            return _loop_budget_left(_this_attempt)
 
         def _continuation_would_be_served(
             candidate_messages,
