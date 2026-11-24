@@ -295,34 +295,37 @@ def _checkpoint_quant_method(
     revision,
     token = None,
 ):
-    """The quant_method of the checkpoint config at `source` (local folder or Hub id), "" when it has none."""
+    """(quant_method, folder) of the checkpoint config at `source` (local folder or Hub id): "" when it has none;
+    `folder` holds its config.json (a Hub id's snapshot), None when there is none."""
     import json
     import os
 
     if os.path.isdir(source):
         path = os.path.join(source, "config.json")
         if not os.path.isfile(path):
-            return ""
+            return "", None
     else:
         from huggingface_hub import hf_hub_download
         from huggingface_hub.errors import EntryNotFoundError
         try:
             path = hf_hub_download(source, "config.json", revision = revision, token = token)
         except EntryNotFoundError:
-            return ""
+            return "", None
     with open(path, encoding = "utf-8") as f:
         config = json.load(f)
+    folder = os.path.dirname(path)
     for cfg in (config, config.get("text_config") or {}):
         quant = cfg.get("quantization_config") if isinstance(cfg, dict) else None
         if isinstance(quant, dict) and quant.get("quant_method"):
-            return str(quant["quant_method"]).lower()
-    return ""
+            return str(quant["quant_method"]).lower(), folder
+    return "", folder
 
 
 def inkling2_merge_source(
     source,
     revision = None,
     token = None,
+    save_directory = None,
 ):
     """(checkpoint, revision) a merged Inkling 2 export reads its base tensors from.
 
@@ -330,17 +333,32 @@ def inkling2_merge_source(
     expert weights, which the merge cannot add LoRA deltas to or write as 16-bit: merge into the original checkpoint
     it was quantized from (the mapper's 16-bit name, at its default revision). Its 4-bit weights are the ones a
     4-bit load of that checkpoint quantizes, so the deltas apply unchanged. A pre-quantized folder with no known
-    original is refused."""
-    if _checkpoint_quant_method(source, revision, token = token) != "bitsandbytes":
+    original is refused, and so is a local folder (whatever its name: its tensors may not be the Hub repo's).
+    `save_directory` (the merged export's folder) must not be the pre-quantized checkpoint's own folder."""
+    import os
+
+    method, folder = _checkpoint_quant_method(source, revision, token = token)
+    if method != "bitsandbytes":
         return source, revision
     from .mapper import INT_TO_FLOAT_MAPPER
 
-    original = INT_TO_FLOAT_MAPPER.get(str(source).lower())
+    original = None if os.path.isdir(source) else INT_TO_FLOAT_MAPPER.get(str(source).lower())
     if original is None:
         raise NotImplementedError(
             f"Unsloth: {source} is a pre-quantized bitsandbytes 4-bit Inkling 2 checkpoint, and a merged export "
             "needs the original weights. Load the original checkpoint (for example unsloth/Inkling-2-Mini) with "
-            "`load_in_4bit = True` to merge, or save the LoRA adapter with `model.save_pretrained(...)`."
+            "`load_in_4bit = True, use_exact_model_name = True` to merge, or save the LoRA adapter with "
+            "`model.save_pretrained(...)`."
+        )
+    if (
+        save_directory is not None
+        and folder is not None
+        and os.path.isdir(save_directory)
+        and os.path.samefile(save_directory, folder)
+    ):
+        raise RuntimeError(
+            f"Unsloth: the merged Inkling 2 export would overwrite the checkpoint it was loaded from ({folder}); "
+            "pick another directory."
         )
     print(f"Unsloth: {source} is pre-quantized; merging into its original checkpoint {original}.")
     return original, None
@@ -401,7 +419,10 @@ def save_inkling2_merged_16bit(
         raise RuntimeError("Unsloth: cannot find the Inkling 2 base checkpoint to merge into.")
     loaded_from = source
     source, revision = inkling2_merge_source(
-        source, getattr(base.config, "_commit_hash", None), token = token
+        source,
+        getattr(base.config, "_commit_hash", None),
+        token = token,
+        save_directory = None if push_to_hub else save_directory,
     )
     # A pre-quantized load's converters map that repo's layout (packed stacks under the model's names); the
     # original checkpoint read below needs the model's own mapping.

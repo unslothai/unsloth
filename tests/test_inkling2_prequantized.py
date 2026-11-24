@@ -145,3 +145,39 @@ def test_merge_refuses_a_prequantized_folder_with_no_known_original(tmp_path):
     assert inkling2_merge_source(original, None) == (original, None)
     plain = _config_dir(tmp_path, "local_plain", None)
     assert inkling2_merge_source(plain, "r") == (plain, "r")
+
+
+def test_merge_refuses_a_local_folder_named_like_the_prequantized_repo(tmp_path, monkeypatch):
+    # A relative folder spelled as the Hub id is a local checkpoint: its tensors may not be the Hub repo's, so the
+    # public original is not substituted for it.
+    from unsloth.models.inkling2 import inkling2_merge_source
+
+    (tmp_path / "unsloth").mkdir()
+    _config_dir(tmp_path / "unsloth", "Inkling-2-Mini-unsloth-bnb-4bit", BNB)
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(NotImplementedError, match = "use_exact_model_name = True"):
+        inkling2_merge_source(PREQUANTIZED, None)
+
+
+def test_merged_export_refuses_to_overwrite_the_prequantized_snapshot(tmp_path, monkeypatch):
+    # Loaded from the Hub pre-quantized repo, merged into the original: the export folder must still not be the
+    # loaded snapshot (it would delete its packed weights and overwrite its config).
+    import types
+
+    import huggingface_hub
+
+    pytest.importorskip("transformers.core_model_loading")
+    from unsloth.models.inkling2 import save_inkling2_merged_16bit
+
+    snapshot = _config_dir(tmp_path, "snapshot", BNB)
+    monkeypatch.setattr(
+        huggingface_hub,
+        "hf_hub_download",
+        lambda repo_id, filename, **kwargs: snapshot + "/" + filename,
+    )
+    model = types.SimpleNamespace(
+        config = types.SimpleNamespace(_name_or_path = PREQUANTIZED, _commit_hash = "abc123")
+    )
+    with pytest.raises(RuntimeError, match = "checkpoint it was loaded from"):
+        save_inkling2_merged_16bit(model, None, snapshot)
+    assert (tmp_path / "snapshot" / "config.json").exists()
