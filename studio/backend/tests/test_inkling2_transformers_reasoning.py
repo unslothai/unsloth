@@ -14,6 +14,7 @@ from core.inference.chat_template_helpers import (  # noqa: E402
     InklingMessageNormalizer,
     detect_reasoning_channel_markers_from_template,
     make_reasoning_normalizer,
+    prompt_opens_reasoning_channel,
 )
 from core.inference.native_tool_tokens import reasoning_control_tokens  # noqa: E402
 
@@ -145,3 +146,14 @@ def test_every_chunking_gives_the_same_reply():
 def test_header_without_a_content_opener_is_flushed_as_text():
     out = _stream(make_reasoning_normalizer(MARKERS), ["plain words with no protocol at all"])
     assert out == "plain words with no protocol at all"
+
+
+def test_a_prompt_that_opens_the_thought_keeps_thought_and_answer():
+    prompt = (
+        "<|message_user|><|content_text|>hi<|end_message|><|message_model|><|content_thinking|>"
+    )
+    in_reasoning = prompt_opens_reasoning_channel(prompt, MARKERS)
+    assert in_reasoning
+    raw = "Short thought.<|end_message|><|message_model|><|content_text|>42<|end_message|>"
+    out = _stream(make_reasoning_normalizer(MARKERS, in_reasoning = in_reasoning), _token_chunks(raw))
+    assert out == "<think>Short thought.</think>42"

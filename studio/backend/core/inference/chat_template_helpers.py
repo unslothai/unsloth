@@ -1953,8 +1953,9 @@ class InklingMessageNormalizer(ReasoningChannelNormalizer):
         super().__init__(*args, **kwargs)
         self._header = ""
         self._role_partial = ""
-        # The generation prompt ends with <|message_model|>, so the stream starts inside a header.
-        self._in_header = True
+        # The generation prompt ends with <|message_model|>, so the stream starts inside a header
+        # unless the prompt already opened the thought.
+        self._in_header = not self._in_reasoning
         self._held = ""
         self._in_tool_call = False
 
