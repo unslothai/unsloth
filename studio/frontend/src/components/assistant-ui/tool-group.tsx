@@ -325,8 +325,7 @@ const ToolGroupImpl: FC<
       ]),
     [toolCallIds, paneScope, unresolvedScope],
   );
-  // Select the boolean, not the map: every tool_output event replaces the map, which would
-  // re-render every group in the thread.
+  // Select the boolean, not the map: each tool_output replaces the map and would re-render every group.
   const hasLiveOutput = useChatRuntimeStore((s) =>
     liveKeys.some((key) =>
       Object.prototype.hasOwnProperty.call(s.toolLiveOutput, key),
