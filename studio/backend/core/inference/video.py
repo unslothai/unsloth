@@ -5497,6 +5497,12 @@ def _video_offload_vram_floor_mib(
         sizes: dict[str, int] = {}
         modules: dict[str, Any] = {}
         seen: set[int] = set()
+        from .video_ltx2 import ltx2_vae_encoder_parks
+
+        vae = components.get("vae")
+        if isinstance(vae, torch.nn.Module) and ltx2_vae_encoder_parks(vae, policy):
+            # on the host except while an image is encoded, before the connectors and the DiT run
+            seen |= {id(t) for t in chain(vae.encoder.parameters(), vae.encoder.buffers())}
         for name, module in components.items():
             if not isinstance(module, torch.nn.Module):
                 continue
@@ -12340,6 +12346,10 @@ class VideoBackend:
             # a transient OOM during setup may have re-planned to lower residency
             planned = plan
             plan = applied_plan(pipe, plan)
+            # LTX-2 under a streamed tier: the VAE encoder waits on the host until an image is encoded
+            from .video_ltx2 import park_ltx2_vae_encoder
+
+            park_ltx2_vae_encoder(pipe, offload_policy, logger)
             if cache_engaged == TC_FBCACHE and _step_cache_dropped_by_layer_split(pipe):
                 cache_engaged = _restore_step_cache_after_layer_split(
                     pipe,
@@ -15262,6 +15272,10 @@ class VideoBackend:
                             frames = frames,
                             device = device_obj,
                         )
+                    # the floor excludes a parked LTX-2 VAE encoder: undo a move back onto the card first
+                    from .video_ltx2 import park_ltx2_vae_encoder
+
+                    park_ltx2_vae_encoder(state.pipe, state.offload_policy, logger)
                     available_bytes = _request_available_bytes(device_obj, torch.cuda)
                     shortfall = video_offload_shortfall_message(
                         family = fam.name,

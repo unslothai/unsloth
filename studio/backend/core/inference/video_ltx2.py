@@ -1379,6 +1379,90 @@ def install_ltx2_lean_connector_features(pipe: Any, logger: Any = None) -> bool:
     return True
 
 
+# Under a streamed tier the LTX-2 VAE stays on the card whole, but a text-to-video request never runs its encoder
+# (612 MiB on LTX-2.5): the encoder waits on the host and joins the card only for a ``vae.encode`` call (image
+# conditioning), the same weights either way. =0 keeps it on the card.
+LTX2_PARK_VAE_ENCODER_ENV = "UNSLOTH_LTX2_PARK_VAE_ENCODER"
+_LTX2_VAE_CLS = "AutoencoderKLLTX2Video"
+_LTX2_ENCODER_HOME = "_unsloth_encoder_home"
+_LTX2_ENCODE_WRAPPED = "_unsloth_parked_encode"
+# the tiers whose decoders stay resident on the card (not hooked per call)
+_LTX2_PARK_TIERS = ("group", "streaming")
+
+
+def ltx2_vae_encoder_parks(vae: Any, offload_policy: Any) -> bool:
+    """Whether ``vae``'s encoder waits on the host under ``offload_policy``."""
+    if (os.environ.get(LTX2_PARK_VAE_ENCODER_ENV) or "").strip().lower() in (
+        "0",
+        "off",
+        "false",
+        "no",
+    ):
+        return False
+    return (
+        str(offload_policy) in _LTX2_PARK_TIERS
+        and type(vae).__name__ == _LTX2_VAE_CLS
+        and getattr(vae, "encoder", None) is not None
+    )
+
+
+def _module_device(module: Any) -> Any:
+    first = next(iter(module.parameters()), None)
+    return None if first is None else first.device
+
+
+def park_ltx2_vae_encoder(
+    pipe: Any,
+    offload_policy: Any,
+    logger: Any = None,
+) -> int:
+    """Move the LTX-2 VAE encoder to the host and give ``vae.encode`` a wrapper that brings it back for the call.
+    Idempotent (a later ``vae.to(device)`` is undone on the next call); bytes moved off the card, else 0."""
+    vae = getattr(pipe, "vae", None)
+    if vae is None or not ltx2_vae_encoder_parks(vae, offload_policy):
+        return 0
+    try:
+        import torch
+
+        encoder = vae.encoder
+        home = _module_device(getattr(vae, "decoder", None) or vae)
+        if home is None or home.type == "cpu" or getattr(vae, "_hf_hook", None) is not None:
+            return 0
+        if not vae.__dict__.get(_LTX2_ENCODE_WRAPPED, False):
+            inner = vae.encode
+
+            def encode(*args: Any, **kwargs: Any) -> Any:
+                target = vae.__dict__.get(_LTX2_ENCODER_HOME)
+                here = _module_device(encoder)
+                moved = target is not None and here is not None and here != target
+                if moved:
+                    encoder.to(target)
+                try:
+                    return inner(*args, **kwargs)
+                finally:
+                    if moved:
+                        encoder.to(here)
+
+            vae.encode = encode
+            vae.__dict__[_LTX2_ENCODE_WRAPPED] = True
+        vae.__dict__[_LTX2_ENCODER_HOME] = home
+        if _module_device(encoder) == torch.device("cpu"):
+            return 0
+        moved = sum(
+            int(t.numel()) * int(t.element_size())
+            for t in list(encoder.parameters()) + list(encoder.buffers())
+        )
+        encoder.to("cpu")
+    except Exception:  # noqa: BLE001 -- memory lever only: the encoder stays where it was
+        return 0
+    if moved and logger is not None:
+        logger.info(
+            "video.ltx2: VAE encoder (%d MiB) waits on the host; it joins the card only to encode an image",
+            moved >> 20,
+        )
+    return moved
+
+
 def ltx23_verbatim_sigmas(pipe: Any) -> Any:
     """Disable scheduler sigma rewrites (dynamic shift, terminal stretch) so sigmas pass through intact."""
     import contextlib
