@@ -296,24 +296,30 @@ jobs:
           snapshot_home() {
             local d
             for d in "${HOME_DIRS[@]}"; do
-              [ -d "$d" ] && find "$d" -mindepth 1 -maxdepth 1 -printf '%p\n'
+              if [ -d "$d" ]; then find "$d" -mindepth 1 -maxdepth 1 -printf '%p\n'; fi
             done | sort > "$1/home.before"
             mkdir -p "$1/rc"
-            for f in "${RC_FILES[@]}"; do [ -f "$HOME/$f" ] && cp -p "$HOME/$f" "$1/rc/$f"; done
+            for f in "${RC_FILES[@]}"; do
+              if [ -f "$HOME/$f" ]; then cp -p "$HOME/$f" "$1/rc/$f"; fi
+            done
             return 0
           }
           restore_home() {
             local d entry
             for d in "${HOME_DIRS[@]}"; do
-              [ -d "$d" ] && find "$d" -mindepth 1 -maxdepth 1 -printf '%p\n'
+              if [ -d "$d" ]; then find "$d" -mindepth 1 -maxdepth 1 -printf '%p\n'; fi
             done | sort | comm -13 "$1/home.before" - | while IFS= read -r entry; do
               # A new entry under a new dir is removed with its parent.
               [ -e "$entry" ] || [ -L "$entry" ] || continue
-              rm -rf -- "$entry"
+              # Agents leave read-only trees (vibe's plugin cache); make them removable first. A
+              # leftover is a warning, never a reason to skip the agents after this one.
+              [ -L "$entry" ] || chmod -R u+rwX -- "$entry" 2>/dev/null
+              rm -rf -- "$entry" 2>/dev/null || echo "::warning::could not remove $entry after the agent"
             done
             for f in "${RC_FILES[@]}"; do
               if [ -f "$1/rc/$f" ]; then cp -p "$1/rc/$f" "$HOME/$f"; else rm -f -- "$HOME/$f"; fi
             done
+            return 0
           }
           marked_pids() {
             # One grep over every readable environ (NUL-separated records), not one per process.
@@ -326,13 +332,15 @@ jobs:
             for sig in TERM KILL; do
               pids="$(marked_pids "$1")"
               [ -n "$pids" ] || return 0
-              sids="$(ps -o sid= -p $(echo $pids | tr ' ' ',') 2>/dev/null | tr -d ' ' | sort -u)"
+              # A process can exit between the scan and these calls; under bash -e that must
+              # not end the step, so every call here tolerates "no such process".
+              sids="$(ps -o sid= -p $(echo $pids | tr ' ' ',') 2>/dev/null | tr -d ' ' | sort -u || true)"
               for s in $sids; do
                 # Never this step's own session.
-                [ "$s" = "$(ps -o sid= -p $$ | tr -d ' ')" ] || pkill "-$sig" -s "$s" 2>/dev/null
+                [ "$s" = "$(ps -o sid= -p $$ | tr -d ' ')" ] || pkill "-$sig" -s "$s" 2>/dev/null || true
               done
-              kill "-$sig" $pids 2>/dev/null
-              [ "$sig" = TERM ] && sleep 5
+              kill "-$sig" $pids 2>/dev/null || true
+              if [ "$sig" = TERM ]; then sleep 5; fi
             done
             pids="$(marked_pids "$1")"
             if [ -n "$pids" ]; then
