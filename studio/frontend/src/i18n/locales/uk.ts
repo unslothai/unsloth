@@ -1043,6 +1043,9 @@ export const uk = {
       "Натомість шукати й завантажувати з ModelScope. Повернутися можна в налаштуваннях.",
     useModelScopeFailed: "Не вдалося перейти на ModelScope.",
     updateToken: "Оновити токен",
+    linkedModelTitle: "Завантажити {model}?",
+    linkedModelBody: "Посилання відкрило цю сторінку й просить завантажити цю модель.",
+    linkedModelLoad: "Завантажити",
     hfToken: {
       label: "Токен HF",
       saved: "Збережено",

@@ -148,6 +148,8 @@ async def load_checkpoint(
             backend.load_checkpoint,
             checkpoint_path = request.checkpoint_path,
             base_model = base_model,
+            # Checked with no adapter config: one written later must not pick a base unchecked.
+            adapter_free = base_model is None and account_access.managed_account(),
             max_seq_length = request.max_seq_length,
             load_in_4bit = load_in_4bit,
             offload_layers = request.offload_layers,

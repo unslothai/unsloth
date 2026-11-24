@@ -1036,6 +1036,9 @@ export const id = {
       "Cari dan unduh dari ModelScope sebagai gantinya. Anda dapat beralih kembali di Pengaturan.",
     useModelScopeFailed: "Tidak dapat beralih ke ModelScope.",
     updateToken: "Perbarui token",
+    linkedModelTitle: "Muat {model}?",
+    linkedModelBody: "Sebuah tautan membuka halaman ini dan meminta untuk mengunduh dan memuat model ini.",
+    linkedModelLoad: "Muat",
     hfToken: {
       label: "Token HF",
       saved: "Tersimpan",

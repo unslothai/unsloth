@@ -472,6 +472,46 @@ def test_out_of_memory_capture_stops_the_call_not_the_key(host, llama):
     assert s["captures"] == 1 and s["replays"] == 8, s
 
 
+@pytest.mark.parametrize(
+    "fail",
+    [True, torch.cuda.OutOfMemoryError("CUDA out of memory. Tried to allocate 2.00 MiB")],
+    ids = ["error", "oom"],
+)
+def test_failed_capture_clears_the_rng_capture_flag(host, llama, monkeypatch, fail):
+    # A capture that dies after capture_begin leaves the CUDA RNG marked as capturing, so every later
+    # random op raises "Offset increment outside graph capture"; the Llama-family path resets it, and so
+    # must this one, on every card the capture may have begun on.
+    resets = []
+    monkeypatch.setattr(G, "_reset_rng_capture_flag", lambda device: resets.append(device))
+    host.fail = fail
+    s = _both(llama, *_ids(llama))
+    assert s["captures"] == 0 and s["capture_errors"], s
+    # One failed capture (a single-card model: no other cards to reset), one reset.
+    assert len(s["capture_errors"]) == 1 and len(resets) == 1, (resets, s)
+    assert resets[0].type == "cuda", resets
+
+
+def test_out_of_memory_capture_resets_the_rng_after_freeing_the_calls_graphs(
+    host, llama, monkeypatch
+):
+    # The reset is a small capture that allocates: run before the call's graphs (and the failed one,
+    # held by the error's traceback) are released, it can hit the same OOM and leave the RNG poisoned.
+    seen = []
+
+    def reset(device):
+        state = GG._state(llama)
+        seen.append(
+            (len(state.graphs), state.pool is None, sys.exc_info()[0], GG._RECORDING.locked())
+        )
+
+    monkeypatch.setattr(G, "_reset_rng_capture_flag", reset)
+    host.fail = torch.cuda.OutOfMemoryError("CUDA out of memory. Tried to allocate 2.00 MiB")
+    s = _both(llama, *_ids(llama))
+    assert s["refusals"] == {"capture failed: out of memory": 9}, s
+    # Graphs and pool already freed, the error no longer being handled, the recording lock held.
+    assert seen == [(0, True, None, True)], seen
+
+
 def test_capture_setup_failure_runs_eagerly(host, llama, monkeypatch):
     def no_pool():
         raise torch.OutOfMemoryError("pool")
