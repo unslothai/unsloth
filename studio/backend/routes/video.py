@@ -150,6 +150,11 @@ def _guard_video_load_against_training() -> None:
     )
 
 
+def _loras_active(loras: Any) -> bool:
+    from core.inference import video_lora
+    return video_lora.has_active(loras)
+
+
 @router.post("/video/download-plan", response_model = DiffusionDownloadPlanResponse)
 async def video_download_plan(
     request: VideoLoadRequest, current_subject: str = Depends(get_current_subject)
@@ -236,6 +241,9 @@ async def video_download_plan(
                 gpu_ordinal = gpu_ordinal,
                 checkpoint_filename = request.gguf_filename,
                 checkpoint_repo = request.model_path,
+                # The LTX-2.5 low-RAM price depends on both: speed decides the encoder, a LoRA the dense DiT.
+                speed_mode = request.speed_mode,
+                loras_active = _loras_active(request.loras),
             )
         if fam is not None:
             from core.inference.video import refuse_without_guardrail_access
@@ -449,6 +457,8 @@ async def load_video_model_gated(
             gpu_ordinal = gpu_ordinal,
             checkpoint_filename = request.gguf_filename,
             checkpoint_repo = request.model_path,
+            speed_mode = request.speed_mode,
+            loras_active = _loras_active(request.loras),
         )
         # Speech GGUF check here, since the backend's runs after acquire_for evicts chat.
         from core.inference.diffusion_compat import assert_pick_is_not_speech

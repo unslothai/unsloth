@@ -887,6 +887,13 @@ export const ptBR = {
     compactEmpty: "Ainda não há nada para compactar",
     compactUnsupported: "A compactação requer um modelo GGUF ou MLX com suporte a ferramentas",
   },
+  chatFiles: {
+    title: "Arquivos nesta conversa",
+    code: "Trechos de código",
+    showInChat: "Mostrar na conversa",
+    download: "Baixar {name}",
+    saveFailed: "Não foi possível salvar {name}.",
+  },
   welcome: {
     goodToSeeYou: "Que bom ver você",
     goodToSeeYouName: "Que bom ver você, {name}",

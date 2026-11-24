@@ -33,3 +33,6 @@ studio/backend/requirements/engines/** -text
 # Vendored third-party files are pinned by sha256 in studio/backend/vendor/*_manifest.json. A Windows clone
 # (core.autocrlf=true) would rewrite their LICENSE files to CRLF and fail those digests.
 studio/backend/vendor/** -text
+
+# MIOpen db records ship byte-exact (MIOpen parses them line by line; a CRLF checkout would add a stray \r).
+studio/backend/core/inference/rocm_miopen_db/** -text
