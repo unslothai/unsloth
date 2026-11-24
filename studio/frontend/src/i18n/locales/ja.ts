@@ -888,6 +888,13 @@ export const ja = {
     compactEmpty: "まだ圧縮する内容がありません",
     compactUnsupported: "会話の圧縮にはツール対応のGGUFまたはMLXモデルが必要です",
   },
+  chatFiles: {
+    title: "このチャットのファイル",
+    code: "コードスニペット",
+    showInChat: "チャットで表示",
+    download: "{name} をダウンロード",
+    saveFailed: "{name} を保存できませんでした。",
+  },
   welcome: {
     goodToSeeYou: "お会いできてうれしいです",
     goodToSeeYouName: "{name}さん、お会いできてうれしいです",

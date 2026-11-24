@@ -538,6 +538,33 @@ def resolve_auto_cuda_ordinal() -> Optional[int]:
     return 0
 
 
+_SMI_ROWS: ContextVar[Optional[dict]] = ContextVar("unsloth_diffusion_smi_rows", default = None)
+
+
+@contextmanager
+def smi_rows_snapshot():
+    """smi_free_total_mib and smi_util_pct share one nvidia-smi reading inside this block; failures are not cached."""
+    token = _SMI_ROWS.set({})
+    try:
+        yield
+    finally:
+        _SMI_ROWS.reset(token)
+
+
+def _smi_rows(hw: Any) -> Optional[dict]:
+    spec = hw._get_parent_visible_gpu_spec()
+    memo = _SMI_ROWS.get()
+    if memo is None:
+        return hw._smi_visible_utilization(spec)
+    key = repr(spec)
+    if key not in memo:
+        result = hw._smi_visible_utilization(spec)
+        if result is None:
+            return None
+        memo[key] = result
+    return memo[key]
+
+
 def smi_free_total_mib(ordinal: int) -> tuple[Optional[int], Optional[int]]:
     """(free, total) MiB of torch ordinal ``ordinal`` from nvidia-smi, so a card can be sized without a CUDA context
     on it. (None, None) wherever ``resolve_auto_cuda_ordinal`` would not trust the rows (ROCm, a CUDA order other
@@ -561,7 +588,7 @@ def smi_free_total_mib(ordinal: int) -> tuple[Optional[int], Optional[int]]:
         mig = hw._nvidia_mig_gpu_indices_or_none()
         if mig is None or index in mig:
             return None, None
-        result = hw._smi_visible_utilization(hw._get_parent_visible_gpu_spec())
+        result = _smi_rows(hw)
         for device in (result or {}).get("devices", []):
             if device.get("index") != index:
                 continue
@@ -586,7 +613,7 @@ def smi_util_pct(ordinal: int) -> Optional[float]:
         if not 0 <= int(ordinal) < len(visible):
             return None
         index = visible[int(ordinal)]
-        result = hw._smi_visible_utilization(hw._get_parent_visible_gpu_spec())
+        result = _smi_rows(hw)
         for device in (result or {}).get("devices", []):
             if device.get("index") == index:
                 util = device.get("gpu_utilization_pct")

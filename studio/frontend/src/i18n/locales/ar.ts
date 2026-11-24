@@ -887,6 +887,13 @@ export const ar = {
     compactEmpty: "لا يوجد ما يمكن ضغطه بعد",
     compactUnsupported: "ضغط المحادثة يتطلب نموذج GGUF أو MLX يدعم الأدوات",
   },
+  chatFiles: {
+    title: "الملفات في هذه المحادثة",
+    code: "مقتطفات التعليمات البرمجية",
+    showInChat: "إظهار في المحادثة",
+    download: "تنزيل {name}",
+    saveFailed: "تعذّر حفظ {name}.",
+  },
   welcome: {
     goodToSeeYou: "سعيد برؤيتك",
     goodToSeeYouName: "سعيد برؤيتك يا {name}",

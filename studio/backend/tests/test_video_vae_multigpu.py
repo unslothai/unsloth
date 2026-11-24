@@ -570,8 +570,7 @@ def test_a_lost_context_in_the_cleanup_replaces_an_ordinary_split_failure(monkey
         vm.split_tiled_decode(vae, z, torch.device("cpu"))
 
 
-# Kaggle 2x T4, Wan 2.2 TI2V 5B (1629 MiB of VAE weights), 1280x704x49: the partner's measured peak above the split's
-# start per tile size, (reserved, allocated) MiB; 704x704's reserved peak was not separable (render 1 had cache).
+# Kaggle 2x T4 Wan 2.2 TI2V 5B 1280x704x49 partner peaks per tile, (reserved, allocated) MiB.
 _WAN_WEIGHTS_MIB = 1629
 _MEASURED_PEAKS = {(256, 256): (2656, 2422), (704, 496): (6370, 5307), (704, 704): (None, 6371)}
 
@@ -625,3 +624,254 @@ def test_the_split_estimate_adds_the_partner_tiles_frames_beyond_the_fitted_clip
         math.ceil(1.25 * (_WAN_WEIGHTS_MIB + 169 + 3714 / 283648 * 704 * 496 + extra))
     )
     assert vm.need_mib(vae, object()) == fitted
+
+
+def test_partner_sized_tiles_fit_the_partner_and_leave_the_vae_as_it_was(monkeypatch):
+    vae = _wan_sized(monkeypatch, 704, 704)
+    vae.tile_sample_stride_height, vae.tile_sample_stride_width = 704, 640
+    before = tuple(getattr(vae, a) for a in vm._TILE_ATTRS)
+    usable = 5185 - 1024  # the uncapped partner beside a CFG copy
+    tiles = vm.partner_sized_tiles(vae, None, usable)
+    assert tuple(getattr(vae, a) for a in vm._TILE_ATTRS) == before
+    h, sh, w, sw = tiles
+    assert (h - sh, w - sw) == (64, 64) and min(h, w) >= 256
+    sized = _wan_sized(monkeypatch, h, w)
+    assert vm.need_mib(sized) <= usable
+    bigger = _wan_sized(monkeypatch, h + 32, w + 32)
+    assert vm.need_mib(bigger) > usable
+    assert vm.partner_sized_tiles(vae, None, 1000) is None  # nothing at the 256 px floor fits
+
+
+def test_partner_sized_split_matches_the_stock_decode_at_those_tiles(monkeypatch):
+    vae = _vae()
+    z = _latents(vae)
+    tiles = (32, 16, 32, 16)
+    with torch.no_grad():
+        vae.clear_cache()
+        with vm._tiles(vae, tiles):
+            ref = vae.tiled_decode(z, return_dict = False)[0]
+        before = tuple(getattr(vae, a) for a in vm._TILE_ATTRS)
+        with vm._tiles(vae, tiles):
+            out = vm.split_tiled_decode(vae, z, torch.device("cpu"))
+    assert tuple(getattr(vae, a) for a in vm._TILE_ATTRS) == before
+    assert torch.equal(out, ref)
+
+
+def _automatic_wan_split(
+    monkeypatch,
+    free_mib,
+    total_mib,
+    automatic = True,
+):
+    # A 1280x704 Wan decode at the stock wide plan (704x704, stride 704x640) reaching _try_split without a GPU.
+    import core.inference.diffusion_memory as dmem
+    import core.inference.diffusion_multigpu as dmg
+
+    monkeypatch.setattr(dmem, "_user_budget_reserve_mib", lambda base: 0)
+    monkeypatch.setattr(
+        dmg, "current_selection", lambda: types.SimpleNamespace(automatic = automatic)
+    )
+    monkeypatch.delenv(vm.PARTNER_TILES_ENV, raising = False)
+    vae = types.SimpleNamespace(
+        post_quant_conv = types.SimpleNamespace(parameters = lambda: []),
+        named_modules = lambda: [],
+        tile_sample_min_height = 704,
+        tile_sample_stride_height = 704,
+        tile_sample_min_width = 704,
+        tile_sample_stride_width = 640,
+    )
+    monkeypatch.setattr(vm, "_module_mib", lambda module: _WAN_WEIGHTS_MIB)
+    z = types.SimpleNamespace(device = torch.device("cuda", 0))
+    monkeypatch.setattr(vm, "_partner_free_mib", lambda torch_, partner: free_mib)
+    monkeypatch.setattr(
+        torch.cuda, "mem_get_info", lambda d = None: (free_mib << 20, total_mib << 20)
+    )
+    seen = []
+
+    def split(v, z_, partner):
+        seen.append(tuple(getattr(v, a) for a in vm._TILE_ATTRS))
+        return "decoded"
+
+    monkeypatch.setattr(vm, "split_tiled_decode", split)
+    return vae, z, {"partner": 1, "automatic": automatic}, seen
+
+
+_STOCK_WIDE = (704, 704, 704, 640)
+
+
+def test_partner_sized_tiles_engage_under_automatic_when_the_stock_split_does_not_fit(monkeypatch):
+    # The uncapped 2x T4 with a CFG copy on the partner: 5185 MiB free, the stock 704x704 split needs ~10360.
+    vae, z, state, seen = _automatic_wan_split(monkeypatch, 5185, 15360)
+    out, why = vm._try_split(vae, z, state, None)
+    assert out == "decoded" and "partner-sized tiles" in why
+    (tiles,) = seen
+    assert tiles != _STOCK_WIDE and tiles[0] - tiles[1] == tiles[2] - tiles[3] == 64
+    sized = _wan_sized(monkeypatch, tiles[0], tiles[2])
+    assert vm.need_mib(sized) <= 5185 - 1024
+    assert tuple(getattr(vae, a) for a in vm._TILE_ATTRS) == _STOCK_WIDE  # restored
+
+
+def test_the_stock_split_keeps_its_tiles_when_it_fits(monkeypatch):
+    # The 12 GiB-capped partner fits the stock 704x704 split: partner-sized tiles never engage (bit-identical).
+    vae, z, state, seen = _automatic_wan_split(monkeypatch, 11692, 12288)
+    assert vm._try_split(vae, z, state, None) == ("decoded", "split")
+    assert seen == [_STOCK_WIDE]
+
+
+def test_partner_sized_tiles_decline_when_even_the_floor_does_not_fit(monkeypatch):
+    vae, z, state, seen = _automatic_wan_split(monkeypatch, 3000, 15360)
+    out, why = vm._try_split(vae, z, state, None)
+    assert out is None and "kept free" in why and seen == []
+
+
+def test_partner_sized_tiles_opt_out_and_explicit_selection(monkeypatch):
+    vae, z, state, seen = _automatic_wan_split(monkeypatch, 5185, 15360)
+    monkeypatch.setenv(vm.PARTNER_TILES_ENV, "0")
+    assert vm._try_split(vae, z, state, None)[0] is None and seen == []
+    # an explicit card pick keeps the stock tiles unless forced
+    vae, z, state, seen = _automatic_wan_split(monkeypatch, 5185, 15360, automatic = False)
+    assert vm._try_split(vae, z, state, None)[0] is None and seen == []
+    monkeypatch.setenv(vm.PARTNER_TILES_ENV, "1")
+    assert vm._try_split(vae, z, state, None)[0] == "decoded" and len(seen) == 1
+
+
+def test_the_load_time_selection_decides_partner_tiles_on_the_render_thread(monkeypatch):
+    # The selection is a context variable of the load; the decode runs on the render thread where it is unset, so
+    # install records whether the load was Automatic and the decode reads that record.
+    import core.inference.diffusion_multigpu as dmg
+
+    vae = _vae()
+    pipe = types.SimpleNamespace(vae = vae)
+    monkeypatch.setattr(vm, "eligible", lambda v: None)
+    monkeypatch.setattr(vm, "_automatic_partner", lambda v, p: (int(p), "selected"))
+    monkeypatch.setattr(dmg, "current_selection", lambda: types.SimpleNamespace(automatic = True))
+    assert vm.install(pipe, 1)
+    assert vae.__dict__[vm._ATTR]["automatic"] is True
+    vm.uninstall(pipe)
+    monkeypatch.setattr(dmg, "current_selection", lambda: types.SimpleNamespace(automatic = False))
+    assert vm.install(pipe, 1)
+    assert vae.__dict__[vm._ATTR]["automatic"] is False
+    vm.uninstall(pipe)
+    # at decode time the selection is gone: the recorded flag still engages the partner tiles
+    w, z, state, seen = _automatic_wan_split(monkeypatch, 5185, 15360)
+    monkeypatch.setattr(dmg, "current_selection", lambda: None)
+    out, why = vm._try_split(w, z, state, None)
+    assert out == "decoded" and "partner-sized tiles" in why
+
+
+def _installed_wan_behind_a_real_load(monkeypatch):
+    # The Studio sequence: the split is installed inside an Automatic load (the selection is a context variable of
+    # the load scope), the load returns and resets it, and the render runs later on another thread. Only CUDA memory,
+    # device discovery and the decode math are simulated.
+    import threading
+
+    import core.inference.diffusion_memory as dmem
+    import core.inference.diffusion_multigpu as dmg
+
+    attrs = vm._TILE_ATTRS
+    stock_calls, split_calls = [], []
+
+    class Vae:
+        spatial_compression_ratio = 16
+        config = types.SimpleNamespace(scale_factor_temporal = 4)
+        post_quant_conv = types.SimpleNamespace(parameters = lambda: ())
+
+        def parameters(self):
+            return iter((torch.empty(0, dtype = torch.float16),))
+
+        def named_modules(self):
+            return ()
+
+        def tiled_decode(
+            self,
+            latents,
+            return_dict = True,
+        ):
+            stock_calls.append(tuple(getattr(self, a) for a in attrs))
+            return ("stock",)
+
+    vae = Vae()
+    for attr, value in zip(attrs, _STOCK_WIDE):
+        setattr(vae, attr, value)
+    pipe = types.SimpleNamespace(vae = vae)
+    z = types.SimpleNamespace(device = torch.device("cuda", 0), shape = (1, 48, 13, 44, 80))
+    automatic = dmg.MultiGpuSelection(0, (1,), automatic = True)
+    cards = {i: dmg.DeviceProbe(i, "Tesla T4", 15360, 15360, 0) for i in (0, 1)}
+    monkeypatch.setenv(vm.ENV, "1")
+    monkeypatch.setenv(dmg.MULTIGPU_ENV, "1")
+    monkeypatch.delenv(vm.PARTNER_TILES_ENV, raising = False)
+    monkeypatch.setattr(dmg, "automatic_selection", lambda *a, **k: automatic)
+    monkeypatch.setattr(dmg, "install_compile_recorder", lambda *a, **k: None)
+    monkeypatch.setattr(dmg, "probe_devices", lambda *a, **k: cards)
+    monkeypatch.setattr(vm, "eligible", lambda v: None)
+    monkeypatch.setattr(vm, "_module_mib", lambda m: _WAN_WEIGHTS_MIB)
+    monkeypatch.setattr(vm, "_partner_free_mib", lambda t, p: 5185)
+    monkeypatch.setattr(dmem, "_user_budget_reserve_mib", lambda base: 0)
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda d = None: (5185 << 20, 15360 << 20))
+
+    def split(model, latents, partner):
+        split_calls.append(tuple(getattr(model, a) for a in attrs))
+        return "split"
+
+    monkeypatch.setattr(vm, "split_tiled_decode", split)
+
+    @dmg.with_load_selection
+    def load(_backend, **kwargs):
+        assert dmg.current_selection() == automatic
+        assert vm.install(pipe, 1)
+
+    load(None, _gpu_ordinals = dmg.AUTOMATIC_ORDINALS, gpu_ordinal = 0)
+    assert dmg.current_selection() is None  # the load scope reset it
+
+    def render():
+        out = []
+        worker = threading.Thread(
+            target = lambda: out.append(vae.tiled_decode(z, return_dict = False)[0])
+        )
+        worker.start()
+        worker.join()
+        return out[0]
+
+    return vae, pipe, render, stock_calls, split_calls
+
+
+def test_partner_sized_tiles_engage_on_a_render_after_an_automatic_load(monkeypatch):
+    vae, pipe, render, stock_calls, split_calls = _installed_wan_behind_a_real_load(monkeypatch)
+    assert render() == "split"
+    (tiles,) = split_calls
+    assert tiles != _STOCK_WIDE and stock_calls == []
+    st = vm.stats(pipe)
+    assert st["plan"] == "resized split" and st["tiles"] == tiles and st["split"] == 1
+    assert tuple(getattr(vae, a) for a in vm._TILE_ATTRS) == _STOCK_WIDE
+    # the opt-out is still read at decode time
+    monkeypatch.setenv(vm.PARTNER_TILES_ENV, "0")
+    assert render() == "stock"
+    st = vm.stats(pipe)
+    assert st["plan"] == "one card" and st["tiles"] == _STOCK_WIDE and "kept free" in st["last"]
+
+
+def test_an_oom_in_the_partner_sized_split_falls_back_to_one_card_and_is_recorded(monkeypatch):
+    # #19220's contract: an ordinary split failure (a partner OOM) decodes on one card at the stock tiles, which is
+    # also what ran before partner-sized tiles for this shortfall. It is recorded, and that size is not retried.
+    vae, pipe, render, stock_calls, split_calls = _installed_wan_behind_a_real_load(monkeypatch)
+
+    def oom(model, latents, partner):
+        split_calls.append(tuple(getattr(model, a) for a in vm._TILE_ATTRS))
+        raise torch.OutOfMemoryError("CUDA out of memory on the partner")
+
+    monkeypatch.setattr(vm, "split_tiled_decode", oom)
+    assert render() == "stock"
+    assert stock_calls == [_STOCK_WIDE] and len(split_calls) == 1
+    st = vm.stats(pipe)
+    assert st["plan"] == "one card" and st["resized_failures"] == 1
+    assert "partner-sized split" in st["last"] and "OutOfMemoryError" in st["last"]
+    assert render() == "stock" and len(split_calls) == 1  # the size that ran out is not tried again
+
+
+def test_stats_record_the_stock_split_plan(monkeypatch):
+    vae, pipe, render, stock_calls, split_calls = _installed_wan_behind_a_real_load(monkeypatch)
+    monkeypatch.setattr(vm, "_partner_free_mib", lambda t, p: 11692)
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda d = None: (11692 << 20, 12288 << 20))
+    assert render() == "split" and split_calls == [_STOCK_WIDE]
+    st = vm.stats(pipe)
+    assert st["plan"] == "split" and st["tiles"] == _STOCK_WIDE and st["last"] == "split"

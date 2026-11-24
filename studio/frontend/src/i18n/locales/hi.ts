@@ -887,6 +887,13 @@ export const hi = {
     compactEmpty: "अभी कॉम्पैक्ट करने के लिए कुछ नहीं है",
     compactUnsupported: "कॉम्पैक्शन के लिए टूल सपोर्ट वाला GGUF या MLX मॉडल आवश्यक है",
   },
+  chatFiles: {
+    title: "इस चैट की फ़ाइलें",
+    code: "कोड स्निपेट",
+    showInChat: "चैट में दिखाएँ",
+    download: "{name} डाउनलोड करें",
+    saveFailed: "{name} सहेजा नहीं जा सका।",
+  },
   welcome: {
     goodToSeeYou: "आपको देखकर अच्छा लगा",
     goodToSeeYouName: "{name}, आपको देखकर अच्छा लगा",
