@@ -188,8 +188,7 @@ def _special_token_sets(tokenizer, preserved_tokens = ()) -> tuple[frozenset[int
 
 
 def _as_id_sequence(token_ids):
-    """``tokenizer.decode`` takes one id as well as a sequence, and transformers 5.24's ``TextStreamer`` passes
-    one (``decode(token_cache[-1])`` after every newline), so a bare int or 0-d tensor becomes a list."""
+    """transformers 5.24's ``TextStreamer`` decodes one bare id (``token_cache[-1]``) after each newline."""
     if isinstance(token_ids, int) or getattr(token_ids, "ndim", None) == 0:
         return [int(token_ids)]
     return token_ids
