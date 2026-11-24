@@ -19390,11 +19390,17 @@ class _QuantShortBesideItsRepo(Exception):
 def _served_twice(slot) -> tuple[bool, Optional[_ExtraSlot]]:
     """Whether another slot serves this one's exact checkpoint and quant, and which."""
 
+    from dataclasses import replace
+
     def identity(llama):
         if not getattr(llama, "is_loaded", False) or not getattr(llama, "hf_variant", None):
             return None
+        # Settings too: a twin launched with another context or template is not this load.
+        intent = getattr(llama, "last_load_intent", None)
+        if intent is not None:
+            intent = replace(intent, hf_token = None, verified_gguf = None)
         # Case kept: two local paths differing only in case are two files on most filesystems.
-        return (str(llama.model_identifier), llama.hf_variant.casefold())
+        return (str(llama.model_identifier), llama.hf_variant.casefold(), intent)
 
     own = identity(slot.llama)
     for other in (None, *model_slots.visible()):

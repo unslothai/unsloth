@@ -129,8 +129,12 @@ test("normal startup status adoption owns the resident model's globals", () => {
 });
 
 test("a refresh reads the selected quant, not whichever copy of its repo was used last", () => {
-  assert.match(SYNC, /getInferenceStatus\(signal, servedSelection\(\)\)/);
+  assert.match(SYNC, /getInferenceStatus\(signal, options\?\.adopting \?\? servedSelection\(\)\)/);
   assert.doesNotMatch(SYNC, /getInferenceStatus\(signal, selectedAtStart\)/);
+});
+
+test("the refresh after a load adopts the quant it just loaded", () => {
+  assert.match(SOURCE, /await refresh\(\{ signal: abortCtrl\.signal, adopting: modelId \}\);/);
 });
 
 test("a refresh in flight does not undo a newer quant pick of the same repo", () => {

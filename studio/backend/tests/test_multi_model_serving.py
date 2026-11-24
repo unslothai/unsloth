@@ -1092,6 +1092,9 @@ def test_a_fallback_onto_a_served_quant_keeps_one_copy(backends, monkeypatch):
     model_slots.slots += [lower, upper, twin]
     assert inf._served_twice(upper) == (False, None)
     assert inf._served_twice(twin) == (True, lower)
+    lower.llama.last_load_intent = llama_cpp.GgufLoadIntent("/m/b.gguf", n_ctx = 4096)
+    twin.llama.last_load_intent = llama_cpp.GgufLoadIntent("/m/b.gguf", n_ctx = 32768)
+    assert inf._served_twice(twin) == (False, None)
 
 
 def test_an_alongside_load_counts_as_activity(backends, monkeypatch):

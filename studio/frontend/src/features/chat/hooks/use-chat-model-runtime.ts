@@ -675,6 +675,8 @@ function unloadKeptModel(keptId: string): Promise<boolean> {
 
 export async function syncInferenceStatusToStore(options?: {
   signal?: AbortSignal;
+  /** A just-loaded pick: the selected quant has not moved to it yet. */
+  adopting?: string;
   includeLoras?: boolean;
   preserveIdleUnloaded?: boolean;
   externalChatSlotLoad?: boolean;
@@ -696,7 +698,7 @@ export async function syncInferenceStatusToStore(options?: {
     const variantAtStart = useChatRuntimeStore.getState().activeGgufVariant;
     const [listRes, statusRes, , idleUnloadArmed] = await Promise.all([
       listModels(),
-      getInferenceStatus(signal, servedSelection()),
+      getInferenceStatus(signal, options?.adopting ?? servedSelection()),
       // Settled from this request alone: a sibling rejection must not mark the inventory settled.
       includeLoras
         ? listLoras().then(
@@ -996,6 +998,7 @@ export function useChatModelRuntime() {
     async (options?: {
       waitForServerModel?: boolean;
       signal?: AbortSignal;
+      adopting?: string;
       includeLoras?: boolean;
       preserveIdleUnloaded?: boolean;
       externalChatSlotLoad?: boolean;
@@ -2910,7 +2913,7 @@ export function useChatModelRuntime() {
                 maxTokensCap: loadedContextCap,
               });
             }
-            await refresh({ signal: abortCtrl.signal });
+            await refresh({ signal: abortCtrl.signal, adopting: modelId });
             postLoadRefresh.needed = Boolean(
               (loadResponse.is_gguf || isGguf || ggufVariant) &&
                 !isExternalModelId(modelId),
