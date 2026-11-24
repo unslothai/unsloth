@@ -198,6 +198,7 @@ from .diffusion_small_host import (
     INT8_DENOISER_NAMES,
     MAPPED_DENOISER_PREFIX,
     decide_small_host,
+    small_host_components,
     dense_denoiser_enabled as small_host_dense_enabled,
     enable_int8_act_ as small_host_enable_int8_act,
     download_first_enabled as small_host_download_first,
@@ -448,7 +449,11 @@ from .diffusion_precision import (
     te_quant_unsupported_reason,
     torchao_quantize_importable,
 )
-from .diffusion_te_prequant import supplied_component_pipe_kwargs, te_prequant_pipe_kwargs
+from .diffusion_te_prequant import (
+    fp16_te_pick_scope,
+    supplied_component_pipe_kwargs,
+    te_prequant_pipe_kwargs,
+)
 from . import diffusion_lora_files as lora_files
 from .diffusion_lora import LORA_RELOAD_REMEDY, LoraReloadRequiredError, LoraSelectionError
 from .diffusion_lora_memory import price_attached_loras
@@ -1807,9 +1812,12 @@ def _with_supplied_components(load: Callable[..., dict]) -> Callable[..., dict]:
 
         token = set_active_component_overrides(overrides)
         try:
+            # The float16 encoder pick _run_load staged (None: decided once inside this load, on first use).
+            fp16_pick = kwargs.pop("_te_fp16_int8", None)
             # An unset / "auto" encoder scheme never fails the load: a hosted file that cannot load falls back to dense.
             with auto_te_request(te_quant_is_auto(kwargs.get("text_encoder_quant"))):
-                return load(self, repo_id, **kwargs)
+                with fp16_te_pick_scope(fp16_pick):
+                    return load(self, repo_id, **kwargs)
         finally:
             reset_active_component_overrides(token)
 
@@ -6488,18 +6496,6 @@ class DiffusionBackend:
                 "none" if te_bf16_auto else kwargs.get("text_encoder_quant"),
                 getattr(fam, "te_quant_auto", None),
             )
-            te_prequant_files = {
-                c: v
-                for c, v in self._te_prequant_plan_files(
-                    fam,
-                    te_quant_planned,
-                    kwargs.get("hf_token"),
-                    kwargs.get("gpu_ordinal"),
-                    local_files_only = local_files_only,
-                    base_repo = base,
-                ).items()
-                if c not in replaced
-            }
             vae_hosted_files = (
                 {}
                 if "vae" in replaced
@@ -6513,6 +6509,25 @@ class DiffusionBackend:
                 )
             )
             kwargs["_hosted_vae_planned"] = bool(vae_hosted_files)
+            # A float16 card's automatic encoder pick is settled once here, before the dense shards would be skipped, and
+            # carried into load_pipeline (never re-read from a later host reading).
+            te_fp16_pick, te_fp16_supplied = self._te_fp16_pick(
+                fam, base, kind, kwargs, te_quant_planned, replaced, bool(vae_hosted_files)
+            )
+            kwargs["_te_fp16_int8"] = te_fp16_pick
+            with fp16_te_pick_scope(te_fp16_pick, te_fp16_supplied):
+                te_prequant_files = {
+                    c: v
+                    for c, v in self._te_prequant_plan_files(
+                        fam,
+                        te_quant_planned,
+                        kwargs.get("hf_token"),
+                        kwargs.get("gpu_ordinal"),
+                        local_files_only = local_files_only,
+                        base_repo = base,
+                    ).items()
+                    if c not in replaced
+                }
             pipeline_planned = self._pipeline_planned_denoiser_scheme(
                 fam,
                 base = base,
@@ -7074,6 +7089,64 @@ class DiffusionBackend:
             if failures_out is not None:
                 failures_out.append(exc)
             return None
+
+    def _te_fp16_pick(
+        self,
+        fam: Any,
+        base: Optional[str],
+        kind: str,
+        kwargs: dict,
+        te_quant_planned: Any,
+        replaced: tuple,
+        hosted_vae: bool,
+    ) -> tuple[Optional[bool], tuple[str, ...]]:
+        """(pick, supplied) for a float16 card's automatic encoder: None when the host-RAM rule does not apply. The
+        supplied set is what the loader will take from elsewhere (and so exclude from its small-host pricing): user
+        components, a GGUF / single-file denoiser or its extra components, a pre-quantized denoiser seed, a hosted
+        VAE."""
+        try:
+            from .diffusion_te_prequant import decide_fp16_te_int8, fp16_te_pick_applies
+
+            ordinal = kwargs.get("gpu_ordinal")
+            target = (
+                resolve_diffusion_device_target()
+                if ordinal is None
+                else resolve_diffusion_device_target(ordinal = ordinal)
+            )
+            if not fp16_te_pick_applies(fam, target, te_quant_planned):
+                return None, ()
+            supplied = set(replaced) | set(_single_file_components(fam, kind))
+            if kind != "pipeline" or kwargs.get("transformer_prequant_path"):
+                supplied.add("transformer")
+            else:
+                seeded = self._pipeline_planned_denoiser_scheme(
+                    fam,
+                    base = base,
+                    kind = kind,
+                    transformer_quant = kwargs.get("transformer_quant"),
+                    speed_mode = kwargs.get("speed_mode"),
+                    memory_mode = kwargs.get("memory_mode"),
+                    cpu_offload = bool(kwargs.get("cpu_offload")),
+                    loras = kwargs.get("loras"),
+                    transformer_prequant_path = kwargs.get("transformer_prequant_path"),
+                    gpu_ordinal = ordinal,
+                    repo_id = kwargs["repo_id"],
+                    fast_accum = kwargs.get("transformer_quant_fast_accum"),
+                    text_encoder_quant = te_quant_planned,
+                    local_files_only = bool(kwargs.get("local_files_only")),
+                )
+                if seeded not in (None, PIPELINE_SEED_DECLINED):
+                    supplied.add("transformer")
+            if hosted_vae:
+                supplied.add("vae")
+            supplied.discard("text_encoder")
+            ordered = tuple(sorted(supplied))
+            return decide_fp16_te_int8(fam, base, ordered), ordered
+        except Exception as exc:  # noqa: BLE001 -- the resolver decides on its own (int8 when unsure)
+            logger.warning(
+                "diffusion.te_prequant: float16 encoder pick not settled at planning: %s", exc
+            )
+            return None, ()
 
     @staticmethod
     def _te_prequant_plan_files(
@@ -8104,23 +8177,6 @@ class DiffusionBackend:
             and not Path(repo_id).expanduser().exists()
         )
         plan_failures: list = []
-        te_files = (
-            self._h3_image_te_plan_files(text_encoder_quant, hf_token, plan_failures)
-            if h3_image
-            else {
-                c: v
-                for c, v in self._te_prequant_plan_files(
-                    fam,
-                    te_quant_planned,
-                    hf_token,
-                    load_kwargs.get("gpu_ordinal"),
-                    base_repo = base,
-                ).items()
-                if c not in replaced
-            }
-            if allow_device_probe
-            else {}
-        )
         vae_hosted_files = (
             self._hosted_vae_plan_files(
                 fam, kind, base, load_kwargs.get("gpu_ordinal"), hf_token, False
@@ -8128,6 +8184,39 @@ class DiffusionBackend:
             if allow_device_probe and "vae" not in replaced
             else {}
         )
+        # the float16 encoder pick the load would stage (same planner helper as _run_load), so the size shown is the
+        # size the load moves
+        te_fp16_pick, te_fp16_supplied = (
+            self._te_fp16_pick(
+                fam,
+                base,
+                kind,
+                {**load_kwargs, "repo_id": repo_id, "hf_token": hf_token},
+                te_quant_planned,
+                replaced,
+                bool(vae_hosted_files),
+            )
+            if allow_device_probe and not h3_image
+            else (None, ())
+        )
+        with fp16_te_pick_scope(te_fp16_pick, te_fp16_supplied):
+            te_files = (
+                self._h3_image_te_plan_files(text_encoder_quant, hf_token, plan_failures)
+                if h3_image
+                else {
+                    c: v
+                    for c, v in self._te_prequant_plan_files(
+                        fam,
+                        te_quant_planned,
+                        hf_token,
+                        load_kwargs.get("gpu_ordinal"),
+                        base_repo = base,
+                    ).items()
+                    if c not in replaced
+                }
+                if allow_device_probe
+                else {}
+            )
         # Settled before the listing: only a checkpoint that resolves on the Hub may drop the released shards.
         pipeline_planned = (
             self._h3_image_planned_dit_scheme(
@@ -14396,12 +14485,8 @@ class DiffusionBackend:
                 )
         if snapshot is None:
             return None
-        comps = {
-            name: comp
-            for name, comp in stored_components(snapshot).items()
-            # pre-built components (hosted fp8 encoder, prequant denoiser) are not loaded here
-            if name not in pipe_kwargs
-        }
+        # pre-built components (hosted fp8 encoder, prequant denoiser) are not loaded here
+        comps = small_host_components(stored_components(snapshot), tuple(pipe_kwargs))
         decision = decide_small_host(
             comps,
             dtype,

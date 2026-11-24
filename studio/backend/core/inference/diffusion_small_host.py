@@ -363,6 +363,17 @@ def stored_components(snapshot: Any) -> dict[str, StoredComponent]:
     return out
 
 
+def small_host_components(
+    stored: dict[str, StoredComponent], supplied: Any = ()
+) -> dict[str, StoredComponent]:
+    """The components a pipeline load prices for host RAM: the snapshot's stored components (``stored_components``)
+    minus the ones the load supplies from elsewhere (pre-built pipe kwargs: a GGUF / pre-quantized denoiser, a hosted
+    encoder or VAE). The loader's small-host decision and the float16 encoder pick both call this, so they price the
+    same set."""
+    skip = set(supplied or ())
+    return {name: comp for name, comp in stored.items() if name not in skip}
+
+
 def resolve_snapshot_dir(repo_or_dir: Any, cache_dir: Any = None) -> Optional[Path]:
     """Local diffusers dir for a repo id (cache only) or path."""
     try:
