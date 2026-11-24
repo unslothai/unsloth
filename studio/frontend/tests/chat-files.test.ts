@@ -158,3 +158,26 @@ test("a fence opened right after a list marker closes on its own fence", () => {
     ],
   );
 });
+
+const fenceText = (text: string) =>
+  collectChatFiles([
+    { id: "a1", role: "assistant", content: [{ type: "text", text }] },
+  ]);
+
+test("a thematic break of repeated list markers scans in linear time", () => {
+  const start = performance.now();
+  fenceText(`${"-  ".repeat(5000)}\n`);
+  assert.ok(performance.now() - start < 200);
+});
+
+test("a four-space-indented fence line is code, not a top-level closer", () => {
+  const files = fenceText(
+    '```python\ndef f():\n    """\n    ```\n    """\n```\n',
+  );
+  assert.equal(files[0].text, 'def f():\n    """\n    ```\n    """');
+});
+
+test("CRLF replies keep their code blocks", () => {
+  const files = fenceText("```python\r\nprint(1)\r\n```\r\n");
+  assert.equal(files[0].text, "print(1)");
+});

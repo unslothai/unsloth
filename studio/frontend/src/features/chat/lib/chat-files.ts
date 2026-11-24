@@ -41,36 +41,76 @@ type MessageLike = {
 };
 
 const IMAGE_EXT = /\.(png|jpe?g|gif|webp|bmp|avif|svg)$/i;
-// Leading spaces and list markers are the fence's container (`- ```py`, `1. ```js`), not code.
-const FENCE_OPEN_RE =
-  /^((?:[ \t]*(?:[-*+]|\d{1,9}[.)])[ \t]+)*[ \t]*)(`{3,}|~{3,})[ \t]*([^\s`]*)/;
+const LIST_MARKER_RE = /^(?:[-*+]|\d{1,9}[.)])[ \t]+/;
+const FENCE_RE = /^(`{3,}|~{3,})[ \t]*([^\s`]*)/;
+
+type FenceOpen = {
+  container: number;
+  column: number;
+  fence: string;
+  language: string;
+};
+
+// List markers are the fence's container (`- ```py`). One pass per marker: no backtracking regex,
+// since this runs on every assistant message during render.
+function fenceOpener(line: string): FenceOpen | null {
+  let container = 0;
+  let rest = line;
+  for (;;) {
+    const marker = LIST_MARKER_RE.exec(rest.replace(/^ {0,3}/, ""));
+    if (!marker) {
+      break;
+    }
+    const consumed =
+      rest.length - rest.replace(/^ {0,3}/, "").length + marker[0].length;
+    container += consumed;
+    rest = rest.slice(consumed);
+  }
+  const indent = rest.length - rest.replace(/^ {0,3}/, "").length;
+  const open = FENCE_RE.exec(rest.slice(indent));
+  if (!open) {
+    return null;
+  }
+  return {
+    container,
+    column: container + indent,
+    fence: open[1],
+    language: open[2],
+  };
+}
 
 export function extractCodeFences(
   markdown: string,
 ): { language: string | null; source: string }[] {
   const blocks: { language: string | null; source: string }[] = [];
-  const lines = markdown.split("\n");
+  const lines = markdown.split(/\r?\n/);
   let i = 0;
   while (i < lines.length) {
-    const open = FENCE_OPEN_RE.exec(lines[i]);
+    const open = fenceOpener(lines[i]);
     if (!open) {
       i += 1;
       continue;
     }
-    const fence = open[2];
-    // CommonMark strips the container's width from body lines.
-    const indentRe = open[1] ? new RegExp(`^ {0,${open[1].length}}`) : null;
-    const closeRe = new RegExp(`^[ \\t]*${fence[0]}{${fence.length},}[ \\t]*$`);
+    const { fence } = open;
+    // CommonMark: body lines lose up to the opener's column; the closer sits within 3 of the container.
+    const indentRe = open.column ? new RegExp(`^ {0,${open.column}}`) : null;
+    const closeRe = new RegExp(
+      `^ {0,${open.container + 3}}${fence[0]}{${fence.length},}[ \\t]*$`,
+    );
     const body: string[] = [];
     i += 1;
     while (i < lines.length && !closeRe.test(lines[i])) {
       body.push(indentRe ? lines[i].replace(indentRe, "") : lines[i]);
       i += 1;
     }
-    if (i >= lines.length) break;
+    if (i >= lines.length) {
+      break;
+    }
     i += 1;
     const source = body.join("\n");
-    if (source.trim()) blocks.push({ language: open[3] || null, source });
+    if (source.trim()) {
+      blocks.push({ language: open.language || null, source });
+    }
   }
   return blocks;
 }
