@@ -1789,7 +1789,9 @@ export function useChatModelRuntime() {
           : await confirmStopRunningChatsIfNeeded(
               forceReload ? "Applying these settings" : "Loading a different model",
               "reload",
-              touchesOnlySelected ? modelId : undefined,
+              touchesOnlySelected
+                ? servedCheckpoint(loadedNow, modelId, ggufVariant)
+                : undefined,
             );
       } catch (error) {
         releasePreflightLifecycleLease();

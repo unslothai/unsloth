@@ -25,7 +25,7 @@ import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { type ApiMonitorEntry, useChatModelRuntime } from "@/features/chat";
 import type { ApiMonitorResponse } from "@/features/chat/types/api";
 import { isExternalModelId } from "@/features/chat/external-providers";
-import { modelIdsMatch } from "@/features/hub/lib/model-identity";
+import { ggufVariantsMatch, modelIdsMatch } from "@/features/hub/lib/model-identity";
 import {
   type ModelConfigHandoffRequest,
   createModelConfigHandoffRequestId,
@@ -275,7 +275,7 @@ function servedModels(
   // Status says MLX only for the primary model; kept slots carry no backend.
   loadedIsMlx: boolean | null,
 ): ServedModel[] {
-  const activeId = monitorSelection(activeModel).id;
+  const { id: activeId, ggufVariant: activeQuant } = monitorSelection(activeModel);
   // At most one primary row: two local files can share a public name, and marking both ejected the primary.
   const named = (model: { id: string }): boolean =>
     Boolean(activeId) && modelIdsMatch(model.id, activeId);
@@ -285,8 +285,11 @@ function servedModels(
           named(model) && (model.checkpoint ?? model.id) === residentCheckpoint,
       )
     : -1;
+  const byQuant = activeQuant
+    ? loaded.findIndex((model) => named(model) && ggufVariantsMatch(model.quant, activeQuant))
+    : -1;
   const activeIndex =
-    byCheckpoint >= 0 ? byCheckpoint : loaded.findIndex(named);
+    byCheckpoint >= 0 ? byCheckpoint : byQuant >= 0 ? byQuant : loaded.findIndex(named);
   const rows = loaded.map((model, index) => ({
     name:
       model.quant && !model.id.includes(":")

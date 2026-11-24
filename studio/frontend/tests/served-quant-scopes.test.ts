@@ -24,3 +24,19 @@ test("the loaded panel scopes the active row's stop check to its quant", () => {
     /confirmStopRunningChatsIfNeeded\(\s*"Unloading this model",\s*"unloadOne",\s*entry\.label \?\? entry\.name,\s*\)/,
   );
 });
+
+const MONITOR = readSrc("features/api-monitor/api-monitor-page.tsx");
+const RUNTIME = readSrc("features/chat/hooks/use-chat-model-runtime.ts");
+
+test("the API monitor marks the primary's own quant active, not the first copy of its repo", () => {
+  const served = MONITOR.slice(MONITOR.indexOf("function servedModels("));
+  assert.match(served, /const \{ id: activeId, ggufVariant: activeQuant \} = monitorSelection\(/);
+  assert.match(served, /ggufVariantsMatch\(model\.quant, activeQuant\)/);
+});
+
+test("a settings reload checks the chats of the quant it reloads", () => {
+  assert.match(
+    RUNTIME,
+    /touchesOnlySelected\s*\?\s*servedCheckpoint\(loadedNow, modelId, ggufVariant\)/,
+  );
+});
