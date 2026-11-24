@@ -50,10 +50,18 @@ _VIDEO_REFERENCE_AUDIO_MAX_CHARS = ((24 * 1024 * 1024 + 2) // 3) * 4 + 64 * 1024
 
 def strip_named_quant(request):
     variant = request.gguf_variant
+    if not variant and ":" in request.model_path:
+        from core.inference.openai_auto_download import looks_like_quant
+
+        # A listed repo:QUANT handle loads that quant.
+        named = request.model_path.rsplit(":", 1)[1]
+        variant = named if looks_like_quant(named) else None
     if variant and request.model_path.lower().endswith(f":{variant.lower()}"):
         from hub.utils.paths import is_valid_repo_id
         repo = request.model_path[: -len(variant) - 1]
         if "/" in repo and is_valid_repo_id(repo):
+            if hasattr(request, "gguf_variant") and not request.gguf_variant:
+                request.gguf_variant = variant
             if "_submitted_model_path" in type(request).__private_attributes__:
                 request._submitted_model_path = request.model_path
             request.model_path = repo

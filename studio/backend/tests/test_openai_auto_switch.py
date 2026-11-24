@@ -3806,7 +3806,8 @@ def test_saved_settings_are_found_under_the_on_disk_copy(monkeypatch, named):
     request = LoadRequest(**named, use_saved_settings = True)
     filled = asyncio.run(inference_route._with_saved_settings(request))
     assert asked == [("/cache/snap/A", "org/A-GGUF", "Q4_K_M")]
-    assert (filled.model_path, filled.cache_type_kv) == (named["model_path"], "q8_0")
+    assert (filled.model_path, filled.cache_type_kv) == ("org/A-GGUF", "q8_0")
+    assert filled.gguf_variant == "q4_k_m"
 
 
 def test_a_bare_id_reads_no_quant_the_load_may_not_pick(monkeypatch):

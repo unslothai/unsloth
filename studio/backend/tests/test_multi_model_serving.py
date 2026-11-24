@@ -979,6 +979,10 @@ def test_a_load_or_validate_naming_its_own_quant_names_the_repo():
     assert LoadRequest(model_path = "org/A-GGUF:q8_0", gguf_variant = "Q8_0").model_path == "org/A-GGUF"
     other = LoadRequest(model_path = "org/A-GGUF:Q8_0", gguf_variant = "Q4_K_M")
     assert other.model_path == "org/A-GGUF:Q8_0"
+    listed = LoadRequest(model_path = "org/A-GGUF:Q8_0")
+    assert (listed.model_path, listed.gguf_variant) == ("org/A-GGUF", "Q8_0")
+    tagged = LoadRequest(model_path = "ollama/qwen3:8b")
+    assert (tagged.model_path, tagged.gguf_variant) == ("ollama/qwen3:8b", None)
 
 
 @pytest.mark.parametrize("cancel_as", ["org/A-GGUF:Q8_0", "org/A-GGUF"])
