@@ -4719,13 +4719,36 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     multiplier = self.args.unsloth_logit_chunk_multiplier
 
             all_logprobs_list = []
+            # pad == eos: rows whose completion EOS shares the pad id (None otherwise, or with an older zoo).
+            _eos_rows = None
             if pixel_values is None:
                 left_pad_tokens_per_prompt = calculate_pad_tokens_in_prompt(
                     input_ids, logits_to_keep, self.processing_class.pad_token_id
                 )
                 max_left_pad = torch.max(left_pad_tokens_per_prompt).item()
+                # Body-local: this source is copied out without this module's imports.
+                try:
+                    from unsloth_zoo.rl_replacements import (
+                        grpo_pad_is_eos_rows as _grpo_pad_is_eos_rows,
+                    )
+                except ImportError:
+                    _grpo_pad_is_eos_rows = None
+                if _grpo_pad_is_eos_rows is not None:
+                    _eos_rows = _grpo_pad_is_eos_rows(self, input_ids[:, -logits_to_keep:])
+                    # The zoo loss keeps the EOS slot with old / ref logps only once this path scores it.
+                    self._unsloth_grpo_logps_cover_eos = True
                 input_ids = left_pack_padding(input_ids, self.processing_class.pad_token_id)
                 attention_mask = input_ids != self.processing_class.pad_token_id
+                if _eos_rows is not None:
+                    # Same slot as the zoo loss mask: the first pad-id token after the completion start.
+                    _eos_w = logits_to_keep + max_left_pad
+                    attention_mask[:, -_eos_w:] |= create_completion_attention_mask(
+                        input_ids[:, -_eos_w:],
+                        left_pad_tokens_per_prompt,
+                        max_left_pad,
+                        self.processing_class.pad_token_id,
+                        eos_rows = _eos_rows,
+                    )
                 attention_mask = attention_mask.to(attention_mask.dtype)
             else:
                 max_left_pad = 0
@@ -4795,6 +4818,8 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 # Its extract_logps always projects with lm_head.weight.
                 and not _unsloth_head_hooked
                 and not getattr(unwrapped_model, "_unsloth_prefix_grouper_nograd_disabled", False)
+                # Its layout finds tokens by pad id, so it would drop a kept EOS that shares it.
+                and _eos_rows is None
             )
             if _pg_engage:
                 try:
@@ -4955,6 +4980,9 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 try:
                     _pk_pad = self.processing_class.pad_token_id
                     _pk_keep = input_ids != _pk_pad
+                    if _eos_rows is not None:
+                        # Same tokens as attention_mask: keep the real EOS that shares the pad id.
+                        _pk_keep = attention_mask.to(torch.bool)
                     _pk_len = _pk_keep.sum(dim = 1)
                     _pk_len_cpu = _pk_len.tolist()  # single GPU->CPU sync, reused below
                     _pk_nz_cpu = [_n for _n in _pk_len_cpu if _n > 0]
@@ -4985,7 +5013,11 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                         _pk_flat = input_ids[_pk_keep].unsqueeze(0)
                         # Per-row completion mask (same as the loss); prompt-only rows count as inactive.
                         _pk_cmask = create_completion_attention_mask(
-                            input_ids[:, -_pk_W:], left_pad_tokens_per_prompt, max_left_pad, _pk_pad
+                            input_ids[:, -_pk_W:],
+                            left_pad_tokens_per_prompt,
+                            max_left_pad,
+                            _pk_pad,
+                            **({} if _eos_rows is None else {"eos_rows": _eos_rows}),
                         )
                         _pk_active = int(_pk_cmask.any(dim = 1).sum())
                     if _pk_fits and (_pk_ok is True or _pk_active >= 2):
