@@ -320,6 +320,17 @@ def flux3_pipeline_class() -> type:
     return _PIPELINE_CLASS
 
 
+def _reset_guider_step(mp: Any) -> None:
+    """Rewind the guider's step state. diffusers keeps the last call's step: after a call whose last steps ran past a
+    Fast CFG stop, the next text step would read one condition and skip the negative embeddings its CFG steps need."""
+    guider = getattr(mp, "guider", None)
+    if guider is None:
+        return
+    guider._step = 0
+    guider._num_inference_steps = None
+    guider._timestep = None
+
+
 class _Flux3KleinPipelineMixin:
     """FLUX.3 Klein (distilled or base) as a ``DiffusionPipeline``; the denoise runs in the modular blocks."""
 
@@ -428,20 +439,19 @@ class _Flux3KleinPipelineMixin:
         if guider is None:
             return
         stop = 1.0 if guidance_stop is None else float(guidance_stop)
-        if guidance_scale is not None and (
-            float(getattr(guider.config, "guidance_scale", -1.0)) != float(guidance_scale)
+        current = getattr(guider.config, "guidance_scale", None)
+        # No scale keeps the guider's own, but never an interval a previous Fast CFG render left on it.
+        scale = guidance_scale if guidance_scale is not None else current
+        if scale is not None and (
+            current is None
+            or float(current) != float(scale)
             or float(getattr(guider.config, "stop", 1.0)) != stop
         ):
             from diffusers import ClassifierFreeGuidance
             mp.update_components(
-                guider = ClassifierFreeGuidance(guidance_scale = float(guidance_scale), stop = stop)
+                guider = ClassifierFreeGuidance(guidance_scale = float(scale), stop = stop)
             )
-            guider = mp.guider
-        # The guider keeps the last call's step: after a render whose last steps ran without the unconditional
-        # branch, the text step would read one condition and skip the negative embeddings the next render needs.
-        guider._step = 0
-        guider._num_inference_steps = None
-        guider._timestep = None
+        _reset_guider_step(mp)
 
     def __call__(
         self,
@@ -532,6 +542,9 @@ class _Flux3KleinPipelineMixin:
                 if not self.is_distilled:
                     cond_blocks.begin_render(transformer)
                 try:
+                    # Per call, not per render: a batch runs one call per image, and the previous image's
+                    # last steps may have run past a Fast CFG stop.
+                    _reset_guider_step(mp)
                     with self._step_hooks(
                         mp,
                         callback_on_step_end,

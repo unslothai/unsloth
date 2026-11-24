@@ -106,3 +106,85 @@ def test_request_model_bounds():
     for bad in (0.0, 1.01, -1):
         with pytest.raises(ValidationError):
             DiffusionGenerateRequest(prompt = "a", cfg_interval_end = bad)
+
+
+def test_no_scale_drops_a_stale_interval():
+    # A call without a guidance scale keeps the guider's scale, never a previous Fast CFG render's stop.
+    mp = _MP(_guider(scale = 4.0, stop = 0.8))
+    _set(mp, None, None)
+    assert mp.guider.config.stop == 1.0
+    assert mp.guider.config.guidance_scale == 4.0
+
+
+class _GuidedModular:
+    """Runs the guider over every step like the FLUX.3 blocks and records the conditions the text step sees."""
+
+    def __init__(self, guider):
+        self.guider = guider
+        self.scheduler = types.SimpleNamespace(step = lambda *a, **k: None)
+        self.transformer = None
+        self.text_conditions = []
+
+    def update_components(self, guider):
+        self.guider = guider
+
+    def __call__(
+        self,
+        output = None,
+        **kwargs,
+    ):
+        self.text_conditions.append(self.guider.num_conditions)
+        steps = kwargs["num_inference_steps"]
+        for i in range(steps):
+            self.guider.set_state(step = i, num_inference_steps = steps, timestep = None)
+        return [f"img:{kwargs['prompt']}"]
+
+
+def test_every_image_of_a_batch_gets_its_negative_embeddings():
+    # A batch is one blocks call per image: image 2's text step must not read image 1's past-the-stop state.
+    from core.inference.diffusion_flux3 import FLUX3_BASE_BLOCKS
+
+    class _Base(_Flux3KleinPipelineMixin):
+        def __init__(self):
+            self.config = types.SimpleNamespace(blocks_class_name = FLUX3_BASE_BLOCKS)
+            self.mp = _GuidedModular(_guider())
+
+        def modular_pipeline(self):
+            return self.mp
+
+        def progress_bar(self, total = None):
+            return types.SimpleNamespace(close = lambda: None)
+
+    pipe = _Base()
+    out = pipe(
+        prompt = ["a", "b", "c"],
+        generator = ["g1", "g2", "g3"],
+        num_inference_steps = 10,
+        guidance_scale = 3.5,
+        guidance_stop = 0.8,
+        negative_prompt = "blurry",
+    )
+    assert out.images == ["img:a", "img:b", "img:c"]
+    assert pipe.mp.guider.config.stop == 0.8
+    assert pipe.mp.text_conditions == [2, 2, 2]
+    # the next render without Fast CFG is full CFG again
+    pipe(prompt = "d", num_inference_steps = 10, guidance_scale = 3.5)
+    assert pipe.mp.guider.config.stop == 1.0
+    assert pipe.mp.text_conditions[-1] == 2
+
+
+def test_infotext_names_fast_cfg_only_when_it_applied():
+    from core.inference.image_gallery import _params_text
+
+    base = {
+        "prompt": "p",
+        "steps": 50,
+        "guidance": 3.5,
+        "seed": 1,
+        "width": 64,
+        "height": 64,
+        "model": "m",
+    }
+    assert "Fast CFG" not in _params_text(base)
+    assert _params_text({**base, "cfg_interval_end": None}) == _params_text(base)
+    assert _params_text({**base, "cfg_interval_end": 0.8}).endswith(", Fast CFG: 0.8")
