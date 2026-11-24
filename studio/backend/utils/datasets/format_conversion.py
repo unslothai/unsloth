@@ -126,23 +126,21 @@ def standardize_chat_format(
         content_key = "content"
     elif len(uniques.keys()) == 2:
         keys = list(uniques.keys())
-        # A role column's values are drawn from known aliases; a content column's are free text.
-        # Cardinality alone swaps the two on a tie (equal distinct counts), so break ties here.
+        distinct = [set(uniques[key]) for key in keys]
         known_roles = {
             _normalize_role_alias(alias)
             for aliases in (aliases_for_system, aliases_for_user, aliases_for_assistant)
             for alias in aliases
         }
-        role_votes = [
-            sum(_normalize_role_alias(value) in known_roles for value in set(uniques[key]))
-            for key in keys
+        # Mostly-alias values mark the role column; a lone "Output" message must not outvote cardinality.
+        role_like = [
+            2 * sum(_normalize_role_alias(v) in known_roles for v in values) >= len(values)
+            for values in distinct
         ]
-        if role_votes[0] != role_votes[1]:
-            role_index = role_votes.index(max(role_votes))
+        if role_like[0] != role_like[1]:
+            role_index = 0 if role_like[0] else 1
         else:
-            length_first = len(set(uniques[keys[0]]))
-            length_second = len(set(uniques[keys[1]]))
-            role_index = 0 if length_first < length_second else 1
+            role_index = 0 if len(distinct[0]) < len(distinct[1]) else 1
         role_key = keys[role_index]
         content_key = keys[1 - role_index]
     else:

@@ -77,3 +77,20 @@ def test_cardinality_still_applies_without_alias_evidence():
     result = standardize_chat_format(dataset, num_proc = 1)
     roles = {m["role"] for m in result[0]["conversations"]}
     assert roles == {"alpha", "beta"}, roles
+
+
+def test_single_alias_like_message_does_not_flip_custom_roles():
+    dataset = Dataset.from_list(
+        [
+            {
+                "messages": [
+                    {"speaker": "customer", "text": f"q{i}"},
+                    {"speaker": "agent", "text": "Output" if i == 0 else f"a{i}"},
+                ]
+            }
+            for i in range(30)
+        ]
+    )
+    result = standardize_chat_format(dataset, num_proc = 1)
+    assert [m["role"] for m in result[0]["messages"]] == ["customer", "agent"]
+    assert result[0]["messages"][1]["content"] == "Output"
