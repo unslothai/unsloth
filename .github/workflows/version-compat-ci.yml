@@ -96,7 +96,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        # Pure text parsing on Python 3.12. Windows stays: its checkout has CRLF line endings,
+        # which the parsers must survive. macOS checks out LF with POSIX paths, so it repeated the
+        # Linux leg exactly, on the scarcest pool.
+        os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:

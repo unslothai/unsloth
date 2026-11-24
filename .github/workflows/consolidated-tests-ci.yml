@@ -245,6 +245,11 @@ jobs:
 
       - name: python floor compatibility (HARD GATE)
         # Every job pins 3.12, so this AST check guards the requires-python floor from pyproject.
+        # One leg: it reads only pyproject.toml and the tracked .py files under the packaged roots
+        # (unsloth/, unsloth_cli/, studio/) through ast/compile, never an installed package, so
+        # every leg computed the same verdict. !cancelled(): it still runs on that leg when an
+        # earlier gate failed, as the other legs used to cover.
+        if: ${{ !cancelled() && matrix.combo.id == 'pyproject' }}
         run: |
           python -m pytest -v --tb=short tests/test_python39_compatibility.py
 
