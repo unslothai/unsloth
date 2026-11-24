@@ -777,15 +777,46 @@ def _ep_refuse_exports(level):
             setattr(level, attr, refused)
 
 
+_MODEL_INIT_REFUSAL = (
+    "Unsloth: Trainer(model_init = ...) is not supported under expert parallel: train() rebuilds the model "
+    "from model_init, while the expert parallel saves, gradient sync and checkpoint restore stay bound to the "
+    "first one. Build the model first and pass Trainer(model = model)."
+)
+
+
+def _ddp_reduces_any(model):
+    """A trainable parameter DDP would reduce (not in `_ddp_params_and_buffers_to_ignore`)."""
+    ignored = set(getattr(model, "_ddp_params_and_buffers_to_ignore", None) or ())
+    return any(p.requires_grad and n not in ignored for n, p in model.named_parameters())
+
+
 def ep_trainer_setup(trainer):
     """Trainer.__init__ (after accelerate exists): EP-aware clipping, non-finite sync, 1-GPU adapter saves."""
     model = getattr(trainer, "model", None)
     if not isinstance(model, nn.Module) or not is_expert_parallel(model):
         return False
+    if getattr(trainer, "model_init", None) is not None:
+        raise NotImplementedError(_MODEL_INIT_REFUSAL)
     mesh = _mesh(model)
     group = mesh.get_group()
     accelerator = trainer.accelerator
     backward = accelerator.backward
+    prepare_model = accelerator.prepare_model
+
+    def ep_prepare_model(
+        target,
+        device_placement = None,
+        evaluation_mode = False,
+        **kwargs,
+    ):
+        # Expert-only LoRA: every trainable tensor is DDP-ignored (expert shards), and DDP refuses a module
+        # with nothing to reduce. Not wrapped: the expert gradients never went through DDP (ep_backward syncs
+        # the replicas, the hooks average), and placement / autocast / compile still apply.
+        if not evaluation_mode and is_expert_parallel(target) and not _ddp_reduces_any(target):
+            evaluation_mode = True
+        return prepare_model(target, device_placement, evaluation_mode, **kwargs)
+
+    accelerator.prepare_model = ep_prepare_model
 
     def ep_backward(*args, **kwargs):
         out = backward(*args, **kwargs)

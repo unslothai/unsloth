@@ -6990,6 +6990,9 @@ def patch_gradient_accumulation_fix(Trainer):
             # DDP exclusions as the one __init__ marked.
             model = _original_call_model_init(self, *args, **kwargs)
             _refuse_tensor_parallel_for_trainer(model)
+            if _is_unsloth_expert_parallel(model):
+                from .ep_native import _MODEL_INIT_REFUSAL
+                raise NotImplementedError(_MODEL_INIT_REFUSAL)
             _tensor_subclass_weights_for_ddp(self, model)
             try:
                 from ..tiling import revalidate_for_trainer

@@ -224,9 +224,11 @@ def _case_env_trainer(
     world,
     tmp,
     resume = False,
+    experts_only = False,
 ):
     """UNSLOTH_PARALLEL="ep=2" (set before `import unsloth`) through transformers' Trainer under Unsloth's
-    Trainer.__init__: DDP over 2 ranks of 1 row each vs one process on 2 rows, clipping on, then save_model."""
+    Trainer.__init__: DDP over 2 ranks of 1 row each vs one process on 2 rows, clipping on, then save_model.
+    experts_only: LoRA on the routed experts alone (target_modules = []), so DDP has no trainable parameter."""
     from test_tp_native_gloo import _import_checkout_unsloth, _Rows, _trainer_args
 
     error = _import_checkout_unsloth()
@@ -253,7 +255,7 @@ def _case_env_trainer(
         config = LoraConfig(
             r = 4,
             lora_alpha = 8,
-            target_modules = targets,
+            target_modules = [] if experts_only else targets,
             target_parameters = ink.EXPERTS,
             init_lora_weights = False,
         )
@@ -428,6 +430,34 @@ def _case_entrypoints(rank, world, tmp, mode):
             ),
             "experts": sum(1 for k in saved["weights"] if ".experts." in k),
         }
+    if mode == "model_init":
+        # train() rebuilds the model from model_init, but the expert parallel hooks keep the first one: refused.
+        def init():
+            return tp_env.tensor_parallel_env_peft(peft)(ink.build(True, lora = False))
+
+        refused = []
+        for both in (False, True):
+            args = _trainer_args(
+                os.path.join(tmp, f"init_{both}"), 1, gradient_accumulation_steps = 1, max_steps = 1
+            )
+            try:
+                trainer = transformers.Trainer(
+                    model = init() if both else None,
+                    model_init = init,
+                    args = args,
+                    train_dataset = data,
+                )
+                trainer.train()
+                refused.append(None)
+            except NotImplementedError as exc:
+                refused.append(str(exc))
+            except (
+                ValueError
+            ) as exc:  # transformers 5 refuses model beside model_init itself (4.x warns)
+                if not both or "not both" not in str(exc):
+                    raise
+                refused.append("model_init: transformers refused model beside it")
+        return {"refused": refused}
     assert mode == "optimizer"
     model = ink.build(True, lora = False)  # full finetuning: Trainer.__init__ shards it
     opt = torch.optim.SGD(model.parameters(), lr = 0.01)
@@ -483,6 +513,13 @@ def test_ep_trainer_refuses_prebuilt_optimizer_over_unsharded_experts():
     for r in results:
         assert r["refused"] is not None and "experts would never update" in r["refused"], r
         assert not r["is_ep"]  # refused before anything was sharded
+
+
+def test_ep_trainer_refuses_model_init():
+    results = _spawn("_case_entrypoints", env = _ep_env(), mode = "model_init")
+    _ok(results)
+    for r in results:
+        assert all(x is not None and "model_init" in x for x in r["refused"]), r
 
 
 def _worker(
@@ -610,6 +647,29 @@ def test_ep_env_trainer_matches_one_process():
     # save_model wrote the 1-GPU adapter: expert LoRA gathered, the same keys, shapes and values.
     want, got = ref["adapter"], results[0]["adapter"]
     assert sorted(got) == sorted(want) and any(".experts." in k for k in got)
+    assert (
+        ink._worst(
+            {k: v.double() for k, v in want.items()}, {k: v.double() for k, v in got.items()}
+        )
+        < 1e-5
+    )
+
+
+def test_ep_env_trainer_expert_only_lora_skips_ddp_and_matches_one_process():
+    """LoRA on the routed experts alone: every trainable parameter is DDP-ignored, so the model is not wrapped
+    (DDP refuses a module with nothing to reduce); the expert gradients still match one process."""
+    (ref,) = _spawn("_case_env_trainer", world = 1, experts_only = True)
+    if "skip" in ref:
+        pytest.skip(f"import unsloth failed on this host: {ref['skip']}")
+    assert "error" not in ref, ref
+    results = _spawn("_case_env_trainer", env = _ep_env(), experts_only = True)
+    assert all(r is not None and "error" not in r for r in results), results
+    for r in results:
+        assert r["is_ep"] and "DistributedDataParallel" not in r["wrapped"], r["wrapped"]
+        assert r["losses"] == pytest.approx(ref["losses"], rel = 1e-5)
+        assert r["grad_norms"] == pytest.approx(ref["grad_norms"], rel = 1e-5)
+    want, got = ref["adapter"], results[0]["adapter"]
+    assert sorted(got) == sorted(want) and all(".experts." in k for k in got)
     assert (
         ink._worst(
             {k: v.double() for k, v in want.items()}, {k: v.double() for k, v in got.items()}
