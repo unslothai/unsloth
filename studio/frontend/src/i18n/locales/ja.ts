@@ -936,6 +936,9 @@ export const ja = {
     useModelScopeHint: "代わりに ModelScope で検索・ダウンロードします。設定からいつでも戻せます。",
     useModelScopeFailed: "ModelScope に切り替えられませんでした。",
     updateToken: "トークンを更新",
+    linkedModelTitle: "{model} を読み込みますか？",
+    linkedModelBody: "リンクからこのページが開かれ、このモデルのダウンロードと読み込みが要求されました。",
+    linkedModelLoad: "読み込む",
     hfToken: {
       label: "HF トークン",
       saved: "保存済み",

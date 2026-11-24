@@ -972,6 +972,9 @@ export const he = {
     useModelScopeHint: "חפש והורד מ-ModelScope במקום. ניתן לחזור בהגדרות.",
     useModelScopeFailed: "המעבר ל-ModelScope נכשל.",
     updateToken: "עדכון טוקן",
+    linkedModelTitle: "לטעון את {model}?",
+    linkedModelBody: "קישור פתח את הדף הזה וביקש להוריד ולטעון את המודל הזה.",
+    linkedModelLoad: "טעינה",
     hfToken: {
       label: "טוקן HF",
       saved: "נשמר",
