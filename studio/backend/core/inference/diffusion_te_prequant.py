@@ -833,20 +833,109 @@ TE_INT8_FP16_ENV = "UNSLOTH_TE_INT8_FP16"
 _TE_INT8_FP16_FAMILIES = frozenset({"qwen-image-2.1"})
 
 
-def int8_convrot_te_runs_fp16(fam: Any, target: Any) -> bool:
-    """float16 CUDA (no bf16/fp8) runs the hosted int8 ConvRot encoder; ``UNSLOTH_TE_INT8_FP16=0`` keeps the dense one."""
+_FP16_TE_LOGGED: set = set()
+
+
+def _base_components(fam: Any, base: Optional[str]) -> dict:
+    """Stored components of the base snapshot when it holds the text encoder, else the family's bf16 table."""
+    from .diffusion_small_host import StoredComponent, resolve_snapshot_dir, stored_components
+
+    repo = base or str(getattr(fam, "base_repo", "") or "")
+    if repo:
+        try:
+            from utils.hf_cache_settings import active_hf_hub_cache
+            cache = active_hf_hub_cache()
+        except Exception:  # noqa: BLE001
+            cache = None
+        snapshot = resolve_snapshot_dir(repo, cache)
+        comps = stored_components(snapshot) if snapshot is not None else {}
+        if "text_encoder" in comps:
+            return comps
+    from .diffusion_auto_policy import family_bf16_components_gb
+
+    table = family_bf16_components_gb(fam, repo or None)
+    if table is None:
+        return {}
+    mib_per_gb = 1000.0**3 / (1024.0 * 1024.0)
+    return {
+        name: StoredComponent(name, int(gb * mib_per_gb), "bfloat16")
+        for name, gb in zip(("transformer", "text_encoder", "vae"), table)
+        if gb
+    }
+
+
+def dense_fp16_encoder_fits_host(
+    fam: Any, base: Optional[str] = None
+) -> tuple[Optional[bool], str]:
+    """Whether the dense load (dense encoder + denoiser + VAE, float16) fits host RAM, priced by the small-host
+    route's own resolver (``diffusion_small_host.dense_load_fits``), so this pick and the load's low-RAM decision
+    agree: (fits, why). fits is None when the components or host RAM cannot be read."""
+    try:
+        import torch
+
+        from .diffusion_small_host import dense_load_fits, host_commit_mib, host_ram_mib
+        from .safetensors_pread import pread_available
+
+        comps = _base_components(fam, base)
+        if "text_encoder" not in comps:
+            return None, "text encoder size unknown"
+        total, available = host_ram_mib()
+        fits, dense = dense_load_fits(
+            comps,
+            torch.float16,
+            host_total_mib = total,
+            host_available_mib = available,
+            host_commit_mib = host_commit_mib(),
+            pread_libraries = ("transformers",) if pread_available() else (),
+        )
+        return fits, f"dense float16 load ~{dense} MiB, {available} MiB available host RAM"
+    except Exception as exc:  # noqa: BLE001
+        return None, f"host RAM check failed: {exc}"
+
+
+def int8_convrot_te_runs_fp16(
+    fam: Any,
+    target: Any,
+    *,
+    auto: bool = False,
+    base: Optional[str] = None,
+) -> bool:
+    """float16 CUDA (no bf16/fp8) may run the hosted int8 ConvRot encoder. An explicit int8 request takes it; an
+    automatic pick takes it only when the dense float16 encoder cannot be held in host RAM (the load would otherwise
+    take the low-RAM route and re-read the encoder from disk per prompt), and keeps the dense encoder when it fits:
+    the int8 encoder is 0.045 relative L2 from an fp32 encode against 0.009 for the dense fp16 one (Qwen-Image-2.1-Turbo,
+    T4, renders +0.027 LPIPS). ``UNSLOTH_TE_INT8_FP16=1`` always takes the int8 encoder, ``=0`` never does."""
     import os
 
-    if os.environ.get(TE_INT8_FP16_ENV, "1").strip().lower() in ("0", "false", "no", "off"):
+    raw = (os.environ.get(TE_INT8_FP16_ENV) or "").strip().lower()
+    if raw in ("0", "false", "no", "off"):
         return False
     name = str(getattr(fam, "name", fam) or "").strip().lower()
     if name not in _TE_INT8_FP16_FAMILIES or getattr(target, "device", None) != "cuda":
         return False
     try:
         import torch
-        return getattr(target, "dtype", None) is torch.float16
+        if getattr(target, "dtype", None) is not torch.float16:
+            return False
     except Exception:  # noqa: BLE001
         return False
+    if raw in ("1", "true", "yes", "on") or not auto:
+        return True
+    fits, why = dense_fp16_encoder_fits_host(fam, base)
+    # unreadable host RAM / sizes: the int8 encoder, the memory-safe pick
+    use_int8 = fits is not True
+    key = (name, base, use_int8)
+    if key not in _FP16_TE_LOGGED:
+        _FP16_TE_LOGGED.add(key)
+        log = _module_logger()
+        if log is not None:
+            log.info(
+                "diffusion.te_prequant: float16 card, automatic %s text encoder for %s (%s)",
+                "int8 ConvRot" if use_int8 else "dense",
+                name,
+                why if fits is not None else f"{why}; dense fit unknown",
+            )
+    return use_int8
 
 
 def hosted_int8_convrot_te_runs_on(fam: Any, target: Any) -> bool:
@@ -1049,6 +1138,7 @@ def te_prequant_sources(
     te_quant_mode: Optional[str],
     target: Any,
     components: Iterable[str] = TE_PREQUANT_COMPONENTS,
+    base: Optional[str] = None,
 ) -> dict[str, TePrequantSource]:
     """Shares the download plan's resolver, so the plan and load agree on which dense encoders to fetch."""
     try:
@@ -1074,7 +1164,10 @@ def te_prequant_sources(
         fp8_runs = te_quant_supported(target, TE_QUANT_FP8)
         if not fp8_runs and not (
             mode == "int8"
-            and (int8_convrot_te_runs_on(target) or int8_convrot_te_runs_fp16(fam, target))
+            and (
+                int8_convrot_te_runs_on(target)
+                or int8_convrot_te_runs_fp16(fam, target, auto = auto, base = base)
+            )
         ):
             return {}
         sources: dict[str, TePrequantSource] = {}
@@ -1128,6 +1221,7 @@ def te_prequant_sources_for_base(
         te_quant_mode = te_quant_mode,
         target = target,
         components = components,
+        base = base,
     )
     registered_base = str(getattr(fam, "base_repo", "") or "")
     standalone = standalone_component_bases or {}
