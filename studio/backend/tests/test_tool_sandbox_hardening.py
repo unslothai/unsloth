@@ -706,6 +706,8 @@ def test_dedicated_cache_paths_are_expanded(tmp_path, monkeypatch):
             source = "environment",
         ),
     )
+    # os.path.expanduser reads USERPROFILE on Windows, not HOME.
+    monkeypatch.setenv("USERPROFILE", str(home))
     monkeypatch.setattr(
         sandbox_linux,
         "_cache_hazard_within_deadline",
