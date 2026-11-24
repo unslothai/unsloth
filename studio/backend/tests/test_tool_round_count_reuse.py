@@ -185,7 +185,15 @@ def test_a_render_count_reuses_the_native_count_of_the_same_prompt(monkeypatch):
 
 @pytest.mark.parametrize(
     "change",
-    ["messages", "system", "tools", "continue_final", "template_kwargs", "template_options"],
+    [
+        "messages",
+        "system",
+        "tools",
+        "tool_key_order",
+        "continue_final",
+        "template_kwargs",
+        "template_options",
+    ],
 )
 def test_a_render_count_of_a_different_prompt_still_renders(monkeypatch, change):
     server = _Server(monkeypatch)
@@ -198,6 +206,8 @@ def test_a_render_count_of_a_different_prompt_still_renders(monkeypatch, change)
         system = "Be terse."
     elif change == "tools":
         tools = None
+    elif change == "tool_key_order":
+        tools = [dict(reversed(tool.items())) for tool in _TOOLS]
     elif change == "continue_final":
         kw = {"continue_final_message": True}
     elif change == "template_kwargs":
@@ -206,6 +216,17 @@ def test_a_render_count_of_a_different_prompt_still_renders(monkeypatch, change)
         kw = {"template_options": {"tool_choice": "required"}}
     backend.count_chat_tokens(messages, system, tools, strict = True, **kw)
     assert len(server.paths("/apply-template")) == 1
+
+
+def test_a_render_count_of_reordered_schema_keys_still_renders(monkeypatch):
+    server = _Server(monkeypatch)
+    backend = _count_backend()
+    backend.count_chat_tokens(_MESSAGES, None, _TOOLS, strict = True)
+    tools = copy.deepcopy(_TOOLS)
+    params = tools[0]["function"]["parameters"]
+    tools[0]["function"]["parameters"] = dict(reversed(params.items()))
+    backend.count_chat_tokens(_MESSAGES, None, tools, strict = True)
+    assert len(server.paths("/apply-template")) == 2
 
 
 def test_a_caller_wanting_the_prompt_still_renders_after_a_native_count(monkeypatch):
