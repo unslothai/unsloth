@@ -174,6 +174,7 @@ from ..device_type import (
     apply_gfx101x_triton_workaround,
     apply_pre_volta_compile_workaround,
     arch_breaks_compile,
+    arch_lacks_bf16,
     cuda_bf16_capability,
     distributed_launch,
     gfx101x_triton_workaround_applied,
@@ -4766,6 +4767,8 @@ def _cache_device_capability(get_device_capability):
 SUPPORTS_BFLOAT16 = False
 # {device index: bf16} on a one-process host whose NVIDIA cards differ, else None (SUPPORTS_BFLOAT16 holds).
 _BF16_BY_DEVICE = None
+# HIP device indices whose arch lacks bf16, so a cast there stays fp16 after a set_device (#7922).
+_BF16_LACKING_DEVICES = frozenset()
 HAS_FLASH_ATTENTION = False
 HAS_FLASH_ATTENTION_SOFTCAPPING = False
 
@@ -4841,6 +4844,17 @@ elif DEVICE_TYPE == "cuda":
         HAS_FLASH_ATTENTION = False
 elif DEVICE_TYPE == "hip":
     SUPPORTS_BFLOAT16 = torch.cuda.is_bf16_supported()
+    _lacking = set()
+    for _bf16_i in range(DEVICE_COUNT):
+        try:
+            if arch_lacks_bf16(
+                getattr(torch.cuda.get_device_properties(_bf16_i), "gcnArchName", "")
+            ):
+                _lacking.add(_bf16_i)
+        except Exception:
+            pass
+    _BF16_LACKING_DEVICES = frozenset(_lacking)
+    del _lacking
     if os.environ.get("UNSLOTH_ROCM_FLASH_ATTN_DIFFUSION_ONLY") == "1":
         # Studio's diffusion-only Triton flash-attn: keep LLM attention on SDPA.
         import transformers.utils.import_utils

@@ -358,3 +358,26 @@ def test_is_bfloat16_supported_follows_set_device_on_hip(monkeypatch):
     assert is_bf16() is True
     fake.cuda._current = 2
     assert is_bf16() is False
+
+
+class _FakeQKV:
+    dtype = __import__("torch").float32
+
+    def __init__(self, index):
+        self.device = types.SimpleNamespace(index = index)
+
+    def to(self, dtype):
+        return dtype
+
+
+@pytest.mark.parametrize("index, expected", [(0, "bfloat16"), (2, "float16"), (None, "bfloat16")])
+def test_fp32_attention_downcast_keeps_fp16_on_a_gfx10_card(monkeypatch, index, expected):
+    """Import on an RDNA4 card leaves SUPPORTS_BFLOAT16 True; a tensor on the gfx10 iGPU must still get fp16 (#7922)."""
+    import torch
+
+    ad = pytest.importorskip("unsloth.utils.attention_dispatch")
+    monkeypatch.setattr(ad, "SUPPORTS_BFLOAT16", True)
+    monkeypatch.setattr(ad, "_BF16_LACKING_DEVICES", frozenset({2}))
+    monkeypatch.setattr(torch, "is_autocast_enabled", lambda *a, **k: False)
+    q = _FakeQKV(index)
+    assert ad._downcast_fp32_qkv(q, q, q) == (getattr(torch, expected),) * 3
