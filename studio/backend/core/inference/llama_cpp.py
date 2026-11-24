@@ -2823,6 +2823,10 @@ _MISS = object()
 
 # GGUF unsigned value-type id -> byte width (uint8, uint16, uint32, uint64).
 _GGUF_UINT_WIDTHS = {0: 1, 2: 2, 4: 4, 10: 8}
+# The GGUF is the publisher's: counts it declares size lists built here, so past these a value is
+# treated as absent. Real files stay far below (a few hundred layers, chat templates of kilobytes).
+_GGUF_MAX_LAYERS = 1 << 16
+_GGUF_MAX_TEXT_BYTES = 16 * 1024 * 1024
 _GGUF_MARKUP_FIRST_BYTES = frozenset(b"<[")
 
 
@@ -19279,6 +19283,8 @@ class LlamaCppBackend:
         ):
             return
         span = end - start
+        if n_phys + (count - 1) * span > _GGUF_MAX_LAYERS:
+            return
         phys = list(range(n_phys)) + [start + k % span for k in range((count - 1) * span)]
         for attr in (
             "_n_kv_heads_by_layer",
@@ -20170,6 +20176,9 @@ class LlamaCppBackend:
 
     @staticmethod
     def _gguf_read_array_value(f, atype: int, alen: int) -> Optional[list]:
+        if atype in (4, 5, 7) and alen > _GGUF_MAX_LAYERS:
+            f.seek(LlamaCppBackend._GGUF_TYPE_SIZE[atype] * alen, 1)
+            return None
         if atype == 4:  # UINT32
             return [struct.unpack("<I", f.read(4))[0] for _ in range(alen)]
         if atype == 5:  # INT32
@@ -20601,6 +20610,9 @@ class LlamaCppBackend:
                         ):
                             if vtype == 8:  # STRING
                                 slen = struct.unpack("<Q", f.read(8))[0]
+                                if slen > _GGUF_MAX_TEXT_BYTES:
+                                    f.seek(slen, 1)
+                                    continue
                                 val_s = f.read(slen).decode("utf-8")
                                 if key.endswith(".decision.type"):
                                     decision_by_arch[key] = val_s
@@ -20717,6 +20729,14 @@ class LlamaCppBackend:
                         break
                 else:
                     kv_complete = True
+
+            if self._n_layers is not None and self._n_layers > _GGUF_MAX_LAYERS:
+                logger.warning(
+                    "GGUF declares %d layers; treating the layer count as unknown", self._n_layers
+                )
+                self._n_layers = None
+            if self._loop_count is not None and self._loop_count > _GGUF_MAX_LAYERS:
+                self._loop_count = None
 
             # Bind buffered metadata after discovering the architecture namespace.
             if arch is not None:
