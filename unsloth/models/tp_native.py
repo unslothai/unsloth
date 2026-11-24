@@ -2616,6 +2616,11 @@ def _tp_projection_compute(self, x):
     lora_A = self._modules.get("lora_A")
     if lora_A is None or getattr(self, "disable_adapters", True) or getattr(self, "merged", False):
         return out
+    mode = self.__dict__.get("_unsloth_tp_lora_mode", _MISSING)
+    if mode is _MISSING:  # a projection not sharded by apply_tensor_parallel (tests)
+        mode = _one_gpu_lora_mode(self)
+    if torch.is_autocast_enabled():  # the generated forward's own (CUDA) query
+        mode = None
     for adapter in _active_adapter(self) or ():
         if adapter not in lora_A:
             continue
@@ -2624,14 +2629,8 @@ def _tp_projection_compute(self, x):
         if rows is not None:
             B = B.narrow(0, *rows)
         scaling = self.scaling[adapter]
-        mode = self.__dict__.get("_unsloth_tp_lora_mode", _MISSING)
-        if mode is _MISSING:  # a projection not sharded by apply_tensor_parallel (tests)
-            mode = _one_gpu_lora_mode(self)
-        dtype = None
-        if mode is not None and not torch.is_autocast_enabled():
-            dtype = torch.float16 if mode == "float16" else out.dtype
-        if dtype is not None:
-            out = _tp_lora_update(self, adapter, out, x, A, B, scaling, dtype)
+        if mode is not None:
+            out = _tp_lora_update(self, adapter, out, x, A, B, scaling, mode)
             continue
         x_lora = x if torch.is_autocast_enabled() else x.to(A.dtype)
         x_lora = _lora_dropout(self, adapter, x_lora)
@@ -2639,11 +2638,19 @@ def _tp_projection_compute(self, x):
     return out
 
 
+# torch 2.8 / 2.9 inductor miscompiles addmm(alpha = scaling, beta = 1) traced inside a compiled block, forward
+# and backward; fixed in 2.10 (unsloth#3271). The same guard as unsloth_zoo's compiled LoRA forward.
+_TP_LORA_NO_COMPILED_ADDMM = tuple(int(v) for v in torch.__version__.split(".")[:2]) < (2, 10)
+
+
 def _one_gpu_lora_mode(proj):
-    """How the one-GPU run computes this layer's low-rank product: Unsloth's compiled LoRA forward (unsloth_zoo
-    compiler `lora_forward`) in the base output's dtype ("output"), or in float16 when the layer was built
-    under forced float32 ("float16", Gemma 3 / 4 on float16 GPUs). None when the class keeps PEFT's forward,
-    which casts x to the LoRA weights' dtype (the float32 product). Read once when the projection is sharded."""
+    """How the one-GPU run computes this layer's low-rank product outside autocast: Unsloth's compiled LoRA
+    forward (unsloth_zoo compiler `lora_forward`) in float16 when the layer was built under forced float32
+    ("float16", Gemma 3 / 4 on float16 GPUs). Otherwise zoo keeps PEFT's input cast: where PEFT's forward
+    branches on autocast itself (bitsandbytes) only x goes to the LoRA dtype and the product runs in the base
+    output's dtype ("output"); elsewhere (dense Linear) result and x both go to the LoRA dtype, so the product
+    runs in the LoRA weights' dtype ("lora"). None when the class keeps PEFT's forward, which casts x to the LoRA
+    weights' dtype (the float32 product), or the generated variant cannot be told. Read once at shard time."""
     forward = getattr(type(proj), "forward", None)
     if getattr(forward, "__name__", "") != "unsloth_forward":
         return None
@@ -2655,23 +2662,44 @@ def _one_gpu_lora_mode(proj):
         )
     if flag is None:
         flag = getattr(forward, "_unsloth_force_float32", "0")
-    return "float16" if str(flag) == "1" else "output"
+    if str(flag) != "0":  # zoo builds the forced template for every UNSLOTH_FORCE_FLOAT32 but "0"
+        return "float16"
+    # zoo's _patch_lora_input_cast: a PEFT forward already branching on autocast keeps its own x cast.
+    try:
+        source = inspect.getsource(forward._unsloth_original_forward)
+    except (AttributeError, OSError, TypeError):
+        return None
+    return "output" if "torch.is_autocast_enabled()" in source else "lora"
 
 
-def _tp_lora_update(proj, adapter, out, x, A, B, scaling, dtype):
-    """out + scaling * B(A(x)) rounded as the one-GPU compiled LoRA forward: x @ A in `dtype`, then one addmm
-    in the output's dtype. The float32 product used before gave the tp ranks LoRA gradients the one-GPU run
-    never computes (under forced float32 the one-GPU float16 product flushes the small loss-scaled gradients
-    of Gemma-4's upper layers), so Gemma-4 tp=2 trained off the one-GPU curve."""
-    xA = _lora_dropout(proj, adapter, x.to(dtype)) @ A.to(dtype).t()
-    shape = out.shape
+def _tp_lora_update(proj, adapter, out, x, A, B, scaling, mode):
+    """out + scaling * B(A(x)) rounded as the one-GPU compiled LoRA forward (`mode` from _one_gpu_lora_mode):
+    the generated input casts, dropout, x @ A, then one addmm in the result's dtype, restored to out's dtype.
+    The float32 product used before gave the tp ranks LoRA gradients the one-GPU run never computes (under
+    forced float32 the one-GPU float16 product flushes the small loss-scaled gradients of Gemma-4's upper
+    layers), so Gemma-4 tp=2 trained off the one-GPU curve."""
+    result = out
+    if mode == "float16":  # COMPILED_LORA_FORWARD_forced_float32: x as the layer received it
+        xA = _lora_dropout(proj, adapter, x.to(torch.float16)) @ A.to(torch.float16).t()
+    else:  # COMPILED_LORA_FORWARD after the generated cast: dropout before the cast to the result's dtype
+        if mode == "lora":
+            result, x = out.to(A.dtype), x.to(A.dtype)
+        else:
+            cast = getattr(proj, "_cast_input_dtype", None)
+            x = cast(x, A.dtype) if cast is not None else x.to(A.dtype)
+        xA = _lora_dropout(proj, adapter, x).to(result.dtype) @ A.to(result.dtype).t()
+    dtype = result.dtype
+    xA, Bt = xA.to(dtype), B.to(dtype).t()
+    if _TP_LORA_NO_COMPILED_ADDMM and torch.compiler.is_compiling():
+        return (result + scaling * (xA @ Bt)).to(out.dtype)
+    shape = result.shape
     flat = torch.addmm(
-        out.reshape(-1, shape[-1]),
-        xA.reshape(-1, xA.shape[-1]).to(out.dtype),
-        B.to(out.dtype).t(),
+        result.reshape(-1, shape[-1]),
+        xA.reshape(-1, xA.shape[-1]),
+        Bt,
         alpha = scaling,
     )
-    return flat.view(shape)
+    return flat.view(shape).to(out.dtype)
 
 
 def _tp_grouped_compute(self, base, x, W, bias):
