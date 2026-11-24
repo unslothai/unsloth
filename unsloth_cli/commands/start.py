@@ -5533,11 +5533,16 @@ def _remember_start(base: str, entry: dict) -> None:
         ctx.params.get("model"), ctx.meta.get("unsloth_raw_args") or []
     )
     subagent = ctx.params.get("as_subagent") or ctx.params.get("auto_route")
+    args = _typed_options(ctx)
+    # Subagent entries carry the resident's quant (org/name:Q8_0); keep it over a bare request.
+    if positional and "--gguf-variant" not in args:
+        if _split_repo_variant(entry["id"])[0] == positional:
+            positional = entry["id"]
     last = {
         "agent": agent,
         # A path-loaded resident's public id is a bare name that would resolve to unsloth/<name>.
         "model": positional or (entry["id"] if _looks_like_model(entry["id"]) else None),
-        "args": _typed_options(ctx),
+        "args": args,
         # Pi's subagent mode keeps the user's own Pi dir; only the bridge config is temporary.
         "kept": bool(
             ctx.params.get("persist") or agent in _OWN_HOME_AGENTS or (agent == "pi" and subagent)

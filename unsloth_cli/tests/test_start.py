@@ -10403,6 +10403,22 @@ def test_continue_does_not_pin_a_path_loaded_residents_bare_name(
     assert resumed["command"][1:] == ["--model", "foo", "--continue"]
 
 
+def test_continue_keeps_the_quant_a_subagent_resolved(fake_studio, tmp_path, monkeypatch):
+    start._agent_ctx = SimpleNamespace(
+        info_name = "codex",
+        params = {"model": MODEL["id"], "persist": True, "as_subagent": True},
+        meta = {"unsloth_raw_args": []},
+        command = SimpleNamespace(params = []),
+    )
+    try:
+        start._remember_start(BASE, {"id": f"{MODEL['id']}:Q8_0"})
+    finally:
+        start._agent_ctx = None
+    assert json.loads((tmp_path / "last_start.json").read_text())["model"] == (
+        f"{MODEL['id']}:Q8_0"
+    )
+
+
 def test_continue_refuses_a_session_that_was_not_kept(fake_studio, monkeypatch):
     monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/hermes")
     _capture_launch(monkeypatch, ["hermes"])
