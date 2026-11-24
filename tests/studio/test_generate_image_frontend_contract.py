@@ -65,7 +65,9 @@ def test_local_results_have_no_edit_and_video_plays_from_the_sandbox() -> None:
         )
     ]
     assert "Edit" not in sandbox_figure and "openOverlay" not in sandbox_figure
-    assert "useSandboxImage<HTMLDivElement>(url)" in sandbox_figure
+    # The sandbox figure fetches through the hook; a video also passes its MIME type (#18406).
+    assert "useSandboxImage<HTMLDivElement>(url" in sandbox_figure
+    assert 'kind === "video" ? videoMimeForName(filename)' in sandbox_figure
     assert "<video" in sandbox_figure and 'preload="metadata"' in sandbox_figure
     video = card[card.index("const VideoGenerationToolUIImpl") :]
     assert 'kind="video"' in video and "sandboxFilePath(" in video

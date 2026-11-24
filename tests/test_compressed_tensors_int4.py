@@ -310,6 +310,34 @@ def _repacked_linear():
 
 @needs_gpu
 @needs_ct
+def test_weight_property_traces_without_a_graph_break():
+    """PEFT's LoRA forward reads base_layer.weight inside Unsloth's compiled block, under the gradient
+    checkpoint's higher-order op. The property read the packed parameter's __dict__, which Dynamo cannot put in
+    that subgraph: one graph break per LoRA layer (compressed-tensors QLoRA, transformers 5.x)."""
+    import torch.utils.checkpoint as cp
+    from torch._dynamo.utils import counters
+
+    lin, _, _ = _repacked_linear()
+    x = torch.randn(4, 8, device = "cuda", requires_grad = True)
+
+    def body(t):
+        w = lin.weight
+        return t * w.shape[0] + (w.quant_state is not None)
+
+    torch._dynamo.reset()
+    counters.clear()
+    try:
+        got = torch.compile(lambda t: cp.checkpoint(body, t, use_reentrant = False), backend = "eager")(
+            x
+        )
+    finally:
+        torch._dynamo.reset()
+    assert sum(counters["graph_break"].values()) == 0, dict(counters["graph_break"])
+    torch.testing.assert_close(got, x * 256 + 1)
+
+
+@needs_gpu
+@needs_ct
 @needs_sm80
 @pytest.mark.parametrize("cast", ["float", "half"])
 def test_repacked_linear_infers_after_a_dtype_cast(cast):

@@ -86,6 +86,7 @@ def _make_backend(
 ):
     inst = LlamaCppBackend.__new__(LlamaCppBackend)
     inst._port = port
+    inst._stdout_lines = []
     # __new__ skips __init__; _auth_headers reads this for --api-key servers.
     inst._api_key = api_key
     inst._effective_context_length = effective_ctx

@@ -57,6 +57,20 @@ _HEADS = dict(num_attention_heads = 4, num_key_value_heads = 2, head_dim = 16)
 # arch -> (model_type, config kwargs)
 CONFIGS = {
     "llama": ("llama", {**_SMALL, **_HEADS}),
+    # gated query (q_proj emits [query | gate] per head) beside replicated Gated DeltaNet layers
+    "qwen3_5_text": (
+        "qwen3_5_text",
+        {
+            **_SMALL,
+            **_HEADS,
+            "num_hidden_layers": 2,
+            "layer_types": ["linear_attention", "full_attention"],
+            "linear_num_key_heads": 2,
+            "linear_num_value_heads": 4,
+            "linear_key_head_dim": 16,
+            "linear_value_head_dim": 16,
+        },
+    ),
     # GPT-J: parallel attention + MLP, fc_in / fc_out, partial rotary
     "gptj": (
         "gptj",
@@ -297,6 +311,7 @@ TP_PASS = {
     "hunyuan_v1_dense": None,
     "lfm2": None,
     "apertus": None,
+    "qwen3_5_text": None,
     "llama_shared": (0, 1),
 }
 TP_REFUSE = {
@@ -312,7 +327,14 @@ def _case_tp(rank, world, tmp):
 
     mesh = init_device_mesh("cpu", (world,), mesh_dim_names = ("tp",))["tp"]
     out = {}
+    from transformers.models.auto.configuration_auto import CONFIG_MAPPING
+
     for name, share in TP_PASS.items():
+        model_type = CONFIGS[name.replace("_shared", "")][0]
+        if model_type not in CONFIG_MAPPING:
+            # build() would pytest.skip inside the rank, a BaseException that kills every case of the module.
+            out[name] = {"skip": f"transformers has no {model_type}"}
+            continue
         try:
             out[name] = _tp_parity(mesh, name.replace("_shared", ""), share)
         except (
@@ -645,6 +667,8 @@ def pp_results():
 
 @pytest.mark.parametrize("name", sorted(TP_PASS))
 def test_tp_trains_like_one_process(tp_results, name):
+    if "skip" in tp_results[0][name]:
+        pytest.skip(tp_results[0][name]["skip"])
     for res in tp_results:
         assert "crash" not in res[name], res[name]
         _check_run(res[name]["tp"], res[name]["ref"], name)

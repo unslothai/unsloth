@@ -57,6 +57,7 @@ from utils.models.gguf_metadata import (
     read_gguf_general_metadata,
     read_gguf_nextn_predict_layers,
 )
+from glob import escape as _glob_escape
 import structlog
 from loggers import get_logger
 import contextlib as _contextlib
@@ -2316,13 +2317,26 @@ def colocated_split_shards(path: Path) -> tuple[list[Path], bool]:
     return [found[i] for i in sorted(found)], len(found) == total
 
 
+def _engram_table_shard_skipped(path: Path) -> bool:
+    """A split set short only of the table shard a --ple download skips loads from its snapshot."""
+    from core.inference.engram_tables import table_shard_skipped
+
+    match = _GGUF_SPLIT_FILE_RE.match(path.name)
+    if match is None:
+        return False
+    shards, _ = colocated_split_shards(path)
+    total = int(match.group("total"))
+    by_index = sorted(shards, key = lambda p: int(_GGUF_SPLIT_FILE_RE.match(p.name).group("index")))
+    return table_shard_skipped(by_index, total)
+
+
 def _local_gguf_load_path(path: Path) -> Path:
     """Choose a loadable local path while preserving complete symlink sets."""
     if _GGUF_SPLIT_FILE_RE.match(path.name) is None:
         return path.absolute()
 
     first, complete = _colocated_first_split_shard(path)
-    if complete and first is not None:
+    if first is not None and (complete or _engram_table_shard_skipped(path)):
         return first.absolute()
 
     try:
@@ -2504,6 +2518,7 @@ from utils.models.drafters import (  # noqa: E402
     _drafter_total_size,
     detect_dflash_file,
     dspark_precision_rank,
+    dspark_preferred_first,
     is_published_drafter_filename,
 )
 from utils.models.drafters import (  # noqa: E402
@@ -2512,7 +2527,7 @@ from utils.models.drafters import (  # noqa: E402
 from utils.paths.path_utils import is_appledouble_metadata
 
 
-def dspark_preference_key(name: str) -> Tuple[int, str]:
+def dspark_preference_key(name: str) -> Tuple[int, int, str]:
     """Delegates instead of re-exporting: repointing routes/inference.py's import trips the lint rule."""
     return _drafters_dspark_preference_key(name)
 
@@ -2645,9 +2660,10 @@ def detect_dspark_file(
 ) -> Optional[str]:
     """Requires a published drafter name even in dspark/, so a parked weight never loads as --model-draft."""
 
-    def _rank(candidate: Path) -> tuple[int, int, int, str]:
-        # Most specific family, then precision, then total size, then name.
+    def _rank(candidate: Path) -> tuple[int, int, int, int, str]:
+        # A model's preferred published drafter, then most specific family, then precision, then total size, then name.
         return (
+            dspark_preferred_first(candidate.name),
             _drafter_stem_rank(candidate.name, kind = "dspark"),
             dspark_precision_rank(candidate.name),
             _drafter_total_size(candidate),
@@ -4252,6 +4268,14 @@ def get_base_model_from_lora_identifier(
         except Exception as exc:
             logger.warning("Could not parse adapter_config.json for '%s': %s", identifier, exc)
             return None
+        from utils.datasets.remote_images import is_network_share
+
+        if isinstance(base_model, str) and is_network_share(base_model):
+            # Touching a share path makes Windows sign in to its host (NTLM); the Hub repo picked it.
+            logger.warning(
+                "Ignoring a network share base in adapter_config.json of '%s'", identifier
+            )
+            return None
         if base_model:
             logger.info(
                 "Detected base model from remote adapter_config.json (%s): %s",
@@ -4333,7 +4357,7 @@ def load_model_defaults(model_name: str) -> Dict[str, Any]:
 
         # Runs after the registry so an alias never loses to a filename.
         for name in lookup_names:
-            for config_path in defaults_dir.rglob(name.replace("/", "_") + ".yaml"):
+            for config_path in defaults_dir.rglob(_glob_escape(name.replace("/", "_")) + ".yaml"):
                 if config_path.is_file():
                     with open(config_path, "r", encoding = "utf-8") as f:
                         config = yaml.safe_load(f) or {}
@@ -4922,7 +4946,12 @@ class ModelConfig:
                 return None
             target = gguf_file
             resolved_variant = Path(gguf_file).name
-        elif gguf_hint is None and not audio_cpp_models.is_umbrella_id(identifier):
+        elif (
+            gguf_hint is None
+            and not audio_cpp_models.is_umbrella_id(identifier)
+            # A repo the runtime's own spec names is audio.cpp's whatever its GGUF headers say.
+            and not audio_cpp_models.is_spec_vouched_id(identifier)
+        ):
             return None
         else:
             target = identifier

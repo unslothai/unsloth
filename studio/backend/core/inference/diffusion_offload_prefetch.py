@@ -12,11 +12,13 @@ import threading
 import weakref
 from collections import deque
 from contextlib import contextmanager
-from typing import Any, Iterator, Optional
+from typing import Any, Iterator, Optional, Sequence
 
 ASYNC_PREFETCH_ENV = "UNSLOTH_DIFFUSION_ASYNC_PREFETCH"
 PREFETCH_DEPTH_ENV = "UNSLOTH_DIFFUSION_PREFETCH_DEPTH"
 CROSS_FORWARD_ENV = "UNSLOTH_DIFFUSION_PREFETCH_CROSS_FORWARD"
+# "0": pins always count on top of the host copies they replace
+PIN_REPLACES_HOST_ENV = "UNSLOTH_DIFFUSION_PIN_REPLACES_HOST"
 # Groups carried while the last streamed block still runs (see GroupPrefetcher._carry).
 TAIL_CARRY_GROUPS = 1
 DEFAULT_PREFETCH_DEPTH = 2
@@ -48,6 +50,15 @@ def async_prefetch_enabled() -> bool:
 
 def cross_forward_enabled() -> bool:
     return (os.environ.get(CROSS_FORWARD_ENV) or "").strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
+
+
+def pin_replaces_host_enabled() -> bool:
+    return (os.environ.get(PIN_REPLACES_HOST_ENV) or "").strip().lower() not in (
         "0",
         "off",
         "false",
@@ -1351,40 +1362,104 @@ def cross_forward_step(
 LIST_STREAM_DEPTH = 1
 
 
+def spread_stream_indices(
+    total: int,
+    count: int,
+    keep: Sequence[int] = (),
+) -> list:
+    """Sorted indices of the ``count`` of ``total`` list members to stream, spaced evenly and ending on the last one,
+    so each streamed copy overlaps the resident members run before it (a streamed tail leaves the copy engine idle
+    through the resident head). A superset of ``keep`` (members already streamed) when it fits in ``count``."""
+    total = max(0, int(total))
+    count = max(0, min(total, int(count)))
+    keep = sorted({int(i) for i in keep if 0 <= int(i) < total})
+    if len(keep) > count:
+        keep = []
+    extra = count - len(keep)
+    if not extra:
+        return keep
+    taken = set(keep)
+    free = [i for i in range(total) if i not in taken]
+    # floor(j * len(free) / extra) strictly increases (len(free) >= extra): distinct, the last free member first
+    picked = [free[len(free) - 1 - (j * len(free)) // extra] for j in range(extra)]
+    return sorted(taken.union(picked))
+
+
 class PrefetchedListStreamer:
-    """Streams ``blocks[resident:]`` via pinned slabs and event-fenced copies ``depth`` members ahead, from the second
-    forward on (the first records the order); a forward that raises still releases its queued copies."""
+    """Streams ``blocks[resident:]`` (or as many members spread among the resident ones) via pinned slabs and
+    event-fenced copies ``depth`` members ahead, from the second forward on (the first records the order); a forward
+    that raises still releases its queued copies."""
 
     def __init__(self) -> None:
         self.handles: list = []
         self.groups: list = []
         self.prefetcher: Optional[GroupPrefetcher] = None
         self.streamed = 0
+        # positions of the streamed members in the list (``stream_module_list(..., spread = True)`` spaces them out)
+        self.streamed_indices: list = []
+        self.spread = False
         self.pinned_bytes = 0
+        self.replaced_bytes = 0
         self.arena: Any = None
+        # earlier arenas whose slabs reused groups still hold (``stream_module_list(..., reuse = ...)``)
+        self.arenas: list = []
+        self._fresh: list = []
         # matches ModuleListStreamer, whose release path clears ``_host``
         self._host: dict = {}
 
     def stats(self) -> dict:
         pf = self.prefetcher
-        return dict(pf.stats) if pf is not None else {}
+        out = dict(pf.stats) if pf is not None else {}
+        out["pinned_bytes"] = int(self.pinned_bytes)
+        return out
 
     def remove(self) -> None:
+        for group in self._unhook(offload = False).values():
+            cpu = getattr(group, "cpu_param_dict", None)
+            if isinstance(cpu, dict):
+                cpu.clear()
+        self.arenas = []
+
+    def detach(self) -> dict:
+        """Unhook, keeping pinned copies as ``{id(block): group}`` for ``stream_module_list(reuse = ...)``
+        (pass ``arenas`` as ``reuse_arenas``)."""
+        out = self._unhook(offload = True)
+        self.streamed = 0
+        return out
+
+    def _unhook(self, offload: bool) -> dict:
         for handle in self.handles:
             handle.remove()
         self.handles = []
         pf = self.prefetcher
         if pf is not None and getattr(pf, "active", False):
             pf.end()
+        if offload and pf is not None and callable(getattr(pf, "drop_carried", None)):
+            pf.drop_carried()  # a copy carried into the next forward goes back with the rest
+        out = {}
         for group in self.groups:
             for name in ("onload_", "offload_", "_unsloth_prefetch_onload", "_unsloth_prefetcher"):
                 group.__dict__.pop(name, None)
-            cpu = getattr(group, "cpu_param_dict", None)
-            if isinstance(cpu, dict):
-                cpu.clear()
+            if offload:
+                try:
+                    type(group).offload_(group)  # every member back on its host copy
+                except Exception:  # noqa: BLE001 - already offloaded
+                    pass
+            leader = getattr(group, "offload_leader", None)
+            out[id(leader)] = group
         self.groups = []
         self.prefetcher = None
+        if self.arena is not None:
+            self.arenas = list(getattr(self, "arenas", [])) + [self.arena]
         self.arena = None
+        return out
+
+
+def _module_device(module: Any) -> Any:
+    import torch
+    for t in list(module.parameters()) + list(module.buffers()):
+        return t.device
+    return torch.device("cpu")
 
 
 def _list_stream_refusal(device: Any) -> Optional[str]:
@@ -1414,6 +1489,16 @@ def _list_stream_refusal(device: Any) -> Optional[str]:
     return None
 
 
+def _end_stream_forward(pf: Any, release_after_forward: bool) -> None:
+    """``end()`` clears ``capturing``, so read it first; never ``empty_cache`` inside a graph capture."""
+    import torch
+
+    capturing = bool(getattr(pf, "capturing", False))
+    pf.end()
+    if release_after_forward and not capturing and not torch.cuda.is_current_stream_capturing():
+        torch.cuda.empty_cache()
+
+
 def stream_module_list(
     owner: Any,
     blocks: Any,
@@ -1424,28 +1509,59 @@ def stream_module_list(
     depth: int = LIST_STREAM_DEPTH,
     reserve_bytes: int = 0,
     max_pin_bytes: Optional[int] = None,
+    replaces_counted: bool = False,
+    release_after_forward: bool = False,
+    reuse: Optional[dict] = None,
+    reuse_arenas: Sequence[Any] = (),
+    spread: bool = False,
 ) -> Optional[PrefetchedListStreamer]:
     """A ``PrefetchedListStreamer`` over ``blocks``, or None (nothing changed) when it does not apply or cannot pin.
-    Pins must fit ``_pin_budget_mib`` less ``reserve_bytes``, and ``max_pin_bytes`` if given."""
+    Pins must fit ``_pin_budget_mib`` less ``reserve_bytes``, and ``max_pin_bytes`` if given. ``replaces_counted``:
+    pins replace host copies the caller already counts, so only the live budget bounds them.
+    ``release_after_forward``: empty the copy stream's cache after each forward (once-per-request owners).
+    ``reuse``: ``PrefetchedListStreamer.detach()`` of an earlier streamer over the same blocks: its groups keep their
+    pinned copies (only the blocks new to the streamed set are pinned and counted), ``reuse_arenas`` their slabs.
+    ``spread``: stream ``len(blocks) - resident`` members spaced evenly among the resident ones
+    (``spread_stream_indices``, a superset of the reused ones) instead of ``blocks[resident:]``: the same weights and
+    the same number of copies in flight, but each copy overlaps resident compute."""
     import torch
 
     refused = _list_stream_refusal(device)
     blocks = list(blocks)
     resident = max(0, min(len(blocks), int(resident)))
-    streamed = blocks[resident:]
+    reuse = dict(reuse or {})
+    if spread:
+        indices = spread_stream_indices(
+            len(blocks),
+            len(blocks) - resident,
+            [i for i, b in enumerate(blocks) if id(b) in reuse],
+        )
+    else:
+        indices = list(range(resident, len(blocks)))
+    chosen = set(indices)
+    streamed = [blocks[i] for i in indices]
+    kept_resident = [b for i, b in enumerate(blocks) if i not in chosen]
+    fresh = [b for b in streamed if id(b) not in reuse]
     if refused is None and not streamed:
         refused = "nothing streams"
-    need = 0
+    need = replaced = kept_bytes = 0
     if refused is None:
         from .diffusion_memory import _pin_budget_mib, _storage_nbytes
 
         need = sum(
-            sum(_storage_nbytes(t))
-            for b in streamed
-            for t in list(b.parameters()) + list(b.buffers())
+            sum(_storage_nbytes(t)) for b in fresh for t in list(b.parameters()) + list(b.buffers())
         )
+        kept_bytes = sum(int(_group_nbytes(reuse[id(b)])) for b in streamed if id(b) in reuse)
         budget = _pin_budget_mib()
-        if max_pin_bytes is not None and need > int(max_pin_bytes):
+        replaced = need if replaces_counted and pin_replaces_host_enabled() else 0
+        # Only where the credit lets the pin fit; pinned owners keep their cache as before.
+        release_after_forward = bool(
+            release_after_forward
+            and replaced
+            and max_pin_bytes is not None
+            and need > int(max_pin_bytes)
+        )
+        if max_pin_bytes is not None and need - replaced > int(max_pin_bytes):
             refused = (
                 f"{need / 1e9:.1f} GB to pin exceeds the {max(0, int(max_pin_bytes)) / 1e9:.1f} GB the host plan "
                 "leaves for pinned copies"
@@ -1471,6 +1587,8 @@ def stream_module_list(
         return None
     onload = torch.device(device)
     streamer = PrefetchedListStreamer()
+    # a failure puts newly streamed members back here
+    origin: dict = {}
     try:
         from .diffusion_memory import install_group_offload_buffer_restore
 
@@ -1478,31 +1596,39 @@ def stream_module_list(
         install_group_offload_buffer_restore()
         from .diffusion_pinned_arena import packable_bytes, pinned_arena_for_group_offload
 
-        for block in streamed:
+        for block in fresh:
+            origin[id(block)] = _module_device(block)
             block.to("cpu")
-        tensors = [t for b in streamed for t in list(b.parameters()) + list(b.buffers())]
+        tensors = [t for b in fresh for t in list(b.parameters()) + list(b.buffers())]
         try:
             expected = packable_bytes(tensors)
         except Exception:  # noqa: BLE001 - whole slabs, as without a size
             expected = None
-        stream = torch.cuda.Stream(device = onload)
+        stream = next(
+            (g.stream for g in reuse.values() if getattr(g, "stream", None) is not None),
+            None,
+        ) or torch.cuda.Stream(device = onload)
+        streamer.arenas = list(reuse_arenas)
         with pinned_arena_for_group_offload(expected_bytes = expected) as arena:
             for block in streamed:
-                group = group_cls(
-                    modules = [block],
-                    offload_device = torch.device("cpu"),
-                    onload_device = onload,
-                    offload_leader = block,
-                    onload_leader = block,
-                    non_blocking = True,
-                    stream = stream,
-                    record_stream = True,
-                    low_cpu_mem_usage = False,
-                )
+                group = reuse.get(id(block))
+                if group is None:
+                    group = group_cls(
+                        modules = [block],
+                        offload_device = torch.device("cpu"),
+                        onload_device = onload,
+                        offload_leader = block,
+                        onload_leader = block,
+                        non_blocking = True,
+                        stream = stream,
+                        record_stream = True,
+                        low_cpu_mem_usage = False,
+                    )
+                    streamer._fresh.append(group)
                 type(group).offload_(group)
                 streamer.groups.append(group)
         streamer.arena = arena
-        for block in blocks[:resident]:
+        for block in kept_resident:
             block.to(onload)
         pf = GroupPrefetcher(owner, streamer.groups, onload, depth)
         pf.fence_first = True
@@ -1542,19 +1668,28 @@ def stream_module_list(
             pf.begin()
             pf.kick()  # the first streamed members copy while the resident ones run
 
+        def _end(*_a: Any, **_k: Any) -> None:
+            _end_stream_forward(pf, release_after_forward)
+
         streamer.handles.append(owner.register_forward_pre_hook(_eager(_begin)))
-        streamer.handles.append(
-            owner.register_forward_hook(_eager(lambda *_a, **_k: pf.end()), always_call = True)
-        )
+        streamer.handles.append(owner.register_forward_hook(_eager(_end), always_call = True))
         streamer.prefetcher = pf
         streamer.streamed = len(streamed)
-        streamer.pinned_bytes = int(need)
+        streamer.streamed_indices = list(indices)
+        streamer.spread = bool(spread)
+        streamer.pinned_bytes = int(need) + int(kept_bytes)
+        streamer.replaced_bytes = int(replaced)
         bump_placement_epoch()
     except Exception as exc:  # noqa: BLE001 - the caller's pageable streamer takes the members as they are now
-        streamer.remove()
-        for block in streamed:
+        detached = streamer._unhook(offload = False)
+        for group in streamer._fresh:
+            cpu = getattr(group, "cpu_param_dict", None)
+            if isinstance(cpu, dict):
+                cpu.clear()
+        del detached
+        for block in fresh:
             try:
-                block.to("cpu")
+                block.to(origin.get(id(block)) or "cpu")
             except Exception:  # noqa: BLE001
                 pass
         if logger is not None:
@@ -1568,11 +1703,13 @@ def stream_module_list(
         payload = getattr(arena, "payload_bytes", 0) if arena is not None else 0
         logger.info(
             "diffusion.memory: %s streams %d of %d members with pinned copies (%.2f GB) and event-fenced prefetch "
-            "(%d ahead)",
+            "(%d ahead)%s%s",
             type(owner).__name__,
             len(streamed),
             len(blocks),
             payload / 1e9,
             depth,
+            " in place of the host copies the plan counts" if replaced else "",
+            " spread among the resident ones" if spread and kept_resident else "",
         )
     return streamer

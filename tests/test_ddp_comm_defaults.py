@@ -36,6 +36,15 @@ CASES = [
     ("peft", "peft", {}, {}),
     ("fp16_hook", "peft", {"UNSLOTH_DDP_COMM_HOOK": "fp16"}, {}),
 ]
+_HAS_LAZY = (
+    "lazy_bucket_allocation"
+    in __import__("inspect")
+    .signature(torch.nn.parallel.DistributedDataParallel.__init__)
+    .parameters
+)
+if _HAS_LAZY:
+    CASES.append(("full_lazy", "full", {"UNSLOTH_DDP_LAZY_BUCKETS": "1"}, {}))
+    CASES.append(("peft_lazy", "peft", {"UNSLOTH_DDP_LAZY_BUCKETS": "1"}, {}))
 if _bf16_hook_supported():
     CASES.append(("bf16_hook", "full", {"UNSLOTH_DDP_COMM_HOOK": "bf16"}, {}))
 _UTILS = pathlib.Path(__file__).resolve().parents[1] / "unsloth" / "models" / "_utils.py"
@@ -129,6 +138,50 @@ def test_comm_hook_opt_in(ranks):
         assert case["hooks"] >= 1, name
         _assert_parity(case, kind, exact = False)
     assert ranks[0]["full"]["hooks"] == 0
+
+
+@pytest.mark.skipif(not _HAS_LAZY, reason = "torch < 2.15: DDP has no lazy_bucket_allocation")
+def test_lazy_buckets_opt_in_is_bitwise(ranks):
+    for rank in (0, 1):
+        on, off = ranks[rank]["full_lazy"], ranks[rank]["full"]
+        assert on["lazy"] is True and off["lazy"] is False
+        assert on["view"] is True  # still one flat gradient storage per bucket
+        assert on["losses"] == off["losses"]
+        assert on["grads"] == off["grads"]
+        assert on["params"] == off["params"]
+        peft_on, peft_off = ranks[rank]["peft_lazy"], ranks[rank]["peft"]
+        assert peft_on["lazy"] is True and peft_off["lazy"] is False
+        assert peft_on["grads"] == peft_off["grads"] and peft_on["params"] == peft_off["params"]
+
+
+def test_lazy_buckets_kwarg_composes_with_other_handler_subclasses(monkeypatch):
+    from accelerate.utils import DistributedDataParallelKwargs
+
+    defaults = worker.load_defaults()
+    monkeypatch.setenv("UNSLOTH_DDP_LAZY_BUCKETS", "1")
+
+    class Other(DistributedDataParallelKwargs):  # e.g. _utils.py's batched_grad_copy subclass
+        def to_kwargs(self):
+            return {**super().to_kwargs(), "batched_grad_copy": True}
+
+    handler = defaults._lazy_buckets_handler(Other())
+    assert handler.to_kwargs() == {"batched_grad_copy": True, "lazy_bucket_allocation": True}
+    assert defaults._lazy_buckets_handler(handler) is handler  # idempotent
+    plain = defaults._lazy_buckets_handler(
+        DistributedDataParallelKwargs(gradient_as_bucket_view = True)
+    )
+    assert plain.to_kwargs() == {"gradient_as_bucket_view": True, "lazy_bucket_allocation": True}
+
+
+def test_lazy_buckets_reason(monkeypatch):
+    defaults = worker.load_defaults()
+    monkeypatch.delenv("UNSLOTH_DDP_LAZY_BUCKETS", raising = False)
+    assert defaults._ddp_lazy_buckets_reason() == "off"
+    monkeypatch.setenv("UNSLOTH_DDP_LAZY_BUCKETS", "1")
+    if _HAS_LAZY:
+        assert defaults._ddp_lazy_buckets_reason() is None
+    else:
+        assert "lazy_bucket_allocation" in defaults._ddp_lazy_buckets_reason()
 
 
 def test_trainer_init_installs_the_defaults():

@@ -448,9 +448,10 @@ test("a snapshot-path chat is labelled by its repo name, not the revision sha", 
   assert.match(body, /modelDisplayName\(createdModel\.modelId\)/);
 });
 
-test("the original-model control sits beside the picker in the chat header", () => {
+test("the original-model control sits in the chat header", () => {
   const header = slice(page, "chat-header-fade", "{/* One provider shared");
-  assert.match(header, /<ModelSelector[\s\S]*<ChatModelNotice/);
+  // The composer's chip is the chat's model picker; the header keeps only the notice.
+  assert.doesNotMatch(header, /<ModelSelector\b/);
   assert.match(
     header,
     /\{view\.mode === "single" && \(\s*<ChatModelNotice\s+active=\{active\}/,

@@ -289,8 +289,7 @@ def true_peak(data: np.ndarray) -> float:
             scale = float(np.max(np.abs(window)))
             screens, err = [None] * len(phases), 0.0
             if 2.0**-60 <= scale <= 2.0**60:
-                # Screen and np.convolve each lie within ~14 * 2**-24 * reach * scale of the exact
-                # sum in any summation order; 2**-19 leaves 2x margin.
+                # Error ~14 * 2**-24 * reach * scale in any order; 2**-19 leaves 2x margin.
                 err = reach * scale * 2.0**-19
                 samples = window.astype(np.float32, copy = False)
                 cols = len(window) - length + 1

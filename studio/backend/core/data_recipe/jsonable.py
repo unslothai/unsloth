@@ -55,6 +55,11 @@ def _to_pil_from_hf_image_dict(value: Any) -> Any | None:
         from fastapi import HTTPException
         from core.training.account_jobs import account_path
 
+        from utils.datasets.remote_images import is_network_share, private_sources_allowed
+
+        # Opening a share path makes Windows sign in to its host (NTLM); the row picked it.
+        if is_network_share(path_value) and not private_sources_allowed():
+            return None
         try:
             account_path(path_value)
         except (HTTPException, OSError, RuntimeError, ValueError, TypeError):

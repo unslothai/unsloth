@@ -20,7 +20,7 @@ PYPROJECT = REPO / "pyproject.toml"
 WORKFLOWS = REPO / ".github" / "workflows"
 
 # Newest transformers tested; moving it means re-running the sweep first.
-TESTED_CEILING = Version("5.17.0")
+TESTED_CEILING = Version("5.18.0")
 
 # Not 4.51.3: peft 0.18.0 needs GradientCheckpointingLayer (4.52.0+); 4.52.0-4.52.3 rejected.
 TESTED_FLOOR = Version("4.52.4")
@@ -42,7 +42,15 @@ REJECTED = (
     "5.1.0",
 )
 
-NEWLY_ADMITTED = ("5.6.0", "5.10.1", "5.14.1", "5.15.1", "5.16.1", "5.17.0")
+NEWLY_ADMITTED = (
+    "5.6.0",
+    "5.10.1",
+    "5.14.1",
+    "5.15.1",
+    "5.16.1",
+    "5.17.0",
+    "5.18.0",
+)
 
 # Keyed on (workflow, exact requirement), never the workflow alone.
 PINNED_BY_DESIGN: dict[tuple[str, str], str] = {}
@@ -527,8 +535,8 @@ def test_the_declared_ceiling_stays_in_the_matrix_after_a_patch_release() -> Non
             return False
 
     published = {
-        "5.17.0": [{"yanked": False}],
-        "5.17.1": [{"yanked": False}],
+        "5.18.0": [{"yanked": False}],
+        "5.18.1": [{"yanked": False}],
     }
 
     def releases(*args, **kwargs):
@@ -537,11 +545,11 @@ def test_the_declared_ceiling_stays_in_the_matrix_after_a_patch_release() -> Non
     module = _matrix_module(releases)
 
     assert module._declared_ceiling_tag() == (
-        "v5.17.0",
+        "v5.18.0",
     ), "the anchor is no longer read from pyproject's transformers cap"
-    assert "v5.17.1" in module.TRANSFORMERS_TAGS, "the newest patch is still measured"
+    assert "v5.18.1" in module.TRANSFORMERS_TAGS, "the newest patch is still measured"
     assert (
-        "v5.17.0" in module.TRANSFORMERS_TAGS
+        "v5.18.0" in module.TRANSFORMERS_TAGS
     ), "a patch release evicted the declared ceiling from the matrix"
 
 

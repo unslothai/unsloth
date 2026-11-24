@@ -8,6 +8,7 @@ offloaded loads too; UNSLOTH_DIFFUSION_CFG_BATCH_COMPILED=0 keeps a compiled res
 
 from __future__ import annotations
 
+import contextlib
 import os
 import sys
 import time
@@ -19,13 +20,9 @@ COMPILED_RESIDENT_ENV = "UNSLOTH_DIFFUSION_CFG_BATCH_COMPILED"
 # 0: any graph a paired call compiles turns pairing off for the load, the first render included
 CFG_PAIR_COMPILE_WARMUP_ENV = "UNSLOTH_DIFFUSION_CFG_PAIR_COMPILE_WARMUP"
 
-# The CFG policy of every denoiser class Studio loads (test_diffusion_cfg_batch_policy pins it to diffusion_families
-# and video_families): exactly one of the three tables below.
-#
-# Batched by this router: the forward keeps no state between calls and both branches share every per-step input but
-# the text conditioning (diffusers 0.42.1 pipelines: same latent object, cond then uncond call). FLUX.3 batches only
-# when both prompts land in the same 80-token window (its transformer attends the padding, so a padded branch would
-# not be the same computation); a shorter negative keeps that shape plain.
+# FLUX.3 pairs CFG branches only when both prompts fit one 80-token window (padding would change its
+# output); diffusers 0.42.1 pipelines; a shorter negative stays plain;
+# test_diffusion_cfg_batch_policy pins each class to one table.
 STATELESS_CLASSES = frozenset(
     {
         "Flux2Transformer2DModel",
@@ -60,9 +57,7 @@ NOT_BATCHABLE: dict[str, str] = {
     "runs eager",
     "CosmosTransformer3DModel": "Anima's modular guider runs each branch as its own guider batch "
     "(prepare_models before each call)",
-    # Measured (Colab L4, 1024x1024, 8 steps): 1.817 vs 1.454 s/step eager, 1.312 vs 1.078 compiled. A single call
-    # packs each prompt at its own caption length with no mask; the doubled call pads both to the longer one and runs
-    # masked attention.
+    # Batching is slower: the doubled call pads both prompts to the longer one and masks attention.
     "Lumina2Transformer2DModel": "measured slower batched: the doubled call pads both captions and runs masked "
     "attention (L4 +25% eager, +22% compiled)",
 }
@@ -590,6 +585,8 @@ class CfgBatchRouter:
         self.identity: Optional[str] = (
             None  # the load's verdict-store identity (None: verdicts stay per load)
         )
+        # per render: False when the current step runs one branch by design (a guidance interval ended)
+        self.guided_step: Optional[Any] = None
 
     def _reset_step(self) -> None:
         self.branch = 0
@@ -641,6 +638,7 @@ class CfgBatchRouter:
         self.prev_calls = 0
         self.render_off = None
         self.render_checked = False
+        self.guided_step = None
         self._reset_step()
         for shape in self.shapes.values():
             shape.render_steps = 0
@@ -743,6 +741,9 @@ class CfgBatchRouter:
             self.branch += 1
         else:
             self._new_step(args, kwargs, latent)
+            if self.guided_step is not None and not self._guided():
+                # no second branch is coming: nothing to batch, and its absence is not a miss
+                return self._plain(args, kwargs)
         shape = self.shape
         if self.branch == 0 and self.paired is not None:
             # the first plain pair records the second call's template
@@ -815,6 +816,12 @@ class CfgBatchRouter:
         self.disable("more than two denoiser calls per step")
         return self._plain(args, kwargs)
 
+    def _guided(self) -> bool:
+        try:
+            return bool(self.guided_step())
+        except Exception:  # noqa: BLE001 - unknown: treat the step as guided, as without a probe
+            return True
+
     def _untimed_mode(self) -> bool:
         """No timing trial: an offloaded denoiser batches whenever the doubled call fits (it saves one weight upload
         per step), and so does a compiled resident one (a trial would compile the batch-2 graph anyway). A resident
@@ -881,9 +888,18 @@ class CfgBatchRouter:
         shape.render_steps += 1
         self.shape = self.last_shape = shape
 
+    def _forward(self, args: tuple, kwargs: dict) -> Any:
+        """``orig_forward`` past ``module.__call__``: AdaLN precompute's rows are armed for these inputs first (the
+        pre-hook armed the outer call's; a doubled call, or a fallback after one, needs its own)."""
+        module = self.module_ref()
+        if module is not None and "_unsloth_adaln" in module.__dict__:
+            from .diffusion_adaln_precompute import arm_call
+            arm_call(module, args, kwargs)
+        return self.orig_forward(*args, **kwargs)
+
     def _plain(self, args: tuple, kwargs: dict) -> Any:
         self.stats["plain_calls"] += 1
-        out = self.orig_forward(*args, **kwargs)
+        out = self._forward(args, kwargs)
         if self.offloaded and self.stats["plain_calls"] <= 2 and self._displaced():
             self._retake_slot()
         return out
@@ -939,15 +955,16 @@ class CfgBatchRouter:
             graphs = _graph_count()
             for _ in range(_BATCHED_SAMPLES):
                 t0 = time.perf_counter()
-                self.orig_forward(*first[0], **first[1])
-                self.orig_forward(*second[0], **second[1])
+                self._forward(first[0], first[1])
+                self._forward(second[0], second[1])
                 self._sync(latent)
                 plain_s.append(time.perf_counter() - t0)
                 t0 = time.perf_counter()
                 predicted = self._predict(latent) if self.template is not None else second
                 b_args, b_kwargs = merge_branches(first, predicted, batch)
                 snapshots = _snapshot(predicted)
-                split_output(self.orig_forward(*b_args, **b_kwargs), batch)
+                with _padded_text_keeps_masks(self.module_ref(), first[1], predicted[1]):
+                    split_output(self._forward(b_args, b_kwargs), batch)
                 _matches(snapshots, second)
                 self._sync(latent)
                 shape.batched_s.append(time.perf_counter() - t0)
@@ -1108,7 +1125,8 @@ class CfgBatchRouter:
             return None
         graphs = _graph_count()
         try:
-            out = self.orig_forward(*b_args, **b_kwargs)
+            with _padded_text_keeps_masks(self.module_ref(), kwargs, second[1]):
+                out = self._forward(b_args, b_kwargs)
             mine, other = split_output(out, int(latent.shape[0]))
         except Exception as exc:  # noqa: BLE001 - the branch reruns plain
             del b_args, b_kwargs
@@ -1256,6 +1274,32 @@ def _matches(snapshots: list, call: tuple) -> bool:
             return False
     # Every tensor argument under one host read per device (once per guided step), not one torch.equal each.
     return mg._bitwise_equal_all(tensors)
+
+
+@contextlib.contextmanager
+def _padded_text_keeps_masks(module: Any, first: dict, second: dict):
+    """HunyuanVideo-1.5 trim: the doubled call bypasses the pre-hook that set the null-mask flag for one branch, so
+    clear it when ``_pad_text`` padded a branch, else its zero padding is attended."""
+    if module is None or getattr(module, "_unsloth_trim_hook", None) is None:
+        yield
+        return
+    torch = _torch()
+    padded = False
+    for emb_key in {k for k, _ in _PADDED_TEXT}:
+        a, b = first.get(emb_key), second.get(emb_key)
+        if isinstance(a, torch.Tensor) and isinstance(b, torch.Tensor) and a.dim() >= 3:
+            padded = padded or a.shape[1] != b.shape[1]
+    if not padded:
+        yield
+        return
+    from .diffusion_attention import _hunyuan_null_mask_state, _set_hunyuan_null_mask
+
+    held = _hunyuan_null_mask_state(module)
+    _set_hunyuan_null_mask(module, False)
+    try:
+        yield
+    finally:
+        _set_hunyuan_null_mask(module, held)
 
 
 def _pad_text(first: dict, second: dict) -> None:
@@ -1469,6 +1513,14 @@ def router_for(pipe: Any) -> Optional[CfgBatchRouter]:
         return _ROUTERS.get(pipe)
     except TypeError:
         return None
+
+
+def set_guided_step_probe(pipe: Any, probe: Optional[Any]) -> None:
+    """For this render: ``probe()`` says whether the current step runs the unconditional branch (None = every
+    step does). Cleared by ``end_render``."""
+    router = router_for(pipe)
+    if router is not None:
+        router.guided_step = probe
 
 
 def end_cfg_batch_render(pipe: Any) -> None:

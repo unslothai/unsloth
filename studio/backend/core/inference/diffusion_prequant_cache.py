@@ -1158,7 +1158,8 @@ def save_runtime_quant(
         if info.get("native"):
             _log(logger, "info", "skipped (native weight-only layers have no safetensors layout)")
             return None
-        if info.get("lora"):
+        # A video load's bake merges adapters into the dense weights before quantising: same keys, different model.
+        if info.get("lora") or getattr(transformer, "_unsloth_loras_baked", False):
             _log(logger, "info", "skipped (baked LoRA adapters)")
             return None
         import torch

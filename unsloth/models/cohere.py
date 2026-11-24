@@ -121,13 +121,16 @@ def CohereAttention_fast_forward(
     assert n_kv_heads * n_groups == n_heads
 
     Q, K, V = getattr(self, "apply_qkv", original_apply_qkv)(self, hidden_states)
-    Q = Q.view(bsz, q_len, n_heads, head_dim).transpose(1, 2)
-    K = K.view(bsz, q_len, n_kv_heads, head_dim).transpose(1, 2)
-    V = V.view(bsz, q_len, n_kv_heads, head_dim).transpose(1, 2)
-    seq_info = get_packed_info_from_kwargs(kwargs, Q.device)
+    Q = Q.view(bsz, q_len, n_heads, head_dim)
+    K = K.view(bsz, q_len, n_kv_heads, head_dim)
+    # q_norm / k_norm weights are (heads, head_dim): normalize before the head transpose (fast decode too).
     if self.use_qk_norm:
         Q = fast_layernorm_compiled(self.q_norm, Q)
         K = fast_layernorm_compiled(self.k_norm, K)
+    Q = Q.transpose(1, 2)
+    K = K.transpose(1, 2)
+    V = V.view(bsz, q_len, n_kv_heads, head_dim).transpose(1, 2)
+    seq_info = get_packed_info_from_kwargs(kwargs, Q.device)
 
     kv_seq_len = K.shape[-2]
     if past_key_value is not None:
@@ -213,7 +216,7 @@ def CohereDecoderLayer_fast_forward(
         out_weight = torch.empty(
             self.input_layernorm.weight.shape,
             dtype = torch.float32,
-            device = f"{DEVICE_TYPE_TORCH}:0",
+            device = hidden_states.device,
         )
 
         residual = hidden_states
@@ -280,6 +283,7 @@ def CohereAttention_fast_forward_inference(
     bsz, _, hd = hidden_states.size()
     K1, V1 = past_key_value
     dtype = Xn.dtype
+    device = Xn.device
 
     n_heads = self.config.num_attention_heads
     n_groups = self.num_key_value_groups
@@ -295,36 +299,30 @@ def CohereAttention_fast_forward_inference(
         self.paged_attention = torch.empty(
             (KV_CACHE_INCREMENT + seq_len + 1, 2, bsz, n_kv_heads, head_dim),
             dtype = dtype,
-            device = f"{DEVICE_TYPE_TORCH}:0",
+            device = device,
         )
         self.paged_attention_K = self.paged_attention[:, 0]
         self.paged_attention_V = self.paged_attention[:, 1]
         self.paged_attention_K[:seq_len] = K1.permute(2, 0, 1, 3)
         self.paged_attention_V[:seq_len] = V1.permute(2, 0, 1, 3)
-        self.temp_QA = torch.empty(
-            (2, bsz, 1, attention_size), dtype = dtype, device = f"{DEVICE_TYPE_TORCH}:0"
-        )
+        self.temp_QA = torch.empty((2, bsz, 1, attention_size), dtype = dtype, device = device)
         self.temp_KV = torch.empty(
             (2, bsz, 1, n_kv_heads * head_dim),
             dtype = dtype,
-            device = f"{DEVICE_TYPE_TORCH}:0",
+            device = device,
         )
-        self.RH_Q = torch.empty(
-            (bsz, n_heads, 1, head_dim), dtype = dtype, device = f"{DEVICE_TYPE_TORCH}:0"
-        )
+        self.RH_Q = torch.empty((bsz, n_heads, 1, head_dim), dtype = dtype, device = device)
 
         # Mistral Nemo 12b has weird dimensions.
         if attention_size != hidden_size:
-            self.temp_O = torch.empty(
-                (bsz, 1, hidden_size), dtype = dtype, device = f"{DEVICE_TYPE_TORCH}:0"
-            )
+            self.temp_O = torch.empty((bsz, 1, hidden_size), dtype = dtype, device = device)
         else:
             self.temp_O = self.temp_QA[1][:, :, :hidden_size]
 
         self.attention = torch.empty(
             (bsz, n_heads, 1, KV_CACHE_INCREMENT + seq_len + (-seq_len) % 8),
             dtype = dtype,
-            device = f"{DEVICE_TYPE_TORCH}:0",
+            device = device,
         )
         self.scalar = 1.0 / math_sqrt(self.head_dim)
         self.half_head_dim = head_dim // 2
@@ -333,12 +331,12 @@ def CohereAttention_fast_forward_inference(
             self.q_norm_out_weight = torch.empty(
                 self.q_norm.weight.shape,
                 dtype = torch.float32,
-                device = f"{DEVICE_TYPE_TORCH}:0",
+                device = device,
             )
             self.k_norm_out_weight = torch.empty(
                 self.k_norm.weight.shape,
                 dtype = torch.float32,
-                device = f"{DEVICE_TYPE_TORCH}:0",
+                device = device,
             )
         else:
             self.q_norm_out_weight = None
@@ -360,12 +358,14 @@ def CohereAttention_fast_forward_inference(
     Qn = fast_linear_forward(self.q_proj, Xn, out = self.temp_QA[0])
     Kn = fast_linear_forward(self.k_proj, Xn, out = self.temp_KV[0])
     Vn = fast_linear_forward(self.v_proj, Xn, out = self.temp_KV[1])
-    Qn = Qn.view(bsz, 1, n_heads, head_dim).transpose(1, 2)
-    Kn = Kn.view(bsz, 1, n_kv_heads, head_dim).transpose(1, 2)
-    Vn = Vn.view(bsz, 1, n_kv_heads, head_dim).transpose(1, 2)
+    Qn = Qn.view(bsz, 1, n_heads, head_dim)
+    Kn = Kn.view(bsz, 1, n_kv_heads, head_dim)
     if self.use_qk_norm:
         Qn = fast_layernorm_inference(self.q_norm, Qn, self.q_norm_out_weight)
         Kn = fast_layernorm_inference(self.k_norm, Kn, self.k_norm_out_weight)
+    Qn = Qn.transpose(1, 2)
+    Kn = Kn.transpose(1, 2)
+    Vn = Vn.view(bsz, 1, n_kv_heads, head_dim).transpose(1, 2)
 
     # rotary_seq_len (once per step from the decode loop) covers explicit positions past the KV length.
     rotary_seq_len = kwargs.get("rotary_seq_len")
@@ -444,7 +444,8 @@ def CohereModel_fast_forward_inference(
     norm_weight = self.model.layers[0].input_layernorm.weight
     out_weights = _LazyDeviceScratch(
         DEVICE_COUNT,
-        lambda device: torch.empty_like(norm_weight, dtype = torch.float32, device = device),
+        # Shape only: under FSDP2 block streaming this is still a DTensor; empty_like would copy that.
+        lambda device: torch.empty(norm_weight.shape, dtype = torch.float32, device = device),
     )
     input_ids = input_ids[:, : self.max_seq_length]
     hidden_states = self.model.embed_tokens(input_ids)

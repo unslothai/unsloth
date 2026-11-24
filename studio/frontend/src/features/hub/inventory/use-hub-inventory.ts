@@ -56,6 +56,8 @@ import {
 export interface HubInventory {
   cachedRows: CachedInventoryRow[];
   localRows: LocalInventoryRow[];
+  /** Complete hf_cache GGUF load ids from before dedupe, which can drop a snapshot's GGUF row. */
+  hfCacheGgufLoadIds: ReadonlySet<string>;
   availableSet: Set<string>;
   partialSet: Set<string>;
   downloadingSet: Set<string>;
@@ -602,6 +604,16 @@ export function useHubInventory(
       .sort((a, b) => a.title.localeCompare(b.title));
   }, [localDatasetsSource.rows]);
 
+  const hfCacheGgufLoadIds = useMemo(
+    () =>
+      new Set(
+        localRows
+          .filter((row) => row.source === "hf_cache" && row.modelFormat === "gguf" && !row.partial)
+          .map((row) => row.loadId),
+      ),
+    [localRows],
+  );
+
   const dedupedModelInventory = useMemo(
     () =>
       dedupeSameSourceHubCacheRows({
@@ -814,6 +826,7 @@ export function useHubInventory(
   return {
     cachedRows,
     localRows: effectiveLocalRows,
+    hfCacheGgufLoadIds,
     availableSet,
     partialSet,
     downloadingSet,

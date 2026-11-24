@@ -148,20 +148,23 @@ test("Close keeps the native close so Cmd+W still reaches the window's close han
   assert.match(APP_MENU, /PredefinedMenuItem::close_window\(app, Some\("Close"\)\)/);
 });
 
-test("Open Folder lands on the new project's Sources, not its chats", () => {
+test("Open Folder makes the folder the working folder and reuses the project already there", () => {
   const openFolder = readSrc("features/chat/utils/open-folder-as-project.ts");
   const landing = readSrc("features/chat/chat-page.tsx");
-  const marked = openFolder.indexOf("markProjectSourcesPending(project.id)");
-  assert.ok(marked > openFolder.indexOf("await createChatProject("));
-  assert.ok(marked < openFolder.indexOf("await createLinkedFolder("));
-  assert.match(landing, /hasProjectSourcesPending\(projectId\) \? "sources" : "chats"/);
+  assert.match(
+    openFolder,
+    /return await createChatProject\(\s*selected\.displayName,\s*selected\.token,\s*undefined,\s*\{ reuseExisting: true \},\s*\);/,
+  );
+  assert.doesNotMatch(openFolder, /createLinkedFolder|markProjectSourcesPending|@\/features\/rag/);
   assert.doesNotMatch(openFolder, /deleteChatProject/);
+  assert.match(landing, /hasProjectSourcesPending\(projectId\) \? "sources" : "chats"/);
   assert.match(landing, /<ProjectLanding\s+key=\{baseView\.projectId\}/);
+  assert.match(ROOT, /void openFolderAsProject\(\)\.then\(\(project\) => \{\s*if \(!project\) return;/);
+  assert.match(ROOT, /setActiveProjectId\(project\.id\);\s*void navigate\(\{ to: "\/chat", search: \{ project: project\.id \} \}\);/);
 });
 
-test("Open Folder still lands on Sources after a visit during the link", () => {
+test("a project marked for Sources still lands there after a visit during the link", () => {
   const dropzone = readSrc("features/rag/components/project-source-dropzone.tsx");
-  const openFolder = readSrc("features/chat/utils/open-folder-as-project.ts");
   const landing = readSrc("features/chat/chat-page.tsx");
   const m = new Function(
     `${stripTypeScriptTypes(dropzone.slice(dropzone.indexOf("const projectsWithPendingSources"), dropzone.indexOf("/** Upload staged files"))).replace(/^export /gm, "")}
@@ -172,7 +175,6 @@ test("Open Folder still lands on Sources after a visit during the link", () => {
     if (!m.isProjectLandingMounted(id)) m.markProjectSourcesPending(id);
   };
   assert.match(landing, /consumeProjectSourcesPending\(projectId\);\s*return noteProjectLandingMounted\(projectId\);/);
-  assert.match(openFolder, /if \(!isProjectLandingMounted\(project\.id\)\) markProjectSourcesPending\(project\.id\);/);
 
   m.markProjectSourcesPending("a");
   const leave = mount("a");
@@ -204,7 +206,8 @@ test("Open Folder is disabled until the open in progress finishes", () => {
   const openFolder = readSrc("features/chat/utils/open-folder-as-project.ts");
   assert.match(openFolder, /if \(opening\) return null;\s*setOpening\(true\);/);
   assert.match(openFolder, /\} finally \{\s*setOpening\(false\);/);
-  assert.match(ROOT, /pathLeasesSupported && !ragUnavailable && !openingFolder/);
+  assert.match(ROOT, /routeShortcutEnabled && pathLeasesSupported && !openingFolder/);
+  assert.doesNotMatch(ROOT, /ragUnavailable/);
 });
 
 test("menu triggers reach the newest mounted handler that claims the action", async () => {

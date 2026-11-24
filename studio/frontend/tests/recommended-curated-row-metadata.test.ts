@@ -53,6 +53,13 @@ test("a bundled folder is searched on the folder name its row shows", () => {
   assert.equal(hits("Kokoro-82M-GGUF").length, 1);
   assert.equal(hits("82M-GGUF").length, 1);
   assert.equal(hits("kokoro 82m gguf").length, 1);
+  // A capability the name does not show is findable by what it does.
+  for (const query of ["multi-speaker", "dialogue", "podcast"]) {
+    assert.deepEqual(
+      hits(query).map((model) => audioCppDisplayName(model.id)),
+      ["VibeVoice-1.5B-GGUF"],
+    );
+  }
 });
 
 test("any other row is searched on its aliases and label", () => {

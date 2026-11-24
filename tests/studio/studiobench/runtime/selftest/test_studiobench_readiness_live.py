@@ -238,11 +238,12 @@ def _completeness(browser, mode: str, **kwargs) -> tuple[dict, list[str]]:
 def test_a_virtualised_thread_passes_the_completeness_probe(browser):
     out, _ = _completeness(browser, "windowed")
     assert out["head_reached"] is True, out
-    # The default 2,000px step jumps straight past this 2,160px thread, so coverage is unmeasured.
-    assert out["ordinal_coverage_complete"] is None, out
-    assert out["sweep_continuous"] is False
-    assert "never in view" in out["coverage_reason"]
-    assert out["ordinal_coverage_state"] == COVERAGE_UNMEASURED, out
+    # The default 2,000px step caps to 3/4 of the 400px viewport (300px), so stops overlap.
+    assert out["traverse_step_px"] == 300, out
+    assert out["sweep_continuous"] is True, out
+    assert out["ordinal_coverage_complete"] is True, out
+    assert out["ordinal_coverage_state"] == COVERAGE_COMPLETE, out
+    assert out["ordinals_seen_count"] == MESSAGES
 
 
 def test_a_virtualised_thread_covers_every_ordinal_when_the_sweep_is_continuous(browser):
@@ -253,6 +254,16 @@ def test_a_virtualised_thread_covers_every_ordinal_when_the_sweep_is_continuous(
     assert out["ordinal_coverage_complete"] is True, out
     assert out["ordinal_coverage_state"] == COVERAGE_COMPLETE, out
     assert out["ordinals_seen_count"] == MESSAGES
+    assert out["ordinals_missing"] == []
+
+
+def test_a_scroll_anchor_jump_does_not_leave_coverage_unmeasured(browser):
+    """A re-anchoring jump can carry one step past a row even below the step cap; the traversal
+    steps back until that row mounts, so coverage stays measured and complete."""
+    out, _ = _completeness(browser, "windowed_anchor_jump")
+    assert out["head_reached"] is True, out
+    assert out["sweep_continuous"] is True, out
+    assert out["ordinal_coverage_state"] == COVERAGE_COMPLETE, out
     assert out["ordinals_missing"] == []
 
 

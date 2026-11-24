@@ -316,6 +316,73 @@ def test_studio_loop_executes_and_replays_native_tool_calls(native, monkeypatch)
     assert api.active_generations.count() == 0
 
 
+def test_done_only_stream_end_still_emits_finish_reason(native, monkeypatch):
+    from core.inference import studio_tool_loop
+    from routes import managed_engine_chat
+
+    httpx = managed_engine_chat.httpx
+
+    def handle(request):
+        body = json.loads(request.content)
+        answered = any(m.get("role") == "tool" for m in body["messages"])
+        if answered:
+            chunks = [
+                {
+                    "id": "answer",
+                    "model": "sf-model",
+                    "choices": [{"index": 0, "delta": {"content": "3973"}}],
+                }
+            ]
+        else:
+            call = '<tool_call>{"name": "python", "arguments": {"code": "print(3973)"}}</tool_call>'
+            chunks = [
+                {
+                    "id": "call",
+                    "model": "sf-model",
+                    "choices": [{"index": 0, "delta": {"content": call}}],
+                },
+                {"id": "call", "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]},
+            ]
+        return httpx.Response(
+            200,
+            text = "".join("data: " + json.dumps(e) + "\n\n" for e in chunks) + "data: [DONE]\n\n",
+        )
+
+    client = httpx._client.AsyncClient
+    monkeypatch.setattr(
+        httpx,
+        "AsyncClient",
+        lambda **kwargs: client(transport = httpx.MockTransport(handle), **kwargs),
+    )
+    monkeypatch.setattr(studio_tool_loop, "execute_tool", lambda *a, **k: "3973")
+
+    class _Headerless(route_test._Request):
+        headers: dict = {}
+
+    async def request():
+        payload = route_test._request(
+            enable_tools = True,
+            enabled_tools = ["python"],
+            permission_mode = "off",
+            stream = True,
+        )
+        response = await api.openai_chat_completions(payload, _Headerless(), "u")
+        return [
+            json.loads(line[5:])
+            async for line in response.body_iterator
+            if line.startswith("data:") and line[5:].strip() != "[DONE]"
+        ]
+
+    result = asyncio.run(request())
+    finishes = [
+        choice["finish_reason"]
+        for event in result
+        for choice in event.get("choices", [])
+        if choice.get("finish_reason")
+    ]
+    assert finishes == ["stop"]
+
+
 def test_run_automatically_streams_arm_the_no_sandbox_gate(native, monkeypatch):
     from core.inference import studio_tool_loop
     from routes import managed_engine_chat
@@ -731,3 +798,71 @@ def test_managed_engine_offers_image_viewer_to_vision_models_only(native, monkey
     names = [t["function"]["name"] for t in native[1][0]["tools"]]
     assert "python" in names
     assert ("view_image" in names) == vision
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("engine", ["vllm", "sglang"])
+@pytest.mark.parametrize("contract", ["studio", "unmarked", "client_catalog"])
+def test_memory_replay_reaches_plain_managed_chat(native, monkeypatch, stream, engine, contract):
+    from core import chat_memory
+    from fastapi import HTTPException
+
+    backend, requests = native
+    backend.models["sf-model"].update(engine = engine, supports_tools = False)
+    route_test._install(monkeypatch, backend, supports_tools = False)
+    monkeypatch.setattr(chat_memory, "thread_context", lambda _: {"projectId": None})
+    monkeypatch.setattr(
+        chat_memory, "context", lambda *_: {"text": "Remembered fact: prefers Rust"}
+    )
+    history = [
+        {"role": "user", "content": "Remember I prefer Rust"},
+        {
+            "role": "assistant",
+            "content": "Saving that preference.",
+            "tool_calls": [
+                {
+                    "id": "memory-call",
+                    "type": "function",
+                    "function": {
+                        "name": "update_memory",
+                        "arguments": '{"scope":"personal","key":"language","value":"Rust"}',
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "memory-call",
+            "name": "update_memory",
+            "content": "Memory updated: personal.language",
+        },
+        {"role": "user", "content": "What do you remember?"},
+    ]
+    payload = route_test._request(
+        messages = history,
+        thread_id = "saved",
+        studio_tool_history = contract != "unmarked",
+        tools = [route_test.LOOKUP_TOOL] if contract == "client_catalog" else None,
+        enable_tools = False,
+        stream = stream,
+    )
+    if contract != "studio":
+        with pytest.raises(HTTPException, match = "No native tool parser") as exc:
+            run(payload)
+        assert exc.value.status_code == 400
+        assert requests == []
+        assert backend.calls == []
+        return
+    result = run(payload)
+    assert "plain" in json.dumps(result)
+    assert requests == []
+    assert backend.calls
+    rendered = backend.calls[-1]
+    assert not rendered.get("tools")
+    assert all(m["role"] != "tool" and not m.get("tool_calls") for m in rendered["messages"])
+    text = json.dumps([rendered["system_prompt"], rendered["messages"]])
+    assert "prefers Rust" in text
+    assert "Saving that preference" in text
+    assert "update_memory" in text
+    assert "Memory updated: personal.language" in text
+    assert "What do you remember?" in text

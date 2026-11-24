@@ -13,6 +13,7 @@ import os
 import threading
 from typing import Any, Callable, Optional
 from .rocm_bf16 import is_rocm_torch
+from .triton_closure_globals import publishes_closure_globals
 
 WAN_FUSED_ENV = "UNSLOTH_DIFFUSION_WAN_FUSED_ADALN"
 # rotary only (the block fusion stays): UNSLOTH_DIFFUSION_WAN_FUSED_ROPE=0
@@ -55,6 +56,7 @@ def wanted(dtype: Any, device: Any = "cuda") -> bool:
 
 
 @functools.lru_cache(maxsize = 1)
+@publishes_closure_globals
 def _kernels() -> Optional[dict]:
     """Build the Triton kernels once; None when Triton is unavailable (the stock forward then stays)."""
     try:

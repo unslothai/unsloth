@@ -1,10 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Torch dequant for the GGUF types diffusers' table lacks (IQ1_S, IQ1_M, IQ2_XXS, IQ2_XS, IQ2_S, IQ3_XXS, IQ3_S), so a
-GGUF holding them loads on the diffusers path instead of being refused, and its weights stay packed on the device.
-Each function is gguf-py's numpy ``dequantize_blocks`` op for op (the same fp32 order, so the same bits) on gguf-py's
-own grids; types diffusers already handles are never replaced. UNSLOTH_DIFFUSION_GGUF_LOWBIT_IQ=0 keeps the refusal."""
+"""Torch dequant for GGUF IQ types diffusers lacks (IQ1_S, IQ1_M, IQ2_XXS, IQ2_XS, IQ2_S, IQ3_XXS,
+IQ3_S), matching gguf-py op for op; types diffusers handles are never replaced;
+UNSLOTH_DIFFUSION_GGUF_LOWBIT_IQ=0 keeps the refusal."""
 
 from __future__ import annotations
 

@@ -122,13 +122,13 @@ def _from_arrow(rows, warn: Callable[[str], None]) -> list[dict]:
     ]
 
 
-def _local_files(paths: list[str]) -> list[Path]:
+def _local_files(paths: list[str], splits: tuple[str, ...] = ("train",)) -> list[Path]:
     from utils.paths import dataset_files_in_dir, datasets_root
 
     files: list[Path] = []
     for entry in paths:
         path = Path(entry if os.path.isabs(entry) else os.path.join(str(datasets_root()), entry))
-        files.extend(dataset_files_in_dir(path) if path.is_dir() else [path])
+        files.extend(dataset_files_in_dir(path, splits) if path.is_dir() else [path])
     return files
 
 
@@ -137,10 +137,15 @@ def _bad_json(path: Path, line: int, exc: json.JSONDecodeError) -> ValueError:
     return ValueError(f"Invalid JSON at {name}:{line}: {exc.msg}")
 
 
-def _read_local_rows(paths: list[str], load_dataset, warn: Callable[[str], None]) -> list[dict]:
+def _read_local_rows(
+    paths: list[str],
+    load_dataset,
+    warn: Callable[[str], None],
+    splits: tuple[str, ...] = ("train",),
+) -> list[dict]:
     from utils.datasets.cells import csv_as_text_kwargs
 
-    files = _local_files(paths)
+    files = _local_files(paths, splits)
     if not files:
         raise ValueError("No local dataset files found")
     rows: list[dict] = []
@@ -158,7 +163,8 @@ def _read_local_rows(paths: list[str], load_dataset, warn: Callable[[str], None]
                 # "Extra data" means the first line parsed, so this is JSONL.
                 if exc.msg != "Extra data":
                     raise _bad_json(path, exc.lineno, exc) from None
-                for number, line in enumerate(text.splitlines(), 1):
+                # LF only: U+2028, U+2029 and U+0085 inside a string are data, not a row end.
+                for number, line in enumerate(text.split("\n"), 1):
                     if not line.strip():
                         continue
                     try:
@@ -216,6 +222,7 @@ def _load_rows(
     from core.training.s3_dataset import S3DownloadCancelled, prepare_s3_dataset_download
     from core.training.worker import _load_embedding_hf_dataset
     from utils.datasets.cache_safe import load_dataset_cache_safe as load_dataset
+    from utils.paths import EVAL_SPLITS
 
     def check_stop():
         if should_stop():
@@ -266,7 +273,7 @@ def _load_rows(
         evaluate
         and config.get("local_eval_datasets")
         and config.get("local_datasets")
-        and {p.resolve() for p in _local_files(config["local_eval_datasets"])}
+        and {p.resolve() for p in _local_files(config["local_eval_datasets"], EVAL_SPLITS)}
         & {p.resolve() for p in _local_files(config["local_datasets"])}
     ):
         # Scoring or calibrating on training rows would report the fit, not held-out accuracy.
@@ -276,7 +283,7 @@ def _load_rows(
         )
     elif evaluate and config.get("local_eval_datasets"):
         eval_rows = _eval_sample(
-            _read_local_rows(config["local_eval_datasets"], load_dataset, warn), seed
+            _read_local_rows(config["local_eval_datasets"], load_dataset, warn, EVAL_SPLITS), seed
         )
 
     check_stop()

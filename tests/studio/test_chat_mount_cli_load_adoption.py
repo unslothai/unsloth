@@ -134,6 +134,9 @@ export const toLoraSummary = (lora: any) => lora;
 export const isExternalModelId = (id: unknown) =>
   typeof id === "string" && id.startsWith("external:");
 export const isSpeechOnlyStatus = (status: any) => Boolean(status?.speechOnly);
+// No scenario serves a translation model, so both read as "not one".
+export const isTranslationOnlyRepo = (_id: any) => false;
+export const isTranslationHeldSlot = (_active: any, _selection: any) => false;
 export const isIdleUnloadedStatus = (status: any, _armed: boolean) =>
   Boolean(status?.idleUnloaded);
 export const resolveInferenceCheckpointId = (status: any) =>
@@ -145,6 +148,8 @@ export function applyActiveModelStatusToStore(status: any, _options: any): void 
 }
 export function syncModelCapabilities(_checkpoint: string, _status: any): void {}
 export function refreshContextUsage(_options: any): void {}
+// No scenario loads two quants of one repo, so a checkpoint is served under its own name.
+export const servedCheckpoint = (_loaded: any, checkpoint: string, _variant: any) => checkpoint;
 
 // Stubbed at the module boundary it really crosses, but keeping the three refusals: "a pick
 // already landed" is what a concurrent refresh produces, and adopting anyway would hide the bug.

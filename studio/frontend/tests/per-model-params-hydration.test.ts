@@ -53,6 +53,7 @@ function applyStatus(
       response: STATUS,
       modelId,
       presetSource: store.activePresetSource,
+      presetEditedKeys: store.presetEditedKeys,
       loadedContextLength: STATUS_CONTEXT_LENGTH,
     }),
     {

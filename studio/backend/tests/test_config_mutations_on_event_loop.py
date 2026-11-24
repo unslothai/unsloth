@@ -10,13 +10,16 @@ it read, with nothing below them serializing the pair:
     uniqueness constraint.
   * update_provider_config / migrate_provider_api_key read the row and then save a credential,
     and `credential_secrets` has no foreign key to `providers`.
-  * login clears its admission check before verify_password reaches _record_login_failure, so
-    the bucket lock guards each call but not the sequence.
 
 They are await-free, so the loop is what makes those sequences atomic. In the threadpool, two
 imports duplicate a server row, an update racing a delete writes a credential for a provider that
 is gone, and a burst of guesses passes admission together. The read-only handlers beside them do
 belong in the threadpool, so both directions are pinned here.
+
+Login used to be pinned to the loop too: its admission check and _record_login_failure had a
+verify_password between them. It now counts the attempt before it awaits the hash (success clears
+it), so a burst cannot pass admission together, and the PBKDF2 runs in a pool of its own instead
+of freezing every client (test_login_hash_off_loop.py holds the burst to the limit).
 
 Refresh used to be pinned to the loop too, because it consumed a token and inserted its replacement
 in two commits that a logout could land between. It now rotates in one SQLite transaction, so it
@@ -87,16 +90,6 @@ _MUTATIONS = {
         None,
         404,
     ),
-    "auth-login": _Case(
-        "post",
-        "/api/auth/login",
-        {"username": "u", "password": "p"},
-        auth_routes,
-        "storage",
-        "get_user_and_secret",
-        None,
-        401,
-    ),
     "auth-logout": _Case(
         "post",
         "/api/auth/logout",
@@ -123,6 +116,16 @@ _READS = {
 
 
 _ATOMIC_MUTATIONS = {
+    "auth-login": _Case(
+        "post",
+        "/api/auth/login",
+        {"username": "u", "password": "p"},
+        auth_routes,
+        "storage",
+        "get_user_and_secret",
+        None,
+        401,
+    ),
     "auth-refresh": _Case(
         "post",
         "/api/auth/refresh",

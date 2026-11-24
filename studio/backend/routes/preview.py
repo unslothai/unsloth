@@ -168,6 +168,11 @@ async def _serve_chat(
         )
     is_lora = (path / "adapter_config.json").exists()
     payload = _sanitize_preview_payload(payload, is_lora)
+    # An external::<provider>::<model> id would route to a saved connection and spend its key.
+    if isinstance(payload.model, str) and payload.model.startswith("external::"):
+        payload = payload.model_copy(
+            update = {"model": run if not checkpoint else f"{run}/{checkpoint}"}
+        )
     scope = getattr(request, "scope", None)
     disable_openai_auto_switch_for_request(scope)
     from core.inference.llama_keepwarm import (
@@ -277,7 +282,13 @@ _PREVIEW_ASSET_MEDIA_TYPES = {
 
 @router.get("/_assets/{asset_path:path}")
 async def preview_asset(asset_path: str):
-    target = (_FRONTEND_DIST / asset_path).resolve()
+    from utils.datasets.remote_images import is_network_share
+
+    joined = _FRONTEND_DIST / asset_path
+    # Unauthenticated: resolve() on a share path makes Windows sign in to that host (NTLM).
+    if is_network_share(asset_path) or is_network_share(str(joined)):
+        raise HTTPException(status_code = 404, detail = "Not found")
+    target = joined.resolve()
     media_type = _PREVIEW_ASSET_MEDIA_TYPES.get(target.suffix.lower())
     if media_type is None or not target.is_relative_to(_FRONTEND_DIST) or not target.is_file():
         raise HTTPException(status_code = 404, detail = "Not found")

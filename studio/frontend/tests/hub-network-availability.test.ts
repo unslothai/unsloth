@@ -53,47 +53,72 @@ function reset() {
   markRemoteNetworkOnline();
 }
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+// network.ts reads Date.now(). A real sleep raced the 10 ms window: on a loaded runner (Windows ticks
+// about every 15 ms) the window lapsed before the first assert, so the clock is driven by hand.
+function manualClock() {
+  const real = Date.now;
+  let now = real();
+  Date.now = () => now;
+  return {
+    advance: (ms: number) => {
+      now += ms;
+    },
+    restore: () => {
+      Date.now = real;
+    },
+  };
+}
 
-test("a lapsed backoff window means probing, never proven-available", async () => {
+test("a lapsed backoff window means probing, never proven-available", () => {
   reset();
-  markRemoteNetworkOffline(HF, 10, {
-    kind: "network-opaque",
-    message: "blocked",
-    origin: HF,
-    retryable: true,
-  });
-  assert.equal(getHubPhase(HF), "unavailable");
+  const clock = manualClock();
+  try {
+    markRemoteNetworkOffline(HF, 10, {
+      kind: "network-opaque",
+      message: "blocked",
+      origin: HF,
+      retryable: true,
+    });
+    clock.advance(9);
+    assert.equal(getHubPhase(HF), "unavailable");
 
-  await sleep(30);
+    clock.advance(21);
 
-  // Only a successful request may promote back to online.
-  assert.equal(
-    getHubPhase(HF),
-    "probing",
-    "TTL expiry must not be mistaken for a successful probe",
-  );
+    // Only a successful request may promote back to online.
+    assert.equal(
+      getHubPhase(HF),
+      "probing",
+      "TTL expiry must not be mistaken for a successful probe",
+    );
+  } finally {
+    clock.restore();
+  }
 });
 
-test("only a success clears the recorded failure", async () => {
+test("only a success clears the recorded failure", () => {
   reset();
-  markRemoteNetworkOffline(HF, 10, {
-    kind: "timeout",
-    message: "timed out",
-    origin: HF,
-    retryable: true,
-  });
-  await sleep(30);
+  const clock = manualClock();
+  try {
+    markRemoteNetworkOffline(HF, 10, {
+      kind: "timeout",
+      message: "timed out",
+      origin: HF,
+      retryable: true,
+    });
+    clock.advance(30);
 
-  assert.equal(
-    getLastHubFailure(HF)?.kind,
-    "timeout",
-    "the cause must outlive the backoff window or the panel goes generic",
-  );
+    assert.equal(
+      getLastHubFailure(HF)?.kind,
+      "timeout",
+      "the cause must outlive the backoff window or the panel goes generic",
+    );
 
-  markRemoteNetworkOnline(HF);
-  assert.equal(getLastHubFailure(HF), null);
-  assert.equal(getHubPhase(HF), "available");
+    markRemoteNetworkOnline(HF);
+    assert.equal(getLastHubFailure(HF), null);
+    assert.equal(getHubPhase(HF), "available");
+  } finally {
+    clock.restore();
+  }
 });
 
 test("Retry clears the backoff but keeps the diagnosis on screen", () => {

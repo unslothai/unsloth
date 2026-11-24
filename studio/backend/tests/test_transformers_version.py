@@ -49,6 +49,8 @@ _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
 sys.modules.setdefault("loggers", _loggers_stub)
 
 from utils.transformers_version import (
+    TRANSFORMERS_510_VERSION,
+    TRANSFORMERS_550_VERSION,
     _resolve_base_model,
     _is_lora_adapter_dir,
     _has_adapter_weights,
@@ -1656,7 +1658,7 @@ class TestActivateLoggingClarity:
             self._restore_env(snap)
 
         text = " ".join(r.getMessage() for r in caplog.records).lower()
-        assert "5.5.0" in text, f"version not logged: {text!r}"
+        assert TRANSFORMERS_550_VERSION in text, f"version not logged: {text!r}"
         assert (
             "sys.path" in text or "path only" in text
         ), f"early activation log does not clarify it is path-prepend only: {text!r}"
@@ -1715,7 +1717,7 @@ class TestActivateLoggingClarity:
             self._restore_env(snap)
 
         text = " ".join(r.getMessage() for r in caplog.records).lower()
-        assert "5.10.2" in text, f"local checkpoint tier did not win: {text!r}"
+        assert TRANSFORMERS_510_VERSION in text, f"local checkpoint tier did not win: {text!r}"
 
     def test_activate_adapter_without_config_skips_path_name_recheck(self, caplog, tmp_path):
         # The resolved base drives the tier; the 'gemma-4' dir name must not upgrade it.

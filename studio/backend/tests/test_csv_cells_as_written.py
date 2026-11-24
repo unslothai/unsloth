@@ -11,6 +11,7 @@ if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
 import importlib  # noqa: E402
+import json  # noqa: E402
 import types  # noqa: E402
 from unittest.mock import MagicMock  # noqa: E402
 
@@ -260,3 +261,24 @@ def test_vision_detection_skips_typed_cells_only_in_csv_read_as_text(tmp_path):
     )
     assert check_dataset_format(preview, is_vlm = True)["detected_text_column"] == "text"
     assert detect_vlm_dataset_structure(preview)["text_column"] == "text"
+
+
+def test_uploaded_jsonl_trains_dates_as_written(trainer, tmp_path):
+    dates = ["1945-05-08", "2021-05-03T10:00:00Z", "2024-02-29 23:59:59"]
+    train = tmp_path / "train.jsonl"
+    train.write_text(
+        "".join(
+            json.dumps({"instruction": "Normalise the date.", "input": "", "output": date}) + "\n"
+            for date in dates
+        )
+    )
+
+    dataset_info, eval_dataset = trainer.load_and_format_dataset(
+        None,
+        local_datasets = [str(train)],
+        local_eval_datasets = [str(train)],
+        eval_steps = 0.1,
+    )
+
+    assert _responses(dataset_info["dataset"]) == dates
+    assert _responses(eval_dataset) == dates

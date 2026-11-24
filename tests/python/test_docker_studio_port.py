@@ -128,7 +128,8 @@ def test_the_ready_summary_and_its_health_probe_use_the_port(tmp_path: Path):
 def test_the_updater_waits_on_the_port():
     body = UPDATE.read_text(encoding = "utf-8")
     assert '_port="${UNSLOTH_STUDIO_PORT:-8000}"' in body
-    assert '"http://127.0.0.1:${_port}/api/health"' in body
+    assert '"${_scheme}://127.0.0.1:${_port}/api/health"' in body
+    assert '[ -n "${UNSLOTH_STUDIO_SSL_KEYFILE:-}" ] && _scheme=https' in body
     assert "answering on port ${_port}" in body
 
 

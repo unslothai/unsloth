@@ -38,7 +38,7 @@ test("every quant list and cached GGUF row marks the quant each loaded model run
 test("a loaded row is selected, picked and ejected by its checkpoint, not its label", () => {
   const runtime = readSrc("features/chat/hooks/use-chat-model-runtime.ts");
   assert.match(runtime, /const checkpoint = checkpoints\?\.\[i\] \|\| id;/);
-  assert.match(runtime, /statusRes\.serving_checkpoints,\s*\);/);
+  assert.match(runtime, /statusRes\.serving_checkpoints,\s*statusRes\.serving_quants,\s*\);/);
   assert.match(
     runtime,
     /\.loadedModels\.map\(\(m\) => m\.checkpoint \?\? m\.id\)/,
@@ -91,7 +91,7 @@ test("an On Device GGUF row with several quants shows a right/down chevron its g
     /\{soleQuantPending \? null : \(\s*<button[\s\S]*?onClick=\{\(\) =>\s*actions\.get\(\)\.toggleGgufExpanded\(c\.repo_id, expanderOpen\)\s*\}/,
   );
   assert.match(row, /expanderOpen\s*\?\s*ChevronDownStandardIcon\s*:\s*ChevronRightStandardIcon/);
-  assert.match(row, /<span className=\{cn\(ROW_ACTIONS_PINNED_CLASS, "h-6"\)\}>/);
+  assert.match(row, /<span\s+className=\{cn\(\s*ROW_ACTIONS_PINNED_CLASS,\s*"h-6 max-md:h-auto max-md:self-stretch",?\s*\)\}\s*>/);
 });
 
 test("a loaded hub GGUF row opens its quant list, so quants downloaded after the load stay reachable", () => {

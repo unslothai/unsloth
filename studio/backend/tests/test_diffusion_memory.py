@@ -426,7 +426,7 @@ def test_explicit_modes_force_policy_regardless_of_budget():
             runtime_headroom_mib = 1000,
             requested_mode = MEMORY_MODE_LOW_VRAM,
         ).offload_policy
-        == OFFLOAD_MODEL
+        == OFFLOAD_GROUP
     )
 
 
@@ -545,11 +545,13 @@ def _plan(policy, *, tiling):
         device_memory = _discrete(80000) if policy == OFFLOAD_NONE else _discrete(4000, 8000),
         model_dense_mib = 1000 if policy == OFFLOAD_NONE else 40000,
         runtime_headroom_mib = 1000,
+        # Whole-module offload: the legacy cpu_offload flag (low_vram streams by default).
         requested_mode = {
             OFFLOAD_NONE: MEMORY_MODE_FAST,
             OFFLOAD_GROUP: MEMORY_MODE_BALANCED,
-            OFFLOAD_MODEL: MEMORY_MODE_LOW_VRAM,
+            OFFLOAD_MODEL: None,
         }[policy],
+        explicit_offload = policy == OFFLOAD_MODEL,
     )
 
 

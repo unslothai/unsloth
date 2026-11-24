@@ -3,9 +3,7 @@
 
 import type { Plugin } from "vite";
 
-// Vite's preload helper looks up the CSP nonce meta on every lazy import with deps. Studio ships
-// no such meta, so each lookup walks the whole document, which on a long chat costs about 1 ms
-// per import (Settings opens 19). The meta can only sit in <head>, so ask <head>.
+// Vite's preload nonce lookup walks the whole document per import; the meta can only sit in head.
 const NONCE_LOOKUP = /document\.querySelector\((["'`])meta\[property=csp-nonce\]\1\)/g;
 
 export function scopePreloadNonceLookup(code: string): string {

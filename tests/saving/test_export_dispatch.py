@@ -201,6 +201,67 @@ def test_non_peft_gguf_uses_checkpoint_as_input_not_output(
     assert not os.path.exists(staged)
 
 
+class GemmaFixedRotaryEmbedding:
+    """Named as unsloth's Gemma rotary: `scaling_factor` is set only when it applied linear RoPE."""
+
+
+@pytest.mark.parametrize("scaling_factor", [2.0, None], ids = ["scaled", "native"])
+def test_reused_gemma_checkpoint_hands_the_live_rope_to_the_converter(
+    monkeypatch, tmp_path, scaling_factor
+):
+    """Reusing the loaded folder stages its config.json, the base's unscaled one, so the scaling the
+    live rotary applied past the native window has to reach the GGUF step from the model."""
+    checkpoint = tmp_path / "checkpoint"
+    checkpoint.mkdir()
+    base_config = '{"model_type": "gemma", "max_position_embeddings": 8192, "rope_scaling": null}'
+    (checkpoint / "config.json").write_text(base_config)
+    (checkpoint / "model.safetensors").write_bytes(b"WEIGHTS")
+    model = _FakeModel()
+    model.config = type(
+        "cfg",
+        (),
+        {
+            "_name_or_path": str(checkpoint),
+            "architectures": ["GemmaForCausalLM"],
+            "model_type": "gemma",
+            "rope_scaling": {"type": "linear", "factor": 2.0},
+            "max_position_embeddings": 16384,
+        },
+    )()
+    rotary = GemmaFixedRotaryEmbedding()
+    if scaling_factor is not None:
+        rotary.scaling_factor = scaling_factor
+    model.modules = lambda: iter([model, rotary])
+    seen = {}
+
+    monkeypatch.setattr(save_mod, "_is_vlm", lambda _model: False)
+    monkeypatch.setattr(save_mod, "_is_gpt_oss", lambda _model: False)
+    monkeypatch.setattr(save_mod, "fix_tokenizer_bos_token", lambda _tokenizer: (False, None))
+    monkeypatch.setattr(save_mod, "_resolve_imatrix_file", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(save_mod, "dtype_from_config", lambda _config: save_mod.torch.float16)
+    monkeypatch.setattr(save_mod, "create_ollama_modelfile", lambda *_args, **_kwargs: None)
+
+    def _save_to_gguf(**kwargs):
+        seen.update(kwargs)
+        seen["staged_config"] = open(os.path.join(kwargs["model_directory"], "config.json")).read()
+        output = tmp_path / "export" / "model_gguf" / "model.Q8_0.gguf"
+        output.parent.mkdir(exist_ok = True)
+        output.write_bytes(b"GGUF")
+        return [str(output)], True, False
+
+    monkeypatch.setattr(save_mod, "save_to_gguf", _save_to_gguf)
+    (tmp_path / "export").mkdir()
+    save_mod.unsloth_save_pretrained_gguf(
+        model,
+        str(tmp_path / "export" / "model"),
+        tokenizer = _FakeTokenizer(),
+        quantization_method = "q8_0",
+    )
+
+    assert seen["staged_config"] == base_config
+    assert seen["gemma_linear_rope"] == (scaling_factor or 1.0)
+
+
 @pytest.mark.parametrize(
     "full_finetuning, state_dict",
     [
@@ -396,7 +457,13 @@ def test_torchao_requires_config_or_qat(tmp_path):
         )
 
 
-def _run_lora_gguf(monkeypatch, tmp_path, token):
+def _run_lora_gguf(
+    monkeypatch,
+    tmp_path,
+    token,
+    write_gguf = True,
+    push_to_hub = False,
+):
     """Drive _unsloth_save_lora_gguf to the converter call and return the env it would use."""
     captured = {}
 
@@ -408,6 +475,9 @@ def _run_lora_gguf(monkeypatch, tmp_path, token):
             captured["env"] = kwargs["env"]
             self.stdout = []
             self.returncode = 0
+            if write_gguf:
+                with open(_cmd[_cmd.index("--outfile") + 1], "wb") as f:
+                    f.write(b"GGUF")
 
         def __enter__(self):
             return self
@@ -435,9 +505,25 @@ def _run_lora_gguf(monkeypatch, tmp_path, token):
     monkeypatch.setenv("HF_HUB_DISABLE_IMPLICIT_TOKEN", "1")
 
     save_mod._unsloth_save_lora_gguf(
-        _FakePeft(), _FakeTokenizer(), str(tmp_path / "out"), outtype = "f16", token = token
+        _FakePeft(),
+        _FakeTokenizer(),
+        str(tmp_path / "out"),
+        outtype = "f16",
+        token = token,
+        push_to_hub = push_to_hub,
     )
     return captured["env"]
+
+
+@pytest.mark.parametrize("push_to_hub", [False, True])
+def test_lora_gguf_converter_rejects_missing_artifact(monkeypatch, tmp_path, push_to_hub):
+    monkeypatch.setattr(
+        "huggingface_hub.HfApi", lambda **kw: pytest.fail("must not upload a missing GGUF")
+    )
+    with pytest.raises(RuntimeError, match = "conversion reported success but wrote no .gguf"):
+        _run_lora_gguf(
+            monkeypatch, tmp_path, token = False, write_gguf = False, push_to_hub = push_to_hub
+        )
 
 
 def test_lora_gguf_converter_is_denied_the_host_token(monkeypatch, tmp_path):

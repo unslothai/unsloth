@@ -4,6 +4,8 @@
 import asyncio
 import os
 import sys
+import threading
+from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -25,6 +27,18 @@ from hub.utils import (
     hf_cache_state,
     state_dir,
 )
+
+
+# A delete narrows its scan to the one repo, as it does an HFCacheInfo: a dataclass holding hashable repos.
+class _CachedRepo(SimpleNamespace):
+    __hash__ = object.__hash__
+
+
+@dataclass
+class _CacheScan:
+    repos: list
+    delete_revisions: object
+    cache_dir: object = None
 
 
 def _shared_setup_1(monkeypatch, tmp_path):
@@ -598,10 +612,10 @@ def test_delete_cached_dataset_scopes_delete_to_selected_root(monkeypatch, tmp_p
             calls.append(self.label)
 
     def _cache(label: str, hub):
-        return SimpleNamespace(
+        return _CacheScan(
             cache_dir = label,
             repos = [
-                SimpleNamespace(
+                _CachedRepo(
                     repo_type = "dataset",
                     repo_id = "Org/Data",
                     repo_path = str(hub / "datasets--Org--Data"),
@@ -772,9 +786,9 @@ def test_delete_raw_path_removes_only_same_scope_app_cache(monkeypatch, tmp_path
     for entry in (first, second):
         repo_path = entry.hub_cache / "datasets--Org--Data"
         scans.append(
-            SimpleNamespace(
+            _CacheScan(
                 repos = [
-                    SimpleNamespace(
+                    _CachedRepo(
                         repo_type = "dataset",
                         repo_id = repo_id,
                         repo_path = str(repo_path),
@@ -1219,6 +1233,123 @@ def test_upload_dataset_response_writes_non_empty_file(monkeypatch, tmp_path):
     assert stored_path.name.endswith("_train.jsonl")
     assert stored_path.read_bytes() == payload
     assert any(getattr(function, "__name__", "") == "write" for function in offloaded)
+
+
+@pytest.mark.parametrize(
+    "second_name,second_payload,reused",
+    [
+        ("train.jsonl", b'{"text":"a"}\n', True),
+        ("train.jsonl", b'{"text":"b"}\n', False),
+        ("other.jsonl", b'{"text":"a"}\n', False),
+    ],
+)
+def test_upload_reuses_only_identical_name_and_content(
+    monkeypatch, tmp_path, second_name, second_payload, reused
+):
+    async def run_inline(function, *args):
+        return function(*args)
+
+    monkeypatch.setattr(local, "DATASET_UPLOAD_DIR", tmp_path)
+    monkeypatch.setattr(local.asyncio, "to_thread", run_inline)
+
+    first = asyncio.run(local.upload_dataset_response(_Upload("train.jsonl", b'{"text":"a"}\n')))
+    second = asyncio.run(local.upload_dataset_response(_Upload(second_name, second_payload)))
+
+    assert (first.stored_path == second.stored_path) is reused
+    assert Path(second.stored_path).read_bytes() == second_payload
+    assert len(list(tmp_path.iterdir())) == (1 if reused else 2)
+
+
+def test_native_upload_reuses_identical_file(monkeypatch, tmp_path):
+    import utils.native_path_leases as leases
+
+    source = tmp_path / "picked" / "train.jsonl"
+    source.parent.mkdir()
+    source.write_bytes(b'{"text":"a"}\n')
+    uploads = tmp_path / "uploads"
+    uploads.mkdir()
+    monkeypatch.setattr(local, "DATASET_UPLOAD_DIR", uploads)
+    monkeypatch.setattr(
+        leases,
+        "verify_native_path_lease",
+        lambda *_a, **_k: SimpleNamespace(canonical_path = source, size_bytes = None),
+    )
+
+    first = local._native_upload_dataset_response("lease")
+    second = local._native_upload_dataset_response("lease")
+
+    assert first.stored_path == second.stored_path
+    assert [p.name for p in uploads.iterdir()] == [Path(first.stored_path).name]
+
+
+def test_upload_accepts_name_at_filename_limit(monkeypatch, tmp_path):
+    async def run_inline(function, *args):
+        return function(*args)
+
+    monkeypatch.setattr(local, "DATASET_UPLOAD_DIR", tmp_path)
+    monkeypatch.setattr(local.asyncio, "to_thread", run_inline)
+    name = "a" * (255 - 33 - len(".jsonl")) + ".jsonl"
+
+    response = asyncio.run(local.upload_dataset_response(_Upload(name, b'{"text":"a"}\n')))
+
+    assert Path(response.stored_path).name.endswith(f"_{name}")
+    assert [p.name for p in tmp_path.iterdir()] == [Path(response.stored_path).name]
+
+
+def test_upload_leaves_no_staged_file_when_publish_fails(monkeypatch, tmp_path):
+    async def run_inline(function, *args):
+        return function(*args)
+
+    monkeypatch.setattr(local, "DATASET_UPLOAD_DIR", tmp_path)
+    monkeypatch.setattr(local.asyncio, "to_thread", run_inline)
+    name = "a" * (256 - 33 - len(".jsonl")) + ".jsonl"
+
+    with pytest.raises(OSError):
+        asyncio.run(local.upload_dataset_response(_Upload(name, b'{"text":"a"}\n')))
+
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_delete_uploaded_dataset_removes_only_named_upload(monkeypatch, tmp_path):
+    upload_root = tmp_path / "uploads"
+    upload_root.mkdir()
+    target = upload_root / "train.jsonl"
+    target.write_text('{"text":"a"}\n', encoding = "utf-8")
+    outside = tmp_path / "outside.jsonl"
+    outside.write_text('{"text":"b"}\n', encoding = "utf-8")
+    (upload_root / "link.jsonl").symlink_to(outside)
+    monkeypatch.setattr(local, "DATASET_UPLOAD_DIR", upload_root)
+
+    for bad_id, status in (
+        ("../outside.jsonl", 400),
+        ("notes.txt", 400),
+        ("missing.jsonl", 404),
+        ("link.jsonl", 404),
+    ):
+        with pytest.raises(HTTPException) as excinfo:
+            local.delete_uploaded_dataset_response(bad_id)
+        assert excinfo.value.status_code == status
+
+    assert local.delete_uploaded_dataset_response("train.jsonl")["id"] == "train.jsonl"
+    assert not target.exists()
+    assert outside.exists()
+
+
+def test_delete_uploaded_dataset_waits_for_publication(monkeypatch, tmp_path):
+    target = tmp_path / "train.jsonl"
+    target.write_text('{"text":"a"}\n', encoding = "utf-8")
+    monkeypatch.setattr(local, "DATASET_UPLOAD_DIR", tmp_path)
+
+    with local._REUSE_LOCK:
+        deleter = threading.Thread(
+            target = local.delete_uploaded_dataset_response, args = ("train.jsonl",)
+        )
+        deleter.start()
+        deleter.join(0.2)
+        assert target.exists()
+    deleter.join(5)
+
+    assert not target.exists()
 
 
 def test_local_dataset_items_expose_recipe_and_upload_source(monkeypatch, tmp_path):

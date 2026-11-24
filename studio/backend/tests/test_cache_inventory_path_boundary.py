@@ -502,6 +502,7 @@ def test_download_progress_hides_the_cache_dir_it_measured(
 _ROUTES_WITHOUT_HOST_PATHS = {
     "remove_scan_folder_endpoint": "status and id only",
     "get_gguf_variants": "filenames and quant labels, no directory",
+    "is_sdxl_checkpoint": "a boolean; repo_id must be a Hub id",
     "download_model": "job id and status",
     "cancel_download_model": "job id and status",
     "get_active_downloads": "repo ids and byte counts",
@@ -1101,10 +1102,8 @@ _WIRING = {
         "echo = (model_name,)",
         "resolve_inventory_handle(",
     ),
-    ("models.scan_model_remote_code", "exact"): (
-        "resolve_inventory_handle(",
-        "restore_inventory_handles(",
-    ),
+    ("models.scan_model_remote_code", "exact"): ("resolve_inventory_handle(",),
+    ("models._scan_model_remote_code_sync", "exact"): ("restore_inventory_handles(",),
     ("inference.load_diffusion_model", "exact"): (
         "except HTTPException",
         "raised_inventory_detail",

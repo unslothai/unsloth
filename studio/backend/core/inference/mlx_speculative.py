@@ -238,6 +238,18 @@ def _named_companion(spec_draft_model: str) -> Optional[DrafterSource]:
     return None if kind is None else DrafterSource(_reported(kind), str(snapshot), False)
 
 
+def _bundled_companion(model_dir: Optional[str]) -> Optional[DrafterSource]:
+    """A drafter checkpoint shipped inside the target's, at ``draft/`` (Ollama's Gemma 4 assistants)."""
+    if not model_dir:
+        return None
+    path = os.path.join(model_dir, "draft")
+    config = _read_config(path)
+    kind = companion_kind(config)
+    if kind is None or not _fits(kind, config, _read_config(model_dir)) or not _has_weights(path):
+        return None
+    return DrafterSource(_reported(kind), path, False)
+
+
 def has_builtin_head(model_dir: Optional[str]) -> bool:
     if not model_dir:
         return False
@@ -254,6 +266,18 @@ def has_builtin_head(model_dir: Optional[str]) -> bool:
         return False
 
 
+def _builtin_head_kind(model_dir: str) -> str:
+    """``dspark`` for a bundled head mlx-vlm builds as a DSpark drafter (Inkling 2's ``mtp.safetensors``), else ``mtp``."""
+    try:
+        from mlx_vlm.speculative.drafters.mtp_split import get_mtp_splitter
+        splitter = get_mtp_splitter(source_config = _read_config(model_dir))
+    except Exception as exc:
+        logger.debug("MLX speculative: no MTP splitter for %s: %s", model_dir, exc)
+        return "mtp"
+    output = str(getattr(splitter, "output_model_type", ""))
+    return "dspark" if output.endswith("_dspark") else "mtp"
+
+
 def resolve_speculation(
     speculative_type,
     spec_draft_model: Optional[str],
@@ -262,7 +286,8 @@ def resolve_speculation(
     target_name: str,
     allowed = None,
 ) -> SpecResolution:
-    """The drafters an MLX load tries: a named ``spec_draft_model``, then cached companions (any kind under auto) and the built-in head, in ``_COMPANION_ORDER``."""
+    """The drafters an MLX load tries: a named ``spec_draft_model``, then the built-in head, a companion bundled in the
+    checkpoint and cached companions (any kind under auto, in ``_COMPANION_ORDER``)."""
     mode = mlx_spec_mode(speculative_type)
     if mode == "off":
         return SpecResolution(mode)
@@ -282,11 +307,17 @@ def resolve_speculation(
     companions = discover_companions(
         target_name, _read_config(model_dir) if model_dir else {}, allowed
     )
+    bundled = _bundled_companion(model_dir)
     companions = [
-        source for source in companions if (auto or source.kind == kind) and source not in sources
+        source
+        for source in ([bundled] if bundled else []) + companions
+        if (auto or source.kind == kind) and source not in sources
     ]
-    if kind == "mtp" and has_builtin_head(model_dir):
-        companions.insert(0, DrafterSource("mtp", str(model_dir), True))
+    # Under ``mtp`` (and so auto) the checkpoint's own head of either kind; under ``dspark`` only a DSpark head.
+    if kind in ("mtp", "dspark") and has_builtin_head(model_dir):
+        head = _builtin_head_kind(model_dir)
+        if kind in ("mtp", head):
+            companions.insert(0, DrafterSource(head, str(model_dir), True))
     sources += companions
     if not sources and auto:
         return SpecResolution(mode, reason = reason)

@@ -6,6 +6,9 @@
 * a large root embedding table split into its own unit (Gemma4 `embed_tokens_per_layer`,
   _large_root_embeddings) is its own dtype group: a 16-bit table next to float32 root parameters
   leaves both homogeneous, with nothing replicated or upcast;
+* a frozen one (a LoRA model's per-layer embeddings, 4.4 GiB on Gemma4 E2B) stays whole on every rank, as on
+  1 GPU: as its own unit it was all-gathered whole every step and ran 2xT4 out of memory. shard_frozen keeps
+  the unit;
 * a CPU mesh (TrainingArguments(use_cpu = True) -> FSDP2Config(device = "cpu")) on a CUDA host plans
   without the GPU's capacity: the per-block sharded layout, as on a CPU-only host."""
 
@@ -31,8 +34,16 @@ from test_fsdp2_native_trainer_ckpt_gloo import _free_port  # noqa: E402
 from test_fsdp2_native_trainer_args_gloo import _lora  # noqa: E402
 from test_fsdp2_native_guards_gloo import _tiny_llama  # noqa: E402
 
+# Spawned gloo ranks die with an access violation on Windows runners (also on main).
+pytestmark = pytest.mark.skipif(sys.platform == "win32", reason = "two gloo ranks over TCP localhost")
 
-def _case_split(native):
+
+def _case_split(
+    native,
+    frozen = False,
+    shard_frozen = None,
+    cpu_offload = False,
+):
     torch.manual_seed(0)
     model = _tiny_llama()  # float32 root: embed_tokens, norm, lm_head
     for layer in model.model.layers:
@@ -40,10 +51,17 @@ def _case_split(native):
     hidden = model.config.hidden_size
     model.model.embed_tokens_per_layer = torch.nn.Embedding(4096, hidden).to(torch.bfloat16)
     table = model.model.embed_tokens_per_layer.weight
+    table.requires_grad_(not frozen)
     root = [model.model.embed_tokens.weight, model.model.norm.weight, model.lm_head.weight]
-    cfg = native.FSDP2Config(param_dtype = torch.float32, split_large_root_embeddings = 0.01)
+    cfg = native.FSDP2Config(
+        param_dtype = torch.float32,
+        split_large_root_embeddings = 0.01,
+        shard_frozen = shard_frozen,
+        cpu_offload = cpu_offload,
+    )
     model = native.shard_model(model, cfg)
     return {
+        "table_shape": list(model.model.embed_tokens_per_layer.weight.shape),
         "extra_units": len(model._unsloth_fsdp2_extra_units),
         "replicated": model._unsloth_fsdp2_replicated,
         "table_dtype": str(model.model.embed_tokens_per_layer.weight.dtype),
@@ -76,7 +94,7 @@ def _case_cpu_mesh(native):
     native._agree_over_ranks = record
     cfg = native.FSDP2Config(param_dtype = torch.float32, device = "cpu", mesh = mesh)
     model = native.shard_model(model, cfg)
-    fits, replicate_frozen, root_only, prefetch = agreed["flags"]
+    fits, replicate_frozen, root_only, prefetch = agreed["flags"][:4]
     return {
         "fits": fits,
         "replicate_frozen": replicate_frozen,
@@ -103,7 +121,19 @@ def _worker(rank, world, port, out, case):
     )
     try:
         native = _load_native()
-        res = _case_split(native) if case == "split" else _case_cpu_mesh(native)
+        if case == "split":
+            res = _case_split(native)
+        elif case == "split_frozen":
+            res = _case_split(native, frozen = True)
+        elif case == "split_frozen_shard":
+            res = _case_split(native, frozen = True, shard_frozen = True)
+        elif case == "split_frozen_offload":
+            res = _case_split(native, frozen = True, cpu_offload = True)
+        elif case == "split_frozen_env0":
+            os.environ["UNSLOTH_FSDP2_REPLICATE_FROZEN"] = "0"
+            res = _case_split(native, frozen = True)
+        else:
+            res = _case_cpu_mesh(native)
         out.put((rank, res))
     except Exception as exc:
         import traceback
@@ -152,6 +182,17 @@ def test_split_root_table_is_its_own_dtype_group():
         assert r["replicated"] == 0, (rank, r)  # neither the table nor the float32 root
         assert r["table_dtype"] == "torch.bfloat16" and r["table_dtensor"] == "DTensor", (rank, r)
         assert r["root_dtypes"] == ["torch.float32"], (rank, r)
+
+
+def test_frozen_split_table_stays_whole_on_every_rank():
+    pytest.importorskip("transformers")
+    for rank, r in _run("split_frozen").items():
+        assert r["extra_units"] == 0 and r["replicated"] == 1, (rank, r)
+        assert r["table_dtensor"] == "Parameter" and r["table_shape"][0] == 4096, (rank, r)
+        assert r["table_dtype"] == "torch.bfloat16", (rank, r)  # its own dtype group: never upcast
+    for case in ("split_frozen_shard", "split_frozen_env0", "split_frozen_offload"):
+        for rank, r in _run(case).items():
+            assert r["extra_units"] == 1 and r["table_dtensor"] == "DTensor", (case, rank, r)
 
 
 def test_cpu_mesh_on_a_cuda_host_plans_the_sharded_layout():

@@ -142,4 +142,4 @@ def test_the_size_controls_follow_the_backend_presets_not_a_hardcoded_list():
     assert "presets && presets.length > 0" in memo
     assert "{resolutionPresets.map(([w, h]) => (" in src
     assert "videoSizeLimits(status?.defaults, resolutionPresets)" in src
-    assert "width: sourceSized ? undefined : videoSize[0]," in src
+    assert "...requestCanvas(sourceSized, matchedResolution, videoSize, !autoMatchSource)," in src

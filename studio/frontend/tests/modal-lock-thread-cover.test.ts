@@ -15,9 +15,8 @@ function rule(selector: string): string {
 }
 
 test("the thread scroller does not inherit a modal layer's body pointer-events lock", () => {
-  // Radix writes pointer-events: none on <body> for dialogs and modal menus. Inherited, it
-  // restyled every message on each open and close; an explicit value stops it at the scroller.
-  // Zero specificity: any deliberate pointer-events rule on the scroller still wins.
+  // An explicit pointer-events on the scroller stops the Radix body lock inheriting into every
+  // message; zero specificity, so any deliberate pointer-events rule on the scroller still wins.
   assert.match(rule(":where(.aui-thread-viewport)"), /pointer-events: auto;/);
 });
 

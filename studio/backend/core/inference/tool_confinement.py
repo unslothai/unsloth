@@ -26,6 +26,8 @@ _LANDLOCK_CREATE_RULESET_VERSION = 1
 _LANDLOCK_RULE_PATH_BENEATH = 1
 _PR_SET_NO_NEW_PRIVS = 38
 _PR_CAPBSET_DROP = 24
+_PR_SET_SECCOMP = 22
+_SECCOMP_MODE_FILTER = 2
 _LINUX_CAPABILITY_VERSION_3 = 0x20080522
 _EPERM = 1
 _EINVAL = 22
@@ -40,7 +42,7 @@ _FS_MAKE_SYM = 1 << 12
 _FS_REFER = 1 << 13  # ABI 2
 _FS_TRUNCATE = 1 << 14  # ABI 3
 _FS_IOCTL_DEV = 1 << 15  # ABI 5
-# ABI 6: scope abstract AF_UNIX sockets and signals. Pathname sockets need ABI 9's RESOLVE_UNIX.
+# ABI 6: scope abstract AF_UNIX sockets and signals. Pathname sockets: see _unix_socket_filter.
 _SCOPE_ABSTRACT_UNIX_SOCKET = 1 << 0
 _SCOPE_SIGNAL = 1 << 1
 _FS_ABI1_MASK = (1 << 13) - 1
@@ -82,6 +84,9 @@ _PRIVATE_RUNTIME_ROOTS = (
     "/run/media",
     "/run/mount",
     "/run/host",
+    # The Docker launcher stages the initial admin password here; cloud-init keeps user-data copies here.
+    "/run/unsloth",
+    "/run/cloud-init",
 )
 # Secrets a root-run Studio (the Docker image) could otherwise hand a managed tool; the rest of /etc
 # (ld.so.cache, nsswitch, hosts, resolv.conf, ssl/certs) is what tool processes need.
@@ -100,6 +105,11 @@ _PRIVATE_SYSTEM_PATHS = (
     "/etc/ipsec.secrets",
     "/etc/docker/key.json",
     "/etc/ssh/ssh_host_*_key",
+    "/etc/wireguard",
+    "/etc/NetworkManager/system-connections",
+    # cloud-init user-data often carries the headless Studio password (UNSLOTH_STUDIO_PASSWORD).
+    "/var/lib/cloud",
+    "/var/lib/tailscale",
 )
 
 
@@ -296,6 +306,19 @@ class _CapData(ctypes.Structure):
     ]
 
 
+class _SockFilter(ctypes.Structure):
+    _fields_ = [
+        ("code", ctypes.c_uint16),
+        ("jt", ctypes.c_uint8),
+        ("jf", ctypes.c_uint8),
+        ("k", ctypes.c_uint32),
+    ]
+
+
+class _SockFprog(ctypes.Structure):
+    _fields_ = [("len", ctypes.c_ushort), ("filter", ctypes.POINTER(_SockFilter))]
+
+
 _libc = None
 if sys.platform == "linux":
     try:
@@ -399,10 +422,27 @@ def _drop_capabilities() -> None:
         raise OSError(ctypes.get_errno(), "capset failed")
 
 
+def _unix_socket_filter():
+    """Built in the parent (the child must not allocate); None on an arch the filter cannot describe."""
+    import platform
+
+    from core.inference.sandbox_seccomp import unix_socket_program
+
+    try:
+        code = unix_socket_program(platform.machine())
+    except RuntimeError:
+        return None
+    instructions = (_SockFilter * len(code))(*(_SockFilter(*item) for item in code))
+    prog = _SockFprog(len(code), ctypes.cast(instructions, ctypes.POINTER(_SockFilter)))
+    # The program references the array, so keep both alive in the partial.
+    return (prog, instructions)
+
+
 def _landlock_preexec(
     handled: int,
     rules: list[tuple[str, int]],
     scoped: int = 0,
+    unix_filter = None,
 ) -> None:
     """Runs in the forked child: no imports, no allocation beyond ctypes."""
     libc = _libc
@@ -439,6 +479,11 @@ def _landlock_preexec(
             raise OSError(ctypes.get_errno(), "PR_SET_NO_NEW_PRIVS failed")
         if libc.syscall(_SYS_LANDLOCK_RESTRICT_SELF, ruleset_fd, 0) < 0:
             raise OSError(ctypes.get_errno(), "landlock_restrict_self failed")
+        if unix_filter is not None and (
+            libc.prctl(_PR_SET_SECCOMP, _SECCOMP_MODE_FILTER, ctypes.byref(unix_filter[0]), 0, 0)
+            < 0
+        ):
+            raise OSError(ctypes.get_errno(), "seccomp AF_UNIX filter failed")
     finally:
         os.close(ruleset_fd)
 
@@ -456,7 +501,11 @@ def _linux_confinement(sandbox_site_dir: str) -> Optional[Confinement]:
     return Confinement(
         mechanism = f"landlock-abi{abi}",
         preexec = partial(
-            _landlock_preexec, handled, rules, _SCOPE_SIGNAL | _SCOPE_ABSTRACT_UNIX_SOCKET
+            _landlock_preexec,
+            handled,
+            rules,
+            _SCOPE_SIGNAL | _SCOPE_ABSTRACT_UNIX_SOCKET,
+            _unix_socket_filter(),
         ),
     )
 

@@ -41,6 +41,7 @@ export interface CompareContext {
   samplers: readonly SamplerOption[];
   samplerChoice: SamplerChoice;
   shift: ShiftControl | null;
+  cfgInterval?: boolean;
   loraCapable: boolean;
   // The form's active LoRA rows, in order; a weight axis targets one of them.
   loras: ReadonlyArray<{ id: string; weight: number; label: string }>;
@@ -198,6 +199,11 @@ export function availableAxes(ctx: CompareContext): AxisDef[] {
   } else if (ctx.shift?.node === "flux") {
     axes.push(numberAxis("base_shift", "Base shift", "float", 0, SHIFT_MAX, "0.25, 0.5, 1", (c, v) => (c.baseShift = v)));
     axes.push(numberAxis("max_shift", "Max shift", "float", 0, SHIFT_MAX, "0.75, 1.15, 1.5", (c, v) => (c.maxShift = v)));
+  }
+  if (ctx.cfgInterval && !ctx.guidanceFixed) {
+    axes.push(
+      numberAxis("cfg_interval_end", "Fast CFG stop", "float", 0, 1, "1, 0.8", (c, v) => (c.extra.cfg_interval_end = v), {}, true),
+    );
   }
   if (ctx.loraCapable) {
     ctx.loras.forEach((lora, index) => {
@@ -475,7 +481,8 @@ export function buildCellRequest(
     const loras: LoraSpecInput[] = ctx.loras
       .map((l, i) => ({ id: l.id.trim(), weight: cell.loraWeights[i] ?? l.weight }))
       .filter((l) => l.id && l.weight > 0);
-    req.loras = loras.length ? loras : undefined;
+    // [] (not omitted) when every weight is 0: the server reads an omitted list as the load's adapters.
+    req.loras = loras;
   }
   if (cell.replacements.length > 0) {
     let prompt = req.prompt;

@@ -172,6 +172,26 @@ export UNSLOTH_APPIMAGE_WEBKIT_MODE
 printf 'unsloth-studio: AppImage WebKitGTK runtime=%s (%s)\n' \
   "$unsloth_webkit_mode" "$unsloth_webkit_detail" >&2
 
+# A relaunch inherits this launch's atk-bridge default; drop it so the new launch re-decides.
+if [ -n "${UNSLOTH_APPIMAGE_NO_AT_BRIDGE:-}" ]; then
+  unset NO_AT_BRIDGE UNSLOTH_APPIMAGE_NO_AT_BRIDGE
+fi
+# The bundled WebKit's web process aborts on KDE Plasma once AT-SPI clients query it (#15260), so
+# its atk-bridge stays off there unless NO_AT_BRIDGE is set (0 keeps it). process.rs reads the
+# marker to give host programs their bridge back.
+if [ "$unsloth_webkit_mode" = bundled ]; then
+  case ":${XDG_CURRENT_DESKTOP:-}:" in
+  *:KDE:*)
+    if [ "${NO_AT_BRIDGE+x}" != x ]; then
+      NO_AT_BRIDGE=1
+      UNSLOTH_APPIMAGE_NO_AT_BRIDGE=1
+      export NO_AT_BRIDGE UNSLOTH_APPIMAGE_NO_AT_BRIDGE
+      printf 'unsloth-studio: atk-bridge off on KDE (#15260); set NO_AT_BRIDGE=0 to keep it\n' >&2
+    fi
+    ;;
+  esac
+fi
+
 # WebKitGTK resolves its helpers relative to its /usr prefix.
 cd "$APPDIR/usr"
 

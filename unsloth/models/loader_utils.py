@@ -23,6 +23,7 @@ import contextlib
 import contextvars
 import copy
 import threading as _threading
+from time import monotonic as _time_monotonic
 import functools
 import inspect
 from typing import Union
@@ -45,7 +46,9 @@ _MAPPER_HELPERS = {
 
 from transformers import __version__ as transformers_version
 from unsloth.models._utils import TorchAOConfig
+from ..import_fixes import unsloth_logging_enabled
 from unsloth_zoo.utils import Version, get_quant_type
+from .packed_expert_loader import quantize_moe_experts_if_requested  # noqa: F401  (re-exported)
 import gc
 import traceback as _traceback
 
@@ -619,6 +622,30 @@ def _single_device_index(device_map):
     return None
 
 
+def no_placement_matcher(model, names = None):
+    """Predicate: is this tensor name one of `model._no_placement_params`? transformers reads the names relative to a
+    `_no_split_modules` module: a bare name ("weight", DeepSeek-V4.1's engram table) matches only a direct tensor of
+    such a module (a suffix match would take every weight in the model); a dotted one (Qwen4Exp's
+    "ple.ple_embedding.ngram_embedding.weight") keeps the suffix match."""
+    names = list(getattr(model, "_no_placement_params", None) or [] if names is None else names)
+    dotted = [n for n in names if "." in n]
+    bare = {n for n in names if "." not in n}
+    roots = set()
+    if bare:
+        no_split = set(getattr(model, "_no_split_modules", None) or [])
+        roots = {
+            path for path, module in model.named_modules() if type(module).__name__ in no_split
+        }
+
+    def match(name):
+        if any(name == n or name.endswith("." + n) for n in dotted):
+            return True
+        owner, _, leaf = name.rpartition(".")
+        return leaf in bare and owner in roots
+
+    return match
+
+
 def no_placement_tensor_names(model):
     """Every tensor name under a module owning one of the model's `_no_placement_params`."""
     names = getattr(model, "_no_placement_params", None)
@@ -627,11 +654,8 @@ def no_placement_tensor_names(model):
     tensors = list(model.named_parameters(remove_duplicate = False)) + list(
         model.named_buffers(remove_duplicate = False)
     )
-    owners = {
-        name.rsplit(".", 1)[0]
-        for name, _ in tensors
-        if any(name == n or name.endswith("." + n) for n in names)
-    }
+    match = no_placement_matcher(model, names)
+    owners = {name.rsplit(".", 1)[0] for name, _ in tensors if match(name)}
     return {name for name, _ in tensors if any(name.startswith(o + ".") for o in owners)}
 
 
@@ -661,10 +685,11 @@ def exclude_no_placement_params(device_map, model_class, config):
             f"Unsloth: could not build {model_class.__name__} on meta to place {names} ({error})."
         )
         return device_map
+    match = no_placement_matcher(meta, names)
     matched = {
         name
         for name, _ in list(meta.named_parameters()) + list(meta.named_buffers())
-        if any(name == n or name.endswith("." + n) for n in names)
+        if match(name)
     }
     if not matched:
         return device_map
@@ -830,6 +855,16 @@ def _as_bytes(size):
     return None
 
 
+def _placement_report(plan):
+    """One line by default (unsloth_zoo's DeviceMapPlan.summary); the planner's full table with
+    UNSLOTH_ENABLE_LOGGING on (any value Unsloth accepts), or from an older unsloth_zoo without
+    summary()."""
+    summary = getattr(plan, "summary", None)
+    if unsloth_logging_enabled() or not callable(summary):
+        return plan.describe()
+    return summary()
+
+
 def resolve_unsloth_device_map(
     device_map,
     model_name,
@@ -972,7 +1007,8 @@ def resolve_unsloth_device_map(
             f'to train. Pass device_map = "{UNSLOTH_BALANCED_DEVICE_MAP}" to split it anyway.'
         )
         return {"": single_device}
-    print(plan.describe())
+    # A plan that does not fit raised DeviceMapInfeasible above with its whole arithmetic.
+    print(_placement_report(plan))
     return plan.device_map
 
 
@@ -1162,7 +1198,7 @@ def resolve_auto_block_swap(
     if not plan.layers:
         return 0, device_map, embedding
     if multi and plan.device_plan is not None:
-        print(plan.device_plan.describe())
+        print(_placement_report(plan.device_plan))
         return plan.layers, plan.device_plan.device_map, embedding
     return plan.layers, {"": target}, embedding
 
@@ -1819,11 +1855,27 @@ def _load_probe_memo_scope(fn):
     return _wrapper
 
 
+# Failed fetches retry after a short pause, not per load: a firewall would cost each load the timeout.
+_NEW_MAPPER_TTL_S = 3600.0
+_NEW_MAPPER_RETRY_S = 300.0
+_NEW_MAPPER_CACHE = {"entry": None}  # (tables, fetched_at): one slot, never a torn pair
+
+
 def _new_mapper_tables():
     memo = _LOAD_PROBE_MEMO.get()
     if memo is not None and "new_mapper" in memo:
         return tuple(dict(table) for table in memo["new_mapper"])
-    tables = _get_new_mapper()
+    entry = _NEW_MAPPER_CACHE["entry"]
+    tables = None
+    if entry is not None:
+        cached, at = entry
+        age = _time_monotonic() - at
+        if 0 <= age < (_NEW_MAPPER_TTL_S if any(cached) else _NEW_MAPPER_RETRY_S):
+            tables = tuple(dict(table) for table in cached)
+    if tables is None:
+        # No lock around the fetch: a fork while another thread is fetching must not leave the child waiting.
+        tables = _get_new_mapper()
+        _NEW_MAPPER_CACHE["entry"] = (tuple(dict(table) for table in tables), _time_monotonic())
     if memo is not None and any(tables):
         memo["new_mapper"] = tuple(dict(table) for table in tables)
     return tables
@@ -1847,10 +1899,91 @@ def _copy_error(error):
     return clone
 
 
+try:
+    # transformers >= 5.18: each from_pretrained sends a repo_info request to resolve its revision.
+    from transformers.utils.hub import resolve_revision as _hub_resolve_revision
+    from huggingface_hub import ResolvedRevision as _ResolvedRevision
+except ImportError:
+    _hub_resolve_revision = None
+    _ResolvedRevision = None
+
+
+def _resolved_revision(
+    model_name,
+    revision,
+    token = None,
+    local_files_only = False,
+    cache_dir = None,
+):
+    """Resolve once per load, only for transformers `revision =` args: a ResolvedRevision equals "main", not None."""
+    memo = _LOAD_PROBE_MEMO.get()
+    if (
+        memo is None
+        or _hub_resolve_revision is None
+        or not isinstance(model_name, str)
+        or not model_name
+        or isinstance(revision, _ResolvedRevision)
+        or os.path.exists(model_name)
+    ):
+        return revision
+    try:
+        key = (
+            "resolved_revision",
+            model_name,
+            revision,
+            token,
+            bool(local_files_only),
+            _env_says_offline(),
+            None if cache_dir is None else os.fspath(cache_dir),
+        )
+        hash(key)
+    except TypeError:
+        return revision
+    if key not in memo:
+        try:
+            resolved = _hub_resolve_revision(
+                model_name,
+                revision,
+                token = token,
+                local_files_only = bool(local_files_only),
+                cache_dir = cache_dir,
+            )
+        except Exception:
+            resolved = revision
+        memo[key] = resolved if isinstance(resolved, _ResolvedRevision) else revision
+    return memo[key]
+
+
+_TOKEN_FROM_KWARGS = object()
+
+
+def _kwargs_with_resolved_revision(
+    model_name,
+    kwargs,
+    token = _TOKEN_FROM_KWARGS,
+):
+    revision = kwargs.get("revision")
+    resolved = _resolved_revision(
+        model_name,
+        revision,
+        token = kwargs.get("token") if token is _TOKEN_FROM_KWARGS else token,
+        local_files_only = kwargs.get("local_files_only", False),
+        cache_dir = kwargs.get("cache_dir"),
+    )
+    if resolved is revision:
+        return kwargs
+    return {**kwargs, "revision": resolved}
+
+
 def _memo_config_probe(loader, model_name, **kwargs):
     memo = _LOAD_PROBE_MEMO.get()
+    # Keyed on the owning class: import_fixes wraps AutoConfig.from_pretrained; PeftConfig keeps the plain ref.
+    owner = getattr(loader, "__self__", loader)
+    pin = (getattr(owner, "__module__", None) or "").startswith("transformers.")
     if memo is None or kwargs.get("trust_remote_code") or not isinstance(model_name, str):
-        return loader(model_name, **kwargs)
+        return loader(
+            model_name, **(_kwargs_with_resolved_revision(model_name, kwargs) if pin else kwargs)
+        )
     if kwargs.get("cache_dir", 0) is None:
         kwargs.pop("cache_dir")
     try:
@@ -1865,7 +1998,9 @@ def _memo_config_probe(loader, model_name, **kwargs):
             raise _copy_error(error)
         return copy.deepcopy(result)
     try:
-        result = loader(model_name, **kwargs)
+        result = loader(
+            model_name, **(_kwargs_with_resolved_revision(model_name, kwargs) if pin else kwargs)
+        )
     except ImportError:
         raise
     except Exception as error:
@@ -4228,6 +4363,18 @@ def check_and_disable_bitsandbytes_loading(
     """Disable bnb flags for non-bnb quantized checkpoints; returns ``(load_in_4bit, load_in_8bit, quant_method)``.
 
     ``requantize_packed = False`` under fast_inference / full_finetuning: nothing would consume the plan."""
+    # Inkling 2's "modelopt" config describes its own expert layout, decoded by transformers' conversion mapping:
+    # drop it so the generic ModelOpt rewrite stays off and bitsandbytes can quantize the dequantized weights.
+    from .inkling2 import (
+        inkling2_owns_modelopt_quantization,
+        drop_inkling2_quantization_config,
+        register_inkling2_expert_dequantization,
+    )
+
+    if inkling2_owns_modelopt_quantization(model_config):
+        drop_inkling2_quantization_config(model_config, verbose = verbose, load_in_4bit = load_in_4bit)
+        register_inkling2_expert_dequantization()
+        return load_in_4bit, load_in_8bit, None
     quant_method = get_quant_type(model_config)
     if quant_method is None:
         # Also under vLLM: it reads the file itself, but the bitsandbytes flags must still drop.
@@ -4246,7 +4393,11 @@ def check_and_disable_bitsandbytes_loading(
 
     if str(quant_method).lower() in ("compressed-tensors", "compressed_tensors", "sparseml"):
         from .mxfp4_compressed_linear import install_compressed_tensors_keep_packed
+
         install_compressed_tensors_keep_packed()
+        from .packed_expert_loader import install_packed_expert_loading
+
+        install_packed_expert_loading()
 
     # Packed compressed-tensors: drop its quant config here and keep load_in_4bit for on-the-fly bnb re-quantization.
     if (
@@ -4263,6 +4414,10 @@ def check_and_disable_bitsandbytes_loading(
         # Whoever loads the weights (vLLM included), a merged_16bit save must dequantize them.
         from .modelopt_fp8 import enable_modelopt_merged_save
         enable_modelopt_merged_save(model_config)
+    if rewrite_modelopt and str(quant_method).lower() == "modelopt":
+        from .modelopt_nvfp4 import arm_modelopt_nvfp4_loading
+        if arm_modelopt_nvfp4_loading(model_config, verbose = verbose) is not None:
+            quant_method = "compressed-tensors"
     if rewrite_modelopt and str(quant_method).lower() == "modelopt":
         from .modelopt_fp8 import arm_modelopt_fp8_loading
         if arm_modelopt_fp8_loading(model_config, verbose = verbose) is not None:
@@ -4354,6 +4509,10 @@ def _index_weight_map(path):
 
 
 def _bin_dtypes(path):
+    from ..import_fixes import refuse_pickle_checkpoint_on_old_torch
+
+    # torch < 2.6 can run code from the pickle even with weights_only (CVE-2025-32434).
+    refuse_pickle_checkpoint_on_old_torch(path)
     # mmap + weights_only reads the pickle and storage metadata, not the tensor bytes.
     state_dict = torch.load(path, map_location = "cpu", mmap = True, weights_only = True)
     return {k: str(v.dtype) for k, v in state_dict.items() if isinstance(v, torch.Tensor)}
@@ -4740,6 +4899,18 @@ def sync_unsloth_model_name_bnb_flags(
     os.environ["UNSLOTH_MODEL_NAME"] = name
 
 
+def _allow_torchao_perblock_safetensors():
+    """torchao's safetensors loader allow-lists PerRow but not PerBlock, and transformers 5 always saves safetensors, so a `load_in_fp8 = "block"` artifact failed to reload with `Failed to find class PerBlock`."""
+    try:
+        from torchao.prototype.safetensors import safetensors_utils
+        from torchao.quantization import PerBlock
+    except Exception:
+        return
+    allowed = getattr(safetensors_utils, "ALLOWED_CLASSES", None)
+    if isinstance(allowed, dict):
+        allowed.setdefault("PerBlock", PerBlock)
+
+
 def _get_fp8_mode_and_check_settings(
     load_in_fp8: Union[bool, str],
     fast_inference: bool,
@@ -4748,7 +4919,7 @@ def _get_fp8_mode_and_check_settings(
     load_in_8bit: bool = False,
     load_in_16bit: bool = False,
 ) -> str:
-    """Validate `load_in_fp8` settings/environment and return the fp8 mode ("row" or "block"). Requires H100+, torchao 0.15.0+, torch 2.9.0+, and fbgemm_gpu_genai 1.4.1+ if installed."""
+    """Validate `load_in_fp8` settings/environment and return the fp8 mode ("row" or "block"). Requires torch 2.9.0+ and either H100+ with torchao 0.15.0+, or Intel XPU with torchao 0.18.0+ and fast_inference = False. fbgemm_gpu_genai 1.4.1+ is used if installed."""
     assert load_in_fp8 is not False
     if load_in_fp8 is True:
         fp8_mode = "row"  # default
@@ -4764,7 +4935,14 @@ def _get_fp8_mode_and_check_settings(
             "Unsloth: `load_in_fp8` is not compatible with `load_in_4bit`, `load_in_8bit` or `load_in_16bit`",
         )
 
-    if not (
+    min_torchao = "0.15.0"
+    if DEVICE_TYPE_TORCH == "xpu":
+        if fast_inference:
+            raise ValueError(
+                "Unsloth: On the fly `load_in_fp8` on Intel XPU needs `fast_inference = False`."
+            )
+        min_torchao = "0.18.0"
+    elif not (
         torch.cuda.is_available()
         and torch.version.cuda
         and torch.cuda.get_device_capability() >= (9, 0)
@@ -4778,20 +4956,21 @@ def _get_fp8_mode_and_check_settings(
             "Unsloth: On the fly `load_in_fp8` requires torch 2.9.0+. Try `unsloth/Qwen3-8B` instead."
         )
 
-    # Check if torchao has pytorch/ao#3158, released in 0.15.0.
+    # CUDA needs pytorch/ao#3158 (0.15.0); XPU was validated on 0.18.0.
     if importlib.util.find_spec("torchao") is None:
         raise ValueError(
             "Unsloth: Please install torchao for on the fly float8 to work! Try `unsloth/Qwen3-8B` instead."
         )
     import torchao
 
-    error_message = (
-        "Unsloth: `load_in_fp8` requires torchao 0.15.0+ (or nightly).\n"
-        f"You have torchao version={torchao.__version__}\n"
-        "Use `pip install --upgrade --force-reinstall torchao`"
-    )
-    if Version(torchao.__version__) < Version("0.15.0"):
-        raise ValueError(error_message)
+    if Version(torchao.__version__) < Version(min_torchao):
+        on_xpu = " on Intel XPU" if DEVICE_TYPE_TORCH == "xpu" else ""
+        raise ValueError(
+            f"Unsloth: `load_in_fp8`{on_xpu} requires torchao {min_torchao}+ (or nightly).\n"
+            f"You have torchao version={torchao.__version__}\n"
+            "Use `pip install --upgrade --force-reinstall torchao`"
+        )
+    _allow_torchao_perblock_safetensors()
 
     # If fbgemm_gpu_genai is installed and old, disable FBGEMM and use Triton kernels instead.
     if (

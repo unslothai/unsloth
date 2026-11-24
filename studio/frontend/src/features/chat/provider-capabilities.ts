@@ -201,13 +201,23 @@ const EXTERNAL_MAX_OUTPUT_TOKENS_BY_MODEL: Array<{
   },
   {
     providerType: "gemini",
-    prefixes: ["gemini-3", "gemini-pro", "gemini-flash"],
+    prefixes: ["gemini-3", "gemini-4", "gemini-pro", "gemini-flash"],
     cap: 65536,
   },
   { providerType: "deepseek", prefixes: ["deepseek"], cap: 384000 },
   // max_completion_tokens up to 1M (https://platform.kimi.ai/docs/guide/kimi-k3-quickstart).
   { providerType: "kimi", prefixes: ["kimi-k3"], cap: 1048576 },
 ];
+
+// Max sends no limit; the backend bounds the rest by the window (_WINDOW_ROOM_REPLY_PROVIDERS).
+const SERVER_WINDOW_BOUNDED_PROVIDERS = new Set([
+  "llama_cpp",
+  "vllm",
+  "ollama",
+  "custom",
+  // Saved as custom on the backend.
+  "sglang",
+]);
 
 /** A documented cap bounds the override rather than replacing it; output floor wins. */
 export function getExternalMaxOutputTokens(
@@ -217,11 +227,59 @@ export function getExternalMaxOutputTokens(
 ): number {
   const override = normalizeProviderMaxOutputTokens(connectionMaxOutputTokens);
   const documented = _documentedMaxOutputTokens(providerType, modelId);
+  // Hosted APIs may cap output below the window, so only Max-sends-none providers use it.
+  const window =
+    providerType != null && SERVER_WINDOW_BOUNDED_PROVIDERS.has(providerType)
+      ? resolveModelCatalogEntry(providerType, modelId)?.contextLength
+      : undefined;
   const resolved =
     documented != null
       ? Math.min(documented, override ?? documented)
-      : (override ?? EXTERNAL_MAX_OUTPUT_TOKENS);
+      : (override ?? window ?? EXTERNAL_MAX_OUTPUT_TOKENS);
   return Math.max(resolved, getExternalMinOutputTokens(providerType));
+}
+
+/** Max Tokens at the top of its range sends no limit here, as "Max" does on a local model. */
+export function externalMaxTokensUnboundedAtMax(
+  providerType: string | null | undefined,
+  modelId: string | null | undefined,
+  connectionMaxOutputTokens?: number | null,
+): boolean {
+  return (
+    providerType != null &&
+    SERVER_WINDOW_BOUNDED_PROVIDERS.has(providerType) &&
+    normalizeProviderMaxOutputTokens(connectionMaxOutputTokens) == null &&
+    _documentedMaxOutputTokens(providerType, modelId) == null
+  );
+}
+
+/** Null means send no max_tokens. */
+export function externalRequestMaxTokens(
+  providerType: string | null | undefined,
+  modelId: string | null | undefined,
+  connectionMaxOutputTokens: number | null | undefined,
+  maxTokens: number,
+): number | null {
+  const cap = getExternalMaxOutputTokens(
+    providerType,
+    modelId,
+    connectionMaxOutputTokens,
+  );
+  if (
+    maxTokens >= cap &&
+    externalMaxTokensUnboundedAtMax(
+      providerType,
+      modelId,
+      connectionMaxOutputTokens,
+    )
+  ) {
+    return null;
+  }
+  // Floor at the provider's documented min (Kimi thinking needs >=16k); clamp at the per-model max.
+  return Math.min(
+    Math.max(maxTokens, getExternalMinOutputTokens(providerType)),
+    cap,
+  );
 }
 
 /**
@@ -555,7 +613,8 @@ export function externalStopWindow(
   providerType: string | null | undefined,
   baseUrl: string | null | undefined,
 ): number | null {
-  return providerType === "gemini" && !isGeminiCustomOpenAICompatBase(baseUrl)
+  return (providerType === "gemini" && !isGeminiCustomOpenAICompatBase(baseUrl)) ||
+    providerType === "vertex"
     ? Number.POSITIVE_INFINITY
     : null;
 }
@@ -693,6 +752,10 @@ const ANTHROPIC_SAMPLING_REMOVED_MODEL =
 const OPENAI_RESPONSES_FIXED_SAMPLING_MODEL =
   /^(?:gpt-5(?:[.-]|$)|gpt-4\.5(?:[.-]|$)|o\d+(?:[.-]|$)|codex-mini(?:[.-]|$)|gpt-6-astra(?:[.-]|$))/;
 
+// Mirrors _GEMINI_RESTRICTED_GENERATION in external_provider.py (#18726).
+const GEMINI_RESTRICTED_GENERATION_MODEL =
+  /^gemini-(?:3\.[78]-flash|(?:[4-9]|\d{2,})(?:\.\d+)?)(?:-|$)/;
+
 export function getProviderCapabilities(
   providerType: string | null | undefined,
   apiType?: "chat_completions" | "responses",
@@ -722,6 +785,12 @@ export function getProviderCapabilities(
       temperature: false,
       topK: false,
     };
+  }
+  if (
+    providerType === "gemini" &&
+    GEMINI_RESTRICTED_GENERATION_MODEL.test(modelId?.trim().toLowerCase() ?? "")
+  ) {
+    return { ...PROVIDER_CAPABILITIES.gemini, presencePenalty: false };
   }
   // kimi-k3 fixes presence_penalty too and the docs ask for it to be omitted.
   if (providerType === "kimi" && isKimiK3(modelId)) {
@@ -1020,8 +1089,12 @@ function resolveGeminiReasoningCapabilities(
       ] as const,
     });
   }
-  if (GEMINI3_PRO_PATTERN.test(m) || GEMINI3_PRO_PREFIXES.some((p) => m.startsWith(p))) {
-    // Gemini 3.x Pro cannot fully disable thinking and rejects "minimal".
+  if (
+    GEMINI_RESTRICTED_GENERATION_MODEL.test(m) ||
+    GEMINI3_PRO_PATTERN.test(m) ||
+    GEMINI3_PRO_PREFIXES.some((p) => m.startsWith(p))
+  ) {
+    // Gemini 3.x Pro, 3.7/3.8 Flash, and Gemini 4+ cannot fully disable thinking and reject "minimal".
     return withReasoningEffortStyle({
       supportsReasoning: true,
       supportsReasoningOff: false,
@@ -1102,8 +1175,8 @@ export function effectiveExternalReasoningProviderType(
 // Thinking off sends "none".
 const OLLAMA_EFFORT_LEVELS = ["low", "medium", "high", "max"] as const;
 
-// vLLM has no per-model reasoning signal on OpenAI-compat, so pin via user toggle; a catalogued effort
-// ladder still applies, since the template is the model's own. Ollama errors a thinking request at a
+// vLLM has no per-model reasoning signal on OpenAI-compat: known models resolve by name, and the
+// connection's toggle opts in one the catalog misses. Ollama errors a thinking request at a
 // model without the /api/tags "thinking" capability, so gate on it (#9649).
 function resolveProviderReasoning(
   normalizedProvider: string,
@@ -1111,8 +1184,9 @@ function resolveProviderReasoning(
   options: ExternalReasoningResolveOptions | undefined,
 ): ExternalReasoningCapabilities | null {
   if (normalizedProvider === "vllm" && options?.isReasoningProvider) {
+    // A known model keeps its own rules (R1 cannot turn thinking off).
     const catalog = modelId ? catalogCapabilities("vllm", modelId.toLowerCase(), true) : null;
-    if (catalog && externalReasoningTakesEffort(catalog)) return catalog;
+    if (catalog?.supportsReasoning) return catalog;
     return withEnableThinkingStyle({
       supportsReasoning: true,
       supportsReasoningOff: true,
@@ -1120,7 +1194,7 @@ function resolveProviderReasoning(
   }
   if (
     normalizedProvider === "ollama" &&
-    providerModelSupportsThinking(normalizedProvider, modelId) === true
+    providerModelSupportsThinking(normalizedProvider, modelId, options?.baseUrl) === true
   ) {
     return withReasoningEffortStyle({
       supportsReasoning: true,
@@ -1143,7 +1217,8 @@ const LOCAL_SERVER_WIRE: ReasoningWire = {
   off: "unified",
 };
 
-/** `levels: null` forwards the whole scale; `[]` means on/off only. */
+/** `levels: null` forwards the whole scale; `[]` means on/off only. NVIDIA NIM is absent: its per-model
+ * schemas share no reasoning field and reject unknown ones, so the backend sends none. */
 const CATALOG_REASONING_WIRE: Record<string, ReasoningWire> = {
   openrouter: { levels: null, off: "unified" },
   openai: { levels: null, off: "none-level" },
@@ -1156,6 +1231,12 @@ const CATALOG_REASONING_WIRE: Record<string, ReasoningWire> = {
   qwen: { levels: [], off: "unified" },
   qwencloud: { levels: [], off: "unified" },
   huggingface: { levels: null, off: "unified" },
+  xai: { levels: ["low", "medium", "high", "xhigh"], off: "unified" },
+  cohere: { levels: [], off: "unified" },
+  vercel: { levels: null, off: "unified" },
+  azure: { levels: ["minimal", "low", "medium", "high", "xhigh"], off: "none-level" },
+  bedrock: { levels: null, off: "unified" },
+  vertex: { levels: ["minimal", "low", "medium", "high", "xhigh", "max"], off: "unified" },
   ollama: { levels: null, off: "unified" },
   // A vLLM older than 0.21 400s on the wider levels; the backend then leaves them to the template default.
   vllm: { levels: null, off: "unified" },
@@ -1323,7 +1404,18 @@ export function getExternalReasoningCapabilities(
     case "qwen":
     case "qwencloud":
     case "huggingface":
+    case "xai":
+    case "cohere":
+    case "vercel":
+    case "azure":
+    case "bedrock":
       return catalogCapabilities(normalizedProvider, normalizedModel) ?? withEnableThinkingStyle();
+    case "vertex": {
+      const table = resolveGeminiReasoningCapabilities(modelForMatching);
+      return table.supportsReasoning
+        ? table
+        : (catalogCapabilities("vertex", normalizedModel) ?? table);
+    }
     case "vllm":
     case "llama_cpp":
       return catalogCapabilities(normalizedProvider, normalizedModel, true) ?? withEnableThinkingStyle();
@@ -1382,6 +1474,7 @@ export function providerModelReplaysReasoning(
 ): boolean {
   return (
     providerType === "minimax" ||
+    providerType === "deepseek" ||
     (providerType === "kimi" && isKimiK3(modelId))
   );
 }

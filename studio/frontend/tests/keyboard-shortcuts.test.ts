@@ -1154,7 +1154,7 @@ test("the model picker chord opens without the tour's pin", async () => {
 
   assert.match(
     CHAT_PAGE,
-    /const openModelSelector = useCallback\(\(\) => \{\n\s*setModelSelectorLocked\(true\);/,
+    /const openModelSelector = useCallback\(\(\) => \{\n\s*if \(!composerModelChipShown\(\)\) return;\n\s*setModelSelectorLocked\(true\);/,
   );
   assert.match(
     CHAT_PAGE,
@@ -1163,7 +1163,7 @@ test("the model picker chord opens without the tour's pin", async () => {
 
   assert.match(
     CHAT_PAGE,
-    /const toggleModelSelector = useCallback\(\(\) => \{\n(?:\s*\/\/[^\n]*\n)*\s*if \(modelSelectorLocked\) return;\n\s*setModelSelectorOpen\(\(open\) => !open\);/,
+    /const toggleModelSelector = useCallback\(\(\) => \{\n(?:\s*\/\/[^\n]*\n)*\s*if \(modelSelectorLocked\) return;\n\s*setModelSelectorOpen\(\(open\) => !open && composerModelChipShown\(\)\);/,
   );
   assert.match(
     CHAT_PAGE,

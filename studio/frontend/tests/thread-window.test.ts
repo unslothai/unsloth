@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The sliding mount window: which rows a reader's position asks for, how tall the rows outside
-// are taken to be, and how a height surprise is kept from moving what the reader sees.
-// The .tsx glue is pinned in progressive-mount-glue.test.ts.
+// Sliding mount window math; the .tsx glue is pinned in progressive-mount-glue.test.ts.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -14,6 +12,8 @@ import {
   type RowWindow,
   FILL_BUDGET_PX,
   RowHeights,
+  STREAM_QUIET_MS,
+  TailPulse,
   WINDOW_KEEP_PX,
   WINDOW_MIN_ROWS,
   WINDOW_MIN_TOTAL_PX,
@@ -212,8 +212,7 @@ test("scrolling up mounts rows above, a step at a time, and never past the first
 
 test("scrolling down mounts rows below, up to the end of the thread", () => {
   const win = { start: 100, end: 107 };
-  // Seven rows from above the upper reach end 1000px below the viewport top: 1800px of the
-  // lower reach are uncovered.
+  // Seven rows end 1000px below the viewport top, leaving 1800px of lower reach open.
   const next = slide(win, stack(win, -2500, 500));
   assert.equal(next.start, 100);
   assert.equal(next.end, 111);
@@ -261,8 +260,7 @@ test("the thread is laid out as rows and the spacers standing in for the rest", 
   assert.deepEqual(names({ start: 3, end: 5 }, 8), ["top[0,3)", 3, 4, "bottom[5,8)"]);
   // A full mount keeps its two spacers, so the nodes survive the window closing and re-opening.
   assert.deepEqual(names(null, 3), ["top[0,0)", 0, 1, 2, "bottom[3,3)"]);
-  // Pins on both sides: each is a row of its own, and the spacers against the window stop at
-  // the nearest one.
+  // Each pin is its own row, and the spacers against the window stop at the nearest pin.
   assert.deepEqual(names({ start: 10, end: 12, pins: [2, 6, 15, 19] }, 20), [
     "gap[0,2)", 2, "gap[3,6)", 6, "top[7,10)", 10, 11, "bottom[12,15)", 15, "gap[16,19)", 19,
     "gap[20,20)",
@@ -450,8 +448,7 @@ test("a fully mounted thread re-opens its window only when enough would unmount"
   // Short thread: under the height floor, so it stays whole.
   const small = { start: 0, end: 40 };
   assert.equal(planEngage(stack(small, -2000, 200), 40, VIEW), null);
-  // Tall enough, but it is one long reply the reader is in: the few rows after it are not worth
-  // a commit.
+  // Tall, but one long reply the reader is in; the rows after it are not worth a commit.
   const giant: MountedRow[] = [{ index: 0, top: -20_000, bottom: 22_000 }];
   for (let index = 1; index < 9; index += 1) {
     giant.push({ index, top: 22_000 + (index - 1) * 300, bottom: 22_000 + index * 300 });
@@ -612,4 +609,22 @@ test("an edited message's page readings no longer stand for it", () => {
   assert.deepEqual(heights.equationsIn([after], 0, 1), { html: 1, mathml: 1 });
   assert.equal(heights.measure(after, 300), true, "a new revision is a new reading at any height");
   assert.equal(heights.heightOf(after), 300);
+});
+
+test("a reply counts as streaming while its content keeps changing", () => {
+  const first = ["a"];
+  const pulse = new TailPulse(first);
+  assert.equal(pulse.streaming(0), false, "the content a thread opened with is not a chunk");
+  pulse.note(first, 10);
+  assert.equal(pulse.changes, 0, "a store write that left the tail alone is not a chunk");
+  assert.equal(pulse.streaming(10), false);
+  pulse.note(["a", "b"], 100);
+  assert.equal(pulse.changes, 1);
+  assert.equal(pulse.streaming(100 + STREAM_QUIET_MS - 1), true);
+  assert.equal(pulse.streaming(100 + STREAM_QUIET_MS), false, "the reply paused");
+  pulse.note(["a", "b", "c"], 5000);
+  assert.equal(pulse.changes, 2);
+  assert.equal(pulse.streaming(5001), true);
+  // A token a second is still one stream: a transition issued between two would be restarted.
+  assert.ok(STREAM_QUIET_MS >= 1000);
 });

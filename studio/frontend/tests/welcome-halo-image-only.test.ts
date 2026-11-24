@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The welcome greeting's halo darkens a background image behind the text. Glass with no image draws a
-// plain backdrop in the page colour, where the halo is the same colour as what it covers: it changed
-// nothing, and its blending rounded a step dark in places, drawing rings around the greeting.
+// The halo is applied only with an image: without one it matches the page and draws rings.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -27,6 +25,16 @@ test("the greeting halo is drawn only where the wallpaper is an image", () => {
     assert.doesNotMatch(selector, /:has\(/, "a host flag, not a :has() re-checked on every mutation");
   }
   assert.match(halo.toString(), /radial-gradient\(ellipse, color-mix\(in srgb, var\(--background\)/);
+});
+
+test("the header contrast fade skips the plain Glass backdrop", () => {
+  const fades: postcss.Rule[] = [];
+  postcss.parse(CSS).walkRules((rule) => {
+    if (rule.selectors.some((s) => /^\.chat-wallpaper\b.*::after$/.test(s))) fades.push(rule);
+  });
+  assert.equal(fades.length, 1, "one header fade rule");
+  assert.deepEqual(fades[0].selectors, [".chat-wallpaper:not([data-glass-backdrop])::after"]);
+  assert.match(fades[0].toString(), /linear-gradient\(color-mix\(in srgb, var\(--background\) 48%, transparent\), transparent\)/);
 });
 
 test("the image flag excludes the plain Glass backdrop", () => {

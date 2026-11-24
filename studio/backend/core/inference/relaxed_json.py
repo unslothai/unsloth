@@ -1,14 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Read a tool-call argument object a model sampled with near-JSON syntax.
-
-Only syntax is repaired, never content: single-quoted strings, unquoted keys, Python literals
-(True / False / None), trailing commas, raw newlines and tabs inside strings, and arguments that were
-JSON-encoded as a string once or twice. Anything ambiguous (an unescaped quote inside a string, an
-unknown bare word, an unterminated string, unbalanced brackets) returns None, so a truncated or garbled
-call is never turned into a different one. One linear pass; callers use it only after strict JSON failed.
-"""
+"""Repairs only syntax, never content, in near-JSON tool-call arguments; ambiguous or truncated
+input returns None; callers use it only after strict JSON fails."""
 
 from __future__ import annotations
 
@@ -145,9 +139,8 @@ def relaxed_object_end(text: str, start: int) -> Optional[int]:
 
 
 def relaxed_object_starts(text: str) -> frozenset:
-    """Positions of the ``{`` that open an object at brace depth 0, quotes honoured inside braces only.
-    Near-JSON is read only there: an object nested in another's argument, or after one that never closes,
-    is read strictly, as before."""
+    """Offsets of top-level { objects, quotes honoured only inside braces; near-JSON read only
+    there; an object nested in another or after an unclosed one stays strict."""
     starts = []
     depth = 0
     quote = None

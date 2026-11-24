@@ -172,6 +172,7 @@ EAGER_ORDER = [
     "export",
     "eval",
     "list-checkpoints",
+    "list-npu-models",
     "doctor",
     "run",
     "install-kernels",

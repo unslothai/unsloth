@@ -3,6 +3,8 @@
 
 import { getApiMonitor } from "@/features/chat/api/chat-api";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
+// eslint-disable-next-line no-restricted-imports -- Leaf module; the npu index pulls in its React views.
+import { useNpuDisplayNames } from "@/features/npu/use-npu-display-name";
 import type {
   ApiMonitorEntry,
   ApiMonitorResponse,
@@ -298,6 +300,7 @@ function ApiMonitorPanel({
   setAutoOpen: (value: boolean) => void;
 }): ReactElement {
   const navigate = useNavigate();
+  const npuName = useNpuDisplayNames(false);
   const focusRequest = useApiMonitorOverlayStore((s) => s.focusRequest);
   const entries = useMemo(() => data?.entries ?? [], [data]);
   const stats = useMemo(() => computeStats(entries), [entries]);
@@ -547,7 +550,9 @@ function ApiMonitorPanel({
                             : "text-muted-foreground",
                         )}
                       >
-                        {entry.error ? entry.error : entry.model}
+                        {entry.error
+                          ? entry.error
+                          : (npuName(entry.model) ?? entry.model)}
                       </span>
                       <span
                         className={cn(

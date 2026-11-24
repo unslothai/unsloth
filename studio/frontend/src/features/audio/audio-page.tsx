@@ -144,6 +144,7 @@ import {
   type PageModelPrefs,
   type PageModelRow,
   pageModels,
+  emptyStateModels,
   recommendedPageModels,
   rowOnPage,
 } from "./page-models";
@@ -1225,7 +1226,7 @@ export function AudioPage({
             ? {
                 reason: "The loaded model cannot edit speech.",
                 actions: [
-                  { label: "Choose a model that can edit", onClick: openSelector },
+                  { label: "Choose a model", onClick: openSelector },
                   ...recommendedEditActions,
                   openLoadedModelHome,
                 ],
@@ -1234,7 +1235,7 @@ export function AudioPage({
             ? {
                 reason: "The loaded model cannot separate audio.",
                 actions: [
-                  { label: "Choose a model that separates", onClick: openSelector },
+                  { label: "Choose a model", onClick: openSelector },
                   ...recommendedSeparateActions,
                 ],
               }
@@ -1253,7 +1254,7 @@ export function AudioPage({
             ? {
                 reason: "The loaded model cannot clone a voice.",
                 actions: [
-                  { label: "Choose a model that can clone", onClick: openSelector },
+                  { label: "Choose a model", onClick: openSelector },
                   ...recommendedCloneActions,
                   openLoadedModelHome,
                 ],
@@ -1262,10 +1263,7 @@ export function AudioPage({
               ? {
                   reason: "The loaded model cannot convert a voice.",
                   actions: [
-                    {
-                      label: "Choose a model that can convert",
-                      onClick: openSelector,
-                    },
+                    { label: "Choose a model", onClick: openSelector },
                     ...recommendedConvertActions,
                   ],
                 }
@@ -1431,6 +1429,7 @@ export function AudioPage({
   const transcribePrefs = useAudioTranscribeStore(
     useShallow((state) => ({
       language: state.language,
+      speakerAccent: state.speakerAccent,
       timestamps: state.timestamps,
       speakers: state.speakers,
     })),
@@ -1695,6 +1694,10 @@ export function AudioPage({
     mode === "speak"
       ? pageModels(ttsWorkflow, MODELS_BY_MODE.speak, pagePrefs)
       : MODELS_BY_MODE[mode];
+  const emptyStatePicks =
+    mode === "speak"
+      ? emptyStateModels(ttsWorkflow, MODELS_BY_MODE.speak, pagePrefs)
+      : [];
   const selectorMoreModels = useMemo(
     () =>
       pageWorkflow === "edit"
@@ -1813,31 +1816,30 @@ export function AudioPage({
               : "The loaded model is not a music model."
         : status?.active_model
           ? "The loaded model is not a TTS audio model."
-          : ttsWorkflow === "music"
-            ? "No music model loaded."
-            : ttsWorkflow === "separate"
-              ? "No separation model loaded."
-            : ttsWorkflow === "clone"
-              ? "No voice cloning model loaded."
-              : ttsWorkflow === "edit"
-                ? "No speech editing model loaded."
-                : ttsWorkflow === "convert"
-                  ? "No voice conversion model loaded."
-                  : "No TTS model loaded."
+          : // Nothing loaded: the note under Generate already says so, with the fix beside it.
+            null
       : transcribeConnection
         ? `Transcribes through ${transcribeConnection.providerName}.`
         : sttSelected
           ? audioCapabilityLine("stt", sttReady ? "ready" : "loading")
           : transcribeRepo
             ? `${transcribeModelName} is not loaded. It loads when you transcribe.`
-            : "No transcription model selected.";
+            : null;
+
+  // Options belong to the loaded model; when it can't run this page (a music model on Text to speech), they're not shown.
+  const pageAudioOptionSpecs = pageModelLoaded ? audioOptionSpecs : [];
+  // A ready model's line only repeats the title and the picker ("Text-to-speech · GGUF"), so it shows only when it has news.
+  const capabilityReady =
+    mode === "speak"
+      ? !connection && !showLastPageModel && ttsLoaded && pageModelLoaded
+      : !transcribeConnection && sttSelected && sttReady;
 
   return (
     <div
       {...{ [MEDIA_RAIL_ROOT_ATTR]: "" }}
       style={railRootStyle}
       ref={pageRootRef}
-      className="@container relative flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-[var(--studio-content-top-inset,0px)]"
+      className="diffusion-surface @container relative flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-[var(--studio-content-top-inset,0px)]"
     >
       <MediaRailResizeHandle kind="audio" placement="page" className="hidden @[50rem]:block" />
       {/* Portals to body, and this page stays mounted off-route, so gate it like the composer. */}
@@ -1867,7 +1869,7 @@ export function AudioPage({
       <div className="pointer-events-none relative z-40 grid h-[calc(48px*var(--ui-space-scale,1))] shrink-0 grid-cols-[minmax(0,var(--media-rail-width,calc(408px*var(--ui-space-scale,1))))_minmax(13rem,1fr)] @max-[30rem]:grid-cols-[minmax(0,1fr)_auto]">
         <div
           className={cn(
-            "pointer-events-none flex h-full min-w-0 items-start overflow-hidden @[50rem]:border-r @[50rem]:border-border/60",
+            "pointer-events-none flex h-full min-w-0 items-start overflow-hidden pr-3 @[50rem]:border-r @[50rem]:border-border/60",
             isMobileShell
             ? "pl-12"
             : // Collapsed desktop sidebar: clear the titlebar buttons, as Chat does.
@@ -1955,44 +1957,52 @@ export function AudioPage({
         </div>
         <div className="grid h-full min-w-0 grid-cols-[minmax(0,1fr)_auto_minmax(max-content,1fr)]">
           <div data-media-header-centre className="pointer-events-auto col-start-2 justify-self-center pt-[var(--studio-chat-header-padding-top,11px)]">
-            {workflowTab.createTrain ? (
-              <PillTabs
-                ariaLabel="Page mode"
-                // Always "create": Train navigates away, so the pill never latches.
-                value="create"
-                onValueChange={(v) => {
-                  if (v !== "train") return;
+            <PillTabs
+              ariaLabel="Page mode"
+              // Always "create": Train navigates away, so the pill never latches.
+              value="create"
+              onValueChange={(v) => {
+                if (v !== "train") return;
+                // Every audio page shows the pill; only speech and transcription models train today.
+                if (!workflowTab.createTrain) {
                   toast.info(
-                    "Audio fine-tuning lives on the Train page. Unsloth trains TTS and STT models there. Pick an audio model and appropriate dataset.",
-                    { duration: 8000 },
+                    `Training isn't available for ${workflowTab.label} yet. Unsloth trains text-to-speech and speech-to-text models on the Train page.`,
                   );
-                  void navigateSelf({ to: "/studio" });
-                }}
-                fit={true}
-                className="h-[calc(34px*var(--ui-space-scale,1))] [&>button]:h-[calc(34px*var(--ui-space-scale,1))] [&>button]:px-3 @[68rem]:[&>button]:px-11 [[data-media-header-tight]_&]:[&>button]:px-3 @max-[30rem]:[&>button]:px-2.5 @max-[30rem]:[&>button>[data-pill-tab-label]]:sr-only"
-                tabs={[
-                  {
-                    value: "create",
-                    label: "Create",
-                    icon: (
-                      <HugeiconsIcon icon={SparklesIcon} className="size-3.5" />
-                    ),
-                  },
-                  {
-                    value: "train",
-                    label: "Train",
-                    icon: (
-                      <HugeiconsIcon
-                        icon={TestTubeOutlineIcon}
-                        className="size-3.5"
-                      />
-                    ),
-                  },
-                ]}
-              />
-            ) : null}
+                  return;
+                }
+                toast.info(
+                  "Audio fine-tuning lives on the Train page. Unsloth trains TTS and STT models there. Pick an audio model and appropriate dataset.",
+                  { duration: 8000 },
+                );
+                void navigateSelf({ to: "/studio" });
+              }}
+              fit={true}
+              className="h-[calc(34px*var(--ui-space-scale,1))] [&>button]:h-[calc(34px*var(--ui-space-scale,1))] [&>button]:px-7 @[68rem]:[&>button]:px-14 [[data-media-header-tight]_&]:[&>button]:px-4 @max-[30rem]:[&>button]:px-2.5 @max-[30rem]:[&>button>[data-pill-tab-label]]:sr-only"
+              tabs={[
+                {
+                  value: "create",
+                  label: "Create",
+                  icon: (
+                    <HugeiconsIcon icon={SparklesIcon} className="size-3.5" />
+                  ),
+                },
+                {
+                  value: "train",
+                  label: "Train",
+                  title: workflowTab.createTrain
+                    ? "Fine-tune an audio model on the Train page"
+                    : `Training isn't available for ${workflowTab.label} yet`,
+                  icon: (
+                    <HugeiconsIcon
+                      icon={TestTubeOutlineIcon}
+                      className="size-3.5"
+                    />
+                  ),
+                },
+              ]}
+            />
           </div>
-          <MediaHeaderActions className="pr-2" groupClassName="gap-2">
+          <MediaHeaderActions className="pr-[calc(var(--thread-scrollbar-gutter,10px)+0.5rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]">
             {connection || (mode === "transcribe" && transcribeConnection) ? null : (
               <UseViaApiButton
                 workflow={pageWorkflow}
@@ -2007,7 +2017,7 @@ export function AudioPage({
           </MediaHeaderActions>
         </div>
       </div>
-      {/* Below 50rem the panes stack and the page scrolls as one column, as on Images and Video. */}
+      {/* Below 50rem the panes stack and the page scrolls as one column. */}
       <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden @[50rem]:flex-row @[50rem]:overflow-hidden">
         <div
           data-tour="audio-settings"
@@ -2017,27 +2027,35 @@ export function AudioPage({
             ref={attachSettingsScroll}
             onScroll={onSettingsScroll}
             className={cn(
-              "hover-scrollbar flex min-h-0 flex-1 flex-col gap-4 px-10 max-sm:px-5 pt-9 pb-6 @[50rem]:overflow-y-auto @[50rem]:[scrollbar-gutter:stable] @[50rem]:pr-[calc(var(--spacing)*10-var(--classic-scrollbar-width,0px))]",
+              "hover-scrollbar flex min-h-0 flex-col gap-4 px-10 max-sm:px-5 pt-9 pb-6 @[50rem]:overflow-y-auto @[50rem]:[scrollbar-gutter:stable] @[50rem]:pr-[calc(var(--spacing)*10-var(--classic-scrollbar-width,0px))]",
+              "flex-1",
               mode === "speak"
                 ? "panel-scroll-fade-action"
                 : "panel-scroll-fade",
               settingsFadeClass,
             )}
           >
-            {/* keep one child because scroll fades watch only the first child. */}
-            <div className="flex flex-col gap-4">
-              {/* match Images and Video headings to keep media panes level (#7986). */}
-              <div className="mb-2 grid gap-1.5">
+            {/* Keep one child: scroll fades watch only the first. */}
+            <div className="flex flex-col gap-7">
+              <div className="grid gap-1.5">
                 <WorkflowTitleMenu
                   workflow={pageWorkflow}
                   onSelect={transitionWorkflow}
                 />
-                <p className="text-ui-11p5 leading-snug text-muted-foreground">
+                <p className="text-xs leading-snug text-muted-foreground">
                   {workflowTab.hint}
                 </p>
-                <p className="text-xs leading-snug text-muted-foreground">
-                  {capabilityLine}
-                </p>
+                {capabilityReady || capabilityLine === null ? null : (
+                  <p
+                    className={cn(
+                      "mt-2 rounded-lg bg-wash-5 px-3 py-2 text-ui-12 leading-normal text-muted-foreground",
+                      // Side by side, the note under Generate says the same thing in view; stacked, it is a scroll away.
+                      generateBlocker?.reason === capabilityLine && "@[50rem]:hidden",
+                    )}
+                  >
+                    {capabilityLine}
+                  </p>
+                )}
               </div>
 
               {mode === "speak" ? (
@@ -2051,7 +2069,7 @@ export function AudioPage({
                         ctx={toolContext}
                         values={toolValues}
                         onChange={handleToolValueChange}
-                        specs={audioOptionSpecs}
+                        specs={pageAudioOptionSpecs}
                         disabled={busy === "generating"}
                         core={{ text: prompt }}
                       />
@@ -2062,8 +2080,8 @@ export function AudioPage({
                     setAudioDeviceState,
                     ttsLoaded,
                     handleEject,
-                    samplingControls,
-                    audioOptionSpecs,
+                    samplingControls: pageModelLoaded && samplingControls,
+                    audioOptionSpecs: pageAudioOptionSpecs,
                     claimedOptions,
                     advancedOpen,
                     setAdvancedOpen,
@@ -2107,7 +2125,7 @@ export function AudioPage({
                     <AudioActiveProvider value={active}>
                       <CloneRail
                         {...railProps}
-                        audioOptionSpecs={clone.audioOptionSpecs}
+                        audioOptionSpecs={pageModelLoaded ? clone.audioOptionSpecs : []}
                         clone={clone}
                         historyClips={clips}
                       />
@@ -2116,7 +2134,7 @@ export function AudioPage({
                     <AudioActiveProvider value={active}>
                       <EditRail
                         {...railProps}
-                        audioOptionSpecs={edit.audioOptionSpecs}
+                        audioOptionSpecs={pageModelLoaded ? edit.audioOptionSpecs : []}
                         edit={edit}
                         historyClips={clips}
                       />
@@ -2163,7 +2181,7 @@ export function AudioPage({
           </div>
           {mode === "speak" ? (
             /* The scroll mask provides the fade; leave the footer unpainted to avoid dark-mode banding. */
-            <div className="relative z-10 flex shrink-0 justify-center px-10 pt-0.5 pb-3">
+            <div className="relative z-10 flex shrink-0 justify-center px-10 pt-3 pb-5 max-sm:px-5">
               {ttsWorkflow === "edit" ? (
                 <EditFooter
                   busy={busy}
@@ -2242,7 +2260,7 @@ export function AudioPage({
               )}
             </div>
           ) : (
-            <div className="relative z-10 flex shrink-0 justify-center px-10 pt-0.5 pb-3">
+            <div className="relative z-10 flex shrink-0 justify-center px-10 pt-3 pb-5 max-sm:px-5">
               <TranscribeFooter
                 busy={busy}
                 blocker={transcribeBlocker}
@@ -2270,7 +2288,9 @@ export function AudioPage({
               data-reload-snapshot-sensitive={
                 transcript || transcribedName ? "" : undefined
               }
-              className="flex min-h-0 flex-1 flex-col gap-3 p-6 px-10 @[50rem]:pt-[calc(60px*var(--ui-space-scale,1))]"
+              className="hover-scrollbar flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto"
+            >
+              <div className="mx-auto flex min-h-full w-full max-w-[calc(880px*var(--ui-space-scale,1))] flex-col gap-3 px-10 pt-7 pb-6 max-sm:px-5"
             >
               <TranscribeOutput
                 transcriptionStartedAt={transcriptionStartedAt}
@@ -2301,9 +2321,10 @@ export function AudioPage({
               <output aria-live="polite" aria-atomic="true" className="sr-only">
                 {transcribeAnnouncement}
               </output>
+              </div>
             </div>
           ) : (
-            <div className="flex min-h-0 flex-1 flex-col gap-4 p-6 px-10 @[50rem]:pt-[calc(60px*var(--ui-space-scale,1))]">
+            <div className="flex min-h-0 flex-1 flex-col gap-4 mx-auto w-full max-w-[calc(880px*var(--ui-space-scale,1))] px-10 pt-7 pb-6 max-sm:px-5">
               {(() => {
                 const outputProps = {
                   workflow: ttsWorkflow,
@@ -2350,19 +2371,26 @@ export function AudioPage({
                   announcement,
                 };
                 return ttsWorkflow === "music" ? (
-                  <MusicOutput {...outputProps} modelReady={pageModelLoaded} loading={busy === "loading"} onChooseModel={openSelector} />
+                  <MusicOutput
+                    {...outputProps}
+                    modelReady={pageModelLoaded}
+                    loading={busy === "loading"}
+                    onChooseModel={openSelector}
+                    recommendedModels={emptyStatePicks}
+                    onPickModel={pickRecommendedModel}
+                  />
                 ) : ttsWorkflow === "edit" ? (
                   <EditOutput
                     {...outputProps}
                     modelReady={pageModelLoaded}
-                    recommendedModels={selectorModels}
+                    recommendedModels={emptyStatePicks}
                     onPickModel={pickRecommendedModel}
                   />
                 ) : ttsWorkflow === "separate" ? (
                   <SeparateOutput
                     {...outputProps}
                     modelReady={pageModelLoaded}
-                    recommendedModels={selectorModels}
+                    recommendedModels={emptyStatePicks}
                     onPickModel={pickRecommendedModel}
                     separate={separate}
                     onSendStem={handleSendStem}
@@ -2372,7 +2400,7 @@ export function AudioPage({
                   <CloneOutput
                     {...outputProps}
                     modelReady={pageModelLoaded}
-                    recommendedModels={selectorModels}
+                    recommendedModels={emptyStatePicks}
                     onPickModel={pickRecommendedModel}
                   />
                 ) : ttsWorkflow === "convert" ? (
@@ -2380,11 +2408,16 @@ export function AudioPage({
                     {...outputProps}
                     useAgainLabel="Use these inputs again"
                     modelReady={pageModelLoaded}
-                    recommendedModels={selectorModels}
+                    recommendedModels={emptyStatePicks}
                     onPickModel={pickRecommendedModel}
                   />
                 ) : (
-                  <SpeakOutput {...outputProps} modelReady={pageModelLoaded} />
+                  <SpeakOutput
+                    {...outputProps}
+                    modelReady={pageModelLoaded || Boolean(connection)}
+                    recommendedModels={emptyStatePicks}
+                    onPickModel={pickRecommendedModel}
+                  />
                 );
               })()}
             </div>

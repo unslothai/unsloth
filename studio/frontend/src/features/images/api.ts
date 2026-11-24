@@ -2,6 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { withBackgroundLoadNotice } from "@/lib/model-lifecycle-events";
+// eslint-disable-next-line no-restricted-imports -- leaf import; the UI barrels would cycle.
+import { dropVramBudgetRetry, loadVramBudgetSettings, settleVramBudgetSave, setVramBudgetLocked } from "@/features/settings/api/vram-budget";
 import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 import { parseLoadJson } from "@/lib/multi-model-refusal";
@@ -11,6 +13,7 @@ import {
   MEMORY_REFUSAL_HEADER,
   MemoryEstimateRefusalError,
 } from "./lib/memory-refusal";
+import { isLoraReloadRefusal, LoraReloadRefusalError } from "./lib/lora-reload";
 import type { DetailerRecord, DetailerRequest } from "./lib/detailer";
 import type { PromptEnhancement } from "./lib/prompt-enhance";
 import type { HiresCapability, HiresRequest } from "./lib/hires-choice";
@@ -25,6 +28,10 @@ export interface DiffusionResolvedControl {
   reason: string;
   artifact?: string | null;
   replaced?: string | null;
+  // int8_attention only (absent on older backends, sd.cpp, MLX): "on" when the kernel engaged.
+  engaged?: boolean;
+  impl?: string | null;
+  modules?: number;
 }
 
 export interface DiffusionStatus {
@@ -61,6 +68,8 @@ export interface DiffusionStatus {
   attention_backend?: string | null;
   transformer_cache?: string | null;
   baked_loras?: string[] | null;
+  // The {id, weight} pairs the load baked in (int8 / fp8 builds); absent on older backends.
+  baked_lora_specs?: LoraSpecInput[] | null;
   vae_tiling?: boolean;
   workflows?: string[];
   // Absent on older backends: callers keep the historical limits (4 images, RGB, 16 px, 2048).
@@ -72,6 +81,8 @@ export interface DiffusionStatus {
   engine_forced?: string | null;
   // A loaded GGUF the native sd.cpp engine can run (drives the Advanced Engine select).
   native_engine_eligible?: boolean;
+  // False on CPU-only torch: Diffusers engine choice is hidden.
+  gguf_diffusers_allowed?: boolean;
   // LoRA is unavailable on this engine, but a reload on the native engine would apply LoRAs.
   lora_via_native?: boolean;
   // LoRA is off only because Speed=Auto compiled the model on its 3rd image; a reload brings it back.
@@ -88,6 +99,7 @@ export interface DiffusionStatus {
   negative_prompt_min_guidance?: number | null;
   // False when the loaded model ignores guidance on this engine (FLUX.3 distilled on diffusers).
   supports_guidance?: boolean;
+  supports_cfg_interval?: boolean;
   // False when this load streams no denoise previews (native engine, families without a preview map).
   supports_live_preview?: boolean;
   // One or two sentences on how the loaded model reads prompts; null when it has no tip.
@@ -129,6 +141,8 @@ export interface DiffusionConditioning {
   max_output_side: number;
   max_output_pixels: number;
   reference_resolutions: number[];
+  // null = the build's tier
+  edit_output_resolution?: number | null;
   unified_edit: boolean;
   // An edit-only family whose Edit takes more images after the source (Qwen-Image-Edit-Plus, up to
   // max_condition_images in total). Absent on older backends.
@@ -210,7 +224,9 @@ export interface DiffusionLoadRequest {
     | "flash4"
     | "sage"
     | "xformers"
-    | "aiter";
+    | "aiter"
+    | "flash_sdpa";
+  int8_attention?: "auto" | "on" | "off";
   memory_mode?: "auto" | "fast" | "balanced" | "low_vram";
   // Neither engine shards, so several cards resolve to the one with the most free VRAM.
   gpu_ids?: number[];
@@ -260,6 +276,7 @@ export interface DiffusionGenerateRequest {
   shift?: number;
   base_shift?: number;
   max_shift?: number;
+  cfg_interval_end?: number;
   // Rewrite the prompt with the family's prompt upsampler first. null/absent = the family default. Sent only for a
   // family that supports it.
   enhance_prompt?: boolean | null;
@@ -312,6 +329,11 @@ export interface DiffusionLoraInfo {
   size_bytes: number;
   weight_default: number;
   fine_tuned?: boolean;
+  /** Step-distilled adapters: the publisher's steps / guidance, applied when the adapter is picked. */
+  recommended_steps?: number | null;
+  recommended_guidance?: number | null;
+  /** A two-expert pair (high- and low-noise files) for a two-expert video model. */
+  expert_pair?: boolean;
 }
 
 export interface GalleryImage {
@@ -368,6 +390,7 @@ export interface GalleryImage {
   shift?: number | null;
   base_shift?: number | null;
   max_shift?: number | null;
+  cfg_interval_end?: number | null;
   embeddings?: string[] | null;
   // The caption the prompt upsampler wrote and the model actually ran; `prompt` stays the user's text.
   enhanced_prompt?: string | null;
@@ -445,20 +468,48 @@ export async function getGenerateProgress(): Promise<DiffusionGenerateProgress> 
   return parseJson(await authFetch("/api/inference/images/generate-progress"));
 }
 
+/** The budget edit never reached the server, so nothing may load on the old one. */
+export class VramBudgetSaveError extends Error {
+  constructor(cause: unknown) {
+    super(cause instanceof Error ? cause.message : "Failed to save VRAM budget");
+    this.name = "VramBudgetSaveError";
+  }
+}
+
+/** Settles a slider edit first: the backend snapshots the budget for a load and its download plan. */
+export async function withSettledVramBudget<T>(run: () => Promise<T>): Promise<T> {
+  const budgetSave = settleVramBudgetSave();
+  if (!budgetSave) return run();
+  setVramBudgetLocked(true);
+  try {
+    await budgetSave.catch((error: unknown) => {
+      // Dropped and repainted together, so the slider never shows a value no load will use.
+      dropVramBudgetRetry();
+      void loadVramBudgetSettings({ force: true });
+      throw new VramBudgetSaveError(error);
+    });
+    return await run();
+  } finally {
+    setVramBudgetLocked(false);
+  }
+}
+
 export async function loadDiffusionModel(body: DiffusionLoadRequest): Promise<DiffusionStatus> {
   // This POST only starts the load, so the notice settles from load-progress, not the response.
-  return withBackgroundLoadNotice(
-    "image",
-    body.model_path,
-    async () =>
-      parseLoadJson<DiffusionStatus>(
-        await authFetch("/api/inference/images/load", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(withAllowOversizedLoad(body)),
-        }),
-      ),
-    async (signal) => (await getDiffusionLoadProgress(signal)).phase,
+  return withSettledVramBudget(() =>
+    withBackgroundLoadNotice(
+      "image",
+      body.model_path,
+      async () =>
+        parseLoadJson<DiffusionStatus>(
+          await authFetch("/api/inference/images/load", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(withAllowOversizedLoad(body)),
+          }),
+        ),
+      async (signal) => (await getDiffusionLoadProgress(signal)).phase,
+    ),
   );
 }
 
@@ -547,6 +598,9 @@ export async function generateDiffusionImage(
     isMemoryEstimateRefusal(response.status, response.headers.get(MEMORY_REFUSAL_HEADER))
   ) {
     throw new MemoryEstimateRefusalError(await readFastApiError(response));
+  }
+  if (!response.ok && isLoraReloadRefusal(response.status, response.headers.get(MEMORY_REFUSAL_HEADER))) {
+    throw new LoraReloadRefusalError(await readFastApiError(response));
   }
   return parseJson(response);
 }
@@ -737,6 +791,8 @@ export interface DiffusionTrainingStartRequest {
   lr_warmup_steps?: number;
   base_precision?: "nf4" | "bf16" | "int8" | "fp8" | "mxfp8" | "auto";
   compile_transformer?: "off" | "on" | "auto";
+  // bf16 DiT bases only: blocks streamed from host RAM. Omitted = the server default (off).
+  block_swap?: "off" | "auto" | number;
   cache_latents?: boolean;
   cache_variants?: number;
   enable_tf32?: boolean;
@@ -810,6 +866,13 @@ export interface DiffusionTrainingStatus {
   base_model?: string | null;
   samples_per_second?: number | null;
   peak_memory_gb?: number | null;
+  // What block_swap resolved to once the base loaded; absent when it did not run.
+  block_swap?: {
+    swapped_blocks?: number;
+    total_blocks?: number;
+    host_gib?: number;
+    pinned_gib?: number;
+  } | null;
   checkpoint_path?: string | null;
   checkpoint_step?: number | null;
   resume_blocked_reason?: string | null;
@@ -932,6 +995,8 @@ export interface DiffusionTrainableFamily {
   precision_modes?: string[];
   recommended_precision?: string;
   supports_compile?: boolean;
+  // DiT trainer with bf16 on this host; absent on an older backend, which has no block_swap field.
+  supports_block_swap?: boolean;
   // Whether the family loop writes checkpoint bundles; undefined on an older backend reads as true.
   supports_checkpoints?: boolean;
   // Absent on an older backend: "Sample every" hidden.
@@ -944,6 +1009,8 @@ export interface DiffusionTrainableFamily {
   // Deploy previews on this repo instead of the trained checkpoint (Krea trains on Raw, runs on Turbo).
   deploy_base?: string | null;
   deploy_bases?: Record<string, string>;
+  // Families the trained adapter loads on; absent on an older backend (the trained family alone).
+  lora_families?: string[];
   base_specs?: Record<
     string,
     {

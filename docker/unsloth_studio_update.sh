@@ -571,13 +571,16 @@ if [ "$RESTART" = "1" ]; then
         else
             _deadline=$(( $(date +%s) + _wait ))
             _port="${UNSLOTH_STUDIO_PORT:-8000}"
+            # Both TLS variables set: Studio serves HTTPS on the port (-k: the cert names the host, not 127.0.0.1).
+            _scheme=http
+            [ -n "${UNSLOTH_STUDIO_SSL_CERTFILE:-}" ] && [ -n "${UNSLOTH_STUDIO_SSL_KEYFILE:-}" ] && _scheme=https
             _up=0
             # probe before reading the clock: date +%s has whole-second steps, so a
             # short wait could expire before the first check and roll back a Studio
             # that was never asked
             while :; do
                 # --noproxy: a container-wide HTTP_PROXY must not answer for the loopback
-                curl -sf -o /dev/null --max-time 3 --noproxy '*' "http://127.0.0.1:${_port}/api/health" && { _up=1; break; }
+                curl -skf -o /dev/null --max-time 3 --noproxy '*' "${_scheme}://127.0.0.1:${_port}/api/health" && { _up=1; break; }
                 [ "$(date +%s)" -lt "$_deadline" ] || break
                 sleep 2
             done

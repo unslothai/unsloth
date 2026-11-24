@@ -7,6 +7,7 @@ import asyncio
 import base64
 import io
 import json
+import threading
 
 import httpx
 import pytest
@@ -51,9 +52,10 @@ def _drive(coro):
             loop.close()
 
 
-def _make_gemini_client(
-    base_url: str = "https://generativelanguage.googleapis.com/v1beta",
-) -> ExternalProviderClient:
+_GEMINI_API = "https://generativelanguage.googleapis.com/v1beta"
+
+
+def _make_gemini_client(base_url: str = _GEMINI_API) -> ExternalProviderClient:
     return ExternalProviderClient(
         provider_type = "gemini",
         base_url = base_url,
@@ -169,9 +171,10 @@ def _capture_body(monkeypatch, **kwargs) -> dict:
     temperature = kwargs.pop("temperature", 0.7)
     top_p = kwargs.pop("top_p", 0.95)
     max_tokens = kwargs.pop("max_tokens", 64)
+    client_kwargs = {"base_url": kwargs.pop("base_url")} if "base_url" in kwargs else {}
 
     async def run():
-        client = _make_gemini_client()
+        client = _make_gemini_client(**client_kwargs)
         async for _ in client.stream_chat_completion(
             messages = messages,
             model = model,
@@ -405,7 +408,19 @@ def test_gemini3_pro_passes_medium_through(monkeypatch):
         assert tc == {"thinkingLevel": "medium", "includeThoughts": True}, (model, tc)
 
 
-@pytest.mark.parametrize("model", ["gemini-3.7-flash", "gemini-3.8-flash", "gemini-4-argon"])
+@pytest.mark.parametrize(
+    "model",
+    [
+        "gemini-3.7-flash",
+        "gemini-3.8-flash",
+        "gemini-4-argon",
+        "gemini-4-carbon",
+        "gemini-4-neon",
+        "gemini-4-hydrogen",
+        "gemini-4-pro",
+        "gemini-4.1-flash",
+    ],
+)
 @pytest.mark.parametrize(
     "kwargs",
     [
@@ -419,7 +434,19 @@ def test_new_gemini_thinking_floor(monkeypatch, model, kwargs):
     assert body["generationConfig"]["thinkingConfig"]["thinkingLevel"] == "low"
 
 
-@pytest.mark.parametrize("model", ["gemini-3.7-flash", "gemini-3.8-flash", "gemini-4-argon"])
+@pytest.mark.parametrize(
+    "model",
+    [
+        "gemini-3.7-flash",
+        "gemini-3.8-flash",
+        "gemini-4-argon",
+        "gemini-4-carbon",
+        "gemini-4-neon",
+        "gemini-4-hydrogen",
+        "gemini-4-pro",
+        "gemini-4.1-flash",
+    ],
+)
 def test_new_gemini_rejects_presence_penalty(monkeypatch, model):
     body = _capture_body(monkeypatch, model = model, presence_penalty = 0.5)["body"]
     assert "presencePenalty" not in body["generationConfig"]
@@ -704,6 +731,70 @@ def test_thought_signature_round_trips_into_gemini_function_call(monkeypatch):
     )
     assert fc_part is not None, fc_turn
     assert fc_part.get("thoughtSignature") == "SIG-ABC", fc_part
+
+
+def _model_function_call_parts(captured) -> list[list[dict]]:
+    return [
+        [p for p in c["parts"] if "functionCall" in p]
+        for c in captured["body"]["contents"]
+        if c["role"] == "model"
+    ]
+
+
+def test_rag_autoinject_call_gets_the_dummy_thought_signature(monkeypatch):
+    """The RAG auto-inject exchange is Studio's, not Gemini's; Gemini 3 400s on its unsigned functionCall."""
+    from core.inference.tools import build_synthetic_search_exchange
+
+    exchange = build_synthetic_search_exchange(
+        tool_name = "search_knowledge_base",
+        call_prefix = "rag_auto_",
+        status_label = "Searching documents",
+        query = "what does the file say",
+        text = "passage",
+        sources = [],
+    )
+    captured = _capture_body(
+        monkeypatch,
+        model = "gemini-3-flash-preview",
+        messages = [{"role": "user", "content": "what does the file say"}, *exchange["messages"]],
+    )
+    [[fc_part]] = _model_function_call_parts(captured)
+    assert fc_part["functionCall"]["id"].startswith("rag_auto_"), fc_part
+    assert fc_part["thoughtSignature"] == ep_mod._GEMINI_DUMMY_THOUGHT_SIGNATURE, fc_part
+
+
+def test_dummy_thought_signature_only_fills_an_unsigned_step(monkeypatch):
+    """Gemini signs only the first of parallel calls: a signed step is left as is, an unsigned one gets one dummy."""
+
+    def _call(call_id, sig = None):
+        call = {
+            "id": call_id,
+            "type": "function",
+            "function": {"name": "lookup", "arguments": "{}"},
+        }
+        if sig:
+            call["extra_content"] = {"google": {"thought_signature": sig}}
+        return call
+
+    def _results(*ids):
+        return [{"role": "tool", "tool_call_id": i, "name": "lookup", "content": "{}"} for i in ids]
+
+    captured = _capture_body(
+        monkeypatch,
+        messages = [
+            {"role": "user", "content": "lookup"},
+            {"role": "assistant", "content": "", "tool_calls": [_call("a", "SIG-A"), _call("b")]},
+            *_results("a", "b"),
+            {"role": "assistant", "content": "", "tool_calls": [_call("c"), _call("d")]},
+            *_results("c", "d"),
+        ],
+    )
+    signed, unsigned = _model_function_call_parts(captured)
+    assert [p.get("thoughtSignature") for p in signed] == ["SIG-A", None], signed
+    assert [p.get("thoughtSignature") for p in unsigned] == [
+        ep_mod._GEMINI_DUMMY_THOUGHT_SIGNATURE,
+        None,
+    ], unsigned
 
 
 def test_thought_signature_emitted_in_tool_call_delta(monkeypatch):
@@ -4018,6 +4109,118 @@ def test_gemini_forced_function_tool_choice_drops_hosted_builtins(monkeypatch):
     assert "googleSearch" not in tool_kinds, body
     assert "codeExecution" not in tool_kinds, body
     assert "functionDeclarations" in tool_kinds, body
+
+
+@pytest.mark.parametrize(
+    ("enabled_tools", "with_functions", "base_url", "expect_flag"),
+    [
+        (["code_execution"], True, _GEMINI_API, True),
+        (["web_search"], True, _GEMINI_API, True),
+        (["code_execution"], False, _GEMINI_API, False),
+        ([], True, _GEMINI_API, False),
+        (["code_execution"], True, "https://aiplatform.googleapis.com/v1/publishers/google", False),
+    ],
+    ids = ["code+functions", "search+functions", "code-only", "functions-only", "vertex"],
+)
+def test_gemini_hosted_tools_beside_functions_send_server_side_invocations(
+    monkeypatch, enabled_tools, with_functions, base_url, expect_flag
+):
+    """The Gemini API 400s on hosted tools plus functionDeclarations without the flag; Vertex rejects it."""
+    captured = _capture_body(
+        monkeypatch,
+        model = "gemini-3.5-flash",
+        enabled_tools = enabled_tools,
+        tools = _tools(name = "search_knowledge_base", parameters = {"type": "object"})
+        if with_functions
+        else None,
+        tool_choice = "auto" if with_functions else None,
+        base_url = base_url,
+    )
+    body = captured["body"]
+    tool_config = body.get("toolConfig") or {}
+    assert tool_config.get("includeServerSideToolInvocations", False) is expect_flag, body
+    if with_functions:
+        assert tool_config["functionCallingConfig"] == {"mode": "AUTO"}, body
+
+
+def test_studio_loop_keeps_gemini_code_output_beside_a_signed_preamble(monkeypatch):
+    """The signed preamble's native text replaces the turn's content on replay, so the code run must survive that."""
+    from core.inference import studio_tool_loop as loop_mod
+    from core.inference.external_tool_transport import OAICompatTransport
+    from core.inference.studio_tool_loop import (
+        ToolLoopPolicy,
+        ToolLoopRun,
+        stream_with_studio_tools,
+    )
+
+    first = [
+        {"text": "Computing first.", "thoughtSignature": "SIG-TEXT"},
+        {
+            "executableCode": {"id": "code_a", "language": "PYTHON", "code": "print(2**61 - 1)"},
+            "thoughtSignature": "SIG-CODE",
+        },
+        {
+            "codeExecutionResult": {
+                "id": "code_a",
+                "outcome": "OUTCOME_OK",
+                "output": "2305843009213693951\n",
+            }
+        },
+        {
+            "functionCall": {"id": "call_1", "name": "web_search", "args": {"query": "M61"}},
+            "thoughtSignature": "SIG-CALL",
+        },
+    ]
+    bodies: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(request.content.decode("utf-8")))
+        parts = first if len(bodies) == 1 else [{"text": "done"}]
+        return httpx.Response(
+            200, content = _gemini_sse([_event(parts)]), headers = {"content-type": "text/event-stream"}
+        )
+
+    _mock_http(monkeypatch, handler)
+    monkeypatch.setattr(loop_mod, "execute_tool", lambda name, arguments, **kwargs: "SEARCH-RESULT")
+    monkeypatch.setattr(loop_mod, "build_rag_autoinject", lambda *a, **k: None)
+    monkeypatch.setattr(loop_mod, "is_high_risk_tool_call", lambda name, args: False)
+
+    async def run():
+        client = _make_gemini_client()
+        transport = OAICompatTransport(
+            client, model = "gemini-3.5-flash", enabled_tools = ["code_execution"], stream = True
+        )
+        async for _ in stream_with_studio_tools(
+            transport,
+            run = ToolLoopRun(messages = [{"role": "user", "content": "go"}], session_id = "s1"),
+            policy = ToolLoopPolicy(
+                tools = _tools(name = "web_search", parameters = {"type": "object"}),
+                max_calls = 5,
+                timeout = 60,
+                permission_mode = "off",
+                confirm_calls = False,
+                bypass_permissions = False,
+                rag_scope = None,
+            ),
+            cancel_event = threading.Event(),
+        ):
+            pass
+        await client.close()
+
+    _drive(run())
+    assert len(bodies) == 2, bodies
+    assert bodies[1]["toolConfig"]["includeServerSideToolInvocations"] is True, bodies[1]
+    model_parts = [c for c in bodies[1]["contents"] if c["role"] == "model"][-1]["parts"]
+    assert model_parts[0] == {
+        "text": "Computing first.",
+        "thoughtSignature": "SIG-TEXT",
+    }, model_parts
+    replayed_text = "".join(p.get("text", "") for p in model_parts)
+    assert (
+        "print(2**61 - 1)" in replayed_text and "2305843009213693951" in replayed_text
+    ), model_parts
+    assert model_parts[-1]["functionCall"]["id"] == "call_1", model_parts
+    assert model_parts[-1]["thoughtSignature"] == "SIG-CALL", model_parts
 
 
 def test_gemini_forced_function_tool_choice_drops_image_generation(monkeypatch):

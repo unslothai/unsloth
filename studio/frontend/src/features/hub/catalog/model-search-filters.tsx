@@ -128,7 +128,7 @@ const RANGES: readonly RangeSpec[] = [
     format: (n) => `${n / B}B`,
   },
   {
-    label: "Context length",
+    label: "Context window",
     about:
       "In tokens. The model's published limit, not what your device can fit. Both limits are included; models that don't publish one are left out.",
     min: "minContext",
@@ -661,8 +661,8 @@ export function ModelSearchFiltersControl({
               <HugeiconsIcon
                 icon={FilterMailIcon}
                 strokeWidth={1.75}
-                // Its lines narrow downward, so the box's centre reads high: a pixel down evens it.
-                className="size-5 translate-y-px"
+                // Lifts the glyph's ink 0.5px to centre.
+                className="size-5 -translate-y-[0.5px]"
               />
               {filtered && (
                 <span

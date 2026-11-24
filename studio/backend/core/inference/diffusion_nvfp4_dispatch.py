@@ -366,8 +366,7 @@ def _constant_bucket(bucket: int, _m: int) -> int:
 
 
 def bucket_config(base: Any, bucket: int):
-    """``base`` profiling exactly one M (``bucket``) and keying every M to it; memoised per bucket so
-    FlashInfer's nearest-profile cache sees a stable spec."""
+    """Profile base at one M (bucket) for all Ms, memoised so FlashInfer sees a stable spec."""
     cache_key = (id(base), int(bucket))
     got = _BUCKET_CONFIGS.get(cache_key)
     if got is not None and got[0] is base:

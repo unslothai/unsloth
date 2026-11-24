@@ -31,6 +31,7 @@ from ._utils import (
 from .loader_utils import is_distributed
 from ..device_type import xpu_keeps_explicit_bf16
 from ._decision_fast import compiled_encoder, pad_length
+from ._lean_lora import apply_lean_lora as _lean_lora, lean_lora_forward as _lean_lora_forward
 from ._decision_common import *  # noqa: F401,F403
 
 HEAD_LEARNING_RATE = 1e-4
@@ -122,44 +123,6 @@ def _gradient_checkpointing(model, use_gradient_checkpointing) -> None:
             model.encoder.enable_input_require_grads()
     else:
         model.encoder.gradient_checkpointing_disable()
-
-
-def _lean_lora_forward(self, x, *args, **kwargs):
-    adapter = self._unsloth_adapter
-    if (
-        self.disable_adapters
-        or self.merged
-        or args
-        or kwargs
-        or (
-            not torch.is_autocast_enabled(x.device.type)
-            and x.dtype != self.lora_A[adapter].weight.dtype
-        )
-    ):
-        return self._unsloth_peft_forward(x, *args, **kwargs)
-    # PEFT math without per-call checks, the fp32 round trip of x, and the scale-1 multiply.
-    lora = self.lora_B[adapter](self.lora_A[adapter](x))
-    scaling = self.scaling[adapter]
-    return self.base_layer(x) + (lora if scaling == 1 else lora * scaling)
-
-
-def _lean_lora(encoder) -> None:
-    # Plain LoRA (one adapter, no dropout, DoRA or other variant) skips PEFT's per-call checks and casts.
-    from peft.tuners.lora.layer import Linear
-
-    # Unsloth's compiler (a FastModel load earlier in this process) already gave PEFT a compiled forward.
-    if Linear.forward.__name__ == "unsloth_forward":
-        return
-    for module in encoder.modules():
-        if type(module) is not Linear or len(module.lora_A) != 1 or module.lora_variant:
-            continue
-        adapter = next(iter(module.lora_A))
-        if not isinstance(module.lora_dropout[adapter], torch.nn.Identity):
-            continue
-        # Bound methods, so the deepcopy that merges for saving rebinds them to the copy.
-        module._unsloth_adapter = adapter
-        module._unsloth_peft_forward = module.forward
-        module.forward = types.MethodType(_lean_lora_forward, module)
 
 
 def _soft_cross_entropy(logits, target, mask):
@@ -725,11 +688,19 @@ def _load_clef(
     adapter = _is_clef_adapter(folder)
     if adapter:
         # LoRA adapters over the base LLM: the base comes from where it was trained from.
-        base = config.get("base_model") or json.loads(
-            (folder / _ADAPTER_CONFIG).read_text(encoding = "utf-8")
-        ).get("base_model_name_or_path")
+        adapter_base = json.loads((folder / _ADAPTER_CONFIG).read_text(encoding = "utf-8")).get(
+            "base_model_name_or_path"
+        )
+        base = config.get("base_model") or adapter_base
         if not base:
             raise ValueError(f"Unsloth: {folder} has adapters but does not name their base model.")
+        # A Hub repo resolves to a local snapshot, so the loader's own check would see a folder.
+        from .loader import _refuse_network_share_adapter_base
+
+        for named in {str(base), str(adapter_base or base)}:
+            _refuse_network_share_adapter_base(
+                str(model_name or folder), types.SimpleNamespace(base_model_name_or_path = named)
+            )
         if full_finetuning:
             # PEFT would freeze the base and the adapters, leaving only the head to train.
             raise ValueError(
@@ -1095,6 +1066,9 @@ def push_to_hub_clef(
 
     api = HfApi(token = token)
     repo_id = api.create_repo(repo_id, private = private, exist_ok = True).repo_id
+    from ..save import _refuse_private_push_to_public_repo
+
+    _refuse_private_push_to_public_repo(repo_id, private, api = api)
     with tempfile.TemporaryDirectory() as folder:
         self.save_pretrained(folder, tokenizer)
         api.upload_folder(folder_path = folder, repo_id = repo_id)
@@ -1265,7 +1239,11 @@ class DecisionTrainer(Trainer):
             args.gradient_checkpointing = False
             if hasattr(args, "activation_checkpointing"):
                 args.activation_checkpointing = False
-            if not clef and not model.encoder.is_gradient_checkpointing:
+            from unsloth.models._gc_config_default import (
+                is_activation_checkpointing as _is_activation_checkpointing,
+            )
+
+            if not clef and not _is_activation_checkpointing(model.encoder):
                 _gradient_checkpointing(model, True)
         if kwargs.get("processing_class") is None:
             kwargs["processing_class"] = tokenizer
@@ -1538,6 +1516,9 @@ def push_to_hub_merged(
 
     api = HfApi(token = token)
     repo_id = api.create_repo(repo_id, private = private, exist_ok = True).repo_id
+    from ..save import _refuse_private_push_to_public_repo
+
+    _refuse_private_push_to_public_repo(repo_id, private, api = api)
     with tempfile.TemporaryDirectory() as folder:
         self.save_pretrained_merged(folder, tokenizer, save_method)
         api.upload_folder(folder_path = folder, repo_id = repo_id)
@@ -1745,9 +1726,13 @@ class FastDecisionModel:
         model.train()
         if getattr(model, "is_clef", False):
             return model
+        from unsloth.models._gc_config_default import (
+            is_activation_checkpointing as _is_activation_checkpointing,
+        )
+
         if not use_gradient_checkpointing:
             model.encoder.gradient_checkpointing_disable()
-        elif not model.encoder.is_gradient_checkpointing:
+        elif not _is_activation_checkpointing(model.encoder):
             _gradient_checkpointing(model, use_gradient_checkpointing)
         return model
 

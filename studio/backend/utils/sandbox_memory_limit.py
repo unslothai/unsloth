@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Settings > Sandbox memory limit (RLIMIT_AS) for sandboxed Python and Terminal runs; a present env var always wins."""
+"""Sandbox memory limit: a present env var wins, then the saved value, then half the RAM (at least 8 GiB)."""
 
 from __future__ import annotations
 
@@ -28,11 +28,21 @@ def _coerce_gb(value: Any) -> int | None:
     return parsed
 
 
+def default_memory_limit_gb() -> int:
+    try:
+        from utils.host_memory import host_ram_capacity_mib
+        total_mib = host_ram_capacity_mib()
+    except Exception:  # noqa: BLE001 - an unreadable host keeps the floor
+        total_mib = None
+    half_gb = (total_mib or 0) // 2 // 1024
+    return min(max(half_gb, DEFAULT_MEMORY_LIMIT_GB), MAX_MEMORY_LIMIT_GB)
+
+
 def locked_by_environment() -> bool:
     return MEMORY_LIMIT_ENV in os.environ
 
 
-def saved_memory_limit_gb() -> int:
+def _stored_memory_limit_gb() -> int | None:
     try:
         from storage.studio_db import get_app_setting
         from utils.account_context import OWNER, run_as
@@ -41,7 +51,15 @@ def saved_memory_limit_gb() -> int:
         stored = run_as(OWNER, get_app_setting, MEMORY_LIMIT_SETTING_KEY, None)
     except Exception:  # noqa: BLE001 - an unreadable store keeps the shipped default
         stored = None
-    return _coerce_gb(stored) or DEFAULT_MEMORY_LIMIT_GB
+    return _coerce_gb(stored)
+
+
+def is_auto() -> bool:
+    return _stored_memory_limit_gb() is None
+
+
+def saved_memory_limit_gb() -> int:
+    return _stored_memory_limit_gb() or default_memory_limit_gb()
 
 
 def effective_memory_limit_gb() -> int | None:
@@ -70,3 +88,9 @@ def set_memory_limit_gb(value: Any) -> int:
 
     run_as(OWNER, upsert_app_settings, {MEMORY_LIMIT_SETTING_KEY: parsed})
     return parsed
+
+
+def use_auto_memory_limit() -> None:
+    from storage.studio_db import upsert_app_settings
+    from utils.account_context import OWNER, run_as
+    run_as(OWNER, upsert_app_settings, {MEMORY_LIMIT_SETTING_KEY: None})

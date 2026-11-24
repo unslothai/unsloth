@@ -42,7 +42,8 @@ jobs:
           - platform: manylinux_2_28_x86_64
             runner: ubuntu-latest
           - platform: win_amd64
-            runner: windows-latest
+            # CUDA 12.8's host_config.h accepts MSVC 2017 to 2022; windows-latest now ships VS 2026.
+            runner: windows-2022
     defaults:
       run:
         shell: bash
@@ -101,13 +102,17 @@ jobs:
           if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'O=NVIDIA Corporation') {
             throw "CUDA installer signature: $($signature.Status) $($signature.SignerCertificate.Subject)"
           }
-          $packages = @('nvcc', 'nvvm', 'crt', 'cudart', 'thrust') | ForEach-Object { "${_}_12.8" }
+          # 12.8 subpackage names (NVIDIA's 12.8 Windows guide): nvcc carries cicc and the crt headers;
+          # separate nvvm / crt subpackages only exist from 13.0, and an unknown name fails the install.
+          $packages = @('nvcc', 'cudart', 'thrust') | ForEach-Object { "${_}_12.8" }
           $process = Start-Process -FilePath $installer -ArgumentList (@('-s') + $packages + @('-n')) -Wait -PassThru -NoNewWindow
           if ($process.ExitCode -ne 0) { throw "CUDA installer exited $($process.ExitCode)" }
           $root = 'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8'
           if (-not (Test-Path (Join-Path $root 'bin\nvcc.exe'))) { throw "no nvcc.exe under $root" }
           New-Item -ItemType Junction -Path 'C:\cuda' -Target $root | Out-Null
           'C:\cuda\bin' | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          & 'C:\cuda\bin\nvcc.exe' --version
+          if ($LASTEXITCODE -ne 0) { throw "nvcc --version exited $LASTEXITCODE" }
 
       - name: Build (Windows, MSVC x64)
         if: runner.os == 'Windows'

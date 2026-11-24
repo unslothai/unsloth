@@ -102,6 +102,8 @@ ROOT_FLAGS = {
     "data-glass-plain": "liquid-3d",
     "data-glass-layers": "allow: WebKit only (layers for Glass surfaces); the Chromium gate cannot run it",
     "data-glass-cpu": "allow: WebKitGTK only (cheaper Glass); the Chromium gate cannot run it",
+    "webkit-cpu-paint": "allow: WebKitGTK CPU painting only (image shadows); the Chromium gate cannot run it",
+    "webkit-legacy-compositor": "allow: WebKitGTK before 2.54 only (TextureMapper backdrop workaround); the Chromium gate cannot run it",
     "data-glass-motion": "allow: set only while scrolling under software compositing; scroll areas measure it",
     "data-chat-wallpaper-ready": "solid+wallpaper",
     "data-chat-wallpaper-workspace-ready": "liquid-3d+wallpaper",
@@ -125,6 +127,7 @@ ROOT_FLAGS = {
     "tauri": "allow: desktop app shell, not reachable from the browser gate",
     "render-linux": "allow: Linux desktop renderer, not reachable from the browser gate",
     "client-windows": "allow: Windows desktop shell, not reachable from the browser gate",
+    "data-sidebar-glass-frame": "allow: pinned sidebar under the Windows / Linux desktop titlebar, not reachable from the browser gate",
 }
 
 # Persisted Glass settings (useMaterialStore partialize in material.ts): what measures each.
@@ -249,6 +252,8 @@ def _root_compound(part: str) -> str | None:
 
 def _flags(compound: str) -> set[str]:
     """Attribute names (`name=value` when the selector pins an exact value) and classes."""
+    # A flag inside :not() turns the rule off, never on.
+    compound = re.sub(r":not\((?:[^()]|\([^()]*\))*\)", "", compound)
     out = set(re.findall(r"\.([\w-]+)", compound))
     for name, op, value in re.findall(
         r"\[([\w-]+)(?:\s*([~|^$*]?=)\s*\"?([^\]\"]*)\"?)?\]", compound

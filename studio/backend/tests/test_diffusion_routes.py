@@ -992,6 +992,8 @@ def test_a_cpu_mispredicted_engine_is_still_preflighted(monkeypatch):
     from core.inference.sd_cpp_engine import ENGINE_DIFFUSERS, ENGINE_SD_CPP
 
     monkeypatch.setenv("UNSLOTH_DIFFUSION_SD_CPP", "0")
+    # The preflight is under test, not the CPU-only GGUF rule (test_cpu_gguf_stays_native): keep the diffusers load.
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_CPU_GGUF_DIFFUSERS_FALLBACK", "1")
     monkeypatch.delenv("UNSLOTH_DIFFUSION_ENGINE", raising = False)
     monkeypatch.setattr(engine_router, "_active_engine_name", ENGINE_DIFFUSERS)
     monkeypatch.setattr(engine_router, "_fallback_reason", None)
@@ -1039,7 +1041,14 @@ def test_a_cpu_mispredicted_engine_is_still_preflighted(monkeypatch):
 
 @pytest.mark.parametrize(
     "device, env",
-    [("cuda", {}), ("cpu", {"UNSLOTH_DIFFUSION_SD_CPP": "0"})],
+    # The CPU leg reaches diffusers through the developer kill switch: a CPU-only GGUF is sd.cpp-only otherwise.
+    [
+        ("cuda", {}),
+        (
+            "cpu",
+            {"UNSLOTH_DIFFUSION_SD_CPP": "0", "UNSLOTH_DIFFUSION_CPU_GGUF_DIFFUSERS_FALLBACK": "1"},
+        ),
+    ],
 )
 def test_gated_pick_on_an_engine_switch_keeps_the_previous_model(monkeypatch, device, env):
     """Refusal must run before the engine switch, since switching unloads the resident image model."""
@@ -1659,6 +1668,9 @@ def test_status_passes_through_resolved(client, monkeypatch):
         "artifact": None,
         "replaced": None,
         "steps": None,
+        "engaged": None,
+        "modules": None,
+        "routed": None,
     }
     # older backend entries (no requested/status) still parse, defaulting to applied
     assert body["resolved"]["speed_mode"]["requested"] is None
@@ -2954,8 +2966,12 @@ def test_generate_schema_bounds_for_unified_editing(client):
     ten = _post_generate(client, prompt = "p", init_image = "QUJD", reference_images = ["QUJD"] * 10)
     assert ten.status_code == 422
     assert _post_generate(client, prompt = "p", workflow = "inpaint").status_code == 422
+    # The transport ceiling admits every family's largest side; the loaded family enforces its own.
+    from core.inference.diffusion_conditioning import MAX_REQUEST_SIDE
+
     assert _post_generate(client, prompt = "p", width = 2752, height = 1536).status_code == 200
-    assert _post_generate(client, prompt = "p", width = 2768).status_code == 422
+    assert _post_generate(client, prompt = "p", width = MAX_REQUEST_SIDE).status_code == 200
+    assert _post_generate(client, prompt = "p", width = MAX_REQUEST_SIDE + 16).status_code == 422
     bad_mode = _post_generate(client, prompt = "p", localized_edit = {"mode": "lasso", "image": "QUJD"})
     assert bad_mode.status_code == 422
 

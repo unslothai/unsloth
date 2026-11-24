@@ -14,7 +14,7 @@ import { cn } from "@/lib/utils";
 import { PlusSignIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useId, useState } from "react";
-import { createApiKey } from "../api/api-keys";
+import { type ApiKey, createApiKey } from "../api/api-keys";
 import { apiKeyActionMessage } from "./api-key-action-message";
 
 const EXPIRY_PRESETS = [
@@ -41,7 +41,7 @@ export function CreateKeyForm({
   onError,
   existingNames,
 }: {
-  onCreated: (rawKey: string) => void;
+  onCreated: (rawKey: string, apiKey: ApiKey) => void;
   /** null clears an earlier failure */
   onError: (message: string | null) => void;
   existingNames: readonly string[];
@@ -69,7 +69,7 @@ export function CreateKeyForm({
     onError(null);
     try {
       const result = await createApiKey(name.trim() || defaultName, expiry);
-      onCreated(result.key);
+      onCreated(result.key, result.api_key);
       setName("");
     } catch (cause) {
       onError(apiKeyActionMessage(t("settings.apiKeys.createError"), cause));

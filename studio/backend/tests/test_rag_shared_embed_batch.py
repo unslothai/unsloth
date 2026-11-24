@@ -290,8 +290,7 @@ def test_a_waiting_document_reports_its_embedding_progress(
 def test_a_backend_swap_inside_a_shared_batch_re_embeds_that_document(
     rag_home, stub_embeddings, tmp_path, monkeypatch
 ):
-    """Vectors from two spaces under one identity are unsearchable, so the document re-embeds
-    whole under the backend that took over."""
+    """Vectors from two spaces under one identity are unsearchable, so the whole document re-embeds."""
     from core.rag import config
 
     monkeypatch.setattr(embeddings, "active_backend_is_llama", lambda *_a, **_k: False)

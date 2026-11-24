@@ -171,7 +171,7 @@ export function useNativeFileDrop(
           paths.map(nativeFileName),
           current.accept,
           current.folders
-            ? "Use Link folder to keep a whole folder indexed and in sync."
+            ? "Use Add folder to keep a whole folder indexed and in sync."
             : undefined,
         );
         return;

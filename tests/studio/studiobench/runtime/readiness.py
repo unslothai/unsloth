@@ -345,6 +345,11 @@ async ([toTop, steps, stepPx]) => {
   // step awaits a paint, so a windowed list gets a frame per step to mount what the step exposed.
   const target = toTop ? 0 : vp.scrollHeight;
   const direction = toTop ? -1 : 1;
+  // Upward, a step is at most 3/4 of the viewport so consecutive stops share a row: a windowed
+  // list mounts little beyond the viewport, and a longer step can jump a short row between two
+  // tall ones, which leaves coverage unmeasured. The distance budget (steps * stepPx) is kept.
+  const step = toTop ? Math.max(1, Math.min(stepPx, Math.floor(vp.clientHeight * 0.75))) : stepPx;
+  const maxSteps = Math.ceil((steps * stepPx) / step);
   // WHICH MESSAGES THE TRAVERSAL ACTUALLY SAW, ordinal by ordinal.
   //
   // The marker check at the end of the walk asks one question -- did the FIRST message arrive --
@@ -388,26 +393,48 @@ async ([toTop, steps, stepPx]) => {
     }
     ranges.push([lo, hi]);
   };
-  record();
-  for (let i = 0; i < steps; i += 1) {
-    const next = toTop
-      ? Math.max(0, vp.scrollTop - stepPx)
-      : Math.min(vp.scrollHeight, vp.scrollTop + stepPx);
-    vp.dispatchEvent(
-      new WheelEvent("wheel", { deltaY: direction * stepPx, bubbles: true, cancelable: true }),
-    );
-    vp.scrollTo({ top: next, behavior: "instant" });
+  const moveTo = async (top, deltaY) => {
+    vp.dispatchEvent(new WheelEvent("wheel", { deltaY, bubbles: true, cancelable: true }));
+    vp.scrollTo({ top, behavior: "instant" });
     await window.__sbNextPaint();
     record();
+  };
+  // Ordinals between two stops that no stop has mounted yet.
+  const unseenBetween = (lo, hi) => {
+    for (let k = lo; k <= hi; k += 1) if (!seen.has(k)) return true;
+    return false;
+  };
+  record();
+  for (let i = 0; i < maxSteps; i += 1) {
+    const prev = ranges.length ? ranges[ranges.length - 1] : null;
+    const next = toTop
+      ? Math.max(0, vp.scrollTop - step)
+      : Math.min(vp.scrollHeight, vp.scrollTop + step);
+    await moveTo(next, direction * step);
+    // A step shorter than the viewport can still open a gap: the list re-anchors scrollTop when
+    // rows above mount at their real height. Step back down in half steps until the rows between
+    // the two stops have mounted, then resume from where the step landed.
+    const here = ranges.length ? ranges[ranges.length - 1] : null;
+    if (toTop && prev && here && here !== prev && here[1] + 1 < prev[0]) {
+      const resume = vp.scrollTop;
+      let pos = resume;
+      for (let k = 0; k < 16 && unseenBetween(here[1] + 1, prev[0] - 1); k += 1) {
+        pos = Math.min(vp.scrollHeight, pos + Math.max(1, Math.floor(step / 2)));
+        await moveTo(pos, Math.max(1, Math.floor(step / 2)));
+      }
+      await moveTo(resume, -1);
+    }
     if (toTop && vp.scrollTop <= 0) break;
     if (!toTop && vp.scrollTop >= vp.scrollHeight - vp.clientHeight - 1) break;
   }
-  let continuous = ranges.length > 0;
-  for (let i = 1; i < ranges.length; i += 1) {
-    const a = ranges[i - 1];
-    const b = ranges[i];
-    // Touching counts as continuous: rows 1-6 followed by rows 7-12 leaves nothing between them.
-    if (b[0] > a[1] + 1 || a[0] > b[1] + 1) { continuous = false; break; }
+  // Continuous when the stops' spans, taken together, leave no gap: touching counts, so rows 1-6
+  // and rows 7-12 leave nothing between them.
+  const spans = ranges.slice().sort((a, b) => a[0] - b[0]);
+  let continuous = spans.length > 0;
+  let reach = spans.length ? spans[0][1] : 0;
+  for (let i = 1; i < spans.length; i += 1) {
+    if (spans[i][0] > reach + 1) { continuous = false; break; }
+    reach = Math.max(reach, spans[i][1]);
   }
   const sorted = Array.from(seen).sort((a, b) => a - b);
   return {
@@ -420,11 +447,12 @@ async ([toTop, steps, stepPx]) => {
     ordinals_in_window_holes: Array.from(holes).sort((a, b) => a - b),
     sweep_continuous: continuous,
     traversal_stops: ranges.length,
+    step_px: step,
   };
 }
 """
 
-# 400 steps of 2,000px cover the tallest rung; reaching either end breaks early.
+# 400 x 2,000px budget covers the tallest rung; upward steps are capped to 3/4 of the viewport.
 TRAVERSE_STEPS = 400
 TRAVERSE_STEP_PX = 2000
 
@@ -566,7 +594,7 @@ def probe_thread_completeness(
             # Distinguishes a missing head from a gesture that never left the bottom.
             "reached_top": top.get("reached_target"),
             "scroll_top_after_gesture": top.get("scroll_top"),
-            "traverse_step_px": step_px,
+            "traverse_step_px": top.get("step_px", step_px),
         }
     )
     out.update(coverage)

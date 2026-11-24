@@ -348,3 +348,87 @@ def test_base_url_validation_runs_off_the_event_loop(mock_http, monkeypatch):
 def test_pasted_endpoint_paths_normalise_to_the_base(pasted, base):
     assert validate_provider_base_url(pasted) == base
     assert validate_provider_base_url(base) == base
+
+
+@pytest.mark.parametrize(
+    "status,kind,text",
+    [
+        (401, "auth", "The server rejected the API key."),
+        (402, "billing", "The key was accepted, but its account has no credit."),
+        (429, "rate_limit", "The server is rate limiting this key right now."),
+        (404, "not_found", "No /models endpoint at this URL"),
+        (500, "other", ""),
+    ],
+)
+def test_a_failed_check_names_its_cause(mock_http, status, kind, text):
+    mock_http.state["handler"] = lambda request: httpx.Response(status)
+    result = _test(ProviderTestRequest(provider_type = "openai", base_url = "http://gw.example/v1"))
+    assert not result.success
+    assert result.error_kind == kind
+    assert text in result.message
+
+
+def test_a_passing_check_has_no_error_kind(mock_http):
+    result = _test(ProviderTestRequest(provider_type = "openai", base_url = "http://gw.example/v1"))
+    assert result.success and result.error_kind is None
+
+
+def test_a_slow_server_is_a_timeout_not_an_unreachable_one(mock_http):
+    def stall(request):
+        raise httpx.ReadTimeout("timed out", request = request)
+
+    mock_http.state["handler"] = stall
+    result = _test(ProviderTestRequest(provider_type = "openai", base_url = "http://gw.example/v1"))
+    assert result.error_kind == "timeout"
+    assert result.message == "Connection failed: The server took too long to answer."
+    payload = ProviderModelsRequest(provider_type = "custom", base_url = "http://gw.example/v1")
+    with pytest.raises(HTTPException) as caught:
+        _run(providers_route.list_provider_models(payload, "tester", False))
+    assert caught.value.detail == "The server took too long to answer."
+
+
+def test_a_custom_check_reports_the_named_cause_not_a_missing_model_id(mock_http):
+    mock_http.state["handler"] = lambda request: httpx.Response(402)
+    result = _test(ProviderTestRequest(provider_type = "custom", base_url = "http://gw.example/v1"))
+    assert result.error_kind == "billing"
+    assert result.message == (
+        "Connection failed: The key was accepted, but its account has no credit."
+    )
+    # No named cause: the old hint about adding a model ID still stands.
+    mock_http.state["handler"] = lambda request: httpx.Response(404)
+    result = _test(ProviderTestRequest(provider_type = "custom", base_url = "http://gw.example/v1"))
+    assert "no model ID was provided" in result.message
+
+
+def test_a_custom_probe_keeps_the_models_cause_over_its_own_plain_error(mock_http):
+    def handle(request):
+        return httpx.Response(401 if request.url.path.endswith("/models") else 404)
+
+    mock_http.state["handler"] = handle
+    result = _test(
+        ProviderTestRequest(provider_type = "custom", base_url = "http://gw.example/v1", model_id = "m")
+    )
+    assert not result.success
+    assert result.error_kind == "auth"
+    assert result.message == "Connection failed: The server rejected the API key."
+
+
+def test_an_invalid_base_url_is_its_own_kind(monkeypatch):
+    monkeypatch.setattr(
+        providers_route, "resolve_provider_api_key_or_400", lambda *a, **k: "sk-bad"
+    )
+    result = _test(ProviderTestRequest(provider_type = "custom", base_url = "ftp://gw.example/v1"))
+    assert not result.success and result.error_kind == "invalid_url"
+
+
+def test_the_registry_links_each_keyed_provider_to_its_key_page():
+    rows = {row["provider_type"]: row for row in providers_route.list_available_providers(True)}
+    assert rows["openai"]["api_key_url"] == "https://platform.openai.com/api-keys"
+    assert rows["openai_codex"]["api_key_url"] is None
+    assert rows["ollama"]["api_key_url"] is None
+    for row in rows.values():
+        url = row["api_key_url"]
+        assert url is None or url.startswith("https://")
+        # A subscription or a self-hosted server has no key page to send anyone to.
+        if row["auth_kind"] != "api_key" or row["hidden"]:
+            assert url is None

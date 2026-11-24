@@ -6,11 +6,13 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import functools
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse
+from pydantic import BaseModel, Field
 from starlette.datastructures import UploadFile
 
 from auth.authentication import get_current_subject
@@ -33,6 +35,27 @@ def _save_to_gallery(mp4: bytes, meta: dict) -> Optional[dict]:
         return video_gallery.save(mp4, meta)
     except Exception:  # noqa: BLE001 -- the clip is still served from the job dir
         return None
+
+
+# Each upload is read into memory (up to VIDEO_RESTYLE_UPLOAD_MAX_BYTES) and the runner restyles one clip
+# at a time, so more held at once only fills memory. Counted on the event loop thread only: no lock.
+MAX_HELD_UPLOADS = 4
+_held_uploads = 0
+
+
+@contextlib.contextmanager
+def _upload_slot():
+    global _held_uploads
+    if _held_uploads >= MAX_HELD_UPLOADS:
+        raise HTTPException(
+            status_code = 429,
+            detail = "Restyle is busy reading other uploads. Please try again in a moment.",
+        )
+    _held_uploads += 1
+    try:
+        yield
+    finally:
+        _held_uploads -= 1
 
 
 async def _read_upload(request: Request) -> tuple[dict[str, Any], list[tuple[str, bytes]]]:
@@ -70,38 +93,102 @@ async def _frames_from_upload(files: list[tuple[str, bytes]]) -> tuple[list[Any]
 
 @router.get("/video/restyle/status")
 async def restyle_status(current_subject: str = Depends(get_current_subject)):
+    state = await asyncio.to_thread(video_restyle.availability)
+    if state.get("can_setup"):
+        try:
+            await _require_restyle_installer(current_subject)
+        except HTTPException as exc:
+            # Only the owner may run setup; everyone else sees why instead of a button that answers 403.
+            state = {**state, "can_setup": False, "refusal": state.get("refusal") or exc.detail}
+    return state
+
+
+class RestyleSetupRequest(BaseModel):
+    hf_token: Optional[str] = Field(default = None, max_length = 512)
+
+
+async def _require_restyle_installer(current_subject: str = Depends(get_current_subject)) -> None:
+    """Setup installs sd.cpp and writes ~30 GB into Studio's cache: the installation owner's call, as for every other
+    install (an API key only where full API access is enabled)."""
+    from auth import policy
+
+    await policy.require_owner()
+    if not policy.full_access_permitted() or policy.api_full_access_refused():
+        raise HTTPException(
+            status_code = 403,
+            detail = "Set up Restyle from the Unsloth UI as the installation owner.",
+        )
+
+
+@router.post("/video/restyle/setup", dependencies = [Depends(_require_restyle_installer)])
+async def setup_restyle(
+    body: Optional[RestyleSetupRequest] = None, current_subject: str = Depends(get_current_subject)
+):
+    """Install the sd.cpp server and fetch the weights, whichever is missing; poll /video/restyle/status."""
+    from core.inference import video_restyle_setup as setup
+
+    await asyncio.to_thread(account_access.require_model_allowed, video_restyle.MODEL_ID)
+    state = await asyncio.to_thread(video_restyle.availability)
+    if state["available"]:
+        return state
+    if state.get("refusal"):
+        raise HTTPException(status_code = 400, detail = state["refusal"])
+    if not state.get("can_setup"):
+        raise HTTPException(
+            status_code = 400, detail = state.get("reason") or "Restyle cannot be set up here."
+        )
+    token = account_access.account_hf_token((body.hf_token if body else None) or None)
+    if token is None:
+        token = account_access.ambient_hf_token()
+    try:
+        await asyncio.to_thread(
+            setup.setup_runner.start,
+            hf_token = token,
+            need_engine = "engine" in state["missing"],
+            need_weights = "weights" in state["missing"],
+        )
+    except setup.SetupError as exc:
+        raise HTTPException(status_code = 409, detail = str(exc))
     return await asyncio.to_thread(video_restyle.availability)
+
+
+@router.post("/video/restyle/setup/cancel", dependencies = [Depends(_require_restyle_installer)])
+async def cancel_restyle_setup(current_subject: str = Depends(get_current_subject)):
+    from core.inference import video_restyle_setup as setup
+    return {"cancelled": setup.setup_runner.cancel()}
 
 
 @router.post("/video/restyle/preview")
 async def preview_restyle(request: Request, current_subject: str = Depends(get_current_subject)):
-    _, files = await _read_upload(request)
-    try:
-        frames, seconds = await _frames_from_upload(files)
-        return await asyncio.to_thread(video_restyle.preview, frames, seconds)
-    except RestyleError as exc:
-        raise HTTPException(status_code = 400, detail = str(exc))
+    with _upload_slot():
+        _, files = await _read_upload(request)
+        try:
+            frames, seconds = await _frames_from_upload(files)
+            return await asyncio.to_thread(video_restyle.preview, frames, seconds)
+        except RestyleError as exc:
+            raise HTTPException(status_code = 400, detail = str(exc))
 
 
 @router.post("/video/restyle")
 async def start_restyle(request: Request, current_subject: str = Depends(get_current_subject)):
     if account_access.managed_account():
         await asyncio.to_thread(account_access.require_model_allowed, video_restyle.MODEL_ID)
-    # Receive the upload before reserving: a reservation holds the GPU, so a slow or stalled body
-    # must not keep every model load and training start refused while it trickles in.
-    upload = await _read_upload(request)
-    try:
-        reservation = video_restyle.runner.reserve(current_account_id())
-    except RestyleBusy as exc:
-        raise HTTPException(status_code = 409, detail = str(exc))
-    # Released here until the shielded start takes it over, which then releases it itself:
-    # a cancelled request must not free a reservation that start() is still about to use.
-    lease = {"route": True}
-    try:
-        return await _start_reserved(upload, reservation, lease)
-    finally:
-        if lease["route"]:
-            video_restyle.runner.release(reservation)
+    with _upload_slot():
+        # Receive the upload before reserving: a reservation holds the GPU, so a slow or stalled body
+        # must not keep every model load and training start refused while it trickles in.
+        upload = await _read_upload(request)
+        try:
+            reservation = video_restyle.runner.reserve(current_account_id())
+        except RestyleBusy as exc:
+            raise HTTPException(status_code = 409, detail = str(exc))
+        # Released here until the shielded start takes it over, which then releases it itself:
+        # a cancelled request must not free a reservation that start() is still about to use.
+        lease = {"route": True}
+        try:
+            return await _start_reserved(upload, reservation, lease)
+        finally:
+            if lease["route"]:
+                video_restyle.runner.release(reservation)
 
 
 def _admit_and_start(**kwargs: Any) -> dict[str, Any]:
@@ -121,8 +208,7 @@ def _admit_and_start(**kwargs: Any) -> dict[str, Any]:
         raise HTTPException(status_code = 409, detail = f"{exc} Try again when it finishes.")
     finally:
         video_restyle.runner.release(kwargs.get("reservation"))
-    # Launched here, inside the shielded call: a request cancelled after start() must not leave
-    # an active runner with no worker.
+    # Start inside shielded call: a cancelled request must not leave a runner without a worker.
     account_thread(
         target = video_restyle.runner.run,
         args = (job, _save_to_gallery),
@@ -133,10 +219,9 @@ def _admit_and_start(**kwargs: Any) -> dict[str, Any]:
 
 
 def _take_the_gpu(mode: Optional[str] = None) -> None:
-    # The restyle sd-server (~30 GB) is a video workload: chat and image models go through the
-    # arbiter's eviction; the Create video model, which shares the VIDEO owner, is checked in ``admit``
-    # (under the arbiter lock, so a Create load cannot register in between) and unloaded in
-    # ``register``, which runs only once every other refusal has passed.
+    # The restyle sd-server (~30 GB) is video work: chat and image models evict; Create video is
+    # checked in admit under the arbiter lock, then unloaded in register once every other refusal
+    # passed.
     from core.inference import gpu_arbiter
     from core.inference.video import generation_account_in_flight, get_video_backend
     from utils.multi_model_settings import get_multi_model_mode

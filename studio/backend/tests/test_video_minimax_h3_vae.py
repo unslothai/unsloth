@@ -14,6 +14,7 @@ from torch.torch_version import TorchVersion  # noqa: E402
 
 
 from core.inference import video_minimax_h3_vae as H
+from core.inference.diffusion_vae_canvas import CANVAS_ENV
 
 # A CUDA build's version tag: Studio reads ROCm from the "+rocm" tag too (AMD SDK / Radeon wheels leave
 # torch.version.hip unset), so a test that fakes NVIDIA clears both.
@@ -33,6 +34,7 @@ def _clean_env(monkeypatch):
         H.H3_VAE_INT8_ENV,
         H.H3_VAE_TILE_BATCH_ENV,
         H.FP16_ACCUM_DISABLE_ENV,
+        CANVAS_ENV,
     ):
         monkeypatch.delenv(name, raising = False)
 
@@ -408,6 +410,7 @@ def test_fused_decoder_follows_the_mixed_precision_load(tmp_path, device):
 
 
 def test_tile_batching_matches_the_stock_tile_loop(monkeypatch):
+    monkeypatch.setenv(CANVAS_ENV, "0")  # the stock stitch these tests pin
     vae = _tiny_vae()
     fast = copy.deepcopy(vae)
     assert H._install_tile_batch(fast)
@@ -422,6 +425,7 @@ def test_tile_batching_matches_the_stock_tile_loop(monkeypatch):
 @pytest.mark.parametrize("batch", ["1", "2", "3"])
 @pytest.mark.parametrize("shape", [(6, 9), (4, 4), (10, 5), (3, 12)])
 def test_streamed_stitch_equals_the_stock_stitch_bit_for_bit(monkeypatch, batch, shape):
+    monkeypatch.setenv(CANVAS_ENV, "0")  # the stock stitch these tests pin
     vae = _tiny_vae()
     assert H._install_tile_batch(vae)
     monkeypatch.setenv(H.H3_VAE_TILE_BATCH_ENV, batch)
@@ -436,6 +440,7 @@ def test_streamed_stitch_equals_the_stock_stitch_bit_for_bit(monkeypatch, batch,
 
 
 def test_streamed_stitch_releases_each_decoder_batch(monkeypatch):
+    monkeypatch.setenv(CANVAS_ENV, "0")  # the stock stitch these tests pin
     from torch.multiprocessing.reductions import StorageWeakRef
 
     vae = _tiny_vae()
@@ -466,6 +471,7 @@ def test_streamed_stitch_releases_each_decoder_batch(monkeypatch):
 
 
 def test_streamed_stitch_keeps_stock_for_an_unknown_stitch(monkeypatch):
+    monkeypatch.setenv(CANVAS_ENV, "0")  # the stock stitch these tests pin
     vae = _tiny_vae()
     assert H._install_tile_batch(vae)
     calls = []
@@ -503,6 +509,7 @@ def test_apply_skips_when_already_applied(monkeypatch):
         H.LEVER_FP16_ENCODER,
         H.LEVER_FUSED_DECODER,
         H.LEVER_TILE_BATCH,
+        H.LEVER_CANVAS,
     }
     encoder_forward = vae.encoder.forward
     assert H.apply_h3_vae_speedups(vae, speed_mode = "max", workflow = "fl2va") == engaged
@@ -743,6 +750,7 @@ def test_the_fp16_encoder_falls_back_to_the_stock_encoder(monkeypatch):
 
 
 def test_tile_batching_retries_one_tile_at_a_time_after_an_oom(monkeypatch):
+    monkeypatch.setenv(CANVAS_ENV, "0")  # the stock stitch these tests pin
     vae = _tiny_vae()
     ref = copy.deepcopy(vae)
     assert H._install_tile_batch(vae)

@@ -195,16 +195,44 @@ function defaultTtsVoice(): SpeechSynthesisVoice | undefined {
   );
 }
 
+export function findVoiceForLanguage(
+  lang: string,
+  voices: readonly SpeechSynthesisVoice[] = typeof window !== "undefined" &&
+  window.speechSynthesis
+    ? window.speechSynthesis.getVoices()
+    : [],
+): SpeechSynthesisVoice | undefined {
+  const wanted = lang.toLowerCase().replace("_", "-");
+  const tagOf = (voice: SpeechSynthesisVoice) =>
+    voice.lang.toLowerCase().replace("_", "-");
+  const score = (voice: SpeechSynthesisVoice) =>
+    (tagOf(voice) === wanted ? 1000 : 0) +
+    voiceQualityScore(voice) +
+    (LOW_QUALITY_VOICE_NAMES.has(voiceBaseName(voice)) ? -500 : 0);
+  return voices
+    .filter((voice) => langBase(tagOf(voice)) === langBase(wanted))
+    .sort((a, b) => score(b) - score(a))[0];
+}
+
 export function createConfiguredUtterance(
   text: string,
+  lang?: string,
 ): SpeechSynthesisUtterance {
   const { ttsVoiceURI, ttsRate, ttsPitch, ttsVolume } =
     useVoiceSettingsStore.getState();
   const utterance = new SpeechSynthesisUtterance(text);
-  const voice = findTtsVoice(ttsVoiceURI) ?? defaultTtsVoice();
+  const picked = findTtsVoice(ttsVoiceURI) ?? defaultTtsVoice();
+  // A voice reads another language's text with its own sounds, or not at all.
+  const voice =
+    lang && (!picked || langBase(picked.lang) !== langBase(lang))
+      ? findVoiceForLanguage(lang)
+      : picked;
   if (voice) {
     utterance.voice = voice;
     utterance.lang = voice.lang;
+  } else if (lang) {
+    // No voice of that language is listed (yet): the tag lets the browser choose one.
+    utterance.lang = lang;
   }
   utterance.rate = ttsRate;
   utterance.pitch = ttsPitch;
@@ -230,6 +258,9 @@ async function resolveReadAloudModel(
     return null;
   }
 }
+
+const NO_SPEECH_MODEL =
+  /speech model (is loaded|for read aloud is no longer loaded)/i;
 
 function readAloudError(
   detail: string,
@@ -414,7 +445,13 @@ export function readAloudChunks(text: string): string[] {
   while (pending.length > 0) {
     const take = Math.max(
       1,
-      planTtsChunk({ pending, first: chunks.length === 0, final: true, playing: false, waitedMs: 0 }),
+      planTtsChunk({
+        pending,
+        first: chunks.length === 0,
+        final: true,
+        playing: false,
+        waitedMs: 0,
+      }),
     );
     chunks.push(pending.splice(0, take).join(" "));
   }
@@ -427,6 +464,7 @@ function speakWithBackendAudio(
   handleEnd: (
     reason: "finished" | "error" | "cancelled",
     error?: unknown,
+    unplayed?: string,
   ) => void,
   markRunning: () => void,
 ): { cancel: () => void } {
@@ -479,10 +517,11 @@ function speakWithBackendAudio(
     });
 
   void (async () => {
+    let i = 0;
     try {
       let pendingChunk = synth(0);
       next = pendingChunk;
-      for (let i = 0; i < chunks.length; i++) {
+      for (; i < chunks.length; i++) {
         const url = await pendingChunk;
         next = null;
         if (cancelled) {
@@ -508,7 +547,7 @@ function speakWithBackendAudio(
       cleanup();
       controller.abort();
       next?.then(releaseTtsAudioUrl, () => {});
-      handleEnd("error", error);
+      handleEnd("error", error, chunks.slice(i).join(" "));
     }
   })();
 
@@ -540,7 +579,11 @@ export class StudioSpeechSynthesisAdapter implements SpeechSynthesisAdapter {
     );
   }
 
-  speak(spokenText: string): SpeechSynthesisAdapter.Utterance {
+  speak(
+    spokenText: string,
+    lang?: string,
+    options?: { systemFallback?: boolean },
+  ): SpeechSynthesisAdapter.Utterance {
     const text = markdownToSpeechText(stripSearchImageTokens(spokenText));
     const subscribers = new Set<() => void>();
 
@@ -589,6 +632,21 @@ export class StudioSpeechSynthesisAdapter implements SpeechSynthesisAdapter {
       handleEnd("finished");
       return res;
     }
+    const speakWithSystemVoice = (spoken = text) => {
+      const utterance = createConfiguredUtterance(spoken, lang);
+      utterance.addEventListener("end", () => handleEnd("finished"));
+      utterance.addEventListener("error", (e) => handleEnd("error", e.error));
+
+      // Chrome silently drops speak() while a cancelled run's utterance is queued.
+      window.speechSynthesis.cancel();
+      window.speechSynthesis.speak(utterance);
+      res.status = { type: "running" };
+
+      cancelImpl = () => {
+        window.speechSynthesis.cancel();
+        handleEnd("cancelled");
+      };
+    };
     if (
       ttsEngine !== "system" ||
       !StudioSpeechSynthesisAdapter.systemVoicesSupported()
@@ -597,7 +655,30 @@ export class StudioSpeechSynthesisAdapter implements SpeechSynthesisAdapter {
         ttsEngine === "custom"
           ? generateCustomTtsAudio
           : generateStudioTtsAudio;
-      const session = speakWithBackendAudio(generate, text, handleEnd, () => {
+      const onEnd = (
+        reason: "finished" | "error" | "cancelled",
+        error?: unknown,
+        unplayed?: string,
+      ) => {
+        if (
+          reason === "error" &&
+          options?.systemFallback &&
+          ttsEngine === "studio" &&
+          error instanceof Error &&
+          NO_SPEECH_MODEL.test(error.message) &&
+          StudioSpeechSynthesisAdapter.systemVoicesSupported() &&
+          res.status.type !== "ended"
+        ) {
+          toast.info(
+            "No Unsloth speech model is loaded, so this device's voice is reading.",
+          );
+          speakWithSystemVoice(unplayed);
+          for (const handler of subscribers) handler();
+          return;
+        }
+        handleEnd(reason, error);
+      };
+      const session = speakWithBackendAudio(generate, text, onEnd, () => {
         if (res.status.type === "ended") return;
         // The adapter contract drives UI state off these subscribe callbacks.
         res.status = { type: "running" };
@@ -607,19 +688,7 @@ export class StudioSpeechSynthesisAdapter implements SpeechSynthesisAdapter {
       return res;
     }
 
-    const utterance = createConfiguredUtterance(text);
-    utterance.addEventListener("end", () => handleEnd("finished"));
-    utterance.addEventListener("error", (e) => handleEnd("error", e.error));
-
-    // Chrome silently drops speak() while a cancelled run's utterance is queued.
-    window.speechSynthesis.cancel();
-    window.speechSynthesis.speak(utterance);
-    res.status = { type: "running" };
-
-    cancelImpl = () => {
-      window.speechSynthesis.cancel();
-      handleEnd("cancelled");
-    };
+    speakWithSystemVoice();
     return res;
   }
 }
