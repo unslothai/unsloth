@@ -38,7 +38,7 @@ const BASE: Snapshot = {
   glass: {
     material: "solid",
     style: "frosted",
-    strength: { light: 25, dark: 25 },
+    strength: { light: 40, dark: 15 },
     lens: "off",
     menus: true,
     scope: "all",
