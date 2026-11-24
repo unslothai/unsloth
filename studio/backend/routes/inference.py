@@ -6975,7 +6975,7 @@ def _display_tool_name_gate(active_tools):
     return names or None
 
 
-_SHIELD_REHEARSAL_RE = _re.compile(r"(?<!\[CALL_ID\])\b[\w-]+\[ARGS\]\s*\{")
+_SHIELD_REHEARSAL_RE = _re.compile(r"(?<!\[CALL_ID\])\b([\w-]+)\[ARGS\]\s*\{")
 
 
 def _strip_tool_xml_for_display(
@@ -6997,6 +6997,7 @@ def _strip_tool_xml_for_display(
         _REHEARSAL_TAIL_STRIP_RE,
         _balanced_json_span,
         _code_spans,
+        _markerless_promotable,
         _strip_bracket_tag_calls,
         apply_tool_strip_patterns,
         strip_outside_think,
@@ -7023,15 +7024,22 @@ def _strip_tool_xml_for_display(
                 nonlocal si
                 m = _SHIELD_REHEARSAL_RE.search(seg, lo)
                 while m is not None:
-                    end = _balanced_json_span(seg, m.end() - 1)
+                    brace = m.end() - 1
                     while si < len(spans) and spans[si][1] <= m.start():
                         si += 1
                     if si < len(spans) and spans[si][0] <= m.start():
+                        # Balanced within its code span only: the example never reaches past it.
                         code_end = spans[si][1] - 1
-                        end = code_end if end is None else min(end, code_end)
+                        body = _balanced_json_span(seg[brace : code_end + 1], 0)
+                        return m.start(), (code_end if body is None else brace + body) + 1
+                    end = _balanced_json_span(seg, brace)
                     if end is not None:
                         return m.start(), end + 1
-                    m = _SHIELD_REHEARSAL_RE.search(seg, m.start() + 1)
+                    if not _markerless_promotable(m.group(1), enabled_tool_names):
+                        # An unfinished inactive example is kept to the end, as the old rehearsal arm kept it.
+                        return m.start(), len(seg)
+                    # An unfinished call: the tail pass strips from it to the end, so no example follows.
+                    return None
                 return None
 
             def _next_call(lo, example):
