@@ -217,6 +217,7 @@ def search_knowledge_base_with_sources(
             k = top_k or config.TOP_K_HYBRID,
             model_name = model_name,
             mode = mode,
+            min_score = min_score,
         )
         hits = retrieval.filter_min_score(hits, min_score)
         rows = store_rows(conn, hits)
@@ -257,6 +258,7 @@ def search_for_autoinject(
             k = k,
             model_name = model_name,
             mode = mode,
+            min_score = min_dense_score or 0.0,
         )
         strong = (
             hits[:k]
