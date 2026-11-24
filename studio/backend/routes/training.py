@@ -2462,6 +2462,7 @@ async def start_training(
 
         # before_spawn hook: runs only after start_training's guards pass.
         def _free_vram_for_training() -> None:
+            _refuse_a_foreign_export()
             try:
                 from core.export import get_export_backend
                 exp_backend = get_export_backend()
@@ -3560,6 +3561,25 @@ def diffusion_dataset_interlock():
         raise HTTPException(status_code = 409, detail = str(exc)) from exc
 
 
+def _refuse_a_foreign_export() -> None:
+    """Starting training stops the export worker; another account's running export refuses the start instead."""
+    from routes.training_vram import ManagedEngineStillRunning
+
+    try:
+        from core.export import get_export_backend
+        from core.training.account_jobs import job_is_foreign
+
+        exp_backend = get_export_backend()
+        foreign = exp_backend.is_export_active() and job_is_foreign(exp_backend)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Could not check the export worker's account: %s", e)
+        return
+    if foreign:
+        raise ManagedEngineStillRunning(
+            "Another account's export is running. Wait for it to finish, then start training."
+        )
+
+
 def _free_restyle_for_training() -> None:
     """The restyle sd-server sits outside the arbiter's owners; a running restyle refuses the start."""
     from core.inference import video_restyle
@@ -3578,6 +3598,7 @@ def _free_restyle_for_training() -> None:
 
 def _free_gpu_for_diffusion_training() -> None:
     """Frees resident GPU models first; the trainer's SDXL pipeline would OOM beside them."""
+    _refuse_a_foreign_export()
     try:
         from core.export import get_export_backend
         exp_backend = get_export_backend()
