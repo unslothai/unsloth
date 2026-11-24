@@ -3117,6 +3117,8 @@ class TestValidateGuardCoversMetadataPreflights:
         remote = {
             "check_upgrade_for_model",
             "latest_tier_active_for",
+            "latest_tier_forces_16bit",
+            "latest_tier_load_policy",
             "get_base_model_from_lora_identifier",
             "_guard_chat_load_against_training",
         }
@@ -3199,7 +3201,12 @@ class TestGuardIsKeyedOnWhatIsRead:
                 continue
             targets, read = node.args[1], node.args[2]
             read_name = getattr(read, "id", None) or getattr(read, "attr", None)
-            if read_name in ("latest_tier_active_for", "_guard_chat_load_against_training"):
+            if read_name in (
+                "latest_tier_active_for",
+                "latest_tier_forces_16bit",
+                "latest_tier_load_policy",
+                "_guard_chat_load_against_training",
+            ):
                 if isinstance(targets, ast.Name):
                     bad.append((read_name, node.lineno))
             if read_name == "check_upgrade_for_model":

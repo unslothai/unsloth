@@ -1085,6 +1085,9 @@ class TestEstimateMemoryRoute:
             "latest_tier_active_for",
             lambda name, token = None: asked.append((name, token)) or True,
         )
+        # The precision check reads the adapter and config next; keep both off the Hub.
+        monkeypatch.setattr(tv, "_remote_lora_base", lambda *a, **kw: None)
+        monkeypatch.setattr(tv, "_load_config_json", lambda *a, **kw: None)
         monkeypatch.setattr(
             ri,
             "_offline_guarded",

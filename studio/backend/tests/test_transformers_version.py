@@ -3033,9 +3033,20 @@ class TestLatestTierForces16Bit:
         )
 
     def test_route_guard_present(self):
-        src = self._read("routes/inference.py")
-        assert "latest_tier_active_for" in src, (
-            "routes/inference.py must size the VRAM guard with the same 16-bit "
+        import ast
+
+        tree = ast.parse(self._read("routes/inference.py"))
+        load = next(
+            node
+            for node in tree.body
+            if isinstance(node, ast.AsyncFunctionDef) and node.name == "_load_model_impl"
+        )
+        # A reference in the body, not an import or a name elsewhere in the file.
+        assert any(
+            isinstance(node, ast.Name) and node.id == "latest_tier_forces_16bit"
+            for node in ast.walk(load)
+        ), (
+            "_load_model_impl must size the VRAM guard with the same 16-bit "
             "flip the worker applies for latest-sidecar models."
         )
 
