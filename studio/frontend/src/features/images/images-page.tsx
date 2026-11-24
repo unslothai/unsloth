@@ -2045,7 +2045,6 @@ export function ImagesPage({
   );
   const [livePreviewOff, setLivePreviewOff] = usePersistedToggle("unsloth_images_live_preview_off");
   const livePreview = !livePreviewOff;
-  // Fast CFG (lossy, off by default): the switch persists like Live preview's.
   const [fastCfgOn, setFastCfgOn] = usePersistedToggle(FAST_CFG_STORAGE_KEY);
   const oversizedOnce = useRef(false);
   // The compare grid run handleGenerate is to send instead of the form's runs (compare/).

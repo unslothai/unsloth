@@ -183,7 +183,6 @@ export function gridRecipeFields(
     ["Base shift", shared("base_shift")],
     ["Max shift", shared("max_shift")],
     ["CFG scale", sent.length ? shared("guidance") : form.guidance],
-    // Read back by the paste parser (lib/image-metadata) like the backend's infotext.
     ["Fast CFG", shared("cfg_interval_end")],
     ["Seed", shared("seed")],
     ["Variation seed", shared("variation_seed")],

@@ -747,7 +747,6 @@ def _flux2_klein_distilled(pipe: Any) -> bool:
     return bool(getattr(getattr(pipe, "config", None), "is_distilled", False))
 
 
-# Pipeline kwarg for limited-interval CFG (FLUX.3 Klein base: diffusers ClassifierFreeGuidance ``stop``).
 _CFG_INTERVAL_KWARG = "guidance_stop"
 
 
@@ -15928,7 +15927,6 @@ class DiffusionBackend:
         inpaint_padding: Optional[int] = None,
         # Upscale workflow: a model upscaler id (diffusion_upscalers) in place of the Lanczos resize. None = Lanczos.
         upscale_model: Optional[str] = None,
-        # Fast CFG (lossy, opt-in): fraction of the steps after which the unconditional branch is dropped. None = off.
         cfg_interval_end: Optional[float] = None,
         _hires_pass: Optional[HiresPass] = None,
     ) -> dict[str, Any]:
@@ -17343,11 +17341,9 @@ class DiffusionBackend:
                         weighting_used = weighting_used[0],
                         variation_seed_list = variation_seed_list,
                     ),
-                    # Recorded only when applied, so a plain inpaint recipe stays unchanged.
                     "mask_blur": mask_blur_applied,
                     "inpaint_only_masked": True if inpaint_padding_applied is not None else None,
                     "inpaint_padding": inpaint_padding_applied,
-                    # Recorded only when applied: a recipe without it replays full CFG.
                     "cfg_interval_end": cfg_interval_applied,
                 }
                 if upscale_model and workflow == "upscale":

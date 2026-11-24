@@ -3030,8 +3030,6 @@ def _interval_cfg_loop(
 
 
 def test_a_fast_cfg_tail_stays_exact_across_renders():
-    # After the stop the uncond branch just does not come: the replica's prediction is dropped, nothing disables,
-    # and the next render (Fast CFG or full) runs both branches in parallel again.
     torch.manual_seed(0)
     dit = _Dit()
     latents = torch.randn(1, 4)

@@ -32,7 +32,6 @@ const LOADED = { loaded: true, supports_cfg_interval: true };
 test("the switch shows only on a model that takes it, with CFG on, and sends the 0.8 preset", () => {
   assert.equal(FAST_CFG_INTERVAL_END, 0.8);
   assert.equal(fastCfgAvailable(LOADED, 3.5), true);
-  // guidance 1 runs one branch already; no model, an older backend, or a connection: hidden.
   assert.equal(fastCfgAvailable(LOADED, 1), false);
   assert.equal(fastCfgAvailable({ loaded: true, supports_cfg_interval: false }, 3.5), false);
   assert.equal(fastCfgAvailable({ loaded: true }, 3.5), false);
@@ -40,7 +39,6 @@ test("the switch shows only on a model that takes it, with CFG on, and sends the
   assert.equal(fastCfgAvailable(null, 3.5), false);
   assert.equal(fastCfgAvailable(LOADED, 3.5, true), false);
   assert.deepEqual(fastCfgRequestFields(true, true), { cfg_interval_end: 0.8 });
-  // Off, or on but hidden (a persisted switch on another model): the request is unchanged.
   assert.deepEqual(fastCfgRequestFields(true, false), {});
   assert.deepEqual(fastCfgRequestFields(false, true), {});
 });
@@ -58,12 +56,10 @@ test("a Studio recipe restores the switch; full CFG and other models are handled
   assert.deepEqual(fastCfgNotApplied(recipe.cfg_interval_end, true), []);
   assert.deepEqual(fastCfgNotApplied(recipe.cfg_interval_end, false), ["Fast CFG 0.8 (not available for this model)"]);
   assert.deepEqual(importNotApplied(recipe), []);
-  // No value (full CFG) turns the switch off; out-of-range values are dropped.
   assert.equal(fastCfgFromRecipe(recipeSettings({ prompt: "p" }, DEFAULTS)), false);
   assert.equal(recipeSettings({ prompt: "p", cfg_interval_end: 1 }, DEFAULTS).cfg_interval_end, undefined);
   assert.equal(recipeSettings({ prompt: "p", cfg_interval_end: 1.5 }, DEFAULTS).cfg_interval_end, undefined);
   assert.equal(recipeSettings({ prompt: "p", cfg_interval_end: 0 }, DEFAULTS).cfg_interval_end, undefined);
-  // An API caller's other value restores as the preset: named.
   assert.deepEqual(fastCfgNotApplied(0.7, true), ["Fast CFG 0.7 (restored as 0.8)"]);
   assert.equal(fastCfgLabel(0.8), "On (CFG for the first 80% of steps)");
   assert.equal(fastCfgLabel(null), null);
@@ -114,7 +110,6 @@ test("a Fast CFG compare axis runs full vs fast cells and the grid names a share
   const sent = r.plan.order.map((_, i) => run.request(i, base(), 7) as unknown as Record<string, unknown>);
   assert.deepEqual(sent.map((q) => q.cfg_interval_end).sort(), [0.8, 1]);
   assert.equal(planCompare([{ axisId: "cfg_interval_end", text: "0" }], c).ok, false);
-  // The form's Fast CFG on every cell of another axis: written once in the grid's parameters.
   const steps = planCompare([{ axisId: "steps", text: "20, 30" }], c, { keepRandomSeeds: false, rng: () => 0.5 });
   assert.ok(steps.ok);
   const cells = [base({ steps: 20, cfg_interval_end: 0.8 }), base({ steps: 30, cfg_interval_end: 0.8 })];

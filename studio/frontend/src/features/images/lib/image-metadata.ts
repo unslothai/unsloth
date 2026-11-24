@@ -822,7 +822,6 @@ export function parseA1111Parameters(text: string): ImportedRecipe | null {
     // Flux's resolution-dependent shift, as Studio's compare grid writes it.
     else if (key === "base shift" && n !== undefined) out.base_shift = n;
     else if (key === "max shift" && n !== undefined) out.max_shift = n;
-    // Studio's Fast CFG (limited-interval CFG): the step fraction the unconditional pass ran for.
     else if (key === "fast cfg" && n !== undefined) out.cfg_interval_end = n;
     // A1111 writes Emphasis only when it is not the default; "Original" is what Studio's prompt encoding does.
     // "None" skips the parser entirely (brackets are prompt text): Studio's prompt weighting off.
@@ -955,7 +954,6 @@ export interface RestorableRecipe {
   shift?: number;
   base_shift?: number;
   max_shift?: number;
-  // Fast CFG (lib/fast-cfg): absent = full CFG.
   cfg_interval_end?: number;
   // The prompt upsampler's caption and outcome; restore decides the Enhance prompt toggle from them.
   enhanced_prompt?: string | null;
@@ -1082,7 +1080,6 @@ export function unknownRecipeKeys(r: ImportedRecipe): string[] {
   });
 }
 
-// The request's bounds for each clamped recipe number (DiffusionGenerateRequest; steps is
 // STEPS_REQUEST_MAX in image-generation-defaults): recipeSettings clamps, importNotApplied says so.
 const RECIPE_BOUNDS = {
   steps: { lo: 1, hi: 100, label: "Steps", integer: true },
@@ -1306,14 +1303,12 @@ export function recipeSettings(
       return n !== undefined && n >= 0 && n < 2 ** 32 ? n : undefined;
     })(),
     variation_strength: clamp(num(r.variation_strength), 0, 1),
-    // The request's bounds: shift in (0, 100], base / max shift in [0, 100].
     shift: (() => {
       const n = num(r.shift);
       return n !== undefined && n > 0 && n <= 100 ? n : undefined;
     })(),
     base_shift: clamp(num(r.base_shift), 0, 100),
     max_shift: clamp(num(r.max_shift), 0, 100),
-    // The request's bounds: (0, 1]; 1 is full CFG, recorded as absent.
     cfg_interval_end: (() => {
       const n = num(r.cfg_interval_end);
       return n !== undefined && n > 0 && n < 1 ? n : undefined;

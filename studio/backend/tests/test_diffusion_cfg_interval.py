@@ -35,7 +35,6 @@ def test_stop_installs_an_interval_guider():
     _set(mp, 3.5, 0.8)
     assert mp.guider.config.stop == 0.8
     assert mp.guider.config.guidance_scale == 3.5
-    # steps 0-39 of 50 run both branches, 40-49 the conditional one only
     mp.guider.set_state(step = 39, num_inference_steps = 50, timestep = None)
     assert mp.guider.num_conditions == 2
     mp.guider.set_state(step = 40, num_inference_steps = 50, timestep = None)
@@ -58,8 +57,6 @@ def test_unchanged_guider_is_kept():
 
 
 def test_state_is_reset_before_each_call():
-    # The previous render ended past the stop: without a reset the next text step would see one condition and
-    # skip the negative embeddings the CFG steps need.
     g = _guider(stop = 0.8)
     g.set_state(step = 49, num_inference_steps = 50, timestep = None)
     assert g.num_conditions == 1
@@ -109,7 +106,6 @@ def test_request_model_bounds():
 
 
 def test_no_scale_drops_a_stale_interval():
-    # A call without a guidance scale keeps the guider's scale, never a previous Fast CFG render's stop.
     mp = _MP(_guider(scale = 4.0, stop = 0.8))
     _set(mp, None, None)
     assert mp.guider.config.stop == 1.0
@@ -141,7 +137,6 @@ class _GuidedModular:
 
 
 def test_every_image_of_a_batch_gets_its_negative_embeddings():
-    # A batch is one blocks call per image: image 2's text step must not read image 1's past-the-stop state.
     from core.inference.diffusion_flux3 import FLUX3_BASE_BLOCKS
 
     class _Base(_Flux3KleinPipelineMixin):
@@ -167,7 +162,6 @@ def test_every_image_of_a_batch_gets_its_negative_embeddings():
     assert out.images == ["img:a", "img:b", "img:c"]
     assert pipe.mp.guider.config.stop == 0.8
     assert pipe.mp.text_conditions == [2, 2, 2]
-    # the next render without Fast CFG is full CFG again
     pipe(prompt = "d", num_inference_steps = 10, guidance_scale = 3.5)
     assert pipe.mp.guider.config.stop == 1.0
     assert pipe.mp.text_conditions[-1] == 2

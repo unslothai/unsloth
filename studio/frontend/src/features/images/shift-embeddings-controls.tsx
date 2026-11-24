@@ -104,7 +104,6 @@ export function ShiftField({
   );
 }
 
-/** The Fast CFG switch (lib/fast-cfg); renders nothing unless the loaded model takes it and CFG runs. */
 export function FastCfgField({
   available,
   enabled,

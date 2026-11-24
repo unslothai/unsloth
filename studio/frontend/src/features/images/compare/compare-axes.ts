@@ -41,7 +41,6 @@ export interface CompareContext {
   samplers: readonly SamplerOption[];
   samplerChoice: SamplerChoice;
   shift: ShiftControl | null;
-  // The loaded model takes Fast CFG (cfg_interval_end); 1 = full CFG, so a "1, 0.8" axis compares the two.
   cfgInterval?: boolean;
   loraCapable: boolean;
   // The form's active LoRA rows, in order; a weight axis targets one of them.

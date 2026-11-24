@@ -99,7 +99,6 @@ export interface DiffusionStatus {
   negative_prompt_min_guidance?: number | null;
   // False when the loaded model ignores guidance on this engine (FLUX.3 distilled on diffusers).
   supports_guidance?: boolean;
-  // Fast CFG: generate takes cfg_interval_end (lib/fast-cfg); absent on an older backend = off.
   supports_cfg_interval?: boolean;
   // False when this load streams no denoise previews (native engine, families without a preview map).
   supports_live_preview?: boolean;
@@ -277,7 +276,6 @@ export interface DiffusionGenerateRequest {
   shift?: number;
   base_shift?: number;
   max_shift?: number;
-  // Fast CFG: the unconditional pass stops after this fraction of the steps; omitted = full CFG.
   cfg_interval_end?: number;
   // Rewrite the prompt with the family's prompt upsampler first. null/absent = the family default. Sent only for a
   // family that supports it.
@@ -392,7 +390,6 @@ export interface GalleryImage {
   shift?: number | null;
   base_shift?: number | null;
   max_shift?: number | null;
-  // Fast CFG the image ran with; null = full CFG.
   cfg_interval_end?: number | null;
   embeddings?: string[] | null;
   // The caption the prompt upsampler wrote and the model actually ran; `prompt` stays the user's text.

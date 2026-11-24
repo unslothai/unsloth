@@ -103,7 +103,6 @@ def _params_text(meta: dict[str, Any]) -> str:
     # Static flow shift, read back by the paste parser; base / max shift stay in the recipe chunk only.
     if meta.get("shift") is not None:
         fields += f", Shift: {meta['shift']}"
-    # Studio's Fast CFG, read back by the paste parser; written only when it applied.
     if meta.get("cfg_interval_end") is not None:
         fields += f", Fast CFG: {meta['cfg_interval_end']}"
     # ADetailer's own keys (adetailer/args.py), so a paste into Studio or a webui with ADetailer restores the pass.

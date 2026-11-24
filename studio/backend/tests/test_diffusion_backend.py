@@ -15215,14 +15215,12 @@ def test_generate_fast_cfg_off_by_default(fake_runtime, tmp_path):
     result = backend.generate(prompt = "a sloth", steps = 50, guidance = 3.5)
     assert backend._state.pipe.last_kwargs["guidance_stop"] is None
     assert result["cfg_interval_end"] is None
-    # 1.0 is full CFG: nothing to pass
     result = backend.generate(prompt = "a sloth", steps = 50, guidance = 3.5, cfg_interval_end = 1.0)
     assert backend._state.pipe.last_kwargs["guidance_stop"] is None
     assert result["cfg_interval_end"] is None
 
 
 def test_generate_fast_cfg_skipped_without_cfg(fake_runtime, tmp_path):
-    # guidance <= 1 runs one branch already: no interval to apply, nothing recorded
     backend = DiffusionBackend()
     _load_interval(backend, tmp_path)
     result = backend.generate(prompt = "a sloth", steps = 50, guidance = 1.0, cfg_interval_end = 0.8)
