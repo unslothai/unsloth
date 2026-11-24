@@ -446,7 +446,7 @@ class TestStackWindowsForce:
 
 HIPINFO_CALL = slice_between(
     INSTALL_SRC,
-    "                # Beside NVIDIA a device-naming CUDA mask",
+    "                # Notice-only probe: a device-naming CUDA mask",
     "                if ($hipOut -match",
 )
 
@@ -459,8 +459,15 @@ HIPINFO_CALL = slice_between(
         (False, {"CUDA_VISIBLE_DEVICES": "0"}, "0"),
         (True, {"CUDA_VISIBLE_DEVICES": "0", "HIP_VISIBLE_DEVICES": "1"}, "0"),
         (True, {"CUDA_VISIBLE_DEVICES": "-1"}, "-1"),
+        (True, {"CUDA_VISIBLE_DEVICES": "1", "UNSLOTH_FORCE_ROCM_TORCH": "1"}, "1"),
     ],
-    ids = ["nvidia-mask-beside-nvidia", "amd-only-host", "hip-mask-wins", "hiding-mask"],
+    ids = [
+        "nvidia-mask-beside-nvidia",
+        "amd-only-host",
+        "hip-mask-wins",
+        "hiding-mask",
+        "forced-keeps-mask",
+    ],
 )
 def test_hipinfo_beside_nvidia_ignores_a_cuda_mask_naming_nvidia_cards(beside, env, seen):
     kv = _ps_kv(
@@ -469,6 +476,7 @@ def test_hipinfo_beside_nvidia_ignores_a_cuda_mask_naming_nvidia_cards(beside, e
             _env(**env),
             "$nvMaskHidesAll = Test-CudaMaskHidesNvidia",
             f"$ProbeAmdBesideNvidia = ${str(beside).lower()}",
+            slice_between(INSTALL_SRC, "    $script:StudioMuteLines = ", "\n"),
             "function Invoke-FakeHipinfo { if ($null -eq $env:CUDA_VISIBLE_DEVICES) { '<unset>' } else { $env:CUDA_VISIBLE_DEVICES } }",
             "$hipinfoExe = [pscustomobject]@{ Source = 'Invoke-FakeHipinfo' }",
             HIPINFO_CALL,
@@ -682,3 +690,25 @@ def test_a_wmi_only_mixed_host_weighs_every_amd_adapter(names, env, arch, notice
         )
     )
     assert kv["ARCH"] == arch and kv["NOTICE"] == notice
+
+
+@requires_pwsh
+def test_a_forced_mixed_host_weighs_the_amd_smi_arches():
+    kv = _ps_kv(
+        _script(
+            COLLECT,
+            INSTALL_HELPERS,
+            INSTALL_WHEEL_MAPS,
+            "$_hipAllArches = @(); $_asicGfxTokens = @(); $_smiGfxTokens = @('gfx90c', 'gfx1100')",
+            _env(UNSLOTH_FORCE_ROCM_TORCH = "1"),
+            "$nvMaskHidesAll = Test-CudaMaskHidesNvidia",
+            "$HasNvidiaSmi = $true; $ProbeAmdBesideNvidia = $true",
+            "$ROCmGfxArch = 'gfx90c'; $AmdHasGpuWheels = $false",
+            "$HasROCm = $true; $HipSdkInstalled = $true; $ROCmGpuLabel = 'x'; $ROCmGpuName = 'x'",
+            "$ROCmUnsupportedGfxArch = $null",
+            INSTALL_DECISION,
+            'Write-Output "ROUTE=$MixedHostRoute"',
+            'Write-Output "ARCH=$ROCmGfxArch"',
+        )
+    )
+    assert kv["ROUTE"] == "rocm" and kv["ARCH"] == "gfx1100"

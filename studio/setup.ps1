@@ -106,6 +106,7 @@ try { $script:StudioStdoutRedirected = [Console]::IsOutputRedirected } catch { }
 # the console handle when redirected, Write-Host (colorized) when interactive.
 function Write-StudioLine {
     param([string]$Message = "", [string]$ForegroundColor)
+    if ($script:StudioMuteLines) { return }
     if ($script:StudioStdoutRedirected) {
         try { [Console]::Out.WriteLine($Message); [Console]::Out.Flush() } catch {}
         return

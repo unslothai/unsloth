@@ -9020,7 +9020,7 @@ main()
     # Declared with its neighbours, not inside the block below: the arms that read
     # it are outside that gate, so an NVIDIA host would leave it undefined.
     $ROCmUnsupportedGfxArch = $null
-    $_hipAllArches = @()
+    $_hipAllArches = @(); $_smiGfxTokens = @(); $_asicGfxTokens = @()
     # Mixed hosts are probed too (flag, mask, notice); a pin skips it, as in install.sh.
     $ProbeAmdBesideNvidia = $HasNvidiaSmi -and -not $SkipTorch -and
         [string]::IsNullOrWhiteSpace($env:UNSLOTH_TORCH_INDEX_URL) -and
@@ -9094,9 +9094,10 @@ main()
         if ($hipinfoExe) {
             $HipSdkInstalled = $true   # binary found → SDK is installed regardless of device state
             try {
-                # Beside NVIDIA a device-naming CUDA mask addresses the NVIDIA cards; HIP would apply it to AMD.
+                # Notice-only probe: a device-naming CUDA mask addresses the NVIDIA cards. A ROCm route keeps it,
+                # as HIP applies it at runtime and setup.ps1 probes with it.
                 $_hipCvd = $env:CUDA_VISIBLE_DEVICES
-                $_hipDropCvd = $ProbeAmdBesideNvidia -and $null -ne $_hipCvd -and -not $nvMaskHidesAll -and $null -eq $env:HIP_VISIBLE_DEVICES
+                $_hipDropCvd = $script:StudioMuteLines -and $null -ne $_hipCvd -and -not $nvMaskHidesAll -and $null -eq $env:HIP_VISIBLE_DEVICES
                 if ($_hipDropCvd) { Remove-Item Env:CUDA_VISIBLE_DEVICES }
                 try { $hipOut = & $hipinfoExe.Source 2>&1 | Out-String }
                 finally { if ($_hipDropCvd) { $env:CUDA_VISIBLE_DEVICES = $_hipCvd } }
@@ -9406,7 +9407,7 @@ main()
     $MixedHostRoute = $null
     $MixedHostAmdArch = $null
     if ($ProbeAmdBesideNvidia) {
-        $_mixedArches = @($_hipAllArches)
+        $_mixedArches = @(@($_hipAllArches) + @($_smiGfxTokens) + @($_asicGfxTokens) | Where-Object { $_ })
         if ($_mixedArches.Count -eq 0 -and $wmiAmdNames -and $nameArchTable -and -not $env:UNSLOTH_ROCM_GFX_ARCH) {
             # WMI-only: every adapter's inferred arch, as setup.ps1 scores them, not adapter 0 alone.
             $_mixedArches = @(foreach ($n in $wmiAmdNames) { foreach ($row in $nameArchTable) { if ($n -match $row.P) { $row.A; break } } })
