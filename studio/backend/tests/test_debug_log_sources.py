@@ -343,7 +343,6 @@ def test_a_relative_spelling_resolves_to_the_same_source(monkeypatch):
 
 
 def test_an_unexpanded_home_spelling_resolves_to_the_same_source(monkeypatch, tmp_path):
-    """A path spelled with the unexpanded home still matches its listed source."""
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", "~/studio")

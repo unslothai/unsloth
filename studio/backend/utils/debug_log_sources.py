@@ -50,7 +50,6 @@ class LogSource:
 
 
 def candidate_roots() -> list[Path]:
-    """The Studio home scanned by the backend log viewer; empty if unresolvable."""
     try:
         from utils.paths import studio_root
         return [Path(os.path.realpath(studio_root()))]
