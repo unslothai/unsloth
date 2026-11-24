@@ -121,3 +121,19 @@ def test_activated_lora_is_refused(fast_encoder):
             use_gradient_checkpointing = False,
         )
     assert not hasattr(fast_encoder[0].auto_model, "peft_config")
+
+
+def test_default_random_state_leaves_the_rng(fast_encoder):
+    import numpy as np
+
+    np.random.seed(1)
+    before = np.random.get_state()[1].copy()
+    FastSentenceTransformer.get_peft_model(
+        fast_encoder,
+        r = 4,
+        lora_alpha = 8,
+        target_modules = ["query", "key", "value"],
+        use_gradient_checkpointing = False,
+    )
+    # LoRA init draws only from torch, so a moved numpy RNG means a reseed (#14327).
+    assert np.array_equal(np.random.get_state()[1], before)
