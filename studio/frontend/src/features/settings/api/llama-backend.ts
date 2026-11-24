@@ -15,6 +15,7 @@ export {
   LLAMA_BACKENDS,
   isLlamaBackend,
   llamaBackendSelectionNeedsApply,
+  llamaBackendUnavailableKey,
   visibleLlamaBackendOptions,
 } from "./llama-backend-payload";
 export type {
@@ -23,6 +24,7 @@ export type {
   LlamaBackendOption,
   LlamaBackendStatus,
   LlamaBackendSwitchStarted,
+  LlamaBackendUnavailableKey,
   LlamaEffectiveBackend,
 } from "./llama-backend-payload";
 
