@@ -84,6 +84,9 @@ _PRIVATE_RUNTIME_ROOTS = (
     "/run/media",
     "/run/mount",
     "/run/host",
+    # The Docker launcher stages the initial admin password here; cloud-init keeps user-data copies here.
+    "/run/unsloth",
+    "/run/cloud-init",
 )
 # Secrets a root-run Studio (the Docker image) could otherwise hand a managed tool; the rest of /etc
 # (ld.so.cache, nsswitch, hosts, resolv.conf, ssl/certs) is what tool processes need.
@@ -102,6 +105,11 @@ _PRIVATE_SYSTEM_PATHS = (
     "/etc/ipsec.secrets",
     "/etc/docker/key.json",
     "/etc/ssh/ssh_host_*_key",
+    "/etc/wireguard",
+    "/etc/NetworkManager/system-connections",
+    # cloud-init user-data often carries the headless Studio password (UNSLOTH_STUDIO_PASSWORD).
+    "/var/lib/cloud",
+    "/var/lib/tailscale",
 )
 
 

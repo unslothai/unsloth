@@ -311,8 +311,12 @@ def _calibration_dataset(dataset: Optional[str], hf_token):
     environment, so Core's own load would be anonymous); the default stays Core's."""
     if not dataset:
         return None
+    from core.training.account_jobs import _dataset_builder_name
     from datasets import load_dataset
 
+    # load_dataset takes its own builder names ahead of the Hub and reads the worker's cwd.
+    if _dataset_builder_name(dataset):
+        raise ValueError(f"the calibration dataset '{dataset}' is not a Hugging Face dataset id")
     kwargs = {} if hf_token is None else {"token": hf_token}
     # Like Core: no split forced, take `train` else the only split.
     splits = load_dataset(dataset, streaming = True, **kwargs)

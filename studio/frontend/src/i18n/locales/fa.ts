@@ -982,6 +982,13 @@ export const fa = {
     compactUnsupported:
       "فشرده‌سازی به یک مدل GGUF یا MLX با پشتیبانی از ابزار نیاز دارد",
   },
+  chatFiles: {
+    title: "فایل‌های این گفتگو",
+    code: "قطعه‌کدها",
+    showInChat: "نمایش در گفتگو",
+    download: "دانلود {name}",
+    saveFailed: "ذخیرهٔ {name} ممکن نشد.",
+  },
   welcome: {
     goodToSeeYou: "از دیدنتان خوشحالیم",
     goodToSeeYouName: "از دیدنتان خوشحالیم، {name}",
@@ -1031,6 +1038,9 @@ export const fa = {
       "به‌جای آن از ModelScope جستجو و دانلود کنید. می‌توانید در «تنظیمات» به حالت قبل برگردید.",
     useModelScopeFailed: "رفتن به ModelScope ممکن نشد.",
     updateToken: "به‌روزرسانی توکن",
+    linkedModelTitle: "{model} بارگذاری شود؟",
+    linkedModelBody: "پیوندی این صفحه را باز کرد و خواست این مدل دانلود و بارگذاری شود.",
+    linkedModelLoad: "بارگذاری",
     hfToken: {
       label: "توکن HF",
       saved: "ذخیره شده",
@@ -2783,7 +2793,7 @@ export const fa = {
         oldWebkitWarning:
           "WebKitGTK {version} روی Wayland: رندرینگ با GPU ممکن است هنگام اجرا روی NVIDIA با مقیاس‌بندی کسری از کار بیفتد (باگ WebKit شمارهٔ 280210). در این صورت، Unsloth خودبه‌خود به رندرینگ با CPU برمی‌گردد. روی WebKitGTK 2.50.4 هیچ افزایش سرعت قابل اندازه‌گیری نداشت (در هر دو حالت 8 fps)، بنابراین گزینهٔ «روشن» اینجا توصیه نمی‌شود.",
         oldDriverWarning:
-          "درایور NVIDIA {version} روی X11: Unsloth تا وقتی درایور 610 یا جدیدتر نشده است رندرینگ با GPU را خاموش نگه می‌دارد. درایورهای قدیمی‌تر در هر فریم یک توصیف‌گر فایل نشت می‌دهند و پنجره در عرض چند دقیقه دیگر ترسیم نمی‌شود.",
+          "درایور NVIDIA {version} روی X11: Unsloth تا وقتی درایور 590 یا جدیدتر نشده است رندرینگ با GPU را خاموش نگه می‌دارد. درایورهای قدیمی‌تر در هر فریم یک توصیف‌گر فایل نشت می‌دهند و پنجره در عرض چند دقیقه دیگر ترسیم نمی‌شود.",
         fallbackNote:
           "رندرینگ با GPU هنگام اجرا روی این سیستم از کار افتاد، بنابراین Unsloth از رندرینگ با CPU استفاده می‌کند.",
         tryAgain: "امتحان دوبارهٔ GPU",
@@ -3059,6 +3069,15 @@ export const fa = {
         runningOn: "llama.cpp در حال حاضر روی {backend} اجرا می‌شود.",
         hint: "بیلد llama.cpp مربوط به این بک‌اند را نصب می‌کند و در به‌روزرسانی‌ها حفظ می‌کند. وقتی انتخاب خودکار از کار می‌افتد یا درایور GPU شما از آن پشتیبانی نمی‌کند مفید است. فقط بک‌اندهایی فهرست شده‌اند که برای این دستگاه بیلد دارند؛ آموزش تحت تأثیر قرار نمی‌گیرد.",
         autoWith: "خودکار ({backend})",
+        unavailableOption: "{backend} ({reason})",
+        unavailableHint: "{backend}: {hint}",
+        unavailable: {
+          rocmNotInstalled: "ROCm نصب نشده است",
+          rocmNoAccess: "دسترسی به GPU وجود ندارد",
+          otherRelease: "به به‌روزرسانی llama.cpp نیاز دارد",
+          checkFailed: "بررسی ممکن نشد",
+          noBuild: "بیلدی برای این دستگاه وجود ندارد",
+        },
         apply: "اعمال",
         applying: "در حال نصب...",
         applyHint:

@@ -82,6 +82,16 @@ def test_auto_on_a_small_cpu_host_fits_the_kv_cache_in_free_ram(tmp_path, monkey
     assert need <= (available_mib - _HOST_RAM_HEADROOM_MIB) * MIB
 
 
+def test_auto_never_grows_the_context_as_free_ram_shrinks(tmp_path, monkeypatch):
+    ctxs = []
+    for gib in (8, 6, 5, 4, 3):
+        home = tmp_path / str(gib)
+        home.mkdir()
+        ctxs.append(_cpu_load(home, monkeypatch, available_mib = gib * 1024, n_ctx = 0)[1])
+    assert ctxs == sorted(ctxs, reverse = True)
+    assert ctxs[-1] <= _FIT_MIN_CTX
+
+
 def test_a_shorter_native_window_keeps_its_own_length(tmp_path, monkeypatch):
     _backend, ctx = _cpu_load(tmp_path, monkeypatch, available_mib = 64 * 1024, native = 40960, n_ctx = 0)
     assert ctx == 40960

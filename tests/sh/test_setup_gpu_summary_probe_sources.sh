@@ -33,8 +33,10 @@ GUARD
     sed -n '/^_amd_prefer_discrete_gfx()/,/^}/p'  "$SETUP_SH"
     # The real initialiser group: under set -u a variable no arm assigns aborts the update.
     sed -n '/^_setup_amd_detected=false$/,/^_setup_amd_records=""$/p' "$SETUP_SH"
-    # NVIDIA is pinned false: this is about which AMD device gets picked.
-    awk '/^if \[ "\$_setup_nvidia_usable" != true \]; then/ {on=1}
+    # NVIDIA is pinned false: this is about which AMD device gets picked. The guard's prefix, not the whole line:
+    # #19180 added "|| [ "$_setup_follow_rocm_torch" = true ]" for ROCm torch on a mixed NVIDIA + AMD host.
+    echo '_setup_follow_rocm_torch=false'
+    awk '/^if \[ "\$_setup_nvidia_usable" != true \]( |;)/ {on=1}
          on && /UNSLOTH_ROCM_GFX_ARCH env override/ {exit}
          on {print}' "$SETUP_SH"
     echo 'fi'

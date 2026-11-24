@@ -3,8 +3,11 @@
 
 from __future__ import annotations
 
+import ast
 import contextlib
 import functools
+import sys
+import threading
 import types
 import weakref
 from typing import Iterator, Optional
@@ -1864,7 +1867,11 @@ def _check_cp_trainer(
         and (getattr(accelerator, "num_processes", 2) or 2) > 1
     ):
         # Unused trainable towers break DDP (find_unused_parameters = False for reentrant checkpointing).
+        # Native FSDP2 also reports MULTI_* to accelerate, but it reduces only the gradients that exist.
+        from .models.fsdp2_native import is_native_fsdp2
         for model in models:
+            if allow_fsdp2 and is_native_fsdp2(model):
+                continue
             unused = _trainable_media_tower_parameters(model)
             if unused:
                 raise NotImplementedError(
@@ -2326,14 +2333,389 @@ def _rl_decoder_pre_hook(module, args, kwargs):
     # blocks on that rank alone.
     if "attention_mask" in kwargs:
         kwargs["attention_mask"] = None
-    stack.append(seq_len)
+    # Claimed by this call alone: a second or nested call of the same decoder gathers every state.
+    selection = getattr(_LAST_HIDDEN, "selection", None)
+    if selection is not None and selection.decoder is module:
+        selection.decoder = None
+        # The first call claims on every rank (the vote needs all of them), but only the call the audited
+        # forward makes itself may truncate: a helper or callback it runs first that calls the decoder
+        # (and may index its hidden_states) votes for every state instead.
+        if (
+            selection.caller is not None
+            and _direct_caller_code(sys._getframe(1)) is not selection.caller
+        ):
+            selection.allowed = False
+    else:
+        selection = None
+    stack.append((seq_len, selection))
     return args, kwargs
 
 
-def _rl_decoder_post_hook(module, args, kwargs, output):
-    seq_len = module._unsloth_cp_rl_stack.pop() if module._unsloth_cp_rl_stack else None
-    if seq_len is None:
+def _direct_caller_code(frame):
+    # The code object that called the module: the first frame above torch's own call machinery
+    # (Module._wrapped_call_impl / _call_impl, compile wrappers).
+    while frame is not None:
+        name = frame.f_globals.get("__name__", "")
+        if name != "torch" and not name.startswith("torch."):
+            return frame.f_code
+        frame = frame.f_back
+    return None
+
+
+class _LastHiddenSelection:
+    __slots__ = ("decoder", "allowed", "truncated", "caller")
+
+    def __init__(
+        self,
+        decoder,
+        allowed = True,
+        caller = None,
+    ):
+        self.decoder = decoder
+        # Code object the claiming decoder call must come from directly (None: any caller).
+        self.caller = caller
+        # This rank's own verdict. The decoder call still claims the selection when it is False, so every
+        # rank reaches the same vote; the vote then keeps every state on all of them.
+        self.allowed = bool(allowed)
+        self.truncated = False
+
+
+# Per thread: a forward on another thread never sees this caller's selection, so whether a decoder call
+# gathers one state or all of them cannot depend on thread timing, which differs between ranks.
+_LAST_HIDDEN = threading.local()
+
+
+@contextlib.contextmanager
+def last_hidden_state_only(
+    decoder,
+    allowed = True,
+    caller = None,
+) -> Iterator[_LastHiddenSelection]:
+    """For a caller that asks for output_hidden_states only to read the last one (GRPO's hidden-state
+    forward): the next call of ``decoder`` on this thread gathers that state alone, not all L + 1 layers
+    to full length. ``decoder = None`` selects nothing (and hides an enclosing selection). The yielded
+    selection's ``truncated`` says whether the decoder did return only the last state. ``allowed = False``
+    claims the decoder call without truncating: it votes against truncation on every rank. With ``caller``
+    (a code object) the claiming call votes against truncation unless that code made it directly."""
+    selection = _LastHiddenSelection(decoder, allowed, caller)
+    previous = getattr(_LAST_HIDDEN, "selection", None)
+    _LAST_HIDDEN.selection = selection
+    try:
+        yield selection
+    finally:
+        _LAST_HIDDEN.selection = previous
+
+
+# Forwards audited to read nothing but the decoder's last state and to hand its hidden_states tuple on untouched.
+_PASSTHROUGH_MARKER = "_unsloth_cp_hidden_states_passthrough"
+_PASSTHROUGH_AUDIT = {}  # code object -> {decoder attribute names: verdict}
+
+
+# The decoder output fields a forward may read anywhere: none of them is (or holds) the hidden-state tuple.
+# Enumerated from the Llama / Qwen2 / Qwen3 / Gemma / Gemma3 / Mistral (and Qwen3-MoE) CausalLM forwards
+# on transformers 4.57 and 5.x (5.x names the cache ``cache``).
+_FREE_OUTPUT_FIELDS = frozenset(
+    ("last_hidden_state", "past_key_values", "cache", "attentions", "router_logits")
+)
+_NESTED_SCOPES = (
+    ast.FunctionDef,
+    ast.AsyncFunctionDef,
+    ast.Lambda,
+    ast.ClassDef,
+    ast.ListComp,
+    ast.SetComp,
+    ast.DictComp,
+    ast.GeneratorExp,
+)
+# Reach a local by name (locals()["outputs"]) past the checks below.
+_INTROSPECTION = frozenset(("locals", "vars", "globals", "eval", "exec"))
+
+
+def _decoder_output_passthrough(function, attrs) -> bool:
+    """Strict allowlist check of a CausalLM forward: every ``self.<attr>(...)`` decoder call is assigned
+    to a plain name, and every read of that name is one of
+      ``name.last_hidden_state`` / ``.past_key_values`` / ``.cache`` / ``.attentions`` / ``.router_logits``
+      (a field read, not called or written), ``name[0]``, or
+      ``name.hidden_states`` as the ``hidden_states =`` keyword of the ModelOutput constructor the forward
+      itself returns.
+    Any other use (slices, other subscripts, methods, aliasing, passing the output on, starred unpacking,
+    reads from a nested scope or comprehension) and any ``hidden_states`` string: False."""
+    import inspect
+    import textwrap
+
+    try:
+        tree = ast.parse(textwrap.dedent(inspect.getsource(function)))
+    except Exception:
+        return False
+    if not tree.body or not isinstance(tree.body[0], (ast.FunctionDef, ast.AsyncFunctionDef)):
+        return False
+    forward = tree.body[0]
+    parents = {}
+    for node in ast.walk(tree):
+        for child in ast.iter_child_nodes(node):
+            parents[child] = node
+        if isinstance(node, ast.Constant) and node.value == "hidden_states":
+            return False
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id in _INTROSPECTION
+        ):
+            return False
+
+    def decoder_call(node):
+        func = getattr(node, "func", None)
+        return (
+            isinstance(node, ast.Call)
+            and isinstance(func, ast.Attribute)
+            and func.attr in attrs
+            and isinstance(func.value, ast.Name)
+            and func.value.id == "self"
+        )
+
+    def in_nested_scope(node):
+        node = parents.get(node)
+        while node is not None and node is not forward:
+            if isinstance(node, _NESTED_SCOPES):
+                return True
+            node = parents.get(node)
+        return node is None
+
+    names = set()
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Attribute)
+            and node.attr in attrs
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "self"
+        ):
+            call = parents.get(node)
+            if not (isinstance(call, ast.Call) and call.func is node):
+                return False  # the decoder handed on whole
+            owner = parents.get(call)
+            if (
+                isinstance(owner, ast.Assign)
+                and len(owner.targets) == 1
+                and isinstance(owner.targets[0], ast.Name)
+            ):
+                names.add(owner.targets[0].id)
+            elif isinstance(owner, ast.AnnAssign) and isinstance(owner.target, ast.Name):
+                names.add(owner.target.id)
+            else:
+                return False  # returned or consumed in place
+    if not names:
+        return False
+
+    def output_class(func):
+        # The callee resolved in the forward's own module: only a ModelOutput subclass counts.
+        path = []
+        while isinstance(func, ast.Attribute):
+            path.append(func.attr)
+            func = func.value
+        if not isinstance(func, ast.Name):
+            return False
+        try:  # getsource above read the innermost function: resolve in its module
+            scope = inspect.unwrap(function).__globals__
+        except Exception:
+            return False
+        if func.id not in scope:
+            return False
+        value = scope[func.id]
+        try:
+            for attr in reversed(path):
+                value = getattr(value, attr)
+            from transformers.utils import ModelOutput
+        except Exception:
+            return False
+        return isinstance(value, type) and issubclass(value, ModelOutput)
+
+    def returned_hidden_states(use):
+        # ``hidden_states = outputs.hidden_states`` straight into the ModelOutput the forward returns.
+        keyword = parents.get(use)
+        if not (isinstance(keyword, ast.keyword) and keyword.arg == "hidden_states"):
+            return False
+        call = parents.get(keyword)
+        return (
+            isinstance(call, ast.Call)
+            and isinstance(parents.get(call), ast.Return)
+            and output_class(call.func)
+        )
+
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Global, ast.Nonlocal)) and names.intersection(node.names):
+            return False
+        if isinstance(node, ast.Attribute) and node.attr == "hidden_states":
+            value = node.value
+            if not (
+                isinstance(value, ast.Name)
+                and value.id in names
+                and isinstance(node.ctx, ast.Load)
+                and returned_hidden_states(node)
+            ):
+                return False
+        if not (isinstance(node, ast.Name) and node.id in names):
+            continue
+        if in_nested_scope(node):
+            return False
+        use = parents.get(node)
+        if isinstance(node.ctx, ast.Store):
+            # Only as the target of its own decoder call.
+            if isinstance(use, ast.Assign) and use.targets == [node] and decoder_call(use.value):
+                continue
+            if isinstance(use, ast.AnnAssign) and use.target is node and decoder_call(use.value):
+                continue
+            return False
+        if not isinstance(node.ctx, ast.Load):
+            return False  # del
+        if isinstance(use, ast.Attribute) and use.value is node and isinstance(use.ctx, ast.Load):
+            caller = parents.get(use)
+            if isinstance(caller, ast.Call) and caller.func is use:
+                return False  # a method, never a field read
+            if use.attr in _FREE_OUTPUT_FIELDS or use.attr == "hidden_states":
+                continue  # hidden_states was checked above
+            return False
+        if (
+            isinstance(use, ast.Subscript)
+            and use.value is node
+            and isinstance(use.ctx, ast.Load)
+            and isinstance(use.slice, ast.Constant)
+            and type(use.slice.value) is int
+            and use.slice.value == 0
+        ):
+            continue
+        return False
+    return True
+
+
+_SAFE_WRAPPER_CODES = None
+
+
+def _safe_forward_wrappers() -> frozenset:
+    """Code objects of the transformers forward decorators that return the wrapped forward's output
+    unchanged (can_return_tuple at most calls .to_tuple() on it, deprecate_kwarg renames kwargs). Found by
+    decorating a probe, so a wrapper matches by code identity, not by name."""
+    global _SAFE_WRAPPER_CODES
+    if _SAFE_WRAPPER_CODES is not None:
+        return _SAFE_WRAPPER_CODES
+
+    def probe(self, *args, **kwargs):
         return None
+
+    codes = set()
+    try:
+        from transformers.utils.generic import can_return_tuple
+        codes.add(can_return_tuple(probe).__code__)
+    except Exception:
+        pass
+    try:
+        from transformers.utils.deprecation import deprecate_kwarg
+        codes.add(deprecate_kwarg("_unsloth_probe", version = "0.0.0")(probe).__code__)
+    except Exception:
+        pass
+    _SAFE_WRAPPER_CODES = frozenset(codes)
+    return _SAFE_WRAPPER_CODES
+
+
+def _cp_text_decoder(model):
+    # The one CP-attached text decoder held directly by ``model``, and the attribute names holding it. Module
+    # structure only: attach_rl_hooks runs on every rank, so this is the same on all of them.
+    manager = get_cp_manager()
+    if manager is None or model is None:
+        return None, None
+    decoders = _decoders(model)
+    if len(decoders) != 1 or getattr(decoders[0], "_unsloth_cp_rl_manager", None) is not manager:
+        return None, None
+    decoder = decoders[0]
+    attrs = frozenset(name for name, child in model._modules.items() if child is decoder)
+    if not attrs:
+        return None, None
+    return decoder, attrs
+
+
+def last_hidden_state_decoder(model, forward) -> Optional[torch.nn.Module]:
+    """The decoder a GRPO hidden-state forward of ``model`` may scope with last_hidden_state_only(), or
+    None (gather every state). Only the one CP-attached text decoder held directly by ``model``, and only
+    when ``forward`` is marked or audited to pass the hidden states through without reading them: a forward
+    that reads an intermediate state before returning would get the wrong tensor otherwise. The verdict on
+    ``forward`` is rank-local (a wrapper installed on one rank changes it): last_hidden_state_scope() votes
+    on it over the CP group."""
+    decoder, attrs = _cp_text_decoder(model)
+    if decoder is None:
+        return None
+    return decoder if _forward_passthrough(forward, attrs) else None
+
+
+def last_hidden_state_scope(
+    model,
+    forward,
+    requested = False,
+):
+    """last_hidden_state_only() for GRPO's hidden-state forward of ``model``. The decoder call is claimed
+    from module structure alone, the same on every rank, so all ranks reach one vote; this rank's verdicts
+    (the caller asked for the states itself, ``forward`` fails the passthrough audit) only make that vote
+    keep every state, never skip it on one rank while a peer enters it."""
+    decoder, attrs = _cp_text_decoder(model)
+    if decoder is None:
+        return last_hidden_state_only(None)
+    allowed = not requested and _forward_passthrough(forward, attrs)
+    # Bound to the audited function: only the decoder call it makes itself may be the truncated one.
+    caller = _audited_code(forward)
+    return last_hidden_state_only(decoder, allowed = allowed and caller is not None, caller = caller)
+
+
+def _audited_code(forward):
+    # The code object of the innermost function _forward_passthrough audits.
+    function = getattr(forward, "__func__", forward)
+    for _ in range(16):
+        if not hasattr(function, "__wrapped__"):
+            break
+        function = function.__wrapped__
+    function = getattr(function, "__func__", function)
+    return getattr(function, "__code__", None)
+
+
+def _forward_passthrough(forward, attrs) -> bool:
+    function = getattr(forward, "__func__", forward)
+    chain = [function]
+    while hasattr(chain[-1], "__wrapped__") and len(chain) < 16:
+        chain.append(chain[-1].__wrapped__)
+    # Only the innermost function is audited: every wrapper around it must be a known one that hands the
+    # output back as is. functools.wraps copies the marker outward, so it cannot vouch for a wrapper either.
+    safe = _safe_forward_wrappers()
+    if hasattr(chain[-1], "__wrapped__") or any(
+        getattr(f, "__code__", None) not in safe for f in chain[:-1]
+    ):
+        return False
+    if any(getattr(f, _PASSTHROUGH_MARKER, False) for f in chain):
+        return True
+    inner = getattr(chain[-1], "__func__", chain[-1])
+    try:
+        key = inner.__code__
+    except AttributeError:
+        return False
+    cached = _PASSTHROUGH_AUDIT.setdefault(key, {})
+    if attrs not in cached:
+        cached[attrs] = _decoder_output_passthrough(inner, attrs)
+    return bool(cached[attrs])
+
+
+def _truncation_agreed(module, hidden, manager, allowed) -> bool:
+    """True on every rank when every rank allows the truncation and no rank has a forward hook after the CP
+    post hook on ``module`` (such a hook reads output["hidden_states"] by index). Agreed over the CP group,
+    so a rank-local hook or forward verdict cannot make the peers enter different gathers."""
+    hooks = list(module._forward_hooks)
+    mine = getattr(module, "_unsloth_cp_rl_post_hook_id", None)
+    later = mine not in hooks or hooks.index(mine) != len(hooks) - 1
+    flag = torch.tensor([int(later or not allowed)], dtype = torch.int32, device = hidden.device)
+    dist.all_reduce(flag, op = dist.ReduceOp.MAX, group = manager.group)
+    return not bool(flag.item())
+
+
+def _rl_decoder_post_hook(module, args, kwargs, output):
+    entry = module._unsloth_cp_rl_stack.pop() if module._unsloth_cp_rl_stack else None
+    if entry is None:
+        return None
+    seq_len, selection = entry
     manager = module._unsloth_cp_rl_manager
     last = output[0]
 
@@ -2352,8 +2734,16 @@ def _rl_decoder_post_hook(module, args, kwargs, output):
             )
         return (hidden, *output[1:])
     output[next(iter(output.keys()))] = hidden
-    if layers is not None:
-        # GRPO's hidden-state forward asks for these and reads the last one (the same tensor as above).
+    if (
+        layers is not None
+        and selection is not None
+        and len(layers)
+        and _truncation_agreed(module, last, manager, selection.allowed)
+    ):
+        # Only the last state is read: every other layer would be one more all-gather and a full-length copy.
+        output["hidden_states"] = (hidden if layers[-1] is last else _full(layers[-1]),)
+        selection.truncated = True
+    elif layers is not None:
         output["hidden_states"] = tuple(
             hidden if layer is last else _full(layer) for layer in layers
         )
@@ -2379,7 +2769,8 @@ def attach_rl_hooks(manager, model) -> None:
         decoder._unsloth_cp_rl_stack = []
         if not getattr(decoder, "_unsloth_cp_rl_hooked", False):
             decoder.register_forward_pre_hook(_rl_decoder_pre_hook, with_kwargs = True)
-            decoder.register_forward_hook(_rl_decoder_post_hook, with_kwargs = True)
+            handle = decoder.register_forward_hook(_rl_decoder_post_hook, with_kwargs = True)
+            decoder._unsloth_cp_rl_post_hook_id = handle.id
             decoder._unsloth_cp_rl_hooked = True
     manager.attach_attention_hooks(model)
 

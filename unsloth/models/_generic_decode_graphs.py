@@ -191,6 +191,13 @@ class _Cuda:
         G._begin(graph, pool)
 
     @staticmethod
+    def reset_rng_capture(indices):
+        """After a failed capture: clear the CUDA RNG's capturing flag on every card the capture may
+        have begun on (see _decode_graphs._reset_rng_capture_flag)."""
+        for index in indices:
+            G._reset_rng_capture_flag(torch.device("cuda", index))
+
+    @staticmethod
     def end_on(graph):
         with warnings.catch_warnings():
             # A segment with no kernels (the tail after the last hand-off) is an empty, valid graph.
@@ -269,10 +276,15 @@ class _SegmentRecorder:
         self.pending = None
         self.moved = {}
         self.original = None
+        # Cards a capture was begun on (attempted included): a failed recording resets the RNG capture
+        # flag on these only, not on cards the step never reached.
+        self.begun = []
 
     def begin(self, card):
         self.graph = self.backend.new_graph()
         self.card = card
+        if card not in self.begun:
+            self.begun.append(card)
         self.backend.begin_on(self.graph, self.pools[card], card)
 
     def end(self):
@@ -378,13 +390,17 @@ class _SegmentRecorder:
             out = fn()
             self.resume()
             self.end()
-        except BaseException:
+        except BaseException as error:
             if self.graph is not None:
                 try:
                     self.backend.end_on(self.graph)
                 except Exception:
                     pass
                 self.graph = None
+            try:
+                error._unsloth_capture_cards = tuple(self.begun)
+            except Exception:
+                pass
             raise
         finally:
             hooks.send_to_device = original_send
@@ -2173,6 +2189,31 @@ def _buffer_like(leaf):
         return _empty_strided_like(leaf)
 
 
+def _capture_cards(error):
+    """The cards a failed capture began on: a split model's recorder names them (cards the step never
+    reached are left out); a single-card capture began on this one."""
+    try:
+        cards = getattr(error, "_unsloth_capture_cards", None)
+        return tuple(cards) if cards is not None else (_BACKEND.current_device(),)
+    except Exception:
+        return ()
+
+
+def _reset_rng_capture(cards):
+    """After a failed capture: capture_begin marks the RNG as capturing and only a clean capture_end
+    clears it, so a capture that died in between leaves every later random op (sampling, dropout, vLLM's
+    sampler) raising "Offset increment outside graph capture encountered unexpectedly". The reset is
+    itself a tiny capture: it holds the recording lock, so no split-model recording on another thread
+    overlaps it."""
+    if not cards:
+        return
+    try:
+        with _RECORDING:
+            _BACKEND.reset_rng_capture(tuple(cards))
+    except Exception:
+        pass
+
+
 def _capture(state, key, forward, kwargs, leaves, cache):
     """Runs this step eagerly (warm-up, its outputs are returned), then captures it."""
     if len(state.graphs) >= G.MAX_GRAPHS:
@@ -2211,6 +2252,7 @@ def _capture(state, key, forward, kwargs, leaves, cache):
     before = _host_state(cache)
     stream.wait_stream(_BACKEND.current_stream())
     graph = None
+    oom_cards = None
     try:
         # Other cards warm up on side streams too, so cuBLAS workspaces exist before capture.
         with (
@@ -2259,20 +2301,27 @@ def _capture(state, key, forward, kwargs, leaves, cache):
             state.cache_sig = sig
             state.call_stop = reason
             state.refusals[reason] += 1
+            # The RNG reset allocates: it runs below, once the call's graphs are freed and the error (whose
+            # traceback holds the failed graph and its pool) is gone, so it does not hit the same OOM.
+            oom_cards = _capture_cards(error)
+        else:
+            message = " ".join(str(error).split())[:200]
+            reason = f"capture failed: {type(error).__name__}: {message}"
+            if len(state.capture_errors) < 4:
+                state.capture_errors.append((reason, _where(error)))
+            state.pool = None
+            state.refused[key] = reason
+            state.refusals[reason] += 1
+            _reset_rng_capture(_capture_cards(error))
+            if os.environ.get("UNSLOTH_DECODE_CUDA_GRAPHS_STRICT", "0") == "1":
+                raise
             return outputs
-        message = " ".join(str(error).split())[:200]
-        reason = f"capture failed: {type(error).__name__}: {message}"
-        if len(state.capture_errors) < 4:
-            state.capture_errors.append((reason, _where(error)))
-        state.pool = None
-        state.refused[key] = reason
-        state.refusals[reason] += 1
-        if os.environ.get("UNSLOTH_DECODE_CUDA_GRAPHS_STRICT", "0") == "1":
-            raise
-        return outputs
     finally:
         # Also after a failed capture: the eager steps must not race the side stream.
         _BACKEND.current_stream().wait_stream(stream)
+    if oom_cards is not None:
+        _reset_rng_capture(oom_cards)
+        return outputs
     state.graphs[key] = _Entry(graph, buffers, static_outputs, key in state.validated)
     state.captures += 1
     state.unreplayed += 1

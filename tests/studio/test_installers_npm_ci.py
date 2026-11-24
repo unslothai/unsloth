@@ -84,6 +84,7 @@ def test_workflows_install_lockfiled_dirs_with_npm_ci():
     for name in (
         "release-desktop.yml",
         "studio-tauri-smoke.yml",
+        "studio-tauri-native-ci.yml",
         "desktop-app-clean-machine-ci.yml",
     ):
         doc = yaml.safe_load(_read(f".github/workflows/{name}"))

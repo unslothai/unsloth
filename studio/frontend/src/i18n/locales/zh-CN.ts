@@ -887,6 +887,13 @@ export const zhCN = {
     compactEmpty: "暂无可压缩的内容",
     compactUnsupported: "对话压缩需要支持工具调用的 GGUF 或 MLX 模型",
   },
+  chatFiles: {
+    title: "此聊天中的文件",
+    code: "代码片段",
+    showInChat: "在聊天中显示",
+    download: "下载 {name}",
+    saveFailed: "无法保存 {name}。",
+  },
   welcome: {
     goodToSeeYou: "很高兴见到你",
     goodToSeeYouName: "很高兴见到你，{name}",
@@ -933,6 +940,9 @@ export const zhCN = {
     useModelScopeHint: "改为从 ModelScope 搜索和下载。可随时在设置中切换回来。",
     useModelScopeFailed: "无法切换到 ModelScope。",
     updateToken: "更新令牌",
+    linkedModelTitle: "加载 {model}？",
+    linkedModelBody: "某个链接打开了此页面，并请求下载和加载此模型。",
+    linkedModelLoad: "加载",
     hfToken: {
       label: "HF token",
       saved: "已保存",
@@ -2584,7 +2594,7 @@ export const zhCN = {
         off: "关闭",
         oldWebkitWarning: "Wayland 上的 WebKitGTK {version}：在使用分数缩放的 NVIDIA 环境中，GPU 渲染可能会在启动时崩溃（WebKit bug 280210）。如果发生这种情况，Unsloth 会自动切换回 CPU 渲染。在 WebKitGTK 2.50.4 上未测得任何提速（两种方式都是 8 fps），因此不建议在此开启。",
         oldDriverWarning:
-          "X11 上的 NVIDIA 驱动 {version}：在驱动更新到 610 或更高版本之前，Unsloth 会保持 GPU 渲染关闭。旧驱动每帧泄漏一个文件描述符，几分钟内窗口就会停止绘制。",
+          "X11 上的 NVIDIA 驱动 {version}：在驱动更新到 590 或更高版本之前，Unsloth 会保持 GPU 渲染关闭。旧驱动每帧泄漏一个文件描述符，几分钟内窗口就会停止绘制。",
         fallbackNote: "GPU 渲染在此系统上启动时崩溃，因此 Unsloth 正在使用 CPU 渲染。",
         tryAgain: "重试 GPU",
         envOverride: "由环境变量 {name} 设置。在移除该变量之前，此设置不会生效。",
@@ -2836,6 +2846,15 @@ export const zhCN = {
         runningOn: "llama.cpp 当前运行在 {backend} 上。",
         hint: "安装该后端的 llama.cpp 构建，并在更新后继续沿用。当自动选择崩溃或显卡驱动不支持时很有用。只列出本机有对应构建的后端；训练不受影响。",
         autoWith: "自动（{backend}）",
+        unavailableOption: "{backend}（{reason}）",
+        unavailableHint: "{backend}：{hint}",
+        unavailable: {
+          rocmNotInstalled: "未安装 ROCm",
+          rocmNoAccess: "无法访问 GPU",
+          otherRelease: "需要更新 llama.cpp",
+          checkFailed: "无法检查",
+          noBuild: "没有适用于此计算机的构建",
+        },
         apply: "应用",
         applying: "正在安装…",
         applyHint: "下载新的构建并重启 llama.cpp。已加载的模型会被卸载。",
