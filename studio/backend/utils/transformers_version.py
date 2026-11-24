@@ -2437,9 +2437,39 @@ def _venv_t5_is_valid() -> bool:
     return _venv_dir_is_valid(_VENV_T5_550_DIR, _VENV_T5_550_PACKAGES)
 
 
+# spec -> PyPI sha256 digests the pre-install scan verified; set only inside install_with_hashes().
+_install_hashes: dict[str, tuple[str, ...]] = {}
+
+
+@contextlib.contextmanager
+def install_with_hashes(hashes: dict):
+    """Installs of a spec in *hashes* inside this block run with --require-hashes on its digests."""
+    global _install_hashes
+    previous, _install_hashes = _install_hashes, dict(hashes or {})
+    try:
+        yield
+    finally:
+        _install_hashes = previous
+
+
 def _install_to_dir(pkg: str, target_dir: str) -> bool:
     """Install a single package into *target_dir*, preferring uv then pip."""
-    pkg = _install_source(pkg)
+    digests = _install_hashes.get(pkg)
+    source = _install_source(pkg)
+    if not digests or source != pkg:
+        return _install_args_to_dir([source], source, target_dir)
+    # A hash-pinned requirement file: uv and pip both refuse a download whose sha256 differs.
+    req_dir = tempfile.mkdtemp(prefix = "unsloth_req_")
+    try:
+        req_file = os.path.join(req_dir, "requirements.txt")
+        with open(req_file, "w", encoding = "utf-8") as handle:
+            handle.write(pkg + "".join(f" --hash=sha256:{d}" for d in digests) + "\n")
+        return _install_args_to_dir(["--require-hashes", "-r", req_file], pkg, target_dir)
+    finally:
+        shutil.rmtree(req_dir, ignore_errors = True)
+
+
+def _install_args_to_dir(install_args: list[str], pkg: str, target_dir: str) -> bool:
     # Try uv first (faster) if on PATH -- do NOT install uv at runtime.
     if shutil.which("uv"):
         result = subprocess.run(
@@ -2453,7 +2483,7 @@ def _install_to_dir(pkg: str, target_dir: str) -> bool:
                 target_dir,
                 "--no-deps",
                 "--upgrade",
-                pkg,
+                *install_args,
             ],
             stdout = subprocess.PIPE,
             stderr = subprocess.STDOUT,
@@ -2485,7 +2515,7 @@ def _install_to_dir(pkg: str, target_dir: str) -> bool:
             target_dir,
             "--no-deps",
             "--upgrade",
-            pkg,
+            *install_args,
         ],
         stdout = subprocess.PIPE,
         stderr = subprocess.STDOUT,
