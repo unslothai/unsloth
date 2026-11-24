@@ -1193,6 +1193,7 @@ class _MarkdownRenderer(HTMLParser):
         self._pre_parts: list[str] = []
         # Depth, not a flag: nested <code> opens two spans and each </code> owes a backtick.
         self._inline_code_depth: int = 0
+        self._inline_marks: list[tuple[int, str]] = []
 
         # Blockquote state: stack of buffers so nested blockquotes get the right ">" depth.
         self._bq_stack: list[list[str]] = []
@@ -1562,7 +1563,18 @@ class _MarkdownRenderer(HTMLParser):
             self._seg_heading_texts.append(heading_text)
 
     def _truncate_open_tags(self, index: int) -> None:
-        """drop open tags above *index* while maintaining the closable count."""
+        """Drop the tags at and above index, closing any inline marks they emitted."""
+        while self._inline_marks and self._inline_marks[-1][0] >= index:
+            position, mark = self._inline_marks.pop()
+            if mark == "`":
+                # Header recovery may already have drained the code span.
+                if not self._inline_code_depth:
+                    continue
+                self._inline_code_depth -= 1
+            if self._in_link and position <= self._link_depth:
+                # A mark wrapped around the link closes after the formatted link.
+                self._finish_link_closed_at(index)
+            self._emit(mark)
         for name in self._open_tags[index:]:
             if positions := self._open_at.get(name):
                 positions.pop()
@@ -1652,6 +1664,12 @@ class _MarkdownRenderer(HTMLParser):
             frame.link_chars += self._link_header_chars
             self._finish_link()
         # code opened OUTSIDE the header is the page's; closing it here leaves </code> unpaired
+        if self._inline_code_depth > frame.outer_in_code:
+            self._inline_marks = [
+                (depth, mark)
+                for depth, mark in self._inline_marks
+                if depth < frame.depth or mark != "`"
+            ]
         while self._inline_code_depth > frame.outer_in_code:
             self._inline_code_depth -= 1
             self._emit("`")
@@ -1828,6 +1846,9 @@ class _MarkdownRenderer(HTMLParser):
 
     def _exit_tag(self, tag: str) -> bool:
         """Recovers an open a element before the segment is recorded, or its text is stranded"""
+        i = -1 if tag in _VOID_TAGS else _innermost_index(self._open_tags, tag)
+        if i >= 0:
+            self._truncate_open_tags(i)
         if self._in_link and self._scope_tags is not None and tag in self._scope_tags:
             self._finish_link()
         suppressed = bool(self._hidden_marks) or (
@@ -1836,9 +1857,7 @@ class _MarkdownRenderer(HTMLParser):
         # Flush the heading here while the tee still recognises it; it emits only after its mark pops
         if self._in_link and tag == "a" and self._heading_marks:
             self._finish_link()
-        i = -1 if tag in _VOID_TAGS else _innermost_index(self._open_tags, tag)
         if i >= 0:
-            self._truncate_open_tags(i)
             # an explicit </a> finishes in _close_rendered_tag
             closes_header = tag != "a" and self._finish_link_unless_header_closes(i)
             while self._hidden_marks and self._hidden_marks[-1] >= i:
@@ -2082,7 +2101,9 @@ class _MarkdownRenderer(HTMLParser):
             self._link_open_state = self._link_output_state()
 
         elif tag in _INLINE_EMPHASIS and not self._in_pre:
-            self._emit(_INLINE_EMPHASIS[tag])
+            mark = _INLINE_EMPHASIS[tag]
+            self._inline_marks.append((len(self._open_tags) - 1, mark))
+            self._emit(mark)
 
         elif tag == "br":
             self._emit("\n")
@@ -2150,6 +2171,7 @@ class _MarkdownRenderer(HTMLParser):
 
         elif tag == "code" and not self._in_pre:
             self._inline_code_depth += 1
+            self._inline_marks.append((len(self._open_tags) - 1, "`"))
             self._emit("`")
 
         elif tag == "table":
@@ -2268,9 +2290,6 @@ class _MarkdownRenderer(HTMLParser):
                 self._header_stack[-1].link_chars += self._link_header_chars
             self._finish_link()
 
-        elif tag in _INLINE_EMPHASIS and not self._in_pre:
-            self._emit(_INLINE_EMPHASIS[tag])
-
         elif tag == "sup":
             self._finish_sup(closing_sup)
 
@@ -2295,11 +2314,6 @@ class _MarkdownRenderer(HTMLParser):
 
         elif tag == "pre" and self._in_pre:
             self._drain_pre()
-
-        # already closed means a frame recovered it; a second backtick codes the rest of the page
-        elif tag == "code" and not self._in_pre and self._inline_code_depth:
-            self._inline_code_depth -= 1
-            self._emit("`")
 
         elif tag in ("th", "td"):
             self._finish_cell()
