@@ -1043,6 +1043,31 @@ def require_listed_adapters_access(identifier) -> None:
             require_model_access(entry)
 
 
+_MAX_ADAPTER_CHAIN = 4
+
+
+def require_adapter_chain_access(base) -> None:
+    """A base that carries its own adapter_config.json makes transformers load the model named there:
+    a managed account must be allowed every model along that chain, not only the first base."""
+    if not managed_account() or not isinstance(base, str) or not base.strip():
+        return
+    from utils.models.model_config import get_base_model_from_lora_identifier
+
+    seen = {base.strip()}
+    current = base.strip()
+    for _ in range(_MAX_ADAPTER_CHAIN):
+        try:
+            # False: the account's lookup never borrows the operator's token.
+            nxt = get_base_model_from_lora_identifier(current, False)
+        except Exception:
+            return
+        if not isinstance(nxt, str) or not nxt.strip() or nxt.strip() in seen:
+            return
+        current = nxt.strip()
+        seen.add(current)
+        require_model_access(current)
+
+
 def require_model_access(
     reference: str,
     repo_type: str = "model",

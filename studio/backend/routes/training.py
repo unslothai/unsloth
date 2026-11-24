@@ -947,6 +947,7 @@ def _authorize_adapter_base(adapter: str, hf_token: HfTokenArg) -> Optional[str]
     base = get_base_model_from_lora_identifier(adapter, account_hf_token(hf_token))
     if not base:
         return None
+    account_access.require_adapter_chain_access(base)
     if is_local_path(base):
         # A managed account may only reach bases in its own workspace or the shared cache.
         account_path(base, shared_cache = True)

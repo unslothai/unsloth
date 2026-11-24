@@ -927,3 +927,27 @@ def test_a_plain_lora_lists_no_adapters(tmp_path):
         json.dumps({"peft_type": "LORA", "base_model_name_or_path": "org/public"})
     )
     assert access.listed_adapters(str(adapter)) == []
+
+
+def test_a_base_that_is_itself_an_adapter_needs_access_to_what_it_names(tmp_path, monkeypatch):
+    # transformers follows a base's own adapter_config.json to the model named there.
+    import json
+
+    public = tmp_path / "public-base"
+    public.mkdir()
+    (public / "adapter_config.json").write_text(
+        json.dumps(
+            {"peft_type": "LORA", "base_model_name_or_path": str(tmp_path / "owner" / "run")}
+        )
+    )
+    monkeypatch.setattr(
+        access,
+        "require_model_access",
+        lambda ref, *a, **k: None
+        if ref == str(public)
+        else (_ for _ in ()).throw(HTTPException(404)),
+    )
+    config = SimpleNamespace(base_model = str(public), identifier = "bob/adapter")
+    with pytest.raises(HTTPException):
+        run_as(BOB, inference._require_resolved_base_access, config)
+    inference._require_resolved_base_access(config)
