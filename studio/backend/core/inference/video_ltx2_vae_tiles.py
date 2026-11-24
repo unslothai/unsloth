@@ -32,6 +32,12 @@ DECODE_MIB_PER_FRAME_LATENT_FUSED = 0.075
 # Coefficients already sit ~5% over measured peaks; an OOM still retries in stock-size tiles.
 _MARGIN = 1.05
 _MARGIN_BYTES = 512 * 2**20
+# Request admission prices the decode from measured peaks (MiB above the weights, per output frame x latent pixel):
+# stock 0.1024 on the LTX-2.5 VAE (L4, 1280x704x121 at 16x16 and 16x19 tiles, the same on both); fused as the tile
+# planner above (0.071 measured). Plus the live clip buffer the tile path keeps (fp32 when budgeted, else the decoder
+# dtype), all times the headroom.
+ADMISSION_MIB_PER_FRAME_LATENT = 0.1024
+ADMISSION_HEADROOM = 1.15
 
 _VAE_CLASSES = frozenset({"AutoencoderKLLTX2Video"})
 
@@ -183,10 +189,17 @@ def _plan(
 ) -> tuple[tuple[int, int], bool]:
     """``(tile, budgeted)``; not budgeted (nothing fit) means no room was priced in for the fp32 accumulator."""
     batch, _, latent_frames, height, width = (int(x) for x in z.shape)
-    frames = output_frames(vae, latent_frames)
-    ratio = int(vae.spatial_compression_ratio)
     if free is None:
         free = _free_bytes(getattr(z, "device", None))
+    return _plan_shape(vae, batch, latent_frames, height, width, free)
+
+
+def _plan_shape(
+    vae: Any, batch: int, latent_frames: int, height: int, width: int, free: Optional[int]
+) -> tuple[tuple[int, int], bool]:
+    """``_plan`` for a latent shape (no tensor): ``free`` bytes, None when unreadable."""
+    frames = output_frames(vae, latent_frames)
+    ratio = int(vae.spatial_compression_ratio)
     allow_single = _untiled_allowed()
     if free is None:
         return choose_tiles(height, width, lambda th, tw: False, allow_single), False
@@ -200,6 +213,67 @@ def _plan(
 
     tile = choose_tiles(height, width, fits, allow_single)
     return tile, fits(*tile)
+
+
+def admission_decode_mib(
+    vae: Any,
+    *,
+    width: int,
+    height: int,
+    frames: int,
+    free_mib: Optional[int],
+    batch: int = 1,
+) -> Optional[int]:
+    """MiB above the weights the tiled decode of a ``width x height x frames`` clip peaks at, headroom included, at the
+    tile ``tiled_decode`` takes with ``free_mib`` free (the request's room once only the decode-phase weights are on the
+    card). None when this decode does not run through the wide tiles (not installed, tiling off, unreadable VAE)."""
+    if (
+        vae is None
+        or not getattr(vae, "_unsloth_wide_tiles", False)
+        or wide_tiles_disabled()
+        or not getattr(vae, "use_tiling", False)
+        or not _covered(vae)
+        or free_mib is None
+    ):
+        return None
+    try:
+        ratio = int(vae.spatial_compression_ratio)
+        t_ratio = int(getattr(vae, "temporal_compression_ratio", 8) or 8)
+        lat_h, lat_w = int(height) // ratio, int(width) // ratio
+        lat_f = (max(1, int(frames)) - 1) // t_ratio + 1
+        if lat_h <= 0 or lat_w <= 0:
+            return None
+        batch = max(1, int(batch))
+        (th, tw), budgeted = _plan_shape(
+            vae, batch, lat_f, lat_h, lat_w, max(0, int(free_mib)) << 20
+        )
+        out_frames = output_frames(vae, lat_f)
+        itemsize = _itemsize(vae)
+        # a fused module that failed once runs stock for good (diffusion_vae_fused._guard): price stock then
+        fused = bool(getattr(vae, "_unsloth_vae_fused_installed", 0)) and not any(
+            getattr(m, "_unsloth_vae_fused_failed", False) for m in vae.modules()
+        )
+        coef = DECODE_MIB_PER_FRAME_LATENT_FUSED if fused else ADMISSION_MIB_PER_FRAME_LATENT
+        work = coef * max(2, itemsize) / 2 * batch * out_frames * th * tw
+        clip = 0.0
+        if (th, tw) != (lat_h, lat_w):
+            # the tile path's clip buffer: fp32 when the planner budgeted it, else the decoder dtype
+            clip = (
+                (4 if budgeted else itemsize)
+                * batch
+                * 3
+                * out_frames
+                * lat_h
+                * ratio
+                * lat_w
+                * ratio
+                / 2**20
+            )
+        need = int(-(-((work + clip) * ADMISSION_HEADROOM) // 1))
+        # a tile the planner budgeted fits its own (margined) pricing in ``free_mib``: never refuse it here
+        return min(need, max(0, int(free_mib))) if budgeted else need
+    except Exception:  # noqa: BLE001 -- unpriced: the caller keeps its flat estimate
+        return None
 
 
 def banded_output_disabled() -> bool:
