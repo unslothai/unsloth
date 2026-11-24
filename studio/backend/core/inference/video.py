@@ -2673,6 +2673,11 @@ def _h3_te_canonical(repo_id: Optional[str]) -> str:
     return canonical_base(repo_id).strip().lower()
 
 
+def _video_no_mirror() -> bool:
+    """``UNSLOTH_DIFFUSION_NO_MIRROR``: base components are fetched from the upstream id, never its unsloth mirror."""
+    return bool(os.environ.get("UNSLOTH_DIFFUSION_NO_MIRROR", "").strip())
+
+
 def _video_fetch_repo(
     repo_id: Optional[str],
     hf_token: Optional[str] = None,
@@ -2693,7 +2698,7 @@ def _video_fetch_repo(
     # ``checkpoint``: the user-selected file itself. The opt-out folds a mirror back onto its upstream only for BASE
     # components; an unsloth carrier repo's own root FP8 / GGUF checkpoints do not exist upstream, so a pick stays in
     # the repo it was selected from.
-    no_mirror = bool(os.environ.get("UNSLOTH_DIFFUSION_NO_MIRROR", "").strip())
+    no_mirror = _video_no_mirror()
     if checkpoint and no_mirror:
         return repo_id
     from .diffusion_families import (
@@ -4827,6 +4832,51 @@ def _auto_seed_yields_to_resident_bf16(
     return requested is None or normalize_transformer_quant(requested) == TQ_AUTO
 
 
+def _auto_offline_keeps_cached_seed(
+    fam: Any,
+    scheme: Optional[str],
+    base: Optional[str],
+    *,
+    hf_token: Optional[str] = None,
+    local_files_only: bool = False,
+    fetch_repos: Sequence[Optional[str]] = (),
+) -> bool:
+    """An offline AUTO load whose dense DiT shards are not cached keeps the cached hosted ``scheme`` checkpoint.
+
+    The dense shards count only in the repo assembly reads: the selection ``_video_fetch_repo`` makes for ``base``
+    (upstream or its unsloth mirror, by cached completeness) and ``fetch_repos`` (the load's own ``fetch_base``).
+
+    Installs where an older auto staged only the hosted int8 DiT still load offline. Cache reads only, never raises."""
+    try:
+        if scheme is None or scheme == DENOISER_SEED_DECLINED:
+            return False
+        if not local_files_only and _can_download():
+            return False
+        from core.inference.diffusion import DiffusionBackend
+
+        dense_repos = []
+        for candidate in (*fetch_repos, _video_fetch_repo(base, hf_token) or base):
+            if candidate and candidate not in dense_repos:
+                dense_repos.append(candidate)
+        if any(DiffusionBackend._released_transformer_cached(r) for r in dense_repos):
+            return False
+        repo = VideoBackend._denoiser_prequant_cached_repo(
+            fam, scheme, base, online = False, hf_token = hf_token
+        )
+        if repo is None:
+            return False
+        logger.info(
+            "video.denoiser_prequant: offline auto load and the dense %s DiT shards are not cached, so the "
+            "cached hosted %s checkpoint (%s) is loaded instead of a resident bf16 DiT",
+            getattr(fam, "name", None),
+            scheme,
+            repo,
+        )
+        return True
+    except Exception:  # noqa: BLE001 -- unanswerable keeps the bf16 rule
+        return False
+
+
 def _auto_keeps_resident_bf16(plan: Any, target: Any) -> bool:
     """The bf16 plan keeps the DiT resident on a measured budget, so auto runs bf16 (int8 fails the LPIPS bar there)."""
     if plan is None or not plan_keeps_transformer_resident(plan):
@@ -6892,6 +6942,7 @@ class VideoBackend:
                 hf_token = kwargs.get("hf_token"),
                 ltx25_dev = ltx25_dev,
                 native_hosted = native_hosted_out,
+                local_files_only = local_files_only,
             )
             if baking_loras:
                 # LoRAs merge into dense weights: no hosted pre-quantized denoiser replaces the dense shards.
@@ -8391,6 +8442,7 @@ class VideoBackend:
         hf_token: Optional[str] = None,
         ltx25_dev: bool = False,
         native_hosted: Optional[list] = None,
+        local_files_only: bool = False,
     ) -> Optional[str]:
         """The pre-download auto denoiser scheme, None, or ``DENOISER_SEED_DECLINED`` if the plan would offload.
 
@@ -8445,8 +8497,11 @@ class VideoBackend:
                         settled.append(settled_snapshot_device_memory(target))
                     return settled[0]
 
-                if _auto_seed_yields_to_resident_bf16(
-                    scheme, transformer_quant, fam
+                if (
+                    _auto_seed_yields_to_resident_bf16(scheme, transformer_quant, fam)
+                    and not _auto_offline_keeps_cached_seed(
+                        fam, scheme, base, hf_token = hf_token, local_files_only = local_files_only
+                    )
                 ) and _video_seed_stays_resident(
                     fam,
                     target = target,
@@ -10806,9 +10861,18 @@ class VideoBackend:
             denoiser_seed_scheme = None
             denoiser_seed_gb = None
             plan, bf16_plan, quant_replanned = _plan_for_te_scale(te_scale, log = False)
-        if _auto_seed_yields_to_resident_bf16(
-            denoiser_seed_scheme, transformer_quant, fam
-        ) and _auto_keeps_resident_bf16(_plan_for_te_scale(te_scale, log = False)[1], target):
+        if (
+            _auto_seed_yields_to_resident_bf16(denoiser_seed_scheme, transformer_quant, fam)
+            and _auto_keeps_resident_bf16(_plan_for_te_scale(te_scale, log = False)[1], target)
+            and not _auto_offline_keeps_cached_seed(
+                fam,
+                denoiser_seed_scheme,
+                base,
+                hf_token = hf_token,
+                local_files_only = local_files_only,
+                fetch_repos = (fetch_base,),
+            )
+        ):
             # Auto keeps a resident bf16 DiT; seeding would change auto's precision wherever bf16 fits.
             logger.info(
                 "video.denoiser_prequant: auto keeps the bf16 DiT (it fits resident), so the hosted "
