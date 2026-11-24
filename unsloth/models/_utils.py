@@ -4917,36 +4917,40 @@ def _broken_xformers_notice(
     """What to print when an installed xformers cannot be used ("" = nothing).
 
     The usual cause is a preinstalled wheel built for another torch / CUDA (Kaggle,
-    or PyPI's cu128 wheel beside a cu130 torch, #4381). Attention still works through
-    PyTorch, so by default this is one line; UNSLOTH_ENABLE_LOGGING=1 adds the fix and
-    the full error. With FlashAttention installed xformers would not be picked anyway
-    (FlashAttention always wins in attention_dispatch), so nothing is printed.
+    or PyPI's cu128 wheel beside a cu130 torch, #4381). Attention still works, so by
+    default this is one line on CUDA; UNSLOTH_ENABLE_LOGGING=1 adds the fix and the
+    full error. FlashAttention being installed does not hide it: some paths still use
+    xformers when it loads (Mistral's uncached eval mask, packed fp32 attention).
+    `unsloth install-kernels xformers` resolves CUDA wheels only, so it is named on CUDA only.
     """
     text = str(error)
+    fallback = "FlashAttention / PyTorch attention" if has_flash_attention else "PyTorch attention"
+    banner = f"========\nSwitching to {fallback} since your Xformers is broken.\n========\n"
     # The version guards above (e.g. Blackwell FA3 dispatch) carry their own fix; install-kernels would not apply it.
     own_guard = text.startswith("Unsloth:") and getattr(error, "__cause__", None) is None
     if verbose and own_guard:
-        return (
-            "========\nSwitching to PyTorch attention since your Xformers is broken.\n========\n"
-            + text
-        )
+        return banner + text
     if verbose:
         _built_for = re.search(r"PyTorch (\S+) with CUDA \S+ \(you have", text)
         built = f" (it was built for {_built_for.group(1)})" if _built_for else ""
-        return (
-            "========\nSwitching to PyTorch attention since your Xformers is broken.\n========\n"
-            f"Unsloth: xformers is installed but cannot load with torch {torch_version}{built}.\n"
+        fix = (
             "To install a matching xformers, run `unsloth install-kernels xformers`, "
-            "or `pip uninstall xformers` to hide this.\n" + text
+            "or `pip uninstall xformers` to hide this.\n"
+            if device_type == "cuda"
+            else "Run `pip uninstall xformers` to hide this.\n"
+        )
+        return (
+            banner
+            + f"Unsloth: xformers is installed but cannot load with torch {torch_version}{built}.\n"
+            + fix
+            + text
         )
     if device_type != "cuda":
         return ""
     if own_guard:
         return text
-    if has_flash_attention:
-        return ""
     return (
-        f"Unsloth: xformers does not load with torch {torch_version}, using PyTorch attention "
+        f"Unsloth: xformers does not load with torch {torch_version}, using {fallback} "
         "(UNSLOTH_ENABLE_LOGGING=1 for the fix)."
     )
 

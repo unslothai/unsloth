@@ -119,6 +119,21 @@ def _notice():
     ]
 
 
+def _wrapped_register_failure():
+    """The real shape: _register_extensions() failed, re-raised as ImportError ... from error."""
+    try:
+        try:
+            raise RuntimeError(_CU128_ERROR)
+        except RuntimeError as error:
+            raise ImportError(
+                "Unsloth: Xformers was not installed correctly.\n"
+                "Please install xformers separately first.\n"
+                "Longer error message:\n" + str(error)
+            ) from error
+    except ImportError as wrapped:
+        return wrapped
+
+
 def test_broken_xformers_is_one_line_by_default():
     out = _notice()(_XformersLoadError(_CU128_ERROR), "2.11.0+cu130", device_type = "cuda")
     assert "\n" not in out
@@ -137,19 +152,37 @@ def test_broken_xformers_verbose_keeps_fix_and_error():
     assert "xFormers can't load C++/CUDA extensions" in out
 
 
-def test_broken_xformers_silent_when_flash_attention_wins():
-    notice = _notice()
-    assert (
-        notice(
-            _XformersLoadError(_CU128_ERROR),
-            "2.11.0+cu130",
-            device_type = "cuda",
-            has_flash_attention = True,
-        )
-        == ""
+def test_broken_xformers_still_noted_when_flash_attention_is_installed():
+    # FlashAttention does not replace xformers everywhere (Mistral's uncached eval mask, packed
+    # fp32), so a broken xformers keeps its one line.
+    out = _notice()(
+        _XformersLoadError(_CU128_ERROR),
+        "2.11.0+cu130",
+        device_type = "cuda",
+        has_flash_attention = True,
     )
-    # Not CUDA: nothing to say unless asked.
-    assert notice(_XformersLoadError(_CU128_ERROR), "2.11.0", device_type = "xpu") == ""
+    assert "\n" not in out and out.startswith("Unsloth: xformers does not load with torch")
+    assert "FlashAttention" in out
+
+
+@pytest.mark.parametrize("device_type", ["hip", "xpu", "cpu"])
+def test_broken_xformers_names_no_cuda_wheel_off_cuda(device_type):
+    notice = _notice()
+    error = _XformersLoadError(_CU128_ERROR)
+    assert notice(error, "2.11.0", device_type = device_type) == ""
+    verbose = notice(error, "2.11.0", device_type = device_type, verbose = True)
+    assert "install-kernels" not in verbose
+    assert "pip uninstall xformers" in verbose and "xFormers can't load" in verbose
+
+
+def test_wrapped_xformers_failure_is_not_an_unsloth_guard():
+    notice = _notice()
+    wrapped = _wrapped_register_failure()
+    assert wrapped.__cause__ is not None
+    out = notice(wrapped, "2.11.0+cu130", device_type = "cuda")
+    assert out.startswith("Unsloth: xformers does not load with torch") and "\n" not in out
+    verbose = notice(wrapped, "2.11.0+cu130", device_type = "cuda", verbose = True)
+    assert "unsloth install-kernels xformers" in verbose
 
 
 def test_unsloth_version_guard_message_is_kept():

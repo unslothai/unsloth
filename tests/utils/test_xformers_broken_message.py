@@ -55,17 +55,14 @@ def _run(code, **extra_env):
 def test_broken_xformers_is_reported():
     import xformers._cpp_lib as c
 
-    import unsloth.models._utils as u
-
     out = _run(_PAST_VERSION_GUARD + _BREAK_XFORMERS + _IMPORT_UNSLOTH)
     assert "XFORMERS_IS_NONE True" in out
-    if u.HAS_FLASH_ATTENTION:
-        # FlashAttention is picked over xformers anyway, so a broken xformers costs nothing.
-        assert "xformers" not in out.replace("XFORMERS_IS_NONE", "")
-    else:
-        # One line by default; the fix and the full error sit behind UNSLOTH_ENABLE_LOGGING=1.
-        assert "xformers does not load with torch" in out
-        assert "unsloth install-kernels xformers" not in out
+    # One line by default, FlashAttention installed or not (some paths still use xformers);
+    # the fix and the full error sit behind UNSLOTH_ENABLE_LOGGING=1.
+    notices = [line for line in out.splitlines() if "xformers" in line.lower()]
+    notices = [line for line in notices if not line.startswith("XFORMERS_IS_NONE")]
+    assert len(notices) == 1 and "xformers does not load with torch" in notices[0], out
+    assert "install-kernels" not in out and "xFormers can't load" not in out
     out = _run(_PAST_VERSION_GUARD + _BREAK_XFORMERS + _IMPORT_UNSLOTH, UNSLOTH_ENABLE_LOGGING = "1")
     assert "xformers is installed but cannot load with torch" in out
     # No build metadata (xformers already failed its own load here) means no version to name.
