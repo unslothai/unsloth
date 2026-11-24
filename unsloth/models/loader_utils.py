@@ -996,7 +996,12 @@ def resolve_unsloth_device_map(
             f'to train. Pass device_map = "{UNSLOTH_BALANCED_DEVICE_MAP}" to split it anyway.'
         )
         return {"": single_device}
-    print(plan.describe())
+    # One line by default (unsloth_zoo's DeviceMapPlan.summary); the planner's full table with
+    # UNSLOTH_ENABLE_LOGGING=1, or from an older unsloth_zoo without summary(). A plan that does
+    # not fit raised DeviceMapInfeasible above with its whole arithmetic.
+    summary = getattr(plan, "summary", None)
+    verbose = os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") == "1"
+    print(plan.describe() if verbose or not callable(summary) else summary())
     return plan.device_map
 
 
@@ -1186,7 +1191,10 @@ def resolve_auto_block_swap(
     if not plan.layers:
         return 0, device_map, embedding
     if multi and plan.device_plan is not None:
-        print(plan.device_plan.describe())
+        device_plan = plan.device_plan
+        summary = getattr(device_plan, "summary", None)
+        verbose = os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") == "1"
+        print(device_plan.describe() if verbose or not callable(summary) else summary())
         return plan.layers, plan.device_plan.device_map, embedding
     return plan.layers, {"": target}, embedding
 
