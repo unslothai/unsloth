@@ -171,6 +171,14 @@ def test_windows_unnamed_owner_rule_is_unchanged(monkeypatch, tmp_path, windows,
     assert bool(errors) is not ready
 
 
+def test_port_accepts_refuses_a_bound_socket_that_is_not_listening_yet():
+    # vLLM's create_server_socket binds before the model load and listens only after it.
+    with socket.socket() as reserved:
+        reserved.bind(("127.0.0.1", 0))
+        port = reserved.getsockname()[1]
+        assert not managed_engine._port_accepts(f"http://127.0.0.1:{port}")
+
+
 def test_port_accepts_sends_nothing_and_follows_the_url_host():
     with socket.socket() as server:
         server.bind(("127.0.0.1", 0))
@@ -186,12 +194,14 @@ def test_port_accepts_sends_nothing_and_follows_the_url_host():
 
 def test_port_accepts_ipv6_loopback():
     if not socket.has_ipv6:
-        pytest.skip("no IPv6")
+        pytest.skip(reason = "host Python built without IPv6 support")
     with socket.socket(socket.AF_INET6) as server:
         try:
             server.bind(("::1", 0))
         except OSError:
-            pytest.skip("no IPv6 loopback")
+            pytest.skip(
+                reason = "host has no ::1 loopback (IPv6 disabled in the kernel or container)"
+            )
         server.listen()
         port = server.getsockname()[1]
         assert managed_engine._port_accepts(f"http://[::1]:{port}")
