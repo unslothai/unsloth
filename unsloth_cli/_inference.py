@@ -789,7 +789,8 @@ def _http_error_text(exc: Exception) -> str:
     import urllib.error
     if isinstance(exc, urllib.error.HTTPError):
         try:
-            detail = json.loads(exc.read() or b"{}").get("detail")
+            body = json.loads(exc.read() or b"{}")
+            detail = body.get("detail") or body.get("error", {}).get("message")
         except Exception:
             detail = None
         if isinstance(detail, str) and detail:
@@ -1114,6 +1115,7 @@ class HttpChatBackend:
         self.reply_hit_token_limit = False
         self.gguf_variant: Optional[str] = None
         self.supports_images = False
+        self._model_id = "default"
 
     def _request(
         self,
@@ -1194,6 +1196,7 @@ class HttpChatBackend:
             typer.echo(f"Model load failed: {reason}", err = True)
             raise typer.Exit(code = 1)
         self.supports_images = isinstance(loaded, dict) and bool(loaded.get("is_vision"))
+        self._model_id = (loaded.get("model") if isinstance(loaded, dict) else None) or model
 
     def _inference_status(self) -> Optional[dict]:
         try:
@@ -1236,12 +1239,13 @@ class HttpChatBackend:
         use_adapter: Optional[bool] = None,
     ):
         import json
+        import urllib.error
 
         msgs = list(messages)
         if system_prompt:
             msgs = [{"role": "system", "content": system_prompt}, *msgs]
         body = {
-            "model": "default",
+            "model": self._model_id,
             "messages": msgs,
             "stream": True,
             "enable_thinking": enable_thinking,
@@ -1257,7 +1261,10 @@ class HttpChatBackend:
             body["max_tokens"] = max_new_tokens
         if use_adapter is not None:
             body["use_adapter"] = use_adapter
-        resp = self._request("POST", "/v1/chat/completions", body)
+        try:
+            resp = self._request("POST", "/v1/chat/completions", body)
+        except urllib.error.HTTPError as exc:
+            raise RuntimeError(_http_error_text(exc)) from None
 
         self.reply_hit_token_limit = False
 

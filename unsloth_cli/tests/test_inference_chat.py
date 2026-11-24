@@ -1491,6 +1491,67 @@ def test_chat_drops_a_turn_with_an_incomplete_studio_stream(monkeypatch):
     ]
 
 
+def test_chat_turn_is_not_answered_by_a_model_loaded_elsewhere():
+    import http.server
+    import threading
+
+    studio = {"resident": None}
+
+    class Studio(http.server.BaseHTTPRequestHandler):
+        def _send(
+            self,
+            status,
+            body,
+            content_type = "application/json",
+        ):
+            data = body if isinstance(body, bytes) else json.dumps(body).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def do_GET(self):
+            self._send(200, {"active_model": studio["resident"]})
+
+        def do_POST(self):
+            payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            if self.path == "/api/inference/load":
+                studio["resident"] = payload["model_path"]
+                self._send(200, {"status": "loaded", "model": payload["model_path"]})
+                return
+            requested = payload["model"]
+            if requested not in (studio["resident"], "default"):
+                message = f"The model '{requested}' is downloaded but not loaded."
+                self._send(404, {"error": {"message": message, "code": "model_not_found"}})
+                return
+            chunk = {
+                "choices": [{"delta": {"content": studio["resident"]}, "finish_reason": "stop"}]
+            }
+            sse = f"data: {json.dumps(chunk)}\n\ndata: [DONE]\n\n".encode()
+            self._send(200, sse, "text/event-stream")
+
+        def log_message(self, *a):
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Studio)
+    threading.Thread(target = server.serve_forever, daemon = True).start()
+    try:
+        backend = HttpChatBackend(f"http://127.0.0.1:{server.server_address[1]}", "token")
+        backend.ensure_loaded(
+            "unsloth/Qwen3-0.6B-GGUF", hf_token = None, max_seq_length = None, load_in_4bit = None
+        )
+        turn = [{"role": "user", "content": "hi"}]
+        assert list(backend.stream(turn, **_STREAM_KWARGS))[-1] == "unsloth/Qwen3-0.6B-GGUF"
+
+        studio["resident"] = "unsloth/gemma-3-270m-it-GGUF"
+        with pytest.raises(RuntimeError, match = "Qwen3-0.6B-GGUF' is downloaded but not loaded"):
+            list(backend.stream(turn, **_STREAM_KWARGS))
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 def _http_stream_body(monkeypatch, max_new_tokens):
     backend = HttpChatBackend("http://localhost:8888", "token")
     bodies = []
