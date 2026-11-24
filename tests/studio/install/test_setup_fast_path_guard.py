@@ -121,9 +121,8 @@ def test_the_installer_reports_duplicate_metadata_on_every_platform(script: path
 
 
 def test_the_sidecar_predicate_asks_the_shim_on_colab_too():
-    """No venv interpreter on Colab; the shim is stdlib-only and the installer's own
-    `python` asks it. The version grep alone read a sidecar interrupted after
-    transformers landed as current on every later run."""
+    """On Colab there is no venv interpreter, so the stdlib-only shim is asked via python; a version
+    grep alone reads a sidecar interrupted after transformers as current."""
     text = SETUP_SH.read_text(encoding = "utf-8")
     start = text.index("_sidecar_current() {")
     body = text[start : text.index("\n}\n", start)]
@@ -170,9 +169,8 @@ def test_the_ps1_sidecar_installs_are_isolated_from_uv_override():
 
 
 def test_the_tiktoken_top_up_checks_the_payload_not_the_dist_info_alone():
-    """An interrupted install leaves tiktoken-*.dist-info with no package beside it; the
-    sidecar predicate accepts that sidecar (tiktoken is optional), so the top-up is the
-    only repair left, and a dist-info-only check would skip it forever."""
+    """An interrupted install can leave tiktoken dist-info without its package; the predicate
+    accepts it (tiktoken is optional), so the top-up must check the payload itself."""
     sh = SETUP_SH.read_text(encoding = "utf-8")
     start = sh.index("_sidecar_top_up_tiktoken() {")
     assert '"$_stt_dir/tiktoken/__init__.py"' in sh[start : sh.index("\n}\n", start)]

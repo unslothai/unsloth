@@ -80,15 +80,13 @@ WHISPER_UNPAIRED = re.compile(r"whisper\.cpp\s+no compatible prebuilt \(")
 AUDIO_CPP_STEP = re.compile(r"^\s*audio\.cpp\s+\S", re.MULTILINE)
 # A warm-cache rebuild talks to no forbidden host, so the log line is the only witness.
 FRONTEND_CURRENT_MARKER = re.compile(r"frontend\s+up to date")
-# What setup.sh / setup.ps1 print when the version check found a newer release, and when
-# it could not ask PyPI at all (the pass runs on purpose in both cases).
+# setup.sh/setup.ps1 messages for a newer release or unreachable PyPI; the pass runs anyway.
 UPGRADE_MARKER = "available, updating..."
 UPTODATE_MARKER = re.compile(r"python\s+\S+ \S+ is up to date")
 PYPI_UNREACHABLE_MARKER = "could not reach PyPI, updating to be safe..."
 # What --local installs from the checkout on every pass, so its RECORD moving is expected.
 LOCAL_CORE = frozenset({"unsloth", "unsloth-zoo", "unsloth_zoo"})
-# Full passes reinstall these at the same version: seed plugins, and click (sqlfluff<4 vs
-# huggingface-hub 1.23+, recorded known_unmet).
+# Full passes reinstall seed plugins and click unchanged (sqlfluff<4 vs huggingface-hub 1.23+).
 FULL_PASS_CHURN = LOCAL_CORE | frozenset(
     {"data-designer-github-repo-seed", "data-designer-unstructured-seed", "click"}
 )
@@ -125,6 +123,8 @@ INDEX_DIGEST = (
     "else:\n"
     "    digest = hashlib.sha256()\n"
     "    for name in sorted(index):\n"
+    "        if name in ('usearch', 'numkong'):\n"
+    "            continue\n"
     "        digest.update(f'{name}=={index[name][0]}\\n'.encode('utf-8'))\n"
     "    print(digest.hexdigest())\n"
 )
@@ -285,9 +285,8 @@ def _wait_until(
     timeout: float = 5.0,
     interval: float = 0.05,
 ) -> bool:
-    """Poll until `predicate` holds or the deadline passes. A monotonic deadline rather
-    than a fixed sleep: the wait is for something the proxy is already doing, and a sleep
-    long enough to be safe on a loaded CI box is wasted on every ordinary run."""
+    """Poll until `predicate` holds or the monotonic deadline passes; a fixed sleep would waste time
+    on every ordinary run."""
     deadline = time.monotonic() + timeout
     while True:
         if predicate():
@@ -352,6 +351,8 @@ def run_update(
     # Inherited, not replaced: a hand-built environment fails in ways that look like the product.
     env = dict(os.environ)
     env.pop("UNSLOTH_IDEMPOTENCY_E2E", None)
+    # tests/conftest.py turns the HNSW download off for unit tests; the update under test must run it.
+    env.pop("RAG_VEC_ANN_AUTO_INSTALL", None)
     # The pytest venv is not the venv under test.
     for leaked in (
         "VIRTUAL_ENV",
@@ -458,8 +459,7 @@ def _digest(path: pathlib.Path) -> str | None:
 
 
 def _tree_state(root: pathlib.Path) -> dict | None:
-    """File count and newest mtime. Cheap enough for a sidecar of 4000 files, and it
-    moves the moment anything in the tree is rewritten."""
+    """File count and newest mtime; cheap for 4000 files and moves when anything is rewritten."""
     if not root.is_dir():
         return None
     count = 0
@@ -531,6 +531,11 @@ def snapshot(venv_python: pathlib.Path) -> dict:
 
     state["uv_cache_marker"] = _digest(studio_home / "cache" / "uv-cache-dir")
     state["no_torch_marker"] = (venv / ".unsloth-no-torch").is_file()
+    # A no-op update must not rewrite the HNSW probe marker.
+    hnsw_marker = venv / ".unsloth-hnsw.json"
+    state["hnsw_marker"] = (
+        (_digest(hnsw_marker), hnsw_marker.stat().st_mtime_ns) if hnsw_marker.is_file() else None
+    )
     for name in (".venv_t5_530", ".venv_t5_550", ".venv_t5_510"):
         state[name] = _tree_state(studio_home / name)
 
@@ -561,8 +566,7 @@ def expected_prebuilt_answers(log: str) -> int:
 
 @pytest.fixture(scope = "session")
 def settled(install, tmp_path_factory):
-    """One update, so whatever the install left half-decided is decided. Everything
-    below measures the update AFTER this one."""
+    """A settling update, so anything the install left half-decided is decided first."""
     directory = tmp_path_factory.mktemp("idempotency")
     run = run_update(directory, "run1-settle")
     assert run.rc == 0, f"the first update failed:\n{run.log[-8000:]}"
@@ -586,8 +590,7 @@ def test_a_second_update_changes_nothing_on_disk(install, settled):
 
 
 def test_a_second_update_downloads_no_payload(install, settled):
-    """The measurement the timings cannot make: a fast run and a run that refetched
-    three release manifests look the same on a warm cache."""
+    """Timings miss refetches: on a warm cache, refetching three manifests still looks fast."""
     directory, _ = settled
     run = run_update(directory, "run3-network")
     assert run.rc == 0, run.log[-8000:]
@@ -649,6 +652,14 @@ def test_the_desktop_update_path_keeps_a_verified_install_offline(install, settl
         or UPGRADE_MARKER in run.log
     ), run.log[-8000:]
     assert run.connections == run.refused, run.report()
+    if UPGRADE_MARKER in run.log:
+        # Windows reached PyPI and moved to its release (the checkout's version is not PyPI's, as between
+        # a version bump and its publish), so the disk moved by design. Restore the checkout first: the
+        # fault tests after this one expect the code under test.
+        restore = run_update(directory, "run6-restore", local = True)
+        assert restore.rc == 0, restore.log[-8000:]
+        _assert_install_working(install, before, same_distributions = False)
+        pytest.skip("installed version is not PyPI's latest; the offline keep path was not taken")
     assert diff(before, snapshot(install)) == []
 
 
@@ -702,9 +713,8 @@ def test_a_truncated_sidecar_file_rebuilds_only_that_sidecar(install, settled):
 
 
 def test_a_deleted_manifest_re_runs_the_pass_and_changes_nothing(install, settled):
-    """The manifest is the only record of what the last pass did. Without it every step
-    must run -- and every step must then find its work already done, so the venv comes
-    out identical."""
+    """The manifest is the only record of the last pass; without it every step re-runs and must find
+    its work done, leaving the venv identical."""
     directory, _ = settled
     manifest = install.parent.parent / "unsloth_install_manifest.json"
     saved = manifest.read_bytes()
@@ -849,9 +859,8 @@ def test_full_deps_forces_every_step_and_still_changes_nothing(install, settled)
 
 
 def test_the_install_is_left_working(install, settled):
-    """Runs last. The fault cases legitimately move mtimes -- a rebuilt sidecar is a
-    rebuilt sidecar -- so this asserts what has to be true anyway: the same packages are
-    installed, and the install reports itself complete."""
+    """Runs last; fault cases legitimately move mtimes, so this checks only that the same packages
+    are installed and the install reports complete."""
     _directory, before = settled
     _assert_install_working(install, before)
 

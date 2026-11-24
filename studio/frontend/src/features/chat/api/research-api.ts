@@ -2,6 +2,7 @@
 
 // eslint-disable-next-line no-restricted-imports -- Avoid the auth barrel's React login page.
 import { authFetch } from "@/features/auth/api";
+import { watchStreamSilence } from "@/lib/stream-silence";
 import type {
   CreateResearchRunInput,
   ResearchEvent,
@@ -165,6 +166,7 @@ export async function* streamResearchEvents(
   id: string,
   after: number,
   signal?: AbortSignal,
+  silenceTimeoutMs?: number,
 ): AsyncGenerator<StreamResearchEvent> {
   // POST, not GET: proxies hold a streamed GET until it closes. The route accepts both.
   const response = await authFetch(
@@ -180,9 +182,11 @@ export async function* streamResearchEvents(
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
+  const silence = watchStreamSilence(reader, silenceTimeoutMs);
   try {
     while (true) {
       const { done, value } = await reader.read();
+      silence.touch();
       buffer += decoder.decode(value, { stream: !done });
       // Normalize on the whole buffer so a CRLF split across chunks still frames.
       buffer = buffer.replace(/\r\n/g, "\n");
@@ -223,6 +227,7 @@ export async function* streamResearchEvents(
       }
     }
   } finally {
+    silence.stop();
     await reader.cancel().catch(() => undefined);
   }
 }
@@ -258,7 +263,6 @@ function waitForReconnect(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
-/** Follow a durable run across clean SSE EOFs and transient network failures. */
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: The retry, cursor, abort, and terminal states belong to one reconnect state machine.
 export async function* followResearchRun(
   id: string,
@@ -266,6 +270,7 @@ export async function* followResearchRun(
     initialRun?: ResearchRun;
     signal?: AbortSignal;
     replayFrom?: number;
+    silenceTimeoutMs?: number;
   } = {},
 ): AsyncGenerator<ResearchRunUpdate> {
   const { signal, replayFrom } = options;
@@ -303,13 +308,14 @@ export async function* followResearchRun(
   let cursor = replayFrom ?? run.lastEventSeq;
   while (!signal?.aborted) {
     try {
-      for await (const event of streamResearchEvents(id, cursor, signal)) {
+      for await (const event of streamResearchEvents(
+        id,
+        cursor,
+        signal,
+        options.silenceTimeoutMs,
+      )) {
         cursor = Math.max(cursor, event.id);
-        // Delta-only events carry no run by design (`_DELTA_ONLY_EVENTS` in routes/research_runs.py), so
-        // reuse the run we hold: report and reasoning deltas arrive ~12x/s for the whole synthesis, and
-        // a fresh object per event re-renders every subscriber that selects the run. The cursor lives in
-        // `session.lastAppliedSeq`, and a terminal status comes with a snapshot.
-        // A terminal status, which is all isSettledResearchRun reads lastEventSeq for, comes with a snapshot.
+        // Delta-only events carry no run; reuse ours so ~12 deltas/s do not re-render every subscriber.
         const eventRun: ResearchRun = event.run ?? currentRun;
         const hydratedEvent: ResearchEvent = {
           ...event,

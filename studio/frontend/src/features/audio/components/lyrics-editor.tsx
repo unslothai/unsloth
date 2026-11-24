@@ -9,15 +9,17 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Textarea } from "@/components/ui/textarea";
-import { Add01Icon } from "@hugeicons/core-free-icons";
+import { PlusSignIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useRef } from "react";
 import { insertSectionTag, sectionTags } from "../music/music-policy";
 import type { MusicModeRule } from "../music/music-types";
+import { FieldLabel, FieldTag } from "./field";
 
 export function LyricsEditor({
   id,
   label,
+  optional = false,
   value,
   onChange,
   sectionCase,
@@ -27,6 +29,7 @@ export function LyricsEditor({
 }: {
   id: string;
   label: string;
+  optional?: boolean;
   value: string;
   onChange: (next: string) => void;
   sectionCase: MusicModeRule["section_case"];
@@ -52,11 +55,15 @@ export function LyricsEditor({
     });
   };
   return (
-    <div className="grid gap-1.5">
+    <div className="grid gap-2">
       <div className="flex min-w-0 items-center justify-between gap-2">
-        <label htmlFor={id} className="text-ui-13 font-medium text-foreground">
+        <FieldLabel
+          htmlFor={id}
+          className="text-ui-13 font-medium text-foreground"
+        >
           {label}
-        </label>
+          {optional ? <FieldTag>Optional</FieldTag> : null}
+        </FieldLabel>
         <DropdownMenu>
           <DropdownMenuTrigger asChild={true}>
             <Button
@@ -64,9 +71,9 @@ export function LyricsEditor({
               variant="ghost"
               size="sm"
               disabled={disabled}
-              className="-me-2 h-auto px-2 py-1 text-ui-11p5"
+              className="h-auto gap-1 px-0 py-0 text-ui-12 text-muted-foreground hover:bg-transparent hover:text-foreground dark:hover:bg-transparent"
             >
-              <HugeiconsIcon icon={Add01Icon} className="size-3" />
+              <HugeiconsIcon icon={PlusSignIcon} className="size-3" />
               Add section
             </Button>
           </DropdownMenuTrigger>

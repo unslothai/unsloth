@@ -194,3 +194,22 @@ def test_sharegpt_message_lists_train_as_one_conversation(mapping):
         _user("Sky?"),
         _assistant("Blue"),
     ]
+
+
+def _parts(text):
+    return [{"type": "text", "text": text}]
+
+
+@pytest.mark.parametrize("mapping", [None, _MAPPING], ids = ["auto_mapping", "user_mapping"])
+@pytest.mark.parametrize("row, conversation", _CASES)
+def test_text_part_messages_train_as_their_text(row, conversation, mapping):
+    parts_row = {
+        column: [{**message, "content": _parts(message["content"])} for message in value]
+        if isinstance(value, list)
+        else value
+        for column, value in row.items()
+    }
+
+    result = format_dataset(Dataset.from_list([parts_row]), custom_format_mapping = mapping)
+
+    assert result["dataset"][0]["conversations"] == conversation

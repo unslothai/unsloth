@@ -3,10 +3,8 @@
 
 import { createContext, useContext } from "react";
 
-/** The project the runtime provider on this subtree is showing, for the composer to stamp sends
- *  with (see `chat-thread-project-claim.ts`). Context rather than the store's `activeProjectId`:
- *  this is the same value the adapter files threads under, and one source for both is what makes
- *  the claim and the fallback agree. */
+/** The project this provider shows. From context, not the store, so the composer's claim and
+ *  the adapter's filing agree. */
 export const ChatProjectScopeContext = createContext<string | null>(null);
 
 export function useChatProjectScope(): string | null {

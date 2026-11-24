@@ -94,6 +94,9 @@ def test_table_covers_every_accelerate_distributed_type(native):
 
 def test_every_refuse_row_is_refused_at_both_entry_points(native, monkeypatch):
     launch = sys.modules["unsloth.fsdp2_launch"]
+    # Explicit native: on a torch build without CUDA / ROCm (CPU CI) the generic flag routes a vendor
+    # device to accelerate's FSDP2 instead (non_cuda_install), which is not refused.
+    monkeypatch.setenv("UNSLOTH_FSDP2_BACKEND", "native")
     rows = [r for r in launch.NATIVE_BACKEND_TABLE if r["action"] == "refuse"]
     assert len(rows) >= 10
     for row in rows:

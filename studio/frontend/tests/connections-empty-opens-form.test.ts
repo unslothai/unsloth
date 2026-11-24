@@ -1,10 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Settings > Connections used to open onto an empty list that never said what
-// the page was for. It now opens the form when the first sync comes back with
-// no connections. These pin the parts that make it land where a user expects.
-
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -12,57 +8,36 @@ import { readSrc } from "./helpers/kit.ts";
 
 const dialog = readSrc("features/chat/chat-providers-dialog.tsx");
 
-test("an empty connection list opens the add-connection form", () => {
-  // Both operands matter: `syncedProviders` is the backend answer, and
-  // `selectableRegistry` stops a form with an empty dropdown from opening.
-  assert.match(
-    dialog,
-    /if \(syncedProviders\.length === 0 && selectableRegistry\.length > 0\) \{\s*(?:\/\/[^\n]*\n\s*)*setPage\("form"\);/,
-  );
+test("an empty connection list stays on the list, where the provider gallery is", () => {
+  assert.doesNotMatch(dialog, /syncedProviders\.length === 0[^\n]*\{\s*setPage\("form"\)/);
+  assert.doesNotMatch(dialog, /autoOpenedAddFormRef/);
   assert.match(
     dialog,
     /const selectableRegistry = registryRows\.filter\(\(entry\) => !entry\.hidden\);\s*setRegistry\(selectableRegistry\);/,
   );
-
-  // Reading `providers` would decide against the previous render's props.
-  assert.doesNotMatch(
+  assert.match(dialog, /No connections yet/);
+  assert.match(
     dialog,
-    /if \(providers\.length === 0 &&[^\n]*\)\s*\{\s*(?:\/\/[^\n]*\n\s*)*setPage\("form"\);/,
+    /<ConnectionGallery\s*registry=\{menuRegistry\}[\s\S]{0,200}?onPick=\{\(type\) => openAddProvider\(type\)\}/,
   );
 });
 
-test("the add-connection form only opens itself once", () => {
-  // Without the latch, the focus re-sync would pull the user back to the form.
-  assert.match(
-    dialog,
-    /if \(!autoOpenedAddFormRef\.current\) \{\s*autoOpenedAddFormRef\.current = true;/,
-  );
-  assert.match(dialog, /const autoOpenedAddFormRef = useRef\(false\);/);
-
-  // Resetting it would make the latch per render instead of per visit.
-  assert.doesNotMatch(dialog, /autoOpenedAddFormRef\.current = false;/);
+test("only the user's own navigation moves between the list and the form", () => {
+  const calls = [...dialog.matchAll(/setPage\("(list|form)"\)/g)].map((call) => {
+    const before = dialog.slice(0, call.index);
+    const owner = [...before.matchAll(/\n {2}(?:async )?function (\w+)\(/g)].at(-1)?.[1];
+    return `${owner}:${call[1]}`;
+  });
+  assert.deepEqual(calls, [
+    "openAddProvider:form",
+    "closeForm:list",
+    "addProvider:list",
+    "saveProviderEdits:list",
+    "editProvider:form",
+  ]);
 });
 
 test("the form's back arrow still returns to the list", () => {
-  // A starting point, not a trap: the way back and its copy both stay.
-  assert.match(
-    dialog,
-    /function closeForm\(\) \{\s*resetForm\(\);\s*autoOpenedAddFormRef\.current = true;\s*setPage\("list"\);/,
-  );
-  assert.match(dialog, /No connections yet/);
-});
-
-test("navigating before the sync lands consumes the auto-open", () => {
-  // The Add connection row stays live while the first sync runs, so a user can
-  // open the form and go back before it lands. Every path that moves the page
-  // latches the one-shot, or the sync would drag them back into the form.
-  const calls = [...dialog.matchAll(/setPage\("(?:list|form)"\)/g)];
-  assert.equal(calls.length, 6);
-  for (const call of calls) {
-    const before = dialog.slice(
-      Math.max(0, (call.index ?? 0) - 200),
-      call.index,
-    );
-    assert.match(before, /autoOpenedAddFormRef\.current = true;/);
-  }
+  assert.match(dialog, /function closeForm\(\) \{\s*resetForm\(\);\s*setPage\("list"\);/);
+  assert.match(dialog, /onClick=\{closeForm\}\s*aria-label="Back to connections"/);
 });

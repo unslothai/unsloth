@@ -1,9 +1,9 @@
 # Optional inference engines
 
-Studio can install and run vLLM or SGLang for local text and image chat. Installation
+Unsloth can install and run vLLM or SGLang for local text and image chat. Installation
 is opt-in. Select a model, open its run settings, and choose **Inference engine**.
 Choose **Install engine** to install and load the selected model. Selecting **Default** returns
-to Studio's normal backend. Remembered model settings include the engine choice.
+to Unsloth's normal backend. Remembered model settings include the engine choice.
 
 **Settings > System > Inference engines** provides installation, cancellation,
 repair, removal, and restoration of the previous installation. Unload the model
@@ -15,7 +15,7 @@ refreshing the page. It shows live package-manager output and expandable details
 Model settings show a brief installation status and a cancel action, without
 duplicating the progress bar or live log.
 The progress bar stays indeterminate because the installer does not report reliable
-byte totals; Studio does not invent a percentage, transfer speed or ETA.
+byte totals; Unsloth does not invent a percentage, transfer speed or ETA.
 
 ## Initial support
 
@@ -27,11 +27,11 @@ Select one or more GPUs in the model settings. With multiple GPUs, choose
 **Multi-GPU mode**:
 
 - **Tensor parallel** splits computations within model layers. This is the default
-  for existing settings. Studio checks head and layer dimensions before unloading
+  for existing settings. Unsloth checks head and layer dimensions before unloading
   the current model.
 - **Pipeline parallel** places different layers on each GPU. It can reduce
   communication overhead on systems without NVLink. Layer allocation follows the
-  engine's default partition; Studio does not automatically balance unequal cards.
+  engine's default partition; Unsloth does not automatically balance unequal cards.
 - **Replicas (data parallel)** distributes requests across GPU workers. Dense
   models need a full model copy and cache on each GPU. Native vLLM data parallelism
   can shard MoE experts across workers, so these are not independent full replicas
@@ -44,18 +44,19 @@ Text and vision architectures are validated by the selected engine. Individual
 models can still exceed available memory or require unsupported kernels.
 
 OpenAI chat requests support client-owned tool calls, streamed arguments and tool-result
-history. Studio can also execute its existing built-in and MCP tools through the
+history. Unsloth can also execute its existing built-in and MCP tools through the
 shared approval and execution flow. Native output parsers are selected from the
-model's Jinja template syntax; Studio does not replace the template. Models with
+model's Jinja template syntax; Unsloth does not replace the template. Models with
 unrecognized tool syntax remain available for ordinary chat. The pinned SGLang
 version can return multiple calls even with `parallel_tool_calls: false`.
 Legacy completions and Anthropic endpoints retain their existing GGUF requirement;
 exact token counting for tool-enabled prompts is not available.
 
-LoRA adapters, audio/video input, structured output, reasoning
-controls and continuation are outside this profile. Custom model code uses the
-existing trust-remote-code consent setting. Multi-node serving is not configured by Studio.
-Engine servers honor Studio's VRAM budget, capped by the most constrained
+Structured output (`response_format`) and continuing a cut-off reply are served by the
+engine; a reply cut off mid-thought cannot be resumed. LoRA adapters, audio/video input
+and reasoning controls are outside this profile. Custom model code uses the
+existing trust-remote-code consent setting. Multi-node serving is not configured by Unsloth.
+Engine servers honor Unsloth's VRAM budget, capped by the most constrained
 selected GPU's measured free-memory fraction, with at least 512 MiB left per GPU for driver allocations.
 GPU memory is not treated as a single pool: each device must fit its own shard
 and runtime allocations. Training evicts them before allocating
@@ -103,13 +104,13 @@ clients that explicitly send `load_in_4bit: true` without `engine_precision` sel
 4-bit conversion. Changing precision requires a reload.
 
 Vision models accept text-only chat and OpenAI `image_url` content parts, including
-multiple images and images on earlier turns. Studio forwards the original image
+multiple images and images on earlier turns. Unsloth forwards the original image
 bytes to the engine, fetching remote URLs itself with the same limits as other backends. The selected model determines its image and context limits.
 
 ## Environment and cache design
 
-Engines run in their own processes from environments under the Studio home's
-`engines` directory. Studio never imports engine packages into its own Python
+Engines run in their own processes from environments under the Unsloth home's
+`engines` directory. Unsloth never imports engine packages into its own Python
 process. Compiler caches, including Triton, are scoped to each engine profile, model,
 precision, context and GPU selection to avoid reusing incompatible kernels.
 The committed requirements profiles lock versions and wheel hashes for Python 3.13 (the ROCm
@@ -124,38 +125,38 @@ Each engine has one locked release per PyTorch build it can share, newest first:
 | SGLang | 0.5.17 | 2.11.0 (CUDA 13.0) | `sglang-linux-cu130.txt` |
 | vLLM on AMD | 0.30.0 | 2.12.0 (ROCm 7.2) | `vllm-linux-rocm723.txt` |
 
-Studio installs the release built on its own PyTorch, so a new install (torch 2.13) and an
+Unsloth installs the release built on its own PyTorch, so a new install (torch 2.13) and an
 existing default install (torch 2.11) both share. Any other PyTorch (2.10, 2.12, a CUDA 12 build)
 gets the newest release in a complete isolated environment, since no vLLM or SGLang release is
 built on it. Windows hosts install the newest release inside WSL.
 
-The engines cannot share Studio's site-packages: they pin Transformers and other
-packages at versions Studio does not use, and they conflict with each other. They
-can share its interpreter, PyTorch and CUDA libraries. When Studio runs Python 3.13
+The engines cannot share Unsloth's site-packages: they pin Transformers and other
+packages at versions Unsloth does not use, and they conflict with each other. They
+can share its interpreter, PyTorch and CUDA libraries. When Unsloth runs Python 3.13
 and its torch, together with the Triton and NVIDIA packages torch loads, is exactly
-the version an engine is locked to, the engine environment uses Studio's
-interpreter and holds only the locked packages Studio lacks or has at another
-version. A `.pth` file adds Studio's site-packages after the engine's own, so the
+the version an engine is locked to, the engine environment uses Unsloth's
+interpreter and holds only the locked packages Unsloth lacks or has at another
+version. A `.pth` file adds Unsloth's site-packages after the engine's own, so the
 engine's pins win and multiprocessing workers see the same packages. A CUDA library torch accepts as a range (nvjitlink)
 only has to satisfy every locked package's requirement. Otherwise, for example with
 another torch version or CUDA build, the engine gets a complete isolated environment
 from the newest lock.
 
-A shared environment records the Studio packages it was checked against. If a
-Studio update changes any of them, or the Python version, the engine reports an
+A shared environment records the Unsloth packages it was checked against. If a
+Unsloth update changes any of them, or the Python version, the engine reports an
 available update, refuses to load until it is repaired, and cannot be rolled back
 to an environment built on the old packages. Repair reuses cached downloads.
 
 Installation uses the shared uv cache, honoring `UV_CACHE_DIR` when configured.
-Otherwise it reuses the installer's recorded cache path, with Studio's own cache
+Otherwise it reuses the installer's recorded cache path, with Unsloth's own cache
 as the fallback.
 Copy-on-write clones allow identical cached files to share storage on supporting
 filesystems; uv falls back to copies elsewhere. Environments do not hardlink
-mutable files into Studio's Python environment. Existing installations may use
+mutable files into Unsloth's Python environment. Existing installations may use
 different Torch or CUDA builds, or may not retain cached wheels, so no fixed disk
-savings are promised. Model downloads use Studio's configured Hugging Face cache.
+savings are promised. Model downloads use Unsloth's configured Hugging Face cache.
 
-An exclusive file lock protects installation and removal across Studio processes.
+An exclusive file lock protects installation and removal across Unsloth processes.
 Running engines hold shared leases. A staged environment must pass dependency,
 CUDA import and server entry-point checks before an atomic active marker changes.
 The dependency check runs in the engine's interpreter, so it covers both layers of a
@@ -165,9 +166,9 @@ Failed or cancelled installations preserve the prior marker. A successful repair
 keeps one previous environment for restoration. Explicitly restoring an older
 profile allows model loading while still offering the pinned update. That choice
 survives restart and failed repairs; a successful update replaces it. Interrupted
-jobs are reported after restarting Studio.
+jobs are reported after restarting Unsloth.
 
-Servers bind to loopback with a random port and authentication key. Studio owns
+Servers bind to loopback with a random port and authentication key. Unsloth owns
 their process trees, startup cancellation, health checks, streaming cancellation
 and GPU handoff. These engines participate in the local model lifecycle. They
 are not entries in the external provider registry.
@@ -176,7 +177,7 @@ Engine adapters own command lines and startup phases; the orchestrator remains
 the source of resident-model state. HTTP response cleanup is shared with the
 external OpenAI transport. A bounded async bridge provides synchronous streaming
 to the orchestrator without letting a slow consumer buffer unlimited output.
-Children are spawned through Studio's process-lifetime thread so they survive
+Children are spawned through Unsloth's process-lifetime thread so they survive
 the short-lived thread that requested their start.
 
 Controls use the shared Select, Switch and Settings components. New copy lives in the
@@ -185,17 +186,17 @@ translation catalog, with explicit English fallback for untranslated locales.
 SGLang uses Triton attention and PyTorch sampling in this profile so its default
 FlashInfer JIT path does not require a matching system CUDA toolkit. Runtime
 executables such as Ninja are resolved from the engine environment first, then from
-Studio's environment for a shared engine.
+Unsloth's environment for a shared engine.
 For tensor parallelism, SGLang probes GPU peer access and falls back to its
 standard collective when peer access is unavailable. Its equal-free-memory
-guard is disabled for these managed groups: Studio checks every GPU, and SGLang
+guard is disabled for these managed groups: Unsloth checks every GPU, and SGLang
 sizes its cache from the minimum available memory across ranks. This allows
 cards with different memory capacities without treating their VRAM as a pool.
 
 ## AMD GPUs
 
 vLLM runs on AMD GPUs from vLLM's own ROCm build: vLLM 0.30.0 with the PyTorch 2.12 it
-publishes for ROCm 7.2 (`vllm-linux-rocm723.txt`). SGLang stays NVIDIA only. Studio picks the
+publishes for ROCm 7.2 (`vllm-linux-rocm723.txt`). SGLang stays NVIDIA only. Unsloth picks the
 ROCm build when its own PyTorch is a ROCm build, or on Linux when the kernel lists an AMD GPU and
 no NVIDIA driver is loaded.
 
@@ -208,8 +209,8 @@ On Linux the host needs:
 - A C compiler: Triton builds its HIP driver module when the engine first compiles a kernel.
 - Access to `/dev/kfd` (the `render` and `video` groups).
 - A GPU whose gfx target vLLM's ROCm kernels are built for: gfx90a, gfx942, gfx950, gfx1100,
-  gfx1101, gfx1150, gfx1151, gfx1200 or gfx1201. Studio reads the target the GPU presents to
-  PyTorch, so an `HSA_OVERRIDE_GFX_VERSION` in Studio's environment applies to the engine too.
+  gfx1101, gfx1150, gfx1151, gfx1200 or gfx1201. Unsloth reads the target the GPU presents to
+  PyTorch, so an `HSA_OVERRIDE_GFX_VERSION` in Unsloth's environment applies to the engine too.
 
 The engine always gets an isolated environment on a uv-managed CPython 3.12: vLLM publishes its
 ROCm build for CPython 3.12 only, and Triton compiles against the interpreter's `Python.h`, which a
@@ -220,7 +221,7 @@ nvidia-smi. Model default, BF16, FP16, INT8 and FP8 work. 4-bit conversion and p
 BitsAndBytes checkpoints are refused before the resident model unloads, because vLLM's ROCm build
 has no BitsAndBytes.
 
-On Windows the engine runs in Studio's WSL distro, as on NVIDIA, on one AMD GPU. Installing it
+On Windows the engine runs in Unsloth's WSL distro, as on NVIDIA, on one AMD GPU. Installing it
 also installs ROCm 7.2.1 from AMD's apt repository into the distro, plus AMD's prebuilt WSL
 packages from `ROCm/librocdxg` v1.2.2: `rocdxg-roct`, the HSA runtime's bridge to the Windows
 driver over `/dev/dxg`, and `rocdxg-amd-smi-lib`, through which vLLM detects the GPU. The apt key
@@ -229,7 +230,7 @@ engine runs with `HSA_ENABLE_DXG_DETECTION=1`, `LD_LIBRARY_PATH=/opt/rocm-wsl/li
 `ROCPROFILER_REGISTER_ENABLED=0`: rocprofiler-sdk, which vLLM's PyTorch links, aborts HIP start-up
 without the KFD sysfs topology that WSL lacks. The pool HIP reports under WSL is the dedicated
 memory plus a share of the host's RAM, and allocations past what the host can back stall rather
-than fail, so Studio budgets a discrete card against its dedicated memory and an APU against its
+than fail, so Unsloth budgets a discrete card against its dedicated memory and an APU against its
 dedicated memory plus 80% of the RAM Windows reports available. When Windows reports neither, the
 budget falls back to the WSL VM's available memory, and the load is refused when that cannot be
 read either. This was measured on one Strix Halo machine.
@@ -237,7 +238,7 @@ read either. This was measured on one Strix Halo machine.
 ## Maintaining profiles
 
 Run from the repository root using uv. Seed each output file with `uv pip freeze`
-from a default Studio install first: uv prefers versions already in the output file,
+from a default Unsloth install first: uv prefers versions already in the output file,
 which keeps each engine's own layer small.
 
 ```sh
@@ -256,7 +257,7 @@ uv pip compile vllm-linux-rocm723.in --python-version 3.12 --python-platform x86
 python engine_compat.py vllm-linux-rocm723
 ```
 
-Keep each lock's torch, torchvision, torchaudio and CUDA pins equal to the Studio
+Keep each lock's torch, torchvision, torchaudio and CUDA pins equal to the Unsloth
 install it serves, or no installation can share them. `engine_compat.py` also records
 each wheel's download size, which the install prompt shows. SGLang's excludes file drops `outlines`,
 whose `outlines-core` pin has no Python 3.13 wheel; SGLang only imports it for

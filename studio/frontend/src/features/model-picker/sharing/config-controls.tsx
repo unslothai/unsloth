@@ -4,6 +4,8 @@
 import { LazyImportBoundary } from "@/components/lazy-import-boundary";
 import { Button } from "@/components/ui/button";
 import { toast } from "@/lib/toast";
+import { Share01Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { type ComponentProps, Suspense, lazy, useLayoutEffect } from "react";
 import type { ModelPickTarget } from "../components/model-selector/types";
 import {
@@ -97,12 +99,18 @@ export function SharedRunConfigControls({
   const fallback = (
     <Button
       type="button"
-      size="sm"
+      size="icon-sm"
       variant="outline"
       className={props.className}
+      aria-label="Share"
+      title="Share"
       disabled
     >
-      Share
+      <HugeiconsIcon
+        icon={Share01Icon}
+        strokeWidth={1.75}
+        className="size-[calc(1rem*var(--ui-space-scale,1))]"
+      />
     </Button>
   );
   return (

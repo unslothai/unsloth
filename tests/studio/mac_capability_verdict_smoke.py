@@ -8,6 +8,8 @@ clock and a stand-in worker. Nothing there boots a server, and nothing there run
 host where `import mlx.core` succeeds or fails for real. This does: it boots the real
 `unsloth studio` on Apple Silicon, polls /api/health from the first reply the socket
 gives, and judges the whole sequence rather than the last answer.
+Once login succeeds, each scenario explicitly requests hardware detection, as a
+capability-dependent feature does; ordinary health alone stays cold by default.
 
 Three scenarios, one per boot (the self-heal is once per process, so they cannot share
 one):
@@ -587,6 +589,26 @@ def assert_settled_and_stable(poller: HealthPoller, chat_only: bool, reason, lab
     ok(f"the {label} verdict held for {STABLE_HOLD_S:.0f}s across {len(tail)} replies")
 
 
+def request_hardware_detection(poller: HealthPoller, getter: TokenGetter) -> bool:
+    """Keep observing idle health, then make the authenticated demand a picker makes."""
+    sample = poller.wait_for(
+        lambda s: s.authed, 120, "an authenticated health reply before hardware demand"
+    )
+    if sample is None or not poller.token:
+        fail(f"cannot request hardware detection ({getter.error or 'login had not landed yet'})")
+        return False
+    if not sample.published and sample.body.get("hardware_detection_deferred"):
+        ok("ordinary health stayed provisional before the hardware request")
+    step("requesting hardware detection for the capability-dependent feature")
+    status, body = _get(f"{poller.base}/api/health?detect_hardware=true", poller.token)
+    if status != 200 or not isinstance(body, dict) or "version" not in body:
+        fail(f"authenticated hardware detection returned {status} without an accepted health reply")
+        return False
+    # The response can still be provisional while detection or MLX repair runs.
+    # Leave the ordinary poller and every stability/repair assertion in control.
+    return True
+
+
 def first_authed_published(
     poller: HealthPoller, getter: TokenGetter, budget: float
 ) -> Sample | None:
@@ -661,6 +683,8 @@ def scenario_real_mlx(port: int, log: Path) -> None:
         return
 
     with booted(port, log, dict(os.environ)) as (poller, getter):
+        if not request_hardware_detection(poller, getter):
+            return
         settled = poller.wait_for(lambda s: s.published, SETTLE_BUDGET_S, "the verdict to settle")
         if settled is None:
             wait_for_health(port, log)
@@ -709,6 +733,8 @@ def scenario_no_mlx_settles(port: int, log: Path, work: Path) -> None:
     env["UNSLOTH_DISABLE_MLX_AUTOREPAIR"] = "1"
 
     with booted(port, log, env) as (poller, getter):
+        if not request_hardware_detection(poller, getter):
+            return
         if not wait_for_health(port, log):
             fail("the server never became healthy")
             return
@@ -755,6 +781,8 @@ def scenario_no_mlx_repair(port: int, log: Path, work: Path) -> None:
     env.pop("UNSLOTH_DISABLE_MLX_AUTOREPAIR", None)
 
     with booted(port, log, env) as (poller, getter):
+        if not request_hardware_detection(poller, getter):
+            return
         if not wait_for_health(port, log):
             fail("the server never became healthy")
             return

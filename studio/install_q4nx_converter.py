@@ -73,6 +73,26 @@ def install_dir(root: Path, pins: Optional[dict] = None) -> Path:
     return Path(root) / pins["commit"][:12]
 
 
+def _overrides(pins: dict) -> dict:
+    return pins.get("config_overrides") or {}
+
+
+def apply_config_overrides(payload: Path, overrides: dict) -> None:
+    """Set dotted keys in the converter's JSON configs (the archive itself is hash-checked)."""
+    for relpath, values in overrides.items():
+        path = payload / relpath
+        config = json.loads(path.read_text(encoding = "utf-8"))
+        for dotted, value in values.items():
+            *parents, leaf = dotted.split(".")
+            node = config
+            for key in parents:
+                node = node.get(key) if isinstance(node, dict) else None
+            if not isinstance(node, dict) or leaf not in node:
+                raise RuntimeError(f"{relpath} has no {dotted} to override.")
+            node[leaf] = value
+        path.write_text(json.dumps(config, indent = 4) + "\n", encoding = "utf-8")
+
+
 def installed_converter(root: Path, pins: Optional[dict] = None) -> Optional[Path]:
     """convert.py of a complete install matching the pin, else None."""
     pins = pins or load_pins()
@@ -82,6 +102,8 @@ def installed_converter(root: Path, pins: Optional[dict] = None) -> Optional[Pat
     except (OSError, ValueError):
         return None
     if marker.get("commit") != pins["commit"] or marker.get("sha256") != pins["archive_sha256"]:
+        return None
+    if marker.get("config_overrides", {}) != _overrides(pins):
         return None
     script = target / "convert.py"
     return script if script.is_file() and (target / "q4nx").is_dir() else None
@@ -144,12 +166,14 @@ def install(
             if not scripts:
                 raise RuntimeError("The Q4NX converter archive does not contain convert.py.")
             payload = scripts[0].parent
+            apply_config_overrides(payload, _overrides(pins))
             (payload / MARKER_NAME).write_text(
                 json.dumps(
                     {
                         "repo": pins["repo"],
                         "commit": pins["commit"],
                         "sha256": pins["archive_sha256"],
+                        "config_overrides": _overrides(pins),
                     },
                     indent = 2,
                 )

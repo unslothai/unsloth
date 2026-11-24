@@ -1,18 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""routes/llama_compat.py: the discovery surface a third-party client probes.
-
-Reproduces a real user report. A client pointed at Studio's port ran this sequence:
-
-    GET  /api/v1/models  404      GET  /props    200 text/html
-    GET  /api/tags       404      GET  /version  200 text/html
-    GET  /v1/props       404      POST /api/show 405
-
-The two 200s are the bug: neither was a Studio route, so both fell through the SPA
-catch-all and returned index.html, which a probe reads as "supported" before failing
-on the body. The module is loaded standalone with a double for routes.inference.
-"""
+"""Discovery paths like /props and /version must not 200 with index.html via the SPA catch-all."""
 
 from __future__ import annotations
 
@@ -169,24 +158,16 @@ def _teardown():
     sys.modules.pop("llama_compat_under_test", None)
 
 
-# ── the reported probe sequence ───────────────────────────────────────────────
-
-
 def test_the_reported_probe_sequence_no_longer_returns_html():
-    """THE REGRESSION THIS FILE EXISTS FOR: every probed path answers JSON or 404,
-    never 200 text/html."""
+    """Regression guard: every probed path answers JSON or 404, never 200 text/html."""
     mod = _load()
     with _client(mod) as c:
-        # The two that used to answer with the app shell now answer with JSON.
         for path in ("/props", "/v1/props", "/version"):
             r = c.get(path)
             assert r.status_code == 200, (path, r.status_code)
             assert "application/json" in r.headers["content-type"], path
 
-        # The Ollama pair stays a 404 on purpose: see test_the_ollama_surface_is_not
-        # _advertised. What matters is that no probe in the sequence gets HTML.
-        # 405 for POST /api/show is main.py's standing answer for a POST to any unknown
-        # /api/ path, unchanged by this PR; what matters is that none of them is HTML.
+        # Ollama paths stay 404 on purpose; 405 is main.py's answer to POST on unknown /api/
         for method, path in (
             ("GET", "/api/v1/models"),
             ("GET", "/api/tags"),
@@ -198,8 +179,7 @@ def test_the_reported_probe_sequence_no_longer_returns_html():
 
 
 def test_the_html_fallback_is_what_used_to_answer_these():
-    """The control: without it the test above passes on a build that 404s everything,
-    which would break every deep link into the UI."""
+    """Control: a build that 404s everything would pass the test above and break UI deep links."""
     mod = _load()
     with _client(mod) as c:
         r = c.get("/some-ui-deep-link")
@@ -222,12 +202,9 @@ def test_probe_matching_ignores_case_and_stray_slashes():
     assert mod.is_engine_probe_path("/slots/")
     assert mod.is_engine_probe_path("Metrics")
     assert not mod.is_engine_probe_path("chat")
-    # Served paths are deliberately absent: they are real routes, matched first.
+    # served paths are deliberately absent: they are real routes, matched first
     assert not mod.is_engine_probe_path("props")
     assert not mod.is_engine_probe_path("version")
-
-
-# ── /props ────────────────────────────────────────────────────────────────────
 
 
 def test_props_never_echoes_the_on_disk_gguf_path():
@@ -254,9 +231,6 @@ def test_props_degrades_to_the_local_view_when_the_engine_cannot_be_read():
         body = c.get("/props").json()
     assert body["model_path"] == "unsloth/Qwen3.8-27B-GGUF"
     assert body["default_generation_settings"]["n_ctx"] == 262144
-    # Not 0: this same response advertises the model as loaded, and a client reading
-    # props for capacity would conclude it cannot serve. The backend knows what it
-    # launched with.
     assert body["total_slots"] == 4
     assert body["build_info"].startswith("unsloth-studio/")
 
@@ -266,8 +240,6 @@ def test_props_with_nothing_loaded_reports_no_model():
     with _client(mod) as c:
         body = c.get("/props").json()
     assert "model_path" not in body
-    # No llama-server, so no llama-server props. Reporting total_slots 0 and an empty
-    # template would describe an engine that is not running.
     assert "total_slots" not in body
     assert "chat_template" not in body
     assert body["build_info"].startswith("unsloth-studio/")
@@ -279,9 +251,6 @@ def test_v1_props_and_props_agree():
         assert c.get("/props").json() == c.get("/v1/props").json()
 
 
-# ── /version ──────────────────────────────────────────────────────────────────
-
-
 def test_version_answers_on_the_bare_path_only():
     """Ollama spells it /api/version; answering there is part of claiming to be Ollama."""
     mod = _load()
@@ -291,9 +260,6 @@ def test_version_answers_on_the_bare_path_only():
     assert bare.status_code == 200
     assert isinstance(bare.json()["version"], str) and bare.json()["version"]
     assert prefixed.status_code == 404
-
-
-# ── platform and robustness, from the sandbox run ─────────────────────────────
 
 
 @pytest.mark.parametrize(
@@ -405,8 +371,7 @@ def test_no_ui_route_or_public_asset_takes_a_forwarded_get_path():
 
 
 def test_no_client_side_ui_route_is_shadowed_by_the_deny_list():
-    """Reads the routes the frontend declares, so a UI page named /metrics fails here
-    rather than 404-ing in the browser."""
+    """Checks frontend routes against the deny-list, so a UI page named /metrics fails here."""
     routes_dir = _BACKEND.parent / "frontend" / "src" / "app" / "routes"
     if not routes_dir.is_dir():
         pytest.skip("frontend sources not present in this checkout")
@@ -422,20 +387,14 @@ def test_no_client_side_ui_route_is_shadowed_by_the_deny_list():
     assert not shadowed, f"UI route(s) shadowed by the probe deny-list: {shadowed}"
 
 
-# ── the four findings from review ─────────────────────────────────────────────
-
-
 def test_the_ollama_surface_is_not_advertised():
-    """Answering /api/tags makes a client select Ollama and then fail on /api/chat.
-    The reporting user's client got 404 here, fell back to OpenAI, and worked, so
-    advertising the pair would have broken the very client this started from."""
+    """Answering /api/tags makes clients select Ollama and then fail on /api/chat; a 404 lets them
+    fall back to OpenAI."""
     mod = _load()
     routes = {r.path for r in mod.router.routes}
     assert "/api/tags" not in routes
     assert "/api/show" not in routes
     assert "/api/version" not in routes
-    # And the inference endpoints an Ollama client would go on to call are absent, which
-    # is what makes advertising the discovery pair wrong rather than merely incomplete.
     assert "/api/chat" not in routes and "/api/generate" not in routes
 
 
@@ -471,8 +430,7 @@ def test_get_on_a_probe_path_still_reaches_the_asset_lookup(tmp_path):
 
 
 def test_props_does_not_pair_an_orchestrator_model_with_llama_server_fields():
-    """With MLX resident the llama backend is unloaded, so reading its fields anyway
-    described a serving model as having no context and no slots."""
+    """With MLX resident the llama backend is unloaded, so its fields must not be reported."""
 
     class _Orchestrator:
         active_model_name = "unsloth/Llama-3.2-3B"
@@ -486,8 +444,7 @@ def test_props_does_not_pair_an_orchestrator_model_with_llama_server_fields():
 
 
 def test_the_probe_paths_are_admitted_under_keyless_inference_scope():
-    """A 401 on /props in front of a surface the scope grants reads as an auth wall
-    over the whole thing and stops discovery."""
+    """A 401 on /props in a keyless-scope surface reads as an auth wall and stops discovery."""
     from utils.keyless_api_access import _INFERENCE_ROUTES
 
     assert ("GET", "/v1/models") in _INFERENCE_ROUTES, "baseline moved; re-derive this"
@@ -502,9 +459,6 @@ def test_the_probe_paths_are_admitted_under_keyless_inference_scope():
         assert ("POST", path) in _INFERENCE_ROUTES, path
     for path in ("/slots", "/metrics"):
         assert ("GET", path) not in _INFERENCE_ROUTES, path
-
-
-# ── round two ─────────────────────────────────────────────────────────────────
 
 
 def test_head_on_an_unserved_probe_path_is_404_not_405():
@@ -612,7 +566,6 @@ def test_props_advertises_only_the_child_endpoints_studio_forwards():
     assert body["endpoint_metrics"] is True
     for child_only in ("ui", "ui_settings", "cors_proxy_enabled"):
         assert child_only not in body, child_only
-    # The fields that do describe the model still come through untouched.
     assert body["total_slots"] == 4
 
 
@@ -862,8 +815,7 @@ def test_the_forwarded_gets_survive_api_only_mode(monkeypatch):
 
 
 def test_a_transient_props_failure_does_not_report_zero_slots():
-    """total_slots 0 beside a model this response advertises as loaded reads as
-    "cannot serve"."""
+    """total_slots 0 beside a model this response advertises as loaded reads as cannot serve."""
     mod = _load(backend = _Backend(props = None, slots = 8))
     with _client(mod) as c:
         body = c.get("/props").json()
@@ -929,8 +881,7 @@ def test_unserved_v1_aliases_404_on_their_real_method(path, method):
 
 
 def test_the_v1_deny_list_never_shadows_a_path_studio_serves():
-    """The drift guard: implementing one of these must fail here rather than let a 404
-    shadow a real route."""
+    """Drift guard: implementing one of these must fail here, not 404-shadow a real route."""
     import os
 
     os.environ.setdefault("TMPDIR", os.environ.get("UNSLOTH_WORKSPACE", "/tmp") + "/temp")
@@ -942,8 +893,7 @@ def test_the_v1_deny_list_never_shadows_a_path_studio_serves():
     from routes.llama_compat import _probe_not_found
 
     def _record(into, path, endpoint):
-        # This module registers its own 404 handlers on exactly these paths, so a naive
-        # walk reports every one of them as served and the guard can never fire.
+        # Own 404 handlers sit on these paths, so a naive walk would report them all as served.
         if path and endpoint is not _probe_not_found:
             into.add(path)
 
@@ -987,12 +937,8 @@ def test_the_slash_and_bare_forms_agree():
         assert c.get("/version").json() == c.get("/version/").json()
 
 
-# ── 405 leaks the same signal a 200 did ───────────────────────────────────────
-
-
 def _lifespan_app(mod, *, frontend_mounted = False):
-    """An app wired the way main.py wires one: installed at startup, because that is
-    the point both launch paths reach after the frontend decision."""
+    """An app wired as main.py wires it: installed at startup, where both launch paths meet."""
     from contextlib import asynccontextmanager
 
     @asynccontextmanager
@@ -1024,8 +970,7 @@ def _directly_added_get_paths(app):
 
 
 def test_the_denials_are_installed_only_when_no_frontend_is_mounted():
-    """So an app already serving a catch-all does not carry a second, dead copy of
-    every engine path. Ordering, not this flag, is what keeps assets reachable."""
+    """Skipped when a frontend is mounted, so no dead engine paths; ordering keeps assets."""
     mod = _load()
     with TestClient(_lifespan_app(mod, frontend_mounted = False)):
         pass
@@ -1068,8 +1013,7 @@ def test_the_slash_form_of_a_denied_path_404s_rather_than_405(method, path):
     ["/completion", "/completion/", "/health", "/tokenize", "/v1/health", "/slots/3"],
 )
 def test_a_get_probe_404s_in_api_only_mode(path):
-    """--api-only mounts no frontend, so the catch-all that supplies the GET 404 is not
-    registered and these answered 405 on method alone."""
+    """--api-only has no frontend catch-all, so GET probes answered 405 instead of 404."""
     mod = _load()
     with _api_only_client(mod) as c:
         r = c.get(path)

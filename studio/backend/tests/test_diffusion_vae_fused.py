@@ -46,7 +46,7 @@ def test_disabled_by_env(monkeypatch):
 
 
 def test_rocm_and_old_triton_keep_stock(monkeypatch):
-    # the #11801 kernels are gated off on ROCm (missing add_rn / rint, wrong fp16 GroupNorm on gfx1151): same here
+    # the fused kernels are gated off on ROCm (missing add_rn / rint, wrong fp16 GroupNorm on gfx1151)
     monkeypatch.delenv(F.VAE_FUSED_ENV, raising = False)
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(torch.version, "hip", "6.4.0", raising = False)
@@ -70,7 +70,7 @@ def test_missing_triton_keeps_stock(monkeypatch):
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(torch.version, "hip", None, raising = False)
     F._triton_version_ok.cache_clear()
-    monkeypatch.setitem(sys.modules, "triton", None)  # `import triton` raises ImportError
+    monkeypatch.setitem(sys.modules, "triton", None)
     try:
         assert F.runtime_ok() is False
         assert F.will_install(type("AutoencoderKL", (), {})()) is False
@@ -111,7 +111,7 @@ def test_install_is_noop_without_runtime(monkeypatch):
 
 
 def test_uncovered_class_not_planned():
-    class AutoencoderKLMiniMaxH3(torch.nn.Module):  # has its own fast path
+    class AutoencoderKLMiniMaxH3(torch.nn.Module):
         pass
 
     assert F.will_install(AutoencoderKLMiniMaxH3()) is False
@@ -129,7 +129,6 @@ def test_speed_layer_skips_vae_compile_when_fused(monkeypatch):
 
     assert S._fused_vae_planned(Pipe()) is True
     assert S._vae_decode_compile_allowed(Pipe(), "max") is False
-    # forcing the compile keeps the old behaviour and skips the fused path
     monkeypatch.setenv(S.COMPILE_VAE_ENV, "1")
     assert S._fused_vae_planned(Pipe()) is False
     assert S._install_fused_vae(Pipe(), None) is False
@@ -171,7 +170,7 @@ def _check(
         assert not any(
             getattr(m.__dict__.get("forward"), "_unsloth_vae_fused", False) for m in vae.modules()
         )
-        # the channels-last weights stay, and cuDNN may pick another algorithm for them (torch 2.7: 71 dB)
+        # channels-last weights stay, and cuDNN may pick another algorithm for them (torch 2.7: 71 dB)
         assert torch.equal(_decode(vae, z), ref) or _psnr(_decode(vae, z), ref) > 60
 
 
@@ -272,21 +271,27 @@ def test_ltx2_fused_matches_stock():
     _check(vae, z, min_psnr = 40)
 
 
-@needs_cuda
-def test_ltx2_reflect_decoder_stays_stock(monkeypatch):
-    from diffusers import AutoencoderKLLTX2Video
-
+def _ltx2_tiny_cfg(**kw):
     from core.inference.video_ltx2 import _VIDEO_VAE_CONFIG
 
-    monkeypatch.delenv("UNSLOTH_VAE_FUSED_CL_WEIGHTS", raising = False)
     cfg = dict(_VIDEO_VAE_CONFIG)
     cfg.update(
         latent_channels = 16, block_out_channels = (32, 64, 128, 128), decoder_block_out_channels = (32, 64, 64, 128),
         layers_per_block = (1, 1, 1, 1, 1), decoder_layers_per_block = (1, 1, 1, 1, 1),
     )  # fmt: skip
+    cfg.update(kw)
+    return cfg
+
+
+@needs_cuda
+def test_ltx2_reflect_decoder_stays_stock_with_the_kill_switch(monkeypatch):
+    from diffusers import AutoencoderKLLTX2Video
+
+    monkeypatch.delenv("UNSLOTH_VAE_FUSED_CL_WEIGHTS", raising = False)
+    monkeypatch.setenv(F.LTX2_REFLECT_ENV, "0")
     convs = lambda v: [m.weight for m in v.decoder.modules() if isinstance(m, torch.nn.Conv3d)]  # noqa: E731
     reflect = (
-        AutoencoderKLLTX2Video(**{**cfg, "decoder_spatial_padding_mode": "reflect"})
+        AutoencoderKLLTX2Video(**_ltx2_tiny_cfg(decoder_spatial_padding_mode = "reflect"))
         .cuda()
         .bfloat16()
         .eval()
@@ -295,9 +300,70 @@ def test_ltx2_reflect_decoder_stays_stock(monkeypatch):
     assert F.install(reflect) == 0
     assert all(w.is_contiguous() for w in convs(reflect))
     assert not any("forward" in m.__dict__ for m in reflect.modules())
-    zeros = AutoencoderKLLTX2Video(**cfg).cuda().bfloat16().eval()
+    zeros = AutoencoderKLLTX2Video(**_ltx2_tiny_cfg()).cuda().bfloat16().eval()
     assert F.install(zeros) > 0
     assert all(w.is_contiguous(memory_format = torch.channels_last_3d) for w in convs(zeros))
+
+
+@needs_cuda
+def test_ltx2_reflect_decoder_fused_matches_stock(monkeypatch):
+    from diffusers import AutoencoderKLLTX2Video
+
+    monkeypatch.delenv(F.LTX2_REFLECT_ENV, raising = False)
+    torch.manual_seed(0)
+    vae = (
+        AutoencoderKLLTX2Video(**_ltx2_tiny_cfg(decoder_spatial_padding_mode = "reflect"))
+        .cuda()
+        .bfloat16()
+        .eval()
+    )
+    assert F.will_install(vae) is True
+    F.ENGAGED.clear()
+    z = torch.randn(1, 16, 3, 3, 4, device = "cuda", dtype = torch.bfloat16)
+    _check(vae, z, min_psnr = 40)
+    assert F.ENGAGED.get("ltx2_reflect", 0) > 0
+
+
+@needs_cuda
+@pytest.mark.parametrize(
+    "levers",
+    [
+        {},
+        {"UNSLOTH_VAE_FUSED_PREPAD": "1", "UNSLOTH_VAE_FUSED_T1_CONV2D": "1"},
+        {"UNSLOTH_VAE_FUSED_CAUSAL_TAIL": "0", "UNSLOTH_VAE_FUSED_BIAS_FOLD": "0"},
+    ],
+)
+def test_wan22_decoder_matches_stock_under_each_causal_lever(levers, monkeypatch):
+    from diffusers import AutoencoderKLWan
+
+    for k, v in levers.items():
+        monkeypatch.setenv(k, v)
+    torch.manual_seed(0)
+    vae = AutoencoderKLWan(
+        base_dim = 32, decoder_base_dim = 32, z_dim = 8, dim_mult = [1, 2, 2, 2], num_res_blocks = 1, in_channels = 12,
+        out_channels = 12, is_residual = True, patch_size = 2, scale_factor_spatial = 16,
+        latents_mean = [0.0] * 8, latents_std = [1.0] * 8,
+    ).cuda().half().eval()  # fmt: skip
+    for m in vae.decoder.modules():
+        if isinstance(m, torch.nn.Conv3d):
+            m.weight.data = m.weight.data.contiguous(memory_format = torch.channels_last_3d)
+    F.ENGAGED.clear()
+    z = torch.randn(1, 8, 4, 6, 8, device = "cuda", dtype = torch.float16)
+    _check(vae, z, min_psnr = 45)
+    assert (F.ENGAGED.get("causal_tail", 0) > 0) is ("UNSLOTH_VAE_FUSED_CAUSAL_TAIL" not in levers)
+    assert (F.ENGAGED.get("bias_fold", 0) > 0) is ("UNSLOTH_VAE_FUSED_BIAS_FOLD" not in levers)
+    assert (F.ENGAGED.get("t1_conv2d", 0) > 0) is ("UNSLOTH_VAE_FUSED_T1_CONV2D" in levers)
+
+
+@needs_cuda
+def test_up_nearest2x_deferred_bias_rounds_once():
+    x = torch.randn(1, 64, 2, 9, 11, device = "cuda", dtype = torch.float16).contiguous(
+        memory_format = torch.channels_last_3d
+    )
+    bias = torch.randn(64, device = "cuda", dtype = torch.float16)
+    out, t_o = F.up_nearest2x(x, True, bias)
+    ref, _ = F.up_nearest2x((x.float() + bias.float().view(1, -1, 1, 1, 1)).half(), True)
+    assert t_o == 4 and torch.equal(out, ref)
 
 
 @needs_cuda
@@ -327,7 +393,7 @@ def test_guard_falls_back_to_stock_for_good(monkeypatch):
 
 @needs_cuda
 def test_guard_restores_causal_cache_state_on_fallback(monkeypatch):
-    # a fast residual block that dies AFTER writing its first cache slot must not desync the stock retry
+    # a fast residual block dying AFTER writing its first cache slot must not desync the stock retry
     from diffusers import AutoencoderKLWan
 
     torch.manual_seed(0)
@@ -406,13 +472,12 @@ def test_attention_oom_falls_back_for_that_call_only(monkeypatch, oom):
         monkeypatch.setattr(F, "single_head_attention", boom)
         out = attn(x)
     assert torch.equal(out, ref)
-    # an OOM keeps the fused path for the next call; a real failure retires it
     assert getattr(attn, "_unsloth_vae_fused_failed", False) is (not oom)
 
 
 @needs_cuda
 def test_qwenimage_tiled_decode_is_not_clamped_like_stock(monkeypatch):
-    # diffusers' AutoencoderKLQwenImage.tiled_decode returns the raw decoder output (Wan's and Qwen-Image-2.1's clamp)
+    # diffusers' AutoencoderKLQwenImage.tiled_decode returns raw decoder output (Wan's and Qwen-Image-2.1's clamp)
     from diffusers import AutoencoderKLQwenImage
 
     torch.manual_seed(0)
@@ -426,16 +491,16 @@ def test_qwenimage_tiled_decode_is_not_clamped_like_stock(monkeypatch):
                       tile_sample_stride_width = 48)  # fmt: skip
     monkeypatch.setenv(F.TILE_BATCH_ENV, "3")
     with torch.no_grad():
-        vae.decoder.conv_out.weight.mul_(64)  # the decode lands far outside [-1, 1]
+        vae.decoder.conv_out.weight.mul_(64)
     z = torch.randn(1, 4, 1, 14, 18, device = "cuda", dtype = torch.bfloat16)
     with torch.inference_mode():
         ref = _decode(vae, z)
-        assert ref.abs().max() > 1.5  # the case under test exists
+        assert ref.abs().max() > 1.5
         F.install(vae)
         out = _decode(vae, z)
     assert out.shape == ref.shape
     assert out.abs().max() > 1.5
-    assert ((out - ref).norm() / ref.norm()).item() < 2e-2  # same values, unclamped
+    assert ((out - ref).norm() / ref.norm()).item() < 2e-2
 
 
 def test_hv_causal_mask_allocates_nothing_quadratic_besides_the_output():
@@ -515,7 +580,7 @@ def test_blend_seam_on_cuda_is_bit_identical_and_host_free(dtype):
 
 
 def test_wan_attention_oom_retries_stock_for_that_call_only(monkeypatch):
-    # the fused attention holds fp32 score chunks the stock SDPA never allocates, so its OOM must not abort the decode
+    # fused attention: fp32 score chunks stock SDPA never allocates; its OOM must not abort the decode
     diffusers = pytest.importorskip("diffusers")
     monkeypatch.setattr(F, "runtime_ok", lambda: True)
     torch.manual_seed(0)
@@ -544,6 +609,28 @@ def test_wan_attention_oom_retries_stock_for_that_call_only(monkeypatch):
     assert not getattr(block, "_unsloth_vae_fused_failed", False)
 
 
+def test_fused_install_can_leave_a_wan_encoder_stock(monkeypatch):
+    diffusers = pytest.importorskip("diffusers")
+    monkeypatch.setattr(F, "runtime_ok", lambda: True)
+
+    def patched(part):
+        return sorted(name for name, m in part.named_modules() if "forward" in m.__dict__)
+
+    def tiny():
+        torch.manual_seed(0)
+        return diffusers.AutoencoderKLWan(
+            base_dim = 32, z_dim = 4, dim_mult = [1, 2, 2, 2], num_res_blocks = 1
+        ).eval()
+
+    both, decoder_only = tiny(), tiny()
+    n_both = F.install(both)
+    n_decoder = F.install(decoder_only, encoder = False)
+    assert patched(both.encoder) and patched(both.decoder)
+    assert patched(decoder_only.encoder) == []
+    assert patched(decoder_only.decoder) == patched(both.decoder)
+    assert 0 < n_decoder < n_both
+
+
 @pytest.mark.parametrize("frames", [1, 2, 4])
 def test_causal_cache_is_a_compact_two_frame_copy(frames):
     # a view would pin the whole (frames + 2)-frame conv input per cache slot until the next chunk
@@ -561,7 +648,7 @@ def test_causal_cache_is_a_compact_two_frame_copy(frames):
 
 
 def test_pipeline_qkv_fuse_keeps_the_fused_vae_attention():
-    # SDXL's pipe-level fuse_qkv_projections() resets every VAE processor; the fused one must be re-wrapped around it
+    # SDXL's fuse_qkv_projections() resets every VAE processor; the fused one must be re-wrapped
     diffusers = pytest.importorskip("diffusers")
     from diffusers.models.attention_processor import FusedAttnProcessor2_0
     from diffusers.pipelines.pipeline_utils import StableDiffusionMixin
@@ -631,3 +718,126 @@ def test_shape_args_do_not_multiply_jit_variants():
         )  # fp32 silu vs fp16 opmath: last-ulp
         seen = seen or _variants(k.rms_act)
         assert _variants(k.rms_act) == seen, (t, h, w, front)
+
+
+# ---- causal-conv levers ----
+
+
+def test_causal_levers_default_and_kill_switches(monkeypatch):
+    for env in (F.CAUSAL_TAIL_ENV, F.LTX2_REFLECT_ENV, F.BIAS_FOLD_ENV):
+        monkeypatch.delenv(env, raising = False)
+        assert F.lever_on(env) is True
+        monkeypatch.setenv(env, "0")
+        assert F.lever_on(env) is False
+    for env in (F.T1_CONV2D_ENV,):
+        monkeypatch.delenv(env, raising = False)
+        assert F.lever_on(env) is False
+        monkeypatch.setenv(env, "1")
+        assert F.lever_on(env) is True
+    monkeypatch.delenv(F.PREPAD_ENV, raising = False)
+    assert (
+        F.lever_on(F.PREPAD_ENV) is False
+    )  # same decode time either way (A100 / RTX PRO 6000): opt-in
+    monkeypatch.setenv(F.PREPAD_ENV, "1")
+    assert F.lever_on(F.PREPAD_ENV) is True
+
+
+@pytest.mark.parametrize("n_cache", [0, 1, 2])
+def test_rms_norm_act_zero_halo_and_tail_match_stock(n_cache):
+    mod = pytest.importorskip("diffusers.models.autoencoders.autoencoder_kl_wan")
+    torch.manual_seed(0)
+    norm = mod.WanRMS_norm(8, channel_first = True, images = False, bias = False).eval()
+    x = torch.randn(1, 8, 3, 5, 6)
+    cache = torch.randn(1, 8, n_cache, 5, 6) if n_cache else None
+    with torch.inference_mode():
+        out, tail = F.rms_norm_act(x, norm, True, front = 2, cache = cache, zero_pad = (1, 2), tail = 2)
+        y = torch.nn.functional.silu(norm(x))
+        full = torch.cat([cache, y], 2) if cache is not None else y
+        full = torch.nn.functional.pad(
+            full, (0, 0, 0, 0, 2 - (n_cache if cache is not None else 0), 0)
+        )
+    assert torch.equal(out, torch.nn.functional.pad(full, (2, 2, 1, 1, 0, 0)))
+    assert torch.equal(tail, full[:, :, -2:])
+    assert tail.untyped_storage().nbytes() == tail.numel() * tail.element_size()
+
+
+def test_rms_norm_act_reflect_halo_matches_ltx2_conv_padding():
+    mod = pytest.importorskip("diffusers.models.autoencoders.autoencoder_kl_ltx2")
+    torch.manual_seed(0)
+    norm = mod.PerChannelRMSNorm(channel_dim = 1, eps = 1e-8)
+    x = torch.randn(1, 8, 3, 5, 6)
+    with torch.inference_mode():
+        out = F.rms_norm_act(x, norm, True, front = 1, back = 1, reflect_pad = (1, 1))
+        y = torch.nn.functional.silu(norm(x))
+        y = torch.cat([y[:, :, :1], y, y[:, :, -1:]], 2)
+        ref = torch.nn.functional.pad(y, (1, 1, 1, 1, 0, 0), mode = "reflect")
+    assert torch.equal(out, ref)
+
+
+@pytest.mark.parametrize("causal", [True, False])
+def test_ltx_conv_reflect_matches_the_diffusers_conv(causal, monkeypatch):
+    mod = pytest.importorskip("diffusers.models.autoencoders.autoencoder_kl_ltx2")
+    monkeypatch.delenv(F.LTX2_REFLECT_ENV, raising = False)
+    torch.manual_seed(0)
+    conv = mod.LTX2VideoCausalConv3d(8, 8, 3, spatial_padding_mode = "reflect").eval()
+    norm = mod.PerChannelRMSNorm(channel_dim = 1, eps = 1e-8)
+    assert F._ltx_conv_ok(conv) is True
+    x = torch.randn(1, 8, 4, 6, 7)
+    F.ENGAGED.clear()
+    with torch.inference_mode():
+        out = F.ltx_conv(conv, x, causal, norm = norm, act = True)
+        ref = conv(torch.nn.functional.silu(norm(x)), causal = causal)
+    assert torch.allclose(out, ref, atol = 1e-5)
+    assert F.ENGAGED.get("ltx2_reflect") == 1
+    monkeypatch.setenv(F.LTX2_REFLECT_ENV, "0")
+    assert F._ltx_conv_ok(conv) is False
+
+
+def _t1_args():
+    cl = torch.channels_last_3d
+    x = torch.randn(1, 4, 2, 3, 3).contiguous(memory_format = cl)
+    w = torch.randn(4, 4, 1, 1, 1).contiguous(memory_format = cl)
+    return x, w, None, (1, 1, 1), (0, 0, 0), (1, 1, 1)
+
+
+def test_conv_frames_is_a_frame_batched_conv2d(monkeypatch):
+    monkeypatch.delenv(F.T1_CONV2D_ENV, raising = False)
+    assert F.conv_frames(*_t1_args()) is None  # opt-in
+    monkeypatch.setenv(F.T1_CONV2D_ENV, "1")
+    torch.manual_seed(0)
+    cl = torch.channels_last_3d
+    x = torch.randn(2, 8, 3, 5, 6).contiguous(memory_format = cl)
+    w = torch.randn(4, 8, 1, 3, 3).contiguous(memory_format = cl)
+    b = torch.randn(4)
+    F.ENGAGED.clear()
+    out = F.conv_frames(x, w, b, (1, 1, 1), (0, 1, 1), (1, 1, 1))
+    ref = torch.nn.functional.conv3d(x, w, b, 1, (0, 1, 1))
+    assert out is not None and torch.allclose(out, ref, atol = 1e-5)
+    assert out.is_contiguous(memory_format = cl) and F.ENGAGED.get("t1_conv2d") == 1
+    assert F.conv_frames(x, torch.randn(4, 8, 3, 3, 3), b, (1, 1, 1), (0, 1, 1), (1, 1, 1)) is None
+    assert F.conv_frames(x, w, b, (2, 1, 1), (0, 1, 1), (1, 1, 1)) is None
+    assert F.conv_frames(x.contiguous(), w, b, (1, 1, 1), (0, 1, 1), (1, 1, 1)) is None
+
+    # strided last-tap view stays conv3d
+    w3 = torch.randn(4, 8, 3, 3, 3)
+    assert F.conv_frames(x, w3[:, :, -1:], b, (1, 1, 1), (0, 1, 1), (1, 1, 1)) is None
+
+
+def test_wan_shortcut_bias_fold_matches_stock(monkeypatch):
+    mod = pytest.importorskip("diffusers.models.autoencoders.autoencoder_kl_wan")
+    torch.manual_seed(0)
+    block = mod.WanResidualBlock(8, 16).eval()
+    x = torch.randn(1, 8, 3, 5, 6).contiguous(memory_format = torch.channels_last_3d)
+    fast = F._fast_wan_resblock(block)
+    monkeypatch.setenv(F.BIAS_FOLD_ENV, "1")
+    F.ENGAGED.clear()
+    with torch.inference_mode():
+        ref = block(x)
+        out = fast(x)
+    assert torch.allclose(out, ref, atol = 1e-5)
+    assert F.ENGAGED.get("bias_fold", 0) == 1
+    monkeypatch.setenv(F.BIAS_FOLD_ENV, "0")
+    F.ENGAGED.clear()
+    with torch.inference_mode():
+        assert torch.allclose(fast(x), ref, atol = 1e-5)
+    assert F.ENGAGED.get("bias_fold", 0) == 0

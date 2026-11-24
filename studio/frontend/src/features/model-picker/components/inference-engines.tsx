@@ -14,11 +14,12 @@ import {
 import { useIsAccountOwner } from "@/features/auth";
 import { SettingsRow } from "@/features/settings/components/settings-row";
 import { SettingsSection } from "@/features/settings/components/settings-section";
-import { useT } from "@/i18n";
+import { useLocale, useT } from "@/i18n";
 import { isEngineGpuDevice, useGpuDevices } from "@/hooks/use-gpu-info";
 import { formatGiB } from "@/lib/memory/format";
+import { useTimeFormat, withTimeFormat } from "@/lib/time-format";
 import { cn } from "@/lib/utils";
-import { useEffect, useRef, useState } from "react";
+import { type Ref, useEffect, useRef, useState } from "react";
 import {
   type EngineStatus,
   type InferenceEngine,
@@ -54,6 +55,8 @@ export function EngineInstall({
   onUse?: () => void;
 }) {
   const t = useT();
+  const locale = useLocale();
+  useTimeFormat();
   const isOwner = useIsAccountOwner();
   const useAfterInstall = useRef(false);
   // Off once an install starts, until it fails or stops: the next poll may not show it running yet.
@@ -80,6 +83,16 @@ export function EngineInstall({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const running = engine.job.state === "running";
+  // A retry clears the last failure: the same message coming back must read as a new attempt.
+  const failed = engine.job.state === "error" && !confirm && !busy;
+  const finishedAt = engine.job.finished_at;
+  const lastAttempt =
+    typeof finishedAt === "number"
+      ? new Intl.DateTimeFormat(
+          locale,
+          withTimeFormat({ timeStyle: "medium" }, locale),
+        ).format(finishedAt * 1000)
+      : null;
   const canInstall = !engine.in_use && isOwner && !engine.unsupported_reason;
   // The dialog's user already asked to load, so skip the extra "Install engine" click there.
   const showConfirm =
@@ -171,7 +184,7 @@ export function EngineInstall({
           {management && isOwner && engine.installed && (
             <Button
               size="sm"
-              variant="ghost"
+              variant="destructive"
               disabled={busy || engine.in_use}
               onClick={() => void action("remove")}
             >
@@ -220,6 +233,7 @@ export function EngineInstall({
           <p>{t("managedEngines.background")}</p>
           <div className={cn("flex gap-2", centered && "justify-center pt-3")}>
             <Button
+              variant="dark"
               size={centered ? "default" : "sm"}
               disabled={busy}
               onClick={() => void action("install")}
@@ -236,12 +250,17 @@ export function EngineInstall({
           </div>
         </section>
       )}
-      {(error || engine.job.state === "error") && (
+      {(error || failed) && (
         <p role="alert" className="whitespace-pre-wrap text-destructive">
           {error || t("managedEngines.failed")}
         </p>
       )}
-      {engine.job.state === "error" && (
+      {failed && !error && lastAttempt && (
+        <p className="text-muted-foreground">
+          {t("managedEngines.lastAttempt", { time: lastAttempt })}
+        </p>
+      )}
+      {failed && (
         <details>
           <summary>{t("managedEngines.details")}</summary>
           <pre className="max-h-48 overflow-auto whitespace-pre-wrap text-ui-11">
@@ -259,7 +278,9 @@ export function EngineInstall({
   );
 }
 
-export function InferenceEnginesSection() {
+export function InferenceEnginesSection({
+  ref,
+}: { ref?: Ref<HTMLElement> } = {}) {
   const t = useT();
   const isOwner = useIsAccountOwner();
   const { engines, error } = useEngines();
@@ -267,11 +288,8 @@ export function InferenceEnginesSection() {
   const engineNote = (engine: EngineStatus) =>
     engine.unsupported_reason ||
     (isOwner || engine.installed ? undefined : t("managedEngines.ownerRequired"));
-  return (
-    <SettingsSection
-      title={t("managedEngines.title")}
-      description={t("managedEngines.description")}
-    >
+  const rows = (
+    <>
       {error && <p role="alert">{error}</p>}
       {engines.map((engine) => (
         <SettingsRow
@@ -282,6 +300,15 @@ export function InferenceEnginesSection() {
           <EngineInstall engine={engine} management={true} />
         </SettingsRow>
       ))}
+    </>
+  );
+  return (
+    <SettingsSection
+      ref={ref}
+      title={t("managedEngines.title")}
+      description={t("managedEngines.description")}
+    >
+      {rows}
     </SettingsSection>
   );
 }
@@ -422,7 +449,7 @@ export function InferenceEnginePicker({
                       {device.index}: {device.name}
                     </span>
                     <Switch
-                      className="panel-switch shrink-0"
+                      className="shrink-0"
                       aria-label={`GPU ${device.index}: ${device.name}`}
                       checked={checked}
                       disabled={checked && selectedGpuIds.length === 1}

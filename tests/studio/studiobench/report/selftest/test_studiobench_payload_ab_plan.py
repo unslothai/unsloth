@@ -154,9 +154,8 @@ def test_a_retry_that_never_reached_its_cell_row_still_owns_the_cell():
 
 
 def test_a_plan_balanced_as_written_is_unbalanced_if_only_its_first_half_ran():
-    """A `--reps 2` interrupted after rep 0 planned base, treatment, treatment, base and ran
-    base, treatment, so base led every pair that happened and drift lands on treatment instead
-    of cancelling. That pair is scored, so the plan's `True` describes an order nothing ran."""
+    """Interrupted --reps 2 run plans base,treatment,treatment,base but runs only the first half, so
+    balanced must be False, not True."""
     rows = [ROWS[0], _plan("s1", LADDER, balanced = True), *_cells("s1", *PAIR)]
     assert _assemble(rows)["ab_plan"]["balanced"] is False
     whole = [ROWS[0], _plan("s1", LADDER, balanced = True), *_cells("s1", *LADDER)]

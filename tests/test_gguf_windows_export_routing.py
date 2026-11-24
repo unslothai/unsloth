@@ -72,6 +72,12 @@ class _Harness:
         monkeypatch.setattr(save_mod, "convert_to_gguf", self._convert)
         monkeypatch.setattr(save_mod, "quantize_gguf", self._quantize)
         monkeypatch.setattr(save_mod, "os", _OsShim(flavour))
+        # The real staging folder comes from tempfile, which joins with the host os.path; keep it virtual.
+        monkeypatch.setattr(
+            save_mod,
+            "_gguf_conversion_staging",
+            lambda directory: (flavour.join(directory, ".unsloth_gguf_convert_t"), False),
+        )
 
     def _scratch(self, virtual_path: str):
         """Materialise a virtual (possibly Windows) path as one real POSIX file."""
@@ -91,7 +97,9 @@ class _Harness:
         final = model_name if model_name.endswith(".gguf") else f"{model_name}.{qtype.upper()}.gguf"
         self.initial_names.append(final)
         # save.py requires the returned paths to exist; the escape under test is at the quantize join.
-        return [str(self._scratch(final))], False
+        real = self._scratch(final)
+        # Under the posixpath shim on a Windows host, a backslash path has no posix basename; "C:/..." still opens.
+        return [real.as_posix() if self.flavour is posixpath else str(real)], False
 
     def _quantize(self, input_gguf, output_gguf, quant_type, **kw):
         self.quantize_calls.append(
@@ -157,6 +165,8 @@ def test_derived_stem_keeps_quantized_gguf_inside_gguf_directory(monkeypatch, tm
     for call in harness.quantize_calls:
         assert ntpath.dirname(call["output"]) == expected_dir, call["output"]
         assert not call["output"].startswith("D:"), call["output"]
+    # The intermediate is written on the destination volume, not the process CWD.
+    assert ntpath.dirname(ntpath.dirname(harness.initial_names[0])) == expected_dir
 
 
 def test_legacy_stem_escaped_to_the_base_model_drive(monkeypatch, tmp_path):

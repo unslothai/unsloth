@@ -216,8 +216,8 @@ class QGaLoreAdamW8bit(Optimizer2State):
                 self.update_step(group, p, gindex, pindex)
 
                 if "rank" in group:
-                    # Decay the pre-update weight BEFORE adding the update; it touches only
-                    # p._saved_data, so p.data still holds the low-rank update below.
+                    # Decay the pre-update weight BEFORE adding the update; only p._saved_data is touched,
+                    # so p.data still holds the low-rank update below.
                     if "_wd_saved" in group:
                         p._saved_data.add_(
                             p._saved_data,
@@ -241,8 +241,7 @@ class QGaLoreAdamW8bit(Optimizer2State):
                     p._q_scales = scales
                     p._q_zeros = zeros
                     p._q_shape = shape
-                    # Scalar placeholder to free float memory; the forward pre-hook (install_weight_quant_hooks)
-                    # dequantizes before the next forward pass.
+                    # Placeholder to free memory; the forward pre-hook dequantizes before the next forward.
                     p.data = torch.empty(1, dtype = p.data.dtype, device = p.data.device)
 
         device_synchronize()
@@ -264,14 +263,8 @@ class QGaLoreAdamW8bit(Optimizer2State):
         group_size: int = 128,
         stochastic: bool = True,
     ) -> None:
-        """Tag parameters for INT8 weight quantization.
-
-        This marks eligible weights with quantization metadata so that
-        the optimizer knows to quantize/dequantize them during ``step()``.
-        **Weights are NOT converted to uint8 here** — they remain in float
-        so that the first forward/backward pass runs correctly.  The actual
-        quantization happens at the end of the first ``step()`` call.
-        """
+        """Tag INT8-eligible weights; they stay float until the first step() quantizes them, so the
+        first forward and backward pass runs correctly."""
         weight_quant_params = set()
         for group in param_groups:
             if group.get("weight_quant", False):
@@ -280,8 +273,7 @@ class QGaLoreAdamW8bit(Optimizer2State):
 
         for name, p in model.named_parameters():
             if id(p) in weight_quant_params:
-                # Store metadata without converting weights to uint8; the first step() quantizes after the update,
-                # and dummy scales/zeros keep _has_weight_quant() True on that first step.
+                # The first step() quantizes; dummy scales keep _has_weight_quant() True on that step.
                 p._q_scales = None
                 p._q_zeros = None
                 p._q_shape = p.data.shape
@@ -336,10 +328,7 @@ def _weight_quant_load_state_dict_hook(module, state_dict, prefix, *args):
 
 
 def install_weight_quant_hooks(model: torch.nn.Module) -> list:
-    """Register forward and checkpoint hooks for INT8-quantized weights.
-
-    Returns a list of hook handles so the caller can remove them if needed.
-    """
+    """Register forward and checkpoint hooks for INT8 weights; returns handles to remove them later."""
     handles = [
         model.register_forward_pre_hook(
             _weight_quant_model_pre_hook, prepend = True, with_kwargs = True

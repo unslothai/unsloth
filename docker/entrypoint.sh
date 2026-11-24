@@ -7,8 +7,7 @@
 # Bypass for offline tooling/docs/CI: docker run -e UNSLOTH_SKIP_GPU_CHECK=1 ...
 set -euo pipefail
 
-# Studio image: relink its code into the home (maybe an earlier image's volume) before the
-# CUDA tool selection reads the venv. Fatal on failure (a half-linked home); no-op on the base image.
+# Relink the Studio code into the home before the CUDA tool selection reads the venv.
 if [[ -x /usr/local/bin/unsloth-studio-home ]]; then
     /usr/local/bin/unsloth-studio-home || {
         echo "ERROR: could not link Unsloth Studio's code into ${UNSLOTH_STUDIO_HOME:-/opt/unsloth-studio}; see the messages above" >&2
@@ -16,9 +15,8 @@ if [[ -x /usr/local/bin/unsloth-studio-home ]]; then
     }
 fi
 
-# CUDA 13 ptxas + NVRTC are baked only for sm_103 and sm_121, which cu12.8 cannot
-# target and which ship on >=580 drivers; every other arch is cu12.8 on the 570-579
-# floor, where a cu13 cubin cannot load. So the choice is per DEVICE at boot.
+# CUDA 13 ptxas/NVRTC are only for sm_103/sm_121 (need >=580 drivers); everything else uses
+# cu12.8 on the 570 floor. Chosen per device at boot.
 select_cuda_jit_tools() {
     local caps="" cc nvrtc_dir need_cu13=0
     if command -v nvidia-smi >/dev/null 2>&1; then
@@ -53,6 +51,72 @@ select_cuda_jit_tools() {
     done
 }
 select_cuda_jit_tools || true
+
+# Hand root:root downloads in a host-owned HF cache mount back to its owner, keeping group root rwX for Studio's
+# capability-less uid 0 tool sandbox; that sandbox writes this cache, hence fd-relative no-follow updates only.
+hf_cache_uid="$(stat -c '%u' "${HF_HOME:-}" 2>/dev/null || true)"
+if [[ "$(id -u):$(id -g)" == 0:0 && -n "${hf_cache_uid}" && "${hf_cache_uid}" != 0 ]] && command -v python3 >/dev/null 2>&1; then
+    while :; do
+        python3 -I -S - "${HF_HOME}" "${hf_cache_uid}" <<'PY' || true
+import os, stat, sys
+
+top, uid = sys.argv[1], int(sys.argv[2])
+src, src_gid = (int(sys.argv[3]), int(sys.argv[4])) if len(sys.argv) > 4 else (0, 0)
+
+
+def has_acl(fd):
+    try:
+        return bool(os.getxattr(fd, "system.posix_acl_access"))
+    except OSError:
+        return False
+
+
+def still_here(name, dfd, st, is_dir):
+    """The name is still this inode, its only link: an unlinked cache name could leave it living outside the cache."""
+    try:
+        now = os.stat(name, dir_fd = dfd, follow_symlinks = False)
+    except OSError:
+        return False
+    return (now.st_dev, now.st_ino) == (st.st_dev, st.st_ino) and (is_dir or now.st_nlink == 1)
+
+
+def hand_over(name, dfd):
+    st = os.stat(name, dir_fd = dfd, follow_symlinks = False)
+    # Symlinks stay root's: removing one only needs the parent directory, and a path-based lchown can be redirected.
+    if (st.st_uid, st.st_gid) != (src, src_gid) or stat.S_ISLNK(st.st_mode) or (st.st_nlink > 1 and not stat.S_ISDIR(st.st_mode)):
+        return
+    fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd = dfd)
+    try:
+        st = os.fstat(fd)
+        is_dir = stat.S_ISDIR(st.st_mode)
+        if (st.st_uid, st.st_gid) != (src, src_gid) or not (is_dir or (stat.S_ISREG(st.st_mode) and st.st_nlink == 1)):
+            return
+        if not still_here(name, dfd, st, is_dir):
+            return
+        # Under an ACL the group bits set the mask, not group root's entry, so the grant below would not hold.
+        if has_acl(fd):
+            return
+        mode = stat.S_IMODE(st.st_mode) | (0o070 if is_dir or st.st_mode & 0o111 else 0o060)
+        os.fchmod(fd, mode if is_dir else mode & ~0o6000)
+        os.fchown(fd, uid, -1)
+        if not still_here(name, dfd, st, is_dir):
+            os.fchown(fd, src, -1)
+            os.fchmod(fd, stat.S_IMODE(st.st_mode))
+    finally:
+        os.close(fd)
+
+
+for _, dirs, files, dfd in os.fwalk(top, follow_symlinks = False):
+    # Studio resumes only partials it owns; they are handed over once published as blobs.
+    for name in dirs + [f for f in files if not f.endswith(".incomplete")]:
+        try:
+            hand_over(name, dfd)
+        except OSError:
+            pass
+PY
+        sleep 30
+    done </dev/null >/dev/null 2>&1 &
+fi
 
 # best-effort, gated by UNSLOTH_SKIP_NOTEBOOK_SYNC, never blocks the container
 sync_notebooks() {

@@ -196,6 +196,51 @@ def test_loss_through_distributed_wrapper(model):
     torch.testing.assert_close(wrapped, plain)
 
 
+class _ScatteringDataParallel(torch.nn.DataParallel):
+    """nn.DataParallel's contract without GPUs: tensors split on dim 0, every other object shared by all replicas."""
+
+    def __init__(
+        self,
+        inner,
+        replicas = 2,
+    ):
+        torch.nn.Module.__init__(self)
+        self.module = inner
+        self.replicas = replicas
+
+    def forward(self, **kwargs):
+        rows = next(v for v in kwargs.values() if torch.is_tensor(v)).shape[0]
+        bounds = torch.arange(rows).chunk(self.replicas)
+        outs = [
+            self.module(
+                **{
+                    k: v[b[0] : b[-1] + 1]
+                    if torch.is_tensor(v) and v.dim() and v.shape[0] == rows
+                    else v
+                    for k, v in kwargs.items()
+                }
+            )
+            for b in bounds
+        ]
+        return types.SimpleNamespace(
+            logits = torch.cat([o.logits for o in outs]),
+            encoder_last_hidden_state = torch.cat([o.encoder_last_hidden_state for o in outs]),
+        )
+
+
+def test_loss_through_data_parallel_scatter(model):
+    # Each replica must decode from a cache holding its own rows, not one built for the whole batch.
+    batch = _batch(model.config.text_config.vocab_size, model.config.canvas_length)
+    torch.manual_seed(0)
+    plain = DIFFUSION_GEMMA_PROFILE.compute_loss(model, batch, _args())[0]
+    torch.manual_seed(0)
+    wrapped = DIFFUSION_GEMMA_PROFILE.compute_loss(_ScatteringDataParallel(model), batch, _args())[
+        0
+    ]
+    torch.testing.assert_close(wrapped, plain)
+    assert not model._forward_pre_hooks and not model._forward_hooks
+
+
 @pytest.mark.parametrize("attn", ["eager", "sdpa"])
 def test_decoder_sees_the_prefix_window_inference_sees(attn):
     # The encoder runs on the whole sequence, but sliding decoder layers must keep the window ending at the

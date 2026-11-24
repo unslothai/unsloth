@@ -45,6 +45,41 @@ def _torch_or_stub():
     return torch
 
 
+class _RelativeImports(ast.NodeTransformer):
+    """Rewrite `from ..pkg.mod import a` as `a = _relative_import("pkg.mod", "a")`."""
+
+    def visit_ImportFrom(self, node):
+        if not node.level:
+            return node
+        assigns = []
+        for alias in node.names:
+            key = (node.module or "", alias.name)
+            call = ast.Call(
+                func = ast.Name("_relative_import", ast.Load()),
+                args = [ast.Constant(key[0]), ast.Constant(key[1])],
+                keywords = [],
+            )
+            target = ast.Name(alias.asname or alias.name, ast.Store())
+            assigns.append(ast.copy_location(ast.Assign(targets = [target], value = call), node))
+        return assigns
+
+
+def _resolve_relative_imports(module):
+    return ast.fix_missing_locations(_RelativeImports().visit(module))
+
+
+def _relative_importer(table):
+    def resolve(module, name):
+        # Raised only when a fake reaches the import, so guarded branches it never takes need no stub.
+        assert (
+            module,
+            name,
+        ) in table, f"stub the relative import {(module, name)} lifted from unsloth/models"
+        return table[(module, name)]
+
+    return resolve
+
+
 def _fast_base_model():
     tree = ast.parse((MODELS / "vision.py").read_text(encoding = "utf-8"))
     cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "FastBaseModel")
@@ -72,8 +107,36 @@ def _fast_base_model():
         ):
             node.decorator_list = []
             wanted.insert(0, node)
-    namespace = _Namespace(os = os, inspect = inspect, torch = _torch_or_stub(), functools = functools)
-    module = ast.fix_missing_locations(ast.Module(body = wanted, type_ignores = []))
+    # Follow the lifted code into every other _utils.py helper it names, so a guard either method
+    # gains (for_inference's tensor parallel refusal, #15137) runs here instead of resolving to None.
+    helpers = {n.name: n for n in utils.body if isinstance(n, ast.FunctionDef)}
+    # Helpers that import a sibling module (a relative import has no package in this namespace): stubbed with what
+    # they return for these fakes. A model split by hand (apply_pipeline_parallel) keeps no UNSLOTH_PP_SIZE replica.
+    stubbed = {
+        "_pipeline_keeps_replica": lambda model: False,
+        "enable_fp8_lora": lambda model: [],
+        "restore_fp8_lora_for_inference": lambda model: None,
+        # for_training frees kept decode graphs and their cache; none exist for these fakes.
+        "_decode_graphs": types.SimpleNamespace(release_for_training = lambda model: None),
+    }
+    # A relative import inside a lifted body (for_inference clearing the NF4 dequant cache, #18285)
+    # resolves through this table; an import missing from it fails here, naming what to stub.
+    relative = {("kernels.dequant_cache", "clear_dequant_cache"): lambda: None}
+    lifted = {n.name for n in wanted} | set(stubbed)
+    todo = list(wanted)
+    while todo:
+        for ref in ast.walk(todo.pop()):
+            if isinstance(ref, ast.Name) and ref.id in helpers and ref.id not in lifted:
+                node = helpers[ref.id]
+                node.decorator_list = []
+                lifted.add(node.name)
+                wanted.insert(0, node)
+                todo.append(node)
+    namespace = _Namespace(
+        os = os, inspect = inspect, torch = _torch_or_stub(), functools = functools, **stubbed
+    )
+    namespace["_relative_import"] = _relative_importer(relative)
+    module = _resolve_relative_imports(ast.Module(body = wanted, type_ignores = []))
     exec(compile(module, str(MODELS / "vision.py"), "exec"), namespace)
     for name in ("for_inference", "for_training"):
         methods[name] = namespace[name]
@@ -135,6 +198,14 @@ def test_flag_set_after_for_inference_is_kept(fbm):
     assert os.environ[FLAG] == "1"
 
 
+def test_lifted_for_inference_runs_its_real_helpers(fbm):
+    # The lifted for_inference calls the real _utils.py guards, not a None the namespace made up.
+    model = _Model()
+    model._unsloth_pp = True
+    with pytest.raises(RuntimeError, match = "pipeline parallel"):
+        fbm.for_inference(model)
+
+
 def _fast_llama_for_training():
     tree = ast.parse((MODELS / "llama.py").read_text(encoding = "utf-8"))
     cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "FastLlamaModel")
@@ -147,6 +218,11 @@ def _fast_llama_for_training():
         resolve_training_gradient_checkpointing = lambda model, flag, checkpointing = None: False,
         arm_gradient_checkpointing = lambda model, checkpointing = None: False,
         set_module_gradient_checkpointing = lambda module, flag: None,
+        _tensor_parallel_for_training = lambda model: None,  # tp_replica.py: no tp model here
+        enable_fp8_lora = lambda model: [],
+        _decode_graphs = types.SimpleNamespace(
+            release_for_training = lambda model: None
+        ),  # no graphs held here
     )
     module = ast.fix_missing_locations(ast.Module(body = [fn], type_ignores = []))
     exec(compile(module, str(MODELS / "llama.py"), "exec"), namespace)
@@ -232,3 +308,25 @@ def test_generated_trainer_init_never_writes_the_flag():
     )
     assert FLAG not in ast.unparse(patcher)
     assert FLAG not in _template()
+
+
+def test_train_restores_eval_without_a_replica_on_a_parallel_trainer():
+    # Failing before: the restore called for_inference, which gathers a whole replica under tensor / pipeline
+    # parallel and is refused for pp x tp, so train() raised after the training finished.
+    calls = []
+    model = _Model()
+    model.for_inference = lambda: calls.append("for_inference")
+    model.for_training = lambda use_gradient_checkpointing = None: model.train()
+
+    class _Trainer:
+        args = types.SimpleNamespace(gradient_checkpointing = False)
+        _unsloth_tensor_parallel = True
+
+        def train(self):
+            return "trained"
+
+    trainer = _Trainer()
+    trainer.model = model
+    model.eval()
+    assert _prepare_for_training_mode()(_Trainer.train)(trainer) == "trained"
+    assert model.training is False and calls == []

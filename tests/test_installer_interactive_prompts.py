@@ -29,6 +29,7 @@ SCANNED_SCRIPTS = ENTRY_POINTS + (
     "scripts/uninstall.sh",
     "scripts/uninstall.ps1",
     "studio/install_audio_cpp_prebuilt.py",
+    "studio/install_hnsw_prebuilt.py",
     "studio/install_lemonade_prebuilt.py",
     "studio/install_llama_prebuilt.py",
     "studio/install_manifest.py",
@@ -39,8 +40,10 @@ SCANNED_SCRIPTS = ENTRY_POINTS + (
     "studio/install_sd_cpp_prebuilt.py",
     "studio/install_whisper_prebuilt.py",
     "studio/nvidia_probe.py",
+    "studio/precompile_bytecode.py",
     "studio/backend/requirements/single-env/patch_metadata.py",
     "studio/systemd/install_user_service.sh",
+    "studio/launchd/install_user_agent.sh",
 )
 
 # Keyed by (script, normalised question) since line numbers move. Do NOT add an entry just to
@@ -221,9 +224,8 @@ def _redirected_loop_bodies(lines: list[str]) -> set[int]:
 
 
 def _outside_docstring(line: str, delimiter: str) -> tuple[str, str]:
-    """Strip triple-quoted regions from a Python line, returning what is left and the
-    delimiter still open. A docstring showing an `input()` example documents the
-    script, it does not prompt."""
+    """Strip triple-quoted regions from a Python line, returning the rest and any delimiter still
+    open; an input() example inside a docstring documents the script, it does not prompt."""
     while True:
         if delimiter:
             end = line.find(delimiter)

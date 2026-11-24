@@ -3,8 +3,11 @@
 
 import codecs
 import json
+import contextlib
 import os
 import re
+import stat
+import subprocess
 import sys
 import threading
 from pathlib import Path
@@ -14,7 +17,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from auth.authentication import get_current_subject
-from core.inference import skills
+from core.inference import skills, tools
 from routes.skills import router
 
 
@@ -39,7 +42,6 @@ def _write_skill(
 
 @pytest.fixture(autouse = True)
 def _reset_tool_request_budget():
-    # execute_tool never resets these, so the pagination test's tight budget must not leak.
     from core.inference import tools
 
     context_token = tools._REQUEST_CONTEXT_TOKENS.set(tools._UNSET_CONTEXT_TOKENS)
@@ -108,12 +110,10 @@ def test_bundled_skill_creator_is_enabled_and_user_override_wins(isolated_skills
 
     creator = next(record for record in skills.list_skills() if record["name"] == "skill-creator")
     assert creator["source"] == "bundled"
-    # Bundled skills ship disabled: a fresh install must not carry skill tools into every chat.
     assert creator["enabled"] is False
     assert skills.enabled_skills() == []
     with pytest.raises(skills.SkillError, match = "disabled"):
         skills.read_skill_resource("skill-creator")
-    # Enabling one is an explicit override that survives a re-list; disabling clears it again.
     assert skills.set_skill_enabled("skill-creator", True)["enabled"] is True
     assert skills._load_overrides() == {"skill-creator": True}
     assert "create_skill" in skills.read_skill_resource("skill-creator")
@@ -156,6 +156,28 @@ def test_bundled_image_prompting_skill_parses_and_ships_disabled(isolated_skills
             "---\nname: bad-metadata\ndescription: valid\nmetadata:\n  version: 1\n---\n",
         ),
         ("no-description", "---\nname: no-description\n---\n"),
+        ("bad-literal", "---\nname: bad-literal\ndescription: |\n  Use when: a\n b\n---\n"),
+        ("bad-folded", "---\nname: bad-folded\ndescription: > Use when: a\n---\n"),
+        ("bad-anchor", "---\nname: bad-anchor\ndescription: &d |\n  a\n b\n---\n"),
+        ("bad-tag", '---\nname: bad-tag\ndescription: !!str "Use "a": b"\n---\n'),
+        ("wrapped", "---\nname: wrapped\ndescription: Use when: a\n  author: b\n---\n"),
+        ("bad-flow", '---\nname: bad-flow\ndescription: ["a: b",, "c"]\n---\n'),
+        (
+            "bad-flow-map",
+            '---\nname: bad-flow-map\ndescription: d\nmetadata: {\nauthor: *a* b: c, v: "1"\n}\n---\n',
+        ),
+        (
+            "bad-flow-key",
+            "---\nname: bad-flow-key\nmetadata: {\ndescription: *a* b: c, v: d\n}\n"
+            "description: Use when: e\n---\n",
+        ),
+        (
+            "bad-merge",
+            "---\nname: bad-merge\n<<: &d {\ndescription: Use when: a, license: MIT\n}\n"
+            "metadata: *d\n---\n",
+        ),
+        ("bad-entry", "---\nname: bad-entry\ndescription: - Use when: a\n---\n"),
+        ("bad-alias", "---\nname: bad-alias\ndescription: valid\nlicense: *missing\n---\n"),
     ],
 )
 def test_invalid_skill_is_reported_without_hiding_valid_skills(
@@ -225,6 +247,265 @@ def test_read_resource_is_contained_utf8_and_paginated(isolated_skills):
         skills.read_skill_resource("reader", home = home)
 
 
+@pytest.mark.parametrize(
+    "resource", ["data.jsonl", f"{tools._ATTACHMENTS_DIR}/85563b7dcbb0/data.jsonl"]
+)
+def test_missing_resource_says_attachments_are_not_skill_resources(isolated_skills, resource):
+    home, _ = isolated_skills
+    _write_skill(home, "agents", "reader")
+
+    with pytest.raises(skills.SkillError, match = "Chat attachments are not skill resources"):
+        skills.read_skill_resource("reader", resource, home = home)
+
+
+def test_missing_resource_lists_the_skill_files(isolated_skills):
+    home, _ = isolated_skills
+    root = _write_skill(home, "agents", "lint")
+    (root / "scripts").mkdir()
+    (root / "scripts" / "lint.py").write_text("print(1)", encoding = "utf-8")
+    (root / ".cache").mkdir()
+    (root / ".cache" / "x.json").write_text("{}", encoding = "utf-8")
+    (root / ".hidden").write_text("", encoding = "utf-8")
+
+    with pytest.raises(skills.SkillError) as error:
+        skills.read_skill_resource("lint", "dataset-lint.py", home = home)
+
+    assert str(error.value).endswith("Files in this skill: SKILL.md, scripts/lint.py.")
+
+
+@pytest.mark.skipif(os.name != "nt", reason = "Windows hidden file attribute")
+def test_missing_resource_listing_skips_windows_hidden_entries(isolated_skills):
+    home, _ = isolated_skills
+    root = _write_skill(home, "agents", "reader")
+    hidden_file = root / "desktop.ini"
+    hidden_file.touch()
+    hidden_dir = root / "cache"
+    hidden_dir.mkdir()
+    (hidden_dir / "notes.txt").touch()
+    for path in (hidden_file, hidden_dir):
+        subprocess.run(["attrib", "+H", str(path)], check = True)
+        if not path.stat().st_file_attributes & stat.FILE_ATTRIBUTE_HIDDEN:
+            pytest.skip("filesystem does not persist the Windows hidden attribute")
+
+    with pytest.raises(skills.SkillError) as error:
+        skills.read_skill_resource("reader", "missing.txt", home = home)
+
+    assert str(error.value).endswith("Files in this skill: SKILL.md.")
+
+
+def test_missing_resource_listing_applies_reader_path_limit(isolated_skills, monkeypatch):
+    home, _ = isolated_skills
+    root = _write_skill(home, "agents", "reader")
+    (root / "docs").mkdir()
+    (root / "docs" / "yes.txt").touch()
+    (root / "docs" / "long.txt").touch()
+    monkeypatch.setattr(skills, "MAX_SKILL_RESOURCE_PATH_BYTES", len("docs/yes.txt"))
+
+    with pytest.raises(skills.SkillError) as error:
+        skills.read_skill_resource("reader", "missing", home = home)
+
+    assert str(error.value).endswith("Files in this skill: SKILL.md, docs/yes.txt.")
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "POSIX names rejected by the portable reader")
+def test_missing_resource_listing_skips_unusable_names(isolated_skills):
+    home, _ = isolated_skills
+    root = _write_skill(home, "agents", "reader")
+    (root / "aux.txt").touch()
+    (root / "old\\notes.txt").touch()
+    (root / "con").mkdir()
+    (root / "con" / "notes.txt").touch()
+
+    with pytest.raises(skills.SkillError) as error:
+        skills.read_skill_resource("reader", "missing.txt", home = home)
+
+    assert str(error.value).endswith("Files in this skill: SKILL.md.")
+
+
+def test_missing_resource_listing_marks_exhausted_entry_budget(isolated_skills):
+    home, _ = isolated_skills
+    root = _write_skill(home, "agents", "reader")
+    (root / "scripts").mkdir()
+    (root / "scripts" / "lint.py").touch()
+
+    assert skills._list_skill_files(root, root.stat(), max_entries = 2) == ["SKILL.md", "..."]
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "POSIX byte filenames")
+def test_missing_resource_listing_skips_undecodable_names(isolated_skills):
+    home, _ = isolated_skills
+    root = _write_skill(home, "agents", "bytes")
+    try:
+        open(os.fsencode(root) + b"/bad-\xff.txt", "w").close()
+    except OSError:
+        pytest.skip("filesystem refuses non-UTF-8 names")
+
+    with pytest.raises(skills.SkillError) as error:
+        skills.read_skill_resource("bytes", "missing.txt", home = home)
+
+    str(error.value).encode("utf-8")
+    assert str(error.value).endswith("Files in this skill: SKILL.md.")
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink"), reason = "symlinks unavailable")
+def test_missing_resource_listing_refuses_a_swapped_directory(isolated_skills, tmp_path):
+    home, _ = isolated_skills
+    root = _write_skill(home, "agents", "swap")
+    identity = os.stat(root, follow_symlinks = False)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.txt").write_text("", encoding = "utf-8")
+    root.rename(root.with_name("swap-old"))
+    try:
+        os.symlink(outside, root, target_is_directory = True)
+    except OSError:
+        pytest.skip("cannot create symlinks here")
+
+    assert skills._list_skill_files(root, identity) == []
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink"), reason = "symlinks unavailable")
+def test_missing_resource_listing_refuses_a_subfolder_swapped_after_queueing(
+    isolated_skills, tmp_path, monkeypatch
+):
+    home, _ = isolated_skills
+    root = _write_skill(home, "agents", "queued")
+    (root / "scripts").mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "private-filename.txt").write_text("", encoding = "utf-8")
+    replacement = tmp_path / "replacement"
+    try:
+        replacement.symlink_to(outside, target_is_directory = True)
+    except OSError as exc:
+        if os.name != "nt" or exc.winerror != 1314:
+            pytest.skip(f"cannot create a directory symlink on this filesystem: {exc}")
+        import _winapi
+        _winapi.CreateJunction(str(outside), str(replacement))
+    real_scandir = os.scandir
+    queued = []
+    swapped = []
+
+    def swapping_scandir(target):
+        # Swap between queueing scripts/ as a real directory and scanning it.
+        if queued and not swapped:
+            (root / "scripts").rename(root / "scripts-old")
+            replacement.rename(root / "scripts")
+            swapped.append(True)
+        with real_scandir(target) as scan:
+            entries = list(scan)
+        if any(entry.name == "scripts" for entry in entries):
+            queued.append(True)
+        return contextlib.nullcontext(entries)
+
+    monkeypatch.setattr(skills.os, "scandir", swapping_scandir)
+    with pytest.raises(skills.SkillError) as error:
+        skills.read_skill_resource("queued", "missing.txt", home = home)
+
+    assert swapped
+    assert "private-filename" not in str(error.value)
+
+
+@pytest.mark.skipif(not skills._SCANDIR_FD, reason = "descriptor scans only")
+def test_missing_resource_listing_types_entries_while_the_folder_is_open(
+    isolated_skills, monkeypatch
+):
+    home, _ = isolated_skills
+    root = _write_skill(home, "agents", "lazy")
+    (root / "scripts").mkdir()
+    (root / "scripts" / "lint.py").write_text("", encoding = "utf-8")
+    real_scandir = os.scandir
+
+    class LazyEntry:
+        # DT_UNKNOWN: the type comes from an fstatat on the scanned descriptor.
+        def __init__(self, entry, descriptor):
+            self._entry, self._descriptor, self.name = entry, descriptor, entry.name
+
+        def _typed(self, method, *args, **kwargs):
+            os.fstat(self._descriptor)
+            return getattr(self._entry, method)(*args, **kwargs)
+
+        def is_symlink(self):
+            return self._typed("is_symlink")
+
+        def is_dir(self, **kwargs):
+            return self._typed("is_dir", **kwargs)
+
+        def is_file(self, **kwargs):
+            return self._typed("is_file", **kwargs)
+
+    def lazy_scandir(target):
+        if not isinstance(target, int):
+            return real_scandir(target)
+        with real_scandir(target) as scan:
+            return contextlib.nullcontext([LazyEntry(entry, target) for entry in scan])
+
+    monkeypatch.setattr(skills.os, "scandir", lazy_scandir)
+    with pytest.raises(skills.SkillError) as error:
+        skills.read_skill_resource("lazy", "missing.txt", home = home)
+
+    assert str(error.value).endswith("Files in this skill: SKILL.md, scripts/lint.py.")
+
+
+def test_missing_resource_listing_stops_reading_a_large_folder(isolated_skills, monkeypatch):
+    home, _ = isolated_skills
+    root = _write_skill(home, "agents", "flat")
+    for index in range(300):
+        (root / f"{index:03d}.txt").write_text("", encoding = "utf-8")
+    real_scandir = os.scandir
+    read = []
+
+    class Counted:
+        def __init__(self, scan):
+            self._scan = scan
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            self._scan.close()
+
+        def __iter__(self):
+            for entry in self._scan:
+                read.append(entry.name)
+                yield entry
+
+    monkeypatch.setattr(skills.os, "scandir", lambda target: Counted(real_scandir(target)))
+    listed = skills._list_skill_files(root, os.stat(root, follow_symlinks = False), max_entries = 50)
+
+    assert len(read) == 50 and len(listed) == 21 and listed[-1] == "..."
+
+
+def test_missing_resource_listing_survives_deep_empty_trees(isolated_skills):
+    home, _ = isolated_skills
+    root = _write_skill(home, "agents", "deep")
+    try:
+        current = root
+        for _ in range(1100):
+            current = current / "d"
+            current.mkdir()
+    except OSError:
+        pytest.skip("filesystem refuses deep paths")
+
+    with pytest.raises(skills.SkillError) as error:
+        skills.read_skill_resource("deep", "missing.txt", home = home)
+
+    assert str(error.value).endswith("Files in this skill: SKILL.md.")
+
+
+def test_missing_resource_listing_is_capped(isolated_skills):
+    home, _ = isolated_skills
+    root = _write_skill(home, "agents", "many")
+    for index in range(30):
+        (root / f"f{index:02d}.txt").write_text("", encoding = "utf-8")
+
+    with pytest.raises(skills.SkillError) as error:
+        skills.read_skill_resource("many", "missing.txt", home = home)
+
+    listed = str(error.value).split("Files in this skill: ", 1)[1].removesuffix(".").split(", ")
+    assert len(listed) == 21 and listed[-1] == "..."
+
+
 @pytest.mark.skipif(
     not hasattr(os, "mkfifo"), reason = "POSIX FIFOs are unavailable on this platform"
 )
@@ -265,7 +546,6 @@ def test_read_resource_rejects_escaping_symlink(isolated_skills):
     try:
         (root / "link.txt").symlink_to(outside)
     except (OSError, NotImplementedError):
-        # Reason: Windows may deny symlink creation without Developer Mode.
         pytest.skip("symlinks are unavailable on this platform")
 
     with pytest.raises(skills.SkillError, match = "symbolic links"):
@@ -286,14 +566,12 @@ def test_read_resource_rejects_link_swapped_during_open(isolated_skills, monkeyp
 
     def replacing_open(path, *args, **kwargs):
         nonlocal swapped
-        # The descriptor-relative walk opens the bare component name against a dir_fd.
         if path in (resource, resource.name) and not swapped:
             swapped = True
             resource.unlink()
             try:
                 resource.symlink_to(outside)
             except (OSError, NotImplementedError):
-                # Reason: Windows may deny symlink creation without Developer Mode.
                 pytest.skip("symlinks are unavailable on this platform")
         return original_open(path, *args, **kwargs)
 
@@ -318,7 +596,6 @@ def test_read_resource_rejects_skill_root_swapped_after_selection(isolated_skill
         try:
             root.symlink_to(outside, target_is_directory = True)
         except (OSError, NotImplementedError):
-            # Reason: Windows may deny symlink creation without Developer Mode.
             pytest.skip("symlinks are unavailable on this platform")
         return record, path, identity
 
@@ -457,7 +734,6 @@ def test_linked_skill_directory_is_followed_once_and_pinned(isolated_skills, tmp
         (root / "to-file").symlink_to(real / "SKILL.md")
         (real / "escape.md").symlink_to(tmp_path / "dotfiles")
     except (OSError, NotImplementedError):
-        # Reason: Windows may deny symlink creation without Developer Mode.
         pytest.skip("symlinks are unavailable on this platform")
 
     records = {record["name"]: record for record in skills.list_skills(home = home)}
@@ -593,7 +869,6 @@ def test_skill_tools_registration_selection_and_prompt(isolated_skills, monkeypa
     assert "- guided: Guide this task" in nudge
     assert "@skill-name" in nudge
     assert "create_skill" in nudge
-    # Codex and external paths skip the general nudge but keep the catalog for @mentions.
     narrow = inference_routes._build_tool_action_nudge(
         tools = [*selected, tools_module.WEB_SEARCH_TOOL],
         model_name = "test",
@@ -645,8 +920,6 @@ def test_read_skill_tool_keeps_pagination_consistent_with_tight_room(isolated_sk
     assert f"offset={end}." in result
     assert "truncated to" not in result
 
-
-# Account scoping: the owner keeps the home folders, a managed account gets its own workspace.
 
 _ALICE_ID = "a" * 32
 _BOB_ID = "b" * 32
@@ -736,19 +1009,16 @@ def test_managed_account_overrides_and_creation_stay_in_its_workspace(managed_ac
     _write_skill(home, "agents", "shared-name", description = "owner copy")
     _account_skill(studio, _ALICE_ID, "shared-name", "alice copy")
 
-    # Alice disabling her copy leaves the owner's enabled and writes only her overrides file.
     assert run_as(alice, skills.set_skill_enabled, "shared-name", False)["enabled"] is False
     assert (studio / "accounts" / _ALICE_ID / "skill-overrides.json").is_file()
     assert not (studio / "skill-overrides.json").exists()
     assert next(r for r in skills.list_skills() if r["name"] == "shared-name")["enabled"] is True
     assert run_as(bob, skills.enabled_skills) == []
 
-    # Bob toggling a skill he cannot see is a not-found, not a write into Alice's file.
     with pytest.raises(skills.SkillNotFoundError):
         run_as(bob, skills.set_skill_enabled, "shared-name", False)
     assert not (studio / "accounts" / _BOB_ID / "skill-overrides.json").exists()
 
-    # create_skill lands in the caller's own workspace, never in the owner's home.
     record = run_as(bob, skills.create_skill, "bob-made", "Bob's skill", "Instructions")
     assert record["path"] == "skills/bob-made/SKILL.md"
     assert (studio / "accounts" / _BOB_ID / "skills" / "bob-made" / "SKILL.md").is_file()
@@ -779,7 +1049,6 @@ def test_inference_catalog_cache_is_per_account(managed_accounts, monkeypatch):
     assert run_as(bob, inference_routes._enabled_agent_skills) == []
     assert set(inference_routes._AGENT_SKILLS_CACHE) == {None, _ALICE_ID, _BOB_ID}
 
-    # The catalog a request is built from follows the acting account.
     from models.inference import ChatCompletionRequest
 
     payload = ChatCompletionRequest(
@@ -813,10 +1082,31 @@ def test_read_skill_page_floor_reports_no_room_instead_of_slivers(isolated_skill
     home, _ = isolated_skills
     monkeypatch.setattr(skills, "_owner_home", lambda: home)
     _write_skill(home, "agents", "long", body = "x" * 12_000)
-    # Whatever the room, a page smaller than the floor is not worth a round trip.
     monkeypatch.setattr(tools_module, "_fit_result_to_room", lambda result, name: result[:40])
     result = tools_module.execute_tool("read_skill", {"name": "long"})
     assert result.startswith("Error: Not enough context room")
+
+
+def test_read_skill_not_found_hint_fits_the_priced_room(isolated_skills, monkeypatch):
+    from core.inference import tools as tools_module
+
+    home, _ = isolated_skills
+    monkeypatch.setattr(skills, "_owner_home", lambda: home)
+    root = _write_skill(home, "agents", "wide")
+    for index in range(20):
+        (root / f"{index:02d}-{'n' * 200}.txt").write_text("", encoding = "utf-8")
+    unpriced = tools_module.execute_tool("read_skill", {"name": "wide", "resource": "x.py"})
+    priced = tools_module.execute_tool(
+        "read_skill", {"name": "wide", "resource": "x.py"}, result_budget_tokens = 150
+    )
+
+    assert "Files in this skill: " in unpriced and len(unpriced) < 1400
+    assert priced == unpriced.split(" Files in this skill: ", 1)[0]
+    assert priced.endswith("Chat attachments are not skill resources.")
+    exhausted = tools_module.execute_tool(
+        "read_skill", {"name": "wide", "resource": "x.py"}, result_budget_tokens = 0
+    )
+    assert exhausted == priced
 
 
 def test_read_resource_rejects_ancestor_swapped_after_selection(isolated_skills, monkeypatch):
@@ -831,12 +1121,10 @@ def test_read_resource_rejects_ancestor_swapped_after_selection(isolated_skills,
 
     def replacing_selected_skill(name, *, home = None):
         selection = original_selected_skill(name, home = home)
-        # The skill directory itself stays a real directory; only its parent is swapped.
         skills_root.rename(home / "original-skills")
         try:
             skills_root.symlink_to(outside / ".agents" / "skills", target_is_directory = True)
         except (OSError, NotImplementedError):
-            # Reason: Windows may deny symlink creation without Developer Mode.
             pytest.skip("symlinks are unavailable on this platform")
         return selection
 
@@ -948,6 +1236,52 @@ def test_skill_manifest_saved_with_a_utf8_byte_order_mark_is_valid(isolated_skil
     assert record["valid"] is True
     assert record["description"] == "Use this skill for testing."
     assert skills.read_skill_manifest("marked", home = home)["instructions"] == "Follow the steps."
+
+
+@pytest.mark.parametrize(
+    ("written", "description"),
+    [
+        (
+            'Fill PDF forms. Use when: the user attaches a "PDF" form',
+            'Fill PDF forms. Use when: the user attaches a "PDF" form',
+        ),
+        (
+            "Fill PDF forms. Use when: the user attaches a PDF form # draft",
+            "Fill PDF forms. Use when: the user attaches a PDF form",
+        ),
+        (
+            "*Fast PDF filler*. Use when: a form arrives",
+            "*Fast PDF filler*. Use when: a form arrives",
+        ),
+    ],
+)
+def test_unquoted_description_with_a_colon_is_valid(isolated_skills, written, description):
+    home, _ = isolated_skills
+    _write_skill(home, "claude", "pdf-forms", description = written)
+
+    record = next(item for item in skills.list_skills(home = home) if item["name"] == "pdf-forms")
+
+    assert record["valid"] is True
+    assert record["description"] == description
+
+
+def test_colon_fallback_keeps_the_other_fields_as_written(isolated_skills):
+    home, _ = isolated_skills
+    _write_skill(
+        home,
+        "claude",
+        "pdf-forms",
+        description = "Fill PDF forms. Use when: the user attaches a PDF form",
+        frontmatter = (
+            "license: &license MIT\nmetadata: {author: *license}\ncompatibility: |\n  Needs Python 3."
+        ),
+    )
+
+    record = next(item for item in skills.list_skills(home = home) if item["name"] == "pdf-forms")
+
+    assert record["valid"] is True
+    assert record["metadata"] == {"author": "MIT"}
+    assert record["compatibility"] == "Needs Python 3.\n"
 
 
 def test_read_skill_tool_applies_defaults_for_null_arguments(isolated_skills, monkeypatch):
@@ -1098,7 +1432,6 @@ def test_linked_agents_skill_stays_read_only_in_the_dialog(isolated_skills, tmp_
     try:
         (root / "linked").symlink_to(real, target_is_directory = True)
     except (OSError, NotImplementedError):
-        # Reason: Windows may deny symlink creation without Developer Mode.
         pytest.skip("symlinks are unavailable on this platform")
     listed = skills.list_skills(home = home)[0]
     assert (listed["valid"], listed["linked"]) == (True, True)
@@ -1124,7 +1457,6 @@ def test_skill_under_a_linked_agents_root_stays_read_only(isolated_skills, tmp_p
             (home / ".agents").mkdir()
             (home / ".agents" / "skills").symlink_to(real / "skills", target_is_directory = True)
     except (OSError, NotImplementedError):
-        # Reason: Windows may deny symlink creation without Developer Mode.
         pytest.skip("symlinks are unavailable on this platform")
 
     assert skills.list_skills(home = home)[0]["linked"] is True

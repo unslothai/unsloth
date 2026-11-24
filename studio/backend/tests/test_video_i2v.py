@@ -61,10 +61,10 @@ def test_text_only_families_take_no_frame(name):
 
 def test_i2v_class_is_never_the_t2v_class():
     # A family naming its own t2v class as the i2v one would "swap" to the same class and pass the image to a
-    # __call__ that ignores it.
+    # __call__ that ignores it, unless that class takes the frame itself (Cosmos3OmniPipeline's image=).
     for fam in _FAMILIES:
         if fam.i2v_pipeline_class:
-            assert fam.i2v_pipeline_class != fam.pipeline_class
+            assert fam.i2v_pipeline_class != fam.pipeline_class or not fam.i2v_fits_first_frame
             assert fam.i2v_pipeline_class.endswith("Pipeline")
 
 
@@ -352,9 +352,7 @@ def test_class_swap_is_a_noop_without_a_class():
 
 
 def test_from_pipe_would_upcast_which_is_why_it_is_not_used():
-    """Pins the reason video_i2v does not call DiffusionPipeline.from_pipe: without torch_dtype it
-    casts every shared module to float32, an extra copy of the weights and a different numeric
-    path. If diffusers changes that, the swap is still correct; this test only documents it."""
+    """from_pipe would upcast shared modules to float32 unless torch_dtype is passed, so it is not used."""
     torch, pipe = _tiny_wan_pipe()
     import diffusers
 

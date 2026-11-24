@@ -63,8 +63,7 @@
     }
     return st;
   };
-  // The decoder that last delivered SSE, i.e. the measured stream. Built by newState() so a window
-  // opening before the first stream reads zero, not undefined.
+  // Last decoder to deliver SSE, the measured stream; newState() keeps early windows at zero.
   let active = newState();
   // Marker fragment holder; reported even before its decoder is identified as the stream.
   let markerHold = null;
@@ -124,13 +123,25 @@
     st.pending = parts.pop();
     if (carried && parts.length > 0) noteCarried(st);
     for (const part of parts) {
-      const line = part.trim();
-      if (!line.startsWith("data:")) continue;
-      const body = line.slice(5).trim();
+      // A block may carry id: / event: lines before its data (chat-run events do); per SSE, the
+      // block's data is its data: lines joined by newlines, and comment / other field lines are not data.
+      const dataLines = [];
+      for (const raw of part.split("\n")) {
+        const field = raw.trim();
+        if (field.startsWith("data:")) dataLines.push(field.slice(5).trim());
+      }
+      if (dataLines.length === 0) continue;
+      const body = dataLines.join("\n").trim();
       if (body === "" || body === "[DONE]") continue;
       try {
         const frame = JSON.parse(body);
-        const choices = frame && frame.choices;
+        // A chat run (/api/inference/chat-runs/{id}/events) wraps each OpenAI chunk as {seq, type: "chunk", payload};
+        // its other event types (status, done, ...) carry no delta and are skipped like any frame without choices.
+        const chunk =
+          frame && frame.type === "chunk" && frame.payload && typeof frame.payload === "object"
+            ? frame.payload
+            : frame;
+        const choices = chunk && chunk.choices;
         if (!choices || !choices.length) continue;
         const delta = choices[0].delta || {};
         // Reasoning arrives as reasoning_content beside empty content, so summing is not double counting.

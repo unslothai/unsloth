@@ -184,6 +184,8 @@ const state: any = {
   loadedContextLength: null,
   modelLoading: false,
   runningByThreadId: {},
+  chatFullAccessGrants: {},
+  chatFullAccessPreviousMode: null,
 };
 
 function set(updater: any): void {

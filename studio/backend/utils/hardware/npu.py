@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Detect AMD NPUs without starting a runtime.
-
-XDNA 2 (1022:17f0) is supported, and only with ``UNSLOTH_STUDIO_ENABLE_NPU=1``; XDNA 1
-(1022:1502) is not. Runtime readiness is checked separately by ``flm validate``.
-"""
+"""Detects AMD XDNA 2 NPUs (1022:17f0) without starting a runtime; UNSLOTH_STUDIO_ENABLE_NPU=0 hides."""
 
 from __future__ import annotations
 
@@ -19,12 +15,12 @@ _XDNA2_DEVICE = "17f0"
 _XDNA1_DEVICE = "1502"
 _PCI_ROOT = Path("/sys/bus/pci/devices")
 _MODULE_ROOT = Path("/sys/module")
-# Off by default: the NPU section, NPU loads and the CLI's NPU ids all wait on this.
+# On unless set to a false value: the NPU section, NPU loads and the CLI's NPU ids all wait on this.
 ENABLE_ENV = "UNSLOTH_STUDIO_ENABLE_NPU"
 
 
 def npu_enabled() -> bool:
-    return os.environ.get(ENABLE_ENV, "").strip().lower() in ("1", "true", "yes", "on")
+    return os.environ.get(ENABLE_ENV, "").strip().lower() not in ("0", "false", "no", "off")
 
 
 def _read(path: Path) -> Optional[str]:

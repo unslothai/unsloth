@@ -7,25 +7,28 @@ import {
   subscribeDictationLevel,
 } from "@/features/chat";
 import { useAui, useAuiState } from "@assistant-ui/react";
-import { ArrowUpIcon, SquareIcon } from "lucide-react";
+import { ArrowUpIcon } from "lucide-react";
 import { type FC, useEffect, useRef, useState } from "react";
 import { TooltipIconButton } from "./tooltip-icon-button";
+import { StopIcon } from "@/lib/media-control-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 
-// Dense row of dots that rise into centered recording bars.
-const BAR_COUNT = 84;
-// Peak height multiple for the loudest audio (dot is 4px). Under the 40px pill
-// so bars don't touch the edges.
-const MAX_SCALE = 8;
-// Time for a sample to slide one bar-width left (drift speed). Bars interpolate
-// between samples each frame, so a slower interval stays smooth.
-const PUSH_INTERVAL_MS = 165;
-// If no real mic level arrives for this long (e.g. Web Audio unavailable), fall
-// back to a gentle idle shimmer so the bar stays alive.
+const BAR_COUNT = 48;
+// The peak stays inside the 40px pill.
+const MIN_HEIGHT = 4;
+const MAX_HEIGHT = 26;
+const PUSH_INTERVAL_MS = 120;
+// No mic level for this long (e.g. no Web Audio): fall back to an idle shimmer.
 const IDLE_AFTER_MS = 450;
 const WAVE_BAR_IDS = Array.from(
   { length: BAR_COUNT },
   (_, index) => `wave-bar-${index}`,
 );
+
+function barHeight(level: number): string {
+  const px = MIN_HEIGHT + level * (MAX_HEIGHT - MIN_HEIGHT);
+  return `calc(${px.toFixed(2)}px * var(--ui-space-scale, 1))`;
+}
 
 function formatElapsed(ms: number): string {
   const total = Math.floor(ms / 1000);
@@ -34,21 +37,13 @@ function formatElapsed(ms: number): string {
   return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
-/**
- * Recording UI shown in place of the composer input: a live waveform with stop
- * and send on the right. Stop transcribes into the composer for editing; send
- * transcribes and submits. Escape discards without transcribing, as does a
- * second press of stop once transcription is under way.
- */
+/** Recording UI in place of the composer input. Escape, or stop pressed again while transcribing, discards. */
 export const ChatDictationBar: FC<{
-  /** Transcribe, then submit the composer. Falls back to stop when absent. */
   onSend?: () => void;
-  /** Send is unavailable (e.g. an attachment is still uploading). */
   sendDisabled?: boolean;
 }> = ({ onSend, sendDisabled }) => {
   const aui = useAui();
   const isDictating = useAuiState((s) => s.composer.dictation != null);
-  // Which button started transcription, so only it shows the spinner.
   const [transcribing, setTranscribing] = useState<"stop" | "send" | null>(
     null,
   );
@@ -64,7 +59,7 @@ export const ChatDictationBar: FC<{
     }
 
     const startedAt = Date.now();
-    let peak = 0; // loudest level seen since the last waveform advance
+    let peak = 0;
     let smoothed = 0;
     let lastLevelAt = 0;
     const barEls = rowRef.current
@@ -72,16 +67,12 @@ export const ChatDictationBar: FC<{
           (el): el is HTMLElement => el instanceof HTMLElement,
         )
       : [];
-    // Paint the bars imperatively (not via React state) so the waveform does not
-    // thrash renders. The spans carry no style prop, so React never overwrites
-    // these transforms on an elapsed-timer re-render. At rest each is a round dot
-    // (scaleY 1); louder audio scales it into a thin centered bar.
+    // Painted imperatively so React never overwrites these heights on a timer re-render.
     for (const el of barEls) {
-      el.style.transform = "scaleY(1)";
-      el.style.opacity = "0.62";
+      el.style.height = barHeight(0);
+      el.style.opacity = "0.45";
     }
 
-    // Push one new sample, dropping the oldest.
     const commitSample = () => {
       const bars = barsRef.current;
       let level = peak;
@@ -89,8 +80,6 @@ export const ChatDictationBar: FC<{
       if (Date.now() - lastLevelAt > IDLE_AFTER_MS) {
         level = 0.075 + 0.055 * (1 + Math.sin(Date.now() / 360));
       }
-      // Quiet speech needs a perceptual lift. Fast attack, slower release:
-      // removes twitching while preserving clear peaks.
       const visual = Math.min(1, Math.max(0, level) ** 0.62 * 1.45);
       smoothed =
         visual >= smoothed
@@ -102,8 +91,7 @@ export const ChatDictationBar: FC<{
       }
     };
 
-    // Keep the loudest mic level between advances so downsampling to
-    // PUSH_INTERVAL_MS doesn't swallow peaks in quiet gaps.
+    // Keep the loudest level between advances so downsampling does not swallow peaks.
     const unsub = subscribeDictationLevel((level) => {
       if (level > peak) {
         peak = level;
@@ -111,8 +99,6 @@ export const ChatDictationBar: FC<{
       lastLevelAt = Date.now();
     });
 
-    // Repaint every frame; bars interpolate between samples so the wave glides.
-    // Timer updates at most once per second.
     let lastPushAt = performance.now();
     let shownSecond = -1;
     let raf = 0;
@@ -138,12 +124,12 @@ export const ChatDictationBar: FC<{
 
       const phase = Math.min(1, (now - lastPushAt) / PUSH_INTERVAL_MS);
       for (let i = 0; i < barEls.length; i++) {
-        // Bar i drifts toward its right neighbour as phase goes 0 to 1.
         const a = bars[i] ?? 0;
         const b = bars[i + 1] ?? a;
         const v = a + (b - a) * phase;
-        barEls[i].style.transform = `scaleY(${1 + v * (MAX_SCALE - 1)})`;
-        barEls[i].style.opacity = `${0.62 + v * 0.38}`;
+        // Height, not scaleY, so the rounded caps stay round at every level.
+        barEls[i].style.height = barHeight(v);
+        barEls[i].style.opacity = `${0.45 + v * 0.55}`;
       }
 
       const elapsedMs = Date.now() - startedAt;
@@ -155,8 +141,7 @@ export const ChatDictationBar: FC<{
     };
     raf = requestAnimationFrame(frame);
 
-    // Reset in cleanup (dictation end or unmount) so the next session starts
-    // fresh, without a synchronous setState in the effect body.
+    // Reset in cleanup, not with a synchronous setState in the effect body.
     return () => {
       unsub();
       cancelAnimationFrame(raf);
@@ -167,8 +152,7 @@ export const ChatDictationBar: FC<{
     };
   }, [isDictating]);
 
-  // No discard button, so Escape drops a recording without transcribing. It
-  // stays live while transcribing too, where cancel aborts the request.
+  // No discard button, so Escape drops a recording; while transcribing it aborts the request.
   useEffect(() => {
     if (!isDictating) {
       return;
@@ -188,15 +172,12 @@ export const ChatDictationBar: FC<{
     return null;
   }
 
-  // Freeze the timer + waveform while the transcription round trip runs.
   const freeze = (source: "stop" | "send") => {
     transcribingRef.current = true;
     setTranscribing(source);
   };
 
-  // Transcript lands in the composer, ready to edit. A second press while
-  // transcribing discards it instead, as Compare's does: Escape is otherwise
-  // the only way out, which touch has no way to press.
+  // A second press while transcribing discards: touch has no Escape key.
   const stop = () => {
     if (transcribing !== null) {
       cancelActiveStudioDictation();
@@ -206,7 +187,6 @@ export const ChatDictationBar: FC<{
     aui.composer().stopDictation();
   };
 
-  // Same transcription, then the message submits on its own.
   const send = () => {
     if (sendDisabled) return;
     if (!onSend) {
@@ -220,29 +200,35 @@ export const ChatDictationBar: FC<{
   return (
     <fieldset
       // order-2 places the bar in the input's slot after the left "+" tools.
-      // No row gap: the wave padding and the timer margin set the spacing.
       className="unsloth-dictation-bar order-2 m-0 flex min-w-0 flex-1 items-center gap-0 border-0 p-0"
       aria-label="Voice recording"
     >
       <div
         ref={rowRef}
         aria-hidden="true"
-        className="unsloth-dictation-wave grid h-10 min-w-0 flex-1 items-center overflow-hidden pl-4 pr-2"
+        className="unsloth-dictation-wave grid h-10 min-w-0 flex-1 items-center overflow-hidden pl-4 pr-2 [mask-image:linear-gradient(to_right,transparent,#000_28%)]"
         style={{
-          gridTemplateColumns: `repeat(${BAR_COUNT}, minmax(1px, 3px))`,
+          gridTemplateColumns: `repeat(${BAR_COUNT}, minmax(2px, 3px))`,
           justifyContent: "space-between",
         }}
       >
         {WAVE_BAR_IDS.map((barId) => (
           <span
             key={barId}
-            className="h-1 w-full origin-center rounded-full bg-foreground opacity-[0.62] will-change-transform"
+            className="h-1 w-full rounded-full bg-foreground opacity-45"
           />
         ))}
       </div>
-      {/* Classed so narrow panes can tighten these; both are shrink-0, so they
-          set the bar's floor and would otherwise overflow the composer. */}
-      <span className="unsloth-dictation-timer mr-4 shrink-0 tabular-nums text-sm text-muted-foreground">
+      {/* Classed so narrow panes can tighten these: both are shrink-0 and set the bar's floor. */}
+      <span className="unsloth-dictation-timer mr-4 flex shrink-0 items-center gap-1.5 tabular-nums text-sm text-muted-foreground">
+        <span
+          aria-hidden="true"
+          className={
+            transcribing === null
+              ? "size-1.5 animate-pulse rounded-full bg-destructive"
+              : "size-1.5 rounded-full bg-muted-foreground/50"
+          }
+        />
         {formatElapsed(elapsed)}
       </span>
       <div className="unsloth-dictation-actions flex shrink-0 items-center gap-2.5">
@@ -256,14 +242,13 @@ export const ChatDictationBar: FC<{
           }
           variant="ghost"
           onClick={stop}
-          // Neutral grey in both themes: --secondary is brand green on the
-          // default light palette, and too close to --card on dark.
+          // Neutral grey: --secondary is brand green on light and too close to --card on dark.
           className="size-9 rounded-full bg-accent text-foreground hover:bg-accent/70 dark:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.16*var(--contrast-wash-gain,1)))]"
         >
           {transcribing === "stop" ? (
             <Spinner className="size-3.5" />
           ) : (
-            <SquareIcon className="size-3 fill-current" />
+            <HugeiconsIcon icon={StopIcon} className="composer-glyph-snap size-3.5 fill-current" />
           )}
         </TooltipIconButton>
         <TooltipIconButton

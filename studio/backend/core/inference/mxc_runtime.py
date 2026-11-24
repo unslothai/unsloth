@@ -21,8 +21,7 @@ MXC_SCHEMA_VERSION = "0.8.0-alpha"
 PROFILE_ID = "unsloth-mxc-windows-processcontainer-v2"
 RELEASE_REPOSITORY = "microsoft/mxc"
 RELEASE_TAG = "v0.8.0"
-# Microsoft's @microsoft/mxc-sdk 0.8.0 npm package: every x64 binary is byte-identical to the
-# v0.8.0 release zip (358 MB, which adds only .pdb/.dwp symbols), at 26 MB.
+# @microsoft/mxc-sdk 0.8.0 npm: x64 binaries identical to the release zip, 26 MB vs 358 MB
 RELEASE_ASSET = "@microsoft/mxc-sdk@0.8.0"
 RELEASE_URL = "https://registry.npmjs.org/@microsoft/mxc-sdk/-/mxc-sdk-0.8.0.tgz"
 RELEASE_ARCHIVE_SIZE = 25_881_758
@@ -45,6 +44,9 @@ _ARCHITECTURES = ("x86_64", "arm64")
 HOST_PREP_STEPS = ("prepare-system-drive", "prepare-null-device")
 HOST_PREP_PROBE_SECONDS = 10.0
 DACL_RECOVERY_SECONDS = 60.0
+# mxc_probe never uses MXC below this build, and some of those (Server 2019) cannot load wxc-exec: the
+# loader shows a modal "System Error" dialog instead of returning an exit code (#16169).
+MIN_WINDOWS_BUILD = 26100
 
 _WXC_EXEC_NAME = "wxc-exec.exe"
 _WXC_HOST_PREP_NAME = "wxc-host-prep.exe"
@@ -267,7 +269,16 @@ def _open_artifact_guard(path: Path) -> object:
     return _WindowsHandleGuard(int(handle))
 
 
+def _require_supported_windows() -> None:
+    windows_version = getattr(sys, "getwindowsversion", None)
+    if windows_version is not None and windows_version().build < MIN_WINDOWS_BUILD:
+        raise MxcRuntimeUnavailable(
+            f"Microsoft MXC needs Windows 11 build {MIN_WINDOWS_BUILD} or newer"
+        )
+
+
 def _acquire(select, package_root: Path | None) -> RuntimeLease:
+    _require_supported_windows()
     with _lock:
         info = select(package_root = package_root)
         guard = _open_artifact_guard(info.path)

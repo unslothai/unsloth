@@ -1,10 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Drop text-encoder decoder layers (and an unread head) after the last hidden state the pipeline's
-``encode_prompt`` reads. A NaN-taint bisection over weightless passthrough slots finds that layer; kept layers
-are untouched, so outputs are bit-identical. Any surprise keeps the full encoder.
-Kill switch: ``UNSLOTH_DIFFUSION_TE_TRUNCATE=0``."""
+"""Drops text-encoder decoder layers and an unread head after the last hidden state encode_prompt
+reads; outputs bit-identical; any surprise keeps the full encoder; kill
+UNSLOTH_DIFFUSION_TE_TRUNCATE=0"""
 
 from __future__ import annotations
 

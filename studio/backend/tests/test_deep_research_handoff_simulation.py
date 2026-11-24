@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""End-to-end simulation of the Deep Research handoff, and of what it must not change.
-
-Arming research used to create a run before the model read the message, so "hi" spent the
-thread's one run on a greeting. Now the model is offered a `deep_research` tool and decides.
-These drive the real loop, the real tool catalog and the real supervisor with a scripted model,
-covering both halves: that the decision reaches the run, and that every path that existed
-before still behaves the way it did.
-"""
+"""Arming research no longer creates a run before the model reads the message; the model decides."""
 
 from __future__ import annotations
 
@@ -63,8 +56,6 @@ def research_home(tmp_path, monkeypatch):
     )
     return tmp_path
 
-
-# ── The scripted model ────────────────────────────────────────────
 
 _DONE = "data: [DONE]"
 
@@ -195,9 +186,6 @@ def _visible(lines) -> str:
     return "".join(text)
 
 
-# ── What the loop publishes, which is all the client has to go on ─
-
-
 def test_the_loop_publishes_the_question_and_a_result_that_says_it_ran(research_home, monkeypatch):
     model = ScriptedModel([_calls_research(REFINED), _says("Looking into it.")])
     lines = _run_turn(model, tools = [DEEP_RESEARCH_TOOL], monkeypatch = monkeypatch)
@@ -225,8 +213,6 @@ def test_a_denied_call_is_closed_by_the_same_event_and_says_it_did_not_run(
     )
 
     started, ended = _tool_events(lines)
-    # The card carries the approval prompt, so the client has to draw it: the loop is blocked
-    # on a verdict until someone answers.
     assert started["awaiting_confirmation"] is True
     assert started["approval_id"]
     assert ended["result"] != DEEP_RESEARCH_STARTED
@@ -294,9 +280,6 @@ def test_the_tool_is_only_offered_to_the_model_when_it_is_in_the_catalog(
     offered = [tool["function"]["name"] for tool in model.requests[0]["tools"]]
 
     assert offered == ["deep_research"]
-
-
-# ── What the change is for ────────────────────────────────────────
 
 
 def test_the_handed_off_question_is_what_actually_gets_researched(research_home, monkeypatch):
@@ -376,9 +359,6 @@ def test_planning_waits_for_plan_approval_before_research(research_home, monkeyp
     assert research_db.claim_next("worker-2") is None
     assert research_db.approve("run-1", planned["planRevision"], planned["planHash"]) == "queued"
     assert research_db.claim_next("worker-2") is not None
-
-
-# ── What the change must not break ────────────────────────────────
 
 
 def test_a_run_from_an_old_install_researches_its_user_message(research_home, monkeypatch):
@@ -467,11 +447,7 @@ def test_the_tool_is_offered_only_when_research_is_armed(armed):
 
 
 def test_an_unarmed_request_is_byte_identical_to_before():
-    """The tool list a normal chat sends must not move because this feature exists.
-
-    Compared against the armed selection rather than a frozen catalog, which any unrelated
-    built-in would fail without saying anything about this feature.
-    """
+    """Compare unarmed tool lists to the live selection; a frozen catalog breaks on any new built-in."""
     from models.inference import ChatCompletionRequest
     from routes.inference import _select_request_tools
 
@@ -487,7 +463,6 @@ def test_an_unarmed_request_is_byte_identical_to_before():
     unarmed = _names()
     assert "deep_research" not in unarmed
     assert unarmed
-    # Appended, and nothing else moves: same catalog, in the same order, plus the one tool.
     assert _names(deep_research_armed = True) == [*unarmed, "deep_research"]
 
 

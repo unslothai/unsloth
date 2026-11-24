@@ -85,6 +85,7 @@ async function load(env: Env) {
     location: { protocol: tauri ? "tauri:" : "http:" },
     localStorage: storage,
     focus() {},
+    addEventListener() {},
   };
   if (tauri) {
     windowStub.__TAURI_INTERNALS__ = {};

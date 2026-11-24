@@ -199,3 +199,9 @@ PROMPTS = (
     (make_short_film, "Make a short film"),
     (build_dataset_and_train, "Build a dataset and train"),
 )
+
+# Tools each prompt calls itself to read live facts; the prompt is hidden while any of them is off.
+PROMPT_REQUIRES = {
+    "make_short_film": frozenset({"studio_status", "list_models"}),
+    "build_dataset_and_train": frozenset({"studio_status", "list_models"}),
+}

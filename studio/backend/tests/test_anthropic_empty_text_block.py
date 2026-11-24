@@ -105,7 +105,6 @@ def test_captioned_image_keeps_its_text_block(monkeypatch):
 
 
 def test_text_only_empty_block_drops_the_whole_message(monkeypatch):
-    # Nothing usable survives, and an empty content array 400s too.
     captured = _capture(
         monkeypatch,
         [
@@ -134,7 +133,6 @@ def test_whitespace_only_caption_dropped_from_image_turn(monkeypatch):
 
 
 def test_caption_keeps_its_own_surrounding_whitespace(monkeypatch):
-    # Only the DECISION uses strip(); a real caption goes out verbatim.
     captured = _capture(
         monkeypatch,
         [
@@ -164,7 +162,6 @@ def test_empty_string_content_message_dropped(monkeypatch):
 
 
 def test_dropping_the_last_message_moves_the_cache_breakpoint(monkeypatch):
-    # cache_control on an empty text block is rejected separately.
     captured = _capture(
         monkeypatch,
         [
@@ -201,7 +198,6 @@ def test_cached_image_only_turn_marks_the_image(monkeypatch):
 
 
 def test_whitespace_only_assistant_text_beside_a_tool_call(monkeypatch):
-    # The whitespace block 400s and takes the tool_use down with it.
     captured = _capture(
         monkeypatch,
         [
@@ -249,7 +245,6 @@ def test_real_assistant_text_beside_a_tool_call_survives(monkeypatch):
 
 
 def test_missing_text_key_does_not_raise(monkeypatch):
-    # `part["text"]` used to KeyError, taking down the whole request.
     captured = _capture(
         monkeypatch,
         [

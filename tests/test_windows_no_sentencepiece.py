@@ -158,9 +158,8 @@ def test_calling_it_twice_is_stable(monkeypatch):
 
 
 def test_the_studio_parent_applies_the_same_rule_without_importing_unsloth():
-    """Studio's parent must not import unsloth: that runs unsloth/__init__.py, whose GPU branch
-    pulls torch, Triton, transformers and the model stack into a long-lived process built to
-    stay light, and can open a competing GPU context. So it calls Studio's own copy instead."""
+    """Studio's parent must not import unsloth: unsloth/__init__.py's GPU branch pulls torch, Triton
+    and transformers into a light process and can open a competing GPU context."""
     source = MAIN.read_text(encoding = "utf-8")
     assert "from unsloth.import_fixes import" not in source
     assert "import unsloth\n" not in source
@@ -190,9 +189,8 @@ def test_the_studio_parent_applies_the_same_rule_without_importing_unsloth():
     ],
 )
 def test_the_two_spellings_agree(platform, env, expect_disabled, monkeypatch):
-    """The package helper and Studio's copy, driven through the same cases. Compared by
-    behaviour rather than by source text, which would pass on two implementations that had
-    quietly stopped agreeing."""
+    """Compares the package helper and Studio's copy by behaviour over the same cases; comparing
+    source text would pass even if the two had stopped agreeing."""
     monkeypatch.setattr(sys, "platform", platform)
     if env is None:
         monkeypatch.delenv(DISABLE_SENTENCEPIECE_VARIABLE, raising = False)

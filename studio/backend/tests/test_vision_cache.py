@@ -1,17 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tests for is_vision_model() caching behaviour.
-
-``_vision_detection_cache`` mirrors the ``_audio_detection_cache``
-pattern used by ``detect_audio_type()``. These tests verify:
-
-* Repeated calls for the same model hit the cache.
-* Different models each trigger their own detection.
-* Both True and False results are cached.
-* The subprocess path (transformers 5.x models) is cached.
-* Exceptions that fall back to False are cached.
-"""
+"""is_vision_model() caches True, False, subprocess and exception-fallback results per model."""
 
 import struct
 import sys
@@ -31,7 +21,6 @@ def _shared_setup_1(monkeypatch):
     return mc
 
 
-# sys.path + logger stub — same pattern as the rest of the test suite
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
@@ -53,25 +42,11 @@ from utils.models.model_config import (
 
 @pytest.fixture(autouse = True)
 def _clear_vision_cache(tmp_path, monkeypatch):
-    """Ensure every test starts with a fresh cache, from an empty working dir.
-
-    ``is_vision_model`` calls ``is_local_path`` first: any relative model id that
-    happens to exist on disk (``Path(name).exists()``) is treated as a local
-    model, short-circuiting before the mocked detection internals run. The CI cwd
-    (``studio/backend``) and the HF cache can contain dirs whose names collide
-    with the synthetic remote ids used here (``org/my-vlm``, ``model-a``,
-    ``broken/model`` ...), which made these tests fail with "called 0 times".
-    Running each test from a fresh empty ``tmp_path`` removes that collision
-    while leaving the real ``is_local_path`` logic intact (the local-GGUF tests
-    pass absolute ``tmp_path`` paths, unaffected by cwd).
-    """
+    """Run each test from an empty cwd: a relative model id that exists on disk counts as local."""
     monkeypatch.chdir(tmp_path)
     _vision_detection_cache.clear()
     yield
     _vision_detection_cache.clear()
-
-
-# Cache hit / miss tests
 
 
 class TestVisionCacheHitMiss:
@@ -111,23 +86,16 @@ class TestVisionCacheStoresFalse:
         assert _vision_detection_cache[("org/text-only", None, False)] is False
 
 
-# Subprocess path (transformers 5.x) caching
-
-
 class TestVisionCacheSubprocessPath:
-    """transformers 5.x models go through _is_vision_model_subprocess.
-    The cache should spawn the subprocess at most once per model per
-    process."""
+    """transformers 5.x models go through _is_vision_model_subprocess, which the cache spawns at
+    most once per model per process."""
 
     @patch("utils.models.model_config._raw_config_has_vision_config", return_value = None)
     @patch("utils.models.model_config._is_vision_model_subprocess", return_value = True)
     @patch("utils.transformers_version.needs_transformers_5", return_value = True)
     def test_subprocess_called_once_with_cache(self, mock_needs_t5, mock_subprocess, mock_raw):
-        """When the raw-config reader is inconclusive (None), the transformers
-        5.x subprocess fires only on the first call; the second is cached."""
-        # First call: raw None -> subprocess
+        """An inconclusive raw config runs the 5.x subprocess once; the second call is cached."""
         assert is_vision_model("unsloth/Qwen3.5-2B") is True
-        # Second call: cache hit, no subprocess
         assert is_vision_model("unsloth/Qwen3.5-2B") is True
 
         mock_subprocess.assert_called_once()
@@ -147,9 +115,6 @@ class TestVisionCacheSubprocessPath:
             "unsloth/gemma-4-E4B-it", hf_token = None, local_files_only = False
         )
         mock_subprocess.assert_not_called()
-
-
-# --- Local GGUF capability path ---
 
 
 def _projector_declaring(path: Path, key: str) -> Path:
@@ -250,8 +215,7 @@ class TestLocalGgufVisionDetection:
         mock_subprocess.assert_not_called()
 
     def test_an_audio_only_projector_is_not_a_vision_model(self, tmp_path):
-        """ultravox / Voxtral / Qwen3-ASR ship a projector for audio input; offering images
-        for it is a capability the model does not have."""
+        """ultravox, Voxtral and Qwen3-ASR take audio projectors only, so no image input."""
         model = tmp_path / "Voxtral-Mini-3B-2507-Q4_K_M.gguf"
         model.write_bytes(b"\0" * 32)
         _projector_declaring(tmp_path / "mmproj-F16.gguf", "clip.has_audio_encoder")
@@ -332,9 +296,6 @@ class TestLocalGgufVisionDetection:
         assert is_vision_model(str(tmp_path), gguf_variant = "UD-Q4_K_XL") is False
 
 
-# --- Exception handling: cache the False fallback ---
-
-
 class TestVisionCacheOnException:
     """On exception, _is_vision_model_uncached distinguishes permanent
     failures (cached as False) from transient ones (returned as None,
@@ -346,11 +307,7 @@ class TestVisionCacheOnException:
     )
     @patch("utils.transformers_version.needs_transformers_5", return_value = False)
     def test_permanent_exception_result_cached(self, mock_needs_t5, mock_load_config):
-        """A permanent failure (ValueError / RepositoryNotFoundError /
-        GatedRepoError / JSONDecodeError) is caught, returns False, and
-        that False is cached so subsequent calls don't retry. ValueError
-        stands in as the simplest cacheable exception type."""
-        # First call raises -> False; second is a cache hit.
+        """Permanent failures (e.g. ValueError, GatedRepoError) cache False so later calls do not retry."""
         assert is_vision_model("broken/model") is False
         assert is_vision_model("broken/model") is False
         mock_load_config.assert_called_once()
@@ -364,32 +321,26 @@ class TestVisionCacheOnException:
         """A transient failure (OSError, timeouts) returns None from
         _is_vision_model_uncached, surfaces as False, and is NOT cached
         so the next call retries."""
-        # First call: OSError -> False, not cached; second call retries.
         assert is_vision_model("broken/model") is False
         assert is_vision_model("broken/model") is False
         assert mock_load_config.call_count == 2
 
 
-# Direct detection path (non-transformers-5 models) caching
-
-
 class TestVisionCacheDirectPath:
-    """Models that do NOT need transformers 5.x detect via
-    load_model_config directly. The cache must work the same way."""
+    """Non-5.x models detect via load_model_config; the cache must handle them the same way."""
 
     @patch("utils.models.model_config._raw_config_has_vision_config", return_value = None)
     @patch("utils.transformers_version.needs_transformers_5", return_value = False)
     @patch("utils.models.model_config.load_model_config")
     def test_direct_vlm_detection_cached(self, mock_load_config, mock_needs_t5, mock_raw):
         """A standard VLM detected via architecture suffix should be cached."""
-        cfg = MagicMock(spec = [])  # strict: only explicitly set attrs exist
+        cfg = MagicMock(spec = [])
         cfg.model_type = "gemma3"
         cfg.architectures = ["Gemma3ForConditionalGeneration"]
         mock_load_config.return_value = cfg
 
         assert is_vision_model("google/gemma-3-4b-it") is True
         assert is_vision_model("google/gemma-3-4b-it") is True
-        # load_model_config should only be called once
         mock_load_config.assert_called_once()
 
     @patch("utils.models.model_config._raw_config_has_vision_config", return_value = None)
@@ -397,12 +348,11 @@ class TestVisionCacheDirectPath:
     @patch("utils.models.model_config.load_model_config")
     def test_direct_non_vlm_detection_cached(self, mock_load_config, mock_needs_t5, mock_raw):
         """A standard text model (no VLM indicators) should cache False."""
-        cfg = MagicMock(spec = [])  # spec=[] means no attributes at all
+        cfg = MagicMock(spec = [])
         cfg.model_type = "llama"
         cfg.architectures = ["LlamaForCausalLM"]
         mock_load_config.return_value = cfg
 
-        # No VLM suffix, no vision_config, etc.
         assert is_vision_model("meta-llama/Llama-3-8B") is False
         assert is_vision_model("meta-llama/Llama-3-8B") is False
         mock_load_config.assert_called_once()
@@ -414,9 +364,9 @@ class TestVisionCacheDirectPath:
         self, mock_load_config, mock_needs_t5, mock_raw
     ):
         """Models with vision_config (LLaVA, Qwen2-VL, etc.) should be cached as True."""
-        cfg = MagicMock(spec = [])  # strict: only explicitly set attrs exist
+        cfg = MagicMock(spec = [])
         cfg.model_type = "qwen2_vl"
-        cfg.architectures = ["Qwen2VLForCausalLM"]  # Doesn't match VLM suffixes
+        cfg.architectures = ["Qwen2VLForCausalLM"]
         cfg.vision_config = {"hidden_size": 1024}
         mock_load_config.return_value = cfg
 
@@ -473,7 +423,7 @@ class TestVisionCacheDirectPath:
     def test_audio_model_excluded_and_cached(self, mock_load_config, mock_needs_t5, mock_raw):
         """Audio-only models (csm, whisper) with ForConditionalGeneration
         should be excluded from VLM detection and cached as False."""
-        cfg = MagicMock(spec = [])  # strict: only explicitly set attrs exist
+        cfg = MagicMock(spec = [])
         cfg.model_type = "whisper"
         cfg.architectures = ["WhisperForConditionalGeneration"]
         mock_load_config.return_value = cfg
@@ -483,18 +433,12 @@ class TestVisionCacheDirectPath:
         mock_load_config.assert_called_once()
 
 
-# hf_token handling
-
-
 class TestVisionCacheTokenHandling:
-    """The cache is keyed on (model_name, hf_token). Different tokens
-    for the same model trigger separate detections for gated models."""
+    """Cache is keyed on (model_name, hf_token), so each token runs its own gated-model check."""
 
     @patch("utils.models.model_config._is_vision_model_uncached", return_value = True)
     def test_different_tokens_trigger_new_detection(self, mock_uncached):
-        """Different tokens trigger separate detections for gated models
-        (e.g. unauthenticated probe → False, then authenticated
-        re-check)."""
+        """An unauthenticated False for a gated model must not block the later authenticated check."""
         assert is_vision_model("gated/model", hf_token = "token-a") is True
         assert is_vision_model("gated/model", hf_token = "token-b") is True
         assert mock_uncached.call_count == 2
@@ -619,7 +563,9 @@ class TestRevisionAwareVisionDetection:
             )
             is False
         )
-        assert run.call_args.args[0][-3:] == ["org/model", "hf_x", "commit-a"]
+        # The token rides in the child env only; its argv slot stays, empty.
+        assert run.call_args.args[0][-3:] == ["org/model", "", "commit-a"]
+        assert run.call_args.kwargs["env"]["HF_TOKEN"] == "hf_x"
         assert 'kwargs["revision"] = revision' in run.call_args.args[0][2]
 
 
@@ -644,23 +590,16 @@ class TestVisionCacheLocalOnly:
             local_files_only = False,
         ):
             seen.append(local_files_only)
-            # Offline can't fetch -> not a VLM; online reveals the VLM.
             return False if local_files_only else True
 
         monkeypatch.setattr(mc, "_is_vision_model_uncached", _probe)
 
-        # Offline probe caches False under a local-only key.
         assert mc.is_vision_model("some/vlm", local_files_only = True) is False
-        # A later online probe must re-run (different key) and detect the VLM.
         assert mc.is_vision_model("some/vlm", local_files_only = False) is True
         assert seen == [True, False]
-        # The online positive is then cached for subsequent online callers.
         assert mc.is_vision_model("some/vlm", local_files_only = False) is True
         assert seen == [True, False]
         mc._vision_detection_cache.clear()
-
-
-# --- Direct unit tests for _raw_config_has_vision_config ---
 
 
 import json as _json
@@ -680,9 +619,7 @@ def _write_config(tmp_path, config):
 
 
 class TestRawConfigVlmDetection:
-    """Direct coverage of _raw_config_has_vision_config across the same
-    indicator set used by _is_vlm. The cache integration tests above mock
-    this function; these exercise its real implementation."""
+    """Exercises the real _raw_config_has_vision_config, which the cache tests above mock out."""
 
     def test_truthy_vision_config(self, tmp_path):
         p = _write_config(tmp_path, {"vision_config": {"hidden_size": 1024}})
@@ -725,9 +662,6 @@ class TestRawConfigVlmDetection:
         assert _raw_config_has_vision_config(str(tmp_path)) is None
 
 
-# --- Self-contained subprocess script (no parent backend imports) ---
-
-
 class TestSubprocessScript:
     def test_does_not_import_parent_module(self):
         assert "from utils.models.model_config" not in _VISION_CHECK_SCRIPT
@@ -758,16 +692,10 @@ class TestSubprocessScript:
         assert inline_is_vlm(_C(model_type = "llama", architectures = ["LlamaForCausalLM"])) is False
 
 
-# --- Audio-only model exclusion must apply across every detection path ---
-
-
 class TestVlmAudioExclusion:
-    """The {csm, whisper} guard previously lived only in the direct caller
-    branch. These tests assert it now applies inside _is_vlm, the raw
-    fallback, and the inlined subprocess helper too."""
+    """The {csm, whisper} audio guard applies inside _is_vlm and the raw and subprocess fallbacks too."""
 
     def test_audio_only_set_canonical(self):
-        # Derived from the transformers audio registry, so a superset of {csm, whisper}.
         assert {"csm", "whisper"} <= _AUDIO_ONLY_MODEL_TYPES
 
     def test_is_vlm_excludes_whisper(self):
@@ -825,7 +753,6 @@ class TestAudioDetectionCacheTokenAware:
             local_files_only = False,
         ):
             calls.append(hf_token)
-            # Gated repo: only an authenticated probe can read the tokenizer.
             return ("bicodec", True) if hf_token else (None, True)
 
         monkeypatch.setattr(mc, "_detect_audio_from_tokenizer", _fake)
@@ -833,13 +760,10 @@ class TestAudioDetectionCacheTokenAware:
         monkeypatch.setattr(mc, "resolve_cached_repo_id_case", lambda n, *_a, **_k: n)
         monkeypatch.setattr(mc, "_env_offline", lambda: False)
 
-        # Unauthenticated miss caches None under (name, None)...
         assert mc.detect_audio_type("private/spark") is None
-        # ...but the authenticated call uses a different key and is NOT poisoned.
         assert mc.detect_audio_type("private/spark", hf_token = "hf_x") == "bicodec"
         assert calls == [None, "hf_x"]
 
-        # Same (model, token) is served from cache (no third probe).
         assert mc.detect_audio_type("private/spark", hf_token = "hf_x") == "bicodec"
         assert calls == [None, "hf_x"]
         mc._audio_detection_cache.clear()
@@ -873,8 +797,7 @@ class TestAudioDetectionCacheTokenAware:
         mc._audio_detection_cache.clear()
 
     def test_transient_none_is_not_cached_but_definitive_none_is(self, monkeypatch):
-        """A transient probe failure (definitive=False) must retry; a clean
-        'not audio' read (definitive=True) caches so we don't re-probe."""
+        """Transient probe errors (definitive=False) are retried; a definitive miss is cached."""
         mc = _shared_setup_1(monkeypatch)
 
         transient_calls = []
@@ -885,12 +808,11 @@ class TestAudioDetectionCacheTokenAware:
             local_files_only = False,
         ):
             transient_calls.append(hf_token)
-            return (None, False)  # network/5xx -- not cacheable
+            return (None, False)
 
         monkeypatch.setattr(mc, "_detect_audio_from_tokenizer", _transient)
         assert mc.detect_audio_type("flaky/model") is None
         assert mc.detect_audio_type("flaky/model") is None
-        # Re-probed both times: the transient None was never cached.
         assert transient_calls == [None, None]
 
         definitive_calls = []
@@ -901,18 +823,16 @@ class TestAudioDetectionCacheTokenAware:
             local_files_only = False,
         ):
             definitive_calls.append(hf_token)
-            return (None, True)  # read the config, no audio tokens
+            return (None, True)
 
         monkeypatch.setattr(mc, "_detect_audio_from_tokenizer", _definitive)
         assert mc.detect_audio_type("plain/text-model") is None
         assert mc.detect_audio_type("plain/text-model") is None
-        # Probed once: the definitive None was cached.
         assert definitive_calls == [None]
         mc._audio_detection_cache.clear()
 
     def test_local_only_negative_does_not_poison_online(self, monkeypatch):
-        """An offline negative must not be reused by a later online probe (else an audio
-        model is routed through the text loader until restart)."""
+        """An offline negative must not poison a later online probe, or audio is sent to text."""
         mc = _shared_setup_1(monkeypatch)
         # Pin env-offline off so the key tracks the kwarg.
         monkeypatch.setattr(mc, "_env_offline", lambda: False)
@@ -925,17 +845,13 @@ class TestAudioDetectionCacheTokenAware:
             local_files_only = False,
         ):
             seen.append(local_files_only)
-            # Offline: nothing on disk -> not audio; online reveals the audio model.
             return (None, True) if local_files_only else ("snac", True)
 
         monkeypatch.setattr(mc, "_detect_audio_from_tokenizer", _probe)
 
-        # Offline probe caches None under a local-only key.
         assert mc.detect_audio_type("some/audio-model", local_files_only = True) is None
-        # A later online probe must re-run (different key) and detect the audio model.
         assert mc.detect_audio_type("some/audio-model", local_files_only = False) == "snac"
         assert seen == [True, False]
-        # The online positive is then cached for subsequent online callers.
         assert mc.detect_audio_type("some/audio-model", local_files_only = False) == "snac"
         assert seen == [True, False]
         mc._audio_detection_cache.clear()
@@ -960,10 +876,8 @@ class TestAudioDetectionCacheTokenAware:
 
         monkeypatch.setattr(mc, "_detect_audio_from_tokenizer", _probe)
 
-        # Env offline + default kwarg -> probe runs offline; None cached under the offline key.
         assert mc.detect_audio_type("some/audio-model") is None
         assert seen == [True]
-        # Env var cleared: a fresh online probe must re-run (different key) and detect.
         env_offline["v"] = False
         assert mc.detect_audio_type("some/audio-model") == "snac"
         assert seen == [True, False]
@@ -1071,9 +985,6 @@ class TestEnvOfflineParsing:
             assert mc._env_offline() is False, f"HF_HUB_OFFLINE={val!r} should not be offline"
 
 
-# --- The current cached snapshot answers the vision probe without fetching config.json ---
-
-
 def _hub_cached_repo(
     tmp_path,
     repo_id,
@@ -1098,10 +1009,7 @@ def _probe_against_cache(
     remote_config = None,
     **kwargs,
 ):
-    """Drive the vision probe against a cached snapshot, recording any Hub read it makes.
-
-    ``listed`` is what the repo document says the repo holds; None stands for no document.
-    """
+    """Runs the vision probe on a cached snapshot and logs Hub reads; listed=None means no document."""
     import huggingface_hub
     import utils.hf_probe as hf_probe
     import utils.models.model_config as mc
@@ -1147,11 +1055,7 @@ def _probe_against_cache(
 def test_the_current_snapshot_answers_without_fetching_the_file(
     tmp_path, monkeypatch, cached, expected
 ):
-    """The snapshot decides the answer -- it is read, not merely counted.
-
-    The repo document is still read, since it names the current commit. What the snapshot
-    saves is fetching config.json itself.
-    """
+    """The cached snapshot answers without fetching config.json; the repo document is still read."""
     repo_dir, _ = _hub_cached_repo(tmp_path, "acme/vlm", {"config.json": _json.dumps(cached)})
 
     answer, reads = _probe_against_cache(monkeypatch, repo_dir)
@@ -1165,7 +1069,6 @@ def test_the_current_snapshot_answers_without_fetching_the_file(
     [
         # A repo re-downloaded at a new commit keeps the old snapshot beside the new one.
         ("stale snapshot", {"config.json": '{"model_type": "llama"}'}, {"sha": "new"}),
-        # The repo has the file; this snapshot simply never downloaded it.
         ("file not downloaded", {"modules.json": "[]"}, {}),
         # Offline, or on any failed read, there is nothing to judge the snapshot against.
         ("no repo document", {"config.json": '{"model_type": "llama"}'}, {"listed": None}),
@@ -1221,7 +1124,6 @@ def test_local_files_only_reads_no_repo_document(tmp_path, monkeypatch):
 
     assert mc._raw_config_has_vision_config("acme/vlm", local_files_only = True) is False
     assert reads == []
-    # The download reads the same cache, without a network call of its own.
     assert downloads == [True]
 
 
@@ -1271,14 +1173,11 @@ def test_the_current_snapshot_is_the_one_the_repo_document_names(tmp_path, monke
     monkeypatch.setattr(mc, "_hub_model_info", _info)
 
     assert mc._current_cached_snapshot("acme/vlm") == (snapshot, {"config.json"})
-    # Never authorizes, so a caller who forced anonymity is not served the cache.
     assert mc._current_cached_snapshot("acme/vlm", False) is None
 
 
 def test_a_repo_that_publishes_no_config_is_settled_by_the_document(tmp_path, monkeypatch):
-    """The document names the repo's files, so it already says config.json is not among
-    them. Probing the Hub for it spends a round trip to be told the same, and that is what
-    made a cached GGUF-only repo cost this caller two reads where main costs it one."""
+    """A document that omits config.json already settles it; probing the Hub for it wastes a round trip."""
     repo_dir, _ = _hub_cached_repo(tmp_path, "acme/vlm", {"model-Q4_K_M.gguf": "x"})
 
     result, reads = _probe_against_cache(monkeypatch, repo_dir, listed = ("model-Q4_K_M.gguf",))
@@ -1288,8 +1187,7 @@ def test_a_repo_that_publishes_no_config_is_settled_by_the_document(tmp_path, mo
 
 
 def test_a_config_the_repo_has_but_the_cache_lacks_still_asks(tmp_path, monkeypatch):
-    """Only a document that omits the file settles it. One that lists a file the snapshot
-    does not hold says the opposite: fetch it."""
+    """Only a document omitting the file settles it; one listing an absent file means fetch it."""
     repo_dir, _ = _hub_cached_repo(tmp_path, "acme/vlm", {"model-Q4_K_M.gguf": "x"})
 
     result, reads = _probe_against_cache(

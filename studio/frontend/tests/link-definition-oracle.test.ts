@@ -1,27 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// `markdownRenderScope` decides whether a reply is lexed as one document or per block, and it
-// answers with a cheap line scan rather than a second markdown parse -- the render already
-// pays one inside `parseMarkdownIntoBlocks`, and doubling that on every streaming chunk is the
-// cost this path is written to avoid.
-//
-// A scan is an approximation of the block grammar, so what is worth pinning is not that it
-// agrees everywhere, but that it never errs in the direction that loses content. The oracle
-// below is not a second opinion about markdown; it is the rendered outcome, built from the
-// two pieces production actually uses -- streamdown's `parseMarkdownIntoBlocks` for the split
-// and the remark pipeline for the render, the same shape as math-block-marker-pipeline.test.ts.
-// Deliberately no `marked` import: the frontend does not depend on marked directly, and a bare
-// specifier resolves to the copy hoisted for mermaid rather than the one streamdown splits
-// with, so an oracle built on it would be measuring a different lexer from the renderer.
-//
-// The two errors are not symmetric:
-//   blocks when the reply needed one document -> the reference/definition pair is split apart
-//     and the reference survives as literal `[label][ref]` text. Content is lost.
-//   one document when blocks would have done -> that reply loses its per-block Copy code and
-//     Download file controls. Nothing is lost from the content, and it is what main did for
-//     EVERY reply containing a `]:` substring, which is what this path set out to narrow.
-// So this file guards the expensive half, exhaustively.
+// `markdownRenderScope` uses a cheap line scan instead of a second markdown parse. It may err
+// toward one document (losing per-block controls) but must never split a reference from its
+// definition (losing content). The oracle is the rendered outcome from streamdown's
+// parseMarkdownIntoBlocks plus remark; no `marked` import, since a bare specifier resolves
+// to the copy hoisted for mermaid, not streamdown's.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -56,8 +40,6 @@ function anchorCount(markdown: string): number {
   return found;
 }
 
-// The whole point of the document path: how many references resolve when the reply is lexed
-// in one piece, versus when streamdown splits it first.
 const asOneDocument = (markdown: string): number => anchorCount(markdown);
 const asBlocks = (markdown: string): number =>
   parseMarkdownIntoBlocks(markdown).reduce(
@@ -82,8 +64,7 @@ const DEFINITION_CONTEXTS = [
   "- - [g]: /guide",
   "> - [g]: /guide",
   "- > - > [g]: /guide",
-  // Indented quote content, and a definition on a list item's continuation line: four columns
-  // absolute, but flush with the content column `10. ` opened.
+  // Four columns absolute, but flush with the content column `10. ` opened.
   ">  [g]: /guide",
   ">   [g]: /guide",
   "10. item\n\n    [g]: /guide",
@@ -133,7 +114,6 @@ test("a reply whose reference only resolves in one piece is never split into blo
         `See [guide][g].\n\n${neutral}\n\n${definition}\n`,
         `See [guide][g].\n\n${definition}\n\n${neutral}\n`,
       ]) {
-        // Only replies that actually lose an anchor when split are in scope here.
         if (asOneDocument(reply) <= asBlocks(reply)) {
           continue;
         }
@@ -152,10 +132,7 @@ test("a reply whose reference only resolves in one piece is never split into blo
 });
 
 test("a reference is never split into blocks because its label is long", () => {
-  // Every case above uses a one-character label. Length is the one dimension the probes bound and
-  // the only one this file never varied, which is why #9540 and #9645's half-fix were invisible.
-  // In scope only when the two paths really differ, so past 999 drops out and this cannot pass
-  // vacuously.
+  // Every case above uses a one-character label; this varies length. Past 999 drops out of scope.
   const failures: string[] = [];
   let inScope = 0;
   for (const length of [1, 2, 199, 200, 201, 400, 998, 999, 1000, 1001, 2000]) {
@@ -196,8 +173,6 @@ test("line endings other than LF do not hide the definition", () => {
 });
 
 test("a backtick opener carrying a backtick is prose, not a fence", () => {
-  // CommonMark forbids a backtick in a backtick fence's info string, so the line never opens a
-  // fence and the block is ordinary prose -- which is where a reference can still be waiting.
   for (const opener of ["```bad`", "````bad`", "```js`x`"]) {
     const reply = `${opener} See [guide][g].\n\n[g]: /guide\n`;
     assert.ok(
@@ -207,24 +182,19 @@ test("a backtick opener carrying a backtick is prose, not a fence", () => {
     assert.equal(markdownRenderScope(reply), "document", opener);
   }
 
-  // A tilde opener has no such rule: backticks in its info string are fine and it is a fence,
-  // so the definition inside it is code and the reply keeps block rendering.
   const tilde = "~~~bad` See [guide][g].\n\n[g]: /guide\n";
   assert.equal(asOneDocument(tilde), asBlocks(tilde));
   assert.equal(markdownRenderScope(tilde), "blocks");
 });
 
 test("a definition lookalike that no parser registers keeps block rendering", () => {
-  // These cost nothing if we get them wrong -- the reply keeps its content either way -- but
-  // each one that reaches `document` is a reply that loses its Copy/Download controls for no
-  // reason, which is the residue this path exists to shrink.
+  // Wrong answers here only cost the reply its Copy/Download controls, not content.
   for (const lookalike of [
     "\t[two]: /tab-indented-code-block",
     "    [two]: /indented-code-block",
     "-[two]: /no-space-is-not-a-list",
     "1.[two]: /no-space-is-not-a-list",
-    // An indented code block whose first content character is one CommonMark counts as
-    // ordinary content but JavaScript's `\S` calls whitespace.
+    // Its first content character counts as content in CommonMark but as whitespace to JS `\S`.
     "     first\n    [two]: /still-code",
     "    \u00a0\n    [two]: /still-code",
   ]) {
@@ -249,8 +219,6 @@ test("a live reference pair inside a list or quote still resolves", () => {
 });
 
 test("ordinary code is still rendered per block", () => {
-  // The regression this path exists for: nothing here is a definition, so each of these must
-  // keep its per-block Copy code / Download file controls.
   for (const reply of [
     "Shape.\n\n```ts\ninterface G {\n  [key: string]: number[][];\n}\n\nconst c = grid[row][col];\n```\n",
     "Compare [one][two].\n\n```css\na[href]:hover { color: red; }\n```\n",

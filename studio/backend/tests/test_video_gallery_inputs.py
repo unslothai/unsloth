@@ -144,3 +144,20 @@ def test_a_silent_video_has_no_audio_track_to_extract():
     assert response.status_code == 400
     assert response.json()["detail"].startswith("This video has no audio track")
     assert list(run_as(ALICE, audio_inputs.inputs_dir).iterdir()) == []
+
+
+def test_a_frame_png_keeps_pillows_default_encoding(monkeypatch, tmp_path):
+    # MCP gates on these bytes (INLINE_CAP, MAX_IMAGE_BYTES): a larger encoding could flip an inline preview to a link.
+    from core.inference import image_gallery
+
+    av = pytest.importorskip("av")
+    path = tmp_path / "clip.mp4"
+    path.write_bytes(_real_mp4_bytes(frames = 4, size = (64, 48), rate = 4))
+    monkeypatch.delenv(image_gallery.PNG_COMPRESS_LEVEL_ENV, raising = False)
+    with av.open(str(path)) as src:
+        image = next(src.decode(src.streams.video[0])).to_image()
+    expected = io.BytesIO()
+    image.save(expected, format = "PNG")
+    assert video_gallery.frame_png(path, "first") == expected.getvalue()
+    monkeypatch.setenv(image_gallery.PNG_COMPRESS_LEVEL_ENV, "1")
+    assert video_gallery.frame_png(path, "first") == expected.getvalue()

@@ -64,6 +64,15 @@ test("isColorThemeId rejects unknown values", () => {
   assert.equal(isColorThemeId(null), false);
 });
 
+test("Trick or Treat is a year-round theme; retired Halloween ids fall back", () => {
+  assert.ok((FLAVOR_THEME_IDS as readonly string[]).includes("trick-or-treat"));
+  assert.equal(COLOR_THEMES["trick-or-treat"].light.accent, "#f0b400");
+  assert.equal(COLOR_THEMES["trick-or-treat"].dark.accent, "#ffc400");
+  for (const id of ["pumpkin", "gothic", "black-cat", "candycorn"]) {
+    assert.equal(isColorThemeId(id), false, id);
+  }
+});
+
 function luminance(hex: string): number {
   const channel = (i: number) => {
     const c = Number.parseInt(hex.slice(i, i + 2), 16) / 255;
@@ -91,21 +100,21 @@ function mix(hex: string, target: string, amount: number): string {
   return `#${channel(1)}${channel(3)}${channel(5)}`;
 }
 
-// text-primary and text-control-accent paint these on the page, so they share
-// the applier's 2.5:1 accent-text floor, plain and on a 20% wash.
+// Trick or Treat's light mode keeps a bright gold on purpose, below the floor.
+const ACCENT_FLOOR_EXEMPT = new Set(["trick-or-treat light"]);
+
 test("flavor accents used as text meet the accent-text floor", () => {
   for (const id of FLAVOR_THEME_IDS) {
     for (const [mode, selector] of [
       ["light", `:root[data-palette="${id}"]:not(.dark) {`],
       ["dark", `:root[data-palette="${id}"].dark {`],
     ] as const) {
-      // A palette can open the same selector more than once (its seeds in one block, a shared
-      // variable such as --composer-shadow in another), so read every block it opens.
       const blocks: string[] = [];
       for (let start = indexCss.indexOf(selector); start >= 0; start = indexCss.indexOf(selector, start + 1)) {
         blocks.push(indexCss.slice(start, indexCss.indexOf("}", start)));
       }
       assert.ok(blocks.length > 0, `${id} ${mode} block`);
+      if (ACCENT_FLOOR_EXEMPT.has(`${id} ${mode}`)) continue;
       const block = blocks.join("\n");
       const token = (name: string) =>
         block.match(new RegExp(`\\s${name}: (#[0-9a-f]{6});`))?.[1];
@@ -127,8 +136,6 @@ test("flavor accents used as text meet the accent-text floor", () => {
 });
 
 test("More themes leads with Butterfly Pea and Earl Grey, and Cherry is just Cherry", () => {
-  // The menu draws FLAVOR_THEME_IDS in order: Butterfly Pea took Blueberry's slot and Earl Grey
-  // took Honey's, with Blueberry and Honey moving to where those two were.
   assert.deepEqual(FLAVOR_THEME_IDS.slice(0, 5), ["matcha", "espresso", "butterfly-pea", "cherry", "earl-grey"]);
   assert.equal(FLAVOR_THEME_IDS.indexOf("blueberry"), 11);
   assert.equal(FLAVOR_THEME_IDS.indexOf("honey"), 13);

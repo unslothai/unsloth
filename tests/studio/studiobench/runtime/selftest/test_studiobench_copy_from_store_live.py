@@ -122,8 +122,7 @@ def test_a_full_mount_copies_the_whole_thread(context):
 
 
 def test_a_windowed_thread_without_the_handler_loses_most_of_the_conversation(context):
-    """THE REGRESSION, REPRODUCED. Not described, not inferred from the mounted count: the
-    clipboard is read back and most of the conversation is not in it."""
+    """Regression reproduced: the read-back clipboard lacks most of the conversation."""
     page = _page(context, "windowed", copy_from_store = False)
     try:
         got = _select_all_copy(page)

@@ -6,7 +6,6 @@ import { fetchBrowserPage } from "./api";
 const MAX_ICON_BYTES = 256 * 1024;
 const MAX_ICONS = 64;
 
-// Favicon URL to a data: URL, oldest first.
 const icons = new Map<string, Promise<string | null>>();
 
 function dataUrl(blob: Blob): Promise<string | null> {
@@ -20,7 +19,7 @@ function dataUrl(blob: Blob): Promise<string | null> {
 
 async function load(url: string): Promise<string | null> {
   try {
-    const page = await fetchBrowserPage({ url, maxBytes: MAX_ICON_BYTES }, new AbortController().signal);
+    const page = await fetchBrowserPage({ url, maxBytes: MAX_ICON_BYTES, credentials: "omit" }, new AbortController().signal);
     if (page.kind !== "raw" || !page.contentType.startsWith("image/") || page.blob.size > MAX_ICON_BYTES) {
       return null;
     }

@@ -72,7 +72,7 @@ def test_an_unreadable_store_keeps_the_shipped_defaults(monkeypatch):
     monkeypatch.setattr(studio_db, "get_app_settings", boom)
     assert mxc_policy.dacl_fallback_enabled() is False
     assert mxc_read_grants.enabled() is True
-    assert settings._cached is None  # a failure is never held
+    assert settings._cached is None
 
 
 def test_a_missing_settings_module_means_off(monkeypatch):
@@ -102,7 +102,7 @@ def test_the_owner_choice_is_what_a_managed_account_reads():
     token = bind_account(ALICE)
     try:
         assert mxc_policy.dacl_fallback_enabled() is True
-        settings.set_dacl_fallback_setting(False)  # still lands in the owner's store
+        settings.set_dacl_fallback_setting(False)
     finally:
         reset_account(token)
     token = bind_account(OWNER)
@@ -124,7 +124,7 @@ def test_a_read_in_flight_cannot_republish_what_a_write_replaced(monkeypatch):
         return stored
 
     monkeypatch.setattr(studio_db, "get_app_settings", write_lands_mid_read)
-    assert settings.dacl_fallback_setting() is True  # the answer this call was committed to
+    assert settings.dacl_fallback_setting() is True
     assert settings._cached is None
     assert settings.dacl_fallback_setting() is False
 
@@ -151,7 +151,7 @@ def test_a_refresh_started_before_a_reset_does_not_publish_its_profile(monkeypat
     monkeypatch.setattr(tools, "_request_profile", [None, 0.0])
 
     def profile_computed_under_the_old_setting(_disable_sandbox = False):
-        tools.reset_terminal_profile_cache()  # the setting flips while the probe runs
+        tools.reset_terminal_profile_cache()
         return "cmd_isolated"
 
     monkeypatch.setattr(tools, "_terminal_profile", profile_computed_under_the_old_setting)

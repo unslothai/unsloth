@@ -2,23 +2,9 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * The message action menu must stay non-modal.
- *
- * Radix writes `pointer-events: none` onto <body> for a modal menu. That is an
- * INHERITED property, so the write invalidates style for every element in the
- * document, and the menu re-renders the thread's tooltips on the way back out.
- * Measured on a 500-message thread at 4x CPU throttle, one open plus close:
- *
- *              modal    non-modal
- *   windows   42462ms       506ms
- *   ubuntu    31651ms       356ms
- *   macos     16505ms       231ms
- *
- * The cost is also flat in thread length afterwards (1.5x from 10 to 500
- * messages, against 24x to 32x before), which is the property worth keeping.
- *
- * `modal={false}` is one word and reads like a stray prop, so it is pinned here
- * rather than left to survive the next tidy-up.
+ * The message action menu must stay non-modal: Radix sets inherited `pointer-events: none` on
+ * <body> for modal menus, which restyled the whole document (42s vs 0.5s on a 500-message thread).
+ * `modal={false}` looks like a stray prop, so it is pinned here.
  */
 
 import assert from "node:assert/strict";
@@ -39,7 +25,6 @@ const source = ts.createSourceFile(
   ts.ScriptKind.TSX,
 );
 
-/** Every `<ActionBarMorePrimitive.Root ...>` in the file, opening element only. */
 const menuRoots = (): ts.JsxOpeningLikeElement[] => {
   const found: ts.JsxOpeningLikeElement[] = [];
   const visit = (node: ts.Node): void => {
@@ -80,10 +65,8 @@ test("every message action menu is non-modal", () => {
 });
 
 test("the prop reaches Radix rather than being swallowed by the wrapper", () => {
-  // ActionBarMorePrimitive.Root spreads ...rest onto Radix's DropdownMenu.Root,
-  // which is the only reason a prop it does not name has any effect. If the
-  // pinned version stops doing that, modal={false} silently becomes a no-op and
-  // the test above keeps passing.
+  // ActionBarMorePrimitive.Root only honors modal because it spreads ...rest onto DropdownMenu.Root;
+  // if that stops, modal={false} silently becomes a no-op.
   const wrapper = new URL(
     "../node_modules/@assistant-ui/react/dist/primitives/actionBarMore/ActionBarMoreRoot.js",
     import.meta.url,

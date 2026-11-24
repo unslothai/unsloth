@@ -105,6 +105,7 @@ export const initialTrainingConfigState: TrainingConfigState = {
   modelDefaultsAppliedFor: null,
   advancedSettingsBaseline: null,
   trainOnCompletionsDefaultPendingFor: null,
+  trainingToggleChoices: {},
   isCheckingDataset: false,
   isDatasetImage: null,
   isDatasetAudio: false,
@@ -197,4 +198,33 @@ export function formatStreamingDisabledOptions(
     style: "long",
     type: "conjunction",
   }).format(options);
+}
+
+
+/** Capabilities and training objectives decide these defaults, never a model-family whitelist. */
+export function trainingToggleDefaults(state: Pick<TrainingConfigState,
+  "isVisionModel" | "isAudioModel" | "isEmbeddingModel" | "isDatasetImage" |
+  "isDatasetAudio" | "modelType" | "datasetStreaming" | "datasetFormat" | "trainingMethod"
+>): { packing: boolean; trainOnCompletions: boolean } {
+  const decisionOrEmbedding = state.isEmbeddingModel || state.modelType === "decision";
+  const standaloneAudio = state.isAudioModel && !state.isVisionModel;
+  return {
+    // The image/audio collators consume examples directly; they do not use text sequence packing.
+    packing: !decisionOrEmbedding && !standaloneAudio &&
+      !(state.isVisionModel && (state.isDatasetImage === true || state.isDatasetAudio)),
+    trainOnCompletions: !decisionOrEmbedding && !standaloneAudio &&
+      !state.datasetStreaming && state.trainingMethod !== "cpt" &&
+      !isRawTextDatasetFormat(state.datasetFormat),
+  };
+}
+
+export function resolveTrainingToggleDefaults(state: Parameters<typeof trainingToggleDefaults>[0] &
+  Pick<TrainingConfigState, "trainingToggleChoices">
+): { packing: boolean; trainOnCompletions: boolean } {
+  const defaults = trainingToggleDefaults(state);
+  return {
+    packing: defaults.packing && (state.trainingToggleChoices?.packing ?? true),
+    trainOnCompletions: defaults.trainOnCompletions &&
+      (state.trainingToggleChoices?.trainOnCompletions ?? true),
+  };
 }

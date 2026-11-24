@@ -23,8 +23,7 @@ _INSTALL_COMMAND = 'python -m pip install "unsloth[s3]"'
 @pytest.fixture
 def without_aws(monkeypatch):
     monkeypatch.setenv("UNSLOTH_S3_AUTO_INSTALL", "0")
-    # None blocks imports even on a developer's machine with the SDK installed,
-    # and makes find_spec report the same absence as a default Studio install.
+    # None blocks imports even with the SDK installed, and find_spec reports it as absent.
     for name in _AWS_MODULES:
         monkeypatch.setitem(sys.modules, name, None)
 

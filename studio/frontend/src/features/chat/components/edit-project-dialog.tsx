@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -13,19 +14,29 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
-import type { NativeDocumentFolderSelection } from "@/features/native-intents";
-import { WorkingFolderPicker } from "./working-folder-picker";
-import { LinkedFoldersManager } from "@/features/rag";
+import {
+  type WorkingFolderSelection,
+  WorkingFolderPicker,
+} from "./working-folder-picker";
+import { LinkedFoldersManager } from "@/features/rag/components/linked-folders-manager";
+import { isModEnter } from "@/features/settings/lib/keyboard-shortcuts";
 import { toast } from "@/lib/toast";
-import { Folder02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { ProjectIcon } from "@/lib/project-icon";
 
-import { setChatProjectWorkingFolder } from "../api/chat-api";
+import {
+  setChatProjectWorkingFolder,
+  setChatProjectWorkingFolderPath,
+} from "../api/chat-api";
 import {
   renameChatProject,
   updateChatProjectInstructions,
 } from "../hooks/use-chat-projects";
 import type { ProjectRecord } from "../types";
+import { listMcpServers, type McpServerConfig } from "../api/mcp-servers-api";
+import { updateStoredChatProject } from "../utils/chat-history-storage";
+import { refreshContextUsage } from "../utils/refresh-context-usage";
+import { projectFolderState } from "../utils/project-folder-state";
 import {
   imeOwnsInputKeydown,
   inputImeHandlers,
@@ -41,25 +52,27 @@ function ProjectWorkingFolder({
   disabled: boolean;
   onPendingChange: (pending: boolean) => void;
 }) {
-  const [folder, setFolder] = useState(project.workingFolder ?? null);
-  const seed = `${project.id}\n${project.workingFolder ?? ""}`;
+  const [saved, setSaved] = useState(project);
+  const seed = `${project.id}\n${project.workingFolder ?? ""}\n${project.workingFolderStatus ?? ""}`;
   const [seededFor, setSeededFor] = useState(seed);
   if (seed !== seededFor) {
     setSeededFor(seed);
-    setFolder(project.workingFolder ?? null);
+    setSaved(project);
   }
+  const folder = projectFolderState(saved);
 
-  async function apply(selection: NativeDocumentFolderSelection | null) {
-    const saved = await setChatProjectWorkingFolder(
-      project.id,
-      selection?.token ?? null,
+  async function apply(selection: WorkingFolderSelection | null) {
+    setSaved(
+      selection && "serverPath" in selection
+        ? await setChatProjectWorkingFolderPath(project.id, selection.serverPath)
+        : await setChatProjectWorkingFolder(project.id, selection?.token ?? null),
     );
-    setFolder(saved.workingFolder ?? null);
   }
 
   return (
     <WorkingFolderPicker
-      value={folder}
+      value={folder.chosen ? folder.label : null}
+      detail={folder}
       onChange={apply}
       disabled={disabled}
       onPendingChange={onPendingChange}
@@ -67,20 +80,102 @@ function ProjectWorkingFolder({
   );
 }
 
-/** Name, instructions, working folder and source folders for one project.
+function ProjectMcpServers({
+  value,
+  onChange,
+  disabled,
+}: {
+  value: string[] | null;
+  onChange: (value: string[] | null) => void;
+  disabled: boolean;
+}) {
+  const [servers, setServers] = useState<McpServerConfig[] | null>(null);
+  const [loadFailed, setLoadFailed] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    void listMcpServers().then(
+      (rows) => {
+        if (!cancelled) setServers(rows.filter((server) => server.is_enabled));
+      },
+      () => {
+        if (!cancelled) setLoadFailed(true);
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  return (
+    <fieldset disabled={disabled} className="flex flex-col gap-1.5">
+      <legend className="text-ui-15 font-medium text-foreground">
+        MCP servers
+      </legend>
+      <label className="flex items-center gap-2 text-ui-13">
+        <Checkbox
+          checked={value !== null}
+          disabled={value === null && servers === null}
+          onCheckedChange={(checked) => {
+            if (checked !== true) onChange(null);
+            else if (servers) onChange(servers.map((server) => server.id));
+          }}
+        />
+        Use a specific set of servers for this project
+      </label>
+      <p className="text-ui-13 text-muted-foreground">
+        Applies when MCP is on in a chat. Servers disabled globally stay off.
+      </p>
+      {loadFailed ? (
+        <p role="status" className="text-ui-13 text-muted-foreground">
+          Could not load MCP servers.
+        </p>
+      ) : value !== null && servers ? (
+        <div className="max-h-28 space-y-1 overflow-y-auto">
+          {servers.length === 0 ? (
+            <p className="text-ui-13 text-muted-foreground">
+              No MCP servers enabled globally.
+            </p>
+          ) : (
+            servers.map((server) => (
+              <label
+                key={server.id}
+                className="flex items-center gap-2 text-ui-13"
+              >
+                <Checkbox
+                  checked={value.includes(server.id)}
+                  onCheckedChange={(checked) =>
+                    onChange(
+                      checked === true
+                        ? [...value, server.id]
+                        : value.filter((id) => id !== server.id),
+                    )
+                  }
+                />
+                <span className="truncate">{server.display_name || server.id}</span>
+              </label>
+            ))
+          )}
+        </div>
+      ) : null}
+    </fieldset>
+  );
+}
+
+/** Name, instructions, MCP servers, working folder and source folders for one project.
  *  Deleting hands back to the caller, which owns the confirmation. */
 export function EditProjectDialog({
   project,
   onOpenChange,
   onDelete,
 }: {
-  /** The project being edited, or null while the dialog is closed. */
   project: ProjectRecord | null;
   onOpenChange: (open: boolean) => void;
   onDelete: (project: ProjectRecord) => void;
 }) {
   const [name, setName] = useState(project?.name ?? "");
   const [instructions, setInstructions] = useState(project?.instructions ?? "");
+  const [mcpServerIds, setMcpServerIds] = useState(project?.mcpServerIds ?? null);
   const [busy, setBusy] = useState(false);
   const [folderBusy, setFolderBusy] = useState(false);
   const nameImeRef = useRef(newInputImeState());
@@ -99,6 +194,7 @@ export function EditProjectDialog({
     setSeededFor(project?.id ?? null);
     setName(project?.name ?? "");
     setInstructions(project?.instructions ?? "");
+    setMcpServerIds(project?.mcpServerIds ?? null);
     setBusy(false);
     setFolderBusy(false);
   }
@@ -112,7 +208,14 @@ export function EditProjectDialog({
   const nameChanged = trimmedName.length > 0 && trimmedName !== project.name;
   const instructionsChanged =
     trimmedInstructions !== (project.instructions ?? "").trim();
-  const dirty = nameChanged || instructionsChanged;
+  const previousMcpServerIds = project.mcpServerIds ?? null;
+  const mcpChanged =
+    mcpServerIds !== previousMcpServerIds &&
+    (mcpServerIds === null ||
+      previousMcpServerIds === null ||
+      mcpServerIds.length !== previousMcpServerIds.length ||
+      mcpServerIds.some((id) => !previousMcpServerIds.includes(id)));
+  const dirty = nameChanged || instructionsChanged || mcpChanged;
 
   function close() {
     if (busy || folderBusy) return;
@@ -131,6 +234,10 @@ export function EditProjectDialog({
       if (nameChanged) await renameChatProject(target.id, trimmedName);
       if (instructionsChanged) {
         await updateChatProjectInstructions(target.id, trimmedInstructions);
+      }
+      if (mcpChanged) {
+        await updateStoredChatProject(target.id, { mcpServerIds });
+        void refreshContextUsage({ invalidate: true });
       }
       onOpenChange(false);
     } catch (err) {
@@ -151,11 +258,10 @@ export function EditProjectDialog({
       }}
     >
       <DialogContent
-        className="corner-squircle dialog-soft-surface gap-5 sm:max-w-lg"
+        className="corner-squircle dialog-soft-surface grid-cols-[minmax(0,1fr)] gap-5 sm:max-w-xl"
         {...nameImeHandlers}
-        // Enter saves from the name field, which a multi-line instructions box cannot do; the
-        // chord saves from either. The menus and confirmations inside portal out of here, so
-        // their own keys never reach this.
+        // Enter saves from the name field, which a multi-line instructions box cannot do, and the
+        // chord saves from either; portaled menus and confirmations keep their keys out of here.
         onKeyDown={(e) => {
           if (
             imeOwnsInputKeydown(e, nameImeRef.current, {
@@ -163,7 +269,7 @@ export function EditProjectDialog({
             })
           )
             return;
-          if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+          if (isModEnter(e)) {
             e.preventDefault();
             void save();
           }
@@ -177,20 +283,14 @@ export function EditProjectDialog({
           </DialogDescription>
         </DialogHeader>
         {/* The same name field the create dialog uses. */}
-        <div className="flex items-stretch overflow-hidden rounded-[16px] border border-border bg-background transition-colors focus-within:border-ring has-[input:disabled]:opacity-50 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]">
-          <span className="flex w-10 shrink-0 items-center justify-center pl-1 text-muted-foreground">
+        <div className="flex items-stretch overflow-hidden rounded-full border border-border bg-background transition-colors focus-within:border-ring has-[input:disabled]:opacity-50 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]">
+          <span className="flex shrink-0 items-center pl-5 text-muted-foreground">
             <HugeiconsIcon
-              icon={Folder02Icon}
+              icon={ProjectIcon}
               strokeWidth={1.75}
               className="size-5"
             />
           </span>
-          {/* The rule that separates the icon from the field. The container drops its border in
-              dark mode, where --border goes with it, so the rule carries its own tint there. */}
-          <span
-            aria-hidden="true"
-            className="my-3 w-px bg-border dark:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
-          />
           <input
             value={name}
             onChange={(e) => setName(e.target.value)}
@@ -215,7 +315,7 @@ export function EditProjectDialog({
             maxLength={120}
             placeholder="Project name"
             aria-label="Project name"
-            className="min-w-0 flex-1 bg-transparent py-4 pr-4 pl-2.5 text-base outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed"
+            className="min-w-0 flex-1 bg-transparent py-4 pr-4 pl-3.5 text-base outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed"
           />
         </div>
         <div className="flex flex-col gap-1.5">
@@ -235,9 +335,15 @@ export function EditProjectDialog({
             disabled={busy || folderBusy}
             rows={4}
             placeholder="How should the model answer in this project?"
-            className="mt-0.5 resize-none rounded-[16px]"
+            className="mt-0.5 resize-none rounded-xl"
           />
         </div>
+        <ProjectMcpServers
+          key={`mcp-${project.id}`}
+          value={mcpServerIds}
+          onChange={setMcpServerIds}
+          disabled={busy || folderBusy}
+        />
         <ProjectWorkingFolder
           key={project.id}
           project={project}

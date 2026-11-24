@@ -167,14 +167,12 @@ def test_chat_template_from_dir_with_variant_still_prefers_tokenizer(tmp_path, m
     )
     (tmp_path / "model-Q4_K_M.gguf").write_bytes(b"")
     monkeypatch.setattr("picker.service.read_gguf_chat_template", lambda _path: "FROM_GGUF")
-    # Selecting a variant must not flip precedence to the embedded GGUF template.
     assert _chat_template_from_dir(tmp_path, "Q4_K_M") == "FROM_CONFIG"
 
 
 def test_chat_template_from_dir_with_variant_falls_back_to_gguf(tmp_path, monkeypatch):
     (tmp_path / "model-Q4_K_M.gguf").write_bytes(b"")
     monkeypatch.setattr("picker.service.read_gguf_chat_template", lambda _path: "FROM_GGUF")
-    # With no tokenizer sidecar, the embedded GGUF template is still the fallback.
     assert _chat_template_from_dir(tmp_path, "Q4_K_M") == "FROM_GGUF"
 
 
@@ -190,7 +188,6 @@ def test_read_default_chat_template_direct_gguf_prefers_sidecar(tmp_path, monkey
     )
     monkeypatch.setattr("picker.service._build_browse_allowlist", lambda: [tmp_path])
     monkeypatch.setattr("picker.service.read_gguf_chat_template", lambda _path: "FROM_GGUF")
-    # A directly selected .gguf must prefer a maintained sidecar over its embedded copy.
     assert read_default_chat_template(str(gguf)) == "FROM_CONFIG"
 
 
@@ -199,13 +196,11 @@ def test_read_default_chat_template_direct_gguf_falls_back_to_embedded(tmp_path,
     gguf.write_bytes(b"")
     monkeypatch.setattr("picker.service._build_browse_allowlist", lambda: [tmp_path])
     monkeypatch.setattr("picker.service.read_gguf_chat_template", lambda _path: "FROM_GGUF")
-    # With no sidecar next to the file, the embedded GGUF template is the fallback.
     assert read_default_chat_template(str(gguf)) == "FROM_GGUF"
 
 
 def test_tokenizer_config_over_size_limit_is_skipped_not_parsed(tmp_path):
-    # An oversized tokenizer_config.json must be skipped before json.loads so a
-    # hostile sidecar cannot exhaust memory.
+    # Skip an oversized tokenizer_config.json before json.loads (hostile sidecar).
     padding = "x" * (MAX_TEMPLATE_METADATA_BYTES + 1024)
     (tmp_path / "tokenizer_config.json").write_text(
         json.dumps({"chat_template": "HELLO", "_pad": padding}), encoding = "utf-8"
@@ -231,8 +226,6 @@ def test_tokenizer_config_at_size_limit_is_still_read(tmp_path):
 
 
 def test_remote_template_over_size_limit_is_skipped_before_download(monkeypatch):
-    # An uncached Hub repo whose template exceeds the cap must be skipped via the
-    # remote size pre-check, never downloaded.
     import huggingface_hub
 
     monkeypatch.setattr("picker.service.resolve_cached_repo_id_case", lambda name: name)
@@ -253,23 +246,24 @@ def test_remote_template_over_size_limit_is_skipped_before_download(monkeypatch)
 
 
 def test_remote_oversized_jinja_falls_through_to_tokenizer_template(tmp_path, monkeypatch):
-    # A raw chat_template.jinja between the response cap (MAX_CHAT_TEMPLATE_BYTES)
-    # and the download bound (MAX_TEMPLATE_METADATA_BYTES) must not be returned: the
-    # route drops it, so the remote path must skip the oversized Jinja and fall
-    # through to the smaller tokenizer_config.json.
+    # A Jinja between MAX_CHAT_TEMPLATE_BYTES and MAX_TEMPLATE_METADATA_BYTES is dropped by the
+    # route, so fall through to tokenizer_config.json.
     import huggingface_hub
     from picker.schemas import MAX_CHAT_TEMPLATE_BYTES
 
-    big_jinja = tmp_path / "chat_template.jinja"
+    selected_cache = tmp_path / "selected-cache" / "hub"
+    # Downloads land in the cache they were asked for; the picker reads nothing outside it.
+    snapshot = selected_cache / "models--org--big-jinja-model" / "snapshots" / "rev"
+    snapshot.mkdir(parents = True)
+    big_jinja = snapshot / "chat_template.jinja"
     big_jinja.write_text("{{ x }}" * (MAX_CHAT_TEMPLATE_BYTES // 4), encoding = "utf-8")
     assert MAX_CHAT_TEMPLATE_BYTES < big_jinja.stat().st_size < MAX_TEMPLATE_METADATA_BYTES
-    tokenizer_config = tmp_path / "tokenizer_config.json"
+    tokenizer_config = snapshot / "tokenizer_config.json"
     tokenizer_config.write_text(json.dumps({"chat_template": "SMALL_TEMPLATE"}), encoding = "utf-8")
     files = {
         "chat_template.jinja": big_jinja,
         "tokenizer_config.json": tokenizer_config,
     }
-    selected_cache = tmp_path / "selected-cache" / "hub"
     observed_cache_dirs = []
 
     monkeypatch.setattr("picker.service.resolve_cached_repo_id_case", lambda name: name)

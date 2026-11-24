@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The FlashInfer NVFP4 Linear, and the conversion that puts a hosted checkpoint onto it.
-
-ONE artifact, two backends. Nothing here requantizes: torchao's payload IS FlashInfer's, byte for
-byte. The activation global scale is BAKED, never calibrated (not capture-safe, and the cause of the
-flux black-frame latch), so a layer without one is NOT converted.
-"""
+"""FlashInfer NVFP4 Linear conversion (no requantize); layers without a baked act scale are skipped."""
 
 from __future__ import annotations
 
@@ -102,9 +97,7 @@ def nvfp4_linear_class():
                     *shape[:-1], self.out_features
                 )
             if self.protect.armed and self.protect.protected:
-                weight = dequantize_nvfp4_weight(
-                    self.wq, self.w_sf, self.w_scale, dtype = torch.bfloat16
-                )
+                weight = dequantize_nvfp4_weight(self.wq, self.w_sf, self.w_scale, dtype = flat.dtype)
                 out = F.linear(flat, weight)
             else:
                 with _device_guard(flat):
@@ -319,7 +312,7 @@ def _prewarm_shapes(modules, shapes, *, logger, tuned_box) -> None:
             m = int(m)
             if m <= 0:
                 continue
-            key = (m, module.in_features, module.out_features)
+            key = _prewarm_key(m, module.in_features, module.out_features)
             if key in _TUNED_SHAPES:
                 continue
             device = module.wq.device
@@ -328,13 +321,25 @@ def _prewarm_shapes(modules, shapes, *, logger, tuned_box) -> None:
                     x = torch.zeros(m, module.in_features, device = device, dtype = torch.bfloat16)
                     with flashinfer.autotune(True):
                         module(x)
-                    torch.cuda.synchronize(device)
+                    from .diffusion_cuda_graph import synchronize_outside_capture
+
+                    synchronize_outside_capture(device)
             except Exception as exc:  # noqa: BLE001 - a shape that will not tune still runs
                 _log(logger, "debug", f"[nvfp4] prewarm {key} failed ({type(exc).__name__}: {exc})")
                 continue
             _TUNED_SHAPES.add(key)
             tuned_box[0] += 1
         module._tuned = True
+
+
+def _prewarm_key(m: int, k: int, n: int) -> tuple:
+    """Legacy: the exact shape, which also stands in for the forward's claim. Bucketed: the forward
+    claims (or the plan tunes) its own bucket, so this only skips repeating the same warm-up."""
+    from .diffusion_nvfp4_tactics import bucketed_enabled
+
+    if bucketed_enabled():
+        return ("prewarm", int(m), int(k), int(n))
+    return (int(m), int(k), int(n))
 
 
 def _iter_linears(transformer: Any):

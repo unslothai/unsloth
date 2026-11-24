@@ -31,8 +31,7 @@ export function selectCodeToolNames(input: CodeToolPlacementInput): CodeToolName
   if (!input.codeToolsEnabled) return { local: [], hosted: [] };
   if (input.hostedCodeExecutionForThisTurn) return { local: [], hosted: ["code_execution"] };
   if (input.providerHostsCodeExecution) return { local: [], hosted: [] };
-  // edit_file is local-only: when the provider hosts execution the files live in its sandbox, so a
-  // local editor would patch a copy nothing else sees.
+  // edit_file is local-only: hosted execution keeps files in the provider's sandbox.
   return { local: ["python", "terminal", "edit_file", "view_image"], hosted: [] };
 }
 

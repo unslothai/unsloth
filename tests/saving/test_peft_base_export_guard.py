@@ -20,6 +20,8 @@ _EXPORT_FUNCTIONS = {
     "unsloth_generic_save_pretrained_merged",
     "unsloth_generic_push_to_hub_merged",
     "unsloth_save_pretrained_torchao",
+    "unsloth_save_pretrained_openvino",
+    "unsloth_push_to_hub_openvino",
 }
 
 
@@ -103,6 +105,27 @@ def test_a_peft_wrapper_is_allowed(peft_guard_env):
 def test_a_full_fine_tune_is_allowed(peft_guard_env):
     guard = _load_guard(None)
     guard(_Model(object()))
+
+
+# PeftModel defines its own save_pretrained / push_to_hub, so those never forward to the base; the GGML LoRA exports refuse a non-PeftModel themselves.
+_UNGUARDED_BINDINGS = {
+    "unsloth_model_save_pretrained",
+    "unsloth_push_to_hub",
+    "unsloth_tokenizer_save_pretrained",
+    "unsloth_convert_lora_to_ggml_and_push_to_hub",
+    "unsloth_convert_lora_to_ggml_and_save_locally",
+}
+
+
+def test_every_bound_export_is_guarded_or_exempt():
+    bound = {
+        node.args[0].id
+        for node in ast.walk(_function("patch_saving_functions"))
+        if isinstance(node, ast.Call)
+        and getattr(node.func, "id", None) == "_bind_saving_method"
+        and isinstance(node.args[0], ast.Name)
+    }
+    assert bound - _UNGUARDED_BINDINGS == _EXPORT_FUNCTIONS
 
 
 @pytest.mark.parametrize("name", sorted(_EXPORT_FUNCTIONS))

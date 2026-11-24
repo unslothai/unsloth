@@ -89,9 +89,8 @@ def test_save_subprocess_text_calls_declare_utf8_encoding():
 
 
 def test_utf8_replace_decodes_non_cp1252_subprocess_output():
-    """Reproduce the bug and fix with a real subprocess: the child emits U+201D
-    (UTF-8 E2 80 9D, byte 0x9D undefined in cp1252) so cp1252 decode raises while
-    the fix's utf-8/replace kwargs read it cleanly."""
+    """A real subprocess reproduces the bug: the child emits U+201D (UTF-8 E2 80 9D, where 0x9D is
+    undefined in cp1252), so cp1252 decoding raises while utf-8 with replace reads it."""
     # All-ASCII argv; the child builds the non-ASCII char so it is locale-independent.
     child = (
         "import sys; "

@@ -12,6 +12,7 @@ from studio_mcp import forward, model_downloads
 
 from .mcp_harness import (  # noqa: F401
     bodies,
+    media_load_bodies,
     fake_studio,
     fast_polls,
     run_tool,
@@ -88,7 +89,7 @@ def test_a_plan_that_refuses_the_knobs_is_asked_without_them(monkeypatch, fast_p
     )
     plans = bodies(studio, "/api/inference/video/download-plan")
     assert plans == [{"model_path": "a/v", "h3_task": "fl2va"}, {"model_path": "a/v"}]
-    assert bodies(studio, "/api/inference/video/load") == [
+    assert media_load_bodies(studio, "/api/inference/video/load") == [
         {"model_path": "a/v", "h3_task": "fl2va"}
     ]
 

@@ -110,7 +110,6 @@ def test_patch_leaves_an_already_patched_module_alone():
 
 def test_patch_refuses_an_unrecognised_body():
     def rewritten_upstream(input, mat2):
-        # None of the markers the gate looks for
         return input @ mat2
 
     module = _fake_intmm_module(rewritten_upstream)
@@ -190,3 +189,40 @@ def test_real_torchao_int_mm_is_patched_and_bit_identical():
         assert torch.equal(
             patched(a, b), original(a, b)
         ), f"patched safe_int_mm diverged from torchao's on {tuple(a.shape)} x {tuple(b.shape)}"
+
+
+def _capturing_safe_int_mm():
+    seen = []
+
+    def original(input, mat2):
+        return None
+
+    module = _fake_intmm_module(original)
+    module.out_dtype = lambda op, dtype, a, b: seen.append(b) or a
+    from core.inference.diffusion_torchao_patches import _make_safe_int_mm
+
+    return _make_safe_int_mm(module, original), seen
+
+
+def test_transposed_weight_reaches_the_gemm_without_a_row_major_copy():
+    torch = pytest.importorskip("torch")
+    patched, seen = _capturing_safe_int_mm()
+    a = torch.empty((1184, 7168), dtype = torch.int8, device = "meta")
+    weight = torch.empty((5376, 7168), dtype = torch.int8, device = "meta")
+    mat2 = weight.t()
+    patched(a, mat2)
+    assert seen[-1] is mat2
+    assert seen[-1].stride() == (1, 7168)
+
+
+def test_row_major_and_strided_mat2_keep_their_handling():
+    torch = pytest.importorskip("torch")
+    patched, seen = _capturing_safe_int_mm()
+    a = torch.empty((64, 64), dtype = torch.int8, device = "meta")
+    row_major = torch.empty((64, 32), dtype = torch.int8, device = "meta")
+    patched(a, row_major)
+    assert seen[-1] is row_major
+    strided = torch.empty((64, 64), dtype = torch.int8, device = "meta")[:, ::2]
+    assert not strided.is_contiguous() and not strided.t().is_contiguous()
+    patched(a, strided)
+    assert seen[-1] is not strided and seen[-1].is_contiguous()

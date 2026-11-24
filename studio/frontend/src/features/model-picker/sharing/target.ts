@@ -12,6 +12,7 @@ import type { ModelPickTarget } from "../components/model-selector/types";
 import type { ModelConfigHandoffRequest } from "../model-config/model-config-handoff";
 import {
   ggufVariantsMatch,
+  isOllamaMlxModelId,
   isOllamaModelId,
   isStandaloneGgufPath,
   residentModelIdMatches,
@@ -88,9 +89,12 @@ export function resolveRunConfigTarget(
     lora,
     isGguf: knownFormat,
   } = knownModel(id, selection);
+  const ollamaMlx = isOllamaMlxModelId(id);
   const singleFile =
-    isStandaloneGgufPath(id) || (Boolean(selectedModel) && isOllamaModelId(id));
-  const isGguf = singleFile || Boolean(value.model) || knownFormat !== false;
+    isStandaloneGgufPath(id) ||
+    (Boolean(selectedModel) && isOllamaModelId(id) && !ollamaMlx);
+  const isGguf =
+    singleFile || (!ollamaMlx && (Boolean(value.model) || knownFormat !== false));
   const ggufVariant =
     isGguf && !singleFile
       ? (value.ggufVariant ??

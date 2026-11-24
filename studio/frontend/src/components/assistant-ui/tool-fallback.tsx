@@ -3,11 +3,14 @@
 
 "use client";
 
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/components/ui/collapsible";
+  UnmeasuredCollapsible as Collapsible,
+  UnmeasuredCollapsibleContent as CollapsibleContent,
+  UnmeasuredCollapsibleTrigger as CollapsibleTrigger,
+  CLOSE_FALLBACK_MARGIN_MS,
+} from "@/components/ui/unmeasured-collapsible";
 import { Spinner } from "@/components/ui/spinner";
 // eslint-disable-next-line no-restricted-imports -- the feature barrel imports this component
 import { useChatPreferencesStore } from "@/features/chat/stores/chat-preferences-store";
@@ -32,6 +35,8 @@ import {
 } from "@/components/assistant-ui/sandbox-files";
 import { SandboxFiles } from "@/components/assistant-ui/sandbox-files-view";
 import { useChatProjectScope } from "@/features/chat/chat-project-scope";
+// eslint-disable-next-line no-restricted-imports -- the feature barrel imports this component
+import { useToolAwaitingApproval } from "@/features/chat/tool-approval";
 import { stripAnsi, stringifyToolResult } from "@/lib/strip-ansi";
 import { cn } from "@/lib/utils";
 import {
@@ -40,13 +45,16 @@ import {
   useAuiState,
 } from "@assistant-ui/react";
 import {
-  AlertCircleIcon,
-  ChevronDownIcon,
-  LoaderIcon,
-  WrenchIcon,
-  XCircleIcon,
-} from "lucide-react";
+  COMPUTER_USE_TOOL,
+  computerCallFullySaid,
+  computerCallWhy,
+  describeComputerCall,
+  plainComputerResult,
+} from "@/features/computer-use/summary";
+import { Alert02Icon, CancelCircleIcon, Cursor02Icon } from "@hugeicons/core-free-icons";
+import { LoaderIcon } from "lucide-react";
 import { InternetGlyph } from "@/lib/internet-icon";
+import { WrenchIcon } from "@/lib/wrench-icon";
 import {
   type CSSProperties,
   type ComponentProps,
@@ -59,6 +67,7 @@ import {
 import {
   isToolCallCancelled,
   isToolCallRunning,
+  plainBrowserResult,
   toolArgText,
   toolFallbackLabel,
 } from "./tool-arg-text";
@@ -76,11 +85,7 @@ export type ToolFallbackRootProps = Omit<
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
   defaultOpen?: boolean;
-  /**
-   * Parked on an allow/deny decision. Pins the card open above `open` and the
-   * collapse preference, so what is being approved stays readable. Groups do
-   * the same with `hasPendingConfirmation`.
-   */
+  /** Pins the card open above `open` and the collapse preference while awaiting a decision. */
   awaitingApproval?: boolean;
 };
 
@@ -108,7 +113,7 @@ function ToolFallbackRoot({
   if (syncedUncontrolledState !== uncontrolledState) {
     setUncontrolledState(syncedUncontrolledState);
   }
-  const lockScroll = useCollapseScrollLock(collapsibleRef, ANIMATION_DURATION);
+  const lockScroll = useCollapseScrollLock(collapsibleRef, ANIMATION_DURATION + CLOSE_FALLBACK_MARGIN_MS);
 
   const isControlled = controlledOpen !== undefined;
   const isOpen =
@@ -168,13 +173,31 @@ type ToolStatus = ToolCallMessagePartStatus["type"];
 
 // Not a tick: "Used tool" already says it finished.
 function completeToolIcon(name: string): ElementType {
-  return name.startsWith("browser_") ? InternetGlyph : WrenchIcon;
+  if (name === COMPUTER_USE_TOOL) return ComputerGlyph;
+  return name.startsWith("browser_") ? InternetGlyph : WrenchGlyph;
+}
+
+function ComputerGlyph(props: { className?: string }) {
+  return <HugeiconsIcon icon={Cursor02Icon} strokeWidth={2} {...props} />;
+}
+
+// Stroke 2 like InternetGlyph beside it.
+function WrenchGlyph(props: { className?: string }) {
+  return <HugeiconsIcon icon={WrenchIcon} strokeWidth={2} {...props} />;
+}
+
+function CancelCircleGlyph(props: { className?: string }) {
+  return <HugeiconsIcon icon={CancelCircleIcon} {...props} />;
+}
+
+function AlertCircleGlyph(props: { className?: string }) {
+  return <HugeiconsIcon icon={Alert02Icon} {...props} />;
 }
 
 const statusIconMap: Record<Exclude<ToolStatus, "complete">, ElementType> = {
   running: LoaderIcon,
-  incomplete: XCircleIcon,
-  "requires-action": AlertCircleIcon,
+  incomplete: CancelCircleGlyph,
+  "requires-action": AlertCircleGlyph,
 };
 
 function ToolFallbackTrigger({
@@ -184,12 +207,12 @@ function ToolFallbackTrigger({
   status,
   icon: ToolIcon,
   singleLine = false,
+  detail,
   className,
   ...props
 }: ComponentProps<typeof CollapsibleTrigger> & {
-  // Straight off the wire: provider SSE is relayed verbatim, and a non-string
-  // name matches nothing in thread.tsx's by_name map, which is exactly why it
-  // lands HERE, where formatMcpToolName calls `.startsWith` on it.
+  detail?: string;
+  // Relayed verbatim from provider SSE, so a non-string name lands here; formatMcpToolName needs a string.
   toolName: unknown;
   mcpServer?: string;
   mcpTool?: string;
@@ -209,7 +232,10 @@ function ToolFallbackTrigger({
     statusType === "complete"
       ? completeToolIcon(name)
       : statusIconMap[statusType];
-  const displayName = formatMcpToolName(name, mcpServer, mcpTool) ?? name;
+  const displayName =
+    name === COMPUTER_USE_TOOL
+      ? `Computer use${detail ? ` · ${detail}` : ""}`
+      : (formatMcpToolName(name, mcpServer, mcpTool) ?? name);
 
   return (
     <CollapsibleTrigger
@@ -268,7 +294,8 @@ function ToolFallbackTrigger({
           </span>
         )}
       </span>
-      <ChevronDownIcon
+      <HugeiconsIcon
+        icon={ChevronDownStandardIcon}
         data-slot="tool-fallback-trigger-chevron"
         className={cn(
           "aui-tool-fallback-trigger-chevron mr-1 size-3.5 shrink-0 self-center",
@@ -289,15 +316,12 @@ function ToolFallbackContent({
   return (
     <CollapsibleContent
       data-slot="tool-fallback-content"
+      closeDurationMs={ANIMATION_DURATION}
       className={cn(
         "aui-tool-fallback-content relative overflow-hidden text-trace-foreground text-sm outline-none",
         "group/collapsible-content ease-out",
-        "data-[state=closed]:animate-collapsible-up",
-        "data-[state=open]:animate-collapsible-down",
-        "data-[state=closed]:fill-mode-forwards",
         "data-[state=closed]:pointer-events-none",
-        "data-[state=open]:duration-(--animation-duration)",
-        "data-[state=closed]:duration-(--animation-duration)",
+        "duration-(--animation-duration)",
         className,
       )}
       {...props}
@@ -383,6 +407,28 @@ function ToolFallbackMcpApp({
   );
 }
 
+function ToolFallbackImages({
+  images,
+  className,
+}: {
+  images: McpImageResult["images"];
+  className?: string;
+}) {
+  return (
+    <div className={cn("flex flex-col gap-2", className)}>
+      {images.map((img, i) => (
+        <img
+          key={i}
+          src={`data:${img.mimeType};base64,${img.data}`}
+          alt={`Tool result ${i + 1}`}
+          loading="lazy"
+          className="max-w-full rounded-lg border border-border"
+        />
+      ))}
+    </div>
+  );
+}
+
 function ToolFallbackResult({
   result,
   className,
@@ -395,8 +441,7 @@ function ToolFallbackResult({
   }
 
   const imageResult = isMcpImageResult(result) ? result : null;
-  // Colourised CLIs (ls --color, grep --color, npm, cargo, pytest) emit SGR escapes that a plain
-  // <pre> cannot style; strip them so the pane stays readable (#7962).
+  // Strip SGR escapes from colourised CLIs; a plain <pre> cannot style them.
   const resultText = imageResult ? null : stringifyToolResult(result);
 
   return (
@@ -413,17 +458,7 @@ function ToolFallbackResult({
               {stripAnsi(imageResult.text)}
             </pre>
           )}
-          <div className="mt-2 flex flex-col gap-2">
-            {imageResult.images.map((img, i) => (
-              <img
-                key={i}
-                src={`data:${img.mimeType};base64,${img.data}`}
-                alt={`Tool result ${i + 1}`}
-                loading="lazy"
-                className="max-w-full rounded border border-border"
-              />
-            ))}
-          </div>
+          <ToolFallbackImages images={imageResult.images} className="mt-2" />
         </>
       ) : (
         <pre className="aui-tool-fallback-result-content whitespace-pre-wrap text-xs">
@@ -476,15 +511,14 @@ function ToolFallbackError({
 }
 
 const ToolFallbackImpl: ToolCallMessagePartComponent = ({
+  toolCallId,
   toolName,
   argsText,
   result,
   status,
   ...rest
 }) => {
-  // Allow/Deny confirmation controls are rendered uniformly for every tool
-  // card (built-in and fallback) by the `withToolConfirmation` wrapper in
-  // thread.tsx, so this renderer stays purely presentational.
+  // Confirmation controls come from thread.tsx's `withToolConfirmation`; this stays presentational.
   const provenance = (rest as { provenance?: unknown }).provenance;
   const isCancelled = isToolCallCancelled(status);
   // A widget result's pane shows the text (and images) the model saw, never its UI seed.
@@ -498,18 +532,42 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = ({
     ? created.text
     : widget?.images?.length
       ? { text: widget.text, images: widget.images }
-      : (widget?.text ?? result);
+      : toolName.startsWith("browser_")
+        ? plainBrowserResult(result)
+        : toolName === COMPUTER_USE_TOOL
+          ? plainComputerResult(result)
+          : (widget?.text ?? result);
+  const computerSteps = toolName === COMPUTER_USE_TOOL ? describeComputerCall(argsText) : [];
+
+  const picture =
+    !isCancelled &&
+    !widget &&
+    (toolName === "view_image" || toolName.startsWith("mcp__")) &&
+    isMcpImageResult(shown)
+      ? shown
+      : null;
+
+  // Open while it waits on Allow / Deny, so what is being approved is readable.
+  const awaitingApproval = useToolAwaitingApproval(toolCallId);
 
   return (
     <ToolFallbackRoot
       className={cn(isCancelled && "bg-muted/30")}
       defaultOpen={isToolCallRunning(status)}
+      awaitingApproval={awaitingApproval}
     >
       <ToolFallbackTrigger
         toolName={toolName}
         mcpServer={mcpServerFromProvenance(provenance)}
         mcpTool={mcpToolFromProvenance(provenance)}
         status={status}
+        detail={
+          computerSteps.length > 0
+            ? // The model's word for it once it runs; the steps themselves while it asks.
+              (!awaitingApproval && computerCallWhy(argsText)) || computerSteps.join(", ")
+            : undefined
+        }
+        singleLine={computerSteps.length > 0}
       />
       {!isCancelled && widget && (
         <ToolFallbackMcpApp
@@ -521,11 +579,17 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = ({
       <ToolFallbackContent>
         <ToolFallbackError status={status} />
         <ToolFallbackArgs
-          argsText={argsText}
+          argsText={
+            computerSteps.length > 0
+              ? // With the call as sent beneath them when the steps do not say all of it.
+                computerSteps.join("\n") + (computerCallFullySaid(argsText) ? "" : `\n\n${argsText}`)
+              : argsText
+          }
           className={cn(isCancelled && "opacity-60")}
         />
-        {!isCancelled && <ToolFallbackResult result={shown} />}
+        {!isCancelled && <ToolFallbackResult result={picture ? picture.text : shown} />}
       </ToolFallbackContent>
+      {picture && <ToolFallbackImages className="ml-5 mt-2" images={picture.images} />}
       {/* Files stay outside even when the card is collapsed (#10425) */}
       {created && (
         <SandboxFiles

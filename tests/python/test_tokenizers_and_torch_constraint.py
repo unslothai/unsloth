@@ -97,8 +97,7 @@ class TestStructuralTorchConstraint:
                 ), f"{literal} hardcoded on a pip install line: {ln.strip()!r}"
 
     def test_gfx906_reroute_caps_below_211(self):
-        """The gfx906 / MI50 reroute must keep its literal sub-2.11 cap: the
-        rocm6.3 index it routes to serves no torch 2.11 wheel."""
+        """gfx906 reroute keeps a literal sub-2.11 cap; rocm6.3 index has no torch 2.11 wheel."""
         assert self._sh.count('TORCH_CONSTRAINT="torch>=2.4,<2.11.0"') == 1
 
     def test_tightening_guarded_by_skip_torch(self):

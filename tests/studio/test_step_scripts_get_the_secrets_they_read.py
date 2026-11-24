@@ -88,6 +88,7 @@ _INDEXED_FOR = {
 # The Tauri smoke build blanks the signing key on purpose so debug builds are never signed.
 _DELIBERATELY_BLANK = {
     ("studio-tauri-smoke.yml", "TAURI_SIGNING_PRIVATE_KEY"),
+    ("studio-tauri-native-ci.yml", "TAURI_SIGNING_PRIVATE_KEY"),
 }
 _INDEXED = re.compile(r"secrets\[\s*([^\]]+?)\s*\]")
 

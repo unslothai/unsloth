@@ -120,7 +120,6 @@ test("a group cut by the page boundary waits for the next page, which the page l
   ];
   assert.deepEqual(ids(groupSeparationClips(clips, true)), ["g1"]);
   assert.deepEqual(ids(groupSeparationClips(clips, false)), ["g1", "g2"]);
-  // A short list never scrolls, so a hidden oldest run must trigger loadMore itself.
   const page = readSrc("features/audio/pages/separate-page.tsx");
   assert.match(
     page,
@@ -146,7 +145,6 @@ test("Generate says what the track needs, in order", () => {
     sourceError: null,
   };
   const long = { ...source, durationS: 601 };
-  // Each row also carries every lower-priority problem, so the order is pinned too.
   const cases: [
     Partial<Parameters<typeof separateBlocker>[0]>,
     string | null,

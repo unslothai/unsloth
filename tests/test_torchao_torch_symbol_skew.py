@@ -167,6 +167,8 @@ def test_the_real_torchao_018_import_line_is_unblocked(monkeypatch):
         if getattr(getattr(F, n, None), "__unsloth_placeholder__", False):
             delattr(F, n)
 
+    if IF.TORCHAO_DISABLED_FOR_OLD_TORCH:
+        pytest.skip("import unsloth disabled torchao for this torch; there is no torchao to shim")
     # Gate on these two: `any` over the tuple is always true via scaled_dot_product_attention.
     if all(hasattr(F, n) for n in ("ScalingType", "SwizzleType")):
         pytest.skip("this torch already provides ScalingType/SwizzleType")
@@ -207,9 +209,8 @@ INIT = ROOT / "unsloth" / "__init__.py"
 
 
 def test_the_mlx_path_applies_the_fix_too():
-    """The MLX branch imports unsloth_zoo directly and never reaches
-    _gpu_init, so without the fix there Apple Silicon hits the same dead
-    import."""
+    """The MLX branch imports unsloth_zoo directly without reaching _gpu_init, so without the fix
+    Apple Silicon hits the same dead import."""
     lines = INIT.read_text(encoding = "utf-8").splitlines()
     fix = next(i for i, l in enumerate(lines) if "_fix_torchao()" in l)
     zoo = next(i for i, l in enumerate(lines) if l.strip() == "import unsloth_zoo")

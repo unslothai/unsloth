@@ -173,8 +173,7 @@ def test_a_different_token_is_not_marked_rejected():
 
 
 def test_a_401_rebuilt_from_a_child_process_is_recognised():
-    # The download ladder re-raises a child's error from its "<Class>: <message>" text.
-    # The same bypass the ladder uses when the constructor demands a response.
+    # The ladder re-raises from '<Class>: <message>' text; bypass the constructor like it does.
     rebuilt = RepositoryNotFoundError.__new__(RepositoryNotFoundError)
     BaseException.__init__(rebuilt, "RepositoryNotFoundError: 401 Client Error. (Request ID: x)")
     assert is_token_rejection(rebuilt)
@@ -352,7 +351,6 @@ def test_worker_private_repo_keeps_the_token(worker):
     with patch("huggingface_hub.model_info", model_info):
         with pytest.raises(RepositoryNotFoundError):
             worker._model_info_with_retry(REPO, BAD)
-    # The second attempt may ask anonymously first, having learned the token is refused.
     assert sorted(map(str, seen)) == sorted(map(str, [BAD, False, BAD, False]))
     assert worker._hf_token_arg(BAD) == BAD
 

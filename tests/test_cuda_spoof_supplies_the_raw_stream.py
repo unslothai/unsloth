@@ -87,12 +87,9 @@ def test_the_spoof_leaves_a_real_raw_stream_alone():
 
 
 def test_the_spoof_replaces_a_raw_stream_that_has_no_driver_behind_it():
-    """A CUDA wheel on a GPU-less runner carries the symbol, but calling it raises.
-
-    The notebooks smoke leg for Llama3.1 GRPO installs vLLM, which brings in torch 2.13.0+cu130,
-    and importing unsloth then died in kernels/utils.py with "CUDA driver version is insufficient
-    for CUDA runtime version". The spoof has to cover that wheel the same way it covers a CPU one.
-    """
+    """A CUDA wheel on a GPU-less runner has the symbol but raises when called; torch 2.13.0+cu130
+    pulled in by vLLM made import die in kernels/utils.py with a driver-insufficient error, so
+    the spoof must cover it."""
     script = textwrap.dedent(
         f"""
         import ctypes, sys

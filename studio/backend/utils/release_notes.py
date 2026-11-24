@@ -26,10 +26,10 @@ from packaging.version import InvalidVersion, Version
 
 from .update_status import DISABLE_ENV_VAR, RELEASE_NOTES_URL
 
-# A release entry carries its whole body (~40 KiB lately), so per_page=100 would be ~4 MiB, twice the cap below, and the fetch would fail outright. 30 is ~1.2 MiB, newest first.
-RELEASES_API_URL = "https://api.github.com/repos/unslothai/unsloth/releases?per_page=30"
+# Entries carry full bodies and asset lists, so keep the page small (#17661); 10 still spans the asset-only releases (`Windows-ARM64`, `prebuilt-wheels-*`).
+RELEASES_API_URL = "https://api.github.com/repos/unslothai/unsloth/releases?per_page=10"
 RELEASES_URL_ENV_VAR = "UNSLOTH_RELEASES_URL"
-RELEASES_TIMEOUT_SECONDS = 3
+RELEASES_TIMEOUT_SECONDS = 10
 RELEASES_MAX_BYTES = 2 * 1024 * 1024
 _RELEASES_CHUNK_BYTES = 64 * 1024
 _RELEASES_MIN_READ_SECONDS = 0.05
@@ -779,8 +779,7 @@ def _next_fence_state(open_fence: str | None, marker: str, rest: str) -> str | N
 
 
 def _code_span_ranges(line: str) -> list[tuple[int, int]]:
-    """Code span bounds. A run of backticks closes only on a run of its length."""
-    # Collected once: rescanning per opener is quadratic on a line of distinct unmatched runs, and notes are reparsed on every request.
+    """Collected once: rescanning per opener is quadratic on a line of many distinct unmatched runs, and notes are reparsed on every request."""
     runs: list[tuple[int, int]] = []
     index = 0
     while index < len(line):

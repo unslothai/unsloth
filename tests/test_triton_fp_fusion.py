@@ -27,9 +27,14 @@ _NOT_LAUNCHES = {
     "triton_launch.py": {"kernel"},
     "layernorm.py": {"kernel"},
     "rms_layernorm.py": {"wrap(kernel)"},
+    "large_head_attention.py": {"kernel", "kernel.fn"},
 }
 # Launch helpers forwarding options to the excluded sites above: each call is checked instead.
-_LAUNCH_HELPERS = {"layernorm.py": "_launch", "rms_layernorm.py": "_launch"}
+_LAUNCH_HELPERS = {
+    "layernorm.py": "_launch",
+    "rms_layernorm.py": "_launch",
+    "large_head_attention.py": "_launch",
+}
 
 
 def _launch_sites():
@@ -263,7 +268,6 @@ def test_compiled_kernels_keep_fp_fusion(tmp_path, default):
     expected = {
         "rms_layernorm._rms_layernorm_forward",
         "rms_layernorm._rms_layernorm_backward",
-        "rope_embedding._rope_embedding",
         "rope_embedding._rope_embedding_QK",
         "cross_entropy_loss._cross_entropy_forward",
         "cross_entropy_loss._chunked_cross_entropy_forward",
@@ -293,7 +297,7 @@ def test_compiled_kernels_keep_fp_fusion(tmp_path, default):
     if not result["hip"]:
         # Contraction really happened: fma.rn in PTX.
         for name in (
-            "rope_embedding._rope_embedding",
+            "rope_embedding._rope_embedding_QK",
             "geglu._exact_forward_kernel",
             "swiglu._DWf_DW_dfg_kernel",
         ):

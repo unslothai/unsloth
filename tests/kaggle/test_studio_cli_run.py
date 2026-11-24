@@ -47,9 +47,8 @@ def test_it_uses_its_own_port():
 
 
 def test_no_public_url_is_ever_opened_from_ci():
-    """--secure implies a Cloudflare quick tunnel, which publishes this server
-    to the internet from a CI kernel. --no-cloudflare is explicit rather than
-    relying on the default, because a default is a thing that changes."""
+    """--secure implies a Cloudflare quick tunnel that publishes the server to the internet from CI,
+    so --no-cloudflare is passed explicitly rather than trusting a default."""
     body = "".join(_body().split())  # formatter-proof; see the cloudflare guards
     assert '"--no-cloudflare",' in body
     assert '"--secure"' not in body
@@ -62,9 +61,8 @@ def test_the_key_comes_from_the_marker_the_cli_itself_prints():
 
 
 def test_the_key_is_registered_as_a_secret_before_anything_reads_the_log():
-    """The log is packed into the evidence bundle. `redacted()` is what keeps
-    the key out of it, and it can only redact a secret it has been told about,
-    so the registration has to happen at the moment the key is parsed."""
+    """The log goes into the evidence bundle and redacted() only redacts secrets it has been told
+    about, so the key must be registered where it is parsed."""
     src = _body()
     parse_at = src.index('text.split("UNSLOTH_START_API_KEY:"')
     add_at = src.index("self.secrets.add(api_key)")

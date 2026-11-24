@@ -121,6 +121,7 @@ def _mm_impl(xq: Any, wq: Any, x_sf: Any, w_sf: Any, alpha: Any, n: int, backend
     import torch
 
     from . import diffusion_nvfp4_dispatch as dispatch
+    from . import diffusion_nvfp4_tactics as tactics
 
     with _device_guard(xq):
         m = xq.shape[0]
@@ -129,7 +130,11 @@ def _mm_impl(xq: Any, wq: Any, x_sf: Any, w_sf: Any, alpha: Any, n: int, backend
         else:
             out = torch.empty(m, n, device = xq.device, dtype = torch.bfloat16)
             _fire_barrier(xq.device)
-        if _claim_first_call_tune(m, xq.shape[1] * 2, n):
+        fast = dispatch.enabled(xq.device)
+        # Bucketed fast path: the plan tunes its own M bucket once (and reads it back from disk).
+        if not (fast and tactics.bucketed_enabled()) and _claim_first_call_tune(
+            m, xq.shape[1] * 2, n
+        ):
             # Before the dispatch plan, which caches whatever tactic FlashInfer holds on its first build.
             try:
                 with flashinfer.autotune(True):
@@ -138,7 +143,7 @@ def _mm_impl(xq: Any, wq: Any, x_sf: Any, w_sf: Any, alpha: Any, n: int, backend
                     )
             except Exception:  # noqa: BLE001 - claimed, so it is not retried; run it untuned
                 pass
-        if dispatch.enabled(xq.device):
+        if fast:
             wq_t, w_sf_t = dispatch.transposed(wq), dispatch.transposed(w_sf)
             plan = dispatch.gemm_plan(xq, wq_t, x_sf, w_sf_t, alpha, out, n, backend)
             if plan is not None:
@@ -164,14 +169,33 @@ def _mm_impl(xq: Any, wq: Any, x_sf: Any, w_sf: Any, alpha: Any, n: int, backend
         )
 
 
+def _flashinfer_bucket(m: int) -> int:
+    """The M FlashInfer's own mm_fp4 tuning keys ``m`` under (exact ``m`` when it cannot be read)."""
+    try:
+        from flashinfer.gemm.gemm_base import _MM_FP4_TUNING_CONFIG_128x4
+        return int(
+            _MM_FP4_TUNING_CONFIG_128x4.dynamic_tensor_specs[0].map_to_tuning_buckets(int(m))
+        )
+    except Exception:  # noqa: BLE001 - an unreadable mapper only costs a retune per length
+        return int(m)
+
+
+def _first_tune_key(m: int, k: int, n: int) -> tuple:
+    """Public-API tuning covers FlashInfer's whole bucket, so a new length in a tuned bucket is no
+    new tune; ``UNSLOTH_NVFP4_TACTIC_CACHE=0`` restores one claim per exact length."""
+    from .diffusion_nvfp4_tactics import bucketed_enabled
+
+    if bucketed_enabled():
+        return ("flashinfer_bucket", _flashinfer_bucket(m), int(k), int(n))
+    return (int(m), int(k), int(n))
+
+
 def _claim_first_call_tune(m: int, k: int, n: int) -> bool:
-    """True exactly once per ``(M, K, N)`` not yet autotuned, and only outside a CUDA graph
-    capture, where profiling is illegal (the warm-up before a capture is eager, so a graphed
-    shape tunes there). Shares ``nvfp4_prewarm``'s process-wide set, so a prewarmed shape is
-    never profiled twice."""
+    """Claims the one autotune for a shape, never inside a CUDA graph capture, where profiling is
+    illegal."""
     from .diffusion_nvfp4_linear import _TUNED_SHAPES
 
-    key = (int(m), int(k), int(n))
+    key = _first_tune_key(m, k, n)
     if key in _TUNED_SHAPES or _is_capturing():
         return False
     _TUNED_SHAPES.add(key)
@@ -271,6 +295,9 @@ def e2m1_lut(device: Any):
     """The signed e2m1 decode table on ``device``, memoised so it is never first allocated during capture."""
     import torch
 
+    # Traced: a graph constant. Reading the memo would guard on it, and its first insert would recompile the caller.
+    if torch.compiler.is_compiling():
+        return torch.tensor(_E2M1_LUT, device = device, dtype = torch.float32)
     key = (str(device.type), device.index)
     table = _LUT_CACHE.get(key)
     if table is None:
@@ -394,8 +421,11 @@ def _preflight_probe(dev: Any) -> bool:
     import flashinfer
     import torch
     with torch.cuda.device(dev):
-        x = torch.randn(128, 256, device = dev, dtype = torch.bfloat16) * 0.05
-        w = torch.randn(128, 256, device = dev, dtype = torch.bfloat16) * 0.02
+        # An explicit CPU generator: up to torch 2.11 a default-generator draw raises while another thread
+        # records, and a CPU draw moved to the device needs no CUDA generator (absent on a spoofed / CPU-only torch).
+        gen = torch.Generator().manual_seed(0)
+        x = torch.randn(128, 256, dtype = torch.bfloat16, generator = gen).to(dev) * 0.05
+        w = torch.randn(128, 256, dtype = torch.bfloat16, generator = gen).to(dev) * 0.02
         a_gsf, w_gsf = global_scale(x), global_scale(w)
         xq, x_sf = flashinfer.nvfp4_quantize(x, a_gsf, do_shuffle = False)
         wq, w_sf = flashinfer.nvfp4_quantize(w, w_gsf, do_shuffle = False)
@@ -410,7 +440,9 @@ def _preflight_probe(dev: Any) -> bool:
             out = out,
             backend = DEFAULT_MM_BACKEND,
         )
-        torch.cuda.synchronize(dev)
+        from .diffusion_cuda_graph import synchronize_outside_capture
+
+        synchronize_outside_capture(dev)
         return bool(torch.isfinite(y).all().item())
 
 

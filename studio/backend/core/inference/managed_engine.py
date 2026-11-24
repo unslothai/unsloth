@@ -22,6 +22,7 @@ from pathlib import Path
 
 import httpx
 
+from utils.debug_log_sources import MANAGED_ENGINE_LOG_FAMILIES
 from utils.hardware.hardware import resolve_requested_gpu_ids
 
 from .engine_install import (
@@ -36,8 +37,7 @@ from .engine_install import (
     stale,
     support_reason,
 )
-
-
+from .managed_engine_log import ManagedEngineLog
 from .engine_adapters import (
     ADAPTERS,
     gpu_memory_fraction,
@@ -56,6 +56,51 @@ def _offline(env) -> bool:
     )
 
 
+def _mig_rows(gpu_ids: list[int]):
+    """R570+ MIG rows for these ids, or None (untranslatable: keep the physical-id behaviour)."""
+    try:
+        from utils.hardware import mig
+
+        from .engine_install import gpu_platform
+
+        if gpu_platform() == "rocm":
+            return None
+        rows = mig.rows_for(gpu_ids)
+        if rows is None or mig.mask_for(gpu_ids) is None:
+            return None
+        return rows
+    except Exception:
+        return None
+
+
+_CA_BUNDLE_VARIABLES = ("SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE")
+
+
+def _point_tls_at_studio_ca_bundle(child_env: dict[str, str]) -> None:
+    """Engines verify TLS with Studio's current certifi unless the user chose a bundle: their
+    hash-pinned venvs keep an old certifi (2026.7.22 still trusts the revoked emSign roots)."""
+    if any(child_env.get(name) for name in _CA_BUNDLE_VARIABLES):
+        return
+    try:
+        import certifi
+        bundle = certifi.where()
+    except Exception:
+        return
+    if os.path.isfile(bundle):
+        child_env["SSL_CERT_FILE"] = bundle
+        child_env["REQUESTS_CA_BUNDLE"] = bundle
+
+
+def _child_cuda_mask(gpu_ids: list[int]) -> str:
+    """Instance UUIDs on an R570+ MIG host (numeric ids would name the whole host), else the numeric mask."""
+    try:
+        from utils.hardware import mig
+        pinned = mig.mask_for(gpu_ids)
+    except Exception:
+        pinned = None
+    return pinned or ",".join(str(i) for i in gpu_ids)
+
+
 def validate_load(engine: str, request) -> list[int]:
     """Returns the physical GPU ids to launch on, all inside the GPUs Studio may use."""
     profile(engine)
@@ -65,7 +110,7 @@ def validate_load(engine: str, request) -> list[int]:
     # The engine's CUDA_VISIBLE_DEVICES replaces Studio's, so an omitted selection is the first GPU Studio sees.
     gpu_ids = resolve_requested_gpu_ids(gpu_ids) if gpu_ids else resolve_requested_gpu_ids(None)[:1]
     if not gpu_ids:
-        raise ValueError("Studio has no GPU it can assign to this engine.")
+        raise ValueError("Unsloth has no GPU it can assign to this engine.")
     from . import wsl_host
 
     if len(gpu_ids) > 1 and wsl_host.active() and profile(engine)["platform"] == "rocm":
@@ -85,11 +130,13 @@ def validate_load(engine: str, request) -> list[int]:
             mask = None
         if mask:
             raise ValueError(
-                f"{ENGINE_NAMES[engine]} cannot select AMD GPUs while Studio runs with {mask}. "
+                f"{ENGINE_NAMES[engine]} cannot select AMD GPUs while Unsloth runs with {mask}. "
                 "Use only HIP_VISIBLE_DEVICES or only ROCR_VISIBLE_DEVICES instead."
             )
-    for gpu_id in gpu_ids:
-        reason = support_reason(engine, gpu_id)
+    mig_rows = _mig_rows(gpu_ids)
+    for position, gpu_id in enumerate(gpu_ids):
+        checked = int(mig_rows[position]["physical_index"]) if mig_rows else gpu_id
+        reason = support_reason(engine, checked)
         if reason:
             raise ValueError(f"GPU {gpu_id}: {reason}")
     info = installed(engine)
@@ -99,7 +146,7 @@ def validate_load(engine: str, request) -> list[int]:
         )
     if stale(info):
         raise ValueError(
-            f"Studio's packages changed since {ENGINE_NAMES[engine]} was installed. Repair it in Settings > System > Inference engines."
+            f"Unsloth's packages changed since {ENGINE_NAMES[engine]} was installed. Repair it in Settings > System > Inference engines."
         )
     if info.get("profile_digest") != profile_digest(engine) and not (
         info.get("restored") and built_for_this_gpu(engine, info)
@@ -249,6 +296,8 @@ def validate_model(
         options["seed"] = seed
     if gpu_memory_utilization is not None:
         options["gpu_memory_utilization"] = gpu_memory_utilization
+    if engine == "sglang" and generation_prompt_opens_thought(template):
+        options["opens_thought"] = True
     if reasoning_parser:
         from .llama_cpp import detect_reasoning_flags
         options["reasoning_parser"] = reasoning_parser
@@ -256,7 +305,7 @@ def validate_model(
             template,
             # The detector reads DeepSeek's `thinking` toggle off the id; a renamed local directory loses it.
             f"deepseek {config.identifier}"
-            if reasoning_parser == "deepseek_v3"
+            if reasoning_parser in ("deepseek_v3", "deepseek-v3")
             else config.identifier,
             log_source = "managed engine",
         )
@@ -348,12 +397,9 @@ def _memory_line(output: str) -> list:
 
 
 def _wsl_amd_usable_mib(gpu_ids) -> list[tuple[float, bool]] | None:
-    """(MiB, is an APU) for what each selected AMD GPU can allocate through WSL, or None when
-    Windows cannot say.
-
-    Through DXG the pool HIP reports is the dedicated memory plus a share of the host's RAM, and an
-    allocation past what the host can back hangs instead of failing. So a discrete card keeps its
-    dedicated memory, and an APU adds 80% of the host RAM Windows reports available now."""
+    """Returns (MiB, is an APU) per selected AMD GPU for what it can allocate through WSL, or None
+    when Windows cannot say; a discrete card keeps its dedicated memory, but an APU adds 80% of
+    host RAM available now, since DXG allocations past host capacity hang rather than fail."""
     try:
         import psutil
         import torch
@@ -447,7 +493,7 @@ def _rocm_visibility(env: dict, gpu_ids) -> dict:
 # SGLang raises when its derived gRPC port (HTTP + 10000) exceeds 65535.
 _PORT_LIMIT = 55535
 # Launch options that change no compiled artifact, so they share the compile cache.
-_UNCACHED_OPTIONS = frozenset(("seed", "gpu_memory_utilization"))
+_UNCACHED_OPTIONS = frozenset(("seed", "gpu_memory_utilization", "opens_thought"))
 
 
 def _free_port(limit: int | None = _PORT_LIMIT) -> int:
@@ -468,9 +514,19 @@ def _free_port(limit: int | None = _PORT_LIMIT) -> int:
     raise RuntimeError("Could not allocate an inference server port.")
 
 
-# Engine silence, not total startup time: an uncached Hub model downloads inside the engine, and
-# a first load can compile (torch.compile, Triton kernels) for tens of minutes without a line,
-# as a block-FP8 27B did on gfx1151 for over 17 minutes.
+def _port_accepts(base_url: str, timeout: float = 2) -> bool:
+    """True if ``base_url``'s port accepts a TCP connect. Sends nothing, so a squatter learns no key."""
+    from urllib.parse import urlsplit
+
+    target = urlsplit(base_url)
+    try:
+        with socket.create_connection((target.hostname, target.port), timeout = timeout):
+            return True
+    except (OSError, ValueError):
+        return False
+
+
+# Measures engine silence, not total startup: a first load can compile unlogged for tens of minutes.
 STARTUP_STALL_S = 3600
 STARTUP_LIMIT_S = 4 * 3600
 
@@ -494,7 +550,7 @@ class _EngineExited(RuntimeError):
     """The engine process exited during startup (not a stop, cancel or timeout)."""
 
 
-def _token_file_token(env) -> str | None:
+def _token_file_token(env, *, for_log = False) -> str | None:
     """The `hf auth login` token a local engine would read from its inherited HF_HOME; the WSL
     guest gets its own HF_HOME, so the token has to cross over. Anonymous loads keep none."""
     if (env.get("HF_HUB_DISABLE_IMPLICIT_TOKEN") or "").upper() in ("1", "ON", "YES", "TRUE"):
@@ -506,12 +562,71 @@ def _token_file_token(env) -> str | None:
         os.path.expandvars(os.path.expanduser(home)), "token"
     )
     try:
-        token = (
-            Path(os.path.expandvars(os.path.expanduser(path))).read_text(encoding = "utf-8").strip()
-        )
+        token_path = Path(os.path.expandvars(os.path.expanduser(path)))
+        if for_log:
+            # A credential helper's FIFO belongs to the real consumer; bound reads of plain files.
+            if not token_path.is_file():
+                return None
+            with token_path.open("rb") as stream:
+                raw = stream.read(4097)
+            if len(raw) > 4096:
+                return None
+            return raw.decode("utf-8").strip() or None
+        token = token_path.read_text(encoding = "utf-8").strip()
     except (OSError, UnicodeDecodeError):
         return None
     return token or None
+
+
+CONTINUATION_FIELDS = {"continue_final_message": True, "add_generation_prompt": False}
+
+
+def generation_prompt_opens_thought(template) -> bool:
+    """R1 distills, QwQ and Qwen3 Thinking-2507 end the generation prompt inside ``<think>``."""
+    if not isinstance(template, str) or "<think>" not in template:
+        return False
+    from jinja2.sandbox import ImmutableSandboxedEnvironment
+
+    def raise_exception(message):
+        raise ValueError(message)
+
+    try:
+        environment = ImmutableSandboxedEnvironment(
+            extensions = ["jinja2.ext.loopcontrols", "jinja2.ext.do"]
+        )
+        environment.globals["raise_exception"] = raise_exception
+        prompt = environment.from_string(template).render(
+            messages = [{"role": "user", "content": "Hi"}],
+            add_generation_prompt = True,
+            bos_token = "",
+            eos_token = "",
+        )
+    except Exception:
+        return False
+    return prompt.rstrip().endswith("<think>")
+
+
+def sglang_prefill(message: dict, opens_thought: bool) -> dict:
+    """SGLang drops the trailing assistant turn, renders a fresh generation prompt and appends only
+    its string content, so a separately sent thought must travel in that content. Without one the
+    content goes as is: where the prompt opens <think>, SGLang's raw text already holds any close."""
+    content = message.get("content")
+    if isinstance(content, list):
+        content = "".join(part.get("text") or "" for part in content if isinstance(part, dict))
+    thought = (message.get("reasoning_content") or message.get("reasoning") or "").strip()
+    if thought:
+        opener = "" if opens_thought else "<think>\n"
+        content = f"{opener}{thought}\n</think>\n\n{content or ''}"
+    rest = {k: v for k, v in message.items() if k not in ("reasoning", "reasoning_content")}
+    return {**rest, "content": content}
+
+
+# The prompt closed the thought, but a forcing parser (deepseek_r1) files the rest as one.
+def fold_reasoning_into_answer(part: dict) -> None:
+    reasoning = part.pop("reasoning", None)
+    reasoning = part.pop("reasoning_content", None) or reasoning
+    if reasoning:
+        part["content"] = reasoning + (part.get("content") or "")
 
 
 class ManagedEngine:
@@ -526,11 +641,13 @@ class ManagedEngine:
         self._lock = threading.RLock()
         self._lease = None
         self._reader = None
+        self._attempt_log = None
         self._tail = deque(maxlen = 200)
         self._mamba_blocks = None
         self._last_output = time.monotonic()
         self.base_url = ""
         self.reasoning_parser = None
+        self.opens_thought = False
         self._guest_environment = None
         # A URL-safe token can start with '-', which CLI parsers read as an option.
         self.key = "studio-" + secrets.token_urlsafe(32)
@@ -643,21 +760,38 @@ class ManagedEngine:
                 or (cancel_event is not None and cancel_event.is_set())
             ):
                 raise RuntimeError("Model load cancelled")
-            self._lease = engine_lease(self.engine)
-            self._lease.__enter__()
+            capture_logs = self.engine in MANAGED_ENGINE_LOG_FAMILIES
+            attempt_log = ManagedEngineLog.open(self.engine) if capture_logs else None
+            self._attempt_log = attempt_log
+            secrets_to_redact = (self.key,)
             try:
+                if capture_logs:
+                    secrets_to_redact = self._log_secrets(env)
+                lease = engine_lease(self.engine)
+                lease.__enter__()
+                self._lease = lease
                 info = installed(self.engine)
                 if info is None:
                     raise RuntimeError("The selected engine is no longer installed.")
                 port = _free_port(_PORT_LIMIT if self.engine == "sglang" else None)
                 self.base_url = f"http://127.0.0.1:{port}"
+                if self.engine == "sglang" and model_path and ":" in model:
+                    # SGLang reserves colons for LoRA aliases. Keep the real path separate.
+                    model = "unsloth-local-" + hashlib.sha256(model.encode()).hexdigest()[:16]
                 self.model, self.context = model, context or 4096
                 self.reasoning_parser = (options or {}).get("reasoning_parser")
+                self.opens_thought = bool((options or {}).get("opens_thought"))
                 stdin = None
                 if info.get("host") == "wsl":
                     command, child_env = self._wsl_command(
                         info, env, gpu_ids, options, trust_remote_code, model, model_path, port
                     )
+                    if capture_logs:
+                        # Keep launcher diagnostics in the same encoding as guest stdout.
+                        child_env["WSL_UTF8"] = "1"
+                        # The guest may have received an implicit token from a credential helper.
+                        if child_env.get("HF_TOKEN"):
+                            secrets_to_redact += (child_env["HF_TOKEN"],)
                     # The guest runner ends the engine when this pipe closes (stop, or Studio dying).
                     stdin = subprocess.PIPE
                     self._guest_environment = info["path"]
@@ -682,11 +816,12 @@ class ManagedEngine:
                             child_env.get("PATH", os.defpath),
                         ]
                     )
-                    child_env["CUDA_VISIBLE_DEVICES"] = ",".join(str(i) for i in (gpu_ids or [0]))
+                    child_env["CUDA_VISIBLE_DEVICES"] = _child_cuda_mask(gpu_ids or [0])
                     rocm = info.get("platform") == "rocm"
                     if rocm:
                         child_env.update(_rocm_visibility(child_env, gpu_ids or [0]))
                     child_env["PYTHONNOUSERSITE"] = "1"
+                    _point_tls_at_studio_ca_bundle(child_env)
                     from .engine_install import engine_root
 
                     cache = (
@@ -756,15 +891,20 @@ class ManagedEngine:
                 )
                 adopt_pid(self.process.pid)
                 if is_process_shutting_down():
-                    raise RuntimeError("Studio is shutting down")
+                    raise RuntimeError("Unsloth is shutting down")
                 self._reader = threading.Thread(
-                    target = self._drain, args = (self.process,), daemon = True
+                    target = self._drain,
+                    args = (self.process, attempt_log, secrets_to_redact),
+                    daemon = True,
                 )
                 self._reader.start()
-            except Exception:
+            except Exception as exc:
+                self._record_start_failure(attempt_log, exc, secrets_to_redact)
                 self.stop()
                 raise
         started = self._last_output = time.monotonic()
+        from core.inference.llama_cpp import LlamaCppBackend
+
         try:
             with httpx.Client(trust_env = False, timeout = 2) as client:
                 while (
@@ -782,10 +922,22 @@ class ManagedEngine:
                         if self._mamba_blocks:
                             raise _MambaSeqLimit(message, self._mamba_blocks)
                         raise _EngineExited(message)
+                    # Skip the costly ownership scan (and its false "not listening" error) until the engine listens.
+                    if not _port_accepts(self.base_url):
+                        self._cancel.wait(0.25)
+                        continue
+                    # The port was released before the engine binds it: probe (with the key) only our own listener.
+                    if not LlamaCppBackend._health_listener_is_ours(
+                        self.process, int(self.base_url.rsplit(":", 1)[1])
+                    ):
+                        self._cancel.wait(0.25)
+                        continue
                     try:
                         response = client.get(self.base_url + "/health", headers = self.headers)
                         if response.status_code == 200:
                             self.phase = "ready"
+                            if attempt_log is not None:
+                                attempt_log.write_redacted("Managed engine is ready.")
                             return
                     except httpx.HTTPError:
                         pass
@@ -794,18 +946,15 @@ class ManagedEngine:
                     "Engine startup timed out. Try a smaller model or context length.\n"
                     + "\n".join(list(self._tail)[-20:])
                 )
-        except _MambaSeqLimit:
-            # Not a stop request: an external stop() meanwhile must still cancel the relaunch.
-            self._teardown()
-            raise
-        except _EngineExited:
-            if self._drafter_retry(model, model_path, options):
+        except Exception as exc:
+            self._record_start_failure(attempt_log, exc, secrets_to_redact)
+            if isinstance(exc, _MambaSeqLimit) or (
+                isinstance(exc, _EngineExited) and self._drafter_retry(model, model_path, options)
+            ):
+                # An external stop() must still be able to cancel the relaunch.
                 self._teardown()
             else:
                 self.stop()
-            raise
-        except Exception:
-            self.stop()
             raise
 
     def _cache_key(self, info, model, gpu_ids, options) -> str:
@@ -924,9 +1073,39 @@ class ManagedEngine:
     def headers(self):
         return {"Authorization": "Bearer " + self.key}
 
-    def _drain(self, proc):
+    def _log_secrets(self, env) -> tuple[str, ...]:
+        from hub.utils.hf_tokens import _HF_TOKEN_ENV_KEYS
+
+        exact = {self.key, _token_file_token(env, for_log = True)}
+        exact.update(env.get(key) for key in _HF_TOKEN_ENV_KEYS)
+        return tuple(sorted(filter(None, exact), key = len, reverse = True))
+
+    @staticmethod
+    def _redact_output(line: str, exact_secrets: tuple[str, ...]) -> str:
         from utils.log_redaction import redact_log_text
-        from utils.native_path_leases import redact_native_paths
+
+        for secret in exact_secrets:
+            line = line.replace(secret, "[redacted]")
+        line = redact_log_text(line)
+        # An ANSI escape inside an exact secret may only become visible after the scrub above.
+        for secret in exact_secrets:
+            line = line.replace(secret, "[redacted]")
+        return line
+
+    def _record_start_failure(self, attempt_log, exc, exact_secrets) -> None:
+        if attempt_log is None:
+            return
+        exc.managed_engine_log_path = attempt_log.path
+        if isinstance(exc, (_MambaSeqLimit, _EngineExited)):
+            message = "Engine exited during startup."
+        else:
+            try:
+                message = self._redact_output(f"Engine startup failed: {exc}", exact_secrets)
+            except Exception:
+                message = "Engine startup failed."
+        attempt_log.write_redacted(message)
+
+    def _drain(self, proc, attempt_log, exact_secrets):
         for line in proc.stdout:
             self._last_output = time.monotonic()
             if self.engine == "vllm" and (limit := _MAMBA_SEQ_LIMIT.search(line)):
@@ -935,11 +1114,14 @@ class ManagedEngine:
             stage = self.adapter.progress(line)
             if stage and self.phase != "ready":
                 self.phase = stage
-            self._tail.append(
-                redact_native_paths(redact_log_text(line.replace(self.key, "[redacted]"))).strip()[
-                    -1000:
-                ]
-            )
+            try:
+                clean = self._redact_output(line, exact_secrets)
+            except Exception:
+                # A failed scrub must never publish the raw line or stop draining the child.
+                continue
+            self._tail.append(clean.strip()[-1000:])
+            if attempt_log is not None:
+                attempt_log.write_redacted(clean)
 
     def stop(self) -> bool:
         self._cancel.set()
@@ -971,8 +1153,13 @@ class ManagedEngine:
                 forget_pid(self.process.pid)
                 if self._reader:
                     self._reader.join(timeout = 2)
+                    self._reader = None
                 self.process.stdout.close()
                 self.process = None
+            if self._attempt_log is not None:
+                self._attempt_log.write_redacted("Managed engine stopped.")
+                self._attempt_log.close()
+                self._attempt_log = None
             if self._lease is not None:
                 self._lease.__exit__(None, None, None)
                 self._lease = None
@@ -1003,13 +1190,20 @@ class ManagedEngine:
             fields["reasoning_effort"] = reasoning_effort
         return fields
 
+    def continue_final_message(self, body: dict) -> None:
+        """Resume the trailing assistant turn of ``body["messages"]`` in place."""
+        body.update(CONTINUATION_FIELDS)
+        if self.engine == "sglang" and body.get("messages"):
+            *head, last = body["messages"]
+            body["messages"] = [*head, sglang_prefill(last, self.opens_thought)]
+
     def replay_reasoning(
         self,
         messages,
         preserve_thinking = None,
     ):
-        """vLLM reads a past turn's thinking from ``reasoning``, Studio keeps it as ``reasoning_content``."""
-        if not (self.reasoning_parser and preserve_thinking):
+        """vLLM reads a past turn's thinking from ``reasoning``; SGLang and Studio keep ``reasoning_content``."""
+        if self.engine != "vllm" or not (self.reasoning_parser and preserve_thinking):
             return messages
         # Moved, not copied: the context fit prices the whole message, so a copy charges the thought twice.
         return [
@@ -1023,14 +1217,51 @@ class ManagedEngine:
             for message in messages
         ]
 
+    def _reply_cap_in_window(
+        self,
+        messages,
+        system_prompt,
+        limit,
+        params,
+        tools = None,
+    ):
+        """vLLM and SGLang refuse prompt + max_tokens past the window, where llama-server stops at it."""
+        try:
+            prompt = self.count_tokens(
+                messages,
+                system_prompt,
+                tools = tools,
+                enable_thinking = params.get("enable_thinking"),
+                reasoning_effort = params.get("reasoning_effort"),
+                preserve_thinking = params.get("preserve_thinking"),
+            )[0]
+        except Exception:
+            # An estimate would cut a fitting reply short; the engine judges the cap itself.
+            return limit
+        return max(1, min(limit, self.context - prompt))
+
+    def _completion_cap_in_window(self, prompt, limit):
+        try:
+            return max(1, min(limit, self.context - self._tokenize({"prompt": prompt})))
+        except Exception:
+            return limit
+
+    def _tokenize(self, body):
+        with httpx.Client(trust_env = False, timeout = 30) as client:
+            response = client.post(
+                self.base_url + "/tokenize",
+                headers = self.headers,
+                json = {"model": self.model, **body},
+            )
+            response.raise_for_status()
+            return int(response.json()["count"])
+
     def count_tokens(
         self,
         messages,
         system_prompt = "",
         **kwargs,
     ):
-        if kwargs.get("tools"):
-            raise ValueError("Tools are unavailable for this optional engine profile.")
         if not self.adapter.exact_token_count:
             raise RuntimeError("Exact prompt token counting is unavailable for this engine.")
         if system_prompt:
@@ -1047,19 +1278,14 @@ class ManagedEngine:
             template_kwargs = fields["chat_template_kwargs"]
             template_kwargs["reasoning_effort"] = effort
             template_kwargs.setdefault("enable_thinking", effort != "none")
-        with httpx.Client(trust_env = False, timeout = 30) as client:
-            response = client.post(
-                self.base_url + "/tokenize",
-                headers = self.headers,
-                json = {
-                    "model": self.model,
-                    "messages": self.replay_reasoning(messages, kwargs.get("preserve_thinking")),
-                    "add_generation_prompt": True,
-                    **fields,
-                },
-            )
-            response.raise_for_status()
-            return int(response.json()["count"]), self.model
+        body = {
+            "messages": self.replay_reasoning(messages, kwargs.get("preserve_thinking")),
+            "add_generation_prompt": True,
+            **fields,
+        }
+        if kwargs.get("tools"):
+            body["tools"] = kwargs["tools"]
+        return self._tokenize(body), self.model
 
     def generate(
         self,
@@ -1074,9 +1300,9 @@ class ManagedEngine:
             raise ValueError(
                 "Tools and adapter comparisons are not supported by this optional engine profile."
             )
-        if params.get("video"):
+        if params.get("videos"):
             raise ValueError(
-                "Video input is not yet supported by the Studio managed engine transport."
+                "Video input is not yet supported by the Unsloth managed engine transport."
             )
         from .orchestrator import _encoded_images, InferenceOrchestrator
 
@@ -1124,13 +1350,10 @@ class ManagedEngine:
                         )
                         message["content"] = parts
                         break
-        if params.get("continue_final_message") or (
-            not self.reasoning_parser
-            and (params.get("enable_thinking") or params.get("preserve_thinking"))
+        if not self.reasoning_parser and (
+            params.get("enable_thinking") or params.get("preserve_thinking")
         ):
-            raise ValueError(
-                "Continuation and reasoning controls are unavailable for this engine profile."
-            )
+            raise ValueError("Reasoning controls are unavailable for this engine profile.")
         from .engine_transport import engine_messages
 
         messages = self.replay_reasoning(engine_messages(messages), params.get("preserve_thinking"))
@@ -1153,13 +1376,18 @@ class ManagedEngine:
             "seed",
             "stop",
             "logit_bias",
+            "response_format",
         ):
             if params.get(key) is not None:
                 payload[key] = params[key]
         # -1 or full context leaves no room for the prompt; let the engine budget it.
         limit = params.get("max_new_tokens") or 0
         if limit > 0 and (not self.context or limit < self.context):
-            payload["max_tokens"] = limit
+            payload["max_tokens"] = (
+                self._reply_cap_in_window(messages, system_prompt, limit, params)
+                if self.context and not request_images
+                else limit
+            )
         payload.update(
             self.reasoning_fields(
                 params.get("enable_thinking"),
@@ -1167,6 +1395,9 @@ class ManagedEngine:
                 params.get("preserve_thinking"),
             )
         )
+        continuing = bool(params.get("continue_final_message"))
+        if continuing:
+            self.continue_final_message(payload)
         from .engine_transport import stream_chat_events
 
         def cancelled():
@@ -1177,11 +1408,20 @@ class ManagedEngine:
             if event.get("usage") and stats_holder is not None:
                 stats_holder.setdefault("stats", {})["usage"] = event["usage"]
             if event.get("error"):
+                error = event["error"] if isinstance(event["error"], dict) else {}
+                constrained = payload.get("response_format", {"type": "text"}) != {"type": "text"}
+                # vLLM: "Grammar error: ...", SGLang: "Failed to compile json grammar: ...".
+                rejected = re.search(r"grammar|schema", str(error.get("message")), re.IGNORECASE)
+                if constrained and rejected and str(error.get("code")).startswith("4"):
+                    from .grammar_constraint import ResponseFormatError
+                    raise ResponseFormatError(error.get("message") or "Invalid response_format.")
                 raise RuntimeError("Engine generation failed.")
             for choice in event.get("choices", []):
                 if choice.get("finish_reason") and stats_holder is not None:
                     stats_holder.setdefault("stats", {})["finish_reason"] = choice["finish_reason"]
                 delta = choice.get("delta", {})
+                if continuing:
+                    fold_reasoning_into_answer(delta)
                 # The parser splits thinking out; <think> markup is what the route's extractor reads.
                 reasoning = delta.get("reasoning") or delta.get("reasoning_content")
                 if reasoning:

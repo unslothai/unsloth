@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Building the OpenAPI schema must not stall the event loop (#9712). The build is slowed so
-the result does not depend on machine speed."""
+"""Building the OpenAPI schema must not stall the event loop (#9712). The measured build is a
+sleep of _BUILD_S, so the result does not depend on machine speed."""
 
 from __future__ import annotations
 
@@ -30,16 +30,22 @@ def main_module():
     return _main
 
 
+@pytest.fixture(scope = "module")
+def real_schema(main_module):
+    """Builds the real OpenAPI schema before the probe starts, since generating it holds the GIL in
+    stretches that would trip the event-loop probe."""
+    return main_module.app.openapi()
+
+
 @pytest.fixture
-def slow_cold_build(main_module, monkeypatch):
-    """A cold schema cache whose build takes _BUILD_S and counts its calls."""
-    real = fastapi.applications.get_openapi
+def slow_cold_build(main_module, real_schema, monkeypatch):
+    """A cold schema cache whose build sleeps _BUILD_S, returns the real schema, and counts its calls."""
     calls = []
 
     def slow(*args, **kwargs):
         calls.append(threading.current_thread().name)
         time.sleep(_BUILD_S)
-        return real(*args, **kwargs)
+        return real_schema
 
     monkeypatch.setattr(fastapi.applications, "get_openapi", slow)
     saved = main_module.app.openapi_schema

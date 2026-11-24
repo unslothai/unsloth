@@ -1,14 +1,24 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { PillTabs } from "@/features/model-picker/components/model-selector/pill-tabs";
 import type { AudioOptionSpec } from "../audio-options";
 import { AudioOptionFields } from "../audio-options-fields";
 import { formatVibeVoiceScript } from "../clone-policy";
+import { FieldLabel } from "../components/field";
 import { VoicePicker } from "../components/voice-picker";
 import {
+  SUPERTONIC_LANGUAGES,
   type SpeakVoiceValue,
   speakVoiceLogic,
+  supertonicLanguageLogic,
   usesSavedVoice,
   vibeVoiceDialogueLogic,
 } from "./panel-logic";
@@ -76,7 +86,7 @@ const speakVoicePanel: AudioToolPanel<SpeakVoiceValue> = {
           family={ctx.audioFamily}
         />
       ) : (
-        <p className="text-ui-11p5 leading-snug text-muted-foreground">
+        <p className="text-ui-12 leading-normal text-muted-foreground">
           The model's own voice, shaped by a voice description when you give
           one.
         </p>
@@ -91,14 +101,14 @@ const vibeVoiceDialoguePanel: AudioToolPanel<null> = {
     const text = core?.text.trim() ?? "";
     const script = formatVibeVoiceScript(text);
     return (
-      <div className="grid gap-1.5">
+      <div className="grid gap-2">
         <span className="text-ui-13 font-medium text-foreground">Dialogue</span>
-        <p className="text-ui-11p5 leading-snug text-muted-foreground">
+        <p className="text-ui-12 leading-normal text-muted-foreground">
           This model reads a script with one line per speaker, such as “Speaker
           1: Hello.” Plain text is read by Speaker 1.
         </p>
         {text && script !== text ? (
-          <pre className="max-h-24 overflow-auto whitespace-pre-wrap rounded-xl bg-muted px-3 py-2 font-mono text-ui-11p5 text-muted-foreground">
+          <pre className="max-h-24 overflow-auto whitespace-pre-wrap rounded-lg bg-muted px-3 py-2 font-mono text-ui-11p5 text-muted-foreground">
             {script}
           </pre>
         ) : null}
@@ -107,7 +117,48 @@ const vibeVoiceDialoguePanel: AudioToolPanel<null> = {
   },
 };
 
+const LANGUAGE_NAMES = new Intl.DisplayNames(["en"], { type: "language" });
+// Radix Select cannot hold an empty value.
+const DEFAULT_LANGUAGE = "__default__";
+
+const supertonicLanguagePanel: AudioToolPanel<string> = {
+  ...supertonicLanguageLogic,
+  Component: ({ value, onChange, disabled }) => (
+    <div className="grid gap-2">
+      <FieldLabel
+        className="text-ui-13 font-medium text-foreground"
+        htmlFor="supertonic-language"
+      >
+        Language
+      </FieldLabel>
+      <Select
+        value={value || DEFAULT_LANGUAGE}
+        onValueChange={(next) =>
+          onChange(next === DEFAULT_LANGUAGE ? "" : next)
+        }
+        disabled={disabled}
+      >
+        <SelectTrigger id="supertonic-language" size="sm" className="w-full">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value={DEFAULT_LANGUAGE}>English (default)</SelectItem>
+          {SUPERTONIC_LANGUAGES.filter((code) => code !== "en").map((code) => (
+            <SelectItem key={code} value={code}>
+              {LANGUAGE_NAMES.of(code) ?? code}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      <p className="text-ui-12 leading-normal text-muted-foreground">
+        The language of the text, so it is pronounced right.
+      </p>
+    </div>
+  ),
+};
+
 export const SPEAK_TOOL_PANELS = [
   speakVoicePanel,
   vibeVoiceDialoguePanel,
+  supertonicLanguagePanel,
 ] as const;

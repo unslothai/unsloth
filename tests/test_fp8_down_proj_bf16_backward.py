@@ -44,11 +44,11 @@ def fp8_calls(monkeypatch):
         return X @ _dequant(W, W_quant).t()
 
     monkeypatch.setattr(kernel_utils, "fp8_linear", fake_fp8_linear)
-    monkeypatch.setattr(
-        fast_lora,
-        "fast_dequantize",
-        lambda W, q, *a, **k: W if q is None else _dequant(W, q),
-    )
+    fake_dequantize = lambda W, q, *a, **k: W if q is None else _dequant(W, q)
+    monkeypatch.setattr(fast_lora, "fast_dequantize", fake_dequantize)
+    # The LoRA backward reaches it through dequant_cache.dequantize (#18285), which reads it from
+    # kernels.utils at call time; an fp8 quant state is never cached, so it decodes every call.
+    monkeypatch.setattr(kernel_utils, "fast_dequantize", fake_dequantize)
     return calls
 
 
@@ -108,5 +108,6 @@ def test_bf16_down_proj_backward_unchanged(fp8_calls):
     downW = torch.randn(HIDDEN, INTER, generator = torch.Generator().manual_seed(5))
     DW, dY, downA, downB = _backward(downW, None)
     assert fp8_calls == []
-    old = kernel_utils.matmul_lora(dY, downW.t(), None, downB.t(), downA.t(), 2.0)
+    # The module holds FP8 gate / up weights, so it keeps the base-then-LoRA order.
+    old = kernel_utils.matmul_lora(dY, downW.t(), None, downB.t(), downA.t(), 2.0, fused = False)
     assert torch.equal(DW, old)

@@ -61,7 +61,6 @@ export interface TrainingMethodProvenance {
   trainOnCompletionsBeforeCpt: boolean | null;
 }
 
-/** Column-to-role mapping, e.g. { "problem": "user", "solution": "assistant", "context": "system" } */
 export type DatasetManualMapping = Record<string, string>;
 
 /** "auto" retrains a native MTP head when the model has one, else trains an EAGLE-3 drafter. */
@@ -144,6 +143,8 @@ export interface TrainingConfigState {
   drafterCapability: DrafterCapability | null;
   packing: boolean;
   trainOnCompletions: boolean;
+  /** Explicit user/YAML choices, separate from automatic model and dataset defaults. */
+  trainingToggleChoices: { packing?: boolean; trainOnCompletions?: boolean };
   gradientCheckpointing: GradientCheckpointing;
   offloadLayers: OffloadLayers;
   offloadVramGb: number | null;

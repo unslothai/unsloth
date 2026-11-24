@@ -14,7 +14,7 @@ WHAT THIS IS NOT: a correctness mechanism. Every caller must treat a failed pref
 
 from __future__ import annotations
 
-# The sentinel the driver and the reporters grep for. One record per repo, on its own line, so `kernel.log` ALONE measures the download, the number the whole schedule is built around and the one thing no artifact has ever separated from weight-load time.
+# Sentinel the driver and reporters grep for: one record per repo, on its own line.
 PREFETCH_SENTINEL = "KAGGLE_CI_PREFETCH"
 
 
@@ -38,7 +38,7 @@ def prefetch_cell(
     total_timeout: int = 1800,
 ) -> str:
     """Source for a cell (or a driver thread) that warms ``repos``, in order. ``repos`` is ordered and the order is load bearing: the caller puts the repo with the longest lead time first, because a prefetch only pays for the work it finishes BEFORE the payload that wants it starts. ``hf_home`` of None means "do not touch HF_HOME", which is what the leg prefetch needs, since the legs read the Kaggle image's default cache and the entire point is to land in the cache they read; setting it to a private directory there would produce a perfectly healthy prefetch that no payload can see, 12 GB of work thrown away, and a green run."""
-    # repr(), NOT json.dumps(): this text is Python, and `json.dumps(None)` is `null`, which parses fine and dies with a NameError the first time the cell RUNS, on a Kaggle session, minutes in, having already paid for the box. `test_the_generated_prefetch_cell_runs` exists because compiling the cell did not catch exactly that.
+    # repr(), not json.dumps(): this is Python source, and json's `null` is a NameError at run time.
     return f'''
 import json, os, threading, time
 

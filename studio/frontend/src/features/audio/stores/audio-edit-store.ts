@@ -8,14 +8,11 @@ import type { EditDelivery, EditMode } from "../edit-adapters";
 
 export const AUDIO_EDIT_STORAGE_KEY = "unsloth_audio_edit_v1";
 
-/** Tool values live in the Clone store with every page's. */
 interface AudioEditState {
   source: AudioSourceSelection | null;
   transcript: string;
-  /** The source id the transcript came from, so a new recording gets transcribed again. */
   transcriptFor: string | null;
   edited: string;
-  /** Until the user types in ②, ② follows ①. */
   editedTouched: boolean;
   mode: EditMode;
   delivery: EditDelivery;

@@ -12,7 +12,7 @@ const TRIGGER_CLASS_RE = /className="(aui-user-message-time-trigger [^"]*)"/;
 test("a sent prompt's time keeps the arrow cursor, since clicking it does nothing", () => {
   const classes = TRIGGER_CLASS_RE.exec(TIME)?.[1] ?? "";
   assert.ok(classes, "could not find the time trigger");
-  // Important, so the pointer cursors setting's button rule doesn't bring the hand back.
+  // Important, so the pointer cursors setting does not bring the hand back.
   assert.match(classes, /(^| )cursor-default!( |$)/);
   assert.doesNotMatch(classes, /cursor-pointer/);
   assert.doesNotMatch(TIME, /onClick=/);

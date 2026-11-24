@@ -27,6 +27,8 @@ PIP_CACHE_JOBS = {
     ("notebooks-ci.yml", "smoke-install"),
     ("studio-backend-ci.yml", "pytest"),
     ("studio-backend-ci.yml", "repo-cpu-tests"),
+    # repo-cpu-tests' multi-rank shards, split out; restores that entry read-only and never saves.
+    ("distributed-cpu-ci.yml", "distributed-cpu-tests"),
     ("studio-export-capability-ci.yml", "capability"),
     ("version-compat-ci.yml", "zoo-imports-under-spoof"),
     ("version-compat-ci.yml", "grpo-fake-run"),
@@ -37,7 +39,10 @@ PARTIAL_SAVE_JOBS = {("prebuilt-cuda-wheels.yml", "warm")}
 
 # Restore another job's pip cache and deliberately save nothing (mirrors
 # READ_ONLY_BORROWERS in test_pip_cache_naming.py, which checks the owner side).
-PIP_CACHE_READ_ONLY_JOBS = {("consolidated-tests-ci.yml", "consolidated-zoo")}
+PIP_CACHE_READ_ONLY_JOBS = {
+    ("consolidated-tests-ci.yml", "consolidated-zoo"),
+    ("distributed-cpu-ci.yml", "distributed-cpu-tests"),
+}
 
 HEAVY = re.compile(
     r"torch|transformers|trl|peft|vllm|bitsandbytes|sentence-transformers|diffusers"
@@ -115,10 +120,9 @@ _MAIN_ONLY = re.compile(r"github\.ref\s*==\s*['\"]refs/heads/main['\"]")
 _LEAF_MAIN = re.compile(
     r"github\.ref\s*==\s*['\"]refs/heads/main['\"]|['\"]refs/heads/main['\"]\s*==\s*github\.ref"
 )
-# Staging repos (scripts/pr_review/staging_ci.py) open PRs against `upstream-main` and never
-# push their own main, so their dependency caches are seeded by a run dispatched on that branch.
-# The equality counts as restricted ONLY next to an AND-ed guard that excludes this repository:
-# a branch ref is never a PR ref, but here upstream-main has no business saving anything.
+# Staging repos (scripts/pr_review/staging_ci.py) open PRs against upstream-main and never push
+# their own main, so a run on that branch seeds their caches; the equality counts only beside an
+# AND-ed guard that excludes this repository, since upstream-main should save nothing.
 _LEAF_SEED = re.compile(
     r"github\.ref\s*==\s*['\"]refs/heads/upstream-main['\"]"
     r"|['\"]refs/heads/upstream-main['\"]\s*==\s*github\.ref"

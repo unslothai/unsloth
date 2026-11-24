@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The audio.cpp models Unsloth Studio can offer and the Audio pages each runs on: every umbrella
-folder, plus the Community repos the runtime's ``model_specs/`` download from. Public data only.
-"""
+"""audio.cpp models Studio offers and the Audio pages each runs on: umbrella folders plus Community
+repos the runtime's model_specs/ pulls from; public data only."""
 
 from __future__ import annotations
 
@@ -17,6 +16,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional, Sequence
 
 from core.inference import audio_cpp_models as acm
+from core.inference import audio_cpp_spec_packages as spec_packages
 from core.inference.audio_cpp_models import AUDIO_CPP_REPO, RepoFile, recommended_gguf_files
 from core.inference.audio_workflows import AUDIO_WORKFLOW_IDS
 from hub.utils.state_dir import state_root
@@ -40,8 +40,6 @@ _STATUSES = frozenset(("supported", "community", "experimental", "testing", "wip
 _TASKS = frozenset(("tts", "music", "asr", "sep"))
 _NO_FAMILY = "Unsloth Studio could not tell which model family this is."
 _NO_PAGE = "Unsloth Studio has no Audio page for this model yet."
-_SIDECARS = "Unsloth Studio cannot download the extra files this model needs beside its GGUF yet."
-_NOT_AUDIO_CPP = "This repository's GGUF is not in the audio.cpp format Unsloth Studio loads."
 
 _cache_lock = threading.Lock()
 _build_lock = threading.Lock()
@@ -123,16 +121,11 @@ def _spec_targets(index: dict[str, dict], folders: Sequence[str]) -> tuple[dict,
     # model: its bare id resolves to whichever GGUF ranks first, so only single-family repos list.
     community: dict[str, tuple[str, set[str]]] = {}
     for family, spec in index.items():
-        packages = spec.get("packages")
-        base = _dict(_dict(spec.get("package_defaults")).get("download"))
-        for package in packages if isinstance(packages, list) else ():
-            if not isinstance(package, dict) or package.get("format") != "gguf":
-                continue  # other formats are conversion sources
-            repo = str({**base, **_dict(package.get("download"))}.get("repo") or "").strip()
+        for package in spec_packages.spec_packages(spec):
+            repo = package.repo
             if not repo or repo.lower() == AUDIO_CPP_REPO.lower():
-                files = package.get("files") if isinstance(package.get("files"), list) else []
-                where = str(package.get("target_directory") or (files[:1] or [""])[0] or "")
-                folder = by_lower.get(where.replace("\\", "/").strip("/").split("/")[0].lower())
+                where = package.target_directory or package.files[0]
+                folder = by_lower.get(where.strip("/").split("/")[0].lower())
                 if folder:
                     umbrella.setdefault(folder, family)
             elif acm._REPO_ID_RE.match(repo):
@@ -243,34 +236,6 @@ def _ranked(
     return variants[0] if variants else None
 
 
-# Licenses, notices, checksums and docs ship beside a GGUF but are never loaded by the runtime.
-_PACKAGING_FILE = re.compile(
-    r"(?i)(license|licence|notice|copying|readme|sha256sums|checksums)(\.[a-z0-9]+)?$|.*\.md$"
-)
-
-
-def _sidecars(spec: dict) -> list[str]:
-    """Non-GGUF files of the spec's recommended (else default) GGUF package, ``embeddings/`` aside."""
-    packages = [p for p in _list(spec.get("packages")) if isinstance(p, dict)]
-    packages = [p for p in packages if str(p.get("format") or "").lower() == "gguf"]
-    wanted = _dict(spec.get("ui")).get("recommended_package")
-    package = next((p for p in packages if wanted and p.get("id") == wanted), None) or next(
-        (p for p in packages if p.get("default") is True), None
-    )
-    files = [f.replace("\\", "/") for f in _list(_dict(package).get("files")) if isinstance(f, str)]
-    return [
-        f
-        for f in files
-        if not f.lower().endswith(".gguf")
-        and "/embeddings/" not in f"/{f}"
-        and not _PACKAGING_FILE.match(f.rsplit("/", 1)[-1])
-    ]
-
-
-def _list(value: Any) -> list:
-    return value if isinstance(value, list) else []
-
-
 def _text(value: Any, limit: int) -> Optional[str]:
     if not isinstance(value, str) or not value.strip():
         return None
@@ -285,13 +250,12 @@ def _row(
     family: Optional[str],
     spec: Optional[dict],
     files: Sequence[RepoFile],
-    header: Optional[acm.AudioCppHeader] = None,
 ) -> AudioCatalogModel:
     spec = spec if isinstance(spec, dict) else {}
     display = _text(spec.get("display_name"), 120) or folder or repo_id.split("/")[-1]
     names = (model_id, folder, *(Path(f.path).name for f in files if f.path.endswith(".gguf")))
     workflows: list[str] = []
-    task, size, reason = "", None, _NO_FAMILY
+    task, size, smallest, reason = "", None, None, _NO_FAMILY
     if family:
         try:
             policy = acm.family_policy(family, spec or None, names, display)
@@ -299,16 +263,41 @@ def _row(
             workflows = [w for w in AUDIO_WORKFLOW_IDS if w in bindings]
             task = policy.task if policy.task in _TASKS else ""
             reason = policy.unsupported or (None if workflows else _NO_PAGE)
-            if not folder and not policy.package and _sidecars(spec):
-                # A Community repo loads as one GGUF: files its package reads beside it never download.
-                reason = reason or _SIDECARS
-            if header is not None and not header.is_audio_cpp:
-                # resolve() returns None for it, so loading the row would fail.
-                reason = reason or _NOT_AUDIO_CPP
+            packaged = None
+            # An unread listing (offline, a late answer) says nothing about what the repo publishes.
+            if files and not policy.package and (not folder or family not in acm.FAMILIES):
+                packaged = acm.spec_package_variants(spec or None, repo_id, folder, files)
+            if packaged is not None and not packaged:
+                reason = reason or acm.PACKAGE_INCOMPLETE
             wanted = set(recommended_gguf_files(spec or None))
             picked = [f for f in files if Path(f.path).name in wanted]
+            if packaged:
+                picked = list(packaged[0].files)
+            elif picked and policy.package:
+                # A package loads and downloads every file it lists (YuE2's VAE and sidecars too).
+                package = next(
+                    (
+                        v
+                        for v in acm._package_variants(policy, files, folder)
+                        if any(f in v.files for f in picked)
+                    ),
+                    None,
+                )
+                picked = list(package.files) if package is not None else picked
             variant = None if picked else _ranked(files, folder, policy)
             size = sum(f.size for f in picked) if picked else (variant and variant.size_bytes)
+            smallest = min(
+                (
+                    v.size_bytes
+                    for v in (
+                        acm._package_variants(policy, files, folder)
+                        if policy.package
+                        else packaged or acm._single_file_variants(files, folder)
+                    )
+                    if acm.quant_label(v.main_file) not in acm.CPU_ONLY_QUANTS
+                ),
+                default = None,
+            )
         except Exception as exc:  # noqa: BLE001 - a malformed spec refuses its row, not the list
             logger.debug("audio.cpp catalog: policy of %s failed: %s", family, exc)
             reason = "Unsloth Studio could not read this model's spec."
@@ -331,6 +320,7 @@ def _row(
         languages = None if languages == ["auto"] else languages,
         status = status if status in _STATUSES else None,
         size_bytes = size or None,
+        smallest_size_bytes = smallest or None,
         unsupported_reason = reason or None,
     )
 
@@ -410,24 +400,15 @@ def _build(network: bool, specs_dir: Optional[Path]) -> tuple[AudioCatalogRespon
             for repo in community
         }
     )
-    header_probes = {}
-    for repo, repo_files in listings.items() if online else ():
-        ggufs = [f for f in repo_files or [] if f.path.lower().endswith(".gguf")]
-        wanted = set(recommended_gguf_files(index.get(community[repo])))
-        main = next((f for f in ggufs if Path(f.path).name in wanted), ggufs[0] if ggufs else None)
-        if main is not None:
-            header_probes[repo] = lambda repo = repo, f = main: acm.read_remote_header(
-                repo, f.path, False, size = f.size or None
-            )
-    headers = _bounded(header_probes)
+    # No header probe: a repo the runtime spec names is vouched for (acm.spec_vouched_family).
     for repo in sorted(community, key = str.lower):
         family = community[repo]
         files = listings.get(repo) or []
-        rows.append(_row(repo, repo, "", family, index.get(family), files, headers.get(repo)))
+        rows.append(_row(repo, repo, "", family, index.get(family), files))
     payload = AudioCatalogResponse(
         source = source,
         fetched_at = fetched_at,
         runtime_specs = specs_dir is not None,
         models = rows,
     )
-    return payload, len(answered) == len(probes) and len(headers) == len(header_probes)
+    return payload, len(answered) == len(probes)

@@ -335,6 +335,7 @@ export function useTrainingRuntimeLifecycle(): void {
       return s.phase === "idle" && !s.isTrainingRunning;
     };
 
+    // Not gated on document.hidden: drives the native finished / failed notifications.
     const statusTimer = setInterval(() => {
       const s = runtimeStore.getState();
       if (!s.hasHydrated || s.isHydrating) {
@@ -346,15 +347,31 @@ export function useTrainingRuntimeLifecycle(): void {
       void pollStatus();
     }, STATUS_POLL_INTERVAL_MS);
 
-    const metricsTimer = setInterval(() => {
+    let lastMetricsPollAt = 0;
+    const pollMetricsIfActive = () => {
       if (isIdle()) return;
       const s = runtimeStore.getState();
       if (shouldUseLiveSync(s) || s.currentStep > 0) {
+        lastMetricsPollAt = Date.now();
         void pollMetrics();
       }
-    }, METRICS_POLL_INTERVAL_MS);
+    };
 
-    // Low-frequency poll: recovers failed hydration and catches out-of-band state changes.
+    const metricsTimer = setInterval(() => {
+      if (document.hidden) return;
+      pollMetricsIfActive();
+    }, METRICS_POLL_INTERVAL_MS);
+    const onVisibilityChange = () => {
+      if (
+        !document.hidden &&
+        Date.now() - lastMetricsPollAt >= METRICS_POLL_INTERVAL_MS
+      ) {
+        pollMetricsIfActive();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+
+    // Recovers failed hydration and catches out-of-band state changes.
     const idleTimer = setInterval(() => {
       const s = runtimeStore.getState();
       if (!s.hasHydrated || s.isHydrating) {
@@ -371,6 +388,7 @@ export function useTrainingRuntimeLifecycle(): void {
       clearInterval(statusTimer);
       clearInterval(metricsTimer);
       clearInterval(idleTimer);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
       unsubscribeRuntime();
       stopStream();
     };
