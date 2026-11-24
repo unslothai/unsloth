@@ -81,6 +81,28 @@ def _version(module: str) -> Optional[str]:
         return None
 
 
+# Distributions that install the ``triton`` module: Windows, ROCm and XPU wheels (current names and the older
+# pytorch-triton-* ones) are not named ``triton``, and kernels are chosen by the Triton version (the INT8 attention
+# rotation on 3.3), so verdicts must key on it there too.
+_TRITON_DISTS = (
+    "triton",
+    "triton-windows",
+    "triton-rocm",
+    "triton-xpu",
+    "pytorch-triton-rocm",
+    "pytorch-triton",
+    "pytorch-triton-xpu",
+)
+
+
+def _triton_version() -> Optional[str]:
+    for dist in _TRITON_DISTS:
+        found = _version(dist)
+        if found is not None:
+            return found if dist == "triton" else f"{dist}=={found}"
+    return None
+
+
 def _ordinal(card: str) -> Optional[int]:
     if card == "cuda":
         return None
@@ -190,7 +212,7 @@ def fingerprint(card: str) -> Optional[dict[str, Any]]:
             "torch_cuda": str(torch.version.cuda),
             "hip": str(hip),
             "torchao": _version("torchao"),
-            "triton": _version("triton"),
+            "triton": _triton_version(),
             "driver": driver,
             "gpu_name": str(props.name),
             "gpu_uuid": uuid,

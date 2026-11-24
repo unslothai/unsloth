@@ -20,6 +20,7 @@ from typing import Optional, Tuple, List, Union
 
 from ._utils import *
 from ._utils import apply_unsloth_gradient_checkpointing
+from ..import_fixes import assign_rope_scaling
 from ._utils import _ignore_block_swap_params_for_ddp
 from ._frozen_prefix import install_frozen_prefix_skip
 from .fused_label_smoothing import output_head_not_fusable
@@ -2649,7 +2650,7 @@ def _compute_config_rope_inv_freq(config, rope_scaling):
                 import copy as _copy
 
                 config_copy = _copy.copy(config)
-                config_copy.rope_scaling = rope_scaling
+                assign_rope_scaling(config_copy, rope_scaling)
                 inv_freq, attention_scaling = rope_init_fn(config_copy, torch.device("cpu"))
         return inv_freq.to(dtype = torch.float32, device = "cpu"), float(attention_scaling)
     except Exception as exception:
@@ -4259,7 +4260,7 @@ class FastLlamaModel:
             # On the config for the in-process load and in kwargs for load_vllm, else vLLM keeps the
             # checkpoint's RoPE and indexes past its cos/sin cache (#3083).
             rope_scaling = _user_rope_scaling(model_config, rope_scaling)
-            model_config.rope_scaling = rope_scaling
+            assign_rope_scaling(model_config, rope_scaling)
             kwargs["rope_scaling"] = rope_scaling
         elif not caller_rope_scaling and max_seq_length > model_max_seq_length:
             factor = max_seq_length / model_max_seq_length
@@ -4645,7 +4646,7 @@ class FastLlamaModel:
                         model_config.max_position_embeddings = max_position_embeddings
                     _rope_scaling = kwargs.pop("rope_scaling", None)
                     if _rope_scaling is not None:
-                        model_config.rope_scaling = _rope_scaling
+                        assign_rope_scaling(model_config, _rope_scaling)
                     if (
                         _modelopt_rewritten or _fp8_to_nf4 or _fp8_backfilled
                     ) and user_config is None:
@@ -4800,7 +4801,7 @@ class FastLlamaModel:
                 )
                 # The rebuilt model takes the checkpoint's config, so put the caller's RoPE back for saving.
                 if rope_scaling is not None:
-                    model.config.rope_scaling = rope_scaling
+                    assign_rope_scaling(model.config, rope_scaling)
                 model.vllm_engine = llm
                 llm.shared_weights = True
                 model.fast_generate = model.vllm_engine.generate

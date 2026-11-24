@@ -12944,6 +12944,7 @@ async def _maybe_auto_switch_model(
                                         current_request_counted = True,
                                         **load_internal_kw,
                                     )
+                                    model_slots.mark_used(None)
                                     return
                                 await load_model_gated(
                                     load_request,
@@ -18633,6 +18634,13 @@ class _ScopedLoadAttempt(NamedTuple):
     subject: str
     cancel_event: threading.Event
     cancel_complete: threading.Event
+    # The model_path as the client sent it; a scoped cancel may name either spelling.
+    submitted: str = ""
+
+
+def _names_attempt(attempt: _ScopedLoadAttempt, model_path: str) -> bool:
+    wanted = model_path.strip().casefold()
+    return wanted in {p.strip().casefold() for p in (attempt.model_path, attempt.submitted) if p}
 
 
 _scoped_load_attempts_lock = threading.Lock()
@@ -18710,6 +18718,7 @@ def _begin_load_attempt(request: LoadRequest, current_subject: str) -> _ScopedLo
         subject = current_subject,
         cancel_event = threading.Event(),
         cancel_complete = threading.Event(),
+        submitted = getattr(request, "_submitted_model_path", None) or request.model_path,
     )
     if attempt.request_id is None:
         return attempt
@@ -18723,10 +18732,7 @@ def _begin_load_attempt(request: LoadRequest, current_subject: str) -> _ScopedLo
                 detail = "A load with this request ID is already in progress",
             )
         tombstone = _scoped_load_cancel_tombstones.pop(key, None)
-        if (
-            tombstone is not None
-            and tombstone[0].strip().casefold() == attempt.model_path.strip().casefold()
-        ):
+        if tombstone is not None and _names_attempt(attempt, tombstone[0]):
             attempt.cancel_event.set()
             attempt.cancel_complete.set()
         _scoped_load_attempts[key] = attempt
@@ -18772,7 +18778,7 @@ def _cancel_scoped_load_attempt(
                 now + _SCOPED_LOAD_CANCEL_TOMBSTONE_TTL_S,
             )
             return None, False
-        if attempt.model_path.strip().casefold() != request.model_path.strip().casefold():
+        if not _names_attempt(attempt, request.model_path):
             return None, False
         attempt.cancel_event.set()
         is_running = _running_load_attempt is attempt
@@ -19096,6 +19102,7 @@ async def load_model_gated(
             replaced_token = _replaced_primary_sink.set(replaced_slots)
             # Chosen under the gate, so two loads cannot both claim an empty primary.
             extra = await _select_load_slot(request)
+            model_slots.mark_used(extra)
             new_slot = extra is not None and extra not in model_slots.slots
             if new_slot:
                 model_slots.slots.append(extra)
@@ -19172,6 +19179,17 @@ async def load_model_gated(
                             # Only a primary beside an image or video model refuses a partial fit.
                             request = await _make_room_for_primary(request, exc, evicted)
                             continue
+                        if (
+                            new_slot
+                            and request.gguf_variant
+                            and await asyncio.to_thread(
+                                _repo_loaded_beside, request.model_path, extra
+                            )
+                        ):
+                            if exc.capped and not request.force_alongside:
+                                request = request.model_copy(update = {"force_alongside": True})
+                                continue
+                            raise _QuantShortBesideItsRepo() from exc
                         from utils.multi_model_settings import get_multi_model_mode
 
                         if await asyncio.to_thread(get_multi_model_mode) == "always":
@@ -19293,9 +19311,24 @@ async def load_model_gated(
                             request.model_path,
                         )
                         extra.llama._last_kill_monotonic = time.monotonic()
-            if extra is not None:
-                from core.inference.llama_keepwarm import _note_activity
+            twin, survivor = (
+                await asyncio.to_thread(_served_twice, extra)
+                if new_slot and extra is not None
+                else (False, None)
+            )
+            from core.inference.llama_keepwarm import _note_activity
 
+            # A request that already reached the new copy keeps it.
+            if twin and model_slots.claim_victim(extra):
+                # A low-disk fallback can land on a quant already served beside it: keep that one.
+                model_slots.loading = None
+                await asyncio.to_thread(model_slots.drop, extra)
+                await asyncio.to_thread(release_chat_gpu_claim)
+                routed_slot.set(survivor)
+                model_slots.mark_used(survivor)
+                _note_activity()
+                extra = None
+            if extra is not None:
                 extra.request = request
                 extra.last_used = time.monotonic()
                 # A fresh load is use: without it the idle loop drops the slot on its next tick.
@@ -19326,6 +19359,8 @@ async def load_model_gated(
     except MultiModelAlwaysRefusal as exc:
         path = getattr(getattr(fastapi_request, "url", None), "path", None)
         raise exc.as_http_exception(path) from exc
+    except _QuantShortBesideItsRepo:
+        pass
     finally:
         if sink_token is not None:
             eviction_sink.reset(sink_token)
@@ -19343,6 +19378,68 @@ async def load_model_gated(
             with _scoped_load_attempts_lock:
                 _pending_load_attempts.pop(attempt.token, None)
             _finish_load_attempt(attempt)
+    token = _replaces_its_repo.set(True)
+    try:
+        return await load_model_gated(
+            request.model_copy(update = {"force_alongside": False}),
+            fastapi_request,
+            current_subject,
+            user_initiated = user_initiated,
+            current_request_counted = current_request_counted,
+            impl_kwargs = impl_kwargs,
+            background = background,
+        )
+    finally:
+        _replaces_its_repo.reset(token)
+
+
+class _QuantShortBesideItsRepo(Exception):
+    pass
+
+
+_TWIN_SETTINGS = (
+    "n_ctx",
+    "chat_template_override",
+    "cache_type_kv",
+    "disable_vision",
+    "speculative_type",
+    "spec_draft_n_max",
+    "n_parallel",
+    "reasoning_budget",
+    "reasoning_budget_message",
+    "engram_precision",
+    "extra_args",
+)
+
+
+def _served_twice(slot) -> tuple[bool, Optional[_ExtraSlot]]:
+    """Whether another slot serves this one's exact checkpoint and quant, and which."""
+
+    def identity(llama):
+        if not getattr(llama, "is_loaded", False) or not getattr(llama, "hf_variant", None):
+            return None
+        # Request-visible settings only, not placement or admission flags.
+        intent = getattr(llama, "last_load_intent", None)
+        served = tuple(getattr(intent, name, None) for name in _TWIN_SETTINGS)
+        # The resolved files too: an updated cache entry is other weights under the same quant.
+        files = getattr(llama, "_gguf_load_identity", None)
+        # Case kept: two local paths differing only in case are two files on most filesystems.
+        return (str(llama.model_identifier), llama.hf_variant.casefold(), served, files)
+
+    own = identity(slot.llama)
+    for other in (None, *model_slots.visible()):
+        if other is not slot and own is not None:
+            if identity(model_slots.in_slot(other, get_llama_cpp_backend)) == own:
+                return True, other
+    return False, None
+
+
+def _repo_loaded_beside(repo: str, exclude) -> bool:
+    return any(
+        model_slots.in_slot(slot, lambda: _loaded_satisfies(repo))
+        for slot in (None, *model_slots.visible())
+        if slot is not exclude
+    )
 
 
 def _refuse_oom_beside_media_under_always() -> None:
@@ -19523,6 +19620,10 @@ def chat_eviction_reports() -> list[dict]:
 
 # The serving primary an ordinary load replaces, reported in ``evicted_slots`` only: the legacy
 # ``evicted`` list drives the "to make room" toast, which an ordinary switch must not show.
+# Set for the retry of a quant that did not fit beside its repo's loaded quant: it replaces that one.
+_replaces_its_repo: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "_replaces_its_repo", default = False
+)
 _replaced_primary_sink: contextvars.ContextVar[Optional[list]] = contextvars.ContextVar(
     "replaced_primary_sink", default = None
 )
@@ -19605,19 +19706,21 @@ async def _select_load_slot(request: LoadRequest) -> Optional[_ExtraSlot]:
     if is_npu_model_path(request.model_path) or request.engine != "auto":
         routed_slot.set(None)
         return None
+    from utils.multi_model_settings import get_multi_model_enabled
+
+    keeps = await asyncio.to_thread(get_multi_model_enabled)
     requested = _model_key(request)
     slot = await _route_to_extra_slot(requested)
-    if slot is None and request.gguf_variant:
-        # Another quant replaces its repo in place: requests name the repo, so a copy beside it is unreachable.
+    beside = keeps and request.alongside and not _replaces_its_repo.get()
+    if slot is None and request.gguf_variant and not beside:
+        # Another quant replaces its repo in place unless models are kept loaded and it fits beside it.
         slot = await _route_to_extra_slot(request.model_path)
         if slot is not None or await asyncio.to_thread(_loaded_satisfies, request.model_path):
             return slot
     if slot is not None:
         return slot
-    from utils.multi_model_settings import get_multi_model_enabled
-
     # Off unless enabled in Settings; a kept model left busy when disabled is evicted once idle.
-    if not await asyncio.to_thread(get_multi_model_enabled):
+    if not keeps:
         if model_slots.slots:
             from core.inference.gpu_arbiter import note_evictions
 
@@ -22808,7 +22911,7 @@ async def unload_model(request: UnloadRequest, current_subject: str = Depends(ge
 async def _unload_model_impl(request: UnloadRequest, current_subject: str):
     """Routes the unload to llama-server for GGUF models and to Unsloth otherwise."""
     extra = (
-        await _route_to_extra_slot(request.model_path)
+        await _route_to_extra_slot(request.model_path, touch = False)
         if request.cancel_load_request_id is None
         else None
     )
@@ -23227,7 +23330,7 @@ async def get_sampling_defaults(model: str, current_subject: str = Depends(get_c
     """
     # A kept model answers its own requests: route as the request path does, so the backend getters
     # below read that slot rather than the primary.
-    await _route_to_extra_slot(model)
+    await _route_to_extra_slot(model, touch = False)
     return await asyncio.to_thread(_sampling_defaults_for, model)
 
 
@@ -23696,19 +23799,26 @@ async def get_status(current_subject: str, model: Optional[str] = None):
         response.multi_model_mode = await asyncio.to_thread(get_multi_model_mode)
         active = response.active_model
         response.serving = [active] if active else []
-        response.serving_checkpoints = [response.model_identifier or active] if active else []
+        served = [(response.model_identifier or active, response.gguf_variant)] if active else []
         for other in (None, *model_slots.visible()):
             if other is not slot:
-                entries, checkpoints = await asyncio.to_thread(
+                entries, checkpoints, quant = await asyncio.to_thread(
                     model_slots.in_slot, other, _slot_entries_and_checkpoints
                 )
                 response.loaded += [e["id"] for e in entries if e["id"] not in response.loaded]
                 for e in entries:
                     # By checkpoint: two local files can share a label.
-                    checkpoint = checkpoints.get(e["id"]) or e["id"]
-                    if checkpoint not in response.serving_checkpoints:
+                    key = (checkpoints.get(e["id"]) or e["id"], quant.get(e["id"]))
+                    if key not in served:
                         response.serving.append(e["id"])
-                        response.serving_checkpoints.append(checkpoint)
+                        served.append(key)
+        names = [c for c, _ in served]
+        response.serving_checkpoints = [
+            f"{c}:{q}" if q and names.count(c) > 1 else c for c, q in served
+        ]
+        response.serving_quants = [q for _, q in served]
+        if active and response.model_identifier:
+            response.model_identifier = response.serving_checkpoints[0]
     return response
 
 
@@ -23771,19 +23881,22 @@ def _npu_resident_mib() -> "tuple[Optional[int], Optional[bool]]":
         return None, None
 
 
-def _slot_entries_and_checkpoints() -> "tuple[list[dict], dict[str, str]]":
-    """This slot's /v1/models entries, and the checkpoint each local one is loaded from."""
+def _slot_entries_and_checkpoints() -> "tuple[list[dict], dict[str, str], dict[str, str]]":
+    """This slot's /v1/models entries, the checkpoint each local one is loaded from, and its quant."""
     checkpoints: dict[str, str] = {}
+    quant: dict[str, str] = {}
     llama = get_llama_cpp_backend()
     if getattr(llama, "is_loaded", False):
         public = _llama_public_model_id(llama)
         if public:
             checkpoints[public] = _llama_status_model_ids(llama)[1] or public
+            if getattr(llama, "hf_variant", None):
+                quant[public] = llama.hf_variant
     backend = _peek_inference_backend()
     name = getattr(backend, "active_model_name", None)
     if name:
         checkpoints[_orchestrator_public_model_id(backend) or name] = name
-    return _slot_model_objects(), checkpoints
+    return _slot_model_objects(), checkpoints, quant
 
 
 async def _slot_status(current_subject: str):
@@ -38874,11 +38987,19 @@ _OWNED_BY = "unsloth-studio"
 
 
 def _openai_model_objects() -> list[dict]:
-    return [
-        entry
-        for slot in (None, *model_slots.visible())
-        for entry in model_slots.in_slot(slot, _slot_model_objects)
-    ]
+    def objects_and_quant():
+        llama = get_llama_cpp_backend()
+        loaded = getattr(llama, "is_loaded", False)
+        return _slot_model_objects(), getattr(llama, "hf_variant", None) if loaded else None
+
+    models: list[dict] = []
+    for slot in (None, *model_slots.visible()):
+        entries, quant = model_slots.in_slot(slot, objects_and_quant)
+        for entry in entries:
+            if quant and any(m["id"] == entry["id"] and m.get("quant") != quant for m in models):
+                entry = {**entry, "id": f"{entry['id']}:{quant}", "quant": quant}
+            models.append(entry)
+    return models
 
 
 def _slot_model_objects() -> list[dict]:
@@ -45429,7 +45550,7 @@ async def chat_count_tokens(
     # Admitted only while idle, not atomic by design; also blocks second-tab and /api runs the UI misses.
     from core.chat_memory import apply_to_request
 
-    await _route_to_extra_slot(payload.model)
+    await _route_to_extra_slot(payload.model, touch = False)
     if model_slots.routed_generation_count() > 0:
         raise HTTPException(
             status_code = 503,
