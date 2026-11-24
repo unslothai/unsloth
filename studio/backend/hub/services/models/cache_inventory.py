@@ -1196,9 +1196,18 @@ def _fields_dict(fields: tuple) -> dict:
     return {name: list(value) if name == "tags" else value for name, value in fields}
 
 
+# A card's front matter sits at its top; the README itself is the publisher's and can be any size.
+_CARD_READ_MAX_BYTES = 2 * 1024 * 1024
+
+
 def _read_model_card_frontmatter(path: Path) -> dict:
     try:
-        text = path.read_text(encoding = "utf-8")
+        with open(path, "rb") as handle:
+            raw = handle.read(_CARD_READ_MAX_BYTES + 1)
+        if len(raw) > _CARD_READ_MAX_BYTES:
+            # Whole lines only, so a cut multibyte character cannot fail the decode.
+            raw = raw[: raw.rfind(b"\n", 0, _CARD_READ_MAX_BYTES) + 1]
+        text = raw.decode("utf-8")
     except Exception:
         return {}
     lines = text.splitlines()

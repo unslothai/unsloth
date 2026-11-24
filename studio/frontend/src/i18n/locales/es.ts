@@ -937,6 +937,9 @@ export const es = {
     useModelScopeHint: "Busca y descarga desde ModelScope en su lugar. Puedes volver a cambiarlo en Ajustes.",
     useModelScopeFailed: "No se pudo cambiar a ModelScope.",
     updateToken: "Actualizar token",
+    linkedModelTitle: "¿Cargar {model}?",
+    linkedModelBody: "Un enlace abrió esta página y pidió descargar y cargar este modelo.",
+    linkedModelLoad: "Cargar",
     hfToken: {
       label: "Token de HF",
       saved: "Guardado",
@@ -2400,12 +2403,16 @@ export const es = {
         label: "Tipo de instalación",
         description:
           "Solo chat (GGUF). La instalación completa añade entrenamiento, exportación, vídeo, modelos safetensors y más funciones de generación de imágenes.",
+        descriptionMlx:
+          "Solo chat (GGUF/MLX). La instalación completa añade entrenamiento, exportación, vídeo, modelos safetensors y más funciones de generación de imágenes.",
         descriptionCpu:
           "Solo chat (GGUF). No se ha encontrado una GPU compatible, así que la instalación completa añade entrenamiento en la CPU.",
         action: "Actualizar a la instalación completa",
         confirmTitle: "¿Actualizar a la instalación completa?",
         confirmDescription:
           "Esta instalación de solo chat ejecuta modelos GGUF. La instalación completa añade PyTorch para la GPU de este equipo, lo que habilita el entrenamiento, la exportación, el vídeo, los modelos safetensors y más funciones de generación de imágenes. Descarga varios gigabytes (al menos 5 GB de espacio en disco) y reinicia el servidor. Se conservan las conversaciones, los modelos y los ajustes. Puede tardar varios minutos.",
+        confirmDescriptionMlx:
+          "Esta instalación de solo chat ejecuta modelos GGUF/MLX. La instalación completa añade PyTorch para la GPU de este equipo, lo que habilita el entrenamiento, la exportación, el vídeo, los modelos safetensors y más funciones de generación de imágenes. Descarga varios gigabytes (al menos 5 GB de espacio en disco) y reinicia el servidor. Se conservan las conversaciones, los modelos y los ajustes. Puede tardar varios minutos.",
         confirmDescriptionCpu:
           "Esta instalación de solo chat ejecuta modelos GGUF. No se ha encontrado una GPU compatible en este equipo, así que la instalación completa añade PyTorch para la CPU, lo que habilita el entrenamiento en la CPU. Entrenar en la CPU es mucho más lento que en una GPU. Necesita al menos 5 GB de espacio en disco y reinicia el servidor. Se conservan las conversaciones, los modelos y los ajustes. Puede tardar varios minutos.",
         confirmAction: "Actualizar",
@@ -2620,7 +2627,7 @@ export const es = {
         off: "Desactivado",
         oldWebkitWarning: "WebKitGTK {version} en Wayland: el renderizado por GPU puede fallar al iniciar en NVIDIA con escalado fraccionario (WebKit bug 280210). Si ocurre, Unsloth vuelve por sí solo al renderizado por CPU. En WebKitGTK 2.50.4 no mostró ninguna mejora medible (8 fps en ambos casos), así que no se recomienda Activado aquí.",
         oldDriverWarning:
-          "Controlador NVIDIA {version} en X11: Unsloth mantiene desactivado el renderizado por GPU hasta que el controlador sea 610 o posterior. Los controladores anteriores pierden un descriptor de archivo por fotograma y la ventana deja de dibujarse en pocos minutos.",
+          "Controlador NVIDIA {version} en X11: Unsloth mantiene desactivado el renderizado por GPU hasta que el controlador sea 590 o posterior. Los controladores anteriores pierden un descriptor de archivo por fotograma y la ventana deja de dibujarse en pocos minutos.",
         fallbackNote: "El renderizado por GPU falló al iniciar en este sistema, así que Unsloth usa el renderizado por CPU.",
         tryAgain: "Probar la GPU de nuevo",
         envOverride: "Definido por la variable de entorno {name}. Este ajuste no tiene efecto hasta que se elimine.",

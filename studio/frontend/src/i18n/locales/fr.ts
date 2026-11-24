@@ -937,6 +937,9 @@ export const fr = {
     useModelScopeHint: "Rechercher et télécharger depuis ModelScope à la place. Vous pouvez revenir en arrière dans les Paramètres.",
     useModelScopeFailed: "Impossible de passer à ModelScope.",
     updateToken: "Mettre à jour le jeton",
+    linkedModelTitle: "Charger {model} ?",
+    linkedModelBody: "Un lien a ouvert cette page et demande de télécharger et de charger ce modèle.",
+    linkedModelLoad: "Charger",
     hfToken: {
       label: "Token HF",
       saved: "Enregistré",
@@ -2403,12 +2406,16 @@ export const fr = {
         label: "Type d'installation",
         description:
           "Chat uniquement (GGUF). L'installation complète ajoute l'entraînement, l'export, la vidéo, les modèles safetensors et des fonctionnalités supplémentaires de génération d'images.",
+        descriptionMlx:
+          "Chat uniquement (GGUF/MLX). L'installation complète ajoute l'entraînement, l'export, la vidéo, les modèles safetensors et des fonctionnalités supplémentaires de génération d'images.",
         descriptionCpu:
           "Chat uniquement (GGUF). Aucun GPU compatible n'a été trouvé, l'installation complète ajoute donc l'entraînement sur le CPU.",
         action: "Passer à l'installation complète",
         confirmTitle: "Passer à l'installation complète ?",
         confirmDescription:
           "Cette installation Chat uniquement exécute des modèles GGUF. L'installation complète ajoute PyTorch pour le GPU de cette machine, ce qui active l'entraînement, l'export, la vidéo, les modèles safetensors et des fonctionnalités supplémentaires de génération d'images. Elle télécharge plusieurs gigaoctets (au moins 5 Go d'espace disque) et redémarre le serveur. Les discussions, les modèles et les paramètres sont conservés. Cela peut prendre plusieurs minutes.",
+        confirmDescriptionMlx:
+          "Cette installation Chat uniquement exécute des modèles GGUF/MLX. L'installation complète ajoute PyTorch pour le GPU de cette machine, ce qui active l'entraînement, l'export, la vidéo, les modèles safetensors et des fonctionnalités supplémentaires de génération d'images. Elle télécharge plusieurs gigaoctets (au moins 5 Go d'espace disque) et redémarre le serveur. Les discussions, les modèles et les paramètres sont conservés. Cela peut prendre plusieurs minutes.",
         confirmDescriptionCpu:
           "Cette installation Chat uniquement exécute des modèles GGUF. Aucun GPU compatible n'a été trouvé sur cette machine, l'installation complète ajoute donc PyTorch pour le CPU, ce qui active l'entraînement sur le CPU. L'entraînement sur CPU est beaucoup plus lent que sur GPU. Elle nécessite au moins 5 Go d'espace disque et redémarre le serveur. Les discussions, les modèles et les paramètres sont conservés. Cela peut prendre plusieurs minutes.",
         confirmAction: "Mettre à niveau",
@@ -2623,7 +2630,7 @@ export const fr = {
         off: "Désactivé",
         oldWebkitWarning: "WebKitGTK {version} sous Wayland : le rendu GPU peut planter au lancement sur NVIDIA avec une mise à l’échelle fractionnaire (WebKit bug 280210). Dans ce cas, Unsloth repasse de lui-même au rendu CPU. Sous WebKitGTK 2.50.4, il n’a apporté aucun gain mesurable (8 fps dans les deux cas), donc Activé n’est pas recommandé ici.",
         oldDriverWarning:
-          "Pilote NVIDIA {version} sous X11 : Unsloth laisse le rendu GPU désactivé tant que le pilote n'est pas en version 610 ou plus récente. Les pilotes plus anciens perdent un descripteur de fichier par image et la fenêtre cesse de s'afficher en quelques minutes.",
+          "Pilote NVIDIA {version} sous X11 : Unsloth laisse le rendu GPU désactivé tant que le pilote n'est pas en version 590 ou plus récente. Les pilotes plus anciens perdent un descripteur de fichier par image et la fenêtre cesse de s'afficher en quelques minutes.",
         fallbackNote: "Le rendu GPU a planté au lancement sur ce système, donc Unsloth utilise le rendu CPU.",
         tryAgain: "Réessayer le GPU",
         envOverride: "Défini par la variable d’environnement {name}. Ce réglage n’a aucun effet tant qu’elle n’est pas supprimée.",

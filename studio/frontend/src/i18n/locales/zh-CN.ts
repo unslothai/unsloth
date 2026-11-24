@@ -933,6 +933,9 @@ export const zhCN = {
     useModelScopeHint: "改为从 ModelScope 搜索和下载。可随时在设置中切换回来。",
     useModelScopeFailed: "无法切换到 ModelScope。",
     updateToken: "更新令牌",
+    linkedModelTitle: "加载 {model}？",
+    linkedModelBody: "某个链接打开了此页面，并请求下载和加载此模型。",
+    linkedModelLoad: "加载",
     hfToken: {
       label: "HF token",
       saved: "已保存",
@@ -2351,12 +2354,16 @@ export const zhCN = {
         label: "安装类型",
         description:
           "仅聊天 (GGUF)。完整安装会添加训练、导出、视频、safetensors 模型和更多图像生成功能。",
+        descriptionMlx:
+          "仅聊天 (GGUF/MLX)。完整安装会添加训练、导出、视频、safetensors 模型和更多图像生成功能。",
         descriptionCpu:
           "仅聊天 (GGUF)。未找到受支持的 GPU，因此完整安装会添加 CPU 训练。",
         action: "升级到完整安装",
         confirmTitle: "要升级到完整安装吗？",
         confirmDescription:
           "此仅聊天安装运行 GGUF 模型。完整安装会为本机 GPU 添加 PyTorch，从而启用训练、导出、视频、safetensors 模型和更多图像生成功能。它会下载几 GB 数据（至少 5 GB 磁盘空间）并重启服务器。聊天记录、模型和设置会保留。这可能需要几分钟。",
+        confirmDescriptionMlx:
+          "此仅聊天安装运行 GGUF/MLX 模型。完整安装会为本机 GPU 添加 PyTorch，从而启用训练、导出、视频、safetensors 模型和更多图像生成功能。它会下载几 GB 数据（至少 5 GB 磁盘空间）并重启服务器。聊天记录、模型和设置会保留。这可能需要几分钟。",
         confirmDescriptionCpu:
           "此仅聊天安装运行 GGUF 模型。本机未找到受支持的 GPU，因此完整安装会添加 CPU 版 PyTorch，从而启用 CPU 训练。CPU 训练比 GPU 训练慢得多。它需要至少 5 GB 磁盘空间并会重启服务器。聊天记录、模型和设置会保留。这可能需要几分钟。",
         confirmAction: "升级",
@@ -2580,7 +2587,7 @@ export const zhCN = {
         off: "关闭",
         oldWebkitWarning: "Wayland 上的 WebKitGTK {version}：在使用分数缩放的 NVIDIA 环境中，GPU 渲染可能会在启动时崩溃（WebKit bug 280210）。如果发生这种情况，Unsloth 会自动切换回 CPU 渲染。在 WebKitGTK 2.50.4 上未测得任何提速（两种方式都是 8 fps），因此不建议在此开启。",
         oldDriverWarning:
-          "X11 上的 NVIDIA 驱动 {version}：在驱动更新到 610 或更高版本之前，Unsloth 会保持 GPU 渲染关闭。旧驱动每帧泄漏一个文件描述符，几分钟内窗口就会停止绘制。",
+          "X11 上的 NVIDIA 驱动 {version}：在驱动更新到 590 或更高版本之前，Unsloth 会保持 GPU 渲染关闭。旧驱动每帧泄漏一个文件描述符，几分钟内窗口就会停止绘制。",
         fallbackNote: "GPU 渲染在此系统上启动时崩溃，因此 Unsloth 正在使用 CPU 渲染。",
         tryAgain: "重试 GPU",
         envOverride: "由环境变量 {name} 设置。在移除该变量之前，此设置不会生效。",

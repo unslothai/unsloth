@@ -447,6 +447,18 @@ class SmallHostDecision:
     dense_denoiser: bool = False
 
 
+def small_host_ineligible(compute_dtype: Any, *, device: str) -> Optional[str]:
+    """Why the route cannot engage whatever the weights hold, else None; known before any download."""
+    if small_host_disabled():
+        return f"{SMALL_HOST_ENV}=0"
+    if str(device) != "cuda":
+        return "not a CUDA load"
+    compute = _dtype_name(compute_dtype)
+    if compute not in ("float16", "float32"):
+        return f"compute dtype {compute} needs no conversion"
+    return None
+
+
 def decide_small_host(
     components: dict[str, StoredComponent],
     compute_dtype: Any,
@@ -466,13 +478,10 @@ def decide_small_host(
     violation in native code, not a Python error (#13432, #14513). ``spill_free_mib``: ``spill_capacity_mib``, None = no spill.
     ``dense_denoiser``: the caller asked for the unquantised denoiser, so the route keeps it memory-mapped at its
     stored dtype (cast per call) instead of storing it as int8."""
-    if small_host_disabled():
-        return SmallHostDecision(False, f"{SMALL_HOST_ENV}=0")
-    if str(device) != "cuda":
-        return SmallHostDecision(False, "not a CUDA load")
+    skip = small_host_ineligible(compute_dtype, device = device)
+    if skip:
+        return SmallHostDecision(False, skip)
     compute = _dtype_name(compute_dtype)
-    if compute not in ("float16", "float32"):
-        return SmallHostDecision(False, f"compute dtype {compute} needs no conversion")
     converted = {
         name: comp
         for name, comp in components.items()

@@ -633,6 +633,21 @@ def test_speed_default_respects_family_cudnn_benchmark_opt_out(monkeypatch):
     assert applied["cudnn_benchmark"] is True and torch.backends.cudnn.benchmark is True
 
 
+def test_minimax_h3_video_holds_cudnn_benchmark_off(monkeypatch):
+    # The Qwen3-VL conditioner's Conv3d patch embed reads the reference clip: a per-process cudnn.benchmark pick there
+    # rendered two clip families for one seed across fresh processes (G4), so the family keeps the flag off.
+    from core.inference.video_families import _FAMILIES
+
+    fam = next(f for f in _FAMILIES if f.name == "minimax-h3")
+    assert fam.cudnn_benchmark is False
+    torch = _stub_torch(monkeypatch)
+    applied = apply_speed_optims(
+        _Pipe(with_compile = True), _target(), is_gguf = False, family = fam, speed_mode = SPEED_DEFAULT
+    )
+    assert applied["cudnn_benchmark"] is False
+    assert torch.backends.cudnn.benchmark is False
+
+
 def test_cudnn_benchmark_opt_out_image_families():
     from core.inference.diffusion_families import _FAMILIES
     off = {fam.name for fam in _FAMILIES if not fam.cudnn_benchmark}
@@ -649,6 +664,7 @@ def test_cudnn_benchmark_opt_out_image_families():
         "z-image",
         "sdxl",
         "moss-image",
+        "krea-2",
     }
 
 

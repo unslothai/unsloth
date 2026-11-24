@@ -3032,6 +3032,7 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
                 layer_split = False,
                 flash_attn = True,
                 n_parallel = 1,
+                swa_full = False,
             ):
                 return 0
 

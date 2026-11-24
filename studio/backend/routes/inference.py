@@ -12184,6 +12184,7 @@ async def _maybe_auto_switch_model(
             resident = _loaded_slot_ident()
             try:
                 await asyncio.to_thread(account_access.require_model_access, resident)
+                await asyncio.to_thread(_require_loaded_base_access)
             except HTTPException as refusal:
                 # A Hub resident the caller's own token can fetch is theirs to use as well.
                 if refusal.status_code != 404:
@@ -14316,7 +14317,13 @@ def _gguf_runtime_bytes(
             # mirrors _plan_tensor_parallel: per-device buffer and ctx growth on every device
             compute = devices * (
                 _flat_buffer(True)
-                + probe._compute_buffer_ctx_bytes(ctx, effective_ubatch, cache_type_for_scratch)
+                + probe._compute_buffer_ctx_bytes(
+                    ctx,
+                    effective_ubatch,
+                    cache_type_for_scratch,
+                    n_parallel = slots,
+                    swa_full = swa_full,
+                )
             )
         else:
             # layer_split follows the loader: -ot, -ncmoe, --no-kv-offload disable pipeline parallelism.
@@ -14335,6 +14342,7 @@ def _gguf_runtime_bytes(
                     layer_split = devices > 1 and not pipeline_parallel_off,
                     flash_attn = flash_attn,
                     n_parallel = slots,
+                    swa_full = swa_full,
                 )
             )
         if compute <= 0:
@@ -19688,11 +19696,48 @@ def _discoverable_drafters(model_path: str) -> Optional[list]:
     return [row["repo_id"] for row in _mlx_cached_drafters(model_path)]
 
 
+def _require_loaded_base_access() -> None:
+    """A resident adapter answers with its base model, so sharing it needs the base grant too."""
+    if not account_access.managed_account():
+        return
+    backend = _peek_inference_backend()
+    active = getattr(backend, "active_model_name", None) if backend is not None else None
+    info = (getattr(backend, "models", None) or {}).get(active) or {}
+    base = info.get("base_model") if isinstance(info, dict) else None
+    if isinstance(base, str) and base.strip():
+        account_access.require_model_access(base.strip())
+
+
 def _require_resolved_base_access(config) -> None:
     """Grants apply to the base in an adapter's config, so it cannot pull a foreign cached base."""
+    if not account_access.managed_account():
+        return
     base = getattr(config, "base_model", None)
-    if account_access.managed_account() and isinstance(base, str) and base.strip():
+    if isinstance(base, str) and base.strip():
         account_access.require_model_access(base.strip())
+        account_access.require_adapter_chain_access(base.strip())
+    account_access.require_listed_adapters_access(getattr(config, "identifier", None))
+    # A local merged vision export's processor comes from the base_model its export_metadata.json names;
+    # text exports are self-contained and never open it.
+    if (
+        getattr(config, "is_vision", False)
+        and getattr(config, "is_local", False)
+        and not getattr(config, "is_lora", False)
+    ):
+        meta_base = _export_metadata_base(getattr(config, "path", None))
+        if meta_base:
+            account_access.require_model_access(meta_base)
+
+
+def _export_metadata_base(folder) -> Optional[str]:
+    if not folder:
+        return None
+    try:
+        meta = json.loads((Path(folder) / "export_metadata.json").read_text(encoding = "utf-8-sig"))
+    except (OSError, ValueError, TypeError):
+        return None
+    base = meta.get("base_model") if isinstance(meta, dict) else None
+    return base.strip() if isinstance(base, str) and base.strip() else None
 
 
 async def _managed_engine_request(request):
@@ -20332,6 +20377,7 @@ async def _load_model_impl(
                 if not _resident_audio_holds_no_gpu(backend):
                     await asyncio.to_thread(_reassert_chat_claim, multi_model_mode)
                 if replacing:
+                    await asyncio.to_thread(_require_loaded_base_access)
                     account_access.join_resident("chat")
                 if request._advertised_id:
                     backend._openai_advertised_id = request._advertised_id
@@ -30084,6 +30130,25 @@ def _compaction_share(payload) -> float:
     return percent / 100 if percent else 1 - _EXTERNAL_COMPACTION_HEADROOM
 
 
+# Max fills what the window leaves after the prompt: unbounded, Ollama context-shifts past num_ctx.
+# Not OpenRouter: a router id or an unloaded catalog overstates the routed endpoint's window.
+_WINDOW_ROOM_REPLY_PROVIDERS = frozenset({"ollama", "custom"})
+_UNKNOWN_WINDOW_MAX_TOKENS = 32_768
+_MIN_WINDOW_ROOM_TOKENS = 256
+
+
+def _window_room_max_tokens(window: int, prompt_tokens: int, compaction_threshold) -> int:
+    # A fit shrinks the prompt to the threshold first.
+    if compaction_threshold:
+        prompt_tokens = min(prompt_tokens, compaction_threshold)
+    if prompt_tokens >= window:
+        # Only a replayed summary or compaction epoch (applied later) can make this fit: guess.
+        return window // 4
+    room = window - prompt_tokens
+    # The floor never passes the room itself: a strict server refuses prompt + reply > window.
+    return min(room, max(_MIN_WINDOW_ROOM_TOKENS, room - window // 32))
+
+
 def _extends_turn(old: Any, new: Any) -> bool:
     """``new`` is ``old`` with text or parts appended, as the loop's ``_append_user_turn`` merges."""
     if isinstance(old, str) and isinstance(new, str):
@@ -30467,31 +30532,66 @@ async def _finish_external_compaction(
         reply_tokens = cloud_compaction.summary_max_tokens(plan.budget)
         # The whole window when it is known: the threshold only says when to compact.
         room = payload.context_window or plan.context_length
+        # A saved summary written by a retry can be up to twice the reply.
+        carried = (
+            estimate_message_tokens_without_unpriced_media(
+                {"role": "user", "content": plan.summary}
+            )
+            if plan.summary
+            else 0
+        )
         chunks = cloud_compaction.summary_chunks(
             plan.to_summarise,
             estimate_message_tokens_without_unpriced_media,
             # Room for the instructions, the summary so far and the reply.
-            max(1_000, room - 2 * reply_tokens - 1_000) if room else None,
+            max(1_000, room - 2 * reply_tokens - max(0, carried - reply_tokens) - 1_000)
+            if room
+            else None,
         )
         summary = plan.summary
+
+        async def _summarise(request: list[dict], limit: int, first_line_timeout: float) -> str:
+            return await cloud_compaction.collect_summary(
+                client.stream_chat_completion(
+                    messages = request,
+                    model = model,
+                    temperature = None,
+                    top_p = None,
+                    max_tokens = limit,
+                    tool_choice = "none",
+                    enable_prompt_caching = False,
+                    enable_thinking = cloud_compaction.summary_thinking(
+                        getattr(client, "provider_type", None),
+                        getattr(client, "api_type", None),
+                    ),
+                    thread_id = payload.thread_id,
+                    # Past collect_summary's own timers, so a stall reads as timed out.
+                    read_timeout = first_line_timeout + cloud_compaction.SUMMARY_IDLE_TIMEOUT_S,
+                ),
+                first_line_timeout = first_line_timeout,
+                total_timeout = cloud_compaction.summary_total_timeout(limit),
+            )
+
         try:
-            for chunk in chunks:
-                summary = await cloud_compaction.collect_summary(
-                    client.stream_chat_completion(
-                        messages = cloud_compaction.summary_request_messages(summary, chunk),
-                        model = model,
-                        temperature = None,
-                        top_p = None,
-                        max_tokens = reply_tokens,
-                        tool_choice = "none",
-                        enable_prompt_caching = False,
-                        enable_thinking = cloud_compaction.summary_thinking(
-                            getattr(client, "provider_type", None),
-                            getattr(client, "api_type", None),
-                        ),
-                        thread_id = payload.thread_id,
-                    )
+            for index, chunk in enumerate(chunks):
+                request = cloud_compaction.summary_request_messages(summary, chunk)
+                request_tokens = sum(
+                    estimate_message_tokens_without_unpriced_media(m) for m in request
                 )
+                first_line_timeout = cloud_compaction.summary_first_line_timeout(request_tokens)
+                try:
+                    summary = await _summarise(request, reply_tokens, first_line_timeout)
+                except cloud_compaction.SummaryCutOff:
+                    # One retry with twice the room, on the last call only: an earlier one would carry
+                    # the longer summary into a chunk sized for a reply-length one.
+                    if index < len(chunks) - 1:
+                        raise
+                    retry_tokens = 2 * reply_tokens
+                    if room:
+                        retry_tokens = min(retry_tokens, room - request_tokens - 1_000)
+                    if retry_tokens <= reply_tokens:
+                        raise
+                    summary = await _summarise(request, retry_tokens, first_line_timeout)
         except cloud_compaction.SummaryFailed as exc:
             logger.warning("external_provider.summary_failed", error = str(exc), model = model)
             summary_failed = True
@@ -31386,6 +31486,49 @@ async def _proxy_to_external_provider(
         served = await client.served_context_window(model)
         return min(served, payload.context_window or served) if served else None
 
+    _reply_room = None
+    if (
+        managed is None
+        and provider_type in _WINDOW_ROOM_REPLY_PROVIDERS
+        and _effective_max_tokens(payload) is None
+    ):
+        from routes.providers import cached_catalog_model_context
+
+        _reply_window = None
+        # Responses endpoints are hosted gateways with their own output caps.
+        if api_type != "responses":
+            # Ollama's loaded num_ctx is often far below the catalogued window.
+            _reply_window = min(
+                filter(None, (payload.context_window, await client.served_context_window(model))),
+                default = None,
+            ) or cached_catalog_model_context(provider_type, model)
+        if _reply_window:
+            _room_threshold = (
+                payload.compaction_threshold
+                if payload.context_overflow == "truncate_oldest"
+                else None
+            )
+            _room_payload = payload
+
+            def _reply_room(
+                messages,
+                tools = _external_fit_tools,
+                threshold = None,
+            ) -> int:
+                # Fitted prompts are counted as sent: an irreducible turn can stay above the threshold.
+                return _window_room_max_tokens(
+                    _reply_window,
+                    _external_token_counter(_room_payload, tools)(messages),
+                    threshold,
+                )
+
+            payload = payload.model_copy(
+                update = {"max_tokens": _reply_room(chat_messages, threshold = _room_threshold)}
+            )
+        elif _ui_stream_events_enabled(request):
+            # Studio's Max with no window to read; an API caller keeps the provider's default.
+            payload = payload.model_copy(update = {"max_tokens": _UNKNOWN_WINDOW_MAX_TOKENS})
+
     _external_truncation = None
     _external_max_tokens = _effective_max_tokens(payload)
     _compaction_fallback = None
@@ -31765,6 +31908,7 @@ async def _proxy_to_external_provider(
                     message_fitter = _external_fit_steps if _fit_active else None,
                     overflow_refitter = _external_overflow_refit if _overflow_recovery else None,
                     first_turn_overrides = _first_turn_overrides,
+                    reply_limit = _reply_room,
                     enabled_tools = loop_hosted_tools or None,
                     stream = True,
                     **_provider_kwargs,
@@ -31835,6 +31979,8 @@ async def _proxy_to_external_provider(
                     _sent_messages, overrides["max_tokens"], truncation_line = fit
                     if truncation_line:
                         yield truncation_line
+                if _reply_room is not None:
+                    overrides["max_tokens"] = _reply_room(_sent_messages)
                 async for line in _send_plain(_sent_messages, **overrides):
                     yield line
 
@@ -31846,6 +31992,8 @@ async def _proxy_to_external_provider(
                 if fit is None or fit[0] is None:
                     return None
                 refit_messages, max_tokens, truncation_line = fit
+                if _reply_room is not None:
+                    max_tokens = _reply_room(refit_messages)
 
                 async def _resend():
                     if truncation_line:
@@ -44621,13 +44769,12 @@ def _normalize_openai_image_parts_for_llama(openai_messages: list[dict], on_imag
             url = image_url.get("url", "")
             if not url.startswith("data:"):
                 url = fetches.inline(url)
-                if not url.startswith("data:"):
-                    # llama-server also accepts bare base64 payloads.
-                    continue
-                image_url["url"] = url
+                if url.startswith("data:"):
+                    image_url["url"] = url
 
             try:
-                _, b64data = url.split(",", 1)
+                # llama-server also accepts bare base64; decode it here too, or FFmpeg reads it unchecked.
+                b64data = url.split(",", 1)[1] if url.startswith("data:") else url
                 data_url = _llama_image_data_url_from_b64(b64data)
             except Exception:
                 raise HTTPException(
@@ -52265,6 +52412,21 @@ def _shift_kwargs(generate: Any, request: Any) -> dict:
     raise ValueError("Shift is supported on the diffusers engine only.")
 
 
+def _cfg_interval_kwargs(generate: Any, request: Any) -> dict:
+    """``cfg_interval_end`` (Fast CFG) for an engine whose generate() takes it; omitted when unset, refused
+    (ValueError -> 400) on an engine without it."""
+    value = getattr(request, "cfg_interval_end", None)
+    if value is None:
+        return {}
+    try:
+        import inspect
+        if "cfg_interval_end" in inspect.signature(generate).parameters:
+            return {"cfg_interval_end": value}
+    except (TypeError, ValueError):
+        pass
+    raise ValueError("Fast CFG is supported on the diffusers engine only.")
+
+
 def _inpaint_mask_kwargs(generate: Any, request: Any) -> dict:
     """Inpaint mask kwargs generate() accepts; only the set ones, so an untouched request is unchanged."""
     try:
@@ -52466,6 +52628,7 @@ async def _external_image_generation(
         or body.hires is not None
         or body.upscale_model
         or body.detailer is not None
+        or body.cfg_interval_end is not None
     ):
         raise HTTPException(
             status_code = 400,
@@ -53066,6 +53229,7 @@ async def _generate_diffusion_image_run(
                     **_sampler_kwargs(backend.generate, request.sampler, request.schedule_type),
                     **_sd_controls_kwargs(backend.generate, request),
                     **_shift_kwargs(backend.generate, request),
+                    **_cfg_interval_kwargs(backend.generate, request),
                     **_inpaint_mask_kwargs(backend.generate, request),
                     **_hires_kwargs(backend.generate, request),
                 )
@@ -53240,6 +53404,7 @@ async def _generate_diffusion_image_run(
                         **{
                             key: result[key]
                             for key in (
+                                "cfg_interval_end",
                                 "shift",
                                 "base_shift",
                                 "max_shift",

@@ -1047,6 +1047,9 @@ export const nl = {
       "Zoek en download in plaats daarvan via ModelScope. Je kunt terugschakelen in Instellingen.",
     useModelScopeFailed: "Kan niet overschakelen naar ModelScope.",
     updateToken: "Token bijwerken",
+    linkedModelTitle: "{model} laden?",
+    linkedModelBody: "Een link heeft deze pagina geopend en vraagt dit model te downloaden en te laden.",
+    linkedModelLoad: "Laden",
     hfToken: {
       label: "HF-token",
       saved: "Opgeslagen",
@@ -2625,12 +2628,16 @@ export const nl = {
         label: "Installatietype",
         description:
           "Alleen chat (GGUF). De volledige installatie voegt training, export, video, safetensors-modellen en extra functies voor het genereren van afbeeldingen toe.",
+        descriptionMlx:
+          "Alleen chat (GGUF/MLX). De volledige installatie voegt training, export, video, safetensors-modellen en extra functies voor het genereren van afbeeldingen toe.",
         descriptionCpu:
           "Alleen chat (GGUF). Er is geen ondersteunde GPU gevonden, dus de volledige installatie voegt training op de CPU toe.",
         action: "Upgraden naar volledige installatie",
         confirmTitle: "Upgraden naar de volledige installatie?",
         confirmDescription:
           "Deze installatie voor Alleen chat draait GGUF-modellen. De volledige installatie voegt PyTorch toe voor de GPU van deze machine, waarmee training, export, video, safetensors-modellen en extra functies voor het genereren van afbeeldingen beschikbaar worden. Er worden enkele gigabytes gedownload (minimaal 5 GB schijfruimte) en de server wordt opnieuw gestart. Chats, modellen en instellingen blijven behouden. Dit kan enkele minuten duren.",
+        confirmDescriptionMlx:
+          "Deze installatie voor Alleen chat draait GGUF/MLX-modellen. De volledige installatie voegt PyTorch toe voor de GPU van deze machine, waarmee training, export, video, safetensors-modellen en extra functies voor het genereren van afbeeldingen beschikbaar worden. Er worden enkele gigabytes gedownload (minimaal 5 GB schijfruimte) en de server wordt opnieuw gestart. Chats, modellen en instellingen blijven behouden. Dit kan enkele minuten duren.",
         confirmDescriptionCpu:
           "Deze installatie voor Alleen chat draait GGUF-modellen. Er is op deze machine geen ondersteunde GPU gevonden, dus de volledige installatie voegt PyTorch voor de CPU toe, waarmee training op de CPU beschikbaar wordt. Training op de CPU is veel trager dan op een GPU. Er is minimaal 5 GB schijfruimte nodig en de server wordt opnieuw gestart. Chats, modellen en instellingen blijven behouden. Dit kan enkele minuten duren.",
         confirmAction: "Upgraden",
@@ -2828,7 +2835,7 @@ export const nl = {
         oldWebkitWarning:
           "WebKitGTK {version} op Wayland: GPU-rendering kan bij het starten crashen op NVIDIA met fractionele schaling (WebKit-bug 280210). Als dat gebeurt, schakelt Unsloth vanzelf terug naar CPU-rendering. Op WebKitGTK 2.50.4 leverde het geen meetbare versnelling op (in beide gevallen 8 fps), dus Aan wordt hier niet aanbevolen.",
         oldDriverWarning:
-          "NVIDIA-stuurprogramma {version} op X11: Unsloth houdt GPU-rendering uit tot het stuurprogramma versie 610 of nieuwer is. Oudere stuurprogramma's lekken per frame een bestandsdescriptor, en het venster stopt binnen enkele minuten met tekenen.",
+          "NVIDIA-stuurprogramma {version} op X11: Unsloth houdt GPU-rendering uit tot het stuurprogramma versie 590 of nieuwer is. Oudere stuurprogramma's lekken per frame een bestandsdescriptor, en het venster stopt binnen enkele minuten met tekenen.",
         fallbackNote:
           "GPU-rendering is bij het starten gecrasht op dit systeem, dus Unsloth gebruikt CPU-rendering.",
         tryAgain: "GPU opnieuw proberen",

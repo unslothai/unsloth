@@ -169,49 +169,63 @@ def _assert_component_grid(pipe: Any) -> None:
         )
 
 
-def _load_conditioners(cfg, device):
-    """Loads only the named conditioning components, not the transformer; omit workflow=, which prunes the block graph statically and cannot be undone."""
+def _load_conditioners(
+    cfg,
+    device,
+    *,
+    text = True,
+    vaes = True,
+    pipe = None,
+):
+    """Loads only the named conditioning components, not the transformer; omit workflow=, which prunes the block graph statically and cannot be undone.
+    ``text`` / ``vaes`` pick the halves a partial cache miss needs (a clip-only edit never reads the conditioner);
+    ``pipe`` adds a half to a pipeline an earlier call opened."""
     import torch
-    from diffusers import ModularPipeline
 
     from core.inference.diffusion import hub_cache_dir
 
     # Pin the cache dir: diffusers falls back to an import-time hub default, and this subprocess lacks the cache wrapper, so components get re-downloaded.
     cache_dir = hub_cache_dir()
-    pipe = ModularPipeline.from_pretrained(cfg.base_model, token = cfg.hf_token, cache_dir = cache_dir)
+    if pipe is None:
+        from diffusers import ModularPipeline
+        pipe = ModularPipeline.from_pretrained(
+            cfg.base_model, token = cfg.hf_token, cache_dir = cache_dir
+        )
     from core.inference.diffusion_component_fetch import load_components_strict
 
     # load_components swallows per-component failures (a missing token, a full disk); the strict call raises them.
     auth = {"token": cfg.hf_token} if cfg.hf_token else {}
-    load_components_strict(
-        pipe,
-        names = [n for n in _H3_TEXT_COMPONENTS if n != "text_encoder"],
-        torch_dtype = torch.bfloat16,
-        cache_dir = cache_dir,
-        **auth,
-    )
-    te_config = _read_layers_config(pipe, cache_dir, auth)
-    load_components_strict(
-        pipe,
-        names = ["text_encoder"],
-        torch_dtype = torch.bfloat16,
-        cache_dir = cache_dir,
-        **({"config": te_config} if te_config is not None else {}),
-        **auth,
-    )
-    if te_config is not None:
-        _finish_read_layers(pipe.text_encoder)
-    # Moved before the VAEs load, so the host never holds both; the VAEs move after it is freed (_train_h3).
-    pipe.text_encoder.to(device)
-    load_components_strict(
-        pipe,
-        names = list(_H3_VAE_COMPONENTS),
-        torch_dtype = torch.float32,
-        cache_dir = cache_dir,
-        **auth,
-    )
-    _drop_vae_decoders(pipe)
-    _assert_component_grid(pipe)
+    if text:
+        load_components_strict(
+            pipe,
+            names = [n for n in _H3_TEXT_COMPONENTS if n != "text_encoder"],
+            torch_dtype = torch.bfloat16,
+            cache_dir = cache_dir,
+            **auth,
+        )
+        te_config = _read_layers_config(pipe, cache_dir, auth)
+        load_components_strict(
+            pipe,
+            names = ["text_encoder"],
+            torch_dtype = torch.bfloat16,
+            cache_dir = cache_dir,
+            **({"config": te_config} if te_config is not None else {}),
+            **auth,
+        )
+        if te_config is not None:
+            _finish_read_layers(pipe.text_encoder)
+        # Moved before the VAEs load, so the host never holds both; the VAEs move after it is freed (_train_h3).
+        pipe.text_encoder.to(device)
+    if vaes:
+        load_components_strict(
+            pipe,
+            names = list(_H3_VAE_COMPONENTS),
+            torch_dtype = torch.float32,
+            cache_dir = cache_dir,
+            **auth,
+        )
+        _drop_vae_decoders(pipe)
+        _assert_component_grid(pipe)
     return pipe
 
 
@@ -729,9 +743,12 @@ def _prepare_h3_conditioning(
         )
         return caption_embeds, cache
 
-    # Phase 1: conditioning. The 63 GiB Qwen3-VL conditioner is resident here and nowhere else.
+    # Phase 1: conditioning. The 63 GiB Qwen3-VL conditioner is resident here and nowhere else, and only when a
+    # caption missed: a clip-only edit loads the VAE encoders alone, a caption-only edit the conditioner alone.
+    text_loaded = len(caption_embeds) < len(to_encode)
+    vaes_loaded = len(clip_entries) < len(clip_paths)
     with isolated_sampling(device, False):
-        pipe = _load_conditioners(cfg, device)
+        pipe = _load_conditioners(cfg, device, text = text_loaded, vaes = vaes_loaded)
         # The load can move the revision (a first run read "unresolved", or the fetch pulled a newer snapshot):
         # what was served under the old namespace is dropped and everything is read and written under the new one.
         if pcache is not None:
@@ -746,6 +763,10 @@ def _prepare_h3_conditioning(
                         caption_embeds[cap] = hit[0]
         for cap in to_encode:
             if cap not in caption_embeds:
+                if not text_loaded:
+                    # Only a namespace the load moved to can miss a caption the first lookup served.
+                    pipe = _load_conditioners(cfg, device, text = True, vaes = False, pipe = pipe)
+                    text_loaded = True
                 caption_embeds[cap] = _encode_prompt(pipe, cap, device)
                 if pcache is not None:
                     _cache_put(pcache, pcache.text_key(cap), (caption_embeds[cap],))
@@ -773,6 +794,15 @@ def _prepare_h3_conditioning(
             # A namespace the load moved to may already hold this clip.
             hit = _cache_get(pcache, key)
             entry = tuple(hit) if hit is not None else None
+        if entry is None and not vaes_loaded:
+            # The VAEs were skipped (every clip hit) until a namespace the load moved to missed one.
+            with isolated_sampling(device, False):
+                pipe = _load_conditioners(cfg, device, text = False, vaes = True, pipe = pipe)
+            vaes_loaded = True
+            for attr in _H3_VAE_COMPONENTS:
+                module = getattr(pipe, attr, None)
+                if module is not None:
+                    module.to(device)
         if entry is None:
             frames, waveform = decode_clip(
                 path,

@@ -445,7 +445,7 @@ test("composer search keeps Mac-native repos, as the header picker did", () => {
   );
   assert.match(
     picker,
-    /discoverListsCheckpoints\(\s+isMac,[\s\S]{0,120}?\) &&\s+isRecommendableFormat\(r\.id, r\.isGguf, true, r\.quantMethod\)/,
+    /discoverListsCheckpoints\(\s+isMac,[\s\S]{0,240}?\) &&\s+isRecommendableFormat\(r\.id, r\.isGguf, true, r\.quantMethod\)/,
   );
 });
 

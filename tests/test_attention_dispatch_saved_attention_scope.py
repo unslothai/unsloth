@@ -120,10 +120,21 @@ def test_auto_mode_still_routes_inside_unsloth_block(monkeypatch, auto_mode):
     assert _graph_breaks() >= 1
 
 
-def test_explicit_setting_is_unchanged(monkeypatch, auto_mode):
-    # UNSLOTH_GC_SAVE_ATTENTION=1 (min_seq None) keeps routing every training call, as before.
+@pytest.mark.parametrize("zoo", ["frame_aware", "older"])
+def test_explicit_setting_outside_a_frame(monkeypatch, auto_mode, zoo):
+    # UNSLOTH_GC_SAVE_ATTENTION=1 (min_seq None), no checkpoint frame. A zoo with saved_attention_skip_slot makes
+    # the route frame-aware (#19112): the call stays in the caller's graph, so fullgraph=True compiles. An older
+    # zoo keeps the previous rule: every training call routed (a break per layer), except on ROCm.
     monkeypatch.setattr(ad, "_SAVE_ATTENTION_MIN_SEQ", None)
-    assert _graph_breaks() >= 1
+    if zoo == "older":
+        monkeypatch.delattr(SA, "saved_attention_skip_slot", raising = False)
+        breaks = _graph_breaks()
+        assert breaks == 0 if ad._ROCM_SDPA_GUARD else breaks >= 1, breaks
+        return
+    if getattr(SA, "saved_attention_skip_slot", None) is None:
+        pytest.skip("this unsloth_zoo has no saved_attention_skip_slot")
+    assert _graph_breaks() == 0
+    assert _graph_breaks(fullgraph = True) == 0
 
 
 @pytest.mark.parametrize("setting", ["0", "false"])

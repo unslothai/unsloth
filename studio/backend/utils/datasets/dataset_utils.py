@@ -25,6 +25,7 @@ from .format_conversion import (
     convert_sharegpt_with_images_to_vlm_format,
     convert_video_to_vlm_format,
     own_message_videos,
+    require_own_message_images,
     normalize_chatml_roles,
 )
 from .chat_templates import (
@@ -1338,6 +1339,21 @@ def format_and_template_dataset(
                     "errors": errors,
                 }
             warnings.append("Dataset already in standard VLM messages format")
+
+        try:
+            require_own_message_images(dataset)
+        except Exception as e:
+            errors.append(f"Failed to read the images of VLM messages rows: {e}")
+            return {
+                "dataset": dataset,
+                "detected_format": vlm_structure["format"],
+                "final_format": "vlm_conversion_failed",
+                "is_vlm": True,
+                "success": False,
+                "requires_manual_mapping": True,
+                "warnings": warnings,
+                "errors": errors,
+            }
 
         return {
             "dataset": dataset,
