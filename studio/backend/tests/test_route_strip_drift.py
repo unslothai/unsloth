@@ -105,3 +105,14 @@ def test_route_strip_is_disabled_when_healing_is_off(route_strip):
 )
 def test_route_strip_keeps_rehearsal_and_marker_rules_apart(route_strip, text, expected):
     assert route_strip(text, auto_heal_tool_calls = True, enabled_tool_names = ENABLED) == expected
+
+
+@pytest.mark.parametrize(
+    "text, expected",
+    [
+        ('a\x000\x00 <tool_call>{"name":"search"}</tool_call>', "a\x000\x00 "),
+        ("a\x000\x00 `get_weather[ARGS]{}`", "a\x000\x00 `get_weather[ARGS]{}`"),
+    ],
+)
+def test_route_strip_leaves_nul_digit_runs_alone(route_strip, text, expected):
+    assert route_strip(text, auto_heal_tool_calls = True, enabled_tool_names = ENABLED) == expected

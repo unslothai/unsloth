@@ -7013,17 +7013,20 @@ def _strip_tool_xml_for_display(
         if is_last:
             # A rehearsal the bracket scan kept is an example: hide it whole, never past the code span it sits in.
             kept, parts, pos, spans = [], [], 0, _code_spans(seg)
+            # The placeholder char must not occur in seg, or restoring would rewrite the model's own text.
+            mark = next(chr(c) for c in range(0xE001, 0xF900) if chr(c) not in seg)
             for m in _re.finditer(r"(?<!\[CALL_ID\])\b[\w-]+\[ARGS\]\s*\{", seg):
                 end = _balanced_json_span(seg, m.end() - 1)
                 code_end = next((e - 1 for b, e in spans if b <= m.start() < e), None)
                 if code_end is not None:
                     end = code_end if end is None else min(end, code_end)
                 if m.start() >= pos and end is not None:
-                    parts += [seg[pos : m.start()], f"\0{len(kept)}\0"]
+                    parts += [seg[pos : m.start()], f"{mark}{len(kept)}{mark}"]
                     kept.append(seg[m.start() : end + 1])
                     pos = end + 1
             seg = _TOOL_XML_RE.sub("", "".join(parts) + seg[pos:])
-            seg = _re.sub(r"\0(\d+)\0", lambda m: kept[int(m[1])], seg)
+            if kept:
+                seg = _re.sub(f"{mark}(\\d+){mark}", lambda m: kept[int(m[1])], seg)
             # Then the truncated rehearsal tail, gated and code-aware as in strip_segment, once outer calls are gone.
             return apply_tool_strip_patterns(seg, [_REHEARSAL_TAIL_STRIP_RE], enabled_tool_names)
         return _TOOL_XML_CLOSED_RE.sub("", seg)
