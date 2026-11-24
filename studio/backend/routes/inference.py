@@ -19388,20 +19388,33 @@ class _QuantShortBesideItsRepo(Exception):
     pass
 
 
+_TWIN_SETTINGS = (
+    "n_ctx",
+    "chat_template_override",
+    "cache_type_kv",
+    "disable_vision",
+    "speculative_type",
+    "spec_draft_n_max",
+    "n_parallel",
+    "reasoning_budget",
+    "reasoning_budget_message",
+    "engram_precision",
+    "extra_args",
+)
+
+
 def _served_twice(slot) -> tuple[bool, Optional[_ExtraSlot]]:
     """Whether another slot serves this one's exact checkpoint and quant, and which."""
-
-    from dataclasses import replace
 
     def identity(llama):
         if not getattr(llama, "is_loaded", False) or not getattr(llama, "hf_variant", None):
             return None
-        # Settings too: a twin launched with another context or template is not this load.
+        # What a request sees, not placement or admission: a twin with another context or
+        # template is not this load.
         intent = getattr(llama, "last_load_intent", None)
-        if intent is not None:
-            intent = replace(intent, hf_token = None, verified_gguf = None)
+        served = tuple(getattr(intent, name, None) for name in _TWIN_SETTINGS)
         # Case kept: two local paths differing only in case are two files on most filesystems.
-        return (str(llama.model_identifier), llama.hf_variant.casefold(), intent)
+        return (str(llama.model_identifier), llama.hf_variant.casefold(), served)
 
     own = identity(slot.llama)
     for other in (None, *model_slots.visible()):

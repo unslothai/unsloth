@@ -1096,6 +1096,10 @@ def test_a_fallback_onto_a_served_quant_keeps_one_copy(backends, monkeypatch):
     lower.llama.last_load_intent = llama_cpp.GgufLoadIntent("/m/b.gguf", n_ctx = 4096)
     twin.llama.last_load_intent = llama_cpp.GgufLoadIntent("/m/b.gguf", n_ctx = 32768)
     assert inf._served_twice(twin) == (False, None)
+    twin.llama.last_load_intent = llama_cpp.GgufLoadIntent(
+        "/m/b.gguf", n_ctx = 4096, refuse_partial_gpu_fit = True, gpu_ids = (1,)
+    )
+    assert inf._served_twice(twin) == (True, lower)
 
 
 def test_an_alongside_load_counts_as_activity(backends, monkeypatch):
