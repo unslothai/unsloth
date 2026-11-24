@@ -92,6 +92,8 @@ studio = [
     "backend/core/inference/nvfp4_gate_record.json",
     # ROCm GEMM tables: if missing from the wheel, gfx1151 silently falls back to the slower pick.
     "backend/core/inference/rocm_gemm_tables/*.csv",
+    # ROCm MIOpen find-db / perf-db per exact stack: if missing from the wheel, gfx1151 VAE convs take the slower pick.
+    "backend/core/inference/rocm_miopen_db/*/*",
     "backend/core/data_recipe/oxc-validator/*.json",
     "backend/core/data_recipe/oxc-validator/*.mjs",
     "backend/core/inference/bundled_skills/**/*.md",

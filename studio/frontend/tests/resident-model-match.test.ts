@@ -55,6 +55,22 @@ test("a path naming the same file matches whatever its separators", () => {
   );
 });
 
+test("a quant loaded beside another quant of its repo is still the resident model", () => {
+  const twin = {
+    active_model: REPO_ID,
+    model_identifier: `${REPO_ID}:Q4_K_M`,
+    gguf_variant: "Q4_K_M",
+  };
+  assert.equal(
+    residentModelMatchesPick(twin, { id: REPO_ID, ggufVariant: "Q4_K_M" }),
+    true,
+  );
+  assert.equal(
+    residentModelMatchesPick(twin, { id: REPO_ID, ggufVariant: "Q8_0" }),
+    false,
+  );
+});
+
 test("a different quant of the same repo is a real reload", () => {
   assert.equal(
     residentModelMatchesPick(pinnedStatus, {

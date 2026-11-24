@@ -4720,9 +4720,7 @@ def _tp_load_quantizing(original, cls, name, args, kwargs, mesh, state):
     4-bit projection weight of the plan and each 4-bit routed expert stack replaced by this rank's shard as soon
     as transformers sets it (bitwise what apply_tensor_parallel cuts from a full load), so a rank holds its
     shards, the replicated tensors and the one tensor being converted. transformers 4.x loads in full."""
-    import os
-
-    from .fsdp2_load import _ASYNC_LOAD_ENV, _shard_allocator_warmup
+    from .fsdp2_load import sharded_load_memory
 
     try:
         from transformers import core_model_loading as loading
@@ -4823,18 +4821,11 @@ def _tp_load_quantizing(original, cls, name, args, kwargs, mesh, state):
     loading.set_param_for_module = set_and_shard
     state["active"] = True
     token = _TP_QUANTIZE_OWNER.set(owner)
-    restore_warmup = _shard_allocator_warmup(tp)
-    # As fsdp2_load._load_quantizing: no worker threads holding whole full-precision tensors ahead of the setter.
-    forced_sync = _ASYNC_LOAD_ENV not in os.environ
-    if forced_sync:
-        os.environ[_ASYNC_LOAD_ENV] = "1"
     try:
-        loaded = original(cls, name, *args, **kwargs)
+        with sharded_load_memory(tp):
+            loaded = original(cls, name, *args, **kwargs)
     finally:
-        if forced_sync:
-            os.environ.pop(_ASYNC_LOAD_ENV, None)
         loading.set_param_for_module = set_param
-        restore_warmup()
         _TP_QUANTIZE_OWNER.reset(token)
         state["active"] = False
     model = loaded[0] if isinstance(loaded, tuple) else loaded
