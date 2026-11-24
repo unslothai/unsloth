@@ -2256,12 +2256,20 @@ def _install(
             register_route(index, head_dim, _raise_processor_floor(proc, m))
         engaged += 1
         # A layer split or CFG replica runs this processor on the selection's other cards too: the op runs the kernel
-        # only on a card whose own accuracy check passed, so check each of them here (the race stays the primary's).
+        # only on a card whose own accuracy check passed, so check each of them here (the race stays the primary's),
+        # on the primary's implementation only: a secondary whose CUDA kernel fails keeps native, not unraced Triton.
         for card in _secondary_cards(index, transformer):
             if implementation(card, head_dim) is None:
                 continue
             report[(card, int(m.heads), head_dim, name)] = verdict(
-                torch.device("cuda", card), dtype, int(m.heads), head_dim, fn, name, timed = False
+                torch.device("cuda", card),
+                dtype,
+                int(m.heads),
+                head_dim,
+                fn,
+                name,
+                timed = False,
+                impl_only = found.get("impl"),
             )
     if logger is not None:
         for key, found in report.items():
@@ -2450,7 +2458,7 @@ def install_family_auto(
                 "error": "CUDA kernel only",
             }, None
         # the accuracy check alone: the family's own race below replaces the RACE_TOKENS one
-        found = verdict(dev, dt, heads, head_dim, fn, name, timed = False)
+        found = verdict(dev, dt, heads, head_dim, fn, name, timed = False, impl_only = "cuda")
         if not found.get("ok"):
             return found, None
         if found.get("impl") != "cuda":

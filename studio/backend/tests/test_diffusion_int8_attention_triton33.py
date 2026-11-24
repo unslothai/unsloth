@@ -169,7 +169,11 @@ def test_no_kernel_verdict_names_both_reasons(monkeypatch):
     assert I._no_kernel_reason(0, 64) == "no kernel for this card (Triton: Triton is not installed)"
 
 
-def _split_flux3(monkeypatch, cuda_fails_on: int):
+def _split_flux3(
+    monkeypatch,
+    cuda_fails_on: int,
+    generic: bool = False,
+):
     """A FLUX.3 (CUDA-only Auto family) split over cards 0 and 1 on sm89: the CUDA kernel passes its race on card 0
     and fails to load on ``cuda_fails_on``. Returns (dit, probes, served-on-card-1 thunk)."""
     from contextlib import nullcontext
@@ -234,7 +238,11 @@ def _split_flux3(monkeypatch, cuda_fails_on: int):
         requires_grad = False,
     )
     with torch.no_grad():
-        installed = I.install_auto(SimpleNamespace(transformer = dit), target)
+        if generic:
+            # the generic Auto path (no family floor): the primary's own timed race, then the secondaries
+            installed = I.install_int8_attention(dit, device = "cuda:0", dtype = torch.bfloat16)
+        else:
+            installed = I.install_auto(SimpleNamespace(transformer = dit), target)
 
     def served():
         with torch.no_grad():
@@ -270,3 +278,19 @@ def test_verdict_impl_only_declines_another_implementation_unchecked(monkeypatch
     assert (
         found["ok"] is False and found["impl"] == "triton" and "cuda kernel only" in found["error"]
     )
+
+
+def test_generic_auto_secondary_whose_cuda_kernel_fails_keeps_native(monkeypatch):
+    installed, dit, probes, served = _split_flux3(monkeypatch, cuda_fails_on = 1, generic = True)
+    assert installed == 1 and dit.attention.processor._unsloth_int8
+    assert (0, "cuda", True) in probes
+    # the primary raced the CUDA kernel: card 1 may not adopt an unraced Triton stand-in
+    assert not [p for p in probes if p[0] == 1 and p[1] == "triton"]
+    assert served() == "native"
+
+
+def test_generic_auto_secondary_still_runs_the_primary_pick(monkeypatch):
+    installed, dit, probes, served = _split_flux3(monkeypatch, cuda_fails_on = -1, generic = True)
+    assert installed == 1
+    assert (1, "cuda", False) in probes
+    assert served() == "cuda"
