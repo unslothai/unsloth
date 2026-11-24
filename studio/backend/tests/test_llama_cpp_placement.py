@@ -85,6 +85,19 @@ def _write_gguf(path: Path, architecture: str = "llama") -> Path:
     return path
 
 
+# Placement reads the host's total RAM (the pinned-host share, #19231). Pin one host so a launch decides the same on a
+# 16 GB runner as on a large one; the tests about host RAM set their own after this.
+_PINNED_HOST_TOTAL_MIB = 256 * 1024
+
+
+@pytest.fixture(autouse = True)
+def _pinned_host_ram(monkeypatch):
+    monkeypatch.setattr(
+        LlamaCppBackend, "_total_system_memory_mib", staticmethod(lambda: _PINNED_HOST_TOTAL_MIB)
+    )
+    monkeypatch.setattr(LlamaCppBackend, "_cgroup_memory_limit_mib", staticmethod(lambda: None))
+
+
 def _backend(tmp_path: Path, *, vulkan: bool, memory):
     backend = LlamaCppBackend()
     gguf = _write_gguf(tmp_path / "model.gguf")
