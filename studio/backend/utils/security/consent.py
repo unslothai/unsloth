@@ -24,6 +24,7 @@ from utils.security.remote_code_scan import (
     config_declares_auto_map,
     hub_config_path,
     remote_code_config_paths,
+    versioned_config_paths,
     remote_code_fingerprint,
     repo_remote_code_files,
     scan_remote_code_files,
@@ -140,17 +141,21 @@ def _load_remote_code_configs(
     try:
         from utils.paths import is_local_path, normalize_path
 
+        names = list(remote_code_config_paths(load_subdirs))
         if is_local_path(model_name):
             root = Path(normalize_path(model_name)).expanduser()
             configs = []
-            for name in remote_code_config_paths(load_subdirs):
+            for name in names:
                 p = root.joinpath(*Path(name).parts)
                 if p.is_file():
                     configs.append(json.loads(p.read_text(encoding = "utf-8-sig")))
+                    names.extend(
+                        [n for n in versioned_config_paths(name, configs[-1]) if n not in names]
+                    )
             return configs
 
         configs = []
-        for name in remote_code_config_paths(load_subdirs):
+        for name in names:
             try:
                 p = hub_config_path(model_name, name, hf_token)
             except Exception:
@@ -158,6 +163,9 @@ def _load_remote_code_configs(
                 return None
             if p is not None:
                 configs.append(json.loads(Path(p).read_text(encoding = "utf-8-sig")))
+                names.extend(
+                    [n for n in versioned_config_paths(name, configs[-1]) if n not in names]
+                )
         # Every config was read or a genuine 404 -> an empty list is a definitive "no auto_map".
         return configs
     except Exception as exc:

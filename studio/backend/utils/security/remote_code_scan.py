@@ -60,6 +60,31 @@ def remote_code_config_paths(load_subdirs = ()) -> tuple[str, ...]:
     return tuple(paths)
 
 
+def versioned_config_paths(cfg_name: str, cfg) -> tuple[str, ...]:
+    """transformers loads a config.<version>.json named in config.json's configuration_files instead of
+    config.json, so that file's auto_map runs too: its repo path, beside the config.json."""
+    path = pathlib.PurePosixPath(cfg_name)
+    files = cfg.get("configuration_files") if isinstance(cfg, dict) else None
+    if path.name != "config.json" or not isinstance(files, (list, tuple)):
+        return ()
+    out = []
+    for name in files:
+        entry = pathlib.PurePosixPath(str(name))
+        if (
+            not isinstance(name, str)
+            or not name
+            or "\\" in name
+            or entry.is_absolute()
+            or any(
+                part in {"", ".", ".."} or pathlib.PureWindowsPath(part).drive
+                for part in entry.parts
+            )
+        ):
+            continue
+        out.append((path.parent / entry).as_posix())
+    return tuple(dict.fromkeys(out))
+
+
 class RemoteCodeUnscannable(Exception):
     """The repo's executable code could not be fully fetched/listed to scan. Raised (not returned empty) so the gate distinguishes "code PRESENT but unreadable" (offline/gated/transient/404/listing failure), which fails CLOSED, from "repo has NO .py" (empty result), where trust_remote_code is a no-op and the load is allowed. Conflating them would block a code-free repo or fail open on code we could not see."""
 
@@ -533,11 +558,16 @@ def repo_remote_code_files(
                     files[str(p.relative_to(root))] = _read_python_source(p)
             # A local config can still point auto_map at an EXTERNAL Hub repo that executes on load, so fetch it; every config that can declare auto_map is checked. The external form is owner/name--module.Class.
             ext_refs = set()
-            for name in remote_code_config_paths(load_subdirs):
+            names = list(remote_code_config_paths(load_subdirs))
+            for name in names:
                 p = root.joinpath(*pathlib.PurePosixPath(name).parts)
                 if p.is_file():
                     try:
-                        ext_refs |= _auto_map_refs(json.loads(p.read_text(encoding = "utf-8-sig")))
+                        cfg = json.loads(p.read_text(encoding = "utf-8-sig"))
+                        ext_refs |= _auto_map_refs(cfg)
+                        names.extend(
+                            [n for n in versioned_config_paths(name, cfg) if n not in names]
+                        )
                     except Exception:
                         pass
             if not _add_external_refs(files, ext_refs, hf_token, model_name):
@@ -552,7 +582,8 @@ def repo_remote_code_files(
 
         # Refs from EVERY config that can declare auto_map; an unreadable one could hide one, so fail closed.
         refs = set()
-        for cfg_name in remote_code_config_paths(load_subdirs):
+        cfg_names = list(remote_code_config_paths(load_subdirs))
+        for cfg_name in cfg_names:
             try:
                 cfg_path = hub_config_path(model_name, cfg_name, hf_token)
             except Exception as exc:
@@ -562,7 +593,11 @@ def repo_remote_code_files(
             if cfg_path is None:
                 continue
             try:
-                refs |= _auto_map_refs(json.loads(Path(cfg_path).read_text(encoding = "utf-8-sig")))
+                cfg = json.loads(Path(cfg_path).read_text(encoding = "utf-8-sig"))
+                refs |= _auto_map_refs(cfg)
+                cfg_names.extend(
+                    [n for n in versioned_config_paths(cfg_name, cfg) if n not in cfg_names]
+                )
             except Exception:
                 pass
         own_refs = {fn for repo, fn in refs if repo is None}
@@ -686,18 +721,24 @@ def external_auto_map_repos(
 
         if is_local_path(model_name):
             root = Path(normalize_path(model_name)).expanduser()
-            for cfg_name in remote_code_config_paths(load_subdirs):
+            cfg_names = list(remote_code_config_paths(load_subdirs))
+            for cfg_name in cfg_names:
                 p = root.joinpath(*pathlib.PurePosixPath(cfg_name).parts)
                 if not p.is_file():
                     continue
                 try:
-                    refs = _auto_map_refs(json.loads(p.read_text(encoding = "utf-8-sig")))
+                    cfg = json.loads(p.read_text(encoding = "utf-8-sig"))
+                    refs = _auto_map_refs(cfg)
+                    cfg_names.extend(
+                        [n for n in versioned_config_paths(cfg_name, cfg) if n not in cfg_names]
+                    )
                 except Exception:
                     continue
                 repos.update(repo for repo, _fn in refs if repo)
             return repos
 
-        for cfg_name in remote_code_config_paths(load_subdirs):
+        cfg_names = list(remote_code_config_paths(load_subdirs))
+        for cfg_name in cfg_names:
             try:
                 cfg_path = hub_config_path(model_name, cfg_name, hf_token)
             except Exception:
@@ -705,7 +746,11 @@ def external_auto_map_repos(
             if cfg_path is None:
                 continue
             try:
-                refs = _auto_map_refs(json.loads(Path(cfg_path).read_text(encoding = "utf-8-sig")))
+                cfg = json.loads(Path(cfg_path).read_text(encoding = "utf-8-sig"))
+                refs = _auto_map_refs(cfg)
+                cfg_names.extend(
+                    [n for n in versioned_config_paths(cfg_name, cfg) if n not in cfg_names]
+                )
             except Exception:
                 continue
             repos.update(repo for repo, _fn in refs if repo)
