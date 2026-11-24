@@ -278,6 +278,11 @@ def _loaded_local_model_identity() -> tuple[bool, str, str]:
     return False, "", ""
 
 
+def _names_quant(variant: str) -> bool:
+    from core.inference.openai_auto_download import looks_like_quant
+    return looks_like_quant(variant)
+
+
 def _ensure_selected_local_model_loaded(
     recipe: dict[str, Any], local_provider_names: set[str]
 ) -> tuple[Optional[str], Any]:
@@ -310,7 +315,9 @@ def _ensure_selected_local_model_loaded(
             f"Selected {selected}; active {active or 'none'}. "
             "Load the selected model again, then run the recipe."
         )
-    served = f"{target}:{gguf_variant}" if gguf_variant and len(same_repo) > 1 else None
+    # Named for the job's lifetime: a sibling quant loaded later would take a bare repo id.
+    pin = gguf_variant and (len(same_repo) > 1 or _names_quant(gguf_variant))
+    served = f"{target}:{gguf_variant}" if pin else None
     return served, match[0]
 
 

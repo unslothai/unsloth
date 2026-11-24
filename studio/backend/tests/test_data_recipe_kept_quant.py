@@ -43,7 +43,16 @@ def test_recipe_still_refuses_a_quant_that_is_not_loaded(twins):
         jobs._ensure_selected_local_model_loaded(_recipe("Q2_K"), {"local"})
 
 
-def test_a_lone_model_keeps_its_plain_name(monkeypatch):
+def test_a_lone_quant_is_pinned_before_a_sibling_loads(monkeypatch):
     monkeypatch.setattr(model_slots, "visible", lambda: [])
     monkeypatch.setattr(jobs, "_loaded_local_model_identity", lambda: (True, REPO, "Q4_K_M"))
-    assert jobs._ensure_selected_local_model_loaded(_recipe("Q4_K_M"), {"local"}) == (None, None)
+    assert jobs._ensure_selected_local_model_loaded(_recipe("Q4_K_M"), {"local"}) == (
+        f"{REPO}:Q4_K_M",
+        None,
+    )
+
+
+def test_a_lone_model_without_a_quant_keeps_its_plain_name(monkeypatch):
+    monkeypatch.setattr(model_slots, "visible", lambda: [])
+    monkeypatch.setattr(jobs, "_loaded_local_model_identity", lambda: (True, REPO, "Q4_K_M"))
+    assert jobs._ensure_selected_local_model_loaded(_recipe(None), {"local"}) == (None, None)
