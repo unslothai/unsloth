@@ -238,6 +238,11 @@ export function useNativeModelDrop(
     // "over" fires per cursor move; returning `prev` makes React bail out.
     const publish = (next: NativeModelDropState) =>
       setDropState((prev) => (sameDropState(prev, next) ? prev : next));
+    // A missed "leave" kept the overlay up through minimize / restore (#19346). A drag still over the
+    // window restores it on its next "over", from the paths kept above.
+    const clearOverlay = () => publish({ status: "idle" });
+    globalThis.window?.addEventListener("blur", clearOverlay);
+    globalThis.document?.addEventListener("visibilitychange", clearOverlay);
 
     void import("@tauri-apps/api/webview")
       .then(({ getCurrentWebview }) =>
@@ -442,6 +447,11 @@ export function useNativeModelDrop(
     return () => {
       disposed = true;
       unlisten?.();
+      globalThis.window?.removeEventListener("blur", clearOverlay);
+      globalThis.document?.removeEventListener(
+        "visibilitychange",
+        clearOverlay,
+      );
     };
   }, [addIntent, enabled]);
 
