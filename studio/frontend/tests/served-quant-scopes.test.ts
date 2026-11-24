@@ -13,7 +13,7 @@ test("deep research runs on the selected quant's copy", () => {
   const call = ADAPTER.slice(ADAPTER.indexOf("buildResearchInferenceRequest({"));
   assert.match(
     call.slice(0, 300),
-    /checkpoint: servedCheckpoint\(\s*useChatRuntimeStore\.getState\(\)\.loadedModels,\s*selectedCheckpoint,\s*runtime\.activeGgufVariant,\s*\)/,
+    /checkpoint: servedCheckpoint\(\s*runtime\.loadedModels,\s*selectedCheckpoint,\s*runtime\.activeGgufVariant,\s*\)/,
   );
 });
 

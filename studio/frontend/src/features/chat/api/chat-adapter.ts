@@ -4883,7 +4883,7 @@ export function createOpenAIStreamAdapter(
           (runtime.reasoningEnabled && runtime.reasoningEffort !== "none");
         const inferenceRequest = buildResearchInferenceRequest({
           checkpoint: servedCheckpoint(
-            useChatRuntimeStore.getState().loadedModels,
+            runtime.loadedModels,
             selectedCheckpoint,
             runtime.activeGgufVariant,
           ),

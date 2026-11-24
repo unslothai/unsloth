@@ -195,7 +195,7 @@ def test_monitor_can_unload_the_loaded_model():
         r"eject: \(modelId\) => \{\s*if \(!busy\) \{\s*handleEject\(modelId\);", controls
     )
     # /unload matches on the internal id, omitted here (a host path), so read it from status.
-    assert "resolveInferenceCheckpointId(status)" in src
+    assert "servedInferenceCheckpointId(status)" in src
     assert "unloadModel({ model_path: checkpoint })" in src
 
 

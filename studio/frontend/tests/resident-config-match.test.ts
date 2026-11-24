@@ -1560,10 +1560,9 @@ test("the shortcut re-reads and re-judges the status before adopting", () => {
     restore > hydrate,
     "the adopted pick no longer keeps its own GPU selection",
   );
-  assert.ok(
-    USE_CHAT_MODEL_RUNTIME.includes(
-      "getInferenceStatus(undefined, modelId).catch(() => null);",
-    ),
+  assert.match(
+    USE_CHAT_MODEL_RUNTIME,
+    /getInferenceStatus\(\s*undefined,\s*servedCheckpoint\([\s\S]{0,160}?\),\s*\)\.catch\(\(\) => null\);/,
     "the re-read no longer tolerates a failed status",
   );
 });
@@ -1767,7 +1766,10 @@ test("a pick asks the status about its own model and keeps or replaces the other
     USE_CHAT_MODEL_RUNTIME,
     /let keepsOthers =\s*keepModelsLoaded && !forceReload && \(paramsNow\.engine \?\? "auto"\) === "auto";[\s\S]*?const touchesOnlySelected =\s*forceReload && !isExternalModelId\(modelId\) && loadedNow\.length > 1;/,
   );
-  assert.match(USE_CHAT_MODEL_RUNTIME, /touchesOnlySelected \? modelId : undefined,/);
+  assert.match(
+    USE_CHAT_MODEL_RUNTIME,
+    /touchesOnlySelected\s*\?\s*servedCheckpoint\(loadedNow, modelId, ggufVariant\)\s*:\s*undefined,/,
+  );
   assert.match(USE_CHAT_MODEL_RUNTIME, /stopQueuedRuns\(stopDecision, keepsOthers \|\| touchesOnlySelected\);/);
   assert.match(USE_CHAT_MODEL_RUNTIME, /if \(!keepsOthers && !touchesOnlySelected\) \{\s*requestLocalPromptQueueStop\(\);/);
   assert.match(USE_CHAT_MODEL_RUNTIME, /if \(currentCheckpoint && !keepsOthers\)/);
@@ -1791,7 +1793,7 @@ test("ejects stop only the ejected model's chats; eject all asks once and unload
   );
   assert.match(
     USE_CHAT_MODEL_RUNTIME,
-    /const scope =\s*!confirmed && useChatRuntimeStore\.getState\(\)\.loadedModels\.length > 1\s*\?\s*checkpoint\s*:\s*undefined;\s*const stopDecision =\s*confirmed \?\?\s*\(await confirmStopRunningChatsIfNeeded\(\s*"Unloading the model",\s*"unload",\s*scope,\s*\)\);/,
+    /const scope =\s*!confirmed && useChatRuntimeStore\.getState\(\)\.loadedModels\.length > 1\s*\?\s*servedSelection\(\)\s*:\s*undefined;\s*const stopDecision =\s*confirmed \?\?\s*\(await confirmStopRunningChatsIfNeeded\(\s*"Unloading the model",\s*"unload",\s*scope,\s*\)\);/,
   );
   assert.match(USE_CHAT_MODEL_RUNTIME, /stopQueuedRuns\(stopDecision, Boolean\(scope\)\);/);
   assert.match(
