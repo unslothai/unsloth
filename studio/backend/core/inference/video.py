@@ -1097,6 +1097,29 @@ def h3_fp16_host_shortfall(
     )
 
 
+def _ltx25_lowram_target(
+    fam: Any,
+    target: Any,
+    *,
+    kind: str,
+    text_encoder_quant: Optional[str] = None,
+    base: Optional[str] = None,
+) -> Any:
+    """``target`` as the low-RAM route plans and loads it (a bfloat16 card) when the route engages, else ``target``."""
+    if getattr(fam, "name", None) != "ltx-2.5":
+        return target
+    from .video_ltx25_lowram import decide_lowram, storage_target
+
+    route = decide_lowram(
+        fam,
+        target,
+        model_kind = kind,
+        text_encoder_quant = text_encoder_quant,
+        base = base or getattr(fam, "base_repo", None),
+    )
+    return storage_target(target) if route.engaged else target
+
+
 def ltx25_fp16_host_shortfall(
     fam: Any,
     target: Any,
@@ -1127,7 +1150,21 @@ def ltx25_fp16_host_shortfall(
             small_host_disabled,
         )
 
-        if small_host_disabled() or host_ram_check_disabled():
+        if host_ram_check_disabled():
+            return None
+        from .video_ltx25_lowram import decide_lowram
+
+        # The low-RAM route (bf16 storage, float32 compute) serves a host short of the float32 load.
+        route = decide_lowram(
+            fam,
+            target,
+            model_kind = model_kind,
+            text_encoder_quant = text_encoder_quant,
+            base = base or getattr(fam, "base_repo", None),
+        )
+        if route.refusal is not None:
+            return route.refusal
+        if route.engaged or small_host_disabled():
             return None
         sizes = tuple(float(x) for x in (getattr(fam, "bf16_components_gb", None) or ()))
         if len(sizes) != 3:
@@ -8407,6 +8444,25 @@ class VideoBackend:
                     if gpu_ordinal is None
                     else resolve_diffusion_device_target(ordinal = gpu_ordinal)
                 )
+                card = target
+                target = _ltx25_lowram_target(
+                    fam, target, kind = kind, text_encoder_quant = text_encoder_quant, base = base
+                )
+                if target is not card and str(transformer_quant or "").strip().lower() in (
+                    "",
+                    TQ_AUTO,
+                    TQ_INT8,
+                ):
+                    # The low-RAM route offloads the DiT on an fp16-only card: read the hosted int8 file (25 GB) as
+                    # native Linears instead of pulling the 42 GB dense shards and quantising them at load.
+                    hosted = _video_native_hosted_scheme(fam, TQ_INT8, target)
+                    if native_hosted is not None and hosted is not None:
+                        native_hosted.append(hosted)
+                        logger.info(
+                            "video.ltx25_lowram: the hosted %s DiT is read as offload-safe native Linears",
+                            hosted,
+                        )
+                        return DENOISER_SEED_DECLINED
                 if target.dtype is torch.float16 and fp16_promotes_to_fp32(fam):
                     # The loader promotes fp16 to float32 here, so read the dtype the load will.
                     return None
@@ -10253,6 +10309,29 @@ class VideoBackend:
         te_auto_retry = (
             text_encoder_quant if text_encoder_quant_auto and te_auto_unavailable else None
         )
+        # LTX-2.5 on an fp16-only card whose host cannot hold the float32 load: plan and load as a bf16 card (hosted int8
+        # DiT, bf16 companions), then compute in float32 below. ``lowram_target`` is the real card, restored then.
+        lowram_target = None
+        if fam.name == "ltx-2.5":
+            from .video_ltx25_lowram import decide_lowram, storage_target
+            lowram = decide_lowram(
+                fam,
+                target,
+                model_kind = kind,
+                text_encoder_quant = text_encoder_quant,
+                base = repo_id if kind == "pipeline" else base,
+            )
+            if lowram.engaged:
+                logger.warning(
+                    "video.ltx25_lowram: engaged (%s): bf16 storage, float32 compute; route needs ~%d MiB of "
+                    "%s MiB host RAM",
+                    lowram.reason,
+                    lowram.need_mib,
+                    lowram.total_mib,
+                )
+                lowram_target, target = target, storage_target(target)
+            elif lowram.total_mib is not None:
+                logger.info("video.ltx25_lowram: not engaged (%s)", lowram.reason)
         # FlashInfer only serves hosted pre-quantised denoisers. Modular H3 installs below; a conventional load installs
         # after its live-memory plan keeps the seed (a capacity-settled seed can still be dropped).
         _nvfp4_install_wanted = (
@@ -10909,7 +10988,8 @@ class VideoBackend:
                 cache_dir = hub_cache_dir(),
                 local_files_only = local_files_only,
                 device = worker_device,
-                dtype = str(dtype).replace("torch.", ""),
+                # The low-RAM route computes in float32; so does its encoder worker.
+                dtype = "float32" if lowram_target is not None else str(dtype).replace("torch.", ""),
                 resident = encoder_resident_for_plan(plan),
                 budget_mib = worker_budget,
                 te_quant = ltx25_te_quant_scheme(text_encoder_quant),
@@ -11995,6 +12075,18 @@ class VideoBackend:
                     off_label = "leave it unset to keep the dense bf16 encoder",
                     auto_available = False,
                 )
+            )
+
+        if lowram_target is not None:
+            from .video_ltx25_lowram import upcast_compute_
+
+            # Before placement, patches and compile: they read the compute dtype off the modules.
+            kept = upcast_compute_(pipe, torch.float32)
+            dtype = torch.float32
+            target = lowram_target
+            logger.info(
+                "video.ltx25_lowram: float32 compute, bf16 weights cast per layer (MiB kept at bf16: %s)",
+                ", ".join(f"{name} {mib}" for name, mib in kept.items()),
             )
 
         # Order: step cache first (compile keys fullgraph off it), then attention, speed, placement.
