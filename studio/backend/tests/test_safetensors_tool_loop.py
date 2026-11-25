@@ -5653,3 +5653,60 @@ def test_mcp_matches_arrive_as_a_search_after_the_message(tool_choice, injected)
         )
     else:
         assert roles[-1] == "user"
+
+
+@pytest.mark.parametrize("split", [True, False])
+@pytest.mark.parametrize(
+    "t1, shown",
+    [
+        ("<think>I will search.</think>", ""),
+        ("<think>I will search.</think>Let me search.", "Let me search."),
+    ],
+)
+def test_split_reasoning_content_moves_think_blocks_into_reasoning_field(split, t1, shown):
+    t2 = "<think>A</think>x<think>B</think>"
+    seen, turns = [], iter([t1, f"{t2}<function=web_search></function>", "Done."])
+
+    def single_turn(messages, **_):
+        seen.append([dict(m) for m in messages])
+        yield next(turns)
+
+    _collect_events(
+        run_safetensors_tool_loop(
+            single_turn = single_turn,
+            messages = [{"role": "user", "content": "q"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            execute_tool = FakeExecuteTool(["ok"]),
+            nudge_tool_calls = True,
+            split_reasoning_content = split,
+        )
+    )
+    reprompt, tool_turn = [m for m in seen[2] if m["role"] == "assistant"]
+    # Unsplit, the re-prompt turn keeps the classifier's text: the visible plan, else the bare thought.
+    assert reprompt["content"] == (shown if split else (shown or t1))
+    assert reprompt.get("reasoning_content") == ("I will search." if split else None)
+    assert tool_turn["content"] == ("x" if split else t2)
+    assert tool_turn.get("reasoning_content") == ("A\nB" if split else None)
+
+
+def test_split_reasoning_content_keeps_the_intent_text_of_a_prefilled_reprompt():
+    # The prompt opened the thought, so the raw turn has no <think> to split on.
+    seen, turns = [], iter(["Plan.</think>Let me search.", "Done."])
+
+    def single_turn(messages, **_):
+        seen.append([dict(m) for m in messages])
+        yield next(turns)
+
+    _collect_events(
+        run_safetensors_tool_loop(
+            single_turn = single_turn,
+            messages = [{"role": "user", "content": "q"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            execute_tool = FakeExecuteTool(["ok"]),
+            nudge_tool_calls = True,
+            reasoning_prefilled = True,
+            split_reasoning_content = True,
+        )
+    )
+    (reprompt,) = [m for m in seen[1] if m["role"] == "assistant"]
+    assert reprompt["content"] == "Let me search."

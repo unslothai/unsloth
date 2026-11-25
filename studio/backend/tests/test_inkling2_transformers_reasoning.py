@@ -16,6 +16,7 @@ from core.inference.chat_template_helpers import (  # noqa: E402
     detect_reasoning_channel_markers_from_template,
     make_reasoning_normalizer,
     prompt_opens_reasoning_channel,
+    replays_reasoning_content,
 )
 from core.inference.native_tool_tokens import reasoning_control_tokens  # noqa: E402
 
@@ -57,6 +58,9 @@ def test_template_selects_the_inkling_markers():
     assert set(MARKERS) <= reasoning_control_tokens(MARKERS)
     assert {"<|message_model|>", "<|content_text|>"} <= reasoning_control_tokens(MARKERS)
     assert isinstance(make_reasoning_normalizer(MARKERS), InklingMessageNormalizer)
+    # The orchestrator has no tokenizer: the forwarded template decides, and only Inkling's does.
+    assert replays_reasoning_content(None, {"chat_template_info": {"template": INKLING_TEMPLATE}})
+    assert not replays_reasoning_content(None, {"chat_template_info": {"template": "<think>"}})
 
 
 def test_thought_then_answer():

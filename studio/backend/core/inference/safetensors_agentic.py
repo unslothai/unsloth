@@ -329,13 +329,33 @@ def _status_for_tool(tool_name: str, arguments: dict) -> str:
     return status_for_tool(tool_name, arguments)
 
 
+_THINK_BLOCK_RE = re.compile(r"<think>(.*?)</think>", re.DOTALL)
+
+
+def _assistant_turn_msg(content: str, *, split: bool) -> dict:
+    msg: dict = {"role": "assistant", "content": content}
+    if split and "<think>" in content:
+        thoughts = _THINK_BLOCK_RE.findall(content)
+        if thoughts:
+            msg["content"] = _THINK_BLOCK_RE.sub("", content)
+            msg["reasoning_content"] = "\n".join(thoughts)
+    return msg
+
+
 def _append_raw_turn(conversation: list, assistant_msg: dict, *, continue_final_message: bool):
     """``append_assistant_turn`` for raw-text turns: a resumed thought is replayed whole after the
     re-emitted ``<think>``; text without that opener drops it."""
+    resume_kind = trailing_assistant_resume_kind(conversation) if continue_final_message else None
+    added = assistant_msg.get("reasoning_content")
+    if resume_kind == "content" and isinstance(added, str):
+        # The merge keeps one reasoning field: a thought after resumed text must not replace the saved one.
+        saved = conversation[-1].get("reasoning_content")
+        if isinstance(saved, str) and saved:
+            assistant_msg = {**assistant_msg, "reasoning_content": f"{saved}\n{added}"}
     if not (
-        continue_final_message
-        and trailing_assistant_resume_kind(conversation) == "reasoning_content"
+        resume_kind == "reasoning_content"
         and isinstance(assistant_msg.get("content"), str)
+        and not isinstance(assistant_msg.get("reasoning_content"), str)
     ):
         append_assistant_turn(
             conversation, assistant_msg, continue_final_message = continue_final_message
@@ -573,6 +593,7 @@ def run_safetensors_tool_loop(
     sandbox_level: Optional[str] = None,
     reasoning_prefilled: bool = False,
     continue_final_message: bool = False,
+    split_reasoning_content: bool = False,
     markup = None,
     renderable_tools = None,
     context_length: Optional[int] = None,
@@ -1208,10 +1229,16 @@ def run_safetensors_tool_loop(
                         1 if already_acted else MAX_ACT_REPROMPTS,
                         len(intent_text),
                     )
+                    # The intent text has dropped the thought; the split replays it from the raw turn.
+                    replayed = intent_text
+                    if split_reasoning_content and not reasoning_prefilled:
+                        replayed = strip_tool_markup(
+                            content_accum, final = True, enabled_tool_names = _enabled_tool_names
+                        )
                     # Merge into a resumed partial: a second assistant turn breaks alternation.
                     _append_raw_turn(
                         conversation,
-                        {"role": "assistant", "content": intent_text},
+                        _assistant_turn_msg(replayed, split = split_reasoning_content),
                         continue_final_message = continue_final_message,
                     )
                     tool_hint = " or ".join(_active_tool_names(active_tools)) or "an available tool"
@@ -1396,7 +1423,7 @@ def run_safetensors_tool_loop(
             if disable_parallel_tool_use and len(tool_calls) > 1:
                 tool_calls, over_cap = tool_calls[:1], []
 
-        assistant_msg: dict = {"role": "assistant", "content": content_text}
+        assistant_msg = _assistant_turn_msg(content_text, split = split_reasoning_content)
         assistant_appended = False
         # Defer no-op nudges so one no-op does not abort the rest of the batch.
         deferred_noop_msgs: list = []

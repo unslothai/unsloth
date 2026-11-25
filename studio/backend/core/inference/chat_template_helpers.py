@@ -1700,6 +1700,16 @@ def detect_reasoning_channel_markers_from_model_info(
     return None
 
 
+def replays_reasoning_content(
+    tokenizer,
+    model_info: Optional[dict] = None,
+    tools = None,
+) -> bool:
+    """Inkling renders assistant content inside its text block, so its thought replays as a field."""
+    markers = detect_reasoning_channel_markers_from_model_info(tokenizer, model_info, tools)
+    return markers == (_INKLING_THOUGHT_OPEN, _INKLING_MESSAGE_END)
+
+
 @dataclass(frozen = True)
 class ChatTemplateRenderResult:
     """Prompt plus response-protocol metadata selected by the renderer."""
