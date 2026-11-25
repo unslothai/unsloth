@@ -921,8 +921,7 @@ def _decode_base64_payload(content_base64: str) -> bytes:
 
 
 # Match the recipe's DuckDB read: inference made "007" -> 7 and a created_at number a date.
-# utf-8-sig: pandas cannot parse the BOM that Notepad and Windows PowerShell put at the start of a file.
-_JSON_READ_OPTIONS = {"dtype": False, "convert_dates": False, "encoding": "utf-8-sig"}
+_JSON_READ_OPTIONS = {"dtype": False, "convert_dates": False}
 
 
 def _read_preview_rows_from_local_file(path: Path, preview_size: int) -> list[dict[str, Any]]:
@@ -1635,6 +1634,9 @@ def inspect_seed_upload(payload: SeedInspectUploadRequest) -> SeedInspectRespons
             )
 
     file_bytes = _decode_base64_payload(payload.content_base64)
+    if ext in (".csv", ".json", ".jsonl"):
+        # Notepad / PowerShell BOM: pandas rejects it in JSON, DuckDB reads a .json array as one "json" column.
+        file_bytes = file_bytes.removeprefix(b"\xef\xbb\xbf")
     if not file_bytes:
         raise HTTPException(status_code = 400, detail = "empty upload payload")
     if len(file_bytes) > LOCAL_SEED_UPLOAD_MAX_BYTES:
