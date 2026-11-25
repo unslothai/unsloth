@@ -1461,6 +1461,43 @@ def _scale_inputs_embeds(inputs_embeds, factor, from_caller):
     return (inputs_embeds.detach() * factor).requires_grad_(inputs_embeds.requires_grad)
 
 
+def _split_layer_rope_tables(model, device, position_embeddings, rope_len, rows):
+    """Per-layer cos / sin for a model split over GPUs (device_map), or None when every layer sits on
+    `device`. accelerate's hooks otherwise copy the whole cos / sin tables from the first card to a
+    split layer's card on every call of that layer (forward and checkpoint recompute): 4 cross-device
+    copies per layer per micro-batch, each kept alive for backward. The rotary cache already keeps a
+    table per card, built the same way (so bit-identical), so each layer gets its own card's table."""
+    layers = model.layers
+    if len(layers) < 2 or getattr(layers, "_unsloth_block_swap", None) is not None:
+        return None
+
+    def device_of(layer):
+        return per_layer_device(layer)[0]
+
+    try:
+        if device_of(layers[0]) == device and device_of(layers[-1]) == device:
+            return None
+        devices = [device_of(layer) for layer in layers]
+    except Exception:
+        return None
+    tables = {device: position_embeddings}
+    out = []
+    for layer_device in devices:
+        if layer_device not in tables:
+            if layer_device.type != device.type or layer_device.index is None:
+                tables[layer_device] = position_embeddings
+            else:
+                cos_sin = model.rotary_emb.get_cached(rope_len, layer_device.index)
+                if rope_len < rows and cos_sin[0].shape[0] < rows:
+                    # Same padding as the first card's tables in LlamaModel_fast_forward.
+                    cos_sin = tuple(
+                        torch.nn.functional.pad(x, (0, 0, 0, rows - x.shape[0])) for x in cos_sin
+                    )
+                tables[layer_device] = cos_sin
+        out.append(tables[layer_device])
+    return out
+
+
 # Ported from transformers models/llama/modeling_llama.py#L825
 def LlamaModel_fast_forward(
     self,
@@ -1785,11 +1822,22 @@ def LlamaModel_fast_forward(
             )
     else:
         position_embeddings = None
+    # Split over GPUs: each layer reads its own card's tables instead of copying the first card's.
+    layer_rope_tables = (
+        None
+        if position_embeddings is None
+        else _split_layer_rope_tables(
+            self, hidden_states.device, position_embeddings, rope_len, rows
+        )
+    )
 
     for idx, decoder_layer in enumerate(self.layers):
         if output_hidden_states:
             all_hidden_states += (hidden_states,)
         past_key_value = past_key_values[idx] if past_key_values is not None else None
+        layer_position_embeddings = (
+            position_embeddings if layer_rope_tables is None else layer_rope_tables[idx]
+        )
 
         mask = causal_mask
         if IS_GEMMA2:
@@ -1803,14 +1851,16 @@ def LlamaModel_fast_forward(
         if gradient_checkpointing and not isinstance(decoder_layer, GradientCheckpointingLayer):
             # Bind this layer's values: the reentrant replay runs after the loop, when kwargs
             # (Gemma2 use_sliding_window) and past_key_value hold the last layer's.
-            def create_custom_forward(module, past_key_value, layer_kwargs):
+            def create_custom_forward(
+                module, past_key_value, layer_kwargs, layer_position_embeddings
+            ):
                 def custom_forward(*inputs):
                     return module(
                         *inputs,
                         past_key_value,
                         output_attentions,
                         padding_mask = padding_mask,
-                        position_embeddings = position_embeddings,
+                        position_embeddings = layer_position_embeddings,
                         **layer_kwargs,
                     )
 
@@ -1818,7 +1868,9 @@ def LlamaModel_fast_forward(
                 return custom_forward
 
             layer_outputs = torch.utils.checkpoint.checkpoint(
-                create_custom_forward(decoder_layer, past_key_value, dict(kwargs)),
+                create_custom_forward(
+                    decoder_layer, past_key_value, dict(kwargs), layer_position_embeddings
+                ),
                 hidden_states,
                 mask,
                 attention_mask,
@@ -1838,7 +1890,7 @@ def LlamaModel_fast_forward(
                 output_attentions = output_attentions,
                 use_cache = use_cache,
                 padding_mask = padding_mask,
-                position_embeddings = position_embeddings,
+                position_embeddings = layer_position_embeddings,
                 **kwargs,
             )
             hidden_states = layer_outputs[0]
