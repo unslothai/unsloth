@@ -586,7 +586,6 @@ function rowMaker(
 // Logo files pad their art differently: scale each so its drawn part fills the box.
 interface LogoFitResult {
   transform: string;
-  /** Opaque to every corner (a tile, not a transparent mark): shown as a disc. */
   tile: boolean;
 }
 const LOGO_FIT = new Map<string, LogoFitResult>();
@@ -616,7 +615,7 @@ function useLogoFit(src: string): LogoFitResult | undefined {
       const h = (image.naturalHeight || FIT_PX) * k;
       ctx.drawImage(image, (FIT_PX - w) / 2, (FIT_PX - h) / 2, w, h);
       const { data } = ctx.getImageData(0, 0, FIT_PX, FIT_PX);
-      // Corners of the drawn image, 1px in so antialiased edges do not count.
+      // 1px in from each corner, past the antialiasing.
       const x0 = Math.ceil((FIT_PX - w) / 2) + 1;
       const y0 = Math.ceil((FIT_PX - h) / 2) + 1;
       const x1 = Math.floor((FIT_PX + w) / 2) - 2;
@@ -1799,8 +1798,7 @@ export function ComposerModelPicker({
   }, [tabStrip]);
 
   const inventory = useChatPickerInventory({ enabled: open });
-  // Latched: an empty inventory's revalidation reads as not ready again, which flipped the open
-  // panel to On Device's "Loading models" and back.
+  // Latched: an empty inventory's revalidation reads as unready and flipped the open panel's tab.
   const [inventorySeenReady, setInventorySeenReady] = useState(false);
   if (inventory.cachedReady && !inventorySeenReady) {
     setInventorySeenReady(true);
@@ -2041,8 +2039,7 @@ export function ComposerModelPicker({
     ) {
       return fromHub;
     }
-    // The fallback is for offline or a failed search: shown while the first page loads, the
-    // Hub's rows then replaced it a moment after the panel opened.
+    // Offline or failed search only: during the first page it flashed before the Hub rows.
     if (online && hubFirstLoad) {
       return [];
     }
@@ -5632,7 +5629,7 @@ export function ComposerModelPicker({
         onOpenAutoFocus={(event) => {
           const byTouch = touchPress.current;
           touchPress.current = false;
-          // Radix would focus the first tab, flashing its tooltip for a frame before the search took focus.
+          // Radix would focus the first tab and flash its tooltip.
           event.preventDefault();
           if (isExpanded && !(byTouch && smallScreen)) {
             requestAnimationFrame(() => searchRef.current?.focus());

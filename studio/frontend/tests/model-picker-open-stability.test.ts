@@ -6,8 +6,6 @@ import test from "node:test";
 
 import { readText } from "./helpers/kit.ts";
 
-// The composer picker flickered while it opened: the list swapped sources and tabs as data landed.
-
 const PICKER =
   "../src/components/assistant-ui/composer-model-picker/composer-model-picker.tsx";
 const PAGINATED = "../src/features/hub/hooks/use-hub-paginated-search.ts";

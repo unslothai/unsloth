@@ -92,7 +92,6 @@ export function useHubPaginatedSearch<T>(
 } {
   const enabled = options?.enabled ?? true;
   const [retryNonce, setRetryNonce] = useState(0);
-  // Bumped to rerun a failed stale refresh without changing the query, so its rows stay.
   const [refreshTick, setRefreshTick] = useState(0);
   const staleFailedRef = useRef(false);
   // A thrown async generator is closed, so a failed page can only be restarted.
@@ -187,8 +186,7 @@ export function useHubPaginatedSearch<T>(
     if (sameQuery && fresh && iterRef.current !== null) {
       return;
     }
-    // A stale refresh of the same query keeps its rows until the new page lands: clearing them
-    // flashed an empty list, then the same rows, on every reopen past the TTL.
+    // A stale refresh keeps its rows until the new page lands; clearing them flashed the list.
     const revalidate =
       sameQuery &&
       stateRef.current.queryKey === queryKey &&
@@ -236,7 +234,7 @@ export function useHubPaginatedSearch<T>(
       })
       .catch((err) => {
         if (versionRef.current !== v || isAbortError(err)) return;
-        // The old rows stay; the next page request reruns the refresh.
+        // Keep the rows; fetchMore reruns it.
         if (revalidate) {
           iterDeadRef.current = true;
           staleFailedRef.current = true;
