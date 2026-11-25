@@ -7012,6 +7012,74 @@ def _display_tool_name_gate(active_tools):
     return names or None
 
 
+def _strip_tool_xml_keeping_examples(
+    seg: str,
+    enabled_tool_names,
+    reply: str = "",
+) -> str:
+    """``_TOOL_XML_RE`` removal that keeps a rehearsal the parser does not promote (inactive name, or quoted in code).
+
+    An example quoted in code is kept only once its body is balanced within the code span, and only up to that body,
+    so the arm's open-ended fallback cannot also keep a real call after it. One whose body holds a parser tool signal
+    is removed whole: the parser runs a marker call wherever it sits. Until the body closes the example is removed
+    too, so a stream never shows an example that later text would take back. ``reply`` (whose last think-split segment
+    is ``seg``) gives code context as the parser sees it: the whole reply, reasoning masked."""
+    import bisect
+
+    from core.inference.tool_call_parser import TOOL_XML_SIGNALS, _mask_blocked_bodies
+    from core.tool_healing import (
+        _balanced_json_span,
+        _code_spans,
+        _in_code,
+        _markerless_promotable,
+        _think_spans_outside_tool_markup,
+    )
+
+    spans = None
+    prefix = ""
+    out: list[str] = []
+    pos = 0
+    while (m := _TOOL_XML_RE.search(seg, pos)) is not None:
+        name = m.group("reh")
+        end = m.start()
+        if name is not None and not _markerless_promotable(name, enabled_tool_names):
+            end = m.end()
+        elif name is not None:
+            if spans is None:
+                think = _think_spans_outside_tool_markup(reply) if reply else None
+                prefix = (
+                    _mask_blocked_bodies(reply, enabled_tool_names, think = True)[0][: think[-1][1]]
+                    if think
+                    else ""
+                )
+                spans = _code_spans(prefix + seg)
+            at = len(prefix) + m.start()
+            if _in_code(spans, at):
+                span_end = spans[bisect.bisect_right(spans, (at, at)) - 1][1] - len(prefix)
+                brace = seg.find("{", m.end("reh"), min(m.end(), span_end))
+                body_end = _balanced_json_span(seg[:span_end], brace) if brace >= 0 else None
+                if body_end is None and span_end >= len(seg):
+                    # Still arriving in an open block: keep it as it streams, or drop the rest if it holds a call.
+                    rest = seg[m.end("reh") :]
+                    signal = any(sig in rest for sig in TOOL_XML_SIGNALS if sig != "[ARGS]")
+                    out.append(seg[pos : m.start()] if signal else seg[pos:])
+                    return "".join(out)
+                body = seg[brace + 1 : body_end] if body_end is not None else ""
+                # A rehearsal nested in the body is in code too, so its [ARGS] is never run.
+                if body_end is not None and not any(
+                    signal in body for signal in TOOL_XML_SIGNALS if signal != "[ARGS]"
+                ):
+                    end = body_end + 1
+        if end == m.start():
+            out.append(seg[pos : m.start()])
+            pos = m.end()
+        else:
+            out.append(seg[pos:end])
+            pos = end
+    out.append(seg[pos:])
+    return "".join(out)
+
+
 def _strip_tool_xml_for_display(
     text: str,
     *,
@@ -7027,18 +7095,7 @@ def _strip_tool_xml_for_display(
         and _DISPLAY_GEMMA_CALL_RE.search(text) is None
     ):
         return text
-    from core.tool_healing import (
-        _markerless_promotable,
-        _strip_bracket_tag_calls,
-        strip_outside_think,
-    )
-
-    def _keep_inactive_rehearsal(m) -> str:
-        # Deleting a call the parser will not promote leaves the turn empty.
-        name = m.groupdict().get("reh")
-        if name is not None and not _markerless_promotable(name, enabled_tool_names):
-            return m.group(0)
-        return ""
+    from core.tool_healing import _strip_bracket_tag_calls, strip_outside_think
 
     def _strip_segment(seg: str, is_last: bool) -> str:
         # Strips close at each call's real terminator, so a quoted </function> cannot truncate them.
@@ -7052,18 +7109,22 @@ def _strip_tool_xml_for_display(
         seg = _strip_glm_calls(seg, final = is_last)
         seg = _strip_function_xml_calls(seg, final = is_last)
         if is_last:
-            return _TOOL_XML_RE.sub(_keep_inactive_rehearsal, seg)
+            return _strip_tool_xml_keeping_examples(seg, enabled_tool_names, source)
         return _TOOL_XML_CLOSED_RE.sub("", seg)
 
     # Mask blocked-call bodies and lone backticked tags (prose) so these passes do not edit them.
     from core.inference.tool_call_parser import _mask_blocked_bodies, _unmask_blocked_bodies
 
     masked, bodies = _mask_blocked_bodies(text, enabled_tool_names, mentions = True)
+    source = masked
     result = strip_outside_think(masked, _strip_segment)
     if not bodies:
         return result
     restored = _unmask_blocked_bodies(result, bodies)
-    return restored if restored is not None else strip_outside_think(text, _strip_segment)
+    if restored is not None:
+        return restored
+    source = text
+    return strip_outside_think(text, _strip_segment)
 
 
 # Every literal some arm of ``_strip_tool_xml_for_display`` needs before it can edit text. Markerless Gemma has
@@ -7099,9 +7160,83 @@ _PENDING_MENTION_RE = _re.compile(
 _PENDING_MENTION_MAX_CHARS = 256
 
 
-def _pending_mention_cut(text: str) -> int:
-    """Where to cut a cumulative stream so a still-open backticked tool tag is held back, else -1. The cut keeps
-    the backticks, so for a tag the strip would remove anyway the held display equals the full strip."""
+def _pending_inline_rehearsal_cut(text: str, enabled_tool_names) -> int:
+    """Where a promotable rehearsal, or a tail that may still become one, starts in an inline code span still open on
+    the last line, else -1: its closing backticks turn a removed rehearsal into a kept example, which would insert
+    text before what the stream already sent. A rehearsal the strip never removes passes through, so holding it would
+    take back what was sent; a tail is held before it is sent, so releasing it only appends."""
+    line = text.rfind("\n") + 1
+    if len(text) - line > _PENDING_INLINE_MAX_CHARS or text.find("`", line) < 0:
+        return -1
+    from core.inference.tool_call_parser import _mask_blocked_bodies
+    from core.tool_healing import _markerless_promotable, _think_spans_outside_tool_markup
+
+    starts = []
+    if text.find("[ARGS]", line) >= 0:
+        starts = [
+            m.start()
+            for m in _PENDING_REHEARSAL_RE.finditer(text, line)
+            if _markerless_promotable(m.group(1), enabled_tool_names)
+        ]
+    tail = _PENDING_REHEARSAL_TAIL_RE.search(text, max(line, len(text) - 128))
+    if tail is not None and (
+        _markerless_promotable(tail.group(1), enabled_tool_names)
+        if tail.group(2)
+        else enabled_tool_names is None
+        or any(n.startswith(tail.group(1)) for n in enabled_tool_names)
+    ):
+        starts.append(tail.start())
+    if not starts:
+        return -1
+    t0 = max(0, len(text) - _PENDING_THINK_WINDOW)
+    opened = max(text.rfind("<think", t0), text.rfind("[THINK]", t0))
+    if opened > max(text.rfind("</think", t0), text.rfind("[/THINK]", t0)):
+        think = _think_spans_outside_tool_markup(text[t0:])
+        if think and think[-1][1] == len(text) - t0:
+            return -1
+    # Pair delimiters on the parser's masked view, over a bounded window.
+    lo = max(0, line - _PENDING_MASK_WINDOW)
+    masked = text[lo:]
+    if "<" in masked or "[" in masked:
+        masked = _mask_blocked_bodies(masked, enabled_tool_names, think = True)[0]
+    if len(masked) != len(text) - lo:
+        return -1
+    open_end = open_len = 0
+    i = line - lo
+    while (i := masked.find("`", i)) >= 0:
+        j = i
+        while j < len(masked) and masked[j] == "`":
+            j += 1
+        if not open_len:
+            open_end, open_len = j, j - i
+        elif j - i == open_len:
+            open_len = 0
+        i = j
+    if not open_len:
+        return -1
+    return next(
+        (s for s in sorted(starts) if s - lo >= open_end and masked[s - lo] != "\ue000"), -1
+    )
+
+
+# Bounds the per-event scan: a longer last line streams unheld.
+_PENDING_INLINE_MAX_CHARS = 4096
+_PENDING_MASK_WINDOW = 2048
+_PENDING_THINK_WINDOW = 65536
+# Call-shaped only: the strip removes ``NAME[ARGS]{``, never a bare ``NAME[ARGS]`` mention.
+_PENDING_REHEARSAL_RE = _re.compile(r"\b([\w-]+)\[ARGS\]\s*\{")
+# A name, or a name and part of ``[ARGS]`` before its ``{``, that the next chunk could still make call-shaped.
+_PENDING_REHEARSAL_TAIL_RE = _re.compile(r"\b([\w-]+)(\[(?:A(?:R(?:G(?:S(?:\]\s*)?)?)?)?)?)?\Z")
+
+
+def _pending_mention_cut(text: str, enabled_tool_names = None) -> int:
+    """Where to cut a cumulative stream so a still-open backticked tool tag or rehearsal is held back, else -1. The
+    cut keeps the backticks, so for a tag the strip would remove anyway the held display equals the full strip."""
+    cut = _pending_tag_cut(text)
+    return cut if cut >= 0 else _pending_inline_rehearsal_cut(text, enabled_tool_names)
+
+
+def _pending_tag_cut(text: str) -> int:
     lo = max(0, len(text) - _PENDING_MENTION_MAX_CHARS)
     # The tag holds no backtick, so its opening run is the last one before any trailing closers.
     end = len(text)
@@ -7121,19 +7256,32 @@ def _pending_mention_cut(text: str) -> int:
     return m.start(2)
 
 
-def _hold_pending_mention(text: str, auto_heal_tool_calls: bool) -> str:
+def _hold_pending_mention(
+    text: str,
+    auto_heal_tool_calls: bool,
+    enabled_tool_names = None,
+) -> str:
     """A cumulative stream event with a still-open backticked tool tag held back; the strips only remove text
     with Auto-Heal on, so only then can a shown tag be taken back."""
     if not auto_heal_tool_calls:
         return text
-    cut = _pending_mention_cut(text)
+    cut = _pending_mention_cut(text, enabled_tool_names)
     return text[:cut] if cut >= 0 else text
 
 
-def _held_mention_display(display_strip, raw_text: str, auto_heal_tool_calls: bool):
+def _held_mention_display(
+    display_strip,
+    raw_text: str,
+    auto_heal_tool_calls: bool,
+    enabled_tool_names = None,
+):
     """The display a turn owes when it ends with ``_hold_pending_mention`` still holding a backticked tag, else None.
     Its closing backticks never came, so it is not a mention: the full strip decides, as for a non-streaming reply."""
-    if not raw_text or not auto_heal_tool_calls or _pending_mention_cut(raw_text) < 0:
+    if (
+        not raw_text
+        or not auto_heal_tool_calls
+        or _pending_mention_cut(raw_text, enabled_tool_names) < 0
+    ):
         return None
     return display_strip.strip(raw_text)
 
@@ -7325,6 +7473,8 @@ class _ReasoningSpanGuard:
         self._claimed = False
         self._display = None
         self._display_key = None
+        # Whether the last ``strip`` held text back, judged on the very slice it held.
+        self.held = False
 
     @property
     def claimed(self) -> bool:
@@ -7376,13 +7526,16 @@ class _ReasoningSpanGuard:
         """``hold=False`` is the end-of-turn strip: a backticked tag still open there is final text."""
         wrap = self._wrap_for(text, wrapped_so_far)
         display = self._display_strip(auto_heal_tool_calls, enabled_tool_names)
-        if wrap is None:
-            return display.strip(_hold_pending_mention(text, auto_heal_tool_calls and hold))
         # Clamp: mid-stream the close tag has not arrived yet, so the whole text is trace.
-        end = min(len(self._OPEN) + int(wrap.get("len", 0)) + len(self._CLOSE), len(text))
-        return text[:end] + display.strip(
-            _hold_pending_mention(text[end:], auto_heal_tool_calls and hold)
+        end = (
+            0
+            if wrap is None
+            else min(len(self._OPEN) + int(wrap.get("len", 0)) + len(self._CLOSE), len(text))
         )
+        answer = text[end:]
+        kept = _hold_pending_mention(answer, auto_heal_tool_calls and hold, enabled_tool_names)
+        self.held = len(kept) < len(answer)
+        return text[:end] + display.strip(kept)
 
     def _display_strip(
         self, auto_heal_tool_calls: bool, enabled_tool_names
@@ -35366,7 +35519,10 @@ async def produce_openai_chat_completions(
                         nonlocal prev_text, _gguf_turn_raw
                         span = reasoning_extractor.server_wrap_span(_gguf_turn_raw)
                         clean = _held_mention_display(
-                            _gguf_display_strip, _gguf_turn_raw[span:], _gguf_auto_heal_tool_calls
+                            _gguf_display_strip,
+                            _gguf_turn_raw[span:],
+                            _gguf_auto_heal_tool_calls,
+                            _gguf_display_tool_names,
                         )
                         if clean is not None:
                             clean = _gguf_turn_raw[:span] + clean
@@ -35565,7 +35721,11 @@ async def produce_openai_chat_completions(
                         _gguf_turn_raw = raw_cumulative
                         span = reasoning_extractor.server_wrap_span(raw_cumulative)
                         clean_cumulative = raw_cumulative[:span] + _gguf_display_strip.strip(
-                            _hold_pending_mention(raw_cumulative[span:], _gguf_auto_heal_tool_calls)
+                            _hold_pending_mention(
+                                raw_cumulative[span:],
+                                _gguf_auto_heal_tool_calls,
+                                _gguf_display_tool_names,
+                            )
                         )
                         new_text = clean_cumulative[len(prev_text) :]
                         prev_text = clean_cumulative
@@ -37312,7 +37472,10 @@ async def produce_openai_chat_completions(
                 def _sf_release_held_mention():
                     nonlocal prev_text, _sf_turn_raw
                     clean = _held_mention_display(
-                        _sf_display_strip, _sf_turn_raw, _sf_auto_heal_tool_calls
+                        _sf_display_strip,
+                        _sf_turn_raw,
+                        _sf_auto_heal_tool_calls,
+                        _sf_display_tool_names,
                     )
                     _sf_turn_raw = ""
                     if clean is None:
@@ -37466,7 +37629,9 @@ async def produce_openai_chat_completions(
                     raw_cumulative = event.get("text", "")
                     _sf_turn_raw = raw_cumulative
                     clean_cumulative = _sf_display_strip.strip(
-                        _hold_pending_mention(raw_cumulative, _sf_auto_heal_tool_calls)
+                        _hold_pending_mention(
+                            raw_cumulative, _sf_auto_heal_tool_calls, _sf_display_tool_names
+                        )
                     )
                     new_text = clean_cumulative[len(prev_text) :]
                     prev_text = clean_cumulative
@@ -48062,9 +48227,9 @@ class _AnthropicToolEventRules:
         return released + self._emitter.feed(event)
 
     def _release_held_mention(self) -> list:
-        """A backticked tag still held when its turn ends never closed: emit what the full strip keeps."""
+        """Whatever a turn still holds never closed: emit what the unheld strip keeps."""
         raw, self._turn_raw = self._turn_raw, ""
-        if not raw or _pending_mention_cut(raw) < 0:
+        if not raw or not self._span_guard.held:
             return []
         return self._emitter.feed(
             {
@@ -48455,7 +48620,7 @@ def _anthropic_tool_response_from_events(
     def _release_held_mention() -> None:
         nonlocal turn_event
         last, turn_event = turn_event, None
-        if last is None or _pending_mention_cut(last["text"]) < 0:
+        if last is None or not _span_guard.held:
             return
         _add_text(
             _span_guard.strip(
