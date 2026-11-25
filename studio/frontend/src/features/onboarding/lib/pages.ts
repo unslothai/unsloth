@@ -63,7 +63,6 @@ export function stepIndex(target: number, total: number): number {
 
 export const OUTSIDE_DISMISS_WINDOW_MS = 3000;
 
-// One stray click beside the card used to end onboarding for good; only a second one within the window closes it.
 export function outsideClickCloses(
   armedAt: number | null,
   now: number,
