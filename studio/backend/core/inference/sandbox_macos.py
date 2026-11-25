@@ -232,8 +232,7 @@ def _sbpl_string(value: str) -> str:
     return json.dumps(value, ensure_ascii = False)
 
 
-# One render's spellings: build_profile asks for the same path's spellings many times (read, metadata,
-# state and write rules), each a realpath. Scoped to a single render, so a later launch re-resolves.
+# One render's path spellings (each a realpath, asked for by several rules); a later launch re-resolves.
 _render_spellings: contextvars.ContextVar = contextvars.ContextVar(
     "seatbelt_render_spellings", default = None
 )
@@ -288,7 +287,7 @@ def _sbpl_spellings(path: str, *, resolve: bool = True) -> tuple[str, ...]:
     key = (path, resolve)
     found = memo.get(key)
     if found is None:
-        # A rejected path raises here and is not stored, so every use still refuses it.
+        # A rejected path raises and is not stored, so every use still refuses it.
         found = memo[key] = _compute_sbpl_spellings(path, resolve)
     return found
 
@@ -440,7 +439,6 @@ def runtime_read_paths(workdir: str | None = None) -> tuple[str, ...]:
         pass
 
     selected: list[str] = []
-    # The four prefixes are usually one directory: drop repeated spellings before any filesystem call.
     for candidate in dict.fromkeys(candidates):
         if not candidate or not posixpath.isabs(candidate):
             continue
@@ -486,7 +484,7 @@ def runtime_paths_under(workdir: str) -> tuple[str, ...]:
             posixpath.join(prefix, name)
             for name in ("bin", "include", "lib", "lib64", "libexec", "pyvenv.cfg", "ssl", "Python")
         )
-    # sys.executable stays first, so its identity check below still applies.
+    # sys.executable stays first, keeping its identity check below.
     for candidate in dict.fromkeys(candidates):
         if not os.path.exists(candidate):
             continue

@@ -15,7 +15,7 @@ import pytest
 
 from utils import process_lifetime as pl
 
-_START = calendar.timegm((2026, 11, 4, 9, 5, 7, 0, 0, 0))  # single-digit day: %e pads it
+_START = calendar.timegm((2026, 11, 4, 9, 5, 7, 0, 0, 0))  # single-digit day: padded
 
 
 def _info(
@@ -40,8 +40,7 @@ def darwin(monkeypatch):
         spawned.append(argv)
         if "state=" in argv:
             return SimpleNamespace(stdout = "Z+\n")
-        # What macOS ps prints under TZ=UTC: strftime("%c") left-justified in 28, then comm.
-        # A fixed C-locale line, independent of this interpreter's locale.
+        # What macOS ps prints under TZ=UTC in the C locale, fixed text.
         return SimpleNamespace(
             stdout = "Wed Nov  4 09:05:07 2026      /opt/homebrew/bin/python3.12\n"
         )

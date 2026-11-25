@@ -572,7 +572,7 @@ def _darwin_bsdinfo(pid: int):
 
 
 def _darwin_c_locale_time() -> bool:
-    """ps formats lstart with strftime("%c") in the inherited locale; C and en_US give the format built here."""
+    """Whether ps, formatting in the inherited locale, prints the C-locale text built here."""
     if os.environ.get("PATH_LOCALE"):
         return False  # libc may load custom locale data
     for name in ("LC_ALL", "LC_TIME", "LANG"):
@@ -589,14 +589,13 @@ def _darwin_native_identity(pid: int):
     info = _darwin_bsdinfo(pid)
     if info is None or info is _DARWIN_ASK_PS:
         return info
-    # ps lstart: strftime("%c") of p_start.tv_sec (the field pbi_start_tvsec copies), left-justified in 28.
-    # asctime is the C-locale %c and ignores Python's own LC_TIME, which ps never sees.
+    # ps lstart is strftime("%c") of pbi_start_tvsec in 28 columns; asctime is the C-locale %c.
     try:
         lstart = time.asctime(time.gmtime(info.pbi_start_tvsec)).ljust(28)
     except (OverflowError, ValueError, OSError):
         return _DARWIN_ASK_PS
     comm = info.pbi_comm.decode("utf-8", "replace")
-    # _same_identity compares only the five lstart fields on macOS; the comm column is informational.
+    # macOS identities compare only the five lstart fields; comm is informational.
     return f"{lstart} {comm}".strip() if comm else lstart.strip()
 
 
