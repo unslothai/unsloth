@@ -240,6 +240,9 @@ def test_a_root_user_outside_group_root_hands_nothing_over(entrypoint, tmp_path)
     assert not calls.exists(), calls.read_text()
 
 
+@pytest.mark.skipif(
+    os.name == "posix" and os.geteuid() == 0, reason = "the recording sweep needs a non-root uid"
+)
 def test_a_mount_inside_the_cache_is_handed_to_its_own_owner(entrypoint, tmp_path):
     hf_home = tmp_path / "hf"
     hub = hf_home / "hub"

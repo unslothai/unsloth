@@ -57,6 +57,8 @@ def test_default_cache_is_mounted_alone(tmp_path):
     assert _mounts(tmp_path) == {
         "/workspace/.cache/huggingface": str(tmp_path / "home" / ".cache" / "huggingface")
     }
+    # the container creates hub itself, group root writable for Studio's sandbox
+    assert not (tmp_path / "home" / ".cache" / "huggingface" / "hub").exists()
 
 
 def test_hf_home_is_mounted_alone(tmp_path):
