@@ -5174,11 +5174,11 @@ export const th = {
       toneFormal: "ทางการ",
       toneCasual: "เป็นกันเอง",
       auto: "แปลขณะพิมพ์",
-      autoDescription: "เริ่มเมื่อโหลดโมเดลแล้ว การพิมพ์จะไม่เริ่มการดาวน์โหลด",
+      autoDescription: "เริ่มอัตโนมัติเมื่อโหลดโมเดลแล้ว",
       saveHistory: "บันทึกประวัติ",
       saveHistoryDescription: "เก็บไว้ในเบราว์เซอร์นี้เท่านั้น",
       showPrompt: "แสดงพรอมต์",
-      showPromptDescription: "ดูคำสั่งที่ส่งให้โมเดลแบบคำต่อคำ",
+      showPromptDescription: "ดูคำสั่งที่ส่งไปยังโมเดลอย่างละเอียด",
     },
     history: {
       title: "ประวัติ",

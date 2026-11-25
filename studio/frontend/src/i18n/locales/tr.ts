@@ -5400,11 +5400,11 @@ export const tr = {
       toneFormal: "Resmi",
       toneCasual: "Samimi",
       auto: "Yazarken çevir",
-      autoDescription: "Model yüklendikten sonra başlar. Yazmak hiçbir zaman indirme başlatmaz.",
+      autoDescription: "Model yüklendiğinde otomatik olarak başlar.",
       saveHistory: "Geçmişi kaydet",
       saveHistoryDescription: "Yalnızca bu tarayıcıda saklanır.",
       showPrompt: "İstemi göster",
-      showPromptDescription: "Modele gönderilen talimatları aynen görün.",
+      showPromptDescription: "Modele gönderilen talimatların tam halini görün.",
     },
     history: {
       title: "Geçmiş",

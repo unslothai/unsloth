@@ -5375,13 +5375,11 @@ export const fa = {
       toneFormal: "رسمی",
       toneCasual: "غیررسمی",
       auto: "ترجمه هنگام تایپ",
-      autoDescription:
-        "پس از بارگذاری مدل شروع می‌شود. تایپ کردن هرگز دانلودی را شروع نمی‌کند.",
+      autoDescription: "وقتی مدل بارگذاری شد، خودکار شروع می‌شود.",
       saveHistory: "ذخیرهٔ سابقه",
       saveHistoryDescription: "فقط در همین مرورگر نگهداری می‌شود.",
       showPrompt: "نمایش پرامپت",
-      showPromptDescription:
-        "دستورهای دقیقی را که برای مدل فرستاده می‌شود ببینید.",
+      showPromptDescription: "دستورالعمل‌های دقیق ارسال‌شده به مدل را ببینید.",
     },
     history: {
       title: "سابقه",

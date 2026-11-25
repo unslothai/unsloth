@@ -5398,11 +5398,11 @@ export const vi = {
       toneFormal: "Trang trọng",
       toneCasual: "Thân mật",
       auto: "Dịch khi bạn nhập",
-      autoDescription: "Bắt đầu sau khi mô hình được tải. Việc nhập không bao giờ kích hoạt tải xuống.",
+      autoDescription: "Tự động bắt đầu khi mô hình đã được tải.",
       saveHistory: "Lưu lịch sử",
       saveHistoryDescription: "Chỉ lưu trong trình duyệt này.",
       showPrompt: "Hiển thị lời nhắc",
-      showPromptDescription: "Xem chính xác hướng dẫn được gửi đến mô hình.",
+      showPromptDescription: "Xem hướng dẫn chính xác được gửi đến mô hình.",
     },
     history: {
       title: "Lịch sử",

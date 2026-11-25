@@ -5144,11 +5144,11 @@ export const fr = {
       toneFormal: "Formel",
       toneCasual: "Familier",
       auto: "Traduire pendant la saisie",
-      autoDescription: "Démarre une fois le modèle chargé. La saisie ne lance jamais de téléchargement.",
+      autoDescription: "Démarre automatiquement une fois le modèle chargé.",
       saveHistory: "Enregistrer l'historique",
       saveHistoryDescription: "Conservé uniquement dans ce navigateur.",
       showPrompt: "Afficher le prompt",
-      showPromptDescription: "Consultez les instructions exactes envoyées au modèle.",
+      showPromptDescription: "Voir les instructions exactes envoyées au modèle.",
     },
     history: {
       title: "Historique",

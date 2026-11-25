@@ -5451,7 +5451,7 @@ export const pl = {
       toneFormal: "Formalny",
       toneCasual: "Swobodny",
       auto: "Tłumacz podczas pisania",
-      autoDescription: "Zaczyna działać po wczytaniu modelu. Pisanie nigdy nie rozpoczyna pobierania.",
+      autoDescription: "Uruchamia się automatycznie po załadowaniu modelu.",
       saveHistory: "Zapisuj historię",
       saveHistoryDescription: "Przechowywana tylko w tej przeglądarce.",
       showPrompt: "Pokaż prompt",

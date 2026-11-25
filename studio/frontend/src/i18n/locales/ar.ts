@@ -5060,11 +5060,11 @@ export const ar = {
       toneFormal: "رسمي",
       toneCasual: "غير رسمي",
       auto: "الترجمة أثناء الكتابة",
-      autoDescription: "تبدأ بعد تحميل النموذج. الكتابة لا تبدأ أي تنزيل أبدًا.",
+      autoDescription: "يبدأ تلقائيًا عند تحميل النموذج.",
       saveHistory: "حفظ السجل",
       saveHistoryDescription: "يُحفظ في هذا المتصفح فقط.",
       showPrompt: "إظهار الموجّه",
-      showPromptDescription: "اطّلع على التعليمات المرسلة إلى النموذج بنصّها.",
+      showPromptDescription: "اطّلع على التعليمات الدقيقة المرسلة إلى النموذج.",
     },
     history: {
       title: "السجل",

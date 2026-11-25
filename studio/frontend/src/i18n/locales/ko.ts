@@ -5049,11 +5049,11 @@ export const ko = {
       toneFormal: "격식체",
       toneCasual: "일상체",
       auto: "입력하는 대로 번역",
-      autoDescription: "모델이 로드되면 시작됩니다. 입력만으로는 다운로드가 시작되지 않습니다.",
+      autoDescription: "모델이 로드되면 자동으로 시작됩니다.",
       saveHistory: "기록 저장",
       saveHistoryDescription: "이 브라우저에만 보관됩니다.",
       showPrompt: "프롬프트 표시",
-      showPromptDescription: "모델에 전송되는 정확한 지시문을 확인합니다.",
+      showPromptDescription: "모델에 보내는 정확한 지시를 확인합니다.",
     },
     history: {
       title: "기록",

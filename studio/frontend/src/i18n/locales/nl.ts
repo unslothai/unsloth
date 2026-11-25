@@ -5450,11 +5450,11 @@ export const nl = {
       toneFormal: "Formeel",
       toneCasual: "Informeel",
       auto: "Vertalen tijdens het typen",
-      autoDescription: "Begint zodra het model is geladen. Typen start nooit een download.",
+      autoDescription: "Start automatisch zodra het model is geladen.",
       saveHistory: "Geschiedenis opslaan",
       saveHistoryDescription: "Wordt alleen in deze browser bewaard.",
       showPrompt: "Prompt tonen",
-      showPromptDescription: "Bekijk de exacte instructies die naar het model worden gestuurd.",
+      showPromptDescription: "Bekijk de exacte instructies die naar het model gaan.",
     },
     history: {
       title: "Geschiedenis",

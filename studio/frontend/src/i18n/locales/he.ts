@@ -5142,11 +5142,11 @@ export const he = {
       toneFormal: "רשמי",
       toneCasual: "יומיומי",
       auto: "תרגום תוך כדי הקלדה",
-      autoDescription: "מתחיל לאחר שהמודל נטען. הקלדה לעולם לא מתחילה הורדה.",
+      autoDescription: "מתחיל אוטומטית כשהמודל נטען.",
       saveHistory: "שמירת היסטוריה",
       saveHistoryDescription: "נשמרת בדפדפן הזה בלבד.",
       showPrompt: "הצג פרומפט",
-      showPromptDescription: "הצג את ההוראות המדויקות שנשלחות למודל.",
+      showPromptDescription: "הצגת ההוראות המדויקות שנשלחות למודל.",
     },
     history: {
       title: "היסטוריה",

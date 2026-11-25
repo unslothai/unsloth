@@ -5133,11 +5133,11 @@ export const es = {
       toneFormal: "Formal",
       toneCasual: "Informal",
       auto: "Traducir mientras escribes",
-      autoDescription: "Empieza cuando el modelo está cargado. Escribir nunca inicia una descarga.",
+      autoDescription: "Empieza automáticamente cuando el modelo está cargado.",
       saveHistory: "Guardar historial",
       saveHistoryDescription: "Se guarda solo en este navegador.",
       showPrompt: "Mostrar prompt",
-      showPromptDescription: "Consulta las instrucciones exactas enviadas al modelo.",
+      showPromptDescription: "Ver las instrucciones exactas enviadas al modelo.",
     },
     history: {
       title: "Historial",

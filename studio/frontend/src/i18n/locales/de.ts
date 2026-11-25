@@ -5134,11 +5134,11 @@ export const de = {
       toneFormal: "Förmlich",
       toneCasual: "Locker",
       auto: "Beim Tippen übersetzen",
-      autoDescription: "Startet, sobald das Modell geladen ist. Tippen löst nie einen Download aus.",
+      autoDescription: "Startet automatisch, sobald das Modell geladen ist.",
       saveHistory: "Verlauf speichern",
       saveHistoryDescription: "Wird nur in diesem Browser gespeichert.",
       showPrompt: "Prompt anzeigen",
-      showPromptDescription: "Zeigt die genauen Anweisungen, die an das Modell gesendet werden.",
+      showPromptDescription: "Genaue Anweisungen an das Modell anzeigen.",
     },
     history: {
       title: "Verlauf",

@@ -5084,11 +5084,11 @@ export const en = {
       toneFormal: "Formal",
       toneCasual: "Casual",
       auto: "Translate as you type",
-      autoDescription: "Starts once the model is loaded. Typing never starts a download.",
+      autoDescription: "Starts automatically when model is loaded.",
       saveHistory: "Save history",
       saveHistoryDescription: "Kept in this browser only.",
       showPrompt: "Show prompt",
-      showPromptDescription: "See the exact instructions sent to the model.",
+      showPromptDescription: "See exact instructions sent to the model.",
     },
     history: {
       title: "History",

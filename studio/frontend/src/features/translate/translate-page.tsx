@@ -996,10 +996,10 @@ const ModelMenu = memo(function ModelMenu({
             type="button"
             aria-label={`${t("translate.model.label")}: ${label}`}
             title={t("translate.model.label")}
-            className="unsloth-thinking-pill composer-model-chip unsloth-model-selector-trigger max-w-56 pl-3.5 pr-3"
+            className="unsloth-thinking-pill composer-model-chip unsloth-model-selector-trigger h-[calc(40px*var(--ui-space-scale,1))] max-w-64"
           >
             {preparing && (
-              <Spinner className="size-[calc(14px*var(--ui-space-scale,1))] shrink-0" />
+              <Spinner className="size-[calc(15px*var(--ui-space-scale,1))] shrink-0" />
             )}
             <span className="unsloth-thinking-label composer-model-chip-name truncate">
               {label}
@@ -1007,7 +1007,7 @@ const ModelMenu = memo(function ModelMenu({
             <HugeiconsIcon
               icon={ChevronDownStandardIcon}
               strokeWidth={1.75}
-              className="size-[calc(14px*var(--ui-space-scale,1))] shrink-0 text-muted-foreground"
+              className="size-[calc(18px*var(--ui-space-scale,1))] shrink-0 text-muted-foreground"
             />
           </button>
         </DropdownMenuTrigger>
@@ -1161,15 +1161,20 @@ function OptionRow({
 }) {
   const id = useId();
   return (
-    <div className="grid gap-2">
-      <FieldLabel
-        htmlFor={id}
-        className="flex items-center justify-between gap-3 text-ui-13 font-medium text-foreground"
-      >
-        {label}
+    // The description keeps to the label's column, so it never runs under the toggle.
+    <div className="flex items-start justify-between gap-4">
+      <div className="grid min-w-0 gap-2">
+        <FieldLabel
+          htmlFor={id}
+          className="text-ui-13 font-medium text-foreground"
+        >
+          {label}
+        </FieldLabel>
+        {description && <p className={HINT}>{description}</p>}
+      </div>
+      <div className="flex h-[1lh] shrink-0 items-center text-ui-13">
         {children(id)}
-      </FieldLabel>
-      {description && <p className={HINT}>{description}</p>}
+      </div>
     </div>
   );
 }
@@ -1193,9 +1198,9 @@ function OptionsPopover() {
           size="icon"
           title={t("translate.options.label")}
           aria-label={t("translate.options.label")}
-          className={ICON_ACTION}
+          className={cn(ICON_ACTION, "size-[calc(36px*var(--ui-space-scale,1))]")}
         >
-          <HugeiconsIcon icon={Settings01Icon} className="size-4" />
+          <HugeiconsIcon icon={Settings01Icon} className="size-5" />
         </Button>
       </PopoverTrigger>
       <PopoverContent align="end" sideOffset={4} className="w-80 gap-5">
@@ -1700,9 +1705,9 @@ export function TranslatePage() {
             }
             disabled={!canSwap || busy}
             onClick={() => swap(detected)}
-            className="absolute start-1/2 top-1 z-10 -translate-x-1/2 max-md:hidden rtl:translate-x-1/2"
+            className="absolute start-1/2 top-0 z-10 size-[calc(40px*var(--ui-space-scale,1))] -translate-x-1/2 max-md:hidden rtl:translate-x-1/2"
           >
-            <SwapArrowsIcon className="size-5.5" />
+            <SwapArrowsIcon className="size-5.5 -translate-x-[0.5px]" />
           </IconAction>
           <section
             aria-label={t("translate.sourceLabel")}
@@ -1901,9 +1906,9 @@ export function TranslatePage() {
                 }
                 disabled={!canSwap || busy}
                 onClick={() => swap(detected)}
-                className="ms-auto md:hidden"
+                className="ms-auto size-[calc(40px*var(--ui-space-scale,1))] md:hidden"
               >
-                <SwapArrowsIcon className="size-5.5" />
+                <SwapArrowsIcon className="size-5.5 -translate-x-[0.5px]" />
               </IconAction>
             </LanguageTabs>
             <div

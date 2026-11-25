@@ -5403,7 +5403,7 @@ export const id = {
       toneFormal: "Formal",
       toneCasual: "Santai",
       auto: "Terjemahkan saat mengetik",
-      autoDescription: "Dimulai setelah model dimuat. Mengetik tidak pernah memulai unduhan.",
+      autoDescription: "Mulai otomatis saat model dimuat.",
       saveHistory: "Simpan riwayat",
       saveHistoryDescription: "Hanya disimpan di browser ini.",
       showPrompt: "Tampilkan prompt",

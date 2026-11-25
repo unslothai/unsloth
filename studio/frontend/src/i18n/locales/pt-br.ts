@@ -5089,7 +5089,7 @@ export const ptBR = {
       toneFormal: "Formal",
       toneCasual: "Informal",
       auto: "Traduzir ao digitar",
-      autoDescription: "Começa assim que o modelo é carregado. Digitar nunca inicia um download.",
+      autoDescription: "Começa automaticamente quando o modelo é carregado.",
       saveHistory: "Salvar histórico",
       saveHistoryDescription: "Fica guardado apenas neste navegador.",
       showPrompt: "Mostrar prompt",
