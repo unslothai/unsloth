@@ -358,7 +358,7 @@ $env:UNSLOTH_NO_TORCH=1; irm https://unsloth.ai/install.ps1 | iex
 | `UNSLOTH_LLAMA_CPP_BACKEND=vulkan` | Pick the `llama.cpp` build for GGUF chat: `vulkan`, `cpu`, `cuda`, `rocm` or `auto`. PyTorch is chosen separately. |
 | `UNSLOTH_PYTHON=3.12` | Pin the Python version. |
 | `UNSLOTH_STUDIO_HOME=/abs/path` | Install to a custom location (`C:\path` on Windows). |
-| `UNSLOTH_SKIP_AUTOSTART=1` | Skip the post-install prompt that starts Unsloth (automated installs). |
+| `UNSLOTH_SKIP_AUTOSTART=1` | Skip the post-install prompt that starts Unsloth, for automated installs: `curl -fsSL https://unsloth.ai/install.sh \| UNSLOTH_SKIP_AUTOSTART=1 sh` or `$env:UNSLOTH_SKIP_AUTOSTART=1; irm https://unsloth.ai/install.ps1 \| iex`. |
 
 Cap Unsloth's native CPU thread pools on high-core hosts at launch: `UNSLOTH_CPU_THREADS=8 unsloth studio -p 8888`.
 
