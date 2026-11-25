@@ -38,6 +38,7 @@ _ENV_KEYS = (
     "UNSLOTH_PP_MICROBATCHES",
     "UNSLOTH_PP_SCHEDULE",
     "UNSLOTH_PP_KEEP_REPLICA",
+    "UNSLOTH_PP_FOLD_GA",
     "UNSLOTH_FSDP2",
     "UNSLOTH_FSDP2_BACKEND",
     "ACCELERATE_USE_FSDP",
@@ -289,6 +290,7 @@ def _case_env(
     ga = 2,
     eval_bs = None,
     noisy = False,
+    varlen = False,
 ):
     error = _import_checkout_unsloth()
     if error is not None:
@@ -317,6 +319,14 @@ def _case_env(
         }
         # Uneven token counts per micro-batch / replica, the same per row however the rows are batched.
         batch["labels"][batch["labels"] % 5 == 0] = -100
+        if varlen:
+            # Rows of 2 to 9 tokens (fixed per row), right padded to the batch's longest with a mask.
+            lengths = [2 + int(r["input_ids"].sum()) % 8 for r in rows]
+            width = max(lengths)
+            mask = torch.arange(9)[None, :] < torch.tensor(lengths)[:, None]
+            batch["input_ids"] = torch.where(mask, batch["input_ids"], 0)[:, :width]
+            batch["labels"] = torch.where(mask, batch["labels"], -100)[:, :width]
+            batch["attention_mask"] = mask[:, :width].long()
         if noisy:
             # A stochastic collator whose RNG the stages advance differently (as dropout over different layers).
             if rank % 2 == 1:
@@ -391,6 +401,8 @@ def _case_env(
         res["schedule"] = (stage.schedule, stage.schedule_auto)
         # The torch schedules the training steps actually ran (eval / later cells come after this).
         res["step_schedules"] = sorted({type(s).__name__ for s in stage._shapes.values()})
+        # Gradient accumulation folded into one schedule step per window (pp_env._pp_window_step).
+        res["fold"] = dict(stage.__dict__.get("_unsloth_fold_stats") or {})
         # Every stage seeds its train sampler per dp replica (LengthGroupedSampler would draw from the global RNG).
         res["sampler_hooked"] = "_get_train_sampler" in trainer.__dict__
         res["owned"] = sorted(n for n, p in trainer.model.named_parameters() if p.requires_grad)
@@ -820,6 +832,8 @@ def test_pp_env_trainer_matches_one_process(world, env, ref_bs):
             )
         assert "DistributedDataParallel" not in res["wrapped"]
         assert res["sampler_hooked"], res
+        # GA 2: each window of 2 batches ran as one schedule step over all 4 rows.
+        assert res["fold"]["windows"] == 3 and res["fold"]["schedule_steps"] == 3, res["fold"]
         _close(res, ref, what = rank)
         stages.add(res["stage"])
     assert stages == {0, 1}
@@ -943,9 +957,17 @@ def test_pp_default_schedule_plan(checkout_unsloth):
         (4, 1, None, ["Schedule1F1B"]),
         (4, 1, "gpipe", ["ScheduleGPipe"]),
         (2, 2, None, ["Schedule1F1B"]),
-        (1, 2, None, ["ScheduleGPipe"]),
+        (1, 1, None, ["ScheduleGPipe"]),
+        # GA 2 folds the window's two 1-row batches into one step of 2 micro-batches: 1F1B again.
+        (1, 2, None, ["Schedule1F1B"]),
     ],
-    ids = ["default_bs4", "gpipe_bs4", "default_bs2_ga2", "default_bs1_falls_back"],
+    ids = [
+        "default_bs4",
+        "gpipe_bs4",
+        "default_bs2_ga2",
+        "default_bs1_falls_back",
+        "default_bs1_ga2_folds",
+    ],
 )
 def test_pp_env_default_schedule_same_loss(bs, ga, schedule, expect, checkout_unsloth):
     # The default schedule moved from GPipe to 1F1B: same micro-batches, same per-token loss normalisation, so
@@ -1030,3 +1052,68 @@ def test_pp_env_tensor_peers_train_on_one_batch():
     sums = [sum(r["stage_ids"]) for r in last]
     assert len(last) == 2 and all(r["stage_ids"] for r in last), sums
     assert sums == [sum(first[0]["seen"])] * 2, (sums, [sum(r["seen"]) for r in first])
+
+
+@needs_pipelining
+@pytest.mark.parametrize(
+    "world,env,bs,ga,ref_bs",
+    [
+        (2, {}, 2, 4, 2),
+        (2, {}, 1, 8, 1),
+        (2, {"UNSLOTH_PP_SCHEDULE": "1f1b"}, 1, 4, 1),
+        (2, {"UNSLOTH_PP_SCHEDULE": "gpipe"}, 1, 4, 1),
+        (2, {"UNSLOTH_PP_MICROBATCHES": "1"}, 2, 3, 2),
+        (4, {}, 1, 4, 2),
+        (4, {"UNSLOTH_FSDP2": "1"}, 1, 4, 2),
+        (4, {"UNSLOTH_TP_SIZE": "2"}, 2, 4, 2),
+    ],
+    ids = [
+        "bs2_ga4",
+        "bs1_ga8",
+        "bs1_ga4_1f1b",
+        "bs1_ga4_gpipe",
+        "bs2_ga3_mb1",
+        "pp2_x_ddp2_bs1_ga4",
+        "pp2_x_fsdp2_bs1_ga4",
+        "pp2_x_tp2_bs2_ga4",
+    ],
+)
+def test_pp_env_fold_ga_window_matches_one_process(world, env, bs, ga, ref_bs):
+    # The accumulation window's rows (2 to 9 tokens, padded per batch) run as few schedule steps over all
+    # of them, grouped by length: every logged loss, grad norm and the trained adapter equal one process
+    # running the same batches with gradient accumulation; UNSLOTH_PP_FOLD_GA=0 runs one step per batch.
+    if env.get("UNSLOTH_PP_MICROBATCHES") == "1" and tuple(
+        int(x) for x in torch.__version__.split("+")[0].split(".")[:2]
+    ) < (2, 13):
+        pytest.skip("gpipe with 1 micro-batch over 2 stages needs torch >= 2.13")
+    kw = dict(bs = bs, ga = ga, steps = 2, evaluate = False, post = False, varlen = True)
+    ref = _ref(ref_bs, **{k: v for k, v in kw.items() if k != "bs"})
+    base = {"UNSLOTH_PP_SIZE": "2", **env}
+    for fold in (True, False):
+        run_env = base if fold else {**base, "UNSLOTH_PP_FOLD_GA": "0"}
+        for rank, res in enumerate(_spawn("env", world, run_env, **kw)):
+            stats = res["fold"]
+            if fold:
+                # Engaged: 2 windows, fewer schedule steps than batches.
+                assert stats["windows"] == 2 and stats["batches"] == 2 * ga, stats
+                assert stats["schedule_steps"] < stats["batches"], stats
+            else:
+                assert stats == {}, stats
+            _close(res, ref, what = (fold, rank))
+            _same_tensors(res["adapter"] or ref["adapter"], ref["adapter"], atol = 5e-5)
+
+
+def test_pp_fold_plan(checkout_unsloth):
+    from unsloth.models import pp_env
+
+    plan = pp_env._fold_plan
+    # Equal rows: one schedule step over the window (bubble once, not once per batch).
+    assert plan([100] * 8, 1, 2, 1, None) == [(0, 8, 8)]
+    # One long row and short ones: the long row alone, the rest together (no padding to the long one).
+    assert plan([1000] + [50] * 7, 1, 2, 1, None) == [(0, 1, 1), (1, 8, 7)]
+    # Explicit 1F1B needs >= stages micro-batches per step (the long row takes a real neighbour, not a
+    # filler); GPipe keeps at most max(m, stages) in flight.
+    assert plan([1000] + [50] * 7, 1, 2, 2, None) == [(0, 2, 2), (2, 8, 6)]
+    assert plan([100] * 8, 1, 2, 1, 2) == [(0, 2, 2), (2, 4, 2), (4, 6, 2), (6, 8, 2)]
+    # Whole micro-batches of 2 rows; the last one is filled up.
+    assert plan([100] * 7, 2, 2, 1, None) == [(0, 7, 4)]
