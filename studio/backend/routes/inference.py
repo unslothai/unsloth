@@ -27827,8 +27827,15 @@ async def transcribe_audio_raw(
             media_type = "application/x-ndjson",
             headers = {"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
         )
-    return JSONResponse(
-        content = await _transcribe_audio_result(
+    # In-app dictation gets the API monitor row chat and /v1/audio/transcriptions already open.
+    _requested = (model or "").strip()
+    async with _monitored_media_request(
+        request,
+        model = public_model_id(_requested) or _requested,
+        prompt = title,
+        subject = current_subject,
+    ) as monitor_id:
+        result = await _transcribe_audio_result(
             b"".join(chunks),
             model,
             language,
@@ -27839,7 +27846,10 @@ async def transcribe_audio_raw(
             context_length = context_length,
             timestamps = timestamps,
         )
-    )
+        _served_model = str(result.get("model") or "")
+        api_monitor.relabel(monitor_id, public_model_id(_served_model) or _served_model)
+        api_monitor.set_reply(monitor_id, str(result.get("text", "")))
+    return JSONResponse(content = result)
 
 
 def _refuse_stt_caps(caps: dict, *, timestamps: bool, speakers: bool) -> None:
