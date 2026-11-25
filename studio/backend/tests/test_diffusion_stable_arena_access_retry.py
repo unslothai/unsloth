@@ -73,7 +73,6 @@ def _arena(monkeypatch, access_results, platform):
 
 
 def test_not_ready_then_success_maps_on_windows(monkeypatch):
-    assert "wt_win_arena" in sa.__file__
     arena, drv, sleeps = _arena(monkeypatch, [600, 0], "win32")
     assert arena.map() == "base"
     assert drv.calls == ["create", "map", "access", "access"]
