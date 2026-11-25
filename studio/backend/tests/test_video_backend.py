@@ -159,9 +159,13 @@ def _pin_video_fetch_to_the_named_repo(monkeypatch):
 @pytest.fixture(autouse = True)
 def _roomy_host_ram(monkeypatch):
     """Native H3 loads fit against the host's available RAM, which a CI runner may not have (macos-15: about 3 GiB).
-    Tests that need a tight host stub usable_host_ram_mib themselves, after this."""
+    Tests that need a tight host stub usable_host_ram_mib themselves, after this. CPU-only loads (no GPU here) are
+    also sized against host RAM before downloading (video_cpu_host), so a 16 GB runner refused cosmos3-nano / Wan."""
+    from core.inference import diffusion_small_host
     from utils import host_memory
+
     monkeypatch.setattr(host_memory, "usable_host_ram_mib", lambda *a, **k: 1 << 30)
+    monkeypatch.setattr(diffusion_small_host, "host_ram_mib", lambda: (1 << 30, 1 << 30))
 
 
 @pytest.fixture(autouse = True)
