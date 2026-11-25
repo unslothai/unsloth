@@ -702,7 +702,8 @@ function modalUnderlay(chain: HTMLElement[]): HTMLElement[] {
   for (const node of chain.slice(modal)) {
     // Earlier siblings paint below it; later ones (toasts, menus) draw over the page.
     for (let sibling = node.previousElementSibling; sibling; sibling = sibling.previousElementSibling) {
-      under.push(sibling as HTMLElement);
+      // The notification rail sits above the dialog by z-index, though earlier in the tree.
+      if (!sibling.hasAttribute?.("data-native-rail")) under.push(sibling as HTMLElement);
     }
   }
   return under;

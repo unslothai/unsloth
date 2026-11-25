@@ -598,3 +598,29 @@ test("the app under the dialog a layered page opens in is cut too, though no anc
   }
   assert.equal(landing.attributes.has("data-native-hole-mask"), false, "closing the panel fills the hole");
 });
+
+test("the notification rail above the dialog a layered page opens in is not cut", async () => {
+  const backdrop = node("backdrop", "rgba(255, 255, 255, 0.8)", section);
+  const dialog = Object.assign(node("dialog", "rgb(255, 255, 255)", backdrop), {
+    getAttribute: (name: string) => (name === "aria-modal" ? "true" : null),
+  });
+  const rail = Object.assign(node("rail", "rgba(0, 0, 0, 0)", html), {
+    hasAttribute: (name: string) => name === "data-native-rail",
+  });
+  const sidebar = Object.assign(node("sidebar", "rgb(250, 250, 250)", html), { previousElementSibling: rail });
+  Object.assign(section, { previousElementSibling: sidebar });
+  const parent = wrapper.parentElement;
+  Object.assign(wrapper, { parentElement: dialog });
+  useBrowserStore.getState().openUrl("https://project.example/");
+  const stop = startNativeViews();
+  try {
+    await frame();
+    await frame();
+    assert.ok(sidebar.attributes.has("data-native-hole-mask"));
+    assert.equal(rail.attributes.has("data-native-hole-mask"), false, "its cards stay visible over the page");
+  } finally {
+    stop();
+    Object.assign(wrapper, { parentElement: parent });
+    Object.assign(section, { previousElementSibling: undefined });
+  }
+});
