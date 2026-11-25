@@ -1451,7 +1451,13 @@ def _pp_training_step(
     scaler = getattr(self.accelerator, "scaler", None)
     scaler = scaler if scaler is not None and scaler.is_enabled() else None
     window = self.__dict__.get(_FOLD)
-    if window is not None or _foldable(self, stage, input_ids, extra, n):
+    # A window starts on every dp replica or on none: a buffering replica runs no collective until the
+    # window's last batch. (The run's settings alone rule it out without a collective.)
+    ga = int(getattr(self.args, "gradient_accumulation_steps", 1) or 1)
+    start = window is None and ga > 1 and _fold_requested()
+    if window is not None or (
+        start and _dp_agree(stage, _foldable(self, stage, input_ids, extra, n), 0)
+    ):
         # The Trainer runs no backward of its own here, so the window's batches wait (loss 0) and the
         # last one runs them all as micro-batches: the pipeline fills and drains once per window.
         window = self.__dict__.setdefault(_FOLD, [])
