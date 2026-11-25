@@ -4171,6 +4171,7 @@ export const fr = {
       lr: "LR",
       hardware: "Matériel",
       vram: "VRAM",
+      vramTotal: "{size} au total",
       noGpu: "Aucun GPU détecté",
       hfToken: "Token HF",
       saved: "Enregistré",

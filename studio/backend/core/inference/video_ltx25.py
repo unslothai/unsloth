@@ -2157,7 +2157,10 @@ def _render(
             if moved:
                 upsampler.to(video_latents.device)
             try:
-                upsampled = upsampler(video_latents.to(param.dtype))
+                # ``dtype`` reads a per-layer cast's compute dtype (fp16-card low-RAM route), else the weights'
+                upsampled = upsampler(
+                    video_latents.to(getattr(upsampler, "dtype", None) or param.dtype)
+                )
             finally:
                 if moved:
                     upsampler.to(home)

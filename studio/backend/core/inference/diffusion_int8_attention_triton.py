@@ -57,6 +57,22 @@ def _rocm_build() -> bool:
         return False
 
 
+def triton_version() -> Optional[tuple]:
+    """(major, minor) of the imported Triton, or None (no Triton, or a version string that does not parse)."""
+    try:
+        return tuple(int(x) for x in triton.__version__.split(".")[:2])
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def join_free_rotation() -> bool:
+    """True where the rotation is built without ``tl.join``: NVIDIA Triton 3.3, whose layout-conversion pass gives
+    the join a result layout its own type inference rejects ("'tt.join' op failed to infer returned types"). The
+    rotation's bits are the join's; the int8 Q codes can differ by one at a rounding tie (21 of 16.8M at Qwen-Image
+    1024 px on Triton 3.7.1, same accuracy). Every other Triton (and ROCm 3.3, which compiles the join) keeps it."""
+    return triton is not None and triton_version() == (3, 3) and not _rocm_build()
+
+
 # Sequence lengths stay out of the attention kernel's compile key except on ROCm, where the % 16 facts are worth 3%
 # at 75k tokens on gfx1151 and a run keeps one resolution.
 _ATTN_NO_SPECIALIZE = (
@@ -70,16 +86,37 @@ if triton is not None:
         # round half to even in fp32 for |x| < 2**22: adding then removing 1.5 * 2**23 drops the fraction
         return (x + 12582912.0) - 12582912.0
 
-    @triton.jit
-    def _rotate(x, R: tl.constexpr, D: tl.constexpr):
-        cols = tl.arange(0, D)
-        flip = (((cols * 7919 + 13) * (cols + 3)) >> 7) & 1
-        x = x * (1.0 - 2.0 * flip.to(tl.float32))[None, :]
-        for _ in tl.static_range(4):
-            a, b = tl.split(tl.reshape(x, (R, D // 2, 2)))
-            z = tl.reshape(tl.join(a + b, a - b), (R, D // 16, 8, 2))
-            x = tl.reshape(tl.permute(z, (0, 1, 3, 2)), (R, D))
-        return x
+    if not join_free_rotation():
+
+        @triton.jit
+        def _rotate(x, R: tl.constexpr, D: tl.constexpr):
+            cols = tl.arange(0, D)
+            flip = (((cols * 7919 + 13) * (cols + 3)) >> 7) & 1
+            x = x * (1.0 - 2.0 * flip.to(tl.float32))[None, :]
+            for _ in tl.static_range(4):
+                a, b = tl.split(tl.reshape(x, (R, D // 2, 2)))
+                z = tl.reshape(tl.join(a + b, a - b), (R, D // 16, 8, 2))
+                x = tl.reshape(tl.permute(z, (0, 1, 3, 2)), (R, D))
+            return x
+
+    else:
+        # Chosen in Python, not by a constexpr global: Triton 3.2 / 3.3 leave a global's value out of the cache key, so
+        # both bodies behind one ``if`` would share compiled kernels. Its own source keeps this one apart.
+        @triton.jit
+        def _rotate(x, R: tl.constexpr, D: tl.constexpr):
+            cols = tl.arange(0, D)
+            flip = (((cols * 7919 + 13) * (cols + 3)) >> 7) & 1
+            x = x * (1.0 - 2.0 * flip.to(tl.float32))[None, :]
+            pair = tl.arange(0, 2)[None, None, :]
+            for _ in tl.static_range(4):
+                a, b = tl.split(tl.reshape(x, (R, D // 2, 2)))
+                # (a + b, a - b) interleaved by a select on a size-2 axis: the join's values without tt.join
+                z = tl.reshape(
+                    tl.where(pair == 0, (a + b)[:, :, None], (a - b)[:, :, None]),
+                    (R, D // 16, 8, 2),
+                )
+                x = tl.reshape(tl.permute(z, (0, 1, 3, 2)), (R, D))
+            return x
 
     @triton.jit
     def _stats(

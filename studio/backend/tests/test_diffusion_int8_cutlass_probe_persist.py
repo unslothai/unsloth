@@ -106,7 +106,10 @@ def test_stale_or_malformed_verdicts_probe_again(env, monkeypatch):
 def test_the_key_covers_the_library_and_the_code(monkeypatch):
     from core.inference import diffusion_int8_gemm as g8
 
-    assert set(cut.PROBE_PERSIST_SOURCES) == {"diffusion_int8_cutlass.py", "diffusion_int8_gemm.py"}
+    # diffusion_int8_gemm.py keys it through the race code digest (its tie_operands probe input), not byte for byte:
+    # an unrelated edit there must not drop every stored tile verdict
+    assert set(cut.PROBE_PERSIST_SOURCES) == {"diffusion_int8_cutlass.py"}
+    assert "tie_operands" in g8._RACE_SOURCES["diffusion_int8_gemm"]
     monkeypatch.setattr(cut, "library_path", lambda: "/lib/x.so")
     monkeypatch.setattr(g8, "_sources_digest", lambda lib: f"digest-of-{lib}")
     assert cut._probe_extra() == {"abi": cut.ABI_VERSION, "lib": "digest-of-/lib/x.so"}

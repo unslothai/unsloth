@@ -4129,6 +4129,7 @@ export const hi = {
       lr: "LR",
       hardware: "हार्डवेयर",
       vram: "VRAM",
+      vramTotal: "कुल {size}",
       noGpu: "कोई GPU नहीं मिला",
       hfToken: "HF टोकन",
       saved: "सहेजा गया",
