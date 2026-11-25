@@ -164,6 +164,99 @@ def fp16_card_hosted_int8_transformer(
         return None
 
 
+def _dense_dit_fits_host(
+    fam: Any, base: Optional[str], cache_dir: Optional[str]
+) -> tuple[Optional[bool], str]:
+    """Whether the dense float16 DiT alone fits host RAM, priced by the small-host route's own resolver
+    (``diffusion_small_host.dense_load_fits``): from the cached snapshot's headers when its DiT shards are complete,
+    else from the family's bf16 table. (None, why) when unpriced."""
+    import torch
+
+    from .diffusion_small_host import (
+        StoredComponent,
+        dense_load_fits,
+        host_commit_mib,
+        host_ram_mib,
+        resolve_snapshot_dir,
+        snapshot_weights_complete,
+        stored_components,
+    )
+
+    comp = None
+    source = "family table"
+    snapshot = resolve_snapshot_dir(base, cache_dir) if base else None
+    if snapshot is not None:
+        stored = stored_components(snapshot)
+        if "transformer" in stored and snapshot_weights_complete(
+            snapshot, skip = tuple(n for n in stored if n != "transformer")
+        ):
+            comp, source = stored["transformer"], "snapshot"
+    if comp is None:
+        from .diffusion_auto_policy import family_bf16_components_gb
+
+        table = family_bf16_components_gb(fam, base)
+        if not table or not table[0]:
+            return None, "DiT size unknown"
+        comp = StoredComponent(
+            "transformer", int(table[0] * 1000.0**3 / (1024.0 * 1024.0)), "bfloat16"
+        )
+    total, available = host_ram_mib()
+    fits, dense = dense_load_fits(
+        {"transformer": comp},
+        torch.float16,
+        host_total_mib = total,
+        host_available_mib = available,
+        host_commit_mib = host_commit_mib(),
+    )
+    return fits, f"dense float16 DiT ~{dense} MiB ({source}), {available} MiB available host RAM"
+
+
+def small_host_hosted_int8_reason(
+    fam: Any,
+    target: Any,
+    *,
+    base: Optional[str],
+    cache_dir: Optional[str] = None,
+    require_cached: bool = False,
+    has_lora: bool = False,
+) -> Optional[str]:
+    """Why AUTO takes int8 from the hosted ConvRot file on this fp16-only card, else None (AUTO is unchanged).
+
+    When the dense float16 DiT alone does not fit host RAM, the small-host route already turns AUTO into int8: it
+    reads the bf16 shards and quantises them per row at load (Qwen-Image-2.1 on a 12.7 GB T4: 200-244 s, ~14 GB read).
+    The hosted file holds the fp16-only card's W8A8 ConvRot build of the same weights (7.3 GB, no quantise), the build
+    an explicit int8 pick reads, so AUTO takes that build here. Only the released Hub repo with the hosted file
+    (``require_cached``: already in the cache); LoRA, an unreadable host and a DiT that fits keep the old route.
+    ``UNSLOTH_FP16_CARD_HOSTED_INT8=0`` or ``UNSLOTH_DIFFUSION_SMALL_HOST=0`` turns it off. Never raises."""
+    try:
+        if fam is None or has_lora or not _official_hub_base(fam, base):
+            return None
+        from .diffusion_small_host import small_host_disabled
+        from .diffusion_transformer_quant import TQ_INT8, fp16_card_native_scheme
+
+        if small_host_disabled():
+            return None
+        name = getattr(fam, "name", None)
+        scheme = fp16_card_native_scheme(target, TQ_INT8, family = name)
+        if scheme != TQ_INT8 or fp16_card_hosted_int8_reason(fam, scheme, target) is None:
+            return None
+        fits, why = _dense_dit_fits_host(fam, base, cache_dir)
+        if fits is not False:
+            return None
+        if (
+            require_cached
+            and fp16_card_hosted_int8_cached(fam, scheme, target, base = base, cache_dir = cache_dir)
+            is None
+        ):
+            return None
+        return (
+            f"{why}: the low-RAM route would quantise the dense DiT per row at load; the hosted int8 ConvRot file "
+            f"holds this card's W8A8 build ({FP16_CARD_HOSTED_INT8_ENV}=0 keeps the at-load route)"
+        )
+    except Exception:  # noqa: BLE001 - unanswerable keeps the old route
+        return None
+
+
 def fp16_card_hosted_int8_planned_scheme(
     fam: Any,
     target: Any,
@@ -173,9 +266,12 @@ def fp16_card_hosted_int8_planned_scheme(
     speed_mode: Optional[str] = None,
     forces_offload: bool = False,
     has_lora: bool = False,
+    base: Optional[str] = None,
+    cache_dir: Optional[str] = None,
 ) -> Optional[str]:
     """The native scheme the load will build on this fp16-only card, settled before any download the way the load
-    settles it (an explicit pick, or AUTO's measured Turing int8), else None. Never raises."""
+    settles it (an explicit pick, AUTO's measured Turing int8, or AUTO on a host the dense DiT does not fit:
+    ``small_host_hosted_int8_reason``), else None. Never raises."""
     try:
         if kind != "pipeline" or fam is None or has_lora:
             return None
@@ -193,7 +289,11 @@ def fp16_card_hosted_int8_planned_scheme(
             # Speed off rewrites AUTO to off (``diffusion_speed.SPEED_OFF``).
             if speed_mode is not None and str(speed_mode).strip().lower() == "off":
                 return None
-            if forces_offload or turing_auto_int8_reason(target, name) is None:
+            if forces_offload or (
+                turing_auto_int8_reason(target, name) is None
+                and small_host_hosted_int8_reason(fam, target, base = base, cache_dir = cache_dir)
+                is None
+            ):
                 return None
             pinned = TQ_INT8
         else:
