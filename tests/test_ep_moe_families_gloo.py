@@ -31,6 +31,63 @@ FAMILIES = {
     "glm4_moe": "trl-internal-testing/tiny-Glm4MoeForCausalLM",  # shared experts + grouped routing
     # (hidden_states, router_indices, routing_weights), transposed stacks, per-expert biases
     "gpt_oss": "trl-internal-testing/tiny-GptOssForCausalLM",
+    "mixtral": "hf-internal-testing/tiny-random-MixtralForCausalLM",
+    "qwen2_moe": "hf-internal-testing/tiny-random-Qwen2MoeForCausalLM",  # shared expert
+    "qwen3_next": "hf-internal-testing/tiny-random-Qwen3NextForCausalLM",  # gated deltanet hybrid + shared
+    # The tiny repo's layers are all dense (first_k_dense_replace=3 of 2 layers).
+    "deepseek_v3": dict(
+        repo = "trl-internal-testing/tiny-DeepseekV3ForCausalLM",
+        overrides = dict(
+            first_k_dense_replace = 0,
+            n_routed_experts = 8,
+            n_group = 2,
+            topk_group = 1,
+            num_experts_per_tok = 2,
+        ),
+    ),
+    "qwen3_5_moe": dict(
+        config = dict(
+            model_type = "qwen3_5_moe_text",
+            vocab_size = 128,
+            hidden_size = 32,
+            num_hidden_layers = 2,
+            layer_types = ["linear_attention", "full_attention"],
+            num_attention_heads = 2,
+            num_key_value_heads = 1,
+            head_dim = 16,
+            linear_num_key_heads = 2,
+            linear_num_value_heads = 2,
+            linear_key_head_dim = 8,
+            linear_value_head_dim = 8,
+            num_experts = 4,
+            num_experts_per_tok = 2,
+            moe_intermediate_size = 16,
+            shared_expert_intermediate_size = 16,
+        )
+    ),
+    # Experts directly on the decoder layer, beside a dense mlp.
+    "gemma4": dict(
+        config = dict(
+            model_type = "gemma4_text",
+            vocab_size = 128,
+            vocab_size_per_layer_input = 128,
+            hidden_size = 32,
+            hidden_size_per_layer_input = 0,
+            intermediate_size = 64,
+            num_hidden_layers = 2,
+            layer_types = ["sliding_attention", "full_attention"],
+            sliding_window = 8,
+            num_attention_heads = 2,
+            num_key_value_heads = 1,
+            head_dim = 16,
+            num_kv_shared_layers = 0,
+            enable_moe_block = True,
+            num_experts = 4,
+            top_k_experts = 2,
+            moe_intermediate_size = 16,
+        ),
+        experts = "experts",
+    ),
 }
 REFUSED = {
     "llama": "hf-internal-testing/tiny-random-LlamaForCausalLM",
@@ -67,8 +124,30 @@ def _sum_loss(model, ids, labels):
     )
 
 
-def _build(build, repo):
-    model = build(repo, **EXPERT_LORA).train()
+def _family(family):
+    spec = FAMILIES[family]
+    return dict(spec) if isinstance(spec, dict) else dict(repo = spec)
+
+
+def _local_config(tmp, rank, config):
+    from transformers import AutoConfig
+
+    path = os.path.join(tmp, f"config_{rank}")
+    config = dict(config)
+    AutoConfig.for_model(config.pop("model_type"), **config).save_pretrained(path)
+    return path
+
+
+def _build(
+    build,
+    repo,
+    overrides = None,
+    experts = None,
+):
+    lora = EXPERT_LORA
+    if experts is not None:
+        lora = dict(target_parameters = [f"{experts}.gate_up_proj", f"{experts}.down_proj"])
+    model = build(repo, overrides = overrides, **lora).train()
     g = torch.Generator().manual_seed(1234)
     with torch.no_grad():  # lora_B = 0 would leave every lora_A gradient of the first step at 0
         for name, p in model.named_parameters():
@@ -81,20 +160,25 @@ def _case_family(
     rank,
     world,
     tmp,
-    repo,
+    repo = None,
     ep = None,
+    overrides = None,
+    config = None,
+    experts = None,
 ):
     import torch.distributed as dist
     from torch.distributed.device_mesh import init_device_mesh
     from torch.nn.parallel import DistributedDataParallel
 
     build, tpn, epn = _modules()
+    if config is not None:
+        repo = _local_config(tmp, rank, config)
     ep = ep or world
     if ep == world:
         mesh = init_device_mesh("cpu", (world,), mesh_dim_names = ("ep",))["ep"]
     else:  # replica groups of ep ranks, ep innermost
         mesh = init_device_mesh("cpu", (world // ep, ep), mesh_dim_names = ("ep_rep", "ep"))
-    ref = _build(build, repo)
+    ref = _build(build, repo, overrides, experts)
     vocab = tpn._text_config(ref).vocab_size
     rows = [_rows(vocab, r) for r in range(world)]
     n = sum(int((lab[:, 1:] != -100).sum()) for _, lab in rows)
@@ -107,7 +191,7 @@ def _case_family(
         torch.nn.utils.clip_grad_norm_([p for p in ref.parameters() if p.grad is not None], 1e9)
     )
 
-    model = _build(build, repo)
+    model = _build(build, repo, overrides, experts)
     epn.apply_expert_parallel(model, mesh)
     group = epn._mesh(model).get_group()
     ddp = DistributedDataParallel(model)
@@ -422,7 +506,7 @@ def _spawn(
 
 @pytest.mark.parametrize("family", sorted(FAMILIES))
 def test_ep_family_matches_one_process(family):
-    results = _spawn("_case_family", repo = FAMILIES[family])
+    results = _spawn("_case_family", **_family(family))
     _check_family(results, 2)
     if family == "gpt_oss":  # its per-expert biases are sharded with the stacks
         assert results[0]["has_bias_shards"] == ["down_proj_bias", "gate_up_proj_bias"], results[0][
