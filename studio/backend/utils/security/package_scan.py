@@ -330,7 +330,8 @@ def _check_release(spec: str, name: str, version: str, primary: bool) -> Package
     finally:
         import shutil
         shutil.rmtree(workdir, ignore_errors = True)
-    return PackageScanResult(CLEAN, "", {spec: tuple(digests)})
+    # Only the inspected wheel: an sdist (PIP_NO_BINARY) must not inherit its clean verdict.
+    return PackageScanResult(CLEAN, "", {spec: (expected,)})
 
 
 def _check_advisories(pinned: list[tuple[str, str, str]]) -> PackageScanResult:

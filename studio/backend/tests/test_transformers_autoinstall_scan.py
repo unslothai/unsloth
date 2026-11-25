@@ -262,7 +262,8 @@ def test_clean_pypi_release_auto_installs_hash_pinned(install_env, index):
     assert result["success"] is True and result["scan_status"] == ps.CLEAN
     ((version, hashes),) = install_env
     assert version == VERSION
-    assert hashes[f"transformers=={VERSION}"] == (index.published_sha, "a" * 64)
+    # Only the inspected wheel, never the sdist beside it.
+    assert hashes[f"transformers=={VERSION}"] == (index.published_sha,)
     # The context is scoped to this install.
     assert tv._install_hashes == {}
 
