@@ -12968,6 +12968,9 @@ class VideoBackend:
                 if install_untiled_decode(pipe, fam.name, logger = logger):
                     speed_optims += ("vae_untiled_when_fits",)
             install_frame_pad_fix(pipe, target, logger = logger)
+            from .diffusion_vae_noclone import install_on_pipe as install_vae_noclone
+
+            install_vae_noclone(pipe, logger)
             # Windows ROCm: decoder Conv3d calls over 2 GiB run as per-tap Conv2d (stock Conv3d falls off a cliff there).
             try:
                 from .video_vae_rocm_pertap import install_on_pipe as install_vae_rocm_pertap

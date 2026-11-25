@@ -1,8 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Opt-in token-aware SFT micro-batches: UNSLOTH_TOKEN_BALANCE=1 keeps num_items_in_batch unchanged;
+"""Token-aware SFT micro-batches: UNSLOTH_TOKEN_BALANCE=1 keeps num_items_in_batch unchanged;
 UNSLOTH_TOKEN_BUDGET passes sum to the unsplit loss.
+
+Under torchrun (WORLD_SIZE > 1) balancing across ranks is the default; UNSLOTH_TOKEN_BALANCE=0 turns it off.
 
 UNSLOTH_TOKEN_BALANCE=labels also regroups rows across UNSLOTH_TOKEN_BALANCE_WINDOW (default 8)
 consecutive optimizer steps so every step carries a similar number of supervised tokens (shifted
@@ -376,10 +378,33 @@ def _env_int(name):
         raise ValueError(f"Unsloth: {name} must be an integer, got {value!r}.")
 
 
+def _arrow_lengths(dataset):
+    """Row lengths of `input_ids` from the Arrow list offsets (no token is read), or None."""
+    try:
+        import pyarrow.compute as pc
+
+        # A transform may not return the stored column.
+        if getattr(dataset, "_format_type", None) == "custom":
+            return None
+        lengths = pc.list_value_length(dataset.data.column("input_ids"))
+        indices = getattr(dataset, "_indices", None)
+        if indices is not None:
+            lengths = pc.take(lengths, indices.column(0))
+        lengths = lengths.to_pylist()
+    except Exception:
+        return None
+    if len(lengths) != len(dataset) or any(length is None for length in lengths):
+        return None
+    return lengths
+
+
 def _dataset_lengths(dataset):
     column_names = getattr(dataset, "column_names", None)
     if column_names is None or "input_ids" not in column_names:
         return None
+    lengths = _arrow_lengths(dataset)
+    if lengths is not None:
+        return lengths
     # Batched, so the whole token column is never materialised as Python lists at once.
     if hasattr(dataset, "select_columns") and hasattr(dataset, "iter"):
         lengths = []
@@ -464,8 +489,17 @@ def _dataset_label_counts(dataset, completion_only_loss = True):
     return counts_of({column: dataset[column] for column in read})
 
 
+def _data_parallel_world():
+    try:
+        return int(os.environ.get("WORLD_SIZE", "1"))
+    except ValueError:
+        return 1
+
+
 def _balance_mode():
-    value = os.environ.get(_TOKEN_BALANCE_ENV, "0").strip().lower()
+    value = os.environ.get(_TOKEN_BALANCE_ENV, "auto").strip().lower()
+    if value in ("", "auto"):
+        return "auto" if _data_parallel_world() > 1 else None
     if value in ("1", "true", "yes", "on", "exact", "tokens"):
         return "exact"
     if value in ("labels", "label"):
@@ -584,6 +618,13 @@ def _balance_dataloader(
     mode = "exact",
 ):
     labels_mode = mode == "labels"
+    auto = mode == "auto"
+    if auto and (
+        getattr(trainer, "is_deepspeed_enabled", False)
+        or getattr(trainer, "is_fsdp_enabled", False)
+    ):
+        # DeepSpeed / accelerate FSDP stay opt-in.
+        return False
     # The labels mode regroups rows across steps (a data order change), so it does not need the
     # within-step exactness guards; it then length-balances inside each step only when they pass.
     balance_lengths = _exactness_blocker(trainer) is None and not _padded_batches(trainer)
@@ -634,6 +675,8 @@ def _balance_dataloader(
     args = trainer.args
     # Moving rows between ranks keeps the loss exact only when the token count is global.
     cross_rank = world_size > 1 and bool(getattr(args, "average_tokens_across_devices", False))
+    if auto and not cross_rank:
+        return False
     batch_sampler.sampler = TokenBalancedSampler(
         sampler,
         lengths,
@@ -839,6 +882,14 @@ def install_token_budget(trainer):
                     "Unsloth: UNSLOTH_TOKEN_BALANCE=labels regrouping rows over "
                     f"{_label_window()} optimizer steps to even out supervised tokens per step.",
                 )
+            elif trainer._unsloth_token_balance_active and balance == "auto":
+                _note_once(
+                    trainer,
+                    "Unsloth: data-parallel ranks get equal token counts per optimizer step "
+                    "(same rows per step; UNSLOTH_TOKEN_BALANCE=0 turns it off).",
+                )
+            elif balance == "auto":
+                pass
             elif balance == "labels":
                 _note_once(
                     trainer,
@@ -901,15 +952,23 @@ def install_token_budget(trainer):
                 return original_training_step(model, inputs, num_items_in_batch, *args, **kwargs)
             trainer._unsloth_token_budget_splits += 1
             total = None
-            for i, chunk in enumerate(chunks):
-                context = (
-                    accelerator.no_sync(model)
-                    if i < len(chunks) - 1 and accelerator is not None
-                    else contextlib.nullcontext()
-                )
-                with context:
-                    loss = original_training_step(model, chunk, num_items_in_batch, *args, **kwargs)
-                total = loss if total is None else total + loss
+            try:
+                for i, chunk in enumerate(chunks):
+                    partial = i < len(chunks) - 1
+                    # sync_gradients stays True per chunk; expert parallel reads this to sum replicas once per step.
+                    trainer._unsloth_token_budget_partial = partial
+                    context = (
+                        accelerator.no_sync(model)
+                        if partial and accelerator is not None
+                        else contextlib.nullcontext()
+                    )
+                    with context:
+                        loss = original_training_step(
+                            model, chunk, num_items_in_batch, *args, **kwargs
+                        )
+                    total = loss if total is None else total + loss
+            finally:
+                trainer._unsloth_token_budget_partial = False
             if metrics is not None:
                 weights = _global_chunk_weights(trainer, chunks, accelerator)
                 _merge_chunk_metrics(trainer, metrics, lengths, chunks, weights)

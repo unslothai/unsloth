@@ -12494,6 +12494,10 @@ class DiffusionBackend:
                         logger.warning("diffusion.vae_tiling: not installed: %s", exc)
                     install_frame_pad_fix(pipe, target, logger = logger)
                     install_vae_sync(pipe, target, logger = logger)
+                    # Before the speed optims: the fused CUDA decoder replaces the up blocks with its own clone-free one.
+                    from .diffusion_vae_noclone import install_on_pipe as install_vae_noclone
+
+                    install_vae_noclone(pipe, logger)
                     # Before the speed optims so their decode compile lands inside the non-finite check; `off` keeps fp32.
                     vae_fp16 = (
                         str(speed_mode or "").strip().lower() != SPEED_OFF
@@ -12751,6 +12755,9 @@ class DiffusionBackend:
 
                     skip_text_encoder_kv_cache(pipe, logger = logger)
                     select_final_hidden_state(pipe, logger = logger)
+                    from .diffusion_qwen_vl_mm_types import forward_mm_token_type_ids
+
+                    forward_mm_token_type_ids(pipe, logger = logger)
 
                     # After the TE quant, so the cache key reflects the encoders that run.
                     cond_cache.install(
@@ -16807,6 +16814,10 @@ class DiffusionBackend:
                 # cap; the OOM backoff below halves a failed chunk. Layered: one input per forward (the pipeline's
                 # per-prompt layer stride is only right for one).
                 chunks = _generation_chunks(state.family, jobs, batch_size, layer_count = layer_count)
+                # Qwen-Image-2.1 lays out a batch from one row: prompts of different text lengths render apart.
+                from .diffusion_qwenimage21 import text_length_runs
+
+                chunks = [run for chunk in chunks for run in text_length_runs(pipe, chunk)]
 
                 # EFFECTIVE steps: img2img at strength < 1 denoises a fraction of `steps`.
                 strength_applied = effective_request_strength(
