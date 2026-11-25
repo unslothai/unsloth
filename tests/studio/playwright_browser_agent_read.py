@@ -40,9 +40,14 @@ def page():
         with getattr(p, os.environ.get("PW_BROWSER", "chromium")).launch(headless = True) as browser:
             with browser.new_page(viewport = {"width": 1280, "height": 900}) as page:
 
-                def read(html, **command):
+                def read(
+                    html,
+                    scroll = 0,
+                    **command,
+                ):
                     page.set_content(html)
                     page.evaluate(source)
+                    page.evaluate(f"window.scrollTo(0, {scroll})")
                     return page.evaluate(
                         "(c) => window[Symbol.for('unsloth.agent')].run(c)",
                         {"op": "snapshot", **command},
@@ -89,6 +94,16 @@ def test_fence_outlasts_backticks_in_the_code(page):
     code = "Write:\n```python\nprint(1)\n```"
     text = page(f"<pre>{code}</pre><p>Done</p>")
     assert f"````\n{code}\n````" in text
+
+
+def test_scrolling_moves_through_a_block_taller_than_the_budget(page):
+    code = "\n".join(f"line_{i:04d} = {i}" for i in range(3000))
+    html = f'<pre style="margin: 0; font: 15px/20px monospace">{code}</pre>'
+    top = [l for l in page(html).splitlines() if l.startswith("line_")]
+    lower = [l for l in page(html, scroll = 8 + 20 * 1000).splitlines() if l.startswith("line_")]
+    assert top[0] == "line_0000 = 0"
+    assert lower[0] == "line_1000 = 1000"
+    assert page(html, scroll = 20 * 1000, fullPage = True).splitlines()[1] == "line_0000 = 0"
 
 
 if __name__ == "__main__":

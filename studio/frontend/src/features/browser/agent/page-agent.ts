@@ -358,6 +358,28 @@ export function installPageAgent(): PageAgent {
 
   const BLOCK = /^(block|flex|grid|table|list-item|table-row|table-cell|flow-root)/;
 
+  // A view snapshot of a block taller than the screen starts at its first line on screen, so scrolling moves on.
+  const onScreenPart = (node: Text, keepsLines: boolean): string => {
+    const value = node.nodeValue ?? "";
+    const range = document.createRange();
+    const lineBottom = (from: number) => {
+      range.setStart(node, from);
+      range.setEnd(node, Math.min(value.length, from + 64));
+      return range.getClientRects()[0]?.bottom ?? Infinity;
+    };
+    if (lineBottom(0) > 0) return value;
+    let lo = 0;
+    let hi = value.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (lineBottom(mid) > 0) hi = mid;
+      else lo = mid + 1;
+    }
+    if (lo >= value.length) return "";
+    const start = keepsLines ? value.lastIndexOf("\n", lo - 1) + 1 : lo;
+    return `…${keepsLines ? "\n" : ""}${value.slice(start)}`;
+  };
+
   const read = (root: Element, wholePage: boolean, budget: number): { text: string; links: string[]; cut: boolean } => {
     const lines: string[] = [];
     const links: string[] = [];
@@ -446,7 +468,8 @@ export function installPageAgent(): PageAgent {
       for (const node of children) {
         if (cut) return;
         if (node.nodeType === Node.TEXT_NODE) {
-          const value = node.nodeValue ?? "";
+          const raw = node.nodeValue ?? "";
+          const value = wholePage || rect.top >= 0 || !shown || !raw.trim() ? raw : onScreenPart(node as Text, keepsLines);
           if (unreadable) buffer += " ";
           else if (!labelled) {
             buffer += keepsLines ? value : value.replace(/\s+/g, " ");
