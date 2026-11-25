@@ -8374,8 +8374,12 @@ html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root])[data-
   pointer-events: none;
   background: linear-gradient(to top, var(--background) 72%, transparent);
 }
+/* The novel panel is translucent: fade the sides too, so the backdrop has no edges. */
 .character-novel-dialogue .character-speaker-bar::before {
+  inset-inline: -1.5rem;
   background: linear-gradient(to top, color-mix(in oklab, var(--background) 80%, transparent) 72%, transparent);
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 1.5rem, #000 calc(100% - 1.5rem), transparent);
+  mask-image: linear-gradient(to right, transparent, #000 1.5rem, #000 calc(100% - 1.5rem), transparent);
 }
 
 /* Stage view: keep the conversation centered beside the docked picture when there's room.
