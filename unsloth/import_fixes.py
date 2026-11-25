@@ -12432,6 +12432,52 @@ _VLLM_COMPILED_EXTENSIONS = (
 )
 
 
+# Importing vllm.platforms.cuda turns cuDNN SDPA off process-wide (a torch 2.5.0 workaround, diffusers#9704,
+# fixed in 2.5.1). Unsloth's import probes vLLM, so restore the caller's value after import and re-apply
+# vLLM's only on Unsloth loads. Known-bad cuDNN cases are avoided per call (fix_cudnn_sdpa_known_bad_shapes).
+_CUDNN_SDPA_BEFORE_IMPORT = [None]
+_CUDNN_SDPA_OFF_FOR_LOADS = [False]
+
+
+def _cudnn_sdpa_enabled():
+    torch = sys.modules.get("torch")
+    if torch is None:
+        return None
+    try:
+        return bool(torch.backends.cuda.cudnn_sdp_enabled())
+    except Exception:
+        return None
+
+
+def snapshot_cudnn_sdpa_before_import():
+    """torch not imported yet means torch's default (on)."""
+    if _CUDNN_SDPA_BEFORE_IMPORT[0] is None:
+        enabled = _cudnn_sdpa_enabled()
+        _CUDNN_SDPA_BEFORE_IMPORT[0] = True if enabled is None else enabled
+
+
+def restore_cudnn_sdpa_after_import():
+    if _CUDNN_SDPA_BEFORE_IMPORT[0] is not True or _cudnn_sdpa_enabled() is not False:
+        return
+    try:
+        import torch
+        torch.backends.cuda.enable_cudnn_sdp(True)
+    except Exception as e:
+        logger.info(f"Unsloth: could not restore cuDNN SDPA after import ({e})")
+        return
+    _CUDNN_SDPA_OFF_FOR_LOADS[0] = True
+
+
+def apply_cudnn_sdpa_for_unsloth_load():
+    if not _CUDNN_SDPA_OFF_FOR_LOADS[0] or _cudnn_sdpa_enabled() is not True:
+        return
+    try:
+        import torch
+        torch.backends.cuda.enable_cudnn_sdp(False)
+    except Exception:
+        pass
+
+
 def disable_broken_vllm(error = None):
     """Disable vLLM dynamically when its shared library is ABI-broken or it refuses this transformers."""
     global VLLM_BROKEN, VLLM_DISABLED_REASON
