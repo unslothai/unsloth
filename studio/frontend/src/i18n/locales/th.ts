@@ -6247,7 +6247,6 @@ export const th = {
     back: "ย้อนกลับ",
     continue: "ดำเนินการต่อ",
     skipSetup: "ข้ามการตั้งค่า",
-    outsideAgain: "คลิกด้านนอกอีกครั้งเพื่อปิด",
     getStarted: "เริ่มต้นใช้งาน",
     progress: "ขั้นตอนที่ {current} จาก {total}",
     welcome: {

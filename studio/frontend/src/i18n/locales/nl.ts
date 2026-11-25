@@ -6585,7 +6585,6 @@ export const nl = {
     back: "Terug",
     continue: "Doorgaan",
     skipSetup: "Instellen overslaan",
-    outsideAgain: "Klik nogmaals buiten het venster om te sluiten",
     getStarted: "Aan de slag",
     progress: "Stap {current} van {total}",
     welcome: {

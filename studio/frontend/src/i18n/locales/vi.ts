@@ -6526,7 +6526,6 @@ export const vi = {
     back: "Quay lại",
     continue: "Tiếp tục",
     skipSetup: "Bỏ qua thiết lập",
-    outsideAgain: "Nhấp ra ngoài lần nữa để đóng",
     getStarted: "Bắt đầu",
     progress: "Bước {current}/{total}",
     welcome: {

@@ -6119,7 +6119,6 @@ export const ar = {
     back: "رجوع",
     continue: "متابعة",
     skipSetup: "تخطي الإعداد",
-    outsideAgain: "انقر خارج النافذة مرة أخرى للإغلاق",
     getStarted: "ابدأ",
     progress: "الخطوة {current} من {total}",
     welcome: {

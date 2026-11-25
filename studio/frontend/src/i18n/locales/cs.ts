@@ -6548,7 +6548,6 @@ export const cs = {
     back: "Zpět",
     continue: "Pokračovat",
     skipSetup: "Přeskočit nastavení",
-    outsideAgain: "Kliknutím mimo okno jej znovu zavřete",
     getStarted: "Začít",
     progress: "Krok {current} z {total}",
     welcome: {

@@ -6528,7 +6528,6 @@ export const id = {
     back: "Kembali",
     continue: "Lanjutkan",
     skipSetup: "Lewati penyiapan",
-    outsideAgain: "Klik di luar sekali lagi untuk menutup",
     getStarted: "Mulai",
     progress: "Langkah {current} dari {total}",
     welcome: {

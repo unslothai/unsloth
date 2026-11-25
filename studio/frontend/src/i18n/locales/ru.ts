@@ -6147,7 +6147,6 @@ export const ru = {
     back: "Назад",
     continue: "Далее",
     skipSetup: "Пропустить настройку",
-    outsideAgain: "Щёлкните снаружи ещё раз, чтобы закрыть",
     getStarted: "Начать",
     progress: "Шаг {current} из {total}",
     welcome: {

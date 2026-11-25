@@ -6579,7 +6579,6 @@ export const pl = {
     back: "Wstecz",
     continue: "Dalej",
     skipSetup: "Pomiń konfigurację",
-    outsideAgain: "Kliknij ponownie poza oknem, aby zamknąć",
     getStarted: "Zaczynajmy",
     progress: "Krok {current} z {total}",
     welcome: {

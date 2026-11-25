@@ -6203,7 +6203,6 @@ export const fr = {
     back: "Retour",
     continue: "Continuer",
     skipSetup: "Passer la configuration",
-    outsideAgain: "Cliquez à nouveau à l'extérieur pour fermer",
     getStarted: "Commencer",
     progress: "Étape {current} sur {total}",
     welcome: {
