@@ -4055,6 +4055,7 @@ export const zhCN = {
       lr: "LR",
       hardware: "硬件",
       vram: "VRAM",
+      vramTotal: "共 {size}",
       noGpu: "未检测到 GPU",
       hfToken: "HF token",
       saved: "已保存",

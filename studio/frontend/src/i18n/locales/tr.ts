@@ -4415,6 +4415,7 @@ export const tr = {
       lr: "LR",
       hardware: "Donanım",
       vram: "VRAM",
+      vramTotal: "Toplam {size}",
       noGpu: "GPU algılanmadı",
       hfToken: "HF tokenı",
       saved: "Kaydedildi",

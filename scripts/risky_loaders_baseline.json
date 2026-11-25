@@ -878,9 +878,9 @@
       "file": "unsloth_cli/_npu.py",
       "rule": "dynamic-import",
       "sink": "spec_from_file_location",
-      "digest": "20120c388ba71a53",
+      "digest": "a6119de2dc199e0a",
       "count": 1,
-      "reason": "npu_detected() loads Studio's own studio/backend/utils/hardware/npu.py from a fixed path next to this package (Path(__file__).parents[1]); no user, network or checkpoint input chooses the file, and any failure returns False."
+      "reason": "npu_detected() loads Studio's own studio/backend/utils/hardware/npu.py from a fixed path next to this package (Path(__file__).parents[1]); no user, network or checkpoint input chooses the file, and any failure returns False. Only the module name passed to spec_from_file_location changed (#19401)."
     },
     {
       "file": "unsloth_cli/_studio_deps.py",
