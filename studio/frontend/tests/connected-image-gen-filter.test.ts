@@ -6,8 +6,7 @@ import test from "node:test";
 
 import { readText } from "./helpers/kit.ts";
 
-// Image Gen > Connected > "Image gen" listed nothing: it asked the chat marks, which only know a
-// chat route's built-in image tool, about connections the Images page generates through itself.
+// Image Gen > Connected > "Image gen" listed nothing: the chat marks only know a built-in image tool.
 
 test("an image picker's connected rows all pass the Image gen filter", async () => {
   const src = await readText(
