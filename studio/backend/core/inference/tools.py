@@ -4099,8 +4099,7 @@ def _references_studio_credential_here(
     _depth: int = 0,
 ) -> bool:
     """Checks credential refs and .. paths from the tool cwd (the one shape that can leave the sandbox); a binding of the variable first names its own dir"""
-    # Nested `[[...]]` rewrites reach one text along many paths. Cache only clean (False) results (a True
-    # ends the call), keyed per call and recursion depth so answers and RecursionError match a rescan.
+    # Nested `[[...]]` rewrites reach one text along many paths; keyed on depth so RecursionError matches a rescan.
     if _cleared is None:
         _cleared = set()
     key = None
@@ -9764,7 +9763,6 @@ def is_high_risk_tool_call(name: str, arguments: dict) -> bool:
             return _python_is_high_risk(str(arguments.get("code", "")))
         return True
     except RecursionError:
-        # Only RecursionError (fail closed): too deep to analyse asks, as for an unknown tool.
         return True
 
 
@@ -15372,7 +15370,6 @@ def execute_tool(
             if _mcp_arguments_reference_studio_credential(arguments):
                 return _STUDIO_CREDENTIAL_BLOCKED
         except RecursionError:
-            # Fail closed: arguments the screen cannot analyse are never sent.
             return _MCP_TOO_DEEP_TO_SCREEN
         try:
             _, server_id, _ = name.split("__", 2)
@@ -24528,7 +24525,6 @@ def _python_exec(
                 "was written. Remove the coding line and run it again."
             )
 
-        # Validate imports and code safety (skipped when the sandbox is disabled)
         error = None
         if not disable_sandbox:
             # The allowlist is advisory (the network is not confined), so a user's approval lifts it; API keys keep it.
@@ -24536,7 +24532,6 @@ def _python_exec(
                 code, host_approved = host_access_approved and not _api_host_access_refused()
             )
     except RecursionError:
-        # Fail closed: what the screen cannot analyse never runs.
         return _PYTHON_TOO_DEEP_TO_SCREEN
     if not disable_sandbox:
         if error:
@@ -24748,7 +24743,6 @@ def _bash_exec(
         ):
             return _STUDIO_CREDENTIAL_BLOCKED
     except RecursionError:
-        # Fail closed: what the screen cannot analyse never runs.
         return _TERMINAL_TOO_DEEP_TO_SCREEN
 
     # Chosen once, so the blocklist, env and argv all agree on the shell that will run this call.

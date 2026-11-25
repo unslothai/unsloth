@@ -173,7 +173,7 @@ def _classify(is_high_risk, name: str, arguments, sandbox_level: Optional[str]) 
         try:
             return bool(is_high_risk(name, arguments))
         except RecursionError:
-            # Too deeply nested to analyse counts as high risk: ask, or require the OS sandbox in "off".
+            # Too deep to analyse counts as high risk.
             return True
 
 
