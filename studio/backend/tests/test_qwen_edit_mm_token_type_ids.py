@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Qwen-Image-Edit prompt embeddings match a Qwen2.5-VL forward that gets the processor's own inputs.
-
-transformers 5.x builds Qwen2.5-VL's 3D RoPE positions only from ``mm_token_type_ids``, which the diffusers
-edit pipelines drop (diffusers #14189); 4.57 derives them from the image pad tokens."""
+"""Qwen-Image-Edit prompt embeddings match a Qwen2.5-VL forward given the processor's own inputs (diffusers #14189)."""
 
 from __future__ import annotations
 
@@ -32,7 +29,6 @@ TEMPLATE = (
 
 @pytest.fixture(scope = "module")
 def tiny_vl():
-    # The Hub cache first (the network is blocked in tests); skipped when the tiny repo was never fetched.
     from huggingface_hub import snapshot_download
     try:
         path = snapshot_download(REPO, local_files_only = True)
@@ -71,7 +67,6 @@ def _images():
 
 
 def _reference(processor, model, prompt, images):
-    """The encoder forward on every input the processor returns (its own mm_token_type_ids on 5.x)."""
     text = "".join(
         f"Picture {i + 1}: <|vision_start|><|image_pad|><|vision_end|>" for i in range(len(images))
     )
@@ -96,7 +91,7 @@ def test_edit_prompt_embeds_match_the_processor_reference(tiny_vl):
 
     engaged = mm_types.forward_mm_token_type_ids(pipe)
     assert engaged == accepts
-    assert mm_types.forward_mm_token_type_ids(pipe) == engaged  # idempotent
+    assert mm_types.forward_mm_token_type_ids(pipe) == engaged
 
     with torch.no_grad():
         embeds, mask = pipe._get_qwen_prompt_embeds(prompt, images, device = torch.device("cpu"))

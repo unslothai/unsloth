@@ -3,11 +3,8 @@
 
 """Qwen-Image-Edit prompt encoding with ``mm_token_type_ids`` (UNSLOTH_QWEN_VL_MM_TOKEN_TYPES=0 disables).
 
-On transformers 5.x Qwen2.5-VL builds its 3D (M-RoPE) positions only when ``mm_token_type_ids`` is passed;
-without it the image tokens get plain 1D positions. The diffusers edit pipelines drop the processor's ids
-when they call the text encoder, so the edit embeddings differ from the ones the model was trained on
-(diffusers #14189). transformers 4.57 derives the layout from the image pad tokens and takes no such
-argument, so the hook only engages where the encoder's forward accepts it, as the MiniMax-H3 encoder does."""
+transformers 5.x Qwen2.5-VL builds 3D M-RoPE positions only from ``mm_token_type_ids``, which the diffusers
+edit pipelines drop (diffusers #14189); 4.57 takes no such argument, so engage only where forward accepts it."""
 
 from __future__ import annotations
 
@@ -55,8 +52,7 @@ def _add_mm_token_type_ids(module: Any, args: tuple, kwargs: dict) -> tuple:
 
 
 def forward_mm_token_type_ids(pipe: Any, logger: Any = None) -> bool:
-    """Wrap ``pipe._get_qwen_prompt_embeds`` so a Qwen2.5-VL encoder forward gets ``mm_token_type_ids``
-    whenever it sees images. Idempotent; False when the pipeline or the installed transformers does not need it."""
+    """Pass ``mm_token_type_ids`` to the encoder during prompt encode. Idempotent; False when not needed."""
     if not _enabled():
         return False
     encoder = getattr(pipe, "text_encoder", None)
