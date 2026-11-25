@@ -7673,6 +7673,87 @@ function Get-TritonWindowsRocmSpec {
     return $null
 }
 
+# Defined before the fast path: Test-TritonWindowsPairingNeedsPass reads it there, the CUDA install after it.
+# triton-windows follows the Triton each torch pins: 2.12 and 2.13 -> 3.7 (2.12.0 -> 3.7.0), 2.14 -> 3.8, 2.15 -> 3.9, older keeps <3.7.
+function Get-TritonWindowsSpec {
+    param([string]$TorchVersion, [bool]$WinArm64 = $false)
+    if ($WinArm64) { return "triton-windows>=3.8.0.post28" }
+    if ($TorchVersion -match '^2\.(\d+)\.(\d+)') {
+        switch ([int]$Matches[1]) {
+            12 { if ([int]$Matches[2] -eq 0) { return "triton-windows>=3.7,<3.7.1" } return "triton-windows>=3.7,<3.8" }
+            13 { return "triton-windows>=3.7,<3.8" }
+            14 { return "triton-windows>=3.8,<3.9" }
+            15 { return "triton-windows>=3.9,<3.10" }
+        }
+    }
+    return "triton-windows<3.7"
+}
+
+# A triton-windows version as a comparable key: 4 release parts, then the post number (-1 = none). Only the forms
+# triton-windows publishes (3.6.0.post25, 3.8.0, a +local label); anything else (dev, rc) is $null.
+function Get-TritonWindowsVersionKey {
+    param([string]$Version)
+    if ("$Version".Trim() -notmatch '^(\d+(?:\.\d+){0,3})(?:\.post(\d+))?(?:\+[\w.]+)?$') { return $null }
+    $key = [System.Collections.Generic.List[long]]::new()
+    foreach ($part in $Matches[1].Split('.')) { $key.Add([long]$part) }
+    while ($key.Count -lt 4) { $key.Add(0) }
+    $key.Add($(if ($Matches[2]) { [long]$Matches[2] } else { -1 }))
+    return ,$key.ToArray()
+}
+
+# True / false when $Version is inside / outside a Get-TritonWindowsSpec range; $null when either is unreadable.
+function Test-TritonWindowsVersionInSpec {
+    param([string]$Version, [string]$Spec)
+    $have = Get-TritonWindowsVersionKey $Version
+    if ($null -eq $have) { return $null }
+    $clauses = @("$Spec" -replace '^\s*triton-windows\s*', '' -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    if ($clauses.Count -eq 0) { return $null }
+    foreach ($clause in $clauses) {
+        if ($clause -notmatch '^(>=|<=|==|<|>)\s*(\S+)$') { return $null }
+        $op = $Matches[1]
+        $want = Get-TritonWindowsVersionKey $Matches[2]
+        if ($null -eq $want) { return $null }
+        $cmp = 0
+        for ($i = 0; $i -lt $have.Count -and $cmp -eq 0; $i++) { $cmp = $have[$i].CompareTo($want[$i]) }
+        $ok = switch ($op) { '>=' { $cmp -ge 0 } '<=' { $cmp -le 0 } '==' { $cmp -eq 0 } '<' { $cmp -lt 0 } '>' { $cmp -gt 0 } }
+        if (-not $ok) { return $false }
+    }
+    return $true
+}
+
+function Get-TritonWindowsPairing {
+    # Metadata only, no torch import. No double quotes: Invoke-BoundedPythonProbe wraps $Code in them. Only a CUDA torch
+    # (+cuNNN) is judged: the dependency pass installs Get-TritonWindowsSpec only on its CUDA branch, so forcing the
+    # pass for a CPU / XPU / ROCm torch (ROCm has Get-RocmTritonPairing) would repair nothing. No triton-windows, or
+    # more than one record, is unknown, never stale: a fail-soft install that found no wheel must not force every run.
+    $code = "import importlib.metadata as m; print('TORCH=' + m.version('torch')); " +
+        "vs = [d.version for d in m.distributions(name='triton-windows') if d.version]; " +
+        "print('TRITONWIN=' + (vs[0] if len(vs) == 1 else ''))"
+    $probe = Invoke-BoundedPythonProbe -PythonExe "python" -Code $code
+    $torch = if ($probe.Ok -and $probe.Output -match '(?m)^TORCH=(\S+)\s*$') { $Matches[1] } else { "" }
+    $triton = if ($probe.Ok -and $probe.Output -match '(?m)^TRITONWIN=(\S+)\s*$') { $Matches[1] } else { "" }
+    $spec = $null
+    $inSpec = $null
+    if ($torch -match '\+cu\d+' -and $triton) {
+        $spec = Get-TritonWindowsSpec -TorchVersion $torch -WinArm64 ([bool](Test-WinArm64Venv))
+        $inSpec = Test-TritonWindowsVersionInSpec -Version $triton -Spec $spec
+    }
+    return @{ Torch = $torch; Triton = $triton; Spec = $spec; Stale = [bool]($null -ne $inSpec -and -not $inSpec) }
+}
+
+function Test-TritonWindowsPairingNeedsPass {
+    # A verified install skips the CUDA branch that pairs triton-windows with torch (a kept torch 2.15 with 3.6 would
+    # stay broken for torch.compile), so a pair outside Get-TritonWindowsSpec forces the pass that reinstalls it.
+    $pair = Get-TritonWindowsPairing
+    if (-not $pair.Stale) { return $false }
+    if ($script:OfflineFastPath -or (Test-UvOfflineRequested)) {
+        substep "triton-windows $($pair.Triton) does not pair with torch $($pair.Torch) but UV_OFFLINE is set -- left for the next online update" "Yellow"
+        return $false
+    }
+    substep "triton-windows $($pair.Triton) does not pair with torch $($pair.Torch) ($($pair.Spec)) -- forcing dependency pass to repair..." "Cyan"
+    return $true
+}
+
 function Get-TritonRuntimeState {
     # Judged by the imported runtime, not metadata: a dist-info can say 3.8 while the files are 3.9 or half removed.
     # Healthy = triton and a real (non-namespace) triton.language import with their core API, whatever the version.
@@ -7858,6 +7939,9 @@ sys.exit(2 if conflict else (0 if version else 1))
         # A verified install skips the post-stack pairing. Outside the gfx checks: a pinned ROCm index or a hybrid host
         # can hold a ROCm torch with no detected gfx.
         if ($SkipPythonDeps -and -not $NoTorchMode -and (Test-RocmTritonPairingNeedsPass)) {
+            $SkipPythonDeps = $false
+        }
+        if ($SkipPythonDeps -and -not $NoTorchMode -and (Test-TritonWindowsPairingNeedsPass)) {
             $SkipPythonDeps = $false
         }
     }
@@ -8208,20 +8292,6 @@ if ($WinArm64Venv -and $WinArm64EffectiveTorchIndexUrl) {
 }
 # win_arm64's first triton-windows wheel is 3.8.0.post28.
 $_tritonSpec = if ($WinArm64Venv) { "triton-windows>=3.8.0.post28" } else { "triton-windows<3.7" }
-# triton-windows follows the Triton each torch pins: 2.12 and 2.13 -> 3.7 (2.12.0 -> 3.7.0), 2.14 -> 3.8, 2.15 -> 3.9, older keeps <3.7.
-function Get-TritonWindowsSpec {
-    param([string]$TorchVersion, [bool]$WinArm64 = $false)
-    if ($WinArm64) { return "triton-windows>=3.8.0.post28" }
-    if ($TorchVersion -match '^2\.(\d+)\.(\d+)') {
-        switch ([int]$Matches[1]) {
-            12 { if ([int]$Matches[2] -eq 0) { return "triton-windows>=3.7,<3.7.1" } return "triton-windows>=3.7,<3.8" }
-            13 { return "triton-windows>=3.7,<3.8" }
-            14 { return "triton-windows>=3.8,<3.9" }
-            15 { return "triton-windows>=3.9,<3.10" }
-        }
-    }
-    return "triton-windows<3.7"
-}
 # The win_arm64 index publishes only the trio, so a dependency index rides beside it (the caller's configured one, public PyPI by default). Not gated on $UseUv: pip needs the extra index too.
 $WinArm64IndexArgs = if ($WinArm64Venv) {
     $_woaResolver = if ($UseUv) { "uv" } else { "pip" }
