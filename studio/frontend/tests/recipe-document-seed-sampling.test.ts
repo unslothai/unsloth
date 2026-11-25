@@ -9,7 +9,7 @@ import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
-const { makeSeedConfig } = await import(
+const { makeSeedConfig, swapSeedSourceType } = await import(
   "../src/features/recipe-studio/utils/config-factories.ts"
 );
 const { buildSeedConfig } = await import(
@@ -51,4 +51,16 @@ test("the PDF QA template samples chunks from the whole upload", () => {
     snapshot.auxNodePositions,
   );
   assert.equal(built.payload.recipe.seed_config?.sampling_strategy, "shuffle");
+});
+
+test("swapping a seed to Documents samples chunks from the whole upload", () => {
+  const hf = makeSeedConfig("s1", [], "hf");
+  const docs = swapSeedSourceType(hf, "unstructured");
+  assert.equal(docs.sampling_strategy, "shuffle");
+  assert.equal(swapSeedSourceType(docs, "local").sampling_strategy, "ordered");
+  const pinned = { ...docs, sampling_strategy: "ordered" as const };
+  assert.equal(
+    swapSeedSourceType(pinned, "unstructured").sampling_strategy,
+    "ordered",
+  );
 });
