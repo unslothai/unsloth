@@ -23,7 +23,6 @@ import threading
 
 import torch
 
-from ._cache_kwarg import get_cache_kwarg
 
 # Programmatic override (tests, harnesses): True / False force graphs on / off, None (default) follows
 # the environment variable read at call time and the RL / Studio generation scopes (enabled()).
@@ -542,7 +541,9 @@ def generate_with_fallback(
             not graphs
             or not graphable(model)
             or kwargs.get("streamer", None) is not None
-            or get_cache_kwarg(kwargs) is not None
+            or kwargs.get("past_key_values", None) is not None
+            # transformers 5.24 spells the caller cache cache=.
+            or kwargs.get("cache", None) is not None
             or kwargs.get("stopping_criteria", None)
             or kwargs.get("logits_processor", None)
         ):
