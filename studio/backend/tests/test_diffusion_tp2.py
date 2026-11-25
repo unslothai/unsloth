@@ -525,3 +525,22 @@ def test_row_parallel_wrapper_is_one_class():
     kinds = {type(blk.attn.to_out[0]) for card in m.transformer_blocks[0].shards() for blk in card}
     kinds |= {type(blk.img_mlp.out) for card in m.transformer_blocks[0].shards() for blk in card}
     assert len(kinds) == 1
+
+
+def test_int8_dispatch_route_census_and_remove_see_the_shards(monkeypatch):
+    from types import SimpleNamespace
+
+    from core.inference import diffusion_int8_attention_dispatch as disp
+
+    m = _tiny(layers = 2)
+    for blk in m.transformer_blocks:
+        blk.attn.processor._attention_backend = disp.Int8Route("native", 0, torch.float16, 0, 32)
+    pipe = SimpleNamespace(transformer = m)
+    monkeypatch.setattr(disp, "_dits", lambda p: [p.transformer])
+    assert disp.routed_count(pipe) == 2
+    tp2.install(m, CPU2)
+    # both cards' shards share each block's processor: the census still finds the routes, and remove reaches them
+    assert disp.routed_count(pipe) == 4
+    assert disp.status(pipe)["modules"] == 4
+    disp.remove(pipe)
+    assert disp.routed_count(pipe) == 0

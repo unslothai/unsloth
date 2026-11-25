@@ -525,14 +525,21 @@ def _dits(pipe: Any) -> list:
         return []
 
 
+def _dit_modules(dit: Any) -> list:
+    """``dit.modules()`` plus a tensor-parallel denoiser's per-card block shards (outside the module tree)."""
+    modules = getattr(dit, "modules", None)
+    if not callable(modules):
+        return []
+    from .diffusion_tp2 import shard_modules
+
+    return [*modules(), *shard_modules(dit)]
+
+
 def remove(pipe: Any) -> int:
     """Every routed processor back to its incumbent backend. Returns how many were routed."""
     count = 0
     for dit in _dits(pipe):
-        modules = getattr(dit, "modules", None)
-        if not callable(modules):
-            continue
-        for m in modules():
+        for m in _dit_modules(dit):
             proc = getattr(m, "processor", None)
             backend = getattr(proc, "_attention_backend", None)
             if isinstance(backend, Int8Route):
@@ -546,7 +553,7 @@ def routed_count(pipe: Any) -> int:
     return sum(
         1
         for dit in _dits(pipe)
-        for m in (dit.modules() if callable(getattr(dit, "modules", None)) else ())
+        for m in _dit_modules(dit)
         if isinstance(getattr(getattr(m, "processor", None), "_attention_backend", None), Int8Route)
     )
 
@@ -554,7 +561,7 @@ def routed_count(pipe: Any) -> int:
 def status(pipe: Any = None) -> dict:
     routes: dict = {}
     for dit in _dits(pipe) if pipe is not None else ():
-        for m in dit.modules():
+        for m in _dit_modules(dit):
             backend = getattr(getattr(m, "processor", None), "_attention_backend", None)
             if isinstance(backend, Int8Route):
                 key = f"{type(dit).__name__} heads={m.heads} head_dim={backend.head_dim} vs {backend.value} cards={backend.cards} impl={backend.impl}"
