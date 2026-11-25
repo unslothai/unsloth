@@ -206,6 +206,47 @@ def fsdp2_keeps_fused_lora():
     return fsdp2_requested()
 
 
+# Pre-quantized bnb 4-bit repos whose fused MoE experts are bare Params4bit stacks. They store the dtype they were
+# quantized in, so without unsloth_zoo's patching_utils.BARE_PARAMS4BIT_COMPUTE_DTYPE a float16 GPU dequantizes their
+# experts in bfloat16 (2x T4: 36.5 vs 24.1 s per step, about 1.2 GB more per card). An older zoo keeps quantize-on-load.
+_BARE_4BIT_EXPERT_REPOS = frozenset(("unsloth/inkling-2-mini-unsloth-bnb-4bit",))
+
+
+def _zoo_sets_bare_4bit_compute_dtype():
+    """unsloth_zoo gives fused 4-bit expert stacks (bare Params4bit) the compute dtype (older ones keep the saved one)."""
+    try:
+        from unsloth_zoo import patching_utils
+    except Exception:
+        return False
+    return getattr(patching_utils, "BARE_PARAMS4BIT_COMPUTE_DTYPE", False) is True
+
+
+def _complete_in_cache(repo_id, cache_dir = None):
+    """config.json and every safetensors shard of `repo_id` (default revision) are in the local Hub cache."""
+    import json
+    try:
+        from huggingface_hub import try_to_load_from_cache
+
+        if cache_dir is None:
+            from transformers.utils import hub as _tf_hub
+            cache_dir = getattr(_tf_hub, "TRANSFORMERS_CACHE", None)
+
+        def cached(filename):
+            path = try_to_load_from_cache(repo_id, filename, cache_dir = cache_dir)
+            return path if isinstance(path, str) else None
+
+        if cached("config.json") is None:
+            return False
+        index = cached("model.safetensors.index.json")
+        if index is None:
+            return cached("model.safetensors") is not None
+        with open(index, encoding = "utf-8") as f:
+            shards = set(json.load(f)["weight_map"].values())
+        return bool(shards) and all(isinstance(s, str) and cached(s) is not None for s in shards)
+    except Exception:
+        return False
+
+
 def _zoo_gathers_fsdp2_lora():
     """unsloth_zoo hands vLLM whole adapters from FSDP2 DTensor shards (older ones pass the shards)."""
     try:
@@ -2044,6 +2085,24 @@ def get_model_name(
     elif new_model_name is None and model_name.lower() in BAD_MAPPINGS:
         # Some bad names (the -unsloth-bnb-4bit dynamic quants) are keys of the mappers, not values, so the resolver returns None and the remap above is skipped; remap the input name directly.
         new_model_name = BAD_MAPPINGS[model_name.lower()]
+
+    if (
+        load_in_4bit
+        and type(new_model_name) is str
+        and new_model_name.lower() in _BARE_4BIT_EXPERT_REPOS
+        and new_model_name.lower() != str(model_name).lower()
+        and (
+            not _zoo_sets_bare_4bit_compute_dtype()
+            or (
+                (local_files_only or _env_says_offline())
+                and not _complete_in_cache(new_model_name, cache_dir)
+            )
+        )
+    ):
+        # Mapped to the pre-quantized repo, but this unsloth_zoo would dequantize its experts in the saved dtype, or
+        # an offline load has not cached it: load the requested checkpoint and quantize on load, as before. Not
+        # None, so the fetched mapper is not probed.
+        new_model_name = str(model_name)
 
     if (
         new_model_name is None
