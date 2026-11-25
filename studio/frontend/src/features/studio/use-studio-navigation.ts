@@ -12,6 +12,8 @@ import { useShallow } from "zustand/react/shallow";
 
 export type TrainSubTab = "configure" | "current-run" | "history";
 
+let mountedStudioPages = 0;
+
 function studioTabFor(
   selectedHistoryRunId: string | null,
   jobId: string | null,
@@ -133,8 +135,13 @@ export function useStudioNavigation() {
     return () => setCurrentRunViewActive(false);
   }, [activeTab, setCurrentRunViewActive]);
 
+  // A route change briefly mounts a second Train page in the fading-out wrapper; only the last one to unmount clears.
   useEffect(() => {
-    return () => setSelectedHistoryRunId(null);
+    mountedStudioPages += 1;
+    return () => {
+      mountedStudioPages -= 1;
+      if (mountedStudioPages === 0) setSelectedHistoryRunId(null);
+    };
   }, [setSelectedHistoryRunId]);
 
   useEffect(() => {

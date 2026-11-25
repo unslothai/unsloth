@@ -76,13 +76,15 @@ const { useLibraryOrigin: libraryOrigin } = loadWithStubs<
 });
 
 function mountStudio() {
-  slots = [];
+  const mine: Slot[] = [];
+  slots = mine;
   const stopWatching = useTrainingRuntimeStore.subscribe(() => {
     dirty = true;
   });
   let view!: ReturnType<typeof renderStudioNavigation>;
   const render = () => {
     do {
+      slots = mine;
       dirty = false;
       cursor = 0;
       pendingEffects = [];
@@ -99,7 +101,7 @@ function mountStudio() {
     },
     unmount() {
       stopWatching();
-      for (const slot of slots) {
+      for (const slot of mine) {
         if (typeof slot?.cleanup === "function") slot.cleanup();
       }
     },
@@ -290,3 +292,15 @@ for (const [label, next] of [
     studio.unmount();
   });
 }
+
+test("the Train page fading out after a route change does not clear the run opened from Recents", () => {
+  lastSeenJob("job-live", true);
+  openFromRecents("job-live");
+  // The page transition renders the Train page twice for a moment: in the fading-out wrapper and the new one.
+  const fading = mountStudio();
+  const studio = mountStudio();
+  fading.unmount();
+  assert.deepEqual(visible(studio), ["current-run", "job-live"]);
+  studio.unmount();
+  assert.equal(useTrainingRuntimeStore.getState().selectedHistoryRunId, null);
+});
