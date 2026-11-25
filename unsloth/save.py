@@ -3147,11 +3147,12 @@ def save_to_gguf(
             output_location = os.path.join(
                 gguf_directory, f"{model_name}.{quant_method.upper()}.gguf"
             )
+            partial_location = output_location + ".tmp"
             try:
                 if quant_method == "q2_k_l":
-                    return _quantize_q2_k_l(
+                    _quantize_q2_k_l(
                         input_gguf = base_gguf,
-                        output_gguf = output_location,
+                        output_gguf = partial_location,
                         quantizer_location = quantizer_location,
                         n_threads = n_threads if n_threads is not None else n_cpus,
                         print_output = print_output,
@@ -3161,7 +3162,7 @@ def save_to_gguf(
                     # Standard unsloth-zoo quantization for everything else. Pass imatrix only when set, so an older zoo still handles plain quants; an inapplicable imatrix was rejected above.
                     quant_kwargs = dict(
                         input_gguf = base_gguf,
-                        output_gguf = output_location,
+                        output_gguf = partial_location,
                         quant_type = quant_method,
                         quantizer_location = quantizer_location,
                         print_output = print_output,
@@ -3170,7 +3171,9 @@ def save_to_gguf(
                         quant_kwargs["imatrix"] = imatrix
                     if n_threads is not None:
                         quant_kwargs["n_threads"] = n_threads
-                    return quantize_gguf(**quant_kwargs)
+                    quantize_gguf(**quant_kwargs)
+                _place_gguf_output(partial_location, output_location)
+                return output_location
             except Exception as e:
                 # Judge "no room" against what this pass writes, not a constant. Priced as a lower bound, not the generous reclamation estimate: a high guess calls a disk full that had room.
                 try:
@@ -3199,7 +3202,7 @@ def save_to_gguf(
                     e,
                     gguf_directory,
                     needed_bytes = _needed,
-                    partial_output = output_location,
+                    partial_output = partial_location,
                 ):
                     raise RuntimeError(
                         f"Unsloth: Quantization failed for {output_location}\n"
@@ -3216,7 +3219,7 @@ def save_to_gguf(
                     e,
                     gguf_directory,
                     needed_bytes = _needed,
-                    partial_output = output_location,
+                    partial_output = partial_location,
                 ):
                     # Kaggle is not the only place a disk fills, and the rebuild advice below only fits a broken quantizer; on a full disk it is a long compile that fixes nothing.
                     try:
@@ -3255,6 +3258,8 @@ def save_to_gguf(
                         "Once that's done, redo the quantization.\n"
                         f"Error: {e}"
                     ) from e  # keep the cause: the OOM check walks it for the returncode
+            finally:
+                Path(partial_location).unlink(missing_ok = True)
 
         # Outputs already on disk pre-date this run; never delete them on a failure.
         preexisting_outputs = {
@@ -6621,6 +6626,7 @@ def _unsloth_save_lora_gguf(
 
     base_config_dir = None
     inkling2_dir = None
+    partial_gguf = None
     # Save the adapter: an isolated temp dir for a hub push, else save_directory itself, wrapped so it is always cleaned up.
     if push_to_hub:
         lora_dir = tempfile.mkdtemp(prefix = "unsloth-lora-gguf-")
@@ -6648,6 +6654,7 @@ def _unsloth_save_lora_gguf(
             )
 
         out_gguf = os.path.join(lora_dir, f"{model_name}-lora-{outtype}.gguf")
+        partial_gguf = out_gguf + ".tmp"
         converter_input = lora_dir
         if is_inkling2_config(getattr(model, "config", None)):
             # The converter maps Inkling 2's original checkpoint names, PEFT saves transformers names.
@@ -6657,7 +6664,7 @@ def _unsloth_save_lora_gguf(
             converter,
             converter_input,
             "--outfile",
-            out_gguf,
+            partial_gguf,
             "--outtype",
             outtype,
         ]
@@ -6712,11 +6719,12 @@ def _unsloth_save_lora_gguf(
                 e.returncode, _converter_error_line(output_tail), expert_targets
             )
 
-        if not os.path.isfile(out_gguf):
+        if not os.path.isfile(partial_gguf):
             raise RuntimeError(
                 f"Unsloth: LoRA GGUF conversion reported success but wrote no .gguf file to "
                 f"{out_gguf}. See the output above for details."
             )
+        _place_gguf_output(partial_gguf, out_gguf)
 
         if not push_to_hub:
             print(f"Unsloth: Done. Saved LoRA GGUF to '{out_gguf}'")
@@ -6761,6 +6769,8 @@ def _unsloth_save_lora_gguf(
         print(f"Unsloth: Done. Uploaded to {destination}")
         return save_directory
     finally:
+        if partial_gguf is not None:
+            Path(partial_gguf).unlink(missing_ok = True)
         if push_to_hub:
             shutil.rmtree(lora_dir, ignore_errors = True)
         if base_config_dir is not None:
