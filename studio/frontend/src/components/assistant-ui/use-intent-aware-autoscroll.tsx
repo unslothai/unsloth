@@ -551,9 +551,11 @@ export function useIntentAwareAutoScroll(): {
         const sh = el.scrollHeight;
         const currentContent = sh - stabilizerPx;
         // Runs only: opening a thread shrinks too, and that padding stuck under the reply.
+        // `source` is null outside a thread runtime, where `aui.thread()` throws.
         const runSettling =
-          aui.thread().getState().isRunning ||
-          performance.now() - runEndAtRef.current < FOLLOW_SETTLE_MS;
+          aui.thread.source != null &&
+          (aui.thread().getState().isRunning ||
+            performance.now() - runEndAtRef.current < FOLLOW_SETTLE_MS);
         const followActive =
           runSettling &&
           !userDetachedRef.current &&

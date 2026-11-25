@@ -55,7 +55,7 @@ test("opening or switching a thread never leaves stabilizer padding under the re
     )?.[1] ?? "";
   assert.match(
     stabilize,
-    /const runSettling =\s*aui\.thread\(\)\.getState\(\)\.isRunning \|\|/,
+    /const runSettling =\s*aui\.thread\.source != null &&\s*\(aui\.thread\(\)\.getState\(\)\.isRunning \|\|/,
   );
   assert.match(stabilize, /const followActive =\s*runSettling &&/);
 });
