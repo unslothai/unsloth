@@ -115,6 +115,27 @@ def test_first_message_tool_call_without_a_role_opener():
     assert out == '<|content_invoke_tool_json|>{"name":"python","args":{}}<|end_message|>'
 
 
+def test_answer_ending_in_the_tool_name_keeps_it_after_healing():
+    from core.inference.passthrough_healing import heal_openai_message_events
+
+    raw = (
+        "<|content_text|>I will check that with python<|end_message|><|message_model|>python"
+        '<|content_invoke_tool_json|>{"name":"python","args":{"code":"1+1"}}<|end_message|>'
+    )
+    text = _stream(make_reasoning_normalizer(MARKERS), _token_chunks(raw))
+    events = heal_openai_message_events({"role": "assistant", "content": text}, {"python"})
+    assert events[0] == ("text", "I will check that with python")
+    assert events[1][0] == "tool_call" and events[1][1]["function"]["name"] == "python"
+    # Raw streams still lose the echoed name at a message boundary.
+    for prefix in ("", "Red<|end_message|>", "Hi<|end_message|><|message_model|>"):
+        raw_call = (
+            prefix + 'python<|content_invoke_tool_json|>{"name":"python","args":{}}<|end_message|>'
+        )
+        events = heal_openai_message_events({"role": "assistant", "content": raw_call}, {"python"})
+        assert [kind for kind, _ in events] == (["text"] if prefix else []) + ["tool_call"]
+        assert "python" not in "".join(value for kind, value in events if kind == "text")
+
+
 def test_every_chunking_gives_the_same_reply():
     raw = (
         "<|content_thinking|>a b<|end_message|><|message_model|><|content_text|>x y\\nz<|end_message|>"
