@@ -62,7 +62,7 @@ function styleOf({ mode, tone }: TranslatePromptOptions): string | null {
 
 export type TranslateMessage = { role: "user"; content: string };
 
-/** Hy-MT2's model-card templates: one user turn, no system prompt; the card has no source-language slot. */
+/** Hy-MT's model-card templates (Hy-MT2 and Hy-MT3 share them): one user turn, no system prompt; the card has no source-language slot. */
 export function hyMtInstruction(options: TranslatePromptOptions): string {
   if (options.custom) return fillPlaceholders(options.custom, options);
   const pair = `${options.sourceName ? `from ${options.sourceName} ` : ""}into ${options.targetName}`;
@@ -127,6 +127,28 @@ export type TranslateChunk = {
 export const TRANSLATE_CHUNK_CHARS = 1000;
 
 const SENTENCE_END = /[.!?;。！？；…]["'”’)\]]*\s+|[。！？；]/g;
+const LINE_END = /[.!?;。！？；…]["'”’)\]]*[^\S\n]*\n\s*|\n\s*\n\s*/g;
+const MID_LINE_END = new RegExp(
+  `(?<!^[^\\S\\n]*\\d+)(?:${SENTENCE_END.source})`,
+  "gm",
+);
+
+function lastBreak(text: string, from: number): number {
+  for (const pattern of [LINE_END, MID_LINE_END]) {
+    let cut = -1;
+    pattern.lastIndex = from;
+    for (let m = pattern.exec(text); m; m = pattern.exec(text)) {
+      cut = m.index + m[0].length;
+    }
+    if (cut > 0) return cut;
+  }
+  return text.length;
+}
+
+function toChunk(piece: string): TranslateChunk {
+  const text = piece.trimEnd();
+  return { text, after: piece.slice(text.length) };
+}
 
 function splitLongLine(line: string, limit: number): TranslateChunk[] {
   const pieces: TranslateChunk[] = [];
@@ -179,18 +201,24 @@ export function splitForTranslation(
   }
   const chunks: TranslateChunk[] = [];
   let current: TranslateChunk | null = null;
+  const fits = (a: TranslateChunk, b: TranslateChunk) =>
+    a.text.length + a.after.length + b.text.length <= limit;
   for (const unit of units) {
-    if (
-      current &&
-      current.text.length + current.after.length + unit.text.length <= limit
-    ) {
-      current = unit.text
-        ? { text: current.text + current.after + unit.text, after: unit.after }
-        : { text: current.text, after: current.after + unit.after };
-      continue;
+    if (current && !fits(current, unit)) {
+      const whole: string = current.text + current.after;
+      const cut = lastBreak(whole, Math.floor(limit / 2));
+      chunks.push(toChunk(whole.slice(0, cut)));
+      current = cut < whole.length ? toChunk(whole.slice(cut)) : null;
+      if (current && !fits(current, unit)) {
+        chunks.push(current);
+        current = null;
+      }
     }
-    if (current) chunks.push(current);
-    current = unit;
+    current = current
+      ? unit.text
+        ? { text: current.text + current.after + unit.text, after: unit.after }
+        : { text: current.text, after: current.after + unit.after }
+      : unit;
   }
   if (current && (current.text || current.after)) chunks.push(current);
   return chunks.map((chunk) =>

@@ -20,6 +20,8 @@ export interface TransformersUpgradeCheck {
   latestTierActive: boolean;
   /** The latest sidecar forces 16-bit. */
   forces16Bit: boolean;
+  /** The latest sidecar still loads this model in bnb 4-bit, so installing it keeps QLoRA. */
+  sidecarKeeps4Bit?: boolean;
   /** The checkpoint resumes only in 4-bit, which installing would remove. Set only for resumes. */
   installBreaksExactResume: boolean;
 }

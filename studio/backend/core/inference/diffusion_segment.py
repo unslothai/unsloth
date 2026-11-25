@@ -821,8 +821,8 @@ def _cuda_free_mib(ordinal: int) -> tuple[Optional[int], Optional[int]]:
     SAM's emptied weights in that cache on purpose, so driver free alone would send the next detection to the CPU on a
     warm card (ComfyUI's get_free_memory likewise adds reserved minus active bytes)."""
     try:
-        import torch
-        free, total = torch.cuda.mem_get_info(ordinal)
+        from utils.hardware import trusted_mem_get_info
+        free, total = trusted_mem_get_info(ordinal)
     except Exception:  # noqa: BLE001
         return None, None
     try:

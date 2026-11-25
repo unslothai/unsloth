@@ -1406,6 +1406,9 @@ class FastLanguageModel(FastLlamaModel):
         on_model_resolved = None,
         **kwargs,
     ):
+        from ._utils import _unsloth_load_begins
+
+        _unsloth_load_begins()
         rope_scaling = _fold_rope_parameters(rope_scaling, kwargs)
         quantization_config = kwargs.get("quantization_config", None)
         if quantization_config is not None:
@@ -1582,6 +1585,9 @@ class FastLanguageModel(FastLlamaModel):
                 trust_remote_code = trust_remote_code,
                 local_files_only = kwargs.get("local_files_only", False),
                 cache_dir = kwargs.get("cache_dir", None),
+                quantization_config = None
+                if fast_inference
+                else kwargs.get("quantization_config", None),
                 revision = revision,
             )
         else:
@@ -1859,6 +1865,9 @@ class FastLanguageModel(FastLlamaModel):
                     trust_remote_code = trust_remote_code,
                     local_files_only = kwargs.get("local_files_only", False),
                     cache_dir = kwargs.get("cache_dir", None),
+                    quantization_config = None
+                    if fast_inference
+                    else kwargs.get("quantization_config", None),
                 )
             # Pre-quantized models allowed? AMD Instinct GPUs need blocksize = 128 on bitsandbytes < 0.49.2, and our pre-quants use 64.
             if not ALLOW_PREQUANTIZED_MODELS and model_name.lower().endswith(
@@ -2404,6 +2413,9 @@ class FastModel(FastBaseModel):
         on_model_resolved = None,
         **kwargs,
     ):
+        from ._utils import _unsloth_load_begins
+
+        _unsloth_load_begins()
         rope_scaling = _fold_rope_parameters(rope_scaling, kwargs)
         user_config = kwargs.pop("config", None)
         fp8_lora = None
@@ -2573,6 +2585,9 @@ class FastModel(FastBaseModel):
                 load_in_fp8 = load_in_fp8,
                 local_files_only = kwargs.get("local_files_only", False),
                 cache_dir = kwargs.get("cache_dir", None),
+                quantization_config = None
+                if fast_inference
+                else kwargs.get("quantization_config", None),
                 revision = revision,
             )
         else:
@@ -3125,6 +3140,9 @@ class FastModel(FastBaseModel):
                     load_in_4bit,
                     local_files_only = kwargs.get("local_files_only", False),
                     cache_dir = kwargs.get("cache_dir", None),
+                    quantization_config = None
+                    if fast_inference
+                    else kwargs.get("quantization_config", None),
                 )
             # Pre-quantized models allowed? AMD Instinct GPUs need blocksize = 128 on bitsandbytes < 0.49.2, and our pre-quants use 64.
             if not ALLOW_PREQUANTIZED_MODELS and model_name.lower().endswith(

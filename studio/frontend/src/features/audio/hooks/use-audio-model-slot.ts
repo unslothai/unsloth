@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { modelErrorToast } from "@/lib/model-error-toast";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { isAccountOwner } from "@/features/auth";
 import {
@@ -485,13 +486,13 @@ export function useAudioModelSlot({
               void retryLoad("cpu");
             },
           });
-          toast.error((error as Error).message, {
+          modelErrorToast((error as Error).message, {
             id: toastId,
             duration: 12000,
             action: action && { label: action.label, onClick: action.onClick },
           });
         } else if (isCurrent()) {
-          toast.error(
+          modelErrorToast(
             error instanceof Error ? error.message : "Model load failed.",
             { id: toastId },
           );

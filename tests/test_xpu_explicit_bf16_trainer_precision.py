@@ -46,3 +46,17 @@ def test_xpu_forced_float32_still_wins():
     )
     assert (args.fp16, args.bf16) == (False, False)
     assert env["ACCELERATE_MIXED_PRECISION"] == "no"
+
+
+def test_xpu_flag_alone_does_not_force_an_unstamped_model():
+    # UNSLOTH_FORCE_FLOAT32 is process wide: a model Unsloth did not load (no stamp) keeps the precision asked for.
+    args, env = _run(
+        torch.bfloat16,
+        bf16_supported = False,
+        fp16 = True,
+        force_float32 = "1",
+        device_type = "xpu",
+        forced_stamp = "none",
+    )
+    assert (args.fp16, args.bf16) == (False, True)
+    assert env["ACCELERATE_MIXED_PRECISION"] == "bf16"

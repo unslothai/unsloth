@@ -126,6 +126,14 @@ _MULTI_STAGE_DP = (
     "(each FSDP2 root must be one stage's module); use one stage per rank (schedule = 'gpipe' / '1f1b') "
     "with a dp mesh, or no dp mesh."
 )
+# Root mesh dimension names FSDP2 shards over (the base `dp`, the launcher's / torchtitan's `dp_shard`). A
+# replicated dp axis (dp_replicate: DDP-style gradient all-reduce) and model parallel axes under any name
+# compose with several stages per rank; FSDP2 under another name is still refused at shard_model.
+_SHARDED_DP_DIMS = (
+    "dp",
+    "dp_shard",
+    "fsdp",
+)
 _SIMPLE = (bool, int, float, str, type(None))
 
 
@@ -234,6 +242,39 @@ def pipeline_stage_of(model):
     return None
 
 
+@functools.lru_cache(maxsize = None)
+def _adjacent_stage_class(forward_only):
+    """A PipelineStage for two adjacent stages on one rank (V schedules, loop schedules at pp 1).
+    torch < 2.12 (no PipelineStage._is_same_rank) warms up with a send / recv to the neighbour stages' rank even
+    when it is this rank; gloo has no pair to itself ("Pair is not connected", 0xC0000005 on Windows), so those
+    are dropped (local stages hand over in process). forward_only: the in-place gradient hand-over is a no-op."""
+    from torch.distributed.pipelining import PipelineStage
+
+    class _AdjacentStage(PipelineStage):
+        if not hasattr(PipelineStage, "_is_same_rank"):
+
+            def _get_init_p2p_neighbors_ops(self):
+                return [
+                    op
+                    for op in super()._get_init_p2p_neighbors_ops()
+                    if getattr(op, "group_peer", None) != self.group_rank
+                ]
+
+        if forward_only:
+
+            def get_local_bwd_output(self, mb_index):
+                if not self.has_backward:
+                    return ()
+                return super().get_local_bwd_output(mb_index)
+
+            def set_local_bwd_input(self, next_stage_bwd_outputs, mb_index):
+                if not self.has_backward:
+                    return None
+                return super().set_local_bwd_input(next_stage_bwd_outputs, mb_index)
+
+    return _AdjacentStage
+
+
 # ------------------------------------------------------------------------------- composed meshes
 
 
@@ -249,6 +290,22 @@ def _root_mesh(mesh):
         return _mesh_resources.get_root_mesh(mesh)
     except Exception:
         return None
+
+
+def check_multi_stage_dp(pp_mesh, stages_per_rank):
+    """Several stages per rank do not compose with native FSDP2 data parallel: ValueError when the root mesh
+    of `pp_mesh` has an FSDP2 data parallel dimension (dp, dp_shard, fsdp) of size > 1 besides `pp_mesh`'s own
+    dimension (whatever its name). Run before the model is cut or a checkpoint is read; nothing is changed."""
+    if stages_per_rank <= 1 or pp_mesh is None:
+        return
+    root = _root_mesh(pp_mesh)
+    if root is None or root is pp_mesh:
+        return
+    own = set(getattr(pp_mesh, "mesh_dim_names", None) or ())
+    names = tuple(getattr(root, "mesh_dim_names", None) or ())
+    for i, name in enumerate(names):
+        if name in _SHARDED_DP_DIMS and name not in own and root.size(i) > 1:
+            raise ValueError(f"{_MULTI_STAGE_DP} (mesh dimension {name!r} of size {root.size(i)})")
 
 
 def check_mesh_composition(meshes, what = "pipeline parallel composition"):
@@ -820,7 +877,11 @@ def _router_statistics(
         weights = torch.nn.functional.softmax(gate.to(device), dim = -1)
         _, selected = torch.topk(weights, top_k, dim = -1)
         if flat is None:
-            counts = counts + torch.bincount(selected.reshape(-1), minlength = num_experts).float()
+            # bincount syncs the host to size its output; float32 sums of ones are exact below 2**24.
+            index = selected.reshape(-1)
+            counts = counts + torch.zeros(
+                num_experts, dtype = torch.float32, device = device
+            ).scatter_add_(0, index, torch.ones_like(index, dtype = torch.float32))
             probs = probs + weights.float().sum(dim = 0)
             rows = rows + weights.shape[0]
         else:
@@ -842,11 +903,17 @@ def _load_balancing_from_statistics(stats, num_experts):
     return torch.sum((counts / rows) * (probs / rows)) * num_experts
 
 
-def _statistics_match_transformers(module, num_experts, top_k):
+def _statistics_match_transformers(
+    module,
+    num_experts,
+    top_k,
+    reference = None,
+):
     """The family's own load_balancing_loss_func equals the loss formed from per-stage statistics on random
     router logits (with and without a padding mask): a transformers change to the formula refuses instead of
-    training on a different loss."""
-    reference = getattr(sys.modules.get(module), "load_balancing_loss_func", None)
+    training on a different loss. `reference` checks that function instead of the module's."""
+    if reference is None:
+        reference = getattr(sys.modules.get(module), "load_balancing_loss_func", None)
     if not callable(reference):
         return False
     g = torch.Generator().manual_seed(0)
@@ -2183,6 +2250,12 @@ def _batch_kwargs(kwargs, bsz, device, what):
     return out
 
 
+def _restore_grads(kept):
+    """Add gradients set aside by PipelineParallel._take_fsdp_grads back onto the step's own."""
+    for p, grad in kept:
+        p.grad = grad if p.grad is None else p.grad + grad
+
+
 class PipelineParallel:
     """This rank's pipeline stage of a model split by apply_pipeline_parallel."""
 
@@ -2428,6 +2501,9 @@ class PipelineParallel:
                 (mb, seq, width), dtype = self.activation_dtype, device = "meta", requires_grad = True
             )
 
+        # Adjacent stages on this rank (V schedules, loop schedules at pp 1): see _adjacent_stage_class.
+        adjacent = any(k + 1 in self.local_stages for k in self.local_stages)
+        stage_cls = _adjacent_stage_class(not train) if adjacent else PipelineStage
         for index, module in zip(self.local_stages, self.stage_modules):
             if index == 0:
                 example_in = torch.empty((mb, seq), dtype = torch.long, device = "meta")
@@ -2460,7 +2536,7 @@ class PipelineParallel:
                 if index != self.total_stages - 1:
                     example_out = plus(example_out)
             stages.append(
-                PipelineStage(
+                stage_cls(
                     module,
                     index,
                     self.total_stages,
@@ -2582,6 +2658,7 @@ class PipelineParallel:
         num_items_in_batch = max(num_items_in_batch, 1)
         # FSDP2 / DDP-style dp average the gradients over dp: dp x (this replica's token loss sum / global tokens).
         self._loss_multiplier = (dp_mesh.size() if dp_mesh is not None else 1) * float(loss_scale)
+        fresh = (bsz // m, seq, m, True) not in self._shapes
         schedule = self._schedule_for(bsz // m, seq, m)
         step_kwargs = _batch_kwargs(kwargs, bsz, device, "step")
         step_kwargs["labels"] = labels.to(device)
@@ -2600,17 +2677,31 @@ class PipelineParallel:
         args = (input_ids.to(device),) if self.is_first else ()
         target = step_kwargs["labels"] if self.is_last else None
         tables = self._size_frozen_table_memo(m)
+        # torch >= 2.12 sets every FSDP2 parameter's grad to None when a schedule runs its first step
+        # (_post_metadata_inference_cleanup): a new shape mid accumulation window would drop the earlier
+        # steps' gradients. Keep them aside and add them back.
+        kept = self._take_fsdp_grads() if fresh and self.dp_mesh is not None else None
         try:
             schedule.step(*args, target = target, return_outputs = False, **step_kwargs)
         finally:
             self._scaler = None
             self.ctx.num_items_in_batch = None
+            if kept:
+                _restore_grads(kept)
         if tables is not None:
             self.last_table_memo = tables.frozen_table_step_stats()
         if self.dp_mesh is not None:
             self._average_replicated_grads()
         total = self._batch_loss(m, device, dp_group)
         return total * float(loss_scale) if loss_scale != 1 else total
+
+    def _take_fsdp_grads(self):
+        kept = []
+        for p in self.module.parameters():
+            if p.grad is not None:
+                kept.append((p, p.grad))
+                p.grad = None
+        return kept
 
     def step_schedule(self, m):
         """The schedule a training step with `m` micro-batches runs: the default 1F1B (schedule_auto) falls back
@@ -2719,6 +2810,10 @@ class PipelineParallel:
         finally:
             schedule._has_backward = has_backward
             self.ctx.num_items_in_batch = None
+            # No backward pops the forward caches: free each micro-batch's stage inputs / outputs now, not at the
+            # next eval_loss (this cached schedule is not the training one).
+            for st in getattr(schedule, "_stages", None) or (schedule._stage,):
+                st.clear_runtime_states()
         return self._batch_loss(m, device, None)
 
     def _average_replicated_grads(self):
@@ -2781,7 +2876,7 @@ class PipelineParallel:
         divided by the ranks holding a copy of it, summed over every rank)."""
         import torch.distributed as dist
 
-        from .tp_native import _square_sum
+        from .tp_native import _scale_tensors_, _square_sum
 
         self._check_unscaled()
         params = self.parameters() if parameters is None else list(parameters)
@@ -2801,9 +2896,7 @@ class PipelineParallel:
         elif self.num_stages > 1:
             dist.all_reduce(sq, group = self.group)
         total = sq.sqrt()
-        coef = torch.clamp(float(max_norm) / (total + eps), max = 1.0)
-        for g in grads:
-            g.mul_(coef.to(g.dtype))
+        _scale_tensors_(grads, total, float(max_norm), eps)
         return total.float()
 
     def unscale_(self, scaler, optimizer):
@@ -2980,37 +3073,45 @@ class PipelineParallel:
             dist.all_gather_object(parts, tables, group = self.group)
             tables = provenance.merge_provenance(parts)
         merged = self.adapter_state_dict(**kwargs)
-        if merged is not None:
-            import peft.peft_model as peft_model
 
-            selection = peft_model.get_peft_model_state_dict
+        def write():
+            if merged is not None:
+                import peft.peft_model as peft_model
 
-            def gathered(
-                model,
-                state_dict = None,
-                adapter_name = "default",
-                **unused,
-            ):
-                return merged[adapter_name]
+                selection = peft_model.get_peft_model_state_dict
 
-            kwargs.pop("state_dict", None)
-            kwargs.setdefault("is_main_process", True)
-            # PEFT's own writer (files, config, card), fed the merged selection of every stage.
-            peft_model.get_peft_model_state_dict = gathered
-            try:
-                peft_model.PeftModel.save_pretrained(self.model, save_directory, **kwargs)
-            finally:
-                peft_model.get_peft_model_state_dict = selection
-            if kwargs.get("is_main_process", True):
-                # Every stage's tables, next to each adapter PEFT wrote ("default" here, others in <name>/),
-                # replacing the writer stage's own record that PEFT's save wrote there.
-                provenance.write_adapter_provenance(
-                    self.model, save_directory, tables, kwargs.get("selected_adapters")
-                )
+                def gathered(
+                    model,
+                    state_dict = None,
+                    adapter_name = "default",
+                    **unused,
+                ):
+                    return merged[adapter_name]
+
+                kwargs.pop("state_dict", None)
+                kwargs.setdefault("is_main_process", True)
+                # PEFT's own writer (files, config, card), fed the merged selection of every stage.
+                peft_model.get_peft_model_state_dict = gathered
+                try:
+                    peft_model.PeftModel.save_pretrained(self.model, save_directory, **kwargs)
+                finally:
+                    peft_model.get_peft_model_state_dict = selection
+                if kwargs.get("is_main_process", True):
+                    # Every stage's tables, next to each adapter PEFT wrote ("default" here, others in <name>/),
+                    # replacing the writer stage's own record that PEFT's save wrote there.
+                    provenance.write_adapter_provenance(
+                        self.model, save_directory, tables, kwargs.get("selected_adapters")
+                    )
+
         if self.composed:
-            dist.barrier()
+            group = None
         elif self.num_stages > 1:
-            dist.barrier(group = self.group)
+            group = self.group
+        else:
+            return write()
+        from .tp_native import _agree_write
+
+        _agree_write(write, group)
 
 
 def _default_activation_dtype(model, parts):
@@ -3113,6 +3214,14 @@ def apply_pipeline_parallel(
         existing = existing or level.__dict__.get("_unsloth_pp_stage")
     if existing is not None:
         return existing
+    if any(
+        level.__dict__.get("_unsloth_ep") is not None
+        for level in (_model_chain(model) if isinstance(model, nn.Module) else ())
+    ):
+        raise NotImplementedError(
+            "Unsloth: apply_pipeline_parallel cannot split an expert parallel model (apply_expert_parallel): its "
+            "experts are already split by index over the ranks. ep with pipeline parallel is not supported."
+        )
     _check_torch_pipelining()
     config = config or PPConfig()
     spec = schedule_spec(schedule)
@@ -3159,11 +3268,7 @@ def apply_pipeline_parallel(
         _refuse_aux_with_reentrant_checkpointing(model, moe.config)
     total_stages = pp * stages_per_rank
     rank = pp_mesh.get_local_rank()
-    if stages_per_rank > 1:
-        root = _root_mesh(pp_mesh)
-        names = tuple(getattr(root, "mesh_dim_names", None) or ()) if root is not None else ()
-        if "dp" in names:
-            raise ValueError(_MULTI_STAGE_DP)
+    check_multi_stage_dp(pp_mesh, stages_per_rank)
     # The torch schedule's own checks, on placeholder stages: before anything is cut.
     props = validate_schedule(spec, pp_mesh.get_group(), pp, stages_per_rank, n_microbatches, rank)
     _check_schedule(model, spec, props)

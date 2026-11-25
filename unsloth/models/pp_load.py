@@ -133,12 +133,19 @@ def install_placeholder_aware_lora_init():
 
 
 def _split_for(model, mesh, schedule, config):
-    from .pp_native import PPConfig, _find_parts, _refuse_unsupported, derive_pp_split
+    from .pp_native import (
+        PPConfig,
+        _find_parts,
+        _refuse_unsupported,
+        check_multi_stage_dp,
+        derive_pp_split,
+    )
     from .pp_schedules import resolve_stages_per_rank, schedule_spec, stage_indices
 
     config = config or PPConfig()
     spec = schedule_spec(schedule)
     v = resolve_stages_per_rank(spec, config.stages_per_rank)
+    check_multi_stage_dp(mesh, v)  # apply_pipeline_parallel would refuse this split after the read
     pp, rank = mesh.size(), mesh.get_local_rank()
     parts = _find_parts(model)
     if parts.ple is not None:
@@ -317,13 +324,19 @@ def _pipeline_loading(
     """pipeline_sharded_loading; `auto`: only checkpoints larger than the GPU (UNSLOTH_PP_SIZE), `pp_mesh` then
     a callable returning it (read at the first from_pretrained)."""
     from .pp_schedules import schedule_spec
-    from .tp_native import _sharded_from_pretrained
+    from .tp_native import _sharded_from_pretrained, refuse_hf_distributed_kwargs
 
-    schedule_spec(schedule)  # refuse an unknown schedule before loading anything
+    spec = schedule_spec(schedule)  # refuse an unknown schedule before loading anything
     if pp_mesh is None:
         pp_mesh = _default_load_mesh()
     if not callable(pp_mesh) and pp_mesh.ndim != 1:
         raise ValueError("Unsloth: pipeline_sharded_loading takes a 1-D pp mesh (pass mesh['pp']).")
+    from .pp_native import PPConfig, check_multi_stage_dp
+    from .pp_schedules import resolve_stages_per_rank
+
+    stages = resolve_stages_per_rank(spec, (config or PPConfig()).stages_per_rank)
+    if not callable(pp_mesh):
+        check_multi_stage_dp(pp_mesh, stages)
     state = {
         "mesh": pp_mesh,
         "plan": (schedule, config),
@@ -333,6 +346,15 @@ def _pipeline_loading(
         "prequantized_hint": _QUANTIZED_HINT,
         "mesh_hint": "Unsloth: pipeline_sharded_loading takes a 1-D pp mesh (pass mesh['pp']).",
         "auto": auto,
+        # A pre-quantized bnb 4-bit checkpoint whose tensors transformers converts on load (Inkling 2): its own
+        # load, per stage, as for a quantize-on-load.
+        "prequantized_fallback": lambda original,
+        cls,
+        name,
+        args,
+        kwargs,
+        mesh,
+        live: _load_quantizing(original, cls, name, args, kwargs, live),
     }
     from transformers import PreTrainedModel
 
@@ -344,6 +366,13 @@ def _pipeline_loading(
         quantizing = {"active": False}
 
         def from_pretrained(cls, pretrained_model_name_or_path, *args, **kwargs):
+            if not live["active"] and not quantizing["active"]:
+                refuse_hf_distributed_kwargs(kwargs, "pipeline parallel", "apply_pipeline_parallel")
+                if stages > 1 and callable(live["mesh"]):
+                    # A mesh factory: resolve it now, before the checkpoint is sized or read.
+                    mesh = live["mesh"]()
+                    check_multi_stage_dp(mesh, stages)
+                    live["mesh"] = mesh
             if (
                 not live["active"]
                 and not quantizing["active"]
@@ -564,9 +593,10 @@ def _load_quantizing(real, cls, name, args, kwargs, state):
     plan = {}
     counts = {"loaded_bytes": 0, "kept_bytes": 0, "placeholder_tensors": 0, "placeholder_numel": 0}
 
-    def plan_for(model):
+    def stage_plan(model):
         # The meta model as transformers built it (bitsandbytes Linear4bit already swapped in): the split
-        # apply_pipeline_parallel derives later (QuantState shapes give the same layer costs).
+        # apply_pipeline_parallel derives later (QuantState shapes give the same layer costs). Pure: the
+        # caller decides which plan it fills.
         parts, spec, v, bounds, local = _split_for(model, mesh, schedule, config)
         owned = {i for k in local for i in range(*bounds[k])}
         holds_first, holds_last = 0 in local, len(bounds) - 1 in local
@@ -578,7 +608,7 @@ def _load_quantizing(real, cls, name, args, kwargs, state):
         for module, holds in ((parts.embed, holds_first), (parts.lm_head, holds_last)):
             if not (holds or (tied and (holds_first or holds_last))):
                 prefixes.append(names[id(module)] + ".")
-        plan.update(
+        return dict(
             model = model,
             parts = parts,
             spec = spec,
@@ -592,7 +622,9 @@ def _load_quantizing(real, cls, name, args, kwargs, state):
     def set_and_drop(model, target_name, param_value, *rest, **more):
         set_param(model, target_name, param_value, *rest, **more)
         if plan.get("model") is not model:
-            plan_for(model)
+            # Only the setter fills `plan`: the post-load check below reads it as proof a tensor went through here.
+            plan.clear()
+            plan.update(stage_plan(model))
         module_path, _, pname = target_name.rpartition(".")
         try:
             module = model.get_submodule(module_path) if module_path else model
@@ -618,10 +650,23 @@ def _load_quantizing(real, cls, name, args, kwargs, state):
         counts["placeholder_tensors"] += 1
         counts["placeholder_numel"] += p.numel()
 
+    warm = {}
+
+    def keep(model, target_name):
+        # The allocator warmup sees the meta model before any tensor is set: plan this rank's stages from it, in
+        # its own dict, so a warmup that runs without the setter never passes the post-load check below.
+        if warm.get("model") is not model:
+            warm.clear()
+            warm.update(stage_plan(model))
+        return not target_name.startswith(warm["prefixes"])
+
+    from .fsdp2_load import sharded_load_memory
+
     loading.set_param_for_module = set_and_drop
     state["active"] = True
     try:
-        loaded = real(cls, name, *args, **kwargs)
+        with sharded_load_memory(mesh.size(), keep):
+            loaded = real(cls, name, *args, **kwargs)
     finally:
         loading.set_param_for_module = set_param
         state["active"] = False

@@ -328,6 +328,7 @@ def test_auto_policy(fx, monkeypatch, capability, mode, min_length, expected):
     monkeypatch.setattr(fx, "_capability", lambda device: capability)
     # NVIDIA capabilities: on a ROCm build torch.version.hip is set and auto keeps eager (test_auto_policy_keeps_rocm_eager).
     monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    monkeypatch.setattr(torch, "__version__", _CUDA_VERSION)
     if mode is None:
         monkeypatch.delenv(fx.ENV, raising = False)
     else:
@@ -339,6 +340,33 @@ def test_auto_policy(fx, monkeypatch, capability, mode, min_length, expected):
     assert fx._wants_flex(1024, 1024, 0, 0, "cuda") is expected
     # Decode steps and cached continuations never take flex.
     assert fx._wants_flex(1, 1025, 1024, 0, "cuda") is False
+
+
+_CUDA_VERSION = str(torch.__version__).split("+")[0] + "+cu130"
+
+
+@pytest.mark.parametrize("mode,expected", [("auto", False), (None, False), ("1", True)])
+def test_auto_policy_keeps_sdk_wheel_eager(fx, monkeypatch, mode, expected):
+    # AMD SDK / Radeon wheels leave torch.version.hip unset; the ROCm tag is only in __version__.
+    monkeypatch.setattr(fx, "_capability", lambda device: (11, 5))
+    monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    monkeypatch.setattr(torch, "__version__", str(torch.__version__).split("+")[0] + "+rocm7.14.0")
+    monkeypatch.delenv(fx.MIN_LEN_ENV, raising = False)
+    if mode is None:
+        monkeypatch.delenv(fx.ENV, raising = False)
+    else:
+        monkeypatch.setenv(fx.ENV, mode)
+    assert fx._wants_flex(1024, 1024, 0, 0, "cuda") is expected
+
+
+def test_sdk_wheel_compiles_flex_static(fx, monkeypatch):
+    compiles = []
+    monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    monkeypatch.setattr(torch, "__version__", str(torch.__version__).split("+")[0] + "+rocm7.14.0")
+    monkeypatch.setattr(fx, "_COMPILED_FLEX", None)
+    monkeypatch.setattr(torch, "compile", lambda fn, **kw: compiles.append(kw) or fn)
+    fx._flex_function(torch.device("cuda", 0))
+    assert compiles == [{"dynamic": False}]
 
 
 @pytest.mark.parametrize("mode,expected", [("auto", False), (None, False), ("1", True)])
@@ -416,6 +444,7 @@ def test_auto_policy_mixed_cards_keep_eager(fx, monkeypatch):
     monkeypatch.setattr(fx, "_ALLOW_CPU", False)
     monkeypatch.delenv(fx.MIN_LEN_ENV, raising = False)
     monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    monkeypatch.setattr(torch, "__version__", _CUDA_VERSION)
     capability = {0: (8, 9), 1: (7, 5)}
     monkeypatch.setattr(fx, "_capability", lambda device: capability[device.index])
     model = _tiny(False)
@@ -439,6 +468,9 @@ def test_rocm_compiles_flex_with_static_shapes(fx, monkeypatch):
     monkeypatch.setattr(torch, "compile", lambda fn, **kw: calls.append(kw) or fn)
     for hip, expected in (("6.4.0", False), (None, None)):
         monkeypatch.setattr(torch.version, "hip", hip, raising = False)
+        monkeypatch.setattr(
+            torch, "__version__", _CUDA_VERSION if hip is None else "2.11.0+rocm7.13.0"
+        )
         monkeypatch.setattr(fx, "_COMPILED_FLEX", None)
         fx._flex_function(torch.device("cuda", 0))
         assert calls[-1]["dynamic"] is expected

@@ -2501,7 +2501,10 @@ def _unsloth_average_gradients(ddp, bucket_bytes = 64 << 20):
 
     group = ddp.process_group
     world_size = dist.get_world_size(group)
-    params = [p for p in ddp.module.parameters() if p.requires_grad]
+    # DDP never reduces its ignored parameters (expert parallel puts every expert shard there: each rank holds
+    # different experts of the same shape, synced by ep_native itself), so neither does this.
+    ignored = getattr(ddp, "parameters_to_ignore", None) or ()
+    params = [p for n, p in ddp.module.named_parameters() if p.requires_grad and n not in ignored]
     if world_size <= 1 or len(params) == 0:
         return
     device = params[0].device
@@ -2988,9 +2991,9 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             # FORCE_FLOAT32 models (Gemma3, gpt_oss) cannot use float16: without bf16 keep float32, with bf16 full finetuning may still autocast. Stamped by from_pretrained, since the env is process wide and a later load would otherwise answer for this trainer.
             "full_finetuning = getattr(model, '_unsloth_full_finetuning', None)\n"
             "if full_finetuning is None: full_finetuning = os.environ.get('UNSLOTH_ENABLE_FULL_FINETUNING', '0') == '1'\n"
-            # Stamped by from_pretrained: the env is process wide, so a forced family loaded earlier would answer here for a model that is not forced at all.
-            "model_forced_float32 = getattr(model, '_unsloth_forced_float32', None)\n"
-            "if model_forced_float32 is None: model_forced_float32 = os.environ.get('UNSLOTH_FORCE_FLOAT32', '0') == '1'\n"
+            # Stamped by from_pretrained: the env is process wide, so a forced family loaded earlier would answer here for a model that is not forced at all, including one Unsloth never loaded.
+            "from unsloth.models._utils import _model_forced_float32\n"
+            "model_forced_float32 = _model_forced_float32(model)\n"
             "if model_forced_float32 and not (full_finetuning and _bf16_supported()):\n"
             "    print('Unsloth: Switching to float32 training since model cannot work with float16')\n"
             "    force_float32 = True\n"
@@ -3765,8 +3768,9 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             # None = unset: resolved below to 0.0 for dapo / dr_grpo, else 0.001 (verl's recommendation; TRL used 0.04, now 0.0, huggingface/trl#3516).
             "beta": None,
             "auto_find_batch_size": False,  # Cannot work on GRPO
-            # See fengyao.notion.site/off-policy-rl and huggingface/trl#3867.
-            "vllm_importance_sampling_correction": False,
+            # On, as in TRL: colocated vLLM and the trainer score the same weights differently. Default since
+            # #3390 / zoo #308, lost in the 2026-01-15 refactor (#3628 / zoo #357). See huggingface/trl#3867.
+            "vllm_importance_sampling_correction": True,
             # None = unset: resolved below to "token_truncate" instead of TRL's "sequence_mask".
             "vllm_importance_sampling_mode": None,
             # TRL >= 1.7.0 enables the MoE router aux loss by default (0.001), but the optimized GRPO forward does not compute it, so default it off.
@@ -3942,7 +3946,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "    vllm_importance_sampling_mode = 'token_truncate'\n"
             + (
                 "    if vllm_importance_sampling_correction:\n"
-                "        print(\"Unsloth: vllm_importance_sampling_correction = True now defaults to token-level truncated importance sampling (vllm_importance_sampling_mode = 'token_truncate'). Set vllm_importance_sampling_mode = 'sequence_mask' for TRL's default.\")\n"
+                "        print(\"Unsloth: the vLLM importance sampling correction is on by default, token-level truncated (vllm_importance_sampling_mode = 'token_truncate'). Set vllm_importance_sampling_correction = False to turn it off, or vllm_importance_sampling_mode = 'sequence_mask' for TRL's mode.\")\n"
                 if "vllm_importance_sampling_correction" in call_args
                 else ""
             )
@@ -4483,6 +4487,13 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                 patch_rl_trainer(trainer_cls, trainer_file)
         except Exception as e:
             logger.warning(f"Unsloth: Could not add context parallelism to {RLTrainer_name}: {e}")
+            try:
+                from ._utils import guard_config_cp_after_patch_failure
+                guard_config_cp_after_patch_failure(
+                    getattr(created_module, f"Unsloth{RLTrainer_name}"), e
+                )
+            except Exception:
+                pass
     if trainer_file == "ppo_trainer":
         try:
             _wrap_ppo_train(getattr(created_module, f"Unsloth{RLTrainer_name}"))

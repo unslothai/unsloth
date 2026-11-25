@@ -778,6 +778,9 @@ def test_compile_counters_count_breaks_and_recompiles():
         ("dp_shard=1,dp_replicate=2", {"dp": 2, "fsdp": False}),
         ("dp_shard=2,dp_replicate=1", {"dp": 2, "fsdp": True}),
         ("dp=2,dp_shard=1,dp_replicate=2", {"dp": 2, "fsdp": False}),
+        # Expert parallel (models/ep_native.py); ep with tp / pp / cp / fsdp is refused by translate.
+        ("ep=2", {"ep": 2}),
+        ("ep_size=2,tp=2", {"ep": 2, "tp": 2}),
     ],
 )
 def test_distributed_config_names_are_accepted(raw, want):
@@ -788,8 +791,6 @@ def test_distributed_config_names_are_accepted(raw, want):
 @pytest.mark.parametrize(
     "raw, match",
     [
-        ("ep=2", "expert parallel"),
-        ("ep_size=2,tp=2", "expert parallel"),
         ("efsdp=2", "expert FSDP"),
         ("dp_shard=2,dp_replicate=2", "HSDP"),
         ("dp=4,dp_shard=2", "disagrees"),
@@ -892,6 +893,7 @@ def test_adafactor_is_refused_on_native_fsdp2_shards():
 
 
 def test_moe_rows_cover_family_precision_aux_and_mode():
+    import os
     import types
 
     from unsloth import parallel_capabilities as caps
@@ -902,7 +904,7 @@ def test_moe_rows_cover_family_precision_aux_and_mode():
         if c.name.startswith("MoE ")
         and not c.name.endswith((", block compile", ", Unsloth checkpoint", ", multimodal"))
     ]
-    assert len(moe) == len(caps.MOE_FAMILIES) * 4 * 2 * 6
+    assert len(moe) == len(caps.MOE_FAMILIES) * 4 * 2 * 7
     proven = sorted(c.name for c in moe if not c.missing())
     assert "MoE qwen3_moe x lora+experts x aux off x cp" in proven
     assert "MoE qwen3_moe x full x aux off x fsdp2" in proven
@@ -936,10 +938,34 @@ def test_moe_rows_cover_family_precision_aux_and_mode():
     ):
         with pytest.raises(NotImplementedError, match = why):
             caps.check(_q(cp = 2, cp_backend = "ulysses", **{**moe_q, **extra}))
+    # Qwen3-MoE aux under Ulysses cp is supported; other families, HF checkpointing and the kill switch stay refused.
+    aux_cp = _q(cp = 2, cp_backend = "ulysses", router_aux_loss = True, **moe_q)
+    assert caps.cell_status(aux_cp)[0] == "supported"
+    caps.check(aux_cp)
+    caps.check(
+        _q(cp = 2, cp_backend = "ulysses", router_aux_loss = True, memory = "unsloth_offload", **moe_q)
+    )
+    caps.check(_q(dp = 2, cp = 2, fsdp2 = True, cp_backend = "ulysses", router_aux_loss = True, **moe_q))
+    with pytest.raises(NotImplementedError, match = r"no numeric parity"):
+        caps.check(_q(cp = 2, cp_backend = "ulysses", router_aux_loss = True, memory = "gc", **moe_q))
     with pytest.raises(
         NotImplementedError, match = r"^Unsloth: MoE x pp / cp: .*router_aux_loss_coef = 0.0"
     ):
-        caps.check(_q(cp = 2, cp_backend = "ulysses", router_aux_loss = True, **moe_q))
+        caps.check(
+            _q(cp = 2, cp_backend = "ulysses", router_aux_loss = True, **{**moe_q, "family": "mixtral"})
+        )
+    with pytest.raises(
+        NotImplementedError, match = r"^Unsloth: MoE x pp / cp: .*router_aux_loss_coef = 0.0"
+    ):
+        caps.check(_q(cp = 2, cp_backend = "ring", router_aux_loss = True, **moe_q))
+    os.environ["UNSLOTH_CP_ROUTER_AUX"] = "0"
+    try:
+        with pytest.raises(
+            NotImplementedError, match = r"^Unsloth: MoE x pp / cp: .*router_aux_loss_coef = 0.0"
+        ):
+            caps.check(aux_cp)
+    finally:
+        del os.environ["UNSLOTH_CP_ROUTER_AUX"]
     # Pipeline parallel carries the Qwen3-MoE router auxiliary loss (tests/test_pp_moe_aux_gloo.py): gpipe /
     # 1f1b, one stage per rank, aux on or off; other families, full finetuning and checkpointing stay refused.
     for aux in (True, False):
@@ -1122,10 +1148,10 @@ def test_launcher_flag_with_a_disagreeing_legacy_variable_is_refused(clean_env, 
         pe.apply_parallel_env()
 
 
-def test_the_launcher_keys_are_accepted_and_ep_is_reserved():
+def test_the_launcher_keys_are_accepted_and_efsdp_is_reserved():
     from unsloth import parallel_env as pe
     assert set(LAUNCHER_KEYS) <= set(pe._KEYS)
-    assert {"ep", "efsdp"} <= set(pe._RESERVED)
+    assert "ep" in pe._KEYS and "efsdp" in pe._RESERVED
 
 
 @pytest.mark.parametrize("kind", ["sft", "dpo", "grpo"])
