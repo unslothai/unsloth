@@ -98,6 +98,41 @@ test("a WebVTT file keeps its header, notes, identifiers and cue settings", () =
   );
 });
 
+test("WebVTT translation preserves CR, LF and CRLF cue boundaries", async () => {
+  for (const eol of ["\r", "\n", "\r\n"]) {
+    const source = [
+      "WEBVTT",
+      "",
+      "intro",
+      "00:01.000 --> 00:02.000 align:start",
+      "Hello",
+      "world",
+      "",
+      "00:03.000 --> 00:04.000",
+      "Goodbye",
+      "",
+    ].join(eol);
+    const doc = parseSubtitles(source);
+    assert.ok(doc);
+    assert.equal(doc.format, "vtt");
+    assert.equal(rebuildSubtitles(doc, []), source);
+    const output = await translateSubtitles(
+      doc,
+      async (prompt) => {
+        assert.equal(prompt, "1. Hello\nworld\n2. Goodbye");
+        return "1. Bonjour\nmonde\n2. Au revoir";
+      },
+      { signal: new AbortController().signal, onPhase() {}, onOutput() {} },
+    );
+    assert.equal(
+      output,
+      source
+        .replace(`Hello${eol}world`, `Bonjour${eol}monde`)
+        .replace("Goodbye", "Au revoir"),
+    );
+  }
+});
+
 test("plain text, prose with a timestamp and broken subtitles stay plain text", () => {
   for (const text of [
     "",

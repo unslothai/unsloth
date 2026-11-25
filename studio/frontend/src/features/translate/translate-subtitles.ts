@@ -26,7 +26,10 @@ export type SubtitleDocument = {
 
 const TIME = String.raw`(?:\d+:)?\d{1,2}:\d{2}[,.]\d{1,3}`;
 const TIMING = new RegExp(`^[ \\t]*${TIME}[ \\t]*-->[ \\t]*${TIME}`);
-const VTT_HEADER = /^WEBVTT(?:[ \t]|\r?\n|$)/;
+const VTT_HEADER = /^WEBVTT(?:[ \t\r\n]|$)/;
+const LINE_BREAK = /\r\n|[\r\n]/;
+// A single CRLF cannot supply both line breaks of a blank line.
+const BLOCK_BREAK = /((?:\r?\n|\r(?!\n))(?:[ \t]*(?:\r?\n|\r(?!\n)))+)/;
 
 /** Null for anything that is not a whole SRT or WebVTT file; a clipped last SRT block is kept as is. */
 export function parseSubtitles(source: string): SubtitleDocument | null {
@@ -36,16 +39,18 @@ export function parseSubtitles(source: string): SubtitleDocument | null {
   const content = body.slice(0, body.length - trail.length);
   if (!content) return null;
   const format: SubtitleFormat = VTT_HEADER.test(content) ? "vtt" : "srt";
-  const parts = content.split(/(\r?\n(?:[ \t]*\r?\n)+)/);
+  const parts = content.split(BLOCK_BREAK);
   const doc: SubtitleDocument = {
     format,
     cues: [],
     pieces: [lead],
-    eol: source.includes("\r\n") ? "\r\n" : "\n",
+    eol: source.includes("\r\n")
+      ? "\r\n"
+      : (source.match(LINE_BREAK)?.[0] ?? "\n"),
   };
   for (let i = 0; i < parts.length; i += 2) {
     const block = parts[i];
-    const lines = block.split(/(\r?\n)/);
+    const lines = block.split(/(\r\n|[\r\n])/);
     const timing = TIMING.test(lines[0])
       ? 0
       : lines.length > 2 &&
@@ -97,7 +102,7 @@ export function rebuildSubtitles(
 /** Blank lines would end the cue early, so a translated cue keeps none. */
 export function cueText(translated: string, eol: string): string {
   return translated
-    .split(/\r?\n/)
+    .split(LINE_BREAK)
     .map((line) => line.trim())
     .filter(Boolean)
     .join(eol);
@@ -140,7 +145,7 @@ export function splitNumberedBatch(
   count: number,
 ): string[] | null {
   const items: string[][] = [];
-  for (const line of reply.split(/\r?\n/)) {
+  for (const line of reply.split(LINE_BREAK)) {
     if (!line.trim()) continue;
     const marker = MARKER.exec(line);
     if (marker) {
@@ -189,7 +194,7 @@ export async function translateTexts(
     onPhase({ kind: "translating", part: part + 1, parts: batches.length });
     // A line that already reads like a marker would shift the numbering.
     const numbered = batch.some((i) =>
-      sources[i].split(/\r?\n/).some((line) => MARKER.test(line)),
+      sources[i].split(LINE_BREAK).some((line) => MARKER.test(line)),
     );
     if (batch.length === 1 || numbered) {
       for (const index of batch) {
