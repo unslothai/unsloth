@@ -903,9 +903,8 @@ def _unsloth_generate_accepts_kwarg(model, key):
 
 
 def _router_logits_off_for_generate(model, kwargs):
-    """generate never uses the MoE aux loss, but TRL < 1.18's SFTTrainer leaves config.output_router_logits on
-    after training, and a hybrid model's forward then feeds generate's per-layer-type attention_mask dict to
-    load_balancing_loss_func (Qwen3.8-Flash-Next: `dict.reshape`). An explicit output_router_logits is kept."""
+    """generate never needs the MoE aux loss; TRL < 1.18 leaves config.output_router_logits on after SFT, and a hybrid
+    model then feeds generate's per-layer-type attention_mask dict to load_balancing_loss_func. Explicit kwarg kept."""
     if "output_router_logits" in kwargs:
         return
     config = getattr(model, "config", None)
