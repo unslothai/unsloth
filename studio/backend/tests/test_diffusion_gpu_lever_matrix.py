@@ -150,6 +150,14 @@ def probe_int8_attention(p: GpuProfile) -> dict:
             src = nearest(p.capability, hd, p.smem_optin)[0]
             if src is not None and tuple(src) != tuple(p.capability):
                 why = f"nearest:sm{src[0]}{src[1]}"  # an unlisted arch offered a measured card's config (raced)
+        if (
+            impl is None
+            and nearest is not None
+            and nearest(p.capability, hd, p.smem_optin)[0] is not None
+        ):
+            from core.inference import diffusion_int8_attention_cuda as i8c
+            if not i8c.nvrtc_arch_supported(p.capability):
+                why = "no_nvrtc_target"  # a measured config fits, but the pinned NVRTC cannot build for the arch
         out[f"any.int8_attn.serving.hd{hd}"] = lever(
             impl is not None, cfg = f"{impl}:{fmt(cfg)}" if impl else None, why = why
         )
@@ -233,6 +241,72 @@ def probe_int8_gemm(p: GpuProfile) -> dict:
     return out
 
 
+# Production GEMM shapes (M rows, N, K): H3 video fused QKV and FFN down at a 960x544x124 render, Qwen-Image-2.1 MLP
+# in / down at 1024 px, and a short call below the per-shape rules' row floor.
+GEMM_SHAPES = {
+    "h3_qkv": (19318, 21504, 5376),
+    "h3_ffn_down": (19318, 5376, 14336),
+    "q21_mlp_in": (4096, 12288, 3072),
+    "q21_mlp_down": (4096, 3072, 12288),
+    "short": (512, 3072, 3072),
+}
+
+
+@probe
+def probe_int8_gemm_tiles(p: GpuProfile) -> dict:
+    """The tile ``tile_for`` serves each production shape with on a listed arch, after the real ``device_config``
+    with every on-device probe passing (bit-exact on the real card): a moved shape rule changes the cell. Unlisted
+    archs race their tile at load (``int8_gemm.unlisted_race``), so they record that instead."""
+    keys = [f"any.int8_gemm.tile.{name}" for name in GEMM_SHAPES]
+    if p.vendor != "nvidia":
+        return {k: lever(False, why = _na_code(p)) for k in keys}
+    import torch
+
+    from core.inference import diffusion_int8_gemm as g
+
+    cap = tuple(torch.cuda.get_device_capability(0))
+    if g.arch_config(cap) is None:
+        why = "raced_at_load" if g.unlisted_wanted(cap) else "no_route"
+        return {k: lever(False, why = why) for k in keys}
+    saved = {
+        name: dict(getattr(g, name))
+        if isinstance(getattr(g, name), dict)
+        else set(getattr(g, name))
+        for name in ("_DEVICE_CFG", "_DEVICE_TILES", "_DEVICE_TMA", "_UNLISTED_CARDS")
+    }
+    pins = {
+        "_kernels": lambda: _types.SimpleNamespace(),
+        "_op": lambda: object(),
+        "_settled_probe": lambda index, cfg: True,
+        "_stored_cfg": lambda index, cap, want: None,
+        "_store_cfg": lambda *a, **k: None,
+        "_tma_probe": lambda index, capability: g.tma_config(capability),
+    }
+    old = {k: getattr(g, k) for k in pins}
+    try:
+        for k, v in pins.items():
+            setattr(g, k, v)
+        for name in saved:
+            getattr(g, name).clear()
+        g.device_config(0)
+        out = {}
+        for name, (m, n, k) in GEMM_SHAPES.items():
+            tile = g.tile_for(0, m, n, k)
+            tma = g.tma_tile_for(0, m)
+            out[f"any.int8_gemm.tile.{name}"] = lever(
+                tile is not None,
+                cfg = (f"{fmt(tile)}" + (f" tma={fmt(tma)}" if tma else "")) if tile else None,
+            )
+        return out
+    finally:
+        for k, v in old.items():
+            setattr(g, k, v)
+        for name, value in saved.items():
+            target = getattr(g, name)
+            target.clear()
+            target.update(value)
+
+
 @probe
 def probe_grouped_int8_gemm(p: GpuProfile) -> dict:
     """The fused grouped (MoE / GGUF-style) INT8 GEMM tiles per arch."""
@@ -307,30 +381,32 @@ def probe_native_w8a8_cuda(p: GpuProfile) -> dict:
 
 @probe
 def probe_segment_quant(p: GpuProfile) -> dict:
-    """Segmenter dynamic quant (fp8 / int8): the platform and minimum-capability gates of ``unsupported_reason``.
-    A later host-only refusal (torchao / safetensors support) counts as passing the capability gate."""
+    """Segmenter dynamic quant: ``unsupported_reason`` per scheme and what ``resolve_precision`` picks for a tight
+    load (auto ladder), as resolved; an unrecognised refusal is recorded off, never assumed on."""
     import torch
 
     from core.inference import diffusion_segment_quant as sq
 
+    codes = (
+        ("compute capability", "below_min_cap"),
+        ("ROCm", "rocm"),
+        ("CUDA only", "not_cuda"),
+        ("no bf16", "no_bf16"),
+        ("stub", "torchao_stub"),
+    )
+    device = "cuda:0" if p.cuda else ("mps" if p.mps else "cpu")
     out: dict = {}
     for prec in (sq.PRECISION_FP8, sq.PRECISION_INT8):
-        device = "cuda:0" if p.cuda else ("mps" if p.mps else "cpu")
         try:
             why = sq.unsupported_reason(prec, device, torch.bfloat16)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 - recorded, never read as engaged
             why = f"error {type(exc).__name__}"
-        if why is None:
-            cell = lever(True)
-        elif "compute capability" in why:
-            cell = lever(False, why = "below_min_cap")
-        elif "ROCm" in why:
-            cell = lever(False, why = "rocm")
-        elif "CUDA only" in why:
-            cell = lever(False, why = _na_code(p))
-        else:  # a host-only refusal after the gates (torchao / safetensors support): the gates passed
-            cell = lever(True)
-        out[f"any.segment_quant.{prec}"] = cell
+        out[f"any.segment_quant.{prec}"] = lever(why is None, why = _code(why, codes))
+    try:
+        chosen, _why = sq.resolve_precision(device, torch.bfloat16, memory_tight = True)
+    except Exception as exc:  # noqa: BLE001
+        chosen = f"error {type(exc).__name__}"
+    out["any.segment_quant.auto_tight"] = lever(chosen not in (sq.PRECISION_BF16,), cfg = chosen)
     return out
 
 
@@ -467,6 +543,8 @@ def probe_nvfp4(p: GpuProfile) -> dict:
         out["any.mxfp8.tensor_cores"] = lever(False, why = "below_sm100")
     elif why and "not CUDA" in why:
         out["any.mxfp8.tensor_cores"] = lever(False, why = _na_code(p))
+    elif why:  # any other refusal is recorded, never read as passing the gate
+        out["any.mxfp8.tensor_cores"] = lever(False, why = "other")
     elif p.rocm:
         out["any.mxfp8.tensor_cores"] = lever(True, why = "rocm_cap_passes")
     else:
@@ -942,6 +1020,9 @@ def _speed_layer_extra(patch: Any, p: GpuProfile) -> None:
     patch.setattr(diffusion_gguf_compile, "_compiled_dequant_installed", False)
     patch.setattr(diffusion_gguf_compile, "_compile_error", None)
     patch.setattr(diffusion_cuda_graph, "install_cuda_graphs", lambda pipe, logger = None: True)
+    # Freeing a graph's pool runs gc.collect + empty_cache: memory upkeep on a real card, ~75 ms per stub here.
+    if hasattr(diffusion_cuda_graph, "release_cached_outside_capture"):
+        patch.setattr(diffusion_cuda_graph, "release_cached_outside_capture", lambda *a, **k: None)
     kernel = (lambda *a, **k: None) if (p.cuda and p.triton) else None
     for mod_name, attr, value in (
         ("diffusion_flux2_rope", "_kernel", lambda: kernel),
@@ -973,16 +1054,48 @@ def family_target(backend: str, fam: Any, target: Any) -> Any:
     return _types.SimpleNamespace(**{**vars(target), "dtype": dtype})
 
 
+# The host-flip children resolve one profile per platform class (each host input is profile-independent; these
+# cover every vendor, consumer / datacenter, fp16 and bf16, and both future-arch parents).
+FLIP_PROFILES = ("t4", "rtx3090", "l4", "rtx5090", "b200", "gfx1151", "mps", "cpu")
+
+
+def _collected_profiles() -> list:
+    only = os.environ.get("GPU_LEVER_PROFILES")
+    keys = [k for k in only.split(",") if k] if only else list(PROFILES)
+    return [PROFILES[k] for k in keys]
+
+
+def armed_after_placement(pipe: Any, views: list) -> bool:
+    """What the loader's post-placement step really installs for an offloaded load (``arm_graphs_after_placement``,
+    the call image and video loads make once placement is final): its ``cuda_graph`` after arming, never the pending
+    flag the speed layer leaves. The stub denoiser carries no offload hook, so the resident placement records."""
+    from core.inference.diffusion_speed import arm_graphs_after_placement
+
+    armed = False
+    for view in views:
+        try:
+            armed |= bool(arm_graphs_after_placement(pipe, dict(view)).get("cuda_graph"))
+        except Exception:  # noqa: BLE001 - recorded as not armed
+            pass
+    try:
+        from core.inference.diffusion_cuda_graph import uninstall_all
+        uninstall_all(getattr(pipe, "_unsloth_cuda_graphs", ()) or ())
+    except Exception:  # noqa: BLE001
+        pass
+    return armed
+
+
 def collect_autoopt(blocks: dict) -> dict:
     import test_diffusion_autoopt_parity as par
     from core.inference import diffusion_speed as ds
 
     cells: dict = {}
-    for p in PROFILES.values():
+    for p in _collected_profiles():
         with clean_policy_env(), mock_profile(p, extra = _speed_layer_extra):
             target = _autoopt_target(p)
             dtype = str(target.dtype).replace("torch.", "")
-            # offload: the streamed / offloaded tier (8-16 GB cards), where graphs arm after placement (R3 / R4)
+            # offload: the streamed / offloaded tier (8-16 GB cards), where graphs arm after placement (R3 / R4): the cell records
+            # what arm_graphs_after_placement installs (cuda_graph_armed), not the speed layer's pending flag
             for (backend, fam), offload in itertools.product(par._families(), (False, True)):
                 key = f"{p.key}.{fam.name}.autoopt" + ("_offload" if offload else "")
                 fam_target = family_target(backend, fam, target)
@@ -995,8 +1108,10 @@ def collect_autoopt(blocks: dict) -> dict:
                     )
                     engaged = {k for view in result["views"] for k, v in view.items() if v}
                     engaged |= {f"patch:{k}" for k, v in result["patches"].items() if v}
-                    if offload and getattr(pipe, "_unsloth_cuda_graph_after_placement", False):
-                        engaged.add("cuda_graph_after_placement")
+                    if offload:
+                        engaged.discard("cuda_graph")
+                        if armed_after_placement(pipe, result["views"]):
+                            engaged.add("cuda_graph_armed")
                     engaged = sorted(engaged)
                     cells[key] = {"on": bool(engaged), "engaged": engaged, "cfg": f"dtype={dtype}"}
                 except Exception as exc:  # noqa: BLE001 - recorded: a load that now raises is a lost cell
@@ -1010,7 +1125,7 @@ def collect_autoopt(blocks: dict) -> dict:
 # ----------------------------------------------------------------------------------------------------- collection
 def collect_levers() -> dict:
     cells: dict = {}
-    for p in PROFILES.values():
+    for p in _collected_profiles():
         with clean_policy_env(), mock_profile(p):
             for fn in LEVER_PROBES:
                 for key, value in fn(p).items():
@@ -1048,9 +1163,46 @@ def collect_all(blocks: dict) -> dict:
     return {"cells": cells, "seconds": {"levers": round(t1 - t0, 2), "autoopt": round(t2 - t1, 2)}}
 
 
+# Host differences the golden must NOT see (Backend CI's runners, a dev box, Windows, torch floor to latest): each is
+# simulated in its own child and must resolve the identical matrix (test_the_matrix_is_host_independent).
+HOST_FLIPS: dict = {
+    # torchao missing or failing to import (TorchAO 0.18 needs torch >= 2.11)
+    "no_torchao": "sys.modules['torchao'] = None",
+    # Triton missing (CPU torch from pip on Windows / macOS)
+    "no_triton": "sys.modules['triton'] = None",
+    # Windows: torch_compile_runtime_available() and other sys.platform reads
+    "win32": "import torch; sys.platform = 'win32'",
+    # macOS host
+    "darwin": "import torch; sys.platform = 'darwin'",
+    # torch before allow_fp16_accumulation (Backend CI's floor, 2.4)
+    "old_torch_matmul": (
+        "import torch\n"
+        "class _M:\n"
+        "    def __init__(self, m): object.__setattr__(self, '_m', m)\n"
+        "    def __getattr__(self, k):\n"
+        "        if k == 'allow_fp16_accumulation': raise AttributeError(k)\n"
+        "        return getattr(self._m, k)\n"
+        "    def __setattr__(self, k, v): setattr(self._m, k, v)\n"
+        "torch.backends.cuda.matmul = _M(torch.backends.cuda.matmul)"
+    ),
+    # torch before the e8m0 dtype (< 2.7)
+    # torch's own compiler modules bind the dtype at import, so load them first: a real old torch
+    # imports cleanly, it only lacks the attribute the production probes read.
+    "old_torch_dtypes": (
+        "import torch, torch._dynamo, torch._inductor\n"
+        "if hasattr(torch, 'float8_e8m0fnu'): delattr(torch, 'float8_e8m0fnu')"
+    ),
+    # an Intel XPU visible on the host
+    "host_xpu": "import torch; torch.xpu.is_available = lambda: True; torch.xpu.device_count = lambda: 1",
+    # a host with diffusers installed (the golden hides it; the flip un-hides nothing, it must stay hidden)
+}
+
 _CHILD = """
-import json, sys
+import json, os, sys
 sys.modules["diffusers"] = None  # what Backend CI has; every host resolves the same golden
+flip = os.environ.get("GPU_LEVER_HOST_FLIP")
+if flip:
+    exec(json.loads(os.environ["GPU_LEVER_HOST_FLIP_CODE"]))
 sys.path[:0] = [{backend!r}, {tests!r}]
 import test_diffusion_gpu_lever_matrix as m
 blocks = json.loads(sys.stdin.read())
@@ -1059,28 +1211,93 @@ sys.stdout.write("\\n@@GPU_LEVER_JSON@@" + json.dumps(out))
 """
 
 
-def _collect_in_child(blocks: dict) -> dict:
+def _child_cmd() -> list:
+    return [sys.executable, "-c", _CHILD.format(backend = str(_BACKEND), tests = str(_TESTS))]
+
+
+# Flip sets the host-independence test runs, one child each (all at once): a bare Windows CPU host, and macOS.
+HOST_FLIP_SETS: dict = {
+    "windows_cpu_bare": (
+        "no_torchao",
+        "no_triton",
+        "old_torch_matmul",
+        "old_torch_dtypes",
+        "host_xpu",
+        "win32",
+    ),
+    "macos": ("no_triton", "darwin"),
+}
+
+
+def _flip_code(flip: str) -> str:
+    names = HOST_FLIP_SETS.get(flip) or (flip,)
+    return "\n".join(HOST_FLIPS[n] for n in names)
+
+
+def _child_env(flip: Optional[str] = None) -> dict:
     import json
     import os
-    import subprocess
 
     env = dict(os.environ)
     env.pop("UNSLOTH_UPDATE_GPU_GOLDEN", None)
+    env.pop("GPU_LEVER_HOST_FLIP", None)
+    env.pop("GPU_LEVER_PROFILES", None)
+    if flip:
+        env["GPU_LEVER_HOST_FLIP"] = flip
+        env["GPU_LEVER_HOST_FLIP_CODE"] = json.dumps(_flip_code(flip))
+        env["GPU_LEVER_PROFILES"] = ",".join(FLIP_PROFILES)
+    return env
+
+
+def _child_result(proc: Any, stdout: str, stderr: str) -> dict:
+    import json
+
+    marker = "@@GPU_LEVER_JSON@@"
+    if proc.returncode != 0 or marker not in stdout:
+        raise AssertionError(
+            f"the lever matrix child exited {proc.returncode}:\n{stdout[-3000:]}\n{stderr[-6000:]}"
+        )
+    return json.loads(stdout.rsplit(marker, 1)[1])
+
+
+def _collect_in_child(blocks: dict, flip: Optional[str] = None) -> dict:
+    import json
+    import subprocess
+
     proc = subprocess.run(
-        [sys.executable, "-c", _CHILD.format(backend = str(_BACKEND), tests = str(_TESTS))],
+        _child_cmd(),
         input = json.dumps(blocks),
         capture_output = True,
         text = True,
         cwd = str(_BACKEND),
-        env = env,
-        timeout = 240,
+        env = _child_env(flip),
+        timeout = 600,
     )
-    marker = "@@GPU_LEVER_JSON@@"
-    if proc.returncode != 0 or marker not in proc.stdout:
-        raise AssertionError(
-            f"the lever matrix child exited {proc.returncode}:\n{proc.stdout[-3000:]}\n{proc.stderr[-6000:]}"
+    return _child_result(proc, proc.stdout, proc.stderr)
+
+
+def collect_flips(blocks: dict, flips: Any) -> dict:
+    """``{flip: matrix}``, every flip in its own child, all at once."""
+    import json
+    import subprocess
+
+    procs = {
+        flip: subprocess.Popen(
+            _child_cmd(),
+            stdin = subprocess.PIPE,
+            stdout = subprocess.PIPE,
+            stderr = subprocess.PIPE,
+            text = True,
+            cwd = str(_BACKEND),
+            env = _child_env(flip),
         )
-    return json.loads(proc.stdout.rsplit(marker, 1)[1])
+        for flip in flips
+    }
+    out = {}
+    for flip, proc in procs.items():
+        stdout, stderr = proc.communicate(json.dumps(blocks), timeout = 600)
+        out[flip] = _child_result(proc, stdout, stderr)
+    return out
 
 
 # --------------------------------------------------------------------------------------------------------- golden
@@ -1296,8 +1513,11 @@ def matrix(golden) -> dict:
             blocks.update(denoiser_blocks_from_diffusers())
         except Exception:  # noqa: BLE001 - keep the recorded table where diffusers does not import
             pass
-    out = _collect_in_child(blocks)
+    # The plain matrix and every host-flip set, each in its own child, all at once (one wall-clock wait).
+    runs = collect_flips(blocks, [None, *HOST_FLIP_SETS])
+    out = runs.pop(None)
     out["blocks"] = blocks
+    out["flips"] = runs
     return out
 
 
@@ -1333,16 +1553,149 @@ def test_every_probe_returns_the_same_cells_on_every_profile(matrix):
     }
 
 
-def test_golden_is_sorted_versioned_and_reasoned(golden):
+def test_golden_is_sorted_versioned_and_reasoned():
+    golden = load_golden()
     cells = golden["cells"]
     assert golden["schema"] == GOLDEN_SCHEMA and int(golden["version"]) >= 1
     assert list(cells) == sorted(cells)
     assert golden["changes"] and golden["changes"][-1]["version"] == golden["version"]
     assert all(str(c.get("reason", "")).strip() for c in golden["changes"])
+    on_disk = (
+        load_golden()
+    )  # re-read: an update run in this session rewrote it after the fixture loaded
     assert GOLDEN.read_text(encoding = "utf-8") == _dump_golden(
-        golden
+        on_disk
     ), "the golden was hand-edited out of format"
     assert set(golden["profiles"]) == set(PROFILES)
+
+
+def test_the_matrix_is_host_independent(matrix):
+    """The same matrix on any host: without torchao or Triton, on a torch older than allow_fp16_accumulation, with an
+    Intel XPU visible, on Windows (sys.platform win32) and on macOS. Each flip set runs in its own child; a diff here
+    is a host dependency the mock does not pin (pin it in gpu_profiles.mock_profile, never in the golden). Isolate one
+    flip with collect_flips(blocks, ["<name>"]) over HOST_FLIPS."""
+    flipped = matrix["flips"]
+    assert set(flipped) == set(HOST_FLIP_SETS)
+    bad = {}
+    for name, out in flipped.items():
+        want = {k: v for k, v in matrix["cells"].items() if k.split(".", 1)[0] in FLIP_PROFILES}
+        assert want and set(k.split(".", 1)[0] for k in out["cells"]) == set(FLIP_PROFILES)
+        diffs = diff_cells(want, out["cells"])
+        if diffs:
+            bad[name] = format_diffs(diffs).splitlines()[:12]
+    assert not bad, "the lever matrix follows the host, not the profile:\n" + "\n".join(
+        f"[{name}] " + "\n  ".join(lines) for name, lines in bad.items()
+    )
+
+
+def test_a_mixed_card_host_resolves_each_ordinal_on_its_own_card():
+    """``mock_profile(..., ordinals=...)``: device 1 answers as its own profile (a load pinned to cuda:1 must route by
+    cuda:1, not by card 0)."""
+    import torch
+
+    from core.inference import diffusion_int8_attention as i8
+    from core.inference.video_minimax_h3_attn import cuda_capability
+
+    with clean_policy_env(), mock_profile(PROFILES["rtx6000_ada"], ordinals = {1: PROFILES["t4"]}):
+        assert torch.cuda.device_count() == 2
+        assert torch.cuda.get_device_capability(0) == (8, 9) and torch.cuda.get_device_capability(
+            "cuda:1"
+        ) == (7, 5)
+        assert torch.cuda.get_device_name(torch.device("cuda", 1)) == PROFILES["t4"].name
+        assert cuda_capability("cuda:1") == (7, 5)
+        assert i8.device_config(0, 128) == i8.KERNEL_CONFIGS[(8, 9)][128]
+        assert i8.device_config(1, 128) == i8.KERNEL_CONFIGS[(7, 5)][128]
+
+
+def test_mock_profile_keeps_dynamo_importable():
+    """Replaced torch functions keep ``__wrapped__`` (Dynamo inspects them at import, torch >= 2.14)."""
+    import torch
+    with mock_profile(PROFILES["mps"]):
+        assert hasattr(torch.backends.mps.is_available, "__wrapped__")
+        assert hasattr(torch.cuda.get_device_capability, "__wrapped__")
+        import torch._dynamo  # noqa: F401
+
+
+def test_streamed_graph_cell_is_what_the_arming_installs(monkeypatch):
+    """The offloaded cell reads the post-placement arming's result: an arming that installs nothing loses the lever
+    even though the speed layer left its pending flag set."""
+    import test_diffusion_autoopt_parity as par
+
+    from core.inference import diffusion_cuda_graph as cg
+    from core.inference import diffusion_speed as ds
+
+    fam = next(f for b, f in par._families() if f.name == "flux.2-klein")
+    blocks = load_golden()["inputs"]["denoiser_blocks"]
+    p = PROFILES["l4"]
+
+    def run() -> bool:
+        with clean_policy_env(), mock_profile(p, extra = _speed_layer_extra):
+            pipe = _autoopt_pipe("image", fam, blocks)
+            flags = ds.snapshot_backend_flags()
+            try:
+                res = par.autoopt_entry(
+                    "image", pipe, _autoopt_target(p), fam, AUTOOPT_SPEED, True, False
+                )
+                assert getattr(pipe, "_unsloth_cuda_graph_after_placement", False)
+                return armed_after_placement(pipe, res["views"])
+            finally:
+                ds.restore_backend_flags(flags)
+                par._teardown()
+
+    assert run() is True
+    monkeypatch.setattr(
+        cg, "arm_after_placement", lambda pipe, logger = None, **k: ([], "nothing installed")
+    )
+    assert run() is False
+
+
+def test_gemm_tile_cells_follow_the_shape_rules(monkeypatch):
+    """Moving a per-shape rule (here sm120's H3 fused-QKV N range) changes the tile cell for that production shape."""
+    from core.inference import diffusion_int8_gemm as g
+
+    p = PROFILES["rtx5090"]
+    with clean_policy_env(), mock_profile(p):
+        before = probe_int8_gemm_tiles(p)["any.int8_gemm.tile.h3_qkv"]
+    rules = list(g._SHAPE_TILES[(12, 0)])
+    first = rules[0]
+    rules[0] = (65536, 65536, first[2], first[3], first[4])
+    monkeypatch.setitem(g._SHAPE_TILES, (12, 0), tuple(rules))
+    with clean_policy_env(), mock_profile(p):
+        after = probe_int8_gemm_tiles(p)["any.int8_gemm.tile.h3_qkv"]
+    assert before["on"] and before != after, (before, after)
+
+
+def test_segment_quant_records_an_unexpected_refusal_as_off(monkeypatch):
+    from core.inference import diffusion_segment_quant as sq
+
+    p = PROFILES["l4"]
+    real = sq.unsupported_reason
+
+    def ada_refuses(
+        precision,
+        device,
+        dtype = None,
+    ):
+        return (
+            "fp8 refused on this card for a new reason"
+            if precision == sq.PRECISION_FP8
+            else real(precision, device, dtype)
+        )
+
+    with clean_policy_env(), mock_profile(p):
+        assert probe_segment_quant(p)["any.segment_quant.fp8"]["on"] is True
+        monkeypatch.setattr(sq, "unsupported_reason", ada_refuses)
+        assert probe_segment_quant(p)["any.segment_quant.fp8"] == {"on": False, "why": "other"}
+
+
+def test_an_update_run_passes_its_own_format_check(tmp_path):
+    """The documented update writes a new version; the format check reads the file, not a stale copy."""
+    path = tmp_path / "golden.json"
+    write_golden({"t4.any.x": lever(True)}, "first", {}, path = path)
+    stale = load_golden(path)
+    write_golden({"t4.any.x": lever(False, why = "gone")}, "second", {}, path = path)
+    assert path.read_text(encoding = "utf-8") == _dump_golden(load_golden(path))
+    assert path.read_text(encoding = "utf-8") != _dump_golden(stale)
 
 
 def test_golden_writer_refuses_an_empty_reason_and_ledgers_the_change(tmp_path):
@@ -1415,6 +1768,7 @@ FUTURE_ARCH_EXCLUSIONS: dict = {
     "sm1[23][01].any.int8_gemm.arch_tile": "served by the unlisted-arch race (install_gate on); a listed tile skips it",
     "sm1[23][01].any.convrot.rotq_tile": "served by the unlisted rotq_h16 race (convrot.unlisted_h16 on)",
     "sm1[23][01].any.convrot.k_tiles": "per-K rules of the listed rotq tile; the unlisted rotq_h16 race serves",
+    "sm1[23][01].any.int8_gemm.tile.*": "served by the unlisted-arch race (its tile is picked on the card at load)",
     "sm1[23][01].any.int8_gemm.shape_tiles": _NEEDS.format("sm121 / sm130")
     + " (per-shape tiles of sm120)",
     "sm1[23][01].any.int8_gemm.tma_tile": _NEEDS.format("sm121 / sm130")
@@ -1423,6 +1777,8 @@ FUTURE_ARCH_EXCLUSIONS: dict = {
     # follows by the nearest-family fallback (int8_attn.serving stays on).
     "sm1[23][01].any.int8_attn.triton_table.*": _NEEDS.format("sm121 / sm130")
     + " (Triton stand-in tiles)",
+    # The fallback compiles for the card's own arch, and the NVRTC the profiles declare (13.0) targets sm75..sm121.
+    "sm130.any.int8_attn.serving.*": "the pinned NVRTC cannot target sm130 (the fallback is gated on the toolchain)",
     "sm1[23][01].any.grouped_int8_gemm.tiles": _NEEDS.format("sm121 / sm130")
     + " (spill-measured grouped tiles)",
     "sm1[123][01].any.nvfp4.*": _NEEDS.format("sm110 / sm121 / sm130")
@@ -1993,17 +2349,18 @@ def test_incident_r2_16764_h3_int8_vae_decoder_on_by_default(speed):
 def test_incident_r3_stream_tier_keeps_cuda_graphs(matrix, key):
     """R3 / R4: the 8 GB streaming tier ran with CUDA graphs off. Offloaded / streamed loads arm graphs after
     placement on every family that is capture-safe; H3 video stays off by measurement (its streamed group onloads
-    wait on the host, which a graph cannot record), so it is not asserted here."""
+    wait on the host, which a graph cannot record), so it is not asserted here. The cell is what the loader's
+    post-placement arming installs; families that record offloaded steps only (Wan) need a real offload hook, which
+    a CPU stub does not carry (test_diffusion_offload_cuda_graph covers their replay on a GPU)."""
     cells = matrix["cells"]
     for fam in (
         "flux.1",
         "flux.2-klein",
         "flux.3-klein",
         "z-image",
-        "wan2.2-ti2v-5b",
         "minimax-h3-image",
     ):
         resident = cells[f"{key}.{fam}.autoopt"]
         streamed = cells[f"{key}.{fam}.autoopt_offload"]
         if "cuda_graph" in resident.get("engaged", ()):
-            assert "cuda_graph_after_placement" in streamed.get("engaged", ()), (key, fam, streamed)
+            assert "cuda_graph_armed" in streamed.get("engaged", ()), (key, fam, streamed)
