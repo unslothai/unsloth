@@ -162,6 +162,22 @@ def test_csv_task_preserves_prompt_and_gold_text(tmp_path):
     assert first["id"] == 1
 
 
+def test_csv_missing_values_across_reader_chunks(tmp_path):
+    tasks = pytest.importorskip("lm_eval.tasks")
+    data = tmp_path / "codes.csv"
+    # Datasets reads 10,000 rows at a time. The first chunk establishes an integer id.
+    data.write_text("question,answer,id\n" + "001,NA,1\n" * 10_000 + ",,NA\n", encoding = "utf-8")
+    names, includes = evalmod.resolve_tasks(str(data), "question", "answer", tmp_path / "tasks")
+    task = tasks.TaskManager(include_defaults = False, include_path = includes).load_task_or_group(
+        names
+    )["codes"]
+    docs = task.test_docs()
+    assert len(docs) == 10_001
+    assert docs[0] == {"question": "001", "answer": "NA", "id": 1}
+    assert docs[-1] == {"question": None, "answer": None, "id": None}
+    assert task.process_results(docs[-1], [""])["exact_match"] == 0.0
+
+
 def _score_generation(tmp_path, rows, generation):
     tasks = pytest.importorskip("lm_eval.tasks")
     from lm_eval.api.instance import Instance

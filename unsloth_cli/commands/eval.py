@@ -424,6 +424,14 @@ def process_results(doc, results):
 """
 
 
+def _csv_text(value):
+    import pyarrow as pa
+
+    # A typed scalar keeps literal NA tokens through pandas' missing-value pass.
+    # Datasets converts it to a string column, including when every cell is empty.
+    return pa.scalar(value or None, type = pa.string())
+
+
 def _stop_sequence(data_file: Path, target_key: str) -> str:
     # a newline run longer than any answer holds, so multi-line answers are generated whole
     text = data_file.read_text(encoding = "utf-8-sig")
@@ -494,23 +502,20 @@ def make_dataset_task(
             )
         )
         if builder == "csv":
-            target.write("\ncsv_text = str\n")
+            # Datasets fingerprints the converter; a stable import lets repeated runs reuse the cache.
+            target.write("\nfrom unsloth_cli.commands.eval import _csv_text\n")
     module = Path(target.name).stem
     dumper = yaml.SafeDumper
     if builder == "csv":
-        # pandas would read "001" as 1 and "NA" as NaN; keep the prompt and answer as written
-        spec["dataset_kwargs"].update(
-            keep_default_na = False,
-            na_values = [""],
-            converters = dict.fromkeys((input_key, target_key), str),
-        )
+        spec["dataset_kwargs"]["converters"] = dict.fromkeys((input_key, target_key), _csv_text)
 
         class CsvTaskDumper(yaml.SafeDumper):
             def ignore_aliases(self, data):
                 return True
 
         CsvTaskDumper.add_representer(
-            type, lambda dumper, _: dumper.represent_scalar("!function", f"{module}.csv_text")
+            type(_csv_text),
+            lambda dumper, fn: dumper.represent_scalar("!function", f"{module}.{fn.__name__}"),
         )
         dumper = CsvTaskDumper
     (out_dir / f"{name}.yaml").write_text(
