@@ -157,6 +157,7 @@ def test_streamed_unpromotable_inline_example_is_never_held(text):
         ["Use `search", "[ARGS]{", "}` here."],
         ["Use `sea", "rch[AR", "GS]{", "}` and `searching` here."],
         ["<think>`note</think> Use `search", "[ARGS]{", "}` here."],
+        ["The `<thinking>` tag. Use `search", "[ARGS]{", "}` here."],
     ],
 )
 def test_streamed_chunks_never_rewind(chunks):

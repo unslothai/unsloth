@@ -7135,7 +7135,7 @@ def _pending_inline_rehearsal_cut(text: str, enabled_tool_names) -> int:
     if len(text) - line > _PENDING_INLINE_MAX_CHARS or text.find("`", line) < 0:
         return -1
     from core.inference.tool_call_parser import _mask_blocked_bodies
-    from core.tool_healing import _markerless_promotable
+    from core.tool_healing import _markerless_promotable, _think_spans_outside_tool_markup
 
     starts = []
     if text.find("[ARGS]", line) >= 0:
@@ -7158,7 +7158,9 @@ def _pending_inline_rehearsal_cut(text: str, enabled_tool_names) -> int:
     t0 = max(0, len(text) - _PENDING_THINK_WINDOW)
     opened = max(text.rfind("<think", t0), text.rfind("[THINK]", t0))
     if opened > max(text.rfind("</think", t0), text.rfind("[/THINK]", t0)):
-        return -1
+        think = _think_spans_outside_tool_markup(text[t0:])
+        if think and think[-1][1] == len(text) - t0:
+            return -1
     # Pair delimiters as the parser sees the text (reasoning and blocked-call bodies masked), over a bounded window.
     lo = max(0, line - _PENDING_MASK_WINDOW)
     masked = text[lo:]
