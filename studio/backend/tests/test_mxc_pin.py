@@ -16,6 +16,7 @@ from core.inference import mxc_runtime
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _PRIMARY = mxc_runtime.PRIMARY_PIN
 _LEGACY = mxc_runtime.LEGACY_PIN
+_LEGACY_STILL_INSTALLED = mxc_runtime._legacy_still_installed
 
 
 @pytest.mark.parametrize("pin", [_PRIMARY, _LEGACY], ids = ["primary", "legacy"])
@@ -62,6 +63,8 @@ def _windows(
     monkeypatch.setattr(mxc_runtime.sys, "platform", "win32")
     monkeypatch.setattr(mxc_runtime, "_windows_release", lambda: release)
     monkeypatch.setattr(mxc_runtime, "demoted_by_probe", lambda _release = None: bool(demoted))
+    # Nothing installed unless a test puts files there: no runtime of the test host's own is seen.
+    monkeypatch.setattr(mxc_runtime, "_legacy_still_installed", lambda: False)
 
 
 @pytest.mark.parametrize(
@@ -90,6 +93,58 @@ def _windows(
 def test_the_pin_follows_windows_built_in_container_support(monkeypatch, release, pin):
     _windows(monkeypatch, release)
     assert mxc_runtime.selected_pin() is pin
+
+
+def _managed_files(
+    monkeypatch,
+    tmp_path,
+    pin,
+    *,
+    prep = True,
+    architecture = "x86_64",
+):
+    """Files of ``pin``'s sizes (sparse, never hashed) in a fresh managed folder."""
+    monkeypatch.setattr(mxc_runtime, "_expected_architecture", lambda: architecture)
+    monkeypatch.setattr(mxc_runtime, "_installed_package_root", lambda: tmp_path)
+    monkeypatch.setattr(mxc_runtime, "_legacy_still_installed", _LEGACY_STILL_INSTALLED)
+    for kind, name in mxc_runtime._ARTIFACT_NAMES.items():
+        if (architecture, kind) in pin.artifacts and (kind == "exec" or prep):
+            with open(tmp_path / name, "wb") as handle:
+                handle.truncate(pin.artifacts[(architecture, kind)][1])
+
+
+@pytest.mark.parametrize("architecture", ["x86_64", "arm64"])
+def test_mxc_1_0_1_keeps_running_after_windows_gains_the_container(
+    monkeypatch, tmp_path, architecture
+):
+    # A Windows update moved this PC across the floor; its runtime is still 1.0.1 until the next install.
+    _windows(monkeypatch, (1, 26200, 9999))
+    _managed_files(monkeypatch, tmp_path, _LEGACY, architecture = architecture)
+    assert mxc_runtime.target_pin() is _PRIMARY  # what the installer puts here next
+    assert mxc_runtime.selected_pin() is _LEGACY  # what Studio runs meanwhile
+
+
+@pytest.mark.parametrize(
+    "installed",
+    ["primary", "none", "legacy-without-prep"],
+)
+def test_only_a_complete_mxc_1_0_1_install_is_kept(monkeypatch, tmp_path, installed):
+    _windows(monkeypatch, (1, 26200, 9999))
+    if installed == "primary":
+        _managed_files(monkeypatch, tmp_path, _PRIMARY)
+    elif installed == "legacy-without-prep":
+        _managed_files(monkeypatch, tmp_path, _LEGACY, prep = False)
+    else:
+        _managed_files(monkeypatch, tmp_path, _PRIMARY, prep = False)
+        (tmp_path / "wxc-exec.exe").unlink()
+    assert mxc_runtime.selected_pin() is _PRIMARY
+
+
+def test_a_forced_pin_ignores_what_is_installed(monkeypatch, tmp_path):
+    _windows(monkeypatch, (1, 26200, 9999))
+    _managed_files(monkeypatch, tmp_path, _LEGACY)
+    monkeypatch.setenv(mxc_runtime.PIN_ENV, _PRIMARY.version)
+    assert mxc_runtime.selected_pin() is _PRIMARY
 
 
 def test_a_probe_demotion_moves_a_supported_looking_windows_to_the_legacy_pin(monkeypatch):

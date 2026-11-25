@@ -119,6 +119,7 @@ MIN_WINDOWS_BUILD = 26100
 
 _WXC_EXEC_NAME = "wxc-exec.exe"
 _WXC_HOST_PREP_NAME = "wxc-host-prep.exe"
+_ARTIFACT_NAMES = {"exec": _WXC_EXEC_NAME, "prep": _WXC_HOST_PREP_NAME}
 logger = logging.getLogger(__name__)
 _lock = threading.RLock()
 
@@ -306,8 +307,8 @@ def forced_pin() -> MxcPin | None:
     return next((pin for pin in PINS if override == pin.version), None)
 
 
-def selected_pin() -> MxcPin:
-    """MXC 1.1.0 where Windows has the built-in container, else 1.0.1 and its AppContainer + DACL tier."""
+def target_pin() -> MxcPin:
+    """The pin the installer puts on this PC: MXC 1.1.0 where Windows has the built-in container, else 1.0.1."""
     forced = forced_pin()
     if forced is not None:
         return forced
@@ -317,6 +318,30 @@ def selected_pin() -> MxcPin:
     if builtin_container_supported(release) is False or demoted_by_probe(release):
         return LEGACY_PIN
     return PRIMARY_PIN
+
+
+def _legacy_still_installed() -> bool:
+    """MXC 1.0.1's files, by size alone, in the managed folder; every launch still verifies the bytes."""
+    try:
+        architecture = _expected_architecture()
+        root = _installed_package_root()
+        sizes = {kind: (root / name).lstat().st_size for kind, name in _ARTIFACT_NAMES.items()}
+    except (OSError, MxcRuntimeUnavailable):
+        return False
+    return all(sizes[kind] == LEGACY_PIN.artifacts[(architecture, kind)][1] for kind in sizes)
+
+
+def selected_pin() -> MxcPin:
+    """The pin Studio runs: target_pin(), except that MXC 1.0.1 keeps running until the installer replaces it.
+
+    A Windows update can add the built-in container to a PC on 1.0.1. 1.0.1 uses that container too, so it
+    stays in use, with its own settings, until the next install moves this PC to 1.1.0.
+    """
+    target = target_pin()
+    if target is PRIMARY_PIN and forced_pin() is None and sys.platform == "win32":
+        if _legacy_still_installed():
+            return LEGACY_PIN
+    return target
 
 
 def _artifact(

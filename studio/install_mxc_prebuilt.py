@@ -227,7 +227,7 @@ def install_mxc_release(
     if sys.platform != "win32":
         raise MxcInstallError("the MXC runtime installer is Windows-only")
     mxc_runtime._expected_architecture()
-    pin = pin or mxc_runtime.selected_pin()
+    pin = pin or mxc_runtime.target_pin()
 
     install_dir = install_dir.expanduser().resolve()
     install_dir.parent.mkdir(parents = True, exist_ok = True)
@@ -480,7 +480,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.install_dir is None:
         parser.error("--install-dir is required")
     try:
-        pin = mxc_runtime.selected_pin()
+        pin = mxc_runtime.target_pin()
         # A pin forced by UNSLOTH_MXC_PIN is never second-guessed; a chosen 1.1.0 must prove itself first.
         auto = pin is mxc_runtime.PRIMARY_PIN and mxc_runtime.forced_pin() is None
         try:
@@ -501,7 +501,7 @@ def main(argv: list[str] | None = None) -> int:
     except (MxcInstallError, mxc_runtime.MxcRuntimeUnavailable) as exc:
         print(f"[mxc-prebuilt] {exc}", file = sys.stderr)
         return 1
-    version = mxc_runtime.selected_pin().version
+    version = mxc_runtime.target_pin().version
     print(
         f"[mxc-prebuilt] MXC {version} installed and validated"
         if changed

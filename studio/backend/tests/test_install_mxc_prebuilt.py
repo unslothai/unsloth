@@ -87,6 +87,7 @@ def _serve(
     payloads = payloads or {("x86_64", "exec"): b"official-wxc", ("x86_64", "prep"): _HOST_PREP}
     pin = _pin(archive, payloads)
     monkeypatch.setattr(installer.mxc_runtime, "selected_pin", lambda: pin)
+    monkeypatch.setattr(installer.mxc_runtime, "target_pin", lambda: pin)
     monkeypatch.setattr(
         installer, "_download", lambda destination, _pin: destination.write_bytes(archive)
     )
@@ -223,6 +224,7 @@ def test_archive_checksum_mismatch_never_becomes_active(tmp_path, monkeypatch, o
         artifacts = pin.artifacts,
     )
     monkeypatch.setattr(installer.mxc_runtime, "selected_pin", lambda: bad)
+    monkeypatch.setattr(installer.mxc_runtime, "target_pin", lambda: bad)
     with pytest.raises(installer.MxcInstallError, match = "checksum mismatch"):
         installer.install_mxc_release(install_dir)
     assert not install_dir.exists()
@@ -539,7 +541,7 @@ def _auto_primary(
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
     monkeypatch.setattr(installer.mxc_runtime, "_windows_release", lambda: (1, 29000, 1))
     monkeypatch.setattr(
-        installer.mxc_runtime, "selected_pin", lambda: installer.mxc_runtime.PRIMARY_PIN
+        installer.mxc_runtime, "target_pin", lambda: installer.mxc_runtime.PRIMARY_PIN
     )
     installed = []
 
