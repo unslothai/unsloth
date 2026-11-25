@@ -6872,6 +6872,16 @@ def patch_gradient_accumulation_fix(Trainer):
             # UNSLOTH_TP_SIZE / UNSLOTH_PP_SIZE (unmodified scripts): the pipeline split, then tensor parallel,
             # before native FSDP2 shards the dp dimension.
             tp_env = _tensor_parallel_env_trainer_pre(model)
+            if tp_env is None and model is not None:
+                from .ep_native import ep_env_apply, ep_refuse_prebuilt_optimizer
+                ep_refuse_prebuilt_optimizer(
+                    model,
+                    _prebuilt_optimizer(self, _original_trainer_init, args, kwargs),
+                    _optimizer_kwargs_hold_params(self, _original_trainer_init, args, kwargs),
+                )
+                ep_env_apply(
+                    model
+                )  # UNSLOTH_EP_SIZE: a model get_peft_model did not shard (full finetuning)
             if (
                 tp_env is not None
             ):  # model_init alone, or beside model (4.x: train() rebuilds from it)
@@ -6985,6 +6995,9 @@ def patch_gradient_accumulation_fix(Trainer):
             from ._ddp_defaults import install_unsloth_ddp_comm_defaults
 
             install_unsloth_ddp_comm_defaults(self)
+            from .ep_native import ep_trainer_setup
+
+            ep_trainer_setup(self)  # expert parallel: clipping, fp16 skip sync, 1-GPU adapter saves
             try:
                 from ._jit_checkpoint import install_jit_checkpoint_agreement
                 install_jit_checkpoint_agreement(self)
@@ -7018,6 +7031,9 @@ def patch_gradient_accumulation_fix(Trainer):
             # DDP exclusions as the one __init__ marked.
             model = _original_call_model_init(self, *args, **kwargs)
             _refuse_tensor_parallel_for_trainer(model)
+            if _is_unsloth_expert_parallel(model):
+                from .ep_native import _MODEL_INIT_REFUSAL
+                raise NotImplementedError(_MODEL_INIT_REFUSAL)
             _tensor_subclass_weights_for_ddp(self, model)
             try:
                 from ..tiling import revalidate_for_trainer
@@ -7050,6 +7066,20 @@ def _is_unsloth_tensor_parallel(model):
 
 def _is_unsloth_pipeline_parallel(model):
     return _unsloth_model_parallel_marker(model, "_unsloth_pp")
+
+
+def _is_unsloth_expert_parallel(model):
+    """apply_expert_parallel keeps its ep mesh under `_unsloth_ep` on every wrapper level."""
+    m, depth = model, 0
+    while isinstance(getattr(m, "__dict__", None), dict) and depth < 8:
+        if m.__dict__.get("_unsloth_ep") is not None:
+            return True
+        modules = m.__dict__.get("_modules") or {}
+        m, depth = (
+            modules.get("base_model") or modules.get("model") or modules.get("module"),
+            depth + 1,
+        )
+    return False
 
 
 def _refuse_tensor_parallel_for_trainer(model):
@@ -7478,6 +7508,13 @@ def _refuse_model_parallel_export(model, method):
             "holds 1 / tp of the attention / MLP weights, so the export would be shard sized. Save the adapter "
             "with `save_tp_adapter(model, directory)` (on every tp rank), then in a single process load the "
             f"base model with that adapter and call `{method}` there."
+        )
+    if _is_unsloth_expert_parallel(model):
+        raise RuntimeError(
+            f"Unsloth: `{method}` does not support an expert parallel model (apply_expert_parallel): each rank "
+            "holds only its own routed experts, so the export would miss the others. Save the adapter with "
+            "`model.save_pretrained(directory)` or `trainer.save_model(directory)` (on every rank: the 1-GPU "
+            f"adapter), then in a single process load the base model with that adapter and call `{method}` there."
         )
     if _is_unsloth_pipeline_parallel(model):
         from .pp_native import pipeline_stage_of

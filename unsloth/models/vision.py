@@ -2551,6 +2551,11 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
     # device it can OOM where a growing cache would not (#2590).
     if not force_dynamic_cache and cache_implementation is not None:
         force_dynamic_cache = _static_cache_does_not_fit(self, input_ids, kwargs)
+    # synced_gpus (expert parallel sets it; ZeRO-3 callers too): a rank that finishes first keeps running forwards
+    # until every rank is done, past the static cache sized for its own prompt + max_new_tokens (the mask and the
+    # keys then disagree by one slot). A growing cache takes those extra steps.
+    if not force_dynamic_cache and cache_implementation is not None and kwargs.get("synced_gpus"):
+        force_dynamic_cache = True
     if force_dynamic_cache:
         cache_implementation = None
         dynamic_implementation = _dynamic_cache_choice(kwargs)
