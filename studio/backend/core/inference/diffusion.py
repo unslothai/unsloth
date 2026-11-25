@@ -12637,6 +12637,10 @@ class DiffusionBackend:
                     # a refinement may have re-tiered the plan; routed encoders need group offload
                     plan = self._small_host_plan(pipe, plan, fam, logger)
                     plan = refine_plan_for_multigpu(pipe, plan, logger)
+                    from .diffusion_tp2 import engage_for_plan as _tp2_engage
+
+                    # opt-in UNSLOTH_DIFFUSION_TP=1: denoiser sharded over two cards, kept resident
+                    plan = _tp2_engage(pipe, plan, logger)
                     # streamed text encoders pin after the load returns, before or during the first encode
                     request_background_encoder_pins(pipe)
                     effective_policy, effective_tiling = apply_memory_plan(
