@@ -3060,6 +3060,19 @@ def companion_files(path: str, names: Iterable[str]) -> tuple[str, ...]:
     return tuple(found)
 
 
+def _download_job_offline() -> bool:
+    """The download job's own Hub client decides, so read its env with huggingface_hub's rule (no strip, HF_HUB_OFFLINE first)."""
+    try:
+        from huggingface_hub.constants import ENV_VARS_TRUE_VALUES
+        from utils.hf_cache_settings import get_hf_cache_paths
+
+        env = get_hf_cache_paths().child_env()
+        value = env.get("HF_HUB_OFFLINE") or env.get("TRANSFORMERS_OFFLINE")
+        return bool(value) and value.upper() in ENV_VARS_TRUE_VALUES
+    except Exception:  # noqa: BLE001
+        return hf_env_offline()
+
+
 def _fetches_gguf(
     repo_id: str,
     path: str,
@@ -3075,7 +3088,7 @@ def _fetches_gguf(
     except Exception:  # noqa: BLE001 - an unreadable cache is one to fetch into
         snapshots = []
     on_disk = any((snapshot / path).is_file() for snapshot in snapshots)
-    if hf_env_offline():
+    if _download_job_offline():
         return not on_disk
     try:
         from huggingface_hub import get_hf_file_metadata, hf_hub_url

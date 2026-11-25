@@ -47,20 +47,32 @@ def test_gguf_listing_reads_the_cache_without_asking_the_hub(monkeypatch, offlin
     assert asked == []
 
 
-@pytest.mark.parametrize("offline_env", OFFLINE_ENVS, indirect = True)
-def test_audio_download_check_trusts_the_cached_gguf_without_asking_the_hub(
-    monkeypatch, tmp_path, offline_env
+@pytest.mark.parametrize(
+    "env, hub_asked",
+    [
+        ({"HF_HUB_OFFLINE": "on"}, False),
+        ({"TRANSFORMERS_OFFLINE": "1"}, False),
+        ({"HF_HUB_OFFLINE": " TRUE "}, True),
+        ({"HF_HUB_OFFLINE": "0", "TRANSFORMERS_OFFLINE": "1"}, True),
+    ],
+)
+def test_audio_stale_gate_follows_the_download_jobs_hub_client(
+    monkeypatch, tmp_path, env, hub_asked
 ):
+    """The job fetches whenever its Hub client is online, so only then may the gate skip the etag check."""
     import huggingface_hub
 
+    for var in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"):
+        monkeypatch.delenv(var, raising = False)
+    for var, value in env.items():
+        monkeypatch.setenv(var, value)
     asked = []
     (tmp_path / "m.gguf").write_bytes(b"GGUF")
     monkeypatch.setattr(acm, "snapshot_dirs", lambda repo_id, hub_cache = None: [tmp_path])
-    # _fetches_gguf swallows Hub errors, so record the call rather than raise.
     monkeypatch.setattr(huggingface_hub, "get_hf_file_metadata", lambda *a, **k: asked.append(a))
 
     assert acm._fetches_gguf("audio-cpp/demo", "m.gguf", None) is False
-    assert asked == []
+    assert bool(asked) is hub_asked
 
 
 @pytest.mark.parametrize(
