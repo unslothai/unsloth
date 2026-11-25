@@ -200,6 +200,10 @@ fn resolve_launched_hidden(app: &tauri::AppHandle) -> bool {
     let relaunched = in_app_relaunch_config_dir(app)
         .map(|dir| take_in_app_relaunch_marker(&dir))
         .unwrap_or(false);
+    // On Windows, NSIS relaunches the app and forwards the previous session's arguments.
+    #[cfg(windows)]
+    let relaunched =
+        relaunched || std::env::args_os().any(|arg| arg == OsStr::new("--show-after-update"));
     let hidden = argv_has_hidden_flag();
     // The marker is gone now, so a GPU crash before the window reports in must not relaunch
     // hidden.
