@@ -167,9 +167,7 @@ def fp16_card_hosted_int8_transformer(
 def _dense_dit_fits_host(
     fam: Any, base: Optional[str], cache_dir: Optional[str]
 ) -> tuple[Optional[bool], str]:
-    """Whether the dense float16 DiT alone fits host RAM, priced by the small-host route's own resolver
-    (``diffusion_small_host.dense_load_fits``): from the cached snapshot's headers when its DiT shards are complete,
-    else from the family's bf16 table. (None, why) when unpriced."""
+    """(fits, why) for the dense float16 DiT in host RAM via ``dense_load_fits``; fits is None when unpriced."""
     import torch
 
     from .diffusion_small_host import (
@@ -221,13 +219,7 @@ def small_host_hosted_int8_reason(
     has_lora: bool = False,
 ) -> Optional[str]:
     """Why AUTO takes int8 from the hosted ConvRot file on this fp16-only card, else None (AUTO is unchanged).
-
-    When the dense float16 DiT alone does not fit host RAM, the small-host route already turns AUTO into int8: it
-    reads the bf16 shards and quantises them per row at load (Qwen-Image-2.1 on a 12.7 GB T4: 200-244 s, ~14 GB read).
-    The hosted file holds the fp16-only card's W8A8 ConvRot build of the same weights (7.3 GB, no quantise), the build
-    an explicit int8 pick reads, so AUTO takes that build here. Only the released Hub repo with the hosted file
-    (``require_cached``: already in the cache); LoRA, an unreadable host and a DiT that fits keep the old route.
-    ``UNSLOTH_FP16_CARD_HOSTED_INT8=0`` or ``UNSLOTH_DIFFUSION_SMALL_HOST=0`` turns it off. Never raises."""
+    Replaces the small-host per-row quantise at load (~200 s on a 12.7 GB T4) when the dense DiT does not fit. Never raises."""
     try:
         if fam is None or has_lora or not _official_hub_base(fam, base):
             return None

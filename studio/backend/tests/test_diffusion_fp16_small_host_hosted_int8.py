@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""AUTO on an fp16-only card whose host cannot hold the dense float16 DiT (Qwen-Image-2.1 on a 12.7 GB T4) reads the
-hosted int8 ConvRot build instead of letting the small-host route quantise the bf16 shards per row at load. A host the
-dense DiT fits, LoRA, a local or fine-tuned pipeline, an uncached file and the kill switches keep the old routes."""
+"""AUTO on an fp16-only small host reads the hosted int8 ConvRot DiT instead of quantising per row at load."""
 
 from __future__ import annotations
 
@@ -55,7 +53,6 @@ def host(monkeypatch):
     monkeypatch.setattr(tq, "torch_is_rocm", lambda: False)
     monkeypatch.setattr(tq, "is_stubbed", lambda name: False)
     monkeypatch.setattr(tq, "_capability", lambda ordinal = None: (7, 5))
-    # No cached snapshot: the DiT is priced from the family table, as on a first load.
     monkeypatch.setattr(SH, "resolve_snapshot_dir", lambda *a, **k: None)
     monkeypatch.setattr(SH, "host_commit_mib", lambda: None)
     monkeypatch.setattr(FH, "fp16_card_hosted_int8_cached", lambda *a, **k: "/hub/x.safetensors")
@@ -97,7 +94,6 @@ def test_lora_keeps_the_dense_route(host):
 def test_load_needs_the_file_in_the_cache(host, monkeypatch):
     monkeypatch.setattr(FH, "fp16_card_hosted_int8_cached", lambda *a, **k: None)
     assert FH.small_host_hosted_int8_reason(_fam(), T4, base = BASE, require_cached = True) is None
-    # The download plan asks before the file is cached: it stages it.
     assert FH.small_host_hosted_int8_reason(_fam(), T4, base = BASE) is not None
 
 
@@ -140,7 +136,6 @@ def test_the_download_plan_keeps_the_dense_shards_where_auto_does(host, kw):
 
 
 def test_snapshot_pricing_matches_the_small_host_decision(host, monkeypatch, tmp_path):
-    """A complete cached snapshot is priced from its headers, as ``decide_small_host`` prices it."""
     comp = SH.StoredComponent("transformer", 13030, "bfloat16")
     monkeypatch.setattr(SH, "resolve_snapshot_dir", lambda *a, **k: tmp_path)
     monkeypatch.setattr(SH, "stored_components", lambda snap: {"transformer": comp})
@@ -158,7 +153,6 @@ def test_snapshot_pricing_matches_the_small_host_decision(host, monkeypatch, tmp
 
 
 def test_the_loader_consults_the_small_host_reason():
-    """The AUTO pick in the loader asks the small-host reason next to the Turing table, cache only."""
     src = (BACKEND / "core" / "inference" / "diffusion.py").read_text(encoding = "utf-8")
     start = src.index("turing_auto_int8 = (")
     block = src[start : src.index("if turing_auto_int8 is not None:", start)]
@@ -169,8 +163,7 @@ def test_the_loader_consults_the_small_host_reason():
 
 
 def test_the_hosted_dit_is_marked_and_placed_as_the_small_host_routes():
-    """Placed like the route's own int8 DiT (resident share, encoder prefetch, mapped streamed groups): without the mark
-    a 12.7 GB T4 streamed the whole hosted DiT unprefetched at ~14 s/step against the route's 4 s."""
+    """Without the mark a 12.7 GB T4 streamed the hosted DiT unprefetched at ~14 s/step vs 4 s."""
     from core.inference import diffusion as D
     from core.inference.diffusion_memory import pipe_small_host_int8
 
@@ -186,7 +179,6 @@ def test_the_hosted_dit_is_marked_and_placed_as_the_small_host_routes():
     got = D.DiffusionBackend._mark_small_host_hosted(Backend(), pipe, "plan", "why", None, log)
     assert got == "placed"
     assert seen["info"]["components"]["transformer"] == D.SMALL_HOST_HOSTED_INT8_COMPONENT
-    # Reported as the route's int8 DiT (status, LoRA refusal), not re-armed as its per-row build.
     assert D._small_host_int8(pipe) and not pipe_small_host_int8(pipe)
     assert D._lora_load_block_reason(pipe) is not None
 
@@ -250,9 +242,7 @@ def _hosted_read_statements():
 
 @pytest.mark.parametrize("read", ["declined", "read"])
 def test_a_declined_hosted_read_returns_to_the_auto_per_row_route(read):
-    """AUTO pinned int8 only for the hosted file. When the read declines (a non-allocation failure returns None), the
-    load must continue exactly as AUTO did without it: no pinned int8, no native scheme, so the small-host per-row
-    build is not re-armed as an int8 request."""
+    """A declined hosted read restores AUTO: no pinned int8, so the per-row build is not re-armed."""
     module, path = _hosted_read_statements()
     logged = []
     hosted = types.SimpleNamespace(_unsloth_prequant_artifact = "prequant:x")

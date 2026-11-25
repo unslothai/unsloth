@@ -9881,8 +9881,6 @@ class DiffusionBackend:
                     and not _memory_request_forces_offload(memory_mode, cpu_offload)
                     else None
                 )
-                # The low-RAM route would quantise the dense DiT per row at load: read the hosted build instead, and
-                # place it as that route places its int8 DiT (``_mark_small_host_hosted``).
                 small_host_hosted = (
                     small_host_hosted_int8_reason(
                         fam,
@@ -11063,8 +11061,7 @@ class DiffusionBackend:
                                             hosted_native, "_unsloth_prequant_artifact", None
                                         )
                                 if small_host_hosted is not None and hosted_native_scheme is None:
-                                    # AUTO took int8 only for the hosted file, and it was not read: back to the
-                                    # AUTO small-host per-row build exactly as without the hosted file.
+                                    # Hosted read declined: restore AUTO exactly as without the hosted file.
                                     logger.info(
                                         "diffusion.small_host: the hosted int8 ConvRot DiT was not read; AUTO keeps "
                                         "the small-host per-row int8 build (%s)",
@@ -14892,9 +14889,7 @@ class DiffusionBackend:
     def _mark_small_host_hosted(
         self, pipe: Any, plan: Any, reason: str, fam: Any, logger: Any
     ) -> Any:
-        """The hosted int8 ConvRot DiT stands in for the small-host route's per-row int8 build: mark the pipe as that
-        route marks it (encoders stream through the prefetching copy, the denoiser keeps what fits resident and its
-        streamed groups stay memory-mapped, LoRA is refused) and place it as that route places its DiT."""
+        """Mark and place the hosted int8 DiT exactly as the small-host route's per-row int8 build."""
         from .diffusion_small_host import mark
 
         info = dict(small_host_engaged_on(pipe) or {"reason": reason})
@@ -18222,8 +18217,7 @@ def _small_host_int8(pipe: Any) -> bool:
     return any(str(v).startswith("int8") for v in (info.get("components") or {}).values())
 
 
-# Starts with "int8" (status and LoRA refusal read it as the route's int8 DiT), not "int8 weights" (the per-row
-# build, which the loader re-arms for W8A8 and prices from its own measured peaks).
+# Must start with "int8" but not "int8 weights" (that prefix means the per-row build, re-armed for W8A8).
 SMALL_HOST_HOSTED_INT8_COMPONENT = (
     "int8 ConvRot weights (hosted checkpoint, memory-mapped, native W8A8)"
 )
