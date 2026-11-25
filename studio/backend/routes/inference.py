@@ -31030,8 +31030,7 @@ async def _finish_external_compaction(
     fit_payload = payload if plan.auto else None
     turn_ids: set[int] = set()
     if plan.force == "overflow":
-        # The provider counted more than the estimate allowed for: aim for half of it, shortening
-        # the turn's older tool results and evicting only turns before it.
+        # Provider counted more than estimated: aim for half, shortening this turn's tool results.
         half = max(1, count(current) // 2)
         turn_ids = _shorten_turn_tool_results(
             current, branch, prompt_budget(half, _effective_max_tokens(payload)), count
