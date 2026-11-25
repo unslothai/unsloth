@@ -4289,6 +4289,46 @@ def _unsloth_vllm_generation_merges_out_of_place(generation):
     return ok
 
 
+def _unsloth_vllm_trl_dequantizes(original):
+    """True when TRL's own _iter_named_params sends bitsandbytes 4-bit weights dequantized (TRL #8269, 1.19)."""
+    try:
+        return "dequantize_4bit" in inspect.getsource(original)
+    except (OSError, TypeError):
+        return Version(trl_version_raw) >= Version("1.19.0")
+
+
+def _unsloth_vllm_generation_refuses_quantized(generation, original):
+    """TRL 0.28 to 1.18 VLLMGeneration merges the adapters into a quantized base in place and sends
+    param.data, which is the packed storage (bitsandbytes 4-bit: uint8 bytes), not weights. A colocated
+    engine then fails a shape assert inside vLLM on the first sync, and a vLLM server is sent bytes as
+    weights. Raise the error the TRL < 0.28 sync raises instead; True = skip the sync (explicit opt-in)."""
+    model = getattr(generation, "model", None)
+    if model is None or not _unsloth_vllm_quantized(model):
+        return False
+    if (
+        getattr(model, "is_loaded_in_4bit", False)
+        and not getattr(model, "is_loaded_in_8bit", False)
+        and _unsloth_vllm_trl_dequantizes(original)
+    ):
+        return False
+    if os.environ.get("UNSLOTH_VLLM_ALLOW_STALE_ROLLOUTS", "0") == "1":
+        if not generation.__dict__.get("_unsloth_vllm_stale_rollouts_warned", False):
+            generation._unsloth_vllm_stale_rollouts_warned = True
+            print(
+                "Unsloth: UNSLOTH_VLLM_ALLOW_STALE_ROLLOUTS=1, so vLLM weight sync is skipped for this "
+                "quantized model and every rollout uses the initial weights."
+            )
+        return True
+    raise RuntimeError(
+        "Unsloth: GRPO with use_vllm = True but fast_inference = False cannot sync a quantized "
+        "(bitsandbytes, GPTQ, AWQ, HQQ, torchao, FP8, ...) model into TRL's vLLM engine: TRL "
+        f"{trl_version_raw} sends the packed quantized storage, not weights, so vLLM cannot load it.\n"
+        "Load the model with fast_inference = True, or load a 16-bit base (load_in_4bit = False, "
+        "load_in_8bit = False). Set UNSLOTH_VLLM_ALLOW_STALE_ROLLOUTS=1 to train anyway with every "
+        "rollout from the initial weights."
+    )
+
+
 def _unsloth_vllm_patch_iter_named_params(generation_cls):
     """Route VLLMGeneration._iter_named_params through the out-of-place PEFT merge."""
     original = getattr(generation_cls, "_iter_named_params", None)
@@ -4297,6 +4337,8 @@ def _unsloth_vllm_patch_iter_named_params(generation_cls):
 
     def _iter_named_params(self):
         if not _unsloth_vllm_generation_merges_out_of_place(self):
+            if _unsloth_vllm_generation_refuses_quantized(self, original):
+                return
             yield from original(self)
             return
         self._unsloth_vllm_out_of_place_syncs = (
