@@ -2691,3 +2691,13 @@ def test_incident_r3_stream_tier_keeps_cuda_graphs(matrix, key):
         streamed = cells[f"{key}.{fam}.autoopt_offload"]
         if "cuda_graph" in resident.get("engaged", ()):
             assert "cuda_graph_after_placement" in streamed.get("engaged", ()), (key, fam, streamed)
+
+
+def test_a_developer_opt_out_never_reaches_the_cells(monkeypatch):
+    # every env name a lever module reads to switch a lever off is cleared while cells are collected
+    import os
+
+    monkeypatch.setenv("UNSLOTH_DISABLE_FP16_ACCUM", "1")
+    with clean_policy_env():
+        assert "UNSLOTH_DISABLE_FP16_ACCUM" not in os.environ
+    assert os.environ["UNSLOTH_DISABLE_FP16_ACCUM"] == "1"
