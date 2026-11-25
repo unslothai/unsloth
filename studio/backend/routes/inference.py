@@ -6911,7 +6911,8 @@ def _date_a_fitted_system_turn(
 #   3. bare orphan close (open was DRAINED)
 #   4. tail-only `</parameter>` (outer close truncated by EOS); anchored to
 #      `\Z` so mid-text `<parameter>` in user code samples survives.
-#   5. Mistral `[TOOL_CALLS]name{json}`; a rehearsal `name[ARGS]{json}` is the bracket scan's.
+#   5. Mistral `[TOOL_CALLS]name{json}` / rehearsal `name[ARGS]{json}`: the balanced
+#      scan removes the whole call (a non-greedy regex would truncate nested JSON).
 # DeepSeek/GLM/Kimi envelopes are covered by the parser's own arms/scans, so a signal
 # we parse is never left un-stripped; the DeepSeek opener alternation is the parser's own.
 from core.inference.tool_call_parser import _DEEPSEEK_OPEN_RE_SRC as _DS_OPEN_SRC
@@ -6929,8 +6930,10 @@ _TOOL_XML_RE = _re.compile(
     r"|\[/TOOL_CALLS\]"
     # Truncated [TOOL_CALLS] array (lost ']' to EOS): strip its tail.
     r"|\[TOOL_CALLS\]\s*\[.*\Z"
-    # Named / v11 forms; arms aligned with the parser regexes.
+    # Named / v11 forms and bare rehearsal; arms aligned with the parser regexes.
     r"|\[TOOL_CALLS\]\s*[\w-]+(?:\[CALL_ID\][\w-]+)?(?:\[ARGS\])?\s*(?:\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}|.*?\Z)"
+    # Rehearsal: match only at EOS so prose like foo[ARGS] survives; NAME captured as reh.
+    r"|(?<!\[CALL_ID\])\b(?P<reh>[\w-]+)\[ARGS\]\s*(?:\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}|\{.*\Z|\Z)"
     # DeepSeek envelopes, Kimi blocks and bare Kimi calls; a call-shaped lookahead keeps prose safe.
     r"|"
     + _DS_OPEN_SRC
@@ -6975,10 +6978,6 @@ def _display_tool_name_gate(active_tools):
     return names or None
 
 
-_SHIELD_REHEARSAL_RE = _re.compile(r"(?<!\[CALL_ID\])\b([\w-]+)\[ARGS\]\s*\{")
-_BODILESS_REHEARSAL_TAIL_RE = _re.compile(r"(?<!\[CALL_ID\])\b([\w-]+)\[ARGS\]\s*\Z")
-
-
 def _strip_tool_xml_for_display(
     text: str,
     *,
@@ -6995,7 +6994,6 @@ def _strip_tool_xml_for_display(
     ):
         return text
     from core.tool_healing import (
-        _balanced_json_span,
         _code_spans,
         _in_code,
         _markerless_promotable,
@@ -7015,82 +7013,20 @@ def _strip_tool_xml_for_display(
         seg = _strip_glm_calls(seg, final = is_last)
         seg = _strip_function_xml_calls(seg, final = is_last)
         if is_last:
-            # Leftmost wins: a rehearsal kept as an example shields markup quoted in it (never past its code span), while a
-            # real call starting first takes a rehearsal quoted in its arguments with it.
-            spans, si = _code_spans(seg), 0
+            spans = _code_spans(seg)
 
-            def _next_rehearsal(lo):
-                # (start, end, keep) from lo, judged as the bracket scan judges it: an example is kept, a call removed. An
-                # unfinished call has end None: the rest of the segment is its body.
-                nonlocal si
-                m = _SHIELD_REHEARSAL_RE.search(seg, lo)
-                if m is None:
-                    return None
-                brace = m.end() - 1
-                while si < len(spans) and spans[si][1] <= m.start():
-                    si += 1
-                if si < len(spans) and spans[si][0] <= m.start():
-                    code_end = spans[si][1] - 1
-                    body = _balanced_json_span(seg[brace : code_end + 1], 0)
-                    return m.start(), (code_end if body is None else brace + body) + 1, True
-                end = _balanced_json_span(seg, brace)
-                promotable = _markerless_promotable(m.group(1), enabled_tool_names)
-                if end is not None:
-                    return m.start(), end + 1, not promotable
-                # An unfinished inactive example is kept to the end, as the old rehearsal arm kept it.
-                return m.start(), None if promotable else len(seg), True
+            def _keep_example(m) -> str:
+                # A rehearsal the parser does not promote (inactive name, or quoted in code) is text: deleting it would
+                # empty the turn or a code block. Matching it still keeps markup quoted in its arguments from other arms.
+                name = m.groupdict().get("reh")
+                if name is not None and (
+                    not _markerless_promotable(name, enabled_tool_names)
+                    or _in_code(spans, m.start())
+                ):
+                    return m.group(0)
+                return ""
 
-            def _next_call(lo, bound):
-                # Ends at the rehearsal's end, so an opener quoted in it never scans to EOS; a hit before it is re-matched.
-                hi = len(seg) if bound is None else bound[1]
-                while (call := _TOOL_XML_RE.search(seg, lo, hi)) is not None:
-                    if bound is None or call.start() >= bound[0]:
-                        return call
-                    full = _TOOL_XML_RE.match(seg, call.start())
-                    if full is not None:
-                        return full
-                    lo = call.start() + 1
-                return None
-
-            out, pos, removed_len, kept_end, xml_removed = [], 0, 0, 0, False
-            rehearsal = _next_rehearsal(0)
-            while True:
-                if rehearsal is not None and rehearsal[0] < pos:
-                    rehearsal = _next_rehearsal(pos)
-                bound = rehearsal if rehearsal is not None and rehearsal[1] is not None else None
-                call = _next_call(pos, bound)
-                if call is not None and (rehearsal is None or call.start() < rehearsal[0]):
-                    out.append(seg[pos : call.start()])
-                    removed_len += call.end() - call.start()
-                    pos, xml_removed = call.end(), True
-                elif rehearsal is not None and bound is None:
-                    out.append(seg[pos : rehearsal[0]])
-                    pos = len(seg)
-                    break
-                elif bound is not None:
-                    start, end, keep = bound
-                    out.append(seg[pos : end if keep else start])
-                    if keep:
-                        kept_end = end - removed_len
-                    else:
-                        removed_len += end - start
-                    pos = end
-                else:
-                    out.append(seg[pos:])
-                    break
-            seg = "".join(out)
-            # A bodiless call at the very end, never one inside a kept example.
-            tail = _BODILESS_REHEARSAL_TAIL_RE.search(seg, kept_end)
-            if (
-                tail is not None
-                and _markerless_promotable(tail.group(1), enabled_tool_names)
-                and not _in_code(_code_spans(seg), tail.start())
-            ):
-                seg = seg[: tail.start()]
-            if not xml_removed:
-                return seg
-            # A removed call can hold a backtick that made a later complete call read as code: rescan without it.
-            return _strip_bracket_tag_calls(seg, enabled_tool_names = enabled_tool_names)
+            return _TOOL_XML_RE.sub(_keep_example, seg)
         return _TOOL_XML_CLOSED_RE.sub("", seg)
 
     # Mask blocked-call bodies and lone backticked tags (prose) so these passes do not edit them.
@@ -7439,6 +7375,14 @@ class _ReasoningSpanGuard:
                 None if enabled_tool_names is None else frozenset(enabled_tool_names),
             )
         return self._display
+
+
+def _strip_tool_xml(text: str, enabled_tool_names: Optional[set] = None) -> str:
+    # Mistral pre-strip kept explicit so the regression guards see it.
+    text = _strip_mistral_closed_calls(text)
+    return _strip_tool_xml_for_display(
+        text, auto_heal_tool_calls = True, enabled_tool_names = enabled_tool_names
+    )
 
 
 logger = get_logger(__name__)

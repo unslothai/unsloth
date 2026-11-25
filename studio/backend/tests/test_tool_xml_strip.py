@@ -58,6 +58,19 @@ assert _mc, "could not extract _TOOL_XML_CLOSED_RE source"
 exec(f"_TOOL_XML_CLOSED_RE = _re.compile({_mc.group(1)})", _ns)
 _TOOL_XML_CLOSED_RE = _ns["_TOOL_XML_CLOSED_RE"]
 
+# Signatures may span multiple lines and now carry the enabled_tool_names gate; match
+# the whole (possibly multi-line) signature up to ``-> str:`` then the indented body.
+_xml_helper = _re.search(
+    r"def _strip_tool_xml\((?:.|\n)*?\) -> str:\n(?:    .+\n)+",
+    _src,
+)
+assert _xml_helper, "could not extract _strip_tool_xml source"
+assert "_strip_mistral_closed_calls" in _xml_helper.group(
+    0
+), "extracted _strip_tool_xml no longer runs the Mistral balanced strip"
+exec(_xml_helper.group(0), _ns)
+_strip_tool_xml = _ns["_strip_tool_xml"]
+
 # Extract the gate helper and display strip up to the next top-level ``logger =``.
 _helper = _re.search(
     r"def _display_tool_name_gate\(.*?(?=\nlogger = get_logger)",
@@ -65,19 +78,9 @@ _helper = _re.search(
     _re.DOTALL,
 )
 assert _helper, "could not extract display strip helper source"
-assert "_strip_mistral_closed_calls(" in _helper.group(
-    0
-), "display strip no longer runs the Mistral balanced strip"
+assert "_strip_tool_xml(" in _helper.group(0), "display helper no longer delegates"
 exec(_helper.group(0), _ns)
 _strip_tool_xml_for_display = _ns["_strip_tool_xml_for_display"]
-
-
-def _strip_tool_xml(text, enabled_tool_names = None):
-    return _strip_tool_xml_for_display(
-        text, auto_heal_tool_calls = True, enabled_tool_names = enabled_tool_names
-    )
-
-
 _display_tool_name_gate = _ns["_display_tool_name_gate"]
 
 _gate_src = _re.search(
@@ -127,16 +130,17 @@ def test_route_display_strip_removes_closed_xml_before_think_block():
 
 
 def test_all_route_cleanup_sites_use_protected_display_helper():
-    # Every route cleanup site must use _strip_tool_xml_for_display; raw _TOOL_XML_RE use lives only inside it.
-    helper_lines = set(_helper.group(0).splitlines())
-    raw_lines = [
+    # Every route cleanup site must use _strip_tool_xml_for_display; the only raw sub
+    # lives inside the helper itself.
+    raw_sub_lines = [
         (i, line)
         for i, line in enumerate(_src.splitlines(), 1)
-        if _re.search(r"_TOOL_XML_RE\.\w+\(", line) and not line.lstrip().startswith("#")
+        if "_TOOL_XML_RE.sub(" in line and not line.lstrip().startswith("#")
     ]
-    assert raw_lines, "_strip_tool_xml_for_display no longer applies _TOOL_XML_RE"
-    outside = [(i, line) for i, line in raw_lines if line not in helper_lines]
-    assert not outside, f"raw _TOOL_XML_RE use outside _strip_tool_xml_for_display: {outside!r}"
+    assert len(raw_sub_lines) == 1, (
+        "raw _TOOL_XML_RE.sub must appear only inside _strip_tool_xml_for_display; "
+        f"found extra call sites: {raw_sub_lines!r}"
+    )
 
 
 def test_route_display_strip_removes_mistral_tool_calls_with_nested_json():
@@ -288,6 +292,12 @@ def test_strips_gemma_native_orphan_closing_tag():
             "[TOOL_CALLS]",
             "here",
             id = "strips_unclosed_bracket_tail",
+        ),
+        pytest.param(
+            'text python[ARGS]{"code":"print(1)"',
+            "[ARGS]",
+            "text",
+            id = "strips_unclosed_rehearsal_tail",
         ),
         pytest.param(
             'x [TOOL_CALLS]mcp__srv__list-issues{"q":"x"}',

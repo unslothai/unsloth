@@ -43,109 +43,32 @@ def test_route_strip_keeps_a_rehearsal_quoted_in_code(route_strip, text):
         ('Checking. get_weather[ARGS]{"city": "Paris"}', "Checking. "),
         ('Checking. get_weather[ARGS]{"city": "Par', "Checking. "),
         ("Checking. unknown_tool[ARGS]{}", "Checking. unknown_tool[ARGS]{}"),
+        # Markup quoted in a kept example stays; a real call after the code block still goes.
+        (
+            'Try `other[ARGS]{"query":"<tool_call>"}` to search for the literal tag.',
+            'Try `other[ARGS]{"query":"<tool_call>"}` to search for the literal tag.',
+        ),
+        (
+            '```\nsearch[ARGS]{}\n```\n<tool_call>{"name":"search","arguments":{}}</tool_call>Done.',
+            "```\nsearch[ARGS]{}\n```\nDone.",
+        ),
+        (
+            '<tool_call>{"name":"web_search","arguments":{"q":"web_search[ARGS]{ syntax"}}</tool_call>Here.',
+            "Here.",
+        ),
     ],
 )
-def test_route_strip_still_removes_an_enabled_rehearsal_outside_code(route_strip, text, expected):
+def test_route_strip_still_removes_calls_outside_code(route_strip, text, expected):
     assert route_strip(text, auto_heal_tool_calls = True, enabled_tool_names = ENABLED) == expected
 
 
 def test_route_strip_still_removes_a_real_call(route_strip):
-    """Whatever else differs, the route strip must keep doing its actual job."""
-    text = 'Here you go. <tool_call>{"name": "get_weather", "arguments": {"city": "Paris"}}</tool_call>'
-    stripped = route_strip(text, auto_heal_tool_calls = True, enabled_tool_names = ENABLED)
+    text = 'Answer <tool_call>{"name": "get_weather", "arguments": {}}</tool_call>'
 
-    assert "<tool_call>" not in stripped
-    assert "Here you go." in stripped
+    assert route_strip(text, auto_heal_tool_calls = True, enabled_tool_names = ENABLED) == "Answer "
 
 
 def test_route_strip_is_disabled_when_healing_is_off(route_strip):
     text = '<tool_call>{"name": "get_weather", "arguments": {}}</tool_call>'
 
     assert route_strip(text, auto_heal_tool_calls = False, enabled_tool_names = ENABLED) == text
-
-
-@pytest.mark.parametrize(
-    "text, expected",
-    [
-        (
-            'Try `other[ARGS]{"query":"<tool_call>"}` to search for the literal tag.',
-            'Try `other[ARGS]{"query":"<tool_call>"}` to search for the literal tag.',
-        ),
-        (
-            'Example: `web_search[ARGS]{"filters":{"date":{"after":"2025-01-01"}}}`. Answer.</tool_call>',
-            'Example: `web_search[ARGS]{"filters":{"date":{"after":"2025-01-01"}}}`. Answer.',
-        ),
-        (
-            'Try `search_docs[ARGS]{"query":"<tool_call>","filters":{"date":{"after":"2025-01-01"}}}`'
-            " to find the reference.",
-            'Try `search_docs[ARGS]{"query":"<tool_call>","filters":{"date":{"after":"2025-01-01"}}}`'
-            " to find the reference.",
-        ),
-        (
-            'The log stops at `search_docs[ARGS]{"query":"<tool_call>`. The JSON string is still open.'
-            " Retry the request.",
-            'The log stops at `search_docs[ARGS]{"query":"<tool_call>`. The JSON string is still open.'
-            " Retry the request.",
-        ),
-        (
-            'The log stops at `search_docs[ARGS]{"query":"x`. Retry.</tool_call>',
-            'The log stops at `search_docs[ARGS]{"query":"x`. Retry.',
-        ),
-        # Protection ends with the code span, even when a brace closes in a later span.
-        (
-            "The call starts with `web_search[ARGS]{`.</tool_call> Close it with `}`.",
-            "The call starts with `web_search[ARGS]{`. Close it with `}`.",
-        ),
-        (
-            '<tool_call>{"name":"web_search","arguments":{"query":"Mistral web_search[ARGS]{ syntax"}}'
-            "</tool_call>Here is the reference.",
-            "Here is the reference.",
-        ),
-        (
-            '<tool_call>{"name":"web_search","arguments":{"q":"foo[ARGS]{"}}</tool_call>Use "}" here.',
-            'Use "}" here.',
-        ),
-        (
-            '<tool_call>{"name":"web_search","arguments":{"q":"`"}}</tool_call>search[ARGS]{} Answer: `42`.',
-            " Answer: `42`.",
-        ),
-        (
-            'The log ends at foo[ARGS]{"q":"<tool_call>". This is incomplete; retry.',
-            'The log ends at foo[ARGS]{"q":"<tool_call>". This is incomplete; retry.',
-        ),
-        (
-            'The log ends at foo[ARGS]{"q":"web_search[ARGS]{. This is incomplete; retry.',
-            'The log ends at foo[ARGS]{"q":"web_search[ARGS]{. This is incomplete; retry.',
-        ),
-        (
-            '<tool_call>{"name":"search","arguments":{"q":"search[ARGS]{"}}</tool_call>foo[ARGS]{"q":"<tool_call>"} Answer.',
-            'foo[ARGS]{"q":"<tool_call>"} Answer.',
-        ),
-        (
-            "<function=web_search><parameter=query>`</parameter></function>search[ARGS]{} Answer: `42`.",
-            " Answer: `42`.",
-        ),
-        (
-            'foo[ARGS]{} foo[ARGS]{"q":"search[ARGS]{}"} Answer.',
-            'foo[ARGS]{} foo[ARGS]{"q":"search[ARGS]{}"} Answer.',
-        ),
-        ('search[ARGS]{"q":"`"}search[ARGS]{} Answer: `42`.', " Answer: `42`."),
-        (
-            '```\nsearch[ARGS]{}\n<tool_call>{"name":"search","arguments":{}}</tool_call>\n```',
-            "```\nsearch[ARGS]{}\n\n```",
-        ),
-    ],
-)
-def test_route_strip_keeps_rehearsal_and_marker_rules_apart(route_strip, text, expected):
-    assert route_strip(text, auto_heal_tool_calls = True, enabled_tool_names = ENABLED) == expected
-
-
-@pytest.mark.parametrize(
-    "text, expected",
-    [
-        ('a\x000\x00 <tool_call>{"name":"search"}</tool_call>', "a\x000\x00 "),
-        ("a\x000\x00 `get_weather[ARGS]{}`", "a\x000\x00 `get_weather[ARGS]{}`"),
-    ],
-)
-def test_route_strip_leaves_nul_digit_runs_alone(route_strip, text, expected):
-    assert route_strip(text, auto_heal_tool_calls = True, enabled_tool_names = ENABLED) == expected

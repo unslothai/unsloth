@@ -434,11 +434,7 @@ def _strip(text: str, enabled = None) -> str:
 
 def test_wrapperless_call_in_mid_sentence_prose_is_kept_by_every_display_strip():
     from core.inference.safetensors_agentic import strip_tool_markup_streaming
-    from routes.inference import _strip_tool_xml_for_display
-
-    _routes_strip = lambda t, names = None: _strip_tool_xml_for_display(
-        t, auto_heal_tool_calls = True, enabled_tool_names = names
-    )
+    from routes.inference import _strip_tool_xml as _routes_strip
 
     prose = 'Here is the syntax: call:terminal{command: "rm -rf /tmp/x"}. Do not run it.'
     en = {"terminal", "python", "web_search"}

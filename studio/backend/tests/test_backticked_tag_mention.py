@@ -31,6 +31,7 @@ from routes.inference import (  # noqa: E402
     _hold_pending_mention,
     _ReasoningSpanGuard,
     _StreamingDisplayStrip,
+    _strip_tool_xml,
     _strip_tool_xml_for_display,
 )
 
@@ -87,10 +88,7 @@ def _prose_cases():
 def test_backticked_tag_is_shown_by_every_display_strip(text):
     assert _route(text) == text
     assert _route(text, heal = False) == text
-    assert (
-        _strip_tool_xml_for_display(text, auto_heal_tool_calls = True, enabled_tool_names = NAMES)
-        == text
-    )
+    assert _strip_tool_xml(text, NAMES) == text
     assert strip_tool_markup(text, final = True, enabled_tool_names = NAMES) == text.strip()
     assert strip_tool_markup(text, final = False, enabled_tool_names = NAMES) == text
     assert (
