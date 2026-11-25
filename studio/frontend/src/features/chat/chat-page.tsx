@@ -5160,7 +5160,10 @@ export function ChatPage({
                 onDiscard={toggleIncognito}
               />
             ) : null}
-            {view.mode === "single" ? <ChatFilesMenu /> : null}
+            {view.mode === "single" ||
+            (view.mode === "project" && activeThreadId != null) ? (
+              <ChatFilesMenu />
+            ) : null}
             {view.mode === "single" && (
               <ChatHeaderMenu temporary={incognito} onToggleTemporary={toggleIncognito} />
             )}
@@ -5282,6 +5285,7 @@ export function ChatPage({
                     <NativeAttachmentOwnerScopeContext.Provider
                       value={baseAttachmentOwnerScope}
                     >
+                      <ChatFilesBridge />
                       {baseView.mode === "project" ? (
                         <ProjectLanding
                           key={baseView.projectId}
@@ -5296,7 +5300,6 @@ export function ChatPage({
                       ) : (
                         <>
                           <TemporaryChatSaveBridge />
-                          <ChatFilesBridge />
                           <SingleContent threadId={baseView.threadId} />
                         </>
                       )}
