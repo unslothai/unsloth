@@ -1770,6 +1770,9 @@ def _prepare_gdn(layer, hidden_states):
         _GDN_OP[0] = _route_fla_kernel() > 0
         if _GDN_OP[0]:
             _route_causal_conv(gdn)
+    except torch.OutOfMemoryError:
+        _GDN_OP[0] = None
+        raise
     except Exception:
         _GDN_OP[0] = False
 
