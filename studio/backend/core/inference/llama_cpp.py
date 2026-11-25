@@ -34340,6 +34340,30 @@ class LlamaCppBackend:
                             continue
                         if (
                             not _did_fit_retry
+                            and _user_margin_fit
+                            and _startup_crashed
+                            and not _capability_crash
+                            and not _hip_rocr_mismatch
+                        ):
+                            # The fitter ran only to honour the user's --fit-target on Auto's pick
+                            # (#19269); a memory crash disproves the estimate that left the other
+                            # cards out, so retry on them as a --fit off launch would (#19402).
+                            _restore_before = _fit_retry_restore
+                            _widen_fit_retry_mask(run_cmd)
+                            if _fit_retry_restore is not _restore_before:
+                                logger.warning(
+                                    "llama-server crashed during startup (exit code %s) "
+                                    "with --fit on for a --fit-target margin; retrying once "
+                                    "on every card Auto could have picked. Crash log: %s",
+                                    _crashed_proc.returncode,
+                                    self._llama_log_path,
+                                )
+                                self._record_memory_state(run_cmd, env)
+                                _did_fit_retry = True
+                                self._vram_fit_context_length = None
+                                continue
+                        if (
+                            not _did_fit_retry
                             and _fit_retry_allowed
                             and _startup_crashed
                             and not _capability_crash
