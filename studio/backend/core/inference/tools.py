@@ -2447,6 +2447,58 @@ def _find_blocked_commands(command: str, posix: "bool | None" = None) -> set[str
 
 # Holds the sandbox sitecustomize.py shim; put on the child's PYTHONPATH in _build_safe_env.
 _SANDBOX_SITE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sandbox_site")
+# (mtime_ns, size) of the shim whose bytecode this process last confirmed or wrote.
+_sandbox_site_bytecode_for: "tuple | None" = None
+
+
+def _pyc_matches_source(cfile: str, source_stat) -> bool:
+    """A timestamp-mode pyc header (PEP 552) for exactly this source mtime and size."""
+    import importlib.util
+
+    try:
+        with open(cfile, "rb") as stream:
+            header = stream.read(16)
+    except OSError:
+        return False
+    if len(header) != 16 or header[:4] != importlib.util.MAGIC_NUMBER:
+        return False
+    flags = int.from_bytes(header[4:8], "little")
+    mtime = int.from_bytes(header[8:12], "little")
+    size = int.from_bytes(header[12:16], "little")
+    return (
+        flags == 0
+        and mtime == int(source_stat.st_mtime) & 0xFFFFFFFF
+        and size == source_stat.st_size & 0xFFFFFFFF
+    )
+
+
+def _ensure_sandbox_site_bytecode() -> None:
+    """Write the shim's bytecode from Studio, once per shim version. The OS sandboxes mount this folder
+    read-only, so a child can never cache it and recompiled ~1,800 lines on every Python start (~12 ms
+    on Linux). An interpreter with another cache tag just ignores the file."""
+    global _sandbox_site_bytecode_for
+    if sys.dont_write_bytecode:
+        return
+    shim = os.path.join(_SANDBOX_SITE_DIR, "sitecustomize.py")
+    try:
+        source_stat = os.stat(shim)
+    except OSError:
+        return
+    key = (source_stat.st_mtime_ns, source_stat.st_size)
+    if _sandbox_site_bytecode_for == key:
+        return
+    try:
+        import importlib.util
+        import py_compile
+
+        cfile = importlib.util.cache_from_source(shim)
+        if not _pyc_matches_source(cfile, source_stat):
+            # Atomic (temp file + replace); a read-only install just keeps compiling in the child as before.
+            py_compile.compile(shim, cfile = cfile, doraise = True)
+    except Exception:  # noqa: BLE001 - bytecode is an optimization, never a launch failure
+        logger.debug("could not write the sandbox shim bytecode", exc_info = True)
+    _sandbox_site_bytecode_for = key
+
 
 # Auto mode prompting gate; fails closed: anything not provably read-only asks.
 _AUTO_SAFE_TERMINAL_COMMANDS = frozenset(
@@ -9866,6 +9918,7 @@ def _build_safe_env(workdir: str, shell: "str | None" = None) -> dict[str, str]:
     path, git_ext = _safe_path(shell)
     venv = os.environ.get("VIRTUAL_ENV")
     temp_dir = _sandbox_temp_dir(workdir)
+    _ensure_sandbox_site_bytecode()
     env = {
         "PATH": path,
         "HOME": workdir,
@@ -23974,11 +24027,15 @@ def _user_path_parts(parts: "list[str]", root: "str | None" = None) -> "list[str
 _SERVABLE_SEGMENT_RE = re.compile(r"\A[^/\\\x00-\x1f]{1,255}\Z")
 
 
+_SURROGATE_RE = re.compile("[\ud800-\udfff]")
+
+
 def _servable_segment(name: str) -> bool:
     if name in (".", "..") or not _SERVABLE_SEGMENT_RE.match(name):
         return False
-    # Lone surrogates make encodeURIComponent throw.
-    return not any("\ud800" <= ch <= "\udfff" for ch in name)
+    # Lone surrogates make encodeURIComponent throw. ASCII cannot hold one; the regex replaces a per-character
+    # Python loop that every workdir snapshot ran on every file name.
+    return name.isascii() or _SURROGATE_RE.search(name) is None
 
 
 # Exact names we write, not a reserved pattern.
@@ -24111,13 +24168,15 @@ def _snapshot_workdir_views(workdir: "str | None", views: "tuple") -> "list":
         dirs[:] = [d for d in kept if d in children]
         for d in dirs:
             owners[os.path.join(base, d)] = children[d]
+        # os.path.join's result for every name here, without its per-call overhead on thousands of files.
+        joined = base if base.endswith(os.sep) else base + os.sep
         for name in names:
             # ignore internal markers only at the root; nested files with these names remain valid artifacts.
             if base == workdir and name in _INTERNAL_SANDBOX_FILES:
                 continue
             if not _servable_segment(name):
                 continue
-            path = os.path.join(base, name)
+            path = joined + name
             try:
                 # one lstat replaces isfile, islink, and stat while rejecting the same non-regular entries.
                 stat = os.lstat(path)

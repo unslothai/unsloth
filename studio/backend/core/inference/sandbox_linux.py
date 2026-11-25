@@ -691,7 +691,8 @@ def _runtime_read_paths(
         candidates.extend(os.path.join(prefix, "lib", multiarch) for prefix in prefixes)
 
     selected: list[str] = []
-    for candidate in candidates:
+    # Exact duplicates only (sys.prefix == sys.exec_prefix in most venvs): a repeat can only be skipped below.
+    for candidate in dict.fromkeys(candidates):
         if not candidate or not os.path.isabs(candidate):
             continue
         # Check the candidate as WRITTEN, against both workdir spellings, or a symlinked venv/lib exposes its target.

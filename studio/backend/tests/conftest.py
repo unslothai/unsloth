@@ -842,6 +842,9 @@ def _isolate_wal_keepers():
             rag_db.start_wal_keepers()
         else:
             rag_db.close_wal_keeper()
+        # Each test has its own Studio home: drop its settings reader so handles never pile up
+        # (and Windows can delete the test's database folder).
+        studio_db.close_settings_readers()
     finally:
         os.name = patched_os_name
 

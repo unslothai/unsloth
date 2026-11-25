@@ -2102,14 +2102,11 @@ def cleanup_orphaned_runs() -> None:
 
 
 def list_scan_folders() -> list[dict]:
-    conn = get_connection()
-    try:
-        rows = conn.execute(
-            "SELECT id, path, created_at, recursive FROM scan_folders ORDER BY created_at"
-        ).fetchall()
-        return [{**dict(row), "recursive": bool(row["recursive"])} for row in rows]
-    finally:
-        conn.close()
+    # Read on every sandboxed tool launch (model folders are granted read-only): the shared reader.
+    rows = _shared_read_rows(
+        "SELECT id, path, created_at, recursive FROM scan_folders ORDER BY created_at", ()
+    )
+    return [{**dict(row), "recursive": bool(row["recursive"])} for row in rows]
 
 
 def add_scan_folder_with_status(path: str, recursive: bool | None = None) -> tuple[dict, bool]:
@@ -5972,15 +5969,75 @@ def list_chat_messages_for_threads(
         conn.close()
 
 
-def get_app_setting(key: str, fallback = None):
-    conn = get_connection()
+# One long-lived read connection per database for app-setting lookups. A tool launch reads about a
+# dozen settings, and a fresh connection per read (open, three PRAGMAs, close, all under the
+# process-wide sqlite_gate) cost 1-3 ms each. Every autocommit SELECT starts a new read
+# transaction, so writes from any connection or process are seen by the next read.
+_settings_readers: dict[Path, tuple[tuple[int, int], sqlite3.Connection]] = {}
+_settings_reader_lock = threading.Lock()
+
+
+def _db_file_identity(path: Path) -> tuple[int, int] | None:
     try:
-        row = conn.execute("SELECT value_json FROM app_settings WHERE key = ?", (key,)).fetchone()
-        if row is None:
-            return fallback
-        return _json_loads(row["value_json"], fallback)
-    finally:
-        conn.close()
+        metadata = os.stat(path)
+    except OSError:
+        return None
+    return (metadata.st_dev, metadata.st_ino)
+
+
+def close_settings_readers() -> None:
+    with _settings_reader_lock:
+        readers = list(_settings_readers.values())
+        _settings_readers.clear()
+    for _identity, conn in readers:
+        try:
+            conn.close()
+        except Exception as exc:  # noqa: BLE001 - a failed close must not block the keeper close
+            logger.warning("Could not close a studio.db settings reader: %s", exc)
+
+
+def _shared_read_rows(sql: str, params: tuple | list) -> list:
+    db_path = studio_db_path()
+    with _settings_reader_lock:
+        entry = _settings_readers.get(db_path)
+        identity = _db_file_identity(db_path)
+        if entry is not None and (identity is None or entry[0] != identity):
+            # The database was replaced or removed (restore, account reset): reopen, never read a stale file.
+            _settings_readers.pop(db_path, None)
+            try:
+                entry[1].close()
+            except Exception:  # noqa: BLE001
+                pass
+            entry = None
+        if entry is None:
+            try:
+                conn = get_connection(check_same_thread = False)
+            except TypeError:
+                # A substituted get_connection (test doubles) may not take the keyword: read through it, uncached.
+                conn = get_connection()
+                try:
+                    return conn.execute(sql, params).fetchall()
+                finally:
+                    conn.close()
+            identity = _db_file_identity(db_path)
+            if identity is None:
+                try:
+                    return conn.execute(sql, params).fetchall()
+                finally:
+                    conn.close()
+            entry = (identity, conn)
+            _settings_readers[db_path] = entry
+        return entry[1].execute(sql, params).fetchall()
+
+
+on_wal_keeper_closed(close_settings_readers)
+
+
+def get_app_setting(key: str, fallback = None):
+    rows = _shared_read_rows("SELECT value_json FROM app_settings WHERE key = ?", (key,))
+    if not rows:
+        return fallback
+    return _json_loads(rows[0]["value_json"], fallback)
 
 
 def get_app_settings(keys: list[str]) -> dict[str, Any]:
@@ -5988,16 +6045,12 @@ def get_app_settings(keys: list[str]) -> dict[str, Any]:
     unique = list(dict.fromkeys(keys))
     if not unique:
         return {}
-    conn = get_connection()
-    try:
-        placeholders = ",".join("?" for _ in unique)
-        rows = conn.execute(
-            f"SELECT key, value_json FROM app_settings WHERE key IN ({placeholders})",
-            unique,
-        ).fetchall()
-        return {row["key"]: _json_loads(row["value_json"], None) for row in rows}
-    finally:
-        conn.close()
+    placeholders = ",".join("?" for _ in unique)
+    rows = _shared_read_rows(
+        f"SELECT key, value_json FROM app_settings WHERE key IN ({placeholders})",
+        unique,
+    )
+    return {row["key"]: _json_loads(row["value_json"], None) for row in rows}
 
 
 def compare_and_set_app_setting(
