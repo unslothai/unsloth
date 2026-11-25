@@ -7148,8 +7148,8 @@ def _pending_inline_rehearsal_cut(text: str, enabled_tool_names) -> int:
     if tail is not None and (
         _markerless_promotable(tail.group(1), enabled_tool_names)
         if tail.group(2)
-        else enabled_tool_names is not None
-        and any(n.startswith(tail.group(1)) for n in enabled_tool_names)
+        else enabled_tool_names is None
+        or any(n.startswith(tail.group(1)) for n in enabled_tool_names)
     ):
         starts.append(tail.start())
     if not starts:
@@ -7440,6 +7440,8 @@ class _ReasoningSpanGuard:
         self._claimed = False
         self._display = None
         self._display_key = None
+        # Whether the last ``strip`` held text back, judged on the very slice it held.
+        self.held = False
 
     @property
     def claimed(self) -> bool:
@@ -7491,15 +7493,16 @@ class _ReasoningSpanGuard:
         """``hold=False`` is the end-of-turn strip: a backticked tag still open there is final text."""
         wrap = self._wrap_for(text, wrapped_so_far)
         display = self._display_strip(auto_heal_tool_calls, enabled_tool_names)
-        if wrap is None:
-            return display.strip(
-                _hold_pending_mention(text, auto_heal_tool_calls and hold, enabled_tool_names)
-            )
         # Clamp: mid-stream the close tag has not arrived yet, so the whole text is trace.
-        end = min(len(self._OPEN) + int(wrap.get("len", 0)) + len(self._CLOSE), len(text))
-        return text[:end] + display.strip(
-            _hold_pending_mention(text[end:], auto_heal_tool_calls and hold, enabled_tool_names)
+        end = (
+            0
+            if wrap is None
+            else min(len(self._OPEN) + int(wrap.get("len", 0)) + len(self._CLOSE), len(text))
         )
+        answer = text[end:]
+        kept = _hold_pending_mention(answer, auto_heal_tool_calls and hold, enabled_tool_names)
+        self.held = len(kept) < len(answer)
+        return text[:end] + display.strip(kept)
 
     def _display_strip(
         self, auto_heal_tool_calls: bool, enabled_tool_names
@@ -48129,9 +48132,9 @@ class _AnthropicToolEventRules:
         return released + self._emitter.feed(event)
 
     def _release_held_mention(self) -> list:
-        """A backticked tag still held when its turn ends never closed: emit what the full strip keeps."""
+        """Whatever a turn still holds never closed: emit what the unheld strip keeps."""
         raw, self._turn_raw = self._turn_raw, ""
-        if not raw or _pending_mention_cut(raw, self._display_names) < 0:
+        if not raw or not self._span_guard.held:
             return []
         return self._emitter.feed(
             {
@@ -48522,7 +48525,7 @@ def _anthropic_tool_response_from_events(
     def _release_held_mention() -> None:
         nonlocal turn_event
         last, turn_event = turn_event, None
-        if last is None or _pending_mention_cut(last["text"], _display_names) < 0:
+        if last is None or not _span_guard.held:
             return
         _add_text(
             _span_guard.strip(
