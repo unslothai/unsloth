@@ -935,7 +935,7 @@ export const sv = {
   chatMenu: {
     more: "Chattalternativ",
     copy: "Kopiera",
-    addScheduledTask: "Lägg till schemalagd uppgift…",
+    addScheduledTask: "Lägg till schemalagd uppgift",
     compact: "Komprimera konversationen",
     compactEmpty: "Inget att komprimera än",
     compactUnsupported: "Komprimering kräver en GGUF- eller MLX-modell med verktygsstöd",
@@ -5254,6 +5254,7 @@ export const sv = {
     model: {
       label: "Översättningsmodell",
       fast: "Snabb",
+      balanced: "Balanserad",
       quality: "Bäst kvalitet",
       chat: "Chattmodell",
       recommended: "Rekommenderade",
@@ -6369,7 +6370,6 @@ export const sv = {
     back: "Tillbaka",
     continue: "Fortsätt",
     skipSetup: "Hoppa över konfigurering",
-    outsideAgain: "Klicka utanför igen för att stänga",
     getStarted: "Kom igång",
     progress: "Steg {current} av {total}",
     welcome: {

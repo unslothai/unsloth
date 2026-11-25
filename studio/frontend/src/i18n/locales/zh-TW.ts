@@ -929,7 +929,7 @@ export const zhTW = {
   chatMenu: {
     more: "聊天選項",
     copy: "複製",
-    addScheduledTask: "新增排程任務…",
+    addScheduledTask: "新增排程任務",
     compact: "壓縮對話",
     compactEmpty: "目前還沒有可壓縮的內容",
     compactUnsupported: "壓縮需要支援工具的 GGUF 或 MLX 模型",
@@ -5111,6 +5111,7 @@ export const zhTW = {
     model: {
       label: "翻譯模型",
       fast: "快速",
+      balanced: "均衡",
       quality: "最佳品質",
       chat: "聊天模型",
       recommended: "推薦",
@@ -6205,7 +6206,6 @@ export const zhTW = {
     back: "返回",
     continue: "繼續",
     skipSetup: "略過設定",
-    outsideAgain: "再次點擊外部即可關閉",
     getStarted: "開始使用",
     progress: "第 {current} 步，共 {total} 步",
     welcome: {

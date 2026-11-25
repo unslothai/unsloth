@@ -920,7 +920,7 @@ export const he = {
   chatMenu: {
     more: "אפשרויות צ'אט",
     copy: "העתקה",
-    addScheduledTask: "הוספת משימה מתוזמנת…",
+    addScheduledTask: "הוספת משימה מתוזמנת",
     compact: "כווץ שיחה",
     compactEmpty: "אין עדיין מה לכווץ",
     compactUnsupported: "כיווץ שיחה דורש מודל GGUF או MLX עם תמיכה בכלים",
@@ -5121,6 +5121,7 @@ export const he = {
     model: {
       label: "מודל תרגום",
       fast: "מהיר",
+      balanced: "מאוזן",
       quality: "האיכות הטובה ביותר",
       chat: "מודל צ'אט",
       recommended: "מומלצים",
@@ -6225,7 +6226,6 @@ export const he = {
     back: "חזרה",
     continue: "המשך",
     skipSetup: "דילוג על ההגדרה",
-    outsideAgain: "יש ללחוץ שוב מחוץ לחלון כדי לסגור",
     getStarted: "מתחילים",
     progress: "שלב {current} מתוך {total}",
     welcome: {

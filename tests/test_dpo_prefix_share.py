@@ -582,3 +582,21 @@ def test_verify_with_hidden_states_on_another_device(monkeypatch):
     assert dps.LAST_VERIFY["max_rel"] == 0.0
     keep = am.to(device = got.device, dtype = torch.bool)
     torch.testing.assert_close(got[keep], want[keep], rtol = 0, atol = 0)
+
+
+@pytest.mark.parametrize("zero3", [False, True])
+def test_collective_forwards_decline(monkeypatch, zero3):
+    # Under ZeRO-3 a rank-local flex compile failure reruns that rank's forward alone, so its
+    # all-gathers stop lining up with the other ranks'. Decline the shared forward there.
+    import torch.distributed as dist
+    import unsloth_zoo.temporary_patches.utils as zoo_utils
+
+    monkeypatch.setattr(dist, "is_available", lambda: True)
+    monkeypatch.setattr(dist, "is_initialized", lambda: True)
+    monkeypatch.setattr(dist, "get_world_size", lambda *a, **k: 2)
+    monkeypatch.setattr(zoo_utils, "zero3_partitioned_training", lambda *a, **k: zero3)
+    monkeypatch.setenv("UNSLOTH_DPO_PREFIX_SHARE", "1")
+    model = torch.nn.Linear(2, 2)
+    model._unsloth_dpo_prefix_share_eligible = True
+    monkeypatch.setattr(pgk, "_COMPILE_FAILURE", None)
+    assert dps._model_eligible(model, torch.device("cuda", 0)) is (not zero3)

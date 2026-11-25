@@ -882,7 +882,7 @@ export const ko = {
   chatMenu: {
     more: "채팅 옵션",
     copy: "복사",
-    addScheduledTask: "예약 작업 추가…",
+    addScheduledTask: "예약 작업 추가",
     compact: "대화 압축",
     compactEmpty: "아직 압축할 내용이 없습니다",
     compactUnsupported: "대화 압축에는 도구를 지원하는 GGUF 또는 MLX 모델이 필요합니다",
@@ -5028,6 +5028,7 @@ export const ko = {
     model: {
       label: "번역 모델",
       fast: "빠름",
+      balanced: "균형",
       quality: "최고 품질",
       chat: "채팅 모델",
       recommended: "추천",
@@ -6115,7 +6116,6 @@ export const ko = {
     back: "뒤로",
     continue: "계속",
     skipSetup: "설정 건너뛰기",
-    outsideAgain: "닫으려면 바깥쪽을 한 번 더 클릭하세요",
     getStarted: "시작하기",
     progress: "{total}단계 중 {current}단계",
     welcome: {

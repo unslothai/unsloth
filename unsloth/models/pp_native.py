@@ -877,7 +877,11 @@ def _router_statistics(
         weights = torch.nn.functional.softmax(gate.to(device), dim = -1)
         _, selected = torch.topk(weights, top_k, dim = -1)
         if flat is None:
-            counts = counts + torch.bincount(selected.reshape(-1), minlength = num_experts).float()
+            # bincount syncs the host to size its output; float32 sums of ones are exact below 2**24.
+            index = selected.reshape(-1)
+            counts = counts + torch.zeros(
+                num_experts, dtype = torch.float32, device = device
+            ).scatter_add_(0, index, torch.ones_like(index, dtype = torch.float32))
             probs = probs + weights.float().sum(dim = 0)
             rows = rows + weights.shape[0]
         else:

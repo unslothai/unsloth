@@ -882,7 +882,7 @@ export const ar = {
   chatMenu: {
     more: "خيارات المحادثة",
     copy: "نسخ",
-    addScheduledTask: "إضافة مهمة مجدولة…",
+    addScheduledTask: "إضافة مهمة مجدولة",
     compact: "ضغط المحادثة",
     compactEmpty: "لا يوجد ما يمكن ضغطه بعد",
     compactUnsupported: "ضغط المحادثة يتطلب نموذج GGUF أو MLX يدعم الأدوات",
@@ -5039,6 +5039,7 @@ export const ar = {
     model: {
       label: "نموذج الترجمة",
       fast: "سريع",
+      balanced: "متوازن",
       quality: "أفضل جودة",
       chat: "نموذج الدردشة",
       recommended: "موصى به",
@@ -6126,7 +6127,6 @@ export const ar = {
     back: "رجوع",
     continue: "متابعة",
     skipSetup: "تخطي الإعداد",
-    outsideAgain: "انقر خارج النافذة مرة أخرى للإغلاق",
     getStarted: "ابدأ",
     progress: "الخطوة {current} من {total}",
     welcome: {

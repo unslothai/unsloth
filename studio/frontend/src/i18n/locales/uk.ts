@@ -985,7 +985,7 @@ export const uk = {
   chatMenu: {
     more: "Параметри чату",
     copy: "Копіювати",
-    addScheduledTask: "Додати заплановане завдання…",
+    addScheduledTask: "Додати заплановане завдання",
     compact: "Стиснути розмову",
     compactEmpty: "Поки що нічого стискати",
     compactUnsupported:
@@ -5420,6 +5420,7 @@ export const uk = {
     model: {
       label: "Модель перекладу",
       fast: "Швидка",
+      balanced: "Збалансована",
       quality: "Найкраща якість",
       chat: "Модель чату",
       recommended: "Рекомендовані",
@@ -6578,7 +6579,6 @@ export const uk = {
     back: "Назад",
     continue: "Далі",
     skipSetup: "Пропустити налаштування",
-    outsideAgain: "Клацніть ззовні ще раз, щоб закрити",
     getStarted: "Почати",
     progress: "Крок {current} з {total}",
     welcome: {

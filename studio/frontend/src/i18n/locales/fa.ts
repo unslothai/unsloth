@@ -976,7 +976,7 @@ export const fa = {
   chatMenu: {
     more: "گزینه‌های گفتگو",
     copy: "کپی",
-    addScheduledTask: "افزودن کار زمان‌بندی‌شده…",
+    addScheduledTask: "افزودن کار زمان‌بندی‌شده",
     compact: "فشرده‌سازی گفتگو",
     compactEmpty: "هنوز چیزی برای فشرده‌سازی وجود ندارد",
     compactUnsupported:
@@ -5354,6 +5354,7 @@ export const fa = {
     model: {
       label: "مدل ترجمه",
       fast: "سریع",
+      balanced: "متعادل",
       quality: "بهترین کیفیت",
       chat: "مدل گفتگو",
       recommended: "پیشنهادی",
@@ -6507,7 +6508,6 @@ export const fa = {
     back: "بازگشت",
     continue: "ادامه",
     skipSetup: "رد شدن از راه‌اندازی",
-    outsideAgain: "برای بستن، دوباره بیرون کلیک کنید",
     getStarted: "شروع کنید",
     progress: "مرحلهٔ {current} از {total}",
     welcome: {

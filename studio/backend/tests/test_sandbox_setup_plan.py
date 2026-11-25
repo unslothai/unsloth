@@ -6,6 +6,7 @@
 import os
 import platform
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -375,6 +376,13 @@ def windows(monkeypatch):
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setattr(platform, "machine", lambda: "AMD64")
     monkeypatch.setattr(wsl_host, "native_machine", lambda: "x86_64")
+    # A supported build whatever the test host runs (Windows Server 2022 CI is build 20348).
+    monkeypatch.setattr(
+        sys,
+        "getwindowsversion",
+        lambda: SimpleNamespace(build = plan_mod.MXC_MIN_WINDOWS_BUILD, product_type = 1),
+        raising = False,
+    )
     state = {
         "installed": True,
         "missing": ("prepare-null-device",),
@@ -388,6 +396,8 @@ def windows(monkeypatch):
         return "identity"
 
     monkeypatch.setattr(mxc_runtime, "verified_installation_identity", identity)
+    monkeypatch.setattr(mxc_runtime, "selected_pin", lambda: state["pin"])
+    state["pin"] = mxc_runtime.LEGACY_PIN
     monkeypatch.setattr(mxc_runtime, "probe_host_prep_steps", lambda **_kw: state["missing"])
     monkeypatch.setattr(mxc_policy, "dacl_fallback_enabled", lambda: state["opted_in"])
     monkeypatch.setattr(
@@ -402,6 +412,25 @@ def windows(monkeypatch):
         plan_mod, "windows_runtime_install_command", lambda: ["python", "install_mxc_prebuilt.py"]
     )
     return state
+
+
+@pytest.mark.parametrize("installed", [False, True])
+def test_windows_with_the_built_in_container_only_installs_mxc(windows, installed):
+    from core.inference import mxc_runtime
+
+    windows["pin"] = mxc_runtime.PRIMARY_PIN
+    windows["installed"] = installed
+    windows["missing"] = None  # no probe answer must still never add host preparation
+    plan = plan_mod.detect(False)
+    assert not any("--prepare-host" in step for step in plan.steps)
+    assert plan.elevation is None and plan.needs_consent is False
+    # windows-setup, the action Chat and Settings already offer, with only the install step: installed but
+    # failing, the installer probes 1.1.0 again and moves a PC without the built-in container to 1.0.1.
+    assert plan.action == plan_mod.WINDOWS_SETUP
+    assert plan.steps == (("python", "install_mxc_prebuilt.py"),)
+    assert (
+        "live check did not pass" if installed else "MXC runtime is not installed"
+    ) in plan.reason
 
 
 def test_windows_without_the_runtime_installs_then_prepares(windows):

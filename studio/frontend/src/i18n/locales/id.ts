@@ -978,7 +978,7 @@ export const id = {
   chatMenu: {
     more: "Opsi chat",
     copy: "Salin",
-    addScheduledTask: "Tambahkan tugas terjadwal…",
+    addScheduledTask: "Tambahkan tugas terjadwal",
     compact: "Padatkan percakapan",
     compactEmpty: "Belum ada yang dapat dipadatkan",
     compactUnsupported:
@@ -5382,6 +5382,7 @@ export const id = {
     model: {
       label: "Model terjemahan",
       fast: "Cepat",
+      balanced: "Seimbang",
       quality: "Kualitas terbaik",
       chat: "Model chat",
       recommended: "Direkomendasikan",
@@ -6535,7 +6536,6 @@ export const id = {
     back: "Kembali",
     continue: "Lanjutkan",
     skipSetup: "Lewati penyiapan",
-    outsideAgain: "Klik di luar sekali lagi untuk menutup",
     getStarted: "Mulai",
     progress: "Langkah {current} dari {total}",
     welcome: {

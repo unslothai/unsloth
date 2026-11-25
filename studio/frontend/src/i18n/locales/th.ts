@@ -933,7 +933,7 @@ export const th = {
   chatMenu: {
     more: "ตัวเลือกแชท",
     copy: "คัดลอก",
-    addScheduledTask: "เพิ่มงานตามกำหนดเวลา…",
+    addScheduledTask: "เพิ่มงานตามกำหนดเวลา",
     compact: "ย่อการสนทนา",
     compactEmpty: "ยังไม่มีอะไรให้ย่อ",
     compactUnsupported: "การย่อการสนทนาต้องใช้โมเดล GGUF หรือ MLX ที่รองรับเครื่องมือ",
@@ -5153,6 +5153,7 @@ export const th = {
     model: {
       label: "โมเดลแปลภาษา",
       fast: "เร็ว",
+      balanced: "สมดุล",
       quality: "คุณภาพดีที่สุด",
       chat: "โมเดลแชท",
       recommended: "แนะนำ",
@@ -6254,7 +6255,6 @@ export const th = {
     back: "ย้อนกลับ",
     continue: "ดำเนินการต่อ",
     skipSetup: "ข้ามการตั้งค่า",
-    outsideAgain: "คลิกด้านนอกอีกครั้งเพื่อปิด",
     getStarted: "เริ่มต้นใช้งาน",
     progress: "ขั้นตอนที่ {current} จาก {total}",
     welcome: {

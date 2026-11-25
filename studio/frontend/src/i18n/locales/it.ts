@@ -4018,7 +4018,7 @@ export const it = {
   chatMenu: {
     more: "Opzioni chat",
     copy: "Copia",
-    addScheduledTask: "Aggiungi attività pianificata…",
+    addScheduledTask: "Aggiungi attività pianificata",
     compact: "Compatta conversazione",
     compactEmpty: "Ancora niente da compattare",
     compactUnsupported: "La compattazione richiede un modello GGUF o MLX con supporto per gli strumenti",
@@ -5108,6 +5108,7 @@ export const it = {
     model: {
       label: "Modello di traduzione",
       fast: "Veloce",
+      balanced: "Bilanciato",
       quality: "Qualità migliore",
       chat: "Modello di chat",
       recommended: "Consigliati",
@@ -6195,7 +6196,6 @@ export const it = {
     back: "Indietro",
     continue: "Continua",
     skipSetup: "Salta configurazione",
-    outsideAgain: "Fai di nuovo clic all'esterno per chiudere",
     getStarted: "Inizia",
     progress: "Passo {current} di {total}",
     welcome: {
