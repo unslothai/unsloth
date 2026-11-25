@@ -6130,6 +6130,27 @@ def patch_enable_input_require_grads():
         PreTrainedModel.disable_input_require_grads = _patched_single_disable_input_require_grads
         return
 
+    import os
+
+    keep_frozen_towers = os.environ.get("UNSLOTH_FROZEN_TOWER_INPUT_GRAD", "0") == "1"
+
+    def _sub_model_hook(owner):
+        # transformers >= 5 hooks every sub-model's input embeddings, so a frozen vision / audio tower ran a full
+        # backward that no parameter reads. Its output still joins a graph that needs grad downstream (projector,
+        # LoRA), so skipping the flag only drops the tower's own backward.
+        def make_inputs_require_grads(module, input, output):
+            if torch.compiler.is_compiling():
+                trains = owner.__dict__.get("_unsloth_sub_model_trains", True)
+            else:
+                trains = any(p.requires_grad for p in owner.parameters())
+                owner.__dict__["_unsloth_sub_model_trains"] = trains
+            if trains:
+                return outer_hook(module, input, output)
+
+        return make_inputs_require_grads
+
+    outer_hook = make_inputs_require_grads
+
     @functools.wraps(original)
     def _patched_enable_input_require_grads(self):
         hooks = []
@@ -6164,7 +6185,12 @@ def patch_enable_input_require_grads():
                 continue
 
             seen_modules.add(embedding_id)
-            hooks.append(input_embeddings.register_forward_hook(make_inputs_require_grads))
+            hook = (
+                make_inputs_require_grads
+                if module is self or keep_frozen_towers
+                else _sub_model_hook(module)
+            )
+            hooks.append(input_embeddings.register_forward_hook(hook))
 
         self._require_grads_hooks = hooks + register_inputs_embeds_hooks(self)
         if hooks:
