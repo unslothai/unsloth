@@ -374,10 +374,13 @@ if [[ -n "${UNSLOTH_PORTS:-}" ]]; then
     PORT_FLAGS=(${UNSLOTH_PORTS})
 fi
 
-# -t only on a terminal, else "the input device is not a TTY"; -i keeps piped input
-TTY_FLAG=(-i)
+# -t needs a terminal ("the input device is not a TTY"); -i forwards piped or redirected
+# stdin, but not a terminal stdin under redirected stdout: a backgrounded launch would stop on SIGTTIN
+TTY_FLAG=()
 if [ -t 0 ] && [ -t 1 ]; then
     TTY_FLAG=(-it)
+elif [ ! -t 0 ]; then
+    TTY_FLAG=(-i)
 fi
 
 # a mounted script starts in its directory so relative saves survive --rm
