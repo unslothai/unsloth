@@ -38,8 +38,6 @@ def _model():
 
 
 def _decay_seen(model, masters):
-    """dtype of A_log / dt_bias inside each GDN forward, and how far the first forward's values are
-    from the float32 masters (0 on one GPU)."""
     seen, drift = {}, {"max": 0.0}
 
     def hook(module, args):
@@ -77,7 +75,7 @@ def _train(
     split = None,
 ):
     opt = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad], lr = 1e-3)
-    if split is not None:  # the Trainer path: DTensor and replicated params in separate groups
+    if split is not None:
         split(opt)
     losses, decay_grads = [], None
     for step in range(STEPS):
@@ -157,6 +155,5 @@ def test_full_ft_float32_decay_params_gathered_as_float32(tmp_path):
     assert r["n_decay"] > 0, r
     # One GPU computes the decay from float32 masters; the bf16 gather rounded them.
     assert r["seen"] == {"A_log": ["torch.float32"], "dt_bias": ["torch.float32"]}, r
-    assert r["unchecked"] == 0 and r["drift"] == 0.0, r  # the masters' own values, not bf16-rounded
-    # The rest of the model is gathered in bf16 either way (autocast rounds the matmul weights alike).
+    assert r["unchecked"] == 0 and r["drift"] == 0.0, r
     assert r["loss_err"] < 2e-3 and r["grad_err"] < 5e-2, r

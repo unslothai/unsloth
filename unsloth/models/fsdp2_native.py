@@ -936,14 +936,12 @@ def _supports_ignored_params(fully_shard):
 # A minority dtype group up to this fraction of a unit's trainable elements stays replicated.
 _REPLICATE_MINORITY_FRACTION = 0.10
 
-# Parameters the modeling code computes in float32 (GDN / Mamba decay); with the model's own
-# `_keep_in_fp32_modules[_strict]` entries (mHC, routers, sinks) they are what one GPU keeps in float32.
+# Computed in float32 by the modeling code (GDN / Mamba decay), beside `_keep_in_fp32_modules[_strict]`.
 _ALWAYS_FLOAT32_PARAMS = ("A_log", "dt_bias")
 
 
 def _float32_kept_param_ids(model):
-    """ids of the parameters one GPU keeps (and computes) in float32: `_ALWAYS_FLOAT32_PARAMS`
-    and every `_keep_in_fp32_modules[_strict]` entry, matched on whole dotted path components."""
+    """ids of params one GPU keeps in float32, matched on whole dotted path components."""
     names = set(_ALWAYS_FLOAT32_PARAMS)
     for module in model.modules():
         for attr in ("_keep_in_fp32_modules", "_keep_in_fp32_modules_strict"):
@@ -998,9 +996,7 @@ def _unify_dtypes(
                         p.data = p.data.to(torch.float32)
                         n += 1
         if float32_ids:
-            # Trainable float32 masters the model computes in float32 (GDN / Mamba A_log, dt_bias,
-            # `_keep_in_fp32_modules`): the 16-bit gather would round them, which one GPU never does
-            # (autocast leaves them float32). Keep the small ones replicated, smallest first.
+            # The 16-bit gather would round float32-computed masters; one GPU never does. Replicate small ones.
             floats = [p for p in params if _floating(p)]
             budget = _REPLICATE_MINORITY_FRACTION * sum(p.numel() for p in floats)
             picked = []
