@@ -46,6 +46,7 @@ Unmodified scripts: UNSLOTH_TP_SIZE=k torchrun ... applies all of the above from
 
 from __future__ import annotations
 
+import ast
 import contextlib
 import contextvars
 import copy
@@ -54,6 +55,7 @@ import functools
 import inspect
 import math
 import re
+import textwrap
 import types
 from typing import Optional
 
@@ -2630,7 +2632,14 @@ def _tp_projection_compute(self, x):
     lora_A = self._modules.get("lora_A")
     if lora_A is None or getattr(self, "disable_adapters", True) or getattr(self, "merged", False):
         return out
-    for adapter in _active_adapter(self) or ():
+    mode = self.__dict__.get("_unsloth_tp_lora_mode", _MISSING)
+    if mode is _MISSING:  # a projection not sharded by apply_tensor_parallel (tests)
+        mode = _one_gpu_lora_mode(self)
+    if torch.is_autocast_enabled():  # the generated forward's own (CUDA) query
+        mode = None
+    out_dtype = out.dtype
+    active = _active_adapter(self) or ()
+    for adapter in active:
         if adapter not in lora_A:
             continue
         A = _local(lora_A[adapter].weight)
@@ -2638,10 +2647,146 @@ def _tp_projection_compute(self, x):
         if rows is not None:
             B = B.narrow(0, *rows)
         scaling = self.scaling[adapter]
+        if mode is not None:
+            step = mode
+            if (
+                step == "lora_guarded"
+            ):  # zoo's guard: cast only for a variant or several active adapters
+                variant = adapter in (getattr(self, "lora_variant", None) or {})
+                step = "lora" if variant or len(active) > 1 else "base"
+            if (
+                step == "lora"
+            ):  # the generated forward keeps result in the LoRA dtype until the loop ends
+                out, x = out.to(A.dtype), x.to(A.dtype)
+            out = _tp_lora_update(self, adapter, out, x, A, B, scaling, step)
+            continue
         x_lora = x if torch.is_autocast_enabled() else x.to(A.dtype)
         x_lora = _lora_dropout(self, adapter, x_lora)
         out = out + (F.linear(F.linear(x_lora, A), B) * scaling).to(out.dtype)
-    return out
+    return out.to(out_dtype)
+
+
+# torch 2.8 / 2.9 inductor miscompiles addmm(alpha = scaling, beta = 1) traced inside a compiled block, forward
+# and backward; fixed in 2.10 (unsloth#3271). The same guard as unsloth_zoo's compiled LoRA forward.
+_TP_LORA_NO_COMPILED_ADDMM = tuple(int(v) for v in torch.__version__.split(".")[:2]) < (2, 10)
+
+
+def _one_gpu_lora_forward(proj):
+    """The generated forward the one-GPU run calls for this layer. When families built under different
+    UNSLOTH_FORCE_FLOAT32 values share a process, zoo's _install_lora_forward_variant puts an `unsloth_forward`
+    dispatcher on the class whose `_unsloth_variants` maps each flag to its generated forward; resolved here as the
+    dispatcher does (the layer's stamp, its base layer's, else the forward installed last, whose flag the
+    dispatcher carries), so the variant's own flag and cast line are read, not the dispatcher's."""
+    forward = getattr(type(proj), "forward", None)
+    variants = getattr(forward, "_unsloth_variants", None)
+    if not isinstance(variants, dict) or not variants:
+        return forward
+    stamp = getattr(proj, "_unsloth_force_float32", None)
+    if stamp is None:
+        stamp = getattr(proj._modules.get("base_layer"), "_unsloth_force_float32", None)
+    default = variants.get(getattr(forward, "_unsloth_force_float32", None))
+    variant = variants.get(stamp, default)
+    return variant if callable(variant) else None
+
+
+def _one_gpu_lora_mode(proj):
+    """How the one-GPU run computes this layer's low-rank product outside autocast: Unsloth's compiled LoRA
+    forward (unsloth_zoo compiler `lora_forward`) in float16 when the layer was built under forced float32
+    ("float16", Gemma 3 / 4 on float16 GPUs). Otherwise zoo's _patch_lora_input_cast decides: where PEFT's forward
+    branches on autocast itself (bitsandbytes) only x goes to the LoRA dtype and the product runs in the base
+    output's dtype ("output"); elsewhere (dense Linear) the generated forward casts result and x to the LoRA dtype,
+    so the product runs in the LoRA weights' dtype, either always ("lora") or, in newer zoo, only for a LoRA variant
+    or several active adapters, a single vanilla adapter keeping x and the base output's dtype ("lora_guarded",
+    resolved per adapter at call time). Read from the generated forward's own cast line. None when the class
+    keeps PEFT's forward, which casts x to the LoRA weights' dtype (the float32 product), or the generated cast
+    cannot be told. Read once at shard time."""
+    forward = _one_gpu_lora_forward(proj)
+    if getattr(forward, "__name__", "") != "unsloth_forward":
+        return None
+    flag = getattr(forward, "_unsloth_force_float32", "0")
+    if str(flag) != "0":  # zoo builds the forced template for every UNSLOTH_FORCE_FLOAT32 but "0"
+        return "float16"
+    # zoo's _patch_lora_input_cast: a PEFT forward already branching on autocast keeps its own x cast.
+    try:
+        original = inspect.getsource(forward._unsloth_original_forward)
+    except (AttributeError, OSError, TypeError):
+        return None
+    if "torch.is_autocast_enabled()" in original:
+        return "output"
+    return _generated_lora_cast_mode(_generated_lora_source(forward, original))
+
+
+# The guard zoo's _patch_lora_input_cast writes before `result, x = result.to(lora_A.weight.dtype), ...`.
+_LORA_CAST_LINE = re.compile(
+    r"^\s*if (.+?): result, x = result\.to\(lora_A\.weight\.dtype\), x\.to\(lora_A\.weight\.dtype\)\s*$",
+    re.MULTILINE,
+)
+_LORA_CAST_GUARDS = {
+    "not torch.is_autocast_enabled()": "lora",
+    "not torch.is_autocast_enabled() and (active_adapter in getattr(self, 'lora_variant', {}) "
+    "or len(self.active_adapters) > 1)": "lora_guarded",
+}
+
+
+def _generated_lora_source(forward, original):
+    """The generated forward's source (zoo writes it to unsloth_compiled_cache), else zoo's own rewrite of the
+    original PEFT source; None when neither is readable."""
+    try:
+        return inspect.getsource(forward)
+    except (OSError, TypeError):
+        pass
+    try:
+        from unsloth_zoo import compiler as zoo_compiler
+
+        source = textwrap.dedent(original)
+        source = zoo_compiler._patch_lora_update(source)
+        return zoo_compiler._patch_lora_input_cast(source, force_float32 = False)
+    except Exception:
+        return None
+
+
+def _generated_lora_cast_mode(source):
+    if not source:
+        return None
+    guards = set()
+    for found in _LORA_CAST_LINE.finditer(source):
+        try:
+            guards.add(ast.unparse(ast.parse(found.group(1).strip(), mode = "eval")))
+        except SyntaxError:
+            return None
+    known = {ast.unparse(ast.parse(k, mode = "eval")): v for k, v in _LORA_CAST_GUARDS.items()}
+    modes = {known.get(g) for g in guards}
+    if len(modes) != 1 or None in modes:  # no cast, an unknown guard, or several: never a guess
+        return None
+    return modes.pop()
+
+
+def _tp_lora_update(proj, adapter, out, x, A, B, scaling, mode):
+    """out + scaling * B(A(x)) rounded as the one-GPU compiled LoRA forward (`mode` from _one_gpu_lora_mode):
+    the generated input casts, dropout, x @ A, then one addmm in the result's dtype, restored to out's dtype.
+    The float32 product used before gave the tp ranks LoRA gradients the one-GPU run never computes (under
+    forced float32 the one-GPU float16 product flushes the small loss-scaled gradients of Gemma-4's upper
+    layers), so Gemma-4 tp=2 trained off the one-GPU curve."""
+    result = out
+    if mode == "float16":  # COMPILED_LORA_FORWARD_forced_float32: x as the layer received it
+        xA = _lora_dropout(proj, adapter, x.to(torch.float16)) @ A.to(torch.float16).t()
+    else:  # COMPILED_LORA_FORWARD after the generated cast: dropout before the cast to the result's dtype
+        if mode == "output":  # PEFT's own x cast; "lora" arrives cast, "base" keeps x as received
+            cast = getattr(proj, "_cast_input_dtype", None)
+            x = cast(x, A.dtype) if cast is not None else x.to(A.dtype)
+        xA = _lora_dropout(proj, adapter, x).to(result.dtype) @ A.to(result.dtype).t()
+    dtype = result.dtype
+    xA, Bt = xA.to(dtype), B.to(dtype).t()
+    if _TP_LORA_NO_COMPILED_ADDMM and torch.compiler.is_compiling():
+        return (result + scaling * (xA @ Bt)).to(out.dtype)
+    shape = result.shape
+    flat = torch.addmm(
+        result.reshape(-1, shape[-1]),
+        xA.reshape(-1, xA.shape[-1]),
+        Bt,
+        alpha = scaling,
+    )
+    return flat.view(shape).to(out.dtype)
 
 
 def _tp_grouped_compute(self, base, x, W, bias):
@@ -3777,6 +3922,7 @@ def _shard_projection(region, proj, mesh, rank, tp):
     module._unsloth_tp_local = (
         _tp_lora_parameters  # read by kernels/utils.py get_lora_parameters(_bias)
     )
+    module.__dict__["_unsloth_tp_lora_mode"] = _one_gpu_lora_mode(module)
     module.forward = types.MethodType(_tp_projection_forward, module)
 
 
