@@ -448,13 +448,13 @@ def test_build_rag_autoinject_large_model_auto_falls_back_over_budget(rag_conn, 
 
     sentinel = (
         "TOPK_LARGE_MODEL_FALLBACK",
-        [{"citationId": 1, "filename": "big.pdf", "text": "TOPK_LARGE_MODEL_FALLBACK"}],
+        [{"citationId": 1, "filename": "big.pdf", "text": "x"}],
     )
     monkeypatch.setattr(tool, "search_for_autoinject", lambda **kw: sentinel)
 
     result = inf_tools.build_rag_autoinject(_convo(), {"thread_id": "t1", "autoinject": False})
     assert result is not None
-    assert "TOPK_LARGE_MODEL_FALLBACK" in _injected_text(result)
+    assert _injected_text(result) == "TOPK_LARGE_MODEL_FALLBACK"
 
 
 def test_build_rag_autoinject_fallback_is_thread_first_and_budgeted(rag_conn, monkeypatch):
@@ -489,7 +489,8 @@ def test_build_rag_autoinject_fallback_is_thread_first_and_budgeted(rag_conn, mo
 
     injected = _injected_text(result)
     assert "x" * 1600 in injected and "project" in injected
-    assert [(c.get("scope_thread_id"), c.get("scope_project_id")) for c in calls] == [
+    searches = [c for c in calls if c.get("mode") != "dense"]
+    assert [(c.get("scope_thread_id"), c.get("scope_project_id")) for c in searches] == [
         ("t1", None),
         (None, "p1"),
     ]
@@ -707,6 +708,30 @@ def test_build_rag_autoinject_summary_of_long_attachment_leads_with_its_opening(
     assert injected.count("Table ") == inf_tools._autoinject_top_k()
 
 
+def test_build_rag_autoinject_strong_match_skips_the_opening(rag_conn, monkeypatch):
+    scope = store.thread_scope("t1")
+    store.create_document(rag_conn, scope = scope, filename = "big.pdf", sha256 = "h1", document_id = "d1")
+    store.add_chunks(
+        rag_conn,
+        scope,
+        "d1",
+        [
+            _chunk("FRONT_MATTER", 0, source_page = 0, tokens = 60),
+            _chunk("ORBIT_PERIOD", 1, source_page = 1, tokens = 50_000),
+        ],
+        [[0.0, 0.0, 1.0, 0.0], [1.0, 0.0, 0.0, 0.0]],
+    )
+    store.set_document_status(rag_conn, "d1", "completed", num_chunks = 2)
+    _encode_as_query(monkeypatch)
+
+    result = inf_tools.build_rag_autoinject(
+        _convo("what is the orbital period"), {"thread_id": "t1", "autoinject": False}
+    )
+    injected = _injected_text(result)
+    assert "ORBIT_PERIOD" in injected
+    assert "FRONT_MATTER" not in injected.split("ORBIT_PERIOD")[0]
+
+
 def _encode_as_query(monkeypatch):
     from core.rag import embeddings
     monkeypatch.setattr(
@@ -774,7 +799,7 @@ def test_build_rag_autoinject_budget_keeps_the_match_over_the_opening(rag_conn, 
             _chunk("FRONT_MATTER " + "x" * 4000, 0, source_page = 0, tokens = 500),
             _chunk("MATCH_PASSAGE " + "y" * 1500, 1, source_page = 1, tokens = 50_000),
         ],
-        [[0.0, 0.0, 1.0, 0.0], [1.0, 0.0, 0.0, 0.0]],
+        [[0.0, 0.0, 1.0, 0.0], [0.6, 0.8, 0.0, 0.0]],
     )
     store.set_document_status(rag_conn, "d1", "completed", num_chunks = 2)
     _encode_as_query(monkeypatch)

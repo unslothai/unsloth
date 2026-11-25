@@ -16192,12 +16192,14 @@ def _build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> d
                 min_dense_score = None,
                 mode = "hybrid",
             )
-        if not found:
-            return None
-        # A generic request ("summarize this") ranks mid-document scraps, so the matched file's opening leads, beside the best match.
+        if not found or _strong_thread_match():
+            return found
+        # Nothing clears the floor ("summarize this" ranks mid-document scraps), so the matched file's opening leads.
         opening = document_opening(
             scope_thread_id = thread_id, document_id = found[1][0].get("documentId")
         )
+        if not opening:
+            return found
         seen = {s["chunkId"] for s in opening}
         hits = [s for s in found[1] if s.get("chunkId") not in seen]
         merged = opening + hits
@@ -16205,9 +16207,24 @@ def _build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> d
             render_sources(merged), merged, max_tokens, keep_first = len(opening) + bool(hits)
         )
         if kept is None:
+            # render_sources renumbered these hits in place for the merged list.
             return render_sources(found[1]), found[1]
         opening_ids.update(seen)
         return kept
+
+    def _strong_thread_match() -> bool:
+        try:
+            return bool(
+                search_for_autoinject(
+                    query = query,
+                    scope_thread_id = thread_id,
+                    top_k = 1,
+                    min_dense_score = floor,
+                    mode = "dense",
+                )
+            )
+        except Exception:  # noqa: BLE001 - an unavailable dense leg keeps the plain top-k
+            return True
 
     # With auto-injection off, search the oversized attachment alone, unfloored; budget binds only here, so a small context cannot silently switch RAG off.
     if text is None and (enabled or whole_doc_requested):
