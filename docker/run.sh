@@ -164,8 +164,24 @@ case "$GPUS" in
     *)        GPU_FLAG=(--gpus "\"device=${GPUS}\"") ;;  # bare integer index
 esac
 fi
-HF_CACHE="${HF_HOME:-${XDG_CACHE_HOME:-$HOME/.cache}/huggingface}"
-HF_HUB="${HF_HUB_CACHE:-${HUGGINGFACE_HUB_CACHE:-$HF_CACHE/hub}}"
+# Like Studio's _host_path: expand ~, and map a Windows path to its WSL mount.
+host_path() {
+    local path="$1"
+    case "$path" in
+        # Escaped ~ matches the literal character (a quoted one trips SC2088).
+        \~ | \~/*) path="$HOME${path:1}" ;;
+        [A-Za-z]:\\* | [A-Za-z]:/*) path="$(wslpath -u "$path" 2>/dev/null)" || path="" ;;
+    esac
+    printf '%s' "$path"
+}
+
+# huggingface_hub's resolution order; it expands ~ in both
+hf_raw="${HF_HOME:-${XDG_CACHE_HOME:-$HOME/.cache}/huggingface}"
+HF_CACHE="$(host_path "$hf_raw")"
+HF_CACHE="${HF_CACHE:-$hf_raw}"
+hf_raw="${HF_HUB_CACHE:-${HUGGINGFACE_HUB_CACHE:-$HF_CACHE/hub}}"
+HF_HUB="$(host_path "$hf_raw")"
+HF_HUB="${HF_HUB:-$hf_raw}"
 HF_HUB_MOUNT=()
 if [ "$HF_HUB" != "$HF_CACHE/hub" ]; then
     HF_HUB_MOUNT=(-v "$HF_HUB":/workspace/.cache/huggingface/hub)
@@ -198,17 +214,6 @@ first_dir() {
             return 0
         fi
     done
-}
-
-# Like Studio's _host_path: expand ~, and map a Windows path to its WSL mount.
-host_path() {
-    local path="$1"
-    case "$path" in
-        # Escaped ~ matches the literal character (a quoted one trips SC2088).
-        \~ | \~/*) path="$HOME${path:1}" ;;
-        [A-Za-z]:\\* | [A-Za-z]:/*) path="$(wslpath -u "$path" 2>/dev/null)" || path="" ;;
-    esac
-    printf '%s' "$path"
 }
 
 lmstudio_dir() {

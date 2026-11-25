@@ -79,3 +79,14 @@ def test_xdg_cache_home_moves_the_default_cache(tmp_path):
     assert _mounts(tmp_path, XDG_CACHE_HOME = str(xdg)) == {
         "/workspace/.cache/huggingface": str(xdg / "huggingface")
     }
+
+
+def test_home_relative_paths_are_expanded(tmp_path):
+    home = tmp_path / "home"
+    mounts = _mounts(tmp_path, HF_HOME = "~/hf", HF_HUB_CACHE = "~/models/hub")
+    assert mounts == {
+        "/workspace/.cache/huggingface": str(home / "hf"),
+        "/workspace/.cache/huggingface/hub": str(home / "models" / "hub"),
+    }
+    assert (home / "models" / "hub").is_dir()
+    assert not (tmp_path / "~").exists()

@@ -55,10 +55,11 @@ select_cuda_jit_tools || true
 # Hand root:root downloads in a host-owned HF cache mount back to its owner, keeping group root rwX for Studio's
 # capability-less uid 0 tool sandbox; that sandbox writes this cache, hence fd-relative no-follow updates only.
 hf_cache_uid="$(stat -c '%u' "${HF_HOME:-}" 2>/dev/null || true)"
-if [[ "$(id -u):$(id -g)" == 0:0 && -n "${hf_cache_uid}" && "${hf_cache_uid}" != 0 ]] && command -v python3 >/dev/null 2>&1; then
+hf_hub_uid="$(stat -c '%u' "${HF_HOME:-}/hub" 2>/dev/null || true)"
+if [[ "$(id -u):$(id -g)" == 0:0 && -n "${hf_cache_uid}" && "${hf_cache_uid}${hf_hub_uid}" == *[1-9]* ]] && command -v python3 >/dev/null 2>&1; then
     while :; do
         python3 -I -S - "${HF_HOME}" "${hf_cache_uid}" <<'PY' || true
-import os, stat, sys
+import os, re, stat, sys
 
 top, uid = sys.argv[1], int(sys.argv[2])
 src, src_gid = (int(sys.argv[3]), int(sys.argv[4])) if len(sys.argv) > 4 else (0, 0)
@@ -80,7 +81,7 @@ def still_here(name, dfd, st, is_dir):
     return (now.st_dev, now.st_ino) == (st.st_dev, st.st_ino) and (is_dir or now.st_nlink == 1)
 
 
-def hand_over(name, dfd):
+def hand_over(name, dfd, uid):
     st = os.stat(name, dir_fd = dfd, follow_symlinks = False)
     # Symlinks stay root's: removing one only needs the parent directory, and a path-based lchown can be redirected.
     if (st.st_uid, st.st_gid) != (src, src_gid) or stat.S_ISLNK(st.st_mode) or (st.st_nlink > 1 and not stat.S_ISDIR(st.st_mode)):
@@ -106,13 +107,32 @@ def hand_over(name, dfd):
         os.close(fd)
 
 
-for _, dirs, files, dfd in os.fwalk(top, follow_symlinks = False):
-    # Studio resumes only partials it owns; they are handed over once published as blobs.
-    for name in dirs + [f for f in files if not f.endswith(".incomplete")]:
-        try:
-            hand_over(name, dfd)
-        except OSError:
-            pass
+def mount_points():
+    try:
+        with open("/proc/self/mountinfo", encoding = "utf-8", errors = "surrogateescape") as f:
+            return {re.sub(r"\\([0-7]{3})", lambda m: chr(int(m[1], 8)), line.split()[4]) for line in f}
+    except (OSError, IndexError):
+        return set()
+
+
+# A mount inside the cache (run.sh's separate HF_HUB_CACHE) has its own owner: a root-owned shared hub stays root's.
+top = os.path.realpath(top)
+nested = {m for m in mount_points() if m.startswith(top + "/")}
+for root in [top, *sorted(nested)]:
+    try:
+        owner = uid if root == top else os.stat(root).st_uid
+    except OSError:
+        continue
+    if owner == 0:
+        continue
+    for path, dirs, files, dfd in os.fwalk(root, follow_symlinks = False):
+        dirs[:] = [d for d in dirs if os.path.join(path, d) not in nested]
+        # Studio resumes only partials it owns; they are handed over once published as blobs.
+        for name in dirs + [f for f in files if not f.endswith(".incomplete")]:
+            try:
+                hand_over(name, dfd, owner)
+            except OSError:
+                pass
 PY
         sleep 30
     done </dev/null >/dev/null 2>&1 &

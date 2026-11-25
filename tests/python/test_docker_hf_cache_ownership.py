@@ -154,12 +154,20 @@ exec(compile(sys.stdin.read(), "<entrypoint>", "exec"), {"__name__": "__main__"}
 """
 
 
-def _recording_python(tmp_path):
+def _recording_python(tmp_path, mountinfo = None):
     """Runs the entrypoint's own sweep with our uid standing in for root's, logging its chowns."""
     bindir = tmp_path / "bin"
     bindir.mkdir()
     calls = tmp_path / "chown.calls"
-    (tmp_path / "boot.py").write_text(_BOOT)
+    boot = _BOOT
+    if mountinfo is not None:
+        boot = boot.replace(
+            "exec(",
+            "import builtins\n_o = builtins.open\n"
+            f"builtins.open = lambda f, *a, **k: _o({str(mountinfo)!r} if f == '/proc/self/mountinfo' else f, *a, **k)\n"
+            "exec(",
+        )
+    (tmp_path / "boot.py").write_text(boot)
     _stub(str(bindir / "id"), "echo 0\n")
     _stub(
         str(bindir / "python3"),
@@ -230,3 +238,24 @@ def test_a_root_user_outside_group_root_hands_nothing_over(entrypoint, tmp_path)
     _boot(entrypoint, tmp_path, hf_home, bindir, lambda: False)
 
     assert not calls.exists(), calls.read_text()
+
+
+def test_a_mount_inside_the_cache_is_handed_to_its_own_owner(entrypoint, tmp_path):
+    hf_home = tmp_path / "hf"
+    hub = hf_home / "hub"
+    entries, _ = _download_as_root(hub, tmp_path / "outside")
+    (hf_home / "xet").mkdir()
+    mountinfo = tmp_path / "mountinfo"
+    mountinfo.write_text(f"1 0 0:1 / / rw - x x rw\n2 1 0:2 / {hub} rw - x x rw\n")
+    bindir, calls = _recording_python(tmp_path, mountinfo)
+    # HF_HOME reads as owned by 4242; the hub keeps our uid
+    _stub(
+        str(bindir / "stat"), f'[[ "$3" == "{hf_home}" ]] && echo 4242 || exec /usr/bin/stat "$@"\n'
+    )
+
+    _boot(entrypoint, tmp_path, hf_home, bindir, lambda: len(_logged(calls)) >= len(entries))
+
+    logged = _logged(calls)
+    assert logged.pop(str(hf_home / "xet")) == "4242:-1"
+    assert set(logged) == {str(p) for p in entries if p != hub}, sorted(logged)
+    assert set(logged.values()) == {f"{os.getuid()}:-1"}
