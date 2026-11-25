@@ -266,8 +266,9 @@ def _demoted_marker_path() -> Path:
     return _studio_root() / "mxc-runtime" / _DEMOTED_MARKER
 
 
-def _release_label(release: tuple[int, int, int] | None) -> str | None:
-    return None if release is None else f"{release[0]}:{release[1]}.{release[2]}"
+def _release_label(release: tuple[int, int, int] | None) -> str:
+    # Unreadable is a release of its own: a fallback recorded there must keep applying there.
+    return "unknown" if release is None else f"{release[0]}:{release[1]}.{release[2]}"
 
 
 def demoted_by_probe(release: tuple[int, int, int] | None = None) -> bool:
@@ -278,7 +279,7 @@ def demoted_by_probe(release: tuple[int, int, int] | None = None) -> bool:
     except (OSError, ValueError):
         return False
     # Keyed on the release: a Windows update that adds the container brings 1.1.0 back.
-    return isinstance(recorded, dict) and label is not None and recorded.get("windows") == label
+    return isinstance(recorded, dict) and recorded.get("windows") == label
 
 
 def record_probe_demotion(reason: str) -> None:

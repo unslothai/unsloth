@@ -120,6 +120,16 @@ def test_the_demotion_marker_is_keyed_on_the_windows_release(monkeypatch, tmp_pa
     assert not mxc_runtime.demoted_by_probe((1, 26150, 7))
 
 
+def test_a_fallback_recorded_on_an_unreadable_release_keeps_applying(monkeypatch, tmp_path):
+    monkeypatch.delenv(mxc_runtime.PIN_ENV, raising = False)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    monkeypatch.setattr(mxc_runtime.sys, "platform", "win32")
+    monkeypatch.setattr(mxc_runtime, "_windows_release", lambda: None)
+    assert mxc_runtime.selected_pin() is _PRIMARY
+    mxc_runtime.record_probe_demotion("tier: None")
+    assert mxc_runtime.selected_pin() is _LEGACY
+
+
 def test_host_preparation_is_never_asked_of_the_primary_pin(monkeypatch):
     monkeypatch.setattr(mxc_runtime, "selected_pin", lambda: _PRIMARY)
     monkeypatch.setattr(

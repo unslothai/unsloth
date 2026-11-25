@@ -80,6 +80,10 @@ def _replay_retiring_journal(install_dir: Path) -> None:
 
     A newer pin may not read that journal (1.1.0 has no DACL tier), so orphaned grants would stay.
     """
+    if _is_elevated():
+        # The journal is user-writable and names the ACLs to rewrite: never replay it as administrator.
+        print("[mxc-prebuilt] skipping the DACL journal replay in an elevated installer")
+        return
     journal = mxc_runtime.dacl_state_path()
     executable = install_dir / "wxc-exec.exe"
     try:

@@ -591,6 +591,7 @@ def test_the_runtime_being_replaced_replays_its_dacl_journal_first(tmp_path, mon
         installer.mxc_runtime, "RETIRED_DACL_EXEC_SHA256", {digest} if known else set()
     )
     ran = []
+    monkeypatch.setattr(installer, "_is_elevated", lambda: False)
     monkeypatch.setattr(
         installer.subprocess,
         "run",
@@ -604,12 +605,32 @@ def test_the_runtime_being_replaced_replays_its_dacl_journal_first(tmp_path, mon
         assert ran == []
 
 
+def test_an_elevated_installer_never_replays_the_user_journal(tmp_path, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    journal = installer.mxc_runtime.dacl_state_dir()
+    (journal / "pending.json").write_text("{}", encoding = "utf-8")
+    old = tmp_path / "rt"
+    old.mkdir()
+    (old / "wxc-exec.exe").write_bytes(b"retiring-wxc")
+    monkeypatch.setattr(
+        installer.mxc_runtime,
+        "RETIRED_DACL_EXEC_SHA256",
+        {hashlib.sha256(b"retiring-wxc").hexdigest()},
+    )
+    monkeypatch.setattr(installer, "_is_elevated", lambda: True)
+    monkeypatch.setattr(
+        installer.subprocess, "run", lambda *_a, **_k: pytest.fail("replayed as administrator")
+    )
+    installer._replay_retiring_journal(old)
+
+
 def test_no_journal_means_no_replay(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
     installer.mxc_runtime.dacl_state_dir()
     old = tmp_path / "rt"
     old.mkdir()
     (old / "wxc-exec.exe").write_bytes(b"x")
+    monkeypatch.setattr(installer, "_is_elevated", lambda: False)
     monkeypatch.setattr(
         installer.subprocess, "run", lambda *_a, **_k: pytest.fail("replayed an empty journal")
     )
