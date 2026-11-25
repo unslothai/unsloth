@@ -6415,7 +6415,7 @@ async def start_sandbox_setup(
     """
     import sys
 
-    from core.inference import mxc_policy, sandbox_setup_job, sandbox_setup_plan
+    from core.inference import mxc_policy, mxc_runtime, sandbox_setup_job, sandbox_setup_plan
     from utils import mxc_isolation_settings as saved
     from utils.client_ip import is_direct_local_request
 
@@ -6445,6 +6445,7 @@ async def start_sandbox_setup(
     consent = (
         payload.operation == sandbox_setup_plan.WINDOWS_SETUP
         and payload.consent_dacl_fallback
+        and mxc_runtime.selected_pin().has_host_prep
         and not mxc_policy.dacl_fallback_enabled()
     )
     if consent and saved.locked_by_environment(mxc_policy.DACL_FALLBACK_ENV):
