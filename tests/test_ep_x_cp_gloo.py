@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Expert parallel x Ulysses context parallel: the routed experts sharded over the ranks that split each row's
-sequence. Experts are token-local, so a cp shard's tokens dispatch like a data parallel row's, and the expert
-gradients keep DDP's 1 / world scale. Via SFTTrainer on gloo, against one process on the full sequence."""
+"""Expert parallel x Ulysses cp via SFTTrainer on gloo vs one process; expert grads keep DDP's 1 / world scale."""
 
 import os
 import sys
@@ -54,8 +52,7 @@ def test_ep_x_cp_qwen3_moe_lora_matches_one_process(world, ep, aux):
 
 @_FUSED
 def test_ep_x_cp_from_the_launch_variables_matches_one_process():
-    """UNSLOTH_PARALLEL="ep=2,cp=2" sets UNSLOTH_EP_SIZE and UNSLOTH_CP_SIZE: the trainer's registry check
-    (ep x cp cell) lets it through and it trains like one process."""
+    """UNSLOTH_PARALLEL="ep=2,cp=2" passes the registry check and trains like one process."""
     kw = dict(arch = "qwen3_moe", mode = "lora")
     ref = _ref(2, **kw)
     env = {"UNSLOTH_EP_SIZE": "2", "UNSLOTH_CP_SIZE": "2", "UNSLOTH_CP_BACKEND": "ulysses"}

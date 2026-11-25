@@ -253,8 +253,7 @@ def translate(spec, environ = None):
         )
     ep = spec.get("ep", 1)
     if ep > 1:
-        # Expert parallel: the experts sharded over every rank; the rest of the model stays whole on each rank, data
-        # parallel or context parallel (experts are token-local, so a cp shard's tokens dispatch like a dp row's).
+        # Experts shard over every rank; experts are token-local, so cp shards dispatch like dp rows.
         others = [f"{k}={v}" for k, v in sizes.items() if v > 1 and k != "cp"] + (
             ["fsdp=1"] if spec.get("fsdp") else []
         )
@@ -271,8 +270,7 @@ def translate(spec, environ = None):
             raise ValueError(
                 f'Unsloth: {FLAG}="{given}": expert parallel (ep) cannot be combined with {", ".join(others)} yet.'
             )
-        # Every rank (dp x cp) holds the rest of the model; ep ranks share one copy of the experts (replica
-        # groups when ep < world).
+        # ep ranks share one copy of the experts (replica groups when ep < world).
         cp = sizes["cp"]  # an exported UNSLOTH_CP_SIZE that disagrees is refused below
         dp = spec.get("dp", None if world is None else world // cp)
         ranks = None if dp is None else dp * cp
