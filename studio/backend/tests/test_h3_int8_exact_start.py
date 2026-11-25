@@ -40,6 +40,7 @@ def _gate(**kw):
 @pytest.fixture(autouse = True)
 def _no_env(monkeypatch):
     monkeypatch.delenv("UNSLOTH_H3_INT8_EXACT_STEPS", raising = False)
+    monkeypatch.delenv("UNSLOTH_H3_INT8_EXACT_BLOCKS", raising = False)
     monkeypatch.delenv(I8.INT8_ATTENTION_ENV, raising = False)
 
 
@@ -590,4 +591,107 @@ def test_the_h3_load_uses_the_loader_step():
         and any(c is calls[0] for c in ast.walk(n))
         and isinstance(n.test, ast.BoolOp)
     )
-    assert ast.unparse(guard.test) == "int8_auto and h3_int8_gate.exact_steps > 0"
+    assert (
+        ast.unparse(guard.test)
+        == "int8_auto and (h3_int8_gate.exact_steps > 0 or h3_int8_gate.exact_blocks)"
+    )
+    assert {k.arg: ast.unparse(k.value) for k in calls[0].keywords}["blocks"] == (
+        "h3_int8_gate.exact_blocks"
+    )
+
+
+# ── the block policy: blocks kept on 16-bit attention on every step ──
+
+
+@pytest.mark.parametrize(
+    "raw, want",
+    [("3,1,3", (1, 3)), (" 7 ", (7,)), ("none", ()), ("", ()), ("-", ())],
+)
+def test_exact_blocks_env_override(monkeypatch, raw, want):
+    monkeypatch.setenv("UNSLOTH_H3_INT8_EXACT_BLOCKS", raw)
+    assert A.h3_int8_exact_blocks() == want
+    assert _gate().exact_blocks == want
+
+
+@pytest.mark.parametrize("raw", ["x", "-1", "1,a", "2.5"])
+def test_a_bad_blocks_value_keeps_the_default_and_warns(monkeypatch, caplog, raw):
+    monkeypatch.setenv("UNSLOTH_H3_INT8_EXACT_BLOCKS", raw)
+    with caplog.at_level("WARNING"):
+        assert A.h3_int8_exact_blocks() == tuple(A.H3_INT8_EXACT_BLOCKS)
+    assert "not a list of block indices" in caplog.text
+
+
+def test_the_default_gate_carries_the_default_blocks():
+    assert _gate().exact_blocks == tuple(A.H3_INT8_EXACT_BLOCKS)
+    # only Auto keeps blocks: forced INT8 and Off do not
+    assert _gate(mode = "force").exact_blocks == ()
+    assert _gate(mode = "off").exact_blocks == ()
+
+
+def _block_calls(calls, seq = 16):
+    # the transformer blocks run the packed sequence (5 text + 8 video + 3 audio); the refiner only the text
+    return sum(1 for shape in calls if shape[1] == seq)
+
+
+def test_kept_blocks_never_call_int8(monkeypatch):
+    model, off, calls = _int8_model(monkeypatch)
+    assert A.install_int8_exact_blocks(model, (1, 9)) == 1  # 9: past the model's blocks, ignored
+    tb = model.transformer_blocks
+    assert not tb[1].attn.processor._unsloth_int8 and tb[0].attn.processor._unsloth_int8
+    assert A.int8_exact_block_count(model) == 1
+    calls.clear()
+    _run(model)
+    assert _block_calls(calls) == 1
+    # every transformer block kept: only the refiner still calls INT8
+    assert A.install_int8_exact_blocks(model, (0, 1)) == 1
+    assert A.int8_exact_block_count(model) == 2
+    calls.clear()
+    _run(model)
+    assert calls and _block_calls(calls) == 0
+
+
+def test_kept_blocks_on_top_of_the_exact_start(monkeypatch):
+    model, off, calls = _int8_model(monkeypatch)
+    monkeypatch.setattr(
+        I8,
+        "resolved_entry",
+        lambda policy, pipe: (None, "on", "unsloth_int8 (cuda) on 3 attention modules"),
+    )
+    pipe = _Pipe()
+    modules, reason = A.finish_h3_int8_auto(
+        model, pipe, 2, modules = 3, policy = I8.resolve_policy(None), status_pipe = None, blocks = (1,)
+    )
+    assert modules == 2 and A.int8_exact_start_count(model) == 2
+    assert reason == (
+        "unsloth_int8 (cuda) on 3 attention modules, the first 2 denoise steps on 16-bit attention, "
+        "1 blocks on 16-bit attention on every step"
+    )
+    ref = _run(off)
+    for index, block_int8 in ((None, 0), (1, 0), (2, 1), (19, 1)):
+        pipe.scheduler._step_index = index
+        calls.clear()
+        out = _run(model)
+        assert _block_calls(calls) == block_int8
+        assert _equal(out, ref) is (block_int8 == 0)
+
+
+def test_kept_blocks_without_an_exact_start(monkeypatch):
+    model, off, calls = _int8_model(monkeypatch)
+    monkeypatch.setattr(
+        I8,
+        "resolved_entry",
+        lambda policy, pipe: (None, "on", "unsloth_int8 (cuda) on 3 attention modules"),
+    )
+    pipe = _Pipe()
+    modules, reason = A.finish_h3_int8_auto(
+        model, pipe, 0, modules = 3, policy = I8.resolve_policy(None), status_pipe = None, blocks = (0,)
+    )
+    assert modules == 2 and reason.endswith("1 blocks on 16-bit attention on every step")
+    # no exact start: no step-gated op, no graph refusal
+    assert A.int8_exact_start_count(model) == 0 and A._EXACT_HOOK_ATTR not in model.__dict__
+    assert A.GRAPH_UNSAFE_ATTR not in model.__dict__
+    for index in (None, 1, 5):
+        pipe.scheduler._step_index = index
+        calls.clear()
+        _run(model)
+        assert _block_calls(calls) == 1

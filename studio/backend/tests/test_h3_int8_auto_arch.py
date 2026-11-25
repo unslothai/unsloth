@@ -140,4 +140,4 @@ def test_h3_video_load_uses_the_gate():
         for n in ast.walk(load)
         if isinstance(n, ast.Attribute) and getattr(n.value, "id", None) == "h3_int8_gate"
     }
-    assert used == {"forced", "auto", "reason", "exact_steps"}
+    assert used == {"forced", "auto", "reason", "exact_steps", "exact_blocks"}
