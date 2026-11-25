@@ -41126,6 +41126,9 @@ def _names_studio_embedder(requested: str) -> Optional[str]:
     repo = rag_config.effective_gguf_repo_for_embedding_model(model)
     label = _public_embedding_name(model)
     wanted = requested.strip()
+    # A connection reference reads as a tagged identity, so the configured name is matched first.
+    if wanted == model:
+        return model
     if rag_config.embedding_identity_model(wanted) is not None:
         current = rag_embeddings.embedding_identity(model)
         if wanted in (current, _public_embedding_identity(current, model, label)):
@@ -41276,6 +41279,14 @@ async def _studio_embeddings(
         encoding_format = "float"
     dimensions = body.get("dimensions")
     model_name = model_name or rag_config.effective_embedding_model()
+    # Same rule as chat: an API key must not spend a saved connection's credential.
+    if rag_config.is_connection_model(model_name) and not _request_may_use_saved_provider_key(
+        request
+    ):
+        raise HTTPException(
+            status_code = 403,
+            detail = "Studio's embedding model runs on a saved connection, which needs a UI session.",
+        )
     label = _public_embedding_name(model_name)
 
     def _embed():
