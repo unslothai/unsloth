@@ -102,6 +102,12 @@ def _kernel() -> Any:
         return _STATE["kernel"]
 
 
+def _block_ptr() -> bool:
+    """Whether the phase loop may use block pointers: Triton 3.9 removed them (triton-lang/triton#10833)."""
+    from . import diffusion_grouped_int8_gemm_kernels as kernels
+    return bool(kernels.BLOCK_PTR)
+
+
 def covered(
     xq: Any, packed: Any, s_rel: Any, codebook: Any, bits: int, group: int, tile: tuple
 ) -> bool:
@@ -217,6 +223,7 @@ def launch(
             BLOCK_K = bk,
             GROUP_M = gm,
             SPLIT_K = split,
+            BLOCK_PTR = _block_ptr(),
             **kw,
         )
         if split > 1:

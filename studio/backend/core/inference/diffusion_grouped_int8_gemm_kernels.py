@@ -13,6 +13,30 @@ import triton.language as tl
 from .diffusion_grouped_int8_kernels import _e4m3, _rint_clamp
 
 
+def block_ptr_removed(language = tl) -> bool:
+    """True when ``tl.make_block_ptr`` / ``tl.advance`` are missing or are Triton 3.9's raise-only stubs
+    (triton-lang/triton#10833; triton-windows 3.9 alike). Only Triton's own ``@builtin`` wrapper is unwrapped, and the
+    docstring (which names the removal) does not count: the stub's raise message is a constant of its body."""
+    import inspect
+
+    for name in ("make_block_ptr", "advance"):
+        fn = getattr(language, name, None)
+        if not callable(fn):
+            return True
+        inner = inspect.unwrap(fn)
+        code = getattr(inner, "__code__", None)
+        doc = getattr(inner, "__doc__", None)
+        if code is not None and any(
+            isinstance(k, str) and k != doc and "have been removed" in k for k in code.co_consts
+        ):
+            return True
+    return False
+
+
+# Read once at import: launch passes it as the BLOCK_PTR constexpr.
+BLOCK_PTR = not block_ptr_removed()
+
+
 @triton.jit
 def _rbf16(x, RN: tl.constexpr):
     if RN:
@@ -122,8 +146,7 @@ def _phase_code(nib, hi, T: tl.constexpr, BITS: tl.constexpr):
 @triton.jit
 def _phase_dot(
     acc,
-    a_ptrs,
-    a_mask,
+    a_blk,
     nib,
     hi,
     step,
@@ -134,7 +157,7 @@ def _phase_dot(
     HW: tl.constexpr,
 ):
     w = _to_int8(_phase_code(nib, hi, T, BITS), step, cb_ptr, BITS, HAS_CB, HW)
-    a = tl.load(a_ptrs + T, mask = a_mask, other = 0)
+    a = tl.load(a_blk, boundary_check = (0,), padding_option = "zero")
     return tl.dot(a, tl.trans(w), acc, out_dtype = tl.int32)
 
 
@@ -164,8 +187,94 @@ def _phase_loop(
     BLOCK_K: tl.constexpr,
 ):
     Q: tl.constexpr = BLOCK_K // 4
-    # Plain pointers, not block pointers: Triton 3.9 removed tl.make_block_ptr / tl.advance (triton-lang/triton#10833).
-    # Same bytes as the block pointers loaded: rows past M / N read as zeros (never stored), columns stay inside K.
+    om = pid_m * BLOCK_M
+    on = pid_n * BLOCK_N
+    kq = k_first * Q
+    # activations at columns 4j + t (rows past M read as zeros and are never stored)
+    a0 = tl.make_block_ptr(a_ptr, (M, K // 4), (stride_am, 4), (om, kq), (BLOCK_M, Q), (1, 0))
+    a1 = tl.make_block_ptr(a_ptr + 1, (M, K // 4), (stride_am, 4), (om, kq), (BLOCK_M, Q), (1, 0))
+    a2 = tl.make_block_ptr(a_ptr + 2, (M, K // 4), (stride_am, 4), (om, kq), (BLOCK_M, Q), (1, 0))
+    a3 = tl.make_block_ptr(a_ptr + 3, (M, K // 4), (stride_am, 4), (om, kq), (BLOCK_M, Q), (1, 0))
+    # nibble bytes 2j (phases 0, 1) and 2j + 1 (phases 2, 3), top-plane byte j
+    ne = tl.make_block_ptr(q_ptr, (N, K // 4), (stride_qn, 2), (on, kq), (BLOCK_N, Q), (1, 0))
+    no = tl.make_block_ptr(q_ptr + 1, (N, K // 4), (stride_qn, 2), (on, kq), (BLOCK_N, Q), (1, 0))
+    hp = tl.make_block_ptr(
+        q_ptr + K // 2, (N, K // 4), (stride_qn, 1), (on, kq), (BLOCK_N, Q), (1, 0)
+    )
+    jj = tl.arange(0, Q)
+    s_ptrs = s_ptr + rn[:, None] * groups + ((k_first * BLOCK_K + 4 * jj) // GROUP)[None, :]
+    acc = tl.zeros((BLOCK_M, BLOCK_N), dtype = tl.int32)
+    for _k in range(0, k_steps):
+        step = _step_f32(tl.load(s_ptrs), HW)  # one convert serves the four phases
+        nib_e = tl.load(ne, boundary_check = (0,), padding_option = "zero").to(tl.int32)
+        nib_o = tl.load(no, boundary_check = (0,), padding_option = "zero").to(tl.int32)
+        if BITS == 6:
+            hi = tl.load(hp, boundary_check = (0,), padding_option = "zero").to(tl.int32)
+        else:
+            hi = nib_e
+        acc = _phase_dot(acc, a0, nib_e, hi, step, cb_ptr, 0, BITS, HAS_CB, HW)
+        acc = _phase_dot(acc, a1, nib_e, hi, step, cb_ptr, 1, BITS, HAS_CB, HW)
+        acc = _phase_dot(acc, a2, nib_o, hi, step, cb_ptr, 2, BITS, HAS_CB, HW)
+        acc = _phase_dot(acc, a3, nib_o, hi, step, cb_ptr, 3, BITS, HAS_CB, HW)
+        a0 = tl.advance(a0, (0, Q))
+        a1 = tl.advance(a1, (0, Q))
+        a2 = tl.advance(a2, (0, Q))
+        a3 = tl.advance(a3, (0, Q))
+        ne = tl.advance(ne, (0, Q))
+        no = tl.advance(no, (0, Q))
+        hp = tl.advance(hp, (0, Q))
+        s_ptrs += BLOCK_K // GROUP
+    return acc
+
+
+@triton.jit
+def _phase_dot_ptr(
+    acc,
+    a_ptrs,
+    a_mask,
+    nib,
+    hi,
+    step,
+    cb_ptr,
+    T: tl.constexpr,
+    BITS: tl.constexpr,
+    HAS_CB: tl.constexpr,
+    HW: tl.constexpr,
+):
+    w = _to_int8(_phase_code(nib, hi, T, BITS), step, cb_ptr, BITS, HAS_CB, HW)
+    a = tl.load(a_ptrs + T, mask = a_mask, other = 0)
+    return tl.dot(a, tl.trans(w), acc, out_dtype = tl.int32)
+
+
+@triton.jit
+def _phase_loop_ptr(
+    a_ptr,
+    q_ptr,
+    s_ptr,
+    cb_ptr,
+    pid_m,
+    pid_n,
+    M,
+    N,
+    K,
+    stride_am,
+    stride_qn,
+    groups,
+    rn,
+    k_first,
+    k_steps,
+    BITS: tl.constexpr,
+    GROUP: tl.constexpr,
+    HAS_CB: tl.constexpr,
+    HW: tl.constexpr,
+    BLOCK_M: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+    BLOCK_K: tl.constexpr,
+):
+    Q: tl.constexpr = BLOCK_K // 4
+    # _phase_loop with plain pointers, for a Triton without block pointers (3.9 removed tl.make_block_ptr /
+    # tl.advance, triton-lang/triton#10833). Same bytes: rows past M / N read as zeros (never stored), columns stay
+    # inside K. Not the default: on sm120 under Triton 3.8 the block pointers are a few percent faster.
     rows_m = pid_m.to(tl.int64) * BLOCK_M + tl.arange(0, BLOCK_M)
     rows_n = pid_n.to(tl.int64) * BLOCK_N + tl.arange(0, BLOCK_N)
     mask_m = (rows_m < M)[:, None]
@@ -188,10 +297,10 @@ def _phase_loop(
             hi = tl.load(hp_ptrs, mask = mask_n, other = 0).to(tl.int32)
         else:
             hi = nib_e
-        acc = _phase_dot(acc, a_ptrs, mask_m, nib_e, hi, step, cb_ptr, 0, BITS, HAS_CB, HW)
-        acc = _phase_dot(acc, a_ptrs, mask_m, nib_e, hi, step, cb_ptr, 1, BITS, HAS_CB, HW)
-        acc = _phase_dot(acc, a_ptrs, mask_m, nib_o, hi, step, cb_ptr, 2, BITS, HAS_CB, HW)
-        acc = _phase_dot(acc, a_ptrs, mask_m, nib_o, hi, step, cb_ptr, 3, BITS, HAS_CB, HW)
+        acc = _phase_dot_ptr(acc, a_ptrs, mask_m, nib_e, hi, step, cb_ptr, 0, BITS, HAS_CB, HW)
+        acc = _phase_dot_ptr(acc, a_ptrs, mask_m, nib_e, hi, step, cb_ptr, 1, BITS, HAS_CB, HW)
+        acc = _phase_dot_ptr(acc, a_ptrs, mask_m, nib_o, hi, step, cb_ptr, 2, BITS, HAS_CB, HW)
+        acc = _phase_dot_ptr(acc, a_ptrs, mask_m, nib_o, hi, step, cb_ptr, 3, BITS, HAS_CB, HW)
         a_ptrs += BLOCK_K
         ne_ptrs += BLOCK_K // 2
         hp_ptrs += Q
@@ -231,6 +340,7 @@ def grouped_mm_dq(
     BLOCK_K: tl.constexpr,  # divides K, a multiple of GROUP and of 8 (of 64 for the phases)
     GROUP_M: tl.constexpr,
     SPLIT_K: tl.constexpr,  # > 1: K blocks split over grid axis 1 into the int32 buffer p (phase loop only)
+    BLOCK_PTR: tl.constexpr = True,  # phase loop through block pointers; False = plain pointers (Triton >= 3.9)
 ):
     pid = tl.program_id(0)
     num_pid_m = tl.cdiv(M, BLOCK_M)
@@ -250,11 +360,18 @@ def grouped_mm_dq(
         steps = K // BLOCK_K
         per = tl.cdiv(steps, SPLIT_K)
         k_first = tl.program_id(1) * per
-        acc = _phase_loop(
-            a_ptr, q_ptr, s_ptr, cb_ptr, pid_m, pid_n, M, N, K, stride_am, stride_qn, groups, rn,
-            k_first, tl.minimum(per, steps - k_first),
-            BITS, GROUP, HAS_CB, HW, BLOCK_M, BLOCK_N, BLOCK_K,
-        )  # fmt: skip
+        if BLOCK_PTR:
+            acc = _phase_loop(
+                a_ptr, q_ptr, s_ptr, cb_ptr, pid_m, pid_n, M, N, K, stride_am, stride_qn, groups, rn,
+                k_first, tl.minimum(per, steps - k_first),
+                BITS, GROUP, HAS_CB, HW, BLOCK_M, BLOCK_N, BLOCK_K,
+            )  # fmt: skip
+        else:
+            acc = _phase_loop_ptr(
+                a_ptr, q_ptr, s_ptr, cb_ptr, pid_m, pid_n, M, N, K, stride_am, stride_qn, groups, rn,
+                k_first, tl.minimum(per, steps - k_first),
+                BITS, GROUP, HAS_CB, HW, BLOCK_M, BLOCK_N, BLOCK_K,
+            )  # fmt: skip
     else:
         acc = _tile_loop(
             a_ptr, q_ptr, s_ptr, cb_ptr, rm, rn, K, stride_am, stride_qn, groups,

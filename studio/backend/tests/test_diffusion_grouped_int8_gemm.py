@@ -227,23 +227,85 @@ def test_fused_gemm_is_bit_identical_under_the_interpreter():
     assert "OK 16" in proc.stdout
 
 
-def test_no_block_pointers_in_studio_kernels():
-    # Triton 3.9 (and triton-windows 3.9, paired with torch 2.15) turned tl.make_block_ptr / tl.advance into a raise
-    # (triton-lang/triton#10833): a kernel using them fails its probe and silently drops to the slower path.
-    import ast
-    from pathlib import Path
+_REMOVED_BLOCK_PTR = textwrap.dedent(
+    """
+    import sys
+    sys.path.insert(0, {root!r})
+    import triton.language as tl
+    import triton.language.core as core
 
-    hits = []
-    for path in sorted(Path(ROOT).rglob("*.py")):
-        if "tests" in path.relative_to(ROOT).parts:
-            continue
-        tree = ast.parse(path.read_text(encoding = "utf-8"))
-        for node in ast.walk(tree):
-            if (
-                isinstance(node, ast.Attribute)
-                and node.attr in ("make_block_ptr", "advance")
-                and isinstance(node.value, ast.Name)
-                and node.value.id in ("tl", "language")
-            ):
-                hits.append(f"{path.relative_to(ROOT)}:{node.lineno} {node.attr}")
-    assert not hits, hits
+    # Triton 3.9's stubs (triton-lang/triton#10833): docstring plus an unconditional raise.
+    def make_block_ptr(base, shape, strides, offsets, block_shape, order, _semantic=None):
+        \"\"\"Block pointers have been removed. Use a tensor descriptor instead.\"\"\"
+        raise NotImplementedError("Block pointers have been removed in favor of the tensor descriptor API")
+
+    def advance(base, offsets, _semantic=None):
+        \"\"\"Block pointers have been removed. Use a tensor descriptor instead.\"\"\"
+        raise NotImplementedError("Block pointers have been removed in favor of the tensor descriptor API")
+
+    for mod in (tl, core):
+        mod.make_block_ptr, mod.advance = make_block_ptr, advance
+
+    import torch
+    import core.inference.diffusion_grouped_int8_gemm as fg
+    from core.inference.diffusion_grouped_int8 import decode_int8_torch
+
+    n = 0
+    for tile in ((16, 32, 64, 1, 4, 1, 2), (16, 32, 64, 1, 4, 1, 2, 3)):
+        for c in fg.probe_cases("cpu"):
+            if not fg.covered(c["xq"], c["packed"], c["s_rel"], c["codebook"], c["bits"], c["group"], tile):
+                continue
+            out, _ = fg.launch(c["xq"], c["packed"], c["s_rel"], c["codebook"], c["xs"], c["ws"], c["bias"],
+                               c["bits"], c["group"], tile)
+            q8 = decode_int8_torch(c["packed"], c["s_rel"], c["codebook"], c["group"], c["bits"])
+            ref = fg.reference(c["xq"], q8, c["xs"], c["ws"], c["bias"])
+            assert torch.equal(out, ref), (tile, c["bits"], c["group"])
+            n += 1
+    print("OK", n)
+    """
+)
+
+
+def test_phase_tile_is_bit_identical_without_block_pointers():
+    # Triton 3.9 (and triton-windows 3.9, paired with torch 2.15) made the block pointer API raise; the phase tile
+    # must switch to plain pointers instead of failing its probe and dropping to decode + int8 GEMM.
+    pytest.importorskip("triton")
+    env = dict(os.environ, TRITON_INTERPRET = "1", CUDA_VISIBLE_DEVICES = "")
+    proc = subprocess.run(
+        [sys.executable, "-c", _REMOVED_BLOCK_PTR.format(root = ROOT)],
+        env = env,
+        capture_output = True,
+        text = True,
+        timeout = 900,
+    )
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    assert "OK 8" in proc.stdout
+
+
+def test_block_ptr_removed_detection():
+    pytest.importorskip("triton")
+    import functools
+    import types
+
+    from core.inference import diffusion_grouped_int8_gemm_kernels as kernels
+
+    def working(*args, **kwargs):
+        """Block pointers have been removed upstream, but this one still works."""
+        return args
+
+    def stub(*args, **kwargs):
+        """Block pointers have been removed. Use a tensor descriptor instead."""
+        raise NotImplementedError(
+            "Block pointers have been removed in favor of the tensor descriptor API"
+        )
+
+    wrapped_stub = functools.wraps(stub)(lambda *a, **k: stub(*a, **k))
+    assert not kernels.block_ptr_removed(
+        types.SimpleNamespace(make_block_ptr = working, advance = working)
+    )
+    assert kernels.block_ptr_removed(types.SimpleNamespace(make_block_ptr = stub, advance = stub))
+    assert kernels.block_ptr_removed(
+        types.SimpleNamespace(make_block_ptr = wrapped_stub, advance = working)
+    )
+    assert kernels.block_ptr_removed(types.SimpleNamespace(make_block_ptr = working))
+    assert kernels.block_ptr_removed(types.SimpleNamespace())
