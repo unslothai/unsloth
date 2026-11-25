@@ -448,7 +448,7 @@ def probe_native_w8a8_cuda(p: GpuProfile) -> dict:
         _pinned(cq, _kernels = lambda: types.SimpleNamespace() if p.triton else None),
     ):
         try:
-            on = bool(nw.prepare(0))
+            on = bool(nw.prepare("cuda:0"))  # an int device needs a CUDA build of torch
             why = nw._STATE["devices"].get(0)
         except Exception as exc:  # noqa: BLE001 - recorded, never read as engaged
             on, why = False, f"error {type(exc).__name__}"
