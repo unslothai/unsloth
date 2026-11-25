@@ -517,17 +517,99 @@ def test_end_to_end_run_trains_saves_and_the_pipeline_loads_the_adapter(
 # --- caption caching drops the text encoder lm_head ---------------------------------------------------------------
 
 
-def _load_conditioners(tiny_pipe_dir):
+def _load_conditioners(pipe_dir):
     import types
-    cfg = types.SimpleNamespace(base_model = tiny_pipe_dir, hf_token = None)
+    cfg = types.SimpleNamespace(base_model = pipe_dir, hf_token = None)
     return dit._qwen21_load_conditioners(cfg, "cpu", torch.bfloat16)
 
 
-@pytest.mark.allow_network
-def test_caption_cache_drops_the_lm_head_and_keeps_the_embeds(tiny_pipe_dir, monkeypatch):
+@pytest.fixture
+def local_qwen21_conditioner_dir(tmp_path, monkeypatch):
+    """A Qwen-Image-2.1 conditioner checkpoint (untied Qwen3-VL encoder, byte-level tokenizer, toy VAE, no
+    transformer) built and saved locally, so the lm_head trim test needs no Hub access and can never skip for it."""
+    pipe_cls, _ = _classes()
+    try:
+        from diffusers import AutoencoderKLQwenImage21, FlowMatchEulerDiscreteScheduler
+        from tokenizers.pre_tokenizers import ByteLevel
+        from transformers import (
+            Qwen2Tokenizer,
+            Qwen2VLImageProcessor,
+            Qwen3VLConfig,
+            Qwen3VLForConditionalGeneration,
+            Qwen3VLProcessor,
+            Qwen3VLVideoProcessor,
+        )
+    except Exception as exc:  # noqa: BLE001 -- library too old for Qwen3-VL / Qwen-Image-2.1
+        pytest.skip(f"Qwen3-VL / Qwen-Image-2.1 classes unavailable: {exc}")
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    torch.manual_seed(19437)
+    specials = [
+        "<|endoftext|>",
+        "<|im_start|>",
+        "<|im_end|>",
+        "<|image_pad|>",
+        "<|video_pad|>",
+        "<|vision_start|>",
+        "<|vision_end|>",
+    ]
+    vocab = {t: i for i, t in enumerate(specials + sorted(ByteLevel.alphabet()))}
+    processor = Qwen3VLProcessor(
+        image_processor = Qwen2VLImageProcessor(),
+        tokenizer = Qwen2Tokenizer(vocab = vocab, merges = [], additional_special_tokens = specials[1:]),
+        video_processor = Qwen3VLVideoProcessor(),
+        chat_template = "{% for message in messages %}{{ message.content[0].text }}{% endfor %}",
+    )
+    encoder = Qwen3VLForConditionalGeneration(
+        Qwen3VLConfig(
+            tie_word_embeddings = False,
+            image_token_id = vocab["<|image_pad|>"],
+            video_token_id = vocab["<|video_pad|>"],
+            vision_start_token_id = vocab["<|vision_start|>"],
+            vision_end_token_id = vocab["<|vision_end|>"],
+            text_config = {
+                "vocab_size": len(vocab),
+                "hidden_size": 32,
+                "intermediate_size": 64,
+                "num_hidden_layers": 2,
+                "num_attention_heads": 2,
+                "num_key_value_heads": 1,
+                "head_dim": 16,
+                "rope_scaling": {"rope_type": "default", "mrope_section": [2, 3, 3]},
+                "tie_word_embeddings": False,
+            },
+            vision_config = {
+                "depth": 1,
+                "hidden_size": 16,
+                "intermediate_size": 32,
+                "num_heads": 2,
+                "out_hidden_size": 32,
+                "deepstack_visual_indexes": [],
+            },
+        )
+    ).eval()
+    vae = AutoencoderKLQwenImage21(
+        base_dim = 8,
+        decoder_base_dim = 8,
+        dim_mult = [1, 1],
+        z_dim = 4,
+        num_res_blocks = 1,
+        temperal_downsample = [False],
+    )
+    out = tmp_path / "qwen21_conditioners"
+    pipe_cls(FlowMatchEulerDiscreteScheduler(), vae, encoder, processor, None).save_pretrained(
+        str(out)
+    )
+    return str(out)
+
+
+def test_caption_cache_drops_the_lm_head_and_keeps_the_embeds(
+    local_qwen21_conditioner_dir, monkeypatch
+):
     """The trainer's conditioner load drops the untied Qwen3-VL lm_head; the cached caption embeds are bit-identical
-    to the full encoder's, and UNSLOTH_TE_KEEP_LM_HEAD=1 keeps the head."""
+    to the full encoder's, and UNSLOTH_TE_KEEP_LM_HEAD=1 keeps the head. Runs on a locally built checkpoint."""
     from core.inference.diffusion_text_encoder_trim import KEEP_LM_HEAD_ENV, is_trimmed
+
+    tiny_pipe_dir = local_qwen21_conditioner_dir
 
     captions = [
         "a watercolor fox in the snow",
