@@ -162,3 +162,65 @@ def test_loader_installs_the_float32_forward(monkeypatch):
         {"x": 1}, state, variant = "dev", torch_dtype = torch.bfloat16, hf_token = None
     )
     assert audio_vae == "audio_vae" and out._unsloth_fp32_forward
+
+
+def _oom_on_float32(voc, exc):
+    """The stage-1 generator raises ``exc`` whenever it is handed a float32 input (the float32 pass)."""
+    real = voc.vocoder.forward
+    calls = {"fp32": 0}
+
+    def forward(x, *a, **k):
+        if x.dtype == torch.float32:
+            calls["fp32"] += 1
+            raise exc
+        return real(x, *a, **k)
+
+    voc.vocoder.forward = forward
+    return calls
+
+
+@torch.no_grad()
+def test_out_of_memory_runs_the_stored_dtype_and_logs_once(monkeypatch):
+    _, voc = _reference_and_studio()
+    base = copy.deepcopy(voc)
+    L.install_vocoder_fp32_forward(voc)
+    oom = getattr(torch, "OutOfMemoryError", torch.cuda.OutOfMemoryError)
+    calls = _oom_on_float32(voc, oom("CUDA out of memory. Tried to allocate 96.00 MiB"))
+    warned = []
+    monkeypatch.setattr(L, "_fallback_logged", [False])
+    monkeypatch.setattr(L.logger, "warning", lambda *a, **k: warned.append(a))
+    mel = _mel()
+    for _ in range(2):
+        out = voc(mel)
+        assert out.dtype == torch.bfloat16 and torch.equal(out, base(mel))
+    assert calls["fp32"] == 2 and len(warned) == 1
+    # the module is left as it was: stored filter, bf16 weights
+    assert voc.resampler.filter.dtype == torch.bfloat16
+    assert {p.dtype for p in voc.parameters()} == {torch.bfloat16}
+
+
+@torch.no_grad()
+def test_runtime_out_of_memory_message_also_falls_back(monkeypatch):
+    _, voc = _reference_and_studio()
+    base = copy.deepcopy(voc)
+    L.install_vocoder_fp32_forward(voc)
+    _oom_on_float32(voc, RuntimeError("MPS backend out of memory (MPS allocated: 1 GB)"))
+    monkeypatch.setattr(L, "_fallback_logged", [False])
+    assert torch.equal(voc(_mel()), base(_mel()))
+
+
+@torch.no_grad()
+def test_other_errors_are_not_swallowed():
+    _, voc = _reference_and_studio()
+    L.install_vocoder_fp32_forward(voc)
+    _oom_on_float32(voc, ValueError("shape mismatch"))
+    with pytest.raises(ValueError):
+        voc(_mel())
+
+
+def test_fp32_extra_scales_with_clip_length():
+    small = L.vocoder_fp32_extra_bytes(torch.zeros(1, 2, 501, 64))
+    big = L.vocoder_fp32_extra_bytes(torch.zeros(1, 2, 2004, 64))
+    # the measured +104.5 MiB at 501 frames, with margin
+    assert 105 << 20 < small < 300 << 20
+    assert big > 3 * small

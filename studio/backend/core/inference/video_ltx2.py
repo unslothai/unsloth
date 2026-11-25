@@ -1578,8 +1578,57 @@ def _swapped_filter(res: Any, fp32_filter: Any, cache: dict) -> Iterator[None]:
         res._buffers["filter"] = saved
 
 
+# Extra peak of the float32 forward over bf16, measured on an L4 (LTX-2.5 vocoder, 5.04 s clip = 501 mel frames):
+# +104.5 MiB, linear in the clip length. Below it (with margin) free on the card, the call runs the stored dtype.
+_FP32_EXTRA_MIB_PER_MEL_FRAME = 105.0 / 501
+_FP32_MARGIN = 1.5
+_FP32_MARGIN_MIB = 64
+_fallback_logged = [False]
+
+
+def vocoder_fp32_extra_bytes(mel_spec: Any) -> int:
+    """Bytes the float32 forward needs beyond the bf16 one for this mel input, margin included."""
+    frames = int(mel_spec.shape[-2]) if getattr(mel_spec, "dim", lambda: 0)() >= 2 else 0
+    batch = int(mel_spec.shape[0]) if getattr(mel_spec, "dim", lambda: 0)() >= 4 else 1
+    mib = _FP32_EXTRA_MIB_PER_MEL_FRAME * frames * batch * _FP32_MARGIN + _FP32_MARGIN_MIB
+    return int(mib * (1 << 20))
+
+
+def _cuda_room(device: Any) -> Optional[int]:
+    """Free bytes on ``device``: the driver's free memory plus the caching allocator's unused reserve."""
+    try:
+        import torch
+        free, _ = torch.cuda.mem_get_info(device)
+        return (
+            int(free)
+            + int(torch.cuda.memory_reserved(device))
+            - int(torch.cuda.memory_allocated(device))
+        )
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _is_oom(exc: BaseException) -> bool:
+    import torch
+
+    oom = getattr(torch, "OutOfMemoryError", None) or getattr(torch.cuda, "OutOfMemoryError", None)
+    if oom is not None and isinstance(exc, oom):
+        return True
+    return isinstance(exc, RuntimeError) and "out of memory" in str(exc).lower()
+
+
+def _log_fallback_once(reason: str) -> None:
+    if not _fallback_logged[0]:
+        _fallback_logged[0] = True
+        logger.warning(
+            "LTX vocoder: %s; this decode runs in the stored dtype (bf16) instead of float32",
+            reason,
+        )
+
+
 def install_vocoder_fp32_forward(vocoder: Any) -> None:
-    """Run this vocoder instance's forward in float32 and return a float32 waveform; idempotent, never raises."""
+    """Run this vocoder instance's forward in float32 and return a float32 waveform; idempotent, never raises. The
+    float32 call never fails a render: short of room on the card, or out of memory, the call runs the stored dtype."""
     try:
         import torch
         import types
@@ -1590,10 +1639,7 @@ def install_vocoder_fp32_forward(vocoder: Any) -> None:
         fp32_filter = _fp32_resampler_filter(vocoder)
         filter_cache: dict = {}
 
-        def forward(self, mel_spec, *args, **kwargs):
-            param = next(self.parameters(), None)
-            if param is None or not vocoder_fp32_enabled() or not torch.is_floating_point(mel_spec):
-                return inner(mel_spec, *args, **kwargs)
+        def fp32_call(self, param, mel_spec, args, kwargs):
             with _swapped_filter(self.resampler, fp32_filter, filter_cache):
                 if param.dtype == torch.float32:
                     return inner(mel_spec.float(), *args, **kwargs)
@@ -1605,6 +1651,29 @@ def install_vocoder_fp32_forward(vocoder: Any) -> None:
                     ctx = _module_in_fp32(self)
                 with ctx:
                     return inner(mel_spec.float(), *args, **kwargs)
+
+        def forward(self, mel_spec, *args, **kwargs):
+            param = next(self.parameters(), None)
+            if param is None or not vocoder_fp32_enabled() or not torch.is_floating_point(mel_spec):
+                return inner(mel_spec, *args, **kwargs)
+            if param.dtype != torch.float32 and mel_spec.device.type == "cuda":
+                room = _cuda_room(mel_spec.device)
+                need = vocoder_fp32_extra_bytes(mel_spec)
+                if room is not None and room < need:
+                    _log_fallback_once(
+                        f"{room >> 20} MiB free, the float32 pass needs about {need >> 20} MiB"
+                    )
+                    return inner(mel_spec, *args, **kwargs)
+            try:
+                return fp32_call(self, param, mel_spec, args, kwargs)
+            except Exception as exc:  # noqa: BLE001
+                if not _is_oom(exc):
+                    raise
+                _log_fallback_once("out of memory in the float32 pass")
+            # outside the except block, so the failed pass's tensors are released first
+            if mel_spec.device.type == "cuda":
+                torch.cuda.empty_cache()
+            return inner(mel_spec, *args, **kwargs)
 
         vocoder.forward = types.MethodType(forward, vocoder)
         vocoder._unsloth_fp32_forward = True
