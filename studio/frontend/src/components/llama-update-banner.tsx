@@ -4,6 +4,7 @@
 import { Button } from "@/components/ui/button";
 import { LlamaUpdateChangelogPanel } from "@/components/update/llama-update-changelog-panel";
 import { resyncInferenceStatusAfterServerModelChange } from "@/features/chat/hooks/resync-inference-status-lazy";
+import { formatBytes } from "@/features/hub/lib/format";
 import { LLAMA_BACKEND_LABELS } from "@/features/settings/lib/llama-backend-labels";
 import {
   llamaUpdateOffered,
@@ -122,7 +123,7 @@ interface LlamaUpdateBannerProps {
 
 function sizeLabelOf(sizeBytes: number | null | undefined): string | null {
   return sizeBytes && sizeBytes > 0
-    ? `${Math.round(sizeBytes / (1024 * 1024))} MB`
+    ? formatBytes(sizeBytes)
     : null;
 }
 

@@ -69,14 +69,14 @@ const SIZE_UNITS = [
 
 export function formatSize(bytes: number | null, locale: Locale, t: Translate): string | null {
   if (bytes === null) return null;
-  if (bytes < 1024) {
+  if (bytes < 1000) {
     return t("library.size.bytes", { value: formatNumber(bytes, locale, { useGrouping: false }) });
   }
-  let value = bytes / 1024;
+  let value = bytes / 1000;
   let unit: (typeof SIZE_UNITS)[number] = SIZE_UNITS[0];
   for (const next of SIZE_UNITS.slice(1)) {
-    if (value < 1024) break;
-    value /= 1024;
+    if (value < 1000) break;
+    value /= 1000;
     unit = next;
   }
   const digits = value >= 10 ? 0 : 1;

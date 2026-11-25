@@ -7,7 +7,7 @@ const HOURS_PER_DAY = 24;
 const SECONDS_PER_HOUR = SECONDS_PER_MINUTE * MINUTES_PER_HOUR;
 const MAX_DISPLAYABLE_ETA_SECONDS = HOURS_PER_DAY * SECONDS_PER_HOUR;
 
-export function formatBytes(bytes: number): string {
+export function formatBytes(bytes: number, unitSeparator = " "): string {
   if (!Number.isFinite(bytes) || bytes < 0) return "N/A";
   if (bytes === 0) return "0 B";
   const units = ["B", "KB", "MB", "GB", "TB"];
@@ -22,7 +22,7 @@ export function formatBytes(bytes: number): string {
     value = bytes / 1000 ** i;
     decimals = Number(value.toFixed(1)) < 10 ? 1 : 0;
   }
-  return `${value.toFixed(decimals)} ${units[i]}`;
+  return `${value.toFixed(decimals)}${unitSeparator}${units[i]}`;
 }
 
 export function formatRate(bytesPerSec: number): string {

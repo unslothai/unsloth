@@ -250,7 +250,7 @@ import {
   subscribeAdvancedSettingsOpen,
   sameEngramPrecision,
 } from "../model-config/per-model-config";
-import { type EngramTableDetail, listGgufVariants } from "@/features/hub";
+import { type EngramTableDetail, formatBytes, listGgufVariants } from "@/features/hub";
 import { isAudioRuntimeGguf } from "../../audio/audio-cpp-catalog";
 import {
   isNpuModelId,
@@ -2056,10 +2056,6 @@ type EngramTableListing = {
   supported: boolean | null;
 };
 
-function formatTableSize(bytes: number): string {
-  return `${(bytes / 1e9).toFixed(1)} GB`;
-}
-
 /** Tables the repo publishes for this quant, or null when it publishes none (the row then hides). */
 function useEngramTables(source: EngramTableSource | null): EngramTableListing | null {
   const [listing, setListing] = useState<EngramTableListing | null>(null);
@@ -2123,13 +2119,13 @@ function EngramTableRow({
       ? "This llama.cpp build cannot load a separate table, so the next load fails. Update llama.cpp, or pick the built-in table."
       : "Swapping the table needs a newer llama.cpp. Update it to choose another precision.";
   } else if (swapped && table && !table.downloaded) {
-    note = `The next load downloads the ${table.precision} table (${formatTableSize(table.size_bytes)}).`;
+    note = `The next load downloads the ${table.precision} table (${formatBytes(table.size_bytes)}).`;
     if (!ownReady && ownTable) {
-      note += ` The built-in ${own} table (${formatTableSize(ownTable.size_bytes)}) is not needed.`;
+      note += ` The built-in ${own} table (${formatBytes(ownTable.size_bytes)}) is not needed.`;
     }
   } else if (!swapped && quantDownloaded && !ownReady && ownTable) {
     // On disk with another table in place of its own.
-    note = `The next load downloads the built-in ${own} table (${formatTableSize(ownTable.size_bytes)}).`;
+    note = `The next load downloads the built-in ${own} table (${formatBytes(ownTable.size_bytes)}).`;
   }
   return (
     <div className="space-y-1">
@@ -2170,7 +2166,7 @@ function EngramTableRow({
                   <span className="flex min-w-0 flex-1 items-baseline gap-2">
                     <span>{t.precision}</span>
                     <span className="text-ui-12 tabular-nums text-muted-foreground">
-                      {formatTableSize(t.size_bytes)}
+                      {formatBytes(t.size_bytes)}
                       {builtIn ? " · built-in" : downloaded ? " · downloaded" : ""}
                     </span>
                   </span>

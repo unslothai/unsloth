@@ -10,10 +10,10 @@ import {
   type AudioCppSttKey,
   audioCppDisplayName,
   audioCppModelFor,
-  audioCppSizeLabel,
   audioCppWorkflowsFor,
   isAudioCppFolderId,
 } from "../../audio/audio-cpp-catalog.ts";
+import { formatBytes } from "../../hub/lib/format.ts";
 
 /** Mirrored by the backend sidecars; picker order, recommended first. */
 export const STT_MODELS = [
@@ -137,7 +137,7 @@ export const STT_MODEL_SIZES: Record<DefaultSttModel, string> = {
   ...(Object.fromEntries(
     AUDIO_CPP_DICTATION_MODELS.map((model) => [
       model.key,
-      audioCppSizeLabel(model.sizeBytes),
+      formatBytes(model.sizeBytes),
     ]),
   ) as Record<AudioCppSttKey, string>),
 };
