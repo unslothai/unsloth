@@ -978,3 +978,39 @@ def test_macos_profile_grants_pseudo_devices_only():
     profile = tool_confinement.macos_profile(read_roots = [], hidden_roots = [], writable_roots = [])
     assert '(subpath "/dev")' not in profile
     assert '(literal "/dev/null")' in profile and '(literal "/dev/urandom")' in profile
+
+
+def test_a_root_run_server_hides_root_only_system_entries_from_managed_tools(tmp_path, monkeypatch):
+    """Root reads 0600 / 0700 entries that DAC hides from a non-root server; tools must not."""
+    if sys.platform != "linux":
+        pytest.skip("Linux rule builder")
+    root = tmp_path / "host"
+    for name in ("etc/kubernetes", "var/lib/private/app", "var/lib/dpkg", "opt/tool"):
+        (root / name).mkdir(parents = True)
+    (root / "etc/k3s-token").write_text("secret")
+    (root / "etc/hosts").write_text("127.0.0.1 localhost")
+    (root / "var/lib/private/app/key").write_text("secret")
+    os.chmod(root / "etc/k3s-token", 0o600)
+    os.chmod(root / "var/lib/private", 0o700)
+    _keep_the_interpreter_walk_out_of_the_fixtures(tmp_path, monkeypatch)
+    roots = tuple(str(root / sub) for sub in ("etc", "opt", "var/lib"))
+    monkeypatch.setattr(tool_confinement, "_SYSTEM_READ_ROOTS", roots)
+    monkeypatch.setattr(tool_confinement, "_ROOT_ONLY_SCAN_ROOTS", roots, raising = False)
+    monkeypatch.setattr(tool_confinement, "_PRIVATE_SYSTEM_PATHS", ())
+    # Pretend this test's uid is root: the fixtures above are then root-owned.
+    monkeypatch.setattr(tool_confinement, "_ROOT_UID", os.geteuid(), raising = False)
+    run_as(ALICE, tools._get_workdir, "chat")
+    rules = run_as(ALICE, tool_confinement._landlock_rules, 6, tools._SANDBOX_SITE_DIR)
+    granted = [p for p, _ in rules]
+
+    def reachable(rel):
+        target = str(root / rel)
+        return any(tool_confinement._contains(p, target) for p in granted)
+
+    for public in ("etc/hosts", "etc/kubernetes", "var/lib/dpkg", "opt/tool"):
+        assert reachable(public), public
+    for private in ("etc/k3s-token", "var/lib/private", "var/lib/private/app/key"):
+        assert not reachable(private), private
+    # A non-root server is unchanged: DAC already hides these entries.
+    monkeypatch.setattr(tool_confinement, "_ROOT_UID", os.geteuid() + 1)
+    assert tool_confinement._root_only_children() == []
