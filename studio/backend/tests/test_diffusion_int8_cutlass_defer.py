@@ -729,10 +729,14 @@ def test_a_stuck_unit_never_holds_a_render_past_the_deadline(monkeypatch):
         st = defer.status()
         assert st["gave_up"] == 1 and st["running"]
         defer.render_end()
-        t0 = time.perf_counter()
-        defer.render_begin()  # no second drain for this load: it waits at most the deadline for the stuck unit
-        assert time.perf_counter() - t0 < 1.0 and defer.status()["drains"] == 1
-        defer.render_end()
+        monkeypatch.setattr(defer, "_WAIT_MAX_S", 5.0)
+        for _ in range(2):  # the unit is still stuck: later renders neither drain nor wait on it
+            t0 = time.perf_counter()
+            defer.render_begin()
+            assert time.perf_counter() - t0 < 1.0
+            st = defer.status()
+            assert st["drains"] == 1 and st["gave_up"] == 1 and st["running"]
+            defer.render_end()
     finally:
         release.set()
 

@@ -284,13 +284,16 @@ def render_begin(cancel: Any = None) -> bool:
             while (_JOBS or _STATE["running"]) and not stop():
                 waited = True
                 _COND.wait(_WAIT_POLL_S)
-        while _STATE["running"] and not stop():
+        # after a give-up no render of this load waits on the race again, a unit still in flight included
+        while _STATE["running"] and not _STATE["gave_up"] and not stop():
             waited = True
             _COND.wait(_WAIT_POLL_S)
         if draining:
             _STATE["drain"] = False
-        if (_STATE["running"] or (draining and _JOBS)) and not (
-            cancel is not None and cancel.is_set()
+        if (
+            not _STATE["gave_up"]
+            and (_STATE["running"] or (draining and _JOBS))
+            and not (cancel is not None and cancel.is_set())
         ):
             # the deadline passed with race work left: never wait on this load's race again
             _STATE["gave_up"] = True
