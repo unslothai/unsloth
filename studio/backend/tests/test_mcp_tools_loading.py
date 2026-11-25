@@ -93,7 +93,7 @@ def test_load_sends_the_body_and_reports_the_result(monkeypatch, kind):
         "evicted_slots": [{"kind": "llm", "model": "unsloth/Qwen3-0.6B"}],
     }
     assert bodies(studio, "/api/inference/load") == [
-        {"model_path": LLM, "load_in_4bit": True, "max_seq_length": 0, "gguf_variant": "Q4_K_M"}
+        {"model_path": LLM, "use_saved_settings": True, "gguf_variant": "Q4_K_M"}
     ]
 
 
@@ -130,6 +130,38 @@ def test_evicted_merges_the_route_list_and_status(
     assert result["structuredContent"]["evicted"] == expected
 
 
+SAVED_ROW = {"max_seq_length": 100_000, "kv_cache_dtype": "q8_0", "llama_extra_args": ["-cmoe"]}
+
+
+@pytest.mark.parametrize(
+    "args,expected",
+    [
+        ({}, {"max_seq_length": 100_000, "cache_type_kv": "q8_0", "load_in_4bit": True}),
+        (
+            {"max_seq_length": 4096, "kv_cache_type": "f16", "load_in_4bit": False},
+            {"max_seq_length": 4096, "cache_type_kv": "f16", "load_in_4bit": False},
+        ),
+        ({"max_seq_length": 0}, {"max_seq_length": 0, "cache_type_kv": "q8_0"}),
+    ],
+)
+def test_a_load_takes_saved_settings_for_what_it_leaves_unset(monkeypatch, args, expected):
+    import routes.inference as inference_route
+    from core.inference import local_model_resolver as resolver
+    from models.inference import LoadRequest
+    from utils import openai_auto_switch_settings as settings
+
+    monkeypatch.setattr(settings, "resolve_override_for_load", lambda *a: (LLM, dict(SAVED_ROW)))
+    monkeypatch.setattr(resolver, "resolve_trusted_cached_local_gguf", lambda *a, **k: None)
+    monkeypatch.setattr(resolver, "resolve_local_gguf", lambda *a, **k: None)
+    monkeypatch.setattr(resolver, "local_target_is_gguf", lambda *a, **k: True)
+    _result, studio = run_tool(monkeypatch, PAYLOADS, "load_model", {"model": LLM, **args})
+    (body,) = bodies(studio, "/api/inference/load")
+    assert body["use_saved_settings"] is True
+    filled = asyncio.run(inference_route._with_saved_settings(LoadRequest(**body)))
+    assert {name: getattr(filled, name) for name in expected} == expected
+    assert filled.llama_extra_args == ["-cmoe"]
+
+
 @pytest.mark.parametrize(
     "args,headers,token",
     [
@@ -143,7 +175,7 @@ def test_the_hub_token_goes_in_the_body_not_the_header(monkeypatch, args, header
     )
     (_m, _p, sent_headers, body) = call_to(studio, "/api/inference/load")
     assert json.loads(body)["hf_token"] == token
-    assert json.loads(body)["load_in_4bit"] is ("load_in_4bit" not in args)
+    assert json.loads(body).get("load_in_4bit") is args.get("load_in_4bit")
     assert "x-unsloth-hf-token" not in sent_headers
 
 

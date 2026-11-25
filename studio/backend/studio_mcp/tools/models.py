@@ -646,7 +646,7 @@ async def load_model(
     text_encoder_quant: TextEncoderQuant = None,
     h3_task: H3Task = None,
     max_seq_length: Optional[int] = None,
-    load_in_4bit: bool = True,
+    load_in_4bit: Optional[bool] = None,
     device: Device = None,
     alongside: Alongside = None,
     kv_cache_type: KvCacheType = None,
@@ -667,7 +667,7 @@ async def load_model(
     """Load a model into Unsloth Studio, downloading it first if needed, and report progress while it loads.
     ``kind`` unset infers the kind from the catalog or the model's task (a checkpoint or export is "llm"); "llm" covers chat, vision, embedding and audio models, and the "tts" and "audio" kinds list_models reports load the same way; "image" and "video" load the generation models and "stt" a speech-to-text model (downloaded first when needed).
     ``model`` is an id from list_models or a Hugging Face repo id; ``variant`` picks a GGUF quantization such as Q4_K_M.
-    ``max_seq_length`` 0 or unset lets Unsloth Studio choose the context, and ``load_in_4bit`` picks 4-bit weights (both llm only).
+    ``max_seq_length`` 0 lets Unsloth Studio choose the context, and ``load_in_4bit`` picks 4-bit weights (both llm only); an llm setting left unset comes from the model's saved load settings in Unsloth Studio, else its default.
     ``hf_token`` is for gated repos.
     The call waits up to ``wait_s`` seconds (at most 240); set the client's tool timeout above that, or pass wait_s=50 under Codex's 60 s default.
     A load that is still running then returns ``loaded`` false, ``status`` "loading" and a ``job_id``: it keeps running in Unsloth Studio, and get_job(kind="load", id=job_id, wait_s=…) follows it to the same result.

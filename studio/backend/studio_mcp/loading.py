@@ -402,7 +402,7 @@ async def load_llm(
     model: str,
     variant: Optional[str],
     max_seq_length: Optional[int],
-    load_in_4bit: bool,
+    load_in_4bit: Optional[bool],
     hf_token: Optional[str],
     kind: str = "llm",
     deadline: Optional[float] = None,
@@ -413,11 +413,12 @@ async def load_llm(
     is_lora: bool = False,
     precheck: Optional[Callable[[], Awaitable[None]]] = None,
 ) -> LoadResult:
-    body: dict[str, Any] = {
-        "model_path": model,
-        "load_in_4bit": load_in_4bit,
-        "max_seq_length": max_seq_length or 0,
-    }
+    # What the call leaves unset comes from the model's saved launch settings, as in the UI and CLI.
+    body: dict[str, Any] = {"model_path": model, "use_saved_settings": True}
+    if max_seq_length is not None:
+        body["max_seq_length"] = max_seq_length
+    if load_in_4bit is not None:
+        body["load_in_4bit"] = load_in_4bit
     if variant:
         body["gguf_variant"] = variant
     if is_lora:
@@ -499,7 +500,7 @@ async def load_llm(
         # A load asked with its own settings is never the one already running; following it would
         # skip them (and the CPU check).
         attach = not max_seq_length
-        and load_in_4bit
+        and load_in_4bit is not False
         and all(v is None for v in (device, alongside, kv_cache_type, gpu_layers)),
     )
 

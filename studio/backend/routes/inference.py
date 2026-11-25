@@ -8768,7 +8768,7 @@ async def _with_saved_settings(request: LoadRequest) -> LoadRequest:
     )
 
     load_path, variant = request.model_path, request.gguf_variant
-    alias = _snapshot_repo_or_self(load_path, require_cache = True)
+    alias = request._override_alias_id or _snapshot_repo_or_self(load_path, require_cache = True)
     # A row may be keyed by the snapshot path; the scan also warms the index local_target_is_gguf reads.
     ref = f"{load_path}:{variant}" if variant else load_path
     local = resolve_trusted_cached_local_gguf(ref) or await asyncio.to_thread(

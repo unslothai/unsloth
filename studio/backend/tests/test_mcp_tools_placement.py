@@ -150,7 +150,7 @@ def test_device_maps_to_the_load_fields(monkeypatch, model, kind, device, expect
     routes = {**PAYLOADS, ("GET", "/api/hub/gguf-variants"): GGUF_FILES}
     args = {"model": model, "kind": kind, "device": device}
     _result, _studio, (body,) = _load(monkeypatch, args, routes)
-    base = {"model_path": model, "load_in_4bit": True, "max_seq_length": 0}
+    base = {"model_path": model, "use_saved_settings": True}
     assert body == {**base, **expected}
 
 
@@ -398,8 +398,7 @@ def test_cpu_tts_falls_back_to_the_name_when_the_listing_cannot_be_read(monkeypa
     )
     assert body == {
         "model_path": OUTETTS,
-        "load_in_4bit": True,
-        "max_seq_length": 0,
+        "use_saved_settings": True,
         "audio_device": "cpu",
         **CPU,
     }
