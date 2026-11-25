@@ -3736,6 +3736,11 @@ def apply_tensor_parallel(
     """Shard every decoder attention / MLP of `model` over `tp_mesh` (None = all ranks), in place."""
     if is_tensor_parallel(model):
         return model
+    if any(level.__dict__.get("_unsloth_ep") is not None for level in _tp_chain(model)):
+        raise NotImplementedError(
+            "Unsloth: apply_tensor_parallel cannot shard an expert parallel model (apply_expert_parallel): its "
+            "experts are already split by index over the ranks. ep with tensor parallel is not supported."
+        )
     from .fsdp2_save import install_dcp_frozen_table_state_dict
 
     install_dcp_frozen_table_state_dict()  # Trainer / DCP checkpoints never hold a frozen lookup table

@@ -1525,14 +1525,16 @@ def _cp_scaler_start(trainer, accelerator) -> None:
 
 
 def _model_parallel_axes(model) -> list:
-    """The tensor / pipeline parallel axes a trainer would combine with context parallelism: from
-    UNSLOTH_TP_SIZE / UNSLOTH_PP_SIZE (read without building anything) or a model split by hand."""
+    """The tensor / pipeline / expert parallel axes a trainer would combine with context parallelism: from
+    UNSLOTH_TP_SIZE / UNSLOTH_PP_SIZE / UNSLOTH_EP_SIZE (read without building anything) or a model split by
+    hand."""
     import os
 
     axes = []
     for name, what in (
         ("UNSLOTH_PP_SIZE", "pipeline parallel"),
         ("UNSLOTH_TP_SIZE", "tensor parallel"),
+        ("UNSLOTH_EP_SIZE", "expert parallel"),
     ):
         raw = str(os.environ.get(name, "")).strip()
         try:
@@ -1545,6 +1547,7 @@ def _model_parallel_axes(model) -> list:
             axes.append(f"{what} ({name}={raw})")
     if isinstance(model, torch.nn.Module):
         try:
+            from .models.ep_native import is_expert_parallel
             from .models.pp_native import is_pipeline_parallel
             from .models.tp_native import is_tensor_parallel
         except Exception:
@@ -1553,6 +1556,8 @@ def _model_parallel_axes(model) -> list:
             axes.append("pipeline parallel (apply_pipeline_parallel)")
         if is_tensor_parallel(model) and not any(a.startswith("tensor") for a in axes):
             axes.append("tensor parallel (apply_tensor_parallel)")
+        if is_expert_parallel(model) and not any(a.startswith("expert") for a in axes):
+            axes.append("expert parallel (apply_expert_parallel)")
     return axes
 
 
@@ -1619,7 +1624,8 @@ def _refuse_model_parallel_cp(
         check_layout(alone, trainer_cls, model, config, cp_backend = backend, peft_config = peft_config)
         return
 
-    layout = _composed_layout(size) if all("UNSLOTH_" in a for a in axes) else None
+    composable = all("UNSLOTH_" in a and not a.startswith("expert") for a in axes)
+    layout = _composed_layout(size) if composable else None
     if layout is not None:
         from .parallel_capabilities import check_layout
 
@@ -1630,7 +1636,7 @@ def _refuse_model_parallel_cp(
         return
     env_cp = str(os.environ.get("UNSLOTH_CP_SIZE", "")).strip()
     hint = ""
-    if not env_cp and all("UNSLOTH_" in a for a in axes):
+    if not env_cp and composable:
         hint = (
             f' To compose them, put cp in the launch layout instead: UNSLOTH_PARALLEL="...,cp={size}" or '
             f"UNSLOTH_CP_SIZE={size} beside the other variables, so the mesh is built with a cp axis."
