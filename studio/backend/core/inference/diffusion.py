@@ -4806,7 +4806,11 @@ def _prequant_bakes_auto_accumulate(source: Any) -> bool:
 
 
 # Original (LDM) layout of a whole-pipeline single file: denoiser, text encoders, VAE.
-_WHOLE_PIPELINE_PREFIXES = ("model.diffusion_model.", "conditioner.embedders.", "first_stage_model.")
+_WHOLE_PIPELINE_PREFIXES = (
+    "model.diffusion_model.",
+    "conditioner.embedders.",
+    "first_stage_model.",
+)
 # MemoryPlan.estimates marker: companion/text-encoder MiB are shares of model_dense_mib, split from the header.
 WHOLE_PIPELINE_SPLIT_KEY = "whole_pipeline_split"
 

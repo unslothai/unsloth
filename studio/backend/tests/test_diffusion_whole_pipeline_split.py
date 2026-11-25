@@ -49,7 +49,6 @@ SDXL_LIKE = {
 @pytest.fixture
 def no_overrides(monkeypatch):
     import core.inference.diffusion_comfy_components as comps
-
     monkeypatch.setattr(comps, "active_component_overrides", lambda: None)
 
 
@@ -88,7 +87,12 @@ def test_header_split_defers_to_active_component_overrides(tmp_path, monkeypatch
     assert d._whole_pipeline_companion_mib(path, 56) is None
 
 
-def _single_file_plan(monkeypatch, path, fam, companion_cache_bytes = 0):
+def _single_file_plan(
+    monkeypatch,
+    path,
+    fam,
+    companion_cache_bytes = 0,
+):
     seen = {}
 
     def plan(**kwargs):
@@ -105,15 +109,22 @@ def _single_file_plan(monkeypatch, path, fam, companion_cache_bytes = 0):
         DiffusionBackend, "_text_encoder_cache_bytes", staticmethod(lambda *a, **k: 0)
     )
     monkeypatch.setattr(DiffusionBackend, "_supplied_component_mib", lambda self, *a, **k: None)
-    monkeypatch.setattr(d, "settled_snapshot_device_memory", lambda target, **k: DeviceMemory(
-        "cuda", "cuda", "discrete_vram", 6_959, 8_188
-    ))
+    monkeypatch.setattr(
+        d,
+        "settled_snapshot_device_memory",
+        lambda target, **k: DeviceMemory("cuda", "cuda", "discrete_vram", 6_959, 8_188),
+    )
     monkeypatch.setattr(d, "_calibrated_activation", lambda *a, **k: None)
     target = types.SimpleNamespace(
         device = "cuda", backend = "cuda", dtype = None, supports_model_cpu_offload = True
     )
     final = DiffusionBackend()._plan_memory(
-        target, path, "stabilityai/stable-diffusion-xl-base-1.0", fam, None, False,
+        target,
+        path,
+        "stabilityai/stable-diffusion-xl-base-1.0",
+        fam,
+        None,
+        False,
         kind = "single_file",
     )
     return final, seen
@@ -154,7 +165,10 @@ def test_plan_memory_keeps_todays_sizing_for_a_file_without_the_ldm_prefixes(
 def test_plan_memory_does_not_split_a_denoiser_only_file(tmp_path, monkeypatch, no_overrides):
     """A DiT single file keeps the base-cache companions (it carries no encoders of its own)."""
     fam = types.SimpleNamespace(
-        name = "z-image", single_file_is_pipeline = False, pipeline_only = False, denoiser_attr = "transformer"
+        name = "z-image",
+        single_file_is_pipeline = False,
+        pipeline_only = False,
+        denoiser_attr = "transformer",
     )
     monkeypatch.setattr(
         DiffusionBackend, "_comfy_single_file_resident_mib", staticmethod(lambda *a, **k: None)
@@ -190,7 +204,12 @@ def test_pipeline_plan_passes_the_unet_folder_for_a_unet_family(monkeypatch):
 
     seen = []
 
-    def companions(base, staged = None, load_dtype = None, **kw):
+    def companions(
+        base,
+        staged = None,
+        load_dtype = None,
+        **kw,
+    ):
         seen.append(kw)
         return 0
 
@@ -200,9 +219,11 @@ def test_pipeline_plan_passes_the_unet_folder_for_a_unet_family(monkeypatch):
     )
     monkeypatch.setattr(DiffusionBackend, "_cache_bytes", staticmethod(lambda *a, **k: 0))
     monkeypatch.setattr(d, "_calibrated_activation", lambda *a, **k: None)
-    monkeypatch.setattr(d, "settled_snapshot_device_memory", lambda target, **k: DeviceMemory(
-        "cuda", "cuda", "discrete_vram", 6_959, 8_188
-    ))
+    monkeypatch.setattr(
+        d,
+        "settled_snapshot_device_memory",
+        lambda target, **k: DeviceMemory("cuda", "cuda", "discrete_vram", 6_959, 8_188),
+    )
     target = types.SimpleNamespace(
         device = "cuda", backend = "cuda", dtype = None, supports_model_cpu_offload = True
     )
