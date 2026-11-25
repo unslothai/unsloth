@@ -1133,7 +1133,11 @@ def test_a_run_can_call_only_its_selected_stdio_mcp_server(monkeypatch, source):
         )
         assert "outside this run's selection" in outside_scope
         result = await asyncio.to_thread(tools.execute_tool, name, {}, thread_id = payload.thread_id)
+        assert run_sessions()
         return completion(json.loads(result)["arguments"][0])
+
+    def run_sessions():
+        return [k for k in mcp_client._mcp_sessions if k[2].endswith(f":t=run-{source}")]
 
     monkeypatch.setattr(inference_routes, "produce_openai_chat_completions", producer)
     try:
@@ -1146,6 +1150,7 @@ def test_a_run_can_call_only_its_selected_stdio_mcp_server(monkeypatch, source):
             )
         )
         assert answer.content == "selected"
+        assert run_sessions() == []
     finally:
         mcp_client.close_mcp_sessions()
         mcp_client.invalidate_tool_cache()

@@ -133,7 +133,7 @@ def system_prompt(task: dict, now_ms: int) -> str:
     local = _local_time(task, now_ms)
     when = f"{local:%A}, {local:%B} {local.day}, {local.year} at {local:%H:%M}"
     return (
-        f"This is a scheduled task the user set up in Unsloth, running on {when} "
+        f"This is a scheduled task the user set up in Unsloth Studio, running on {when} "
         f"({task['timezone']}). The user is not watching this chat and will read your reply "
         "later, so complete the task directly and do not ask follow-up questions."
     )
@@ -768,6 +768,7 @@ async def generate_answer(
         activity.reserve()
         producer: Optional[asyncio.Future] = None
         response = None
+        mcp_thread: Optional[str] = None
         try:
             # Also bounds a stuck model load or unload so one wait cannot block other tasks.
             try:
@@ -827,8 +828,8 @@ async def generate_answer(
 
             if mcp_server_ids:
                 payload._scheduled_mcp_server_ids = mcp_server_ids
-                # Each run starts independent stateful MCP sessions.
-                payload.thread_id = run["id"]
+                # Stateful MCP sessions last one run, closed in release().
+                payload.thread_id = mcp_thread = run["id"]
 
             serving: dict = {}
 
@@ -896,6 +897,9 @@ async def generate_answer(
 
             def release(*_: Any) -> None:
                 activity.finish(request.scope)
+                if mcp_thread is not None:
+                    from core.inference.tools import close_mcp_thread_sessions
+                    close_mcp_thread_sessions(mcp_thread)
                 if producer is None:
                     end_in_process_request(request.scope, answered = False)
 

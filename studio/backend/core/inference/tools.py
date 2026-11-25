@@ -15093,6 +15093,12 @@ def mcp_session_scope(session_id: "str | None", thread_id: "str | None") -> "str
     return f"s={quote(session_id or '', safe = '')}:t={quote(thread_id, safe = '')}"
 
 
+def close_mcp_thread_sessions(thread_id: str) -> None:
+    from core.inference.mcp_client import close_mcp_scopes
+    suffix = f":t={urllib.parse.quote(thread_id, safe = '')}"
+    close_mcp_scopes(lambda scope: scope.endswith(suffix))
+
+
 _TIMEOUT_UNSET = object()
 
 
