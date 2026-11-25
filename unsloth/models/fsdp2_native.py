@@ -12,6 +12,7 @@ import dataclasses
 import functools
 import math
 import os
+import re
 import sys
 import types
 from typing import Callable, Optional, Union
@@ -935,6 +936,23 @@ def _supports_ignored_params(fully_shard):
 # A minority dtype group up to this fraction of a unit's trainable elements stays replicated.
 _REPLICATE_MINORITY_FRACTION = 0.10
 
+# Parameters the modeling code computes in float32 (GDN / Mamba decay); with the model's own
+# `_keep_in_fp32_modules[_strict]` entries (mHC, routers, sinks) they are what one GPU keeps in float32.
+_ALWAYS_FLOAT32_PARAMS = ("A_log", "dt_bias")
+
+
+def _float32_kept_param_ids(model):
+    """ids of the parameters one GPU keeps (and computes) in float32: `_ALWAYS_FLOAT32_PARAMS`
+    and every `_keep_in_fp32_modules[_strict]` entry, matched on whole dotted path components."""
+    names = set(_ALWAYS_FLOAT32_PARAMS)
+    for module in model.modules():
+        for attr in ("_keep_in_fp32_modules", "_keep_in_fp32_modules_strict"):
+            value = getattr(module, attr, None)
+            if isinstance(value, (list, tuple, set, frozenset)):
+                names.update(v for v in value if isinstance(v, str) and v)
+    keep = re.compile("|".join(rf"(^|\.){re.escape(name)}($|\.)" for name in sorted(names)))
+    return {id(p) for name, p in model.named_parameters() if keep.search(name)}
+
 
 def _unify_dtypes(
     model,
@@ -954,6 +972,12 @@ def _unify_dtypes(
     groups.append([p for p in model.parameters() if id(p) not in inside])
     ignored = set()
     frozen_kept = []
+    float32_kept = []
+    float32_ids = (
+        _float32_kept_param_ids(model)
+        if can_ignore and param_dtype in (torch.bfloat16, torch.float16)
+        else set()
+    )
     n = 0
     seen = set()
     for params in groups:
@@ -973,6 +997,27 @@ def _unify_dtypes(
                     if p.dtype != torch.float32 and type(p) is nn.Parameter:
                         p.data = p.data.to(torch.float32)
                         n += 1
+        if float32_ids:
+            # Trainable float32 masters the model computes in float32 (GDN / Mamba A_log, dt_bias,
+            # `_keep_in_fp32_modules`): the 16-bit gather would round them, which one GPU never does
+            # (autocast leaves them float32). Keep the small ones replicated, smallest first.
+            floats = [p for p in params if _floating(p)]
+            budget = _REPLICATE_MINORITY_FRACTION * sum(p.numel() for p in floats)
+            picked = []
+            for p in sorted(
+                (
+                    p
+                    for p in trainable
+                    if id(p) in float32_ids and p.dtype == torch.float32 and p not in ignored
+                ),
+                key = lambda p: p.numel(),
+            ):
+                if p.numel() > budget or len(picked) + 1 >= len(floats):
+                    break
+                budget -= p.numel()
+                picked.append(p)
+            ignored.update(picked)
+            float32_kept.extend(picked)
         if can_ignore and param_dtype in (torch.bfloat16, torch.float16):
             # Frozen float32 weights next to 16-bit ones (GDN A_log / dt_bias, fp32 norms, routers): the
             # gather would cast them to 16-bit, which one GPU never does. Keep small ones replicated.
@@ -1005,7 +1050,15 @@ def _unify_dtypes(
             f"({sum(p.numel() for p in frozen_kept)} elements) replicated, so they are not cast to "
             f"{str(param_dtype).replace('torch.', '')} as one GPU never does."
         )
-    trainable_kept = [p for p in ignored if p.requires_grad]
+    if float32_kept:
+        _print_rank0(
+            f"Unsloth: native FSDP2 keeps {len(float32_kept)} trainable float32 parameters the model "
+            f"computes in float32 (A_log / dt_bias, _keep_in_fp32_modules; "
+            f"{sum(p.numel() for p in float32_kept)} elements) replicated, so the gather does not "
+            f"round them to {str(param_dtype).replace('torch.', '')}."
+        )
+    float32_kept_ids = {id(p) for p in float32_kept}
+    trainable_kept = [p for p in ignored if p.requires_grad and id(p) not in float32_kept_ids]
     if trainable_kept:
         ignored_trainable = trainable_kept
         _print_rank0(
