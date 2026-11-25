@@ -6038,6 +6038,14 @@ _LTX25_DENOISE_HEADROOM = 1.15
 _LTX25_OUTSIDE_TORCH_MIB = 640
 
 
+def _memory_levers_key(state: Any) -> dict[str, str]:
+    from .video_ltx2 import ltx2_memory_levers
+    levers = ltx2_memory_levers(
+        getattr(state, "pipe", None), getattr(state, "offload_policy", None)
+    )
+    return {"memory_levers": levers} if levers else {}
+
+
 def _ltx25_denoise_price_mib(
     state: Any,
     *,
@@ -6046,9 +6054,12 @@ def _ltx25_denoise_price_mib(
     height: Optional[int],
     frames: Optional[int],
     conditioned: bool,
+    cfg: bool,
 ) -> Optional[int]:
     """The request guard's denoise headroom above the floor for an LTX-2.5 render the measurements cover, else None
-    (the base overhead stands). Never above the base overhead plus the parked encoder, which the floor without the
+    (the base overhead stands). Measured: the distilled two-stage render without CFG; the dev checkpoint renders in
+    one stage outside the connector reuse, and CFG batches the negative rows beside the positive ones, so neither
+    releases the prompt rows. Never above the base overhead plus the parked encoder, which the floor without the
     parking counted: a request the old price admitted stays admitted."""
     if (os.environ.get(VIDEO_LTX25_DENOISE_PRICE_ENV) or "").strip().lower() in (
         "0",
@@ -6057,7 +6068,7 @@ def _ltx25_denoise_price_mib(
         "no",
     ):
         return None
-    if not (width and height and frames) or conditioned or family != "ltx-2.5":
+    if not (width and height and frames) or conditioned or cfg or family != "ltx-2.5":
         return None
     if getattr(state, "offload_policy", None) != OFFLOAD_STREAMING:
         return None
@@ -6076,6 +6087,8 @@ def _ltx25_denoise_price_mib(
         pipe = getattr(state, "pipe", None)
         connectors = getattr(pipe, "connectors", None)
         vae = getattr(pipe, "vae", None)
+        if bool(getattr(pipe, "_unsloth_ltx25_dev", False)):
+            return None
         if not getattr(connectors, _LTX2_LEAN_CONNECTOR_ATTR, False):
             return None
         if not (
@@ -15588,6 +15601,8 @@ class VideoBackend:
                         last_frame = last_pil is not None,
                         references = len(references or ()),
                         cfg = bool(getattr(fam, "supports_cfg", True)) and float(guidance) > 1.0,
+                        # only when engaged, so a lever-off load keeps the key (and the peaks) it had before
+                        **_memory_levers_key(state),
                     )
                     # Tag BEFORE the residency fit: after a reload the fit reads process-wide peaks through this key.
                     video_stream_residency.arm_request(
@@ -15653,6 +15668,7 @@ class VideoBackend:
                             conditioned = first_pil is not None
                             or last_pil is not None
                             or bool(references),
+                            cfg = bool(getattr(fam, "supports_cfg", True)) and float(guidance) > 1.0,
                         ),
                     )
                     if shortfall is not None:

@@ -67,10 +67,17 @@ def _price(
     shape,
     family = "ltx-2.5",
     conditioned = False,
+    cfg = False,
 ):
     w, h, f = shape
     return V._ltx25_denoise_price_mib(
-        state, family = family, width = w, height = h, frames = f, conditioned = conditioned
+        state,
+        family = family,
+        width = w,
+        height = h,
+        frames = f,
+        conditioned = conditioned,
+        cfg = cfg,
     )
 
 
@@ -179,3 +186,33 @@ def test_without_a_price_the_guard_is_unchanged():
         assert V.video_offload_shortfall_message(**common) == V.video_offload_shortfall_message(
             **common, denoise_mib = None
         )
+
+
+@pytest.mark.parametrize(
+    "dev, cfg, priced",
+    [(False, False, True), (False, True, False), (True, True, False), (True, False, False)],
+    ids = ["distilled_cfg1", "distilled_cfg3", "dev_cfg3", "dev_cfg1"],
+)
+def test_only_the_measured_distilled_two_stage_render_without_cfg_is_priced(dev, cfg, priced):
+    """CFG batches the negative rows beside the positive ones and the dev checkpoint renders in one stage outside the
+    connector reuse: neither releases the prompt rows, so both keep the base overhead (refused at 6 GiB, as before)."""
+    state = _state()
+    state.pipe._unsloth_ltx25_dev = dev
+    shape = (768, 512, 49)
+    price = _price(state, shape, cfg = cfg)
+    assert (price is not None) == priced
+    assert (_guard(shape, price) is None) == priced
+
+
+def test_the_measured_peak_key_names_the_engaged_levers(monkeypatch):
+    state = _state()
+    state.pipe._unsloth_ltx25_encoder = object()
+    assert V._memory_levers_key(state) == {
+        "memory_levers": "lean_connectors,released_prompt_rows,parked_vae_encoder"
+    }
+    monkeypatch.setenv(v25.RELEASE_PROMPT_ROWS_ENV, "0")
+    assert V._memory_levers_key(state) == {"memory_levers": "lean_connectors,parked_vae_encoder"}
+    monkeypatch.setenv(L.LTX2_PARK_VAE_ENCODER_ENV, "0")
+    state.pipe.connectors = types.SimpleNamespace()
+    # nothing engaged: no entry, so the key (and its peaks) is the one a load without the levers always had
+    assert V._memory_levers_key(state) == {}
