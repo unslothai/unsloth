@@ -17,7 +17,7 @@ import {
 } from "@/lib/account-transition";
 import { isBackendDownForDesktopUpdate } from "@/lib/desktop-update-activity";
 import { createNavigationNonce } from "@/lib/navigation-nonce";
-import { applySidebarLayout, sidebarLayout, type SidebarLayout } from "../sidebar-layout";
+import { applySidebarLayout, observeSidebarLayout, sidebarLayout, type SidebarLayout } from "../sidebar-layout";
 import {
   SIDEBAR_ORGANIZATION_STORAGE_KEY,
   useSidebarOrganizationStore as store,
@@ -28,7 +28,8 @@ export function useSidebarSectionsSync(): void {
     const account = browserAccountKey();
     let mounted = true;
     let request: AbortController | undefined;
-    let timer: ReturnType<typeof setTimeout>;
+    let scheduled = false;
+    let mirrored = false;
 
     function allowed() {
       return mounted && !accountTransitionPending() &&
@@ -37,8 +38,12 @@ export function useSidebarSectionsSync(): void {
     }
 
     function schedule() {
-      clearTimeout(timer);
-      timer = setTimeout(refresh, 0);
+      if (scheduled) return;
+      scheduled = true;
+      queueMicrotask(() => {
+        scheduled = false;
+        void refresh();
+      });
     }
 
     async function refresh() {
@@ -57,6 +62,7 @@ export function useSidebarSectionsSync(): void {
       // after a lost reply, even when the user has already made further changes.
       let edit = state.pendingLayoutEdit;
       if (!edit && dirty) {
+        if (mirrored) return;
         edit = { id: createNavigationNonce(), layout: snapshot };
         store.setState({ pendingLayoutEdit: edit });
       }
@@ -116,12 +122,9 @@ export function useSidebarSectionsSync(): void {
       }
     }
 
-    const unsubscribe = store.subscribe((state, previous) => {
-      if (state.syncedLayout !== previous.syncedLayout) return;
-      if (state.customSections === previous.customSections && state.manualOrder === previous.manualOrder &&
-        state.sectionByChatId === previous.sectionByChatId && state.sectionByPageId === previous.sectionByPageId &&
-        state.sectionByProjectId === previous.sectionByProjectId && state.sectionOrder === previous.sectionOrder) return;
-      if (JSON.stringify(sidebarLayout(state)) !== state.syncedLayout) schedule();
+    const unsubscribe = observeSidebarLayout((fromStorage) => {
+      mirrored = fromStorage;
+      if (!fromStorage) schedule();
     });
     const visible = () => { if (document.visibilityState === "visible") void refresh(); };
     const poll = window.setInterval(visible, 30_000);
@@ -134,7 +137,6 @@ export function useSidebarSectionsSync(): void {
       mounted = false;
       request?.abort();
       unsubscribe();
-      clearTimeout(timer);
       window.clearInterval(poll);
       window.removeEventListener("focus", visible);
       window.removeEventListener("online", visible);

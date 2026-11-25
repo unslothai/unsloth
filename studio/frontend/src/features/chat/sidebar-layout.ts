@@ -3,7 +3,7 @@
 
 import {
   assignmentMap, customSectionIdOf, customSectionScope, inSectionOrder, resolveSectionOrder,
-  type SidebarCustomSection, type SidebarOrganizationState,
+  useSidebarOrganizationStore, type SidebarCustomSection, type SidebarOrganizationState,
 } from "./stores/sidebar-organization-store.ts";
 
 export interface SidebarLayout {
@@ -43,5 +43,36 @@ export function applySidebarLayout(state: SidebarOrganizationState, layout: Side
     sectionByChatId: assignmentMap(layout.sectionByChatId),
     sectionByProjectId: assignmentMap(layout.sectionByProjectId),
     sectionByPageId: assignmentMap(layout.sectionByPageId),
+  };
+}
+
+// A storage event rehydrates a peer's in-progress view, sometimes between creating a section
+// and filing its first chat. Only the tab making those changes should submit them.
+export function observeSidebarLayout(
+  onChange: (fromStorage: boolean) => void,
+): () => void {
+  let hydrating = false;
+  const store = useSidebarOrganizationStore;
+  const start = store.persist.onHydrate(() => { hydrating = true; });
+  const finish = store.persist.onFinishHydration(() => { hydrating = false; });
+  const unsubscribe = store.subscribe((state, previous) => {
+    if (!hydrating && state.syncedLayout !== previous.syncedLayout) return;
+    if (
+      state.customSections === previous.customSections &&
+      state.sectionByChatId === previous.sectionByChatId &&
+      state.sectionByProjectId === previous.sectionByProjectId &&
+      state.sectionByPageId === previous.sectionByPageId &&
+      state.manualOrder === previous.manualOrder &&
+      state.sectionOrder === previous.sectionOrder
+    ) return;
+    // Rehydration also allocates fresh arrays and maps for unchanged values.
+    if (JSON.stringify(sidebarLayout(state)) !== JSON.stringify(sidebarLayout(previous))) {
+      onChange(hydrating);
+    }
+  });
+  return () => {
+    start();
+    finish();
+    unsubscribe();
   };
 }
