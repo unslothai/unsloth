@@ -25,8 +25,19 @@ ACTIVE_STATUSES = frozenset({"queued", "running", "cancelling"})
 TERMINAL_STATUSES = frozenset({"cancelled", "completed", "failed"})
 ALL_STATUSES = ACTIVE_STATUSES | TERMINAL_STATUSES
 _EVENTS_LOCK = threading.RLock()
-# run id -> [condition, commit count, parked waiters]; per-run so commits wake only that run's followers.
-_RUN_WAITERS: dict[str, list[Any]] = {}
+
+
+class _RunWaiters:
+    __slots__ = ("changed", "commits", "parked")
+
+    def __init__(self) -> None:
+        self.changed = threading.Condition(_EVENTS_LOCK)
+        self.commits = 0
+        self.parked = 0
+
+
+# Per run, so a commit wakes only that run's followers.
+_RUN_WAITERS: dict[str, _RunWaiters] = {}
 _RUN_TOMBSTONE_PREFIX = "chat-generation-run-tombstone:"
 ChatGenerationEventInput = Union[tuple[str, dict[str, Any]], tuple[str, dict[str, Any], int]]
 
@@ -467,8 +478,8 @@ def _commit(
                 slot = _RUN_WAITERS.get(run_id)
                 slots = [slot] if slot is not None else []
             for slot in slots:
-                slot[1] += 1
-                slot[0].notify_all()
+                slot.commits += 1
+                slot.changed.notify_all()
 
 
 def _sync_assistant_status_locked(
@@ -1055,25 +1066,25 @@ def wait_for_events(
     with _EVENTS_LOCK:
         slot = _RUN_WAITERS.get(run_id)
         if slot is None:
-            slot = _RUN_WAITERS[run_id] = [threading.Condition(_EVENTS_LOCK), 0, 0]
-        slot[2] += 1
-        # Snapshot the commit count before the unlocked read; unchanged under the lock = no missed wakeup.
-        seen = slot[1]
+            slot = _RUN_WAITERS[run_id] = _RunWaiters()
+        slot.parked += 1
+        # Unchanged under the lock after the unlocked read = no missed wakeup.
+        seen = slot.commits
     try:
         events = read(run_id, after)
         if events:
             return events
         with _EVENTS_LOCK:
-            if slot[1] != seen:
+            if slot.commits != seen:
                 events = read(run_id, after)
                 if events:
                     return events
-            slot[0].wait(timeout)
+            slot.changed.wait(timeout)
         return read(run_id, after)
     finally:
         with _EVENTS_LOCK:
-            slot[2] -= 1
-            if slot[2] == 0 and _RUN_WAITERS.get(run_id) is slot:
+            slot.parked -= 1
+            if slot.parked == 0 and _RUN_WAITERS.get(run_id) is slot:
                 del _RUN_WAITERS[run_id]
 
 
