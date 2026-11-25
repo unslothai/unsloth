@@ -145,9 +145,7 @@ def _message_fitter(
         return None
     limit = api._effective_max_tokens(payload)
     capped = bool(limit) and 0 < limit < engine.context
-    # A window-sized slider means the engine chooses the reply length. Reserving
-    # it here would leave only half the window for the prompt. prompt_budget
-    # already reserves headroom for generation.
+    # A window-sized cap would reserve half the window; prompt_budget already keeps reply room.
     fit_payload = payload.model_copy(
         update = {
             "context_window": engine.context,
@@ -168,7 +166,7 @@ def _message_fitter(
                     reasoning_effort = payload.reasoning_effort,
                     preserve_thinking = payload.preserve_thinking,
                 )[0]
-            except (httpx.HTTPError, RuntimeError, ValueError, KeyError):
+            except (httpx.HTTPError, RuntimeError, ValueError, KeyError, TypeError):
                 pass
         return estimate(messages)
 

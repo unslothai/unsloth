@@ -367,8 +367,10 @@ _LLAMA_SERVER_ERROR_RE = _re.compile(r"llama-server returned 5\d\d: (.*)", _re.D
 _SGLANG_CONTEXT_LIMIT_RE = _re.compile(
     r"The input \((\d{1,12}) tokens\) is longer than the model's context length \((\d{1,12}) tokens\)"
 )
+# vLLM <= 0.30 "you requested", later "your prompt contains"; SGLang when prompt + max_tokens overflow.
 _VLLM_CONTEXT_LIMIT_RE = _re.compile(
-    r"This model's maximum context length is (\d{1,12}) tokens\. However, you requested"
+    r"This model's maximum context length is (\d{1,12}) tokens\. However, (?:you requested|your prompt contains)"
+    r"|Requested token count exceeds the model's maximum context length of (\d{1,12}) tokens"
 )
 
 
@@ -407,7 +409,7 @@ def _friendly_error(exc: Exception) -> str:
     m = _VLLM_CONTEXT_LIMIT_RE.search(msg)
     if m:
         return (
-            f"The prompt and requested reply exceed the model's {m[1]}-token context window. "
+            f"The prompt and requested reply exceed the model's {m[1] or m[2]}-token context window. "
             "Shorten the prompt or request fewer output tokens."
         )
     if "Lost connection to llama-server" in msg:

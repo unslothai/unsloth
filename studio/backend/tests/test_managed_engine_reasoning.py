@@ -860,6 +860,11 @@ def test_tokenize_receives_the_effort_inside_the_template_kwargs(monkeypatch):
         "The input (2081 tokens) is longer than the model's context length (2048 tokens).",
         "This model's maximum context length is 2048 tokens. However, you requested 1 output "
         "tokens and your prompt contains at least 2048 input tokens.",
+        "This model's maximum context length is 2048 tokens. However, your prompt contains at "
+        "least 2049 input tokens, which exceeds this limit even without any output tokens.",
+        "Requested token count exceeds the model's maximum context length of 2048 tokens. You "
+        "requested a total of 2100 tokens: 1600 tokens from the input messages and 500 tokens "
+        "for the completion.",
     ],
 )
 def test_managed_overflow_reports_the_window_without_copying_engine_details(message):
