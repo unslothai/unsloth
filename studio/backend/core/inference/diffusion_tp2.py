@@ -652,3 +652,15 @@ def engage_for_plan(
         reasons = tuple(plan.reasons)
         + (f"denoiser tensor parallel over {', '.join(record['devices'])}",),
     )
+
+
+def shard_modules(transformer: Any) -> list:
+    """Every module of every card's block shards (outside the module tree), for censuses that walk the attention
+    modules (INT8 attention routing and its status); empty when ``transformer`` is not tensor parallel."""
+    if getattr(transformer, TP_ATTR, None) is None:
+        return []
+    try:
+        stack = transformer.transformer_blocks[0]
+        return [m for card in stack.shards() for blk in card for m in blk.modules()]
+    except Exception:  # noqa: BLE001 - a census never fails the caller
+        return []

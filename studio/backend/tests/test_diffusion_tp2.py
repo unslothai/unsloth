@@ -258,3 +258,20 @@ def test_install_marks_graph_unsafe_and_keeps_regional_compile(monkeypatch):
     monkeypatch.delenv(tp2.TP_COMPILE_ENV)
     e.compile_repeated_blocks(fullgraph = True)
     assert [n for n, _ in compiled] == ["_attn_half", "_mlp_half"]
+
+
+def test_int8_attention_census_sees_the_shards():
+    from core.inference import diffusion_int8_attention as ia
+
+    class Proc:
+        _unsloth_int8 = False
+
+    m = _tiny(layers = 2)
+    for blk in m.transformer_blocks:
+        blk.attn.processor = Proc()
+    before = len(ia.int8_processors(m))
+    tp2.install(m, CPU2)
+    assert before == 2
+    # both cards' shards share each block's processor: the census still finds the attention modules
+    assert len(ia.int8_processors(m)) == 4
+    assert tp2.shard_modules(_tiny(layers = 1)) == []
