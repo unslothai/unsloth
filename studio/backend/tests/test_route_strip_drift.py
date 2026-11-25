@@ -119,12 +119,26 @@ def test_streamed_inline_example_is_append_only(text):
     )
     shown = ""
     for i in range(text.index("[ARGS]") + len("[ARGS]"), len(text) + 1):
-        out = strip.strip(routes_inference._hold_pending_mention(text[:i], True))
+        out = strip.strip(routes_inference._hold_pending_mention(text[:i], True, ENABLED))
         assert out.startswith(shown)
         shown = out
-    held = routes_inference._held_mention_display(strip, text, True)
+    held = routes_inference._held_mention_display(strip, text, True, ENABLED)
     final = shown if held is None else held
     assert final.startswith(shown)
     assert final == routes_inference._strip_tool_xml_for_display(
         text, auto_heal_tool_calls = True, enabled_tool_names = ENABLED
     )
+
+
+@pytest.mark.parametrize("text", ["Use `python[ARGS]{}` here.", "Use `other[ARGS]{} x` here."])
+def test_streamed_unpromotable_inline_example_is_never_held(text):
+    routes_inference = pytest.importorskip("routes.inference")
+    strip = routes_inference._StreamingDisplayStrip(
+        auto_heal_tool_calls = True, enabled_tool_names = ENABLED
+    )
+    shown = ""
+    for i in range(1, len(text) + 1):
+        out = strip.strip(routes_inference._hold_pending_mention(text[:i], True, ENABLED))
+        assert out.startswith(shown)
+        shown = out
+    assert shown == text

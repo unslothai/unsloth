@@ -7120,9 +7120,10 @@ _PENDING_MENTION_RE = _re.compile(
 _PENDING_MENTION_MAX_CHARS = 256
 
 
-def _pending_inline_rehearsal_cut(text: str) -> int:
-    """Where an inline code span still open on the last line holds ``[ARGS]``, else -1: its closing backticks turn a
-    removed rehearsal into a kept example, which would insert text before what the stream already sent."""
+def _pending_inline_rehearsal_cut(text: str, enabled_tool_names) -> int:
+    """Where an inline code span still open on the last line holds a promotable rehearsal, else -1: its closing
+    backticks turn a removed rehearsal into a kept example, which would insert text before what the stream already
+    sent. A rehearsal the strip never removes passes through, so holding it would take back what was sent."""
     line = text.rfind("\n") + 1
     if text.find("[ARGS]", line) < 0:
         return -1
@@ -7137,14 +7138,22 @@ def _pending_inline_rehearsal_cut(text: str) -> int:
         elif j - i == open_len:
             open_len = 0
         i = j
-    return open_end if open_len and text.find("[ARGS]", open_end) >= 0 else -1
+    if not open_len:
+        return -1
+    from core.tool_healing import _markerless_promotable
+
+    names = (m.group(1) for m in _PENDING_REHEARSAL_RE.finditer(text, open_end))
+    return open_end if any(_markerless_promotable(n, enabled_tool_names) for n in names) else -1
 
 
-def _pending_mention_cut(text: str) -> int:
+_PENDING_REHEARSAL_RE = _re.compile(r"\b([\w-]+)\[ARGS\]")
+
+
+def _pending_mention_cut(text: str, enabled_tool_names = None) -> int:
     """Where to cut a cumulative stream so a still-open backticked tool tag or rehearsal is held back, else -1. The
     cut keeps the backticks, so for a tag the strip would remove anyway the held display equals the full strip."""
     cut = _pending_tag_cut(text)
-    return cut if cut >= 0 else _pending_inline_rehearsal_cut(text)
+    return cut if cut >= 0 else _pending_inline_rehearsal_cut(text, enabled_tool_names)
 
 
 def _pending_tag_cut(text: str) -> int:
@@ -7167,19 +7176,32 @@ def _pending_tag_cut(text: str) -> int:
     return m.start(2)
 
 
-def _hold_pending_mention(text: str, auto_heal_tool_calls: bool) -> str:
+def _hold_pending_mention(
+    text: str,
+    auto_heal_tool_calls: bool,
+    enabled_tool_names = None,
+) -> str:
     """A cumulative stream event with a still-open backticked tool tag held back; the strips only remove text
     with Auto-Heal on, so only then can a shown tag be taken back."""
     if not auto_heal_tool_calls:
         return text
-    cut = _pending_mention_cut(text)
+    cut = _pending_mention_cut(text, enabled_tool_names)
     return text[:cut] if cut >= 0 else text
 
 
-def _held_mention_display(display_strip, raw_text: str, auto_heal_tool_calls: bool):
+def _held_mention_display(
+    display_strip,
+    raw_text: str,
+    auto_heal_tool_calls: bool,
+    enabled_tool_names = None,
+):
     """The display a turn owes when it ends with ``_hold_pending_mention`` still holding a backticked tag, else None.
     Its closing backticks never came, so it is not a mention: the full strip decides, as for a non-streaming reply."""
-    if not raw_text or not auto_heal_tool_calls or _pending_mention_cut(raw_text) < 0:
+    if (
+        not raw_text
+        or not auto_heal_tool_calls
+        or _pending_mention_cut(raw_text, enabled_tool_names) < 0
+    ):
         return None
     return display_strip.strip(raw_text)
 
@@ -7423,11 +7445,13 @@ class _ReasoningSpanGuard:
         wrap = self._wrap_for(text, wrapped_so_far)
         display = self._display_strip(auto_heal_tool_calls, enabled_tool_names)
         if wrap is None:
-            return display.strip(_hold_pending_mention(text, auto_heal_tool_calls and hold))
+            return display.strip(
+                _hold_pending_mention(text, auto_heal_tool_calls and hold, enabled_tool_names)
+            )
         # Clamp: mid-stream the close tag has not arrived yet, so the whole text is trace.
         end = min(len(self._OPEN) + int(wrap.get("len", 0)) + len(self._CLOSE), len(text))
         return text[:end] + display.strip(
-            _hold_pending_mention(text[end:], auto_heal_tool_calls and hold)
+            _hold_pending_mention(text[end:], auto_heal_tool_calls and hold, enabled_tool_names)
         )
 
     def _display_strip(
@@ -35363,7 +35387,10 @@ async def produce_openai_chat_completions(
                         nonlocal prev_text, _gguf_turn_raw
                         span = reasoning_extractor.server_wrap_span(_gguf_turn_raw)
                         clean = _held_mention_display(
-                            _gguf_display_strip, _gguf_turn_raw[span:], _gguf_auto_heal_tool_calls
+                            _gguf_display_strip,
+                            _gguf_turn_raw[span:],
+                            _gguf_auto_heal_tool_calls,
+                            _gguf_display_tool_names,
                         )
                         if clean is not None:
                             clean = _gguf_turn_raw[:span] + clean
@@ -35562,7 +35589,11 @@ async def produce_openai_chat_completions(
                         _gguf_turn_raw = raw_cumulative
                         span = reasoning_extractor.server_wrap_span(raw_cumulative)
                         clean_cumulative = raw_cumulative[:span] + _gguf_display_strip.strip(
-                            _hold_pending_mention(raw_cumulative[span:], _gguf_auto_heal_tool_calls)
+                            _hold_pending_mention(
+                                raw_cumulative[span:],
+                                _gguf_auto_heal_tool_calls,
+                                _gguf_display_tool_names,
+                            )
                         )
                         new_text = clean_cumulative[len(prev_text) :]
                         prev_text = clean_cumulative
@@ -37309,7 +37340,10 @@ async def produce_openai_chat_completions(
                 def _sf_release_held_mention():
                     nonlocal prev_text, _sf_turn_raw
                     clean = _held_mention_display(
-                        _sf_display_strip, _sf_turn_raw, _sf_auto_heal_tool_calls
+                        _sf_display_strip,
+                        _sf_turn_raw,
+                        _sf_auto_heal_tool_calls,
+                        _sf_display_tool_names,
                     )
                     _sf_turn_raw = ""
                     if clean is None:
@@ -37463,7 +37497,9 @@ async def produce_openai_chat_completions(
                     raw_cumulative = event.get("text", "")
                     _sf_turn_raw = raw_cumulative
                     clean_cumulative = _sf_display_strip.strip(
-                        _hold_pending_mention(raw_cumulative, _sf_auto_heal_tool_calls)
+                        _hold_pending_mention(
+                            raw_cumulative, _sf_auto_heal_tool_calls, _sf_display_tool_names
+                        )
                     )
                     new_text = clean_cumulative[len(prev_text) :]
                     prev_text = clean_cumulative
@@ -48048,7 +48084,7 @@ class _AnthropicToolEventRules:
     def _release_held_mention(self) -> list:
         """A backticked tag still held when its turn ends never closed: emit what the full strip keeps."""
         raw, self._turn_raw = self._turn_raw, ""
-        if not raw or _pending_mention_cut(raw) < 0:
+        if not raw or _pending_mention_cut(raw, self._display_names) < 0:
             return []
         return self._emitter.feed(
             {
@@ -48439,7 +48475,7 @@ def _anthropic_tool_response_from_events(
     def _release_held_mention() -> None:
         nonlocal turn_event
         last, turn_event = turn_event, None
-        if last is None or _pending_mention_cut(last["text"]) < 0:
+        if last is None or _pending_mention_cut(last["text"], _display_names) < 0:
             return
         _add_text(
             _span_guard.strip(
