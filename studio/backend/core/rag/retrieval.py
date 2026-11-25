@@ -174,7 +174,13 @@ def retrieve_hybrid(
     lexical = retrieve_lexical(
         conn, scope, query, lexical_k or config.TOP_K_LEXICAL, match_query = lexical_query
     )
-    dense = retrieve_dense(conn, scope, query, dense_k or config.TOP_K_DENSE, model_name = model_name)
+    try:
+        dense = retrieve_dense(
+            conn, scope, query, dense_k or config.TOP_K_DENSE, model_name = model_name
+        )
+    except embeddings.EmbeddingModelDownloadRequiredError as exc:
+        logger.info("hybrid search is keyword-only until the embedder is ready: %s", exc)
+        dense = []
     return _rrf([lexical, dense], config.RRF_K, k, min_score)
 
 
