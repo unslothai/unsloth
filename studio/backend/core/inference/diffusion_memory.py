@@ -1509,7 +1509,7 @@ def _cuda_memory(backend: str) -> tuple[Optional[int], Optional[int], str]:
     try:
         import torch
 
-        # Not torch.cuda.mem_get_info: Windows ROCm over-reports free memory.
+        # Not torch.cuda.mem_get_info: ROCm over-reports free memory on Linux and Windows.
         from utils.hardware import trusted_mem_get_info
 
         free, total = trusted_mem_get_info()
