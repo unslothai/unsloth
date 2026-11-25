@@ -321,6 +321,51 @@ def _case_save(rank, world, tmp, repo):
     }
 
 
+def _case_lora_b_flip(rank, world, tmp, repo):
+    """Rank state saved with lora_B cut rank_major, resumed under grouped_by_expert (same local shapes, other
+    columns): refused, as is a checkpoint from before the layout was recorded; the matching layout loads."""
+    from torch.distributed.device_mesh import init_device_mesh
+
+    build, tpn, epn = _modules()
+    assert epn._tpn() is tpn
+    mesh = init_device_mesh("cpu", (world,), mesh_dim_names = ("ep",))["ep"]
+    real = tpn._lora_b_layout
+
+    def make(layout):
+        tpn._lora_b_layout = lambda wrapper = None, adapter = None: layout
+        os.environ["UNSLOTH_MOE_LORA_B_LAYOUT"] = layout
+        try:
+            return epn.apply_expert_parallel(_build(build, repo), mesh)
+        finally:
+            tpn._lora_b_layout = real
+            os.environ.pop("UNSLOTH_MOE_LORA_B_LAYOUT", None)
+
+    def load(model, directory):
+        try:
+            epn._load_rank_weights(model, directory)
+            return None
+        except ValueError as exc:
+            return str(exc)
+
+    saved = os.path.join(tmp, "ckpt")
+    model = make("rank_major")
+    epn._save_rank_state(model, None, saved)
+    legacy = os.path.join(tmp, "legacy")
+    path = epn._rank_path(legacy)
+    os.makedirs(os.path.dirname(path), exist_ok = True)
+    payload = torch.load(epn._rank_path(saved), weights_only = False)
+    payload["layout"].pop("lora_b", None)
+    torch.save(payload, path)
+    flipped = make("grouped_by_expert")
+    return {
+        "recorded": sorted(set(epn._layout(model).get("lora_b", {}).values())),
+        "same": load(make("rank_major"), saved),
+        "flip": load(flipped, saved),
+        "legacy_default": load(make("rank_major"), legacy),
+        "legacy_flip": load(flipped, legacy),
+    }
+
+
 def _worker(rank, world, tmp, case, kwargs):
     os.environ.update(
         RANK = str(rank), WORLD_SIZE = str(world), LOCAL_RANK = str(rank), LOCAL_WORLD_SIZE = str(world)
@@ -494,3 +539,13 @@ def test_ep_exports_refused_without_a_trainer():
             m is not None and "not supported under expert parallel" in m
             for m in r["refused"].values()
         ), r["refused"]
+
+
+def test_ep_resume_refuses_another_lora_b_layout():
+    results = _spawn("_case_lora_b_flip", repo = FAMILIES["olmoe"])
+    assert all(r is not None and "error" not in r for r in results), results
+    for r in results:
+        for key in ("flip", "legacy_flip"):
+            assert r[key] is not None and "UNSLOTH_MOE_LORA_B_LAYOUT" in r[key], r
+        assert r["same"] is None and r["legacy_default"] is None, r
+        assert r["recorded"] == ["rank_major"], r

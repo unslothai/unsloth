@@ -55,6 +55,7 @@ __all__ = [
 _EP = "_unsloth_ep"  # on each expert parameter: its gather layout; on the model: the mesh
 _EP_ENV = "UNSLOTH_EP_SIZE"
 _EP_REP = "_unsloth_ep_replicas"  # on the model: the replica mesh (ep < world), or None
+_EP_LORA_B = "_unsloth_ep_lora_b_layout"  # on each sharded expert lora_B: the UNSLOTH_MOE_LORA_B_LAYOUT it was cut by
 
 
 def ep_env_size():
@@ -331,6 +332,11 @@ def apply_expert_parallel(model, mesh = None):
         reasons = sorted({str(p) for _, p in kept})[:3]
         raise ValueError(f"Unsloth: expert parallel found no shardable MoE block ({reasons}).")
     for block in sharded:
+        for wrapper in tpn._experts_chain(block)[
+            :-1
+        ]:  # the lora_B column slicing the shard is about to use
+            for adapter in getattr(wrapper, "lora_A", {}):
+                wrapper.lora_B[adapter].__dict__[_EP_LORA_B] = tpn._lora_b_layout(wrapper, adapter)
         shard = tpn._shard_moe_experts(block, ep_mesh, rank, ep, make_forward = _ep_experts_forward)
         shard.ep, shard.calls = ep, 0
         _localize(shard, ep)
@@ -696,6 +702,10 @@ def _layout(model):
         "world": dist.get_world_size(),
         "ep": _mesh(model).size(),
         "replicas": rep.size() if rep is not None else 1,
+        # rank_major and grouped_by_expert cut lora_B into same-shaped but different column sets per rank.
+        "lora_b": {
+            n: m.__dict__[_EP_LORA_B] for n, m in model.named_modules() if _EP_LORA_B in m.__dict__
+        },
     }
 
 
@@ -724,10 +734,30 @@ def _read_rank_state(model, directory):
             "parallel, so its expert optimizer state cannot be restored."
         )
     payload = torch.load(path, map_location = "cpu", weights_only = False)
-    if payload["layout"] != _layout(model):
+    saved, want = dict(payload["layout"]), _layout(model)
+    saved_b, want_b = saved.pop("lora_b", None), want.pop("lora_b")
+    if saved != want:
         raise ValueError(
-            f"Unsloth: the checkpoint {directory} was written with expert parallel layout {payload['layout']}, "
-            f"not this run's {_layout(model)}; resume with the same world size and ep."
+            f"Unsloth: the checkpoint {directory} was written with expert parallel layout {saved}, "
+            f"not this run's {want}; resume with the same world size and ep."
+        )
+    if (
+        saved_b is None
+    ):  # written before the layout was recorded: only the default rank_major existed then
+        saved_b = {n: "rank_major" for n in want_b}
+    if saved_b != want_b:
+        diff = sorted(
+            (n, saved_b.get(n), want_b.get(n))
+            for n in set(saved_b) | set(want_b)
+            if saved_b.get(n) != want_b.get(n)
+        )
+        was = sorted({b for _, b, _ in diff if b})
+        raise ValueError(
+            f"Unsloth: the checkpoint {directory} holds MoE expert lora_B shards cut with "
+            f"UNSLOTH_MOE_LORA_B_LAYOUT={'/'.join(was) or 'none'}, but this run cuts them as "
+            f"{'/'.join(sorted({w for _, _, w in diff if w})) or 'none'} (e.g. {diff[0][0]}). Both have the "
+            "same shape, so loading would pair columns with the wrong experts; resume with the "
+            "UNSLOTH_MOE_LORA_B_LAYOUT the checkpoint was trained with."
         )
     return payload
 
