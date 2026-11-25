@@ -147,6 +147,26 @@ test("recipe restore and rows", () => {
   );
 });
 
+test("an imported later batch image replays its batch's variation seed, as gallery restore does", async () => {
+  const { recipeSettings } = await import("../src/features/images/lib/image-metadata.ts");
+  const record = {
+    prompt: "a lighthouse",
+    seed: 42,
+    batch_seed: 42,
+    batch_index: 2,
+    batch_size: 4,
+    variation_seed: 1002,
+    variation_strength: 0.3,
+  };
+  const imported = recipeSettings(record, { width: 1024, height: 1024, steps: 30, guidance: 5 });
+  assert.equal(sdControlsFromRecipe(imported).variationSeed, "1000");
+  assert.equal(sdControlsFromRecipe(imported).variationSeed, sdControlsFromRecipe(record).variationSeed);
+  assert.equal(recipeSettings({ ...record, batch_index: 9 }, { width: 1024, height: 1024, steps: 30, guidance: 5 }).batch_index, 3);
+  const src = readSrc("features/images/images-page.tsx");
+  const importCall = src.slice(src.indexOf("const applyImportedRecipe = useCallback("));
+  assert.doesNotMatch(importCall.slice(0, importCall.indexOf('"import",')), /batch_index:/);
+});
+
 test("the page gates the controls and Vary on the status capability", () => {
   const src = readSrc("features/images/images-page.tsx");
   assert.match(

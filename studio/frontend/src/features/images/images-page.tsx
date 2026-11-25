@@ -3296,7 +3296,6 @@ export function ImagesPage({
           id: "",
           url: "",
           seed: settings.seed ?? 0,
-          batch_index: 0,
           created_at: 0,
           localized_edit:
             localized === "annotate" || localized === "paint" || localized === "mask" ? localized : null,
