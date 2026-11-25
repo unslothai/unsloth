@@ -104,6 +104,7 @@ class TestFamiliesAreBounded:
             "diffusion-server",
             "lemonade",
             "sglang",
+            "vllm",
             "desktop-backend",
             "desktop-install",
             "desktop-update",

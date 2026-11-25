@@ -27,7 +27,7 @@
         "chunk_size": 1200,
         "chunk_overlap": 200
       },
-      "sampling_strategy": "ordered",
+      "sampling_strategy": "shuffle",
       "selection_strategy": null
     },
     "tool_configs": [],

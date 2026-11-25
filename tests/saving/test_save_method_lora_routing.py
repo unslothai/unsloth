@@ -211,6 +211,7 @@ _GENERIC_SAVE_REAL_HELPERS = (
     "_gemma_rope_the_zoo_export_drops",
     "_write_trained_gemma_rope",
     "_is_main_rank",
+    "_merge_base_resolver",
 )
 _GENERIC_SAVE_STUBBED_HELPERS = frozenset(
     {
@@ -270,6 +271,7 @@ def _routing_environment(monkeypatch, model, **overrides):
         _defer_to_main_process = lambda is_main_process, model = None: not is_main_process,
         get_token = lambda: "fixture-token",
         get_model_name = lambda name: name,
+        _merge_base_model_name = lambda name, load_in_4bit = True: name,
         _push_merged_to_hub_revision = lambda kwargs: calls.setdefault("revision", []).append(kwargs),
         _prewarm_base_model_hub_cache = lambda *args, **kwargs: calls["prewarm"].append(kwargs),
         _is_qwen3_5_vlm = lambda model: False,

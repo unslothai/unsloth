@@ -20,7 +20,12 @@ def _inject(monkeypatch, extra_body):
         sys.modules, "routes.inference", SimpleNamespace(get_llama_cpp_backend = lambda: llama)
     )
     monkeypatch.setitem(
-        sys.modules, "core.inference", SimpleNamespace(get_inference_backend = lambda: backend)
+        sys.modules,
+        "core.inference",
+        SimpleNamespace(
+            get_inference_backend = lambda: backend,
+            model_slots = SimpleNamespace(visible = lambda: [], in_slot = lambda slot, fn: fn()),
+        ),
     )
     monkeypatch.setattr(
         route, "_resolve_local_v1_endpoint", lambda request: "http://127.0.0.1:8888/v1"
@@ -76,3 +81,48 @@ def test_generation_settings_still_reach_the_local_model(monkeypatch):
         "mirostat": 2,
         "chat_template_kwargs": {"enable_thinking": False},
     }
+
+
+def test_provider_less_config_resolving_to_the_local_provider_is_filtered(monkeypatch):
+    # Data Designer routes a config without `provider` to the first provider; when that is the
+    # local one, the request reaches Studio's /v1 with the key minted for the named local config.
+    _inject(monkeypatch, {})
+    recipe = {
+        "model_providers": [{"name": "local", "is_local": True}],
+        "model_configs": [
+            {"alias": "chat", "model": MODEL, "provider": "local"},
+            {
+                "alias": "other",
+                "model": MODEL,
+                "inference_parameters": {
+                    "extra_body": {"enable_tools": True, "permission_mode": "off", "top_k": 20}
+                },
+            },
+        ],
+        "columns": [
+            {"column_type": "llm-text", "name": "a", "model_alias": "chat"},
+            {"column_type": "llm-text", "name": "b", "model_alias": "other"},
+        ],
+    }
+    route._inject_local_providers(recipe, SimpleNamespace())
+
+    assert recipe["model_configs"][1]["inference_parameters"]["extra_body"] == {
+        "top_k": 20,
+        "chat_template_kwargs": {"enable_thinking": False},
+    }
+
+
+def test_provider_less_config_resolving_to_an_external_provider_is_untouched(monkeypatch):
+    _inject(monkeypatch, {})
+    body = {"enable_tools": True, "top_k": 20}
+    recipe = {
+        "model_providers": [{"name": "remote"}, {"name": "local", "is_local": True}],
+        "model_configs": [
+            {"alias": "chat", "model": MODEL, "provider": "local"},
+            {"alias": "other", "model": "m", "inference_parameters": {"extra_body": dict(body)}},
+        ],
+        "columns": [{"column_type": "llm-text", "name": "a", "model_alias": "chat"}],
+    }
+    route._inject_local_providers(recipe, SimpleNamespace())
+
+    assert recipe["model_configs"][1]["inference_parameters"]["extra_body"] == body

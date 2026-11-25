@@ -46,8 +46,11 @@ def _env(monkeypatch):
 
 def test_gate_allows_fp8_and_w8a8_only(monkeypatch):
     assert bs.block_swap_error(4, "fp8", "cuda", True) is None
-    # torchao weight-only int8 is a tensor subclass the swapper cannot stream.
+    # torchao weight-only int8 (the opt-out) is a tensor subclass the swapper cannot stream; W8A8 is the default.
+    monkeypatch.setenv(bs._INT8_TRAIN_ENV, "weight-only")
     assert "W8A8" in bs.block_swap_error(4, "int8", "cuda", True)
+    monkeypatch.delenv(bs._INT8_TRAIN_ENV)
+    assert bs.block_swap_error(4, "int8", "cuda", True) is None
     monkeypatch.setenv(bs._INT8_TRAIN_ENV, "w8a8")
     assert bs.block_swap_error(4, "int8", "cuda", True) is None
     for mode in ("nf4", "mxfp8"):

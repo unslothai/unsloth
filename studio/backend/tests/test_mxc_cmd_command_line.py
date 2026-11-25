@@ -291,7 +291,9 @@ def test_the_probe_holds_the_read_grants_until_its_workload_is_released(monkeypa
 
     events = []
     lease = SimpleNamespace(release = lambda: events.append("grants released"))
-    monkeypatch.setattr(mxc_read_grants, "hold_if_needed", lambda: events.append("held") or lease)
+    monkeypatch.setattr(
+        mxc_read_grants, "hold_before_build", lambda: (events.append("held") or lease, True)
+    )
     available = _cmd_probe(
         monkeypatch, tmp_path, quoted_file = True, spawned = events, released = events
     )[0]
@@ -306,7 +308,7 @@ def test_a_probe_that_cannot_record_its_lease_never_spawns(monkeypatch, tmp_path
         raise mxc_read_grants.ReadGrantError("controlled lease failure")
 
     events = []
-    monkeypatch.setattr(mxc_read_grants, "hold_if_needed", refuse)
+    monkeypatch.setattr(mxc_read_grants, "hold_before_build", refuse)
     available, reason = _cmd_probe(monkeypatch, tmp_path, quoted_file = True, spawned = events)
     assert available is False
     assert "controlled lease failure" in reason

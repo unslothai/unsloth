@@ -71,6 +71,7 @@ import {
   useHfTokenStore,
   useHubInfiniteScroll,
   useHubModelSearch,
+  servedCheckpoint,
   useOnlineStatus,
 } from "@/features/hub";
 import { useAvatarImageUrl } from "@/features/hub/catalog/owner-avatar";
@@ -231,6 +232,7 @@ import {
   pickerMinHeight,
   pickerWidth,
   pickerZoomOut,
+  type LoadedCopy,
   type PickerRow,
   RECOMMENDED_TAB,
   SECTION_LABEL,
@@ -271,10 +273,9 @@ interface Row extends PickerRow {
   hub?: ModelOption;
   npu?: NpuModel;
   loadedQuant?: string | null;
+  loadedCopies?: LoadedCopy[];
   partial?: boolean;
   resumable?: boolean;
-  /** Runs on the Audio page: a pick opens it there instead of loading into Chat. */
-  media?: "audio";
   favoriteQuant?: string;
   inventoryKey?: string;
 }
@@ -1198,6 +1199,14 @@ const MENU_ITEM =
   "min-h-0 gap-2 rounded-[calc(8px*var(--ui-space-scale,1))] py-[calc(5px*var(--ui-space-scale,1))] pr-8 pl-2.5 text-ui-12 [&_[data-slot=dropdown-menu-radio-item-indicator]]:right-2.5 [&_[data-slot=dropdown-menu-radio-item-indicator]_svg]:size-3.5";
 const MENU_LABEL =
   "px-2.5 pt-[calc(6px*var(--ui-space-scale,1))] pb-[calc(3px*var(--ui-space-scale,1))] text-ui-10";
+const MEDIA_TAG: Record<
+  NonNullable<Row["media"]>,
+  { label: string; hint: string }
+> = {
+  audio: { label: "Audio", hint: "Opens on the Audio page" },
+  images: { label: "Image", hint: "Opens on the Images page" },
+  video: { label: "Video", hint: "Opens on the Video page" },
+};
 const FORMAT_DOT: Partial<Record<FormatFilter, string>> = {
   gguf: "bg-format-gguf",
   mlx: "bg-format-mlx",
@@ -1346,7 +1355,11 @@ function modelFacts(
   } else if (row.loaded) {
     facts.push([
       "Status",
-      row.loadedQuant ? `Loaded (${row.loadedQuant})` : "Loaded",
+      row.loadedCopies
+        ? `Loaded (${row.loadedCopies.map((c) => c.quant).join(", ")})`
+        : row.loadedQuant
+          ? `Loaded (${row.loadedQuant})`
+          : "Loaded",
     ]);
   }
   return facts;
@@ -1594,6 +1607,7 @@ export function ComposerModelPicker({
   const activeVariant = pane ? pane.ggufVariant : runtimeVariant;
   const modelLoading = pane ? pane.loading === true : runtimeLoading;
   const loadedModels = useChatRuntimeStore((s) => s.loadedModels);
+  const servedId = servedCheckpoint(loadedModels, checkpoint ?? "", activeVariant);
   const chatModels = useChatRuntimeStore((s) => s.models);
   const pinned = usePinnedModelsStore((s) => s.pinned);
   const togglePinned = usePinnedModelsStore((s) => s.togglePinned);
@@ -1936,7 +1950,10 @@ export function ComposerModelPicker({
     },
     [hubScrollRef],
   );
-  const [formatFilter, setFormatFilter] = useState<FormatFilter>("all");
+  const [chosenFormat, setFormatFilter] = useState<FormatFilter>("all");
+  // On Device only: Discover reads it as All.
+  const formatFilter: FormatFilter =
+    chosenFormat === "media" ? "all" : chosenFormat;
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
   const chatOnlyKnown = usePlatformStore(
     (s) => s.isChatOnly() && !s.capabilitiesUnknown(),
@@ -2062,6 +2079,35 @@ export function ComposerModelPicker({
   // Compare and the API page load what they pick, so they list no audio models.
   const listsAudio = !pane;
 
+  const generationPage = useCallback(
+    (id: string, task: string | null | undefined) => {
+      const page = listsAudio
+        ? mediaPageForTask(
+            taskForMediaPick(task, mediaTaskById.get(id.toLowerCase())),
+          )
+        : null;
+      return page === "images" || page === "video" ? page : null;
+    },
+    [listsAudio, mediaTaskById],
+  );
+  const hasGenerationModels = useMemo(
+    () =>
+      inventory.cachedGguf.some((r) => generationPage(r.repo_id, r.task)) ||
+      inventory.cachedModels.some(
+        (r) =>
+          !(r.companion || hidesCheckpoints) &&
+          generationPage(r.repo_id, r.task),
+      ),
+    [
+      inventory.cachedGguf,
+      inventory.cachedModels,
+      hidesCheckpoints,
+      generationPage,
+    ],
+  );
+  const listsGeneration = chosenFormat === "media" && hasGenerationModels;
+  const deviceFormat: FormatFilter = listsGeneration ? "media" : formatFilter;
+
   const rows = useMemo<Row[]>(() => {
     const device: Row[] = [];
     const isAudio = (id: string, task: string | null | undefined) =>
@@ -2071,14 +2117,17 @@ export function ComposerModelPicker({
       ) === "audio";
     for (const repo of inventory.cachedGguf) {
       const audio = isAudio(repo.repo_id, repo.task);
+      const generation = listsGeneration
+        ? generationPage(repo.repo_id, repo.task)
+        : null;
       if (
-        !audio &&
+        !(audio || generation) &&
         (!isChatTask(repo.task) || isMediaCatalogRepo(repo.repo_id))
       ) {
         continue;
       }
       device.push({
-        media: audio ? "audio" : undefined,
+        media: audio ? "audio" : (generation ?? undefined),
         key: `gguf:${repo.repo_id}`,
         id: repo.repo_id,
         label: modelDisplayName(repo.repo_id),
@@ -2097,8 +2146,12 @@ export function ComposerModelPicker({
     }
     for (const repo of inventory.cachedModels) {
       const audio = !repo.companion && isAudio(repo.repo_id, repo.task);
+      const generation =
+        listsGeneration && !repo.companion
+          ? generationPage(repo.repo_id, repo.task)
+          : null;
       if (
-        !audio &&
+        !(audio || generation) &&
         (repo.companion ||
           !isChatTask(repo.task) ||
           isMediaCatalogRepo(repo.repo_id))
@@ -2109,7 +2162,7 @@ export function ComposerModelPicker({
         continue;
       }
       device.push({
-        media: audio ? "audio" : undefined,
+        media: audio ? "audio" : (generation ?? undefined),
         key: `cached:${repo.repo_id}`,
         id: repo.repo_id,
         label: modelDisplayName(repo.repo_id),
@@ -2171,6 +2224,7 @@ export function ComposerModelPicker({
     device.push(...npuPickerRows(npuModels, true));
     // Local models load by path and two files can share a name, so the checkpoint is the identity.
     const servedAs = (m: (typeof loadedModels)[number]) => m.checkpoint ?? m.id;
+    const selected = servedId.toLowerCase();
     const loaded = new Map<string, (typeof loadedModels)[number]>();
     for (const m of loadedModels) {
       loaded.set(m.id.toLowerCase(), m);
@@ -2184,18 +2238,43 @@ export function ComposerModelPicker({
         (row.aliases ?? [])
           .map((a) => loaded.get(a.toLowerCase()))
           .find(Boolean);
-      return hit
-        ? {
-            ...row,
-            loaded: true,
-            loadedQuant: hit.quant ?? null,
-            loadedId: servedAs(hit),
-          }
-        : row;
+      if (!hit) {
+        return row;
+      }
+      const copies = loadedModels.filter(
+        (m) => m.quant && m.id.toLowerCase() === hit.id.toLowerCase(),
+      );
+      if (copies.length < 2) {
+        return {
+          ...row,
+          loaded: true,
+          loadedQuant: hit.quant ?? null,
+          loadedId: servedAs(hit),
+        };
+      }
+      const shown =
+        copies.find((m) => servedAs(m).toLowerCase() === selected) ?? hit;
+      return {
+        ...row,
+        loaded: true,
+        loadedQuant: shown.quant ?? null,
+        loadedId: servedAs(shown),
+        loadedCopies: copies.map((m) => ({
+          quant: m.quant as string,
+          id: servedAs(m),
+        })),
+      };
     });
     for (const m of loadedModels) {
       const checkpoint = servedAs(m);
-      if (marked.some((row) => row.loaded && row.loadedId === checkpoint)) {
+      if (
+        marked.some(
+          (row) =>
+            row.loaded &&
+            (row.loadedId === checkpoint ||
+              row.loadedCopies?.some((c) => c.id === checkpoint)),
+        )
+      ) {
         continue;
       }
       marked.push({
@@ -2272,12 +2351,15 @@ export function ComposerModelPicker({
     npuModels,
     loraModels,
     loadedModels,
+    servedId,
     recommended,
     mlxTaggedHub,
     externalModels,
     mediaTaskById,
     listsAudio,
     hidesCheckpoints,
+    listsGeneration,
+    generationPage,
   ]);
   routeMediaPick.current = (id, meta) => {
     if (!listsAudio) {
@@ -2798,7 +2880,7 @@ export function ComposerModelPicker({
       return found;
     }
     const sorted = sortDeviceRows(
-      found.filter((row) => matchesFormat(row, formatFilter)),
+      found.filter((row) => matchesFormat(row, deviceFormat)),
       deviceSort,
       lastLoaded,
       deviceSortDesc,
@@ -2814,6 +2896,7 @@ export function ComposerModelPicker({
     hubResults.length,
     isFavorite,
     formatFilter,
+    deviceFormat,
     deviceSort,
     deviceSortDesc,
     loadTimes,
@@ -3022,7 +3105,18 @@ export function ComposerModelPicker({
   // A Compare pane ejects nothing, and the API page only once its load has settled.
   const canEject = !pane || pane.loaded === true;
   const eject = (row: Row) => {
-    source?.eject(ejectTargetId(row, chosen?.id));
+    source?.eject(ejectTargetId(row, chosen?.id, servedId));
+  };
+  const loadedQuantsOf = (row: Row): string[] => {
+    if (!row.loaded) {
+      return [];
+    }
+    if (row.loadedCopies) {
+      return row.loadedCopies.map((c) => c.quant.toLowerCase());
+    }
+    const quant =
+      row.loadedQuant ?? (row.id === chosen?.id ? activeVariant : null);
+    return quant ? [quant.toLowerCase()] : [];
   };
 
   const handOff = (row: Row) => {
@@ -4422,8 +4516,8 @@ export function ComposerModelPicker({
             {row.media ? (
               <StatusTag
                 tone="accent"
-                label="Audio"
-                hint="Opens on the Audio page"
+                label={MEDIA_TAG[row.media].label}
+                hint={MEDIA_TAG[row.media].hint}
               />
             ) : null}
             {row.partial ? (
@@ -4760,6 +4854,37 @@ export function ComposerModelPicker({
     );
   };
 
+  const ejectCopyItems = (row: Row, variant: GgufVariantDetail) => {
+    const copy = row.loadedCopies?.find(
+      (c) => c.quant.toLowerCase() === variant.quant.toLowerCase(),
+    );
+    if (!copy || !canEject) {
+      return undefined;
+    }
+    return [
+      {
+        key: "eject",
+        label: "Eject",
+        icon: (
+          <HugeiconsIcon
+            icon={RemoveCircleIcon}
+            strokeWidth={1.75}
+            className="size-icon"
+          />
+        ),
+        onSelect: () =>
+          source?.eject(
+            ejectTargetId(
+              { id: row.id, loadedId: copy.id, loadedCopies: [copy] },
+              chosen?.id,
+              servedId,
+            ),
+          ),
+        destructive: true,
+      },
+    ];
+  };
+
   const renderQuantActions = (
     row: Row,
     variant: GgufVariantDetail,
@@ -4791,6 +4916,7 @@ export function ComposerModelPicker({
             update={updateFor(row, variant)}
             del={deleteQuantFor(row, variant)}
             runSettings={quantConfigTarget}
+            items={ejectCopyItems(row, variant)}
             buttonClassName={cn(ACTION_DOTS, reveal, TOUCH_ACTION)}
             iconClassName="composer-row-dots"
             contentClassName="composer-row-menu"
@@ -4922,9 +5048,7 @@ export function ComposerModelPicker({
   );
 
   const renderDeviceQuants = (row: Row, list: GgufVariantDetail[]) => {
-    const loadedQuant = (
-      row.loadedQuant ?? (row.id === chosen?.id ? activeVariant : null)
-    )?.toLowerCase();
+    const loadedQuants = loadedQuantsOf(row);
     const { ordered, recommended } = pickerOrderedGgufVariants(
       list,
       null,
@@ -4934,9 +5058,7 @@ export function ComposerModelPicker({
       <div className="flex shrink-0 flex-col">
         {ordered.map((variant) =>
           renderQuantRow(variant, {
-            loaded:
-              Boolean(row.loaded) &&
-              variant.quant.toLowerCase() === loadedQuant,
+            loaded: loadedQuants.includes(variant.quant.toLowerCase()),
             recommended: recommended.has(variant.quant),
             onPick: () => {
               if (!source) {
@@ -4994,16 +5116,12 @@ export function ComposerModelPicker({
       offer.defaultVariant,
       quantBudget,
     );
-    const loadedQuant = row.loaded
-      ? (
-          row.loadedQuant ?? (row.id === chosen?.id ? activeVariant : null)
-        )?.toLowerCase()
-      : null;
+    const loadedQuants = loadedQuantsOf(row);
     return (
       <div className="flex shrink-0 flex-col">
         {ordered.map((variant) =>
           renderQuantRow(variant, {
-            loaded: variant.quant.toLowerCase() === loadedQuant,
+            loaded: loadedQuants.includes(variant.quant.toLowerCase()),
             recommended: recommended.has(variant.quant),
             onPick: () =>
               pickOfferQuant(row, variant, !offer.mlx, offer.hasVision),
@@ -5272,15 +5390,19 @@ export function ComposerModelPicker({
     return out;
   };
 
-  const formatGroup = (
+  const formatGroup = (value: FormatFilter, withMedia: boolean) => (
     <>
       <DropdownMenuLabel className={MENU_LABEL}>Format</DropdownMenuLabel>
       <DropdownMenuRadioGroup
-        value={formatFilter}
+        value={value}
         onValueChange={(next) => setFormatFilter(next as FormatFilter)}
       >
         {(Object.keys(FORMAT_FILTER_LABEL) as FormatFilter[])
-          .filter((key) => key !== "npu" || npuCatalog !== null)
+          .filter(
+            (key) =>
+              (key !== "npu" || npuCatalog !== null) &&
+              (key !== "media" || withMedia),
+          )
           .map((key) => (
             <DropdownMenuRadioItem
               key={key}
@@ -5706,7 +5828,7 @@ export function ComposerModelPicker({
                     <button
                       ref={ref}
                       type="button"
-                      aria-label={`Sort and filter: ${DEVICE_SORT_LABEL[deviceSort]} ${deviceSortDesc ? "descending" : "ascending"}, ${FORMAT_FILTER_LABEL[formatFilter]}`}
+                      aria-label={`Sort and filter: ${DEVICE_SORT_LABEL[deviceSort]} ${deviceSortDesc ? "descending" : "ascending"}, ${FORMAT_FILTER_LABEL[deviceFormat]}`}
                       className="relative grid size-[calc(24px*var(--ui-space-scale,1))] shrink-0 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground data-[state=open]:bg-sidebar-accent max-md:size-8"
                     >
                       <HugeiconsIcon
@@ -5715,7 +5837,7 @@ export function ComposerModelPicker({
                         // Lifts the glyph's ink 0.5px to centre.
                         className="size-4 -translate-y-[0.5px]"
                       />
-                      {formatFilter !== "all" ? (
+                      {deviceFormat !== "all" ? (
                         <span className="absolute top-0.5 right-0.5 size-1.5 rounded-full bg-primary" />
                       ) : null}
                     </button>
@@ -5776,7 +5898,7 @@ export function ComposerModelPicker({
                     )}
                   </DropdownMenuRadioGroup>
                   <DropdownMenuSeparator />
-                  {formatGroup}
+                  {formatGroup(deviceFormat, hasGenerationModels)}
                 </NonModalDropdownMenu>
               ) : null}
               {source && viewed === CONNECTED_TAB ? (
@@ -5822,7 +5944,7 @@ export function ComposerModelPicker({
                     </button>
                   )}
                 >
-                  {formatGroup}
+                  {formatGroup(formatFilter, false)}
                   <DropdownMenuSeparator />
                   <Hint
                     label="Hides models larger than this device's memory budget. Downloaded models stay visible."

@@ -2447,6 +2447,67 @@ def _find_blocked_commands(command: str, posix: "bool | None" = None) -> set[str
 
 # Holds the sandbox sitecustomize.py shim; put on the child's PYTHONPATH in _build_safe_env.
 _SANDBOX_SITE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sandbox_site")
+_sandbox_site_bytecode_for: "tuple | None" = None
+_sandbox_site_bytecode_lock = threading.Lock()
+
+
+def _sandbox_site_pyc(shim: str) -> str:
+    """Where a default child looks, whatever this host's PYTHONPYCACHEPREFIX or -O."""
+    tag = sys.implementation.cache_tag
+    return os.path.join(os.path.dirname(shim), "__pycache__", f"sitecustomize.{tag}.pyc")
+
+
+def _pyc_matches_source(cfile: str, source: bytes) -> bool:
+    import importlib.util
+    try:
+        with open(cfile, "rb") as stream:
+            header = stream.read(16)
+    except OSError:
+        return False
+    return (
+        len(header) == 16
+        and header[:4] == importlib.util.MAGIC_NUMBER
+        and int.from_bytes(header[4:8], "little") == 0b11
+        and header[8:16] == importlib.util.source_hash(source)
+    )
+
+
+def _ensure_sandbox_site_bytecode() -> None:
+    """The sandboxes mount the shim read-only, so a child recompiled it on every start (~12 ms). Checked
+    hash (PEP 552): validated against the source bytes, so an edit never runs stale bytecode."""
+    global _sandbox_site_bytecode_for
+    if sys.dont_write_bytecode:
+        return
+    shim = os.path.join(_SANDBOX_SITE_DIR, "sitecustomize.py")
+    try:
+        source_stat = os.stat(shim)
+    except OSError:
+        return
+    key = (shim, source_stat.st_mtime_ns, source_stat.st_size)
+    if _sandbox_site_bytecode_for == key:
+        return
+    with _sandbox_site_bytecode_lock:
+        if _sandbox_site_bytecode_for == key:
+            return
+        try:
+            import py_compile
+
+            cfile = _sandbox_site_pyc(shim)
+            with open(shim, "rb") as stream:
+                source = stream.read()
+            if not _pyc_matches_source(cfile, source):
+                py_compile.compile(
+                    shim,
+                    cfile = cfile,
+                    doraise = True,
+                    invalidation_mode = py_compile.PycInvalidationMode.CHECKED_HASH,
+                )
+        except Exception:  # noqa: BLE001 - bytecode is an optimization, never a launch failure
+            logger.debug("could not write the sandbox shim bytecode", exc_info = True)
+        _sandbox_site_bytecode_for = (
+            key  # also on failure: a read-only install would compile per call
+        )
+
 
 # Auto mode prompting gate; fails closed: anything not provably read-only asks.
 _AUTO_SAFE_TERMINAL_COMMANDS = frozenset(
@@ -3401,6 +3462,18 @@ _STUDIO_CREDENTIAL_BLOCKED = (
     "Blocked for safety: Unsloth Studio's authentication directory holds this install's own "
     "credentials and is not readable by tools."
 )
+_PYTHON_TOO_DEEP_TO_SCREEN = (
+    "Error: the code is nested too deeply for the safety check to analyse, so it was not run. "
+    "Simplify it (for example, split long expressions into several statements) and run it again."
+)
+_TERMINAL_TOO_DEEP_TO_SCREEN = (
+    "Error: the command is nested too deeply for the safety check to analyse, so it was not run. "
+    "Simplify it and run it again."
+)
+_MCP_TOO_DEEP_TO_SCREEN = (
+    "Error: the tool arguments are nested too deeply for the safety check to analyse, so the "
+    "call was not made. Simplify them and try again."
+)
 
 
 def _canonical_path_text(text: str) -> str:
@@ -4082,8 +4155,26 @@ def _references_studio_credential_here(
     _assign_expand_depth: int = 0,
     _quoted_assignments: bool = False,
     _positional_assignments: bool = False,
+    _cleared: "set | None" = None,
+    _depth: int = 0,
 ) -> bool:
     """Checks credential refs and .. paths from the tool cwd (the one shape that can leave the sandbox); a binding of the variable first names its own dir"""
+    # Nested `[[...]]` rewrites reach one text along many paths; keyed on depth so RecursionError matches a rescan.
+    if _cleared is None:
+        _cleared = set()
+    key = None
+    if type(text) is str and (workdir is None or type(workdir) is str):
+        key = (
+            hashlib.sha256(text.encode("utf-8", "surrogatepass")).digest(),
+            workdir,
+            _unescaped,
+            _assign_expand_depth,
+            _quoted_assignments,
+            _positional_assignments,
+            _depth,
+        )
+        if key in _cleared:
+            return False
     if "=" in text and _rebinds_the_studio_home_first(text):
         text = _expand_shell_assignments(text)
     if _references_studio_credential(text):
@@ -4103,18 +4194,22 @@ def _references_studio_credential_here(
         # One level only: recursing per pass raised RecursionError on long `\\` runs.
         unescaped = _ESCAPED_WORD_CHAR_RE.sub(r"\1", text)
         if unescaped != text and _references_studio_credential_here(
-            unescaped, workdir, _unescaped = True
+            unescaped, workdir, _unescaped = True, _cleared = _cleared, _depth = _depth + 1
         ):
             return True
     if "[" in text:
         # Read one-char classes as literals before the wildcard collapse discards them.
         literal = _SINGLETON_CLASS_RE.sub(r"\1", text)
-        if literal != text and _references_studio_credential_here(literal, workdir):
+        if literal != text and _references_studio_credential_here(
+            literal, workdir, _cleared = _cleared, _depth = _depth + 1
+        ):
             return True
     # `aut[h]` splits at the brackets, which also end a path token; `aut?` keeps it whole.
     if "[" in text:
         collapsed = _BRACKET_CLASS_RE.sub("?", text)
-        if collapsed != text and _references_studio_credential_here(collapsed, workdir):
+        if collapsed != text and _references_studio_credential_here(
+            collapsed, workdir, _cleared = _cleared, _depth = _depth + 1
+        ):
             return True
     # The kernel resolves the symlink before `..`; lexical normpath would miss it.
     if workdir and "/proc/" in text:
@@ -4124,13 +4219,17 @@ def _references_studio_credential_here(
     # Bypass repoints HOME at the workdir; substitute rather than replace.
     if workdir and ("pwd" in text.lower() or "%cd%" in text.lower()):
         here = _CWD_VARIABLE_RE.sub(lambda _m: workdir.rstrip("/\\"), text)
-        if here != text and _references_studio_credential_here(here, workdir):
+        if here != text and _references_studio_credential_here(
+            here, workdir, _cleared = _cleared, _depth = _depth + 1
+        ):
             return True
     if workdir and ("home" in text.lower() or "~" in text):
         homed = _HOME_VARIABLE_RE.sub(lambda _m: workdir.rstrip("/\\"), text)
         # A workdir spelling `~` would substitute to another match, so recurse only once it is gone.
         if homed != text and not _HOME_VARIABLE_RE.search(homed):
-            if _references_studio_credential_here(homed, workdir):
+            if _references_studio_credential_here(
+                homed, workdir, _cleared = _cleared, _depth = _depth + 1
+            ):
                 return True
     # One level of variable indirection; it only adds detections.
     if "$" in text:
@@ -4175,6 +4274,8 @@ def _references_studio_credential_here(
                     _assign_expand_depth = _assign_expand_depth + 1,
                     _quoted_assignments = include_quoted,
                     _positional_assignments = positional,
+                    _cleared = _cleared,
+                    _depth = _depth + 1,
                 ):
                     return True
     # A `cd` earlier in the command moves where every later relative path opens from.
@@ -4196,6 +4297,8 @@ def _references_studio_credential_here(
                 ):
                     return True
     if not workdir or ".." not in text:
+        if key is not None:
+            _cleared.add(key)
         return False
     for token in (m.group(0) for m in _path_tokens_containing(text, "..")):
         if "/" not in token and "\\" not in token:
@@ -4205,6 +4308,8 @@ def _references_studio_credential_here(
             for spelling in _token_spellings(token)
         ):
             return True
+    if key is not None:
+        _cleared.add(key)
     return False
 
 
@@ -5528,18 +5633,28 @@ _PATH_NAME_REWRITES = frozenset({"with_name", "with_stem", "with_suffix"})
 _PERCENT_NAMED_RE = re.compile(r"%\((\w+)\)[-#0 +]*\d*(?:\.\d+)?[a-zA-Z]")
 
 
+_NOT_FOLDED = object()
+
+
 def _folded_path(
     node,
     literals = None,
     ctors = None,
     join_names = None,
+    memo = None,
 ) -> "str | None":
-    """Folds literal pieces; a dynamic piece is a NUL placeholder, so a dynamic name stays detectable."""
+    """Folds literal pieces; a dynamic piece is a NUL placeholder, so a dynamic name stays detectable.
+    *memo* (id(node) -> fold) is shared by folds over one tree with the same arguments; a fold over
+    _MAX_PATH_SCAN_CHARS is not kept since the scan refuses it on sight."""
     literals = literals or {}
     ctors = ctors or _PATH_CTORS
     join_names = join_names or frozenset()
 
     def fold(node) -> "str | None":
+        if memo is not None:
+            known = memo.get(id(node), _NOT_FOLDED)
+            if known is not _NOT_FOLDED:
+                return known
         if isinstance(node, ast.Constant) and isinstance(node.value, (str, bytes)):
             # bytes paths are valid too (open(b'/etc/passwd')); decode for scan.
             return (
@@ -5559,7 +5674,7 @@ def _folded_path(
         ):
             return "\x02"  # Path(...).parents[1]
         if isinstance(node, ast.JoinedStr):
-            return "".join(
+            joined = "".join(
                 v.value
                 if isinstance(v, ast.Constant) and isinstance(v.value, str)
                 else (fold(v.value) or "\x00")
@@ -5567,13 +5682,19 @@ def _folded_path(
                 else "\x00"
                 for v in node.values
             )
+            if memo is not None and len(joined) <= _MAX_PATH_SCAN_CHARS:
+                memo[id(node)] = joined
+            return joined
         if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Add, ast.Div)):
             left = fold(node.left)
             right = fold(node.right)
             left = "\x00" if left is None else left
             right = "\x00" if right is None else right
             # `/` is a JOIN: an absolute right side discards the left, as os.path.join does.
-            return _posix_join((left, right)) if isinstance(node.op, ast.Div) else left + right
+            joined = _posix_join((left, right)) if isinstance(node.op, ast.Div) else left + right
+            if memo is not None and len(joined) <= _MAX_PATH_SCAN_CHARS:
+                memo[id(node)] = joined
+            return joined
         if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod):
             # Old-style formatting: '%s/%s' % ('/etc', 'passwd') -> /etc/passwd.
             template = fold(node.left)
@@ -5596,9 +5717,12 @@ def _folded_path(
                     single = fold(rhs)
                     args = (single if single is not None else "\x00",)
                 try:
-                    return template % args
+                    formatted = template % args
                 except (TypeError, ValueError, KeyError):
                     return None
+                if memo is not None and len(formatted) <= _MAX_PATH_SCAN_CHARS:
+                    memo[id(node)] = formatted
+                return formatted
             return None
         if isinstance(node, ast.Call):
             func = node.func
@@ -5679,11 +5803,20 @@ def _folded_path(
     return fold(node)
 
 
+_NUL_RUN_RE = re.compile("\x00{2,}")
+
+
 def _dynamic_name_hits_sensitive(folded) -> bool:
     """A NUL placeholder matches any run within one segment, so a split sensitive name still matches."""
     if not folded or "\x00" not in folded:
         return False
-    pattern = "".join(r"[^/\\]*" if ch == "\x00" else re.escape(ch) for ch in folded)
+    # One literal char matches one target char, so more literals than the longest target can never match.
+    if len(folded) - folded.count("\x00") > max(map(len, _SENSITIVE_GLOB_TARGETS), default = 0):
+        return False
+    # Adjacent placeholders match exactly what one does, so a run of them compiles to one class.
+    pattern = "".join(
+        r"[^/\\]*" if ch == "\x00" else re.escape(ch) for ch in _NUL_RUN_RE.sub("\x00", folded)
+    )
     try:
         rx = re.compile(pattern + r"\Z")
     except re.error:
@@ -5751,6 +5884,44 @@ def classifying_under(sandbox_level: "str | None"):
         yield
     finally:
         _classifying_sandbox_level.reset(token)
+
+
+class PythonCallAnalyses:
+    """Per-call cache of static Python analyses keyed by exact source; never share across calls."""
+
+    __slots__ = ("_by_source",)
+
+    def __init__(self) -> None:
+        self._by_source: "dict[str, tuple]" = {}
+
+
+_python_call_analyses: "ContextVar[PythonCallAnalyses | None]" = ContextVar(
+    "unsloth_python_call_analyses", default = None
+)
+
+
+@contextlib.contextmanager
+def using_python_call_analyses(analyses: "PythonCallAnalyses | None"):
+    if analyses is None:
+        yield
+        return
+    token = _python_call_analyses.set(analyses)
+    try:
+        yield
+    finally:
+        _python_call_analyses.reset(token)
+
+
+def _signal_escape_analysis(code: str):
+    """Cached `_check_signal_escape_patterns`; safe because it reads only the source and constants."""
+    analyses = _python_call_analyses.get()
+    if analyses is None or type(code) is not str:
+        return _check_signal_escape_patterns(code)
+    found = analyses._by_source.get(code)
+    if found is None:
+        found = _check_signal_escape_patterns(code)
+        analyses._by_source[code] = found
+    return found
 
 
 # Both run the command through cmd.exe: the isolated one inside MXC, the fallback on a host without Git Bash.
@@ -9075,7 +9246,7 @@ def _python_is_high_risk(code: str) -> bool:
     if not code or not code.strip():
         return False
     # A confirmation beats a silent refusal at execution time.
-    analysis = _check_signal_escape_patterns(code)
+    analysis = _signal_escape_analysis(code)
     if _check_code_safety(code, analysis = analysis) is not None:
         return True
     if any(_terminal_is_high_risk(command) for command in analysis[1].get("shell_commands", ())):
@@ -9360,9 +9531,10 @@ def _python_is_high_risk(code: str) -> bool:
             if folded and "\x00" not in folded and "\x02" not in folded:
                 str_vars[node.targets[0].id] = folded
 
+    fold_memo: "dict[int, str | None]" = {}
     for node in _tree_nodes(tree):
         if isinstance(node, (ast.BinOp, ast.JoinedStr, ast.Call)):
-            folded = _folded_path(node, str_vars)
+            folded = _folded_path(node, str_vars, memo = fold_memo)
             if folded and _folded_is_sensitive(folded):
                 return True
     # name -> possible runner modules; sets only grow, so alias propagation converges.
@@ -9635,55 +9807,61 @@ def _python_is_high_risk(code: str) -> bool:
 
 def is_high_risk_tool_call(name: str, arguments: dict) -> bool:
     """Auto mode prompts only for sensitive actions (credentials, privilege, destructive, network exfil); unknown tools fail closed; hard blocks still apply."""
-    if _web_search_fetches_url(name, arguments) or _browser_opens_workspace_file(name, arguments):
-        return True
-    if name in _ALWAYS_SAFE_TOOLS:
-        return False
-    if name == "render_html":
-        # A static canvas is fine; only a networked canvas can egress.
-        return _render_html_reaches_network(arguments)
-    if name.startswith(MCP_TOOL_PREFIX):
-        tool_name = _mcp_raw_tool_name(name)
-        if tool_name in _BLENDER_CLI_SUMMARY_TOOLS:
-            return True
-        # Normalize every separator and camelCase boundary to underscore so term regexes match one form.
-        tool_name = _CAMEL_CASE_RE.sub("_", _MCP_TERM_SEPARATOR_RE.sub("_", tool_name))
-        # Exec tools, credential nouns and sensitive paths prompt; ordinary CRUD calls run.
-        _reads = bool(_AUTO_READ_MCP_VERB_RE.search(tool_name))
-        if _AUTO_EXEC_MCP_COMPOUND_RE.search(tool_name):
-            return True
-        if _AUTO_EXEC_MCP_TOOL_RE.search(tool_name) and not (
-            _reads and not _AUTO_EXEC_MCP_VERB_ONLY_RE.search(tool_name)
+    # Caught in the body, not a wrapper: a wrapper frame would move the stack threshold.
+    try:
+        if _web_search_fetches_url(name, arguments) or _browser_opens_workspace_file(
+            name, arguments
         ):
             return True
-        if _AUTO_DESTRUCTIVE_MCP_VERB_RE.search(tool_name):
-            return True
-        if _AUTO_PRIVILEGE_MCP_VERB_RE.search(tool_name):
-            return True
-        if _AUTO_HIGH_IMPACT_MCP_RE.search(tool_name) and not _reads:
-            return True
-        if _AUTO_PRIVILEGE_MCP_NOUN_RE.search(
-            tool_name
-        ) and _AUTO_PRIVILEGE_MCP_SOFT_VERB_RE.search(tool_name):
-            return True
-        if _AUTO_SENSITIVE_MCP_NOUN_RE.search(tool_name):
-            return True
-        if _mcp_resource_names_a_secret(name, tool_name, arguments):
-            return True
-        if _mcp_arguments_reference_sensitive(arguments):
-            return True
-        # A read-named tool carrying a destructive payload masks a destructive action.
-        if _mcp_arguments_mutate(arguments):
-            return True
-        # MCP names are open vocabulary, so a name with no recognised verb asks.
-        if not _mcp_verb_is_known(tool_name):
-            return True
-        return False
-    if name == "terminal":
-        return _terminal_is_high_risk(str(arguments.get("command", "")))
-    if name == "python":
-        return _python_is_high_risk(str(arguments.get("code", "")))
-    return True
+        if name in _ALWAYS_SAFE_TOOLS:
+            return False
+        if name == "render_html":
+            # A static canvas is fine; only a networked canvas can egress.
+            return _render_html_reaches_network(arguments)
+        if name.startswith(MCP_TOOL_PREFIX):
+            tool_name = _mcp_raw_tool_name(name)
+            if tool_name in _BLENDER_CLI_SUMMARY_TOOLS:
+                return True
+            # Normalize every separator and camelCase boundary to underscore so term regexes match one form.
+            tool_name = _CAMEL_CASE_RE.sub("_", _MCP_TERM_SEPARATOR_RE.sub("_", tool_name))
+            # Exec tools, credential nouns and sensitive paths prompt; ordinary CRUD calls run.
+            _reads = bool(_AUTO_READ_MCP_VERB_RE.search(tool_name))
+            if _AUTO_EXEC_MCP_COMPOUND_RE.search(tool_name):
+                return True
+            if _AUTO_EXEC_MCP_TOOL_RE.search(tool_name) and not (
+                _reads and not _AUTO_EXEC_MCP_VERB_ONLY_RE.search(tool_name)
+            ):
+                return True
+            if _AUTO_DESTRUCTIVE_MCP_VERB_RE.search(tool_name):
+                return True
+            if _AUTO_PRIVILEGE_MCP_VERB_RE.search(tool_name):
+                return True
+            if _AUTO_HIGH_IMPACT_MCP_RE.search(tool_name) and not _reads:
+                return True
+            if _AUTO_PRIVILEGE_MCP_NOUN_RE.search(
+                tool_name
+            ) and _AUTO_PRIVILEGE_MCP_SOFT_VERB_RE.search(tool_name):
+                return True
+            if _AUTO_SENSITIVE_MCP_NOUN_RE.search(tool_name):
+                return True
+            if _mcp_resource_names_a_secret(name, tool_name, arguments):
+                return True
+            if _mcp_arguments_reference_sensitive(arguments):
+                return True
+            # A read-named tool carrying a destructive payload masks a destructive action.
+            if _mcp_arguments_mutate(arguments):
+                return True
+            # MCP names are open vocabulary, so a name with no recognised verb asks.
+            if not _mcp_verb_is_known(tool_name):
+                return True
+            return False
+        if name == "terminal":
+            return _terminal_is_high_risk(str(arguments.get("command", "")))
+        if name == "python":
+            return _python_is_high_risk(str(arguments.get("code", "")))
+        return True
+    except RecursionError:
+        return True
 
 
 def _canon_win_path(p: str) -> str:
@@ -9866,6 +10044,7 @@ def _build_safe_env(workdir: str, shell: "str | None" = None) -> dict[str, str]:
     path, git_ext = _safe_path(shell)
     venv = os.environ.get("VIRTUAL_ENV")
     temp_dir = _sandbox_temp_dir(workdir)
+    _ensure_sandbox_site_bytecode()
     env = {
         "PATH": path,
         "HOME": workdir,
@@ -13999,9 +14178,7 @@ _MCP_LISTING_QUERY: ContextVar = ContextVar("mcp_listing_query", default = "")
 _MCP_LISTING_FORCED: ContextVar = ContextVar("mcp_listing_forced", default = None)
 _MCP_LISTING_IMAGE: ContextVar = ContextVar("mcp_listing_image", default = False)
 _MCP_LISTING_REMEMBER: ContextVar = ContextVar("mcp_listing_remember", default = True)
-_MCP_PROJECT_SERVER_IDS: ContextVar[frozenset[str] | None] = ContextVar(
-    "mcp_project_server_ids", default = None
-)
+_MCP_SERVER_IDS: ContextVar[frozenset[str] | None] = ContextVar("mcp_server_ids", default = None)
 # A dict set per request, so the listing can fill it from a thread running in a copy of the request's context.
 _MCP_LISTING_MATCHES: ContextVar = ContextVar("mcp_listing_matches", default = None)
 # (account, thread) -> MCP tools the thread ran while they were deferred, oldest first.
@@ -14897,20 +15074,24 @@ def mcp_project_excludes(server_id: str, session_id: str | None) -> bool:
     return selected is not None and server_id not in selected
 
 
+def set_mcp_server_scope(server_ids: frozenset[str] | None) -> None:
+    _MCP_SERVER_IDS.set(server_ids)
+
+
 async def set_mcp_project_scope(session_id: str | None) -> None:
     selected = (
         await asyncio.to_thread(_mcp_project_server_ids, session_id)
         if session_id and session_id.startswith(_PROJECT_SESSION_PREFIX)
         else None
     )
-    _MCP_PROJECT_SERVER_IDS.set(selected)
+    set_mcp_server_scope(selected)
 
 
 def _enabled_mcp_servers(servers: list[dict]) -> list[dict]:
     from core.inference.studio_tools_mcp import keyless_caller
 
     keyless = keyless_caller(current_account())
-    selected = _MCP_PROJECT_SERVER_IDS.get()
+    selected = _MCP_SERVER_IDS.get()
     enabled = [
         server
         for server in servers
@@ -15091,6 +15272,12 @@ def mcp_session_scope(session_id: "str | None", thread_id: "str | None") -> "str
     return f"s={quote(session_id or '', safe = '')}:t={quote(thread_id, safe = '')}"
 
 
+def close_mcp_thread_sessions(thread_id: str) -> None:
+    from core.inference.mcp_client import close_mcp_scopes
+    suffix = f":t={urllib.parse.quote(thread_id, safe = '')}"
+    close_mcp_scopes(lambda scope: scope.endswith(suffix))
+
+
 _TIMEOUT_UNSET = object()
 
 
@@ -15135,6 +15322,7 @@ def execute_tool(
     host_access_approved: bool = False,
     mcp_image = None,
     started_read: "StartedUrlRead | None" = None,
+    python_analyses: "PythonCallAnalyses | None" = None,
 ) -> str:
     """Runs a tool by name; disable_sandbox skips python/terminal checks, blocklist and caps (secrets stay stripped); tool_execution_mode full is refused here."""
     from state.tool_policy import require_tool_access
@@ -15286,8 +15474,11 @@ def execute_tool(
         return _fit_result_to_room(_mcp_tool_search(arguments), name)
     if name.startswith(MCP_TOOL_PREFIX):
         # An MCP server is not inside the terminal sandbox, so the local refusal has to hold here too.
-        if _mcp_arguments_reference_studio_credential(arguments):
-            return _STUDIO_CREDENTIAL_BLOCKED
+        try:
+            if _mcp_arguments_reference_studio_credential(arguments):
+                return _STUDIO_CREDENTIAL_BLOCKED
+        except RecursionError:
+            return _MCP_TOO_DEEP_TO_SCREEN
         try:
             _, server_id, _ = name.split("__", 2)
         except ValueError:
@@ -15302,6 +15493,9 @@ def execute_tool(
             return f"Error: MCP server '{display}' is disabled"
         if mcp_project_excludes(server_id, session_id):
             return f"Error: MCP server '{display}' is not enabled for this project"
+        selected = _MCP_SERVER_IDS.get()
+        if selected is not None and server_id not in selected:
+            return f"Error: MCP server '{display}' is outside this run's selection"
         if _runs_local_mcp(server) and not stdio_mcp_enabled():
             return f"Error: stdio MCP server '{display}' is disabled on this host"
         mcp_scope = mcp_session_scope(session_id, thread_id)
@@ -15437,7 +15631,7 @@ def execute_tool(
         )
     # Both run with the session's sandbox as cwd, so a chat deleted mid-call must not unlink it from under them.
     if name == "python":
-        with _session_in_flight(session_id):
+        with _session_in_flight(session_id), using_python_call_analyses(python_analyses):
             return _python_exec(
                 arguments.get("code", ""),
                 cancel_event,
@@ -16089,7 +16283,13 @@ def _build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> d
     thread_id = rag_scope.get("thread_id")
     query = _last_user_text(conversation)
     try:
-        from core.rag.tool import render_sources, search_for_autoinject, whole_document_context
+        from core.inference import instruction_pin
+        from core.rag.tool import (
+            document_opening,
+            render_sources,
+            search_for_autoinject,
+            whole_document_context,
+        )
     except Exception as exc:  # noqa: BLE001
         logger.warning("RAG auto-inject unavailable: %s", exc)
         return None
@@ -16170,6 +16370,7 @@ def _build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> d
         return _trim(found[0], found[1], max_tokens) if found else None
 
     thread_docs = _thread_document_ids(thread_id) if whole_doc_requested and text is None else set()
+    opening_ids: set = set()
 
     def retrieve_thread_unfloored(*, max_tokens = None):
         # Lexical-only misses generic requests ("summarize this"), so retry with the dense leg.
@@ -16186,7 +16387,39 @@ def _build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> d
                 min_dense_score = None,
                 mode = "hybrid",
             )
-        return found
+        if not found or _strong_thread_match():
+            return found
+        # Nothing clears the floor ("summarize this" ranks mid-document scraps), so the matched file's opening leads.
+        opening = document_opening(
+            scope_thread_id = thread_id, document_id = found[1][0].get("documentId")
+        )
+        if not opening:
+            return found
+        seen = {s["chunkId"] for s in opening}
+        hits = [s for s in found[1] if s.get("chunkId") not in seen]
+        merged = opening + hits
+        kept = _trim(
+            render_sources(merged), merged, max_tokens, keep_first = len(opening) + bool(hits)
+        )
+        if kept is None:
+            # render_sources renumbered these hits in place for the merged list.
+            return render_sources(found[1]), found[1]
+        opening_ids.update(seen)
+        return kept
+
+    def _strong_thread_match() -> bool:
+        try:
+            return bool(
+                search_for_autoinject(
+                    query = query,
+                    scope_thread_id = thread_id,
+                    top_k = 1,
+                    min_dense_score = floor,
+                    mode = "dense",
+                )
+            )
+        except Exception:  # noqa: BLE001 - an unavailable dense leg keeps the plain top-k
+            return True
 
     # With auto-injection off, search the oversized attachment alone, unfloored; budget binds only here, so a small context cannot silently switch RAG off.
     if text is None and (enabled or whole_doc_requested):
@@ -16232,12 +16465,23 @@ def _build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> d
                     if thread_found and found:
                         cited = thread_docs or {s.get("documentId") for s in thread_found[1]}
                         if not any(s.get("documentId") in cited for s in found[1]):
-                            # Still the lean top_k in total, so the unbudgeted path never doubles the injection.
+                            # The lean top_k plus the opening, so the unbudgeted path never doubles the injection.
                             n_proj = min(len(found[1]), top_k // 2)
-                            merged = thread_found[1][: top_k - n_proj] + found[1][:n_proj]
+                            n_open = sum(s.get("chunkId") in opening_ids for s in thread_found[1])
+                            merged = thread_found[1][: n_open + top_k - n_proj] + found[1][:n_proj]
                             found = (render_sources(merged), merged)
                     elif thread_found:
                         found = thread_found
+                if (
+                    not found
+                    and rag_scope.get("kb_id")
+                    and not instruction_pin.is_thin_query(query)
+                ):
+                    found = retrieve(
+                        scope_kb_id = rag_scope["kb_id"],
+                        min_dense_score = None,
+                        **_scope_retrieval_kwargs(rag_scope),
+                    )
         except Exception as exc:  # noqa: BLE001
             logger.warning("RAG auto-inject retrieval failed: %s", exc)
             return None
@@ -16270,6 +16514,7 @@ _UNMEASURED_ROOM_MARGIN = 0.5
 _MIN_PAGE_CHARS = 2000
 # a percent escape is one non-ASCII byte in ASCII and tokenizes like one.
 _HEX_PAIR_RE = re.compile(r"[0-9A-Fa-f]{2}")
+_ESCAPE_RE = re.compile(r"%[0-9A-Fa-f]{2}")
 # raw cap exceeds _MAX_PAGE_CHARS because conversion strips large SSR <head> sections.
 _MAX_FETCH_BYTES = 512 * 1024
 # news pages can inline about 2.5 MB in <head>, so reserve _MAX_FETCH_BYTES beyond its end.
@@ -17884,18 +18129,56 @@ def _window_context_tokens() -> int | None:
     return ctx if ctx else None
 
 
+def _escape_aligned(text: str, index: int) -> int:
+    """Moves `index` past an escape covering it; a `%` is never inside an earlier escape."""
+    if index >= 2 and _ESCAPE_RE.match(text, index - 2):
+        return index + 1
+    if index >= 1 and _ESCAPE_RE.match(text, index - 1):
+        return index + 2
+    return index
+
+
+def _charged_quarters(piece: str) -> int:
+    """Cost in quarter tokens of a slice starting and ending on escape-aligned indices."""
+    cost = 4 * len(piece) - 3 * len(piece.encode("ascii", "ignore"))
+    if "%" in piece:
+        cost += 9 * len(_ESCAPE_RE.findall(piece))
+    return cost
+
+
 def _dense_prefix_chars(text: str, token_budget: float) -> int:
     """Charges non-ASCII one token each: CJK runs 1.3-1.6 chars per token, so the share stays a share."""
-    # Escape-free ASCII costs 0.25 a char: the loop would stop at floor(budget * 4).
-    if (
-        type(text) is str
-        and type(token_budget) in (int, float)
-        and text.isascii()
-        and 0.0 <= token_budget < 2**50
-    ):
-        end = min(len(text), int(token_budget * 4))
-        if text.find("%", 0, end + 1) < 0:
-            return end
+    if type(text) is str and type(token_budget) in (int, float) and 0.0 <= token_budget < 2**50:
+        # Quarter tokens: plain ASCII 1, non-ASCII 4, escape 12.
+        allowed = int(token_budget * 4)
+        length = len(text)
+        # Escape-free ASCII costs 0.25 a char: the loop would stop at floor(budget * 4).
+        if text.isascii() and text.find("%", 0, min(length, allowed) + 1) < 0:
+            return min(length, allowed)
+        # No char costs over 4, so the next quarter of the room nearly always fits: gallop on
+        # C-speed block sums, halving on an overshoot, then step the last few characters.
+        spent = 0
+        pos = 0
+        cap = length
+        while pos < length:
+            step = min(cap, max(16, (allowed - spent) // 4))
+            stop = _escape_aligned(text, min(length, pos + step))
+            cost = _charged_quarters(text[pos:stop])
+            if spent + cost <= allowed:
+                spent += cost
+                pos = stop
+            elif stop - pos > 18:
+                cap = (stop - pos) // 2
+            else:
+                break
+        else:
+            return length
+        while True:
+            width = 3 if _ESCAPE_RE.match(text, pos) else 1
+            spent += _charged_quarters(text[pos : pos + width])
+            if spent > allowed:
+                return pos
+            pos += width
     spent = 0.0
     index = 0
     length = len(text)
@@ -22316,7 +22599,7 @@ def _check_code_safety(
 ) -> str | None:
     """Validate code safety via static analysis. Returns an error message string if the code is
     unsafe, or None if OK. host_approved lets an approved call reach hosts off the allowlist."""
-    safe, info = analysis or _check_signal_escape_patterns(code)
+    safe, info = analysis or _signal_escape_analysis(code)
     # A literal `python -c PROGRAM` the code launches runs PROGRAM unscreened; screen it the same way.
     if _depth < 3 and not info.get("error"):
         for command in info.get("shell_commands", ()):
@@ -22715,6 +22998,10 @@ def _truncate(
     if limit <= 0:
         # No room: a one-line stub keeps the thread servable so the next fit can recover.
         stub = _zero_room_stub(size, spill, complete)
+        # The call already ran: without its exit status a failure reads as a success (#19352).
+        status = _EXIT_STATUS_LINE.match(text)
+        if status:
+            stub = status.group(0) + stub
         # A short result costs less than any notice about it; a longer rewording saves nothing.
         return (stub if len(stub) < len(text) else text) + hint
     head, on_boundary = _head_whole_lines(text, limit)
@@ -23442,6 +23729,9 @@ def _capitalise(phrase: str) -> str:
     return phrase[:1].upper() + phrase[1:]
 
 
+_EXIT_STATUS_LINE = re.compile(r"Exit code -?\d+:\n")
+
+
 def _zero_room_stub(size: int, spill: "str | None", complete: bool) -> str:
     """The whole message when there is no room for a body. See `_truncate`."""
     located = f", {_spill_phrase(spill, complete)}" if spill else ""
@@ -23974,11 +24264,14 @@ def _user_path_parts(parts: "list[str]", root: "str | None" = None) -> "list[str
 _SERVABLE_SEGMENT_RE = re.compile(r"\A[^/\\\x00-\x1f]{1,255}\Z")
 
 
+_SURROGATE_RE = re.compile("[\ud800-\udfff]")
+
+
 def _servable_segment(name: str) -> bool:
     if name in (".", "..") or not _SERVABLE_SEGMENT_RE.match(name):
         return False
     # Lone surrogates make encodeURIComponent throw.
-    return not any("\ud800" <= ch <= "\udfff" for ch in name)
+    return name.isascii() or _SURROGATE_RE.search(name) is None
 
 
 # Exact names we write, not a reserved pattern.
@@ -24111,13 +24404,14 @@ def _snapshot_workdir_views(workdir: "str | None", views: "tuple") -> "list":
         dirs[:] = [d for d in kept if d in children]
         for d in dirs:
             owners[os.path.join(base, d)] = children[d]
+        joined = os.path.join(base, "")
         for name in names:
             # ignore internal markers only at the root; nested files with these names remain valid artifacts.
             if base == workdir and name in _INTERNAL_SANDBOX_FILES:
                 continue
             if not _servable_segment(name):
                 continue
-            path = os.path.join(base, name)
+            path = joined + name
             try:
                 # one lstat replaces isfile, islink, and stat while rejecting the same non-regular entries.
                 stat = os.lstat(path)
@@ -24427,26 +24721,30 @@ def _python_exec(
     if not code or not code.strip():
         return "No code provided."
 
-    # Refused in every mode, as in _bash_exec. Relative too: the cwd is a sibling of the auth dir.
-    _guard_workdir = _tool_workdir_for_guard(session_id) if _needs_a_workdir(code) else None
-    if _references_studio_credential_here(code, _guard_workdir) or _python_builds_a_credential_path(
-        code, _guard_workdir
-    ):
-        return _STUDIO_CREDENTIAL_BLOCKED
+    try:
+        # Refused in every mode, as in _bash_exec. Relative too: the cwd is a sibling of the auth dir.
+        _guard_workdir = _tool_workdir_for_guard(session_id) if _needs_a_workdir(code) else None
+        if _references_studio_credential_here(
+            code, _guard_workdir
+        ) or _python_builds_a_credential_path(code, _guard_workdir):
+            return _STUDIO_CREDENTIAL_BLOCKED
 
-    source_encoding = _python_source_encoding(code)
-    if source_encoding is None:
-        return (
-            "Error: the code's `# coding:` line would make Python run different source than "
-            "was written. Remove the coding line and run it again."
-        )
+        source_encoding = _python_source_encoding(code)
+        if source_encoding is None:
+            return (
+                "Error: the code's `# coding:` line would make Python run different source than "
+                "was written. Remove the coding line and run it again."
+            )
 
-    # Validate imports and code safety (skipped when the sandbox is disabled)
+        error = None
+        if not disable_sandbox:
+            # The allowlist is advisory (the network is not confined), so a user's approval lifts it; API keys keep it.
+            error = _check_code_safety(
+                code, host_approved = host_access_approved and not _api_host_access_refused()
+            )
+    except RecursionError:
+        return _PYTHON_TOO_DEEP_TO_SCREEN
     if not disable_sandbox:
-        # The allowlist is advisory (the network is not confined), so a user's approval lifts it; API keys keep it.
-        error = _check_code_safety(
-            code, host_approved = host_access_approved and not _api_host_access_refused()
-        )
         if error:
             # Capped: repeated forbidden constructs can produce an oversized error.
             return _truncate(error)
@@ -24650,10 +24948,13 @@ def _bash_exec(
         return "No command provided."
 
     # Refused in every mode: this install's bearer would reach the serving provider.
-    if _references_studio_credential_here(
-        command, _tool_workdir_for_guard(session_id) if _needs_a_workdir(command) else None
-    ):
-        return _STUDIO_CREDENTIAL_BLOCKED
+    try:
+        if _references_studio_credential_here(
+            command, _tool_workdir_for_guard(session_id) if _needs_a_workdir(command) else None
+        ):
+            return _STUDIO_CREDENTIAL_BLOCKED
+    except RecursionError:
+        return _TERMINAL_TOO_DEEP_TO_SCREEN
 
     # Chosen once, so the blocklist, env and argv all agree on the shell that will run this call.
     # Sandbox Low runs on the host shell: cmd is only picked to stay inside MXC.

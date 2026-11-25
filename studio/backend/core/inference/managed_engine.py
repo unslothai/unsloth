@@ -514,6 +514,18 @@ def _free_port(limit: int | None = _PORT_LIMIT) -> int:
     raise RuntimeError("Could not allocate an inference server port.")
 
 
+def _port_accepts(base_url: str, timeout: float = 2) -> bool:
+    """True if ``base_url``'s port accepts a TCP connect. Sends nothing, so a squatter learns no key."""
+    from urllib.parse import urlsplit
+
+    target = urlsplit(base_url)
+    try:
+        with socket.create_connection((target.hostname, target.port), timeout = timeout):
+            return True
+    except (OSError, ValueError):
+        return False
+
+
 # Measures engine silence, not total startup: a first load can compile unlogged for tens of minutes.
 STARTUP_STALL_S = 3600
 STARTUP_LIMIT_S = 4 * 3600
@@ -639,6 +651,18 @@ class ManagedEngine:
         self._guest_environment = None
         # A URL-safe token can start with '-', which CLI parsers read as an option.
         self.key = "studio-" + secrets.token_urlsafe(32)
+
+    def _native_runtime_env(self, info, gpu_count):
+        from utils.paths.path_utils import _is_wsl
+
+        env = self.adapter.environment(gpu_count)
+        if self.engine == "vllm":
+            # 0.26 has no non-UVA buffer fallback, and vLLM disables pinned memory on WSL2.
+            if info.get("platform") == "cuda" and info.get("version") == "0.26.0" and _is_wsl():
+                env["VLLM_WSL2_ENABLE_PIN_MEMORY"] = "1"
+            if _deep_gemm_unloadable(info["path"]):
+                env["VLLM_USE_DEEP_GEMM"] = "0"
+        return env
 
     def alive(self) -> bool:
         return self.process is not None and self.process.poll() is None
@@ -836,10 +860,8 @@ class ManagedEngine:
                         RESERVE_SHARE,
                         measure,
                     )
-                    child_env.update(self.adapter.environment(len(gpu_ids or [0])))
+                    child_env.update(self._native_runtime_env(info, len(gpu_ids or [0])))
                     child_env.update(self.adapter.key_environment(self.key))
-                    if self.engine == "vllm" and _deep_gemm_unloadable(info["path"]):
-                        child_env["VLLM_USE_DEEP_GEMM"] = "0"
                     command = self.adapter.command(
                         info["path"] + "/bin/python",
                         model_path or model,
@@ -910,6 +932,10 @@ class ManagedEngine:
                         if self._mamba_blocks:
                             raise _MambaSeqLimit(message, self._mamba_blocks)
                         raise _EngineExited(message)
+                    # Skip the costly ownership scan (and its false "not listening" error) until the engine listens.
+                    if not _port_accepts(self.base_url):
+                        self._cancel.wait(0.25)
+                        continue
                     # The port was released before the engine binds it: probe (with the key) only our own listener.
                     if not LlamaCppBackend._health_listener_is_ours(
                         self.process, int(self.base_url.rsplit(":", 1)[1])
@@ -1269,6 +1295,13 @@ class ManagedEngine:
         }
         if kwargs.get("tools"):
             body["tools"] = kwargs["tools"]
+        if (
+            kwargs.get("continue_final_message")
+            and messages
+            and messages[-1].get("role") == "assistant"
+        ):
+            # Price what the request sends: SGLang folds the partial's thought into its content.
+            self.continue_final_message(body)
         return self._tokenize(body), self.model
 
     def generate(
