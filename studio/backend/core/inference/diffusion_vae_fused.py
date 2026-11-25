@@ -1577,12 +1577,24 @@ def up_nearest2x(
 def _wan_folded_upsample(conv: Any, x: Any) -> Any:
     """``conv(nearest_2x(frame))`` for every frame of ``x`` (b, c, t, h, w) as one ConvTranspose2d(k4, s2, p1) with the
     3x3 taps summed (diffusion_vae_strips' FLUX / KL fold, same switch ``UNSLOTH_VAE_UPSAMPLE_FOLD`` and cards):
-    2.25x fewer MACs and no 2x map. Rounding-level, not bit-identical. None: the 2x path."""
+    2.25x fewer MACs and no 2x map. Rounding-level, not bit-identical. None: the 2x path, also under torch.compile
+    (the folded-weight cache is mutable Python state a trace would guard on), when autograd would need the conv
+    weight's gradient (the folded weight is detached), and when a folded tap is not finite in the conv dtype."""
+    torch = _torch()
+    if torch.compiler.is_compiling():
+        return None
+    if torch.is_grad_enabled() and (conv.weight.requires_grad or x.requires_grad):
+        return None
     from . import diffusion_vae_strips as strips
 
     b, c, t, h, w = x.shape
     frames = x.permute(0, 2, 1, 3, 4).reshape(b * t, c, h, w)
-    if not (strips._fold_allowed() and strips._fold_on(frames) and strips._fold_ok(conv, frames)):
+    if not (
+        strips._fold_allowed()
+        and strips._fold_on(frames)
+        and strips._fold_ok(conv, frames)
+        and strips.fold_finite(conv)
+    ):
         return None
     elems = conv.out_channels * 4 * h * w
     full_max = strips._fold_full_max(frames)
