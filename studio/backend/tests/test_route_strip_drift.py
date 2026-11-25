@@ -82,6 +82,8 @@ def test_route_strip_keeps_a_rehearsal_quoted_in_code(route_strip, text):
             "```xml\n<think>x</think>\n```\nUse `search[ARGS]{}` here.",
             "```xml\n<think>x</think>\n```\nUse `search[ARGS]{}` here.",
         ),
+        # A backtick inside reasoning is masked, as the parser masks it.
+        ("`<think>`example</think> `search[ARGS]{}`", "`<think>`example</think> ``"),
     ],
 )
 def test_route_strip_still_removes_calls_outside_code(route_strip, text, expected):

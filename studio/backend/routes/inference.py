@@ -6989,11 +6989,10 @@ def _strip_tool_xml_keeping_examples(
     so the arm's open-ended fallback cannot also keep a real call after it. One whose body holds a parser tool signal
     is removed whole: the parser runs a marker call wherever it sits. Until the body closes the example is removed
     too, so a stream never shows an example that later text would take back. ``reply`` (whose last think-split segment
-    is ``seg``) gives code context: the parser scans code over the whole reply, so a fence opened before a think block
-    still counts."""
+    is ``seg``) gives code context as the parser sees it: the whole reply, reasoning masked."""
     import bisect
 
-    from core.inference.tool_call_parser import TOOL_XML_SIGNALS
+    from core.inference.tool_call_parser import TOOL_XML_SIGNALS, _mask_blocked_bodies
     from core.tool_healing import (
         _balanced_json_span,
         _code_spans,
@@ -7014,7 +7013,11 @@ def _strip_tool_xml_keeping_examples(
         elif name is not None:
             if spans is None:
                 think = _think_spans_outside_tool_markup(reply) if reply else None
-                prefix = reply[: think[-1][1]] if think else ""
+                prefix = (
+                    _mask_blocked_bodies(reply, enabled_tool_names, think = True)[0][: think[-1][1]]
+                    if think
+                    else ""
+                )
                 spans = _code_spans(prefix + seg)
             at = len(prefix) + m.start()
             if _in_code(spans, at):
