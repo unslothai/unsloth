@@ -2053,9 +2053,12 @@ class _PPStageModule(nn.Module):
 
 
 def _gradient_checkpointing_on(model):
+    from unsloth.models._gc_config_default import (
+        is_activation_checkpointing as _is_activation_checkpointing,
+    )
     return any(
         getattr(m, "gradient_checkpointing", False) is True for m in model.modules()
-    ) or bool(getattr(_unwrap(model), "is_gradient_checkpointing", False))
+    ) or bool(_is_activation_checkpointing(_unwrap(model)))
 
 
 def _zoo_slot_lease_present():

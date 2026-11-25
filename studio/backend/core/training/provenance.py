@@ -108,9 +108,9 @@ def effective_training_load_in_4bit(
 ) -> bool:
     if not bool(config.get("load_in_4bit")):
         return False
-    from utils.transformers_version import latest_tier_active_for
+    from utils.transformers_version import latest_tier_forces_16bit
 
-    latest_tier_active = latest_tier_active_for(model_load_target, hf_token)
+    latest_tier_active = latest_tier_forces_16bit(model_load_target, hf_token)
     if latest_tier_active and resume_requires_original_load_mode(config):
         raise ExactResumeResourcesUnavailable(
             "This checkpoint requires its original 4-bit model load mode, "

@@ -4163,6 +4163,7 @@ export const es = {
       lr: "LR",
       hardware: "Hardware",
       vram: "VRAM",
+      vramTotal: "{size} en total",
       noGpu: "No se detectó ninguna GPU",
       hfToken: "Token de HF",
       saved: "Guardado",

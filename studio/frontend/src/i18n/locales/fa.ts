@@ -4403,6 +4403,7 @@ export const fa = {
       lr: "نرخ یادگیری",
       hardware: "سخت‌افزار",
       vram: "VRAM",
+      vramTotal: "{size} در مجموع",
       noGpu: "هیچ GPU شناسایی نشد",
       hfToken: "توکن HF",
       saved: "ذخیره‌شده",

@@ -4107,6 +4107,7 @@ export const ko = {
       lr: "LR",
       hardware: "하드웨어",
       vram: "VRAM",
+      vramTotal: "총 {size}",
       noGpu: "GPU가 감지되지 않았습니다",
       hfToken: "HF 토큰",
       saved: "저장됨",

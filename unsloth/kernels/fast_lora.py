@@ -388,6 +388,9 @@ def _base_dgrad_accum(dX, dY, W, W_quant):
     if _dq.traced_route(W, W_quant):
         return _dq.nf4_addmm_(dX, dY, W.t(), W_quant)
     W = _dq.dequantize(W.t(), W_quant, dtype = dY.dtype, rows = _dq.rows_of(dY))
+    if W.dtype != dX.dtype and _dq._is_bnb_nf4(W_quant):
+        # NF4 decodes to the quant state's dtype and in-place addmm_ skips autocast: as nf4_addmm_.
+        W = W.to(dX.dtype)
     return addmm_(dX, dY, W.t())
 
 
@@ -401,6 +404,9 @@ def _base_dgrad(
     if out is None and _dq.traced_route(W, W_quant):
         return _dq.nf4_matmul(dY, W.t(), W_quant)
     W = _dq.dequantize(W.t(), W_quant, dtype = dY.dtype, rows = _dq.rows_of(dY))
+    if W.dtype != dY.dtype and _dq._is_bnb_nf4(W_quant):
+        # matmul(out = ...) skips autocast too: as nf4_matmul.
+        W = W.to(dY.dtype)
     return torch.matmul(dY, W.t(), out = out)
 
 

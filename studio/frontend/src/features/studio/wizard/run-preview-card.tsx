@@ -517,13 +517,36 @@ export function RunPreviewCard({
         <MetaRow
           label={t("studio.preview.hardware")}
           wrap
-          value={gpu.available ? gpu.name : t("studio.preview.noGpu")}
+          value={
+            gpu.available ? (
+              <>
+                {gpu.name}
+                {gpu.deviceCount > 1 ? (
+                  <span className="whitespace-nowrap text-muted-foreground">
+                    {" "}
+                    {t("onboarding.device.moreGpus", {
+                      count: gpu.deviceCount - 1,
+                    })}
+                  </span>
+                ) : null}
+              </>
+            ) : (
+              t("studio.preview.noGpu")
+            )
+          }
         />
         {gpu.available && (
+          // memoryTotalGb sums every visible GPU, so say so when there is more than one.
           <MetaRow
             label={t("studio.preview.vram")}
             title={`${gpu.memoryTotalGb} GiB`}
-            value={`${Math.round(gpu.memoryTotalGb)} GiB`}
+            value={
+              gpu.deviceCount > 1
+                ? t("studio.preview.vramTotal", {
+                    size: `${Math.round(gpu.memoryTotalGb)} GiB`,
+                  })
+                : `${Math.round(gpu.memoryTotalGb)} GiB`
+            }
           />
         )}
         <MetaRow

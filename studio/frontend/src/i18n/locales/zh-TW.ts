@@ -4218,6 +4218,7 @@ export const zhTW = {
       lr: "學習率",
       hardware: "硬體",
       vram: "VRAM",
+      vramTotal: "共 {size}",
       noGpu: "未偵測到 GPU",
       hfToken: "HF 權杖",
       saved: "已儲存",

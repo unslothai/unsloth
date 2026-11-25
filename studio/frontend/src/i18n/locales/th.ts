@@ -4243,6 +4243,7 @@ export const th = {
       lr: "LR",
       hardware: "ฮาร์ดแวร์",
       vram: "VRAM",
+      vramTotal: "รวม {size}",
       noGpu: "ไม่พบ GPU",
       hfToken: "โทเค็น HF",
       saved: "บันทึกแล้ว",

@@ -5206,6 +5206,15 @@ def _refuse_tensor_parallel_model(
     mesh = that dp mesh): returns True then."""
     if not isinstance(model, nn.Module) or getattr(model, _NATIVE_FLAG, False):
         return False
+    from ._utils import _is_unsloth_expert_parallel
+
+    if _is_unsloth_expert_parallel(model):
+        # Each rank holds its own expert slices: FSDP2 would sync rank 0's values into them before sharding.
+        raise RuntimeError(
+            "Unsloth: native FSDP2 does not compose with Unsloth expert parallelism (apply_expert_parallel / "
+            'UNSLOTH_PARALLEL="ep=N"): every rank holds different expert slices. Unset UNSLOTH_FSDP2 for '
+            "expert parallel, or drop ep for FSDP2."
+        )
     tp_size = getattr(model, "tp_size", None)
     try:
         tp_size = int(tp_size) if tp_size is not None else None

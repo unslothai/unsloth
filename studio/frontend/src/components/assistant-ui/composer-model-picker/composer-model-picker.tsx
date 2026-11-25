@@ -71,6 +71,7 @@ import {
   useHfTokenStore,
   useHubInfiniteScroll,
   useHubModelSearch,
+  servedCheckpoint,
   useOnlineStatus,
 } from "@/features/hub";
 import { useAvatarImageUrl } from "@/features/hub/catalog/owner-avatar";
@@ -231,6 +232,7 @@ import {
   pickerMinHeight,
   pickerWidth,
   pickerZoomOut,
+  type LoadedCopy,
   type PickerRow,
   RECOMMENDED_TAB,
   SECTION_LABEL,
@@ -271,6 +273,7 @@ interface Row extends PickerRow {
   hub?: ModelOption;
   npu?: NpuModel;
   loadedQuant?: string | null;
+  loadedCopies?: LoadedCopy[];
   partial?: boolean;
   resumable?: boolean;
   /** Runs on the Audio page: a pick opens it there instead of loading into Chat. */
@@ -1346,7 +1349,11 @@ function modelFacts(
   } else if (row.loaded) {
     facts.push([
       "Status",
-      row.loadedQuant ? `Loaded (${row.loadedQuant})` : "Loaded",
+      row.loadedCopies
+        ? `Loaded (${row.loadedCopies.map((c) => c.quant).join(", ")})`
+        : row.loadedQuant
+          ? `Loaded (${row.loadedQuant})`
+          : "Loaded",
     ]);
   }
   return facts;
@@ -1594,6 +1601,7 @@ export function ComposerModelPicker({
   const activeVariant = pane ? pane.ggufVariant : runtimeVariant;
   const modelLoading = pane ? pane.loading === true : runtimeLoading;
   const loadedModels = useChatRuntimeStore((s) => s.loadedModels);
+  const servedId = servedCheckpoint(loadedModels, checkpoint ?? "", activeVariant);
   const chatModels = useChatRuntimeStore((s) => s.models);
   const pinned = usePinnedModelsStore((s) => s.pinned);
   const togglePinned = usePinnedModelsStore((s) => s.togglePinned);
@@ -2171,6 +2179,7 @@ export function ComposerModelPicker({
     device.push(...npuPickerRows(npuModels, true));
     // Local models load by path and two files can share a name, so the checkpoint is the identity.
     const servedAs = (m: (typeof loadedModels)[number]) => m.checkpoint ?? m.id;
+    const selected = servedId.toLowerCase();
     const loaded = new Map<string, (typeof loadedModels)[number]>();
     for (const m of loadedModels) {
       loaded.set(m.id.toLowerCase(), m);
@@ -2184,18 +2193,43 @@ export function ComposerModelPicker({
         (row.aliases ?? [])
           .map((a) => loaded.get(a.toLowerCase()))
           .find(Boolean);
-      return hit
-        ? {
-            ...row,
-            loaded: true,
-            loadedQuant: hit.quant ?? null,
-            loadedId: servedAs(hit),
-          }
-        : row;
+      if (!hit) {
+        return row;
+      }
+      const copies = loadedModels.filter(
+        (m) => m.quant && m.id.toLowerCase() === hit.id.toLowerCase(),
+      );
+      if (copies.length < 2) {
+        return {
+          ...row,
+          loaded: true,
+          loadedQuant: hit.quant ?? null,
+          loadedId: servedAs(hit),
+        };
+      }
+      const shown =
+        copies.find((m) => servedAs(m).toLowerCase() === selected) ?? hit;
+      return {
+        ...row,
+        loaded: true,
+        loadedQuant: shown.quant ?? null,
+        loadedId: servedAs(shown),
+        loadedCopies: copies.map((m) => ({
+          quant: m.quant as string,
+          id: servedAs(m),
+        })),
+      };
     });
     for (const m of loadedModels) {
       const checkpoint = servedAs(m);
-      if (marked.some((row) => row.loaded && row.loadedId === checkpoint)) {
+      if (
+        marked.some(
+          (row) =>
+            row.loaded &&
+            (row.loadedId === checkpoint ||
+              row.loadedCopies?.some((c) => c.id === checkpoint)),
+        )
+      ) {
         continue;
       }
       marked.push({
@@ -2272,6 +2306,7 @@ export function ComposerModelPicker({
     npuModels,
     loraModels,
     loadedModels,
+    servedId,
     recommended,
     mlxTaggedHub,
     externalModels,
@@ -3022,7 +3057,18 @@ export function ComposerModelPicker({
   // A Compare pane ejects nothing, and the API page only once its load has settled.
   const canEject = !pane || pane.loaded === true;
   const eject = (row: Row) => {
-    source?.eject(ejectTargetId(row, chosen?.id));
+    source?.eject(ejectTargetId(row, chosen?.id, servedId));
+  };
+  const loadedQuantsOf = (row: Row): string[] => {
+    if (!row.loaded) {
+      return [];
+    }
+    if (row.loadedCopies) {
+      return row.loadedCopies.map((c) => c.quant.toLowerCase());
+    }
+    const quant =
+      row.loadedQuant ?? (row.id === chosen?.id ? activeVariant : null);
+    return quant ? [quant.toLowerCase()] : [];
   };
 
   const handOff = (row: Row) => {
@@ -4760,6 +4806,37 @@ export function ComposerModelPicker({
     );
   };
 
+  const ejectCopyItems = (row: Row, variant: GgufVariantDetail) => {
+    const copy = row.loadedCopies?.find(
+      (c) => c.quant.toLowerCase() === variant.quant.toLowerCase(),
+    );
+    if (!copy || !canEject) {
+      return undefined;
+    }
+    return [
+      {
+        key: "eject",
+        label: "Eject",
+        icon: (
+          <HugeiconsIcon
+            icon={RemoveCircleIcon}
+            strokeWidth={1.75}
+            className="size-icon"
+          />
+        ),
+        onSelect: () =>
+          source?.eject(
+            ejectTargetId(
+              { id: row.id, loadedId: copy.id, loadedCopies: [copy] },
+              chosen?.id,
+              servedId,
+            ),
+          ),
+        destructive: true,
+      },
+    ];
+  };
+
   const renderQuantActions = (
     row: Row,
     variant: GgufVariantDetail,
@@ -4791,6 +4868,7 @@ export function ComposerModelPicker({
             update={updateFor(row, variant)}
             del={deleteQuantFor(row, variant)}
             runSettings={quantConfigTarget}
+            items={ejectCopyItems(row, variant)}
             buttonClassName={cn(ACTION_DOTS, reveal, TOUCH_ACTION)}
             iconClassName="composer-row-dots"
             contentClassName="composer-row-menu"
@@ -4922,9 +5000,7 @@ export function ComposerModelPicker({
   );
 
   const renderDeviceQuants = (row: Row, list: GgufVariantDetail[]) => {
-    const loadedQuant = (
-      row.loadedQuant ?? (row.id === chosen?.id ? activeVariant : null)
-    )?.toLowerCase();
+    const loadedQuants = loadedQuantsOf(row);
     const { ordered, recommended } = pickerOrderedGgufVariants(
       list,
       null,
@@ -4934,9 +5010,7 @@ export function ComposerModelPicker({
       <div className="flex shrink-0 flex-col">
         {ordered.map((variant) =>
           renderQuantRow(variant, {
-            loaded:
-              Boolean(row.loaded) &&
-              variant.quant.toLowerCase() === loadedQuant,
+            loaded: loadedQuants.includes(variant.quant.toLowerCase()),
             recommended: recommended.has(variant.quant),
             onPick: () => {
               if (!source) {
@@ -4994,16 +5068,12 @@ export function ComposerModelPicker({
       offer.defaultVariant,
       quantBudget,
     );
-    const loadedQuant = row.loaded
-      ? (
-          row.loadedQuant ?? (row.id === chosen?.id ? activeVariant : null)
-        )?.toLowerCase()
-      : null;
+    const loadedQuants = loadedQuantsOf(row);
     return (
       <div className="flex shrink-0 flex-col">
         {ordered.map((variant) =>
           renderQuantRow(variant, {
-            loaded: variant.quant.toLowerCase() === loadedQuant,
+            loaded: loadedQuants.includes(variant.quant.toLowerCase()),
             recommended: recommended.has(variant.quant),
             onPick: () =>
               pickOfferQuant(row, variant, !offer.mlx, offer.hasVision),

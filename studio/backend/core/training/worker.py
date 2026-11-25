@@ -858,9 +858,9 @@ def _pre_detect_load_in_4bit(config: dict, model_load_target: str, hf_token: str
     """Mirrors the real load's 4-bit flip so detection reads the repo the loader fetches."""
     if not bool(config.get("load_in_4bit", True)):
         return False
-    from utils.transformers_version import latest_tier_active_for
+    from utils.transformers_version import latest_tier_forces_16bit
 
-    return not latest_tier_active_for(model_load_target, hf_token)
+    return not latest_tier_forces_16bit(model_load_target, hf_token)
 
 
 def _pre_detect_training_model(
