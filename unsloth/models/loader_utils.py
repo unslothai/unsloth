@@ -2179,8 +2179,8 @@ def get_model_name(
         and new_model_name.lower() != str(model_name).lower()
         and new_model_name.lower().endswith("bnb-4bit")
     ):
-        # Transformers loads a pre-quantized bnb repo with its saved config over the caller's (or rejects another
-        # config class), so load what the 16bit lookup gives and quantize that with theirs. Installed tables only.
+        # Transformers keeps a pre-quantized repo's saved config over the caller's, so take the 16bit lookup instead.
+        # Installed tables only: the fetched-mapper probe would raise "not supported" for a name they already know.
         unquantized = _resolve_with_mappers(
             model_name = model_name,
             load_in_4bit = False,

@@ -69,7 +69,6 @@ def test_explicit_config_maps_to_the_16bit_mirror(bnb_host, cls):
 @pytest.mark.parametrize("cls", LOADERS, ids = lambda c: c.__name__)
 @pytest.mark.parametrize("kwargs", [{}, {"load_in_4bit": True}], ids = ["default", "load_in_4bit"])
 def test_flags_only_still_map_to_the_prequantized_repo(bnb_host, cls, kwargs):
-    # Users passing only load_in_4bit keep the dynamic quant download.
     assert _resolve(cls, "unsloth/Qwen3-0.6B", **kwargs) == "unsloth/Qwen3-0.6B-unsloth-bnb-4bit"
 
 
