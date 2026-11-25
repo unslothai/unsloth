@@ -1893,8 +1893,7 @@ def _load_saved_attention():
         return None, None
     if min_seq is None:
         return None, None
-    # Automatic mode on ROCm (measured gfx targets): zoo keeps a checkpoint's calls only where this
-    # selector says its SDPA runs a kept kernel under rocm_sdpa_check, as in the explicit mode.
+    # Auto mode on ROCm also needs the selector: zoo keeps calls only where its SDPA kernel is kept.
     if _ROCM_SDPA_GUARD and register is not None:
         register(_select_rocm_saved_sdpa)
     return saved_attention_call, min_seq

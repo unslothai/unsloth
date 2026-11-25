@@ -222,8 +222,7 @@ def test_auto_mode_off_on_unmeasured_gpu_and_rocm(monkeypatch):
 
 
 def test_auto_mode_on_measured_rocm_registers_the_selector(monkeypatch):
-    """gfx1151 (measured on AMD CI) routes from 8K in automatic mode, and zoo's per-frame ROCm check reads
-    the SDPA choice through Unsloth's selector (rocm_sdpa_check filter), as in the explicit mode."""
+    """Measured gfx1151 routes from 8K in auto mode and registers the ROCm SDPA selector."""
     if not hasattr(SA, "_AUTO_MIN_SEQ_ROCM"):
         pytest.skip("unsloth_zoo without automatic mode on ROCm")
     import types
@@ -239,7 +238,6 @@ def test_auto_mode_on_measured_rocm_registers_the_selector(monkeypatch):
     assert ad._load_saved_attention() == (SA.saved_attention_call, 8192)
     assert SA._AUTO_ACTIVE[0] is True
     assert SA._ROCM_SDPA_SELECT is ad._select_rocm_saved_sdpa
-    # An unmeasured gfx target stays off, and nothing is registered for it.
     monkeypatch.setattr(SA, "_ROCM_SDPA_SELECT", SA._default_rocm_sdpa_selector)
     monkeypatch.setattr(
         torch.cuda, "get_device_properties", lambda *a: types.SimpleNamespace(gcnArchName = "gfx1100")
