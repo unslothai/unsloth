@@ -274,7 +274,8 @@ PY
 fi
 
 # Check 3: torch.cuda.is_available() on a HIP build; check torch.version.hip first.
-IMAGE_ROCM="$IMAGE_ROCM" UNSLOTH_ROCM_DEV_PATH="$UNSLOTH_ROCM_DEV_PATH" python - >&2 <<'PY' || exit 1
+# One interpreter for checks 3 and 4: each `python -` re-imports torch (seconds per start).
+IMAGE_ROCM="$IMAGE_ROCM" UNSLOTH_ROCM_DEV_PATH="$UNSLOTH_ROCM_DEV_PATH" IMAGE_GFX="$IMAGE_GFX" python - >&2 <<'PY' || exit 1
 import os
 import sys
 
@@ -310,41 +311,35 @@ if os.environ.get("UNSLOTH_ROCM_DEV_PATH") == "dxg":
         print("UNSLOTH_SKIP_GPU_CHECK=1 reaches the abort itself rather than avoiding it.")
         sys.exit(1)
 
-if torch.cuda.is_available():
-    sys.exit(0)
-image_rocm = os.environ.get("IMAGE_ROCM") or ".".join(hip_ver.split(".")[:2])
-print("ERROR: torch is a ROCm build but torch.cuda.is_available() is False: HIP could")
-print("not open the device the container was given.")
-print()
-if os.environ.get("UNSLOTH_ROCM_DEV_PATH") == "dxg":
-    # WSL has no host amdgpu stack: the Linux driver advice below is wrong here.
-    print("This container is on the WSL2 DXG bridge, so the host amdgpu driver is not")
-    print("involved. Run rocminfo inside the container:")
-    print("  'Failed to load libdxcore.so': /usr/lib/wsl/lib is not mounted or not on")
-    print("    LD_LIBRARY_PATH (measured). Both come from")
-    print("      UNSLOTH_IMAGE=unsloth-rocm:latest bash docker/run.sh --rocm <cmd>")
-    print("  no GPU agent at all: update the Windows AMD driver (a current Adrenalin with")
-    print("    ROCm-on-WSL support, as scripts/install_rocm_wsl_strixhalo.sh documents).")
+if not torch.cuda.is_available():
+    image_rocm = os.environ.get("IMAGE_ROCM") or ".".join(hip_ver.split(".")[:2])
+    print("ERROR: torch is a ROCm build but torch.cuda.is_available() is False: HIP could")
+    print("not open the device the container was given.")
+    print()
+    if os.environ.get("UNSLOTH_ROCM_DEV_PATH") == "dxg":
+        # WSL has no host amdgpu stack: the Linux driver advice below is wrong here.
+        print("This container is on the WSL2 DXG bridge, so the host amdgpu driver is not")
+        print("involved. Run rocminfo inside the container:")
+        print("  'Failed to load libdxcore.so': /usr/lib/wsl/lib is not mounted or not on")
+        print("    LD_LIBRARY_PATH (measured). Both come from")
+        print("      UNSLOTH_IMAGE=unsloth-rocm:latest bash docker/run.sh --rocm <cmd>")
+        print("  no GPU agent at all: update the Windows AMD driver (a current Adrenalin with")
+        print("    ROCm-on-WSL support, as scripts/install_rocm_wsl_strixhalo.sh documents).")
+        print("If HSA_OVERRIDE_GFX_VERSION is set, a wrong value also produces this.")
+        sys.exit(1)
+    print(f"This image was built against ROCm {image_rocm} (HIP {hip_ver}). The host's")
+    print("amdgpu driver has to be at least as new. Check the host (NOT the container):")
+    print("  rocm-smi --version   or   cat /opt/rocm/.info/version   or   dkms status")
+    print()
+    print("If the host is older, upgrade its driver, or rebuild with the matching base:")
+    print("  ROCM_VERSION=<host version> TORCH_INDEX_URL=https://download.pytorch.org/whl/rocm<X.Y> \\")
+    print("    bash docker/build.sh --rocm")
     print("If HSA_OVERRIDE_GFX_VERSION is set, a wrong value also produces this.")
     sys.exit(1)
-print(f"This image was built against ROCm {image_rocm} (HIP {hip_ver}). The host's")
-print("amdgpu driver has to be at least as new. Check the host (NOT the container):")
-print("  rocm-smi --version   or   cat /opt/rocm/.info/version   or   dkms status")
-print()
-print("If the host is older, upgrade its driver, or rebuild with the matching base:")
-print("  ROCM_VERSION=<host version> TORCH_INDEX_URL=https://download.pytorch.org/whl/rocm<X.Y> \\")
-print("    bash docker/build.sh --rocm")
-print("If HSA_OVERRIDE_GFX_VERSION is set, a wrong value also produces this.")
-sys.exit(1)
-PY
+# the end of what was a separate process: keep its output ahead of any later warning
+sys.stdout.flush()
 
 # Check 4 (not a gate): the card's gfx arch vs this image's wheels.
-IMAGE_ROCM="$IMAGE_ROCM" IMAGE_GFX="$IMAGE_GFX" python - >&2 <<'PY' || exit 1
-import os
-import sys
-
-import torch
-
 image_gfx = os.environ.get("IMAGE_GFX", "")
 image_rocm = os.environ.get("IMAGE_ROCM") or ".".join(torch.version.hip.split(".")[:2])
 
