@@ -899,7 +899,9 @@ async def generate_answer(
                 activity.finish(request.scope)
                 if mcp_thread is not None:
                     from core.inference.tools import close_mcp_thread_sessions
-                    close_mcp_thread_sessions(mcp_thread)
+
+                    # Off the loop: past the cleanup queue's cap a close runs inline.
+                    loop.run_in_executor(None, close_mcp_thread_sessions, mcp_thread)
                 if producer is None:
                     end_in_process_request(request.scope, answered = False)
 
