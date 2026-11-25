@@ -174,6 +174,7 @@ def test_expert_factors_are_per_expert_3d(tmp_path):
     model, adapter = _peft_model(tmp_path)
     tensors, _, _ = _rewrite(model, adapter)
     prefix = "base_model.model.model.language_model.layers.0.mlp.experts"
+    # llama.cpp's layout whatever PEFT trained: a (E, r, in), b (E, out, r) of the (E, out, in) stack.
     assert tuple(tensors[f"{prefix}.gate_up_proj.lora_A.weight"].shape) == (E, R, H)
     assert tuple(tensors[f"{prefix}.gate_up_proj.lora_B.weight"].shape) == (E, 2 * I, R)
     assert tuple(tensors[f"{prefix}.down_proj.lora_A.weight"].shape) == (E, R, I)
@@ -215,13 +216,25 @@ def test_recorded_grouped_by_expert_lora_b_is_unpacked_by_expert(tmp_path):
     tensors, _, _ = _rewrite(model, adapter)
     prefix = "base_model.model.model.language_model.layers.0.mlp.experts"
     flat = saved[f"{prefix}.lora_B.weight"]  # the outer wrapper is down_proj
-    for e in range(E):
-        torch.testing.assert_close(
-            tensors[f"{prefix}.down_proj.lora_B.weight"][e], flat[:, e * R : (e + 1) * R]
+    wrappers = {n: m for n, m in model.named_modules() if hasattr(m, "parameter_name")}
+    assert wrappers[prefix].parameter_name == "down_proj"
+
+    def saved_b(parameter, e):
+        # PEFT 0.18 does not swap the features, so llama.cpp's a holds B^T.
+        out = f"{prefix}.{parameter}"
+        swapped = getattr(
+            wrappers[prefix if parameter == "down_proj" else prefix + ".base_layer"],
+            "_did_swap_in_out_features",
+            False,
         )
+        return (
+            tensors[f"{out}.lora_B.weight"][e] if swapped else tensors[f"{out}.lora_A.weight"][e].T
+        )
+
+    for e in range(E):
+        torch.testing.assert_close(saved_b("down_proj", e), flat[:, e * R : (e + 1) * R])
         torch.testing.assert_close(
-            tensors[f"{prefix}.gate_up_proj.lora_B.weight"][e],
-            saved[f"{prefix}.base_layer.lora_B.weight"][:, e::E],
+            saved_b("gate_up_proj", e), saved[f"{prefix}.base_layer.lora_B.weight"][:, e::E]
         )
 
 

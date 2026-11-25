@@ -928,7 +928,8 @@ def inkling2_lora_gguf_adapter(model, adapter_dir):
     attention Linears are renamed to their checkpoint leaves (``self_attn.q_proj.linear`` -> ``attn.wq_du``), and
     each fused expert ParamWrapper (``mlp.experts`` / ``mlp.experts.base_layer``, factors flattened to
     ``(E * r, in)`` and ``(out, E * r)``) becomes ``mlp.experts.gate_up_proj`` / ``down_proj`` with per-expert
-    ``(E, r, in)`` / ``(E, out, r)`` factors, the layout llama.cpp applies with mul_mat_id. transformers keeps
+    ``(E, r, in)`` / ``(E, out, r)`` factors, the layout llama.cpp applies with mul_mat_id (PEFT 0.18, which does not
+    swap a 3D parameter's features, trains the transposed pair, so its factors swap roles). transformers keeps
     gate_up halved (gate rows, then up rows), which is the order the converter writes the base expert stack in.
     A LoRA scaling other than ``lora_alpha / r`` (rsLoRA, alpha_pattern, rank_pattern) is folded into lora_B, since
     the GGUF carries one alpha and llama.cpp scales every tensor by ``alpha / rank``."""
@@ -965,6 +966,7 @@ def inkling2_lora_gguf_adapter(model, adapter_dir):
 
     tensors = load_file(os.path.join(adapter_dir, "adapter_model.safetensors"), device = "cpu")
     out = {}
+    swapped_roles = []
     for key, tensor in tensors.items():
         match = _LORA_KEY.match(key)
         if match is None:
@@ -988,6 +990,11 @@ def inkling2_lora_gguf_adapter(model, adapter_dir):
             else:
                 tensor = tensor.reshape(tensor.shape[0], rank, experts).permute(2, 0, 1)
             tensor = tensor.contiguous()
+            # PEFT >= 0.19 swaps a (experts, out, in) parameter's features, so lora_A reads its last dim. PEFT 0.18
+            # does not: lora_A then reads dim 1 and the delta is A^T @ B^T, which llama.cpp sees as
+            # b = A^T, a = B^T.
+            if kind == "lora_A" and not getattr(module, "_did_swap_in_out_features", False):
+                swapped_roles.append(prefix)
         else:
             for leaf, checkpoint_leaf in _GGUF_LORA_LEAVES.items():
                 if prefix.endswith("." + leaf):
@@ -1001,6 +1008,10 @@ def inkling2_lora_gguf_adapter(model, adapter_dir):
             if abs(factor - 1.0) > 1e-6:
                 tensor = (tensor.float() * factor).to(tensor.dtype)
         out[f"{prefix}.{kind}.weight"] = tensor
+    for prefix in swapped_roles:
+        A, B = out[f"{prefix}.lora_A.weight"], out[f"{prefix}.lora_B.weight"]
+        out[f"{prefix}.lora_A.weight"] = B.transpose(1, 2).contiguous()
+        out[f"{prefix}.lora_B.weight"] = A.transpose(1, 2).contiguous()
 
     directory = tempfile.mkdtemp(prefix = "unsloth-inkling2-lora-gguf-")
     try:
