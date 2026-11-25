@@ -5526,7 +5526,11 @@ class FastLlamaModel:
                         "Beware - your finetuning might be noticeably slower!"
                     )
 
-        if hasattr(model, "_need_to_train_embeddings"):
+        if hasattr(model, "_need_to_train_embeddings") and kwargs.get("trainable_token_indices"):
+            kwargs["trainable_token_indices"] = _cover_untied_new_token_rows(
+                model, kwargs["trainable_token_indices"]
+            )
+        elif hasattr(model, "_need_to_train_embeddings"):
             # embed_tokens and lm_head may already be trained, as LoRA targets in final_modules or via modules_to_save.
             _embed_already_trained = train_embed_tokens or "embed_tokens" in final_modules
             _lm_head_already_trained = train_lm_head or "lm_head" in final_modules

@@ -136,6 +136,7 @@ __all__ = [
     "_resolve_ensure_weight_tying",
     "_vllm_unmovable_embedding_modules",
     "_drop_tied_output_module",
+    "_cover_untied_new_token_rows",
     "_raise_if_fast_inference_modules_to_save",
     "make_fast_generate_wrapper",
     "_mark_unsloth_disable_data_parallel",
@@ -13567,6 +13568,26 @@ def _effective_weight_tying(model, modules_to_save, requested):
     if not _model_ties_embeddings(model):
         return False
     return "embed_tokens" in _embedding_leaves(modules_to_save)
+
+
+def _cover_untied_new_token_rows(model, trainable_token_indices):
+    if isinstance(trainable_token_indices, dict):
+        return trainable_token_indices
+    input_embeddings = model.get_input_embeddings()
+    output_embeddings = model.get_output_embeddings()
+    if (
+        output_embeddings is None
+        or getattr(output_embeddings, "weight", None) is input_embeddings.weight
+    ):
+        return trainable_token_indices
+    names = {id(m): n for n, m in model.named_modules()}
+    input_name, output_name = names.get(id(input_embeddings)), names.get(id(output_embeddings))
+    if input_name is None or output_name is None:
+        return trainable_token_indices
+    print(
+        f"Unsloth: You added new tokens, so `{output_name}` also trains the rows in `trainable_token_indices`."
+    )
+    return {input_name: trainable_token_indices, output_name: trainable_token_indices}
 
 
 def _drop_tied_output_module(model, modules_to_save, ensure_weight_tying):

@@ -5929,7 +5929,15 @@ class FastBaseModel:
             getattr(model, "_need_to_train_embeddings", False)
             and finetune_language_layers
             and getattr(model, "vllm_engine", None) is None
-            and not kwargs.get("trainable_token_indices")
+            and kwargs.get("trainable_token_indices")
+        ):
+            kwargs["trainable_token_indices"] = _cover_untied_new_token_rows(
+                model, kwargs["trainable_token_indices"]
+            )
+        elif (
+            getattr(model, "_need_to_train_embeddings", False)
+            and finetune_language_layers
+            and getattr(model, "vllm_engine", None) is None
         ):
             if modules_to_save is None:
                 modules_to_save = []
