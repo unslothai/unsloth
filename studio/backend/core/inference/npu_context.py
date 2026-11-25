@@ -188,8 +188,7 @@ def plan_context(
         return ContextPlan(ctx, fits)
     if fits is None:
         return ContextPlan(floor, None)
-    auto = min(fits, AUTO_CONTEXT_CEILING)
-    # An engine limit is exact (FastFlowLM's 16377); only a RAM estimate rounds down.
-    if auto != limit:
-        auto = auto // CONTEXT_STEP * CONTEXT_STEP
+    # Round a RAM estimate down; an engine limit is exact (FastFlowLM's 16377).
+    auto = fits if limit and fits >= limit else fits // CONTEXT_STEP * CONTEXT_STEP
+    auto = min(auto, AUTO_CONTEXT_CEILING)
     return ContextPlan(max(floor, auto), fits)
