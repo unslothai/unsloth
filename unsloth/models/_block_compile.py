@@ -92,8 +92,8 @@ def _cpp_wrapper_reason():
 
 
 _CPP_WRAPPER_REASON = _cpp_wrapper_reason()
-# Calls of a block class's first layer (about two per micro-batch under gradient checkpointing) before
-# its C++ region is built; UNSLOTH_BLOCK_CPP_WRAPPER=1 builds it at once.
+# Calls per layer of a block class (about two per micro-batch under gradient checkpointing) before its
+# C++ region is built; UNSLOTH_BLOCK_CPP_WRAPPER=1 builds it at once.
 try:
     _CPP_WRAPPER_AFTER = max(0, int(os.environ.get("UNSLOTH_BLOCK_CPP_WRAPPER_AFTER", "2000")))
 except ValueError:
@@ -2623,12 +2623,12 @@ def _wrap(
     graphed_box = [compiled if graphs else None]
     # The C++ wrapper copy of the graphs-off region, used once auto mode has stopped timing launches
     # (its launch / GPU ratio thresholds were measured on the Python wrapper) and never for CUDA graphs.
-    # Built after _CPP_WRAPPER_AFTER calls of the first layer of this class: its C++ build costs about a
+    # Built once this class's layers average _CPP_WRAPPER_AFTER calls each: its C++ build costs about a
     # minute once, which a short run would not win back.
     cpp = {
         "on": _CPP_WRAPPER_REASON is None and not graphs,
         "region": None,
-        "first": None,
+        "layers": set(),
         "calls": 0,
     }
 
@@ -2639,15 +2639,14 @@ def _wrap(
         )
 
     def cpp_in_use(self, kwargs):
-        """Counts this class's first layer's calls and builds the C++ region once past the threshold."""
+        """Counts this class's calls per layer and builds the C++ region once past the threshold."""
         if not cpp_wanted(kwargs):
             return False
         if cpp["region"] is None:
-            if cpp["first"] is None:
-                cpp["first"] = id(self)
-            if cpp["first"] == id(self):
-                cpp["calls"] += 1
-            if cpp["calls"] <= _CPP_WRAPPER_AFTER:
+            # Per layer seen, so a second model of the same class (or a deleted first one) still counts.
+            cpp["layers"].add(id(self))
+            cpp["calls"] += 1
+            if cpp["calls"] <= _CPP_WRAPPER_AFTER * len(cpp["layers"]):
                 return False
             CPP_WRAPPER_STATS["regions"] += 1
             if _CPP_WRAPPER_AFTER > 0:

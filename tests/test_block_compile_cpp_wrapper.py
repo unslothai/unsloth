@@ -139,7 +139,8 @@ def test_graphs_off_region_is_the_cpp_one(monkeypatch):
 
 
 def test_cpp_region_waits_for_a_long_run(monkeypatch, capsys):
-    """Short runs never pay the C++ build: the first layer's first calls run the Python region."""
+    """Short runs never pay the C++ build: until the layers average the threshold in calls, the
+    Python region runs."""
     monkeypatch.setenv("UNSLOTH_BLOCK_CUDAGRAPHS", "0")
     M = _load()
     assert M._CPP_WRAPPER_AFTER == 2000
@@ -152,12 +153,11 @@ def test_cpp_region_waits_for_a_long_run(monkeypatch, capsys):
     first, second = cls(), cls()
     x = torch.randn(2, 4, 8)
     with torch.no_grad():
-        # The first call also runs the grad-mode trial: 2 + 1 counted calls, all on the Python region,
-        # and the second layer's calls are not counted.
-        for _ in range(2):
-            first(x)
-            for _ in range(5):
-                second(x)
+        # Each layer's first call also runs the grad-mode trial: 2 + 2 + 1 + 1 counted calls, 2 layers.
+        first(x)
+        second(x)
+        first(x)
+        second(x)
     assert "cpp" not in calls and M.CPP_WRAPPER_STATS["regions"] == 0, calls
     calls.clear()
     with torch.no_grad():
@@ -166,6 +166,21 @@ def test_cpp_region_waits_for_a_long_run(monkeypatch, capsys):
     assert calls and set(calls) == {"cpp"}, calls
     assert M.CPP_WRAPPER_STATS == {"regions": 1, "fallbacks": 0}
     assert "C++ wrapper (once, about a minute)" in capsys.readouterr().out
+    # A deleted first model does not stall the count for the next one.
+    calls.clear()
+    M2 = _load()
+    monkeypatch.setattr(M2, "_CPP_WRAPPER_REASON", None)
+    monkeypatch.setattr(M2, "_CPP_WRAPPER_AFTER", 1)
+    cls2 = _toy_class()
+    M2._wrap(cls2, dict(M2._COMPILE_OPTIONS))
+    with torch.no_grad():
+        layer = cls2()
+        layer(x)
+        del layer
+        fresh = cls2()
+        for _ in range(4):
+            fresh(x)
+    assert "cpp" in calls, calls
 
 
 def test_forcing_it_on_builds_at_once(monkeypatch):
