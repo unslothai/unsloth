@@ -1509,7 +1509,7 @@ def _cuda_memory(backend: str) -> tuple[Optional[int], Optional[int], str]:
     try:
         import torch
 
-        # Not torch.cuda.mem_get_info: Windows ROCm over-reports free memory.
+        # Not torch.cuda.mem_get_info: ROCm over-reports free memory on Linux and Windows.
         from utils.hardware import trusted_mem_get_info
 
         free, total = trusted_mem_get_info()
@@ -8522,8 +8522,10 @@ class _RegisteredHostBuffer:
 
                 # An async upload may still read these pages; never unmap under it.
                 torch.cuda.synchronize(self._device)
-                self._cudart.cudaHostUnregister(self.ptr)
                 self._registered = False
+                if int(self._cudart.cudaHostUnregister(self.ptr)) != 0:
+                    # As a refused register: the failure stays pending on whichever thread dropped the last view.
+                    consume_cuda_error()
         except Exception:  # noqa: BLE001 - interpreter teardown
             pass
         try:

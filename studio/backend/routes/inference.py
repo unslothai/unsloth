@@ -364,6 +364,16 @@ _LLAMA_CLIENT_ERROR_RE = _re.compile(r"llama-server returned (?:4\d\d|501): (.*)
 _LLAMA_SERVER_ERROR_RE = _re.compile(r"llama-server returned 5\d\d: (.*)", _re.DOTALL)
 
 
+_SGLANG_CONTEXT_LIMIT_RE = _re.compile(
+    r"The input \((\d{1,12}) tokens\) is longer than the model's context length \((\d{1,12}) tokens\)"
+)
+# vLLM <= 0.30 "you requested", later "your prompt contains"; SGLang when prompt + max_tokens overflow.
+_VLLM_CONTEXT_LIMIT_RE = _re.compile(
+    r"This model's maximum context length is (\d{1,12}) tokens\. However, (?:you requested|your prompt contains)"
+    r"|Requested token count exceeds the model's maximum context length of (\d{1,12}) tokens"
+)
+
+
 def _friendly_error(exc: Exception) -> str:
     """Extract a user-friendly message from known llama-server errors."""
     if isinstance(exc, context_refusal.ContextBudgetExceeded):
@@ -393,6 +403,15 @@ def _friendly_error(exc: Exception) -> str:
     if m:
         # llama-server only knows the prompt total; let the fit's diagnosis pick the wording.
         return context_refusal.describe_oversize(int(m.group(1)), int(m.group(2)))
+    m = _SGLANG_CONTEXT_LIMIT_RE.search(msg)
+    if m:
+        return context_refusal.describe_oversize(int(m[1]), int(m[2]))
+    m = _VLLM_CONTEXT_LIMIT_RE.search(msg)
+    if m:
+        return (
+            f"The prompt and requested reply exceed the model's {m[1] or m[2]}-token context window. "
+            "Shorten the prompt or request fewer output tokens."
+        )
     if "Lost connection to llama-server" in msg:
         return _LOST_CONNECTION_MSG
     template_msg = _template_raise_message(msg, _loaded_chat_template())
@@ -403,12 +422,7 @@ def _friendly_error(exc: Exception) -> str:
         return exc.friendly
     client_error = _LLAMA_CLIENT_ERROR_RE.match(msg)
     if client_error:
-        body = client_error.group(1)
-        try:
-            body = error_message_from_chunk(json.loads(body)) or body
-        except ValueError:
-            pass
-        return _friendly_upstream_error(body[:500])
+        return _friendly_upstream_error(client_error.group(1))
     # Other 5xx stay redacted; media/KV failures are fixed strings that name no path.
     server_error = _LLAMA_SERVER_ERROR_RE.match(msg)
     if server_error:
@@ -435,10 +449,13 @@ def _refused_parameter(value) -> Optional[str]:
     return param if getattr(value, "public", False) and param else None
 
 
-def _friendly_upstream_error(text: str) -> str:
-    """Rewrite a grammar compile failure from llama-server into advice; other errors keep their own text."""
-    lowered = text.lower()
-    if "failed to parse grammar" in lowered:
+def _friendly_upstream_error(text: str, extracted: bool = False) -> str:
+    """The message from a JSON error body, else the raw text, cut to 500 unless ``extracted``; grammar compile failures become advice."""
+    try:
+        text = text if extracted else (error_message_from_chunk(json.loads(text)) or text)
+    except ValueError:
+        pass
+    if "failed to parse grammar" in text.lower():
         return (
             "The model couldn't compile a grammar for this request. A top-level grammar or "
             "json_schema is forwarded as sent, so it must compile in llama-server as written. "
@@ -447,7 +464,7 @@ def _friendly_upstream_error(text: str) -> str:
             "which does not depend on the model or quant. Update Unsloth, which drops the "
             "constraints known to break it, and report the schemas if it still fails."
         )
-    return f"llama-server error: {text}"
+    return f"llama-server error: {text if extracted else text[:500]}"
 
 
 def _oversize_counts(text: str):
@@ -459,12 +476,13 @@ def _oversize_counts(text: str):
 
 
 def _anthropic_upstream_error(text: str, counts_source: Optional[str] = None) -> str:
-    """`text` is what the client is told; `counts_source` is the fuller body it came
-    from, used only to recover token counts the message itself does not spell out."""
+    """`counts_source`, the body `text` was extracted from, only supplies token counts and marks `text` as extracted, shown whole."""
+    # Raw bodies classify on their head, like the status: a long one can echo schema names that read as an overflow.
+    head = text if counts_source is not None else text[:500]
     # KV starvation means retry, not shorten the conversation.
-    if is_kv_starvation(text):
+    if is_kv_starvation(head):
         return KV_STARVATION_MESSAGE
-    if _classify_llama_generation_error(Exception(text)):
+    if _classify_llama_generation_error(Exception(head)):
         counts = _oversize_counts(text)
         if counts is None and counts_source:
             counts = _oversize_counts(counts_source)
@@ -478,7 +496,7 @@ def _anthropic_upstream_error(text: str, counts_source: Optional[str] = None) ->
             "Prompt is too long. Try increasing the Context Length in Model settings, "
             "or shorten the conversation."
         )
-    return _friendly_upstream_error(text)
+    return _friendly_upstream_error(text, extracted = counts_source is not None)
 
 
 def _clamp_finish_reason(value) -> str:
@@ -497,12 +515,16 @@ def _clamp_finish_reason(value) -> str:
     )
 
 
+def _cut_thought_recoverable(payload) -> bool:
+    return getattr(payload, "context_overflow", None) not in ("error", "truncate_middle")
+
+
 def _recover_cut_thought(payload) -> Optional[tuple[str, bool, bool]]:
     """When this thread's previous reply ended in a thought the window cut, do not resume it (it
     cannot fit): keep it, cut back a few tokens, as a finished thought (the template writes the
     model's own closing marker), force the reset /compact does, archive it for search_conversation,
     write a transcript, and add the note. Returns (note, searchable, note_is_a_user_turn), or None."""
-    if getattr(payload, "context_overflow", None) in ("error", "truncate_middle"):
+    if not _cut_thought_recoverable(payload):
         return None
     from core.inference import cut_thought
     from models.inference import ChatMessage
@@ -1006,7 +1028,7 @@ def _openai_passthrough_error(status_code, text) -> "HTTPException":
         )
     return HTTPException(
         status_code = status_code,
-        detail = _friendly_upstream_error(text[:500]),
+        detail = _friendly_upstream_error(text),
     )
 
 
@@ -6424,6 +6446,7 @@ async def _select_request_tools(
         apply_full_access_tool_descriptions,
         get_enabled_mcp_tools,
         set_mcp_project_scope,
+        set_mcp_server_scope,
     )
 
     if not tools_on:
@@ -6519,8 +6542,19 @@ async def _select_request_tools(
         from core.inference.media_chat_tools import remember_server_loop
 
         remember_server_loop(asyncio.get_running_loop())
-        await set_mcp_project_scope(getattr(payload, "session_id", None))
-        tools = tools + await get_enabled_mcp_tools()
+        scheduled_server_ids = getattr(payload, "_scheduled_mcp_server_ids", None)
+        if scheduled_server_ids is None:
+            await set_mcp_project_scope(getattr(payload, "session_id", None))
+        else:
+            set_mcp_server_scope(scheduled_server_ids)
+        mcp_tools = await get_enabled_mcp_tools()
+        if scheduled_server_ids is not None and not mcp_tools:
+            raise HTTPException(
+                status_code = 400,
+                detail = "No tools are available from the selected MCP servers. "
+                "Check that they are enabled and reachable.",
+            )
+        tools += mcp_tools
     # Some callers pass lighter payloads that may lack deep_research_armed, so read it with getattr.
     if getattr(payload, "deep_research_armed", None):
         # Past every filter incl. tools_on: arming research is what offers this tool.
@@ -30444,6 +30478,7 @@ def _fit_external_context(
     first_pass: bool = True,
     replays_manual: bool = False,
     keep_ids: Optional[set[int]] = None,
+    count_tokens: Optional[Callable[[list[dict]], int]] = None,
 ) -> tuple[list[dict], Optional[dict], Optional[int]]:
     """``branch`` is the client's request when ``messages`` is a tool loop's conversation: recall
     queries the user's turn, not a controller re-prompt, and still filters on the loop's turns.
@@ -30467,7 +30502,7 @@ def _fit_external_context(
         _sticky_compaction_state,
     )
 
-    _count = _external_token_counter(payload, tools)
+    _count = count_tokens or _external_token_counter(payload, tools)
     prompt_tokens = _count(messages)
     context_length, max_tokens = _external_fit_limits(payload, prompt_tokens)
     policy = _request_context_policy(payload)
@@ -31590,19 +31625,22 @@ async def _proxy_to_external_provider(
                 _external_nudge, external_studio_tools, payload = payload
             )
     _served_template = None
+    _date_provider_type = None if _external_nudge else provider_type
     if (
-        provider_type == "llama_cpp"
-        and not _external_nudge
+        _date_provider_type in ("llama_cpp", "custom")
         and not _date_gate_blocks(request, run_studio_tool_loop)
         and current_date_prompt_line(request = request)
         and not any(m.get("role") in ("system", "developer") for m in chat_messages)
     ):
-        _served_template = await client.served_chat_template(model)
+        if provider_type == "llama_cpp":
+            _served_template = await client.served_chat_template(model)
+        elif await client.serves_ollama():
+            _date_provider_type = "ollama"
     chat_messages = _prepend_current_date_to_messages(
         chat_messages,
         request,
         include_api_key = run_studio_tool_loop,
-        provider_type = None if _external_nudge else provider_type,
+        provider_type = _date_provider_type,
         served_template = _served_template,
         tools = bool(external_studio_tools or payload.tools),
         controls = llama_cpp_template_controls(
@@ -35170,6 +35208,7 @@ async def produce_openai_chat_completions(
                     context_policy = _request_context_policy(payload),
                     compaction_headroom_ratio = _request_compaction_headroom_ratio(payload),
                     compact_context = getattr(payload, "compact_context", None) is True,
+                    record_cut_thought = _cut_recovery is None and _cut_thought_recoverable(payload),
                 )
 
             _tool_admission_mode = "chat_tool_stream" if payload.stream else "chat_tool_nonstream"
@@ -41126,6 +41165,9 @@ def _names_studio_embedder(requested: str) -> Optional[str]:
     repo = rag_config.effective_gguf_repo_for_embedding_model(model)
     label = _public_embedding_name(model)
     wanted = requested.strip()
+    # A connection reference reads as a tagged identity, so the configured name is matched first.
+    if wanted == model:
+        return model
     if rag_config.embedding_identity_model(wanted) is not None:
         current = rag_embeddings.embedding_identity(model)
         if wanted in (current, _public_embedding_identity(current, model, label)):
@@ -41276,6 +41318,14 @@ async def _studio_embeddings(
         encoding_format = "float"
     dimensions = body.get("dimensions")
     model_name = model_name or rag_config.effective_embedding_model()
+    # Same rule as chat: an API key must not spend a saved connection's credential.
+    if rag_config.is_connection_model(model_name) and not _request_may_use_saved_provider_key(
+        request
+    ):
+        raise HTTPException(
+            status_code = 403,
+            detail = "Studio's embedding model runs on a saved connection, which needs a UI session.",
+        )
     label = _public_embedding_name(model_name)
 
     def _embed():
@@ -44043,7 +44093,7 @@ async def _responses_stream(
                                 "output": [],
                                 "error": {
                                     "code": _responses_error_code(RuntimeError(err_text)),
-                                    "message": _friendly_upstream_error(err_text[:500]),
+                                    "message": _friendly_upstream_error(err_text),
                                 },
                             },
                         },
@@ -47838,6 +47888,8 @@ async def anthropic_messages(
                 ),
                 replay_preserve_thinking = not _anthropic_history_has_thinking(payload),
                 website_policy = website_policy,
+                # This route never runs _recover_cut_thought: keep the exhaustion notice.
+                record_cut_thought = False,
                 **_reasoning_args,
             )
 
@@ -49134,14 +49186,13 @@ async def _anthropic_passthrough_stream(
                         pass
                     resp = None
                     continue
-                _err_text = _err_text[:500]
                 # The outer 200 stream headers are already flushed, so flag the failure: the
                 # middleware must not claim a preview-owned model on a passthrough whose
                 # upstream errored before any SSE.
                 from core.inference.llama_keepwarm import mark_response_failed
 
                 mark_response_failed(getattr(request, "scope", None))
-                _over = bool(_classify_llama_generation_error(Exception(_err_text)))
+                _over = bool(_classify_llama_generation_error(Exception(_err_text[:500])))
                 yield build_anthropic_sse_event(
                     "error",
                     anthropic_error_body(
@@ -49432,8 +49483,8 @@ async def _anthropic_passthrough_non_streaming(
             resp = await upstream.post(body, timeout = _timeout)
 
         if resp.status_code != 200:
-            _err_text = resp.text[:500]
-            _over = bool(_classify_llama_generation_error(Exception(_err_text)))
+            _err_text = resp.text
+            _over = bool(_classify_llama_generation_error(Exception(_err_text[:500])))
             raise HTTPException(
                 status_code = 400 if _over else resp.status_code,
                 detail = _anthropic_upstream_error(_err_text),

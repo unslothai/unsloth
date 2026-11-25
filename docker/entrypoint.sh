@@ -206,29 +206,25 @@ MSG
     exit 1
 fi
 
+# One interpreter: each `python -` re-imports torch (seconds per container start).
 python - >&2 <<'PY' || exit 1
 import sys
 import torch
-if torch.cuda.is_available():
-    sys.exit(0)
-print("ERROR: torch.cuda.is_available() is False despite nvidia-smi working.")
-print()
-print("This image bakes in CUDA 12.8, so the host driver MUST be:")
-print("  >= 570.26   (toolkit floor for cu128, applies to every GPU)")
-print()
-print("Two GPUs need an even newer driver because their launch driver was")
-print("released after cu128's:")
-print("  >= 580      B300 / GB300                              (sm_103)")
-print("  >= 580      GB10 / DGX Spark                          (sm_121)")
-print()
-print("Check the host (NOT the container) with:  nvidia-smi")
-print("Then upgrade the driver to match.")
-sys.exit(1)
-PY
+if not torch.cuda.is_available():
+    print("ERROR: torch.cuda.is_available() is False despite nvidia-smi working.")
+    print()
+    print("This image bakes in CUDA 12.8, so the host driver MUST be:")
+    print("  >= 570.26   (toolkit floor for cu128, applies to every GPU)")
+    print()
+    print("Two GPUs need an even newer driver because their launch driver was")
+    print("released after cu128's:")
+    print("  >= 580      B300 / GB300                              (sm_103)")
+    print("  >= 580      GB10 / DGX Spark                          (sm_121)")
+    print()
+    print("Check the host (NOT the container) with:  nvidia-smi")
+    print("Then upgrade the driver to match.")
+    sys.exit(1)
 
-python - >&2 <<'PY' || exit 1
-import sys
-import torch
 major, minor = torch.cuda.get_device_capability(0)
 name = torch.cuda.get_device_name(0)
 n = torch.cuda.device_count()

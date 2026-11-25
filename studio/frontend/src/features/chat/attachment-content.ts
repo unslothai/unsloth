@@ -1829,9 +1829,58 @@ function pdfFormFieldLines(
 // The server's OCR_MIN_CHARS: a page number or Bates stamp does not make a scanned page readable.
 const SCANNED_PAGE_MAX_CHARS = 16;
 
+type Matrix = [number, number, number, number, number, number];
+const multiply = (m: Matrix, n: Matrix): Matrix => [
+  m[0] * n[0] + m[2] * n[1],
+  m[1] * n[0] + m[3] * n[1],
+  m[0] * n[2] + m[2] * n[3],
+  m[1] * n[2] + m[3] * n[3],
+  m[0] * n[4] + m[2] * n[5] + m[4],
+  m[1] * n[4] + m[3] * n[5] + m[5],
+];
+
+const compose = (m: Matrix, n: unknown): Matrix =>
+  (n as ArrayLike<number> | null | undefined)?.length === 6
+    ? multiply(m, Array.from(n as ArrayLike<number>) as Matrix)
+    : m;
+
+// As the server: a page with text is a scan only under an image covering half of it, not a logo.
+function paintsPageImage(
+  OPS: Record<string, number>,
+  fnArray: number[],
+  argsArray: unknown[][],
+  [left, bottom, right, top]: number[],
+  share: number,
+): boolean {
+  const images = new Set([OPS.paintImageXObject, OPS.paintInlineImageXObject, OPS.paintImageMaskXObject]);
+  const stack: Matrix[] = [];
+  let ctm: Matrix = [1, 0, 0, 1, 0, 0];
+  for (const [i, fn] of fnArray.entries()) {
+    const args = argsArray[i];
+    if (fn === OPS.save) stack.push(ctm);
+    else if (fn === OPS.restore || fn === OPS.paintFormXObjectEnd) ctm = stack.pop() ?? ctm;
+    else if (fn === OPS.transform) ctm = multiply(ctm, args as Matrix);
+    else if (fn === OPS.paintFormXObjectBegin) {
+      stack.push(ctm);
+      ctm = compose(ctm, args?.[0]);
+    } else if (fn === OPS.beginAnnotation) {
+      // From the page's own space: its rect transform, then its /Matrix. Annotations come last.
+      ctm = compose(compose([1, 0, 0, 1, 0, 0], args?.[2]), args?.[3]);
+    } else if (share === 0 && images.has(fn)) return true;
+    else if (images.has(fn)) {
+      const xs = [ctm[4], ctm[0] + ctm[4], ctm[2] + ctm[4], ctm[0] + ctm[2] + ctm[4]];
+      const ys = [ctm[5], ctm[1] + ctm[5], ctm[3] + ctm[5], ctm[1] + ctm[3] + ctm[5]];
+      const width = Math.min(right, Math.max(...xs)) - Math.max(left, Math.min(...xs));
+      const height = Math.min(top, Math.max(...ys)) - Math.max(bottom, Math.min(...ys));
+      if (width > 0 && height > 0 && width * height >= (right - left) * (top - bottom) * share) return true;
+    }
+  }
+  return false;
+}
+
 export async function extractPdfAttachmentText(file: File): Promise<string> {
   assertDocumentAttachmentSize(file, "PDF");
-  const [{ extractText, getDocumentProxy, getResolvedPDFJS }, buffer] = await Promise.all([
+  const [{ extractTextItems, getDocumentProxy, getResolvedPDFJS }, buffer] = await Promise.all([
     import("unpdf"),
     file.arrayBuffer().then((bytes) => new Uint8Array(bytes)),
   ]);
@@ -1840,7 +1889,10 @@ export async function extractPdfAttachmentText(file: File): Promise<string> {
   let hasScannedPage = false;
   try {
     // per page rather than merged: mergePages folds every newline pdf.js marks into one space
-    const { text } = await extractText(pdf);
+    const { items } = await extractTextItems(pdf);
+    const text = items.map((page) =>
+      page.map(({ str, hasEOL }) => str + (hasEOL ? "\n" : "")).join(""),
+    );
     // getAnnotations re-reads the text under each link, so only forms call it
     const hasFields = await pdf.getFieldObjects().then(Boolean, () => false);
     pages = await Promise.all(
@@ -1855,23 +1907,35 @@ export async function extractPdfAttachmentText(file: File): Promise<string> {
         return [pageText, ...fields].filter(Boolean).join("\n");
       }),
     );
-    const short = [...text.keys()].filter(
-      (index) => text[index]!.trim().length < SCANNED_PAGE_MAX_CHARS,
-    );
-    if (short.length) {
+    // A scan's header or footer sits in the top or bottom tenth; any body text, even a slide title, means typed.
+    const candidates = await Promise.all(
+      items.map(async (page, index) => {
+        const { view, rotate } = await pdf.getPage(index + 1);
+        // On a /Rotate 90 or 270 page the visual top and bottom are the x edges.
+        const sideways = rotate % 180 === 90;
+        const [low, high] = sideways ? [view[0]!, view[2]!] : [view[1]!, view[3]!];
+        const margin = (high - low) * 0.1;
+        const hasBody = page.some(
+          (item) =>
+            (sideways ? item.x : item.y) > low + margin &&
+            (sideways ? item.x : item.y) < high - margin &&
+            item.str.trim(),
+        );
+        return text[index]!.trim().length < SCANNED_PAGE_MAX_CHARS || !hasBody ? [index] : [];
+      }),
+    ).then((indexes) => indexes.flat());
+    if (candidates.length) {
       const { OPS } = await getResolvedPDFJS();
-      const imageOps = new Set<number>([
-        OPS.paintImageXObject,
-        OPS.paintInlineImageXObject,
-        OPS.paintImageXObjectRepeat,
-        OPS.paintImageMaskXObject,
-      ]);
       // Sequential, stopping at the first: listing a page's operators decodes its images.
-      for (const index of short) {
-        hasScannedPage = await pdf
-          .getPage(index + 1)
-          .then((page) => page.getOperatorList())
-          .then(({ fnArray }) => fnArray.some((fn) => imageOps.has(fn)), () => false);
+      for (const index of candidates) {
+        const page = await pdf.getPage(index + 1);
+        hasScannedPage = await page
+          .getOperatorList()
+          .then(
+            ({ fnArray, argsArray }) =>
+              paintsPageImage(OPS, fnArray, argsArray, page.view, text[index]!.trim() ? 0.5 : 0),
+            () => false,
+          );
         if (hasScannedPage) break;
       }
     }

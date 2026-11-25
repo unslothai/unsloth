@@ -346,6 +346,10 @@ def test_flash_attention_fallback_pins_a_dynamic_cache():
     fast_generate(Model(), input_ids = input_ids, past_key_values = cache)
     assert "cache_implementation" not in captured
     assert captured["past_key_values"] is cache
+    # transformers 5.24 spells the caller cache `cache=` (past_key_values= is its deprecated alias).
+    fast_generate(Model(), input_ids = input_ids, cache = cache)
+    assert "cache_implementation" not in captured
+    assert captured["cache"] is cache
 
     # LFM3's custom generate lists cache_implementation as unsupported and raises on any value (#16054).
     class CustomGenerateModel(Model):

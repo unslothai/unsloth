@@ -587,7 +587,7 @@ def _load_manual_split(
     )
     monkeypatch.setattr(LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda _b = None: False))
     monkeypatch.setattr(LlamaCppBackend, "_bundle_only_rocm_dirs", {})
-    monkeypatch.setattr(llama_cpp, "_swa_cache_path", lambda: tmp_path / "swa.json")
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     launches = []
 
     class _Process:

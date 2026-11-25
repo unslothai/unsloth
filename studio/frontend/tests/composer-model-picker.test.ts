@@ -1195,7 +1195,7 @@ test("Discover filters from one menu, in On Device's style", () => {
     "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
   );
   // One format filter for both tabs, as in the header picker.
-  assert.equal((picker.match(/\{formatGroup\}/g) ?? []).length, 2);
+  assert.equal((picker.match(/\{formatGroup\(/g) ?? []).length, 2);
   // A ticked circle, as Run settings' Always load.
   assert.match(picker, /setFitOnDeviceOnly\(!fitOnDeviceOnly\);/);
   // The menu takes the Model hub button's place on Discover.

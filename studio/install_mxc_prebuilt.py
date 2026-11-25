@@ -145,6 +145,7 @@ def install_mxc_release(install_dir: Path) -> bool:
             mxc_runtime._validate_runtime(stage)
             mxc_runtime._validate_host_prep(stage)
             swap_into_place(stage, install_dir)
+            mxc_runtime.forget_verified_runtime()
         finally:
             shutil.rmtree(stage, ignore_errors = True)
     return True

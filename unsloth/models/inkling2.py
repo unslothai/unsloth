@@ -332,21 +332,27 @@ def inkling2_merge_source(
     A pre-quantized bitsandbytes repo (``unsloth/Inkling-2-Mini-unsloth-bnb-4bit``) stores packed 4-bit attention and
     expert weights, which the merge cannot add LoRA deltas to or write as 16-bit: merge into the original checkpoint
     it was quantized from (the mapper's 16-bit name, at its default revision). Its 4-bit weights are the ones a
-    4-bit load of that checkpoint quantizes, so the deltas apply unchanged. A pre-quantized folder with no known
-    original is refused, and so is a local folder (whatever its name: its tensors may not be the Hub repo's).
+    4-bit load of that checkpoint quantizes, so the deltas apply unchanged. A hub cache snapshot of that repo (what
+    a run started from a cached model records) maps the same way. A pre-quantized folder with no known original is
+    refused, and so is any other local folder (whatever its name: its tensors may not be the Hub repo's).
     `save_directory` (the merged export's folder) must not be the pre-quantized checkpoint's own folder."""
     import os
 
     method, folder = _checkpoint_quant_method(source, revision, token = token)
     if method != "bitsandbytes":
         return source, revision
+    from .loader_utils import prequantized_snapshot_original
     from .mapper import INT_TO_FLOAT_MAPPER
 
-    original = None if os.path.isdir(source) else INT_TO_FLOAT_MAPPER.get(str(source).lower())
+    if os.path.isdir(source):
+        original = prequantized_snapshot_original(source)
+    else:
+        original = INT_TO_FLOAT_MAPPER.get(str(source).lower())
     if original is None:
         raise NotImplementedError(
             f"Unsloth: {source} is a pre-quantized bitsandbytes 4-bit Inkling 2 checkpoint, and a merged export "
-            "needs the original weights. Load the original checkpoint (for example unsloth/Inkling-2-Mini) with "
+            "needs the original weights. Load it by its Hub id (for example unsloth/Inkling-2-Mini-unsloth-bnb-4bit), "
+            "or load the original checkpoint (for example unsloth/Inkling-2-Mini) with "
             "`load_in_4bit = True, use_exact_model_name = True` to merge, or save the LoRA adapter with "
             "`model.save_pretrained(...)`."
         )

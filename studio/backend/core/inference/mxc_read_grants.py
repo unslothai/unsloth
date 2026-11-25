@@ -590,18 +590,43 @@ def hold() -> WorkloadLease | None:
     return WorkloadLease(path, handle)
 
 
-def hold_if_needed() -> WorkloadLease | None:
-    """Leases every MXC launch or probe, even with the switch off, so no revocation runs under it; only a launch needing grants refuses if unrecorded"""
+def hold_before_build() -> tuple[WorkloadLease | None, bool]:
+    """(lease, tried) for a launch or probe that may run on the DACL tier, so no revocation runs under it.
+
+    With the fallback off the request carries allowDaclMutation false, so wxc-exec cannot pick that tier,
+    the only one that skips its own grant where a recorded ACE covers a path: no lease is needed.
+    """
     from . import mxc_policy
 
     refresh_saved_switches()
-    needed = mxc_policy.dacl_fallback_enabled() and enabled()
+    if not mxc_policy.dacl_fallback_enabled():
+        return None, False
+    return _hold(needed = enabled()), True
+
+
+def hold_if_needed() -> WorkloadLease | None:
+    return hold_before_build()[0]
+
+
+def _hold(*, needed: bool) -> WorkloadLease | None:
     try:
         return hold()
     except ReadGrantError:
         if needed:
             raise
         return None
+
+
+def hold_for_request(request, held: WorkloadLease | None, *, tried: bool) -> WorkloadLease | None:
+    """Leases a request built with DACL allowed after hold_before_build saw it off; never retries a tried lease."""
+    if held is not None or tried:
+        return held
+    config = request.get("config") if isinstance(request, dict) else None
+    fallback = config.get("fallback") if isinstance(config, dict) else None
+    if isinstance(fallback, dict) and fallback.get("allowDaclMutation") is True:
+        refresh_saved_switches()
+        return _hold(needed = enabled())
+    return None
 
 
 def refresh_saved_switches() -> None:
