@@ -8,6 +8,7 @@ from __future__ import annotations
 import inspect
 import io
 import json
+import os
 import re
 import subprocess
 import sys
@@ -1581,6 +1582,101 @@ def test_chat_turn_is_not_answered_by_a_model_loaded_elsewhere(
         server.server_close()
 
 
+_LOCAL_MODEL = str(Path("/models/qwen3").absolute())
+
+
+@pytest.mark.parametrize(
+    "local, confirmed, replacement, refused",
+    [
+        (_LOCAL_MODEL, True, ("unsloth/gemma-3-270m-it-GGUF", None), True),
+        (_LOCAL_MODEL, True, (_LOCAL_MODEL, "Q8_0"), True),
+        (_LOCAL_MODEL, True, (_LOCAL_MODEL + os.sep, "q4_k_m"), False),
+        # Unsloth does not collapse "..", which can cross a symlink to another checkpoint.
+        (_LOCAL_MODEL, True, (os.path.join(_LOCAL_MODEL, "..", "qwen3"), "Q4_K_M"), True),
+        # A native (dragged-in) load names itself only by label.
+        (_LOCAL_MODEL, True, ("label:Qwen3-0.6B-Q8_0", "Q8_0"), True),
+        ("./qwen3", True, ("unsloth/gemma-3-270m-it-GGUF", None), True),
+        # A bare relative name is a path once it exists, as the server reads it.
+        ("qwen3.gguf", True, ("unsloth/gemma-3-270m-it-GGUF", None), True),
+        # A hub id is left to the server's own refusal and switch-back.
+        (_QWEN, True, ("unsloth/gemma-3-270m-it-GGUF", None), False),
+        # Unconfirmed at load, so a mismatch proves nothing and the turn is sent as before.
+        (_LOCAL_MODEL, False, ("unsloth/gemma-3-270m-it-GGUF", None), False),
+        # A status naming no model proves nothing either.
+        (_LOCAL_MODEL, True, (None, None), False),
+    ],
+)
+def test_a_path_chat_refuses_a_turn_once_another_model_replaced_it(
+    monkeypatch, tmp_path, local, confirmed, replacement, refused
+):
+    import http.server
+    import threading
+    from urllib.parse import parse_qs, urlparse
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "qwen3.gguf").touch()
+    resident = (local if confirmed else "qwen3", "Q4_K_M")
+    studio = {"resident": resident, "queries": [], "requests": []}
+
+    class Studio(http.server.BaseHTTPRequestHandler):
+        def _send(
+            self,
+            body,
+            content_type = "application/json",
+        ):
+            data = body if isinstance(body, bytes) else json.dumps(body).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def do_GET(self):
+            studio["queries"] += parse_qs(urlparse(self.path).query).get("model", [])
+            checkpoint, quant = studio["resident"]
+            if str(checkpoint).startswith("label:"):
+                status = {"active_model": checkpoint[len("label:") :], "model_identifier": None}
+            else:
+                status = {"active_model": checkpoint, "model_identifier": checkpoint}
+            self._send({**status, "gguf_variant": quant})
+
+        def do_POST(self):
+            payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            if self.path == "/api/inference/load":
+                self._send({"status": "loaded", "model": payload["model_path"]})
+                return
+            studio["requests"].append(payload["model"])
+            # Like Unsloth, an unloaded path is answered by the resident model.
+            delta = {"delta": {"content": str(studio["resident"])}, "finish_reason": "stop"}
+            sse = f"data: {json.dumps({'choices': [delta]})}\n\ndata: [DONE]\n\n"
+            self._send(sse.encode(), "text/event-stream")
+
+        def log_message(self, *a):
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Studio)
+    threading.Thread(target = server.serve_forever, daemon = True).start()
+    try:
+        backend = HttpChatBackend(f"http://127.0.0.1:{server.server_address[1]}", "token")
+        backend.ensure_loaded(local, hf_token = None, max_seq_length = None, load_in_4bit = None)
+        turn = [{"role": "user", "content": "hi"}]
+        assert list(backend.stream(turn, **_STREAM_KWARGS))[-1] == str(resident)
+
+        studio["resident"] = replacement
+        if refused:
+            # Names the quant the chat loaded, not only the one now served.
+            with pytest.raises(RuntimeError, match = r"no longer loaded: .*, not '.*' \(Q4_K_M\)"):
+                list(backend.stream(turn, **_STREAM_KWARGS))
+        else:
+            list(backend.stream(turn, **_STREAM_KWARGS))
+        assert studio["requests"] == [local] * (1 if refused else 2)
+        # Only a path chat reads status per turn, and only for its own path.
+        assert set(studio["queries"]) == (set() if local == _QWEN else {local})
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 @pytest.mark.parametrize(
     "echoed, served, expected",
     [
@@ -1890,7 +1986,7 @@ def test_http_backend_load_keeps_the_resident_quant(monkeypatch, model, status, 
         payload = None,
         timeout = None,
     ):
-        if path == "/api/inference/status":
+        if path.startswith("/api/inference/status"):
             if status is None:
                 raise OSError("status unavailable")
             return _FakeStatusResponse(status)
@@ -1920,7 +2016,7 @@ def test_http_backend_load_keeps_the_resident_quant_across_windows_path_spelling
         payload = None,
         timeout = None,
     ):
-        if path == "/api/inference/status":
+        if path.startswith("/api/inference/status"):
             return _FakeStatusResponse(resident)
         loads.append(payload)
         return _FakeLoadResponse()
@@ -1949,7 +2045,7 @@ def _untyped_load_payload(
         payload = None,
         timeout = None,
     ):
-        if path == "/api/inference/status":
+        if path.startswith("/api/inference/status"):
             if status is None:
                 raise OSError("status unavailable")
             return _FakeStatusResponse(status)
@@ -2680,7 +2776,7 @@ def test_server_chat_banner_names_the_kept_quant(
         payload = None,
         timeout = None,
     ):
-        if path == "/api/inference/status":
+        if path.startswith("/api/inference/status"):
             return _FakeStatusResponse(resident)
         return _FakeLoadResponse()
 

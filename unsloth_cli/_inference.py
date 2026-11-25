@@ -1102,6 +1102,29 @@ def _studio_token() -> Optional[str]:
         return None
 
 
+def _is_local(name: str) -> bool:
+    # Unsloth's model_identity.is_local(probe=True), bar ref: handles: path spelling or on disk.
+    name = name.strip()
+    if name.startswith(("/", "\\", "~", ".")) or "\\" in name:
+        return True
+    if len(name) >= 2 and name[1] == ":" and name[0].isalpha():
+        return True
+    return bool(name) and os.path.exists(os.path.expanduser(name))
+
+
+def _path_key(path: str) -> str:
+    # Unsloth's own model_identity.path_key, so both sides agree on what one checkpoint is.
+    return os.path.normcase(path).replace("\\", "/").rstrip("/")
+
+
+def _served_key(served: tuple) -> tuple:
+    return _path_key(served[0]), (served[1] or "").lower()
+
+
+def _served_label(served: tuple) -> str:
+    return f"'{served[0]}' ({served[1]})" if served[1] else f"'{served[0]}'"
+
+
 class HttpChatBackend:
     """Chat against a running Unsloth server over its OpenAI-compatible API.
 
@@ -1116,6 +1139,9 @@ class HttpChatBackend:
         self.gguf_variant: Optional[str] = None
         self.supports_images = False
         self._model_id = "default"
+        # (path, (checkpoint, quant)) of a path load: Unsloth answers an unloaded path with
+        # whatever is loaded, so each turn checks it is still served.
+        self._watched: Optional[tuple] = None
 
     def _request(
         self,
@@ -1198,6 +1224,17 @@ class HttpChatBackend:
         loaded = loaded if isinstance(loaded, dict) else {}
         self.supports_images = bool(loaded.get("is_vision"))
         self._model_id = self._pinned_model_id(loaded.get("model") or model, loaded, payload)
+        if _is_local(self._model_id):
+            serving = self._serving(self._model_id)
+            if serving and _path_key(serving[0]) == _path_key(self._model_id):
+                self._watched = (self._model_id, serving)
+
+    def _serving(self, model_id: str) -> Optional[tuple]:
+        """(checkpoint, quant) of the slot serving *model_id*, or None when status names none."""
+        status = self._inference_status(model_id) or {}
+        # A native (dragged-in) load reports only its label.
+        checkpoint = status.get("model_identifier") or status.get("active_model")
+        return (checkpoint, status.get("gguf_variant")) if checkpoint else None
 
     def _pinned_model_id(self, model_id: str, loaded: dict, payload: dict) -> str:
         """Name the loaded quant too: a bare repo id is answered by any quant of that repo."""
@@ -1264,6 +1301,15 @@ class HttpChatBackend:
         import json
         import urllib.error
 
+        if self._watched:
+            path, loaded = self._watched
+            serving = self._serving(path)
+            if serving and _served_key(serving) != _served_key(loaded):
+                raise RuntimeError(
+                    f"The model '{path}' is no longer loaded: the Unsloth server now serves "
+                    f"{_served_label(serving)}, not {_served_label(loaded)}. Rerun the command, "
+                    "or load it again in Unsloth Studio."
+                )
         msgs = list(messages)
         if system_prompt:
             msgs = [{"role": "system", "content": system_prompt}, *msgs]
