@@ -1448,10 +1448,14 @@ def test_a_prompt_the_fit_cannot_shrink_below_the_threshold_still_fits_with_its_
     assert prompt + sent["max_tokens"] <= _SMALL_TRIGGER["context_window"]
 
 
-def _tool_turn(results: int, size: int) -> list[dict]:
+def _tool_turn(
+    results: int,
+    size: int,
+    code: int = 0,
+) -> list[dict]:
     turn = []
     for n in range(1, results + 1):
-        fn = {"name": "python", "arguments": json.dumps({"code": f"step({n})"})}
+        fn = {"name": "python", "arguments": json.dumps({"code": f"step({n})" + " pass;" * code})}
         turn += [
             {
                 "role": "assistant",
@@ -1488,6 +1492,29 @@ def test_an_overflow_inside_a_tool_turn_shortens_its_older_results():
     assert "Run the six steps." in sent and chat[-1]["content"] in sent
     results = [m["content"] for m in resent["messages"] if m["role"] == "tool"]
     assert [r.split(" ")[:2] for r in results] == [["STEP", str(n)] for n in range(1, 5)]
+
+
+def test_an_overflow_from_long_tool_arguments_evicts_the_turns_older_exchanges():
+    chat = [
+        {"role": "system", "content": "Answer in French."},
+        {"role": "user", "content": "Run the eight steps."},
+        *_tool_turn(8, 10, code = 400),
+    ]
+
+    class Refused(_SummarisingHandler):
+        overflow_chars = len(json.dumps(chat)) - 100
+
+    chunks, _, chats = _bodies(
+        Refused,
+        messages = chat,
+        context_overflow = "truncate_oldest",
+        compaction_threshold = 100_000,
+    )
+    assert not [c for c in chunks if "error" in c]
+    refused, resent = chats
+    assert len(json.dumps(resent["messages"])) < len(json.dumps(refused["messages"]))
+    sent = json.dumps(resent["messages"])
+    assert "Run the eight steps." in sent and chat[-1]["content"] in sent
 
 
 def test_an_overflow_nothing_can_shrink_is_refused_once():

@@ -31032,9 +31032,11 @@ async def _finish_external_compaction(
     if plan.force == "overflow":
         # Provider counted more than estimated: aim for half, shortening this turn's tool results.
         half = max(1, count(current) // 2)
-        turn_ids = _shorten_turn_tool_results(
-            current, branch, prompt_budget(half, _effective_max_tokens(payload)), count
-        )
+        target = prompt_budget(half, _effective_max_tokens(payload))
+        turn_ids = _shorten_turn_tool_results(current, branch, target, count)
+        if count(current) > target:
+            # Shortening fell short: leave the turn's older exchanges evictable.
+            turn_ids = set()
         if not summarised_now:
             fit_payload = payload.model_copy(
                 update = {"compaction_threshold": half, "context_window": None}
