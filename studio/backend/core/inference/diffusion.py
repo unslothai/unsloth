@@ -12640,7 +12640,7 @@ class DiffusionBackend:
                     from .diffusion_tp2 import engage_for_plan as _tp2_engage
 
                     # opt-in UNSLOTH_DIFFUSION_TP=1: denoiser sharded over two cards, kept resident
-                    plan = _tp2_engage(pipe, plan, logger)
+                    plan = _tp2_engage(pipe, plan, logger, loras = loras)
                     # streamed text encoders pin after the load returns, before or during the first encode
                     request_background_encoder_pins(pipe)
                     effective_policy, effective_tiling = apply_memory_plan(
@@ -18023,6 +18023,11 @@ def _grouped_form_status(pipe: Any) -> Optional[dict]:
 
 def _lora_load_block_reason(pipe: Any) -> Optional[str]:
     """Why this load's transformer cannot carry adapters whatever the family and quant allow, or None."""
+    from .diffusion_tp2 import lora_block_reason as _tp2_lora_block
+
+    tp_block = _tp2_lora_block(pipe)
+    if tp_block:
+        return tp_block
     if _small_host_int8(pipe):
         return (
             "LoRA is not available on this load: system RAM was too small for the dense model, so Unsloth "

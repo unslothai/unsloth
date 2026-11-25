@@ -283,3 +283,245 @@ def test_int8_attention_census_sees_the_shards():
     # both cards' shards share each block's processor: the census still finds the attention modules
     assert len(ia.int8_processors(m)) == 4
     assert tp2.shard_modules(_tiny(layers = 1)) == []
+
+
+# ---------------------------------------------------------------------------------------- recheck #19460 findings
+
+
+def test_convrot_linear_and_linear_subclasses_are_refused():
+    from core.inference.diffusion_convrot import _install_rotation
+
+    m = _tiny(layers = 1)
+    _install_rotation(
+        m.transformer_blocks[0].attn.to_q, 64
+    )  # what Studio's torchao INT8 route does first
+    why = tp2.refusal(m, CPU2)
+    assert why is not None and "ConvRotLinear" in why
+
+    class MyLinear(nn.Linear):
+        pass
+
+    m = _tiny(layers = 1)
+    old = m.transformer_blocks[0].img_mlp.out
+    sub = MyLinear(old.in_features, old.out_features, bias = False)
+    m.transformer_blocks[0].img_mlp.out = sub
+    assert "MyLinear" in tp2.refusal(m, CPU2)
+    m = _tiny(layers = 1)
+    k = m.transformer_blocks[0].attn.to_k
+    k.weight = nn.Parameter(k.weight.data.to(torch.int8), requires_grad = False)
+    assert "weight" in tp2.refusal(m, CPU2)
+
+
+@pytest.mark.parametrize("where", ["comm", "shard", "place"])
+def test_failed_install_keeps_the_original_blocks(monkeypatch, where):
+    ref = _tiny(layers = 3)
+    m = copy.deepcopy(ref)
+    if where == "comm":
+        monkeypatch.setattr(
+            tp2, "make_all_reduce", lambda *a, **k: (_ for _ in ()).throw(MemoryError("probe OOM"))
+        )
+    elif where == "shard":
+        calls = []
+        real = tp2.shard_block
+
+        def flaky(*a, **k):
+            calls.append(1)
+            if len(calls) == 4:
+                raise MemoryError("shard OOM")
+            return real(*a, **k)
+
+        monkeypatch.setattr(tp2, "shard_block", flaky)
+    else:
+        real_to = type(m).to
+
+        def failing_to(self, *a, **k):
+            if self is m and any(isinstance(x, torch.device) for x in a):
+                raise MemoryError("placement OOM")
+            return real_to(self, *a, **k)
+
+        monkeypatch.setattr(type(m), "to", failing_to)
+    with pytest.raises(MemoryError):
+        tp2.install(m, CPU2)
+    monkeypatch.undo()
+    assert not tp2.is_installed(m)
+    assert len(m.transformer_blocks) == 3
+    assert all(p.device.type == "cpu" for p in m.parameters())  # nothing left on meta
+    torch.testing.assert_close(_run(m), _run(ref))
+
+
+def _plan_cls():
+    import dataclasses
+
+    @dataclasses.dataclass(frozen = True)
+    class Plan:
+        stream_transformer: bool = True
+        resident_transformer_mib: int = 100
+        secondary_ordinal: object = None
+        secondary_components: object = None
+        layer_split: object = None
+        fallback_plan: object = None
+        reasons: tuple = ("planned",)
+        offload_policy: str = "group"
+        stream_text_encoders: bool = False
+
+    return Plan
+
+
+def _two_cards(monkeypatch):
+    from core.inference import diffusion_multigpu as mg
+
+    monkeypatch.setenv(tp2.TP_ENV, "1")
+    monkeypatch.setattr(
+        mg, "current_selection", lambda: mg.MultiGpuSelection(primary = 0, secondaries = (1,))
+    )
+    monkeypatch.setattr(tp2, "refusal", lambda tr, devs: None)
+
+
+def test_engage_falls_back_to_the_plan_when_setup_fails(monkeypatch):
+    from types import SimpleNamespace
+
+    _two_cards(monkeypatch)
+    monkeypatch.setattr(
+        tp2, "install", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("NCCL init failed"))
+    )
+    plan = _plan_cls()()
+    pipe = SimpleNamespace(transformer = _tiny(layers = 1))
+    assert tp2.engage_for_plan(pipe, plan) is plan
+    assert not hasattr(pipe, "_unsloth_tp2")
+
+
+def test_engage_declines_a_companion_split_and_load_time_loras(monkeypatch):
+    from types import SimpleNamespace
+
+    _two_cards(monkeypatch)
+    calls = []
+    monkeypatch.setattr(
+        tp2, "install", lambda *a, **k: calls.append(1) or {"devices": ["cuda:0", "cuda:1"]}
+    )
+    pipe = SimpleNamespace(transformer = _tiny(layers = 1))
+    split = _plan_cls()(
+        offload_policy = "none", secondary_components = ("text_encoder",), secondary_ordinal = 1
+    )
+    assert tp2.engage_for_plan(pipe, split) is split
+    plan = _plan_cls()()
+    assert tp2.engage_for_plan(pipe, plan, loras = [("style", 0.8)]) is plan
+    assert calls == []
+    assert (
+        tp2.engage_for_plan(pipe, plan, loras = [("style", 0.0)]) is not plan
+    )  # a zero weight names no adapter
+    assert calls == [1]
+
+
+def test_cfg_replica_declines_a_tensor_parallel_denoiser():
+    from types import SimpleNamespace
+
+    from core.inference import diffusion_multigpu as mg
+
+    m = _tiny(layers = 1)
+    tp2.install(m, CPU2)
+    pipe = SimpleNamespace(transformer = m)
+    sel = mg.MultiGpuSelection(primary = 0, secondaries = (1,))
+    why = mg.cfg_parallel_decline(pipe, offload_policy = "none", selection = sel)
+    assert why is not None and "tensor parallel" in why
+    with pytest.raises(RuntimeError, match = "tensor-parallel"):
+        mg.build_replica(m, "cpu")
+
+
+def test_final_step_release_frees_the_per_card_prefix_kv():
+    from core.inference import diffusion_prefix_kv as pkv
+
+    m = _tiny(layers = 2)
+    tp2.install(m, CPU2)
+    pkv.track_prefix_kv(m)
+    cache = q21.QwenImage21KVCache(len(m.transformer_blocks))
+    _run(m, cache, "extract")
+    _run(m, cache, "cached")
+    per = m.transformer_blocks[0]._kv[cache.get_layer(0)]
+    held = sum(
+        t.untyped_storage().nbytes() for card in per for layer in card for t in (layer.k, layer.v)
+    )
+    assert held > 0
+    assert pkv.release_prefix_kv(m) == held
+    assert all(layer.k is None and layer.v is None for card in per for layer in card)
+
+
+def test_fp16_row_partials_do_not_overflow_into_nan():
+    # unsplit: 3e4 * 4 - 3e4 * 4 = 0; per card: +1.2e5 -> +Inf and -1.2e5 -> -Inf, NaN after the sum
+    lin = nn.Linear(4, 1, bias = False).half()
+    with torch.no_grad():
+        lin.weight.copy_(torch.tensor([[4.0, 4.0, -4.0, -4.0]]))
+    x = torch.tensor([[1.5e4, 1.5e4, 1.5e4, 1.5e4]], dtype = torch.float16)
+    rows = [tp2._row_parallel_class()(tp2.shard_linear(lin, 1, i, 2, "cpu")) for i in range(2)]
+    parts = tp2.make_all_reduce("cpu", CPU2)([rows[0](x[:, :2]), rows[1](x[:, 2:])])
+    out = parts[0].to(torch.float16)
+    assert torch.isfinite(out).all() and float(out) == 0.0
+
+
+def test_fp16_tp_forward_stays_fp16_and_matches(monkeypatch):
+    ref = _tiny(layers = 2).half()
+    m = copy.deepcopy(ref)
+    tp2.install(m, CPU2)
+
+    def run_half(model):
+        kw = _inputs()
+        kw["hidden_states"] = kw["hidden_states"].half()
+        kw["encoder_hidden_states"] = kw["encoder_hidden_states"].half()
+        with torch.no_grad():
+            return model(**kw)[0]
+
+    a, b = run_half(m), run_half(ref)
+    assert a.dtype == torch.float16
+    torch.testing.assert_close(a.float(), b.float(), rtol = 2e-2, atol = 2e-2)
+
+
+def test_lora_is_blocked_under_tp_and_peft_cannot_see_the_shards():
+    peft = pytest.importorskip("peft")
+    from types import SimpleNamespace
+
+    cfg = peft.LoraConfig(r = 4, target_modules = ["to_q"])
+    stock = _tiny(layers = 1)
+    peft.inject_adapter_in_model(cfg, stock)  # stock blocks: found
+    m = _tiny(layers = 1)
+    tp2.install(m, CPU2)
+    with pytest.raises(ValueError):
+        peft.inject_adapter_in_model(cfg, m)  # the reason render-time adapters are refused under TP
+    reason = tp2.lora_block_reason(SimpleNamespace(transformer = m))
+    assert reason and tp2.TP_ENV in reason
+    assert tp2.lora_block_reason(SimpleNamespace(transformer = _tiny(layers = 1))) is None
+
+
+def test_comm_choice_prefers_nccl_within_the_margin():
+    assert tp2.choose_comm({"nccl": 4.4, "swap": 4.3, "peer": 7.0}) == "nccl"  # 2 % faster: noise
+    assert tp2.choose_comm({"nccl": 5.7, "swap": 4.4, "peer": 7.5}) == "swap"  # 23 % faster
+    assert tp2.choose_comm({"nccl": "failed: x", "swap": 4.4, "peer": 4.3}) == "peer"
+    assert tp2.choose_comm({"nccl": "failed: x"}) is None
+
+
+def test_hostswap_buffers_are_bounded():
+    from collections import OrderedDict
+
+    host, tmp = OrderedDict(), OrderedDict()
+    for n in (32, 64, 128):
+        tp2._evict(host, tmp, tp2.HOSTSWAP_SIZES - 1)
+        host[n], tmp[n] = [n], [n]
+    assert list(host) == [64, 128] and list(tmp) == [64, 128]
+
+
+def test_render_time_lora_gate_names_tp():
+    from types import SimpleNamespace
+
+    from core.inference import diffusion
+
+    m = _tiny(layers = 1)
+    tp2.install(m, CPU2)
+    reason = diffusion._lora_load_block_reason(SimpleNamespace(transformer = m))
+    assert reason and "tensor parallel" in reason
+
+
+def test_row_parallel_wrapper_is_one_class():
+    # one class for every shard: a compiled stage guards on the module type and would retrace per block otherwise
+    m = _tiny(layers = 3)
+    tp2.install(m, CPU2)
+    kinds = {type(blk.attn.to_out[0]) for card in m.transformer_blocks[0].shards() for blk in card}
+    kinds |= {type(blk.img_mlp.out) for card in m.transformer_blocks[0].shards() for blk in card}
+    assert len(kinds) == 1

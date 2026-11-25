@@ -16,18 +16,26 @@ slice, so the int8 result differs slightly from one card's (its own accuracy gat
 
 from __future__ import annotations
 
+import contextlib
 import copy
+import gc
 import os
 import time
 import weakref
 from collections import OrderedDict
+from functools import lru_cache
 from typing import Any, Callable, Optional, Sequence
 
 TP_ENV = "UNSLOTH_DIFFUSION_TP"
 TP_COMM_ENV = "UNSLOTH_DIFFUSION_TP_COMM"  # auto | nccl | swap | peer
 # 1 compiles each card's stages when the denoiser compiles; default eager (2x T4: no per-step gain, +58 s first image)
 TP_COMPILE_ENV = "UNSLOTH_DIFFUSION_TP_COMPILE"
+TP_REDUCE_ENV = "UNSLOTH_DIFFUSION_TP_REDUCE"  # fp32 (default on fp16 cards) | native (reduce in the model dtype)
 GRAPH_UNSAFE_ATTR = "_unsloth_cuda_graph_unsafe"
+# Prefer NCCL unless another backend beats it by more than this (probe noise).
+COMM_MARGIN = 0.05
+# HostSwap keeps pinned / device buffers for this many (numel, dtype) sizes, least recently used dropped.
+HOSTSWAP_SIZES = 2
 TP_ATTR = "_unsloth_tp2"
 _DITS = frozenset({"QwenImage21Transformer2DModel"})
 _COLUMN = ("attn.to_q", "attn.to_k", "attn.to_v", "img_mlp.gate_layer", "img_mlp.proj")
@@ -64,6 +72,26 @@ def _is_native(lin: Any) -> bool:
     return type(lin).__name__ == "NativeWeightOnlyLinear" and hasattr(lin, "weight_q")
 
 
+def _linear_refusal(lin: Any, path: str) -> Optional[str]:
+    """Only layer types this module shards explicitly: plain ``nn.Linear`` with a plain floating weight, or Studio's
+    ``NativeWeightOnlyLinear``. Exact types, not ``isinstance``: a subclass (ConvRotLinear rotates its input in
+    ``forward``) or a tensor-subclass weight (torchao) would lose its behaviour in a plain sliced Linear."""
+    import torch
+
+    if _is_native(lin):
+        g = int(getattr(lin, "rot_group", 0) or 0)
+        if path in _ROW and g and (lin.in_features // 2) % g:
+            return f"{path}: half of {lin.in_features} input channels is not whole {g}-channel ConvRot groups"
+        return None
+    if type(lin) is not torch.nn.Linear:
+        return f"{path} is a {type(lin).__name__} (only nn.Linear and native int8 / fp8 Linears are sharded)"
+    w = getattr(lin, "weight", None)
+    data = getattr(w, "data", None)
+    if type(data) is not torch.Tensor or not data.is_floating_point():
+        return f"{path} holds a {type(data).__name__} {getattr(data, 'dtype', '')} weight (plain float expected)"
+    return None
+
+
 def refusal(transformer: Any, devices: Sequence[Any]) -> Optional[str]:
     """Why TP-2 cannot run this transformer on these cards, or None."""
     import torch
@@ -94,17 +122,70 @@ def refusal(transformer: Any, devices: Sequence[Any]) -> Optional[str]:
     for blk in transformer.transformer_blocks:
         for path in _COLUMN + _ROW:
             lin = _get(blk, path)
-            if _is_native(lin):
-                g = int(getattr(lin, "rot_group", 0) or 0)
-                if path in _ROW and g and (lin.in_features // 2) % g:
-                    return f"{path}: half of {lin.in_features} input channels is not whole {g}-channel ConvRot groups"
-            elif not isinstance(lin, torch.nn.Linear):
-                return (
-                    f"{path} is a {type(lin).__name__} (dense or native int8 / fp8 Linear expected)"
-                )
+            why = _linear_refusal(lin, path)
+            if why is not None:
+                return why
         if getattr(blk, "_diffusers_hook", None) is not None:
             return "the denoiser carries offload hooks (TP replaces offload)"
     return None
+
+
+def reduce_fp32() -> bool:
+    return (os.environ.get(TP_REDUCE_ENV) or "fp32").strip().lower() != "native"
+
+
+_MM_OUT_DTYPE: dict = {}
+
+
+def _mm_fp32(x2: Any, w: Any) -> Any:
+    """``x2 @ w.T`` with float32 output from half inputs: one GEMM with ``out_dtype`` where torch has it for this
+    device, else the float32 product."""
+    import torch
+
+    key = (x2.device.type, x2.dtype)
+    if _MM_OUT_DTYPE.get(key, True):
+        try:
+            return torch.mm(x2, w.t(), out_dtype = torch.float32)
+        except (TypeError, RuntimeError, NotImplementedError):
+            _MM_OUT_DTYPE[key] = False
+    return torch.mm(x2.float(), w.float().t())
+
+
+@lru_cache(maxsize = 1)
+def _row_parallel_class():
+    """Built once: a fresh class per shard would make every compiled stage retrace on the type guard."""
+    from torch import nn
+
+    class RowParallelOut(nn.Module):
+        """A row-parallel shard whose partial sum leaves in float32 on half-precision activations: two partials of
+        +6e4 and -6e4 overflow to +Inf / -Inf in fp16 and reduce to NaN, where the unsplit layer gives a finite
+        result. The caller casts after the all-reduce (one rounding, as the unsplit layer)."""
+
+        def __init__(self, inner: Any):
+            super().__init__()
+            self.inner = inner
+
+        def __getattr__(self, name: str) -> Any:
+            try:
+                return super().__getattr__(name)
+            except AttributeError:
+                return getattr(self._modules["inner"], name)
+
+        def forward(self, x: Any) -> Any:
+            import torch
+
+            inner = self.inner
+            if x.dtype != torch.float16 or not reduce_fp32():
+                return inner(x)
+            if _is_native(inner):
+                return inner(x.float())
+            x2 = x.reshape(-1, x.shape[-1])
+            y = _mm_fp32(x2, inner.weight)
+            if inner.bias is not None:
+                y = y + inner.bias.float()
+            return y.reshape(*x.shape[:-1], y.shape[-1])
+
+    return RowParallelOut
 
 
 def shard_linear(lin: Any, dim: int, index: int, parts: int, device: Any) -> Any:
@@ -198,14 +279,25 @@ def shard_block(block: Any, index: int, parts: int, device: Any) -> Any:
             sub._compiled_call_impl = None
     for path in _COLUMN:
         _set(sb, path, shard_linear(_get(block, path), 0, index, parts, device))
+    row_cls = _row_parallel_class()
     for path in _ROW:
-        _set(sb, path, shard_linear(_get(block, path), 1, index, parts, device))
+        _set(sb, path, row_cls(shard_linear(_get(block, path), 1, index, parts, device)))
     sb.attn.heads = block.attn.heads // parts
     sb.attn.inner_dim = block.attn.inner_dim // parts
     return sb.to(device)
 
 
 # ------------------------------------------------------------------------------------------------- all-reduce
+def _evict(host: Any, tmp: Any, keep: int) -> None:
+    """Drop the least recently used sizes until ``keep`` remain. Safe while copies are in flight: the pinned
+    allocator holds a freed block until its recorded copies finish, and every later use of a device scratch
+    buffer on the compute stream was ordered after its H2D writes."""
+    while len(host) > max(0, keep):
+        key = next(iter(host))
+        host.pop(key, None)
+        tmp.pop(key, None)
+
+
 class HostSwap:
     """All-reduce of two equal tensors through pinned host memory (no P2P needed), chunk-pipelined: each card
     copies its partial D2H on one copy stream; the other card copies it H2D on a second stream once that chunk
@@ -221,15 +313,19 @@ class HostSwap:
         self.devices, self.chunks = list(devices), int(chunks)
         self.d2h = [torch.cuda.Stream(d) for d in self.devices]
         self.h2d = [torch.cuda.Stream(d) for d in self.devices]
-        self._host: dict = {}
-        self._tmp: dict = {}
+        self._host: OrderedDict = OrderedDict()
+        self._tmp: OrderedDict = OrderedDict()
         self._read_done: list = [None, None]
 
     def _bufs(self, n: int, dtype: Any) -> tuple:
         import torch
 
         key = (n, dtype)
-        if key not in self._host:
+        if key in self._host:
+            self._host.move_to_end(key)
+            self._tmp.move_to_end(key)
+        else:
+            _evict(self._host, self._tmp, HOSTSWAP_SIZES - 1)
             self._host[key] = [torch.empty(n, dtype = dtype, pin_memory = True) for _ in self.devices]
             self._tmp[key] = [torch.empty(n, dtype = dtype, device = d) for d in self.devices]
         return self._host[key], self._tmp[key]
@@ -306,6 +402,17 @@ def make_all_reduce(kind: str, devices: Sequence[Any]) -> Callable[[list], list]
     raise ValueError(f"unknown all-reduce {kind!r}")
 
 
+def choose_comm(timings: dict) -> Optional[str]:
+    """NCCL unless a working backend is more than ``COMM_MARGIN`` faster (a single-size probe is noisy)."""
+    ok = {k: v for k, v in timings.items() if isinstance(v, (int, float))}
+    if not ok:
+        return None
+    best = min(ok, key = ok.get)
+    if "nccl" in ok and best != "nccl" and ok[best] > ok["nccl"] * (1.0 - COMM_MARGIN):
+        return "nccl"
+    return best
+
+
 def pick_all_reduce(
     devices: Sequence[Any],
     numel: int,
@@ -318,7 +425,7 @@ def pick_all_reduce(
     forced = _comm_choice()
     names = [forced] if forced != "auto" else list(_COMMS)
     timings: dict = {}
-    best = None
+    fns: dict = {}
     for name in names:
         try:
             fn = make_all_reduce(name, devices)
@@ -331,17 +438,18 @@ def pick_all_reduce(
             if not all(bool((y == 3).all()) for y in ys):
                 raise RuntimeError("wrong sum")
             t = time.perf_counter()
-            for _ in range(5):
+            for _ in range(10):
                 fn(xs)
             for d in devices:
                 torch.cuda.synchronize(d)
-            timings[name] = round((time.perf_counter() - t) * 200, 3)  # ms per call
-            if best is None or timings[name] < timings[best[0]]:
-                best = (name, fn)
+            timings[name] = round((time.perf_counter() - t) * 1000 / 10, 3)  # ms per call
+            fns[name] = fn
         except Exception as exc:  # noqa: BLE001 - a backend that fails here is simply not used
             timings[name] = f"failed: {type(exc).__name__}: {exc}"[:200]
-    if best is None:
+    choice = choose_comm(timings)
+    if choice is None:
         raise RuntimeError(f"no all-reduce backend works on {list(map(str, devices))}: {timings}")
+    best = (choice, fns[choice])
     if logger is not None:
         logger.info(
             "diffusion.tp2: all-reduce %s (probe ms per %d elements: %s)", best[0], numel, timings
@@ -496,20 +604,57 @@ def _stack_class():
                 mlps, gates2 = [], []
                 for c, d in enumerate(devs):
                     with _CardContext(d):
-                        hs[c] = hs[c] + gates[c].tanh() * parts[c]
+                        hs[c] = hs[c] + gates[c].tanh() * parts[c].to(hs[c].dtype)
                         m, g2 = self._stage_mlp(self._shards[c][i], hs[c], mod2s[c], ttms[c])
                     mlps.append(m)
                     gates2.append(g2)
                 mlps = ar(mlps)
                 for c, d in enumerate(devs):
                     with _CardContext(d):
-                        x = hs[c] + gates2[c].tanh() * mlps[c]
+                        x = hs[c] + gates2[c].tanh() * mlps[c].to(hs[c].dtype)
                         hs[c] = x.clip(-65504, 65504) if x.dtype == torch.float16 else x
             self.calls += 1
             out = hs[0]
             return out if out.device == home else out.to(home)
 
     return TPStack
+
+
+def _free_cards(devices: Sequence[Any]) -> None:
+    gc.collect()
+    try:
+        import torch
+        for d in devices:
+            if getattr(d, "type", None) == "cuda":
+                with torch.cuda.device(d):
+                    torch.cuda.empty_cache()
+    except Exception:  # noqa: BLE001 - only a memory hint
+        pass
+
+
+def release_kv(transformer: Any) -> int:
+    """Drop every per-card prefix K/V the TP stack holds (bytes freed); Studio's final-step release calls it, since
+    the pipeline's own cache objects stay empty under TP. Only safe after the last denoiser call."""
+    import torch
+
+    if getattr(transformer, TP_ATTR, None) is None:
+        return 0
+    try:
+        stack = transformer.transformer_blocks[0]
+        per_render = list(stack._kv.values())
+        stack._kv.clear()
+    except Exception:  # noqa: BLE001
+        return 0
+    freed = 0
+    for per in per_render:
+        for card in per:
+            for layer in card:
+                for name in ("k", "v"):
+                    t = getattr(layer, name, None)
+                    if isinstance(t, torch.Tensor):
+                        freed += t.untyped_storage().nbytes()
+                        setattr(layer, name, None)
+    return freed
 
 
 def install(
@@ -534,25 +679,45 @@ def install(
     was_compiled = compile_kw is not None or any(
         b.__dict__.get("_compiled_call_impl") is not None for b in blocks
     )
-    shards: list = [[] for _ in devices]
-    with torch.no_grad():
-        for blk in blocks:
-            for c, d in enumerate(devices):
-                shards[c].append(shard_block(blk, c, len(devices), d))
-            blk.to("meta")  # the whole-block copy is no longer needed
     act_dtype = getattr(transformer, "dtype", None) or torch.float16
+    # the dtype the row-parallel partials travel in (float32 on fp16 activations, see RowParallelOut)
+    red_dtype = torch.float32 if (act_dtype == torch.float16 and reduce_fp32()) else act_dtype
+    # 1. the all-reduce first: nothing of the model has changed yet
     if devices[0].type == "cpu":
         name, fn, probe = "cpu", make_all_reduce("cpu", devices), {}
     elif comm:
         name, fn, probe = comm, make_all_reduce(comm, devices), {}
     else:
         dim = int(transformer.config.num_attention_heads * transformer.config.attention_head_dim)
-        name, fn, probe = pick_all_reduce(devices, probe_tokens * dim, act_dtype, logger)
-    stack = _stack_class()(shards, devices, fn, name)
-    if was_compiled:
-        stack.compile(**dict(compile_kw or {}))
-    transformer.transformer_blocks = nn.ModuleList([stack])
-    transformer.to(devices[0])
+        name, fn, probe = pick_all_reduce(devices, probe_tokens * dim, red_dtype, logger)
+    # 2. shards next to the untouched blocks; 3. swap; the originals go only once everything is placed
+    shards: list = [[] for _ in devices]
+    original_blocks = transformer.transformer_blocks
+    home = next((p.device for p in transformer.parameters()), None)
+    swapped = False
+    try:
+        with torch.no_grad():
+            for blk in blocks:
+                for c, d in enumerate(devices):
+                    shards[c].append(shard_block(blk, c, len(devices), d))
+        stack = _stack_class()(shards, devices, fn, name)
+        if was_compiled:
+            stack.compile(**dict(compile_kw or {}))
+        transformer.transformer_blocks = nn.ModuleList([stack])
+        swapped = True
+        transformer.to(devices[0])
+    except BaseException:
+        if swapped:
+            transformer.transformer_blocks = original_blocks
+            if home is not None:
+                with contextlib.suppress(Exception):
+                    transformer.to(home)
+        shards.clear()
+        _free_cards(devices)
+        raise
+    with torch.no_grad():
+        for blk in blocks:
+            blk.to("meta")  # the whole-block originals are no longer needed
 
     def _local_mib(c: int) -> int:
         seen, total = set(), 0
@@ -601,6 +766,7 @@ def engage_for_plan(
     pipe: Any,
     plan: Any,
     logger: Any = None,
+    loras: Any = None,
 ) -> Any:
     """Opt-in (``UNSLOTH_DIFFUSION_TP=1``) step after the multi-GPU plan refinement: shard the denoiser over the
     selection's primary and first secondary card and return the plan with the denoiser resident and no split (the
@@ -627,6 +793,15 @@ def engage_for_plan(
         torch.device("cuda", int(sel.primary)),
         torch.device("cuda", int(sel.secondaries[0])),
     ]
+    if any(w for (_i, w) in _lora_pairs(loras)):
+        # PEFT target discovery cannot see the shards: a load that names adapters keeps the normal plan
+        return keep("the load names LoRA adapters")
+    if (
+        getattr(plan, "secondary_components", None)
+        and getattr(plan, "offload_policy", None) == "none"
+    ):
+        # the plan was sized with those components on the other card; TP would bring them back to the first
+        return keep(f"the plan places {', '.join(plan.secondary_components)} on another card")
     tr = getattr(pipe, "transformer", None)
     why = refusal(tr, devices)
     if why is not None:
@@ -635,8 +810,12 @@ def engage_for_plan(
         record = install(
             tr, devices, comm = None if _comm_choice() == "auto" else _comm_choice(), logger = logger
         )
-    except Exception as exc:  # noqa: BLE001 - a half-built TP cannot be undone here: surface it
-        raise RuntimeError(f"tensor parallelism failed while sharding the denoiser: {exc}") from exc
+    except Exception as exc:  # noqa: BLE001 - install restored the blocks: the normal plan still loads
+        if logger is not None:
+            logger.warning(
+                "diffusion.tp2: setup failed, the normal placement runs instead: %s", exc
+            )
+        return plan
     pipe._unsloth_tp2 = record
     return dataclasses.replace(
         plan,
@@ -650,6 +829,28 @@ def engage_for_plan(
         fallback_plan = None,
         reasons = tuple(plan.reasons)
         + (f"denoiser tensor parallel over {', '.join(record['devices'])}",),
+    )
+
+
+def _lora_pairs(loras: Any) -> list:
+    out = []
+    for entry in loras or ():
+        try:
+            lora_id, weight = entry
+            out.append((lora_id, float(weight)))
+        except Exception:  # noqa: BLE001 - an unrecognised entry names no adapter
+            continue
+    return out
+
+
+def lora_block_reason(pipe: Any) -> Optional[str]:
+    """Why adapters cannot attach to this load (TP shards are invisible to PEFT's target discovery), or None."""
+    if getattr(getattr(pipe, "transformer", None), TP_ATTR, None) is None:
+        return None
+    return (
+        "LoRA is not available on this load: the denoiser runs tensor parallel across two cards "
+        f"({TP_ENV}=1), which cannot carry adapters yet. Reload without {TP_ENV}, or name the LoRA in the load "
+        "request (Unsloth then keeps the normal placement)."
     )
 
 
