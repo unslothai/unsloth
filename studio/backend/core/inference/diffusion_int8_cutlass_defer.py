@@ -14,7 +14,7 @@ the winning kernels.
 
 A client that renders back to back never leaves Studio idle, so the race would wait forever and every render would
 keep the Triton kernel (an external benchmark's warm renders, 2-4% slower on an RTX 6000 Ada and an RTX 3090, 3-6% on
-an L4). Once ``UNSLOTH_DIFFUSION_INT8_CUTLASS_DEFER_MAX_RENDERS`` renders (default 2) have ended with the race still
+an L4). Once ``UNSLOTH_DIFFUSION_INT8_CUTLASS_DEFER_MAX_RENDERS`` renders (default 1) have ended with the race still
 pending and no idle spell, the whole pending race starts as that render ends, idle or not, and the next render waits
 for what is left of it (a client pausing between requests absorbs part or all of it), then re-records its CUDA graphs
 on the winners. ``0`` keeps waiting for an idle spell. Any render's wait on the race (this drain, or a unit in flight)
@@ -41,10 +41,11 @@ MAX_RENDERS_ENV = "UNSLOTH_DIFFUSION_INT8_CUTLASS_DEFER_MAX_RENDERS"
 # Covers the route saving the image and a back-to-back client's next request.
 _IDLE_S = 2.0
 _IDLE_MAX_S = 600.0
-# Renders that may end back to back with the race pending before the next one runs it first: image 1 keeps the
-# fresh-install head start and a quick second image does not wait; a longer back-to-back run (an API client, a
-# benchmark's warm-ups) gets the CUTLASS kernels from render 3 on instead of never.
-_MAX_RENDERS = 2
+# Renders that may end back to back with the race pending before it runs regardless of idle: image 1 keeps the
+# fresh-install head start, and the race starts as it returns. A back-to-back client's image 2 waits for it once
+# (a benchmark's first warm-up), and every later render runs CUTLASS instead of never; a client that pauses after
+# image 1 absorbs part or all of it.
+_MAX_RENDERS = 1
 # A render waiting on the race (the drain, or a unit in flight) gives up after this long and runs on the Triton
 # kernel; a cancelled generation stops waiting at once (checked every _WAIT_POLL_S).
 _WAIT_MAX_S = 600.0

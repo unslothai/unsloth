@@ -252,6 +252,7 @@ def test_loads_that_keep_racing_at_load(monkeypatch, case):
 
 
 def test_a_render_waits_only_for_the_shape_in_flight(monkeypatch):
+    monkeypatch.setenv(defer.MAX_RENDERS_ENV, "0")  # the idle-spell path alone
     release = threading.Event()
     racing = threading.Event()
 
@@ -318,6 +319,7 @@ def test_image_backend_render_hook(monkeypatch):
 def test_a_waiting_render_re_records_on_the_shape_that_just_won(monkeypatch):
     """Each shape's winner is published with the refresh before a render waiting on it is let in, not only once the
     whole card's job ends: else a graph recorded on that shape keeps replaying the Triton launches."""
+    monkeypatch.setenv(defer.MAX_RENDERS_ENV, "0")  # the idle-spell path alone
     release = threading.Event()
     racing = threading.Event()
 
@@ -628,7 +630,7 @@ def _back_to_back(monkeypatch):
     monkeypatch.setenv(defer.IDLE_ENV, "600")
 
 
-def test_back_to_back_renders_run_the_race_before_render_3(monkeypatch):
+def test_back_to_back_renders_run_the_race_before_render_2(monkeypatch):
     """An external benchmark renders cold + 2 warm-ups + 3 timed images back to back: before the bound no idle spell
     came, the race never ran and every timed render kept the Triton kernel (3-6% slower on an L4)."""
     _back_to_back(monkeypatch)
@@ -639,16 +641,14 @@ def test_back_to_back_renders_run_the_race_before_render_3(monkeypatch):
 
     raced = _env(monkeypatch, {}, gate = gate)
     _image_load(0, [_rec(), _rec(96, 32)])
-    for i in range(2):  # image 1 keeps its head start, image 2 does not wait
-        t0 = time.perf_counter()
-        assert defer.render_begin() is False
-        assert time.perf_counter() - t0 < 0.5
-        g8._defer_note_rows(0, *_call(4176))
-        if i == 0:
-            time.sleep(0.2)
-            assert raced == [] and defer.status()["state"] == "pending"
-        defer.render_end()
-    # render 2's end starts the whole race; render 3, arriving at once, waits for all of it, then re-records
+    t0 = time.perf_counter()  # image 1 keeps its head start: nothing races before or during it
+    assert defer.render_begin() is False
+    assert time.perf_counter() - t0 < 0.5
+    g8._defer_note_rows(0, *_call(4176))
+    time.sleep(0.2)
+    assert raced == [] and defer.status()["state"] == "pending"
+    defer.render_end()
+    # image 1's end starts the whole race; render 2, arriving at once, waits for all of it, then re-records
     out = []
     t = threading.Thread(target = lambda: out.append(defer.render_begin()))
     t.start()
@@ -670,16 +670,16 @@ def test_back_to_back_renders_run_the_race_before_render_3(monkeypatch):
     assert defer.status()["drains"] == 1
 
 
-def test_the_drain_starts_when_render_2_ends_so_a_short_pause_absorbs_it(monkeypatch):
-    """A client that pauses even briefly after render 2 (shorter than the idle spell) gets the race in that pause:
-    render 3 then neither waits nor runs Triton."""
+def test_the_drain_starts_when_image_1_ends_so_a_short_pause_absorbs_it(monkeypatch):
+    """A client that pauses even briefly after image 1 (shorter than the idle spell) gets the race in that pause:
+    image 2 then neither waits nor runs Triton."""
     _back_to_back(monkeypatch)
     raced = _env(monkeypatch, {})
     _image_load(0, [_rec(), _rec(96, 32)])
-    for _ in range(2):
+    for _ in range(1):
         defer.render_begin()
         defer.render_end()
-    _wait_state("done")  # no render 3 has arrived yet
+    _wait_state("done")  # no render 2 has arrived yet
     assert len(raced) == 6
     t0 = time.perf_counter()
     assert defer.render_begin() is True
@@ -716,14 +716,14 @@ def test_a_stuck_unit_never_holds_a_render_past_the_deadline(monkeypatch):
     later render of this load waits on the race again."""
     release, racing, raced = _held_race(monkeypatch)
     monkeypatch.setattr(defer, "_WAIT_MAX_S", 0.2)
-    for _ in range(2):
+    for _ in range(1):
         defer.render_begin()
         defer.render_end()
     assert racing.wait(10)  # the drain's first unit is in flight and stuck
     try:
         t, out, t0 = _begin_in_thread()
         t.join(3)
-        assert out, "render 3 is still blocked on the stuck race unit"
+        assert out, "render 2 is still blocked on the stuck race unit"
         assert out[0][1] - t0 < 2.0
         assert out[0][0] is False and g8._cutlass_tile(0, *_call(4176)) is None  # Triton serves it
         st = defer.status()
@@ -741,7 +741,7 @@ def test_a_cancel_releases_a_render_waiting_on_the_race(monkeypatch):
     """Unload / a superseding load / a user cancel sets the generation's cancel event: a render waiting on the drain
     or on a unit in flight stops waiting at once (the generation then raises its cancel)."""
     release, racing, raced = _held_race(monkeypatch)
-    for _ in range(2):
+    for _ in range(1):
         defer.render_begin()
         defer.render_end()
     assert racing.wait(10)
@@ -799,19 +799,25 @@ def test_the_bound_is_configurable_and_0_waits_for_an_idle_spell(monkeypatch):
     assert (
         raced == [] and defer.status()["drains"] == 0
     )  # #19308's behaviour: only an idle spell runs it
-    for bad, want in (("x", 2), ("-3", 0), ("", 2), (" 4 ", 4)):
+    for bad, want in (("x", 1), ("-3", 0), ("", 1), (" 4 ", 4)):
         monkeypatch.setenv(defer.MAX_RENDERS_ENV, bad)
         assert defer.max_renders() == want
 
 
-def test_a_bound_of_1_runs_the_race_before_image_2(monkeypatch):
+def test_a_bound_of_2_runs_the_race_before_image_3(monkeypatch):
     _back_to_back(monkeypatch)
-    monkeypatch.setenv(defer.MAX_RENDERS_ENV, "1")
+    monkeypatch.setenv(defer.MAX_RENDERS_ENV, "2")
     raced = _env(monkeypatch, {})
     _image_load(0, [_rec()])
     defer.render_begin()
     defer.render_end()
-    assert defer.render_begin() is True and len(raced) == 3  # image 2 runs it
+    assert defer.render_begin() is False  # image 2 neither waits nor races
+    time.sleep(0.2)
+    assert raced == []
+    defer.render_end()
+    assert (
+        defer.render_begin() is True and len(raced) == 3
+    )  # image 2's end ran it, image 3 re-records
     defer.render_end()
 
 
@@ -862,6 +868,7 @@ def test_an_idle_spell_restarts_the_back_to_back_count(monkeypatch):
         if n == 96:
             assert release.wait(10)
 
+    monkeypatch.setenv(defer.MAX_RENDERS_ENV, "2")  # a bound the first render does not reach
     raced = _env(monkeypatch, {}, gate = gate)
     _image_load(0, [_rec(), _rec(96, 32)])
     defer.render_begin()
@@ -875,22 +882,25 @@ def test_an_idle_spell_restarts_the_back_to_back_count(monkeypatch):
     assert defer.status()["drains"] == 0
 
 
-def test_an_idle_gap_still_runs_the_race_without_a_wait(monkeypatch):
-    """With the bound in place, a client that pauses between renders (the Studio UI) still gets the race in the idle
-    spell, exactly as #19308: no render waits for it and none is counted as back to back."""
+@pytest.mark.parametrize("bound", ["", "0"])
+def test_an_idle_gap_still_runs_the_race_without_a_wait(monkeypatch, bound):
+    """A client that pauses between renders (the Studio UI) still gets the race after image 1 with no render waiting:
+    with the default bound it starts as image 1 returns, with the bound off (0) in the idle spell, exactly as #19308."""
+    monkeypatch.setenv(defer.MAX_RENDERS_ENV, bound)
     monkeypatch.setenv(defer.IDLE_ENV, "0.05")
     raced = _env(monkeypatch, {})
     _image_load(0, [_rec(), _rec(96, 32)])
     defer.render_begin()
     defer.render_end()
-    _wait_state("done")  # the idle spell after image 1 runs every shape
+    _wait_state("done")  # the pause after image 1 runs every shape
     assert [r[0] for r in raced] == [64, 64, 64, 96, 96, 96]
     t0 = time.perf_counter()
     assert defer.render_begin() is True  # re-records once on the winners, without waiting
     assert time.perf_counter() - t0 < 0.5
     defer.render_end()
     st = defer.status()
-    assert st.get("drains", 0) == 0 and st["waits"] == 0 and st["won"] == 2
+    assert st["waits"] == 0 and st["won"] == 2
+    assert st.get("drains", 0) == (1 if bound == "" else 0)
 
 
 def test_the_image_backend_hands_the_generation_cancel_to_the_wait(monkeypatch):
