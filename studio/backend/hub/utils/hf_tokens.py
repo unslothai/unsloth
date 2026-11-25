@@ -234,8 +234,7 @@ def cache_reads_authorized(
         return True
     repo = (repo_id or "").strip()
     if isinstance(hf_token, AmbientAuthorizedToken):
-        # The owner's session reads its own cache. A managed account's session reads the
-        # shared cache only for a granted or public repo, else its own token must reach it.
+        # A managed session reads the shared cache only for a granted or public repo.
         if not _managed_cache_read_ungranted(repo, repo_type, offline = offline):
             return True
     if not repo:
