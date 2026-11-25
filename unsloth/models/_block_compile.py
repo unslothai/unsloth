@@ -45,6 +45,65 @@ def _cudagraph_mode():
     return "auto" if value in ("", "auto") else "off"
 
 
+# Inductor's C++ wrapper launches a compiled block's kernels from C++ instead of a Python wrapper:
+# packed / padding-free LoRA rows are launch-bound (Colab L4, Qwen3-4B QLoRA 1.44 -> 1.29 s/step,
+# Llama-3.2-3B LoRA 0.93 -> 0.80), at a one-time C++ build of the block graphs (about a minute on a
+# cold cache, nothing on a warm one), so it starts once a run is long (_CPP_WRAPPER_AFTER).
+# UNSLOTH_BLOCK_CPP_WRAPPER: "1" on at once wherever Inductor allows it, "0" off, unset / "auto" for
+# NVIDIA CUDA on Linux from torch 2.10 with a C++ compiler. A failed C++ build keeps the Python wrapper.
+_CPP_WRAPPER_MIN_TORCH = "2.10.0"
+
+
+def _cpp_wrapper_reason():
+    """Why blocks keep Inductor's Python wrapper (None: they use the C++ one)."""
+    value = os.environ.get("UNSLOTH_BLOCK_CPP_WRAPPER", "auto").strip().lower()
+    if value in ("0", "false", "no", "off"):
+        return "UNSLOTH_BLOCK_CPP_WRAPPER=0"
+    try:
+        import torch._inductor.config as inductor_config
+        if not hasattr(inductor_config, "cpp_wrapper"):
+            return "this torch has no Inductor C++ wrapper"
+    except Exception:
+        return "Inductor unavailable"
+    if value == "1":
+        return None
+    if getattr(torch.version, "hip", None) or getattr(torch.version, "cuda", None) is None:
+        return "not an NVIDIA CUDA build"
+    if sys.platform != "linux":
+        return "not Linux"
+    from packaging.version import Version
+
+    if Version(torch.__version__.split("+")[0]) < Version(_CPP_WRAPPER_MIN_TORCH):
+        return f"torch < {_CPP_WRAPPER_MIN_TORCH}"
+    try:
+        if not torch.cuda.is_available():
+            return "no CUDA device"
+    except Exception:
+        return "no CUDA device"
+    try:
+        import shutil
+
+        from torch._inductor.cpp_builder import get_cpp_compiler
+        if shutil.which(get_cpp_compiler()) is None:
+            return "no C++ compiler"
+    except Exception:
+        return "no C++ compiler"
+    return None
+
+
+_CPP_WRAPPER_REASON = _cpp_wrapper_reason()
+# Calls of a block class's first layer (about two per micro-batch under gradient checkpointing) before
+# its C++ region is built; UNSLOTH_BLOCK_CPP_WRAPPER=1 builds it at once.
+try:
+    _CPP_WRAPPER_AFTER = max(0, int(os.environ.get("UNSLOTH_BLOCK_CPP_WRAPPER_AFTER", "2000")))
+except ValueError:
+    _CPP_WRAPPER_AFTER = 2000
+if os.environ.get("UNSLOTH_BLOCK_CPP_WRAPPER", "").strip() == "1":
+    _CPP_WRAPPER_AFTER = 0
+# regions: block classes given a C++ wrapper region; fallbacks: classes whose C++ build failed.
+CPP_WRAPPER_STATS = {"regions": 0, "fallbacks": 0}
+
+
 # Per-block CUDA graphs only pay off for static shapes on a launch-bound step.
 _CUDAGRAPH_MODE = _cudagraph_mode()
 if _CUDAGRAPH_MODE == "on":
@@ -2562,6 +2621,66 @@ def _wrap(
     else:
         plain = compiled
     graphed_box = [compiled if graphs else None]
+    # The C++ wrapper copy of the graphs-off region, used once auto mode has stopped timing launches
+    # (its launch / GPU ratio thresholds were measured on the Python wrapper) and never for CUDA graphs.
+    # Built after _CPP_WRAPPER_AFTER calls of the first layer of this class: its C++ build costs about a
+    # minute once, which a short run would not win back.
+    cpp = {
+        "on": _CPP_WRAPPER_REASON is None and not graphs,
+        "region": None,
+        "first": None,
+        "calls": 0,
+    }
+
+    def cpp_wanted(kwargs):
+        # Packed rows never take CUDA graphs, so they need not wait for auto mode's verdict.
+        return cpp["on"] and (
+            not auto or _CUDAGRAPH_STATE["auto"]["phase"] == "off" or _packed_kwargs(kwargs)
+        )
+
+    def cpp_in_use(self, kwargs):
+        """Counts this class's first layer's calls and builds the C++ region once past the threshold."""
+        if not cpp_wanted(kwargs):
+            return False
+        if cpp["region"] is None:
+            if cpp["first"] is None:
+                cpp["first"] = id(self)
+            if cpp["first"] == id(self):
+                cpp["calls"] += 1
+            if cpp["calls"] <= _CPP_WRAPPER_AFTER:
+                return False
+            CPP_WRAPPER_STATS["regions"] += 1
+            if _CPP_WRAPPER_AFTER > 0:
+                _rank0_note(
+                    "cpp_wrapper",
+                    "Unsloth: compiling the decoder blocks with Inductor's C++ wrapper (once, about a "
+                    "minute) for faster steps. UNSLOTH_BLOCK_CPP_WRAPPER=0 keeps the Python wrapper.",
+                )
+            cpp["region"] = torch.compile(
+                original,
+                fullgraph = False,
+                dynamic = None,
+                options = {**compile_options, "cpp_wrapper": True},
+                **isolate,
+            )
+        return True
+
+    def fast(kwargs):
+        return cpp["region"] if cpp["region"] is not None and cpp_wanted(kwargs) else compiled
+
+    def python_wrapper_fallback(e):
+        """A failed C++ build (compiler, headers, an op it cannot wrap): this class's blocks go back to
+        the Python wrapper region. False when the C++ wrapper was not in use."""
+        if cpp["region"] is None or not cpp["on"] or not _backend_compile_failed(e):
+            return False
+        cpp["on"] = False
+        CPP_WRAPPER_STATS["fallbacks"] += 1
+        first = str(e).strip().splitlines()[0][:200] if str(e).strip() else type(e).__name__
+        print(
+            f"Unsloth: {cls.__name__} block compile with Inductor's C++ wrapper failed ({first}); "
+            "compiling it with the Python wrapper."
+        )
+        return True
 
     def graphed():
         if graphed_box[0] is None:
@@ -2655,7 +2774,8 @@ def _wrap(
                 ):
                     if _CUDAGRAPH_STATE["off"] is not None and _CUDAGRAPH_STATE["release"] is None:
                         _release_graph_pool()
-                    return plain(self, hidden_states, *args, **kwargs)
+                    region = fast(kwargs) if plain is compiled else plain
+                    return region(self, hidden_states, *args, **kwargs)
                 if (
                     ddp_run
                     and _CUDAGRAPH_STATE["off"] is not None
@@ -2683,7 +2803,7 @@ def _wrap(
                             "Unsloth: block CUDA graph compile failed; blocks run without CUDA graphs.",
                         )
                         return plain(self, hidden_states, *args, **kwargs)
-                return compiled(self, hidden_states, *args, **kwargs)
+                return fast(kwargs)(self, hidden_states, *args, **kwargs)
         finally:
             inline_flag[0] = previous
             _IN_BLOCK[0] = _OFF
@@ -2839,13 +2959,18 @@ def _wrap(
                 return original(self, hidden_states, *args, **kwargs)
             checked = self.__dict__.get("_unsloth_block_checked", 0)
         skip_down = bit == 4
-        if checked & bit:
+        # The C++ wrapper region is built after the first calls (auto mode times launches first):
+        # its first call per grad mode also runs with errors raised, so a failed build falls back.
+        cpp_bit = bit if cpp_in_use(self, kwargs) else 0
+        cpp_checked = self.__dict__.get("_unsloth_block_cpp_checked", 0)
+        if checked & bit and cpp_checked & cpp_bit == cpp_bit:
             return run(self, hidden_states, args, kwargs, mode, skip_down, trial)
         while True:
             try:
                 with _strict_dynamo():
                     out = run(self, hidden_states, args, kwargs, mode, skip_down, trial)
                 self.__dict__["_unsloth_block_checked"] = checked | bit
+                self.__dict__["_unsloth_block_cpp_checked"] = cpp_checked | cpp_bit
                 return out
             except torch.OutOfMemoryError:
                 raise
@@ -2857,6 +2982,8 @@ def _wrap(
                 if os.environ.get("UNSLOTH_BLOCK_COMPILE_DEBUG") == "1":
                     import traceback
                     traceback.print_exc()
+                if python_wrapper_fallback(e):
+                    continue
                 mode = _SPLIT if mode == _FULL else _OFF
                 self.__dict__["_unsloth_block_mode"] = mode
                 kind = _layer_kind(self)
