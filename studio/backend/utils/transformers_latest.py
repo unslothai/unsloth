@@ -721,6 +721,12 @@ def auto_install_preflight(version: str) -> dict | None:
             return _consent_required(
                 version, "Development builds of transformers are installed only after you confirm."
             )
+        from utils.security.package_scan import CUSTOM_INDEX_REASON, custom_package_index
+
+        if custom_package_index() is not None:
+            return _consent_required(
+                version, f"Automatic install skipped: {CUSTOM_INDEX_REASON}.", "review"
+            )
         snapshot = _get_snapshot()
         if snapshot is None or version != snapshot.get("pypi_version"):
             return _consent_required(
@@ -824,7 +830,12 @@ def _install_latest_transformers_locked(
         return _consent_required(
             version, "Development builds of transformers are installed only after you confirm."
         )
-    from utils.transformers_version import install_with_hashes, transformers_main_at
+    from utils.security.package_scan import CUSTOM_INDEX_REASON, custom_package_index
+    from utils.transformers_version import (
+        install_hash_mismatch,
+        install_with_hashes,
+        transformers_main_at,
+    )
 
     # Requirements and archive both come from the pinned commit.
     with transformers_main_at(main_commit) if main_commit else contextlib.nullcontext():
@@ -839,7 +850,16 @@ def _install_latest_transformers_locked(
             }
         hashes: dict = {}
         scan_status = None
-        if not from_main:
+        # A mirror's artifacts need not match PyPI's digests: no scan or pins, the install as it
+        # always was, and only after the user confirms.
+        mirror = None if from_main else custom_package_index()
+        if mirror is not None:
+            if auto:
+                return _consent_required(
+                    version, f"Automatic install skipped: {CUSTOM_INDEX_REASON}.", "review"
+                )
+            logger.info("Package source %s is not PyPI; installing transformers unpinned", mirror)
+        if not from_main and mirror is None:
             # Every PyPI install is scanned; a confirmed one still installs past a "review" verdict.
             scan = _scan_release_plan(version, extra_packages)
             scan_status = scan.status
@@ -850,6 +870,16 @@ def _install_latest_transformers_locked(
             installed = ensure_latest_transformers_venv(
                 version, extra_packages, before_swap = before_swap
             )
+            mismatch = install_hash_mismatch() if hashes else None
+    if mismatch:
+        return {
+            "success": False,
+            "version": version,
+            "message": f"transformers {version} was not installed: the download of {mismatch} did "
+            "not match the sha256 PyPI publishes for it (hash mismatch), so it was refused. "
+            "Nothing was changed.",
+            "scan_status": scan_status,
+        }
     if not installed:
         return {
             "success": False,

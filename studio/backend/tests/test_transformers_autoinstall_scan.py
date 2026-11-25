@@ -243,6 +243,21 @@ def test_scanner_never_raises(index, monkeypatch):
 
 @pytest.fixture
 def install_env(index, monkeypatch, tmp_path):
+    # A host mirror (PIP_INDEX_URL, uv.toml) must not change what these tests see.
+    for var in (
+        "PIP_INDEX_URL",
+        "PIP_EXTRA_INDEX_URL",
+        "PIP_FIND_LINKS",
+        "UV_INDEX_URL",
+        "UV_DEFAULT_INDEX",
+        "UV_INDEX",
+        "UV_EXTRA_INDEX_URL",
+        "UV_FIND_LINKS",
+        "UV_CONFIG_FILE",
+    ):
+        monkeypatch.delenv(var, raising = False)
+    monkeypatch.setenv("UV_NO_CONFIG", "1")
+    monkeypatch.setattr(tv, "_pip_effective_settings", lambda: {})
     tl.clear_caches()
     monkeypatch.setattr(tl, "_cache_file", lambda: tmp_path / "transformers_latest_check.json")
     monkeypatch.setattr(tv, "_VENV_T5_LATEST_DIR", str(tmp_path / "venv_t5_latest"))
@@ -418,3 +433,164 @@ def test_route_returns_requires_consent_before_reserving(monkeypatch):
     body = response.json()
     assert body["requires_consent"] is True and body["success"] is False
     assert body["scan_status"] == ps.REVIEW
+
+
+# ---- custom package index ----
+
+
+_INDEX_ENVS = (
+    "PIP_INDEX_URL",
+    "PIP_EXTRA_INDEX_URL",
+    "PIP_FIND_LINKS",
+    "UV_INDEX_URL",
+    "UV_DEFAULT_INDEX",
+    "UV_INDEX",
+    "UV_EXTRA_INDEX_URL",
+    "UV_FIND_LINKS",
+    "UV_CONFIG_FILE",
+)
+
+
+@pytest.fixture
+def no_index_config(monkeypatch, tmp_path):
+    """No index env, an empty pip config, and no uv.toml anywhere uv would look."""
+    for var in _INDEX_ENVS:
+        monkeypatch.delenv(var, raising = False)
+    monkeypatch.setenv("UV_NO_CONFIG", "1")
+    monkeypatch.setattr(tv, "_pip_effective_settings", lambda: {})
+    return tmp_path
+
+
+@pytest.mark.parametrize(
+    "var,value",
+    [
+        ("PIP_INDEX_URL", "https://mirror.example/simple"),
+        ("UV_INDEX_URL", "https://mirror.example/simple"),
+        ("UV_DEFAULT_INDEX", "https://mirror.example/simple"),
+        ("UV_INDEX", "corp=https://corp.example/simple"),
+        ("PIP_EXTRA_INDEX_URL", "https://extra.example/simple"),
+        ("UV_FIND_LINKS", "/srv/wheels"),
+    ],
+)
+def test_custom_index_env_is_detected(no_index_config, monkeypatch, var, value):
+    monkeypatch.setenv(var, value)
+    assert ps.custom_package_index() == var
+
+
+def test_pypi_index_env_is_not_custom(no_index_config, monkeypatch):
+    monkeypatch.setenv("PIP_INDEX_URL", "https://pypi.org/simple/")
+    monkeypatch.setenv("UV_DEFAULT_INDEX", "https://pypi.org/simple")
+    assert ps.custom_package_index() is None
+
+
+def test_custom_index_in_pip_config(no_index_config, monkeypatch):
+    monkeypatch.setattr(
+        tv, "_pip_effective_settings", lambda: {"global.index-url": "https://mirror.example/simple"}
+    )
+    assert ps.custom_package_index() == "pip config global.index-url"
+
+
+@pytest.mark.parametrize(
+    "body,custom",
+    [
+        ('index-url = "https://mirror.example/simple"\n', True),
+        ('[pip]\nextra-index-url = ["https://extra.example/simple"]\n', True),
+        ('[[index]]\nname = "corp"\nurl = "https://corp.example/simple"\n', True),
+        ('[[index]]\nurl = "https://pypi.org/simple"\ndefault = true\n', False),
+        ("not = [valid toml\n", True),
+        ("cache-dir = '/tmp/x'\n", False),
+    ],
+)
+def test_custom_index_in_uv_toml(no_index_config, monkeypatch, body, custom):
+    cfg = no_index_config / "uv.toml"
+    cfg.write_text(body)
+    monkeypatch.setenv("UV_CONFIG_FILE", str(cfg))
+    assert (ps.custom_package_index() is not None) is custom
+
+
+def test_custom_index_skips_auto_and_installs_unpinned_on_consent(
+    install_env, index, no_index_config, monkeypatch
+):
+    monkeypatch.setenv("PIP_INDEX_URL", "https://mirror.example/simple")
+    blocked = tl.auto_install_preflight(VERSION)
+    assert blocked["requires_consent"] is True
+    assert "custom package index, not verified against PyPI" in blocked["message"]
+    result = tl.install_latest_transformers(VERSION, auto = True)
+    assert result["requires_consent"] is True and install_env == []
+    assert index.downloads == 0, "a mirror is never checked against PyPI"
+    # Confirmed: the install exactly as before, no scan and no hash pins.
+    monkeypatch.setattr(tl, "_scan_release_plan", lambda *a: pytest.fail("scanned a mirror"))
+    result = tl.install_latest_transformers(VERSION)
+    assert result["success"] is True
+    assert install_env == [(VERSION, {})]
+
+
+def test_pypi_auto_path_unchanged_without_custom_index(install_env, index, no_index_config):
+    assert tl.auto_install_preflight(VERSION) is None
+    result = tl.install_latest_transformers(VERSION, auto = True)
+    assert result["success"] is True and result["scan_status"] == ps.CLEAN
+    assert install_env[0][1][f"transformers=={VERSION}"] == (index.published_sha,)
+
+
+# ---- hash mismatch ----
+
+
+def _runner(outputs: dict):
+    calls = []
+
+    def _run(cmd, **kwargs):
+        calls.append(cmd)
+        code, out = outputs[cmd[0]]
+
+        class _R:
+            returncode = code
+            stdout = out
+
+        return _R()
+
+    return calls, _run
+
+
+def test_uv_hash_mismatch_is_not_retried(monkeypatch, tmp_path):
+    calls, run = _runner(
+        {"uv": (1, "error: Hash mismatch for `transformers==5.30.0`\n  Expected: sha256:bbb")}
+    )
+    monkeypatch.setattr(tv.shutil, "which", lambda name: "/usr/bin/uv")
+    monkeypatch.setattr(tv.subprocess, "run", run)
+    with tv.install_with_hashes({"transformers==5.30.0": ("b" * 64,)}):
+        assert tv._install_to_dir("transformers==5.30.0", str(tmp_path)) is False
+        assert tv.install_hash_mismatch() == "transformers==5.30.0"
+    assert len(calls) == 1, "a hash mismatch must not fall through to another install"
+
+
+def test_pip_hash_mismatch_is_recorded(monkeypatch, tmp_path):
+    calls, run = _runner(
+        {
+            "uv": (2, "error: some unrelated failure"),
+            tv.sys.executable: (
+                1,
+                "ERROR: THESE PACKAGES DO NOT MATCH THE HASHES FROM THE REQUIREMENTS FILE.",
+            ),
+        }
+    )
+    monkeypatch.setattr(tv.shutil, "which", lambda name: "/usr/bin/uv")
+    monkeypatch.setattr(tv.subprocess, "run", run)
+    with tv.install_with_hashes({"transformers==5.30.0": ("b" * 64,)}):
+        assert tv._install_to_dir("transformers==5.30.0", str(tmp_path)) is False
+        assert tv.install_hash_mismatch() == "transformers==5.30.0"
+    assert "--require-hashes" in calls[1]
+
+
+def test_hash_mismatch_surfaces_a_clear_error(install_env, index, no_index_config, monkeypatch):
+    def _mismatching_ensure(
+        version,
+        extra_packages = (),
+        before_swap = None,
+    ):
+        tv._hash_mismatch = f"transformers=={version}"
+        return False
+
+    monkeypatch.setattr(tl, "ensure_latest_transformers_venv", _mismatching_ensure)
+    result = tl.install_latest_transformers(VERSION, auto = True)
+    assert result["success"] is False
+    assert "hash mismatch" in result["message"] and f"transformers=={VERSION}" in result["message"]

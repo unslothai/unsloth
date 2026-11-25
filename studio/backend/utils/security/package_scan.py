@@ -376,6 +376,126 @@ def _check_advisories(pinned: list[tuple[str, str, str]]) -> PackageScanResult:
     return PackageScanResult(REVIEW, review) if review else PackageScanResult(CLEAN, "")
 
 
+CUSTOM_INDEX_REASON = "custom package index, not verified against PyPI"
+
+# Replace the default index: anything but PyPI here is a mirror.
+_INDEX_URL_ENVS = ("PIP_INDEX_URL", "UV_INDEX_URL", "UV_DEFAULT_INDEX")
+# Add sources beside (or ranked above) PyPI: any value at all can serve the package.
+_EXTRA_SOURCE_ENVS = (
+    "PIP_EXTRA_INDEX_URL",
+    "PIP_FIND_LINKS",
+    "UV_EXTRA_INDEX_URL",
+    "UV_INDEX",
+    "UV_FIND_LINKS",
+)
+_PIP_INDEX_KEYS = ("index-url", "extra-index-url", "find-links")
+_UV_INDEX_KEYS = ("index-url", "default-index", "extra-index-url", "find-links", "index")
+
+
+def _is_pypi_url(url: str) -> bool:
+    from urllib.parse import urlparse
+    try:
+        parsed = urlparse(url.strip())
+    except ValueError:
+        return False
+    return (
+        parsed.scheme == "https"
+        and (parsed.hostname or "").lower() in ("pypi.org", "pypi.python.org")
+        and parsed.path.rstrip("/") in ("/simple", "")
+    )
+
+
+def _only_pypi(value) -> bool:
+    """True when every source in *value* (a string, a list, or uv's [[index]] tables) is PyPI."""
+    if isinstance(value, dict):
+        return _only_pypi(value.get("url") or "")
+    if isinstance(value, (list, tuple)):
+        return all(_only_pypi(item) for item in value)
+    entries = str(value or "").split()
+    return bool(entries) and all(_is_pypi_url(e) for e in entries)
+
+
+def _uv_config_files() -> list[str]:
+    """The uv.toml / pyproject.toml files ``uv pip install`` would read, highest priority first."""
+    explicit = (os.environ.get("UV_CONFIG_FILE") or "").strip()
+    if explicit:
+        return [explicit]
+    if (os.environ.get("UV_NO_CONFIG") or "").strip().lower() in _TRUE_VALUES:
+        return []
+    files: list[str] = []
+    try:
+        directory = os.getcwd()
+    except OSError:
+        directory = ""
+    while directory:
+        for name in ("uv.toml", "pyproject.toml"):
+            candidate = os.path.join(directory, name)
+            if os.path.isfile(candidate):
+                files.append(candidate)
+        parent = os.path.dirname(directory)
+        directory = "" if parent == directory else parent
+    if os.name == "nt":
+        for root in (os.environ.get("APPDATA"), os.environ.get("PROGRAMDATA")):
+            if root:
+                files.append(os.path.join(root, "uv", "uv.toml"))
+    else:
+        home = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
+        files.append(os.path.join(home, "uv", "uv.toml"))
+        for root in (os.environ.get("XDG_CONFIG_DIRS") or "/etc/xdg").split(":"):
+            if root:
+                files.append(os.path.join(root, "uv", "uv.toml"))
+        files.append("/etc/uv/uv.toml")
+    return [f for f in files if os.path.isfile(f)]
+
+
+def _uv_config_names_index(path: str) -> bool:
+    try:
+        import tomllib  # novermin
+    except ImportError:
+        try:
+            import tomli as tomllib  # type: ignore[no-redef]
+        except ImportError:
+            # Unreadable here: it may name a mirror, so assume it does.
+            return True
+    try:
+        with open(path, "rb") as handle:
+            data = tomllib.load(handle)
+    except Exception:
+        return True
+    if os.path.basename(path) == "pyproject.toml":
+        data = (data.get("tool") or {}).get("uv") or {}
+    if not isinstance(data, dict):
+        return False
+    pip = data.get("pip") if isinstance(data.get("pip"), dict) else {}
+    for table in (data, pip):
+        for key in _UV_INDEX_KEYS:
+            if table.get(key) and not _only_pypi(table[key]):
+                return True
+    return False
+
+
+def custom_package_index() -> str | None:
+    """Where a non-PyPI package source is configured for pip or uv (env, pip config, uv.toml), or
+    None. The sidecar install tries uv then pip, so either one's mirror can serve the package, and
+    its artifacts need not match the digests PyPI publishes."""
+    for var in _INDEX_URL_ENVS + _EXTRA_SOURCE_ENVS:
+        value = (os.environ.get(var) or "").strip()
+        if value and not _only_pypi(value):
+            return var
+    try:
+        from utils.transformers_version import _pip_effective_settings
+        settings = _pip_effective_settings() or {}
+    except Exception:
+        settings = {}
+    for key, value in settings.items():
+        if key.rpartition(".")[2] in _PIP_INDEX_KEYS and value and not _only_pypi(value):
+            return f"pip config {key}"
+    for path in _uv_config_files():
+        if _uv_config_names_index(path):
+            return path
+    return None
+
+
 _cache_lock = threading.Lock()
 _clean_cache: dict = {}
 
