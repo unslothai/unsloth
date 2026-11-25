@@ -80,7 +80,7 @@ H3Task = Annotated[
 Device = Annotated[
     Optional[Literal["auto", "cpu", "gpu"]],
     Field(
-        description = 'llm, tts and audio: where the model runs. "cpu" keeps the GPU free, so a resident image or video model stays loaded; to keep the chat model loaded as well, also pass alongside=true. For kind "llm" it needs a GGUF model, and a vision GGUF still uses the GPU for its projector. "gpu" is never moved to the CPU silently; placement.device reports where the model ended up. Unset leaves the choice to Unsloth Studio.'
+        description = 'llm, tts and audio: where the model runs. "cpu" keeps the GPU free, so a resident image or video model stays loaded; to keep the chat model loaded as well, also pass alongside=true. For kind "llm" it needs a GGUF model, and a vision GGUF still uses the GPU for its projector. "gpu" is never moved to the CPU silently; placement.device reports where the model ended up. Unset leaves the choice to Unsloth Studio. Saved llama.cpp arguments for the model (Settings > API), such as -ngl 0, still apply under "gpu".'
     ),
 ]
 Alongside = Annotated[

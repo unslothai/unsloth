@@ -175,6 +175,25 @@ def test_a_load_takes_saved_settings_for_what_it_leaves_unset(monkeypatch, args,
     assert filled.llama_extra_args == ["-cmoe"]
 
 
+def test_device_gpu_keeps_a_saved_offload_argument(monkeypatch):
+    """Automatic placement keeps a saved -ngl on every load path; MCP's device="gpu" follows that rule."""
+    import routes.inference as inference_route
+    from core.inference import local_model_resolver as resolver
+    from models.inference import LoadRequest
+    from utils import openai_auto_switch_settings as settings
+
+    row = {"llama_extra_args": ["-ngl", "0"]}
+    monkeypatch.setattr(settings, "resolve_override_for_load", lambda *a: (LLM, dict(row)))
+    monkeypatch.setattr(resolver, "resolve_trusted_cached_local_gguf", lambda *a, **k: None)
+    monkeypatch.setattr(resolver, "resolve_local_gguf", lambda *a, **k: None)
+    monkeypatch.setattr(resolver, "local_target_is_gguf", lambda *a, **k: True)
+    _result, studio = run_tool(monkeypatch, PAYLOADS, "load_model", {"model": LLM, "device": "gpu"})
+    (body,) = bodies(studio, "/api/inference/load")
+    filled = asyncio.run(inference_route._with_saved_settings(LoadRequest(**body)))
+    assert filled.gpu_memory_mode == "auto"
+    assert inference_route._strip_inherited_extras(filled, filled.llama_extra_args) == ["-ngl", "0"]
+
+
 @pytest.mark.parametrize(
     "args,headers,token",
     [
