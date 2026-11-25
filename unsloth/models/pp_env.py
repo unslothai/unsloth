@@ -938,7 +938,8 @@ def _refuse_split_router_aux_at_init(
 
 
 def _dp_info(stage):
-    mesh = stage.dp_mesh if stage.dp_mesh is not None else stage.ddp_mesh
+    mesh = getattr(stage, "dp_mesh", None)
+    mesh = mesh if mesh is not None else getattr(stage, "ddp_mesh", None)
     return (mesh.size(), mesh.get_local_rank(), mesh) if mesh is not None else (1, 0, None)
 
 
@@ -1189,11 +1190,47 @@ def _router_aux_on(trainer, stage):
         return True  # unknown coefficient: keep one schedule step per batch
 
 
+# HF rotary embeddings whose frequencies follow the batch's max(position_ids) + 1 (dynamic_rope_update):
+# regrouping and re-padding rows would change them.
+_LENGTH_DEPENDENT_ROPE = ("dynamic", "longrope")
+
+
+def _rope_types(config, depth = 0):
+    """rope_type / type of every rope_scaling / rope_parameters dict (transformers 5 may hold one per layer
+    type), here and in the nested text configs."""
+    if config is None or depth > 3:
+        return set()
+    get = config.get if isinstance(config, dict) else lambda key: getattr(config, key, None)
+    found = set()
+    for name in ("rope_scaling", "rope_parameters"):
+        value = get(name)
+        if not isinstance(value, dict):
+            continue
+        for entry in (value, *value.values()):
+            kind = entry.get("rope_type", entry.get("type")) if isinstance(entry, dict) else None
+            if isinstance(kind, str):
+                found.add(kind)
+    for sub in ("text_config", "language_config", "llm_config"):
+        found |= _rope_types(get(sub), depth + 1)
+    return found
+
+
+def _length_dependent_rope(stage):
+    """The rotary frequencies depend on the batch's sequence length (dynamic NTK, LongRoPE). Read from the
+    config, which every stage holds alike, so all pp ranks decide the same."""
+    cached = stage.__dict__.get("_unsloth_length_rope")
+    if cached is None:
+        kinds = _rope_types(getattr(getattr(stage, "model", None), "config", None))
+        cached = any(kind in _LENGTH_DEPENDENT_ROPE for kind in kinds)
+        stage.__dict__["_unsloth_length_rope"] = cached
+    return cached
+
+
 def _foldable(trainer, stage, input_ids, extra, n):
     """This Trainer batch can join one schedule step over the whole accumulation window: the window token
     count is known (each micro-batch loss is its token sum / that count, however the rows are grouped), a
     single-stage schedule (multi-stage ones are validated for one micro-batch count), no router aux loss
-    (summed per micro-batch), and only [rows, seq] side inputs."""
+    (summed per micro-batch), no sequence-length dependent RoPE, and only [rows, seq] side inputs."""
     from .pp_native import PipelineParallel
 
     if not _fold_requested() or n is None or not isinstance(stage, PipelineParallel):
@@ -1202,6 +1239,8 @@ def _foldable(trainer, stage, input_ids, extra, n):
         return False
     if getattr(getattr(stage, "spec", None), "multi", False) or _router_aux_on(trainer, stage):
         return False
+    if _length_dependent_rope(stage):
+        return False  # regrouped rows change max(position_ids), so the rotary frequencies
     rows, seq = input_ids.shape
     for value in extra.values():
         if not torch.is_tensor(value) or value.dim() != 2 or value.shape[1] != seq:

@@ -48,6 +48,12 @@ N_LAYERS = 4
 
 def _checkpoint(tmp, arch = "llama"):
     overrides = {"num_hidden_layers": N_LAYERS}
+    if arch == "llama_dynamic_rope":
+        # Dynamic NTK RoPE past 4 positions: the frequencies follow each batch's max(position_ids) + 1.
+        arch = "llama"
+        overrides.update(
+            rope_scaling = {"rope_type": "dynamic", "factor": 2.0}, max_position_embeddings = 4
+        )
     if (
         arch == "gemma3"
     ):  # sliding / full layers on both stages, window shorter than the 9-token rows
@@ -1166,3 +1172,16 @@ def test_pp_fold_window_with_different_side_inputs_runs_per_batch():
     for rank, res in enumerate(_spawn("env", 2, {"UNSLOTH_PP_SIZE": "2"}, **kw)):
         assert res["fold"] == {}, res["fold"]
         _close(res, ref, what = rank)
+
+
+@needs_pipelining
+def test_pp_fold_keeps_length_dependent_rope_per_batch():
+    # Failing before: rows regrouped and re-padded across the window changed max(position_ids), so dynamic NTK
+    # RoPE (HF dynamic_rope_update) rotated with other frequencies than one process. Such a model runs one
+    # schedule step per batch.
+    kw = dict(bs = 2, ga = 4, steps = 2, evaluate = False, post = False, varlen = True)
+    kw["arch"] = "llama_dynamic_rope"
+    ref = _ref(2, **{k: v for k, v in kw.items() if k != "bs"})
+    for rank, res in enumerate(_spawn("env", 2, {"UNSLOTH_PP_SIZE": "2"}, **kw)):
+        _close(res, ref, what = rank)  # folded: step 1 grad norm 0.79173 vs 0.79219
+        assert res["fold"] == {}, res["fold"]
