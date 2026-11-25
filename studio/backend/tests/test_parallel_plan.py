@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import os
 
+import types
+
 import pytest
 
 from core.training import parallel_plan as pp
@@ -61,6 +63,7 @@ def _model(
     moe = False,
     mode = "lora",
     family = "qwen3",
+    hybrid = False,
 ):
     per = {
         1: need,
@@ -73,6 +76,7 @@ def _model(
         "is_moe": moe,
         "family": family,
         "multimodal": False,
+        "hybrid": hybrid,
         "mode": mode,
         "trainer": "sft",
     }
@@ -347,3 +351,30 @@ def test_compute_capability_comes_from_the_run_gpus():
     with pytest.raises(pp.ParallelPlanError):
         pp.plan({**spec, "gpu_ids": [0, 1]}, host, _model())
     assert pp.plan({**spec, "gpu_ids": [1, 2]}, host, _model())["spec"] == "cp=2,cp_backend=ring"
+
+
+def test_hybrid_model_traits_reach_core():
+    # Core refuses cp x tp on hybrid (linear attention) models; the planner must forward the trait.
+    four = _host(4)
+    pp.plan({"parallel_mode": "custom", "parallel_spec": "tp=2,cp=2"}, four, _model())
+    with pytest.raises(pp.ParallelPlanError) as err:
+        pp.plan(
+            {"parallel_mode": "custom", "parallel_spec": "tp=2,cp=2"}, four, _model(hybrid = True)
+        )
+    assert err.value.payload["code"] == "parallel_unsupported"
+    assert "hybrid" in err.value.payload["message"]
+
+
+def test_config_traits_match_core():
+    config = types.SimpleNamespace(
+        model_type = "qwen3_next",
+        layer_types = ["linear_attention", "full_attention"],
+        sliding_window = None,
+    )
+    traits = pp._config_traits(config)
+    assert traits == {
+        "family": "qwen3_next",
+        "hybrid": True,
+        "multimodal": False,
+        "windowed": False,
+    }

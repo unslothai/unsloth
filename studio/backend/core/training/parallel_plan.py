@@ -14,6 +14,7 @@ import os
 import sys
 import threading
 import time
+import types
 from typing import Any, Optional
 
 __all__ = [
@@ -282,6 +283,8 @@ def model_facts(
         "is_moe": False,
         "family": "",
         "multimodal": False,
+        "hybrid": False,
+        "windowed": False,
         "mode": "full"
         if training_type == "Full Finetuning"
         else ("qlora" if load_in_4bit else "lora"),
@@ -317,7 +320,26 @@ def model_facts(
         facts["is_moe"] = _is_moe(config)
         facts["family"] = str(getattr(config, "model_type", "") or "")
         facts["multimodal"] = getattr(config, "vision_config", None) is not None
+        facts.update(_config_traits(config))
     return facts
+
+
+def _config_traits(config) -> dict:
+    """Core's own model traits (family, hybrid, multimodal, windowed) from a config, so its refusals apply."""
+    caps = _core_module("parallel_capabilities")
+    traits = getattr(caps, "_model_traits", None)
+    if traits is None:
+        return {}
+    try:
+        family, hybrid, multimodal, windowed = traits(types.SimpleNamespace(config = config))
+    except Exception:  # noqa: BLE001
+        return {}
+    return {
+        "family": str(family or ""),
+        "hybrid": bool(hybrid),
+        "multimodal": bool(multimodal),
+        "windowed": bool(windowed),
+    }
 
 
 # --------------------------------------------------------------------------------------------- plan
@@ -422,6 +444,8 @@ def _core_check(
         "trainer": model.get("trainer", "sft"),
         "family": model.get("family", ""),
         "multimodal": bool(model.get("multimodal")),
+        "hybrid": bool(model.get("hybrid")),
+        "windowed": bool(model.get("windowed")),
         "mode": model.get("mode", "lora"),
         "packing": bool(request.get("packing")),
         "torch": tuple(host.get("torch") or (0, 0)),
