@@ -159,3 +159,23 @@ def test_failed_upload_is_reported_as_a_publish_error(monkeypatch, tmp_path, fai
                 "processors-files/summary/batch_00000.parquet": b"new-s0",
             },
         )
+
+
+@pytest.mark.parametrize("processor", ["data", "Data", "images", "README.md"])
+def test_an_old_run_with_a_processor_on_a_main_dataset_path_is_not_published(
+    monkeypatch, tmp_path, processor
+):
+    hub = _Hub({"data/batch_00000.parquet": b"published-main"})
+    with pytest.raises(recipe_hf.RecipeDatasetPublishError, match = "main dataset"):
+        _publish(
+            monkeypatch,
+            tmp_path,
+            hub,
+            {
+                "parquet-files/batch_00000.parquet": b"new-0",
+                f"processors-files/{processor}/batch_00000.parquet": b"processor-0",
+            },
+        )
+
+    assert hub.files == {"data/batch_00000.parquet": b"published-main"}
+    assert hub.commits == []
