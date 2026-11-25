@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import hashlib
+import http.client
 import io
 import sys
 import urllib.error
@@ -84,8 +85,17 @@ def _pin_digest(monkeypatch, data: bytes):
         lambda url: _rate_limited(url, 429),
         lambda url: urllib.error.URLError("[Errno 111] Connection refused"),
         lambda url: TimeoutError("timed out"),
+        lambda url: http.client.IncompleteRead(b"{", 99),
+        lambda url: http.client.RemoteDisconnected("Remote end closed connection without response"),
     ],
-    ids = ["403-rate-limit", "429", "unreachable", "timeout"],
+    ids = [
+        "403-rate-limit",
+        "429",
+        "unreachable",
+        "timeout",
+        "incomplete-read",
+        "remote-disconnected",
+    ],
 )
 def test_failed_api_installs_pin_from_direct_url(tmp_path, monkeypatch, host, make_exc):
     calls = _api_fails(monkeypatch, make_exc)
@@ -204,3 +214,74 @@ def test_shipped_list_covers_the_pin():
         )
     for digest in table.values():
         assert len(digest) == 64 and int(digest, 16) >= 0
+
+
+def test_print_asset_stdout_is_only_the_asset_name(monkeypatch, capsys, host):
+    """Scripts capture --print-asset stdout as the filename: the fallback note belongs on stderr."""
+    _api_fails(monkeypatch, lambda url: _rate_limited(url, 429))
+    assert sdmod.main(["--print-asset"]) == 0
+    captured = capsys.readouterr()
+    assert captured.out.splitlines() == [_LINUX_CPU]
+    assert "shipped asset list" in captured.err
+    assert "sha256 verified" not in captured.err
+
+
+def test_missing_mirror_archive_continues_to_upstream(tmp_path, monkeypatch, host):
+    """Mirror API 503 and its direct archive 404: the upstream rung still installs, as before the shipped list."""
+    up_tag = sdmod.upstream_tag_for(sdmod.DEFAULT_TAG)
+    up_name = f"sd-{up_tag}-bin-Linux-Ubuntu-22.04-x86_64.zip"
+    seen = []
+
+    def fake_fetch(
+        tag = None,
+        *,
+        repo = None,
+        **_k,
+    ):
+        seen.append((repo, tag))
+        if repo == sdmod.DEFAULT_REPO:
+            raise urllib.error.HTTPError(f"https://api/{repo}", 503, "unavailable", None, None)
+        if repo == sdmod.UPSTREAM_FALLBACK_REPO and tag == up_tag:
+            return {
+                "tag_name": up_tag,
+                "assets": [
+                    {
+                        "name": up_name,
+                        "browser_download_url": f"https://example.invalid/{up_name}",
+                        "digest": "sha256:" + hashlib.sha256(host["zip"]).hexdigest(),
+                    }
+                ],
+            }
+        return None
+
+    def fake_download(url, dest, **_k):
+        host["downloads"].append(url)
+        if url.startswith(f"https://github.com/{sdmod.DEFAULT_REPO}/"):
+            raise urllib.error.HTTPError(url, 404, "Not Found", None, None)
+        dest.write_bytes(host["zip"])
+
+    monkeypatch.setattr(sdmod, "_fetch_release", fake_fetch)
+    monkeypatch.setattr(sdmod, "_download", fake_download)
+    sd_cli = sdmod.install(install_dir = tmp_path / "sd")
+    assert sd_cli.is_file()
+    assert host["downloads"][-1] == f"https://example.invalid/{up_name}"
+    assert sdmod.read_install_record(tmp_path / "sd").get("repo") == sdmod.UPSTREAM_FALLBACK_REPO
+    assert not (tmp_path / "sd" / _LINUX_CPU).exists()
+
+
+def test_missing_mirror_archive_with_no_other_rung_still_errors(tmp_path, monkeypatch, host):
+    def fake_fetch(
+        tag = None,
+        *,
+        repo = None,
+        **_k,
+    ):
+        raise urllib.error.HTTPError(f"https://api/{repo}", 503, "unavailable", None, None)
+
+    def fake_download(url, dest, **_k):
+        raise urllib.error.URLError("[Errno 111] Connection refused")
+
+    monkeypatch.setattr(sdmod, "_fetch_release", fake_fetch)
+    monkeypatch.setattr(sdmod, "_download", fake_download)
+    with pytest.raises(RuntimeError, match = "No prebuilt sd-cli"):
+        sdmod.install(install_dir = tmp_path / "sd")
