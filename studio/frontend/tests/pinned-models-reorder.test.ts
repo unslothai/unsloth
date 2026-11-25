@@ -571,3 +571,33 @@ test("replacePinned moves a pin to its new key in the same slot", () => {
   assert.deepEqual(usePinnedModelsStore.getState().pinned, ["a"]);
   assert.equal(storedPinned(), null);
 });
+
+test("the Hub's Unpin clears a Hub id's pins in any letter case, but a local path only in its own", () => {
+  setPinned(["unsloth/model-gguf::Q4_K_M", "org/other"]);
+  usePinnedModelsStore.getState().toggleRepoPinned("unsloth/Model-GGUF");
+  assert.deepEqual(usePinnedModelsStore.getState().pinned, ["org/other"]);
+  usePinnedModelsStore.getState().toggleRepoPinned("unsloth/Model-GGUF");
+  assert.deepEqual(usePinnedModelsStore.getState().pinned, [
+    "unsloth/Model-GGUF",
+    "org/other",
+  ]);
+  setPinned(["/models/Llama", "/models/llama"]);
+  usePinnedModelsStore.getState().toggleRepoPinned("/models/llama");
+  assert.deepEqual(usePinnedModelsStore.getState().pinned, ["/models/Llama"]);
+});
+
+test("the Hub's pin rank matches pinCoversId for every pin, without rescanning the list", () => {
+  const pinned = [
+    "org/b::Q4_K_M",
+    "Org/A",
+    "/runs/x::v2/model.gguf::Q8_0",
+    "org/a::Q8_0",
+  ];
+  const rank = makeRepoPinRank(pinned);
+  for (const id of ["org/a", "ORG/B", "/runs/x::v2/model.gguf", "/runs/x", "org/c"]) {
+    const first = pinned.findIndex((key) => pinCoversId([key], id));
+    const own = pinned.indexOf(id);
+    const expected = own >= 0 ? own : first >= 0 ? first : Number.MAX_SAFE_INTEGER;
+    assert.equal(rank(id), expected, id);
+  }
+});
