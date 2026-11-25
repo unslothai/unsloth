@@ -182,33 +182,36 @@ def save_attention_context_fn(on_save: Optional[Any] = None) -> Optional[Any]:
 
 
 def _private_saved_outputs(caching: Any, keeps: Any) -> Any:
-    """Wrap the selective checkpoint's caching mode so the caller gets a copy of each kept output and the cache holds
-    the only reference to the kernel's own tensor. Around a compiled block the caller is Inductor's wrapper, which
-    reuses a buffer after its last use in the graph and writes it from a generated kernel (no version bump): when the
-    graph does not save the attention output for its own backward (no grad reaches q / k / v), the cached value was
-    overwritten and the recompute replayed garbage (pytorch #201158). Costs one copy of each kept output per forward."""
-    import torch
-    from torch.utils._python_dispatch import TorchDispatchMode
+    """Make the selective checkpoint's caching mode hand its caller a copy of each kept output, so the cache holds the
+    only reference to the kernel's own tensor. Around a compiled block the caller is Inductor's wrapper, which reuses a
+    buffer after its last use in the graph and writes it from a generated kernel (no version bump): when the graph does
+    not save the attention output for its own backward (no grad reaches q / k / v), the cached value was overwritten and
+    the recompute replayed garbage (pytorch #201158). Costs one copy of each kept output per forward."""
+    cls = _private_caching_class(type(caching))
+    if cls is None:
+        return caching
+    caching.__class__ = cls
+    caching._unsloth_keeps = keeps
+    return caching
 
-    class _PrivateSavedOutputs(TorchDispatchMode):
-        @classmethod
-        def ignore_compile_internals(cls) -> bool:
-            return True
 
-        def __enter__(self):
-            caching.__enter__()
-            try:
-                return super().__enter__()
-            except BaseException:
-                caching.__exit__(None, None, None)
-                raise
+@functools.lru_cache(maxsize = None)
+def _private_caching_class(base: type) -> Optional[type]:
+    """A subclass of torch's caching mode (one mode on the dispatch stack, not two: each dispatched op pays only a
+    super() call). None when the mode is not a TorchDispatchMode subclass with a __torch_dispatch__ to wrap."""
+    try:
+        import torch
+        from torch.utils._python_dispatch import TorchDispatchMode
+        if not (isinstance(base, type) and issubclass(base, TorchDispatchMode)):
+            return None
+    except Exception:  # noqa: BLE001
+        return None
 
-        def __exit__(self, *exc: Any):
-            try:
-                return super().__exit__(*exc)
-            finally:
-                caching.__exit__(*exc)
+    def _copy(t: Any) -> Any:
+        # Plain tensors only: fake / functional tensors mean compile tracing, where nothing is replayed.
+        return t.clone() if type(t) is torch.Tensor else t
 
+    class _PrivateSavedOutputs(base):
         def __torch_dispatch__(
             self,
             func,
@@ -216,15 +219,14 @@ def _private_saved_outputs(caching: Any, keeps: Any) -> Any:
             args = (),
             kwargs = None,
         ):
-            out = func(*args, **(kwargs or {}))
-            if not keeps(func, args):
-                return out
-            # Plain tensors only: fake / functional tensors mean compile tracing, where nothing is cached for replay.
-            return torch.utils._pytree.tree_map(
-                lambda t: t.clone() if type(t) is torch.Tensor else t, out
-            )
+            out = super().__torch_dispatch__(func, types, args, kwargs)
+            if self._unsloth_keeps(func, args):
+                # This mode is off the stack here, so the copy is not itself seen (or cached) by the checkpoint.
+                return torch.utils._pytree.tree_map(_copy, out)
+            return out
 
-    return _PrivateSavedOutputs()
+    _PrivateSavedOutputs.__name__ = base.__name__
+    return _PrivateSavedOutputs
 
 
 class _Checkpoint:
