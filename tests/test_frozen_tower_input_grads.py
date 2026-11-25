@@ -166,3 +166,17 @@ def test_text_embedding_hook_is_unchanged():
         getattr(h, "__name__", None) == "make_inputs_require_grads"
         for h in model.model.visual.patch_embed._forward_hooks.values()
     )
+
+
+def test_compiled_hook_sees_a_tower_unfrozen_after_an_eager_forward():
+    model, trainable = _model()
+    _, _, state = _step(model, trainable)
+    assert state["backward"] == 0
+    patch_embed = model.model.visual.patch_embed
+    tower_weight = model.model.visual.blocks[0].mlp.up_proj.weight
+    tower_weight.requires_grad_(True)
+    compiled = torch.compile(patch_embed, backend = "eager", fullgraph = True)
+    x = _inputs()["pixel_values"]
+    assert compiled(x).requires_grad
+    tower_weight.requires_grad_(False)
+    assert not compiled(x).requires_grad
