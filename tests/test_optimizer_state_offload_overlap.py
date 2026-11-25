@@ -28,6 +28,12 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _PATH = os.path.join(_ROOT, "unsloth", "optimizers", "state_offload.py")
 
 needs_cuda = pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
+# ROCm keeps the serial copies: same results, nothing overlapped.
+_ENGAGES = not getattr(torch.version, "hip", None)
+
+
+def _n(count):
+    return count if _ENGAGES else 0
 
 
 def _module():
@@ -162,7 +168,7 @@ def test_overlap_matches_serial_chunks(monkeypatch, name, dtype, chunk_bytes):
     _assert_same(serial, overlap)
     assert serial[2].overlapped_steps == 0
     # Step 1 creates the state on the device through the serial path; every later step overlaps.
-    assert overlap[2].overlapped_steps == 4
+    assert overlap[2].overlapped_steps == _n(4)
     assert overlap[2].steps == 5
 
 
@@ -171,7 +177,7 @@ def test_state_the_step_replaces_is_still_written_back(monkeypatch):
     serial = _train(monkeypatch, "replacing", overlap = False)
     overlap = _train(monkeypatch, "replacing", overlap = True)
     _assert_same(serial, overlap)
-    assert overlap[2].overlapped_steps == 4
+    assert overlap[2].overlapped_steps == _n(4)
 
 
 @needs_cuda
@@ -193,7 +199,7 @@ def test_overlap_staging_is_not_larger_than_a_serial_chunk(monkeypatch):
             optimizer.step()
             torch.cuda.synchronize()
             peaks[overlap] = torch.cuda.max_memory_allocated() - base
-        assert offloader.overlapped_steps == (1 if overlap else 0)
+        assert offloader.overlapped_steps == (_n(1) if overlap else 0)
         del optimizer, params, offloader
     # Serial: two parameters (2 x 8 MiB of moments) per chunk. The ring holds no more than that.
     assert peaks[True] <= peaks[False]
@@ -226,7 +232,7 @@ def test_resume_from_checkpoint_then_overlap(monkeypatch):
     for a, b in zip(_host_state(o0), _host_state(o1)):
         assert torch.equal(a, b) if isinstance(a, torch.Tensor) else a == b
     # Loaded state is already host resident, so even the first resumed step overlaps.
-    assert off1.overlapped_steps == 2 and off0.overlapped_steps == 0
+    assert off1.overlapped_steps == _n(2) and off0.overlapped_steps == 0
 
 
 @needs_cuda
@@ -327,7 +333,7 @@ def _large_run(
 def test_large_overlapped_copies_with_a_slow_step_match_serial(monkeypatch):
     p0, o0, off0 = _large_run(monkeypatch, overlap = False)
     p1, o1, off1 = _large_run(monkeypatch, overlap = True)
-    assert off0.overlapped_steps == 0 and off1.overlapped_steps == 3
+    assert off0.overlapped_steps == 0 and off1.overlapped_steps == _n(3)
     for a, b in zip(p0, p1):
         assert torch.equal(a, b)
     for a, b in zip(_host_state(o0), _host_state(o1)):
@@ -393,7 +399,7 @@ def test_stochastic_rounding_per_weight_steps_overlap_and_match(monkeypatch, fus
         assert state["exp_avg"].dtype == torch.bfloat16
     # One sequence per parameter group on each step after the first.
     assert off0.overlapped_steps == 0
-    assert off1.overlapped_steps == 2 * 3
+    assert off1.overlapped_steps == _n(2 * 3)
     assert off1.sequence is None
 
 
@@ -406,7 +412,7 @@ def test_unexpected_call_inside_a_sequence_falls_back(monkeypatch):
     reference = {p: {k: v.clone() for k, v in optimizer.state[p].items()} for p in weights}
     groups = optimizer.param_groups
     with offloader.pipelined([[weights[0]], [weights[1]], [weights[2]]]):
-        assert offloader.sequence is not None
+        assert (offloader.sequence is not None) == _ENGAGES
         for p in (
             weights[0],
             weights[2],
@@ -415,7 +421,7 @@ def test_unexpected_call_inside_a_sequence_falls_back(monkeypatch):
             optimizer.step()
         assert offloader.sequence is None
     optimizer.param_groups = groups
-    assert offloader.overlapped_steps == 1  # only the plain step 2 of _train
+    assert offloader.overlapped_steps == _n(1)  # only the plain step 2 of _train
     for p in weights:
         for key, value in optimizer.state[p].items():
             if isinstance(value, torch.Tensor):
