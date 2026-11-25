@@ -1,0 +1,1779 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""A PR that silently costs any GPU a speed lever fails here, on a CPU runner, including on future GPUs.
+
+An external tester re-runs Studio against a reference stack on an RTX 6000 Ada (sm89) and an RTX 3090 (sm86) after
+each batch of merges, and almost every round found a GPU x model cell that got slower because a load-time decision
+changed: a per-arch policy table (#19098 turned H3 video Auto INT8 attention off on sm89 only: the Ada cell lost 25%),
+a race at the wrong shape, a fast path no longer armed, a plan that ignored the VRAM fit or the link. Those decisions
+are pure functions of the card, so this file resolves them for every hardware profile in ``gpu_profiles.py`` (real
+cards plus synthetic future archs) with torch mocked to that card, and diffs the result against a reviewed golden,
+``fixtures/diffusion_gpu_lever_golden.json``:
+
+(a) the lever table: every arch-gated policy function (INT8 attention / GEMM / ConvRot / grouped / CUTLASS tables,
+    the H3 attention gates, VAE strips, quant ladders, NVFP4 routes, ...) per profile, head dim and dtype: engaged or
+    off, the config it engages with, a reason code;
+(b) the speed layer per profile: every registered image / video family through ``install_patches`` +
+    ``run_speed_layer`` (the parity harness's entry) at the default speed tier and the dtype the profile resolves.
+
+A lever lost (engaged to off, a config gone, a cell gone) fails as ``GPU LEVER REGRESSION <profile>.<family>.<lever>:
+expected X, got Y``; gains and config changes fail too, so every change is reviewed. Update an intended change with
+``UNSLOTH_UPDATE_GPU_GOLDEN=1 UNSLOTH_GPU_GOLDEN_REASON="..."`` (the reason and the changed cells go to the golden's
+``changes`` ledger; an empty reason refuses). Both tables run in one child process with diffusers hidden (Backend CI
+has none), so every host resolves the same golden; the diffusers patch layer stays with test_diffusion_autoopt_parity.
+
+Future archs: every lever a synthetic profile's parent engages must engage on the child or be listed in
+``FUTURE_ARCH_EXCLUSIONS`` with a reason. The incident replays at the end assert, one per tester regression class,
+the decision that would have caught it.
+"""
+
+from __future__ import annotations
+
+import contextlib as _contextlib
+import os
+import sys
+import types as _types
+from pathlib import Path
+from typing import Any, Callable, Optional
+
+import pytest
+
+_TESTS = Path(__file__).resolve().parent
+_BACKEND = _TESTS.parent
+for _p in (str(_BACKEND), str(_TESTS)):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+
+from gpu_profiles import PROFILES, GpuProfile, clean_policy_env, mock_profile  # noqa: E402
+
+# One worker builds the matrix once (a module fixture per xdist worker would rebuild it on each).
+pytestmark = pytest.mark.xdist_group("gpu_lever_matrix")
+
+
+# ------------------------------------------------------------------------------------------------ probe helpers
+def lever(
+    on: Any,
+    cfg: Any = None,
+    why: Optional[str] = None,
+) -> dict:
+    """One golden cell: engaged or off, the config it engages with (compact), a stable reason code."""
+    out: dict = {"on": bool(on)}
+    if cfg is not None:
+        out["cfg"] = fmt(cfg)
+    if why:
+        out["why"] = str(why)
+    return out
+
+
+def fmt(cfg: Any) -> Any:
+    """Compact, stable text for a config: tuples join with x, dicts sort as k=v, nested values recurse."""
+    if cfg is None or isinstance(cfg, (bool, int, float, str)):
+        return cfg
+    if isinstance(cfg, dict):
+        return ",".join(f"{k}={fmt(cfg[k])}" for k in sorted(cfg, key = str))
+    if isinstance(cfg, (tuple, list, set, frozenset)):
+        items = sorted(cfg, key = str) if isinstance(cfg, (set, frozenset)) else list(cfg)
+        return (
+            "x".join(str(fmt(v)) for v in items)
+            if all(isinstance(v, (int, float)) for v in items)
+            else "[" + ";".join(str(fmt(v)) for v in items) + "]"
+        )
+    return repr(cfg)
+
+
+def nvidia(p: GpuProfile) -> bool:
+    return p.vendor == "nvidia"
+
+
+# A probe takes a profile (called inside ``mock_profile(p)`` and ``clean_policy_env()``) and returns
+# ``{"<family>.<lever>": lever(...)}``. It returns the SAME keys for every profile (a key missing on some profile is
+# a lost cell) and never raises: non-applicable platforms get ``lever(False, why = "n/a:<platform>")``.
+LEVER_PROBES: list = []
+
+
+def probe(fn: Callable) -> Callable:
+    LEVER_PROBES.append(fn)
+    return fn
+
+
+# --------------------------------------------------------------------------------------------- (a) kernel tables
+
+
+def _na_code(p: GpuProfile) -> str:
+    return "n/a:" + (
+        "rocm" if p.rocm else "mps" if p.mps else "cpu" if p.vendor == "cpu" else p.vendor
+    )
+
+
+def _probe_target(p: GpuProfile) -> Any:
+    """The load target a profile resolves to (device, dtype, ordinal), built like diffusion_device would."""
+    import types
+
+    import torch
+
+    if p.cuda:
+        bf16 = p.rocm or (p.capability or (0, 0)) >= (8, 0)
+        return types.SimpleNamespace(
+            device = "cuda",
+            backend = "rocm" if p.rocm else "cuda",
+            dtype = torch.bfloat16 if bf16 else torch.float16,
+            ordinal = 0,
+            torch_device = "cuda:0",
+        )
+    if p.mps:
+        return types.SimpleNamespace(
+            device = "mps", backend = "mps", dtype = torch.bfloat16, ordinal = None, torch_device = "mps"
+        )
+    return types.SimpleNamespace(
+        device = "cpu", backend = "cpu", dtype = torch.float32, ordinal = None, torch_device = "cpu"
+    )
+
+
+@probe
+def probe_int8_attention(p: GpuProfile) -> dict:
+    """Which INT8 attention kernel serves this card per head dim (the CUDA table, the Triton stand-in, ROCm Triton)."""
+    from core.inference import diffusion_int8_attention as i8
+
+    out: dict = {}
+    for hd in (64, 128):
+        if not p.cuda:
+            out[f"any.int8_attn.serving.hd{hd}"] = lever(False, why = _na_code(p))
+            out[f"any.int8_attn.triton_table.hd{hd}"] = lever(False, why = _na_code(p))
+            continue
+        impl = i8.implementation(0, hd)
+        cfg = i8.device_config(0, hd)
+        why = None if impl else "no_kernel_config"
+        nearest = getattr(i8, "nearest_kernel_config", None)
+        if impl == "cuda" and nearest is not None:
+            src = nearest(p.capability, hd, p.smem_optin)[0]
+            if src is not None and tuple(src) != tuple(p.capability):
+                why = f"nearest:sm{src[0]}{src[1]}"  # an unlisted arch offered a measured card's config (raced)
+        out[f"any.int8_attn.serving.hd{hd}"] = lever(
+            impl is not None, cfg = f"{impl}:{fmt(cfg)}" if impl else None, why = why
+        )
+        if p.rocm:
+            out[f"any.int8_attn.triton_table.hd{hd}"] = lever(False, why = "n/a:rocm")
+        else:
+            tri = i8.triton_kernel_config(p.capability, hd)
+            out[f"any.int8_attn.triton_table.hd{hd}"] = lever(
+                tri is not None, cfg = tri, why = None if tri else "no_triton_config"
+            )
+    return out
+
+
+@probe
+def probe_int8_gemm(p: GpuProfile) -> dict:
+    """The fused INT8 GEMM: arch tile, unlisted-arch race, CUTLASS prebuilt, TMA tile, per-shape rules; the install
+    gate is ``diffusion_int8_gemm.install``'s (CUDA, not ROCm, prebuilt or Triton, then the arch / unlisted gates)."""
+    import torch
+
+    from core.inference import diffusion_int8_cutlass as cut
+    from core.inference import diffusion_int8_gemm as g
+    from core.inference.rocm_bf16 import is_rocm_torch
+
+    keys = (
+        "install_gate",
+        "arch_tile",
+        "unlisted_race",
+        "cutlass_prebuilt",
+        "cutlass_family",
+        "tma_tile",
+        "shape_tiles",
+    )
+    if not p.cuda:
+        return {f"any.int8_gemm.{k}": lever(False, why = _na_code(p)) for k in keys}
+    cap = tuple(torch.cuda.get_device_capability(0))
+    rocm = is_rocm_torch(torch)
+    arch = g.arch_config(cap)
+    unl = g.unlisted_wanted(cap)
+    pre = g.cutlass_wanted(cap)
+    gemm, rotq = g._gates(cap)
+    out: dict = {}
+    if rocm:
+        out["any.int8_gemm.install_gate"] = lever(False, why = "rocm")
+    elif not pre and not g._triton_version_ok():
+        out["any.int8_gemm.install_gate"] = lever(False, why = "no_triton")
+    else:
+        routes = [
+            n
+            for n, on in (("arch", gemm), ("unlisted", unl), ("cutlass", pre), ("rotq", rotq))
+            if on
+        ]
+        out["any.int8_gemm.install_gate"] = lever(
+            bool(routes), cfg = "+".join(routes) or None, why = None if routes else "no_route"
+        )
+    out["any.int8_gemm.arch_tile"] = lever(
+        arch is not None, cfg = arch, why = None if arch else "no_arch_tile"
+    )
+    if g.unlisted_arch(cap) and not rocm:
+        why = None if unl else ("unlisted_skip" if cap in g._UNLISTED_SKIP else "triton38_sm8x")
+    else:
+        why = "rocm" if rocm else "listed_arch" if arch is not None else "below_sm80"
+    out["any.int8_gemm.unlisted_race"] = lever(unl and not rocm, why = why)
+    fam = cut.family(cap) if not rocm else None
+    out["any.int8_gemm.cutlass_prebuilt"] = lever(
+        pre, why = None if pre else ("rocm" if rocm else "no_family")
+    )
+    out["any.int8_gemm.cutlass_family"] = lever(
+        fam is not None, cfg = fam, why = None if fam else "no_family"
+    )
+    tma = g.tma_config(cap)
+    out["any.int8_gemm.tma_tile"] = lever(
+        tma is not None and not rocm, cfg = tma, why = None if tma else "no_tma_tile"
+    )
+    tiles = g.shape_tiles(cap)
+    out["any.int8_gemm.shape_tiles"] = lever(
+        bool(tiles) and not rocm,
+        cfg = len(tiles) if tiles else None,
+        why = None if tiles else "no_shape_rules",
+    )
+    return out
+
+
+@probe
+def probe_grouped_int8_gemm(p: GpuProfile) -> dict:
+    """The fused grouped (MoE / GGUF-style) INT8 GEMM tiles per arch."""
+    from core.inference import diffusion_grouped_int8_gemm as gg
+
+    if not p.cuda or p.rocm:
+        return {
+            "any.grouped_int8_gemm.tiles": lever(False, why = _na_code(p) if not p.rocm else "rocm")
+        }
+    rules = gg.arch_tiles(p.capability)
+    return {
+        "any.grouped_int8_gemm.tiles": lever(
+            bool(rules),
+            cfg = [fmt((r[0],) + tuple(r[1])) for r in rules] if rules else None,
+            why = None if rules else "no_arch_tiles",
+        )
+    }
+
+
+@probe
+def probe_convrot(p: GpuProfile) -> dict:
+    """ConvRot fused rotation + act quant: dense rotq_i8 tile, unlisted-arch rotq_h16 race, tf32x3 second stage,
+    per-K tiles."""
+    from core.inference import diffusion_convrot_quant as cq
+
+    keys = ("rotq_tile", "unlisted_h16", "h16_tf32x3", "k_tiles")
+    if not p.cuda or p.rocm:
+        why = "rocm" if p.rocm else _na_code(p)
+        return {f"any.convrot.{k}": lever(False, why = why) for k in keys}
+    cap = tuple(p.capability)
+    cfg = cq.rotquant_config(cap)
+    unl = cq.unlisted_wanted(cap)
+    tf = cap in cq._H16_TF32X3_ARCHS
+    kt = cq.rotq_k_tiles(cap)
+    return {
+        "any.convrot.rotq_tile": lever(
+            cfg is not None, cfg = cfg, why = None if cfg else "no_arch_tile"
+        ),
+        "any.convrot.unlisted_h16": lever(
+            unl, why = None if unl else ("listed_arch" if cfg is not None else "below_sm80")
+        ),
+        "any.convrot.h16_tf32x3": lever(tf, why = None if tf else "ieee_fma"),
+        "any.convrot.k_tiles": lever(
+            bool(kt), cfg = len(kt) if kt else None, why = None if kt else "no_k_rules"
+        ),
+    }
+
+
+@probe
+def probe_cutlass_sm75(p: GpuProfile) -> dict:
+    """The CUTLASS native-epilogue (fp16, Turing) path keys on family 75."""
+    from core.inference import diffusion_int8_cutlass as cut
+
+    if not p.cuda or p.rocm:
+        return {
+            "any.cutlass.native_fp16_epilogue": lever(False, why = "rocm" if p.rocm else _na_code(p))
+        }
+    fam = cut.family(p.capability)
+    return {
+        "any.cutlass.native_fp16_epilogue": lever(fam == 75, why = None if fam == 75 else "not_sm75")
+    }
+
+
+@probe
+def probe_native_w8a8_cuda(p: GpuProfile) -> dict:
+    """NativeWeightOnlyLinear W8A8 on CUDA needs bf16 activations (sm80+); the capability gate only."""
+    if not p.cuda or p.rocm:
+        return {"any.native_w8a8.cap_gate": lever(False, why = "rocm" if p.rocm else _na_code(p))}
+    ok = tuple(p.capability) >= (8, 0)
+    return {"any.native_w8a8.cap_gate": lever(ok, why = None if ok else "below_sm80")}
+
+
+@probe
+def probe_segment_quant(p: GpuProfile) -> dict:
+    """Segmenter dynamic quant (fp8 / int8): the platform and minimum-capability gates of ``unsupported_reason``.
+    A later host-only refusal (torchao / safetensors support) counts as passing the capability gate."""
+    import torch
+
+    from core.inference import diffusion_segment_quant as sq
+
+    out: dict = {}
+    for prec in (sq.PRECISION_FP8, sq.PRECISION_INT8):
+        device = "cuda:0" if p.cuda else ("mps" if p.mps else "cpu")
+        try:
+            why = sq.unsupported_reason(prec, device, torch.bfloat16)
+        except Exception as exc:  # noqa: BLE001
+            why = f"error {type(exc).__name__}"
+        if why is None:
+            cell = lever(True)
+        elif "compute capability" in why:
+            cell = lever(False, why = "below_min_cap")
+        elif "ROCm" in why:
+            cell = lever(False, why = "rocm")
+        elif "CUDA only" in why:
+            cell = lever(False, why = _na_code(p))
+        else:  # a host-only refusal after the gates (torchao / safetensors support): the gates passed
+            cell = lever(True)
+        out[f"any.segment_quant.{prec}"] = cell
+    return out
+
+
+@probe
+def probe_transformer_quant(p: GpuProfile) -> dict:
+    """Denoiser quant: dense torchao support, the auto scheme tier, the hosted-checkpoint auto order, the fp16-card
+    (Turing) int8 linear, the consumer heuristic behind fp16 accumulation and the RDNA explicit W8A8 arch gate."""
+    from core.inference import diffusion_transformer_quant as tq
+
+    target = _probe_target(p)
+    out: dict = {}
+    dense = tq.dense_transformer_supported(target)
+    out["any.transformer_quant.dense_torchao"] = lever(
+        dense,
+        why = None if dense else ("rocm" if p.rocm else _na_code(p) if not p.cuda else "no_bf16"),
+    )
+    cap = tq._capability(0) if p.cuda else None
+    order = tq._auto_scheme_order(None, "cuda", cap) if (dense and cap is not None) else ()
+    out["any.transformer_quant.auto_tier"] = lever(
+        bool(order), cfg = "+".join(order) or None, why = None if order else "no_tier"
+    )
+    hosted = tq.hosted_auto_scheme_order(None, cap) if (dense and cap is not None) else ()
+    out["any.transformer_quant.hosted_auto"] = lever(
+        bool(hosted), cfg = "+".join(hosted) or None, why = None if hosted else "bf16"
+    )
+    import torch
+    import types
+
+    fp16_target = types.SimpleNamespace(**{**vars(target), "dtype": torch.float16})
+    turing = tq.fp16_card_int8_host(fp16_target)
+    out["any.transformer_quant.fp16_card_int8"] = lever(
+        turing, why = None if turing else ("not_turing" if nvidia(p) else _na_code(p))
+    )
+    if nvidia(p):
+        consumer = tq._is_consumer_gpu(0)
+        out["any.transformer_quant.consumer_gpu"] = lever(
+            consumer, why = None if consumer else "datacenter_or_pro"
+        )
+    else:
+        out["any.transformer_quant.consumer_gpu"] = lever(False, why = _na_code(p))
+    rdna = p.rocm and tq._rdna_explicit_w8a8_arch_measured(target)
+    out["any.transformer_quant.rdna_explicit_w8a8_arch"] = lever(
+        rdna, why = None if rdna else ("unmeasured_gfx" if p.rocm else _na_code(p))
+    )
+    return out
+
+
+@probe
+def probe_te_prequant(p: GpuProfile) -> dict:
+    """Hosted int8 ConvRot text encoder in float16 compute: per family, on a CUDA fp16 target."""
+    import types
+
+    import torch
+
+    from core.inference import diffusion_te_prequant as tp
+
+    out: dict = {}
+    for fam in ("qwen-image-2.1", "flux.3-klein"):
+        target = _probe_target(p)
+        if p.cuda:
+            target = types.SimpleNamespace(**{**vars(target), "dtype": torch.float16})
+        on = tp._fp16_family_target(fam, target)
+        out[f"{fam}.te_int8_fp16"] = lever(
+            on, why = None if on else ("family_unvalidated" if p.cuda else _na_code(p))
+        )
+    return out
+
+
+@probe
+def probe_nvfp4(p: GpuProfile) -> dict:
+    """NVFP4: whether a request is rerouted (pre-Blackwell) and to what, the flashinfer arch set and jit-cache
+    provider, the MXFP8 tensor-core gate."""
+    from core.inference import diffusion_comfy_block as cb
+    from core.inference import diffusion_nvfp4_install as ni
+    from core.inference import diffusion_nvfp4_ops as no
+    from core.inference import diffusion_nvfp4_route as nr
+
+    out: dict = {}
+    saved = nr._smi_visible_capabilities
+    nr._smi_visible_capabilities = lambda torch: ()
+    try:
+        prof = nr._probe_device_profile(True)
+    except Exception as exc:  # noqa: BLE001
+        prof = None
+        kind = f"error {type(exc).__name__}"
+    finally:
+        nr._smi_visible_capabilities = saved
+    kind = prof.kind if prof is not None else kind
+    if prof is not None and prof.kind == nr.NVIDIA:
+        cap, routes = nr.load_capability(prof)
+        out["any.nvfp4.native"] = lever(not routes, why = None if not routes else "pre_blackwell")
+        dit_i = nr._dit_target("image", cap)
+        dit_v = nr._dit_target("video", cap)
+        out["any.nvfp4.reroute_image"] = lever(
+            routes and dit_i == nr.INT8,
+            cfg = dit_i if routes else None,
+            why = None if routes else "native",
+        )
+        out["any.nvfp4.reroute_video"] = lever(
+            routes and dit_v == nr.INT8,
+            cfg = dit_v if routes else None,
+            why = None if routes else "native",
+        )
+    else:
+        out["any.nvfp4.native"] = lever(False, why = f"kind:{kind}")
+        out["any.nvfp4.reroute_image"] = lever(False, why = f"kind:{kind}")
+        out["any.nvfp4.reroute_video"] = lever(False, why = f"kind:{kind}")
+    cap = no._device_capability(0) if nvidia(p) else None
+    fi = cap is not None and tuple(cap) in no.NVFP4_FLASHINFER_CAPS
+    out["any.nvfp4.flashinfer_arch"] = lever(
+        fi, why = None if fi else ("arch_not_in_set" if cap else _na_code(p))
+    )
+    jit = ni.FLASHINFER_JIT_CACHE_ARCH.get(tuple(cap)) if cap else None
+    out["any.nvfp4.jit_cache_provider"] = lever(
+        jit is not None, cfg = jit, why = None if jit else ("no_provider" if cap else _na_code(p))
+    )
+    # MXFP8: the capability gate of mxfp8_runtime_reason; its on-device probe after the gate cannot run on CPU, so
+    # anything past the gate counts as passing it. The probe cache is restored so no verdict leaks out.
+    target = _probe_target(p)
+    snap = dict(getattr(cb, "_MX_PROBE", {}))
+    try:
+        if hasattr(cb, "_MX_PROBE"):
+            cb._MX_PROBE[0] = (
+                None  # the on-device probe passes (it runs on the real card); only the gate is asked
+            )
+        why = cb.mxfp8_runtime_reason(target)
+    except Exception:  # noqa: BLE001 - raised by the device probe, after the gate
+        why = None
+    finally:
+        if hasattr(cb, "_MX_PROBE"):
+            cb._MX_PROBE.clear()
+            cb._MX_PROBE.update(snap)
+    if why and "MXFP8 tensor cores" in why:
+        out["any.mxfp8.tensor_cores"] = lever(False, why = "below_sm100")
+    elif why and "not CUDA" in why:
+        out["any.mxfp8.tensor_cores"] = lever(False, why = _na_code(p))
+    elif p.rocm:
+        out["any.mxfp8.tensor_cores"] = lever(True, why = "rocm_cap_passes")
+    else:
+        out["any.mxfp8.tensor_cores"] = lever(True)
+    return out
+
+
+# --------------------------------------------------------------------------------------------- (a) load policies
+
+
+@_contextlib.contextmanager
+def _pinned(obj: Any, **attrs: Any):
+    """Temporarily set ``attrs`` on ``obj`` (host-dependent answers a profile must not inherit)."""
+    missing = object()
+    old = {k: getattr(obj, k, missing) for k in attrs}
+    try:
+        for k, v in attrs.items():
+            setattr(obj, k, v)
+        yield
+    finally:
+        for k, v in old.items():
+            if v is missing:
+                try:
+                    delattr(obj, k)
+                except AttributeError:
+                    pass
+            else:
+                setattr(obj, k, v)
+
+
+def _na(p: GpuProfile) -> Optional[dict]:
+    """The off cell for a platform the policy does not serve (None where it does: CUDA / ROCm)."""
+    if p.cuda:
+        return None
+    return lever(False, why = f"n/a:{p.vendor if p.vendor != 'apple' else 'mps'}")
+
+
+def _device_target(p: GpuProfile) -> Any:
+    """``resolve_diffusion_device_target()`` for the profile: Studio's detected-device globals (``utils.hardware``
+    caches the host's device type and IS_ROCM) are pinned to the profile so the host never decides."""
+    from core.inference.diffusion_device import resolve_diffusion_device_target
+    from utils import hardware as uh
+    from utils.hardware import hardware as hw
+
+    dev = uh.DeviceType.CUDA if p.cuda else uh.DeviceType.CPU
+    with _pinned(uh, get_device = lambda: dev), _pinned(hw, IS_ROCM = bool(p.rocm)):
+        return resolve_diffusion_device_target()
+
+
+def _code(reason: Any, table: tuple) -> Optional[str]:
+    """Short stable code for a policy's reason text: the first ``(substring, code)`` that matches, else ``other``."""
+    if not reason:
+        return None
+    text = str(reason)
+    for needle, code in table:
+        if needle in text:
+            return code
+    return "other"
+
+
+# --------------------------------------------------------------------------------------------- MiniMax-H3 video
+_H3_GATE_CODES = (
+    ("speed_mode=off", "speed_off"),
+    ("picked explicitly", "explicit_backend"),
+    ("Auto keeps it off for MiniMax-H3 video on", "arch_off"),
+    ("hosted INT8 denoiser", "not_evidenced_config"),
+)
+
+
+@probe
+def probe_h3_video_attention(p: GpuProfile) -> dict:
+    """H3 video's default load (Auto attention, speed on, hosted INT8 denoiser, no adapters): does Auto race INT8
+    attention (and with which exact start), and which SDPA backend the strided processor runs."""
+    keys = (
+        "minimax-h3.int8_attn_auto",
+        "minimax-h3.sdpa_backend",
+        "minimax-h3.strided_processor",
+        "minimax-h3.flash_sdpa",
+    )
+    off = _na(p)
+    if off is not None:
+        return {k: off for k in keys}
+    import torch
+
+    from core.inference import diffusion_int8_attention as i8
+    from core.inference import diffusion_attention as da
+    from core.inference.video_minimax_h3_attn import (
+        cuda_capability,
+        h3_attention_backend,
+        h3_int8_load_gate,
+        strided_install_backend,
+    )
+
+    out: dict = {}
+    gate = h3_int8_load_gate(
+        mode = i8.resolve_policy(None).mode,
+        attention_backend = None,
+        auto_attention = da._auto_request(None),
+        speed_on = True,
+        hosted_int8 = True,
+        comfy_checkpoint = False,
+        adapters = False,
+        capability = cuda_capability("cuda:0"),
+    )
+    on = gate.auto or gate.forced
+    out[keys[0]] = lever(
+        on,
+        cfg = f"exact_steps={gate.exact_steps}" if on else None,
+        why = ("forced" if gate.forced else "auto_race")
+        if on
+        else _code(gate.reason, _H3_GATE_CODES),
+    )
+    target = _device_target(p)
+    # ROCm's Auto flash pick needs an installed, verified flash_attn: pinned present + verified, so the cell is the
+    # policy's answer for a working wheel, not the host's.
+    with _pinned(
+        da, _flash_attn_installed = lambda: True, _rocm_flash_attn_runs = lambda *a, **k: True
+    ):
+        selected = da.select_attention_backend(target, None, speed_active = True)
+        backend = h3_attention_backend(
+            selected,
+            requested = None,
+            target = _types.SimpleNamespace(device = "cuda", dtype = torch.bfloat16),
+        )
+    out[keys[1]] = lever(
+        backend is not None, cfg = str(getattr(backend, "value", backend)) if backend else None
+    )
+    # Flash over cuDNN is its own lever (H3_FLASH_FASTER_ARCHS): losing it on a measured arch is a regression.
+    out["minimax-h3.flash_sdpa"] = lever(str(getattr(backend, "value", backend)) == "_native_flash")
+    out[keys[2]] = lever(strided_install_backend(backend))
+    return out
+
+
+# -------------------------------------------------------------------------------------------- MiniMax-H3-Image
+_H3I_CODES = (
+    ("bf16 requested", "bf16_requested"),
+    ("torchao unavailable", "no_torchao"),
+    ("no int8 or fp8 rung", "no_rung"),
+    ("auto: int8", "auto_int8"),
+    ("auto: fp8", "auto_fp8"),
+    ("auto order", "auto_order"),
+    ("fits", "fit"),
+)
+
+
+@probe
+def probe_h3_image_scheme(p: GpuProfile) -> dict:
+    """H3-Image's Auto DiT weight scheme at the profile's VRAM / host RAM (2048 px), and whether explicit fp8 runs."""
+    keys = ("minimax-h3-image.dit_scheme_auto", "minimax-h3-image.fp8_explicit")
+    off = _na(p)
+    if off is not None:
+        return {k: off for k in keys}
+    from core.inference.diffusion_minimax_h3_image import (
+        explicit_scheme_refusal,
+        resolve_dit_scheme,
+    )
+
+    scheme, reason = resolve_dit_scheme(
+        "auto", device = "cuda:0", vram_gb = p.vram_gb, host_gb = p.host_ram_gb
+    )
+    refusal = explicit_scheme_refusal("fp8", "cuda:0")
+    return {
+        keys[0]: lever(scheme is not None, cfg = scheme, why = _code(reason, _H3I_CODES)),
+        keys[1]: lever(
+            refusal is None,
+            why = "needs_sm89" if refusal and "8.9" in refusal else ("refused" if refusal else None),
+        ),
+    }
+
+
+# --------------------------------------------------------------------------------------------------------- VAE
+@probe
+def probe_vae_decode(p: GpuProfile) -> dict:
+    """Strip decode on every decode (measured cards), the KL strip path, the strip size, the folded upsample, the
+    16-bit decode (vs fp32 on cards without tensor cores) and the Wan VAE frame pairing."""
+    keys = (
+        "any.vae_strips_always",
+        "any.vae_kl_strips_always",
+        "any.vae_strip_elems",
+        "any.vae_upsample_fold",
+        "any.vae_16bit_decode",
+        "any.video_vae_pair_frames",
+    )
+    off = _na(p)
+    if off is not None:
+        return {k: off for k in keys}
+    import torch
+
+    from core.inference import diffusion_vae_finite as vf
+    from core.inference import diffusion_vae_strips as vs
+    from core.inference import video_vae_untiled as vu
+
+    for cached in (vs._card_strip_elems, vs._card_cap):
+        cached.cache_clear()
+    dev = torch.device("cuda", 0)
+    try:
+        elems = vs.strip_elems(dev)
+        x = _types.SimpleNamespace(is_cuda = True, device = dev)
+        target = _device_target(p)
+        out = {
+            keys[0]: lever(vs.always_on(dev)),
+            keys[1]: lever(vs.kl_always_on(dev)),
+            keys[2]: lever(True, cfg = f"2^{int(elems).bit_length() - 1}"),
+            keys[3]: lever(vs._fold_on(x)),
+            keys[4]: lever(
+                not vf.prefers_fp32_decode(target),
+                why = "no_tensor_cores" if vf.prefers_fp32_decode(target) else None,
+            ),
+            keys[5]: lever(vu._pair_frames_enabled(dev)),
+        }
+    finally:
+        for cached in (vs._card_strip_elems, vs._card_cap):
+            cached.cache_clear()
+    return out
+
+
+@probe
+def probe_device_target(p: GpuProfile) -> dict:
+    """The device / backend / compute dtype a diffusion load resolves, and the ROCm bf16 Wan VAE decode arch gate."""
+    from core.inference import diffusion_device as dd
+
+    target = _device_target(p)
+    dtype = str(getattr(target, "dtype", None)).replace("torch.", "")
+    out = {
+        "any.device_target": lever(
+            target.device != "cpu",
+            cfg = f"{target.device}/{target.backend}/{dtype}",
+        ),
+        "any.compile_default": lever(
+            bool(getattr(target, "supports_default_torch_compile", False))
+        ),
+    }
+    if p.rocm:
+        import torch
+        arch = dd._rocm_bf16_decode_arch(torch, target)
+        out["any.rocm_vae_bf16_decode"] = lever(arch is not None)
+    else:
+        out["any.rocm_vae_bf16_decode"] = lever(
+            False, why = f"n/a:{p.vendor if p.vendor != 'apple' else 'mps'}"
+        )
+    return out
+
+
+# ------------------------------------------------------------------------------------------------ graphs, compile
+class Float8Tensor:  # the class NAME is what ``_fp8_rowwise_weight`` reads
+    def __init__(self) -> None:
+        self.scale = _types.SimpleNamespace(numel = lambda: 64)
+        self.act_quant_kwargs = {"granularity": "per_row"}
+        self.device = _types.SimpleNamespace(type = "cuda")
+
+
+@probe
+def probe_fp8_rowwise_graph(p: GpuProfile) -> dict:
+    """A row-wise fp8 denoiser may be CUDA-graphed (``fp8_rowwise_capture_refusal``), at a pinned torch 2.10 (the
+    hang window; torch >= 2.12 never refuses), so the cell does not follow the host's torch."""
+    key = "any.cuda_graph_fp8_rowwise_torch210"
+    off = _na(p)
+    if off is not None:
+        return {key: off}
+    import sys as _sys
+
+    import torch
+
+    from core.inference import diffusion_cuda_graph as cg
+
+    module = _types.SimpleNamespace(parameters = lambda: [Float8Tensor()])
+    with _pinned(torch, __version__ = "2.10.0"), _pinned(_sys, platform = "linux"):
+        refusal = cg.fp8_rowwise_capture_refusal([module], "cuda:0")
+    return {key: lever(refusal is None, why = "streamk_hang" if refusal else None)}
+
+
+@probe
+def probe_inductor_reduction_filter(p: GpuProfile) -> dict:
+    """Families that pin inductor's reduction configs on measured archs (``filter_reduction_configs_archs``)."""
+    from core.inference.diffusion_compile_config import family_filters_reductions
+    from core.inference.diffusion_families import _FAMILIES as image
+    from core.inference.video_families import _FAMILIES as video
+
+    out: dict = {}
+    for fam in tuple(image) + tuple(video):
+        # Only the arch-listed ones: ``filter_reduction_configs`` (every arch) is no per-profile decision.
+        if getattr(fam, "filter_reduction_configs_archs", None) and not getattr(
+            fam, "filter_reduction_configs", False
+        ):
+            out[f"{fam.name}.inductor_reduction_filter"] = lever(family_filters_reductions(fam))
+    return out
+
+
+# ------------------------------------------------------------------------------------------------- video routes
+_LTX_CODES = (
+    ("not a CUDA load", "not_cuda"),
+    ("bfloat16", "bf16_card"),
+    ("not promoted", "fp16_not_promoted"),
+    ("ROCm", "rocm"),
+    ("no int8 tensor cores", "no_int8_tensor_cores"),
+    ("SMALL_HOST=0", "switch_off"),
+    ("probe failed", "probe_failed"),
+)
+
+
+@probe
+def probe_ltx25_lowram(p: GpuProfile) -> dict:
+    """LTX-2.5's small-host int8 route (fp16 cards): can it serve this card at all."""
+    key = "ltx-2.5.lowram_int8_route"
+    from core.inference.video_families import _FAMILIES as video
+    from core.inference.video_ltx25_lowram import lowram_ineligible
+
+    fam = next(f for f in video if f.name == "ltx-2.5")
+    why = lowram_ineligible(fam, _device_target(p), model_kind = "pipeline")
+    return {key: lever(why is None, why = _code(why, _LTX_CODES))}
+
+
+@probe
+def probe_sd_cpp_quant_cublas(p: GpuProfile) -> dict:
+    """sd.cpp's Q8_0 BF16-cuBLAS route row threshold (None keeps int8 MMQ)."""
+    key = "any.sd_cpp_q8_cublas"
+    if not nvidia(p):
+        return {key: lever(False, why = f"n/a:{p.vendor if p.vendor != 'apple' else 'mps'}")}
+    from core.inference.sd_cpp_args import quant_cublas_min_batch
+
+    rows = quant_cublas_min_batch(tuple(p.capability))
+    return {key: lever(rows is not None, cfg = rows, why = None if rows is not None else "mmq")}
+
+
+# --------------------------------------------------------------------------------------------------- attention
+@probe
+def probe_auto_attention(p: GpuProfile) -> dict:
+    """Studio's Auto attention pick for a default (speed on) load, with ROCm flash_attn pinned present + verified."""
+    key = "any.attn_auto_backend"
+    from core.inference import diffusion_attention as da
+
+    target = _device_target(p)
+    with _pinned(
+        da, _flash_attn_installed = lambda: True, _rocm_flash_attn_runs = lambda *a, **k: True
+    ):
+        backend = da.select_attention_backend(target, None, speed_active = True)
+    return {
+        key: lever(
+            backend is not None, cfg = str(getattr(backend, "value", backend)) if backend else None
+        )
+    }
+
+
+@probe
+def probe_cfg_batch(p: GpuProfile) -> dict:
+    """CFG batching: which compiled resident classes batch, and whether a measured-slower entry names this card."""
+    from core.inference import diffusion_cfg_batch as cb
+
+    slower = sorted(
+        f"{cls}/{mode}"
+        for (cls, card, mode) in cb.MEASURED_SLOWER
+        if str(card).lower() in p.name.lower()
+    )
+    return {
+        "any.cfg_batch_compiled_resident": lever(
+            bool(cb.COMPILED_RESIDENT_CLASSES), cfg = fmt(sorted(cb.COMPILED_RESIDENT_CLASSES))
+        ),
+        "any.cfg_batch_card_allowed": lever(not slower, cfg = fmt(slower) if slower else None),
+    }
+
+
+# ------------------------------------------------------------------------------------- (b) the speed layer per profile
+# Every registered image / video family through the real optimizer (``install_patches`` + ``run_speed_layer``, the
+# parity harness's entry), at the default speed tier and the dtype the profile resolves. Stub denoisers carry the
+# family's real class name, module and ``_repeated_blocks`` from ``inputs.denoiser_blocks`` in the golden, so the run
+# is the same with or without diffusers installed (Backend CI has none; the whole matrix runs with it hidden).
+AUTOOPT_SPEED = "default"
+
+
+def _autoopt_target(p: GpuProfile) -> Any:
+    import torch
+
+    from core.inference import diffusion_device as dd
+
+    if p.cuda:
+        return dd._cuda_or_rocm_target(torch, is_rocm = p.rocm)
+    if p.mps:
+        # The MPS target without its on-device bf16 probe (CPU torch has no MPS): fp16, as before macOS 14.
+        return _types.SimpleNamespace(
+            device = "mps",
+            backend = "mps",
+            vendor = "apple",
+            dtype = torch.float16,
+            ordinal = None,
+            torch_device = "mps",
+            supports_default_torch_compile = False,
+            supports_model_cpu_offload = False,
+        )
+    return dd._cpu_target(torch)
+
+
+def _stub_denoiser(fam: Any, blocks: dict) -> Any:
+    import torch
+
+    name = fam.transformer_class
+    meta = blocks.get(name) or {}
+
+    def compile_repeated_blocks(self, **kwargs):
+        if not getattr(self, "_repeated_blocks", None):
+            raise ValueError("_repeated_blocks is empty")
+        self.compile_calls.append(dict(kwargs))
+
+    def compile(self, **kwargs):
+        self.compile_calls.append({"whole": True, **kwargs})
+
+    ns = {
+        "_repeated_blocks": list(meta.get("blocks") or []),
+        "_no_split_modules": list(meta.get("no_split") or []),
+        "compile_repeated_blocks": compile_repeated_blocks,
+        "forward": lambda self, *a, **k: None,
+        "__module__": meta.get("module") or "studio_gpu_lever_stub",
+    }
+    if name == "UNet2DConditionModel":
+        ns["compile"] = compile
+        del ns["compile_repeated_blocks"]
+    module = type(name, (torch.nn.Module,), ns)()
+    module.compile_calls = []
+    return module
+
+
+def _autoopt_pipe(backend: str, fam: Any, blocks: dict) -> Any:
+    pipe = _types.SimpleNamespace()
+    setattr(
+        pipe,
+        getattr(fam, "denoiser_attr", "transformer") or "transformer",
+        _stub_denoiser(fam, blocks),
+    )
+    if backend == "video" and getattr(fam, "is_moe", False):
+        pipe.transformer_2 = _stub_denoiser(fam, blocks)
+    return pipe
+
+
+def _speed_layer_extra(patch: Any, p: GpuProfile) -> None:
+    """What the parity harness pins besides the device: unsloth_zoo's patch helpers, graph install, Triton kernels."""
+    from core.inference import diffusion_cuda_graph, diffusion_gguf_compile, diffusion_patch_backend
+
+    stash: dict = {}
+
+    def _patch_function(
+        target,
+        attr,
+        new_fn,
+        match_level = "relaxed",
+        force = False,
+    ):
+        stash.setdefault((target, attr), getattr(target, attr))
+        setattr(target, attr, new_fn)
+        return True
+
+    def _restore_original(target, attr):
+        if (target, attr) not in stash:
+            return False
+        setattr(target, attr, stash.pop((target, attr)))
+        return True
+
+    patch.setattr(
+        diffusion_patch_backend,
+        "_HELPERS",
+        {"patch": _patch_function, "restore": _restore_original},
+    )
+    fake_gguf_utils = _types.ModuleType("diffusers.quantizers.gguf.utils")
+    fake_gguf_utils.dequantize_gguf_tensor = lambda tensor: tensor
+    patch.setattr(diffusion_gguf_compile, "_gguf_utils", lambda: fake_gguf_utils)
+    patch.setattr(diffusion_gguf_compile, "_compiled_dequant_installed", False)
+    patch.setattr(diffusion_gguf_compile, "_compile_error", None)
+    patch.setattr(diffusion_cuda_graph, "install_cuda_graphs", lambda pipe, logger = None: True)
+    kernel = (lambda *a, **k: None) if (p.cuda and p.triton) else None
+    for mod_name, attr, value in (
+        ("diffusion_flux2_rope", "_kernel", lambda: kernel),
+        ("diffusion_flux3_rope", "_kernel", lambda: kernel),
+        ("video_wan_fused", "_kernels", lambda: ({} if kernel else None)),
+        ("diffusion_rocm_fused", "_is_nvidia_linux", lambda: p.vendor == "nvidia"),
+    ):
+        try:
+            mod = __import__(f"core.inference.{mod_name}", fromlist = [attr])
+            patch.setattr(mod, attr, value)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def collect_autoopt(blocks: dict) -> dict:
+    import test_diffusion_autoopt_parity as par
+    from core.inference import diffusion_speed as ds
+
+    cells: dict = {}
+    for p in PROFILES.values():
+        with clean_policy_env(), mock_profile(p, extra = _speed_layer_extra):
+            target = _autoopt_target(p)
+            dtype = str(target.dtype).replace("torch.", "")
+            for backend, fam in par._families():
+                key = f"{p.key}.{fam.name}.autoopt"
+                pipe = _autoopt_pipe(backend, fam, blocks)
+                flags = ds.snapshot_backend_flags()
+                try:
+                    result = par.autoopt_entry(
+                        backend, pipe, target, fam, AUTOOPT_SPEED, False, False
+                    )
+                    engaged = sorted(
+                        {k for view in result["views"] for k, v in view.items() if v}
+                        | {f"patch:{k}" for k, v in result["patches"].items() if v}
+                    )
+                    cells[key] = {"on": bool(engaged), "engaged": engaged, "cfg": f"dtype={dtype}"}
+                except Exception as exc:  # noqa: BLE001 - recorded: a load that now raises is a lost cell
+                    cells[key] = {"on": False, "why": f"error:{type(exc).__name__}"}
+                finally:
+                    ds.restore_backend_flags(flags)
+                    par._teardown()
+    return cells
+
+
+# ----------------------------------------------------------------------------------------------------- collection
+def collect_levers() -> dict:
+    cells: dict = {}
+    for p in PROFILES.values():
+        with clean_policy_env(), mock_profile(p):
+            for fn in LEVER_PROBES:
+                for key, value in fn(p).items():
+                    cells[f"{p.key}.{key}"] = value
+    return cells
+
+
+def denoiser_blocks_from_diffusers() -> dict:
+    """``{class: {module, blocks, no_split}}`` from the installed diffusers / Studio's in-tree classes (update only)."""
+    import test_diffusion_autoopt_parity as par
+
+    out: dict = {}
+    for _backend, fam in par._families():
+        name = fam.transformer_class
+        cls = par._real_class(name)
+        if cls is None:
+            continue
+        out[name] = {
+            "module": cls.__module__,
+            "blocks": list(getattr(cls, "_repeated_blocks", None) or []),
+            "no_split": list(getattr(cls, "_no_split_modules", None) or []),
+        }
+    return out
+
+
+def collect_all(blocks: dict) -> dict:
+    """Both tables, in THIS process (the test runs it in a child with diffusers hidden: ``_collect_in_child``)."""
+    import time
+
+    t0 = time.perf_counter()
+    cells = collect_levers()
+    t1 = time.perf_counter()
+    cells.update(collect_autoopt(blocks))
+    t2 = time.perf_counter()
+    return {"cells": cells, "seconds": {"levers": round(t1 - t0, 2), "autoopt": round(t2 - t1, 2)}}
+
+
+_CHILD = """
+import json, sys
+sys.modules["diffusers"] = None  # what Backend CI has; every host resolves the same golden
+sys.path[:0] = [{backend!r}, {tests!r}]
+import test_diffusion_gpu_lever_matrix as m
+blocks = json.loads(sys.stdin.read())
+out = m.collect_all(blocks)
+sys.stdout.write("\\n@@GPU_LEVER_JSON@@" + json.dumps(out))
+"""
+
+
+def _collect_in_child(blocks: dict) -> dict:
+    import json
+    import os
+    import subprocess
+
+    env = dict(os.environ)
+    env.pop("UNSLOTH_UPDATE_GPU_GOLDEN", None)
+    proc = subprocess.run(
+        [sys.executable, "-c", _CHILD.format(backend = str(_BACKEND), tests = str(_TESTS))],
+        input = json.dumps(blocks),
+        capture_output = True,
+        text = True,
+        cwd = str(_BACKEND),
+        env = env,
+        timeout = 240,
+    )
+    marker = "@@GPU_LEVER_JSON@@"
+    if proc.returncode != 0 or marker not in proc.stdout:
+        raise AssertionError(
+            f"the lever matrix child exited {proc.returncode}:\n{proc.stdout[-3000:]}\n{proc.stderr[-6000:]}"
+        )
+    return json.loads(proc.stdout.rsplit(marker, 1)[1])
+
+
+# --------------------------------------------------------------------------------------------------------- golden
+GOLDEN = _TESTS / "fixtures" / "diffusion_gpu_lever_golden.json"
+GOLDEN_SCHEMA = 1
+UPDATE_ENV = "UNSLOTH_UPDATE_GPU_GOLDEN"
+REASON_ENV = "UNSLOTH_GPU_GOLDEN_REASON"
+_HOW_TO_UPDATE = (
+    "If this change is intended, regenerate the golden from studio/backend and say why (the reason and the changed "
+    "cells are appended to its `changes` ledger, which review reads):\n"
+    f'    {UPDATE_ENV}=1 {REASON_ENV}="<what changed and the evidence>" '
+    "python -m pytest tests/test_diffusion_gpu_lever_matrix.py -k golden\n"
+    "A lost lever on a real profile is a speed regression on that card until a benchmark says otherwise."
+)
+
+
+def load_golden(path: Path = GOLDEN) -> dict:
+    import json
+    if not path.exists():
+        return {"schema": GOLDEN_SCHEMA, "version": 0, "inputs": {}, "changes": [], "cells": {}}
+    return json.loads(path.read_text(encoding = "utf-8"))
+
+
+def _engaged_set(cell: Optional[dict]) -> set:
+    if not cell:
+        return set()
+    if "engaged" in cell:
+        return set(cell["engaged"])
+    return {"<lever>"} if cell.get("on") else set()
+
+
+def _show(cell: Optional[dict]) -> str:
+    if cell is None:
+        return "<no cell>"
+    if not cell.get("on"):
+        return "off" + (f" ({cell['why']})" if cell.get("why") else "")
+    return "on" + (f" [{cell['cfg']}]" if cell.get("cfg") is not None else "")
+
+
+def diff_cells(want: dict, got: dict) -> list:
+    """``[(kind, cell id, expected, got)]``, kind REGRESSION (a lever lost, a config gone, a cell gone), GAIN (a lever
+    engaged that was off, a new cell) or CHANGE (still engaged, different config / reason)."""
+    out: list = []
+    for cid in sorted(set(want) | set(got)):
+        w, g = want.get(cid), got.get(cid)
+        if w == g:
+            continue
+        if g is None:
+            out.append(("REGRESSION", cid, _show(w), "cell gone"))
+            continue
+        if w is None:
+            out.append(("GAIN", cid, "<no cell>", _show(g)))
+            continue
+        if "engaged" in w or "engaged" in g:
+            lost = sorted(_engaged_set(w) - _engaged_set(g))
+            won = sorted(_engaged_set(g) - _engaged_set(w))
+            for item in lost:
+                out.append(("REGRESSION", f"{cid}.{item}", "engaged", "off"))
+            for item in won:
+                out.append(("GAIN", f"{cid}.{item}", "off", "engaged"))
+            rest_w = {k: v for k, v in w.items() if k not in ("engaged", "on")}
+            rest_g = {k: v for k, v in g.items() if k not in ("engaged", "on")}
+            if rest_w != rest_g:
+                out.append(("CHANGE", cid, str(rest_w), str(rest_g)))
+            continue
+        if w.get("on") and not g.get("on"):
+            out.append(("REGRESSION", cid, _show(w), _show(g)))
+        elif g.get("on") and not w.get("on"):
+            out.append(("GAIN", cid, _show(w), _show(g)))
+        elif w.get("on") and w.get("cfg") is not None and g.get("cfg") is None:
+            out.append(("REGRESSION", cid, _show(w), "config None"))
+        else:
+            out.append(("CHANGE", cid, _show(w), _show(g)))
+    return out
+
+
+def _split_cell(cid: str) -> tuple:
+    """``profile.family.lever...`` -> (profile, family, lever)."""
+    profile, _, rest = cid.partition(".")
+    family, _, lever_name = rest.partition(".")
+    return profile, family, lever_name
+
+
+def format_diffs(diffs: list) -> str:
+    """One line per first divergence ``GPU LEVER <KIND> <profile>.<family>.<lever>: expected X, got Y``; cells with the
+    same (kind, family.lever, expected, got) are grouped under it with the other profiles listed."""
+    groups: dict = {}
+    for kind, cid, exp, got in diffs:
+        profile, family, lever_name = _split_cell(cid)
+        groups.setdefault((kind, family, lever_name, exp, got), []).append(profile)
+    order = {"REGRESSION": 0, "CHANGE": 1, "GAIN": 2}
+    lines = []
+    counts = {k: sum(1 for d in diffs if d[0] == k) for k in order}
+    lines.append(
+        f"{counts['REGRESSION']} lever regression(s), {counts['CHANGE']} change(s), {counts['GAIN']} gain(s) "
+        f"against {GOLDEN.name}:"
+    )
+    for (kind, family, lever_name, exp, got), profiles in sorted(
+        groups.items(), key = lambda kv: (order[kv[0][0]], kv[0][1], kv[0][2], kv[1][0])
+    ):
+        first = profiles[0]
+        line = f"GPU LEVER {kind} {first}.{family}.{lever_name}: expected {exp}, got {got}"
+        if len(profiles) > 1:
+            line += f"  (same on: {', '.join(profiles[1:])})"
+        lines.append(line)
+    if counts["GAIN"] and not counts["REGRESSION"]:
+        lines.append("Gains fail too so every policy change is reviewed: update the golden.")
+    lines.append(_HOW_TO_UPDATE)
+    return "\n".join(lines)
+
+
+def _dump_golden(data: dict) -> str:
+    """Sorted, one cell per line (reviewable diffs)."""
+    import json
+
+    head = {k: data[k] for k in ("schema", "version", "about") if k in data}
+    parts = ["{"]
+    for k, v in head.items():
+        parts.append(f" {json.dumps(k)}: {json.dumps(v)},")
+    parts.append(' "profiles": {')
+    prof = data.get("profiles", {})
+    parts.append(",\n".join(f"  {json.dumps(k)}: {json.dumps(prof[k])}" for k in sorted(prof)))
+    parts.append(" },")
+    parts.append(f' "inputs": {json.dumps(data.get("inputs", {}), sort_keys = True)},')
+    parts.append(' "changes": [')
+    parts.append(
+        ",\n".join(f"  {json.dumps(c, sort_keys = True)}" for c in data.get("changes", []))
+    )
+    parts.append(" ],")
+    parts.append(' "cells": {')
+    cells = data.get("cells", {})
+    parts.append(
+        ",\n".join(
+            f"  {json.dumps(k)}: {json.dumps(cells[k], sort_keys = True)}" for k in sorted(cells)
+        )
+    )
+    parts.append(" }")
+    parts.append("}")
+    return "\n".join(parts) + "\n"
+
+
+def _profile_summary(p: GpuProfile) -> str:
+    bits = [p.name, p.arch, p.segment, f"{p.vram_gb:g} GB", f"host {p.host_ram_gb:g} GB", p.link]
+    if p.parent:
+        bits.append(f"synthetic, parent {p.parent}")
+    return " | ".join(bits)
+
+
+def write_golden(
+    got: dict,
+    reason: str,
+    blocks: dict,
+    path: Path = GOLDEN,
+    old: Optional[dict] = None,
+) -> dict:
+    """Write ``got`` as the new golden, appending ``reason`` and the changed cells to ``changes``. Refuses an empty
+    reason. Returns the written document."""
+    import datetime
+
+    reason = (reason or "").strip()
+    if not reason:
+        raise ValueError(
+            f"{REASON_ENV} is empty: say why the levers changed before updating the golden"
+        )
+    old = load_golden(path) if old is None else old
+    diffs = diff_cells(old.get("cells", {}), got)
+    changed = [f"{kind} {cid}: {exp} -> {g}" for kind, cid, exp, g in diffs]
+    if not old.get("cells"):
+        changed = [f"initial capture: {len(got)} cells"]
+    entry = {
+        "version": int(old.get("version", 0)) + 1,
+        "date": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d"),
+        "reason": reason,
+        "regressions": sum(1 for d in diffs if d[0] == "REGRESSION"),
+        "gains": sum(1 for d in diffs if d[0] == "GAIN"),
+        "changes": sum(1 for d in diffs if d[0] == "CHANGE"),
+        "changed": changed[:300]
+        + ([f"... and {len(changed) - 300} more"] if len(changed) > 300 else []),
+    }
+    data = {
+        "schema": GOLDEN_SCHEMA,
+        "version": entry["version"],
+        "about": "Speed levers each GPU profile engages (tests/test_diffusion_gpu_lever_matrix.py); update only "
+        f"with {UPDATE_ENV}=1 and {REASON_ENV}.",
+        "profiles": {p.key: _profile_summary(p) for p in PROFILES.values()},
+        "inputs": {"denoiser_blocks": blocks},
+        "changes": list(old.get("changes", [])) + [entry],
+        "cells": got,
+    }
+    path.parent.mkdir(parents = True, exist_ok = True)
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(_dump_golden(data), encoding = "utf-8")
+    tmp.replace(path)
+    return data
+
+
+# ---------------------------------------------------------------------------------------------------------- tests
+
+
+@pytest.fixture(scope = "module")
+def golden() -> dict:
+    data = load_golden()
+    if not data.get("cells") and os.environ.get(UPDATE_ENV) != "1":
+        pytest.fail(f"{GOLDEN} has no cells; create it with {UPDATE_ENV}=1 {REASON_ENV}=...")
+    return data
+
+
+@pytest.fixture(scope = "module")
+def matrix(golden) -> dict:
+    blocks = dict(golden.get("inputs", {}).get("denoiser_blocks") or {})
+    if os.environ.get(UPDATE_ENV) == "1":
+        try:
+            blocks.update(denoiser_blocks_from_diffusers())
+        except Exception:  # noqa: BLE001 - keep the recorded table where diffusers does not import
+            pass
+    out = _collect_in_child(blocks)
+    out["blocks"] = blocks
+    return out
+
+
+def test_gpu_lever_golden(golden, matrix):
+    """Every profile x lever (a) and profile x family x speed-layer optim (b) matches the reviewed golden."""
+    got = matrix["cells"]
+    assert len(got) > 1000, f"only {len(got)} cells collected: the matrix lost its probes"
+    profiles = {cid.split(".", 1)[0] for cid in got}
+    assert profiles == set(PROFILES), f"profiles without cells: {sorted(set(PROFILES) - profiles)}"
+    if os.environ.get(UPDATE_ENV) == "1":
+        reason = os.environ.get(REASON_ENV, "")
+        if not reason.strip():
+            pytest.fail(f'{UPDATE_ENV}=1 refuses to write without {REASON_ENV}="<why>"')
+        if diff_cells(golden.get("cells", {}), got) or blocks_changed(golden, matrix):
+            write_golden(got, reason, matrix["blocks"], old = golden)
+        return
+    diffs = diff_cells(golden["cells"], got)
+    assert not diffs, format_diffs(diffs)
+
+
+def blocks_changed(golden: dict, matrix: dict) -> bool:
+    return (golden.get("inputs", {}).get("denoiser_blocks") or {}) != matrix["blocks"]
+
+
+def test_every_probe_returns_the_same_cells_on_every_profile(matrix):
+    by_profile: dict = {}
+    for cid in matrix["cells"]:
+        profile, _, rest = cid.partition(".")
+        by_profile.setdefault(profile, set()).add(rest)
+    sets = list(by_profile.values())
+    assert sets and all(s == sets[0] for s in sets), {
+        p: sorted(s ^ sets[0])[:10] for p, s in by_profile.items() if s != sets[0]
+    }
+
+
+def test_golden_is_sorted_versioned_and_reasoned(golden):
+    cells = golden["cells"]
+    assert golden["schema"] == GOLDEN_SCHEMA and int(golden["version"]) >= 1
+    assert list(cells) == sorted(cells)
+    assert golden["changes"] and golden["changes"][-1]["version"] == golden["version"]
+    assert all(str(c.get("reason", "")).strip() for c in golden["changes"])
+    assert GOLDEN.read_text(encoding = "utf-8") == _dump_golden(
+        golden
+    ), "the golden was hand-edited out of format"
+    assert set(golden["profiles"]) == set(PROFILES)
+
+
+def test_golden_writer_refuses_an_empty_reason_and_ledgers_the_change(tmp_path):
+    path = tmp_path / "golden.json"
+    base = {"t4.any.x": lever(True, cfg = (1, 2)), "t4.any.y": lever(False, why = "n/a")}
+    with pytest.raises(ValueError):
+        write_golden(base, "  ", {}, path = path)
+    first = write_golden(base, "initial", {}, path = path)
+    assert first["version"] == 1
+    second = write_golden(
+        {"t4.any.x": lever(False, why = "gone")}, "drop x on purpose", {}, path = path
+    )
+    assert second["version"] == 2 and second["changes"][-1]["reason"] == "drop x on purpose"
+    assert second["changes"][-1]["regressions"] == 2  # x off, y gone
+    assert load_golden(path)["cells"] == {"t4.any.x": lever(False, why = "gone")}
+
+
+def test_diff_flags_losses_as_regressions_and_gains_for_review():
+    want = {
+        "l4.minimax-h3.int8_attn_auto": lever(True, cfg = "exact_steps=4"),
+        "h100.any.int8_attn.serving.hd128": lever(False, why = "no_kernel_config"),
+        "l4.flux.1.autoopt": {
+            "on": True,
+            "engaged": ["compiled", "cuda_graph"],
+            "cfg": "dtype=bfloat16",
+        },
+        "l4.any.gone": lever(True),
+    }
+    got = {
+        "l4.minimax-h3.int8_attn_auto": lever(False, why = "arch_off"),
+        "h100.any.int8_attn.serving.hd128": lever(True, cfg = "cuda:bn=128"),
+        "l4.flux.1.autoopt": {"on": True, "engaged": ["compiled"], "cfg": "dtype=bfloat16"},
+    }
+    kinds = {(k, c) for k, c, _e, _g in diff_cells(want, got)}
+    assert ("REGRESSION", "l4.minimax-h3.int8_attn_auto") in kinds
+    assert ("REGRESSION", "l4.flux.1.autoopt.cuda_graph") in kinds
+    assert ("REGRESSION", "l4.any.gone") in kinds
+    assert ("GAIN", "h100.any.int8_attn.serving.hd128") in kinds
+    text = format_diffs(diff_cells(want, got))
+    assert (
+        "GPU LEVER REGRESSION l4.minimax-h3.int8_attn_auto: expected on [exact_steps=4], got off (arch_off)"
+        in text
+    )
+    assert UPDATE_ENV in text and REASON_ENV in text
+
+
+def test_mock_profile_restores_torch():
+    import torch
+
+    before = (torch.cuda.is_available, torch.cuda.get_device_capability, torch.version.hip)
+    with mock_profile(PROFILES["gfx1151"]):
+        assert torch.cuda.is_available() and torch.cuda.get_device_capability() == (11, 5)
+        assert torch.version.hip and torch.cuda.get_device_properties(0).gcnArchName.startswith(
+            "gfx1151"
+        )
+    with mock_profile(PROFILES["mps"]):
+        assert not torch.cuda.is_available() and torch.backends.mps.is_available()
+    assert (torch.cuda.is_available, torch.cuda.get_device_capability, torch.version.hip) == before
+
+
+# ------------------------------------------------------------------------------------------ (3) future architectures
+# Every lever a synthetic profile's parent engages must engage on the child (same resources, newer arch), unless
+# listed here with the reason it cannot follow yet. Keys are ``<child>.<family>.<lever>`` fnmatch patterns. A stale
+# entry (the child engages it now, or the parent no longer does) fails, so the list only shrinks.
+_NEEDS = "not raced, so not enabled blind: needs {} hardware to measure"
+FUTURE_ARCH_EXCLUSIONS: dict = {
+    # INT8 GEMM / ConvRot: the child keeps the lever through the unlisted-arch RACE (int8_gemm.install_gate stays
+    # on: _FALLBACK_CONFIG, which is sm120's tile, and _UNLISTED_RACE_TILES race cuBLAS; convrot.unlisted_h16 races
+    # the stock rotation). Copying sm120's listed entry instead would skip that race, so only the table cell drops.
+    "sm1[23][01].any.int8_gemm.arch_tile": "served by the unlisted-arch race (install_gate on); a listed tile skips it",
+    "sm1[23][01].any.convrot.rotq_tile": "served by the unlisted rotq_h16 race (convrot.unlisted_h16 on)",
+    "sm1[23][01].any.convrot.k_tiles": "per-K rules of the listed rotq tile; the unlisted rotq_h16 race serves",
+    "sm1[23][01].any.int8_gemm.shape_tiles": _NEEDS.format("sm121 / sm130")
+    + " (per-shape tiles of sm120)",
+    "sm1[23][01].any.int8_gemm.tma_tile": _NEEDS.format("sm121 / sm130")
+    + " (host-TMA kernel, sm120 only)",
+    # The Triton INT8 attention stand-in serves only when the CUDA kernel fails to build; the CUDA kernel itself
+    # follows by the nearest-family fallback (int8_attn.serving stays on).
+    "sm1[23][01].any.int8_attn.triton_table.*": _NEEDS.format("sm121 / sm130")
+    + " (Triton stand-in tiles)",
+    "sm1[23][01].any.grouped_int8_gemm.tiles": _NEEDS.format("sm121 / sm130")
+    + " (spill-measured grouped tiles)",
+    "sm1[123][01].any.nvfp4.*": _NEEDS.format("sm110 / sm121 / sm130")
+    + " (FlashInfer NVFP4 cubins ship per arch)",
+    "sm110.any.convrot.h16_tf32x3": _NEEDS.format("sm110")
+    + " (tf32x3 vs IEEE second stage; IEEE still runs)",
+    "sm1[0123][0-3].*.inductor_reduction_filter": _NEEDS.format("the new arch")
+    + " (compile filters per measured arch)",
+    "sm1[13]0.any.sd_cpp_q8_cublas": _NEEDS.format("sm110 / sm130")
+    + " (sd.cpp cuBLAS vs MMQ crossover by major)",
+    "sm1[23][01].any.vae_*": _NEEDS.format("sm121 / sm130")
+    + " (VAE strip / fold decode measured per card)",
+    # INT8 attention: KERNEL_CONFIGS is keyed by exact capability, so a newer card keeps 16-bit attention.
+    "sm1[23][01].any.int8_attn.serving.*": "no CUDA config for the arch (exact-key KERNEL_CONFIGS lookup)",
+    # ROCm: tables keyed by the exact gfx ISA; gfx12 is not gfx11 with more of it.
+    "gfx1250.any.int8_attn.serving.*": _NEEDS.format("gfx1250")
+    + " (ROCm Triton INT8 attention tiles per gfx ISA)",
+    "gfx1250.any.transformer_quant.rdna_explicit_w8a8_arch": _NEEDS.format("gfx1250")
+    + " (RDNA W8A8 rows)",
+    "gfx1250.any.vae_upsample_fold": _NEEDS.format("gfx1250")
+    + " (MIOpen fold measured on gfx1151)",
+    "gfx1250.*.inductor_reduction_filter": _NEEDS.format("gfx1250"),
+}
+
+
+def _child_drops(cells: dict) -> list:
+    """``[(child cell id, parent cell id, item)]`` for every parent lever the child does not engage."""
+    drops = []
+    for p in PROFILES.values():
+        if not p.parent:
+            continue
+        prefix = p.parent + "."
+        for pid, pcell in cells.items():
+            if not pid.startswith(prefix):
+                continue
+            cid = p.key + "." + pid[len(prefix) :]
+            lost = _engaged_set(pcell) - _engaged_set(cells.get(cid))
+            for item in sorted(lost):
+                drops.append((cid if item == "<lever>" else f"{cid}.{item}", pid, item))
+    return drops
+
+
+def _excluded(cid: str) -> Optional[str]:
+    import fnmatch
+    for pattern, reason in FUTURE_ARCH_EXCLUSIONS.items():
+        if fnmatch.fnmatchcase(cid, pattern):
+            return pattern
+    return None
+
+
+def test_future_archs_keep_every_parent_lever(matrix):
+    drops = _child_drops(matrix["cells"])
+    unexplained = [(cid, pid) for cid, pid, _item in drops if _excluded(cid) is None]
+    assert not unexplained, (
+        "a future arch loses a lever its parent engages (same resources, newer arch):\n"
+        + "\n".join(
+            f"GPU LEVER REGRESSION {cid}: expected engaged (as {pid}), got off"
+            for cid, pid in unexplained
+        )
+        + "\nFix the policy (raced levers: nearest-family fallback) or add a FUTURE_ARCH_EXCLUSIONS entry with why."
+    )
+
+
+def test_future_arch_exclusions_are_not_stale(matrix):
+    drops = {cid for cid, _pid, _item in _child_drops(matrix["cells"])}
+    used = {_excluded(cid) for cid in drops}
+    stale = sorted(set(FUTURE_ARCH_EXCLUSIONS) - used)
+    assert (
+        not stale
+    ), f"FUTURE_ARCH_EXCLUSIONS entries no child needs any more (delete them): {stale}"
+    assert all(str(r).strip() for r in FUTURE_ARCH_EXCLUSIONS.values())
+
+
+# --------------------------------------------------------------------------------------------- incident replays
+# One test per regression an external tester's benchmark found (rounds R4-R7), each asserting the production
+# decision that would have caught it on a CPU runner. Every replay calls the real policy function; where a test
+# double stands in, it stands in for hardware or for diffusers, never for the decision under test.
+def _h3_video_default_gate(p: GpuProfile):
+    """The H3 video load's INT8 attention gate for Studio's default request on profile ``p``: the request fields
+    come from ``VideoLoadRequest`` defaults, the card capability from the same helper video.py reads it with, and
+    the hosted INT8 ConvRot denoiser (what Auto loads for H3 on CUDA)."""
+    from core.inference import diffusion_int8_attention as i8
+    from core.inference.diffusion_attention import _auto_request
+    from core.inference.video_minimax_h3_attn import cuda_capability, h3_int8_load_gate
+    from models.inference import VideoLoadRequest
+
+    fields = VideoLoadRequest.model_fields
+    backend = fields["attention_backend"].default
+    policy = i8.resolve_policy(fields["int8_attention"].default)
+    with mock_profile(p):
+        capability = cuda_capability("cuda:0")
+    gate = h3_int8_load_gate(
+        mode = policy.mode,
+        attention_backend = backend,
+        auto_attention = _auto_request(backend),
+        speed_on = True,
+        hosted_int8 = True,
+        comfy_checkpoint = False,
+        adapters = bool(fields["loras"].default),
+        capability = capability,
+    )
+    return gate, capability
+
+
+@pytest.mark.parametrize("key", ["rtx6000_ada", "l4", "rtx3090", "a10g"])
+def test_incident_r7_19098_h3_video_auto_int8_on_sm89_and_sm86(key, monkeypatch):
+    """R7, #19098 (fixed by #19344): an sm89 deny-list turned H3 video Auto INT8 attention off and the tester's
+    RTX 6000 Ada 960x544x124 cell got 25% slower ("INT8 attention ... not eligible: 0"). Auto must race it on sm89
+    and sm86 with the 4-step exact start, and an arch deny-list must make this test fail."""
+    from core.inference import video_minimax_h3_attn as h3
+    with clean_policy_env():
+        assert (8, 9) not in h3.H3_INT8_AUTO_OFF_ARCHS and (8, 6) not in h3.H3_INT8_AUTO_OFF_ARCHS
+        gate, cap = _h3_video_default_gate(PROFILES[key])
+        assert cap == PROFILES[key].capability
+        assert gate.auto and not gate.forced and gate.reason is None, gate
+        assert gate.exact_steps == h3.H3_INT8_EXACT_START_STEPS == 4, gate
+        # The replay bites: #19098's deny-list refuses Auto on sm89 (and only there).
+        monkeypatch.setattr(h3, "H3_INT8_AUTO_OFF_ARCHS", frozenset({(8, 9)}))
+        replay, _ = _h3_video_default_gate(PROFILES[key])
+        assert replay.auto is (cap != (8, 9)), replay
+        if cap == (8, 9):
+            assert replay.exact_steps == 0 and "sm89" in (replay.reason or ""), replay
+
+
+def test_incident_r5_18248_h3_video_int8_attention_auto_by_default():
+    """R5, #18004 left H3 video out of Auto INT8 attention (Ada / 3090 -2 to -5%; forcing it was 20% / 37% faster);
+    #18248 put it on by default and R6 measured +27% Ada, +57% 3090. Auto is the default policy, H3 video races at its
+    own long-sequence points (a 4096-token race rejected A100) and every CUDA card in the matrix gets the race."""
+    from core.inference import diffusion_int8_attention as i8
+    with clean_policy_env():
+        assert i8.resolve_policy(None).mode == "auto"
+        large, small = i8.FAMILY_RACE_TOKENS["MiniMaxH3Transformer3DModel"]
+        assert large >= 16384 and small >= 8192 and large > max(i8.RACE_TOKENS)
+        for key, p in PROFILES.items():
+            if p.vendor != "nvidia":
+                continue
+            gate, _ = _h3_video_default_gate(p)
+            assert gate.auto and gate.exact_steps == 4, (key, gate)
+        # ROCm: the gate gets no CUDA capability and Auto does not race there (a documented CUDA-only limit).
+        gate, cap = _h3_video_default_gate(PROFILES["gfx1151"])
+        assert cap is None
+
+
+def test_incident_r5_18105_int8_gemm_race_at_the_long_row_bucket(monkeypatch):
+    """R5, #17486 / #18105 / #18149: the CUTLASS INT8 GEMM race ran at 512 / 4096 rows in short bursts while H3 video
+    calls every GEMM at 19318 rows; the 4096-row winner was 1.2-1.55x slower there (Ada -7 to -10%, L4 -43%). A
+    19318-row call must take the 16384-row race's tile, timed sustained."""
+    from core.inference import diffusion_int8_cutlass as cut
+
+    h3_rows = 19318
+    with clean_policy_env():
+        points = cut.race_points()
+        assert 16384 in points, points
+        entry = {512: "small", 4096: "mid", 16384: "long"}
+        assert cut.slot(h3_rows, entry) == "long"
+        assert cut.slot(4096, entry) == "mid" and cut.slot(512, entry) == "small"
+        assert cut.sustained_for(16384) and cut.sustained_for(h3_rows)
+        decides, _drift = cut.sustained_decides(16384, {"today": 10.0}, {"today": 10.0}, "today")
+        assert decides
+        # The replay bites: without the long race (pre-#18105) the plan has no 16384-row point.
+        monkeypatch.setenv(cut.HUGE_RACE_ENV, "0")
+        assert 16384 not in cut.race_points()
+
+
+@pytest.mark.parametrize("steps", [1, 8, 20, 30])
+def test_incident_r4_17362_h3_steps_equal_evaluations(steps, monkeypatch):
+    """R4, #17362: H3 video ran 19 denoiser passes for 20 requested steps (the tester's +1 to +4% was 1 to 5% behind
+    at equal passes). diffusers' H3 grid of n points (terminal 0 included) runs n - 1 evaluations, so Studio asks for
+    steps + 1; PDD keeps steps + 1 too. Checked on the real scheduler when this diffusers has it."""
+    from core.inference import video_minimax_h3 as h3
+    from core.inference.video_minimax_h3_pdd import h3_pdd_num_inference_steps
+
+    with clean_policy_env():
+        points = h3.h3_num_inference_steps(steps)
+        assert points == steps + 1
+        assert h3_pdd_num_inference_steps(steps) == steps + 1
+        try:
+            from diffusers import MiniMaxH3Scheduler
+        except Exception:  # noqa: BLE001 - CI has no diffusers; the grid arithmetic above is the contract
+            MiniMaxH3Scheduler = None
+        if MiniMaxH3Scheduler is not None:
+            sched = MiniMaxH3Scheduler(shift = 12.0)
+            sched.set_timesteps(points)
+            assert len(sched.timesteps) == steps
+        # The replay bites: the pre-#17362 grid (kill switch) is one evaluation short.
+        monkeypatch.setenv(h3.H3_STEP_EVALUATIONS_ENV, "0")
+        assert h3.h3_num_inference_steps(steps) == steps
+
+
+# Hosted INT8 H3-Image DiT / text encoder GB and the prefetch streamer's in-flight members (as the stream-layout
+# suite plans them).
+_H3I_STREAM = dict(dit_gb = 21.9, te_gb = 27.2, inflight = 2)
+
+
+def test_incident_r5_18183_h3_image_8gb_plan_fits_or_refuses(monkeypatch):
+    """R5, #18183: H3-Image 2048^2 on the tester's RTX 6000 Ada capped to 8 GB went out of memory at step 1 (5.52 GiB
+    of session weights left 1.46 GiB) while the reference stack rendered in 8.1 s; the 3090 on PCIe 3.0 x4 streamed 19
+    of 50 blocks and was 18% slower because the plan never priced the link. A card gets a layout that fits it, is
+    refused at load, and a slow link keeps more blocks resident."""
+    from core.inference import diffusion_minimax_h3_image as h3i
+    with clean_policy_env():
+        # The reported load: 7.73 GB free, 80.5 GB host.
+        plan = h3i.plan_placement(vram_gb = 7.73, host_gb = 80.53, **_H3I_STREAM)
+        assert plan.placement == h3i.PLACE_STREAM
+        # Today's layout (session weights resident) is what ran out of memory: a parked one must be chosen.
+        assert plan.parked and plan.layout in (
+            h3i.LAYOUT_PARKED,
+            h3i.LAYOUT_PARKED_VAE,
+        ), plan.reasons
+        assert plan.host_need_gb is not None and plan.host_need_gb <= 80.53
+        # Every budget from 4 to 24 GB: a stream / resident layout, or a refusal naming the free memory it needs.
+        for tenth in range(40, 245, 5):
+            vram = tenth / 10
+            try:
+                got = h3i.plan_placement(vram_gb = vram, host_gb = 80.53, **_H3I_STREAM)
+            except RuntimeError as exc:
+                assert "free GPU memory" in str(exc), (vram, exc)
+                assert vram < 7.73, f"{vram} GB refused though 7.73 GB renders"
+                continue
+            assert got.placement in h3i.PLACEMENTS, (vram, got)
+        # The 3090 on PCIe 3.0 x4 (3 GiB/s): the priced plan parks and keeps more blocks than the unpriced one.
+        p = PROFILES["rtx3090"]
+        assert p.link == "pcie3x4"
+        unpriced = h3i.plan_placement(vram_gb = 25.06, host_gb = 84.44, **_H3I_STREAM)
+        slow = h3i.plan_placement(
+            vram_gb = 25.06, host_gb = 84.44, h2d_gib_s = 3.0, block_tops = 220 * 0.67, **_H3I_STREAM
+        )
+        assert slow.parked and slow.dit_resident_blocks > unpriced.dit_resident_blocks, slow.reasons
+        # The replay bites: today's layout regardless of fit (pre-#18183) leaves the 8 GB card unparked.
+        monkeypatch.setattr(h3i, "_choose_layout", lambda candidates, **_k: (candidates[0], ""))
+        bad = h3i.plan_placement(vram_gb = 7.73, host_gb = 80.53, **_H3I_STREAM)
+        assert bad.layout == h3i.LAYOUT_TODAY and bad.dit_resident_blocks == 0
+
+
+class _Spec:
+    def __init__(self, name, load):
+        self.name = name
+        self.load = load
+        self.type_hint = None
+        self.pretrained_model_name_or_path = "unsloth/MiniMax-H3"
+        self.subfolder = name
+
+
+class _ModularPipe:
+    """What diffusers' ModularPipeline.load_components does with a component that fails: logs and registers None."""
+
+    def __init__(self, specs):
+        self._component_specs = {s.name: s for s in specs}
+        for s in specs:
+            setattr(self, s.name, None)
+
+    def load_components(self, **kwargs):
+        for name, spec in self._component_specs.items():
+            try:
+                value = spec.load(**kwargs)
+            except Exception:  # noqa: BLE001 - diffusers swallows it
+                value = None
+            setattr(self, name, value)
+
+
+def test_incident_r5_18157_missing_component_fails_the_load():
+    """R5, #18157: a MiniMax-H3 VAE shard that failed to download (disk full, then a 404 on the fallback) still let
+    the load succeed; the first render failed with ``AttributeError: 'NoneType' ... 'config'``. The strict loader
+    fails the load naming the component, and the H3 video load path uses it with no optional VAE."""
+    import ast
+    import errno
+    import inspect
+
+    from core.inference import video
+    from core.inference.diffusion_component_fetch import ComponentFetchError, load_components_strict
+
+    def vae_load(**_kw):
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    specs = [_Spec("transformer", lambda **_kw: object()), _Spec("vae", vae_load)]
+    # The replay bites: diffusers alone loads "successfully" with vae None (the R5 failure).
+    plain = _ModularPipe(specs)
+    plain.load_components()
+    assert plain.vae is None and plain.transformer is not None
+    with pytest.raises(ComponentFetchError) as info:
+        load_components_strict(_ModularPipe(specs), cache_dir = None)
+    assert info.value.component == "vae" and info.value.kind == "disk_full", info.value
+    # The video load calls it, never with the VAE (or any H3 component) optional.
+    tree = ast.parse(inspect.getsource(video))
+    calls = [
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Call)
+        and getattr(n.func, "id", getattr(n.func, "attr", None)) == "load_components_strict"
+    ]
+    assert calls, "video.py no longer loads components strictly"
+    for call in calls:
+        assert not any(kw.arg == "optional" for kw in call.keywords), ast.unparse(call)
+
+
+@pytest.mark.parametrize("family", ["minimax-h3-image", "flux.3-klein"])
+def test_incident_r6_upsampler_never_starts_split_on_small_cards(family, monkeypatch, tmp_path):
+    """R6, #17792 (fixed by #18627): the default-on prompt upsampler sized ``-ngl`` to free VRAM, so on the tester's
+    8 / 12 / 16 GB Ada budgets the 6 GB GGUF split onto the CPU and captions took 507-628 s against a 7.8 s render.
+    For every free-memory reading a render's upsampler starts with every layer on the GPU, or not at all."""
+    import torch
+
+    from core.inference import flux3_prompt_upsampler as pup
+    from core.inference import llama_cpp, stt_mtmd_sidecar, stt_sidecar
+    from utils import process_lifetime
+
+    model = tmp_path / "Qwen3.5-9B-UD-Q4_K_XL.gguf"
+    with open(model, "wb") as fh:
+        fh.truncate(6 * 1024**3)  # sparse: only its size is read
+    state = {"free": 0, "argv": []}
+
+    class _Started(Exception):
+        pass
+
+    def _popen(
+        cmd,
+        env = None,
+        **_kw,
+    ):
+        state["argv"].append(cmd)
+        raise _Started
+
+    monkeypatch.delenv(pup.ENV_ALLOW_PARTIAL_OFFLOAD, raising = False)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 1)
+    monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    monkeypatch.setattr(
+        llama_cpp.LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda b = None: False)
+    )
+    monkeypatch.setattr(pup, "_resident_cuda_ordinal", lambda: 0)
+    monkeypatch.setattr(
+        pup, "_accelerator_memory_mib", lambda o = None: (state["free"], 48 * 1024, "cuda")
+    )
+    monkeypatch.setattr(pup, "_gpu_unowned", lambda: False)
+    monkeypatch.setattr(pup, "_image_model_owns_gpu", lambda: True)
+    monkeypatch.setattr(stt_sidecar, "_training_active", lambda: False)
+    monkeypatch.setattr(stt_mtmd_sidecar, "_llama_server_child_env", lambda b: {})
+    monkeypatch.setattr(llama_cpp, "_llama_server_api_key_enabled", lambda: False)
+    monkeypatch.setattr(process_lifetime, "is_process_shutting_down", lambda: False)
+    monkeypatch.setattr(process_lifetime, "spawn_on_lifetime_thread", lambda fn: fn())
+    monkeypatch.setattr(pup.subprocess, "Popen", _popen)
+    assert pup.supports_family(family) and pup.resolve_enhance(family, None)  # on by default
+
+    def render_start(free_mib):
+        state["free"] = free_mib
+        token = pup._GENERATE_NEEDS_FULL_OFFLOAD.set(True)
+        try:
+            pup.PromptUpsamplerSidecar()._spawn_server("/x/llama-server", str(model), None)
+        except _Started:
+            argv = state["argv"][-1]
+            return int(argv[argv.index("-ngl") + 1])
+        except pup.UpsamplerUnavailableError:
+            return None
+        finally:
+            pup._GENERATE_NEEDS_FULL_OFFLOAD.reset(token)
+        raise AssertionError("the start neither spawned nor refused")
+
+    started = {}
+    for free_mib in range(0, 16 * 1024 + 1, 512):
+        started[free_mib] = render_start(free_mib)
+        assert started[free_mib] in (None, 99), (free_mib, started[free_mib])
+    assert started[16 * 1024] == 99, "a card that fits the GGUF must still enhance"
+    # The replay bites: the old split start (#17792 behaviour, now behind the opt-in) runs part on the CPU.
+    monkeypatch.setenv(pup.ENV_ALLOW_PARTIAL_OFFLOAD, "1")
+    assert render_start(4096) not in (None, 99)
+
+
+@pytest.mark.parametrize(
+    "key,flash", [("a100_40", True), ("l4", True), ("rtx6000_ada", True), ("rtx5090", False)]
+)
+def test_incident_r4_h3_flash_over_cudnn_where_measured(key, flash):
+    """R4: H3 per-step 2-5% behind on the tester's cards; on sm89 the attention pick is flash over cuDNN (measured
+    faster at H3's shape), sm120 keeps cuDNN (ties or loses). sm86 (the 3090) is NOT in ``H3_FLASH_FASTER_ARCHS`` on
+    main, unmeasured, and keeps cuDNN: R4 named that as one cause, so it is pinned in the lever golden, not here."""
+    import types
+
+    from core.inference.video_minimax_h3_attn import h3_attention_backend
+
+    p = PROFILES[key]
+    with clean_policy_env(), mock_profile(p):
+        import torch
+        target = types.SimpleNamespace(device = "cuda", dtype = torch.bfloat16)
+        got = h3_attention_backend(
+            "_native_cudnn", capability = p.capability, requested = None, target = target
+        )
+    assert got == ("_native_flash" if flash else "_native_cudnn"), (key, got)
