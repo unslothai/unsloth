@@ -19,6 +19,11 @@ _UNSLOTH_STUDIO_FOOTER = (
 )
 
 
+# Data Designer names every batch `batch_{n:05d}.parquet`. Unlike `*`, which fnmatch lets cross `/`,
+# `[0-9]` keeps the match out of subfolders such as other splits.
+_BATCH_FILE_PATTERN = "batch_" + "[0-9]" * 5 + ".parquet"
+
+
 class RecipeDatasetPublishError(ValueError):
     """Raised when a recipe dataset cannot be published to Hugging Face."""
 
@@ -71,6 +76,20 @@ def _ensure_hub_repo_private(hf_api, repo_id: str) -> None:
             f"Could not make {repo_id} private, so nothing was uploaded. The token likely "
             "lacks permission to change this repo's settings."
         ) from exc
+
+
+def _replace_batch_files(
+    hf_api, *, repo_id: str, folder: Path, path_in_repo: str, commit_message: str
+) -> None:
+    # A smaller rerun would otherwise leave old batches that the card's glob still loads.
+    hf_api.upload_folder(
+        repo_id = repo_id,
+        folder_path = str(folder),
+        path_in_repo = path_in_repo,
+        repo_type = "dataset",
+        commit_message = commit_message,
+        delete_patterns = [_BATCH_FILE_PATTERN],
+    )
 
 
 def publish_recipe_dataset(
@@ -136,13 +155,12 @@ def publish_recipe_dataset(
         card.push_to_hub(repo_id, token = hf_token, repo_type = "dataset")
 
         try:
-            client._api.upload_folder(
+            _replace_batch_files(
+                client._api,
                 repo_id = repo_id,
-                folder_path = str(dataset_path / FINAL_DATASET_FOLDER_NAME),
+                folder = dataset_path / FINAL_DATASET_FOLDER_NAME,
                 path_in_repo = "data",
-                repo_type = "dataset",
                 commit_message = "Upload main dataset files",
-                delete_patterns = ["*.parquet"],
             )
         except Exception as exc:
             raise HuggingFaceHubClientUploadError(f"Failed to upload parquet files: {exc}") from exc
@@ -150,10 +168,21 @@ def publish_recipe_dataset(
             repo_id = repo_id,
             images_folder = dataset_path / "images",
         )
-        client._upload_processor_files(
-            repo_id = repo_id,
-            processors_folder = dataset_path / PROCESSORS_OUTPUTS_FOLDER_NAME,
-        )
+        processors_folder = dataset_path / PROCESSORS_OUTPUTS_FOLDER_NAME
+        processor_dirs = processors_folder.iterdir() if processors_folder.is_dir() else ()
+        for processor_dir in sorted(d for d in processor_dirs if d.is_dir()):
+            try:
+                _replace_batch_files(
+                    client._api,
+                    repo_id = repo_id,
+                    folder = processor_dir,
+                    path_in_repo = processor_dir.name,
+                    commit_message = f"Upload {processor_dir.name} processor outputs",
+                )
+            except Exception as exc:
+                raise HuggingFaceHubClientUploadError(
+                    f"Failed to upload processor outputs for '{processor_dir.name}': {exc}"
+                ) from exc
         with tempfile.TemporaryDirectory() as scrubbed_dir:
             scrubbed_config_path = Path(scrubbed_dir) / SDG_CONFIG_FILENAME
             if builder_config is not None:

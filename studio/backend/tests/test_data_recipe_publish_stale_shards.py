@@ -7,25 +7,34 @@ from types import ModuleType, SimpleNamespace
 
 from huggingface_hub import CommitOperationAdd, CommitOperationDelete, HfApi
 import huggingface_hub.hf_api as hf_api_module
+import pytest
 
 from core.data_recipe import huggingface as recipe_hf
 
 
 class _Hub(HfApi):
-    def __init__(self, files):
+    def __init__(
+        self,
+        files,
+        *,
+        fail_folder = None,
+    ):
         super().__init__(token = "hf_publish")
         self.files = dict(files)
-
-    def repo_exists(self, *args, **kwargs):
-        return True
-
-    def create_repo(self, *args, **kwargs):
-        pass
+        self.fail_folder = fail_folder
+        self.commits = []
 
     def list_repo_files(self, *args, **kwargs):
         return list(self.files)
 
     def create_commit(self, repo_id, operations, **kwargs):
+        if any(op.path_in_repo.startswith(f"{self.fail_folder}/") for op in operations):
+            raise RuntimeError("upload failed")
+        deleted = {op.path_in_repo for op in operations if isinstance(op, CommitOperationDelete)}
+        assert not deleted & {
+            op.path_in_repo for op in operations if isinstance(op, CommitOperationAdd)
+        }
+        self.commits.append(operations)
         for op in operations:
             if isinstance(op, CommitOperationDelete):
                 del self.files[op.path_in_repo]
@@ -33,21 +42,16 @@ class _Hub(HfApi):
                 self.files[op.path_in_repo] = Path(op.path_or_fileobj).read_bytes()
 
 
-def _stub_data_designer(monkeypatch, hub):
+def _publish(monkeypatch, tmp_path, hub, local_files):
+    # The single-commit path; with Xet, upload_folder may split a large folder into several.
+    monkeypatch.setattr(hf_api_module, "is_xet_available", lambda: False)
+
     class _Client:
         def __init__(self, token):
             self._api = hub
 
         def __getattr__(self, name):
             return lambda **kwargs: None
-
-        def _upload_main_dataset_files(self, *, repo_id, parquet_folder):
-            hub.upload_folder(
-                repo_id = repo_id,
-                folder_path = str(parquet_folder),
-                path_in_repo = "data",
-                repo_type = "dataset",
-            )
 
     modules = {
         "data_designer.engine.storage.artifact_storage": {
@@ -73,24 +77,11 @@ def _stub_data_designer(monkeypatch, hub):
         for key, value in attrs.items():
             setattr(module, key, value)
         monkeypatch.setitem(sys.modules, name, module)
-
-
-def test_republishing_fewer_shards_removes_the_old_ones(monkeypatch, tmp_path):
-    monkeypatch.setattr(hf_api_module, "is_xet_available", lambda: False)
-    hub = _Hub(
-        {
-            "README.md": b"card",
-            "metadata.json": b"{}",
-            "data/batch_00000.parquet": b"old-0",
-            "data/batch_00001.parquet": b"old-1",
-            "data/batch_00002.parquet": b"old-2",
-        }
-    )
-    _stub_data_designer(monkeypatch, hub)
     monkeypatch.setattr(recipe_hf, "_resolve_recipe_artifact_path", lambda _: tmp_path)
     (tmp_path / "metadata.json").write_text("{}", encoding = "utf-8")
-    (tmp_path / "parquet-files").mkdir()
-    (tmp_path / "parquet-files" / "batch_00000.parquet").write_bytes(b"new-0")
+    for rel, data in local_files.items():
+        (tmp_path / rel).parent.mkdir(parents = True, exist_ok = True)
+        (tmp_path / rel).write_bytes(data)
 
     recipe_hf.publish_recipe_dataset(
         artifact_path = str(tmp_path),
@@ -99,8 +90,66 @@ def test_republishing_fewer_shards_removes_the_old_ones(monkeypatch, tmp_path):
         hf_token = "hf_publish",
     )
 
+
+_UNRELATED = {
+    ".gitattributes": b"attrs",
+    "README.md": b"card",
+    "data/train-00000-of-00001.parquet": b"other-tool",
+    "data/test/batch_00000.parquet": b"other-split",
+    "data/batch_archive/batch_00000.parquet": b"archived",
+    "data/batch_00001.parquet.bak": b"backup",
+    "misc/batch_00003.parquet": b"other-config",
+}
+
+
+def test_republishing_fewer_batches_removes_only_old_batches(monkeypatch, tmp_path):
+    hub = _Hub(
+        {
+            **_UNRELATED,
+            "data/batch_00000.parquet": b"old-0",
+            "data/batch_00001.parquet": b"old-1",
+            "data/batch_00002.parquet": b"old-2",
+            "summary/batch_00000.parquet": b"old-s0",
+            "summary/batch_00001.parquet": b"old-s1",
+        }
+    )
+    _publish(
+        monkeypatch,
+        tmp_path,
+        hub,
+        {
+            "parquet-files/batch_00000.parquet": b"new-0",
+            "processors-files/summary/batch_00000.parquet": b"new-s0",
+        },
+    )
+
     assert hub.files == {
-        "README.md": b"card",
-        "metadata.json": b"{}",
+        **_UNRELATED,
         "data/batch_00000.parquet": b"new-0",
+        "summary/batch_00000.parquet": b"new-s0",
     }
+    assert len(hub.commits) == 2
+
+
+def test_first_publish_to_an_empty_repo_uploads_the_batches(monkeypatch, tmp_path):
+    hub = _Hub({".gitattributes": b"attrs"})
+    _publish(monkeypatch, tmp_path, hub, {"parquet-files/batch_00000.parquet": b"new-0"})
+
+    assert hub.files == {".gitattributes": b"attrs", "data/batch_00000.parquet": b"new-0"}
+
+
+@pytest.mark.parametrize(
+    "fail_folder, message", [("data", "parquet files"), ("summary", "processor outputs")]
+)
+def test_failed_upload_is_reported_as_a_publish_error(monkeypatch, tmp_path, fail_folder, message):
+    hub = _Hub({"data/batch_00000.parquet": b"old-0"}, fail_folder = fail_folder)
+    with pytest.raises(recipe_hf.RecipeDatasetPublishError, match = message):
+        _publish(
+            monkeypatch,
+            tmp_path,
+            hub,
+            {
+                "parquet-files/batch_00000.parquet": b"new-0",
+                "processors-files/summary/batch_00000.parquet": b"new-s0",
+            },
+        )
