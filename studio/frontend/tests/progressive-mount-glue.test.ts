@@ -442,7 +442,7 @@ test("a jump asks for its row instead of for the whole thread", () => {
   assert.match(reveal, /\(index >= current\.start && index < current\.end\) \|\|\s*current\.pins\?\.includes\(index\)\s*\) \{\s*return true;/);
   // Synchronous, so the caller finds the row in the DOM when this returns.
   assert.match(reveal, /flushSync\(\(\) => \{\s*setWin\(next\);\s*\}\);/);
-  const jump = section(TURNS, "const jumpToTurn = useCallback(", "[viewportRef, detachFromBottom],");
+  const jump = section(TURNS, "async function jumpToMessageIn(", "shineTurn(target);");
   assert.ok(
     jump.indexOf("revealProgressiveRow(viewport, messageId)") < jump.indexOf("completeProgressiveMounts("),
     "the turn rail reveals one row before falling back to a full mount",

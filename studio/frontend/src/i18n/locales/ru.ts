@@ -887,6 +887,13 @@ export const ru = {
     compactEmpty: "Пока нечего сжимать",
     compactUnsupported: "Для сжатия нужна модель GGUF или MLX с поддержкой инструментов",
   },
+  chatFiles: {
+    title: "Файлы в этом чате",
+    code: "Фрагменты кода",
+    showInChat: "Показать в чате",
+    download: "Скачать {name}",
+    saveFailed: "Не удалось сохранить {name}.",
+  },
   welcome: {
     goodToSeeYou: "Рады вас видеть",
     goodToSeeYouName: "Рады вас видеть, {name}",
