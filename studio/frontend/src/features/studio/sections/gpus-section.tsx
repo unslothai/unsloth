@@ -124,11 +124,12 @@ function DeviceRow({
 function PlanLine({ hasModel }: { hasModel: boolean }): ReactElement | null {
   const t = useT();
   const locale = useLocale();
-  const { status, plan, planError } = useTrainingParallelStore(
+  const { status, plan, planError, hostGpuCount } = useTrainingParallelStore(
     useShallow((s) => ({
       status: s.planStatus,
       plan: s.plan,
       planError: s.planError,
+      hostGpuCount: s.capabilities?.gpus.length ?? 1,
     })),
   );
   const count = useMemo(() => new Intl.NumberFormat(locale), [locale]);
@@ -156,7 +157,7 @@ function PlanLine({ hasModel }: { hasModel: boolean }): ReactElement | null {
       </p>
     );
   }
-  const summary = planSummary(plan, (n) => count.format(n));
+  const summary = planSummary(plan, (n) => count.format(n), hostGpuCount);
   return (
     <div
       className={cn(
@@ -166,14 +167,17 @@ function PlanLine({ hasModel }: { hasModel: boolean }): ReactElement | null {
       data-testid="gpus-plan"
       data-mode={plan.mode}
     >
-      <div className="flex flex-wrap items-center gap-2">
-        <span className="inline-flex h-5 items-center rounded-full bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] px-2 text-ui-10p5 font-medium text-foreground/90 dark:bg-[rgb(255_255_255_/_calc(0.08*var(--contrast-wash-gain,1)))]">
-          {t(PARALLEL_MODE_LABEL_KEYS[plan.mode])}
-        </span>
-        <p className="text-ui-12p5 text-foreground/90">
-          {t(summary.key, summary.params)}
-        </p>
-      </div>
+      {/* A refused choice resolves to some other mode; only the refusal is true for this choice. */}
+      {!plan.error && (
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="inline-flex h-5 items-center rounded-full bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] px-2 text-ui-10p5 font-medium text-foreground/90 dark:bg-[rgb(255_255_255_/_calc(0.08*var(--contrast-wash-gain,1)))]">
+            {t(PARALLEL_MODE_LABEL_KEYS[plan.mode])}
+          </span>
+          <p className="text-ui-12p5 text-foreground/90">
+            {t(summary.key, summary.params)}
+          </p>
+        </div>
+      )}
       {plan.reason && !plan.error && (
         <p className="text-ui-11 leading-relaxed text-muted-foreground/80">
           {plan.reason}

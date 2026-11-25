@@ -279,3 +279,36 @@ test("a GPU override edit while Start is pending counts as an edit, like any oth
   );
   assert.doesNotMatch(capture, /currentParallelRequestFields|\.capabilities/);
 });
+
+test("an auto layer split with gpu_ids null counts the host's GPUs, not 1", () => {
+  // Real backend body: auto on 2 x T4 for a 40 GB model.
+  const plan = normalizeParallelPlan({
+    requested_mode: "auto",
+    mode: "layer_split",
+    world_size: 1,
+    gpu_ids: null,
+    spec: null,
+    error: null,
+  });
+  assert.ok(plan);
+  assert.equal(runGpuCount(plan, 2), 2);
+  assert.equal(planSummary(plan, String, 2).params.count, "2");
+});
+
+test("a refused choice shows only the refusal, not the mode it resolved to", () => {
+  const src = readFileSync(
+    new URL(
+      "../src/features/studio/sections/gpus-section.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const line = src.slice(
+    src.indexOf("function PlanLine"),
+    src.indexOf("function ModeSelect"),
+  );
+  assert.match(
+    line,
+    /\{!plan\.error && \(\s*<div className="flex flex-wrap items-center gap-2">/,
+  );
+});

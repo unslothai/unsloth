@@ -382,6 +382,9 @@ export function RunPreviewCard({
 
   const gpu = useGpuInfo();
   // Only where the GPUs section shows, so a single-GPU preview is unchanged.
+  const hostGpuCount = useTrainingParallelStore(
+    (s) => s.capabilities?.gpus.length ?? 1,
+  );
   const parallelPlan = useTrainingParallelStore((s) =>
     s.capabilities && showsGpuSection(s.capabilities.gpus.length) && !s.plan?.error
       ? s.plan
@@ -549,7 +552,7 @@ export function RunPreviewCard({
             label={t("studio.preview.gpus")}
             value={t("studio.gpus.runChip", {
               mode: t(PARALLEL_MODE_LABEL_KEYS[parallelPlan.mode]),
-              count: numberFormatter.format(runGpuCount(parallelPlan)),
+              count: numberFormatter.format(runGpuCount(parallelPlan, hostGpuCount)),
             })}
           />
         )}

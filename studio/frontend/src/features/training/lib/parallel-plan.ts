@@ -154,24 +154,34 @@ const MODE_SUMMARY_KEYS = {
   custom: "studio.gpus.summary.custom",
 } as const satisfies Record<ParallelMode, TranslationKey>;
 
-/** single and layer_split are one process, so world_size is 1 there: count the GPUs instead. */
-export function runGpuCount(run: {
-  mode: ParallelMode;
-  worldSize: number;
-  gpuIds: readonly number[];
-}): number {
+/** single and layer_split are one process, so world_size is 1 there: count the GPUs instead. An auto
+ * layer split leaves gpu_ids null (picked at load), so `hostGpuCount` stands in. */
+export function runGpuCount(
+  run: {
+    mode: ParallelMode;
+    worldSize: number;
+    gpuIds: readonly number[];
+  },
+  hostGpuCount = 1,
+): number {
   if (run.mode === "single") return 1;
-  if (run.mode === "layer_split") return Math.max(run.gpuIds.length, 1);
+  if (run.mode === "layer_split") {
+    return Math.max(run.gpuIds.length || hostGpuCount, 1);
+  }
   return Math.max(run.worldSize, run.gpuIds.length, 1);
 }
 
 export function planSummary(
   plan: Pick<ParallelPlan, "mode" | "worldSize" | "gpuIds" | "spec">,
   formatCount: (n: number) => string = String,
+  hostGpuCount = 1,
 ): { key: TranslationKey; params: { count: string; spec: string } } {
   return {
     key: MODE_SUMMARY_KEYS[plan.mode],
-    params: { count: formatCount(runGpuCount(plan)), spec: plan.spec ?? "" },
+    params: {
+      count: formatCount(runGpuCount(plan, hostGpuCount)),
+      spec: plan.spec ?? "",
+    },
   };
 }
 
