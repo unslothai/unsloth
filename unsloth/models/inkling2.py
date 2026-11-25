@@ -169,7 +169,7 @@ def _inkling2_lora_deltas(model):
                 # Same contraction as peft's ParamWrapper.get_delta_weight, one expert slice at a time.
                 pattern = (
                     "o r e, e r i -> e o i"
-                    if module._did_swap_in_out_features
+                    if getattr(module, "_did_swap_in_out_features", False)
                     else "o r e, e r i -> e i o"
                 )
                 for A, B, scaling in terms:
