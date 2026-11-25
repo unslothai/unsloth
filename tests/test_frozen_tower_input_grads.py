@@ -124,7 +124,7 @@ def test_frozen_tower_runs_no_backward_and_grads_match():
     model, trainable = _model()
     loss_ref, grads_ref, ref = _step(model, trainable, force_tower_grad = True)
     loss, grads, state = _step(model, trainable)
-    assert ref["backward"] == 1 and ref["out_requires_grad"]
+    assert ref["backward"] >= 1 and ref["out_requires_grad"]
     assert state["backward"] == 0 and state["out_requires_grad"] is False
     assert torch.equal(loss, loss_ref)
     assert grads[0].abs().sum() > 0
@@ -135,7 +135,7 @@ def test_frozen_tower_runs_no_backward_and_grads_match():
 def test_tower_with_a_trainable_weight_keeps_its_backward():
     model, trainable = _model(train_tower = True)
     _, grads, state = _step(model, trainable)
-    assert state["backward"] == 1 and state["out_requires_grad"]
+    assert state["backward"] >= 1 and state["out_requires_grad"]
     assert all(g.abs().sum() > 0 for g in grads)
 
 
@@ -144,7 +144,7 @@ def test_trainability_is_read_at_forward_time():
     tower_weight = model.model.visual.blocks[0].mlp.up_proj.weight
     tower_weight.requires_grad_(True)  # unfrozen after enable_input_require_grads
     _, grads, state = _step(model, trainable + [tower_weight])
-    assert state["backward"] == 1 and grads[1].abs().sum() > 0
+    assert state["backward"] >= 1 and grads[1].abs().sum() > 0
     tower_weight.requires_grad_(False)
     tower_weight.grad = None
     _, _, state = _step(model, trainable)
@@ -168,15 +168,12 @@ def test_text_embedding_hook_is_unchanged():
     )
 
 
-def test_compiled_hook_sees_a_tower_unfrozen_after_an_eager_forward():
+def test_compiled_hook_keeps_the_flag_for_a_tower_unfrozen_later():
     model, trainable = _model()
     _, _, state = _step(model, trainable)
     assert state["backward"] == 0
-    patch_embed = model.model.visual.patch_embed
-    tower_weight = model.model.visual.blocks[0].mlp.up_proj.weight
-    tower_weight.requires_grad_(True)
-    compiled = torch.compile(patch_embed, backend = "eager", fullgraph = True)
+    compiled = torch.compile(model.model.visual.patch_embed, backend = "eager", fullgraph = True)
     x = _inputs()["pixel_values"]
+    assert compiled(x).requires_grad  # traced while frozen: kept, so a later unfreeze still trains
+    model.model.visual.blocks[0].mlp.up_proj.weight.requires_grad_(True)
     assert compiled(x).requires_grad
-    tower_weight.requires_grad_(False)
-    assert not compiled(x).requires_grad

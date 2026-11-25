@@ -6137,8 +6137,8 @@ def patch_enable_input_require_grads():
     def _sub_model_hook(owner):
         # transformers >= 5 hooks every sub-model; a frozen tower's backward is wasted, downstream still gets grad.
         def make_inputs_require_grads(module, input, output):
-            # Read live, also when tracing: dynamo guards each requires_grad, so unfreezing retraces.
-            if any(p.requires_grad for p in owner.parameters()):
+            # Traced: keep the flag, since a graph need not retrace when a tower is unfrozen later.
+            if torch.compiler.is_compiling() or any(p.requires_grad for p in owner.parameters()):
                 return outer_hook(module, input, output)
 
         return make_inputs_require_grads
