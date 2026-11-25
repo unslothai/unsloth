@@ -232,3 +232,69 @@ def test_no_hosted_source_keeps_the_at_load_build(turing, monkeypatch):
         FH.fp16_card_hosted_int8_transformer(_fam(), T4, object, base = QWEN21[0], config_source = None)
         is None
     )
+
+
+_CPU_ALLOC = (
+    "DefaultCPUAllocator: can't allocate memory: you tried to allocate 1073741824 bytes. "
+    "Error code 12 (Cannot allocate memory)"
+)
+
+
+def test_the_cpu_allocators_runtime_error_is_an_allocation_failure(monkeypatch, tmp_path):
+    """PyTorch's host allocator raises a plain RuntimeError (errno 12): it must surface, not fall back to the larger
+    dense load, from the reader and from the fingerprint check alike."""
+    from core.inference import diffusion_native_hosted as NH
+    from core.inference import diffusion_prequant as PQ
+
+    def _host_oom(*_a, **_k):
+        raise RuntimeError(_CPU_ALLOC)
+
+    assert NH.is_allocation_failure(RuntimeError(_CPU_ALLOC))
+    assert NH.is_allocation_failure(MemoryError())
+    assert not NH.is_allocation_failure(RuntimeError("header too large"))
+
+    monkeypatch.setattr(NH, "hosted_metadata", _host_oom)
+    with pytest.raises(RuntimeError, match = "can't allocate memory"):
+        NH.load_native_from_hosted(
+            str(tmp_path / "x.safetensors"), object, "/cfg", spec = {}, family = None
+        )
+
+    monkeypatch.setattr(PQ, "_fingerprint_mode", lambda: "full")
+    monkeypatch.setattr(PQ, "canonical_weight_fingerprint", _oom)
+    meta = {"fingerprint": {PQ.CANONICAL_FINGERPRINT_KEY: {"a.weight": "x"}}}
+    with pytest.raises(torch.OutOfMemoryError):
+        PQ._verify_packed_fingerprint({}, meta)
+
+
+@pytest.mark.parametrize(
+    "base",
+    [
+        "Qwen/Qwen-Image-2.1-Turbo",  # a sibling distill, not scored on a T4
+        "someone/Qwen-Image-2.1",  # a Hub fine-tune
+        "LOCAL",  # an edited local copy named like the release
+    ],
+)
+def test_only_the_released_repo_takes_the_hosted_dit(turing, monkeypatch, tmp_path, base):
+    """The hosted file stands in for the released DiT only: a local or fine-tuned pipeline keeps its own weights."""
+    from core.inference import diffusion_denoiser_prequant as DP
+
+    if base == "LOCAL":
+        local = tmp_path / "my-edited" / "Qwen-Image-2.1"
+        local.mkdir(parents = True)
+        base = str(local)
+    source = types.SimpleNamespace(kind = "repo", location = "unsloth/Qwen-Image-2.1-FP8")
+    monkeypatch.setattr(DP, "denoiser_prequant_source", lambda *a, **k: source)
+    called = []
+    monkeypatch.setattr(
+        RH,
+        "load_rocm_hosted_transformer",
+        lambda *a, **k: called.append(1) or types.SimpleNamespace(),
+    )
+    assert (
+        FH.fp16_card_hosted_int8_transformer(_fam(), T4, object, base = base, config_source = base)
+        is None
+    )
+    assert called == []
+    assert FH.fp16_card_hosted_int8_plan_source(_fam(), "int8", T4, base = base) is None
+    for official in ("Qwen/Qwen-Image-2.1", "unsloth/Qwen-Image-2.1"):
+        assert FH._official_hub_base(_fam(), official)

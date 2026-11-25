@@ -318,14 +318,33 @@ def load_native_from_hosted(
         return None
 
 
-def raise_if_allocation_failure(exc: BaseException) -> None:
-    """Re-raises ``exc`` when it is an allocation failure (host ``MemoryError``, torch ``OutOfMemoryError``, also
-    wrapped), which the hosted readers must not turn into a dense fallback."""
-    if isinstance(exc, MemoryError):
-        raise exc
+# PyTorch's CPU allocator raises a plain RuntimeError ("DefaultCPUAllocator: can't allocate memory: you tried to
+# allocate N bytes. Error code 12 (Cannot allocate memory)"), which names no OutOfMemory class.
+_HOST_ALLOC_FAILURE = ("can't allocate memory", "cannot allocate memory", "defaultcpuallocator")
+
+
+def is_allocation_failure(exc: BaseException) -> bool:
+    """Whether ``exc`` (or anything in its cause chain) is an allocation failure: host ``MemoryError``, torch
+    ``OutOfMemoryError`` (CUDA or host), or the CPU allocator's errno-12 ``RuntimeError``."""
     from .diffusion_batched import is_oom_error
 
-    if is_oom_error(exc):
+    seen = set()
+    cur: Optional[BaseException] = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        if isinstance(cur, MemoryError) or getattr(cur, "errno", None) == 12:
+            return True
+        text = str(cur).lower()
+        if any(marker in text for marker in _HOST_ALLOC_FAILURE):
+            return True
+        cur = cur.__cause__ or cur.__context__
+    return is_oom_error(exc)
+
+
+def raise_if_allocation_failure(exc: BaseException) -> None:
+    """Re-raises ``exc`` when it is an allocation failure (``is_allocation_failure``), which the hosted readers must
+    not turn into a dense fallback: the dense load and quantise need more memory, not less."""
+    if is_allocation_failure(exc):
         raise exc
 
 

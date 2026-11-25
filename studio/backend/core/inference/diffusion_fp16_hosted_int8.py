@@ -37,6 +37,26 @@ def fp16_card_hosted_int8_enabled() -> bool:
     return raw not in ("0", "off", "false", "no")
 
 
+def _official_hub_base(fam: Any, base: Optional[str]) -> bool:
+    """Whether ``base`` is the family's released Hub repo (or a mirror of it). The hosted file stands in for that
+    DiT only: a local pipeline (an edited or fine-tuned copy, whatever its folder name), a Hub fine-tune and a sibling
+    distill under the same family (Qwen-Image-2.1-Turbo, not scored on a T4) keep their own weights, quantised at load.
+    """
+    try:
+        official = str(getattr(fam, "base_repo", "") or "")
+        if not base or not official:
+            return False
+        from .diffusion_families import _is_local_path, canonical_base
+        from .diffusion_prequant import _HUB_REPO_ID
+
+        text = str(base).strip()
+        if not _HUB_REPO_ID.fullmatch(text) or _is_local_path(text):
+            return False
+        return canonical_base(text).lower() == canonical_base(official).lower()
+    except Exception:  # noqa: BLE001 - unanswerable keeps the at-load build
+        return False
+
+
 def fp16_card_hosted_int8_reason(
     fam: Any, native_scheme: Optional[str], target: Any
 ) -> Optional[str]:
@@ -88,7 +108,7 @@ def fp16_card_hosted_int8_transformer(
     load never pulls bytes it did not account for. The module carries ``_unsloth_prequant_artifact`` (the file that
     ran, for the resolved status). Raises only an allocation failure."""
     try:
-        if not base or transformer_cls is None:
+        if not _official_hub_base(fam, base) or transformer_cls is None:
             return None
         from .diffusion_denoiser_prequant import denoiser_prequant_source, prequant_artifact_label
         from .diffusion_rocm_hosted_int8 import load_rocm_hosted_transformer, rocm_convrot_source
@@ -199,7 +219,10 @@ def fp16_card_hosted_int8_plan_source(
     keeps them). The same gate and header check the load applies, so the plan never drops the dense shards for a file
     the load refuses. Never raises."""
     try:
-        if not base or fp16_card_hosted_int8_reason(fam, native_scheme, target) is None:
+        if (
+            not _official_hub_base(fam, base)
+            or fp16_card_hosted_int8_reason(fam, native_scheme, target) is None
+        ):
             return None
         from .diffusion_denoiser_prequant import denoiser_prequant_source
         from .diffusion_prequant import _planning_min_features, hosted_prequant_refusal
@@ -247,7 +270,10 @@ def fp16_card_hosted_int8_cached(
     """The cached hosted int8 ConvRot file this load will read, or None: the load prefetch then skips the dense DiT
     shards it no longer reads. Cache only, never the Hub. Never raises."""
     try:
-        if not base or fp16_card_hosted_int8_reason(fam, native_scheme, target) is None:
+        if (
+            not _official_hub_base(fam, base)
+            or fp16_card_hosted_int8_reason(fam, native_scheme, target) is None
+        ):
             return None
         from .diffusion_denoiser_prequant import denoiser_prequant_source
         from .diffusion_prequant import cached_checkpoint_path

@@ -1764,6 +1764,10 @@ def _verify_packed_fingerprint(
         else:
             actual = packed_weight_fingerprint(state_dict, select = select).get("modules") or {}
     except Exception as exc:  # noqa: BLE001 -- an uncomputable fingerprint checks nothing
+        from .diffusion_native_hosted import raise_if_allocation_failure
+
+        # Out of memory is not an uncomputable fingerprint: the load cannot proceed either.
+        raise_if_allocation_failure(exc)
         _warn(logger, "fingerprint", exc)
         return True
     if not actual:
