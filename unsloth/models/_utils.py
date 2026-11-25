@@ -5102,13 +5102,14 @@ from torch._inductor.runtime.hints import DeviceProperties
 
 
 @functools.lru_cache(None)
-def is_big_gpu(index) -> bool:
+def is_big_gpu(index = 0) -> bool:
+    # torch._inductor.utils.is_big_gpu's signature (index 0 by default) and SM thresholds.
     if DEVICE_TYPE == "xpu":
         prop = DeviceProperties.create(torch.device("xpu", index) if type(index) is int else index)
         min_sms = 16
     else:
         prop = DeviceProperties.create(torch.device("cuda", index) if type(index) is int else index)
-        min_sms = 80
+        min_sms = 68
 
     avail_sms = prop.multi_processor_count
     if avail_sms < min_sms:
