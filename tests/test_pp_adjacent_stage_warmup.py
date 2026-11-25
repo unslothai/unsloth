@@ -6,7 +6,6 @@ this rank, which gloo cannot pair ("Pair is not connected"); unsloth's adjacent-
 
 import datetime
 import os
-import socket
 import sys
 
 import pytest
@@ -15,13 +14,7 @@ import torch.distributed as dist
 
 pipelining = pytest.importorskip("torch.distributed.pipelining")
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from test_pp_native_gloo import ppn  # noqa: E402  (pp_native from this tree, without importing unsloth)
-
-
-def _port():
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+from test_pp_native_gloo import _free_port, ppn  # noqa: E402  (pp_native from this tree, without importing unsloth)
 
 
 @pytest.fixture
@@ -29,7 +22,7 @@ def gloo_world1():
     if dist.is_initialized():
         pytest.skip("a process group is already initialized")
     os.environ.setdefault("MASTER_ADDR", "127.0.0.1")
-    os.environ["MASTER_PORT"] = str(_port())
+    os.environ["MASTER_PORT"] = str(_free_port())
     dist.init_process_group("gloo", rank = 0, world_size = 1, timeout = datetime.timedelta(seconds = 60))
     try:
         yield dist.group.WORLD
