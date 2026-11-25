@@ -36,6 +36,7 @@ on:
       - 'tests/studio/playwright_find_in_page.py'
       - 'tests/studio/playwright_project_folders.py'
       - 'tests/studio/playwright_browser_agent_select.py'
+      - 'tests/studio/playwright_browser_agent_read.py'
       - 'tests/studio/playwright_tool_activity.py'
       - 'tests/studio/playwright_stream_pacing.py'
       - 'tests/studio/playwright_code_block_flicker.py'
@@ -107,6 +108,7 @@ on:
       - 'tests/studio/playwright_find_in_page.py'
       - 'tests/studio/playwright_project_folders.py'
       - 'tests/studio/playwright_browser_agent_select.py'
+      - 'tests/studio/playwright_browser_agent_read.py'
       - 'tests/studio/playwright_tool_activity.py'
       - 'tests/studio/playwright_stream_pacing.py'
       - 'tests/studio/playwright_code_block_flicker.py'
@@ -581,6 +583,7 @@ jobs:
             run_check project_folders 10m python3 tests/studio/playwright_project_folders.py \
               --out "$RUNNER_TEMP/project-folders"
             run_check browser_agent_select 5m python3 tests/studio/playwright_browser_agent_select.py
+            run_check browser_agent_read 5m python3 tests/studio/playwright_browser_agent_read.py
             run_check long_chat_renders 5m python3 tests/studio/playwright_long_chat_renders.py
             # A drag step moves one node; the other nodes of the graph must not re-render.
             run_check recipe_drag_renders 5m python3 tests/studio/playwright_recipe_drag_renders.py

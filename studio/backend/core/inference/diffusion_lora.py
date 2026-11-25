@@ -518,7 +518,8 @@ def export_local_lora(lora_id: str, dest_dir: Path) -> Path:
     dest_dir.mkdir(parents = True, exist_ok = True)
 
     def _free(out: Path) -> bool:
-        if out.stem.lower() in _MODEL_SENTINEL_STEMS:
+        # A "<x>.index" stem would write a weight index sidecar (model.safetensors.index.json).
+        if out.stem.lower() in _MODEL_SENTINEL_STEMS or out.stem.lower().endswith(".index"):
             return False
         if out.exists() and os.path.samefile(src, out):
             return True

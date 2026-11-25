@@ -243,23 +243,36 @@ def pipeline_stage_of(model):
 
 
 @functools.lru_cache(maxsize = None)
-def _forward_only_stage_class():
-    """A PipelineStage for forward-only steps (has_backward False): the in-place gradient hand-over between two
-    adjacent stages on one rank (V schedules) is a no-op, as every backward action already is there."""
+def _adjacent_stage_class(forward_only):
+    """A PipelineStage for two adjacent stages on one rank (V schedules, loop schedules at pp 1).
+    torch < 2.12 (no PipelineStage._is_same_rank) warms up with a send / recv to the neighbour stages' rank even
+    when it is this rank; gloo has no pair to itself ("Pair is not connected", 0xC0000005 on Windows), so those
+    are dropped (local stages hand over in process). forward_only: the in-place gradient hand-over is a no-op."""
     from torch.distributed.pipelining import PipelineStage
 
-    class _ForwardOnlyStage(PipelineStage):
-        def get_local_bwd_output(self, mb_index):
-            if not self.has_backward:
-                return ()
-            return super().get_local_bwd_output(mb_index)
+    class _AdjacentStage(PipelineStage):
+        if not hasattr(PipelineStage, "_is_same_rank"):
 
-        def set_local_bwd_input(self, next_stage_bwd_outputs, mb_index):
-            if not self.has_backward:
-                return None
-            return super().set_local_bwd_input(next_stage_bwd_outputs, mb_index)
+            def _get_init_p2p_neighbors_ops(self):
+                return [
+                    op
+                    for op in super()._get_init_p2p_neighbors_ops()
+                    if getattr(op, "group_peer", None) != self.group_rank
+                ]
 
-    return _ForwardOnlyStage
+        if forward_only:
+
+            def get_local_bwd_output(self, mb_index):
+                if not self.has_backward:
+                    return ()
+                return super().get_local_bwd_output(mb_index)
+
+            def set_local_bwd_input(self, next_stage_bwd_outputs, mb_index):
+                if not self.has_backward:
+                    return None
+                return super().set_local_bwd_input(next_stage_bwd_outputs, mb_index)
+
+    return _AdjacentStage
 
 
 # ------------------------------------------------------------------------------- composed meshes
@@ -2472,10 +2485,9 @@ class PipelineParallel:
                 (mb, seq, width), dtype = self.activation_dtype, device = "meta", requires_grad = True
             )
 
-        # eval_loss with two adjacent stages on this rank (V schedules, loop schedules at pp 1): they hand over
-        # their gradients in place, which a forward-only step has none of (torch asserts there).
+        # Adjacent stages on this rank (V schedules, loop schedules at pp 1): see _adjacent_stage_class.
         adjacent = any(k + 1 in self.local_stages for k in self.local_stages)
-        stage_cls = _forward_only_stage_class() if not train and adjacent else PipelineStage
+        stage_cls = _adjacent_stage_class(not train) if adjacent else PipelineStage
         for index, module in zip(self.local_stages, self.stage_modules):
             if index == 0:
                 example_in = torch.empty((mb, seq), dtype = torch.long, device = "meta")

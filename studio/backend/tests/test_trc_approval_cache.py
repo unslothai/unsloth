@@ -127,7 +127,7 @@ def test_combined_sha_none_when_any_unresolvable(monkeypatch):
 def test_resolve_commit_sha_local_and_offline_are_none(monkeypatch):
     monkeypatch.setattr("utils.paths.is_local_path", lambda t: t.startswith("/"))
     assert approvals.resolve_commit_sha("/local/model") is None
-    monkeypatch.setattr(approvals, "_env_offline", lambda: True)
+    monkeypatch.setattr(approvals, "hf_env_offline", lambda: True)
     assert approvals.resolve_commit_sha("org/remote") is None
 
 

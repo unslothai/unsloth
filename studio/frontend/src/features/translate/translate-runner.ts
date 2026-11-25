@@ -3,6 +3,7 @@
 
 import {
   getInferenceStatus,
+  listCachedModels,
   listGgufVariants,
   loadModel,
   streamChatCompletions,
@@ -37,7 +38,6 @@ import {
 import {
   CUSTOM_TRANSLATE_MODEL,
   type CustomTranslateModel,
-  HY_MT2_SAMPLING,
   TRANSLATE_CONTEXT_TOKENS,
   TRANSLATE_MAX_TOKENS,
   type TranslateModelId,
@@ -45,6 +45,7 @@ import {
   dedicatedTranslateModel,
   translateMessages,
   translatePromptModel,
+  translationSampling,
 } from "./models";
 import { quantOnDisk } from "./quant-on-disk";
 import {
@@ -123,7 +124,23 @@ type LocalModel = {
   /** Null for a model with no quants to pick from; the load fetches whatever it needs. */
   variant: string | null;
   sizeBytes: number;
+  fp8?: true;
 };
+
+async function repoOnDisk(
+  repo: string,
+  signal?: AbortSignal,
+): Promise<boolean | null> {
+  try {
+    const wanted = repo.toLowerCase();
+    const row = (await listCachedModels(undefined, signal)).find(
+      (entry) => entry.repo_id.toLowerCase() === wanted,
+    );
+    return row !== undefined && row.partial !== true;
+  } catch {
+    return null;
+  }
+}
 
 /** Disk first: a quant already on disk needs no Hub listing. `remote: false` never asks the Hub. */
 export async function translateModelDownloaded(
@@ -132,7 +149,7 @@ export async function translateModelDownloaded(
   options?: { remote?: boolean },
 ): Promise<boolean | null> {
   const quant = model.variant?.toLowerCase();
-  if (!quant) return null;
+  if (!quant) return model.fp8 ? repoOnDisk(model.repo, signal) : null;
   return quantOnDisk(
     quant,
     async (localOnly) =>
@@ -143,7 +160,7 @@ export async function translateModelDownloaded(
 }
 
 async function downloadModel(
-  model: LocalModel & { variant: string },
+  model: LocalModel,
   hfToken: string | null,
   signal: AbortSignal,
   onPhase: (phase: TranslatePhase) => void,
@@ -155,7 +172,7 @@ async function downloadModel(
   const kind = DOWNLOAD_KIND.MODEL;
   const jobKey = jobKeyOf(kind, model.repo, model.variant);
   const ours = (variant: string | null) =>
-    (variant ?? "").toLowerCase() === model.variant.toLowerCase();
+    (variant ?? "").toLowerCase() === (model.variant ?? "").toLowerCase();
   onPhase({
     kind: "downloading",
     downloadedBytes: 0,
@@ -273,10 +290,12 @@ async function ensureLocalModel(
 
   const hfToken = useHfTokenStore.getState().token || null;
   // An unreadable listing is left to the load, which fetches a missing file itself.
-  const { variant } = model;
-  if (variant && (await translateModelDownloaded(model, signal)) === false) {
+  if (
+    (model.variant || model.fp8) &&
+    (await translateModelDownloaded(model, signal)) === false
+  ) {
     signal.throwIfAborted();
-    await downloadModel({ ...model, variant }, hfToken, signal, onPhase);
+    await downloadModel(model, hfToken, signal, onPhase);
   }
   signal.throwIfAborted();
   onPhase({ kind: "loading" });
@@ -401,7 +420,9 @@ async function prepareTranslation(options: TranslateSetup): Promise<{
   const promptModel = translatePromptModel(modelId, custom);
   const sampling =
     dedicated?.sampling ??
-    (custom && isTranslationOnlyRepo(custom.id) ? HY_MT2_SAMPLING : null);
+    (custom && isTranslationOnlyRepo(custom.id)
+      ? translationSampling(custom.id)
+      : null);
   const base = await baseRequest(sampling, requestModel);
 
   const complete = async (

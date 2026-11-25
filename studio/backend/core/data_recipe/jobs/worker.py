@@ -29,6 +29,7 @@ from ..service import (
 )
 from utils.paths.lazy import LazyPath
 from utils.paths import ensure_dir, recipe_datasets_root
+from utils.log_redaction import redact_log_text
 
 # Fresh spawned interpreter: re-apply main.py's process-wide network injections.
 from utils.native_tls import activate_native_tls
@@ -40,14 +41,10 @@ activate_happy_eyeballs()
 
 _ARTIFACT_ROOT = LazyPath(recipe_datasets_root)
 _RE_GITHUB_CURSOR = re.compile(r"\bcursor=[^\s,]+")
-_RE_SECRET_TOKEN = re.compile(
-    r"\b(?:(?:ghp|gho|ghu|ghs|ghr|github_pat)_[A-Za-z0-9_]+|sk-unsloth-[A-Za-z0-9]+)"
-)
 
 
 def _sanitize_log_message(message: str) -> str:
-    message = _RE_GITHUB_CURSOR.sub("cursor=<redacted>", message)
-    return _RE_SECRET_TOKEN.sub("<redacted-token>", message)
+    return redact_log_text(_RE_GITHUB_CURSOR.sub("cursor=<redacted>", message))
 
 
 class _QueueLogHandler(logging.Handler):

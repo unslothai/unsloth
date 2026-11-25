@@ -38,7 +38,7 @@ import { useChatProjectScope } from "../chat-project-scope";
 import {
   type ChatFile,
   type ChatFolder,
-  createChatFilesCollector,
+  scheduleChatFiles,
 } from "../lib/chat-files";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import { CHAT_MENU_TRIGGER } from "./chat-header-menu";
@@ -55,7 +55,10 @@ const KIND_ICON = {
 const NO_FOLDERS: ChatFolder[] = [];
 
 export function ChatFilesBridge() {
-  const messages = useAuiState(({ thread }) => thread.messages);
+  // Settled messages only: a streamed token must not re-render this.
+  const settled = useAuiState(({ thread }) =>
+    thread.isRunning ? null : thread.messages,
+  );
   const running = useAuiState(({ thread }) => thread.isRunning);
   const remoteId = useAuiState(({ threadListItem }) => threadListItem.remoteId);
   const activeThreadId = useChatRuntimeStore((state) => state.activeThreadId);
@@ -111,14 +114,18 @@ export function ChatFilesBridge() {
   }, [sessionKey, running, uploads]);
 
   const folders = listed?.key === sessionKey ? listed.folders : NO_FOLDERS;
-  // The streaming reply changes every token: leave it out until it settles, and reuse the
-  // result while the settled messages are the same objects.
-  const [collect] = useState(createChatFilesCollector);
-  const files = collect(running ? messages.slice(0, -1) : messages, folders);
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: a new chat drops the last one's files at once.
+  useEffect(() => {
+    useChatFiles.setState({ files: [] });
+  }, [sessionKey]);
 
   useEffect(() => {
-    useChatFiles.setState({ files });
-  }, [files]);
+    if (!settled) return;
+    return scheduleChatFiles(settled, folders, (files) =>
+      useChatFiles.setState({ files }),
+    );
+  }, [settled, folders]);
   useEffect(() => () => useChatFiles.setState({ files: [] }), []);
 
   return null;
