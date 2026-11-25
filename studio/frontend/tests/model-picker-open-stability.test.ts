@@ -78,6 +78,15 @@ test("a page request during a stale refresh is queued and sent once it lands", a
   const busy = body(src, "if (busyRef.current) {\n      if (busyKindRef", "const iter = iterRef.current;");
   assert.match(busy, /busyKindRef\.current === "initial" && revalidatingRef\.current[\s\S]*?queuedAfterBusyRef\.current = true;/);
   const settle = body(src, ".finally(() => {", "return () => {");
-  assert.match(settle, /if \(revalidate && queuedAfterBusyRef\.current\) \{[\s\S]*?fetchMoreRef\.current\(\);/);
+  assert.match(settle, /if \(revalidate && \(queuedAfterBusyRef\.current \|\| owed\)\) \{[\s\S]*?fetchMoreRef\.current\(\);/);
   assert.match(src, /fetchMoreRef\.current = fetchMore;/);
+});
+
+test("a page owed across a failed refresh is sent only once a refresh lands", async () => {
+  const src = await readText(PAGINATED);
+  const settle = body(src, ".finally(() => {", "return () => {");
+  assert.match(settle, /const owed = refreshed && pageAfterRefreshRef\.current;/);
+  assert.match(settle, /if \(refreshed\) pageAfterRefreshRef\.current = false;/);
+  const dead = body(src, "if (iterDeadRef.current) {", "const iter = iterRef.current;");
+  assert.match(dead, /pageAfterRefreshRef\.current = true;\s+setRefreshTick/);
 });

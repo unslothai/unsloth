@@ -95,6 +95,7 @@ export function useHubPaginatedSearch<T>(
   const [refreshTick, setRefreshTick] = useState(0);
   const staleFailedRef = useRef(false);
   const revalidatingRef = useRef(false);
+  const pageAfterRefreshRef = useRef(false);
   const fetchMoreRef = useRef<() => boolean>(() => false);
   // A thrown async generator is closed, so a failed page can only be restarted.
   const iterDeadRef = useRef(false);
@@ -204,6 +205,8 @@ export function useHubPaginatedSearch<T>(
     busyRef.current = true;
     busyKindRef.current = "initial";
     revalidatingRef.current = revalidate;
+    if (!revalidate) pageAfterRefreshRef.current = false;
+    let refreshed = false;
     clearDeferredFetch();
     abortRef.current?.abort();
     const controller = new AbortController();
@@ -225,6 +228,7 @@ export function useHubPaginatedSearch<T>(
       .then(({ items, done, scanned }) => {
         if (versionRef.current !== v) return;
         loadedAtRef.current = Date.now();
+        refreshed = true;
         setState({
           results: items,
           scannedCount: scanned,
@@ -259,8 +263,11 @@ export function useHubPaginatedSearch<T>(
           busyKindRef.current = null;
           revalidatingRef.current = false;
           // A refresh changes no loading flag, so a sentinel already in view would not ask again.
-          if (revalidate && queuedAfterBusyRef.current) {
+          // A failed one retries once from a sentinel's request; the page waits for one that lands.
+          const owed = refreshed && pageAfterRefreshRef.current;
+          if (revalidate && (queuedAfterBusyRef.current || owed)) {
             queuedAfterBusyRef.current = false;
+            if (refreshed) pageAfterRefreshRef.current = false;
             fetchMoreRef.current();
           }
         }
@@ -310,6 +317,7 @@ export function useHubPaginatedSearch<T>(
       queuedWhileHiddenRef.current = false;
       if (staleFailedRef.current) {
         staleFailedRef.current = false;
+        pageAfterRefreshRef.current = true;
         setRefreshTick((n) => n + 1);
       }
       return false;
