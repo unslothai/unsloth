@@ -253,7 +253,13 @@ def _s2s_answer() -> bytes:
     return json.dumps({"audio": audio, "sample_rate": 44100, "channels": 2}).encode()
 
 
-def _s2s_backend(monkeypatch, tmp_path, family, display, raw_options = ()):
+def _s2s_backend(
+    monkeypatch,
+    tmp_path,
+    family,
+    display,
+    raw_options = (),
+):
     policy = acm.family_policy(family)
     spec = {"options": {"request": list(raw_options)}}
     from dataclasses import replace

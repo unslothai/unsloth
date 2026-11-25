@@ -2225,8 +2225,10 @@ def option_schema(
     policy: AudioCppFamily, spec: Optional[dict], embedded: Optional[dict]
 ) -> tuple[dict, ...]:
     """MiniMax Music 3 and YuE2 show a Studio-side list: their specs carry dozens of knobs and the published GGUFs embed a stale copy"""
-    if policy.task == "sep" and policy.default_server_task != "s2s" and policy.family not in (
-        VARIANT_TASKS
+    if (
+        policy.task == "sep"
+        and policy.default_server_task != "s2s"
+        and policy.family not in (VARIANT_TASKS)
     ):
         return ()
     if policy.options:
