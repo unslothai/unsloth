@@ -4200,6 +4200,7 @@ export const he = {
       lr: "LR",
       hardware: "חומרה",
       vram: "VRAM",
+      vramTotal: "{size} בסך הכול",
       noGpu: "לא זוהה GPU",
       hfToken: "טוקן HF",
       saved: "נשמר",

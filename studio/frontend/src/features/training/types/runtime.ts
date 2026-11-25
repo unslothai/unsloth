@@ -172,6 +172,8 @@ export interface TrainingViewData {
   outputDir: string | null;
   // A newer run reused this output_dir (resume), so its on-disk contents differ.
   resumedLater?: boolean;
+  // False once a past run's output folder is gone. Unset for the live run.
+  artifactsAvailable?: boolean;
   progressPercent: number;
   elapsedSeconds: number | null;
   etaSeconds: number | null;

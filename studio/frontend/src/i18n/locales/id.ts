@@ -4415,6 +4415,7 @@ export const id = {
       lr: "LR",
       hardware: "Perangkat keras",
       vram: "VRAM",
+      vramTotal: "Total {size}",
       noGpu: "Tidak ada GPU yang terdeteksi",
       hfToken: "Token HF",
       saved: "Tersimpan",

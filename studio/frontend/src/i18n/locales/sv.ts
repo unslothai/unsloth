@@ -4306,6 +4306,7 @@ export const sv = {
       lr: "LR",
       hardware: "Maskinvara",
       vram: "VRAM",
+      vramTotal: "{size} totalt",
       noGpu: "Ingen GPU upptäcktes",
       hfToken: "HF-token",
       saved: "Sparad",

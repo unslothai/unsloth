@@ -4465,6 +4465,7 @@ export const pl = {
       lr: "LR",
       hardware: "Sprzęt",
       vram: "VRAM",
+      vramTotal: "Łącznie {size}",
       noGpu: "Nie wykryto GPU",
       hfToken: "Token HF",
       saved: "Zapisano",

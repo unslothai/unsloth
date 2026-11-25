@@ -1392,6 +1392,10 @@ __INT_TO_FLOAT_MAPPER = \
         "Qwen/Qwen3.8-27B",
         "unsloth/Qwen3.8-27B-unsloth-bnb-4bit",
     ),
+    "unsloth/Inkling-2-Mini-unsloth-bnb-4bit" : (
+        "unsloth/Inkling-2-Mini",
+        "thinkingmachines/Inkling-2-Mini",
+    ),
 }
 
 def _add_with_lower(mapper, key, value):

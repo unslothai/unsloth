@@ -177,6 +177,7 @@ export function ProgressSection({
     !data.isTrainingRunning &&
     !!exportRunName &&
     !data.resumedLater &&
+    data.artifactsAvailable !== false &&
     (data.phase === "completed" || data.phase === "stopped");
   const canExportGguf = hasFinishedOutput && !data.isDecision;
   const canUseInDecisionApi = hasFinishedOutput && !!data.isDecision && isOwner;
@@ -360,11 +361,12 @@ export function ProgressSection({
             <Progress value={pct} className="h-2 bg-[color-mix(in_oklab,var(--foreground)_calc(5%*var(--contrast-wash-gain,1)),transparent)]" />
           </div>
 
-          {!isHistorical && (
+          {(!isHistorical || hasFinishedOutput) && (
             <MilestoneCallout
               showCompletedHint={showCompletedHint}
-              showHalfwayHint={showHalfwayHint}
+              showHalfwayHint={!isHistorical && showHalfwayHint}
               onCompareInChat={handleCompareInChat}
+              exportRunName={hasFinishedOutput ? exportRunName : null}
             />
           )}
 
@@ -717,10 +719,12 @@ function MilestoneCallout({
   showCompletedHint,
   showHalfwayHint,
   onCompareInChat,
+  exportRunName,
 }: {
   showCompletedHint: boolean;
   showHalfwayHint: boolean;
   onCompareInChat: () => Promise<void>;
+  exportRunName: string | null;
 }): ReactElement | null {
   const t = useT();
   if (!(showHalfwayHint || showCompletedHint)) {
@@ -759,7 +763,12 @@ function MilestoneCallout({
             {t("studio.training.compareInChat")}
           </Button>
           <Button asChild={true} size="xs" variant="outline">
-            <Link to="/export">{t("studio.training.exportModel")}</Link>
+            <Link
+              to="/export"
+              search={exportRunName ? { run: exportRunName } : {}}
+            >
+              {t("studio.training.exportModel")}
+            </Link>
           </Button>
         </div>
       )}
