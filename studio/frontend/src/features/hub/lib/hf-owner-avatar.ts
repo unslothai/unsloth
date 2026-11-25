@@ -9,7 +9,7 @@ import { useOnlineStatus } from "@/features/hub/hooks/use-online-status";
 
 type AvatarCacheEntry =
   | { kind: "url"; url: string; expiresAt: number }
-  | { kind: "miss-permanent" }
+  | { kind: "miss-permanent"; until: number }
   | { kind: "miss-transient"; until: number; failures: number };
 
 // Stale-while-revalidate after this TTL.
@@ -89,7 +89,7 @@ function hydratePersistedAvatars(): void {
       if (url === null) {
         if (expiresAt <= Date.now()) continue;
         persisted.set(key, { key, url, expiresAt });
-        cache.set(key, { kind: "miss-permanent" });
+        cache.set(key, { kind: "miss-permanent", until: expiresAt });
       } else if (typeof url === "string") {
         persisted.set(key, { key, url, expiresAt });
         cache.set(key, { kind: "url", url, expiresAt });
@@ -161,11 +161,11 @@ function avatarKey(name: string): string {
   return `${getHfEndpoint()}::${name.trim().toLowerCase()}`;
 }
 
-// Expired transient misses are kept so the failure count can escalate the next backoff.
+// Expired misses read as absent; transient ones stay cached to escalate the next backoff.
 function readCache(name: string): AvatarCacheEntry | null {
   const entry = cache.get(avatarKey(name));
   if (!entry) return null;
-  if (entry.kind === "miss-transient" && Date.now() >= entry.until) {
+  if (entry.kind !== "url" && Date.now() >= entry.until) {
     return null;
   }
   return entry;
@@ -259,8 +259,9 @@ function loadAvatar(name: string): Promise<string | null> {
         } else if (transient) {
           cache.set(key, transientMiss(name));
         } else {
-          cache.set(key, { kind: "miss-permanent" });
-          persistAvatar(key, null, Date.now() + MISS_PERSIST_TTL_MS);
+          const until = Date.now() + MISS_PERSIST_TTL_MS;
+          cache.set(key, { kind: "miss-permanent", until });
+          persistAvatar(key, null, until);
         }
         inflight.delete(key);
         return url;

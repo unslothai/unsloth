@@ -149,3 +149,25 @@ test("a failed URL held only in memory is expired too", async () => {
   await settle(400);
   assert.equal(requests.length, 2);
 });
+
+test("a 404 held in memory expires with its persisted copy", async () => {
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 400));
+  const realNow = Date.now;
+  try {
+    useHfOwnerAvatar("gone-owner", true);
+    await settle();
+    requests.length = 0;
+    useHfOwnerAvatar("gone-owner", true);
+    await settle();
+    assert.deepEqual(requests, []);
+
+    // Same session, eight days on: the 7-day miss TTL has passed.
+    const later = realNow() + 8 * 24 * 60 * 60 * 1000;
+    Date.now = () => later;
+    useHfOwnerAvatar("gone-owner", true);
+    await settle();
+    assert.equal(requests.length, 2);
+  } finally {
+    Date.now = realNow;
+  }
+});
