@@ -1257,7 +1257,7 @@ def test_a_connection_embedder_answers_to_its_configured_name(studio_embedder):
     ref = "connection:Scheduler/bge-m3"
     studio_embedder.setattr(rag_config, "effective_embedding_model", lambda: ref)
     assert inference_route._names_studio_embedder(ref) == ref
-    assert inference_route._names_studio_embedder(rag_config.embedding_identity("connection", ref))
+    assert inference_route._names_studio_embedder(rag_embeddings.embedding_identity(ref))
     assert inference_route._names_studio_embedder("connection:Other/bge-m3") is None
 
 

@@ -275,3 +275,72 @@ def test_an_edit_between_reads_never_pairs_the_new_key_with_the_old_url(monkeypa
     client, _, _ = embed_connection._client_for("connection:Scheduler/bge")
     assert client.base_url == "http://new.local/v1"
     assert rows[:2] == ["http://old.local/v1", "http://new.local/v1"]
+
+
+def _edit(monkeypatch, *rows):
+    from storage import providers_db
+    monkeypatch.setattr(providers_db, "list_providers", lambda: [dict(r) for r in rows])
+
+
+@pytest.mark.parametrize(
+    "change", [{"base_url": "http://other.local:9000/v1"}, {"provider_type": "openai"}]
+)
+def test_vectors_from_the_old_server_are_stale_once_the_connection_is_edited(monkeypatch, change):
+    name = "connection:Scheduler/bge-m3"
+    before = embeddings.embedding_identity(name)
+    _edit(monkeypatch, {**_PROVIDERS[0], **change})
+    assert not config.embedding_identity_matches(before, embeddings.embedding_identity(name))
+
+
+def test_an_old_name_taken_by_another_server_does_not_inherit_its_vectors(monkeypatch):
+    name = "connection:Scheduler/bge-m3"
+    before = embeddings.embedding_identity(name)
+    _edit(
+        monkeypatch,
+        {**_PROVIDERS[0], "display_name": "Renamed"},
+        {**_PROVIDERS[0], "id": "p-9", "base_url": "http://other.local:9000/v1"},
+    )
+    assert not config.embedding_identity_matches(before, embeddings.embedding_identity(name))
+
+
+def test_an_edit_that_keeps_the_server_keeps_the_vectors_current(monkeypatch):
+    name = "connection:Scheduler/bge-m3"
+    before = embeddings.embedding_identity(name)
+    _edit(monkeypatch, {**_PROVIDERS[0], "is_enabled": False, "extra_headers": {"x": "1"}})
+    assert config.embedding_identity_matches(before, embeddings.embedding_identity(name))
+
+
+def test_vectors_carry_the_server_that_embedded_them(monkeypatch):
+    name = "connection:Scheduler/bge-m3"
+
+    def _edited_after_answering(request, n):
+        _edit(monkeypatch, {**_PROVIDERS[0], "base_url": "http://other.local:9000/v1"})
+        return _vectors(request, n)
+
+    _, embeddings._get_backend(name)._http = _server(_edited_after_answering)
+    _, identity = embeddings.encode_with_identity(["a"], model_name = name)
+    assert not config.embedding_identity_matches(identity, embeddings.embedding_identity(name))
+
+
+def test_documents_indexed_before_the_upgrade_stay_current_until_the_server_changes(
+    rag_conn, monkeypatch
+):
+    from storage import rag_db
+
+    name = "connection:Scheduler/bge-m3"
+    rag_conn.execute(
+        "INSERT INTO documents(id, scope, filename, sha256, status, created_at, embedding_model) "
+        "VALUES ('d1', 'kb_a', 'a.txt', 'h1', 'completed', '2026-01-01', ?)",
+        (config.embedding_identity("connection", name),),
+    )
+    rag_conn.execute("PRAGMA user_version = 1")
+    rag_conn.commit()
+    rag_db.reset_schema_state_for_tests()
+    conn = rag_db.get_connection()
+    try:
+        stored = conn.execute("SELECT embedding_model FROM documents WHERE id='d1'").fetchone()[0]
+    finally:
+        conn.close()
+    assert config.embedding_identity_matches(stored, embeddings.embedding_identity(name))
+    _edit(monkeypatch, {**_PROVIDERS[0], "base_url": "http://other.local:9000/v1"})
+    assert not config.embedding_identity_matches(stored, embeddings.embedding_identity(name))
