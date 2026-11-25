@@ -25,7 +25,6 @@ test("the bottom spacer leaves a ChatGPT-sized gap and gives back the scroll but
 test("the scroll-to-bottom button keeps its place above the composer", () => {
   assert.match(thread, /const SCROLL_BUTTON_GAP_PX = 14;/);
   assert.match(thread, /: composerHeight \+ SCROLL_BUTTON_GAP_PX;/);
-  // A zero-height sticky row counts its shifted box as scroll room and strands extra space below the reply.
   assert.doesNotMatch(thread, /aui-thread-viewport-footer[^"]*\bh-0\b/);
 });
 
@@ -35,7 +34,6 @@ test("the spacer follows the composer's target height, not each eased frame", ()
     /editor\?\.style\.getPropertyValue\("--composer-editor-height"\)/,
   );
   assert.match(thread, /el\.offsetHeight \+ target - editor\.offsetHeight/);
-  // Expanded writing has no transition and may be taller than the target: its live height counts.
   assert.match(
     thread,
     /editor\?\.closest\('\[data-writing-expanded="true"\]'\) != null/,

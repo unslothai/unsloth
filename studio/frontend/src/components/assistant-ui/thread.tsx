@@ -1884,11 +1884,9 @@ const PromptQueueContext = createContext<PromptQueueCallbacks>({
   stopQueue: noopStopPromptQueue,
 });
 
-// With the message's own bottom padding, the last action row ends ~46px above the composer.
 const COMPOSER_SCROLL_GAP_PX = 8;
-// The scroll-to-bottom row follows the spacer in flow, so the spacer gives its height back; 28px until it renders.
+// The scroll-to-bottom row follows the spacer in flow; 28px until it renders.
 const SCROLL_BUTTON_ROW_PX = 28;
-// The scroll-to-bottom button's bottom edge, above the composer.
 const SCROLL_BUTTON_GAP_PX = 14;
 const THREAD_COMPOSER_VARS = [
   "--thread-composer-clip",
@@ -2695,14 +2693,13 @@ const ThreadComposerDock: FC<{
   useEffect(() => {
     const el = dockRef.current;
     if (!el || !onHeightChange) return;
-    // Report the height the editor is easing to: following each frame of its 280ms transition
-    // shrank the thread's bottom spacer under an open conversation, sliding it down.
+    // The height the editor eases to: tracking each frame slid an opened conversation down.
     const measure = () => {
       const editor = el.querySelector<HTMLElement>(".unsloth-composer-editor");
       const target = Number.parseFloat(
         editor?.style.getPropertyValue("--composer-editor-height") ?? "",
       );
-      // Expanded writing sizes the editor to max(target, fill height) with no transition: its live height is final.
+      // Expanded writing does not ease and can exceed the target.
       const expanded = editor?.closest('[data-writing-expanded="true"]') != null;
       onHeightChange(
         editor && !expanded && Number.isFinite(target)

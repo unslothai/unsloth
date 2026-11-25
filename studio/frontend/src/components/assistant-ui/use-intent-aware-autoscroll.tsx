@@ -550,8 +550,7 @@ export function useIntentAwareAutoScroll(): {
       const stabilize = (): number => {
         const sh = el.scrollHeight;
         const currentContent = sh - stabilizerPx;
-        // Only a run's finalizing content shrinks for real; opening or switching threads also shrinks
-        // as rows remeasure, and padding that kept a gap under the reply until the next scroll.
+        // Runs only: opening a thread shrinks too, and that padding stuck under the reply.
         const runSettling =
           aui.thread().getState().isRunning ||
           performance.now() - runEndAtRef.current < FOLLOW_SETTLE_MS;
