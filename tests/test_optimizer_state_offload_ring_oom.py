@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""UNSLOTH_OFFLOAD_OPTIMIZER_STATE: when the staging ring's one contiguous block does not fit (fragmented device
-memory), the step falls back to the serial chunk copies (allocated tensor by tensor) instead of raising."""
+"""Optimizer state offload falls back to serial chunk copies when the staging ring's allocation OOMs."""
 
 import importlib.util
 import os
@@ -114,7 +113,6 @@ def _per_weight(
     ring_fails,
     steps = 3,
 ):
-    # bfloat16 full finetuning: stochastic rounding steps one weight per call inside offloader.pipelined().
     monkeypatch.setenv("UNSLOTH_OFFLOAD_OPTIMIZER_STATE_OVERLAP", "1" if overlap else "0")
     monkeypatch.delenv("UNSLOTH_BF16_STOCHASTIC_ROUNDING", raising = False)
     module = _module(ring_fails)

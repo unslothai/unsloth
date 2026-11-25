@@ -508,8 +508,7 @@ class _StateOffloader:
         return self.streams
 
     def _new_ring(self, device, capacity):
-        """The staging ring, or None (serial copies) when its one contiguous block does not fit: fragmented
-        device memory can still hold the serial chunk's state, which is allocated tensor by tensor."""
+        """The staging ring, or None (serial copies) if its one contiguous block hits OOM (fragmentation)."""
         try:
             return _Ring(device, capacity, self._streams(device))
         except torch.cuda.OutOfMemoryError:
