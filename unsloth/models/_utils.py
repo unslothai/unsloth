@@ -5866,12 +5866,35 @@ def _requested_float32(dtype):
     return dtype is torch.float32
 
 
+def _unsloth_load_begins():
+    """First step of every Unsloth from_pretrained: the backends the import kept from plain models."""
+    try:
+        from ..import_fixes import apply_cudnn_sdpa_for_unsloth_load
+        apply_cudnn_sdpa_for_unsloth_load()
+    except Exception:
+        pass
+
+
+def _mark_unsloth_model(model):
+    """The fused lm_head + cross entropy forward empties the logits only for models carrying this mark."""
+    try:
+        from unsloth_zoo.fused_losses.forward_install import mark_model
+    except Exception:
+        return model
+    try:
+        mark_model(model)
+    except Exception:
+        pass
+    return model
+
+
 def _mark_requested_float32(model, requested):
     """Record on the model, not in the environment: with two models loaded before a trainer is built, an env var describes whichever loaded last. Outermost caller wins, since only it saw dtype before normalization."""
     try:
         model._unsloth_user_float32 = bool(requested)
     except Exception:
         pass
+    _mark_unsloth_model(model)
     # Every from_pretrained return passes here, so this is the opt-in UNSLOTH_MEMORY_REPORT "load" point.
     if os.environ.get("UNSLOTH_MEMORY_REPORT", "0") != "0":
         try:
@@ -6845,6 +6868,7 @@ def patch_gradient_accumulation_fix(Trainer):
             if model is None and len(args) > 0:
                 model = args[0]
             if model is not None:
+                _mark_unsloth_model(model)
                 try:
                     apply_accepts_loss_kwargs_fix(model)
                 except Exception:
@@ -7030,6 +7054,7 @@ def patch_gradient_accumulation_fix(Trainer):
             # model_init rebuilds the model when training starts: the new instance needs the same
             # DDP exclusions as the one __init__ marked.
             model = _original_call_model_init(self, *args, **kwargs)
+            _mark_unsloth_model(model)
             _refuse_tensor_parallel_for_trainer(model)
             if _is_unsloth_expert_parallel(model):
                 from .ep_native import _MODEL_INIT_REFUSAL
@@ -8701,6 +8726,8 @@ def patch_tokenizer(model, tokenizer):
     model, tokenizer = _patch_tokenizer(model, tokenizer)
     if model is not None:
         model.config.update({"unsloth_version": __version__})
+        # FastLlamaModel / FastBaseModel called directly never reach loader.py's return marks.
+        _mark_unsloth_model(model)
     model = patch_harmony_tool_call_eos(model, tokenizer)
     model = patch_harmony_tool_call_eos_vllm(model, tokenizer)
     return model, tokenizer

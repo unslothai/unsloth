@@ -12229,6 +12229,59 @@ _VLLM_COMPILED_EXTENSIONS = (
 )
 
 
+# vllm/platforms/cuda.py runs torch.backends.cuda.enable_cudnn_sdp(False) when imported (its fix for a
+# torch 2.5.0 cuDNN SDPA crash, huggingface/diffusers#9704). `import unsloth` imports vLLM to probe it
+# (disable_broken_vllm), so that switch used to reach every model in the process, plain transformers ones
+# included (bf16 logits off by a rounding step on GPUs where cuDNN attention is picked). Unsloth puts
+# the caller's value back once its import ends and re-applies vLLM's value only when it loads a model,
+# so Unsloth models run as they always did. Unsloth's own known-bad cuDNN cases are avoided per call
+# (fix_cudnn_sdpa_known_bad_shapes, fix_cudnn_sdpa_d256_masked_backward).
+_CUDNN_SDPA_BEFORE_IMPORT = [None]
+_CUDNN_SDPA_OFF_FOR_LOADS = [False]
+
+
+def _cudnn_sdpa_enabled():
+    torch = sys.modules.get("torch")
+    if torch is None:
+        return None
+    try:
+        return bool(torch.backends.cuda.cudnn_sdp_enabled())
+    except Exception:
+        return None
+
+
+def snapshot_cudnn_sdpa_before_import():
+    """Record cuDNN SDPA before Unsloth's import can import vLLM. torch not imported yet: torch's default (on)."""
+    if _CUDNN_SDPA_BEFORE_IMPORT[0] is None:
+        enabled = _cudnn_sdpa_enabled()
+        _CUDNN_SDPA_BEFORE_IMPORT[0] = True if enabled is None else enabled
+
+
+def restore_cudnn_sdpa_after_import():
+    """Undo a cuDNN SDPA switch-off that happened during Unsloth's import (vLLM's import-time default)."""
+    if _CUDNN_SDPA_BEFORE_IMPORT[0] is not True or _cudnn_sdpa_enabled() is not False:
+        return
+    try:
+        import torch
+        torch.backends.cuda.enable_cudnn_sdp(True)
+    except Exception as e:
+        logger.info(f"Unsloth: could not restore cuDNN SDPA after import ({e})")
+        return
+    _CUDNN_SDPA_OFF_FOR_LOADS[0] = True
+
+
+def apply_cudnn_sdpa_for_unsloth_load():
+    """An Unsloth load turns cuDNN SDPA off again when vLLM's import had, so Unsloth models keep running
+    with the backends they always had."""
+    if not _CUDNN_SDPA_OFF_FOR_LOADS[0] or _cudnn_sdpa_enabled() is not True:
+        return
+    try:
+        import torch
+        torch.backends.cuda.enable_cudnn_sdp(False)
+    except Exception:
+        pass
+
+
 def disable_broken_vllm(error = None):
     """Disable vLLM dynamically when its shared library is ABI-broken or it refuses this transformers."""
     global VLLM_BROKEN, VLLM_DISABLED_REASON
