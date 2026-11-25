@@ -862,21 +862,35 @@ def _chain_archive(path, hops):
 
 
 def test_safe_extractall_installs_a_chain_the_loader_can_still_walk(tmp_path):
-    # The kernel allows 40 traversals, so 40 is readable and must not be refused.
+    # The kernel allows _MAX_LINK_DEPTH traversals (Linux 40, macOS 32), so that chain is readable and must not be refused.
     target = _shared_setup_2(tmp_path)
-    archive = tmp_path / "chain40.zip"
-    _chain_archive(archive, 40)
+    archive = tmp_path / "chain_max.zip"
+    _chain_archive(archive, sdmod._MAX_LINK_DEPTH)
     with zipfile.ZipFile(archive) as zf:
         _safe_extractall(zf, target)
-    assert (target / "l.so.40").read_bytes() == b"ELFpayload"
+    assert (target / f"l.so.{sdmod._MAX_LINK_DEPTH}").read_bytes() == b"ELFpayload"
+
+
+def test_link_depth_matches_this_kernel(tmp_path):
+    """The extractor's limit is the deepest chain this kernel opens: one more ELOOPs."""
+    if not _can_create_symlinks(tmp_path):
+        pytest.skip("symlink creation needs privilege on this host (Windows non-dev-mode)")
+    if sys.platform == "win32":
+        pytest.skip("Windows reparse-point limits differ; the bound there is a conservative 40")
+    (tmp_path / "l.0").write_bytes(b"x")
+    for i in range(1, sdmod._MAX_LINK_DEPTH + 2):
+        os.symlink(f"l.{i - 1}", tmp_path / f"l.{i}")
+    assert (tmp_path / f"l.{sdmod._MAX_LINK_DEPTH}").read_bytes() == b"x"
+    with pytest.raises(OSError):
+        (tmp_path / f"l.{sdmod._MAX_LINK_DEPTH + 1}").read_bytes()
 
 
 def test_safe_extractall_rejects_a_chain_deeper_than_the_loader_allows(tmp_path):
     # At 41 the loader ELOOPs, so the library would be unreadable.
     target = tmp_path / "install"
     target.mkdir()
-    archive = tmp_path / "chain41.zip"
-    _chain_archive(archive, 41)
+    archive = tmp_path / "chain_over.zip"
+    _chain_archive(archive, sdmod._MAX_LINK_DEPTH + 1)
     with zipfile.ZipFile(archive) as zf:
         with pytest.raises(RuntimeError, match = "too deep"):
             _safe_extractall(zf, target)

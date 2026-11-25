@@ -817,8 +817,9 @@ _DOWNLOAD_BACKOFF_S = 2.0
 # PATH_MAX: a larger link payload is a decompression bomb.
 _MAX_LINK_TARGET_BYTES = 4096
 
-# Linux ELOOP limit.
-_MAX_LINK_DEPTH = 40
+# The kernel's ELOOP limit: Linux follows 40 links, macOS (XNU MAXSYMLINKS) 32, so a 33-40 hop chain
+# extracts on a Mac but every open of it fails.
+_MAX_LINK_DEPTH = 32 if sys.platform == "darwin" else 40
 
 
 # Creators whose external_attr high bits are a Unix st_mode (Info-ZIP, Apple ditto); FAT/NTFS are not.
