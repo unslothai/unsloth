@@ -136,6 +136,8 @@ def _triton_ok(device):
                 )
                 torch.cuda.synchronize(device)
             _TRITON_OK[key] = bool(p.float().eq(1).all().item())
+        except torch.cuda.OutOfMemoryError:
+            return False  # transient: the float32-copy route serves this step, the next one checks again
         except Exception as exc:
             print(
                 f"Unsloth: one-pass bfloat16 stochastic rounding is unavailable on {device} ({exc})."
