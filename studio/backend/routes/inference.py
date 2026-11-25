@@ -457,10 +457,8 @@ def _oversize_counts(text: str):
 
 
 def _anthropic_upstream_error(text: str, counts_source: Optional[str] = None) -> str:
-    """`text` is what the client is told; `counts_source`, the fuller body it was extracted from,
-    only supplies token counts and marks `text` as an extracted message, shown whole."""
-    # A raw body is classified on its head, as the passthrough status is: a long body can echo a
-    # request schema whose names would read as an overflow.
+    """`counts_source`, the body `text` was extracted from, only supplies token counts and marks `text` as extracted, shown whole."""
+    # Raw bodies classify on their head, like the status: a long one can echo schema names that read as an overflow.
     head = text if counts_source is not None else text[:500]
     # KV starvation means retry, not shorten the conversation.
     if is_kv_starvation(head):
