@@ -1380,8 +1380,7 @@ _HUB_LISTING_MAX = 256
 _hub_listings: dict[tuple, tuple[float, object]] = {}
 _hub_rate_limited: dict[tuple, tuple[float, BaseException]] = {}
 _hub_listing_lock = threading.Lock()
-# Listings answered by the caller's own credential; an anonymous retry may see a different repo state, so
-# only these seed the arch. Keyed by id + weakref identity check: ModelInfo is unhashable and ids get reused.
+# Listings the caller's own credential answered (not the anonymous retry); id-keyed weakrefs: ModelInfo is unhashable.
 _hub_token_answers: dict[int, "weakref.ref"] = {}
 
 
