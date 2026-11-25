@@ -116,7 +116,6 @@ def _build_layout(model: Any, mod: Any, img_mask: Any, shapes: list, device: Any
 
 
 def _prompt_tokens(pipe: Any, prompt: str) -> Optional[int]:
-    """Token count the pipeline's t2i encode gives ``prompt``, or None when the pipe does not expose it."""
     template = getattr(pipe, "prompt_template_t2i", None)
     processor = getattr(pipe, "processor", None)
     tokenizer = getattr(processor, "tokenizer", None) or getattr(pipe, "tokenizer", None)
@@ -129,12 +128,10 @@ def _prompt_tokens(pipe: Any, prompt: str) -> Optional[int]:
 
 
 def text_length_runs(pipe: Any, chunk: list) -> list:
-    """Split a chunk of ``(prompt, seed)`` jobs into consecutive runs whose prompts encode to the same length.
+    """Split ``(prompt, seed)`` jobs into consecutive runs of equal prompt token length.
 
-    Qwen-Image-2.1 builds one joint layout and RoPE table per batch (stock diffusers reads row 0): a shorter prompt is
-    padded to the longest, and its target image then sits at the longest prompt's RoPE position instead of its own,
-    so it renders different pixels than it does alone. Rows of equal text length share the layout exactly. Order is
-    kept, so the images still come back in job order. Other pipelines get the chunk back unchanged."""
+    Qwen-Image-2.1 builds one layout/RoPE table per batch from row 0, so a shorter padded prompt renders
+    different pixels than alone; equal lengths match exactly."""
     if len(chunk) < 2 or type(getattr(pipe, "transformer", None)).__name__ != _CLASS:
         return [chunk]
     if all(prompt == chunk[0][0] for prompt, _ in chunk):

@@ -8101,8 +8101,6 @@ class _FakeQwen21Pipe(_FakePipe):
 
 
 def test_qwen21_prompt_list_renders_each_text_length_apart(fake_runtime, tmp_path):
-    # Qwen-Image-2.1 lays out a batch from row 0, so a shorter prompt padded to the longest one renders other pixels
-    # than alone: rows of different token lengths must never share a call; equal lengths still batch.
     backend = _load_zimage_backend(tmp_path)
     pipe = _FakeQwen21Pipe()
     object.__setattr__(backend._state, "pipe", pipe)

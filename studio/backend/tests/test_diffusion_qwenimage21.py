@@ -427,9 +427,7 @@ def _rows(m, texts, latents):
 
 @pytest.mark.parametrize("fast", [False, True])
 def test_a_batch_row_matches_its_lone_render_only_at_equal_text_length(fast):
-    """Why text_length_runs splits a Qwen-Image-2.1 prompt list by token length: one layout serves the batch, so a
-    shorter row's target image sits at the longest prompt's RoPE position. Equal lengths match a lone render bit for
-    bit; if a diffusers release lays out each row on its own, the mixed case starts matching and the split can go."""
+    """If diffusers ever lays out each row on its own, the mixed case matches and text_length_runs can go."""
     if fast:
         assert q.install()
     m = _model()
