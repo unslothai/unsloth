@@ -35,12 +35,17 @@ import functools
 import inspect
 import types
 
+# Values of UNSLOTH_ENABLE_LOGGING that turn verbose output on, everywhere in Unsloth.
+_UNSLOTH_LOGGING_ON = ("1", "True", "true")
+
+
+def unsloth_logging_enabled():
+    """UNSLOTH_ENABLE_LOGGING read now (the module constant below is read once at import)."""
+    return os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") in _UNSLOTH_LOGGING_ON
+
+
 # We cannot do from unsloth_zoo.log import logger since FBGEMM might cause seg faults.
-UNSLOTH_ENABLE_LOGGING = os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") in (
-    "1",
-    "True",
-    "true",
-)
+UNSLOTH_ENABLE_LOGGING = unsloth_logging_enabled()
 logger = logging.getLogger(__name__)
 if UNSLOTH_ENABLE_LOGGING:
     logging.basicConfig(level = logging.INFO, format = "[%(name)s|%(levelname)s]%(message)s")
@@ -3309,14 +3314,103 @@ def _bnb_deserialize_ops_without_reverse():
     return tuple(broken)
 
 
+def _bare_params4bit_names(model):
+    """Names of the bitsandbytes 4-bit parameters quantized in place outside a Linear4bit (fused MoE expert
+    stacks, zoo moe_utils_bnb4bit), or an empty set when bitsandbytes is unavailable."""
+    try:
+        from bitsandbytes.nn import Linear4bit, Params4bit
+    except Exception:
+        return set()
+    if (
+        not isinstance(Params4bit, type)
+        or not isinstance(Linear4bit, type)
+        or not callable(getattr(model, "named_modules", None))
+    ):
+        return set()
+    names = set()
+    # Every alias (a shared module or parameter): the state dict being saved names each of them.
+    for module_name, module in model.named_modules(remove_duplicate = False):
+        if isinstance(module, Linear4bit):
+            continue
+        for name, param in module.named_parameters(recurse = False, remove_duplicate = False):
+            if isinstance(param, Params4bit) and getattr(param, "quant_state", None) is not None:
+                names.add(f"{module_name}.{name}" if module_name else name)
+    return names
+
+
+def _converter_matches(conversion, names):
+    """True when `conversion` is a WeightConverter with operations whose reverse (the one save_pretrained applies)
+    matches one of `names`, by transformers' own rules (scope prefix, name boundaries, capture groups)."""
+    operations = getattr(conversion, "operations", None)
+    targets = getattr(conversion, "target_patterns", None)
+    if not operations or not targets or not names:
+        return False
+    if type(conversion).__name__ != "WeightConverter":
+        return False
+    try:
+        # reverse_transform() would build the reverse ops, which a deserializer cannot: same patterns, forward ops.
+        reverse = conversion.copy(
+            conversion._original_target_patterns,
+            conversion._original_source_patterns,
+            operations = list(operations),
+        )
+        return any(reverse.rename_source_key(name)[1] is not None for name in names)
+    except Exception:
+        pass
+    for pattern in targets:
+        try:
+            regex = re.compile(pattern)
+        except (re.error, TypeError):
+            return False
+        if any(regex.search(name) for name in names):
+            return True
+    return False
+
+
+def _packed_4bit(value):
+    """A tensor as a bitsandbytes 4-bit stack stores it: packed [n, 1] bytes."""
+    shape = getattr(value, "shape", None)
+    return shape is not None and len(shape) == 2 and shape[1] == 1
+
+
+def _dense_param_names(
+    model,
+    skip,
+    state_dict = None,
+):
+    """Names saved as dense tensors: the state dict being saved (parameters and persistent buffers), less the 4-bit
+    stacks in `skip` and their QuantState entries; a stack in `skip` whose saved tensor is dense counts as dense.
+    Without a state dict, the model's parameters not in `skip`."""
+    if isinstance(state_dict, dict):
+        names = set()
+        for name, value in state_dict.items():
+            if not isinstance(name, str):
+                continue
+            if name in skip:
+                if not _packed_4bit(value):
+                    names.add(name)
+            elif not any(name.startswith(f"{s}.") for s in skip):
+                names.add(name)
+        return names
+    if not callable(getattr(model, "named_parameters", None)):
+        return set()
+    return {n for n, _ in model.named_parameters(remove_duplicate = False) if n not in skip}
+
+
 def fix_transformers_bnb_prequantized_save():
-    """transformers 5.x: `save_pretrained` reverses the `Bnb{4,8}bitDeserialize` converter a
-    pre-quantized load attaches, and neither op has a `reverse_op` (NotImplementedError, #638;
-    upstream PR #45743 closed unmerged). Quantized modules already emit the checkpoint layout,
-    so skip that converter on save. Probe-gated on `reverse_op` raising."""
+    """transformers 5.x `save_pretrained` reverses the load's weight converters, and two kinds cannot run in
+    reverse on bitsandbytes 4-bit weights:
+
+    - the `Bnb{4,8}bitDeserialize` converter a pre-quantized load attaches has no `reverse_op`
+      (NotImplementedError, #638; upstream PR #45743 closed unmerged). Probe-gated on `reverse_op` raising.
+    - a model converter that builds a fused expert stack (Inkling 2: NVFP4 dequantize + Interleave of
+      `w13_weight` into `gate_up_proj`) would run its inverse on the packed bytes and on the QuantState entries
+      beside them once zoo quantized the stack in place, which raises or writes garbage. Such a stack was
+      quantized in the model's layout and zoo's pre-quantized expert loaders read it back in that layout, so its
+      converter is skipped and the stack is written under the model's own name (the renames still apply).
+
+    Quantized modules already emit the checkpoint layout, so both are skipped on save."""
     broken_ops = _bnb_deserialize_ops_without_reverse()
-    if not broken_ops:
-        return
     try:
         from transformers import core_model_loading, modeling_utils
     except Exception as e:
@@ -3328,15 +3422,53 @@ def fix_transformers_bnb_prequantized_save():
 
     def _is_bnb_deserialize(conversion):
         operations = getattr(conversion, "operations", None)
-        return bool(operations) and all(isinstance(op, broken_ops) for op in operations)
+        return (
+            bool(broken_ops)
+            and bool(operations)
+            and all(isinstance(op, broken_ops) for op in operations)
+        )
+
+    def _skipped(
+        model,
+        conversions,
+        state_dict = None,
+    ):
+        bare = None
+        dense = None
+        skipped = []
+        for conversion in conversions:
+            if _is_bnb_deserialize(conversion):
+                skipped.append(conversion)
+                continue
+            if type(conversion).__name__ != "WeightConverter" or not getattr(
+                conversion, "operations", None
+            ):
+                continue
+            if bare is None:
+                bare = _bare_params4bit_names(model)
+                dense = _dense_param_names(model, bare, state_dict) if bare else set()
+                # A stack the caller saves dense (a supplied state dict) keeps its converter.
+                bare -= dense
+            if not bare or not _converter_matches(conversion, bare):
+                continue
+            # A converter whose target also matches a dense parameter (one stack skipped from quantization)
+            # still has to run for it: keep it, and let a mixed save fail loudly as before.
+            if _converter_matches(conversion, dense):
+                continue
+            skipped.append(conversion)
+        return skipped
 
     @functools.wraps(original)
     def revert_weight_conversion(model, *args, **kwargs):
         conversions = getattr(model, "_weight_conversions", None)
-        if not isinstance(conversions, list) or not any(map(_is_bnb_deserialize, conversions)):
+        if not isinstance(conversions, list):
+            return original(model, *args, **kwargs)
+        state_dict = kwargs.get("state_dict", args[0] if args else None)
+        skipped = _skipped(model, conversions, state_dict)
+        if not skipped:
             return original(model, *args, **kwargs)
         # An empty list, never None: None makes transformers rebuild the default mapping.
-        model._weight_conversions = [c for c in conversions if not _is_bnb_deserialize(c)]
+        model._weight_conversions = [c for c in conversions if not any(c is x for x in skipped)]
         try:
             return original(model, *args, **kwargs)
         finally:
@@ -3350,8 +3482,8 @@ def fix_transformers_bnb_prequantized_save():
         if modeling_utils.__dict__.get("revert_weight_conversion") is original:
             modeling_utils.revert_weight_conversion = revert_weight_conversion
         logger.info(
-            "Unsloth: Patching transformers `revert_weight_conversion` so a pre-quantized "
-            "bitsandbytes model can be saved"
+            "Unsloth: Patching transformers `revert_weight_conversion` so a bitsandbytes 4-bit model "
+            "(pre-quantized, or with fused 4-bit expert stacks) can be saved"
         )
     except Exception as e:
         logger.info(f"Unsloth: Failed patching revert_weight_conversion ({e})")
@@ -3580,7 +3712,44 @@ def _carry_rope_theta_across_assignment(
     return base
 
 
+# transformers 5 warns on every `rope_scaling` write; the probe below writes it on purpose.
+_ROPE_SCALING_DEPRECATION_MESSAGE = r"`?rope_scaling`? is deprecated"
+
+
+def assign_rope_scaling(config, value):
+    """``config.rope_scaling = value`` for Unsloth's own writes, without transformers 5's FutureWarning.
+
+    The caller handed Unsloth a ``rope_scaling`` (or Unsloth extended the context itself), so
+    a warning about the config attribute's name is not something the user can act on. The
+    setter still runs (it standardises ``rope_parameters``); only that one message is
+    filtered, only for this assignment. A user's own ``config.rope_scaling = ...`` still warns.
+    """
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message = _ROPE_SCALING_DEPRECATION_MESSAGE,
+            category = FutureWarning,
+        )
+        config.rope_scaling = value
+
+
 def _transformers_rope_scaling_assignment_drops_theta():
+    """Run the probe below without printing transformers' ``rope_scaling`` FutureWarning.
+
+    The probe has to write the deprecated alias, because the alias setter is what it
+    measures, so the warning it raises at ``import unsloth`` says nothing about the
+    user's code. Only that one message is filtered, only for the probe's duration.
+    """
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message = _ROPE_SCALING_DEPRECATION_MESSAGE,
+            category = FutureWarning,
+        )
+        return _probe_rope_scaling_assignment_drops_theta()
+
+
+def _probe_rope_scaling_assignment_drops_theta():
     """Does replacing ``config.rope_scaling`` on THIS build lose the base frequency?
 
     Measured, not inferred from a version: the move into ``rope_parameters``, the alias

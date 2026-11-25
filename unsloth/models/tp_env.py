@@ -160,6 +160,18 @@ def tensor_parallel_env_load(fn):
     @functools.wraps(fn)
     def from_pretrained(*args, **kwargs):
         layout = env_layout()
+        if layout is None and not _DEPTH["load"]:
+            from .ep_native import ep_env_size
+            if ep_env_size() > 1:  # expert parallel (UNSLOTH_EP_SIZE): the experts load per rank
+                from .ep_native import ep_env_load
+
+                values = _bound(fn, args, kwargs)
+                four_bit = _four_bit(values, fn) and not _is_adapter(values)
+                _DEPTH["load"] += 1
+                try:
+                    return ep_env_load(fn, args, kwargs, four_bit)
+                finally:
+                    _DEPTH["load"] -= 1
         if layout is None or _DEPTH["load"]:
             return fn(*args, **kwargs)
         values = _bound(fn, args, kwargs)
@@ -336,6 +348,18 @@ def tensor_parallel_env_peft(fn):
     @functools.wraps(fn)
     def get_peft_model(*args, **kwargs):
         layout = env_layout()
+        if layout is None and not _DEPTH["peft"]:
+            from .ep_native import ep_env_apply, ep_env_size
+            if ep_env_size() > 1:  # expert parallel: shard the experts once LoRA is attached
+                _DEPTH["peft"] += 1
+                try:
+                    out = fn(*args, **kwargs)
+                finally:
+                    _DEPTH["peft"] -= 1
+                model = _model_of(out)
+                if model is not None:
+                    ep_env_apply(model)
+                return out
         if layout is None or _DEPTH["peft"] or layout.tp == 1 or layout.pp > 1:
             # Under UNSLOTH_PP_SIZE tensor parallel comes after the split, at the Trainer.
             return fn(*args, **kwargs)

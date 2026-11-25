@@ -161,7 +161,7 @@ function ChatFileRow({ file, onJump }: { file: ChatFile; onJump: () => void }) {
           strokeWidth={1.75}
           className="size-4 shrink-0 text-muted-foreground"
         />
-        <span className="truncate text-[13px]">{file.name}</span>
+        <span className="truncate text-ui-13">{file.name}</span>
       </button>
       <button
         type="button"

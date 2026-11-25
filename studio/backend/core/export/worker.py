@@ -450,10 +450,10 @@ def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
     load_in_4bit = cmd.get("load_in_4bit", True)
     # Latest-sidecar checkpoints load 16-bit: bnb 4-bit hits unvalidated expert paths.
     if load_in_4bit:
-        from utils.transformers_version import latest_tier_active_for
+        from utils.transformers_version import latest_tier_forces_16bit
 
         # Plain token: the sentinel reads no cache offline, misses the sidecar and leaves 4-bit on.
-        if latest_tier_active_for(checkpoint_path, hf_token or None):
+        if latest_tier_forces_16bit(checkpoint_path, hf_token or None):
             load_in_4bit = False
             logger.info(
                 "Latest-transformers sidecar active for %s - forcing a 16-bit "

@@ -4434,6 +4434,7 @@ export const cs = {
       lr: "LR",
       hardware: "Hardware",
       vram: "VRAM",
+      vramTotal: "Celkem {size}",
       noGpu: "Nebyla zjištěna žádná GPU",
       hfToken: "Token HF",
       saved: "Uloženo",

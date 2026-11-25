@@ -38,7 +38,7 @@ test("every quant list and cached GGUF row marks the quant each loaded model run
 test("a loaded row is selected, picked and ejected by its checkpoint, not its label", () => {
   const runtime = readSrc("features/chat/hooks/use-chat-model-runtime.ts");
   assert.match(runtime, /const checkpoint = checkpoints\?\.\[i\] \|\| id;/);
-  assert.match(runtime, /statusRes\.serving_checkpoints,\s*\);/);
+  assert.match(runtime, /statusRes\.serving_checkpoints,\s*statusRes\.serving_quants,\s*\);/);
   assert.match(
     runtime,
     /\.loadedModels\.map\(\(m\) => m\.checkpoint \?\? m\.id\)/,

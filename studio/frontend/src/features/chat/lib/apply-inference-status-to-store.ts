@@ -13,7 +13,10 @@ import {
 } from "@/features/model-picker/model-config/per-model-config";
 // eslint-disable-next-line no-restricted-imports -- Leaf module; the model-picker index pulls in chat.
 import { pinnedReasoningEnabled } from "@/features/model-picker/components/model-selector/reasoning-enabled-pin";
-import { modelDisplayName } from "@/features/hub/lib/model-identity";
+import {
+  modelDisplayName,
+  withoutNamedQuant,
+} from "@/features/hub/lib/model-identity";
 // eslint-disable-next-line no-restricted-imports -- Leaf module; the npu index pulls in its React views.
 import { npuDisplayNameNow } from "@/features/npu/use-npu-display-name";
 import { getInferenceStatus } from "../api/chat-api";
@@ -96,11 +99,18 @@ export function reasoningCapsFromLoad(resp: {
   };
 }
 
-export function resolveInferenceCheckpointId(
+export function servedInferenceCheckpointId(
   status: InferenceStatusResponse,
 ): string | null {
   if (!status.active_model) return null;
   return status.model_identifier ?? status.active_model;
+}
+
+export function resolveInferenceCheckpointId(
+  status: InferenceStatusResponse,
+): string | null {
+  const served = servedInferenceCheckpointId(status);
+  return served && withoutNamedQuant(served, status.gguf_variant);
 }
 
 function ensureActiveModelInStoreList(
