@@ -3401,6 +3401,19 @@ _STUDIO_CREDENTIAL_BLOCKED = (
     "Blocked for safety: Unsloth Studio's authentication directory holds this install's own "
     "credentials and is not readable by tools."
 )
+# Returned when the safety screen itself runs out of stack on the tool's input; nothing was run.
+_PYTHON_TOO_DEEP_TO_SCREEN = (
+    "Error: the code is nested too deeply for the safety check to analyse, so it was not run. "
+    "Simplify it (for example, split long expressions into several statements) and run it again."
+)
+_TERMINAL_TOO_DEEP_TO_SCREEN = (
+    "Error: the command is nested too deeply for the safety check to analyse, so it was not run. "
+    "Simplify it and run it again."
+)
+_MCP_TOO_DEEP_TO_SCREEN = (
+    "Error: the tool arguments are nested too deeply for the safety check to analyse, so the "
+    "call was not made. Simplify them and try again."
+)
 
 
 def _canonical_path_text(text: str) -> str:
@@ -9701,55 +9714,62 @@ def _python_is_high_risk(code: str) -> bool:
 
 def is_high_risk_tool_call(name: str, arguments: dict) -> bool:
     """Auto mode prompts only for sensitive actions (credentials, privilege, destructive, network exfil); unknown tools fail closed; hard blocks still apply."""
-    if _web_search_fetches_url(name, arguments) or _browser_opens_workspace_file(name, arguments):
-        return True
-    if name in _ALWAYS_SAFE_TOOLS:
-        return False
-    if name == "render_html":
-        # A static canvas is fine; only a networked canvas can egress.
-        return _render_html_reaches_network(arguments)
-    if name.startswith(MCP_TOOL_PREFIX):
-        tool_name = _mcp_raw_tool_name(name)
-        if tool_name in _BLENDER_CLI_SUMMARY_TOOLS:
-            return True
-        # Normalize every separator and camelCase boundary to underscore so term regexes match one form.
-        tool_name = _CAMEL_CASE_RE.sub("_", _MCP_TERM_SEPARATOR_RE.sub("_", tool_name))
-        # Exec tools, credential nouns and sensitive paths prompt; ordinary CRUD calls run.
-        _reads = bool(_AUTO_READ_MCP_VERB_RE.search(tool_name))
-        if _AUTO_EXEC_MCP_COMPOUND_RE.search(tool_name):
-            return True
-        if _AUTO_EXEC_MCP_TOOL_RE.search(tool_name) and not (
-            _reads and not _AUTO_EXEC_MCP_VERB_ONLY_RE.search(tool_name)
+    # In the body, not a wrapper: the stack runs out at the same depth as before.
+    try:
+        if _web_search_fetches_url(name, arguments) or _browser_opens_workspace_file(
+            name, arguments
         ):
             return True
-        if _AUTO_DESTRUCTIVE_MCP_VERB_RE.search(tool_name):
-            return True
-        if _AUTO_PRIVILEGE_MCP_VERB_RE.search(tool_name):
-            return True
-        if _AUTO_HIGH_IMPACT_MCP_RE.search(tool_name) and not _reads:
-            return True
-        if _AUTO_PRIVILEGE_MCP_NOUN_RE.search(
-            tool_name
-        ) and _AUTO_PRIVILEGE_MCP_SOFT_VERB_RE.search(tool_name):
-            return True
-        if _AUTO_SENSITIVE_MCP_NOUN_RE.search(tool_name):
-            return True
-        if _mcp_resource_names_a_secret(name, tool_name, arguments):
-            return True
-        if _mcp_arguments_reference_sensitive(arguments):
-            return True
-        # A read-named tool carrying a destructive payload masks a destructive action.
-        if _mcp_arguments_mutate(arguments):
-            return True
-        # MCP names are open vocabulary, so a name with no recognised verb asks.
-        if not _mcp_verb_is_known(tool_name):
-            return True
-        return False
-    if name == "terminal":
-        return _terminal_is_high_risk(str(arguments.get("command", "")))
-    if name == "python":
-        return _python_is_high_risk(str(arguments.get("code", "")))
-    return True
+        if name in _ALWAYS_SAFE_TOOLS:
+            return False
+        if name == "render_html":
+            # A static canvas is fine; only a networked canvas can egress.
+            return _render_html_reaches_network(arguments)
+        if name.startswith(MCP_TOOL_PREFIX):
+            tool_name = _mcp_raw_tool_name(name)
+            if tool_name in _BLENDER_CLI_SUMMARY_TOOLS:
+                return True
+            # Normalize every separator and camelCase boundary to underscore so term regexes match one form.
+            tool_name = _CAMEL_CASE_RE.sub("_", _MCP_TERM_SEPARATOR_RE.sub("_", tool_name))
+            # Exec tools, credential nouns and sensitive paths prompt; ordinary CRUD calls run.
+            _reads = bool(_AUTO_READ_MCP_VERB_RE.search(tool_name))
+            if _AUTO_EXEC_MCP_COMPOUND_RE.search(tool_name):
+                return True
+            if _AUTO_EXEC_MCP_TOOL_RE.search(tool_name) and not (
+                _reads and not _AUTO_EXEC_MCP_VERB_ONLY_RE.search(tool_name)
+            ):
+                return True
+            if _AUTO_DESTRUCTIVE_MCP_VERB_RE.search(tool_name):
+                return True
+            if _AUTO_PRIVILEGE_MCP_VERB_RE.search(tool_name):
+                return True
+            if _AUTO_HIGH_IMPACT_MCP_RE.search(tool_name) and not _reads:
+                return True
+            if _AUTO_PRIVILEGE_MCP_NOUN_RE.search(
+                tool_name
+            ) and _AUTO_PRIVILEGE_MCP_SOFT_VERB_RE.search(tool_name):
+                return True
+            if _AUTO_SENSITIVE_MCP_NOUN_RE.search(tool_name):
+                return True
+            if _mcp_resource_names_a_secret(name, tool_name, arguments):
+                return True
+            if _mcp_arguments_reference_sensitive(arguments):
+                return True
+            # A read-named tool carrying a destructive payload masks a destructive action.
+            if _mcp_arguments_mutate(arguments):
+                return True
+            # MCP names are open vocabulary, so a name with no recognised verb asks.
+            if not _mcp_verb_is_known(tool_name):
+                return True
+            return False
+        if name == "terminal":
+            return _terminal_is_high_risk(str(arguments.get("command", "")))
+        if name == "python":
+            return _python_is_high_risk(str(arguments.get("code", "")))
+        return True
+    except RecursionError:
+        # Nested too deeply to analyse: ask, as for an unknown tool, rather than end the turn.
+        return True
 
 
 def _canon_win_path(p: str) -> str:
@@ -15352,8 +15372,12 @@ def execute_tool(
         return _fit_result_to_room(_mcp_tool_search(arguments), name)
     if name.startswith(MCP_TOOL_PREFIX):
         # An MCP server is not inside the terminal sandbox, so the local refusal has to hold here too.
-        if _mcp_arguments_reference_studio_credential(arguments):
-            return _STUDIO_CREDENTIAL_BLOCKED
+        try:
+            if _mcp_arguments_reference_studio_credential(arguments):
+                return _STUDIO_CREDENTIAL_BLOCKED
+        except RecursionError:
+            # Fail closed: arguments the screen cannot analyse are never sent.
+            return _MCP_TOO_DEEP_TO_SCREEN
         try:
             _, server_id, _ = name.split("__", 2)
         except ValueError:
@@ -24493,26 +24517,32 @@ def _python_exec(
     if not code or not code.strip():
         return "No code provided."
 
-    # Refused in every mode, as in _bash_exec. Relative too: the cwd is a sibling of the auth dir.
-    _guard_workdir = _tool_workdir_for_guard(session_id) if _needs_a_workdir(code) else None
-    if _references_studio_credential_here(code, _guard_workdir) or _python_builds_a_credential_path(
-        code, _guard_workdir
-    ):
-        return _STUDIO_CREDENTIAL_BLOCKED
+    try:
+        # Refused in every mode, as in _bash_exec. Relative too: the cwd is a sibling of the auth dir.
+        _guard_workdir = _tool_workdir_for_guard(session_id) if _needs_a_workdir(code) else None
+        if _references_studio_credential_here(
+            code, _guard_workdir
+        ) or _python_builds_a_credential_path(code, _guard_workdir):
+            return _STUDIO_CREDENTIAL_BLOCKED
 
-    source_encoding = _python_source_encoding(code)
-    if source_encoding is None:
-        return (
-            "Error: the code's `# coding:` line would make Python run different source than "
-            "was written. Remove the coding line and run it again."
-        )
+        source_encoding = _python_source_encoding(code)
+        if source_encoding is None:
+            return (
+                "Error: the code's `# coding:` line would make Python run different source than "
+                "was written. Remove the coding line and run it again."
+            )
 
-    # Validate imports and code safety (skipped when the sandbox is disabled)
+        # Validate imports and code safety (skipped when the sandbox is disabled)
+        error = None
+        if not disable_sandbox:
+            # The allowlist is advisory (the network is not confined), so a user's approval lifts it; API keys keep it.
+            error = _check_code_safety(
+                code, host_approved = host_access_approved and not _api_host_access_refused()
+            )
+    except RecursionError:
+        # Fail closed: what the screen cannot analyse never runs.
+        return _PYTHON_TOO_DEEP_TO_SCREEN
     if not disable_sandbox:
-        # The allowlist is advisory (the network is not confined), so a user's approval lifts it; API keys keep it.
-        error = _check_code_safety(
-            code, host_approved = host_access_approved and not _api_host_access_refused()
-        )
         if error:
             # Capped: repeated forbidden constructs can produce an oversized error.
             return _truncate(error)
@@ -24716,10 +24746,14 @@ def _bash_exec(
         return "No command provided."
 
     # Refused in every mode: this install's bearer would reach the serving provider.
-    if _references_studio_credential_here(
-        command, _tool_workdir_for_guard(session_id) if _needs_a_workdir(command) else None
-    ):
-        return _STUDIO_CREDENTIAL_BLOCKED
+    try:
+        if _references_studio_credential_here(
+            command, _tool_workdir_for_guard(session_id) if _needs_a_workdir(command) else None
+        ):
+            return _STUDIO_CREDENTIAL_BLOCKED
+    except RecursionError:
+        # Fail closed: what the screen cannot analyse never runs.
+        return _TERMINAL_TOO_DEEP_TO_SCREEN
 
     # Chosen once, so the blocklist, env and argv all agree on the shell that will run this call.
     # Sandbox Low runs on the host shell: cmd is only picked to stay inside MXC.

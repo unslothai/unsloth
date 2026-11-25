@@ -170,7 +170,11 @@ def _classify(is_high_risk, name: str, arguments, sandbox_level: Optional[str]) 
     """The risk check, told the level: under Low the Terminal's shell is the host's."""
     from core.inference.tools import classifying_under
     with classifying_under(sandbox_level):
-        return bool(is_high_risk(name, arguments))
+        try:
+            return bool(is_high_risk(name, arguments))
+        except RecursionError:
+            # Too deeply nested to analyse counts as high risk: ask, or require the OS sandbox in "off".
+            return True
 
 
 def requires_os_isolation(

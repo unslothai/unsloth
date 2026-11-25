@@ -194,3 +194,140 @@ def test_a_shared_fold_memo_gives_every_node_its_own_fold():
                 assert tools._folded_path(node, literals, memo = memo) == tools._folded_path(
                     node, literals
                 ), ast.unparse(node)
+
+
+# Deep enough that the screen itself runs out of stack (it raised RecursionError out of every gate).
+_TOO_DEEP = {
+    "add-chain": ("python", {"code": "x = 1" + " + 1" * 1000}),
+    "unary-run": ("python", {"code": "x = " + "-" * 500 + "1"}),
+    "brackets": ("python", {"code": "x = " + "[" * 2000 + "]" * 2000}),
+    "terminal-brackets": ("terminal", {"command": "echo " + "[" * 2000 + "]" * 2000}),
+}
+
+
+def _decide(mode, name, arguments, **kwargs):
+    from state import tool_policy
+
+    common = dict(
+        confirm_tool_calls = True,
+        bypass_permissions = False,
+        permission_mode = mode,
+        name = name,
+        arguments = arguments,
+    )
+    prompted = tool_policy.needs_tool_confirmation(**common, session_id = _SESSION, **kwargs)
+    strict = tool_policy.requires_os_isolation(**common, prompted = prompted, **kwargs)
+    return prompted, strict
+
+
+@pytest.fixture
+def launches(monkeypatch):
+    calls = []
+
+    def stub(*args, **kwargs):
+        calls.append(args)
+        raise RuntimeError("launch stubbed")
+
+    monkeypatch.setattr(tools, "_prepare_tool_launch", stub)
+    monkeypatch.setattr(tools, "_account_confinement", lambda: None)
+    return calls
+
+
+@pytest.fixture(params = [True, False], ids = ["isolated", "no-isolation"])
+def os_isolation(request, monkeypatch):
+    from core.inference import os_sandbox
+
+    monkeypatch.setattr(os_sandbox, "cached_tool_isolation", lambda _name: request.param)
+    monkeypatch.setattr(tools, "workdir_scan_overran", lambda _session: False)
+    return request.param
+
+
+@pytest.mark.parametrize("case", sorted(_TOO_DEEP))
+def test_too_deep_to_screen_is_high_risk(studio_home, case):
+    name, arguments = _TOO_DEEP[case]
+    assert tools.is_high_risk_tool_call(name, arguments) is True
+
+
+@pytest.mark.parametrize("case", sorted(_TOO_DEEP))
+def test_auto_asks_when_the_screen_cannot_analyse(studio_home, case):
+    assert _decide("auto", *_TOO_DEEP[case]) == (True, False)
+
+
+@pytest.mark.parametrize("case", sorted(_TOO_DEEP))
+def test_off_never_runs_unscreened_code_without_the_sandbox(studio_home, os_isolation, case):
+    name, arguments = _TOO_DEEP[case]
+    prompted, strict = _decide("off", name, arguments)
+    if not os_isolation:
+        # No OS sandbox to require: "off" asks instead.
+        assert (prompted, strict) == (True, False)
+    else:
+        assert (prompted, strict) == (False, True)
+
+
+@pytest.mark.parametrize("case", sorted(_TOO_DEEP))
+def test_ask_still_asks(studio_home, case):
+    assert _decide("ask", *_TOO_DEEP[case]) == (True, False)
+
+
+def test_only_recursion_fails_closed_in_the_policy():
+    def deep(_name, _arguments):
+        raise RecursionError
+
+    def broken(_name, _arguments):
+        raise ValueError("not a recursion")
+
+    assert _decide("auto", "python", {"code": "1"}, is_high_risk = deep) == (True, False)
+    with pytest.raises(ValueError):
+        _decide("auto", "python", {"code": "1"}, is_high_risk = broken)
+
+
+@pytest.mark.parametrize("host_access_approved", [False, True])
+@pytest.mark.parametrize("case", sorted(_TOO_DEEP))
+def test_an_approved_call_the_screen_cannot_analyse_is_not_run(
+    studio_home, launches, case, host_access_approved
+):
+    name, arguments = _TOO_DEEP[case]
+    result = tools.execute_tool(
+        name, arguments, session_id = _SESSION, host_access_approved = host_access_approved
+    )
+    assert result.startswith("Error: the ") and "nested too deeply for the safety check" in result
+    assert "not run" in result
+    assert launches == []
+
+
+def test_an_mcp_call_the_screen_cannot_analyse_is_not_sent(studio_home, monkeypatch):
+    nested: dict = {}
+    cur = nested
+    for _ in range(900):
+        cur["a"] = {}
+        cur = cur["a"]
+    sent = []
+    monkeypatch.setattr(
+        tools.mcp_servers_db, "get_server_for_tool", lambda server_id: sent.append(server_id)
+    )
+    name = f"{tools.MCP_TOOL_PREFIX}srv__get_item"
+    assert tools.is_high_risk_tool_call(name, nested) is True
+    result = tools.execute_tool(name, nested, session_id = _SESSION)
+    assert "nested too deeply for the safety check" in result and "not made" in result
+    assert sent == []
+
+
+@pytest.mark.parametrize(
+    "name, arguments, high_risk",
+    [
+        ("python", {"code": "print(1 + 1)"}, False),
+        ("python", {"code": "x = 1" + " + 1" * 300}, False),
+        ("python", {"code": "import os\nos.remove('/etc/passwd')"}, True),
+        ("python", {"code": "open('/home/someoneelse/notes.txt', 'w').write('x')"}, True),
+        ("terminal", {"command": "ls -la"}, False),
+        ("terminal", {"command": "echo " + "[" * 300 + "]" * 300}, False),
+        ("terminal", {"command": "rm -rf /"}, True),
+    ],
+)
+def test_ordinary_calls_keep_their_decisions(studio_home, launches, name, arguments, high_risk):
+    assert tools.is_high_risk_tool_call(name, arguments) is high_risk
+    assert _decide("auto", name, arguments) == (high_risk, False)
+    if not high_risk:
+        launches.clear()
+        tools.execute_tool(name, arguments, session_id = _SESSION)
+        assert len(launches) == 1
