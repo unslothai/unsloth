@@ -4018,7 +4018,7 @@ export const it = {
   chatMenu: {
     more: "Opzioni chat",
     copy: "Copia",
-    addScheduledTask: "Aggiungi attività pianificata…",
+    addScheduledTask: "Aggiungi attività pianificata",
     compact: "Compatta conversazione",
     compactEmpty: "Ancora niente da compattare",
     compactUnsupported: "La compattazione richiede un modello GGUF o MLX con supporto per gli strumenti",

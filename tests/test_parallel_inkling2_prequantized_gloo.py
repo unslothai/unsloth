@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-"""Tensor parallel and native FSDP2 on a PRE-QUANTIZED bitsandbytes 4-bit Inkling-2-Mini (gloo CPU, 2 ranks, fp32).
+"""Tensor / expert parallel and native FSDP2 on a PRE-QUANTIZED bitsandbytes 4-bit Inkling-2-Mini (gloo CPU, 2 ranks, fp32).
 
 The fake is saved as unsloth/Inkling-2-Mini-unsloth-bnb-4bit is: quantized on load (attention Linear4bit, the
 3-D routed expert stacks as bare Params4bit), then save_pretrained under Unsloth's save fixes, so the
@@ -10,7 +10,8 @@ bytes + QuantState entries). Ranks reload it with zoo's pre-quantized expert loa
 - tp=2, full load + LoRA + apply_tensor_parallel: the 4-bit experts shard by expert index; losses / LoRA grads
   match one process.
 - tp=2 under sharded_loading: each rank's 4-bit tensors bitwise equal to the full load + apply, same losses.
-- native FSDP2, full load + shard_model, and fsdp2_sharded_loading: same 4-bit chunks bitwise, same losses."""
+- native FSDP2, full load + shard_model, and fsdp2_sharded_loading: same 4-bit chunks bitwise, same losses.
+- ep=2 under expert_parallel_loading: each rank keeps only its 4-bit experts, bitwise the full load + apply."""
 
 import functools
 import importlib.util
@@ -226,6 +227,40 @@ def _case_tp(rank, world, tmp, path):
     return out
 
 
+def _case_ep(rank, world, tmp, path):
+    from torch.distributed.device_mesh import init_device_mesh
+
+    import test_ep_inkling2_gloo as epi
+
+    _zoo()
+    ink._load("tp_native")
+    epn = ink._load("ep_native")
+    mesh = init_device_mesh("cpu", (world,), mesh_dim_names = ("ep",))["ep"]
+    out = {"ep_native": epn.__file__}
+
+    # (a) full load + LoRA + apply_expert_parallel against one process.
+    out["ref"] = epi._ref(q._lora(_load(path)), world)
+    model = _load(path)
+    out["full_bytes"] = q._held_4bit(model)
+    model = q._lora(model)
+    epn.apply_expert_parallel(model, mesh)
+    want = q._snapshot(model)
+    out["full"] = epi._ep_train(epn, model, rank, world)
+
+    # (b) expert_parallel_loading of the pre-quantized checkpoint.
+    with epn.expert_parallel_loading(mesh) as state:
+        model = _load(path)
+    out["models"] = len(state["models"])
+    out["stats"] = dict(model.__dict__.get("_unsloth_tp_load_stats") or {})
+    out["held"] = q._held_4bit(model)
+    model = q._lora(model)
+    epn.apply_expert_parallel(model, mesh)
+    have = q._snapshot(model)
+    out["compared"], out["diffs"] = len(want), _diffs(want, have)
+    out["sharded"] = epi._ep_train(epn, model, rank, world)
+    return out
+
+
 def _case_fsdp2(rank, world, tmp, path):
     import importlib
 
@@ -349,6 +384,25 @@ def test_tp_prequantized_inkling_full_and_sharded_load(ckpt):
             "stats"
         ]
         assert r["stats"]["sharded_weights"] >= 60, r["stats"]
+        assert r["compared"] > 0 and not r["diffs"], r["diffs"][:5]
+        assert r["sharded"]["losses"] == r["full"]["losses"]
+
+
+def test_ep_prequantized_inkling_sharded_load_keeps_only_local_experts(ckpt):
+    import test_ep_inkling2_gloo as epi
+    results = _run("_case_ep", ckpt)
+    for r in results:
+        assert os.path.realpath(r["ep_native"]).startswith(os.path.realpath(REPO) + os.sep), r[
+            "ep_native"
+        ]
+        epi._check(r["ref"], r["full"], 5e-4)
+        # Each rank reads only its 4-bit experts (12 blocks x 2 stacks); attention and the rest load whole.
+        assert r["models"] == 1, r
+        assert r["stats"].get("prequantized") and r["stats"]["sharded_expert_stacks"] == 24, r[
+            "stats"
+        ]
+        assert r["stats"]["sharded_weights"] == 0, r["stats"]
+        assert r["held"] < r["full_bytes"], (r["held"], r["full_bytes"])
         assert r["compared"] > 0 and not r["diffs"], r["diffs"][:5]
         assert r["sharded"]["losses"] == r["full"]["losses"]
 

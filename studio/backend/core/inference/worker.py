@@ -919,6 +919,7 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                         "audio_options_by_workflow",
                         "audio_workflow_tasks",
                         "audio_server_task",
+                        "audio_separation",
                         "audio_convert",
                         "audio_convert_route",
                         "audio_convert_rules",

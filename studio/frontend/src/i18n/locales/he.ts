@@ -920,7 +920,7 @@ export const he = {
   chatMenu: {
     more: "אפשרויות צ'אט",
     copy: "העתקה",
-    addScheduledTask: "הוספת משימה מתוזמנת…",
+    addScheduledTask: "הוספת משימה מתוזמנת",
     compact: "כווץ שיחה",
     compactEmpty: "אין עדיין מה לכווץ",
     compactUnsupported: "כיווץ שיחה דורש מודל GGUF או MLX עם תמיכה בכלים",

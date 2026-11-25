@@ -4739,11 +4739,33 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             # pad == eos: rows whose completion EOS shares the pad id (None otherwise, or with an older zoo).
             _eos_rows = None
             _eos_cmask = create_completion_attention_mask
+            # pad == eos and pad-id tokens TRL marks real (turn ends, EOS): the zoo loss's real-token mask.
+            _real = None
             if pixel_values is None:
                 left_pad_tokens_per_prompt = calculate_pad_tokens_in_prompt(
                     input_ids, logits_to_keep, self.processing_class.pad_token_id
                 )
                 # Body-local: this source is copied out without this module's imports.
+                try:
+                    from unsloth_zoo.rl_replacements import (
+                        create_completion_attention_mask as _real_cmask,
+                        grpo_real_token_mask as _grpo_real_token_mask,
+                        grpo_trainer_eos_token_ids as _grpo_eos_token_ids,
+                    )
+                except ImportError:
+                    _grpo_real_token_mask = None
+                if _grpo_real_token_mask is not None and torch.is_tensor(attention_mask):
+                    _real = _grpo_real_token_mask(
+                        input_ids,
+                        attention_mask,
+                        logits_to_keep,
+                        self.processing_class.pad_token_id,
+                        eos_token_ids = _grpo_eos_token_ids(self),
+                    )
+                    # The zoo loss lays rows out by the same mask with these old / ref logps.
+                    self._unsloth_grpo_logps_prompt_from_mask = True
+                if _real is not None:
+                    left_pad_tokens_per_prompt = (~_real[:, :-logits_to_keep]).sum(dim = 1)
                 try:
                     from unsloth_zoo.rl_replacements import (
                         create_completion_attention_mask as _eos_cmask_live,
@@ -4761,11 +4783,12 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 except (ImportError, TypeError, ValueError):
                     _grpo_pad_is_eos_rows = None
                 if _grpo_pad_is_eos_rows is not None and torch.is_tensor(attention_mask):
-                    _eos_rows = _grpo_pad_is_eos_rows(
-                        self,
-                        input_ids[:, -logits_to_keep:],
-                        completion_mask = attention_mask[:, -logits_to_keep:],
-                    )
+                    if _real is None:
+                        _eos_rows = _grpo_pad_is_eos_rows(
+                            self,
+                            input_ids[:, -logits_to_keep:],
+                            completion_mask = attention_mask[:, -logits_to_keep:],
+                        )
                     # The zoo loss keeps the EOS slot with old / ref logps only once this path scores it.
                     self._unsloth_grpo_logps_cover_eos = True
                     # The installed zoo's mask helper: a cached trainer copy may predate eos_rows.
@@ -4783,8 +4806,14 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                         _eos_rows = None
                 else:
                     max_left_pad = torch.max(left_pad_tokens_per_prompt).item()
-                input_ids = left_pack_padding(input_ids, self.processing_class.pad_token_id)
-                attention_mask = input_ids != self.processing_class.pad_token_id
+                if _real is None:
+                    input_ids = left_pack_padding(input_ids, self.processing_class.pad_token_id)
+                    attention_mask = input_ids != self.processing_class.pad_token_id
+                else:
+                    # left_pack_padding keyed on the real-token mask, as the zoo loss packs.
+                    _real_order = torch.argsort(_real, dim = 1, descending = True, stable = True)
+                    input_ids = torch.gather(input_ids, 1, _real_order)
+                    attention_mask = torch.gather(_real, 1, _real_order)
                 if _eos_rows is not None:
                     # Same slot as the zoo loss mask: the first pad-id token after the completion start.
                     _eos_w = logits_to_keep + max_left_pad
@@ -4866,6 +4895,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 and not getattr(unwrapped_model, "_unsloth_prefix_grouper_nograd_disabled", False)
                 # Its layout finds tokens by pad id, so it would drop a kept EOS that shares it.
                 and _eos_rows is None
+                and _real is None
             )
             if _pg_engage:
                 try:
@@ -5026,8 +5056,8 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 try:
                     _pk_pad = self.processing_class.pad_token_id
                     _pk_keep = input_ids != _pk_pad
-                    if _eos_rows is not None:
-                        # Same tokens as attention_mask: keep the real EOS that shares the pad id.
+                    if _eos_rows is not None or _real is not None:
+                        # Same tokens as attention_mask: keep the real tokens that share the pad id.
                         _pk_keep = attention_mask.to(torch.bool)
                     _pk_len = _pk_keep.sum(dim = 1)
                     _pk_len_cpu = _pk_len.tolist()  # single GPU->CPU sync, reused below
@@ -5058,15 +5088,26 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     if _pk_fits:
                         _pk_flat = input_ids[_pk_keep].unsqueeze(0)
                         # Per-row completion mask (same as the loss); prompt-only rows count as inactive.
-                        _pk_cmask = (
-                            create_completion_attention_mask if _eos_rows is None else _eos_cmask
-                        )(
-                            input_ids[:, -_pk_W:],
-                            left_pad_tokens_per_prompt,
-                            max_left_pad,
-                            _pk_pad,
-                            **({} if _eos_rows is None else {"eos_rows": _eos_rows}),
-                        )
+                        if _real is not None:
+                            _pk_cmask = _real_cmask(
+                                input_ids[:, -_pk_W:],
+                                left_pad_tokens_per_prompt,
+                                max_left_pad,
+                                _pk_pad,
+                                real_mask = _pk_keep[:, -_pk_W:],
+                            )
+                        else:
+                            _pk_cmask = (
+                                create_completion_attention_mask
+                                if _eos_rows is None
+                                else _eos_cmask
+                            )(
+                                input_ids[:, -_pk_W:],
+                                left_pad_tokens_per_prompt,
+                                max_left_pad,
+                                _pk_pad,
+                                **({} if _eos_rows is None else {"eos_rows": _eos_rows}),
+                            )
                         _pk_active = int(_pk_cmask.any(dim = 1).sum())
                     if _pk_fits and (_pk_ok is True or _pk_active >= 2):
                         _pk_pos = (_pk_keep.cumsum(dim = 1) - 1)[_pk_keep].unsqueeze(0)
@@ -5442,6 +5483,8 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                     completion_input_ids_chunk,
                                     temperature,
                                 )
+                    # The [B, L, V] logits (or hidden states) of this chunk must not live through the next chunk's forward.
+                    del logits_chunk, completion_input_ids_chunk
                     # Avoids a race with GPT OSS offload_embbed=True; it does not appear to slow models down.
                     device_synchronize()
                     all_logprobs_list.append(logprobs_chunk)

@@ -929,7 +929,7 @@ export const zhTW = {
   chatMenu: {
     more: "聊天選項",
     copy: "複製",
-    addScheduledTask: "新增排程任務…",
+    addScheduledTask: "新增排程任務",
     compact: "壓縮對話",
     compactEmpty: "目前還沒有可壓縮的內容",
     compactUnsupported: "壓縮需要支援工具的 GGUF 或 MLX 模型",
