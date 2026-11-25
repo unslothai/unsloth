@@ -33176,8 +33176,6 @@ class LlamaCppBackend:
                 # Visibility env, child ids, effective pin and per-GPU plan the widened retry
                 # replaced, put back when it fails so later rungs respawn on the planned cards.
                 _fit_retry_restore: Optional[tuple] = None
-                # Cards the failed widened child saw, for the arch-crash rung that follows it.
-                _fit_retry_failed_ids: Optional[tuple[int, ...]] = None
                 if not is_vulkan_backend and _gpu_mem:
                     _child_gpu_physical_ids = self._unmasked_child_gpu_physical_ids()
                 _parent_view_gpu_ids = _child_gpu_physical_ids
@@ -33646,10 +33644,9 @@ class LlamaCppBackend:
                 def _restore_fit_retry_mask() -> None:
                     """Put back what a widened retry replaced: the rungs after a failed load
                     respawn from the planned argv, so they get the planned cards."""
-                    nonlocal _child_gpu_physical_ids, _fit_retry_restore, _fit_retry_failed_ids
+                    nonlocal _child_gpu_physical_ids, _fit_retry_restore
                     if _fit_retry_restore is None:
                         return
-                    _fit_retry_failed_ids = _child_gpu_physical_ids
                     (
                         _saved_env,
                         _child_gpu_physical_ids,
@@ -33732,15 +33729,16 @@ class LlamaCppBackend:
                     Up to four launches: the first, one ROCm env correction, one
                     retry without the MoE expert cache, and one --fit recovery.
                     Separate flags, so a library mix does not spend the fit slot
-                    and a VRAM crash after the correction can still fit-retry.
+                    and a VRAM crash after the correction can still fit-retry. A
+                    widened --fit recovery that hits a kernel-image error gets one
+                    more launch on the planned cards.
                     """
                     # _mem_host_resident too: the --fit on retry re-arms the
                     # page-lock and writes it back, which without this makes the
                     # read below an UnboundLocalError instead.
                     nonlocal _last_spawn_cmd, _mem_host_resident, _did_rocm_retry
                     nonlocal _sched_abort_seen, _sidecar_fit_reserve_mib, effective_ctx
-                    nonlocal _fit_retry_failed_ids
-                    _fit_retry_failed_ids = None
+                    nonlocal _fit_retry_pool
                     # Single revocation point for the tensor-spill plan; label is empty only on the first spawn.
                     if label:
                         run_cmd = self._drop_tensor_spill(run_cmd, label.lstrip("-") or "retry")
@@ -33756,7 +33754,7 @@ class LlamaCppBackend:
                     _did_fit_retry = False
                     _did_moe_cache_retry = False
                     _ctx_halvings = 0
-                    for _spawn_attempt in range(4 + _CTX_HALVE_MAX):
+                    for _spawn_attempt in range(5 + _CTX_HALVE_MAX):
                         if _spawn_attempt:
                             run_cmd = self._drop_managed_lazy_mode(run_cmd, "startup")
                         # Defensive kill: drop an orphan Popen a concurrent load may
@@ -34174,6 +34172,21 @@ class LlamaCppBackend:
                         _capability_crash = _capability_crash or (
                             self._cuda_kernel_image_error("\n".join(self._stdout_lines)) is not None
                         )
+                        if _fit_retry_restore is not None and self._kernel_image_invalid(
+                            "\n".join(self._stdout_lines[-80:])
+                        ):
+                            # A card the widen added has no kernels in this build: the --fit on
+                            # retry still gets the planned cards, as it did before the widen.
+                            logger.warning(
+                                "The --fit on retry over GPUs %s hit a kernel-image error; "
+                                "retrying once with --fit on over the planned GPU(s). "
+                                "Crash log: %s",
+                                list(_child_gpu_physical_ids or ()),
+                                self._llama_log_path,
+                            )
+                            _restore_fit_retry_mask()
+                            _fit_retry_pool = None
+                            continue
                         if (
                             not _did_rocm_retry
                             and _startup_crashed
@@ -34897,10 +34910,8 @@ class LlamaCppBackend:
                     # empties the pool to bypass the planner.
                     _enumerated = [i for i, _free in _detected_gpus]
                     if gpu_indices:
-                        # A widened --fit on retry crashed on the cards it saw, not the plan's.
-                        _crash_ids = list(_fit_retry_failed_ids or gpu_indices)
-                        _crashed = sorted(set(_crash_ids))
-                        _remaining = self._arch_crash_retry_gpu_ids(_crash_ids, _enumerated)
+                        _crashed = sorted(set(gpu_indices))
+                        _remaining = self._arch_crash_retry_gpu_ids(gpu_indices, _enumerated)
                     elif (
                         _cache_target_unknown
                         or str(env.get("LLAMA_ARG_MAIN_GPU", "")).strip()
@@ -35070,6 +35081,8 @@ class LlamaCppBackend:
                             env, ",".join(str(i) for i in _retry_mask), prefer_rocr = True
                         )
                         _child_gpu_physical_ids = tuple(int(i) for i in _retry_mask)
+                        # Its own --fit on recovery stays on the cards this rung kept.
+                        _fit_retry_pool = None
                         self._clear_split_placement_env(env)
                         # The mask re-indexes survivors, so drop a --tensor-split sized for the crashed set.
                         _arch_retry_cmd = self._without_tensor_split(cmd)

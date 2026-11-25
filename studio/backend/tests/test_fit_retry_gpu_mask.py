@@ -308,12 +308,10 @@ def test_a_failed_widened_pick_publishes_the_planned_card_again(monkeypatch, tmp
     assert backend.gpu_ids == [1]
 
 
-def test_an_arch_crash_on_the_widened_child_does_not_retry_on_the_card_that_failed(
-    monkeypatch, tmp_path
-):
-    # GPU 0 runs out of memory, then the widened child hits a kernel-image error on
-    # GPU 1. Blaming the planned [0] would send the next launch to GPU 1 alone.
-    _backend, launches, _error = _load(
+def test_a_kernel_error_on_an_added_card_falls_back_to_the_planned_card(monkeypatch, tmp_path):
+    # GPU 0 runs out of memory, then the widened child hits a kernel-image error on GPU 1.
+    # The --fit on retry main runs on GPU 0 alone still gets its turn, and comes up.
+    backend, launches, error = _load(
         monkeypatch,
         tmp_path,
         returncodes = [1, 1, None],
@@ -322,8 +320,28 @@ def test_an_arch_crash_on_the_widened_child_does_not_retry_on_the_card_that_fail
             "CUDA error: no kernel image is available for execution on the device",
         ],
     )
-    assert [_mask(launch) for launch in launches[:2]] == ["0", "0,1"]
-    assert all(_mask(launch) != "1" for launch in launches[2:])
+    assert error is None
+    assert backend._healthy
+    assert [_mask(launch) for launch in launches] == ["0", "0,1", "0"]
+    assert [_fit_mode(launch[0]) for launch in launches] == ["off", "on", "on"]
+
+
+def test_the_arch_rung_fit_retry_stays_on_the_cards_it_kept(monkeypatch, tmp_path):
+    # GPU 0 has no kernels; the arch rung moves to GPU 1, which then runs out of memory
+    # under --fit off. Its --fit on retry must not add GPU 0 back.
+    backend, launches, error = _load(
+        monkeypatch,
+        tmp_path,
+        returncodes = [1, 1, None],
+        outputs = [
+            "CUDA error: no kernel image is available for execution on the device",
+            _OOM,
+        ],
+    )
+    assert error is None
+    assert backend._healthy
+    assert [_mask(launch) for launch in launches] == ["0", "1", "1"]
+    assert [_fit_mode(launch[0]) for launch in launches] == ["off", "off", "on"]
 
 
 def test_the_widened_mask_keeps_the_parent_order(monkeypatch, tmp_path):
