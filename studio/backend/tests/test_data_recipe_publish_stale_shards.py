@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
-from huggingface_hub import CommitOperationAdd, CommitOperationDelete, HfApi
+from huggingface_hub import CommitInfo, CommitOperationAdd, CommitOperationDelete, HfApi
 import huggingface_hub.hf_api as hf_api_module
 import pytest
 
@@ -40,11 +40,17 @@ class _Hub(HfApi):
                 del self.files[op.path_in_repo]
             elif isinstance(op, CommitOperationAdd):
                 self.files[op.path_in_repo] = Path(op.path_or_fileobj).read_bytes()
+        return CommitInfo(
+            commit_url = f"https://huggingface.co/datasets/{repo_id}/commit/0",
+            commit_message = "",
+            commit_description = "",
+            oid = "0",
+        )
 
 
 def _publish(monkeypatch, tmp_path, hub, local_files):
-    # The single-commit path; with Xet, upload_folder may split a large folder into several.
-    monkeypatch.setattr(hf_api_module, "is_xet_available", lambda: False)
+    # Single-commit path; huggingface_hub 1.x with Xet may split the upload into several commits.
+    monkeypatch.setattr(hf_api_module, "is_xet_available", lambda: False, raising = False)
 
     class _Client:
         def __init__(self, token):
