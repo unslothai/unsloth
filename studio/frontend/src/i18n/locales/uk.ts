@@ -985,7 +985,7 @@ export const uk = {
   chatMenu: {
     more: "Параметри чату",
     copy: "Копіювати",
-    addScheduledTask: "Додати заплановане завдання…",
+    addScheduledTask: "Додати заплановане завдання",
     compact: "Стиснути розмову",
     compactEmpty: "Поки що нічого стискати",
     compactUnsupported:

@@ -886,7 +886,7 @@ export const en = {
   chatMenu: {
     more: "Chat options",
     copy: "Copy",
-    addScheduledTask: "Add scheduled task…",
+    addScheduledTask: "Add scheduled task",
     compact: "Compact conversation",
     compactEmpty: "Nothing to compact yet",
     compactUnsupported: "Compaction requires a GGUF or MLX model with tool support",
