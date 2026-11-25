@@ -86,7 +86,7 @@ def _top_level_calls(tree):
 
 
 def test_init_snapshots_before_gpu_init_and_restores_last():
-    with open(os.path.join(ROOT, "unsloth", "__init__.py")) as f:
+    with open(os.path.join(ROOT, "unsloth", "__init__.py"), encoding = "utf-8") as f:
         tree = ast.parse(f.read())
     lines = _top_level_calls(tree)
     assert lines["snapshot_cudnn_sdpa_before_import"] < lines["_gpu_init"]
@@ -106,7 +106,7 @@ def test_every_from_pretrained_starts_with_the_load_hook():
         ("unsloth/models/llama.py", ("FastLlamaModel",)),
         ("unsloth/models/vision.py", ("FastBaseModel",)),
     ):
-        with open(os.path.join(ROOT, rel)) as f:
+        with open(os.path.join(ROOT, rel), encoding = "utf-8") as f:
             tree = ast.parse(f.read())
         for cls in tree.body:
             if not (isinstance(cls, ast.ClassDef) and cls.name in owner):
