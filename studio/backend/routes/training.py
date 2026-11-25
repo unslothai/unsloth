@@ -2451,16 +2451,33 @@ async def _plan_parallel_training(request, training_kwargs: dict, hf_token) -> N
 
     def _plan():
         # Fresh GPU telemetry: a start must not reuse a display read cached by the capabilities route.
-        return parallel_plan.plan_for_request(
-            _parallel_plan_input(training_kwargs, request),
-            hf_token = hf_token,
-            host = parallel_plan.detect_host(max_age_s = 0),
+        host = parallel_plan.detect_host(max_age_s = 0)
+        plan = parallel_plan.plan_for_request(
+            _parallel_plan_input(training_kwargs, request), hf_token = hf_token, host = host
         )
+        return plan, len(host.get("gpus") or [])
 
     try:
-        plan = await asyncio.to_thread(_plan)
+        plan, n_visible = await asyncio.to_thread(_plan)
     except parallel_plan.ParallelPlanError as exc:
         raise HTTPException(status_code = 400, detail = exc.payload) from None
+    pin = bool(plan["gpu_ids"])
+    if pin and not _parent_mask_takes_gpu_ids():
+        if len(plan["gpu_ids"]) < n_visible:
+            # A UUID / MIG / tile mask cannot be narrowed by id, so a subset of its GPUs cannot be honored.
+            raise HTTPException(
+                status_code = 400,
+                detail = {
+                    "code": "parallel_gpu_ids",
+                    "mode": plan["mode"],
+                    "message": (
+                        f"{plan['mode']} on GPU(s) {plan['gpu_ids']} needs a subset of the {n_visible} GPUs Studio "
+                        "sees, and this GPU visibility mask (UUID / MIG entries) cannot be narrowed by index."
+                    ),
+                    "alternative": "use every visible GPU, or start Studio with numeric CUDA_VISIBLE_DEVICES",
+                },
+            )
+        pin = False  # every visible GPU, which is what the plan counted
     training_kwargs["parallel"] = {
         key: plan[key]
         for key in (
@@ -2474,9 +2491,8 @@ async def _plan_parallel_training(request, training_kwargs: dict, hf_token) -> N
             "reason",
         )
     }
-    if plan["gpu_ids"] and _parent_mask_takes_gpu_ids():
-        # Multi-process ranks and an explicit single / layer split run on exactly the planned GPUs. A UUID / MIG /
-        # tile mask cannot be narrowed by id: there the ranks take every GPU it shows, which is what the plan counted.
+    if pin:
+        # Multi-process ranks and an explicit single / layer split run on exactly the planned GPUs.
         training_kwargs["gpu_ids"] = list(plan["gpu_ids"])
     logger.info(
         "Multi-GPU plan: mode=%s world_size=%s gpu_ids=%s spec=%s (%s)",

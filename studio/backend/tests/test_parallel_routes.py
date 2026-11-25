@@ -131,3 +131,14 @@ def test_request_model_defaults_to_legacy():
     from models.training import TrainingStartRequest
     fields = TrainingStartRequest.model_fields
     assert fields["parallel_mode"].default is None and fields["parallel_spec"].default is None
+
+
+def test_start_plan_step_refuses_a_subset_of_an_unnarrowable_mask(spoof, monkeypatch):
+    monkeypatch.setattr(training_routes, "_parent_mask_takes_gpu_ids", lambda: False)
+    with pytest.raises(HTTPException) as err:
+        asyncio.run(training_routes._plan_parallel_training(_request("single"), _kwargs(), None))
+    assert err.value.status_code == 400 and err.value.detail["code"] == "parallel_gpu_ids"
+    # Every visible GPU needs no narrowing: the ranks take the mask as it is.
+    kwargs = _kwargs()
+    asyncio.run(training_routes._plan_parallel_training(_request("ddp"), kwargs, None))
+    assert kwargs["parallel"]["world_size"] == 2 and kwargs["gpu_ids"] is None
