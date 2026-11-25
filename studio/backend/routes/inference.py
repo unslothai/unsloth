@@ -7132,13 +7132,37 @@ def _pending_inline_rehearsal_cut(text: str, enabled_tool_names) -> int:
     text before what the stream already sent. A rehearsal the strip never removes passes through, so holding it would
     take back what was sent; a tail is held before it is sent, so releasing it only appends."""
     line = text.rfind("\n") + 1
-    if text.find("`", line) < 0:
+    if len(text) - line > _PENDING_INLINE_MAX_CHARS or text.find("`", line) < 0:
+        return -1
+    from core.inference.tool_call_parser import _mask_blocked_bodies
+    from core.tool_healing import _markerless_promotable
+
+    starts = []
+    if text.find("[ARGS]", line) >= 0:
+        starts = [
+            m.start()
+            for m in _PENDING_REHEARSAL_RE.finditer(text, line)
+            if _markerless_promotable(m.group(1), enabled_tool_names)
+        ]
+    tail = _PENDING_REHEARSAL_TAIL_RE.search(text, max(line, len(text) - 128))
+    if tail is not None and (
+        _markerless_promotable(tail.group(1), enabled_tool_names)
+        if tail.group(2)
+        else enabled_tool_names is not None
+        and any(n.startswith(tail.group(1)) for n in enabled_tool_names)
+    ):
+        starts.append(tail.start())
+    if not starts:
+        return -1
+    # Pair delimiters as the parser sees the text: backticks in reasoning or blocked-call bodies do not count.
+    masked = _mask_blocked_bodies(text, enabled_tool_names, think = True)[0]
+    if len(masked) != len(text):
         return -1
     open_end = open_len = 0
     i = line
-    while (i := text.find("`", i)) >= 0:
+    while (i := masked.find("`", i)) >= 0:
         j = i
-        while j < len(text) and text[j] == "`":
+        while j < len(masked) and masked[j] == "`":
             j += 1
         if not open_len:
             open_end, open_len = j, j - i
@@ -7147,31 +7171,11 @@ def _pending_inline_rehearsal_cut(text: str, enabled_tool_names) -> int:
         i = j
     if not open_len:
         return -1
-    from core.inference.tool_call_parser import _mask_blocked_bodies
-    from core.tool_healing import _markerless_promotable
-
-    starts = [
-        m.start()
-        for m in _PENDING_REHEARSAL_RE.finditer(text, open_end)
-        if _markerless_promotable(m.group(1), enabled_tool_names)
-    ]
-    tail = _PENDING_REHEARSAL_TAIL_RE.search(text, open_end)
-    if tail is not None and (
-        _markerless_promotable(tail.group(1), enabled_tool_names)
-        if tail.group(2)
-        else enabled_tool_names is None
-        or any(n.startswith(tail.group(1)) for n in enabled_tool_names)
-    ):
-        starts.append(tail.start())
-    if not starts:
-        return -1
-    # The strip leaves reasoning and blocked-call bodies alone, so a rehearsal there is never removed.
-    masked = _mask_blocked_bodies(text, enabled_tool_names, think = True)[0]
-    if len(masked) != len(text):
-        return -1
-    return next((s for s in starts if masked[s] != "\ue000"), -1)
+    return next((s for s in sorted(starts) if s >= open_end and masked[s] != "\ue000"), -1)
 
 
+# Past this, a last line is not scanned per stream event; such a line streams as before.
+_PENDING_INLINE_MAX_CHARS = 4096
 # Call-shaped only: the strip removes ``NAME[ARGS]{``, never a bare ``NAME[ARGS]`` mention.
 _PENDING_REHEARSAL_RE = _re.compile(r"\b([\w-]+)\[ARGS\]\s*\{")
 # A name, or a name and part of ``[ARGS]`` before its ``{``, that the next chunk could still make call-shaped.
