@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch, getAuthToken } from "@/features/auth";
+import { invalidateLlamaFlagCatalog } from "@/features/model-picker/api/llama-flags";
 import { refreshHardwareInfo } from "@/hooks/use-hardware-info";
 import {
   signalRunningLlamaJob,
@@ -63,6 +64,11 @@ export interface LlamaUpdateStatus {
   from_backend: string | null;
   to_backend: string | null;
   job: LlamaUpdateJob;
+}
+
+export function afterLlamaInstallChanged(): void {
+  invalidateLlamaFlagCatalog();
+  void refreshHardwareInfo();
 }
 
 export function llamaUpdateOffered(status: LlamaUpdateStatus): boolean {
@@ -517,8 +523,8 @@ export function useLlamaUpdateCheck({
         if (presentation.running) return;
         clearPollTimer();
         notifySettledOnce(s.job);
+        afterLlamaInstallChanged();
         if (s.job.state === "success") {
-          void refreshHardwareInfo();
           // Fires here, not only in apply's onDone, so cross-tab updates are covered.
           notifyReloadIfNeeded(s.job);
           onDone?.({
