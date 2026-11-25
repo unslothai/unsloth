@@ -1462,11 +1462,8 @@ def _scale_inputs_embeds(inputs_embeds, factor, from_caller):
 
 
 def _split_layer_rope_tables(model, device, position_embeddings, rope_len, rows):
-    """Per-layer cos / sin for a model split over GPUs (device_map), or None when every layer sits on
-    `device`. accelerate's hooks otherwise copy the whole cos / sin tables from the first card to a
-    split layer's card on every call of that layer (forward and checkpoint recompute): 4 cross-device
-    copies per layer per micro-batch, each kept alive for backward. The rotary cache already keeps a
-    table per card, built the same way (so bit-identical), so each layer gets its own card's table."""
+    """Per-layer cos / sin under device_map, or None on one card: each layer reads its own card's
+    (bit-identical) table instead of accelerate copying the first card's on every call."""
     layers = model.layers
     if len(layers) < 2 or getattr(layers, "_unsloth_block_swap", None) is not None:
         return None
@@ -1487,14 +1484,12 @@ def _split_layer_rope_tables(model, device, position_embeddings, rope_len, rows)
             if layer_device.type != device.type or layer_device.index is None:
                 tables[layer_device] = position_embeddings
             else:
-                # get_cached's fast path only checks rope_len; first rebuild this card if the first
-                # card's cache grew (explicit positions can index every row it materialized).
+                # get_cached's fast path checks only rope_len: catch up with a grown first card.
                 ensure = getattr(model.rotary_emb, "_ensure_rope_cache", None)
                 if ensure is not None:
                     ensure(layer_device.index)
                 cos_sin = model.rotary_emb.get_cached(rope_len, layer_device.index)
                 if rope_len < rows and cos_sin[0].shape[0] < rows:
-                    # Same padding as the first card's tables in LlamaModel_fast_forward.
                     cos_sin = tuple(
                         torch.nn.functional.pad(x, (0, 0, 0, rows - x.shape[0])) for x in cos_sin
                     )
@@ -1827,7 +1822,6 @@ def LlamaModel_fast_forward(
             )
     else:
         position_embeddings = None
-    # Split over GPUs: each layer reads its own card's tables instead of copying the first card's.
     layer_rope_tables = (
         None
         if position_embeddings is None
