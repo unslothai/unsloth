@@ -2031,7 +2031,7 @@ _TOKENIZER_FILES_READ_BY_LOADER = (
 
 
 _TOKENIZER_HOST_PATH_PATCH_FLAG = "_unsloth_refuses_tokenizer_host_paths"
-# Keys the loader rewrites or never opens; a locally saved legacy config can hold a real path here.
+# Loader bookkeeping keys; a locally saved legacy config can hold a real path here.
 _TOKENIZER_CONFIG_PATH_KEYS_IGNORED = frozenset(
     ("name_or_path", "tokenizer_config_file", "special_tokens_map_file", "added_tokens_file")
 )
@@ -2040,8 +2040,7 @@ _TOKENIZER_JSON_STRING_MODEL_FILE = re.compile(rb'"(?:vocab|merges)"\s*:\s*"')
 
 
 def _tokenizer_value_names_host_file(value, repo_dirs):
-    """True when a config string names an existing file outside the repo folder. Tokens such as
-    `</s>` or `[UNK]` are never existing files, so only a crafted path matches."""
+    """True when a config string names an existing file outside the repo folder."""
     if not isinstance(value, str) or not value or len(value) > 4096 or "\n" in value:
         return False
     if not (os.path.isabs(value) or "/" in value or os.sep in value):
@@ -2063,10 +2062,8 @@ def _tokenizer_value_names_host_file(value, repo_dirs):
 
 
 def _tokenizer_files_naming_host_paths(resolved_vocab_files, caller_kwargs):
-    """Keys of tokenizer_config.json, special_tokens_map.json and tokenizer.json that would make
-    the tokenizer open a host file outside the repo: a string `vocab` / `merges` (WordPiece and
-    BPE open a string as a path), `init_inputs`, or any other constructor key. Files the class
-    resolved in the repo are skipped, they win over the config; caller kwargs are trusted."""
+    """Entries of tokenizer_config.json, special_tokens_map.json and tokenizer.json naming a host
+    file outside the repo. Repo-resolved files and caller kwargs are skipped."""
     files = {k: v for k, v in dict(resolved_vocab_files or {}).items() if isinstance(v, str)}
     repo_dirs = set()
     for path in files.values():
@@ -2089,8 +2086,7 @@ def _tokenizer_files_naming_host_paths(resolved_vocab_files, caller_kwargs):
         if not isinstance(data, dict):
             continue
         for key, value in data.items():
-            # *_file keys reach the class only when it resolved that file in the repo (skipped
-            # above, and kept over the config by the back-port); elsewhere they are unused.
+            # *_file keys reach the class only when resolved in the repo (skipped above).
             if key in skip or key.endswith("_file"):
                 continue
             values = value if isinstance(value, (list, tuple)) else [value]
@@ -2112,12 +2108,9 @@ def _tokenizer_files_naming_host_paths(resolved_vocab_files, caller_kwargs):
 
 
 def fix_transformers_tokenizer_config_host_paths():
-    """Refuse a tokenizer whose own JSON names a host file outside its folder. Every transformers
-    version (5.18 included) opens a string `vocab` / `merges` / `init_inputs` entry from
-    tokenizer_config.json, a key of special_tokens_map.json, or a string `model.vocab` in
-    tokenizer.json as a path, so a Hub or uploaded repo could read any file the process can (the
-    tokens then come back through previews, chat and exported tokenizers). Saved tokenizers never
-    hold such paths, so normal loads are unchanged. Idempotent."""
+    """Refuse a tokenizer whose own JSON names a host file outside its folder: transformers 5.x
+    opens a string vocab / merges / init_inputs / special token entry or tokenizer.json
+    model.vocab as a path, so a repo could read any host file back as tokens. Idempotent."""
     try:
         from transformers.tokenization_utils_base import PreTrainedTokenizerBase
 
@@ -2162,7 +2155,7 @@ def fix_transformers_tokenizer_config_vocab_file_override():
     resolved inside the repo, and the tokenizer opens that path as given, even outside the repo.
     save_pretrained never writes these keys. Hand the resolved paths over as keyword arguments,
     which apply after the config, so only an explicit caller path overrides them.
-    Also installs the host path guard, which every version needs, for the keys not covered here."""
+    Also installs the host path guard for the keys not covered here."""
     fix_transformers_tokenizer_config_host_paths()
     try:
         import transformers
