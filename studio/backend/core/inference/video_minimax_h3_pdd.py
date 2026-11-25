@@ -1,10 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""with_heads stacks 32 video/audio heads (head 0 full, rest offsets); step uses head 0 + dt-
-weighted offset mean; sigma pair is a device tensor rewritten in place by a pre-hook, so CUDA
-graph replays and torch.compile never specializes; Intel Arc keeps float64 on host; without_heads
-refused."""
+"""with_heads stacks 32 video/audio heads (head 0 full, rest offsets); a step is head 0 plus a
+dt-weighted offset mean; the sigma pair is a device tensor rewritten in place by a pre-hook so
+CUDA graphs and torch.compile never specialize; Arc keeps float64 on host; without_heads refused."""
 
 from __future__ import annotations
 
@@ -64,8 +63,7 @@ def h3_pdd_heads_from_header(
     audio_dim: Optional[int] = None,
     filename: Optional[str] = None,
 ) -> int:
-    """Heads per stream of a ComfyUI-layout H3 file (1 for a plain denoiser). Raises ``ValueError`` for a PDD file
-    Studio cannot run correctly: a trunk without its bank, or a bank whose shapes disagree."""
+    """Heads per stream (1 if plain); ValueError on a PDD trunk without its bank or bad shapes."""
     name = os.path.basename(str(filename or "")) or "this checkpoint"
     metadata = header.get("__metadata__") or {}
     video = header.get(VIDEO_HEAD_KEY) or {}
@@ -139,8 +137,7 @@ def device_has_fp64(device: Any) -> bool:
 
 
 def pdd_head_weights(state: Any, heads: int) -> Any:
-    """Per-head blend weights (heads,) float64 for one step as masks, matching ComfyUI round/unshift
-    slicing (unshift in float32); head 0 gets 0, always added whole"""
+    """Per-head float64 masks (heads,), unshift in float32; head 0 gets 0, always added whole."""
     import torch
 
     sig = state[0:2].to(torch.float32)
@@ -194,9 +191,8 @@ def _bank_class():
             return f"in_features={self.in_features}, out_features={self.out_features}, heads={self.heads}"
 
         def _own_state(self, device: Any = None) -> Any:
-            """``pdd_state`` as a normal (non-inference) tensor on ``device``. The first render moves it to the
-            GPU inside the pipeline's inference_mode; a tensor made there is an inference tensor, and the next
-            render's set_shifts (outside inference_mode) could not write it."""
+            """Returns pdd_state as a normal (non-inference) tensor on device: a tensor made inside
+            the first render's inference_mode could not be written by later set_shifts."""
             state = self.pdd_state
             if state.is_inference() or (device is not None and state.device != device):
                 with torch.inference_mode(False):
@@ -256,9 +252,8 @@ _SIGMA_POSITIONS = (3, 4, 7)
 def h3_pdd_sigma_pair(
     timestep: Any, timestep_indices: Any, video_indices: Any, sample_sigmas: Any
 ) -> Any:
-    """``[sigma, sigma_next]`` float64 on the device (host if it lacks float64), without a host sync. ``sigma`` is
-    the generated video rows' sigma (conditioning rows sit at a larger t, so it is the largest video-row sigma),
-    clamped like ComfyUI's; the next one is the schedule entry after the nearest, the last entry for the last step."""
+    """[sigma, sigma_next] float64 on device (host if no float64), no host sync; sigma: the largest
+    video-row sigma, clamped as ComfyUI; sigma_next is the next entry (last on last step)."""
     import torch
 
     rows = timestep_indices.index_select(0, video_indices.reshape(-1).to(timestep_indices.device))

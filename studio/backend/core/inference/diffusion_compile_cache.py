@@ -89,8 +89,7 @@ def _save_enabled(mode: str) -> bool:
         return False
     if mode == "on":
         return True
-    # auto: save by default (without a saved bundle no user gets a warm restart); the SAVE env overrides: "0" load-only,
-    # "1" on.
+    # Default auto saves (no saved bundle, no warm restart); SAVE env: "0" load-only, "1" on.
     return (os.environ.get(_ENV_SAVE) or "").strip().lower() not in ("0", "off", "false", "no")
 
 
@@ -378,8 +377,7 @@ def _adapter_path(name: str) -> bool:
 
 
 def graph_variant(transformer: Any, *, skip_adapters: bool = False) -> dict[str, Any]:
-    """Structural descriptor of the loaded quant artifact (no weight hashing): stable across processes, distinct for
-    plain vs ConvRot, hosted vs ComfyUI vs runtime quantise, torchao vs native. Never raises."""
+    """No weight hashing; stable across processes, distinct per quant variant; never raises."""
     # skip_adapters: describe the base build (PEFT adapter modules ignored), for the learned-peak key.
     variant: dict[str, Any] = {}
     try:
@@ -435,8 +433,7 @@ def model_fingerprint(
     shape_bucket: Any = None,
     reduction_filter: bool = False,
 ) -> dict[str, Any]:
-    """Model-graph key: the transformer class and its repeated blocks, so the key tracks what is
-    compiled."""
+    """Model-graph key: the transformer class and its repeated blocks (what gets compiled)."""
     blocks = list(getattr(transformer, "_repeated_blocks", []) or [])
     if not blocks and transformer is not None:
         from .diffusion_regional_compile import verified_repeated_blocks
@@ -654,8 +651,7 @@ def _load_from_legacy(ctx: CacheContext, logger: Any) -> bool:
         return False
     ldir = root / ctx.key
     manifest_path = ldir / _MANIFEST_NAME
-    # The manifest is the commit point here too, so it decides which legacy bundle is live; a
-    # pre-content-addressing one names cache.bin.
+    # Manifest commits the live legacy bundle; a pre-content-addressing one names cache.bin.
     published = _read_manifest(manifest_path)
     if published is None:
         return False
@@ -671,9 +667,8 @@ def _load_from_legacy(ctx: CacheContext, logger: Any) -> bool:
     if _save_enabled(ctx.mode):
         try:
             ctx.dir.mkdir(parents = True, exist_ok = True)
-            # Under the name the copied manifest names, which is not ctx.bundle unless the legacy
-            # pair predates content addressing. Published like begin() does, so the context goes
-            # on naming the live bundle in the write root.
+            # Copied manifest names the migrated bundle, not ctx.bundle unless legacy predates
+            # content addressing; publish like begin(), naming the live bundle in the write root.
             migrated = _manifest_bundle(ctx.dir, published)
             _atomic_copy(bundle, migrated)
             # Bundle first: a manifest without one reads as a miss, not an unservable hit.
@@ -1126,8 +1121,7 @@ def _write_bundle(ctx: CacheContext, logger: Any) -> bool:
             "created": time.time(),
             "bytes": len(data),
             "sha256": digest,
-            # The bundle THIS manifest is paired with. Content-addressed, so a save writes a file no reader is
-            # using and the previous pair stays whole and addressed until the manifest below commits.
+            # Content-addressed bundle: the old pair stays whole until the manifest commits.
             "bundle": bundle.name,
             "env": ctx.env_fp,
             "model": ctx.model_fp,

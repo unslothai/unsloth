@@ -69,8 +69,7 @@ LTX25_NONE_COMPONENTS = (
 )
 LATENT_UPSAMPLER_SUBFOLDER = "latent_upsampler"
 TEXT_ENCODER_MIN_TRANSFORMERS = "5.10.1"
-# What the encoder worker holds on the card beyond its weights, on every plan tier: its CUDA context (~0.6 GB on
-# Hopper / Blackwell) plus allocator slack. The weights are the family table's text-encoder term.
+# Encoder CUDA context (~0.6 GB on Hopper / Blackwell) and allocator slack, beyond weights.
 LTX25_WORKER_RESIDENT_GB = 1.0
 # Auto takes the hosted int8 file only when confirmed, else bf16 (never quantizes at load). A100-40 LPIPS vs bf16
 # 0.133 (bf16 encoder 0.141), peak host 71 -> 52 GiB. Env =0 keeps bf16 auto, =1 makes auto an explicit int8.
@@ -80,9 +79,8 @@ LTX25_TE_QUANT_ENV = "UNSLOTH_LTX25_TE_INT8"
 LTX25_TE_INT8_GB = 13.1
 # The dense bf16 encoder (the family table's text-encoder term), what quantizing at load materializes first.
 LTX25_TE_BF16_GB = 23.9
-# The hosted build of that same at-load quantization (scripts/build_ltx25_te_int8_convrot.py): the worker loads it
-# instead of reading the 23.9 GB bf16 encoder and quantizing it, and the plan drops the dense text_encoder/ shards. A
-# file that cannot be fetched or loaded falls back to the at-load quantization of the dense encoder.
+# Hosted build (scripts/build_ltx25_te_int8_convrot.py) replaces the bf16 read, and the plan drops
+# dense text_encoder/ shards; a fetch or load failure falls back to at-load quantization.
 LTX25_TE_HOSTED_REPO = "unsloth/LTX-2.5-FP8"
 LTX25_TE_HOSTED_FILE = "LTX-2.5-text_encoder-INT8-ConvRot.safetensors"
 LTX25_TE_HOSTED_FORMAT = "unsloth_ltx25_text_encoder_int8_convrot_v1"
@@ -809,9 +807,8 @@ def ltx25_resolve_te_request(
 def ltx25_te_host_gb(
     text_encoder_quant: Optional[str], base: Optional[str], *, bf16_gb: float, scale: float
 ) -> float:
-    """Host GB the encoder worker reads Gemma 4 into, loading at ``scale`` x bf16 (2.0 = float32) on the host.
-
-    Hosted int8 widens only its dense tensors; bf16 and load-time int8 (reads dense first) widen fully."""
+    """Host GB the encoder worker reads Gemma 4 into at ``scale`` x bf16 (2.0 = float32); hosted
+    int8 widens only dense tensors; bf16 and load-time int8 (reads dense first) widen fully."""
     try:
         ltx25_te_quant_scheme(text_encoder_quant)
     except ValueError:
@@ -857,8 +854,7 @@ def sidecar_missing_message(venv_dir: str) -> str:
 
 
 def ensure_text_encoder_sidecar() -> str:
-    """The ``.venv_t5_510`` dir, created / repaired the way the chat and training workers do it; RuntimeError naming
-    the sidecar when it cannot be made usable."""
+    """Makes ``.venv_t5_510`` usable like chat/training workers do; RuntimeError if it cannot."""
     from utils.transformers_version import _VENV_T5_510_DIR, _ensure_venv_t5_510_exists
 
     try:
@@ -1287,8 +1283,7 @@ class Ltx25TextEncoderClient:
             )
             from utils.process_lifetime import spawn_on_lifetime_thread
 
-            # The child arms PR_SET_PDEATHSIG, which follows the spawning THREAD: a load runs on a short-lived thread,
-            # and a worker started there dies the moment the load returns.
+            # PR_SET_PDEATHSIG follows the spawning thread, so use spawn_on_lifetime_thread.
             spawn_on_lifetime_thread(proc.start)
         self._proc = proc
         self._ready = False
@@ -1459,8 +1454,7 @@ class Ltx25TextEncoderClient:
                     "prompts": list(prompts),
                     "max_sequence_length": int(max_sequence_length),
                     "server_reserved_mib": _server_reserved_mib(self.config.get("device")),
-                    # The server pins its own host weights during the first render; the encoder's pin waits for that
-                    # so it never takes the host RAM those pins need.
+                    # Encoder pin waits on server's first-render pins, so their RAM stays free.
                     "pin_host": self.renders > 1,
                     "compact": compact,
                 }
@@ -1907,8 +1901,7 @@ def render(
         raise
     finally:
         if image is not None or failed:
-            # Reset pipe's offload hooks on every exit: the condition pipeline shares its modules,
-            # not hooks.
+            # Reset offload hooks on exit: the condition pipeline shares modules, not hooks.
             free = getattr(pipe, "maybe_free_model_hooks", None)
             if callable(free):
                 try:
@@ -1935,8 +1928,7 @@ _RELEASE_SUPPORTED: list = []
 
 
 def prompt_rows_release_supported() -> bool:
-    """Whether this torch can tell a tensor is alone on its storage (the binding ``_release_rows`` needs), probed once;
-    without it nothing is released."""
+    """Whether torch can tell a tensor is alone on its storage; if not, nothing is released."""
     if not _RELEASE_SUPPORTED:
         try:
             import torch

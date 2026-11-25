@@ -420,8 +420,7 @@ def _probe_sdpa_kernels(device: str, dtype: Any) -> tuple[str, ...]:
         return _mps_sdpa_kernels()
     if device.split(":")[0] == "cuda" and _module_is_rocm(torch):
         return _probe_rocm_sdpa_kernels(device, dtype)
-    # Small enough to be free, but shaped like real attention: the fused kernels reject head_dim they cannot serve, and
-    # a degenerate 1-element tensor would not exercise that.
+    # Cheap, yet realistic: fused kernels reject some head_dims that a 1-element probe misses.
     q = torch.zeros((1, 2, 8, 64), device = device, dtype = dtype)
     available: list[str] = []
     for name, backend in candidates:
@@ -1228,8 +1227,7 @@ class _AutoCudnn(str):
 
 
 AUTO_CUDNN = _AutoCudnn("_native_cudnn")
-# B200 torch 2.13 bf16: native SDPA already runs cuDNN at head_dim 64/128 (pin = 0.4-22% slower eager wrapper);
-# head_dim 256 picks FLASH, hence the per-head-dim probe.
+# B200 torch 2.13 bf16: SDPA picks cuDNN at head_dim 64/128, FLASH at 256; probe per head_dim.
 BLACKWELL_NATIVE_ATTN_ENV = (
     "UNSLOTH_DIFFUSION_BLACKWELL_NATIVE_ATTN"  # auto (default) | 0 keeps the cuDNN pin
 )
@@ -1537,8 +1535,7 @@ def _rocm_flash_block_admitted(
 # hidden sizes} lives on that DiT and is active only while it runs (its forward hooks), so a model loaded with explicit
 # flash or UNSLOTH_DIFFUSION_ROCM_FLASH=1 is never gated, whichever loaded first.
 ROCM_FLASH_GATE_ATTR = "_unsloth_rocm_flash_gate"
-# Per thread (concurrent image and video forwards never see each other's): ``gate`` and ``tally`` of the DiT forward
-# running now, and ``probing`` while a timing probe runs. Dynamo traces threading.local reads.
+# Per thread so concurrent forwards never see each other; Dynamo traces threading.local reads.
 _ROCM_FLASH_LOCAL = threading.local()
 # (device, dtype, *geometry, query bucket, key bucket, batch bucket) -> flash serves it, filled on an eager call's
 # first use (the probe or a stored verdict). In memory: a bucket the probe rejected stays native.
@@ -2472,8 +2469,7 @@ def _rocm_flash_attn_runs(target: Any) -> bool:
 
 
 def _cudnn_attention_supported() -> bool:
-    """cuDNN fused SDPA needs Ampere+ (SM80); on pre-SM80 cards (T4/V100) diffusers accepts it
-    then fails at generation, so gate the upgrade on capability. Unknown capability allows it."""
+    """cuDNN SDPA needs SM80+; T4/V100 fail at generation, gate on capability; unknown passes."""
     have = _cuda_capability()
     return have is None or have >= (8, 0)
 
@@ -3048,8 +3044,7 @@ def rocm_flash_ran(pipe: Any) -> Optional[tuple[str, str]]:
 
 
 def begin_attention_run(state: Any) -> None:
-    """A generation boundary: the per-DiT route tallies restart, so the report after it describes this run alone, and
-    this run's DiTs retry buckets whose probe could not run."""
+    """Generation boundary: resets per-DiT tallies; buckets with an unrun probe are retried."""
     for dit in _with_rocm_flash_replicas(_rocm_flash_dits(getattr(state, "pipe", None))):
         if isinstance(getattr(dit, ROCM_FLASH_TALLY_ATTR, None), dict):
             try:
@@ -3684,9 +3679,8 @@ def _xformers_wheel_target() -> tuple[Optional[str], Optional[str]]:
         except Exception as exc:  # noqa: BLE001 -- must never break a model load
             return (None, f"the xFormers wheel could not be resolved ({exc})")
         if env is None:
-            # Ambiguous: a platform wheel_platform_tag() does not name (macOS, Windows on ARM) which is deterministic,
-            # or a probe that timed out on a busy box which is transient. Not cached, so the next request can settle
-            # it. Linux aarch64 is NOT here: it gets a platform_tag and so lands on the branch below.
+            # Not cached: no wheel_platform_tag (macOS, Windows on ARM) is deterministic, a busy-box
+            # probe timeout is transient; Linux aarch64 gets a platform_tag and lands below.
             return (
                 None,
                 "torch could not be probed, or this platform has no xFormers wheel "
@@ -3867,8 +3861,7 @@ def _ensure_backend_package(backend: str, logger: Any = None) -> Optional[str]:
             timeout = 600,
             check = True,
         )
-        # The import system caches directory listings, so invalidate the finder caches or the next find_spec can miss
-        # the new wheel.
+        # Import caches list directories: invalidate them or find_spec can miss the new wheel.
         importlib.invalidate_caches()
         if package == "kernels":
             from utils.kernels_compat import check_kernels_install
@@ -4179,10 +4172,9 @@ def explicit_pick_fallback(
     speed_active: bool,
     family: Any = None,
 ) -> Optional[str]:
-    """Closest kernel for an explicit pick that cannot run, keeping strided processors / fused QK-RoPE.
-
-    Flash family -> SDPA's flash kernel (same algorithm, no flash_attn package); others -> the automatic cuDNN pick.
-    None unless NVIDIA with speed on (speed off must stay bit-identical)."""
+    """Closest kernel for an explicit pick that cannot run, keeping strided processors and fused
+    QK-RoPE; flash maps to SDPA flash kernel (same algorithm, no flash_attn package); others to
+    auto cuDNN; None unless NVIDIA with speed on (speed off must stay bit-identical)."""
     try:
         alias = normalize_attention_backend(requested)
     except ValueError:
@@ -4508,8 +4500,7 @@ def _apply_attention_backend_impl(
     _tag_dits(pipe, None)
     _untrack_rocm_flash_calls(pipe)
     _restore_native_backend(setters[0], logger)
-    # Native means torch's SDPA dispatch decides per call, and on a device with no fused kernel that decision is MATH.
-    # Say so now; the flags this would otherwise be read off lie (#8225).
+    # Native defers to torch SDPA per call: MATH without a fused kernel; the flags lie (#8225).
     if target is not None:
         _configure_native_attention(pipe, target, logger)
     return None
@@ -4580,9 +4571,8 @@ def _warn(logger: Any, what: str, exc: Exception) -> None:
         logger.warning("diffusion.attention: %s unavailable (%s); using default", what, exc)
 
 
-# HunyuanVideo-1.5: trim padded text before joint attention so fused SDPA runs without a dense mask
-# (no information lost, though not bit-identical; ~10x faster). Trimmed length varies per
-# prompt, so compile must stay dynamic=None.
+# HunyuanVideo-1.5: trim padded text before joint attention so fused SDPA needs no dense mask;
+# lossless but not bit-identical; trimmed length varies, so compile must stay dynamic=None.
 _HUNYUAN15_TRANSFORMER_CLS = "HunyuanVideo15Transformer3DModel"
 _HUNYUAN15_PROCESSOR_CLS = "HunyuanVideo15AttnProcessor2_0"
 _NULL_ATTN_FLAG = "_unsloth_null_attn_mask"

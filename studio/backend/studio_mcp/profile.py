@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Per-caller MCP profiles set tools offered, host-file reach and key lifetime; tools only declare
-FACTS, and a profile withholds the tools whose facts it cannot allow."""
+"""Per-caller MCP profiles limit host-file reach, key lifetime and tools by declared facts."""
 
 from __future__ import annotations
 

@@ -29,7 +29,6 @@ _DISABLED = {"0", "off", "false", "no"}
 
 
 def _enabled(env_name: str) -> bool:
-    """Enabled unless explicitly disabled (default ON)."""
     return str(os.environ.get(env_name, "1")).strip().lower() not in _DISABLED
 
 
@@ -127,8 +126,7 @@ def install_compiled_dequant(logger: Any = None) -> bool:
 
         eager = gguf_utils.dequantize_gguf_tensor
         compiled = _guard(torch.compile(eager, dynamic = True), eager, logger)
-        # force=True: the compiled callable's fingerprint differs from the original, which can_safely_patch would
-        # correctly reject.
+        # force=True: the compiled fingerprint differs, which can_safely_patch would reject.
         if apply_patch(gguf_utils, _DEQUANT_ATTR, compiled, force = True):
             _compiled_dequant_installed = True
             _compile_error = None
@@ -178,8 +176,7 @@ def _guard(compiled: Any, eager: Any, logger: Any) -> Any:
 
 
 def _install_fused_q8_0(gguf_utils: Any, logger: Any) -> bool:
-    """Patch ``GGUFLinear.forward_native``: Q8_0 dequant+cast in one kernel, an fp16 dequant cast to bf16 in place;
-    anything else takes the stock forward."""
+    """GGUFLinear.forward_native: Q8_0 fused dequant+cast, fp16 in-place bf16 cast, else stock."""
     global _fused_q8_0_installed, _fused_cast_installed, _forward_patched
     q8_0 = _enabled(_ENV_FUSED_Q8_0)
     fused_cast = _enabled(_ENV_FUSED_CAST)

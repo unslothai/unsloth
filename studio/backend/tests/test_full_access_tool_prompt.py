@@ -369,8 +369,7 @@ def test_the_studio_tool_loop_paths_carry_the_folder_sentence(full_access):
 
 
 def test_every_nudge_call_site_passes_the_folder_flag():
-    """Structural on purpose: the eight call sites are completions and counts on different
-    backends, and one that drops the flag silently loses the sentence or skews the count."""
+    """Structural: call sites are spread over backends; a dropped flag fails silently."""
     import ast
     from pathlib import Path
 
@@ -475,8 +474,7 @@ def _sandbox_site_dir():
     reason = "root ignores a mode-500 directory",
 )
 def test_the_mkdir_clause_promises_an_attempt_not_a_created_directory(tmp_path):
-    """The mkdir clause promises only an attempt: os.makedirs is wrapped, but _makedirs calls only
-    _remap, so an unwritable path outside convention prefixes raises and creates nothing."""
+    """Mkdir only promises an attempt: an unwritable path outside convention prefixes raises."""
     import subprocess
 
     workdir = tmp_path / "work"

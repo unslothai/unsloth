@@ -60,10 +60,8 @@ AUTO_DITS = frozenset(
 # AUTO_DITS members raced only when their own weights are quantized (an INT8 / FP8 checkpoint): measured against its
 # INT8-ConvRot default only, so a bf16 load (the accuracy reference) keeps its attention.
 AUTO_QUANTIZED_ONLY = frozenset({"MOSSImageTransformer"})
-# AUTO_DITS members the unset switch leaves alone in a two-expert pipeline (a ``transformer_2``): Wan 2.2 A14B on A100
-# (hosted INT8 pair, 832x480x33, 10 steps) ran 10% faster per step with the kernel, but the clip drifts step over step
-# through both experts (latent rel L2 0.20 / 0.39 at the end, LPIPS 0.135 / 0.277 against the kernel off, whose own
-# fresh-process repeat is bit-identical): a different clip, not a near copy. Wan 2.2 5B (one expert) keeps its race.
+# Unset switch leaves these alone in two-expert pipelines (a transformer_2): with the kernel, Wan
+# 2.2 A14B drifts into a different clip; Wan 2.2 5B keeps its race.
 AUTO_SINGLE_EXPERT_ONLY = frozenset({"WanTransformer3DModel"})
 
 
@@ -303,7 +301,6 @@ def _reason(route: Int8Route, args: tuple, kwargs: dict) -> Optional[str]:
 
 
 def _on_card(x: Any, route: Int8Route) -> bool:
-    """Whether a tensor is on a card the route was checked on."""
     return bool(x.is_cuda) and x.device.index in route.cards
 
 
@@ -577,9 +574,8 @@ def install(
     speed_unset_only: bool = False,
     policy: Any = None,
 ) -> int:
-    """Routes DiT attention to INT8 where allowed; speed_active=False keeps auto routing off so
-    output stays bit-identical; policy on or off beats the env switch; returns count; never
-    raises"""
+    """Routes DiT attention to INT8 where allowed; speed_active=False keeps auto routing off for
+    bit-identical output; policy on or off beats the env switch; returns count; never raises."""
     try:
         return _install(pipe, target, requested, logger, speed_active, speed_unset_only, policy)
     except Exception as exc:  # noqa: BLE001 -- an optimisation: the processors keep their backend
@@ -620,8 +616,7 @@ def _race_wins(
         _LONG_VERDICTS[key] = stored
         return stored
     won = timed = False
-    # an out-of-memory probe is retried once (after freeing the cache); a second one counts as a loss for this call
-    # only: neither cached for the process nor persisted, so a later load races again
+    # OOM is retried once; a second OOM is a loss for this call only: not cached or persisted.
     for _ in range(2):
         q = k = v = None
         try:
@@ -663,8 +658,7 @@ def long_verdict(
     name: str,
     tokens: Optional[tuple] = None,
 ) -> Optional[int]:
-    """The token count from which the kernel wins at ``LONG_RACE_TOKENS`` (where it lost the card race), or None.
-    ``tokens``: another (large, small) pair (a family's ``FAMILY_RACE_TOKENS``)."""
+    """Crossover token count at LONG_RACE_TOKENS (or a FAMILY_RACE_TOKENS pair), else None."""
     from . import diffusion_int8_attention as I8
 
     large, small = tokens or LONG_RACE_TOKENS
@@ -688,9 +682,8 @@ def mid_verdict(
 
 
 def _secondary_cards(primary: int, dits: Any = ()) -> tuple:
-    """The other CUDA cards of this load's multi-GPU selection (a layer split or a CFG replica places DiT blocks
-    there after the attention pick), or, outside a load (the deferred speed profile re-installs at the 3rd image),
-    the other cards ``dits`` already run on: an armed CFG-parallel replica's card and a layer split's block cards."""
+    """Other CUDA cards of this load's multi-GPU selection (layer split or CFG replica puts DiT
+    blocks there); outside a load (deferred speed profile, 3rd image), the cards dits run on."""
     try:
         from .diffusion_multigpu import current_selection
         selection = current_selection()

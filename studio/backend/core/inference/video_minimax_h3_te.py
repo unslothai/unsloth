@@ -24,8 +24,7 @@ H3_TE_INT8 = "int8"
 # Hosted Q4_K_M GGUF: 18.2 GB vs 27.2, but 5.8% hidden_states[50] error vs bf16 against int8's 1.6%.
 H3_TE_Q4_K_M = "q4_k_m"
 H3_TE_QUANT_FILES: dict[str, str] = {
-    # Built from MiniMaxAI text_encoder/ with quantize_convrot_int8_weight; reads the official path
-    # only.
+    # From MiniMaxAI text_encoder/ via quantize_convrot_int8_weight; reads official path only.
     H3_TE_INT8: "text_encoders/official/qwen3vl_32b_minimax_h3_int8_convrot.safetensors",
     H3_TE_Q4_K_M: "qwen3vl_32b_minimax_h3-Q4_K_M.gguf",
 }
@@ -540,8 +539,7 @@ def h3_te_stream_enabled() -> bool:
 
 
 def h3_te_pin_allowed(payload_bytes: int = 0, device: Any = None) -> bool:
-    """Whether a payload may be pinned in full (not one arena), under the group switch and the ~1
-    GiB Windows/WSL cap; never raises"""
+    """Whether to pin a payload whole: group switch and ~1 GiB Windows/WSL cap; never raises."""
     try:
         import os
 

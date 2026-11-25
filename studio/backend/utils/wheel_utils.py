@@ -345,9 +345,8 @@ def unsloth_prebuilt_wheel_url(*, filename_prefix: str, env: dict[str, str] | No
     return f"{UNSLOTH_PREBUILT_RELEASE_BASE_URL}/{UNSLOTH_PREBUILT_RELEASE_TAG}/{filename}"
 
 
-# Cells the pinned releases (causal-conv1d v1.6.1.post4, mamba-ssm v2.3.1) publish for cp310-cp313;
-# anything else (CUDA 13 before torch 2.9, aarch64 before 2.7, abiFALSE torch after 2.6) would 404
-# ahead of the source fallback, so it resolves to nothing.
+# Pinned causal-conv1d v1.6.1.post4 and mamba-ssm v2.3.1 publish cp310-cp313; other cells (CUDA 13
+# before torch 2.9, aarch64 before 2.7, abiFALSE after 2.6) would 404 before source fallback.
 _UPSTREAM_SSM_PINS = {
     "causal_conv1d": CAUSAL_CONV1D_PACKAGE_VERSION,
     "mamba_ssm": MAMBA_SSM_PACKAGE_VERSION,
@@ -384,8 +383,7 @@ PINNED_SOURCE_BUILD_MAX_TORCH = (2, 12)
 
 
 def pinned_source_build_supported(env: dict[str, str] | None) -> bool:
-    """Whether a source build of the pinned causal-conv1d / mamba-ssm (or their upstream wheels)
-    can work with this torch; from torch 2.13 on only our prebuilt wheels can."""
+    """Whether source builds or upstream wheels work with this torch; from 2.13 on only ours."""
     try:
         major, minor = (int(part) for part in str((env or {}).get("torch_mm") or "").split(".")[:2])
     except ValueError:

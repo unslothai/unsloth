@@ -59,8 +59,7 @@ def group_fold_opted_in() -> bool:
 
 
 def denoisers_resident(offload_policy: Any, memory_mode: Any, denoisers: list) -> bool:
-    """Folded weights must not move: group offload qualifies only if opted in and every denoiser is whole on the
-    card, unhooked."""
+    """Folded weights stay put: group offload needs opt-in and all denoisers fully on the card."""
     from .diffusion_memory import OFFLOAD_GROUP, OFFLOAD_NONE, keeps_denoiser_streamed
 
     if offload_policy == OFFLOAD_NONE:

@@ -43,8 +43,7 @@ def _drafter_free_discount(mtp):
     return 0 if mtp else 3 * GIB
 
 
-# Every GGUF here reads 4 GiB; the target with compute and soft overhead prices ~9.2 GiB,
-# so 12 GiB holds the target alone but not target + sidecar, and 16 GiB holds both.
+# GGUFs read 4 GiB; the target prices ~9.2 GiB, so 12 GiB fits it alone and 16 GiB fits both.
 class TestMetalLaunch:
     @pytest.mark.parametrize(
         "extras, kept",

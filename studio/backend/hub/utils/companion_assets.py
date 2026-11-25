@@ -254,8 +254,7 @@ def _hosted_component_table() -> dict[str, dict[str, set[tuple[str, str, str]]]]
             h3_te_quant_source,
         )
 
-        # Old released builds kept the identical conditioner outside official/; both locations are this asset.
-        # The GGUF conditioner ships from the GGUF mirror, already covered elsewhere.
+        # Old builds kept it outside official/ too; GGUF's conditioner is covered elsewhere.
         names = [
             n
             for scheme, name in H3_TE_QUANT_FILES.items()
@@ -357,8 +356,7 @@ def _hosted_repo_owners(table, repo) -> set[tuple[str, str, str]]:
 
 
 def _hosted_holds_unknown(table, repo) -> bool:
-    """Whether a hosted repo holds a weight the table does not name (or, if also a base mirror, any foldered
-    file): that may be a user install, so it is preserved."""
+    """Unnamed weight (any foldered file on a base mirror) may be a user install, so keep it."""
     key = _normalise(str(getattr(repo, "repo_id", "") or ""))
     names = _hosted_names(table, key) or set()
     try:

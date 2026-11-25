@@ -133,8 +133,7 @@ _UNDECODABLE_PREFIXES = (
 
 
 def _mime_is_bounded(image: Any) -> bool:
-    """Metadata is not where megabytes may hide from the byte budgets on either side;
-    an entry whose mimeType runs past the bound is not a picture this path sends."""
+    """Metadata must not hide megabytes from byte budgets; an over-long mimeType is not sent."""
     mime = image.get("mimeType") if isinstance(image, dict) else None
     return not (isinstance(mime, str) and len(mime) > MAX_MCP_IMAGE_MIME_CHARS)
 
@@ -664,8 +663,7 @@ def trim_image_url_turns(
 
 
 def _merge_into_trailing_user_turn(conversation: list, parts: list[dict]) -> bool:
-    """Folds parts into a trailing user turn, since two user messages in a row break strict VLM
-    templates."""
+    """Folds parts into the last user turn; adjacent user messages break strict VLM templates."""
     last = conversation[-1] if conversation else None
     if not isinstance(last, dict) or last.get("role") != "user":
         return False

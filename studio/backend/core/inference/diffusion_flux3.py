@@ -490,8 +490,7 @@ class _Flux3KleinPipelineMixin:
             raise ValueError("FLUX.3 takes a text prompt (str) per image.")
         generators = generator if isinstance(generator, (list, tuple)) else None
         negatives = list(negative_prompt) if isinstance(negative_prompt, (list, tuple)) else None
-        # The text encoder sizes its window per prompt, so the blocks take ONE prompt per call. A batch of
-        # distinct prompts, or one prompt with a generator per image, runs as one call per image.
+        # One prompt per call (text encoder sizes per prompt); batches run one call per image.
         if len(prompts) > 1 or generators is not None:
             count = max(len(prompts), len(generators or ()))
             if len(prompts) == 1:

@@ -561,8 +561,7 @@ def test_edit_workflow_peak_does_not_charge_the_condition_images_twice(qwen_pipe
     )
     # 7168 seed reserve + 3014 condition allowance - 7168 headroom: what main charges, store or no store
     assert dm.measured_request_extra_mib(pipe, **kw) == 3014
-    # a learned edit peak (7800 x 1.15 -> 9216) already holds the condition images; it is an alternative to the seed
-    # estimate plus allowance (10182), not a base the allowance is added on top of (that gave 5062)
+    # Learned edit peak holds the condition images, so use it instead of seed plus allowance.
     _record(7800, quant = KEY["quant"] + "|cfg:off|wf:edit")
     assert dm.measured_request_extra_mib(pipe, **kw) == 3014
 

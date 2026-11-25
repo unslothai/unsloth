@@ -53,8 +53,7 @@ def test_every_family_declares_at_least_one_resolution_preset(name):
 
 @pytest.mark.parametrize("name", _FAMILY_NAMES)
 def test_every_preset_survives_the_family_snap_unchanged(name):
-    """A preset is what the UI sends verbatim, so it must already sit on the family's
-    grid -- otherwise the clip comes back a different size than the one selected."""
+    """UI sends presets verbatim, so each must lie on the family grid or the clip is resized."""
     fam = _family(name)
     for width, height in fam.resolution_presets:
         assert isinstance(width, int) and isinstance(height, int)

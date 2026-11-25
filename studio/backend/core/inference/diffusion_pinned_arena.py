@@ -105,8 +105,7 @@ class PinnedArena:
         return slab[:nbytes]
 
     def pin_plain(self, tensor: Any) -> Any:
-        """A pinned copy of a plain CPU tensor, as a view into a slab. Falls back to ``pin_memory()``
-        for anything the packing cannot represent exactly."""
+        """Pinned copy of a plain CPU tensor as a slab view; pin_memory() when unpackable."""
         if tensor.device.type != "cpu" or not _packable(tensor):
             return tensor.pin_memory()
         nbytes = tensor.numel() * tensor.element_size()
@@ -172,8 +171,7 @@ def arena_reserved_bytes(tensors: Any, slab_bytes: int = DEFAULT_SLAB_BYTES) -> 
 
 
 def _repoint(param: Any, pinned: Any) -> None:
-    """Make ``param`` read the pinned copy now, so its pageable storage is freed during setup.
-    Group offloading's own offload does exactly this after every forward."""
+    """Repoint param at its pinned copy, freeing pageable storage; group offload does likewise."""
     from torch.utils._python_dispatch import is_traceable_wrapper_subclass
     if is_traceable_wrapper_subclass(param):
         names, _ = pinned.__tensor_flatten__()

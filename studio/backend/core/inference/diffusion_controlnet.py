@@ -129,8 +129,7 @@ def _scan_local() -> list[ControlNetCatalogEntry]:
 
 
 def list_controlnets(*, family: Optional[str] = None) -> list[ControlNetCatalogEntry]:
-    """Merged catalog (curated + local), optionally family-filtered. Cheap: one dir scan
-    plus the in-memory curated list. Network is only touched on resolve()."""
+    """Curated + local ControlNets, optionally family-filtered; network only in resolve()."""
     merged = list(_CURATED) + _scan_local()
     if family:
         fam = family.strip().lower()
@@ -144,8 +143,7 @@ def _catalog_by_id() -> dict[str, ControlNetCatalogEntry]:
 
 
 def resolve_controlnet(spec_id: str, *, family: Optional[str] = None) -> ResolvedControlNet:
-    """Refuses a ControlNet tagged for another family; it is architecture-specific and would load
-    wrongly."""
+    """Refuses a ControlNet tagged for another family (architecture-specific; loads wrongly)."""
     entry = _catalog_by_id().get(spec_id)
     if entry is None:
         entry = next((e for e in _CURATED if e.repo_id and e.repo_id == spec_id), None)

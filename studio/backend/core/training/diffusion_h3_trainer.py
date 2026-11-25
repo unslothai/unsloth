@@ -860,8 +860,7 @@ def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _sav
     latent_frames = h3_video_latent_frames(num_frames)
     num_audio_latents = h3_audio_latent_count(num_frames)
 
-    # Phases 1 and 2: caption embeddings and clip latents, served from the persistent cache when warm.
-    # One canvas from the FIRST clip's aspect ratio; other clips are cover-cropped onto it.
+    # Phases 1-2 use the persistent cache if warm; canvas from first clip, rest cover-cropped.
     width, height = _dataset_canvas(clip_paths[0], cfg.resolution)
     latent_h, latent_w = height // H3_SPATIAL_COMPRESSION, width // H3_SPATIAL_COMPRESSION
     prepared = _prepare_h3_conditioning(

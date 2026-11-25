@@ -50,9 +50,8 @@ def _mem_get_info() -> tuple[int, int]:
 
 
 def rocm_windows_discrete(device = "cuda") -> bool:
-    """A discrete (not APU) Radeon card under Windows ROCm. WDDM shows these budgets the whole card as free (blind to
-    other processes) and satisfies an overflow from host RAM instead of raising, so the OOM step-down never fires;
-    the budgets were measured only on a unified-memory gfx1151. Never raises: unknown answers False."""
+    """Discrete Radeon under Windows ROCm: WDDM reports the whole card free and spills to host RAM,
+    so OOM step-down never fires; measured only on gfx1151. Never raises; unknown is False."""
     import sys
 
     if sys.platform != "win32":
@@ -252,10 +251,9 @@ class BudgetedCheckpoint:
     def __call__(self, function: Any, *args: Any, **kwargs: Any) -> Any:
         owner = _owner(function)
         if getattr(owner, SWAPPED_ATTR, False):
-            # A block-swapped block streams its weights from host RAM: kept activations would hold them on the card
-            # until backward, so it is always checkpointed and never measured or planned. Plainly: its swap hooks
-            # copy the next block's weights inside the region, in the other direction during the recompute, which a
-            # selective checkpoint (saved attention) rejects as a mismatched op.
+            # Swapped blocks stream weights from host RAM; kept activations would hold them on the
+            # card: always checkpoint them (never measured or planned); their swap hooks copy the
+            # next block's weights in reverse on recompute, which selective checkpoints reject.
             return self.swapped(function, *args, **kwargs)
         idx = self._block_index(owner)
         if self.probing and not self.disabled:
@@ -392,8 +390,7 @@ class BudgetedCheckpoint:
 
     @property
     def can_retry(self) -> bool:
-        """A fully checkpointed rerun would use less memory than this step: measuring, blocks kept, or attention
-        outputs kept for the checkpointed blocks."""
+        """True if measuring or anything is kept; a fully checkpointed rerun uses less."""
         return not self.disabled and (self.probing or bool(self.keep) or self._saving_attention)
 
     @property

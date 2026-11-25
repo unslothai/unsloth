@@ -208,8 +208,7 @@ def make_selection(
             if others
             else None
         )
-    # The load dtype and the device-specific patches are resolved for the primary (bf16 only from Ampere, FP8 kernels
-    # from Ada): a card of a lower compute capability may not run them, so it takes no component.
+    # Primary's dtype and patches (bf16 needs Ampere, FP8 Ada) exclude lower-capability cards.
     need = _capability(int(primary))
     if need is not None:
         others = tuple(o for o in others if (_capability(o) or need) >= need)
@@ -1966,8 +1965,7 @@ def _execution_device(module: Any) -> Any:
             if onload is not None and getattr(onload, "type", None) == "cuda":
                 onload = _torch().device(onload)
                 if onload.index is None:
-                    # an automatic load on the current card onloads to bare "cuda": name the card, so the replica
-                    # search compares it with the secondaries by ordinal
+                    # Bare "cuda" onloads: name the card so replica search compares ordinals.
                     onload = _torch().device("cuda", _torch().cuda.current_device())
                 return onload
     except Exception:  # noqa: BLE001 - unknown: the parameter device stands
@@ -2388,8 +2386,7 @@ _ROOT_HOOK_DICTS = (
 )
 
 
-# Offload machinery moves weights between host and card without changing the math. A replica holds its weights
-# resident, so it drops these instead of inheriting them.
+# Offload hooks move weights without changing the math; a resident replica drops them.
 _OFFLOAD_REGISTRY_HOOKS = frozenset(
     {"group_offloading", "layer_execution_tracker", "lazy_prefetch_group_offloading"}
 )
@@ -2650,8 +2647,7 @@ def _copy_module(module: Any, device: Any) -> Any:
                 or moss_qkv_record(key, value)
                 or zimage_qkv_record(key, value)
             ):
-                # never traversed: offload state holds pinned host copies a deepcopy would duplicate, and a
-                # source-only cache holds source-card tensors
+                # Pinned offload copies and source-card caches are dropped, not deep-copied.
                 memo[id(value)] = _DROP
         for attr in ("_forward_hooks", "_forward_pre_hooks"):
             for hook in (getattr(sub, attr, None) or {}).values():
@@ -2742,10 +2738,9 @@ def _copy_module(module: Any, device: Any) -> Any:
 
 # Per-step precision state only the source's step loop advances (the replica never enters ``cache_context``).
 _SHARED_STATE_TYPES = frozenset({"NVFP4StepController", "StepPolicy"})
-# Caches only the source's own hooks fill and clear: the FLUX.3 conditioning blocks reach the copy through the
-# forwarded call (diffusion_cond_blocks), so a copied cache would only pin source-card tensors that no render clears.
-# AdaLN precompute's state (a lock, tables on the source card): the replica gets the real modulation modules instead
-# (diffusion_adaln_precompute.replica_memo).
+# Source-only caches are not copied (copies would pin source-card tensors no render clears); FLUX.3
+# conditioning reaches the replica via diffusion_cond_blocks; AdaLN's lock and tables stay on the
+# source, so the replica gets real modulation modules (diffusion_adaln_precompute.replica_memo).
 _SOURCE_ONLY_ATTRS = frozenset(
     {"_unsloth_cond_cache", "_unsloth_rocm_flash_replicas", "_unsloth_adaln"}
 )
@@ -2793,8 +2788,7 @@ def weights_fingerprint(module: Any) -> int:
             version = param._version
         except Exception:  # noqa: BLE001 - inference tensors carry no version
             version = -1
-        # Identity, not the data pointer: an encode-time offload round trip moves the same weights and must not force
-        # a rebuild, while a replaced parameter (new object) or an in-place edit (version) must.
+        # Identity and version, not data pointer: offloads keep both; swaps or edits do not.
         parts.append((name, id(param), version))
     for name, sub in module.named_modules():
         for attr in _ADAPTER_ATTRS:
@@ -3256,9 +3250,8 @@ def _same_value(a: Any, b: Any) -> bool:
         return False
 
 
-# Per-call state Studio's root hooks write onto denoiser submodules (``_unsloth_*`` scalars, e.g. the HunyuanVideo-1.5
-# trim hook's null-mask flag). The root hooks run only on the source, around the router, so the replica's copy of that
-# state is mirrored from the source before every replica call and the prediction is verified against it.
+# Per-call _unsloth_* state (e.g. HunyuanVideo-1.5 null-mask flag) is written by source-only root
+# hooks; the replica mirrors it before each call and verifies the prediction against it.
 _STATE_PREFIX = "_unsloth_"
 _STATE_TYPES = (bool, int, float, str, type(None))
 _STATE_KEEP = frozenset({"_unsloth_replica_compiled"})
@@ -3620,8 +3613,7 @@ class CfgParallelRouter:
             self._drop_pending()
             self.b0_leaves = dict(_leaves((args, kwargs)))
             if self.cfg_seen and self.replica is not None and self.disabled_reason is None:
-                # Copy this step's inputs to the replica card BEFORE the primary branch is queued: a copy queued after
-                # it would wait for it on the source stream and serialise the two branches.
+                # Copy inputs before queuing the primary; a later copy serialises the branches.
                 self._prefetch(args, kwargs)
                 sig = self._signature(args, kwargs)
                 self._launch_prediction(latent, sig)

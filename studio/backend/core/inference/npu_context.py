@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Auto context for an NPU load: the largest window whose KV cache fits the RAM the weights leave,
-as GGUF's Auto does on host RAM. The NPU has no memory of its own."""
+"""Auto NPU context: largest KV-cache window fitting host RAM after weights, as GGUF does."""
 
 from __future__ import annotations
 
@@ -55,8 +54,7 @@ def _npu_window_gb() -> Optional[float]:
 
 
 def _npu_window_bytes(weights: int) -> Optional[int]:
-    """What the NPU memory window leaves after the weights and load margin (half of RAM on
-    Windows, as the catalog's fit warning prices it); None when RAM is unknown."""
+    """Window left after weights and load margin (half of RAM on Windows); None if RAM unknown."""
     window = _npu_window_gb()
     needed = npu_memory.npu_memory_needed_gb(weights / _GIB)
     if window is None or needed is None:

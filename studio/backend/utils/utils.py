@@ -41,9 +41,8 @@ def hf_env_offline() -> bool:
 
 
 def package_installs_offline() -> bool:
-    """True when installs must stay off the network: an operator-set HF offline, or UV_OFFLINE
-    (install_wheel's pip fallback would reach the index anyway). A Studio auto-set HF offline
-    says nothing about GitHub or PyPI, so only UV_OFFLINE counts."""
+    """True for an operator-set HF offline or UV_OFFLINE (install_wheel's pip fallback reaches the
+    index); auto-set HF offline says nothing of GitHub or PyPI, so only UV_OFFLINE counts."""
     from utils.wheel_utils import hf_offline_auto_set, uv_offline
 
     if hf_offline_auto_set():

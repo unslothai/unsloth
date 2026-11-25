@@ -57,8 +57,7 @@ def test_uv_cmd_targets_this_interpreter_with_mlx_packages(monkeypatch):
     # Pinned, not floored: see _MLX_INSTALL_SPECS.
     assert "mlx==0.32.4" in cmd
     assert "mlx-lm>=0.31.3,<=0.32.2" in cmd
-    # Look up by name, not prefix: startswith('mlx==') could only be checked on a pinned spec, so it
-    # passed vacuously once the pin was relaxed.
+    # Look up by name, not prefix: startswith('mlx==') passes vacuously once the pin relaxes.
     spec = mr._MLX_INSTALL_SPECS["mlx"]
     assert spec.startswith("=="), f"mlx must be pinned, not floored: got {spec}"
 

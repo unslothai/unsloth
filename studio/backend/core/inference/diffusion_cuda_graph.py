@@ -41,9 +41,8 @@ OFFLOAD_CUDA_GRAPH_ENV = "UNSLOTH_DIFFUSION_OFFLOAD_CUDA_GRAPH"
 # =0: a block-streamed whole-step graph records its copies into the graph pool instead of the prefetcher's slot ring.
 STEP_SLOTS_ENV = "UNSLOTH_DIFFUSION_STEP_GRAPH_SLOTS"
 MODEL_OFFLOAD_CUDA_GRAPH_ENV = "UNSLOTH_DIFFUSION_MODEL_OFFLOAD_CUDA_GRAPH"
-# =1: record over the stock onloads, re-recording whenever they move (replay saved ~1% of a step on FLUX.2-klein 4B
-# 1024^2 while each re-record + ~0.6 GB pool cost more). Default: record only over the stable range, see
-# diffusion_stable_arena.
+# =1 records over the stock onloads, re-recording when they move (re-record plus ~0.6 GB pool cost
+# more than the replay saves); default records only the stable range (diffusion_stable_arena).
 MODEL_OFFLOAD_REASON = (
     "model offload re-uploads the denoiser every render at new addresses, so its step graph would record again on "
     "every render; set " + MODEL_OFFLOAD_CUDA_GRAPH_ENV + "=1 to record it anyway"
@@ -109,9 +108,8 @@ _REFERENCE_KWARGS = ("image_cond_hidden_states", "image_cond_ids")
 
 
 def _image_scope(args: tuple, kwargs: dict) -> tuple:
-    """The non-text part of a call's shape: the key of its first argument (the latents in each
-    variable-length denoiser call) plus any separate reference images; resolution, batch and
-    reference images change it, prompt length does not."""
+    """The non-text part of a call's shape: the key of its first argument (the latents) plus
+    separate reference images; resolution and batch change it, prompt length does not."""
     first = args[0] if args else next(iter(kwargs.values()), None)
     refs = tuple((name, graph_key(kwargs[name])) for name in _REFERENCE_KWARGS if name in kwargs)
     return (graph_key(first),) + refs if refs else graph_key(first)
@@ -172,9 +170,8 @@ class _ThreadGateState(threading.local):
     device_card = None
 
 
-# Long single-card work (the deferred int8 CUTLASS timing race) holds only its card off captures, so a capture on
-# another card (a video render) never waits on it: card index -> holds (``hold_device_off_capture``), and card index
-# -> recordings (None = a capture whose card could not be read: it conflicts with every card).
+# Long single-card work (deferred int8 CUTLASS race) holds only its card off captures; card -> holds
+# (hold_device_off_capture), card -> recordings (None: unreadable card, conflicts with all).
 _DEVICE_HOLDS: dict = {}
 _DEVICE_DEPTH: dict = {}
 
@@ -393,9 +390,8 @@ _DEFERRED_RELEASES: "collections.deque" = collections.deque()
 
 
 def run_if_capture_idle(fn: Any) -> bool:
-    """Runs fn under the capture lock when no capture is recording, else returns False; never
-    blocks, so finalizers may call it on a thread holding the non-reentrant lock; fn may sync and
-    free device memory since no capture can enter while it runs."""
+    """Runs fn under the capture lock unless recording (then False); never blocks, as finalizers may
+    run under the non-reentrant lock; fn may sync and free memory: no capture can enter."""
     if _OUTSIDE_LOCAL.recording:
         return False
     if _OUTSIDE_LOCAL.lock_held:
@@ -642,9 +638,8 @@ def flush_now_locked(clear_cublas: bool = False) -> bool:
 
 
 def release_cached_outside_capture(clear_cublas: bool = False) -> bool:
-    """The one way graph memory goes back outside a capture entry: empty_cache and the cuBLAS clear
-    run now under the capture lock, else (while another thread records, which forbids both) it is
-    counted as a retired pool with the clear owed to the next capture entry flush."""
+    """Outside a capture, empty_cache and the cuBLAS clear run under the capture lock; while another
+    thread records, the pool counts as retired and the clear is owed to the next capture."""
     # Owed first, in one step with the cuBLAS debt: a capture entering from here on sees it due, whether or not this
     # flush gets the lock; a successful flush below acknowledges it.
     with _RETIRE_LOCK:
@@ -660,8 +655,7 @@ def release_cached_outside_capture(clear_cublas: bool = False) -> bool:
 
 
 def _note_dropped_pools(tokens: list) -> None:
-    """Graph entries just left a step cache: count a retirement when one of their pools no live graph records into
-    (a pool still shared with a live graph keeps its freed blocks for that pool's next capture)."""
+    """Dropped pools count as retired unless a live graph still records into them."""
     try:
         if not tokens:
             return
@@ -734,9 +728,8 @@ def card_graph(
     index: int,
     pool: Any = None,
 ):
-    """``torch.cuda.graph`` recorded on card ``index``: that card current (its sync, its allocator) and its own capture
-    stream. A bare ``torch.cuda.graph`` on a second card records on the first card's default capture stream, so the
-    graph comes out empty while the kernels run eagerly on the card they belong to."""
+    """Records the graph on card index, with that card current and its own capture stream; a bare
+    torch.cuda.graph on a second card gets the first card's stream and comes out empty."""
     torch = _torch()
     index = int(index)
     with torch.cuda.device(index):
@@ -750,8 +743,7 @@ def _graph_without_flush(
     pool: Any = None,
     stream: Any = None,
 ):
-    """``torch.cuda.graph`` minus its ``empty_cache`` / host ``emptyCache``: same capture stream discipline, same
-    capture mode (``CAPTURE_MODE``), same pool."""
+    """torch.cuda.graph minus empty_cache and host emptyCache; same stream, CAPTURE_MODE, pool."""
     torch = _torch()
     torch.cuda.synchronize()
     if stream is None:
@@ -851,9 +843,8 @@ _LIVE_WRAPPERS: "weakref.WeakSet" = weakref.WeakSet()
 
 
 def _drop_pool_if_unused() -> None:
-    """Forget the shared pool id once no live graph records into it: capturing into a pool whose graphs are all gone
-    dies on the allocator's use_count assert. Checked per graph, not per wrapper: a wrapper still holding graphs in an
-    EARLIER pool (one dropped before) does not keep the current id alive."""
+    """Forget the shared pool id once no live graph records into it (capturing into such a pool
+    trips the allocator's use_count assert); checked per graph, not per wrapper."""
     try:
         pool = _POOL_BOX[0]
         if pool is None:
@@ -918,8 +909,7 @@ def capture_generation(device_index: Optional[int]) -> int:
 
 
 def failed_capture_count() -> int:
-    """Captures that failed in this process (an absorbed OOM among them): a render that saw one grow peaked at the
-    failed attempt, not at what it needed."""
+    """Failed captures, absorbed OOMs included; a render that saw one overstates its need."""
     return len(_FAILED_GRAPHS)
 
 
@@ -1159,9 +1149,8 @@ def live_pool_free_bytes() -> int:
 
 
 def releasable_pool_bytes(handles: Any, device: Optional[int] = None) -> int:
-    """Unused graph-pool bytes on ``device`` (the current card when None) that ``reset_all(handles)`` hands back: the
-    whole-step pools only these handles record into (another live wrapper, such as a co-resident video pipeline's,
-    keeps a shared pool alive) and the block-graph pools these handles own. 0 when unreadable."""
+    """Graph-pool bytes reset_all(handles) frees on device (current when None): whole-step pools
+    these handles record into (shared ones stay), plus their block pools; 0 if unreadable."""
     handles = tuple(handles or ())
     # reset() also frees a whole-step graph's per-block fallback, so its block pools count too
     nested = []
@@ -1445,10 +1434,9 @@ class GraphedForward:
     )
 
     def _unlink_wrapper_metadata(self, stock: Any) -> None:
-        """diffusers wraps a hooked forward FROM the one it replaced (``update_wrapper``): the slot's ``__wrapped__``
-        chain still names this retired wrapper, and each link carries a copy of its ``__dict__`` (cache, stats, the
-        module). The CFG replica builder peels the root forward by ``__wrapped__`` and refuses an unknown override, so
-        point the chain at the class forward and drop the copied state."""
+        """update_wrapper leaves the hooked forward's __wrapped__ chain naming this retired wrapper,
+        with its __dict__ copied (cache, stats); the CFG replica builder peels by __wrapped__ and
+        refuses an unknown override, so relink to the class forward and drop the copies."""
         chain: list = []
         link = self.module.__dict__.get("forward")
         while link is not None and link is not self and len(chain) < 16:
@@ -1530,9 +1518,8 @@ class GraphedForward:
             # A pending or armed per-block fallback still keys its graphs on the resident groups' addresses: the
             # stable re-pin stays until it is known to be gone (``_engage_fallback`` / ``free``).
             _retire_stable_placement(self.placement)
-        # Poisoned entries are unreachable (__call__ goes eager first) yet pin statics, outputs and
-        # pool slices, so they are dropped; the caller's _release frees both in one pass once the
-        # failed capture's frames are gone.
+        # Poisoned entries are unreachable (__call__ goes eager first) yet pin statics, outputs,
+        # pool slices; caller's _release frees both once the failed capture's frames are gone.
         dropped = [getattr(e, "pool_token", None) for e in self.cache.values()]
         self.cache.clear()
         _note_dropped_pools(dropped)
@@ -1540,7 +1527,6 @@ class GraphedForward:
         return self
 
     def free(self) -> "GraphedForward":
-        """Drop the graphs and the slot."""
         self.reset()
         self.fallback = None
         if getattr(self, "fallback_handle", None) is not None:
@@ -1803,8 +1789,7 @@ class GraphedForward:
             if token != self.valid_token:
                 if self.cache:
                     self.stats["invalidations"] += 1
-                    # Not reset(): its empty_cache on every model-offload onload makes the next onload pay the
-                    # cudaMallocs again. The dropped pool's blocks stay with the allocator.
+                    # Not reset(): empty_cache re-pays cudaMallocs; pool stays with allocator.
                     dropped = [getattr(e, "pool_token", None) for e in self.cache.values()]
                     self.cache.clear()
                     _note_dropped_pools(dropped)  # the next capture flushes it before it records
@@ -1935,8 +1920,7 @@ class GraphedForward:
                 )
                 and self._real_warmup_ready(key, args, kwargs)
             ):
-                # Resident: this real step is one of the key's warm-ups (compile, lazy allocations), run on copies
-                # laid out like the capture statics so the recording meets no new compiled variant.
+                # Warm-up on statics-layout copies so recording meets no new compiled variant.
                 self._real_warm[key] = self._real_warm.get(key, 0) + 1
                 while len(self._real_warm) > 4 * self.max_graphs:
                     self._real_warm.pop(next(iter(self._real_warm)))
@@ -1950,8 +1934,7 @@ class GraphedForward:
                     warm_args, warm_kwargs = _rebuild(spec, self._statics(live))
                     return call(*warm_args, **warm_kwargs)
                 except Exception as exc:  # noqa: BLE001 - like a failed capture: never fails the render
-                    # The copies cost memory the plain step does not need (an OOM here), or the step failed on them:
-                    # this load runs eager, as after a failed capture.
+                    # Copies can OOM or fail: this load runs eager like after a failed capture.
                     self.poison(exc)
                     self.stats["fallbacks"] += 1
                     if self.logger is not None:
@@ -1975,8 +1958,7 @@ class GraphedForward:
                     self._warmed.pop(next(iter(self._warmed)))
                 self._open_warmups.add(key)
                 self.stats["shape_warmups"] += 1
-                # Copies laid out like the capture statics: compiled code guards on strides/offsets, else the
-                # capture compiles a new variant inside itself and fails.
+                # Copies like statics: compiled code guards strides/offsets, or capture fails.
                 live: list = []
                 spec = _flatten((args, kwargs), live)
                 warm_args, warm_kwargs = _rebuild(spec, self._statics(live))
@@ -2103,9 +2085,8 @@ class GraphedForward:
         return _rebuild(entry.out_spec, outs)
 
     def _real_warmup_ready(self, key: Any, args: tuple, kwargs: dict) -> bool:
-        """Before a key's first real warm-up step, what ``_capture`` does before its side-stream warm-ups: NVFP4
-        GEMMs tuned at the step's row counts (an untuned eager step would run another tactic than the replays), and
-        a load with NVFP4 activation scales still calibrating left to the capture's refusal (runs eager)."""
+        """Before a key's first real warm-up: NVFP4 GEMMs tuned at the step's row counts (an untuned
+        step would run another tactic than replays); calibrating NVFP4 loads run eager."""
         if self._real_warm.get(key, 0):
             return True
         nvfp4_layers = _nvfp4_flashinfer_linears(self.module)
@@ -2453,9 +2434,8 @@ class OffloadPlacement:
         return module_prefetcher(self.module)
 
     def _enable_slots(self) -> None:
-        """Streamed groups copy into the prefetcher's slot ring (diffusion_offload_prefetch), so the recorded copies
-        land at fixed addresses outside the graph pool: the pool then holds one step's activations, not a second
-        prefetch window beside the eager one. Off with UNSLOTH_DIFFUSION_STEP_GRAPH_SLOTS=0."""
+        """Streamed copies use the prefetcher's slot ring at fixed addresses outside the graph pool,
+        so it holds one step's activations; UNSLOTH_DIFFUSION_STEP_GRAPH_SLOTS=0 disables."""
         if (os.environ.get(STEP_SLOTS_ENV) or "").strip().lower() in ("0", "off", "false", "no"):
             return
         if not self.streams():
@@ -2673,8 +2653,7 @@ def offload_placement(module: Any) -> tuple:
                 None,
                 f"offload hook {type(hf_hook).__name__} moves the weights inside the forward",
             )
-        # Every other refusal first: the stable range below swaps the module's onload, so it attaches only for a
-        # placement that will record.
+        # Other refusals first: stable range swaps onloads, so it attaches only to recorders.
         why = _forward_refusal(module, "model")
         if why is not None:
             return None, why
@@ -2740,8 +2719,7 @@ def _detach_stable_range(module: Any) -> None:
 
 
 def _retire_stable_placement(placement: Any) -> None:
-    """No graph of this placement can replay again (a poisoned or freed handle): stop paying for stable addresses. A
-    re-arm attaches afresh."""
+    """Drop stable addresses once no graph can replay (poisoned/freed); re-arm attaches afresh."""
     if placement is None:
         return
     if placement.mode == "model":
@@ -3152,9 +3130,8 @@ def install_cuda_graphs(
 
 
 def note_render_steps(handles: Any, steps: Any) -> None:
-    """A render is about to run ``steps`` denoiser steps (after img2img strength): a resident key's first real steps
-    are its warm-ups only where more than WARMUP_ITERS of them follow, so it records within this render. Unknown
-    (None), or a pipeline of several denoisers (experts that split the steps), keeps the side-stream warm-ups."""
+    """Of the render's denoiser steps, a key's first real ones are warm-ups only if more than
+    WARMUP_ITERS follow, so it records now; None or several denoisers keep side-stream warm-ups."""
     handles = tuple(handles or ())
     try:
         count = int(steps) if steps is not None and len(handles) == 1 else None
@@ -3178,9 +3155,8 @@ def seal_lengths(handles: Any) -> None:
         try:
             real = getattr(handle, "_real_warm", None)
             if real:
-                # A key whose real warm-ups the render ended before its capture records next time, as it did before
-                # real warm-ups: the side-stream way when it ran fewer than a capture needs (renders 2+ of a 1-step
-                # render replay), at once when it ran them all and the render ended before the recording step.
+                # A key whose real warm-ups the render cut short records next time: side-stream
+                # warm-ups if it ran fewer than a capture needs, else at once if it ran them all.
                 handle._real_warm_closed.update(
                     key
                     for key, n in real.items()
@@ -3191,8 +3167,7 @@ def seal_lengths(handles: Any) -> None:
         try:
             if not getattr(handle, "length_varies", False):
                 continue
-            # Only a scope that recorded since the last reset: a render that only warmed up (a planned step's first
-            # call at a new length) or recorded nothing keeps its window open.
+            # Only a scope recorded since reset is sealed; warm-up-only renders keep it open.
             for scope in handle._render_scopes:
                 if handle._scope_captures.get(scope, 0) > 0:
                     handle._sealed_scopes.add(scope)
@@ -3386,7 +3361,6 @@ def never_engaged(handles: Any) -> Optional[str]:
     if refused and not s["captures"] and not s["replays"]:
         return f"armed, but every denoiser call so far ran eager: {refused[0]}"
     if refused and not s["graphs"]:
-        # Recorded, then dropped for the load: the steps run eager from here on.
         return f"captured, then dropped: {refused[0]}; denoiser steps now run eager"
     if all(getattr(h, "poisoned", False) for h in handles):
         error = s["capture_error"] or {}

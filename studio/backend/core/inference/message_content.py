@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Collapses message content (string or OpenAI multimodal list) to text, dropping non-text parts; no
-heavy imports, so unit-testable alone."""
+"""Collapses string or OpenAI list content to text, dropping non-text parts; no heavy imports."""
 
 from __future__ import annotations
 

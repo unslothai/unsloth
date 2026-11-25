@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Serializes switches: one at a time per backend, plus one cross-backend GPU lock every GPU-taking
-switch queues on; locks are per event loop, since a module-level asyncio.Lock hangs a second
-loop."""
+"""Serializes switches: one lock per backend and one cross-backend GPU lock all GPU-taking switches
+queue on; locks are per event loop, since a module-level asyncio.Lock hangs a second loop."""
 
 from __future__ import annotations
 

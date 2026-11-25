@@ -89,17 +89,15 @@ def static_schedule(
     min_steps: int = STATIC_MIN_STEPS,
     masks: Optional[dict] = None,
 ) -> tuple:
-    """Per step, compute (True) or skip (False); empty (compute all) below ``min_steps`` (never below
-    ``STATIC_MIN_STEPS``). ``masks`` maps a step count to a measured per-step mask (``parse_mask``), used at exactly
-    that step count even below ``min_steps``; a step count without one keeps the interval schedule."""
+    """Per step: True computes, False skips; empty below min_steps (never below STATIC_MIN_STEPS). A
+    measured mask applies at its step count even below min_steps, else interval schedule."""
     try:
         n = int(steps)  # type: ignore[arg-type]
         every = int(every)
         floor = max(STATIC_MIN_STEPS, int(min_steps))
     except (TypeError, ValueError):
         return ()
-    # A measured mask is the measurement at its own step count, so it also stands below the interval's floor
-    # (``parse_mask`` still keeps it at STATIC_MIN_STEPS or more).
+    # Measured masks apply below the floor; parse_mask keeps them at STATIC_MIN_STEPS or more.
     mask = _mask_for(masks, n)
     if mask:
         return mask
@@ -164,8 +162,7 @@ def auto_static_settings(
     env: Optional[dict] = None,
     logger: Any = None,
 ) -> dict:
-    """Knobs for an AUTO static skip: the family's measured ``every`` and ``min_steps`` over the defaults; an
-    explicit ``UNSLOTH_STATIC_SKIP_*`` value still wins (benchmarking)."""
+    """Measured every and min_steps beat defaults; explicit UNSLOTH_STATIC_SKIP settings win."""
     env = os.environ if env is None else env
     out = static_skip_settings(env, logger)
     every_override = _every_override_valid(env)
@@ -283,9 +280,8 @@ def _timestep_of(
     kwargs: dict,
     slot: tuple = ("timestep", None),
 ) -> Any:
-    """The call's timestep as a one-element float32 tensor on its own device (no host sync).
-
-    The max: a per-token ``mask * t`` (Wan2.2 TI2V, LTX) is 0 on conditioned tokens; taylor1 would silently reuse."""
+    """Timestep as a one-element float32 tensor (no host sync), taken as the max over tokens: a
+    per-token mask times t is 0 on conditioned tokens, and taylor1 would silently reuse."""
     name, index = slot
     t = kwargs.get(name)
     if t is None and index is not None and index < len(args):

@@ -51,8 +51,7 @@ def enabled() -> bool:
 
 
 def applies(state: Any, *, layers: Optional[int] = None) -> bool:
-    """True when a CPU server's render should decode the latent here: a FLUX.2 VAE family with its
-    file on disk, one image per latent, and torch plus diffusers present; import-light."""
+    """True if a CPU render decodes here: FLUX.2 VAE on disk, one image, torch and diffusers."""
     if not enabled() or layers:
         return False
     if getattr(state, "device", None) != "cpu" or getattr(state, "server", None) is None:

@@ -35,8 +35,7 @@ CONVROT_W4A4 = "convrot_w4a4"
 FP8_E4M3 = "float8_e4m3fn"
 FP8_FORMATS = {"float8_e4m3fn": "F8_E4M3", "float8_e5m2": "F8_E5M2"}
 
-# Every companion tensor a ComfyUI quantized layer can carry. A suffix outside what a supported format
-# consumes means a format this loader does not implement, so it is refused rather than dropped.
+# Companion tensors of a ComfyUI quant layer; an unconsumed suffix is refused, not dropped.
 _SCALE_SUFFIXES = (
     ".weight_scale",
     ".weight_scale_2",
@@ -795,9 +794,8 @@ def _fp8_tensor(
     dtype: Any,
     fast_accum: Optional[bool] = None,
 ) -> Optional[Any]:
-    """The torchao fp8 weight a hosted FP8 checkpoint rebuilds into (per-row ``Float8Tensor``, dynamic
-    per-row fp8 activations with the same 1e-12 floor, the plain-torch kernel), built by the same decoder.
-    A per-tensor scale is the per-row layout with every row's scale equal, so it is repeated, not changed."""
+    """Torchao per-row Float8Tensor for hosted FP8 checkpoints, from the same decoder; dynamic
+    per-row fp8 activations (1e-12 floor, plain-torch kernel); per-tensor scales repeat per row."""
     import torch
 
     from .diffusion_transformer_quant import _resolve_fast_accum
@@ -1691,8 +1689,7 @@ def load_comfy_quant_transformer(
                 sources[i][2].reshape(-1, 1).expand(sources[i][1].shape[0], 1)[r : r + n]
                 for i, r, n in segments
             ]
-            # one segment (a split or renamed layer) is a row slice of a contiguous tensor: no copy; a
-            # reorder (a stock converter swapping gate / proj halves) is a full copy of the kept codes
+            # A split or rename is a row slice (no copy); a reorder copies the kept codes.
             charge_host_ram((_nbytes(parts) if len(parts) > 1 else 0) + _nbytes(scale_parts))
             codes = parts[0] if len(parts) == 1 else torch.cat(parts)
             scale = torch.cat(scale_parts)

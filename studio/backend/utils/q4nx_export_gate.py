@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Q4NX export is an AMD NPU feature: only a machine with a supported NPU and FastFlowLM installed
-gets it, so NVIDIA and other machines never download the converter."""
+"""Q4NX export: supported AMD NPU and FastFlowLM only; others never fetch the converter."""
 
 from __future__ import annotations
 

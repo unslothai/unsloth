@@ -754,8 +754,7 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
         raise WorkdirUnsafeError(str(exc)) from exc
     if not os.path.isdir(workdir):
         raise WorkdirUnsafeError(f"the session workdir does not exist: {workdir}")
-    # Every rule below grants whatever the path resolves to, and tool code can write the workdir's parent
-    # entry: a workdir swapped for a link would move the grants to the link's target.
+    # Grants follow the resolved path: tool code can swap the workdir for a link and move them.
     if os.path.islink(workdir):
         raise WorkdirUnsafeError(f"the session workdir is a symbolic link: {workdir}")
     resolved = os.path.realpath(workdir)
@@ -794,8 +793,7 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
                 egress_port = proxy.port if proxy else None,
             )
         except SandboxUnavailableError as exc:
-            # A refusal here is this workdir's (a link swapped in to a target Seatbelt cannot name): it must
-            # not select auto's unisolated fallback.
+            # Refusal for a swapped-in link must not select auto's unisolated fallback.
             raise WorkdirUnsafeError(str(exc)) from exc
         if os.path.islink(workdir) or os.path.realpath(workdir) != resolved:
             raise WorkdirUnsafeError(

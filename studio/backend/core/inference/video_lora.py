@@ -134,8 +134,7 @@ def dense_transformer_quant(
 
 
 def check_families(specs: Iterable[tuple[str, float]], family: Optional[str]) -> None:
-    """Network-free family gate for catalog ids, so a mismatched pick is a 400 before anything is evicted.
-    Ids the catalog does not know (public HF repo ids) are resolved, and gated, by the load itself."""
+    """Network-free: wrong-family catalog ids 400 before eviction; unknown ids gated by load."""
     from core.inference import diffusion_lora
 
     req = (family or "").strip().lower()

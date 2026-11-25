@@ -48,9 +48,8 @@ def _hip_sees(
     count,
     totals = None,
 ):
-    """Declare HIP's own inventory: how many devices it opens, and the total memory
-    it reports per physical id. Empty totals mean torch could not describe the
-    devices, which the probe fails open on."""
+    """Declare HIP's device count and total memory per physical id; empty totals mean torch could
+    not describe the devices, so the probe fails open."""
     monkeypatch.setattr(LlamaCppBackend, "_rocm_hip_device_count", staticmethod(lambda: count))
     monkeypatch.setattr(
         LlamaCppBackend,
@@ -199,8 +198,7 @@ class TestAnApuTheClassifierMisses:
         assert LlamaCppBackend._get_gpu_memory_amd_smi() == []
 
     def test_two_readings_of_one_pool_are_accepted(self, rocm, monkeypatch):
-        """amd-smi and HIP totals differ (reserved pages, MB against MiB), so the comparison uses
-        the System tab's 10% margin."""
+        """amd-smi and HIP totals differ (reserved pages, MB vs MiB); allow a 10% margin."""
         monkeypatch.setattr(amd, "_run_amd_smi", _fake_amd_smi(_payload((0, 4096, 24576)), None))
         _hip_sees(monkeypatch, 1, {0: 24400})
         assert LlamaCppBackend._get_gpu_memory_amd_smi() == [(0, 20480, 24576)]

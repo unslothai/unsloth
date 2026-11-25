@@ -146,8 +146,7 @@ class OAICompatTransport:
         self.sent_messages = messages
 
         def _send(messages: list[dict[str, Any]], request_kwargs: dict[str, Any]):
-            # Re-derived each turn: a tool or user message at the end must not be resumed as an
-            # assistant turn.
+            # Re-derived per turn: a last tool/user message must not resume an assistant turn.
             continue_final_message = bool(self._continue_final_message) and bool(
                 messages
                 and isinstance(messages[-1], dict)

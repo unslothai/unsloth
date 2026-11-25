@@ -20,8 +20,7 @@ import threading
 import time
 from typing import Callable, Optional
 
-# Archived under its own role, so recall can tell it from a turn that must still be on the live
-# branch: a thought is never part of the branch text the branch filter compares against.
+# Own role, so recall tells it from live-branch turns; the branch filter never sees thoughts.
 THOUGHT_ROLE = "thinking"
 THOUGHT_DOCUMENT = f"earlier turn ({THOUGHT_ROLE})"
 # Tokens dropped from the end of the cut thought: the window can stop it mid-word.

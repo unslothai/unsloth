@@ -141,8 +141,7 @@ def raise_if_load_cancelled(message: str) -> None:
 
 
 def run_unless_load_cancelled(message: str, fn, *args, **kwargs):
-    """Runs fn under the preflight lock unless an unload cancelled the load, so a destructive step
-    never runs for a cancelled load."""
+    """Run fn under the preflight lock unless an unload cancelled the load; then fn is not run."""
     token = _current_preparing.get()
     if token is None:
         return fn(*args, **kwargs)
@@ -250,8 +249,7 @@ class SwapSave:
 
 
 async def acquire_then_close(swap: SwapSave, acquire):
-    """Run the blocking acquire on a thread and close ``swap`` only once that thread is done. A
-    cancelled request leaves the thread running, and it may still evict chat and commit the save."""
+    """Closes swap once the acquire thread ends; cancelled, it may still evict chat and commit."""
     task = asyncio.ensure_future(asyncio.to_thread(acquire))
 
     def _done(finished) -> None:

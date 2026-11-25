@@ -349,8 +349,7 @@ def _media_loading(owner: str) -> bool:
 
 
 def _chat_occupied() -> bool:
-    """Whether a chat load is in flight, a kept slot failed to stop, or the primary cannot be read;
-    unreadable counts as yes, so Always never evicts it blind."""
+    """Chat load in flight, stuck slot, unreadable primary is occupied; Always never evicts it."""
     try:
         from core.inference import model_slots
         from core.inference.llama_cpp import chat_load_active
@@ -434,8 +433,7 @@ def refuse_replacing_media(
 def guarded_media_begin(
     owner: str, policy: str, requested: Iterable[Optional[str]], begin: Callable[[], Any]
 ) -> Callable[[], Any]:
-    """``begin`` re-checked against a load that registered meanwhile, for use as an acquire's
-    ``register`` (which runs under ``_lock``). Off and fit begin as before."""
+    """Re-checks begin under _lock against a concurrent load; off/fit return begin unchanged."""
     if policy != "always":
         return begin
     names = tuple(requested)
@@ -472,9 +470,8 @@ def _media_slot(kind: str, owner: str, status: Optional[dict]) -> list[dict[str,
     return [{"kind": kind, "model": str(model), "account": _resident_loader(owner)}]
 
 
-# What an owner's eviction unloads, as {kind, model} with the public model id, plus the loading account under
-# "account". Patchable like _EVICTORS. Read before the evictor runs, under _lock, so a reporter must never call back
-# into the arbiter's locking functions. One that fails reports nothing rather than blocking the acquire.
+# Unloads as {kind, model (public id), account}; patchable like _EVICTORS. Read under _lock before
+# the evictor, so it must not re-lock; a failing one reports nothing rather than blocking.
 _SLOT_REPORTERS: dict[str, Callable[[], list[dict[str, Any]]]] = {
     CHAT: _chat_slots,
     DIFFUSION: _diffusion_slots,
@@ -945,8 +942,7 @@ def restore_owner_account(owner: str, account_id: Optional[str] = None) -> bool:
 
 
 def restore_media_need(owner: str) -> None:
-    """Put back the price the newest load of ``owner`` overwrote, when that load failed and the
-    model it was replacing stays loaded; otherwise the kept model is priced as the failed one."""
+    """Restores the price a failed newest load overwrote, so a kept model keeps its own price."""
     with _lock:
         if owner not in _media_need_rollback:
             return

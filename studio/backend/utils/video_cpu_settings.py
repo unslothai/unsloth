@@ -49,8 +49,7 @@ def video_cpu_env_override() -> Optional[bool]:
 
 
 def get_video_cpu_setting() -> bool:
-    """The persisted owner setting. Read from the owner's store whoever asks, since it is installation
-    wide; a missing or unreadable setting is the default (off)."""
+    """Installation-wide setting read from the owner's store; missing or unreadable means off."""
     try:
         from storage.studio_db import get_app_setting
         from utils.account_context import OWNER, run_as

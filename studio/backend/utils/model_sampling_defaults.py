@@ -98,8 +98,7 @@ def _lookup(
 
 
 def sampling_defaults_key(model_id: str) -> str:
-    """The key one model's defaults are stored under: per model, not per quant, and a cached repo by
-    its repo id rather than a snapshot path that a new revision would orphan."""
+    """Per model, not per quant; cached repos key by repo id: revisions orphan snapshot paths."""
     from core.inference.model_ids import hf_cache_repo_id
 
     key = model_id.strip()

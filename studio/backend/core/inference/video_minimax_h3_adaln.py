@@ -90,8 +90,7 @@ def _build_curve_time_embedder(curve_grid: int, curve_dim: int) -> Any:
 
 
 def _passthrough_time_proj() -> Any:
-    """Feeds the raw timestep to the curve embedder; Timesteps is parameter-free, so no state keys
-    change."""
+    """Raw timestep feeds curve embedder; Timesteps is parameter-free, so no state keys change."""
     from torch import nn
 
     class _MiniMaxH3RawTimestep(nn.Module):

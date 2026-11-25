@@ -25,7 +25,6 @@ def _coerce_bool(value: Any) -> bool | None:
 
 
 def helper_model_disabled_by_env() -> bool:
-    """Return True when existing broad helper-disable env var is active."""
     return os.environ.get("UNSLOTH_HELPER_MODEL_DISABLE", "").strip() in {"1", "true"}
 
 

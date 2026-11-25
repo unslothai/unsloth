@@ -533,8 +533,7 @@ class TestCrossPlatform:
 
 
 def test_the_status_route_reports_what_a_self_sizing_load_asked_for():
-    """The UI re-seeds its context pin from it, because the resolved window cannot say
-    whether anyone chose that length; without it a pin is invisible after a refresh."""
+    """Pin survives refresh via requested_context_length; resolved window hides a user choice."""
     route_src = (Path(__file__).resolve().parents[1] / "routes" / "inference.py").read_text(
         encoding = "utf-8"
     )

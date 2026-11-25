@@ -111,8 +111,7 @@ def test_every_small_activation_normalises_to_one_row_count():
 
 
 def test_no_padding_at_or_above_pad_to():
-    """A module that is small on one call and large on the next must pay nothing on the large
-    one: at or above ``pad_to`` the activation reaches the GEMM at its own row count."""
+    """At or above pad_to the activation reaches the GEMM unpadded; large calls pay nothing."""
     inner = _RecordingLinear(8, 6)
     wrapped = PadToMinM(inner, min_m = 17, pad_to = 32)
     wrapped(torch.randn(32, 8))
@@ -132,8 +131,7 @@ def test_zero_rows_return_the_projected_width():
 
 
 def test_pad_to_can_never_sit_below_min_m():
-    """``pad_to`` exists to buy tiling and shape stability above the floor, never to undercut
-    it: a 'padded' activation below ``min_m`` would still trip the assert it exists to clear."""
+    """pad_to can never sit below min_m: a padded activation under it still trips the assert."""
     inner = nn.Linear(8, 6)
     assert PadToMinM(inner, min_m = 17, pad_to = 8).pad_to == 17
     assert PadToMinM(inner, min_m = 17, pad_to = None).pad_to == 17

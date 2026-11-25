@@ -69,8 +69,7 @@ def _verdict(key: tuple[str, str]) -> tuple[bool, Optional[str]]:
 
 
 def cached_family(repo_id: Optional[str], filename: Optional[str] = None) -> Optional[str]:
-    """The family a Hub single-file header declares, from memory or disk only (None if unknown); a
-    prefetch read off the Hub outranks a cached copy, which may be an older revision."""
+    """Family from memory/disk (None if unknown); Hub prefetch outranks possibly stale cache."""
     if not is_hub_id(repo_id) or not _is_single_file(filename):
         return None
     repo_id = str(repo_id).strip()

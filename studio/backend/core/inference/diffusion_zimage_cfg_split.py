@@ -442,7 +442,6 @@ def split_aware_request_extra(
 
 
 def guided_runs_at_guidance_off_batch(pipe: Any) -> bool:
-    """Whether a guided render runs at the guidance-off batch."""
     denoiser = getattr(pipe, "transformer", None)
     slots = getattr(denoiser, "__dict__", None)
     if not isinstance(slots, dict) or not slots.get(_ARMED_ATTR) or zimage_cfg_split_disabled():

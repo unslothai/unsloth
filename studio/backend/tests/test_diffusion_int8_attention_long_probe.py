@@ -39,8 +39,7 @@ def _clean(monkeypatch):
 
 
 def _fake_card(monkeypatch, long_fails = False):
-    """A CPU stand-in for an sm89 card. Returns the (keys, selected config) of every kernel call; with
-    ``long_fails`` a call that selects the long variant raises at launch, as a failed compile or launch would."""
+    """sm89 stand-in: logs (keys, config) per call; long_fails makes long-variant calls raise."""
     from core.inference import rocm_bf16
 
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
@@ -156,8 +155,7 @@ def test_the_card_check_compiles_and_verifies_the_long_variant(monkeypatch):
 
 
 def test_a_long_variant_that_fails_its_check_leaves_long_calls_on_the_short_kernel(monkeypatch):
-    """(b) The long variant raises in the check: the card keeps INT8 (the short kernel is verified), short calls run
-    it, and long calls run the short config instead of native attention."""
+    """Failed long check keeps INT8: long calls run the short config, not native attention."""
     calls, _ = _fake_card(monkeypatch, long_fails = True)
     long_keys = int(I.kernel_config(CAPABILITY, LONG_HD)["long_keys"])
     found = I._check("cuda", torch.float32, 24, LONG_HD, None, timed = False)

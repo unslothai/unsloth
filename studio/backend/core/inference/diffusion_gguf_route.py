@@ -63,8 +63,7 @@ def gguf_offload_prequant_placement(
     prequant_cached: bool,
     torchao_offload_plan: Any,
 ) -> tuple[Optional[Any], Optional[str]]:
-    """``(placement, None)`` to swap, ``(None, reason)`` to keep the GGUF by this rule, ``(None, None)`` when it
-    does not apply."""
+    """(placement, None) swaps; (None, reason) keeps GGUF; (None, None) when not applicable."""
     if not gguf_offload_prequant_enabled():
         return None, None
     if candidate is None or not bool(getattr(candidate, "prequant", False)) or not scheme:

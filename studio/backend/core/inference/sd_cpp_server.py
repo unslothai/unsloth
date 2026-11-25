@@ -201,8 +201,7 @@ class SdCppServer:
 
     @property
     def lora_dir(self) -> Optional[str]:
-        """Server rescans this dir per request; reference staged files via the lora field, not
-        prompt tags."""
+        """Server rescans this dir per request; refer staged files via lora, not prompt tags."""
         return self._scratch_dir
 
     def vid_gen_accepts(self, features: tuple[str, ...]) -> bool:

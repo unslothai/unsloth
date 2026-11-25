@@ -11,12 +11,10 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# Windows maps at most about half of system RAM to the NPU (lemonade-sdk/lemonade#839, surfacing
-# as FastFlowLM#904); taken from those issues, not measured here.
+# Windows caps NPU RAM at about half (lemonade-sdk/lemonade#839, FastFlowLM#904); not measured.
 _WINDOWS_NPU_RAM_SHARE = 0.5
 _NPU_OS_RESERVE_GB = 2.0
-# A loaded model holds its weights plus context buffers and the runtime; a flat 1 GB covers those
-# at the default 8192 context without flagging models that sit just under the window.
+# Flat 1 GB covers context buffers and runtime at default 8192 context; borderline models pass.
 _NPU_LOAD_MARGIN_GB = 1.0
 
 

@@ -124,7 +124,6 @@ def _record(path: str, status: str, cause: str) -> None:
 
 
 def record_scan_failure(path: str, error: OSError) -> None:
-    """Remember why a scan skipped ``path``."""
     _record(path, classify_scan_error(error), path)
 
 
@@ -141,7 +140,6 @@ def clear_scan_slow(path: str) -> None:
 
 
 def clear_scan_failure(path: str) -> None:
-    """Forget a past failure once the folder reads again."""
     if _failed:
         _failed.pop(path, None)
 
@@ -209,7 +207,6 @@ def refresh_failed_scan_folders(folders: list[dict]) -> None:
 
 
 def annotate_scan_folders(folders: list[dict]) -> list[dict]:
-    """Copy each folder row with its status attached."""
     if not _failed:
         return [{**folder, "status": STATUS_OK} for folder in folders]
     return [

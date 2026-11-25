@@ -402,8 +402,7 @@ def run_diffusion_lora_training(
             train_steps = resolve_train_steps(cfg, len(pairs), [p for p, _ in pairs]),
             num_epochs = 0,
         )
-        # Validate a resume request against this run's identity BEFORE the multi-GB base model load, so a
-        # mismatch fails in seconds instead of after the download.
+        # Check resume identity before the multi-GB base load so a mismatch fails in seconds.
         identity = identity_for_config(cfg, dataset_pairs = pairs)
         if cfg.resume_from_checkpoint:
             preflight_resume(
@@ -615,8 +614,7 @@ def run_diffusion_lora_training(
             chosen = [pairs[i] for i in idx]
             return idx, [c[0] for c in chosen], [c[1] for c in chosen]
 
-        # Restore a previous run's state BEFORE the loop, so resumed is the last completed step and the loop
-        # picks up at resumed + 1; a mismatch raises out to the adapter.
+        # Restore before the loop so it picks up at resumed + 1; a mismatch raises an error.
         rng_streams = {"loop": rng, "variant": variant_rng}
         restored = restore_resume_state(
             cfg,

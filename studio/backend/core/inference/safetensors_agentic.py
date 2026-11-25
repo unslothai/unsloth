@@ -1258,8 +1258,7 @@ def run_safetensors_tool_loop(
                 enabled_tool_names = _enabled_names_gate,
             )
             if not tool_calls:
-                # Auto-Heal strips unparseable tool XML from display; off, raw text keeps malformed
-                # markup visible.
+                # Auto-Heal strips unparseable XML from display; off keeps malformed markup.
                 if content_accum:
                     _drain_text = _strip_tool_markup_final(
                         content_accum,

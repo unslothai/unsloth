@@ -372,9 +372,8 @@ def compile_eligible(
     family: Any,
     probe: bool = True,
 ) -> bool:
-    """Whether the repeated block is regionally compiled: CUDA or ROCm bf16, or fp16 on NVIDIA
-    sm_75+, compile-friendly family with inductor; probe=False never runs the ROCm probe,
-    unprobed counts eligible, a recorded failure does not."""
+    """Regional compile: bf16 CUDA/ROCm or fp16 NVIDIA sm_75+, compile-friendly family with
+    inductor; probe=False skips ROCm probing, unprobed counts eligible, recorded failures don't."""
     del is_gguf
     if not torch_compile_runtime_available():
         return False
@@ -2045,8 +2044,7 @@ def _guard_compiled_decode(
 
 
 def _decode_slot_owner(fn: Any) -> Any:
-    """The mutable slot an eager outer wrapper (fp16 non-finite check, ROCm bf16 cast) calls through, found under
-    any layer installed over it since (the OOM scope), or None."""
+    """Mutable slot an eager outer wrapper calls through, found under any later layer, or None."""
     from .decode_layers import next_layer  # noqa: PLC0415
 
     for _ in range(32):
@@ -2349,8 +2347,7 @@ _DROPPED_ATTR = "_unsloth_dropped_projections"
 
 
 def _fused_attention_drops(module: Any) -> tuple:
-    """The projections diffusers' fused processor no longer calls: self attention runs ``to_qkv`` (q, k, v unused),
-    cross attention ``to_q`` + ``to_kv`` (k, v unused)."""
+    """Projections the fused processor never calls: to_q/to_k/to_v (self), to_k/to_v (cross)."""
     if not getattr(module, "fused_projections", False):
         return ()
     if getattr(module, "is_cross_attention", False):
@@ -2396,8 +2393,7 @@ def _drop_plan(unet: Any) -> list:
 
 
 def unfused_projections_will_drop(unet: Any) -> bool:
-    """Whether the fuse's unfused copies will be dropped on this (not yet fused) U-Net: drop on, no PEFT adapter, and
-    every projection the fused processor stops calling is a plain hook-free Linear."""
+    """Whether unfused copies drop (drop on, no PEFT adapter, only plain hook-free Linears)."""
     if unet is None or not _drop_unfused_enabled():
         return False
     try:

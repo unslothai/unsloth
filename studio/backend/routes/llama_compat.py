@@ -80,8 +80,7 @@ _MANAGEMENT_ROUTES = frozenset(
 )
 _SERVED_ROUTES = _PASSTHROUGH_ROUTES | _MANAGEMENT_ROUTES
 
-# The /v1 entries Studio does not implement. A test asserts each is really absent from
-# the assembled app, so implementing one fails CI instead of being shadowed by a 404.
+# Unserved /v1 entries; a test asserts absence so an added route fails CI, not a shadowing 404.
 _UNSERVED_V1_PROBE_PATHS = frozenset(
     {
         "v1/chat/completions/control",
@@ -135,8 +134,7 @@ def _loaded_public_model_id() -> Optional[str]:
 
 
 def _server_props() -> dict:
-    """llama-server's /props, with model_path mapped to the public id like every other
-    Studio response: upstream reports the absolute .gguf path and this is LAN reachable."""
+    """model_path is the public id; upstream reports the absolute .gguf path, LAN reachable."""
     llama_backend = _inference().get_llama_cpp_backend()
     public_id = _loaded_public_model_id()
     llama_loaded = bool(getattr(llama_backend, "is_loaded", False))

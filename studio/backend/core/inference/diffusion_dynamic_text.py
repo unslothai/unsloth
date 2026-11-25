@@ -153,9 +153,8 @@ def prompt_length_varies(transformer: Any) -> bool:
     return isinstance(PROMPT_LENGTH_POLICY.get(cls.__name__), tuple)
 
 
-# What the compile arms: int8 and fp8 FLUX.1 and Z-Image (torchao weights, automatic dynamic)
-# recompiled on new text lengths and resolutions; armed, the first compile covers every text length
-# and image size.
+# Arms int8/fp8 FLUX.1 and Z-Image (torchao weights, automatic dynamic), which recompiled per text
+# length and resolution; armed, the first compile covers every text length and image size.
 _FAMILY_SOURCES: dict[str, tuple[str, ...]] = {
     "FluxTransformer2DModel": _FLUX1_SOURCES,
     "ZImageTransformer2DModel": _ZIMAGE_SOURCES,

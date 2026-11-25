@@ -14,8 +14,7 @@ from utils.models.drafters.common import (
 
 
 def dspark_precision_rank(name: str) -> int:
-    """Sidecar precision preference, Q8_0 first as the DSpark model card recommends; shared with hub
-    download and VRAM sizing so budgeted and fetched files match."""
+    """Q8_0 first per DSpark's model card; shared with hub download and VRAM budget to match."""
     base = Path(name).name.lower()
     if "-q8_0" in base:
         return 0

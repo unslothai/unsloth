@@ -48,8 +48,7 @@ from core.inference.diffusion_families import (
 
 # FLUX.2 tensor table sits in the first ~15 KiB; this is only a buffer ceiling.
 _GGUF_HEADER_BYTES = 256 * 1024
-# One short read. A pick is blocked on this in the UI, and a slow Hub must not stall the picker;
-# a timeout is just another fail-open.
+# One short read; a pick waits on it, so a slow Hub must not stall it; a timeout fails open.
 _HEADER_TIMEOUT_SECONDS = 15
 # How long to wait for an interrupted read to notice before leaving it to the GC.
 _ABANDON_GRACE_SECONDS = 0.5
@@ -206,8 +205,7 @@ def _read_gguf_header(
     max_bytes = _GGUF_HEADER_BYTES if max_bytes is None else max_bytes
     timeout_seconds = _HEADER_TIMEOUT_SECONDS if timeout_seconds is None else timeout_seconds
     buffer = bytearray()
-    # Published by the worker as soon as it has something interruptible; read by this thread on
-    # timeout. A one-element list rather than a nonlocal, so the worker's assignment is visible.
+    # Set by the worker once interruptible; a list, not nonlocal, so its write is visible.
     holder: list[Any] = [None]
 
     def _fetch() -> None:
@@ -278,8 +276,7 @@ def flux2_inner_dim_for_pick(
             _shared_gguf_header(repo_id, gguf_filename, token, local)
         )
     with _CACHE_LOCK:
-        # Plain FIFO-ish eviction: this only bounds a session's worth of picks, and a re-probe
-        # after an eviction costs one range request.
+        # Clear-all eviction bounds a session's picks; a re-probe costs one range request.
         if len(_INNER_DIM_CACHE) >= _INNER_DIM_CACHE_MAX:
             _INNER_DIM_CACHE.clear()
         _INNER_DIM_CACHE[key] = inner_dim
@@ -311,8 +308,7 @@ def flux2_pick_mismatch(
     if not gguf_filename or not str(getattr(fam, "name", "")).startswith("flux.2"):
         return None
     want = flux2_base_inner_dim(base_repo)
-    # Cheapest order: a base outside the size table (a local path, a repo we do not ship) leaves
-    # nothing to compare against, so it must not cost a round trip either.
+    # A base outside the size table leaves nothing to compare, so it skips the round trip.
     if want is None:
         return None
     got = flux2_inner_dim_for_pick(repo_id, gguf_filename, hf_token)
@@ -358,8 +354,7 @@ def _shared_gguf_header(
                 return prefix
             del _HEADER_PREFIX_CACHE[key]
     prefix = _read_gguf_header(repo_id, gguf_filename, token)
-    # An empty prefix is a failed read, and the two probes disagreeing about that is not worth a
-    # sticky miss: each still memoises its own "no verdict" on its own terms.
+    # An empty prefix is a failed read, not a verdict; each probe memoises its own no-verdict.
     if not prefix:
         return prefix
     with _CACHE_LOCK:
@@ -400,8 +395,7 @@ def _revalidated_speech_arch(
     if cached is None:
         return arch
     if not allow_network:
-        # A cache-only caller cannot wear the HEAD; the caller declines to memoise this answer,
-        # so the next one that CAN reach the Hub still revalidates it.
+        # Cache-only calls cannot check HEAD; never memoise, so a networked call revalidates.
         return arch
     live = _hub_revision(repo_id, gguf_filename, token)
     if live is None or live == cached:
@@ -430,8 +424,7 @@ def _speech_probe_architecture(
                 return arch
             del _SPEECH_ARCH_CACHE[key]
     if local is None and not allow_network:
-        # Memo or local header only, as the size pairing does. Nothing is memoised, so the next
-        # caller that CAN wait still gets a real answer instead of this one's silence.
+        # Nothing is memoised here, so a caller that can wait still gets a real answer.
         return None
     prefix = (
         _read_local_header(local)
@@ -473,8 +466,7 @@ def speech_pick_refusal(
     a server that ignores Range -- because refusing a pick that works is worse than the download
     this saves.
     """
-    # A ".gguf" name only, as the size pairing does: a single_file pick names a .safetensors,
-    # which has no GGUF header, and a range request to learn that on every such load is waste.
+    # Skip non-.gguf names: .safetensors picks have no GGUF header, so a range read is waste.
     if not repo_id or not gguf_filename or not gguf_filename.lower().endswith(".gguf"):
         return None
     arch = _speech_probe_architecture(repo_id, gguf_filename, hf_token, allow_network)
@@ -539,8 +531,7 @@ def _flux3_pipeline_index(
     except (OSError, RuntimeError, ValueError):
         return None
     try:
-        # The gated vendor repo's manifest is read from its byte-identical unsloth mirror (pure table lookup), so a
-        # load that fetches everything from the mirror does not also probe, and 401 on, the vendor repo.
+        # Gated vendor manifest comes from its byte-identical unsloth mirror, so no 401 probe.
         from core.inference.diffusion_families import prefer_ungated_mirror
 
         source = prefer_ungated_mirror(repo_id, token, files = (FLUX3_INDEX,))
@@ -564,8 +555,7 @@ def _flux3_pipeline_index(
 def _flux3_pick_tensor_names(
     repo_id: str, filename: str, token: Optional[str], allow_network: bool
 ) -> tuple[Optional[list[str]], bool]:
-    """Tensor names and ComfyUI-quantization flag of a FLUX.3 pick, read from headers only (local
-    file, else a GGUF range read or safetensors header from the Hub); names None if unreadable."""
+    """FLUX.3 pick's tensor names and ComfyUI flag, read from headers; None if unreadable."""
     from .diffusion_families import (
         _checkpoint_comfy_declared,
         _checkpoint_tensor_names,
@@ -599,9 +589,8 @@ def flux3_pick_mismatch(
     hf_token: Optional[str] = None,
     allow_network: bool = True,
 ) -> Optional[str]:
-    """Why a FLUX.3 pick cannot load under ``fam``, or None when nothing is known to be wrong: a single file /
-    GGUF of the other variant (or a BFL quantized package) from its tensor names, a full pipeline of the other
-    variant from its manifest. Headers and the manifest only; None on anything unreadable."""
+    """Why a FLUX.3 pick cannot load under fam, or None if nothing is known wrong; other-variant
+    files are spotted by tensor names, pipelines by manifest; None if unreadable."""
     name = str(getattr(fam, "name", ""))
     if not name.startswith("flux.3"):
         return None

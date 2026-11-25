@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Pure helpers with no torch/diffusers imports (unit-testable without the runtime); separate video
-registry so no picker misroutes; GGUF is DiT-only, needs a base repo"""
+"""Runtime-free video family helpers; separate registry; GGUF is DiT-only, needs a base repo."""
 
 from __future__ import annotations
 
@@ -362,12 +361,10 @@ _LTX_VIDEO_09_REFUSAL = (
     "This is an LTX-Video 0.9.x checkpoint, a different architecture from LTX-2 that Unsloth does not "
     "run. Load LTX-2 or LTX-2.3 instead (for example unsloth/LTX-2.3-GGUF)."
 )
-# Last path segment of each identifier only: an owner or parent folder named i2v does not make a checkpoint I2V.
-# MiniMax-H3 PDD files Studio cannot run. A "without_heads" bake keeps the single original output heads and needs the
-# external PDD head bank applied per step by a custom node; loaded as a plain denoiser it renders wrong output with no
-# error. The custom-node LoRA files hold a trunk LoRA plus that bank, not a denoiser. A "with_heads" bake carries its
-# 32-head bank in the file and runs natively (video_minimax_h3_pdd). An unnamed without-heads file is caught at load
-# from its header (pdd_acc_baked metadata with single heads).
+# Last path segment only; without_heads PDD bakes need an external per-step head bank and render
+# wrong output with no error as plain denoisers; custom-node LoRA files are not denoisers;
+# with_heads (32-head bank) runs natively; unnamed without-heads caught at load by pdd_acc_baked
+# header.
 _H3_PDD_WITHOUT_HEADS_RE = r"(?<![a-z0-9])pdd(?![a-z])[^/\\|]*without[-_ ]?heads"
 H3_PDD_WITHOUT_HEADS_REFUSAL = (
     "This MiniMax-H3 PDD checkpoint has no head bank: it keeps the single original output heads and needs the "
@@ -654,9 +651,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         profile = FamilyProfile(
             # the 2.3 DiT less the video FFN bias
             int8_exclude_tokens = _LTX2_INT8_EXCLUDES,
-            # Hosted rotated int8 build only: rotation baked into the file (every quantized Linear, group 256) and read
-            # back from its metadata. No runtime ConvRot spec (group 0), so quantizing at load stays plain int8;
-            # default_on only picks the hosted rotated file (the env's ``0`` picks the plain one).
+            # Hosted rotated int8 only: rotation (group 256) baked in and read from metadata;
+            # load-time quantizing is plain int8; default_on picks hosted file (env 0 picks plain).
             int8_convrot = ConvRotSpec(
                 group = 0,
                 suffixes = (),
@@ -716,8 +712,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         cudnn_benchmark = False,
         filter_reduction_configs = True,
     ),
-    # LTX-2 (diffusers >= 0.39): Gemma3-12B encoder is stored fp32 on the hub, ~49 GB download, ~24
-    # GB resident as bf16
+    # diffusers >= 0.39: Gemma3-12B encoder is fp32 on hub (~49 GB), ~24 GB resident as bf16.
     VideoFamily(
         name = "ltx-2",
         trainable = True,
@@ -750,8 +745,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         gguf_repo = "unsloth/LTX-2.3-GGUF",
         # pre-cast Gemma3-12B TE (fp32 ~49 GB on the hub, pre-cast ~13.2 GB): the biggest download win
         te_prequant_repos = (("fp8", "text_encoder", "unsloth/LTX-2-FP8"),),
-        # fp8 by default. ComfyUI's LTX-2 / LTX-2.3 workflow templates (video_ltx2_t2v.json, video_ltx2_3_t2v.json) load
-        # gemma_3_12B_it_fp4_mixed; the hosted layerwise fp8 file is the nearest scheme we serve.
+        # fp8 default; ComfyUI uses gemma_3_12B_it_fp4_mixed; hosted layerwise fp8 is nearest.
         te_quant_auto = "fp8",
         # Hosted 2.3 DISTILLED DiT, used only by the 2.3 single-file assembly. fp8 only: LTX-2.3-INT8.pt predates the int8 excludes.
         # Keyed on the 2.0 base so 2.3 never resolves it. fp8 only: LTX-2-INT8.safetensors predates
@@ -863,8 +857,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
     VideoFamily(
         name = "wan2.2-t2v-a14b",
         profile = FamilyProfile(
-            # Auto leads with nvfp4 only after a passing accuracy-gate record; none exists yet, so
-            # int8.
+            # Auto leads with nvfp4 only after an accuracy-gate pass; none yet, so int8.
             auto_prefer = AutoPrefer(
                 floor = (10, 0),
                 schemes = ("nvfp4", "int8", "fp8", "mxfp8"),
@@ -1034,9 +1027,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         ui_default_resolution = (848, 480),
         # DiT fp32 on disk (32.0 to 16.6 bf16); VAE 4.7 to 2.4; Qwen2.5-VL TE bf16 14.0 + ByT5 0.8
         bf16_components_gb = (16.6, 14.8, 2.4),
-        # Qwen2.5-VL-7B text tower pre-cast fp8 (ByT5 stays dense: glyph rendering). fp8 by default, as ComfyUI's
-        # HunyuanVideo-1.5 template (video_hunyuan_video_1.5_720p_t2v.json) loads qwen_2.5_vl_7b_fp8_scaled. The tensors are Qwen/Qwen2.5-VL-7B-Instruct's
-        # language model unchanged (Apache-2.0), and the 480p and 720p repacks ship the same bytes.
+        # Qwen2.5-VL text tower pre-cast fp8 (ByT5 stays dense for glyphs); ComfyUI's template loads
+        # qwen_2.5_vl_7b_fp8_scaled; unchanged Instruct LM (Apache-2.0) in both repacks.
         te_prequant_repos = (("fp8", "text_encoder", "unsloth/HunyuanVideo-1.5-FP8"),),
         te_quant_auto = "fp8",
         # Only the Qwen tower: the ByT5 glyph encoder (text_encoder_2) stays dense under the default.
@@ -1080,9 +1072,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         # The pipeline's own size when none is given: the 16:9 bucket of target_size 960.
         ui_default_resolution = (1280, 720),
         bf16_components_gb = (16.6, 14.8, 2.4),
-        # Qwen2.5-VL-7B text tower pre-cast fp8 (ByT5 stays dense: glyph rendering). fp8 by default, as ComfyUI's
-        # HunyuanVideo-1.5 template (video_hunyuan_video_1.5_720p_t2v.json) loads qwen_2.5_vl_7b_fp8_scaled. The tensors are Qwen/Qwen2.5-VL-7B-Instruct's
-        # language model unchanged (Apache-2.0), and the 480p and 720p repacks ship the same bytes.
+        # Qwen2.5-VL text tower pre-cast fp8 (ByT5 stays dense for glyphs); ComfyUI's template loads
+        # qwen_2.5_vl_7b_fp8_scaled; unchanged Instruct LM (Apache-2.0) in both repacks.
         te_prequant_repos = (("fp8", "text_encoder", "unsloth/HunyuanVideo-1.5-FP8"),),
         te_quant_auto = "fp8",
         # Only the Qwen tower: the ByT5 glyph encoder (text_encoder_2) stays dense under the default.
@@ -1992,8 +1983,7 @@ _LTX25_DISTILLED = re.compile(r"(?<![a-z0-9])distill")
 
 
 def ltx25_is_dev(*identifiers: Optional[str]) -> bool:
-    """The first identifier naming a variant decides (selected file before repo); unnamed means distilled, which is
-    what the Diffusers pack's default ``transformer/`` and the reference workflow ship."""
+    """First identifier naming a variant decides (file before repo); unnamed means distilled."""
     for identifier in identifiers:
         leaf = _ltx_leaf(identifier).lower()
         if _LTX25_DISTILLED.search(leaf):

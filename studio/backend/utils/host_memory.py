@@ -53,9 +53,8 @@ def _reclaimable_file_bytes(
     v1: bool,
     credit_mapped: bool = False,
 ) -> int:
-    """Droppable page cache bytes: inactive_file + active_file minus mapped, dirty and writeback
-    (conservative); shmem/tmpfs is never counted; credit_mapped also counts clean mapped pages as
-    MemAvailable does, else MGLRU flips the reading."""
+    """Droppable cache: inactive_file + active_file minus mapped/dirty/writeback (conservative);
+    shmem excluded; credit_mapped adds clean mapped pages like MemAvailable, else MGLRU flips."""
     values: dict[str, int] = {}
     try:
         with open(path, "r", encoding = "utf-8") as f:

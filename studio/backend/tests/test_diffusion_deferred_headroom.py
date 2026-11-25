@@ -184,8 +184,7 @@ def test_render_start_opens_a_fresh_peak_window_without_the_learned_probe(
 
 
 def test_hires_refinement_peaks_are_noted_too():
-    # The refinement pass does not count as a generation, but its (larger) peak must still be noted before the next
-    # pass resets the counters, so the note may not sit under the generation-count branch.
+    # Refinement peaks are noted before the next reset, outside the generation-count branch.
     import ast
     import inspect
 
@@ -220,8 +219,7 @@ def test_a_lora_keeps_the_copies_so_they_count(monkeypatch):
 
 
 def test_drop_lets_the_profile_engage_where_the_copies_would_not_fit(card, engage, monkeypatch):
-    # the reading test_profile_declined_when_the_render_would_not_fit declines with the copies kept engages once
-    # they are dropped: the fuse then adds nothing to the card
+    # Copies kept: the profile declines; dropped, it engages and the fuse adds nothing.
     monkeypatch.delenv(dspeed.DROP_UNFUSED_QKV_ENV, raising = False)
     card.update(peak = 7778 - 300, free = 544, reserved = 7234)
     _state, engaged = engage()

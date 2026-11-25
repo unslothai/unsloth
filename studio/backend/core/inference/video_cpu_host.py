@@ -26,8 +26,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
-# LTX-2.5's Gemma 4 encoder worker holding the hosted int8 ConvRot file on CPU: 8,087 MiB peak worker RSS (measured,
-# CPU-HM). Lower than the 13.1 GB file because the worker reads it through a mapping.
+# LTX-2.5 encoder worker on hosted int8 file: 8,087 MiB peak RSS, under 13.1 GB as mapped.
 LTX25_CPU_TE_INT8_HOST_GB = 8.5
 # MiniMax-H3 GGUF on the native engine on CPU: whole render tree RssAnon peak, 864x480x124 (measured, CPU-HM).
 H3_CPU_NATIVE_HOST_GB = 5.1
@@ -254,9 +253,8 @@ def gguf_copy_gb(
     *,
     mapped: Optional[bool] = None,
 ) -> Optional[float]:
-    """GB diffusers copies into memory for this GGUF denoiser, or None when Studio's mmap hook reads it mapped. The size
-    comes from a local file, the Hub cache, then the Hub; unreadable, the smallest curated quant's share of bf16. A
-    dual-expert family loads both expert files. Never raises."""
+    """GB copied to memory for this GGUF denoiser (None if mmap-mapped); MoE counts both experts;
+    size: local file, Hub cache, then Hub; else smallest quant's bf16 share; never raises."""
     try:
         if mapped is None:
             from .diffusion_gguf_mmap import gguf_mmap_enabled

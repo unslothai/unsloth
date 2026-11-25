@@ -186,8 +186,7 @@ def h3_process_held_host_bytes() -> int:
 
 
 def h3_host_capacity_bytes() -> int:
-    """Usable host RAM (cgroup-capped) plus what this process already holds and the render reuses,
-    capped at the cgroup limit."""
+    """Usable host RAM plus memory this process and render hold, capped at the cgroup limit."""
     import psutil
     from utils import host_memory
 
@@ -1580,8 +1579,7 @@ def h3_quant_cublas_env(
     sage: bool,
     environ: Optional[dict] = None,
 ) -> tuple[tuple[str, str], ...]:
-    """sd-cli env for the BF16 cuBLAS route: known sm80+ always, known older never, unknown
-    (``cuda_cc`` None) only with sage. A user-exported value (0 included) always wins."""
+    """sm80+ always, older never, unknown only with sage; a user-exported value (0 incl.) wins"""
     environ = os.environ if environ is None else environ
     if H3_QUANT_CUBLAS_ENV in environ:
         return ()
@@ -1620,8 +1618,7 @@ def h3_native_render_flags(
     need_bytes: Optional[int],
     env: Optional[dict] = None,
 ) -> tuple[list[str], bool]:
-    """Flags for one render and whether it runs resident: only memory auto, only when the live free VRAM covers
-    the estimate; anything unknown keeps the committed flags."""
+    """Resident only in auto memory and when free VRAM covers need_bytes; else committed flags."""
     flags = list(offload_flags)
     environ = env if env is not None else os.environ
     if str(environ.get(H3_NATIVE_RESIDENT_ENV, "")).strip().lower() in ("0", "false", "no", "off"):
@@ -1995,9 +1992,8 @@ class H3NativeFitInputs:
 
 
 def h3_native_host_budgets() -> "tuple[Optional[int], int]":
-    """(RAM, swap) a native render may still take: RAM cgroup-capped, without Studio's own RSS, and on cgroup v1 no
-    more than the RAM+swap (memsw) headroom; swap bounded by the cgroup against that RAM budget, so the two never
-    sum past what the cgroup can charge. (None, 0) only when RAM cannot be read; unreadable swap is 0 swap."""
+    """RAM is cgroup-capped less Studio's RSS (cgroup v1: at most RAM+swap memsw); swap is bounded
+    so the sum fits the cgroup. (None, 0) only if RAM unreadable; unreadable swap is 0."""
     try:
         ram = h3_native_host_available_bytes()
     except Exception:  # noqa: BLE001 - an unreadable reading skips the host check
@@ -2038,9 +2034,8 @@ def h3_native_live_fit(
         gtt_free, gtt_known = amdgpu_gtt_reading(None)
     spill = 0
     if inputs.check_gtt and inputs.uma and compute_bytes:
-        # What the carve-out cannot hold of the compute buffer comes from GTT. A segment's weights come on top, but
-        # sd.cpp's own capacity check reports that remainder, so only the compute buffer is charged here.
-        # An unreadable or ambiguous carve-out (several cards, no slot) holds none of it, like the tightest GTT.
+        # Compute buffer beyond the carve-out comes from GTT; weights are left to sd.cpp's capacity
+        # check; an unreadable or ambiguous carve-out (several cards, no slot) holds none.
         vram_free = amdgpu_vram_free_bytes(inputs.gtt_pci_slot) or 0
         spill = max(int(compute_bytes) - vram_free, 0)
     return h3_native_memory_fit(
@@ -2534,8 +2529,7 @@ def transcode_video_to_mp4(source: Path, *, fps: int) -> bytes:
 
 
 def _unforced_picture_type(frame: Any) -> Any:
-    """A decoded frame keeps its picture type (every MJPG / raw frame is I), which libx264 obeys: clear it so
-    the encoder picks I / P / B frames, as the Diffusers export does."""
+    """Clear the picture type (MJPG/raw are I) so libx264 picks I/P/B, as Diffusers does."""
     try:
         from av.video.frame import PictureType
         frame.pict_type = PictureType.NONE
@@ -2548,8 +2542,7 @@ def _unforced_picture_type(frame: Any) -> Any:
 
 
 def _finite_audio_frame(frame: Any) -> Any:
-    """``frame`` with float samples bounded to [-1, 1] and NaN zeroed: the AAC encoder refuses NaN, which sd.cpp's
-    float PCM (the uncompressed AVI) keeps, and 16-bit PCM clipped the same range."""
+    """Clamp to [-1,1], zero NaN: AAC refuses NaN; sd.cpp float PCM keeps it; 16-bit PCM clips."""
     import av
     import numpy as np
 

@@ -30,7 +30,6 @@ from core.inference.video_families import detect_video_family  # noqa: E402
 
 
 def _ref_save_bytes(frames):
-    # the reference video save: (frame * 255).clamp(0, 255).byte()
     return (frames * 255).clamp(0, 255).byte()
 
 

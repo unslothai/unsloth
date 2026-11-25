@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Only desktop launches on AMD hosts copy allowlisted ROCm vars that are absent here from the login
-shell; every other launch reads no shell"""
+"""AMD desktop launches copy absent allowlisted ROCm vars from the login shell; others do not."""
 
 from __future__ import annotations
 

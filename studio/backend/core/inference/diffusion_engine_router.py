@@ -154,8 +154,7 @@ _VULKAN_SD_CPP_PLATFORMS = frozenset({("linux", "x86_64"), ("win32", "amd64")})
 
 @functools.lru_cache(maxsize = 1)
 def _vulkan_loader_loads() -> bool:
-    """Whether the Vulkan loader library opens here. The Vulkan build links it, so without it
-    neither sd-cli nor sd-server would start."""
+    """Whether the Vulkan loader opens; without it neither sd-cli nor sd-server would start."""
     import ctypes
     try:
         if sys.platform == "win32":
@@ -188,9 +187,8 @@ _RENDER_NODE_VENDORS = {"0x1002": "amd", "0x8086": "intel"}
 
 
 def _accessible_render_vendors(vendors) -> set:
-    """Which of ``vendors`` have a readable and writable /dev/dri render node. A container can list
-    a card in sysfs without mounting its node, and Vulkan then sees no device. Empty when another
-    vendor's GPU (virtio, VMware) also has an openable node, since unpinned sd.cpp could take it first."""
+    """Vendors with a readable, writable /dev/dri render node (else Vulkan sees none); empty if
+    another vendor's GPU (virtio, VMware) has an openable node sd.cpp could take first."""
     import glob
 
     found = set()
@@ -217,8 +215,7 @@ def _accessible_render_vendors(vendors) -> set:
 
 
 def _reachable_intel_arc_render_node() -> bool:
-    """True when this process can open the render node of an Intel Arc itself (PCI class per node), not
-    only some Intel node: beside a UHD iGPU, a container may mount the iGPU's node alone."""
+    """True if an Intel Arc render node (PCI class per node) is openable, not only an iGPU's."""
     import glob
 
     from utils.hardware.hardware import _intel_pci_device_is_xpu_class
@@ -284,8 +281,7 @@ def _vulkan_gpu_for_cpu_torch() -> bool:
 
     gpus = [d for d in devices if d.get("vendor") in ("amd", "intel")]
     if sys.platform != "win32":
-        # Vulkan only sees cards whose render node this process can open (a container may mount
-        # one vendor's), and the node and the driver must belong to the same vendor.
+        # Only cards whose render node is openable count; node and driver share a vendor.
         reachable = _accessible_render_vendors({d.get("vendor") for d in gpus})
         gpus = [d for d in gpus if d.get("vendor") in reachable]
     masked = _masked_vendors()
@@ -308,8 +304,7 @@ def _vulkan_gpu_for_cpu_torch() -> bool:
     return _hardware_vulkan_driver(rendering_vendors) and _vulkan_loader_loads()
 
 
-# The ICD manifests that drive each vendor's cards (RADV as radeon_icd or radv_icd, AMDVLK /
-# Adrenalin, ANV); a software rasteriser or another vendor's driver lists none of them.
+# Each vendor's ICD manifests (RADV, AMDVLK, ANV); software or other vendors list none.
 _VENDOR_ICD_NEEDLES = {"amd": ("radeon", "radv", "amd"), "intel": ("intel",)}
 
 
@@ -335,8 +330,7 @@ def _hardware_vulkan_driver(vendors) -> bool:
 
 
 def _nvidia_adapter_present() -> bool:
-    """An NVIDIA card nvidia-smi cannot see (Nouveau, no proprietary driver, no nvidia-smi) is still
-    a Vulkan device. Unanswerable counts as present."""
+    """Hidden NVIDIA cards still count as Vulkan devices; unanswerable counts as present."""
     if sys.platform == "win32":
         try:
             from utils.hardware.hardware import (
@@ -647,8 +641,7 @@ def _engine_config(engine: Optional[str] = None) -> tuple[str, str, bool]:
 
 
 def engine_for(name: str) -> Any:
-    """The engine object a name refers to, WITHOUT activating it: activating unloads the resident
-    model, so /images/load's gated-repo preflight needs the pending engine before the switch."""
+    """Engine object for a name, WITHOUT activating it: activating unloads the resident model."""
     if name == ENGINE_SD_CPP:
         from core.inference.sd_cpp_backend import get_sd_cpp_backend
         return get_sd_cpp_backend()
@@ -774,8 +767,7 @@ def begin_load_on(expected_engine: Any, start: Callable[[], Any]) -> Any:
 
 
 def _selected_card(gpu_ordinal) -> Optional[str]:
-    """The card at an already RESOLVED ordinal, or ``None``, meaning every record applies. Never
-    re-derived from the id list: free-VRAM ranking can name a different card the second time."""
+    """Card at a RESOLVED ordinal (None = all); never re-derived, free-VRAM ranking may differ."""
     if gpu_ordinal is None:
         return None
     try:
@@ -1212,8 +1204,7 @@ def refuse_engine_pick(
 def native_binary_installed(
     *, gpu_ordinal: Optional[int] = None, fam: Optional[DiffusionFamily] = None
 ) -> bool:
-    """Answers whether a runnable sd.cpp binary exists on disk, never installing one, unlike the
-    prediction."""
+    """Whether a runnable sd.cpp binary is on disk; never installs one, unlike the prediction."""
     backend = resolve_diffusion_device_target().backend
     off_torch = off_torch_sd_cpp_device(backend)
     if off_torch is not None:
@@ -1439,9 +1430,8 @@ def annotate_status(status: dict[str, Any]) -> dict[str, Any]:
 
 
 def engine_choice_status(status: dict[str, Any]) -> dict[str, Any]:
-    """What the Images page needs to offer the engine choice for the loaded pick: the env pin (which wins over a pick),
-    whether the native engine can serve it (a GGUF of a family with sd.cpp assets; the binary is checked on reload, not
-    on a status poll), and whether reloading it there would enable LoRA where this engine cannot apply one."""
+    """Engine-choice status for the Images page: the env pin wins over the pick; native needs a GGUF
+    of an sd.cpp family (binary checked on reload, not on poll); reload may enable LoRA."""
     from .diffusion_lora import supports_lora
 
     fam = None

@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Known audio.cpp failures, named so clients can offer a fix; raw runtime text is only classified,
-never returned, and details go through sanitize_runtime_tail."""
+"""Known audio.cpp failures; raw text is classified, never returned; see sanitize_runtime_tail."""
 
 from __future__ import annotations
 
@@ -248,8 +247,7 @@ def smaller_variants(
     free_gb: Optional[float] = None,
     limit: int = 3,
 ) -> list[dict]:
-    """Variants with a lower estimate than the loaded one, largest first; only those that fit
-    ``free_gb``. Byte size alone is not enough: ACE-Step base is a few bytes under turbo."""
+    """Lower-estimate variants fitting free_gb, largest first; byte size misorders (ACE-Step)."""
     if model is None:
         return []
     from core.inference.audio_cpp_models import quant_label, resolve

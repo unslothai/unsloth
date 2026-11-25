@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Stops the Windows proactor feeding bytes to h11 after uvicorn sent ConnectionClosed, which
-printed a spurious LocalProtocolError traceback on clean shutdown; dropping that data beats
-suppressing the error, which would hide real protocol errors."""
+"""Drops Windows proactor bytes fed to h11 after ConnectionClosed, which printed a spurious
+LocalProtocolError on clean shutdown; suppressing the error would hide real protocol errors."""
 
 from __future__ import annotations
 

@@ -164,7 +164,6 @@ def _overflow_record(ip: str, now: float) -> int:
             entry[0] = min(entry[0] + 1, _LOGIN_IP_MAX_FAILS)
         return entry[0]
     if len(shard) >= _LOGIN_IP_OVERFLOW_MAX:
-        # Make room by dropping the lowest-count entry.
         del shard[min(shard, key = lambda k: shard[k][0])]
     shard[ip] = [1, now]
     return 1
@@ -233,7 +232,6 @@ def _normalize_forwarded_addr(value: str) -> str:
 
 
 def _forwarded_for_from_element(element: str) -> str:
-    """Pick the `for=` token out of a single ``Forwarded`` element."""
     for tok in element.split(";"):
         key, sep, val = tok.strip().partition("=")
         if sep and key.lower() == "for":
@@ -245,8 +243,7 @@ def _client_ip(request: Request | None) -> str:
     if request is None:
         return "_unknown"
     if _trust_forwarded_for():
-        # Rightmost entry only: the trusted proxy appends the client it saw, and everything left of
-        # it is the caller's own text, so keying on it would let each guess pick a fresh bucket.
+        # Rightmost XFF only: the rest is caller-forged, so each guess gets a fresh bucket.
         from utils.client_ip import header_fields
 
         xff = header_fields(request.headers, "x-forwarded-for")
@@ -299,8 +296,7 @@ def _prune_stale_buckets(now: float) -> None:
 
 
 def _prune_stale_ip_buckets(now: float) -> None:
-    """Prune empty or expired per-IP buckets to bound memory under spray; only successful logins
-    otherwise reclaim them, so failure-only spray grows the dict without bound."""
+    """Prune stale IP buckets; failure-only spray otherwise grows the dict without bound."""
     stale: list[str] = []
     for bucket_ip, bucket in _LOGIN_IP_BUCKETS.items():
         _prune_bucket(bucket, now)

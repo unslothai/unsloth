@@ -14,9 +14,8 @@ DEFAULT_PORTS = {"http": 80, "https": 443, "ws": 80, "wss": 443}
 
 
 def canonical_origin(scheme: str, netloc: str) -> Optional[tuple[str, str, int]]:
-    """Canonicalise an Origin to ``(scheme, host, port)`` for equality. Browsers strip default ports (RFC 6454
-    sec 6.1) and scheme/host are case-insensitive (RFC 3986), so a bare string compare misclassifies
-    same-origin requests as cross-origin. Returns ``None`` on unparseable input so callers fall to the safer
+    """Canonicalise an Origin to (scheme, host, port); default ports and case vary, so a string
+    compare misclassifies. Returns None on unparseable input so callers fall to the safer
     cross-origin default."""
     scheme = (scheme or "").strip().lower()
     if not scheme or not netloc:

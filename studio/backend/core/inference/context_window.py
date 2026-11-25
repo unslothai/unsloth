@@ -111,8 +111,7 @@ _DATA_URL_DIMENSIONS_MAX = 256
 
 
 def _data_url_dimensions(url: str) -> Optional[tuple[int, int]]:
-    """Cached because the same image is priced on every count of a tool loop. Keyed on the URL's
-    hash, not the URL: an lru_cache would keep up to 256 multi-MB base64 payloads alive."""
+    """Cached for tool-loop recounts; hash-keyed, since lru_cache would pin multi-MB base64."""
     key = (hash(url), len(url))
     try:
         return _DATA_URL_DIMENSIONS[key]
@@ -165,8 +164,7 @@ def _ascii_count(text: str) -> int:
 
 
 def estimate_messages_tokens_dense(messages: list[dict]) -> int:
-    """Estimate charging non-ASCII a token per character (2.1x undercount measured on CJK). Not the
-    default: eviction must not be pessimistic."""
+    """Charge non-ASCII per char (else 2.1x CJK undercount); eviction must not be pessimistic."""
     total = 0
     for message in messages:
         try:
@@ -189,8 +187,7 @@ _DENSE_RUN_RE = re.compile(r"\S{%d,}" % _DENSE_RUN_CHARS)
 def estimate_messages_tokens_conservative(
     messages: list[dict], *, dense_ascii: bool = False
 ) -> int:
-    """As above, but long unbroken ASCII runs are charged as blobs; ``dense_ascii`` charges all
-    ASCII that way."""
+    """Long unbroken runs are charged as blobs; ``dense_ascii`` charges all ASCII that way."""
     total = 0
     for message in messages:
         try:
@@ -231,8 +228,7 @@ def group_turns(messages: list[dict]) -> list[list[dict]]:
 
 
 def evicted_messages(before: list[dict], after: list[dict]) -> list[dict]:
-    """Messages in ``before`` and not ``after``. Identity, not equality: two turns can be
-    byte-identical."""
+    """Messages in ``before`` but not ``after``, by identity: two turns can be byte-identical."""
     kept = {id(message) for message in after}
     return [message for message in before if id(message) not in kept]
 
@@ -330,8 +326,7 @@ def messages_without_unpriced_media(messages: list[dict]) -> list[dict]:
 
 
 def prompt_budget(context_length: int, max_tokens: Optional[int]) -> int:
-    """Tokens available to the PROMPT once reply room is set aside. Exported so recall sizing and
-    the client explanation share one formula."""
+    """Prompt tokens left after reply room; exported so recall and client share one formula."""
     if context_length <= 1:
         return context_length
     requested = max_tokens if max_tokens is not None and max_tokens > 0 else context_length
@@ -351,8 +346,7 @@ def retrieval_budget(
     *,
     reply_returns: bool = False,
 ) -> int:
-    """Prompt room for one retrieval: in a tool loop the exchange and reply are protected next fit,
-    so at most half the budget."""
+    """Retrieval room: at most half the budget with reply_returns, as the reply is protected."""
     target = prompt_budget(context_length, max_tokens)
     room = max(0, target - int(prompt_tokens or 0))
     if reply_returns:
@@ -374,9 +368,8 @@ def tool_result_budget(
     *,
     buffer: float = _TOOL_RESULT_BUDGET_BUFFER,
 ) -> int:
-    """Tokens a tool result may add without pushing the next prompt over. Priced against room
-    remaining, not a share of the window, and against ``prompt_budget`` so the reply still has
-    room. Covers the whole tool message, notice included."""
+    """Tokens a tool result may add before the prompt exceeds the buffered prompt_budget, so the
+    reply keeps room; priced on remaining room, not a window share, and covers the notice."""
     target = prompt_budget(context_length, max_tokens)
     return max(0, int(target * buffer) - int(prompt_tokens or 0))
 
@@ -429,29 +422,25 @@ def _compacted_arguments(
     phrase: Optional[str] = None,
     reply: object = None,
 ) -> Optional[str]:
-    """Receipt standing in for a completed call's arguments, or None to leave them. Structured and
-    naming the path, since a bare [omitted] reads as failure and draws a retry of the same
-    oversized write."""
+    """Receipt replacing a completed call's arguments, or None to keep them; names the path, since a
+    bare [omitted] reads as failure and draws a retry of the same oversized write."""
     # Not a default: the constant is defined below.
     phrase = phrase or _completed_phrase_for(name, reply)
     if not isinstance(arguments, str):
         return None
-    # A refused call ignores the general floor: its refusal is about to enter a prompt that already does not fit. The
-    # size check at the end still stops the receipt growing the prompt.
+    # Refused calls skip the floor (prompt already over); size check still stops growth.
     refused = phrase == _REFUSED_PHRASE
     if not refused and len(arguments) < _ARG_COMPACTION_TOTAL_FLOOR_CHARS:
         return None
     try:
         parsed = json.loads(arguments)
     except Exception:
-        # Size alone is an honest receipt for unparseable arguments. Worded from `phrase`: hardcoding
-        # after-the-call-ran replayed a REFUSED call as having run.
+        # Size-only receipt; worded from phrase so a REFUSED call is not replayed as run.
         _unparseable = json.dumps(
             {"_unsloth_compacted": f"{len(arguments)} chars {phrase.format(where = '')}"},
             ensure_ascii = False,
         )
-        # Checked here as well as at the end: without the general floor a short refused call can get a receipt longer
-        # than what it replaces.
+        # Checked here too: a short refused call could get a receipt longer than it replaces.
         return _unparseable if len(_unparseable) < len(arguments) else None
     if not isinstance(parsed, dict):
         return None
@@ -472,14 +461,12 @@ def _compacted_arguments(
         """Elide every large string at any depth: `edit_file` takes an `edits` ARRAY, so content
         sits at `edits[i].new_string`."""
         nonlocal elided
-        # The destination is never expendable: it names WHICH file the call touched, and the receipt promises the
-        # content is there.
+        # Path keys are never elided: they name the file, and the receipt promises its content.
         if key in _PATH_KEYS:
             return value
         if isinstance(value, str) and len(value) >= _leaf_floor:
             elided += len(value)
-            # Repeated in each leaf's receipt only when cheaper than the field it points at. `path` is preserved
-            # verbatim either way.
+            # Path repeats per leaf only when cheaper than its field; always kept as is.
             where = (
                 f" to {path}"
                 if path and key not in _PATH_KEYS and len(str(path)) <= _RECEIPT_PATH_MAX_CHARS
@@ -584,15 +571,13 @@ def compact_executed_call_arguments(messages: list[dict], call_id: str) -> list[
 
 
 def compact_refused_tool_arguments(messages: list[dict], call_id: str) -> list[dict]:
-    """Drop a declined call's arguments, named as never sent. `tool_calls` render only once a `tool`
-    message answers them, and the refusal is one, so declining costs the prompt what it declined
-    to afford."""
+    """Drop a declined call's arguments, named as never sent; tool_calls render once a tool message
+    answers them, and the refusal is one, so declining costs the prompt."""
     return _compact_one_call(messages, call_id, _REFUSED_PHRASE)
 
 
 def _last_index_with_call(messages: list[dict], call_id: str) -> int:
-    """Call ids are NOT unique: parsers number from `call_0` each turn, so rewriting every match
-    relabels an earlier call's fate. Callers act on the call just decided, so take the last."""
+    """Call ids repeat across turns (call_0 each turn), so take only the last match."""
     for index in range(len(messages) - 1, -1, -1):
         message = messages[index]
         if message.get("role") != "assistant":
@@ -672,8 +657,7 @@ def _reply_shows_execution(content: object) -> bool:
 
 
 def _executed_call_sites(messages: list[dict]) -> "dict[tuple[int, str], object]":
-    """Keyed on the SITE, not the id: generated ids restart at `call_0` each turn, so an earlier
-    success once vouched for a call the user DECLINED."""
+    """Keyed by site not id: ids restart each turn; an old success vouched for a declined call."""
     pending: dict[str, list[int]] = {}
     executed: dict[tuple[int, str], object] = {}
     for index, message in enumerate(messages):
@@ -701,9 +685,8 @@ def _executed_call_sites(messages: list[dict]) -> "dict[tuple[int, str], object]
 def compact_completed_tool_arguments(
     messages: list[dict], *, protect_last: int = 0
 ) -> tuple[list[dict], int]:
-    """Rewrite only what is REPLAYED; the stored thread and the arguments the tool received stay
-    byte-identical. Only answered calls are touched, oldest first; ``protect_last`` holds
-    trailing messages clear."""
+    """Rewrites only the replayed copy, leaving the stored thread and tool arguments byte-identical;
+    only answered calls, oldest first; protect_last keeps trailing messages unchanged."""
     answered = _executed_call_sites(messages)
     if not answered:
         return messages, 0
@@ -739,12 +722,10 @@ def compact_completed_tool_arguments(
 
 
 def _blamed_role(message: dict) -> str:
-    """Advice key: role, except an assistant turn with `tool_calls`, where start-a-new-reply is the
-    wrong lever for an 8 KB payload."""
+    """Advice key is the role, except tool_calls turns, where a new reply is the wrong lever."""
     role = str(message.get("role") or "")
     if role == "assistant" and message.get("tool_calls"):
-        # Split by whether a FILE is involved, from the call that accounts for the turn's SIZE: ask-for-a-smaller-file
-        # cannot shrink a `python` or MCP payload.
+        # Smaller-file advice only when a FILE dominates; python or MCP payloads cannot shrink.
         _dominant = None
         _dominant_size = -1
         for call in message.get("tool_calls") or []:
@@ -800,8 +781,7 @@ def _blamed_role_for_turn(messages: list[dict]) -> str:
 def _latest_turn_count(
     messages: list[dict], count_tokens: Callable[[list[dict]], int]
 ) -> tuple[int, bool]:
-    """Estimated when the template refuses a lone tool result. The caller must know which it got:
-    only the counted one carries the prompt's floor."""
+    """Estimated when the template refuses a lone tool result; the floor is for counts only."""
     if not messages:
         return 0, False
     try:
@@ -811,9 +791,8 @@ def _latest_turn_count(
 
 
 def _shared_prompt_tokens(count_tokens: Callable[[list[dict]], int]) -> int:
-    """What a rendered prompt costs before any message: the template wrapper plus the whole tool
-    catalogue, so it sits inside every count. Measured, not estimated, since it is subtracted
-    from the counts that decide the blame."""
+    """Token cost of the rendered prompt before any message: template wrapper plus tool catalogue;
+    measured, not estimated, since it is subtracted from the counts that decide blame."""
     try:
         return max(0, int(count_tokens([])))
     except Exception:
@@ -857,8 +836,7 @@ def turn_diagnosis(
         if marginal is not None and marginal > 0:
             latest = marginal + shared
         else:
-            # Nothing countable left: price the message's own JSON, and record no floor, because that estimate carries
-            # none.
+            # Nothing countable: price the message JSON, no floor; the estimate carries none.
             latest = int(estimate_messages_tokens(messages[-1:]))
             shared = 0
             # What is REPORTED is now the estimate, and that is what the flag describes.
@@ -874,8 +852,7 @@ def turn_diagnosis(
 
 
 def clamp_compaction_headroom_ratio(value: Any) -> Optional[float]:
-    """Overrides pass the same ``[0, 0.9]`` clamp as the process default, so a UI slider cannot ask
-    the fitter to drop the whole prompt."""
+    """Overrides get the same ``[0, 0.9]`` clamp: a UI slider cannot drop the whole prompt."""
     if value is None:
         return None
     try:
@@ -912,8 +889,7 @@ def fit_rolling_context(
     current_tokens = initial_tokens
     dropped_total = 0
 
-    # Phase one, gated on the prompt not already fitting: a saved boundary describes the branch it was measured on,
-    # and after a rollback would evict a chat that fits.
+    # Over budget: a saved boundary is branch-specific; rollback would evict a fitting chat.
     if sticky_dropped > 0 and initial_tokens > prompt_target:
         candidate, dropped = truncate_oldest_messages(
             fitted,
@@ -1136,11 +1112,9 @@ def fit_oversized_attachments(
     max_tokens: Optional[int],
     count_tokens: Callable[[list[dict]], int],
 ) -> list[dict]:
-    """Cut sandbox-backed attachments too big for the window: the newest turn keeps the start, older turns the path.
-
-    Decided per message, so a turn renders the same on every later request. Rewrites ``content`` in place:
-    eviction matches messages by identity, and a copy of the newest turn was archived as evicted.
-    """
+    """Cuts oversized sandbox-backed attachments per message so a turn renders the same on later
+    requests: the newest turn keeps its start, older turns the path; rewrites ``content`` in
+    place, since eviction matches by identity and a copy would be archived as evicted."""
     if not context_length or context_length <= 1:
         return messages
     attached = [

@@ -227,7 +227,6 @@ def windows_command_length(args: list) -> int:
 
 
 def max_extra_args_bytes() -> int:
-    """The size cap for this platform."""
     return MAX_EXTRA_ARGS_BYTES_WINDOWS if sys.platform == "win32" else MAX_EXTRA_ARGS_BYTES
 
 
@@ -273,9 +272,8 @@ def _has_control_characters(token: str) -> bool:
 
 
 def validate_extra_args(args: Optional[Iterable[str]]) -> list[str]:
-    """Validate user-supplied llama-server args. Returns a flat list ready to extend the
-    llama-server command; raises ``ValueError`` naming the offending flag on the first managed
-    token."""
+    """Validate user-supplied llama-server args; returns a flat list ready to extend the command, or
+    raises ValueError naming the offending flag on the first managed token."""
     if not args:
         return []
     out: list[str] = []
@@ -388,9 +386,8 @@ def drop_managed_flags(args: Optional[Iterable[str]]) -> tuple[list[str], list[s
         flag: str,
         source: list = None,
     ) -> bool:
-        """True when the token's value is the NEXT token rather than its own. ``source`` defaults to
-        the input list; the trimming loop passes the list it is shortening, where "the next
-        token" means the one just removed."""
+        """True when the token's value is the next token, not its own; source defaults to the input
+        list; trimming passes the shortened list, where next means the one just removed."""
         if _value_is_attached(token, flag):
             return False
         seq = tokens if source is None else source
@@ -471,14 +468,12 @@ def drop_managed_flags(args: Optional[Iterable[str]]) -> tuple[list[str], list[s
 
 
 def sorted_managed_flags() -> list[str]:
-    """Every denied flag, sorted, for a UI that wants to explain a rejection before the request is
-    made. The validator stays the authority; this is only a mirror."""
+    """Sorted denied flags for UI hints; the validator stays the authority, this is a mirror."""
     return sorted(_DENYLIST)
 
 
 def is_managed_flag(flag: str) -> bool:
-    """True if ``flag`` is Unsloth-managed. Normalises via ``_flag_name`` so `-np8` / `--parallel=8`
-    classify like the canonical tokens."""
+    """True if flag is Unsloth-managed; _flag_name folds forms like -np8 and --parallel=8."""
     normalised = _flag_name(flag)
     return normalised is not None and normalised in _DENYLIST
 
@@ -568,8 +563,7 @@ _MLOCK_FLAGS: frozenset[str] = frozenset({"--mlock", "-mlock"})
 # Modern spelling of both, as an enum value. Takes a value, so NOT boolean.
 _LOAD_MODE_FLAGS: frozenset[str] = frozenset({"--load-mode", "-lm"})
 _NO_MMAP_FLAGS: frozenset[str] = frozenset({"--no-mmap", "-no-mmap"})
-# Deprecated selectors reset the WHOLE mode (dropping mlock). Negative spellings map to `none`,
-# so no-reserve must veto those too.
+# Deprecated selectors reset the whole mode (drops mlock); no-reserve must veto negatives too.
 _DIO_ON_FLAGS: frozenset[str] = frozenset({"--direct-io", "-dio"})
 _DIO_OFF_FLAGS: frozenset[str] = frozenset({"--no-direct-io", "-ndio"})
 _DIO_FLAGS: frozenset[str] = _DIO_ON_FLAGS | _DIO_OFF_FLAGS
@@ -610,8 +604,7 @@ _BOOLEAN_SHADOWING_FLAGS: frozenset[str] = frozenset(
 
 
 def parse_ctx_override(args: Optional[Iterable[str]]) -> Optional[int]:
-    """Return the last user-supplied ``-c`` / ``--ctx-size`` value. Mirrors llama.cpp's last-wins
-    parsing for the one numeric knob Unsloth's load-time fit logic needs."""
+    """Last -c / --ctx-size value (llama.cpp last-wins); the knob Unsloth's fit logic needs."""
     if not args:
         return None
 
@@ -714,8 +707,7 @@ def effective_ctx_checkpoints(
 
 
 def resolve_requested_ctx(args: Optional[Iterable[str]], fallback_n_ctx: int) -> int:
-    """Return the context size load_model treats as requested; the single source of truth for its
-    ctx-override conditional, so tests call it rather than reimplement the logic."""
+    """Requested ctx size load_model uses; tests call this rather than copy its conditional."""
     override = parse_ctx_override(args)
     return override if override is not None else fallback_n_ctx
 
@@ -742,9 +734,8 @@ def _last_flag_value(
     preserve_raw: bool = False,
     validate_value: Optional[Callable[[str], object]] = None,
 ) -> Optional[str]:
-    """Return the last-wins string value among ``flags`` in extras, or None. Handles both
-    ``--flag=value`` and ``--flag value`` forms and raises if a matched flag has no (or an empty)
-    value. Shared by the single-knob last-wins parsers (cache type, split mode)."""
+    """Last-wins string value among flags in extras, or None; handles --flag=value and --flag value;
+    raises on a missing or empty value; shared by cache and split-mode parsers."""
     if not args:
         return None
 
@@ -878,8 +869,7 @@ def parse_gpu_layers_override(args: Optional[Iterable[str]]) -> Optional[int]:
 
 
 def _as_emitted(value: float) -> float:
-    """``value`` as the manual launcher will write it, which is ``f"{x:g}"``: six significant
-    digits, so the text the child parses is not always the number validated here."""
+    """Manual launcher writes {x:g} (six digits), so the child can parse a different number."""
     return float(f"{value:g}")
 
 
@@ -1066,8 +1056,7 @@ def resolve_cache_type_kv(
 
 
 def parse_split_mode_override(args: Optional[Iterable[str]]) -> Optional[str]:
-    """Return the last-wins --split-mode or -sm value from extras as a raw mode string (tensor, row,
-    none or layer), or None; mirrors parse_cache_override for multi-GPU split mode."""
+    """Last-wins --split-mode or -sm value from extras: tensor, row, none or layer, or None."""
     return _last_flag_value(args, _SPLIT_MODE_FLAGS)
 
 
@@ -1171,14 +1160,12 @@ def _extra_args_positive_int(
 def extra_args_image_max_tokens(
     args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
 ) -> Optional[int]:
-    """Return the effective positive ``--image-max-tokens`` value."""
     return _extra_args_positive_int(args, "--image-max-tokens", "LLAMA_ARG_IMAGE_MAX_TOKENS", env)
 
 
 def extra_args_image_min_tokens(
     args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
 ) -> Optional[int]:
-    """Return the effective positive ``--image-min-tokens`` value."""
     return _extra_args_positive_int(args, "--image-min-tokens", "LLAMA_ARG_IMAGE_MIN_TOKENS", env)
 
 
@@ -1673,16 +1660,14 @@ def scrub_memory_env(env: dict, settings: Optional[tuple[bool, bool]] = None) ->
 
 # Pageable twin of each buffer-allocating mode; upstream sets use_mmap only for mmap modes.
 _PAGEABLE_LOAD_MODE: dict[str, Optional[str]] = {"none": None, "mlock": "mmap+mlock"}
-# Already-mapping modes: stripped only when a LATER reserving selector shadowed their lock,
-# since keeping them would hand the lock back.
+# Mapping modes drop only if a later reserving selector shadowed their lock; else it returns.
 _SHADOWED_LOCK_LOAD_MODE = frozenset({"mmap+mlock"})
 
 
 def _pageable_mode_replacement(
     normalized: str, drop_shadowed_mlock: bool
 ) -> tuple[bool, Optional[str]]:
-    """``(rewrite, replacement)`` for one ``--load-mode`` value, argv or env alike. ``replacement``
-    None removes the selector, leaving llama.cpp's default mapping."""
+    """(rewrite, replacement) per --load-mode value; None means llama.cpp's default mapping."""
     if normalized in _PAGEABLE_LOAD_MODE:
         return True, None if drop_shadowed_mlock else _PAGEABLE_LOAD_MODE[normalized]
     if normalized in _SHADOWED_LOCK_LOAD_MODE:
@@ -1727,9 +1712,8 @@ def force_pageable_load(
     *,
     auto_unmapped: bool = False,
 ) -> tuple[list[str], list[str]]:
-    """Rewrites none/mlock to pageable: effective locks become mmap+mlock, shadowed locks stay dropped; decided by pre-rewrite state, not tokens.
-
-    ``auto_unmapped``: auto is none on this child, so an unset mode gets ``--load-mode mmap``."""
+    """Rewrites none/mlock to pageable: effective locks become mmap+mlock, shadowed locks stay
+    dropped, decided by pre-rewrite state; auto_unmapped gives an unset mode --load-mode mmap."""
     tokens = [str(a) for a in (argv or [])]
     if auto_unmapped and load_mode_left_auto(tokens, env):
         return [*tokens, "--load-mode", "mmap"], ["auto, which is none on this GPU"]

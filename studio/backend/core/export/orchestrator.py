@@ -86,8 +86,7 @@ class ExportOrchestrator:
         self._op_lock = threading.Lock()
         self._op_seq: int = 0
         self._active_op_kind: Optional[str] = None
-        # A caller's id for the running op, so cancel(expected_op_id) stops only that op; ids cancelled
-        # before their op started are refused when it does.
+        # Op id for cancel(expected_op_id): stops only that op; ids pre-cancelled are refused.
         self._active_op_id: Optional[str] = None
         self._cancelled_op_ids: set = set()
         self._last_op: Optional[Dict[str, Any]] = None
@@ -156,8 +155,7 @@ class ExportOrchestrator:
         return self._cancel_requested
 
     def _record_op_finished(self, success: bool, message: str, output_path: Optional[str]) -> None:
-        """Called before ``_export_active`` clears, so any read that sees the op inactive sees its
-        result."""
+        """Called before _export_active clears, so an inactive op has its result visible."""
         with self._op_lock:
             self._op_seq += 1
             status = "cancelled" if self._cancel_requested else ("success" if success else "error")

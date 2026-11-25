@@ -264,8 +264,7 @@ class _GuardOnImport(importlib.abc.MetaPathFinder):
         return spec
 
 
-# Importing datasets here pulled pandas, pyarrow and torch into every Studio start, so the guard is
-# applied when datasets' image module loads instead (or now, if something already loaded it).
+# Guard datasets' image module at load (or now): eager import pulled pandas, pyarrow and torch.
 if _IMAGE_MODULE in sys.modules:
     install_guarded_image_decode(sys.modules[_IMAGE_MODULE])
 elif not any(isinstance(finder, _GuardOnImport) for finder in sys.meta_path):

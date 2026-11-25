@@ -21,8 +21,7 @@ logger = logging.getLogger(__name__)
 
 HfTokenArg = Optional[Union[str, Literal[False]]]
 
-# Anonymous sentinel kept apart from None so an ambient-token slot is not served to an API key.
-# Not hex, so no digest collides.
+# Not None, so an ambient-token slot is not served to an API key; not hex, no digest collides.
 ANONYMOUS_CACHE_IDENTITY = "anon"
 # Prefixes a UI session's cache identity. Kept short because it lands in dict keys.
 UI_CACHE_IDENTITY_PREFIX = "ui:"
@@ -62,8 +61,7 @@ _REPO_ACCESS_PROBE_TIMEOUT_S = 10.0
 
 
 def apply_token_to_child_env(env: MutableMapping[str, str], hf_token: HfTokenArg) -> None:
-    """Omitting a token does not deny one: the child inherits the parent env, so only the sentinel
-    scrubs."""
+    """Omitting a token does not deny one: the child inherits env, so only the sentinel scrubs."""
     if isinstance(hf_token, str) and hf_token and saved_token_rejected(hf_token):
         hf_token = False
     if isinstance(hf_token, str) and hf_token:
@@ -447,8 +445,7 @@ def forget_a_fetch_that_moved_nothing(
     repo_id: str,
     repo_type: Optional[str] = "model",
 ) -> None:
-    """Taken back only if the disk shows the failed call moved nothing and it is still this call's
-    record."""
+    """Taken back only if the disk shows nothing moved and the record is still this call's."""
     if not record or not repo_id:
         return
     try:
@@ -475,8 +472,7 @@ def recording_a_request_token_fetch(
     repo_id: str,
     repo_type: Optional[str] = "model",
 ):
-    """Record the fetch around the call that performs it, and take the record back if that call
-    raised without leaving anything on disk. See ``forget_a_fetch_that_moved_nothing``."""
+    """Record the fetch; take the record back if the call raises and leaves nothing on disk."""
     record = note_repo_fetched_with_a_request_token(token, repo_id, repo_type)
     try:
         yield
@@ -688,8 +684,7 @@ def _cache_provenance_is_establishable(repo_id: Optional[str], repo_type: Option
 
 def _denial_can_be_overturned(repo_id: str, repo_type: str, token: Optional[str]) -> bool:
     """Remember denials only where _resolve_unaskable would say yes; caller repo ids can flood the cache."""
-    # BEFORE the rule below: a denial dropped during an unreadable store would be authorized
-    # by the next outage.
+    # A denial dropped while the store is unreadable would be authorized by the next outage.
     if not _cache_provenance_is_establishable(repo_id, repo_type):
         return True
     try:
@@ -762,8 +757,7 @@ def _explicit_token_reaches_repo(
     repo_type: str,
     offline: bool = False,
 ) -> Optional[bool]:
-    # None asks the public question under its own key (a public repo answers 200 for any token, so a
-    # shared key would let any string claim it); the endpoint is part of the key too.
+    # Anonymous gets its own key, or any token could claim a public repo; endpoint keyed too.
     key = (
         repo_id.casefold(),
         repo_type,
@@ -1130,8 +1124,7 @@ def _is_missing_file(exc: BaseException) -> bool:
 
 
 def call_with_anonymous_retry(read, hf_token: HfTokenArg):
-    """Retries anonymously only on a rejected credential; if that fails too, the original error is
-    raised."""
+    """Anonymous retry on a rejected credential; if that fails, the original error is raised."""
     if _credential_rejected_this_request(hf_token):
         # Refused earlier in this request: anonymous first, the credential only if that fails.
         try:

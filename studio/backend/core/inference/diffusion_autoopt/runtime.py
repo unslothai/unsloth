@@ -30,8 +30,7 @@ def step_cache_runner_reason(base: Any, runner: Any) -> Optional[str]:
 
 
 def auto_cache_steps(base: Any, runner: Any, steps: int) -> tuple[int, Optional[str]]:
-    """The step count an AUTO cache toggle should see for this call: 0 (disengage) when the runner cannot host the
-    cache, else ``steps``. Returns ``(steps, reason)``."""
+    """Returns (steps, reason) for AUTO cache toggle: 0 if runner can't host it, else steps."""
     reason = step_cache_runner_reason(base, runner)
     return (0, reason) if reason else (int(steps), None)
 

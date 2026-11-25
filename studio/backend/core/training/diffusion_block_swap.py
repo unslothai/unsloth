@@ -29,9 +29,8 @@ _OFF = ("", "0", "off", "none", "false", "no")
 _LOWP_CODE_BYTES = 1
 # Marks a FrozenFp8Linear / FrozenInt8Linear whose codes stream through a ring slot (diffusion_frozen_fp8 reads it).
 SWAPPED_WEIGHT_ATTR = "_studio_swapped_weight"
-# Headroom kept free besides the activation estimate: CUDA context, cuBLAS / compile workspaces, fragmentation. The
-# fraction is of the VRAM this run can use (free at install), not of the card: another process's share of a 96 GB
-# card is not this run's fragmentation, and reserving 12% of it swapped 32 of 34 Z-Image blocks with 16 GB free.
+# Headroom beyond activations (CUDA context, cuBLAS workspaces, fragmentation) is 12% of the VRAM
+# free at install, not of the card: 12% of a 96 GB card swapped 32 of 34 blocks with 16 GB free.
 _RESERVE_MIN_BYTES = 3 << 30
 _RESERVE_FRACTION = 0.12
 # Bytes per (token x hidden) element kept per block under full checkpointing, plus the one block being recomputed.
@@ -43,8 +42,7 @@ LAST_SWAPPERS: list = []
 
 
 def block_swap_request(cfg: Any) -> Optional[Union[int, str]]:
-    """None (off), "auto", or a block count. An unset cfg.block_swap (None or "") takes UNSLOTH_DIT_BLOCK_SWAP; an
-    explicit "off" or 0 is off even when the env asks for a swap."""
+    """None (off), auto or count; unset takes UNSLOTH_DIT_BLOCK_SWAP; explicit off or 0 wins."""
     raw = getattr(cfg, "block_swap", None)
     if raw is None or str(raw).strip() == "":
         raw = os.environ.get(BLOCK_SWAP_ENV, "")
@@ -336,9 +334,8 @@ def _place_rest(
     device,
     move = None,
 ) -> None:
-    """Everything except the swapped blocks' frozen weights to the card (their LoRA params BlockSwap moves). A frozen
-    fp8 / W8A8 block's codes are such weights once host_lowp_weight made them parameters; its scales are buffers and
-    go to the card. ``move(tensor, device)`` (tests) defaults to ``tensor.to(device)``."""
+    """Moves all but swapped blocks' frozen weights to the card (BlockSwap moves their LoRA params);
+    converted fp8/W8A8 codes count as those, scales go to the card; move is a test hook."""
     import torch
 
     if move is None:
@@ -414,10 +411,9 @@ def install_dit_block_swap(
     prefetch_depth: Union[int, str] = "auto",
     lowp: Optional[dict] = None,
 ) -> dict:
-    """The host-loaded transformer (LoRA attached) goes to the card except the planned blocks, which BlockSwap streams.
-    ``lowp`` = {"mode": "fp8" | "int8_w8a8", "targets": fqns, "convert": fn(model, names, device) -> (done, failed)}
-    converts the frozen base first (sized from the converted bytes, see host_lowp_weight). Returns a summary; the
-    swappers are kept in LAST_SWAPPERS and on transformer._unsloth_block_swaps."""
+    """Host-loaded transformer goes to the card except planned blocks that BlockSwap streams; lowp
+    {mode, targets, convert(model, names, device) -> (done, failed)} converts frozen base first;
+    returns a summary; swappers kept in LAST_SWAPPERS and transformer._unsloth_block_swaps."""
     import torch
 
     try:
@@ -521,8 +517,7 @@ def compile_swapped_blocks(
     dynamic: bool = True,
     options: Optional[dict] = None,
 ) -> int:
-    """Regional compile that leaves the swap hooks outside the graph: each repeated block's forward is compiled,
-    not its _call_impl (whose pre / post hooks would be a graph break, an error under fullgraph)."""
+    """Compile each block's forward, not _call_impl (whose swap hooks would break fullgraph)."""
     import torch
 
     n = 0

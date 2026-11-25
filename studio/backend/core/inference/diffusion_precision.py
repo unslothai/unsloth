@@ -114,8 +114,7 @@ def te_bf16_auto_wanted(
     auto_scheme: Optional[str],
     kind: Optional[str],
 ) -> bool:
-    """Whether an unset / auto text-encoder request may be upgraded to the bf16 encoder (room still to be proven).
-    An explicit pick (none, off, fp8, int8, ...) always wins, as does the kill switch."""
+    """Unset/auto may upgrade to bf16 if room is proven; explicit picks and kill switch win."""
     if not te_bf16_auto_enabled() or not te_quant_is_auto(raw_request):
         return False
     if kind != "pipeline" or (family or "").lower() not in TE_BF16_AUTO_FAMILIES:
@@ -443,8 +442,7 @@ def _quantize_text_encoders(
             and _family_hosts_te_int8(family)
             and (pre_cast or not torchao_quantize_importable())
         ):
-            # The hosted int8 file did not engage. The on-the-fly torchao int8 (the path before the file existed) is
-            # the fallback only over a dense encoder and with torchao present; otherwise fp8.
+            # Hosted int8 miss: torchao int8 only for dense encoders with torchao; else fp8.
             skip = None
         if skip is None:
             _note(
@@ -544,8 +542,7 @@ def _hosted_te_scheme(encoder: Any) -> Optional[str]:
 
 
 def _hosts_te_int8_for_all_but_small(family: Optional[str], hosted: list, present: list) -> bool:
-    """Whether every encoder the family hosts an int8 ConvRot file for loaded from it, so the rest are the small
-    companions the family deliberately leaves dense."""
+    """Whether each int8 ConvRot encoder the family hosts loaded from it; the rest stay dense."""
     try:
         from .diffusion_te_prequant import TE_INT8_CONVROT_FILES
 
@@ -748,9 +745,8 @@ def _slot_version(value: Any) -> Any:
 
 
 def _restoring_hooks(hook: Any, stock_pre: Any, stock_post: Any) -> tuple:
-    """Put the kept fp8 tensors back after the forward instead of downcasting the compute copies (exact: every fp8
-    value is representable in bf16 / fp16 / fp32). A slot replaced or written in place during the forward takes the
-    stock downcast, and so does any traced forward: pointers and version counters are eager-only."""
+    """Restores kept fp8 tensors after the forward, not downcast (exact: fp8 fits bf16/fp16/fp32);
+    replaced or in-place slots and traced forwards get stock downcast (pointers eager-only)."""
     import torch
 
     kept: dict = {}

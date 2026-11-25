@@ -92,7 +92,6 @@ _BNB_SUFFIXES = ("-unsloth-bnb-4bit", "-bnb-4bit")
 
 
 def mlx_bnb_base_repo(model_name: Optional[str]) -> Optional[str]:
-    """Return the replacement base repository, or None."""
     if not isinstance(model_name, str) or not model_name.startswith("unsloth/"):
         return None
     if os.path.exists(model_name):

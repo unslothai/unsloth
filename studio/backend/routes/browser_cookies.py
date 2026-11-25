@@ -291,9 +291,8 @@ def set_page_cookie(
     stored: Optional[str],
     same_site: Optional[str] = None,
 ) -> None:
-    """A page's ``document.cookie`` write in the frame's form (``stored`` None removes): host-only,
-    Secure over https, never over an HttpOnly cookie or a Secure one from http (rfc6265bis 5.7).
-    ``same_site`` is the write's SameSite; an unknown value leaves the default (Lax)."""
+    """Frame-form document.cookie write (stored None removes): host-only; Secure over https; never
+    over an HttpOnly or http-set Secure cookie (rfc6265bis 5.7); unknown same_site is Lax."""
     name, _, path = key.partition("=")
     if not path.startswith("/") or any(char in name + path for char in ";,\r\n \t"):
         return

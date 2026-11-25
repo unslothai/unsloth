@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Diffusion patches via unsloth_zoo patch_function; unsloth_zoo imported lazily, and if that import
-fails patching is a best-effort no-op; changed forward stays unpatched"""
+"""unsloth_zoo diffusion patches: lazy import, no-op on failure, changed forward unpatched."""
 
 from __future__ import annotations
 
@@ -13,8 +12,7 @@ _HELPERS: Optional[dict] = None
 
 
 def _retry_could_help(exc: BaseException) -> bool:
-    """Whether importing unsloth could fix exc; the import is costly, so only try it where it can
-    succeed."""
+    """Whether importing unsloth could fix exc; it is costly, so only try where it can succeed."""
     import importlib.util
     import os
     import sys

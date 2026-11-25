@@ -81,8 +81,7 @@ def _read_listings() -> dict:
 def remember_listing(
     repo_id: str, tables: Sequence[EngramTable], own_by_quant: dict[str, Optional[str]]
 ) -> None:
-    """Keeps the Hub's answer so a listing without the Hub can still name the tables and each
-    quant's own one (a quant that swapped its table shard out cannot tell it from disk)."""
+    """Keeps the Hub answer for offline use; disk can't tell a quant's swapped table shard."""
     entry = {
         "tables": [
             {"precision": t.precision, "filename": t.filename, "size_bytes": t.size_bytes}

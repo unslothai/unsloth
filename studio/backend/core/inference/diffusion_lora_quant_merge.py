@@ -95,8 +95,7 @@ def _group(module: Any) -> int:
 
 
 def _mergeable_module(module: Any) -> bool:
-    """A plain or ConvRot Linear whose weight is a registered Parameter: a wrapper or native twin can expose ``weight``
-    as a computed view, where a write would not reach the forward."""
+    """Plain or ConvRot Linear with a registered Parameter weight; computed views drop writes."""
     import torch
 
     from .diffusion_convrot import is_rotated_linear

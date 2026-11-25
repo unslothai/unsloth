@@ -4,8 +4,7 @@
 # The transformer, scheduler and pipeline below are a port of OpenMOSS-Team's ``pipeline_moss_image.py``
 # (Apache-2.0, https://huggingface.co/OpenMOSS-Team/MOSS-Image-SFT), keeping its state-dict names and numerics.
 
-"""MOSS-Image in-tree diffusers pipeline, no remote code; numerics bit-identical to reference, only
-default sigmas differ"""
+"""In-tree MOSS-Image pipeline; no remote code, bit-identical numerics, default sigmas differ."""
 
 from __future__ import annotations
 
@@ -105,9 +104,8 @@ def _validate_skip_layers(
 
 
 def _length_dynamic(*tensors) -> None:
-    """Hint dim 1 (the text length) of the refiner block inputs as dynamic. The pipeline refines the text once per render
-    OUTSIDE ``forward`` (``refine_text``), where Studio's per-forward prompt-length arming does not reach, so the
-    compiled text block otherwise specialised on the first length and recompiled on the uncond one. A no-op eagerly."""
+    """Marks dim 1 (text length) of refiner inputs dynamic: refine_text runs outside forward, where
+    prompt-length arming misses, so the uncond length would recompile; no-op eagerly."""
     try:
         if torch.compiler.is_compiling():
             return
@@ -120,8 +118,7 @@ def _length_dynamic(*tensors) -> None:
 
 
 def _rope_tables(rope):
-    """``(cos, sin)`` duplicated to the full head dim, shaped to broadcast over heads: the split-half layout the
-    reference's ``_rotate`` builds on every call, built once."""
+    """Cos/sin duplicated to full head dim, unsqueezed to broadcast over heads; built once."""
     sin, cos = rope.chunk(2, -1)
     sin = torch.cat((sin, sin), -1).unsqueeze(-2)
     cos = torch.cat((cos, cos), -1).unsqueeze(-2)
@@ -840,8 +837,7 @@ class MOSSImagePipeline(DiffusionPipeline):
         return embeds, mask
 
     def _branch(self, embeds, mask, refine: bool) -> dict:
-        """Transformer kwargs for one CFG branch. Equal-length rows need no mask (no host sync in the forward); with
-        ``refine`` the text refiner runs here, once for the whole render."""
+        """Branch kwargs: refine once per render; no mask for equal-length rows (no host sync)."""
         full = mask is None or bool(mask.all())
         kwargs: dict = {}
         if full and refine:
@@ -995,8 +991,7 @@ class MOSSImagePipeline(DiffusionPipeline):
             uncond_skip_active = skip_active and (
                 uncond_window is None or uncond_window[step_index]
             )
-            # CFG combines fp32 predictions, even when the DiT runs in bf16.
-            # return_dict=False: a CUDA-graph replay hands back a tuple, never a dataclass.
+            # CFG in fp32 even for bf16 DiT; return_dict=False: CUDA-graph replay gives tuples.
             prediction = self.transformer(latents, timestep, **cond_kw, return_dict = False)[
                 0
             ].float()

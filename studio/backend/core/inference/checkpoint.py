@@ -206,9 +206,8 @@ def _pick(
     if not missing:
         return chosen
     if not any(_takeable(index) for index in missing):
-        # What is missing costs more than the whole budget, so there was never a unit to take. Dropping the opening buys
-        # nothing here: it is usually the ONLY turn that fits, so the block would go out empty, which is the failure
-        # this pass exists to stop (a 43-token instruction then eight 160-token sections under 100 tokens).
+        # Missing units cost more than the whole budget, so there is no unit to take; dropping the
+        # opening buys nothing: it is usually the only turn that fits, leaving the block empty.
         return chosen
     # Whole or nothing: half a unit carries the abandoned request without its correction.
     return _walk([index for index in plain if index != unit[0]]) or chosen
@@ -416,9 +415,8 @@ def fit_checkpoint_context(
             )
         )
         if prior:
-            # The pair rule travels with the merge: a plain newest-first re-cap could take the opening request and drop
-            # the correction to it. Which bullets were the pair is not recoverable from rendered text, so the block goes
-            # in as one unit.
+            # A newest-first re-cap could keep the opening request and drop its correction; pairs
+            # are not recoverable from rendered text, so the block goes in whole.
             items = _recap(
                 prior + items,
                 max_tokens = budget,
@@ -464,13 +462,11 @@ def fit_checkpoint_context(
 
     projected, block = _project(fitted)
     current_tokens = count_tokens(projected)
-    # What `current_tokens` prices, tracked separately because `projected` is rebound below on a path that does not
-    # re-count. The refusal reports the pair together.
+    # current_tokens is tracked apart: projected is rebound unrecounted; refusal reports both.
     measured = projected
 
-    # Phase two: the epoch is full, so start a new one. keep_ratio 0.0 takes every evictable group in one pass; the
-    # primitive itself protects system, developer, final and newest user groups. The turn in progress is held too,
-    # released oldest first until the reset leaves the headroom free.
+    # Full epoch: start anew; keep_ratio 0.0 evicts every evictable group, protecting system,
+    # developer, final and newest user groups; live turn goes oldest first until headroom is free.
     if (current_tokens > prompt_target or force_reset) and _resolved(can_reset):
         if on_evict is not None:
             on_evict()

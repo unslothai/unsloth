@@ -22,9 +22,8 @@ def _hip_sees(
     count,
     totals = None,
 ):
-    """Declare HIP's own inventory: how many devices it opens, and the total memory
-    it reports per physical id. Empty totals mean torch could not describe the
-    devices, which the probe fails open on."""
+    """Declare HIP's own inventory: device count and total memory per physical id; empty totals mean
+    torch could not describe the devices, so the probe fails open."""
     monkeypatch.setattr(LlamaCppBackend, "_rocm_hip_device_count", staticmethod(lambda: count))
     monkeypatch.setattr(
         LlamaCppBackend,
@@ -218,8 +217,7 @@ class TestTheArchGateAppliesToThisBranchToo:
         ]
 
     def test_the_gate_survives_the_full_probe(self, mixed_host, monkeypatch):
-        """End to end through _get_gpu_memory, which is where the ordering trap is:
-        a truthy amd-smi answer returns before the torch branch can gate it."""
+        """Through _get_gpu_memory, a truthy amd-smi answer returns before torch can gate it."""
         monkeypatch.setattr(
             LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda binary: False)
         )

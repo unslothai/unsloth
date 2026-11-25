@@ -166,9 +166,8 @@ def probe_mps_int8pack(
     device: Any = "mps",
     logger: Any = None,
 ) -> bool:
-    """Time the Metal kernel against a dense ``dtype`` GEMM on ``module``'s largest kernel-eligible layer and stamp
-    the verdict on every eligible layer of ``module``. Verdicts are cached per (dtype, probed shape), so another model
-    with the same largest layer reuses it and one with a different shape is probed. The env override skips the probe."""
+    """Times the Metal kernel against dense GEMM on the largest eligible layer; the verdict covers
+    all eligible layers, cached per (dtype, probed shape); an env override skips the probe."""
     import torch
 
     if mps_int8pack_disabled() or mps_int8pack_forced():
@@ -218,8 +217,7 @@ def probe_mps_int8pack(
 
 
 def snap_scale_up(scale: Any, dtype: Any) -> Any:
-    """``scale`` rounded up to a ``dtype``-exact fp32 value: the Metal kernel takes ``dtype`` scales, so a call-time
-    cast would add per-row gain error (up to 2**-9 in bf16); rounding up never clips a code."""
+    """Scale rounded up to dtype-exact fp32 (never clips); a call-time cast adds gain error."""
     import torch
 
     # nextafter is not implemented on every backend.
@@ -551,10 +549,9 @@ def native_linear_class():
             scale: Any = None,
             scale_dtype: Any = None,
         ):
-            """``codes`` / ``scale``: int8 (or, for the fp8 scheme, float8_e4m3fn) codes [out, in] and per-row
-            scales made elsewhere, stored as given (``linear`` then supplies only the shapes, dtype and bias).
-            With ``rot_group`` int8 codes are already ConvRot-rotated, so the rotation is installed whether or
-            not activations go int8. ``scale_dtype``: snap int8 scales exact in that dtype (``snap_scale_up``)."""
+            """Codes [out, in] (int8 or float8_e4m3fn) and per-row scale are stored as given; linear
+            gives shapes, dtype, bias. With rot_group, codes are ConvRot-rotated, so rotation is
+            installed even for non-int8 activations; scale_dtype snaps int8 scales exact."""
             super().__init__()
             if scheme not in _QMAX:
                 raise ValueError(f"unsupported native scheme {scheme!r}")
@@ -606,8 +603,7 @@ def native_linear_class():
                     and weight.is_floating_point()
                     and weight.dtype != cast
                 ):
-                    # Round to the compute dtype first, as a host-widened load would, so the codes
-                    # match either way.
+                    # Round to compute dtype first, like a host-widened load, so codes match.
                     weight = weight.to(cast)
                 with torch.no_grad():
                     w = weight.float()
@@ -742,8 +738,7 @@ def native_linear_class():
 
         @property
         def weight(self) -> Any:
-            """The dense weight, rebuilt on each read. Code that reads a wrapped Linear's weight directly
-            (PEFT's DoRA forward reads ``base_layer.weight``) keeps working; nothing holds it."""
+            """Rebuilt on each read and never held, so direct readers (PEFT DoRA) still work."""
             return self.dequantized_weight(self.compute_dtype)
 
         def _int_mm_ok(self, rows: int) -> bool:
@@ -1123,8 +1118,7 @@ def apply_native_weight_quant(
     logger: Any = None,
     scale_dtype: Any = None,
 ) -> int:
-    """Swap every Linear ``filter_fn`` keeps for a native weight-only twin; returns layers swapped. One layer
-    at a time; a failure part-way leaves a partial conversion the caller must refuse."""
+    """Returns layers swapped; a failure leaves a partial conversion the caller must refuse."""
     cls = native_linear_class()
     act_int8 = scheme == NATIVE_INT8 and bool(act_int8)
     rot_group = int8_rotation_group() if act_int8 else 0

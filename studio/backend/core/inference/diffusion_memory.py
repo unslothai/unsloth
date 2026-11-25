@@ -628,8 +628,7 @@ def _same_view(tensor: Any, view: Any) -> bool:
 
 
 def _prune_pin_layout(layout: list, host: dict, buffer_host: dict) -> None:
-    """Drop, in place, the layout entries whose kept host weight is no longer their pinned view, and the chunks left
-    with none: the layout's own references would otherwise keep those pinned chunks alive."""
+    """Drops stale layout entries and empty chunks in place so pinned chunks are freed."""
     kept = []
     for buf, entries in layout:
         live = []
@@ -956,9 +955,8 @@ def _wrap_cpu_offload_hook(
             ):
                 prev.offload()
 
-            # The stock pre_forward offloads the previous component, then calls module.to(device) only if the module
-            # is not there yet. Shadow that one call so the pinned chunks go up first; module.to then moves whatever
-            # the chunks did not cover (unpinned or replaced weights) exactly as before.
+            # Shadow the module.to call that the stock pre_forward makes when the module is not
+            # there yet, so pinned chunks go up first; module.to still moves the rest as before.
             def _put_back_to() -> None:
                 if prior_to is None:
                     mod.__dict__.pop("to", None)
@@ -1052,16 +1050,14 @@ def offload_host_copy(module: Any, name: str, tensor: Any) -> Any:
 
 
 def reclaim_offload_host_memory(offload_policy: str, logger: Any = None) -> bool:
-    """Return unused allocator pages after whole-model CPU offload, without touching live
-    tensors, Python GC, or device caches. Unsupported allocators and failures are non-fatal."""
+    """Free unused allocator pages after whole-model offload; live tensors, GC, caches intact; non-fatal."""
     if offload_policy != OFFLOAD_MODEL:
         return False
     return reclaim_host_memory(logger = logger)
 
 
 def reclaim_host_memory(logger: Any = None) -> bool:
-    """Return freed allocator pages to the OS regardless of offload policy (unload / teardown).
-    Best effort: unsupported allocators and failures return False."""
+    """Return allocator pages to OS for any offload policy; False if unsupported or failed."""
     global _host_memory_reclaim_warning_logged
     global _host_memory_reclaim_unsupported_logged
     try:
@@ -1108,8 +1104,7 @@ def _rss_anon_mib() -> Optional[int]:
 
 
 def trim_host_heap_after_load(logger: Any = None) -> bool:
-    """Return the heap a finished load freed to the OS; glibc otherwise keeps it (Qwen-Image-2.1, 8 GiB budget:
-    0.65 GiB warm, 1.9 GiB on a first load). Live tensors and the pinned caches are untouched."""
+    """Return heap freed by a load to OS (glibc keeps it); tensors and pinned caches untouched."""
     if _env_off(LOAD_HEAP_TRIM_ENV):
         return False
     try:
@@ -1997,9 +1992,8 @@ def _reserve_mib(memory_kind: str, base: int) -> int:
 
 
 def _rocm_linux_apu_os_room_outside_pool(memory: DeviceMemory) -> bool:
-    """Linux ROCm APU whose host RAM outside the pool's free part already covers the unified OS reserve: the pool is
-    the amdgpu GTT cap, below physical RAM, so reserving 20% of it too reserves twice. Not Windows (HIP over-reports
-    free, #7072); unknown readings answer False."""
+    """Linux ROCm APU whose RAM outside the pool covers the OS reserve (amdgpu GTT cap is below RAM,
+    so 20% reserves twice); not Windows (HIP over-reports free, #7072); unknown is False."""
     if (
         memory.memory_kind != "unified_memory"
         or str(getattr(memory, "device", None) or "").split(":")[0] != "cuda"
@@ -2208,8 +2202,7 @@ def _planner_reserve_mib(memory: DeviceMemory, base: int) -> int:
 
 
 def _safe_device_budget_mib(memory: DeviceMemory) -> Optional[int]:
-    """Free memory minus a headroom reserve (room for fragmentation + other tenants). None when
-    free memory is unknown."""
+    """Free memory minus headroom for fragmentation and other tenants; None if free is unknown."""
     if memory.free_mib is None:
         return None
     base = memory.total_mib or memory.free_mib
@@ -2555,9 +2548,8 @@ _V1_INT8_PIN_OPS_INSTALLED = False
 
 
 def install_torchao_v1_int8_pin_ops() -> bool:
-    """Register ``is_pinned`` / ``pin_memory`` on torchao's v1 int8 classes so group offload streams them (else
-    synchronous copies, 14x slower). Re-wraps the same int8 data, scale and zero point, so outputs stay bit-identical.
-    Only where torchao ships the classes without the ops (<= 0.17)."""
+    """Adds is_pinned / pin_memory to torchao v1 int8 classes so group offload streams them (else
+    14x slower); re-wraps same int8 data, bit-identical; torchao <= 0.17 only."""
     global _V1_INT8_PIN_OPS_INSTALLED
     if _V1_INT8_PIN_OPS_INSTALLED:
         return True
@@ -2833,9 +2825,8 @@ def _unified_oversize_source() -> str:
 
 
 def unified_capacity_memory(memory: DeviceMemory) -> DeviceMemory:
-    """memory at capacity (free = total), so the verdict ignores what is loaded now; on mps the RAM
-    view is re-read so the pick is not judged against a smaller working set just because
-    something is resident."""
+    """Unified memory counts as at capacity (free = total), so the verdict ignores current load; on
+    mps the RAM view is re-read so a resident model does not shrink the pick."""
     capacity = replace(memory, free_mib = memory.total_mib)
     if getattr(memory, "device", None) != "mps" or memory.metal_working_set_mib is None:
         return capacity
@@ -3120,9 +3111,8 @@ def plan_diffusion_memory(
         policy = OFFLOAD_GROUP
         reasons.append("balanced requested; streamed block-level transformer offload")
     elif mode == MEMORY_MODE_LOW_VRAM:
-        # Whole-module offload keeps the whole denoiser on the card for every step, which is above balanced's
-        # streamed blocks whenever the denoiser outweighs the text encoders (Cosmos3 has none: 18.9 vs 9.0 GiB).
-        # Streaming the denoiser and the text encoders is the lowest tier; a setup failure still falls back.
+        # Streams the denoiser and text encoders (lowest tier): whole-module keeps the denoiser
+        # resident, above balanced when it outweighs the encoders; setup failure falls back.
         policy = OFFLOAD_GROUP
         stream_text_encoders = True
         estimates["low_vram_streamed"] = 1
@@ -3280,9 +3270,8 @@ def _multigpu_companion_split(
     text_encoder_dense_mib: Optional[int] = None,
     calibrated_activation: Optional[CalibratedImageActivation] = None,
 ) -> Any:
-    """The multi-GPU companion split for this plan, or None (one card: every existing decision unchanged). Only for
-    ``auto`` / ``fast`` on a discrete CUDA card that is the primary of a multi-card selection; explicit offload modes
-    and the legacy ``cpu_offload`` flag keep their meaning."""
+    """Companion split for this plan, or None on one card; only for auto / fast on a discrete CUDA
+    primary of a multi-card selection; explicit modes and cpu_offload are unchanged."""
     from .diffusion_multigpu import (
         current_selection,
         plan_companion_split,
@@ -3501,8 +3490,7 @@ GROUP_RUN_ONCE_COMPANIONS_ENV = "UNSLOTH_VIDEO_GROUP_RUN_ONCE_COMPANIONS"
 
 
 def group_streams_run_once_companions(*, stream_transformer: bool = True) -> bool:
-    """Whether a group plan streams its run-once companions: only beside a streamed DiT, whose resident blocks take
-    the room they free; a resident-DiT group plan keeps them on the card."""
+    """Run-once companions stream only beside a streamed DiT, which takes the room they free."""
     return (
         bool(stream_transformer)
         and not _env_off(GROUP_RUN_ONCE_COMPANIONS_ENV)
@@ -3729,8 +3717,7 @@ def refine_memory_plan_for_components(
         if _pipe_denoisers_hold_torchao(pipe):
             return plan
         streamable = _streamable_components(pipe, torch)
-        # run-once companions (LTX-2 text connectors) count resident, as the streaming tier keeps them when it cannot
-        # pin them; only a card they would not fit beside the rest streams them regardless (see below)
+        # Companions resident if unpinnable; streamed only if they won't fit beside the rest.
         companions = (
             {}
             if getattr(plan.device_memory, "is_unified", False)
@@ -5696,9 +5683,8 @@ def _keep_groups_resident(
             module._unsloth_resident_device = onload
         except AttributeError:
             pass
-        # Tied weights (an LM head sharing the embedding, as in Qwen3 text encoders) sit in two groups. A resident
-        # group next to a streamed partner breaks: the partner's offload points the shared tensor back at its host
-        # copy and the resident group's no-op onload never brings it back. Such groups go resident together or not.
+        # Tied LM head and embedding span two groups; a resident group beside a streamed partner
+        # breaks as partner's offload repoints the shared tensor, so keep tied groups together.
         tied = _tied_group_closures(ordered, _tensors)
         done: set = set()
         for group in ordered:
@@ -5891,8 +5877,7 @@ def _release_group(group: Any) -> None:
 
 
 def _release_group_range(owner: Any, group: Any) -> None:
-    """A released group's weights are on their host copies again: its stable re-pin range gives the physical memory
-    back (the addresses stay reserved)."""
+    """On host copies again; the re-pin range frees physical memory, addresses stay reserved."""
     if "_unsloth_repin_range" in getattr(group, "__dict__", {}):
         from .diffusion_stable_arena import release_group_range
         release_group_range(owner, group, _resident_tensors(group))
@@ -5916,9 +5901,8 @@ def release_resident_groups(
     streamed: set = set()
 
     def restore(strict: bool = False) -> None:
-        """Pin the released groups again. ``strict``: raise when any of them is still not resident afterwards (the
-        re-pin catches its own failures and leaves those groups streamed, which callers that must retry need to
-        know)."""
+        """Re-pin the released groups; with strict, raise if any stays streamed, since the re-pin
+        catches its own failures that retrying callers must see."""
         for module in released:
             _keep_groups_resident(
                 module,
@@ -6298,8 +6282,7 @@ def hook_resident_denoiser(
             ):
                 raise RuntimeError("not every offload group stayed resident")
     except Exception as exc:  # noqa: BLE001 - the guard still refuses what cannot fit
-        # the apply already moved the weights to their host copies: back to the card, as before the call (a return
-        # that itself fails raises: the caller owns the way back)
+        # Weights are on host copies; a return to the card that fails raises to the caller.
         _unhook_and_return(transformer, onload, torch_hooks)
         if logger is not None:
             logger.warning("diffusion.memory: resident transformer left without hooks (%s)", exc)
@@ -6460,8 +6443,7 @@ def _encoder_width(module: Any) -> tuple[Optional[int], int, int]:
 
 
 def encode_need_mib(module: Any, args: Any, kwargs: Any) -> Optional[int]:
-    """MiB one encoder call needs: the ``depth + 1`` largest streamed groups plus prompt activations, with margin.
-    None when unpriceable (visual inputs, no token ids, unknown width)."""
+    """MiB per encoder call: depth+1 largest streamed groups + activations; None if unpriceable"""
     try:
         import torch
 
@@ -6566,9 +6548,8 @@ def install_encode_release(
     plan: Any,
     logger: Any = None,
 ) -> int:
-    """While a text encoder runs, stream the whole-resident (or widened partial) denoiser back to the flat room (the
-    partial placement's encode state); pin it back on return, or once encode_prompt returns (one move per prompt with
-    several encoders). Returns the number of encoders hooked."""
+    """Streams the denoiser back to the flat room while a text encoder runs; pinned back on return
+    or after encode_prompt (once per prompt). Returns the number of encoders hooked."""
     estimates = getattr(plan, "estimates", None) or {}
     encode_room = estimates.get("encode_resident_transformer_mib")
     whole = getattr(plan, "resident_transformer_mib", None)
@@ -7046,8 +7027,7 @@ def _measured_request_extra_mib(
             or cfg_unmeasured
         )
     ):
-        # the learned peak no longer describes this pipeline (LoRA adapters the load did not price, a planned VAE saver
-        # that did not engage): requests size from the flat estimate
+        # Learned peak stale (unpriced LoRA, VAE saver not engaged): size from flat estimate.
         flat = estimate_image_runtime_mib(
             width = width,
             height = height,
@@ -7057,8 +7037,7 @@ def _measured_request_extra_mib(
         )
         return max(0, int(flat) - int(phase or headroom))
     if learned:
-        # the learned peak the load reserved, scaled here (not reread from the store, which another worker may evict
-        # or a failed write may leave empty while this pipeline stays loaded)
+        # Scaled from the load-reserved peak, not the store (may be evicted or left empty).
         from .diffusion_measured_peaks import resolution_bucket
 
         w = max(64, int(width or DEFAULT_IMAGE_WIDTH))
@@ -7116,8 +7095,7 @@ def _measured_request_extra_mib(
                 own = measured_image_runtime_mib(family, speed_mode, quant = keyed, **sized)
             own_learned = own
             if own is not None:
-                # the learned workflow peak is the other complete estimate: it was measured with the condition images
-                # resident, so the allowance is not charged on top of it
+                # Learned workflow peak: condition images resident, so no allowance is charged.
                 need = own if need is None else max(need, own)
     if need is None:
         return 0
@@ -7604,8 +7582,7 @@ def _retry_group_offload_lower(
 
 
 def _enable_vae_saver(pipe: Any, pipe_method: str, vae_method: str, logger: Any) -> bool:
-    """Turn on a VAE memory saver, trying the pipeline shortcut first then the VAE submodule
-    (some pipelines, e.g. Z-Image, only expose it on ``pipe.vae``). Returns whether it engaged."""
+    """Returns whether it engaged: pipe_method on pipe, then vae_method on pipe.vae (Z-Image)."""
     for owner, method in ((pipe, pipe_method), (getattr(pipe, "vae", None), vae_method)):
         fn = getattr(owner, method, None)
         if not callable(fn):
@@ -7620,8 +7597,7 @@ def _enable_vae_saver(pipe: Any, pipe_method: str, vae_method: str, logger: Any)
 
 
 def _pin_vision_embedding_device(module: Any) -> int:
-    """Keeps Qwen3-VL's vision pos_embed on the compute device, which group offload otherwise leaves
-    on CPU."""
+    """Keeps Qwen3-VL's vision pos_embed on the compute device; group offload leaves it on CPU."""
     import types
 
     walk = getattr(module, "modules", None)
@@ -8126,8 +8102,7 @@ def rebuild_dropped_host_copies(groups: Iterable[Any]) -> int:
         total += -(-int(live.nbytes) // _REBUILD_ALIGN) * _REBUILD_ALIGN
     device = next((live.device for live in lives.values() if live.device.type == "cuda"), None)
     slab = None
-    # Pinned only where pinning is allowed now and the copy fits what host RAM can pin now; else pageable copies
-    # (the group streams slower, the release itself never waits on a pin).
+    # Pin only if allowed and fits host RAM now; else pageable (release never waits on a pin).
     budget = None if device is None or _pinned_memory_capped() else _pin_budget_mib()
     if (
         device is not None
@@ -8542,9 +8517,8 @@ REGISTERED_SLAB_ENV = "UNSLOTH_DIFFUSION_REGISTERED_SLABS"
 def registered_pinned_empty(
     nbytes: int, fill: Optional[Callable[[Any], None]] = None
 ) -> Optional[Any]:
-    """Page-locked uint8 host tensor or None; zeroing faults pages in parallel (torch pinned
-    allocator faults on one thread, ~18 s for MiniMax-H3); fill(buf) replaces zero fill; its
-    errors propagate"""
+    """Returns page-locked uint8 host tensor or None; fill(buf) replaces the zeroing that faults
+    pages in parallel (torch's pinned allocator faults on one thread); its errors propagate."""
     if (os.environ.get(REGISTERED_SLAB_ENV) or "").strip().lower() in ("0", "off", "false", "no"):
         return None
     if int(nbytes) <= 0 or not _fast_pin_supported():
@@ -9711,8 +9685,7 @@ def _apply_group_offload(
         ):
             installed = 1
         if installed and _is_oom(exc) and _unwind_group_offload(pipe, hook_snapshots, logger):
-            # An OOM after some hooks exist (a later DiT, an encoder moved resident): every hook is gone again, so
-            # the caller's one lower-residency retry can run instead of the load failing.
+            # An OOM after hooks exist unwinds them, so a lower-residency retry can run.
             installed = 0
         if installed:
             # Partial group-offload hooks make enable_model_cpu_offload reject the pipe; raise the real failure.

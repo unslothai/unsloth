@@ -103,8 +103,7 @@ def test_the_owner_can_eject_an_idle_backend(backend):
 
 
 def test_a_preflight_caller_cannot_block_the_owner_of_the_load_in_flight(backend):
-    """Bob is inside begin_load validation (recorded, not admitted) while Alice's background load
-    runs. The admitted load owns the epoch, so Alice can still cancel her own construction."""
+    """Bob's preflight is only recorded: the admitted load owns the epoch, so Alice can cancel."""
     _background_load(backend, ALICE)
     _pending_invocation(backend, BOB)
     backend.unload(expected_account = ALICE)
@@ -119,8 +118,7 @@ def test_a_preflight_caller_cannot_block_the_resident_owner(backend):
 
 
 def test_an_eject_arriving_between_the_wait_and_the_lock_is_waited_out(backend, monkeypatch):
-    """An eject landing between the wait and the registration lock bumps the epoch too, so a
-    re-read adopts the eject's OWN token and the load is admitted into its teardown."""
+    """An eject landing in that gap must be waited out, or the load is admitted mid-teardown."""
     from core.inference.diffusion import _account_owned_load
 
     calls = {"waits": 0}
@@ -128,8 +126,7 @@ def test_an_eject_arriving_between_the_wait_and_the_lock_is_waited_out(backend, 
     started = threading.Event()
 
     def racing_wait(*args, **kwargs):
-        # Counted on ENTRY: the second call is the one that blocks, and the thread that releases the
-        # fence has to know it has started before it can let go of it.
+        # Counted on entry: the second call blocks, and the releasing thread must see it start.
         calls["waits"] += 1
         if calls["waits"] >= 2:
             started.set()
@@ -163,8 +160,7 @@ def test_an_eject_arriving_between_the_wait_and_the_lock_is_waited_out(backend, 
 
 
 def test_a_load_waiting_out_an_eject_sleeps_instead_of_spinning(backend):
-    """_teardown_drained is still SET between the eject being accepted and the teardown being
-    reserved, so waiting on it there returned instantly and burned a core per waiter."""
+    """_teardown_drained stays set until teardown is reserved, so a waiter there spins a core."""
     with backend._load_cancel_lock:
         backend._unload_waiters += 1
         backend._unload_fence_clear.clear()

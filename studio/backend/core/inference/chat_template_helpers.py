@@ -82,9 +82,8 @@ _ATEM_TAGS = (
     "</atem:parameter>",
 )
 
-# Control markup from user/system/tool turns must not reach the prompt raw: it can forge turns (#7066).
-# The name list is closed on purpose so "<div>", "List<String>" and "[1]" stay as typed.
-# \uXXXX escapes keep this file ASCII.
+# Control markup from user/system/tool turns must not reach the prompt raw (it can forge turns,
+# #7066); the closed name list keeps "<div>" as typed; Unicode escapes keep this file ASCII.
 _CONTROL_MARKUP = re.compile(
     r"<(?="
     # Phi-4 Mini closes with "<|/tool|>" / "<|/tool_call|>".
@@ -476,8 +475,7 @@ ORPHEUS_VOICES = ("tara", "leah", "jess", "leo", "dan", "mia", "zac", "zoe")
 
 
 def tts_voice_options(audio_type) -> Optional[list]:
-    """The voice picker a codec TTS model offers, in the audio.cpp ``audio_options`` shape, or None.
-    No default, so an unset voice keeps the unprefixed prompt fine-tunes were trained on."""
+    """Voices in audio.cpp audio_options shape, else None; unset keeps the unprefixed prompt."""
     if audio_type != "snac":
         return None
     return [
@@ -665,8 +663,7 @@ def _neutralize_content_parts(
             [carriers[i + 1] == carriers[i] + 1 for i in range(len(carriers) - 1)],
         )
         if redistributed is None:
-            # A split across a non-text part: moving the opener is smaller harm than collapsing all
-            # text.
+            # Across a non-text part, moving the opener is less harm than collapsing all text.
             redistributed = _redistribute_swept(run, rewrite)
         if redistributed is None:
             # Last resort, unreachable for every known marker; kept because collapsing is safer than a marker surviving a renderer that trims parts.
@@ -875,8 +872,7 @@ def neutralize_control_markup_in_messages(
             # Templates compare roles case-sensitively, so a known role is canonicalized.
             if role in _SCHEMA_ROLES and new_role != role:
                 new_role = role
-            # Phi-3 renders an unknown role as "<|" + role + "|>", so "end" spells its terminator. Falls back
-            # to "user" rather than padding, since a template that trims the role would undo a space.
+            # Role end spells Phi-3's terminator, so fall back to user; padding gets trimmed.
             elif role not in _SCHEMA_ROLES:
                 wrapped = f"<|{new_role}|>"
                 if neutralize_control_markup(wrapped, markup) != wrapped:
@@ -1069,8 +1065,7 @@ _SCHEMA_VALUED_IDENTIFIERS = frozenset(
         # contentEncoding and contentMediaType are machine-valued strings a validator decodes against; contentSchema stays out since the scan reads it.
         "contentEncoding",
         "contentMediaType",
-        # OpenAPI discriminator leaves are machine-valued identifiers, so the server resolves the
-        # original.
+        # Discriminator leaves are machine-valued identifiers; server resolves the original.
         "discriminator",
         # Same shape: an OpenAPI xml object is "name" / "namespace" / "prefix" plus two booleans, all serialization
         # identifiers and no prose, so a rewrite would advertise element names the server does not produce.
@@ -1204,8 +1199,7 @@ def catalog_tool_names(tools) -> set:
         if not isinstance(tool, dict):
             continue
         function = tool.get("function")
-        # Names are read from both function.name and the flat name, else a dropped tool escapes the
-        # catalog.
+        # Read both function.name and the flat name, so no dropped tool escapes the catalog.
         nested = function.get("name") if isinstance(function, dict) else None
         for name in (nested, tool.get("name")):
             if isinstance(name, str):
@@ -1740,8 +1734,7 @@ def _split_partial_marker(text: str, marker: str) -> tuple[str, str]:
 
 
 def _find_atem_block_end(text: str, start: int = 0) -> tuple[int, int]:
-    """Earliest block terminator at or after ``start``. Callers that keep feeding the same buffer
-    pass what they have already searched, so a held block costs one scan."""
+    """Earliest block terminator at or after start; callers pass the already-searched offset."""
     index, length = -1, 0
     for marker in _ATEM_BLOCK_ENDS:
         found = text.find(marker, start)
@@ -2121,8 +2114,7 @@ class RecipientChannelNormalizer:
                 if pieces is not None:
                     output.append("".join(text for _, text in pieces))
                     continue
-                # No call in it at all: keep the body, but this block is closed and the next header is still ours to
-                # read, so do not stop normalizing the turn.
+                # A block with no call keeps its body; the turn is still normalized after it.
                 output.append(_atem_surrounding_text(block))
                 continue
 
@@ -2277,8 +2269,7 @@ def normalize_reasoning_snapshots(
     continued: bool = False,
     ended = None,
 ):
-    """Normalize prefix-monotonic cumulative streams; read ended after, so a stop-ended turn still
-    closes."""
+    """Normalize prefix-monotonic streams; read ended after, so stop-ended turns still close."""
     markers = markers or detect_reasoning_channel_markers(tokenizer, tools = tools)
     if markers is None:
         yield from stream
@@ -2466,8 +2457,7 @@ def _special_token_strings(tokenizer) -> dict:
         try:
             value = getattr(tokenizer, name, None)
         except Exception:
-            # A tokenizer property can raise on a partially loaded model; a missing special is simply one fewer
-            # marker, never a failed request.
+            # Raising properties are skipped on a partly loaded model; never a failed request.
             continue
         # AddedToken rather than str on some tokenizers, and its str() is the content.
         if value is not None and not isinstance(value, str):
@@ -2521,8 +2511,7 @@ def _vocabulary_size_key(inner):
 
 
 def _native_markup_for_tokenizer(tokenizer, native_tpl, tools) -> Optional[ModelMarkup]:
-    """model_markup of the native fallback template, which walks the whole vocabulary, cached per tokenizer.
-    model_markup reads tools only for truthiness."""
+    """Walks the whole vocabulary, so cached per tokenizer; tools matter only for truthiness."""
     inner = getattr(tokenizer, "tokenizer", tokenizer)
     specials = _special_token_strings(inner)
     key = (
@@ -2700,8 +2689,7 @@ def messages_have_tool_history(messages) -> bool:
 
 
 def alternating_turns(messages: list) -> list:
-    """User/assistant text turns, alternating and ending on the newest user turn as sent; of two
-    same-role neighbours the later one is kept."""
+    """Alternating user/assistant text turns ending on the newest user; same-role: later kept."""
     from core.inference.message_content import content_to_text, named_turn
 
     messages = list(messages or [])
@@ -2872,8 +2860,7 @@ def template_resumes_thought(tokenizer, tools = None) -> bool:
 
 
 def splice_resumed_thought(prefix: str, thought: str) -> str:
-    """Reopen *thought* on a generation prompt, cutting the template's own reasoning prefill (open
-    or empty closed block) as llama-server does."""
+    """Reopen thought; cut the template's open or empty reasoning prefill as llama-server does."""
     open_at = prefix.rfind(_THINK_OPEN)
     if open_at != -1 and prefix[open_at + len(_THINK_OPEN) :].strip() in ("", _THINK_CLOSE):
         prefix = prefix[:open_at]
@@ -3300,9 +3287,8 @@ def render_with_native_template_fallback(
         return prompt
 
     if not tools:
-        # Gemma 4 can emit its native reasoning protocol even when a generation-time Unsloth override rendered a
-        # marker-free prompt. Preserve the live-verified no-tools thinking behavior without letting cached native
-        # metadata describe unrelated tool prompts that kept the active override.
+        # Gemma 4 can emit native reasoning despite an override's marker-free prompt; keep
+        # live-verified no-tools thinking, not cached native metadata for unrelated tool prompts.
         markers = live_markers
         if markers is None:
             markers = detect_reasoning_channel_markers_from_model_info(

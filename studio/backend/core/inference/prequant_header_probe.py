@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Reads a safetensors checkpoint's format and metadata, never its weights; never opens .pt; never
-raises, fails open with None if unknown"""
+"""Reads safetensors format and metadata, never weights or .pt; never raises; None if unknown."""
 
 from __future__ import annotations
 

@@ -97,9 +97,8 @@ def _drain_queue(
     max_chars: int | None,
     held: list | None = None,
 ) -> tuple[str, bool]:
-    """Joins queued chunks FIFO up to max_chars, discarding the rest but still scanning it so
-    completion is detected; crossing chunk sliced one char past budget; dict events held, never
-    joined or dropped"""
+    """Joins chunks FIFO up to max_chars, still scanning the dropped rest for completion; the
+    crossing chunk is sliced one char past budget; dict events are held, never joined or dropped."""
     parts: list[str] = []
     total = 0
     dropping = False
@@ -214,8 +213,7 @@ def stream_tool_execution(
         return text
 
     def _drain_and_drop() -> None:
-        """Past the cap, drops chunks without joining them; completion is still detected so the loop
-        exits."""
+        """Past the cap, drop chunks unjoined; completion is still detected so the loop exits."""
         nonlocal finished
         while True:
             try:
@@ -274,8 +272,7 @@ def stream_tool_execution(
                 continue
 
             if stream_capped:
-                # Past the cap: drop queued chunks. One sleep per poll (not monotonic; tests patch it), counted
-                # as idle so heartbeats keep flowing.
+                # One sleep per poll (not monotonic), counted idle so heartbeats keep flowing.
                 _drain_and_drop()
                 if finished:
                     continue
@@ -316,8 +313,7 @@ def stream_tool_execution(
                     "text": emit,
                 }
     except BaseException:
-        # Only reached on early close by the consumer. Set cancel only here so the shared event is
-        # never set under the next tool in a clean turn; re-raise (GeneratorExit must not be swallowed).
+        # Early close only; sets cancel here, never in clean turns; re-raises GeneratorExit.
         abnormal_exit = True
         if cancel_event is not None:
             try:

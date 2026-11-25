@@ -1323,8 +1323,7 @@ def _amd_nodes_the_runtime_lacks(*, needs_kfd: bool = True) -> "list[str]":
 
 
 def amd_closed_nodes_block_the_runtime(*, needs_kfd: bool = True) -> bool:
-    """A closed node blocks only with no open sibling; /dev/kfd has no sibling, so it blocks HIP
-    outright."""
+    """Closed node blocks only if no open sibling; /dev/kfd has none, so it always blocks HIP."""
     # Missing nodes block like closed ones, so they must not suppress the hint.
     if _amd_nodes_the_runtime_lacks(needs_kfd = needs_kfd):
         return True
@@ -1392,15 +1391,10 @@ def _a_per_gpu_mask_narrows_the_runtime() -> bool:
 
 
 def _shell_word(value: str) -> str:
-    """``value`` as a single shell word, for a command the user is going to paste.
-
-    NSS names are not identifiers: winbind hands back DOMAIN\\user, and a group name may
-    carry whitespace or a metacharacter, so interpolating one raw lets the shell de-escape,
-    split or expand it -- and usermod then names an account that is not the one holding the
-    node shut, or runs something nobody typed under the sudo the line already carries.
-    shlex.quote leaves an ordinary name exactly as it was, so the common command is
-    unchanged; install.sh's _shell_quote is the same safe set for the same reason.
-    """
+    """Quote value as one shell word for a pasted command: winbind DOMAIN prefixes or whitespace
+    could be split or expanded, so usermod names the wrong account or runs unintended text under
+    sudo; shlex.quote leaves plain names unchanged, and install.sh's _shell_quote uses the same
+    safe set."""
     if value == "$USER":
         # The no-pwd placeholder is meant to be expanded, not named.
         return value

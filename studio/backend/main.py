@@ -175,8 +175,7 @@ def _process_tree_rss_mb(process: Any) -> int:
     return round(total / 1024**2)
 
 
-# Windows AMD ROCm DLL injection: Python 3.8+ ignores PATH for extension modules, so register ROCm bin
-# dirs with os.add_dll_directory() to find amdhip64.dll etc. before any torch import.
+# Python 3.8+ ignores PATH for DLLs; add ROCm bin dirs via os.add_dll_directory() before torch.
 if sys.platform == "win32":
     # Module scope: the handle removes the search-path entry when garbage collected.
     _ROCM_DLL_HANDLES: list = []
@@ -422,8 +421,7 @@ _STUDIO_ROOT_ID_CACHE: str = _read_studio_install_id()
 
 
 def _studio_root_id() -> str:
-    """Same-install discriminator for /api/health (cached at import). Empty when no installer token is
-    present."""
+    """Same-install id for /api/health, cached at import; empty without an installer token."""
     return _STUDIO_ROOT_ID_CACHE
 
 
@@ -632,8 +630,7 @@ def _start_offline_docs_refresh_if_due() -> None:
 
 
 def _run_llama_cpp_startup_probes(app: FastAPI) -> None:
-    """Run llama.cpp probes off the startup path; GitHub freshness checks and macOS Gatekeeper stall
-    them."""
+    """llama.cpp probes run off startup: GitHub freshness checks, macOS Gatekeeper stall them."""
     try:
         from core.inference.llama_cpp import LlamaCppBackend
         from utils.llama_cpp_freshness import (
@@ -749,17 +746,15 @@ def _start_post_warm_thread() -> bool:
 
 
 def _stop_post_warm_thread() -> None:
-    """Retire whatever worker is current; never wait for it. Joining would hold shutdown for the rest of the ML
-    stack import, the stall this path exists to avoid; bumping the generation suffices, since the worker
-    re-reads it after its join."""
+    """Retire the current worker without waiting: joining would stall shutdown on the ML stack
+    import; bumping the generation suffices since the worker re-reads it after its join."""
     global _post_warm_generation
     with _post_warm_lock:
         _post_warm_generation += 1
 
 
 def _post_warm_retired(generation: Optional[int]) -> bool:
-    """True when this post-warm worker's lifespan has ended (logs once when it has). The remaining work imports
-    optional platform or RAG scheduling modules, so none of it may start for a stopped lifespan."""
+    """True once the lifespan ended (logs once); stopped lifespans start no more work."""
     if generation is None or _post_warm_current_generation() == generation:
         return False
     import structlog as _structlog
@@ -798,8 +793,7 @@ def _post_warm_background_work(generation: Optional[int] = None) -> None:
     if _post_warm_retired(generation):
         return
 
-    # Repair only after hardware is needed. A cold Apple Silicon launch must not
-    # import mlx_lm/transformers merely to check whether they need repairing.
+    # Repair waits for hardware; Apple Silicon cold starts must not import mlx_lm/transformers.
     def repair_mlx() -> None:
         try:
             from utils.mlx_repair import start_mlx_autorepair_if_needed
@@ -880,9 +874,8 @@ def _post_warm_background_work(generation: Optional[int] = None) -> None:
 
 
 def clear_compiled_cache_unless_shared(app: FastAPI) -> None:
-    """Clear the compiled cache unless a sibling backend of this install is live. The decision lives in
-    cache_cleanup, next to the paths it clears and the lock that serializes it against a sibling's startup;
-    run_server puts the probe on app.state because main.py must not import run.py back."""
+    """Clears the compiled cache unless a sibling backend is live; the check lives in cache_cleanup
+    under a lock; run_server sets app.state since main.py cannot import run.py."""
     _clear_compiled_cache_unless_shared(getattr(app.state, "live_sibling_backend", None))
 
 
@@ -1048,8 +1041,7 @@ async def lifespan(app: FastAPI):
         _lifespan_log.warning("--models-dir registration failed at startup: %s", exc)
 
     try:
-        # Boot pass settles only orphaned runs; a wedged run is swept on an interval once its lease
-        # expires.
+        # Boot settles only orphaned runs; wedged runs are swept on a timer after lease expiry.
         from core.inference.chat_generation_runs import start_lease_sweeper
         start_lease_sweeper(app)
     except Exception as exc:
@@ -1567,8 +1559,7 @@ def _nonced_docs_response(html: str, *, tag: "_re.Pattern[str]") -> HTMLResponse
     return HTMLResponse(nonced, headers = {_CSP_SCRIPT_NONCE_HEADER: nonce})
 
 
-# FastAPI's own /openapi.json builds the schema on the event loop: seconds for ~550 routes, fetched by older chat
-# sidebars every session, stalling every request behind it (#9712). Built once in a worker thread instead.
+# Schema built on the event loop stalls requests (#9712); built once in a worker thread.
 _openapi_build_lock = threading.Lock()
 _build_openapi_schema = app.openapi
 
@@ -1697,9 +1688,8 @@ _BODY_PROTECTED_PREFIXES = (
     # llama-server passthrough POSTs; keyless inference scope admits them.
     "/tokenize",
     "/detokenize",
-    # Everything else, root routes included (/models/load). FastAPI reads a body before the route's auth
-    # dependency runs, so an unlisted prefix let an unauthenticated client stream an unbounded body into memory.
-    # Uploads that need more are the explicit passthroughs below.
+    # Everything else, root routes included (/models/load); FastAPI reads the body before auth, so
+    # unlisted prefixes let unauthenticated clients stream unbounded bodies.
     "/",
 )
 _DATASET_UPLOAD_PASSTHROUGH_PREFIXES = (
@@ -1868,8 +1858,7 @@ _ZSTD_MAX_RATIO = 64
 _ZSTD_MAX_FRAMES = 1024
 
 
-# Decoding runs before the route's auth check, so an unauthenticated ~8 MiB frame can inflate to the full body
-# cap: one decode at a time per event loop keeps concurrent bombs from multiplying that.
+# Decoding runs before auth, so one decode at a time per event loop limits concurrent bombs.
 _ZSTD_DECODE_GATES: dict = {}
 
 
@@ -2740,8 +2729,7 @@ def _schedule_shutdown(request: Request) -> dict:
         await asyncio.sleep(0.2)  # Let the HTTP response return first
         trigger = getattr(request.app.state, "trigger_shutdown", None)
         if trigger is not None:
-            # Runs cleanup on its own thread so uvicorn can close the port; main thread still waits
-            # on _shutdown_event before exit; one cleanup per shutdown trigger.
+            # Own thread: uvicorn can close port; main awaits _shutdown_event; one per trigger.
             with _shutdown_thread_lock:
                 state = request.app.state
                 if getattr(state, "_shutdown_trigger", None) is not trigger:
@@ -3003,8 +2991,7 @@ _dense_quant_scheme_ladder: list[str] = []
 
 
 def _refresh_dense_quant_capability() -> bool:
-    """Resolve the dense-quant bit and cache it. Imports torch and torchao; never call from a route
-    that has not already got them."""
+    """Caches the dense-quant bit; imports torch/torchao; never call from a route without them."""
     global _dense_quant_capability, _dense_quant_scheme_ladder
     _dense_quant_capability = _probe_dense_quant_supported()
     _dense_quant_scheme_ladder = _probe_dense_quant_schemes() if _dense_quant_capability else []
@@ -3085,8 +3072,7 @@ def _quantised_streaming() -> bool:
 
 
 def _diffusers_offload_tiers() -> dict:
-    """Extra picker fit tiers per curated Diffusers repo (lower-cased id), in the picker's GiB units.
-    Torch-free; the picker unions them with the catalog's own tiers, so they can only widen."""
+    """Torch-free extra picker fit tiers by lower-cased Diffusers repo id, in GiB; only widens."""
     try:
         from core.inference.video_minimax_h3 import h3_diffusers_fit_tiers
         tiers = h3_diffusers_fit_tiers()
@@ -3122,8 +3108,7 @@ def _checkpoint_quant_formats() -> list[str]:
 
 
 def _dense_quant_schemes() -> list[str]:
-    """The scheme ladder for ``/api/system``, a pure read of already-resolved state: the polled route
-    must never import torch, and the entry beside it refreshed both in one pass."""
+    """Scheme ladder for /api/system: read-only, no torch import, refreshed with the bit."""
     return list(_dense_quant_scheme_ladder)
 
 
@@ -3399,8 +3384,7 @@ def get_disk_space(
     if readings:
         tightest = min(readings, key = lambda r: r["free_gb"])
         answer = dict(tightest)
-        # Redact the path for non-owners (API keys, managed accounts); use the INVENTORY redactor,
-        # since redact_host_paths leaves a field named 'path' alone.
+        # Redact for non-owners via INVENTORY redactor; redact_host_paths leaves 'path' alone.
         from utils.account_context import is_owner_context
 
         return redact_inventory_host_paths(

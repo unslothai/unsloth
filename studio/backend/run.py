@@ -111,8 +111,7 @@ except ValueError as exc:
     configured = os.environ.get("UNSLOTH_CPU_THREADS")
     raise SystemExit(f"Error: Invalid UNSLOTH_CPU_THREADS value {configured!r}: {exc}") from None
 
-# Windows ROCm has no distributed backend, so torchao and xformers die on import. Stubs must
-# precede the first import below.
+# Windows ROCm lacks a distributed backend, so torchao/xformers die on import; stubs go first.
 from core._torchao_stub import (
     alias_torchao_fqn_to_config,
     hide_xformers_built_for_another_torch,
@@ -522,8 +521,7 @@ def _start_display_host_resolution(host: str) -> Callable[[], str]:
     import urllib.request  # noqa: F401
     from threading import Thread
 
-    # main.py installs these before its first connection; the worker connects before main.py runs,
-    # so install them here (both idempotent) to keep the OS trust store and the RFC 8305 connector.
+    # Worker connects before main.py, so install native TLS and RFC 8305 here (idempotent).
     from utils.native_tls import activate_native_tls
     from utils.happy_eyeballs import activate_happy_eyeballs
 
@@ -808,8 +806,7 @@ def _print_cloudflare_line(
 
 
 def _get_pid_on_port(port: int) -> "tuple[int, str] | None":
-    """(pid, process_name) listening on *port*, or None. Uses psutil when available, else None so
-    callers can still report the conflict without process details."""
+    """(pid, name) listening on port; None without psutil so callers still report the conflict."""
     try:
         import psutil
     except ImportError:
@@ -868,8 +865,7 @@ def _is_port_free(host: str, port: int) -> bool:
             bound.append((family, sockaddr))
             probe = socket.socket(family, socktype, proto)
             sockets.append(probe)
-            # Windows SO_REUSEADDR lets a second socket bind a listening port, so the probe would lie.
-            # POSIX keeps it so a TIME_WAIT listener does not strand the port.
+            # Windows SO_REUSEADDR lets a probe bind a live port; POSIX keeps it for TIME_WAIT.
             if sys.platform != "win32":
                 probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             if family == socket.AF_INET6 and hasattr(socket, "IPV6_V6ONLY"):
@@ -1130,9 +1126,8 @@ def write_startup_marker() -> None:
         import contextlib
         compiled_cache_lock = lambda **kwargs: contextlib.nullcontext()
         LOCK_BUSY, LOCK_HELD = "busy", "held"
-    # A longer budget than a clear takes: publishing behind a holder that is mid-rmtree is the case worth
-    # waiting out. Publishing anyway if the wait runs out is still right, because a marker that never appears
-    # makes this backend invisible.
+    # A longer budget than a clear takes: publishing behind a holder mid-rmtree is worth waiting
+    # out; if it runs out, publish anyway, since a missing marker hides this backend.
     with compiled_cache_lock(timeout = 30.0) as lock_state:
         if lock_state == LOCK_HELD:
             _prune_dead_pid_records()
@@ -1366,8 +1361,7 @@ def _write_pid_file(port: int, host: str = ""):
         address = ",".join(sorted(_bind_addresses(host, port))) if host else ""
         identity = linux_process_identity(os.getpid())
         body = f"{os.getpid()}\n{'' if created is None else repr(created)}\n{address}\n{identity or ''}\n"
-        # Write-then-rename: `stop` reads these concurrently, and a reader that
-        # catches the truncate window sees a corrupt record and deletes it.
+        # Write-then-rename so a concurrent stop never reads a truncated record and deletes it.
         tmp = path.with_name(path.name + ".tmp")
         try:
             tmp.write_text(body, encoding = "utf-8")
@@ -1390,8 +1384,7 @@ def _write_pid_file(port: int, host: str = ""):
 
 
 def _legacy_heir() -> "int | None":
-    """Another live server's PID, to hand the legacy studio.pid over to. Only one server owns studio.pid
-    at a time, so its exit would otherwise drop the single record an older CLI can read."""
+    """A live sibling's PID to inherit studio.pid, since an older CLI reads only that file."""
     try:
         paths = sorted(_studio_root().glob(PID_FILE_GLOB))
     except OSError:
@@ -1497,8 +1490,7 @@ def _note_quit_signal():
 
 
 def _graceful_shutdown(server = None):
-    """Shut down all subprocess backends and the uvicorn server. Called from signal handlers to clean up
-    children before exit; critical on Windows where atexit handlers are unreliable after Ctrl+C."""
+    """Shut down subprocess backends and uvicorn; atexit is unreliable on Windows after Ctrl+C."""
     logger.info("Graceful shutdown initiated -- cleaning up subprocesses...")
 
     # 0a. Latch "quitting" first: in-flight loads can reach spawners whose step already ran.
@@ -1614,8 +1606,7 @@ def _flush_standard_streams() -> None:
 
 
 def _wait_for_server_shutdown(timeout: Optional[float] = _SERVER_SHUTDOWN_JOIN_TIMEOUT) -> None:
-    """Join the uvicorn thread so the prompt returns only after its shutdown logs flush. Skip the
-    self-join when called from the server thread."""
+    """Join the uvicorn thread so shutdown logs flush; skip the self-join on the server thread."""
     import threading
 
     thread = _server_thread
@@ -1925,8 +1916,7 @@ def _setup_server_disk_logging():
                 os.fchmod(fd, 0o600)
             except OSError:
                 pass
-        # Line-buffered so the tail survives a hard kill; errors="replace" so a console encoding quirk can
-        # never take the server down.
+        # Line-buffered so the tail survives a kill; errors="replace" stops encoding crashes.
         log_fh = os.fdopen(fd, "w", encoding = "utf-8", errors = "replace", buffering = 1)
     except Exception:
         return None
@@ -2280,8 +2270,7 @@ def _apply_supplied_password(password_value: "Optional[str]") -> None:
 
 
 def _apply_cli_tool_policy(enable_tools: "Optional[bool]") -> None:
-    """None leaves policy unset, so each request decides; a tools-on default would reach launches
-    where omitted means off."""
+    """None leaves policy unset per request; tools-on default would reach omitted-off launches."""
     if enable_tools is None:
         return
     from state.tool_policy import set_tool_policy
@@ -2304,8 +2293,7 @@ def _drops_its_marker_on_failure(start):
         try:
             return start(*args, **kwargs)
         except BaseException:
-            # Only with no server thread left: a Ctrl+C during readiness leaves uvicorn finishing lifespan,
-            # and dropping the marker then would let a sibling clear the cache under a live backend.
+            # Only with no server thread alive: a sibling could clear a live backend's cache.
             thread = _server_thread
             if thread is None or not thread.is_alive():
                 _remove_startup_marker()
@@ -2451,8 +2439,7 @@ def run_server(
     # `unsloth studio run` installs its own resolved policy and passes None here.
     _apply_cli_tool_policy(enable_tools)
 
-    # Set env vars BEFORE importing main so CORS middleware picks them up. secure api-only keeps
-    # any-origin CORS (remote behind Cloudflare); plain api-only stays locked to the Tauri app.
+    # Set env before importing main; api-only CORS is any-origin when secure, else Tauri-only.
     if api_only:
         os.environ["UNSLOTH_API_ONLY"] = "1"
     if secure:
@@ -2488,8 +2475,7 @@ def run_server(
 
     import_started = time.perf_counter()
 
-    # For the banner and the reachability probe; started now so its network round trips overlap the
-    # import below. The startup log line resolves its own, LAN-only, answer.
+    # Host lookup for banner/probe starts early, overlapping import; log line resolves its own.
     display_host_result = _start_display_host_resolution(host)
 
     # Before the import, to shrink the window where two launches think they are alone. The cache env

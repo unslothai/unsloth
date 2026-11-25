@@ -26,8 +26,7 @@ def file_contents_available_locally(path, stat_result = None) -> bool:
     return not bool(attributes & _WINDOWS_CONTENT_RECALL_ATTRIBUTES)
 
 
-# macOS stores xattrs in ._ companions on exFAT/FAT/SMB/NFS; only the magic identifies one,
-# since a user's own ._model.gguf is a real model.
+# Identify ._ macOS companions by magic bytes, since a user's own ._model.gguf can be real.
 # ── macOS Finder metadata companions ───────────────────────────
 _MAGIC = b"\x00\x05\x16\x07"
 
@@ -300,8 +299,7 @@ def reset_cache_case_resolution_state() -> None:
 
 
 def _comparable_path(path, pathmod) -> str:
-    """*path* spelled the way two paths are compared: on Windows without the extended-length
-    prefix, which realpath keeps on one side only for a long path, and case folded."""
+    """Case-folded path for comparison; drops the Windows extended-length prefix."""
     text = os.fspath(path)
     if pathmod.sep == "\\":
         if text[:8].upper() == "\\\\?\\UNC\\":
@@ -375,8 +373,7 @@ _FILE_MANAGER1 = "org.freedesktop.FileManager1"
 
 
 def _linux_show_items(path: Path, is_file: bool) -> bool:
-    """FileManager1 over D-Bus (Nautilus, Dolphin, Nemo, Caja, Thunar) shows *path*, a file
-    selected in its folder; False when nothing answers."""
+    """Reveals path via the FileManager1 D-Bus interface; False when no file manager answers."""
     import subprocess
 
     # as_uri percent-encodes quotes and commas, so the URI is safe in both argument syntaxes.
@@ -603,10 +600,9 @@ def _same_bytes(handle: int, staged: Path, size: int) -> bool:
 
 
 def _stage_for_open(path: Path, root: Optional[Path] = None) -> Path:
-    """Stages the file at path for the OS opener: opened once without following links, then copied
-    to a Studio-only dir, since sandboxed tool code can swap in a symlink; not a hard link
-    (sandbox refuses outside links); O_NOFOLLOW covers only the last component, so check the real
-    location against root."""
+    """Copies the file to a Studio-only dir for the opener (sandbox can swap in a symlink); not a
+    hard link; O_NOFOLLOW covers only the last component, so check the real location against
+    root."""
     import shutil
     import stat as stat_module
     import tempfile
@@ -713,8 +709,7 @@ _PC_CASE_SENSITIVE = 11
 
 
 def macos_volume_ignores_case(path: str) -> bool:
-    """Whether the macOS volume of path (or its nearest existing folder) ignores case, as APFS and
-    HFS+ do unless case-sensitive; True off macOS unless a test acts as macOS."""
+    """APFS/HFS+ ignore case unless case-sensitive; True off macOS unless tests act as macOS."""
     if sys.platform != "darwin":
         return True
     probe = path

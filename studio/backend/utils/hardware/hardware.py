@@ -2057,8 +2057,7 @@ def _amd_permission_hint_for_mismatch(
     # recording AMD is necessary, not sufficient, as a hybrid CUDA host records both vendors.
     if vendors is None:
         vendors = {str(vendor).lower() for vendor in CHAT_ONLY_MISMATCH_VENDORS}
-    # Worth MENTIONING is about the hardware; REPLACES the reinstall advice is about the
-    # wheel, and only a ROCm one is repaired by opening a node. Conflating them was the bug.
+    # Hardware note, not reinstall advice: only a ROCm wheel is repaired by opening a node.
     _label = (detail or "").lower()
     # Intent is the last resort: it outlives the wheel installed over it.
     wheel_targets_amd = (
@@ -2164,8 +2163,7 @@ def _gpu_present_but_unusable_message(
         return None
     installed = f" (installed {detail})" if detail else ""
     node_hint, wheel_targets_amd = _amd_permission_hint_for_mismatch(detail)
-    # Replaces the reinstall advice only for a ROCm wheel, which the closed node fully
-    # explains. A CPU-only or other-vendor wheel needs BOTH repairs and is given both.
+    # ROCm wheels get the node hint alone; CPU-only or other-vendor wheels get both repairs.
     if node_hint and reason == "torch_cuda_unavailable" and wheel_targets_amd:
         return f"This host has a GPU, but {feature} cannot use it. {node_hint}"
     # Both routes, always. The repair row exists only in the desktop app and only for a backend it manages, so a browser-hosted Studio, or a desktop attached to a server someone started from a terminal, was being sent to a control that is not on the page.
@@ -2531,8 +2529,7 @@ def _cuda_cards_identical(gpu_ids: Optional[list[int]] = None) -> Optional[bool]
 
 
 def _nvidia_mig_gpu_indices_or_none() -> Optional[set[int]]:
-    """Physical indices of NVIDIA cards with MIG instances or MIG mode on, None when discovery is
-    unknown (failed or empty listing); shares nvidia's caches so failures back off."""
+    """MIG-on NVIDIA indices, or None if unknown. Shares nvidia's caches so failures back off."""
     try:
         from . import nvidia
 
@@ -2554,8 +2551,7 @@ def _cuda_instance_ids_active() -> bool:
 
 
 def _cuda_instance_free_total_mib(ordinal: int) -> tuple[Optional[int], Optional[int]]:
-    """(free, total) MiB of CUDA device ``ordinal`` from its own MIG instance row (NVML slice memory), or
-    (None, None) when that slice was not read. Never another card's figures. Never raises."""
+    """(free, total) MiB from the ordinal's own MIG slice, else (None, None); never raises."""
     try:
         from . import mig
 
@@ -2613,8 +2609,7 @@ def _smi_rows_for_cuda_ordinals(parent_ids: list[int]) -> Optional[Dict[str, Any
     result = _smi_query(
         "get_visible_gpu_utilization", sorted(rows), parent_cuda_visible_devices = None
     )
-    # nvidia-smi rows show a MIG card's whole memory, not its slice: with a MIG card among the rows,
-    # or MIG discovery failing, keep the slice-aware torch telemetry instead.
+    # MIG card in rows or failed MIG discovery: nvidia-smi memory is whole-card, so use torch.
     mig = _nvidia_mig_gpu_indices_or_none()
     if mig is None or mig & set(rows):
         return None
@@ -3434,8 +3429,7 @@ def _xpu_hierarchy_is_composite() -> bool:
     return hierarchy == "" and _intel_xpu_single_tile_host()
 
 
-# The prefix C stoul(entry, nullptr, 0) consumes: sign, then hex, binary (C23 strtoul, which current
-# compute-runtime builds link), octal or decimal ("08" -> 0, "+1abc" -> 1, "0b10" -> 2).
+# Mirrors C stoul base 0: sign, then hex, binary (C23), octal or decimal; "08" reads as 0.
 _ZE_MASK_ROOT_RE = re.compile(
     r"([+-]?)(?:0[xX]([0-9a-fA-F]+)|0[bB]([01]+)|(0[0-7]*)|([1-9][0-9]*))"
 )
@@ -7450,8 +7444,7 @@ def _with_mig_instance_memory(devices: list[Dict[str, Any]]) -> list[Dict[str, A
     except Exception as e:
         logger.debug("NVML MIG slice probe failed: %s", e)
     if mig is None:
-        # MIG discovery failed: NVML reads slices and whole cards alike, so its readings
-        # replace the CLI's; without any the devices stand as before MIG support.
+        # NVML slice and card readings replace the CLI's; no slices leaves devices unchanged.
         if not slices:
             return devices
         mig = set(slices) & indices
@@ -7628,9 +7621,8 @@ def _vulkan_inference_device(row: Dict[str, Any], apply_igpu_host_reserve_mib) -
 def get_mixed_vulkan_inference_gpu_info(
     cuda_info: Optional[Dict[str, Any]],
 ) -> Optional[Dict[str, Any]]:
-    """Returns cuda_info plus the Vulkan devices a CUDA+Vulkan llama.cpp build also runs on, or
-    None; llama.cpp skips a Vulkan device whose PCI id a CUDA device holds; with no ids it falls
-    back to the name; without CUDA torch, nvidia-smi rows stand in for cuda_info."""
+    """Returns cuda_info plus Vulkan devices llama.cpp runs on, or None. llama.cpp skips devices
+    whose PCI id a CUDA device holds (by name if no ids); nvidia-smi stands in without torch."""
     try:
         from core.inference.llama_cpp import (
             LlamaCppBackend,
@@ -7787,8 +7779,7 @@ def _nvidia_inference_devices() -> list[Dict[str, Any]]:
 
 
 def get_cross_vendor_inference_gpu_info() -> Optional[Dict[str, Any]]:
-    """nvidia-smi only, since a CUDA context here would pin VRAM; amd-smi cannot prove HIP's memory
-    scope."""
+    """nvidia-smi only: a CUDA context would pin VRAM; amd-smi cannot prove HIP memory scope."""
     try:
         llama_backend = _installed_llama_backend()
     except Exception as e:
@@ -8026,8 +8017,7 @@ def _probe_backend_visible_gpu_info(device) -> Dict[str, Any]:
                     ):
                         result["backend"] = _backend_label(device)
                         return result
-                    # Fall through to torch unless the join is unsafe: under FASTEST_FIRST torch rows
-                    # would mislabel cards.
+                    # Fall to torch unless the join is unsafe (FASTEST_FIRST mislabels cards).
                     if _cuda_join_is_unsafe(parent_visible_spec["numeric_ids"]):
                         logger.debug(
                             "Keeping the nvidia-smi rows: CUDA_DEVICE_ORDER does not "

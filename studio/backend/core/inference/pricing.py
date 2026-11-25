@@ -166,8 +166,7 @@ def calculate_cost(provider: str, model: str, usage: dict[str, Any]) -> dict[str
         "priced": bool(prices),
     }
 
-    # Raw Anthropic input_tokens EXCLUDES cache buckets; raw OpenAI input_tokens and chat-style
-    # prompt_tokens INCLUDE them. Clamp >= 0 so corrupted payloads can't bill negative.
+    # Anthropic input_tokens exclude cache; OpenAI's include them. Clamp >= 0 for bad payloads.
     cache_creation = max(0, int(usage.get("cache_creation_input_tokens") or 0))
     cache_read_native_present = (
         "cache_read_input_tokens" in usage and usage.get("cache_read_input_tokens") is not None

@@ -134,8 +134,7 @@ def _record_with_companion(transport: str, entry: Path):
 
 
 def test_a_companion_partial_from_another_transport_is_not_a_resume(cache):
-    """The companion is governed by .transport.companion, not by this variant's marker.
-    prepare_cache_for_transport purges it on an HTTP run, so it cannot back a Resume."""
+    """Governed by .transport.companion, not this marker; an HTTP run purges it, so no Resume."""
     _record_with_companion("http", cache)
     download_registry._write_companion_marker(cache, "xet")
     _partial(cache, f"{COMPANION}{hf_cache_state.INCOMPLETE_SUFFIX}")
@@ -267,8 +266,7 @@ def test_another_roots_partial_does_not_vouch_for_this_row(two_roots):
 
 
 def test_a_remembered_roots_own_partial_still_resumes(two_roots):
-    """And the other direction: the row's bytes are reopenable and its manifest lives in that
-    root's scope, so the verdict may not be lost just because the active root is empty."""
+    """A remembered root's partial still resumes though the active root is empty; bytes reopen."""
     active, previous = two_roots
     _record_in(previous, "http", "Q4_K_M")
     _partial(previous, LEGACY_PARTIAL)

@@ -44,8 +44,7 @@ ANTHROPIC_TYPE_BY_STATUS = {
 }
 
 
-# A machine-readable code for an agent-actionable failure, as ``code k=v ...``. A header, so the
-# body (and the detail text the frontend shows) stays exactly as it was.
+# Failure code as ``code k=v ...``, sent in a header; the body and detail text stay unchanged.
 PROBLEM_HEADER = "X-Unsloth-Problem"
 _PROBLEM_TOKEN = re.compile(r"^[A-Za-z0-9_.:/-]{1,200}$")
 

@@ -74,7 +74,6 @@ def build_default_output_dir_name(
     *,
     timestamp: Optional[int] = None,
 ) -> str:
-    """Build the default training output folder name."""
     from utils.paths import default_run_dir_name
 
     timestamp_part = str(int(time.time() if timestamp is None else timestamp))
@@ -133,7 +132,6 @@ def base_model_from_run_dir_name(dir_name: str) -> Optional[str]:
 
 
 def extract_project_name(config: Any) -> Optional[str]:
-    """Read and normalize a project name from a stored config dict."""
     if not isinstance(config, dict):
         return None
     return normalize_project_name(config.get("project_name"))

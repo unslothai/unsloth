@@ -449,8 +449,7 @@ def test_decoding_happens_where_the_codec_actually_is():
 
 
 def test_a_codec_with_no_recorded_placement_still_honours_the_caller():
-    """Nothing is recorded until a codec is actually loaded, and every pre-existing
-    caller passes the device it wants. An unknown codec must keep deferring to it."""
+    """Unrecorded codecs defer to the caller's device, and every existing caller passes one."""
     from core.inference.audio_codecs import AudioCodecManager
 
     mgr = AudioCodecManager()
@@ -458,8 +457,7 @@ def test_a_codec_with_no_recorded_placement_still_honours_the_caller():
 
 
 def test_a_cpu_load_leaves_a_running_export_alone():
-    """The export teardown frees VRAM for the incoming model; a load that masks the accelerators
-    needs none of it, so killing the export only costs the user the job."""
+    """Export teardown exists to free VRAM; a CPU load that masks the accelerators needs none."""
     import inspect
 
     src = inspect.getsource(ri._load_model_impl)

@@ -82,9 +82,8 @@ def _mlx_minimum(name: str) -> str:
 
 
 def _install_packages() -> tuple[str, ...]:
-    """mlx-lm and mlx-vlm are narrowed to the specifier unsloth-zoo declares, as their call shapes
-    must match it; mlx is pinned exactly at both ends, so intersecting it would empty the range;
-    uv intersects both."""
+    """mlx-lm and mlx-vlm are narrowed to unsloth-zoo's declared specifier (their call shapes must
+    match); mlx is not, as uv intersects and its both-ends pin would empty the range."""
     packages = []
     for name, spec in _MLX_INSTALL_SPECS.items():
         declared = _zoo_declared_specifier(name) if name in ("mlx-lm", "mlx-vlm") else ""

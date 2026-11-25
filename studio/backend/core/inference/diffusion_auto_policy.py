@@ -442,8 +442,7 @@ def precision_refusal_message(
     return f"{control}='{requested}' could not be used: {reason}. {remedy}"
 
 
-# applied: honored or no ask; fell_back: explicit ask declined, something else engaged;
-# unsupported: the explicit ask cannot run on this host / model.
+# applied: honored or no ask; fell_back: declined, other engaged; unsupported: cannot run here.
 RESOLVED_APPLIED = "applied"  # the ask was honored (or there was no ask)
 RESOLVED_FELL_BACK = "fell_back"  # an explicit ask was declined and something ELSE engaged
 RESOLVED_UNSUPPORTED = "unsupported"  # an explicit ask cannot run on this host / model at all

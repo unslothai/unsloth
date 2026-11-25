@@ -128,9 +128,8 @@ def _save(directory: Path, data: dict[str, Any]) -> None:
 
 @contextlib.contextmanager
 def _file_lock(directory: Path):
-    """Best-effort cross-process exclusive lock over one directory's store. Generation runs in
-    subprocesses, so the in-process RLock alone would let two of them clobber each other on
-    ``os.replace``. Yields whether the OS lock was taken, so destructive callers can fail closed."""
+    """Best-effort cross-process lock for generation subprocesses: the in-process RLock alone lets
+    them clobber on os.replace; yields whether taken, so destructive callers fail closed."""
     try:
         fd = os.open(str(directory / f"{_STORE_NAME}.lock"), os.O_CREAT | os.O_RDWR, 0o600)
     except Exception:
@@ -324,8 +323,7 @@ def set_flags_locked(
 
 
 def forget(directory: Path, item_ids) -> None:
-    """Drop flags for ids that no longer exist, so a deleted image cannot hand its pin to a
-    future id and the store cannot grow without bound. No-op when nothing is stored."""
+    """Drops flags of deleted ids so no future id inherits a pin or the store grows unbounded."""
     with _lock, _file_lock(directory):
         forget_locked(directory, item_ids)
 

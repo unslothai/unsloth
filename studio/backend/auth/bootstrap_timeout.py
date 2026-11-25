@@ -105,8 +105,7 @@ def enforce_bootstrap_password_deadline(
     timeout_seconds: int,
     logger = None,
 ) -> bool:
-    """Deadline handler: shut down iff the seeded admin password is still unchanged. Returns True if it
-    shut Unsloth down, False if it left it running (the password was changed in time)."""
+    """Shut down iff the seeded admin password is still unchanged; returns True if shut down."""
     # One-shot timer: a failed read retries for a bounded window, then counts as unsecured.
     give_up_at = time.monotonic() + STORAGE_RETRY_WINDOW_SECONDS
     while True:

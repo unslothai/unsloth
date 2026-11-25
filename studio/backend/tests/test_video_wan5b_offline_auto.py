@@ -40,8 +40,7 @@ _REAL_VIDEO_FETCH_REPO = __import__(
 
 @pytest.fixture(autouse = True)
 def _hermetic(monkeypatch):
-    """No network, no Hub, no hang: every reachability / mirror / Hub lookup is pinned, sockets refuse to connect,
-    and a stuck test dumps its stacks after 60 s instead of eating the CI job."""
+    """Hermetic: Hub lookups are pinned, sockets refuse, and a hang dumps stacks after 60 s."""
     import huggingface_hub
     from huggingface_hub import constants
 

@@ -505,8 +505,7 @@ def _apply_int8_w8a8(
     try:
         dev = torch.device(device) if device is not None else next(transformer.parameters()).device
         if dev.type == "cuda":
-            # _int_mm probe on the operands' card: an arch / build without int8 GEMMs (or without int8 tensor
-            # cores) must fall back before any layer is touched.
+            # int8 probe on the operands' card; failure falls back before any layer is touched.
             decline = _int8_gemm_decline(dev)
             if decline:
                 raise RuntimeError(decline)
@@ -528,8 +527,7 @@ def _apply_int8_w8a8(
         return True
     except Exception as exc:  # noqa: BLE001 -- no int8 GEMM here: fall back to the torchao weight-only base
         if any(isinstance(m, FrozenInt8Linear) for m in transformer.modules()):
-            # Failed partway (a device move OOMs between layers): torchao would quantize only the rest, training a
-            # mixed base that compile, the caches and the checkpoint all treat as weight-only int8.
+            # Partial int8 conversion must raise: a mixed base would pass as weight-only int8.
             raise ValueError(
                 f"int8 W8A8 failed after converting part of the base ({exc}); "
                 "use base_precision='nf4' or 'auto'."
@@ -627,8 +625,7 @@ def _probe_lowp(
     transformer,
     device = None,
 ) -> None:
-    """Tiny fwd+bwd probe on 48 unaligned rows: an unverified arch falls back to bf16 at load. ``device`` is where
-    the base will train when it is still on the host."""
+    """Tiny fwd+bwd probe on 48 unaligned rows; an unverified arch falls back to bf16 at load."""
     import torch
     import torch.nn as nn
 
@@ -946,8 +943,7 @@ def _auto_fp8_family_ok(spec, base_model) -> bool:
 
 
 def _auto_fp8_run_ok(cfg) -> bool:
-    """Run settings Auto's fp8 pick must respect: a requested block swap streams a bf16 base only, and a resume
-    continues the base its bundle trained on (one that predates the record trained without Auto fp8)."""
+    """No Auto fp8 with block swap (streams bf16 only) or resume of a base trained without it."""
     from core.training.diffusion_block_swap import block_swap_request
 
     if block_swap_request(cfg) is not None:
@@ -1035,8 +1031,7 @@ _AUTO_SWAP_HOST_RESERVE = 4 << 30
 
 
 def _auto_swap_host_ram_ok(spec, cfg) -> bool:
-    """Whether host RAM (cgroup-aware) holds the dense bf16 base for a swapped load; unreadable counts as no, since
-    the int8 path it replaces streams the load and needs far less host RAM."""
+    """Host RAM (cgroup-aware) must fit dense bf16 base; unreadable means no, int8 needs less."""
     try:
         from core.inference.diffusion_prequant_cache import _host_memory_bytes
         _total, avail = _host_memory_bytes()
@@ -1274,9 +1269,8 @@ def _resolve_base_precision(cfg, spec, device) -> str:
 
             free_gb = trusted_mem_get_info()[0] / 1e9
             capability = torch.cuda.get_device_capability()
-            # The frozen fp8 base runs torch._scaled_mm on NVIDIA sm89+; ROCm reports gfx capabilities that are not.
-            # The cheap gates go first: the probe allocates, runs a GEMM and syncs, and the policy never picks fp8
-            # below sm89 or for an eager run anyway.
+            # fp8 base needs torch._scaled_mm on NVIDIA sm89+ (ROCm reports gfx caps that are not);
+            # never picks fp8 below sm89 or for eager runs; cheap gates first, probe last.
             has_fp8 = (
                 tuple(capability) >= (8, 9)
                 and _auto_run_compiles(cfg)
@@ -1811,9 +1805,8 @@ def _qwen21_load_conditioners(cfg, device, weight_dtype):
 
 
 def _trim_caption_encoder(pipe, family) -> None:
-    """Caption caching reads hidden_states[-1] only, so the untied lm_head (Qwen3-VL-8B: 151936 x 4096, about
-    1.2 GB bf16) is dropped before the encoder reaches the card, as inference and the H3 trainer already do.
-    Bit-identical embeds; UNSLOTH_TE_KEEP_LM_HEAD=1 keeps it."""
+    """Caption embeds are bit-identical: only hidden_states[-1] is read, so the untied lm_head
+    (Qwen3-VL-8B, 1.2 GB bf16) is dropped before the card; UNSLOTH_TE_KEEP_LM_HEAD=1 keeps it."""
     import logging
 
     from core.inference.diffusion_text_encoder_trim import trim_text_encoder
@@ -2349,8 +2342,7 @@ def _flux3_save(
 
 
 def _flux3_training_scheduler(cfg):
-    """The block graph's own FlowMatchEuler (Flux3SetTimestepsStep: constant shift 6.93, no dynamic shifting); the
-    repos ship no scheduler/, and load_flux3_pipeline builds the inference one the same way."""
+    """Block graph FlowMatchEuler, constant 6.93 shift; repos have no scheduler/, as inference."""
     from diffusers import FlowMatchEulerDiscreteScheduler
 
     from core.inference.diffusion_flux3 import FLUX3_BASE_BLOCKS, flux3_blocks
@@ -2496,8 +2488,7 @@ _LTX2_TARGETS = (
     "attn2.to_out.0",
 )
 
-# Rotary time is in SECONDS: at 24 fps a still lands on a generated clip's first frame
-# (Lightricks pin images to fps=1.0 instead).
+# Rotary time is SECONDS: 24 fps lands a still on a clip's first frame; Lightricks use fps=1.0.
 _LTX2_TRAIN_FPS = 24.0
 
 
@@ -2773,8 +2764,7 @@ def _ltx25_te_quant(cfg):
 
 
 def _ltx25_conditioning_key(cfg) -> str:
-    """Caption-cache key part naming the encoder that wrote them: int8 and bf16 Gemma 4 captions differ, and the
-    hosted int8 file is a separate artifact from an at-load quantization of the pack's encoder."""
+    """Encoder key: int8 and bf16 Gemma 4 captions differ; hosted int8 is not at-load quant."""
     from core.inference.video_ltx25 import (
         LTX25_TE_HOSTED_FILE,
         LTX25_TE_HOSTED_FORMAT,
@@ -2815,8 +2805,7 @@ def _ltx25_start_encoder(cfg, device):
 
 
 def _ltx25_worker_resident(worker_device: str, te_quant) -> bool:
-    """Keep Gemma 4 on the card only if it fits beside the connectors already there; a resident
-    worker never falls back on OOM, while others onload, stream or encode on CPU per encode."""
+    """Gemma 4 stays resident only if it fits beside connectors; no OOM fallback for residents."""
     kind = str(worker_device).split(":", 1)[0]
     if kind not in ("cuda", "xpu"):
         return False
@@ -3055,8 +3044,7 @@ def _adapter_saver(spec, transformer):
 
 
 def _wan_training_scheduler(cfg):
-    """FlowMatchEuler with Wan's UniPC ``flow_shift`` baked in; loading it from the UniPC config silently drops the
-    shift. UniPC flow sigmas equal FlowMatchEuler's static shift."""
+    """Wan's flow_shift in FlowMatchEuler (UniPC sigmas match); UniPC config silently drops it."""
     from diffusers import FlowMatchEulerDiscreteScheduler
 
     conf = FlowMatchEulerDiscreteScheduler.load_config(
@@ -3348,8 +3336,7 @@ def _canvas(resolution):
 
 
 def _open_resized(path, resolution):
-    """Open + EXIF-orient + cover-resize to the canvas (same geometry as the SDXL loader; a square
-    canvas is the legacy short-side resize). Returns the resized PIL image and its (rw, rh)."""
+    """EXIF-orient, cover-resize as SDXL (square: legacy short side); returns image, (rw, rh)."""
     from PIL import Image, ImageOps
 
     from core.inference.mcp_images import flattened_rgb
@@ -3385,8 +3372,7 @@ def _load_pixel_tensor(path, resolution, center_crop, random_flip, rng):
 
 
 def _precision_agreement_warning(own, agreed, picks) -> Optional[str]:
-    """Data parallel: every rank trains the base the tightest card resolved. Say so when that is not this card's pick
-    (another card was busier, so Auto settled lower), naming every rank's pick."""
+    """Ranks share the tightest card's base; warn when own pick differs, naming all GPU picks."""
     if not picks or len(set(picks)) == 1:
         return None
     per_rank = ", ".join(f"GPU {i}: {p}" for i, p in enumerate(picks))
@@ -3583,9 +3569,8 @@ def _encode_prompts_cached(spec, pipe, to_encode, device, pcache):
 
 
 def _rekey_conditioning_cache(pcache, reopen):
-    """The cache under its namespace read again now the conditioners are on disk. A first run reads the source
-    revision before its download ("unresolved"), and a fetch can move ``refs/main``; reopening before any encode
-    keeps this run from serving, or carrying over, entries another revision's weights produced."""
+    """Reopen once conditioners are on disk, before encoding: the pre-download revision is
+    'unresolved', and a fetch can move refs/main, so other revisions' entries are not served."""
     if pcache is None:
         return None
     try:
@@ -3614,8 +3599,7 @@ def _load_warm_conditioning(
     device,
     canvases = None,
 ):
-    """Full cache hit returns (caption_embeds, latent_cache), else (None, None) for the cold path;
-    on a hit the VAE and text encoders are never loaded."""
+    """Full hit: (caption_embeds, latent_cache), else (None, None); VAE/encoders never load."""
     embeds = []
     for cap in to_encode:
         entry = pcache.get(pcache.text_key(cap))
@@ -3769,9 +3753,8 @@ def _nf4_compile_supported() -> bool:
 
 
 def _guard_vae_attention(vae) -> int:
-    """ROCm: route the VAE's single-head attention the way inference does (diffusion_vae_attn_chunked), so a head no
-    fused kernel computes correctly runs exact math. Without it Windows ROCm encoded the training latents through a
-    kernel that returns garbage for head dim 512. Returns the number of modules patched; never raises."""
+    """Routes VAE single-head attention like inference (diffusion_vae_attn_chunked): on Windows ROCm
+    a kernel returns garbage at head dim 512. Returns patched module count; never raises."""
     try:
         from core.inference.diffusion_vae_attn_chunked import install
         return install(vae)
@@ -4035,8 +4018,7 @@ def run_dit_lora_training(
         ),
         num_epochs = 0,
     )
-    # Validate a resume against this run's identity BEFORE the multi-GB phased load, using the RESOLVED LoRA targets
-    # rather than the generic default the config carries.
+    # Validate resume before the multi-GB load; use resolved LoRA targets, not config default.
     identity = identity_for_config(
         cfg,
         dataset_pairs = pairs,
@@ -4223,8 +4205,7 @@ def _train_dit(
                 total = len(image_paths),
             )
     if caption_embeds is not None and sample_texts:
-        # Warm conditioning skips the VAE and encoders, but previews need the VAE and their own embeddings. RNG-isolated:
-        # a run without previews never makes this load, so it must not move the training streams.
+        # Previews need VAE and own embeddings; RNG-isolated, must not move training streams.
         _emit(
             on_event,
             "model_load_started",
@@ -5085,9 +5066,8 @@ def _train_dit(
             stop_now = stop_latched
         if ddp is not None:
             stop_now = ddp.any_flag(stop_now)
-        # Skipped on the final step and when stopping, since the stop path writes one at the exact step. Data
-        # parallel: rank 0 alone saves. Its RNG state is every rank's (all ranks draw the global batch from the same
-        # streams), so a resume restores it on every rank and ddp.sync_rng() hands rank 0's card generator to the rest.
+        # Skipped on the final and stop steps (the stop path saves there); under DDP only rank 0
+        # saves, its RNG state being every rank's, and resume re-syncs it via ddp.sync_rng().
         if (
             not stop_now
             and (ddp is None or ddp.is_main)
@@ -5279,9 +5259,8 @@ def _dequant_cache_wanted(
     fp16_amp,
     int8_base = False,
 ) -> bool:
-    """nf4 / int8 dequant cache on CUDA and ROCm; off on the fp16 path, whose 16 GB cards it shares with the checkpointing budget
-    (on a T4 both planned from step 1's free memory and step 2 OOMed). int8 runs eager, so the cache is its only
-    relief from torchao's per-call weight cast."""
+    """nf4/int8 dequant cache: on for CUDA/ROCm, off on fp16 (it and the checkpoint budget OOMed a
+    16 GB T4); int8 runs eager; the cache is its only relief from torchao's per-call cast."""
     from core.training.diffusion_gc_budget import rocm_windows_discrete
     from core.training.diffusion_lora_fast import dequant_cache_enabled, int8_dequant_cache_enabled
 

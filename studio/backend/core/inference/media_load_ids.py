@@ -227,8 +227,7 @@ def _in_flight_unlocked(engine: Any) -> bool:
 
 
 def _still_named(record: Optional[_Record], published: Any, engine: Any) -> Callable[[], bool]:
-    """What the engine's unload rechecks under the lock its load worker settles under: the load the
-    token named is still the one in flight or resident (no load ended or began since the check)."""
+    """Recheck under the load worker's lock: the named load is still in flight or resident."""
     if record is not None:
 
         def guard() -> bool:

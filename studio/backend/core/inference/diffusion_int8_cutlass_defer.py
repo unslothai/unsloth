@@ -35,8 +35,7 @@ _IDLE_MAX_S = 600.0
 _RETRY_S = 0.5
 _CANCEL_WAIT_S = 60.0
 
-# Set by the image backend's load and render to the arming owner: a video load (no render hooks here) keeps racing at
-# load. None = not armed.
+# Set by image load/render to the arming owner; None = not armed; video keeps racing at load.
 _ALLOWED: contextvars.ContextVar[Optional[int]] = contextvars.ContextVar(
     "unsloth_int8_cutlass_defer_allowed", default = None
 )
@@ -182,9 +181,8 @@ def schedule(
 
 
 def render_begin() -> bool:
-    """A render starts: waits for a race unit in flight (one weight shape), then returns True once if winners
-    landed since the last render began (drop the CUDA graphs so they re-record on the winning kernels). A unit
-    publishes its winner and this flag together, before it lets a waiting render in."""
+    """Waits for a race unit in flight; returns True once if winners landed since last render (drop
+    CUDA graphs to re-record); units publish winner and flag before waiting renders enter."""
     with _COND:
         _STATE["active"] += 1
         waited = False

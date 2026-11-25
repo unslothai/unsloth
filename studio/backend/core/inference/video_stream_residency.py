@@ -270,8 +270,7 @@ def _store_key(key: Any) -> Any:
 
 
 def _key_peaks(key: Any) -> dict:
-    """This process's peaks for ``key``, merged with the persisted store's (other processes' measurements) at every
-    read; the store's own mtime cache keeps that a stat when nothing changed."""
+    """Process peaks for key, merged with the store's (other processes) on read; mtime-cached."""
     peaks = _PEAKS.setdefault(key, {})
     try:
         from .diffusion_measured_peaks import work_peaks
@@ -290,9 +289,8 @@ def measured_extra_mib(key: Any, work: int) -> Optional[int]:
 
 
 def _measured_extra_mib(module: Any, work: int) -> Optional[int]:
-    """The largest recorded peak among completed requests at least as large as ``work``; None when none covers it.
-    A tagged module reads only the peaks of its calibration key (same load AND request mode), which also carries the
-    peaks it recorded itself; the module's own mode-blind table is the fallback for an untagged one."""
+    """Largest peak among completed requests at least as large as work, or None; a tagged module
+    reads only its calibration key (same load and request mode), else its mode-blind table."""
     key = getattr(module, "_unsloth_video_calibration_key", None)
     if key is not None:
         return _covering(_key_peaks(key), work)

@@ -55,8 +55,7 @@ def _torch_module(props_by_ordinal) -> types.SimpleNamespace:
 
 
 def _not_hip(monkeypatch) -> None:
-    """Stub the torch the CUDA classifier asks for HIP, so a ROCm runner does not invert
-    every assertion here (the same trap test_dgx_spark_gpu_inventory.py documents)."""
+    """No HIP on torch, else a ROCm runner inverts these; see test_dgx_spark_gpu_inventory.py."""
     monkeypatch.setitem(
         sys.modules, "torch", types.SimpleNamespace(version = types.SimpleNamespace(hip = None))
     )
@@ -558,8 +557,7 @@ def test_a_numeric_mask_under_fastest_first_refuses_the_join(monkeypatch):
 
 
 def test_the_widened_utilization_is_capped_by_the_cgroup(monkeypatch):
-    """psutil reports host-wide counters in containers, while unified-memory use is charged to
-    memory.max, so published free bytes must not exceed what this process can still charge."""
+    """psutil is host-wide in containers, but memory.max bounds unified use, so cap free bytes."""
     _cuda_host(monkeypatch, _N1XProps())
     _host_memory(monkeypatch)
     monkeypatch.setattr(LlamaCppBackend, "_cgroup_available_memory_mib", staticmethod(lambda: 2048))

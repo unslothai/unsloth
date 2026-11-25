@@ -63,8 +63,7 @@ def _bind(namespace) -> None:
     )
 
 
-# The owner's tool child runs unconfined, so an absolute path reaches the real filesystem;
-# relative paths stay in the workdir, and absolute paths outside these roots ask in auto mode.
+# Unconfined child: absolute paths ask outside roots in auto mode; relative stay in workdir.
 _SYSTEM_READ_SILENT_ROOTS = (
     # Credential checks run first, so /etc/shadow still asks despite /etc being here.
     "/usr",
@@ -80,8 +79,7 @@ _SYSTEM_READ_SILENT_ROOTS = (
     "/var/lib",
     "/proc",
     "/sys",
-    # Named pseudo-devices and accelerator nodes only: a raw disk or /dev/mem read is the host's data
-    # and asks. Mirrors tool_confinement._DEVICE_NODES / _ACCELERATOR_NODES.
+    # Named pseudo-devices and accelerator nodes only; raw disks ask. Mirrors tool_confinement.
     "/dev/null",
     "/dev/zero",
     "/dev/full",
@@ -164,8 +162,7 @@ _silent_roots_cache = None
 
 
 def _normalized_fs_text(text: str) -> str:
-    """Fold a path to the form root containment compares against: `~` expanded, separators
-    canonical, `.`/`..` collapsed, case-folded where the platform is case-insensitive."""
+    """Fold for containment: ~ expanded, separators unified, case-folded if case-insensitive."""
     if os.sep != "/":
         text = text.replace("/", os.sep)
     if text[:1] == "~":
@@ -177,8 +174,7 @@ def _normalized_fs_text(text: str) -> str:
 
 
 def _silent_root_list(producers) -> "tuple[str, ...]":
-    """Normalize each producer's paths, skipping any that raises: a root that cannot be resolved
-    (a retired account, an unset studio home) must narrow the allowlist, never crash the scan."""
+    """Skip raising producers: unresolvable roots narrow the allowlist, never crash the scan."""
     roots: "list[str]" = []
     for producer in producers:
         try:
@@ -400,8 +396,7 @@ def _silent_roots() -> "tuple[tuple[str, ...], tuple[str, ...]]":
 
 
 def _looks_absolute(text: str) -> bool:
-    """True for a path reaching the real filesystem: POSIX absolute, tilde-rooted, Windows drive or
-    UNC share; Windows spellings count on every platform, as a misjudgment only costs a prompt"""
+    """True for absolute paths; Windows spellings count everywhere (false matches only prompt)."""
     if not text:
         return False
     if text[0] == "/":
@@ -541,8 +536,7 @@ def _path_needs_approval(text, *, writing: bool = False) -> bool:
     # Shared project and tmp bases hold every account's subtree; never silent.
     if _names_a_managed_account_subtree(candidate):
         return True
-    # A symlink inside a silent root can resolve outside it. Resolved only on the about-to-allow
-    # path; the TOCTOU gap is the OS sandbox's to close.
+    # Symlinks may escape a silent root; resolved only when allowing (TOCTOU is the sandbox's).
     resolved = _resolved_fs_text(candidate)
     if resolved != candidate:
         lexical_roots = roots
@@ -676,8 +670,7 @@ _PATH_DEST_FIRST_COMMANDS = frozenset({"zip"})
 _PATH_SOURCE_MUTATING_COMMANDS = frozenset({"mv", "ln"})
 
 
-# Interpreters loading their operand files, treated as reads. `awk`/`jq` are absent: their
-# first positional is a program.
+# Interpreters reading operand files; awk/jq absent as their first positional is a program.
 _PATH_SCRIPT_COMMANDS = frozenset(
     """
     python python2 python3 py perl bash sh zsh ksh dash fish csh tcsh source ruby node deno bun
@@ -1249,8 +1242,7 @@ def _terminal_path_operands(tokens, text = None) -> "list[tuple[str, bool]]":
     and a flag value that is not a path (``head -n 5``) cannot look absolute. Redirection targets
     are included whichever command owns them, since ``> /abs/file`` truncates that file regardless.
     """
-    # Absolute operands need a root, tilde, backslash or drive colon; with none, skip the segment
-    # scan.
+    # Absolute operands need a root, tilde, backslash or drive colon; otherwise skip the scan.
     if not any(_PATH_HINT_RE.search(t) for t in tokens):
         return []
     # shlex does not split on < and >, so `echo X>/media/x` is one token.
@@ -1307,16 +1299,14 @@ def _terminal_path_operands(tokens, text = None) -> "list[tuple[str, bool]]":
             continue
         segment.append(token)
     flush()
-    # Forwarding commands build argv from the pipeline, so every absolute token is a candidate.
-    # Substring screen first to skip the per-token lookup.
+    # Forwarding commands build argv from the pipeline, so any absolute token is a candidate.
     if any("xargs" in t or "parallel" in t for t in tokens) and any(
         _token_command_base(t) in _PATH_FORWARDING_COMMANDS for t in tokens
     ):
         # The wrapped command decides the mode: `xargs touch` writes.
         forwarded_write = _forwarded_command_writes(tokens)
         operands.extend((t, forwarded_write) for t in tokens if _looks_absolute(t))
-    # Backtick substitutions are scanned in addition to the outer command. A `cd` to an absolute dir
-    # is charged as a write when anything after it writes.
+    # Backticks are scanned too; cd to an absolute dir is a write if anything after it writes.
     operands.extend(_directory_change_write_targets(tokens))
     nested = _split_backticks(tokens, text)
     if nested != list(tokens):
@@ -1530,8 +1520,7 @@ def _segment_path_operands(segment) -> "list[tuple[str, bool]]":
     if command.endswith(".exe"):
         command = command[: -len(".exe")]
     args = segment[index + 1 :]
-    # Running a binary by path reads it, so report the command word as a read. A trailing
-    # separator names a directory, which keeps a sed fragment like `/x/` out.
+    # Binary run by path is read; a trailing separator marks a directory, keeping sed /x/ out.
     launched = (
         [(segment[index], False)]
         if _looks_absolute(segment[index]) and not segment[index].endswith(("/", "\\"))
@@ -1576,8 +1565,7 @@ def _segment_path_operands(segment) -> "list[tuple[str, bool]]":
         for arg in args
     )
     spec = _PATH_FLAG_SPECS.get(command, {})
-    # tar: scan every short-flag token for c/r/u (mode may come later), but only args[0] and
-    # single-dash tokens, since filenames can contain those letters.
+    # tar scans c/r/u in args[0] and single-dash tokens only, as filenames may contain them.
     if command == "git" and "init" in args:
         # `git init <dir>` creates the repository there.
         after = args[args.index("init") + 1 :]
@@ -1975,8 +1963,7 @@ def _lex_keeping_backslashes(text: str) -> "list[str] | None":
 _ABSOLUTE_HINT_RE = re.compile(r"[/~\\]|^[A-Za-z]:")
 
 
-# Python callables whose first argument (or receiver) is a file read. Ambiguous names are keyed
-# on the module: `numpy.load` takes a filename, other serializers' `load` takes a file object.
+# First arg (or receiver) is read; numpy.load takes a filename, other load() a file object.
 _PY_QUALIFIED_READ_CALLS = {
     "numpy": frozenset({"load"}),
     "np": frozenset({"load"}),
@@ -2144,7 +2131,6 @@ _PY_PATH_DEST_SECOND_CALLS = frozenset(
 )
 
 
-# Keyword arguments that carry a path on these callables.
 _PY_PATH_KWARGS = (
     "path",
     "file",
@@ -2835,8 +2821,7 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
             # `io.FileIO(p)` opens like `io.open(p)`: the mode sits in the same spot, so the same write check.
             add(first, _open_call_writes(node, mode_index = 1))
         elif name in ("open", "fdopen"):
-            # The mode decides read vs write; as a method the mode is the first argument. Module functions
-            # (io.open, gzip.open) take the path first, so their receiver is not a path.
+            # Method calls: mode first. Module functions (io.open, gzip.open): path first.
             receiver = receiver_name
             # A dotted receiver has no `.id`; the trailing name is what the table is keyed on.
             tail = func.value.attr if is_method and isinstance(func.value, ast.Attribute) else ""

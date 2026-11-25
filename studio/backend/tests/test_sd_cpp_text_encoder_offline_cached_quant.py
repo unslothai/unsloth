@@ -81,8 +81,7 @@ def _seed_klein_9b(live):
 
 
 def test_cache_only_load_reads_the_cached_earlier_quant(cache):
-    """Klein 9B loaded before the BF16 default fetched Qwen3-8B Q4_K_M. A background (cache-only) load must still
-    resolve it rather than fail on the uncached BF16 file."""
+    """Cache-only load must resolve the cached Q4_K_M rather than fail on uncached BF16."""
     live, _fetched = cache
     old = _seed_klein_9b(live)
     b = SdCppDiffusionBackend()
@@ -136,8 +135,7 @@ def test_highest_cached_precision_wins_and_bf16_is_kept_when_cached(cache):
 
 
 def test_online_specs_and_explicit_override_are_unchanged(cache, monkeypatch):
-    """An online load still wants BF16 (fresh loads get the accuracy default), and an explicit
-    UNSLOTH_SD_CPP_TEXT_ENCODER_QUANT is honoured, not swapped, even offline."""
+    """Online loads want BF16; an explicit UNSLOTH_SD_CPP_TEXT_ENCODER_QUANT is kept offline."""
     live, _fetched = cache
     _seed_klein_9b(live)
     b = SdCppDiffusionBackend()

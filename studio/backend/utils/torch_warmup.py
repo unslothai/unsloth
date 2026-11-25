@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Imports the ML stack on a background thread, started last in main.py's lifespan so it overlaps
-serving; idempotent, never fatal, never half-initialised; torch endpoints block on get_device()
-until hardware stage ends, so async handlers must use asyncio.to_thread."""
+"""Imports the ML stack on a background thread started last in lifespan; idempotent, non-fatal,
+never half-initialised; get_device() blocks until hardware stage ends, so use asyncio.to_thread."""
 
 from __future__ import annotations
 

@@ -35,7 +35,6 @@ def _probe_conversation(dataset: Dataset, candidates = None):
     if candidates is None:
         candidates = CONVERSATION_COLUMNS
     columns = set(dataset.column_names)
-    # Remember the first all-corrupt candidate.
     all_corrupt_fallback = None
     for col in candidates:
         if col not in columns:
@@ -139,7 +138,6 @@ def is_none_or_empty(value) -> bool:
 
 
 def _classify_empty(value) -> str:
-    """Return a human-readable label for why this value is considered empty."""
     if value is None:
         return "None"
     if isinstance(value, str):

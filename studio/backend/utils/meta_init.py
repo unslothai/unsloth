@@ -1,13 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Make accelerate's ``init_on_device`` / ``init_empty_weights`` per-thread.
-
-accelerate swaps ``nn.Module.register_parameter`` process-wide for the block and restores what it saved on exit, so
-concurrent skeleton builds (a load plus Images ``download-plan`` fit checks) leak meta parameters into other threads
-and, when blocks exit out of order, leave the patch installed for the life of the process.
-
-Behaviour change: a thread started inside a block no longer inherits it (no Studio block starts a thread)."""
+"""Makes accelerate's init_on_device and init_empty_weights per-thread: its process-wide
+register_parameter swap leaks meta parameters across threads and, on out-of-order exits, stays
+installed for the process; threads started inside a block no longer inherit it."""
 
 from __future__ import annotations
 

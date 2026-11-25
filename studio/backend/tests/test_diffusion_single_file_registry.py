@@ -130,8 +130,7 @@ def test_registration_never_overwrites_diffusers_own_entry(monkeypatch):
 
 
 def test_a_class_this_diffusers_lacks_is_not_registered(monkeypatch):
-    """Not tidiness: diffusers getattr()s every registry entry on each from_single_file call, so one
-    missing class breaks all single-file loads."""
+    """A missing class breaks all loads: diffusers getattr()s every registry entry per call."""
     diffusers, sfm = _sfm()
     monkeypatch.setattr(sfm, "SINGLE_FILE_LOADABLE_CLASSES", dict(sfm.SINGLE_FILE_LOADABLE_CLASSES))
     assert getattr(diffusers, "NotAClassThisDiffusersShips2DModel", None) is None

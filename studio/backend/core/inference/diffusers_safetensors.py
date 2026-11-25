@@ -179,9 +179,8 @@ def _weightless(class_name: Any) -> bool:
 
 
 def local_pipeline_safetensors_complete(root: Any, passed: Iterable[str] = ()) -> bool:
-    """True when ``root`` is a local diffusers pipeline folder whose every manifest component that holds weights
-    (and is not supplied pre-built in ``passed``) has a ``.safetensors`` weight. False when unknown (a weight-bearing
-    component missing or without weights, e.g. a partly cached snapshot) or any component is pickle-only."""
+    """True when ``root`` is a local pipeline folder whose weight-holding components (not in
+    ``passed``) all have ``.safetensors``; False if one lacks weights or is pickle-only."""
     try:
         base = Path(str(root)).expanduser()
         if not base.is_dir():

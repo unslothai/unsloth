@@ -88,8 +88,7 @@ def model_key(
     frames: int = 1,
     device: Optional[str] = None,
 ) -> str:
-    """``device``: the GPU's name. Kernels and workspaces differ by card, so a heterogeneous host keeps one set of
-    peaks per card model instead of placing one GPU from another's measurement."""
+    """device: GPU name; peaks are kept per card model since kernels and workspaces differ."""
     return "|".join(
         (
             str(family or "unknown").lower(),
@@ -376,9 +375,8 @@ def lookup_bucket(
     device: Optional[str] = None,
     phase: Optional[str] = None,
 ) -> Optional[tuple[int, int]]:
-    """``lookup`` plus the pixels the peak covers and whether it scales squared: (peak MiB, bucket pixels,
-    quadratic), or None. A ``graphs:on`` label (a load placed before it knows whether placement keeps the whole-step
-    graph or records per block) reads an envelope over the ``graphs:step`` and ``graphs:blocks`` entries."""
+    """Returns the lookup plus (peak MiB, bucket pixels, quadratic), or None; graphs:on, used before
+    placement is known, reads an envelope over graphs:step and graphs:blocks."""
     if "graphs:on" in str(quant or "").split("|"):
         found = [
             lookup_bucket(
@@ -451,8 +449,7 @@ def record_work(
     peak_mib: int,
     held: Optional[list] = None,
 ) -> bool:
-    """Persist a peak under an opaque calibration key (the video path's work = pixels x frames table); max wins.
-    ``held`` as in ``record``."""
+    """Stores a peak under an opaque key (work = pixels x frames); max wins; held as in record."""
     if not enabled() or key is None or peak_mib is None or int(peak_mib) <= 0 or int(work) <= 0:
         return False
     path = store_path()
@@ -505,9 +502,8 @@ _windows: dict[str, "weakref.WeakSet[_Window]"] = {}
 
 
 def open_window(device: Any) -> _Window:
-    """Register a peak measurement on ``device``. Resetting the peak is allocator-wide, so a second render arming on
-    the same card (image and video run on separate threads) spoils both: each one's window reads as overlapped. An
-    abandoned window drops out once nothing references it."""
+    """Opens a peak measurement window on device; resetting the peak is allocator-wide, so
+    overlapping windows on a card spoil each other; abandoned windows drop out once unreferenced."""
     window = _Window()
     with _windows_lock:
         live = _windows.setdefault(str(device), weakref.WeakSet())
@@ -581,8 +577,7 @@ class PeakProbe:
         self.encode_peak = -(-peak // (1024 * 1024)) if peak > 0 else 0
 
     def mark_decode(self) -> None:
-        """Read the pre-decode peak without a reset (other measurements share the counters). A second decode (split
-        batch) interleaves phases, so no split is reported."""
+        """Reads pre-decode peak, no reset (shared counters); a split batch reports no split."""
         if self.device is None or self.base is None:
             return
         self.decodes += 1

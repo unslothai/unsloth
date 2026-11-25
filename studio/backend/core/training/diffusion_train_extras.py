@@ -242,8 +242,7 @@ def _hub_cache_roots() -> list[str]:
     return roots
 
 
-# In-place edits here must change the fingerprint; "connectors" is LTX-2's cached connector.
-# audio_vae: MiniMax-H3 caches its audio latents, so an edited local audio VAE must miss too.
+# In-place edits must change the fingerprint: connectors (LTX-2) and audio_vae (MiniMax-H3).
 _CACHE_SOURCE_SUBDIRS = ("text_encoder", "tokenizer", "vae", "audio_vae", "connectors")
 
 
@@ -359,8 +358,7 @@ def cond_cache_max_bytes() -> int:
 
 
 def compact_cache_namespace(family: str, *parts: str) -> str:
-    """A short, filesystem-safe namespace: the family readable, the rest (repo ids, local paths, revisions) hashed,
-    so a long local base path cannot push a key past the 255-byte file-name limit."""
+    """Readable family, hashed rest: long local paths cannot push keys past the 255-byte limit."""
     digest = hashlib.sha256("|".join(str(p) for p in parts).encode("utf-8")).hexdigest()[:20]
     return f"{_sanitize(family)}-{digest}"
 

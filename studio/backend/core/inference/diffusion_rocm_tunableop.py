@@ -187,8 +187,7 @@ def _pre(_module: Any, args: Any, kwargs: Any) -> None:
     """Tune only on a call shaped like the previous one, so one-off shapes (first call, prefix prefill) never tune."""
     import torch
 
-    # A whole-module compile (a U-Net on the max tier) traces the hooks: the lock and the process-global switch break
-    # fullgraph, so a compiled call only reads the table and tuning stays with eager calls.
+    # Whole-module compiles trace hooks: lock and global switch break fullgraph; tune eagerly.
     if torch.compiler.is_compiling():
         return
     key = _call_key(args, kwargs)

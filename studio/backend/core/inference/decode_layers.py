@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Installs and removes one wrapper on an instance's method slot (e.g. VAE decode) exactly: wrap
-records the prior instance-dict entry or none, unwrap restores it if still outermost; if a later
-wrapper captured it, it becomes a pass-through skipped by __wrapped__."""
+"""Wrap and unwrap a layer on an instance method slot (e.g. VAE decode): unwrap restores the exact
+prior entry only when outermost; else it is a pass-through skipped via __wrapped__."""
 
 from __future__ import annotations
 

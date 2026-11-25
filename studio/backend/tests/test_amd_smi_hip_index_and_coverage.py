@@ -21,9 +21,8 @@ def _hip_sees(
     count,
     totals = None,
 ):
-    """Declare HIP's own inventory: how many devices it opens, and the total memory
-    it reports per physical id. Empty totals mean torch could not describe the
-    devices, which the probe fails open on."""
+    """Declare HIP's device count and total memory per physical id; empty totals mean torch could
+    not describe the devices, so the probe fails open."""
     monkeypatch.setattr(LlamaCppBackend, "_rocm_hip_device_count", staticmethod(lambda: count))
     monkeypatch.setattr(
         LlamaCppBackend,
@@ -77,8 +76,7 @@ def _fake_amd_smi(metric, enumeration = None):
 
 
 class TestTheAmdSmiIdIsTranslatedToHip:
-    """Defect A: the branch keyed rows by amd-smi's gpu id and compared that number
-    against HIP visibility tokens."""
+    """Defect A: rows keyed by amd-smi's gpu id were compared against HIP visibility tokens."""
 
     def test_a_reordered_host_reports_each_cards_memory_under_its_hip_id(self, rocm, monkeypatch):
         """amd-smi gpu 1 is HIP 0 here. Keyed by amd-smi's number, the 96 GiB card's

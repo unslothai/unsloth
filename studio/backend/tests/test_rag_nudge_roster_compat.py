@@ -234,9 +234,8 @@ _HOSTILE = [
 
 @pytest.mark.parametrize("label,filename,forbidden", _HOSTILE, ids = [c[0] for c in _HOSTILE])
 def test_no_control_or_format_character_reaches_the_prompt(rag_conn, label, filename, forbidden):
-    """B1/B2. Quoting is not a boundary for something that renders as nothing. A
-    direction override reorders every character after it, so one file name could rewrite
-    how the rest of the system prompt reads (CVE-2021-42574)."""
+    """B1/B2: quoting is no boundary for characters that render as nothing; a direction override
+    reorders later text, so a file name could rewrite the prompt (CVE-2021-42574)."""
     _doc(rag_conn, "project_p1", "d1", filename)
     out = _nudge({"project_id": "p1"})
     assert forbidden not in out, f"{label}: {forbidden!r} survived into {out!r}"
@@ -291,8 +290,7 @@ def test_nfd_and_nfc_spellings_are_both_named(rag_conn):
 
 
 def test_a_very_deep_linked_folder_path_cannot_blow_up_the_prompt(rag_conn):
-    """B5. folder_sync stores the relative path with no length cap; _MAX_FOLDER_DEPTH is
-    64, so ~16 kB is reachable. The per-name and whole-list caps are what bound it."""
+    """B5: folder_sync paths are uncapped; _MAX_FOLDER_DEPTH 64 reaches ~16 kB; caps bound it."""
     from routes import inference
 
     _doc(rag_conn, "project_p1", "d1", "/".join(["directory" * 28] * 64) + "/f.pdf")
@@ -393,8 +391,7 @@ def test_many_concurrent_reads_leak_no_database_handles(rag_conn):
 
 
 def test_cancellation_is_not_swallowed_as_a_roster_failure(rag_conn, monkeypatch):
-    """C2. A client disconnect must cancel the request, not be logged as a bad database.
-    CancelledError is a BaseException on 3.8+, so the broad handler correctly misses it."""
+    """C2: disconnects cancel, not log as bad DB; CancelledError is a BaseException (3.8+)."""
     from routes import inference
 
     def _cancel(_scope):
@@ -406,8 +403,7 @@ def test_cancellation_is_not_swallowed_as_a_roster_failure(rag_conn, monkeypatch
 
 
 def test_the_failure_warning_latch_clears_after_a_good_read(rag_conn, monkeypatch):
-    """C3. A database busy inside the 5 s timeout clears on its own, so latching the
-    warning forever hid every later cause and leaked out of the test that set it."""
+    """C3: a busy DB clears in its 5 s timeout; latching the warning forever hid later causes."""
     from routes import inference
     from storage import rag_db
 

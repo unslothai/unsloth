@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Pairs the two expert files of a dual-expert (Wan2.2-A14B) video DiT by high/low noise token;
-high-noise is transformer, low-noise is transformer_2."""
+"""Pairs Wan2.2-A14B experts by high/low noise token (high: transformer, low: transformer_2)."""
 
 from __future__ import annotations
 

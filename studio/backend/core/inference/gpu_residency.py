@@ -112,8 +112,7 @@ def media_owner_held_mib(owner: str) -> Optional[int]:
 
 
 def media_unallocated_mib() -> dict[int, int]:
-    """{physical GPU id: MiB} of the media price live free VRAM still shows as free: an idle resident's generation
-    headroom, or all of a resident still loading. Never raises."""
+    """{GPU: MiB} of media not yet allocated: idle headroom or a loading model. Never raises."""
     try:
         held: dict[int, int] = {}
         for owner, need in _media_records().items():
@@ -173,8 +172,7 @@ def summarize_resident_media() -> dict[str, Any]:
 
 
 def media_load_need_mib(kind: str, request: Any, gpu_ordinal: Optional[int]) -> Optional[MediaNeed]:
-    """MiB a new image or video load will hold, from files on disk; None if unknown, or automatic on
-    several GPUs."""
+    """MiB a media load holds, from disk files; None if unknown or automatic on several GPUs."""
     try:
         from utils.hardware.hardware import get_parent_visible_gpu_ids
 
@@ -863,9 +861,8 @@ def _free_steps(
     acting: Optional[str] = None,
     media_only: bool = False,
 ) -> list[str]:
-    """Caller holds the arbiter lock; frees cheapest residents on gpu_ids only (never other GPUs),
-    stopping once the load fits (or after one step when unpriced); active chat model last;
-    media_only spares chat models; keep-in-memory does not protect."""
+    """Caller holds the lock; frees cheapest residents on gpu_ids only, until it fits (one step if
+    unpriced); active chat last; media_only spares chat; keep-in-memory does not protect."""
     target = set(gpu_ids) if gpu_ids is not None else None
     freed: list[str] = []
 
@@ -901,9 +898,8 @@ def _free_steps(
             logger.warning("gpu_residency: could not release the idle video server: %s", exc)
         if freed and done():
             return freed
-    # 3. An idle image model's resident text encoders: they stream from the host, the model stays loaded. Only for a
-    # load with a known size (an unsized one stops after one step, which must stay the whole model), and only when
-    # the encoders cover a known shortfall.
+    # 3. Idle image model's text encoders stream from host; model stays loaded. Known-size loads
+    # only, when they cover a shortfall; unsized stops after one step (must stay whole model).
     if (
         (need_mib or short_mib)
         and arb.DIFFUSION in overlapping()
