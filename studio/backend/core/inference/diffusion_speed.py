@@ -1543,7 +1543,12 @@ def unet_static_reductions_unsplit(unet: Any = None, logger: Any = None) -> bool
     (491_520 elements) runs as one loop: on a 24-SM RTX 4060 Laptop that fused GroupNorm + SiLU took 43 ms a call and
     the SDXL step 714 ms against 562 eager. Automatic dynamic shapes (dynamic=None) compile those blocks with symbolic
     sizes: 570 ms. Never raises; False off CUDA or when the card is unreadable."""
-    if (os.environ.get(UNET_SMALL_CARD_DYNAMIC_ENV) or "").strip().lower() in ("0", "off", "false", "no"):
+    if (os.environ.get(UNET_SMALL_CARD_DYNAMIC_ENV) or "").strip().lower() in (
+        "0",
+        "off",
+        "false",
+        "no",
+    ):
         return False
     try:
         import torch
@@ -1551,7 +1556,7 @@ def unet_static_reductions_unsplit(unet: Any = None, logger: Any = None) -> bool
         if not torch.cuda.is_available():
             return False
         index = None
-        for tensor in (unet.parameters() if unet is not None else ()):
+        for tensor in unet.parameters() if unet is not None else ():
             if tensor.device.type == "cuda":
                 index = tensor.device.index
             break
