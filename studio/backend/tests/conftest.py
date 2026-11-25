@@ -337,6 +337,16 @@ def _no_real_mxc_drive_aliases(monkeypatch):
 
 
 @pytest.fixture(autouse = True)
+def _no_sdpa_align_wrapper_left_installed():
+    # _maybe_compile_transformer installs it for a compiled diffusion run; tests that drive it never reach the
+    # training loop's uninstall, and the wrapper's cache_key_tag suffix then leaks into every later test.
+    yield
+    sdpa_align = sys.modules.get("core.training.diffusion_sdpa_align")
+    if sdpa_align is not None and sdpa_align.installed():
+        sdpa_align.uninstall_sdpa_align_without_guard()
+
+
+@pytest.fixture(autouse = True)
 def _forget_hub_unreachable_verdict():
     # Per-process Hub verdict must not leak between tests.
     def _forget():
