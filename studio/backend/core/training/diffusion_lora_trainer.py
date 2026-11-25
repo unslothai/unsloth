@@ -320,6 +320,23 @@ def _sample_sdxl_cached_latents(cache, idxs, variant_rng, device, weight_dtype):
     return latents, batch_time_ids
 
 
+def _sdxl_noisy_and_velocity(noise_scheduler, latents, noise, timesteps, v_prediction: bool):
+    """Run ``add_noise`` (and ``get_velocity`` for v-prediction) in fp32, then cast to the latents' dtype.
+
+    The DDPM scheduler casts ``alphas_cumprod`` to the sample dtype before the sqrt: in bf16
+    ``1 - alphas_cumprod[t]`` rounds to 0 at t=0 and t=1, so the noise term vanishes (diffusers #15300).
+    Returns ``(noisy, velocity)``; ``velocity`` is None unless ``v_prediction``.
+    """
+    dtype = latents.dtype
+    latents32 = latents.float()
+    noise32 = noise.float()
+    noisy = noise_scheduler.add_noise(latents32, noise32, timesteps).to(dtype)
+    velocity = None
+    if v_prediction:
+        velocity = noise_scheduler.get_velocity(latents32, noise32, timesteps).to(dtype)
+    return noisy, velocity
+
+
 def _mps_available() -> bool:
     import torch
     try:
@@ -832,7 +849,13 @@ def run_diffusion_lora_training(
                 timesteps = torch.randint(
                     0, noise_scheduler.config.num_train_timesteps, (bsz,), device = device
                 ).long()
-                noisy = noise_scheduler.add_noise(latents, noise, timesteps)
+                noisy, velocity = _sdxl_noisy_and_velocity(
+                    noise_scheduler,
+                    latents,
+                    noise,
+                    timesteps,
+                    prediction_type == "v_prediction",
+                )
 
                 if precompute:
                     prompt_embeds = _parts_to_device(
@@ -848,7 +871,7 @@ def run_diffusion_lora_training(
                 added = {"text_embeds": pooled, "time_ids": batch_time_ids}
 
                 if prediction_type == "v_prediction":
-                    target = noise_scheduler.get_velocity(latents, noise, timesteps)
+                    target = velocity
                 else:
                     target = noise
 
@@ -861,7 +884,7 @@ def run_diffusion_lora_training(
                 if loss is OUT_OF_MEMORY:
                     # Drop every device reference to the micro-batch first, so the rerun has a clean step's memory.
                     loss = noisy = timesteps = prompt_embeds = pooled = added = target = None
-                    latents = noise = batch_time_ids = pixel_values = None
+                    latents = noise = velocity = batch_time_ids = pixel_values = None
                     step_acc = None
                     for loss in budget_steps.rerun(_forward_backward):
                         step_acc = accumulate_loss(step_acc, loss, cfg.gradient_accumulation_steps)
