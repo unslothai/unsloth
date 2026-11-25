@@ -3,6 +3,7 @@
 
 """bfloat16 stochastic rounding for full finetuning. CPU; bitsandbytes on CUDA only."""
 
+import copy
 import importlib.util
 from pathlib import Path
 
@@ -83,6 +84,27 @@ def test_torch_adamw_keeps_the_float32_update(sr, foreach):
     }
     assert kept["bf16"] < 0.5, kept
     assert abs(kept["sr"] - 1) < 0.1, kept
+
+
+def test_resume_with_an_initially_inactive_weight(sr):
+    def setup(weights):
+        params = [torch.nn.Parameter(weight.detach().clone()) for weight in weights]
+        optimizer = torch.optim.AdamW(params, lr = 0.001, weight_decay = 0.0)
+        sr.enable_bf16_stochastic_rounding(optimizer, verbose = False)
+        return params, optimizer
+
+    params, optimizer = setup([torch.ones(1024, dtype = torch.bfloat16) for _ in range(2)])
+    params[1].sum().backward()
+    optimizer.step()
+    optimizer.zero_grad(set_to_none = True)
+
+    resumed, restored = setup(params)
+    restored.load_state_dict(copy.deepcopy(optimizer.state_dict()))
+    for weights, opt in ((params, optimizer), (resumed, restored)):
+        (weights[0].sum() + weights[1].sum()).backward()
+        opt.step()
+    for actual, expected in zip(resumed, params):
+        assert torch.equal(actual, expected)
 
 
 def test_idempotent_kill_switch_and_scope(sr, monkeypatch):
