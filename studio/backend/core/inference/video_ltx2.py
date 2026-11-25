@@ -1254,6 +1254,294 @@ def install_ltx2_full_mask_drop(pipe: Any, logger: Any = None) -> int:
     return count
 
 
+# LTX-2.3 / 2.5 connectors: diffusers keeps the masked norm and both scaled copies ([B, 1024, 49 * 3840], 368 MiB each
+# in bf16) alive while the 1.44 GiB video projection onloads; the lean forward builds each input when its projection
+# runs and frees it after (same ops, bit-identical). =0 keeps the diffusers forward.
+LTX2_LEAN_CONNECTOR_ENV = "UNSLOTH_LTX2_LEAN_CONNECTOR_FEATURES"
+_LTX2_CONNECTORS_CLS = "LTX2TextConnectors"
+_LTX2_LEAN_CONNECTOR_ATTR = "_unsloth_lean_connector_features"
+# sha256 of ``inspect.getsource(LTX2TextConnectors.forward)`` this copy matches (diffusers 0.42.1); any other source
+# keeps the diffusers forward.
+_LTX2_CONNECTORS_FORWARD_SHA256 = frozenset(
+    {"9764cf89cec9603d1190a95d5e3daa95cde08eb567ce19e2eee31644ed15f6dd"}
+)
+
+
+def ltx2_lean_connector_disabled() -> bool:
+    raw = (os.environ.get(LTX2_LEAN_CONNECTOR_ENV) or "").strip().lower()
+    return raw in ("0", "off", "false", "no")
+
+
+def _ltx2_connectors_forward_matches(cls: Any) -> bool:
+    try:
+        import hashlib
+        import inspect
+        source = inspect.getsource(cls.forward)
+    except Exception:  # noqa: BLE001 - unreadable source: keep the diffusers forward
+        return False
+    return hashlib.sha256(source.encode()).hexdigest() in _LTX2_CONNECTORS_FORWARD_SHA256
+
+
+def _ltx2_lean_connectors_forward(
+    self: Any,
+    text_encoder_hidden_states: Any,
+    attention_mask: Any,
+    padding_side: str = "left",
+    scale_factor: int = 8,
+) -> Any:
+    """``LTX2TextConnectors.forward`` (diffusers 0.42.1) with the per-modality inputs built one at a time."""
+    import math
+
+    import torch
+    from diffusers.pipelines.ltx2.connectors import per_token_rms_norm
+
+    if not self.config.per_modality_projections:
+        return type(self).forward(
+            self,
+            text_encoder_hidden_states,
+            attention_mask,
+            padding_side = padding_side,
+            scale_factor = scale_factor,
+        )
+    if text_encoder_hidden_states.ndim == 3:
+        text_encoder_hidden_states = text_encoder_hidden_states.unflatten(
+            2, (self.config.caption_channels, -1)
+        )
+    keep = attention_mask.bool().unsqueeze(-1)
+
+    def scaled_input(hidden_dim: int) -> Any:
+        # torch.where(keep, norm, 0) * scale, in place on the norm this call owns
+        features = per_token_rms_norm(text_encoder_hidden_states).flatten(2, 3)
+        features.masked_fill_(keep.logical_not(), 0.0)
+        return features.mul_(math.sqrt(hidden_dim / self.config.caption_channels))
+
+    features = scaled_input(self.config.video_hidden_dim)
+    video_text_emb_proj = self.video_text_proj_in(features)
+    del features
+    features = scaled_input(self.config.audio_hidden_dim)
+    audio_text_emb_proj = self.audio_text_proj_in(features)
+    del features
+    if not torch.compiler.is_compiling():
+        # eager-only engagement count: a traced attribute write would add a Dynamo guard and a recompile
+        self.__dict__["_unsloth_lean_connector_runs"] = (
+            self.__dict__.get("_unsloth_lean_connector_runs", 0) + 1
+        )
+
+    text_dtype = video_text_emb_proj.dtype
+    attention_mask = (attention_mask.to(torch.int64) - 1).to(text_dtype)
+    attention_mask = attention_mask.reshape(
+        attention_mask.shape[0], 1, -1, attention_mask.shape[-1]
+    )
+    add_attn_mask = attention_mask * torch.finfo(text_dtype).max
+
+    video_text_embedding, video_attn_mask = self.video_connector(video_text_emb_proj, add_attn_mask)
+
+    binary_attn_mask = (video_attn_mask < 1e-6).to(torch.int64)
+    binary_attn_mask = binary_attn_mask.reshape(
+        video_text_embedding.shape[0], video_text_embedding.shape[1], 1
+    )
+    video_text_embedding = video_text_embedding * binary_attn_mask
+
+    audio_text_embedding, _ = self.audio_connector(audio_text_emb_proj, add_attn_mask)
+
+    return video_text_embedding, audio_text_embedding, binary_attn_mask.squeeze(-1)
+
+
+def install_ltx2_lean_connector_features(pipe: Any, logger: Any = None) -> bool:
+    """Give ``pipe.connectors`` the lean forward, before any offload hook wraps it. False (diffusers forward kept)
+    when switched off, not per-modality connectors, a diffusers forward this copy does not match, or a forward
+    already wrapped on the instance (an offload hook would be bypassed)."""
+    if ltx2_lean_connector_disabled():
+        return False
+    connectors = getattr(pipe, "connectors", None)
+    if connectors is None or type(connectors).__name__ != _LTX2_CONNECTORS_CLS:
+        return False
+    if getattr(connectors, _LTX2_LEAN_CONNECTOR_ATTR, False):
+        return True
+    try:
+        if not bool(getattr(connectors.config, "per_modality_projections", False)):
+            return False
+        if "forward" in connectors.__dict__ or not _ltx2_connectors_forward_matches(
+            type(connectors)
+        ):
+            return False
+        import types
+
+        connectors.forward = types.MethodType(_ltx2_lean_connectors_forward, connectors)
+        setattr(connectors, _LTX2_LEAN_CONNECTOR_ATTR, True)
+    except Exception:  # noqa: BLE001 - memory lever only; the diffusers forward stays
+        return False
+    if logger is not None:
+        logger.info(
+            "video.ltx2: connector inputs built one at a time (two fewer prompt-sized copies held)"
+        )
+    return True
+
+
+# Streamed tiers: text-to-video never runs the LTX-2 VAE encoder (612 MiB on LTX-2.5), so it waits on the host and
+# joins the card only for ``vae.encode``. =0 keeps it on the card.
+LTX2_PARK_VAE_ENCODER_ENV = "UNSLOTH_LTX2_PARK_VAE_ENCODER"
+_LTX2_VAE_CLS = "AutoencoderKLLTX2Video"
+_LTX2_ENCODER_HOME = "_unsloth_encoder_home"
+_LTX2_ENCODE_WRAPPED = "_unsloth_parked_encode"
+# the tiers whose decoders stay resident on the card (not hooked per call)
+_LTX2_PARK_TIERS = ("group", "streaming")
+
+
+def ltx2_vae_encoder_parks(vae: Any, offload_policy: Any) -> bool:
+    """Whether ``vae``'s encoder waits on the host under ``offload_policy``."""
+    if (os.environ.get(LTX2_PARK_VAE_ENCODER_ENV) or "").strip().lower() in (
+        "0",
+        "off",
+        "false",
+        "no",
+    ):
+        return False
+    return (
+        str(offload_policy) in _LTX2_PARK_TIERS
+        and type(vae).__name__ == _LTX2_VAE_CLS
+        and getattr(vae, "encoder", None) is not None
+    )
+
+
+def _module_device(module: Any) -> Any:
+    first = next(iter(module.parameters()), None)
+    return None if first is None else first.device
+
+
+def _module_devices(module: Any) -> set:
+    """Every device ``module``'s submodules hold parameters on: a move that failed partway leaves more than one."""
+    devices = set()
+    for sub in module.modules():
+        own = next(iter(sub.parameters(recurse = False)), None)
+        if own is None:
+            own = next(iter(sub.buffers(recurse = False)), None)
+        if own is not None:
+            device = _module_device(sub)
+            devices.add(own.device if device is None else device)
+    return devices
+
+
+def park_ltx2_vae_encoder(
+    pipe: Any,
+    offload_policy: Any,
+    logger: Any = None,
+) -> int:
+    """Move the LTX-2 VAE encoder to the host and give ``vae.encode`` a wrapper that brings it back for the call.
+    Idempotent (a later ``vae.to(device)`` is undone on the next call); bytes moved off the card, else 0."""
+    vae = getattr(pipe, "vae", None)
+    if vae is None or not ltx2_vae_encoder_parks(vae, offload_policy):
+        return 0
+    try:
+        import torch
+
+        encoder = vae.encoder
+        home = _module_device(getattr(vae, "decoder", None) or vae)
+        if home is None or home.type == "cpu" or getattr(vae, "_hf_hook", None) is not None:
+            return 0
+        if not vae.__dict__.get(_LTX2_ENCODE_WRAPPED, False):
+            inner = vae.encode
+
+            def encode(*args: Any, **kwargs: Any) -> Any:
+                target = vae.__dict__.get(_LTX2_ENCODER_HOME)
+                devices = _module_devices(encoder)
+                # parked (or split by a failed move): onto the card for the call, back to the host after
+                moved = target is not None and bool(devices) and devices != {target}
+                try:
+                    if moved:
+                        encoder.to(target)
+                    return inner(*args, **kwargs)
+                finally:
+                    if moved:
+                        # also after a partial onload: the whole encoder goes back to the host
+                        encoder.to("cpu")
+
+            vae.encode = encode
+            vae.__dict__[_LTX2_ENCODE_WRAPPED] = True
+        vae.__dict__[_LTX2_ENCODER_HOME] = home
+        if _module_devices(encoder) == {torch.device("cpu")}:
+            return 0
+        moved = sum(
+            int(t.numel()) * int(t.element_size())
+            for t in list(encoder.parameters()) + list(encoder.buffers())
+        )
+        encoder.to("cpu")
+    except Exception:  # noqa: BLE001 -- memory lever only: the encoder stays where it was
+        return 0
+    if moved and logger is not None:
+        logger.info(
+            "video.ltx2: VAE encoder (%d MiB) waits on the host; it joins the card only to encode an image",
+            moved >> 20,
+        )
+    return moved
+
+
+def unpark_ltx2_vae_encoder(
+    pipe: Any,
+    offload_policy: Any,
+    logger: Any = None,
+) -> int:
+    """For an image-conditioned request: bring a parked encoder back to the card for the whole request (it encodes in
+    both stages, so per-call moves would copy it four times), and return its MiB for the floor; 0 when it does not
+    park. The next unconditioned request parks it again."""
+    vae = getattr(pipe, "vae", None)
+    if vae is None or not ltx2_vae_encoder_parks(vae, offload_policy):
+        return 0
+    encoder = vae.encoder
+    mib = (
+        sum(
+            int(t.numel()) * int(t.element_size())
+            for t in list(encoder.parameters()) + list(encoder.buffers())
+        )
+        >> 20
+    )
+    home = vae.__dict__.get(_LTX2_ENCODER_HOME)
+    if home is None or _module_devices(encoder) in (set(), {home}):
+        return mib
+    try:
+        encoder.to(home)
+    except Exception:  # noqa: BLE001 -- e.g. an OOM partway: the whole encoder back on the host, moved per call
+        try:
+            encoder.to("cpu")
+        except Exception:  # noqa: BLE001
+            pass
+        return mib
+    if logger is not None:
+        logger.info(
+            "video.ltx2: VAE encoder (%d MiB) on the card for an image-conditioned request", mib
+        )
+    return mib
+
+
+def ltx2_memory_levers(pipe: Any, offload_policy: Any) -> str:
+    """The memory levers engaged on ``pipe`` ("" when none): part of the measured-peak key, so a peak recorded with a
+    lever on never lowers the headroom of a load or request running with it off."""
+    levers = []
+    try:
+        if getattr(getattr(pipe, "connectors", None), _LTX2_LEAN_CONNECTOR_ATTR, False):
+            levers.append("lean_connectors")
+        from .video_ltx25 import compact_conditioning_enabled, release_prompt_rows_enabled
+
+        from .video_ltx25 import prompt_rows_release_supported, two_stage_enabled
+
+        if (
+            getattr(pipe, "_unsloth_ltx25_encoder", None) is not None
+            and not bool(getattr(pipe, "_unsloth_ltx25_dev", False))
+            and two_stage_enabled()
+            and release_prompt_rows_enabled()
+            and compact_conditioning_enabled()
+            and prompt_rows_release_supported()
+        ):
+            # only the two-stage render releases them (CFG, which batches the rows, has its own key entry)
+            levers.append("released_prompt_rows")
+        vae = getattr(pipe, "vae", None)
+        if vae is not None and ltx2_vae_encoder_parks(vae, offload_policy):
+            levers.append("parked_vae_encoder")
+    except Exception:  # noqa: BLE001
+        pass
+    return ",".join(levers)
+
+
 def ltx23_verbatim_sigmas(pipe: Any) -> Any:
     """Disable scheduler sigma rewrites (dynamic shift, terminal stretch) so sigmas pass through intact."""
     import contextlib
