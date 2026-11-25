@@ -247,7 +247,7 @@ def _case_ep(rank, world, tmp, path):
     want = q._snapshot(model)
     out["full"] = epi._ep_train(epn, model, rank, world)
 
-    # (b) expert_parallel_loading of the pre-quantized checkpoint: only this rank's 4-bit experts are kept.
+    # (b) expert_parallel_loading of the pre-quantized checkpoint.
     with epn.expert_parallel_loading(mesh) as state:
         model = _load(path)
     out["models"] = len(state["models"])
@@ -403,7 +403,6 @@ def test_ep_prequantized_inkling_sharded_load_keeps_only_local_experts(ckpt):
         ]
         assert r["stats"]["sharded_weights"] == 0, r["stats"]
         assert r["held"] < r["full_bytes"], (r["held"], r["full_bytes"])
-        # Bitwise the full load + apply, same training.
         assert r["compared"] > 0 and not r["diffs"], r["diffs"][:5]
         assert r["sharded"]["losses"] == r["full"]["losses"]
 

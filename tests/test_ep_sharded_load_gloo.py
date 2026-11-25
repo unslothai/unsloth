@@ -1,10 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-"""expert_parallel_loading of a 16-bit MoE checkpoint (gloo CPU, 2 ranks, fp32, transformers 5).
-
-Each rank keeps only its routed experts as transformers sets them (bitwise the full load's slice), PEFT sizes the
-expert LoRA from the whole stack, a forward before apply_expert_parallel is refused, and after apply one training
-step matches a full load + apply bitwise and one process on the concatenated batch."""
+"""expert_parallel_loading of a 16-bit MoE checkpoint (gloo CPU, 2 ranks, fp32, transformers 5)."""
 
 import multiprocessing
 import os
@@ -79,7 +75,7 @@ def _step(epn, model, rank, world, mesh, vocab):
             logits[:, :-1].flatten(0, 1).float(), labels[:, 1:].flatten(), reduction = "sum"
         )
 
-    if mesh is None:  # one process: every rank's rows
+    if mesh is None:
         for ids, lab in rows:
             (loss_of(model, ids, lab) / n).backward()
         value = sum(float(loss_of(model, i, lab).detach()) for i, lab in rows) / n
@@ -214,7 +210,6 @@ def test_ep_sharded_16bit_load_keeps_only_local_experts_and_matches_full_load():
     assert all(r is not None and "error" not in r for r in results), results
     for r in results:
         assert r["models"] == 1, r
-        # Each rank materialises only its half of every routed expert stack, bitwise the full load's slice.
         assert r["per_rank"] * 2 == r["experts"] and r["sliced"], r
         assert r["held"] * 2 == r["whole"], (r["held"], r["whole"])
         assert (

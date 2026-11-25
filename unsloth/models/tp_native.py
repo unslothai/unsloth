@@ -1989,8 +1989,7 @@ def _preload_expert_params4bit(owner, p, rank, tp, ranks):
 
 
 def _preload_expert_plain(owner, p, rank, tp, ranks):
-    """expert_parallel_loading: this rank's experts of a just-loaded 16-bit stack (a plain local Parameter); PEFT
-    still sizes expert LoRA from the whole stack (_patch_param_wrapper_preloaded_shape). None when it cannot be cut."""
+    """This rank's experts of a just-loaded 16-bit stack, or None; PEFT still sizes LoRA from the whole stack."""
     E = owner.__dict__.get("num_experts")
     if (
         not isinstance(E, int)
@@ -2013,8 +2012,6 @@ def _preload_expert_plain(owner, p, rank, tp, ranks):
 
 
 class _WholeStackShape:
-    """get_param of a PEFT ParamWrapper over a preloaded 16-bit expert stack: the whole stack's shape."""
-
     def __init__(self, param, shape):
         self._param, self.shape = param, torch.Size(shape)
 
@@ -5060,9 +5057,7 @@ def _tp_load_quantizing(original, cls, name, args, kwargs, mesh, state):
         return t.numel() * t.element_size()
 
     def shard_experts(module):
-        # Both stacks of a block or neither, once both are set (4-bit, or 16-bit under expert parallel), and only
-        # for a block apply shards (its structure and both stacks checked as at apply): one cut stack would leave
-        # the block unshardable.
+        # Both stacks of a block or neither: one cut stack would leave the block unshardable.
         stacks = {n: module._parameters.get(n) for n in _EXPERT_STACKS}
         if any(
             p is None or p.is_meta or getattr(p, _EXPERT_PRELOAD, None) is not None
@@ -5286,9 +5281,7 @@ def _from_pretrained_sharded(original, cls, name, args, kwargs, state):
                     return original(cls, name, *args, **original_kwargs)
             return chunked(original, cls, name, args, original_kwargs, mesh, state)
     if state.get("experts_only"):
-        # Expert parallel: a 16-bit or pre-quantized bitsandbytes 4-bit checkpoint is transformers' own load with
-        # each routed expert stack cut to this rank's experts as it is set (_tp_load_quantizing); other
-        # quantizations, transformers 4.x and 2-D meshes load in full.
+        # Other quantizations, transformers 4.x and 2-D meshes load in full.
         mesh = state["mesh"] if state["mesh"] is not None else _world_mesh()
         on_load = other or (
             quantized is None

@@ -94,8 +94,7 @@ def ep_env_mesh():
 
 
 def ep_env_load(fn, args, kwargs, sharded):
-    """from_pretrained under UNSLOTH_EP_SIZE: each rank keeps only its routed experts (expert_parallel_loading)
-    unless `sharded` is False (an adapter or QAT load)."""
+    """from_pretrained under UNSLOTH_EP_SIZE; `sharded` False (adapter or QAT load) loads in full."""
     if not sharded:
         return fn(*args, **kwargs)
     try:
@@ -127,9 +126,7 @@ def _tpn():
 
 @contextlib.contextmanager
 def expert_parallel_loading(ep_mesh = None):
-    """A 16-bit, pre-quantized bitsandbytes 4-bit or bitsandbytes 4-bit quantize-on-load (transformers 5) keeps
-    only this rank's routed expert stacks, cut as transformers sets (or quantizes) them; everything else loads
-    whole. Other loads (other quantizations, transformers 4.x) are untouched."""
+    """16-bit or bitsandbytes 4-bit loads (transformers 5) keep only this rank's routed expert stacks; others load whole."""
     tpn = _tpn()
     with tpn._sharded_from_pretrained(
         {
