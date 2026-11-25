@@ -693,9 +693,7 @@ def _whole_sequence_mask(total, device, dtype, window, cu_seqlens):
     return mask.masked_fill_(allowed.logical_not_(), torch.finfo(dtype).min)[None, None]
 
 
-# sdpa with a mask (packed documents or a sliding window) over a gathered sequence longer than this runs in
-# query chunks instead of one [T, T] mask (3 GiB at 32K, 12 GiB at 64K in 16-bit). Shorter ones keep the
-# dense mask, which is one kernel call.
+# Masked sdpa past this many tokens runs in query chunks, not one [T, T] mask (12 GiB at 64K in 16-bit).
 _DENSE_MASK_MAX_TOKENS = 8192
 # Elements of one chunk's [rows, keys] mask: 384 MiB at 16-bit (bool plus the additive mask).
 _MASK_CHUNK_ELEMENTS = 1 << 27
@@ -759,19 +757,14 @@ def _document_starts(seq_info):
 def _chunked_masked_attention(
     shard, query, key, value, attention_fn, kwargs, window, cu_seqlens, starts, rows
 ):
-    """attention_fn over query chunks of `rows`, each against only the keys some row in it can see (from the
-    chunk's first row's document start or window start up to the chunk's last row), with that chunk's slice
-    of the whole-sequence mask. A cropped key would carry exactly zero weight, so the result is the dense
-    mask's up to summation order. sdpa saves its mask for backward, so under autograd each chunk is checkpointed: the slice is
-    rebuilt in backward instead of all of them living until then, which would add back up to [T, T]."""
+    """attention_fn per query chunk, against only the keys the chunk can see, with its mask slice. sdpa saves
+    its mask for backward, so each chunk is checkpointed: otherwise the slices add back up to [T, T]."""
     from torch.utils.checkpoint import checkpoint
 
     total = query.shape[2]
     grad = torch.is_grad_enabled() and any(x.requires_grad for x in (query, key, value))
     if grad and query.dtype in (torch.float16, torch.bfloat16):
-        # A key's gradient sums over every chunk that sees it. Summed in 16-bit, the error grows with the
-        # chunk count (1.5x the dense mask's at 64 chunks); in float32 it stays at one 16-bit rounding per
-        # chunk (1.1x). The slices cast back to 16-bit exactly.
+        # dk / dv sum over chunks: in 16-bit the error grows with the chunk count (1.5x dense at 64 chunks).
         key, value = key.float(), value.float()
     outs = []
     for lo in range(0, total, rows):
@@ -796,7 +789,6 @@ def _chunked_masked_attention(
 
         args = (query[:, :, lo:hi], key[:, :, key_lo:hi], value[:, :, key_lo:hi])
         outs.append(checkpoint(run, *args, use_reentrant = False) if grad else run(*args))
-    # [B, rows, H, D] chunks -> [B, T, H, D]
     return torch.cat(outs, dim = 1)
 
 
