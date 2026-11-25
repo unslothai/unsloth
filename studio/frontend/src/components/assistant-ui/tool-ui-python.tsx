@@ -14,6 +14,7 @@ import {
   toolResultText,
   useChatPreferencesStore,
   useToolAwaitingApproval,
+  useToolOutput,
 } from "@/features/chat";
 import type { ToolCallMessagePartComponent } from "@assistant-ui/react";
 import { useToolArgsStatus } from "@assistant-ui/react";
@@ -29,7 +30,6 @@ import {
 } from "./tool-fallback";
 import { ToolLiveOutput } from "./tool-live-output";
 import { ToolResultOutput } from "./tool-result-output";
-import { useToolFullOutput } from "./use-tool-full-output";
 
 interface StructuredResult {
   text: string;
@@ -105,7 +105,7 @@ const PythonToolUIImpl: ToolCallMessagePartComponent = ({
   }
 
   // Prefer the fuller live stream over a truncated result; after a reload only the result remains.
-  const fullOutput = useToolFullOutput(toolCallId);
+  const fullOutput = useToolOutput("toolFullOutput", toolCallId);
   const displayOutput = useMemo(
     () => preferSanitizedFullToolOutput(fullOutput, output),
     [fullOutput, output],

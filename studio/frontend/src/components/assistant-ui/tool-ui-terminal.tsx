@@ -24,8 +24,8 @@ import {
   preferSanitizedFullToolOutput,
   toolResultText,
   useToolAwaitingApproval,
+  useToolOutput,
 } from "@/features/chat";
-import { useToolFullOutput } from "./use-tool-full-output";
 
 const TerminalToolUIImpl: ToolCallMessagePartComponent = ({
   toolCallId,
@@ -52,7 +52,7 @@ const TerminalToolUIImpl: ToolCallMessagePartComponent = ({
         : toolResultText(result);
 
   // Prefer the fuller live stream over a truncated result; after a reload only the result remains.
-  const fullOutput = useToolFullOutput(toolCallId);
+  const fullOutput = useToolOutput("toolFullOutput", toolCallId);
   // Compare sanitized text on both sides or the reconciliation appends a duplicate prefix.
   const displayOutput = useMemo(
     () => preferSanitizedFullToolOutput(fullOutput, output),

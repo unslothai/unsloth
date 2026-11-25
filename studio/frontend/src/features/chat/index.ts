@@ -114,7 +114,7 @@ export {
   toolOutputKey,
   toolResultText,
   toolThreadScope,
-  useToolOutputFor,
+  useToolOutput,
   useUnresolvedToolPaneScope,
   useToolPaneScope,
 } from "./tool-output-scope";
