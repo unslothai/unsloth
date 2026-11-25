@@ -593,8 +593,18 @@ def test_mossformer2_reads_the_kind_from_any_file_name(hub, name, task, goal):
 
 
 def test_apollo_gets_44k_and_the_48k_filters_get_48k():
-    rates = {f: acm.family_policy(f).separation.rate for f in ("apollo", "sidon", "voice_isolator")}
-    assert rates == {"apollo": 44100, "sidon": 48000, "voice_isolator": 48000}
+    families = ("apollo", "sidon", "voice_isolator", "universr")
+    specs = {f: acm.family_policy(f).separation for f in families}
+    assert {f: s.rate for f, s in specs.items()} == {
+        "apollo": 44100,
+        "sidon": 48000,
+        "voice_isolator": 48000,
+        "universr": 48000,
+    }
+    # Only UniverSR needs the source's bandwidth (it refuses an effective 48 kHz input).
+    assert {f: s.input_rates for f, s in specs.items() if s.input_rates} == {
+        "universr": (8000, 12000, 16000, 24000)
+    }
 
 
 def test_qwen3_tts_package_kind_comes_from_its_name(hub):

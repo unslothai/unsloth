@@ -162,9 +162,11 @@ class SeparationSpec:
     goal: str = "stems"
     # An s2s answer carries one top-level audio and no named outputs; its file gets this id.
     output: Optional[str] = None
-    # Rate Studio prepares the track at: 44.1 kHz suits the stem models and Apollo (which refuses
-    # any other); a 48 kHz filter keeps the top of the band.
+    # Apollo refuses any rate but 44.1 kHz; a 48 kHz filter keeps the top of the band.
     rate: int = 44100
+    # Bandwidths an upscaler's input_sample_rate takes; unset, it is the source's (UniverSR reads
+    # the prepared file's rate otherwise, which no bandwidth matches).
+    input_rates: tuple[int, ...] = ()
 
 
 @dataclass(frozen = True)
@@ -735,7 +737,13 @@ _SEPARATION_FAMILIES: tuple[AudioCppFamily, ...] = (
     AudioCppFamily("apollo", "sep", server_task = "s2s", separation = _RESTORE),
     *(
         AudioCppFamily(name, "sep", server_task = "s2s", separation = _RESTORE_48K)
-        for name in ("sidon", "audiosr", "universr")
+        for name in ("sidon", "audiosr")
+    ),
+    AudioCppFamily(
+        "universr",
+        "sep",
+        server_task = "s2s",
+        separation = replace(_RESTORE_48K, input_rates = (8000, 12000, 16000, 24000)),
     ),
 )
 
@@ -2228,7 +2236,7 @@ def option_schema(
     if (
         policy.task == "sep"
         and policy.default_server_task != "s2s"
-        and policy.family not in (VARIANT_TASKS)
+        and policy.family not in VARIANT_TASKS
     ):
         return ()
     if policy.options:

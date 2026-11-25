@@ -243,6 +243,7 @@ def model_info_fields(model: AudioCppModel) -> dict[str, Any]:
             "goal": model.separation.goal,
             "output": model.separation.output,
             "rate": model.separation.rate,
+            "input_rates": list(model.separation.input_rates),
         },
         "audio_options_by_workflow": options_by_workflow(model, primary),
         # Null when the spec takes any option; else the request fields it declares.

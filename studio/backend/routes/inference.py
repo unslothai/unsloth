@@ -25923,8 +25923,8 @@ def _clock(seconds: float) -> str:
     return f"{whole // 60}:{whole % 60:02d}"
 
 
-def _probe_audio_with_av(path) -> Optional[tuple[int, float]]:
-    """``(channels, seconds)`` of the first audio stream, through FFmpeg; None if unreadable."""
+def _probe_audio_with_av(path) -> Optional[tuple[int, float, int]]:
+    """``(channels, seconds, rate)`` of the first audio stream, through FFmpeg; None if unreadable."""
     try:
         import av
 
@@ -25937,13 +25937,14 @@ def _probe_audio_with_av(path) -> Optional[tuple[int, float]]:
                 seconds = container.duration / 1_000_000
             else:
                 return None
-            return int(stream.channels), seconds
+            return int(stream.channels), seconds, int(stream.rate or 0)
     except Exception:  # noqa: BLE001 - any failure reads as an unreadable track
         return None
 
 
 def _prepare_separation_source(ref: dict[str, Any], rate: int):
-    """``(source, path prepared at ``rate``)``, after the 10-minute cap; stereo stays stereo."""
+    """``(source, path prepared at ``rate``, source rate)``, after the 10-minute cap; stereo stays
+    stereo."""
     import wave
 
     from core.inference import audio_inputs
@@ -25952,19 +25953,20 @@ def _prepare_separation_source(ref: dict[str, Any], rate: int):
     try:
         with wave.open(str(source.path), "rb") as wav:
             channels = wav.getnchannels()
-            seconds = wav.getnframes() / wav.getframerate()
+            native = wav.getframerate()
+            seconds = wav.getnframes() / native
     except Exception:  # noqa: BLE001 - e.g. a float stem from history, which wave cannot open
         probed = _probe_audio_with_av(source.path)
         if probed is None:
             raise audio_inputs.AudioInputError(400, "This track could not be read. Add it again.")
-        channels, seconds = probed
+        channels, seconds, native = probed
     if seconds > _SEPARATE_MAX_SECONDS:
         raise HTTPException(
             status_code = 400,
             detail = "Separate tracks up to 10 minutes long. This one is "
             f"{_clock(seconds)}. Pick a shorter track.",
         )
-    return source, audio_inputs.prepared_path(source, rate, stereo = channels == 2)
+    return source, audio_inputs.prepared_path(source, rate, stereo = channels == 2), native
 
 
 def _stem_rank(ids: list[str]):
@@ -26068,13 +26070,19 @@ async def _run_separation(
     model_name = _orchestrator_public_model_id(backend)
     options = _separation_options(body, model_info, _audio_model_label(model_name))
     ref = source_ref.model_dump(exclude_none = True)
+    separation = model_info.get("audio_separation") or {}
     try:
-        rate = (model_info.get("audio_separation") or {}).get("rate") or _SEPARATE_RATE
-        source, prepared = await asyncio.to_thread(_prepare_separation_source, ref, int(rate))
+        source, prepared, native = await asyncio.to_thread(
+            _prepare_separation_source, ref, int(separation.get("rate") or _SEPARATE_RATE)
+        )
     except audio_inputs.AudioInputError as exc:
         if exc.status == 404 and source_ref.input_id:
             raise HTTPException(status_code = 404, detail = "This track expired. Add it again.")
         raise _audio_source_error(exc) from None
+    input_rates = separation.get("input_rates")
+    if input_rates and "input_sample_rate" not in (options or {}):
+        bandwidth = max((r for r in input_rates if r <= native), default = min(input_rates))
+        options = {**(options or {}), "input_sample_rate": bandwidth}
 
     staging = await asyncio.to_thread(
         lambda: audio_gallery.gallery_dir() / f".separate-{uuid.uuid4().hex}"
