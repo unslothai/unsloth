@@ -62,6 +62,13 @@ def _block(patched):
     "use_vllm, correction, colocated, zoo, expected",
     [
         (True, True, True, True, True),
+        (
+            True,
+            True,
+            "vllm_generation",
+            True,
+            True,
+        ),  # TRL >= 1.x keeps the colocated engine on vllm_generation
         (True, False, True, True, False),  # explicit False
         (False, True, True, True, False),  # no vLLM
         (
@@ -88,9 +95,11 @@ def test_generation_turns_on_untruncated_logprobs(
     trainer = SimpleNamespace(
         use_vllm = use_vllm,
         vllm_importance_sampling_correction = correction,
-        llm = object() if colocated else None,
+        llm = object() if colocated is True else None,
     )
+    if colocated == "vllm_generation":
+        trainer.vllm_generation = SimpleNamespace(llm = object())
     ns["run"](trainer)
     assert trainer._unsloth_vllm_untruncated_logprobs is expected
     if zoo:
-        assert calls == [use_vllm and correction and colocated]
+        assert calls == [bool(use_vllm and correction and colocated)]

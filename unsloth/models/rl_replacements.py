@@ -3580,7 +3580,7 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
             "            self._unsloth_vllm_untruncated_logprobs = bool(_unsloth_untruncated(\n"
             "                getattr(self, 'use_vllm', False)\n"
             "                and getattr(self, 'vllm_importance_sampling_correction', False)\n"
-            "                and getattr(self, 'llm', None) is not None\n"
+            "                and (getattr(self, 'llm', None) or getattr(getattr(self, 'vllm_generation', None), 'llm', None)) is not None\n"
             "            ))\n"
             "        except Exception:\n"
             "            self._unsloth_vllm_untruncated_logprobs = False\n",
