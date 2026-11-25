@@ -543,6 +543,9 @@ def _auto_primary(
     monkeypatch.setattr(
         installer.mxc_runtime, "target_pin", lambda: installer.mxc_runtime.PRIMARY_PIN
     )
+    monkeypatch.setattr(
+        installer, "_is_elevated", lambda: False
+    )  # GitHub's Windows runners are admin
     installed = []
 
     def install(
@@ -891,16 +894,6 @@ def test_main_keeping_the_current_runtime_is_not_an_error(tmp_path, monkeypatch,
     assert installer.main(["--install-dir", str(tmp_path / "rt")]) == 0
     assert "kept the installed MXC 1.0.1" in capsys.readouterr().out
     assert not installer.mxc_runtime.demoted_by_probe((1, 29000, 1))
-
-
-def test_an_elevated_installer_never_probes_the_candidate(tmp_path, monkeypatch):
-    monkeypatch.setattr(installer, "_is_elevated", lambda: True)
-    monkeypatch.setattr(
-        installer.mxc_runtime, "probe_tier", lambda *_a, **_k: pytest.fail("probed elevated")
-    )
-    monkeypatch.setattr(installer, "_already_installed", lambda _root, _pin: True)
-    with pytest.raises(installer.KeptCurrentRuntime, match = "elevated"):
-        installer._require_builtin_container(tmp_path / "stage", install_dir = tmp_path / "rt")
 
 
 @pytest.mark.parametrize("unreadable", ["journal", "runtime"])

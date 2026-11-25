@@ -210,7 +210,11 @@ def test_an_unreadable_update_revision_keeps_the_product_type_and_build(monkeypa
         raising = False,
     )
     monkeypatch.setattr(builtins, "__import__", no_winreg)
-    assert mxc_runtime._windows_release() == (3, 26100, -1)
+    mxc_runtime._windows_release.cache_clear()
+    try:
+        assert mxc_runtime._windows_release() == (3, 26100, -1)
+    finally:
+        mxc_runtime._windows_release.cache_clear()
 
 
 def test_the_demotion_marker_is_written_whole(monkeypatch, tmp_path):

@@ -217,19 +217,14 @@ def _require_builtin_container(root: Path, *, install_dir: Path | None = None) -
 
     No verdict never demotes; it keeps a working 1.0.1 at ``install_dir`` instead of replacing it unproven.
     """
-    if _is_elevated():
-        # The probe would run elevated from a user-writable folder.
-        problem = "is not probed from an elevated installer"
+    try:
+        tier = mxc_runtime.probe_tier(root, pin = mxc_runtime.PRIMARY_PIN)
+    except (mxc_runtime.MxcRuntimeUnavailable, OSError, subprocess.SubprocessError) as exc:
+        problem = f"MXC {mxc_runtime.PRIMARY_PIN.version} could not be probed: {exc}"
     else:
-        try:
-            tier = mxc_runtime.probe_tier(root, pin = mxc_runtime.PRIMARY_PIN)
-        except (mxc_runtime.MxcRuntimeUnavailable, OSError, subprocess.SubprocessError) as exc:
-            problem = f"could not be probed: {exc}"
-        else:
-            if tier != "base-container":
-                raise NoBuiltinContainer(tier)
-            return
-    problem = f"MXC {mxc_runtime.PRIMARY_PIN.version} {problem}"
+        if tier != "base-container":
+            raise NoBuiltinContainer(tier)
+        return
     if (
         install_dir is not None
         and root != install_dir

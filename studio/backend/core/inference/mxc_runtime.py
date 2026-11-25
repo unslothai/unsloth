@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import functools
 import hashlib
 import json
 import logging
@@ -219,11 +220,18 @@ def _require_plain_directory(path: Path) -> Path:
     return path.resolve()
 
 
+_machine_cache: tuple = (None, None)
+
+
 def _expected_architecture() -> str:
     """The OS architecture, not the interpreter's: an x64 Python on an ARM64 PC still needs the ARM64 build."""
-    from .wsl_host import native_machine
+    global _machine_cache
+    from . import wsl_host
 
-    machine = native_machine()
+    # Once per process (it loads kernel32 through ctypes); keyed on the function so a replacement is asked.
+    if _machine_cache[0] is not wsl_host.native_machine:
+        _machine_cache = (wsl_host.native_machine, wsl_host.native_machine())
+    machine = _machine_cache[1]
     if machine not in _ARCHITECTURES:
         raise MxcRuntimeUnavailable(
             f"Microsoft MXC is supported only on Windows x64 and ARM64, not {machine or 'unknown'}",
@@ -231,6 +239,7 @@ def _expected_architecture() -> str:
     return machine
 
 
+@functools.lru_cache(maxsize = 1)  # a Windows update applies at reboot, so once per process
 def _windows_release() -> tuple[int, int, int] | None:
     """(product type, build, UBR) of this Windows; UBR is -1 when only it is unreadable, None when nothing is."""
     try:
