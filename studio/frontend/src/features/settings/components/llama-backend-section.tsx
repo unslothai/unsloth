@@ -13,7 +13,7 @@ import {
 } from "@/components/ui/select";
 import { formatBytes } from "@/features/hub";
 import { FolderBrowser } from "@/features/model-picker";
-import { afterLlamaInstallChanged } from "@/hooks/use-llama-update-check";
+import { afterLlamaFolderChanged } from "@/hooks/use-llama-update-check";
 import { type TranslationKey, useT } from "@/i18n";
 import { toast } from "@/lib/toast";
 import { useEffect, useState } from "react";
@@ -342,7 +342,7 @@ export function LlamaBackendSection() {
 
       <LlamaCppPathRow
         onChanged={() => {
-          afterLlamaInstallChanged();
+          afterLlamaFolderChanged();
           void refresh(true);
         }}
       />

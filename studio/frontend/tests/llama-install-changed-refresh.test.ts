@@ -116,26 +116,28 @@ test("the shared refresh drops the flag catalog and re-reads the hardware info",
   const { hook, calls } = loadHook("idle");
   hook.afterLlamaInstallChanged();
   assert.deepEqual(calls, ["flags", "hardware"]);
+  calls.length = 0;
+  hook.afterLlamaFolderChanged();
+  assert.deepEqual(calls, ["flags", "hardware"]);
 });
 
 for (const state of ["success", "error"]) {
-  test(`an update job that ends in ${state} runs the shared refresh once`, async () => {
-    mock.timers.enable({ apis: ["setInterval"] });
-    try {
-      const { hook, calls } = loadHook(state);
+  test(
+    `an update job that ends in ${state} refreshes the caches without re-reading the status`,
+    withWindow(async () => {
+      const { hook, calls } = loadHook(state, { runEffects: true });
       const done = hook.useLlamaUpdateCheck().apply();
       await flush();
       mock.timers.tick(500);
       await done;
+      await flush();
       assert.deepEqual(calls, ["status", "flags", "hardware"]);
-    } finally {
-      mock.timers.reset();
-    }
-  });
+    }),
+  );
 }
 
 test(
-  "the shared refresh makes a mounted update check re-read the installed tag",
+  "a folder change makes a mounted update check re-read the installed tag",
   withWindow(async () => {
     let installed: string | null = "b9585";
     const { hook, calls, committed, unmount } = loadHook("idle", {
@@ -148,13 +150,13 @@ test(
 
     // A custom folder reports no managed release.
     installed = null;
-    hook.afterLlamaInstallChanged();
+    hook.afterLlamaFolderChanged();
     await flush();
     assert.deepEqual(committed, ["b9585", null]);
 
     unmount();
     calls.length = 0;
-    hook.afterLlamaInstallChanged();
+    hook.afterLlamaFolderChanged();
     await flush();
     assert.deepEqual(calls, ["flags", "hardware"]);
   }),
@@ -226,13 +228,27 @@ test(
   }),
 );
 
-test("saving or resetting the llama.cpp folder runs the shared refresh", () => {
+test(
+  "closing Settings during the folder-change status read starts no poll",
+  withWindow(async () => {
+    const { hook, calls, unmount } = loadHook("running", { runEffects: true });
+    hook.useLlamaUpdateCheck();
+    hook.afterLlamaFolderChanged();
+    unmount();
+    await flush();
+    mock.timers.tick(1500);
+    await flush();
+    assert.deepEqual(calls, ["flags", "hardware", "status"]);
+  }),
+);
+
+test("saving or resetting the llama.cpp folder runs the folder refresh", () => {
   const section = readSrc(
     "features/settings/components/llama-backend-section.tsx",
   );
   const row = section.slice(section.indexOf("<LlamaCppPathRow"));
   assert.match(
     row,
-    /^<LlamaCppPathRow\s+onChanged=\{\(\) => \{\s*afterLlamaInstallChanged\(\);\s*void refresh\(true\);\s*\}\}/,
+    /^<LlamaCppPathRow\s+onChanged=\{\(\) => \{\s*afterLlamaFolderChanged\(\);\s*void refresh\(true\);\s*\}\}/,
   );
 });

@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch, getAuthToken } from "@/features/auth";
+// eslint-disable-next-line no-restricted-imports -- the barrel would load the model picker components here.
 import { invalidateLlamaFlagCatalog } from "@/features/model-picker/api/llama-flags";
 import { refreshHardwareInfo } from "@/hooks/use-hardware-info";
 import {
@@ -66,12 +67,16 @@ export interface LlamaUpdateStatus {
   job: LlamaUpdateJob;
 }
 
-const installChangedListeners = new Set<() => void>();
+const folderChangedListeners = new Set<() => void>();
 
 export function afterLlamaInstallChanged(): void {
   invalidateLlamaFlagCatalog();
   void refreshHardwareInfo();
-  for (const listener of installChangedListeners) listener();
+}
+
+export function afterLlamaFolderChanged(): void {
+  afterLlamaInstallChanged();
+  for (const listener of folderChangedListeners) listener();
 }
 
 export function llamaUpdateOffered(status: LlamaUpdateStatus): boolean {
@@ -662,12 +667,15 @@ export function useLlamaUpdateCheck({
 
   useEffect(() => {
     if (!enabled) return;
-    const reread = () => void readStatus().then(surfaceIfAvailable);
+    const reread = () =>
+      void readStatus().then((next) => {
+        if (activeRef.current) surfaceIfAvailable(next);
+      });
     // A llama.cpp folder change runs no job, so the installed tag held here would stay the old folder's.
-    installChangedListeners.add(reread);
+    folderChangedListeners.add(reread);
     const unsubscribe = subscribeToLlamaJobStarted(reread);
     return () => {
-      installChangedListeners.delete(reread);
+      folderChangedListeners.delete(reread);
       unsubscribe();
     };
   }, [enabled, readStatus, surfaceIfAvailable]);
