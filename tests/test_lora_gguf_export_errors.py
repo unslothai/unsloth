@@ -20,7 +20,6 @@ _TREE = ast.parse(_SAVE.read_text(encoding = "utf-8"))
 _EXPERTS = ["mlp.experts.down_proj", "mlp.experts.gate_up_proj"]
 _UNMAPPED = "ValueError: Can not map tensor 'model.layers.0.mlp.experts.base_layer.weight'"
 
-# Today's converter on an expert adapter, and one that has learned the layout.
 _CONVERTER_TODAY = f"""
 import sys
 print("INFO:lora-to-gguf:Exporting model...")
