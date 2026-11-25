@@ -51,7 +51,6 @@ def _package_modules(*names):
 _AXES = {
     "tp": ("UNSLOTH_TP_SIZE", "2", "tp=2"),
     "pp": ("UNSLOTH_PP_SIZE", "2", "pp=2"),
-    "cp": ("UNSLOTH_CP_SIZE", "2", "cp=2"),
     "fsdp": ("UNSLOTH_FSDP2", "1", "fsdp=1"),
 }
 
@@ -72,6 +71,24 @@ def test_launch_refuses_ep_with_another_axis(axis, form):
     with pytest.raises(ValueError, match = "expert parallel \\(ep\\) cannot be combined"):
         pe.apply_parallel_env(environ)
     assert environ == before  # nothing written
+
+
+def test_launch_composes_ep_with_cp():
+    # Expert parallel x context parallel (the registry's ep x cp cells decide the backend and model).
+    (pe,) = _package_modules("parallel_env")
+    for environ in (
+        {"WORLD_SIZE": "4", "UNSLOTH_EP_SIZE": "2", "UNSLOTH_CP_SIZE": "2"},
+        {"WORLD_SIZE": "4", "UNSLOTH_PARALLEL": "cp=2", "UNSLOTH_EP_SIZE": "2"},
+        {"WORLD_SIZE": "4", "UNSLOTH_PARALLEL": "ep=2,cp=2"},
+    ):
+        environ = dict(environ)
+        pe.apply_parallel_env(environ)
+        assert environ["UNSLOTH_EP_SIZE"] == "2" and environ["UNSLOTH_CP_SIZE"] == "2", environ
+    # ep in the flag with an exported cp the flag does not give: the usual flag / variable conflict.
+    with pytest.raises(ValueError, match = "UNSLOTH_CP_SIZE=2 asks for something else"):
+        pe.apply_parallel_env(
+            {"WORLD_SIZE": "4", "UNSLOTH_PARALLEL": "ep=2", "UNSLOTH_CP_SIZE": "2"}
+        )
 
 
 def test_launch_keeps_ep_alone_and_size_one_axes():
