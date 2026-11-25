@@ -166,7 +166,12 @@ def launch_ranks(
     child_config = dict(config)
     # The mask rank 0 narrowed is inherited; re-applying physical ids to it would narrow twice.
     child_config["resolved_gpu_ids"] = None
-    payload = pickle.dumps(child_config)
+    try:
+        from utils.account_context import current_account
+        account = current_account()  # a ContextVar: a fresh interpreter would start as the owner
+    except Exception:  # noqa: BLE001
+        account = None
+    payload = pickle.dumps({"config": child_config, "account": account})
     for r in range(1, world):
         env = _rank_env(base, r, world)
         env[CHILD_ENV] = str(r)
@@ -219,11 +224,16 @@ class _RankEvents:
 
     def __init__(self, r: int):
         self.rank = r
+        # The worker reports a handled failure as an error event and returns; the rank must still exit non-zero so
+        # rank 0 ends the run at once instead of waiting in a collective.
+        self.failed = False
 
     def put(self, event: Any, *args, **kwargs) -> None:
         if not isinstance(event, dict):
             return
         kind = event.get("type")
+        if kind == "error":
+            self.failed = True
         if kind in ("error", "warning"):
             text = event.get("error") or event.get("message") or ""
             print(f"{kind}: {text}", file = sys.stderr, flush = True)
@@ -275,18 +285,26 @@ def rank_main() -> None:
         bind_current_process_to_parent_lifetime()
     except Exception:  # noqa: BLE001 -- the parent watch above still ends an orphaned rank
         pass
-    config = pickle.loads(sys.stdin.buffer.read())
+    payload = pickle.loads(sys.stdin.buffer.read())
     code = 0
+    sink = _RankEvents(r)
     try:
-        import importlib
-
         module, _, name = (os.environ.get(_ENTRY_ENV) or _DEFAULT_ENTRY).partition(":")
-        target = getattr(importlib.import_module(module), name)
-        target(event_queue = _RankEvents(r), stop_queue = _NoStop(), config = config)
+        kwargs = {"event_queue": sink, "stop_queue": _NoStop(), "config": payload["config"]}
+        account = payload.get("account")
+        if account is not None:
+            # Rank 0's account, as account_process_spec runs rank 0: same storage roots, same credential scrub.
+            from core.training.account_jobs import run_account_child
+            run_account_child(account = account, job_module = module, job_target = name, **kwargs)
+        else:
+            import importlib
+            getattr(importlib.import_module(module), name)(**kwargs)
     except BaseException:  # noqa: BLE001
         import traceback
         traceback.print_exc()
         code = 1
+    if sink.failed:
+        code = code or 2
     sys.stdout.flush()
     sys.stderr.flush()
     # No communicator teardown: NCCL's finalize waits on peers that may already be gone (rank 0 may still be saving).

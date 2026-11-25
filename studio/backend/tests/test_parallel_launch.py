@@ -29,12 +29,18 @@ _TESTS = os.path.dirname(os.path.abspath(__file__))
 _ENTRY = "parallel_launch_target:train"
 
 
-def _start(tmp_path, monkeypatch, **extra):
+def _start(
+    tmp_path,
+    monkeypatch,
+    target = "train",
+    **extra,
+):
     monkeypatch.setenv(parallel_launch._ENTRY_ENV, _ENTRY)
     monkeypatch.setenv(
         "PYTHONPATH", os.pathsep.join(filter(None, [_TESTS, os.environ.get("PYTHONPATH")]))
     )
     monkeypatch.syspath_prepend(_TESTS)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio_home"))
     for key in (
         "RANK",
         "LOCAL_RANK",
@@ -54,10 +60,11 @@ def _start(tmp_path, monkeypatch, **extra):
     }
     ctx = mp.get_context("spawn")
     events, stops = ctx.Queue(), ctx.Queue()
-    from parallel_launch_target import train
+    import parallel_launch_target
 
     proc = ctx.Process(
-        target = train, kwargs = {"event_queue": events, "stop_queue": stops, "config": config}
+        target = getattr(parallel_launch_target, target),
+        kwargs = {"event_queue": events, "stop_queue": stops, "config": config},
     )
     proc.start()
     return proc, events, stops
@@ -117,6 +124,46 @@ def test_a_dead_rank_ends_the_run_with_an_error(tmp_path, monkeypatch):
         assert error is not None and "rank 1 of 2 exited with code 3" in error
         proc.join(30)
         assert proc.exitcode == 1
+    finally:
+        if proc.is_alive():
+            proc.kill()
+
+
+def test_an_error_event_on_another_rank_ends_the_run(tmp_path, monkeypatch):
+    # The worker reports a handled failure (model load, dataset) as an error event and returns normally.
+    proc, events, _ = _start(tmp_path, monkeypatch, fail_rank = 1, fail_step = 2, fail_by_event = True)
+    try:
+        error = None
+        deadline = time.time() + 120
+        while time.time() < deadline and error is None:
+            try:
+                ev = _next(events, timeout = 5)
+            except queue.Empty:
+                continue
+            if ev["type"] == "error":
+                error = ev["error"]
+        assert error is not None and "rank 1 of 2 exited with code 2" in error
+        proc.join(30)
+        assert proc.exitcode == 1
+    finally:
+        if proc.is_alive():
+            proc.kill()
+
+
+def test_other_ranks_keep_the_managed_account(tmp_path, monkeypatch):
+    account = {"account_id": "acct_42", "username": "alice", "role": "user"}
+    proc, events, stops = _start(
+        tmp_path, monkeypatch, target = "train_as", as_account = account, steps = 3
+    )
+    try:
+        deadline = time.time() + 120
+        while time.time() < deadline:
+            if _next(events)["type"] == "complete":
+                break
+        proc.join(60)
+        assert proc.exitcode == 0
+        ranks = [json.loads((tmp_path / f"rank{r}.json").read_text()) for r in (0, 1)]
+        assert [r["account_id"] for r in ranks] == ["acct_42", "acct_42"]
     finally:
         if proc.is_alive():
             proc.kill()

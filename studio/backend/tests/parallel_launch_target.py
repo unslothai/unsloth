@@ -32,6 +32,9 @@ def train(event_queue, stop_queue, config):
     }
     info["resolved_gpu_ids"] = config.get("resolved_gpu_ids")
     info["output_dir"] = config.get("output_dir")
+    from utils.account_context import current_account
+
+    info["account_id"] = current_account().account_id
     info["is_main_rank"] = parallel_launch.is_main_rank()
     stop = save = False
     step = 0
@@ -43,6 +46,10 @@ def train(event_queue, stop_queue, config):
             except queue.Empty:
                 pass
         if config.get("fail_rank") == rank and step == config.get("fail_step"):
+            if config.get("fail_by_event"):
+                # As the worker reports a handled failure: an error event, then a normal return.
+                event_queue.put({"type": "error", "error": "model load failed"})
+                return
             os._exit(3)
         stop, save = parallel_launch.sync_stop(stop, save)
         event_queue.put({"type": "progress", "step": step, "rank": rank})
@@ -54,3 +61,11 @@ def train(event_queue, stop_queue, config):
         json.dump(info, f)
     dist.barrier()
     event_queue.put({"type": "complete", "rank": rank})
+
+
+def train_as(event_queue, stop_queue, config):
+    """train() inside a managed account's context, as account_process_spec runs the Studio worker."""
+    from utils.account_context import AccountContext, run_as
+
+    account = AccountContext(**config["as_account"])
+    return run_as(account, train, event_queue = event_queue, stop_queue = stop_queue, config = config)
