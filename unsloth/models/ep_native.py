@@ -197,7 +197,6 @@ def _ep_experts(shard, prior, hidden, index, weights):
         and index.shape[-1] != shard.experts
     )
     if dense:
-        # Dense [tokens, E] routing weights (gpt-oss on transformers 4.x): only the top-k columns travel.
         weights = weights.gather(1, index)
     weights = weights.reshape(tokens, -1)
     # Each token goes once to every rank owning one of its experts.
@@ -225,8 +224,7 @@ def _ep_experts(shard, prior, hidden, index, weights):
         ic = (got_index[row, slot] - lo).unsqueeze(1)
         wc = got_w[row, slot].unsqueeze(1)
     if dense:
-        # The experts read routing_weights[token, local expert] and take its width as their expert count
-        # (an index equal to it is the "no expert" class), so rebuild a dense [rows, E / ep] tensor.
+        # 4.x gpt-oss experts take E from routing_weights' width: rebuild it dense over the local experts.
         wc = wc.new_zeros((wc.shape[0], shard.per_rank)).scatter(1, ic, wc)
     with tpn._expert_locals(shard):
         yc = prior(xc, ic, wc)

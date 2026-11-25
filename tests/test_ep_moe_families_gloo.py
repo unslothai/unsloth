@@ -157,9 +157,7 @@ def _build(
 
 
 def _transformers4_gpt_oss_contract():
-    """gpt-oss as transformers 4.x runs it, on any version: the router returns dense [tokens, E] scores, the
-    experts take their expert count from routing_weights' width (an index equal to it is the "no expert" class),
-    read routing_weights[token, expert] and return [batch, -1, hidden]."""
+    """transformers 4.x gpt-oss on any version: dense [tokens, E] router scores, E read from their width."""
     import torch.nn.functional as F
     from transformers.models.gpt_oss import modeling_gpt_oss as mod
 
@@ -577,8 +575,6 @@ def test_ep_family_matches_one_process(family):
 
 
 def test_ep_gpt_oss_dense_routing_weights_match_one_process():
-    # transformers 4.x gpt-oss (dense [tokens, E] routing weights, expert count read from their width): each rank
-    # must hand its experts a dense [rows, E / ep] tensor, or it runs only its first local expert.
     _check_family(_spawn("_case_family", repo = FAMILIES["gpt_oss"], dense_routing = True), 2)
 
 
