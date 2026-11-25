@@ -47,14 +47,70 @@ const IMAGE_EXT = /\.(png|jpe?g|gif|webp|bmp|avif|svg)$/i;
 // Cheap gate before parsing: a fence opener or an indented code line.
 const MAY_HOLD_CODE_RE = /```|~~~|^(?: {4}|\t)/m;
 
+type CodeBlock = { language: string | null; source: string };
+
+// Reopening a chat re-imports its messages as new objects, so the per-message cache misses and
+// every reply would be parsed again. The blocks depend only on the text: remember them by text,
+// least recently used first out, bounded by entries and by characters held (texts + sources).
+export const FENCE_CACHE_MAX_ENTRIES = 1024;
+export const FENCE_CACHE_MAX_CHARS = 2_000_000;
+const fenceCache = new Map<
+  string,
+  { blocks: readonly CodeBlock[]; chars: number }
+>();
+let fenceCacheChars = 0;
+
+/** Test hook: cached texts, least recently used first, and characters held. */
+export function fenceCacheStats(): { keys: string[]; chars: number } {
+  return { keys: [...fenceCache.keys()], chars: fenceCacheChars };
+}
+
+/** Test hook: drop every cached entry. */
+export function clearFenceCache(): void {
+  fenceCache.clear();
+  fenceCacheChars = 0;
+}
+
+function cachedCodeFences(markdown: string): readonly CodeBlock[] {
+  const hit = fenceCache.get(markdown);
+  if (hit) {
+    fenceCache.delete(markdown);
+    fenceCache.set(markdown, hit);
+    return hit.blocks;
+  }
+  const blocks = parseCodeFences(markdown);
+  const chars = blocks.reduce(
+    (sum, block) => sum + block.source.length + (block.language?.length ?? 0),
+    markdown.length,
+  );
+  if (chars > FENCE_CACHE_MAX_CHARS) {
+    return blocks;
+  }
+  fenceCache.set(markdown, { blocks, chars });
+  fenceCacheChars += chars;
+  for (const [key, entry] of fenceCache) {
+    if (
+      fenceCache.size <= FENCE_CACHE_MAX_ENTRIES &&
+      fenceCacheChars <= FENCE_CACHE_MAX_CHARS
+    ) {
+      break;
+    }
+    fenceCache.delete(key);
+    fenceCacheChars -= entry.chars;
+  }
+  return blocks;
+}
+
 /** Code blocks as the renderer sees them (CommonMark: lists, indentation, CRLF). */
-export function extractCodeFences(
-  markdown: string,
-): { language: string | null; source: string }[] {
+export function extractCodeFences(markdown: string): CodeBlock[] {
   if (!MAY_HOLD_CODE_RE.test(markdown)) {
     return [];
   }
-  const blocks: { language: string | null; source: string }[] = [];
+  return cachedCodeFences(markdown).map((block) => ({ ...block }));
+}
+
+function parseCodeFences(markdown: string): CodeBlock[] {
+  const blocks: CodeBlock[] = [];
   const visit = (node: Nodes) => {
     if (node.type === "code") {
       if (node.value.trim()) {
