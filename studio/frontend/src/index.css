@@ -7549,7 +7549,7 @@ html:is([data-glass], [data-glass-clear])[data-sidebar-glass-frame]:not(.webkit-
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
 }
-html:is([data-glass], [data-glass-clear])[data-sidebar-glass-frame]:not(.webkit-legacy-compositor[data-glass])[data-chat-wallpaper-workspace-ready] aside[data-slot="chat-settings-panel"] > [data-chat-settings-content] {
+html:is([data-glass], [data-glass-clear])[data-sidebar-glass-frame][data-chat-wallpaper-workspace-ready] aside[data-slot="chat-settings-panel"] > [data-chat-settings-content] {
   border-left-color: transparent;
 }
 html[data-glass][data-chat-wallpaper-workspace-ready] [data-slot="chat-settings-panel"] .bg-panel-surface,
@@ -7567,6 +7567,13 @@ html[data-glass^="liquid"][data-chat-wallpaper-workspace-ready] [data-slot="chat
 }
 html.dark[data-glass^="liquid"][data-chat-wallpaper-workspace-ready] [data-slot="chat-settings-panel"] {
   box-shadow: inset 1px 0 0 rgb(255 255 255 / .08);
+}
+/* WebKitGTK < 2.54 keeps this column's own glass below the caption: the strip's fill and no edge line, so the corner reads as one sheet. */
+html.tauri.render-linux.webkit-legacy-compositor[data-glass][data-sidebar-glass-frame][data-chat-wallpaper-workspace-ready] aside[data-slot="chat-settings-panel"] {
+  background-color: color-mix(in srgb, var(--glass-sidebar-fill) min(96%, calc(max(var(--glass-tint), var(--glass-pane-floor)) * var(--glass-opacity, 1))), transparent);
+  /* The strip's sheen is fixed too, so it runs on into this column. */
+  background-attachment: fixed;
+  box-shadow: none;
 }
 html[data-glass][data-chat-wallpaper-workspace-ready] aside[data-slot="chat-settings-panel"] {
   transition: border-top-left-radius .2s ease;

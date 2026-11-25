@@ -196,7 +196,7 @@ test("the pinned caption strip stops at docked Run settings, whose glass runs to
 	assert.ok(frame.includes("radial-gradient(circle at left bottom, transparent calc(var(--studio-run-settings-fillet) - 1px), black var(--studio-run-settings-fillet))"), frame);
 	assert.ok(frame.includes("calc(100vw - var(--studio-chat-settings-docked-width, 0px) - var(--studio-run-settings-fillet)) var(--studio-custom-titlebar-height)"), frame);
 	assert.ok(frame.includes("--studio-run-settings-fillet: min(var(--radius-md), var(--studio-chat-settings-docked-width, 0px));"), frame);
-	assert.ok(css.includes('html:is([data-glass], [data-glass-clear])[data-sidebar-glass-frame]:not(.webkit-legacy-compositor[data-glass])[data-chat-wallpaper-workspace-ready] aside[data-slot="chat-settings-panel"] > [data-chat-settings-content] {\n  border-left-color: transparent;'));
+	assert.ok(css.includes('html:is([data-glass], [data-glass-clear])[data-sidebar-glass-frame][data-chat-wallpaper-workspace-ready] aside[data-slot="chat-settings-panel"] > [data-chat-settings-content] {\n  border-left-color: transparent;'));
 	assert.ok(sheet.includes('"var(--chat-settings-top, var(--studio-custom-titlebar-height, 0px))"'));
 	assert.match(sheet, /marginTop: CHAT_SETTINGS_TOP,/);
 	assert.match(sheet, /'\[data-slot="sidebar-container"\]\[data-windows-glass-frame\]'/);
