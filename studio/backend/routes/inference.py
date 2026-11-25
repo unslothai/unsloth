@@ -8999,6 +8999,7 @@ def _llama_runtime_fields(llama_backend: LlamaCppBackend) -> dict:
         audio_options_by_workflow = None,
         audio_workflow_tasks = None,
         audio_server_task = None,
+        audio_separation = None,
         audio_convert = None,
         audio_convert_route = None,
         audio_clone = None,
