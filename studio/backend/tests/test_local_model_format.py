@@ -1071,3 +1071,34 @@ def test_adapter_base_is_found_in_the_cache_root_holding_the_adapter(tmp_path):
 
     assert _hub_cache_root_of(adapter_snapshot) == root
     assert _base_transformers_can_chat("Org/WhisperBase", None, adapter_snapshot) is False
+
+
+def test_a_copied_single_file_hf_checkpoint_is_whole_and_media_resolvable(monkeypatch, tmp_path):
+    """Windows without symlinks copies files into snapshots/; a lone flux1-dev.safetensors loads as single_file."""
+    import struct
+
+    from core.inference import media_model_index
+
+    header = json.dumps(
+        {
+            "double_blocks.0.img_attn.qkv.weight": {
+                "dtype": "F32",
+                "shape": [2, 2],
+                "data_offsets": [0, 16],
+            }
+        }
+    ).encode()
+    repo = tmp_path / "hub" / "models--Comfy-Org--flux1-dev"
+    _write(repo / "refs" / "main", "b" * 40)
+    checkpoint = repo / "snapshots" / ("b" * 40) / "flux1-dev.safetensors"
+    checkpoint.parent.mkdir(parents = True)
+    checkpoint.write_bytes(struct.pack("<Q", len(header)) + header + b"\0" * 16)
+    sources = _empty_sources(tmp_path)._replace(hf_cache_dir = tmp_path / "hub")
+    monkeypatch.setattr(local_inventory, "_local_inventory_sources", lambda: sources)
+    monkeypatch.setattr("storage.studio_db.list_scan_folders", lambda: [])
+    monkeypatch.chdir(tmp_path)
+
+    (row,) = models_route.collect_local_models(Path("models").resolve())
+    assert (row.model_id, row.partial) == ("Comfy-Org/flux1-dev", False)
+    pick = media_model_index._build_index("text-to-image")["comfy-org/flux1-dev"]
+    assert Path(pick.model_path) == checkpoint.parent

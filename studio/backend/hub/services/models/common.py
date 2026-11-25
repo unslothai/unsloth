@@ -778,6 +778,17 @@ def _quant_folder_gguf_files(snapshot: Path, files: list[Path]) -> list[Path]:
     return found
 
 
+def _is_single_file_checkpoint_snapshot(snapshot: Path) -> bool:
+    """A sole loose checkpoint (flux1-dev.safetensors) loads as single_file, unless a ref names a missing
+    snapshot, which an interrupted download leaves."""
+    from core.inference.diffusion_local_files import resolve_local_single_file
+    from hub.utils.inventory_scan import _repo_has_a_dangling_ref
+
+    return resolve_local_single_file(str(snapshot)) is not None and not _repo_has_a_dangling_ref(
+        snapshot.parent.parent
+    )
+
+
 def _format_label(model_format: ModelFormat) -> str:
     if model_format == "gguf":
         return "GGUF"
@@ -1049,7 +1060,8 @@ def _classify_local_path(
                 display_name = display_name,
                 model_id = model_id,
                 updated_at = updated_at,
-                partial = partial or trusted_hf_cache_repo,
+                partial = partial
+                or (trusted_hf_cache_repo and not _is_single_file_checkpoint_snapshot(scan_path)),
                 size_bytes = size_bytes,
                 active_cache = active_cache,
             )
