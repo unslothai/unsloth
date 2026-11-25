@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { downloadFile } from "@/lib/native-files";
+import { downloadBlobStreaming } from "@/lib/native-files";
 
 import {
   type ChatExportData,
@@ -30,10 +30,9 @@ function chatExportBlob({ messages, ...rest }: ChatExportData): Blob {
 
 export async function downloadChatExport(): Promise<void> {
   const data = await buildChatExport();
-  await downloadFile(
+  await downloadBlobStreaming(
     chatExportBlob(data),
     `unsloth-chats-${dateStamp()}.json`,
-    "application/json",
   );
 }
 
@@ -46,10 +45,9 @@ export async function downloadArchivedChatExport(): Promise<number> {
   if (archivedCount === 0) {
     return 0;
   }
-  await downloadFile(
+  await downloadBlobStreaming(
     chatExportBlob(data),
     `unsloth-archived-chats-${dateStamp()}.json`,
-    "application/json",
   );
   return archivedCount;
 }

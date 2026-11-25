@@ -147,7 +147,7 @@ test("a chat backup longer than the browser's longest string still downloads", a
     new URL("../src/features/chat/utils/export-chat-history.ts", import.meta.url),
     {
       "@/lib/native-files": {
-        downloadFile: async (content: unknown) => {
+        downloadBlobStreaming: async (content: unknown) => {
           saved = content;
         },
       },
