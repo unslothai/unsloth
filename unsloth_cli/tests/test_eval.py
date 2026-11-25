@@ -170,18 +170,33 @@ def _score_generation(tmp_path, rows, generation):
         ("red\nblue", "red\nblue", 1.0),
         ("red\nblue", " red\nblue\n\nNext question?", 1.0),
         ("red\nblue", "red", 0.0),
+        ("red\nblue\n", "red\nblue", 1.0),
+        (["blue\nred\n"], "blue\nred", 1.0),
+        ("    return 2", "return 2", 0.0),
         ("def f():\n\n    return 1", "def f():\n\n    return 1\n", 1.0),
         (["red\nblue", "blue\nred"], "blue\nred", 1.0),
+        (["2", "two\nlines"], "2\nBecause 1+1 is 2.", 1.0),
+        (["2", "two\nlines"], "two\nlines", 1.0),
+        (["red", None], "None", 0.0),
+        ([2, 3], "3", 1.0),
+        ([["red", "blue"], ["green", "purple"]], "green", 1.0),
+        ([], "[]", 1.0),
+        ([["red"], [None]], "[None]", 0.0),
+        ([[], [None]], "[[], [None]]", 1.0),
     ],
 )
 def test_local_dataset_scores_multiline_answers(tmp_path, answer, generation, score):
-    rows = [{"question": "Colors?", "answer": answer}, {"question": "1+1?", "answer": "2"}]
+    # the dataset loader needs one type per column
+    other = answer if isinstance(answer, list) else "2"
+    rows = [{"question": "Colors?", "answer": answer}, {"question": "1+1?", "answer": other}]
     assert _score_generation(tmp_path, rows, generation) == score
 
 
-def test_single_line_dataset_still_stops_at_the_first_newline(tmp_path):
-    rows = [{"question": "1+1?", "answer": "2"}, {"question": "2+2?", "answer": "4"}]
-    assert _score_generation(tmp_path, rows, "2\nBecause 1+1 is 2.") == 1.0
+@pytest.mark.parametrize("other", ["4", "red\n\nblue"])
+@pytest.mark.parametrize("generation, score", [("2\nBecause 1+1 is 2.", 1.0), ("\n2", 0.0)])
+def test_single_line_answer_still_ends_at_the_first_newline(tmp_path, other, generation, score):
+    rows = [{"question": "1+1?", "answer": "2\n"}, {"question": "2+2?", "answer": other}]
+    assert _score_generation(tmp_path, rows, generation) == score
 
 
 def test_fewshot_examples_end_on_the_stop_sequence(tmp_path):
@@ -201,16 +216,36 @@ def test_fewshot_examples_end_on_the_stop_sequence(tmp_path):
     assert context == f"First? def f():\n\n    return 1{stop}Second?"
 
 
+def test_fewshot_examples_show_gold_as_written(tmp_path):
+    tasks = pytest.importorskip("lm_eval.tasks")
+    data = tmp_path / "qa.jsonl"
+    rows = [
+        {"question": "def g():", "answer": "\n    return 2"},
+        {"question": "Next?", "answer": "x"},
+    ]
+    data.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding = "utf-8")
+    names, includes = evalmod.resolve_tasks(str(data), "question", "answer", tmp_path / "tasks")
+    task = tasks.TaskManager(include_defaults = False, include_path = includes).load_task_or_group(
+        names
+    )["qa"]
+    task.set_fewshot_seed(0)
+    assert (
+        task.fewshot_context(task.test_docs()[1], num_fewshot = 1)
+        == "def g(): \n    return 2\n\nNext?"
+    )
+
+
 def test_stop_sequence_reads_long_csv_fields_and_unicode_separators(tmp_path):
     csv_file = tmp_path / "qa.csv"
     csv_file.write_text(f'question,answer\n"{"x" * 200_000}","red\nblue"\n', encoding = "utf-8")
     assert evalmod._stop_sequence(csv_file, "answer") == "\n\n"
     jsonl = tmp_path / "qa.jsonl"
-    rows = [{"question": "a\u2028b", "answer": "2"}, {"question": "c", "answer": "3"}]
+    # trailing newlines do not widen the stop
+    rows = [{"question": "a\u2028b", "answer": "x\ny\n\n"}, {"question": "c", "answer": "3"}]
     jsonl.write_text(
         "".join(json.dumps(r, ensure_ascii = False) + "\n" for r in rows), encoding = "utf-8"
     )
-    assert evalmod._stop_sequence(jsonl, "answer") == "\n"
+    assert evalmod._stop_sequence(jsonl, "answer") == "\n\n"
 
 
 def test_stop_sequence_names_the_bad_jsonl_line(tmp_path):
