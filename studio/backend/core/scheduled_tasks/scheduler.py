@@ -472,7 +472,11 @@ def _model_is_loaded(model: str) -> bool:
 _EFFORT_LEVELS = ("minimal", "low", "medium", "high", "max", "xhigh")
 
 
-def _reasoning_fields(effort: Optional[str], connection: bool, on_loaded_model: bool) -> dict:
+def _reasoning_fields(
+    effort: Optional[str],
+    connection: bool,
+    backend: Any = None,
+) -> dict:
     """The request fields for a task's thinking effort; None keeps the model's default."""
     if effort is None:
         return {}
@@ -481,13 +485,7 @@ def _reasoning_fields(effort: Optional[str], connection: bool, on_loaded_model: 
         return {"reasoning_effort": relative.get(effort, effort)}
     if effort not in relative:
         return {"enable_thinking": True, "reasoning_effort": effort}
-    backend = None
-    if on_loaded_model:
-        from routes.inference import get_llama_cpp_backend
-        backend = get_llama_cpp_backend()
-        if not getattr(backend, "is_loaded", False):
-            backend = None
-    if backend is None:
+    if not getattr(backend, "is_loaded", False):
         if effort == "off":
             return {"enable_thinking": False}
         return {
@@ -825,17 +823,16 @@ async def generate_answer(
                     ),
                     **tool_fields,
                     **model_fields,
-                    **_reasoning_fields(
-                        task.get("reasoningEffort"),
-                        provider is not None,
-                        # Only the primary's levels are known here: a model kept beside it gets the generic fields.
-                        on_loaded_model = not allow_switch
-                        and (
-                            not model_fields.get("model") or _primary_serves(model_fields["model"])
-                        ),
+                    **(
+                        _reasoning_fields(task.get("reasoningEffort"), True)
+                        if provider is not None
+                        else {}
                     ),
                 }
             )
+            if provider is None:
+                # Resolved by the chat route against the model that serves the run, once loaded or routed.
+                payload._scheduled_reasoning_effort = task.get("reasoningEffort")
 
             if mcp_server_ids:
                 payload._scheduled_mcp_server_ids = mcp_server_ids

@@ -1673,36 +1673,99 @@ def test_a_refusal_from_a_loaded_model_keeps_its_reason(monkeypatch):
     assert (failure.value.code, failure.value.message) == (None, "Too long.")
 
 
-def test_a_task_can_pin_the_loaded_model_and_its_reasoning(monkeypatch):
-    monkeypatch.setattr(inference_routes, "_loaded_satisfies", lambda model: True)
-    producer = FakeProducer(completion("Dawn light."))
-    generate(
-        monkeypatch, producer, make_task(model = "unsloth/Qwen3-1.7B-GGUF", reasoningEffort = "lowest")
-    )
-    payload = producer.payload
-    assert payload.model == "unsloth/Qwen3-1.7B-GGUF"
-    assert (payload.enable_thinking, payload.reasoning_effort) == (True, "low")
-    assert payload.provider_id is None
-
-
-def test_reasoning_off_turns_thinking_off_on_a_local_model(monkeypatch):
-    producer = FakeProducer(completion("Dawn light."))
-    generate(monkeypatch, producer, make_task(reasoningEffort = "off"))
-    assert (producer.payload.enable_thinking, producer.payload.reasoning_effort) == (False, None)
-    assert "model" not in producer.payload.model_fields_set
-
-
-def loaded_gguf(monkeypatch, **reasoning):
+def gguf(**reasoning):
     backend = SimpleNamespace(
         is_loaded = True,
         supports_reasoning = True,
         reasoning_style = "enable_thinking",
         reasoning_effort_levels = [],
         reasoning_always_on = False,
+        model_identifier = None,
     )
     for key, value in reasoning.items():
         setattr(backend, key, value)
-    monkeypatch.setattr(inference_routes, "get_llama_cpp_backend", lambda: backend)
+    return backend
+
+
+class ReachedGeneration(Exception):
+    pass
+
+
+def reasoning_at_generation(
+    monkeypatch,
+    task,
+    serving,
+    state,
+    primary = None,
+):
+    from core.inference import model_slots
+    from core.inference.orchestrator import routed_slot
+
+    slot = SimpleNamespace(llama = serving, last_used = 0.0)
+    primary = (
+        primary
+        or {
+            "primary": serving,
+            "cold": gguf(is_loaded = False),
+            "kept": gguf(reasoning_style = "enable_thinking_effort", reasoning_effort_levels = ["low"]),
+        }[state]
+    )
+    monkeypatch.setattr(inference_routes, "_llama_cpp_backend", primary)
+    monkeypatch.setattr(
+        inference_routes,
+        "_loaded_satisfies",
+        lambda model: state == "primary" or routed_slot.get() is slot,
+    )
+    monkeypatch.setattr(inference_routes, "_loaded_identity_satisfies", lambda model: False)
+    monkeypatch.setattr(model_slots, "visible", lambda: [slot] if state == "kept" else [])
+
+    async def switch(*args, **kwargs):
+        if state == "cold":
+            monkeypatch.setattr(inference_routes, "_llama_cpp_backend", serving)
+        elif state == "kept":
+            routed_slot.set(slot)
+
+    seen = {}
+    normalize = inference_routes._normalize_chat_reasoning_controls
+
+    def reached(payload):
+        normalize(payload)
+        seen["fields"] = (payload.enable_thinking, payload.reasoning_effort)
+        raise ReachedGeneration
+
+    monkeypatch.setattr(inference_routes, "_maybe_auto_switch_model", switch)
+    monkeypatch.setattr(inference_routes, "_normalize_chat_reasoning_controls", reached)
+    monkeypatch.setattr(inference_routes, "_monitor_context_length", lambda: None)
+    app = SimpleNamespace(state = SimpleNamespace())
+    run = {"id": "run-1", "allowModelLoad": state == "cold"}
+    with pytest.raises(ReachedGeneration):
+        asyncio.run(generate_answer(app, task, run, threading.Event()))
+    return seen["fields"]
+
+
+@pytest.mark.parametrize("state", ["primary", "cold", "kept"])
+@pytest.mark.parametrize(
+    "levels, effort, expected",
+    [
+        (["high", "max"], "highest", (True, "max")),
+        (["low", "medium", "high", "xhigh"], "highest", (True, "xhigh")),
+        (["low", "medium", "high", "xhigh"], "lowest", (True, "low")),
+        (["high", "max"], "off", (False, None)),
+    ],
+)
+def test_thinking_effort_matches_the_model_serving_the_run(
+    monkeypatch, state, levels, effort, expected
+):
+    serving = gguf(reasoning_style = "enable_thinking_effort", reasoning_effort_levels = levels)
+    task = make_task(model = "unsloth/GLM-5.2-GGUF", reasoningEffort = effort)
+    assert reasoning_at_generation(monkeypatch, task, serving, state) == expected
+
+
+def test_reasoning_off_turns_thinking_off_on_a_local_model(monkeypatch):
+    serving = gguf()
+    assert reasoning_at_generation(
+        monkeypatch, make_task(reasoningEffort = "off"), serving, "primary"
+    ) == (False, None)
 
 
 @pytest.mark.parametrize(
@@ -1740,32 +1803,25 @@ def loaded_gguf(monkeypatch, **reasoning):
         ({"supports_reasoning": False}, "highest", {}),
     ],
 )
-def test_thinking_effort_resolves_to_the_loaded_model(monkeypatch, reasoning, effort, expected):
-    loaded_gguf(monkeypatch, **reasoning)
-    assert scheduler_module._reasoning_fields(effort, False, on_loaded_model = True) == expected
+def test_thinking_effort_resolves_to_the_loaded_model(reasoning, effort, expected):
+    assert scheduler_module._reasoning_fields(effort, False, gguf(**reasoning)) == expected
 
 
-def test_thinking_effort_for_a_model_not_yet_loaded_or_a_connection(monkeypatch):
-    loaded_gguf(monkeypatch, supports_reasoning = False, model_identifier = "/models/gemma.gguf")
-    assert scheduler_module._reasoning_fields("highest", False, on_loaded_model = False) == {
+def test_thinking_effort_for_a_model_not_yet_loaded_or_a_connection():
+    unloaded = gguf(is_loaded = False)
+    assert scheduler_module._reasoning_fields("highest", False, unloaded) == {
         "enable_thinking": True,
         "reasoning_effort": "high",
     }
-    assert scheduler_module._reasoning_fields("off", True, on_loaded_model = True) == {
-        "reasoning_effort": "none"
-    }
-    assert scheduler_module._reasoning_fields(None, False, on_loaded_model = True) == {}
+    assert scheduler_module._reasoning_fields("off", True, gguf()) == {"reasoning_effort": "none"}
+    assert scheduler_module._reasoning_fields(None, False, gguf()) == {}
 
 
-def test_a_connection_task_names_its_level_and_a_local_one_resolves_it(monkeypatch):
-    loaded_gguf(monkeypatch, reasoning_style = "reasoning_effort")
-    assert scheduler_module._reasoning_fields("xhigh", True, on_loaded_model = False) == {
-        "reasoning_effort": "xhigh"
-    }
-    assert scheduler_module._reasoning_fields("medium", False, on_loaded_model = True) == {
-        "enable_thinking": True,
-        "reasoning_effort": "medium",
-    }
+def test_a_connection_task_names_its_level_and_a_local_one_resolves_it():
+    assert scheduler_module._reasoning_fields("xhigh", True) == {"reasoning_effort": "xhigh"}
+    assert scheduler_module._reasoning_fields(
+        "medium", False, gguf(reasoning_style = "reasoning_effort")
+    ) == {"enable_thinking": True, "reasoning_effort": "medium"}
 
 
 def test_a_chosen_model_that_is_not_loaded_fails_rather_than_switching(monkeypatch):
@@ -2841,32 +2897,9 @@ def test_a_task_model_loaded_alongside_the_primary_answers_without_a_swap(monkey
 
 
 def test_thinking_off_reaches_a_model_kept_beside_a_primary_without_reasoning(monkeypatch):
-    from core.inference import model_slots
-
-    world = SwapWorld(monkeypatch)
-    loaded_gguf(monkeypatch, supports_reasoning = False, model_identifier = "/models/gemma.gguf")
-    beside = object()
-    monkeypatch.setattr(model_slots, "visible", lambda: [beside])
-    monkeypatch.setattr(
-        model_slots,
-        "serving_slot",
-        lambda requested, candidates, satisfies: beside
-        if requested == SwapWorld.TASK_MODEL
-        else None,
-    )
-    producer = FakeProducer(completion("Dawn light."))
-    monkeypatch.setattr(inference_routes, "produce_openai_chat_completions", producer)
     task = make_task(model = SwapWorld.TASK_MODEL, reasoningEffort = "off")
-    asyncio.run(
-        generate_answer(
-            SimpleNamespace(state = SimpleNamespace()),
-            task,
-            {"id": "run-1", "source": "schedule"},
-            threading.Event(),
-        )
-    )
-    assert producer.payload.enable_thinking is False
-    assert world.unloaded == [] and world.loaded == SwapWorld.EARLIER
+    primary = gguf(supports_reasoning = False, model_identifier = "/models/gemma.gguf")
+    assert reasoning_at_generation(monkeypatch, task, gguf(), "kept", primary) == (False, None)
 
 
 def test_switching_back_reloads_a_transformers_model_the_run_replaced_by_name(monkeypatch):

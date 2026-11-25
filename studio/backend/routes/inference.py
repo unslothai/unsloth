@@ -34092,6 +34092,12 @@ async def produce_openai_chat_completions(
     if _audio_preflight is not None:
         _predecoded_audio = _audio_preflight.get("decoded")
         _preprepared_audio = _audio_preflight.get("prepared")
+    if payload._scheduled_reasoning_effort is not None:
+        from core.scheduled_tasks.scheduler import _reasoning_fields
+        for _field, _value in _reasoning_fields(
+            payload._scheduled_reasoning_effort, False, get_llama_cpp_backend()
+        ).items():
+            setattr(payload, _field, _value)
 
     from core.inference.npu_backend import peek_npu_backend
 
