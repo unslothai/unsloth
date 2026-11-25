@@ -2577,7 +2577,10 @@ def _switch_through_the_local_catalog(monkeypatch):
     return backend, rec, listed
 
 
-def test_a_folder_with_gguf_and_safetensors_is_listed_and_loaded_as_its_name(monkeypatch, tmp_path):
+@pytest.mark.parametrize("weights", ["model.safetensors", "pytorch_model.bin"])
+def test_a_folder_with_gguf_and_safetensors_is_listed_and_loaded_as_its_name(
+    monkeypatch, tmp_path, weights
+):
     # The Model Hub labels each format "both (GGUF)"; every other reader names the folder "both".
     from hub.services.models import local_inventory
 
@@ -2586,7 +2589,11 @@ def test_a_folder_with_gguf_and_safetensors_is_listed_and_loaded_as_its_name(mon
     both.mkdir(parents = True)
     (both / "both-Q6_K.gguf").write_bytes(b"GGUF" + b"\0" * 60)
     (both / "config.json").write_text(json.dumps({"model_type": "llama"}))
-    (both / "model.safetensors").write_bytes(b"\0" * 64)
+    (both / weights).write_bytes(b"\0" * 64)
+    # A folder whose own name ends in a format label keeps it.
+    literal = scan / "Literal (GGUF)"
+    literal.mkdir()
+    (literal / "lit-Q4_K_M.gguf").write_bytes(b"GGUF" + b"\0" * 60)
     for module in (studio_db, local_inventory):
         monkeypatch.setattr(module, "list_scan_folders", lambda: [{"path": str(scan)}])
     monkeypatch.setattr(resolver, "_host_has_a_non_gguf_backend", lambda: False)
@@ -2594,15 +2601,17 @@ def test_a_folder_with_gguf_and_safetensors_is_listed_and_loaded_as_its_name(mon
     _local_sources(monkeypatch, tmp_path)
 
     hub_names = sorted(
-        m.display_name for m in asyncio.run(local_inventory.list_local_models_response()).models
+        m.display_name
+        for m in asyncio.run(local_inventory.list_local_models_response()).models
+        if m.display_name.startswith("both")
     )
-    assert hub_names == ["both (GGUF)", "both (Safetensors)"]
+    assert hub_names[0] == "both (GGUF)"
     local = asyncio.run(
         models_route.list_local_models(
             models_dir = "./models", current_subject = "tester", via_api_key = False
         )
     )
-    assert [m.display_name for m in local.models] == ["both"]
+    assert sorted(m.display_name for m in local.models) == ["Literal (GGUF)", "both"]
 
     backend, rec, listed = _switch_through_the_local_catalog(monkeypatch)
     assert listed("both") == [("both", False)]

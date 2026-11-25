@@ -400,18 +400,20 @@ def collect_local_models(
 
 
 def _without_format_labels(models: list) -> list:
-    """The Hub lists a folder or repo holding GGUF and safetensors once per format, as "X (GGUF)" and
-    "X (Safetensors)". These rows name it X, the id /v1/models lists, so a loaded model reports that id."""
+    """The Hub lists a folder or repo holding two weight formats once per format, as "X (GGUF)" and
+    "X (Safetensors)". These rows name it X, the id /v1/models lists, so a loaded model reports that id.
+    A label counts as the Hub's only when X is the folder or repo name, so "Literal (GGUF)" keeps its name."""
+    from pathlib import PurePath
+
     from hub.services.models.common import _format_label
 
-    formats: dict[str, set] = {}
-    for model in models:
-        formats.setdefault(model.id, set()).add(model.model_format)
     rows = []
     for model in models:
         label = f" ({_format_label(model.model_format)})"
-        if len(formats[model.id]) > 1 and model.display_name.endswith(label):
-            model = model.model_copy(update = {"display_name": model.display_name[: -len(label)]})
+        base = model.display_name[: -len(label)] if model.display_name.endswith(label) else None
+        names = {PurePath(model.path or "").name, (model.model_id or "").rsplit("/", 1)[-1]}
+        if base and base in names:
+            model = model.model_copy(update = {"display_name": base})
         rows.append(model)
     return rows
 
