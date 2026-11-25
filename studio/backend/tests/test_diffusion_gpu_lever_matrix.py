@@ -53,7 +53,6 @@ from gpu_profiles import GIB, PROFILES, GpuProfile, clean_policy_env, mock_profi
 pytestmark = pytest.mark.xdist_group("gpu_lever_matrix")
 
 
-# ------------------------------------------------------------------------------------------------ probe helpers
 def lever(
     on: Any,
     cfg: Any = None,
@@ -97,9 +96,6 @@ LEVER_PROBES: list = []
 def probe(fn: Callable) -> Callable:
     LEVER_PROBES.append(fn)
     return fn
-
-
-# --------------------------------------------------------------------------------------------- (a) kernel tables
 
 
 def _na_code(p: GpuProfile) -> str:
@@ -647,9 +643,6 @@ def probe_nvfp4(p: GpuProfile) -> dict:
     return out
 
 
-# --------------------------------------------------------------------------------------------- (a) load policies
-
-
 @_contextlib.contextmanager
 def _pinned(obj: Any, **attrs: Any):
     """Temporarily set ``attrs`` on ``obj`` (host-dependent answers a profile must not inherit)."""
@@ -700,7 +693,6 @@ def _code(reason: Any, table: tuple) -> Optional[str]:
     return "other"
 
 
-# --------------------------------------------------------------------------------------------- MiniMax-H3 video
 _H3_GATE_CODES = (
     ("speed_mode=off", "speed_off"),
     ("picked explicitly", "explicit_backend"),
@@ -773,7 +765,6 @@ def probe_h3_video_attention(p: GpuProfile) -> dict:
     return out
 
 
-# -------------------------------------------------------------------------------------------- MiniMax-H3-Image
 _H3I_CODES = (
     ("bf16 requested", "bf16_requested"),
     ("torchao unavailable", "no_torchao"),
@@ -810,7 +801,6 @@ def probe_h3_image_scheme(p: GpuProfile) -> dict:
     }
 
 
-# --------------------------------------------------------------------------------------------------------- VAE
 @probe
 def probe_vae_decode(p: GpuProfile) -> dict:
     """Strip decode on every decode (measured cards), the KL strip path, the strip size, the folded upsample, the
@@ -900,7 +890,6 @@ def probe_device_target(p: GpuProfile) -> dict:
     return out
 
 
-# ------------------------------------------------------------------------------------------------ graphs, compile
 class Float8Tensor:  # the class NAME is what ``_fp8_rowwise_weight`` reads
     def __init__(self) -> None:
         self.scale = _types.SimpleNamespace(numel = lambda: 64)
@@ -945,7 +934,6 @@ def probe_inductor_reduction_filter(p: GpuProfile) -> dict:
     return out
 
 
-# ------------------------------------------------------------------------------------------------- video routes
 _LTX_CODES = (
     ("not a CUDA load", "not_cuda"),
     ("bfloat16", "bf16_card"),
@@ -981,7 +969,6 @@ def probe_sd_cpp_quant_cublas(p: GpuProfile) -> dict:
     return {key: lever(rows is not None, cfg = rows, why = None if rows is not None else "mmq")}
 
 
-# --------------------------------------------------------------------------------------------------- attention
 @probe
 def probe_auto_attention(p: GpuProfile) -> dict:
     """Studio's Auto attention pick for a default (speed on) load, with ROCm flash_attn pinned present + verified."""
@@ -1018,7 +1005,6 @@ def probe_cfg_batch(p: GpuProfile) -> dict:
     }
 
 
-# ------------------------------------------------------------------------------------- (b) the speed layer per profile
 # Every registered image / video family through the real optimizer (``install_patches`` + ``run_speed_layer``, the
 # parity harness's entry), at the default speed tier and the dtype the profile resolves. Stub denoisers carry the
 # family's real class name, module and ``_repeated_blocks`` from ``inputs.denoiser_blocks`` in the golden, so the run
@@ -1151,7 +1137,6 @@ def _speed_layer_extra(patch: Any, p: GpuProfile) -> None:
     patch.setattr(diffusion_gguf_compile, "_compile_error", None)
     # install_cuda_graphs runs for real: it only wraps each denoiser (the first step captures), so the cell reads
     # what it armed, as the load does.
-    # Freeing a graph's pool runs gc.collect + empty_cache: memory upkeep on a real card, ~75 ms per stub here.
     if hasattr(diffusion_cuda_graph, "release_cached_outside_capture"):
         patch.setattr(diffusion_cuda_graph, "release_cached_outside_capture", lambda *a, **k: None)
     kernel = (lambda *a, **k: None) if (p.cuda and p.triton) else None
@@ -1315,7 +1300,6 @@ def collect_autoopt(blocks: dict) -> dict:
     return cells
 
 
-# ----------------------------------------------------------------------------------------------------- collection
 def collect_levers() -> dict:
     cells: dict = {}
     for p in _collected_profiles():
@@ -1365,7 +1349,6 @@ HOST_FLIPS: dict = {
     "no_triton": "sys.modules['triton'] = None",
     # Windows: torch_compile_runtime_available() and other sys.platform reads
     "win32": "import torch; sys.platform = 'win32'",
-    # macOS host
     "darwin": "import torch; sys.platform = 'darwin'",
     # torch before allow_fp16_accumulation (Backend CI's floor, 2.4)
     "old_torch_matmul": (
@@ -1542,7 +1525,6 @@ def collect_flips(blocks: dict, flips: Any) -> dict:
     return out
 
 
-# --------------------------------------------------------------------------------------------------------- golden
 GOLDEN = _TESTS / "fixtures" / "diffusion_gpu_lever_golden.json"
 GOLDEN_SCHEMA = 1
 UPDATE_ENV = "UNSLOTH_UPDATE_GPU_GOLDEN"
@@ -1734,9 +1716,6 @@ def write_golden(
     tmp.write_text(_dump_golden(data), encoding = "utf-8")
     tmp.replace(path)
     return data
-
-
-# ---------------------------------------------------------------------------------------------------------- tests
 
 
 @pytest.fixture(scope = "module")
@@ -2248,7 +2227,6 @@ def test_mock_profile_restores_torch():
     assert (torch.cuda.is_available, torch.cuda.get_device_capability, torch.version.hip) == before
 
 
-# ------------------------------------------------------------------------------------------ (3) future architectures
 # Every lever a synthetic profile's parent engages must engage on the child (same resources, newer arch), unless
 # listed here with the reason it cannot follow yet. Keys are ``<child>.<family>.<lever>`` fnmatch patterns. A stale
 # entry (the child engages it now, or the parent no longer does) fails, so the list only shrinks.
@@ -2342,7 +2320,6 @@ def test_future_arch_exclusions_are_not_stale(matrix):
     assert all(str(r).strip() for r in FUTURE_ARCH_EXCLUSIONS.values())
 
 
-# --------------------------------------------------------------------------------------------- incident replays
 # One test per regression an external tester's benchmark found (rounds R4-R7), each asserting the production
 # decision that would have caught it on a CPU runner. Every replay calls the real policy function; where a test
 # double stands in, it stands in for hardware or for diffusers, never for the decision under test.
@@ -2682,7 +2659,6 @@ def test_incident_r4_h3_flash_over_cudnn_where_measured(key, flash):
     assert got == ("_native_flash" if flash else "_native_cudnn"), (key, got)
 
 
-# ------------------------------------------------------------------------------------------- incident replays R1-R3
 def test_incident_r1_12874_convrot_default_has_a_fused_route_on_every_arch():
     """R1, #12874 (fixed by #14988): INT8 ConvRot became Qwen-Image-2.1's default while sm86 had neither an
     ``_ARCH_CONFIG`` GEMM tile nor a ``_ROTQ_CONFIG`` rotation tile, so the 3090 ran stock int8 plus a separate
