@@ -5254,6 +5254,7 @@ export const sv = {
     model: {
       label: "Översättningsmodell",
       fast: "Snabb",
+      balanced: "Balanserad",
       quality: "Bäst kvalitet",
       chat: "Chattmodell",
       recommended: "Rekommenderade",
@@ -5275,11 +5276,11 @@ export const sv = {
       toneFormal: "Formell",
       toneCasual: "Ledig",
       auto: "Översätt medan du skriver",
-      autoDescription: "Startar när modellen är inläst. Att skriva startar aldrig en hämtning.",
+      autoDescription: "Startar automatiskt när modellen har laddats.",
       saveHistory: "Spara historik",
       saveHistoryDescription: "Sparas bara i den här webbläsaren.",
       showPrompt: "Visa prompt",
-      showPromptDescription: "Se de exakta instruktionerna som skickas till modellen.",
+      showPromptDescription: "Se exakta instruktioner som skickas till modellen.",
     },
     history: {
       title: "Historik",
@@ -6369,7 +6370,6 @@ export const sv = {
     back: "Tillbaka",
     continue: "Fortsätt",
     skipSetup: "Hoppa över konfigurering",
-    outsideAgain: "Klicka utanför igen för att stänga",
     getStarted: "Kom igång",
     progress: "Steg {current} av {total}",
     welcome: {
