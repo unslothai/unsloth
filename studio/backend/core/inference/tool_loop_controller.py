@@ -1330,7 +1330,7 @@ class ToolLoopController:
         self._one_shot_tools = one_shot_tools
         self._completed_one_shot_tools: set[str] = set()
         self._successful_keys: set[str] = set()
-        self._results: dict[str, ToolCallCompletion] = {}
+        self._results: dict[str, dict[str, Any]] = {}
         # Duplicate note text -> (keys it was sent for, its wording once a result is dropped).
         self._duplicate_notes: dict[str, tuple[set[str], str]] = {}
         # `_workspace_novel_at[key]` is the distinct-call count when `key` last ran.
@@ -1377,7 +1377,7 @@ class ToolLoopController:
         return reworded
 
     def _result_in(self, key: str, messages: Sequence[Mapping[str, Any]]) -> bool:
-        shown = self._results[key].model_message()
+        shown = self._results[key]
         for message in messages:
             if message.get("role") != "tool":
                 continue
@@ -1580,7 +1580,7 @@ class ToolLoopController:
         )
         if not failed:
             self._successful_keys.add(decision.key)
-            self._results[decision.key] = completion
+            self._results[decision.key] = completion.model_message()
             if self._mcp_search and decision.tool_name == MCP_TOOL_SEARCH_NAME:
                 for spec in _mcp_tool_search_specs(result_text):
                     name = _tool_name_from_schema(spec) if isinstance(spec, Mapping) else None

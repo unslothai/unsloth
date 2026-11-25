@@ -332,6 +332,25 @@ def test_final_duplicate_note_is_reworded_once_its_result_is_dropped():
     assert "Provide the final answer now" in sent[-1]["content"]
 
 
+def test_kept_results_hold_no_image_bytes():
+    from core.inference import mcp_images
+
+    controller = ToolLoopController(tools = [_tool("web_search"), _tool("computer")])
+    payload = "QUJD" * 50_000
+    envelope = mcp_images.SENTINEL + json.dumps([{"data": payload, "mimeType": "image/png"}])
+    done = {}
+    for name in ("web_search", "computer"):
+        call = _call(name, {"q": name}, "call_0")
+        done[name] = controller.record_result(controller.prepare_call(call), "seen\n" + envelope)
+        assert payload in done[name].result
+    assert payload not in json.dumps(controller._results)
+
+    search = _call("web_search", {"q": "web_search"}, "call_1")
+    note = controller.record_noop(controller.prepare_call(search)).model_message()
+    sent = [{"role": "user", "content": "go"}, done["web_search"].tool_message(), note]
+    assert controller.reword_stale_notes(sent) is sent
+
+
 def test_repeat_after_the_rounds_end_in_the_same_batch_also_asks_for_the_answer():
     controller = ToolLoopController(tools = [_tool("web_search"), _tool("python")])
     for query in ("a", "b"):
