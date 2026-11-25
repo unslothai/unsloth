@@ -882,7 +882,7 @@ export const ru = {
   chatMenu: {
     more: "Параметры чата",
     copy: "Копировать",
-    addScheduledTask: "Добавить запланированную задачу…",
+    addScheduledTask: "Добавить запланированную задачу",
     compact: "Сжать беседу",
     compactEmpty: "Пока нечего сжимать",
     compactUnsupported: "Для сжатия нужна модель GGUF или MLX с поддержкой инструментов",
@@ -5067,6 +5067,7 @@ export const ru = {
     model: {
       label: "Модель перевода",
       fast: "Быстрая",
+      balanced: "Сбалансированная",
       quality: "Лучшее качество",
       chat: "Модель чата",
       recommended: "Рекомендуемые",
@@ -5088,11 +5089,11 @@ export const ru = {
       toneFormal: "Официальный",
       toneCasual: "Разговорный",
       auto: "Переводить по мере ввода",
-      autoDescription: "Начинает работать после загрузки модели. Ввод текста никогда не запускает скачивание.",
+      autoDescription: "Запускается автоматически, когда модель загружена.",
       saveHistory: "Сохранять историю",
       saveHistoryDescription: "Хранится только в этом браузере.",
       showPrompt: "Показать промпт",
-      showPromptDescription: "Посмотрите точные инструкции, отправляемые модели.",
+      showPromptDescription: "Посмотреть точные инструкции, отправленные модели.",
     },
     history: {
       title: "История",
@@ -6154,7 +6155,6 @@ export const ru = {
     back: "Назад",
     continue: "Далее",
     skipSetup: "Пропустить настройку",
-    outsideAgain: "Щёлкните снаружи ещё раз, чтобы закрыть",
     getStarted: "Начать",
     progress: "Шаг {current} из {total}",
     welcome: {

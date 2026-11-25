@@ -64,7 +64,11 @@ from core.training.dataset_bounds import (
     slice_dataset_rows,
     world_size_from_env,
 )
-from core.training.resume import _checkpoint_state, session_eta_seconds
+from core.training.resume import (
+    _checkpoint_state,
+    checked_resume_checkpoint,
+    session_eta_seconds,
+)
 from utils.training_runs import build_default_output_dir_name
 from utils.kernel_install import (
     CAUSAL_CONV1D,
@@ -4243,7 +4247,7 @@ def _run_mlx_training(
 
     trainer.save_model = _skip_internal_final_save
     try:
-        trainer.train(resume_from_checkpoint = resume_from_checkpoint)
+        trainer.train(resume_from_checkpoint = checked_resume_checkpoint(resume_from_checkpoint))
     finally:
         trainer.save_model = _save_model
 
@@ -6644,7 +6648,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
         # disable_tqdm only swaps ProgressCallback for PrinterCallback, both to stdout.
         _drop_hf_stdout_callbacks(trainer)
 
-        trainer.train(resume_from_checkpoint = resume_from_checkpoint)
+        trainer.train(resume_from_checkpoint = checked_resume_checkpoint(resume_from_checkpoint))
     except Exception as e:
         event_queue.put(
             {

@@ -80,6 +80,8 @@ def _writer(
         "_loaded_via_remote_code": lambda model: False,
         "_base_config_dir": lambda base, token: None,
         "_apply_token_to_child_env": lambda env, token, explicit = False: None,
+        "is_inkling2_config": lambda config: False,
+        "inkling2_lora_gguf_adapter": None,
         "collections": collections,
         "os": os,
         "re": re,

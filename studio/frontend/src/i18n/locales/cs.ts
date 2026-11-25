@@ -980,7 +980,7 @@ export const cs = {
   chatMenu: {
     more: "Možnosti chatu",
     copy: "Kopírovat",
-    addScheduledTask: "Přidat naplánovanou úlohu…",
+    addScheduledTask: "Přidat naplánovanou úlohu",
     compact: "Zkomprimovat konverzaci",
     compactEmpty: "Zatím není co komprimovat",
     compactUnsupported:
@@ -5399,6 +5399,7 @@ export const cs = {
     model: {
       label: "Překladový model",
       fast: "Rychlý",
+      balanced: "Vyvážený",
       quality: "Nejlepší kvalita",
       chat: "Model z chatu",
       recommended: "Doporučené",
@@ -5420,12 +5421,11 @@ export const cs = {
       toneFormal: "Formální",
       toneCasual: "Neformální",
       auto: "Překládat při psaní",
-      autoDescription:
-        "Spustí se po načtení modelu. Psaní nikdy nespustí stahování.",
+      autoDescription: "Spustí se automaticky po načtení modelu.",
       saveHistory: "Ukládat historii",
       saveHistoryDescription: "Ukládá se pouze v tomto prohlížeči.",
       showPrompt: "Zobrazit prompt",
-      showPromptDescription: "Zobrazí přesné pokyny odeslané modelu.",
+      showPromptDescription: "Zobrazit přesné pokyny odeslané modelu.",
     },
     history: {
       title: "Historie",
@@ -6555,7 +6555,6 @@ export const cs = {
     back: "Zpět",
     continue: "Pokračovat",
     skipSetup: "Přeskočit nastavení",
-    outsideAgain: "Kliknutím mimo okno jej znovu zavřete",
     getStarted: "Začít",
     progress: "Krok {current} z {total}",
     welcome: {

@@ -25,6 +25,7 @@ __all__ = [
     "patch_inkling2_model",
     "checkpoint_inkling2_message_inputs",
     "inkling2_lora_target_modules",
+    "inkling2_lora_gguf_adapter",
     "raise_if_merging_inkling2",
     "save_inkling2_merged_16bit",
     "raise_if_inkling2_parallel_unsupported",
@@ -876,6 +877,166 @@ def inkling2_lora_target_modules(
         if name not in result:
             result.append(name)
     return result
+
+
+# transformers Linear leaf -> the original checkpoint leaf llama.cpp's Inkling 2 converter maps (transformers'
+# own conversion mapping, reversed). Leaves the converter already maps under their transformers name (sink_proj,
+# the router, the loop controllers) are absent.
+_GGUF_LORA_LEAVES = {
+    "self_attn.q_proj.linear": "attn.wq_du",
+    "self_attn.k_proj.linear": "attn.wk_dv",
+    "self_attn.v_proj.linear": "attn.wv_dv",
+    "self_attn.o_proj.linear": "attn.wo_ud",
+    "self_attn.o_proj.gate_proj": "attn.gate_attn",
+    "self_attn.relative_position_bias.linear": "attn.wr_du",
+    "self_attn.k_proj.sconv.weight_proj": "attn.k_sconv.weight_proj",
+    "self_attn.v_proj.sconv.weight_proj": "attn.v_sconv.weight_proj",
+}
+_LORA_KEY = re.compile(r"^(.*)\.(lora_A|lora_B)\.weight$")
+
+
+def _expert_lora_b_layout(lora_config, parameter):
+    """How the saved fused expert lora_B packs its experts: the adapter's own record, else PEFT's rank_major."""
+    record = lora_config.get("unsloth_fused_expert_lora") or {}
+    if not isinstance(record, dict):
+        record = {}
+    if record.get("lora_A_layout", "grouped_by_expert") != "grouped_by_expert":
+        raise NotImplementedError(
+            f"Unsloth: Inkling 2 LoRA GGUF export does not know the expert lora_A layout "
+            f"{record.get('lora_A_layout')!r}; export the merged model as GGUF instead."
+        )
+    per_parameter = (record.get("parameters") or {}).get(parameter) or {}
+    layout = (
+        per_parameter.get("lora_B_layout")
+        or record.get("lora_B_layout")
+        or lora_config.get("lora_B_layout")
+        or "rank_major"
+    )
+    if layout not in ("rank_major", "grouped_by_expert"):
+        raise NotImplementedError(
+            f"Unsloth: Inkling 2 LoRA GGUF export does not know the expert lora_B layout {layout!r}; "
+            "export the merged model as GGUF instead."
+        )
+    return layout
+
+
+def inkling2_lora_gguf_adapter(model, adapter_dir):
+    """Copy of the adapter saved in ``adapter_dir`` that llama.cpp's convert_lora_to_gguf.py can map, in a new
+    temporary directory the caller removes.
+
+    The converter maps Inkling 2's original checkpoint names, while PEFT saves transformers module names:
+    attention Linears are renamed to their checkpoint leaves (``self_attn.q_proj.linear`` -> ``attn.wq_du``), and
+    each fused expert ParamWrapper (``mlp.experts`` / ``mlp.experts.base_layer``, factors flattened to
+    ``(E * r, in)`` and ``(out, E * r)``) becomes ``mlp.experts.gate_up_proj`` / ``down_proj`` with per-expert
+    ``(E, r, in)`` / ``(E, out, r)`` factors, the layout llama.cpp applies with mul_mat_id (PEFT 0.18, which does not
+    swap a 3D parameter's features, trains the transposed pair, so its factors swap roles). transformers keeps
+    gate_up halved (gate rows, then up rows), which is the order the converter writes the base expert stack in.
+    A LoRA scaling other than ``lora_alpha / r`` (rsLoRA, alpha_pattern, rank_pattern) is folded into lora_B, since
+    the GGUF carries one alpha and llama.cpp scales every tensor by ``alpha / rank``."""
+    import json
+    import os
+    import shutil
+    import tempfile
+
+    import torch
+    from safetensors.torch import load_file, save_file
+
+    try:
+        from peft.tuners.lora.layer import ParamWrapper
+    except ImportError:
+        ParamWrapper = ()
+    from peft.tuners.lora import LoraLayer
+
+    with open(os.path.join(adapter_dir, "adapter_config.json"), encoding = "utf-8") as f:
+        lora_config = json.load(f)
+    alpha = float(lora_config.get("lora_alpha") or 0)
+
+    # PEFT saves the "default" adapter at the top of adapter_dir (others go to subfolders), and that is the one the
+    # converter reads, so its live scaling is the one to fold, whichever adapter is active.
+    if "default" in (getattr(model, "peft_config", None) or {}):
+        adapter = "default"
+    else:
+        adapter = getattr(model, "active_adapter", None)
+        if callable(adapter):
+            adapter = adapter()
+        if isinstance(adapter, (list, tuple)):
+            adapter = adapter[0] if adapter else None
+        adapter = adapter or "default"
+
+    # Saved keys are the live module names without the adapter name.
+    layers = {}
+    for name, module in model.named_modules():
+        if isinstance(module, LoraLayer) and adapter in getattr(module, "lora_A", {}):
+            layers[name] = module
+
+    tensors = load_file(os.path.join(adapter_dir, "adapter_model.safetensors"), device = "cpu")
+    out = {}
+    swapped_roles = []
+    for key, tensor in tensors.items():
+        match = _LORA_KEY.match(key)
+        if match is None:
+            out[key] = tensor  # the converter reports anything it cannot place
+            continue
+        prefix, kind = match.groups()
+        module = layers.get(prefix)
+        rank = None
+        if ParamWrapper and isinstance(module, ParamWrapper):
+            experts = int(module.num_experts)
+            parameter = module.parameter_name
+            owner = prefix
+            while owner.endswith(".base_layer"):
+                owner = owner[: -len(".base_layer")]
+            prefix = f"{owner}.{parameter}"
+            rank = tensor.shape[0 if kind == "lora_A" else 1] // experts
+            if kind == "lora_A":
+                tensor = tensor.reshape(experts, rank, tensor.shape[-1])
+            elif _expert_lora_b_layout(lora_config, parameter) == "grouped_by_expert":
+                tensor = tensor.reshape(tensor.shape[0], experts, rank).permute(1, 0, 2)
+            else:
+                tensor = tensor.reshape(tensor.shape[0], rank, experts).permute(2, 0, 1)
+            tensor = tensor.contiguous()
+            # PEFT >= 0.19 swaps a (experts, out, in) parameter's features, so lora_A reads its last dim. PEFT 0.18
+            # does not: lora_A then reads dim 1 and the delta is A^T @ B^T, which llama.cpp sees as
+            # b = A^T, a = B^T.
+            if kind == "lora_A" and not getattr(module, "_did_swap_in_out_features", False):
+                swapped_roles.append(prefix)
+        else:
+            for leaf, checkpoint_leaf in _GGUF_LORA_LEAVES.items():
+                if prefix.endswith("." + leaf):
+                    prefix = prefix[: -len(leaf)] + checkpoint_leaf
+                    break
+            if module is not None:
+                rank = tensor.shape[0 if kind == "lora_A" else -1]
+        if kind == "lora_B" and module is not None and rank:
+            scaling = float(module.scaling[adapter])
+            factor = scaling * rank / alpha if alpha else scaling
+            if abs(factor - 1.0) > 1e-6:
+                tensor = (tensor.float() * factor).to(tensor.dtype)
+        out[f"{prefix}.{kind}.weight"] = tensor
+    if any(_LORA_KEY.match(k) and ("vision_tower." in k or ".visual." in k) for k in out):
+        print(
+            "Unsloth: llama.cpp converts Inkling 2's text backbone only, so the vision tower's LoRA weights are "
+            "not in the GGUF LoRA; export the merged model to keep them."
+        )
+    for prefix in swapped_roles:
+        A, B = out[f"{prefix}.lora_A.weight"], out[f"{prefix}.lora_B.weight"]
+        out[f"{prefix}.lora_A.weight"] = B.transpose(1, 2).contiguous()
+        out[f"{prefix}.lora_B.weight"] = A.transpose(1, 2).contiguous()
+
+    directory = tempfile.mkdtemp(prefix = "unsloth-inkling2-lora-gguf-")
+    try:
+        save_file(
+            out, os.path.join(directory, "adapter_model.safetensors"), metadata = {"format": "pt"}
+        )
+        for filename in ("adapter_config.json", "README.md"):
+            if os.path.isfile(os.path.join(adapter_dir, filename)):
+                shutil.copyfile(
+                    os.path.join(adapter_dir, filename), os.path.join(directory, filename)
+                )
+    except BaseException:
+        shutil.rmtree(directory, ignore_errors = True)
+        raise
+    return directory
 
 
 def _unsloth_lora_target_modules(
