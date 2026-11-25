@@ -615,6 +615,25 @@ class ParallelLayout:
         dims = [("pp", self.pp), (dp_name, self.dp), ("cp", self.cp), ("tp", self.tp)]
         return [(name, size) for name, size in dims if size > 1]
 
+    def check_backend(self):
+        """RuntimeError when mesh() would need NCCL (CUDA GPUs; RCCL under the same name on ROCm, no process
+        group yet) on a PyTorch build without it (native Windows): before any model loads, instead of failing in
+        init_process_group."""
+        import torch
+        import torch.distributed as dist
+
+        if not dist.is_available() or dist.is_initialized() or dist.is_nccl_available():
+            return
+        rocm = getattr(torch.version, "hip", None) is not None
+        if (torch.version.cuda is None and not rocm) or not torch.cuda.is_available():
+            return  # CPU (gloo) or a non-CUDA accelerator build
+        backend, gpus = ("RCCL", "ROCm") if rocm else ("NCCL", "CUDA")
+        raise RuntimeError(
+            f"Unsloth: {self.env_vars} ({self}) runs its collectives over {backend} on {gpus} GPUs, but this "
+            "PyTorch build has no NCCL backend (torch.distributed.is_nccl_available() is False; native Windows "
+            f"builds ship without it). Use a PyTorch build with {backend} (Linux or WSL), or train on one GPU."
+        )
+
     def mesh(self):
         if self._mesh is not None:
             return self._mesh
@@ -622,6 +641,7 @@ class ParallelLayout:
         import torch.distributed as dist
         from torch.distributed.device_mesh import init_device_mesh
 
+        self.check_backend()
         cuda = torch.cuda.is_available()
         if cuda:
             torch.cuda.set_device(int(os.environ.get("LOCAL_RANK", "0")))
@@ -778,6 +798,7 @@ def read_layout():
 
     # Layout-only rules before any model loads (ring x tp is refused here, before the tp split).
     check_layout(layout, cells = False, cp_backend = cp_backend)
+    layout.check_backend()
     return layout
 
 

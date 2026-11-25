@@ -192,6 +192,12 @@ def tensor_parallel_env_load(fn):
                 + "; ".join(refused)
                 + f". Unset {unset} to run this script with DDP or UNSLOTH_FSDP2=1."
             )
+        from .tp_native import refuse_hf_distributed_kwargs
+
+        # Every branch below (whole load included): Unsloth splits / shards the model after the load.
+        refuse_hf_distributed_kwargs(
+            values, what, "apply_tensor_parallel" if layout.tp > 1 else "apply_pipeline_parallel"
+        )
         from .fsdp2_load import fsdp2_sharded_load_requested
 
         if fsdp2_sharded_load_requested():
@@ -232,7 +238,11 @@ def tensor_parallel_env_load(fn):
                     *args, **kwargs
                 )  # full load; get_peft_model shards it (Params4bit included)
                 return _check_pipeline_model(out, layout) if layout.pp > 1 else out
-            from .tp_native import _sharded_from_pretrained, _tp_load_quantizing
+            from .tp_native import (
+                HFDistributedKwargsError,
+                _sharded_from_pretrained,
+                _tp_load_quantizing,
+            )
 
             try:
                 # Quantizing on load (load_in_4bit of a 16-bit checkpoint) keeps the full load unless its 4-bit
@@ -251,6 +261,8 @@ def tensor_parallel_env_load(fn):
                     }
                 ) as state:
                     out = fn(*args, **kwargs)
+            except HFDistributedKwargsError:
+                raise  # a whole load would forward the same kwarg to transformers
             except ValueError as exc:
                 if not str(exc).startswith("Unsloth:") or "sharded loading" not in str(exc):
                     raise
