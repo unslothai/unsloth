@@ -94,17 +94,6 @@ def ep_env_mesh():
     return _ENV_MESH[0]
 
 
-def ep_refuse_fast_inference(values):
-    """vLLM's LoRA sync gathers only DTensor adapters; ep keeps expert LoRA as local parameters."""
-    if values.get("fast_inference"):
-        raise NotImplementedError(
-            f"Unsloth: {_EP_ENV}={ep_env_size()} (expert parallel) does not support vLLM (fast_inference = True): "
-            "each rank holds only its own experts' LoRA, and the vLLM LoRA sync would send one rank's slice. "
-            f"Unset {_EP_ENV} (or ep in UNSLOTH_PARALLEL) to run this script with DDP or UNSLOTH_FSDP2=1, "
-            "or load with fast_inference = False."
-        )
-
-
 def ep_env_load(fn, args, kwargs, four_bit):
     """from_pretrained under UNSLOTH_EP_SIZE: a 4-bit quantize-on-load keeps only this rank's experts."""
     if not four_bit:
@@ -129,6 +118,17 @@ def ep_env_apply(model):
     if ep_env_size() > 1 and isinstance(model, nn.Module) and not is_expert_parallel(model):
         apply_expert_parallel(model, ep_env_mesh())
     return model
+
+
+def ep_refuse_fast_inference(values):
+    """vLLM's LoRA sync gathers only DTensor adapters; ep keeps expert LoRA as local parameters."""
+    if values.get("fast_inference"):
+        raise NotImplementedError(
+            f"Unsloth: {_EP_ENV}={ep_env_size()} (expert parallel) does not support vLLM (fast_inference = True): "
+            "each rank holds only its own experts' LoRA, and the vLLM LoRA sync would send one rank's slice. "
+            f"Unset {_EP_ENV} (or ep in UNSLOTH_PARALLEL) to run this script with DDP or UNSLOTH_FSDP2=1, "
+            "or load with fast_inference = False."
+        )
 
 
 def _tpn():

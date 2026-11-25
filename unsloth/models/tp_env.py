@@ -165,8 +165,9 @@ def tensor_parallel_env_load(fn):
             if ep_env_size() > 1:  # expert parallel (UNSLOTH_EP_SIZE): the experts load per rank
                 from .ep_native import ep_env_load, ep_refuse_fast_inference
 
+                ep_refuse_fast_inference(_bound(fn, args, kwargs))
+
                 values = _bound(fn, args, kwargs)
-                ep_refuse_fast_inference(values)
                 four_bit = _four_bit(values, fn) and not _is_adapter(values)
                 _DEPTH["load"] += 1
                 try:
