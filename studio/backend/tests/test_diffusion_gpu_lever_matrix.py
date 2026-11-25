@@ -415,11 +415,50 @@ def probe_cutlass_sm75(p: GpuProfile) -> dict:
 
 @probe
 def probe_native_w8a8_cuda(p: GpuProfile) -> dict:
-    """NativeWeightOnlyLinear W8A8 on CUDA needs bf16 activations (sm80+); the capability gate only."""
+    """NativeWeightOnlyLinear W8A8 on CUDA: what production's ``diffusion_native_w8a8_cuda.prepare()`` decides for the
+    card (its capability gate, Triton kernels, custom op and rotation mode). Only the on-card bit-compare probe and the
+    kernel build are pinned as passing, like a race on the real card; the follow-up GEMM arming is not part of it."""
     if not p.cuda or p.rocm:
         return {"any.native_w8a8.cap_gate": lever(False, why = "rocm" if p.rocm else _na_code(p))}
-    ok = tuple(p.capability) >= (8, 0)
-    return {"any.native_w8a8.cap_gate": lever(ok, why = None if ok else "below_sm80")}
+    import types
+
+    from core.inference import diffusion_convrot_quant as cq
+    from core.inference import diffusion_native_w8a8_cuda as nw
+
+    saved = {k: (dict(v) if isinstance(v, dict) else v) for k, v in nw._STATE.items()}
+    for k in ("devices", "on", "tiles"):
+        nw._STATE[k] = {}
+    with (
+        _pinned(
+            nw,
+            _probe = lambda index, cfg, rules: (cfg, rules),
+            _op = lambda: object(),
+            _norm_op = lambda: None,
+            prepare_gemm = lambda index: False,
+        ),
+        _pinned(cq, _kernels = lambda: types.SimpleNamespace() if p.triton else None),
+    ):
+        try:
+            on = bool(nw.prepare(0))
+            why = nw._STATE["devices"].get(0)
+        except Exception as exc:  # noqa: BLE001 - recorded, never read as engaged
+            on, why = False, f"error {type(exc).__name__}"
+        finally:
+            nw._STATE.clear()
+            nw._STATE.update(saved)
+    if not on and why is None:
+        why = "disabled"  # prepare() returns before probing: its kill switch, or the rotation kernels off
+    return {"any.native_w8a8.cap_gate": lever(on, why = None if on else _code(why, _W8A8_CODES))}
+
+
+_W8A8_CODES = (
+    ("no bf16 activations", "below_sm80"),
+    ("Triton", "no_triton"),
+    ("custom_op", "no_custom_op"),
+    ("switched off", "rotq_off"),
+    ("codes differ", "probe_mismatch"),
+    ("disabled", "disabled"),
+)
 
 
 @probe
@@ -1365,6 +1404,19 @@ HOST_FLIPS: dict = {
         "        super().__init__(name, *a, **k)\n"
         "ctypes.CDLL = _CDLL"
     ),
+    # a host without the CUDA driver library (every CPU CI runner, macOS, Windows without a card)
+    "no_cuda_driver": (
+        "import ctypes\n"
+        "_cdll = ctypes.CDLL\n"
+        "class _NoDriver(_cdll):\n"
+        "    def __init__(self, name, *a, **k):\n"
+        "        if any(t in str(name) for t in ('libcuda', 'nvcuda')):\n"
+        "            raise OSError(f'{name}: not found')\n"
+        "        super().__init__(name, *a, **k)\n"
+        "ctypes.CDLL = _NoDriver"
+    ),
+    # accelerate absent (the profiles' offload hook is the guard's own, never the installed accelerate's)
+    "no_accelerate": "import sys\nsys.modules['accelerate'] = None",
     # an Intel XPU visible on the host
     "host_xpu": "import torch; torch.xpu.is_available = lambda: True; torch.xpu.device_count = lambda: 1",
     # a host with diffusers installed (the golden hides it; the flip un-hides nothing, it must stay hidden)
@@ -1397,8 +1449,10 @@ HOST_FLIP_SETS: dict = {
         "old_torch_dtypes",
         "host_xpu",
         "win32",
+        "no_cuda_driver",
+        "no_accelerate",
     ),
-    "macos": ("no_triton", "darwin", "mps_device_crashes"),
+    "macos": ("no_triton", "darwin", "mps_device_crashes", "no_cuda_driver"),
 }
 
 
@@ -1882,6 +1936,27 @@ def test_inherited_studio_settings_cannot_move_the_golden(monkeypatch):
     want = {k: v for k, v in golden["cells"].items() if k.split(".", 1)[0] in keys}
     assert not diff_cells(want, got), format_diffs(diff_cells(want, got))
     assert "cuda_graph" in _klein_cell()["engaged"]
+
+
+def test_native_w8a8_cell_is_productions_prepare(monkeypatch):
+    """The native W8A8 cell is ``diffusion_native_w8a8_cuda.prepare()``'s decision for the card: a policy change there
+    (the rotation kernels switched off, the module's kill switch) moves the cell."""
+    from core.inference import diffusion_convrot_quant as cq
+
+    p = PROFILES["l4"]
+
+    def cell() -> dict:
+        with clean_policy_env(), mock_profile(p):
+            return probe_native_w8a8_cuda(p)["any.native_w8a8.cap_gate"]
+
+    assert cell() == {"on": True}
+    with clean_policy_env(), mock_profile(PROFILES["t4"]):
+        assert probe_native_w8a8_cuda(PROFILES["t4"])["any.native_w8a8.cap_gate"] == {
+            "on": False,
+            "why": "below_sm80",
+        }
+    monkeypatch.setattr(cq, "rotquant_mode", lambda: "off")
+    assert cell() == {"on": False, "why": "disabled"}
 
 
 def test_int8_gemm_install_cell_is_the_installers_outcome(monkeypatch):

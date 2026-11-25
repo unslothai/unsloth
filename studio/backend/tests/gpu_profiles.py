@@ -395,6 +395,31 @@ def _triton_overrides(p: GpuProfile) -> list:
 DECLARED_NVRTC_ARCHS = ((7, 5), (12, 1))
 
 
+class _DeclaredCudaDriver:
+    """The CUDA driver (libcuda) an NVIDIA profile declares, for code that only asks whether it loads (the model-offload
+    graphs' stable device range needs its virtual-memory API). Any real driver call fails loudly: the guard never
+    reserves memory on the host's card."""
+
+    def __getattr__(self, name: str) -> Any:
+        raise RuntimeError(f"the lever guard does not call the CUDA driver ({name})")
+
+
+def _pin_cuda_driver(put: Callable, p: GpuProfile) -> None:
+    """NVIDIA profiles have a CUDA driver with virtual memory management; ROCm, MPS and CPU have none, whatever the
+    host has (a CPU CI runner has no libcuda, a GPU host does)."""
+
+    def no_driver() -> Any:
+        raise OSError("CUDA driver library not found")
+
+    try:
+        from core.inference import diffusion_stable_arena as arena
+    except Exception:  # noqa: BLE001 - nothing reads the driver then
+        return
+    if hasattr(arena, "_driver"):
+        driver = _DeclaredCudaDriver()
+        put(arena, "_driver", (lambda: driver) if p.vendor == "nvidia" else no_driver)
+
+
 def _pin_metal(put: Callable, p: GpuProfile) -> None:
     """Every real Metal / MPS reading Studio makes, pinned to the profile: the MPS profile declares macOS 14+ (bf16
     works) with its unified memory as Metal's working set; every other profile has no MPS, as on Linux. A Mac host's
@@ -534,6 +559,9 @@ def mock_profile(
         put(torch.cuda, "device_count", lambda: count if cuda else 0)
         put(torch.cuda, "current_device", lambda: 0)
         put(torch.cuda, "is_initialized", lambda: cuda)
+        # nothing in the guard records a CUDA graph (a CPU build raises on the real query)
+        if hasattr(torch.cuda, "is_current_stream_capturing"):
+            put(torch.cuda, "is_current_stream_capturing", lambda: False)
 
         def no_device(*a: Any, **k: Any) -> None:
             # Anything that really touches the card (a tensor moved to it, an on-device probe) fails at once, as it
@@ -563,6 +591,7 @@ def mock_profile(
             put(mps, "is_available", lambda: p.mps)
             put(mps, "is_built", lambda: p.mps)
         _pin_metal(put, p)
+        _pin_cuda_driver(put, p)
         xpu = getattr(torch, "xpu", None)
         if (
             xpu is not None
