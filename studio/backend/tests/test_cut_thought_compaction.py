@@ -192,22 +192,25 @@ def test_a_tool_recovery_whose_own_thought_is_cut_ends_as_before(monkeypatch, pe
     assert "Lower the reasoning effort" in _content(events)
 
 
-def test_a_tool_chat_that_cannot_recover_keeps_the_exhaustion_message():
+def _record_cut_thought_args(route) -> list:
     import ast
     import inspect
-
-    from routes import inference as inference_route
-
-    tree = ast.parse(inspect.getsource(inference_route.produce_openai_chat_completions))
-    records = [
+    return [
         ast.unparse(kw.value)
-        for node in ast.walk(tree)
+        for node in ast.walk(ast.parse(inspect.getsource(route)))
         if isinstance(node, ast.Call)
         and ast.unparse(node.func).endswith("generate_chat_completion_with_tools")
         for kw in node.keywords
         if kw.arg == "record_cut_thought"
     ]
+
+
+def test_a_tool_chat_that_cannot_recover_keeps_the_exhaustion_message():
+    from routes import inference as inference_route
+
+    records = _record_cut_thought_args(inference_route.produce_openai_chat_completions)
     assert records == ["_cut_recovery is None and _cut_thought_recoverable(payload)"]
+    assert _record_cut_thought_args(inference_route.anthropic_messages) == ["False"]
     for policy, recoverable in (("error", False), ("truncate_middle", False), (None, True)):
         payload = _continuation()
         payload.context_overflow = policy

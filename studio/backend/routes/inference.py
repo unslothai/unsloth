@@ -47843,6 +47843,8 @@ async def anthropic_messages(
                 ),
                 replay_preserve_thinking = not _anthropic_history_has_thinking(payload),
                 website_policy = website_policy,
+                # This route never runs _recover_cut_thought: keep the exhaustion notice.
+                record_cut_thought = False,
                 **_reasoning_args,
             )
 
