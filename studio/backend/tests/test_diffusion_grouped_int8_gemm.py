@@ -225,3 +225,25 @@ def test_fused_gemm_is_bit_identical_under_the_interpreter():
     )
     assert proc.returncode == 0, proc.stderr[-2000:]
     assert "OK 16" in proc.stdout
+
+
+def test_no_block_pointers_in_studio_kernels():
+    # Triton 3.9 (and triton-windows 3.9, paired with torch 2.15) turned tl.make_block_ptr / tl.advance into a raise
+    # (triton-lang/triton#10833): a kernel using them fails its probe and silently drops to the slower path.
+    import ast
+    from pathlib import Path
+
+    hits = []
+    for path in sorted(Path(ROOT).rglob("*.py")):
+        if "tests" in path.relative_to(ROOT).parts:
+            continue
+        tree = ast.parse(path.read_text(encoding = "utf-8"))
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Attribute)
+                and node.attr in ("make_block_ptr", "advance")
+                and isinstance(node.value, ast.Name)
+                and node.value.id in ("tl", "language")
+            ):
+                hits.append(f"{path.relative_to(ROOT)}:{node.lineno} {node.attr}")
+    assert not hits, hits

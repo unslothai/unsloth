@@ -122,7 +122,8 @@ def _phase_code(nib, hi, T: tl.constexpr, BITS: tl.constexpr):
 @triton.jit
 def _phase_dot(
     acc,
-    a_blk,
+    a_ptrs,
+    a_mask,
     nib,
     hi,
     step,
@@ -133,7 +134,7 @@ def _phase_dot(
     HW: tl.constexpr,
 ):
     w = _to_int8(_phase_code(nib, hi, T, BITS), step, cb_ptr, BITS, HAS_CB, HW)
-    a = tl.load(a_blk, boundary_check = (0,), padding_option = "zero")
+    a = tl.load(a_ptrs + T, mask = a_mask, other = 0)
     return tl.dot(a, tl.trans(w), acc, out_dtype = tl.int32)
 
 
@@ -163,42 +164,37 @@ def _phase_loop(
     BLOCK_K: tl.constexpr,
 ):
     Q: tl.constexpr = BLOCK_K // 4
-    om = pid_m * BLOCK_M
-    on = pid_n * BLOCK_N
-    kq = k_first * Q
-    # activations at columns 4j + t (rows past M read as zeros and are never stored)
-    a0 = tl.make_block_ptr(a_ptr, (M, K // 4), (stride_am, 4), (om, kq), (BLOCK_M, Q), (1, 0))
-    a1 = tl.make_block_ptr(a_ptr + 1, (M, K // 4), (stride_am, 4), (om, kq), (BLOCK_M, Q), (1, 0))
-    a2 = tl.make_block_ptr(a_ptr + 2, (M, K // 4), (stride_am, 4), (om, kq), (BLOCK_M, Q), (1, 0))
-    a3 = tl.make_block_ptr(a_ptr + 3, (M, K // 4), (stride_am, 4), (om, kq), (BLOCK_M, Q), (1, 0))
-    # nibble bytes 2j (phases 0, 1) and 2j + 1 (phases 2, 3), top-plane byte j
-    ne = tl.make_block_ptr(q_ptr, (N, K // 4), (stride_qn, 2), (on, kq), (BLOCK_N, Q), (1, 0))
-    no = tl.make_block_ptr(q_ptr + 1, (N, K // 4), (stride_qn, 2), (on, kq), (BLOCK_N, Q), (1, 0))
-    hp = tl.make_block_ptr(
-        q_ptr + K // 2, (N, K // 4), (stride_qn, 1), (on, kq), (BLOCK_N, Q), (1, 0)
-    )
+    # Plain pointers, not block pointers: Triton 3.9 removed tl.make_block_ptr / tl.advance (triton-lang/triton#10833).
+    # Same bytes as the block pointers loaded: rows past M / N read as zeros (never stored), columns stay inside K.
+    rows_m = pid_m.to(tl.int64) * BLOCK_M + tl.arange(0, BLOCK_M)
+    rows_n = pid_n.to(tl.int64) * BLOCK_N + tl.arange(0, BLOCK_N)
+    mask_m = (rows_m < M)[:, None]
+    mask_n = (rows_n < N)[:, None]
     jj = tl.arange(0, Q)
+    col = (k_first * Q + jj).to(tl.int64)
+    # activations at columns 4j + t: _phase_dot adds t
+    a_ptrs = a_ptr + rows_m[:, None] * stride_am + (4 * col)[None, :]
+    # nibble bytes 2j (phases 0, 1) and 2j + 1 (phases 2, 3), top-plane byte j
+    q_rows = q_ptr + rows_n[:, None] * stride_qn
+    ne_ptrs = q_rows + (2 * col)[None, :]
+    hp_ptrs = q_rows + K // 2 + col[None, :]
     s_ptrs = s_ptr + rn[:, None] * groups + ((k_first * BLOCK_K + 4 * jj) // GROUP)[None, :]
     acc = tl.zeros((BLOCK_M, BLOCK_N), dtype = tl.int32)
     for _k in range(0, k_steps):
         step = _step_f32(tl.load(s_ptrs), HW)  # one convert serves the four phases
-        nib_e = tl.load(ne, boundary_check = (0,), padding_option = "zero").to(tl.int32)
-        nib_o = tl.load(no, boundary_check = (0,), padding_option = "zero").to(tl.int32)
+        nib_e = tl.load(ne_ptrs, mask = mask_n, other = 0).to(tl.int32)
+        nib_o = tl.load(ne_ptrs + 1, mask = mask_n, other = 0).to(tl.int32)
         if BITS == 6:
-            hi = tl.load(hp, boundary_check = (0,), padding_option = "zero").to(tl.int32)
+            hi = tl.load(hp_ptrs, mask = mask_n, other = 0).to(tl.int32)
         else:
             hi = nib_e
-        acc = _phase_dot(acc, a0, nib_e, hi, step, cb_ptr, 0, BITS, HAS_CB, HW)
-        acc = _phase_dot(acc, a1, nib_e, hi, step, cb_ptr, 1, BITS, HAS_CB, HW)
-        acc = _phase_dot(acc, a2, nib_o, hi, step, cb_ptr, 2, BITS, HAS_CB, HW)
-        acc = _phase_dot(acc, a3, nib_o, hi, step, cb_ptr, 3, BITS, HAS_CB, HW)
-        a0 = tl.advance(a0, (0, Q))
-        a1 = tl.advance(a1, (0, Q))
-        a2 = tl.advance(a2, (0, Q))
-        a3 = tl.advance(a3, (0, Q))
-        ne = tl.advance(ne, (0, Q))
-        no = tl.advance(no, (0, Q))
-        hp = tl.advance(hp, (0, Q))
+        acc = _phase_dot(acc, a_ptrs, mask_m, nib_e, hi, step, cb_ptr, 0, BITS, HAS_CB, HW)
+        acc = _phase_dot(acc, a_ptrs, mask_m, nib_e, hi, step, cb_ptr, 1, BITS, HAS_CB, HW)
+        acc = _phase_dot(acc, a_ptrs, mask_m, nib_o, hi, step, cb_ptr, 2, BITS, HAS_CB, HW)
+        acc = _phase_dot(acc, a_ptrs, mask_m, nib_o, hi, step, cb_ptr, 3, BITS, HAS_CB, HW)
+        a_ptrs += BLOCK_K
+        ne_ptrs += BLOCK_K // 2
+        hp_ptrs += Q
         s_ptrs += BLOCK_K // GROUP
     return acc
 
