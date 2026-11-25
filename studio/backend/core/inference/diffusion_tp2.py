@@ -1043,7 +1043,12 @@ def _storage_mib(tensors: Any) -> int:
 def fit_refusal(transformer: Any, devices: Sequence[Any]) -> Optional[str]:
     """Per-card render headroom: each card holds half the blocks plus Studio's denoiser working set (twice on the
     first card, which also runs the embedders, encode and decode) and the reserve a CFG replica keeps; the first card
-    also holds the prologue / epilogue. None when both fit."""
+    also holds the prologue / epilogue. None when both fit.
+
+    VAE decode is not priced here: it runs after the last denoise step on the first card for every plan, and Studio's
+    decode OOM recovery (components to the host, then tiles) owns it. Measured on 2x T4 at 1 MP: card 0 peaks at
+    8.0-8.8 GB before decode in both the eager (deferred Auto, renders 1-2) and the default profile; decode adds
+    0.6 GB with the fused VAE and 5.3 GB with the unfused one of the eager renders (14.0 GB of 15.4)."""
     try:
         blocks = list(transformer.transformer_blocks)
         block_mib = _storage_mib(t for b in blocks for t in (*b.parameters(), *b.buffers()))
