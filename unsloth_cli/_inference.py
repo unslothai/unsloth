@@ -1163,6 +1163,8 @@ class HttpChatBackend:
             },
             method = method,
         )
+        if self.image_generator and path == "/v1/chat/completions":
+            request.add_header("X-Unsloth-Events", "1")
         # No redirects: this carries a bearer token (see urlopen_no_redirect).
         return urlopen_no_redirect(request, timeout = timeout)
 
@@ -1222,7 +1224,6 @@ class HttpChatBackend:
             typer.echo(f"Model load failed: {reason}", err = True)
             raise typer.Exit(code = 1)
         loaded = loaded if isinstance(loaded, dict) else {}
-        self._text_id = loaded.get("model") or model
         self.supports_images = bool(loaded.get("is_vision"))
         self._model_id = self._pinned_model_id(loaded.get("model") or model, loaded, payload)
         if _is_local(self._model_id):
@@ -1322,6 +1323,15 @@ class HttpChatBackend:
             "stream": True,
             "enable_thinking": enable_thinking,
         }
+        if self.image_generator:
+            body.update(
+                enable_tools = True,
+                enabled_tools = ["generate_image"],
+                image_generator = self.image_generator,
+                max_tool_calls_per_message = 1,
+                parallel_tool_calls = False,
+                permission_mode = "off",
+            )
         sampling = dict(
             temperature = temperature,
             top_p = top_p,
@@ -1333,40 +1343,6 @@ class HttpChatBackend:
             body["max_tokens"] = max_new_tokens
         if use_adapter is not None:
             body["use_adapter"] = use_adapter
-        if self.image_generator:
-            from unsloth_cli._chat_image_swap import image_tool_turn
-
-            def api(path, payload = None):
-                method = "GET" if payload is None else "POST"
-                timeout = 5 if path.endswith("/cancel") else 1200
-                return read_json_checking_deferred_error(
-                    self._base + path, self._request(method, path, payload, timeout = timeout)
-                )
-
-            def show_image(image):
-                typer.echo(
-                    f"Saved gallery image {image['gallery_image_id']}: {image['url']}", err = True
-                )
-
-            choice, history = image_tool_turn(
-                api,
-                body,
-                self._text_id,
-                {"model_path": self.image_generator},
-                show_image,
-            )
-            if not history:
-                self.reply_hit_token_limit = choice.get("finish_reason") == "length"
-                reply = choice["message"]
-                text = reply.get("content") or ""
-                if reply.get("reasoning_content"):
-                    text = _THINK_OPEN + reply["reasoning_content"] + "</think>" + text
-                return iter([text])
-            body.update(
-                messages = [*msgs, *history],
-                enable_tools = False,
-                tool_choice = "none",
-            )
         try:
             resp = self._request("POST", "/v1/chat/completions", body)
         except urllib.error.HTTPError as exc:
@@ -1391,6 +1367,19 @@ class HttpChatBackend:
                         parsed = json.loads(data)
                     except ValueError:
                         continue
+                    if (
+                        self.image_generator
+                        and parsed.get("type") == "tool_end"
+                        and parsed.get("tool_name") == "generate_image"
+                    ):
+                        for line in str(parsed.get("result", "")).splitlines():
+                            if line.startswith("__FILES__:"):
+                                for file in json.loads(line.removeprefix("__FILES__:")):
+                                    if image_id := file.get("gallery_image_id"):
+                                        typer.echo(
+                                            f"Saved gallery image {image_id}: {self._base}/api/inference/images/gallery/{image_id}/file",
+                                            err = True,
+                                        )
                     if "error" in parsed:
                         raise RuntimeError(
                             f"Server error: {parsed['error'].get('message', 'Unknown server error')}"
@@ -1427,13 +1416,6 @@ class HttpChatBackend:
             if not saw_finish:
                 raise RuntimeError("Stream ended before the reply completed.")
 
-        if self.image_generator:
-
-            def with_tool_history():
-                yield from cumulative()
-                messages.extend(history)
-
-            return with_tool_history()
         return cumulative()
 
     def close(self) -> None:

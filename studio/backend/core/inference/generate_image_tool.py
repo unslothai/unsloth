@@ -142,19 +142,26 @@ def _build_request(arguments: dict, prompt: str, status: dict):
     return DiffusionGenerateRequest(**fields)
 
 
-async def _generate(request, ticket):
+async def _generate(
+    request,
+    ticket,
+    *,
+    swap_holds_admission = False,
+):
     from core.inference import media_keepwarm
     from core.inference.generation_ticket import generation_ticket
     from core.inference.gpu_arbiter import DIFFUSION
     from routes.inference import _generate_diffusion_image_core
 
     # The HTTP route is counted by the keep-warm middleware; this path never goes through it.
-    await media_keepwarm.begin_request(DIFFUSION)
+    if not swap_holds_admission:
+        await media_keepwarm.begin_request(DIFFUSION)
     try:
         with generation_ticket(ticket):
             return await _generate_diffusion_image_core(request)
     finally:
-        media_keepwarm.end_request(DIFFUSION)
+        if not swap_holds_admission:
+            media_keepwarm.end_request(DIFFUSION)
 
 
 def _stop(future, ticket) -> None:
@@ -195,7 +202,7 @@ def _save_to_workdir(image, workdir: str, account) -> dict:
     os.makedirs(workdir, exist_ok = True)
     target = os.path.join(workdir, name)
     shutil.copyfile(source, target)
-    return {"name": name, "size": os.path.getsize(target)}
+    return {"name": name, "size": os.path.getsize(target), "gallery_image_id": image.id}
 
 
 def _run(arguments: dict, workdir: str, cancel_event, timeout: Optional[float]) -> str:
@@ -222,6 +229,17 @@ def _run(arguments: dict, workdir: str, cancel_event, timeout: Optional[float]) 
         if not chat_media_swap.swap_enabled():
             return ERR_NOT_LOADED
         return _run_with_swap(arguments, prompt, workdir, cancel_event, timeout, account, loop)
+    from core.inference.chat_media_swap import request_image_model
+
+    if selected := request_image_model.get():
+        from core.inference.media_auto_switch import _resolve_pick
+        from core.inference.media_model_index import IMAGE_TASK, resident_is_pick
+
+        pick = _resolve_pick(DIFFUSION, selected, IMAGE_TASK)
+        if not (
+            resident_is_pick(status, selected, pick) if pick else status.get("repo_id") == selected
+        ):
+            return "Error: a different image model is loaded. Unload it before using the selected generator."
     if not offers_txt2img(status):
         return ERR_EDIT_ONLY
     engine = engine_if_imported(DIFFUSION)
@@ -304,7 +322,7 @@ def _run_with_swap(arguments, prompt, workdir, cancel_event, timeout, account, l
         if should_abort():
             return ERR_STOPPED
         try:
-            response = await _generate(request, ticket)
+            response = await _generate(request, ticket, swap_holds_admission = True)
         except GpuBusyForAnotherAccountError:
             return ERR_OTHER_ACCOUNT
         except HTTPException as exc:

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from contextvars import ContextVar
 import os
 import threading
 import time
@@ -43,6 +44,10 @@ SWAP_BUDGET_S = 900.0
 _last_image_model: dict[str, str] = {}
 
 
+# The CLI can select a generator for this request without changing the owner's preferences.
+request_image_model: ContextVar[Optional[str]] = ContextVar("chat_image_model", default = None)
+
+
 class SwapUnavailable(RuntimeError):
     """The swap cannot start; nothing was changed. The message is the tool result."""
 
@@ -63,6 +68,8 @@ def _env_bool(name: str) -> Optional[bool]:
 
 
 def swap_enabled() -> bool:
+    if request_image_model.get():
+        return True
     env = _env_bool(SWAP_ENV)
     if env is not None:
         return env
@@ -85,6 +92,8 @@ def remember_image_model(model_id: Optional[str]) -> None:
 
 def default_image_model() -> Optional[str]:
     """The setting, else the image model loaded last this session, else the only downloaded one."""
+    if name := request_image_model.get():
+        return name
     env = os.environ.get(SWAP_MODEL_ENV)
     if env and env.strip():
         return env.strip()
@@ -113,6 +122,50 @@ class ChatSnapshot:
     model: Optional[str] = None
     context_length: Optional[int] = None
     extra: dict = field(default_factory = dict)
+
+
+_transformers_load: Optional[ChatSnapshot] = None
+
+
+def _transformers_identity():
+    from routes.inference import _peek_inference_backend
+
+    backend = _peek_inference_backend()
+    name = getattr(backend, "active_model_name", None)
+    if not name or not getattr(backend, "_proc", None):
+        return None
+    return name, backend._proc, id(backend.models.get(name))
+
+
+def remember_transformers_load(request, response, user_initiated: bool) -> None:
+    global _transformers_load
+    _transformers_load = None
+    if (
+        response.is_gguf
+        or response.is_mlx
+        or response.is_npu
+        or response.is_audio
+        or response.is_diffusion
+        or response.engine != "auto"
+        or request.native_path_lease
+    ):
+        return
+    identity = _transformers_identity()
+    if identity:
+        _transformers_load = ChatSnapshot(
+            identity = identity,
+            model = response.model,
+            launch = request.model_copy(
+                update = {
+                    "hf_token": None,
+                    "force_cancel_active": False,
+                    "force_reload": False,
+                    "alongside": False,
+                    "load_request_id": None,
+                }
+            ),
+            extra = {"transformers": True, "user_loaded": user_initiated},
+        )
 
 
 @dataclass
@@ -176,7 +229,7 @@ class RoundTrip:
         if snap is None:
             raise SwapUnavailable(
                 "Error: the chat model cannot be swapped out for the image model "
-                "(only a GGUF chat model loaded on its own can be)."
+                "(load a single GGUF or Transformers chat model)."
             )
         if self.cancel.is_set():
             return ERR_STOPPED
@@ -202,6 +255,8 @@ class RoundTrip:
                 raise SwapUnavailable(ERR_BUSY)
             if self.media_busy is not None and await asyncio.to_thread(self.media_busy):
                 raise SwapUnavailable(ERR_MEDIA_BUSY)
+            if not await self.chat.is_resident(snap):
+                raise SwapUnavailable("Error: the chat model changed before the image swap.")
             return await self._run_held(snap, gate, total)
         finally:
             await gate.aclose()
@@ -303,7 +358,9 @@ class StudioChat:
         from core.inference.llama_keepwarm import launch_to_replay, loaded_identity
 
         llama = self._llama()
-        if not llama.is_loaded or getattr(llama, "holds_no_vram", False):
+        if llama.is_loaded and (
+            getattr(llama, "_native_grant_backed", False) or getattr(llama, "holds_no_vram", False)
+        ):
             return None
         if list(model_slots.slots):
             raise SwapUnavailable(
@@ -319,6 +376,10 @@ class StudioChat:
                 "Error: the chat model was loaded by another account, so this chat cannot unload it "
                 "for the image model."
             )
+        if not llama.is_loaded:
+            if _transformers_load and _transformers_load.identity == _transformers_identity():
+                return _transformers_load
+            return None
         identity = loaded_identity()
         launch = launch_to_replay(llama)
         if identity is None or launch is None:
@@ -329,10 +390,15 @@ class StudioChat:
             model = getattr(llama, "model_identifier", None),
             context_length = getattr(llama, "_effective_context_length", None),
             # The reload path marks it an API load; a UI-picked chat keeps its idle-unload exemption.
-            extra = {"user_loaded": bool(getattr(llama, "_loaded_by_user_action", False))},
+            extra = {
+                "user_loaded": bool(getattr(llama, "_loaded_by_user_action", False)),
+                "process": getattr(llama, "_process", None),
+            },
         )
 
     async def save_kv(self, snap: ChatSnapshot, should_abort) -> Optional[dict]:
+        if snap.extra.get("transformers"):
+            return None
         llama = self._llama()
         try:
             return await asyncio.to_thread(llama.save_slots_for_resume, should_abort)
@@ -352,12 +418,20 @@ class StudioChat:
             policy = "off",
             account_id = current_account_id(),
         )
-        if self._llama().is_active:
+        if self._llama().is_active or (snap.extra.get("transformers") and _transformers_identity()):
             raise RuntimeError("the chat model did not unload")
 
     async def is_resident(self, snap: ChatSnapshot) -> bool:
         from core.inference.llama_keepwarm import loaded_identity
-        return self._llama().is_loaded and loaded_identity() == snap.identity
+
+        if snap.extra.get("transformers"):
+            return _transformers_identity() == snap.identity
+        llama = self._llama()
+        return (
+            llama.is_loaded
+            and loaded_identity() == snap.identity
+            and getattr(llama, "_process", None) is snap.extra["process"]
+        )
 
     async def reload(self, snap: ChatSnapshot, kv: Optional[dict]) -> None:
         from core.inference.llama_keepwarm import (
@@ -371,6 +445,28 @@ class StudioChat:
             _maybe_auto_switch_model,
             allow_model_switch_for_request,
         )
+
+        if snap.extra.get("transformers"):
+            from routes import inference
+
+            request = _in_process_request()
+
+            def require_empty():
+                from core.inference import gpu_arbiter, model_slots
+                if inference._loaded_slot_ident() or model_slots.busy() or gpu_arbiter.residents():
+                    raise SwapUnavailable(
+                        "Another model took the slot before chat could be restored."
+                    )
+
+            inference.require_for_model_switch(request.scope, require_empty)
+            await inference.load_model_gated(
+                snap.launch,
+                request,
+                self.subject,
+                user_initiated = snap.extra["user_loaded"],
+                current_request_counted = True,
+            )
+            return
 
         stash_for_reload(snap.identity, snap.launch)
         if kv:
@@ -480,7 +576,8 @@ class StudioImage:
             if phase in (None, "ready"):
                 status = await asyncio.to_thread(backend.status)
                 if resident_is_pick(status, name, pick):
-                    remember_image_model(pick.model_id)
+                    if not request_image_model.get():
+                        remember_image_model(pick.model_id)
                     return
                 raise RuntimeError(f"'{pick.model_id}' was replaced by another load")
             if time.monotonic() >= deadline:
@@ -531,16 +628,36 @@ def chat_can_swap() -> bool:
         return False
     try:
         from routes.inference import get_llama_cpp_backend
-        return bool(get_llama_cpp_backend().is_loaded)
+
+        llama = get_llama_cpp_backend()
+        if llama.is_loaded:
+            return not getattr(llama, "_native_grant_backed", False)
+        return (
+            _transformers_load is not None
+            and _transformers_load.identity == _transformers_identity()
+        )
     except Exception:  # noqa: BLE001
         return False
 
 
+@contextlib.asynccontextmanager
+async def _hold_swap_requests():
+    from core.inference.gpu_arbiter import DIFFUSION, VIDEO
+    from core.inference.llama_keepwarm import inference_lifecycle_gate
+    from core.inference.media_keepwarm import admission_gate
+
+    async with inference_lifecycle_gate(), admission_gate(DIFFUSION), admission_gate(VIDEO):
+        yield
+
+
 def _media_busy() -> bool:
     """A load or render on the image or the video backend (video jobs never enter ``active_generations``)."""
-    from core.inference.gpu_arbiter import DIFFUSION
+    from core.inference.gpu_arbiter import DIFFUSION, VIDEO
+    from core.inference.media_keepwarm import other_request_count
     from core.inference.media_switch_backends import backend_busy, backend_for, other_backend_busy
 
+    if any(other_request_count(owner, count_pending = False) for owner in (DIFFUSION, VIDEO)):
+        return True
     try:
         if backend_busy(backend_for(DIFFUSION)):
             return True
@@ -588,7 +705,6 @@ def run_in_tool(
 
     on_gpu = load_takes_the_gpu()
     from core.inference.gpu_residency import current_policy
-    from core.inference.llama_keepwarm import inference_lifecycle_gate
 
     policy = current_policy()
     trip = RoundTrip(
@@ -596,7 +712,7 @@ def run_in_tool(
         media = StudioImage(subject, render),
         image_model = name,
         on_cancel = stop_render,
-        hold_requests = inference_lifecycle_gate,
+        hold_requests = _hold_swap_requests,
         still_alone = lambda: active_generations.count() <= 1,
         media_busy = _media_busy,
         beside_first = policy in ("fit", "always") or not on_gpu,

@@ -1221,6 +1221,7 @@ export function localMediaToolsForTurn(
 }
 
 type MediaStatusSnapshot = {
+  chat_swap_available?: boolean;
   loaded?: boolean;
   /** False when the resident model belongs to another account this one may not use. */
   yours?: boolean;
@@ -1239,9 +1240,9 @@ export function localMediaReadyFromStatus(
 ): { image: boolean; video: boolean } {
   return {
     image: Boolean(
-      image?.loaded &&
-        image.yours !== false &&
-        (!image.workflows || image.workflows.includes("txt2img")),
+      image && image.yours !== false && (image.loaded
+        ? !image.workflows || image.workflows.includes("txt2img")
+        : image.chat_swap_available),
     ),
     // Ref2VA needs reference media the chat tool never sends.
     video: Boolean(

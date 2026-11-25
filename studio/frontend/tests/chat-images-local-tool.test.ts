@@ -6,7 +6,7 @@
 // keeps the provider's own image_generation.
 
 import assert from "node:assert/strict";
-import { register, stripTypeScriptTypes } from "node:module";
+import { register } from "node:module";
 import test from "node:test";
 
 import { installLocalStorageFake, readSrc } from "./helpers/kit.ts";
@@ -191,6 +191,13 @@ test("a hidden or edit-only resident is not ready; one this account may use is",
     ),
     { image: true, video: true },
   );
+  assert.deepEqual(
+    localMediaReadyFromStatus({ loaded: false, chat_swap_available: true }, null),
+    { image: true, video: false },
+  );
+  assert.equal(localMediaReadyFromStatus(
+    { loaded: true, workflows: ["edit"], chat_swap_available: true }, null,
+  ).image, false);
   // MiniMax-H3 Ref2VA needs reference media the chat tool never sends.
   assert.deepEqual(
     localMediaReadyFromStatus(null, { loaded: true, h3_task: "ref2va" }),
@@ -204,134 +211,4 @@ test("a hidden or edit-only resident is not ready; one this account may use is",
     image: false,
     video: false,
   });
-});
-
-test("image swap skips audio and video turns before checking model status", async () => {
-  const source = readSrc("features/chat/api/chat-image-swap.ts");
-  const start = source.indexOf("export async function imageSwapForRequest(");
-  const end = source.indexOf("\nfunction sameSession(", start);
-  const imageSwapForRequest = new Function(
-    "chatImageSwapSelection",
-    stripTypeScriptTypes(source.slice(start, end).replace("export ", "")) +
-      "\nreturn imageSwapForRequest;",
-  )(() => assert.fail("a media question must stay on the normal chat path"));
-  const signal = new AbortController().signal;
-  for (const media of [{ video_base64: "clip" }, { audio_base64: "audio" }]) {
-    assert.equal(
-      await imageSwapForRequest({ enabled_tools: ["generate_image"], ...media }, signal),
-      null,
-    );
-  }
-});
-
-test("image swap replay sends the gallery reference and keeps the PNG out of model context", () => {
-  const source = readSrc("features/chat/api/chat-adapter.ts");
-  const start = source.indexOf("function serializeToolResultPart(");
-  const end = source.indexOf("\nfunction canReplayToolCallWithoutRoleTool(", start);
-  const serialize = new Function(
-    "getToolPartReplayMetadata",
-    "getToolReplayProvenance",
-    "toolModelSuffixExtraContent",
-    "isMcpUiToolResult",
-    "isMcpImageToolResult",
-    "isSearchImagesToolResult",
-    "isSandboxWrapper",
-    stripTypeScriptTypes(source.slice(start, end)) + "\nreturn serializeToolResultPart;",
-  )(
-    () => ({ isServerSideBuiltin: false }),
-    () => undefined,
-    () => ({}),
-    () => false,
-    () => false,
-    () => false,
-    () => false,
-  );
-  const part = {
-    toolName: "generate_image",
-    toolCallId: "call-1",
-    result: { image_b64: "PNG_BYTES", text: "Saved image /gallery/example" },
-  };
-  assert.equal(serialize(part).content, "Saved image /gallery/example");
-  assert.doesNotMatch(
-    serialize({ ...part, result: { image_b64: "PNG_BYTES" } }).content,
-    /PNG_BYTES/,
-  );
-});
-
-test("image swap streams its proposal and waits for complete tool arguments", async () => {
-  const source = readSrc("features/chat/api/chat-image-swap.ts");
-  const start = source.indexOf("export async function* streamImageSwap(");
-  let requests = 0;
-  let proposalEnded = false;
-  const streamImageSwap = new Function(
-    "streamChatCompletions",
-    "extractDeltaText",
-    "streamedToolCallArguments",
-    "render",
-    "authFetch",
-    "sameSession",
-    stripTypeScriptTypes(source.slice(start).replace("export ", "")) +
-      "\nreturn streamImageSwap;",
-  )(
-    async function* (
-      request: { stream: boolean; messages: unknown[] },
-      _signal: AbortSignal,
-      _contextLength: number | null,
-      _kvCacheHint: boolean,
-      options?: { waitForClose: boolean },
-    ) {
-      assert.equal(request.stream, true);
-      if (++requests === 1) {
-        assert.equal(options?.waitForClose, true);
-        yield { choices: [{ delta: { content: "I can help." } }] };
-        yield {
-          choices: [{
-            delta: {
-              tool_calls: [{
-                index: 0,
-                id: "image-1",
-                function: { name: "generate_image", arguments: '{"pro' },
-              }],
-            },
-          }],
-        };
-        yield {
-          choices: [{
-            delta: {
-              tool_calls: [{ index: 0, function: { arguments: 'mpt":"a tree"}' } }],
-            },
-            finish_reason: "tool_calls",
-          }],
-        };
-        proposalEnded = true;
-      } else {
-        assert.equal(request.messages.length, 2);
-        assert.match(JSON.stringify(request.messages[0]), /I can help/);
-        assert.match(JSON.stringify(request.messages[0]), /a tree/);
-      }
-    },
-    (content: unknown) => ({ text: typeof content === "string" ? content : "" }),
-    (value: unknown) => value ?? "",
-    async (_selection: unknown, args: { prompt: string }) => {
-      assert.equal(proposalEnded, true);
-      assert.equal(args.prompt, "a tree");
-      return { id: "saved", url: "/gallery/saved" };
-    },
-    async (path: string) => {
-      assert.match(path, /\/images\/gallery\//);
-      return { ok: false };
-    },
-    () => {},
-  );
-  const generator = streamImageSwap(
-    { stream: true, messages: [] },
-    { textId: "text", image: { model_path: "image" } },
-    new AbortController().signal,
-    null,
-  );
-  const first = await generator.next();
-  assert.equal(first.value.choices[0].delta.content, "I can help.");
-  assert.equal(proposalEnded, false);
-  while (!(await generator.next()).done);
-  assert.equal(requests, 2);
 });

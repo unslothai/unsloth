@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { CHAT_IMAGE_SWAP_CHANGED, CHAT_IMAGE_SWAP_ENABLED } from "./chat-image-swap-selection";
-import { useConfirmedLoginMode } from "@/features/auth";
+import { useIsAccountOwner } from "@/features/auth";
 import { modelErrorToast } from "@/lib/model-error-toast";
 import { generationFailureLogsAction } from "@/features/settings/lib/view-logs-action";
 import { isRetiredCopySnapshot, readImageModel, retiredSnapshotAsLoaded, rememberImageModel, matchesRememberedModel, componentFilesMatch, componentFieldsOwnerAfterLoad, componentFilesForModel, forgetStaleImageComponents, forgetStaleResidentComponents, recalledComponentFiles, reconcileRememberedComponents, rememberLoadedImageComponents, recoveredComponentFields, seedImageComponents, rememberPendingImageLoad, clearPendingImageLoad, finishedLoadTarget, type ImageComponentFiles, type ImageModelKey, type RememberedImageModel } from "./image-model-recall";
@@ -329,6 +328,7 @@ import {
 
 import {
   type ControlNetSpecInput,
+  type ChatImageSwapSetting,
   type DiffusionControlNetInfo,
   type DiffusionGenerateProgress,
   type DiffusionGenerateRequest,
@@ -344,6 +344,7 @@ import {
   GenerateResponseLostError,
   cancelDiffusionGeneration,
   cancelDiffusionQueueJob,
+  chatImageSwapSetting,
   clearDiffusionQueue,
   deleteGalleryImage,
   enqueueDiffusionImage,
@@ -2043,8 +2044,6 @@ export function ImagesPage({
   const [advancedOpen, setAdvancedOpen] = usePersistedToggle(
     "unsloth_images_advanced_open",
   );
-  const loginMode = useConfirmedLoginMode();
-  const [chatImageSwap, setChatImageSwap] = usePersistedToggle(CHAT_IMAGE_SWAP_ENABLED);
   const [allowOversized, setAllowOversized] = usePersistedToggle(
     "unsloth_images_allow_oversized",
   );
@@ -2170,6 +2169,34 @@ export function ImagesPage({
   // Background tabs clamp setInterval, so returning fires one immediate poll.
   const genVisibilityListener = useRef<(() => void) | null>(null);
   const [status, setStatus] = useState<DiffusionStatus | null>(null);
+  const isOwner = useIsAccountOwner();
+  const [swapSetting, setSwapSetting] = useState<ChatImageSwapSetting | null>(null);
+  const [savingSwap, setSavingSwap] = useState(false);
+  useEffect(() => {
+    if (!isOwner || !advancedOpen) return;
+    const request = new AbortController();
+    setSwapSetting(null);
+    void chatImageSwapSetting(undefined, request.signal)
+      .then((value) => {
+        if (!request.signal.aborted) setSwapSetting(value);
+      })
+      .catch((error) => {
+        if (!request.signal.aborted) {
+          toast.error("Could not load chat image swapping", { description: String(error) });
+        }
+      });
+    return () => request.abort();
+  }, [advancedOpen, isOwner]);
+  async function toggleChatImageSwap(on: boolean) {
+    setSavingSwap(true);
+    try {
+      setSwapSetting(await chatImageSwapSetting(on));
+    } catch (error) {
+      toast.error("Could not save chat image swapping", { description: String(error) });
+    } finally {
+      setSavingSwap(false);
+    }
+  }
   const residentReconciledFor = useRef<DiffusionStatus | null>(null);
   const reconcileResidentComponents = useCallback(
     (loaded: DiffusionStatus) => {
@@ -6519,16 +6546,20 @@ export function ImagesPage({
         </span>
         <Switch checked={cpuOffload} onCheckedChange={setCpuOffload} />
       </div>
-      {loginMode === "single" && (
+      {isOwner && swapSetting && (
         <div className="flex items-center justify-between">
           <span className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
             Swap models for chat images
-            <InfoHint>Chat uses the last text-to-image model loaded here. When only the text model is loaded, an image tool call unloads it, renders the image, then restores the text model. Turn off other chat tools to use swapping.</InfoHint>
+            <InfoHint>{swapSetting.managed_by_env
+              ? "Configured by UNSLOTH_CHAT_IMAGE_SWAP."
+              : "Let chat load an image generator when you ask for an image, then resume with the same chat model."}</InfoHint>
           </span>
-          <Switch checked={chatImageSwap} aria-label="Swap models for chat images" onCheckedChange={(on) => {
-            setChatImageSwap(on);
-            window.dispatchEvent(new Event(CHAT_IMAGE_SWAP_CHANGED));
-          }} />
+          <Switch
+            aria-label="Swap models for chat images"
+            checked={swapSetting.enabled}
+            disabled={savingSwap || swapSetting.managed_by_env}
+            onCheckedChange={toggleChatImageSwap}
+          />
         </div>
       )}
       <div className="flex items-center justify-between">

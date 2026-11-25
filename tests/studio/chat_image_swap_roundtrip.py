@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
-"""Exercise one automatic image tool call against a dedicated local Unsloth instance.
+"""Exercise two consecutive image tool calls against a dedicated local Unsloth instance.
 
 Supply the same JSON load requests used by the text and image model pickers.
 The text request can select either a GGUF or a Transformers model. The
@@ -19,20 +19,38 @@ from unsloth_cli._inference import read_json_checking_deferred_error, urlopen_no
 
 
 def roundtrip(api, text_load, image_load, question):
-    from unsloth_cli._chat_image_swap import image_tool_turn
-
     model = api("/api/inference/load", text_load)["model"]
-    messages = [{"role": "user", "content": question}]
-    body = {"model": model, "messages": messages, "enable_tools": False}
-    _, history = image_tool_turn(
-        api, body, model, image_load, lambda image: print("Saved", image["url"], flush = True)
-    )
-    if not history:
-        raise RuntimeError("The text model did not call generate_image.")
-    final = api(
-        "/v1/chat/completions", {**body, "messages": [*messages, *history], "tool_choice": "none"}
-    )
-    return final["choices"][0]["message"]["content"]
+    messages = []
+    seen = {image["id"] for image in api("/api/inference/images/gallery")["images"]}
+    for tools in (["generate_image", "web_search"], ["generate_image"]):
+        prompt = (
+            question
+            if not messages
+            else "Generate a new image of a blue sailboat using the image tool."
+        )
+        messages.append({"role": "user", "content": prompt})
+        response = api(
+            "/v1/chat/completions",
+            {
+                "model": model,
+                "messages": messages,
+                "enable_tools": True,
+                "enabled_tools": tools,
+                "image_generator": image_load["model_path"],
+                "max_tool_calls_per_message": 1,
+                "parallel_tool_calls": False,
+                "permission_mode": "off",
+                "tool_choice": {"type": "function", "function": {"name": "generate_image"}},
+            },
+        )
+        current = {image["id"] for image in api("/api/inference/images/gallery")["images"]}
+        if len(current - seen) != 1:
+            raise RuntimeError(f"Expected one new gallery image with tools {tools}.")
+        seen = current
+        messages.append(response["choices"][0]["message"])
+        if not messages[-1]["content"]:
+            raise RuntimeError("Chat did not continue after the image tool.")
+    return messages[-1]["content"]
 
 
 def main():

@@ -99,7 +99,7 @@ import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { isTauri } from "@/lib/api-base";
 // The images and video barrels export only their pages; the status calls alone keep those pages out of the chat chunk.
 // eslint-disable-next-line no-restricted-imports
-import { CHAT_IMAGE_SWAP_CHANGED, chatImageSwapSelection, getDiffusionStatus } from "@/features/images/api";
+import { getDiffusionStatus } from "@/features/images/api";
 // eslint-disable-next-line no-restricted-imports
 import { getVideoStatus } from "@/features/video/api";
 import {
@@ -3470,14 +3470,14 @@ export function ChatPage({
         getVideoStatus(current.signal),
       ]).then(([image, video]) => {
         if (disposed || current.signal.aborted) return;
-        const imageState = image.status === "fulfilled" ? image.value : null;
-        const ready = localMediaReadyFromStatus(
-          imageState, video.status === "fulfilled" ? video.value : null,
-        );
-        const state = useChatRuntimeStore.getState();
-        if (imageState && !imageState.loaded && !imageState.load_id &&
-            chatImageSwapSelection()) ready.image = true;
-        state.setLocalMediaModelsReady(ready);
+        useChatRuntimeStore
+          .getState()
+          .setLocalMediaModelsReady(
+            localMediaReadyFromStatus(
+              image.status === "fulfilled" ? image.value : null,
+              video.status === "fulfilled" ? video.value : null,
+            ),
+          );
       });
     };
     refresh();
@@ -3489,8 +3489,6 @@ export function ChatPage({
       subscribeModelEjected("video", refresh),
     ];
     // An idle unload, another tab or an MCP client changes them with no event in this tab.
-    window.addEventListener(CHAT_IMAGE_SWAP_CHANGED, refresh);
-    unsubscribers.push(() => window.removeEventListener(CHAT_IMAGE_SWAP_CHANGED, refresh));
     window.addEventListener("focus", refresh);
     unsubscribers.push(() => window.removeEventListener("focus", refresh));
     return () => {

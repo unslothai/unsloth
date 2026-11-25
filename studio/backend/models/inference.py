@@ -3237,6 +3237,9 @@ class ChatCompletionRequest(BaseModel):
         None,
         description = "[x-unsloth] Enable tool calling for supported models",
     )
+    image_generator: Optional[str] = Field(
+        None, min_length = 1, description = "Downloaded image generator for this local chat request."
+    )
     enabled_tools: Optional[list[str]] = Field(
         None,
         description = (
@@ -5535,19 +5538,6 @@ MediaSeed = Annotated[
 ]
 
 
-class ChatImageSwapRequest(BaseModel):
-    """A local chat has completed a tool call and released its inference request."""
-
-    swap_id: Optional[str] = Field(None, min_length = 1, max_length = 96, pattern = r"^[A-Za-z0-9_-]+$")
-    text_id: str = Field(min_length = 1)
-    image_load: DiffusionLoadRequest
-    prompt: str = Field(min_length = 1)
-    width: Optional[int] = Field(None, gt = 0)
-    height: Optional[int] = Field(None, gt = 0)
-    seed: MediaSeed = None
-    negative_prompt: Optional[str] = None
-
-
 class DiffusionGenerateRequest(BaseModel):
     """Request to generate one image from the loaded diffusion model."""
 
@@ -6481,6 +6471,8 @@ class DiffusionDownloadPlanResponse(BaseModel):
 
 class DiffusionStatusResponse(BaseModel):
     """Current diffusion backend state."""
+
+    chat_swap_available: bool = False
 
     load_id: Optional[str] = Field(
         None,

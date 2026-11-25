@@ -3564,7 +3564,6 @@ from models.inference import (
     DiffusionLoadRequest,
     LoraSpec,
     MediaUnloadOutcome,
-    ChatImageSwapRequest,
     MediaUnloadRequest,
     DiffusionLoadUnloadedResponse,
     DiffusionUnloadResponse,
@@ -19500,8 +19499,8 @@ async def load_model_gated(
                         )
                         extra.llama._last_kill_monotonic = time.monotonic()
             if extra is None and isinstance(response, LoadResponse):
-                from core.inference.chat_image_swap import remember_text_load
-                remember_text_load(request, user_initiated = user_initiated)
+                from core.inference.chat_media_swap import remember_transformers_load
+                remember_transformers_load(request, response, user_initiated)
             twin, survivor = (
                 await asyncio.to_thread(_served_twice, extra)
                 if new_slot and extra is not None
@@ -23143,16 +23142,11 @@ async def unload_model(request: UnloadRequest, current_subject: str = Depends(ge
     )
 
 
-async def _unload_model_impl(
-    request: UnloadRequest,
-    current_subject: str,
-    *,
-    before_unload: Callable[[], None] | None = None,
-):
+async def _unload_model_impl(request: UnloadRequest, current_subject: str):
     """Routes the unload to llama-server for GGUF models and to Unsloth otherwise."""
     extra = (
         await _route_to_extra_slot(request.model_path, touch = False)
-        if request.cancel_load_request_id is None and before_unload is None
+        if request.cancel_load_request_id is None
         else None
     )
     if extra is not None:
@@ -23172,7 +23166,7 @@ async def _unload_model_impl(
             event = "unload", model = _lifecycle_model_label(request.model_path), reason = "manual"
         )
         return UnloadResponse(status = "unloaded", model = request.model_path)
-    filling = model_slots.visible_loading() if before_unload is None else None
+    filling = model_slots.visible_loading()
     if filling and _names_the_loading_model(filling[1], request.model_path):
         routed_slot.set(filling[0])
     on_primary = routed_slot.get() is None
@@ -23205,11 +23199,7 @@ async def _unload_model_impl(
             "chat", _loaded_slot_ident() if account_access.managed_account() else None
         )
     # Drop the idle reload stash so a /v1 request can't resurrect a deliberately unloaded model.
-    from core.inference.llama_keepwarm import (
-        inference_lifecycle_gate,
-        model_load_gate,
-        note_model_unloaded,
-    )
+    from core.inference.llama_keepwarm import inference_lifecycle_gate, note_model_unloaded
     from core.inference.npu_backend import MODEL_PREFIX, is_npu_model_path, peek_npu_backend
 
     if not on_primary:
@@ -23298,39 +23288,37 @@ async def _unload_model_impl(
             finally:
                 attempt.cancel_complete.set()
 
-        if before_unload is None:
-            # A guarded unload owns one resident runtime and cannot cancel an in-flight load.
-            # cancel_load only kills the loading subprocess, so it runs off-gate and must stay ahead of the active-generation refusal.
-            backend = await asyncio.to_thread(get_inference_backend)
-            loading = getattr(backend, "get_loading_model", lambda: None)()
-            if (
-                loading is not None
-                and hasattr(backend, "cancel_load")
-                and _names_the_loading_model(loading, request.model_path)
-            ):
-                # Cancel under the name the load runs as, which a pinned row states as a path.
-                if await asyncio.to_thread(backend.cancel_load, loading):
-                    note_model_unloaded()
-                    logger.info(f"Cancelled in-flight load: {request.model_path}")
-                    return UnloadResponse(status = "unloaded", model = request.model_path)
-
-            # Still-loading GGUF: unload_model sets cancel_event with no worker command, safe off-gate; gated on the loading model so other unloads cannot cancel it.
-            llama_backend = get_llama_cpp_backend()
-            if (
-                llama_backend.is_active
-                and not llama_backend.is_loaded
-                and (
-                    llama_backend.model_identifier == request.model_path
-                    or is_registered_native_path_label(
-                        llama_backend.model_identifier, request.model_path
-                    )
-                    or _names_the_resident_model(llama_backend.model_identifier, request.model_path)
-                )
-            ):
-                await asyncio.to_thread(llama_backend.unload_model)
+        # cancel_load only kills the loading subprocess, so it runs off-gate and must stay ahead of the active-generation refusal.
+        backend = await asyncio.to_thread(get_inference_backend)
+        loading = getattr(backend, "get_loading_model", lambda: None)()
+        if (
+            loading is not None
+            and hasattr(backend, "cancel_load")
+            and _names_the_loading_model(loading, request.model_path)
+        ):
+            # Cancel under the name the load runs as, which a pinned row states as a path.
+            if await asyncio.to_thread(backend.cancel_load, loading):
                 note_model_unloaded()
-                logger.info(f"Cancelled in-flight GGUF load: {request.model_path}")
+                logger.info(f"Cancelled in-flight load: {request.model_path}")
                 return UnloadResponse(status = "unloaded", model = request.model_path)
+
+        # Still-loading GGUF: unload_model sets cancel_event with no worker command, safe off-gate; gated on the loading model so other unloads cannot cancel it.
+        llama_backend = get_llama_cpp_backend()
+        if (
+            llama_backend.is_active
+            and not llama_backend.is_loaded
+            and (
+                llama_backend.model_identifier == request.model_path
+                or is_registered_native_path_label(
+                    llama_backend.model_identifier, request.model_path
+                )
+                or _names_the_resident_model(llama_backend.model_identifier, request.model_path)
+            )
+        ):
+            await asyncio.to_thread(llama_backend.unload_model)
+            note_model_unloaded()
+            logger.info(f"Cancelled in-flight GGUF load: {request.model_path}")
+            return UnloadResponse(status = "unloaded", model = request.model_path)
         if not on_primary:
             return UnloadResponse(status = "unloaded", model = request.model_path)
 
@@ -23343,12 +23331,7 @@ async def _unload_model_impl(
             )
 
         # Serialize with /load: otherwise a new subprocess could receive this unload command.
-        async with (
-            model_load_gate() if before_unload is not None else nullcontext(),
-            inference_lifecycle_gate(),
-        ):
-            if before_unload is not None:
-                before_unload()
+        async with inference_lifecycle_gate():
             # Rechecked under the gate, like /load: a chat can register while this queues.
             if await asyncio.to_thread(_unload_may_evict, request.model_path):
                 _raise_or_cancel_active_generations(
@@ -33856,6 +33839,17 @@ async def produce_openai_chat_completions(
         request,
         cancel_on_disconnect = cancel_on_disconnect,
     )
+    from core.inference.chat_media_swap import request_image_model
+
+    if payload.image_generator and (
+        current_account().via_api_key
+        or account_access.account_scope() is not None
+        or not _loads_anything()
+        or payload.provider_id
+        or payload.provider_type
+    ):
+        raise HTTPException(status_code = 403, detail = "An image generator requires local owner chat.")
+    request_image_model.set(payload.image_generator)
     # Opt-in per request via UI_STREAM_EVENTS_HEADER; read once so every stream generator shares it.
     _ui_events = _ui_stream_events_enabled(request)
     # Seeded at stream start, so a tool already chatty past the window still gets a keepalive.
@@ -53273,40 +53267,6 @@ async def _enhance_generate_prompts(
     return outcome
 
 
-@studio_router.post("/images/chat-swap/{swap_id}/cancel")
-async def cancel_chat_image_swap(
-    swap_id: str,
-    current_subject: str = Depends(get_current_subject),
-    via_api_key: bool = Depends(authenticated_via_api_key),
-):
-    if via_api_key or account_access.account_scope() is not None:
-        raise HTTPException(
-            status_code = 403, detail = "Image swaps require a single-user Unsloth session."
-        )
-    from core.inference.chat_image_swap import cancel
-    return {"cancelled": cancel(swap_id)}
-
-
-@studio_router.post("/images/chat-swap", response_model = DiffusionGenerateResponse)
-@account_access.gpu_busy_route
-async def generate_chat_image_with_swap(
-    request: ChatImageSwapRequest,
-    http_request: Request,
-    current_subject: str = Depends(get_current_subject),
-    via_api_key: bool = Depends(authenticated_via_api_key),
-):
-    # Model control is an explicit action of the signed-in local user. A chat tools key may
-    # load beside its model only and must never acquire this ability.
-    if via_api_key or not _loads_anything() or account_access.account_scope() is not None:
-        raise HTTPException(
-            status_code = 403, detail = "Image swaps require a single-user Unsloth session."
-        )
-    from core.inference.chat_image_swap import generate_and_restore
-    return await _tunnel_safe_json(
-        generate_and_restore(request, http_request, current_subject), label = "Chat image generation"
-    )
-
-
 @studio_router.post("/images/generate", response_model = DiffusionGenerateResponse)
 @account_access.gpu_busy_route
 async def generate_diffusion_image(
@@ -54788,7 +54748,18 @@ async def diffusion_status(
     if status_dict.get("loaded") and status_dict.get("resident_mib") is None:
         from core.inference.gpu_residency import media_owner_held_mib
         status_dict = {**status_dict, "resident_mib": media_owner_held_mib("diffusion")}
-    status_dict = {**status_dict, "load_id": load_id, "resident_load_id": resident_load_id}
+    from core.inference.chat_media_swap import chat_can_swap
+
+    status_dict = {
+        **status_dict,
+        "load_id": load_id,
+        "resident_load_id": resident_load_id,
+        "chat_swap_available": not raw_status.get("loaded")
+        and not load_id
+        and _loads_anything()
+        and not account_access.resident_hidden("chat")
+        and chat_can_swap(),
+    }
     # Answered long after the resolving request ended, so no handle is in context.
     return redact_host_paths(DiffusionStatusResponse(**status_dict), via_api_key = via_api_key)
 

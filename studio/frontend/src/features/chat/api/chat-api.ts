@@ -369,7 +369,7 @@ export class LoadModelError extends Error {
 
 /** `paddedLabel` opts a caller into `assertCompletedPaddedBody`; only the two padded routes may,
  *  since a truncated body means unfinished there but is legitimate elsewhere. */
-export async function parseJsonOrThrow<T>(
+async function parseJsonOrThrow<T>(
   response: Response,
   paddedLabel?: string,
 ): Promise<T> {
@@ -2188,7 +2188,6 @@ export async function* streamChatCompletions(
   /** Served context window for length-stop attribution; null or omitted when unknown. */
   loadedContextLength?: number | null,
   kvCacheHint = false,
-  { waitForClose = false }: { waitForClose?: boolean } = {},
 ): AsyncGenerator<OpenAIChatChunk> {
   const response = await authFetch("/v1/chat/completions", {
     method: "POST",
@@ -2261,10 +2260,8 @@ export async function* streamChatCompletions(
 
         const dataText = dataLines.join("\n");
         if (dataText === "[DONE]") {
-          sawTerminalSignal = true;
-          // The image swap needs the server's generation slot released before it can unload.
-          if (waitForClose) break;
           completed = true;
+          sawTerminalSignal = true;
           lengthCheck.throwIfReasoningOnlyLength();
           return;
         }

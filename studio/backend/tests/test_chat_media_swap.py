@@ -846,3 +846,101 @@ def test_beside_load_kept_only_after_a_finished_render(stopped):
     names = [e[0] for e in log]
     assert ("image.unload" in names) is stopped
     assert result == (swap.ERR_STOPPED if stopped else result) and chat.resident
+
+
+def test_transformers_mixed_tools_then_image_only(monkeypatch, server_loop):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from models.inference import LoadRequest, LoadResponse
+    from routes import inference
+    from core.inference import gpu_arbiter, gpu_residency, media_switch_backends
+
+    log = Log()
+    backend = SimpleNamespace(active_model_name = None, models = {}, _proc = None)
+    monkeypatch.setattr(inference, "_peek_inference_backend", lambda: backend)
+    monkeypatch.setattr(
+        inference,
+        "get_llama_cpp_backend",
+        lambda: SimpleNamespace(is_loaded = False, is_active = False),
+    )
+    monkeypatch.setattr(swap, "_transformers_load", None)
+    monkeypatch.setattr(gpu_arbiter, "owner_account", lambda owner: OWNER.account_id)
+    monkeypatch.setattr(gpu_residency, "current_policy", lambda: "off")
+    monkeypatch.setattr(media_switch_backends, "load_takes_the_gpu", lambda: True)
+    monkeypatch.setattr(swap, "_media_busy", lambda: False)
+    monkeypatch.setenv(swap.SWAP_MODEL_ENV, "local/image")
+    monkeypatch.setenv(swap.SWAP_ENV, "1")
+    monkeypatch.setattr(media_chat_tools, "media_chat_status", lambda task: None)
+    response = LoadResponse(status = "loaded", model = "text", display_name = "Text", inference = {})
+    recipe = LoadRequest(model_path = "text", max_seq_length = 4096)
+
+    def load(recipe):
+        backend.active_model_name = "text"
+        backend._proc = object()
+        backend.models = {"text": {}}
+        swap.remember_transformers_load(recipe, response, True)
+
+    def evict(*args, **kwargs):
+        backend.active_model_name = None
+        backend._proc = None
+
+    async def restore(recipe, request, subject, **kwargs):
+        inference._check_switch_precondition(request)
+        assert recipe.max_seq_length == 4096
+        load(recipe)
+
+    monkeypatch.setattr(gpu_arbiter, "acquire_for", evict)
+    monkeypatch.setattr(gpu_arbiter, "residents", lambda: {})
+    monkeypatch.setattr(inference, "_loaded_slot_ident", lambda: backend.active_model_name)
+    monkeypatch.setattr(inference, "load_model_gated", restore)
+    monkeypatch.setattr(swap, "StudioImage", lambda subject, render: FakeImage(log))
+    load(recipe)
+    for enabled_tools in (["web_search", "generate_image"], ["generate_image"]):
+        before = backend._proc
+        assert "generate_image" in [
+            tool["function"]["name"]
+            for tool in media_chat_tools.offered_media_chat_tools(enabled_tools)
+        ]
+        result = swap.run_in_tool(
+            loop = server_loop,
+            account = OWNER,
+            render = AsyncMock(),
+            cancel_event = None,
+            render_limit_s = 10,
+            stop_render = lambda: None,
+        )
+        assert result.startswith("Generated")
+        assert backend.active_model_name == "text" and backend._proc is not before
+        assert swap.chat_can_swap()
+
+
+def test_admitted_media_request_refuses_swap_before_eviction():
+    from core.inference import media_keepwarm
+    from core.inference.gpu_arbiter import DIFFUSION
+
+    async def check():
+        await media_keepwarm.begin_request(DIFFUSION)
+        try:
+            async with swap._hold_swap_requests():
+                assert swap._media_busy()
+        finally:
+            media_keepwarm.end_request(DIFFUSION)
+
+    asyncio.run(check())
+
+
+def test_edit_only_generator_leaves_chat_loaded(monkeypatch):
+    from core.inference import media_auto_switch, media_locality
+    from core.inference.media_model_index import MediaModelPick
+
+    pick = MediaModelPick("local/editor", "/models/editor")
+    monkeypatch.setattr(media_auto_switch, "_resolve_pick", lambda *args: pick)
+    monkeypatch.setattr(media_locality, "is_edit_only", lambda candidate: candidate == pick)
+    events = Log()
+    chat = FakeChat(events)
+    trip = swap.RoundTrip(
+        chat = chat, media = swap.StudioImage("unsloth", None), image_model = pick.model_id
+    )
+    with pytest.raises(swap.SwapUnavailable, match = "only edits images"):
+        asyncio.run(trip.run())
+    assert chat.resident and not events

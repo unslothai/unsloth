@@ -1,12 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { createNavigationNonce } from "@/lib/navigation-nonce";
 import { withBackgroundLoadNotice } from "@/lib/model-lifecycle-events";
 // eslint-disable-next-line no-restricted-imports -- leaf import; the UI barrels would cycle.
 import { dropVramBudgetRetry, loadVramBudgetSettings, settleVramBudgetSave, setVramBudgetLocked } from "@/features/settings/api/vram-budget";
-import { authFetch, getAuthSessionEpoch } from "@/features/auth";
-import { rememberImageForChat } from "./chat-image-swap-selection";
+import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 import { parseLoadJson } from "@/lib/multi-model-refusal";
 import { withAllowOversizedLoad } from "@/lib/unified-memory-load-refusal";
@@ -21,8 +19,6 @@ import type { PromptEnhancement } from "./lib/prompt-enhance";
 import type { HiresCapability, HiresRequest } from "./lib/hires-choice";
 import type { SdControlsCapability } from "./lib/sd-controls";
 import type { ShiftControl } from "./lib/shift-choice";
-
-export { CHAT_IMAGE_SWAP_CHANGED, chatImageSwapSelection } from "./chat-image-swap-selection";
 
 export interface DiffusionResolvedControl {
   value: string | boolean | null;
@@ -39,8 +35,7 @@ export interface DiffusionResolvedControl {
 }
 
 export interface DiffusionStatus {
-  load_id?: string | null;
-  resident_load_id?: string | null;
+  chat_swap_available?: boolean;
   loaded: boolean;
   // False when the resident model belongs to another account; the response then carries nothing else.
   yours?: boolean;
@@ -193,7 +188,6 @@ export interface DiffusionLoadProgress {
 }
 
 export interface DiffusionLoadRequest {
-  load_token?: string;
   model_path: string;
   display_repo_id?: string;
   gguf_filename?: string;
@@ -441,6 +435,21 @@ export async function parseJson<T>(response: Response): Promise<T> {
   return (await response.json()) as T;
 }
 
+export type ChatImageSwapSetting = { enabled: boolean; managed_by_env: boolean };
+
+export async function chatImageSwapSetting(
+  enabled?: boolean,
+  signal?: AbortSignal,
+): Promise<ChatImageSwapSetting> {
+  const options = enabled === undefined ? { signal } : {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ enabled }),
+    signal,
+  };
+  return parseJson(await authFetch("/api/settings/chat-image-swap", options));
+}
+
 export async function getDiffusionStatus(
   signal?: AbortSignal,
 ): Promise<DiffusionStatus> {
@@ -502,34 +511,20 @@ export async function withSettledVramBudget<T>(run: () => Promise<T>): Promise<T
 }
 
 export async function loadDiffusionModel(body: DiffusionLoadRequest): Promise<DiffusionStatus> {
-  const epoch = getAuthSessionEpoch();
-  const loadId = body.load_token ?? createNavigationNonce();
   // This POST only starts the load, so the notice settles from load-progress, not the response.
   return withSettledVramBudget(() =>
     withBackgroundLoadNotice(
       "image",
       body.model_path,
-      async () => {
-        const result = await parseLoadJson<DiffusionStatus>(
+      async () =>
+        parseLoadJson<DiffusionStatus>(
           await authFetch("/api/inference/images/load", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(withAllowOversizedLoad({ ...body, load_token: loadId })),
+            body: JSON.stringify(withAllowOversizedLoad(body)),
           }),
-        );
-        return result;
-      },
-      async (signal) => {
-        const { phase } = await getDiffusionLoadProgress(signal);
-        if ((phase === "ready" || phase === null) && !body.load_token) {
-          const state = await getDiffusionStatus(signal);
-          if (state.loaded && state.resident_load_id === loadId &&
-              (!state.workflows?.length || state.workflows.includes("txt2img"))) {
-            rememberImageForChat(body, epoch);
-          }
-        }
-        return phase;
-      },
+        ),
+      async (signal) => (await getDiffusionLoadProgress(signal)).phase,
     ),
   );
 }

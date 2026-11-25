@@ -10,7 +10,3 @@ export async function authFetch(input, init) {
 export function getAuthSessionEpoch() {
   return 0;
 }
-
-export function getConfirmedLoginMode() {
-  return null;
-}
