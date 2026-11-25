@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** Recents, Library and the History grid all open the running job on the live Current Run tab. */
-
 import assert from "node:assert/strict";
 import test from "node:test";
 import type * as LibraryOriginModule from "../src/features/library/origin.ts";
@@ -108,7 +106,6 @@ function mountStudio() {
   };
 }
 
-/** Applies a training status response, as each status poll does. */
 function status(jobId: string, running: boolean) {
   useTrainingRuntimeStore.getState().applyStatus({
     job_id: jobId,
@@ -296,7 +293,6 @@ for (const [label, next] of [
 test("the Train page fading out after a route change does not clear the run opened from Recents", () => {
   lastSeenJob("job-live", true);
   openFromRecents("job-live");
-  // The page transition renders the Train page twice for a moment: in the fading-out wrapper and the new one.
   const fading = mountStudio();
   const studio = mountStudio();
   fading.unmount();
