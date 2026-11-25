@@ -1401,16 +1401,19 @@ class _pp_step_context:
         return False
 
 
-def _dp_agree(stage, flag):
-    """`flag` on every dp replica (they must run the same number of schedule steps), else False."""
+def _dp_agree(stage, flag, shape):
+    """`flag` on every dp replica and the same `shape` (rows of the window's first batch, which sets the rows
+    per micro-batch and GPipe's cap) on all of them: they must run the same schedule steps. Else False."""
     dp, _, mesh = _dp_info(stage)
     if dp == 1:
         return bool(flag)
     import torch.distributed as dist
 
-    value = torch.tensor([int(bool(flag))], dtype = torch.int64, device = _comm_device(stage))
+    value = torch.tensor(
+        [int(bool(flag)), shape, -shape], dtype = torch.int64, device = _comm_device(stage)
+    )
     dist.all_reduce(value, op = dist.ReduceOp.MIN, group = mesh.get_group())
-    return bool(value[0])
+    return bool(value[0]) and int(value[1]) == -int(value[2])
 
 
 def _add_fold_reset(trainer):
@@ -1457,8 +1460,10 @@ def _pp_training_step(
             return torch.zeros((), device = self.args.device)
         self.__dict__.pop(_FOLD, None)
         fold = len(window) > 1 and len({entry[3] for entry in window}) == 1
+        # Rows of different batches are stacked, so every batch must carry the same side inputs.
+        fold = fold and len({tuple(sorted(entry[2])) for entry in window}) == 1
         fold = fold and all(_foldable(self, stage, e[0], e[2], e[3]) for e in window)
-        if _dp_agree(stage, fold):
+        if _dp_agree(stage, fold, window[0][0].shape[0]):
             loss = _pp_window_step(self, model, stage, [e[:3] for e in window], n, scaler)
         else:  # mixed batches: one schedule step per batch, as without folding
             loss = sum(_pp_batch_step(self, model, stage, *entry, scaler) for entry in window)

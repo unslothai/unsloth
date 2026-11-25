@@ -291,6 +291,7 @@ def _case_env(
     eval_bs = None,
     noisy = False,
     varlen = False,
+    mixed_keys = False,
 ):
     error = _import_checkout_unsloth()
     if error is not None:
@@ -327,6 +328,10 @@ def _case_env(
             batch["input_ids"] = torch.where(mask, batch["input_ids"], 0)[:, :width]
             batch["labels"] = torch.where(mask, batch["labels"], -100)[:, :width]
             batch["attention_mask"] = mask[:, :width].long()
+            if mixed_keys and len(seen) % 2:
+                del batch[
+                    "attention_mask"
+                ]  # right padding without a mask: same loss under causal attention
         if noisy:
             # A stochastic collator whose RNG the stages advance differently (as dropout over different layers).
             if rank % 2 == 1:
@@ -614,7 +619,32 @@ def _case_scaler_clip(
     }
 
 
+def _case_dp_agree(rank, world, tmp):
+    """pp_env._dp_agree: folding only when every dp replica folds with the same first-batch rows."""
+    error = _import_checkout_unsloth()
+    if error is not None:
+        return {"skip": error}
+    import types
+
+    import torch.distributed as dist
+    from torch.distributed.device_mesh import init_device_mesh
+
+    from unsloth.models import pp_env
+
+    dist.init_process_group("gloo")
+    mesh = init_device_mesh("cpu", (world,), mesh_dim_names = ("dp",))
+    stage = types.SimpleNamespace(
+        dp_mesh = mesh, ddp_mesh = None, group = None, device = torch.device("cpu")
+    )
+    return {
+        "same": pp_env._dp_agree(stage, True, 2),
+        "one_off": pp_env._dp_agree(stage, rank == 0, 2),
+        "rows_differ": pp_env._dp_agree(stage, True, 2 if rank == 0 else 1),
+    }
+
+
 CASES = {
+    "dp_agree": _case_dp_agree,
     "units": _case_units,
     "env": _case_env,
     "resume": _case_resume,
@@ -1117,3 +1147,22 @@ def test_pp_fold_plan(checkout_unsloth):
     assert plan([100] * 8, 1, 2, 1, 2) == [(0, 2, 2), (2, 4, 2), (4, 6, 2), (6, 8, 2)]
     # Whole micro-batches of 2 rows; the last one is filled up.
     assert plan([100] * 7, 2, 2, 1, None) == [(0, 7, 4)]
+
+
+@needs_pipelining
+def test_pp_fold_needs_every_dp_replica_to_agree():
+    # Failing before: each replica planned its window from its own first batch, so replicas with different
+    # rows per batch could run different numbers of schedule steps and hang in the dp collectives.
+    for res in _spawn("dp_agree", 2):
+        assert res == {"same": True, "one_off": False, "rows_differ": False}, res
+
+
+@needs_pipelining
+def test_pp_fold_window_with_different_side_inputs_runs_per_batch():
+    # Failing before: a window whose batches carried different side inputs (attention_mask on some only)
+    # was stacked with the first batch's keys (KeyError, or a mask dropped). It now runs one step per batch.
+    kw = dict(bs = 2, ga = 4, steps = 2, evaluate = False, post = False, varlen = True, mixed_keys = True)
+    ref = _ref(2, **{k: v for k, v in kw.items() if k != "bs"})
+    for rank, res in enumerate(_spawn("env", 2, {"UNSLOTH_PP_SIZE": "2"}, **kw)):
+        assert res["fold"] == {}, res["fold"]
+        _close(res, ref, what = rank)
