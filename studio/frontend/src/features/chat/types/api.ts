@@ -102,8 +102,7 @@ export interface LoadModelRequest {
   spec_draft_n_max?: number | null;
   /** MLX only: a companion drafter, a local directory or an already-cached repo id. */
   spec_draft_model?: string | null;
-  /** Parallel decode slots for llama-server (--parallel), 1..64. Omit/null = the launch default. The
-   *  VRAM fitter may launch fewer to stay on GPU. */
+  /** llama-server --parallel slots, 1..64; null = launch default; VRAM fitter may launch fewer. */
   n_parallel?: number | null;
   /** -1 unrestricted, 0 end immediately, >0 token cap. */
   reasoning_budget?: number;

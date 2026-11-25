@@ -3,8 +3,7 @@
 
 import { normalizeDenseQuantSchemes } from "../../../../lib/dense-quant-schemes.ts";
 
-/** Media-picker runtime capability. The backend reports dense quant, since its name alone cannot
- *  distinguish unsupported accelerators. */
+/** Backend reports dense quant; its name alone cannot distinguish unsupported accelerators. */
 /** "cpu-only": a "gguf-only" host with backend cpu; families with a GGUF row offer only GGUF rows. */
 export type HostClass = "unknown" | "gguf-only" | "cpu-only" | "accelerated" | "dense-quant";
 

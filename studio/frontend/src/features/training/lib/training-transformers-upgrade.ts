@@ -67,8 +67,7 @@ export function getTrainingResumeUpgradeWouldStrandMessage(
   return `${modelName} is not supported yet by the installed transformers, and installing the release it needs would permanently retire the 4-bit model load this checkpoint was attested with, so the resume would still fail. Start a new run on this model instead.`;
 }
 
-/** Raise chat's upgrade dialog before a run starts instead of failing at model load. Additive:
- * a backend without the check leaves the start unchanged. */
+/** Raises chat's upgrade dialog before a run, not at model load; old backends are unchanged. */
 export async function confirmTrainingTransformersUpgrade({
   modelName,
   hfToken,

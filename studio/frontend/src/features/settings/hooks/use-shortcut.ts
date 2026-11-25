@@ -27,8 +27,7 @@ import {
 
 export const COMPOSER_INPUT_SELECTOR = COMPOSER_SURFACE;
 
-// Every element these can match registers itself (useSurfaceRef), so a check reads a handful of
-// elements, not the whole document; any other selector is still a document query.
+// Tracked elements register via useSurfaceRef; other selectors query the whole document.
 const TRACKED_SURFACE_SELECTORS: ReadonlySet<string> = new Set([
   COMPOSER_SURFACE,
   SIDEBAR_SURFACE,
@@ -82,8 +81,7 @@ export function isSurfaceInForeground(selector: string): boolean {
   );
 }
 
-/** Not the complement of the above: an unrendered surface (closed mobile sidebar) is not
- * backgrounded. */
+/** Not foreground's complement: an unrendered surface (closed sidebar) is not backgrounded. */
 export function isSurfaceBackgrounded(selector: string): boolean {
   if (typeof document === "undefined") return false;
   return answerOncePerPass(`backgrounded\0${selector}`, () => {
@@ -105,8 +103,7 @@ export function typesInTextField(binding: ShortcutBinding): boolean {
 export interface UseShortcutOptions {
   enabled?: boolean;
   skipInTextFields?: boolean;
-  /** Fields exempt from skipInTextFields for a chord that types nothing there (Escape in the
-   * composer must still decline a tool request). */
+  /** Exempt from skipInTextFields for chords typing nothing; Escape still declines a request. */
   textFieldException?: string;
   /** Run on auto-repeat; one-shot otherwise, since a held toggle lands wherever released. */
   repeats?: boolean;
@@ -131,8 +128,7 @@ function flushTriggerListeners(): void {
     passAnswers = null;
   }
 }
-// One pass per microtask: a dialog mounting or unmounting registers or drops a trigger per
-// shortcut and lands as several observer batches, and each pass re-asks every subscriber.
+// One pass per microtask: each re-asks every subscriber, and dialogs arrive in many batches.
 const notifyTriggerListeners = () => {
   if (notifyQueued) return;
   notifyQueued = true;
@@ -256,8 +252,7 @@ export function useShortcut(
       const hit = bindings.find((binding) => matchesBinding(binding, event));
       if (!hit) return;
       if (zoomTypedOffZoomKey(event, hit.code, isMacPlatform())) return;
-      // The exception is for a chord that types nothing there. Decline ships on Escape; rebound to
-      // Enter or a letter, the same pass would deny the request as the user edits the prompt.
+      // Exempt only chords typing nothing; Decline rebound to Enter would be denied mid-edit.
       const exception = typesInTextField(hit) ? undefined : textFieldException;
       if (skipInTextFields && isTextEntryFocused(exception)) return;
       if (

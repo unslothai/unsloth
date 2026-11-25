@@ -7,8 +7,7 @@ function comparable(path: string): string {
   return /^([A-Za-z]:|\/\/)/.test(slashed) ? slashed.toLowerCase() : slashed;
 }
 
-/** Listed models per registered folder, counted from rows the inventory already holds. A model
- *  under two nested folders counts for the innermost one only. */
+/** Counts models per folder; a model under nested folders counts only for the innermost one. */
 export function countModelsPerFolder(
   folderPaths: readonly string[],
   modelPaths: readonly string[],

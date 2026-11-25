@@ -6,8 +6,7 @@
 
 export const SAVING_CHAT_CONTEXT = "saving_chat_context";
 
-/** Calls onSaving on each tick that reports the save, and ignores every other phase.
- *  stop() is idempotent and drops a read still in flight. */
+/** onSaving fires per saving tick; stop() is idempotent and drops an in-flight read. */
 export function watchSavingPhase(
   read: (signal: AbortSignal) => Promise<{ phase: unknown }>,
   onSaving: () => void,

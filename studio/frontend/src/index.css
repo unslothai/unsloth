@@ -15,8 +15,7 @@
 
 @custom-variant dark (&:is(.dark *));
 
-/* A clickable button's fill: the segmented toggles' track (.hub-tab-toggle in hub.css), so a filled
-   button and a toggle are the same grey in both themes, panels included. No border. */
+/* Fill matches segmented toggle track (.hub-tab-toggle, hub.css) in both themes; no border. */
 @utility btn-fill {
 	background-color: color-mix(in srgb, var(--foreground) calc(5% * var(--contrast-wash-gain, 1)), transparent);
 	&:hover {
@@ -75,12 +74,11 @@
 		}
 	}
 
-	/* The custom Windows/Linux titlebar stays above modal backdrops so native
-	   window actions remain usable. Repeat the standard backdrop over the surface
-	   and page navigation. Window controls paint above it, keeping their glyphs
-	   and hover feedback sharp without changing hit testing.
-	   Only viewport backdrops participate; a panel-local dialog or a menu must
-	   not dim the window chrome. */
+	/*
+	 * The custom Windows/Linux titlebar stays above modal backdrops so native window actions stay
+	 * usable, repeating the backdrop over it; controls paint above without changing hit testing, and
+	 * only viewport backdrops participate, so a panel-local dialog or menu does not dim the chrome.
+	 */
 	[data-slot="window-titlebar"]::after {
 		content: "";
 		position: absolute;
@@ -302,8 +300,7 @@
 	--muted-foreground: oklch(0.5486 0 0);
 	/* Trace ink: muted, pulled toward the page so the answer stands apart. */
 	--trace-fade: 7%;
-	/* Hover/active washes are neutral grey (matches the sidebar), not the
-	   brand green; green stays on primary controls only. */
+	/* Hover/active washes are neutral grey, not brand green; green is for primary controls only. */
 	--accent-base: #ececec;
 	--accent-foreground-base: #262626;
 	--destructive: oklch(0.6368 0.2078 25.3313);
@@ -316,8 +313,7 @@
 	--border-base: oklch(0.9208 0 0);
 	--input-base: oklch(0.9208 0 0);
 	--ring: #262626;
-	/* Derived from the live border/foreground so every palette and mode gets the right shade.
-	   Focus/hover uses soft; selected uses the deeper one. */
+	/* Derived from the live border and foreground; focus/hover use soft, selected uses deeper. */
 	--ring-soft: color-mix(in srgb, var(--foreground) 22%, var(--border));
 	--ring-select: color-mix(in srgb, var(--foreground) 48%, var(--border));
 	--chart-1: #17b88b;
@@ -325,8 +321,7 @@
 	--chart-3: oklch(0.7014 0.1193 197.5897);
 	--chart-4: oklch(0.6926 0.1112 346.5775);
 	--chart-5: oklch(0.7497 0.1003 85.0057);
-	/* White sidebar against the warm off-white page; the tone difference is
-	   the separator now that the right-edge divider is gone. */
+	/* Tone difference separates the white sidebar now that the right-edge divider is gone. */
 	--sidebar-base: #ffffff;
 	--sidebar-foreground-base: oklch(0.1281 0 0);
 	--sidebar-primary: #17b88b;
@@ -379,13 +374,11 @@
 	--slider-thumb-shadow: inset 0 0 0 1px #dbdbdb, 0 1.5px 2.5px -0.5px rgb(0 0 0 / 0.08);
 	--slider-track-height: calc(0.15625rem * var(--ui-space-scale, 1));
 	--slider-thumb-size: calc(1.125rem * var(--ui-space-scale, 1));
-	/* Chat-message action icons (assistant action bar, branch picker
-	   chevrons + numbers, message-timing token counter, code-block
-	   copy/download, user action bar, delete button). One token drives
-	   all of them so the row reads as a single coherent control strip.
-	   Mid-dark gray on the light surface — visible enough to read as
-	   active controls, not so dark that they compete with message
-	   text. */
+	/*
+	 * Chat-message action icons (assistant and user action bars, branch picker, timing counter,
+	 * code-block copy/download, delete) share one token; mid-dark gray on the light surface reads as
+	 * active controls without competing with message text.
+	 */
 	--chat-icon-fg-base: #555555;
 	--chat-icon-fg-hover: var(--foreground);
 	--chat-icon-bg-hover-base: #ededec;
@@ -406,8 +399,7 @@
 	   the webview. */
 	--ui-font-scale: calc(var(--ui-font-size-scale, 0.9375) * var(--ui-interface-scale, 1));
 
-	/* Spacing stays the same fraction of text at any UI font size; normalised at the 15px default.
-	   Values pinned outside the UI (traffic lights, title bar, hairlines) skip it. */
+	/* Spacing is a fixed fraction of text (15px default); traffic lights and hairlines skip it. */
 	--ui-space-scale: calc(var(--ui-font-scale, 1) / 0.9375);
 
 	/* @container thresholds are inlined at build time, so breakpoints do not move. */
@@ -554,8 +546,7 @@ html.client-mac {
 	--slider-fill: color-mix(in oklab, var(--control-accent) 75%, #a0a0a0);
 	--slider-track: rgb(255 255 255 / calc(0.09 * var(--contrast-wash-gain, 1)));
 	--slider-thumb-shadow: 0 1px 2px -0.5px rgb(0 0 0 / 0.12);
-	/* Chat action icons: under the ink so they read as controls, not text.
-	   Hover restores full --foreground. */
+	/* Chat action icons sit under the ink so they read as controls; hover restores --foreground. */
 	--chat-icon-fg-base: #c4c4c4;
 	--chat-icon-fg-hover: var(--foreground);
 	--chat-icon-bg-hover-base: #3a3a3a;
@@ -1691,8 +1682,7 @@ html[data-contrast-adjust]:not(.dark) .hub-page .hub-result-row {
 	--border: color-mix(in oklab, var(--border-base), var(--contrast-panel-target, var(--contrast-target)) var(--contrast-line-mix));
 	--input: color-mix(in oklab, var(--input-base), var(--contrast-panel-target, var(--contrast-target)) var(--contrast-control-mix));
 }
-/* The dark Hub repaints these as popovers from @layer base, so only an element with no background
-   utility in play is one. */
+/* Dark Hub repaints these popovers from @layer base; only elements with no bg utility match. */
 html[data-contrast-adjust].dark .hub-page :is([class*="bg-background"], [class*="bg-card"]):not([class^="bg-"], [class*=" bg-"], [class*="dark:bg-"], :hover) {
 	--foreground: color-mix(in oklab, var(--foreground-base), var(--contrast-panel-ink-target, var(--contrast-ink-target, transparent)) var(--contrast-ink-mix, 0%));
 	--muted-foreground: color-mix(
@@ -1845,8 +1835,7 @@ html.force-reduced-motion [data-radix-popper-content-wrapper] {
 	transition: none !important;
 }
 
-/* Same loader exceptions as the OS-level media block below: freezing
-   spinners removes the only signal that work is in flight. */
+/* Same loader exceptions as the OS media block; spinners alone signal work is in flight. */
 html.force-reduced-motion :is(.animate-spin, svg.animate-spin > *) {
 	animation-duration: 1.5s !important;
 	animation-iteration-count: infinite !important;
@@ -1881,8 +1870,7 @@ html.dark.render-linux:not(.no-font-smoothing):not([data-chat-font]):not([data-u
 	letter-spacing: 0.023em;
 }
 
-/* WebKitGTK's compositor wobbles a rotating <svg> by a pixel or more when it sits off the device pixel grid;
-   turn its contents instead. CSS animates SVG children from WebKitGTK 2.40, which the app already needs. */
+/* WebKitGTK wobbles a rotating svg off the pixel grid; animate its children instead (2.40+). */
 html.tauri.render-linux svg.animate-spin {
 	animation: none;
 }
@@ -1932,8 +1920,7 @@ html.tauri.render-linux.webkit-cpu-paint:not([data-glass], [data-glass-clear])
 	border-radius: 0 !important;
 }
 
-/* Chat font: only applies while a custom chat font is set. Elements with
-   explicit font utilities (headings, code) keep their own families. */
+/* Applies only when a custom chat font is set; explicit font utilities (headings, code) win. */
 html[data-chat-font] .aui-root {
 	font-family: var(--custom-chat-font);
 }
@@ -2223,8 +2210,7 @@ html[data-chat-font] .aui-root {
 		margin-top: 0;
 		margin-right: 0 !important;
 	}
-	/* The 0px react-remove-scroll sets on modal open. Preset so the lock
-	   does not restyle the whole page. */
+	/* Presets the react-remove-scroll bar size to 0px so the modal lock does not restyle the page. */
 	body {
 		--removed-body-scroll-bar-size: 0px;
 	}
@@ -2274,14 +2260,12 @@ html[data-chat-font] .aui-root {
 			pointer-events: none;
 		}
 	}
-	/* The side pane (browser, research) sets its own pointer-events: auto once shown, so it never
-	   inherited the lock and its scrollers (file view, page) took wheel and touch under a modal menu.
-	   The same cover over it blocks them as react-remove-scroll's document listeners did, without a
-	   listener per open (each add or remove restyles the whole page in WebKit). The pane roots carry a
-	   static class, so the lock toggle only looks at them (an :is() subject here made every toggle
-	   restyle the thread in Chromium: 120 ms at 200 turns). Both roots are position: relative;
-	   dialogs and menus portal to <body> at z-50, above the cover. Its own layer: Chromium's
-	   compositor otherwise hit-tests the composited scroller under a paintless cover and scrolls it. */
+	/*
+	 * Cover blocks side-pane scrollers under modal menus like react-remove-scroll, no listener per
+	 * open; lock toggle checks only the static pane root class (:is() cost 120 ms at 200 turns); roots
+	 * are position relative and z-50 portals sit above the cover; own layer stops Chromium scrolling
+	 * beneath.
+	 */
 	[data-modal-lock-region] .chat-artifact-pop-surface .side-pane-lock-cover::after,
 	[data-modal-lock-region].chat-artifact-pop-surface .side-pane-lock-cover::after {
 		content: "";
@@ -2318,8 +2302,7 @@ html[data-chat-font] .aui-root {
 		outline-offset: -1px;
 	}
 
-	/* The reveal sentinels in thread.tsx are tab stops the rule above never matched. Outline-offset
-	   draws the ring around the 0x0 span without shifting layout. */
+	/* Reveal sentinels are tab stops; outline-offset draws the 0x0 ring without shifting layout. */
 	.aui-assistant-reveal-sentinel,
 	.aui-user-reveal-sentinel {
 		display: inline-block;
@@ -2461,8 +2444,7 @@ html[data-chat-font] .aui-root {
 	.sidebar-row-action-glyph {
 		@apply inline-flex size-6 items-center justify-center rounded-full text-sidebar-foreground/55;
 	}
-	/* Paint on the icon, not the glyph: subpixel rounding put the icon half a pixel off centre.
-	   !important outranks the icon's size-* utility. */
+	/* Paint the icon, not the glyph (subpixel rounding); !important beats the size utility. */
 	.sidebar-row-action-glyph > svg {
 		--glyph-icon: var(--icon-size);
 		box-sizing: border-box;
@@ -2481,8 +2463,7 @@ html[data-chat-font] .aui-root {
 	.sidebar-row-action.is-disclosure-open {
 		@apply opacity-100 pointer-events-auto;
 	}
-	/* Drop the facing paddings so the pin's glyph box meets the options button's at 27px; moving the
-	   pin instead would slide it under the later options button, which takes the clicks. */
+	/* Drop facing paddings to meet the options button at 27px; moving the pin slides it under. */
 	.sidebar-row-action.is-unpin-action {
 		right: calc(1.6875rem * var(--ui-space-scale, 1));
 		padding-right: calc(0.125rem * var(--ui-space-scale, 1));
@@ -2503,16 +2484,14 @@ html[data-chat-font] .aui-root {
 		--aui-chevron-hit: max(calc(24px * var(--ui-interface-scale, 1)), var(--aui-chevron-slot));
 		--aui-chevron-extra: calc(var(--aui-chevron-hit) - var(--aui-chevron-slot));
 	}
-	/* The count between the chevrons is at least as wide as both extensions, so they cannot meet over it even
-	   in a narrow custom chat font. Wider counts, the usual case, are untouched. */
+	/* Count is at least as wide as both extensions, so they never meet in narrow chat fonts. */
 	.aui-branch-chevron-btn + .aui-branch-picker-state {
 		/* 1px of slack: two targets that only touch can still trade a sub-pixel once snapped to device pixels. */
 		min-inline-size: calc(var(--aui-chevron-extra) * 2 + 1px);
 		text-align: center;
 	}
 	.aui-branch-chevron-btn {
-		/* Visible box stays the 20px slot; an invisible ::before extends the hit target to 24px (#12173)
-		   toward the count only. The floor follows Interface Scale, not UI font size. */
+		/* Hit target widens 24px toward count via ::before (#12173); floor follows Interface Scale. */
 		position: relative;
 		/* Room for the target past the box, so a wrapped picker grows its row instead of overlapping. */
 		margin-block: calc(var(--aui-chevron-extra) / 2);
@@ -2544,8 +2523,7 @@ html[data-chat-font] .aui-root {
 		color: #fff;
 	}
 
-	/* 18px left aligns labels with row content; 9px right aligns header actions with a row's "…".
-	   The desktop titlebar overrides this in app-sidebar.tsx. */
+	/* Labels align 18px left, header actions 9px right; app-sidebar.tsx overrides it on desktop. */
 	.sidebar-sticky-label {
 		@apply rounded-none bg-sidebar pt-0 pb-[calc(8px*var(--ui-space-scale,1))] pl-[calc(18px*var(--ui-space-scale,1))] pr-[calc(9px*var(--ui-space-scale,1))] text-ui-14! leading-ui-17 font-medium normal-case focus-visible:ring-0! focus-visible:outline-none transition-shadow duration-150;
 		/* Lighter than #5f6368 so it reads as a header. Follows the contrast slider. */
@@ -2716,13 +2694,10 @@ html[data-chat-font] .aui-root {
 		--slider-fill: var(--panel-slider-fg);
 	}
 
-	/* Inline numeric input — used for slider values and Context Length.
-	   Designed to read as *editable text* rather than a pill button so
-	   it doesn't mirror the Select/dropdown components on the panel.
-	   Default: transparent box, no border, no ring; the component sets
-	   an inline width that hugs the value. Hover/focus: very light bg
-	   fade-in, just enough to read as interactive without competing
-	   with the slider row's quiet aesthetic. */
+	/*
+	 * Inline numeric input for slider values and Context Length: reads as editable text, not a pill
+	 * like the Select dropdowns; no border or ring, width hugs the value, light hover/focus fill.
+	 */
 	/* Wider right gutter: the value is right-aligned on the panel's own edge. */
 	/* Editing only deepens the fill: a focus ring outside the pill reads as the box growing. */
 	.panel-number-input {
@@ -2737,8 +2712,7 @@ html[data-chat-font] .aui-root {
 		@apply rounded-full border-transparent bg-[var(--panel-input-surface)] px-3.5 py-0 text-left text-ui-13 font-medium text-nav-fg outline-none hover:bg-[var(--panel-input-surface-hover)] focus-visible:ring-0;
 	}
 
-	/* Important to beat a base SelectTrigger class of the same weight. The chevron box carries ~3px
-	   of slack, which the reduced right padding pays back. */
+	/* Beats same-weight base SelectTrigger via !important; right padding repays chevron's ~3px. */
 	.panel-select-trigger {
 		@apply rounded-full! border-transparent! bg-[var(--panel-input-surface)]! py-0! pl-3.5! pr-[calc(11px*var(--ui-space-scale,1))]! text-ui-13! font-medium! text-nav-fg shadow-none! hover:bg-[var(--panel-input-surface-hover)]! focus-visible:ring-0!;
 	}
@@ -2766,13 +2740,11 @@ html[data-chat-font] .aui-root {
 		@apply border-0 ring-0 bg-background/98 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-none;
 	}
 
-	/* Rich tooltip — used for the context-usage and token-counter
-	   popups (multi-row metric breakdowns). Same surface as the
-	   compact tooltips so chat-area popovers feel like one family.
-	   Corner radius matches the user-profile dropdown in the left
-	   sidebar (14px) so panel-level menu surfaces share a single
-	   roundness. Uses the heading font with tracking for the structured
-	   content. */
+	/*
+	 * Rich tooltip for context-usage and token-counter popups with multi-row breakdowns; same surface
+	 * as compact tooltips; corner radius matches the 14px user-profile dropdown; heading font with
+	 * tracking.
+	 */
 	.tooltip-rich {
 		@apply rounded-[16px] border-transparent bg-(--tooltip-bg) px-4 py-3 font-heading tracking-wide text-(--tooltip-fg) shadow-(--tooltip-shadow-rich);
 	}
@@ -2914,8 +2886,7 @@ html[data-chat-font] .aui-root {
 		cursor: pointer;
 	}
 
-	/* The drag cursor comes from PanelResizeHandle's overlay: a universal descendant rule here would
-	   restyle the whole document on every flip. */
+	/* Drag cursor comes from PanelResizeHandle; a universal rule would restyle the page on flips. */
 
 	.unsloth-model-selector-trigger,
 	.unsloth-model-selector-menu button {
@@ -3022,8 +2993,7 @@ html[data-chat-font] .aui-root {
 		height: calc(round(up, 1lh, 1px) - 1lh);
 	}
 
-	/* A menu's corner is its 12px row radius plus its gutter, so the hover nests in the corner:
-	   16px around the standard 4px gutter. !important beats per-menu rounded-*. */
+	/* Menu corner is 12px radius plus 4px gutter, so hovers nest; !important beats menu rounding. */
 	[data-slot="dropdown-menu-content"],
 	[data-slot="dropdown-menu-sub-content"],
 	[data-slot="select-content"],
@@ -3077,8 +3047,7 @@ html[data-chat-font] .aui-root {
 	[data-slot="popover-content"] {
 		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16) !important;
 	}
-	/* Dark: glow in the page colour unless a context below sets --dropdown-glow.
-	   .dropdown-surface marks bespoke dropdowns. */
+	/* Dark glow uses page colour unless overridden below; .dropdown-surface marks bespoke menus. */
 	.dark [data-slot="dropdown-menu-content"],
 	.dark [data-slot="dropdown-menu-sub-content"],
 	.dark [data-slot="context-menu-content"],
@@ -3145,8 +3114,7 @@ html[data-chat-font] .aui-root {
 		background-color: var(--dropdown-lift-surface) !important;
 	}
 
-	/* Browser menus in dark: the toolbar pills' colour, with one shadow colour.
-	   The surface resolves on <html> so --accent can be reassigned below. */
+	/* Dark browser menu surface resolves on <html> so --accent can be reassigned below. */
 	.dark {
 		--browser-menu-surface: var(--accent);
 	}
@@ -3252,8 +3220,7 @@ html[data-chat-font] .aui-root {
 			@apply pointer-events-none absolute bottom-[calc(100%+6px)] left-1/2 z-50 -translate-x-1/2 rounded-full bg-(--tooltip-bg) px-2.5 py-1.5 text-ui-11 font-medium leading-snug whitespace-nowrap text-(--tooltip-fg) shadow-(--tooltip-shadow);
 		}
 
-		/* Caret pills open a menu, so keep the icon and skip the X swap; the off-switch rules below would
-		   otherwise blank the slot when collapsed. */
+		/* Caret pills skip the X swap, since off-switch rules would blank the slot when collapsed. */
 		&:has(.composer-pill-caret):hover .composer-pill-glyph {
 			--pill-glyph-icon-opacity: 1;
 		}
@@ -3295,8 +3262,7 @@ html[data-chat-font] .aui-root {
 	.composer-pill-glyph {
 		@apply inline-grid w-[var(--ui-icon-size)] shrink-0 place-items-center transition-opacity;
 	}
-	/* Not relative + absolute: a positioned slot beside the spinning plus got its own WebKit layer and
-	   jumped a pixel each spin. */
+	/* Not relative + absolute: a positioned slot beside spinning plus jumped a pixel each spin. */
 	.composer-pill-glyph > * {
 		grid-area: 1 / 1;
 	}
@@ -3319,8 +3285,7 @@ html[data-chat-font] .aui-root {
 		@apply opacity-100;
 	}
 
-	/* Off-switch pills (RAG, MCP) render only while the feature is on, so reveal the X even when
-	   not in their active look. */
+	/* Off-switch pills (RAG, MCP) render only while enabled, so show the X even when inactive. */
 	.composer-pill-btn:has(> .composer-pill-glyph[role="button"]):hover .composer-pill-glyph {
 		--pill-glyph-icon-opacity: 0;
 	}
@@ -3711,8 +3676,7 @@ html[data-chat-font] .aui-root {
 		width: calc(100% + 1rem * var(--ui-space-scale, 1));
 	}
 
-	/* Narrow panes shrink the greeting, or a 30px title wraps over two lines. Sized off the
-	   text tokens so the UI font scale still applies. */
+	/* In narrow panes a 30px title would wrap; sized off text tokens so UI font scale applies. */
 	:where(.aui-thread-root[data-thread-narrow]) .unsloth-welcome-title {
 		font-size: var(--text-2xl);
 	}
@@ -3726,8 +3690,7 @@ html[data-chat-font] .aui-root {
 		gap: calc(0.625rem * var(--ui-space-scale, 1));
 	}
 
-	/* ~300px and under: one step further, so the greeting holds a single line
-	   beside the mascot instead of wrapping over the composer. */
+	/* Under ~300px the greeting stays on one line beside the mascot rather than wrapping. */
 	:where(.aui-thread-root[data-thread-tiny]) .unsloth-welcome-title {
 		font-size: var(--text-xl);
 	}
@@ -3744,8 +3707,7 @@ html[data-chat-font] .aui-root {
 	/* pl-2 matches the left pills so the hover X is not pushed in too far. */
 	.unsloth-thinking-pill {
 		@apply inline-flex shrink-0 cursor-pointer items-center gap-1 rounded-full py-1.5 pl-2 pr-2.5 text-ui-14 font-medium text-muted-foreground dark:text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-40;
-		/* Reserve a text line so the icon-only (inactive) pill matches the
-		   text pills' height instead of collapsing to the icon. */
+		/* Reserve a text line so the icon-only inactive pill matches the text pills' height. */
 		min-height: calc(1lh + 0.75rem * var(--ui-space-scale, 1));
 	}
 
@@ -4733,16 +4695,14 @@ html[data-chat-font] .aui-root {
 		font-family: var(--font-sans);
 	}
 
-	/* Distant, horizontally fitting replies can paint independently while keeping
-	   their natural layout and searchable text. Print uses normal page overflow. */
+	/* Contain paint on distant, fitting replies, keeping layout and text searchable; screen only. */
 	@media screen {
 		.aui-assistant-message-root[data-reply-paint] {
 			contain: paint;
 		}
 	}
 
-	/* Zero the trailing margin along the deepest :last-child path (streamdown nests 4-5 levels) so the
-	   gap above the action bar is only the footer's mt-*; a generic descendant rule would hit lists. */
+	/* Zero trailing margin down the last-child path; a generic descendant rule would hit lists. */
 	.aui-assistant-message-content > *:last-child,
 	.aui-assistant-message-content > *:last-child > *:last-child,
 	.aui-assistant-message-content > *:last-child > *:last-child > *:last-child,
@@ -4752,13 +4712,12 @@ html[data-chat-font] .aui-root {
 		margin-bottom: 0 !important;
 	}
 
-	/* One vertical rhythm for everything stacked inside an assistant reply: text, thinking
-	   headers, tool-call groups and single tool rows all sit 1rem apart, the same gap
-	   streamdown puts between two paragraphs. The parts themselves own no outer margin or
-	   padding, so a header next to a paragraph reads the same as a paragraph next to a
-	   paragraph. `:where()` keeps this at zero specificity so a part that does set its own
-	   `mt-*` still wins. The first real child follows a zero-height badge anchor and gets none.
-	   Not `* + *`: that restyles the whole page when Radix inserts its focus guard. */
+	/*
+	 * 1rem gap between stacked reply parts like streamdown paragraphs; parts own no outer margin or
+	 * padding; :where() keeps zero specificity so an explicit mt-* still wins; first child skips it
+	 * after a zero-height badge; not * + * (restyles the whole page when Radix inserts its focus
+	 * guard).
+	 */
 	:where(.aui-assistant-message-content > *):where(:not(:first-child)) {
 		margin-top: calc(1rem * var(--ui-space-scale, 1));
 	}
@@ -4777,8 +4736,7 @@ html[data-chat-font] .aui-root {
 		margin-bottom: 0 !important;
 	}
 
-	/* Margin collapsing keeps the gap before a following block, so this only affects a trailing code
-	   block, matching a text-trailing message. */
+	/* Trailing code block only, since margin collapsing keeps the gap before a following block. */
 	.aui-assistant-message-content [data-streamdown="code-block"] {
 		margin-bottom: 0 !important;
 	}
@@ -5088,8 +5046,7 @@ html[data-chat-font] .aui-root {
 	cursor: pointer;
 }
 
-/* A pointer drag, not a native one. Set on the drag's box (markDragging in use-sidebar-drag.ts),
-   never the body, which restyles the whole page and hitched long chats. */
+/* Set on the drag box (markDragging in use-sidebar-drag.ts), not body (it restyles the page). */
 .pointer-dragging,
 .pointer-dragging * {
 	-webkit-user-select: none;
@@ -5738,8 +5695,7 @@ html.dark .translate-page .hub-tab-toggle-pill {
 	clip-path: inset(-0.625rem 0 0 0 round 28px 28px 0 0);
 }
 
-/* Avoid iOS Safari focus zoom. Important in the base layer, because an important
-   declaration in an earlier layer beats important utilities such as text-ui-13!. */
+/* Avoid iOS Safari focus zoom; base layer, as an earlier layer's !important beats utilities. */
 @layer base {
 	@media (hover: none) and (pointer: coarse) {
 		input:not([type="checkbox"], [type="radio"], [type="range"], [type="color"], [type="file"], [type="button"], [type="submit"], [type="reset"], [type="image"]),
@@ -5804,8 +5760,7 @@ html.dark .translate-page .hub-tab-toggle-pill {
 	margin-inline: var(--scroll-radius, 0px);
 }
 
-/* Firefox has no track to inset, so clip back to the radius; an outer shadow would be clipped, so
-   such surfaces scroll an inner viewport instead. */
+/* Firefox has no track to inset: clip to radius; shadowed surfaces scroll an inner viewport. */
 @supports (-moz-appearance: none) {
 	:is(.scroll-rounded:not(.overflow-hidden), .hub-readme-prose pre) {
 		clip-path: inset(-1px round calc(var(--scroll-radius, 0px) + 1px));
@@ -5904,8 +5859,7 @@ html.dark .translate-page .hub-tab-toggle-pill {
 	background: oklch(0.72 0 0 / 0.4);
 }
 
-/* Settings pane: the native bar is hidden and ListScrollbar draws the thumb on the dialog's edge.
-   !important beats the Windows rule that restores scrollbar-width on every element. */
+/* !important beats the Windows rule restoring scrollbar-width; ListScrollbar draws the thumb. */
 [data-settings-main-scroll] {
 	scrollbar-width: none !important;
 }
@@ -5971,8 +5925,7 @@ html.dark .translate-page .hub-tab-toggle-pill {
 	padding-left: calc(var(--spacing) * 5 + var(--thread-gutter-shift));
 }
 
-/* Subject match only (use-intent-aware-autoscroll.tsx): reaching the viewport through a sibling of an
-   ancestor makes WebKit restyle the whole thread whenever the flag flips. */
+/* Subject match only: via an ancestor's sibling, WebKit restyles the thread on each flip. */
 .aui-thread-viewport[data-aui-following] {
 	overflow-anchor: none;
 }
@@ -6165,9 +6118,8 @@ html.dark .translate-page .hub-tab-toggle-pill {
 }
 
 /*
- * Honour OS reduce-motion: Tailwind, Radix and Framer animations ignore the media query, so collapse
- * them to ~0ms. Loading indicators (.animate-spin, image loading dots) keep animating, since
- * freezing them removes the only sign that work is in flight.
+ * Honour OS reduce-motion: Tailwind, Radix and Framer ignore the media query, so collapse them to
+ * ~0ms; loading indicators keep animating, as freezing removes the only sign work is in flight.
  */
 @media (prefers-reduced-motion: reduce) {
 	/* html.force-motion (Reduce motion set to Off) opts back out. */
@@ -6184,8 +6136,7 @@ html.dark .translate-page .hub-tab-toggle-pill {
 		transition-duration: 0.01ms !important;
 	}
 
-	/* The duration above turns on transitions everywhere (transition-property defaults to all), so
-	   Radix moving a popup from its parking spot to its anchor became a one-frame slide in WebKit. */
+	/* Popper wrapper opts out: the duration above otherwise makes Radix's move slide in WebKit. */
 	html:not(.force-motion) [data-radix-popper-content-wrapper] {
 		transition-property: none !important;
 	}
@@ -6222,8 +6173,7 @@ html.dark .translate-page .hub-tab-toggle-pill {
   opacity: 1;
 }
 
-/* Values equal the library defaults at the 16px base. KaTeX's font-size:1px trick is layout and
-   stays untouched. */
+/* Library defaults at 16px base; KaTeX's font-size:1px trick is layout and stays untouched. */
 .before\:text-\[13px\]::before {
 	/* Streamdown citation chip utility (class scanned from node_modules). */
 	font-size: calc(0.8125rem * var(--ui-font-scale, 1));
@@ -6246,15 +6196,13 @@ html.dark .translate-page .hub-tab-toggle-pill {
 	font-size: calc(0.75rem * var(--ui-font-scale, 1));
 }
 
-/* Radix hides it (the viewport is the scroller so corners stay rounded); Firefox uses the inline
-   scrollbar-width. */
+/* Radix hides it; viewport scrolls, so corners stay rounded. Firefox uses scrollbar-width. */
 [data-slot="select-content"] [data-radix-select-viewport]::-webkit-scrollbar {
 	display: block !important;
 	width: 8px;
 }
 
-/* Icons scale with the text; arbitrary sizes match in plain and scaled spelling. Identity at the
-   default. */
+/* Icons scale with text; arbitrary sizes match plain and scaled spellings alike. */
 :is(
 	[data-slot='dropdown-menu-content'],
 	[data-slot='dropdown-menu-sub-content'],
@@ -6363,8 +6311,7 @@ html.dark .translate-page .hub-tab-toggle-pill {
 	}
 }
 
-/* An odd-sized glyph in these 32px buttons sits on a half pixel, which paints it 0.5px right of
-   its circle; an even size centers it. After the block above, which it must outrank. */
+/* Odd-sized glyphs sit on a half pixel; even sizes center them. Must outrank the block above. */
 :is(.aui-root.aui-thread-root, .aui-md-table.aui-md-table) :is(.aui-chat-icon-btn, .aui-md-table-actions button) svg {
 	width: round(var(--icon-size), 2px);
 	height: round(var(--icon-size), 2px);
@@ -6438,8 +6385,7 @@ html.dark .translate-page .hub-tab-toggle-pill {
 	background: var(--background);
 }
 
-/* Drop animations, not pause them: a paused entrance holds opacity 0. The shadow tree loads this
-   stylesheet under .reload-snapshot-shell. */
+/* Animations are dropped, not paused: a paused entrance holds opacity 0. */
 .reload-snapshot-shell *,
 .reload-snapshot-shell *::before,
 .reload-snapshot-shell *::after {
@@ -6460,8 +6406,7 @@ html.dark .translate-page .hub-tab-toggle-pill {
 	color: #1a1a1a;
 }
 
-/* No border: light uses the chatbox's own material; dark sits one step above --card, since it
-   floats over --card, with a page-coloured halo shadow. */
+/* No border: light uses chatbox material; dark is one step above --card, floating over it. */
 .find-bar-surface {
 	background-color: #ffffff;
 	/* Needs more spread than the composer shadow to sit on content, but not more weight. */
@@ -6488,8 +6433,7 @@ html[data-browser-overlay-open] [data-find-bar-layer] {
 	display: none;
 }
 
-/* Toasts stack under the open find bar: its top, its h-13, then 8px. Not the zoom popup, which
-   shares the surface class. */
+/* Toasts stack under the open find bar: top, h-13, then 8px; the zoom popup is excluded. */
 html[data-find-bar-open] [data-sonner-toaster][data-y-position="top"] {
 	--offset-top: calc(var(--studio-content-top-inset, 0px) + 3.5rem + 3.25rem * var(--ui-space-scale, 1) + 0.5rem) !important;
 	--mobile-offset-top: calc(var(--studio-content-top-inset, 0px) + 3.5rem + 3.25rem * var(--ui-space-scale, 1) + 0.5rem) !important;
@@ -6958,8 +6902,7 @@ html:not(.dark)[data-glass][data-chat-welcome] :is([data-wallpaper-workspace], [
    thread on any change below the workspace. A flag repeats once per simple selector of the :has()
    argument it replaced (`[data-wallpaper-ready][data-wallpaper-ready]` for `.chat-wallpaper[data-ready]`),
    so every rule keeps its specificity. */
-/* Conversations dim the crop; compare dims even an empty pane so both match.
-   Welcome/compare come from root flags (welcome.ts): a descendant :has() here re-walks the thread per keystroke. */
+/* Compare dims even when empty; root flags, not a descendant :has() re-walking per keystroke. */
 html:not([data-chat-welcome]) :is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready]:not([data-wallpaper-route="page"]) > .chat-wallpaper,
 html[data-chat-compare] :is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready]:not([data-wallpaper-route="page"]) > .chat-wallpaper,
 .wallpaper-preview[data-wallpaper-conversation] > .chat-wallpaper { opacity: calc(.4 + .6 * var(--wallpaper-conversation, 0)); }
@@ -7100,8 +7043,7 @@ html[data-chat-wallpaper-ready]:where(:not(.client-windows), [data-glass], [data
   backdrop-filter: none;
   text-shadow: 0 1px 8px var(--background);
 }
-/* The sidebar and any viewport backdrop already paint beneath this transparent bar;
-   repeating either here doubles the tint, so a modal dims only the navigation glyphs. */
+/* Sidebar and backdrop already paint beneath this bar; repeating them doubles the tint. */
 html[data-chat-wallpaper-ready]:where(:not(.client-windows), [data-glass], [data-glass-clear]) [data-slot="window-titlebar"]::after {
   background: transparent;
 }
@@ -7512,8 +7454,7 @@ html[data-glass^="liquid"][data-chat-wallpaper-workspace-ready]:not([data-browse
 }
 
 
-/* Windows hosts websites in a child WebView2 above the shell. A single glass
-   layer below the caption keeps both browser rows on the same backdrop. */
+/* Websites sit in WebView2 above the shell; one glass layer under the caption covers both. */
 html[data-glass][data-chat-wallpaper-workspace-ready]:not([data-browser-overlay-open]) [data-windows-browser="web"]::before {
   content: "";
   position: absolute;
@@ -8066,8 +8007,7 @@ html[data-glass="macos"] [data-page-model-header] [data-slot="api-toolbar-fade"]
 html:not([data-glass]) [data-wallpaper-workspace][data-wallpaper-ready][data-wallpaper-ready] [data-page-model-header] [data-slot="api-toolbar-fade"] {
   display: none;
 }
-/* Follow the actual sidebar edge during resize. The decorative layer stays
-   behind the scrolling pane and below the Windows caption. */
+/* Sidebar edge tracked by anchor-name during resize; decorative layer sits below the caption. */
 [data-windows-wallpaper-page] > [data-slot="sidebar"] {
   anchor-name: --windows-page-sidebar;
 }
@@ -8081,8 +8021,7 @@ html[data-glass] [data-windows-wallpaper-page][data-wallpaper-image][data-wallpa
   pointer-events: none;
   backdrop-filter: blur(max(calc(22px * var(--glass-on)), var(--glass-blur)));
 }
-/* The pinned sidebar's glass frame, flagged by the root: this page also holds the hidden chat, and
-   any :has() on it re-checked the chat on every mutation. */
+/* Root-flagged sidebar frame: the page holds the hidden chat, which a :has() would re-check. */
 [data-windows-wallpaper-page] > [data-slot="page-wallpaper-blur"][data-sidebar-frame] {
   border-top-left-radius: var(--radius-md);
 }
@@ -8267,17 +8206,14 @@ html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root])[data-
   display: none;
 }
 
-/* MessagePrimitive's slack helper clears inline flex-shrink on viewport updates.
-   Keep measured placeholders and reconnected display:contents bodies at natural height. */
+/* Placeholders and display:contents bodies need natural height; the helper clears flex-shrink. */
 .aui-thread-viewport [data-message-windowed] {
 	flex-shrink: 0;
-	/* duration-150 on user rows otherwise transitions the placeholder's height
-	   from its empty padding box, moving the reader as every batch is parked. */
+	/* Stops duration-150 on user rows animating placeholder height, moving the reader. */
 	transition-property: none;
 }
 
-/* Keep WebKitGTK thumb jumps synchronized with paints of newly mounted bodies.
-   Fixed backgrounds synchronize overflow scrolling with main-thread paints. */
+/* Fixed backgrounds keep WebKitGTK thumb jumps synced with paints of newly mounted bodies. */
 .aui-thread-viewport[data-windowed-messages]::before {
 	content: "";
 	position: absolute;
@@ -8340,8 +8276,7 @@ html.tauri.client-windows[data-glass-clear] #root .browser-chrome {
   --accent: var(--clear-highlight);
 }
 
-/* The docked tab strip and body each paint once, below the Windows caption.
-   Keep the native page and file viewer in charge of their document backgrounds. */
+/* Docked tab strip and body paint once below the caption; native page keeps its background. */
 html.tauri.client-windows[data-glass-clear] .chat-artifact-pop-surface:not(.chat-browser-floating):has(> [data-slot="browser-panel"]) {
   border-image: linear-gradient(to bottom, transparent var(--studio-custom-titlebar-height), var(--border) var(--studio-custom-titlebar-height)) 1;
 }
@@ -8358,8 +8293,7 @@ html.tauri.client-windows[data-glass-clear] [data-slot="chat-settings-panel"] .b
   background-color: transparent;
 }
 
-/* Portals live outside #root. Keep floating text readable over other controls
-   with the same additional tint and light-mode floor as the other glass menus. */
+/* Portals live outside the root; floating text gets glass menus' tint and light-mode floor. */
 html.tauri.client-windows[data-glass-clear][data-glass-menus] :is([data-slot$="menu-content"], [data-slot$="menu-sub-content"], [data-slot="select-content"], [data-slot="combobox-content"], [data-slot="popover-content"], [data-slot="dialog-content"], [data-slot="alert-dialog-content"], [data-slot="sheet-content"]) {
   --clear-alpha: min(100%, max(calc(var(--glass-fill-alpha, 50%) + 30%), var(--glass-menu-floor)));
   --dropdown-lift-surface: var(--popover);
@@ -8396,8 +8330,7 @@ html.tauri.client-windows[data-glass-clear][data-glass-menus] [data-slot="dialog
   -webkit-backdrop-filter: blur(16px);
   backdrop-filter: blur(16px);
 }
-/* A fullscreen dialog's close button stays viewport-fixed. Keep its blur on a
-   fixed background layer so neither the button nor the blur scrolls with the body. */
+/* Keep blur on a fixed layer so neither the close button nor the blur scrolls with the body. */
 @media (width < 40rem) {
   html.tauri.client-windows[data-glass-clear][data-glass-menus] [data-slot="dialog-content"].fixed:not([data-settings-dialog]) {
     -webkit-backdrop-filter: none;

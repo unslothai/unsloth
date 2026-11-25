@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** One compare run as the page's Generate loop sees it: N runs, each with its own request, reporting its records
- *  back. The page keeps owning progress polling, Stop, the gallery merge and error toasts. */
+/** N runs, each with its own request; the page owns polling, Stop, gallery merge and toasts. */
 
 import type { ControlNetSpecInput, DiffusionGenerateRequest, GalleryImage } from "../api.ts";
 import { HIRES_UPSCALER_LABELS, type HiresRequest } from "../lib/hires-choice.ts";
@@ -222,8 +221,7 @@ export function gridLoraField(
 
 const AXIS_NAMES = ["X", "Y", "Z"] as const;
 
-/** The grid PNG's A1111-style `parameters`: the prompt, the negative prompt when any
- *  cell engages it (the first cell may not), the shared recipe, then the axes. */
+/** `parameters`: prompt, negative prompt if any cell uses it (first may not), recipe, axes. */
 export function gridParameters(
   plan: CompareGridPlan,
   ctx: CompareContext,

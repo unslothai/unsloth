@@ -513,8 +513,7 @@ export function toApiOverride(config: PerModelConfig | null): ApiModelOverride {
     const tensorSplit = normalizeTensorSplit(config.tensorSplit, config.selectedGpuIds);
     // Explicit null clears a saved split; an older client omitting it keeps its value.
     payload.tensor_split = tensorSplit;
-    // Sent only when it is not the legacy default, so a physical pin's payload is
-    // unchanged from before this field.
+    // Sent only when not the legacy default, so physical pins keep their pre-field payload.
     if (gpuIndexKind !== "physical") {
       payload.gpu_index_kind = gpuIndexKind;
     }
@@ -524,8 +523,7 @@ export function toApiOverride(config: PerModelConfig | null): ApiModelOverride {
 
 // One in-flight write per model so an older response cannot resurrect a replaced entry.
 const writesByKey = new Map<string, Promise<ModelOverrideWriteResult>>();
-// A forget clears every alias of a cached repo on the server, so per-key order is not enough: it
-// waits for every write in flight, and every write after it waits for the forget.
+// A forget clears all aliases, so it waits for in-flight writes and blocks later writes.
 let forgetBarrier: Promise<unknown> = Promise.resolve();
 
 export interface ModelOverrideWriteResult {

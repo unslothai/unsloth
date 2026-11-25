@@ -18,9 +18,8 @@ const HIDDEN_NEEDLES = [
   "stories260k.gguf", // probe filename (carries .gguf so it stays specific)
 ];
 const HIDDEN_STT_REPOS = new Set([
-  // Transformers safetensors repos and their whisper.cpp GGUF companions
-  // (unslothai/whisper-*-GGUF): STT-only, never chat models. The Qwen3-ASR GGUFs are here for the
-  // same reason: llama.cpp will load one as a chat model, where it only answers with transcripts.
+  // Transformers safetensors repos and their whisper.cpp GGUFs are STT-only; Qwen3-ASR GGUFs are
+  // listed since llama.cpp would load them as chat models answering with transcripts.
   "unsloth/whisper-tiny",
   "unsloth/whisper-base",
   "unsloth/whisper-small",

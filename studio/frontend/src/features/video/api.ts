@@ -113,9 +113,8 @@ export interface VideoStatus {
   defaults?: VideoGenerationDefaults | null;
   // One or two sentences on how the loaded model reads prompts; null when it has no tip.
   prompt_hint?: string | null;
-  // Per-control provenance keyed by control name, read by the "Auto: X" badges. Null when
-  // nothing is loaded or the backend does not record it.
-  // The names are memory_mode, speed_mode, attention_backend, int8_attention and transformer_cache.
+  // Provenance for the Auto badges, keyed by control (memory_mode, speed_mode, attention_backend,
+  // int8_attention, transformer_cache); null when nothing is loaded or the backend omits it.
   resolved?: Record<string, VideoResolvedControl> | null;
   // Adapters merged into the denoiser at load (VideoLoadRequest.loras); absent on an older backend.
   baked_loras?: string[];
@@ -211,9 +210,8 @@ export interface VideoGenerateRequest {
   // Omitted = the server default (on).
   live_preview?: boolean;
   negative_prompt?: string;
-  // Width, height, num_frames and fps default per family; when sent they must match its rules:
-  // num_frames on the k times frame_step plus 1 lattice, and width and height a preset or on
-  // resolution_multiple within the custom_size bounds, else 422.
+  // Width, height, num_frames and fps default per family; if sent, num_frames is k times frame_step
+  // plus 1, width/height a preset or resolution_multiple in custom_size bounds, else 422.
   width?: number;
   height?: number;
   num_frames?: number;
@@ -426,8 +424,7 @@ export async function clearVideoGallery(): Promise<void> {
   if (!res.ok) throw new Error(await readFastApiError(res));
 }
 
-/** res.blob() would download a whole MP4 before playback and pin it; the file route streams
- * ranges but is bearer-gated, so mint a short-lived signed link. */
+/** Signed link, not res.blob(), which pins the whole MP4; the file route is bearer-gated. */
 export async function fetchGalleryVideoSignedUrl(id: string): Promise<string> {
   const res = await authFetch(
     `/api/inference/video/gallery/${encodeURIComponent(id)}/signed-url`,

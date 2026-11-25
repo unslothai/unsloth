@@ -85,8 +85,7 @@ fn channel_from_env() -> (Option<UnixStream>, Option<String>) {
         .filter(|fd| *fd > 2 && fd_is_socket(*fd))
         .map(|fd| {
             set_cloexec(fd, true);
-            // SAFETY: the fd is an open socket inherited from the parent and nothing else in
-            // this process owns it.
+            // SAFETY: an inherited, open socket that no other owner in this process holds.
             unsafe { UnixStream::from_raw_fd(fd) }
         });
     (stream, fallback)
@@ -183,8 +182,7 @@ pub fn install_gdk_hook() {
                 glib::log_default_handler(domain, level, Some(message));
             },
         );
-        // GTK 3 builds with G_LOG_USE_STRUCTURED, so its own g_message bypasses the handler above
-        // and only reaches the writer. The writer can be set once per process, before any logging.
+        // GTK 3 (G_LOG_USE_STRUCTURED) skips the handler; set the writer once before logging.
         glib::log_set_writer_func(|level, fields| {
             let field = |key: &str| {
                 fields
@@ -285,9 +283,8 @@ pub fn maybe_simulate_error71() {
     if CHANNEL.get().is_none() || !test_hook_requested() {
         return;
     }
-    // Use GTK's exact structured API with NUL-terminated fields. Older GLib default writers
-    // do not reliably print the explicitly sized, non-NUL fields in log_structured!.
-    // SAFETY: all pointers are static C strings, and the format has no variadic arguments.
+    // Use GTK's exact structured API with NUL-terminated fields: older GLib default writers do not
+    // reliably print explicitly sized, non-NUL fields; SAFETY: static C strings, no varargs.
     unsafe {
         glib::ffi::g_log_structured_standard(
             c"Gdk".as_ptr(),
@@ -572,8 +569,7 @@ fn run_attempt(mut command: Command, shared: &Shared) -> io::Result<Option<Attem
     };
     *shared.current.lock().unwrap_or_else(|e| e.into_inner()) = Current::default();
 
-    // The child writes before it exits, so everything it sent is already queued. Draining
-    // after the wait cannot race the exit, and cannot block on a descendant holding the fd.
+    // Drain after the wait: the child wrote before exiting; descendants may hold the fd open.
     let mut saw_shown = false;
     let mut saw_ready = false;
     let mut saw_error71 = false;
@@ -1136,8 +1132,7 @@ mod tests {
             .unwrap();
             let on_control = on_signal.clone();
             start_control_reader(move || on_control(libc::SIGTERM));
-            // A real GUI reports its window before the parent drains the channel. If the
-            // supervisor is killed with this unread data, Linux resets the peer, not just EOF.
+            // Reports before the drain: unread data on a killed supervisor resets, not EOFs.
             note_window_will_show();
             // SAFETY: getpgrp only reads the calling process's group ID.
             let pgid = unsafe { libc::getpgrp() };

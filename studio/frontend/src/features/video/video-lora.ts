@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** Load-time LoRA helpers for the Video page. A video adapter is merged into the denoiser at load, so the
- * picker holds a pending selection and the resident build reports what it baked (`baked_lora_specs`). */
+/** Video LoRA helpers; adapters merge at load, so picks stay pending (see baked_lora_specs). */
 
 import type { LoraSpecInput } from "@/features/images/api";
 
@@ -49,8 +48,7 @@ export function videoLoraReloadNeeded(
   return specKey(videoLoraSpecs(selection)) !== specKey(bakedVideoLoraSpecs(status));
 }
 
-/** Only a full diffusers pipeline load has a dense denoiser to bake into; GGUF and single-file picks and
- * two-expert families refuse (`lora_refusal`). */
+/** Only a loaded pipeline with no lora_refusal; GGUF, single-file and two-expert refuse. */
 export function videoLoraCapable(status: VideoStatus | null | undefined): boolean {
   return Boolean(status?.loaded && status.model_kind === "pipeline" && !status.lora_refusal);
 }

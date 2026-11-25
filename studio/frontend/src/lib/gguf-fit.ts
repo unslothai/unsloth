@@ -14,8 +14,7 @@ export type GgufFitClass =
 export interface GgufFitInput {
   gpuGb?: number;
   systemRamGb?: number;
-  /** Absent falls back to the shared default, NOT the whole card. Keeps the badge in step with the
-   * memory bar on the same row. */
+  /** Absent uses the shared default, not the whole card, so the badge matches the memory bar. */
   budgetFraction?: number;
   /** Only the reserve floor uses it; absent means one card. */
   gpuCount?: number;

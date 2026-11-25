@@ -8,8 +8,7 @@ export class SttModelNotDownloadedError extends Error {
   }
 }
 
-/** Shared by load and transcribe: a segment may be first to learn the model is missing. 409 also
- *  covers cancelled loads and mid-request switches, so the detail separates them. */
+/** 409 + not-downloaded detail means a missing model; cancelled loads and switches also 409. */
 export function sttRequestError(status: number, detail: string): Error {
   return status === 409 && /not downloaded/i.test(detail)
     ? new SttModelNotDownloadedError(detail)

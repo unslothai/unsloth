@@ -5,8 +5,7 @@ import { useEffect, useMemo } from "react";
 
 import { useMonitorFrameStore } from "../stores/monitor-frame-store";
 
-/** Keep floating panels off `element` (the docked composer); ResizeObserver catches moves
- * that fire no resize event. */
+/** Keep floating panels off element (docked composer); ResizeObserver catches silent moves. */
 export function usePublishedFrame(element: HTMLElement | null): void {
   const publisher = useMemo(() => ({}), []);
   const setFrame = useMonitorFrameStore((state) => state.setFrame);

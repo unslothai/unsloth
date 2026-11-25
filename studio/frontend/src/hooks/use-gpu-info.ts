@@ -311,8 +311,7 @@ function toGpuDevices(
     }));
 }
 
-/** Keep the previous array when unchanged: polls re-probe memory, and consumers memoise picker
- * options on this list. */
+/** Keeps the previous array when unchanged: polls re-probe memory and consumers memoise on it. */
 export function withStableSchemes(current: GpuInfo, next: GpuInfo): GpuInfo {
   const held = current.denseQuantSchemes;
   const fresh = next.denseQuantSchemes;
@@ -443,8 +442,7 @@ export function useGpuDevices(forDiffusion = false): SystemGpuDevice[] {
 /** Empty when there is nothing to choose; diffusion checkpoints are never sharded. */
 export function useDiffusionGpuChoices(): SystemGpuDevice[] {
   const devices = useGpuDevices(true);
-  // Memoized: a fresh array per render cascaded into the GGUF picker re-POSTing download plans
-  // on every status poll.
+  // Memoized: fresh arrays each render made the GGUF picker re-POST download plans every poll.
   return useMemo(() => {
     const context = pinnableGpuContext(devices, true);
     return (context.ids?.length ?? 0) > 1 ? (context.devices ?? []) : [];

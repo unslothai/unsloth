@@ -6,8 +6,7 @@ import { test } from "node:test";
 import { readSrc } from "./helpers/kit.ts";
 
 test("the View menu zooms a native page that holds the keys, wherever activeElement is", () => {
-  // A click into a native page view leaves activeElement in the app (often the composer), so the
-  // menu asks the scopes first and only then falls back to activeElement.
+  // A click in a native page leaves activeElement in the app, so scopes are asked first.
   const actions = readSrc("features/interface-zoom/lib/zoom-actions.ts");
   assert.match(
     actions,

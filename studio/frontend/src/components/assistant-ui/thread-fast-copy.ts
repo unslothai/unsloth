@@ -148,8 +148,7 @@ function restoreStyleAttribute(element: Element, had: string | null): void {
     element.setAttribute("style", had);
     return;
   }
-  // `removeAttribute("style")` leaves `style=""` once the declaration was touched (Chromium);
-  // removing the attribute NODE works.
+  // removeAttribute("style") leaves style="" once touched (Chromium); drop the attribute node.
   try {
     element.attributes.removeNamedItem("style");
   } catch {
@@ -175,8 +174,7 @@ function patchClipboardDeltas(root: Element): Array<() => void> {
     undo.push(() => restoreStyleAttribute(element, had));
   }
 
-  // The alt holder must not have a box: next to a block image it gets an anonymous block and a
-  // stray newline. Hiding the image removes it, and the image has no text of its own.
+  // Keep the alt holder boxless: beside a block image it gets an anonymous block and newline.
   for (const image of Array.from(
     root.querySelectorAll<HTMLImageElement>("img[alt]"),
   )) {

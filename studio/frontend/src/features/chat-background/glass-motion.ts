@@ -140,8 +140,7 @@ export function startGlassMotion(doc: Document = document): GlassMotion {
     const out: Element[] = [];
     const own = scroller.closest(GLASS_MOTION_SURFACES);
     if (own) out.push(own);
-    // The glass floating over the chat (the composer dock, the scroll-to-bottom button) sits beside the
-    // thread viewport. Only those siblings' own subtrees are searched, never the viewport's.
+    // Chat glass sits beside the thread viewport; only those siblings' subtrees are searched.
     const parent = scroller.parentElement;
     if (parent && !own && scroller.matches(THREAD_SCROLLER)) {
       for (const sibling of parent.children) {

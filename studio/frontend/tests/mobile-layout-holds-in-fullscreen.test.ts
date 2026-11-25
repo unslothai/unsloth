@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// A page in the narrow browser overlay going full screen widens the viewport past the mobile
-// breakpoint; swapping to the side panel then unmounted the full screen frame and reloaded it.
+// Full screen in the narrow overlay widens past mobile; a side-panel swap reloads the frame.
 
 import assert from "node:assert/strict";
 import test from "node:test";

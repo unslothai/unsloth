@@ -36,9 +36,8 @@ export function resolveReadmeUrl(
 }
 
 /**
- * Harden blocks a relative URL unless it starts with `/`, `./` or `../`, so a card's
- * `<img src="assets/plot.png">` showed "[Image blocked]": `urlTransform` resolves it only after
- * harden has run. This resolves against the repo first; harden still decides every URL.
+ * Resolves relative URLs against the repo first: harden would block paths like assets/plot.png
+ * before urlTransform resolves them; harden still decides every URL.
  */
 export const rehypeReadmeUrls: Plugin<[{ baseUrl: string }], Root> =
   function rehypeReadmeUrls({ baseUrl }) {

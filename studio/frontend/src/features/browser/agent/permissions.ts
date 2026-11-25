@@ -66,8 +66,7 @@ export function ruleCovers(pattern: string, rule: SiteRule | undefined, host: st
   return Boolean(host) && patternMatches(pattern, host) && (host === pattern || !rule?.hostOnly);
 }
 
-// Longer is narrower. On a tie ("example.com" and "*.example.com" on a subdomain) the wildcard
-// wins, so the result doesn't depend on the order the rules were saved in.
+// Longer is narrower; ties go to the wildcard, so rule save order never matters.
 const specificity = (pattern: string) => pattern.replace("*.", "").length * 2 + (pattern.startsWith("*.") ? 1 : 0);
 
 /** The most specific site rule for `url`, else the default; `site` is the pattern that applied. */

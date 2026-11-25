@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Desktop only: the app keeps each download's path (browser_downloads.rs) and the page gets an
-// opaque id to reveal the file or check it still exists.
+// Desktop only: the app keeps download paths (browser_downloads.rs); pages get an opaque id.
 
 import { isTauri } from "@/lib/api-base";
 import { NATIVE_FILE_NAME_HEADER, encodeNativeFilename } from "@/lib/native-files";

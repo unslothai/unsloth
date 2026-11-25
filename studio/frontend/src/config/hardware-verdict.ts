@@ -39,8 +39,7 @@ export function trainsOnCpu(chatOnlyReason: string | null, cpuTraining: boolean)
 export function videoNavHint(
   chatOnlyMeasured: boolean,
   chatOnlyReason: string | null,
-  // Developer mode's CPU video opt-in (/api/health video_cpu_opt_in). Waives only the plain
-  // no-GPU host; VideoPage still answers from the backend's own video verdict.
+  // video_cpu_opt_in waives only plain no-GPU hosts; the backend video verdict still decides.
   videoCpuOptIn = false,
   // On "no_torch": a GPU-less Chat only install, which the full install does not give video either.
   cpuTraining = false,
@@ -49,14 +48,12 @@ export function videoNavHint(
   if (chatOnlyReason === "no_gpu" && videoCpuOptIn) return undefined;
   if (chatOnlyReason === "no_torch" && cpuTraining)
     return "Video generation needs an NVIDIA or AMD GPU.";
-  // Not "or a GPU": an Intel Mac's own dGPU is not one the video pipelines can use, so offering
-  // that reads as a fix that would not work. Mirrors the backend's message for this host.
+  // Not 'or a GPU': an Intel Mac's dGPU is unusable for video; mirrors the backend's message.
   if (chatOnlyReason === "intel_mac")
     return "Video generation requires Apple Silicon. This Intel Mac has no Metal device to run it.";
   if (chatOnlyReason === "rosetta")
     return "Unsloth is running under Rosetta (x86_64 Python). Re-run the installer from a native arm64 terminal to enable video generation.";
-  // The GPU is there; PyTorch is what cannot reach it (a Windows update that resolved torch
-  // from PyPI leaves a +cpu wheel beside two working cards), so "get a GPU" is a lie.
+  // The GPU is there but PyTorch can't reach it (e.g. a +cpu wheel), so 'get a GPU' is a lie.
   if (
     chatOnlyReason === "torch_cpu_build" ||
     chatOnlyReason === "torch_cuda_unavailable"

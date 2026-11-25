@@ -138,8 +138,7 @@ function slide(
   const [shadow, startCap, strip, endCap] = Array.from(
     root.children,
   ) as HTMLElement[];
-  // The strip tucks 1px under each half-circle cap to hide the seam; any deeper and its square
-  // corners poke out, so every width involved must leave it room
+  // Tucks 1px under caps to hide the seam; deeper, square corners poke out; widths need room.
   const r = h / 2;
   const inner = w - 2 * r + 2;
   const resize =
@@ -157,8 +156,7 @@ function slide(
     ),
   ];
   if (resize) {
-    // Only the strip scales, the end cap moves, and a shadow-only copy underneath carries the
-    // shadow.
+    // The strip scales, the end cap moves; a shadow-only copy underneath carries the shadow.
     root.style.setProperty("background-color", "transparent", "important");
     root.style.setProperty("box-shadow", "none", "important");
     shadow.style.width = `${w}px`;

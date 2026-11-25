@@ -58,8 +58,7 @@ export interface ModelArtifact {
    *  encoder `approxSizeGb` counts, `quantisedGb` the hosted file the backend loads instead (GiB, Hub file sizes).
    *  Absent = an auto load keeps the bf16 encoder (no `te_quant_auto`, ComfyUI's bf16 choice, or no hosted file). */
   autoQuantTextEncoderGb?: Readonly<{ denseGb: number; quantisedGb: number }>;
-  /** Curated resident-size estimate for routing. Omitted = unknown: never auto-picked unless
-   *  downloaded. GGUF omits it too, since its quant ladder self-fits via pickDefaultQuant. */
+  /** Unknown if omitted: never auto-picked unless downloaded. GGUF omits it; quants self-fit. */
   approxSizeGb?: number;
   /** Measured CPU-offload fit tiers; a met tier bypasses the resident 70% rule. */
   offloadFitTiers?: readonly OffloadFitTier[];
@@ -92,8 +91,7 @@ export interface CatalogGroup {
   requires?: string;
   /** Leads the Recommended list whatever the dropdown sort, in catalog order among pinned groups. */
   pinToTop?: boolean;
-  /** With `pinToTop`: every row of this group (its GGUF too) leads before the next pinned group's
-   *  rows, instead of interleaving lead rows first. */
+  /** With pinToTop, all rows of the group (GGUF too) lead before the next pinned group's rows. */
   pinRowsTogether?: boolean;
 }
 
@@ -300,8 +298,7 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     ],
   },
   {
-    // The undistilled checkpoint (CFG, more steps), laid out the same way from its own FP8 repo. Not pinned:
-    // it sorts with the other models.
+    // Undistilled (CFG, more steps), same layout from its FP8 repo; unpinned, sorts normally.
     canonicalId: "black-forest-labs/flux-3-image-klein-base",
     displayName: "FLUX.3 Image Klein Base",
     description: "Text-to-image and image editing",
@@ -1167,8 +1164,7 @@ export function curatedArtifactTakesDenseQuant(
   );
 }
 
-/** Whether this row runs the dense quant path on this host. Artifact and host only: the actual
- *  precision depends on request inputs and is reported by `resolved`. */
+/** Artifact and host only: precision depends on request inputs and is reported by `resolved`. */
 function artifactUsesDenseQuant(
   group: CatalogGroup,
   artifact: ModelArtifact,
@@ -1389,8 +1385,7 @@ export interface DeviceBudget {
   denseQuantSchemes?: readonly string[];
   /** Group offload can stream torchao weights; absent = unknown, so streamed tiers are not offered. */
   quantisedStreaming?: boolean;
-  /** Backend-reported extra offload tiers per lower-cased repo id. They only widen catalog tiers
-   *  and are ignored for artifacts without them. */
+  /** Backend extra tiers by lower-cased repo id; only widen catalog tiers, ignored elsewhere. */
   extraOffloadFitTiers?: Readonly<Record<string, readonly OffloadFitTier[]>>;
 }
 
@@ -1452,8 +1447,7 @@ export function recommendedQuantForDevice<T extends GgufVariantSizes>(
   preferred: T | null = null,
   gpuGb = 0,
 ): T | null {
-  // Judged on the download footprint, which includes companion GGUFs (mmproj, drafter).
-  // A `streamed` quant (tables left on disk) runs but never outranks one that fits fully resident.
+  // Download size incl. companion GGUFs; `streamed` quants never beat a fully resident fit.
   const fitOfVariant = (variant: T) =>
     classifyVariantFitOnCard(fitOf, variant, gpuGb);
   // Zero size means unknown (old backend or stat error) and must not compete as comfortable.
@@ -1610,8 +1604,7 @@ function fitsArtifactBudget(
   return sizeGb <= allowanceGb;
 }
 
-/** The artifact a bare group click loads. Sized artifacts normally use the 0.7 * GPU budget;
- *  measured offload tiers can override that fit check. */
+/** Artifact for bare group click: sized ones fit 0.7 * GPU budget; offload tiers can override. */
 export function pickDefaultArtifact(
   group: CatalogGroup,
   input: RoutingInput,

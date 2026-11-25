@@ -17,9 +17,8 @@ import { type ReactElement, useState } from "react";
 import { SettingsRow } from "./settings-row";
 
 /**
- * Reruns the bundled installer: `studio update` reuses the environment, so only this re-selects
- * the PyTorch index (e.g. to fix a CPU-only wheel). Desktop-only, and hidden for an external
- * backend, where the refusal would arrive after the shell switched to the repair screen.
+ * Reruns the bundled installer, since `studio update` reuses the environment and does not re-select
+ * the PyTorch index (e.g. a CPU-only wheel); desktop-only, hidden for external backends.
  */
 export function DesktopRepairControl(): ReactElement | null {
   const t = useT();

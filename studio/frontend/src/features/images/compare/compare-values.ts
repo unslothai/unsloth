@@ -37,8 +37,7 @@ export function roundValue(value: number): number {
   return Number(value.toFixed(8));
 }
 
-/** csv.reader(skipinitialspace=True) over every line, each field stripped; empty fields are kept here and dropped by
- *  the typed expansion, as A1111 does for numbers. */
+/** Like csv.reader(skipinitialspace=True): fields stripped; empty ones are dropped later. */
 export function splitAxisList(text: string): string[] {
   const out: string[] = [];
   let field = "";
@@ -98,8 +97,7 @@ function inclusiveRange(start: number, end: number, step: number): number[] | nu
   return Array.from({ length: count }, (_, i) => start + step * i);
 }
 
-/** Parse one axis's text into typed values. `str` axes keep each list item as typed (no range expansion); empty
- *  items are dropped unless `keepEmpty`. */
+/** Parse axis text to typed values; str skips range expansion; empties drop unless keepEmpty. */
 export function parseAxisValues(text: string, type: AxisValueType, options: { keepEmpty?: boolean } = {}): ParsedValues {
   const items = splitAxisList(text);
   if (type === "str") {

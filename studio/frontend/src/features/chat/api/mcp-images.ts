@@ -116,8 +116,7 @@ export function planMcpImageBound(
   for (let b = batches.length - 1; b >= 0; b--) {
     const batch = batches[b];
     const room = Math.min(budget, perResult);
-    // Charge only what the backend can promote; shared spares keep corrupt entries from stranding
-    // valid older images.
+    // Charge only promotable images; spares stop corrupt entries stranding valid older images.
     let allowance = room + spare;
     let taken = 0;
     for (let r = batch.length - 1; r >= 0; r--) {

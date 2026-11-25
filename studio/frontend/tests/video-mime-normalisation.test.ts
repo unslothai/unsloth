@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// A file accepted by extension can arrive as "" or octet-stream, and only ^video/ parts are
-// sent as video, so an un-normalised type silently drops the clip.
+// Un-normalised "" or octet-stream types silently drop the clip; only ^video/ parts are sent.
 
 import assert from "node:assert/strict";
 import test from "node:test";
