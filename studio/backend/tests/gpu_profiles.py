@@ -21,7 +21,7 @@ import dataclasses
 import sys
 import types
 from collections import namedtuple
-from typing import Any, Iterator, Optional
+from typing import Any, Callable, Iterator, Optional
 
 GIB = 1024**3
 
@@ -395,6 +395,52 @@ def _triton_overrides(p: GpuProfile) -> list:
 DECLARED_NVRTC_ARCHS = ((7, 5), (12, 1))
 
 
+def _pin_metal(put: Callable, p: GpuProfile) -> None:
+    """Every real Metal / MPS reading Studio makes, pinned to the profile: the MPS profile declares macOS 14+ (bf16
+    works) with its unified memory as Metal's working set; every other profile has no MPS, as on Linux. A Mac host's
+    own device is never touched (on a paravirtual runner the first MPS op crashes the process)."""
+    import torch
+
+    def no_mps(*_a: Any, **_k: Any) -> Any:
+        raise RuntimeError("MPS backend is not available")
+
+    working_set = int(p.vram_gb * GIB) if p.mps else 0
+    mps = getattr(torch, "mps", None)
+    if mps is not None:
+        for name, value in (
+            ("recommended_max_memory", (lambda: working_set) if p.mps else no_mps),
+            ("driver_allocated_memory", (lambda: 0) if p.mps else no_mps),
+            ("current_allocated_memory", (lambda: 0) if p.mps else no_mps),
+            ("synchronize", (lambda: None) if p.mps else no_mps),
+            ("empty_cache", lambda: None),
+            ("set_per_process_memory_fraction", lambda fraction: None),
+        ):
+            if hasattr(mps, name):
+                put(mps, name, value)
+    for mod_name, attr, value in (
+        # Studio's on-device bf16 probe (a real MPS op): macOS 14+ on the MPS profile
+        (
+            "core.inference.diffusion_device",
+            "_mps_supports_bfloat16",
+            lambda torch_mod: bool(p.mps),
+        ),
+        # the VAE's Metal sync (a real MPS tensor round trip)
+        ("core.inference.diffusion_device", "mps_synchronize", lambda: None),
+        # MLX / torch.mps / Metal.framework reading of the working set
+        (
+            "utils.hardware.hardware",
+            "_metal_recommended_working_set_bytes",
+            lambda *, allow_import = True: working_set,
+        ),
+    ):
+        try:
+            mod = __import__(mod_name, fromlist = [attr])
+        except Exception:  # noqa: BLE001 - a module that does not import here reads nothing
+            continue
+        if hasattr(mod, attr):
+            put(mod, attr, value)
+
+
 def declared_os(p: GpuProfile) -> str:
     return "darwin" if p.mps else "linux"
 
@@ -516,6 +562,7 @@ def mock_profile(
         if mps is not None:
             put(mps, "is_available", lambda: p.mps)
             put(mps, "is_built", lambda: p.mps)
+        _pin_metal(put, p)
         xpu = getattr(torch, "xpu", None)
         if (
             xpu is not None

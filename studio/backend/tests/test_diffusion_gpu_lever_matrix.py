@@ -47,7 +47,7 @@ for _p in (str(_BACKEND), str(_TESTS)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from gpu_profiles import PROFILES, GpuProfile, clean_policy_env, mock_profile  # noqa: E402
+from gpu_profiles import GIB, PROFILES, GpuProfile, clean_policy_env, mock_profile  # noqa: E402
 
 # One worker builds the matrix once (a module fixture per xdist worker would rebuild it on each).
 pytestmark = pytest.mark.xdist_group("gpu_lever_matrix")
@@ -833,6 +833,14 @@ def probe_device_target(p: GpuProfile) -> dict:
             bool(getattr(target, "supports_default_torch_compile", False))
         ),
     }
+    if p.mps:
+        # Studio's other MPS branch: the bf16 probe fails (before macOS 14), so the load runs fp32, never fp16.
+        with _pinned(dd, _mps_supports_bfloat16 = lambda torch_mod: False):
+            fp32 = _device_target(p)
+        dtype = str(getattr(fp32, "dtype", None)).replace("torch.", "")
+        out["any.device_target_fp32"] = lever(
+            fp32.device != "cpu", cfg = f"{fp32.device}/{fp32.backend}/{dtype}"
+        )
     # A request with no speed_mode compiles from the deferred profile only where the dtype allows it: fp16 cards (T4)
     # compile on an explicit tier only, so their Studio-default load runs eager (real T4 load, 2026-11-24).
     from core.inference.diffusion_speed import fp16_compile_explicit_only
@@ -1299,6 +1307,34 @@ HOST_FLIPS: dict = {
         "import torch, torch._dynamo, torch._inductor\n"
         "if hasattr(torch, 'float8_e8m0fnu'): delattr(torch, 'float8_e8m0fnu')"
     ),
+    # a macOS runner whose real MPS device crashes on first use (torch 2.15 on an Apple Paravirtual device): any MPS
+    # tensor, MPS copy, torch.mps reading or Metal.framework load kills the process, so the matrix must touch none
+    "mps_device_crashes": (
+        "import os, ctypes, torch\n"
+        "def _die(*a, **k):\n"
+        "    os.kill(os.getpid(), 11)\n"
+        "def _mps_arg(a, k):\n"
+        "    return any('mps' in str(x) for x in (*a, *k.values()) if isinstance(x, (str, torch.device)))\n"
+        "def _guard(fn):\n"
+        "    def run(*a, **k):\n"
+        "        if _mps_arg(a, k):\n"
+        "            _die()\n"
+        "        return fn(*a, **k)\n"
+        "    return run\n"
+        "for _n in ('ones', 'zeros', 'empty', 'randn', 'rand', 'tensor', 'full', 'arange', 'ones_like', 'zeros_like', 'empty_like'):\n"
+        "    setattr(torch, _n, _guard(getattr(torch, _n)))\n"
+        "for _n in ('to', 'copy_'):\n"
+        "    setattr(torch.Tensor, _n, _guard(getattr(torch.Tensor, _n)))\n"
+        "torch.Tensor.mps = _die\n"
+        "for _n in ('recommended_max_memory', 'driver_allocated_memory', 'current_allocated_memory', 'synchronize', 'empty_cache'):\n"
+        "    if hasattr(torch.mps, _n): setattr(torch.mps, _n, _die)\n"
+        "_cdll = ctypes.CDLL\n"
+        "class _CDLL(_cdll):\n"
+        "    def __init__(self, name, *a, **k):\n"
+        "        if 'Metal' in str(name): _die()\n"
+        "        super().__init__(name, *a, **k)\n"
+        "ctypes.CDLL = _CDLL"
+    ),
     # an Intel XPU visible on the host
     "host_xpu": "import torch; torch.xpu.is_available = lambda: True; torch.xpu.device_count = lambda: 1",
     # a host with diffusers installed (the golden hides it; the flip un-hides nothing, it must stay hidden)
@@ -1332,7 +1368,7 @@ HOST_FLIP_SETS: dict = {
         "host_xpu",
         "win32",
     ),
-    "macos": ("no_triton", "darwin"),
+    "macos": ("no_triton", "darwin", "mps_device_crashes"),
 }
 
 
@@ -1654,7 +1690,9 @@ def test_every_probe_returns_the_same_cells_on_every_profile(matrix):
     for cid in matrix["cells"]:
         profile, _, rest = cid.partition(".")
         # a profile's extra dtype branch (MPS: autoopt_fp32) repeats its default rows, it adds no other cell
-        rest = rest.replace(".autoopt_fp32", ".autoopt")
+        rest = rest.replace(".autoopt_fp32", ".autoopt").replace(
+            ".device_target_fp32", ".device_target"
+        )
         by_profile.setdefault(profile, set()).add(rest)
     sets = list(by_profile.values())
     assert sets and all(s == sets[0] for s in sets), {
@@ -1821,6 +1859,47 @@ def test_mps_speed_rows_follow_studios_dtype_resolver(matrix):
                 fam.name,
                 off,
             )
+
+
+def test_mps_device_target_rows_cover_both_resolver_branches(matrix):
+    """The MPS profile declares macOS 14+ (the bf16 probe passes): the load target is bf16, and the probe-fails branch
+    is its own row in fp32. Neither reads the host's MPS device."""
+    cells = matrix["cells"]
+    assert cells["mps.any.device_target"] == {"on": True, "cfg": "mps/mps/bfloat16"}
+    assert cells["mps.any.device_target_fp32"] == {"on": True, "cfg": "mps/mps/float32"}
+
+
+def test_mock_profile_never_touches_the_hosts_mps_device(monkeypatch):
+    """Under any profile every Metal / MPS reading Studio makes is pinned: the bf16 probe, torch.mps memory readings and
+    sync, the VAE's Metal sync and the working-set reader. A host whose MPS device crashes on first use (a paravirtual
+    macOS runner) must never reach it; the macOS host flip runs the whole matrix that way."""
+    import torch
+
+    from core.inference import diffusion_device as dd
+    from utils.hardware import hardware as hw
+
+    def crash(*_a, **_k):
+        raise AssertionError("touched the host's MPS device")
+
+    monkeypatch.setattr(dd, "_mps_supports_bfloat16", crash)
+    monkeypatch.setattr(dd, "mps_synchronize", crash)
+    monkeypatch.setattr(hw, "_metal_recommended_working_set_bytes", crash)
+    for name in ("recommended_max_memory", "driver_allocated_memory", "synchronize"):
+        if hasattr(torch.mps, name):
+            monkeypatch.setattr(torch.mps, name, crash)
+    for key in ("mps", "cpu", "l4"):
+        p = PROFILES[key]
+        with clean_policy_env(), mock_profile(p):
+            assert dd._mps_supports_bfloat16(torch) is bool(p.mps)
+            dd.mps_synchronize()
+            assert hw._metal_recommended_working_set_bytes() == (
+                int(p.vram_gb * GIB) if p.mps else 0
+            )
+            if p.mps:
+                assert torch.mps.recommended_max_memory() == int(p.vram_gb * GIB)
+                assert torch.mps.driver_allocated_memory() == 0
+            if p.mps:
+                assert _device_target(p).dtype == torch.bfloat16
 
 
 def test_streamed_cells_name_the_arming_branch(matrix):
