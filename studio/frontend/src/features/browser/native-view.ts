@@ -702,8 +702,7 @@ function modalUnderlay(chain: HTMLElement[]): HTMLElement[] {
   let level = 0;
   for (const node of chain.slice(modal)) {
     level = stackLevel(getComputedStyle(node)) ?? level;
-    // Earlier siblings paint below it unless raised over it (the notification rail, the resource
-    // monitor); later ones (toasts, menus) draw over the page.
+    // Earlier siblings paint below it unless raised over it (rail, monitor); later ones draw over the page.
     for (let sibling = node.previousElementSibling; sibling; sibling = sibling.previousElementSibling) {
       if (zIndex(getComputedStyle(sibling)) <= level) under.push(sibling as HTMLElement);
     }
@@ -716,7 +715,7 @@ function zIndex(computed: CSSStyleDeclaration): number {
   return computed.position && computed.position !== "static" && Number.isFinite(z) ? z : 0;
 }
 
-/** The z-index a node's subtree stacks at, if it starts a stacking context. */
+// null: the node starts no stacking context.
 function stackLevel(computed: CSSStyleDeclaration): number | null {
   if (computed.position && computed.position !== "static" && computed.zIndex !== "auto") return zIndex(computed);
   if (computed.position === "fixed" || computed.position === "sticky") return 0;
