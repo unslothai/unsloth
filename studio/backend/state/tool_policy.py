@@ -145,6 +145,7 @@ def needs_tool_confirmation(
     sandbox_level: Optional[str] = None,
     session_id: Optional[str] = None,
     thread_id: Optional[str] = None,
+    python_analyses = None,
 ) -> bool:
     if is_high_risk is None or never_needs is None:
         from core.inference import tools
@@ -159,17 +160,23 @@ def needs_tool_confirmation(
         return computer_policy.needs_confirmation(arguments, thread_id or session_id)
     if permission_mode == "off":
         return off_mode_still_gates(name, sandbox_level, session_id) and _classify(
-            is_high_risk, name, arguments, sandbox_level
+            is_high_risk, name, arguments, sandbox_level, python_analyses
         )
     if permission_mode == "auto":
-        return _classify(is_high_risk, name, arguments, sandbox_level)
+        return _classify(is_high_risk, name, arguments, sandbox_level, python_analyses)
     return True
 
 
-def _classify(is_high_risk, name: str, arguments, sandbox_level: Optional[str]) -> bool:
+def _classify(
+    is_high_risk,
+    name: str,
+    arguments,
+    sandbox_level: Optional[str],
+    python_analyses = None,
+) -> bool:
     """The risk check, told the level: under Low the Terminal's shell is the host's."""
-    from core.inference.tools import classifying_under
-    with classifying_under(sandbox_level):
+    from core.inference.tools import classifying_under, using_python_call_analyses
+    with classifying_under(sandbox_level), using_python_call_analyses(python_analyses):
         return bool(is_high_risk(name, arguments))
 
 
@@ -183,6 +190,7 @@ def requires_os_isolation(
     prompted: bool,
     is_high_risk = None,
     sandbox_level: Optional[str] = None,
+    python_analyses = None,
 ) -> bool:
     """Whether the call must launch with tool_execution_mode required (no software fallback); prompted is passed in to avoid a cache race."""
     if prompted or not confirm_tool_calls or bypass_permissions or permission_mode != "off":
@@ -191,7 +199,7 @@ def requires_os_isolation(
         return False
     if is_high_risk is None:
         from core.inference.tools import is_high_risk_tool_call as is_high_risk
-    return _classify(is_high_risk, name, arguments, sandbox_level)
+    return _classify(is_high_risk, name, arguments, sandbox_level, python_analyses)
 
 
 def account_tool_stream(stream):
