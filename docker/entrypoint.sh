@@ -142,8 +142,7 @@ def pruned(walk, skip):
         yield step
 
 
-# A mount directly in the cache (run.sh's separate HF_HUB_CACHE) has its own owner, so a root-owned shared hub stays
-# root's; it is opened no-follow relative to top (a mount point cannot be swapped), and a symlinked top is never followed.
+# A mount directly in the cache (run.sh's HF_HUB_CACHE) keeps its own owner; opened no-follow from top, never via a symlink.
 nofollow_dir = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 real = os.path.realpath(top)
 nested = {os.path.basename(m) for m in mount_points() if os.path.dirname(m) == real}

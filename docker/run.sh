@@ -175,7 +175,6 @@ host_path() {
     printf '%s' "$path"
 }
 
-# huggingface_hub's resolution order; it expands ~ in both
 # Collapsed // and no trailing /, so a hub spelled differently from $HF_CACHE/hub is not mounted twice
 hf_path() {
     local path
