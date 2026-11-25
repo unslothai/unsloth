@@ -65,3 +65,12 @@ test("full-bleed logo tiles render as discs, transparent marks do not", async ()
   assert.match(src, /tile \? "rounded-full object-cover" : "object-contain"/);
   assert.match(src, /if \(!tile && right >= left\) \{/, "a tile is not rescaled to its ink");
 });
+
+test("a failed stale refresh is rerun by the next page request, rows kept", async () => {
+  const src = await readText(PAGINATED);
+  const failed = body(src, ".catch((err) => {", "setState({");
+  assert.match(failed, /staleFailedRef\.current = true;/);
+  const dead = body(src, "if (iterDeadRef.current) {", "const iter = iterRef.current;");
+  assert.match(dead, /setRefreshTick\(\(n\) => n \+ 1\)/, "pagination must not stay dead");
+  assert.match(src, /retryNonce,\s+refreshTick,\s+queryKey,/, "the rerun keeps the query, so revalidate keeps the rows");
+});

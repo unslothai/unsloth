@@ -92,6 +92,9 @@ export function useHubPaginatedSearch<T>(
 } {
   const enabled = options?.enabled ?? true;
   const [retryNonce, setRetryNonce] = useState(0);
+  // Bumped to rerun a failed stale refresh without changing the query, so its rows stay.
+  const [refreshTick, setRefreshTick] = useState(0);
+  const staleFailedRef = useRef(false);
   // A thrown async generator is closed, so a failed page can only be restarted.
   const iterDeadRef = useRef(false);
   const queryKey = useMemo(
@@ -148,6 +151,7 @@ export function useHubPaginatedSearch<T>(
     [clearDeferredFetch],
   );
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: refreshTick only reruns a failed stale refresh.
   useEffect(() => {
     if (!enabled) {
       clearDeferredFetch();
@@ -232,9 +236,10 @@ export function useHubPaginatedSearch<T>(
       })
       .catch((err) => {
         if (versionRef.current !== v || isAbortError(err)) return;
-        // The old rows are still valid; the next stale check retries.
+        // The old rows stay; the next page request reruns the refresh.
         if (revalidate) {
           iterDeadRef.current = true;
+          staleFailedRef.current = true;
           return;
         }
         setState({
@@ -262,6 +267,7 @@ export function useHubPaginatedSearch<T>(
     mapItem,
     enabled,
     retryNonce,
+    refreshTick,
     queryKey,
     clearDeferredFetch,
   ]);
@@ -291,6 +297,10 @@ export function useHubPaginatedSearch<T>(
     if (iterDeadRef.current) {
       queuedAfterBusyRef.current = false;
       queuedWhileHiddenRef.current = false;
+      if (staleFailedRef.current) {
+        staleFailedRef.current = false;
+        setRefreshTick((n) => n + 1);
+      }
       return false;
     }
 
