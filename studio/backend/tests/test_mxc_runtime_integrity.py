@@ -365,13 +365,12 @@ def test_installation_identity_cache_keys_on_the_approved_pin(runtime, monkeypat
 
 def test_status_and_repair_verify_the_bytes_even_with_a_cached_identity(runtime, monkeypatch):
     monkeypatch.setattr(mxc_runtime, "_installed_package_root", lambda: runtime)
+    monkeypatch.setattr(mxc_runtime, "_file_stamp", lambda path: ("unchanged",))
     mxc_runtime.forget_verified_runtime()
     mxc_runtime.installation_identity()
     path = runtime / "wxc-exec.exe"
-    stamp = path.stat()
-    with open(path, "r+b") as stream:  # corrupt in place, keeping size and timestamps
+    with open(path, "r+b") as stream:  # corrupt in place; the stamp is pinned as if it did not move
         stream.write(b"x")
-    os.utime(path, ns = (stamp.st_atime_ns, stamp.st_mtime_ns))
     calls = _count_hashes(monkeypatch)
     mxc_runtime.installation_identity()  # the per-call fingerprint keeps its cached answer
     assert calls == []
@@ -397,3 +396,28 @@ def test_an_unsupported_host_is_refused_before_any_artifact_is_opened(
     monkeypatch.setattr(mxc_runtime, "_expected_architecture", unsupported)
     with pytest.raises(mxc_runtime.MxcRuntimeUnavailable, match = "unsupported architecture"):
         getattr(mxc_runtime, acquire)(package_root = runtime)
+
+
+def test_a_failed_reverification_drops_the_old_verdict(runtime, monkeypatch):
+    monkeypatch.setattr(mxc_runtime, "_installed_package_root", lambda: runtime)
+    mxc_runtime.forget_verified_runtime()
+    mxc_runtime.installation_identity()
+    path = runtime / "wxc-exec.exe"
+    good = path.read_bytes()
+    stamp = path.stat()
+    path.write_bytes(b"x" * len(good))
+    os.utime(path, ns = (stamp.st_atime_ns, stamp.st_mtime_ns + 10**9))
+    with pytest.raises(mxc_runtime.MxcRuntimeUnavailable, match = "digest"):
+        mxc_runtime.installation_identity()
+    assert mxc_runtime._identity_cache == {}
+
+
+def test_a_backend_refresh_forgets_the_runtime_identity(runtime, monkeypatch):
+    from core.inference import mxc_probe
+
+    monkeypatch.setattr(mxc_runtime, "_installed_package_root", lambda: runtime)
+    mxc_runtime.forget_verified_runtime()
+    mxc_runtime.installation_identity()
+    assert mxc_runtime._identity_cache
+    mxc_probe.invalidate_cache()
+    assert mxc_runtime._identity_cache == {}

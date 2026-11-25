@@ -237,6 +237,7 @@ def _file_stamp(path: Path) -> tuple:
         metadata.st_size,
         metadata.st_mtime_ns,
         getattr(metadata, "st_birthtime_ns", None),
+        metadata.st_ctime_ns,  # creation time on Windows before Python 3.12, which lacks st_birthtime_ns
         getattr(metadata, "st_nlink", 1),
     )
 
@@ -256,7 +257,8 @@ def installation_identity() -> str:
         raise MxcRuntimeUnavailable("the MXC runtime is Windows-only")
     architecture = _expected_architecture()
     _member, size, sha256 = _artifact(architecture, "exec")
-    path = _require_plain_directory(_installed_package_root()) / _WXC_EXEC_NAME
+    root = _require_plain_directory(_installed_package_root())
+    path = root / _WXC_EXEC_NAME
     try:
         before = _file_stamp(path)
     except OSError as exc:
@@ -268,7 +270,9 @@ def installation_identity() -> str:
         hit = _identity_cache.get(key)
         if hit is not None and hit[0] == before:
             return hit[1].identity
-    info = selected_runtime()
+        # A changed stamp retires the old verdict even if this verification fails.
+        _identity_cache.pop(key, None)
+    info = selected_runtime(package_root = root)
     try:
         after = _file_stamp(path)
     except OSError:
@@ -343,12 +347,17 @@ def _acquire(select, package_root: Path | None, name: str) -> RuntimeLease:
         # Lock, then verify once: the guard denies write, rename and delete for the whole lease, so one
         # digest taken under it covers the bytes wxc-exec runs. Hashing before and after the open cost
         # a second full SHA-256 of the executable on every tool call.
-        candidate = _require_plain_directory(package_root or _installed_package_root()) / name
-        if not candidate.is_file() or candidate.is_symlink():
+        root = _require_plain_directory(package_root or _installed_package_root())
+        candidate = root / name
+        try:
+            reparse = getattr(candidate.lstat(), "st_file_attributes", 0) & 0x400
+        except OSError:
+            reparse = True
+        if reparse or not candidate.is_file() or candidate.is_symlink():
             raise MxcRuntimeUnavailable(f"the managed {name} is missing or is not a regular file")
         guard = _open_artifact_guard(candidate)
         try:
-            info = select(package_root = package_root)
+            info = select(package_root = root)
             if info.path != candidate.resolve():
                 raise MxcRuntimeUnavailable(f"the managed {name} changed during acquisition")
         except Exception:

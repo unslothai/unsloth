@@ -629,6 +629,7 @@ def hold_for_request(request, held: WorkloadLease | None, *, tried: bool) -> Wor
     config = request.get("config") if isinstance(request, dict) else None
     fallback = config.get("fallback") if isinstance(config, dict) else None
     if isinstance(fallback, dict) and fallback.get("allowDaclMutation") is True:
+        refresh_saved_switches()  # another Studio process may have turned persistent grants on
         return _hold(needed = enabled())
     return None
 
