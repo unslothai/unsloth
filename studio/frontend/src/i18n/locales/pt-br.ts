@@ -5060,6 +5060,7 @@ export const ptBR = {
     model: {
       label: "Modelo de tradução",
       fast: "Rápido",
+      balanced: "Equilibrado",
       quality: "Melhor qualidade",
       chat: "Modelo do chat",
       recommended: "Recomendados",

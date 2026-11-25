@@ -5145,6 +5145,7 @@ export const th = {
     model: {
       label: "โมเดลแปลภาษา",
       fast: "เร็ว",
+      balanced: "สมดุล",
       quality: "คุณภาพดีที่สุด",
       chat: "โมเดลแชท",
       recommended: "แนะนำ",

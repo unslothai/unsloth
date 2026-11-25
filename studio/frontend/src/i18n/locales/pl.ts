@@ -5422,6 +5422,7 @@ export const pl = {
     model: {
       label: "Model tłumaczenia",
       fast: "Szybki",
+      balanced: "Zrównoważony",
       quality: "Najlepsza jakość",
       chat: "Model czatu",
       recommended: "Polecane",

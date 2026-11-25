@@ -96,6 +96,7 @@ import { StopIcon } from "@/lib/media-control-icons";
 import { MicIcon } from "@/lib/mic-icon";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { toast } from "@/lib/toast";
+import { useGpuInfo } from "@/hooks/use-gpu-info";
 import { useScrollFades } from "@/hooks/use-scroll-fades";
 import { cn } from "@/lib/utils";
 import {
@@ -151,6 +152,7 @@ import {
   CUSTOM_TRANSLATE_MODEL,
   type CustomTranslateModel,
   DEDICATED_TRANSLATE_MODELS,
+  type DedicatedTranslateModel,
   type DownloadedTranslateModel,
   downloadedQuant,
   downloadedTranslateModels,
@@ -159,6 +161,8 @@ import {
   dedicatedTranslateModel,
   formatModelBytes,
   isTranslateModelId,
+  offeredTranslateModelId,
+  offeredTranslateModels,
   translateInstruction,
   translateModelKey,
   translatePromptKind,
@@ -349,8 +353,12 @@ const MODEL_NOTE: Record<
   (typeof DEDICATED_TRANSLATE_MODELS)[number]["id"],
   TranslationKey
 > = {
-  "hy-mt2-1.8b": "translate.model.fast",
-  "hy-mt2-7b": "translate.model.quality",
+  "hy-mt3-1.8b": "translate.model.fast",
+  "hy-mt3-7b": "translate.model.balanced",
+  "hy-mt3-30b-a3b": "translate.model.quality",
+  "hy-mt3-1.8b-fp8": "translate.model.fast",
+  "hy-mt3-7b-fp8": "translate.model.balanced",
+  "hy-mt3-30b-a3b-fp8": "translate.model.quality",
 };
 
 function LanguagePicker({
@@ -827,12 +835,14 @@ const ModelMenu = memo(function ModelMenu({
   onChange,
   onPickCustom,
   downloaded,
+  offered,
 }: {
   value: TranslateModelId;
   custom: CustomTranslateModel | null;
   onChange: (id: TranslateModelId) => void;
   onPickCustom: (model: CustomTranslateModel) => void;
   downloaded: Downloaded;
+  offered: readonly DedicatedTranslateModel[];
 }) {
   const t = useT();
   const busy = useTranslateStore((state) => state.phase !== null);
@@ -945,8 +955,8 @@ const ModelMenu = memo(function ModelMenu({
     const builtIn = DEDICATED_TRANSLATE_MODELS.find(
       (model) =>
         model.repo.toLowerCase() === id.toLowerCase() &&
-        (variant ?? model.variant).toLowerCase() ===
-          model.variant.toLowerCase(),
+        (variant ?? model.variant ?? "").toLowerCase() ===
+          (model.variant ?? "").toLowerCase(),
     );
     if (builtIn) {
       onChange(builtIn.id);
@@ -1037,7 +1047,7 @@ const ModelMenu = memo(function ModelMenu({
             <DropdownMenuLabel>
               {t("translate.model.recommended")}
             </DropdownMenuLabel>
-            {DEDICATED_TRANSLATE_MODELS.map((model) => (
+            {offered.map((model) => (
               <DropdownMenuRadioItem
                 key={model.id}
                 value={model.id}
@@ -1298,6 +1308,20 @@ export function TranslatePage() {
     })),
   );
   const navigate = useNavigate();
+  const gpu = useGpuInfo();
+  const offeredModels = useMemo(
+    () => offeredTranslateModels(gpu.checkpointQuantFormats),
+    [gpu.checkpointQuantFormats],
+  );
+  // Only once system info has arrived: until then no device reports FP8.
+  useEffect(() => {
+    if (!gpu.backend) return;
+    const offered = offeredTranslateModelId(
+      prefs.modelId,
+      gpu.checkpointQuantFormats,
+    );
+    if (offered !== prefs.modelId) setPrefs({ modelId: offered });
+  }, [gpu.backend, gpu.checkpointQuantFormats, prefs.modelId, setPrefs]);
   const pickTranslateModel = useCallback(
     (modelId: TranslateModelId) => setPrefs({ modelId }),
     [setPrefs],
@@ -1381,7 +1405,7 @@ export function TranslatePage() {
   useEffect(() => {
     if (busy) return;
     const abort = new AbortController();
-    for (const model of DEDICATED_TRANSLATE_MODELS) {
+    for (const model of offeredModels) {
       // After every run: the disk shows a finished download, so the Hub is asked only before it is known missing.
       void translateModelDownloaded(model, abort.signal, {
         remote: downloadedRef.current[model.id] !== false,
@@ -1391,7 +1415,7 @@ export function TranslatePage() {
       });
     }
     return () => abort.abort();
-  }, [busy]);
+  }, [busy, offeredModels]);
 
   useEffect(() => {
     if (!prefs.autoTranslate || busy || !canTranslate) return;
@@ -1687,6 +1711,7 @@ export function TranslatePage() {
             onChange={pickTranslateModel}
             onPickCustom={pickCustomTranslateModel}
             downloaded={downloaded}
+            offered={offeredModels}
           />
           <OptionsPopover />
         </div>

@@ -5421,6 +5421,7 @@ export const nl = {
     model: {
       label: "Vertaalmodel",
       fast: "Snel",
+      balanced: "Gebalanceerd",
       quality: "Beste kwaliteit",
       chat: "Chatmodel",
       recommended: "Aanbevolen",

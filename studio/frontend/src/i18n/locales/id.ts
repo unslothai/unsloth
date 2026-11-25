@@ -5374,6 +5374,7 @@ export const id = {
     model: {
       label: "Model terjemahan",
       fast: "Cepat",
+      balanced: "Seimbang",
       quality: "Kualitas terbaik",
       chat: "Model chat",
       recommended: "Direkomendasikan",

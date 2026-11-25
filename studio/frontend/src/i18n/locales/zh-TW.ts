@@ -5103,6 +5103,7 @@ export const zhTW = {
     model: {
       label: "翻譯模型",
       fast: "快速",
+      balanced: "均衡",
       quality: "最佳品質",
       chat: "聊天模型",
       recommended: "推薦",

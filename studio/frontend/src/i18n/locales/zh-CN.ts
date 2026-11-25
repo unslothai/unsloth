@@ -4931,6 +4931,7 @@ export const zhCN = {
     model: {
       label: "翻译模型",
       fast: "快速",
+      balanced: "均衡",
       quality: "最佳质量",
       chat: "聊天模型",
       recommended: "推荐",

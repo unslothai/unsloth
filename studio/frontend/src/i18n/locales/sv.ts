@@ -5246,6 +5246,7 @@ export const sv = {
     model: {
       label: "Översättningsmodell",
       fast: "Snabb",
+      balanced: "Balanserad",
       quality: "Bäst kvalitet",
       chat: "Chattmodell",
       recommended: "Rekommenderade",

@@ -5059,6 +5059,7 @@ export const ru = {
     model: {
       label: "Модель перевода",
       fast: "Быстрая",
+      balanced: "Сбалансированная",
       quality: "Лучшее качество",
       chat: "Модель чата",
       recommended: "Рекомендуемые",

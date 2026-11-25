@@ -5113,6 +5113,7 @@ export const he = {
     model: {
       label: "מודל תרגום",
       fast: "מהיר",
+      balanced: "מאוזן",
       quality: "האיכות הטובה ביותר",
       chat: "מודל צ'אט",
       recommended: "מומלצים",

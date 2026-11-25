@@ -5369,6 +5369,7 @@ export const vi = {
     model: {
       label: "Mô hình dịch",
       fast: "Nhanh",
+      balanced: "Cân bằng",
       quality: "Chất lượng tốt nhất",
       chat: "Mô hình trò chuyện",
       recommended: "Đề xuất",

@@ -4980,6 +4980,7 @@ export const ja = {
     model: {
       label: "翻訳モデル",
       fast: "高速",
+      balanced: "バランス",
       quality: "最高品質",
       chat: "チャットモデル",
       recommended: "おすすめ",
