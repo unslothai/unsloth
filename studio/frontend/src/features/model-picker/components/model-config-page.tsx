@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useT } from "@/i18n";
 import { AdvancedGpuSlider } from "./advanced-gpu-slider";
 // eslint-disable-next-line no-restricted-imports -- leaf import; the UI barrels would cycle.
 import { VramBudgetControl } from "@/features/settings/components/vram-budget-control";
@@ -2224,6 +2225,7 @@ function GgufAdvancedSettings({
   draftKey: string;
   focusParallelSlots: boolean;
 }) {
+  const t = useT();
   const batchAdviceId = useId();
   const ubatchAdviceId = useId();
   const llamaBackend = useLlamaCppBackend();
@@ -2242,7 +2244,7 @@ function GgufAdvancedSettings({
   return (
     <>
       {(!isDiffusion || showGpuPicker) && (
-      <AdvancedGroup title="Memory">
+      <AdvancedGroup title={t("runSettings.memory")}>
       {!isDiffusion && (
       <div className={ROW_CLASS}>
         <div className="flex min-w-0 items-center gap-1.5">
@@ -2301,7 +2303,7 @@ function GgufAdvancedSettings({
       )}
 
       {!isDiffusion && (
-      <AdvancedGroup title="Speed">
+      <AdvancedGroup title={t("runSettings.speed")}>
       <div className={ROW_CLASS}>
         <div className="flex min-w-0 items-center gap-1.5">
           <span className={LABEL_CLASS_WRAP}>Speculative Decoding</span>
@@ -2360,7 +2362,7 @@ function GgufAdvancedSettings({
             max={16}
             step={1}
             value={config.specDraftNMax ?? ""}
-            placeholder="auto"
+            placeholder={t("runSettings.auto")}
             onChange={(event) => {
               const raw = event.target.value;
               if (raw === "") {
@@ -2372,7 +2374,7 @@ function GgufAdvancedSettings({
                 update({ specDraftNMax: Math.max(1, Math.min(16, parsed)) });
               }
             }}
-            aria-label="Speculative decoding draft tokens"
+            aria-label={t("runSettings.specDraftTokens")}
             className={NUMBER_INPUT_CLASS}
           />
         </div>
@@ -2444,7 +2446,7 @@ function GgufAdvancedSettings({
               max={N_BATCH_MAX}
               step={1}
               value={config.nBatch ?? ""}
-              placeholder="auto"
+              placeholder={t("runSettings.auto")}
               onChange={(event) => {
                 const raw = event.target.value;
                 if (raw === "") {
@@ -2458,7 +2460,7 @@ function GgufAdvancedSettings({
                   });
                 }
               }}
-              aria-label="Prompt batch size"
+              aria-label={t("runSettings.promptBatchSize")}
               aria-describedby={batchBelowFloor ? batchAdviceId : undefined}
               className={NUMBER_INPUT_CLASS}
             />
@@ -2492,7 +2494,7 @@ function GgufAdvancedSettings({
               max={N_BATCH_MAX}
               step={1}
               value={config.nUbatch ?? ""}
-              placeholder="auto"
+              placeholder={t("runSettings.auto")}
               onChange={(event) => {
                 const raw = event.target.value;
                 if (raw === "") {
@@ -2506,7 +2508,7 @@ function GgufAdvancedSettings({
                   });
                 }
               }}
-              aria-label="Prompt micro-batch size"
+              aria-label={t("runSettings.promptMicroBatchSize")}
               aria-describedby={ubatchExceedsBatch ? ubatchAdviceId : undefined}
               className={NUMBER_INPUT_CLASS}
             />
@@ -2531,7 +2533,7 @@ function GgufAdvancedSettings({
           </div>
           <Switch
             className="shrink-0"
-            aria-label="Tensor Parallelism"
+            aria-label={t("runSettings.tensorParallelism")}
             checked={config.tensorParallel}
             onCheckedChange={(checked) => update({ tensorParallel: checked })}
           />
@@ -2540,7 +2542,7 @@ function GgufAdvancedSettings({
       </AdvancedGroup>
       )}
 
-      <AdvancedGroup title="Output">
+      <AdvancedGroup title={t("runSettings.output")}>
       {!isDiffusion && (
         <ReasoningBudgetRows
           config={config}
@@ -2554,7 +2556,7 @@ function GgufAdvancedSettings({
 
       {/* llama-server-only knobs; the diffusion runner launches no llama-server. */}
       {!isDiffusion && (
-        <AdvancedGroup title="Server">
+        <AdvancedGroup title={t("runSettings.server")}>
           <LoadModeRow config={config} update={update} />
 
           <div className={ROW_CLASS}>
@@ -2573,7 +2575,7 @@ function GgufAdvancedSettings({
               max={CTX_CHECKPOINTS_MAX}
               step={1}
               value={config.ctxCheckpoints ?? ""}
-              placeholder="auto"
+              placeholder={t("runSettings.auto")}
               onChange={(event) => {
                 const raw = event.target.value;
                 if (raw === "") {
@@ -2590,7 +2592,7 @@ function GgufAdvancedSettings({
                   });
                 }
               }}
-              aria-label="Context checkpoints per slot"
+              aria-label={t("runSettings.checkpointsPerSlot")}
               className={NUMBER_INPUT_CLASS}
             />
           </div>
@@ -2611,7 +2613,7 @@ function GgufAdvancedSettings({
               max={CACHE_RAM_MAX}
               step={1}
               value={config.cacheRam ?? ""}
-              placeholder="auto"
+              placeholder={t("runSettings.auto")}
               onChange={(event) => {
                 const raw = event.target.value;
                 if (raw === "") {
@@ -2628,7 +2630,7 @@ function GgufAdvancedSettings({
                   });
                 }
               }}
-              aria-label="Host prompt cache size in MiB"
+              aria-label={t("runSettings.hostCacheMiB")}
               className={NUMBER_INPUT_CLASS}
             />
           </div>
@@ -2658,6 +2660,7 @@ function ExtraArgsRow({
   onLoadableChange: (loadable: boolean) => void;
   draftKey: string;
 }) {
+  const t = useT();
   const [catalog, setCatalog] = useState<LlamaFlagCatalog | null>(null);
   const adviceId = useId();
   // The typed draft, not stored tokens, or the other editor re-quotes half-typed input.
@@ -2766,8 +2769,8 @@ function ExtraArgsRow({
             value={text}
             onChange={(event) => commit(event.target.value)}
             spellCheck={false}
-            placeholder="--rope-scaling yarn --yarn-orig-ctx 32768"
-            aria-label="Extra llama-server arguments"
+            placeholder={t("runSettings.extraArgsPlaceholder")}
+            aria-label={t("runSettings.extraArgs")}
             aria-describedby={diagnostics.length > 0 ? adviceId : undefined}
             className="block size-full resize-none bg-transparent px-3.5 py-2.5 text-left font-mono text-ui-12 leading-relaxed text-foreground outline-none placeholder:text-muted-foreground"
           />
@@ -2776,7 +2779,9 @@ function ExtraArgsRow({
           <div id={adviceId} className="space-y-1">
             {tokenCount > 0 && (
               <p className="text-ui-11 text-muted-foreground">
-                {tokenCount === 1 ? "1 argument" : `${tokenCount} arguments`}
+                {tokenCount === 1
+                  ? t("runSettings.extraArgsCountOne")
+                  : t("runSettings.extraArgsCountMany", { count: tokenCount })}
               </p>
             )}
             {diagnostics.map((diagnostic) => (
