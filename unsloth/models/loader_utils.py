@@ -2100,6 +2100,7 @@ def get_model_name(
     local_files_only = False,
     cache_dir = None,
     revision = None,
+    quantization_config = None,
 ):
     assert load_in_fp8 in (True, False, "block")
     new_model_name = _resolve_with_mappers(
@@ -2169,6 +2170,35 @@ def get_model_name(
                 'pip install --upgrade --no-cache-dir "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git"\n'
                 'pip install --upgrade --no-cache-dir "git+https://github.com/unslothai/unsloth-zoo.git"\n'
             )
+
+    if (
+        quantization_config is not None
+        and load_in_4bit
+        and load_in_fp8 == False
+        and type(new_model_name) is str
+        and new_model_name.lower() != str(model_name).lower()
+        and new_model_name.lower().endswith("bnb-4bit")
+    ):
+        # Transformers loads a pre-quantized bnb repo with its saved config over the caller's (or rejects another
+        # config class), so load what the 16bit lookup gives and quantize that with theirs. Installed tables only.
+        unquantized = _resolve_with_mappers(
+            model_name = model_name,
+            load_in_4bit = False,
+            load_in_fp8 = False,
+            int_to_float = INT_TO_FLOAT_MAPPER,
+            float_to_int = FLOAT_TO_INT_MAPPER,
+            map_to_unsloth_16bit = MAP_TO_UNSLOTH_16bit,
+        )
+        if type(unquantized) is str and unquantized.lower() in BAD_MAPPINGS:
+            unquantized = BAD_MAPPINGS[unquantized.lower()]
+        unquantized = str(model_name) if type(unquantized) is not str else unquantized
+        # A requested FP8 / bnb checkpoint honours the config no better: keep the 4bit remap then.
+        if not (unquantized.lower().endswith("bnb-4bit") or "fp8" in unquantized.lower()):
+            print(
+                f"Unsloth: Loading `{unquantized}` and quantizing it with your `quantization_config`, "
+                f"since the pre-quantized `{new_model_name}` would override it with its own."
+            )
+            new_model_name = unquantized
 
     if new_model_name is None:
         new_model_name = model_name
