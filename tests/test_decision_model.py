@@ -1133,6 +1133,62 @@ def test_clef_encoding_is_token_identical_to_cloudflares():
             ]
 
 
+JSON_TEXT = '{"b": 1, "a": [2, {"d": 3, "c": 4}]}'
+
+
+def test_clef_trains_on_a_json_text_state_as_written(capsys):
+    from transformers import AutoTokenizer
+
+    from unsloth.models.clef import encode_record, render
+
+    tokenizer = AutoTokenizer.from_pretrained(TINY_QWEN3_5)
+    value = json.loads(JSON_TEXT)
+    states = ["plain text", JSON_TEXT, value, render(value)]
+    items, report = _clef_items_with(
+        tokenizer, [{**_row(i), "state": s} for i, s in enumerate(states)]
+    )
+    assert report["skipped"] == 0 and report["json_text_states"] == 1
+    # As Cloudflare's encoding and every server read it: text as written, an object sorted.
+    assert [item[1] for item in items] == [
+        encode_record(tokenizer, {"state": s, "questions": QUESTIONS}, max_length = 4096).input_ids
+        for s in states
+    ]
+    assert "1 of 4 states are JSON text" in capsys.readouterr().out
+    # Read as text a state can stop fitting; it is counted all the same.
+    rows, report = [{**_row(0), "state": JSON_TEXT}], {"total": 0, "skipped": 0}
+    assert decision._clef_items(rows, tokenizer, 50, None, report, lambda *a: None) == []
+    assert report["json_text_states"] == 1
+
+
+def test_predict_reads_a_clef_json_text_state_as_written_and_laya_decodes_it(
+    checkpoint, monkeypatch
+):
+    seen = []
+
+    def clef_decide(model, tokenizer, state, *args, **kwargs):
+        seen.append(state)
+        return {"answers": {}}
+
+    monkeypatch.setattr(decision, "_clef_decide", clef_decide)
+    FastDecisionModel.predict(
+        types.SimpleNamespace(is_clef = True, decision_config = {}), None, JSON_TEXT, QUESTIONS
+    )
+    assert seen == [JSON_TEXT]
+
+    model, tokenizer = FastDecisionModel.from_pretrained(
+        str(checkpoint), use_gradient_checkpointing = False
+    )
+    common = _laya().common
+    build = common.build_sequence
+    spy = lambda tokenizer, state, *args: seen.append(state) or build(tokenizer, state, *args)
+    monkeypatch.setattr(common, "build_sequence", spy)
+    FastDecisionModel.predict(model, tokenizer, JSON_TEXT, QUESTIONS)
+    assert seen[1:] == [json.loads(JSON_TEXT)] * len(QUESTIONS)
+    # Every model's report has the count Unsloth Studio reads.
+    row = {**_row(0), "state": JSON_TEXT}
+    assert FastDecisionModel.build_dataset([row], tokenizer, model)[1]["json_text_states"] == 0
+
+
 @pytest.mark.parametrize(
     "option",
     [
