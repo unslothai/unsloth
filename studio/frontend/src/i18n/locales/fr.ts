@@ -970,6 +970,7 @@ export const fr = {
     saving: "Enregistrement...",
     search: "Rechercher",
     shutdown: "Arrêter",
+    technicalDetails: "Détails techniques",
   },
   shell: {
     helpMenu: {

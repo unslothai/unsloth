@@ -969,6 +969,7 @@ export const ru = {
     saving: "Сохранение…",
     search: "Поиск",
     shutdown: "Выключить",
+    technicalDetails: "Технические подробности",
   },
   shell: {
     helpMenu: {

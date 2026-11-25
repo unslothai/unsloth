@@ -969,6 +969,7 @@ export const es = {
     saving: "Guardando...",
     search: "Buscar",
     shutdown: "Apagar",
+    technicalDetails: "Detalles técnicos",
   },
   shell: {
     helpMenu: {

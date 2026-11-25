@@ -846,6 +846,7 @@ export const it = {
     saving: "Salvataggio...",
     search: "Cerca",
     shutdown: "Arresta",
+    technicalDetails: "Dettagli tecnici",
   },
   shell: {
     helpMenu: {

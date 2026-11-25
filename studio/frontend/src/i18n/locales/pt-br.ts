@@ -969,6 +969,7 @@ export const ptBR = {
     saving: "Salvando...",
     search: "Buscar",
     shutdown: "Desligar",
+    technicalDetails: "Detalhes técnicos",
   },
   shell: {
     helpMenu: {

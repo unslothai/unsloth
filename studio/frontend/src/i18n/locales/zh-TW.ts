@@ -1014,6 +1014,7 @@ export const zhTW = {
     saving: "儲存中...",
     search: "搜尋",
     shutdown: "關閉",
+    technicalDetails: "技術詳細資料",
   },
   shell: {
     helpMenu: {

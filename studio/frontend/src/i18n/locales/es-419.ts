@@ -1074,6 +1074,7 @@ export const es419 = {
     saving: "Guardando...",
     search: "Buscar",
     shutdown: "Apagar",
+    technicalDetails: "Detalles técnicos",
   },
   shell: {
     helpMenu: {

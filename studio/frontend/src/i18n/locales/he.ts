@@ -1003,6 +1003,7 @@ export const he = {
     saving: "שומר...",
     search: "חיפוש",
     shutdown: "כיבוי",
+    technicalDetails: "פרטים טכניים",
   },
   shell: {
     helpMenu: {

@@ -1064,6 +1064,7 @@ export const tr = {
     saving: "Kaydediliyor...",
     search: "Ara",
     shutdown: "Kapat",
+    technicalDetails: "Teknik ayrıntılar",
   },
   shell: {
     helpMenu: {

@@ -1075,6 +1075,7 @@ export const uk = {
     saving: "Збереження...",
     search: "Пошук",
     shutdown: "Вимкнути",
+    technicalDetails: "Технічні відомості",
   },
   shell: {
     helpMenu: {

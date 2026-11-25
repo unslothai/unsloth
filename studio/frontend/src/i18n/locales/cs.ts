@@ -1069,6 +1069,7 @@ export const cs = {
     saving: "Ukládání...",
     search: "Hledat",
     shutdown: "Vypnout",
+    technicalDetails: "Technické podrobnosti",
   },
   shell: {
     helpMenu: {

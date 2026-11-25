@@ -1080,6 +1080,7 @@ export const nl = {
     saving: "Opslaan...",
     search: "Zoeken",
     shutdown: "Afsluiten",
+    technicalDetails: "Technische details",
   },
   shell: {
     helpMenu: {

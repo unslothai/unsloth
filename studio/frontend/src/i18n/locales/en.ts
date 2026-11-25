@@ -970,6 +970,7 @@ export const en = {
     saving: "Saving...",
     search: "Search",
     shutdown: "Shutdown",
+    technicalDetails: "Technical details",
   },
   shell: {
     helpMenu: {

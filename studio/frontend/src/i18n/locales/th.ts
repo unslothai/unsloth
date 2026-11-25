@@ -1017,6 +1017,7 @@ export const th = {
     saving: "กำลังบันทึก...",
     search: "ค้นหา",
     shutdown: "ปิดระบบ",
+    technicalDetails: "รายละเอียดทางเทคนิค",
   },
   shell: {
     helpMenu: {

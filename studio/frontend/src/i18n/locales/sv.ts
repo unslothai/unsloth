@@ -1020,6 +1020,7 @@ export const sv = {
     saving: "Sparar …",
     search: "Sök",
     shutdown: "Stäng av",
+    technicalDetails: "Tekniska detaljer",
   },
   shell: {
     helpMenu: {
