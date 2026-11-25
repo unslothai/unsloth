@@ -115,6 +115,47 @@ def _build_layout(model: Any, mod: Any, img_mask: Any, shapes: list, device: Any
     return lay
 
 
+def _prompt_tokens(pipe: Any, prompt: str) -> Optional[int]:
+    """Token count the pipeline's t2i encode gives ``prompt``, or None when the pipe does not expose it."""
+    template = getattr(pipe, "prompt_template_t2i", None)
+    processor = getattr(pipe, "processor", None)
+    tokenizer = getattr(processor, "tokenizer", None) or getattr(pipe, "tokenizer", None)
+    if not isinstance(template, str) or not callable(tokenizer):
+        return None
+    try:
+        return len(tokenizer(template.format(prompt or " "))["input_ids"])
+    except Exception:  # noqa: BLE001 - unknown tokenizer shape: the caller splits every prompt apart
+        return None
+
+
+def text_length_runs(pipe: Any, chunk: list) -> list:
+    """Split a chunk of ``(prompt, seed)`` jobs into consecutive runs whose prompts encode to the same length.
+
+    Qwen-Image-2.1 builds one joint layout and RoPE table per batch (stock diffusers reads row 0): a shorter prompt is
+    padded to the longest, and its target image then sits at the longest prompt's RoPE position instead of its own,
+    so it renders different pixels than it does alone. Rows of equal text length share the layout exactly. Order is
+    kept, so the images still come back in job order. Other pipelines get the chunk back unchanged."""
+    if len(chunk) < 2 or type(getattr(pipe, "transformer", None)).__name__ != _CLASS:
+        return [chunk]
+    if all(prompt == chunk[0][0] for prompt, _ in chunk):
+        return [chunk]
+    lengths: dict = {}
+    runs: list = []
+    previous = object()
+    for job in chunk:
+        prompt = job[0]
+        if prompt not in lengths:
+            lengths[prompt] = _prompt_tokens(pipe, prompt)
+        length = lengths[prompt]
+        # An unknown length matches nothing, not even another unknown one.
+        if runs and length is not None and length == previous:
+            runs[-1].append(job)
+        else:
+            runs.append([job])
+        previous = length
+    return runs
+
+
 def _segments(lay: _Layout, mod: Any) -> list:
     if lay._segments is None:
         lay._segments = mod._qwenimage21_prefix_segments(lay.image_ids, lay.prefix_len)
