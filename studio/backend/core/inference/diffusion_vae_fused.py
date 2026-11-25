@@ -1574,10 +1574,33 @@ def up_nearest2x(
     return out.permute(0, 3, 1, 2), t_o
 
 
+def _wan_folded_upsample(conv: Any, x: Any) -> Any:
+    """``conv(nearest_2x(frame))`` for every frame of ``x`` (b, c, t, h, w) as one ConvTranspose2d(k4, s2, p1) with the
+    3x3 taps summed (diffusion_vae_strips' FLUX / KL fold, same switch ``UNSLOTH_VAE_UPSAMPLE_FOLD`` and cards):
+    2.25x fewer MACs and no 2x map. Rounding-level, not bit-identical. None: the 2x path."""
+    from . import diffusion_vae_strips as strips
+
+    b, c, t, h, w = x.shape
+    frames = x.permute(0, 2, 1, 3, 4).reshape(b * t, c, h, w)
+    if not (strips._fold_allowed() and strips._fold_on(frames) and strips._fold_ok(conv, frames)):
+        return None
+    elems = conv.out_channels * 4 * h * w
+    full_max = strips._fold_full_max(frames)
+    full_max = strips.FOLD_FULL_MAX_ELEMS if full_max is None else full_max
+    if b * t != 1 and b * t * elems > full_max:
+        return None  # the strip fold writes one frame
+    _count("upsample_fold")
+    return strips._fold_upsample(conv, frames, conv.bias, full_max = full_max)
+
+
 def _fast_wan_resample(mod: Any) -> Any:
     import torch.nn.functional as F
 
     conv = mod.resample[1]
+    # Qwen-Image-2.1's upsample3d time_conv is its one-frame (Conv2d) specialisation: only the first chunk, which
+    # never runs it, takes this path; a later chunk (which its own stock forward refuses) stays stock.
+    time_2d = mod.mode == "upsample3d" and _conv_kind(getattr(mod, "time_conv", None)) == "2d"
+    stock = _stock_forward(mod)
 
     def fast(
         x: Any,
@@ -1586,6 +1609,8 @@ def _fast_wan_resample(mod: Any) -> Any:
     ) -> Any:
         if feat_idx is None:
             feat_idx = [0]
+        if time_2d and feat_cache is not None and feat_cache[feat_idx[0]] is not None:
+            return stock(x, feat_cache = feat_cache, feat_idx = feat_idx)
         b = x.shape[0]
         interleave = False
         t_bias = None
@@ -1604,6 +1629,13 @@ def _fast_wan_resample(mod: Any) -> Any:
                 feat_cache[idx] = new
                 interleave = True
             feat_idx[0] += 1
+        if not interleave:
+            out = _wan_folded_upsample(conv, y)
+            if out is not None:
+                t_o = y.shape[2]
+                return out.view(b, t_o, out.shape[1], out.shape[2], out.shape[3]).permute(
+                    0, 2, 1, 3, 4
+                )
         up, t_o = up_nearest2x(y, interleave, t_bias)
         out = F.conv2d(up, conv.weight, conv.bias, conv.stride, conv.padding)
         return out.view(b, t_o, out.shape[1], out.shape[2], out.shape[3]).permute(0, 2, 1, 3, 4)
@@ -1622,7 +1654,9 @@ def _wan_resample_ok(mod: Any) -> bool:
         and seq[0].mode in ("nearest", "nearest-exact")
         and tuple(float(f) for f in (seq[0].scale_factor or ())) == (2.0, 2.0)
         and isinstance(seq[1], torch.nn.Conv2d)
-        and (mod.mode == "upsample2d" or _conv_kind(getattr(mod, "time_conv", None)) == "3d")
+        and (
+            mod.mode == "upsample2d" or _conv_kind(getattr(mod, "time_conv", None)) in ("3d", "2d")
+        )
     )
 
 
