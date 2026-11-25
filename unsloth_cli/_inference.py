@@ -1103,7 +1103,7 @@ def _studio_token() -> Optional[str]:
 
 
 def _is_local(name: str) -> bool:
-    # Unsloth's model_identity.is_local(probe=True), bar ref: handles: path spelling or on disk.
+    # Mirrors Unsloth's model_identity.is_local(probe=True), minus ref: handles.
     name = name.strip()
     if name.startswith(("/", "\\", "~", ".")) or "\\" in name:
         return True
@@ -1113,7 +1113,7 @@ def _is_local(name: str) -> bool:
 
 
 def _path_key(path: str) -> str:
-    # Unsloth's own model_identity.path_key, so both sides agree on what one checkpoint is.
+    # Mirrors Unsloth's model_identity.path_key.
     return os.path.normcase(path).replace("\\", "/").rstrip("/")
 
 
@@ -1139,8 +1139,7 @@ class HttpChatBackend:
         self.gguf_variant: Optional[str] = None
         self.supports_images = False
         self._model_id = "default"
-        # (path, (checkpoint, quant)) of a path load: Unsloth answers an unloaded path with
-        # whatever is loaded, so each turn checks it is still served.
+        # (path, (checkpoint, quant)): Unsloth answers an unloaded path with whatever is loaded.
         self._watched: Optional[tuple] = None
 
     def _request(
@@ -1242,8 +1241,7 @@ class HttpChatBackend:
 
         if not loaded.get("is_gguf"):
             return model_id
-        # Routed by the load's own key (_model_key), so it names the quant that slot serves:
-        # a low-disk load falls back to a smaller one than asked.
+        # Ask by the load's own key: a low-disk load may serve a smaller quant than asked.
         key, variant = payload["model_path"], payload.get("gguf_variant")
         status = self._inference_status(f"{key}:{variant}" if variant else key) or {}
         served_id = str(status.get("active_model") or "")
