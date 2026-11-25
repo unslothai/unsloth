@@ -1,10 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Full finetuning with float32 masters and a 16-bit gather (native FSDP2 default when the config says
-bf16): the GDN decay parameters (A_log, dt_bias) must reach the forward in float32, as on one GPU
-(autocast leaves them float32), not rounded to bf16 by the all-gather. Two gloo ranks on CPU, tiny
-Qwen3-Next, loss and decay gradients compared against one process over a few steps."""
+"""Float32 masters + bf16 gather: GDN A_log / dt_bias must reach the forward in float32, as on one GPU.
+Two gloo ranks on CPU vs one process, tiny Qwen3-Next."""
 
 import json
 import os
@@ -153,7 +151,6 @@ def test_full_ft_float32_decay_params_gathered_as_float32(tmp_path):
     r = json.load(open(out, encoding = "utf-8"))
     print(r)
     assert r["n_decay"] > 0, r
-    # One GPU computes the decay from float32 masters; the bf16 gather rounded them.
     assert r["seen"] == {"A_log": ["torch.float32"], "dt_bias": ["torch.float32"]}, r
     assert r["unchecked"] == 0 and r["drift"] == 0.0, r
     assert r["loss_err"] < 2e-3 and r["grad_err"] < 5e-2, r
