@@ -493,9 +493,26 @@ def make_dataset_task(
                 "TARGET_KEY", repr(target_key)
             )
         )
+        if builder == "csv":
+            target.write("\ncsv_text = str\n")
     module = Path(target.name).stem
+    dumper = yaml.SafeDumper
+    if builder == "csv":
+        # A CSV field is text even when every value happens to look like a number.
+        # Only the prompt and answer need a converter; other columns can still infer types.
+        spec["dataset_kwargs"].update(
+            keep_default_na = False, na_values = [""], converters = dict.fromkeys((input_key, target_key), str)
+        )
+
+        class CsvTaskDumper(yaml.SafeDumper):
+            pass
+
+        CsvTaskDumper.add_representer(
+            type(str), lambda dumper, _: dumper.represent_scalar("!function", f"{module}.csv_text")
+        )
+        dumper = CsvTaskDumper
     (out_dir / f"{name}.yaml").write_text(
-        yaml.safe_dump(spec, sort_keys = False)
+        yaml.dump(spec, Dumper = dumper, sort_keys = False)
         + f"doc_to_target: !function {module}.doc_to_target\n"
         + f"process_results: !function {module}.process_results\n",
         encoding = "utf-8",

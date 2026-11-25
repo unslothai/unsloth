@@ -145,6 +145,21 @@ def test_local_dataset_scores_literal_answers_and_formats_fewshot(
     assert task.fewshot_context(second, num_fewshot = 1) == f"First? {display_answer}\n\nSecond?"
 
 
+def test_csv_task_preserves_prompt_and_gold_text(tmp_path):
+    tasks = pytest.importorskip("lm_eval.tasks")
+    data = tmp_path / "codes.csv"
+    data.write_text("item code,label,id\n001,007,1\n010,042,2\n011,NA,3\n", encoding = "utf-8")
+    names, includes = evalmod.resolve_tasks(str(data), "item code", "label", tmp_path / "tasks")
+    task = tasks.TaskManager(include_defaults = False, include_path = includes).load_task_or_group(names)["codes"]
+    first, _, last = task.test_docs()
+    assert task.doc_to_text(first) == "001"
+    assert task.doc_to_target(first) == "007"
+    assert task.process_results(first, ["007"])["exact_match"] == 1.0
+    assert task.process_results(first, ["7"])["exact_match"] == 0.0
+    assert task.doc_to_target(last) == "NA"
+    assert first["id"] == 1
+
+
 def _score_generation(tmp_path, rows, generation):
     tasks = pytest.importorskip("lm_eval.tasks")
     from lm_eval.api.instance import Instance
@@ -305,7 +320,7 @@ def test_dataset_task_avoids_explicit_group_name(tmp_path, dataset_first):
     )
     spec = _read_dataset_task(generated / "suite_2.yaml")
     assert spec["task"] == "suite_2"
-    assert spec["dataset_kwargs"] == {"data_files": str(data.resolve())}
+    assert spec["dataset_kwargs"]["data_files"] == str(data.resolve())
 
 
 @pytest.mark.parametrize("dataset_first", [True, False])
@@ -324,7 +339,7 @@ def test_dataset_tasks_avoid_explicit_yaml_numeric_suffixes(tmp_path, dataset_fi
     for name, path in zip(["qa_3", "qa_4"], data):
         spec = _read_dataset_task(tmp_path / "tmp" / "generated" / f"{name}.yaml")
         assert spec["task"] == name
-        assert spec["dataset_kwargs"] == {"data_files": str(path.resolve())}
+        assert spec["dataset_kwargs"]["data_files"] == str(path.resolve())
 
 
 @pytest.mark.parametrize("duplicate", ["yaml", "same_yaml", "plain_first", "plain_last"])
