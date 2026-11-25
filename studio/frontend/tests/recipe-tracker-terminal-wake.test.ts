@@ -153,7 +153,6 @@ test("job.completed during the poll sleep leaves the loop at once and keeps the 
     "sse:job.completed",
     ...COMPLETED_TAIL,
   ]);
-  // The sleep would otherwise hold the loop ~1100 ms more.
   assert.ok(run1.sseToNextStatusMs !== null && run1.sseToNextStatusMs < 300);
   assert.equal(run1.pendingTimers, 0);
 });

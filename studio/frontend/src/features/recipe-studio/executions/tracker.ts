@@ -265,7 +265,6 @@ export async function trackRecipeExecution({
         }
       }
       if (!done) {
-        // A terminal SSE event wakes this early.
         await sleepUntilNextPoll(1200);
       }
     }
