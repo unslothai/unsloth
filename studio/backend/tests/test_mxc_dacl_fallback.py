@@ -398,7 +398,7 @@ def test_probe_journal_is_forced_and_empty_when_not_replaying(monkeypatch, tmp_p
     seen = {}
 
     @contextlib.contextmanager
-    def lease(package_root = None):
+    def lease(package_root = None, pin = None):
         yield SimpleNamespace(info = SimpleNamespace(path = tmp_path / "wxc-exec.exe"))
 
     def run(argv, **kwargs):
@@ -567,3 +567,10 @@ def test_mxc_workloads_install_into_and_import_from_the_session_packages(tmp_pat
     assert "PATH" not in env, "a second PATH beside Path is ambiguous on Windows"
     assert env["Path"].split(os.pathsep)[0] == "/windows/system32"
     assert os.path.join(packages, "Scripts") in env["Path"].split(os.pathsep)
+
+
+@pytest.fixture(autouse = True)
+def _dacl_capable_pin(monkeypatch):
+    # The AppContainer + DACL tier exists only in the MXC 1.0.1 pin; 1.1.0 turns all of it off.
+    from core.inference import mxc_runtime
+    monkeypatch.setenv(mxc_runtime.PIN_ENV, mxc_runtime.LEGACY_PIN.version)

@@ -82,6 +82,9 @@ def _windows(
         ((2, 26100, 9999), _LEGACY),  # domain controller
         ((3, 20348, 2000), _LEGACY),  # Windows Server 2022
         (None, _PRIMARY),  # unreadable: the installer's probe decides
+        ((1, 26100, -1), _PRIMARY),  # only the update revision unreadable: the probe decides
+        ((3, 26100, -1), _LEGACY),  # ...but Windows Server is still known
+        ((1, 22631, -1), _LEGACY),  # ...and so is a release older than the table
     ],
 )
 def test_the_pin_follows_windows_built_in_container_support(monkeypatch, release, pin):
@@ -130,6 +133,44 @@ def test_a_fallback_recorded_on_an_unreadable_release_keeps_applying(monkeypatch
     assert mxc_runtime.selected_pin() is _LEGACY
 
 
+def test_an_unreadable_update_revision_keeps_the_product_type_and_build(monkeypatch):
+    from types import SimpleNamespace
+    import builtins
+
+    real_import = builtins.__import__
+
+    def no_winreg(name, *args, **kwargs):
+        if name == "winreg":
+            raise ImportError(name)
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(
+        mxc_runtime.sys,
+        "getwindowsversion",
+        lambda: SimpleNamespace(build = 26100, product_type = 3),
+        raising = False,
+    )
+    monkeypatch.setattr(builtins, "__import__", no_winreg)
+    assert mxc_runtime._windows_release() == (3, 26100, -1)
+
+
+def test_the_demotion_marker_is_written_whole(monkeypatch, tmp_path):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    monkeypatch.setattr(mxc_runtime, "_windows_release", lambda: (1, 26150, 7))
+    mxc_runtime.record_probe_demotion("tier: None")
+    assert [path.name for path in (tmp_path / "mxc-runtime").iterdir()] == ["pin-demoted.json"]
+
+
+@pytest.mark.parametrize(("pin", "enabled"), [(_PRIMARY, False), (_LEGACY, True)])
+def test_a_saved_dacl_choice_applies_only_to_the_legacy_pin(monkeypatch, pin, enabled):
+    from core.inference import mxc_policy
+
+    monkeypatch.setattr(mxc_runtime, "selected_pin", lambda: pin)
+    monkeypatch.setenv(mxc_policy.DACL_FALLBACK_ENV, "1")
+    # 1.1.0 has no AppContainer + DACL tier: no grants, no leases, no allowDaclMutation.
+    assert mxc_policy.dacl_fallback_enabled() is enabled
+
+
 def test_host_preparation_is_never_asked_of_the_primary_pin(monkeypatch):
     monkeypatch.setattr(mxc_runtime, "selected_pin", lambda: _PRIMARY)
     monkeypatch.setattr(
@@ -144,18 +185,37 @@ def test_host_preparation_is_never_asked_of_the_primary_pin(monkeypatch):
         ('{"tier": "base-container", "warnings": []}', 0, "base-container"),
         ('{"tier": "appcontainer-dacl"}', 0, "appcontainer-dacl"),
         ('{"warnings": []}', 0, None),  # 1.1.0 on Windows Server: exit 0, no tier
-        ("not json", 0, None),
-        ('{"tier": "base-container"}', 1, None),
+        ('{"tier": ""}', 0, None),
     ],
 )
 def test_probe_tier_reads_the_tier_wxc_reports(monkeypatch, tmp_path, stdout, code, tier):
     from types import SimpleNamespace
+
+    calls = []
+
+    def run(*args, **kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(returncode = code, stdout = stdout, stderr = "")
+
+    monkeypatch.setattr(mxc_runtime, "_run_wxc_probe", run)
+    assert mxc_runtime.probe_tier(tmp_path, pin = _PRIMARY) == tier
+    # The tier needs no journal, and the installer may be elevated: Studio's is never replayed here.
+    assert calls[0]["replay_journal"] is False and calls[0]["pin"] is _PRIMARY
+
+
+@pytest.mark.parametrize(
+    ("stdout", "code"),
+    [("not json", 0), ("[]", 0), ('{"tier": "base-container"}', 1), ("", 0xC0000005)],
+)
+def test_a_probe_without_a_report_is_no_verdict(monkeypatch, tmp_path, stdout, code):
+    from types import SimpleNamespace
     monkeypatch.setattr(
         mxc_runtime,
         "_run_wxc_probe",
-        lambda *_a, **_k: SimpleNamespace(returncode = code, stdout = stdout, stderr = ""),
+        lambda *_a, **_k: SimpleNamespace(returncode = code, stdout = stdout, stderr = "boom"),
     )
-    assert mxc_runtime.probe_tier(tmp_path) == tier
+    with pytest.raises(mxc_runtime.MxcRuntimeUnavailable):
+        mxc_runtime.probe_tier(tmp_path)
 
 
 @pytest.mark.skipif(

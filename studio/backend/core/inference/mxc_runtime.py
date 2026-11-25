@@ -232,18 +232,22 @@ def _expected_architecture() -> str:
 
 
 def _windows_release() -> tuple[int, int, int] | None:
-    """(product type, build, UBR) of this Windows; None when it cannot be read."""
+    """(product type, build, UBR) of this Windows; UBR is -1 when only it is unreadable, None when nothing is."""
+    try:
+        version = sys.getwindowsversion()
+        product_type, build = int(version.product_type), int(version.build)
+    except (ValueError, TypeError, AttributeError):
+        return None
     try:
         import winreg
-
-        version = sys.getwindowsversion()
         with winreg.OpenKey(
             winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows NT\CurrentVersion"
         ) as key:
             ubr = int(winreg.QueryValueEx(key, "UBR")[0])
-        return int(version.product_type), int(version.build), ubr
-    except (OSError, ValueError, TypeError, AttributeError, ImportError):
-        return None
+    except (OSError, ValueError, TypeError, ImportError):
+        # Product type and build still rule out Windows Server and releases older than the table.
+        ubr = -1
+    return product_type, build, ubr
 
 
 def builtin_container_supported(release: tuple[int, int, int] | None) -> bool | None:
@@ -254,6 +258,8 @@ def builtin_container_supported(release: tuple[int, int, int] | None) -> bool | 
     if product_type != 1:  # not VER_NT_WORKSTATION: Windows Server has no BaseContainer
         return False
     if build in BUILTIN_CONTAINER_MIN_UBR:
+        if ubr < 0:
+            return None  # the update revision decides, and it is unreadable: the installer's probe does
         return ubr >= BUILTIN_CONTAINER_MIN_UBR[build]
     if build < min(BUILTIN_CONTAINER_MIN_UBR):
         return False
@@ -286,18 +292,25 @@ def record_probe_demotion(reason: str) -> None:
     label = _release_label(_windows_release())
     path = _demoted_marker_path()
     path.parent.mkdir(parents = True, exist_ok = True)
-    path.write_text(
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    temporary.write_text(
         json.dumps({"windows": label, "from": PRIMARY_PIN.version, "reason": reason[:500]}),
         encoding = "utf-8",
     )
+    os.replace(temporary, path)  # a reader never sees half a marker
+
+
+def forced_pin() -> MxcPin | None:
+    """The pin UNSLOTH_MXC_PIN names, if it names one of PINS; anything else is ignored."""
+    override = (os.environ.get(PIN_ENV) or "").strip()
+    return next((pin for pin in PINS if override == pin.version), None)
 
 
 def selected_pin() -> MxcPin:
     """MXC 1.1.0 where Windows has the built-in container, else 1.0.1 and its AppContainer + DACL tier."""
-    override = (os.environ.get(PIN_ENV) or "").strip()
-    for pin in PINS:
-        if override == pin.version:
-            return pin
+    forced = forced_pin()
+    if forced is not None:
+        return forced
     if sys.platform != "win32":
         return PRIMARY_PIN
     release = _windows_release()
@@ -363,11 +376,11 @@ def _validate_host_prep(package_root: Path, pin: MxcPin | None = None) -> Runtim
     return _validate_artifact(package_root, _WXC_HOST_PREP_NAME, "prep", pin)
 
 
-def selected_runtime(*, package_root: Path | None = None) -> RuntimeInfo:
+def selected_runtime(*, package_root: Path | None = None, pin: MxcPin | None = None) -> RuntimeInfo:
     if sys.platform != "win32":
         raise MxcRuntimeUnavailable("the MXC runtime is Windows-only")
     _expected_architecture()
-    return _validate_runtime(package_root or _installed_package_root())
+    return _validate_runtime(package_root or _installed_package_root(), pin)
 
 
 def selected_host_prep(*, package_root: Path | None = None) -> RuntimeInfo:
@@ -521,8 +534,11 @@ def _acquire(select, package_root: Path | None, name: str) -> RuntimeLease:
         return RuntimeLease(info = info, _guard = guard)
 
 
-def acquire_runtime(*, package_root: Path | None = None) -> RuntimeLease:
-    return _acquire(selected_runtime, package_root, _WXC_EXEC_NAME)
+def acquire_runtime(*, package_root: Path | None = None, pin: MxcPin | None = None) -> RuntimeLease:
+    def select(*, package_root: Path | None) -> RuntimeInfo:
+        return selected_runtime(package_root = package_root, pin = pin)
+
+    return _acquire(select, package_root, _WXC_EXEC_NAME)
 
 
 def acquire_host_prep(*, package_root: Path | None = None) -> RuntimeLease:
@@ -536,13 +552,14 @@ def _run_wxc_probe(
     *,
     replay_journal: bool = True,
     timeout: float = HOST_PREP_PROBE_SECONDS,
+    pin: MxcPin | None = None,
 ):
     # --probe reaps orphaned ACEs first: point it at Studio's journal, not %LOCALAPPDATA%'s.
     env = dict(os.environ if env is None else env)
     with tempfile.TemporaryDirectory(prefix = "unsloth-mxc-empty-journal-") as empty:
         # An elevated probe must not replay a user-writable journal: it names the ACLs to rewrite.
         env["MXC_DACL_STATE_DIR"] = str(dacl_state_dir()) if replay_journal else empty
-        with acquire_runtime(package_root = package_root) as lease:
+        with acquire_runtime(package_root = package_root, pin = pin) as lease:
             return subprocess.run(
                 [str(lease.info.path), "--probe"],
                 stdin = subprocess.DEVNULL,
@@ -558,6 +575,20 @@ def _run_wxc_probe(
             )
 
 
+def dacl_recovery_clean(completed) -> bool:
+    """Whether a `wxc-exec --probe` run replayed the DACL journal without a restore error."""
+    stderr = completed.stderr or ""
+    # main.rs prints "DACL recovery: ... N error(s)" only when there was work, or "DACL recovery failed".
+    report = re.search(r"DACL recovery: .*?(\d+) error\(s\)", stderr)
+    # Deleting a journal that is already gone is not a restore error: a concurrent run finished it.
+    already_gone = len(re.findall(r"^\s*remove .*\(os error 2\)\s*$", stderr, re.MULTILINE))
+    return (
+        completed.returncode == 0
+        and "DACL recovery failed" not in stderr
+        and (report is None or int(report.group(1)) <= already_gone)
+    )
+
+
 def recover_dacl_state(env: dict[str, str] | None = None) -> bool:
     """Replay the DACL journal now; True only when wxc-exec reports no recovery error."""
     try:
@@ -566,18 +597,11 @@ def recover_dacl_state(env: dict[str, str] | None = None) -> bool:
     except Exception as exc:  # noqa: BLE001 - an unknown outcome is not a clean one
         logger.warning("MXC DACL recovery did not run: %s", exc)
         return False
-    stderr = completed.stderr or ""
-    # main.rs prints "DACL recovery: ... N error(s)" only when there was work, or "DACL recovery failed".
-    report = re.search(r"DACL recovery: .*?(\d+) error\(s\)", stderr)
-    # Deleting a journal that is already gone is not a restore error: a concurrent run finished it.
-    already_gone = len(re.findall(r"^\s*remove .*\(os error 2\)\s*$", stderr, re.MULTILINE))
-    clean = (
-        completed.returncode == 0
-        and "DACL recovery failed" not in stderr
-        and (report is None or int(report.group(1)) <= already_gone)
-    )
+    clean = dacl_recovery_clean(completed)
     if not clean:
-        logger.warning("MXC DACL recovery reported a problem: %s", stderr.strip()[-500:])
+        logger.warning(
+            "MXC DACL recovery reported a problem: %s", (completed.stderr or "").strip()[-500:]
+        )
     return clean
 
 
@@ -605,13 +629,28 @@ def probe_host_prep_steps(
     )
 
 
-def probe_tier(package_root: Path, env: dict[str, str] | None = None) -> str | None:
-    """The tier `wxc-exec --probe` reports ("base-container", "appcontainer-dacl", ...); None when it names none."""
-    completed = _run_wxc_probe(package_root, env, timeout = DACL_RECOVERY_SECONDS)
-    if completed.returncode != 0:
-        return None
+def probe_tier(
+    package_root: Path,
+    env: dict[str, str] | None = None,
+    *,
+    pin: MxcPin | None = None,
+) -> str | None:
+    """The tier `wxc-exec --probe` reports ("base-container", "appcontainer-dacl", ...); None when it names none.
+
+    Raises MxcRuntimeUnavailable when the probe fails or prints no report: that is no verdict at all.
+    """
+    # The installer may run elevated, and the tier needs no journal: never replay Studio's here.
+    completed = _run_wxc_probe(
+        package_root, env, replay_journal = False, timeout = DACL_RECOVERY_SECONDS, pin = pin
+    )
     try:
-        tier = json.loads(completed.stdout).get("tier")
-    except (ValueError, AttributeError):
-        return None
+        report = json.loads(completed.stdout)
+    except ValueError:
+        report = None
+    if completed.returncode != 0 or not isinstance(report, dict):
+        raise MxcRuntimeUnavailable(
+            f"wxc-exec --probe exited {completed.returncode} without a report: "
+            f"{(completed.stderr or completed.stdout or '').strip()[-300:]}"
+        )
+    tier = report.get("tier")
     return tier if isinstance(tier, str) and tier else None

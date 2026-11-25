@@ -58,7 +58,13 @@ class MxcPolicyError(RuntimeError):
 
 
 def dacl_fallback_enabled() -> bool:
-    """Opt-in to the AppContainer tier (temporarily adds ACEs); env var if set, else the saved choice."""
+    """Opt-in to the AppContainer tier (temporarily adds ACEs); env var if set, else the saved choice.
+
+    Always off on MXC 1.1.0: it has no AppContainer + DACL tier, so a choice saved for 1.0.1 or 0.8.0 must
+    not add grants, lease ACEs or ask for allowDaclMutation there.
+    """
+    if not mxc_runtime.selected_pin().has_host_prep:
+        return False
     if DACL_FALLBACK_ENV in os.environ:
         return os.environ[DACL_FALLBACK_ENV].strip() == "1"
     try:

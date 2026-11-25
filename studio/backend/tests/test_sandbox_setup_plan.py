@@ -427,8 +427,10 @@ def test_windows_with_the_built_in_container_only_installs_mxc(windows, installe
     if installed:
         assert plan.action is None and "live check did not pass" in plan.reason
     else:
-        assert plan.action == plan_mod.WINDOWS_RUNTIME
+        # windows-setup, the action Chat and Settings already offer, with only the install step.
+        assert plan.action == plan_mod.WINDOWS_SETUP
         assert plan.steps == (("python", "install_mxc_prebuilt.py"),)
+        assert "MXC runtime is not installed" in plan.reason
 
 
 def test_windows_without_the_runtime_installs_then_prepares(windows):

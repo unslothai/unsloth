@@ -452,7 +452,15 @@ def _windows_plan() -> SetupPlan:
                 platform = sys.platform,
                 reason = "MXC is installed, but its live check did not pass.",
             )
-        return windows_runtime_plan()
+        step = tuple(windows_runtime_install_command())
+        # The same action as the fallback setup, so Chat and Settings offer it, minus consent and elevation.
+        return SetupPlan(
+            platform = sys.platform,
+            action = WINDOWS_SETUP,
+            steps = (step,),
+            manual_command = powershell_command((step,)),
+            reason = "The MXC runtime is not installed.",
+        )
     installed = windows_runtime_installed()
     missing = None
     if installed:
