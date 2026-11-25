@@ -177,13 +177,10 @@ if platform.system() == "Windows":
 
 
 def _amd_smi_allowed() -> bool:
-    """Windows is opt-in only (UNSLOTH_ENABLE_AMD_SMI=1), as in studio/backend/utils/hardware/amd.py:
-    amd-smi.exe pops a UAC/DiskPart prompt RunAsInvoker cannot suppress, even with a HIP SDK.
+    """Never on Windows: amd-smi.exe elevates a child and pops a UAC/DiskPart prompt RunAsInvoker
+    cannot suppress, with or without a HIP SDK.
     The gfx arch still arrives via the forwarded --rocm-gfx, so prebuilt selection is unaffected."""
-    if platform.system() != "Windows":
-        return True
-    flag = os.environ.get("UNSLOTH_ENABLE_AMD_SMI", "").strip().lower()
-    return flag in ("1", "true", "yes", "on")
+    return platform.system() != "Windows"
 
 
 windows_hidden_subprocess_kwargs = _core.windows_hidden_subprocess_kwargs
@@ -3122,8 +3119,6 @@ def detect_host(*, probe_rocm_with_nvidia: bool = False) -> HostInfo:
             return None
 
         _win_probes = [(["hipinfo"], lambda out: "gcnarchname" in out.lower())]
-        if _amd_smi_allowed():
-            _win_probes.append((["amd-smi", "list"], _amd_smi_has_gpu))
         for _cmd, _check in _win_probes:
             _exe = _resolve_exe(_cmd[0])
             if not _exe:

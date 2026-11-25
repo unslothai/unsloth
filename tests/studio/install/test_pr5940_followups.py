@@ -238,51 +238,28 @@ def test_amd_smi_allowed_on_linux_regardless(module):
 
 
 @_AMD_SMI_GATE_MODULES
-def test_amd_smi_skipped_on_windows_without_hip_sdk(module):
-    assert _amd_smi_allowed_under(module, "Windows", hipinfo_present = False, env = {}) is False
-
-
-@_AMD_SMI_GATE_MODULES
-def test_amd_smi_skipped_on_windows_with_hip_sdk(module):
+@pytest.mark.parametrize("hipinfo_present", [False, True], ids = ["no-hip-sdk", "hip-sdk"])
+@pytest.mark.parametrize("flag", [None, "1", "0"], ids = ["unset", "opt-in", "opt-out"])
+def test_amd_smi_never_runs_on_windows(module, hipinfo_present, flag):
     # A HIP SDK used to open the gate, which popped DiskPart prompts during every update.
-    assert _amd_smi_allowed_under(module, "Windows", hipinfo_present = True, env = {}) is False
+    env = {} if flag is None else {"UNSLOTH_ENABLE_AMD_SMI": flag}
+    assert _amd_smi_allowed_under(module, "Windows", hipinfo_present, env) is False
 
 
-@_AMD_SMI_GATE_MODULES
-@pytest.mark.parametrize("flag", ["1", "true", "YES", "on"])
-def test_amd_smi_opt_in_forces_on_windows(module, flag):
-    env = {"UNSLOTH_ENABLE_AMD_SMI": flag}
-    assert _amd_smi_allowed_under(module, "Windows", hipinfo_present = False, env = env) is True
-
-
-@_AMD_SMI_GATE_MODULES
-def test_amd_smi_opt_out_on_windows_with_hip_sdk(module):
-    env = {"UNSLOTH_ENABLE_AMD_SMI": "0"}
-    assert _amd_smi_allowed_under(module, "Windows", hipinfo_present = True, env = env) is False
-
-
-def test_installer_amd_smi_gates_match_the_runtime():
-    # The installers and studio/backend/utils/hardware/amd.py must agree, or an update brings the prompt back.
+def test_windows_installers_never_run_amd_smi():
     for src in (_PREBUILT_PATH, _PYSTACK_PY):
         text = src.read_text(encoding = "utf-8")
         assert (
             "_external_hipinfo_on_path" not in text
         ), f"{src.name} gates amd-smi on a HIP SDK again"
     for ps in (_INSTALL_PS1, _SETUP_PS1):
-        gate = [
-            ln for ln in ps.read_text(encoding = "utf-8").splitlines() if "$amdSmiAllowed = " in ln
-        ]
-        assert gate, f"{ps.name} missing amd-smi gate"
-        assert all(
-            "HipSdkInstalled" not in ln for ln in gate
-        ), f"{ps.name} gates amd-smi on a HIP SDK again"
+        text = ps.read_text(encoding = "utf-8")
+        assert not re.search(r"(?i)amd-?smi", text), f"{ps.name} runs amd-smi again"
 
 
-def test_ps_installers_gate_amd_smi_on_windows():
+def test_ps_installers_skip_the_venv_hipinfo():
     for ps in (_INSTALL_PS1, _SETUP_PS1):
         text = ps.read_text(encoding = "utf-8")
-        assert "UNSLOTH_ENABLE_AMD_SMI" in text, f"{ps.name} missing amd-smi opt-in gate"
-        assert "amdSmiAllowed" in text, f"{ps.name} missing amd-smi gate variable"
         assert (
             "Test-HipinfoIsVenvInternal" in text
         ), f"{ps.name} missing venv-internal hipinfo exclusion helper"

@@ -8116,49 +8116,6 @@ exit 0
         return (Exit-InstallFailure "Managed Python is unavailable at $VenvPython (recorded base home: $recordedBaseHome)")
     }
 
-    # ── Helper: run amd-smi without triggering a UAC elevation prompt ──
-    # __COMPAT_LAYER=RunAsInvoker stops amd-smi auto-elevating; WMI fallback still resolves
-    # the arch.
-    function Invoke-AmdSmiNoElevate {
-        param(
-            [Parameter(Mandatory = $true, Position = 0)][string]$Exe,
-            [Parameter(Position = 1)][string[]]$SmiArgs = @(),
-            [int]$TimeoutSec = 30
-        )
-        # RunAsInvoker blocks auto-elevation; the timeout bounds a flaky amd-smi (30s, as amd.py).
-        $prevCompat = [Environment]::GetEnvironmentVariable('__COMPAT_LAYER', 'Process')
-        $env:__COMPAT_LAYER = 'RunAsInvoker'
-        try {
-            # [Process]::Start, not Start-Process: PS 5.1 leaves .ExitCode $null and detection dies.
-            $psi = New-Object System.Diagnostics.ProcessStartInfo
-            $psi.FileName = $Exe
-            $psi.Arguments = ($SmiArgs -join ' ')
-            $psi.UseShellExecute = $false
-            $psi.RedirectStandardOutput = $true
-            $psi.RedirectStandardError = $true
-            $psi.CreateNoWindow = $true
-            $proc = [System.Diagnostics.Process]::Start($psi)
-            $outTask = $proc.StandardOutput.ReadToEndAsync()
-            $errTask = $proc.StandardError.ReadToEndAsync()
-            if (-not $proc.WaitForExit($TimeoutSec * 1000)) {
-                try { $proc.Kill() } catch {}
-                $global:LASTEXITCODE = 124
-                return ""
-            }
-            $global:LASTEXITCODE = $proc.ExitCode
-            return ($outTask.Result + "`n" + $errTask.Result)
-        } catch {
-            $global:LASTEXITCODE = 1
-            return ""
-        } finally {
-            if ($null -eq $prevCompat) {
-                Remove-Item Env:__COMPAT_LAYER -ErrorAction SilentlyContinue
-            } else {
-                $env:__COMPAT_LAYER = $prevCompat
-            }
-        }
-    }
-
     # ── A driverless nvidia-smi exits 0 listing no GPU, so require a "GPU <n>:" row. ──
     # 124 means Invoke-NvidiaSmiBounded killed the probe; recorded so the banner skips a
     # second query.
@@ -8696,16 +8653,14 @@ main()
     function Test-OtherVendorAdapterPresent {
         param($Scan = $null)
         if ($null -eq $Scan) { $Scan = Invoke-BoundedVideoControllerScan }
-        # AMD evidence the AMD route finds without WMI (override, the installer's forwarded arch, HIP SDK,
-        # opted-in amd-smi) vetoes too.
+        # AMD evidence the AMD route finds without WMI (override, the installer's forwarded arch, HIP SDK)
+        # vetoes too.
         if ("$env:UNSLOTH_ROCM_GFX_ARCH".Trim() -or "$env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF".Trim()) { return $true }
         try {
             if (Get-Command hipinfo -CommandType Application -ErrorAction SilentlyContinue) { return $true }
             foreach ($hipEnv in @($env:HIP_PATH, $env:HIP_PATH_57, $env:ROCM_PATH)) {
                 if ($hipEnv -and (Test-Path -LiteralPath (Join-Path $hipEnv "bin\hipinfo.exe"))) { return $true }
             }
-            if ($env:UNSLOTH_ENABLE_AMD_SMI -match '^(?i)(1|true|yes|on)$' -and
-                (Get-Command amd-smi -ErrorAction SilentlyContinue)) { return $true }
         } catch {}
         # Same classification as the Intel route, which ignores PNP ID and status.
         if ($Scan.Ok) {
@@ -9128,56 +9083,8 @@ main()
                 }
             } catch {}
         }
-        # amd-smi pops a UAC/DiskPart prompt RunAsInvoker cannot suppress, even with a HIP SDK: opt-in only, as amd.py.
-        # Never for the notice-only probe: hipinfo / WMI name the card.
-        $amdSmiAllowed = -not $script:StudioMuteLines -and ($env:UNSLOTH_ENABLE_AMD_SMI -match '^(?i)(1|true|yes|on)$')
-        if (-not $HasROCm -and $amdSmiAllowed) {
-            $amdSmiExe = Get-Command "amd-smi" -ErrorAction SilentlyContinue
-            if ($amdSmiExe) {
-                try {
-                    $smiOut = Invoke-AmdSmiNoElevate $amdSmiExe.Source @('list')
-                    if ($LASTEXITCODE -eq 0 -and $smiOut -match "(?im)^GPU\s*[:\[]\s*\d") {
-                        $HasROCm = $true
-                        # gfx tokens in enumeration order, picked via HIP_VISIBLE_DEVICES.
-                        # Beside NVIDIA (a ROCm route) HIP applies a CUDA mask too, as setup.ps1's Resolve-VisibleGpuIndex reads it.
-                        $_smiVisIdx = if ($env:HIP_VISIBLE_DEVICES -match '^\d') { [int]($env:HIP_VISIBLE_DEVICES -split ',')[0] } elseif ($env:ROCR_VISIBLE_DEVICES -match '^\d') { [int]($env:ROCR_VISIBLE_DEVICES -split ',')[0] } elseif ($ProbeAmdBesideNvidia -and $env:CUDA_VISIBLE_DEVICES -match '^\d') { [int]($env:CUDA_VISIBLE_DEVICES -split ',')[0] } else { 0 }
-                        # Attempt 1: newer amd-smi versions embed the gfx arch in list output.
-                        $_smiGfxTokens = @([regex]::Matches($smiOut, "(?i)\b(gfx\d+[a-z]?)\b") | ForEach-Object { $_.Groups[1].Value.ToLower() })
-                        # Market names, when this amd-smi prints them, indexed like the gfx
-                        # tokens above. Banner only; the arch that selects the wheel is never
-                        # taken from here.
-                        $_smiNames = @([regex]::Matches($smiOut, "(?im)Market.?Name\s*[:\|]\s*([^\r\n]+)") | ForEach-Object { $_.Groups[1].Value.Trim() })
-                        if ($_smiGfxTokens.Count -gt 0) {
-                            $ROCmGfxArch = if ($_smiVisIdx -lt $_smiGfxTokens.Count) { $_smiGfxTokens[$_smiVisIdx] } else { $_smiGfxTokens[0] }
-                            $ROCmGpuLabel = "AMD ROCm ($ROCmGfxArch)"
-                            if ($_smiNames.Count -eq $_smiGfxTokens.Count) {
-                                $ROCmGpuName = if ($_smiVisIdx -lt $_smiNames.Count) { $_smiNames[$_smiVisIdx] } else { $_smiNames[0] }
-                            }
-                        } else {
-                            # Attempt 2: 'static --asic' exposes the GFX target on ROCm 6+.
-                            $smiAsicOut = ""
-                            try { $smiAsicOut = Invoke-AmdSmiNoElevate $amdSmiExe.Source @('static','--asic') } catch {}
-                            $_asicGfxTokens = @([regex]::Matches($smiAsicOut, "(?i)\b(gfx\d+[a-z]?)\b") | ForEach-Object { $_.Groups[1].Value.ToLower() })
-                            $_asicNames = @([regex]::Matches($smiAsicOut, "(?im)Market.?Name\s*[:\|]\s*([^\r\n]+)") | ForEach-Object { $_.Groups[1].Value.Trim() })
-                            if ($_asicGfxTokens.Count -gt 0) {
-                                $ROCmGfxArch = if ($_smiVisIdx -lt $_asicGfxTokens.Count) { $_asicGfxTokens[$_smiVisIdx] } else { $_asicGfxTokens[0] }
-                                $ROCmGpuLabel = "AMD ROCm ($ROCmGfxArch)"
-                                if ($_asicNames.Count -eq $_asicGfxTokens.Count) {
-                                    $ROCmGpuName = if ($_smiVisIdx -lt $_asicNames.Count) { $_asicNames[$_smiVisIdx] } else { $_asicNames[0] }
-                                }
-                            } elseif ($_asicNames.Count -gt 0) {
-                                $ROCmGpuName = if ($_smiVisIdx -lt $_asicNames.Count) { $_asicNames[$_smiVisIdx] } else { $_asicNames[0] }
-                                $ROCmGpuLabel = "AMD ROCm ($ROCmGpuName)"
-                            } else {
-                                $ROCmGpuLabel = "AMD ROCm"
-                            }
-                        }
-                    }
-                } catch {}
-            }
-        }
         # This scan fills the LABEL the arch inference reads, so its gate is load-bearing:
-        # widening it turned a CPU install into a ROCm one on hosts amd-smi had already
+        # widening it turned a CPU install into a ROCm one on hosts hipinfo had already
         # claimed. CIM, not Get-WmiObject, which PowerShell 7 removed: the catch below is
         # silent, so a supported Radeon named only by Windows took the CPU path there, and
         # the report-only peer scan cannot undo that. Same class and fields as every other
@@ -9326,17 +9233,6 @@ main()
                     }
                 } catch {}
             }
-            if (-not $ROCmVersion -and $amdSmiAllowed) {
-                $amdSmiVer = Get-Command "amd-smi" -ErrorAction SilentlyContinue
-                if ($amdSmiVer) {
-                    try {
-                        $smiVerOut = Invoke-AmdSmiNoElevate $amdSmiVer.Source @('version')
-                        if ($LASTEXITCODE -eq 0 -and $smiVerOut -match 'ROCm version:\s*(\d+\.\d+)') {
-                            $ROCmVersion = $Matches[1]
-                        }
-                    } catch {}
-                }
-            }
         }
     }
     } finally { $script:StudioMuteLines = $false }
@@ -9433,7 +9329,7 @@ main()
             $ROCmGfxArch = $_mixedPicked; $ROCmGpuLabel = "AMD ROCm ($ROCmGfxArch)"; $ROCmGpuName = $null
             $AmdHasGpuWheels = $true
         }
-        # UNSLOTH_ROCM_GFX_ARCH names an arch, not a card: hipinfo, amd-smi or WMI must see one.
+        # UNSLOTH_ROCM_GFX_ARCH names an arch, not a card: hipinfo or WMI must see one.
         $_amdSeen = $HasROCm -or @($amdAdapters).Count -gt 0 -or @($_hipAllArches + $_smiGfxTokens + $_asicGfxTokens).Count -gt 0
         $MixedHostRoute = Get-MixedHostTorchRoute -AmdHasGpuWheels ($AmdHasGpuWheels -and $_amdSeen) `
             -ForceRocm (Test-RocmTorchExplicitlyRequested) -CudaMaskHidesNvidia $nvMaskHidesAll `
@@ -9530,7 +9426,6 @@ main()
         # Above every AMD branch: true only when AMD gets no GPU wheel, so those would end on CPU.
         step "gpu" $IntelGpuDisplay "Green"
     } elseif ($HasROCm -and -not $ROCmUnsupportedGfxArch) {
-        # amd-smi can set $HasROCm with only a market name and no gfx arch.
         step "gpu" $ROCmGpuDisplay
         $hipSdkPath = if ($env:HIP_PATH) { $env:HIP_PATH } elseif ($env:ROCM_PATH) { $env:ROCM_PATH } else { "on system PATH" }
         substep "HIP SDK: $hipSdkPath"

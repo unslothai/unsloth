@@ -4975,10 +4975,10 @@ class TestSetupPs1ShadowingParity:
         helper = helper[: helper.index("\n}\n")]
         for _mask in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
             assert _mask in helper
-        # hipinfo, amd-smi list, amd-smi static --asic, WMI name inference.
+        # WMI name inference (Windows never runs amd-smi).
         assert (
             source.count("Resolve-VisibleGpuIndex $") + source.count("Resolve-VisibleGpuIndex ")
-            >= 4
+            >= 2
         )
         assert "$_hipVisIdx = if (" not in source
         assert "$visGpu = if (" not in source
@@ -6052,15 +6052,10 @@ _INSTALL_PS1_PATH = PACKAGE_ROOT / "install.ps1"
 class TestStrixHaloGfxArchDetection:
     """setup.ps1 / install.ps1 gfx arch detection for Strix Halo / iGPU (HIP runtime only, no hipinfo)."""
 
-    def test_amd_smi_static_asic_attempted_in_setup(self):
-        """setup.ps1 must try 'amd-smi static --asic' when list output lacks gfx arch."""
-        source = _SETUP_PS1_PATH.read_text(encoding = "utf-8")
-        assert "static --asic" in source
-
-    def test_amd_smi_static_asic_attempted_in_install(self):
-        """install.ps1 must try 'amd-smi static --asic' when list output lacks gfx arch."""
-        source = _INSTALL_PS1_PATH.read_text(encoding = "utf-8")
-        assert "static --asic" in source
+    def test_amd_smi_never_runs_in_windows_installers(self):
+        """amd-smi pops a UAC/DiskPart prompt on Windows, so neither installer runs it."""
+        for path in (_SETUP_PS1_PATH, _INSTALL_PS1_PATH):
+            assert "static','--asic" not in path.read_text(encoding = "utf-8")
 
     def test_env_var_override_in_setup(self):
         """setup.ps1 must honour UNSLOTH_ROCM_GFX_ARCH as a manual arch override."""
@@ -6110,14 +6105,6 @@ class TestStrixHaloGfxArchDetection:
         # $HasROCm = $true must not appear within 300 chars of the WMI call.
         wmi_context = source[wmi_idx : wmi_idx + 300]
         assert "$HasROCm = $true" not in wmi_context
-
-    def test_gfx_arch_regex_parses_from_amd_smi_output(self):
-        """Both files must use the gfx\\d+[a-z]? regex to parse arch from amd-smi output."""
-        for path in (_SETUP_PS1_PATH, _INSTALL_PS1_PATH):
-            source = path.read_text(encoding = "utf-8")
-            assert (
-                "gfx\\d+" in source or r"gfx\d+" in source
-            ), f"gfx arch regex not found in {path.name}"
 
 
 class TestHipSdkEnvPathResolution:

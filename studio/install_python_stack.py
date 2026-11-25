@@ -1674,12 +1674,9 @@ def _amd_smi_env() -> dict[str, str] | None:
 
 
 def _amd_smi_allowed() -> bool:
-    """Windows is opt-in only (UNSLOTH_ENABLE_AMD_SMI=1), as in studio/backend/utils/hardware/amd.py:
-    amd-smi.exe pops a UAC/DiskPart prompt RunAsInvoker cannot suppress, even with a HIP SDK."""
-    if platform.system() != "Windows":
-        return True
-    flag = os.environ.get("UNSLOTH_ENABLE_AMD_SMI", "").strip().lower()
-    return flag in ("1", "true", "yes", "on")
+    """Never on Windows: amd-smi.exe elevates a child and pops a UAC/DiskPart prompt RunAsInvoker
+    cannot suppress, with or without a HIP SDK."""
+    return platform.system() != "Windows"
 
 
 # Memoized: _ensure_rocm_torch() runs twice on Linux; the disagreement warning prints once.
@@ -12239,38 +12236,23 @@ def install_python_stack() -> int:
         _ensure_xpu_triton()
 
     if IS_WINDOWS and not NO_TORCH and not _has_usable_nvidia_gpu():
-        import re as _re_win
-
-        def _win_amd_smi_has_gpu(stdout: str) -> bool:
-            return bool(_re_win.search(r"(?im)^gpu\s*[:\[]\s*\d", stdout))
-
+        # hipinfo only: Windows amd-smi pops a UAC/DiskPart prompt (_amd_smi_allowed).
         _win_amd_gpu = False
-        for _wcmd, _check_fn in (
-            (["hipinfo"], lambda out: "gcnarchname" in out.lower()),
-            (["amd-smi", "list"], _win_amd_smi_has_gpu),
-        ):
-            _wexe = shutil.which(_wcmd[0])
-            if not _wexe:
-                continue
-            # Skip amd-smi without a HIP SDK (UAC prompt); only a best-effort note is lost.
-            if _wcmd[0] == "amd-smi" and not _amd_smi_allowed():
-                continue
+        _hipinfo = shutil.which("hipinfo")
+        if _hipinfo:
             try:
                 _wr = subprocess.run(
-                    [_wexe, *_wcmd[1:]],
+                    [_hipinfo],
                     stdout = subprocess.PIPE,
                     stderr = subprocess.DEVNULL,
                     text = True,
                     encoding = "utf-8",
                     errors = "replace",
                     timeout = 10,
-                    env = _amd_smi_env() if _wcmd[0] == "amd-smi" else None,
                 )
+                _win_amd_gpu = _wr.returncode == 0 and "gcnarchname" in _wr.stdout.lower()
             except Exception:
-                continue
-            if _wr.returncode == 0 and _check_fn(_wr.stdout):
-                _win_amd_gpu = True
-                break
+                pass
         if _win_amd_gpu and not _rocm_windows_torch_installed:
             _note(
                 "AMD GPU detected but ROCm PyTorch could not be auto-installed. "

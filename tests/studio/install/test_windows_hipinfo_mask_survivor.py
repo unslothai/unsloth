@@ -3,7 +3,7 @@
 """Windows hipinfo is a HIP application, so HIP_VISIBLE_DEVICES / CUDA_VISIBLE_DEVICES have
 already filtered and renumbered what it lists. Indexing that list with the mask again picked
 the wrong card: three AMD GPUs with HIP_VISIBLE_DEVICES=1,2 list two devices, and index 1
-named physical GPU 2 instead of GPU 1. amd-smi is not filtered and keeps the mask index."""
+named physical GPU 2 instead of GPU 1."""
 
 from __future__ import annotations
 
@@ -85,9 +85,8 @@ def test_hipinfo_under_a_mask_picks_the_first_listed_device(monkeypatch, env):
     assert m._active_rocm_gfx_target(routed) == "gfx1201"
     # A mask still blocks the automatic Vulkan route.
     assert m._should_auto_vulkan_for_amd_windows(routed) is False
-    # amd-smi lists every physical device, so the mask index still applies there.
-    unfiltered = detect(monkeypatch, "amd-smi", amd_smi_listing(PHYSICAL), env)
-    assert unfiltered.rocm_gfx_target == "gfx1201"
+    # Windows never runs amd-smi (UAC/DiskPart prompt), even when it is on PATH and opted in.
+    assert detect(monkeypatch, "amd-smi", amd_smi_listing(PHYSICAL), env).has_rocm is False
 
 
 def test_hipinfo_keeps_indexing_a_rocr_mask(monkeypatch):
