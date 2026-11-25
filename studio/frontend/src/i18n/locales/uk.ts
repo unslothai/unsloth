@@ -4450,6 +4450,7 @@ export const uk = {
       lr: "LR",
       hardware: "Обладнання",
       vram: "VRAM",
+      vramTotal: "Усього {size}",
       noGpu: "GPU не виявлено",
       hfToken: "Токен HF",
       saved: "Збережено",
