@@ -16,7 +16,7 @@ import {
   fenceCacheStats,
 } from "../src/features/chat/lib/chat-files.ts";
 
-// The uncached extraction, as it was before the cache: the reference every cached answer must equal.
+// Uncached reference extraction.
 function reference(markdown: string) {
   if (!/```|~~~|^(?: {4}|\t)/m.test(markdown)) return [];
   const blocks: { language: string | null; source: string }[] = [];
@@ -70,7 +70,6 @@ test("cached blocks equal the uncached parse on first and repeated reads", () =>
       `hit: ${JSON.stringify(text)}`,
     );
   }
-  // Equal text built at runtime (a new string object) hits the same entry.
   const rebuilt = ["Here:\n```py", "thon\nprint(1)\n```\n"].join("");
   assert.deepEqual(extractCodeFences(rebuilt), reference(rebuilt));
 });
