@@ -766,15 +766,35 @@ def probe_h3_video_attention(p: GpuProfile) -> dict:
     out[keys[2]] = lever(strided_install_backend(backend))
     # Where Auto runs INT8 attention, how many denoise steps stay on 16-bit attention and on which kernel (#19344). A
     # change to either moves the clip time on every card, so it must show up here as an explicit golden diff.
-    exact_on = gate.auto and gate.exact_steps > 0
-    out[keys[4]] = lever(
-        exact_on,
-        cfg = {"steps": gate.exact_steps, "kernel": h3_int8_exact_kernel(backend)}
-        if exact_on
-        else None,
-        why = None if exact_on else ("int8_every_step" if on else "int8_off"),
-    )
+    out[keys[4]] = _h3_exact_policy_cell(gate, backend)
     return out
+
+
+# H3 video's attention head dim (hidden 7168 / 56 heads): the INT8 kernel serving check the load's race makes
+_H3_HEAD_DIM = 128
+
+
+def _h3_exact_policy_cell(gate: Any, backend: Any) -> dict:
+    """What the H3 load installs, not what the gate allows: the exact start runs only where Auto engages INT8 attention,
+    which takes (video.py) the strided processor on the picked backend, then (install_family_auto) a CUDA-kernel race,
+    never run on ROCm. Inactive profiles record steps=0, kernel=none with the step that stops it. The race's own timing
+    verdict is runtime, so an active cell means every load-time precondition holds."""
+    from core.inference import diffusion_int8_attention as i8
+    from core.inference.video_minimax_h3_attn import h3_int8_exact_kernel, strided_install_backend
+
+    if not gate.auto:
+        why = "forced_every_step" if gate.forced else "int8_off"
+    elif gate.exact_steps <= 0:
+        why = "int8_every_step"
+    elif not strided_install_backend(backend):
+        why = "inactive:no_strided_processor"
+    elif i8._is_rocm():
+        why = "inactive:rocm_no_race"
+    elif i8.implementation(0, _H3_HEAD_DIM) != "cuda":
+        why = "inactive:no_cuda_kernel"
+    else:
+        return lever(True, cfg = {"steps": gate.exact_steps, "kernel": h3_int8_exact_kernel(backend)})
+    return lever(False, cfg = {"steps": 0, "kernel": "none"}, why = why)
 
 
 _H3I_CODES = (
@@ -2261,6 +2281,8 @@ FUTURE_ARCH_EXCLUSIONS: dict = {
     + " (Triton stand-in tiles)",
     # The fallback compiles for the card's own arch, and the NVRTC the profiles declare (13.0) targets sm75..sm121.
     "sm130.any.int8_attn.serving.*": "the pinned NVRTC cannot target sm130 (the fallback is gated on the toolchain)",
+    "sm130.minimax-h3.int8_exact_policy": "no INT8 attention kernel serves sm130 (see int8_attn.serving), so Auto "
+    "engages no INT8 attention and installs no exact start",
     "sm1[23][01].any.grouped_int8_gemm.tiles": _NEEDS.format("sm121 / sm130")
     + " (spill-measured grouped tiles)",
     "sm1[123][01].any.nvfp4.*": _NEEDS.format("sm110 / sm121 / sm130")
@@ -2414,6 +2436,29 @@ def test_h3_exact_start_policy_is_a_golden_cell(key, golden, monkeypatch):
     # the per-load env override never reaches the golden (the matrix runs with a clean policy env)
     monkeypatch.setenv(h3.H3_INT8_EXACT_STEPS_ENV, "0")
     assert cell() == base
+
+
+@pytest.mark.parametrize(
+    "key, active",
+    [("l4", True), ("rtx3090", True), ("t4", False), ("gfx1151", False)],
+)
+def test_h3_exact_policy_cell_records_what_the_load_installs(key, active, golden):
+    """The exact start installs only where Auto engages INT8 attention: T4 has no strided processor on its default
+    backend and ROCm never runs the H3 race, so their cells are the inactive steps=0, kernel=none (the gate alone
+    allows 4 steps on both), while L4 and the 3090 keep their 4 steps."""
+    from core.inference import video_minimax_h3_attn as h3
+
+    p = PROFILES[key]
+    with clean_policy_env(), mock_profile(p):
+        cell = probe_h3_video_attention(p)["minimax-h3.int8_exact_policy"]
+        gate, _ = _h3_video_default_gate(p)
+    assert gate.auto and gate.exact_steps == h3.H3_INT8_EXACT_START_STEPS, gate
+    assert cell == golden["cells"][f"{key}.minimax-h3.int8_exact_policy"], cell
+    if active:
+        assert cell["on"] and f"steps={h3.H3_INT8_EXACT_START_STEPS}" in cell["cfg"], cell
+    else:
+        assert not cell["on"] and cell["cfg"] == "kernel=none,steps=0", cell
+        assert cell["why"].startswith("inactive:"), cell
 
 
 def test_incident_r5_18248_h3_video_int8_attention_auto_by_default():
