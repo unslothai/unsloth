@@ -6186,6 +6186,7 @@ export const es = {
     back: "Atrás",
     continue: "Continuar",
     skipSetup: "Omitir configuración",
+    outsideAgain: "Haz clic fuera otra vez para cerrar",
     getStarted: "Empezar",
     progress: "Paso {current} de {total}",
     welcome: {

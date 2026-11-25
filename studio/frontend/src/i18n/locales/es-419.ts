@@ -6616,6 +6616,7 @@ export const es419 = {
     back: "Atrás",
     continue: "Continuar",
     skipSetup: "Omitir configuración",
+    outsideAgain: "Haz clic afuera otra vez para cerrar",
     getStarted: "Comenzar",
     progress: "Paso {current} de {total}",
     welcome: {

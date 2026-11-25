@@ -5942,6 +5942,7 @@ export const en = {
     back: "Back",
     continue: "Continue",
     skipSetup: "Skip setup",
+    outsideAgain: "Click outside again to close",
     getStarted: "Get started",
     progress: "Step {current} of {total}",
     welcome: {

@@ -6212,6 +6212,7 @@ export const he = {
     back: "חזרה",
     continue: "המשך",
     skipSetup: "דילוג על ההגדרה",
+    outsideAgain: "יש ללחוץ שוב מחוץ לחלון כדי לסגור",
     getStarted: "מתחילים",
     progress: "שלב {current} מתוך {total}",
     welcome: {

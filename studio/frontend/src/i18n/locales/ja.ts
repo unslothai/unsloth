@@ -6062,6 +6062,7 @@ export const ja = {
     back: "戻る",
     continue: "続ける",
     skipSetup: "セットアップをスキップ",
+    outsideAgain: "もう一度外側をクリックすると閉じます",
     getStarted: "はじめる",
     progress: "ステップ {current}/{total}",
     welcome: {

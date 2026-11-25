@@ -6124,6 +6124,7 @@ export const hi = {
     back: "वापस",
     continue: "जारी रखें",
     skipSetup: "सेटअप छोड़ें",
+    outsideAgain: "बंद करने के लिए फिर से बाहर क्लिक करें",
     getStarted: "शुरू करें",
     progress: "चरण {current} / {total}",
     welcome: {

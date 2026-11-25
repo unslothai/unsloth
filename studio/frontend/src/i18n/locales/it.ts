@@ -6182,6 +6182,7 @@ export const it = {
     back: "Indietro",
     continue: "Continua",
     skipSetup: "Salta configurazione",
+    outsideAgain: "Fai di nuovo clic all'esterno per chiudere",
     getStarted: "Inizia",
     progress: "Passo {current} di {total}",
     welcome: {
