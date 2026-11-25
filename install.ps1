@@ -10336,8 +10336,8 @@ main()
 
     $_desktopMinVer = if ($env:UNSLOTH_DESKTOP_BACKEND_VERSION) { $env:UNSLOTH_DESKTOP_BACKEND_VERSION.Trim() } else { "" }
     $_unslothDesktopInstallSpec = if ($_desktopMinVer) { "unsloth>=$_desktopMinVer" } else { $null }
-    $_unslothReleaseInstallSpec = if ($_unslothDesktopInstallSpec) { $_unslothDesktopInstallSpec } else { "unsloth>=2026.11.11" }
-    $_unslothZooInstallSpec = "unsloth-zoo>=2026.11.11"
+    $_unslothReleaseInstallSpec = if ($_unslothDesktopInstallSpec) { $_unslothDesktopInstallSpec } else { "unsloth>=2026.11.12" }
+    $_unslothZooInstallSpec = "unsloth-zoo>=2026.11.12"
     # typer 0.29 imports pydantic, so `unsloth studio setup` would hold pydantic_core's .pyd open while
     # the Studio requirements re-pin pydantic, and Windows refuses to replace a loaded .pyd.
     $_typerCapSpec = "typer<0.29"

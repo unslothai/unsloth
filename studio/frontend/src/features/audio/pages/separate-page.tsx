@@ -48,12 +48,16 @@ import { STEM_SAVE_VOICE_TARGET, STEM_SEND_TARGETS } from "../send-targets";
 import { saveAudio } from "../save-audio";
 import {
   SEPARATE_MAX_SECONDS,
+  separateAnnouncement,
+  separateEmptyTitle,
   separatePresentation,
+  separateVerb,
 } from "../separate-policy";
 import {
   SEPARATION_STEMS_BY_FAMILY,
   type SeparationGroup,
   groupSeparationClips,
+  separationGroupSummary,
   stemLabel,
 } from "../separation-stems";
 import { useAudioSeparateStore } from "../stores/audio-separate-store";
@@ -79,7 +83,10 @@ import { TtsFooter, TtsRailFields } from "./tts-workspace";
 export function separateOutputStems(
   family: string | null | undefined,
   modelId: string | null | undefined,
+  output: string | null = null,
 ): readonly string[] | null {
+  // A loaded filter names its one output (MossFormer2's depends on the file loaded).
+  if (output) return [output];
   const known = family ? SEPARATION_STEMS_BY_FAMILY[family] : undefined;
   if (known) return known.stems;
   const stems = audioCppModelFor(modelId)?.stems;
@@ -101,7 +108,9 @@ type RailProps = Omit<
 function StemChips({ stems }: { stems: readonly string[] }) {
   return (
     <div className="grid gap-1">
-      <span className="text-ui-13 font-medium text-foreground">Outputs</span>
+      <span className="text-ui-13 font-medium text-foreground">
+        {stems.length === 1 ? "Output" : "Outputs"}
+      </span>
       <p className="text-ui-12 leading-normal text-muted-foreground">
         {stems.map(stemLabel).join(" · ")}
       </p>
@@ -126,21 +135,22 @@ function SeparateInputs({
   const outputs = separateOutputStems(
     pageModelLoaded ? separate.family : null,
     pageModelId,
+    pageModelLoaded ? separate.output : null,
   );
   return (
     <AudioHistoryProvider value={historyClips}>
       <div data-tour="audio-separate-source">
         <AudioSourceInput
           id="separate-source"
-          label="Track"
-          hint="Converted to 44.1 kHz automatically. Up to 10 minutes."
+          label="Recording"
+          hint="A song, a voice memo or any audio. Up to 10 minutes."
           value={separate.source}
           onChange={setSource}
           disabled={disabled}
           allowSavedVoice={false}
           usesFirstSeconds={null}
           expiredMessage={SEPARATE_TRACK_EXPIRED_MESSAGE}
-          recordHint="Play the track near the mic, up to 10 minutes."
+          recordHint="Record up to 10 minutes."
           // A second under the cap: the timer fires late, and the server allows no overrun.
           maxRecordSeconds={SEPARATE_MAX_SECONDS - 1}
           handleRef={separate.sourceHandle}
@@ -150,7 +160,7 @@ function SeparateInputs({
       {outputs ? <StemChips stems={outputs} /> : null}
       {pageModelLoaded ? null : (
         <p className="text-ui-12 leading-normal text-muted-foreground">
-          Loading a separation model replaces the model in the main slot.
+          Loading a model here replaces the model in the main slot.
         </p>
       )}
       {pageModelLoaded && separate.cpuWarning ? (
@@ -167,12 +177,14 @@ export function SeparateRail({
   historyClips,
   pageModelLoaded,
   pageModelId,
+  audioOptionSpecs,
   ...props
 }: RailProps & {
   separate: SeparateGeneration;
   historyClips: readonly AudioGalleryClip[];
   pageModelLoaded: boolean;
   pageModelId: string | null;
+  audioOptionSpecs: ComponentProps<typeof TtsRailFields>["audioOptionSpecs"];
 }) {
   const disabled = props.busy === "generating";
   return (
@@ -182,7 +194,7 @@ export function SeparateRail({
       prompt=""
       setPrompt={() => {}}
       samplingControls={false}
-      audioOptionSpecs={[]}
+      audioOptionSpecs={audioOptionSpecs}
       inputs={
         <SeparateInputs
           separate={separate}
@@ -228,6 +240,7 @@ export function SeparateFooter({
     generationPresentation,
     generationPhase,
     separate.reloading,
+    separate.pendingRun?.goal ?? separate.goal,
   );
   const ready =
     props.ttsLoaded && props.blocker === null && props.busy === null;
@@ -430,9 +443,7 @@ export function SeparateOutput({
   useEffect(() => {
     if (fresh && selected) setFocusedGroup(selected.groupId);
   }, [fresh, selected]);
-  const announcement = lastResult
-    ? `Separated into ${lastResult.stems} stem${lastResult.stems === 1 ? "" : "s"}.`
-    : "";
+  const announcement = lastResult ? separateAnnouncement(lastResult.stems) : "";
 
   const pinGroup = (group: SeparationGroup, pinned: boolean) => {
     for (const clip of group.stems) void handleTogglePin(clip.id, pinned);
@@ -547,9 +558,9 @@ export function SeparateOutput({
               </span>
               <span className="text-ui-12 text-muted-foreground">
                 {pendingRun.model
-                  ? `Separating with ${audioModelLabel(pendingRun.model)}…`
-                  : "Separating…"}{" "}
-                The stems appear here when they are ready.
+                  ? `${separateVerb(pendingRun.goal)} with ${audioModelLabel(pendingRun.model)}…`
+                  : `${separateVerb(pendingRun.goal)}…`}{" "}
+                The result appears here when it is ready.
               </span>
             </span>
           </output>
@@ -592,11 +603,11 @@ export function SeparateOutput({
         ) : (
           <ClipsCardEmpty
             icon={audioWorkflowTab("separate").icon}
-            title="Stems will appear here"
+            title={separateEmptyTitle(separate.goal)}
             text={
               modelReady
-                ? "Add a track and press Generate."
-                : "Load a separation model, add a track, and press Generate."
+                ? "Add a recording and press Generate."
+                : "Load a model, add a recording, and press Generate."
             }
             actions={
               modelReady ? null : (
@@ -651,9 +662,7 @@ export function SeparateOutput({
                         title={group.model}
                       >
                         {audioModelLabel(group.model)} ·{" "}
-                        {group.complete
-                          ? `${group.stems.length} stems`
-                          : `${group.stems.length} of ${group.expectedStems} stems`}
+                        {separationGroupSummary(group)}
                       </span>
                     </span>
                     <span className={CLIP_ROW_DURATION}>

@@ -86,6 +86,7 @@ from .models._utils import (
 )
 from .models.mistral_format import raise_if_merging_mistral_format_view
 from .models.inkling2 import (
+    inkling2_lora_gguf_adapter,
     is_inkling2_config,
     raise_if_merging_inkling2,
     save_inkling2_merged_16bit,
@@ -6619,6 +6620,7 @@ def _unsloth_save_lora_gguf(
     model_name = _model_basename(base_model_id)
 
     base_config_dir = None
+    inkling2_dir = None
     # Save the adapter: an isolated temp dir for a hub push, else save_directory itself, wrapped so it is always cleaned up.
     if push_to_hub:
         lora_dir = tempfile.mkdtemp(prefix = "unsloth-lora-gguf-")
@@ -6646,7 +6648,19 @@ def _unsloth_save_lora_gguf(
             )
 
         out_gguf = os.path.join(lora_dir, f"{model_name}-lora-{outtype}.gguf")
-        cmd = [sys.executable, converter, lora_dir, "--outfile", out_gguf, "--outtype", outtype]
+        converter_input = lora_dir
+        if is_inkling2_config(getattr(model, "config", None)):
+            # The converter maps Inkling 2's original checkpoint names, PEFT saves transformers names.
+            converter_input = inkling2_dir = inkling2_lora_gguf_adapter(model, lora_dir)
+        cmd = [
+            sys.executable,
+            converter,
+            converter_input,
+            "--outfile",
+            out_gguf,
+            "--outtype",
+            outtype,
+        ]
         # Pass --trust-remote-code only when the model really came from custom code (the approved load decision), not merely because its config carries an auto_map entry.
         loaded_via_remote_code = _loaded_via_remote_code(model)
         # --base-model-id's strict AutoConfig rejects an older config (Ling-3.0-tiny's int kda_lower_bound, #13948); --base falls back to config.json.
@@ -6751,6 +6765,8 @@ def _unsloth_save_lora_gguf(
             shutil.rmtree(lora_dir, ignore_errors = True)
         if base_config_dir is not None:
             shutil.rmtree(base_config_dir, ignore_errors = True)
+        if inkling2_dir is not None:
+            shutil.rmtree(inkling2_dir, ignore_errors = True)
 
 
 @_model_parallel_refuses_save("push_to_hub_ggml")

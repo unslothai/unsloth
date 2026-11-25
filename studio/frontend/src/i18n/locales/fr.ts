@@ -882,7 +882,7 @@ export const fr = {
   chatMenu: {
     more: "Options de la discussion",
     copy: "Copier",
-    addScheduledTask: "Ajouter une tâche planifiée…",
+    addScheduledTask: "Ajouter une tâche planifiée",
     compact: "Compacter la conversation",
     compactEmpty: "Rien à compacter pour le moment",
     compactUnsupported: "Le compactage nécessite un modèle GGUF ou MLX prenant en charge les outils",
@@ -5123,6 +5123,7 @@ export const fr = {
     model: {
       label: "Modèle de traduction",
       fast: "Rapide",
+      balanced: "Équilibré",
       quality: "Meilleure qualité",
       chat: "Modèle de chat",
       recommended: "Recommandés",
@@ -5144,11 +5145,11 @@ export const fr = {
       toneFormal: "Formel",
       toneCasual: "Familier",
       auto: "Traduire pendant la saisie",
-      autoDescription: "Démarre une fois le modèle chargé. La saisie ne lance jamais de téléchargement.",
+      autoDescription: "Démarre automatiquement une fois le modèle chargé.",
       saveHistory: "Enregistrer l'historique",
       saveHistoryDescription: "Conservé uniquement dans ce navigateur.",
       showPrompt: "Afficher le prompt",
-      showPromptDescription: "Consultez les instructions exactes envoyées au modèle.",
+      showPromptDescription: "Voir les instructions exactes envoyées au modèle.",
     },
     history: {
       title: "Historique",
@@ -6210,7 +6211,6 @@ export const fr = {
     back: "Retour",
     continue: "Continuer",
     skipSetup: "Passer la configuration",
-    outsideAgain: "Cliquez à nouveau à l'extérieur pour fermer",
     getStarted: "Commencer",
     progress: "Étape {current} sur {total}",
     welcome: {

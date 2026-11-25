@@ -426,3 +426,13 @@ def can_resume_run(run: dict, *, resource_cache: Optional[dict[str, bool]] = Non
     if cache_key not in resource_cache:
         resource_cache[cache_key] = resource_provenance_allows_resume(config)
     return resource_cache[cache_key]
+
+
+def checked_resume_checkpoint(path_value):
+    """The checkpoint to hand trainer.train, re-checked right before it: transformers joins each
+    weight index name onto the folder as is, and the folder may have been edited since start."""
+    if path_value:
+        from utils.security.file_security import escaping_weight_references
+        if escaping_weight_references(path_value):
+            raise ValueError("This model's weight index names files outside its folder.")
+    return path_value

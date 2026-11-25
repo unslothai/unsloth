@@ -882,7 +882,7 @@ export const ar = {
   chatMenu: {
     more: "خيارات المحادثة",
     copy: "نسخ",
-    addScheduledTask: "إضافة مهمة مجدولة…",
+    addScheduledTask: "إضافة مهمة مجدولة",
     compact: "ضغط المحادثة",
     compactEmpty: "لا يوجد ما يمكن ضغطه بعد",
     compactUnsupported: "ضغط المحادثة يتطلب نموذج GGUF أو MLX يدعم الأدوات",
@@ -5039,6 +5039,7 @@ export const ar = {
     model: {
       label: "نموذج الترجمة",
       fast: "سريع",
+      balanced: "متوازن",
       quality: "أفضل جودة",
       chat: "نموذج الدردشة",
       recommended: "موصى به",
@@ -5060,11 +5061,11 @@ export const ar = {
       toneFormal: "رسمي",
       toneCasual: "غير رسمي",
       auto: "الترجمة أثناء الكتابة",
-      autoDescription: "تبدأ بعد تحميل النموذج. الكتابة لا تبدأ أي تنزيل أبدًا.",
+      autoDescription: "يبدأ تلقائيًا عند تحميل النموذج.",
       saveHistory: "حفظ السجل",
       saveHistoryDescription: "يُحفظ في هذا المتصفح فقط.",
       showPrompt: "إظهار الموجّه",
-      showPromptDescription: "اطّلع على التعليمات المرسلة إلى النموذج بنصّها.",
+      showPromptDescription: "اطّلع على التعليمات الدقيقة المرسلة إلى النموذج.",
     },
     history: {
       title: "السجل",
@@ -6126,7 +6127,6 @@ export const ar = {
     back: "رجوع",
     continue: "متابعة",
     skipSetup: "تخطي الإعداد",
-    outsideAgain: "انقر خارج النافذة مرة أخرى للإغلاق",
     getStarted: "ابدأ",
     progress: "الخطوة {current} من {total}",
     welcome: {

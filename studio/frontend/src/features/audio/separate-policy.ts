@@ -3,9 +3,12 @@
 
 // Free of app imports so the node test runner can load it directly.
 
+import type { SeparationGoal } from "./audio-cpp-catalog";
 import type { AudioGenerationPresentation } from "./audio-page-policy";
 import type { AudioSourceSelection } from "./audio-run-request";
 import type { AudioToolPanel } from "./tools/types";
+
+export const SEPARATE_EXPIRED_MESSAGE = "This recording expired. Add it again.";
 
 /** Mirrors SEPARATE_MAX_SECONDS in studio/backend/routes/inference.py. */
 export const SEPARATE_MAX_SECONDS = 600;
@@ -50,11 +53,11 @@ export function separateBlocker({
     };
   }
   if (sourceError) return { kind: "source-error", reason: sourceError };
-  if (!source) return { kind: "source", reason: "Add a track to separate." };
+  if (!source) return { kind: "source", reason: "Add a recording." };
   if (sourceExpired) {
     return {
       kind: "source-expired",
-      reason: "This track expired. Add it again.",
+      reason: SEPARATE_EXPIRED_MESSAGE,
     };
   }
   if (
@@ -63,7 +66,7 @@ export function separateBlocker({
   ) {
     return {
       kind: "too-long",
-      reason: `Separate tracks up to 10 minutes long. This one is ${clock(source.durationS)}.`,
+      reason: `Separate takes recordings up to 10 minutes long. This one is ${clock(source.durationS)}.`,
     };
   }
   return null;
@@ -98,9 +101,12 @@ export function separateCpuWarning(
   device: string | null | undefined,
 ): string | null {
   if (device !== "cpu" || !family) return null;
-  return ROFORMER_FAMILIES.has(family)
-    ? "RoFormer models are very slow on the CPU: expect minutes for a short clip. Load into GPU when you can."
-    : "Separating on the CPU is slower; expect about a second per second of audio.";
+  if (ROFORMER_FAMILIES.has(family)) {
+    return "RoFormer models are very slow on the CPU: expect minutes for a short clip. Load into GPU when you can.";
+  }
+  return Object.hasOwn(GPU_SECONDS_PER_SECOND, family)
+    ? "Separating on the CPU is slower; expect about a second per second of audio."
+    : "This model is slower on the CPU. Load into GPU when you can.";
 }
 
 export interface OverlapValue {
@@ -120,24 +126,78 @@ export function overlapReloads(
   return (lastOverlap ?? true) !== overlap;
 }
 
+const GOAL_COPY: Record<
+  SeparationGoal,
+  { verb: string; emptyTitle: string; oneFile: boolean }
+> = {
+  stems: { verb: "Separating", emptyTitle: "Stems will appear here", oneFile: false },
+  voice: {
+    verb: "Isolating the voice",
+    emptyTitle: "The clean voice will appear here",
+    oneFile: true,
+  },
+  restore: {
+    verb: "Restoring",
+    emptyTitle: "The restored audio will appear here",
+    oneFile: true,
+  },
+  speakers: {
+    verb: "Separating",
+    emptyTitle: "Each speaker will appear here",
+    oneFile: false,
+  },
+};
+
+const goalCopy = (goal: SeparationGoal | null | undefined) =>
+  GOAL_COPY[goal ?? "stems"];
+
+export function separateVerb(goal: SeparationGoal | null | undefined): string {
+  return goalCopy(goal).verb;
+}
+
+export function separateEmptyTitle(
+  goal: SeparationGoal | null | undefined,
+): string {
+  return goalCopy(goal).emptyTitle;
+}
+
+/** Spec options an s2s model takes, over any tool panel's; undefined when there are none. */
+export function separateRunOptions<T>(
+  toolOptions: Readonly<Record<string, T>> | undefined,
+  specOptions: Readonly<Record<string, T>>,
+): Record<string, T> | undefined {
+  const merged = { ...(toolOptions ?? {}), ...specOptions };
+  return Object.keys(merged).length > 0 ? merged : undefined;
+}
+
+export function separateAnnouncement(files: number): string {
+  if (files === 1) return "Saved the result.";
+  return `Separated into ${files} stems.`;
+}
+
 export function separatePresentation(
   presentation: AudioGenerationPresentation | null,
   phase: string | null,
   reloading: boolean,
+  goal: SeparationGoal | null = null,
 ): AudioGenerationPresentation | null {
   if (!presentation) return null;
+  const verb = separateVerb(goal);
   switch (phase) {
     case "preparing":
-      return { ...presentation, status: "Preparing the track…" };
+      return { ...presentation, status: "Preparing the recording…" };
     case "generating":
       return {
         ...presentation,
         status: reloading
-          ? "Reloading the model with the new overlap, then separating…"
-          : "Separating…",
+          ? `Reloading the model with the new overlap, then ${verb.toLowerCase()}…`
+          : `${verb}…`,
       };
     case "finishing":
-      return { ...presentation, status: "Saving stems…" };
+      return {
+        ...presentation,
+        status: goalCopy(goal).oneFile ? "Saving…" : "Saving stems…",
+      };
     case "stopping":
       return { ...presentation, status: "Stopping…" };
     default:

@@ -882,7 +882,7 @@ export const ko = {
   chatMenu: {
     more: "채팅 옵션",
     copy: "복사",
-    addScheduledTask: "예약 작업 추가…",
+    addScheduledTask: "예약 작업 추가",
     compact: "대화 압축",
     compactEmpty: "아직 압축할 내용이 없습니다",
     compactUnsupported: "대화 압축에는 도구를 지원하는 GGUF 또는 MLX 모델이 필요합니다",
@@ -5028,6 +5028,7 @@ export const ko = {
     model: {
       label: "번역 모델",
       fast: "빠름",
+      balanced: "균형",
       quality: "최고 품질",
       chat: "채팅 모델",
       recommended: "추천",
@@ -5049,11 +5050,11 @@ export const ko = {
       toneFormal: "격식체",
       toneCasual: "일상체",
       auto: "입력하는 대로 번역",
-      autoDescription: "모델이 로드되면 시작됩니다. 입력만으로는 다운로드가 시작되지 않습니다.",
+      autoDescription: "모델이 로드되면 자동으로 시작됩니다.",
       saveHistory: "기록 저장",
       saveHistoryDescription: "이 브라우저에만 보관됩니다.",
       showPrompt: "프롬프트 표시",
-      showPromptDescription: "모델에 전송되는 정확한 지시문을 확인합니다.",
+      showPromptDescription: "모델에 보내는 정확한 지시를 확인합니다.",
     },
     history: {
       title: "기록",
@@ -6115,7 +6116,6 @@ export const ko = {
     back: "뒤로",
     continue: "계속",
     skipSetup: "설정 건너뛰기",
-    outsideAgain: "닫으려면 바깥쪽을 한 번 더 클릭하세요",
     getStarted: "시작하기",
     progress: "{total}단계 중 {current}단계",
     welcome: {

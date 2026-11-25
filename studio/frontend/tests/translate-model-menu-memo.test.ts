@@ -28,7 +28,9 @@ test("the page passes only stable props, so memo bails out on keystrokes and str
     ["onChange", "pickTranslateModel"],
     ["onPickCustom", "pickCustomTranslateModel"],
     ["downloaded", "downloaded"],
+    ["offered", "offeredModels"],
   ]);
+  assert.match(page, /const offeredModels = useMemo\(/);
   for (const name of ["pickTranslateModel", "pickCustomTranslateModel"]) {
     assert.match(
       page,

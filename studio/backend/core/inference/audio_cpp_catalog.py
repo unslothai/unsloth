@@ -257,12 +257,14 @@ def _row(
     names = (model_id, folder, *(Path(f.path).name for f in files if f.path.endswith(".gguf")))
     workflows: list[str] = []
     task, size, smallest, reason = "", None, None, _NO_FAMILY
+    goal = None
     if family:
         try:
             policy = acm.family_policy(family, spec or None, names, display)
             bindings = policy.workflows
             workflows = [w for w in AUDIO_WORKFLOW_IDS if w in bindings]
             task = policy.task if policy.task in _TASKS else ""
+            goal = policy.separation.goal if policy.separation is not None else None
             reason = policy.unsupported or (None if workflows else _NO_PAGE)
             packaged = None
             # An unread listing (offline, a late answer) says nothing about what the repo publishes.
@@ -316,6 +318,7 @@ def _row(
         display_name = display,
         family = family,
         task = task,
+        separation_goal = goal,
         workflows = [] if reason else workflows,
         description = _text(spec.get("description"), 280),
         languages = None if languages == ["auto"] else languages,
