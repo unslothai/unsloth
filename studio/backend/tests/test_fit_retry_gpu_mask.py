@@ -194,9 +194,9 @@ _KEEPS_PLANNED_MASK = {
 
 @pytest.mark.parametrize("kwargs", _KEEPS_PLANNED_MASK.values(), ids = _KEEPS_PLANNED_MASK.keys())
 def test_the_retry_keeps_the_planned_mask(monkeypatch, tmp_path, kwargs):
-    _backend, launches, _error = _load(monkeypatch, tmp_path, returncodes = [1, None], **kwargs)
-    assert len(launches) >= 2
-    assert all(_mask(launch) == "0" for launch in launches)
+    _backend, launches, error = _load(monkeypatch, tmp_path, returncodes = [1, None], **kwargs)
+    assert error is None
+    assert [_mask(launch) for launch in launches] == ["0", "0"]
 
 
 @pytest.mark.parametrize(
