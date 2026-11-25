@@ -70,11 +70,10 @@ def _masters(model):
 def _train(
     model,
     step_fn,
-    split = None,
+    foreach = None,
 ):
-    opt = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad], lr = 1e-3)
-    if split is not None:
-        split(opt)
+    # The sharded run: a plain user-built foreach AdamW over model.parameters(), no Unsloth group split.
+    opt = torch.optim.AdamW(model.parameters(), lr = 1e-3, foreach = foreach)
     losses, decay_grads = [], None
     for step in range(STEPS):
         opt.zero_grad()
@@ -118,9 +117,15 @@ def _worker(rank, world, port, out):
         ref_losses, ref_grads = _train(ref, _grads)
         native.shard_model(model, native.FSDP2Config())
         seen, drift, handles = _decay_seen(model, masters)
-        losses, grads = _train(model, _grads, native._split_mixed_param_groups)
+        from torch.distributed.tensor import DTensor
+
+        losses, grads = _train(model, _grads, foreach = True)
         for h in handles:
             h.remove()
+        decay = [p for n, p in model.named_parameters() if n.endswith(DECAY)]
+        local = torch.cat([p.to_local().detach().flatten() for p in decay])
+        copies = [torch.zeros_like(local) for _ in range(world)]
+        dist.all_gather(copies, local)
         grad_err = max(
             ((grads[n] - r).abs().max() / (r.abs().max() + 1e-12)).item()
             for n, r in ref_grads.items()
@@ -135,6 +140,20 @@ def _worker(rank, world, port, out):
                         "loss_err": max(abs(a - b) for a, b in zip(losses, ref_losses)),
                         "grad_err": grad_err,
                         "n_decay": len(ref_grads),
+                        "all_dtensor": all(isinstance(p, DTensor) for p in model.parameters()),
+                        "decay_layout": sorted(
+                            {
+                                f"{p.dtype}:{all(pl.is_replicate() for pl in p.placements)}"
+                                for p in decay
+                            }
+                        ),
+                        "replica_diff": (copies[0] - copies[1]).abs().max().item(),
+                        "decay_names_kept": sorted(
+                            n.split("layers.", 1)[-1]
+                            for n, _ in model.named_parameters()
+                            if n.endswith(DECAY)
+                        )
+                        == sorted(n.split("layers.", 1)[-1] for n in ref_grads),
                     },
                     f,
                 )
@@ -152,5 +171,9 @@ def test_full_ft_float32_decay_params_gathered_as_float32(tmp_path):
     print(r)
     assert r["n_decay"] > 0, r
     assert r["seen"] == {"A_log": ["torch.float32"], "dt_bias": ["torch.float32"]}, r
+    # Kept as float32 Replicate DTensors: a plain foreach AdamW over model.parameters() steps, and the
+    # averaged gradients keep the replicas identical.
+    assert r["all_dtensor"] and r["decay_layout"] == ["torch.float32:True"], r
+    assert r["replica_diff"] == 0.0 and r["decay_names_kept"], r
     assert r["unchecked"] == 0 and r["drift"] == 0.0, r
     assert r["loss_err"] < 2e-3 and r["grad_err"] < 5e-2, r
