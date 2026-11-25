@@ -182,12 +182,6 @@ def _redact_worker_output(text: str) -> str:
     except Exception:  # noqa: BLE001 -- a redactor that cannot run must not lose the others
         pass
     try:
-        from hub.utils.download_registry import scrub_secrets
-        redacted = scrub_secrets(redacted)
-    except Exception:  # noqa: BLE001
-        pass
-    try:
-        # `redact_log_text` is idempotent, so it runs after `scrub_secrets`.
         from utils.log_redaction import redact_log_text
         redacted = redact_log_text(redacted)
     except Exception:  # noqa: BLE001
