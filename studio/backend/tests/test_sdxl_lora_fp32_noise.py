@@ -42,13 +42,11 @@ def test_noise_and_velocity_match_fp64_at_ends_and_middle(dtype):
 
     noisy, velocity = trainer._sdxl_noisy_and_velocity(scheduler, latents, noise, timesteps, True)
     assert noisy.dtype == dtype and velocity.dtype == dtype
-    # Only the final cast to the training dtype may round: error within one ulp of the output dtype.
     tol = torch.finfo(dtype).eps * 2
     for got, ref in ((noisy, ref_noisy), (velocity, ref_vel)):
         err = ((got.double() - ref).abs() / ref.abs().clamp_min(1e-2)).amax()
         assert err <= tol, (dtype, float(err))
 
-    # At t=0 the noise term must survive (it is exactly 0 when the scheduler runs in bf16).
     assert not torch.equal(noisy[0], latents[0])
 
     eps_noisy, eps_vel = trainer._sdxl_noisy_and_velocity(

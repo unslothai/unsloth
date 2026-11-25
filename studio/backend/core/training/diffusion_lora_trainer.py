@@ -321,12 +321,7 @@ def _sample_sdxl_cached_latents(cache, idxs, variant_rng, device, weight_dtype):
 
 
 def _sdxl_noisy_and_velocity(noise_scheduler, latents, noise, timesteps, v_prediction: bool):
-    """Run ``add_noise`` (and ``get_velocity`` for v-prediction) in fp32, then cast to the latents' dtype.
-
-    The DDPM scheduler casts ``alphas_cumprod`` to the sample dtype before the sqrt: in bf16
-    ``1 - alphas_cumprod[t]`` rounds to 0 at t=0 and t=1, so the noise term vanishes (diffusers #15300).
-    Returns ``(noisy, velocity)``; ``velocity`` is None unless ``v_prediction``.
-    """
+    """fp32 ``add_noise``/``get_velocity``: in bf16 ``1 - alphas_cumprod[t]`` rounds to 0 at t<=1 (diffusers #15300)."""
     dtype = latents.dtype
     latents32 = latents.float()
     noise32 = noise.float()
