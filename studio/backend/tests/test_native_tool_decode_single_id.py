@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""transformers 5.24's TextStreamer keeps the last token across a newline and measures it with
-``tokenizer.decode(token_cache[-1])``, one bare id. NativeToolTokenDecoder iterated that id and every
-chat reply containing a newline died with "'int' object is not iterable". In-memory tokenizer, no download."""
+"""transformers 5.24's TextStreamer decodes one bare id after a newline; NativeToolTokenDecoder iterated it."""
 
 import sys
 from pathlib import Path
@@ -26,7 +24,6 @@ from test_mlx_incremental_decode import _byte_level  # noqa: E402
 def decoder():
     tokenizer = _byte_level()
     decoder = NativeToolTokenDecoder(tokenizer)
-    # The special-id path is the one that iterated: <|eot|> is special and not a tool token.
     assert decoder.dropped_ids()
     return tokenizer, decoder
 
