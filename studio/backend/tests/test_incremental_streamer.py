@@ -196,10 +196,15 @@ _INDENTED = (
 
 
 @pytest.fixture(scope = "module", params = _REAL_TOKENIZERS)
-def real_tokenizer(request):
+def real_tokenizer(request, allow_outbound_network):
+    from transformers import AutoTokenizer
     try:
-        from transformers import AutoTokenizer
-        return AutoTokenizer.from_pretrained(request.param)
+        return AutoTokenizer.from_pretrained(request.param, local_files_only = True)
+    except Exception:  # noqa: BLE001 -- not cached yet
+        pass
+    try:
+        with allow_outbound_network():
+            return AutoTokenizer.from_pretrained(request.param)
     except Exception as e:  # noqa: BLE001 -- offline or hub unavailable
         # Skips when this machine has no Hub access: the tokenizer files come from the Hub.
         pytest.skip(reason = f"tokenizer {request.param} not downloadable (no Hub access): {e}")
