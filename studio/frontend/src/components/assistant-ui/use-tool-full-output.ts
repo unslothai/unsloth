@@ -11,8 +11,7 @@ import {
   useUnresolvedToolPaneScope,
 } from "@/features/chat";
 
-/** useToolOutputFor over toolFullOutput, selecting this card's two keys as strings, not the whole
- *  map, so a long-output tool end re-renders only its own card instead of every card in history. */
+/** Selects only this card's keys (not the whole map) so a tool end re-renders just its own card. */
 export function useToolFullOutput(toolCallId: string): string {
   const paneScope = useToolPaneScope();
   const unresolvedScope = useUnresolvedToolPaneScope();
