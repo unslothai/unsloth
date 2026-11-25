@@ -13146,9 +13146,7 @@ class VideoBackend:
                 ):
                     self._ltx25_pending_encoder = None
                 try:
-                    # A fresh Triton cache compiles the fused VAE kernels inside the first decode (~5 s for
-                    # LTX-2.5 on an L4). Started under the teardown lock, after the load-token check, so an
-                    # unload's cancel_all() always sees the child.
+                    # Under the teardown lock, after the token check, so an unload's cancel_all() sees the child.
                     from . import diffusion_vae_prebuild
                     diffusion_vae_prebuild.maybe_kick_video(pipe, logger)
                 except Exception:  # noqa: BLE001 - a prebuild, never a failed load
@@ -15319,7 +15317,7 @@ class VideoBackend:
                 self._active_generate_cancel = cancel
                 begin_attention_run(state)
             apply_cpu_render_threads(state.device)
-            # A VAE prebuild child still building holds a CUDA context: on a tight card, free it before admission.
+            # A still-building VAE prebuild child holds VRAM the admission below reads as taken.
             import sys
 
             prebuild = sys.modules.get(f"{__package__}.diffusion_vae_prebuild")

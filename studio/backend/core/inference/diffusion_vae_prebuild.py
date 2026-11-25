@@ -66,7 +66,7 @@ def plan(pipe: Any) -> Optional[dict]:
     if isinstance(z_dim, int):
         shape = [1, z_dim, 1, _LATENT_SIDE, _LATENT_SIDE]
     elif isinstance(cfg.get("latent_channels"), int) and "temporal_compression_ratio" in cfg:
-        shape = [1, cfg["latent_channels"], *_VIDEO_LATENT]  # a video VAE decodes 5D latents
+        shape = [1, cfg["latent_channels"], *_VIDEO_LATENT]
     elif isinstance(cfg.get("latent_channels"), int):
         shape = [1, cfg["latent_channels"], _LATENT_SIDE, _LATENT_SIDE]
     else:
@@ -279,8 +279,7 @@ def _stop(proc: Any) -> None:
 
 
 def cancel_all(owner: Optional[str] = None) -> int:
-    """Kill the live prebuild children of ``owner`` ("image" / "video"; None = all): an unload's CUDA context and VAE
-    must not shadow the next load. Never raises."""
+    """Kill ``owner``'s ("image" / "video"; None = all) live prebuild children on unload. Never raises."""
     with _LIVE_LOCK:
         procs = [p for p, (o, _d) in _LIVE.items() if owner is None or o == owner]
     for proc in procs:
@@ -292,9 +291,8 @@ def cancel_all(owner: Optional[str] = None) -> int:
 
 
 def yield_to_render(owner: str, logger: Any = None) -> int:
-    """A render is starting: stop ``owner``'s still-building children on a card too tight to hold the child beside
-    the render. Its admission and tile choice read live free VRAM, which the child's context would take; the render
-    then compiles in the foreground, as without the prebuild. Never raises."""
+    """Stop ``owner``'s still-building children on a card too tight for child + render (the render then compiles in
+    the foreground, as without a prebuild). Never raises."""
     stopped = 0
     try:
         import torch
