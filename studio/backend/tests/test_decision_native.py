@@ -696,6 +696,7 @@ def test_a_stock_clef_gets_a_json_string_state_as_sent(home, client, stub):
         ("laya", '{"scope": "mail","request": 1}', '{"scope": "mail", "request": 1}'),
         ("clef", ' ["b", {"z": 1, "a": 2}]', '["b",{"a":2,"z":1}]'),
         ("clef", "{not json", "{not json"),
+        ("clef", "[" * 100_000, "[" * 100_000),
         ("clef", "The parcel never arrived.", "The parcel never arrived."),
         ("gguf", '{"z": 1, "a": 2}', '{"z": 1, "a": 2}'),
         ("clef", {"z": 1, "a": 2}, {"z": 1, "a": 2}),

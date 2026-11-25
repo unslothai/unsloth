@@ -2451,7 +2451,8 @@ def _route(
     if checkpoint.layout != "laya" and hardware.is_apple_silicon():
         # A request, unlike a settings read, waits for device detection, so the first one already knows of MLX.
         hardware.get_device()
-    if checkpoint.is_local:
+    # A d1 (the only Clef layout whose own backend is MLX) renders a parsed state as indented text, not JSON.
+    if checkpoint.is_local and not _is_mlx(checkpoint):
         state = _as_trained(checkpoint.layout, state)
     state_images = _state_has_images(state)
     target, reason = select(checkpoint, images, questions, state_images = state_images, audio = audio)
@@ -2488,10 +2489,7 @@ def _route(
 
 
 def _as_trained(layout: str, state):
-    """A JSON string state as Unsloth's decision trainer read it, for a fine-tune Studio trained. The trainer parses
-    one, so a Clef learned it with sorted keys and compact separators and a Laya as json.dumps of the parsed value,
-    while every runtime reads a string as is. Other strings and objects pass unchanged, and so does every state sent
-    to a stock checkpoint, which Unsloth did not train."""
+    """A JSON string state as the decision trainer rendered it after parsing; runtimes read a string verbatim."""
     if (
         layout not in ("clef", "laya")
         or not isinstance(state, str)
@@ -2500,7 +2498,7 @@ def _as_trained(layout: str, state):
         return state
     try:
         value = json.loads(state)
-    except ValueError:
+    except (ValueError, RecursionError):
         return state
     if layout == "laya":
         return json.dumps(value, ensure_ascii = False)

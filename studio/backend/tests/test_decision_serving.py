@@ -1751,6 +1751,27 @@ def test_a_trained_d1_is_found_and_served_as_a_d1(home, client, engine, monkeypa
     assert laya_runtime._mlx_family(laya_runtime._mlx_target(plain)) == "clef"
 
 
+def test_a_json_string_state_is_rewritten_for_a_trained_clef_but_not_a_trained_d1(
+    home, client, engine
+):
+    folder = home / "d1_state"
+    folder.mkdir()
+    config = {"architectures": ["D1Model"], "model_type": "lfm3_vl", "vision_config": {}}
+    (folder / "config.json").write_text(json.dumps(config), encoding = "utf-8")
+    (folder / "processor_config.json").write_text("{}", encoding = "utf-8")
+    (folder / "model.safetensors").write_bytes(b"")
+    d1_name = catalog.CLEF_FINE_TUNE_PREFIX + "d1_state"
+    clef_name = _clef_fine_tune(home, "clef_state")
+    engine.cached.update({d1_name, clef_name})
+    state, questions = '{"z": 1, "a": 2}', {"q": {"type": "noul", "instructions": "i"}}
+    for name, served in ((clef_name, '{"a":2,"z":1}'), (d1_name, state)):
+        assert (
+            laya_runtime._route(catalog.fine_tune(name), state, questions, None)["_backend"]
+            == "mlx"
+        )
+        assert engine.read[0] == served
+
+
 @pytest.mark.parametrize("wrapped", [True, False])
 def test_a_processor_only_model_keeps_the_engine_token_limit(engine, wrapped):
     tokens = SimpleNamespace(encode = lambda text, add_special_tokens = False: [0] * len(text))
