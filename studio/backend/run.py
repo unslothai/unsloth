@@ -521,7 +521,8 @@ def _start_display_host_resolution(host: str) -> Callable[[], str]:
     import urllib.request  # noqa: F401
     from threading import Thread
 
-    # Worker connects before main.py, so install native TLS and RFC 8305 here (idempotent).
+    # main.py installs these before its first connection; the worker connects before main.py runs,
+    # so install them here (both idempotent) to keep the OS trust store and the RFC 8305 connector.
     from utils.native_tls import activate_native_tls
     from utils.happy_eyeballs import activate_happy_eyeballs
 
@@ -1126,8 +1127,9 @@ def write_startup_marker() -> None:
         import contextlib
         compiled_cache_lock = lambda **kwargs: contextlib.nullcontext()
         LOCK_BUSY, LOCK_HELD = "busy", "held"
-    # A longer budget than a clear takes: publishing behind a holder mid-rmtree is worth waiting
-    # out; if it runs out, publish anyway, since a missing marker hides this backend.
+    # A longer budget than a clear takes: publishing behind a holder that is mid-rmtree is the case worth
+    # waiting out. Publishing anyway if the wait runs out is still right, because a marker that never appears
+    # makes this backend invisible.
     with compiled_cache_lock(timeout = 30.0) as lock_state:
         if lock_state == LOCK_HELD:
             _prune_dead_pid_records()

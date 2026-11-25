@@ -115,8 +115,9 @@ def _is_abs_path_id(value: str) -> bool:
 
 
 def _advertised_loader_id(info) -> Optional[str]:
-    """Prefer a client-facing alias over the absolute scanned path, so /v1/models and the override
-    key never expose a host path (./models and LM Studio report the path as info.id)."""
+    """The id to advertise for a scanned model: prefer a client-facing alias over
+    an absolute filesystem path so /v1/models and the override key never expose a
+    host path (the ./models and LM Studio scanners report the path as info.id)."""
     from hub.services.models.ollama import is_ollama_manifest_ref
 
     raw_id = getattr(info, "id", None)

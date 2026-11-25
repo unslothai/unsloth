@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Image/video chat tools; registries read MEDIA_CHAT_TOOLS (so no drift); imports stay lazy."""
+"""Chat tools for the loaded image/video model; registries read MEDIA_CHAT_TOOLS so they cannot
+drift; no heavy imports at load, status helpers import lazily."""
 
 from __future__ import annotations
 

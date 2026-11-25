@@ -543,8 +543,9 @@ from utils.first_token_timeout import (
     start_first_token_wait,
 )
 
-# Import leaf utils modules, not utils.models: its __init__ pulls in model_config and PyYAML, which
-# the chat backend must not make a hard import dependency.
+# The leaf module, not utils.models: importing anything from that package runs its __init__,
+# which pulls in model_config and therefore PyYAML. This is the chat backend, imported wherever
+# Unsloth's Python is, so it must not make the whole models package a hard import dependency.
 from utils import gguf_archs as _gguf_archs
 from utils import gguf_names as _gguf_names
 from utils.gguf_archs import (
@@ -672,7 +673,8 @@ def _gpu_plan_mib(total_bytes: int, on: list[int], gpus) -> dict[int, int]:
 
 
 def _net_of_held_vram(gpu_mem, held: dict[int, int]):
-    """Free MiB capped at total less others' plans; total 0 (iGPU, shared RAM) is already net."""
+    """Cap each GPU's free MiB at its total less what the other loaded models planned. A total of 0
+    is an integrated GPU on shared RAM, whose free reading already counts them: left as is."""
     if not held:
         return gpu_mem
     return [
@@ -6193,7 +6195,8 @@ _CTX_HALVE_MAX = 8
 
 
 def _halved_ctx_after_oom(cmd: Sequence[str], output: str, is_memory_failure) -> Optional[int]:
-    """Half of -c after GPU memory context failure; None if no -c, other error, or below floor."""
+    """Half of the launched -c when the context could not be created for lack of GPU memory;
+    None when there is no -c, the failure is something else, or half drops below the floor."""
     if "-c" not in cmd or "failed to create context with model" not in output:
         return None
     if not is_memory_failure(output):
@@ -10750,10 +10753,11 @@ class LlamaCppBackend:
         tensor_parallel: bool,
         pin_owns_devices: bool = False,
     ) -> Optional[List[float]]:
-        """Discrete-first split for a full-offload mixed Vulkan pin; discrete cards only get a
-        byte-balanced split where llama.cpp's own would overflow, [] if none fits (the caller
-        then lets --fit place the model), None keeps llama.cpp's split when inputs cannot be
-        priced or someone else owns placement."""
+        """The discrete-first split for a full-offload mixed Vulkan pin; for discrete cards
+        only, a byte-balanced split where llama.cpp's own would overflow one, or [] when no
+        split fits (the caller then lets --fit place the model). None leaves
+        llama.cpp's own split (the pre-existing behaviour) wherever its inputs cannot be
+        priced or someone else owns the placement."""
         if (
             (not shared_gpu_ids and len(gpu_indices) < 2)
             or spill_inputs is None
@@ -19473,8 +19477,9 @@ class LlamaCppBackend:
         return int((activations + outputs + recurrent) * self._COMPUTE_BUFFER_SAFETY + swa_mask)
 
     def _effective_sliding_window(self) -> int:
-        """The sliding window when some layer really slides, else 0; Phi-4-mini declares a 262144
-        window over a 131072 context with no pattern, which bounds nothing."""
+        """The sliding window when some layer really slides, else 0. Phi-4-mini
+        declares a 262144 window over a 131072 context and no pattern, which bounds
+        nothing."""
         window = getattr(self, "_sliding_window", None) or 0
         if window <= 0:
             return 0
@@ -19485,10 +19490,12 @@ class LlamaCppBackend:
         return window if not context or window < context else 0
 
     def _expand_loop_slots(self) -> None:
-        """Expand a looped GGUF's physical layers to the cache slots llama.cpp allocates: the core
-        [start, end) runs count times, each run after the first gets slots past the physical ones
-        (slot n_phys + k maps to start + k % (end - start)); weights stay counted once, KV and
-        state follow the slots."""
+        """Expand a looped GGUF's physical layers to the cache slots llama.cpp allocates.
+
+        The file stores each physical layer once; the core [start, end) runs `count` times and every run after
+        the first gets its own slots after the physical ones (slot n_phys + k maps to start + k % (end - start)).
+        Weights stay counted once (the file size); KV and state follow the slots, as for the visit-indexed layout.
+        """
         start, end, count = self._loop_start, self._loop_end, self._loop_count
         n_phys = self._n_layers
         if not (
@@ -24209,7 +24216,8 @@ class LlamaCppBackend:
             )
         )
 
-    # Pre-b9455 llama.cpp exits 1 on quantized KV with --split-mode tensor; skips doomed loads.
+    # llama.cpp before b9455 refused quantized KV under --split-mode tensor with a clean exit 1;
+    # this marker avoids two doomed loads on older binaries.
     _TENSOR_QUANT_KV_UNSUPPORTED_MARKER = (
         "split_mode_tensor and kv cache quantization not implemented"
     )
@@ -27530,7 +27538,8 @@ class LlamaCppBackend:
 
                     # Explicit n_ctx: honor it, capping only if no GPU combination fits. Auto: prefer fewer GPUs with reduced context (multi-GPU is slower).
                     gpu_indices, use_fit = None, True
-                    # Tensor-mode per-GPU weights; None lets llama.cpp split by free VRAM.
+                    # Per-GPU weight proportions for tensor mode (None lets
+                    # llama.cpp split by free VRAM).
                     tp_tensor_split: Optional[list[int]] = None
                     # Whether the TP branch planned this load. Not readable from tp_tensor_split (None when llama.cpp sizes it); re-set per retry so a retry starts clean.
                     _tp_planned = False
@@ -32121,8 +32130,9 @@ class LlamaCppBackend:
                 _mem_env = dict(os.environ)
                 if gpu_memory_mode == "manual":
                     self._clear_manual_placement_env(_mem_env)
-                # A gpu_ids pin drops device flags from argv and env, so classifying on them would
-                # pin for a --device cpu the child never sees; same launch helpers avoid drift.
+                # A gpu_ids pin drops the device flags from argv and env below,
+                # so classifying on them would pin for a --device cpu the child
+                # never sees. Same helpers the launch uses, so they cannot drift.
                 _mem_extra_args = extra_args
                 if _gpu_ids_own_device_flags:
                     _mem_extra_args = self._strip_device_extra_args(extra_args)
@@ -33193,9 +33203,10 @@ class LlamaCppBackend:
                         _offload_msg += _pageable_note
                     # First notice wins, so amend whatever is already recorded.
                     self._amend_load_warning(_pageable_note)
-                    # Recorded state and snapshot must describe the launched argv, or the reload
-                    # comparator judges against a mode it no longer runs; the arch-crash retry
-                    # restores the snapshot over cmd, which now carries the override.
+                    # The recorded state has to describe the argv that launches, or the
+                    # reload comparator judges this child against a mode it no longer
+                    # runs. The snapshot too: the arch-crash retry restores it over
+                    # `cmd`, which now carries the override.
                     self._record_memory_state(cmd, env)
                     _mem_policy_for_cmd = _snapshot_policy_for_cmd()
                 self._record_load_warning(_offload_msg)
@@ -33210,7 +33221,8 @@ class LlamaCppBackend:
                 _did_rocm_retry = False
 
                 def _enable_managed_fit_for_no_flash(fa_cmd: list) -> list:
-                    """Restores Unsloth's --fit on for --flash-attn off respawns that need it."""
+                    """Restores Unsloth's own --fit on for a --flash-attn off respawn, which is re-
+                    placed and needs it."""
                     if "--fit" not in fa_cmd:
                         return fa_cmd
                     if any(
@@ -33389,10 +33401,13 @@ class LlamaCppBackend:
                         self._child_gpu_physical_ids = _child_gpu_physical_ids
 
                         self._stdout_lines = []
-                        # Tees llama-server output to a dedicated log under the studio home, since
-                        # the parent keeps only the last 50 lines; the label (MTP fallback) and
-                        # attempt index (--fit off retry) stop same-second respawns truncating the
-                        # crash log.
+                        # Tee llama-server output to a dedicated log file so a
+                        # post-mortem has the full trail even when the parent only
+                        # kept the last 50 lines. Path is under the studio home.
+                        # ``label`` (MTP fallback) and the attempt index (--fit
+                        # off retry) keep a respawn within the same epoch second
+                        # from truncating the crash log a retry warning just
+                        # pointed the user at.
                         self._llama_log_fh = None
                         try:
                             log_dir = studio_root() / "logs" / "llama-server"
@@ -33407,8 +33422,9 @@ class LlamaCppBackend:
                                 encoding = "utf-8",
                                 buffering = 1,
                             )
-                            # Prune after the open so the cap counts this file and never deletes it;
-                            # keep-newest keeps earlier retry logs.
+                            # After the open, so the cap counts this file and never deletes
+                            # it. On the retry path the earlier attempts' logs are what a
+                            # reader wants, and keep-newest holds on to them.
                             prune_log_dir(log_dir, "llama-*.log", protect = self._llama_log_path)
                             logger.info(f"llama-server stdout/stderr -> {self._llama_log_path}")
                         except (OSError, UnicodeDecodeError) as e:
@@ -35323,9 +35339,10 @@ class LlamaCppBackend:
                     if healthy:
                         self._speculative_type = "default"
                         _mtp_active_for_launched_server = False
-                        # The record stores extra_args as what launched, but this server launched
-                        # without the spec group; keeping the MTP list would make the next
-                        # inheriting Apply repeat the crash, so keep only the requested state, as
+                        # The record below stores extra_args as what LAUNCHED, but this
+                        # server launched without the spec group. Leaving the MTP list
+                        # there would have the next inheriting Apply pick it back up and
+                        # repeat the crash. Keep it as the requested state only, the way
                         # the runtime-crash replay does.
                         if _fb_stripped_extras is not None:
                             _pv_suppressed_spec_extra_args = (
@@ -35854,7 +35871,8 @@ class LlamaCppBackend:
                 logger.info(
                     f"llama-server ready on port {self._port} for model '{model_identifier}'"
                 )
-                # Poll /metrics for vLLM-style engine_stats logs; binary must expose /metrics.
+                # Poll llama-server /metrics -> vLLM-style engine_stats logs
+                # (only when the binary exposes /metrics).
                 if server_caps.get("supports_metrics"):
                     try:
                         from core.inference.llama_stats import maybe_start_stats_logger
@@ -39098,7 +39116,8 @@ class LlamaCppBackend:
 
     @staticmethod
     def _build_openai_messages(messages: list[dict], image_b64: Optional[str] = None) -> list[dict]:
-        """Adds image_url part to last user message; messages as-is when there is no image."""
+        """Build OpenAI-format messages, optionally injecting an image_url part
+        into the last user message for vision models. As-is if no image."""
         if not image_b64:
             return messages
 
@@ -40986,7 +41005,8 @@ class LlamaCppBackend:
         _effective_enable_thinking = enable_thinking
         # An explicit effort wins over enable_thinking, so clear it too.
         _effective_reasoning_effort = reasoning_effort
-        # Caller's flag restored once a turn progresses; turned on only to stitch one answer.
+        # Restored once a turn gets somewhere: it is turned on to stitch ONE answer
+        # back together, not for the rest of the request.
         _caller_continue_final_message = continue_final_message
         # Single-element lists so the nested execution scope can rebind them.
         _last_tool_result_key: list = [None]

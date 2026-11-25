@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Runtime-free video family helpers; separate registry; GGUF is DiT-only, needs a base repo."""
+"""Pure helpers with no torch/diffusers imports (unit-testable without the runtime); separate video
+registry so no picker misroutes; GGUF is DiT-only, needs a base repo"""
 
 from __future__ import annotations
 
@@ -361,10 +362,12 @@ _LTX_VIDEO_09_REFUSAL = (
     "This is an LTX-Video 0.9.x checkpoint, a different architecture from LTX-2 that Unsloth does not "
     "run. Load LTX-2 or LTX-2.3 instead (for example unsloth/LTX-2.3-GGUF)."
 )
-# Last path segment only; without_heads PDD bakes need an external per-step head bank and render
-# wrong output with no error as plain denoisers; custom-node LoRA files are not denoisers;
-# with_heads (32-head bank) runs natively; unnamed without-heads caught at load by pdd_acc_baked
-# header.
+# Last path segment of each identifier only: an owner or parent folder named i2v does not make a checkpoint I2V.
+# MiniMax-H3 PDD files Studio cannot run. A "without_heads" bake keeps the single original output heads and needs the
+# external PDD head bank applied per step by a custom node; loaded as a plain denoiser it renders wrong output with no
+# error. The custom-node LoRA files hold a trunk LoRA plus that bank, not a denoiser. A "with_heads" bake carries its
+# 32-head bank in the file and runs natively (video_minimax_h3_pdd). An unnamed without-heads file is caught at load
+# from its header (pdd_acc_baked metadata with single heads).
 _H3_PDD_WITHOUT_HEADS_RE = r"(?<![a-z0-9])pdd(?![a-z])[^/\\|]*without[-_ ]?heads"
 H3_PDD_WITHOUT_HEADS_REFUSAL = (
     "This MiniMax-H3 PDD checkpoint has no head bank: it keeps the single original output heads and needs the "
@@ -651,8 +654,9 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         profile = FamilyProfile(
             # the 2.3 DiT less the video FFN bias
             int8_exclude_tokens = _LTX2_INT8_EXCLUDES,
-            # Hosted rotated int8 only: rotation (group 256) baked in and read from metadata;
-            # load-time quantizing is plain int8; default_on picks hosted file (env 0 picks plain).
+            # Hosted rotated int8 build only: rotation baked into the file (every quantized Linear, group 256) and read
+            # back from its metadata. No runtime ConvRot spec (group 0), so quantizing at load stays plain int8;
+            # default_on only picks the hosted rotated file (the env's ``0`` picks the plain one).
             int8_convrot = ConvRotSpec(
                 group = 0,
                 suffixes = (),

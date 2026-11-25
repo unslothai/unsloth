@@ -421,7 +421,8 @@ _STUDIO_ROOT_ID_CACHE: str = _read_studio_install_id()
 
 
 def _studio_root_id() -> str:
-    """Same-install id for /api/health, cached at import; empty without an installer token."""
+    """Same-install discriminator for /api/health (cached at import). Empty when no installer token is
+    present."""
     return _STUDIO_ROOT_ID_CACHE
 
 
@@ -630,7 +631,8 @@ def _start_offline_docs_refresh_if_due() -> None:
 
 
 def _run_llama_cpp_startup_probes(app: FastAPI) -> None:
-    """llama.cpp probes run off startup: GitHub freshness checks, macOS Gatekeeper stall them."""
+    """Run llama.cpp probes off the startup path; GitHub freshness checks and macOS Gatekeeper stall
+    them."""
     try:
         from core.inference.llama_cpp import LlamaCppBackend
         from utils.llama_cpp_freshness import (
@@ -746,15 +748,17 @@ def _start_post_warm_thread() -> bool:
 
 
 def _stop_post_warm_thread() -> None:
-    """Retire the current worker without waiting: joining would stall shutdown on the ML stack
-    import; bumping the generation suffices since the worker re-reads it after its join."""
+    """Retire whatever worker is current; never wait for it. Joining would hold shutdown for the rest of the ML
+    stack import, the stall this path exists to avoid; bumping the generation suffices, since the worker
+    re-reads it after its join."""
     global _post_warm_generation
     with _post_warm_lock:
         _post_warm_generation += 1
 
 
 def _post_warm_retired(generation: Optional[int]) -> bool:
-    """True once the lifespan ended (logs once); stopped lifespans start no more work."""
+    """True when this post-warm worker's lifespan has ended (logs once when it has). The remaining work imports
+    optional platform or RAG scheduling modules, so none of it may start for a stopped lifespan."""
     if generation is None or _post_warm_current_generation() == generation:
         return False
     import structlog as _structlog
@@ -874,8 +878,9 @@ def _post_warm_background_work(generation: Optional[int] = None) -> None:
 
 
 def clear_compiled_cache_unless_shared(app: FastAPI) -> None:
-    """Clears the compiled cache unless a sibling backend is live; the check lives in cache_cleanup
-    under a lock; run_server sets app.state since main.py cannot import run.py."""
+    """Clear the compiled cache unless a sibling backend of this install is live. The decision lives in
+    cache_cleanup, next to the paths it clears and the lock that serializes it against a sibling's startup;
+    run_server puts the probe on app.state because main.py must not import run.py back."""
     _clear_compiled_cache_unless_shared(getattr(app.state, "live_sibling_backend", None))
 
 
@@ -1858,7 +1863,8 @@ _ZSTD_MAX_RATIO = 64
 _ZSTD_MAX_FRAMES = 1024
 
 
-# Decoding runs before auth, so one decode at a time per event loop limits concurrent bombs.
+# Decoding runs before the route's auth check, so an unauthenticated ~8 MiB frame can inflate to the full body
+# cap: one decode at a time per event loop keeps concurrent bombs from multiplying that.
 _ZSTD_DECODE_GATES: dict = {}
 
 
@@ -2991,7 +2997,8 @@ _dense_quant_scheme_ladder: list[str] = []
 
 
 def _refresh_dense_quant_capability() -> bool:
-    """Caches the dense-quant bit; imports torch/torchao; never call from a route without them."""
+    """Resolve the dense-quant bit and cache it. Imports torch and torchao; never call from a route
+    that has not already got them."""
     global _dense_quant_capability, _dense_quant_scheme_ladder
     _dense_quant_capability = _probe_dense_quant_supported()
     _dense_quant_scheme_ladder = _probe_dense_quant_schemes() if _dense_quant_capability else []
@@ -3072,7 +3079,8 @@ def _quantised_streaming() -> bool:
 
 
 def _diffusers_offload_tiers() -> dict:
-    """Torch-free extra picker fit tiers by lower-cased Diffusers repo id, in GiB; only widens."""
+    """Extra picker fit tiers per curated Diffusers repo (lower-cased id), in the picker's GiB units.
+    Torch-free; the picker unions them with the catalog's own tiers, so they can only widen."""
     try:
         from core.inference.video_minimax_h3 import h3_diffusers_fit_tiers
         tiers = h3_diffusers_fit_tiers()
@@ -3108,7 +3116,8 @@ def _checkpoint_quant_formats() -> list[str]:
 
 
 def _dense_quant_schemes() -> list[str]:
-    """Scheme ladder for /api/system: read-only, no torch import, refreshed with the bit."""
+    """The scheme ladder for ``/api/system``, a pure read of already-resolved state: the polled route
+    must never import torch, and the entry beside it refreshed both in one pass."""
     return list(_dense_quant_scheme_ladder)
 
 

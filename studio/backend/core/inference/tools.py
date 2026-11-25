@@ -13575,7 +13575,8 @@ _FULL_ACCESS_SUBSTITUTIONS = (
         ". This runs wherever Unsloth Studio is running, which may be a remote host "
         "or a container with only some paths mounted.{clause}",
     ),
-    # Absolute paths work on Windows; Unsloth may serve a remote host (--secure, -H 0.0.0.0).
+    # Windows never denies absolute paths, so state the capability. Tools run on the host serving
+    # Unsloth, which may not be the user's device (--secure, -H 0.0.0.0).
     (
         "opens a window on the user's desktop.",
         "opens a window on that machine's desktop, which the user sees only if "

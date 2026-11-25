@@ -304,7 +304,8 @@ class DiffusionFamily:
 
 # Fresh processes pick near-tied norm-reduction configs, so one seed rendered 2-4 variants.
 _REDUCTION_RACE_ARCHS: tuple[tuple[int, int], ...] = ((8, 0), (8, 9), (12, 0))
-# FLUX.1 (schnell int8, cold cache) and Kontext race on B200; the filter matched 12/12 bitwise.
+# FLUX.1 races on B200 too (schnell int8, cold inductor cache): 15 fresh processes denoised one seed into 3 latents; with
+# the filter 12/12 matched bitwise. Kontext runs the same DiT.
 _FLUX1_REDUCTION_RACE_ARCHS: tuple[tuple[int, int], ...] = _REDUCTION_RACE_ARCHS + ((10, 0),)
 # Qwen-Image races on B200 too (torch 2.14): fresh processes rendered one seed 26 dB apart; with the filter 6/6 matched bitwise.
 _QWEN_REDUCTION_RACE_ARCHS: tuple[tuple[int, int], ...] = _REDUCTION_RACE_ARCHS + ((10, 0),)
@@ -677,7 +678,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # purpose: config, text encoder, VAE and scheduler are byte-identical, and the 9B's come from the ungated mirror
         # while the KV repo is gated with no mirror; only the pipeline class follows the file.
         pipeline_class_variants = (("klein9bkv", "Flux2KleinKVPipeline"),),
-        # Train undistilled bases, preview on 4-step models; vendor ids go via ungated mirrors.
+        # Train the undistilled bases, then preview their adapters on the matching 4-step models. Both vendor ids
+        # resolve through the ungated mirrors at fetch time.
         trainable = True,
         train_base_repos = (
             "black-forest-labs/FLUX.2-klein-base-4B",
@@ -3457,8 +3459,9 @@ _RETIRED_SD_CPP_COMPANION_REPOS: frozenset[str] = frozenset(
 )
 
 
-# Community repacks that these retired copies stood in for; a recorded companion link may name them,
-# so this set only drops stale links and never makes one a companion.
+# The community repacks those retired copies stood in for. Released builds sent an sd-cli fetch back to one already
+# cached, so a recorded companion link may name it. Ordinary cached repos otherwise (some also ship denoiser files), so
+# this set only drops stale LINKS; it never makes one a companion.
 _RETIRED_SD_CPP_LEGACY_SOURCES: frozenset[str] = frozenset(
     {
         "comfyanonymous/flux_text_encoders",
