@@ -737,6 +737,9 @@ def _addmm_impl(
     Wd = _dense_from_parts(
         W, absmax, code2, absmax2, offset, code, blocksize, blocksize2, shape, dtype, X.shape[0]
     )
+    if Wd.dtype != out.dtype:
+        # NF4 decodes to the quant state's dtype, and in-place addmm_ needs matching dtypes (autocast skips it).
+        Wd = Wd.to(out.dtype)
     out.addmm_(X, Wd.t())
 
 

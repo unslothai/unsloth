@@ -4039,10 +4039,20 @@ _GENERATION_TERMINAL_STATUSES = {"cancelled", "completed", "failed"}
 _GENERATION_STATUS_RANK = {"queued": 0, "running": 1, "cancelling": 2}
 
 
+def _equals_stored_json(value, stored_json: str) -> bool:
+    # Writers store default json.dumps, so equal strings mean equal values; else compare key-order-blind.
+    return json.dumps(value) == stored_json or json.dumps(value, sort_keys = True) == json.dumps(
+        json.loads(stored_json), sort_keys = True
+    )
+
+
 def _safe_generation_assistant_update(
     conn: sqlite3.Connection, thread_id: str, message: dict
 ) -> bool:
     """Allow only monotonic writes to the assistant row owned by one run."""
+    message_id = str(message["id"])
+    if str(message.get("role")) != "assistant":
+        return False
     row = conn.execute(
         """SELECT r.id AS run_id, r.status AS run_status, r.last_event_seq,
                   m.parent_id, m.role, m.content_json, m.metadata_json,
@@ -4050,19 +4060,16 @@ def _safe_generation_assistant_update(
            FROM chat_generation_runs r
            JOIN chat_messages m ON m.id = r.assistant_message_id
            WHERE r.thread_id = ? AND r.assistant_message_id = ?""",
-        (thread_id, str(message["id"])),
+        (thread_id, message_id),
     ).fetchone()
-    if row is None or str(message.get("role")) != "assistant":
+    if row is None:
         return False
     if (message.get("parentId") or None) != (row["parent_id"] or None):
         return False
     if int(message.get("createdAt", row["created_at"])) != int(row["created_at"]):
         return False
 
-    stored_attachments = json.loads(row["attachments_json"]) if row["attachments_json"] else None
-    if json.dumps(message.get("attachments"), sort_keys = True) != json.dumps(
-        stored_attachments, sort_keys = True
-    ):
+    if not _equals_stored_json(message.get("attachments"), row["attachments_json"] or "null"):
         return False
 
     incoming = message.get("metadata")
@@ -4085,9 +4092,9 @@ def _safe_generation_assistant_update(
         or incoming_seq > int(row["last_event_seq"])
     ):
         return False
-    if incoming_seq == stored_seq and json.dumps(
-        message.get("content", []), sort_keys = True
-    ) != json.dumps(json.loads(row["content_json"] or "[]"), sort_keys = True):
+    if incoming_seq == stored_seq and not _equals_stored_json(
+        message.get("content", []), row["content_json"] or "[]"
+    ):
         return False
 
     # A settled terminal row is immutable; an old tab must not overwrite finish metadata.

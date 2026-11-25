@@ -123,10 +123,19 @@ def test_t4_still_refuses_families_without_an_fp16_path(card, monkeypatch, tmp_p
 
 
 @pytest.mark.parametrize("mode", ["bf16", "int8", "fp8", "mxfp8"])
-def test_t4_refuses_dense_bases_before_eviction(card, mode):
+def test_t4_refuses_dense_bases_before_eviction(card, mode, monkeypatch):
     card((7, 5))
+    # int8 trains on a T4 only as the W8A8 base (the default); the weight-only opt-out stays refused.
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_INT8_TRAIN", "weight-only")
     reason = dtc.training_precision_preflight_error("z-image", mode)
     assert reason and "nf4" in reason
+
+
+def test_t4_takes_int8_as_the_default_w8a8_base(card, monkeypatch):
+    card((7, 5))
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_INT8_TRAIN", raising = False)
+    reason = dtc.training_precision_preflight_error("z-image", "int8")
+    assert reason is None or "nf4" not in reason
 
 
 def test_t4_dense_base_refused_in_the_trainer_too(card, monkeypatch, tmp_path):

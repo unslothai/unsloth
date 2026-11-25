@@ -13,6 +13,7 @@ import {
 import {
   DOWNLOAD_KIND,
   downloadManager,
+  ggufVariantsMatch,
   publicModelId,
   useDeviceInventorySources,
   useRepoDownload,
@@ -211,6 +212,7 @@ export function ApiModelLoadControls({
   const lorasFromStore = useChatRuntimeStore((s) => s.loras);
   const modelLoading = useChatRuntimeStore((s) => s.modelLoading);
   const loadedContextLength = useChatRuntimeStore((s) => s.loadedContextLength);
+  const runtimeVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
   const { checkpoint: runtimeCheckpoint, config: runtimeConfig } =
     useActiveModelConfig();
   const localModelInventory = useDeviceInventorySources(["localModels"]);
@@ -348,7 +350,9 @@ export function ApiModelLoadControls({
   const runtimeIsResident =
     isLoaded &&
     runtimeCheckpoint != null &&
-    publicModelId(runtimeCheckpoint) === effectiveModel;
+    publicModelId(runtimeCheckpoint) === effectiveModel &&
+    (!(runtimeVariant && activeGgufVariant) ||
+      ggufVariantsMatch(runtimeVariant, activeGgufVariant));
 
   const pickerSource = useMemo<ComposerModelPickerSource>(
     () => ({

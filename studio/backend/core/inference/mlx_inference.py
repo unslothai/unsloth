@@ -1254,7 +1254,13 @@ class VLMPromptCacheSession:
             self._forward.__exit__(*exc)
         return False
 
-    def find_prefix_length(self, token_ids):
+    def find_prefix_length(
+        self,
+        token_ids,
+        *,
+        video_timing = (),
+    ):
+        # mlx-vlm 0.8.1 passes video_timing; always empty here, as video requests get no session.
         token_ids = list(token_ids)
         self._token_ids = token_ids
         rows = len(token_ids) + self._max_new_tokens
@@ -1370,7 +1376,13 @@ class VLMPromptCacheSession:
         except Exception as exc:
             logger.info("MLX VLM prompt cache: served snapshot not kept (%s)", exc)
 
-    def update(self, _token_ids, _cache):
+    def update(
+        self,
+        _token_ids,
+        _cache,
+        *,
+        video_timing = (),
+    ):
         """mlx-vlm's after-generation hook; ``finish`` stores, as it also runs on a consumer that
         stops reading early."""
 
@@ -8277,6 +8289,7 @@ class MLXInferenceBackend:
                 in_reasoning = prompt_opens_reasoning_channel(
                     prompt, reasoning_channel_markers, _resumed_partial
                 ),
+                continued = _resumed_partial,
             )
             if preserve_native_channels
             else None
@@ -8554,6 +8567,7 @@ class MLXInferenceBackend:
                 in_reasoning = prompt_opens_reasoning_channel(
                     prompt, reasoning_channel_markers, _resumed_partial
                 ),
+                continued = _resumed_partial,
             )
             if preserve_native_channels
             else None
@@ -8907,14 +8921,12 @@ class MLXInferenceBackend:
                     self._tokenizer,
                     preserved_tokens = reasoning_control_tokens(markers),
                 )
+        _continued = bool(continue_final_message and trailing_assistant_text(messages))
         normalizer = (
             make_reasoning_normalizer(
                 markers,
-                in_reasoning = prompt_opens_reasoning_channel(
-                    prompt,
-                    markers,
-                    bool(continue_final_message and trailing_assistant_text(messages)),
-                ),
+                in_reasoning = prompt_opens_reasoning_channel(prompt, markers, _continued),
+                continued = _continued,
             )
             # The normalizer would rewrite marker text inside the document.
             if markers is not None and (constraint is None or constraint.allows_reasoning)

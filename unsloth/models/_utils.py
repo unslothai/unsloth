@@ -4907,6 +4907,54 @@ def _xformers_fa3_lacks_sm90a(build_info, capability, flash3) -> bool:
     return bool(arch_list) and "9.0a" not in arch_list
 
 
+def _broken_xformers_notice(
+    error,
+    torch_version,
+    device_type,
+    verbose = False,
+    has_flash_attention = False,
+):
+    """What to print when an installed xformers cannot be used ("" = nothing).
+
+    The usual cause is a preinstalled wheel built for another torch / CUDA (Kaggle,
+    or PyPI's cu128 wheel beside a cu130 torch, #4381). Attention still works, so by
+    default this is one line on CUDA; UNSLOTH_ENABLE_LOGGING=1 adds the fix and the
+    full error. FlashAttention being installed does not hide it: some paths still use
+    xformers when it loads (Mistral's uncached eval mask, packed fp32 attention).
+    `unsloth install-kernels xformers` resolves CUDA wheels only, so it is named on CUDA only.
+    """
+    text = str(error)
+    fallback = "FlashAttention / PyTorch attention" if has_flash_attention else "PyTorch attention"
+    banner = f"========\nSwitching to {fallback} since your Xformers is broken.\n========\n"
+    # The version guards above (e.g. Blackwell FA3 dispatch) carry their own fix; install-kernels would not apply it.
+    own_guard = text.startswith("Unsloth:") and getattr(error, "__cause__", None) is None
+    if verbose and own_guard:
+        return banner + text
+    if verbose:
+        _built_for = re.search(r"PyTorch (\S+) with CUDA \S+ \(you have", text)
+        built = f" (it was built for {_built_for.group(1)})" if _built_for else ""
+        fix = (
+            "To install a matching xformers, run `unsloth install-kernels xformers`, "
+            "or `pip uninstall xformers` to hide this.\n"
+            if device_type == "cuda"
+            else "Run `pip uninstall xformers` to hide this.\n"
+        )
+        return (
+            banner
+            + f"Unsloth: xformers is installed but cannot load with torch {torch_version}{built}.\n"
+            + fix
+            + text
+        )
+    if device_type != "cuda":
+        return ""
+    if own_guard:
+        return text
+    return (
+        f"Unsloth: xformers does not load with torch {torch_version}, using {fallback} "
+        "(UNSLOTH_ENABLE_LOGGING=1 for the fix)."
+    )
+
+
 try:
     _xformers_logger = logging.getLogger("xformers")
     _xformers_logger.setLevel(logging.ERROR)
@@ -4982,23 +5030,16 @@ except ModuleNotFoundError:
     xformers_attention = None
     xformers_version = None
 except Exception as e:
-    if UNSLOTH_ENABLE_LOGGING:
-        print("========\nSwitching to PyTorch attention since your Xformers is broken.\n========\n")
-        print(str(e))
-    elif DEVICE_TYPE == "cuda" and str(e).startswith("Unsloth:") and e.__cause__ is None:
-        # The version guards above (e.g. Blackwell FA3 dispatch) carry their own fix; install-kernels would not apply it.
-        print(str(e))
-    elif DEVICE_TYPE == "cuda":
-        # xformers' own warning is silenced above; usually PyPI's cu128 wheel beside a cu130 torch (#4381).
-        _built_for = re.search(r"PyTorch (\S+) with CUDA \S+ \(you have", str(e))
-        print(
-            "Unsloth: xformers is installed but cannot load with torch "
-            f"{torch_version}{f' (it was built for {_built_for.group(1)})' if _built_for else ''}, "
-            "so PyTorch attention is used instead.\n"
-            "To install a matching xformers, run `unsloth install-kernels xformers`, "
-            "or `pip uninstall xformers` to hide this. UNSLOTH_ENABLE_LOGGING=1 shows the full error."
-        )
-        del _built_for
+    _xformers_notice = _broken_xformers_notice(
+        e,
+        torch_version,
+        device_type = DEVICE_TYPE,
+        verbose = UNSLOTH_ENABLE_LOGGING,
+        has_flash_attention = HAS_FLASH_ATTENTION,
+    )
+    if _xformers_notice:
+        print(_xformers_notice)
+    del _xformers_notice
     xformers = None
     xformers_attention = None
     xformers_version = None
@@ -6831,6 +6872,16 @@ def patch_gradient_accumulation_fix(Trainer):
             # UNSLOTH_TP_SIZE / UNSLOTH_PP_SIZE (unmodified scripts): the pipeline split, then tensor parallel,
             # before native FSDP2 shards the dp dimension.
             tp_env = _tensor_parallel_env_trainer_pre(model)
+            if tp_env is None and model is not None:
+                from .ep_native import ep_env_apply, ep_refuse_prebuilt_optimizer
+                ep_refuse_prebuilt_optimizer(
+                    model,
+                    _prebuilt_optimizer(self, _original_trainer_init, args, kwargs),
+                    _optimizer_kwargs_hold_params(self, _original_trainer_init, args, kwargs),
+                )
+                ep_env_apply(
+                    model
+                )  # UNSLOTH_EP_SIZE: a model get_peft_model did not shard (full finetuning)
             if (
                 tp_env is not None
             ):  # model_init alone, or beside model (4.x: train() rebuilds from it)
@@ -6944,6 +6995,9 @@ def patch_gradient_accumulation_fix(Trainer):
             from ._ddp_defaults import install_unsloth_ddp_comm_defaults
 
             install_unsloth_ddp_comm_defaults(self)
+            from .ep_native import ep_trainer_setup
+
+            ep_trainer_setup(self)  # expert parallel: clipping, fp16 skip sync, 1-GPU adapter saves
             try:
                 from ._jit_checkpoint import install_jit_checkpoint_agreement
                 install_jit_checkpoint_agreement(self)
@@ -6977,6 +7031,9 @@ def patch_gradient_accumulation_fix(Trainer):
             # DDP exclusions as the one __init__ marked.
             model = _original_call_model_init(self, *args, **kwargs)
             _refuse_tensor_parallel_for_trainer(model)
+            if _is_unsloth_expert_parallel(model):
+                from .ep_native import _MODEL_INIT_REFUSAL
+                raise NotImplementedError(_MODEL_INIT_REFUSAL)
             _tensor_subclass_weights_for_ddp(self, model)
             try:
                 from ..tiling import revalidate_for_trainer
@@ -7011,6 +7068,20 @@ def _is_unsloth_pipeline_parallel(model):
     return _unsloth_model_parallel_marker(model, "_unsloth_pp")
 
 
+def _is_unsloth_expert_parallel(model):
+    """apply_expert_parallel keeps its ep mesh under `_unsloth_ep` on every wrapper level."""
+    m, depth = model, 0
+    while isinstance(getattr(m, "__dict__", None), dict) and depth < 8:
+        if m.__dict__.get("_unsloth_ep") is not None:
+            return True
+        modules = m.__dict__.get("_modules") or {}
+        m, depth = (
+            modules.get("base_model") or modules.get("model") or modules.get("module"),
+            depth + 1,
+        )
+    return False
+
+
 def _refuse_tensor_parallel_for_trainer(model):
     """Trainer(model_init = ...): the model it returns is built after the Trainer set up its accelerator."""
     if _is_unsloth_tensor_parallel(model):
@@ -7041,42 +7112,72 @@ def _refuse_pipeline_parallel_for_trainer(model):
         )
 
 
-def _trainer_init_args(trainer, init, args, kwargs):
-    training_args = kwargs.get("args")
-    if training_args is None:
+# transformers' Trainer.__init__ positional order, for an __init__ whose signature cannot be read (a wrapper
+# without functools.wraps: (self, *args, **kwargs)).
+_TRAINER_INIT_ORDER = (
+    "model",
+    "args",
+    "data_collator",
+    "train_dataset",
+    "eval_dataset",
+    "processing_class",
+    "model_init",
+    "compute_loss_func",
+    "compute_metrics",
+    "callbacks",
+    "optimizers",
+)
+
+
+def _trainer_init_value(trainer, init, args, kwargs, name):
+    """The `name` argument of an __init__(self, *args, **kwargs) call, by keyword or by position."""
+    value = kwargs.get(name)
+    if value is not None:
+        return value
+    import inspect
+
+    try:
+        param = inspect.signature(init).parameters.get(name)
+    except (TypeError, ValueError):
+        param = None
+    if param is not None and param.kind not in (param.VAR_POSITIONAL, param.VAR_KEYWORD):
         try:
-            import inspect
-            bound = inspect.signature(init).bind_partial(trainer, *args, **kwargs)
-            training_args = bound.arguments.get("args")
+            return (
+                inspect.signature(init).bind_partial(trainer, *args, **kwargs).arguments.get(name)
+            )
         except (TypeError, ValueError):
-            training_args = None
-    return training_args
+            return None
+    if name in _TRAINER_INIT_ORDER:  # no such parameter, or only *args / **kwargs
+        index = _TRAINER_INIT_ORDER.index(name)
+        return args[index] if len(args) > index else None
+    return None
+
+
+def _trainer_init_args(trainer, init, args, kwargs):
+    return _trainer_init_value(trainer, init, args, kwargs, "args")
 
 
 def _prebuilt_optimizer(trainer, init, args, kwargs):
-    optimizers = kwargs.get("optimizers")
-    if optimizers is None:
-        try:
-            import inspect
-            bound = inspect.signature(init).bind_partial(trainer, *args, **kwargs)
-            optimizers = bound.arguments.get("optimizers")
-        except (TypeError, ValueError):
-            optimizers = None
+    optimizers = _trainer_init_value(trainer, init, args, kwargs, "optimizers")
     if isinstance(optimizers, (tuple, list)) and optimizers:
         return optimizers[0]
     return None
 
 
-def _cp_trainer_refusal(trainer_cls, cp) -> str:
-    """Why a trainer class carries no context parallel wrapper under UNSLOTH_CP_SIZE, and what to do."""
+def _cp_trainer_refusal(
+    trainer_cls,
+    cp,
+    requested = None,
+) -> str:
+    """Why a trainer class carries no context parallel wrapper when context parallel was requested
+    (UNSLOTH_CP_SIZE, or `requested`: the config's context_parallel_size), and what to do."""
     import sys
 
     name = trainer_cls.__name__
     bases = {c.__name__.removeprefix("Unsloth").removeprefix("_CPU") for c in trainer_cls.__mro__}
     kind = next((k for k in ("SFTTrainer", "DPOTrainer", "GRPOTrainer") if k in bases), None)
-    head = (
-        f"Unsloth: cp x trainer: context parallel (UNSLOTH_CP_SIZE={cp}) was requested, but {name} "
-    )
+    requested = requested or f"UNSLOTH_CP_SIZE={cp}"
+    head = f"Unsloth: cp x trainer: context parallel ({requested}) was requested, but {name} "
     if sys.modules.get("unsloth._cpu_init") is not None or getattr(
         trainer_cls, "_unsloth_cpu", False
     ):
@@ -7107,12 +7208,16 @@ def _cp_trainer_refusal(trainer_cls, cp) -> str:
             "GRPOTrainer": "grpo_trainer",
         }[kind]
         built = PATCHED_TRAINER_BUILD_ERRORS.get(file)
-        reason = (
-            f"Unsloth's patched {kind} could not be built ({built})"
-            if built
-            else f"Unsloth's context parallel wrapper was not installed on {name} (import unsloth before trl)"
-        )
-        fix = "import unsloth before trl / transformers, and check the warning above for the build failure"
+        cp_error = getattr(trainer_cls, "_unsloth_cp_patch_error", None)
+        if cp_error:
+            reason = f"Unsloth could not add context parallelism to {name} ({cp_error})"
+            fix = "resolve that error (see the warning logged when the trainer was patched)"
+        elif built:
+            reason = f"Unsloth's patched {kind} could not be built ({built})"
+            fix = "check the warning above for the build failure"
+        else:
+            reason = f"Unsloth's context parallel wrapper was not installed on {name} (import unsloth before trl)"
+            fix = "import unsloth before trl / transformers"
     return (
         head
         + f"has no context parallel wrapper: {reason}; every rank would train on the whole sequence. "
@@ -7135,6 +7240,38 @@ def _optimizer_kwargs_hold_params(trainer, init, args, kwargs):
     return "params" in value[1]
 
 
+def _refuse_unwrapped_config_cp(trainer, init, args, kwargs):
+    """A config-only context parallel request (context_parallel_size > 1, no UNSLOTH_CP_SIZE) on a trainer class
+    without the context parallel wrapper: every rank would silently train as plain data parallel."""
+    if getattr(type(trainer), "__unsloth_context_parallel__", False):
+        return
+    size = getattr(_trainer_init_args(trainer, init, args, kwargs), "context_parallel_size", 1)
+    if isinstance(size, int) and not isinstance(size, bool) and size > 1:
+        raise NotImplementedError(
+            _cp_trainer_refusal(type(trainer), size, f"context_parallel_size = {size}")
+        )
+
+
+def guard_config_cp_after_patch_failure(trainer_cls, error):
+    """patch_rl_trainer raised for `trainer_cls` (rl.py only logs it): record why, and refuse a config-only
+    context parallel request in the class's own __init__, whether or not the Trainer.__init__ wrapper (installed
+    by Unsloth's loaders / the parallel launch flags) runs for this model."""
+    if getattr(trainer_cls, "__unsloth_context_parallel__", False):
+        return
+    trainer_cls._unsloth_cp_patch_error = f"{type(error).__name__}: {error}"
+    original = trainer_cls.__dict__.get("__init__")
+    if original is None or getattr(original, "_unsloth_config_cp_guard", False):
+        return
+
+    @functools.wraps(original)
+    def __init__(self, *args, **kwargs):
+        _refuse_unwrapped_config_cp(self, original, args, kwargs)
+        return original(self, *args, **kwargs)
+
+    __init__._unsloth_config_cp_guard = True
+    trainer_cls.__init__ = __init__
+
+
 def _parallel_capabilities_pre(trainer, init, args, kwargs, model):
     from .. import fsdp2_launch as _launch
 
@@ -7154,6 +7291,7 @@ def _parallel_capabilities_pre(trainer, init, args, kwargs, model):
         for what, on in (("fsdp2", native_fsdp2), ("tp", tp_env_set)):
             if on:
                 refuse_shard_unaware_optimizer(optimizer, what)
+    _refuse_unwrapped_config_cp(trainer, init, args, kwargs)
     if not any(
         os.environ.get(name, "").strip() not in ("", "1")
         for name in ("UNSLOTH_TP_SIZE", "UNSLOTH_PP_SIZE", "UNSLOTH_CP_SIZE")
@@ -7370,6 +7508,13 @@ def _refuse_model_parallel_export(model, method):
             "holds 1 / tp of the attention / MLP weights, so the export would be shard sized. Save the adapter "
             "with `save_tp_adapter(model, directory)` (on every tp rank), then in a single process load the "
             f"base model with that adapter and call `{method}` there."
+        )
+    if _is_unsloth_expert_parallel(model):
+        raise RuntimeError(
+            f"Unsloth: `{method}` does not support an expert parallel model (apply_expert_parallel): each rank "
+            "holds only its own routed experts, so the export would miss the others. Save the adapter with "
+            "`model.save_pretrained(directory)` or `trainer.save_model(directory)` (on every rank: the 1-GPU "
+            f"adapter), then in a single process load the base model with that adapter and call `{method}` there."
         )
     if _is_unsloth_pipeline_parallel(model):
         from .pp_native import pipeline_stage_of

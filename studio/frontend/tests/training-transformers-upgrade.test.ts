@@ -56,6 +56,33 @@ test("a model no installed transformers ships pauses the start on the dialog", a
   assert.equal(stub.calls[1]?.args[0].upgrade, UPGRADE);
 });
 
+test("installing a release the sidecar keeps in 4-bit does not report 16-bit", async () => {
+  // Inkling 2: the latest sidecar validates its bnb 4-bit load, so the run stays QLoRA.
+  stub.resetStub();
+  stub.state.checkResult = {
+    upgrade: { ...UPGRADE, model_type: "inkling2_loop" },
+    requiresTrustRemoteCode: false,
+    latestTierActive: false,
+    forces16Bit: false,
+    sidecarKeeps4Bit: true,
+  };
+  stub.state.consentResult = true;
+  stub.state.installRan = true;
+
+  const outcome = await confirmTrainingTransformersUpgrade({
+    modelName: "unsloth/Inkling-2-Mini",
+    hfToken: "hf_token",
+  });
+
+  assert.deepEqual(outcome, {
+    proceed: true,
+    error: null,
+    forces16Bit: false,
+    requiresTrustRemoteCode: false,
+  });
+  assert.equal(stub.calls[1]?.name, "confirmTransformersUpgradeIfNeeded");
+});
+
 test("declining the install abandons the start instead of spawning a doomed run", async () => {
   stub.resetStub();
   stub.state.checkResult = {
