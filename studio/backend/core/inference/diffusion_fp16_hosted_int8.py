@@ -24,9 +24,10 @@ import os
 from typing import Any, Optional
 
 FP16_CARD_HOSTED_INT8_ENV = "UNSLOTH_FP16_CARD_HOSTED_INT8"
-# Families whose hosted read was scored on a T4 against a dense float16 reference (16 prompts). Others keep the at-load
-# build until measured: the hosted codes are not the at-load codes (see the module docstring).
-FP16_CARD_HOSTED_INT8_FAMILIES = frozenset({"qwen-image-2.1"})
+# Families whose hosted read was scored on a T4 against a dense float16 reference (Qwen-Image-2.1 16 prompts, FLUX.3
+# klein 8). Others keep the at-load build until measured: the hosted codes are not the at-load codes (see the module
+# docstring).
+FP16_CARD_HOSTED_INT8_FAMILIES = frozenset({"qwen-image-2.1", "flux.3-klein"})
 _TAG = "diffusion.fp16_hosted_int8"
 
 
