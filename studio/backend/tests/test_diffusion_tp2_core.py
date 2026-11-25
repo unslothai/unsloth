@@ -110,7 +110,7 @@ def two_cards(monkeypatch):
     monkeypatch.setattr(
         tp2,
         "install",
-        lambda tr, devs, comm = None, logger = None: calls.append(devs)
+        lambda tr, devs, comm = None, logger = None, retire = True: calls.append(devs)
         or {"devices": [str(d) for d in devs]},
     )
     return calls
@@ -447,3 +447,174 @@ def test_release_kv_frees_the_per_card_caches():
     stack._kv[key] = layers
     assert tp2.release_kv(m) == 8 * 4 * 4
     assert all(layer.k is None and layer.v is None for card in layers for layer in card)
+
+
+# ------------------------------------------------------------------------------------------- round 3 (#19460)
+
+
+def _memory_plan(
+    dm,
+    policy,
+    stream_transformer = True,
+):
+    return dm.MemoryPlan(
+        requested_mode = "auto",
+        offload_policy = policy,
+        vae_tiling = False,
+        vae_slicing = False,
+        device_memory = dm.DeviceMemory(backend = "cuda", device = "cuda", memory_kind = "discrete_vram"),
+        estimates = {},
+        stream_transformer = stream_transformer,
+    )
+
+
+def test_encoder_offload_failure_uninstalls_tp_and_places_the_unsplit_denoiser(monkeypatch):
+    from core.inference import diffusion_memory as dm
+
+    m = _stub(3)
+    blocks = list(m.transformer_blocks)
+    tp2.install(m, CPU2, retire = False)
+    seen = []
+
+    def group_fails(pipe, placement, logger, **kw):
+        seen.append(("group", kw.get("stream_transformer", True)))
+        dm._set_group_offload_failure(pipe, RuntimeError("encoder hook failed"))
+        return False
+
+    monkeypatch.setattr(dm, "_apply_group_offload", group_fails)
+    monkeypatch.setattr(dm, "keep_cpu_weights_on_offload", lambda *a, **k: 0)
+    pipe = SimpleNamespace(
+        transformer = m,
+        _unsloth_tp2 = {"devices": ["cpu", "cpu"]},
+        enable_model_cpu_offload = lambda **k: seen.append(("model", None)),
+    )
+    tp_plan = _memory_plan(dm, "group", stream_transformer = False)
+    before = _memory_plan(dm, "group")
+    # under TP the encoder failure must not fall back to hooking or streaming the TP stack
+    with pytest.raises(tp2.PlacementError):
+        dm.apply_memory_plan(pipe, tp_plan, device = "cuda", placement_device = "cuda:0")
+    seen.clear()
+    (policy, _tiling), used = tp2.place_atomically(
+        pipe,
+        tp_plan,
+        before,
+        lambda p: dm.apply_memory_plan(pipe, p, device = "cuda", placement_device = "cuda:0"),
+    )
+    assert used is before and policy == "model"
+    assert seen == [("group", False), ("group", True), ("model", None)]
+    assert not tp2.is_installed(m) and list(m.transformer_blocks) == blocks
+    assert all(p.device.type == "cpu" for p in m.parameters()) and not hasattr(pipe, "_unsloth_tp2")
+
+
+def test_successful_placement_commits_and_frees_the_originals():
+    m = _stub(2)
+    originals = list(m.transformer_blocks)
+    tp2.install(m, CPU2, retire = False)
+    assert originals[0].attn.to_q.weight.device.type == "cpu"  # kept until placement succeeded
+    pipe = SimpleNamespace(transformer = m)
+    out, used = tp2.place_atomically(pipe, "tp-plan", "plain-plan", lambda p: ("placed", p))
+    assert out == ("placed", "tp-plan") and used == "tp-plan"
+    assert tp2.is_installed(m) and originals[0].attn.to_q.weight.device.type == "meta"
+    assert tp2.uninstall(m) is False  # nothing to restore once committed
+
+
+def test_a_non_group_tier_under_tp_is_a_placement_error():
+    from core.inference import diffusion_memory as dm
+
+    m = _stub()
+    tp2.install(m, CPU2)
+    for policy in ("model", "sequential", "streaming"):
+        with pytest.raises(tp2.PlacementError):
+            dm.apply_memory_plan(
+                SimpleNamespace(transformer = m), _memory_plan(dm, policy), device = "cuda"
+            )
+
+
+def test_native_block_zero_exclusion_follows_the_shards():
+    from core.inference import diffusion_int8_attention_dispatch as disp
+
+    m = _stub(2)
+    assert {id(m.transformer_blocks[0].attn)} <= disp.native_block_modules(m)
+    tp2.install(m, CPU2)
+    shards = m.transformer_blocks[0].shards()
+    excluded = disp.native_block_modules(m)
+    assert {id(card[0].attn) for card in shards} <= excluded  # block 0 on both cards
+    assert not ({id(card[1].attn) for card in shards} & excluded)
+
+
+def test_probe_oom_propagates(monkeypatch):
+    def oom(xs):
+        raise torch.OutOfMemoryError("CUDA out of memory")
+
+    monkeypatch.setattr(tp2, "make_all_reduce", lambda kind, devs: oom)
+    with pytest.raises(torch.OutOfMemoryError):
+        tp2.pick_all_reduce(CPU2, 8, torch.float32, only = "nccl")
+    with pytest.raises(torch.OutOfMemoryError):
+        tp2.pick_all_reduce(CPU2, 8, torch.float32)
+
+
+def test_engage_keeps_an_oom(two_cards, monkeypatch):
+    monkeypatch.setattr(
+        tp2, "install", lambda *a, **k: (_ for _ in ()).throw(torch.OutOfMemoryError("full"))
+    )
+    with pytest.raises(torch.OutOfMemoryError):
+        tp2.engage_for_plan(SimpleNamespace(transformer = _stub()), Plan())
+
+
+class _Ev:
+    def __init__(self):
+        self.stream = None
+
+    def record(self, stream):
+        self.stream = stream
+
+
+class _Stream:
+    def __init__(self, name):
+        self.name, self.waits = name, []
+
+    def wait_event(self, ev):
+        self.waits.append(ev)
+
+
+def test_hostswap_orders_scratch_reuse_after_the_add_on_its_own_stream(monkeypatch):
+    import contextlib
+
+    cur = {"s": _Stream("compute-A")}
+    fake_cuda = SimpleNamespace(
+        Stream = lambda d: _Stream(f"side-{d}"),
+        Event = _Ev,
+        current_stream = lambda d: cur["s"],
+        stream = lambda s: contextlib.nullcontext(),
+        device = lambda d: contextlib.nullcontext(),
+    )
+    monkeypatch.setattr(torch, "cuda", fake_cuda)
+    hs = tp2.HostSwap(["d0", "d1"], chunks = 1)
+
+    class Buf:
+        def __init__(self, t):
+            self.t = t
+
+        def __getitem__(self, k):
+            return self.t[k]
+
+        def record_stream(self, s):
+            pass
+
+    monkeypatch.setattr(
+        hs,
+        "_bufs",
+        lambda n, dt: (
+            [torch.zeros(n), torch.zeros(n)],
+            [Buf(torch.zeros(n)), Buf(torch.zeros(n))],
+        ),
+    )
+    hs([torch.ones(4), torch.ones(4)])
+    first_add = list(hs._add_done)
+    assert all(ev.stream is cur["s"] for ev in first_add)
+    cur["s"] = _Stream("compute-B")  # the caller switched compute streams
+    hs([torch.ones(4), torch.ones(4)])
+    for c in (0, 1):
+        assert (
+            first_add[c] in hs.h2d[c].waits
+        )  # the H2D into tmp[c] waited for the previous add on stream A

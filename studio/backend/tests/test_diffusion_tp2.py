@@ -177,7 +177,7 @@ def test_engage_for_plan(monkeypatch):
     monkeypatch.setattr(
         tp2,
         "install",
-        lambda tr, devs, comm = None, logger = None: seen.update(devs = devs)
+        lambda tr, devs, comm = None, logger = None, retire = True: seen.update(devs = devs)
         or {"devices": [str(d) for d in devs]},
     )
     out = tp2.engage_for_plan(pipe, plan)
@@ -546,3 +546,44 @@ def test_int8_dispatch_route_census_and_remove_see_the_shards(monkeypatch):
     assert disp.status(pipe)["modules"] == 4
     disp.remove(pipe)
     assert disp.routed_count(pipe) == 0
+
+
+def test_compiled_style_view_caches_are_compacted_per_card(monkeypatch):
+    # Inductor lowers the extract step's prefix clone to a view of the full K/V; Studio compacts the unsplit cache,
+    # and the per-card TP caches must get the same copy or they pin the full prefill K/V through decode
+    def view_store(self, k, v):
+        self.k = torch.cat([k, k], 1)[:, : k.shape[1]]
+        self.v = torch.cat([v, v], 1)[:, : v.shape[1]]
+
+    monkeypatch.setattr(q21.QwenImage21KVLayerCache, "store", view_store)
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_Q21_COMPACT_KV", raising = False)
+    ref = _tiny(layers = 2)
+    tp = copy.deepcopy(ref)
+    tp2.install(tp, CPU2)
+    c_ref, c_tp = q21.QwenImage21KVCache(2), q21.QwenImage21KVCache(1)
+    _run(ref, c_ref, "extract")
+    _run(tp, c_tp, "extract")
+    per = tp.transformer_blocks[0]._kv[c_tp.get_layer(0)]
+    for layer in (layer for card in per for layer in card):
+        for t in (layer.k, layer.v):
+            assert t.untyped_storage().nbytes() == t.numel() * t.element_size()
+    torch.testing.assert_close(
+        _run(tp, c_tp, "cached"), _run(ref, c_ref, "cached"), rtol = 1e-5, atol = 1e-5
+    )
+
+
+def test_speed_profile_backend_change_is_refused_under_tp():
+    from types import SimpleNamespace
+
+    from core.inference import diffusion_attention as da
+
+    m = _tiny(layers = 2)
+    tp2.install(m, CPU2)
+    procs = [card[i].attn.processor for card in m.transformer_blocks[0].shards() for i in range(2)]
+    before = [getattr(p, "_attention_backend", None) for p in procs]
+    pipe = SimpleNamespace(transformer = m)
+    kept = getattr(m, da.ATTENTION_BACKEND_ATTR, None)
+    engaged = da.apply_attention_backend(pipe, "_native_math")
+    # the shards cannot be reached by diffusers' setter, so nothing changes and nothing new is reported
+    assert engaged == kept and getattr(m, da.ATTENTION_BACKEND_ATTR, None) == kept
+    assert [getattr(p, "_attention_backend", None) for p in procs] == before

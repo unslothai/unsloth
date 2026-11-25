@@ -126,7 +126,12 @@ def native_block_modules(dit: Any) -> set:
     named = getattr(dit, "named_modules", None)
     if not blocks or not native_blocks_enabled() or not callable(named):
         return set()
-    return {id(m) for name, m in named() if block_index(name) in blocks}
+    from .diffusion_tp2 import shard_named_modules
+
+    # a tensor-parallel denoiser's blocks live in its per-card shards, named as in the unsplit tree
+    return {
+        id(m) for name, m in (*named(), *shard_named_modules(dit)) if block_index(name) in blocks
+    }
 
 
 # (large, small) token counts of the second race, for a card where the kernel loses at RACE_TOKENS

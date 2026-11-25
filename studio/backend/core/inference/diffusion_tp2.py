@@ -349,6 +349,8 @@ class HostSwap:
         self._host: OrderedDict = OrderedDict()
         self._tmp: OrderedDict = OrderedDict()
         self._read_done: list = [None, None]
+        # the add that last read tmp[c], recorded on the stream that ran it (the caller's stream can change)
+        self._add_done: list = [None, None]
 
     def _bufs(self, n: int, dtype: Any) -> tuple:
         import torch
@@ -376,6 +378,10 @@ class HostSwap:
             )  # partial written; previous add (reads tmp[c]) done
             self.d2h[c].wait_event(ready)
             self.h2d[c].wait_event(ready)
+            if (
+                self._add_done[c] is not None
+            ):  # the previous add read tmp[c], maybe on another stream
+                self.h2d[c].wait_event(self._add_done[c])
             if self._read_done[c] is not None:  # the other card finished reading host[c] last call
                 self.d2h[c].wait_event(self._read_done[c])
         step = -(-n // self.chunks)
@@ -403,6 +409,12 @@ class HostSwap:
             cur.wait_event(landed[c][-1])  # own D2H read flat[c] before the add overwrites it
             with torch.cuda.device(d):
                 flat[c].add_(tmp[c][:n])
+            added = torch.cuda.Event()
+            added.record(cur)
+            self._add_done[c] = added
+            # the scratch was written on h2d and read on this stream: an evicted size must not be reused early
+            tmp[c].record_stream(cur)
+            tmp[c].record_stream(self.h2d[c])
         return xs
 
 
@@ -485,6 +497,8 @@ def pick_all_reduce(
             _sync(devices)
             timings[name] = round((time.perf_counter() - t) * 1000 / 10, 3)  # ms per call
             fns[name] = fn
+        except torch.OutOfMemoryError:
+            raise  # a full card is not a broken backend: the caller's OOM handling decides
         except Exception as exc:  # noqa: BLE001 - a backend that fails here is simply not used
             timings[name] = f"failed: {type(exc).__name__}: {exc}"[:200]
     choice = choose_comm(timings)
@@ -582,7 +596,12 @@ def _stack_class():
         def compile(self, *args: Any, **kwargs: Any) -> None:  # noqa: A003 - nn.Module.compile's name
             """Regional compile of a TP denoiser: compile the two per-card stages (attention half, MLP half), the
             all-reduce stays eager between them. Opt-in (``UNSLOTH_DIFFUSION_TP_COMPILE=1``). Reached through ``compile_repeated_blocks`` (the transformer's
-            ``_repeated_blocks`` names this class) or at install when the blocks were compiled already."""
+            ``_repeated_blocks`` names this class) or at install when the blocks were compiled already.
+
+            Two stages instead of one block mean more Dynamo graph variants over a prefill / extract / cached
+            sequence (6 to 8 by default, 3 to 4 with ``dynamic=True``; marking the token dimension dynamic does not
+            merge them), all compiled once per shape with no graph breaks. Confined to this opt-in; default TP runs
+            the stages eager."""
             import torch
 
             if (os.environ.get(TP_COMPILE_ENV) or "").strip().lower() not in (
@@ -654,6 +673,9 @@ def _stack_class():
             ttms = [_move(target_token_mask, d) for d in devs]
             kvs = [_move(key_valid, d) for d in devs]
             caches = self._caches(layer_cache, kv_cache_mode)
+            compact = (
+                _kv_compactor() if caches is not None and cache_write_slice is not None else None
+            )
             for i in range(len(self._shards[0])):
                 parts, gates, mod2s = [], [], []
                 for c, d in enumerate(devs):
@@ -674,6 +696,8 @@ def _stack_class():
                     parts.append(a)
                     gates.append(g1)
                     mod2s.append(m2)
+                    if compact and caches is not None and cache_write_slice is not None:
+                        compact(caches[c][i])
                 parts = ar(parts)
                 mlps, gates2 = [], []
                 for c, d in enumerate(devs):
@@ -692,6 +716,16 @@ def _stack_class():
             return out if out.device == home else out.to(home)
 
     return TPStack
+
+
+def _kv_compactor() -> Optional[Callable]:
+    """Studio's prefix K/V compaction (diffusion_qwenimage21): a compiled extract step stores views of the full K/V,
+    which would pin the whole prefill through decode; the per-card caches get the same copy-down."""
+    try:
+        from .diffusion_qwenimage21 import _compact_layer_cache, compact_kv_enabled
+    except Exception:  # noqa: BLE001 - no Studio compaction available: keep the entries as stored
+        return None
+    return _compact_layer_cache if compact_kv_enabled() else None
 
 
 def _free_cards(devices: Sequence[Any]) -> None:
@@ -737,9 +771,11 @@ def install(
     comm: Optional[str] = None,
     logger: Any = None,
     probe_tokens: int = 4096,
+    retire: bool = True,
 ) -> dict:
     """Shard ``transformer``'s blocks over ``devices`` and route its block loop through them. The prologue /
-    epilogue (embedders, shared modulation, norm_out, proj_out) move to ``devices[0]``. Returns a status record."""
+    epilogue (embedders, shared modulation, norm_out, proj_out) move to ``devices[0]``. Returns a status record.
+    ``retire=False`` keeps the original blocks (where they were) for ``uninstall`` until ``commit``."""
     import torch
     from torch import nn
 
@@ -810,15 +846,9 @@ def install(
     }
     record["stage_compile"] = bool(stack.compiled)
     setattr(transformer, TP_ATTR, record)
-    # the whole-block originals are no longer needed; TP is complete and marked whatever happens here
-    try:
-        with torch.no_grad():
-            for blk in blocks:
-                blk.to("meta")
-    except Exception as exc:  # noqa: BLE001 - they stay in host memory, TP itself is intact
-        record["originals_kept"] = f"{type(exc).__name__}: {exc}"[:200]
-        if logger is not None:
-            logger.warning("diffusion.tp2: original blocks kept after setup: %s", exc)
+    object.__setattr__(stack, "_originals", (original_blocks, home))
+    if retire:
+        commit(transformer, logger)
     # A later regional compile reaches the stages through TPStack.compile.
     transformer._repeated_blocks = (type(stack).__name__,)
     # One recorded graph cannot hold both cards' launches and the all-reduce between them.
@@ -826,6 +856,111 @@ def install(
     if logger is not None:
         logger.info("diffusion.tp2: %s", record)
     return record
+
+
+class PlacementError(RuntimeError):
+    """The placement could not keep the TP denoiser resident (the encoders' group offload failed); the load must
+    uninstall TP and place the unsplit denoiser instead of letting a fallback hook or stream the TP stack."""
+
+
+def _stack(transformer: Any) -> Any:
+    try:
+        stack = transformer.transformer_blocks[0]
+    except Exception:  # noqa: BLE001
+        return None
+    return stack if type(stack).__name__ == "TPStack" else None
+
+
+def commit(transformer: Any, logger: Any = None) -> None:
+    """Free the original blocks (to meta) once TP is placed; TP stays complete whatever happens here."""
+    import torch
+
+    stack = _stack(transformer)
+    originals = getattr(stack, "_originals", None) if stack is not None else None
+    if originals is None:
+        return
+    object.__setattr__(stack, "_originals", None)
+    try:
+        with torch.no_grad():
+            for blk in originals[0]:
+                blk.to("meta")
+    except Exception as exc:  # noqa: BLE001 - they stay in host memory, TP itself is intact
+        rec = getattr(transformer, TP_ATTR, None)
+        if isinstance(rec, dict):
+            rec["originals_kept"] = f"{type(exc).__name__}: {exc}"[:200]
+        if logger is not None:
+            logger.warning("diffusion.tp2: original blocks kept after setup: %s", exc)
+
+
+def uninstall(transformer: Any, logger: Any = None) -> bool:
+    """Put the original blocks back (before ``commit`` only) and drop the shards. False when they are gone."""
+    stack = _stack(transformer)
+    originals = getattr(stack, "_originals", None) if stack is not None else None
+    if originals is None:
+        return False
+    blocks, home = originals
+    devices = list(getattr(stack, "_devices", ()))
+    object.__setattr__(stack, "_originals", None)
+    transformer.transformer_blocks = blocks
+    if home is not None:
+        with contextlib.suppress(Exception):
+            transformer.to(home)
+    for key in (TP_ATTR, GRAPH_UNSAFE_ATTR, "_repeated_blocks"):
+        transformer.__dict__.pop(key, None)
+    with contextlib.suppress(Exception):
+        stack._shards.clear()
+        stack._kv.clear()
+    _free_cards(devices)
+    if logger is not None:
+        logger.info("diffusion.tp2: uninstalled, the unsplit denoiser is placed instead")
+    return True
+
+
+def place_atomically(
+    pipe: Any,
+    plan: Any,
+    plan_without_tp: Any,
+    apply: Callable[[Any], Any],
+    logger: Any = None,
+) -> tuple:
+    """``(apply(plan), plan)`` with TP committed, or, when the placement cannot keep the TP denoiser resident
+    (``PlacementError``), TP uninstalled and ``(apply(plan_without_tp), plan_without_tp)``. Any other failure
+    uninstalls TP and propagates. Without TP: ``(apply(plan), plan)``."""
+    tr = getattr(pipe, "transformer", None)
+    if not is_installed(tr):
+        return apply(plan), plan
+    try:
+        out = apply(plan)
+    except PlacementError as exc:
+        if logger is not None:
+            logger.warning(
+                "diffusion.tp2: placement failed (%s); the normal placement runs instead", exc
+            )
+        uninstall(tr, logger)
+        with contextlib.suppress(Exception):
+            delattr(pipe, "_unsloth_tp2")
+        return apply(plan_without_tp), plan_without_tp
+    except BaseException:
+        if uninstall(tr, logger):
+            with contextlib.suppress(Exception):
+                delattr(pipe, "_unsloth_tp2")
+        raise
+    commit(tr, logger)
+    return out, plan
+
+
+def shard_named_modules(transformer: Any) -> list:
+    """``(name, module)`` for every card's block shards, named as the unsplit tree would name them
+    (``transformer_blocks.<i>.<sub>``), so per-block rules (INT8 attention's native block 0) reach the shards."""
+    stack = _stack(transformer) if getattr(transformer, TP_ATTR, None) is not None else None
+    if stack is None:
+        return []
+    out = []
+    for card in stack.shards():
+        for i, blk in enumerate(card):
+            for sub, m in blk.named_modules():
+                out.append((f"transformer_blocks.{i}" + (f".{sub}" if sub else ""), m))
+    return out
 
 
 def is_installed(transformer: Any) -> bool:
@@ -959,8 +1094,14 @@ def engage_for_plan(
         return keep("; ".join(reasons))
     try:
         record = install(
-            tr, devices, comm = None if _comm_choice() == "auto" else _comm_choice(), logger = logger
+            tr,
+            devices,
+            comm = None if _comm_choice() == "auto" else _comm_choice(),
+            logger = logger,
+            retire = False,  # the originals go only once placement succeeded (place_atomically)
         )
+    except torch.OutOfMemoryError:
+        raise  # install restored the blocks; Studio's OOM handling owns the retry
     except Exception as exc:  # noqa: BLE001 - install restored the blocks: the normal plan still loads
         if logger is not None:
             logger.warning(

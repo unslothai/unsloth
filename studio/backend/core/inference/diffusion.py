@@ -12781,18 +12781,28 @@ class DiffusionBackend:
                     plan = self._small_host_plan(pipe, plan, fam, logger)
                     plan = refine_plan_for_multigpu(pipe, plan, logger)
                     from .diffusion_tp2 import engage_for_plan as _tp2_engage
+                    from .diffusion_tp2 import place_atomically as _tp2_place
 
                     # opt-in UNSLOTH_DIFFUSION_TP=1: denoiser sharded over two cards, kept resident
+                    plan_without_tp = plan
                     plan = _tp2_engage(pipe, plan, logger, loras = loras)
                     # streamed text encoders pin after the load returns, before or during the first encode
                     request_background_encoder_pins(pipe)
-                    effective_policy, effective_tiling = apply_memory_plan(
+                    # TP placement is atomic: a placement that cannot keep the shards resident uninstalls TP and
+                    # places the unsplit denoiser with the plan it had before TP
+                    (effective_policy, effective_tiling), plan = _tp2_place(
                         pipe,
                         plan,
-                        device = device,
-                        # Indexed: CPU-offload APIs default to cuda:0 without an index.
-                        placement_device = target.torch_device,
-                        logger = logger,
+                        plan_without_tp,
+                        lambda p: apply_memory_plan(
+                            pipe,
+                            p,
+                            device = device,
+                            # Indexed: CPU-offload APIs default to cuda:0 without an index.
+                            placement_device = target.torch_device,
+                            logger = logger,
+                        ),
+                        logger,
                     )
                     start_background_pins(pipe)
                     # a transient OOM during setup may have re-planned to lower residency
