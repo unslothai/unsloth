@@ -31,7 +31,7 @@ _OPAQUE = {"w8a8_block_fp8_matmul_triton", "torchao_block_matmul"}
 
 
 def _launchers():
-    tree = ast.parse(_FP8.read_text())
+    tree = ast.parse(_FP8.read_text(encoding = "utf-8"))
     found = {}
     for node in tree.body:
         if isinstance(node, ast.FunctionDef) and node.name in _OPAQUE:
