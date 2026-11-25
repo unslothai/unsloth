@@ -269,7 +269,6 @@ def profile(key: str) -> GpuProfile:
     return PROFILES[key]
 
 
-# ------------------------------------------------------------------------------------------------------- mocking
 _VirtualMemory = namedtuple(
     "svmem", "total available percent used free active inactive buffers cached shared slab"
 )
