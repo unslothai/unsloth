@@ -498,8 +498,7 @@ def make_dataset_task(
     module = Path(target.name).stem
     dumper = yaml.SafeDumper
     if builder == "csv":
-        # A CSV field is text even when every value happens to look like a number.
-        # Only the prompt and answer need a converter; other columns can still infer types.
+        # pandas would read "001" as 1 and "NA" as NaN; keep the prompt and answer as written
         spec["dataset_kwargs"].update(
             keep_default_na = False,
             na_values = [""],
@@ -507,10 +506,11 @@ def make_dataset_task(
         )
 
         class CsvTaskDumper(yaml.SafeDumper):
-            pass
+            def ignore_aliases(self, data):
+                return True
 
         CsvTaskDumper.add_representer(
-            type(str), lambda dumper, _: dumper.represent_scalar("!function", f"{module}.csv_text")
+            type, lambda dumper, _: dumper.represent_scalar("!function", f"{module}.csv_text")
         )
         dumper = CsvTaskDumper
     (out_dir / f"{name}.yaml").write_text(
