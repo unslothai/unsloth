@@ -109,6 +109,8 @@ def test_start_plan_step_pins_gpus_and_spec(spoof):
     asyncio.run(training_routes._plan_parallel_training(_request("auto"), kwargs, None))
     assert kwargs["parallel"]["mode"] == "ddp" and kwargs["parallel"]["launcher"] == "multi_process"
     assert kwargs["parallel"]["spec"] == "dp=2" and kwargs["gpu_ids"] == [0, 1]
+    # Rank r runs on the r-th id of the mask the worker writes, which is parallel.gpu_ids.
+    assert kwargs["parallel"]["gpu_ids"] == kwargs["gpu_ids"]
 
 
 def test_start_plan_step_refuses_with_400(spoof):
@@ -141,3 +143,13 @@ def test_start_plan_step_refuses_a_subset_of_an_unnarrowable_mask(spoof, monkeyp
     kwargs = _kwargs()
     asyncio.run(training_routes._plan_parallel_training(_request("ddp"), kwargs, None))
     assert kwargs["parallel"]["world_size"] == 2 and kwargs["gpu_ids"] is None
+
+
+@pytest.mark.parametrize("order, expected", [([1, 0], [1, 0]), ([0, 1], [0, 1]), ([], None)])
+def test_unnarrowable_mask_reports_gpu_ids_in_rank_order(spoof, monkeypatch, order, expected):
+    # The ranks inherit the parent mask, so gpu_ids follow its order; no telemetry index -> None.
+    monkeypatch.setattr(training_routes, "_parent_mask_takes_gpu_ids", lambda: False)
+    monkeypatch.setattr(training_routes, "_parent_visible_gpu_order", lambda: order)
+    kwargs = _kwargs()
+    asyncio.run(training_routes._plan_parallel_training(_request("ddp"), kwargs, None))
+    assert kwargs["parallel"]["gpu_ids"] == expected and kwargs["gpu_ids"] is None

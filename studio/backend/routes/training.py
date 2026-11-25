@@ -2440,6 +2440,14 @@ def _parent_mask_takes_gpu_ids() -> bool:
         return True
 
 
+def _parent_visible_gpu_order() -> list:
+    try:
+        from utils.hardware import hardware as hw
+        return list(hw.get_parent_visible_gpu_ids())
+    except Exception:
+        return []
+
+
 async def _plan_parallel_training(request, training_kwargs: dict, hf_token) -> None:
     """Resolve parallel_mode before any VRAM moves: a refused layout is a 400."""
     from core.training import parallel_plan
@@ -2473,6 +2481,11 @@ async def _plan_parallel_training(request, training_kwargs: dict, hf_token) -> N
                 },
             )
         pin = False  # every visible GPU, which is what the plan counted
+        if plan["launcher"] == "multi_process":
+            # Rank r runs on the r-th device of the inherited mask: report gpu_ids in that order, or
+            # None when the mask names no telemetry index.
+            order = _parent_visible_gpu_order()
+            plan["gpu_ids"] = order if sorted(order) == sorted(plan["gpu_ids"]) else None
     training_kwargs["parallel"] = {
         key: plan[key]
         for key in (
@@ -2487,6 +2500,7 @@ async def _plan_parallel_training(request, training_kwargs: dict, hf_token) -> N
         )
     }
     if pin:
+        # The worker's mask lists these ids in this order, so rank r runs on gpu_ids[r].
         training_kwargs["gpu_ids"] = list(plan["gpu_ids"])
     logger.info(
         "Multi-GPU plan: mode=%s world_size=%s gpu_ids=%s spec=%s (%s)",
