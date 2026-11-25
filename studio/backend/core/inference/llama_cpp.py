@@ -33167,7 +33167,6 @@ class LlamaCppBackend:
                 # companion flags fitted to the child's mask, refitted by the arch-crash retry
                 _companion_fit_mask: Optional[list[int]] = None
                 _companion_added_device: Optional[list[str]] = None
-                # Every card Auto could have picked, for the --fit on retry once its estimate fails.
                 _fit_retry_pool: Optional[list[int]] = None
                 _fit_retry_restore: Optional[tuple] = None
                 if not is_vulkan_backend and _gpu_mem:
@@ -33662,12 +33661,9 @@ class LlamaCppBackend:
                         # A kernel-image crash belongs to the arch-crash rung.
                         or not self._is_gpu_memory_start_failure(_crash_text)
                         or self._kernel_image_invalid(_crash_text)
-                        # Decided for the pinned cards.
                         or _unified_env_applied
-                        # A trailing user --fit off wins over the retry's on.
                         or not fit_is_effectively_on(run_cmd, env)
                         or _argv_places_by_device_position(run_cmd, env)
-                        # A user's per-device --fit-target list is positional too.
                         or any(
                             len(re.split(r"[,/]+", str(v).strip())) > 1
                             for v in _fit_target_values(extra_args or (), env)
@@ -34134,8 +34130,7 @@ class LlamaCppBackend:
                         # Here rather than per rung, so a later rung cannot forget it.
                         self._memory_pending_launch = _mem_settings
                         if _fit_retry_restore is not None:
-                            # An extra attempt: the planned-card retry runs before anything is
-                            # read off the widened child, so later rungs see no trace of it.
+                            # Retry on the planned cards before reading anything off the widened child.
                             logger.warning(
                                 "The --fit on retry over GPUs %s did not come up; retrying "
                                 "once with --fit on over the planned GPU(s). Log: %s",
