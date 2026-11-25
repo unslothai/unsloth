@@ -388,6 +388,15 @@ export function installPageAgent(): PageAgent {
     let buffer = "";
     let bufferShown = false;
     let bufferKeepsLines = false;
+    let bufferCode = false;
+    let overflow = false;
+    // Tracked apart: endsWith on a long concatenated buffer flattens it every line (quadratic).
+    let lineOpen = false;
+    const add = (text: string) => {
+      if (!text) return;
+      buffer += text;
+      lineOpen = !text.endsWith("\n");
+    };
     let inPre = 0;
     const push = (line: string) => {
       if (cut) return;
@@ -398,13 +407,16 @@ export function installPageAgent(): PageAgent {
       lines.push(line);
       used += line.length + 1;
     };
-    const flush = (code = false) => {
+    const flush = () => {
+      const code = bufferCode;
       const text = bufferKeepsLines ? buffer.replace(/[^\S\n]+$/gm, "").replace(/^\n+|\s+$/g, "") : clean(buffer, Infinity);
       // A lone symbol is an icon or a bullet; a lone digit or letter is a count or a grade.
       if (text && bufferShown && (text.length > 1 || /[\p{L}\p{N}]/u.test(text))) {
         // Cut inside the fence so the "more below" note never lands in an open code block.
         // Longer than any backtick run inside, so the body can't close it (CommonMark fenced code).
-        const fence = code ? "`".repeat(Math.max(3, ...(text.match(/`+/g) ?? []).map((run) => run.length + 1))) : "";
+        let longest = 2;
+        if (code) for (const run of text.match(/`+/g) ?? []) longest = Math.max(longest, run.length);
+        const fence = code ? "`".repeat(longest + 1) : "";
         const room = budget - used - 1 - (code ? 2 * fence.length + 2 : 0);
         const fits = text.length <= room || room <= 1;
         const body = fits ? text : `${text.slice(0, room - 1)}…`;
@@ -414,6 +426,9 @@ export function installPageAgent(): PageAgent {
       buffer = "";
       bufferShown = false;
       bufferKeepsLines = false;
+      // A link inside code splits it; the rest is still code.
+      bufferCode = code && inPre > 0;
+      lineOpen = false;
     };
     const walk = (el: Element) => {
       if (cut) return;
@@ -461,8 +476,11 @@ export function installPageAgent(): PageAgent {
       // A block inside a code block is one of its lines (highlighters wrap each line), not a paragraph.
       const codeLine = block && inPre > 0;
       if (block && !codeLine) flush();
-      if (codeLine && buffer && !buffer.endsWith("\n")) buffer += "\n";
-      if (tag === "pre") inPre++;
+      if (codeLine && lineOpen) add("\n");
+      if (tag === "pre") {
+        inPre++;
+        if (block) bufferCode = true;
+      }
       // A label's words are already its field's name.
       const labelled = tag === "label" && Boolean((el as HTMLLabelElement).control);
       // Text too small to read is there for the model, not the user. Only this element's own text:
@@ -471,13 +489,20 @@ export function installPageAgent(): PageAgent {
       const keepsLines = /^(pre|break-spaces)/.test(style.whiteSpace);
       const children = el.shadowRoot ? [...Array.from(el.shadowRoot.childNodes), ...Array.from(el.childNodes)] : Array.from(el.childNodes);
       for (const node of children) {
-        if (cut) return;
+        // Already past what fits: the rest would be cut, so the final flush ends the read.
+        if (cut || overflow) return;
+        if (bufferShown && buffer.length > budget - used) {
+          overflow = true;
+          return;
+        }
         if (node.nodeType === Node.TEXT_NODE) {
           const raw = node.nodeValue ?? "";
-          const value = wholePage || rect.top >= 0 || !shown || !raw.trim() ? raw : onScreenPart(node as Text, keepsLines);
-          if (unreadable) buffer += " ";
+          // A code line above the screen: the view starts below it, as it does inside one long line.
+          const above = !wholePage && inPre > 0 && rect.height > 0 && rect.bottom <= 0;
+          const value = above ? "" : wholePage || rect.top >= 0 || !shown || !raw.trim() ? raw : onScreenPart(node as Text, keepsLines);
+          if (unreadable) add(" ");
           else if (!labelled) {
-            buffer += keepsLines ? value : value.replace(/\s+/g, " ");
+            add(keepsLines ? value : value.replace(/\s+/g, " "));
             if (keepsLines && value.includes("\n")) bufferKeepsLines = true;
             if (value.trim() && shown && sized(rect)) bufferShown = true;
           }
@@ -487,12 +512,13 @@ export function installPageAgent(): PageAgent {
       }
       if (tag === "pre") inPre--;
       if (codeLine) {
-        if (buffer && !buffer.endsWith("\n")) buffer += "\n";
+        if (lineOpen) add("\n");
         bufferKeepsLines = true;
-      } else if (block) flush(tag === "pre");
+      } else if (block) flush();
     };
     walk(root);
     flush();
+    if (overflow) cut = true;
     return { text: lines.join("\n"), links, cut };
   };
 

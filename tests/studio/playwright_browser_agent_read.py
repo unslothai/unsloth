@@ -114,5 +114,20 @@ def test_highlighter_lines_stay_one_fenced_block(page):
     assert f"```\n>>> x\n{CODE}\n```" in text
 
 
+def test_scrolling_moves_through_highlighter_lines(page):
+    spans = "".join(f'<span style="display: block">line_{i:04d} = {i}</span>' for i in range(3000))
+    html = f'<pre style="margin: 0; font: 15px/20px monospace">{spans}</pre>'
+    text = page(html, scroll = 8 + 20 * 1000)
+    assert text.splitlines()[1] == "```"
+    assert [line for line in text.splitlines() if line.startswith("line_")][0] == "line_1000 = 1000"
+
+
+def test_many_backtick_runs_still_read(page):
+    code = "\n".join(f"console.log(`v{i}`)" for i in range(70000))
+    text = page(f"<pre>{code}</pre>", fullPage = True)
+    assert text.startswith("```\nconsole.log(`v0`)")
+    assert text.endswith("(more below: use browser_scroll, browser_find, or a snapshot ref)")
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q", "--confcutdir", str(Path(__file__).parent)]))
