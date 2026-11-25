@@ -486,8 +486,7 @@ def test_post_patch_model_installs_the_routing():
 
 @pytest.mark.parametrize("arch", list(ARCHS))
 def test_mixer_forward_is_patched_whatever_the_cache_argument_is_called(monkeypatch, arch):
-    # transformers 5.24 renamed the mixer's `cache_params` to `cache`; a patch keyed on the old name
-    # skipped the class silently and dt_proj / x_proj LoRA stopped training.
+    # transformers 5.24 renamed cache_params to cache; the patch used to skip the mixer silently.
     model, calls = _build(monkeypatch, arch, ["in_proj", *RAW])
     mixer_cls = type(_mixers(model)[0])
     params = list(inspect.signature(mixer_cls.forward).parameters)

@@ -442,7 +442,6 @@ def _patch_class(cls):
         _gate_module_fns(cls)
         return True
     params = list(inspect.signature(forward).parameters)
-    # transformers 5.24 renamed the mixer's cache_params to cache (cache_params stays a deprecated alias).
     cache_name = next((name for name in _CACHE_PARAM_NAMES if name in params), None)
     if cache_name is None or len(params) < 2:
         return False
