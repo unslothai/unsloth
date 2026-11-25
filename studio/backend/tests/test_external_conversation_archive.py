@@ -274,8 +274,7 @@ def test_no_compaction_nudge_when_tool_calls_are_disabled(monkeypatch):
 
 
 def test_a_tool_result_found_this_turn_stays_in_the_prompt(archive_ready):
-    """The fit shortens this turn's results instead of evicting them, so the model keeps what it
-    found this turn (#16187)."""
+    """The fit shortens this turn's results rather than evicting them (#16187)."""
     finding = "The ZEBRA-4471 valve opens at 37 bar"
     request = _chat()[:3] + [
         {"role": "user", "content": "What pressure does the ZEBRA-4471 valve open at?"}
