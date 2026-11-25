@@ -522,6 +522,8 @@ def test_long_runs_compile_the_encoder_layers_and_leave_them_eager(
     assert not compiled
     assert _decision_fast._wants_compile(model, 10**6) == next(model.parameters()).is_cuda
     monkeypatch.setattr(_decision_fast, "_on_gpu", lambda model: True)
+    # A GPU host has triton; macOS and Windows CPU runners do not, and would never compile.
+    monkeypatch.setattr(_decision_fast, "_has_triton", lambda: True)
     assert _decision_fast._wants_compile(model, _decision_fast.COMPILE_MIN_FORWARDS)
     assert not _decision_fast._wants_compile(model, _decision_fast.COMPILE_MIN_FORWARDS - 1)
     monkeypatch.setenv("UNSLOTH_DECISION_COMPILE", "1")
