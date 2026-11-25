@@ -713,8 +713,10 @@ def plan_for_request(
     *,
     hf_token: Optional[str] = None,
     host: Optional[dict] = None,
+    inline_error: bool = False,
 ) -> dict:
-    """plan() on the live host and model; a refusal comes back in `error` (the /plan route) -- /start raises it."""
+    """plan() on the live host and model. A refusal raises ParallelPlanError (/start), or with inline_error comes back
+    in `error` beside the auto plan (/plan, so the Train page can show it next to the default)."""
     host = host or detect_host()
     model = None
     if request.get("model_name"):
@@ -730,4 +732,14 @@ def plan_for_request(
             gradient_checkpointing = request.get("gradient_checkpointing") or "unsloth",
             optimizer = request.get("optim") or "adamw_8bit",
         )
-    return plan(request, host, model)
+    try:
+        return plan(request, host, model)
+    except ParallelPlanError as exc:
+        if not inline_error:
+            raise
+        fallback = {**request, "parallel_mode": AUTO, "parallel_spec": None}
+        try:
+            result = plan(fallback, host, model)
+        except ParallelPlanError:
+            result = plan({**fallback, "gpu_ids": None}, host, model)
+        return {**result, "requested_mode": request.get("parallel_mode"), "error": exc.payload}

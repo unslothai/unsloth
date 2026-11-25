@@ -38,6 +38,9 @@ __all__ = [
 CHILD_ENV = "UNSLOTH_STUDIO_PARALLEL_RANK"  # set in ranks 1..N-1
 _WORLD_ENV = "UNSLOTH_STUDIO_PARALLEL_WORLD"  # set in every rank of a Studio multi-process run
 _PARENT_ENV = "UNSLOTH_STUDIO_PARALLEL_PARENT"
+# module:function ranks 1..N-1 run (tests point it at a small target).
+_ENTRY_ENV = "UNSLOTH_STUDIO_PARALLEL_ENTRY"
+_DEFAULT_ENTRY = "core.training.worker:run_training_process"
 _HOST = "127.0.0.1"
 _PROCS: list = []
 _CLOSING = threading.Event()
@@ -269,9 +272,11 @@ def rank_main() -> None:
     config = pickle.loads(sys.stdin.buffer.read())
     code = 0
     try:
-        from core.training.worker import run_training_process
-        sink = _RankEvents(r)
-        run_training_process(event_queue = sink, stop_queue = _NoStop(), config = config)
+        import importlib
+
+        module, _, name = (os.environ.get(_ENTRY_ENV) or _DEFAULT_ENTRY).partition(":")
+        target = getattr(importlib.import_module(module), name)
+        target(event_queue = _RankEvents(r), stop_queue = _NoStop(), config = config)
     except BaseException:  # noqa: BLE001
         import traceback
         traceback.print_exc()

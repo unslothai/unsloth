@@ -1785,16 +1785,7 @@ async def plan_parallel_training(
     token = hf_token_arg(hf_token, allow_ambient_token = not (via_api_key is True or managed))
 
     def _plan():
-        try:
-            return parallel_plan.plan_for_request(values, hf_token = token)
-        except parallel_plan.ParallelPlanError as exc:
-            host = parallel_plan.detect_host()
-            fallback = parallel_plan.plan(
-                {**values, "parallel_mode": "auto", "parallel_spec": None, "gpu_ids": None},
-                host,
-                None,
-            )
-            return {**fallback, "requested_mode": request.parallel_mode, "error": exc.payload}
+        return parallel_plan.plan_for_request(values, hf_token = token, inline_error = True)
 
     return await asyncio.to_thread(_plan)
 
@@ -2655,6 +2646,10 @@ async def start_training(
                 )
 
                 def _can_keep_resident_models():
+                    if (training_kwargs.get("parallel") or {}).get("launcher") == "multi_process":
+                        # Every rank holds a full copy or a shard on each GPU: the per-card sizing below is for one
+                        # process, so free resident models rather than guess.
+                        return False, {"mode": "multi_process", "reason": "multi_process"}
                     members = batch_members or [training_kwargs]
                     return can_keep_chat_during_training(
                         model_name = training_kwargs["model_name"],
