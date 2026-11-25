@@ -18,6 +18,8 @@ const {
   repackDocxAttachmentArchive,
   writeDocxBreaksAndCheckboxes,
   writeDocxListNumbers,
+  writeDocxSuperscripts,
+  unwrapDocxRuns,
   writeDocxTableRows,
 } = await import("../src/features/chat/attachment-content.ts");
 const { mammoth, writeDocxSymbols } = await import("../src/features/chat/docx-reader.ts");
@@ -77,7 +79,7 @@ function everyRewrite(document = "word/document.xml"): Record<string, Uint8Array
 /** The archive-to-archive chain extractDocxAttachmentText ran before reading one map of parts. */
 async function chained(name: string, bytes: Uint8Array): Promise<string> {
   const repacked = repackDocxAttachmentArchive(name, bytes);
-  const marked = markDocxNotes(linearizeDocxMath(writeDocxSymbols(repacked, 10 * 1024 * 1024)));
+  const marked = markDocxNotes(writeDocxSuperscripts(linearizeDocxMath(unwrapDocxRuns(writeDocxSymbols(repacked, 10 * 1024 * 1024)))));
   const archive = writeDocxTableRows(writeDocxBreaksAndCheckboxes(writeDocxListNumbers(marked.archive)));
   const { value } = await mammoth.extractRawText({ buffer: Buffer.from(archive) } as never);
   return marked.label(value);
@@ -208,5 +210,84 @@ test("extractDocxAttachmentText keeps the chain's errors for unreadable archives
     })) {
       await assertSameAsChained(name, bytes);
     }
+  });
+});
+
+test("extractDocxAttachmentText keeps superscript exponents", async () => {
+  const run = (text: string, align = "") =>
+    `<w:r>${align && `<w:rPr><w:vertAlign w:val="${align}"/></w:rPr>`}<w:t xml:space="preserve">${text}</w:t></w:r>`;
+  const sup = (text: string) => run(text, "superscript");
+  const document =
+    `<w:document ${W}><w:body>` +
+    `<w:p>${run("The tank holds 2.5 × 10")}${sup("6")}${run(" litres over 40 km")}${sup("2")}${run(".")}</w:p>` +
+    `<w:p>${run("Tolerance is 10")}${sup("-")}${sup("3")}${run(" m")}</w:p>` +
+    `<w:p>${run("Due on the 1")}${sup("st")}${run(", as noted.")}${sup("4")}${run(" H")}${run("2", "subscript")}${run("O")}</w:p>` +
+    `<w:p>${run("Moved 10")}${sup("6")}<w:moveFrom w:id="1">${sup("2")}</w:moveFrom>${run(" and 10")}<w:moveFrom w:id="2">${sup("2")}</w:moveFrom>${sup("6")}</w:p>` +
+    `<w:p>${run("Sign 10")}<w:r><w:rPr><w:vertAlign w:val="superscript"/></w:rPr><w:noBreakHyphen/><w:t>3</w:t></w:r>${run(" and 10")}` +
+    `<mc:AlternateContent xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"><mc:Choice Requires="w14">${sup("6")}</mc:Choice><mc:Fallback>${sup("6")}</mc:Fallback></mc:AlternateContent></w:p>` +
+    `<w:p>${run("Split 10")}<w:r><w:rPr><w:vertAlign w:val="superscript"/></w:rPr><w:t>6</w:t><w:br/><w:t>3</w:t></w:r>${run(" and clai")}${run("m")}${sup("1,2")}${run(" 10")}<w:r><w:rPr><w:vertAlign w:val="superscript"/></w:rPr><w:br/><w:t>6</w:t></w:r>${run(" 10")}<w:r><w:rPr><w:vertAlign w:val="superscript"/></w:rPr><w:tab/><w:t>6</w:t></w:r></w:p>` +
+    `</w:body></w:document>`;
+  await withDocxGlobals(async () => {
+    const text = await assertSameAsChained(
+      "sup.docx",
+      zipSync({
+        "[Content_Types].xml": strToU8("<Types/>"),
+        "_rels/.rels": rels([["officeDocument", "word/document.xml"]]),
+        "word/document.xml": strToU8(document),
+      }),
+    );
+    assert.equal(
+      text.trim(),
+      "The tank holds 2.5 × 10^6 litres over 40 km^2.\n\nTolerance is 10^-3 m\n\nDue on the 1st, as noted.4 H2O\n\nMoved 10^6 and 10^6\n\nSign 10^-3 and 106\n\nSplit 106\n3 and claim1,2 10\n6 10\t6",
+    );
+  });
+});
+
+test("extractDocxAttachmentText ends a superscript at a note reference", async () => {
+  const sup = (inner: string) => `<w:r><w:rPr><w:vertAlign w:val="superscript"/></w:rPr>${inner}</w:r>`;
+  const document =
+    `<w:document ${W}><w:body><w:p><w:r><w:t xml:space="preserve">Area 10</w:t></w:r>${sup("<w:t>6</w:t>")}` +
+    `${sup('<w:footnoteReference w:id="1"/>')}${sup("<w:t>3</w:t>")}<w:r><w:t xml:space="preserve"> m</w:t></w:r></w:p></w:body></w:document>`;
+  await withDocxGlobals(async () => {
+    const text = await assertSameAsChained(
+      "ref.docx",
+      zipSync({
+        "[Content_Types].xml": strToU8("<Types/>"),
+        "_rels/.rels": rels([["officeDocument", "word/document.xml"]]),
+        "word/document.xml": strToU8(document),
+        "word/_rels/document.xml.rels": rels([["footnotes", "footnotes.xml"]]),
+        "word/footnotes.xml": notes("footnote", ["1"]),
+      }),
+    );
+    assert.match(text, /^Area 10\^6\[1\]3 m/);
+  });
+});
+
+test("extractDocxAttachmentText keeps moved, field, ruby, direction and custom XML text", async () => {
+  const run = (text: string) => `<w:r><w:t xml:space="preserve">${text}</w:t></w:r>`;
+  const document =
+    `<w:document ${W}><w:body>` +
+    `<w:p><w:moveFrom w:id="1">${run("Old spot")}</w:moveFrom></w:p>` +
+    `<w:p>${run("Clause 4: ")}<w:moveTo w:id="2">${run("Payment is due in 30 days.")}</w:moveTo></w:p>` +
+    `<w:p>${run("Customer: ")}<w:fldSimple w:instr=" MERGEFIELD Name ">${run("Ada Lovelace")}</w:fldSimple></w:p>` +
+    `<w:p><w:ruby><w:rubyPr/><w:rt>${run("かんじ")}</w:rt><w:rubyBase>${run("漢字")}</w:rubyBase></w:ruby>${run("を読む")}</w:p>` +
+    `<w:p><w:dir w:val="rtl">${run("שלום")}</w:dir>${run(" and ")}<w:bdo w:val="ltr">${run("ltr text")}</w:bdo></w:p>` +
+    `<w:customXml w:element="clause"><w:p>${run("Custom block")}</w:p></w:customXml>` +
+    `<w:p><w:customXml w:element="party"><w:customXmlPr/>${run("Custom inline")}</w:customXml></w:p>` +
+    `<w:p><w:moveTo w:id="3"><w:fldSimple w:instr=" DATE ">${run("1 May 2026")}</w:fldSimple></w:moveTo></w:p>` +
+    `</w:body></w:document>`;
+  await withDocxGlobals(async () => {
+    const text = await assertSameAsChained(
+      "wrapped.docx",
+      zipSync({
+        "[Content_Types].xml": strToU8("<Types/>"),
+        "_rels/.rels": rels([["officeDocument", "word/document.xml"]]),
+        "word/document.xml": strToU8(document),
+      }),
+    );
+    assert.equal(
+      text.trim(),
+      "Clause 4: Payment is due in 30 days.\n\nCustomer: Ada Lovelace\n\n漢字を読む\n\nשלום and ltr text\n\nCustom block\n\nCustom inline\n\n1 May 2026",
+    );
   });
 });

@@ -3,6 +3,7 @@
 
 """sk-unsloth callers must not write or run as the operator; None would trigger a token lookup."""
 
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -135,8 +136,7 @@ def test_push_with_a_token_reaches_the_backend_unchanged(monkeypatch, endpoint, 
 def test_a_local_export_carries_the_callers_identity(
     monkeypatch, endpoint, method, extra, via_api_key, expected
 ):
-    """No push, so nothing is refused, but the credential still has to be spelled: a local
-    GGUF export resolves its base and imatrix from the Hub."""
+    """No push, but a local GGUF export fetches its base and imatrix from the Hub, so it needs a token."""
     backend = _backend(monkeypatch, method)
     response = TestClient(_app(via_api_key)).post(
         endpoint, json = {"save_directory": "/tmp/x", "push_to_hub": False, **extra}
@@ -453,6 +453,7 @@ def test_a_local_gguf_lora_conversion_carries_the_sentinel(
             token = None,
         ):
             seen["token"] = token
+            (Path(save_directory) / "adapter.gguf").write_bytes(b"")
 
     monkeypatch.setattr(export_backend_module, "_export_runtime_available", lambda: True)
     monkeypatch.setattr(export_backend_module, "_IS_MLX", False)
@@ -472,8 +473,7 @@ def test_a_local_gguf_lora_conversion_carries_the_sentinel(
 
 @pytest.mark.parametrize("hf_token,expected", [(False, False), ("hf_caller", "hf_caller")])
 def test_a_local_merged_save_carries_the_sentinel(monkeypatch, tmp_path, hf_token, expected):
-    """Not a push, but the merge resolves its base repo, and save.py turns a None into
-    get_token(), which is the operator's stored login."""
+    """A local merge resolves its base repo, and a None token falls back to the operator's stored login."""
     from core.export import export as export_backend_module
 
     seen: dict = {}

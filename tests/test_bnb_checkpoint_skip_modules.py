@@ -64,9 +64,8 @@ def test_the_vision_loader_does_not_touch_the_checkpoint_skip_list():
 
 
 def test_the_runtime_skip_list_is_still_built_for_on_the_fly_quantization():
-    """The other half: a full-precision checkpoint has no config to defer to, so Unsloth's
-    own list keeps heads, routers and towers in compute dtype. Hence the fix was to remove
-    a write, not to stop building the list."""
+    """A full-precision checkpoint has no config to defer to, so Unsloth's own skip list keeps
+    heads, routers and towers in compute dtype; the fix removed a write, not the list build."""
     source = open(VISION, encoding = "utf-8").read()
     assert "_skip_modules = SKIP_QUANTIZATION_MODULES.copy()" in source
     assert "llm_int8_skip_modules = _skip_modules" in source

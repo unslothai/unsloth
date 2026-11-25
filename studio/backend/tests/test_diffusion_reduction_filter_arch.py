@@ -109,7 +109,7 @@ def test_image_family_keeps_inductor_pick_elsewhere(monkeypatch, name, cap):
     assert _filter_reaching_compile(monkeypatch, fam) is False
 
 
-@pytest.mark.parametrize("name", ["sdxl", "hunyuanvideo-1.5", "wan2.2-ti2v-5b"])
+@pytest.mark.parametrize("name", ["sdxl", "wan2.2-ti2v-5b"])
 def test_unmeasured_families_stay_off_on_sm120(monkeypatch, name):
     _on(monkeypatch, _SM120)
     assert cc.family_filters_reductions(_family(name)) is False
@@ -206,3 +206,37 @@ def test_qwen_image_21_filter_kill_switch(monkeypatch):
     kwargs = {"options": {}}
     assert ds.pin_reduction_configs(kwargs) is False
     assert ds.REDUCTION_FILTER_OPTION not in kwargs["options"]
+
+
+@pytest.mark.parametrize("cap", [(7, 5), (8, 0), (8, 6), (8, 9), (9, 0), (10, 0), (12, 0), None])
+@pytest.mark.parametrize(
+    "repo, name",
+    [
+        ("black-forest-labs/flux-3-image-klein-base", "flux.3-klein-base"),
+        ("black-forest-labs/flux-3-image-klein", "flux.3-klein"),
+    ],
+)
+def test_flux3_pins_the_reduction_filter_and_conv_pick_on_every_arch(monkeypatch, repo, name, cap):
+    """Fresh L4 processes rendered one Klein base seed 0.003-0.007 LPIPS apart (per-process reduction-config and
+    cuDNN conv picks); FLUX.3 shares FLUX.2 Klein's q/k RMSNorm and VAE, so it pins both the same way."""
+    from core.inference.diffusion_families import detect_family
+
+    fam = detect_family(repo)
+    assert fam is not None and fam.name == name
+    _on(monkeypatch, cap)
+    assert cc.family_filters_reductions(fam) is True
+    assert _filter_reaching_compile(monkeypatch, fam) is True
+    assert fam.cudnn_benchmark is False
+
+
+# Krea-2 pins on every arch: fresh Studio homes on one A100 rendered one INT8 seed two ways (the compile cache keeps
+# its cold benchmark's reduction configs), and forcing the slowest reduction config reproduced the other image.
+@pytest.mark.parametrize("cap", [(8, 0), (8, 6), (8, 9), (9, 0), (10, 0), (12, 0), None])
+def test_krea2_pins_the_reduction_filter_and_conv_pick_on_every_arch(monkeypatch, cap):
+    _on(monkeypatch, cap)
+    fam = _family("krea-2")
+    assert fam.filter_reduction_configs is True
+    assert cc.family_filters_reductions(fam) is True
+    assert _filter_reaching_compile(monkeypatch, fam) is True
+    # cudnn.benchmark decoded one fixed latent 3 ways over 3 fresh L4 homes.
+    assert fam.cudnn_benchmark is False

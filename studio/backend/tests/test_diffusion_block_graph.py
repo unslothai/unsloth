@@ -1232,6 +1232,20 @@ def test_a_variable_length_denoiser_records_no_block_graphs(monkeypatch):
     assert not any(isinstance(b.__dict__.get("forward"), bg.BlockGraph) for b in net.blocks)
 
 
+def test_the_streamk_fp8_refusal_outranks_the_prompt_length_reason(monkeypatch):
+    monkeypatch.delenv(bg.BLOCK_GRAPHS_ENV, raising = False)
+    monkeypatch.delenv(cg.FORCE_FAMILIES_ENV, raising = False)
+    why = "the row-wise fp8 GEMM on this sm_89 card cannot replay in a CUDA graph"
+    monkeypatch.setattr(cg, "fp8_rowwise_capture_refusal", lambda modules, device = None: why)
+    net = type("QwenImageTransformer2DModel", (Net,), {})(blocks = 3)
+    pipe = _pipe_with(net)
+    pipe._unsloth_cuda_graph_reason = "offload active"
+    handles, applied = _arm(pipe, monkeypatch, hooked = True, pinned = True, opt_in = True)
+    assert handles == () and not applied["cuda_graph"]
+    assert cg.status_reason(pipe, False).startswith(why)
+    assert not any(isinstance(b.__dict__.get("forward"), bg.BlockGraph) for b in net.blocks)
+
+
 def test_a_model_offloaded_denoiser_reason_names_both_opt_ins(monkeypatch):
     pipe = _pipe_with(Net(blocks = 3))
     pipe.transformer._hf_hook = types.SimpleNamespace()
@@ -1276,3 +1290,19 @@ def test_a_refused_block_recording_runs_eager_and_records_later(monkeypatch):
     assert handle.stats["captures"] > 0 and handle.stats["fallbacks"] == 0
     assert handle.stats["replays"] > 0
     handle.free()
+
+
+def test_reusable_cache_of_a_non_cuda_device_is_zero(monkeypatch):
+    # A CPU device parsed to index None read the current CUDA card's cache: on a 2-GPU host that ran a CUDA test first,
+    # test_prefix_kv_cache_too_large_for_the_replica_card_stays_on_the_primary saw the cache as free and mirrored it.
+    seen = []
+    monkeypatch.setattr(
+        dm, "cuda_reclaimable_bytes", lambda index = None: seen.append(index) or 4 << 30
+    )
+    assert dm.cuda_reusable_cache_bytes(torch.device("cpu")) == 0
+    assert dm.cuda_reusable_cache_bytes("cpu") == 0
+    assert seen == []
+    assert dm.cuda_reusable_cache_bytes(torch.device("cuda", 1)) == 4 << 30
+    assert dm.cuda_reusable_cache_bytes(0) == 4 << 30
+    assert dm.cuda_reusable_cache_bytes() == 4 << 30
+    assert seen == [1, 0, None]

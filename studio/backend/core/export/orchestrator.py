@@ -45,8 +45,7 @@ _CLEANUP_TIMEOUT = 30.0
 
 
 def _sweep_reap_staging_of(pid: Optional[int]) -> None:
-    """A worker confirmed dead (cancelled, killed at shutdown, crashed) cannot remove its REAP
-    staging copy, a full model, itself."""
+    """A dead worker cannot remove its REAP staging copy, a full model, so this sweeps it."""
     try:
         from core.export.reap import sweep_reap_staging
         sweep_reap_staging(dead_pid = pid)
@@ -503,6 +502,7 @@ class ExportOrchestrator:
         base_model: Optional[str] = None,
         op_id: Optional[str] = None,
         offload_layers = "auto",
+        adapter_free: bool = False,
     ) -> Tuple[bool, str]:
         """Load a checkpoint for export.
 
@@ -524,6 +524,7 @@ class ExportOrchestrator:
         sub_config = {
             "checkpoint_path": checkpoint_path,
             "base_model": base_model,
+            "adapter_free": adapter_free,
             "max_seq_length": max_seq_length,
             "load_in_4bit": load_in_4bit,
             "offload_layers": offload_layers,

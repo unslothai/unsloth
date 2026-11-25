@@ -6,6 +6,7 @@ import test from "node:test";
 import {
   buildNamedConversationsMarkdown,
   conversationExportBasename,
+  conversationModelLabel,
   createConversationMarkdownBuilder,
   createConversationMarkdownExporter,
 } from "../src/features/chat/utils/conversation-markdown-export.ts";
@@ -241,4 +242,11 @@ test("a local model is named after the model, not the folder it loads from", () 
     ),
     "Qwen3-4B-GGUF - Hi (2026-09-01)",
   );
+});
+
+test("the PDF model label hides external-provider ids and local folders", () => {
+  assert.equal(conversationModelLabel("external::provider-1::openai%2Fgpt-4o"), "gpt-4o");
+  assert.equal(conversationModelLabel("C:\\Users\\alex\\models\\Qwen3-4B-Q4_K_M.gguf"), "Qwen3-4B-Q4_K_M");
+  assert.equal(conversationModelLabel("unsloth/Qwen3-4B-GGUF"), "Qwen3-4B-GGUF");
+  assert.equal(conversationModelLabel(undefined), "");
 });

@@ -371,20 +371,54 @@ def _te_deferrals(pipe, deferred):
     return [cap for module, cap in deferred if module is pipe.text_encoder]
 
 
-@pytest.mark.parametrize("tier", ["group", "streaming"])
-def test_a_first_load_writing_its_cast_cache_pins_no_encoder_prefix(monkeypatch, tier):
-    deferred = _plan_only(
-        monkeypatch, 10
-    )  # 18 MiB registered, 32 MiB power-of-two: neither fits whole
-    pipe = _streaming_video_pipe()
-    dm.note_cast_cache_writes(pipe, _Writes(finished = False))
+def _plan_video(pipe, tier):
     if tier == "group":
         dm._apply_group_offload(
             pipe, "cuda", None, stream_text_encoders = True, stream_transformer = True
         )
     else:
         dm._apply_streaming_offload(pipe, "cuda", None)
-    assert _te_deferrals(pipe, deferred) == []  # what main does: the encoder streams unpinned
+
+
+@pytest.mark.parametrize("tier", ["group", "streaming"])
+def test_a_first_load_writing_its_cast_cache_pins_the_encoder_prefix_late(monkeypatch, tier):
+    deferred = _plan_only(
+        monkeypatch, 10
+    )  # 18 MiB registered, 32 MiB power-of-two: neither fits whole
+    pipe = _streaming_video_pipe()
+    dm.note_cast_cache_writes(pipe, _Writes(finished = False))
+    _plan_video(pipe, tier)
+    caps = _te_deferrals(pipe, deferred)
+    # the cap is read when the pinner starts, against the host RAM free once the load has returned
+    assert len(caps) == 1 and callable(caps[0])
+
+
+@pytest.mark.parametrize("tier", ["group", "streaming"])
+@pytest.mark.parametrize("env", ["VIDEO_FIRST_LOAD_PREFIX_ENV", "VIDEO_EXACT_PIN_PLAN_ENV"])
+def test_the_first_load_prefix_kill_switches(monkeypatch, tier, env):
+    deferred = _plan_only(monkeypatch, 10)
+    monkeypatch.setenv(getattr(dm, env), "0")
+    pipe = _streaming_video_pipe()
+    dm.note_cast_cache_writes(pipe, _Writes(finished = False))
+    _plan_video(pipe, tier)
+    assert (
+        _te_deferrals(pipe, deferred) == []
+    )  # the previous first load: the encoder streams unpinned
+
+
+@pytest.mark.parametrize("tier", ["group", "streaming"])
+def test_a_first_load_cap_returns_the_freed_heap_before_reading_the_budget(monkeypatch, tier):
+    deferred = _plan_only(monkeypatch, 10)
+    order = []
+    monkeypatch.setattr(dm, "trim_host_heap_after_load", lambda *a, **k: order.append("trim"))
+    monkeypatch.setattr(
+        dm, "_streamed_pin_leftover_mib", lambda *a, **k: order.append("budget") or 7
+    )
+    pipe = _streaming_video_pipe()
+    dm.note_cast_cache_writes(pipe, _Writes(finished = False))
+    _plan_video(pipe, tier)
+    (cap,) = _te_deferrals(pipe, deferred)
+    assert cap() == 7 << 20 and order == ["trim", "budget"]
 
 
 @pytest.mark.parametrize("tier", ["group", "streaming"])

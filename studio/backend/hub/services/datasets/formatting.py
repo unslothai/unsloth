@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from core.training.account_jobs import (
+    _dataset_builder_name,
     account_hf_token,
     account_path,
     visible_cached_path,
@@ -65,6 +66,16 @@ _MISSING_DATASET_DETAIL = "This dataset is no longer on disk. Add it again or pi
 def _is_local_dataset_ref(dataset_name: str) -> bool:
     normalized = normalize_path(str(dataset_name or "").strip())
     return Path(normalized).expanduser().is_absolute()
+
+
+def _datasets_reads_locally(dataset_name: str) -> bool:
+    """``load_dataset`` takes its own builder names and any path under the server's cwd ahead of the
+    Hub, and a builder then reads whatever lies under that directory (``pandas`` unpickles it)."""
+    return (
+        not _is_valid_repo_id(dataset_name)
+        or _dataset_builder_name(dataset_name)
+        or Path(dataset_name).exists()
+    )
 
 
 def _image_pixel_count(image) -> int:
@@ -487,6 +498,9 @@ def load_preview_slice(
     dataset_exists = dataset_path.exists()
     if not dataset_exists and _is_local_dataset_ref(request.dataset_name):
         raise HTTPException(status_code = 404, detail = _MISSING_DATASET_DETAIL)
+    # Not a local dataset, so every reader below hands the name to ``datasets`` as a Hub id.
+    if not dataset_exists and _datasets_reads_locally(request.dataset_name):
+        raise HTTPException(status_code = 400, detail = "Invalid dataset name")
 
     # Both streaming tiers run on the default prefer_local_cache=false, ahead of the
     # guarded cache reader below, so the gate stands in front of them.
@@ -494,8 +508,7 @@ def load_preview_slice(
         refuse_unauthorized_dataset_preview(
             hf_token,
             request.dataset_name,
-            # A prefer-local request reads the cache or 404s below, either way without
-            # the network, so the probe would be a round trip it had ruled out.
+            # Prefer-local requests read the cache or 404 with no network, so skip the probe.
             offline = bool(request.prefer_local_cache),
         )
     if dataset_exists:

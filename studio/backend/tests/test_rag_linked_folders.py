@@ -1066,11 +1066,8 @@ def test_identities_round_trip_across_the_sqlite_integer_boundary(value):
 def test_reauthorizing_encodes_a_root_identity_above_the_sqlite_maximum(
     rag_home, stub_embeddings, monkeypatch
 ):
-    """A Windows volume serial fills all 64 bits, so half of them overflow SQLite INTEGER.
-
-    The reauthorize path writes root_device with its own UPDATE, so it needs its own case: a
-    real st_dev on this host is far too small to reach the encoding at all.
-    """
+    """A Windows volume serial fills all 64 bits, so half the values overflow SQLite INTEGER;
+    reauthorize writes root_device with its own UPDATE too."""
     source, folder = _folder(rag_home)
     (source / "notes.txt").write_text("kept across the remount", encoding = "utf-8")
     assert _run(folder["id"])["status"] == "completed"
@@ -2517,12 +2514,8 @@ def test_a_project_recreated_during_delete_keeps_its_rag_scope(rag_home, monkeyp
 def test_the_purge_is_skipped_for_a_project_recreated_after_the_ownership_check(
     rag_home, monkeypatch
 ):
-    """A recreated project must be left exactly as the delete found it, not merely unpurged.
-
-    The reconciler already refuses to purge a scope whose owner exists; this is the same guard
-    on the delete route, which reached the purge unconditionally. Aborting has to put back
-    everything the pass did, which is why only the tombstone is written before this recheck.
-    """
+    """Delete must recheck ownership before purging; only the tombstone may be written before that
+    recheck, since an abort must undo everything the pass did."""
     from routes import chat_history
 
     scope = store.project_scope("p1")
@@ -2819,11 +2812,8 @@ def test_retirement_leaves_a_folder_linked_after_the_ownership_check(rag_home):
 
 @requires_sqlite_vec
 def test_the_ownership_bound_survives_a_clock_that_cannot_separate_the_two(rag_home, monkeypatch):
-    """Windows reads its clock in ~15.6ms steps, so both links can share one timestamp.
-
-    Freezing `_now` is that quantisation at its limit: any clock-derived bound has to guess,
-    and guessing wrong retires the folders of a project recreated with the same id, for good.
-    """
+    """Windows clocks tick about 15.6 ms, so two links can share a timestamp; a clock bound must
+    guess, and a wrong guess retires the folders of a recreated project for good."""
     scope = store.project_scope("p1")
     monkeypatch.setattr(folder_sync, "_now", lambda: "2026-01-01T00:00:00+00:00")
     for name in ("before-check", "after-check"):
@@ -3321,3 +3311,80 @@ def test_an_unlink_cancel_only_reaches_its_own_account():
         assert not run_as(other, folder_sync.is_cancel_requested, "shared-id")
     finally:
         folder_sync.clear_cancel("shared-id")
+
+
+@requires_sqlite_vec
+def test_a_folder_of_small_files_embeds_across_documents(rag_home, stub_embeddings, monkeypatch):
+    """A vault of one-chunk notes paid one encode call per file before (#16715)."""
+    monkeypatch.setattr(embeddings, "batches_across_documents", lambda model_name = None: True)
+    source, folder = _folder(rag_home)
+    for i in range(12):
+        (source / f"note-{i:02d}.md").write_text(f"note {i} searchable words", encoding = "utf-8")
+    monkeypatch.setattr(folder_sync.config, "FOLDER_INGEST_WORKERS", 2)
+    batches = []
+    real_encode = embeddings.encode
+    lock = threading.Lock()
+
+    def recording(texts, **kwargs):
+        with lock:
+            batches.append(len(texts))
+        # An instant stub finishes each file before the coordinator snapshots the next one.
+        time.sleep(0.5)
+        return real_encode(texts, **kwargs)
+
+    monkeypatch.setattr(embeddings, "encode", recording)
+
+    assert _run(folder["id"])["status"] == "completed"
+
+    assert sum(batches) == 12, batches
+    assert len(batches) < 12, batches
+    assert max(batches) > 1, batches
+    with _connection() as conn:
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) AS count FROM linked_folder_files WHERE folder_id=?",
+                (folder["id"],),
+            ).fetchone()["count"]
+            == 12
+        )
+        for i in range(12):
+            assert store.search_lexical(conn, folder["scope"], f"note {i}", 5)
+
+
+@requires_sqlite_vec
+def test_large_files_stay_within_the_parse_workers(rag_home, stub_embeddings, monkeypatch):
+    """Only small files queue past the workers; big ones would hold snapshots and chunks."""
+    monkeypatch.setattr(embeddings, "batches_across_documents", lambda model_name = None: True)
+    source, folder = _folder(rag_home)
+    for i in range(8):
+        (source / f"doc-{i}.txt").write_text(f"document {i} words", encoding = "utf-8")
+    monkeypatch.setattr(folder_sync.config, "FOLDER_INGEST_WORKERS", 2)
+    # Every file in this folder counts as large.
+    monkeypatch.setattr(folder_sync.config, "FOLDER_INGEST_BATCH_FILE_BYTES", 1)
+    in_flight = {"now": 0, "peak": 0}
+    lock = threading.Lock()
+    real_start = ingestion.start_ingestion
+
+    def watched(*args, **kwargs):
+        with lock:
+            in_flight["now"] += 1
+            in_flight["peak"] = max(in_flight["peak"], in_flight["now"])
+        try:
+            return real_start(*args, **kwargs)
+        finally:
+            with lock:
+                in_flight["now"] -= 1
+
+    monkeypatch.setattr(folder_sync.ingestion, "start_ingestion", watched)
+
+    assert _run(folder["id"])["status"] == "completed"
+
+    assert in_flight["peak"] <= 2, in_flight
+    with _connection() as conn:
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) AS count FROM linked_folder_files WHERE folder_id=?",
+                (folder["id"],),
+            ).fetchone()["count"]
+            == 8
+        )

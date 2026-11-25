@@ -63,7 +63,7 @@ def _session_with_chunks(chunks):
         config = type("C", (), {"patch_size": None})()
 
     session = vse.StreamEncode(_Vae(), None, 24)
-    session.chunks = [(torch.from_numpy(c), None) for c in chunks]
+    session.chunks = [vse._Chunk(torch.from_numpy(c), None, len(c), spool = False) for c in chunks]
     return session
 
 

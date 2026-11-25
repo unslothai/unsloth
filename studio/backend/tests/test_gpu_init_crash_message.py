@@ -78,11 +78,7 @@ def _managed_runtime(monkeypatch, tmp_path):
         "_is_llama_install_tree",
         staticmethod(lambda _binary: True),
     )
-    monkeypatch.setattr(
-        llama_cpp,
-        "_swa_cache_path",
-        lambda: tmp_path / "studio" / "swa_cache.json",
-    )
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
     return binary
 
 
@@ -268,8 +264,15 @@ class TestGpuInitCrashMessage:
         assert "UNSLOTH_LLAMA_CPP_BACKEND=cpu" in message
 
     def test_rocm_host_keeps_the_original_advice(self, monkeypatch):
+        monkeypatch.setattr(sys, "platform", "linux")
         message = self._message(monkeypatch, "hip")
         assert "ROCR_VISIBLE_DEVICES=0" in message
+
+    def test_windows_rocm_host_is_told_the_variable_that_masks_there(self, monkeypatch):
+        monkeypatch.setattr(sys, "platform", "win32")
+        message = self._message(monkeypatch, "hip")
+        assert "HIP_VISIBLE_DEVICES=0" in message
+        assert "ROCR_VISIBLE_DEVICES" not in message
 
     def test_cuda_host_gets_cuda_advice(self, monkeypatch):
         message = self._message(monkeypatch, "cuda")
@@ -290,8 +293,7 @@ class TestGpuInitCrashMessage:
 
 
 class TestPlatformMatrix:
-    """Every OS and runtime flavour Unsloth ships, so the recovery cannot leak
-    into a path that already worked."""
+    """Every OS and runtime Unsloth ships, so recovery cannot leak into a working path."""
 
     # (platform, library prefix, library suffix, binary name)
     OSES = {
@@ -327,9 +329,7 @@ class TestPlatformMatrix:
         monkeypatch.setattr(
             LlamaCppBackend, "_is_llama_install_tree", staticmethod(lambda _binary: True)
         )
-        monkeypatch.setattr(
-            llama_cpp, "_swa_cache_path", lambda: tmp_path / "studio" / "swa_cache.json"
-        )
+        monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
         return binary
 
     @pytest.mark.parametrize("os_key", list(OSES))
@@ -742,8 +742,7 @@ class TestCpuIsolatedReplay:
         assert backend._cpu_fallback_reason is None
 
     def test_the_windows_full_offload_thread_cap_is_undone(self, monkeypatch, tmp_path):
-        """Two threads and PASSIVE OpenMP are tuned for a GPU doing the work, so
-        a CPU replay that kept them would decode on two cores."""
+        """A CPU replay must undo the two-thread PASSIVE OpenMP cap or decode on two cores."""
         env = {"OMP_NUM_THREADS": "2", "OMP_WAIT_POLICY": "PASSIVE", "KEEP": "1"}
         cmd = ["llama-server", "-m", "m.gguf", "--threads", "2", "--jinja"]
 
@@ -887,11 +886,7 @@ class TestCpuIsolatedReplay:
             "_is_llama_install_tree",
             staticmethod(lambda _binary: True),
         )
-        monkeypatch.setattr(
-            llama_cpp,
-            "_swa_cache_path",
-            lambda: tmp_path / "studio" / "swa_cache.json",
-        )
+        monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
 
         backend = LlamaCppBackend()
         staged = backend._cpu_isolated_binary(str(wrapper))
@@ -938,6 +933,26 @@ def test_confirmed_projector_signal_retry_keeps_gpu_init_diagnosis(monkeypatch, 
             mmproj_from_argv = True,
             cpu_fallback_available = False,
         )
+
+
+def test_an_unexpanded_studio_home_keeps_runner_files_in_the_real_home(monkeypatch, tmp_path):
+    """A systemd EnvironmentFile or docker env passes "~/x" verbatim; nothing may land in "./~"."""
+    from utils import debug_log_sources
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", "~/x")
+    monkeypatch.chdir(tmp_path)
+    backend, loaded, _launches, _sources = _run_cpu_fallback_load(
+        monkeypatch, tmp_path, returncodes = [None]
+    )
+
+    assert loaded is True
+    log_path = Path(backend._llama_log_path)
+    assert log_path.parent == tmp_path / "x" / "logs" / "llama-server"
+    assert llama_cpp._swa_cache_path() == tmp_path / "x" / "swa_cache.json"
+    assert not (tmp_path / "~").exists()
+    assert log_path.name in [s.label for s in debug_log_sources.list_sources()]
 
 
 @pytest.mark.parametrize("name", ["LLAMA_ARG_MMPROJ", "LLAMA_ARG_MMPROJ_URL"])
@@ -1029,8 +1044,7 @@ def test_drafter_replay_falls_back_to_the_stripped_command(monkeypatch, tmp_path
 
 
 def test_a_drafter_that_cannot_start_anywhere_still_recovers(monkeypatch, tmp_path):
-    """The drafter replay can be staged and still die of the drafter, so the
-    drafterless argv must get its own attempt rather than the load aborting."""
+    """A drafter can die in its replay, so the drafterless argv gets its own attempt."""
     backend, loaded, launches, fallback_sources = _run_cpu_fallback_load(
         monkeypatch,
         tmp_path,
@@ -1046,8 +1060,7 @@ def test_a_drafter_that_cannot_start_anywhere_still_recovers(monkeypatch, tmp_pa
 
 
 def test_a_replay_request_needs_the_same_bar_as_the_crash_path(monkeypatch, tmp_path):
-    """cpu_fallback is client-supplied, so an explicitly GPU-pinned request must
-    not be silently staged onto CPU and reported as a Vulkan crash."""
+    """Client-supplied cpu_fallback must not silently stage a GPU-pinned request onto CPU."""
     backend, loaded, launches, fallback_sources = _run_cpu_fallback_load(
         monkeypatch,
         tmp_path,
@@ -1077,8 +1090,7 @@ def test_a_cancelled_load_never_spawns_the_cpu_replay(monkeypatch, tmp_path):
 
 
 def test_the_exit_handler_removes_the_runtime_after_the_kill():
-    """TemporaryDirectory's exit hook is registered later, so it runs first and
-    cannot delete a runtime whose server is still holding the files open."""
+    """Removal waits for the kill: the server holds the runtime files open until it dies."""
     backend = LlamaCppBackend()
     order = []
     backend._kill_process = lambda **_kw: order.append("kill")
@@ -1090,8 +1102,7 @@ def test_the_exit_handler_removes_the_runtime_after_the_kill():
 
 
 def test_an_unload_during_staging_takes_the_runtime_back(monkeypatch, tmp_path):
-    """Staging copies a whole runtime, so /unload can land after the first gate
-    and find nothing registered to clean up."""
+    """Staging copies a whole runtime, so /unload can find nothing registered to clean up."""
     sink = {}
     with pytest.raises(Exception):
         _run_cpu_fallback_load(
@@ -1133,8 +1144,7 @@ def test_a_posix_exit_three_is_not_a_crash(monkeypatch, tmp_path):
 
 
 def test_an_accepted_replay_request_normalizes_the_placement(monkeypatch, tmp_path):
-    """A client that sends only the flag must still end up on manual/0, or the
-    session reports an Auto GPU placement for a CPU-only server."""
+    """A client sending only the flag must normalize to manual/0, not report Auto placement."""
     backend, loaded, launches, fallback_sources = _run_cpu_fallback_load(
         monkeypatch,
         tmp_path,
@@ -1151,8 +1161,7 @@ def test_an_accepted_replay_request_normalizes_the_placement(monkeypatch, tmp_pa
 
 
 def test_an_ineligible_replay_request_drops_the_recovery_state(monkeypatch, tmp_path):
-    """The kill phase keeps the staged recovery for a replay. A request that then
-    fails the eligibility bar must not leave the next model wearing it."""
+    """An ineligible replay must drop the staged recovery, or the next model inherits it."""
     backend, loaded, launches, fallback_sources = _run_cpu_fallback_load(
         monkeypatch,
         tmp_path,
@@ -1170,8 +1179,7 @@ def test_an_ineligible_replay_request_drops_the_recovery_state(monkeypatch, tmp_
 
 
 def test_preserving_a_recovery_ignores_env_the_replay_strips(monkeypatch, tmp_path):
-    """The replay pops every main-model placement var, so an inherited one must
-    not stop the resident CPU intent from being carried into a reload."""
+    """Replay strips placement vars; an inherited one must not block the resident CPU intent."""
     monkeypatch.setenv("LLAMA_ARG_SPLIT_MODE", "tensor")
     backend = LlamaCppBackend()
     backend._cpu_fallback_reason = "vulkan_startup_crash"
@@ -1562,9 +1570,7 @@ def _run_full_offload_spawns(monkeypatch, tmp_path, *, outputs, returncodes):
     backend.probe_server_capabilities = lambda _binary: {"found": True}
     backend._record_server_pid = lambda _pid: None
     backend._clear_server_pid = lambda: None
-    monkeypatch.setattr(
-        llama_cpp, "_swa_cache_path", lambda: tmp_path / "studio" / "swa_cache.json"
-    )
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
 
     def _env_for_binary(
         _binary,
@@ -1633,9 +1639,7 @@ def _run_full_offload_spawns(monkeypatch, tmp_path, *, outputs, returncodes):
 
 
 class TestHipRocrRetryKeepsFitBudget:
-    """The ROCm env correction has its own attempt, so a later VRAM crash
-    after the bundle-only launch can still take the --fit on recovery.
-    """
+    """The ROCm env correction has its own attempt, so a later VRAM crash still gets --fit on recovery."""
 
     def test_mix_then_vram_still_gets_fit_on(self, monkeypatch, tmp_path):
         launches, loaded, error = _run_full_offload_spawns(

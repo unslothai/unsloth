@@ -110,7 +110,17 @@ test("Size sorts local folders by their scanned size, and Format follows the for
     "../src/features/hub/catalog/inventory-sort.ts"
   );
   const local = (modelFormat: string, extra: object = {}) =>
-    ({ variant: "local", row: { modelFormat, source: "custom", ...extra } }) as never;
+    ({
+      variant: "local",
+      row: {
+        kind: "local",
+        modelFormat,
+        source: "custom",
+        path: "/m/model",
+        title: "model",
+        ...extra,
+      },
+    }) as never;
   assert.equal(inventoryItemSize(local("gguf", { bytes: 5_000 })), 5_000);
   assert.equal(inventoryItemSize(local("gguf")), 0);
   const ranks = [
@@ -131,12 +141,26 @@ test("the MLX format finds MLX folders, which the scan reports as safetensors", 
     "../src/features/hub/catalog/inventory-sort.ts"
   );
   const row = (extra: object) =>
-    ({ kind: "local", modelFormat: "safetensors", source: "custom", ...extra }) as never;
+    ({
+      kind: "local",
+      modelFormat: "safetensors",
+      source: "custom",
+      path: "/models/Qwen3-8B",
+      title: "Qwen3-8B",
+      ...extra,
+    }) as never;
   const mlxByLibrary = row({ libraryName: "MLX" });
   const mlxByTag = row({ tags: ["mlx"] });
   const omlx = row({ source: "omlx" });
+  const mlxByPath = row({ path: "/models/Qwen3-8B-MLX" });
+  const mlxByRepo = {
+    kind: "cache",
+    modelFormat: "safetensors",
+    repoId: "mlx-community/Qwen3-8B-4bit",
+    repo: "Qwen3-8B-4bit",
+  } as never;
   const plain = row({});
-  for (const mlx of [mlxByLibrary, mlxByTag, omlx]) {
+  for (const mlx of [mlxByLibrary, mlxByTag, omlx, mlxByPath, mlxByRepo]) {
     assert.equal(matchesFormat(inventoryRowFormat(mlx), "mlx"), true);
     assert.equal(matchesFormat(inventoryRowFormat(mlx), "checkpoint"), false);
   }
@@ -146,7 +170,52 @@ test("the MLX format finds MLX folders, which the scan reports as safetensors", 
   assert.doesNotMatch(page, /matchesFormat\(row\.modelFormat, deferredFormatFilter\)/);
 });
 
+test("the inspector classifies a local MLX folder as its inventory row does", async () => {
+  const { namedOrTaggedMlx } = await import("../src/features/hub/lib/format-filters.ts");
+  assert.equal(
+    namedOrTaggedMlx({ names: ["/Users/me/models/Qwen3-8B-MLX", "Qwen3-8B-MLX", "Qwen3-8B-MLX"] }),
+    true,
+  );
+  assert.equal(namedOrTaggedMlx({ names: ["/Users/me/models/Qwen3-8B"], omlx: true }), true);
+  assert.equal(namedOrTaggedMlx({ names: ["/Users/me/models/Qwen3-8B", "Qwen3-8B"] }), false);
+  const inspector = readSrc("features/hub/catalog/model-inspector.tsx");
+  assert.match(
+    inspector,
+    /model\.isLocal &&\s*namedOrTaggedMlx\(\{\s*names: \[model\.path \?\? "", model\.title, model\.displayId\],\s*omlx: model\.localSource === "omlx",/,
+  );
+  assert.match(
+    inspector,
+    /const mlxRunsHere =\s*runsAsMlx &&\s*isServedByMlx\(false, deviceType, chatOnlyReason, mlxInference\);/,
+  );
+});
+
+test("the picker and chat auto-load read a local oMLX folder as MLX, as the Hub does", async () => {
+  const { localRowIsMlx } = await import("../src/features/hub/lib/format-filters.ts");
+  const { matchesFormatFilter } = await import(
+    "../src/features/model-picker/components/model-selector/recommended-fit.ts"
+  );
+  const omlx = { id: "Qwen3-8B-4bit", display_name: "Qwen3-8B-4bit", path: "/omlx/Qwen3-8B-4bit", source: "omlx" };
+  assert.equal(localRowIsMlx(omlx), true);
+  assert.equal(localRowIsMlx({ ...omlx, source: "custom" }), false);
+  assert.equal(localRowIsMlx({ ...omlx, source: "custom", path: "/models/Qwen3-8B-MLX" }), true);
+  assert.equal(matchesFormatFilter(omlx.id, false, "mlx", localRowIsMlx(omlx)), true);
+  assert.equal(matchesFormatFilter(omlx.id, false, "safetensors", localRowIsMlx(omlx)), false);
+  const pickers = readSrc("features/model-picker/components/model-selector/pickers.tsx");
+  assert.match(pickers, /function localModelIsMlx\(m: LocalModelInfo\): boolean \{\s*return localRowIsMlx\(m\);/);
+  assert.match(pickers, /localModelIsGguf\(m\),\s*filter,\s*(?:\/\/[^\n]*\n\s*)?localModelIsMlx\(m\),\s*\);/);
+  const adapter = readSrc("features/chat/api/chat-adapter.ts");
+  assert.match(adapter, /if \(isGgufLocalRow\(row\)\) \{\s*return true;\s*\}(?:\s*\/\/[^\n]*)*\s*return platformServesMlx\(platform\);/);
+});
+
 test("each Hub visit rescans Studio's trained and exported models", () => {
   const inventory = readSrc("features/hub/inventory/use-hub-inventory.ts");
   assert.match(inventory, /if \(unslothModelsEnabled\) \{\s*refreshUnslothModelInventory\(\)/);
+});
+
+test("a measured Chat only Mac searches GGUF, plus checkpoints only where it serves MLX", () => {
+  const pickers = readSrc("features/model-picker/components/model-selector/pickers.tsx");
+  assert.match(
+    pickers,
+    /!chatOnly \|\|(?:\s*\/\/[^\n]*)*\s*isRecommendableFormat\(\s*id,\s*isKnownGgufRepo\(id\),\s*isMac && \(Boolean\(task\) \|\| !chatOnlyMeasured \|\| servesMlx\),\s*\) \|\|\s*runsCheckpointQuant\(\{ id \}\),/,
+  );
 });

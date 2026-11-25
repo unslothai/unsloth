@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Chat tool: one image on the loaded image model for the caller's account; never loads/unloads models"""
+"""Chat tool: one image on the loaded image model; loads/unloads models only via the opt-in chat_media_swap"""
 
 from __future__ import annotations
 
@@ -12,6 +12,8 @@ import os
 import shutil
 import time
 from typing import Any, Optional
+
+from .diffusion_conditioning import MAX_REQUEST_SIDE
 
 logger = logging.getLogger(__name__)
 
@@ -34,19 +36,19 @@ ERR_NO_LOOP = "Error: Unsloth Studio could not reach its server loop to run this
 _DESCRIPTION = (
     "Generate one image with the image model loaded in Unsloth Studio. Write the full prompt "
     "yourself from the user's request: subject, setting, style, lighting and composition. Steps "
-    "and guidance follow the loaded model's own defaults; the size defaults to 1024x1024. It "
-    "never loads or unloads a model."
+    "and guidance follow the loaded model's own defaults; the size defaults to 1024x1024."
 )
+# Kept while the opt-in swap is off, so the tool prompt every other chat sees is unchanged.
+_NO_SWAP_NOTE = " It never loads or unloads a model."
 
-# A chat with no tool timeout ("no limit") still gets a ceiling, so a stuck render can't hold
-# the turn forever.
+# Even a no-limit chat gets a ceiling, so a stuck render cannot hold the turn forever.
 _MAX_WAIT_S = 900.0
 _STOP_WAIT_S = 30.0
 _POLL_S = 0.25
 _PROMPT_ECHO_CHARS = 300
 _MIN_SIDE = 256
 # DiffusionGenerateRequest's own ceiling.
-_TRANSPORT_MAX_SIDE = 2752
+_TRANSPORT_MAX_SIDE = MAX_REQUEST_SIDE
 
 
 def _size_limits(status: dict) -> tuple[int, int, int, int]:
@@ -86,7 +88,9 @@ def generate_image_schema(status: dict) -> dict:
             "type": "string",
             "description": "What the image should not show.",
         }
-    description = _DESCRIPTION
+    from core.inference.chat_media_swap import swap_enabled
+
+    description = _DESCRIPTION if swap_enabled() else _DESCRIPTION + _NO_SWAP_NOTE
     hint = status.get("prompt_hint")
     if hint:
         description += " " + str(hint)
@@ -126,13 +130,12 @@ def _snap_size(arguments: dict, status: dict) -> tuple[int, int]:
 def _build_request(arguments: dict, prompt: str, status: dict):
     from models.inference import DiffusionGenerateRequest
 
-    # Only what the model supplied: an omitted steps/guidance must stay unset so the core
-    # resolves the loaded model's own defaults.
+    # Omitted steps and guidance stay unset so the core uses the loaded model's own defaults.
     fields: dict[str, Any] = {"prompt": prompt}
     if arguments.get("width") is not None or arguments.get("height") is not None:
         fields["width"], fields["height"] = _snap_size(arguments, status)
     if arguments.get("seed") is not None:
-        fields["seed"] = int(arguments["seed"])
+        fields["seed"] = arguments["seed"]
     negative = arguments.get("negative_prompt")
     if status.get("supports_negative_prompt") and isinstance(negative, str) and negative.strip():
         fields["negative_prompt"] = negative.strip()
@@ -215,7 +218,10 @@ def _run(arguments: dict, workdir: str, cancel_event, timeout: Optional[float]) 
         return ERR_NO_LOOP
     status = media_chat_status("text-to-image")
     if status is None:
-        return ERR_NOT_LOADED
+        from core.inference import chat_media_swap
+        if not chat_media_swap.swap_enabled():
+            return ERR_NOT_LOADED
+        return _run_with_swap(arguments, prompt, workdir, cancel_event, timeout, account, loop)
     if not offers_txt2img(status):
         return ERR_EDIT_ONLY
     engine = engine_if_imported(DIFFUSION)
@@ -255,6 +261,10 @@ def _run(arguments: dict, workdir: str, cancel_event, timeout: Optional[float]) 
         return ERR_OTHER_ACCOUNT
     except HTTPException as exc:
         return _http_error(exc)
+    return _result_text(response, prompt, workdir, account)
+
+
+def _result_text(response, prompt: str, workdir: str, account) -> str:
     if not response.images:
         return "Error: the image model returned no image."
     image = response.images[0]
@@ -266,6 +276,49 @@ def _run(arguments: dict, workdir: str, cancel_event, timeout: Optional[float]) 
     )
     return (
         text + "\n__FILES__:" + json.dumps([saved]) + "\n__IMAGES__:" + json.dumps([saved["name"]])
+    )
+
+
+def _run_with_swap(arguments, prompt, workdir, cancel_event, timeout, account, loop) -> str:
+    from fastapi import HTTPException
+
+    from core.inference import chat_media_swap
+    from core.inference.generation_ticket import GenerationTicket
+    from core.inference.gpu_arbiter import GpuBusyForAnotherAccountError
+    from core.inference.media_chat_tools import media_chat_status
+
+    ticket = GenerationTicket()
+
+    async def render(should_abort) -> str:
+        import asyncio
+
+        status = await asyncio.to_thread(media_chat_status, "text-to-image")
+        if status is None:
+            return ERR_NOT_LOADED
+        if not offers_txt2img(status):
+            return ERR_EDIT_ONLY
+        try:
+            request = _build_request(arguments, prompt, status)
+        except (TypeError, ValueError) as exc:
+            return f"Error: invalid generate_image arguments: {exc}"
+        if should_abort():
+            return ERR_STOPPED
+        try:
+            response = await _generate(request, ticket)
+        except GpuBusyForAnotherAccountError:
+            return ERR_OTHER_ACCOUNT
+        except HTTPException as exc:
+            return _http_error(exc)
+        return await asyncio.to_thread(_result_text, response, prompt, workdir, account)
+
+    limit = _MAX_WAIT_S if timeout is None or timeout >= 9999 else max(1.0, float(timeout))
+    return chat_media_swap.run_in_tool(
+        loop = loop,
+        account = account,
+        render = render,
+        cancel_event = cancel_event,
+        render_limit_s = limit,
+        stop_render = ticket.stop,
     )
 
 

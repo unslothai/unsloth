@@ -1162,7 +1162,10 @@ class NativeAudioBackend:
 
         token_kwargs = self._token_kwargs(hf_token)
         pipeline = ModularPipeline.from_pretrained(source, trust_remote_code = False, **token_kwargs)
-        pipeline.load_components(
+        from .diffusion_component_fetch import load_components_strict
+
+        load_components_strict(
+            pipeline,
             pretrained_model_name_or_path = source,
             dtype = self._dtype(),
             **token_kwargs,

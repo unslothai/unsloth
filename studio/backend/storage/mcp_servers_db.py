@@ -174,14 +174,21 @@ def list_servers() -> list[dict]:
         conn.close()
 
 
+# Managed rows name their tools mcp__<builtin_id>__; other rows use their random hex id.
+MANAGED_MCP_IDS = frozenset({"blender", "unity", "unreal", "godot", "figma", "roblox"})
+
+
 def get_server_for_tool(key: str) -> Optional[dict]:
-    if key == "blender":
+    if key in MANAGED_MCP_IDS:
         return next((row for row in list_servers() if row.get("builtin_id") == key), None)
     return get_server(key)
 
 
 def _effective_row(row: dict) -> dict:
-    if row.get("builtin_id"):
+    if row.get("builtin_id") == "blender":
         from integrations.blender.service import resolve_server
+        return resolve_server(row)
+    if row.get("builtin_id"):
+        from integrations.editors import resolve_server
         return resolve_server(row)
     return row

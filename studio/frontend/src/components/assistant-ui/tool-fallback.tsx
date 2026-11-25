@@ -44,7 +44,14 @@ import {
   type ToolCallMessagePartStatus,
   useAuiState,
 } from "@assistant-ui/react";
-import { Alert02Icon, CancelCircleIcon } from "@hugeicons/core-free-icons";
+import {
+  COMPUTER_USE_TOOL,
+  computerCallFullySaid,
+  computerCallWhy,
+  describeComputerCall,
+  plainComputerResult,
+} from "@/features/computer-use/summary";
+import { Alert02Icon, CancelCircleIcon, Cursor02Icon } from "@hugeicons/core-free-icons";
 import { LoaderIcon } from "lucide-react";
 import { InternetGlyph } from "@/lib/internet-icon";
 import { WrenchIcon } from "@/lib/wrench-icon";
@@ -166,7 +173,12 @@ type ToolStatus = ToolCallMessagePartStatus["type"];
 
 // Not a tick: "Used tool" already says it finished.
 function completeToolIcon(name: string): ElementType {
+  if (name === COMPUTER_USE_TOOL) return ComputerGlyph;
   return name.startsWith("browser_") ? InternetGlyph : WrenchGlyph;
+}
+
+function ComputerGlyph(props: { className?: string }) {
+  return <HugeiconsIcon icon={Cursor02Icon} strokeWidth={2} {...props} />;
 }
 
 // Stroke 2 like InternetGlyph beside it.
@@ -195,9 +207,11 @@ function ToolFallbackTrigger({
   status,
   icon: ToolIcon,
   singleLine = false,
+  detail,
   className,
   ...props
 }: ComponentProps<typeof CollapsibleTrigger> & {
+  detail?: string;
   // Relayed verbatim from provider SSE, so a non-string name lands here; formatMcpToolName needs a string.
   toolName: unknown;
   mcpServer?: string;
@@ -218,7 +232,10 @@ function ToolFallbackTrigger({
     statusType === "complete"
       ? completeToolIcon(name)
       : statusIconMap[statusType];
-  const displayName = formatMcpToolName(name, mcpServer, mcpTool) ?? name;
+  const displayName =
+    name === COMPUTER_USE_TOOL
+      ? `Computer use${detail ? ` · ${detail}` : ""}`
+      : (formatMcpToolName(name, mcpServer, mcpTool) ?? name);
 
   return (
     <CollapsibleTrigger
@@ -390,6 +407,28 @@ function ToolFallbackMcpApp({
   );
 }
 
+function ToolFallbackImages({
+  images,
+  className,
+}: {
+  images: McpImageResult["images"];
+  className?: string;
+}) {
+  return (
+    <div className={cn("flex flex-col gap-2", className)}>
+      {images.map((img, i) => (
+        <img
+          key={i}
+          src={`data:${img.mimeType};base64,${img.data}`}
+          alt={`Tool result ${i + 1}`}
+          loading="lazy"
+          className="max-w-full rounded-lg border border-border"
+        />
+      ))}
+    </div>
+  );
+}
+
 function ToolFallbackResult({
   result,
   className,
@@ -419,17 +458,7 @@ function ToolFallbackResult({
               {stripAnsi(imageResult.text)}
             </pre>
           )}
-          <div className="mt-2 flex flex-col gap-2">
-            {imageResult.images.map((img, i) => (
-              <img
-                key={i}
-                src={`data:${img.mimeType};base64,${img.data}`}
-                alt={`Tool result ${i + 1}`}
-                loading="lazy"
-                className="max-w-full rounded-lg border border-border"
-              />
-            ))}
-          </div>
+          <ToolFallbackImages images={imageResult.images} className="mt-2" />
         </>
       ) : (
         <pre className="aui-tool-fallback-result-content whitespace-pre-wrap text-xs">
@@ -505,7 +534,18 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = ({
       ? { text: widget.text, images: widget.images }
       : toolName.startsWith("browser_")
         ? plainBrowserResult(result)
-        : (widget?.text ?? result);
+        : toolName === COMPUTER_USE_TOOL
+          ? plainComputerResult(result)
+          : (widget?.text ?? result);
+  const computerSteps = toolName === COMPUTER_USE_TOOL ? describeComputerCall(argsText) : [];
+
+  const picture =
+    !isCancelled &&
+    !widget &&
+    (toolName === "view_image" || toolName.startsWith("mcp__")) &&
+    isMcpImageResult(shown)
+      ? shown
+      : null;
 
   // Open while it waits on Allow / Deny, so what is being approved is readable.
   const awaitingApproval = useToolAwaitingApproval(toolCallId);
@@ -521,6 +561,13 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = ({
         mcpServer={mcpServerFromProvenance(provenance)}
         mcpTool={mcpToolFromProvenance(provenance)}
         status={status}
+        detail={
+          computerSteps.length > 0
+            ? // The model's word for it once it runs; the steps themselves while it asks.
+              (!awaitingApproval && computerCallWhy(argsText)) || computerSteps.join(", ")
+            : undefined
+        }
+        singleLine={computerSteps.length > 0}
       />
       {!isCancelled && widget && (
         <ToolFallbackMcpApp
@@ -532,11 +579,17 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = ({
       <ToolFallbackContent>
         <ToolFallbackError status={status} />
         <ToolFallbackArgs
-          argsText={argsText}
+          argsText={
+            computerSteps.length > 0
+              ? // With the call as sent beneath them when the steps do not say all of it.
+                computerSteps.join("\n") + (computerCallFullySaid(argsText) ? "" : `\n\n${argsText}`)
+              : argsText
+          }
           className={cn(isCancelled && "opacity-60")}
         />
-        {!isCancelled && <ToolFallbackResult result={shown} />}
+        {!isCancelled && <ToolFallbackResult result={picture ? picture.text : shown} />}
       </ToolFallbackContent>
+      {picture && <ToolFallbackImages className="ml-5 mt-2" images={picture.images} />}
       {/* Files stay outside even when the card is collapsed (#10425) */}
       {created && (
         <SandboxFiles

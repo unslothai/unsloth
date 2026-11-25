@@ -19,6 +19,7 @@ export const useBackgroundStore = create<{
 let database: Dexie | undefined;
 let account = "";
 let revision = 0;
+let patchRevision = 0;
 let committed: ChatBackgroundValue | null = null;
 // Kept with the image it describes: another tab can replace the stored one while this one still shows its own.
 let committedSha: string | null = null;
@@ -125,6 +126,10 @@ export function useChatBackground() {
 export function setBackgroundError(error: BackgroundError) {
 	useBackgroundStore.setState({ error });
 }
+export function clearBackgroundError(error: BackgroundError) {
+	if (useBackgroundStore.getState().error === error)
+		useBackgroundStore.setState({ error: null });
+}
 async function persist(
 	value: ChatBackgroundValue | null,
 	optimistic: boolean,
@@ -132,9 +137,13 @@ async function persist(
 ): Promise<boolean> {
 	const db = currentDatabase();
 	const ticket = ++revision;
-	if (optimistic) useBackgroundStore.setState({ value, error: null });
+	if (optimistic) {
+		patchRevision = ticket;
+		useBackgroundStore.setState({ value, error: null });
+	}
 	const write = writes.then(async () => {
-		if (fromServer && ticket !== revision) return;
+		// A patch is skipped only for a newer patch: both keep the image and its sha256.
+		if (ticket !== revision && (fromServer || (optimistic && patchRevision === revision && db === database))) return;
 		const sameImage = Boolean(value && committed && value.blob === committed.blob);
 		const sha256 = fromServer ? (fromServer.sha256 ?? null) : sameImage ? committedSha : null;
 		if (value) await db.table("backgrounds").put({ id: "current", value, sha256 });
@@ -187,13 +196,15 @@ export function beginBackgroundUpload() {
 	useBackgroundStore.setState({ busy: true, error: null });
 	return ++uploadTicket;
 }
+/** Resolves false when a newer upload took over or the image could not be stored. */
 export async function finishBackgroundUpload(
 	ticket: number,
 	value: ChatBackgroundValue,
-) {
-	if (ticket !== uploadTicket) return;
-	await persist(value, false);
+): Promise<boolean> {
+	if (ticket !== uploadTicket) return false;
+	const stored = await persist(value, false);
 	if (ticket === uploadTicket) useBackgroundStore.setState({ busy: false });
+	return stored;
 }
 export function failBackgroundUpload(ticket: number, error: BackgroundError) {
 	if (ticket === uploadTicket)

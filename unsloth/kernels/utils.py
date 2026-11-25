@@ -52,9 +52,8 @@ else:
     torch_amp_custom_fwd = torch.amp.custom_fwd(device_type = "cuda")
     torch_amp_custom_bwd = torch.amp.custom_bwd(device_type = "cuda")
 
-# DEVICE_COUNT == 0 = no visible accelerator (e.g. CPU-only CI runner). The consumer functions below only index
-# these arrays during real GPU work, so empty containers are safe -- they just need to be defined so the module
-# imports cleanly.
+# DEVICE_COUNT == 0 means no visible accelerator (e.g. a CPU-only CI runner); consumers only index
+# these arrays during GPU work, so empty containers only need to exist for the module to import.
 if DEVICE_TYPE == "xpu":
     torch_amp_custom_fwd = torch.amp.custom_fwd(device_type = "xpu")
     torch_amp_custom_bwd = torch.amp.custom_bwd(device_type = "xpu")
@@ -178,10 +177,9 @@ HAS_CUDA_STREAM = False
 try:
     import bitsandbytes as bnb
 
-    # If an earlier `import bitsandbytes` died inside __init__, CPython evicts only the parent from
-    # sys.modules and keeps its submodules, so this retry re-executes __init__ without rebinding
-    # bnb.functional. `import x.y as z` reads sys.modules directly and survives that, plain attribute
-    # access does not.
+    # If an earlier import bitsandbytes died in __init__, CPython evicts only the parent from
+    # sys.modules, so this retry re-runs __init__ without rebinding bnb.functional; import x.y as z
+    # survives that, plain attribute access does not.
     import bitsandbytes.functional as bnb_functional
 except Exception:
     # device_type.py already degrades to 16bit/full finetuning when bnb is missing (gfx906, whose
@@ -475,6 +473,35 @@ def _packed_base(base_layer):
     return base_layer.weight_packed, base_layer.mxfp4_quant_state()
 
 
+_QAT_MODULE_PREFIXES = ("torchao.quantization.qat.", "torchao.prototype.qat.")
+_IS_QAT_LINEAR = {}
+
+
+def _is_qat_linear(module):
+    # torchao QAT linears fake-quantize the weight and / or input inside forward(); memoized per class.
+    cls = type(module)
+    is_qat = _IS_QAT_LINEAR.get(cls)
+    if is_qat is None:
+        is_qat = _IS_QAT_LINEAR[cls] = any(
+            c.__module__.startswith(_QAT_MODULE_PREFIXES) for c in cls.__mro__
+        )
+    return is_qat
+
+
+def _has_qat_linear(proj):
+    # Decode reads raw weights, so QAT (base or adapter) must run the module forward.
+    modules = proj._modules
+    if _is_qat_linear(modules.get("base_layer", proj)):
+        return True
+    for name in ("lora_A", "lora_B"):
+        adapters = modules.get(name)
+        if adapters is not None:
+            for module in adapters._modules.values():
+                if _is_qat_linear(module):
+                    return True
+    return False
+
+
 def _has_packed_qweight(proj):
     # GPTQ / AWQ keep a packed qweight and no dense .weight tensor: only their own forward can run them.
     base_layer = proj._modules.get("base_layer", proj)
@@ -497,10 +524,9 @@ def _is_packed_state(quant_state):
 
 
 def get_lora_parameters(proj):
-    """Return (weight, weight quant_state, lora A, lora B, lora scale).
-    With QAT enabled, also fake-quantizes the base layer and lora weights.
-    Tensor parallel projections (models/tp_native.py) return local shards of their DTensors.
-    """
+    """Return (weight, weight quant_state, lora A, lora B, lora scale); with QAT the base layer and
+    lora weights are also fake-quantized; tensor parallel projections (models/tp_native.py)
+    return local shards of their DTensors."""
     localize = proj.__dict__.get("_unsloth_tp_local")
     if localize is not None:
         return localize(proj)
@@ -696,6 +722,21 @@ _USE_NF4_KERNELS = False
 _TRITON_GEMV_EAGER = False
 _GEMV_MAX_ROWS = 1
 _is_compiling = torch.compiler.is_compiling
+# gfx1151 ROCm and NVIDIA L4: the Triton skinny decode linear (rocm_skinny_linear.py) where measured.
+_ROCM_SKINNY_LINEAR = False
+if (
+    os.environ.get("UNSLOTH_ROCM_SKINNY_LINEAR", "1") != "0"
+    if torch.version.hip is not None
+    else os.environ.get("UNSLOTH_CUDA_SKINNY_LINEAR", "1") != "0" and torch.version.cuda is not None
+):
+    try:
+        from . import rocm_skinny_linear as _rocm_skinny
+        if _rocm_skinny.triton is not None:
+            _rocm_skinny_decode_linear = _rocm_skinny.skinny_decode_linear
+            _rocm_skinny_supported = _rocm_skinny.skinny_linear_supported
+            _ROCM_SKINNY_LINEAR = True
+    except Exception:
+        pass
 _current_device = torch.cuda.current_device
 if (
     DEVICE_TYPE in ("cuda", "hip")
@@ -738,12 +779,9 @@ _FSDP2_GATHERED = "_unsloth_fsdp2_gathered"
 
 
 def _gathered_plan_hit(plan, W):
-    """FSDP2 frees an all-gathered weight's storage after use and re-allocates it for the next
-    all-gather: the same tensor at a new address, so a plan keyed on the address it was built at
-    never hits again. The planned launch reads the address of the tensor it was built with at
-    launch time, so it still applies while that tensor and W (the weight, or a view of it such as
-    the backward's `W.t()`) are at the same address with the 16 byte alignment it was specialized
-    on. A tensor given a new storage object instead of a resized one has another address: rebuilt."""
+    """FSDP2 re-allocates an all-gathered weight at a new address, so a plan is reused only while
+    its tensor and W (or a view like W.t()) keep the address and 16 byte alignment it was built
+    for; else rebuilt."""
     address = W.data_ptr()
     if plan[6].data_ptr() != address or (address & 15) != (plan[0] & 15):
         return False
@@ -1771,9 +1809,42 @@ def _fast_lora_weights(lora_A, lora_B, dtype):
         )
     cache = getattr(lora_A, "_fast_lora", None)
     if cache is None or cache[0] != key:
-        cache = (key, lora_A.to(dtype), lora_B.to(dtype))
+        if cache is not None and _refresh_lora_cast(cache, lora_A, lora_B, dtype):
+            # Same tensors, new values: a captured decode graph reading them stays valid.
+            cache = (key, cache[1], cache[2])
+        else:
+            cache = (key, *_new_lora_cast(lora_A, lora_B, dtype))
         lora_A._fast_lora = cache
     return cache[1], cache[2]
+
+
+def _new_lora_cast(lora_A, lora_B, dtype):
+    if torch.is_inference_mode_enabled() and not _is_compiling():
+        # Normal tensors, so a later refresh can write them in place outside inference mode too.
+        with torch.inference_mode(False), torch.no_grad():
+            return lora_A.to(dtype), lora_B.to(dtype)
+    return lora_A.to(dtype), lora_B.to(dtype)
+
+
+def _refresh_lora_cast(cache, lora_A, lora_B, dtype):
+    """Copies the adapters into the cached casts in place (addresses kept) when they still fit."""
+    A, B = cache[1], cache[2]
+    if _is_compiling() or torch.is_grad_enabled():
+        return False
+    pairs = [(cast, source) for cast, source in ((A, lora_A), (B, lora_B)) if cast is not source]
+    for cast, source in pairs:
+        if (
+            cast.dtype != dtype
+            or cast.shape != source.shape
+            or cast.device != source.device
+            or cast.requires_grad
+            or cast._base is not None
+            or (cast.is_inference() and not torch.is_inference_mode_enabled())
+        ):
+            return False
+    for cast, source in pairs:
+        cast.copy_(source)
+    return True
 
 
 def fast_linear_forward(
@@ -1788,6 +1859,7 @@ def fast_linear_forward(
         or _has_active_dora_adapter(proj)
         or _has_active_lora_bias(proj)
         or _has_packed_qweight(proj)
+        or _has_qat_linear(proj)
     ):
         result = proj(X)
         return result if out is None else out.copy_(result)
@@ -1798,6 +1870,27 @@ def fast_linear_forward(
         return matmul_lora(
             X, W, W_quant, lora_A, lora_B, lora_S, fused = not _has_lora_dropout_module(proj)
         )
+
+    lora_cast = None
+    if W_quant is None and temp_lora is None and _ROCM_SKINNY_LINEAR and not _is_compiling():
+        # gfx11 ROCm / L4: base GEMM + LoRA in one launch (rocBLAS skinny GEMMs, cuBLAS rank-r GEMMs are slow
+        # there). Decided before the LoRA cast: other devices cast once below, and trainable adapters under grad
+        # keep the path below (the cached cast is detached). A caller's temp_lora must get X @ A.T: path below.
+        A = B = None
+        take = _rocm_skinny_supported(X.device)
+        if take and lora_A is not None:
+            take = lora_B is not None and not (
+                torch.is_grad_enabled() and (lora_A.requires_grad or lora_B.requires_grad)
+            )
+            if take:
+                A, B = _fast_lora_weights(lora_A, lora_B, X.dtype)
+                # A rejected call reuses this cast below instead of looking it up again.
+                lora_cast = (A, B)
+        fused = _rocm_skinny_decode_linear(X, W, A, B, lora_S, out) if take else None
+        if fused is not None:
+            if bias is not None:
+                fused += bias
+            return fused
 
     if W_quant is None:
         out = torch_matmul(X, W.t(), out = out)
@@ -1841,33 +1934,36 @@ def fast_linear_forward(
         out = torch_matmul(X, W, out = out)
 
     if out.dtype != X.dtype:
-        # torch.matmul under a different autocast dtype returns that dtype; the LoRA update, decode
-        # buffers and every other branch here work in X.dtype.
+        # Matmul under another autocast returns that dtype; LoRA and buffers need X.dtype.
         out = out.to(X.dtype)
 
     if lora_A is not None:
         out_dim = out.shape[2]
         dtype = X.dtype
 
-        if _is_compiling():
+        if lora_cast is not None:
+            A, B = lora_cast
+        elif _is_compiling():
             A, B = lora_A.to(dtype), lora_B.to(dtype)
         else:
             A, B = _fast_lora_weights(lora_A, lora_B, dtype)
 
+        # Update through a 1-D / 2-D view but return `out` itself: a re-view of a strided buffer
+        # (down_proj writes into temp_up[..., :hd]) breaks torch.matmul's fold to one mm downstream.
         if bsz == 1:
-            out = out.view(out_dim)
             temp_lora = torch_mv(A, X.ravel(), out = temp_lora)
             # Without out=, mv / mm follow a different autocast dtype; the in-place update does not.
             if temp_lora.dtype != dtype:
                 temp_lora = temp_lora.to(dtype)
-            out = out.addmv_(B, temp_lora, alpha = lora_S)
+            res = out.view(out_dim).addmv_(B, temp_lora, alpha = lora_S)
         else:
-            out = out.view(bsz, out_dim)
             temp_lora = torch_mm(X.view(bsz, in_dim), A.t(), out = temp_lora)
             if temp_lora.dtype != dtype:
                 temp_lora = temp_lora.to(dtype)
-            out = out.addmm_(temp_lora, B.t(), alpha = lora_S)
-        out = out.view(bsz, 1, out_dim)
+            res = out.view(bsz, out_dim).addmm_(temp_lora, B.t(), alpha = lora_S)
+        # A subclass operand makes the in-place method return its type (#16249).
+        if type(res) is not type(out):
+            out = out.as_subclass(type(res))
 
     if bias is not None:
         out += bias
@@ -2064,6 +2160,9 @@ def _shares_storage(out, *tensors):
         return True
 
 
+from . import dequant_cache as _dequant_cache
+
+
 def matmul_lora(
     X,
     W,
@@ -2146,12 +2245,34 @@ def matmul_lora(
             # Eager only: a traced caller buffer cannot be checked for aliasing (_shares_storage). Dequantize
             # first: the caller's buffer may share storage with the quant state (absmax, code, ...).
             if W_quant is not None:
-                W = fast_dequantize(W, W_quant, use_global_buffer = use_global_buffer, dtype = dtype)
+                W = _dequant_cache.dequantize(
+                    W,
+                    W_quant,
+                    use_global_buffer = use_global_buffer,
+                    dtype = dtype,
+                    rows = X.shape[0],
+                )
             out = _accumulated(addmm_(out, XA, B, alpha = s, beta = 0), out.addmm_(X, W.t()))
+        elif (
+            W_quant is not None
+            and _HAS_LORA_FIRST_OP
+            and type(s) in (int, float)
+            and _is_dynamo_compiling()
+            and not _exporting()
+            and _dequant_cache.traced_route(W, W_quant)
+        ):
+            # The traced op below, with the base weight from the dequant cache (or decoded) inside the op.
+            out = _dequant_cache.nf4_lora_first(X, W, W_quant, XA, B, s)
         else:
             # Unquantized, fast_dequantize returns W as is (FP8 never takes this branch).
             if W_quant is not None:
-                W = fast_dequantize(W, W_quant, use_global_buffer = use_global_buffer, dtype = dtype)
+                W = _dequant_cache.dequantize(
+                    W,
+                    W_quant,
+                    use_global_buffer = use_global_buffer,
+                    dtype = dtype,
+                    rows = X.shape[0],
+                )
             if not _is_compiling():
                 out = _lora_first_addmm(X, W.t(), XA, B, s)
             elif (
@@ -2167,8 +2288,12 @@ def matmul_lora(
                 out = torch.addmm(XA.new_zeros(1), XA, B, beta = 0, alpha = s)
                 out = torch.addmm(out, X, W.t())
         A = None
+    elif out is None and _dequant_cache.traced_route(W, W_quant):
+        out = _dequant_cache.nf4_matmul(X, W, W_quant)
     else:
-        W = fast_dequantize(W, W_quant, use_global_buffer = use_global_buffer, dtype = dtype)
+        W = _dequant_cache.dequantize(
+            W, W_quant, use_global_buffer = use_global_buffer, dtype = dtype, rows = X.shape[0]
+        )
         out = torch_matmul(X, W.t(), out = out)
     if W_quant is not None:
         del W

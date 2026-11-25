@@ -45,7 +45,7 @@ export function QuantPicker({
         <span className="text-xs font-medium text-muted-foreground">
           Quantization Levels
         </span>
-        <Tooltip>
+        <Tooltip disableHoverableContent={false}>
           <TooltipTrigger asChild={true}>
             <button
               type="button"

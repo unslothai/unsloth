@@ -473,6 +473,7 @@ _REACHED_THROUGH_A_GATE = {
         "_pin_host_tensor",
     ): "_H3BlockPinner._run only, built by defer_streamed_block_pins behind _background_pin_enabled / "
     "_fast_pin_supported / h3_te_pin_allowed (the admit too), all on the target device",
+    ("core/inference/diffusion_lora_fuse.py", "fuse"): "_host_backup_pinned",
     ("core/inference/diffusion_preview.py", "_device_map"): "exempt: tiny, async preview",
     (
         "core/inference/diffusion_preview.py",

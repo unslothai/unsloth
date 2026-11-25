@@ -18,6 +18,7 @@ import tempfile  # noqa: E402
 import types  # noqa: E402
 import weakref  # noqa: E402
 import gc as gc_module  # noqa: E402
+import importlib  # noqa: E402
 
 import pytest  # noqa: E402
 import torch  # noqa: E402
@@ -503,11 +504,10 @@ def test_pp2_zero_bubble_with_non_reentrant_checkpointing_matches_one_process(sc
 
 @pytest.mark.parametrize("schedule", ["interleavedzerobubble", "zbvzerobubble"])
 def test_pp2_zero_bubble_with_compiled_blocks_matches_one_process(schedule):
-    sched = sys.modules["unsloth.models.pp_schedules"]
+    sched = importlib.import_module("unsloth.models.pp_schedules")
     if not sched.split_backward_keeps_function_nodes():
-        # torch <= 2.12: split backward reads _input_metadata of compiled (AOTAutograd) nodes whose graph root
-        # is already released; refused before the model is cut.
-        # V schedules on torch < 2.12 hit the earlier V-placement refusal first.
+        # torch <= 2.12 refuses split backward over compiled AOTAutograd nodes before the model is
+        # cut; on torch < 2.12 V schedules hit the earlier V-placement refusal first
         v_refused = schedule in V_SCHEDULES and not _v_supported()
         for res in _spawn("compiled_refusal", 2, schedule = schedule):
             if v_refused:
@@ -574,7 +574,7 @@ def test_multi_stage_on_a_pp_x_dp_mesh_is_refused_before_the_cut():
 
 
 def test_schedule_names_normalize():
-    sched = sys.modules["unsloth.models.pp_schedules"]
+    sched = importlib.import_module("unsloth.models.pp_schedules")
     assert sched.schedule_spec("Interleaved1F1B").name == "interleaved1f1b"
     assert sched.schedule_spec("ScheduleDualPipeV").name == "dualpipev"
     assert sched.schedule_spec("zbv").name == "zbvzerobubble"
@@ -584,13 +584,13 @@ def test_schedule_names_normalize():
 
 def test_split_backward_probe_matches_torch_node_ownership():
     # THPFunction owns its node (c10::intrusive_ptr) from torch 2.13; up to 2.12 it is a std::weak_ptr.
-    sched = sys.modules["unsloth.models.pp_schedules"]
+    sched = importlib.import_module("unsloth.models.pp_schedules")
     major, minor = (int(v) for v in torch.__version__.split(".")[:2])
     assert sched.split_backward_keeps_function_nodes() == ((major, minor) >= (2, 13))
 
 
 def test_compiled_blocks_refused_for_split_backward_on_affected_torch(monkeypatch):
-    sched = sys.modules["unsloth.models.pp_schedules"]
+    sched = importlib.import_module("unsloth.models.pp_schedules")
     split = {"interleaved": True, "split_backward": True}
     full = {"interleaved": True, "split_backward": False}
 
@@ -635,7 +635,7 @@ def test_forward_calling_compiled_function_refused_for_split_backward(monkeypatc
     # on it after the cut ("_input_metadata is invalid"), as on a compiled block.
     import functools
 
-    sched = sys.modules["unsloth.models.pp_schedules"]
+    sched = importlib.import_module("unsloth.models.pp_schedules")
     split = {"interleaved": True, "split_backward": True}
 
     def eager(self, x):
@@ -682,7 +682,7 @@ def test_single_backward_kernels_unwraps_partials():
     # patch_peft_model binds Cohere's MLP kernel as MethodType(partial(apply_lora_mlp, inplace=False), mlp).
     import functools
 
-    sched = sys.modules["unsloth.models.pp_schedules"]
+    sched = importlib.import_module("unsloth.models.pp_schedules")
 
     def apply_lora_mlp_swiglu(
         self,

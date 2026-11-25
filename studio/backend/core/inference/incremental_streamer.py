@@ -2,9 +2,13 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """``TextIteratorStreamer`` that decodes long lines incrementally instead of re-decoding the whole
-line per token; chunks equal upstream ``put``, which short lines and non-splitting tokenizers keep."""
+line per token. ``put`` is transformers 5.24's on every installed version: a newline flush keeps the
+last id as decode context, since SentencePiece decoders (Llama / Mistral ``Strip``, ``Metaspace``)
+drop the leading space of a decode's first piece and older ``put`` lost one indent space per line."""
 
 from __future__ import annotations
+
+import unicodedata
 
 from transformers import TextIteratorStreamer
 
@@ -41,9 +45,6 @@ class IncrementalTextIteratorStreamer(TextIteratorStreamer):
         return True
 
     def put(self, value):
-        if self._line_ids is not self.token_cache and not self._attach():
-            return super().put(value)
-
         if len(value.shape) > 1 and value.shape[0] > 1:
             raise ValueError("TextStreamer only supports batch size 1")
         elif len(value.shape) > 1:
@@ -54,17 +55,26 @@ class IncrementalTextIteratorStreamer(TextIteratorStreamer):
             return
 
         new_ids = value.tolist()
+        incremental = self._line_ids is self.token_cache or self._attach()
         self.token_cache.extend(new_ids)
-        for token_id in new_ids:
-            self._decoder.feed(token_id)
-        text = self._decoder.text
+        if incremental:
+            for token_id in new_ids:
+                self._decoder.feed(token_id)
+            text = self._decoder.text
+        else:
+            text = self.tokenizer.decode(self.token_cache, **self.decode_kwargs)
 
+        unprinted = text[self.print_len :]
         if text.endswith("\n"):
-            printable_text = text[self.print_len :]
-            self.token_cache = []
-            self.print_len = 0
-        elif len(text) > 0 and self._is_chinese_char(ord(text[-1])):
-            printable_text = text[self.print_len :]
+            printable_text = unprinted
+            # The next line decodes after this id, so its first piece keeps its leading space.
+            self.token_cache = self.token_cache[-1:]
+            self.print_len = len(self.tokenizer.decode(self.token_cache, **self.decode_kwargs))
+        elif (len(text) > 0 and self._is_chinese_char(ord(text[-1]))) or all(
+            char.isspace() or unicodedata.category(char)[0] in "LMN" for char in unprinted
+        ):
+            # Letters, marks, digits and spaces print at once; other symbols may still change.
+            printable_text = unprinted
             self.print_len += len(printable_text)
         else:
             # rfind from print_len slices the same text as upstream's whole-line rfind.

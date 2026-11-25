@@ -2,14 +2,9 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * Tools the BROWSER has to execute itself, so a turn that uses one genuinely cannot proceed once the tab is gone
- * and must stay on the subscriber-owned (cancel-on-disconnect) stream.
- *
- * Every other tool Studio runs for a local model - web_search, web_fetch, python, terminal, edit_file, render_html,
- * image_generation, MCP - is executed by the SERVER and streams as chunk events, so it is durable like plain text.
- * The browser tools are the exception: they drive this tab's browser panel. Add a name here only if a tool truly
- * needs a live tab. Spelled out rather than imported from features/browser/agent/tools.ts, which the barrel cycle
- * would leave uninitialized here; tests/browser-agent-gate.test.ts keeps the two lists equal.
+ * Browser-executed tools need this tab alive, so a turn using one stays on the subscriber-owned
+ * stream; server-run tools stream durably. Spelled out to avoid a barrel-cycle import of
+ * features/browser/agent/tools.ts; tests/browser-agent-gate.test.ts keeps them equal.
  */
 export const BROWSER_EXECUTED_TOOLS: ReadonlySet<string> = new Set<string>([
   "browser_navigate",
@@ -41,8 +36,8 @@ export function turnRequiresLegacyStream(requestPayload: unknown): boolean {
 
 /** Plain values the adapter already resolved, so the gate is a truth table. */
 export type DurableRunCandidate = {
-  /** A passthrough/external-provider turn: its own client owns the stream, so there is nothing to make durable. */
-  externalProvider?: boolean;
+  /** A connection turn whose key or headers live only in this browser: a run persists its request, so it cannot carry them. */
+  externalKeyInBrowser?: boolean;
   /** The resolved model is an audio model - it runs on its own legacy path regardless of the gate. */
   modelIsAudio?: boolean;
   /** A diffusion model is loaded: that path has no durable run to join. */
@@ -64,7 +59,7 @@ export type DurableRunCandidate = {
 /** The adapter's durability conjunction, extracted unchanged so it can be tested as a truth table. */
 export function isDurableRunCandidate(input: DurableRunCandidate): boolean {
   return Boolean(
-    !input.externalProvider &&
+    !input.externalKeyInBrowser &&
       input.modelIsAudio !== true &&
       input.loadedIsDiffusion !== true &&
       // Turn-scoped, not thread-scoped: a stale blob from an earlier turn must not refuse this one.

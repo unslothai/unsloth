@@ -148,10 +148,8 @@ def next_run_after(
     *,
     anchor_ms: Optional[int] = None,
 ) -> Optional[int]:
-    """The first run strictly after ``after_ms`` (epoch ms), or None once a schedule has none left.
-
-    Hourly schedules start one interval from now unless a persisted occurrence anchors their cadence.
-    """
+    """First run strictly after after_ms (epoch ms), or None once none is left; hourly starts one
+    interval out unless a persisted occurrence (anchor_ms) anchors cadence."""
     zone = resolve_timezone(timezone_name)
     if isinstance(schedule, HourlySchedule):
         interval_ms = schedule.hours * 60 * 60 * 1000

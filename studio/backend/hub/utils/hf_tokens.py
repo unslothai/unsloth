@@ -149,8 +149,7 @@ def _denial_is_remembered(key: tuple[str, ...]) -> bool:
 
 
 def _with_remembered_denial(key: tuple[str, ...], verdict: Optional[bool]) -> Optional[bool]:
-    """ "Could not ask" reads as the last answer if that was no; once any refusal is evicted, no
-    key may claim it was never refused."""
+    """Once a refusal is evicted from memory, no key may claim it was never refused."""
     if verdict is None and (_denial_is_remembered(key) or _denial_memory_lost_an_entry()):
         return False
     return verdict
@@ -233,10 +232,11 @@ def cache_reads_authorized(
         return False
     if not hf_token:
         return True
-    if isinstance(hf_token, AmbientAuthorizedToken):
-        # Same caller class reads the cache tokenless from the None branch above.
-        return True
     repo = (repo_id or "").strip()
+    if isinstance(hf_token, AmbientAuthorizedToken):
+        # A managed session reads the shared cache only for a granted or public repo.
+        if not _managed_cache_read_ungranted(repo, repo_type, offline = offline):
+            return True
     if not repo:
         return False
     if _is_local_path(repo):
@@ -281,6 +281,22 @@ def cached_read_refused(
         is_anonymous(hf_token)
         and public_cache_read_authorized(repo_id = repo_id, repo_type = repo_type, offline = offline)
     )
+
+
+def _managed_cache_read_ungranted(repo_id: str, repo_type: str, *, offline: bool) -> bool:
+    """True only for a managed account and a repo it holds no grant for and is not public."""
+    from utils.account_context import is_owner_context
+
+    if is_owner_context():
+        return False
+    if not repo_id or _is_local_path(repo_id):
+        return True
+    try:
+        from hub.services.models import account_access
+        return not account_access.repo_visible(repo_id, repo_type, offline = offline)
+    except Exception:
+        # Fail closed: the caller then asks the Hub with the account's own token.
+        return True
 
 
 def _is_local_path(repo_id: str) -> bool:
@@ -522,8 +538,7 @@ def _host_credential_identities() -> "Optional[dict]":
 
 
 def _note_host_credential_identities(tokens: Iterable[str]) -> None:
-    """The memo is set only once the identity is KNOWN to be in the ledger: a missing entry
-    authorizes MORE, not less."""
+    """Only set the memo once the identity is in the ledger; a missing entry authorizes more."""
     for token in tokens:
         if not isinstance(token, str) or not token:
             continue
@@ -1053,8 +1068,7 @@ _HUB_401_TEXT = re.compile(r"^(?:[A-Za-z]\w*: )?401 Client Error\b")
 
 
 def is_token_rejection(exc: BaseException) -> bool:
-    """A 401 anywhere in the chain: transports wrap Hub errors, and the download ladder rebuilds
-    a child's error from its text."""
+    """A 401 anywhere in the chain counts: transports wrap Hub errors and ladders rebuild text."""
     seen: set[int] = set()
     pending: list[Optional[BaseException]] = [exc]
     while pending:

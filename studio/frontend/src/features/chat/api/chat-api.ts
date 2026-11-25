@@ -30,6 +30,7 @@ import {
   type ModelRuntime,
   withModelLoadNotice,
 } from "@/lib/model-lifecycle-events";
+import { takeSseFrame } from "@/lib/sse-framing";
 import type { AgentsMdRecord } from "../utils/agents-md";
 import { showLoadWarning } from "../utils/load-warning-toast";
 import { readAdvertisedPatchGuards } from "../utils/openapi-support";
@@ -84,6 +85,51 @@ export type ChatHistoryUpdatedDetail = {
 // bounds the request itself so a wedged socket cannot stall every reader waiting on the write
 const THREAD_WRITE_TIMEOUT_MS = 30_000;
 
+export type OwnChatHistoryWrite = {
+  threadId: string;
+  thread: readonly [before: number, after: number];
+  history: readonly [before: number, after: number];
+};
+
+const CHAT_REVISION_HEADER = "X-Unsloth-Chat-Revision";
+const ownChatHistoryWriteListeners = new Set<
+  (write: OwnChatHistoryWrite) => void
+>();
+
+export function subscribeOwnChatHistoryWrites(
+  listener: (write: OwnChatHistoryWrite) => void,
+): () => void {
+  ownChatHistoryWriteListeners.add(listener);
+  return () => {
+    ownChatHistoryWriteListeners.delete(listener);
+  };
+}
+
+function publishOwnChatHistoryWrite(
+  response: Response,
+  affected: readonly string[] | null,
+): void {
+  const header = response.ok
+    ? response.headers?.get(CHAT_REVISION_HEADER)
+    : null;
+  if (!header || affected?.length !== 1) return;
+  const values = header.split(",").map(Number);
+  if (values.length !== 4 || !values.every(Number.isSafeInteger)) return;
+  const [threadBefore, threadAfter, historyBefore, historyAfter] = values;
+  const write: OwnChatHistoryWrite = {
+    threadId: affected[0],
+    thread: [threadBefore, threadAfter],
+    history: [historyBefore, historyAfter],
+  };
+  for (const listener of ownChatHistoryWriteListeners) {
+    try {
+      listener(write);
+    } catch {
+      // A listener failing must not fail the write that already landed.
+    }
+  }
+}
+
 async function threadWriteFetch(
   input: string,
   init: RequestInit,
@@ -93,7 +139,12 @@ async function threadWriteFetch(
   const timeout = disposableTimeoutSignal(THREAD_WRITE_TIMEOUT_MS);
   if (caller === undefined) {
     try {
-      return await authFetch(input, { ...init, signal: timeout.signal });
+      const response = await authFetch(input, {
+        ...init,
+        signal: timeout.signal,
+      });
+      publishOwnChatHistoryWrite(response, affected);
+      return response;
     } finally {
       timeout.dispose();
       forgetThreadReads(affected);
@@ -106,7 +157,12 @@ async function threadWriteFetch(
   caller.addEventListener("abort", abort);
   timeout.signal.addEventListener("abort", abort);
   try {
-    return await authFetch(input, { ...init, signal: controller.signal });
+    const response = await authFetch(input, {
+      ...init,
+      signal: controller.signal,
+    });
+    publishOwnChatHistoryWrite(response, affected);
+    return response;
   } finally {
     caller.removeEventListener("abort", abort);
     timeout.dispose();
@@ -134,7 +190,7 @@ const LENGTH_STOP_ADVICE: Record<LengthStopCause, string> = {
     "The model ran out of room to answer: thinking used what the context window " +
     "had left after the prompt, before any answer was written. Raising Max " +
     "Tokens cannot create room the window does not have -- increase the " +
-    "Context Length in Model settings, or disable thinking, then retry.",
+    "Context in Model settings, or disable thinking, then retry.",
   // No Studio setting controls a connected model's window.
   context_window:
     "The conversation filled the model's context window before an answer was " +
@@ -144,12 +200,27 @@ const LENGTH_STOP_ADVICE: Record<LengthStopCause, string> = {
     "Max Tokens, disable thinking, or start a new chat.",
 };
 
+const KV_CACHE_HINT =
+  " A q8_0 KV Cache Dtype in Model settings fits more context in the same memory.";
+const FULL_PRECISION_KV = new Set(["f16", "bf16", "f32"]);
+
+/** FastFlowLM and providers have no KV cache setting; an already quantized cache gains nothing. */
+export function offersKvCacheHint(
+  loadedIsGguf: boolean | null,
+  loadedKvCacheDtype: string | null,
+): boolean {
+  return loadedIsGguf === true && FULL_PRECISION_KV.has(loadedKvCacheDtype ?? "f16");
+}
+
 /** A reasoning model spent its output budget before emitting any standard content. */
 export class GenerationLengthError extends Error {
   readonly stopCause: LengthStopCause;
 
-  constructor(stopCause: LengthStopCause) {
-    super(LENGTH_STOP_ADVICE[stopCause]);
+  constructor(stopCause: LengthStopCause, kvCacheHint = false) {
+    super(
+      LENGTH_STOP_ADVICE[stopCause] +
+        (kvCacheHint && stopCause === "context_length" ? KV_CACHE_HINT : ""),
+    );
     this.name = "GenerationLengthError";
     this.stopCause = stopCause;
   }
@@ -447,14 +518,30 @@ export async function countChatInputTokens(payload: {
   auto_heal_tool_calls?: boolean;
   studio_tool_history?: boolean;
   run_tools_locally?: boolean;
+  breakdown?: boolean;
   // `model` is informational: the endpoint counts with whatever is resident and reports which.
-}, serializedPayload = JSON.stringify(payload)): Promise<{ input_tokens: number; model?: string }> {
+}, serializedPayload = JSON.stringify(payload)): Promise<ChatCountTokensResponse> {
   const response = await authFetch("/api/inference/chat/count_tokens", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: serializedPayload,
   });
-  return parseJsonOrThrow<{ input_tokens: number; model?: string }>(response);
+  return parseJsonOrThrow<ChatCountTokensResponse>(response);
+}
+
+export interface ChatCountTokensResponse {
+  input_tokens: number;
+  model?: string;
+  breakdown?: {
+    system: number;
+    tools: number;
+    messages: number;
+    tool_names: string[];
+  };
+  context_length?: number | null;
+  compaction_budget?: number | null;
+  // Null on MLX.
+  prompt?: string | null;
 }
 
 export async function validateModel(
@@ -607,6 +694,8 @@ export async function getGgufDownloadProgress(
   variant: string,
   expectedBytes: number,
   hfToken?: string | null,
+  /** The standalone Engram table the load fetches, so the bar counts it. */
+  engramPrecision?: string | null,
 ): Promise<{
   downloaded_bytes: number;
   expected_bytes: number;
@@ -617,6 +706,9 @@ export async function getGgufDownloadProgress(
     variant,
     expected_bytes: String(expectedBytes),
   });
+  if (engramPrecision) {
+    params.set("engram_precision", engramPrecision);
+  }
   const response = await authFetch(
     `/api/models/gguf-download-progress?${params}`,
     { headers: hubTokenHeader(hfToken) },
@@ -663,11 +755,12 @@ export async function getDatasetDownloadProgress(
   return parseJsonOrThrow(response);
 }
 
-export type ModelLoadPhase = "mmap" | "ready" | null;
+export type ModelLoadPhase = "fit" | "mmap" | "ready" | null;
 
 export interface LoadProgressResponse {
-  /** Load phase: "mmap" while llama-server pages weight shards into RAM, "ready" once healthy, or
-   *  null when no load is in flight. */
+  /** Load phase: "fit" while llama-server's --fit searches for a layer placement (no weights read
+   *  yet), "mmap" while it pages weight shards into RAM, "ready" once healthy, or null when no
+   *  load is in flight. */
   phase: ModelLoadPhase | "starting" | "loading_weights" | "warming_up";
   bytes_loaded: number;
   bytes_total: number;
@@ -1067,6 +1160,27 @@ export async function getChatThread(
   }
 }
 
+export type ChatHistoryRevision = {
+  revision: number;
+  threads: Record<string, number>;
+};
+
+/** Null when the server predates the endpoint. */
+export async function getChatHistoryRevision(
+  threadIds: readonly string[],
+  signal?: AbortSignal,
+): Promise<ChatHistoryRevision | null> {
+  const query = new URLSearchParams();
+  for (const threadId of threadIds) query.append("threadId", threadId);
+  const encoded = query.toString();
+  const response = await authFetch(
+    `/api/chat/revision${encoded ? `?${encoded}` : ""}`,
+    { signal },
+  );
+  if (response.status === 404 || response.status === 405) return null;
+  return parseJsonOrThrow<ChatHistoryRevision>(response);
+}
+
 export class ChatThreadDeletedError extends Error {
   constructor(message: string) {
     super(message);
@@ -1263,14 +1377,99 @@ export async function getChatAgentsMd(
   return parseJsonOrThrow<AgentsMdRecord>(response);
 }
 
+export type ProjectFileEntry = {
+  name: string;
+  kind: "dir" | "file";
+  size?: number | null;
+  hidden: boolean;
+};
+
+export type ProjectFileListing = {
+  root: string;
+  path: string;
+  entries: ProjectFileEntry[];
+  truncated: boolean;
+  chosen: boolean;
+};
+
+export type ProjectFileSearch = {
+  results: { path: string; name: string }[];
+  truncated: boolean;
+};
+
+export type ProjectChangeStatus =
+  | "modified"
+  | "added"
+  | "deleted"
+  | "renamed"
+  | "untracked"
+  | "conflicted";
+
+export type ProjectChanges = {
+  repo: boolean;
+  branch: string | null;
+  changes: { path: string; status: ProjectChangeStatus }[];
+  truncated: boolean;
+};
+
+function projectFilesUrl(projectId: string, suffix: string): string {
+  return `/api/chat/projects/${encodeURIComponent(projectId)}/${suffix}`;
+}
+
+export async function listProjectFiles(
+  projectId: string,
+  path: string,
+  showHidden: boolean,
+  signal?: AbortSignal,
+): Promise<ProjectFileListing> {
+  const query = new URLSearchParams({ path, show_hidden: String(showHidden) });
+  const response = await authFetch(
+    `${projectFilesUrl(projectId, "files")}?${query}`,
+    { signal },
+  );
+  return parseJsonOrThrow<ProjectFileListing>(response);
+}
+
+export async function searchProjectFiles(
+  projectId: string,
+  q: string,
+  signal?: AbortSignal,
+): Promise<ProjectFileSearch> {
+  const query = new URLSearchParams({ q });
+  const response = await authFetch(
+    `${projectFilesUrl(projectId, "files/search")}?${query}`,
+    { signal },
+  );
+  return parseJsonOrThrow<ProjectFileSearch>(response);
+}
+
+export async function getProjectChanges(
+  projectId: string,
+  signal?: AbortSignal,
+): Promise<ProjectChanges> {
+  const response = await authFetch(projectFilesUrl(projectId, "changes"), {
+    signal,
+  });
+  return parseJsonOrThrow<ProjectChanges>(response);
+}
+
+export type SaveChatProjectOptions = {
+  reuseExisting?: boolean;
+};
+
 export async function saveChatProject(
   project: ProjectRecord,
   nativePathLease?: string,
+  options: SaveChatProjectOptions = {},
 ): Promise<ProjectRecord> {
   const response = await authFetch("/api/chat/projects", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ ...project, ...(nativePathLease ? { nativePathLease } : {}) }),
+    body: JSON.stringify({
+      ...project,
+      ...(nativePathLease ? { nativePathLease } : {}),
+      ...(nativePathLease && options.reuseExisting ? { reuseExisting: true } : {}),
+    }),
   });
   const saved = await parseJsonOrThrow<ProjectRecord>(response);
   notifyChatProjectsUpdated();
@@ -1312,6 +1511,31 @@ export async function setChatProjectWorkingFolder(
   const project = await parseJsonOrThrow<ProjectRecord>(response);
   notifyChatProjectsUpdated();
   return project;
+}
+
+export async function setChatProjectWorkingFolderPath(
+  projectId: string,
+  serverPath: string,
+): Promise<ProjectRecord> {
+  const response = await authFetch(
+    `/api/chat/projects/${encodeURIComponent(projectId)}/working-folder`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ serverPath }),
+    },
+  );
+  const project = await parseJsonOrThrow<ProjectRecord>(response);
+  notifyChatProjectsUpdated();
+  return project;
+}
+
+export async function getProjectFolderAccess(): Promise<{
+  serverPath: boolean;
+}> {
+  const response = await authFetch("/api/chat/project-folder-access");
+  const body = await parseJsonOrThrow<{ serverPath?: unknown }>(response);
+  return { serverPath: body?.serverPath === true };
 }
 
 /** Member thread ids whose sandbox still holds files, from the route. */
@@ -1466,10 +1690,19 @@ export async function saveChatMessage(
 export async function syncChatMessages(
   threadId: string,
   messages: MessageRecord[],
-  options: { pruneMissing?: boolean; deletedMessageIds?: string[] } = {},
+  options: {
+    pruneMissing?: boolean;
+    deletedMessageIds?: string[];
+    echo?: boolean;
+  } = {},
 ): Promise<MessageRecord[]> {
+  // Deletes always echo: publishForkBoundary reads the stored rows back.
+  const skipEcho =
+    options.echo === false &&
+    options.pruneMissing !== true &&
+    (options.deletedMessageIds?.length ?? 0) === 0;
   const response = await threadWriteFetch(
-    `/api/chat/threads/${encodeURIComponent(threadId)}/messages`,
+    `/api/chat/threads/${encodeURIComponent(threadId)}/messages${skipEcho ? "?echoMessages=false" : ""}`,
     {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
@@ -1484,7 +1717,8 @@ export async function syncChatMessages(
   const data = await parseJsonOrThrow<{ messages: MessageRecord[] }>(response);
   // Pruning deletes messages, which other tabs must see immediately, so it does not coalesce.
   notifyChatHistoryUpdated({ coalesce: options.pruneMissing !== true });
-  return data.messages;
+  // An older backend ignores the flag and echoes as before; either answer resolves the same.
+  return skipEcho ? messages : data.messages;
 }
 
 export async function countBackendChats(): Promise<number> {
@@ -1531,16 +1765,54 @@ export async function clearBackendChats(
   };
 }
 
-export async function buildBackendChatExport(): Promise<{
+type BackendChatExport = {
   exportedAt: string;
   version: number;
   threadCount: number;
   projects?: ProjectRecord[];
   threads: ThreadRecord[];
   messages: MessageRecord[];
-}> {
-  const response = await authFetch("/api/chat/export");
-  return parseJsonOrThrow(response);
+};
+
+export async function buildBackendChatExport(
+  archived = false,
+): Promise<BackendChatExport> {
+  const response = await authFetch(
+    `/api/chat/export${archived ? "?archived=true" : ""}`,
+  );
+  if (!response.ok) await parseJsonOrThrow(response);
+  const reader = response.body?.getReader();
+  const decoder = new TextDecoder();
+  const messages: MessageRecord[] = [];
+  let head = null as BackendChatExport | null;
+  let data = null as BackendChatExport | null;
+  let pending: string[] = [];
+  const readLine = (line: string) => {
+    if (head === null) head = JSON.parse(`${line}]}`);
+    else messages.push(JSON.parse(line.endsWith(",") ? line.slice(0, -1) : line));
+  };
+  try {
+    while (reader) {
+      const { done, value } = await reader.read();
+      const text = done ? decoder.decode() : decoder.decode(value, { stream: true });
+      let start = 0;
+      for (let end = text.indexOf("\n"); end !== -1; end = text.indexOf("\n", start)) {
+        pending.push(text.slice(start, end));
+        readLine(pending.join(""));
+        pending = [];
+        start = end + 1;
+      }
+      pending.push(text.slice(start));
+      if (done) break;
+    }
+    const last = pending.join("");
+    if (head === null) data = JSON.parse(last);
+    else if (last === "]}") data = { ...head, messages };
+  } catch {
+    data = null;
+  }
+  if (!data) throw new Error("The chat export did not download completely.");
+  return data;
 }
 
 // Server-side legacy-Dexie import ledger, so a studio.db wipe keeps the import recoverable.
@@ -1593,11 +1865,18 @@ export interface BrowseEntry {
   hidden: boolean;
 }
 
+export interface BrowsePlace {
+  path: string;
+  label: string;
+  kind: "home" | "user" | "drive" | "models";
+}
+
 export interface BrowseFoldersResponse {
   current: string;
   parent: string | null;
   entries: BrowseEntry[];
   suggestions: string[];
+  places?: BrowsePlace[];
   truncated?: boolean;
   model_files_here?: number;
 }
@@ -1612,16 +1891,30 @@ export async function browseFolders(
   path?: string,
   showHidden = false,
   signal?: AbortSignal,
+  modelHints = true,
 ): Promise<BrowseFoldersResponse> {
   const params = new URLSearchParams();
   if (path !== undefined && path !== null) params.set("path", path);
   if (showHidden) params.set("show_hidden", "true");
+  if (!modelHints) params.set("model_hints", "false");
   const qs = params.toString();
   // Forward the signal so a cancelled navigation also cancels the server-side walk.
   const response = await authFetch(
     `/api/models/browse-folders${qs ? `?${qs}` : ""}`,
     signal ? { signal } : undefined,
   );
+  return parseJsonOrThrow<BrowseFoldersResponse>(response);
+}
+
+export async function createBrowseFolder(
+  parent: string,
+  name: string,
+): Promise<BrowseFoldersResponse> {
+  const response = await authFetch("/api/models/browse-folders", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ parent, name }),
+  });
   return parseJsonOrThrow<BrowseFoldersResponse>(response);
 }
 
@@ -1806,11 +2099,95 @@ function classifyStructuredDeltaContent(content: unknown): {
   return { hasAssistantContent, hasReasoningContent };
 }
 
+/** Detects a reasoning-only length stop; shared by the direct stream and durable chat runs. */
+export function createReasoningOnlyLengthCheck({
+  cap,
+  contextLength,
+  kvCacheHint = false,
+}: {
+  cap: number | null;
+  contextLength: number | null;
+  kvCacheHint?: boolean;
+}) {
+  let terminalFinishReason: string | null = null;
+  let sawAssistantContent = false;
+  let sawReasoningContent = false;
+  // Needed to tell the walls apart: a Max Tokens below context did not necessarily stop it.
+  let promptTokens: number | null = null;
+  let windowCount: number | null = null;
+  // Anthropic's explicit model_context_window_exceeded signal.
+  let providerReportedWindow = false;
+
+  return {
+    observe(chunk: unknown) {
+      if (!chunk || typeof chunk !== "object") return;
+      const {
+        usage: parsedUsage,
+        timings: parsedTimings,
+        _toolEvent: parsedToolEvent,
+        choices: parsedChoices,
+      } = chunk as {
+        usage?: { prompt_tokens?: number };
+        timings?: { predicted_n?: number };
+        _toolEvent?: { type?: string };
+        choices?: Array<{
+          delta?: Record<string, unknown>;
+          finish_reason?: string | null;
+        }>;
+      };
+      if (typeof parsedUsage?.prompt_tokens === "number") {
+        promptTokens = parsedUsage.prompt_tokens;
+      }
+      windowCount = windowEvidenceCount(parsedTimings) ?? windowCount;
+      if (parsedToolEvent?.type === "context_window_exceeded") {
+        providerReportedWindow = true;
+      }
+      for (const choice of parsedChoices ?? []) {
+        const delta = choice.delta;
+        if (delta) {
+          const contentState = classifyStructuredDeltaContent(delta.content);
+          sawAssistantContent ||= contentState.hasAssistantContent;
+          sawReasoningContent ||= contentState.hasReasoningContent;
+          const reasoning =
+            delta.reasoning_content ??
+            delta.reasoning ??
+            delta.reasoning_details;
+          sawReasoningContent ||= hasNonWhitespaceText(reasoning);
+        }
+        if (choice.finish_reason) {
+          terminalFinishReason = choice.finish_reason;
+        }
+      }
+    },
+    throwIfReasoningOnlyLength() {
+      if (
+        terminalFinishReason === "length" &&
+        sawReasoningContent &&
+        !sawAssistantContent
+      ) {
+        // Backend substitutes the context length for Max Tokens "Max", so equal means unset.
+        throw new GenerationLengthError(
+          providerReportedWindow
+            ? "context_window"
+            : lengthStopCause({
+                cap,
+                contextLength,
+                promptTokens,
+                completionTokens: windowCount,
+              }),
+          kvCacheHint,
+        );
+      }
+    },
+  };
+}
+
 export async function* streamChatCompletions(
   payload: OpenAIChatCompletionsRequest,
   signal: AbortSignal,
   /** Served context window for length-stop attribution; null or omitted when unknown. */
   loadedContextLength?: number | null,
+  kvCacheHint = false,
 ): AsyncGenerator<OpenAIChatChunk> {
   const response = await authFetch("/v1/chat/completions", {
     method: "POST",
@@ -1838,58 +2215,46 @@ export async function* streamChatCompletions(
   let completed = false;
   // EOF without `[DONE]` or a finish_reason chunk means the stream was cut mid-generation.
   let sawTerminalSignal = false;
-  let terminalFinishReason: string | null = null;
-  let sawAssistantContent = false;
-  let sawReasoningContent = false;
-  // Needed to tell the walls apart: a Max Tokens below context did not necessarily stop it.
-  let promptTokens: number | null = null;
-  let windowCount: number | null = null;
-  // Anthropic's explicit model_context_window_exceeded signal.
-  let providerReportedWindow = false;
-
-  const throwIfReasoningOnlyLength = () => {
-    if (
-      terminalFinishReason === "length" &&
-      sawReasoningContent &&
-      !sawAssistantContent
-    ) {
-      // Backend substitutes the context length for Max Tokens "Max", so equal means unset.
-      throw new GenerationLengthError(
-        providerReportedWindow
-          ? "context_window"
-          : lengthStopCause({
-              cap: payload.max_tokens ?? null,
-              contextLength: loadedContextLength ?? null,
-              promptTokens,
-              completionTokens: windowCount,
-            }),
-      );
-    }
-  };
+  const lengthCheck = createReasoningOnlyLengthCheck({
+    cap: payload.max_tokens ?? null,
+    contextLength: loadedContextLength ?? null,
+    kvCacheHint,
+  });
 
   try {
     while (true) {
-      const { done, value } = await reader.read();
+      let chunk: ReadableStreamReadResult<Uint8Array>;
+      try {
+        chunk = await reader.read();
+      } catch (error) {
+        // A dropped socket rejects with TypeError: treat it as a cut stream.
+        if (!signal.aborted && error instanceof TypeError) {
+          throw new StreamInterruptedError();
+        }
+        throw error;
+      }
+      const { done, value } = chunk;
       if (done) {
         completed = true;
         if (!sawTerminalSignal) {
           throw new StreamInterruptedError();
         }
-        throwIfReasoningOnlyLength();
+        lengthCheck.throwIfReasoningOnlyLength();
         break;
       }
 
       buffer += decoder.decode(value, { stream: true });
 
-      let separatorIndex = buffer.search(/\r?\n\r?\n/);
-      while (separatorIndex >= 0) {
-        const rawEvent = buffer.slice(0, separatorIndex);
-        const separatorLength = buffer[separatorIndex] === "\r" ? 4 : 2;
-        buffer = buffer.slice(separatorIndex + separatorLength);
+      for (
+        let frame = takeSseFrame(buffer);
+        frame;
+        frame = takeSseFrame(buffer)
+      ) {
+        const rawEvent = frame.event;
+        buffer = frame.remainder;
 
         const dataLines = parseSseEvent(rawEvent);
         if (dataLines.length === 0) {
-          separatorIndex = buffer.search(/\r?\n\r?\n/);
           continue;
         }
 
@@ -1897,7 +2262,7 @@ export async function* streamChatCompletions(
         if (dataText === "[DONE]") {
           completed = true;
           sawTerminalSignal = true;
-          throwIfReasoningOnlyLength();
+          lengthCheck.throwIfReasoningOnlyLength();
           return;
         }
 
@@ -1909,21 +2274,18 @@ export async function* streamChatCompletions(
         }
         if ("type" in parsed && parsed.type === "skill_load") {
           yield { _toolEvent: skillLoadCardEvent(parsed) } as unknown as OpenAIChatChunk;
-          separatorIndex = buffer.search(/\r?\n\r?\n/);
           continue;
         }
         if ("type" in parsed && parsed.type === "tool_status") {
           yield {
             _toolStatus: parsed.content ?? "",
           } as unknown as OpenAIChatChunk;
-          separatorIndex = buffer.search(/\r?\n\r?\n/);
           continue;
         }
         if ("type" in parsed && parsed.type === "diffusion_frame") {
           yield {
             _diffusionFrame: parsed,
           } as unknown as OpenAIChatChunk;
-          separatorIndex = buffer.search(/\r?\n\r?\n/);
           continue;
         }
         if (
@@ -1936,7 +2298,6 @@ export async function* streamChatCompletions(
             parsed.type === "tool_approved")
         ) {
           yield { _toolEvent: parsed } as unknown as OpenAIChatChunk;
-          separatorIndex = buffer.search(/\r?\n\r?\n/);
           continue;
         }
         if (
@@ -1949,67 +2310,26 @@ export async function* streamChatCompletions(
             _reasoningDurationMs: (parsed as { duration_ms?: number })
               .duration_ms,
           } as unknown as OpenAIChatChunk;
-          separatorIndex = buffer.search(/\r?\n\r?\n/);
           continue;
         }
         // A tool loop's context as it hands off to a tool, so the meter moves mid-turn.
         if ("type" in parsed && parsed.type === "context_usage") {
           yield { _contextUsage: parsed } as unknown as OpenAIChatChunk;
-          separatorIndex = buffer.search(/\r?\n\r?\n/);
           continue;
         }
         if ("type" in parsed && parsed.type === "generation_progress") {
           yield { _generationProgress: parsed } as unknown as OpenAIChatChunk;
-          separatorIndex = buffer.search(/\r?\n\r?\n/);
           continue;
         }
-        const {
-          usage: parsedUsage,
-          timings: parsedTimings,
-          _toolEvent: parsedToolEvent,
-        } = parsed as {
-          usage?: { prompt_tokens?: number };
-          timings?: { predicted_n?: number };
-          _toolEvent?: { type?: string };
-        };
-        if (typeof parsedUsage?.prompt_tokens === "number") {
-          promptTokens = parsedUsage.prompt_tokens;
-        }
-        windowCount = windowEvidenceCount(parsedTimings) ?? windowCount;
-        if (parsedToolEvent?.type === "context_window_exceeded") {
-          providerReportedWindow = true;
-        }
+        lengthCheck.observe(parsed);
         // finish_reason is a valid terminal signal for providers that close without a [DONE] sentinel.
-        const parsedChoices = (
-          parsed as {
-            choices?: Array<{
-              delta?: Record<string, unknown>;
-              finish_reason?: string | null;
-            }>;
-          }
-        ).choices;
-        for (const choice of parsedChoices ?? []) {
-          const delta = choice.delta;
-          if (delta) {
-            const contentState = classifyStructuredDeltaContent(delta.content);
-            sawAssistantContent ||= contentState.hasAssistantContent;
-            sawReasoningContent ||= contentState.hasReasoningContent;
-            const reasoning =
-              delta.reasoning_content ??
-              delta.reasoning ??
-              delta.reasoning_details;
-            sawReasoningContent ||= hasNonWhitespaceText(reasoning);
-          }
-          if (choice.finish_reason) {
-            terminalFinishReason = choice.finish_reason;
-          }
-        }
-        const finishReason = parsedChoices?.[0]?.finish_reason;
+        const finishReason = (
+          parsed as { choices?: Array<{ finish_reason?: string | null }> }
+        ).choices?.[0]?.finish_reason;
         if (finishReason) {
           sawTerminalSignal = true;
         }
         yield parsed as OpenAIChatChunk;
-        separatorIndex = buffer.search(/\r?\n\r?\n/);
       }
     }
   } finally {

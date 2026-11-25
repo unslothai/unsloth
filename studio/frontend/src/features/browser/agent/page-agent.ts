@@ -358,6 +358,28 @@ export function installPageAgent(): PageAgent {
 
   const BLOCK = /^(block|flex|grid|table|list-item|table-row|table-cell|flow-root)/;
 
+  // A view snapshot of a block taller than the screen starts at its first line on screen, so scrolling moves on.
+  const onScreenPart = (node: Text, keepsLines: boolean): string => {
+    const value = node.nodeValue ?? "";
+    const range = document.createRange();
+    const lineBottom = (from: number) => {
+      range.setStart(node, from);
+      range.setEnd(node, Math.min(value.length, from + 64));
+      return range.getClientRects()[0]?.bottom ?? Infinity;
+    };
+    if (lineBottom(0) > 0) return value;
+    let lo = 0;
+    let hi = value.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (lineBottom(mid) > 0) hi = mid;
+      else lo = mid + 1;
+    }
+    if (lo >= value.length) return "";
+    const start = keepsLines ? value.lastIndexOf("\n", lo - 1) + 1 : lo;
+    return `…${keepsLines ? "\n" : ""}${value.slice(start)}`;
+  };
+
   const read = (root: Element, wholePage: boolean, budget: number): { text: string; links: string[]; cut: boolean } => {
     const lines: string[] = [];
     const links: string[] = [];
@@ -365,6 +387,22 @@ export function installPageAgent(): PageAgent {
     let cut = false;
     let buffer = "";
     let bufferShown = false;
+    let bufferKeepsLines = false;
+    let bufferCode = false;
+    let overflow = false;
+    // Tracked apart: endsWith on a long concatenated buffer flattens it every line (quadratic).
+    let lineOpen = false;
+    // Length after flush collapses whitespace, so the stop below never cuts text that fits.
+    let bufferChars = 0;
+    let spaceEnd = true;
+    const add = (text: string) => {
+      if (!text) return;
+      buffer += text;
+      lineOpen = !text.endsWith("\n");
+      bufferChars += text.length - (spaceEnd && /^\s/.test(text) ? 1 : 0);
+      spaceEnd = /\s$/.test(text);
+    };
+    let inPre = 0;
     const push = (line: string) => {
       if (cut) return;
       if (used + line.length + 1 > budget) {
@@ -375,11 +413,27 @@ export function installPageAgent(): PageAgent {
       used += line.length + 1;
     };
     const flush = () => {
-      const text = clean(buffer, 400);
+      const code = bufferCode;
+      const text = bufferKeepsLines ? buffer.replace(/[^\S\n]+$/gm, "").replace(/^\n+|\s+$/g, "") : clean(buffer, Infinity);
       // A lone symbol is an icon or a bullet; a lone digit or letter is a count or a grade.
-      if (text && bufferShown && (text.length > 1 || /[\p{L}\p{N}]/u.test(text))) push(text);
+      if (text && bufferShown && (text.length > 1 || /[\p{L}\p{N}]/u.test(text))) {
+        // Fence longer than any backtick run inside (CommonMark), cut inside it so the more-below note stays out.
+        let longest = 2;
+        if (code) for (const run of text.match(/`+/g) ?? []) longest = Math.max(longest, run.length);
+        const fence = code ? "`".repeat(longest + 1) : "";
+        const room = budget - used - 1 - (code ? 2 * fence.length + 2 : 0);
+        const fits = text.length <= room || room <= 1;
+        const body = fits ? text : `${text.slice(0, room - 1)}…`;
+        push(code ? `${fence}\n${body}\n${fence}` : body);
+        if (!fits) cut = true;
+      }
       buffer = "";
       bufferShown = false;
+      bufferKeepsLines = false;
+      bufferCode = code && inPre > 0;
+      lineOpen = false;
+      bufferChars = 0;
+      spaceEnd = true;
     };
     const walk = (el: Element) => {
       if (cut) return;
@@ -424,30 +478,51 @@ export function installPageAgent(): PageAgent {
         return;
       }
       const block = BLOCK.test(style.display);
-      if (block) flush();
+      // A block inside a code block is one of its lines (highlighters wrap each line), not a paragraph.
+      const codeLine = block && inPre > 0;
+      // Code lines share one buffer, so each keeps the per-block rule: a line off screen or with no size stays out.
+      if (codeLine && !(shown && sized(rect))) return;
+      if (block && !codeLine) flush();
+      if (codeLine && lineOpen) add("\n");
+      if (tag === "pre") {
+        inPre++;
+        if (block) bufferCode = true;
+      }
       // A label's words are already its field's name.
       const labelled = tag === "label" && Boolean((el as HTMLLabelElement).control);
       // Text too small to read is there for the model, not the user. Only this element's own text:
       // a font-size:0 parent whose children reset it is a common inline-block layout trick.
       const unreadable = Number.parseFloat(style.fontSize) < 2;
+      const keepsLines = /^(pre|break-spaces)/.test(style.whiteSpace);
       const children = el.shadowRoot ? [...Array.from(el.shadowRoot.childNodes), ...Array.from(el.childNodes)] : Array.from(el.childNodes);
       for (const node of children) {
-        if (cut) return;
+        if (cut || overflow) return;
+        if (bufferShown && bufferChars > budget - used) {
+          overflow = true;
+          return;
+        }
         if (node.nodeType === Node.TEXT_NODE) {
-          const value = node.nodeValue ?? "";
-          if (unreadable) buffer += " ";
+          const raw = node.nodeValue ?? "";
+          const value = wholePage || rect.top >= 0 || !shown || !raw.trim() ? raw : onScreenPart(node as Text, keepsLines);
+          if (unreadable) add(" ");
           else if (!labelled) {
-            buffer += value;
+            add(keepsLines ? value : value.replace(/\s+/g, " "));
+            if (keepsLines && value.includes("\n")) bufferKeepsLines = true;
             if (value.trim() && shown && sized(rect)) bufferShown = true;
           }
         } else if (node.nodeType === Node.ELEMENT_NODE) {
           walk(node as Element);
         }
       }
-      if (block) flush();
+      if (tag === "pre") inPre--;
+      if (codeLine) {
+        if (lineOpen) add("\n");
+        bufferKeepsLines = true;
+      } else if (block) flush();
     };
     walk(root);
     flush();
+    if (overflow) cut = true;
     return { text: lines.join("\n"), links, cut };
   };
 
@@ -586,9 +661,8 @@ export function installPageAgent(): PageAgent {
         position: "absolute", left: "-14px", top: "-14px", width: "28px", height: "28px", "box-sizing": "border-box",
         "border-radius": "50%", border: "2px solid", opacity: "0",
       });
-      // Hugeicons cursor-02, its corners rounded further by a round-joined stroke of the fill (white
-      // outline drawn wider underneath), then scaled back to size about its tip at (3, 3). The rounded
-      // tip ends up 1.25px short of (0, 0), hence the offset.
+      // Hugeicons cursor-02 with corners rounded by a round-joined fill stroke, scaled back about
+      // its tip at (3, 3); the rounded tip lands 1.25px short of (0, 0), hence the offset.
       const arrow = styled(document.createElementNS(SVG, "svg"), {
         position: "absolute", left: "-1.25px", top: "-1.25px", width: "24px", height: "24px", overflow: "visible",
       });
@@ -727,10 +801,9 @@ export function installPageAgent(): PageAgent {
 
   const describe = (ref: string, value?: unknown, point?: Point | null): Record<string, unknown> => {
     const found = point ? elementAt(point) : ref ? lookup(ref) : (document.activeElement ?? document.body);
-    // A click on text inside a button or label reaches that control (a label's being its field or
-    // button), which may submit.
-    // A point lands on whatever is drawn, often an icon inside a control: gate the control.
-    const control = point ? (lineage(found).find((node) => roleOf(node) !== null) ?? found) : found;
+    // A click on text inside a button or label reaches that control (a label being its field or
+    // button), which may submit; a point or a ref can land on text inside one, so gate the control.
+    const control = point || ref ? (lineage(found).find((node) => roleOf(node) !== null) ?? found) : found;
     const holder = control.closest("button, label") ?? control;
     const el = holder instanceof HTMLLabelElement && holder.control ? holder.control : holder;
     const field = el as HTMLInputElement;
@@ -1081,10 +1154,9 @@ export function installPageAgent(): PageAgent {
     return down;
   };
 
-  // The agent works only in its own tab: a form or link aimed at a new tab (target, formtarget)
-  // would be dropped by the panel, which opens tabs only on a real user click, while the model hears
-  // it went. The target is read after the event, by the browser or by the proxy shell's deferred
-  // setTimeout, so it points here for the action and is put back on a later timer.
+  // The agent works only in its own tab: a target or formtarget aimed at a new tab would be dropped
+  // by the panel (tabs open only on a real click); the target is read after the event, so it is
+  // repointed for the action and restored on a later timer.
   const inOwnTab = <T>(act: () => T): T => {
     const restore: Array<() => void> = [];
     const point = (el: unknown, name: string) => {

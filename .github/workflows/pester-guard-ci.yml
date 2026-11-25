@@ -2,7 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
 # Runs the Pester bootstrap guard on Windows when the guard itself changes, without
-# launching the full studio-windows-inference-smoke matrix.
+# launching the full studio-windows-installer-smoke matrix.
 
 name: Pester guard
 

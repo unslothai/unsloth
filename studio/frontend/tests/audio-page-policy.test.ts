@@ -1063,7 +1063,7 @@ test("deleting the audio.cpp package forgets the folders remembered from it", ()
 });
 
 
-test("Eject is offered only for a resident Transcribe model, and never while busy", () => {
+test("Eject is offered only for a resident Transcribe model, and never while loading or unloading", () => {
   const idle = { busy: null, hasValue: true, showLastPageModel: false } as const;
   assert.equal(audioEjectAvailable({ ...idle, mode: "transcribe", sttReady: true }), true);
   // After an unload the selector still shows the last model; Eject there released nothing.
@@ -1076,6 +1076,14 @@ test("Eject is offered only for a resident Transcribe model, and never while bus
   assert.equal(
     audioEjectAvailable({ ...idle, mode: "transcribe", sttReady: true, busy: "unloading" }),
     false,
+  );
+  assert.equal(
+    audioEjectAvailable({ ...idle, mode: "speak", sttReady: false, busy: "generating" }),
+    true,
+  );
+  assert.equal(
+    audioEjectAvailable({ ...idle, mode: "transcribe", sttReady: true, busy: "transcribing" }),
+    true,
   );
   assert.equal(
     audioEjectAvailable({ ...idle, mode: "speak", sttReady: false, hasValue: false }),

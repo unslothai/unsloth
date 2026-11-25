@@ -15,9 +15,11 @@ import threading
 import time
 from typing import Any, AsyncIterator, Iterator
 
+from starlette.exceptions import HTTPException
 from starlette.requests import Request
 
 from core.inference.llama_keepwarm import InferenceActivityReservation
+from core.inference.sse import SSEDecoder
 from core.training.account_jobs import sweepable_job_accounts
 from utils.account_context import current_account_id, run_as
 from utils.first_token_timeout import FirstTokenWait, track_first_token_wait
@@ -45,23 +47,6 @@ _LEASE_SWEEP_INTERVAL_SECONDS = 60.0
 _LEASE_ERROR = "Generation stopped making progress"
 
 
-class _SSEDecoder:
-    def __init__(self) -> None:
-        self.buffer = ""
-
-    def feed(self, text: str) -> list[str]:
-        self.buffer += text.replace("\r\n", "\n")
-        values: list[str] = []
-        while "\n\n" in self.buffer:
-            block, self.buffer = self.buffer.split("\n\n", 1)
-            data = "\n".join(
-                line[5:].lstrip() for line in block.splitlines() if line.startswith("data:")
-            )
-            if data:
-                values.append(data)
-        return values
-
-
 def _background_request(
     app: Any,
     run_id: str,
@@ -69,7 +54,16 @@ def _background_request(
     timezone_headers: dict[str, str] | None = None,
     *,
     via_api_key: bool | None = None,
+    external: bool = False,
 ) -> Request:
+    state: dict[str, Any] = {
+        "generation_cancel_event": cancel_event,
+        "api_monitor_via_api_key": via_api_key,
+    }
+    if external:
+        # Admission refused keyless creators of connection runs; this request carries no credential to re-check.
+        from utils.keyless_api_access import KEYLESS_ADMISSION_STATE_KEY
+        state[KEYLESS_ADMISSION_STATE_KEY] = False
     scope = {
         "type": "http",
         "asgi": {"version": "3.0", "spec_version": "2.3"},
@@ -91,10 +85,7 @@ def _background_request(
         "client": ("127.0.0.1", 0),
         "server": ("127.0.0.1", 0),
         "app": app,
-        "state": {
-            "generation_cancel_event": cancel_event,
-            "api_monitor_via_api_key": via_api_key,
-        },
+        "state": state,
     }
 
     async def receive():
@@ -111,6 +102,18 @@ def _chunk_finish_reason(chunk: dict[str, Any]) -> str | None:
         if isinstance(choice, dict) and choice.get("finish_reason") is not None:
             return str(choice["finish_reason"])
     return None
+
+
+def _exception_text(exc: BaseException) -> str:
+    """A refusal raised before streaming, as the live stream shows it rather than ``400: {...}``."""
+    if not isinstance(exc, HTTPException):
+        return str(exc)
+    detail = exc.detail
+    if isinstance(detail, dict):
+        nested = detail.get("error")
+        detail = nested if isinstance(nested, dict) else detail
+        detail = detail.get("message") or detail.get("detail") or detail
+    return detail if isinstance(detail, str) else json.dumps(detail, default = str)
 
 
 def _chunk_error(chunk: dict[str, Any]) -> str | None:
@@ -466,6 +469,7 @@ class ChatGenerationSupervisor:
         *,
         thread_id: str | None = None,
         model: str | None = None,
+        external: bool = False,
     ) -> bool:
         if self._stopping:
             return False
@@ -476,6 +480,7 @@ class ChatGenerationSupervisor:
                 run_id = run_id,
                 thread_id = thread_id,
                 model = model,
+                external = external,
             ):
                 pass
             return True
@@ -489,11 +494,13 @@ class ChatGenerationSupervisor:
         cancel_event.renew_lease = lambda: db.touch_progress(run_id)
         activity = InferenceActivityReservation()
         activity.reserve()
+        # External runs stay out of the local swap guard, as the legacy proxy's registration does.
         registration = active_generations.ActiveGeneration(
             cancel_event,
             run_id = run_id,
             thread_id = thread_id,
             model = model,
+            external = external,
         )
         registration.__enter__()
         self._cancel_events[run_id] = cancel_event
@@ -508,11 +515,14 @@ class ChatGenerationSupervisor:
         thread_id: str | None = None,
         model: str | None = None,
         images: dict[str, str] | None = None,
+        external: bool = False,
     ) -> None:
         if (
             self._stopping
             or run_id in self._tasks
-            or not self._ensure_reservation(run_id, thread_id = thread_id, model = model)
+            or not self._ensure_reservation(
+                run_id, thread_id = thread_id, model = model, external = external
+            )
         ):
             return
         if images:
@@ -658,8 +668,11 @@ class ChatGenerationSupervisor:
         # Sent on its own chunk, since the finish chunk still reads `stop`.
         quote_cut = False
         saw_done = False
+        # Read as each chunk lands, before the next pull resumes the stream: the provider proxy sets the shared event in its own teardown.
+        stopped = False
         worker_token: str | None = None
         next_raw_task: asyncio.Task | None = None
+        background_scope: dict[str, Any] | None = None
 
         def start_write() -> None:
             nonlocal writing, pending, write_task, last_flush
@@ -738,12 +751,19 @@ class ChatGenerationSupervisor:
                 via_api_key = request_payload.pop(db.API_MONITOR_ORIGIN_FIELD, None)
                 _attach_embedded_images(request_payload, self._detached_images.pop(run_id, {}))
                 payload = ChatCompletionRequest.model_validate(request_payload)
+                background = _background_request(
+                    self.app,
+                    run_id,
+                    cancel_event,
+                    timezone_headers,
+                    via_api_key = via_api_key,
+                    external = bool(payload.provider_id),
+                )
+                background_scope = background.scope
                 # Prep runs before the first-token budget; one later touch cannot cover prep longer than the lease
                 response = await produce_openai_chat_completions(
                     payload,
-                    _background_request(
-                        self.app, run_id, cancel_event, timezone_headers, via_api_key = via_api_key
-                    ),
+                    background,
                     owner,
                     cancel_on_disconnect = False,
                 )
@@ -753,7 +773,7 @@ class ChatGenerationSupervisor:
             iterator = getattr(response, "body_iterator", None)
             if iterator is None:
                 raise RuntimeError("Local generation did not return an event stream")
-            decoder = _SSEDecoder()
+            decoder = SSEDecoder()
             last_keepalive = time.monotonic()
             next_raw_task = asyncio.create_task(iterator.__anext__())
             while True:
@@ -789,24 +809,29 @@ class ChatGenerationSupervisor:
                     raw = next_raw_task.result()
                 except StopAsyncIteration:
                     next_raw_task = None
-                    break
-                next_raw_task = asyncio.create_task(iterator.__anext__())
-                text = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else str(raw)
-                # `: keep-alive` means nothing was produced, so renewing on it would keep a wedged run alive.
-                if _ADMISSION_DONE_MARKER in text:
-                    last_keepalive = time.monotonic()
-                    await self._try_touch_progress(run_id)
-                elif (
-                    _ADMISSION_WAIT_MARKER in text
-                    or _TOOL_HEARTBEAT_MARKER in text
-                    or _PREFILL_PROGRESS_MARKER in text
-                ):
-                    now_s = time.monotonic()
-                    if now_s - last_keepalive >= _renew_interval_seconds():
-                        last_keepalive = now_s
+                    raw = None
+                stopped = cancel_event.is_set()
+                if raw is None:
+                    events = decoder.flush()
+                else:
+                    next_raw_task = asyncio.create_task(iterator.__anext__())
+                    events = decoder.feed(raw)
+                    text = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else str(raw)
+                    # `: keep-alive` means nothing was produced, so renewing on it would keep a wedged run alive.
+                    if _ADMISSION_DONE_MARKER in text:
+                        last_keepalive = time.monotonic()
                         await self._try_touch_progress(run_id)
-                for encoded in decoder.feed(text):
-                    if encoded == "[DONE]":
+                    elif (
+                        _ADMISSION_WAIT_MARKER in text
+                        or _TOOL_HEARTBEAT_MARKER in text
+                        or _PREFILL_PROGRESS_MARKER in text
+                    ):
+                        now_s = time.monotonic()
+                        if now_s - last_keepalive >= _renew_interval_seconds():
+                            last_keepalive = now_s
+                            await self._try_touch_progress(run_id)
+                for encoded in events:
+                    if encoded.strip() == "[DONE]":
                         saw_done = True
                         break
                     try:
@@ -819,7 +844,7 @@ class ChatGenerationSupervisor:
                     finish_reason = _chunk_finish_reason(chunk) or finish_reason
                     error = _chunk_error(chunk) or error
                     quote_cut = quote_cut or chunk.get("quote_cut") is True
-                if saw_done:
+                if saw_done or raw is None:
                     break
 
             failure = await settle_write()
@@ -834,7 +859,7 @@ class ChatGenerationSupervisor:
                 status = "failed"
                 finish_reason = "interrupted"
                 error = "Unsloth shut down during generation"
-            elif current["cancelRequested"] or (cancel_event.is_set() and error is None):
+            elif current["cancelRequested"] or (stopped and error is None):
                 # The streaming paths set this event after an in-band error too, so a parsed failure outranks it.
                 status = "cancelled"
                 finish_reason = "cancelled"
@@ -891,7 +916,7 @@ class ChatGenerationSupervisor:
                         if cancelled
                         else "Unsloth shut down during generation"
                         if shutting_down
-                        else str(exc)[:1000]
+                        else _exception_text(exc)[:1000]
                     ),
                     pending_events = pending,
                 )
@@ -904,4 +929,5 @@ class ChatGenerationSupervisor:
                     next_raw_task.cancel()
                 await asyncio.gather(next_raw_task, return_exceptions = True)
             await _close_iterator(iterator)
-            activity.finish()
+            # The provider proxy untracks its scope and drops the started count itself.
+            activity.finish(background_scope)

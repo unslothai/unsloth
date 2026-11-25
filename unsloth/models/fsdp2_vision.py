@@ -199,8 +199,7 @@ def _agree_counts(
     device,
     mesh = None,
 ):
-    """Elementwise sum of `flags` over the ranks of `mesh` (the model's; the world when None), and
-    their number: one small all-reduce per mesh dimension."""
+    """Sum of `flags` over `mesh` ranks (world when None) and the rank count, via all-reduce."""
     import torch.distributed as dist
 
     if not (dist.is_available() and dist.is_initialized()):
@@ -215,8 +214,7 @@ def _agree_counts(
 
 
 def _missing_required(fn, inputs):
-    """Parameters of `fn` with no default (not *args / **kwargs) that `inputs` does not supply. A
-    signature that cannot be read counts as unknown: ["?"]."""
+    """Required params of `fn` (not *args/**kwargs) that `inputs` omits; ["?"] if unreadable."""
     try:
         signature = inspect.signature(inspect.unwrap(fn))
     except (TypeError, ValueError):
@@ -277,13 +275,8 @@ def _install_presence_agreement(
     device_of,
     mesh = None,
 ):
-    """Every forward of `host`, before any encoder runs: one all-reduce over [present per input,
-    cannot-run-a-dummy per modality]. Each input is encoded by its own call, so an input present on
-    some ranks only makes the ranks without it run the modality's dummy (`run_dummy`, the image inputs
-    a dummy stands in for), or, when there is no dummy for that input or it cannot be built on some
-    rank lacking it, raises on every rank alike (the ranks with it would otherwise wait in
-    collectives the others never enter). A dummy that cannot be built is found before the
-    collective, so that failure is agreed too."""
+    """Agrees across ranks before encoding; an input with no dummy, or whose dummy cannot be built,
+    raises on every rank so no rank waits in a collective others skip."""
     signature = _forward_signature(host)
     plan = [(m, m.groups(signature)) for m in modalities]
     slots = [
@@ -373,11 +366,8 @@ def _audio_tower(module):
 
 
 def _audio_host(model, vision_host = None):
-    """The module whose forward receives the audio input on every rank: the outermost one taking an
-    audio input with an audio tower in its subtree. An inner module taking it too may run only on some
-    ranks (PeAudioVideoModel calls `audio_model` only when no video is given), and an agreement hook
-    there would leave the other ranks out of its collective. The vision host is reused when it takes an
-    audio input and holds the tower (Gemma3n / Gemma4), so one collective covers both."""
+    """Outermost module taking audio with an audio tower in its subtree (inner ones may run on some
+    ranks only); the vision host is reused when it takes audio and holds the tower."""
     candidates = [vision_host] if vision_host is not None else []
     candidates += list(model.modules())
     for module in candidates:
@@ -526,10 +516,8 @@ def _float_sum(obj, acc = None):
         return acc
     fields = getattr(obj, "__dataclass_fields__", None)
     if fields or isinstance(obj, dict):
-        # ModelOutput: Gemma4 assigns pooler_output (the embed_vision projection) to a
-        # BaseModelOutputWithPast after building it, so it is neither a field nor a dict item, only an
-        # instance attribute. Read the dict items, the fields and the instance attributes (a tensor
-        # counted twice only adds another 0 times it).
+        # Gemma4 sets pooler_output only as an instance attribute, so read __dict__ values as well
+        # as fields.
         values = list(obj.values()) if isinstance(obj, dict) else []
         values += [getattr(obj, name, None) for name in fields or ()]
         values += list(getattr(obj, "__dict__", {}).values())
@@ -557,9 +545,8 @@ def _vision_modules(mm, tower):
 
 
 def _managed_by_fsdp(*modules):
-    """Some parameter of `modules` issues a gradient collective: a DTensor (FSDP2 reduce-scatters it,
-    but only where its gradient is not None), or a replicated trainable one whose gradient is averaged
-    by the all-reduce hook `fsdp2_save.reduce_unsharded_trainable_grads` installed."""
+    """Whether any parameter issues a gradient collective: a DTensor (only where its gradient is not
+    None), or a replicated trainable one with the all-reduce hook."""
     try:
         from torch.distributed.tensor import DTensor
     except ImportError:
@@ -585,8 +572,7 @@ def _in_generate():
 
 
 def _vision_plan(model):
-    """(host, image modality or None, dummy tower or None, [separate video modality]) for the vision
-    encoders, or None when none issues collectives."""
+    """(host, image, dummy tower, video) for vision encoders; None if none issue collectives."""
     mm = _multimodal_module(model)
     if mm is None:
         inline = _inline_multimodal_module(model)
@@ -682,8 +668,7 @@ _TEXT_KWARGS = frozenset(
         "args",
     )
 )
-# Media inputs by name (the ones above in this module, Fuyu's image_patches, ...) or by shape of the
-# name, for models whose config carries no media sub-config.
+# Media inputs are matched by name, or by name pattern for models without a media sub-config.
 _MEDIA_KWARG_RE = re.compile(
     r"(pixel|image|img|video|audio|speech|patch|wave|mel|spectrogram|_features$|_values$)"
 )
@@ -692,8 +677,7 @@ _BACKBONE_NAMES = ("language_model", "text_model", "text_decoder")
 
 
 def _forward_chain(model):
-    """The outermost module and the wrapped models its forward hands kwargs to (PeftModel ->
-    LoraModel -> the transformers model), outermost first."""
+    """Model and the wrapped models its forward passes kwargs to, outermost first."""
     chain = [model]
     for _ in range(6):
         current = chain[-1]
@@ -729,8 +713,7 @@ def _media_candidates(chain):
 
 
 def _is_multimodal(chain, candidates):
-    """A media sub-config (vision_config, audio_config, audio_encoder_config, ...) on the model's
-    config, or a media-looking input in its forward."""
+    """Has a media sub-config (vision_config, audio_config, ...) or a media-looking input."""
     for module in chain:
         config = getattr(module, "config", None)
         if config is None:
@@ -743,9 +726,8 @@ def _is_multimodal(chain, candidates):
 
 
 def _outside_backbone(model, chain):
-    """Parameters outside the language model that are trainable or FSDP-managed (a DTensor): the
-    ones a media input alone reaches. The text backbone (`language_model` / `text_model`, else the
-    decoder) and the input / output embeddings do not count."""
+    """Trainable or FSDP-managed (DTensor) parameters outside the language model that only a media
+    input reaches; the text backbone and input and output embeddings do not count."""
     try:
         from torch.distributed.tensor import DTensor
     except ImportError:
@@ -784,11 +766,10 @@ def _outside_backbone(model, chain):
 
 
 def _generic_media_plan(model, named):
-    """The outermost forward agrees on every media input whenever a multimodal model has trainable
-    or FSDP-managed parameters outside its language model: one bit per candidate input (a fixed,
-    sorted list of forward argument names read now). Inputs a named modality covers keep its dummy;
-    the others have none, so a mismatch raises on every rank. Returns (host, leftover modality or
-    None), or None (text-only model, or nothing outside the backbone)."""
+    """Outermost forward agrees on each media input (one bit per sorted candidate argument name)
+    when a multimodal model has trainable or FSDP-managed parameters outside its language model;
+    inputs with no dummy raise on every rank on mismatch; returns (host, leftover modality) or
+    None."""
     chain = _forward_chain(model)
     candidates = _media_candidates(chain)
     if not candidates or not _is_multimodal(chain, candidates):
@@ -811,12 +792,9 @@ def _generic_media_plan(model, named):
 
 
 def install_vision_dummy(model):
-    """Per-modality presence agreement on a natively sharded `model` (vision and audio encoders that
-    issue gradient / gather collectives). Every forward agrees over ranks, with one small all-reduce,
-    which encoder inputs each rank has; a modality present on some ranks only runs a dummy on the
-    others (images, when a dummy input with every required argument can be built) or raises on every
-    rank. Models with no such encoder get no hook and pay nothing. Returns the host module (the vision
-    one when there is one), or None."""
+    """Per-forward all-reduce so ranks agree on which encoder inputs they have; a modality on some
+    ranks only runs a dummy (images, if buildable) on the rest or raises everywhere; no hook
+    without such an encoder; returns the host module or None."""
     if os.environ.get("UNSLOTH_FSDP2_VISION_DUMMY", "1").strip().lower() in (
         "0",
         "false",

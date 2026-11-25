@@ -778,6 +778,9 @@ def test_compile_counters_count_breaks_and_recompiles():
         ("dp_shard=1,dp_replicate=2", {"dp": 2, "fsdp": False}),
         ("dp_shard=2,dp_replicate=1", {"dp": 2, "fsdp": True}),
         ("dp=2,dp_shard=1,dp_replicate=2", {"dp": 2, "fsdp": False}),
+        # Expert parallel (models/ep_native.py); ep with tp / pp / cp / fsdp is refused by translate.
+        ("ep=2", {"ep": 2}),
+        ("ep_size=2,tp=2", {"ep": 2, "tp": 2}),
     ],
 )
 def test_distributed_config_names_are_accepted(raw, want):
@@ -788,8 +791,6 @@ def test_distributed_config_names_are_accepted(raw, want):
 @pytest.mark.parametrize(
     "raw, match",
     [
-        ("ep=2", "expert parallel"),
-        ("ep_size=2,tp=2", "expert parallel"),
         ("efsdp=2", "expert FSDP"),
         ("dp_shard=2,dp_replicate=2", "HSDP"),
         ("dp=4,dp_shard=2", "disagrees"),
@@ -862,6 +863,32 @@ def test_a_shard_unaware_muon_is_refused_before_native_fsdp2_shards(clean_env):
     )
 
 
+def test_adafactor_is_refused_on_native_fsdp2_shards():
+    # Both Adafactors fail at step one on fully_shard DTensors (factored row / column statistics).
+    import types
+
+    from transformers.optimization import Adafactor
+
+    from unsloth import parallel_capabilities as caps
+    from unsloth.models import fsdp2_native
+
+    p = [torch.nn.Parameter(torch.randn(4, 4))]
+    for optimizer in (
+        Adafactor(p, lr = 1e-3, relative_step = False, scale_parameter = False),
+        torch.optim.Adafactor(p, lr = 1e-3),
+        "adafactor",
+    ):
+        with pytest.raises(
+            NotImplementedError,
+            match = r"^Unsloth: fsdp2 x optimizer: Adafactor .*Instead: adamw_torch",
+        ):
+            caps.refuse_shard_unaware_optimizer(optimizer, "fsdp2")
+    caps.check(_q(dp = 2, optim = "adafactor"))  # DDP holds whole matrices
+    with pytest.raises(ValueError, match = r"optim = 'adafactor'.*Use optim = 'adamw_torch'"):
+        fsdp2_native._refuse_projection_optim(types.SimpleNamespace(optim = "adafactor"))
+    fsdp2_native._refuse_projection_optim(types.SimpleNamespace(optim = "adamw_torch"))
+
+
 # MoE cells.
 
 
@@ -873,7 +900,8 @@ def test_moe_rows_cover_family_precision_aux_and_mode():
     moe = [
         c
         for c in caps.CELLS
-        if c.name.startswith("MoE ") and not c.name.endswith(", block compile")
+        if c.name.startswith("MoE ")
+        and not c.name.endswith((", block compile", ", Unsloth checkpoint", ", multimodal"))
     ]
     assert len(moe) == len(caps.MOE_FAMILIES) * 4 * 2 * 6
     proven = sorted(c.name for c in moe if not c.missing())
@@ -920,8 +948,32 @@ def test_moe_rows_cover_family_precision_aux_and_mode():
             pp_q = _q(pp = 2, pp_schedule = schedule, router_aux_loss = aux, **moe_q)
             assert caps.cell_status(pp_q)[0] == "supported", (aux, schedule)
             caps.check(pp_q)
-    with pytest.raises(NotImplementedError, match = r"x pp' lacks .*Qwen3-MoE only"):
-        caps.check(_q(pp = 2, pp_schedule = "gpipe", **{**moe_q, "family": "gpt_oss"}))
+    with pytest.raises(
+        NotImplementedError, match = r"x pp' lacks .*Qwen3-MoE, Qwen3.5-MoE and Qwen4Exp only"
+    ):
+        caps.check(
+            _q(pp = 2, pp_schedule = "gpipe", router_aux_loss = True, **{**moe_q, "family": "mixtral"})
+        )
+    with pytest.raises(NotImplementedError, match = r"x pp' lacks .*no gloo parity run"):
+        caps.check(_q(pp = 2, pp_schedule = "gpipe", **{**moe_q, "family": "mixtral"}))
+    # gpt-oss pp with aux loss off runs; with it on the note names the switch.
+    gpt_oss_q = {**moe_q, "family": "gpt_oss", "attention": "eager", "windowed": True}
+    for extra in ({}, {"memory": "gc"}, {"memory": "unsloth_offload", "mode": "qlora"}):
+        query = _q(pp = 2, pp_schedule = "gpipe", **{**gpt_oss_q, **extra})
+        assert caps.cell_status(query)[0] == "supported", extra
+        caps.check(query)
+    with pytest.raises(NotImplementedError, match = r"x pp' lacks .*router_aux_loss_coef = 0.0"):
+        caps.check(
+            _q(
+                pp = 2,
+                pp_schedule = "gpipe",
+                router_aux_loss = True,
+                memory = "unsloth_offload",
+                **gpt_oss_q,
+            )
+        )
+    with pytest.raises(NotImplementedError, match = r"no numeric parity"):
+        caps.check(_q(pp = 2, pp_schedule = "gpipe", **{**gpt_oss_q, "attention": "sdpa"}))
     with pytest.raises(NotImplementedError, match = r"^Unsloth: pp x schedule"):
         caps.check(_q(pp = 2, pp_schedule = "interleaved", **moe_q))
     with pytest.raises(NotImplementedError, match = r"^Unsloth: pp x mode"):
@@ -1071,10 +1123,10 @@ def test_launcher_flag_with_a_disagreeing_legacy_variable_is_refused(clean_env, 
         pe.apply_parallel_env()
 
 
-def test_the_launcher_keys_are_accepted_and_ep_is_reserved():
+def test_the_launcher_keys_are_accepted_and_efsdp_is_reserved():
     from unsloth import parallel_env as pe
     assert set(LAUNCHER_KEYS) <= set(pe._KEYS)
-    assert {"ep", "efsdp"} <= set(pe._RESERVED)
+    assert "ep" in pe._KEYS and "efsdp" in pe._RESERVED
 
 
 @pytest.mark.parametrize("kind", ["sft", "dpo", "grpo"])
@@ -1115,8 +1167,7 @@ def test_router_aux_loss_after_init_is_refused_under_cp_for_each_trl_trainer(kin
 
 
 def _strict_sft(monkeypatch, inits):
-    """A trainer whose __init__ takes no unknown keyword, like TRL's SFTTrainer: a CP option left in the
-    constructor kwargs is a TypeError there."""
+    """__init__ rejects unknown keywords, like TRL's SFTTrainer: CP option left in kwargs is a TypeError."""
     import trl
 
     class SFTTrainer:
@@ -1252,7 +1303,7 @@ def test_pp_env_refuses_router_aux_loss_split_over_micro_batches():
         config = types.SimpleNamespace(output_router_logits = True), router_aux_loss_coef = 0.01
     )
     stage = types.SimpleNamespace(
-        ctx = types.SimpleNamespace(moe = types.SimpleNamespace(owner = owner)),
+        ctx = types.SimpleNamespace(moe = types.SimpleNamespace(owner = owner, config = owner.config)),
         env_layout = None,
         num_stages = 2,
     )
@@ -1260,6 +1311,16 @@ def test_pp_env_refuses_router_aux_loss_split_over_micro_batches():
         pp_env._refuse_split_router_aux(stage, 2)
     pp_env._refuse_split_router_aux(stage, 1)
     owner.config.output_router_logits = False
+    pp_env._refuse_split_router_aux(stage, 2)
+
+    # A wrapper keeps both settings on its text_config.
+    text = types.SimpleNamespace(output_router_logits = True, router_aux_loss_coef = 0.01)
+    wrapper = type("Qwen4ExpForConditionalGeneration", (), {})()
+    wrapper.config = types.SimpleNamespace(text_config = text)
+    stage.ctx.moe = types.SimpleNamespace(owner = wrapper, config = text)
+    with pytest.raises(NotImplementedError, match = "load-balancing loss per micro-batch"):
+        pp_env._refuse_split_router_aux(stage, 2)
+    text.router_aux_loss_coef = 0.0
     pp_env._refuse_split_router_aux(stage, 2)
 
 
@@ -1659,3 +1720,29 @@ def test_pp_replica_restores_detached_layers_with_the_live_adapter_state():
     assert not any(m.disable_adapters for m in detached.modules() if isinstance(m, BaseTunerLayer))
     assert {n: p.requires_grad for n, p in detached.named_parameters()} == grads
     assert "_apply_adapter_state(module, adapters)" in inspect.getsource(pp_env.gather_replica)
+
+
+@pytest.mark.parametrize(
+    "schedule, microbatches, expect, auto",
+    [
+        (None, None, "1f1b", True),
+        (None, "1", "gpipe", True),
+        (None, "2", "1f1b", True),
+        ("gpipe", "1", "gpipe", False),
+    ],
+)
+def test_default_schedule_resolved_in_the_layout(clean_env, schedule, microbatches, expect, auto):
+    # Sharded loading records layout.schedule; the low-micro-batch GPipe fallback must already be in it.
+    from unsloth import parallel_env as pe
+    from unsloth.models import pp_native
+
+    clean_env.setattr(pp_native, "_check_torch_pipelining", lambda: None)
+    clean_env.setenv("WORLD_SIZE", "2")
+    clean_env.setenv("UNSLOTH_PP_SIZE", "2")
+    if schedule:
+        clean_env.setenv("UNSLOTH_PP_SCHEDULE", schedule)
+    if microbatches:
+        clean_env.setenv("UNSLOTH_PP_MICROBATCHES", microbatches)
+    layout = pe.read_layout()
+    assert layout.schedule == expect
+    assert layout.schedule_auto is auto

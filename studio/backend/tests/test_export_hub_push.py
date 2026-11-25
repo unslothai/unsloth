@@ -1047,8 +1047,9 @@ def test_lora_gguf_export_push_uploads_the_saved_folder(tmp_path, monkeypatch):
     assert seen["uploaded"] == _LORA_GGUF_FILES
 
 
+@pytest.mark.parametrize("aged", [True, False])
 def test_lora_gguf_export_push_to_a_reused_folder_does_not_upload_its_leftovers(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, aged
 ):
     calls: list[str] = []
     seen: dict = {}
@@ -1060,13 +1061,16 @@ def test_lora_gguf_export_push_to_a_reused_folder_does_not_upload_its_leftovers(
     (export_dir / "model.Q4_K_M.gguf").write_bytes(b"GGUF")
     (export_dir / "Modelfile").write_text("FROM model.Q4_K_M.gguf")
     (export_dir / "export_metadata.json").write_text('{"base_model": "/home/me/models/base"}')
+    if aged:
+        for leftover in export_dir.iterdir():
+            os.utime(leftover, (1000, 1000))
 
     success, message, output_path = _push_lora(backend, str(export_dir), True, False)
 
     assert success is True, message
     assert output_path == str(export_dir.resolve())
     assert Path(output_path, "model-lora-q8_0.gguf").is_file()
-    assert len(backend.current_model.conversions) == 2
+    assert len(backend.current_model.conversions) == (2 if aged else 1)
     assert seen["folder"] != output_path
     assert Path(seen["folder"]).name == export_dir.name
     assert not Path(seen["folder"]).exists()
@@ -1117,6 +1121,7 @@ def test_merged_push_into_a_folder_with_a_stale_report_uploads_none(tmp_path, mo
     export_dir = tmp_path / "export-torchao-fp8"
     export_dir.mkdir(parents = True)
     (export_dir / "reap_report.json").write_text('{"kept_experts": {}}')
+    _age(export_dir)  # an earlier export's report
     success, message, output_path = backend.export_merged_model(
         str(tmp_path / "export"),
         compressed_method = "torchao_fp8",

@@ -223,3 +223,57 @@ def test_installed_trl_rewrites_and_compiles():
     # rl.py's _strip_vllm_weight_loads deletes `.state_dict()` from every generated trainer.
     assert ".state_dict()" not in patched
     compile(textwrap.dedent(patched), "<patched>", "exec")
+
+
+def _bf16_llama(seed):
+    from transformers import LlamaConfig, LlamaForCausalLM
+
+    torch.manual_seed(seed)
+    cfg = LlamaConfig(
+        vocab_size = 64,
+        hidden_size = 32,
+        intermediate_size = 64,
+        num_hidden_layers = 2,
+        num_attention_heads = 4,
+        num_key_value_heads = 2,
+        max_position_embeddings = 64,
+    )
+    return LlamaForCausalLM(cfg).to(torch.bfloat16)
+
+
+def test_bf16_full_finetuning_reference_gets_the_policy_autocast(monkeypatch):
+    # bfloat16 full finetuning: FP32 norms beside BF16 projections, forward under bfloat16 autocast. The reference
+    # recast to FP32 norms must run under the same autocast, else its forward raises a Float vs BFloat16 mismatch.
+    import transformers.integrations.deepspeed as ds
+    from unsloth_zoo.training_utils import _wrap_forward_in_bf16_autocast
+
+    monkeypatch.setattr(ds, "is_deepspeed_zero3_enabled", lambda: False)
+    policy = _bf16_llama(0)
+    for module in policy.modules():
+        if "norm" in type(module).__name__.lower():
+            module.float()
+    _wrap_forward_in_bf16_autocast(policy, torch.bfloat16)
+    namespace = {
+        "_unsloth_dpo_reference_loadable": _NS["_unsloth_dpo_reference_loadable"],
+        "_unsloth_dpo_copy_policy_into_reference": _NS["_unsloth_dpo_copy_policy_into_reference"],
+        "create_model_from_path": lambda path, **kwargs: _bf16_llama(1),
+        "is_peft_model": lambda m: False,
+        "get_config_model_id": lambda config: config,
+        "torch": torch,
+        "warnings": __import__("warnings"),
+    }
+    exec(textwrap.dedent(hook("__init__", TRL_INIT)), namespace)
+    trainer = types.SimpleNamespace()
+    with pytest.warns(UserWarning, match = "later TRL warning"):
+        namespace["__init__"](trainer, policy, None)
+    reference = trainer.ref_model
+    assert reference is not policy and reference.model.norm.weight.dtype == torch.float32
+    ids = torch.randint(0, 64, (2, 8))
+    with torch.no_grad():
+        assert torch.equal(reference(input_ids = ids).logits, policy(input_ids = ids).logits)
+    # Without an autocast-wrapped policy the reference forward is left alone.
+    plain = _bf16_llama(2)
+    _NS["_unsloth_dpo_copy_policy_into_reference"](
+        plain, torch.nn.Module.state_dict(_bf16_llama(3))
+    )
+    assert not getattr(plain, "_unsloth_bf16_autocast_wrapped", False)

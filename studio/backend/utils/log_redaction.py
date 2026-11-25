@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 
 REDACTED = "<redacted>"
@@ -94,18 +95,23 @@ _SECRET_KEYS = (
 _KEY_START = r"(?<![A-Za-z0-9])"
 
 _PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
-    # Hugging Face
-    (re.compile(r"\bhf_(?:oauth_[A-Za-z0-9._~+/=-]{20,}|[A-Za-z0-9]{20,})"), "hf_" + REDACTED),
+    # Hugging Face, no \b: an escaped "\nhf_..." or "Bearer%20hf_..." still carries the token.
+    (re.compile(r"hf_(?:oauth_[A-Za-z0-9._~+/=-]{20,}|[A-Za-z0-9]{20,})"), "hf_" + REDACTED),
     # OpenAI and other sk- keys (project, Anthropic, OpenRouter). Not a word boundary: that also fires after a hyphen, eating checkpoint-sk-9f8a... in a filename.
     (
-        re.compile(r"(?<![A-Za-z0-9-])sk-(?:proj-|ant-api\d{2}-|or-v1-)?[A-Za-z0-9_-]{16,}"),
+        # sk-unsloth- also after a hyphen (run-sk-unsloth-x.json), never inside a word (task-unsloth-lora).
+        re.compile(
+            r"(?<![A-Za-z0-9-])sk-(?:proj-|ant-api\d{2}-|or-v1-)?[A-Za-z0-9_-]{16,}"
+            r"|(?<![A-Za-z0-9])sk-unsloth-\w+"
+        ),
         "sk-" + REDACTED,
     ),
     # Other vendor prefixes
     (
         re.compile(
-            r"\b(?:gsk_|xai-|ghp_|gho_|ghu_|ghs_|ghr_|github_pat_|glpat-|"
-            r"xox[abpsr]-|ya29\.)[A-Za-z0-9_.-]{16,}"
+            # Any GitHub token prefix is masked, even one cut short.
+            r"\b(?:(?:gsk_|xai-|glpat-|xox[abpsr]-|ya29\.)[A-Za-z0-9_.-]{16,}"
+            r"|(?:ghp_|gho_|ghu_|ghs_|ghr_|github_pat_)[A-Za-z0-9_.-]+)"
         ),
         REDACTED,
     ),
@@ -140,7 +146,7 @@ _FLAG_RE = re.compile(
 
 # An Authorization value whatever the scheme: the key/value rule captures only "Basic" and leaves the credential behind it. Same for a Cookie, which for Unsloth is the UI session.
 _SCHEMES = ("bearer", "basic", "digest", "token", "apikey")
-# A scheme word only introduces a credential when an Authorization header put it there, and the credential stops at a quote or structural delimiter, since \S+ swallowed the rest of the dict. Bare "digest sha256:..." and "token hf_..." are ordinary log content, and firing on the word alone blanked the digest a user came here to read.
+# A scheme word only introduces a credential when an Authorization header put it there, and the credential stops at a quote or structural delimiter, since \S+ swallowed the rest of the dict. Bare "digest sha256:..." and "token hf_..." are ordinary log content, and firing on the word alone blanked the digest a user came here to read. Inside the header the credential needs no shape check: a short token is still a token.
 _CREDENTIAL = r"[^\s\"',}\]]+"
 _AUTH_HEADER_RE = re.compile(
     r"(?i)((?:proxy-)?authorization[\"']?\s*[:=]\s*[\"']?"
@@ -260,6 +266,64 @@ def _lowered(text: str) -> str | None:
     return text.lower() if text.isascii() else None
 
 
+# _KV_RE cannot match across an escaped quote, so decode the JSON strings nested in a message. The optional closing quote takes a truncated token whole.
+_JSON_STRING = re.compile(r'"(?:[^"\\\x00-\x1f]|\\.)*"?')
+_JSON_COLON = re.compile(r"\s*:\s*")
+_JSON_SECRET_KEY = re.compile(_KEY_START + r"(?:" + _SECRET_KEYS + r")$", re.IGNORECASE)
+_JSON_DECODER = json.JSONDecoder()
+_SURROGATE_RE = re.compile(r"[\ud800-\udfff]")
+
+
+def _mask_json_strings(text: str, *, inside_message: bool = False) -> str:
+    parts: list[str] = []
+    written = pos = 0
+    while match := _JSON_STRING.search(text, pos):
+        pos = match.end()
+        token = match[0]
+        if inside_message and (colon := _JSON_COLON.match(text, pos)):
+            try:
+                key = json.loads(token) if "\\" in token else token[1:-1]
+            except ValueError:
+                continue
+            if _JSON_SECRET_KEY.search(key):
+                # A string value may be cut off by truncation, so take its token extent rather than decoding it.
+                if value := _JSON_STRING.match(text, colon.end()):
+                    end = value.end()
+                    if value[0] == '""':
+                        continue
+                else:
+                    try:
+                        parsed, end = _JSON_DECODER.raw_decode(text, colon.end())
+                    except (ValueError, RecursionError):
+                        continue
+                    # null, a flag or a count shows whether a credential is set, not its value (as in _redact_kv).
+                    if parsed is None or isinstance(parsed, bool):
+                        continue
+                    is_number = isinstance(parsed, (int, float))
+                    if is_number and not _NUMERIC_IS_STILL_SECRET.search(key):
+                        continue
+                parts.extend((text[written : colon.end()], '"<redacted>"'))
+                written = pos = end
+            continue
+        if r"\"" in token and ":" in token:
+            try:
+                message = json.loads(token)
+            except ValueError:
+                continue
+            masked = _mask_json_strings(message, inside_message = True)
+            if masked != message:
+                # Keep raw characters raw, or redact_native_paths no longer matches a non-ASCII path. A lone surrogate stays escaped: it cannot be written as UTF-8.
+                encoded = json.dumps(masked, ensure_ascii = token.isascii())
+                if not token.isascii():
+                    encoded = _SURROGATE_RE.sub(lambda m: f"\\u{ord(m[0]):04x}", encoded)
+                parts.extend((text[written : match.start()], encoded))
+                written = pos
+    if not parts:
+        return text
+    parts.append(text[written:])
+    return "".join(parts)
+
+
 def redact_log_text(text: str) -> str:
     """Mask credentials. Idempotent, and a no-op on ordinary log content."""
     if not text:
@@ -267,13 +331,15 @@ def redact_log_text(text: str) -> str:
     # Nothing anchored below survives an escape between a key and its value, so strip first, guarded by one introducer scan: ordinary content is untouched.
     if _ANSI_INTRODUCER_RE.search(text):
         text = _strip_ansi(text)
+    if r"\"" in text and ":" in text:
+        text = _mask_json_strings(text)
     for (pattern, replacement), gate in zip(_PATTERNS, _PATTERN_GATES):
         if gate is None or gate.search(text) is not None:
             text = pattern.sub(replacement, text)
     lowered = _lowered(text)
     # Before the key/value rules: _KV_RE captures "Basic" from "Authorization: Basic dXNlcjpwdw==", masking the scheme and leaving the credential clear.
     if _has_folded(text, lowered, ("authorization",)):
-        text = _AUTH_HEADER_RE.sub(_redact_shaped, text)
+        text = _AUTH_HEADER_RE.sub(r"\1\2" + REDACTED, text)
         lowered = _lowered(text)
     if _has_folded(text, lowered, ("bearer",)):
         text = _SCHEME_RE.sub(_redact_shaped, text)

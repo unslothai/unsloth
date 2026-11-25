@@ -120,10 +120,8 @@ def _snapshot_revision(path: Optional[str]) -> Optional[str]:
 
 
 def _hub_revision(repo_id: str, gguf_filename: str, hf_token: Optional[str]) -> Optional[str]:
-    """The commit the Hub currently serves this file at, or None when it cannot be asked.
-
-    One HEAD, no body: the caller only needs to know whether the local copy is still the current
-    one, and an offline or erroring host must leave today's verdict alone."""
+    """The commit the Hub currently serves this file at, or None when it cannot be asked; one HEAD
+    request with no body, and an offline or erroring host leaves the verdict alone."""
     from core.inference import hub_reachability
 
     if hub_reachability.hub_unreachable():
@@ -269,10 +267,9 @@ def flux2_inner_dim_for_pick(
     if local is None and not allow_network:
         return None
     if local is not None:
-        # Same prefix parse as the remote path, so both read the file the same way: the loader's
-        # backstop memory-maps the whole multi-GB checkpoint and builds a view over every tensor,
-        # which is a lot of work for a table in the first 15 KiB. Fall back to it only if the
-        # prefix said nothing, so a header past the cap is still answered.
+        # Same prefix parse as the remote path; the loader backstop memory-maps the whole multi-GB
+        # checkpoint, so it runs only when the prefix says nothing, and a header past the cap is
+        # still answered.
         inner_dim = gguf_flux2_inner_dim_from_header(_read_local_header(local))
         if inner_dim is None:
             inner_dim = gguf_flux2_inner_dim(local)
@@ -567,9 +564,8 @@ def _flux3_pipeline_index(
 def _flux3_pick_tensor_names(
     repo_id: str, filename: str, token: Optional[str], allow_network: bool
 ) -> tuple[Optional[list[str]], bool]:
-    """Tensor names of a FLUX.3 single file / GGUF pick without reading a weight, and whether it declares ComfyUI
-    quantization: the file on disk, else a GGUF header range read or the safetensors header from the Hub. None
-    names on anything unreadable."""
+    """Tensor names and ComfyUI-quantization flag of a FLUX.3 pick, read from headers only (local
+    file, else a GGUF range read or safetensors header from the Hub); names None if unreadable."""
     from .diffusion_families import (
         _checkpoint_comfy_declared,
         _checkpoint_tensor_names,

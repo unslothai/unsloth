@@ -35,6 +35,9 @@ export function nextHfDatasetOptionSelection({
   }
   return {
     type: "split",
-    value: splits.includes("train") ? "train" : splits[0],
+    value: splits.includes("train")
+      ? "train"
+      : (splits.find((split) => /(^|[^a-z])train([^a-z]|$)/i.test(split)) ??
+        splits[0]),
   };
 }

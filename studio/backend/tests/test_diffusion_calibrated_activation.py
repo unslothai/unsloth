@@ -574,13 +574,28 @@ def test_flat_tiers_ignore_the_controlnet_flag(free, kw):
 
 
 def test_generate_passes_the_calibrated_placement_and_controlnet_to_the_guard():
+    import ast
     import inspect
 
     import core.inference.diffusion as d
 
-    src = inspect.getsource(d)
-    assert 'calibrated_placement = bool(getattr(state, "calibrated_placement", False)),' in src
-    assert 'controlnet = workflow == "controlnet" and control_pil is not None,' in src
+    # Compare parsed keyword values, not source text, so a reflow of the call cannot fail this.
+    want = {
+        "calibrated_placement": ast.dump(
+            ast.parse('bool(getattr(state, "calibrated_placement", False))', mode = "eval").body
+        ),
+        "controlnet": ast.dump(
+            ast.parse('workflow == "controlnet" and control_pil is not None', mode = "eval").body
+        ),
+    }
+    calls = [
+        {kw.arg: ast.dump(kw.value) for kw in node.keywords if kw.arg in want}
+        for node in ast.walk(ast.parse(inspect.getsource(d)))
+        if isinstance(node, ast.Call)
+    ]
+    assert (
+        want in calls
+    ), "no guard call passes both the calibrated placement and the ControlNet flag"
 
 
 # Real Tesla T4 load of stabilityai/stable-diffusion-xl-base-1.0 at fp16: the planner inputs it logged.
@@ -607,7 +622,9 @@ def test_sdxl_measured_activation_keeps_a_t4_resident():
         plan = _t4_plan(act, mode)
         assert plan.offload_policy == OFFLOAD_NONE, mode
         assert not plan.vae_tiling and not plan.vae_slicing
-    assert _t4_plan(act, MEMORY_MODE_LOW_VRAM).offload_policy == OFFLOAD_MODEL
+    # low_vram streams the denoiser and the encoders (the applier gives a U-Net the whole-module tier).
+    low = _t4_plan(act, MEMORY_MODE_LOW_VRAM)
+    assert low.offload_policy == OFFLOAD_GROUP and low.stream_text_encoders and low.vae_tiling
     assert _t4_plan(act, MEMORY_MODE_BALANCED).offload_policy == OFFLOAD_GROUP
 
 

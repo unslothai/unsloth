@@ -123,14 +123,9 @@ def _prefetch_builder():
 
 
 def _models_from(payload_args: str) -> list[str]:
-    """The repos this payload will load, read off its own argv.
-
-    NOT a second copy of the defaults. ``--chat-model`` and ``--train-model``
-    are dispatch inputs, so a hardcoded pair here would prefetch the wrong
-    models the moment anyone used them -- and prefetching the wrong repo is
-    invisible: it downloads happily, warms a cache nobody reads, and reports
-    success.
-    """
+    """Reads the repos from the payload argv, not a second copy of the defaults: --chat-model and
+    --train-model are dispatch inputs, so a wrong prefetch looks like success while warming a
+    cache nobody reads."""
     tokens = payload_args.split()
     picked = {}
     for flag, default in (

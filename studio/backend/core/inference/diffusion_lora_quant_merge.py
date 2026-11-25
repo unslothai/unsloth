@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Merges LoRA / LoKR adapters of a ComfyUI-quantized single file into its fp8 / int8 (ConvRot) / float weights, as
-ComfyUI patches them, and removes the adapter layers. Originals are backed up on the host; a weight change restores
-them into the same tensors and merges again, so compiled code and captured graphs stay valid."""
+"""Merges LoRA/LoKR into ComfyUI-quantized weights and removes adapter layers; originals backed up
+and restored into the same tensors on a weight change, so compiled code and graphs stay valid"""
 
 from __future__ import annotations
 
@@ -18,8 +17,21 @@ _FP8_MAX = 448.0
 _INT8_MAX = 127.0
 
 
+# "0": a weight change restores and re-merges every merged layer, not only those of the adapters it changes.
+INCREMENTAL_ENV = "UNSLOTH_DIFFUSION_LORA_INCREMENTAL_REMERGE"
+
+
 def enabled() -> bool:
     return (os.environ.get(MERGE_ENV) or "").strip().lower() not in ("0", "off", "false", "no")
+
+
+def _incremental() -> bool:
+    return (os.environ.get(INCREMENTAL_ENV) or "").strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
 
 
 def merged(pipe: Any) -> bool:
@@ -117,8 +129,7 @@ def _dequant(module: Any, kind: str, group: int, device: Any) -> Any:
 
 
 def _stochastic_fp8(x: Any, dtype: Any, generator: Any) -> Any:
-    """Stochastic rounding of ``x`` (float32, in range) to e4m3, as ComfyUI rounds a patched fp8 weight: round to
-    nearest drops every delta below half a step."""
+    """Stochastic e4m3 rounding, as ComfyUI does; nearest drops deltas under half a step."""
     import torch
 
     mag = x.abs()
@@ -253,7 +264,13 @@ def _host_room(layers: list) -> bool:
     return (int(available) << 20) - nbytes >= _HOST_RESERVE
 
 
-def _apply(layers: list, weights: dict, device: Any) -> None:
+def _apply(
+    layers: list,
+    weights: dict,
+    device: Any,
+    only: Optional[set] = None,
+) -> None:
+    """``only``: layer indices to merge; seeds stay full-list indices, so a subset matches a full re-merge."""
     import torch
 
     # No TF32: the same weights must merge to the same codes before and after a speed profile engages.
@@ -262,6 +279,8 @@ def _apply(layers: list, weights: dict, device: Any) -> None:
     try:
         with torch.no_grad():
             for index, entry in enumerate(layers):
+                if only is not None and index not in only:
+                    continue
                 module = entry.module
                 kind = _weight_kind(module.weight)
                 live = [t for t in entry.terms if weights.get(t.adapter, 0.0)]
@@ -276,10 +295,12 @@ def _apply(layers: list, weights: dict, device: Any) -> None:
         torch.backends.cuda.matmul.allow_tf32 = tf32
 
 
-def _restore(layers: list) -> None:
+def _restore(layers: list, only: Optional[set] = None) -> None:
     import torch
     with torch.no_grad():
-        for entry in layers:
+        for index, entry in enumerate(layers):
+            if only is not None and index not in only:
+                continue
             kind = _weight_kind(entry.module.weight)
             for key, live in _tensors(entry.module.weight, kind).items():
                 live.copy_(entry.backup[key])
@@ -347,9 +368,15 @@ def set_weights(pipe: Any, weights: dict) -> bool:
         if live.device.type != "meta":
             device = live.device
             break
-    _restore(layers)
+    only = None
+    if _incremental():
+        # a layer's codes depend only on its own adapters' weights
+        old = state["weights"]
+        changed = {n for n in set(old) | set(weights) if old.get(n, 0.0) != weights.get(n, 0.0)}
+        only = {i for i, e in enumerate(layers) if any(t.adapter in changed for t in e.terms)}
+    _restore(layers, only)
     try:
-        _apply(layers, weights, device)
+        _apply(layers, weights, device, only)
     except Exception:
         # Never leave half the layers merged: the base weights, then the error.
         _restore(layers)

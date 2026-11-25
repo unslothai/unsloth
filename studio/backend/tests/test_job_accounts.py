@@ -1117,7 +1117,7 @@ def test_recipe_workflow_key_belongs_to_the_starting_account(account, monkeypatc
         route, "_resolve_local_v1_endpoint", lambda request: "http://127.0.0.1:8888/v1"
     )
     monkeypatch.setattr(
-        route, "_ensure_selected_local_model_loaded", lambda recipe, local_names: None
+        route, "_ensure_selected_local_model_loaded", lambda recipe, local_names: (None, None)
     )
     monkeypatch.setattr(
         storage,
@@ -1370,8 +1370,7 @@ def test_startup_reconciliation_settles_a_deactivated_accounts_interrupted_runs(
 def test_retirement_cancels_model_downloads_and_no_late_grant_recreates_the_workspace(
     tmp_path, monkeypatch
 ):
-    """A model download of a deleted account is killed, and a worker that still completes cannot
-    rebuild the workspace retirement just renamed aside."""
+    """A deleted account's downloads are killed, and no late grant recreates the retired workspace."""
     import subprocess
     import sys
 
@@ -1986,3 +1985,31 @@ def test_retirement_leaves_another_accounts_image_generation_alone(monkeypatch, 
         cancel.set()
         assert done.wait(10)
         thread.join(10)
+
+
+@pytest.mark.parametrize(
+    "tail",
+    ["x.jsonl/..*.jsonl", "**/../../*.jsonl", "sub/..?/secret.jsonl", "a/b/../../../*.csv"],
+)
+def test_a_wildcard_seed_path_cannot_climb_out_of_the_workspace(tail):
+    # The engine cuts a wildcard path at the first wildcard and resolves the rest itself.
+    own = run_as(ALICE, workspace_root)
+    recipe = {"seed_config": {"source": {"seed_type": "local", "path": f"{own}/{tail}"}}}
+    with pytest.raises(HTTPException) as exc:
+        run_as(ALICE, jobs.validate_recipe_access, recipe)
+    assert exc.value.status_code == 403
+    run_as(OWNER, jobs.validate_recipe_access, recipe)
+
+
+def test_a_wildcard_seed_path_inside_the_workspace_still_works():
+    own = run_as(ALICE, workspace_root)
+    (own / "data").mkdir(parents = True, exist_ok = True)
+    for path in (f"{own}/data/*.jsonl", f"{own}/data/**/*.parquet", f"{own}/data/part-[0-9].csv"):
+        run_as(ALICE, jobs.validate_recipe_access, {"seed_config": {"source": {"path": path}}})
+    other = run_as(BOB, workspace_root)
+    with pytest.raises(HTTPException):
+        run_as(
+            ALICE,
+            jobs.validate_recipe_access,
+            {"seed_config": {"source": {"path": f"{other}/*.jsonl"}}},
+        )

@@ -7,7 +7,7 @@ import type { ToolCallMessagePartComponent } from "@assistant-ui/react";
 import { useToolArgsStatus } from "@assistant-ui/react";
 import { TerminalIcon } from "lucide-react";
 import { Spinner } from "@/components/ui/spinner";
-import { memo } from "react";
+import { memo, useMemo } from "react";
 import {
   ToolFallbackContent,
   ToolFallbackRoot,
@@ -19,14 +19,12 @@ import { ToolLiveOutput } from "./tool-live-output";
 import { ToolResultOutput } from "./tool-result-output";
 import { SandboxFiles } from "./sandbox-files-view";
 import { isSandboxToolResult, type SandboxFile } from "./sandbox-files";
-import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 
 import {
   preferSanitizedFullToolOutput,
   toolResultText,
   useToolAwaitingApproval,
-  useToolOutputFor,
-  useToolPaneScope,
+  useToolOutput,
 } from "@/features/chat";
 
 const TerminalToolUIImpl: ToolCallMessagePartComponent = ({
@@ -54,14 +52,12 @@ const TerminalToolUIImpl: ToolCallMessagePartComponent = ({
         : toolResultText(result);
 
   // Prefer the fuller live stream over a truncated result; after a reload only the result remains.
-  const paneScope = useToolPaneScope();
-  const fullOutput = useToolOutputFor(
-    useChatRuntimeStore((s) => s.toolFullOutput),
-    paneScope,
-    toolCallId,
-  );
+  const fullOutput = useToolOutput("toolFullOutput", toolCallId);
   // Compare sanitized text on both sides or the reconciliation appends a duplicate prefix.
-  const displayOutput = preferSanitizedFullToolOutput(fullOutput, output);
+  const displayOutput = useMemo(
+    () => preferSanitizedFullToolOutput(fullOutput, output),
+    [fullOutput, output],
+  );
   // The gate opens only once the call parsed, so pending approval means the command is written.
   const awaitingApproval = useToolAwaitingApproval(toolCallId);
   const isWriting = isWritingCommand && !awaitingApproval;

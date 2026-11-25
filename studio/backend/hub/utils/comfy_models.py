@@ -299,8 +299,7 @@ def is_loose_checkpoint_candidate(path: Path) -> bool:
 
 
 def loose_diffusion_checkpoints(folder: Path, *, entry_limit: Optional[int] = None) -> list[Path]:
-    """Loose ``.safetensors`` in ``folder`` offered as diffusion models, sorted; empty for a folder
-    that is itself one model. Never raises."""
+    """Loose .safetensors in folder, sorted; empty when the folder is one model. Never raises."""
     try:
         for marker in (
             "config.json",
@@ -345,7 +344,7 @@ def _single_file_loadable(image_fam, video_fam, filename: str) -> bool:
     """Mirrors the loaders' single-file refusals (pipeline-only, dual-expert, unnamed MiniMax-H3, a native-only
     family's non-safetensors file, a GGUF of a family with no GGUF loader)."""
     if image_fam is not None:
-        if image_fam.pipeline_only:
+        if image_fam.pipeline_only or not getattr(image_fam, "single_file_loadable", True):
             return False
         if str(filename or "").lower().endswith(".gguf") and not getattr(
             image_fam, "gguf_loadable", True

@@ -36,8 +36,8 @@ import {
   Refresh01Icon,
   Search01Icon,
   Shield01Icon,
-  TextWrapIcon,
 } from "@hugeicons/core-free-icons";
+import { LineWrapDisableIcon, LineWrapIcon } from "@/lib/hugeicons-derived";
 import { FolderOpenIcon } from "@/lib/folder-icons";
 import { Copy01Icon } from "@/lib/copy-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -81,6 +81,7 @@ import {
   withRequestTimeout,
 } from "../lib/debug-log-buffer";
 import { isAbort, isLogSourceGone } from "../lib/debug-log-error";
+import { isManagedEngineLogFamily } from "../lib/managed-engine-log-target";
 import {
   NO_PENDING_LOG_REQUEST,
   pendingLogRequestKey,
@@ -126,6 +127,8 @@ function readStoredMode(): RefreshMode {
     return DEFAULT_REFRESH_MODE;
   }
 }
+
+const REQUESTED_LOG_MISSING = "";
 
 function groupByFamily(
   sources: DebugLogSource[],
@@ -179,7 +182,10 @@ export function DebuggingTab() {
   const [buffer, setBuffer] = useState<LogBufferState>(EMPTY_BUFFER);
   const [realpath, setRealpath] = useState<string | null>(null);
   const [logRoot, setLogRoot] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
+  const [readNotice, setNotice] = useState<string | null>(null);
+  const notice = sourceId === REQUESTED_LOG_MISSING
+    ? t("settings.debugging.missing")
+    : readNotice;
   const [dropped, setDropped] = useState(false);
   const [morePending, setMorePending] = useState(false);
   const [staleSession, setStaleSession] = useState(false);
@@ -227,33 +233,33 @@ export function DebuggingTab() {
           REQUEST_TIMEOUT_MS,
           options.signal,
         );
-        if (seq < appliedSourceFetchRef.current) return;
+        const dialog = useSettingsDialogStore.getState();
+        if (
+          seq < appliedSourceFetchRef.current ||
+          pendingLogRequestKey(dialog) !== requestedFor
+        ) return;
+        appliedSourceFetchRef.current = seq;
         setSources(result.sources);
         setLogRoot(result.logRoot);
-        const dialog = useSettingsDialogStore.getState();
         const requested = dialog.logFamilyRequested;
         const byPath = result.matchedSourceId
           ? result.sources.find(
               (source) => source.id === result.matchedSourceId,
             )
           : undefined;
+        const exactAttempt = pendingPath && isManagedEngineLogFamily(requested);
         const fromFailure =
           byPath ??
-          (requested
+          (requested && !exactAttempt
             ? result.sources.find((source) => source.family === requested)
             : undefined);
-        const stillTheSameRequest =
-          pendingLogRequestKey(dialog) === requestedFor;
-        if (fromFailure && stillTheSameRequest)
+        if (exactAttempt || fromFailure) {
           useSettingsDialogStore.getState().consumeLogFamilyRequest();
-        if (fromFailure && !stillTheSameRequest) return;
-        appliedSourceFetchRef.current = seq;
+          setSourceId(fromFailure?.id ?? REQUESTED_LOG_MISSING);
+          return;
+        }
         setSourceId((current) =>
-          fromFailure
-            ? fromFailure.id
-            : options.reselect
-              ? result.defaultSourceId
-              : (current ?? result.defaultSourceId),
+          options.reselect ? result.defaultSourceId : (current ?? result.defaultSourceId),
         );
       } catch {
       }
@@ -283,14 +289,17 @@ export function DebuggingTab() {
         return;
       }
       if (isLogSourceGone(error)) {
-        // Default reselection terminates: an empty source list returns 200, not another 404.
         cursorRef.current = null;
-        await refreshSources({ signal, reselect: true });
+        const missingAttempt = isManagedEngineLogFamily(sourceId?.split(":")[0]);
+        if (missingAttempt) {
+          setSourceId((current) => current === sourceId ? REQUESTED_LOG_MISSING : current);
+        }
+        await refreshSources({ signal, reselect: !missingAttempt });
         return;
       }
       setNotice((error as Error).message);
     },
-    [refreshSources, t],
+    [refreshSources, sourceId, t],
   );
 
   const rescanSourcesIfStale = useCallback(
@@ -304,6 +313,7 @@ export function DebuggingTab() {
 
   const poll = useCallback(
     async (signal?: AbortSignal) => {
+      if (sourceId === REQUESTED_LOG_MISSING) return;
       const selection = selectionRef.current;
       if (inFlightRef.current === selection) return;
       inFlightRef.current = selection;
@@ -850,7 +860,7 @@ export function DebuggingTab() {
                   wrap ? "text-foreground" : "text-muted-foreground",
                 )}
               >
-                <HugeiconsIcon strokeWidth={1.75} icon={TextWrapIcon} />
+                <HugeiconsIcon strokeWidth={1.75} icon={wrap ? LineWrapDisableIcon : LineWrapIcon} />
               </Button>
             </TooltipTrigger>
             <TooltipContent>{t("settings.debugging.wrapLines")}</TooltipContent>

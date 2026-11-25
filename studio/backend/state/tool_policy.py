@@ -71,6 +71,11 @@ def normalize_tool_permissions(
 OS_SANDBOXED_TOOLS = frozenset({"python", "terminal"})
 
 
+def _is_computer_tool(name: str) -> bool:
+    from core.inference.computer_use import is_computer_tool
+    return is_computer_tool(name)
+
+
 SANDBOX_LEVELS = ("high", "low")
 
 
@@ -95,6 +100,9 @@ def off_mode_still_gates(
     session_id: Optional[str] = None,
 ) -> bool:
     """Whether "off" must still ask for this tool. Cached only; unknown counts as not isolated."""
+    # The desktop is outside every sandbox, so "off" keeps asking about what is risky there.
+    if _is_computer_tool(name):
+        return True
     if name not in OS_SANDBOXED_TOOLS:
         return False
     if runs_without_os_sandbox(name, sandbox_level):
@@ -136,6 +144,8 @@ def needs_tool_confirmation(
     never_needs = None,
     sandbox_level: Optional[str] = None,
     session_id: Optional[str] = None,
+    thread_id: Optional[str] = None,
+    python_analyses = None,
 ) -> bool:
     if is_high_risk is None or never_needs is None:
         from core.inference import tools
@@ -143,20 +153,35 @@ def needs_tool_confirmation(
         never_needs = never_needs or tools.never_needs_approval
     if not confirm_tool_calls or bypass_permissions or never_needs(name):
         return False
+    if permission_mode in ("off", "auto") and _is_computer_tool(name):
+        from core.inference.computer_use import policy as computer_policy
+
+        # Per conversation: a project's chats share session_id, and each asks for itself.
+        return computer_policy.needs_confirmation(arguments, thread_id or session_id)
     if permission_mode == "off":
         return off_mode_still_gates(name, sandbox_level, session_id) and _classify(
-            is_high_risk, name, arguments, sandbox_level
+            is_high_risk, name, arguments, sandbox_level, python_analyses
         )
     if permission_mode == "auto":
-        return _classify(is_high_risk, name, arguments, sandbox_level)
+        return _classify(is_high_risk, name, arguments, sandbox_level, python_analyses)
     return True
 
 
-def _classify(is_high_risk, name: str, arguments, sandbox_level: Optional[str]) -> bool:
+def _classify(
+    is_high_risk,
+    name: str,
+    arguments,
+    sandbox_level: Optional[str],
+    python_analyses = None,
+) -> bool:
     """The risk check, told the level: under Low the Terminal's shell is the host's."""
-    from core.inference.tools import classifying_under
-    with classifying_under(sandbox_level):
-        return bool(is_high_risk(name, arguments))
+    from core.inference.tools import classifying_under, using_python_call_analyses
+    with classifying_under(sandbox_level), using_python_call_analyses(python_analyses):
+        try:
+            return bool(is_high_risk(name, arguments))
+        except RecursionError:
+            # Too deep to analyse counts as high risk.
+            return True
 
 
 def requires_os_isolation(
@@ -169,6 +194,7 @@ def requires_os_isolation(
     prompted: bool,
     is_high_risk = None,
     sandbox_level: Optional[str] = None,
+    python_analyses = None,
 ) -> bool:
     """Whether the call must launch with tool_execution_mode required (no software fallback); prompted is passed in to avoid a cache race."""
     if prompted or not confirm_tool_calls or bypass_permissions or permission_mode != "off":
@@ -177,7 +203,7 @@ def requires_os_isolation(
         return False
     if is_high_risk is None:
         from core.inference.tools import is_high_risk_tool_call as is_high_risk
-    return _classify(is_high_risk, name, arguments, sandbox_level)
+    return _classify(is_high_risk, name, arguments, sandbox_level, python_analyses)
 
 
 def account_tool_stream(stream):
@@ -207,9 +233,7 @@ def get_tool_policy() -> Optional[bool]:
 
 
 def get_tool_policy_default() -> Optional[bool]:
-    """Fallback for a request that omits `enable_tools`; None unless `unsloth
-    studio run` installed one (every other launcher, embedder and library caller
-    keeps the omitted-is-off read)."""
+    """Fallback for an omitted `enable_tools`: None unless `unsloth studio run` installed one, else off."""
     if _force_disabled.get():
         return False
     return _tool_policy_default
@@ -218,6 +242,11 @@ def get_tool_policy_default() -> Optional[bool]:
 def conversation_recall_allowed() -> bool:
     """Recall reads only this thread's archive: `--disable-tools` keeps it, `tools_force_disabled` does not."""
     return not _force_disabled.get()
+
+
+def force_disable_tools_for_request() -> None:
+    """Hard-disable server-side tools for the rest of this request's context, as the account binding lasts."""
+    _force_disabled.set(True)
 
 
 @contextmanager

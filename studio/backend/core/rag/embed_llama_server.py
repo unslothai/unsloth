@@ -23,6 +23,7 @@ from collections import OrderedDict
 from contextlib import contextmanager
 from functools import lru_cache
 from pathlib import Path
+from typing import Iterable
 
 import httpx
 import numpy as np
@@ -681,6 +682,9 @@ class LlamaServerBackend:
             return True
         from core.inference.llama_cpp import LlamaCppBackend
 
+        # A SYCL build is unsized by design (#17787), so an empty probe is not "no GPU".
+        if LlamaCppBackend._is_sycl_only_backend():
+            return True
         # [(idx, free_mib)], honors CVD
         gpus = LlamaCppBackend._get_gpu_free_memory(for_llama_server = True)
         return any(free >= LlamaServerBackend._MIN_GPU_FREE_MIB for _, free in gpus)
@@ -741,7 +745,10 @@ class LlamaServerBackend:
                 env["PATH"] = ";".join(path_dirs) + ";" + env.get("PATH", "")
             else:
                 # Path(binary).parent, unresolved: resolving would move the first LD_LIBRARY_PATH entry of every symlinked install.
-                self._add_linux_cuda_libs(env, str(Path(binary).parent))
+                from utils.prebuilt.runtime_libs import oneapi_lib_dirs
+                self._add_linux_cuda_libs(
+                    env, str(Path(binary).parent), oneapi_lib_dirs(_binary_lib_dir(binary))
+                )
             _pinned = self._arch_gated_gpu_ids(binary)
             if _pinned:
                 from core.inference.llama_cpp import LlamaCppBackend
@@ -764,7 +771,11 @@ class LlamaServerBackend:
         return env
 
     @staticmethod
-    def _add_linux_cuda_libs(env: dict[str, str], binary_dir: str) -> None:
+    def _add_linux_cuda_libs(
+        env: dict[str, str],
+        binary_dir: str,
+        extra_dirs: Iterable[str] = (),
+    ) -> None:
         """Best-effort LD_LIBRARY_PATH so the prebuilt binary finds CUDA libs."""
         import glob
         import platform
@@ -798,6 +809,7 @@ class LlamaServerBackend:
             lib_dirs.extend(tegra + system_dirs + pip_dirs)
         else:
             lib_dirs.extend(pip_dirs + system_dirs)
+        lib_dirs.extend(extra_dirs)
         existing = env.get("LD_LIBRARY_PATH", "")
         joined = ":".join(lib_dirs)
         env["LD_LIBRARY_PATH"] = f"{joined}:{existing}" if existing else joined

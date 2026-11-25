@@ -6,6 +6,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import * as speechText from "../src/features/chat/voice/speech-text.ts";
+import * as ttsChunkPlan from "../src/features/chat/voice/tts-chunk-plan.ts";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 
 import { readSrc } from "./helpers/kit.ts";
@@ -100,6 +102,8 @@ function load(
       "../search-images/search-images": {
         stripSearchImageTokens: (text: string) => text,
       },
+      "../voice/speech-text": speechText,
+      "../voice/tts-chunk-plan": ttsChunkPlan,
       "../utils/speech-text": {
         markdownToSpeechText: toSpeech,
       },
@@ -177,14 +181,14 @@ test("custom TTS defaults a blank voice for strict OpenAI-compatible endpoints",
 
 test("read-aloud sends the speech text, not the markdown source (#12547)", async () => {
   const { adapter, posted } = load(true, {
-    toSpeech: (text) => `spoken(${text})`,
+    toSpeech: (text) => `Spoken ${text.replaceAll("*", "")}`,
   });
   new adapter.StudioSpeechSynthesisAdapter().speak("**Done.**");
   // The model lookup adds a request before the speech one.
   for (let i = 0; i < 20 && posted.length === 0; i++) {
     await new Promise((resolve) => setTimeout(resolve, 0));
   }
-  assert.equal(JSON.parse(posted[0]).messages[0].content, "spoken(**Done.**)");
+  assert.equal(JSON.parse(posted[0]).messages[0].content, "Spoken Done.");
 });
 
 test("custom TTS rejects a deleted provider even when Voice settings is unmounted", async () => {
@@ -301,6 +305,7 @@ test("authFetch invokes its policy guard after refresh and before retry", async 
             accessToken = null;
             refreshToken = null;
           },
+          getAuthSessionMark: () => "session",
           getAuthToken: () => accessToken,
           getRefreshToken: () => refreshToken,
           mustChangePassword: () => false,

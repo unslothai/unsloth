@@ -51,8 +51,7 @@ OPTIMIZER_BYTES_PER_PARAM: Dict[str, int] = {
     "sgd": 4,
 }
 
-# (full_ft_multiplier, lora_multiplier) - fraction of num_layers.
-# LoRA: frozen layers skip activation storage, but ~1 is in flight during backprop.
+# Multipliers are fractions of num_layers; LoRA frozen layers skip storage, ~1 in flight.
 GC_LAYER_MULTIPLIERS = {
     "none": (None, None),
     "true": (2.0, 1.0),

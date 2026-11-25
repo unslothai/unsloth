@@ -12,6 +12,7 @@
 from transformers import AutoTokenizer
 from transformers.convert_slow_tokenizer import convert_slow_tokenizer
 from transformers import PreTrainedTokenizerFast
+from transformers import __version__ as transformers_version
 import re
 import os
 import json
@@ -198,8 +199,8 @@ def _strip_bos_from_chat_template_text(chat_template):
     if not isinstance(chat_template, str) or not chat_template:
         return chat_template
     stripped = re.sub(r"\{[\s\-]*\{[\s\-]*bos\_token[\s\-]*\}[\s\-]*\}", "", chat_template, count = 1)
-    # Keep the opening `{{` for Llama 2 expressions so removing bos_token does not leave a dangling `}}`.
-    return re.sub(r"(\{[\s\-]*\{[\s\-]*)bos\_token[\s\-]*\+[\s\-]*", r"\1", stripped, count = 1)
+    # Drop only the `bos_token +` term: Llama 2's `{{ }}` and Llama 3's `{% set %}` must survive.
+    return re.sub(r"\bbos\_token\s*\+\s*", "", stripped, count = 1)
 
 
 def _dedupe_bos_chat_template(tokenizer):
@@ -757,9 +758,7 @@ llama_template = (
 )
 
 
-def assert_same_tokenization(slow_tokenizer, fast_tokenizer):
-    if not hasattr(slow_tokenizer, "all_special_tokens"):
-        return True
+def _same_tokenization_special_tokens(slow_tokenizer):
     dir_names = dir(slow_tokenizer)
     special_tokens = list(
         filter(
@@ -774,7 +773,21 @@ def assert_same_tokenization(slow_tokenizer, fast_tokenizer):
     all_special_tokens = list(set(special_tokens + slow_tokenizer.all_special_tokens))
 
     replacement_char = b"\xc3\xaf\xc2\xbf\xc2\xbd".decode("utf-8")
-    all_special_tokens = [x for x in all_special_tokens if x != replacement_char]
+    return [x for x in all_special_tokens if x != replacement_char]
+
+
+def _same_tokenization_text(all_special_tokens):
+    return (
+        "\n".join(all_special_tokens)
+        + "A quick brown fox jumps over the lazy dog!!\n\nHi</s>\n\n"
+        + "".join(all_special_tokens)
+    )
+
+
+def assert_same_tokenization(slow_tokenizer, fast_tokenizer):
+    if not hasattr(slow_tokenizer, "all_special_tokens"):
+        return True
+    all_special_tokens = _same_tokenization_special_tokens(slow_tokenizer)
 
     check_chat_template1 = True
     check_chat_template2 = True
@@ -820,11 +833,7 @@ def assert_same_tokenization(slow_tokenizer, fast_tokenizer):
     check_chat_template = check_chat_template1 and check_chat_template2 and check_chat_template3
 
     try:
-        string = (
-            "\n".join(all_special_tokens)
-            + "A quick brown fox jumps over the lazy dog!!\n\nHi</s>\n\n"
-            + "".join(all_special_tokens)
-        )
+        string = _same_tokenization_text(all_special_tokens)
         check_special_tokens = slow_tokenizer(string).input_ids == fast_tokenizer(string).input_ids
 
         return check_chat_template and check_special_tokens
@@ -1022,6 +1031,67 @@ def fix_sentencepiece_gguf(saved_location):
     return
 
 
+def _sync_add_special_tokens(fast_tokenizer, slow_tokenizer):
+    if hasattr(fast_tokenizer, "add_bos_token") and hasattr(slow_tokenizer, "add_bos_token"):
+        fast_tokenizer.add_bos_token = slow_tokenizer.add_bos_token
+    if hasattr(fast_tokenizer, "add_eos_token") and hasattr(slow_tokenizer, "add_eos_token"):
+        fast_tokenizer.add_eos_token = slow_tokenizer.add_eos_token
+
+
+# v5 ignores use_fast/from_slow: the "slow" load is the fast one plus legacy = False, unread by these classes.
+_TRANSFORMERS_V5 = int(transformers_version.split(".")[0]) >= 5
+_V5_LEGACY_FREE_TOKENIZERS = frozenset(
+    (
+        "TokenizersBackend",
+        "Qwen2Tokenizer",
+        "Qwen3_5Tokenizer",
+        "GemmaTokenizer",
+        "GPT2Tokenizer",
+        "CohereTokenizer",
+    )
+)
+
+
+def _slow_load_copies_fast(fast_tokenizer):
+    cls = type(fast_tokenizer)
+    if not _TRANSFORMERS_V5 or not cls.__module__.startswith("transformers."):
+        return False
+    if cls.__name__ in _V5_LEGACY_FREE_TOKENIZERS:
+        return True
+    # LlamaTokenizer builds its pre-tokenizer from legacy, so the copy only matches at legacy = False.
+    return cls.__name__ == "LlamaTokenizer" and getattr(fast_tokenizer, "legacy", None) is False
+
+
+def _same_tokenization_as_own_copy(fast_tokenizer):
+    try:
+        string = _same_tokenization_text(_same_tokenization_special_tokens(fast_tokenizer))
+        before = fast_tokenizer(string).input_ids
+    except Exception:
+        return False
+    # The setters rebuild the post_processor in place; undo them if ids move so the slow path starts as loaded.
+    backend = getattr(fast_tokenizer, "_tokenizer", None)
+    saved_post_processor = getattr(backend, "post_processor", None)
+    saved_flags = {
+        k: fast_tokenizer.__dict__[k]
+        for k in ("_add_bos_token", "_add_eos_token")
+        if k in fast_tokenizer.__dict__
+    }
+    try:
+        _sync_add_special_tokens(fast_tokenizer, fast_tokenizer)
+        same = fast_tokenizer(string).input_ids == before
+    except Exception:
+        same = False
+    if not same:
+        for k in ("_add_bos_token", "_add_eos_token"):
+            if k in saved_flags:
+                object.__setattr__(fast_tokenizer, k, saved_flags[k])
+            else:
+                fast_tokenizer.__dict__.pop(k, None)
+        if backend is not None:
+            backend.post_processor = saved_post_processor
+    return same
+
+
 def _load_correct_tokenizer(
     tokenizer_name,
     model_max_length = None,
@@ -1050,6 +1120,12 @@ def _load_correct_tokenizer(
         token = token,
         trust_remote_code = trust_remote_code,
     )
+    from .models.loader_utils import _resolved_revision
+
+    # Only the AutoTokenizer loads take it; the repairs and _mark_loaded_revision keep the plain ref.
+    revision_for_transformers = _resolved_revision(
+        tokenizer_name, revision, token, cache_dir = cache_dir
+    )
     _name_lower = tokenizer_name.lower()
     # These return the fast tokenizer unread by the slow one, so skip the slow load; the post-load fixes repair the fast backend.
     if (
@@ -1059,11 +1135,24 @@ def _load_correct_tokenizer(
         or "phi-4" in _name_lower
     ):
         fast_tokenizer = AutoTokenizer.from_pretrained(
-            tokenizer_name, cache_dir = cache_dir, revision = revision, **_load_kwargs
+            tokenizer_name, cache_dir = cache_dir, revision = revision_for_transformers, **_load_kwargs
         )
         return _apply_post_load_tokenizer_fixes(
             fast_tokenizer, fix_tokenizer, config, **_repair_kwargs
         )
+
+    fast_tokenizer = None
+    if _TRANSFORMERS_V5:
+        fast_tokenizer = AutoTokenizer.from_pretrained(
+            tokenizer_name, cache_dir = cache_dir, revision = revision_for_transformers, **_load_kwargs
+        )
+        _repair_tokenizer_backend_from_json(fast_tokenizer, **_repair_kwargs)
+        if _slow_load_copies_fast(fast_tokenizer) and _same_tokenization_as_own_copy(
+            fast_tokenizer
+        ):
+            return _apply_post_load_tokenizer_fixes(
+                fast_tokenizer, fix_tokenizer, config, **_repair_kwargs
+            )
 
     # Try the slow tokenizer first and fall back to fast only, mainly to solve Deepseek models with no tokenizer.model file.
     slow_tokenizer = None
@@ -1075,7 +1164,7 @@ def _load_correct_tokenizer(
             legacy = False,
             from_slow = True,
             cache_dir = cache_dir,
-            revision = revision,
+            revision = revision_for_transformers,
             **_load_kwargs,
         )
     except:
@@ -1083,19 +1172,19 @@ def _load_correct_tokenizer(
     if type(slow_tokenizer) is bool:
         slow_tokenizer = None
 
-    fast_tokenizer = AutoTokenizer.from_pretrained(
-        tokenizer_name, cache_dir = cache_dir, revision = revision, **_load_kwargs
-    )
+    load_fast = fast_tokenizer is None
+    if load_fast:
+        fast_tokenizer = AutoTokenizer.from_pretrained(
+            tokenizer_name, cache_dir = cache_dir, revision = revision_for_transformers, **_load_kwargs
+        )
     # Repair both before comparing them, or a v5 byte-level mismatch detours into the legacy path.
     if slow_tokenizer is not None:
         _repair_tokenizer_backend_from_json(slow_tokenizer, **_repair_kwargs)
-    _repair_tokenizer_backend_from_json(fast_tokenizer, **_repair_kwargs)
+    if load_fast:
+        _repair_tokenizer_backend_from_json(fast_tokenizer, **_repair_kwargs)
 
     if slow_tokenizer is not None:
-        if hasattr(fast_tokenizer, "add_bos_token") and hasattr(slow_tokenizer, "add_bos_token"):
-            fast_tokenizer.add_bos_token = slow_tokenizer.add_bos_token
-        if hasattr(fast_tokenizer, "add_eos_token") and hasattr(slow_tokenizer, "add_eos_token"):
-            fast_tokenizer.add_eos_token = slow_tokenizer.add_eos_token
+        _sync_add_special_tokens(fast_tokenizer, slow_tokenizer)
 
         if assert_same_tokenization(slow_tokenizer, fast_tokenizer):
             return _apply_post_load_tokenizer_fixes(
@@ -1570,6 +1659,31 @@ def _repair_string_template(tokenizer, chat_template, is_sharegpt):
     return None
 
 
+# Chat templates that render nothing for add_generation_prompt ON PURPOSE, keyed on their own
+# marker tokens (all must be present) so a genuinely broken template still gets the warning.
+# Inkling 2 (inkling2 / inkling2_loop): transformers' own examples call
+# apply_chat_template(add_generation_prompt = True) and the model emits `<|message_model|>`
+# itself; appending that marker would make it start a second turn header.
+_TEMPLATES_WITHOUT_GENERATION_PROMPT = {
+    "Inkling 2": (
+        "<|message_user|>",
+        "<|message_model|>",
+        "<|end_message|>",
+        "<|content_text|>",
+    ),
+}
+
+
+def _template_without_generation_prompt_by_design(chat_template):
+    """Family name when `chat_template` is a known template with no generation prompt by design, else None."""
+    if not isinstance(chat_template, str) or "add_generation_prompt" in chat_template:
+        return None
+    for family, markers in _TEMPLATES_WITHOUT_GENERATION_PROMPT.items():
+        if all(marker in chat_template for marker in markers):
+            return family
+    return None
+
+
 def _fix_chat_template_for_tokenizer(tokenizer, chat_template):
     """Entry point for a string chat_template. Runs the no==yes diagnostic, attempts repair if needed, and returns the (possibly patched) template. On repair failure the behavior is controlled by UNSLOTH_STRICT_CHAT_TEMPLATE: warn + return original (default) or raise RuntimeError (strict)."""
     name = getattr(tokenizer, "name_or_path", "unknown")
@@ -1617,6 +1731,15 @@ def _fix_chat_template_for_tokenizer(tokenizer, chat_template):
         return chat_template
 
     if no != yes:
+        return chat_template
+
+    family = _template_without_generation_prompt_by_design(chat_template)
+    if family is not None:
+        # Not broken: the model writes its own turn marker, so neither repair nor warn.
+        logger.info(
+            f"Unsloth: `{name}` uses the {family} chat template, which has no "
+            "add_generation_prompt block by design; the model emits its own turn marker."
+        )
         return chat_template
 
     # no == yes: the template ignores add_generation_prompt, so try to repair. It may have the block while the output does not change, the "wasn't provided correctly" case.

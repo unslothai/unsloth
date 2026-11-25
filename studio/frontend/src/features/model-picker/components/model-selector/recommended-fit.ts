@@ -12,30 +12,30 @@ import {
 } from "../../../../lib/vram.ts";
 import {
   audioCppDisplayName,
+  audioCppModelFor,
   isAudioCppFolderId,
 } from "../../../audio/audio-cpp-catalog.ts";
-import { matchesRecommended } from "../../../hub/lib/format-filters.ts";
+import {
+  checkpointQuantFormat,
+  isMlxId,
+  matchesRecommended,
+} from "../../../hub/lib/format-filters.ts";
 import {
   classifyMediaGgufFit,
   type curatedArtifactFit,
 } from "./model-catalog.ts";
 
+export {
+  cachedRepoIsMlx,
+  hasMlxCardTag,
+  isMlxId,
+  localRowIsMlx,
+} from "../../../hub/lib/format-filters.ts";
+
 const GGUF_SUFFIX_RE = /-GGUF(?:$|-)/i;
-// Mirrors the backend's _looks_like_mlx_repo.
-const MLX_RE = /(?:^|[-_.])mlx(?:$|[-_.])/i;
-const MLX_OWNER_PREFIX = "mlx-community/";
-// Callers pass a filesystem path, which may be Windows.
-const PATH_SEP_RE = /[\\/]/;
 
 export function isGgufId(id: string, hintedIsGguf?: boolean): boolean {
   return Boolean(hintedIsGguf) || GGUF_SUFFIX_RE.test(id);
-}
-
-export function isMlxId(id: string): boolean {
-  const trimmed = id.trim();
-  if (trimmed.toLowerCase().startsWith(MLX_OWNER_PREFIX)) return true;
-  const leaf = trimmed.split(PATH_SEP_RE).filter(Boolean).at(-1) ?? trimmed;
-  return MLX_RE.test(leaf);
 }
 
 const MOBILE_RE = /(?:^|[-_/. ])mobile(?:$|[-_/. ])/i;
@@ -44,14 +44,23 @@ export function isMobileVariant(id: string): boolean {
   return MOBILE_RE.test(id);
 }
 
-/** GGUF anywhere; on Mac also MLX and safetensors. */
+// CUDA-kernel quant formats MLX cannot load.
+const GPU_ONLY_QUANT_NAME = /(?:^|[-_/.])(?:gptq|awq|exl2)(?:[-_/.]|$)/i;
+
+/** GGUF anywhere; on Mac also MLX and safetensors, but not GPU-only quant checkpoints. */
 export function isRecommendableFormat(
   id: string,
   hintedIsGguf: boolean | undefined,
   isMac: boolean,
+  quantMethod?: string,
 ): boolean {
   if (isGgufId(id, hintedIsGguf)) return true;
-  return isMac;
+  if (!isMac) return false;
+  if (isMlxId(id)) return true;
+  return (
+    checkpointQuantFormat({ id, isGguf: false, quantMethod }) === null &&
+    !GPU_ONLY_QUANT_NAME.test(id)
+  );
 }
 
 /** An FP8 / NVFP4 checkpoint (not a GGUF) this host's GPUs run natively. */
@@ -77,14 +86,18 @@ export function matchesFormatFilter(
   id: string,
   hintedIsGguf: boolean | undefined,
   filter: FormatFilter,
+  hintedIsMlx?: boolean,
 ): boolean {
+  const gguf = isGgufId(id, hintedIsGguf);
+  // GGUF repos often carry an mlx tag too; the tag never outranks GGUF.
+  const mlx = isMlxId(id, hintedIsMlx && !gguf);
   switch (filter) {
     case "gguf":
-      return isGgufId(id, hintedIsGguf);
+      return gguf;
     case "mlx":
-      return isMlxId(id);
+      return mlx;
     case "safetensors":
-      return !isGgufId(id, hintedIsGguf) && !isMlxId(id);
+      return !gguf && !mlx;
     case "npu":
       return false;
     default:
@@ -126,7 +139,10 @@ export function pickerSearchMatches(
     const name = audioCppDisplayName(id);
     return (
       normalizeSearchText(name.replace(/-gguf$/i, "")).includes(q) ||
-      (!"gguf".includes(q) && normalizeSearchText(name).includes(q))
+      (!"gguf".includes(q) && normalizeSearchText(name).includes(q)) ||
+      (audioCppModelFor(id)?.keywords ?? []).some((term) =>
+        normalizeSearchText(term).includes(q),
+      )
     );
   }
   return (label ? [...aliases, label] : aliases).some((term) =>
@@ -429,6 +445,8 @@ export function orderRecommendedRows<
   /** Pinned family keys whose rows stay together instead of interleaving: all of them come before
    *  the next pinned family's, so a GGUF sits right under its own lead row. */
   pinnedTogether?: readonly string[];
+  /** Outranks every other key: "lead" rows come first in list order, "trail" rows last. Omitted = no tiers. */
+  tierOf?: (row: T) => "lead" | "trail" | undefined;
 }): T[] {
   const {
     seeds,
@@ -439,6 +457,7 @@ export function orderRecommendedRows<
     familyOf,
     pinnedFamilies = [],
     pinnedTogether = [],
+    tierOf,
   } = opts;
   const seedById = new Map(seeds.map((s) => [s.id, s]));
   const rows = results.filter(keep).map((row) => {
@@ -486,7 +505,7 @@ export function orderRecommendedRows<
     slotOf.set(i, slot);
     seenPerFamily.set(key, slot + 1);
   });
-  const sortKey = (r: T, i: number) => {
+  const baseKey = (r: T, i: number) => {
     const key = keyOf(r);
     // Pinned families lead, ahead of first-party rows that trend higher.
     const pin = pinIndex.get(key);
@@ -505,6 +524,14 @@ export function orderRecommendedRows<
       firstSeen.get(key) ?? i,
       i,
     ];
+  };
+  // Lead rows keep the curated (catalog) order whatever the dropdown sort, like pinned families.
+  const sortKey = (r: T, i: number) => {
+    if (!tierOf) return baseKey(r, i);
+    const tier = tierOf(r);
+    return tier === "lead"
+      ? [0, 0, 0, 0, 0, i]
+      : [tier === "trail" ? 2 : 1, ...baseKey(r, i)];
   };
   return ordered
     .map((row, i) => ({ row, key: sortKey(row, i) }))
@@ -569,4 +596,36 @@ export function recommendedEmptyState({
 }): "loading" | "failed" | "empty" {
   if (isLoading) return "loading";
   return error || hubPhase !== "available" ? "failed" : "empty";
+}
+
+/** The header picker's fit verdict for a chat GGUF; null when it fits or nothing is known. */
+export function chatGgufFit(
+  sizeBytes: number | undefined,
+  gpu: {
+    memoryTotalGb: number;
+    systemRamAvailableGb: number;
+    budgetKnown: boolean;
+    deviceCount: number;
+    unifiedLoadBudgetGb?: number | null;
+    unifiedLoadCeilingGb?: number | null;
+  },
+  {
+    budgetFraction,
+    loadFreesResident,
+  }: { budgetFraction?: number; loadFreesResident: boolean },
+): ReturnType<typeof classifyGgufFit> | null {
+  const anyBudget = gpu.memoryTotalGb > 0 || gpu.systemRamAvailableGb > 0;
+  if (!gpu.budgetKnown && !anyBudget) return null;
+  if (sizeBytes == null) return null;
+  if (!anyBudget) return "oom";
+  const fit = classifyGgufFit(sizeBytes, {
+    gpuGb: gpu.memoryTotalGb,
+    systemRamGb: gpu.systemRamAvailableGb,
+    budgetFraction,
+    gpuCount: gpu.deviceCount,
+    unifiedLoadBudgetGb: loadFreesResident
+      ? gpu.unifiedLoadCeilingGb
+      : gpu.unifiedLoadBudgetGb,
+  });
+  return fit === "fits" ? null : fit;
 }

@@ -26,8 +26,7 @@ def _patches_enabled() -> bool:
     return (os.environ.get(_ENV_ENABLE) or "").strip().lower() not in ("0", "off", "false", "no")
 
 
-# The shared needle guard (diffusion_autoopt.patches); the module-level name is what the resolvers below call, so a
-# test can still monkeypatch it here.
+# Resolvers call this module-level alias, so a test can monkeypatch the shared needle guard here.
 _body_has = body_has
 
 
@@ -90,9 +89,7 @@ def _zimage_forward(
     adaln_noisy: torch.Tensor | None = None,
     adaln_clean: torch.Tensor | None = None,
 ):
-    """``ZImageTransformerBlock.forward`` with the two gated residuals ``x = x + gate * sublayer``
-    fused to ``torch.addcmul``. The shift-free ``*scale`` modulation and non-gated residuals are
-    left as-is."""
+    """ZImage block fuses its two gated residuals into torch.addcmul; shift-free scale stays as-is."""
     from diffusers.models.transformers.transformer_z_image import select_per_token
 
     if self.modulation:

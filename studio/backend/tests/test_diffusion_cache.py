@@ -87,9 +87,8 @@ class _NoCtxPipe:
 
 
 class _PrefixKVTransformer(_MixinTransformer):
-    """A CacheMixin transformer that caches the prompt/condition prefix K and V (Qwen-Image-2.1,
-    FLUX.2 klein KV, Wan-Animate-2): its blocks see the whole joint sequence on the first step and
-    the target tokens alone afterwards."""
+    """A CacheMixin transformer caching the prompt/condition prefix K and V (Qwen-Image-2.1, FLUX.2
+    klein KV, Wan-Animate-2); blocks see the joint sequence once, then target tokens."""
 
     def forward(
         self,
@@ -817,9 +816,8 @@ def test_a_silently_partial_engage_still_has_its_hooks_taken_off(monkeypatch):
 
 
 def test_an_unverifiable_teardown_keeps_the_marker(monkeypatch):
-    """No registry to remove through means the hooks cannot be shown to be gone. Clearing the marker
-    there would let the graph wrapper capture a partly-hooked forward, so it stays set and the
-    transformer keeps the eager path: slower, and not wrong."""
+    """Without a registry to remove hooks through, their removal can't be verified, so the marker
+    stays: clearing it would let a graph capture a partly-hooked forward."""
     _stub_diffusers(monkeypatch)
     monkeypatch.delitem(sys.modules, "diffusers.hooks.first_block_cache", raising = False)
     monkeypatch.setitem(sys.modules, "diffusers.hooks", types.ModuleType("diffusers.hooks"))
@@ -881,9 +879,8 @@ def test_a_reconfigure_whose_cleanup_unhooked_anyway_re_engages(monkeypatch):
 
 
 def test_a_reconfigure_that_cannot_be_verified_keeps_reporting_the_prior_mode(monkeypatch):
-    """With no registry to remove through, the teardown cannot be shown to have completed. Re-engaging
-    on top of hooks that may still be installed is the dangerous move, so this reports the mode that was
-    last known to be running and leaves the marker describing it."""
+    """With no registry to remove through, teardown cannot be shown complete; re-engaging over
+    possibly live hooks is the dangerous move, so the last known mode is reported."""
     _stub_diffusers(monkeypatch)
     monkeypatch.delitem(sys.modules, "diffusers.hooks.first_block_cache", raising = False)
     monkeypatch.setitem(sys.modules, "diffusers.hooks", types.ModuleType("diffusers.hooks"))
@@ -932,9 +929,8 @@ def test_a_reconfigure_that_dies_between_the_two_hook_removals_finishes_the_job(
 
 
 def test_another_cache_type_is_left_alone(monkeypatch):
-    """MagCache / FasterCache / PAB share the same generic _cache_config, so a transformer running one
-    of them arrives here looking like a broken FBC one. Removing FBC's hook names does nothing for it,
-    and clearing the state would make diffusers forget a cache that is still installed."""
+    """MagCache, FasterCache and PAB share the generic _cache_config, so they look like broken FBC
+    configs; FBC hook names miss them, and clearing state would forget a live cache."""
     registry = _stub_diffusers(monkeypatch)
 
     class _MagCacheConfig:
@@ -1004,9 +1000,8 @@ def test_a_lost_marker_does_not_cost_a_healthy_cache(monkeypatch):
 
 
 def test_a_stale_marker_cannot_authorize_the_no_op(monkeypatch):
-    """The marker is not a second opinion alongside the live config. A transformer reconfigured
-    elsewhere to a different threshold keeps whatever marker was last written, and honouring that
-    would report success for settings the model is not running. Only the live config decides."""
+    """Only the live config decides: a transformer reconfigured elsewhere keeps the old marker, and
+    trusting it would report success for settings it is not running."""
     _stub_diffusers(monkeypatch)
 
     class FirstBlockCacheConfig:  # noqa: N801 - matched by NAME
@@ -1101,9 +1096,8 @@ def test_a_cache_installed_through_the_low_level_api_is_not_torn_down(monkeypatc
 
 
 def test_a_low_level_cache_is_integrated_and_marked_before_being_reported(monkeypatch):
-    """Adopting low-level hooks must run the same post-enable integration as adopting a live
-    config, and must set the marker first: GraphedForward falls back to eager ONLY on that marker,
-    so a clear one over live hooks lets it capture a data-dependent cached forward."""
+    """Adopting low-level hooks must integrate and set the marker first, as for a live config: a
+    clear marker over live hooks lets GraphedForward capture a data-dependent cached forward."""
     registry = _stub_diffusers(monkeypatch)
     import core.inference.diffusion_cache as dc
 
@@ -1157,8 +1151,7 @@ def test_auto_disengage_unhooks_an_adopted_cache_instead_of_trusting_disable_cac
 
 
 def test_auto_disengage_keeps_the_marker_when_the_hooks_cannot_be_verified_gone(monkeypatch):
-    """An unverifiable teardown keeps the marker engaged: that costs eager execution, where the
-    reverse risks a captured graph over a cached forward."""
+    """Unverifiable teardown keeps the marker: slow eager beats a graph captured over a cache."""
     _stub_diffusers(monkeypatch)
     import core.inference.diffusion_cache as dc
 
@@ -1177,9 +1170,8 @@ def test_auto_disengage_keeps_the_marker_when_the_hooks_cannot_be_verified_gone(
 
 
 def test_the_hook_probe_sees_the_names_the_low_level_api_installs(monkeypatch):
-    """The probe above is the whole basis for that decision, so it is pinned against the real hook
-    names rather than a stub: a rename upstream must fail here, not silently start tearing down
-    other people's caches again."""
+    """The probe is the whole basis for the teardown decision, so it is pinned to the real hook
+    names: an upstream rename must fail here, not tear down other caches."""
     _stub_diffusers(monkeypatch)
     import types as _types
 

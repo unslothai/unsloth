@@ -11,7 +11,6 @@ import hashlib
 import importlib.util
 import json
 import os
-import re
 import shlex
 import signal
 import subprocess
@@ -26,7 +25,8 @@ from typing import Callable, Iterator, Literal, NamedTuple, Optional, Sequence
 from loggers import get_logger
 
 # One floor, one name, shared: hand-written copies meant the site that got missed was missed because "who enforces it" had to be read rather than grepped.
-from utils.process_lifetime import is_signalable_pid
+from utils.process_lifetime import is_signalable_pid, pid_is_running
+from utils.log_redaction import REDACTED, redact_log_text
 
 from hub.utils import state_dir
 from hub.utils.hf_errors import modelscope_missing
@@ -101,8 +101,7 @@ def http_size_ceiling_reason(largest_file_bytes: Optional[int]) -> Optional[str]
 
 
 def humanize_worker_error(text: str, *, largest_file_bytes: Optional[int] = None) -> str:
-    """Name a repo missing on ModelScope, and replace the hub's misleading >50GB dependency
-    error with the transport limit."""
+    """Name a ModelScope-missing repo; swap the misleading >50GB error for the transport limit."""
     missing = modelscope_missing(text)
     if missing:
         return missing
@@ -262,30 +261,7 @@ def _safe_unlink(path: Path) -> None:
 
 
 def _process_alive(pid: int) -> bool:
-    if sys.platform == "win32":
-        import ctypes
-        from ctypes import wintypes
-
-        SYNCHRONIZE = 0x00100000
-        ERROR_INVALID_PARAMETER = 87
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)
-        kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
-        kernel32.OpenProcess.restype = wintypes.HANDLE
-        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
-        kernel32.CloseHandle.restype = wintypes.BOOL
-        ctypes.set_last_error(0)
-        handle = kernel32.OpenProcess(SYNCHRONIZE, False, pid)
-        if not handle:
-            return ctypes.get_last_error() != ERROR_INVALID_PARAMETER
-        kernel32.CloseHandle(handle)
-        return True
-    try:
-        os.kill(pid, 0)
-        return True
-    except ProcessLookupError:
-        return False
-    except OSError:
-        return True
+    return pid_is_running(pid)
 
 
 def _read_process_cmdline(pid: int) -> Optional[str]:
@@ -786,19 +762,10 @@ def prepare_cache_for_transport(
     return total_purged
 
 
-_HF_TOKEN_RE = re.compile(r"hf_(?:oauth_[A-Za-z0-9._~+/=-]{20,}|[A-Za-z0-9]{20,})")
-_BEARER_RE = re.compile(r"(?i)bearer\s+[A-Za-z0-9._\-]+")
-
-
 def scrub_secrets(text: str, *, hf_token: Optional[str] = None) -> str:
-    if not text:
-        return text
-    cleaned = text
-    if hf_token:
-        cleaned = cleaned.replace(hf_token, "***")
-    cleaned = _BEARER_RE.sub("Bearer ***", cleaned)
-    cleaned = _HF_TOKEN_RE.sub("hf_***", cleaned)
-    return cleaned
+    if text and hf_token:
+        text = text.replace(hf_token, REDACTED)
+    return redact_log_text(text)
 
 
 def purge_empty_marker_dir(
@@ -1095,6 +1062,10 @@ TERMINAL_STATES = frozenset({"complete", "cancelled", "error"})
 _ACTIVE_STATES = frozenset({"running", "cancelling"})
 
 
+# A claim argument the caller did not pass, told apart from an explicit None.
+_UNSET = object()
+
+
 @dataclass(frozen = True)
 class DownloadState:
     state: JobState
@@ -1119,6 +1090,9 @@ class DownloadMetadata:
     scoped_files: tuple[str, ...] = ()
     owner: Optional[str] = None
     load_attached: bool = False
+    # GGUF variant jobs: the standalone Engram table fetched in place of the quant's own, so a
+    # retry, a transport fallback and an adopting client fetch the same files.
+    engram_precision: Optional[str] = None
 
 
 @dataclass(frozen = True)
@@ -1476,7 +1450,10 @@ class DownloadRegistry:
         xet_cache: Optional[str] = None,
         scoped_files: Optional[Sequence[str]] = None,
         owner: Optional[str] = None,
+        engram_precision: object = _UNSET,
     ) -> tuple[bool, str]:
+        """``engram_precision`` left unset is a claim that does not choose a table (a load, a
+        delete); set, it is part of the job's plan and must match a live job to join it."""
         key = normalize_job_key(key)
         repo = _repo_of_key(key)
         requested_hashes = blob_hashes or frozenset()
@@ -1532,6 +1509,13 @@ class DownloadRegistry:
                     and sorted(set(live.scoped_files)) != sorted(set(scoped_files))
                 ):
                     return False, "scope_file_mismatch"
+                # Same for the table: the live job is fetching a different file set.
+                if (
+                    engram_precision is not _UNSET
+                    and live is not None
+                    and (live.engram_precision or "").upper() != (engram_precision or "").upper()
+                ):
+                    return False, "engram_mismatch"
                 return False, current
             if generation is None:
                 self._generation_seq += 1
@@ -1561,6 +1545,9 @@ class DownloadRegistry:
                     scoped_files = tuple(scoped_files or ()),
                     owner = owner,
                     load_attached = previous.load_attached if previous is not None else False,
+                    engram_precision = (
+                        (engram_precision or None) if engram_precision is not _UNSET else None
+                    ),
                 )
                 if cancel_marker_transport is not None:
                     self._cancel_marker_transports[key] = cancel_marker_transport

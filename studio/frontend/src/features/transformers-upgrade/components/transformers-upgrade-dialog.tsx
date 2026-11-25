@@ -11,9 +11,16 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
-import { PackageIcon } from "@hugeicons/core-free-icons";
+import { ArrowDown01Icon, PackageIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   upgradeDialogActions,
@@ -32,6 +39,12 @@ export function TransformersUpgradeDialog() {
   const upgrade = useTransformersUpgradeDialogStore((s) => s.upgrade);
   const phase = useTransformersUpgradeDialogStore((s) => s.phase);
   const errorMessage = useTransformersUpgradeDialogStore((s) => s.errorMessage);
+  const autoInstallNotice = useTransformersUpgradeDialogStore(
+    (s) => s.autoInstallNotice,
+  );
+  const installBlocked = useTransformersUpgradeDialogStore(
+    (s) => s.installBlocked,
+  );
   const trustRemoteCodeFallback = useTransformersUpgradeDialogStore(
     (s) => s.trustRemoteCodeFallback,
   );
@@ -45,6 +58,7 @@ export function TransformersUpgradeDialog() {
     upgrade,
     phase,
     trustRemoteCodeFallback,
+    installBlocked,
   });
   const installing = phase === "installing";
 
@@ -56,7 +70,8 @@ export function TransformersUpgradeDialog() {
         if (!next && !installing) resolve(false);
       }}
     >
-      <AlertDialogContent className="max-w-lg">
+      {/* A plain max-w loses to the size rule, whose 28rem can't fit a dev version's button row. */}
+      <AlertDialogContent className="sm:!max-w-[calc(34rem*var(--ui-space-scale,1))]">
         <AlertDialogHeader className="min-w-0">
           <div className="flex w-full min-w-0 items-start gap-3">
             <div className="flex size-9 shrink-0 items-center justify-center rounded-full bg-blue-500/10 text-blue-600 dark:text-blue-400">
@@ -69,53 +84,38 @@ export function TransformersUpgradeDialog() {
                   <span className="font-medium text-foreground">
                     {displayName}
                   </span>{" "}
-                  uses the{" "}
-                  <span className="font-mono text-foreground">{modelType}</span>{" "}
-                  architecture, which your installed transformers does not
-                  support yet.{" "}
-                  {installable && fromMain ? (
+                  uses{" "}
+                  <span className="font-mono text-foreground">{modelType}</span>
+                  {installable ? (
                     <>
-                      No transformers release supports it yet, but the
-                      development branch (main) does. Install transformers{" "}
+                      , which needs transformers{" "}
                       <span className="font-medium text-foreground">
                         {version}
-                      </span>{" "}
-                      from main to load it. Development builds are not releases
-                      and can change; the install runs once and loading
-                      continues automatically afterwards.
+                      </span>
+                      {fromMain ? " (development build)" : ""}. Updating takes
+                      about a minute.
                     </>
-                  ) : installable ? (
-                    <>
-                      Install transformers{" "}
-                      <span className="font-medium text-foreground">
-                        {version}
-                      </span>{" "}
-                      from PyPI to load it. The install runs once and can take a
-                      minute; loading continues automatically afterwards.
-                    </>
+                  ) : installBlocked ? (
+                    <>, which needs a newer transformers release.</>
                   ) : devOnly ? (
                     <>
-                      Even the latest transformers release on PyPI does not
-                      support it yet: the architecture is only available on the
-                      transformers development branch (main), whose version
-                      could not be checked right now. Try again later.
+                      , which only the transformers development build supports.
+                      Its version can't be checked right now; try again later.
                     </>
                   ) : (
-                    <>
-                      No released transformers version supports it yet, so it
-                      cannot be loaded.
-                    </>
+                    <>, which no transformers version supports yet.</>
                   )}
-                  {customCode ? (
-                    <>
-                      {" "}
-                      This model also ships its own modeling code; you can
-                      continue and review enabling that custom code instead,
-                      which loads it on the transformers you already have.
-                    </>
-                  ) : null}
+                  {customCode && !installable
+                    ? " You can still load it with the model's own code."
+                    : null}
                 </AlertDialogDescription>
               </div>
+
+              {autoInstallNotice && phase !== "error" ? (
+                <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
+                  {autoInstallNotice}
+                </p>
+              ) : null}
 
               {phase === "error" && errorMessage ? (
                 <p className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-600 dark:text-red-400">
@@ -126,26 +126,35 @@ export function TransformersUpgradeDialog() {
               {installing ? (
                 <p className="flex items-center gap-2 text-xs text-muted-foreground">
                   <Spinner className="size-3.5" />
-                  Installing transformers {version}... This can take a minute.
+                  Updating transformers to {version}...
                 </p>
               ) : null}
             </div>
           </div>
         </AlertDialogHeader>
 
-        <AlertDialogFooter>
+        <AlertDialogFooter className="sm:flex-wrap">
           <AlertDialogCancel disabled={installing}>Cancel</AlertDialogCancel>
           {installable ? (
             <>
               {customCode ? (
-                // Offered beside Install: installing activates the 16-bit sidecar, so this is
-                // the only way a 4-bit run on this model can start.
-                <AlertDialogAction
-                  className="bg-transparent text-foreground hover:bg-accent"
-                  onClick={() => resolve(true)}
-                >
-                  Continue with custom code
-                </AlertDialogAction>
+                // Installing forces 16-bit, so this is a 4-bit run's only path; the code scan follows.
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild={true}>
+                    <Button variant="outline">
+                      Other
+                      <HugeiconsIcon
+                        icon={ArrowDown01Icon}
+                        className="size-4"
+                      />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end" className="w-auto">
+                    <DropdownMenuItem onSelect={() => resolve(true)}>
+                      Continue with custom code
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
               ) : null}
               <AlertDialogAction
                 disabled={installing}
@@ -159,12 +168,12 @@ export function TransformersUpgradeDialog() {
                 {installing ? (
                   <>
                     <Spinner className="size-4" />
-                    Installing...
+                    Updating...
                   </>
                 ) : phase === "error" ? (
-                  "Retry install"
+                  "Retry update"
                 ) : (
-                  `Install transformers ${version}`
+                  `Update transformers to ${version}`
                 )}
               </AlertDialogAction>
             </>

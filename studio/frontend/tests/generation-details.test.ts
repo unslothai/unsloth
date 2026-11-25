@@ -87,9 +87,7 @@ test("the time left follows the rate so far and drops out under a second", () =>
   assert.equal(formatPrefillTimeLeft(prefill({ processed: 18500, total: 18880, cached: 0, tokPerS: 1400 }), t), null);
 });
 
-// llama-server's own [processed, time_ms] samples for two prompts. The first, 30,382 tokens through
-// llama-server directly, ended at 34,847 ms; the second, 27,268 tokens through Studio, ended at
-// 18,229 ms and its first batch was slow (warm-up), which a fit through the first sample misreads.
+// Prefill samples: Studio's first batch is slow warm-up, so fitting its first sample misleads.
 const LONG_PROMPTS = [
   {
     total: 30382,
@@ -199,6 +197,25 @@ test("a compaction frame reads as its own phase and survives a persisted run", (
   assert.equal(generationChunkCountsTowardTiming(normalized), false);
 });
 
+test("a failed /compact frame carries its reason and ends the compacting status", () => {
+  assert.deepEqual(readGenerationProgress({ phase: "compaction_failed", reason: "cut_off" }), {
+    phase: "compaction_failed",
+    reason: "cut_off",
+  });
+  assert.deepEqual(readGenerationProgress({ phase: "compaction_failed", reason: "<b>" }), {
+    phase: "compaction_failed",
+    reason: "error",
+  });
+  const adapter = readSrc("features/chat/api/chat-adapter.ts");
+  assert.match(
+    adapter,
+    /update\?\.phase === "compaction_failed"\) \{\s*runtime\.setLiveCompacting\(liveThreadKey\(serverCancel\), false\);\s*compactionFailure = update\.reason;/,
+  );
+  assert.match(adapter, /if \(compactionFailure\) \{\s*toast\.warning\("This chat was not compacted"/);
+  const provider = readSrc("features/chat/runtime-provider.tsx");
+  assert.match(provider, /progress\?\.phase === "compaction_failed"\) \{\s*store\.setLiveCompacting\(threadId, false\);/);
+});
+
 test("compaction shows until the pass's context_truncated or first prefill sample, live or followed", async () => {
   await import("./helpers/store-stubs/settings-http.ts");
   await import("./helpers/store-stubs/chat-history-storage.ts");
@@ -243,11 +260,12 @@ test("a tool result drops the last pass's figures, live or followed, so the next
 
 test("the status line comes back between tool rounds, after the finished call", () => {
   const thread = readSrc("components/assistant-ui/thread.tsx");
-  const indicator = thread.slice(thread.indexOf("const NextRoundIndicator"), thread.indexOf("// Mounted only under a running reply"));
-  assert.match(indicator, /betweenToolRounds\(message\.status\?\.type === "running", message\.content\)/);
-  assert.match(indicator, /<GeneratingStatus \/>/);
+  const indicator = thread.slice(thread.indexOf("const PartsWithRoundTail"), thread.indexOf("// Mounted only under a running reply"));
+  assert.match(indicator, /runningReplyTail\(message\.status\?\.type === "running", message\.content\)/);
+  assert.match(indicator, /tail === 2 && \(\s*<div data-slot="next-round-indicator" className="mt-2">\s*<GeneratingStatus \/>/);
   // After the parts, so it sits under the call it follows rather than above the reply.
-  assert.match(thread, /<MessagePrimitive\.Parts components=\{ASSISTANT_PART_COMPONENTS\} \/>\s*<NextRoundIndicator \/>/);
+  assert.match(indicator, /\{children\}\s*\{tail !== 0 && \(/);
+  assert.match(thread, /<PartsWithRoundTail>\s*<MessagePrimitive\.Parts\s+components=\{ASSISTANT_PART_COMPONENTS\}/);
 });
 
 test("a finished call shows the next round's status, past the sources a recovered reply ends with", () => {
@@ -413,7 +431,7 @@ test("the live line follows the branch picker, so its growing text never moves t
 test("the live line gates on the preference before any assistant-ui selector", () => {
   const line = readSrc("components/assistant-ui/live-generation-line.tsx");
   const gate = line.slice(line.indexOf("export const LiveGenerationLine"), line.indexOf("const RunningGate"));
-  assert.match(gate, /return enabled \? <RunningGate \/> : null;/);
+  assert.match(gate, /return details \|\| realtime \? <RunningGate realtime=\{realtime\} \/> : null;/);
   assert.doesNotMatch(gate, /useAuiState/);
 });
 
@@ -473,6 +491,15 @@ test("the placement readout names expert weights and gives both memory figures",
   );
   assert.equal(loadedPlacementFrom({ is_gguf: false, offload_total_layers: 31 }), null);
   assert.equal(loadedPlacementFrom({ is_gguf: true }), null);
+});
+
+test("the placement row needs no setting", () => {
+  // Source text: the row cannot be mounted here, since it pulls in the chat feature's React tree.
+  const row = readSrc("features/model-picker/components/loaded-placement-row.tsx");
+  assert.doesNotMatch(row, /showGenerationDetails|useChatPreferencesStore/);
+  assert.match(row, /if \(placement === null\) return null;/);
+  assert.equal(en.settings.chat.showGenerationDetails, "Detailed speed info");
+  assert.doesNotMatch(en.settings.chat.showGenerationDetailsDescription, /layers/);
 });
 
 test("a GPU build that fell back to the CPU is not reported as GPU layers", () => {

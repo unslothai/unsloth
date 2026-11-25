@@ -7,6 +7,7 @@ import importlib.util
 import json
 import os
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -840,8 +841,7 @@ class TestStructuredFindingsForDialog:
         )
 
     def test_scan_route_reports_all_scan_created_repos(self, monkeypatch):
-        """A LoRA scan that pulls both adapter and base into cache reports every created
-        repo, so a decline purges all of them, not just the primary."""
+        """A LoRA scan's created repos include the base, so a decline must purge all of them."""
         adapter, base = "someone/lora-adapter", "someone/base-model"
         payload = self._run_scan_route(
             monkeypatch, adapter = adapter, base = base, in_cache = lambda _n: False
@@ -1146,8 +1146,7 @@ class TestStructuredFindingsForDialog:
         assert payload["scan_created_repos"] == []
 
     def test_scan_route_purges_remote_adapter_downloaded_by_base_resolution(self, monkeypatch):
-        """A remote adapter counts as scan-created, since base resolution caches it, so decline
-        purges it."""
+        """A remote adapter is scan-created when base resolution caches it, so decline purges it."""
         import asyncio
 
         import routes.models as models_route
@@ -1263,13 +1262,43 @@ class TestIsTrustedOrgRepo:
                 assert is_trusted_org_repo("unsloth/maybe-real") is False
 
     def test_offline_trusts_shape_without_hub(self, monkeypatch):
-        monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+        import huggingface_hub.constants as hub_constants
+
+        monkeypatch.setattr(hub_constants, "HF_HUB_OFFLINE", True)
         clear_cache()
         with patch("huggingface_hub.HfApi") as Api:
             assert is_trusted_org_repo("unsloth/Local-Cached") is True
             assert is_trusted_org_repo("nvidia/Nemotron-H-x") is True
             assert is_trusted_org_repo("evil/x") is False
             Api.assert_not_called()
+
+    def test_studio_only_offline_spelling_still_verifies(self, monkeypatch):
+        """huggingface_hub does not strip, so " TRUE " leaves the Hub client online and the load could fetch."""
+        import huggingface_hub.constants as hub_constants
+
+        monkeypatch.setattr(hub_constants, "HF_HUB_OFFLINE", False)
+        monkeypatch.setenv("HF_HUB_OFFLINE", " TRUE ")
+        clear_cache()
+        with patch(
+            "huggingface_hub.HfApi", _fake_hfapi("someoneelse/x", author = "someoneelse")
+        ) as Api:
+            assert is_trusted_org_repo("unsloth/x") is False
+            Api.return_value.model_info.assert_called_once()
+
+    def test_offline_verdict_is_not_reused_online(self, monkeypatch):
+        import huggingface_hub.constants as hub_constants
+        from utils.utils import force_hf_offline
+
+        monkeypatch.setattr(hub_constants, "HF_HUB_OFFLINE", False)
+        clear_cache()
+        with patch(
+            "huggingface_hub.HfApi", _fake_hfapi("someoneelse/x", author = "someoneelse")
+        ) as Api:
+            with force_hf_offline():
+                assert is_trusted_org_repo("unsloth/x") is True
+            Api.assert_not_called()
+            assert is_trusted_org_repo("unsloth/x") is False
+            Api.return_value.model_info.assert_called_once()
 
     def test_token_failure_does_not_poison_authed_lookup(self):
         clear_cache()
@@ -1971,15 +2000,24 @@ class TestScannerCoversAllExecutableCode:
 
 
 class TestDiscardRemoteCodeDownload:
-    @staticmethod
-    def _fake_cache(filenames):
+    # The route narrows its scan to the one repo, as it does an HFCacheInfo: a dataclass holding hashable repos.
+    class _CachedRepo(SimpleNamespace):
+        __hash__ = object.__hash__
+
+    @dataclass
+    class _CacheScan:
+        repos: list
+        delete_revisions: MagicMock
+
+    @classmethod
+    def _fake_cache(cls, filenames):
         files = [
             SimpleNamespace(file_name = fn, file_path = f"/snap/{fn}", blob_path = f"/blob/{fn}")
             for fn in filenames
         ]
         rev = SimpleNamespace(commit_hash = "deadbeef", files = files)
-        repo = SimpleNamespace(repo_type = "model", repo_id = "evil/repo", revisions = [rev])
-        return SimpleNamespace(repos = [repo], delete_revisions = MagicMock())
+        repo = cls._CachedRepo(repo_type = "model", repo_id = "evil/repo", revisions = [rev])
+        return cls._CacheScan(repos = [repo], delete_revisions = MagicMock())
 
     def _run(
         self,

@@ -217,6 +217,37 @@ def test_vram_is_tight():
     assert not pup.vram_is_tight(None, None)
 
 
+def test_accelerator_memory_counts_what_the_hip_figure_misses(monkeypatch):
+    """Linux ROCm: the kernel's free figure wins when it is lower than HIP's, which misses Vulkan users."""
+    import contextlib
+    import types
+
+    import torch
+
+    from core.inference import diffusion_device
+    from utils.hardware import hardware
+
+    mib = 1024 * 1024
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(
+        diffusion_device, "diffusion_device_scope", lambda o: contextlib.nullcontext()
+    )
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda *a: (11_802 * mib, 12_272 * mib))
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    monkeypatch.setattr(
+        torch.cuda, "get_device_properties", lambda i: types.SimpleNamespace(integrated = False)
+    )
+    monkeypatch.setattr(hardware, "rocm_windows_free_is_untrusted", lambda: False)
+    monkeypatch.setattr(hardware, "rocm_linux_kernel_free_mib", lambda *a, **k: 5_454)
+    free, total, device = pup._accelerator_memory_mib()
+    assert (free, total, device) == (5_454, 12_272, "cuda")
+    assert pup.vram_is_tight(free, total)
+    monkeypatch.setattr(hardware, "rocm_linux_kernel_free_mib", lambda *a, **k: None)
+    assert pup._accelerator_memory_mib()[0] == 11_802
+    monkeypatch.setattr(hardware, "rocm_linux_kernel_free_mib", lambda *a, **k: 12_000)
+    assert pup._accelerator_memory_mib()[0] == 11_802
+
+
 # ── paths and fallbacks ─────────────────────────────────────────────────────────────────────────────────────────────
 def test_env_override_paths(monkeypatch, tmp_path):
     model = tmp_path / "pup.gguf"
@@ -339,6 +370,18 @@ def test_cancel_propagates(runnable):
             ["a"], family_name = "flux.3-klein", enhance_prompt = None, cancel_event = event
         )
     assert pup.progress() is None
+
+
+def test_a_stopped_ticket_cancels_its_own_enhancement(runnable):
+    """A queued job's Stop reaches its captioning, not only the denoise after it."""
+    from core.inference.generation_ticket import GenerationTicket, generation_ticket
+
+    ticket = GenerationTicket()
+    ticket.stop()
+    with generation_ticket(ticket), pytest.raises(pup.UpsamplerCancelledError):
+        pup.enhance_for_generation(["a"], family_name = "flux.3-klein", enhance_prompt = None)
+    out = pup.enhance_for_generation(["a"], family_name = "flux.3-klein", enhance_prompt = None)
+    assert out.status == "applied"
 
 
 def _png_url(size = (640, 480)):
@@ -1679,7 +1722,8 @@ def test_an_override_still_beats_a_cached_quant(fake_hub, monkeypatch, tmp_path)
 def test_no_repo_download_beside_an_override(routes, monkeypatch):
     client, backend, saved = routes
     started = []
-    monkeypatch.setattr(pup, "status", lambda: {"override": True})
+    monkeypatch.setenv(pup.ENV_MODEL_OVERRIDE, "/models/pup.gguf")
+    monkeypatch.setattr(pup, "status", lambda: pytest.fail("status() read on the download route"))
     monkeypatch.setattr(pup, "start_download", lambda token: started.append(token) or "dl")
     r = client.post("/api/inference/images/prompt-upsampler/download")
     assert r.status_code == 409 and "UNSLOTH_FLUX3_UPSAMPLER_GGUF" in r.text and started == []

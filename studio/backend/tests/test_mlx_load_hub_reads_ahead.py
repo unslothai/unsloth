@@ -76,7 +76,7 @@ def test_nothing_starts_offline_or_for_a_local_path(hub, monkeypatch, repo, offl
 def test_an_existing_relative_checkpoint_is_not_read_from_the_hub(hub, monkeypatch, tmp_path):
     (tmp_path / "outputs" / "private-model").mkdir(parents = True)
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(mc, "_env_offline", lambda: False)
+    monkeypatch.setattr(mc, "hf_env_offline", lambda: False)
     calls = []
     monkeypatch.setattr("huggingface_hub.model_info", lambda repo, **kwargs: calls.append(repo))
     tv.read_activation_files_ahead("outputs/private-model", "tok")
@@ -89,7 +89,7 @@ def test_model_info_ahead_fills_the_open_scope(monkeypatch):
     calls = []
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
-    monkeypatch.setattr(mc, "_env_offline", lambda: False)
+    monkeypatch.setattr(mc, "hf_env_offline", lambda: False)
     monkeypatch.setattr(
         "huggingface_hub.model_info",
         lambda repo, **kwargs: calls.append(repo) or SimpleNamespace(id = repo),
@@ -109,7 +109,7 @@ def test_a_failed_read_ahead_leaves_the_answer_to_the_probe(monkeypatch):
             raise outcome
         return outcome
 
-    monkeypatch.setattr(mc, "_env_offline", lambda: False)
+    monkeypatch.setattr(mc, "hf_env_offline", lambda: False)
     monkeypatch.setattr("huggingface_hub.model_info", model_info)
     with mc.shared_hub_model_info():
         mc.read_hub_model_info_ahead("org/model", None).join()

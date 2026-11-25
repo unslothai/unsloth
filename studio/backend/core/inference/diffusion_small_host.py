@@ -51,6 +51,14 @@ def host_ram_check_disabled() -> bool:
     return _env(HOST_RAM_CHECK_ENV) in ("0", "off", "false", "no")
 
 
+# "0": explicit transformer_quant none / off on a small host falls back to int8; default keeps it memory-mapped, cast per call.
+DENSE_DENOISER_ENV = "UNSLOTH_DIFFUSION_SMALL_HOST_DENSE"
+
+
+def dense_denoiser_enabled() -> bool:
+    return _env(DENSE_DENOISER_ENV) not in ("0", "off", "false", "no")
+
+
 # Int8 spill: the route's int8 DiT weights live in a memory-mapped scratch file, not anonymous host RAM.
 # Auto only when the in-RAM route does not fit; 0 = off, 1 = always.
 SPILL_ENV = "UNSLOTH_DIFFUSION_SMALL_HOST_SPILL"
@@ -355,6 +363,17 @@ def stored_components(snapshot: Any) -> dict[str, StoredComponent]:
     return out
 
 
+def small_host_components(
+    stored: dict[str, StoredComponent], supplied: Any = ()
+) -> dict[str, StoredComponent]:
+    """The components a pipeline load prices for host RAM: the snapshot's stored components (``stored_components``)
+    minus the ones the load supplies from elsewhere (pre-built pipe kwargs: a GGUF / pre-quantized denoiser, a hosted
+    encoder or VAE). The loader's small-host decision and the float16 encoder pick both call this, so they price the
+    same set."""
+    skip = set(supplied or ())
+    return {name: comp for name, comp in stored.items() if name not in skip}
+
+
 def resolve_snapshot_dir(repo_or_dir: Any, cache_dir: Any = None) -> Optional[Path]:
     """Local diffusers dir for a repo id (cache only) or path."""
     try:
@@ -435,6 +454,92 @@ class SmallHostDecision:
     refuse: Optional[str] = None
     int8_spill: bool = False
     spill_route_host_mib: int = 0
+    # the denoiser stays memory-mapped at its stored dtype, cast per call (an explicit transformer_quant none / off)
+    dense_denoiser: bool = False
+
+
+def small_host_ineligible(compute_dtype: Any, *, device: str) -> Optional[str]:
+    """Why the route cannot engage whatever the weights hold, else None; known before any download."""
+    if small_host_disabled():
+        return f"{SMALL_HOST_ENV}=0"
+    if str(device) != "cuda":
+        return "not a CUDA load"
+    compute = _dtype_name(compute_dtype)
+    if compute not in ("float16", "float32"):
+        return f"compute dtype {compute} needs no conversion"
+    return None
+
+
+def _converted_components(components: dict[str, StoredComponent]) -> dict[str, StoredComponent]:
+    """The components a dense load converts on the host: large bf16 ones."""
+    return {
+        name: comp
+        for name, comp in components.items()
+        if comp.dtype == "bfloat16" and comp.mib >= _STREAM_MIN_MIB
+    }
+
+
+def _dense_mib(converted: dict[str, StoredComponent], compute: str) -> int:
+    return int(
+        sum(c.mib * _itemsize(compute) / _itemsize(c.dtype) for c in converted.values())
+        * _CONVERT_MARGIN
+    )
+
+
+def _dense_commit_mib(
+    converted: dict[str, StoredComponent], dense: int, pread_libraries: tuple[str, ...]
+) -> int:
+    # Windows charges each copy-on-write safetensors view to commit until the load ends: stored bytes plus the
+    # converted copy; a component read through ``pread`` (``pread_libraries``) holds no view. Linux / macOS do not
+    # enforce commit.
+    return dense + int(
+        sum(c.mib for c in converted.values() if c.library not in pread_libraries) * _CONVERT_MARGIN
+    )
+
+
+def _dense_fits(
+    dense: int,
+    dense_commit: int,
+    reserve: int,
+    host_available_mib: Optional[int],
+    commit: Optional[int],
+) -> bool:
+    commit_fits = commit is None or dense_commit + reserve <= commit
+    return (
+        host_available_mib is not None
+        and dense + reserve <= int(host_available_mib)
+        and commit_fits
+    )
+
+
+def dense_load_fits(
+    components: dict[str, StoredComponent],
+    compute_dtype: Any,
+    *,
+    host_total_mib: Optional[int],
+    host_available_mib: Optional[int],
+    host_commit_mib: Optional[int] = None,
+    pread_libraries: tuple[str, ...] = (),
+) -> tuple[Optional[bool], int]:
+    """(fits, dense MiB): whether a dense load of ``components`` at ``compute_dtype`` fits host RAM, priced exactly as
+    ``decide_small_host`` prices it (same conversion margin, reserve and commit rule). fits is None when host RAM is
+    unreadable; True when nothing converts."""
+    compute = _dtype_name(compute_dtype)
+    converted = _converted_components(components)
+    if not converted:
+        return True, 0
+    dense = _dense_mib(converted, compute)
+    if host_available_mib is None:
+        return None, dense
+    commit = None if host_commit_mib is None else int(host_commit_mib)
+    reserve = host_reserve_mib(host_total_mib)
+    return _dense_fits(
+        dense,
+        _dense_commit_mib(converted, dense, pread_libraries),
+        reserve,
+        host_available_mib,
+        commit,
+    ), dense
 
 
 def decide_small_host(
@@ -448,56 +553,43 @@ def decide_small_host(
     host_commit_mib: Optional[int] = None,
     pread_libraries: tuple[str, ...] = (),
     spill_free_mib: Optional[int] = None,
+    dense_denoiser: bool = False,
 ) -> SmallHostDecision:
     """Whether this pipeline load takes the small-host route. Only CUDA loads converting large bf16 components
     (fp16 / fp32 compute) change; same-dtype loads already stay memory-mapped. ``host_commit_mib`` (Windows)
     also routes a dense load whose commit need does not fit: on Windows commit exhaustion is an access
-    violation in native code, not a Python error (#13432, #14513). ``spill_free_mib``: ``spill_capacity_mib``, None = no spill."""
-    if small_host_disabled():
-        return SmallHostDecision(False, f"{SMALL_HOST_ENV}=0")
-    if str(device) != "cuda":
-        return SmallHostDecision(False, "not a CUDA load")
+    violation in native code, not a Python error (#13432, #14513). ``spill_free_mib``: ``spill_capacity_mib``, None = no spill.
+    ``dense_denoiser``: the caller asked for the unquantised denoiser, so the route keeps it memory-mapped at its
+    stored dtype (cast per call) instead of storing it as int8."""
+    skip = small_host_ineligible(compute_dtype, device = device)
+    if skip:
+        return SmallHostDecision(False, skip)
     compute = _dtype_name(compute_dtype)
-    if compute not in ("float16", "float32"):
-        return SmallHostDecision(False, f"compute dtype {compute} needs no conversion")
-    converted = {
-        name: comp
-        for name, comp in components.items()
-        if comp.dtype == "bfloat16" and comp.mib >= _STREAM_MIN_MIB
-    }
+    converted = _converted_components(components)
     if not converted:
         return SmallHostDecision(False, "no large bf16 component to convert")
-    dense = int(
-        sum(c.mib * _itemsize(compute) / _itemsize(c.dtype) for c in converted.values())
-        * _CONVERT_MARGIN
-    )
-    # encoders stay memory-mapped except fp32-kept layers; a DiT lands as int8
+    dense = _dense_mib(converted, compute)
+    # encoders stay memory-mapped except fp32-kept layers and a token embedding widened to float32
+    # (``prepare_streamed_encoder_`` converts the first parameter's owner on the host: 3.8 GB for Qwen3.5-9B); a DiT
+    # lands as int8, or memory-mapped like an encoder
     route = sum(
         c.mib // 2
-        if n in INT8_DENOISER_NAMES
-        else c.kept_fp32_mib * 4 // _itemsize(c.dtype)
+        if n in INT8_DENOISER_NAMES and not dense_denoiser
+        else c.kept_fp32_mib * 4 // _itemsize(c.dtype) + _widened_embed_mib(c, compute)
         if n.startswith("text_encoder")
+        else c.kept_fp32_mib * 4 // _itemsize(c.dtype)
+        if n in INT8_DENOISER_NAMES
         else c.mib * _itemsize(compute) // _itemsize(c.dtype)
         for n, c in converted.items()
     )
     reserve = host_reserve_mib(host_total_mib)
-    # Windows charges each copy-on-write safetensors view to commit until the load ends: stored bytes plus the
-    # converted copy; a component read through ``pread`` (``pread_libraries``) holds no view. Linux / macOS do not
-    # enforce commit.
-    dense_commit = dense + int(
-        sum(c.mib for c in converted.values() if c.library not in pread_libraries) * _CONVERT_MARGIN
-    )
+    dense_commit = _dense_commit_mib(converted, dense, pread_libraries)
     storage = {name: comp.dtype for name, comp in converted.items()}
     forced = small_host_forced()
     if host_available_mib is None and not forced:
         return SmallHostDecision(False, "host RAM unreadable", dense_host_mib = dense)
     commit = None if host_commit_mib is None else int(host_commit_mib)
-    commit_fits = commit is None or dense_commit + reserve <= commit
-    fits = (
-        host_available_mib is not None
-        and dense + reserve <= int(host_available_mib)
-        and commit_fits
-    )
+    fits = _dense_fits(dense, dense_commit, reserve, host_available_mib, commit)
     commit_note = (
         ""
         if commit is None
@@ -526,8 +618,10 @@ def decide_small_host(
             route,
             **extra,
         )
-    spill, spill_route = _spill_choice(
-        converted, compute, route, reserve, host_available_mib, spill_free_mib
+    spill, spill_route = (
+        (False, route)
+        if dense_denoiser
+        else _spill_choice(converted, compute, route, reserve, host_available_mib, spill_free_mib)
     )
     need = spill_route if spill else route
     refuse = None
@@ -554,6 +648,7 @@ def decide_small_host(
         refuse = refuse,
         int8_spill = spill,
         spill_route_host_mib = spill_route if spill else 0,
+        dense_denoiser = bool(dense_denoiser),
         **extra,
     )
 
@@ -573,13 +668,21 @@ def _spill_choice(
     short = available is not None and route + reserve > int(available)
     if not (short or spill_forced()) or dit + _SPILL_DISK_MARGIN_MIB > int(spill_free_mib):
         return False, route
-    # route omits the converted encoder embedding
+    # route holds a widened encoder embedding only; a same-width one joins here
     embed = sum(
         c.embed_mib * _itemsize(compute) // _itemsize(c.dtype)
         for n, c in converted.items()
-        if n.startswith("text_encoder")
+        if n.startswith("text_encoder") and not _widened_embed_mib(c, compute)
     )
     return True, route - dit + embed + _SPILL_TRANSIENT_MIB
+
+
+def _widened_embed_mib(comp: StoredComponent, compute: str) -> int:
+    """Host MiB of an encoder's token embedding converted to a wider ``compute`` dtype (bf16 -> float32 doubles it,
+    past what the reserve absorbs); 0 at the same width, where the reserve covers the copy as measured on FLUX.2."""
+    if _itemsize(compute) <= _itemsize(comp.dtype):
+        return 0
+    return comp.embed_mib * _itemsize(compute) // _itemsize(comp.dtype)
 
 
 def _refusal(need: int, reserve: int, available: Optional[int], what: str) -> str:
@@ -659,6 +762,20 @@ def int8_act_device_ok(device: Any) -> bool:
     return ok
 
 
+def enable_int8_act_(module: Any) -> int:
+    """Let every int8-stored Linear of ``module`` run W8A8 (an explicit int8 request on an fp16-only card); returns
+    how many. The per-call gate is unchanged: float32 CUDA input on sm_75 with an exact ``_int_mm``, else dequantise.
+    ``UNSLOTH_DIFFUSION_SMALL_HOST_INT8_ACT=0`` keeps them dequantised."""
+    if int8_act_disabled() or _INT8_CLS is None:
+        return 0
+    count = 0
+    for sub in module.modules():
+        if isinstance(sub, _INT8_CLS):
+            sub.act_int8 = True
+            count += 1
+    return count
+
+
 def _int8_linear_class():
     import torch
     import torch.nn.functional as F
@@ -698,10 +815,13 @@ def _int8_linear_class():
             return y.reshape(*x.shape[:-1], self.out_features)
 
         def forward(self, x):
+            # Eager-only: mutating a global int under Dynamo recompiles every call.
+            count = not torch.compiler.is_compiling()
             if self._int8_act_ok(x):
-                _INT8_ACT_COUNTS["int8_act"] += 1
+                if count:
+                    _INT8_ACT_COUNTS["int8_act"] += 1
                 return self._forward_int8_act(x)
-            if self.act_int8:
+            if self.act_int8 and count:
                 _INT8_ACT_COUNTS["dequant"] += 1
             scale = self.scale
             if scale.dtype == x.dtype:
@@ -823,9 +943,9 @@ def cast_resident_(module: Any, device: Any, compute_dtype: Any) -> None:
 
 
 def prepare_streamed_encoder_(module: Any, compute_dtype: Any) -> int:
-    """Layerwise-cast a memory-mapped bf16 encoder: Linear / Embedding weights keep their stored dtype, everything
-    else converts now, including the owner of the first float parameter (``module.dtype`` sets the prompt-embedding
-    dtype). Returns the MiB left memory-mapped."""
+    """Layerwise-cast a memory-mapped bf16 encoder (or a denoiser kept dense, ``dense_denoiser``): Linear / Embedding
+    weights keep their stored dtype, everything else converts now, including the owner of the first float parameter
+    (``module.dtype`` sets the prompt-embedding dtype). Returns the MiB left memory-mapped."""
     import torch
     from diffusers.hooks import apply_layerwise_casting
 
@@ -1030,6 +1150,18 @@ def mark(pipe: Any, info: dict) -> None:
 
 def engaged_on(pipe: Any) -> Optional[dict]:
     return getattr(pipe, SMALL_HOST_ATTR, None)
+
+
+MAPPED_DENOISER_PREFIX = "memory-mapped"
+
+
+def mapped_denoiser(pipe: Any) -> bool:
+    """Whether the route kept a denoiser memory-mapped at its stored dtype (cast per call)."""
+    info = engaged_on(pipe) or {}
+    return any(
+        name in INT8_DENOISER_NAMES and str(value).startswith(MAPPED_DENOISER_PREFIX)
+        for name, value in (info.get("components") or {}).items()
+    )
 
 
 ENCODER_PREFETCH_ENV = "UNSLOTH_DIFFUSION_SMALL_HOST_PREFETCH"

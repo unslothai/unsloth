@@ -305,6 +305,10 @@ def test_load_checkpoint_repairs_legacy_cache_identity_without_rewriting_adapter
         / "0123456789abcdef"
     )
     snapshot.mkdir(parents = True)
+    # The repo id is restored only for a base that is in a Hub cache, not one merely named like a snapshot.
+    hf_cache_settings = types.ModuleType("utils.hf_cache_settings")
+    hf_cache_settings.known_hf_hub_caches = lambda: [tmp_path / "cache"]
+    monkeypatch.setitem(sys.modules, "utils.hf_cache_settings", hf_cache_settings)
     checkpoint = tmp_path / "checkpoint-100"
     checkpoint.mkdir()
     adapter_path = checkpoint / "adapter_config.json"
@@ -444,9 +448,8 @@ def test_is_device_map_infeasible_matches_by_class_name(monkeypatch):
 
 
 def test_planner_refusal_retries_on_the_single_device_loader(monkeypatch, tmp_path):
-    """The planner budgets from memory read before this process opens a context, so a
-    training or chat job holding the other cards can make it refuse a model the old
-    single-device load still fits. That was a working export before the switch."""
+    """The planner budgets from memory read before this process opens a context, so other jobs on
+    the cards can make it refuse a model the single-device load fits."""
     mod = _export_mod(monkeypatch)
 
     class DeviceMapInfeasible(RuntimeError):

@@ -54,6 +54,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Callable, Union
 from datasets import Dataset
 from core.training.eval_dataset import STREAMING_EVAL_MAX_SAMPLES, evaluation_enabled
+from core.training import parallel_launch as _parallel_launch
+from core.training.resume import checked_resume_checkpoint
 from utils.datasets.audio_decode import ensure_audio_decoding
 from utils.datasets.audio_rows import (
     audio_transcription_messages,
@@ -73,7 +75,7 @@ from utils.third_party_source import (
     import_sparktts_module,
 )
 
-from utils.models import is_vision_model, detect_audio_type_checked
+from utils.models import is_vision_model, audio_vlm_multimodal_lm_checked, detect_audio_type_checked
 from utils.models.diffusion_lm import (
     diffusion_lm_profile_for_model,
     loaded_diffusion_profile,
@@ -81,9 +83,9 @@ from utils.models.diffusion_lm import (
 )
 from utils.models.model_identity import restore_hf_cache_repo_identity
 from utils.models.unsloth_mirror import unsloth_public_mirror
-from utils.models.model_config import _env_offline
+from utils.utils import hf_env_offline
 from utils.datasets import format_and_template_dataset
-from utils.datasets.cells import csv_as_text_kwargs
+from utils.datasets.cells import cell_text, csv_as_text_kwargs
 from utils.datasets.chat_templates import get_training_chat_template
 from utils.datasets.completion_masking import (
     apply_completion_masking,
@@ -100,6 +102,7 @@ from utils.datasets.pretokenized import (
 )
 from utils.datasets.raw_text import prepare_raw_text_dataset, resolve_column_names
 from utils.paths import (
+    EVAL_SPLITS,
     dataset_files_in_dir,
     ensure_dir,
     resolve_dataset_path,
@@ -116,7 +119,12 @@ from .training import (
     should_use_mlx_training_backend,
 )
 
-from .dataset_bounds import bound_dataset_rows, world_size_env_report, world_size_from_env
+from .dataset_bounds import (
+    bound_dataset_rows,
+    slice_dataset_rows,
+    world_size_env_report,
+    world_size_from_env,
+)
 
 logger = get_logger(__name__)
 
@@ -180,6 +188,16 @@ def _embedding_module_path(model, name: str):
     return next((path for path, m in model.named_modules() if m is module and path), None)
 
 
+def _block_swap_engaged(trainer) -> Any:
+    """The run's offload_layers as the fork veto reads it. "auto" offloads nothing when the model fits, so it
+    counts only once a swapper is attached; a fixed count stands as asked."""
+    layers = getattr(trainer, "_offload_layers", 0)
+    if layers != "auto":
+        return layers
+    swapper = getattr(getattr(trainer, "model", None), "_unsloth_block_swap", None)
+    return layers if swapper is not None else 0
+
+
 def _tokenizer_blocks_map_workers(tokenizer) -> bool:
     """True when `dataset_num_proc` workers cannot receive this tokenizer. dill pickles a remote-code
     tokenizer class by value (transformers 5.5 does not set its module on the parent package), dragging
@@ -227,6 +245,16 @@ def _drop_hf_stdout_callbacks(trainer) -> None:
 
 # These load_model branches force load_in_4bit=False: the base is 16-bit or wider (bicodec fp32).
 _FORCED_16BIT_AUDIO_TYPES = frozenset({"csm", "whisper", "bicodec", "dac"})
+
+
+def _audio_vlm_auto_model_kwargs(multimodal: bool) -> dict:
+    """No vision tower (LFM3-Audio): the default load builds a backbone with no LM head, so use Chat's class."""
+    if not multimodal:
+        return {}
+    import transformers
+
+    auto_model = getattr(transformers, "AutoModelForMultimodalLM", None)
+    return {"auto_model": auto_model} if auto_model is not None else {}
 
 
 def _bitsandbytes_allows_4bit() -> bool:
@@ -559,6 +587,9 @@ class UnslothTrainer:
 
         self._lock = threading.Lock()
 
+    def _remember_model_source(self, load_name, revision, local_files_only) -> None:
+        self._model_source = (load_name, revision, bool(local_files_only))
+
     def pre_detect_and_load_tokenizer(
         self,
         model_name: str,
@@ -583,6 +614,7 @@ class UnslothTrainer:
             model_revision,
             load_in_4bit,
         )
+        self._remember_model_source(model_load_name or model_name, model_revision, local_files_only)
 
         if hf_token:
             os.environ["HF_TOKEN"] = hf_token
@@ -1010,7 +1042,13 @@ class UnslothTrainer:
                 )
 
             def on_step_end(self, args, state, control, **kwargs):
-                if trainer_ref.should_stop:
+                stop = trainer_ref.should_stop
+                if _parallel_launch.is_multi_process():
+                    # Every rank acts on rank 0's stop so all leave the loop at the same step.
+                    stop, save = _parallel_launch.sync_stop(stop, trainer_ref.save_on_stop)
+                    if stop:
+                        trainer_ref.should_stop, trainer_ref.save_on_stop = True, save
+                if stop:
                     logger.info(f"Stop detected at step {state.global_step}\n")
                     control.should_training_stop = True
                     return control
@@ -1106,11 +1144,18 @@ class UnslothTrainer:
         label = "",
     ):
         """Save model after training and update progress. Used by all training branches."""
+        # Saves are collective (FSDP2 gathers on every rank): all ranks must take the same save path.
+        main_rank = _parallel_launch.is_main_rank()
+        if _parallel_launch.is_multi_process():
+            self.should_stop, self.save_on_stop = _parallel_launch.sync_stop(
+                self.should_stop, self.save_on_stop
+            )
         if self.should_stop and self.save_on_stop:
             self.trainer._save_checkpoint(self.trainer.model, trial = None)
             self.trainer.save_model()
-            self.tokenizer.save_pretrained(output_dir)
-            self._patch_adapter_config(output_dir)
+            if main_rank:
+                self.tokenizer.save_pretrained(output_dir)
+                self._patch_adapter_config(output_dir)
             msg = f"{label} training stopped" if label else "Training stopped"
             logger.info(f"\n{msg}. Model saved to {output_dir}\n")
             self._update_progress(
@@ -1125,8 +1170,9 @@ class UnslothTrainer:
             self._update_progress(is_training = False, status_message = "Training cancelled.")
         else:
             self.trainer.save_model()
-            self.tokenizer.save_pretrained(output_dir)
-            self._patch_adapter_config(output_dir)
+            if main_rank:
+                self.tokenizer.save_pretrained(output_dir)
+                self._patch_adapter_config(output_dir)
             msg = f"{label} training completed" if label else "Training completed"
             logger.info(f"\n{msg}! Model saved to {output_dir}\n")
             self._update_progress(
@@ -1201,6 +1247,7 @@ class UnslothTrainer:
         metadata_name = _metadata_lookup_name(
             model_name, lookup_name, local_files_only, model_revision, load_in_4bit
         )
+        self._remember_model_source(lookup_name, model_revision, local_files_only)
         self.model_load_error = None
         try:
             if self.model is not None:
@@ -1231,7 +1278,8 @@ class UnslothTrainer:
             from utils.cache_cleanup import clear_unsloth_compiled_cache
 
             _preserve = ["Unsloth*Trainer.py"] if sys.platform in ("win32", "darwin") else None
-            clear_unsloth_compiled_cache(preserve_patterns = _preserve)
+            if not os.environ.get(_parallel_launch.CACHE_CLEARED_ENV):
+                clear_unsloth_compiled_cache(preserve_patterns = _preserve)
             # Use the checked variant: it reassigns _audio_type, else the flag describes the previous probe.
             self._audio_type, self._audio_type_known = detect_audio_type_checked(
                 metadata_name,
@@ -1262,6 +1310,16 @@ class UnslothTrainer:
                 else False
             )
             self.is_vlm = not self.is_audio_vlm and vision and is_dataset_image
+            # Only a definitive no (not an unreadable config) takes the multimodal class.
+            audio_vlm_multimodal = False
+            if self.is_audio_vlm and not vision:
+                takes, known = audio_vlm_multimodal_lm_checked(
+                    metadata_name,
+                    hf_token = hf_token,
+                    local_files_only = local_files_only,
+                    revision = model_revision,
+                )
+                audio_vlm_multimodal = known and takes
             self._detect_diffusion_lm(metadata_name, hf_token, local_files_only, model_revision)
             self.model_name = model_name
             self.max_seq_length = max_seq_length
@@ -1301,7 +1359,7 @@ class UnslothTrainer:
                 os.environ["HF_TOKEN"] = hf_token
 
             # Gate-check the repo Unsloth will fetch, which may be a public mirror of it.
-            if "/" in model_name and not local_files_only and not _env_offline():
+            if "/" in model_name and not local_files_only and not hf_env_offline():
                 try:
                     from huggingface_hub import model_info as hf_model_info
 
@@ -1465,7 +1523,10 @@ class UnslothTrainer:
 
             elif self.is_audio_vlm:
                 from unsloth import FastModel
+
+                audio_vlm_kwargs = _audio_vlm_auto_model_kwargs(audio_vlm_multimodal)
                 self.model, self.tokenizer = FastModel.from_pretrained(
+                    **audio_vlm_kwargs,
                     model_name = lookup_name,
                     max_seq_length = max_seq_length,
                     dtype = _auto_dtype,
@@ -1480,7 +1541,9 @@ class UnslothTrainer:
                     on_model_resolved = on_model_resolved,
                     **self._offload_load_kwargs(device_map),
                 )
-                logger.info("Loaded audio VLM model (FastModel)")
+                logger.info(
+                    f"Loaded audio VLM model (FastModel{', AutoModelForMultimodalLM' if audio_vlm_kwargs else ''})"
+                )
 
             elif self.diffusion_lm_profile:
                 # FastModel routes every registered text-diffusion family to its diffusion loader.
@@ -2188,9 +2251,15 @@ class UnslothTrainer:
         from datasets import Audio
         import torch
 
+        # The pinned snapshot the consent gate scanned and the tokenizer loaded, never the repo's moving main.
+        source, revision, local_files_only = getattr(
+            self, "_model_source", (self.model_name, None, False)
+        )
         processor = AutoProcessor.from_pretrained(
-            self.model_name,
+            source,
             trust_remote_code = getattr(self, "trust_remote_code", False),
+            revision = revision,
+            local_files_only = local_files_only,
         )
 
         # A leaked pad_to_multiple_of is rejected by EncodecFeatureExtractor.
@@ -2316,6 +2385,17 @@ class UnslothTrainer:
         )
         self._audio_vlm_image_col = image_col
 
+        total = len(dataset)
+        dataset = dataset.filter(
+            lambda text: bool(cell_text(text).strip()), input_columns = [text_col]
+        )
+        if not len(dataset):
+            raise ValueError(f"Every transcript in the '{text_col}' column is blank.")
+        if len(dataset) < total:
+            self._record_warning(
+                f"Skipped {total - len(dataset):,} of {total:,} audio rows with a blank transcript."
+            )
+
         dataset = dataset.cast_column(audio_col, Audio(sampling_rate = 16000))
         if image_col:
             dataset = prepare_audio_vlm_image_column(dataset, image_col)
@@ -2328,7 +2408,7 @@ class UnslothTrainer:
                 formatted["messages"].append(
                     audio_transcription_messages(
                         samples[audio_col][idx]["array"],
-                        str(samples[text_col][idx]),
+                        cell_text(samples[text_col][idx]),
                         image_slot_count(row_images),
                     )
                 )
@@ -3103,14 +3183,14 @@ class UnslothTrainer:
         return load_saved_dataset(UnslothTrainer._resolve_local_path(file_paths[0]))
 
     @staticmethod
-    def _resolve_local_files(file_paths: list) -> list[str]:
+    def _resolve_local_files(file_paths: list, splits: tuple[str, ...] = ("train",)) -> list[str]:
         """Resolve a list of local dataset paths to concrete file paths."""
         all_files: list[str] = []
         for dataset_file in file_paths:
             file_path_obj = UnslothTrainer._resolve_local_path(dataset_file)
 
             if file_path_obj.is_dir():
-                all_files.extend(str(p) for p in dataset_files_in_dir(file_path_obj))
+                all_files.extend(str(p) for p in dataset_files_in_dir(file_path_obj, splits))
             else:
                 all_files.append(str(file_path_obj))
         return all_files
@@ -3281,7 +3361,7 @@ class UnslothTrainer:
                     eval_all_files = (
                         []
                         if eval_saved is not None
-                        else self._resolve_local_files(local_eval_datasets)
+                        else self._resolve_local_files(local_eval_datasets, EVAL_SPLITS)
                     )
                     if eval_saved is not None:
                         eval_dataset = eval_saved
@@ -3599,11 +3679,9 @@ class UnslothTrainer:
                 dataset_slice_start is not None or dataset_slice_end is not None
             ):
                 total_rows = len(dataset)
-                start = dataset_slice_start if dataset_slice_start is not None else 0
-                end = dataset_slice_end if dataset_slice_end is not None else total_rows - 1
-                start = max(0, min(start, total_rows - 1))
-                end = max(start, min(end, total_rows - 1))
-                dataset = dataset.select(range(start, end + 1))
+                dataset, start, end = slice_dataset_rows(
+                    dataset, dataset_slice_start, dataset_slice_end
+                )
                 logger.info(
                     f"Sliced dataset to rows [{start}, {end}]: {len(dataset)} of {total_rows} rows\n"
                 )
@@ -3780,6 +3858,7 @@ class UnslothTrainer:
                 is_vlm = self.is_vlm,
                 format_type = format_type,
                 dataset_name = dataset_source,
+                dataset_revision = dataset_revision,
                 custom_format_mapping = custom_format_mapping,
                 progress_callback = self._update_progress,
             )
@@ -3809,6 +3888,7 @@ class UnslothTrainer:
             logger.info(f"Dataset formatted successfully ({final_n} samples, {detected})\n")
 
             if has_separate_eval_source and eval_dataset is not None:
+                _raise_if_empty_train_split(eval_dataset, "in the eval split")
                 eval_n = len(eval_dataset) if hasattr(eval_dataset, "__len__") else "?"
                 logger.info(f"Formatting eval dataset ({eval_n} rows)...\n")
                 eval_info = format_and_template_dataset(
@@ -3817,7 +3897,10 @@ class UnslothTrainer:
                     tokenizer = self.tokenizer,
                     is_vlm = self.is_vlm,
                     format_type = format_type,
+                    # Eval rows without their own question column score the training prompt; per-row questions stay.
+                    vlm_fallback_instruction = dataset_info.get("vlm_instruction"),
                     dataset_name = dataset_source,
+                    dataset_revision = dataset_revision,
                     custom_format_mapping = custom_format_mapping,
                 )
                 if not eval_info.get("success", True):
@@ -4132,6 +4215,9 @@ class UnslothTrainer:
                 max_steps = config_args.get("max_steps"),
                 grad_accum = config_args.get("gradient_accumulation_steps", 1),
                 resolved_max_steps_epochs = resolved_epochs,
+                offload_layers = _block_swap_engaged(self),
+                # The reading the dataset_num_proc veto used, so both fork sites agree.
+                host_memory = getattr(self, "_fork_host_memory", None),
             )
         except Exception as exc:  # noqa: BLE001 - a gating failure must not fail a run
             logger.warning(f"Online tokenization gating failed, using eager path: {exc}")
@@ -4296,7 +4382,11 @@ class UnslothTrainer:
 
             self._update_progress(is_training = True, error = None)
 
-            if training_args.get("enable_wandb", False) and training_args.get("wandb_token"):
+            if (
+                training_args.get("enable_wandb", False)
+                and training_args.get("wandb_token")
+                and _parallel_launch.is_main_rank()
+            ):
                 os.environ["WANDB_API_KEY"] = training_args["wandb_token"]
                 import wandb
                 wandb.init(project = training_args.get("wandb_project", "unsloth-training"))
@@ -4344,7 +4434,9 @@ class UnslothTrainer:
                 self._update_progress(total_steps = total, status_message = "Starting CSM training...")
                 logger.info(f"CSM training config: {config}\n")
                 self.trainer.train(
-                    resume_from_checkpoint = training_args.get("resume_from_checkpoint")
+                    resume_from_checkpoint = checked_resume_checkpoint(
+                        training_args.get("resume_from_checkpoint")
+                    )
                 )
                 self._finalize_training(output_dir, "CSM")
                 return
@@ -4389,7 +4481,9 @@ class UnslothTrainer:
                 self._update_progress(total_steps = total, status_message = "Starting SNAC training...")
                 logger.info(f"SNAC training config: {config}\n")
                 self.trainer.train(
-                    resume_from_checkpoint = training_args.get("resume_from_checkpoint")
+                    resume_from_checkpoint = checked_resume_checkpoint(
+                        training_args.get("resume_from_checkpoint")
+                    )
                 )
                 self._finalize_training(output_dir, "SNAC")
                 return
@@ -4449,7 +4543,9 @@ class UnslothTrainer:
                 )
                 logger.info(f"Whisper training config: {config}\n")
                 self.trainer.train(
-                    resume_from_checkpoint = training_args.get("resume_from_checkpoint")
+                    resume_from_checkpoint = checked_resume_checkpoint(
+                        training_args.get("resume_from_checkpoint")
+                    )
                 )
                 self._finalize_training(output_dir, "Whisper")
                 return
@@ -4542,6 +4638,19 @@ class UnslothTrainer:
 
                 audio_col_name = getattr(self, "_audio_vlm_audio_col", "audio")
                 image_col_name = getattr(self, "_audio_vlm_image_col", None)
+                # Placeholder ids stay out of the loss; LFM3-Audio keeps them on the processor, Gemma 3n on its tokenizer.
+                placeholder_ids = set()
+                for holder in (processor, getattr(processor, "tokenizer", None)):
+                    for attr in (
+                        "audio_token_id",
+                        "audio_out_token_id",
+                        "image_token_id",
+                        "boi_token_id",
+                        "eoi_token_id",
+                    ):
+                        token_id = getattr(holder, attr, None)
+                        if type(token_id) is int:
+                            placeholder_ids.add(token_id)
                 if training_args.get("train_on_completions", False) and not training_args.get(
                     "is_cpt", False
                 ):
@@ -4603,15 +4712,8 @@ class UnslothTrainer:
 
                     labels = batch["input_ids"].clone()
                     labels[labels == processor.tokenizer.pad_token_id] = -100
-                    for attr in (
-                        "audio_token_id",
-                        "image_token_id",
-                        "boi_token_id",
-                        "eoi_token_id",
-                    ):
-                        token_id = getattr(processor.tokenizer, attr, None)
-                        if token_id is not None:
-                            labels[labels == token_id] = -100
+                    for token_id in placeholder_ids:
+                        labels[labels == token_id] = -100
                     batch["labels"] = labels
                     if audio_response_masker is not None:
                         batch["labels"] = audio_response_masker(batch)["labels"]
@@ -4649,6 +4751,17 @@ class UnslothTrainer:
                 f"[DEBUG] learning_rate from training_args: {lr_value} (type: {type(lr_value).__name__})\n"
             )
 
+            from utils.datasets.online_tokenization import (
+                host_memory_fork_veto,
+                host_memory_snapshot,
+            )
+
+            # A tokenizer pool forked off a trainer this size can OOM the host; UNSLOTH_DATASET_NUM_PROC still wins.
+            # One reading per run, shared with the online tokenization gate.
+            self._fork_host_memory = host_memory_snapshot()
+            fork_veto = host_memory_fork_veto(_block_swap_engaged(self), self._fork_host_memory)
+            if fork_veto:
+                logger.info(f"Tokenizing in process: {fork_veto}\n")
             config_args = {
                 "per_device_train_batch_size": training_args.get("batch_size", 2),
                 "gradient_accumulation_steps": training_args.get("gradient_accumulation_steps", 4),
@@ -4671,6 +4784,7 @@ class UnslothTrainer:
                         or self.is_audio_vlm
                         or self._cuda_audio_used
                         or _tokenizer_blocks_map_workers(self.tokenizer)
+                        or fork_veto
                     )
                     else None,
                     serial_as_none = False,
@@ -4847,6 +4961,17 @@ class UnslothTrainer:
                     vocab_size = vocab_size,
                     completion_only_loss = completion_only,
                 )
+            elif (
+                raw_text_mode
+                and config_args.get("packing")
+                and eval_dataset is not None
+                and eval_final_format != "raw_text"
+            ):
+                # Raw text packs wrapped, which would join a formatted eval split's examples across rows.
+                logger.info(
+                    "Formatted eval dataset beside raw text: eval sequence packing turned off\n"
+                )
+                config_args["eval_packing"] = False
 
             # Plain-text single-pass runs tokenize in DataLoader workers; other runs keep eager .map().
             self._online_prewarm_batches = 0
@@ -4982,12 +5107,16 @@ class UnslothTrainer:
                         trainer_kwargs["eval_dataset"] = eval_dataset
                     self.trainer = _UnslothCPTTrainer(**trainer_kwargs)
                 else:
+                    sft_args = SFTConfig(**config_args)
+                    if raw_text_mode and config_args.get("packing", False):
+                        sft_args.packing_strategy = "wrapped"
+                        logger.info("Raw-text packing strategy: wrapped\n")
                     trainer_kwargs = {
                         "model": self.model,
                         "tokenizer": sft_tokenizer,
                         "train_dataset": dataset["dataset"],
                         "data_collator": data_collator,
-                        "args": SFTConfig(**config_args),
+                        "args": sft_args,
                     }
                     if eval_dataset is not None:
                         trainer_kwargs["eval_dataset"] = eval_dataset
@@ -5160,7 +5289,9 @@ class UnslothTrainer:
                         num_samples = None
                 if num_samples is None:
                     num_samples = len(train_dataset_obj)
-                batch_size = training_args.get("batch_size", 2)
+                batch_size = (
+                    training_args.get("batch_size", 2) * _parallel_launch.data_parallel_size()
+                )
                 total_steps = self._calculate_total_steps(
                     num_samples,
                     batch_size,
@@ -5181,7 +5312,9 @@ class UnslothTrainer:
             logger.info("Starting training...\n")
             try:
                 self.trainer.train(
-                    resume_from_checkpoint = training_args.get("resume_from_checkpoint")
+                    resume_from_checkpoint = checked_resume_checkpoint(
+                        training_args.get("resume_from_checkpoint")
+                    )
                 )
             finally:
                 # Release before finalize: workers hold a fork during merge/export.

@@ -182,6 +182,8 @@ test("saving a reply unchanged does not mark it revised, however the parts were 
     [{ type: "reasoning", text: "\nlet me think\n" }, { type: "text", text: "the reply" }],
     [{ type: "text", text: "one" }, { type: "text", text: "two" }],
     [{ type: "text", text: "the reply", status: { type: "complete" } }],
+    [{ type: "text", text: "the reply </THINK> verbatim" }],
+    [{ type: "reasoning", text: "a </THINK> inside" }, { type: "text", text: "the reply" }],
   ]) {
     const h = harness();
     const exported = thread(content);

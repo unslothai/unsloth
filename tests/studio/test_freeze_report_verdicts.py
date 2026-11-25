@@ -74,9 +74,8 @@ def test_a_real_stall_after_warmup_is_still_caught():
 
 
 def test_both_loops_going_quiet_is_not_healthy():
-    """Backend gone at 120s, shell still up. Both counters freeze together, so no
-    comparison between them can fail, and the totals from the first half are large enough
-    that every other branch declines: this used to fall through to OK."""
+    """With the backend gone at 120s and the shell still up, both counters freeze together, so no
+    comparison fails and every other branch declines; it must not fall through to OK."""
     samples, mon, live = [], 0, 0
     for t in range(15, 241, 15):
         if t <= 120:
@@ -110,9 +109,8 @@ def test_clean_exit_late_in_the_window_is_not_a_single_instance_handoff():
 
 
 def test_candidate_env_drops_an_inherited_workaround():
-    """The reporter has already been told to try these by hand, so one is very likely
-    still exported. Overlaying on top of it runs the control through the workaround and
-    the report then says the control was fine."""
+    """The reporter was told to try workarounds by hand, so one is likely still exported; overlaying
+    on it would run the control through the workaround and misreport it as fine."""
     base = {"GDK_BACKEND": "x11", "PATH": "/usr/bin", "DISPLAY": ":0"}
     control = freeze.candidate_env(base, {})
     assert "GDK_BACKEND" not in control
@@ -269,9 +267,8 @@ def test_bare_relative_executable_is_resolved_before_launch(tmp_path, monkeypatc
 
 
 def test_candidate_rationale_survives_a_no_signal_result():
-    """The reason a candidate was tried is a field of the report. A no-signal run used to
-    overwrite it with the measurement-failure explanation, so the one result that most
-    needs context lost it."""
+    """The reason a candidate was tried is a report field that a no-signal run must not overwrite
+    with the measurement-failure explanation."""
     import inspect
 
     source = inspect.getsource(freeze.run_candidate)
@@ -367,9 +364,8 @@ def test_exactly_three_silent_intervals_is_already_stale():
 def test_a_non_executable_appimage_is_refused_with_the_command_that_fixes_it(
     monkeypatch, tmp_path, capsys
 ):
-    """An AppImage downloaded through a browser has no execute bit. Popen raises
-    PermissionError on it and nothing between run_candidate() and the candidate loop
-    catches it, so the run ended in a traceback with nothing measured and no report."""
+    """A browser-downloaded AppImage has no execute bit; Popen raises PermissionError, nothing up to
+    the candidate loop catches it, so the run ends in a traceback with no report."""
     app = tmp_path / "Unsloth-Desktop.AppImage"
     app.write_text("#!/bin/sh\n")
     app.chmod(0o644)

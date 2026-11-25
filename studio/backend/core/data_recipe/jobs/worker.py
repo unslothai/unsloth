@@ -29,6 +29,7 @@ from ..service import (
 )
 from utils.paths.lazy import LazyPath
 from utils.paths import ensure_dir, recipe_datasets_root
+from utils.log_redaction import redact_log_text
 
 # Fresh spawned interpreter: re-apply main.py's process-wide network injections.
 from utils.native_tls import activate_native_tls
@@ -40,14 +41,10 @@ activate_happy_eyeballs()
 
 _ARTIFACT_ROOT = LazyPath(recipe_datasets_root)
 _RE_GITHUB_CURSOR = re.compile(r"\bcursor=[^\s,]+")
-_RE_SECRET_TOKEN = re.compile(
-    r"\b(?:(?:ghp|gho|ghu|ghs|ghr|github_pat)_[A-Za-z0-9_]+|sk-unsloth-[A-Za-z0-9]+)"
-)
 
 
 def _sanitize_log_message(message: str) -> str:
-    message = _RE_GITHUB_CURSOR.sub("cursor=<redacted>", message)
-    return _RE_SECRET_TOKEN.sub("<redacted-token>", message)
+    return redact_log_text(_RE_GITHUB_CURSOR.sub("cursor=<redacted>", message))
 
 
 class _QueueLogHandler(logging.Handler):
@@ -219,9 +216,8 @@ def run_job_process(*, event_queue, recipe: dict[str, Any], run: dict[str, Any])
 
 
 def _unify_batch_schemas(base_dataset_path: Path) -> None:
-    """Give every batch file one schema. Each batch infers its own, so a field stored as JSON text in one
-    batch and as an object in another (or float vs int, all-null vs text) left a folder that training
-    could not load as one dataset."""
+    """Unify all batch files to one schema; per-batch inference made mixed types (JSON text vs
+    object) unloadable."""
     parquet_dir = base_dataset_path / "parquet-files"
     parquet_files = drop_appledouble_metadata(sorted(parquet_dir.glob("*.parquet")))
     if len(parquet_files) <= 1:

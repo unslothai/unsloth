@@ -501,6 +501,10 @@ def load(
                     scale = scale,
                 ),
             )
+        from .prequant_safetensors import _unviewed
+
+        # No-copy aliases: a view's base survives offload's ``.data =`` re-point and keeps the whole file mapped.
+        state = {key: _unviewed(value) for key, value in state.items()}
         model.load_state_dict(state, strict = True, assign = True)
         del state
         if any(t.device.type == "meta" for t in (*model.parameters(), *model.buffers())):
@@ -607,8 +611,7 @@ def _loaded_dtype(key: str, tag: str, dtype: Any, keep_in_fp32: Any) -> Any:
 
 
 def _map_tensor(fd: int, start: int, entry: dict) -> Any:
-    """One tensor over its own private mapping, unmapped when freed (a whole-shard mapping stays resident while any
-    tensor survives)."""
+    """Private mapping per tensor, unmapped when freed; a shard mapping stays while any tensor lives."""
     import mmap
 
     import torch

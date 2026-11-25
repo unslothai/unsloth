@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-"""CP over the fast Qwen3 attention and unsloth_zoo's compiled attention: two gloo CPU ranks vs one process.
+"""CP over Unsloth's fast attention (Qwen3, Mistral, Granite, Cohere) and unsloth_zoo's compiled attention: two gloo
+CPU ranks vs one process.
 GPU-only Triton RoPE / RMSNorm are swapped for torch references; the attention path is the real one."""
 
 import importlib
@@ -121,6 +122,60 @@ def _fast_qwen3_attention(kv_heads):
     return attn
 
 
+def _family_config(family, kv_heads):
+    from transformers import CohereConfig, GraniteConfig, MistralConfig
+
+    common = dict(
+        hidden_size = HIDDEN,
+        intermediate_size = 64,
+        head_dim = 8,
+        num_attention_heads = 4,
+        num_key_value_heads = kv_heads,
+        num_hidden_layers = 1,
+        vocab_size = 96,
+        attention_dropout = 0.0,
+    )
+    if family == "mistral":
+        return MistralConfig(sliding_window = None, **common)
+    if family == "granite":
+        # A non-default attention multiplier: the scale must survive the exchange.
+        return GraniteConfig(attention_multiplier = 0.2, **common)
+    return CohereConfig(use_qk_norm = False, **common)
+
+
+def _fast_family_attention(family, kv_heads):
+    """The HF attention module running Unsloth's fast forward for that family, on CPU-safe kernels."""
+    if family == "qwen3":
+        return _fast_qwen3_attention(kv_heads)
+    module = importlib.import_module(f"unsloth.models.{family}")
+    modeling = importlib.import_module(f"transformers.models.{family}.modeling_{family}")
+    cls = getattr(modeling, f"{family.capitalize()}Attention")
+    forward = getattr(module, f"{family.capitalize()}Attention_fast_forward")
+    config = _family_config(family, kv_heads)
+    config._attn_implementation = "sdpa"
+    torch.manual_seed(0)
+    attn = cls(config, 0).float().train()
+    attn.__class__ = _fast_class(cls, forward)
+    attn.rotary_emb = _Rotary(8, 10000.0)
+    return attn
+
+
+def _install_family_kernels(family):
+    _install_cpu_kernels()
+    if family != "qwen3":
+        importlib.import_module(f"unsloth.models.{family}").fast_rope_embedding = _rope
+
+
+# Granite takes the model-level table (asserts position_embeddings); Mistral / Cohere build theirs per layer.
+_TABLE_ROWS = 64
+
+
+def _attn_kwargs(family, attn):
+    if family == "granite":
+        return {"position_embeddings": attn.rotary_emb.get_cached(_TABLE_ROWS)}
+    return {}
+
+
 def _wrap(attn):
     root = torch.nn.Module()
     root.config = attn.config
@@ -144,6 +199,26 @@ def test_compiled_fastmodel_attention_is_hf_registry_attention():
     cp._check_cp_model(model, 2, "ulysses")
 
 
+_MORE_FAMILIES = ["mistral", "granite", "cohere"]
+
+
+@pytest.mark.parametrize("family", _MORE_FAMILIES)
+def test_more_unsloth_fast_attention_passes_the_cp_check(family):
+    model = _wrap(_fast_family_attention(family, 2))
+    assert cp._uses_unsloth_attention(model)
+    assert cp._supports_context_parallel(model, "ulysses")
+    assert cp._supports_context_parallel(model, "ring")
+    cp._check_cp_model(model, 2, "ulysses")
+
+
+@pytest.mark.parametrize("family", _MORE_FAMILIES)
+def test_more_fast_attention_keeps_window_refusal(family):
+    attn = _fast_family_attention(family, 2)
+    attn.config.sliding_window = 8
+    with pytest.raises(NotImplementedError, match = "sliding window"):
+        cp._check_cp_model(_wrap(attn), 2, "ulysses")
+
+
 def test_a_fast_forward_without_the_cp_declaration_stays_refused():
     from transformers.models.qwen3.modeling_qwen3 import Qwen3Attention
     from unsloth.models.qwen3 import Qwen3Attention_fast_forward
@@ -159,9 +234,17 @@ def test_a_fast_forward_without_the_cp_declaration_stays_refused():
         cp._check_cp_model(model, 2, "ulysses")
 
 
-def _fast_parity_worker(rank, world, kv_heads, packed, out_dir):
-    _install_cpu_kernels()
-    attn = _fast_qwen3_attention(kv_heads)
+def _fast_parity_worker(
+    rank,
+    world,
+    kv_heads,
+    packed,
+    out_dir,
+    family = "qwen3",
+):
+    _install_family_kernels(family)
+    attn = _fast_family_attention(family, kv_heads)
+    extra = _attn_kwargs(family, attn)
     model = _wrap(attn)
     cp._check_cp_model(model, world, "ulysses")
     bsz = 1 if packed else 2
@@ -179,7 +262,9 @@ def _fast_parity_worker(rank, world, kv_heads, packed, out_dir):
     x_ref = x.clone().requires_grad_(True)
     for a, b in pieces:
         out, _, _ = attn(
-            hidden_states = x_ref[:, a:b], position_ids = torch.arange(b - a).expand(bsz, -1)
+            hidden_states = x_ref[:, a:b],
+            position_ids = torch.arange(b - a).expand(bsz, -1),
+            **extra,
         )
         full[:, a:b] = out.detach()
         (out * weight[:, a:b]).sum().backward()
@@ -187,11 +272,12 @@ def _fast_parity_worker(rank, world, kv_heads, packed, out_dir):
     x_grad = x_ref.grad.clone()
     attn.zero_grad(set_to_none = True)
 
-    calls = []
+    calls, windows = [], []
     original = ad.ulysses_attention
 
     def counted(*args, **kwargs):
         calls.append(1)
+        windows.append(args[1].flash_dense_kwargs.get("window_size"))
         return original(*args, **kwargs)
 
     ad.ulysses_attention = counted
@@ -207,15 +293,19 @@ def _fast_parity_worker(rank, world, kv_heads, packed, out_dir):
     x_cp = x[:, sl].clone().requires_grad_(True)
     attn.rotary_emb.asked.clear()
     with manager.apply(inputs):
-        kwargs = {}
+        kwargs = dict(extra)
         if packed:
             kwargs["packed_seq_lengths"] = inputs["packed_seq_lengths"]
         out, _, _ = attn(hidden_states = x_cp, position_ids = inputs["position_ids"], **kwargs)
         (out * weight[:, sl]).sum().backward()
     ad.ulysses_attention = original
     assert calls == [1], calls
-    # The rotary table must cover the global positions, not only this shard's length.
-    assert attn.rotary_emb.asked and min(attn.rotary_emb.asked) >= SEQ, attn.rotary_emb.asked
+    if family == "granite":
+        # Flash's dense window must span the gathered sequence (a shard-sized one cuts attention off).
+        assert windows[0] is not None and min(windows[0]) >= SEQ - 1, windows
+    else:
+        # The rotary table must cover the global positions, not only this shard's length.
+        assert attn.rotary_emb.asked and min(attn.rotary_emb.asked) >= SEQ, attn.rotary_emb.asked
     torch.testing.assert_close(out.detach(), full[:, sl], rtol = 1e-5, atol = 1e-6)
     gathered = [torch.zeros_like(x_cp.grad) for _ in range(world)]
     dist.all_gather(gathered, x_cp.grad)
@@ -229,7 +319,9 @@ def _fast_parity_worker(rank, world, kv_heads, packed, out_dir):
     if rank == 0 and out_dir:
         import os
         with open(
-            os.path.join(out_dir, f"fast_qwen3_kv{kv_heads}_{'packed' if packed else 'rows'}.txt"),
+            os.path.join(
+                out_dir, f"fast_{family}_kv{kv_heads}_{'packed' if packed else 'rows'}.txt"
+            ),
             "w",
         ) as f:
             f.write(f"ulysses calls {len(calls)} max grad diff {worst:.3e}\n")
@@ -246,6 +338,19 @@ def _fast_parity_worker(rank, world, kv_heads, packed, out_dir):
 def test_unsloth_fast_qwen3_attention_matches_one_process(kv_heads, packed):
     _qwen3_config(kv_heads)  # skip before forking when the repo is unavailable
     generic._spawn(_fast_parity_worker, 2, kv_heads, packed, generic._OUT)
+
+
+@pytest.mark.parametrize(
+    "kv_heads, packed",
+    [
+        (2, False),
+        (1, False),  # 1 kv head replicated over cp 2
+        (2, True),
+    ],
+)
+@pytest.mark.parametrize("family", _MORE_FAMILIES)
+def test_more_unsloth_fast_attention_matches_one_process(family, kv_heads, packed):
+    generic._spawn(_fast_parity_worker, 2, kv_heads, packed, generic._OUT, family)
 
 
 def _compiled_parity_worker(rank, world, packed, out_dir):
@@ -265,21 +370,151 @@ def test_compiled_fastmodel_attention_matches_one_process(packed):
     generic._spawn(_compiled_parity_worker, 2, packed, "")
 
 
-_RL_REFUSAL = "DPO / GRPO context parallelism supports Unsloth's Llama-style attention only"
+_RL_REFUSAL = (
+    "DPO / GRPO context parallelism supports Unsloth's Llama-style and Qwen3 attention only"
+)
 
 
-def test_rl_keeps_context_parallel_llama_only():
-    """Qwen3 is SFTTrainer only: DPO / GRPO need an RL parity run on the fast Qwen3 attention first."""
+def test_rl_context_parallel_declarations():
+    """DPO / GRPO: Llama-style and Qwen3 fast attention (RL parity below); Mistral / Granite / Cohere SFTTrainer only."""
     from transformers.models.qwen3.modeling_qwen3 import Qwen3Attention
     from unsloth.models.llama import LlamaAttention_fast_forward
 
-    qwen3 = _wrap(_fast_qwen3_attention(2))
-    cp._check_cp_model(qwen3, 2, "ulysses")
-    with pytest.raises(NotImplementedError, match = _RL_REFUSAL):
-        cp._check_cp_model(qwen3, 2, "ulysses", allow_hybrids = False)
+    cp._check_cp_model(_wrap(_fast_qwen3_attention(2)), 2, "ulysses", allow_hybrids = False)
     llama = _fast_qwen3_attention(2)
     llama.__class__ = _fast_class(Qwen3Attention, LlamaAttention_fast_forward)
     cp._check_cp_model(_wrap(llama), 2, "ulysses", allow_hybrids = False)
+    for family in _MORE_FAMILIES:
+        model = _wrap(_fast_family_attention(family, 2))
+        cp._check_cp_model(model, 2, "ulysses")
+        with pytest.raises(NotImplementedError, match = _RL_REFUSAL):
+            cp._check_cp_model(model, 2, "ulysses", allow_hybrids = False)
+
+
+class _FastQwen3RL(torch.nn.Module):
+    """Two pre-norm blocks on the real fast Qwen3 attention under an embed_tokens + layers decoder (the RL hooks'
+    target), scored by TRL's DPO / GRPO objectives from tests/test_context_parallel_rl.py."""
+
+    def __init__(self, seed, dtype):
+        super().__init__()
+        self.model = torch.nn.Module()
+        self.model.embed_tokens = torch.nn.Embedding(96, HIDDEN)
+        self.model.layers = torch.nn.ModuleList()
+        for _ in range(2):
+            layer = torch.nn.Module()
+            layer.self_attn = _fast_qwen3_attention(2)
+            layer.mlp = torch.nn.Linear(HIDDEN, HIDDEN, bias = False)
+            self.model.layers.append(layer)
+        self.model.config = self.model.layers[0].self_attn.config
+        self.model.forward = self._decode
+        self.lm_head = torch.nn.Linear(HIDDEN, 96, bias = False)
+        torch.manual_seed(seed)
+        with torch.no_grad():
+            for p in self.parameters():
+                p.normal_(0, 0.3)
+        self.to(dtype)
+
+    def _decode(
+        self,
+        input_ids = None,
+        attention_mask = None,
+        position_ids = None,
+        **kwargs,
+    ):
+        from transformers.modeling_outputs import BaseModelOutputWithPast
+
+        if cp.get_cp_manager() is not None:
+            assert attention_mask is None  # the RL pre-hook drops the per-shard mask
+        if position_ids is None:
+            position_ids = torch.arange(input_ids.shape[1]).expand_as(input_ids)
+        x = self.model.embed_tokens(input_ids)
+        for layer in self.model.layers:
+            a, _, _ = layer.self_attn(
+                hidden_states = F.rms_norm(x, (HIDDEN,)), position_ids = position_ids
+            )
+            x = x + a
+            x = x + layer.mlp(F.silu(F.rms_norm(x, (HIDDEN,))))
+        return BaseModelOutputWithPast(last_hidden_state = F.rms_norm(x, (HIDDEN,)))
+
+    def token_logps(self, ids, mask):
+        h = self.model(input_ids = ids, attention_mask = mask).last_hidden_state
+        return (
+            torch.log_softmax(self.lm_head(h)[:, :-1], -1).gather(-1, ids[:, 1:, None]).squeeze(-1)
+        )
+
+
+def _fast_qwen3_rl_worker(rank, world, out_dir):
+    import contextlib
+
+    rl = importlib.import_module("tests.test_context_parallel_rl")
+    _install_cpu_kernels()
+    g = torch.Generator().manual_seed(3)
+    rand = lambda n: torch.randint(1, 96, (n,), generator = g).tolist()
+    prompts = [rand(7), rand(12)]
+    chosen = [p + rand(n) for p, n in zip(prompts, (9, 5))]
+    rejected = [p + rand(n) for p, n in zip(prompts, (4, 14))]
+    ids, mask = rl._right_pad(chosen + rejected)  # 26 tokens, the padded tail crosses the shard
+    completion = mask.clone()
+    for i, n in enumerate([7, 12, 7, 12]):
+        completion[i, :n] = 0
+    dpo = (ids, mask, completion[:, 1:])
+    prompt = rand(9)
+    g_ids, g_mask = rl._right_pad([prompt + rand(n) for n in (11, 3, 17, 8)])
+    g_completion = g_mask.clone()
+    g_completion[:, :9] = 0
+    grpo = (g_ids, g_mask, g_completion[:, 1:], torch.tensor([0.3, 1.0, 0.1, 0.65]))
+    lines = []
+    for dtype, tol in ((torch.float64, 1e-10), (torch.float32, 1e-5)):
+        for objective, batch in ((rl._dpo_sigmoid, dpo), (rl._grpo_dapo, grpo)):
+            results = []
+            for use_cp in (False, True):
+                policy = _FastQwen3RL(0, dtype)
+                ref = _FastQwen3RL(1, dtype).requires_grad_(False)
+                scope, calls = contextlib.nullcontext(), []
+                if use_cp:
+                    cp._check_cp_model(policy, world, "ulysses", allow_hybrids = False)
+                    manager = generic._manager(world, rank)
+                    cp.attach_rl_hooks(manager, policy)
+                    cp.attach_rl_hooks(manager, ref)
+                    scope = cp._manager_scope(manager)
+                    original = ad.ulysses_attention
+
+                    def counted(*args, **kwargs):
+                        calls.append(1)
+                        return original(*args, **kwargs)
+
+                    ad.ulysses_attention = counted
+                try:
+                    with scope:
+                        loss = objective(policy, ref, batch, world if use_cp else 1)
+                        loss.backward()
+                finally:
+                    if use_cp:
+                        ad.ulysses_attention = original
+                grads = torch.cat([p.grad.flatten() for p in policy.parameters()])
+                if use_cp:  # DDP's average over the CP group
+                    # 2 layers x (policy + reference) forwards: the fast attention exchanged every time.
+                    assert len(calls) == 4, calls
+                    dist.all_reduce(grads)
+                    grads /= world
+                results.append((loss.detach(), grads))
+            (loss_ref, grad_ref), (loss_cp, grad_cp) = results
+            name = f"{objective.__name__} {dtype}"
+            loss_rel = abs(float(loss_cp - loss_ref)) / abs(float(loss_ref))
+            grad_rel = float((grad_cp - grad_ref).norm() / grad_ref.norm())
+            assert loss_rel <= tol, f"{name}: loss rel {loss_rel:.3e}"
+            assert grad_rel <= tol, f"{name}: grad rel {grad_rel:.3e}"
+            lines.append(f"{name} loss_rel {loss_rel:.3e} grad_rel {grad_rel:.3e}")
+    if rank == 0 and out_dir:
+        import os
+        with open(os.path.join(out_dir, "fast_qwen3_rl.txt"), "w") as f:
+            f.write("\n".join(lines) + "\n")
+
+
+def test_fast_qwen3_attention_dpo_grpo_match_one_process():
+    """rl = True on Qwen3: the RL decoder hooks over the real fast Qwen3 attention equal one process."""
+    _qwen3_config(2)
+    generic._spawn(_fast_qwen3_rl_worker, 2, generic._OUT)
 
 
 _REAL_COMPILED = r"""

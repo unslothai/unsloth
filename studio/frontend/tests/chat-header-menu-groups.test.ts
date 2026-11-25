@@ -8,7 +8,7 @@ import { readSrc } from "./helpers/kit.ts";
 
 const MENU = readSrc("features/chat/components/chat-header-menu.tsx");
 
-test("the chat menu splits into naming, marking, copying the chat, moving it out, its folder, and removal", () => {
+test("the chat menu splits into naming, marking, copying the chat, moving it out, scheduling, its folder, and removal", () => {
   const body = MENU.slice(
     MENU.indexOf("  return (\n    <>\n      <Item icon={Edit03Icon}"),
   );
@@ -26,6 +26,8 @@ test("the chat menu splits into naming, marking, copying the chat, moving it out
     'DropdownMenuSeparator className="mx-3"',
     "chatMenu.copy",
     "common.export",
+    'DropdownMenuSeparator className="mx-3"',
+    "chatMenu.addScheduledTask",
     'chatFolderSessionId(menu.item) ? <DropdownMenuSeparator className="mx-3" /> : null',
     "<OpenChatFolderItem",
     "<UploadToChatFolderItem",
@@ -41,7 +43,7 @@ test("the chat menu splits into naming, marking, copying the chat, moving it out
   }
   assert.equal(
     outer.match(/<DropdownMenuSeparator className="mx-3" \/>/g)?.length,
-    5,
+    6,
   );
 });
 

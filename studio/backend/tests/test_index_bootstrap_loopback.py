@@ -82,6 +82,19 @@ def test_reverse_proxy_forwarded_headers_are_remote():
         assert _is_local_bootstrap_request(request) is False, header
 
 
+def test_proxy_hop_headers_alone_are_remote(monkeypatch):
+    import main
+    monkeypatch.setattr(main, "_IS_COLAB", False)
+    for header, value in (
+        ("x-forwarded-proto", "https"),
+        ("via", "1.1 proxy"),
+        ("x-forwarded-port", "443"),
+        ("x-forwarded-server", "proxy.example.com"),
+    ):
+        request = _request("127.0.0.1", "127.0.0.1:8888", headers = {header: value})
+        assert main._should_inject_bootstrap(request) is False, header
+
+
 def test_malformed_or_absent_host_is_remote():
     """A malformed/absent/scope-id Host must not fall back to the loopback server address."""
     from main import _is_local_bootstrap_request

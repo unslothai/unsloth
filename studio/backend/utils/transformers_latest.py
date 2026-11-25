@@ -17,7 +17,6 @@ from pathlib import Path
 from loggers import get_logger
 from utils.paths.storage_roots import studio_root as _studio_root
 from utils.transformers_version import (
-    _env_offline,
     _load_config_json,
     _model_types_from_source,
     _tier_from_config_mapping,
@@ -35,6 +34,7 @@ from utils.transformers_version import (
     ensure_latest_transformers_venv,
     latest_venv_pinned_version,
 )
+from utils.utils import hf_env_offline
 
 logger = get_logger(__name__)
 
@@ -49,8 +49,7 @@ _FETCH_TIMEOUT_SECONDS = 5.0
 _FETCH_RETRIES = 1
 # urlopen's timeout bounds each read, not the transfer, so the transfer gets its own budget.
 _FETCH_DEADLINE_SECONDS = 2 * _FETCH_TIMEOUT_SECONDS
-# One attempt's true worst case: the budget, plus the single socket read already blocking
-# when it runs out (the deadline is only tested between reads).
+# Worst case is the budget plus one blocked socket read; the deadline is checked between reads.
 _FETCH_ATTEMPT_SECONDS = _FETCH_DEADLINE_SECONDS + _FETCH_TIMEOUT_SECONDS
 _READ_CHUNK_BYTES = 1 << 16
 _CACHE_TTL_SECONDS = 24 * 60 * 60
@@ -67,8 +66,7 @@ _lock = threading.Lock()
 _memory_snapshot: dict | None = None
 _last_failure_at: float = 0.0
 _is_fetching: bool = False
-# Set whenever no refresh is in flight; a concurrent caller waits on it for the running
-# fetch's answer instead of reporting "no answer" (see _get_snapshot).
+# Set when no refresh runs; concurrent callers wait on it rather than report no answer.
 _fetch_done: threading.Event = threading.Event()
 _fetch_done.set()
 # Body, or None if still running at deadline; read1 returns what has arrived, since resp.read() has no bound against a drip-fed body.
@@ -94,13 +92,8 @@ _FETCH_MISSING = "__unsloth_fetch_missing__"
 
 
 def _read_within(resp, deadline: float) -> str | None:
-    """Body of *resp*, or None if the transfer is still running at *deadline*.
-
-    ``resp.read()`` in one call has no bound at all: the socket timeout only fires on a
-    read that stalls longer than itself, so a drip-fed response never trips it. ``read1``
-    returns what has arrived instead of blocking for a full chunk, which is what lets the
-    budget be checked as the body comes in.
-    """
+    """Body of resp, or None if still running at deadline; resp.read() has no bound against a
+    drip-fed body, while read1 returns what has arrived so the budget is checked as it comes in."""
     read1 = getattr(resp, "read1", None)
     if read1 is None:
         # A file-like that hands back the whole body in one go has nothing to dribble.
@@ -256,7 +249,7 @@ def _get_snapshot() -> dict | None:
         if _snapshot_is_fresh(disk):
             _memory_snapshot = disk
             return disk
-        if _disabled() or _env_offline():
+        if _disabled() or hf_env_offline():
             return None
         if time.time() - _last_failure_at < _FAILURE_BACKOFF_SECONDS:
             return None
@@ -346,7 +339,7 @@ def latest_transformers_supports(model_type: str) -> dict | None:
     """Fires only when model_type is in no installed overlay or tier table (load would fail); never raises; off via UNSLOTH_STUDIO_NO_LATEST_TRANSFORMERS."""
     if not isinstance(model_type, str) or not model_type:
         return None
-    if _disabled() or _env_offline():
+    if _disabled() or hf_env_offline():
         return None
     snapshot = _get_snapshot()
     if snapshot is None:
@@ -428,7 +421,7 @@ def _remote_code_upgrade(model_name: str, cfg: dict) -> dict | None:
 def check_upgrade_for_model(model_name: str, hf_token: str | None = None) -> dict | None:
     """Fires only when model_type is in no installed overlay or tier table, i.e. the load would fail."""
     try:
-        if _disabled() or _env_offline():
+        if _disabled() or hf_env_offline():
             return None
         cfg = _load_config_json(model_name, hf_token)
         if not isinstance(cfg, dict):
@@ -655,9 +648,8 @@ def _base_env_sidecar_pins() -> list[str]:
 
 
 def is_install_in_progress() -> bool:
-    """True while a latest-transformers install or lazy repair holds the sidecar swap
-    reservation. Training and export starts check this so a fresh worker never
-    activates the sidecar mid-swap."""
+    """True while a latest-transformers install or lazy repair holds the sidecar swap; training and
+    export check it so a fresh worker never activates mid-swap."""
     from utils.transformers_version import sidecar_swap_in_progress
     return sidecar_swap_in_progress()
 
@@ -666,6 +658,7 @@ def install_latest_transformers(
     version: str,
     before_swap = None,
     reserved: bool = False,
+    auto: bool = False,
 ) -> dict:
     """Consented install of the latest transformers sidecar; returns a structured result.
 
@@ -676,7 +669,9 @@ def install_latest_transformers(
     to the stage-and-swap: it runs only after the staged install succeeded, right
     before the live sidecar is replaced. *reserved* means the caller already holds the
     sidecar swap reservation (the install route takes it before waiting on the
-    inference lifecycle gate, so worker starts see it for the whole window).
+    inference lifecycle gate, so worker starts see it for the whole window). *auto* is an
+    install nobody confirmed: it goes ahead only for a PyPI release the package scan
+    passes, else it returns ``requires_consent`` without touching the sidecar.
     """
     from utils.transformers_version import end_sidecar_swap, try_begin_sidecar_swap
 
@@ -687,13 +682,91 @@ def install_latest_transformers(
             "message": "A transformers installation is already in progress.",
         }
     try:
-        return _install_latest_transformers_locked(version, before_swap = before_swap)
+        return _install_latest_transformers_locked(version, before_swap = before_swap, auto = auto)
     finally:
         if not reserved:
             end_sidecar_swap()
 
 
-def _install_latest_transformers_locked(version: str, before_swap = None) -> dict:
+def _consent_required(
+    version: str,
+    reason: str,
+    scan_status: str | None = None,
+) -> dict:
+    return {
+        "success": False,
+        "version": version,
+        "message": reason,
+        "requires_consent": True,
+        "scan_status": scan_status,
+    }
+
+
+def _scan_release_plan(version: str, extra_packages: tuple[str, ...]):
+    from utils.security.package_scan import scan_pypi_install
+    from utils.transformers_version import _venv_t5_latest_packages
+    return scan_pypi_install(_venv_t5_latest_packages(version, extra_packages))
+
+
+def auto_install_preflight(version: str) -> dict | None:
+    """None when an unconfirmed install of *version* may go ahead: it is the current PyPI release
+    and the package scan of its install plan is clean. Otherwise the structured result to return
+    instead, before anything is reserved or unloaded. Never raises."""
+    try:
+        if _disabled() or hf_env_offline():
+            return _consent_required(
+                version, "Unsloth is offline, so the release could not be scanned."
+            )
+        if ".dev" in version:
+            return _consent_required(
+                version, "Development builds of transformers are installed only after you confirm."
+            )
+        from utils.security.package_scan import CUSTOM_INDEX_REASON, custom_package_index
+
+        if custom_package_index() is not None:
+            return _consent_required(
+                version, f"Automatic install skipped: {CUSTOM_INDEX_REASON}.", "review"
+            )
+        snapshot = _get_snapshot()
+        if snapshot is None or version != snapshot.get("pypi_version"):
+            return _consent_required(
+                version, "Could not confirm this is the latest transformers release on PyPI."
+            )
+        extra_packages, blockers = compat_plan(version)
+        if blockers:
+            # The install itself reports the blockers; there is nothing to confirm.
+            return None
+        scan = _scan_release_plan(version, extra_packages)
+        if scan.clean:
+            return None
+        return _scan_failure(version, scan, auto = True)
+    except Exception as exc:
+        logger.warning("Automatic transformers install preflight failed: %s", exc)
+        return _consent_required(version, "The transformers release could not be scanned.")
+
+
+def _scan_failure(version: str, scan, auto: bool) -> dict:
+    from utils.security.package_scan import FLAGGED
+    if scan.status == FLAGGED:
+        return {
+            "success": False,
+            "version": version,
+            "message": f"transformers {version} was not installed: the package scan flagged it "
+            f"({scan.reason}).",
+            "scan_status": FLAGGED,
+        }
+    return _consent_required(
+        version,
+        f"Automatic install skipped: {scan.reason}." if auto else scan.reason,
+        scan.status,
+    )
+
+
+def _install_latest_transformers_locked(
+    version: str,
+    before_swap = None,
+    auto: bool = False,
+) -> dict:
     """Body of install_latest_transformers; runs with the in-progress flag held."""
     if _disabled():
         return {
@@ -702,7 +775,7 @@ def _install_latest_transformers_locked(version: str, before_swap = None) -> dic
             "message": "Latest-transformers installs are disabled "
             "(UNSLOTH_STUDIO_NO_LATEST_TRANSFORMERS).",
         }
-    if _env_offline():
+    if hf_env_offline():
         return {
             "success": False,
             "version": version,
@@ -753,7 +826,16 @@ def _install_latest_transformers_locked(version: str, before_swap = None) -> dic
             "latest_version": snapshot["pypi_version"],
             "latest_main_version": current_main,
         }
-    from utils.transformers_version import transformers_main_at
+    if from_main and auto:
+        return _consent_required(
+            version, "Development builds of transformers are installed only after you confirm."
+        )
+    from utils.security.package_scan import CUSTOM_INDEX_REASON, custom_package_index
+    from utils.transformers_version import (
+        install_hash_mismatch,
+        install_with_hashes,
+        transformers_main_at,
+    )
 
     # Requirements and archive both come from the pinned commit.
     with transformers_main_at(main_commit) if main_commit else contextlib.nullcontext():
@@ -766,9 +848,38 @@ def _install_latest_transformers_locked(version: str, before_swap = None) -> dic
                 f"{version}: this environment does not satisfy {', '.join(blockers)}. "
                 "An Unsloth update is required first.",
             }
-        installed = ensure_latest_transformers_venv(
-            version, extra_packages, before_swap = before_swap
-        )
+        hashes: dict = {}
+        scan_status = None
+        # A mirror's artifacts need not match PyPI's digests: no scan or pins, the install as it
+        # always was, and only after the user confirms.
+        mirror = None if from_main else custom_package_index()
+        if mirror is not None:
+            if auto:
+                return _consent_required(
+                    version, f"Automatic install skipped: {CUSTOM_INDEX_REASON}.", "review"
+                )
+            logger.info("Package source %s is not PyPI; installing transformers unpinned", mirror)
+        if not from_main and mirror is None:
+            # Every PyPI install is scanned; a confirmed one still installs past a "review" verdict.
+            scan = _scan_release_plan(version, extra_packages)
+            scan_status = scan.status
+            if not scan.clean and (auto or scan.status != "review"):
+                return _scan_failure(version, scan, auto)
+            hashes = scan.hashes
+        with install_with_hashes(hashes):
+            installed = ensure_latest_transformers_venv(
+                version, extra_packages, before_swap = before_swap
+            )
+            mismatch = install_hash_mismatch() if hashes else None
+    if mismatch:
+        return {
+            "success": False,
+            "version": version,
+            "message": f"transformers {version} was not installed: the download of {mismatch} did "
+            "not match the sha256 PyPI publishes for it (hash mismatch), so it was refused. "
+            "Nothing was changed.",
+            "scan_status": scan_status,
+        }
     if not installed:
         return {
             "success": False,
@@ -781,13 +892,13 @@ def _install_latest_transformers_locked(version: str, before_swap = None) -> dic
         "version": version,
         "message": f"Installed transformers {version}{' (main)' if from_main else ''} into the latest sidecar "
         f"(pinned: {latest_venv_pinned_version()}).",
+        "scan_status": scan_status,
     }
 
 
 def _invalidate_capability_caches():
-    """Drop caches computed before the new sidecar existed: tier probes and the
-    latest tier's model_type mapping (stale on upgrade) plus vision detection
-    (a raw-heuristic False may now defer to the sidecar AutoConfig probe)."""
+    """Drop caches built before the new sidecar existed (tier probes, latest model_type mapping,
+    vision detection); a raw-heuristic False may now defer to the sidecar AutoConfig probe."""
     try:
         from utils import transformers_version as tv
         tv._probe_tier_cache.clear()

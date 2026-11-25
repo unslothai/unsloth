@@ -121,13 +121,14 @@ test("the rule is armed by nothing except that attribute", () => {
     "the code-block flicker rule is still there",
   );
 
-  // Two gated copies of `auto`, one per population, plus the engine-gated one on windowed code
-  // bodies. An ungated one would turn the flag into decoration.
+  // Two gated copies of `auto`, one per population, plus the engine-gated ones on windowed code
+  // bodies, settled reasoning chunks and distant message rows. An ungated one would turn the flag
+  // into decoration.
   const declarations = INDEX_CSS.split("content-visibility: auto;").length - 1;
   assert.equal(
     declarations,
-    4,
-    "exactly four `content-visibility: auto` declarations in the whole stylesheet",
+    5,
+    "exactly five `content-visibility: auto` declarations in the whole stylesheet",
   );
   const gateAt = INDEX_CSS.indexOf(`html[${MATH_BLOCK_CONTAINMENT_ATTRIBUTE}=`);
   assert.ok(gateAt >= 0, "PRECONDITION: the gate is present");
@@ -184,8 +185,8 @@ test("a print turns the containment off, for both populations", () => {
 
   assert.equal(
     INDEX_CSS.split("content-visibility: auto;").length - 1,
-    4,
-    "PRECONDITION: the gated declarations this print block and the two engine-gated ones switch off",
+    5,
+    "PRECONDITION: the gated declarations this print block and the three engine-gated ones switch off",
   );
 });
 

@@ -8,48 +8,36 @@ import { readSrc } from "./helpers/kit.ts";
 
 const dialog = readSrc("features/chat/chat-providers-dialog.tsx");
 
-test("an empty connection list opens the add-connection form", () => {
-  assert.match(
-    dialog,
-    /if \(syncedProviders\.length === 0 && selectableRegistry\.length > 0\) \{\s*(?:\/\/[^\n]*\n\s*)*setPage\("form"\);/,
-  );
+test("an empty connection list stays on the list, where the provider gallery is", () => {
+  assert.doesNotMatch(dialog, /syncedProviders\.length === 0[^\n]*\{\s*setPage\("form"\)/);
+  assert.doesNotMatch(dialog, /autoOpenedAddFormRef/);
   assert.match(
     dialog,
     /const selectableRegistry = registryRows\.filter\(\(entry\) => !entry\.hidden\);\s*setRegistry\(selectableRegistry\);/,
   );
-
-  assert.doesNotMatch(
+  assert.match(dialog, /No connections yet/);
+  assert.match(
     dialog,
-    /if \(providers\.length === 0 &&[^\n]*\)\s*\{\s*(?:\/\/[^\n]*\n\s*)*setPage\("form"\);/,
+    /<ConnectionGallery\s*registry=\{menuRegistry\}[\s\S]{0,200}?onPick=\{\(type\) => openAddProvider\(type\)\}/,
   );
 });
 
-test("the add-connection form only opens itself once", () => {
-  assert.match(
-    dialog,
-    /if \(!autoOpenedAddFormRef\.current\) \{\s*autoOpenedAddFormRef\.current = true;/,
-  );
-  assert.match(dialog, /const autoOpenedAddFormRef = useRef\(false\);/);
-
-  assert.doesNotMatch(dialog, /autoOpenedAddFormRef\.current = false;/);
+test("only the user's own navigation moves between the list and the form", () => {
+  const calls = [...dialog.matchAll(/setPage\("(list|form)"\)/g)].map((call) => {
+    const before = dialog.slice(0, call.index);
+    const owner = [...before.matchAll(/\n {2}(?:async )?function (\w+)\(/g)].at(-1)?.[1];
+    return `${owner}:${call[1]}`;
+  });
+  assert.deepEqual(calls, [
+    "openAddProvider:form",
+    "closeForm:list",
+    "addProvider:list",
+    "saveProviderEdits:list",
+    "editProvider:form",
+  ]);
 });
 
 test("the form's back arrow still returns to the list", () => {
-  assert.match(
-    dialog,
-    /function closeForm\(\) \{\s*resetForm\(\);\s*autoOpenedAddFormRef\.current = true;\s*setPage\("list"\);/,
-  );
-  assert.match(dialog, /No connections yet/);
-});
-
-test("navigating before the sync lands consumes the auto-open", () => {
-  const calls = [...dialog.matchAll(/setPage\("(?:list|form)"\)/g)];
-  assert.equal(calls.length, 6);
-  for (const call of calls) {
-    const before = dialog.slice(
-      Math.max(0, (call.index ?? 0) - 200),
-      call.index,
-    );
-    assert.match(before, /autoOpenedAddFormRef\.current = true;/);
-  }
+  assert.match(dialog, /function closeForm\(\) \{\s*resetForm\(\);\s*setPage\("list"\);/);
+  assert.match(dialog, /onClick=\{closeForm\}\s*aria-label="Back to connections"/);
 });

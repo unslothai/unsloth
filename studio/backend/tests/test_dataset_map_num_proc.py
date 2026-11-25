@@ -37,6 +37,18 @@ def _memory_headroom(monkeypatch):
     monkeypatch.setattr(policy, "_affordable_workers", lambda: 64)
 
 
+def _trainer_or_skip():
+    """core.training.trainer imports unsloth, which needs unsloth_zoo (absent from some CPU CI buckets)."""
+    # Not importorskip: unsloth_zoo raises NotImplementedError on hosts with no accelerator.
+    try:
+        import core.training.trainer as trainer
+    except Exception as error:
+        pytest.skip(
+            f"core.training.trainer is not importable here: {type(error).__name__}: {error}"
+        )
+    return trainer
+
+
 def _require_fork(multiprocess):
     """Skip without fork: spawn pools fail for unrelated reasons (WinError 10038, missing os.WNOHANG)."""
     if _HOST_PLATFORM == "win32" or "fork" not in multiprocess.get_all_start_methods():
@@ -475,3 +487,91 @@ def test_the_trainer_leaves_the_ordinary_case_to_the_policy():
             f"policy can see it: {requested}"
         )
         assert requested.rstrip().endswith("None"), requested
+
+
+def _config_num_proc_call():
+    import ast
+    from pathlib import Path
+
+    source = (Path(__file__).resolve().parents[1] / "core" / "training" / "trainer.py").read_text(
+        encoding = "utf-8"
+    )
+    tree = ast.parse(source)
+    calls = [
+        value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Dict)
+        for key, value in zip(node.keys, node.values)
+        if isinstance(key, ast.Constant)
+        and key.value == "dataset_num_proc"
+        and isinstance(value, ast.Call)
+        and ast.unparse(value.func) == "dataset_map_num_proc"
+    ]
+    assert len(calls) == 1, "the SFTConfig dataset_num_proc entry moved; re-check this guard"
+    return tree, calls[0]
+
+
+def test_a_trainer_too_big_to_fork_tokenizes_in_process():
+    """The tokenize pool forks the loaded trainer: a 133 GiB Block Swap run went 138 -> 165 GiB host and was killed."""
+    import ast
+
+    tree, call = _config_num_proc_call()
+    serial_test = ast.unparse(call.args[0].test)
+    assert "fork_veto" in serial_test, serial_test
+    assigned = [
+        ast.unparse(node.value)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign) and any(ast.unparse(t) == "fork_veto" for t in node.targets)
+    ]
+    assert assigned and all(
+        "host_memory_fork_veto(" in a and "_block_swap_engaged(self)" in a for a in assigned
+    )
+
+
+@pytest.mark.parametrize(
+    "layers, swapper, expected",
+    [
+        (0, None, 0),
+        (28, None, 28),
+        (28, object(), 28),
+        ("auto", None, 0),
+        ("auto", object(), "auto"),
+    ],
+)
+def test_block_swap_counts_for_the_veto_only_when_it_offloads(layers, swapper, expected):
+    """Auto with nothing to offload attaches no swapper: such a run keeps its tokenizer workers."""
+    from types import SimpleNamespace
+
+    _block_swap_engaged = _trainer_or_skip()._block_swap_engaged
+
+    model = SimpleNamespace() if swapper is None else SimpleNamespace(_unsloth_block_swap = swapper)
+    assert _block_swap_engaged(SimpleNamespace(_offload_layers = layers, model = model)) == expected
+    assert _block_swap_engaged(SimpleNamespace()) == 0
+
+
+def test_the_batched_packing_pool_asks_the_same_veto(monkeypatch):
+    """Multi-LoRA packing forks the loaded base model too."""
+    _policy_or_skip()
+    _patch_device(monkeypatch, hw.DeviceType.CPU)
+    monkeypatch.delenv("UNSLOTH_DATASET_NUM_PROC", raising = False)
+    from types import SimpleNamespace
+
+    _trainer_or_skip()
+    from core.training import multi_lora_trainer
+    import utils.datasets.online_tokenization as online
+
+    monkeypatch.setattr(online, "host_memory_snapshot", lambda: (40 << 30, 8 << 30))
+    tight = SimpleNamespace(_offload_layers = 0, model = SimpleNamespace())
+    assert multi_lora_trainer._pack_num_proc(None, tight) is None
+    monkeypatch.setattr(online, "host_memory_snapshot", lambda: (1 << 30, 1 << 40))
+    assert multi_lora_trainer._pack_num_proc(None, tight) == multi_lora_trainer._pack_num_proc(None)
+
+
+def test_the_escape_hatch_still_beats_a_host_memory_serial_request(monkeypatch):
+    """The veto only asks for 1, so UNSLOTH_DATASET_NUM_PROC keeps the last word."""
+    _policy_or_skip()
+    _patch_device(monkeypatch, hw.DeviceType.CPU)
+    monkeypatch.setenv("UNSLOTH_DATASET_NUM_PROC", "3")
+    assert hw.dataset_map_num_proc(1, serial_as_none = False) == 3
+    monkeypatch.delenv("UNSLOTH_DATASET_NUM_PROC")
+    assert hw.dataset_map_num_proc(1, serial_as_none = False) == 1

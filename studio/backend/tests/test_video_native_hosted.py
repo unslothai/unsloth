@@ -7,7 +7,9 @@ file, verified against its recorded fingerprint, and refused (dense build) whene
 
 from __future__ import annotations
 
+import gc
 import json
+import os
 import sys
 import types
 from pathlib import Path
@@ -249,6 +251,65 @@ def test_refuses_a_file_that_is_not_the_native_build(tmp_path, case):
     assert _load(path, cfg_dir) is None
 
 
+def test_keeps_float32_only_where_from_pretrained_does(tmp_path):
+    # FLUX.3 stores its _keep_in_fp32_modules (norm_q / norm_k) as F32, which a bf16 from_pretrained keeps too.
+    def widen(state):
+        state["scale_shift_table"] = state["scale_shift_table"].float()
+
+    path, cfg_dir, _ = _write_hosted(tmp_path, mutate = widen)
+    assert _load(path, cfg_dir) is None
+
+    class Kept(CLS):
+        _keep_in_fp32_modules = ["scale_shift_table"]
+
+    assert (
+        NH.load_native_from_hosted(
+            str(path), Kept, str(cfg_dir), spec = _spec(), family = FAMILY, logger = None
+        )
+        is None
+    )
+    model = NH.load_native_from_hosted(
+        str(path), Kept, str(cfg_dir), spec = _spec(), family = FAMILY, logger = None, keep_fp32 = True
+    )
+    assert model is not None
+    assert model.scale_shift_table.dtype == torch.float32
+    assert all(
+        p.dtype == torch.bfloat16
+        for n, p in model.named_parameters()
+        if p.is_floating_point() and n != "scale_shift_table"
+    )
+
+
+def test_refuses_a_hosted_file_baked_for_another_base(tmp_path, monkeypatch):
+    # The planning header probe can be off: the reader itself must refuse the official file for a fine-tune.
+    monkeypatch.setenv("UNSLOTH_PREQUANT_HEADER_PROBE", "0")
+    path, cfg_dir, _ = _write_hosted(tmp_path)
+
+    def load(base):
+        return NH.load_native_from_hosted(
+            str(path), CLS, str(cfg_dir), spec = _spec(), family = FAMILY, base = base, logger = None
+        )
+
+    assert load("someone/LTX-2.5-finetune") is None
+    assert load("Lightricks/LTX-2.5-Diffusers") is not None
+    assert load(None) is not None
+    unbased, cfg_unbased, _ = _write_hosted(
+        tmp_path / "unbased", meta_patch = {"base_model_id": None}
+    )
+    assert (
+        NH.load_native_from_hosted(
+            str(unbased),
+            CLS,
+            str(cfg_unbased),
+            spec = _spec(),
+            family = FAMILY,
+            base = "Lightricks/LTX-2.5-Diffusers",
+            logger = None,
+        )
+        is None
+    )
+
+
 def test_refuses_a_weight_only_or_unrotated_native_build(tmp_path):
     path, cfg_dir, _ = _write_hosted(tmp_path)
     assert _load(path, cfg_dir, spec = native_spec("int8", FAMILY, act_int8 = False)) is None
@@ -288,3 +349,41 @@ def test_only_an_opted_in_family_offload_int8_takes_the_hosted_file(monkeypatch)
     monkeypatch.setattr(V, "native_int8_act", lambda target: True)
     monkeypatch.setenv(NH.NATIVE_HOSTED_ENV, "0")
     assert V._video_native_hosted_scheme(ltx25, "int8", _target()) is None
+
+
+def _file_mapped(path) -> bool:
+    real = os.path.realpath(str(path))
+    with open("/proc/self/maps") as maps:
+        return any(line.rstrip("\n").endswith(real) for line in maps)
+
+
+def test_offload_repoint_releases_the_hosted_file(tmp_path):
+    # Group offload re-points each weight at its pinned copy; a view's base would keep the file mapped.
+    path, cfg_dir, _built = _write_hosted(tmp_path)
+    model = _load(path, cfg_dir)
+    assert model is not None
+    tensors = [*model.parameters(), *model.buffers()]
+    assert all(t._base is None for t in tensors)
+    if not os.path.exists("/proc/self/maps"):
+        return
+    assert _file_mapped(path)
+    for t in tensors:
+        t.data = t.data.clone()
+    del t, tensors
+    gc.collect()
+    assert not _file_mapped(path)
+
+
+def test_video_reads_pass_the_base_check_for_the_official_hosted_files():
+    """The reader's base check also guards the video reads (they pass ``base = fam.base_repo``): every native hosted
+    video family's own base matches the base_model_id its official file carries, and another base is refused."""
+    from core.inference.diffusion_prequant import _same_base_model
+    from core.inference.video_families import detect_video_family
+
+    # header base_model_id of unsloth/LTX-2.5-FP8/LTX-2.5-INT8-ConvRot.safetensors
+    official = {"ltx-2.5": "Lightricks/LTX-2.5-Diffusers"}
+    for name, header in official.items():
+        fam = detect_video_family(header, override = name)
+        assert fam is not None and NH.native_hosted_family(fam)
+        assert _same_base_model(header, fam.base_repo)
+        assert not _same_base_model("Lightricks/LTX-2", fam.base_repo)

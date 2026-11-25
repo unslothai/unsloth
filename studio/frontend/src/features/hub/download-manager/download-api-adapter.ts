@@ -82,6 +82,7 @@ export function apiGetProgress(
       expectedBytes: job.expectedBytes,
       hfToken: token,
       signal,
+      engramPrecision: job.engramPrecision ?? null,
     });
   }
   return getDownloadProgress(job.repoId, {
@@ -109,6 +110,9 @@ export function apiStart(
         repo_id: req.repoId,
         gguf_variant: req.scopeId ? null : req.variant,
         scope_id: req.scopeId ?? null,
+        ...(req.engramPrecision && req.variant && !req.scopeId
+          ? { engram_precision: req.engramPrecision }
+          : {}),
         files: req.files,
         hf_token: hfToken,
         use_xet: useXet,

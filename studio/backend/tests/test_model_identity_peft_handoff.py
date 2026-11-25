@@ -3,7 +3,10 @@
 
 """PEFT copies the instance name_or_path into adapter_config.json, so the local snapshot path leaks."""
 
+from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 from utils.models.model_identity import restore_hf_cache_repo_identity
 
@@ -13,6 +16,15 @@ _SNAPSHOT = (
     "/home/user/.cache/huggingface/hub/"
     "models--unsloth--Llama-3.2-1B-Instruct/snapshots/0123456789abcdef"
 )
+
+
+@pytest.fixture(autouse = True)
+def _snapshot_is_in_a_known_hub_cache(monkeypatch):
+    # With no expected_repo_id, the id is restored only for a path in a known Hub cache.
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.known_hf_hub_caches",
+        lambda: [Path("/home/user/.cache/huggingface/hub")],
+    )
 
 
 def _loaded_model(**overrides):

@@ -8,7 +8,8 @@ from __future__ import annotations
 
 import functools
 import os
-from collections.abc import Sequence
+import re
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -27,14 +28,14 @@ _TE_FLAGS_BY_FAMILY: dict[str, tuple[str, ...]] = {
     "qwen-image": ("--qwen2vl",),
     "qwen-image-edit": ("--qwen2vl",),
     "qwen-image-layered": ("--qwen2vl",),
-    # 2.1 conditions on Qwen3-VL, which sd-cli takes through --llm. --qwen2vl is an alias of --llm
-    # that also turns on Qwen2-VL's vision path, so it is the wrong door even though both names
-    # reach the same field.
+    # 2.1 conditions on Qwen3-VL via --llm; --qwen2vl also enables Qwen2-VL's vision, the wrong
+    # door.
     "qwen-image-2.1": ("--llm",),
     # Qwen3-VL-4B through --llm, as qwen-image-2.1.
     "flux.3-klein": ("--llm",),
     "flux.3-klein-base": ("--llm",),
     "krea-2": ("--llm",),
+    "minimax-h3-image": ("--llm",),
     "flux.1": ("--clip_l", "--t5xxl"),
     "flux.1-kontext": ("--clip_l", "--t5xxl"),
 }
@@ -77,8 +78,7 @@ class SdCppGenParams:
 
     prompt: str
     negative_prompt: Optional[str] = None
-    # None = unset: an image-conditioned run lets sd.cpp derive the size from the input; a plain txt2img falls back to
-    # 1024x1024.
+    # None: unset, so image runs let sd.cpp derive size; plain txt2img defaults to 1024x1024.
     width: Optional[int] = None
     height: Optional[int] = None
     steps: Optional[int] = None
@@ -86,6 +86,7 @@ class SdCppGenParams:
     guidance: Optional[float] = None
     seed: Optional[int] = None
     sampling_method: Optional[str] = None
+    scheduler: Optional[str] = None
     batch_count: int = 1
     init_img: Optional[str] = None
     strength: Optional[float] = None
@@ -95,6 +96,7 @@ class SdCppGenParams:
     lora_apply_mode: Optional[str] = None
     # Qwen-Image-Layered layer count; sd.cpp returns layers + 1 images (first = input reconstruction). None = its default 3.
     qwen_image_layers: Optional[int] = None
+    rng: Optional[str] = None
 
 
 @dataclass(frozen = True)
@@ -119,8 +121,16 @@ class SdCppVideoGenParams:
     ref_videos: tuple[str, ...] = ()
     ref_video_audios: tuple[str, ...] = ()
     ref_audios: tuple[str, ...] = ()
-    # sd.cpp exposes only the video schedule shift.
+    # 0-based ref_videos index of each ref_video_audios entry; () pairs them by position.
+    ref_video_audio_indices: tuple[int, ...] = ()
     flow_shift: Optional[float] = None
+    # --audio-flow-shift: builds with sd_cpp_supports_flag(binary, "--audio-flow-shift") only; None = model default.
+    audio_flow_shift: Optional[float] = None
+    # --sampling-method / --scheduler; None leaves the build's default.
+    sample_method: Optional[str] = None
+    scheduler: Optional[str] = None
+    # Uncompressed AVI (BGR24 + float PCM) so Studio's x264 / AAC export is the only lossy step.
+    lossless_output: bool = False
 
 
 @dataclass(frozen = True)
@@ -135,6 +145,8 @@ class SdCppUpscaleParams:
 
 # Fork patch (ggml-patches/0001): quantized matmuls with >= N rows use BF16 dequant + cuBLAS instead of int8 MMQ.
 # Q8_0 only (Z-Image Turbo vs BF16, B200: LPIPS 0.0148 -> 0.0052); k-quants are weight-error bound. Ada/Ampere/Orin keep MMQ (2x faster).
+# Read from the diffusion GGUF only (A100, Q8_0 DiT + Q4_K_M encoder: 1.57x); the env is process-wide, but prompt rows
+# stay below it. Drop the env once the pin carries fork patch 0016, the build's own Q8_0-only default.
 QUANT_CUBLAS_ENV = "GGML_CUDA_QUANT_CUBLAS_MIN_BATCH"
 QUANT_CUBLAS_WEIGHT_TYPES = frozenset({"Q8_0"})
 _UNQUANTIZED_GGUF_TYPES = frozenset({"F32", "F16", "BF16", "F64", "I8", "I16", "I32", "I64"})
@@ -162,36 +174,12 @@ def gguf_quantized_weight_types(path: Optional[str]) -> Optional[frozenset[str]]
         return None
 
 
-def model_files_quantized_weight_types(files: "SdCppModelFiles") -> Optional[frozenset[str]]:
-    """Quantized types across every loaded file (the env override is process-wide), or None if any GGUF is unreadable."""
-    types = gguf_quantized_weight_types(files.diffusion_model)
-    if types is None:
-        return None
-    for path in (
-        files.vae,
-        files.audio_vae,
-        files.clip_l,
-        files.clip_g,
-        files.t5xxl,
-        files.llm,
-        files.llm_vision,
-        files.qwen2vl,
-    ):
-        if not path or not str(path).lower().endswith(".gguf"):
-            continue
-        extra = gguf_quantized_weight_types(path)
-        if extra is None:
-            return None
-        types |= extra
-    return types
-
-
 def quant_cublas_env(
     cuda_ccs: Sequence[tuple[int, int]],
     environ: Optional[dict] = None,
     weight_types: Optional[frozenset[str]] = None,
 ) -> dict[str, str]:
-    """Set only if every card sd.cpp may pick agrees and all quantized tensors are Q8_0; a user value wins."""
+    """Set only if every card sd.cpp may pick agrees and the diffusion GGUF is all Q8_0; a user value wins."""
     import os
 
     environ = os.environ if environ is None else environ
@@ -205,7 +193,8 @@ def quant_cublas_env(
     return {QUANT_CUBLAS_ENV: str(rows.pop())}
 
 
-# Native speed profiles. default/max: --diffusion-fa + --diffusion-conv-direct (exact); Metal/Vulkan/ROCm get fa only.
+# Native speed profiles. default/max: --diffusion-fa + --diffusion-conv-direct (exact); Metal/Vulkan/ROCm get fa only
+# (Metal VAE direct conv is opt-in, Apple Silicon only: ``metal_vae_conv_direct_decision``).
 NATIVE_SPEED_OFF = "off"
 NATIVE_SPEED_DEFAULT = "default"
 NATIVE_SPEED_MAX = "max"
@@ -221,8 +210,7 @@ def native_speed_flags(
     """sd-cli speed flags for a native speed mode (empty for off / None). Separate from offload:
     ``--diffusion-fa`` is a win in its own right. De-duplicated against offload at the call site.
     ``backend_args``: the other argv flags (``--backend`` picks the device); ``accelerator``: build class or None.
-    ``binary``: on builds listing ``--conv-direct`` (master-963+) a rejected direct conv is sent as ``--conv-direct off``,
-    since an omitted flag means auto there (direct conv on for HIP MMA / Vulkan regardless of this policy)."""
+    ``binary``: builds listing ``--conv-direct`` (master-963+) get rejected direct conv explicitly, since omitted = auto."""
     mode = (speed_mode or NATIVE_SPEED_OFF).strip().lower()
     if mode in ("", NATIVE_SPEED_OFF):
         return []
@@ -231,7 +219,11 @@ def native_speed_flags(
         if not conv_direct_wanted(args, accelerator):
             user_set = any(f in _CONV_DIRECT_FLAGS for f in args)
             if not user_set and binary and sd_cpp_supports_conv_direct_mode(binary):
-                return ["--diffusion-fa", "--conv-direct", "off"]
+                return [
+                    "--diffusion-fa",
+                    "--conv-direct",
+                    rejected_conv_direct_mode(args, accelerator, binary),
+                ]
             return ["--diffusion-fa"]
         return ["--diffusion-fa", "--diffusion-conv-direct"]
     raise ValueError(f"native speed_mode must be one of {NATIVE_SPEED_MODES}, got '{speed_mode}'")
@@ -255,6 +247,116 @@ def speed_flags_without(speed: Sequence[str], offload: Sequence[str]) -> list[st
     return out
 
 
+# VAE keeps auto: Vulkan output-checks vs im2col (faster on RADV / AMD Windows), CPU is bit-identical.
+# Not HIP: its auto picks implicit GEMM, never faster on gfx1151.
+_VAE_CONV_DIRECT_AUTO_BACKENDS = ("vulkan", "cpu")
+
+
+def _vae_backend(backend_args: Sequence[str], accelerator: Optional[str]) -> Optional[str]:
+    """``--vae-on-cpu``, else ``vae=`` beats a bare ``--backend`` default, else ``accelerator``."""
+    args = list(backend_args)
+    if "--vae-on-cpu" in args:
+        return "cpu"
+    explicit = default = None
+    for spec in (args[i + 1] for i, f in enumerate(args[:-1]) if f == "--backend"):
+        for part in str(spec).split(","):
+            key, sep, value = part.strip().partition("=")
+            if not sep:
+                default = key or default
+            elif key.strip().lower() == "vae":
+                explicit = value.strip()
+    return explicit or default or accelerator
+
+
+def rejected_conv_direct_mode(
+    backend_args: Sequence[str] = (),
+    accelerator: Optional[str] = None,
+    binary: Optional[str] = None,
+) -> str:
+    """``off,vae=auto`` for a Vulkan denoiser with a Vulkan/CPU VAE, ``off,vae=on`` for an opted-in Metal VAE on Apple
+    Silicon with the implicit GEMM Metal CONV_2D (``_metal_vae_conv_direct``), else ``off`` (also the kill switch).
+    Module syntax shipped with ``--conv-direct`` itself (sd.cpp #2134)."""
+    import os
+
+    forced = (os.environ.get("UNSLOTH_SD_CPP_CONV_DIRECT") or "").strip().lower()
+    if forced in ("0", "off", "false", "no"):
+        return "off"
+    if _runs_on_apple_metal(backend_args):
+        return "off,vae=on" if _metal_vae_conv_direct(backend_args, binary) else "off"
+    args = list(backend_args)
+    diffusion = _diffusion_backend(
+        [args[i + 1] for i, f in enumerate(args[:-1]) if f == "--backend"]
+    )
+    diffusion = (diffusion or accelerator or "").strip().lower().rstrip("0123456789")
+    vae = (_vae_backend(args, accelerator) or "").strip().lower().rstrip("0123456789")
+    if diffusion == "vulkan" and vae in _VAE_CONV_DIRECT_AUTO_BACKENDS:
+        return "off,vae=auto"
+    return "off"
+
+
+# Metal VAE direct conv: unslothai/stable-diffusion.cpp#103 (ggml patches 0072 / 0073) gives ggml-metal an implicit GEMM
+# CONV_2D. On a virtualized macos-15 M1 runner (Metal timings there are not hardware numbers), SD-Turbo VAE decode went
+# 512 px 12.3 -> 5.4 s and 1664 -> 640 MB of VAE compute buffer; 1024 px decoded untiled in 2.56 GB. No physical Apple
+# Silicon measurement exists yet, so this is OFF by default: ``UNSLOTH_SD_CPP_METAL_VAE_CONV_DIRECT=1`` opts in, and
+# then only on an Apple Silicon Mac with a build known to carry the kernel. Intel Macs never get it (their Metal CONV_2D
+# was ~5x slower than im2col and tripped the GPU watchdog). ``=force`` skips the build check (source builds), still
+# Apple Silicon only. The denoiser always keeps im2col.
+METAL_VAE_CONV_DIRECT_ENV = "UNSLOTH_SD_CPP_METAL_VAE_CONV_DIRECT"
+# Unsloth prebuilts carrying the implicit GEMM Metal CONV_2D. Every later sd.cpp master build (> 982) does too.
+METAL_IMPLICIT_GEMM_CONV_TAGS = frozenset({"master-982-0518b34-u9455ee1"})
+METAL_IMPLICIT_GEMM_CONV_MIN_BUILD = 983
+
+
+def metal_implicit_gemm_conv(binary: Optional[str]) -> bool:
+    """True when ``binary`` is an Unsloth prebuilt (``-u<id>`` tag recorded by the installer) carrying the implicit GEMM
+    Metal CONV_2D: an allowlisted tag, or an sd.cpp master build past 982. Fails closed on an unrecorded binary
+    (``SD_CLI_PATH``, PATH, a source build), an upstream tag, or an older Unsloth prebuilt."""
+    import re
+
+    tag = _installed_sd_cpp_tag(str(binary)) if binary else None
+    if not tag or not re.search(r"-u[0-9a-f]+$", tag):
+        return False
+    if tag in METAL_IMPLICIT_GEMM_CONV_TAGS:
+        return True
+    build = sd_cpp_build_number(tag)
+    return build is not None and build >= METAL_IMPLICIT_GEMM_CONV_MIN_BUILD
+
+
+def metal_vae_conv_direct_decision(
+    backend_args: Sequence[str] = (), binary: Optional[str] = None
+) -> tuple[bool, str]:
+    """``(on, reason)`` for direct conv on a Metal VAE. Off unless opted in, on Apple Silicon, with the VAE on Metal and
+    a build carrying the implicit GEMM kernel (or ``force``)."""
+    import os
+
+    forced = (os.environ.get("UNSLOTH_SD_CPP_CONV_DIRECT") or "").strip().lower()
+    if forced in ("0", "off", "false", "no"):
+        return False, "off: UNSLOTH_SD_CPP_CONV_DIRECT=0"
+    opt = (os.environ.get(METAL_VAE_CONV_DIRECT_ENV) or "").strip().lower()
+    if opt not in ("1", "on", "true", "yes", "force"):
+        return False, f"off by default (set {METAL_VAE_CONV_DIRECT_ENV}=1 to opt in)"
+    if not apple_silicon_machine():
+        return False, "off: not an Apple Silicon Mac"
+    if (_vae_backend(backend_args, None) or "").strip().lower() == "cpu":
+        return False, "off: VAE runs on the CPU"
+    if opt != "force" and not metal_implicit_gemm_conv(binary):
+        return False, "off: this sd.cpp build lacks the implicit GEMM Metal CONV_2D"
+    return True, "on: opted in, Apple Silicon, VAE on Metal"
+
+
+_METAL_VAE_CONV_LOGGED: set = set()
+
+
+def _metal_vae_conv_direct(backend_args: Sequence[str], binary: Optional[str]) -> bool:
+    """True when the VAE runs on Metal and should take direct conv (``metal_vae_conv_direct_decision``); logs once."""
+    on, reason = metal_vae_conv_direct_decision(backend_args, binary)
+    if reason not in _METAL_VAE_CONV_LOGGED:
+        _METAL_VAE_CONV_LOGGED.add(reason)
+        import logging
+        logging.getLogger(__name__).info("sd.cpp Metal VAE direct conv: %s", reason)
+    return on
+
+
 def sd_cpp_supports_conv_direct_mode(binary: str) -> bool:
     """True when ``binary --help`` lists ``--conv-direct``. Fails closed (older builds reject the unknown flag)."""
     import os
@@ -274,6 +376,59 @@ def _conv_direct_in_help(binary: str, size: int, mtime_ns: int) -> bool:
 
     text = _sd_cpp_probe_output(binary, "--help")
     return text is not None and re.search(r"(?<![\w-])--conv-direct\b", text) is not None
+
+
+# Builds with per-module --flash-attn (the pinned fork) treat the legacy --diffusion-fa as "--flash-attn
+# off,diffusion=on", turning text-encoder flash attention OFF where the binary's own auto turns it on (CPU, CUDA MMA,
+# HIP MMA, Metal, Vulkan on NVIDIA RTX; elsewhere a timed probe decides). An LLM encoder then materializes the full
+# score matrix. te=auto hands the text encoder back to that per-backend auto, so no backend runs a kernel its own probe
+# rejected. The VAE keeps flash attention off, as --diffusion-fa had it. Builds without the module syntax keep
+# --diffusion-fa.
+LEGACY_DIFFUSION_FA = "--diffusion-fa"
+FLASH_ATTN_MODULES = "off,diffusion=on,te=auto"
+
+
+def sd_cpp_supports_flash_attn_modules(binary: Optional[str]) -> bool:
+    """True when ``binary --help`` documents per-module ``--flash-attn`` assignments. Fails closed."""
+    import os
+
+    if not binary:
+        return False
+    try:
+        st = os.stat(binary)
+    except OSError:
+        return False
+    return _flash_attn_modules_in_help(str(binary), st.st_size, st.st_mtime_ns)
+
+
+@functools.lru_cache(maxsize = 16)
+def _flash_attn_modules_in_help(binary: str, size: int, mtime_ns: int) -> bool:
+    import re
+
+    from core.inference.sd_cpp_backend import _sd_cpp_probe_output
+
+    text = _sd_cpp_probe_output(binary, "--help")
+    return (
+        text is not None
+        and re.search(r"(?<![\w-])--flash-attn\b", text) is not None
+        and re.search(r"\bte=(?:on|off)\b", text) is not None
+    )
+
+
+def with_module_flash_attn(flags: Sequence[str], binary: Optional[str]) -> list[str]:
+    """``flags`` with ``--diffusion-fa`` replaced by ``--flash-attn off,diffusion=on,te=auto`` on builds that take
+    module assignments (one occurrence kept); unchanged otherwise."""
+    flags = list(flags)
+    if LEGACY_DIFFUSION_FA not in flags or not sd_cpp_supports_flash_attn_modules(binary):
+        return flags
+    out: list[str] = []
+    for f in flags:
+        if f == LEGACY_DIFFUSION_FA:
+            if "--flash-attn" not in out:
+                out += ["--flash-attn", FLASH_ATTN_MODULES]
+        else:
+            out.append(f)
+    return out
 
 
 # Direct conv loses to im2col here: Vulkan (sd.cpp #2137, 10.9 -> 73.4 s) and HIP (#2085; gfx1151 never faster).
@@ -312,10 +467,8 @@ def _diffusion_backend(specs: Sequence[str]) -> Optional[str]:
 
 
 def _runs_on_apple_metal(backend_args: Sequence[str] = ()) -> bool:
-    """True when sd.cpp runs the diffusion model on Apple Metal (macOS; an explicit ``--backend`` for it decides,
-    else an Apple Silicon machine whose GPU is not paravirtual).
-
-    Direct conv is not used there: ggml-metal's CONV_2D trips the GPU watchdog on an SD1.5 UNet."""
+    """True when sd.cpp runs diffusion on Apple Metal (an explicit --backend decides, else Apple
+    Silicon not paravirtual); the denoiser keeps im2col, since the scalar CONV_2D tripped the GPU watchdog."""
     import sys
 
     if sys.platform != "darwin":
@@ -735,27 +888,92 @@ def is_device_oom_text(text: Optional[str]) -> bool:
     return False
 
 
+# sd.cpp ``fail_segment`` capacity-check stages (ggml_runner.cpp); "workspace allocation" is an allocator failure.
+_SEGMENT_REFUSAL_MARKERS: tuple[str, ...] = (
+    "failed during weight preparation",
+    "failed during workspace capacity check",
+    "failed during allocated capacity check",
+)
+# Allocator failures on the host RAM that weight preparation stages into, as well as on the device.
+_ALLOCATION_FAILURE_MARKERS: tuple[str, ...] = (
+    *_HOST_OOM_MARKERS,
+    "erroroutofhostmemory",
+    "failed to allocate",
+    "backend buffer failed",
+)
+# sd.cpp fills free-512 MiB with cached weights, so each phase needs memory the last one released; half leaves it
+# unclaimed when the driver reports the release late (Windows may defer destroying allocations).
+IMAGE_VRAM_RETRY_SCALE = 0.5
+
+
+def is_vram_refusal_text(text: Optional[str]) -> bool:
+    """sd.cpp's model manager declined a segment for VRAM, and no allocation failed outright (that keeps its error)."""
+    lines = str(text or "").lower().splitlines()
+    if not any(marker in line for line in lines for marker in _SEGMENT_REFUSAL_MARKERS):
+        return False
+    return not any(
+        "failed during" not in line
+        and (
+            is_device_oom_text(line)
+            or any(marker in line for marker in _ALLOCATION_FAILURE_MARKERS)
+        )
+        for line in lines
+    )
+
+
+def image_vram_retry_budget(
+    planned_free_mib: Optional[Mapping[str, int]], render_devices: Iterable[str] = ()
+) -> Optional[str]:
+    """``--max-vram`` for the image retry: half of each planned card's free VRAM (``CUDA0=..,CUDA1=..`` for several),
+    skipping cards under the floor. None if none qualifies or a ``render_devices`` card does not."""
+    planned = dict(planned_free_mib or {})
+    budgets: dict[str, float] = {}
+    for name, mib in planned.items():
+        gib = graph_cut_budget_gib(int(mib) << 20, reserve_bytes = 0, scale = IMAGE_VRAM_RETRY_SCALE)
+        if gib is not None:
+            budgets[name] = gib
+    if not budgets:
+        return None
+    known = {name.lower() for name in budgets}
+    if any(str(device).lower() not in known for device in render_devices):
+        return None
+    if len(planned) == 1:
+        return _format_gib(next(iter(budgets.values())))
+    return ",".join(f"{name}={_format_gib(gib)}" for name, gib in budgets.items())
+
+
 def device_backend_flags(
-    device_name: Optional[str], offload: Optional[list[str]] = None
+    device_name: Optional[str],
+    offload: Optional[list[str]] = None,
+    *,
+    te_device: Optional[str] = None,
+    vae_device: Optional[str] = None,
 ) -> list[str]:
     """Pins only modules the offload policy left on GPU, else sd.cpp uses ordinal 0 on mixed boxes; a later device flag would undo --clip-on-cpu."""
     if not device_name:
         return []
     flags = offload or []
-    te = "cpu" if "--clip-on-cpu" in flags else device_name
-    vae = "cpu" if "--vae-on-cpu" in flags else device_name
+    te = "cpu" if "--clip-on-cpu" in flags else (te_device or device_name)
+    vae = "cpu" if "--vae-on-cpu" in flags else (vae_device or device_name)
     return ["--backend", f"diffusion={device_name},te={te},vae={vae}"]
 
 
 def without_device_backend_flags(flags: Sequence[str]) -> list[str]:
-    """Strips every --backend pair: sd.cpp concatenates repeats, so a CPU restart needs the pin gone; status and recipe read empty flags as no offload."""
+    """Strips every --backend pair: sd.cpp concatenates repeats, so a CPU restart needs the pin gone; status and recipe read empty flags as no offload.
+    A two-card block split's ``--auto-fit`` / ``--max-vram`` belong to its pin and go with it."""
+    items = list(flags)
+    split = any(
+        f == "--backend" and i + 1 < len(items) and "&" in str(items[i + 1])
+        for i, f in enumerate(items)
+    )
+    paired = ("--backend", "--auto-fit", "--max-vram") if split else ("--backend",)
     out: list[str] = []
     skip = False
-    for flag in flags:
+    for flag in items:
         if skip:
             skip = False
             continue
-        if flag == "--backend":
+        if flag in paired:
             skip = True
             continue
         out.append(flag)
@@ -773,14 +991,154 @@ def is_ggml_unsupported_op_abort(message: str) -> bool:
     return all(marker in text for marker in _GGML_UNSUPPORTED_OP_MARKERS)
 
 
+# Bare --vae-tiling on the CPU VAE = 256 px tiles (49 for 1024 px, ~3x slower, per-tile colour shift); take the
+# largest tile spare host RAM holds. FLUX.2 klein 4B 1024 px decode: 185 s at 256, 138 s at 512, 68 s whole.
+CPU_VAE_TILE_ENV = "UNSLOTH_SD_CPP_VAE_TILE"
+CPU_VAE_TILE_SIZES = (1024, 768, 512)
+# Qwen-Image 2.1 measured 3889 MiB per 1024 px tile (worst family) + 30%.
+CPU_VAE_DECODE_MIB_PER_MPX = 5120
+# Older builds count latent cells (1024 = untiled).
+VAE_TILE_PIXELS_HELP = "tile size for vae encode and decode in image pixels"
+
+
+# A tile covering the image decodes it whole: untiled pixels, faster. Smaller tiles run GroupNorm per tile and shift
+# tone on FLUX.2 (klein 4B: 31.3 dB at 1536 px, 25.9 dB at 2048 px vs untiled). sd-server fixes the tile at launch, so a
+# measured family gets the largest whole tile the budget holds, then the ladder below. Values: ggml VAE buffer (MiB)
+# of one whole decode on an L4; FLUX VAEs grow faster than area past 1536 px, so nothing past 2048 is extrapolated.
+_FLUX2_VAE_WHOLE_MIB = ((2048, 17040), (1536, 6336))
+_FLUX1_VAE_WHOLE_MIB = ((2048, 17028), (1536, 6336))
+_QWEN21_VAE_WHOLE_MIB = ((2048, 15552), (1536, 8748))
+WHOLE_VAE_DECODE_MIB: dict[str, tuple[tuple[int, int], ...]] = {
+    "flux.2-klein": _FLUX2_VAE_WHOLE_MIB,
+    "flux.2-dev": _FLUX2_VAE_WHOLE_MIB,
+    "z-image": _FLUX1_VAE_WHOLE_MIB,
+    "flux.1": _FLUX1_VAE_WHOLE_MIB,
+    "flux.1-kontext": _FLUX1_VAE_WHOLE_MIB,
+    "chroma": _FLUX1_VAE_WHOLE_MIB,
+    "qwen-image-2.1": _QWEN21_VAE_WHOLE_MIB,
+}
+# Margin on the measured buffer: the card retries a failed allocation with halved tiles, the CPU has no retry.
+GPU_WHOLE_VAE_MARGIN = 1.15
+CPU_WHOLE_VAE_MARGIN = 1.3
+
+
+def whole_vae_tiles(family: Optional[str]) -> tuple[tuple[int, int], ...]:
+    """(tile edge px, measured whole-decode MiB) pairs tried above the per-tile ladder for ``family``, largest first;
+    () when its whole decode is unmeasured (MiniMax-H3 keeps its own tiler)."""
+    return WHOLE_VAE_DECODE_MIB.get((family or "").strip().lower(), ())
+
+
+def cpu_vae_tile_size(
+    spare_mib: Optional[int],
+    env: Optional[dict] = None,
+    whole_tiles: Sequence[tuple[int, int]] = (),
+) -> Optional[int]:
+    """Tile edge (px) for the CPU VAE, None = 256 px. Env 0/off keeps 256, a number pins it. ``whole_tiles``
+    (``whole_vae_tiles``) are tried first."""
+    import os
+
+    forced = ((env if env is not None else os.environ).get(CPU_VAE_TILE_ENV) or "").strip().lower()
+    if forced in ("0", "off", "false", "no"):
+        return None
+    if forced.isdigit() and int(forced) >= 64:
+        return int(forced)
+    if spare_mib is None:
+        return None
+    for side, mib in whole_tiles:
+        if int(mib * CPU_WHOLE_VAE_MARGIN) <= spare_mib:
+            return int(side)
+    for size in CPU_VAE_TILE_SIZES:
+        if CPU_VAE_DECODE_MIB_PER_MPX * (size / 1024) ** 2 <= spare_mib:
+            return size
+    return None
+
+
+# The offload path can decode on the card instead when it has the room. --offload-to-cpu keeps every weight in host
+# RAM and copies a model's weights to the card only while it runs; the denoiser's copies are evicted (least recently
+# used first) when the decode asks for more than is free, and the copies are dropped when the request ends, so the
+# decode has the card's free VRAM. Measured on an L4 (12 vCPU), 1024 px: the whole CUDA decode takes 1.2 s (FLUX.2
+# klein 4B) / 2.5 s (Qwen-Image 2.1) against 66 / 109 s for the whole CPU decode, the render's peak VRAM is unchanged
+# (the denoiser's peak is higher), and the idle server keeps about 0.5 GB more in its CUDA buffer cache.
+GPU_VAE_ENV = "UNSLOTH_SD_CPP_VAE_GPU"
+GPU_VAE_TILE_SIZES = (1024, 768, 512, 256)
+# MiB of CUDA decode buffer per 1024x1024 tile (direct conv), from whole-decode minus 512 px-tile peaks: Qwen-Image 2.1
+# 4459, FLUX.2 3315; + 25%.
+GPU_VAE_DECODE_MIB_PER_MPX = 5632
+
+
+def gpu_vae_tile_size(
+    free_mib: Optional[int],
+    vae_mib: Optional[int],
+    env: Optional[dict] = None,
+    whole_tiles: Sequence[tuple[int, int]] = (),
+) -> Optional[int]:
+    """Tile edge (px) for decoding the offload path's VAE on the card, or None to keep it on the CPU.
+
+    ``free_mib``: card VRAM free after the card reserve (None = unread, keeps the CPU). ``vae_mib``: the VAE file,
+    counted twice (its weights may be widened to f32 on the card). Takes the largest tile whose decode buffer fits
+    beside them, ``whole_tiles`` (``whole_vae_tiles``) first; sd.cpp still halves the tile if an allocation
+    fails. ``UNSLOTH_SD_CPP_VAE_GPU``: 0 / off keeps the VAE on the CPU."""
+    forced = ((env if env is not None else os.environ).get(GPU_VAE_ENV) or "").strip().lower()
+    if forced in ("0", "off", "false", "no") or free_mib is None:
+        return None
+    room = int(free_mib) - 2 * max(int(vae_mib or 0), 0)
+    for side, mib in whole_tiles:
+        if int(mib * GPU_WHOLE_VAE_MARGIN) <= room:
+            return int(side)
+    for size in GPU_VAE_TILE_SIZES:
+        if GPU_VAE_DECODE_MIB_PER_MPX * (size / 1024) ** 2 <= room:
+            return size
+    return None
+
+
+# The text encoder follows the VAE onto the card when the card has room: its weights stay in host RAM and sd.cpp
+# segments the encoder to the live free VRAM (prefetching the next segment), then evicts it for the denoiser. On a
+# 2 vCPU T4 the 7.7 GB BF16 Qwen3-4B encoder of FLUX.2 klein took the request from 133 to 56 s; with 7.6 GB free it
+# ran in segments at a 6.2 GB peak. Below this much free VRAM (after the card reserve) the encoder stays on the CPU.
+GPU_TE_ENV = "UNSLOTH_SD_CPP_TE_GPU"
+GPU_TE_MIN_FREE_MIB = 6000
+
+
+def gpu_te_fits(free_mib: Optional[int], env: Optional[dict] = None) -> bool:
+    """True when the offload path's text encoder may run on the card: ``free_mib`` (card free after the reserve, None =
+    unread) is at least ``GPU_TE_MIN_FREE_MIB``. ``UNSLOTH_SD_CPP_TE_GPU``: 0 / off keeps it on the CPU."""
+    forced = ((env if env is not None else os.environ).get(GPU_TE_ENV) or "").strip().lower()
+    if forced in ("0", "off", "false", "no") or free_mib is None:
+        return False
+    return int(free_mib) >= GPU_TE_MIN_FREE_MIB
+
+
+def sd_cpp_vae_tile_size_in_pixels(binary: Optional[str]) -> bool:
+    """Fails closed."""
+    import os
+
+    if not binary:
+        return False
+    try:
+        st = os.stat(binary)
+    except OSError:
+        return False
+    return _vae_tile_pixels_in_help(str(binary), st.st_size, st.st_mtime_ns)
+
+
+@functools.lru_cache(maxsize = 16)
+def _vae_tile_pixels_in_help(binary: str, size: int, mtime_ns: int) -> bool:
+    from core.inference.sd_cpp_backend import _sd_cpp_probe_output
+    text = _sd_cpp_probe_output(binary, "--help")
+    return text is not None and VAE_TILE_PIXELS_HELP in " ".join(text.split())
+
+
 def offload_flags(
     policy: str,
     *,
     vae_tiling: bool = False,
     diffusion_fa: bool = False,
     vae_on_cpu: bool = True,
+    vae_tile_size: Optional[int] = None,
+    te_on_cpu: bool = True,
 ) -> list[str]:
-    """vae_on_cpu=False drops only --vae-on-cpu, for families whose VAE cannot run on the CPU path."""
+    """vae_on_cpu=False drops only --vae-on-cpu: families whose VAE cannot run on the CPU path, and an offload load
+    whose card holds the decode (``gpu_vae_tile_size``). te_on_cpu=False drops --clip-on-cpu (``gpu_te_fits``)."""
     flags: list[str] = []
     fa = diffusion_fa
     tile = vae_tiling
@@ -788,7 +1146,8 @@ def offload_flags(
         flags.append("--offload-to-cpu")
         fa = True
     if policy in (OFFLOAD_MODEL, OFFLOAD_SEQUENTIAL):
-        flags.append("--clip-on-cpu")
+        if te_on_cpu:
+            flags.append("--clip-on-cpu")
         if vae_on_cpu:
             flags.append("--vae-on-cpu")
         tile = True
@@ -803,7 +1162,38 @@ def offload_flags(
         if f not in seen:
             seen.add(f)
             out.append(f)
+    # A GPU VAE keeps sd.cpp's halving retry on OOM whatever the starting tile.
+    if tile and vae_tile_size:
+        out += ["--vae-tile-size", str(int(vae_tile_size))]
     return out
+
+
+# H3 VAE tiler: --vae-tile-overlap is a minimum overlap fraction (0.5 unset); 0.25 = the reference 64 px layout.
+H3_VAE_TILE_OVERLAP = "0.25"
+
+
+def with_h3_vae_tile_overlap(flags: "tuple[str, ...] | list[str]") -> tuple[str, ...]:
+    """``flags`` plus ``--vae-tile-overlap 0.25`` when they tile the VAE and set no overlap, else unchanged."""
+    flags = tuple(flags)
+    if "--vae-tiling" not in flags or "--vae-tile-overlap" in flags:
+        return flags
+    return flags + ("--vae-tile-overlap", H3_VAE_TILE_OVERLAP)
+
+
+# sd-cli's own <lora:NAME:W> pattern; it loads an absolute NAME from anywhere, whatever --lora-model-dir says.
+_LORA_TAG_RE = re.compile(r"<lora:([^:>]+):([^>]+)>")
+
+
+def strip_lora_tags(prompt: str) -> str:
+    """Removes every tag sd-cli would parse, to a fixed point so a split tag cannot reassemble, plus any dangling
+    ``<lora:`` that could pair with a tag appended after it."""
+    out, prev = prompt, None
+    while prev != out:
+        prev = out
+        out = _LORA_TAG_RE.sub("", out).replace("<lora:", "")
+    if out == prompt:
+        return prompt
+    return re.sub(r"[ \t]{2,}", " ", out).strip()
 
 
 def build_sd_cpp_command(
@@ -840,7 +1230,9 @@ def build_sd_cpp_command(
         if value:
             cmd += [flag, value]
 
-    cmd += ["--prompt", params.prompt]
+    # Tags are only honoured against a lora_dir the caller filled with validated adapters.
+    prompt = params.prompt if params.lora_dir else strip_lora_tags(params.prompt)
+    cmd += ["--prompt", prompt]
     if params.negative_prompt:
         cmd += ["--negative-prompt", params.negative_prompt]
     if params.init_img:
@@ -873,8 +1265,12 @@ def build_sd_cpp_command(
         cmd += ["--guidance", _fmt_float(params.guidance)]
     if params.sampling_method:
         cmd += ["--sampling-method", str(params.sampling_method)]
+    if params.scheduler:
+        cmd += ["--scheduler", str(params.scheduler)]
     if params.seed is not None:
         cmd += ["--seed", str(int(params.seed))]
+    if params.rng:
+        cmd += ["--rng", str(params.rng)]
     if params.batch_count and params.batch_count != 1:
         # The runner collects only --output, so a CLI batch drops images; use the server API.
         raise ValueError(
@@ -886,7 +1282,7 @@ def build_sd_cpp_command(
         cmd += ["--threads", str(int(threads))]
     offload = list(offload or [])
     if offload:
-        cmd += offload
+        cmd += with_module_flash_attn(offload, binary)
     cmd += metal_placement_flags(offload)
     cmd += mmap_flags(binary, extra_args, offload)
     if verbose:
@@ -894,6 +1290,11 @@ def build_sd_cpp_command(
     if extra_args:
         cmd += list(extra_args)
     return cmd
+
+
+# References are already sized. sd.cpp's "max" leaves a short edge <= 2048 untouched; its default
+# "match" is not idempotent after the 32 px snap, so it could resize them again. Pre-#2177 builds ignore it.
+H3_SIZED_REF_IMAGE_ARGS = "ref_image_size=max"
 
 
 def build_sd_cpp_video_command(
@@ -943,23 +1344,27 @@ def build_sd_cpp_video_command(
             "MiniMax-H3 keyframes and references cannot be combined: they run against "
             "different denoiser partitions."
         )
-    if len(params.ref_video_audios) > len(params.ref_videos):
-        raise ValueError("each reference video soundtrack needs a reference video to pair with")
+    _check_ref_video_audio_indices(params)
     if params.init_img:
         cmd += ["--init-img", params.init_img]
     if params.end_img:
         cmd += ["--end-img", params.end_img]
     for ref in params.ref_images:
         cmd += ["--ref-image", ref]
+    if params.ref_images:
+        cmd += ["--ref-image-args", H3_SIZED_REF_IMAGE_ARGS]
     for ref in params.ref_videos:
         cmd += ["--ref-video", ref]
     for ref in params.ref_video_audios:
         cmd += ["--ref-video-audio", ref]
+    for index in params.ref_video_audio_indices:
+        cmd += ["--ref-video-audio-index", str(int(index))]
     for ref in params.ref_audios:
         cmd += ["--ref-audio", ref]
     cmd += [
         "--prompt",
-        params.prompt,
+        # Video has no LoRA selection, so no prompt tag is legitimate.
+        strip_lora_tags(params.prompt),
         "--cfg-scale",
         _fmt_float(params.cfg_scale),
         "--width",
@@ -975,16 +1380,24 @@ def build_sd_cpp_video_command(
     ]
     if params.steps is not None:
         cmd += ["--steps", str(int(params.steps))]
+    if params.sample_method:
+        cmd += ["--sampling-method", str(params.sample_method)]
+    if params.scheduler:
+        cmd += ["--scheduler", str(params.scheduler)]
     if params.flow_shift is not None:
         cmd += ["--flow-shift", _fmt_float(params.flow_shift)]
+    if params.audio_flow_shift is not None:
+        cmd += ["--audio-flow-shift", _fmt_float(params.audio_flow_shift)]
     if params.seed is not None:
         cmd += ["--seed", str(int(params.seed))]
+    if params.lossless_output:
+        cmd.append("--lossless-video")
     cmd += ["--output", output_path]
     if threads is not None:
         cmd += ["--threads", str(int(threads))]
     offload = list(offload or [])
     if offload:
-        cmd += offload
+        cmd += with_module_flash_attn(offload, binary)
     cmd += metal_placement_flags(offload)
     cmd += mmap_flags(binary, extra_args, offload)
     if verbose:
@@ -1049,6 +1462,7 @@ def build_sd_cpp_server_command(
     verbose: bool = False,
     extra_args: Optional[list[str]] = None,
     accelerator: Optional[str] = None,
+    rng: Optional[str] = None,
 ) -> list[str]:
     """Those dir flags all point at ``scratch_dir``, which must exist: sd-server fails on a missing dir."""
     if not files.diffusion_model:
@@ -1071,6 +1485,9 @@ def build_sd_cpp_server_command(
             cmd += [flag, value]
     if vae_format:
         cmd += ["--vae-format", vae_format]
+    # A server-wide flag: the request body has no rng field.
+    if rng:
+        cmd += ["--rng", str(rng)]
     cmd += ["--listen-ip", str(host), "--listen-port", str(int(port))]
     if scratch_dir:
         cmd += [
@@ -1085,14 +1502,13 @@ def build_sd_cpp_server_command(
         cmd += ["--threads", str(int(threads))]
 
     offload = list(offload or [])
-    if offload:
-        cmd += offload
-    # De-dup speed flags against offload (may already include --diffusion-fa).
+    # De-dup speed flags against offload (may already include --diffusion-fa); then the module form of it.
     placement = metal_placement_flags(offload)
     backend_args = [*offload, *placement, *(extra_args or ())]
-    cmd += speed_flags_without(
+    speed = speed_flags_without(
         native_speed_flags(native_speed, backend_args, accelerator, binary), offload
     )
+    cmd += with_module_flash_attn([*offload, *speed], binary)
     cmd += placement
     cmd += mmap_flags(binary, extra_args, offload)
     if verbose:
@@ -1112,6 +1528,7 @@ def build_img_gen_request(
     seed: Optional[int] = None,
     batch_count: int = 1,
     sample_method: Optional[str] = None,
+    scheduler: Optional[str] = None,
     flow_shift: Optional[float] = None,
     cfg_scale: Optional[float] = None,
     distilled_guidance: Optional[float] = None,
@@ -1138,6 +1555,8 @@ def build_img_gen_request(
         sample_params["sample_steps"] = int(steps)
     if sample_method:
         sample_params["sample_method"] = str(sample_method)
+    if scheduler:
+        sample_params["scheduler"] = str(scheduler)
     if flow_shift is not None:
         sample_params["flow_shift"] = float(flow_shift)
     if custom_sigmas:
@@ -1185,9 +1604,126 @@ def sd_cli_output_paths(output_path: str, num_results: int) -> list[str]:
     return [f"{stem}_{i}.{ext}" for i in range(num_results)]
 
 
-def h3_server_eligible(params: "SdCppVideoGenParams") -> bool:
-    """False for reference videos / audio: path-only sd-cli flags with no ``vid_gen`` JSON field."""
-    return not (params.ref_videos or params.ref_video_audios or params.ref_audios)
+H3_SERVER_REFS_ENV = "UNSLOTH_H3_SERVER_REFS"
+# sd-cli's --ref-video reader (examples/cli/main.cpp load_images_from_dir): these extensions, byte-ordered names.
+_SD_CLI_FRAME_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".webp")
+
+
+# "0" = no family --scheduler / flow-shift variants (sd.cpp default schedule).
+FAMILY_SCHEDULER_ENV = "UNSLOTH_SD_CPP_FAMILY_SCHEDULER"
+
+# MiniMax-H3's reference recipe: res_multistep (eta 0, one evaluation per step) on the simple schedule. Distilled /
+# PDD checkpoints keep Euler on the same schedule (their recipe). "legacy" restores Euler on sd.cpp's discrete grid.
+H3_SAMPLER_ENV = "UNSLOTH_H3_SD_CPP_SAMPLER"
+H3_SAMPLE_METHOD = "res_multistep"
+H3_DISTILLED_SAMPLE_METHOD = "euler"
+H3_SCHEDULER = "simple"
+# "0" keeps sd.cpp's MJPG AVI (lossy) even on builds with the uncompressed AVI.
+H3_LOSSLESS_ENV = "UNSLOTH_H3_SD_CPP_LOSSLESS"
+H3_LOSSLESS_SERVER_FORMAT = "avi_raw"
+
+
+def h3_sd_cpp_sampler(distilled: bool) -> tuple[str, str]:
+    """``(sample_method, scheduler)`` for one MiniMax-H3 render on sd.cpp."""
+    if os.environ.get(H3_SAMPLER_ENV, "").strip().lower() == "legacy":
+        return "euler", "discrete"
+    return (H3_DISTILLED_SAMPLE_METHOD if distilled else H3_SAMPLE_METHOD), H3_SCHEDULER
+
+
+def h3_server_output_format(server_formats: Iterable[str]) -> str:
+    """vid_gen ``output_format`` for an sd-server listing ``server_formats``: uncompressed AVI when offered."""
+    if h3_lossless_enabled() and H3_LOSSLESS_SERVER_FORMAT in tuple(server_formats or ()):
+        return H3_LOSSLESS_SERVER_FORMAT
+    return "avi"
+
+
+def sd_cpp_supports_flag(binary: Optional[str], flag: str) -> bool:
+    """True when ``binary --help`` lists ``flag``. Fails closed (older builds reject an unknown flag)."""
+    if not binary:
+        return False
+    try:
+        st = os.stat(binary)
+    except OSError:
+        return False
+    return _flag_in_help(str(binary), st.st_size, st.st_mtime_ns, flag)
+
+
+def sd_cpp_supports_ref_video_audio_index(binary: Optional[str]) -> bool:
+    """Explicit soundtrack pairing (``--ref-video-audio-index``)."""
+    return sd_cpp_supports_flag(binary, "--ref-video-audio-index")
+
+
+@functools.lru_cache(maxsize = 32)
+def _flag_in_help(binary: str, size: int, mtime_ns: int, flag: str) -> bool:
+    import re
+
+    from core.inference.sd_cpp_backend import _sd_cpp_probe_output
+
+    text = _sd_cpp_probe_output(binary, "--help")
+    return text is not None and re.search(r"(?<![\w-])" + re.escape(flag) + r"\b", text) is not None
+
+
+def h3_lossless_enabled() -> bool:
+    value = os.environ.get(H3_LOSSLESS_ENV, "").strip().lower()
+    return value not in ("0", "false", "no", "off")
+
+
+def sd_cpp_supports_lossless_video(binary: Optional[str]) -> bool:
+    """True when ``binary --help`` lists ``--lossless-video``. Fails closed (older builds reject the unknown flag)."""
+    if not binary:
+        return False
+    try:
+        st = os.stat(binary)
+    except OSError:
+        return False
+    return _lossless_video_in_help(str(binary), st.st_size, st.st_mtime_ns)
+
+
+@functools.lru_cache(maxsize = 16)
+def _lossless_video_in_help(binary: str, size: int, mtime_ns: int) -> bool:
+    import re
+
+    from core.inference.sd_cpp_backend import _sd_cpp_probe_output
+
+    text = _sd_cpp_probe_output(binary, "--help")
+    return text is not None and re.search(r"(?<![\w-])--lossless-video\b", text) is not None
+
+
+def family_scheduler_enabled() -> bool:
+    value = os.environ.get(FAMILY_SCHEDULER_ENV, "").strip().lower()
+    return value not in ("0", "false", "no", "off")
+
+
+def h3_server_refs_enabled() -> bool:
+    value = os.environ.get(H3_SERVER_REFS_ENV, "").strip().lower()
+    return value not in ("0", "false", "no", "off")
+
+
+def h3_reference_media_keys(params: "SdCppVideoGenParams") -> tuple[str, ...]:
+    keys = []
+    if params.ref_videos:
+        keys.append("ref_videos")
+    if params.ref_video_audios:
+        keys.append("ref_video_audios")
+    if params.ref_audios:
+        keys.append("ref_audios")
+    if params.ref_video_audio_indices:
+        keys.append("ref_video_audio_indices")
+    return tuple(keys)
+
+
+def h3_server_eligible(params: "SdCppVideoGenParams", *, server_refs: bool = False) -> bool:
+    return server_refs or not h3_reference_media_keys(params)
+
+
+def sd_cli_frame_files(directory: str) -> list[str]:
+    entries = [
+        entry
+        for entry in os.scandir(directory)
+        if entry.is_file() and os.path.splitext(entry.name)[1].lower() in _SD_CLI_FRAME_EXTS
+    ]
+    entries.sort(key = lambda entry: entry.name.encode("utf-8", "surrogateescape"))
+    return [entry.path for entry in entries]
 
 
 def build_vid_gen_request(
@@ -1196,16 +1732,28 @@ def build_vid_gen_request(
     images_b64: Optional[dict[str, str]] = None,
     ref_images_b64: Optional[list[str]] = None,
     output_compression: int = 90,
+    ref_videos_b64: Optional[list[list[str]]] = None,
+    ref_video_audios_b64: Optional[list[str]] = None,
+    ref_audios_b64: Optional[list[str]] = None,
 ) -> dict:
     """POST body equal to build_sd_cpp_video_command (same pixels per seed); writes AVI, which needs no WebM build; --rng cpu is a server flag passed at spawn."""
     if not (params.prompt or "").strip():
         raise ValueError("prompt is required")
     if params.width <= 0 or params.height <= 0 or params.num_frames <= 0:
         raise ValueError("width, height, and num_frames must be positive")
-    if not h3_server_eligible(params):
-        raise ValueError("reference videos and audio are not accepted by the sd-server vid_gen API")
+    inline_refs = {
+        "ref_videos": ref_videos_b64,
+        "ref_video_audios": ref_video_audios_b64,
+        "ref_audios": ref_audios_b64,
+    }
+    for key in h3_reference_media_keys(params):
+        if key in inline_refs and len(inline_refs[key] or ()) != len(getattr(params, key)):
+            raise ValueError(f"{key} must be sent inline to the sd-server vid_gen API")
+    _check_ref_video_audio_indices(params)
     images = dict(images_b64 or {})
-    if (images.get("init_image") or images.get("end_image")) and ref_images_b64:
+    if (images.get("init_image") or images.get("end_image")) and (
+        ref_images_b64 or h3_reference_media_keys(params)
+    ):
         raise ValueError(
             "MiniMax-H3 keyframes and references cannot be combined: they run against "
             "different denoiser partitions."
@@ -1215,6 +1763,12 @@ def build_vid_gen_request(
         sample_params["sample_steps"] = int(params.steps)
     if params.flow_shift is not None:
         sample_params["flow_shift"] = float(params.flow_shift)
+    if params.sample_method:
+        sample_params["sample_method"] = str(params.sample_method)
+    if params.scheduler:
+        sample_params["scheduler"] = str(params.scheduler)
+    if params.audio_flow_shift is not None:
+        sample_params["audio_flow_shift"] = float(params.audio_flow_shift)
     req: dict = {
         "prompt": params.prompt,
         "width": int(params.width),
@@ -1222,7 +1776,7 @@ def build_vid_gen_request(
         "video_frames": int(params.num_frames),
         "fps": int(params.fps),
         "sample_params": sample_params,
-        "output_format": "avi",
+        "output_format": H3_LOSSLESS_SERVER_FORMAT if params.lossless_output else "avi",
         "output_compression": int(output_compression),
     }
     if params.seed is not None:
@@ -1232,7 +1786,25 @@ def build_vid_gen_request(
             req[key] = images[key]
     if ref_images_b64:
         req["ref_images"] = list(ref_images_b64)
+        req["ref_image_args"] = H3_SIZED_REF_IMAGE_ARGS
+    for key in h3_reference_media_keys(params):
+        if key == "ref_video_audio_indices":
+            req[key] = [int(index) for index in params.ref_video_audio_indices]
+        else:
+            req[key] = [list(item) if key == "ref_videos" else item for item in inline_refs[key]]
     return req
+
+
+def _check_ref_video_audio_indices(params: "SdCppVideoGenParams") -> None:
+    if len(params.ref_video_audios) > len(params.ref_videos):
+        raise ValueError("each reference video soundtrack needs a reference video to pair with")
+    indices = params.ref_video_audio_indices
+    if indices and (
+        len(indices) != len(params.ref_video_audios)
+        or len(set(indices)) != len(indices)
+        or any(not 0 <= int(i) < len(params.ref_videos) for i in indices)
+    ):
+        raise ValueError("each reference video soundtrack needs its own reference video index")
 
 
 def _fmt_float(value: float) -> str:

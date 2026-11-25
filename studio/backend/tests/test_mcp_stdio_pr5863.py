@@ -92,8 +92,7 @@ class _RecordingClient:
 
 @pytest.fixture
 def transport(monkeypatch):
-    """Patch mcp_client._client with a recorder. Returns the recorder list;
-    empty == stdio transport never reached."""
+    """Patch mcp_client._client with a recorder; an empty list means stdio never reached."""
     recorder = []
     monkeypatch.setattr(
         mcp_client,

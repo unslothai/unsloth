@@ -47,7 +47,8 @@ test("a set outline reaches every composer, and 0 drops the glass edge too", () 
   // !important: the glass composer rules are more specific and would otherwise keep their 14% ring.
   assert.match(css, /html\[data-composer-outline="on"\] :is\(\.unsloth-composer-surface, \.wallpaper-preview-composer\) \{\s*--composer-shadow: inset 0 0 0 1px [^;]*var\(--composer-outline\)[^;]*!important;/);
   // macOS glass has no background image, so its 14% ring needs its own selector.
-  assert.match(css, /html\[data-glass="macos"\]\[data-composer-outline="off"\] \.unsloth-composer-surface,[^{]*\.chat-wallpaper\[data-ready\]\) \.unsloth-composer-surface,[^{]*\{\s*--composer-shadow: none !important;/);
+  assert.match(css, /html\[data-glass="macos"\]\[data-composer-outline="off"\] \.unsloth-composer-surface \{\s*--composer-shadow: none !important;/);
+  assert.match(css, /html\[data-composer-outline="off"\] :is\(\[data-wallpaper-workspace\], \[data-chat-content-root\]\)\[data-wallpaper-ready\]\[data-wallpaper-ready\] \.unsloth-composer-surface,[^{]*\{\s*--composer-shadow: var\(--wallpaper-composer-drop\) !important;/);
   assert.match(css, /var\(--composer-outline, var\(--wallpaper-outline, 30%\)\)/);
 });
 
@@ -73,17 +74,19 @@ test("light glass outlines its controls by default", () => {
   assert.doesNotMatch(css, /box-shadow: var\(--glass-light-inner\);/);
   assert.doesNotMatch(css, /:where\(\[class~="border"\]\[class\*="rounded"\]\)[^{]*\{\s*border-color: transparent;/);
   const tab = readSrc("features/settings/tabs/appearance-tab.tsx");
-  const preferences = tab.slice(tab.indexOf("preferencesTitle"), tab.indexOf('t("settings.appearance.composer.title")'));
+  const preferences = tab.slice(tab.indexOf("preferencesTitle"), tab.indexOf('t("settings.appearance.code.title")'));
   assert.ok(preferences.indexOf("<ElementOutlineSliderRow />") > preferences.indexOf("<InterfaceScaleRow />"));
 });
 
-test("the composer rows have their own Composer section", () => {
-  const tab = readSrc("features/settings/tabs/appearance-tab.tsx");
-  const section = tab.slice(tab.indexOf('t("settings.appearance.composer.title")'));
-  assert.ok(section.indexOf("<ComposerPositionSliderRow />") < section.indexOf("settings.appearance.code.title"));
-  assert.ok(section.indexOf("<ComposerOutlineSliderRow />") < section.indexOf("settings.appearance.code.title"));
-  assert.ok(section.indexOf("<ChatWidthSelect />") < section.indexOf("settings.appearance.code.title"));
-  assert.ok(section.indexOf("<SentAttachmentsSelect />") < section.indexOf("settings.appearance.code.title"));
-  const preferences = tab.slice(tab.indexOf("preferencesTitle"), tab.indexOf('t("settings.appearance.composer.title")'));
-  assert.doesNotMatch(preferences, /ComposerPositionSliderRow|ComposerOutlineSliderRow|ChatWidthSelect|SentAttachmentsSelect/);
+test("the composer appearance rows live only in Chat's Customization section", () => {
+  const chat = readSrc("features/settings/tabs/chat-tab.tsx");
+  const start = chat.indexOf('<SettingsSection title={t("settings.chat.groups.customization.title")}>');
+  assert.ok(start !== -1);
+  const section = chat.slice(start, chat.indexOf("</SettingsSection>", start));
+  for (const control of ["ComposerPositionSliderRow", "ComposerOutlineSliderRow", "ChatWidthSelect"]) {
+    assert.ok(section.includes(`<${control} />`), `${control} is in Customization`);
+    assert.ok(!readSrc("features/settings/tabs/appearance-tab.tsx").includes(control));
+  }
+  assert.ok(chat.includes("<SentAttachmentsSelect />"));
+  assert.ok(!readSrc("features/settings/tabs/appearance-tab.tsx").includes("SentAttachmentsSelect"));
 });

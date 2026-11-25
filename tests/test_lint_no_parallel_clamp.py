@@ -34,10 +34,16 @@ CLAMPS = (
     "def load():\n    n_parallel = _mtp_clamped_slots\n",
     "async def load():\n    n_parallel = 1\n",
     "def load():\n    if mtp:\n        n_parallel = 1\n",
+    # Wrapped by the formatter and unmarked: still a clamp.
+    "def load():\n    n_parallel = (\n        1\n    )\n",
+    # A marker on the next statement does not excuse this one.
+    "def load():\n    n_parallel = 1\n    x = 2  # allow-slot-clamp: elsewhere\n",
 )
 
 ALLOWED = (
     "def load():\n    n_parallel = 1  # allow-slot-clamp: no --kv-unified\n",
+    # The formatter moves the trailing marker inside the parentheses when it wraps the line.
+    "def load():\n    n_parallel = (\n        1  # allow-slot-clamp: --fit on keeps layers over slots\n    )\n",
     "def load():\n    n_parallel: int = 1  # allow-slot-clamp: no --kv-unified\n",
     "def load(fit):\n    n_parallel = fit.slots\n",
     "def load(n):\n    n_parallel = min(n, 1)  # allow-slot-clamp: no --kv-unified\n",

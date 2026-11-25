@@ -161,7 +161,8 @@ def test_the_h3_modular_build_hands_the_offline_sources_to_load_components():
                 call
                 for call in ast.walk(node)
                 if isinstance(call, ast.Call)
-                and getattr(call.func, "attr", None) == "load_components"
+                # Through the strict wrapper, which forwards every keyword to pipe.load_components.
+                and getattr(call.func, "id", None) == "load_components_strict"
             ]
             assert calls, "no load_components call"
             sources = ast.unparse(node)

@@ -22,6 +22,7 @@ from pathlib import Path
 
 import httpx
 
+from utils.debug_log_sources import MANAGED_ENGINE_LOG_FAMILIES
 from utils.hardware.hardware import resolve_requested_gpu_ids
 
 from .engine_install import (
@@ -36,8 +37,7 @@ from .engine_install import (
     stale,
     support_reason,
 )
-
-
+from .managed_engine_log import ManagedEngineLog
 from .engine_adapters import (
     ADAPTERS,
     gpu_memory_fraction,
@@ -397,12 +397,9 @@ def _memory_line(output: str) -> list:
 
 
 def _wsl_amd_usable_mib(gpu_ids) -> list[tuple[float, bool]] | None:
-    """(MiB, is an APU) for what each selected AMD GPU can allocate through WSL, or None when
-    Windows cannot say.
-
-    Through DXG the pool HIP reports is the dedicated memory plus a share of the host's RAM, and an
-    allocation past what the host can back hangs instead of failing. So a discrete card keeps its
-    dedicated memory, and an APU adds 80% of the host RAM Windows reports available now."""
+    """Returns (MiB, is an APU) per selected AMD GPU for what it can allocate through WSL, or None
+    when Windows cannot say; a discrete card keeps its dedicated memory, but an APU adds 80% of
+    host RAM available now, since DXG allocations past host capacity hang rather than fail."""
     try:
         import psutil
         import torch
@@ -517,9 +514,19 @@ def _free_port(limit: int | None = _PORT_LIMIT) -> int:
     raise RuntimeError("Could not allocate an inference server port.")
 
 
-# Engine silence, not total startup time: an uncached Hub model downloads inside the engine, and
-# a first load can compile (torch.compile, Triton kernels) for tens of minutes without a line,
-# as a block-FP8 27B did on gfx1151 for over 17 minutes.
+def _port_accepts(base_url: str, timeout: float = 2) -> bool:
+    """True if ``base_url``'s port accepts a TCP connect. Sends nothing, so a squatter learns no key."""
+    from urllib.parse import urlsplit
+
+    target = urlsplit(base_url)
+    try:
+        with socket.create_connection((target.hostname, target.port), timeout = timeout):
+            return True
+    except (OSError, ValueError):
+        return False
+
+
+# Measures engine silence, not total startup: a first load can compile unlogged for tens of minutes.
 STARTUP_STALL_S = 3600
 STARTUP_LIMIT_S = 4 * 3600
 
@@ -543,7 +550,7 @@ class _EngineExited(RuntimeError):
     """The engine process exited during startup (not a stop, cancel or timeout)."""
 
 
-def _token_file_token(env) -> str | None:
+def _token_file_token(env, *, for_log = False) -> str | None:
     """The `hf auth login` token a local engine would read from its inherited HF_HOME; the WSL
     guest gets its own HF_HOME, so the token has to cross over. Anonymous loads keep none."""
     if (env.get("HF_HUB_DISABLE_IMPLICIT_TOKEN") or "").upper() in ("1", "ON", "YES", "TRUE"):
@@ -555,9 +562,17 @@ def _token_file_token(env) -> str | None:
         os.path.expandvars(os.path.expanduser(home)), "token"
     )
     try:
-        token = (
-            Path(os.path.expandvars(os.path.expanduser(path))).read_text(encoding = "utf-8").strip()
-        )
+        token_path = Path(os.path.expandvars(os.path.expanduser(path)))
+        if for_log:
+            # A credential helper's FIFO belongs to the real consumer; bound reads of plain files.
+            if not token_path.is_file():
+                return None
+            with token_path.open("rb") as stream:
+                raw = stream.read(4097)
+            if len(raw) > 4096:
+                return None
+            return raw.decode("utf-8").strip() or None
+        token = token_path.read_text(encoding = "utf-8").strip()
     except (OSError, UnicodeDecodeError):
         return None
     return token or None
@@ -626,6 +641,7 @@ class ManagedEngine:
         self._lock = threading.RLock()
         self._lease = None
         self._reader = None
+        self._attempt_log = None
         self._tail = deque(maxlen = 200)
         self._mamba_blocks = None
         self._last_output = time.monotonic()
@@ -635,6 +651,18 @@ class ManagedEngine:
         self._guest_environment = None
         # A URL-safe token can start with '-', which CLI parsers read as an option.
         self.key = "studio-" + secrets.token_urlsafe(32)
+
+    def _native_runtime_env(self, info, gpu_count):
+        from utils.paths.path_utils import _is_wsl
+
+        env = self.adapter.environment(gpu_count)
+        if self.engine == "vllm":
+            # 0.26 has no non-UVA buffer fallback, and vLLM disables pinned memory on WSL2.
+            if info.get("platform") == "cuda" and info.get("version") == "0.26.0" and _is_wsl():
+                env["VLLM_WSL2_ENABLE_PIN_MEMORY"] = "1"
+            if _deep_gemm_unloadable(info["path"]):
+                env["VLLM_USE_DEEP_GEMM"] = "0"
+        return env
 
     def alive(self) -> bool:
         return self.process is not None and self.process.poll() is None
@@ -744,14 +772,24 @@ class ManagedEngine:
                 or (cancel_event is not None and cancel_event.is_set())
             ):
                 raise RuntimeError("Model load cancelled")
-            self._lease = engine_lease(self.engine)
-            self._lease.__enter__()
+            capture_logs = self.engine in MANAGED_ENGINE_LOG_FAMILIES
+            attempt_log = ManagedEngineLog.open(self.engine) if capture_logs else None
+            self._attempt_log = attempt_log
+            secrets_to_redact = (self.key,)
             try:
+                if capture_logs:
+                    secrets_to_redact = self._log_secrets(env)
+                lease = engine_lease(self.engine)
+                lease.__enter__()
+                self._lease = lease
                 info = installed(self.engine)
                 if info is None:
                     raise RuntimeError("The selected engine is no longer installed.")
                 port = _free_port(_PORT_LIMIT if self.engine == "sglang" else None)
                 self.base_url = f"http://127.0.0.1:{port}"
+                if self.engine == "sglang" and model_path and ":" in model:
+                    # SGLang reserves colons for LoRA aliases. Keep the real path separate.
+                    model = "unsloth-local-" + hashlib.sha256(model.encode()).hexdigest()[:16]
                 self.model, self.context = model, context or 4096
                 self.reasoning_parser = (options or {}).get("reasoning_parser")
                 self.opens_thought = bool((options or {}).get("opens_thought"))
@@ -760,6 +798,12 @@ class ManagedEngine:
                     command, child_env = self._wsl_command(
                         info, env, gpu_ids, options, trust_remote_code, model, model_path, port
                     )
+                    if capture_logs:
+                        # Keep launcher diagnostics in the same encoding as guest stdout.
+                        child_env["WSL_UTF8"] = "1"
+                        # The guest may have received an implicit token from a credential helper.
+                        if child_env.get("HF_TOKEN"):
+                            secrets_to_redact += (child_env["HF_TOKEN"],)
                     # The guest runner ends the engine when this pipe closes (stop, or Studio dying).
                     stdin = subprocess.PIPE
                     self._guest_environment = info["path"]
@@ -816,10 +860,8 @@ class ManagedEngine:
                         RESERVE_SHARE,
                         measure,
                     )
-                    child_env.update(self.adapter.environment(len(gpu_ids or [0])))
+                    child_env.update(self._native_runtime_env(info, len(gpu_ids or [0])))
                     child_env.update(self.adapter.key_environment(self.key))
-                    if self.engine == "vllm" and _deep_gemm_unloadable(info["path"]):
-                        child_env["VLLM_USE_DEEP_GEMM"] = "0"
                     command = self.adapter.command(
                         info["path"] + "/bin/python",
                         model_path or model,
@@ -861,13 +903,18 @@ class ManagedEngine:
                 if is_process_shutting_down():
                     raise RuntimeError("Unsloth is shutting down")
                 self._reader = threading.Thread(
-                    target = self._drain, args = (self.process,), daemon = True
+                    target = self._drain,
+                    args = (self.process, attempt_log, secrets_to_redact),
+                    daemon = True,
                 )
                 self._reader.start()
-            except Exception:
+            except Exception as exc:
+                self._record_start_failure(attempt_log, exc, secrets_to_redact)
                 self.stop()
                 raise
         started = self._last_output = time.monotonic()
+        from core.inference.llama_cpp import LlamaCppBackend
+
         try:
             with httpx.Client(trust_env = False, timeout = 2) as client:
                 while (
@@ -885,10 +932,22 @@ class ManagedEngine:
                         if self._mamba_blocks:
                             raise _MambaSeqLimit(message, self._mamba_blocks)
                         raise _EngineExited(message)
+                    # Skip the costly ownership scan (and its false "not listening" error) until the engine listens.
+                    if not _port_accepts(self.base_url):
+                        self._cancel.wait(0.25)
+                        continue
+                    # The port was released before the engine binds it: probe (with the key) only our own listener.
+                    if not LlamaCppBackend._health_listener_is_ours(
+                        self.process, int(self.base_url.rsplit(":", 1)[1])
+                    ):
+                        self._cancel.wait(0.25)
+                        continue
                     try:
                         response = client.get(self.base_url + "/health", headers = self.headers)
                         if response.status_code == 200:
                             self.phase = "ready"
+                            if attempt_log is not None:
+                                attempt_log.write_redacted("Managed engine is ready.")
                             return
                     except httpx.HTTPError:
                         pass
@@ -897,18 +956,15 @@ class ManagedEngine:
                     "Engine startup timed out. Try a smaller model or context length.\n"
                     + "\n".join(list(self._tail)[-20:])
                 )
-        except _MambaSeqLimit:
-            # Not a stop request: an external stop() meanwhile must still cancel the relaunch.
-            self._teardown()
-            raise
-        except _EngineExited:
-            if self._drafter_retry(model, model_path, options):
+        except Exception as exc:
+            self._record_start_failure(attempt_log, exc, secrets_to_redact)
+            if isinstance(exc, _MambaSeqLimit) or (
+                isinstance(exc, _EngineExited) and self._drafter_retry(model, model_path, options)
+            ):
+                # An external stop() must still be able to cancel the relaunch.
                 self._teardown()
             else:
                 self.stop()
-            raise
-        except Exception:
-            self.stop()
             raise
 
     def _cache_key(self, info, model, gpu_ids, options) -> str:
@@ -1027,9 +1083,39 @@ class ManagedEngine:
     def headers(self):
         return {"Authorization": "Bearer " + self.key}
 
-    def _drain(self, proc):
+    def _log_secrets(self, env) -> tuple[str, ...]:
+        from hub.utils.hf_tokens import _HF_TOKEN_ENV_KEYS
+
+        exact = {self.key, _token_file_token(env, for_log = True)}
+        exact.update(env.get(key) for key in _HF_TOKEN_ENV_KEYS)
+        return tuple(sorted(filter(None, exact), key = len, reverse = True))
+
+    @staticmethod
+    def _redact_output(line: str, exact_secrets: tuple[str, ...]) -> str:
         from utils.log_redaction import redact_log_text
-        from utils.native_path_leases import redact_native_paths
+
+        for secret in exact_secrets:
+            line = line.replace(secret, "[redacted]")
+        line = redact_log_text(line)
+        # An ANSI escape inside an exact secret may only become visible after the scrub above.
+        for secret in exact_secrets:
+            line = line.replace(secret, "[redacted]")
+        return line
+
+    def _record_start_failure(self, attempt_log, exc, exact_secrets) -> None:
+        if attempt_log is None:
+            return
+        exc.managed_engine_log_path = attempt_log.path
+        if isinstance(exc, (_MambaSeqLimit, _EngineExited)):
+            message = "Engine exited during startup."
+        else:
+            try:
+                message = self._redact_output(f"Engine startup failed: {exc}", exact_secrets)
+            except Exception:
+                message = "Engine startup failed."
+        attempt_log.write_redacted(message)
+
+    def _drain(self, proc, attempt_log, exact_secrets):
         for line in proc.stdout:
             self._last_output = time.monotonic()
             if self.engine == "vllm" and (limit := _MAMBA_SEQ_LIMIT.search(line)):
@@ -1038,11 +1124,14 @@ class ManagedEngine:
             stage = self.adapter.progress(line)
             if stage and self.phase != "ready":
                 self.phase = stage
-            self._tail.append(
-                redact_native_paths(redact_log_text(line.replace(self.key, "[redacted]"))).strip()[
-                    -1000:
-                ]
-            )
+            try:
+                clean = self._redact_output(line, exact_secrets)
+            except Exception:
+                # A failed scrub must never publish the raw line or stop draining the child.
+                continue
+            self._tail.append(clean.strip()[-1000:])
+            if attempt_log is not None:
+                attempt_log.write_redacted(clean)
 
     def stop(self) -> bool:
         self._cancel.set()
@@ -1074,8 +1163,13 @@ class ManagedEngine:
                 forget_pid(self.process.pid)
                 if self._reader:
                     self._reader.join(timeout = 2)
+                    self._reader = None
                 self.process.stdout.close()
                 self.process = None
+            if self._attempt_log is not None:
+                self._attempt_log.write_redacted("Managed engine stopped.")
+                self._attempt_log.close()
+                self._attempt_log = None
             if self._lease is not None:
                 self._lease.__exit__(None, None, None)
                 self._lease = None
@@ -1133,12 +1227,20 @@ class ManagedEngine:
             for message in messages
         ]
 
-    def _reply_cap_in_window(self, messages, system_prompt, limit, params):
+    def _reply_cap_in_window(
+        self,
+        messages,
+        system_prompt,
+        limit,
+        params,
+        tools = None,
+    ):
         """vLLM and SGLang refuse prompt + max_tokens past the window, where llama-server stops at it."""
         try:
             prompt = self.count_tokens(
                 messages,
                 system_prompt,
+                tools = tools,
                 enable_thinking = params.get("enable_thinking"),
                 reasoning_effort = params.get("reasoning_effort"),
                 preserve_thinking = params.get("preserve_thinking"),
@@ -1148,14 +1250,28 @@ class ManagedEngine:
             return limit
         return max(1, min(limit, self.context - prompt))
 
+    def _completion_cap_in_window(self, prompt, limit):
+        try:
+            return max(1, min(limit, self.context - self._tokenize({"prompt": prompt})))
+        except Exception:
+            return limit
+
+    def _tokenize(self, body):
+        with httpx.Client(trust_env = False, timeout = 30) as client:
+            response = client.post(
+                self.base_url + "/tokenize",
+                headers = self.headers,
+                json = {"model": self.model, **body},
+            )
+            response.raise_for_status()
+            return int(response.json()["count"])
+
     def count_tokens(
         self,
         messages,
         system_prompt = "",
         **kwargs,
     ):
-        if kwargs.get("tools"):
-            raise ValueError("Tools are unavailable for this optional engine profile.")
         if not self.adapter.exact_token_count:
             raise RuntimeError("Exact prompt token counting is unavailable for this engine.")
         if system_prompt:
@@ -1172,19 +1288,21 @@ class ManagedEngine:
             template_kwargs = fields["chat_template_kwargs"]
             template_kwargs["reasoning_effort"] = effort
             template_kwargs.setdefault("enable_thinking", effort != "none")
-        with httpx.Client(trust_env = False, timeout = 30) as client:
-            response = client.post(
-                self.base_url + "/tokenize",
-                headers = self.headers,
-                json = {
-                    "model": self.model,
-                    "messages": self.replay_reasoning(messages, kwargs.get("preserve_thinking")),
-                    "add_generation_prompt": True,
-                    **fields,
-                },
-            )
-            response.raise_for_status()
-            return int(response.json()["count"]), self.model
+        body = {
+            "messages": self.replay_reasoning(messages, kwargs.get("preserve_thinking")),
+            "add_generation_prompt": True,
+            **fields,
+        }
+        if kwargs.get("tools"):
+            body["tools"] = kwargs["tools"]
+        if (
+            kwargs.get("continue_final_message")
+            and messages
+            and messages[-1].get("role") == "assistant"
+        ):
+            # Price what the request sends: SGLang folds the partial's thought into its content.
+            self.continue_final_message(body)
+        return self._tokenize(body), self.model
 
     def generate(
         self,

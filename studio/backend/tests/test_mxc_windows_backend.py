@@ -653,7 +653,7 @@ def test_policy_mutation_is_refused_before_wxc_dispatch(monkeypatch):
         mxc_adapter.spawn(request)
 
 
-@pytest.mark.parametrize("dacl, grants", [(True, True), (True, False), (False, True)])
+@pytest.mark.parametrize("dacl, grants", [(True, True), (True, False)])
 def test_a_launch_holds_the_read_grants_until_its_last_cleanup(monkeypatch, tmp_path, dacl, grants):
     from core.inference import sandbox_windows_mxc
 
@@ -706,7 +706,7 @@ def test_a_launch_whose_grant_lease_cannot_be_recorded_is_refused(monkeypatch, t
         raise mxc_read_grants.ReadGrantError("controlled lease failure")
 
     built = []
-    monkeypatch.setattr(mxc_read_grants, "hold_if_needed", refuse)
+    monkeypatch.setattr(mxc_read_grants, "hold_before_build", refuse)
     monkeypatch.setattr(
         sandbox_windows_mxc.mxc_policy,
         "build_launch_request",
@@ -985,8 +985,7 @@ def test_uv_base_prefix_junction_grants_concrete_runtime(monkeypatch, tmp_path):
     assert str(base.resolve()) in roots
     assert str(alias) not in roots
     assert str(tmp_path) not in roots
-    # The exception belongs only to Python's own base prefix. Arbitrary grants
-    # and workdirs must still reject the same redirect.
+    # Only Python's own base prefix is exempt; grants and workdirs must still reject redirects.
     with pytest.raises(mxc_policy.MxcPolicyError, match = "reparse point"):
         mxc_policy._runtime_read_roots(str(prefix / "python.exe"), [str(alias)])
     with pytest.raises(mxc_policy.MxcPolicyError, match = "reparse point"):

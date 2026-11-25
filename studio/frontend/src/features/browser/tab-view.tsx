@@ -368,7 +368,7 @@ function WebPage({
     updateTab(tab.id, { loading: true });
     // Now, not when the file arrives: a slow download can outlast the agent's run.
     const agentRuleAtStart = agentDownloadRule(tab.id, entry.from ?? url, url);
-    fetchBrowserPage({ url, method, body, errorPage: true }, controller.signal)
+    fetchBrowserPage({ url, method, body, errorPage: true, initiator: entry.from }, controller.signal)
       .then((page) => {
         cachePage(entry, page);
         setState({ status: "ready", page });
@@ -432,6 +432,7 @@ function WebPage({
       base={page.base}
       ownBase={page.ownBase === true}
       anyOrigin={page.anyOrigin === true}
+      siteCookies={page.siteCookies === true}
       refresh={page.refresh}
       title={tab.title || hostOf(page.url)}
       tabId={tab.id}

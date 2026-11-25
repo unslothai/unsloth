@@ -28,11 +28,14 @@ import { createPortal } from "react-dom";
 import {
   completeProgressiveMounts,
   hasPendingProgressiveMounts,
+  revealProgressiveRow,
+  subscribeMountedRows,
 } from "@/components/assistant-ui/progressive-messages";
 import {
   threadTurns,
   turnOpenerIdAt,
 } from "@/components/assistant-ui/thread-turns";
+import { jumpListeners } from "@/components/assistant-ui/message-jump";
 import { THREAD_GUTTER_SHIFT_PROPERTY } from "@/components/assistant-ui/thread-gutter";
 import { useDetachThreadFromBottom } from "@/components/assistant-ui/use-intent-aware-autoscroll";
 import {
@@ -125,10 +128,47 @@ const BookmarkTurnMenuItemInner: FC<BookmarkTurnMenuItemProps> = ({
   );
 };
 
+async function jumpToMessageIn(
+  viewport: HTMLElement,
+  messageId: string,
+  detachFromBottom: () => void,
+): Promise<void> {
+  const selector = `[data-message-id="${CSS.escape(messageId)}"]`;
+  let target = viewport.querySelector<HTMLElement>(selector);
+  // The thread mounts only the rows near the reader; ask for this one rather than for all.
+  if (!target && revealProgressiveRow(viewport, messageId)) {
+    target = viewport.querySelector<HTMLElement>(selector);
+  }
+  if (!target) {
+    await completeProgressiveMounts((candidate) => candidate === viewport);
+    target = viewport.querySelector<HTMLElement>(selector);
+  }
+  if (!target) {
+    return;
+  }
+  detachFromBottom();
+  alignTurnTop(viewport, target, JUMP_ALIGN_FRAMES);
+  shineTurn(target);
+}
+
 export const TurnNavigator: FC<{
   viewportRef: RefObject<HTMLElement | null>;
 }> = memo(({ viewportRef }) => {
   const enabled = useChatPreferencesStore((state) => state.showTurnNavigation);
+  const detachFromBottom = useDetachThreadFromBottom();
+  useEffect(() => {
+    const listener = (messageId: string) => {
+      const viewport = viewportRef.current;
+      // Backgrounded threads stay mounted, hidden or inert.
+      if (viewport?.offsetParent && !viewport.closest("[inert]")) {
+        void jumpToMessageIn(viewport, messageId, detachFromBottom);
+      }
+    };
+    jumpListeners.add(listener);
+    return () => {
+      jumpListeners.delete(listener);
+    };
+  }, [viewportRef, detachFromBottom]);
   return enabled ? <TurnRailGate viewportRef={viewportRef} /> : null;
 });
 TurnNavigator.displayName = "TurnNavigator";
@@ -336,21 +376,9 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
   const jumpToTurn = useCallback(
     async (messageId: string) => {
       const viewport = viewportRef.current;
-      if (!viewport) {
-        return;
+      if (viewport) {
+        await jumpToMessageIn(viewport, messageId, detachFromBottom);
       }
-      const selector = `[data-message-id="${CSS.escape(messageId)}"]`;
-      let target = viewport.querySelector<HTMLElement>(selector);
-      if (!target) {
-        await completeProgressiveMounts((candidate) => candidate === viewport);
-        target = viewport.querySelector<HTMLElement>(selector);
-      }
-      if (!target) {
-        return;
-      }
-      detachFromBottom();
-      alignTurnTop(viewport, target, JUMP_ALIGN_FRAMES);
-      shineTurn(target);
     },
     [viewportRef, detachFromBottom],
   );
@@ -541,23 +569,38 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
       (entries) => {
         for (const entry of entries) {
           const marker = markerFor.get(entry.target);
-          if (marker) marker.toggleAttribute("data-in-view", entry.isIntersecting);
+          if (marker)
+            marker.toggleAttribute("data-in-view", entry.isIntersecting);
         }
       },
       { root: viewport },
     );
-    const messages = new Map<string, Element>();
-    for (const message of viewport.querySelectorAll("[data-message-id]")) {
-      messages.set(message.getAttribute("data-message-id") ?? "", message);
-    }
-    for (const marker of rail.querySelectorAll<HTMLElement>("button[data-turn-id]")) {
-      const message = messages.get(marker.dataset.turnId ?? "");
-      if (message) {
-        markerFor.set(message, marker);
-        observer.observe(message);
+    // Rows mount and unmount as the reader moves, so the watched set follows them.
+    const watch = () => {
+      observer.disconnect();
+      markerFor.clear();
+      const messages = new Map<string, Element>();
+      for (const message of viewport.querySelectorAll("[data-message-id]")) {
+        messages.set(message.getAttribute("data-message-id") ?? "", message);
       }
-    }
-    return () => observer.disconnect();
+      for (const marker of rail.querySelectorAll<HTMLElement>(
+        "button[data-turn-id]",
+      )) {
+        const message = messages.get(marker.dataset.turnId ?? "");
+        if (message) {
+          markerFor.set(message, marker);
+          observer.observe(message);
+        } else {
+          marker.removeAttribute("data-in-view");
+        }
+      }
+    };
+    watch();
+    const unsubscribe = subscribeMountedRows(watch);
+    return () => {
+      unsubscribe();
+      observer.disconnect();
+    };
   }, [viewportRef, signature, turnCount]);
   const hidePreview = useCallback(() => {
     cancelHide();

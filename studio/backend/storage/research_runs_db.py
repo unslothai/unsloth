@@ -14,7 +14,7 @@ import time
 from typing import Any
 
 from core.inference.web_access_policy import check_url_access, normalize_website_policy
-from storage.studio_db import get_connection as _studio_connection
+from storage.studio_db import get_connection as _studio_connection, insert_server_chat_message
 
 ACTIVE_STATUSES = frozenset(
     {"planning", "awaiting_approval", "queued", "running", "paused", "cancelling"}
@@ -158,27 +158,15 @@ def _bind_assistant_locked(
         "serverManaged": True,
     }
     if message is None:
-        # An empty placeholder adds no attachment entries; keep a clean inventory clean (#14217).
-        inventory_was_clean = (
-            conn.execute(
-                "SELECT 1 FROM chat_attachment_inventory_state WHERE singleton=1 AND dirty=0"
-            ).fetchone()
-            is not None
+        insert_server_chat_message(
+            conn,
+            assistant_message_id,
+            thread_id,
+            user_message_id,
+            "[]",
+            json.dumps(metadata, ensure_ascii = False),
+            created,
         )
-        conn.execute(
-            """INSERT INTO chat_messages
-               (id, thread_id, parent_id, role, content_json, metadata_json, created_at)
-               VALUES (?, ?, ?, 'assistant', '[]', ?, ?)""",
-            (
-                assistant_message_id,
-                thread_id,
-                user_message_id,
-                json.dumps(metadata, ensure_ascii = False),
-                created,
-            ),
-        )
-        if inventory_was_clean:
-            conn.execute("UPDATE chat_attachment_inventory_state SET dirty=0 WHERE singleton=1")
         conn.execute(
             "UPDATE chat_threads SET updated_at=MAX(COALESCE(updated_at, created_at), ?) WHERE id=?",
             (created, thread_id),
@@ -294,9 +282,7 @@ def create_run(
 def _unbind_assistant_locked(
     conn: sqlite3.Connection, previous_id: str | None, next_id: str | None
 ) -> None:
-    """Drop the research binding from the reply the run is leaving behind. Both replies would otherwise
-    carry the same run id, and each renders whatever that run is doing now, so the new question's
-    live card would appear twice."""
+    """Unbind the old reply: two replies sharing one run id would each render its live card."""
     if not previous_id or previous_id == next_id:
         return
     row = conn.execute(
@@ -333,9 +319,7 @@ def _stopped_run_locked(conn: sqlite3.Connection, thread_id: str) -> sqlite3.Row
 
 
 def research_spent(thread_id: str) -> bool:
-    """Whether the thread's research is used up, which is what the composer greys out on. The claim
-    itself outlives a stopped run so the same run can be re-pointed, so a held claim alone must not
-    read as spent: after a Stop, research is still on offer."""
+    """Whether research is spent; a held claim alone does not count, since a Stop leaves it on offer."""
     conn = get_connection()
     try:
         claim = conn.execute(
@@ -638,18 +622,14 @@ def create_and_bind_terminal_fallback(
             "serverManaged": True,
         }
         created = now_ms()
-        conn.execute(
-            """INSERT INTO chat_messages
-               (id, thread_id, parent_id, role, content_json, metadata_json, created_at)
-               VALUES (?, ?, ?, 'assistant', ?, ?, ?)""",
-            (
-                message_id,
-                run["thread_id"],
-                run["user_message_id"],
-                json.dumps(parts, ensure_ascii = False),
-                json.dumps(metadata, ensure_ascii = False),
-                created,
-            ),
+        insert_server_chat_message(
+            conn,
+            message_id,
+            run["thread_id"],
+            run["user_message_id"],
+            json.dumps(parts, ensure_ascii = False),
+            json.dumps(metadata, ensure_ascii = False),
+            created,
         )
         conn.execute(
             "UPDATE research_runs SET assistant_message_id=?, updated_at=? WHERE id=?",
@@ -772,11 +752,9 @@ def approve(run_id: str, revision: int, plan_hash: str) -> str:
 
 
 def request_cancel(run_id: str, expected_attempt: int | None = None) -> str | None:
-    """Stop ``run_id``. With ``expected_attempt``, only if that attempt is still the run's; else None.
-
-    The attempt check shares the cancel's transaction, so a retry or rebind that commits first
-    (both bump retry_count under the same id) can never be cancelled on its predecessor's behalf.
-    """
+    """Cancels run_id only if expected_attempt is still current, else None; the check shares the
+    cancel's transaction, so a newer retry or rebind is never cancelled on its predecessor's
+    behalf"""
     conn = get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")

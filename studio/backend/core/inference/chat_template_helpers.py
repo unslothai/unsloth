@@ -29,6 +29,15 @@ _GEMMA_TEMPLATE_OPENERS = (
     _GEMMA_THOUGHT_OPEN + "\\n",
     _GEMMA_THOUGHT_OPEN + _GEMMA_THOUGHT_CLOSE,
 )
+_INKLING_THOUGHT_OPEN = "<|content_thinking|>"
+_INKLING_MESSAGE_END = "<|end_message|>"
+_INKLING_TOOL_CALL_OPEN = "<|content_invoke_tool_json|>"
+_INKLING_ROLE_OPEN = "<|message_model|>"
+_INKLING_TEXT_OPEN = "<|content_text|>"
+_INKLING_CONTENT_OPENS = (_INKLING_TEXT_OPEN, _INKLING_THOUGHT_OPEN, _INKLING_TOOL_CALL_OPEN)
+_INKLING_BODY_ENDS = (_INKLING_MESSAGE_END, _INKLING_ROLE_OPEN)
+# A header names at most a tool; a longer held header is content after all.
+_INKLING_HEADER_MAX_LEN = 128
 
 # Both header prefixes occur: the first header arrives without the prompt's "<|start|>assistant".
 _ATEM_REASONING_RECIPIENT = "self"
@@ -82,6 +91,8 @@ _CONTROL_MARKUP = re.compile(
     r"\|/?(?:(?:start|end)_(?:header_id|of_role)|tool(?:_call|_response)?"
     # Kimi K2 / Moonshot wrap history in a section and begin/end call pairs; none is the short tool_call spelling, so a paste could fabricate a call.
     r"|tool_calls?(?:_section)?_(?:begin|end)|tool_call_argument_begin"
+    # LFM2 / LFM2.5 open a call list with this; its closer is the Kimi tool_call_end above.
+    r"|tool_call_start"
     r"|end(?:_of_(?:turn|text))?"
     # Document boundaries from reserved vocabulary: a pasted copy is split back to the real token id and becomes a document break.
     r"|begin_of_text|endoftext"
@@ -241,9 +252,7 @@ _ALIAS_SEPARATORS = "(?:\u2581|\\\\?_| )"
 
 @functools.lru_cache(maxsize = 1)
 def _deepseek_opener_pattern():
-    """The tool-call-parser's own DeepSeek opener alternation, or None if unavailable. Single source
-    of truth: tool_call_parser keeps the five spellings llama.cpp accepts, and a profile that
-    breaks only the one spelling a vocabulary happens to hold leaves the other four live (#7066)."""
+    """The DeepSeek opener alternation from tool_call_parser: all five llama.cpp spellings, or None."""
     try:
         from core.inference.tool_call_parser import (
             _DEEPSEEK_OPEN_RE_SRC,
@@ -454,9 +463,7 @@ def neutralize_turn_boundary_markup(text: str, markup: "ModelMarkup" = None) -> 
 
 
 def neutralize_tts_prompt_text(text: str, audio_type = None) -> str:
-    """Break the active codec's own delimiters in a TTS prompt (#7066). Scoped to *audio_type*: this
-    text is spoken, so anything that is not structure in THIS codec's prompt has to survive
-    byte-exact."""
+    """Breaks only the active codec's delimiters in the TTS prompt; spoken text must survive byte-exact."""
     return _spaced_out(_TTS_MARKUP_BY_CODEC.get(audio_type, _TTS_MARKUP_DEFAULT), text)
 
 
@@ -651,17 +658,15 @@ def _neutralize_content_parts(
             continue
         # Keep each carrier's own text: Llama-3.1 serializes the list in order.
         run = [texts[index] for index in carriers]
-        # First choice: migrate an opener only between carriers that really are adjacent, so nothing crosses an image
-        # or a JSON part sitting between them.
+        # Opener moves only between truly adjacent carriers, not across an image or JSON part.
         redistributed = _redistribute_swept(
             run,
             rewrite,
             [carriers[i + 1] == carriers[i] + 1 for i in range(len(carriers) - 1)],
         )
         if redistributed is None:
-            # The split straddles a non-text part and a trimming renderer would re-form the marker. Moving the opener
-            # across that part is a smaller harm than the collapse below: one marker character changes side, rather
-            # than every carrier's text being pulled into the first one (#7066).
+            # A split across a non-text part: moving the opener is smaller harm than collapsing all
+            # text.
             redistributed = _redistribute_swept(run, rewrite)
         if redistributed is None:
             # Last resort, unreachable for every known marker; kept because collapsing is safer than a marker surviving a renderer that trims parts.
@@ -675,9 +680,7 @@ def _neutralize_content_parts(
 
 
 def _differs(new, old) -> bool:
-    """True when the rewrite changed *old* into *new*. The client picks the nesting depth and ``==``
-    recurses in C, so an overflowing comparison must not 500 the request. It counts as changed,
-    keeping the neutralized copy: the safe direction (#7066)."""
+    """RecursionError counts as changed so the request cannot 500; client picks depth (issue 7066)"""
     try:
         return new != old
     except RecursionError:
@@ -711,8 +714,7 @@ def _neutralized_arguments(arguments, markup = None):
                 return json.dumps(safe, ensure_ascii = True)
             return None
     new_arguments = _neutralize_argument_leaves(arguments, markup)
-    # Same guard for arguments that arrived already decoded, which never passed through json.loads and so were never
-    # depth-limited by it.
+    # Same guard for pre-decoded arguments, which skip json.loads, so never depth-limited.
     return new_arguments if _differs(new_arguments, arguments) else None
 
 
@@ -1067,9 +1069,8 @@ _SCHEMA_VALUED_IDENTIFIERS = frozenset(
         # contentEncoding and contentMediaType are machine-valued strings a validator decodes against; contentSchema stays out since the scan reads it.
         "contentEncoding",
         "contentMediaType",
-        # An OpenAPI discriminator holds only "propertyName" and a "mapping" whose keys and targets are identifiers,
-        # with no prose field to protect, so every leaf under it is machine-valued: the server resolves the original
-        # while the model sees the rewrite.
+        # OpenAPI discriminator leaves are machine-valued identifiers, so the server resolves the
+        # original.
         "discriminator",
         # Same shape: an OpenAPI xml object is "name" / "namespace" / "prefix" plus two booleans, all serialization
         # identifiers and no prose, so a rewrite would advertise element names the server does not produce.
@@ -1203,9 +1204,8 @@ def catalog_tool_names(tools) -> set:
         if not isinstance(tool, dict):
             continue
         function = tool.get("function")
-        # Both spellings: an entry may carry an empty "function" mapping beside the flat name that actually
-        # dispatches, and reading only the nested level made a dropped tool look as though it had never been in the
-        # caller's catalog -- so a forced tool_choice for it was forwarded unchanged (#7066).
+        # Names are read from both function.name and the flat name, else a dropped tool escapes the
+        # catalog.
         nested = function.get("name") if isinstance(function, dict) else None
         for name in (nested, tool.get("name")):
             if isinstance(name, str):
@@ -1545,15 +1545,8 @@ def renderable_tool_catalog(
         return safe if active_renders_tools else _unadvertised()
     if not active_renders_tools and not _template_reads_tools(native_tpl, tools):
         return _unadvertised()
-    # With the special tokens too: the native render profiles through markup_for_tokenizer and so resolves "{{
-    # bos_token }}", and a catalog built without them kept a tool whose schema carries that value while the render
-    # dropped it (#7066).
-    native = model_markup(
-        native_tpl,
-        _vocabulary_of(tokenizer),
-        tools,
-        specials = _special_token_strings(getattr(tokenizer, "tokenizer", tokenizer)),
-    )
+    # Profiled with special tokens: the native render resolves bos_token.
+    native = _native_markup_for_tokenizer(tokenizer, native_tpl, tools)
     if native is None:
         return safe
     kept = catalog_tool_names(neutralize_tool_descriptions(tools, cache, native))
@@ -1663,6 +1656,8 @@ def _detect_reasoning_channel_markers_from_templates(
         return _GEMMA_THOUGHT_OPEN, _GEMMA_THOUGHT_CLOSE
     if any(_ATEM_TEMPLATE_OPENER in template for template in templates):
         return _ATEM_REASONING_RECIPIENT, _ATEM_REPLY_RECIPIENT
+    if any(_INKLING_THOUGHT_OPEN in template for template in templates):
+        return _INKLING_THOUGHT_OPEN, _INKLING_MESSAGE_END
     return None
 
 
@@ -1771,8 +1766,7 @@ def _atem_partial_framing_len(text: str) -> int:
 
 
 def _split_partial_atem_boundary(text: str) -> tuple[str, str]:
-    """Between blocks either a header or a block terminator may follow, and both are consumed there,
-    so a partial of either has to be held for the next chunk."""
+    """Header or block terminator may follow; a partial of either is held for the next chunk."""
     stable, held = _split_partial_atem_header(text)
     candidate, tail = _split_partial_atem_block_end(text)
     return (candidate, tail) if len(tail) > len(held) else (stable, held)
@@ -1819,9 +1813,7 @@ def _atem_unfinished_tag(text: str) -> int:
 
 
 def _atem_surrounding_text(segment: str, *, complete: bool = True) -> str:
-    """Text around calls, minus the envelope; whitespace alone is framing. ``complete`` is False for
-    the tail of a block the stream cut short, where a trailing fragment of markup the model had
-    not finished writing is framing too."""
+    """Text around calls minus the envelope; whitespace is framing, and so is unfinished tail markup."""
     for tag in _ATEM_CALLS_ENVELOPE:
         segment = segment.replace(tag, "")
     if not complete:
@@ -1888,8 +1880,7 @@ class ReasoningChannelNormalizer:
         self._buffer = ""
         self._in_reasoning = in_reasoning
         self._reasoning_done = False
-        # Only a generated opener carries the protocol newline; from the prompt it is already consumed, so a streamed
-        # newline is content.
+        # Only a generated opener's newline is protocol; after a prompt opener it is content.
         self._skip_opening_newline = False
         # A prompt-supplied opener never reaches the stream, so <think> is owed to the first delta carrying text.
         self._pending_open = in_reasoning
@@ -1934,9 +1925,7 @@ class ReasoningChannelNormalizer:
         return "".join(output)
 
     def finish(self) -> str:
-        """Flush a stream that ended and close an open think block. Ended, not merely finished
-        generating: a stop sequence ends a turn as a stop token does, and the block it cut inside
-        is still owed its close."""
+        """Flush and close an open think block, including when a stop sequence cut the turn inside it."""
         output = self.drain()
         if self._in_reasoning:
             # Nothing generated: no block at all, rather than a close with no opener.
@@ -1952,6 +1941,131 @@ class ReasoningChannelNormalizer:
         output = self._buffer
         self._buffer = ""
         return output
+
+
+class InklingMessageNormalizer:
+    """Convert Inkling 2's ``[<|message_model|>][name]<|content_KIND|>body<|end_message|>`` messages: headers and
+    text closers go, the first thought becomes ``<think>`` (later ones show as text), and a tool call keeps its
+    opener and closer for the tool-call parser."""
+
+    def __init__(
+        self,
+        *_markers,
+        in_reasoning: bool = False,
+        continued: bool = False,
+    ):
+        self._buffer = ""
+        # Where the prompt left off: an opened thought, a continued message's content, or a header.
+        self._state = "thought" if in_reasoning else "text" if continued else "header"
+        self._thought_seen = in_reasoning
+        self._think_open = False
+        self._in_string = False
+        self._escape = False
+
+    def feed(self, text: str) -> str:
+        self._buffer += text or ""
+        return self._consume(final = False)
+
+    def drain(self) -> str:
+        return self._consume(final = True)
+
+    def finish(self) -> str:
+        output = self.drain()
+        if self._think_open:
+            output += _THINK_CLOSE
+            self._think_open = False
+        return output
+
+    def _consume(self, final: bool) -> str:
+        output: list[str] = []
+        while self._buffer:
+            if self._state == "header":
+                found = [
+                    (self._buffer.find(opener), opener)
+                    for opener in _INKLING_CONTENT_OPENS
+                    if opener in self._buffer
+                ]
+                if not found:
+                    if not final and len(self._buffer) <= _INKLING_HEADER_MAX_LEN:
+                        break
+                    self._state = "text"
+                    continue
+                index, opener = min(found)
+                self._buffer = self._buffer[index + len(opener) :]
+                if opener == _INKLING_TOOL_CALL_OPEN:
+                    output.append(opener)
+                    self._state, self._in_string, self._escape = "tool", False, False
+                elif opener == _INKLING_THOUGHT_OPEN and not self._thought_seen:
+                    self._state, self._thought_seen = "thought", True
+                else:
+                    self._state = "text"
+            elif self._state == "tool":
+                index = self._tool_call_end()
+                if index < 0:
+                    # Only outside a string can the tail be the start of the closer.
+                    held = (
+                        ""
+                        if final or self._in_string
+                        else _split_partial_marker(self._buffer, _INKLING_MESSAGE_END)[1]
+                    )
+                    output.append(self._buffer[: len(self._buffer) - len(held)])
+                    self._buffer = held
+                    break
+                index += len(_INKLING_MESSAGE_END)
+                output.append(self._buffer[:index])
+                self._buffer = self._buffer[index:]
+                self._state = "header"
+            else:
+                found = [
+                    (self._buffer.find(marker), marker)
+                    for marker in _INKLING_BODY_ENDS
+                    if marker in self._buffer
+                ]
+                if not found:
+                    held = (
+                        ""
+                        if final
+                        else max(
+                            (
+                                _split_partial_marker(self._buffer, marker)[1]
+                                for marker in _INKLING_BODY_ENDS
+                            ),
+                            key = len,
+                        )
+                    )
+                    output.append(self._body(self._buffer[: len(self._buffer) - len(held)]))
+                    self._buffer = held
+                    break
+                index, marker = min(found)
+                output.append(self._body(self._buffer[:index]))
+                self._buffer = self._buffer[index + len(marker) :]
+                if self._think_open:
+                    output.append(_THINK_CLOSE)
+                    self._think_open = False
+                self._state = "header"
+        return "".join(output)
+
+    def _body(self, text: str) -> str:
+        if self._state == "thought" and text and not self._think_open:
+            self._think_open = True
+            return _THINK_OPEN + text
+        return text
+
+    def _tool_call_end(self) -> int:
+        """Index of the closer outside the call's JSON strings, or -1."""
+        for index, char in enumerate(self._buffer):
+            if self._escape:
+                self._escape = False
+            elif self._in_string:
+                if char == "\\":
+                    self._escape = True
+                elif char == '"':
+                    self._in_string = False
+            elif char == '"':
+                self._in_string = True
+            elif self._buffer.startswith(_INKLING_MESSAGE_END, index):
+                return index
+        return -1
 
 
 class RecipientChannelNormalizer:
@@ -1979,8 +2093,7 @@ class RecipientChannelNormalizer:
         self._passthrough = False
         self._skip_opening_newline = False
         self._between_blocks = True
-        # How much of a held tool block has already been searched for a terminator, so a long argument is scanned once
-        # rather than once per delta.
+        # Held tool block already searched for a terminator; each delta scans only new text.
         self._tool_scanned = 0
 
     def feed(self, text: str) -> str:
@@ -2014,8 +2127,7 @@ class RecipientChannelNormalizer:
                 continue
 
             if self._in_reply:
-                # The reply is content, but the turn can continue after it, so follow it to its close rather than
-                # giving up on the rest.
+                # Reply is content, and the turn may go on after it; follow it to its close.
                 index, length = _find_atem_block_end(self._buffer)
                 if index < 0:
                     stable, self._buffer = _split_partial_atem_block_end(self._buffer)
@@ -2102,17 +2214,14 @@ class RecipientChannelNormalizer:
         return output
 
     def drain(self) -> str:
-        """Flush buffered text without completing anything the model left open. Text held back
-        survives; a call held back does not, so cancelling a turn can never be the thing that
-        starts a tool running."""
+        """Flush buffered text without completing anything; a held-back tool call is dropped, never run."""
         return self._flush(keep_calls = False)
 
     def _flush(self, *, keep_calls: bool) -> str:
         output = self._buffer
         self._buffer = ""
         if self._tool_header is not None:
-            # No terminator arrived, so unlike feed() there is no complete block to hand on: keep the text the model
-            # had written and drop the rest.
+            # Unterminated: nothing complete to hand on; keep the model's text, drop the rest.
             pieces = _atem_block_pieces(output, complete = False)
             if pieces is None:
                 output = _atem_surrounding_text(output, complete = False)
@@ -2120,8 +2229,7 @@ class RecipientChannelNormalizer:
                 output = "".join(t for is_call, t in pieces if keep_calls or not is_call)
             self._tool_header = None
         elif output:
-            # feed() held this back because it could still become framing. The stream ended before it did, so drop it
-            # rather than show the control markup.
+            # Held as possible framing; the stream ended, so drop it rather than show markup.
             held = _atem_partial_framing_len(output)
             output = output[: len(output) - held] if held else output
         if not self._in_reasoning:
@@ -2130,10 +2238,17 @@ class RecipientChannelNormalizer:
         return output
 
 
-def make_reasoning_normalizer(markers: tuple[str, ...], *, in_reasoning: bool = False):
+def make_reasoning_normalizer(
+    markers: tuple[str, ...],
+    *,
+    in_reasoning: bool = False,
+    continued: bool = False,
+):
     if markers and markers[0] == _ATEM_REASONING_RECIPIENT:
         # The generation prompt ends at "<|start|>assistant", so the model always writes its own header.
         return RecipientChannelNormalizer(*markers)
+    if tuple(markers) == (_INKLING_THOUGHT_OPEN, _INKLING_MESSAGE_END):
+        return InklingMessageNormalizer(*markers, in_reasoning = in_reasoning, continued = continued)
     return ReasoningChannelNormalizer(*markers, in_reasoning = in_reasoning)
 
 
@@ -2162,9 +2277,8 @@ def normalize_reasoning_snapshots(
     continued: bool = False,
     ended = None,
 ):
-    """Normalize a prefix-monotonic cumulative text stream when supported. ``ended`` is read after
-    the stream: a turn a stop sequence ended still owes its open block a close, even if a cancel
-    landed on the same step."""
+    """Normalize prefix-monotonic cumulative streams; read ended after, so a stop-ended turn still
+    closes."""
     markers = markers or detect_reasoning_channel_markers(tokenizer, tools = tools)
     if markers is None:
         yield from stream
@@ -2173,6 +2287,7 @@ def normalize_reasoning_snapshots(
     normalizer = make_reasoning_normalizer(
         markers,
         in_reasoning = prompt_opens_reasoning_channel(prompt, markers, continued),
+        continued = continued,
     )
     raw_output = ""
     normalized_output = ""
@@ -2258,8 +2373,7 @@ def _take_tool_result(pending: list, call_id) -> Optional[dict]:
 
 
 def _split_parallel_tool_calls(messages: list) -> list:
-    """Llama 3.x templates render one call per message, so split parallel calls into consecutive
-    single-call messages, each followed by its own result."""
+    """Llama 3.x renders one call per message; split parallel calls into single-call messages."""
     if not any(isinstance(m, dict) and len(m.get("tool_calls") or ()) > 1 for m in messages):
         return messages
 
@@ -2363,76 +2477,105 @@ def _special_token_strings(tokenizer) -> dict:
     return specials
 
 
-def markup_for_tokenizer(
-    tokenizer,
-    tools = None,
-    template = None,
-) -> Optional[ModelMarkup]:
-    """Profile the loaded tokenizer's own structural markers, cached per tokenizer. Returns None
-    when the template and vocabulary cannot be read, which falls back to the curated patterns: an
-    unreadable model stays fully swept rather than unprotected."""
-    if tokenizer is None:
-        return None
+_NATIVE_MARKUP_BY_TOKENIZER: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
+
+
+def _template_key(template):
+    """Hashable form of a template; a named-template dict is not."""
+    if isinstance(template, str):
+        return template
     try:
-        cached = _MARKUP_BY_TOKENIZER.get(tokenizer)
-    except TypeError:  # not weak-referenceable
-        cached = None
-    # Vision models: chat_template on the processor, vocabulary on the inner tokenizer.
-    inner = getattr(tokenizer, "tokenizer", tokenizer)
-    # An explicit *template* is the one this request will actually render with: the generate-time mapper installs its
-    # template later, so profiling the load-time one left the authorization catalog a step behind the prompt it was
-    # gating (#7066).
-    if not template:
-        template = getattr(tokenizer, "chat_template", None)
-    if not template:
-        template = getattr(inner, "chat_template", None)
-    # Keyed on template too (a mapped template lands on the same object at generate time) and on tools presence, since named dicts emit different literals.
-    is_processor = _is_processor(tokenizer)
-    # A processor always renders "default", so its profile does not vary with tools and the cache must not key two
-    # identical entries under different selectors.
-    selector = bool(tools) and not is_processor
-    # A named-template dict is unhashable, so the key is a stable serialization of it; without this the cache write
-    # raised TypeError and every call rebuilt the profile.
-    if not isinstance(template, str):
-        try:
-            template_key = json.dumps(template, sort_keys = True, default = str)
-        except (TypeError, ValueError):
-            template_key = repr(template)
-    else:
-        template_key = template
-    if isinstance(cached, dict):
-        hit = cached.get((template_key, selector), _UNPARSED)
+        return json.dumps(template, sort_keys = True, default = str)
+    except (TypeError, ValueError):
+        return repr(template)
+
+
+def _cached_markup(store, tokenizer, key, build):
+    """build() memoised per tokenizer under *key*, at most 4 keys each; unweakrefable tokenizers are not cached."""
+    try:
+        entry = store.get(tokenizer)
+    except TypeError:
+        entry = None
+    if isinstance(entry, dict):
+        hit = entry.get(key, _UNPARSED)
         if hit is not _UNPARSED:
             return hit
-    else:
-        cached = None
-    tokens = None
-    tokens = _tokenizer_strings(inner)
-    # ProcessorMixin.apply_chat_template does NOT switch to "tool_use" implicitly; it renders "default" unless
-    # chat_template= names another. Profiling with the tokenizer rule left a processor's own default-template boundary
-    # unswept while the render emitted it (#7066).
-    profile = model_markup(
-        template,
-        tokens,
-        tools,
-        prefer_tool_use = not is_processor,
-        specials = _special_token_strings(inner),
-    )
+    profile = build()
     try:
-        entry = cached if isinstance(cached, dict) else {}
-        # Two selectors per template; trim if a tokenizer somehow cycles templates.
+        entry = entry if isinstance(entry, dict) else {}
         if len(entry) >= 4:
             entry.clear()
-        entry[(template_key, selector)] = profile
-        _MARKUP_BY_TOKENIZER[tokenizer] = entry
+        entry[key] = profile
+        store[tokenizer] = entry
     except TypeError:
         pass
     return profile
 
 
+def _vocabulary_size_key(inner):
+    # Not len(): on a fast tokenizer it builds the whole vocabulary map, the cost this cache avoids.
+    try:
+        return (inner.vocab_size, len(getattr(inner, "added_tokens_decoder", None) or ()))
+    except Exception:
+        return None
+
+
+def _native_markup_for_tokenizer(tokenizer, native_tpl, tools) -> Optional[ModelMarkup]:
+    """model_markup of the native fallback template, which walks the whole vocabulary, cached per tokenizer.
+    model_markup reads tools only for truthiness."""
+    inner = getattr(tokenizer, "tokenizer", tokenizer)
+    specials = _special_token_strings(inner)
+    key = (
+        _template_key(native_tpl),
+        bool(tools),
+        _vocabulary_size_key(inner),
+        tuple(sorted(specials.items())),
+    )
+    return _cached_markup(
+        _NATIVE_MARKUP_BY_TOKENIZER,
+        tokenizer,
+        key,
+        lambda: model_markup(native_tpl, _vocabulary_of(tokenizer), tools, specials = specials),
+    )
+
+
+def markup_for_tokenizer(
+    tokenizer,
+    tools = None,
+    template = None,
+) -> Optional[ModelMarkup]:
+    """Profile tokenizer markers, cached per tokenizer; None when unreadable, so curated patterns apply."""
+    if tokenizer is None:
+        return None
+    # Vision models: chat_template on the processor, vocabulary on the inner tokenizer.
+    inner = getattr(tokenizer, "tokenizer", tokenizer)
+    # An explicit template is what this request renders with; load-time profiling lagged it (#7066).
+    if not template:
+        template = getattr(tokenizer, "chat_template", None)
+    if not template:
+        template = getattr(inner, "chat_template", None)
+    is_processor = _is_processor(tokenizer)
+    # A processor always renders default, so tools do not change its profile or the cache key.
+    selector = bool(tools) and not is_processor
+    # ProcessorMixin.apply_chat_template does NOT switch to "tool_use" implicitly; it renders "default" unless
+    # chat_template= names another. Profiling with the tokenizer rule left a processor's own default-template boundary
+    # unswept while the render emitted it (#7066).
+    return _cached_markup(
+        _MARKUP_BY_TOKENIZER,
+        tokenizer,
+        (_template_key(template), selector),
+        lambda: model_markup(
+            template,
+            _tokenizer_strings(inner),
+            tools,
+            prefer_tool_use = not is_processor,
+            specials = _special_token_strings(inner),
+        ),
+    )
+
+
 def trailing_assistant_text(messages: list) -> Optional[str]:
-    """Plain text of a trailing assistant turn, else None. Only plain text resumes: tool calls and
-    image parts have no resume point."""
+    """Plain text of a trailing assistant turn, else None; tool calls and images cannot resume."""
     if not messages:
         return None
     last = messages[-1]
@@ -2535,8 +2678,7 @@ def prompt_serializes_structured_media(prompt, messages) -> bool:
 
 
 def vlm_prompt_issue(prompt, messages) -> Optional[str]:
-    """Name the way a VLM render came back unusable, else None. Shared by both backends so a defect
-    one of them refuses stays refused by the other."""
+    """Name why a VLM render is unusable, else None; both backends share this check."""
     if not isinstance(prompt, str) or not prompt.strip():
         return "an empty prompt"
     if prompt_serializes_structured_media(prompt, messages):
@@ -2974,6 +3116,43 @@ def apply_chat_template_for_generation(
         raise
 
 
+_COMMIT_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+
+
+def reviewed_code_revision(source) -> Optional[str]:
+    """Commit the consent scan just read for a Hub repo (its cached refs/main snapshot); None for local paths or no cache."""
+    if not source:
+        return None
+    try:
+        from utils.paths import is_local_path
+        from utils.utils import hf_cache_snapshot_dir_for_repo
+
+        if is_local_path(str(source)):
+            return None
+        snapshot = hf_cache_snapshot_dir_for_repo(str(source))
+    except Exception as exc:
+        logger.debug("Could not read the cached commit for %s: %s", source, exc)
+        return None
+    name = snapshot.name if snapshot is not None else ""
+    return name if _COMMIT_SHA_RE.match(name) else None
+
+
+def reviewed_code_pin(model_info: dict, template_source) -> dict:
+    """Keeps a later trust_remote_code reload on the commit reviewed at load time, never the branch's current tip."""
+    try:
+        from utils.paths import is_local_path
+        if is_local_path(str(template_source)):
+            return {}
+    except Exception:
+        pass
+    pins = model_info.get("remote_code_revisions") or {}
+    revision = pins.get(str(template_source))
+    if revision:
+        return {"revision": revision}
+    # Unknown commit: read only what is already cached rather than fetch new, unreviewed code.
+    return {"local_files_only": True}
+
+
 def resolve_native_chat_template(
     model_info: dict,
     active_model_name,
@@ -2989,12 +3168,14 @@ def resolve_native_chat_template(
         return None
     # Reuse load-time trust_remote_code so a custom-code tokenizer repo can instantiate its class.
     trust_remote_code = bool(model_info.get("trust_remote_code", False))
+    pin_kwargs = reviewed_code_pin(model_info, template_source) if trust_remote_code else {}
     try:
         from transformers import AutoTokenizer
         nt = AutoTokenizer.from_pretrained(
             template_source,
             token = hf_token if hf_token and hf_token.strip() else None,
             trust_remote_code = trust_remote_code,
+            **pin_kwargs,
         )
         native_tpl = nt.chat_template or False
     except Exception as exc:

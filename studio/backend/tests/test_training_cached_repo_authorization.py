@@ -71,9 +71,7 @@ def test_snapshot_symlink_into_blobs_still_names_its_repo(cache_root):
 
 
 def test_cached_private_dataset_path_is_attributed_to_the_dataset_repo(cache_root):
-    """A dataset snapshot passed where a model is expected must still be authorized: such a repo
-    can hold config.json plus weights, and matching only "models--" skipped the check entirely.
-    """
+    """A dataset snapshot passed as a model must be authorized; matching only models-- skipped it."""
     from hub.utils.hf_cache_state import cached_repo_id_for_path, cached_repo_ref_for_path
 
     snapshot = _make_repo(cache_root, "datasets--org--private-data")

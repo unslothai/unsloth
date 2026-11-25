@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-# security-audit.yml's pip-scan-packages job depends on this path.
+# .github/workflows/security-audit.yml's pip-scan-packages job depends
+# on this file existing at scripts/scan_packages.py.
 """
 scan_packages.py -- Standalone pre-install package scanner.
 
@@ -102,7 +103,7 @@ RE_BASE64 = re.compile(
 
 RE_EXEC_EVAL = re.compile(r"\b(exec|eval)\s*\(")
 
-# Excludes urllib.parse. httpx2 is a separate import name that openai 3.x routes through.
+# Network APIs (excludes urllib.parse, pure string manipulation). ``httpx2`` is the pydantic-maintained successor and a separate import name: openai 3.0.0 requires it and routes every call through it, which made the SDK's own HTTP invisible to each combined check needing a network half.
 RE_NETWORK = re.compile(
     r"\burllib\.request\b"
     r"|\burlopen\s*\("
@@ -116,8 +117,11 @@ RE_NETWORK = re.compile(
 RE_LARGE_BLOB = re.compile(r"[A-Za-z0-9+/=]{200,}")
 
 
-# Credential and wallet names are split and joined at runtime so AV does not quarantine the file
-# as a stealer (it folds `+` and adjacent literals). Split any name added to these two the same way.
+# Credential and wallet names in RE_CRED_ACCESS and RE_CRYPTO_THEFT are stored split into pieces and
+# joined at import: written whole, they got this file quarantined by Bitdefender as Generic.PY.STEALER.
+# Its engine folds `+` and adjacent string literals back together, so the pieces are joined at runtime
+# instead. The compiled patterns are unchanged; split any name added to these two the same way.
+# Trimming the comments above this point brought the same detection back (#12969); rescan after editing.
 def _joined(*parts) -> str:
     """Concatenate pattern parts; a tuple part is one name split into pieces."""
     return "".join("".join(part) for part in parts)
@@ -167,7 +171,7 @@ RE_OBFUSCATION = re.compile(
     r"|\bbz2\s*\.\s*decompress\b"
     r"|\bbytearray\s*\(\s*\[.*?\]\s*\)"  # bytearray([104,101,...])
     r"|\bchr\s*\(\s*\d+\s*\).*chr\s*\(\s*\d+\s*\)"  # chr() obfuscation chains
-    r"|\b__import__\s*\("
+    r"|\b__import__\s*\("  # dynamic import
     r"|\bgetattr\s*\(\s*__builtins__"  # getattr(__builtins__, ...)
     r"|\brotate\s*=.*\blambda\b.*\bchr\b"  # rotation ciphers
     r"|\b(?:b64decode|decodebytes)\s*\(.*(?:b64decode|decodebytes)\s*\(",  # double base64
@@ -197,7 +201,7 @@ RE_CLOUD_METADATA = re.compile(
 RE_PERSISTENCE = re.compile(
     r"/etc/systemd/"
     r"|systemctl\s+(enable|start|daemon-reload)"
-    r"|\.service\b.*\[Service\]"
+    r"|\.service\b.*\[Service\]"  # systemd unit content
     r"|/etc/cron"
     r"|crontab\s"
     r"|/etc/init\.d/"
@@ -205,11 +209,11 @@ RE_PERSISTENCE = re.compile(
     r"|/Library/LaunchAgents"
     r"|~/\.config/autostart"
     r"|~/.local/share/systemd"
-    r"|~/\.config/systemd/user/"
-    r"|HKEY_LOCAL_MACHINE.*\\\\Run"
+    r"|~/\.config/systemd/user/"  # user-level systemd
+    r"|HKEY_LOCAL_MACHINE.*\\\\Run"  # Windows registry autorun
     r"|HKEY_CURRENT_USER.*\\\\Run"
     r"|\\\\Start Menu\\\\Programs\\\\Startup"
-    r"|schtasks\s",
+    r"|schtasks\s",  # Windows scheduled tasks
     re.IGNORECASE,
 )
 
@@ -227,15 +231,15 @@ RE_CONTAINER_ABUSE = re.compile(
     r"|\bhostPID\s*:\s*true"
     r"|\bprivileged\s*:\s*true"
     r"|\bhostNetwork\s*:\s*true"
-    r"|\bhostPath\b.*\bpath\s*:\s*/",
+    r"|\bhostPath\b.*\bpath\s*:\s*/",  # k8s hostPath mounts
     re.IGNORECASE,
 )
 
 RE_ENV_HARVEST = re.compile(
-    r"\bos\.environ\s*\.\s*copy\s*\("
+    r"\bos\.environ\s*\.\s*copy\s*\("  # full env copy
     r"|\bdict\s*\(\s*os\.environ\s*\)"
     r"|\bjson\.dumps\s*\(\s*(?:dict\s*\(\s*)?os\.environ"
-    r"|\bfor\s+\w+\s*,\s*\w+\s+in\s+os\.environ\.items\(\)"
+    r"|\bfor\s+\w+\s*,\s*\w+\s+in\s+os\.environ\.items\(\)"  # iterating all env vars
     r"|\bos\.environ\b.*(?:SECRET|TOKEN|KEY|PASSWORD|CREDENTIAL|API_KEY|PRIVATE)"
     r"|\b(?:SECRET|TOKEN|PASSWORD|API_KEY|PRIVATE_KEY)\b.*os\.environ",
     re.IGNORECASE,
@@ -250,24 +254,24 @@ RE_ARCHIVE_STAGING = re.compile(
     re.DOTALL,
 )
 
-# No bare platform.system() branch: under DOTALL it matched any cross-platform library.
+# Anti-analysis / sandbox evasion / debugger detection. Deliberately NO bare ``platform.system() ... Linux/Windows/Darwin`` branch: under re.DOTALL it matched across the whole file, so any cross-platform library tripped it. OS detection alone is not an anti-analysis signal; the debugger/VM/long-sleep signals below are.
 RE_ANTI_ANALYSIS = re.compile(
     r"\bptrace\b"
     r"|\bsys\s*\.\s*gettrace\s*\("
     r"|\bsys\s*\.\s*settrace\b"
     r"|\bTracerPid\b"
-    # Lookbehind instead of \b, which needs a word char before `/` and so missed real uses.
+    # /proc/self/status is read to scrape TracerPid for anti-debug. A leading \b is unsatisfiable there, so the old pattern was dead; a lookbehind forbidding only a preceding word char or path separator matches open("/proc/self/status") and `cat /proc/self/status` while avoiding mid-path partials.
     r"|(?<![\w/])/proc/self/status\b"
     r"|\bIsDebuggerPresent\b"
     r"|\bvirtualbox\b.*\bhardware\b"
     r"|\bvmware\b.*\bdetect\b"
-    r"|\btime\.sleep\s*\(\s*(?:[3-9]\d{2,}|[1-9]\d{3,})\s*\)",
+    r"|\btime\.sleep\s*\(\s*(?:[3-9]\d{2,}|[1-9]\d{3,})\s*\)",  # long sleep (anti-sandbox)
     re.IGNORECASE | re.DOTALL,
 )
 
 RE_DNS_EXFIL = re.compile(
     r"\bdns\.resolver\b"
-    r"|\bsocket\.getaddrinfo\s*\([^)]*\+[^)]*\)"
+    r"|\bsocket\.getaddrinfo\s*\([^)]*\+[^)]*\)"  # dynamic hostname construction
     r"|\bdnspython\b"
     r"|\bTXT\b.*\bresolver\b"
     r"|\bresolver\b.*\bTXT\b"
@@ -280,9 +284,9 @@ RE_FS_ENUM = re.compile(
     r"|\bglob\s*\.\s*glob\s*\([^)]*(?:\*\*|\*\.pem|\*\.key|\*\.cer|\*\.pfx|\*\.p12)"
     r"|\bos\.listdir\s*\(\s*['\"](?:/home|/root|/Users|/etc)"
     r"|\bPath\s*\(\s*['\"]~['\"]\s*\)\s*\.\s*glob\b"
-    # History files by name; a DOTALL `history.*read` spanned whole files and was all noise.
+    # Shell / REPL history FILES. Replaces `\bhistory\b.*\bread\b`, whose re.DOTALL `.*` spanned the whole file and produced 9 of the 11 baselined CRITICALs here, each allowlisted, which suppressed this check for the whole file.
     r"|\.(?:bash|zsh|ksh|sh|python|node_repl|psql|mysql|rediscli|irb|sqlite)_history\b"
-    # Undotted history files; a quote counts as a boundary so Path pieces still match.
+    # Undotted history files, with a boundary that finds them however the path was built (fish_history, PSReadLine/ConsoleHost_history.txt). A quote counts as a boundary alongside a separator, so a basename assembled by Path.home() / "fish" / "fish_history" still matches.
     r"|(?:^|[/\\'\"])(?i:fish_history|ConsoleHost_history\.txt)\b"
     r"|['\"~/]\.history\b"
     r"|\bHISTFILE\b"
@@ -291,8 +295,7 @@ RE_FS_ENUM = re.compile(
     re.DOTALL,
 )
 
-# Leave this pattern exactly as is: evidence is extracted with it, so editing the alternation
-# moves digests and reopens every reviewed baseline entry. dup2 is gated below instead.
+# Reverse shell / bind shell patterns. LEFT EXACTLY AS IT WAS, dup2 included, because this pattern is what the evidence is extracted with: it is re.DOTALL, so a match spans from the first signal to the last and editing the alternation moves the span, moves the digest, and silently reopens every reviewed baseline entry taken against it (removing the dup2 branch un-suppressed 11 entries). Whether dup2 alone is enough is decided below instead.
 RE_REVERSE_SHELL = re.compile(
     r"\bsocket\b.*\bconnect\b.*\bsubprocess\b"
     r"|\bsocket\b.*\bconnect\b.*\b(?:sh|bash|cmd)\b"
@@ -303,7 +306,7 @@ RE_REVERSE_SHELL = re.compile(
     re.DOTALL,
 )
 
-# Without dup2: a reverse shell dup2s onto a socket, so the socket carries the meaning.
+# The same thing without the dup2 branch, used only to answer "would this file still be a reverse shell if dup2 did not count?". dup2 is the ordinary way to point a file descriptor at a file and was the only single-token alternative above, so it fired on capture helpers and redirect plumbing: ten of the nineteen reverse-shell baseline entries are dup2 with no socket anywhere in the file, and not one is a true positive. A reverse shell dup2s onto a SOCKET, so the socket is the half carrying the meaning.
 RE_REVERSE_SHELL_WITHOUT_DUP = re.compile(
     r"\bsocket\b.*\bconnect\b.*\bsubprocess\b"
     r"|\bsocket\b.*\bconnect\b.*\b(?:sh|bash|cmd)\b"
@@ -315,11 +318,11 @@ RE_REVERSE_SHELL_WITHOUT_DUP = re.compile(
 RE_SOCKET_USE = re.compile(r"\bsocket\b")
 
 RE_REMOTE_CODE = re.compile(
-    r"\bexec\s*\(\s*(?:urllib|requests|httpx|urlopen)"
+    r"\bexec\s*\(\s*(?:urllib|requests|httpx|urlopen)"  # exec(requests.get(...))
     r"|\bexec\s*\([^)]*\.(?:text|content|read)\s*\("
     r"|\beval\s*\([^)]*\.(?:text|content|read)\s*\("
-    r"|\bimportlib\s*\.\s*import_module\s*\([^)]*\+"
-    r"|\b__import__\s*\([^)]*\+",
+    r"|\bimportlib\s*\.\s*import_module\s*\([^)]*\+"  # dynamic import with concatenation
+    r"|\b__import__\s*\([^)]*\+",  # __import__ with concatenation
     re.DOTALL,
 )
 
@@ -355,7 +358,7 @@ RE_C2_POLLING = re.compile(
     re.DOTALL,
 )
 
-# Lightning 2.6.x planted editor SessionStart hooks to re-attach the payload.
+# Developer-tool persistence hooks. Lightning 2.6.x planted SessionStart hooks into Claude Code / VS Code / Cursor so the payload re-attached on editor open.
 RE_DEV_TOOL_HIJACK = re.compile(
     r"\.claude/settings\.json"
     r"|\.cursor/.*hooks"
@@ -366,7 +369,7 @@ RE_DEV_TOOL_HIJACK = re.compile(
     r"|\bautomator\b.*\.workflow\b",
 )
 
-# Packages shipping regexes for other people's secrets are nearly always stealers.
+# Hard-coded credential / API-token regexes embedded in source: packages that ship regexes for OTHER people's secrets are nearly always stealers.
 RE_TOKEN_REGEX = re.compile(
     r"\bgh[psoru]_[A-Za-z0-9_]{20,}"  # GitHub PAT/OAuth/etc.
     r"|\bgithub_pat_[A-Za-z0-9_]{20,}"
@@ -390,11 +393,11 @@ RE_MAY12_IOC = re.compile(
 RE_JS_OBFUSCATION = re.compile(
     r"_0x[a-f0-9]{4,6}\s*=\s*function"
     r"|var\s+_0x[a-f0-9]{4,6}\b"
-    r"|(?:\\x[0-9a-f]{2}){10,}"
+    r"|(?:\\x[0-9a-f]{2}){10,}"  # \x-escape strings
     r"|String\.fromCharCode\s*\(\s*\d+\s*(?:,\s*\d+\s*){10,}\)",
 )
 
-# The Qix npm phish swapped recipient addresses via a window.ethereum listener.
+# Web3 / wallet-hijack pattern. The Qix npm phish overrode fetch/XMLHttpRequest and swapped recipient addresses via a `window.ethereum` listener.
 RE_WEB3_HIJACK = re.compile(
     r"\bwindow\.ethereum\b"
     r"|\bweb3\.eth\.\w+\s*\("
@@ -403,7 +406,7 @@ RE_WEB3_HIJACK = re.compile(
     r"|TronWeb|solanaWeb3",
 )
 
-# Self-propagating worms plant their own workflow and use trufflehog/gitleaks.
+# Self-propagating worms (Shai-Hulud, ForceMemo) plant their own GitHub workflow in every repo they reach and use trufflehog/gitleaks for credential discovery.
 RE_WORKFLOW_INJECT = re.compile(
     r"\.github/workflows/[^\"\']*\.ya?ml"
     r"|\btrufflehog\b|\bgitleaks\b"
@@ -438,7 +441,7 @@ def check_pth_file(content: str, filename: str, package: str) -> list[Finding]:
 
     import_lines = [line for line in content.splitlines() if RE_PTH_IMPORT.match(line)]
     if not import_lines:
-        return findings
+        return findings  # Pure path entries, inert
 
     _pth_checks = [
         (RE_SUBPROCESS, ".pth has subprocess/os exec calls"),
@@ -480,7 +483,7 @@ def check_pth_file(content: str, filename: str, package: str) -> list[Finding]:
             )
 
     if RE_LARGE_BLOB.search(content):
-        # Digest every blob in full, so a kept prefix or an appended blob still reopens.
+        # Digest every blob (not just the first 120 chars, and not just the first blob), so a later payload that keeps the prefix or appends a second encoded blob reopens.
         blob, digest = _blob_digest(content)
         findings.append(
             Finding(

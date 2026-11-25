@@ -137,8 +137,7 @@ def _recorded_master_root() -> Path | None:
 
 
 def forget_recorded_master_root() -> None:
-    """Drop the cached note reading. For tests, and for an installer that writes the note into
-    a tree this process has already looked at."""
+    """Drops the cached note reading, for tests and installers rewriting an already-read tree."""
     with _recorded_master_lock:
         _recorded_master_roots.clear()
 
@@ -175,8 +174,7 @@ def _warn_unrecognized_portable(raw: str) -> None:
 
 
 def portable_mode() -> bool:
-    """Whether this install keeps everything under one directory. Implied by UNSLOTH_HOME, and
-    settable on its own so an existing install can opt in."""
+    """One-directory install, implied by UNSLOTH_HOME; UNSLOTH_PORTABLE alone opts in."""
     # Case-folded: FALSE must not read as on.
     raw = (os.environ.get("UNSLOTH_PORTABLE") or "").strip()
     value = raw.lower()
@@ -1078,12 +1076,9 @@ def _path_with_first(path: str, first: str) -> str:
 
 
 def _setup_cache_env() -> None:
-    """Set cache env vars for HuggingFace, uv, and vLLM.
-
-    Explicit Hugging Face environment variables take precedence over Unsloth's
-    stored location. Unsloth seeds import-time variables once, while each later
-    worker receives its own captured cache location.
-    """
+    """Sets cache env vars for Hugging Face, uv and vLLM; explicit Hugging Face env vars override
+    Unsloth's stored location, and import-time variables are seeded once while each later worker
+    gets its own captured location."""
     _use_studio_uv_tools()
     root = cache_root()
     from utils.hf_cache_settings import initialize_hf_cache_environment
@@ -1343,27 +1338,68 @@ def resolve_tensorboard_dir(path_value: str | None = None) -> Path:
     )
 
 
-def dataset_files_in_dir(directory: Path) -> list[Path]:
+TRAIN_SPLITS = ("train",)
+EVAL_SPLITS = ("validation", "test")
+
+
+def _split_files(directory: Path, files: list[Path], splits: tuple[str, ...]) -> list[Path]:
+    """The *files* ``datasets.load_dataset(directory)`` puts in the first of *splits* it finds, else all."""
+    try:
+        from datasets.data_files import DEFAULT_PATTERNS_ALL, DataFilesDict, get_data_patterns
+
+        patterns = get_data_patterns(str(directory))
+        if patterns == DEFAULT_PATTERNS_ALL:
+            return files
+        for split in splits:
+            if split not in patterns:
+                continue
+            matched = DataFilesDict.from_patterns(
+                {split: patterns[split]}, base_path = str(directory)
+            ).get(split)
+            wanted = {os.path.normcase(os.path.realpath(f)) for f in matched or ()}
+            picked = [f for f in files if os.path.normcase(os.path.realpath(f)) in wanted]
+            if picked:
+                return picked
+    except Exception:
+        pass
+    return files
+
+
+def dataset_files_in_dir(directory: Path, splits: tuple[str, ...] = TRAIN_SPLITS) -> list[Path]:
     """Loadable dataset files for *directory*, preferring a ``parquet-files/`` export over the
-    directory's own files. Raises ``ValueError`` when it holds no supported format."""
+    directory's own files. Files named by split (``train.jsonl`` beside ``val.jsonl``) keep only the
+    first of *splits* present, as ``datasets.load_dataset`` splits them; otherwise every file.
+    Raises ``ValueError`` when it holds no supported format."""
     parquet_dir = directory / "parquet-files"
     if not parquet_dir.exists():
         parquet_dir = directory
     parquet = drop_appledouble_metadata(sorted(parquet_dir.glob("*.parquet")))
     if parquet:
-        return parquet
+        return _split_files(parquet_dir, parquet, splits)
     files: list[Path] = []
     for ext in (".json", ".jsonl", ".csv", ".parquet"):
         files.extend(drop_appledouble_metadata(sorted(directory.glob(f"*{ext}"))))
     if not files:
         raise ValueError(f"No supported data files in directory: {directory}")
-    return files
+    return _split_files(directory, files, splits)
+
+
+def _refuse_network_share_dataset(raw: str) -> None:
+    """Refused before realpath() touches it: that alone makes Windows sign in to the share's host (NTLM).
+    A dataset root the owner placed on a share keeps working."""
+    from utils.datasets.remote_images import is_network_share
+    if is_network_share(raw) and not any(
+        is_network_share(str(root))
+        for root in (datasets_root(), dataset_uploads_root(), recipe_datasets_root())
+    ):
+        raise ValueError(f"dataset path must be relative or under a dataset root: {raw!r}")
 
 
 def resolve_dataset_path(path_value: str) -> Path:
     raw = str(path_value or "").strip()
     if "\x00" in raw:
         raise ValueError("dataset path may not contain null bytes")
+    _refuse_network_share_dataset(raw)
     path = Path(raw).expanduser()
     if ".." in path.parts:
         raise ValueError(f"dataset path may not contain '..' segments: {raw!r}")

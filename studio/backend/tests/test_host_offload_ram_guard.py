@@ -45,17 +45,14 @@ class TestHostOffloadShortfall:
         assert _shortfall(20 * _GB, 21 * _MIB_PER_GB) is not None
 
     def test_the_warning_says_the_load_goes_ahead(self):
-        """Nothing here blocks a load any more, so the message must not read as a
-        refusal or send the user hunting for an env var. It states the cost and says
-        the load continues."""
+        """The warning says Loading anyway, not a refusal, and does not name UNSLOTH_ALLOW_HOST_OFFLOAD."""
         msg = _shortfall(20 * _GB, 21 * _MIB_PER_GB)
         assert msg is not None
         assert "Loading anyway" in msg
         assert "UNSLOTH_ALLOW_HOST_OFFLOAD" not in msg
 
     def test_a_refusal_never_prints_a_need_at_or_under_the_usable_figure(self):
-        """A spill inside available RAM but inside the headroom too is still refused, so
-        the message must not read as 7 GB not fitting in 8 GB."""
+        """Headroom refusals must show 6 GB usable, not read as 7 GB not fitting in 8 GB."""
         msg = _shortfall(7 * _GB, 8 * _MIB_PER_GB)
         assert msg is not None
         assert "About 7 GB" in msg and "6 GB usable" in msg

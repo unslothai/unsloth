@@ -72,6 +72,14 @@ const LEGACY_ROW = {
   ragAutoInjectMinScore: 0.4,
 };
 
+const RECOMMENDED = new Set<string>([
+  "temperature",
+  "topP",
+  "topK",
+  "minP",
+  "presencePenalty",
+]);
+
 let scenario = 0;
 
 async function world(rows: Record<string, Record<string, unknown>> = {}) {
@@ -191,7 +199,7 @@ test("C1b: a legacy chat follows the installation defaults, which a model load m
   assert.deepEqual(threadRows.rows.get("L"), LEGACY_ROW);
 });
 
-test("C1c: a legacy chat that the user then edits pins the WHOLE set, not just the edit", async (t) => {
+test("C1c: a legacy chat that the user then edits pins the edit, not the model's sampling", async (t) => {
   enableCountedTimers(t);
   const w = await world({ L: { ...LEGACY_ROW } });
   await settle(w.mod, (ms) => t.mock.timers.tick(ms));
@@ -199,12 +207,12 @@ test("C1c: a legacy chat that the user then edits pins the WHOLE set, not just t
   w.store().setParams({ ...w.store().params, temperature: 1.37 });
   await settle(w.mod, (ms) => t.mock.timers.tick(ms));
 
-  // The write is a full replacement from the store, so all keys get pinned.
   const row = threadRows.rows.get("L") as Record<string, unknown>;
   assert.equal(row.temperature, 1.37);
-  for (const key of SAMPLING_KEYS) {
-    assert.notEqual(row[key], undefined, `${key} was not pinned`);
+  for (const key of ["topP", "topK", "minP", "presencePenalty"]) {
+    assert.equal(row[key], undefined, `${key} was pinned`);
   }
+  assert.equal(row.systemPrompt, INSTALLATION.systemPrompt);
   assert.equal(row.ragTopK, 7);
   assert.equal(row.permissionMode, "off");
   assert.deepEqual(row.ragSource, { type: "kb", kbId: "notes" });
@@ -213,12 +221,101 @@ test("C1c: a legacy chat that the user then edits pins the WHOLE set, not just t
     {
       ...w.store().params,
       temperature: 0.31,
+      topP: 0.41,
       checkpoint: "unsloth/Qwen3.5-9B-GGUF",
     },
     { fromModelDefaults: true },
   );
   await settle(w.mod, (ms) => t.mock.timers.tick(ms));
   assert.equal(w.store().params.temperature, 1.37);
+  assert.equal(w.store().params.topP, 0.41);
+});
+
+const QWEN = {
+  temperature: 0.7,
+  topP: 0.8,
+  topK: 20,
+  minP: 0,
+  presencePenalty: 1.5,
+  checkpoint: "unsloth/Qwen3.5-4B-GGUF",
+};
+const GEMMA = {
+  temperature: 1,
+  topP: 0.95,
+  topK: 64,
+  minP: 0,
+  presencePenalty: 0,
+  checkpoint: "unsloth/gemma-4-E4B-it-GGUF",
+};
+
+function recommended(params: Record<string, unknown>) {
+  const { temperature, topP, topK, minP, presencePenalty } = params;
+  return { temperature, topP, topK, minP, presencePenalty };
+}
+
+test("C1d: a model picked inside a chat runs at its own recommended sampling", async (t) => {
+  enableCountedTimers(t);
+  const w = await world();
+  const settleNow = () => settle(w.mod, (ms) => t.mock.timers.tick(ms));
+  await settleNow();
+  w.store().setParams({ ...w.store().params, ...QWEN }, { fromModelDefaults: true });
+  await settleNow();
+  w.open("N", null);
+  await settleNow();
+
+  w.store().setParams({ ...w.store().params, ...GEMMA }, { fromModelDefaults: true });
+  await settleNow();
+  assert.deepEqual(recommended(w.store().params), recommended(GEMMA));
+
+  w.open("M", null);
+  await settleNow();
+  w.open("N");
+  await settleNow();
+  assert.deepEqual(recommended(w.store().params), recommended(GEMMA));
+});
+
+test("C1e: a chat opened before any model loads takes the loaded model's sampling", async (t) => {
+  enableCountedTimers(t);
+  const w = await world();
+  const settleNow = () => settle(w.mod, (ms) => t.mock.timers.tick(ms));
+  await settleNow();
+  w.open("P", null);
+  await settleNow();
+
+  w.store().setParams({ ...w.store().params, ...GEMMA }, { fromModelDefaults: true });
+  await settleNow();
+  assert.deepEqual(recommended(w.store().params), recommended(GEMMA));
+});
+
+test("C1f: a custom preset picked in a chat keeps its values that matched the model's", async (t) => {
+  enableCountedTimers(t);
+  const w = await world();
+  const settleNow = () => settle(w.mod, (ms) => t.mock.timers.tick(ms));
+  await settleNow();
+  w.store().setParams({ ...w.store().params, ...QWEN }, { fromModelDefaults: true });
+  await settleNow();
+  w.open("N", null);
+  await settleNow();
+
+  const mine = { ...recommended(QWEN), topP: 0.5 };
+  w.store().setParams(
+    { ...w.store().params, ...mine },
+    { minPChoiceEdited: true, fromPreset: true, pinsSampling: true },
+  );
+  w.store().setActivePreset("Mine");
+  w.store().setActivePresetSource("custom");
+  await settleNow();
+
+  w.open("M", null);
+  await settleNow();
+  w.store().setActivePreset("Default");
+  w.store().setActivePresetSource("builtin-default");
+  w.store().setParams({ ...w.store().params, ...GEMMA }, { fromModelDefaults: true });
+  await settleNow();
+
+  w.open("N");
+  await settleNow();
+  assert.deepEqual(recommended(w.store().params), mine);
 });
 
 test("C2: an empty, null or absent snapshot opens on the installation settings", async (t) => {
@@ -235,7 +332,9 @@ test("C2: an empty, null or absent snapshot opens on the installation settings",
     for (const key of SAMPLING_KEYS) {
       assert.equal(
         row[key],
-        INSTALLATION[key as keyof typeof INSTALLATION],
+        RECOMMENDED.has(key)
+          ? undefined
+          : INSTALLATION[key as keyof typeof INSTALLATION],
         where,
       );
     }
@@ -366,6 +465,7 @@ test("C3e: an out-of-range recommendation never reaches a chat that pinned that 
   const w = await world();
   await settle(w.mod, (ms) => t.mock.timers.tick(ms));
   w.open("A");
+  w.store().setParams({ ...w.store().params, topP: 0.9 });
   await settle(w.mod, (ms) => t.mock.timers.tick(ms));
 
   w.store().setParams(
@@ -375,9 +475,9 @@ test("C3e: an out-of-range recommendation never reaches a chat that pinned that 
   w.store().setParams({ ...w.store().params, temperature: 1.37 });
   await settle(w.mod, (ms) => t.mock.timers.tick(ms));
 
-  assert.equal(w.store().params.topP, INSTALLATION.topP);
+  assert.equal(w.store().params.topP, 0.9);
   const row = threadRows.rows.get("A") as Record<string, unknown>;
-  assert.equal(row.topP, INSTALLATION.topP);
+  assert.equal(row.topP, 0.9);
   assert.equal(row.temperature, 1.37);
 
   w.open("Z");
@@ -385,7 +485,7 @@ test("C3e: an out-of-range recommendation never reaches a chat that pinned that 
   await settle(w.mod, (ms) => t.mock.timers.tick(ms));
   assertUsable(w.sampling(), "after an out-of-range recommendation");
   assert.equal(w.store().params.temperature, 1.37);
-  assert.equal(w.store().params.topP, INSTALLATION.topP);
+  assert.equal(w.store().params.topP, 0.9);
 });
 
 test("C3f: an out-of-range recommendation taken with no chat open cannot be pinned", async (t) => {
@@ -407,7 +507,6 @@ test("C3f: an out-of-range recommendation taken with no chat open cannot be pinn
   await settle(w.mod, (ms) => t.mock.timers.tick(ms));
   const row = threadRows.rows.get("A") as Record<string, unknown>;
   assert.equal(row.topP, undefined);
-  assert.equal(row.temperature, INSTALLATION.temperature);
   assert.equal(row.systemPrompt, INSTALLATION.systemPrompt);
 
   assertUsable(w.sampling(), "out-of-range recommendation, no chat open");
@@ -450,6 +549,7 @@ test("C4b: a falsy edit round-trips capture -> persist -> restore", async (t) =>
 
     const row = threadRows.rows.get("A") as Record<string, unknown>;
     for (const [key, value] of Object.entries(edge)) {
+      if (RECOMMENDED.has(key) && value === INSTALLATION[key as keyof typeof INSTALLATION]) continue;
       assert.equal(row[key], value, `topK ${topK}: ${key} was not stored`);
     }
     assert.deepEqual(settingsHttp.puts, [], `topK ${topK}: an edit leaked`);
@@ -490,13 +590,15 @@ test("C4c: a falsy pinned value survives a model load and a model switch", async
     { fromModelDefaults: true },
   );
   await settle(w.mod, (ms) => t.mock.timers.tick(ms));
-  assert.deepEqual(w.sampling(), FALSY_EDGE, "the load overwrote a falsy pin");
+  // presencePenalty 0 was never an edit: it was already the installation's value.
+  const pinned = { ...FALSY_EDGE, presencePenalty: 0.25 };
+  assert.deepEqual(w.sampling(), pinned, "the load overwrote a falsy pin");
 
   w.store().setCheckpoint("external::anthropic::claude-opus-5", null);
   await settle(w.mod, (ms) => t.mock.timers.tick(ms));
   assert.deepEqual(
     w.sampling(),
-    FALSY_EDGE,
+    pinned,
     "the switch overwrote a falsy pin",
   );
 

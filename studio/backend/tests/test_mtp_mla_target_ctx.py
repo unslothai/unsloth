@@ -241,8 +241,7 @@ class TestKdaRollbackReserve:
 
 
 class TestMlaFitPreventsOom:
-    """The corrected reserve must actually lower the auto-fit context so the
-    config holds at runtime instead of OOMing on the first decode."""
+    """The reserve must lower the auto-fit context so the config does not OOM at runtime."""
 
     # 2x B200, mirroring the GLM-5.2 UD-IQ1_S crash.
     AVAIL_MIB = 2 * 182010

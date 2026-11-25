@@ -248,12 +248,18 @@ def _hosted_component_table() -> dict[str, dict[str, set[tuple[str, str, str]]]]
         logger.debug("Hosted text-encoder table unavailable: %s", exc)
 
     try:
-        from core.inference.video_minimax_h3_te import H3_TE_QUANT_FILES, H3_TE_QUANT_REPO
+        from core.inference.video_minimax_h3_te import (
+            H3_TE_QUANT_FILES,
+            H3_TE_QUANT_REPO,
+            h3_te_quant_source,
+        )
 
         # Old released builds kept the identical conditioner outside official/; both locations are this asset.
+        # The GGUF conditioner ships from the GGUF mirror, already covered elsewhere.
         names = [
             n
-            for name in H3_TE_QUANT_FILES.values()
+            for scheme, name in H3_TE_QUANT_FILES.items()
+            if h3_te_quant_source(scheme) == H3_TE_QUANT_REPO
             for n in (name, name.replace("/official/", "/"))
         ]
         for owner in by_name.get("minimax-h3", ()):

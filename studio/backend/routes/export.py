@@ -119,6 +119,8 @@ def _authorized_adapter_base(checkpoint_path: str) -> Optional[str]:
     for name in dict.fromkeys([base, *bases]):
         if name:
             account_access.require_model_access(name)
+            account_access.require_adapter_chain_access(name)
+    account_access.require_listed_adapters_access(checkpoint_path)
     return base or None
 
 
@@ -148,6 +150,8 @@ async def load_checkpoint(
             backend.load_checkpoint,
             checkpoint_path = request.checkpoint_path,
             base_model = base_model,
+            # Checked with no adapter config: one written later must not pick a base unchecked.
+            adapter_free = base_model is None and account_access.managed_account(),
             max_seq_length = request.max_seq_length,
             load_in_4bit = load_in_4bit,
             offload_layers = request.offload_layers,
@@ -492,6 +496,15 @@ async def get_moe_info(
             from utils.models.model_config import get_base_model_from_lora_identifier
 
             base = await asyncio.to_thread(get_base_model_from_lora_identifier, model, probe_token)
+            from utils.datasets.remote_images import is_network_share
+
+            if isinstance(base, str) and is_network_share(base):
+                # The Hub repo picked this path; probing it on Windows authenticates to that host (NTLM).
+                raise HTTPException(
+                    status_code = 400,
+                    detail = f"The adapter '{model}' names a base model on a network share. "
+                    "Download the base model and export from a local folder instead.",
+                )
             if hub_adapter and not base:
                 # A confirmed adapter whose base could not be read (a failed download after its
                 # retries): unknown, not dense.
@@ -654,6 +667,11 @@ async def export_gguf(
     Wraps ExportBackend.export_gguf.
     """
     validate_job_paths(request.model_dump())
+    if request.npu_q4nx:
+        from starlette.concurrency import run_in_threadpool
+        from utils.q4nx_export_gate import Q4NX_EXPORT_UNAVAILABLE_DETAIL, q4nx_export_allowed
+        if not await run_in_threadpool(q4nx_export_allowed):
+            raise HTTPException(status_code = 403, detail = Q4NX_EXPORT_UNAVAILABLE_DETAIL)
     if request.reap and request.reap.dataset:
         validate_job_paths({"hf_dataset": request.reap.dataset, "hf_token": request.hf_token})
     try:
@@ -683,6 +701,12 @@ async def export_gguf(
         if not success:
             raise HTTPException(status_code = 400, detail = message)
 
+        if request.npu_q4nx and output_path:
+            from core.inference.npu_local_models import EXPORT_SUBFOLDER, hidden_in_exports
+
+            # The NPU picker finds <save>/npu-q4nx only once the save folder is registered.
+            if hidden_in_exports(Path(output_path) / EXPORT_SUBFOLDER):
+                await asyncio.to_thread(_try_register_external_export, Path(output_path))
         if getattr(backend, "decision", None):
             details = await asyncio.to_thread(_decision_export_details, output_path)
         else:
@@ -716,6 +740,11 @@ async def convert_q4nx(
     Needs no loaded checkpoint or GPU, so it runs here rather than in the export worker.
     """
     validate_job_paths(request.model_dump())
+    from starlette.concurrency import run_in_threadpool
+    from utils.q4nx_export_gate import Q4NX_EXPORT_UNAVAILABLE_DETAIL, q4nx_export_allowed
+
+    if not await run_in_threadpool(q4nx_export_allowed):
+        raise HTTPException(status_code = 403, detail = Q4NX_EXPORT_UNAVAILABLE_DETAIL)
     # A managed account may only read a GGUF inside its own workspace.
     account_path(request.gguf_path)
     if bool(request.gguf_path) == bool(request.repo_id and request.filename):
@@ -757,6 +786,11 @@ async def convert_q4nx(
     except Exception as e:
         logger.error(f"Q4NX conversion failed: {e}", exc_info = True)
         raise HTTPException(status_code = 400, detail = f"Q4NX conversion failed: {e}")
+    from core.inference.npu_local_models import hidden_in_exports
+
+    # The NPU picker lists registered folders too; _export_details registers one outside exports.
+    if hidden_in_exports(Path(output_path)):
+        await asyncio.to_thread(_try_register_external_export, Path(output_path))
     return ExportOperationResponse(
         success = True,
         message = "Converted to Q4NX for the AMD NPU",
@@ -962,8 +996,7 @@ async def stream_export_logs(
                         yield _format_sse("{}", event = "heartbeat")
                         last_yield = now
                     if not backend.is_export_active():
-                        # Let the reader thread drain trailing lines printed just
-                        # before the worker signalled done.
+                        # Reader drains lines printed just before the worker signalled done.
                         if idle_since is None:
                             idle_since = now
                         elif now - idle_since > 1.0:

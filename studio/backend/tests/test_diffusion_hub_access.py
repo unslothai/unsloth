@@ -23,9 +23,7 @@ _GATED = (
 
 
 def _gated(text = _GATED):
-    """A real GatedRepoError by type, without hub's constructor: HfHubHTTPError.__init__ requires a
-    response on hub 1.x but not on 0.x, and the pin spans both. The helper screens on type and
-    str() only, so a message-carrying subclass pins the contract on either version."""
+    """Subclass GatedRepoError without its __init__: hub 1.x requires response there, 0.x does not."""
     from huggingface_hub.errors import GatedRepoError
 
     class _Gated(GatedRepoError):
@@ -55,9 +53,7 @@ def test_a_token_that_still_bounces_names_the_account():
 
 
 def test_a_metadata_api_url_names_the_model_not_the_endpoint():
-    """auth_check, and model_info on a gated private repo, raise with /api/models/<owner>/<repo>
-    (the shape hub's own GatedRepoError docstring shows); a plain two-segment match on that would
-    name "api/models" as the gated repo."""
+    """Metadata URLs look like /api/models/<owner>/<repo>; a two-segment match would name api/models."""
     message = hub_access_message(
         _gated(
             "403 Client Error. (Request ID: ViT1Bf7O) Cannot access gated repo for url "

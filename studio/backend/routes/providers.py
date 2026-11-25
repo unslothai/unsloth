@@ -15,7 +15,7 @@ from urllib.parse import urlsplit
 
 import httpx
 import structlog
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 from auth.authentication import (
     authenticated_via_api_key,
@@ -39,15 +39,22 @@ from core.inference.providers import (
     get_connectable_provider_info,
     get_provider_info,
     list_available_providers,
+    provider_default_models,
+    provider_probes_with_chat,
     validate_provider_base_url,
 )
 from core.inference.pricing import pricing_snapshot
-from core.inference.external_provider import ExternalProviderClient
+from core.inference.external_provider import (
+    _CATALOG_WINDOW_PROVIDERS,
+    _SERVED_WINDOW_PROVIDERS,
+    ExternalProviderClient,
+)
 
 from core.inference import openai_codex_auth, openai_codex_client
 from core.inference.provider_model_capabilities import (
     MODEL_CAPABILITY_PROVIDERS,
     MODELS_DEV_URL,
+    models_dev_chat_models,
     provider_model_capabilities,
     trim_models_dev_catalog,
 )
@@ -80,8 +87,11 @@ _MAX_RESPONSES_CONNECTIVITY_MODELS = 5
 _PROVIDER_CONNECTIVITY_TIMEOUT_SECONDS = 15.0
 _RESPONSES_PROBE_BUDGET_SECONDS = 20.0
 _API_KEY_REJECTED = "The server rejected the API key."
+_NO_CREDIT = "The key was accepted, but its account has no credit."
+_RATE_LIMITED = "The server is rate limiting this key right now. Try again in a moment."
+_TIMED_OUT = "The server took too long to answer."
 # Their /models answers without auth, so only a second request can tell a bad key apart.
-_KEY_CHECKED_PROVIDERS = frozenset({"openrouter", "huggingface"})
+_KEY_CHECKED_PROVIDERS = frozenset({"openrouter", "huggingface", "vercel"})
 _URL_USERINFO = re.compile(r"(\b[a-z][a-z0-9+.-]*://)[^/\s@'\"]+@", re.IGNORECASE)
 
 
@@ -107,20 +117,44 @@ def _unreachable_detail(base_url: str) -> str:
     return detail
 
 
+def _provider_error_kind(exc: Exception, *, listing_models: bool = False) -> str:
+    """Machine-readable cause, so the UI can point at the field to fix."""
+    if isinstance(exc, httpx.HTTPStatusError):
+        status = exc.response.status_code
+        if status in (401, 403):
+            return "auth"
+        if status == 402:
+            return "billing"
+        if status == 429:
+            return "rate_limit"
+        if listing_models and status in (404, 405):
+            return "not_found"
+    elif isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout)):
+        return "unreachable"
+    elif isinstance(exc, httpx.TimeoutException):
+        return "timeout"
+    return "other"
+
+
 def _known_provider_error(
     exc: Exception,
     base_url: str,
     *,
     listing_models: bool = False,
 ) -> str | None:
-    if isinstance(exc, httpx.HTTPStatusError):
-        status = exc.response.status_code
-        if status in (401, 403):
-            return _API_KEY_REJECTED
-        if listing_models and status in (404, 405):
-            return "No /models endpoint at this URL (check that it ends in /v1)."
-    elif isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout)):
+    kind = _provider_error_kind(exc, listing_models = listing_models)
+    if kind == "auth":
+        return _API_KEY_REJECTED
+    if kind == "billing":
+        return _NO_CREDIT
+    if kind == "rate_limit":
+        return _RATE_LIMITED
+    if kind == "not_found":
+        return "No /models endpoint at this URL (check that it ends in /v1)."
+    if kind == "unreachable":
         return _unreachable_detail(base_url)
+    if kind == "timeout":
+        return _TIMED_OUT
     return None
 
 
@@ -145,9 +179,15 @@ _SHARED_READ_ONLY = "This connection is shared by the installation owner. Only t
 
 
 def _request_extra_headers(payload, via_api_key: bool) -> dict[str, str]:
-    if "extra_headers" in getattr(payload, "model_fields_set", set()):
-        return normalize_provider_extra_headers(payload.extra_headers)
     provider_id = getattr(payload, "provider_id", None)
+    # A shared connection sends the owner's key: only the owner's saved headers go with it.
+    sent_headers = "extra_headers" in getattr(payload, "model_fields_set", set())
+    if sent_headers and (
+        not provider_id
+        or payload.encrypted_api_key
+        or providers_db.get_own_provider(provider_id) is not None
+    ):
+        return normalize_provider_extra_headers(payload.extra_headers)
     # Saved headers can carry credentials: same gate as the saved key.
     if not provider_id or payload.encrypted_api_key or via_api_key:
         return {}
@@ -184,6 +224,14 @@ def _provider_response(row: dict, *, hide_headers: bool = False) -> ProviderResp
         models = row.get("models") or [],
         available_models = row.get("available_models") or [],
         max_output_tokens = row.get("max_output_tokens"),
+        auto_compact_tokens = row.get("auto_compact_tokens"),
+        auto_compact_percent = row.get("auto_compact_percent"),
+        auto_compact_percent_by_model = row.get("auto_compact_percent_by_model") or {},
+        compaction_mode = (
+            row.get("compaction_mode")
+            if row.get("compaction_mode") in ("summary", "rolling", "checkpoint")
+            else None
+        ),
         shared = bool(row.get("shared")),
         shared_by_owner = bool(row.get("shared_by_owner")),
         created_at = row["created_at"],
@@ -241,7 +289,7 @@ def _validate_provider_auth_contract(
         raise HTTPException(status_code = 400, detail = "ChatGPT subscriptions do not use API keys.")
     if base_url is not None and (not updating or base_url != info["base_url"]):
         raise HTTPException(status_code = 400, detail = "ChatGPT subscription routing is fixed.")
-    if models is None:
+    if models is None or (not updating and not models):
         return
     # Same evidence order as the chat route, so a save cannot persist a model every send refuses.
     if provider_id and openai_codex_client.subscription_catalog_known(provider_id):
@@ -251,7 +299,7 @@ def _validate_provider_auth_contract(
             if openai_codex_client.offered_subscription_model(provider_id, slug) is not None
         }
     else:
-        allowed = set(info["default_models"])
+        allowed = set()
         proven = not provider_id or openai_codex_client.saved_models_proven_for(
             provider_id, validated_account
         )
@@ -307,7 +355,11 @@ async def list_registry(
     it saw before and cannot render them as duplicate dropdown options.
     OAuth rows need ``include_hidden`` or ``include_oauth``.
     """
-    return list_available_providers(include_hidden = include_hidden, include_oauth = include_oauth)
+    return list_available_providers(
+        include_hidden = include_hidden,
+        include_oauth = include_oauth,
+        catalog_models = cached_catalog_models(),
+    )
 
 
 @router.get("/pricing")
@@ -394,6 +446,10 @@ async def create_provider_config(
             reasoning_config = payload.reasoning_config,
             extra_headers = payload.extra_headers,
             shared = payload.shared,
+            auto_compact_tokens = payload.auto_compact_tokens,
+            compaction_mode = payload.compaction_mode,
+            auto_compact_percent = payload.auto_compact_percent,
+            auto_compact_percent_by_model = payload.auto_compact_percent_by_model,
         )
         try:
             if api_key:
@@ -457,11 +513,10 @@ async def update_provider_config(
         ):
             openai_codex_client.forget_subscription_models(provider_id)
             openai_codex_client.mark_subscription_catalog_stale(provider_id)
+        openai_codex_client.restore_subscription_catalog(provider_id, current_bundle)
     if existing_info.get("auth_kind") == "chatgpt_oauth" and payload.models:
         # Only unproven slugs hit the catalog, so saves do not wait on upstream timeouts.
-        unproven = (
-            set(payload.models) - set(existing_info["default_models"]) - set(persisted_models)
-        )
+        unproven = set(payload.models) - set(persisted_models)
         if unproven:
             try:
                 await openai_codex_client.ensure_subscription_models(provider_id)
@@ -495,6 +550,10 @@ async def update_provider_config(
         "models",
         "available_models",
         "max_output_tokens",
+        "auto_compact_tokens",
+        "auto_compact_percent",
+        "auto_compact_percent_by_model",
+        "compaction_mode",
         "api_type",
         "reasoning_config",
         "extra_headers",
@@ -533,6 +592,16 @@ async def update_provider_config(
         )
         if max_output_tokens_requested:
             metadata_updates["max_output_tokens"] = payload.max_output_tokens
+        if "auto_compact_tokens" in payload.model_fields_set:
+            metadata_updates["auto_compact_tokens"] = payload.auto_compact_tokens
+        if "compaction_mode" in payload.model_fields_set:
+            metadata_updates["compaction_mode"] = payload.compaction_mode
+        if "auto_compact_percent" in payload.model_fields_set:
+            metadata_updates["auto_compact_percent"] = payload.auto_compact_percent
+        if "auto_compact_percent_by_model" in payload.model_fields_set:
+            metadata_updates["auto_compact_percent_by_model"] = (
+                payload.auto_compact_percent_by_model or {}
+            )
         if reasoning_config_requested:
             metadata_updates["reasoning_config"] = (
                 payload.reasoning_config.model_dump()
@@ -550,6 +619,10 @@ async def update_provider_config(
         models = existing.get("models") or [],
         available_models = existing.get("available_models") or [],
         max_output_tokens = existing.get("max_output_tokens"),
+        auto_compact_tokens = existing.get("auto_compact_tokens"),
+        auto_compact_percent = existing.get("auto_compact_percent"),
+        auto_compact_percent_by_model = existing.get("auto_compact_percent_by_model") or {},
+        compaction_mode = existing.get("compaction_mode"),
         api_type = existing.get("api_type", "chat_completions"),
         reasoning_config = existing.get("reasoning_config"),
         extra_headers = existing.get("extra_headers") or {},
@@ -576,6 +649,10 @@ async def update_provider_config(
             # Explicit null clears nullable overrides; elsewhere it means "not sent".
             if written is None and field not in {
                 "max_output_tokens",
+                "auto_compact_tokens",
+                "auto_compact_percent",
+                "auto_compact_percent_by_model",
+                "compaction_mode",
                 "reasoning_config",
                 "extra_headers",
             }:
@@ -732,7 +809,8 @@ def _bind_saved_provider_target(payload):
     """Use the saved provider's endpoint whenever its saved credential may be used."""
     if not payload.provider_id or payload.encrypted_api_key:
         return payload
-    config = providers_db.get_provider(payload.provider_id)
+    own = providers_db.get_own_provider(payload.provider_id)
+    config = own if own is not None else providers_db.get_provider(payload.provider_id)
     if config is None:
         raise HTTPException(
             status_code = 404,
@@ -747,10 +825,18 @@ def _bind_saved_provider_target(payload):
         "provider_type": config["provider_type"],
         "api_type": config.get("api_type", "chat_completions"),
     }
+    if (
+        own is not None
+        and config["provider_type"] == "custom"
+        and "api_type" in payload.model_fields_set
+    ):
+        update["api_type"] = payload.api_type
     # Pinning the saved endpoint keeps a saved credential off other hosts; a keyless row has none to protect, so an
     # edited base URL is used as sent.
+    # Another account's row is always pinned: whether its key is saved is itself a read that can fail.
     if (
         not payload.base_url
+        or own is None
         or config["provider_type"] == "openai_codex"
         or credential_secrets.provider_api_key_saved(config["id"])
     ):
@@ -824,13 +910,18 @@ async def _test_custom_provider_connectivity(
                 message = f"Connected successfully. Found {len(models)} model(s).",
                 models_count = len(models),
             )
+        # A named cause (bad key, no credit, server down) is the answer; a model ID would not change it.
+        known = _known_provider_error(models_error, base_url)
         return ProviderTestResult(
             success = False,
             message = (
-                "Connection failed: could not reach /models and no model ID was "
+                f"Connection failed: {known}"
+                if known
+                else "Connection failed: could not reach /models and no model ID was "
                 f"provided to test further. {_provider_error_detail(models_error, base_url)}"
             ),
             models_count = None,
+            error_kind = _provider_error_kind(models_error),
         )
 
     if api_type == "responses":
@@ -858,12 +949,20 @@ async def _test_custom_provider_connectivity(
                 async def consume_response_stream():
                     nonlocal received_response, model_failure
                     async for line in response_stream:
-                        if line.startswith("data: ") and line[6:].strip() != "[DONE]":
-                            event = json.loads(line[6:])
+                        if line.startswith("data:") and line[5:].strip() != "[DONE]":
+                            try:
+                                event = json.loads(line[5:])
+                            except json.JSONDecodeError:
+                                continue
+                            if not isinstance(event, dict):
+                                continue
                             received_response = received_response or bool(event.get("choices"))
                             if event.get("error"):
-                                model_failure = event["error"].get(
-                                    "message", "Responses request failed"
+                                err = event["error"]
+                                model_failure = (
+                                    err.get("message", "Responses request failed")
+                                    if isinstance(err, dict)
+                                    else str(err)
                                 )
 
                 try:
@@ -914,11 +1013,84 @@ async def _test_custom_provider_connectivity(
             models_count = None,
         )
     except Exception as exc:
+        # The probe's own error can be a plain 404 on a server whose /models already named the real cause.
+        if _provider_error_kind(exc) == "other" and models_error is not None:
+            if _known_provider_error(models_error, base_url):
+                exc = models_error
         return ProviderTestResult(
             success = False,
             message = f"Connection failed: {_provider_error_detail(exc, base_url)}",
             models_count = None,
+            error_kind = _provider_error_kind(exc),
         )
+
+
+async def _test_by_chat(client, model_id: str, base_url: str) -> ProviderTestResult:
+    """For providers with no usable model list (Azure deployments, Bedrock, Vertex, Perplexity)."""
+    if not model_id:
+        return ProviderTestResult(
+            success = False,
+            message = "Connection failed: add a model ID to test with.",
+            error_kind = "other",
+        )
+    failure: str | None = None
+    kind = "other"
+    answered = False
+    stream = client.stream_chat_completion(
+        messages = [{"role": "user", "content": "ping"}],
+        model = model_id,
+        temperature = None,
+        top_p = None,
+        max_tokens = 16,
+    )
+
+    async def consume() -> None:
+        nonlocal failure, kind, answered
+        async for line in stream:
+            if line.startswith("data: ") and line[6:].strip() != "[DONE]":
+                event = json.loads(line[6:])
+                answered = answered or bool(event.get("choices"))
+                if event.get("error"):
+                    failure = event["error"].get("message", "The request failed.")
+                    # The stream arrives under a 200; the upstream status rides in `code`.
+                    status = str(event["error"].get("code"))
+                    if status in ("401", "403"):
+                        failure, kind = _API_KEY_REJECTED, "auth"
+                    elif status == "402":
+                        failure, kind = _NO_CREDIT, "billing"
+                    elif status == "429":
+                        failure, kind = _RATE_LIMITED, "rate_limit"
+                    # The client turns transport failures into these frames instead of raising.
+                    elif status == "504":
+                        failure, kind = _TIMED_OUT, "timeout"
+                    elif failure.startswith("Failed to connect to "):
+                        failure, kind = _unreachable_detail(base_url), "unreachable"
+
+    try:
+        try:
+            await asyncio.wait_for(consume(), timeout = _PROVIDER_CONNECTIVITY_TIMEOUT_SECONDS)
+        finally:
+            await stream.aclose()
+    except asyncio.TimeoutError:
+        return ProviderTestResult(
+            success = False, message = f"Connection failed: {_TIMED_OUT}", error_kind = "timeout"
+        )
+    except Exception as exc:
+        return ProviderTestResult(
+            success = False,
+            message = f"Connection failed: {_provider_error_detail(exc, base_url)}",
+            error_kind = _provider_error_kind(exc),
+        )
+    if failure is None and answered:
+        return ProviderTestResult(
+            success = True, message = f"Connected successfully. {model_id} answered."
+        )
+    failure = failure or "The model returned nothing."
+    return ProviderTestResult(
+        success = False,
+        message = f"Connection failed: {_redact_url_userinfo(failure)}",
+        error_kind = kind,
+    )
 
 
 async def _test_decision_connectivity(client, model_id: str) -> ProviderTestResult:
@@ -993,6 +1165,7 @@ async def test_provider(
                 success = False,
                 message = "Connection failed: Base URL is required for custom providers.",
                 models_count = None,
+                error_kind = "invalid_url",
             )
     try:
         base_url = await asyncio.to_thread(validate_provider_base_url, base_url)
@@ -1001,6 +1174,7 @@ async def test_provider(
             success = False,
             message = f"Connection failed: {exc}",
             models_count = None,
+            error_kind = "invalid_url",
         )
 
     client = await asyncio.to_thread(
@@ -1018,6 +1192,12 @@ async def test_provider(
         try:
             if answers_decisions_only(payload.provider_type, payload.api_type):
                 await client.list_decision_models()
+            elif provider_probes_with_chat(payload.provider_type, base_url):
+                # No model list to read, so a listing would fail even when the chat works.
+                saved = (providers_db.get_provider(payload.provider_id) or {}).get("models") or []
+                model = payload.model_id if payload.model_id in saved else next(iter(saved), "")
+                if not (await _test_by_chat(client, model, base_url)).success:
+                    raise RuntimeError("chat check failed")
             elif payload.provider_type == "openrouter":
                 await client.verify_models_endpoint_lightweight()
             else:
@@ -1041,11 +1221,15 @@ async def test_provider(
             return await _test_custom_provider_connectivity(
                 client, payload.model_id or "", payload.api_type, base_url
             )
+        if provider_probes_with_chat(payload.provider_type, base_url):
+            return await _test_by_chat(client, (payload.model_id or "").strip(), base_url)
         if info.get("model_list_mode") == "curated":
             await client.verify_models_endpoint_lightweight()
             if payload.provider_type in _KEY_CHECKED_PROVIDERS and await client.api_key_rejected():
                 return ProviderTestResult(
-                    success = False, message = f"Connection failed: {_API_KEY_REJECTED}"
+                    success = False,
+                    message = f"Connection failed: {_API_KEY_REJECTED}",
+                    error_kind = "auth",
                 )
             return ProviderTestResult(
                 success = True,
@@ -1060,7 +1244,9 @@ async def test_provider(
         models = await client.list_models()
         if payload.provider_type in _KEY_CHECKED_PROVIDERS and await client.api_key_rejected():
             return ProviderTestResult(
-                success = False, message = f"Connection failed: {_API_KEY_REJECTED}"
+                success = False,
+                message = f"Connection failed: {_API_KEY_REJECTED}",
+                error_kind = "auth",
             )
         return ProviderTestResult(
             success = True,
@@ -1075,6 +1261,7 @@ async def test_provider(
                 f"Connection failed: {_provider_error_detail(exc, base_url, listing_models = True)}"
             ),
             models_count = None,
+            error_kind = _provider_error_kind(exc, listing_models = True),
         )
     finally:
         await client.close()
@@ -1115,6 +1302,26 @@ def _write_model_catalog_file(data: dict) -> None:
         logger.warning("providers.model_catalog_cache_write_failed", error = str(exc))
 
 
+def cached_catalog_models() -> dict[str, list[str]]:
+    global _model_catalog_cache
+    if _model_catalog_cache is None:
+        _model_catalog_cache = _read_model_catalog_file()
+    return (_model_catalog_cache or {}).get("models") or {}
+
+
+def cached_catalog_model_context(namespace: str, model: str) -> int | None:
+    global _model_catalog_cache
+    if _model_catalog_cache is None:
+        _model_catalog_cache = _read_model_catalog_file()
+    bucket = ((_model_catalog_cache or {}).get("providers") or {}).get(namespace) or {}
+    entry = bucket.get(model.strip().lower()) if isinstance(bucket, dict) else None
+    entry = entry if isinstance(entry, dict) else {}
+    limits = [
+        v for v in (entry.get("input_tokens"), entry.get("context")) if isinstance(v, int) and v > 0
+    ]
+    return min(limits, default = None)
+
+
 def cached_catalog_model_inputs(namespace: str, model: str) -> list[str] | None:
     global _model_catalog_cache
     if _model_catalog_cache is None:
@@ -1130,14 +1337,23 @@ async def _fetch_models_dev_catalog() -> dict:
 
     response = await _client().get(MODELS_DEV_URL, timeout = 20.0)
     response.raise_for_status()
-    return {"fetched_at": time.time(), "providers": trim_models_dev_catalog(response.json())}
+    raw = response.json()
+    return {
+        "fetched_at": time.time(),
+        "providers": trim_models_dev_catalog(raw),
+        "models": models_dev_chat_models(raw),
+    }
 
 
 @router.get("/model-catalog", response_model = ModelCatalogResponse)
 async def get_model_catalog(_current_subject: str = Depends(get_current_subject)):
     global _model_catalog_cache
     cached = _model_catalog_cache or _read_model_catalog_file()
-    if cached is not None and time.time() - cached["fetched_at"] < _MODEL_CATALOG_TTL_SECONDS:
+    if (
+        cached is not None
+        and "models" in cached
+        and time.time() - cached["fetched_at"] < _MODEL_CATALOG_TTL_SECONDS
+    ):
         _model_catalog_cache = cached
         return cached
     try:
@@ -1242,6 +1458,75 @@ def _model_capability_names(model: dict) -> Optional[list[str]]:
     return [name for name in values if isinstance(name, str) and name]
 
 
+async def _catalog_window(row: dict, model: str, request: Optional[Request]) -> Optional[int]:
+    # A hosted listing needs the key: same gate as the chat path (UI session or the `unsloth start` key).
+    from routes.inference import _request_may_use_saved_provider_key
+    from routes.provider_credentials import provider_config_guard
+
+    if request is None or not _request_may_use_saved_provider_key(request):
+        return None
+    async with provider_config_guard(row["id"], shared_by_owner = bool(row.get("shared_by_owner"))):
+        api_key = await asyncio.to_thread(credential_secrets.get_provider_api_key, row["id"])
+        if not api_key:
+            return None
+        headers = row.get("extra_headers")
+        try:
+            client = await asyncio.to_thread(
+                ExternalProviderClient,
+                provider_type = row["provider_type"],
+                base_url = row["base_url"],
+                api_key = api_key,
+                api_type = row.get("api_type", "chat_completions"),
+                **({"extra_headers": headers} if headers else {}),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code = 400, detail = str(exc)) from None
+    return await client.catalog_context_window(model)
+
+
+@router.post("/{provider_id}/served-window")
+async def load_served_window(
+    provider_id: str,
+    model: str,
+    request: Request = None,
+):
+    row = providers_db.get_provider(provider_id)
+    if row is None or not row["is_enabled"] or model not in (row.get("models") or []):
+        raise HTTPException(status_code = 404, detail = "Connection model not found")
+    if row["provider_type"] in _CATALOG_WINDOW_PROVIDERS:
+        listed = await _catalog_window(row, model, request)
+        return {
+            "context_length": listed or cached_catalog_model_context(row["provider_type"], model)
+        }
+    if row["provider_type"] not in _SERVED_WINDOW_PROVIDERS:
+        # A hosted provider whose listing has no window (OpenAI): the daily models.dev catalog.
+        return {"context_length": cached_catalog_model_context(row["provider_type"], model)}
+    try:
+        # The saved key and headers stay with the chat path; a keyed server just reports nothing.
+        client = await asyncio.to_thread(
+            ExternalProviderClient,
+            provider_type = row["provider_type"],
+            base_url = row["base_url"],
+            api_key = "",
+            api_type = row.get("api_type", "chat_completions"),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from None
+    if row["provider_type"] != "ollama":
+        return {"context_length": await client.served_context_window(model)}
+    try:
+        return {"context_length": await client.load_ollama_window(model)}
+    except (httpx.HTTPError, ValueError) as exc:
+        logger.info("providers.ollama_load_failed", error = repr(exc))
+        return {"context_length": None}
+
+
+def _listed_display_name(model: dict) -> str:
+    """The provider's own name (Anthropic ``display_name``, Gemini ``displayName``), else the id."""
+    name = model.get("display_name")
+    return name.strip() if isinstance(name, str) and name.strip() else model.get("id", "")
+
+
 @router.post("/models", response_model = list[ProviderModelInfo])
 async def list_provider_models(
     payload: ProviderModelsRequest,
@@ -1328,7 +1613,7 @@ async def list_provider_models(
         models = await client.list_models()
         # Model-id filters only apply on the vendor's own host; proxies and Azure use other names.
         _NATIVE_HOSTS = {
-            "gemini": ("generativelanguage.googleapis.com",),
+            "gemini": ("generativelanguage.googleapis.com", "aiplatform.googleapis.com"),
             "openai": ("api.openai.com",),
         }
         apply_registry_model_filters = True
@@ -1358,17 +1643,23 @@ async def list_provider_models(
             denylist = info.get("model_id_denylist")
             if denylist is not None:
                 models = [m for m in models if not denylist.search(m.get("id", ""))]
-        # Optional cap after filtering to keep large catalogs picker-sized. Unsorted, so "first N matches"; pair with
-        # default_models for flagships.
         if shared_models is not None:
             models = [m for m in models if m.get("id", "") in shared_models]
         limit = info.get("model_id_limit")
         if isinstance(limit, int) and limit > 0:
+            newest = provider_default_models(payload.provider_type, cached_catalog_models())
+            # The server does not sort: keep saved models (the form drops omitted ones), then catalog ones.
+            saved = set()
+            if payload.provider_id:
+                saved = set(
+                    (providers_db.get_provider(payload.provider_id) or {}).get("models") or []
+                )
+            models.sort(key = lambda m: (m.get("id", "") not in saved, m.get("id", "") not in newest))
             models = models[:limit]
         return [
             ProviderModelInfo(
                 id = m.get("id", ""),
-                display_name = m.get("id", ""),
+                display_name = _listed_display_name(m),
                 context_length = m.get("context_length") or m.get("context_window"),
                 owned_by = m.get("owned_by"),
                 capabilities = _model_capability_names(m),

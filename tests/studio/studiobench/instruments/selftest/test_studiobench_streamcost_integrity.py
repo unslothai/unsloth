@@ -84,8 +84,7 @@ def _frame(content: str) -> str:
 
 
 def test_a_clean_stream_is_scoreable_and_counts_every_character(page):
-    """The control. Without this the failure tests below could pass on an instrument that marks
-    everything unscoreable and counts nothing."""
+    """Control: the failure tests below could also pass on an instrument that counts nothing."""
     page.evaluate("() => window.__sb.streamcost.reset()")
     _feed(page, _frame("hello") + _frame(" world"))
     assert page.evaluate("() => window.__sb.streamcost.replyChars()") == len("hello world")
@@ -159,8 +158,7 @@ def test_a_window_ending_mid_frame_is_marked_unscoreable(page):
 
 
 def test_a_clean_window_stays_scoreable(page):
-    """The fix must not mark everything unscoreable; a check that never passes is as useless as one
-    that never fails."""
+    """The fix must not mark everything unscoreable; a check that never passes is useless."""
     inst = _instrument(page)
     page.evaluate("() => window.__sb.streamcost.reset()")
     inst.open(_Window())
@@ -179,8 +177,7 @@ def _halves(text: str, at: int) -> tuple:
 
 
 def test_the_counter_survives_a_split_inside_the_data_prefix(page):
-    """THE DEFECT. Two chunks, neither of which contains `data:`, and one whole frame between
-    them."""
+    """The defect: a split inside the `data:` prefix, with neither chunk containing `data:`."""
     page.evaluate("() => window.__sb.streamcost.reset()")
     head, tail = _halves(_frame("split marker"), 2)
     assert "data:" not in head and "data:" not in tail, (head, tail)
@@ -237,9 +234,7 @@ def test_unrelated_text_ending_in_a_marker_letter_does_not_corrupt_the_next_fram
 
 
 def test_the_speculative_buffer_cannot_grow_with_unrelated_traffic(page):
-    """The memory bound, asserted rather than argued. A fix that buffered every chunk in the page
-    on the chance that one of them was an SSE frame would be worse than the bug it fixes: a tail
-    short enough to be a partial `data:` is at most four characters."""
+    """Memory bound asserted: a partial `data:` tail is at most four characters; no unbounded buffer."""
     page.evaluate("() => window.__sb.streamcost.reset()")
     for i in range(50):
         _feed(page, f"chunk {i} of unrelated traffic, ending in data")

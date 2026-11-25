@@ -91,6 +91,7 @@ const fullConfig: Omit<
   cacheRam: -1,
   tensorParallel: true,
   disableVision: false,
+  engramPrecision: "Q8_0",
   llamaExtraArgs: [
     "--rope-scaling",
     "yarn",

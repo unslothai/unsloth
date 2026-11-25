@@ -866,8 +866,7 @@ def test_tool_loop_context_truncation_accumulates_dropped_messages():
 
 
 def test_apply_overflow_truncation_clips_giant_protected_tool_results():
-    """One giant burst (few turn-groups, all protected) must still shrink:
-    stage 2 clips oversized tool contents instead of giving up."""
+    """Even one giant protected burst must shrink: stage 2 clips oversized tool contents."""
     msgs = [
         {"role": "system", "content": "sys"},
         {"role": "user", "content": "task"},
@@ -1283,9 +1282,7 @@ def _instruction(text = None):
 
 
 def _filler_turns(count, chars = 800):
-    """Short user nudges with long agent replies, which is the shape that produces the
-    defect: the user types "keep going", the agent writes a page, and the newest USER
-    group -- the only one the window protects -- is the nudge."""
+    """Short nudges after long agent replies leave the protected newest user group as a nudge."""
     nudges = ["continue", "keep going", "yes", "ok", "go on", "proceed"]
     out = []
     for index in range(count):
@@ -1323,8 +1320,7 @@ def test_a_governing_instruction_survives_filler_turns():
 
 
 def test_a_pinned_instruction_cannot_starve_the_window():
-    """The single enormous instruction is the thing that could starve the window, so it
-    is the thing the ceiling excludes -- not partially, at all."""
+    """An enormous pinned instruction could starve the window, so the ceiling drops it whole."""
     from core.inference import instruction_pin
 
     big = [_instruction("Please " + "consider this requirement carefully. " * 95) for _ in range(3)]

@@ -198,6 +198,7 @@ def test_an_unreadable_file_is_not_damage(site_packages):
         os.chmod(target, 0o644)
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason = "a Windows file name cannot hold a line break")
 def test_a_quoted_line_break_in_a_recorded_name_is_not_damage(site_packages):
     """RECORD is CSV: a quoted field may hold a newline that splitlines breaks."""
     dist_info = _dist(site_packages)
@@ -316,7 +317,9 @@ def test_a_package_directory_replaced_by_a_file_is_damage(site_packages):
 
     shutil.rmtree(site_packages / PKG)
     (site_packages / PKG).write_text("quarantined", encoding = "utf-8")
-    assert install_manifest.damaged_payload_files(PKG) == [f"{PKG}/__init__.py is not reachable"]
+    # Windows reports a file in the middle of a path as a missing path, not ENOTDIR; damage either way.
+    reason = "is missing" if sys.platform == "win32" else "is not reachable"
+    assert install_manifest.damaged_payload_files(PKG) == [f"{PKG}/__init__.py {reason}"]
 
 
 def test_the_companion_distribution_is_scanned_too(site_packages):
@@ -595,6 +598,26 @@ def test_a_launcher_with_nothing_staged_beside_it_is_still_damage(site_packages)
     launcher = _launcher_case(site_packages)
     launcher.unlink()
     assert install_manifest.damaged_payload_files(PKG) == ["../Scripts/unsloth.exe is missing"]
+
+
+def test_a_launcher_restored_from_an_older_copy_is_not_damage(site_packages):
+    """#16897: an update restored an older uv trampoline, shorter than RECORD says."""
+    launcher = _launcher_case(site_packages)
+    launcher.write_bytes(b"MZ")
+    assert install_manifest.damaged_payload_files(PKG) == []
+
+
+def test_another_shortened_console_script_is_still_damage(site_packages):
+    """Only the launcher the update restores loses its size check."""
+    venv = site_packages.parent
+    (venv / "pyvenv.cfg").write_text("home = /usr\n", encoding = "utf-8")
+    dist_info = _dist(site_packages)
+    size = _write(venv / "Scripts" / "demo.exe", "MZ binary\n")
+    _record(dist_info, [["../Scripts/demo.exe", "sha256=b", size]])
+    (venv / "Scripts" / "demo.exe").write_bytes(b"MZ")
+    assert install_manifest.damaged_payload_files(PKG) == [
+        f"../Scripts/demo.exe is 2 bytes, expected {size}"
+    ]
 
 
 def test_an_unrelated_sibling_does_not_excuse_a_missing_file(site_packages):

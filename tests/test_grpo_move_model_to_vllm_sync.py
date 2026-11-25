@@ -252,9 +252,13 @@ def test_lora_sync_pushes_merged_weights_every_step(vllm_mode, dtype):
         before = len(rec.tensors)
         assert method(trainer) is None
         pushed = dict(rec.tensors[before:])
-        assert sorted(pushed) == ["0.weight", "1.bias", "1.weight"]
+        # The frozen layer without an adapter is sent once; the engine keeps it after that.
+        if step == 0:
+            assert sorted(pushed) == ["0.weight", "1.bias", "1.weight"]
+            assert torch.equal(pushed["1.weight"], model.base_model.model[1].weight)
+        else:
+            assert sorted(pushed) == ["0.weight"]
         assert torch.equal(pushed["0.weight"], _expected_merged(model))
-        assert torch.equal(pushed["1.weight"], model.base_model.model[1].weight)
     assert rec.resets == 2
     assert trainer._unsloth_vllm_sync_skip is False
 
@@ -271,7 +275,9 @@ def test_lora_sync_never_touches_frozen_base(dtype):
         assert method(trainer) is None
     assert torch.equal(layer.base_layer.weight, before)
     assert not layer.merged
-    assert len(rec.tensors) == 9
+    assert [name for name, _ in rec.tensors] == ["0.weight", "1.weight", "1.bias"] + [
+        "0.weight"
+    ] * 2
 
 
 def test_dora_syncs_out_of_place():
@@ -560,10 +566,8 @@ def _drift_config(kind):
 
 @pytest.mark.parametrize("kind", ["dora", "lora_bias", "loha", "lokr", "ia3", "vera"])
 def test_bf16_non_plain_peft_never_drifts_frozen_base(kind):
-    # TRL's body merge_adapter()s and unmerge_adapter()s the live bf16 model every sync; those rounded
-    # in-place edits are not lossless, so the frozen base drifted outside the optimizer. The merge now
-    # runs on a copy: after 10 syncs every frozen tensor keeps its exact bytes, and each sync pushes
-    # exactly what PEFT's own merge of the current adapter gives.
+    # TRL's in-place merge_adapter and unmerge_adapter on the live bf16 model are lossy and drift
+    # the frozen base; merging on a copy keeps frozen tensors bit-exact across syncs.
     peft = pytest.importorskip("peft")
     model = peft.get_peft_model(_tiny_llama(torch.bfloat16), _drift_config(kind))
     frozen = {n: p.detach().clone() for n, p in model.named_parameters() if not p.requires_grad}

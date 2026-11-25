@@ -287,3 +287,38 @@ def test_a_failed_backup_allocation_keeps_the_adapter_layers(monkeypatch):
     assert isinstance(net.proj["q"], lf.kron_linear_class()) and pipe.unloaded == 0
     assert all(torch.equal(_codes(net)[k], original[k]) for k in original)
     assert not qm.merged(pipe)
+
+
+@pytest.mark.parametrize("kind", ["int8", "fp8"])
+def test_a_peft_lora_injects_and_runs_on_a_quantized_single_file_weight(kind):
+    # diffusers' own loader on the torchao weights a quantised single file rebuilds (peft 0.19 raised a TypeError here)
+    pytest.importorskip("peft")
+    pytest.importorskip("diffusers")
+    from diffusers.loaders import PeftAdapterMixin
+
+    from core.inference.diffusion_torchao_patches import install_peft_torchao_dispatch_guard
+
+    install_peft_torchao_dispatch_guard()
+
+    class _Model(PeftAdapterMixin, _Net):
+        pass
+
+    net = _Model(kind)
+    weight = net.proj["q"].weight
+    x = torch.randn(3, 64, dtype = torch.bfloat16)
+    torch.manual_seed(2)
+    a, b = torch.randn(2, 64) * 0.1, torch.randn(32, 2) * 0.1
+    net.load_lora_adapter(
+        {"transformer.proj.q.lora_A.weight": a, "transformer.proj.q.lora_B.weight": b},
+        adapter_name = "l",
+        prefix = "transformer",
+    )
+    layer = net.proj["q"]
+    assert "l" in layer.lora_A and layer.get_base_layer().weight is weight
+    if kind == "fp8":
+        return  # torch's CPU _scaled_mm takes per-tensor scales only; the fp8 forward runs on a GPU
+    with torch.no_grad():
+        got = layer(x).float()
+        base_out = layer.get_base_layer()(x).float()
+    want = base_out + (x.float() @ a.T.bfloat16().float() @ b.T.bfloat16().float())
+    assert (got - want).norm() / want.norm() < 0.02

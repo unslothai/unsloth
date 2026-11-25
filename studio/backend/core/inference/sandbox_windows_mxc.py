@@ -153,12 +153,13 @@ def prepare(plan, capability):
     grant_lease = None
     try:
         # Before the request is built, so a revocation racing this launch either finishes first or waits.
-        grant_lease = mxc_read_grants.hold_if_needed()
+        grant_lease, tried = mxc_read_grants.hold_before_build()
         request = (
             mxc_policy.build_launch_request(plan, cwd_alias = lease.root)
             if lease
             else mxc_policy.build_launch_request(plan)
         )
+        grant_lease = mxc_read_grants.hold_for_request(request, grant_lease, tried = tried)
     except Exception as exc:
         if lease is not None:
             lease.release()

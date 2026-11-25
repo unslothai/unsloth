@@ -105,7 +105,11 @@ def test_matches_zoo_answer(monkeypatch, info, _expected):
     assert _is_bfloat16_supported()() is zoo_dt._apple_bf16_supported()
 
 
-def _mlx_from_pretrained(bf16):
+def _mlx_from_pretrained(
+    bf16,
+    monkeypatch,
+    vllm_utils = None,
+):
     tree = ast.parse(INIT.read_text(encoding = "utf-8"))
     node = next(
         n
@@ -126,18 +130,33 @@ def _mlx_from_pretrained(bf16):
         load_in_mxfp4 = False,
         load_in_nvfp4 = False,
         full_finetuning = False,
+        token = None,
+        trust_remote_code = False,
+        text_only = None,
+        patch_mode = "patched",
+        revision = None,
+        random_state = 3407,
         **kwargs,
     ):
         pass
 
     def from_pretrained(*a, **k):
         calls.append((a, k))
+        return types.SimpleNamespace(), "tokenizer"
 
     from_pretrained.__signature__ = inspect.signature(signature)
 
+    if vllm_utils is None:
+        vllm_utils = types.SimpleNamespace(use_vllm = lambda fast_inference: False)
+    zoo_mlx = types.ModuleType("unsloth_zoo.mlx")
+    if vllm_utils is not False:  # False: a zoo build without vllm_utils
+        zoo_mlx.vllm_utils = vllm_utils
+    monkeypatch.setitem(sys.modules, "unsloth_zoo", types.ModuleType("unsloth_zoo"))
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx", zoo_mlx)
     namespace = {
         "is_bfloat16_supported": lambda: bf16,
         "_inspect": inspect,
+        "_types": types,
         "FastMLXModel": types.SimpleNamespace(from_pretrained = from_pretrained),
     }
     exec(compile(ast.Module(body = [node], type_ignores = []), str(INIT), "exec"), namespace)
@@ -187,8 +206,52 @@ def _mlx_from_pretrained(bf16):
         ),
     ],
 )
-def test_loader_default_dtype_follows_gpu_family(args, kwargs, bf16, expected):
+def test_loader_default_dtype_follows_gpu_family(monkeypatch, args, kwargs, bf16, expected):
     """zoo's loader defaults by name only, so a g13/g14 VM would load bf16 without this."""
-    load, calls = _mlx_from_pretrained(bf16)
+    load, calls = _mlx_from_pretrained(bf16, monkeypatch)
     load(*args, **kwargs)
     assert calls == [expected]
+
+
+def test_fast_inference_starts_vllm_metal_only_when_zoo_picks_it(monkeypatch):
+    events = []
+    vllm_utils = types.SimpleNamespace(
+        use_vllm = lambda fast_inference: events.append(("use", fast_inference)) or fast_inference,
+        load_vllm = lambda model, **options: events.append(("load", options)) or "engine",
+        attach_vllm_engine = lambda model, engine: events.append(("attach", engine)),
+        load_lora = lambda model, *args: (model, args),
+    )
+    load, calls = _mlx_from_pretrained(True, monkeypatch, vllm_utils)
+    model, tokenizer = load(
+        "m",
+        max_seq_length = 1024,
+        fast_inference = True,
+        gpu_memory_utilization = 0.3,
+        max_lora_rank = 16,
+        full_finetuning = True,
+    )
+    # zoo's loader never sees the vLLM options; the engine gets CUDA's names and the load's defaults.
+    assert calls == [(("m",), {"max_seq_length": 1024, "full_finetuning": True})]
+    options = dict(
+        max_seq_length = 1024,
+        gpu_memory_utilization = 0.3,
+        max_lora_rank = 16,
+        enable_lora = False,
+        seed = 3407,
+    )
+    assert events == [("use", True), ("load", options), ("attach", "engine")]
+    assert model.load_lora("saved") == (model, ("saved",))
+    events.clear()
+    model, _ = load("m", random_state = 7)
+    assert events == [("use", False)] and not hasattr(model, "load_lora")
+    load("m", fast_inference = True)
+    assert events[-2][1] == dict(
+        max_seq_length = 2048,
+        gpu_memory_utilization = 0.5,
+        max_lora_rank = 64,
+        enable_lora = True,
+        seed = 3407,
+    )
+    load, _ = _mlx_from_pretrained(True, monkeypatch, vllm_utils = False)
+    model, _ = load("m", fast_inference = True)
+    assert not hasattr(model, "load_lora")

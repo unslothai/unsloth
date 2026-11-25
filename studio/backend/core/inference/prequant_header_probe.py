@@ -214,6 +214,12 @@ def read_hub_checkpoint_header(
     size = getattr(meta, "size", None)
     if not size:
         return None, True
+    etag = getattr(meta, "etag", None)
+    cached = _header_cache_get(etag, filename, int(size))
+    if cached is not None:
+        cached["size"] = int(size)
+        cached["commit"] = getattr(meta, "commit_hash", None)
+        return cached, True
     url = hf_hub_url(repo_id, filename, revision = getattr(meta, "commit_hash", None) or revision)
     try:
         headers = dict(build_hf_headers(token = token))
@@ -221,6 +227,85 @@ def read_hub_checkpoint_header(
         return None, True
     out = read_checkpoint_header(filename, _hub_range_reader(url, headers, deadline), int(size))
     if out is not None:
+        _header_cache_put(etag, filename, int(size), out)
         out["size"] = int(size)
         out["commit"] = getattr(meta, "commit_hash", None)
     return out, True
+
+
+# "0": every fresh process reads a hosted checkpoint's header over the network again (two ranged GETs, ~1-2 s).
+HEADER_CACHE_ENV = "UNSLOTH_DIFFUSION_HEADER_CACHE"
+_HEADER_CACHE_NAME = "prequant_header_cache.json"
+_HEADER_CACHE_MAX = 64
+_HEADER_CACHE_ENTRY_MAX = 512 * 1024
+_HEADER_CACHE_KEYS = ("format", "metadata", "container")
+_HEADER_CACHE_LOCK = threading.Lock()
+
+
+def _header_cache_file() -> Optional[Any]:
+    import os
+    if (os.environ.get(HEADER_CACHE_ENV) or "").strip().lower() in ("0", "off", "false", "no"):
+        return None
+    try:
+        from pathlib import Path
+
+        from utils.paths.storage_roots import cache_root
+        return Path(cache_root()) / _HEADER_CACHE_NAME
+    except Exception:  # noqa: BLE001 - no resolvable root: read over the network as before
+        return None
+
+
+def _header_cache_key(etag: Any, filename: str, size: int) -> Optional[str]:
+    """The file's content digest (the Hub ETag of an LFS / Xet file is its sha256) plus name and size: one answer
+    per content, whatever repo or revision serves it. Read only after this request's own HEAD returned it."""
+    if not isinstance(etag, str) or not etag.strip('"'):
+        return None
+    return f"{etag.strip(chr(34))}|{filename.rsplit('/', 1)[-1]}|{int(size)}"
+
+
+def _header_cache_get(etag: Any, filename: str, size: int) -> Optional[dict]:
+    key = _header_cache_key(etag, filename, size)
+    path = _header_cache_file() if key else None
+    if path is None:
+        return None
+    try:
+        with _HEADER_CACHE_LOCK:
+            table = json.loads(path.read_text(encoding = "utf-8")) if path.is_file() else {}
+        hit = table.get(key) if isinstance(table, dict) else None
+    except Exception:  # noqa: BLE001 - unreadable or corrupt: a miss
+        return None
+    if not isinstance(hit, dict) or not isinstance(hit.get("format"), str):
+        return None
+    if not all(k in hit for k in _HEADER_CACHE_KEYS):
+        return None
+    # nothing read this time: the skip log's byte count stays true
+    return {**{k: hit[k] for k in _HEADER_CACHE_KEYS}, "bytes_read": 0}
+
+
+def _header_cache_put(etag: Any, filename: str, size: int, header: dict) -> None:
+    import os
+
+    key = _header_cache_key(etag, filename, size)
+    path = _header_cache_file() if key else None
+    if path is None:
+        return
+    try:
+        entry = {k: header.get(k) for k in _HEADER_CACHE_KEYS}
+        if len(json.dumps(entry, default = str)) > _HEADER_CACHE_ENTRY_MAX:
+            return
+        with _HEADER_CACHE_LOCK:
+            try:
+                table = json.loads(path.read_text(encoding = "utf-8")) if path.is_file() else {}
+            except Exception:  # noqa: BLE001
+                table = {}
+            if not isinstance(table, dict):
+                table = {}
+            table.pop(key, None)
+            table = dict(list(table.items())[-(_HEADER_CACHE_MAX - 1) :])
+            table[key] = entry
+            path.parent.mkdir(parents = True, exist_ok = True)
+            tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+            tmp.write_text(json.dumps(table, default = str), encoding = "utf-8")
+            os.replace(tmp, path)
+    except Exception:  # noqa: BLE001 - persistence is best-effort
+        pass

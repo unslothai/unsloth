@@ -10,6 +10,7 @@
 # limitations under the License.
 import os
 import functools
+import inspect
 from contextlib import nullcontext
 import torch
 import torch.nn as nn
@@ -139,16 +140,20 @@ except:
 
 def _import_torchao_blockwise_gemm():
     # torchao <= 0.17 ships blockwise_fp8_gemm under prototype; 0.18 moved it to torchao.kernel.
+    # A class is not the kernel: on Windows ROCm without torchao, unsloth_zoo stubs every torchao
+    # import with sentinel classes, and calling one raises "blockwise_fp8_gemm() takes no arguments".
     try:
         from torchao.prototype.blockwise_fp8_inference.blockwise_quantization import (
             blockwise_fp8_gemm,
         )
-        return blockwise_fp8_gemm
+        if callable(blockwise_fp8_gemm) and not isinstance(blockwise_fp8_gemm, type):
+            return blockwise_fp8_gemm
     except Exception:
         pass
     try:
         from torchao.kernel.blockwise_quantization import blockwise_fp8_gemm
-        return blockwise_fp8_gemm
+        if callable(blockwise_fp8_gemm) and not isinstance(blockwise_fp8_gemm, type):
+            return blockwise_fp8_gemm
     except Exception:
         pass
     logger.info("Unsloth: Could not find torchao blockwise_fp8_gemm")
@@ -269,11 +274,9 @@ def _has_fbgemm_rowwise():
 
 
 def _scale_mul(x, s, dtype):
-    # fp16: an fp16 scale goes subnormal below 6.1e-5 and overflows above 65504, zeroing or inf-ing
-    # the weight, so multiply by the fp32 scale and round once. fp8 values are exact in fp16, and an
-    # fp16 out= makes TensorIterator compute in fp32 per element without fp32 temporaries. Dynamo
-    # refuses a strided out=; under compile Inductor fuses the fp32 expression instead (same bits).
-    # Other dtypes keep their dtype-native expression.
+    # fp16 scales go subnormal below 6.1e-5 and overflow above 65504, so multiply by the fp32 scale
+    # and round once; an fp16 out= computes fp32 per element (fp8 is exact in fp16), and Dynamo
+    # refuses a strided out= so Inductor fuses it under compile.
     if _scale_dequant_one_pass_ok(x, s, dtype):
         return _scale_dequant_one_pass(x, s, dtype)
     if dtype != torch.float16:
@@ -1137,23 +1140,16 @@ def _rocm_bytes_dequant_arch(device):
 
 
 def _hip_bytes_dequant(device, out_dtype):
-    # fp16 excluded: on gfx1151 the byte decoder rounds fp16 differently from the torch loop.
-    return (
-        _HIP_FP8_BYTES_DEQUANT and out_dtype != torch.float16 and _rocm_bytes_dequant_arch(device)
-    )
+    # fp16 only with the integer rounding: the plain cast fuses into v_fma_mixlo_f16.
+    if out_dtype == torch.float16 and not _fp8_exact_f16_round(out_dtype):
+        return False
+    return _HIP_FP8_BYTES_DEQUANT and _rocm_bytes_dequant_arch(device)
 
 
 def _fp8_kernel_unsupported(tensor, kernel_dtype = None):
-    """True when triton here cannot compile this fp8 dtype, so kernels taking it must be avoided.
-
-    triton adds fp8e4nv only from sm89 on, so compare the full (major, minor): sm89 (4090,
-    L40S, L4) does support it. ROCm's capability is gfx-derived, so it is gated on the gfx arch
-    and triton version instead (_rocm_fp8e4nv_kernel_supported).
-
-    kernel_dtype is the fp8 dtype the kernel really handles. It defaults to the tensor's own,
-    which is right for a dequant, but a forward must pass e4m3fn: act_quant emits e4m3fn
-    whatever the weight dtype is, so e5m2 weights hit the same unsupported kernel.
-    """
+    """True when triton here cannot compile this fp8 dtype (fp8e4nv from sm89 on, compared as major
+    and minor; ROCm uses gfx arch and triton version); forwards pass kernel_dtype e4m3fn since
+    act_quant always emits it, even for e5m2 weights."""
     return (
         tensor.is_cuda
         and (tensor.dtype if kernel_dtype is None else kernel_dtype) == torch.float8_e4m3fn
@@ -1303,8 +1299,8 @@ def _fp8_rowwise_gemv_rows_reduce(
     y_ptr,
     M,
     N,
-    SPLIT_K: tl.constexpr,
-    BLOCK: tl.constexpr,  # SPLIT_K split-K factor, BLOCK block size
+    SPLIT_K: tl.constexpr,  # split-K factor
+    BLOCK: tl.constexpr,  # block size
 ):
     offs = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
     mask = offs < M * N
@@ -1834,9 +1830,8 @@ def _e4m3fn_bytes_dequant(
 
 
 def _blockwise_weight_dequant_any_shape(weight, weight_scale, block_size, out_dtype):
-    """Blockwise fp8 weight dequant for any shape: triton when the weight tiles
-    evenly into block_size and this GPU can compile its fp8 dtype, else a
-    torch-native per-block scale expansion."""
+    """Blockwise fp8 weight dequant for any shape: triton when weight tiles evenly into block_size
+    and this GPU can compile the fp8 dtype, else a torch scale expansion."""
     m, n = weight.shape
     if weight_scale.dtype not in (torch.float32, torch.float16, torch.bfloat16):
         weight_scale = weight_scale.to(torch.float32)  # e.g. float8_e8m0fnu scales break triton
@@ -2769,11 +2764,29 @@ if FP8GroupedLinear is not None:
             grad_bias = gy.sum(1).reshape(-1) if ctx.has_bias else None
             return grad_x, None, None, None, None, grad_bias
 
+    def _fp8_grouped_eval_kernel_ok():
+        """Whether transformers' grouped fp8 eval kernel is usable; newer releases need the optional `kernels` package."""
+        try:
+            import transformers.integrations.finegrained_fp8 as _ff8
+
+            if "lazy_load_kernel" not in inspect.getsource(_ff8):
+                return True
+            from transformers.integrations.hub_kernels import is_kernels_available
+
+            return bool(is_kernels_available())
+        except Exception:
+            return False
+
+    # Read once at import: inspect.getsource inside the forward cannot be traced (fullgraph compiles fail).
+    _FP8_GROUPED_EVAL_KERNEL_OK = _fp8_grouped_eval_kernel_ok()
+
     def _fp8_grouped_forward(self, x):
-        # The upstream eval path runs its own fp8e4nv kernels, so pre-sm89 has to use the
-        # dequant path here too, not only while training.
+        # The upstream eval path runs its own fp8e4nv kernels (Hub kernels on newer transformers), so pre-sm89 and
+        # an install without `kernels` use the dequant path here too, not only while training.
         if self.weight.element_size() > 1 or (
-            not self.training and not _fp8_kernel_unsupported(self.weight, torch.float8_e4m3fn)
+            not self.training
+            and not _fp8_kernel_unsupported(self.weight, torch.float8_e4m3fn)
+            and _FP8_GROUPED_EVAL_KERNEL_OK
         ):
             return _fp8_grouped_forward_orig(self, x)
         bias = self.bias if self.has_bias else None

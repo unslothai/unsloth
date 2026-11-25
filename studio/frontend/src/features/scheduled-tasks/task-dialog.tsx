@@ -5,8 +5,9 @@ import { useTimeFormat } from "@/lib/time-format";
 import { InformationCircleIcon } from "@hugeicons/core-free-icons";
 import { Folder01Icon } from "@/lib/folder-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { type ReactNode, useId, useMemo, useRef, useState } from "react";
+import { type ReactNode, useEffect, useId, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -34,7 +35,11 @@ import {
   type ExternalProviderConfig,
   externalReasoningTakesEffort,
   getExternalReasoningCapabilities,
+  listMcpServers,
+  type McpServerConfig,
+  providerModelDisplayName,
   useChatProjects,
+  useModelDisplayNamesVersion,
   useChatRuntimeStore,
   useExternalProvidersStore,
 } from "@/features/chat";
@@ -224,13 +229,19 @@ function effortChoices(
 
 export function TaskDialog({
   task,
+  initialProjectId = null,
+  chat = null,
   onClose,
   onDelete,
 }: {
   task: ScheduledTask | null;
+  initialProjectId?: string | null;
+  chat?: { id: string; title: string } | null;
   onClose: () => void;
   onDelete?: (task: ScheduledTask) => void;
 }) {
+  // Re-render when a listing learns model names.
+  useModelDisplayNamesVersion();
   const t = useT();
   const locale = useLocale();
   useTimeFormat();
@@ -249,7 +260,29 @@ export function TaskDialog({
   const [model, setModel] = useState<string | null>(task?.model ?? null);
   const [allowLoad, setAllowLoad] = useState(task?.allowModelLoad ?? false);
   const [archiveSuccessful, setArchiveSuccessful] = useState(task?.archiveSuccessful ?? false);
-  const [projectId, setProjectId] = useState<string | null>(task?.projectId ?? null);
+  const [webSearch, setWebSearch] = useState(task?.webSearch ?? false);
+  const [mcpServerIds, setMcpServerIds] = useState(task?.mcpServerIds ?? []);
+  const [mcpServers, setMcpServers] = useState<McpServerConfig[] | "error" | null>(null);
+  const mcpOptions = Array.isArray(mcpServers)
+    ? mcpServers
+      .filter((server) => server.is_enabled || mcpServerIds.includes(server.id))
+      .map((server) => ({
+        id: server.id,
+        label: server.is_enabled
+          ? server.display_name
+          : t("scheduledTasks.form.mcpServerUnavailable", { name: server.display_name }),
+      }))
+    : [];
+  for (const id of mcpServerIds) {
+    if (!mcpOptions.some((server) => server.id === id)) {
+      mcpOptions.push({ id, label: t("scheduledTasks.form.mcpServerUnavailable", { name: id }) });
+    }
+  }
+
+  function toggleMcpServer(id: string, checked: boolean): void {
+    setMcpServerIds((ids) => (checked ? [...ids, id] : ids.filter((saved) => saved !== id)));
+  }
+  const [projectId, setProjectId] = useState<string | null>(task?.projectId ?? initialProjectId);
   const { projects } = useChatProjects();
   const openProjects = projects.filter((project) => !project.archived || project.id === projectId);
   const [chosenEffort, setEffort] = useState<TaskReasoningEffort | null>(task?.reasoningEffort ?? null);
@@ -264,11 +297,24 @@ export function TaskDialog({
       : null;
   const efforts = effortChoices(models.connection, loadedReasoning);
   const effort = chosenEffort !== null && efforts.includes(chosenEffort) ? chosenEffort : null;
-  const [advanced, setAdvanced] = useState(
-    () =>
-      task !== null &&
-      (task.notify !== "all" || task.archiveSuccessful || task.projectId !== null),
+  const [advanced, setAdvanced] = useState(() =>
+    task === null
+      ? initialProjectId !== null
+      : task.notify !== "all" ||
+        task.archiveSuccessful ||
+        task.projectId !== null ||
+        task.webSearch === true ||
+        Boolean(task.mcpServerIds?.length),
   );
+  useEffect(() => {
+    if (!advanced) return;
+    let active = true;
+    void listMcpServers().then(
+      (servers) => { if (active) setMcpServers(servers); },
+      () => { if (active) setMcpServers("error"); },
+    );
+    return () => { active = false; };
+  }, [advanced]);
   const [busy, setBusy] = useState(false);
   const timezone = task?.timezone ?? browserTimeZone();
   const valid = prompt.trim() !== "" && scheduleFormComplete(form);
@@ -304,6 +350,10 @@ export function TaskDialog({
         if (allowLoad !== task.allowModelLoad) patch.allowModelLoad = allowLoad;
         if (archiveSuccessful !== task.archiveSuccessful) patch.archiveSuccessful = archiveSuccessful;
         if (projectId !== task.projectId) patch.projectId = projectId;
+        if (webSearch !== (task.webSearch ?? false)) patch.webSearch = webSearch;
+        if (mcpServerIds !== task.mcpServerIds && (mcpServerIds.length || task.mcpServerIds?.length)) {
+          patch.mcpServerIds = mcpServerIds;
+        }
         if (Object.keys(patch).length > 0) await update(task.id, patch);
       } else {
         await create({
@@ -318,6 +368,10 @@ export function TaskDialog({
           allowModelLoad: allowLoad,
           archiveSuccessful,
           projectId,
+          // Only when on: an older server refuses fields it does not know.
+          ...(webSearch ? { webSearch } : {}),
+          ...(mcpServerIds.length ? { mcpServerIds } : {}),
+          ...(chat ? { threadId: chat.id } : {}),
         });
       }
       onClose();
@@ -357,6 +411,11 @@ export function TaskDialog({
             {task ? t("scheduledTasks.form.editTitle") : t("scheduledTasks.form.createTitle")}
           </DialogTitle>
           <DialogDescription className="sr-only">{t("scheduledTasks.description")}</DialogDescription>
+          {chat && !task ? (
+            <p className="text-ui-13 text-muted-foreground">
+              {t("scheduledTasks.form.repliesInChat", { title: chat.title })}
+            </p>
+          ) : null}
         </DialogHeader>
         <div className="flex flex-col gap-2">
           <div className={cn(CARD, "rounded-full")}>
@@ -424,7 +483,7 @@ export function TaskDialog({
                         <SelectLabel>{group.provider.name}</SelectLabel>
                         {group.models.map((option) => (
                           <SelectItem key={option.id} value={option.id}>
-                            {option.modelId}
+                            {providerModelDisplayName(group.provider.providerType, option.modelId)}
                           </SelectItem>
                         ))}
                       </SelectGroup>
@@ -658,6 +717,15 @@ export function TaskDialog({
                   className="mr-2"
                 />
               </Row>
+              <Row id={`${ids}-web-search`} label={t("scheduledTasks.form.webSearch")}>
+                <Switch
+                  id={`${ids}-web-search`}
+                  checked={webSearch}
+                  onCheckedChange={setWebSearch}
+                  disabled={busy}
+                  className="mr-2"
+                />
+              </Row>
               <Row id={`${ids}-project`} label={t("scheduledTasks.form.project")}>
                 <Select
                   value={projectId ?? NO_PROJECT}
@@ -678,6 +746,42 @@ export function TaskDialog({
                   </SelectContent>
                 </Select>
               </Row>
+              <div
+                role="group"
+                aria-labelledby={`${ids}-mcp-heading`}
+                aria-describedby={mcpOptions.length ? `${ids}-mcp-hint` : undefined}
+                className="space-y-2 border-t border-border px-5 py-3 dark:border-border/60"
+              >
+                <p id={`${ids}-mcp-heading`} className="text-ui-15 font-medium text-foreground">
+                  {t("scheduledTasks.form.mcpServers")}
+                </p>
+                {mcpOptions.map((server) => (
+                  <div key={server.id} className="flex min-h-8 items-center gap-3">
+                    <Checkbox
+                      id={`${ids}-mcp-${server.id}`}
+                      checked={mcpServerIds.includes(server.id)}
+                      onCheckedChange={(checked) => toggleMcpServer(server.id, checked === true)}
+                      disabled={busy}
+                    />
+                    <label
+                      htmlFor={`${ids}-mcp-${server.id}`}
+                      className="min-w-0 flex-1 break-words py-1 text-ui-15 text-foreground peer-enabled:cursor-pointer"
+                    >
+                      {server.label}
+                    </label>
+                  </div>
+                ))}
+                {mcpServers === "error" ? (
+                  <p className="text-ui-12 text-muted-foreground">{t("scheduledTasks.form.mcpServersLoadError")}</p>
+                ) : mcpServers && !mcpOptions.length ? (
+                  <p className="text-ui-12 text-muted-foreground">{t("scheduledTasks.form.mcpServersEmpty")}</p>
+                ) : null}
+                {mcpOptions.length > 0 && (
+                  <p id={`${ids}-mcp-hint`} className="text-ui-12 leading-snug text-muted-foreground">
+                    {t("scheduledTasks.form.mcpServersHint")}
+                  </p>
+                )}
+              </div>
             </div>
           )}
         </div>

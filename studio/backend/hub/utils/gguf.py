@@ -5,8 +5,13 @@
 
 from __future__ import annotations
 
+import contextvars
+import hashlib
 import os
 import re
+import threading
+import time
+import weakref
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Optional, Sequence
@@ -21,6 +26,7 @@ from utils.paths.path_utils import (
     is_appledouble_metadata,
 )
 from utils.models.gguf_metadata import mmproj_accepts_image
+from utils.utils import hf_env_offline
 
 logger = get_logger(__name__)
 _GGUF_MODEL_INFO_TIMEOUT_SECONDS = 5.0
@@ -338,10 +344,8 @@ def default_gguf_scope(
     *repo_ids: object,
     key = None,
 ) -> list:
-    """The *items* a bare repo id may default to: the default subdirectory's rows, else root rows, else all.
-
-    Every resolver of a bare id uses this one rule so one id names one checkpoint everywhere.
-    """
+    """Bare repo id defaults: default subdirectory rows, else root rows, else all; every resolver
+    shares this rule so one id names one checkpoint"""
     rows = list(items)
     key_of = key or (lambda item: item)
     subdir = default_gguf_subdir(*repo_ids)
@@ -949,13 +953,34 @@ def _variant_scope_label(filename: str, *, with_stem: bool = False) -> str:
     return f"{parents}/{stem}" if with_stem else parents
 
 
-def _apply_gguf_display_labels(variants: list[GgufVariantInfo], *repo_ids: object) -> None:
+_NAME_SEPARATORS = "-_. /"
+
+
+def _distinct_name_tails(variants: list[GgufVariantInfo]) -> dict[int, str]:
+    """Each name past the shared prefix (``HIGH`` in ``Model-HIGH.gguf``); empty when none is shared."""
+    stems = [variant.filename.replace("\\", "/").rsplit(".", 1)[0] for variant in variants]
+    shared = os.path.commonprefix(stems)
+    cut = max(shared.rfind(sep) for sep in _NAME_SEPARATORS) + 1
+    if cut <= 0:
+        return {}
+    tails = {id(variant): stem[cut:] for variant, stem in zip(variants, stems)}
+    if not all(tails.values()) or len(set(tails.values())) != len(tails):
+        return {}
+    return tails
+
+
+def _apply_gguf_display_labels(
+    variants: list[GgufVariantInfo],
+    *repo_ids: object,
+    name_tails: bool = False,
+) -> None:
     """Fill ``display_label`` where the key alone does not say which checkpoint a row is."""
     root_label = gguf_root_label(*repo_ids) if repo_ids else None
     unknown_variants = [
         variant for variant in variants if extract_quant_token(variant.filename) is None
     ]
     ambiguous = len(unknown_variants) > 1
+    unknown_tails = _distinct_name_tails(unknown_variants) if ambiguous and name_tails else {}
 
     # The bpw modifier reads perfectly well on its own, so a key that is only the token plus its bpw suffix is NOT path-qualified and needs no scope label.
     def _plain_key(variant) -> Optional[str]:
@@ -984,7 +1009,11 @@ def _apply_gguf_display_labels(variants: list[GgufVariantInfo], *repo_ids: objec
             variant.display_label = f"{task} · {token or 'GGUF'} · {build}"
             continue
         if token is None:
-            variant.display_label = f"GGUF · {variant.filename}" if ambiguous else "GGUF"
+            variant.display_label = (
+                f"GGUF · {unknown_tails.get(id(variant), variant.filename)}"
+                if ambiguous
+                else "GGUF"
+            )
         elif variant.quant.lower() != (_plain_key(variant) or "").lower():
             collides = scopes.get(_variant_scope_label(variant.filename).lower(), 0) > 1
             variant.display_label = (
@@ -1014,14 +1043,6 @@ def group_gguf_variant_files(
         first = min(path for path, _ in chosen)
         grouped[key_of(first)] = (first, sum(size for _, size in chosen))
     return grouped
-
-
-def _env_offline() -> bool:
-    return os.environ.get("HF_HUB_OFFLINE", "").lower() in (
-        "1",
-        "true",
-        "yes",
-    ) or os.environ.get("TRANSFORMERS_OFFLINE", "").lower() in ("1", "true", "yes")
 
 
 def iter_hf_cache_snapshots(repo_id: str, root: Optional[Path] = None):
@@ -1338,26 +1359,115 @@ def _ready_cached_variants(cached: tuple) -> tuple[list[GgufVariantInfo], bool, 
     return whole or variants, has_vision, None
 
 
+# A caller's list here receives the model_info list_gguf_variants fetched, for reuse in the same request.
+HUB_MODEL_INFO_SINK: contextvars.ContextVar[Optional[list]] = contextvars.ContextVar(
+    "gguf_hub_model_info_sink", default = None
+)
+
+
+# Every picker open re-lists each Discover GGUF repo; one listing per repo and credential per window
+# keeps anonymous users under the Hub's API rate limit. A 429 is not re-asked until its window ends.
+_HUB_LISTING_TTL_S = 120.0
+_HUB_RATE_LIMIT_S = 60.0
+_HUB_LISTING_MAX = 256
+_hub_listings: dict[tuple, tuple[float, object]] = {}
+_hub_rate_limited: dict[tuple, tuple[float, BaseException]] = {}
+_hub_listing_lock = threading.Lock()
+# Listings the caller's own credential answered (not the anonymous retry); id-keyed weakrefs: ModelInfo is unhashable.
+_hub_token_answers: dict[int, "weakref.ref"] = {}
+
+
+def hub_model_info_from_token(info) -> bool:
+    """Whether ``info`` was answered with the credential its caller passed, not anonymously."""
+    with _hub_listing_lock:
+        ref = _hub_token_answers.get(id(info))
+    return ref is not None and ref() is info
+
+
+def _note_token_answer(info) -> None:
+    # Caller holds _hub_listing_lock.
+    try:
+        _hub_token_answers[id(info)] = weakref.ref(info)
+    except TypeError:
+        return
+    if len(_hub_token_answers) > _HUB_LISTING_MAX:
+        for stale in [k for k, ref in _hub_token_answers.items() if ref() is None]:
+            del _hub_token_answers[stale]
+        while len(_hub_token_answers) > _HUB_LISTING_MAX:
+            _hub_token_answers.pop(next(iter(_hub_token_answers)))
+
+
+def _hub_listing_key(repo_id: str, hf_token) -> tuple:
+    token = hashlib.sha256(repr(hf_token).encode()).hexdigest()[:16]
+    return (repo_id.lower(), token, os.environ.get("HF_ENDPOINT", ""))
+
+
+def _retry_after_s(exc: BaseException) -> Optional[float]:
+    response = getattr(exc, "response", None)
+    if getattr(response, "status_code", None) != 429:
+        return None
+    try:
+        return max(1.0, min(float(response.headers.get("Retry-After")), 600.0))
+    except (TypeError, ValueError, AttributeError):
+        return _HUB_RATE_LIMIT_S
+
+
+def _hub_model_info(repo_id: str, hf_token):
+    from huggingface_hub import HfApi
+
+    key = _hub_listing_key(repo_id, hf_token)
+    now = time.monotonic()
+    with _hub_listing_lock:
+        hit = _hub_listings.get(key)
+        if hit is not None and hit[0] > now:
+            return hit[1]
+        limited = _hub_rate_limited.get(key)
+        if limited is not None and limited[0] > now:
+            raise limited[1].with_traceback(None)
+    sent: list = []
+
+    def _read(token):
+        sent.append(token)
+        return HfApi(token = token).model_info(
+            repo_id,
+            files_metadata = True,
+            timeout = _GGUF_MODEL_INFO_TIMEOUT_SECONDS,
+        )
+
+    try:
+        # A refused credential retries once anonymously: a public listing still answers.
+        info = call_with_anonymous_retry(_read, hf_token)
+    except Exception as exc:
+        wait = _retry_after_s(exc)
+        if wait is not None:
+            with _hub_listing_lock:
+                now = time.monotonic()
+                for stale in [k for k, (until, _) in _hub_rate_limited.items() if until <= now]:
+                    del _hub_rate_limited[stale]
+                _hub_rate_limited[key] = (now + wait, exc)
+                while len(_hub_rate_limited) > _HUB_LISTING_MAX:
+                    _hub_rate_limited.pop(next(iter(_hub_rate_limited)))
+        raise
+    with _hub_listing_lock:
+        _hub_rate_limited.pop(key, None)
+        _hub_listings[key] = (time.monotonic() + _HUB_LISTING_TTL_S, info)
+        if sent and sent[-1] is not False:
+            _note_token_answer(info)
+        while len(_hub_listings) > _HUB_LISTING_MAX:
+            _hub_listings.pop(next(iter(_hub_listings)))
+    return info
+
+
 def list_gguf_variants(
     repo_id: str, hf_token: Optional[str] = None
 ) -> tuple[list[GgufVariantInfo], bool, Optional[list]]:
-    from huggingface_hub import HfApi
-
-    if _env_offline():
+    if hf_env_offline():
         cached = list_gguf_variants_from_hf_cache(repo_id)
         if cached is not None:
             return _ready_cached_variants(cached)
 
     try:
-        # A refused credential retries once anonymously: a public listing still answers.
-        info = call_with_anonymous_retry(
-            lambda token: HfApi(token = token).model_info(
-                repo_id,
-                files_metadata = True,
-                timeout = _GGUF_MODEL_INFO_TIMEOUT_SECONDS,
-            ),
-            hf_token,
-        )
+        info = _hub_model_info(repo_id, hf_token)
     except Exception as exc:
         if type(exc).__name__ in (
             "RepositoryNotFoundError",
@@ -1376,6 +1486,9 @@ def list_gguf_variants(
             return _ready_cached_variants(cached)
         raise
 
+    sink = HUB_MODEL_INFO_SINK.get()
+    if sink is not None:
+        sink.append(info)
     has_vision = False
     main_files: list[tuple[str, int]] = []
 
@@ -1508,7 +1621,7 @@ def list_local_gguf_variants(
         for quant, (filename, size) in group_gguf_variant_files(main_files, keys).items()
     ]
     variants.sort(key = lambda variant: -variant.size_bytes)
-    _apply_gguf_display_labels(variants, directory, model_root)
+    _apply_gguf_display_labels(variants, directory, model_root, name_tails = keys is not None)
     if keys:
         _label_split_builds(variants, keys)
     return variants, has_vision

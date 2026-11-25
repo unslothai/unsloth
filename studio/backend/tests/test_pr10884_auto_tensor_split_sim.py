@@ -125,12 +125,7 @@ def test_the_emitted_token_is_plain_decimal(tmp_path):
     ],
 )
 def test_an_extreme_ratio_survives_formatting(tmp_path, ratio):
-    """llama.cpp normalizes the list, so only the proportion has to survive.
-
-    Two ways it can fail to: %g renders 1000000 as "1e+06", and a fixed-point
-    rendering collapses a ratio of very small numbers to "0,0", which is a
-    division by zero once llama.cpp normalizes it.
-    """
+    """%g renders 1000000 as 1e+06, and fixed-point rounds tiny ratios to 0,0, a division by zero."""
     backend, gguf = _tp_backend(tmp_path, memory = [(0, 24_000, 24_000), (1, 24_000, 24_000)])
     cmd = _auto_tp(backend, gguf, tensor_split = list(ratio), gpu_ids = [0, 1])
     raw = _flag(cmd, "--tensor-split")
@@ -190,8 +185,7 @@ def test_the_budget_check_agrees_with_the_planner_on_an_even_share(tmp_path):
 
     gpus = [(0, 24_000), (1, 24_000)]
     total_by_idx = {0: 24_000, 1: 24_000}
-    # usable = 24000 - max(0.03*24000, min(512, 0.03*24000)) = 23280 MiB per card,
-    # reserve = 256, so the planner's ceiling is 23024 MiB a card.
+    # Planner ceiling is 23024 MiB a card; the even share must sit in the gap below it.
     model_mib = 43_452
     even_share = (model_mib + 2 * cc_per_device_mib) / 2
     assert 22_000 < even_share < 23_024, "the case has drifted out of the gap it tests"
@@ -240,8 +234,7 @@ def test_the_context_buffer_is_charged_flat_not_by_the_ratio(tmp_path):
 
 
 def test_the_budget_check_still_refuses_what_does_not_fit(tmp_path):
-    """The other side of the rule above: relaxing the double charge must not
-    turn the check into one that accepts anything."""
+    """Relaxing the double charge must not make the budget check accept anything."""
     backend, gguf = _tp_backend(tmp_path, memory = [(0, 24_000, 24_000), (1, 24_000, 24_000)])
     mib = 1024 * 1024
     backend._compute_buffer_ctx_bytes = lambda *a, **k: 0
@@ -262,8 +255,7 @@ def test_the_budget_check_still_refuses_what_does_not_fit(tmp_path):
 
 
 def test_the_budget_check_fails_closed_on_an_unsurveyed_card(tmp_path):
-    """gpu_indices and the tensor-parallel survey can disagree. Pricing one
-    against the other used to raise KeyError out of load_model."""
+    """A card missing from the tensor-parallel survey must fail closed, not raise KeyError."""
     backend, gguf = _tp_backend(tmp_path, memory = [(0, 24_000, 24_000), (1, 24_000, 24_000)])
     assert (
         backend._tensor_split_fits_budget(
@@ -305,8 +297,7 @@ def test_a_single_gpu_never_gets_a_split(tmp_path):
 
 
 def test_no_gpu_at_all_does_not_raise(tmp_path):
-    """CPU-only. The new code divides by len(gpu_indices) and by sum(split);
-    neither may be reached with a zero."""
+    """CPU-only: the new code divides by len(gpu_indices) and sum(split); neither may be zero."""
     backend, gguf = _tp_backend(tmp_path, memory = [])
     cmd = _auto_tp(backend, gguf, tensor_split = [3, 1])
     assert _flag(cmd, "--tensor-split") is None
@@ -326,8 +317,7 @@ def test_cards_whose_driver_reports_no_total(tmp_path):
 
 
 def test_paravirtual_metal_never_launches_a_tensor_split(tmp_path, monkeypatch):
-    """macOS in a VM pins to CPU and overrides --split-mode. The PR must not
-    reintroduce a split there."""
+    """Paravirtual Metal pins to CPU and overrides --split-mode, so no tensor split may launch."""
     import core.inference.llama_cpp as llama_cpp
 
     monkeypatch.setattr(llama_cpp, "_metal_device_is_paravirtual", lambda: True)
@@ -336,8 +326,7 @@ def test_paravirtual_metal_never_launches_a_tensor_split(tmp_path, monkeypatch):
     assert _flag(cmd, "--tensor-split") is None
 
 
-# load_model's except arm drops the plan and sets --fit on but keeps tensor_parallel,
-# so the fallback fires with gpu_indices wider than tp_gpus (or not rebuilt).
+# The except arm drops the plan but keeps tensor_parallel, so gpu_indices can outrun tp_gpus.
 
 
 def _planner_raises(backend):
@@ -348,8 +337,7 @@ def _planner_raises(backend):
 
 
 def test_a_failed_plan_still_launches_on_vulkan(tmp_path):
-    """Vulkan rebuilds gpu_indices from every DETECTED device, so it can name a
-    card the planner's reserve filter had dropped."""
+    """Vulkan rebuilds gpu_indices from all detected cards, so it can name a dropped card."""
     backend, gguf = _tp_backend(
         tmp_path,
         memory = [(0, 24_000, 24_000), (1, 24_000, 24_000), (2, 200, 24_000)],
@@ -361,8 +349,7 @@ def test_a_failed_plan_still_launches_on_vulkan(tmp_path):
 
 
 def test_a_failed_plan_still_launches_when_gpu_ids_were_pinned(tmp_path):
-    """The CUDA / ROCm shape: gpu_indices comes back as sorted(gpu_ids), which
-    can include a card the tensor-parallel reserve filter excluded."""
+    """CUDA and ROCm return gpu_indices as sorted(gpu_ids), which can include an excluded card."""
     backend, gguf = _tp_backend(
         tmp_path,
         memory = [(0, 24_000, 24_000), (1, 24_000, 24_000), (2, 200, 24_000)],
@@ -435,9 +422,7 @@ def test_a_planner_weighted_split_still_reuses_the_server(tmp_path):
 
 
 def test_a_rejected_user_ratio_still_reuses_the_server(tmp_path):
-    """The other half of the same shape: the budget check declined the ratio,
-    so nothing was emitted. Repeating the identical request must not reload --
-    the second launch would decline it identically."""
+    """A declined ratio emits nothing, so an identical repeat request must reuse the server, not reload."""
     backend, gguf = _tp_backend(
         tmp_path,
         memory = [(0, 16_000, 16_000), (1, 16_000, 16_000)],
@@ -464,8 +449,7 @@ def test_unload_clears_the_recorded_ratio(tmp_path):
 
 
 def test_a_layer_split_load_clears_the_recorded_ratio(tmp_path):
-    """Turning tensor parallelism off must not leave the ratio behind: the
-    next auto tensor load would compare against a server that never had it."""
+    """A layer-split load must clear the recorded ratio, or the next auto load compares to it."""
     backend, gguf = _tp_backend(tmp_path, memory = [(0, 24_000, 24_000), (1, 24_000, 24_000)])
     _auto_tp(backend, gguf, tensor_split = [3, 1], gpu_ids = [0, 1])
     _launch(
@@ -480,8 +464,7 @@ def test_a_layer_split_load_clears_the_recorded_ratio(tmp_path):
 
 
 def _crash_once_with_an_arch_error(backend):
-    """Make the first spawn die the way a binary with no kernels for the pinned
-    card does, so the arch-crash retry runs and the second spawn succeeds."""
+    """The first spawn dies with an arch error, so the arch-crash retry runs and succeeds."""
     calls: list[int] = []
 
     def _health(timeout, **_kw):
@@ -511,8 +494,7 @@ def test_the_arch_crash_retry_stops_reporting_the_ratio_it_dropped(tmp_path):
 
 
 def test_a_launch_that_does_not_crash_still_reports_its_ratio(tmp_path):
-    """The control. Clearing on the recovery arm must not clear on the ordinary
-    one, or the PR's own reporting is gone."""
+    """Recovery-arm clears must not reach the ordinary launch, or its ratio report is lost."""
     backend, gguf = _tp_backend(
         tmp_path,
         memory = [(0, 24_000, 24_000), (1, 24_000, 24_000), (2, 400, 24_000)],

@@ -37,6 +37,8 @@ on:
     types: [opened, synchronize, reopened, labeled]
     paths:
       - 'studio/backend/**'
+      # Backend unit tests are not part of the running Studio this workflow drives.
+      - '!studio/backend/tests/**'
       - 'studio/setup.sh'
       - 'studio/install_llama_prebuilt.py'
       - 'studio/prebuilt_core.py'
@@ -53,6 +55,8 @@ on:
     branches: [main]
     paths:
       - 'studio/backend/**'
+      # Backend unit tests are not part of the running Studio this workflow drives.
+      - '!studio/backend/tests/**'
       - 'studio/setup.sh'
       - 'studio/install_llama_prebuilt.py'
       - 'studio/prebuilt_core.py'

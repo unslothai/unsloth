@@ -25,10 +25,10 @@
   const ID_ATTR_RE = /^data-[a-z0-9-]+-id$/;
   const isVolatile = (name) => VOLATILE_ATTRS.has(name) || ID_ATTR_RE.test(name);
 
-  // data-reply-paint is a paint-containment hint toggled by an IntersectionObserver on replies
-  // that are far from the viewport: it carries no content and its presence depends on scroll
-  // position, so it is not thread structure.
-  const IGNORED_ATTRS = new Set(["data-react-checksum", "data-reactroot", "data-reply-paint"]);
+  // data-reply-paint and data-row-distant are containment hints toggled by IntersectionObservers on
+  // messages far from the viewport: they carry no content and their presence depends on scroll
+  // position, so they are not thread structure.
+  const IGNORED_ATTRS = new Set(["data-react-checksum", "data-reactroot", "data-reply-paint", "data-row-distant"]);
 
   // Dropped only from the visible-region digest; see parityVisible.capture().
   const VIRTUALIZATION_ATTRS = new Set(["aria-posinset", "aria-setsize"]);
@@ -276,9 +276,8 @@
     return position;
   };
 
-  // The fallback ordinal is the row's DOM position at observe time, not a lifetime counter:
-  // thread_reopen rebuilds rows in one document. The index is built at most once per mutation
-  // batch and only when needed, keeping O(document) work off the per-mutation path.
+  // Fallback ordinal is DOM position at observe time, not a lifetime counter, since thread_reopen
+  // rebuilds rows; the index is built at most once per mutation batch, only when needed.
   const positionIndex = () => {
     if (VIS.index) return VIS.index;
     const nodes = (D().messages && D().messages()) || [];

@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import textwrap
+
 import pytest
 
 from core.inference import diffusion_int8_fused as fused
@@ -148,8 +150,7 @@ def test_int_mm_no_graph_break_after_offloaded_install(monkeypatch):
 
 
 def test_int_mm_no_graph_break_after_finalize_early_return(monkeypatch):
-    """_finalize on weights that are on no CUDA card (group offload, CPU) returns early; the GEMM home it resolves
-    must be cached before that return."""
+    """_finalize returns early off CUDA (group offload, CPU), so cache the GEMM home first."""
     model = torch.nn.Linear(2, 3)
     assert fused.resident_cuda_device(model) is None
     assert _intmm_graph_breaks(monkeypatch, lambda: fused._finalize(model)) == 0
@@ -188,6 +189,22 @@ def test_install_noop_when_disabled(monkeypatch):
 def test_plain_tensor_is_not_eligible():
     assert fused._plain_int8_weight(torch.zeros(8, 8)) is False
     assert fused._plain_int8_weight(None) is False
+
+
+@pytest.mark.parametrize("mapping, ok", [("SYMMETRIC", True), ("SYMMETRIC_NO_CLIPPING_ERR", False)])
+def test_only_plain_symmetric_activation_quant_is_eligible(mapping, ok):
+    quant_api = pytest.importorskip("torchao.quantization")
+    MappingType = pytest.importorskip("torchao.quantization.quant_primitives").MappingType
+    import dataclasses
+
+    lin = torch.nn.Linear(64, 64, bias = False).to(torch.bfloat16)
+    quant_api.quantize_(lin, quant_api.Int8DynamicActivationInt8WeightConfig(version = 2))
+    w = lin.weight
+    # torchao 0.18 no longer builds SYMMETRIC_NO_CLIPPING_ERR weights; a loaded one still carries it
+    w.act_quant_kwargs = dataclasses.replace(
+        w.act_quant_kwargs, mapping_type = getattr(MappingType, mapping)
+    )
+    assert fused._plain_int8_weight(w) is ok
 
 
 def test_install_noop_on_cpu_module():
@@ -1094,3 +1111,44 @@ def test_int8_linear_leaves_an_installed_int8_gemm_forward_alone(monkeypatch):
     lin.__dict__[g8._MARK] = object()  # what diffusion_int8_gemm.install leaves on a swapped Linear
     lin.forward = lambda x: "int8_gemm forward"
     assert fused.int8_linear(lin, torch.randn(32, 8)) == "int8_gemm forward"
+
+
+def test_fused_mlps_and_v2_linears_quantize_through_the_probed_kernel():
+    """The three fused MLP forwards and diffusion_int8_gemm's v2 Linears use the probed one-pass act quant (bit
+    identical to torchao's where it engages), not torchao's own quant."""
+    import ast
+    import inspect
+
+    from core.inference import diffusion_int8_gemm as g8
+
+    for fn in (
+        fused._ff_forward,
+        fused._flux_single_forward,
+        fused._swiglu_forward,
+        g8._act_quant_v2,
+    ):
+        calls = {
+            n.func.id
+            for n in ast.walk(ast.parse(textwrap.dedent(inspect.getsource(fn))))
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+        }
+        assert "_act_quant" not in calls, fn.__name__
+        assert "_mlp_act_quant" in calls, fn.__name__
+
+
+def test_mlp_act_quant_kill_switch(monkeypatch):
+    monkeypatch.setattr(fused, "_fast_act_quant", lambda x, w: "fast")
+    monkeypatch.setattr(fused, "_act_quant", lambda x, w: "torchao")
+    monkeypatch.delenv(fused.MLP_FAST_ACT_QUANT_ENV, raising = False)
+    monkeypatch.setenv(
+        fused.INT8_FUSED_ENV, "0"
+    )  # install returns right after reading the switches
+    fused.install(None)
+    assert fused._mlp_act_quant(None, None) == "fast"
+    monkeypatch.setenv(fused.MLP_FAST_ACT_QUANT_ENV, "0")
+    fused.install(None)
+    assert fused._mlp_act_quant(None, None) == "torchao"
+    monkeypatch.delenv(fused.MLP_FAST_ACT_QUANT_ENV)
+    monkeypatch.delenv(fused.INT8_FUSED_ENV)
+    fused.install(None)
+    assert fused._MLP_FAST_ACTQ is True

@@ -152,6 +152,11 @@ def _run(
         "utils.datasets.online_tokenization.resolve_worker_count",
         lambda desired = None: 4,
     )
+    monkeypatch.setattr(
+        "utils.datasets.online_tokenization.host_memory_snapshot",
+        lambda: (1 << 30, 64 << 30),
+        raising = False,
+    )
     trainer = _fake_self(**(self_overrides or {}))
     config_args = _config_args(**(config_overrides or {}))
     wrapper = {"dataset": _dataset()} if wrapper is None else wrapper
@@ -288,6 +293,48 @@ def test_an_already_tokenized_split_takes_the_old_path(monkeypatch):
     _assert_untouched(config_args, wrapper, trainer, original)
 
 
+def test_a_block_swap_run_takes_the_old_path(monkeypatch):
+    """The trainer's offload setting reaches the gate: Block Swap runs keep their layers in host RAM."""
+    original = _dataset()
+    decision, config_args, wrapper, trainer = _run(
+        monkeypatch, wrapper = {"dataset": original}, self_overrides = {"_offload_layers": 28}
+    )
+    assert not decision.enabled and "Block Swap" in decision.reason
+    _assert_untouched(config_args, wrapper, trainer, original)
+
+
+def test_an_auto_block_swap_that_offloaded_nothing_still_goes_online(monkeypatch):
+    """Auto offloads no layer when the model fits the card: no swapper, nothing in host RAM to duplicate."""
+    decision, *_ = _run(monkeypatch, self_overrides = {"_offload_layers": "auto"})
+    assert decision.enabled, decision.reason
+
+
+def test_an_auto_block_swap_with_a_swapper_takes_the_old_path(monkeypatch):
+    original = _dataset()
+    decision, config_args, wrapper, trainer = _run(
+        monkeypatch,
+        wrapper = {"dataset": original},
+        self_overrides = {
+            "_offload_layers": "auto",
+            "model": SimpleNamespace(_unsloth_block_swap = object()),
+        },
+    )
+    assert not decision.enabled and "Block Swap" in decision.reason
+    _assert_untouched(config_args, wrapper, trainer, original)
+
+
+def test_the_gate_reuses_the_reading_the_num_proc_veto_took(monkeypatch):
+    """One host memory reading per run: the num_proc site and this gate cannot disagree near the line."""
+    original = _dataset()
+    decision, config_args, wrapper, trainer = _run(
+        monkeypatch,
+        wrapper = {"dataset": original},
+        self_overrides = {"_fork_host_memory": (40 << 30, 8 << 30)},
+    )
+    assert not decision.enabled and "40.0 GiB of host RAM" in decision.reason
+    _assert_untouched(config_args, wrapper, trainer, original)
+
+
 @pytest.mark.parametrize("platform", ["win32", "darwin"])
 def test_windows_and_macos_take_the_old_path(monkeypatch, platform):
     original = _dataset()
@@ -345,8 +392,7 @@ def test_raw_text_and_cpt_take_the_old_path(monkeypatch):
 
 
 def test_a_broken_gate_degrades_instead_of_failing_the_run(monkeypatch):
-    """The feature is an optimisation. Any unexpected failure in it must cost
-    the user speed, never the run."""
+    """An optimisation: any unexpected failure in it must cost speed, never the run."""
     original = _dataset()
 
     def _explode(**kwargs):
@@ -428,16 +474,12 @@ def _eight_ranks(
 
 
 def test_an_mpirun_launch_scales_the_rows_a_step_consumes(monkeypatch):
-    """mpirun never sets WORLD_SIZE. Reading that one variable alone calls an
-    eight-rank run single-process and engages a view that re-tokenizes on every
-    extra pass."""
+    """mpirun never sets WORLD_SIZE; reading it alone calls an eight-rank run single-process."""
     _eight_ranks(monkeypatch, OMPI_COMM_WORLD_SIZE = "8")
 
 
 def test_a_per_node_torchrun_scales_the_rows_a_step_consumes(monkeypatch):
-    """torchrun sets WORLD_SIZE and LOCAL_WORLD_SIZE both, so this is the defensive
-    case: an environment that kept the per-node count and lost the global one still
-    has to be counted rather than read as a single process."""
+    """Defensive case: a per-node LOCAL_WORLD_SIZE with no WORLD_SIZE must still count the ranks."""
     _eight_ranks(monkeypatch, LOCAL_WORLD_SIZE = "8")
 
 
@@ -475,9 +517,7 @@ def test_a_junk_world_size_no_longer_disables_online_tokenization(monkeypatch, j
 
 
 def test_the_resolved_pass_count_handed_to_the_gate_is_the_arithmetic(monkeypatch):
-    """The veto only sees a number, so assert the number rather than its verdict:
-    a wrong world size that still lands on the same side of 1.0 is a bug that has
-    not surfaced yet."""
+    """The veto sees only a number, so assert the number itself; a wrong world size can hide."""
     monkeypatch.setenv("OMPI_COMM_WORLD_SIZE", "8")
     seen: dict = {}
     import utils.datasets.online_tokenization as online_mod
@@ -525,16 +565,14 @@ def test_a_multi_rank_launch_names_the_variable_that_claimed_the_ranks(monkeypat
 
 
 def test_a_single_process_launch_says_nothing_about_launchers(monkeypatch):
-    """The report is for the surprising case only; a normal run must not grow a
-    line about a world size of one."""
+    """The report is for the surprising case only; a world size of one must stay silent."""
     lines = _captured_logger(monkeypatch)
     _eight_ranks(monkeypatch, expect_enabled = True)
     assert not [line for line in lines if "data-parallel processes" in line], lines
 
 
 def test_a_single_process_launch_still_qualifies(monkeypatch):
-    """The control for every case above: same steps, same split, no launcher
-    variable at all. Counting a rank that is not there would veto this run."""
+    """Control: no launcher variable; counting a rank that is absent would veto the run."""
     decision = _eight_ranks(monkeypatch, expect_enabled = True)
     assert decision.prewarm_batches > 0
 
