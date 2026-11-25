@@ -7326,6 +7326,44 @@ def _widen_pin_ids_for_companion_devices(
     return widened, f"{main_ids} -> {widened}"
 
 
+_FIT_RETRY_RESTORED_ENV = (
+    "CUDA_VISIBLE_DEVICES",
+    "HIP_VISIBLE_DEVICES",
+    "ROCR_VISIBLE_DEVICES",
+    "GGML_CUDA_P2P",
+)
+_GPU_BUFFER_NAME_RE = re.compile(r"(?:CUDA|ROCm)\d", re.IGNORECASE)
+
+
+def _argv_places_by_device_position(cmd: Iterable[str], env: Mapping[str, str]) -> bool:
+    """Whether argv or its env twins place work by device position, which a wider mask moves."""
+    if _extra_args_set_any_flag(cmd, _DEVICE_FLAGS | _TENSOR_SPLIT_FLAGS | _SPLIT_MODE_FLAGS):
+        return True
+    for flags in _COMPANION_DEVICE_FLAG_GROUPS:
+        value = _extra_args_device(cmd, flags) or ""
+        if any(_GPU_DEVICE_TOKEN_RE.match(token.strip()) for token in value.split(",")):
+            return True
+    args = [str(a) for a in cmd]
+    for i, raw in enumerate(args):
+        if _flag_name(raw) in _OVERRIDE_TENSOR_FLAGS:
+            _, eq, inline = raw.partition("=")
+            value = inline if eq else (args[i + 1] if i + 1 < len(args) else "")
+            if _GPU_BUFFER_NAME_RE.search(value):
+                return True
+    if _GPU_BUFFER_NAME_RE.search(str(env.get("LLAMA_ARG_OVERRIDE_TENSOR", ""))):
+        return True
+    return any(
+        str(env.get(name, "")).strip()
+        for name in (
+            "LLAMA_ARG_DEVICE",
+            "LLAMA_ARG_MAIN_GPU",
+            "LLAMA_ARG_TENSOR_SPLIT",
+            "LLAMA_ARG_SPLIT_MODE",
+            "MTMD_BACKEND_DEVICE",
+        )
+    )
+
+
 def _extra_args_draft_device_pin(extra_args: Optional[Iterable[str]]) -> Optional[str]:
     """Return a GPU draft-device override; cpu/none do not conflict with a pin."""
     last_dev = _extra_args_draft_device(extra_args)
@@ -33129,6 +33167,8 @@ class LlamaCppBackend:
                 # companion flags fitted to the child's mask, refitted by the arch-crash retry
                 _companion_fit_mask: Optional[list[int]] = None
                 _companion_added_device: Optional[list[str]] = None
+                _fit_retry_pool: Optional[list[int]] = None
+                _fit_retry_restore: Optional[tuple] = None
                 if not is_vulkan_backend and _gpu_mem:
                     _child_gpu_physical_ids = self._unmasked_child_gpu_physical_ids()
                 _parent_view_gpu_ids = _child_gpu_physical_ids
@@ -33257,6 +33297,19 @@ class LlamaCppBackend:
                         )
                     else:
                         self._emit_child_gpu_visibility(env, _child_mask, prefer_rocr = True)
+                        # Only Auto's own narrowing; manual and companion masks are the user's.
+                        _pool_ids = sorted({int(i) for i, _free in _detected_gpus})
+                        if (
+                            gpu_memory_mode != "manual"
+                            and not _companion_widen
+                            and set(_pool_ids) - {int(i) for i in _pin_ids}
+                        ):
+                            # The pick's order, else the parent mask's (None if ascending).
+                            _fit_retry_pool = (
+                                [int(i) for i in gpu_ids if int(i) in _pool_ids]
+                                if gpu_ids
+                                else self._inherited_child_gpu_order(_pool_ids) or _pool_ids
+                            )
                     _child_gpu_physical_ids = tuple(int(i) for i in _pin_ids)
                     _launch_pinned_ids = list(_pin_ids)
                 elif not is_vulkan_backend and not gpu_ids:
@@ -33579,19 +33632,99 @@ class LlamaCppBackend:
                     or bool(getattr(intent, "max_seq_length_auto_derived", False))
                 )
 
+                def _restore_fit_retry_mask() -> None:
+                    """Put back what a widened retry replaced: the rungs after a failed load
+                    respawn from the planned argv, so they get the planned cards."""
+                    nonlocal _child_gpu_physical_ids, _fit_retry_restore
+                    if _fit_retry_restore is None:
+                        return
+                    (
+                        _saved_env,
+                        _child_gpu_physical_ids,
+                        self._gpu_ids,
+                        self._pending_plan_mib,
+                    ) = _fit_retry_restore
+                    for name, value in _saved_env.items():
+                        if value is None:
+                            env.pop(name, None)
+                        else:
+                            env[name] = value
+                    _fit_retry_restore = None
+
+                def _widen_fit_retry_mask(run_cmd) -> None:
+                    """Give the --fit on retry every card Auto could have picked: the crash
+                    disproved the estimate that excluded them."""
+                    nonlocal _child_gpu_physical_ids, _fit_retry_restore
+                    _crash_text = "\n".join(self._stdout_lines[-200:])
+                    if (
+                        not _fit_retry_pool
+                        # A kernel-image crash belongs to the arch-crash rung.
+                        or not self._is_gpu_memory_start_failure(_crash_text)
+                        or self._kernel_image_invalid(_crash_text)
+                        or _unified_env_applied
+                        or not fit_is_effectively_on(run_cmd, env)
+                        or _argv_places_by_device_position(run_cmd, env)
+                        or any(
+                            len(re.split(r"[,/]+", str(v).strip())) > 1
+                            for v in _fit_target_values(extra_args or (), env)
+                        )
+                    ):
+                        return
+                    _wide_mask = LlamaCppBackend._pinned_child_visibility(_fit_retry_pool)
+                    if _wide_mask is None:
+                        return
+                    if _sm_gate_ids_are_pci and self._cuda_sm_gate_error(binary, _fit_retry_pool):
+                        return
+                    _fit_retry_restore = (
+                        {name: env.get(name) for name in _FIT_RETRY_RESTORED_ENV},
+                        _child_gpu_physical_ids,
+                        self._gpu_ids,
+                        self._pending_plan_mib,
+                    )
+                    self._emit_child_gpu_visibility(env, _wide_mask, prefer_rocr = True)
+                    # Studio enables peer copies only on a confirmed NVLink set; a user's value stands.
+                    if (
+                        env.get("GGML_CUDA_P2P")
+                        and "GGML_CUDA_P2P" not in os.environ
+                        and self._p2p_veto_reason(
+                            _fit_retry_pool, _p2p_launch_order_pinned, _p2p_ids_are_pci
+                        )
+                        is not None
+                    ):
+                        env.pop("GGML_CUDA_P2P", None)
+                    logger.info(
+                        "The --fit on retry may use GPUs %s, not only %s: Auto "
+                        "excluded the others on the estimate that just failed.",
+                        _fit_retry_pool,
+                        list(_child_gpu_physical_ids or ()),
+                    )
+                    _child_gpu_physical_ids = tuple(_fit_retry_pool)
+                    # /status and load dedupe echo a pick's cards; the plan spans them too.
+                    if self._gpu_ids is not None:
+                        self._gpu_ids = list(_fit_retry_pool)
+                    if self._pending_plan_mib:
+                        self._pending_plan_mib = _gpu_plan_mib(
+                            sum(self._pending_plan_mib.values()) * 1024 * 1024,
+                            list(_fit_retry_pool),
+                            gpus or _detected_gpus,
+                        )
+
                 def _spawn_and_wait(run_cmd, *, label = ""):
                     """Start llama-server with run_cmd and wait for health.
 
                     Up to four launches: the first, one ROCm env correction, one
                     retry without the MoE expert cache, and one --fit recovery.
                     Separate flags, so a library mix does not spend the fit slot
-                    and a VRAM crash after the correction can still fit-retry.
+                    and a VRAM crash after the correction can still fit-retry. A
+                    widened --fit recovery that does not come up gets one more launch
+                    on the planned cards.
                     """
                     # _mem_host_resident too: the --fit on retry re-arms the
                     # page-lock and writes it back, which without this makes the
                     # read below an UnboundLocalError instead.
                     nonlocal _last_spawn_cmd, _mem_host_resident, _did_rocm_retry
                     nonlocal _sched_abort_seen, _sidecar_fit_reserve_mib, effective_ctx
+                    nonlocal _fit_retry_pool
                     # Single revocation point for the tensor-spill plan; label is empty only on the first spawn.
                     if label:
                         run_cmd = self._drop_tensor_spill(run_cmd, label.lstrip("-") or "retry")
@@ -33607,7 +33740,7 @@ class LlamaCppBackend:
                     _did_fit_retry = False
                     _did_moe_cache_retry = False
                     _ctx_halvings = 0
-                    for _spawn_attempt in range(4 + _CTX_HALVE_MAX):
+                    for _spawn_attempt in range(5 + _CTX_HALVE_MAX):
                         if _spawn_attempt:
                             run_cmd = self._drop_managed_lazy_mode(run_cmd, "startup")
                         # Defensive kill: drop an orphan Popen a concurrent load may
@@ -33996,6 +34129,17 @@ class LlamaCppBackend:
                         # captured settings while a crashed child leaves is_active false.
                         # Here rather than per rung, so a later rung cannot forget it.
                         self._memory_pending_launch = _mem_settings
+                        if _fit_retry_restore is not None:
+                            # Retry on the planned cards before reading anything off the widened child.
+                            logger.warning(
+                                "The --fit on retry over GPUs %s did not come up; retrying "
+                                "once with --fit on over the planned GPU(s). Log: %s",
+                                list(_child_gpu_physical_ids or ()),
+                                self._llama_log_path,
+                            )
+                            _restore_fit_retry_mask()
+                            _fit_retry_pool = None
+                            continue
                         # Read once, like the wait itself: a cleared reference is a
                         # teardown, not a startup crash, and re-reading the
                         # attribute per term would race the shutdown thread again.
@@ -34170,6 +34314,7 @@ class LlamaCppBackend:
                                         "the --fit on retry; the full-offload "
                                         "prediction did not hold."
                                     )
+                            _widen_fit_retry_mask(_run)
                             run_cmd = _run
                             self._record_memory_state(_run, env)
                             _did_fit_retry = True
@@ -34915,6 +35060,8 @@ class LlamaCppBackend:
                             env, ",".join(str(i) for i in _retry_mask), prefer_rocr = True
                         )
                         _child_gpu_physical_ids = tuple(int(i) for i in _retry_mask)
+                        # Its own --fit on recovery stays on the cards this rung kept.
+                        _fit_retry_pool = None
                         self._clear_split_placement_env(env)
                         # The mask re-indexes survivors, so drop a --tensor-split sized for the crashed set.
                         _arch_retry_cmd = self._without_tensor_split(cmd)
