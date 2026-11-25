@@ -6143,6 +6143,7 @@ export const zhTW = {
     back: "返回",
     continue: "繼續",
     skipSetup: "略過設定",
+    outsideAgain: "再次點擊外部即可關閉",
     getStarted: "開始使用",
     progress: "第 {current} 步，共 {total} 步",
     welcome: {

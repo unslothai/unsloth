@@ -6307,6 +6307,7 @@ export const sv = {
     back: "Tillbaka",
     continue: "Fortsätt",
     skipSetup: "Hoppa över konfigurering",
+    outsideAgain: "Klicka utanför igen för att stänga",
     getStarted: "Kom igång",
     progress: "Steg {current} av {total}",
     welcome: {

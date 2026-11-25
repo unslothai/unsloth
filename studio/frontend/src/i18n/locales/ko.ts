@@ -6053,6 +6053,7 @@ export const ko = {
     back: "뒤로",
     continue: "계속",
     skipSetup: "설정 건너뛰기",
+    outsideAgain: "닫으려면 바깥쪽을 한 번 더 클릭하세요",
     getStarted: "시작하기",
     progress: "{total}단계 중 {current}단계",
     welcome: {

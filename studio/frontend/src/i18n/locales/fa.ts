@@ -6447,6 +6447,7 @@ export const fa = {
     back: "بازگشت",
     continue: "ادامه",
     skipSetup: "رد شدن از راه‌اندازی",
+    outsideAgain: "برای بستن، دوباره بیرون کلیک کنید",
     getStarted: "شروع کنید",
     progress: "مرحلهٔ {current} از {total}",
     welcome: {

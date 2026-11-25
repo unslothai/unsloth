@@ -6093,6 +6093,7 @@ export const ptBR = {
     back: "Voltar",
     continue: "Continuar",
     skipSetup: "Pular configuração",
+    outsideAgain: "Clique fora novamente para fechar",
     getStarted: "Começar",
     progress: "Etapa {current} de {total}",
     welcome: {
