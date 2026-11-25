@@ -5039,6 +5039,7 @@ export const ar = {
     model: {
       label: "نموذج الترجمة",
       fast: "سريع",
+      balanced: "متوازن",
       quality: "أفضل جودة",
       chat: "نموذج الدردشة",
       recommended: "موصى به",

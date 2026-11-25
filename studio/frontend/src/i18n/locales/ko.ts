@@ -5028,6 +5028,7 @@ export const ko = {
     model: {
       label: "번역 모델",
       fast: "빠름",
+      balanced: "균형",
       quality: "최고 품질",
       chat: "채팅 모델",
       recommended: "추천",

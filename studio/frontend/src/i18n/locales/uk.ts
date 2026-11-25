@@ -5420,6 +5420,7 @@ export const uk = {
     model: {
       label: "Модель перекладу",
       fast: "Швидка",
+      balanced: "Збалансована",
       quality: "Найкраща якість",
       chat: "Модель чату",
       recommended: "Рекомендовані",

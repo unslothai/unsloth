@@ -5050,6 +5050,7 @@ export const hi = {
     model: {
       label: "अनुवाद मॉडल",
       fast: "तेज़",
+      balanced: "संतुलित",
       quality: "सर्वोत्तम गुणवत्ता",
       chat: "चैट मॉडल",
       recommended: "सुझाए गए",

@@ -5354,6 +5354,7 @@ export const fa = {
     model: {
       label: "مدل ترجمه",
       fast: "سریع",
+      balanced: "متعادل",
       quality: "بهترین کیفیت",
       chat: "مدل گفتگو",
       recommended: "پیشنهادی",

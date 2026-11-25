@@ -5399,6 +5399,7 @@ export const cs = {
     model: {
       label: "Překladový model",
       fast: "Rychlý",
+      balanced: "Vyvážený",
       quality: "Nejlepší kvalita",
       chat: "Model z chatu",
       recommended: "Doporučené",

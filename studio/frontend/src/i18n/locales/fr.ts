@@ -5123,6 +5123,7 @@ export const fr = {
     model: {
       label: "Modèle de traduction",
       fast: "Rapide",
+      balanced: "Équilibré",
       quality: "Meilleure qualité",
       chat: "Modèle de chat",
       recommended: "Recommandés",

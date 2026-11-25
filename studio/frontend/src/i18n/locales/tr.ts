@@ -5379,6 +5379,7 @@ export const tr = {
     model: {
       label: "Çeviri modeli",
       fast: "Hızlı",
+      balanced: "Dengeli",
       quality: "En iyi kalite",
       chat: "Sohbet modeli",
       recommended: "Önerilen",

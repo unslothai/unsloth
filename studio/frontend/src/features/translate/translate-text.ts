@@ -62,7 +62,7 @@ function styleOf({ mode, tone }: TranslatePromptOptions): string | null {
 
 export type TranslateMessage = { role: "user"; content: string };
 
-/** Hy-MT2's model-card templates: one user turn, no system prompt; the card has no source-language slot. */
+/** Hy-MT's model-card templates (Hy-MT2 and Hy-MT3 share them): one user turn, no system prompt; the card has no source-language slot. */
 export function hyMtInstruction(options: TranslatePromptOptions): string {
   if (options.custom) return fillPlaceholders(options.custom, options);
   const pair = `${options.sourceName ? `from ${options.sourceName} ` : ""}into ${options.targetName}`;

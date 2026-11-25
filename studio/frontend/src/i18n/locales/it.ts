@@ -5108,6 +5108,7 @@ export const it = {
     model: {
       label: "Modello di traduzione",
       fast: "Veloce",
+      balanced: "Bilanciato",
       quality: "Qualità migliore",
       chat: "Modello di chat",
       recommended: "Consigliati",

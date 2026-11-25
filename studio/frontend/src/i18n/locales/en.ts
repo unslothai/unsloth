@@ -5062,6 +5062,7 @@ export const en = {
     model: {
       label: "Translation model",
       fast: "Fast",
+      balanced: "Balanced",
       quality: "Best quality",
       chat: "Chat model",
       recommended: "Recommended",
