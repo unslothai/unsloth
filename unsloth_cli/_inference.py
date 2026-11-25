@@ -1195,12 +1195,35 @@ class HttpChatBackend:
             _exit_if_refused_load(model, reason, trust_remote_code)
             typer.echo(f"Model load failed: {reason}", err = True)
             raise typer.Exit(code = 1)
-        self.supports_images = isinstance(loaded, dict) and bool(loaded.get("is_vision"))
-        self._model_id = (loaded.get("model") if isinstance(loaded, dict) else None) or model
+        loaded = loaded if isinstance(loaded, dict) else {}
+        self.supports_images = bool(loaded.get("is_vision"))
+        self._model_id = self._pinned_model_id(loaded.get("model") or model, loaded, payload)
 
-    def _inference_status(self) -> Optional[dict]:
+    def _pinned_model_id(self, model_id: str, loaded: dict, payload: dict) -> str:
+        """Name the loaded quant too: a bare repo id is answered by any quant of that repo."""
+        from unsloth_cli.commands.start import _display_model_spec, _is_hub_model_id
+
+        if not loaded.get("is_gguf"):
+            return model_id
+        # Routed by the load's own key (_model_key), so it names the quant that slot serves:
+        # a low-disk load falls back to a smaller one than asked.
+        key, variant = payload["model_path"], payload.get("gguf_variant")
+        status = self._inference_status(f"{key}:{variant}" if variant else key) or {}
+        served_id = str(status.get("active_model") or "")
+        # The load can echo an ownerless or differently cased id (ModelConfig.from_identifier).
+        echoed = model_id if "/" in model_id else f"unsloth/{model_id}"
+        if not (status.get("is_gguf") and _is_hub_model_id(served_id)):
+            return model_id
+        if served_id.casefold() != echoed.casefold():
+            return model_id
+        return _display_model_spec(served_id, status.get("gguf_variant"))
+
+    def _inference_status(self, model: Optional[str] = None) -> Optional[dict]:
+        from urllib.parse import urlencode
+
+        query = f"?{urlencode({'model': model})}" if model else ""
         try:
-            with self._request("GET", "/api/inference/status", timeout = 30) as response:
+            with self._request("GET", f"/api/inference/status{query}", timeout = 30) as response:
                 status = json.loads(response.read())
         except Exception:
             return None

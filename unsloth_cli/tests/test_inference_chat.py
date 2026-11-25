@@ -8,6 +8,7 @@ from __future__ import annotations
 import inspect
 import io
 import json
+import re
 import subprocess
 import sys
 import types
@@ -1491,11 +1492,34 @@ def test_chat_drops_a_turn_with_an_incomplete_studio_stream(monkeypatch):
     ]
 
 
-def test_chat_turn_is_not_answered_by_a_model_loaded_elsewhere():
+_QWEN = "unsloth/Qwen3-0.6B-GGUF"
+
+
+@pytest.mark.parametrize(
+    "loaded, requested, picked, replacement",
+    [
+        ([], _QWEN, "Q4_K_M", (_QWEN, "Q8_0")),
+        ([], f"{_QWEN}:Q8_0", "Q8_0", ("unsloth/gemma-3-270m-it-GGUF", "Q8_0")),
+        # A low-disk load serves a smaller quant than the one asked for.
+        ([], f"{_QWEN}:Q8_0", "Q4_K_M", (_QWEN, "Q8_0")),
+        # The asked quant is already kept beside another quant of its repo.
+        ([(_QWEN, "Q6_K"), (_QWEN, "IQ2_M")], f"{_QWEN}:IQ2_M", "IQ2_M", (_QWEN, "Q6_K")),
+    ],
+)
+def test_chat_turn_is_not_answered_by_a_model_loaded_elsewhere(
+    loaded, requested, picked, replacement
+):
     import http.server
     import threading
+    from urllib.parse import parse_qs, urlparse
 
-    studio = {"resident": None}
+    # Loaded (repo, quant) pairs; the first is the primary.
+    studio = {"slots": list(loaded)}
+
+    def slot_for(name):
+        repo, _, quant = (name or "").partition(":")
+        named = [s for s in studio["slots"] if s == (repo, quant)]
+        return (named or studio["slots"] or [(None, None)])[0]
 
     class Studio(http.server.BaseHTTPRequestHandler):
         def _send(
@@ -1512,22 +1536,28 @@ def test_chat_turn_is_not_answered_by_a_model_loaded_elsewhere():
             self.wfile.write(data)
 
         def do_GET(self):
-            self._send(200, {"active_model": studio["resident"]})
+            asked = parse_qs(urlparse(self.path).query).get("model", [None])[0]
+            repo, quant = slot_for(asked)
+            # A scan-folder load reports its snapshot path as model_identifier.
+            status = {"active_model": repo, "model_identifier": f"/models/{repo}/snapshot"}
+            self._send(200, {**status, "is_gguf": bool(repo), "gguf_variant": quant})
 
         def do_POST(self):
             payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             if self.path == "/api/inference/load":
-                studio["resident"] = payload["model_path"]
-                self._send(200, {"status": "loaded", "model": payload["model_path"]})
+                repo = payload["model_path"].partition(":")[0]
+                if slot_for(payload["model_path"]) not in studio["slots"][1:]:
+                    studio["slots"][:1] = [(repo, picked)]
+                # Like Unsloth, the load answers with the bare repo id.
+                self._send(200, {"status": "loaded", "model": repo, "is_gguf": True})
                 return
-            requested = payload["model"]
-            if requested not in (studio["resident"], "default"):
-                message = f"The model '{requested}' is downloaded but not loaded."
+            repo, _, quant = payload["model"].partition(":")
+            if not any(r == repo and quant in ("", q) for r, q in studio["slots"]):
+                message = f"The model '{payload['model']}' is downloaded but not loaded."
                 self._send(404, {"error": {"message": message, "code": "model_not_found"}})
                 return
-            chunk = {
-                "choices": [{"delta": {"content": studio["resident"]}, "finish_reason": "stop"}]
-            }
+            served = ":".join(slot_for(payload["model"]))
+            chunk = {"choices": [{"delta": {"content": served}, "finish_reason": "stop"}]}
             sse = f"data: {json.dumps(chunk)}\n\ndata: [DONE]\n\n".encode()
             self._send(200, sse, "text/event-stream")
 
@@ -1538,18 +1568,55 @@ def test_chat_turn_is_not_answered_by_a_model_loaded_elsewhere():
     threading.Thread(target = server.serve_forever, daemon = True).start()
     try:
         backend = HttpChatBackend(f"http://127.0.0.1:{server.server_address[1]}", "token")
-        backend.ensure_loaded(
-            "unsloth/Qwen3-0.6B-GGUF", hf_token = None, max_seq_length = None, load_in_4bit = None
-        )
+        backend.ensure_loaded(requested, hf_token = None, max_seq_length = None, load_in_4bit = None)
         turn = [{"role": "user", "content": "hi"}]
-        assert list(backend.stream(turn, **_STREAM_KWARGS))[-1] == "unsloth/Qwen3-0.6B-GGUF"
+        pinned = f"{_QWEN}:{picked}"
+        assert list(backend.stream(turn, **_STREAM_KWARGS))[-1] == pinned
 
-        studio["resident"] = "unsloth/gemma-3-270m-it-GGUF"
-        with pytest.raises(RuntimeError, match = "Qwen3-0.6B-GGUF' is downloaded but not loaded"):
+        studio["slots"] = [replacement]
+        with pytest.raises(RuntimeError, match = re.escape(f"'{pinned}' is downloaded but not")):
             list(backend.stream(turn, **_STREAM_KWARGS))
     finally:
         server.shutdown()
         server.server_close()
+
+
+@pytest.mark.parametrize(
+    "echoed, served, expected",
+    [
+        ("Qwen3-0.6B-GGUF", _QWEN, f"{_QWEN}:Q8_0"),
+        ("unsloth/qwen3-0.6b-gguf", _QWEN, f"{_QWEN}:Q8_0"),
+        # Another model's status lends no quant.
+        (_QWEN, "unsloth/gemma-3-270m-it-GGUF", _QWEN),
+        # A path load has no :quant channel.
+        ("/models/Qwen3-0.6B-GGUF", "/models/Qwen3-0.6B-GGUF", "/models/Qwen3-0.6B-GGUF"),
+    ],
+)
+def test_the_pin_takes_the_quant_from_the_served_models_status(
+    monkeypatch, echoed, served, expected
+):
+    backend = HttpChatBackend("http://localhost:8888", "token")
+    status = {"active_model": served, "is_gguf": True, "gguf_variant": "Q8_0"}
+    monkeypatch.setattr(backend, "_inference_status", lambda _model: status)
+    assert backend._pinned_model_id(echoed, {"is_gguf": True}, {"model_path": echoed}) == expected
+
+
+def test_inference_reports_a_turn_the_server_refused(monkeypatch):
+    from typer.testing import CliRunner
+    from unsloth_cli import app
+    from unsloth_cli.commands import inference as inference_mod
+
+    class Refusing:
+        def stream(self, *_args, **_kwargs):
+            raise RuntimeError("The model 'm:Q8_0' is downloaded but not loaded.")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(inference_mod, "connect_studio_server", lambda *_a, **_k: Refusing())
+    result = CliRunner().invoke(app, ["inference", "unsloth/Qwen3-0.6B-GGUF", "hi"])
+    assert result.exit_code == 1
+    assert "Error: The model 'm:Q8_0' is downloaded but not loaded." in result.output
 
 
 def _http_stream_body(monkeypatch, max_new_tokens):
