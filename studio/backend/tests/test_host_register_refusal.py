@@ -161,3 +161,86 @@ def test_the_training_stream_registration_consumes_its_refusal_too():
         ts._Registered(buf, buf.numel(), stream)
     _launch()
     first.release()
+
+
+def _fake_holder(unregister_rc: int):
+    calls = []
+    holder = object.__new__(mem._RegisteredHostBuffer)
+    holder._cudart = type(
+        "R",
+        (),
+        {"cudaHostUnregister": staticmethod(lambda ptr: calls.append(ptr) or unregister_rc)},
+    )()
+    holder.ptr, holder._size, holder._registered, holder._device = 4096, 4096, True, 0
+    holder._anchor = None
+    holder._map = type("M", (), {"close": lambda self: None})()
+    return holder, calls
+
+
+@pytest.mark.parametrize("rc, consumed", [(713, ["consumed"]), (0, [])])
+def test_a_failed_unregister_consumes_the_pending_error(monkeypatch, rc, consumed):
+    seen = []
+    monkeypatch.setattr(torch.cuda, "synchronize", lambda *_a, **_k: None)
+    monkeypatch.setattr(mem, "consume_cuda_error", lambda: seen.append("consumed"))
+    holder, calls = _fake_holder(rc)
+    holder.__del__()
+    assert calls == [4096] and seen == consumed and holder._registered is False
+
+
+@pytest.mark.parametrize("rc, consumed", [(713, ["consumed"]), (0, [])])
+def test_the_training_stream_consumes_a_failed_unregister(monkeypatch, rc, consumed):
+    import types
+
+    from core.training import diffusion_te_stream as ts
+
+    seen = []
+    monkeypatch.setattr(hp, "consume_cuda_error", lambda: seen.append("consumed"))
+    monkeypatch.setattr(
+        torch.cuda, "cudart", lambda: types.SimpleNamespace(cudaHostUnregister = lambda ptr: rc)
+    )
+    reg = object.__new__(ts._Registered)
+    reg.ptr, reg.stream = 4096, types.SimpleNamespace(synchronize = lambda: None)
+    reg.release()
+    assert seen == consumed and reg.ptr is None
+
+
+@pytest.mark.parametrize(
+    "platform, registers", [("linux", True), ("win32", False), ("darwin", False)]
+)
+def test_h3_residency_registers_host_copies_only_on_linux(monkeypatch, platform, registers):
+    import sys
+
+    import core.inference.video_minimax_h3_residency as res
+
+    registered, pinned = [], []
+    monkeypatch.setattr(sys, "platform", platform)
+    monkeypatch.setattr(mem, "registered_host_copy", lambda src: registered.append(src) or src)
+    monkeypatch.setattr(
+        torch.Tensor, "pin_memory", lambda self, *a, **k: pinned.append(self) or self
+    )
+    src = torch.ones(3000, dtype = torch.uint8)
+    assert res._pin_host_tensor(src) is src
+    assert (len(registered), len(pinned)) == ((1, 0) if registers else (0, 1))
+    # the compaction prices what the pin takes: page-exact when registered, else the allocator's power of two
+    assert res._pin_cost(torch.ones(9000, dtype = torch.uint8)) == (12288 if registers else 16384)
+
+
+@needs_cuda
+def test_the_next_kernel_after_a_failed_unregister_runs():
+    holder = mem._RegisteredHostBuffer(1 << 20)
+    holder.register()
+    # unregister behind the holder's back: its own unregister then fails (cudaErrorHostMemoryNotRegistered)
+    assert int(holder._cudart.cudaHostUnregister(holder.ptr)) == 0
+    holder.__del__()
+    _launch()  # raised the stale "pointer does not correspond to a registered memory region" before
+
+
+@needs_cuda
+def test_the_training_stream_next_kernel_after_a_failed_unregister_runs():
+    from core.training import diffusion_te_stream as ts
+
+    buf = torch.empty(1 << 20, dtype = torch.uint8)
+    reg = ts._Registered(buf, buf.numel(), torch.cuda.current_stream())
+    assert int(torch.cuda.cudart().cudaHostUnregister(reg.ptr)) == 0
+    reg.release()
+    _launch()

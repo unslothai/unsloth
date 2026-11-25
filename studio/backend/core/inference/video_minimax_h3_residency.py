@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 from typing import Any, Optional
 
 H3_DIT_RESIDENT_ENV = "UNSLOTH_H3_DIT_RESIDENT"
@@ -285,7 +286,7 @@ def _pin_cost(leaf: Any) -> int:
     from .diffusion_pinned_arena import _packable, _pow2_ceil
 
     nbytes = int(leaf.numel()) * int(leaf.element_size())
-    if type(leaf) is torch.Tensor and _packable(leaf):
+    if _registers_host() and type(leaf) is torch.Tensor and _packable(leaf):
         return -(-nbytes // 4096) * 4096
     return _pow2_ceil(nbytes)
 
@@ -1041,6 +1042,12 @@ def _host_leaves(tensor: Any) -> list:
     return [leaf for leaf in _plain_leaves(tensor) if leaf.numel() > 0]
 
 
+def _registers_host() -> bool:
+    """``cudaHostRegister`` copies only on Linux, as every other registered pin (``_fast_pin_supported``): on Windows
+    the H3 re-fit ran it on the render thread, where a refusal the runtime keeps pending fails the next launch."""
+    return sys.platform.startswith("linux")
+
+
 def _pin_host_tensor(src: Any) -> Any:
     """Pinned copy of ``src``; torchao wrapper subclasses are rebuilt from pinned inner tensors like ``PinnedArena.pin``."""
     import torch
@@ -1053,7 +1060,7 @@ def _pin_host_tensor(src: Any) -> Any:
         names, ctx = src.__tensor_flatten__()
         inner = {name: _pin_host_tensor(getattr(src, name)) for name in names}
         return type(src).__tensor_unflatten__(inner, ctx, src.size(), src.stride())
-    if type(src) is torch.Tensor and _packable(src):
+    if _registers_host() and type(src) is torch.Tensor and _packable(src):
         try:
             return registered_host_copy(src)
         except Exception:  # noqa: BLE001 -- registration refused: the allocator's pin for this tensor

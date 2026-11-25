@@ -8522,8 +8522,10 @@ class _RegisteredHostBuffer:
 
                 # An async upload may still read these pages; never unmap under it.
                 torch.cuda.synchronize(self._device)
-                self._cudart.cudaHostUnregister(self.ptr)
                 self._registered = False
+                if int(self._cudart.cudaHostUnregister(self.ptr)) != 0:
+                    # As a refused register: the failure stays pending on whichever thread dropped the last view.
+                    consume_cuda_error()
         except Exception:  # noqa: BLE001 - interpreter teardown
             pass
         try:
