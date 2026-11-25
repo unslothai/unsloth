@@ -952,15 +952,23 @@ def install_token_budget(trainer):
                 return original_training_step(model, inputs, num_items_in_batch, *args, **kwargs)
             trainer._unsloth_token_budget_splits += 1
             total = None
-            for i, chunk in enumerate(chunks):
-                context = (
-                    accelerator.no_sync(model)
-                    if i < len(chunks) - 1 and accelerator is not None
-                    else contextlib.nullcontext()
-                )
-                with context:
-                    loss = original_training_step(model, chunk, num_items_in_batch, *args, **kwargs)
-                total = loss if total is None else total + loss
+            try:
+                for i, chunk in enumerate(chunks):
+                    partial = i < len(chunks) - 1
+                    # sync_gradients stays True per chunk; expert parallel reads this to sum replicas once per step.
+                    trainer._unsloth_token_budget_partial = partial
+                    context = (
+                        accelerator.no_sync(model)
+                        if partial and accelerator is not None
+                        else contextlib.nullcontext()
+                    )
+                    with context:
+                        loss = original_training_step(
+                            model, chunk, num_items_in_batch, *args, **kwargs
+                        )
+                    total = loss if total is None else total + loss
+            finally:
+                trainer._unsloth_token_budget_partial = False
             if metrics is not None:
                 weights = _global_chunk_weights(trainer, chunks, accelerator)
                 _merge_chunk_metrics(trainer, metrics, lengths, chunks, weights)

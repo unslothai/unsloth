@@ -19,6 +19,7 @@ REVISIONS = {
     "trl-internal-testing/tiny-Phi3ForCausalLM-3": "e82e6bc7a65dc695e68b5c80fc92df026948b290",
     "trl-internal-testing/tiny-Qwen2ForCausalLM-2.5-Coder": "fb30b6ef8f125eaea368e40f402311f96bcd6908",
     "hf-internal-testing/tiny-random-StableLmForCausalLM": "c300fb0fb9aa5127fbec3cdda59b30db8326a89d",
+    "trl-internal-testing/tiny-NemotronHForCausalLM-3.5-lightning": "0fd0a2356bc9530b41fb96f4981b52c6a2ac95fd",
     "hf-internal-testing/tiny-random-Olmo2ForCausalLM": "dcdf4af956c38843cac650c839e282349b92382c",
     # The revision before its Nov 2026 re-upload.
     "trl-internal-testing/tiny-Qwen3MoeForCausalLM": "6db57163fa56fa0e00d4b820169908ac0d3a219d",

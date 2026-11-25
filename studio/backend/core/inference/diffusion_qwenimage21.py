@@ -115,6 +115,44 @@ def _build_layout(model: Any, mod: Any, img_mask: Any, shapes: list, device: Any
     return lay
 
 
+def _prompt_tokens(pipe: Any, prompt: str) -> Optional[int]:
+    template = getattr(pipe, "prompt_template_t2i", None)
+    processor = getattr(pipe, "processor", None)
+    tokenizer = getattr(processor, "tokenizer", None) or getattr(pipe, "tokenizer", None)
+    if not isinstance(template, str) or not callable(tokenizer):
+        return None
+    try:
+        return len(tokenizer(template.format(prompt or " "))["input_ids"])
+    except Exception:  # noqa: BLE001 - unknown tokenizer shape: the caller splits every prompt apart
+        return None
+
+
+def text_length_runs(pipe: Any, chunk: list) -> list:
+    """Split ``(prompt, seed)`` jobs into consecutive runs of equal prompt token length.
+
+    Qwen-Image-2.1 builds one layout/RoPE table per batch from row 0, so a shorter padded prompt renders
+    different pixels than alone; equal lengths match exactly."""
+    if len(chunk) < 2 or type(getattr(pipe, "transformer", None)).__name__ != _CLASS:
+        return [chunk]
+    if all(prompt == chunk[0][0] for prompt, _ in chunk):
+        return [chunk]
+    lengths: dict = {}
+    runs: list = []
+    previous = object()
+    for job in chunk:
+        prompt = job[0]
+        if prompt not in lengths:
+            lengths[prompt] = _prompt_tokens(pipe, prompt)
+        length = lengths[prompt]
+        # An unknown length matches nothing, not even another unknown one.
+        if runs and length is not None and length == previous:
+            runs[-1].append(job)
+        else:
+            runs.append([job])
+        previous = length
+    return runs
+
+
 def _segments(lay: _Layout, mod: Any) -> list:
     if lay._segments is None:
         lay._segments = mod._qwenimage21_prefix_segments(lay.image_ids, lay.prefix_len)
