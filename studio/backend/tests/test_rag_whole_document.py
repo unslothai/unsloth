@@ -784,6 +784,11 @@ def test_build_rag_autoinject_budget_keeps_the_match_over_the_opening(rag_conn, 
         {"thread_id": "t1", "autoinject": False, "context_length": 4096},
     )
     assert "MATCH_PASSAGE" in _injected_text(result)
+    end = next(e for e in result["events"] if e["type"] == "tool_end")
+    text, sources = end["result"].split(inf_tools.RAG_SOURCES_SENTINEL)
+    assert [s["citationId"] for s in json.loads(sources)] == [
+        int(i) for i in re.findall(r'<chunk id="(\d+)"', text)
+    ]
 
 
 def test_build_rag_autoinject_retries_hybrid_when_lexical_winner_is_over_budget(

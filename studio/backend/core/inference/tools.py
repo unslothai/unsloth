@@ -16205,7 +16205,7 @@ def _build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> d
             render_sources(merged), merged, max_tokens, keep_first = len(opening) + bool(hits)
         )
         if kept is None:
-            return found
+            return render_sources(found[1]), found[1]
         opening_ids.update(seen)
         return kept
 
