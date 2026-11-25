@@ -4137,6 +4137,7 @@ export const ptBR = {
       lr: "LR",
       hardware: "Hardware",
       vram: "VRAM",
+      vramTotal: "{size} no total",
       noGpu: "Nenhuma GPU detectada",
       hfToken: "Token do HF",
       saved: "Salvo",

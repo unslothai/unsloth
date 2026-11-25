@@ -778,6 +778,9 @@ def test_compile_counters_count_breaks_and_recompiles():
         ("dp_shard=1,dp_replicate=2", {"dp": 2, "fsdp": False}),
         ("dp_shard=2,dp_replicate=1", {"dp": 2, "fsdp": True}),
         ("dp=2,dp_shard=1,dp_replicate=2", {"dp": 2, "fsdp": False}),
+        # Expert parallel (models/ep_native.py); ep with tp / pp / cp / fsdp is refused by translate.
+        ("ep=2", {"ep": 2}),
+        ("ep_size=2,tp=2", {"ep": 2, "tp": 2}),
     ],
 )
 def test_distributed_config_names_are_accepted(raw, want):
@@ -788,8 +791,6 @@ def test_distributed_config_names_are_accepted(raw, want):
 @pytest.mark.parametrize(
     "raw, match",
     [
-        ("ep=2", "expert parallel"),
-        ("ep_size=2,tp=2", "expert parallel"),
         ("efsdp=2", "expert FSDP"),
         ("dp_shard=2,dp_replicate=2", "HSDP"),
         ("dp=4,dp_shard=2", "disagrees"),
@@ -1122,10 +1123,10 @@ def test_launcher_flag_with_a_disagreeing_legacy_variable_is_refused(clean_env, 
         pe.apply_parallel_env()
 
 
-def test_the_launcher_keys_are_accepted_and_ep_is_reserved():
+def test_the_launcher_keys_are_accepted_and_efsdp_is_reserved():
     from unsloth import parallel_env as pe
     assert set(LAUNCHER_KEYS) <= set(pe._KEYS)
-    assert {"ep", "efsdp"} <= set(pe._RESERVED)
+    assert "ep" in pe._KEYS and "efsdp" in pe._RESERVED
 
 
 @pytest.mark.parametrize("kind", ["sft", "dpo", "grpo"])
