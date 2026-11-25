@@ -624,12 +624,18 @@ AMD_SMI_GATE = slice_between(INSTALL_SRC, "        $amdSmiAllowed = ", "\n")
 
 
 @requires_pwsh
-@pytest.mark.parametrize("muted, expected", [(True, "False"), (False, "True")])
-def test_the_notice_only_probe_never_runs_amd_smi(muted, expected):
+@pytest.mark.parametrize(
+    "muted, opt_in, expected",
+    [(True, True, "False"), (False, True, "True"), (False, False, "False")],
+    ids = ["notice-only", "opted-in", "hip-sdk-without-opt-in"],
+)
+def test_amd_smi_runs_only_on_opt_in_and_never_for_the_notice(muted, opt_in, expected):
     kv = _ps_kv(
         _script(
-            "Remove-Item Env:UNSLOTH_ENABLE_AMD_SMI -ErrorAction SilentlyContinue",
-            "$amdSmiOptOut = $false; $HipSdkInstalled = $true",
+            "$env:UNSLOTH_ENABLE_AMD_SMI = '1'"
+            if opt_in
+            else "Remove-Item Env:UNSLOTH_ENABLE_AMD_SMI -ErrorAction SilentlyContinue",
+            "$HipSdkInstalled = $true",
             f"$script:StudioMuteLines = ${str(muted).lower()}",
             AMD_SMI_GATE,
             'Write-Output "ALLOWED=$amdSmiAllowed"',

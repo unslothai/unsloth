@@ -9030,7 +9030,7 @@ main()
     $script:StudioMuteLines = $ProbeAmdBesideNvidia -and -not $nvMaskHidesAll -and -not (Test-RocmTorchExplicitlyRequested)
     try {
     if (-not $HasNvidiaSmi -or $ProbeAmdBesideNvidia) {
-        # Ignore the venv hipInfo.exe: an AMD wheel, not a HIP SDK, so amd-smi still auto-elevates.
+        # Ignore the venv hipInfo.exe: an AMD wheel, not a HIP SDK.
         function Test-HipinfoIsVenvInternal {
             param([AllowNull()][string]$HipinfoPath)
             if ([string]::IsNullOrWhiteSpace($HipinfoPath)) { return $false }
@@ -9128,10 +9128,9 @@ main()
                 }
             } catch {}
         }
-        # amd-smi pops an unsuppressable UAC prompt without HIP, so probe only with a SDK or opt-in.
-        $amdSmiOptOut = $env:UNSLOTH_ENABLE_AMD_SMI -match '^(?i)(0|false|no|off)$'
-        # Not for the notice-only probe: amd-smi can raise UAC, and hipinfo / WMI name the card.
-        $amdSmiAllowed = (-not $amdSmiOptOut) -and -not $script:StudioMuteLines -and ($HipSdkInstalled -or ($env:UNSLOTH_ENABLE_AMD_SMI -match '^(?i)(1|true|yes|on)$'))
+        # amd-smi pops a UAC/DiskPart prompt RunAsInvoker cannot suppress, even with a HIP SDK: opt-in only, as amd.py.
+        # Never for the notice-only probe: hipinfo / WMI name the card.
+        $amdSmiAllowed = -not $script:StudioMuteLines -and ($env:UNSLOTH_ENABLE_AMD_SMI -match '^(?i)(1|true|yes|on)$')
         if (-not $HasROCm -and $amdSmiAllowed) {
             $amdSmiExe = Get-Command "amd-smi" -ErrorAction SilentlyContinue
             if ($amdSmiExe) {

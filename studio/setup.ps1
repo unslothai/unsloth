@@ -4363,9 +4363,8 @@ if (-not $HasNvidiaSmi -or $script:ProbeAmdBesideNvidia) {
             }
         } catch {}
     }
-    # amd-smi can pop an unsuppressable UAC prompt, so probe only with a HIP SDK or on opt-in.
-    $amdSmiOptOut = $env:UNSLOTH_ENABLE_AMD_SMI -match '^(?i)(0|false|no|off)$'
-    $amdSmiAllowed = (-not $amdSmiOptOut) -and ($HipSdkInstalled -or ($env:UNSLOTH_ENABLE_AMD_SMI -match '^(?i)(1|true|yes|on)$'))
+    # amd-smi pops a UAC/DiskPart prompt RunAsInvoker cannot suppress, even with a HIP SDK: opt-in only, as amd.py.
+    $amdSmiAllowed = $env:UNSLOTH_ENABLE_AMD_SMI -match '^(?i)(1|true|yes|on)$'
     if (-not $HasROCm -and $amdSmiAllowed) {
         $amdSmiExe = Get-Command "amd-smi" -ErrorAction SilentlyContinue
         if ($amdSmiExe) {
