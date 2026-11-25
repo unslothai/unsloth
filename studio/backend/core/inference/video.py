@@ -5753,6 +5753,17 @@ def _video_calibration_companions(pipe: Any) -> dict[str, str]:
     return {"run_once_companions": "streamed" if streamed else "resident"}
 
 
+def _video_calibration_vocoder(pipe: Any) -> dict[str, str]:
+    """The peak calibration key's vocoder entry: the LTX-2.3/2.5 vocoder's decode precision (its float32 pass and
+    the switched-off stored dtype peak differently, so they never share peaks). Empty for every other vocoder."""
+    try:
+        from .video_ltx2 import vocoder_precision
+        precision = vocoder_precision(getattr(pipe, "vocoder", None))
+    except Exception:  # noqa: BLE001 -- unreadable: the key as before
+        return {}
+    return {"vocoder_precision": precision} if precision else {}
+
+
 def _video_offload_vram_floor_mib(
     pipe: Any,
     plan: Any,
@@ -15668,6 +15679,7 @@ class VideoBackend:
                         references = len(references or ()),
                         cfg = bool(getattr(fam, "supports_cfg", True)) and float(guidance) > 1.0,
                         **_video_calibration_companions(state.pipe),
+                        **_video_calibration_vocoder(state.pipe),
                     )
                     # Tag BEFORE the residency fit: after a reload the fit reads process-wide peaks through this key.
                     video_stream_residency.arm_request(
