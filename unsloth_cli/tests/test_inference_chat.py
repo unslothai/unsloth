@@ -1514,7 +1514,6 @@ def test_chat_turn_is_not_answered_by_a_model_loaded_elsewhere(
     import threading
     from urllib.parse import parse_qs, urlparse
 
-    # Loaded (repo, quant) pairs; the first is the primary.
     studio = {"slots": list(loaded)}
 
     def slot_for(name):
@@ -1539,7 +1538,6 @@ def test_chat_turn_is_not_answered_by_a_model_loaded_elsewhere(
         def do_GET(self):
             asked = parse_qs(urlparse(self.path).query).get("model", [None])[0]
             repo, quant = slot_for(asked)
-            # A scan-folder load reports its snapshot path as model_identifier.
             status = {"active_model": repo, "model_identifier": f"/models/{repo}/snapshot"}
             self._send(200, {**status, "is_gguf": bool(repo), "gguf_variant": quant})
 
@@ -1549,7 +1547,6 @@ def test_chat_turn_is_not_answered_by_a_model_loaded_elsewhere(
                 repo = payload["model_path"].partition(":")[0]
                 if slot_for(payload["model_path"]) not in studio["slots"][1:]:
                     studio["slots"][:1] = [(repo, picked)]
-                # Like Unsloth, the load answers with the bare repo id.
                 self._send(200, {"status": "loaded", "model": repo, "is_gguf": True})
                 return
             repo, _, quant = payload["model"].partition(":")
@@ -1602,7 +1599,6 @@ _LOCAL_MODEL = str(Path("/models/qwen3").absolute())
         (_QWEN, True, ("unsloth/gemma-3-270m-it-GGUF", None), False),
         # Unconfirmed at load, so a mismatch proves nothing and the turn is sent as before.
         (_LOCAL_MODEL, False, ("unsloth/gemma-3-270m-it-GGUF", None), False),
-        # A status naming no model proves nothing either.
         (_LOCAL_MODEL, True, (None, None), False),
     ],
 )
@@ -1664,13 +1660,11 @@ def test_a_path_chat_refuses_a_turn_once_another_model_replaced_it(
 
         studio["resident"] = replacement
         if refused:
-            # Names the quant the chat loaded, not only the one now served.
             with pytest.raises(RuntimeError, match = r"no longer loaded: .*, not '.*' \(Q4_K_M\)"):
                 list(backend.stream(turn, **_STREAM_KWARGS))
         else:
             list(backend.stream(turn, **_STREAM_KWARGS))
         assert studio["requests"] == [local] * (1 if refused else 2)
-        # Only a path chat reads status per turn, and only for its own path.
         assert set(studio["queries"]) == (set() if local == _QWEN else {local})
     finally:
         server.shutdown()
@@ -1682,9 +1676,7 @@ def test_a_path_chat_refuses_a_turn_once_another_model_replaced_it(
     [
         ("Qwen3-0.6B-GGUF", _QWEN, f"{_QWEN}:Q8_0"),
         ("unsloth/qwen3-0.6b-gguf", _QWEN, f"{_QWEN}:Q8_0"),
-        # Another model's status lends no quant.
         (_QWEN, "unsloth/gemma-3-270m-it-GGUF", _QWEN),
-        # A path load has no :quant channel.
         ("/models/Qwen3-0.6B-GGUF", "/models/Qwen3-0.6B-GGUF", "/models/Qwen3-0.6B-GGUF"),
     ],
 )
