@@ -389,6 +389,11 @@ export interface InferenceStatusResponse {
   /** e.g. {"clone": "clon"}; a task other than audio_server_task reloads. */
   audio_workflow_tasks?: Record<string, string> | null;
   audio_server_task?: string | null;
+  /** Separate: what the model is for, and the id of its one output when it filters a recording. */
+  audio_separation?: {
+    goal: "stems" | "speakers" | "voice" | "restore";
+    output: string | null;
+  } | null;
   audio_convert_route?: string | null;
   audio_convert?: AudioConvertCaps | null;
   audio_required_inputs?: string[] | null;
