@@ -51,13 +51,14 @@ test("a Library file reads the same size as in chat and Settings", () => {
   assert.equal(formatLibrarySize(1_500_000, "en", t as never), "1.5 MB");
 });
 
-test("Library and Hub round a size up to the next unit the same way", () => {
+test("Library and Hub pick the same unit and round the same way", () => {
   const t = (key: string, values?: { value?: unknown }) =>
     `${String(values?.value)} ${key.split(".").pop()}`;
   for (const [bytes, hub, library] of [
     [999_999, "1.0 MB", "1.0 megabytes"],
     [9_960, "10 KB", "10 kilobytes"],
     [999, "999 B", "999 bytes"],
+    [2_550_000, "2.5 MB", "2.5 megabytes"],
   ] as const) {
     assert.equal(formatBytes(bytes), hub);
     assert.equal(formatLibrarySize(bytes, "en", t as never), library);

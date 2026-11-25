@@ -22,7 +22,7 @@ export function scaleBytes(bytes: number): { value: number; unit: number; decima
     value = bytes / 1000 ** unit;
     decimals = Number(value.toFixed(1)) < 10 ? 1 : 0;
   }
-  return { value, unit, decimals };
+  return { value: Number(value.toFixed(decimals)), unit, decimals };
 }
 
 export function formatBytes(bytes: number, unitSeparator = " "): string {
