@@ -3462,7 +3462,6 @@ _STUDIO_CREDENTIAL_BLOCKED = (
     "Blocked for safety: Unsloth Studio's authentication directory holds this install's own "
     "credentials and is not readable by tools."
 )
-# Returned when the safety screen itself runs out of stack on the tool's input; nothing was run.
 _PYTHON_TOO_DEEP_TO_SCREEN = (
     "Error: the code is nested too deeply for the safety check to analyse, so it was not run. "
     "Simplify it (for example, split long expressions into several statements) and run it again."
