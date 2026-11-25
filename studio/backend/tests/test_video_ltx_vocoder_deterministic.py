@@ -1,0 +1,93 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""LTX-2.3/2.5 vocoder: cuDNN deterministic algorithms for the call on NVIDIA CUDA, restored after; a kill switch."""
+
+from __future__ import annotations
+
+import types
+
+import pytest
+
+torch = pytest.importorskip("torch")
+
+from core.inference import video_ltx2 as L  # noqa: E402
+
+
+def _cuda_like():
+    return types.SimpleNamespace(device = types.SimpleNamespace(type = "cuda"))
+
+
+@pytest.fixture(autouse = True)
+def _flags(monkeypatch):
+    monkeypatch.delenv(L.VOCODER_DETERMINISTIC_ENV, raising = False)
+    monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    before = torch.backends.cudnn.deterministic
+    torch.backends.cudnn.deterministic = False
+    yield
+    torch.backends.cudnn.deterministic = before
+
+
+def test_cuda_call_runs_deterministic_and_restores():
+    with L._deterministic_cudnn(_cuda_like()):
+        assert torch.backends.cudnn.deterministic is True
+    assert torch.backends.cudnn.deterministic is False
+
+
+def test_restored_when_the_call_raises():
+    with pytest.raises(RuntimeError):
+        with L._deterministic_cudnn(_cuda_like()):
+            raise RuntimeError("boom")
+    assert torch.backends.cudnn.deterministic is False
+
+
+def test_a_global_deterministic_setting_is_left_on():
+    torch.backends.cudnn.deterministic = True
+    with L._deterministic_cudnn(_cuda_like()):
+        assert torch.backends.cudnn.deterministic is True
+    assert torch.backends.cudnn.deterministic is True
+
+
+@pytest.mark.parametrize("case", ["cpu", "rocm", "switch_off"])
+def test_cpu_rocm_and_kill_switch_keep_the_global_setting(case, monkeypatch):
+    mel = _cuda_like()
+    if case == "cpu":
+        mel = torch.zeros(1)
+    elif case == "rocm":
+        monkeypatch.setattr(torch.version, "hip", "7.1", raising = False)
+    else:
+        monkeypatch.setenv(L.VOCODER_DETERMINISTIC_ENV, "0")
+    with L._deterministic_cudnn(mel):
+        assert torch.backends.cudnn.deterministic is False
+
+
+class _Voc(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.conv = torch.nn.ConvTranspose1d(4, 2, 4, stride = 2)
+
+    def forward(self, mel):
+        return self.conv(mel)
+
+
+def test_the_installed_forward_enters_the_scope(monkeypatch):
+    entered = []
+
+    class _Scope:
+        def __init__(self, mel):
+            entered.append(mel)
+
+        def __enter__(self):
+            return None
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(L, "_deterministic_cudnn", _Scope)
+    voc = _Voc().eval()
+    L.install_vocoder_fp32_forward(voc)
+    mel = torch.randn(1, 4, 8)
+    with torch.no_grad():
+        out = voc(mel)
+    assert len(entered) == 1 and entered[0] is mel
+    assert out.shape == (1, 2, 18)

@@ -1808,6 +1808,36 @@ def vocoder_fp32_enabled() -> bool:
     return (os.environ.get(VOCODER_FP32_ENV) or "").strip().lower() not in _SWITCH_OFF
 
 
+# cuDNN may pick a nondeterministic (atomic) algorithm for the vocoder's transposed convs, so the same latents give a
+# different waveform per process. NVIDIA CUDA only (ROCm's MIOpen has no such flag). "0" keeps the global setting.
+VOCODER_DETERMINISTIC_ENV = "UNSLOTH_LTX_VOCODER_DETERMINISTIC"
+
+
+def vocoder_deterministic_enabled() -> bool:
+    return (os.environ.get(VOCODER_DETERMINISTIC_ENV) or "").strip().lower() not in _SWITCH_OFF
+
+
+@contextlib.contextmanager
+def _deterministic_cudnn(mel_spec: Any) -> Iterator[None]:
+    import torch
+
+    cudnn = torch.backends.cudnn
+    if (
+        getattr(getattr(mel_spec, "device", None), "type", None) != "cuda"
+        or getattr(torch.version, "hip", None)
+        or _is_compiling()
+        or cudnn.deterministic
+        or not vocoder_deterministic_enabled()
+    ):
+        yield
+        return
+    cudnn.deterministic = True
+    try:
+        yield
+    finally:
+        cudnn.deterministic = False
+
+
 def _is_compiling() -> bool:
     try:
         import torch
@@ -2031,6 +2061,10 @@ def install_vocoder_fp32_forward(vocoder: Any) -> None:
             return stored_call(self, mel_spec, args, kwargs)
 
         def forward(self, mel_spec, *args, **kwargs):
+            with _deterministic_cudnn(mel_spec):
+                return fp32_forward(self, mel_spec, *args, **kwargs)
+
+        def fp32_forward(self, mel_spec, *args, **kwargs):
             param = next(self.parameters(), None)
             compiling = _is_compiling()
             if (
