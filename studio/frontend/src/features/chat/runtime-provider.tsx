@@ -208,6 +208,7 @@ import {
   notifyReplyFinished,
 } from "./utils/reply-finished-notification";
 import {
+  deltaReasoningText,
   extractDeltaText,
   markLiteralThinkTags,
   markPendingThinkTag,
@@ -1900,10 +1901,7 @@ function scheduleGenerationRecovery(
                 completionTokens = chunk.usage.completion_tokens;
               }
               const deltaRecord = chunk.choices?.[0]?.delta;
-              const reasoning =
-                typeof deltaRecord?.reasoning_content === "string"
-                  ? deltaRecord.reasoning_content
-                  : "";
+              const reasoning = deltaReasoningText(deltaRecord);
               const { text: delta, hasStructuredReasoning } = extractDeltaText(
                 deltaRecord?.content,
               );

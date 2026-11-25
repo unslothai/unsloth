@@ -4,6 +4,7 @@
 import type { ChatGenerationStatus } from "../api/chat-generation-api";
 import {
   createThinkTagTracker,
+  deltaReasoningText,
   extractDeltaText,
   markLiteralThinkTags,
   markPendingThinkTag,
@@ -28,29 +29,10 @@ const TERMINAL = new Set<StoredGenerationStatus>([
 
 export function generationChunkHasSubstantiveDelta(payload: unknown): boolean {
   const delta = (
-    payload as {
-      choices?: Array<{
-        delta?: {
-          content?: unknown;
-          reasoning_content?: unknown;
-          reasoning_details?: unknown;
-        };
-      }>;
-    }
+    payload as { choices?: Array<{ delta?: { content?: unknown } }> }
   )?.choices?.[0]?.delta;
-  const reasoning =
-    typeof delta?.reasoning_content === "string" ? delta.reasoning_content : "";
-  const reasoningDetails = Array.isArray(delta?.reasoning_details)
-    ? delta.reasoning_details.some(
-        (part) =>
-          part !== null &&
-          typeof part === "object" &&
-          typeof (part as { text?: unknown }).text === "string" &&
-          Boolean((part as { text: string }).text),
-      )
-    : false;
   return Boolean(
-    reasoning || reasoningDetails || extractDeltaText(delta?.content).text,
+    deltaReasoningText(delta) || extractDeltaText(delta?.content).text,
   );
 }
 
