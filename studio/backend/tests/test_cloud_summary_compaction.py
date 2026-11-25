@@ -1446,3 +1446,136 @@ def test_a_prompt_the_fit_cannot_shrink_below_the_threshold_still_fits_with_its_
     prompt = ri._external_token_counter(ri.ChatCompletionRequest(messages = chat), None)(chat)
     assert prompt > _SMALL_TRIGGER["compaction_threshold"]
     assert prompt + sent["max_tokens"] <= _SMALL_TRIGGER["context_window"]
+
+
+def _tool_turn(results: int, size: int) -> list[dict]:
+    turn = []
+    for n in range(1, results + 1):
+        fn = {"name": "python", "arguments": json.dumps({"code": f"step({n})"})}
+        turn += [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{"id": f"c{n}", "type": "function", "function": fn}],
+            },
+            {"role": "tool", "tool_call_id": f"c{n}", "content": f"STEP {n} " + "harbor " * size},
+        ]
+    return turn
+
+
+def test_an_overflow_inside_a_tool_turn_shortens_its_older_results():
+    chat = [
+        {"role": "system", "content": "Answer in French."},
+        {"role": "user", "content": "q0"},
+        {"role": "assistant", "content": "a0"},
+        {"role": "user", "content": "Run the six steps."},
+        *_tool_turn(4, 600),
+    ]
+
+    class Refused(_SummarisingHandler):
+        overflow_chars = len(json.dumps(chat)) - 100
+
+    chunks, summaries, chats = _bodies(
+        Refused,
+        messages = chat,
+        context_overflow = "truncate_oldest",
+        compaction_threshold = 100_000,
+    )
+    assert not [c for c in chunks if "error" in c]
+    refused, resent = chats
+    assert len(json.dumps(resent["messages"])) < len(json.dumps(refused["messages"])) // 2
+    sent = json.dumps(resent["messages"])
+    assert "Run the six steps." in sent and chat[-1]["content"] in sent
+    results = [m["content"] for m in resent["messages"] if m["role"] == "tool"]
+    assert [r.split(" ")[:2] for r in results] == [["STEP", str(n)] for n in range(1, 5)]
+
+
+def test_an_overflow_nothing_can_shrink_is_refused_once():
+    chat = [
+        {"role": "system", "content": "Answer in French."},
+        {"role": "user", "content": "q0"},
+        {"role": "assistant", "content": "a0"},
+        {"role": "user", "content": "Run one step."},
+        *_tool_turn(1, 3_000),
+    ]
+
+    class Refused(_SummarisingHandler):
+        overflow_chars = len(json.dumps(chat)) - 100
+
+    chunks, _, chats = _bodies(
+        Refused,
+        messages = chat,
+        context_overflow = "truncate_oldest",
+        compaction_threshold = 100_000,
+    )
+    assert len(chats) == 1
+    [error] = [c["error"] for c in chunks if "error" in c]
+    assert "maximum context length" in error["message"]
+
+
+class _ToolSteps(_SummarisingHandler):
+    steps = 6
+    overflow_chars = 9_000
+
+    def do_POST(self) -> None:  # noqa: N802
+        raw = self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}"
+        body = json.loads(raw)
+        done = sum(1 for m in body["messages"] if m.get("role") == "tool")
+        fits = len(json.dumps(body["messages"])) <= self.overflow_chars
+        if _is_summary_call(body) or not fits or done >= self.steps:
+            self.rfile = __import__("io").BytesIO(raw)
+            return super().do_POST()
+        self.server.recorded.append(body)  # type: ignore[attr-defined]
+        code = f'print("STEP {done + 1} " + "harbor " * 500)'
+        call = {
+            "index": 0,
+            "id": f"call_{done + 1}",
+            "type": "function",
+            "function": {"name": "python", "arguments": json.dumps({"code": code})},
+        }
+        payload = (
+            "".join(
+                "data: "
+                + json.dumps({"choices": [{"index": 0, "delta": delta, "finish_reason": end}]})
+                + "\n\n"
+                for delta, end in (
+                    ({"role": "assistant", "tool_calls": [call]}, None),
+                    ({}, "tool_calls"),
+                )
+            ).encode()
+            + b"data: [DONE]\n\n"
+        )
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+
+@pytest.mark.parametrize("threshold", [100_000, None])
+def test_an_overflow_mid_tool_loop_recovers_by_shortening_the_turns_results(threshold, monkeypatch):
+    async def connected(self) -> bool:
+        return False
+
+    monkeypatch.setattr(Request, "is_disconnected", connected)
+    chat = [
+        {"role": "system", "content": "Answer in French."},
+        {"role": "user", "content": "q0"},
+        {"role": "assistant", "content": "a0"},
+        {"role": "user", "content": "Run the six steps."},
+    ]
+    chunks, _, chats = _bodies(
+        _ToolSteps,
+        messages = chat,
+        enable_tools = True,
+        enabled_tools = ["python"],
+        permission_mode = "off",
+        context_overflow = "truncate_oldest",
+        compaction_threshold = threshold,
+    )
+    assert not [c for c in chunks if "error" in c]
+    final = chats[-1]["messages"]
+    results = [m["content"] for m in final if m["role"] == "tool"]
+    assert len(results) == 6 and all(f"STEP {n}" in r for n, r in enumerate(results, 1))
+    assert any(m["role"] == "user" and m["content"] == "Run the six steps." for m in final)
+    assert any(c.get("choices") and c["choices"][0]["delta"].get("content") == "ok" for c in chunks)

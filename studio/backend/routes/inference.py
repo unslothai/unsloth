@@ -30546,6 +30546,49 @@ def _active_turn_anchors(messages: list[dict], branch: Optional[list[dict]]) -> 
     return {id(messages[start])} | {id(m) for m in messages[latest:]}
 
 
+_OVERFLOW_TOOL_RESULT_CHARS = 200
+
+
+def _shorten_tool_result(text: str) -> str:
+    if len(text) <= 2 * _OVERFLOW_TOOL_RESULT_CHARS:
+        return text
+    return (
+        text[:_OVERFLOW_TOOL_RESULT_CHARS]
+        + f"\n\n... (truncated to fit the context window, {len(text)} chars total)"
+    )
+
+
+def _shorten_turn_tool_results(
+    messages: list[dict],
+    branch: Optional[list[dict]],
+    target: int,
+    count: Callable[[list[dict]], int],
+) -> set[int]:
+    anchors = (
+        _active_turn_anchors(messages, branch) or _active_turn_anchors(messages, messages) or set()
+    )
+    start = next((i for i, m in enumerate(messages) if id(m) in anchors), len(messages))
+    for message in messages[start + 1 :]:
+        if message.get("role") != "tool" or id(message) in anchors:
+            continue
+        if count(messages) <= target:
+            break
+        content = message.get("content")
+        # In place: the loop's later passes must send the results cut too.
+        if isinstance(content, str):
+            message["content"] = _shorten_tool_result(content)
+        elif isinstance(content, list):
+            message["content"] = [
+                {**part, "text": _shorten_tool_result(part["text"])}
+                if isinstance(part, dict)
+                and part.get("type") == "text"
+                and isinstance(part.get("text"), str)
+                else part
+                for part in content
+            ]
+    return {id(message) for message in messages[start:]}
+
+
 def _extend_checkpoint_fit(state: dict, messages: list[dict]) -> Optional[list[dict]]:
     """The cached checkpoint fit plus the loop's new turns, or None when ``messages`` diverged.
 
@@ -30886,6 +30929,7 @@ async def _finish_external_compaction(
     from core.inference import cloud_compaction
     from core.inference.context_window import (
         estimate_message_tokens_without_unpriced_media,
+        prompt_budget,
         retrieval_budget,
     )
     from core.inference.llama_cpp import _archive_and_recall
@@ -30984,11 +31028,18 @@ async def _finish_external_compaction(
     refusal = None
     max_tokens = plan.max_tokens
     fit_payload = payload if plan.auto else None
-    if plan.force == "overflow" and not summarised_now:
-        # The provider counted more than the estimate allowed for: evict down to half of it.
-        fit_payload = payload.model_copy(
-            update = {"compaction_threshold": max(1, count(current) // 2), "context_window": None}
+    turn_ids: set[int] = set()
+    if plan.force == "overflow":
+        # The provider counted more than the estimate allowed for: aim for half of it, shortening
+        # the turn's older tool results and evicting only turns before it.
+        half = max(1, count(current) // 2)
+        turn_ids = _shorten_turn_tool_results(
+            current, branch, prompt_budget(half, _effective_max_tokens(payload)), count
         )
+        if not summarised_now:
+            fit_payload = payload.model_copy(
+                update = {"compaction_threshold": half, "context_window": None}
+            )
     if fit_payload is not None:
         fitted, evicted, max_tokens = await asyncio.to_thread(
             _fit_external_context,
@@ -30997,7 +31048,7 @@ async def _finish_external_compaction(
             tools = tools,
             branch = branch,
             tool_loop = tool_loop,
-            keep_ids = cloud_compaction.summary_turn_ids(current),
+            keep_ids = cloud_compaction.summary_turn_ids(current) | turn_ids,
         )
         current = fitted
         if evicted and not plan.summarise:
@@ -32139,18 +32190,17 @@ async def _proxy_to_external_provider(
 
     async def _external_overflow_refit(messages, tools = _external_fit_tools):
         """The provider refused the prompt as too long: summarise everything before the newest
-        turn. ``(None, None, None)`` when that changes nothing, so the refusal stands."""
+        turn. ``(None, None, None)`` when the refit is no smaller, so the refusal stands."""
         nonlocal _external_truncation
         earlier, _external_truncation = _external_truncation, None
+        count = _external_token_counter(payload, tools)
+        refused = count(_last_fit if _fit_active and _last_fit is not None else messages)
         async for step in _external_fit_steps(messages, tools, force = "overflow"):
             if isinstance(step, str):
                 yield step
                 continue
-            truncation = _external_truncation or {}
-            changed = truncation.get("checkpoint_started") or (
-                truncation.get("dropped_messages") and not truncation.get("summarized")
-            )
-            if not changed:
+            changed = count(step[0]) < refused
+            if not changed or _external_truncation is None:
                 _external_truncation = earlier
             yield step if changed else (None, None, None)
 

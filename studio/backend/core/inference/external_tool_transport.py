@@ -57,7 +57,7 @@ class OAICompatTransport:
         **request_kwargs: Any,
     ) -> None:
         """message_fitter may be coroutine or async generator yielding progress lines then
-        (messages, max_tokens, line); overflow_refitter same shape, runs once per request when
+        (messages, max_tokens, line); overflow_refitter same shape, runs once per provider turn when
         provider refuses as too long before output; first_turn_overrides replace kwargs on turn 1
         only; reply_limit (only when the caller set no max_tokens) sizes each round's max_tokens from
         what its fitted prompt leaves of the window"""
@@ -163,9 +163,8 @@ class OAICompatTransport:
             )
 
         async def _recover():
-            refitter, self._overflow_refitter = self._overflow_refitter, None
             fit = None
-            async for step in _fit_steps(refitter(unfitted, tools)):
+            async for step in _fit_steps(self._overflow_refitter(unfitted, tools)):
                 if not isinstance(step, str):
                     fit = step
             if fit is None or fit[0] is None:
