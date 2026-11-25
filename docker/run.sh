@@ -67,7 +67,7 @@ if [[ $# -gt 0 && "$1" == "--rocm" ]]; then
     shift
 fi
 
-# UNSLOTH_DEV_ROOT prefixes /dev probes for the regression tests; unset in normal use.
+# UNSLOTH_DEV_ROOT prefixes host probes for the regression tests; unset in normal use.
 DEV_ROOT="${UNSLOTH_DEV_ROOT:-}"
 
 # WSL2 has no /dev/kfd: the card is reached over /dev/dxg and librocdxg, with no groups.
@@ -250,9 +250,13 @@ hermes_dir() {
     first_dir "$root/models" "$native/models"
 }
 
-ollama_dir() {
-    first_dir "$(host_path "${OLLAMA_MODELS:-}")" "$HOME/.ollama/models" \
-        /usr/share/ollama/.ollama/models /var/lib/ollama/.ollama/models
+ollama_dirs() {
+    local dir
+    for dir in "$(host_path "${OLLAMA_MODELS:-}")" "$HOME/.ollama/models" \
+            "$DEV_ROOT"/usr/share/ollama/.ollama/models "$DEV_ROOT"/var/lib/ollama/.ollama/models; do
+        [[ -n "$dir" && -d "$dir" ]] && printf '%s\n' "$dir"
+    done
+    return 0
 }
 
 declare -a MODEL_MOUNTS=()
@@ -269,7 +273,25 @@ mount_models() {
 }
 
 mount_models "LM Studio" "${UNSLOTH_LMSTUDIO_DIR:-$(lmstudio_dir)}" /root/.lmstudio/models
-mount_models Ollama "${UNSLOTH_OLLAMA_DIR:-$(ollama_dir)}" /root/.ollama/models
+# Studio scans every Ollama store; the first keeps /root/.ollama/models so saved model paths still match.
+if [[ -n "${UNSLOTH_OLLAMA_DIR:-}" ]]; then
+    mount_models Ollama "$UNSLOTH_OLLAMA_DIR" /root/.ollama/models
+else
+    ollama_seen=""
+    while IFS= read -r dir; do
+        real="$(CDPATH='' cd -- "$dir" && pwd -P)" || continue
+        [[ "$ollama_seen" == *$'\n'"$real"$'\n'* ]] && continue
+        if [[ -z "$ollama_seen" ]]; then
+            mount_models Ollama "$dir" /root/.ollama/models
+        elif [[ "$dir" == "$HOME/.ollama/models" ]]; then
+            mount_models Ollama "$dir" /root/.ollama/home-models
+            MODEL_MOUNTS+=(-e OLLAMA_MODELS=/root/.ollama/home-models)
+        else
+            mount_models Ollama "$dir" "${dir#"$DEV_ROOT"}"
+        fi
+        ollama_seen+=$'\n'"$real"$'\n'
+    done < <(ollama_dirs)
+fi
 mount_models Hermes "${UNSLOTH_HERMES_DIR:-$(hermes_dir)}" /root/.hermes/models
 mount_models local "${UNSLOTH_MODELS_DIR:-}" /workspace/models
 

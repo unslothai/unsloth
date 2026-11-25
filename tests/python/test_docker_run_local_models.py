@@ -244,6 +244,82 @@ def test_windows_ollama_models_env_is_mapped_under_wsl(tmp_path):
     assert mounts["/root/.ollama/models"] == (windows, True)
 
 
+_SERVICE_STORE = "/usr/share/ollama/.ollama/models"
+_VAR_LIB_STORE = "/var/lib/ollama/.ollama/models"
+
+
+def _ollama_mounts(tmp_path, *stores, **env_extra):
+    root = tmp_path / "root"
+    paths = [_dir(root / store.lstrip("/")) for store in stores]
+    mounts, _ = _run(tmp_path, UNSLOTH_DEV_ROOT = str(root), **env_extra)
+    argv = (tmp_path / "argv").read_text().splitlines()
+    ollama = {t: m for t, m in mounts.items() if "ollama" in t}
+    return ollama, paths, argv
+
+
+def test_home_store_does_not_hide_the_service_store(tmp_path):
+    home = _dir(tmp_path / "home" / ".ollama" / "models")
+
+    ollama, (service,), _ = _ollama_mounts(tmp_path, _SERVICE_STORE)
+
+    assert ollama == {"/root/.ollama/models": (home, True), _SERVICE_STORE: (service, True)}
+
+
+def test_every_ollama_store_is_mounted(tmp_path):
+    home = _dir(tmp_path / "home" / ".ollama" / "models")
+
+    ollama, (service, var_lib), _ = _ollama_mounts(tmp_path, _SERVICE_STORE, _VAR_LIB_STORE)
+
+    assert ollama == {
+        "/root/.ollama/models": (home, True),
+        _SERVICE_STORE: (service, True),
+        _VAR_LIB_STORE: (var_lib, True),
+    }
+
+
+def test_lone_service_store_keeps_its_mount_point(tmp_path):
+    ollama, (service,), argv = _ollama_mounts(tmp_path, _SERVICE_STORE)
+
+    assert ollama == {"/root/.ollama/models": (service, True)}
+    assert not any(a.startswith("OLLAMA_MODELS=") for a in argv)
+
+
+def test_ollama_models_env_keeps_the_home_store_visible(tmp_path):
+    home = _dir(tmp_path / "home" / ".ollama" / "models")
+    custom = _dir(tmp_path / "ollama custom")
+
+    mounts, _ = _run(tmp_path, OLLAMA_MODELS = custom)
+    argv = (tmp_path / "argv").read_text().splitlines()
+
+    assert mounts["/root/.ollama/models"] == (custom, True)
+    assert mounts["/root/.ollama/home-models"] == (home, True)
+    assert "OLLAMA_MODELS=/root/.ollama/home-models" in argv
+
+
+def test_the_same_ollama_store_is_mounted_once(tmp_path):
+    root = tmp_path / "root"
+    service = _dir(root / _SERVICE_STORE.lstrip("/"))
+    (tmp_path / "home" / ".ollama").mkdir(parents = True)
+    (tmp_path / "home" / ".ollama" / "models").symlink_to(service)
+
+    ollama, _, argv = _ollama_mounts(tmp_path, OLLAMA_MODELS = service)
+
+    assert list(ollama) == ["/root/.ollama/models"]
+    assert ollama["/root/.ollama/models"] == (service, True)
+    assert not any(a.startswith("OLLAMA_MODELS=") for a in argv)
+
+
+@pytest.mark.parametrize("value", ["none", "picked"])
+def test_explicit_ollama_dir_mounts_only_that_dir(tmp_path, value):
+    _dir(tmp_path / "home" / ".ollama" / "models")
+    picked = _dir(tmp_path / "picked")
+    dirs = {"none": "none", "picked": picked}
+
+    ollama, _, _ = _ollama_mounts(tmp_path, _SERVICE_STORE, UNSLOTH_OLLAMA_DIR = dirs[value])
+
+    assert ollama == ({} if value == "none" else {"/root/.ollama/models": (picked, True)})
+
+
 def test_explicit_dirs_override_detection(tmp_path):
     _dir(tmp_path / "home" / ".lmstudio" / "models")
     lmstudio = _dir(tmp_path / "lmstudio")
