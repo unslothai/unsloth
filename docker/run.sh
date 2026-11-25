@@ -180,7 +180,7 @@ hf_path() {
     local path
     path="$(host_path "$1")"
     path="${path:-$1}"
-    while [[ "$path" == *//* ]]; do path="${path//\/\//\/}"; done
+    path="$(printf '%s' "$path" | tr -s /)"
     [[ "$path" == */ && "$path" != / ]] && path="${path%/}"
     printf '%s' "$path"
 }
