@@ -4232,7 +4232,7 @@ export const en = {
       noDatasetsFound: "No datasets found.",
       tokenRejectedTitle: "Hugging Face token rejected",
       tokenRejectedBody: "Update your token in Settings → General, then retry.",
-      hubUnreachable: "Couldn't reach Hugging Face",
+      hubUnreachable: "Can't reach Hugging Face",
       cantUseDataset: "Can't use dataset",
       reasonInvalidHubId:
         "Enter a valid Hugging Face dataset ID: repo or owner/repo, with no consecutive periods or hyphens and no .git suffix (maximum 96 characters per part).",
@@ -4259,7 +4259,7 @@ export const en = {
       tokenRejectedBody: "Update your token in Settings → General, then retry.",
       tokenRejectedAnonymousBody:
         "Public models are shown without it. Update your token in Settings → General to reach private and gated models.",
-      hubUnreachable: "Couldn't reach Hugging Face",
+      hubUnreachable: "Can't reach Hugging Face",
       cantUseModel: "Can't use model for training",
       reasonTypeMismatch:
         "This model doesn't match the training type selected in the previous step.",
