@@ -100,8 +100,15 @@ def _run(
         _stub(str(bindir / "rocm-smi"), 'echo "GPU[0] : GPU ID: 0x1586"\n')
         info = tmp_path / "build-info"
         info.write_text("TORCH_INDEX_URL=x\nROCM_GFX=\nROCM_VERSION=7.2.4\n")
+        topo = tmp_path / "topo" / "1"
+        topo.mkdir(parents = True)
+        (topo / "properties").write_text("vendor_id 4098\ngfx_target_version 110000\n")
         env.update(
-            {"UNSLOTH_DEV_ROOT": str(tmp_path / "root"), "UNSLOTH_ROCM_BUILD_INFO": str(info)}
+            {
+                "UNSLOTH_DEV_ROOT": str(tmp_path / "root"),
+                "UNSLOTH_ROCM_BUILD_INFO": str(info),
+                "UNSLOTH_KFD_TOPOLOGY": str(tmp_path / "topo"),
+            }
         )
     else:
         _stub(
