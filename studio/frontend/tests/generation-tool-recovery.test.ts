@@ -524,6 +524,7 @@ async function recoverRun(
     // The real store has these; a stand-in missing them would make approval recovery look broken.
     setToolConfirmation() {},
     clearToolConfirmation() {},
+    setToolNetworkRequest() {},
     setLivePrefill() {},
     setLiveDecode() {},
     setLiveCompacting() {},
