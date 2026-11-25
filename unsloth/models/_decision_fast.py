@@ -155,8 +155,7 @@ def compiled_encoder(
     amp_dtype = None,
     max_length: Optional[int] = None,
 ):
-    """Compile Laya encoder layers in place for one training run, then go back to eager; parameter
-    names stay unchanged so saving and LoRA merging work"""
+    """Compile encoder layers for one run, then restore eager; names kept for save/LoRA merge."""
     layers = _encoder_layers(model)
     if not (layers and _wants_compile(model, forwards)):
         layers = []

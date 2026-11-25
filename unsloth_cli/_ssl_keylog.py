@@ -7,8 +7,7 @@ import sys
 
 def drop_unwritable_ssl_keylog_file():
     """Unset SSLKEYLOGFILE if it cannot be appended: ssl.create_default_context opens it per
-    context, so an unwritable path makes every HTTPS client raise; security software sets it
-    machine-wide."""
+    context, so every HTTPS client would raise; security software sets it machine-wide."""
     path = os.environ.get("SSLKEYLOGFILE")
     if not path:
         return False

@@ -219,9 +219,8 @@ def cuda_visible_capabilities(with_index = False):
 
 
 def cuda_gate_capabilities():
-    """Capabilities a process-wide gate should judge: every card that could be read, which
-    always includes the current device (the pre-mixed-host rule) when it is readable, so a
-    gate is never less strict than before and still sees a known old card beside it."""
+    """Capabilities for a process-wide gate: all readable cards, incl. the current device when
+    readable (pre-mixed-host rule), so it is never less strict and sees known old cards."""
     caps = cuda_visible_capabilities()
     if caps:
         return caps
@@ -347,8 +346,7 @@ def _xpu_selected_indices(device = None):
 
 
 def _xpu_device_lacks_native_bf16(index):
-    """True only when this device is proven to emulate bf16. Its own aspects decide whether the probe
-    can be trusted: without libocloc (absent in torch-xpu wheels) every SYCL aspect reads False."""
+    """True only if proven to emulate bf16; no libocloc (torch-xpu wheels) aspects read False."""
     aspects = (
         "has_bfloat16_conversions",
         "has_subgroup_matrix_multiply_accumulate",
@@ -389,8 +387,7 @@ def xpu_vllm_refuses_bf16():
 
 
 def xpu_keeps_explicit_bf16():
-    """An explicit bf16 request on XPU stays bf16 (emulated if need be) only beside an unsloth_zoo
-    that does the same for vLLM, so the engine and the HF weights it shares agree on one dtype."""
+    """Explicit bf16 on XPU holds only if unsloth_zoo does the same for vLLM, so dtypes agree."""
     if DEVICE_TYPE != "xpu":
         return False
     try:
@@ -435,8 +432,7 @@ def apply_pre_volta_compile_workaround(
         import torch._dynamo
         dynamo_config = torch._dynamo.config
     dynamo_config.disable = True
-    # torch >= 2.12 keeps that assignment per thread, and backward (checkpoint recompute) runs on
-    # autograd worker threads, so also set the process-wide default those threads fall back to.
+    # torch >= 2.12 scopes it per thread; autograd backward threads need the process default.
     entry = getattr(dynamo_config, "_config", {}).get("disable", None)
     if entry is not None and hasattr(entry, "default"):
         entry.default = True

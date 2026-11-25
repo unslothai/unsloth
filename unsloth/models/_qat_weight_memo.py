@@ -64,8 +64,7 @@ _STATS = {
 }
 # device -> [limit bytes, used bytes]
 _BUDGET = {}
-# device -> {"main_peak": peak reserved bytes the run needs beside the cache, "cum_peak": last seen
-# max_memory_reserved, "max_used": most cache held since the last optimizer step}
+# main_peak (peak beside the cache), cum_peak (last reserved), max_used (cache since step).
 _DEVICE = {}
 # Process state: armed after the first optimizer step; disabled for good after an out of memory error.
 _STATE = {
@@ -197,9 +196,8 @@ def _rebudget():
         free, total, reserved, allocated, peak = stats
         state = _DEVICE.setdefault(device, {"main_peak": 0, "cum_peak": 0, "max_used": 0})
         if peak > state["cum_peak"]:
-            # A new high water mark since the last step. The cache fills during the first forward after
-            # a step (every weight was already seen), before the logits / backward / optimizer peaks,
-            # so it is full at the peak; eval mode peaks hold no cache and need no room for one.
+            # New high water mark since the last step: the cache fills in the first forward after a
+            # step, so it is full at the peak; eval peaks hold no cache and need no room.
             state["main_peak"] = max(state["main_peak"], peak - max(state["max_used"], budget[1]))
         state["cum_peak"] = peak
         limit = _cache_limit(

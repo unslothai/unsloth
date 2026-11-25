@@ -66,8 +66,7 @@ class _Frame:
     __slots__ = ("merged", "applied")
 
     def __init__(self, merged):
-        # [(weight the forward passes, W + delta handed to the kernel instead, leaf)]; matched by
-        # identity, not id(), which torch.compile cannot trace for a tensor built in the forward.
+        # Matched by identity: torch.compile cannot trace id() of tensors built in forward.
         self.merged = merged
         # Leaves whose adapter ran: merged into a kernel call that returned, or called as a module.
         self.applied = set()

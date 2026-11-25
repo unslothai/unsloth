@@ -136,8 +136,7 @@ def lora_bias_blocks_fused(proj):
 
 
 def _needs_peft_forward(proj, adapter):
-    # A PEFT LoRA variant (DoRA, MoNTeCLoRA, VeLoRA, BD-LoRA, ...) replaces the LoRA branch in PEFT's
-    # forward, and a trainable base weight needs its gradient: the fused Functions compute neither.
+    # LoRA variants and trainable base weights need PEFT's forward, not fused Functions.
     variants = proj.__dict__.get("lora_variant")
     if variants and adapter in variants:
         return True
@@ -169,9 +168,8 @@ def _active_lora_requires_grad(projs):
 
 
 def _autocast_dtype_mismatch(X):
-    # Under autocast fused matmuls return the autocast dtype but in-place LoRA accumulation keeps
-    # X's dtype, so a mismatched autocast dtype cannot be fused; the check reads mode flags only,
-    # eager-only since Dynamo would trace the public calls as constants.
+    # Fused matmuls return the autocast dtype but in-place LoRA keeps X's dtype, so a mismatched
+    # autocast dtype cannot be fused; eager only: Dynamo would trace the calls as constants.
     if (
         _is_any_autocast_enabled is not None
         and not _is_compiling()
@@ -237,9 +235,8 @@ def _autocast_master_dtype(module, projs, X):
 
 
 def _is_plain_lora(proj):
-    # One enabled, unmerged adapter with no dropout module and no lora_B bias (the default LoRA config).
-    # Reads PEFT's instance state directly: getattr through nn.Module / properties costs more than the
-    # routing it guards. Anything else (or other PEFT internals) takes the general path below.
+    # One enabled unmerged adapter, no dropout module, no lora_B bias (default config); else general
+    # path. Reads PEFT's __dict__ directly: getattr costs more than the routing it guards.
     state = proj.__dict__
     adapter = state.get("_active_adapter")
     if type(adapter) is not str:
@@ -291,8 +288,7 @@ def _lora_dropout_and_bias(projs, X):
             # Enabled adapter missing from this projection: PEFT runs the base layer alone.
             if not getattr(proj, "disable_adapters", True) and not getattr(proj, "merged", False):
                 return None
-            # Disabled or merged: the fused Functions run the base matmul alone (the no-grad reference
-            # forward of DPO / GRPO), but their backward needs LoRA weights, so PEFT runs it under grad.
+            # Disabled or merged: fused backward needs LoRA weights, so PEFT runs it under grad.
             if grad_enabled is None:
                 grad_enabled = torch.is_grad_enabled()
             if grad_enabled and (
@@ -324,8 +320,7 @@ def _lora_dropout_and_bias(projs, X):
         biases.append(proj.lora_B[adapter].bias)
     if any(lora_bias_blocks_fused(proj) for proj in projs):
         return None
-    # A dropout module in eval (p = 0) keeps the dropout route, so it still skips the global
-    # dequantization scratch the plain path keeps resident.
+    # Eval dropout (p = 0) keeps the dropout route, still skipping the global dequant scratch.
     keep = any(dropout_p) or has_dropout_module
     return (tuple(dropout_p) if keep else None), tuple(biases)
 
@@ -356,8 +351,7 @@ def _dropout_replay(
 
 
 def _matmul_lora_ext(X, X_lora, W, W_quant, A, B, S, bias):
-    # matmul_lora with the LoRA branch reading X_lora (X after dropout, or X itself) plus lora_B's bias.
-    # No global dequantization scratch: these configurations ran PEFT, which keeps no dense weight resident.
+    # matmul_lora: LoRA branch reads X_lora and lora_B's bias; no global dequant scratch.
     if A is None or (X_lora is X and bias is None):
         # fused = False: dropout or a lora_bias elsewhere in the module keeps the whole module on one order.
         return matmul_lora(X, W, W_quant, A, B, S, use_global_buffer = False, fused = False)
@@ -467,8 +461,7 @@ def _shared_lora_backward(
         # The last view keeps the whole A @ X.t() buffer alive otherwise.
         del AX_
     if _is_compiling() or torch.is_grad_enabled():
-        # Traced, Inductor plans the buffers; slice writes would only add scatter copies. A recorded
-        # backward (create_graph) cannot write through sibling split views either.
+        # Traced: slice writes add scatter copies; create_graph can't write into split views.
         dB = torch.cat([dY @ B.t() for dY, B in zip(dYs, Bs)], 1)
     else:
         dB = dYs[0].new_empty((X.shape[0], A_rows.shape[0]))
@@ -492,8 +485,7 @@ def _shared_lora_backward(
 
 
 def _lora_traced_ok(*lora_weights, X = None):
-    # A DTensor X or LoRA weight keeps the base-then-LoRA order: matmul_lora falls back for it, and the
-    # recorded decision must match so the backward does not take the shared / fused path either.
+    # DTensor X or LoRA weights use base-then-LoRA order; backward must take the same path.
     if any(isinstance(t, _LORA_DTENSOR) for t in (X, *lora_weights)):
         return False
     # Traced, the fused order needs nn.Parameter LoRA weights: plain tensors of dynamic shape can
@@ -551,10 +543,9 @@ def _may_overwrite_input(X):
     )
 
 
-# Skipping the down projection while a gradient checkpoint replays a decoder layer. The replay only rebuilds the
-# tensors LoRA_MLP saves (X, e, g); backward never reads h or the down output i, and the layer output they feed
-# (residual + i) is the checkpoint's output, whose value its nested backward never reads. A decoder layer arms this
-# (arm_mlp_output_unread) only when it is the whole checkpointed function; UNSLOTH_GC_SKIP_MLP_DOWN=0 disables.
+# Skips the down projection during checkpoint replay: only X, e, g are rebuilt and backward never
+# reads h, the down output or the layer output; a decoder layer arms it via arm_mlp_output_unread
+# only when it is the whole checkpointed function; UNSLOTH_GC_SKIP_MLP_DOWN=0 disables.
 _SKIP_DOWN_TLS = threading.local()
 MLP_DOWN_SKIP_STATS = collections.Counter()  # skipped: replays that did not run the down projection
 _SKIP_DOWN_ENABLED = os.environ.get("UNSLOTH_GC_SKIP_MLP_DOWN", "1") != "0"
@@ -570,10 +561,9 @@ def _replay_module():
 
 
 def _mlp_output_unobserved(layer, mlp):
-    """True when nothing outside `layer` can read or re-enter mlp(x), checked on every call: the MLP's own
-    `forward` is a fused LoRA MLP bound directly to it (no accelerate hook or tiled MLP around it), the MLP
-    has no forward pre / post hook, the layer has no forward hook or accelerate wrapper (whose post_forward
-    sees the layer output), and no global forward hook is registered."""
+    """True when nothing outside layer can read or re-enter mlp(x), checked on every call:
+    mlp.forward is a fused LoRA MLP bound directly to it, no pre/post hook on mlp, no forward
+    hook or accelerate wrapper on layer, no global forward hook."""
     module = torch.nn.modules.module
     if module._global_forward_hooks or module._global_forward_pre_hooks:
         return False
@@ -640,8 +630,7 @@ def block_skip_down_eligible(layer, layer_forward):
 
 
 def _no_lora_dropout_or_bias(proj):
-    """False when the active adapter of `proj` has a dropout module or a lora_B bias, which send LoRA_MLP down
-    the branch that always runs the down projection (_lora_dropout_and_bias)."""
+    """False if the active adapter has dropout or a lora_B bias, forcing the down projection."""
     if proj is None:
         return False
     if _is_plain_lora(proj):
@@ -775,8 +764,7 @@ class LoRA_MLP(torch.autograd.Function):
                     _SKIP_DOWN_TLS.active = False
                     MLP_DOWN_SKIP_STATS["skipped"] += 1
             if skip_down:
-                # Checkpoint replay of a layer whose output nothing reads: backward needs only X, e, g.
-                # Out of place: an ATen fill_ on a returned fresh tensor compiles a wrong gradient (#14712).
+                # Backward needs X, e, g; out of place: fill_ miscompiles the grad (#14712).
                 i = (
                     X.new_empty(X.shape)
                     if _SKIPPED_FILL is None
@@ -870,8 +858,7 @@ class LoRA_MLP(torch.autograd.Function):
             downB.t(),
         )
 
-        # Decided on the stored weights, before the FP8 down weight below is converted to a dense one.
-        # The forward's order; a handcrafted or older ctx without `fused` keeps the base-then-LoRA order.
+        # Decided on stored weights before FP8 down dequant; no ctx.fused means base-then-LoRA.
         fused = getattr(ctx, "fused", False) and (
             _fused_reused(ctx, dY.dtype)
             or _mlp_fused_ok(gateW, gateW_quant, upW, upW_quant, downW, downW_quant, dY.dtype)
@@ -1303,8 +1290,7 @@ class LoRA_QKV(torch.autograd.Function):
     ):
         dtype = X.dtype
 
-        # bitsandbytes 8-bit matmul expects 2D inputs, and TorchInductor/AOTAutograd fails on 3D tensors
-        # during backward, so flatten the sequence dimension explicitly.
+        # bitsandbytes 8-bit matmul needs 2D inputs; Inductor fails on 3D tensors in backward.
         orig_shape = X.shape
         X_for_matmul = X
         if X.dim() == 3:
@@ -1347,7 +1333,6 @@ class LoRA_QKV(torch.autograd.Function):
             del Xd
             masks = (Q_mask, K_mask, V_mask)
 
-        # Restore original shape after matmul
         if len(orig_shape) == 3:
             Q = Q.view(orig_shape[0], orig_shape[1], -1)
             K = K.view(orig_shape[0], orig_shape[1], -1)

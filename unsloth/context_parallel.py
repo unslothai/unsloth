@@ -178,8 +178,7 @@ def ulysses_packing_blocker(model, model_types = ()) -> Optional[str]:
 
 
 def _ddp_ignore_indexer(model, attn_name: str, attention) -> None:
-    # Indexer weights get no gradient (discrete top-k); CP turns find_unused_parameters off, so DDP
-    # must ignore them
+    # Indexer: no grad (discrete top-k); DDP ignores it as CP sets find_unused_parameters off.
     names = [
         f"{attn_name}.{sub}.{p}"
         for sub, module in attention.named_modules()
@@ -272,8 +271,7 @@ def _unsupported_attention(
     backend = "ring",
     generic = False,
 ) -> Optional[str]:
-    # Ring and Unsloth's fast Llama forward ignore mask, window and softcap, so they refuse them. Ulysses
-    # around the model's own attention function (`generic`) keeps the window and the softcap.
+    # Ring and fast Llama refuse mask, window, softcap; generic Ulysses keeps window, softcap.
     allowed = {"full_attention", "linear_attention"} if backend == "ulysses" else {"full_attention"}
     windows_ok = generic and backend == "ulysses"
     if windows_ok:
@@ -448,8 +446,7 @@ def _hybrid_config_blocker(model) -> Optional[str]:
         isinstance(getattr(m, "experts", None), torch.nn.ModuleList) and not _runs_every_expert(m)
         for m in model.modules()
     ):
-        # Per-expert modules run only for experts the local shard routes to, so with DDP's
-        # find_unused_parameters off an expert unused on one rank stalls the gradient reduction.
+        # Experts run only when routed; unused ones stall DDP if find_unused_parameters is off.
         return "sparse MoE layers with per-expert modules (transformers 4.x Qwen3-Next)"
     return None
 
@@ -506,8 +503,7 @@ def start_expert_window(blocks) -> None:
 
 
 def drop_idle_expert_grads(blocks, group = None) -> int:
-    """Set .grad = None on experts no rank routed real tokens to; only blocks a CP forward counted
-    since the last step, so with CP off every gradient is kept"""
+    """Set .grad None on experts no rank routed to, among CP-counted blocks; CP off keeps all."""
     # Counted: a CP forward ran since the last step (it pops _EXPERT_STEPPED) and no non-CP forward
     # since (forget_expert_tokens). All CP peers run the same forwards, so they agree on the collective.
     blocks = [
@@ -721,8 +717,7 @@ def _self_attn_pre_forward_hook(_module, module_args, module_kwargs):
 
 
 def _decoder_layer_pre_forward_hook(_module, module_args, module_kwargs):
-    # HF's shard-local mask is None on shards with no document start, a tensor elsewhere; CP attention never
-    # reads it, so always pass None: a compiled layer guards on the argument type and keeps one graph.
+    # CP never reads the shard-local mask; pass None so a compiled layer keeps one graph.
     if get_cp_manager() is not None and module_kwargs.get("attention_mask") is not None:
         module_kwargs["attention_mask"] = None
     return module_args, module_kwargs
@@ -759,8 +754,7 @@ class ContextParallelManager:
             return
         self.layout = None
         world_size = dist.get_world_size()
-        # FSDP2 shards parameters over dp_shard x cp flattened (torchtitan, accelerate's dp_shard_cp):
-        # CP peers hold different tokens, so their gradients must be reduced like data parallel ones.
+        # FSDP2 shards over dp_shard x cp; CP peers see other tokens, so grads reduce like DP.
         self.device_mesh = DeviceMesh(
             DEVICE_TYPE_TORCH,
             torch.arange(world_size).reshape(world_size // size, size),
@@ -943,8 +937,7 @@ class ContextParallelManager:
         return positions.lt(padded[1]).expand(input_ids.shape[0], -1).contiguous()
 
     def _note_real_tokens(self, local_ids, local) -> None:
-        # Same-size forwards OR their masks: counting a pad as real is harmless, a real token as pad
-        # is not.
+        # Same-size forwards OR masks: a pad counted as real is harmless, the reverse is not.
         if not isinstance(local_ids, torch.Tensor) or not torch.is_grad_enabled():
             return
         masks = self.__dict__.setdefault("_real_token_masks", {})
@@ -982,8 +975,7 @@ class ContextParallelManager:
         store[key] = lengths if seen is None else tuple(max(a, b) for a, b in zip(seen, lengths))
 
     def caller_pad_lengths(self, bsz: int, total: int) -> Optional[tuple]:
-        """Leading real tokens per row, None if unpadded; set only where MoE expert counts see
-        caller padding."""
+        """Real tokens per row, None if unpadded; set only when MoE counts see caller padding."""
         store = self.__dict__.get("_caller_pad_lengths")
         # Hashing the (bsz, total) key specialises a compiled layer's shard length: look up only when set.
         return store.get((bsz, total)) if store else None
@@ -1211,8 +1203,7 @@ def _gathered_save_model(trainer, original_save_model, args, kwargs):
     with fsdp2_gathered(model, trainable_only = adapter, include = include) as writer:
         if writer is not False:
             return original_save_model(trainer, *args, **kwargs)
-        # Rank 0 writes the gathered weights; the others still run save_model (a push_to_hub save is
-        # collective again) but must not write their shards.
+        # Rank 0 writes; others run save_model (collective for push_to_hub) but skip writes.
         missing = object()
         previous = trainer.__dict__.get("_save", missing)
         trainer._save = lambda *a, **k: None
@@ -1549,8 +1540,7 @@ def _positional_config_to_keyword(
     kwargs,
     require_args = True,
 ):
-    """Binds every positional to its name so the config can be rebuilt with cp values as kwargs;
-    unchanged if the signature cannot bind them"""
+    """Binds positionals to names to rebuild config with CP kwargs; unchanged if unbindable."""
     import inspect
 
     try:
@@ -1628,8 +1618,7 @@ def _resolve_auto_backend(
     if (current or "auto") != "auto":
         return
     if isinstance(model, str) and not rl:
-        # A model id is loaded inside the trainer's __init__, after this commits the backend: read its heads
-        # from the config now, so 'auto' picks ring when they cannot be split over cp.
+        # Heads read now, as a model id loads later; 'auto' picks ring if cp can't split them.
         try:
             # The trainer's own loader options (subfolder, revision, token, cache_dir, trust_remote_code).
             from .trainer import _resolve_string_model_config
@@ -1750,8 +1739,7 @@ def _check_cp_model(
             f"Unsloth: context parallelism does not support n-gram lookup tables ({table}): their hashes read "
             "the tokens before each position, which a sequence shard boundary would cut off."
         )
-    # DPO / GRPO (allow_hybrids False) keep the Llama-style rule: their decoder hooks are not verified on
-    # the generic path.
+    # DPO / GRPO (allow_hybrids False) use the Llama-style rule; generic hooks are unverified.
     generic = (
         allow_hybrids
         and backend == "ulysses"
@@ -1965,8 +1953,7 @@ def patch_sft_trainer(install_cp_methods: bool = False) -> None:
                 backend = kwargs.get("context_parallel_backend"),
             )
         if requested > 1 or install_cp_methods:
-            # Before the original __init__: Unsloth wraps instance methods there (auto packing's
-            # train reset, the token budget's training_step), and they must capture the CP ones.
+            # Before the original __init__ so Unsloth's instance wrappers capture the CP ones.
             _bind_instance_methods(self, cp_methods)
         try:
             original_init(self, *args, **kwargs)
@@ -2253,8 +2240,7 @@ _all_gather_into = getattr(dist, "all_gather_single", None) or getattr(
 )
 
 
-# DPO / GRPO: the loss reads per-token logps of whole sequences (sums over completions, group masks),
-# so only the decoder is sharded; its last hidden states are gathered back to full length before lm_head.
+# DPO / GRPO shard only the decoder (loss sums whole-sequence logps); gather before lm_head.
 class _GatherSequence(torch.autograd.Function):
     @staticmethod
     def forward(ctx, x, group, rank, size):
@@ -2329,9 +2315,8 @@ def _rl_decoder_pre_hook(module, args, kwargs):
         if batch.get(name) is not None:
             # Fresh in the ambient grad / inference mode: a shard view keeps its base's inference flag.
             kwargs[name] = batch[name].clone()
-    # Validated right padding needs no mask under Ulysses (attention drops it anyway). Passing the shard
-    # would differ per peer (only the last shard holds padding) and recompile the compiled decoder
-    # blocks on that rank alone.
+    # Validated right padding needs no mask under Ulysses since attention drops it anyway; a shard
+    # mask differs per peer (only the last holds padding) and recompiles blocks on that rank.
     if "attention_mask" in kwargs:
         kwargs["attention_mask"] = None
     # Claimed by this call alone: a second or nested call of the same decoder gathers every state.
@@ -2353,8 +2338,7 @@ def _rl_decoder_pre_hook(module, args, kwargs):
 
 
 def _direct_caller_code(frame):
-    # The code object that called the module: the first frame above torch's own call machinery
-    # (Module._wrapped_call_impl / _call_impl, compile wrappers).
+    # Code object of first frame above torch's call machinery (_call_impl, compile wrappers).
     while frame is not None:
         name = frame.f_globals.get("__name__", "")
         if name != "torch" and not name.startswith("torch."):
@@ -2375,14 +2359,12 @@ class _LastHiddenSelection:
         self.decoder = decoder
         # Code object the claiming decoder call must come from directly (None: any caller).
         self.caller = caller
-        # This rank's own verdict. The decoder call still claims the selection when it is False, so every
-        # rank reaches the same vote; the vote then keeps every state on all of them.
+        # Own verdict; a False one still claims so all ranks vote alike and keep every state.
         self.allowed = bool(allowed)
         self.truncated = False
 
 
-# Per thread: a forward on another thread never sees this caller's selection, so whether a decoder call
-# gathers one state or all of them cannot depend on thread timing, which differs between ranks.
+# Thread-local: other threads never see this selection, so timing cannot make ranks disagree.
 _LAST_HIDDEN = threading.local()
 
 
@@ -2592,9 +2574,8 @@ _SAFE_WRAPPER_CODES = None
 
 
 def _safe_forward_wrappers() -> frozenset:
-    """Code objects of the transformers forward decorators that return the wrapped forward's output
-    unchanged (can_return_tuple at most calls .to_tuple() on it, deprecate_kwarg renames kwargs). Found by
-    decorating a probe, so a wrapper matches by code identity, not by name."""
+    """Code objects of transformers forward decorators that pass the output on (can_return_tuple may
+    call .to_tuple(), deprecate_kwarg renames kwargs); matched by code identity, not name."""
     global _SAFE_WRAPPER_CODES
     if _SAFE_WRAPPER_CODES is not None:
         return _SAFE_WRAPPER_CODES
@@ -2721,8 +2702,7 @@ def _rl_decoder_post_hook(module, args, kwargs, output):
     last = output[0]
 
     def _full(x):
-        # A fresh tensor, not a view of the padded gather: the compiled log-softmax would otherwise
-        # guard on the view's base and recompile under CP only.
+        # Not a view: compiled log-softmax would guard on its base and recompile under CP only.
         x = gather_sequence(x, manager)
         return x if x.shape[1] == seq_len else x[:, :seq_len].clone()
 
@@ -2812,8 +2792,7 @@ class _OnDevice:
         self.inference = tensor.is_inference()
 
     def restore(self, device):
-        # Peers get the root's inference-mode flag too: compiled forwards guard on it, so a mismatch
-        # recompiles on every peer but the root.
+        # Peers copy the root's inference mode; a mismatch makes compiled forwards recompile.
         with torch.inference_mode(self.inference):
             tensor = self.tensor.to(device) if self.on_accelerator else self.tensor
             return tensor.clone() if self.inference and not tensor.is_inference() else tensor

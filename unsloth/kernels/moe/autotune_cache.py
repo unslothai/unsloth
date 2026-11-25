@@ -145,8 +145,7 @@ def save_cached_config(
         logger.warning(f"Failed to save cache file {cache_file}: {e}")
 
 
-# Always eager: unsloth_zoo calls this from the MoE forward inside compiled decoder blocks, and a
-# Dynamo trace reads `.best_config` before any kernel ran, so every tuning silently fell back.
+# Eager only: a traced .best_config read runs before any kernel, so tuning silently falls back.
 @torch.compiler.disable
 def get_or_autotune_moe_kernels(
     num_experts: int,
@@ -195,7 +194,6 @@ def get_or_autotune_moe_kernels(
     )
     cache_key = _get_cache_key(*key_args, device_model = device_model)
 
-    # Env override to disable autotuning
     if os.environ.get("UNSLOTH_MOE_DISABLE_AUTOTUNE", "0") == "1":
         logger.info(
             f"UNSLOTH_MOE_DISABLE_AUTOTUNE=1: Using Heuristic (Safe) MoE kernel configs for SM{device_capability[0]}{device_capability[1]}"
@@ -677,8 +675,7 @@ def _wide_dw_device_ok(device = None) -> bool:
         return False
 
 
-# Compute capability majors where float32 dW was measured slower on the 128-wide tile: B200 (sm100) 13-15%.
-# L4 (sm89) is 6-18% faster on it, so other architectures keep the wide tile for float32 too.
+# Where fp32 dW is slower on the 128-wide tile: B200 (sm100) 13-15%; L4 (sm89) 6-18% faster.
 _FP32_NARROW_DW_MAJORS = (10,)
 
 
@@ -747,11 +744,10 @@ def _get_heuristic_configs(
     )
 
     configs = _fit_configs_to_dims((config_fwd, config_bwd_dx, config_bwd_dw), n_dim, k_dim)
-    # dW tiles N x K and reduces over tokens. When K leaves only BLOCK_SIZE_K 64 (gpt-oss: K = 2880), a 64 x 64
-    # output tile starves the kernel; a 128-wide N tile at 3 stages is faster at the same error. Other K, an N
-    # that 128 does not divide, or an N x K output too small to fill the card at half the programs (the legacy
-    # kernel was 5-23% slower at N 1024 x K <= 576) keep the fitted tile. The SMEM fit below still shrinks it.
-    # float32 activations keep it on sm100, where the wide tile is 13-15% slower (B200).
+    # BLOCK_SIZE_K 64 (gpt-oss K=2880) starves 64x64 tile: 128-wide N at 3 stages wins at equal
+    # error; keep fit for other K, N not div by 128, or N x K too small to fill card at half the
+    # programs (legacy 5-23% slower at N1024 x K<=576); SMEM fit shrinks it; float32 on sm100 keeps
+    # it (B200 13-15% slower).
     config_bwd_dw = configs[2]
     if (
         config_bwd_dw.BLOCK_SIZE_K == 64

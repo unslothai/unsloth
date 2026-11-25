@@ -51,10 +51,9 @@ def _has_mtp(config):
 
 
 def compressed_ignore_patterns(config):
-    """Modules the compressed recipe refuses to quantize (llm-compressor ignore entries);
-    stdlib-only so save.py sizes from the same list, and only ever executed by file path. A re:
-    prefix is re.match on the qualified name, else exact name or parent class name
-    (compressed-tensors is_match)."""
+    """Modules the compressed recipe leaves unquantized (llm-compressor ignore entries); stdlib-only
+    and run only by file path so save.py sizes from the same list. A re: prefix is re.match on
+    the qualified name, else exact or parent class name (compressed-tensors is_match)."""
     ignore = ["lm_head"]
     # Skip what RedHatAI/NVIDIA skip for Qwen3.5 / Qwen3-Next: shapes not divisible by group_size.
     ignore += ["re:.*\\.linear_attn\\..*", "re:.*\\.visual\\..*", "re:.*mtp.*"]

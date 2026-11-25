@@ -500,9 +500,8 @@ def _attention_interface(module, query, key, value, attention_mask, **kwargs):
 
 
 def _move_closure(obj, device, memo):
-    """Copy of a mask function whose captured tensors (padding mask, packed-sequence ids, position ids) live on
-    ``device``: the BlockMask is built once on the embedding device, and layers placed on another card evaluate its
-    mask_mod on theirs."""
+    """Copy of a mask function whose captured tensors live on device, since the BlockMask is built
+    once on the embedding device and other cards evaluate its mask_mod."""
     if id(obj) in memo:
         return memo[id(obj)]
     if isinstance(obj, torch.Tensor):
@@ -806,9 +805,8 @@ def _patch_classes(model):
 
 
 def _rebind_hooked_instances(model, classes):
-    """accelerate's device-map hooks (a model split over GPUs) call the forward bound at load, ``_old_forward``, not the
-    class attribute: point those at the wrapped forward, or the split model would keep running eager attention on
-    flex masks."""
+    """accelerate's device-map hooks call _old_forward, bound at load, not the class attribute;
+    point them at the wrapped forward or split models would run eager attention on flex masks."""
     rebound = 0
     for module in model.modules():
         cls = type(module)
@@ -881,8 +879,7 @@ def enable_inkling2_flex(model, verbose = True):
         devices = _cuda_devices(model)
         if not devices:
             return False
-        # The mask picks flex from the embedding device, so a model split over an L4 and a T4 would run flex on the
-        # T4 too: auto takes flex only when every card does.
+        # Flex is chosen from the embedding device, so auto needs every card to qualify.
         if _mode() == "auto" and any(_auto_min_length(d) is None for d in devices):
             return False
     if _patch_classes(model) is not None:

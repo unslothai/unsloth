@@ -327,8 +327,7 @@ def fast_lora_init(force = False):
 
 
 def record_fast_pissa(model):
-    """PEFT re-runs PiSSA when loading an adapter, and only the same algorithm rebuilds the residual base
-    training saw: saves of this model mark their adapter folders so Unsloth's loaders can tell."""
+    """PEFT re-runs PiSSA on load; marked saves let Unsloth loaders use the same algorithm."""
     original = model.save_pretrained
     if getattr(original, "_unsloth_fast_pissa", False):
         return

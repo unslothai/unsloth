@@ -83,12 +83,10 @@ def _plan(model, stacks, heads):
     if any(
         getattr(layer, "_unsloth_pipeline_stand_in", False) for stack in stacks for layer in stack
     ):
-        # Pipeline parallel: later stages' first layers are pass-throughs (cutting there trains no
-        # earlier stage) and non-last stages raise past hook cleanup; off everywhere.
+        # Pipeline parallel: off (later stages' first layers pass through; non-last raise).
         return None
     for stack in stacks:
-        # Runs on every training forward: a stack that trains its first layer (adapters everywhere) or
-        # nothing (a frozen vision tower) is settled here, without walking the whole model's parameters.
+        # Per training forward, stacks training layer 0 or nothing skip the full param walk.
         k = _first_trainable(stack)
         if not k:
             continue
@@ -162,8 +160,7 @@ def install_frozen_prefix_skip(model):
         else:
             return None
         state["cut"] = True
-        # One cut per forward: a stack run again (looped / recurrent-depth models such as Ouro) feeds
-        # the prefix from trainable layers, so later passes keep their graph and checkpointing.
+        # One cut per forward; looped models (Ouro) keep graph and checkpointing on later runs.
         _release(state["active"])
         return output
 

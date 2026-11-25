@@ -6,18 +6,9 @@ import torch.nn.functional as F
 
 
 def permute(X: torch.Tensor, gather_indices: torch.Tensor, topk: int):
-    """
-    Scatters X to a new tensor with shape [total_tokens, hidden_dim] where total_tokens is num_tokens * topk,
-    permuting the tokens according to sorted_token_idx.
-
-    Helper for grouped gemm where hidden states need be ordered by expert.
-    X: [num_tokens, hidden_dim]
-    sorted_token_idx: [num_tokens * topk]
-    topk: int
-
-    Returns:
-        [total_tokens, hidden_dim]
-    """
+    """Scatters X [num_tokens, hidden_dim] to a new [total_tokens, hidden_dim] tensor, total_tokens
+    = num_tokens * topk, permuting by sorted_token_idx [num_tokens * topk]; grouped gemm needs
+    hidden states ordered by expert."""
     assert gather_indices.ndim == 1
     X = X.view(-1, X.shape[-1])
     # Shortcut for topk == 1.
@@ -109,14 +100,8 @@ def torch_grouped_gemm(
     m_sizes,
     transpose = True,
 ):
-    """
-    X: [M, K] if forward, else [M, N]
-    W: [E, N, K]
-    m_sizes: [E]
-
-    Returns:
-        Y: [M, N] if forward, else [M, K]
-    """
+    """Per-expert grouped matmul: X is [M, K] if forward else [M, N], W is [E, N, K], m_sizes is
+    [E]; returns Y [M, N] if forward else [M, K]."""
     X = X.view(-1, X.shape[-1])
     M, K = X.shape
 

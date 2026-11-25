@@ -240,7 +240,6 @@ class GaLoreProjector:
         self.past_ortho_vector = current_vector.clone()
 
     def _store_ortho(self, float_ortho: torch.Tensor) -> None:
-        """Store the orthogonal matrix, optionally quantized."""
         if self.quant:
             q, scales, zeros, shape = _quantize(
                 float_ortho,
@@ -255,7 +254,6 @@ class GaLoreProjector:
             self.ortho_matrix = float_ortho
 
     def _load_ortho(self) -> torch.Tensor:
-        """Load the orthogonal matrix, dequantizing if necessary."""
         if self.quant:
             return _dequantize(
                 self.ortho_matrix,

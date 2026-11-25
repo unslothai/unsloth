@@ -284,10 +284,9 @@ def _split_mesh(mesh):
 
 
 def apply_expert_parallel(model, mesh = None):
-    """Shard every MoE block's routed experts by index over the ep ranks once LoRA is attached. `mesh`: a 1-D ep
-    mesh over every rank, or a 2-D (replicas, "ep") mesh: each group of ep ranks holds all experts once and the
-    groups are replicas (experts' gradients summed over them). Every rank is data parallel. Blocks whose experts
-    cannot be cut exactly stay whole."""
+    """Shard MoE blocks' routed experts by index over the ep ranks once LoRA is attached; mesh is
+    1-D ep over all ranks or 2-D (replicas, ep), whose groups are replicas (expert grads summed);
+    every rank is data parallel; blocks whose experts cannot be cut exactly stay whole."""
     import torch.distributed as dist
 
     tpn = _tpn()
@@ -485,8 +484,7 @@ def _ep_save_entrypoints(level):
                     "rank's 4-bit expert stacks. Save the adapter (the PEFT model's save_pretrained or "
                     "trainer.save_model), or save from one process."
                 )
-            # Only global rank 0 writes: only it receives the gathered tensors (the adapter's alone for a PEFT
-            # model), so no rank holds the whole expert set.
+            # Only global rank 0 receives the tensors, so no rank holds the whole expert set.
             state = ep_full_adapter_state_dict(level, dst = 0)
             _SAVING.append(True)
             try:
@@ -612,12 +610,10 @@ def ep_full_adapter_state_dict(
     adapter = None,
     dst = None,
 ):
-    """Collective over the ep ranks: the model's state dict with its expert tensors gathered to the 1-GPU shape.
-    `adapter` (default: `model` is a PEFT model): only the expert tensors an adapter keeps (the LoRA factors and
-    any trainable stack) are gathered; the frozen base stacks PEFT drops stay this rank's (gathering them would
-    put every expert on every rank). `dst` (a global rank, the one that writes): only it receives the gathered
-    tensors, each moved to the CPU as it arrives (one stack on the GPU at a time); every other rank gets None,
-    and the ranks of other replica groups (they hold the same experts) take no part."""
+    """Collective over ep ranks returning the state dict with experts gathered to the 1-GPU shape;
+    with an adapter only its expert tensors are gathered (frozen base stacks stay local, else
+    every rank holds all experts); dst alone receives them on CPU; other ranks get None; other
+    replica groups skip it."""
     import torch.distributed as dist
 
     if adapter is None:
@@ -798,8 +794,7 @@ _EP_EXPORTS = (
 
 
 def _ep_refuse_exports(level):
-    """Merged / GGUF / torchao exports read every weight in this process, and each rank holds only its experts:
-    refused (also by unsloth/save.py's model parallel export guard)."""
+    """Merged, GGUF and torchao exports read all weights, which no EP rank holds; refused."""
     for attr in _EP_EXPORTS:
         prior = getattr(level, attr, None)
         if callable(prior) and not getattr(prior, "_unsloth_ep_refused", False):
@@ -840,9 +835,8 @@ def ep_trainer_setup(trainer):
         evaluation_mode = False,
         **kwargs,
     ):
-        # Expert-only LoRA: every trainable tensor is DDP-ignored (expert shards), and DDP refuses a module
-        # with nothing to reduce. Not wrapped: the expert gradients never went through DDP (ep_backward syncs
-        # the replicas, the hooks average), and placement / autocast / compile still apply.
+        # Expert-only LoRA is not DDP-wrapped (DDP refuses a module with nothing to reduce); expert
+        # grads never go through DDP, but placement, autocast and compile still apply.
         if not evaluation_mode and is_expert_parallel(target) and not _ddp_reduces_any(target):
             evaluation_mode = True
         return prepare_model(target, device_placement, evaluation_mode, **kwargs)
@@ -870,8 +864,7 @@ def ep_trainer_setup(trainer):
     save_model = trainer.save_model
 
     def ep_save_model(output_dir = None, _internal_call = False):
-        # Every rank takes part in gathering the expert LoRA (collective) onto global rank 0, the main process
-        # that writes (onto every rank when each node saves), then the Trainer's own save there.
+        # All ranks gather expert LoRA onto global rank 0 (all if each node saves), then save.
         state = ep_full_adapter_state_dict(model, dst = None if trainer.args.save_on_each_node else 0)
         directory = output_dir or trainer.args.output_dir
         if trainer.args.should_save:
@@ -885,8 +878,7 @@ def ep_trainer_setup(trainer):
         dist.barrier(group = group)
 
     trainer.save_model = ep_save_model
-    # Checkpoints: the adapter is the 1-GPU one (save_model above); each rank also writes its own trainable
-    # tensors (local expert shards) and its optimizer state, and a resume loads them back on the same layout.
+    # Gathered 1-GPU adapter; per-rank expert shards and optimizer, resumed on the same layout.
     save_optim = trainer._save_optimizer_and_scheduler
     load_optim = trainer._load_optimizer_and_scheduler
     load_weights = trainer._load_from_checkpoint

@@ -263,8 +263,7 @@ def GemmaModel_fast_forward_inference(
     )
 
 
-# Follows google-deepmind/gemma positional_embeddings.py#L45 line by line, which formulates cos and
-# sin differently from Llama.
+# Follows google-deepmind/gemma positional_embeddings.py:45; differs from Llama in cos/sin.
 class GemmaFixedRotaryEmbedding(_PerDeviceRopeCache, torch.nn.Module):
     # RoPE buffer precision is wrong, so cast to int64; see huggingface/transformers#28837 and microsoft/DeepSpeed#4932.
     def __init__(

@@ -77,8 +77,7 @@ def karmarkar_karp(
 
 
 def _more_even(regrouped, given, weights, size):
-    """Karmarkar-Karp is a heuristic: True unless `given` already has the smaller spread of
-    per-group sums over consecutive `size` chunks, so a regroup never ends up less even."""
+    """Karmarkar-Karp is a heuristic: True unless given is already more even by per-group sums."""
 
     def spread(order):
         sums = [sum(weights[i] for i in order[s : s + size]) for s in range(0, len(order), size)]
@@ -350,8 +349,7 @@ def _splittable_keys(batch):
 
 
 def split_batch_by_token_budget(batch, budget):
-    """Splits a batch to at most budget tokens: padding-free [1, T] batches between whole sequences,
-    padded [B, L] by rows; other shapes are never split."""
+    """Splits to at most budget tokens: [1, T] between sequences, [B, L] by rows; else unsplit."""
     if not isinstance(batch, Mapping) or budget is None or budget <= 0:
         return [batch]
     input_ids = batch.get("input_ids")
@@ -538,8 +536,7 @@ def _exactness_blocker(trainer):
 
 
 def _length_dependent_rope(trainer):
-    """LongRoPE or dynamic RoPE anywhere in the text config (flat or per layer type): both pick
-    frequencies from each forward's length, which splitting or regrouping changes."""
+    """LongRoPE or dynamic RoPE: frequencies depend on forward length, which splitting changes."""
     config = getattr(getattr(trainer, "model", None), "config", None)
     config = getattr(config, "text_config", None) or config
 
@@ -584,8 +581,7 @@ def _balance_dataloader(
     mode = "exact",
 ):
     labels_mode = mode == "labels"
-    # The labels mode regroups rows across steps (a data order change), so it does not need the
-    # within-step exactness guards; it then length-balances inside each step only when they pass.
+    # Labels mode regroups rows across steps, so only length balancing needs exactness guards.
     balance_lengths = _exactness_blocker(trainer) is None and not _padded_batches(trainer)
     if not labels_mode and not balance_lengths:
         return False
@@ -654,8 +650,7 @@ def _same_count_on_every_rank(
     accelerator,
     flag = None,
 ):
-    """True when every rank has the same count. With flag, returns (same, flag on every rank) from
-    the same collective, so a later collective guarded by flag runs on every rank or on none."""
+    """True if all ranks match; flag rides the same collective, so guarded calls stay in step."""
     if accelerator is None or getattr(accelerator, "num_processes", 1) <= 1:
         return True if flag is None else (True, bool(flag))
     import torch.distributed as dist
@@ -774,8 +769,7 @@ def _metric_lengths(trainer):
 
 
 def _global_chunk_weights(trainer, chunks, accelerator):
-    """Multi-process weights sum token counts over ranks; older attention-style TRL averages
-    per-rank entropy ratios, which cannot be refolded, so entropy stays unfolded."""
+    """Ranks sum token counts; entropy stays unfolded since older TRL averages per-rank ratios."""
     weights = {
         key: [count(trainer, chunk) for chunk in chunks] for key, count in _RATIO_METRICS.items()
     }
@@ -799,8 +793,7 @@ def _merge_chunk_metrics(
     chunks,
     weights = None,
 ):
-    """Fold the per-chunk ratio entries back into one entry for the micro-batch, weighting each chunk by
-    the tokens TRL divided by, so the logged value matches an unsplit step."""
+    """Fold per-chunk ratios weighted by tokens TRL divides by, so logs match unsplit steps."""
     if weights is None:
         weights = {
             key: [count(trainer, chunk) for chunk in chunks]
@@ -890,8 +883,7 @@ def install_token_budget(trainer):
             if not merge:
                 metrics, lengths = None, None
             if not same_count:
-                # Each chunk runs compute_loss (TRL gathers metrics there) and its own backward:
-                # ranks with different counts would issue mismatched collectives and hang.
+                # Different chunk counts per rank mean mismatched collectives and a hang.
                 _note_once(
                     trainer,
                     "Unsloth: UNSLOTH_TOKEN_BUDGET not splitting steps whose ranks need different chunk counts.",

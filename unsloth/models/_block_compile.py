@@ -49,9 +49,8 @@ def _cudagraph_mode():
 _CUDAGRAPH_MODE = _cudagraph_mode()
 if _CUDAGRAPH_MODE == "on":
     _COMPILE_OPTIONS["triton.cudagraphs"] = True
-# Shape cap: variable lengths recorded a graph set per length (3.5x slower, pool grew every step).
-# Two shapes = one fixed length plus a short last batch. Past the cap graphs go off for every block
-# and the graph pool is released (T4: 8 shapes cost 15-65 s over 40 steps and kept 3-4.75 GB).
+# Shape cap defaults to 2 (one fixed length plus a short last batch): variable lengths record a
+# graph set each (3.5x slower); past the cap graphs go off and the pool is released.
 try:
     _CUDAGRAPH_MAX_SHAPES = max(0, int(os.environ.get("UNSLOTH_BLOCK_CUDAGRAPHS_MAX_SHAPES", "2")))
 except ValueError:
@@ -202,9 +201,8 @@ def _mark_block_outputs(out):
 
 
 def _pool_release_verdict(managers, ours):
-    """ "ok" when every tree function belongs to a block compile and nothing in the pool is alive
-    (no pending backward), "pending" to retry at a later call, "foreign" when another torch.compile
-    region also records into this tree: resetting would break its next call."""
+    """ok" if every tree function is ours and no backward is pending; "pending" to retry later;
+    "foreign" if another torch.compile region records into the tree (resetting breaks it)."""
     for manager in managers:
         if any(cid is None or cid not in ours for cid in manager.id_to_compile_id.values()):
             return "foreign"
@@ -327,11 +325,10 @@ def _same(tensor):
 
 
 def _detached(tensor):
-    # Pack hook of the non-reentrant trial. Nothing backpropagates the trial graph, so it is only freed
-    # when its output dies; a pack hook returning its input saves an op's output on that op's own node,
-    # a cycle through the C++ graph that gc cannot see (torch's saved_tensors_hooks warning). Each
-    # block's first non-reentrant call then kept its whole trial forward until exit (Qwen3-30B-A3B
-    # shape, 4 layers, 32K tokens, aux loss on: 14 GiB between steps).
+    # Pack hook of the non-reentrant trial; nothing backpropagates it, so it is freed when its
+    # output dies; returning the input makes a gc-invisible cycle (torch's saved_tensors_hooks
+    # warning) that kept each block's trial forward until exit (14 GiB between steps; Qwen3-30B-A3B,
+    # 32K tokens, aux loss on).
     return tensor.detach()
 
 
@@ -557,8 +554,7 @@ def _flex_block_mask_call(
     kwargs,
     note = True,
 ):
-    """BlockMask index tensors are static graph inputs rebuilt every step, so the graph re-records
-    each call (StaticInputIdxMismatch is outside the re-record limit); Gemma3 was slower with graphs."""
+    """BlockMask index tensors are rebuilt per step: graphs re-record uncapped; Gemma3 slower."""
     for value in (*args, *kwargs.values()):
         if type(value).__name__ == "BlockMask":
             if note:
@@ -662,9 +658,8 @@ def _auto_is_cuda(hidden_states):
 
 
 def _dynamo_callback_active():
-    """A torch.compile around the model: its block calls run traced or under the compiler's frame
-    callback (a callable, or False for run-only frames), so whether a rank reaches them eagerly can
-    differ by rank (recompile fallbacks)."""
+    """True when a torch.compile frame callback is set (a callable, or False for run-only frames);
+    it can differ by rank after recompile fallbacks."""
     try:
         from torch._C._dynamo import eval_frame
         return eval_frame.get_eval_frame_callback() is not None
@@ -695,8 +690,7 @@ def _fsdp2_type():
 
 
 def _auto_cp_reason():
-    """Unsloth's context-parallel manager, or torch's native context_parallel() dispatch: collectives
-    inside attention."""
+    """Unsloth's CP manager or torch's context_parallel() dispatch; collectives in attention."""
     cp = sys.modules.get("unsloth.context_parallel")
     if cp is not None and getattr(cp, "get_cp_manager", lambda: None)() is not None:
         return "context parallel"
@@ -807,8 +801,7 @@ def _auto_ddp_enroll(ddp):
     try:
         import torch.distributed as dist
         rank = dist.get_rank(group)
-        # The vote buffer is allocated here, not in a forward: a rank-local allocation failure at vote
-        # time would leave that rank out of the collective the others are already waiting in.
+        # Vote buffer is allocated here so a local failure cannot strand the other ranks.
         vote = torch.zeros(4, dtype = torch.int64, device = device)
     except Exception:
         why = why or "DDP layout unavailable"
@@ -842,7 +835,6 @@ def _auto_ddp_enroll(ddp):
     if previous:
         return  # a re-wrapped model keeps the agreed state; the first vote confirms it
     if auto["phase"] == "on":
-        # Graphs went on in one process before the process group came up.
         _auto_ddp_veto(auto, "process group started after graphs went on")
     elif auto["first"] is not None and auto["phase"] == "probe":
         # A probe started in one process: start again inside DDP.
@@ -856,15 +848,10 @@ def _join_enabled(ddp):
 
 
 def _auto_ddp_pre_forward(ddp, args):
-    # Registered on the DDP wrapper; a plain function so torch.save(ddp) can pickle the hook. It runs
-    # before DDP's own forward, eagerly, also when ddp.module is compiled (a vote of 0 there). A user
-    # torch.compile of the DDP model itself or of a function calling it traces this hook: it traces to
-    # nothing (no call into the compiler-disabled step, so fullgraph=True still works and
-    # fullgraph=False gets no graph break), and a forward that runs a compiled graph never runs it.
-    # Run eagerly under the compiler's callback (a recompile or cache-limit fallback, which can differ
-    # by rank), it only vetoes locally. So no compiled DDP forward counts or votes on any rank,
-    # whether that rank traced, replayed or fell back, and the ranks keep one schedule; the local veto
-    # reaches the other ranks at the next eager vote, if there is one.
+    # Plain function (torch.save(ddp) pickles it); runs eagerly before DDP forward (vote 0 if
+    # ddp.module is compiled); under torch.compile traces to nothing, so fullgraph=True works and
+    # fullgraph=False gets no break; compiled forwards never vote; local veto reaches other ranks at
+    # next eager vote.
     if torch.compiler.is_compiling():
         return
     _auto_ddp_step(ddp, _dynamo_callback_active())
@@ -932,8 +919,7 @@ def _auto_ddp_agree(auto, session, ddp, live):
             flag = 2
         else:
             flag = 1
-    # Outside the try below: a rank-local failure here raises on that rank instead of being taken
-    # as a finished session, which would skip the collective the other ranks already entered.
+    # Outside the try: a local failure must raise, else the other ranks' collective is skipped.
     group = ddp.process_group
     world = group.size()
     rank = session["rank"]
@@ -993,9 +979,8 @@ def _backend_compile_failed(e):
 
 
 def _ddp_stock_phase(session, layer, phase, tracing):
-    """DDP: the phase a stock call acts on. Traced: none (the enclosing graph owns the call; the next
-    eager call sees the same rows). Outside the owning forward: none (no veto from a foreign model).
-    A block of the owning forward goes through the same checks as a compiled call."""
+    """Phase a stock call acts on: none when traced (the enclosing graph owns it) or outside the
+    owning forward (no foreign veto); owning blocks get compiled-call checks."""
     if tracing:
         return None
     if phase not in ("probe", "on") or not layer.training:
@@ -1026,8 +1011,7 @@ def _auto_ddp_call_reason(session, layer):
     if owner is None:
         return _NOT_OURS
     if torch._C._current_graph_task_id() != -1:
-        # A checkpoint recompute in backward, after the DDP forward ended: graphs only for a block
-        # whose last forward call ran inside the owning DDP forward.
+        # Checkpoint recompute: graphs only if the last forward ran in the owning DDP forward.
         if session["owned"].get(layer, False):
             return _auto_ddp_admit(session, layer)
         return _NOT_OURS
@@ -1247,8 +1231,7 @@ def _note_block_mask_call(layer, args, kwargs):
 
 
 def _ddp_optimizer_mode():
-    # optimize_ddp also takes "python_reducer" / "no_optimization" strings: only "ddp_optimizer"
-    # (or True) makes dynamo split graphs (convert_frame.py checks == "ddp_optimizer").
+    # optimize_ddp splits graphs only for "ddp_optimizer" (or True); see convert_frame.py.
     getter = getattr(torch._dynamo.utils, "get_optimize_ddp_mode", None) or getattr(
         torch._dynamo.config, "_get_optimize_ddp_mode", None
     )
@@ -1362,9 +1345,8 @@ def _writes_globals(code):
 
 
 def _rebind_globals(fn):
-    """Dynamo resolves globals via sys.modules; exec-generated code is rebuilt on a registered
-    module holding a copy of its dict; functions that assign globals are left alone since a copy
-    cannot follow later writes"""
+    """Dynamo resolves globals via sys.modules: exec-generated code is rebuilt on a registered
+    module holding a copy of its dict; global writers are left alone (the copy misses writes)."""
     g = getattr(fn, "__globals__", None)
     if g is None or _writes_globals(fn.__code__):
         return fn
@@ -1389,9 +1371,8 @@ def _rebind_globals(fn):
 
 
 def _inline_compiled(fn):
-    """Inside a block, call the original of a compiled method so dynamo inlines it: inlining the
-    wrapper guards on its closure and hits Unexpected type CatchErrorsWrapper on torch 2.13 and
-    2.14 (Gemma-4 fp16 MLP); outside a block the wrapper runs as before"""
+    """Inside blocks call the original so dynamo inlines it (inlining the wrapper hits Unexpected
+    type CatchErrorsWrapper on torch 2.13 and 2.14); outside, the wrapper is unchanged."""
     original = getattr(fn, "_torchdynamo_orig_callable", None)
     if (
         not isinstance(original, types.FunctionType)
@@ -1468,8 +1449,7 @@ _PACKED_LENGTH_KWARGS = ("packed_seq_lengths", "cu_seq_lens_q", "cu_seq_lens_k",
 
 
 def _mark_packed_dynamic(kwargs):
-    # The document count changes from one packed batch to the next: without the mark every block (and
-    # the attention frame after its graph break) recompiled once on the second packed batch.
+    # Doc count changes between packed batches; unmarked, blocks recompile on the second batch.
     for key in _PACKED_LENGTH_KWARGS:
         value = kwargs.get(key)
         if isinstance(value, torch.Tensor) and value.dim() == 1:
@@ -1549,8 +1529,7 @@ def _gdn_chunk_adapter(original):
 
 def _route_fla_kernel():
     """Repoint namespace refs to fla chunk_gated_delta_rule at the adapter; callers are found by gc
-    referrers, not by name (they reach it via globals, closures and compiled copies); closures
-    are left alone"""
+    referrers, not names (globals, closures and compiled copies); closures are left alone."""
     import gc
 
     # gc.get_referrers skips frozen objects, so thaw before the walk or the op never engages.
@@ -1614,8 +1593,7 @@ def _route_fla_callers(gc):
 
 
 def _causal_conv1d_adapter(original, depthwise_conv):
-    # Inductor's conv backward guards on the exact sequence length: recompile per length.
-    # transformers < 5.15 calls with causal-conv1d kwargs (x = ..., seq_idx = None): pass args through unchanged.
+    # Inductor conv backward recompiles per length; transformers < 5.15 x= kwargs pass through.
     @functools.wraps(original, updated = ())
     def causal_conv1d_fn(*args, **kwargs):
         named = dict(zip(("hidden_states", "weight", "bias", "activation"), args))
@@ -1671,8 +1649,7 @@ def _namespaces(fn, depth = 3):
 
 
 def _alias_namespace(space):
-    """The namespace Dynamo resolves `space`'s globals through: an inlined function's globals are
-    read as sys.modules[__name__], and Unsloth's compiled modules import transformers' __name__."""
+    """Dynamo reads inlined globals via sys.modules[__name__] (transformers' module here)."""
     module = (
         sys.modules.get(space.get("__name__")) if isinstance(space.get("__name__"), str) else None
     )
@@ -1809,8 +1786,7 @@ def _stable_parametrized_classes():
     parametrize._inject_new_class = _inject_new_class
 
 
-# zoo's Gemma-4 sliding router scans the mask (data dependent) and declines while compiling, so
-# the block runs the scan eagerly and a router wrapper reads the verdict stored on the mask.
+# zoo's Gemma-4 sliding router declines while compiling, so the block scans the mask eagerly.
 _BAND_MODULE = "unsloth_zoo.temporary_patches.gemma4_banded_attention"
 _FLASH_MODULE = "unsloth_zoo.temporary_patches.gemma4_flash_sliding"
 # Read by unsloth/kernels/large_head_attention.py (PLAIN_CAUSAL_ATTR): a compiled head_dim 512 layer
@@ -1820,9 +1796,8 @@ _BAND_CHECK = [None]
 
 
 def _gemma4_router_hook():
-    """Sliding layers: a plain causal band within the window runs is_causal SDPA, longer bands run
-    masked SDPA. Router stays untraced: its counters drive a branch dynamo guards on; traced
-    banded kernel breaks checkpoints"""
+    """Plain causal bands in the window use is_causal SDPA, longer bands masked SDPA; router stays
+    untraced (dynamo guards on its counters) and traced banded kernels break checkpoints."""
     try:
         from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
     except Exception:
@@ -1832,8 +1807,7 @@ def _gemma4_router_hook():
         router, "_unsloth_block_band", False
     ):
         return
-    # Other routers wrap zoo's (unsloth's head_dim 512 kernel, installed at load before this runs, has no
-    # _ORIG_SDPA), so fall back to zoo's module: without it the hook never installed for Gemma-4.
+    # head_dim 512 kernel lacks _ORIG_SDPA: fall to zoo's module, else no hook for Gemma-4.
     plain = None
     for name in (router.__module__, _FLASH_MODULE):
         plain = getattr(sys.modules.get(name), "_ORIG_SDPA", [None])[0]
@@ -2034,8 +2008,7 @@ def _precheck_band(
                     obj._unsloth_block_band = False
             elif not hasattr(obj, "_unsloth_block_band"):
                 obj._unsloth_block_band = False
-            # Full-attention layers: a band as wide as the sequence is the plain causal mask
-            # (scan cached on the mask by version, one per forward for every global layer).
+            # Full-width band is plain causal; the scan is cached on the mask by version.
             if window is None:
                 try:
                     causal = bool(check(obj, seq_len, seq_len))
@@ -2243,8 +2216,7 @@ def _sdpa_alignment_without_guard():
     UNSLOTH_BLOCK_SDPA_ALIGN_GUARD=1 keeps torch's guards."""
     if os.environ.get("UNSLOTH_BLOCK_SDPA_ALIGN_GUARD", "0") == "1":
         if _efficient_backward_keeps_guard():
-            # Stock lowering, but the same cache key as a run without the guard before the tag existed:
-            # tag it too, or that run's faulting efficient backward is served again.
+            # Same cache key as unguarded runs: tag it or the faulting backward is served.
             _tag_efficient_backward_cache()
         return False
     try:
@@ -2420,8 +2392,7 @@ def _layer_kind(layer):
 
 
 def _is_hf_checkpoint_wrapper(fn):
-    """transformers >= 5.23 checkpoints in a wrapper GradientCheckpointingLayer.__init_subclass__ puts on
-    each layer class's `forward` (it was `__call__`); it checkpoints only while it is `type(self).forward`."""
+    """transformers >= 5.23 wraps forward not __call__; checkpoints only if type(self).forward."""
     code = getattr(fn, "__code__", None)
     return (
         code is not None
@@ -2540,13 +2511,11 @@ def _wrap(
         scratch_takes_owner = "owner" in inspect.signature(capture_scratch).parameters
     except (TypeError, ValueError):
         scratch_takes_owner = False
-    # First call per grad mode compiles with errors raised: on failure retry with flex outside,
-    # then the stock forward. The mode is per layer (a checkpoint recompute must not switch graph);
-    # a failure is also the starting mode for later layers of the same kind.
+    # Errors raise on each grad mode's first compile: retry with flex outside, then stock; per layer
+    # (recompute must not switch graph); failures start later same-kind layers there.
     state = {"reported": set(), "start": {}}
-    # Under Unsloth checkpointing each block call is a new cudagraph generation: the next replay
-    # overwrites this block's outputs and gradients, so they are cloned out of the pool.
-    # Auto: `compiled` stays the graphs-off region; the graphed one is compiled once graphs turn on.
+    # Under Unsloth checkpointing each block call is a new cudagraph generation, so outputs/grads
+    # are cloned out of the pool; auto keeps compiled graphs-off, graphed once graphs turn on.
     auto = not graphs and _CUDAGRAPH_MODE == "auto"
     if graphs:
         plain = torch.compile(
@@ -2692,8 +2661,7 @@ def _wrap(
         device = hidden_states.device.index
         if _pool_outputs_stay_valid(self, hidden_states):
             if _input_grad_must_leave_pool(hidden_states):
-                # A leaf's .grad outlives the generation (trainable inputs_embeds); a
-                # checkpoint's backward recomputes (a new generation) before reading it.
+                # Leaf .grad outlives the generation; checkpoint backward recomputes first.
                 hidden_states = _CloneGrad.apply(hidden_states)
             return _graphed_call(graphed(), device, self, hidden_states, *args, **kwargs)
         if hidden_states.requires_grad and torch.is_grad_enabled():
@@ -2803,11 +2771,10 @@ def _wrap(
             bit == 2 and not checked & 2 and not _IN_TRIAL[0] and _in_nonreentrant_checkpoint()
         )
         if (bit == 1 or nonreentrant) and not checked & trial_bit:
-            # Grad-mode trial runs first (RNG forked); a checkpoint recompute must not demote below
-            # this call. Inside a non-reentrant checkpoint (also a no-grad call: a reentrant layer in a
-            # non-reentrant parent) our own saved-tensor hooks keep the trial graph out of the
-            # checkpoint frame, whose recompute would otherwise save fewer tensors (detaching pack,
-            # see _detached)
+            # Grad-mode trial runs first (RNG forked) and checkpoint recomputes must not demote
+            # below it; in a non-reentrant checkpoint (or a no-grad call in one) our saved-tensor
+            # hooks (detaching pack, see _detached) keep the trial graph out of the checkpoint
+            # frame, whose recompute would save fewer tensors.
             devices = [hidden_states.device.index] if hidden_states.is_cuda else []
             hooks = (
                 torch.autograd.graph.saved_tensors_hooks(_detached, _same)
@@ -2847,8 +2814,7 @@ def _wrap(
             except torch.OutOfMemoryError:
                 raise
             except Exception as e:
-                # Non-reentrant checkpoint ends a recompute by raising through the forward: control
-                # flow, not a compile failure (demoting on it left the stock forward in every block).
+                # _StopRecomputationError: control flow, not a compile failure; never demote.
                 if type(e).__name__ == "_StopRecomputationError":
                     raise
                 if os.environ.get("UNSLOTH_BLOCK_COMPILE_DEBUG") == "1":
@@ -3110,8 +3076,7 @@ def _install_router_capture_hooks(model):
     ):
         return 0
     installed = 0
-    # Outermost first, as transformers does; skip modules with a hooked descendant (no double
-    # hooks).
+    # Outermost first, like transformers; skip if a descendant is hooked (no double hooks).
     for module in model.modules():
         # dict.get: 5.23's _CanRecordRegistry.get expects the model and returned {} for a string (transformers#49594).
         flags = dict.get(registry, str(type(module))) or {}
@@ -3243,8 +3208,7 @@ def patch_block_compile(model):
         # a GPU-bound one. Graphs that went off for shape churn stay off.
         state = _CUDAGRAPH_STATE
         if _AUTO_DDP and state["off"] == "ddp":
-            # A DDP veto belongs to that run (its session retires, voting 0): once its pool is
-            # released, the new model decides again.
+            # DDP veto (voting 0) ends with its run; once its pool frees, a new model decides.
             _release_graph_pool()
             if state["release"] == "done":
                 state["off"] = None

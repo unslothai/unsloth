@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""Direct safe_open(device=cuda) on CUDA/HIP UMA GPUs: clone tensors to CPU before moving (bit-
-identical); CPU-open then .to() (bnb/HQQ) and XPU keep stock path."""
+"""safe_open(device=cuda) on UMA GPUs: CPU clone first, bit-identical; bnb/HQQ, XPU stay stock."""
 
 import os
 import functools

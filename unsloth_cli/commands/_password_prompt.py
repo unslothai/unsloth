@@ -30,8 +30,7 @@ class PromptUnattended(Exception):
 
 
 def _wait_for_first_key(timeout: float) -> bool:
-    """Whether a keystroke arrived within timeout seconds; needs cbreak mode already set, since
-    canonical mode holds input until a newline. True on any doubt (blocking)."""
+    """Keystroke within timeout; needs cbreak (canonical mode holds input); True when unsure."""
     if os.name == "nt":
         import time
 

@@ -197,8 +197,7 @@ def _nvidia_smi_gpu_name():
 
 def _reraise_device_type_error_with_gpu_hint(exception):
     mask = os.environ.get("CUDA_VISIBLE_DEVICES")
-    # Zoo's generic error lists AMD, so only "ROCm" identifies its ROCm advice.
-    # An empty or "-1" mask hides every GPU on purpose.
+    # Zoo's error lists AMD, so match "ROCm" only; empty or "-1" mask hides GPUs on purpose.
     if "ROCm" in str(exception) or (mask is not None and "".join(mask.split()) in ("", "-1")):
         raise exception
     gpu_name = _nvidia_smi_gpu_name()
@@ -239,8 +238,7 @@ try:
     )
 
     _allocator_env_before = {k: os.environ.get(k) for k in _ALLOCATOR_ENV}
-    # Zoo exports its allocator settings before its own import starts CUDA, so only a process whose CUDA was
-    # already running (a torchrun rank > 0 binds its device at import) missed them.
+    # Zoo sets allocator env before CUDA starts; torchrun ranks > 0 bind early and miss them.
     _cuda_started_before = cuda_started()
     import unsloth_zoo
 
@@ -309,8 +307,7 @@ if os.environ.get("UNSLOTH_FORCE_SINGLE_COMPILE_WORKER", "0") == "1":
             "determine_compile_threads",
             lambda: 1,
         )
-        # Zoo's options dicts were snapshotted at import and outrank the env var in Inductor; rewrite them
-        # in place, since they are shared by identity across modules and the torch_compile partial.
+        # Zoo's options dicts outrank the env var; rewrite in place (shared by identity).
         for module in list(sys.modules.values()):
             name = getattr(module, "__name__", "")
             if name != "unsloth_zoo" and not name.startswith("unsloth_zoo."):

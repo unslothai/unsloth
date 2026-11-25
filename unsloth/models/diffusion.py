@@ -350,8 +350,7 @@ class FastDiffusionModel:
             else:
                 qcfg = BitsAndBytesConfig(load_in_8bit = True)
 
-        # Same leaf-level resolution as llama.py and vision.py: an unresolved "unsloth" becomes
-        # torch.device("unsloth") in transformers and raises instead of loading.
+        # As in llama.py and vision.py: an unresolved "unsloth" device raises in transformers.
         device_map = requested_device_map(device_map)
         if is_automatic_device_map(device_map):
             # Under torchrun / accelerate launch each rank loads one whole model on its own device, as
@@ -465,8 +464,7 @@ class FastDiffusionModel:
                 profile.prepare_model(unwrap_diffusion_model(model), None)
             return _mark_requested_float32(model, user_float32), None
 
-        # Prefer the processor (chat template plus tokenizer), falling back to a bare tokenizer, returned as
-        # "tokenizer" to match the Unsloth (model, tokenizer) contract.
+        # Prefer the processor (chat template), else a bare tokenizer, returned as tokenizer.
         tokenizer_source, tokenizer_revision = model_name, revision
         if adapter_name is not None:
             from transformers.utils import cached_file

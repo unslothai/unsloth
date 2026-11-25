@@ -110,7 +110,6 @@ def FalconH1Attention_fast_forward(
     V = V.view(bsz, q_len, n_kv_heads, head_dim).transpose(1, 2)
     seq_info = get_packed_info_from_kwargs(kwargs, hidden_states.device)
 
-    # Falcon H1 multiplies key states by a multiplier.
     K = K * self.config.key_multiplier
 
     Q = Q.transpose(1, 2)

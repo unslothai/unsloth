@@ -24,8 +24,7 @@ import threading
 import torch
 
 
-# Programmatic override (tests, harnesses): True / False force graphs on / off, None (default) follows
-# the environment variable read at call time and the RL / Studio generation scopes (enabled()).
+# Test override: True/False force graphs on/off; None follows the env var and RL/Studio scopes.
 ENABLED = None
 # Whole-step graphs (attention captured too, over a power-of-two span of cache rows).
 FULL = os.environ.get("UNSLOTH_DECODE_CUDA_GRAPHS_FULL", "0") == "1"
@@ -75,8 +74,7 @@ __all__ = [
     "end_generation",
 ]
 
-# The graph-mode statics of the step this thread is warming up / capturing (static()); per thread,
-# so another thread's (or model's) eager decode never reads them.
+# Per-thread statics (static()) of the step being captured; other threads never read them.
 _TLS = threading.local()
 # Bumped whenever a persistent decode buffer is (re)allocated or resized.
 BUFFER_EPOCH = 0
@@ -110,9 +108,8 @@ def enabled():
 
 
 def _default_ok():
-    # The RL default is NVIDIA CUDA, plus gfx1151 ROCm with the skinny decode linear on: there graph
-    # replay was measured token for token equal to the eager step (GRPO losses equal) and faster.
-    # Other HIP archs are unverified (=1 still forces it); XPU / MPS / CPU never take the graphed step.
+    # RL default is NVIDIA CUDA and gfx1151 ROCm with skinny linear on (measured token-equal and
+    # faster); other HIP archs unverified (=1 still forces); XPU, MPS, CPU never use graphs.
     try:
         if not torch.cuda.is_available():
             return False
@@ -194,8 +191,7 @@ class rl_generation:
 
 
 def rl_generating():
-    """Whether this thread is inside an RL trainer's generate() call (rl_generation itself, not the Studio /
-    plain generate() scopes built on it)."""
+    """Whether this thread is in an RL trainer's generate() (rl_generation), not Studio scopes."""
     return getattr(_TLS, "rollout_depth", 0) > 0
 
 
@@ -652,8 +648,7 @@ class _StepStatics:
         self.kv_len = None
         self.mask = None
         self.attention = _run_now
-        # Whole-step graphs: cache rows the captured attention reads, and their bool keep mask
-        # [bsz, 1, 1, rows] (refilled outside the graph before every replay).
+        # Whole-step cache rows read; bool keep [bsz, 1, 1, rows] refilled before every replay.
         self.span = span
         self.keep = keep
         self.drop = drop  # ~keep, so the graph does not invert it once per layer
@@ -747,12 +742,10 @@ def alloc_decode_buffers(
                 scores = torch.empty((bsz, n_heads, 1, rows), dtype = dtype, device = device)
             bufs = store[key] = (paged, temp_QA, temp_KV, RH_Q, temp_O, scores)
         elif not _vmm_wake(bufs[0]) and FULL:
-            # A reused buffer still holds old rows that a whole-step graph reads past seq_len (NaN
-            # would turn 0 * V into NaN), so zero them unless just woken from sleep
+            # Zero rows a whole-step graph reads past seq_len (NaN * 0 = NaN) unless just woken
             bufs[0][seq_len:].zero_()
         paged, temp_QA, temp_KV, RH_Q, temp_O, scores = bufs
-        # A new sequence: its first graph step re-checks the fingerprint (adapters toggled or
-        # merged since the last one, also in decode loops that do not go through generate()).
+        # New sequence re-checks fingerprint (adapters toggled/merged, also outside generate())
         GENERATION_EPOCH += 1
         attn.paged_attention = paged
         attn.paged_attention_K = paged[:, 0]
@@ -1095,8 +1088,7 @@ def _fingerprint(
     rope_len,
     refresh = False,
 ):
-    """Everything a captured step baked in; None when the model cannot be graphed. refresh: bring the
-    LoRA decode casts up to date first (in place where they still fit)."""
+    """What a captured step baked in; None if not graphable. refresh updates LoRA decode casts."""
     from ..kernels import utils as K
 
     items = []
@@ -1152,8 +1144,7 @@ def _fingerprint(
     if adapters is None:
         return None
     items.extend(adapters)
-    # No version / optimizer-step counter: graphs read weights by address, so an in-place update (optimizer
-    # step, adapter edit) replays correctly once the refresh above brought the decode casts up to date.
+    # Graphs read weights by address; no version counter; in-place edits replay after refresh.
     items.append(WEIGHTS_EPOCH)
     return tuple(items)
 
@@ -1328,8 +1319,7 @@ def decode_step(
         or paged.shape[2] != bsz
         or input_ids.shape[1] != 1
     ):
-        # First decode step after a prefill (allocates / fills the cache), or a cache this path
-        # did not size.
+        # First decode after prefill (allocates the cache), or a cache this path did not size.
         state.eager_steps += 1
         return None
     seq_len = past_key_values[0][0].shape[-2]
@@ -1342,8 +1332,7 @@ def decode_step(
 
     from ..kernels import utils as K
 
-    # RoPE rows the captured steps may read: the table is sized (and its address fingerprinted)
-    # for this many, so a position at or past it runs eagerly (the eager step grows the table).
+    # RoPE rows are sized for captured steps (fingerprinted); positions past them run eagerly.
     rope_len = max(state.rope_len or 0, cap + 1)
     # LongRoPE reads its long table once a position passes original: capture the short one only.
     rope_len = min(
@@ -1371,12 +1360,10 @@ def decode_step(
         if reason is not None:
             state.disabled = reason
             return None
-        # refresh: adapters may have moved (optimizer step, in-place edit), so the decode casts the graphs
-        # read are updated in place; one that had to be re-made changes the fingerprint (re-capture).
+        # Adapters may move: casts update in place; a re-made cast changes the fingerprint.
         fingerprint = _fingerprint(model, layers, rope_len, True)
         if fingerprint is None:
-            # Ineligible for this generation only (several / non-CUDA devices, or a DoRA / non-LoRA
-            # adapter, e.g. one side of a compare): free the captured steps and re-check next time.
+            # Ineligible for this generation (several or non-CUDA devices, DoRA or non-LoRA).
             state.clear()
             state.ineligible_epoch = GENERATION_EPOCH
             state.eager_steps += 1

@@ -562,8 +562,7 @@ def _keep_saved(tensor):
 
 
 def _detach_saved(tensor):
-    # Returning the input saves an op's output on its own node, a cycle gc cannot break: a probe whose
-    # backward fails (out of resource retry, compile failure) would keep its Q / K / V copies alive.
+    # detach() avoids a cycle gc cannot break, so failed probes do not keep Q / K / V alive.
     return tensor.detach()
 
 

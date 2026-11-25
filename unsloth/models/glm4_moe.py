@@ -141,7 +141,6 @@ def Glm4MoeLiteMoE_fast_forward(self, hidden_states):
             is_first_gemm = True,
         )
 
-        # SiLU(gate) * up.
         gate, up = intermediate.chunk(2, dim = -1)
         intermediate = torch_nn_functional_silu(gate) * up
 
@@ -165,7 +164,6 @@ def Glm4MoeLiteMoE_fast_forward(self, hidden_states):
     else:
         hidden_states = self.experts(hidden_states, topk_indices, topk_weights)
 
-    # Add shared expert output
     hidden_states = hidden_states + self.shared_experts(residuals.view(-1, hidden_dim))
 
     return hidden_states.view(*orig_shape)
@@ -174,9 +172,8 @@ def Glm4MoeLiteMoE_fast_forward(self, hidden_states):
 def Glm4MoeLiteNaiveMoe_fast_forward(
     self, hidden_states: torch.Tensor, top_k_index: torch.Tensor, top_k_weights: torch.Tensor
 ) -> torch.Tensor:
-    """Grouped GEMM expert forward: hidden_states is [num_tokens, hidden_dim], top_k_index and
-    top_k_weights are [num_tokens, top_k]; returns the [num_tokens, hidden_dim] weighted expert
-    sum."""
+    """Grouped GEMM expert forward: hidden_states [num_tokens, hidden_dim], top_k_index and
+    top_k_weights are [num_tokens, top_k]; returns weighted expert sum [num_tokens, hidden_dim]."""
     num_tokens, hidden_dim = hidden_states.shape
     top_k = top_k_index.shape[1]
     top_k_weights = top_k_weights.to(hidden_states.dtype)
@@ -244,7 +241,6 @@ def Glm4MoeLiteNaiveMoe_fast_forward(
         is_first_gemm = False,
     )
 
-    # Merge topk weights
     final_hidden_states = (
         expert_output.view(num_tokens, top_k, hidden_dim) * top_k_weights.unsqueeze(-1)
     ).sum(dim = 1)
@@ -263,9 +259,6 @@ def Glm4MoeLiteDecoderLayer_fast_forward(
     position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
     **kwargs,
 ) -> torch.Tensor:
-    """
-    Optimized decoder layer forward with fast RMS layernorm.
-    """
     is_inference = use_cache and hasattr(self, "_flag_for_generation")
 
     if is_inference:

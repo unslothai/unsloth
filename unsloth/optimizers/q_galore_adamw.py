@@ -216,8 +216,7 @@ class QGaLoreAdamW8bit(Optimizer2State):
                 self.update_step(group, p, gindex, pindex)
 
                 if "rank" in group:
-                    # Decay the pre-update weight BEFORE adding the update; only p._saved_data is touched,
-                    # so p.data still holds the low-rank update below.
+                    # Decay p._saved_data first; p.data still holds the low-rank update
                     if "_wd_saved" in group:
                         p._saved_data.add_(
                             p._saved_data,

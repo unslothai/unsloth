@@ -1,25 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Ulysses context parallelism for Inkling 2 (inkling2 / inkling2_loop, transformers >= 5.24).
-
-Every Inkling 2 layer mixes tokens in two ways:
-
-- attention (sliding window or full) with a relative position bias read from the query token's hidden states
-  (`rel_logits[b, q, h, q - k]` for `0 <= q - k < rel_extent`) and a per-token sink logit (`sink_proj`);
-- short causal convolutions: one on the keys and one on the values inside the attention (static taps in the
-  sliding layers, static + per-token taps in the full layers), and two on the residual stream of every decoder layer
-  (after attention and after the MoE).
-
-Attention runs after an all-to-all from sequence shards to head shards, on the whole sequence: q / k / v, the
-query-side relative logits and the sinks are exchanged, and the bias, the causal / sliding window mask and the sink
-softmax are formed over the whole sequence, so they match one process exactly. The short convolutions stay on the
-sequence shard: each one only needs the `kernel_size - 1` tokens before the shard, which come from the previous
-rank (a halo exchange, zeros on rank 0 as the causal padding). Everything else in the layer (block / message
-attention residuals over layers, the MoE, norms, message gates) is per token.
-
-Not supported (refused): packed rows (the convolution and the bias would need document boundaries), a KV cache,
-attention dropout, and shards shorter than the halo."""
+"""Ulysses context parallelism for Inkling 2 (transformers >= 5.24): attention runs on head shards
+over the whole sequence so results match one process; short convolutions exchange a halo with the
+previous rank; packed rows, KV cache, attention dropout and shards shorter than the halo are
+refused."""
 
 from __future__ import annotations
 
@@ -152,8 +137,7 @@ def ulysses_inkling2_conv_forward(
     group,
     **kwargs,
 ):
-    """The module's own forward on [previous rank's last kernel_size - 1 tokens, this shard], keeping this shard's
-    rows: each output token then sees the same kernel_size inputs as in one process."""
+    """Module forward on halo-extended shard so each token sees the same inputs as one process."""
     name = type(module).__name__
     if cache is not None:
         raise NotImplementedError(

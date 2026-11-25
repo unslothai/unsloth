@@ -86,8 +86,7 @@ def _returns_aux_loss():
 
 
 def _modern_scorer_contract():
-    """TRL >= 1.15 scores through its fused lm_head: completion pads score 0 and the entropy keeps its gradient.
-    Older TRL leaves pad scores as they come and computes the entropy under no_grad."""
+    """TRL >= 1.15: pads score 0, entropy keeps gradient; older: pads as is, entropy no_grad."""
     return _trl_at_least("1.15.0")
 
 
@@ -106,8 +105,7 @@ def _return_hidden_states(enabled):
 
 @contextlib.contextmanager
 def _keep_left_padding_mask(model):
-    """Unsloth's training forwards may drop the attention mask (they assume right padding); GRPO prompts are left
-    padded, so keep it for the scoring forward, as PPO and distillation do."""
+    """Training forwards may drop the mask (right padding assumed); GRPO left-pads, so keep it."""
     missing = object()
     try:
         states = [
@@ -169,14 +167,12 @@ def _entropy_from_logits(logits):
 
 
 def _support_log_softmax(logits, targets, support):
-    """log_softmax over each token's sampling candidates (``support``: ids padded with -1), as vLLM normalised the
-    sampled token's logprob; positions without candidates use the whole vocabulary."""
+    """Log-softmax over sampling candidates (padded -1), as vLLM; no candidates: full vocab."""
     if logits.dtype in (torch.float16, torch.bfloat16):
         logits = logits.float()
     valid = support >= 0
     gathered = logits.gather(-1, support.clamp(min = 0).to(torch.long))
-    # A finite floor, not -inf: rows without candidates take the full vocabulary below, and a logsumexp over -inf
-    # alone would send NaN through torch.where's zero gradient.
+    # Finite floor, not -inf: logsumexp of all -inf gives NaN gradients through torch.where.
     gathered = gathered.masked_fill(~valid, torch.finfo(gathered.dtype).min)
     log_z = torch.where(
         valid.any(-1),

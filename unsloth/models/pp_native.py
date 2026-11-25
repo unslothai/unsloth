@@ -62,8 +62,7 @@ _MOE_CONFIG_KEYS = ("num_experts", "num_local_experts", "n_routed_experts", "moe
 _PP_MOE_AUX_WRAPPERS = ("Qwen3_5MoeForConditionalGeneration", "Qwen4ExpForConditionalGeneration")
 _PP_MOE_AUX_FAMILIES = ("Qwen3MoeForCausalLM", "Qwen4ExpForCausalLM", *_PP_MOE_AUX_WRAPPERS)
 _PP_MOE_AUX_SCHEDULES = ("gpipe", "1f1b")
-# Mixture-of-experts CausalLMs whose loss has no router auxiliary term (bias-based routing balance, nothing
-# updated from router statistics in training): a stage boundary cuts nothing, so there is nothing to carry.
+# MoE models with bias-based router balancing (no aux loss); nothing crosses a stage boundary.
 _PP_MOE_NO_AUX_FAMILIES = (
     "DeepseekV41ForCausalLM",
     "Gemma4ForCausalLM",
@@ -309,9 +308,8 @@ def check_multi_stage_dp(pp_mesh, stages_per_rank):
 
 
 def check_mesh_composition(meshes, what = "pipeline parallel composition"):
-    """`meshes` ({name: 1-D DeviceMesh}) must be dimensions of one init_device_mesh covering every rank:
-    1-D, meeting only at this rank (orthogonal) and with sizes multiplying to the world size. Returns the
-    world size covered; ValueError otherwise (nothing is changed)."""
+    """meshes ({name: 1-D DeviceMesh}) must be orthogonal dims of one init_device_mesh with sizes
+    multiplying to the world size; returns that size, else ValueError with nothing changed."""
     import torch.distributed as dist
 
     world = dist.get_world_size() if dist.is_initialized() else 1
@@ -475,8 +473,7 @@ def _carry_layout(model, n):
 
 
 def _layer_tables(decoder, layers, layers_name):
-    """Decoder children holding one module per decoder layer, keyed by the layer index (DeepSeek-V4.1's
-    engram_tables: an n-gram table read at the model level for one layer): the owning stage keeps its own."""
+    """Layer-indexed ModuleDicts (DeepSeek-V4.1 engram_tables); owning stage keeps its own."""
     out = []
     n = len(layers)
     for name, child in decoder.named_children():
@@ -731,8 +728,7 @@ def _takes_media(inner):
 
 
 def _refuse_shared_across_stages(parts, bounds):
-    """A trainable parameter used by layers of two stages (a block shared by several layers, Zamba2 /
-    ALBERT style) would be trained as two independent copies."""
+    """A trainable parameter used by layers of two stages would be trained as two independent copies."""
     stage_of = {i: k for k, (start, end) in enumerate(bounds) for i in range(start, end)}
     owners = {}
     for i, layer in enumerate(parts.layers):
@@ -1466,8 +1462,7 @@ class _PPPassThrough(_CheckpointLayer):
     pinned off), so the hidden states it hands out stay in this stage's autograd graph."""
 
     gradient_checkpointing = property(lambda self: False, lambda self, value: None)
-    # Read by _frozen_prefix: the hidden states this layer hands out come from the previous stage and carry its
-    # gradient, so they must never become the cut's detached leaf.
+    # Read by _frozen_prefix: previous-stage hidden states carry gradient; never detach them.
     _unsloth_pipeline_stand_in = True
 
     def __init__(self, index, ctx, source):
@@ -1720,11 +1715,9 @@ class _StageContext:
         self.stage_forward = None
         self.active = False
         self.stage_input = None
-        # The step's token count, given to every stage forward from here rather than as a schedule kwarg:
-        # a non-tensor kwarg reaches torch's split backward (zero bubble) as a stage input on torch < 2.13.
+        # Token count on ctx: non-tensor kwargs become split-backward inputs on torch < 2.13.
         self.num_items_in_batch = None
-        # Mixture-of-experts router auxiliary loss carry (_MoEAux), the router logits of the running stage
-        # forward, and the last stage's per-micro-batch auxiliary losses of the step.
+        # MoE router aux loss carry (_MoEAux), router logits and per-micro-batch aux losses.
         self.moe = None
         self.router_logits = None
         self.aux_losses = []
@@ -1930,8 +1923,7 @@ class _PPStageModule(nn.Module):
                     )
                 t = t.to(want)
             if t.dim() != 3:
-                # A stage output must not be a view: split-backward schedules (zero bubble, DualPipeV) detach
-                # their outputs in place, which a view refuses. One copy of the stream at the boundary.
+                # Outputs must not be views: split-backward schedules detach them in place.
                 t = t.flatten(2).clone()
             elif torch.compiler.is_compiling() or t._is_view():
                 t = t.clone()  # compiled: always (Dynamo cannot trace _is_view, a bool)
@@ -2153,8 +2145,7 @@ def _refuse_aux_with_reentrant_checkpointing(
     config,
     on = None,
 ):
-    """Reentrant checkpointing (transformers' default, Unsloth smart) runs the first layer under
-    no_grad, so router logits carry no graph; the aux loss adds its value but no gradient."""
+    """Reentrant checkpointing runs the first layer under no_grad; aux loss gets no gradient."""
     if not (getattr(config, "output_router_logits", False) if on is None else on):
         return
     if non_reentrant_checkpointing_only(model) is False:
@@ -2223,8 +2214,7 @@ def _refuse_generate(*args, **kwargs):
 
 
 def _batch_kwargs(kwargs, bsz, device, what):
-    """Tensor kwargs with the batch dimension first: a size-1 batch dimension (broadcast position_ids) is
-    expanded so the schedule splits it per micro-batch like input_ids."""
+    """Size-1 batch dims (broadcast position_ids) are expanded so they split per micro-batch."""
     out = {}
     for key, value in kwargs.items():
         if isinstance(value, torch.Tensor):
@@ -2380,9 +2370,8 @@ class PipelineParallel:
         dp_mesh,
         mp_policy = None,
     ):
-        """After shard_model shards this stage, make the PipelineStage module the outer FSDP2 root
-        with no parameters of its own, so the reduce-scatter defers to perform_reduce_grad, as
-        torchtitan does."""
+        """After shard_model, make the PipelineStage the outer FSDP2 root with no own parameters so
+        reduce-scatter defers to perform_reduce_grad, as torchtitan does."""
         from torch.distributed.fsdp import MixedPrecisionPolicy, fully_shard
 
         if self.stages_per_rank > 1:
@@ -2438,8 +2427,7 @@ class PipelineParallel:
     def _loss_fn(self, output, target):
         self._mb_losses.append(output.detach())
         if self._loss_multiplier != 1:
-            # FSDP2 averages gradients over dp: dp x (sum of this replica's token losses / global tokens)
-            # averages to the global batch gradient.
+            # FSDP2 averages grads over dp: scale by dp x (replica loss sum / global tokens).
             output = output * self._loss_multiplier
         return output if self._scaler is None else self._scaler.scale(output)
 
@@ -2534,8 +2522,7 @@ class PipelineParallel:
         if not self.spec.multi and (not train or self.step_schedule(m) == "gpipe"):
             from torch.distributed.pipelining import ScheduleGPipe
 
-            # forward only (eval_loss): no backward order to keep; the default 1F1B with fewer micro-batches
-            # than stages also runs as GPipe
+            # Forward-only (eval_loss) and 1F1B with m < stages run as GPipe.
             cls = ScheduleGPipe
         schedule = cls(
             stages if self.spec.multi else stages[0],
@@ -2673,8 +2660,7 @@ class PipelineParallel:
         return total * float(loss_scale) if loss_scale != 1 else total
 
     def step_schedule(self, m):
-        """The schedule a training step with `m` micro-batches runs: the default 1F1B (schedule_auto) falls back
-        to GPipe when m < stages; an explicit schedule is always kept."""
+        """schedule_auto 1F1B falls back to GPipe when m < stages; explicit schedule is kept."""
         if self.schedule_auto and self.schedule == "1f1b" and m < self.num_stages:
             return "gpipe"
         return self.schedule
@@ -2779,16 +2765,14 @@ class PipelineParallel:
         finally:
             schedule._has_backward = has_backward
             self.ctx.num_items_in_batch = None
-            # No backward pops the forward caches: free each micro-batch's stage inputs / outputs now, not at the
-            # next eval_loss (this cached schedule is not the training one).
+            # No backward pops forward caches; free them now, not at the next eval_loss.
             for st in getattr(schedule, "_stages", None) or (schedule._stage,):
                 st.clear_runtime_states()
         return self._batch_loss(m, device, None)
 
     def _average_replicated_grads(self):
-        """Averages trainable FSDP2-replicated parameters over dp here, once: the schedule runs
-        micro-batch backwards with gradient sync off and reduces FSDP2 groups outside autograd;
-        re-averaging equal values is a no-op."""
+        """Averages FSDP2-replicated grads over dp once: the schedule runs backwards with gradient
+        sync off; re-averaging equal values is a no-op."""
         params = self.model.__dict__.get("_unsloth_replicated_grad_params")
         if not params:
             return
@@ -2806,9 +2790,8 @@ class PipelineParallel:
         )
 
     def _grad_copies(self, grad):
-        """(local tensor, number of ranks holding the same values) for this rank's gradient. Stages hold
-        disjoint parameters; inside a stage plain gradients are replicated over its world // pp ranks and
-        a DTensor's local shard repeats over that count divided by its shard dimensions."""
+        """Returns (local tensor, copy count) for this rank's grad: plain grads repeat over world/pp
+        ranks; DTensor shards repeat over that count divided by shard dims."""
         stage_ranks = torch.distributed.get_world_size() // self.num_stages if self.composed else 1
         try:
             from torch.distributed.tensor import DTensor, Replicate
@@ -2840,9 +2823,8 @@ class PipelineParallel:
         parameters = None,
         eps = 1e-6,
     ):
-        """Clip by the global 2-norm over every stage (squares summed over pp). Returns the norm.
-        Composed with dp / tp: every gradient element counted once over the world (a local square sum
-        divided by the ranks holding a copy of it, summed over every rank)."""
+        """Clips by the global 2-norm over all stages (squares summed over pp) and returns the norm;
+        with dp/tp each element is counted once (square sum / copy count) over the world."""
         import torch.distributed as dist
 
         from .tp_native import _square_sum
@@ -2984,8 +2966,7 @@ class PipelineParallel:
             from .tp_native import _full, _is_dtensor, _param_layouts
 
             full = self.model.state_dict(keep_vars = True)
-            # PEFT selects over local shards: PEFT >= 0.22 gathers selected DTensors into new tensors itself,
-            # which would lose the fused tp layout lookup below, so each selection maps back to its DTensor.
+            # PEFT >= 0.22 gathers DTensors and drops the tp layout; map each selection back.
             raw = {k: v.to_local() if _is_dtensor(v) else v for k, v in full.items()}
             back = {id(raw[k]): v for k, v in full.items()}
             layouts = _param_layouts(self.model)
@@ -3091,8 +3072,7 @@ def _default_activation_dtype(model, parts):
 
 
 def _local_stage_modules(pp_stage, parts, owned):
-    """One _PPStageModule per local stage. While stage k runs, this rank's layers of its other
-    stages become pass-throughs; the embedding becomes a stub unless k is the first stage."""
+    """Per local stage: other stages' layers pass through, the embedding stubs unless first."""
     layers = parts.layers
     stand_ins = {i: _PPPassThrough(i, pp_stage.ctx, layers[i]) for i in owned}
     embed_owner = _owner(parts.decoder, parts.embed) if pp_stage.is_first else None

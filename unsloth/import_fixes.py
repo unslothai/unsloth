@@ -175,7 +175,6 @@ if not UNSLOTH_ENABLE_LOGGING:
     warnings.filterwarnings("ignore", message = "invalid escape sequence", category = SyntaxWarning)
     # PYTORCH_CUDA_ALLOC_CONF is deprecated warning from torch
     warnings.filterwarnings("ignore", message = "PYTORCH_CUDA_ALLOC_CONF is deprecated")
-    # TF32 precision deprecation warning from torch
     warnings.filterwarnings("ignore", message = "Please use the new API settings to control TF32")
     # Deprecation warnings from torchao
     warnings.filterwarnings("ignore", message = "`int4_weight_only` is deprecated")
@@ -241,7 +240,6 @@ if not UNSLOTH_ENABLE_LOGGING:
     # vllm "Level is deprecated" stderr noise
     sys.stderr.add_filter("Level is deprecated")
 
-    # PydanticSerializationUnexpectedValue warning
     warnings.filterwarnings(
         "ignore",
         message = r".*PydanticSerializationUnexpectedValue",
@@ -1360,8 +1358,7 @@ def _legacy_normalize(
     )
 
 
-# Only 4.x thin passthroughs to image_transforms; resize/center_crop/pad converted a dict
-# `size` first so are not signature compatible.
+# Only rescale/normalize are thin 4.x passthroughs; resize/center_crop/pad convert dict size.
 _LEGACY_NUMPY_IMAGE_METHODS = {
     "rescale": (_legacy_rescale, {"scale": 1.0 / 255.0}),
     "normalize": (_legacy_normalize, {"mean": [0.5, 0.5, 0.5], "std": [0.5, 0.5, 0.5]}),
@@ -3045,8 +3042,7 @@ _COMPOSITE_PREFIX_RENAMING_FLAG = "_unsloth_patched_composite_prefix_renaming"
 # Literal, not imported, so an older unsloth_zoo cannot cause an ImportError.
 _ZOO_COMPOSITE_PREFIX_RENAMING_FLAG = "_unsloth_zoo_patched_composite_prefix_renaming"
 
-# zoo's WRAPPER_INNER_ATTR: its MoE wrapper links the inner function here, not via __wrapped__,
-# so walking only __wrapped__ would miss a repair underneath it.
+# zoo's MoE wrapper links inner fn via WRAPPER_INNER_ATTR; __wrapped__ alone would miss repairs
 _ZOO_WRAPPER_INNER_ATTR = "_unsloth_wrapper_inner"
 
 
@@ -3390,8 +3386,7 @@ def fix_transformers_composite_prefix_renaming():
             namespace = getattr(module, "__dict__", None)
             if not isinstance(namespace, dict):
                 continue
-            # __dict__, not getattr: lazy modules print deprecation noise. Rebind only true aliases of
-            # the wrapped function so package-local helpers are not clobbered.
+            # Read __dict__, not getattr (lazy modules warn); rebind true aliases, not helpers.
             try:
                 bound = namespace.get("get_model_conversion_mapping", None)
                 if not callable(bound) or bound is get_model_conversion_mapping:
@@ -3573,8 +3568,7 @@ def fix_transformers_bnb_prequantized_save():
                 bare -= dense
             if not bare or not _converter_matches(conversion, bare):
                 continue
-            # A converter whose target also matches a dense parameter (one stack skipped from quantization)
-            # still has to run for it: keep it, and let a mixed save fail loudly as before.
+            # Converters matching a dense param still run; mixed save fails loudly, as before.
             if _converter_matches(conversion, dense):
                 continue
             skipped.append(conversion)
@@ -5835,9 +5829,8 @@ def patch_datasets():
         )
 
 
-# psutil <= 7.2.2 reads M4 freq tables (now kHz) as Hz. Mirrored in
-# studio/backend/utils/hardware/hardware.py: keep in sync; delete once psutil#2824 ships.
-# Apple clocks are 0.6-4.6 GHz: a raw Hz entry is above 1e8, kHz below.
+# psutil <= 7.2.2 reads M4 freq tables (kHz) as Hz; keep studio/backend/utils/hardware/hardware.py
+# in sync, delete once psutil#2824 ships; Apple clocks put Hz above 1e8, kHz below.
 _APPLE_CPU_FREQ_UNIT_THRESHOLD = 100_000_000
 _APPLE_MIN_PLAUSIBLE_CPU_MHZ = 500
 _APPLE_MAX_PLAUSIBLE_CPU_MHZ = 20000
@@ -8104,8 +8097,7 @@ def _executorch_needs_torchtune_get_mapped_key(models_dir):
 
 # Fix Executorch needing torchtune's get_mapped_key when torchtune is absent
 def _drop_loaded_legacy_torchtune_stub():
-    # An old patched executorch imported before Unsloth already put the legacy stub in sys.modules; it has no
-    # file and no hf_to_tune. Drop it when a real torchtune is installed so the next import finds the package.
+    # Drop the legacy torchtune stub (no file, no hf_to_tune) once a real torchtune is installed.
     stub = sys.modules.get("torchtune")
     if (
         stub is None
@@ -8436,8 +8428,7 @@ def _same_tensor(tensor):
 
 
 def _detached_tensor(tensor):
-    # Nothing backpropagates the example score_mod forward; an identity pack saves an op's output
-    # (tanh soft-capping) on its own node, a cycle gc cannot break, so every call leaked that graph.
+    # Saving an op output on its own node forms a cycle gc cannot break; detach avoids leaking.
     return tensor.detach()
 
 
@@ -8522,8 +8513,7 @@ def fix_dynamo_config_thread_visibility():
 
     mirrored_modules = ("torch._dynamo.config", "torch._inductor.config")
 
-    # config.patch()/load_config() writes are thread-local by design; a per-thread depth counter
-    # keeps them out of the global default.
+    # Per-thread depth counter keeps config.patch()/load_config() writes off global default.
     import threading
 
     _scoped_depth = threading.local()
@@ -8743,7 +8733,6 @@ def check_vllm_torch_sm100_compatibility():
     except Exception:
         vllm_version = "unknown"
 
-    # Incompatible combination: raise a helpful error
     raise RuntimeError(
         f"Unsloth: Incompatible configuration detected.\n\n"
         f"  GPU: {sm100_gpu_name} (SM100 / Blackwell architecture)\n"
@@ -9069,8 +9058,7 @@ def fix_cudnn_sdpa_backward_grad_layout():
                 # Dynamo graph-breaks on a hook on an intermediate; the Function traces inline.
                 return grad_in_output_layout.apply(out)
             if type(out.grad_fn).__name__ in _SDPA_GRAD_LAYOUT_NODES:
-                # A hook keeps out a plain tensor: a Function output is a view, so in-place
-                # ops on it would raise.
+                # A Function output is a view that in-place ops reject, so use a hook instead.
                 out.register_hook(functools.partial(_sdpa_grad_to_layout, out.stride()))
         return out
 
@@ -9491,8 +9479,7 @@ def rocm_windows_wide_head_sdpa(sdpa):
 
     @functools.wraps(sdpa)
     def scaled_dot_product_attention(query, key, value, *args, **kwargs):
-        # Modes see func = this wrapper (is F.sdpa), so F-based matchers still match; tensor subclasses
-        # go to torch's builtin below, as nested jagged tensors only match that.
+        # Modes see F.sdpa, so F matchers match; subclasses use torch builtin (nested jagged).
         if (
             not torch.compiler.is_compiling()
             and torch._C._is_torch_function_mode_enabled()
@@ -9869,8 +9856,7 @@ def disable_torchcodec_if_broken():
     except Exception as load_error:
         remedy_hint = mismatch_hint
         if remedy_hint is None:
-            # Versions agree, so the load failed for another reason. A mismatched accelerator
-            # build is the one this can still name, and the one pinning the index repairs.
+            # Versions agree: only an accelerator mismatch is nameable; index pin repairs it.
             try:
                 remedy_hint = _torchcodec_provenance_hint()
             except Exception:
@@ -10928,8 +10914,7 @@ _PEFT_MOE_CONVERSION_PATTERNS = {
     "solar_open": "qwen2_moe",
     # transformers (main, November 2026) aliases Sarvam's MLA MoE to the qwen2_moe conversion.
     "sarvam_mla": "qwen2_moe",
-    # Keyed by class name, not model type: transformers (main, October 2026) aliases the
-    # unlimited_ocr text model's class to qwen2_moe, and the lookup keeps its case.
+    # Keyed by class name, case kept: transformers aliases UnlimitedOcrTextModel to qwen2_moe.
     "UnlimitedOcrTextModel": "qwen2_moe",
     # Same shape: transformers (main, November 2026) aliases the dots3-note text model's class.
     "Dots3NoteTextModel": "qwen2_moe",
@@ -10944,8 +10929,7 @@ _PEFT_MOE_NAMED_NOT_FUSED = frozenset(
         "granitemoehybrid",
         "granitemoeshared",
         "qwen3_5_moe_text",
-        # Keyed by class name: transformers (main, October 2026) aliases the Qwen3-Omni MoE
-        # thinker classes to the dense Qwen2.5-Omni thinker, which peft does not rewrite.
+        # Keyed by class name: Qwen3-Omni MoE thinkers alias a dense thinker that peft skips.
         "Qwen3OmniMoeThinkerForConditionalGeneration",
         "Qwen3OmniMoeThinkerModel",
     )
@@ -12109,8 +12093,7 @@ def _both_arches(manylinux_tag):
     return {"x86_64": manylinux_tag, "aarch64": manylinux_tag}
 
 
-# vLLM wheel names cannot be derived (+cuXXX tags and manylinux vary per release); transcribed
-# from real release assets. Extend on a new release.
+# Cannot derive wheel names (tags vary); transcribed from real assets; extend on new releases.
 _VLLM_WHEEL_ASSETS = (
     (
         "0.11.0",
@@ -14113,8 +14096,7 @@ def fix_torchao_safe_int_mm_repr_probe():
     return True
 
 
-# dill pickles modules outside site-packages/sys prefixes by value, which breaks datasets
-# fingerprinting on pyarrow (e.g. pip --target installs).
+# dill pickles outside site-packages/sys prefixes by value; breaks datasets fingerprinting
 _DILL_FIX_SENTINEL = "_unsloth_dill_by_reference_fix"
 _DILL_FIX_ENV = "UNSLOTH_DISABLE_DILL_FIX"
 
@@ -14396,8 +14378,7 @@ def fix_dill_module_by_value_pickling():
     return True
 
 
-# Windows Smart App Control can refuse sentencepiece's unsigned .pyd, and any probe triggers
-# the dialog, so on Windows the extension is never imported.
+# Windows Smart App Control can refuse unsigned .pyd probes; never import sentencepiece there.
 DISABLE_SENTENCEPIECE_VARIABLE = "UNSLOTH_DISABLE_SENTENCEPIECE"
 _SENTENCEPIECE_TRUTHY = frozenset({"1", "true", "yes", "on"})
 _SENTENCEPIECE_FALSY = frozenset({"0", "false", "no", "off"})

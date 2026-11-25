@@ -33,8 +33,7 @@ def transformers_has_deepseek_v41():
 
 
 def _conversion_rules():
-    """Released checkpoint names -> this module tree. No ``$`` anchors: the table also runs in reverse on save,
-    and a reversed ``$`` would be written into the key."""
+    """Released checkpoint key rules; no $ anchors: the table also runs in reverse when saving."""
     from transformers.core_model_loading import (
         Concatenate,
         MergeModulelist,

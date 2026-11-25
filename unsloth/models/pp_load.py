@@ -653,8 +653,7 @@ def _load_quantizing(real, cls, name, args, kwargs, state):
     warm = {}
 
     def keep(model, target_name):
-        # The allocator warmup sees the meta model before any tensor is set: plan this rank's stages from it, in
-        # its own dict, so a warmup that runs without the setter never passes the post-load check below.
+        # Warmup sees the meta model; its own plan dict stops it passing the post-load check.
         if warm.get("model") is not model:
             warm.clear()
             warm.update(stage_plan(model))

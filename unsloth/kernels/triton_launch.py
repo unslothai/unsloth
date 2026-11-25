@@ -46,9 +46,8 @@ def _hooks_set():
 
 
 def relaunch(entry, grid, device_index, args):
-    """Repeat a launch whose cache entry launch() returned, with args matching the original in
-    dtypes, 16 byte alignment and integer specialization, on device_index (the current device).
-    False when the caller must use launch() instead."""
+    """Re-runs the cache entry from launch() on device_index (the current device); args must match
+    its dtypes, 16 byte alignment and integer specialization; False means use launch()."""
     if not _ENABLED or _hooks_set():
         return False
     compiled, tail = entry

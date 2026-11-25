@@ -135,8 +135,7 @@ def _load_builtin_profiles():
 
 
 def unwrap_diffusion_model(model):
-    """The module holding config / heads / Unsloth attributes under DDP, FSDP and PEFT wrappers. Forwards
-    still go through the wrapper so gradients synchronise."""
+    """Config/heads module under DDP/FSDP/PEFT; forwards use the wrapper so gradients sync."""
     while hasattr(model, "module") and isinstance(model.module, torch.nn.Module):
         model = model.module
     if hasattr(model, "get_base_model"):
