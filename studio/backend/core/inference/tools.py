@@ -16182,9 +16182,16 @@ def _build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> d
         if thread_docs is not None and not thread_docs:
             return None
         scope_kwargs = _scope_retrieval_kwargs(rag_scope)
-        found = retrieve(scope_thread_id = thread_id, min_dense_score = None, **scope_kwargs)
+        found = retrieve(
+            max_tokens = max_tokens, scope_thread_id = thread_id, min_dense_score = None, **scope_kwargs
+        )
         if not found and scope_kwargs["mode"] == "lexical":
-            found = retrieve(scope_thread_id = thread_id, min_dense_score = None, mode = "hybrid")
+            found = retrieve(
+                max_tokens = max_tokens,
+                scope_thread_id = thread_id,
+                min_dense_score = None,
+                mode = "hybrid",
+            )
         if not found:
             return None
         # A generic request ("summarize this") ranks mid-document scraps, so the matched file's opening leads, beside the best match.
@@ -16198,7 +16205,7 @@ def _build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> d
             render_sources(merged), merged, max_tokens, keep_first = len(opening) + bool(hits)
         )
         if kept is None:
-            return _trim(found[0], found[1], max_tokens)
+            return found
         opening_ids.update(seen)
         return kept
 

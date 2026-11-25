@@ -786,6 +786,25 @@ def test_build_rag_autoinject_budget_keeps_the_match_over_the_opening(rag_conn, 
     assert "MATCH_PASSAGE" in _injected_text(result)
 
 
+def test_build_rag_autoinject_retries_hybrid_when_lexical_winner_is_over_budget(
+    rag_conn, monkeypatch
+):
+    monkeypatch.setattr(tool, "whole_document_context", lambda **kw: None)
+    monkeypatch.setattr(inf_tools, "_thread_document_ids", lambda thread_id: None)
+
+    def fake_search(**kw):
+        text = "z" * 6000 if kw["mode"] == "lexical" else "HYBRID_PASSAGE"
+        sources = [{"citationId": 1, "chunkId": kw["mode"], "filename": "big.pdf", "text": text}]
+        return tool.render_sources(sources), sources
+
+    monkeypatch.setattr(tool, "search_for_autoinject", fake_search)
+    result = inf_tools.build_rag_autoinject(
+        _convo("what is the orbital period"),
+        {"thread_id": "t1", "autoinject": False, "mode": "lexical", "context_length": 2048},
+    )
+    assert "HYBRID_PASSAGE" in _injected_text(result)
+
+
 def test_build_rag_autoinject_on_attachment_beside_project_keeps_lean_top_k(rag_conn, monkeypatch):
     monkeypatch.setattr(inf_tools, "_thread_document_ids", lambda thread_id: None)
 
