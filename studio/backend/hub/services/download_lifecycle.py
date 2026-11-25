@@ -505,8 +505,21 @@ def _drop_cut_line(part: bytearray, at_end: bool) -> bytearray:
     return kept if kept.strip() else part
 
 
+def _redacted_edge(part: bytes, edge: int, at_end: bool, hf_token: Optional[str]) -> str:
+    """Redact `part` with all of it as context, but show only what the raw `edge` bytes at that end redact to. Slicing the redacted text instead lets a collapsed token pull the cut-off start of the window into view."""
+    scrub = lambda raw: download_registry.scrub_secrets(
+        raw.decode("utf-8", "replace"), hf_token = hf_token
+    )
+    whole = scrub(part)
+    if at_end:
+        n = len(os.path.commonprefix([whole, scrub(part[:-edge])]))
+        return whole[n:][-edge:]
+    n = len(os.path.commonprefix([whole[::-1], scrub(part[edge:])[::-1]]))
+    return whole[: len(whole) - n][:edge]
+
+
 def drain_stderr_excerpt(stream, hf_token: Optional[str] = None) -> str:
-    """Drain a worker's stderr to EOF and return it redacted, keeping the first and last 500 characters (stderr prefixes often name the failing repo). Each end is redacted with 4 KiB of context past the cut and drops the line the cut splits (the extra byte shows whether it split one), so a credential whose header or parameter name was cut off is never shown."""
+    """Drain a worker's stderr to EOF and return it redacted, keeping the first and last 500 bytes (stderr prefixes often name the failing repo). Each end is redacted with 4 KiB of context past the cut and drops the line the cut splits (the extra byte shows whether it split one), so a credential whose header or parameter name was cut off is never shown."""
     if stream is None:
         return ""
     edge, window = 500, 500 + 4096 + 1
@@ -520,13 +533,18 @@ def drain_stderr_excerpt(stream, hf_token: Optional[str] = None) -> str:
             continue
         tail.extend(chunk)
         del tail[:-window]
-    texts = [
-        download_registry.scrub_secrets(part.decode("utf-8", "replace"), hf_token = hf_token)
-        for part in ((full,) if head is None else (head, _drop_cut_line(tail, False)))
-    ]
-    if len(texts) == 1 and len(texts[0]) <= 2 * edge:
-        return texts[0]
-    return texts[0][:edge] + "\n...[stderr truncated]...\n" + texts[-1][-edge:]
+    if head is None:
+        text = download_registry.scrub_secrets(full.decode("utf-8", "replace"), hf_token = hf_token)
+        return (
+            text
+            if len(text) <= 2 * edge
+            else text[:edge] + "\n...[stderr truncated]...\n" + text[-edge:]
+        )
+    return (
+        _redacted_edge(head, edge, False, hf_token)
+        + "\n...[stderr truncated]...\n"
+        + _redacted_edge(_drop_cut_line(tail, False), edge, True, hf_token)
+    )
 
 
 def _cancellation_return_codes() -> frozenset[int]:

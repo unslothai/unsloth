@@ -217,7 +217,18 @@ def test_worker_error_keeps_a_complete_last_line_that_fills_the_window():
 def test_worker_error_keeps_a_last_line_longer_than_the_window():
     last_line = "RuntimeError: missing " + "shard-00001-of-00099.safetensors, " * 200
     assert _failed_job_error(FILLER + last_line + "\n").endswith(last_line.strip()[-480:])
-    assert "RuntimeError" in _failed_job_error("OSError: " + "x" * 12000)
+    assert _failed_job_error("OSError: " + "x" * 12000).startswith("OSError: xxx")
+
+
+def test_worker_error_hides_a_password_whose_scheme_the_window_cut_off():
+    # The tail window starts after "https://", and the security token after the password shrinks to one marker once redacted.
+    start = "alice:MirrorPassword42@mirror.example/f?X-Amz-Security-Token="
+    stderr = FILLER + "OSError: 403 for https://" + start + "T" * (WINDOW - len(start) - 1) + "\n"
+    assert stderr[-WINDOW:].startswith(start)
+
+    error = _failed_job_error(stderr)
+    assert "MirrorPassword42" not in error
+    assert "TTTT" not in error
 
 
 def test_xet_failure_retries_over_http_for_model_and_dataset(monkeypatch, tmp_path):
