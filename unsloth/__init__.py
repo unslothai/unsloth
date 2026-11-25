@@ -2447,8 +2447,7 @@ if not globals().get("_IS_CPU_BACKEND", True):
     except Exception:
         pass
 
-# Last, after every import that may pull in vLLM: its import-time cuDNN SDPA switch-off stays with Unsloth
-# loads, and models loaded with plain transformers keep the caller's setting.
+# Last, after every import that may pull in vLLM (import_fixes.restore_cudnn_sdpa_after_import).
 if not globals().get("_IS_CPU_BACKEND", True):
     try:
         from .import_fixes import restore_cudnn_sdpa_after_import as _restore_cudnn_sdpa
@@ -2456,8 +2455,7 @@ if not globals().get("_IS_CPU_BACKEND", True):
         del _restore_cudnn_sdpa
     except Exception:
         pass
-    # Fused lm_head + cross entropy only for the models Unsloth loads or trains (mark_unsloth_model); a
-    # plain transformers model given labels keeps its logits.
+    # Zoo's fused forward and mask patch only for models Unsloth loads or trains.
     try:
         from unsloth_zoo.fused_losses.forward_install import require_model_marker as _require_marker
         _require_marker()

@@ -4570,9 +4570,7 @@ def _trainer_marking_wrapper(original, when):
 
 
 def _patch_trainer_marks_models(Trainer):
-    """At import, as the zoo patches are: every model a Trainer holds or builds keeps the fused lm_head + cross
-    entropy branch and Unsloth's causal mask (model_marker). TRL builds some (GRPO's reference model) after
-    Trainer.__init__, so train() marks again."""
+    """Mark every model a Trainer holds; train() again, as TRL builds GRPO's reference model after __init__."""
     for name, when in (("__init__", "after"), ("call_model_init", "result"), ("train", "before")):
         original = getattr(Trainer, name, None)
         if original is not None and not getattr(original, "_unsloth_marks_models", False):
@@ -5896,7 +5894,6 @@ def _requested_float32(dtype):
 
 
 def _unsloth_load_begins():
-    """First step of every Unsloth from_pretrained: the backends the import kept from plain models."""
     try:
         from ..import_fixes import apply_cudnn_sdpa_for_unsloth_load
         apply_cudnn_sdpa_for_unsloth_load()
@@ -5905,7 +5902,6 @@ def _unsloth_load_begins():
 
 
 def _mark_unsloth_model(model):
-    """The fused lm_head + cross entropy forward empties the logits only for models carrying this mark."""
     try:
         from unsloth_zoo.fused_losses.forward_install import mark_model
     except Exception:
@@ -5918,8 +5914,6 @@ def _mark_unsloth_model(model):
 
 
 def _mark_trainer_models(trainer):
-    """Every model a Trainer holds (policy, reference, reward, teacher) keeps Unsloth's patched path; TRL
-    builds some (GRPO's reference model) after Trainer.__init__, so train() marks again."""
     seen = set()
     for value in list(vars(trainer).values()):
         for item in value if isinstance(value, (list, tuple)) else (value,):
