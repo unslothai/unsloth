@@ -11,10 +11,14 @@ import json
 import multiprocessing as mp
 import os
 import queue
+import sys
 import time
 
 import pytest
 
+if not sys.platform.startswith("linux"):
+    # Studio starts multi-process runs on Linux only (parallel_plan refuses them on Windows and macOS).
+    pytest.skip("multi-process training is Linux only", allow_module_level = True)
 dist = pytest.importorskip("torch.distributed")
 if not dist.is_available():
     pytest.skip("torch.distributed unavailable", allow_module_level = True)
