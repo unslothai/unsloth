@@ -7120,9 +7120,34 @@ _PENDING_MENTION_RE = _re.compile(
 _PENDING_MENTION_MAX_CHARS = 256
 
 
+def _pending_inline_rehearsal_cut(text: str) -> int:
+    """Where an inline code span still open on the last line holds ``[ARGS]``, else -1: its closing backticks turn a
+    removed rehearsal into a kept example, which would insert text before what the stream already sent."""
+    line = text.rfind("\n") + 1
+    if text.find("[ARGS]", line) < 0:
+        return -1
+    open_end = open_len = 0
+    i = line
+    while (i := text.find("`", i)) >= 0:
+        j = i
+        while j < len(text) and text[j] == "`":
+            j += 1
+        if not open_len:
+            open_end, open_len = j, j - i
+        elif j - i == open_len:
+            open_len = 0
+        i = j
+    return open_end if open_len and text.find("[ARGS]", open_end) >= 0 else -1
+
+
 def _pending_mention_cut(text: str) -> int:
-    """Where to cut a cumulative stream so a still-open backticked tool tag is held back, else -1. The cut keeps
-    the backticks, so for a tag the strip would remove anyway the held display equals the full strip."""
+    """Where to cut a cumulative stream so a still-open backticked tool tag or rehearsal is held back, else -1. The
+    cut keeps the backticks, so for a tag the strip would remove anyway the held display equals the full strip."""
+    cut = _pending_tag_cut(text)
+    return cut if cut >= 0 else _pending_inline_rehearsal_cut(text)
+
+
+def _pending_tag_cut(text: str) -> int:
     lo = max(0, len(text) - _PENDING_MENTION_MAX_CHARS)
     # The tag holds no backtick, so its opening run is the last one before any trailing closers.
     end = len(text)

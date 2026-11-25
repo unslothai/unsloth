@@ -100,3 +100,31 @@ def test_route_strip_is_disabled_when_healing_is_off(route_strip):
     text = '<tool_call>{"name": "get_weather", "arguments": {}}</tool_call>'
 
     assert route_strip(text, auto_heal_tool_calls = False, enabled_tool_names = ENABLED) == text
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Use ``search[ARGS]{}`` here.",
+        'Call it as `search[ARGS]{"q": "x"} when needed` ok.',
+        "Try `a` then `search[ARGS]{} x` and `b`.",
+        "Open `search[ARGS]{} never closed\nnext line",
+        "Open `search[ARGS]{} never closed",
+    ],
+)
+def test_streamed_inline_example_is_append_only(text):
+    routes_inference = pytest.importorskip("routes.inference")
+    strip = routes_inference._StreamingDisplayStrip(
+        auto_heal_tool_calls = True, enabled_tool_names = ENABLED
+    )
+    shown = ""
+    for i in range(text.index("[ARGS]") + len("[ARGS]"), len(text) + 1):
+        out = strip.strip(routes_inference._hold_pending_mention(text[:i], True))
+        assert out.startswith(shown)
+        shown = out
+    held = routes_inference._held_mention_display(strip, text, True)
+    final = shown if held is None else held
+    assert final.startswith(shown)
+    assert final == routes_inference._strip_tool_xml_for_display(
+        text, auto_heal_tool_calls = True, enabled_tool_names = ENABLED
+    )
