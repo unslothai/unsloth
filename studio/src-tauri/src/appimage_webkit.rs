@@ -28,9 +28,6 @@ const APPINDICATOR_LIBRARIES: [&[u8]; 2] = [
 const EXIT_NO_AUDIO_SINK: i32 = 4;
 #[cfg(target_os = "linux")]
 const AUDIO_SINK_PLUGIN: &str = "libgstautodetect.so";
-/// The ones AppRun's host mode leaves set.
-#[cfg(target_os = "linux")]
-const GSTREAMER_PLUGIN_PATHS: [&str; 2] = ["GST_PLUGIN_PATH", "GST_PLUGIN_SYSTEM_PATH"];
 
 /// True when this AppImage runs on its own bundled libraries. A host-mode AppImage loads the
 /// system's stack, so renderer decisions treat it like a native install.
@@ -81,23 +78,28 @@ pub fn host_lacks_audio_sink() -> bool {
     !bundled_runtime(env) && !audio_sink_plugin_present(gstreamer_library_dir().as_deref(), env)
 }
 
-/// Read from disk: building the registry can outlast the probe's timeout. Unknown is present.
+/// GStreamer's own search (gst_registry_scan_plugins): `*_1_0` beats the plain name, and a set
+/// system path replaces the default directory. Read from disk: building the registry can outlast
+/// the probe's timeout. An unknown default directory counts as present.
 #[cfg(target_os = "linux")]
 fn audio_sink_plugin_present(
     library_dir: Option<&Path>,
     env: impl Fn(&str) -> Option<OsString>,
 ) -> bool {
-    let Some(library_dir) = library_dir else {
-        return true;
-    };
-    let named: Vec<PathBuf> = GSTREAMER_PLUGIN_PATHS
+    let var = |name: &str| env(&format!("{name}_1_0")).or_else(|| env(name));
+    let mut directories: Vec<PathBuf> = var("GST_PLUGIN_PATH")
+        .map(|paths| std::env::split_paths(&paths).collect())
+        .unwrap_or_default();
+    match var("GST_PLUGIN_SYSTEM_PATH") {
+        Some(paths) => directories.extend(std::env::split_paths(&paths)),
+        None => match library_dir {
+            Some(library_dir) => directories.push(library_dir.join("gstreamer-1.0")),
+            None => return true,
+        },
+    }
+    directories
         .iter()
-        .filter_map(|name| env(name))
-        .flat_map(|paths| std::env::split_paths(&paths).collect::<Vec<_>>())
-        .collect();
-    std::iter::once(library_dir.join("gstreamer-1.0"))
-        .chain(named)
-        .any(|directory| directory.join(AUDIO_SINK_PLUGIN).is_file())
+        .any(|directory| directory.is_absolute() && directory.join(AUDIO_SINK_PLUGIN).is_file())
 }
 
 /// The directory of the libgstreamer the linked WebKitGTK loaded.
@@ -192,29 +194,44 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn only_a_host_plainly_without_the_audio_sink_plugin_fails_the_probe() {
+    fn the_audio_sink_plugin_is_looked_up_where_gstreamer_scans() {
         let host = tempfile::tempdir().unwrap();
         let library_dir = host.path().join("lib");
-        let plugins = library_dir.join("gstreamer-1.0");
-        let elsewhere = host.path().join("elsewhere");
-        for directory in [&plugins, &elsewhere] {
+        let default = library_dir.join("gstreamer-1.0");
+        let extra = host.path().join("extra");
+        for directory in [&default, &extra] {
             std::fs::create_dir_all(directory).unwrap();
         }
-        let search = format!("/nonexistent:{}", elsewhere.display());
+        let extra_path = format!("/nonexistent:{}", extra.display());
+        let present =
+            |vars: &[(&str, &str)]| audio_sink_plugin_present(Some(&library_dir), env(vars));
 
-        assert!(!audio_sink_plugin_present(Some(&library_dir), env(&[])));
         assert!(audio_sink_plugin_present(None, env(&[])));
-        std::fs::write(elsewhere.join(AUDIO_SINK_PLUGIN), b"").unwrap();
-        assert!(!audio_sink_plugin_present(Some(&library_dir), env(&[])));
-        for name in GSTREAMER_PLUGIN_PATHS {
-            assert!(
-                audio_sink_plugin_present(Some(&library_dir), env(&[(name, &search)])),
-                "{name}"
-            );
+        assert!(!present(&[]));
+        std::fs::write(extra.join(AUDIO_SINK_PLUGIN), b"").unwrap();
+        assert!(!present(&[]));
+        for name in [
+            "GST_PLUGIN_PATH",
+            "GST_PLUGIN_PATH_1_0",
+            "GST_PLUGIN_SYSTEM_PATH",
+            "GST_PLUGIN_SYSTEM_PATH_1_0",
+        ] {
+            assert!(present(&[(name, &extra_path)]), "{name}");
         }
-        std::fs::remove_file(elsewhere.join(AUDIO_SINK_PLUGIN)).unwrap();
-        std::fs::write(plugins.join(AUDIO_SINK_PLUGIN), b"").unwrap();
-        assert!(audio_sink_plugin_present(Some(&library_dir), env(&[])));
+        assert!(!present(&[
+            ("GST_PLUGIN_PATH_1_0", ""),
+            ("GST_PLUGIN_PATH", &extra_path)
+        ]));
+
+        std::fs::remove_file(extra.join(AUDIO_SINK_PLUGIN)).unwrap();
+        std::fs::write(default.join(AUDIO_SINK_PLUGIN), b"").unwrap();
+        assert!(present(&[]));
+        assert!(present(&[("GST_PLUGIN_PATH", &extra_path)]));
+        assert!(!present(&[("GST_PLUGIN_SYSTEM_PATH", &extra_path)]));
+        assert!(!present(&[
+            ("GST_PLUGIN_SYSTEM_PATH_1_0", ""),
+            ("GST_PLUGIN_SYSTEM_PATH", "")
+        ]));
     }
 
     #[cfg(target_os = "linux")]
