@@ -187,7 +187,15 @@ def _special_token_sets(tokenizer, preserved_tokens = ()) -> tuple[frozenset[int
     return special_ids, frozenset(kept_ids)
 
 
+def _as_id_sequence(token_ids):
+    """transformers 5.24's ``TextStreamer`` decodes one bare id (``token_cache[-1]``) after each newline."""
+    if isinstance(token_ids, int) or getattr(token_ids, "ndim", None) == 0:
+        return [int(token_ids)]
+    return token_ids
+
+
 def _decode_with_token_sets(tokenizer, token_ids, special_ids, tool_ids) -> str:
+    token_ids = _as_id_sequence(token_ids)
     if not special_ids:
         return _decode_without_special_spacing(tokenizer, token_ids, skip_special_tokens = True)
     filtered = [
