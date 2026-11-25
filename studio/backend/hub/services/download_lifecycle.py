@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import logging
 import os
-import re
 import signal
 import subprocess
 import sys
@@ -500,8 +499,14 @@ def spawn_worker(
             hf_xet_fallback.bind_worker_budget(proc.pid if proc is not None else None)
 
 
+def _drop_cut_line(part: bytearray, at_end: bool) -> bytearray:
+    kept = part[: part.rfind(b"\n") + 1] if at_end else part[part.find(b"\n") + 1 :]
+    # A window that is one cut line keeps it: dropping it would lose the error itself.
+    return kept if kept.strip() else part
+
+
 def drain_stderr_excerpt(stream, hf_token: Optional[str] = None) -> str:
-    """Drain a worker's stderr to EOF and return it redacted, keeping the first and last 500 characters. Incremental reads keep the pipe from filling while bounding memory; long messages keep both ends since stderr prefixes often name the failing repo. Each end is redacted with 4 KiB of context past the cut, so a long signed URL cannot keep a value whose parameter name was cut off."""
+    """Drain a worker's stderr to EOF and return it redacted, keeping the first and last 500 characters (stderr prefixes often name the failing repo). Each end is redacted with 4 KiB of context past the cut and drops the line the cut splits (the extra byte shows whether it split one), so a credential whose header or parameter name was cut off is never shown."""
     if stream is None:
         return ""
     edge, window = 500, 500 + 4096 + 1
@@ -511,14 +516,13 @@ def drain_stderr_excerpt(stream, hf_token: Optional[str] = None) -> str:
         if head is None:
             full.extend(chunk)
             if len(full) > 2 * window:
-                # Each cut drops the line it splits (the extra byte shows whether it split one), so a credential whose header or parameter name was cut off is never shown.
-                head, tail, full = re.sub(rb"[^\n]*\Z", b"", full[:window]), full[-window:], None
+                head, tail, full = _drop_cut_line(full[:window], True), full[-window:], None
             continue
         tail.extend(chunk)
         del tail[:-window]
     texts = [
         download_registry.scrub_secrets(part.decode("utf-8", "replace"), hf_token = hf_token)
-        for part in ((full,) if head is None else (head, re.sub(rb"\A[^\n]*\n?", b"", tail)))
+        for part in ((full,) if head is None else (head, _drop_cut_line(tail, False)))
     ]
     if len(texts) == 1 and len(texts[0]) <= 2 * edge:
         return texts[0]

@@ -214,6 +214,12 @@ def test_worker_error_keeps_a_complete_last_line_that_fills_the_window():
     assert _failed_job_error(stderr).endswith(last_line[-500:])
 
 
+def test_worker_error_keeps_a_last_line_longer_than_the_window():
+    last_line = "RuntimeError: missing " + "shard-00001-of-00099.safetensors, " * 200
+    assert _failed_job_error(FILLER + last_line + "\n").endswith(last_line.strip()[-480:])
+    assert "RuntimeError" in _failed_job_error("OSError: " + "x" * 12000)
+
+
 def test_xet_failure_retries_over_http_for_model_and_dataset(monkeypatch, tmp_path):
     monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
     monkeypatch.setattr(download_lifecycle.threading, "Thread", _ImmediateThread)
