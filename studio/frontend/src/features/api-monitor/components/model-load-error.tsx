@@ -1,18 +1,20 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ErrorDetails } from "@/components/ui/error-details";
+import { useT } from "@/i18n";
+import { modelErrorParts } from "@/lib/model-error-message";
 import { Cancel01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { ErrorDetails } from "@/components/ui/error-details";
-import { modelErrorParts } from "@/lib/model-error-message";
 
 export function ModelLoadError({
   message,
   onDismiss,
 }: { message: string; onDismiss: () => void }) {
+  const t = useT();
   const { summary, details } = modelErrorParts(message);
   return (
-    <div className="min-w-0 max-w-full basis-full rounded-xl border border-red-500/40 bg-red-500/5 p-3 text-ui-12 text-red-600 dark:text-red-400">
+    <div className="min-w-0 max-w-full basis-full rounded-xl border border-red-500/40 bg-red-500/5 p-3 text-red-600 text-ui-12 dark:text-red-400">
       <div className="flex items-start gap-3">
         <p
           role="alert"
@@ -22,7 +24,7 @@ export function ModelLoadError({
         </p>
         <button
           type="button"
-          aria-label="Dismiss model load error"
+          aria-label={t("common.close")}
           onClick={onDismiss}
           className="shrink-0 rounded-full p-0.5 opacity-70 hover:opacity-100 focus-visible:outline-2"
         >

@@ -964,6 +964,7 @@ export const zhCN = {
     saving: "保存中...",
     search: "搜索",
     shutdown: "关闭服务",
+    technicalDetails: "技术详情",
   },
   shell: {
     helpMenu: {

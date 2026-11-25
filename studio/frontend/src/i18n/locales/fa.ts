@@ -1062,6 +1062,7 @@ export const fa = {
     saving: "در حال ذخیره...",
     search: "جستجو",
     shutdown: "خاموش کردن",
+    technicalDetails: "جزئیات فنی",
   },
   shell: {
     helpMenu: {

@@ -968,6 +968,7 @@ export const ja = {
     saving: "保存中...",
     search: "検索",
     shutdown: "シャットダウン",
+    technicalDetails: "技術的な詳細",
   },
   shell: {
     helpMenu: {

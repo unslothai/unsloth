@@ -1068,6 +1068,7 @@ export const id = {
     saving: "Menyimpan...",
     search: "Cari",
     shutdown: "Matikan",
+    technicalDetails: "Detail teknis",
   },
   shell: {
     helpMenu: {

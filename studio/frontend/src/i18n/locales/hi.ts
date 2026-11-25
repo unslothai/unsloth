@@ -970,6 +970,7 @@ export const hi = {
     saving: "सहेजा जा रहा है...",
     search: "खोजें",
     shutdown: "शटडाउन",
+    technicalDetails: "तकनीकी विवरण",
   },
   shell: {
     helpMenu: {

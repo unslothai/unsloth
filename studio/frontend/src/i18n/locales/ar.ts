@@ -966,6 +966,7 @@ export const ar = {
     saving: "جارٍ الحفظ...",
     search: "بحث",
     shutdown: "إيقاف التشغيل",
+    technicalDetails: "التفاصيل التقنية",
   },
   shell: {
     helpMenu: {

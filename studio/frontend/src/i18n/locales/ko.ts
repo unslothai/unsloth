@@ -966,6 +966,7 @@ export const ko = {
     saving: "저장 중...",
     search: "검색",
     shutdown: "종료",
+    technicalDetails: "기술 세부 정보",
   },
   shell: {
     helpMenu: {

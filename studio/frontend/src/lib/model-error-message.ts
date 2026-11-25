@@ -3,15 +3,18 @@
 
 export const MODEL_ERROR_SUMMARY_LIMIT = 240;
 
-/** Keep the full error available; bound only the always-visible summary. */
+// Labels the backend's _with_startup_diagnostics appends after the human-readable message.
+const DIAGNOSTICS_BOUNDARY = /\r?\n\r?\n(?:llama-server output:|Full log: )/;
+const NEWLINE = /\r?\n/;
+
 export function modelErrorParts(message: string): {
   summary: string;
   details: string | null;
 } {
   const text = message.trim();
-  const boundary = text.search(/\r?\n\r?\n(?:llama-server output:|Full log: )/);
+  const boundary = text.search(DIAGNOSTICS_BOUNDARY);
   const visible = boundary < 0 ? text : text.slice(0, boundary).trim();
-  const lines = visible.split(/\r?\n/);
+  const lines = visible.split(NEWLINE);
   const compact =
     lines.length > 3 ? `${lines.slice(0, 3).join("\n")}…` : visible;
   const summary =

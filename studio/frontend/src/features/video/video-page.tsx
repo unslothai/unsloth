@@ -368,17 +368,28 @@ function showVideoFailureToast(error: string | null | undefined): boolean {
   const hasReason = Boolean(errorType || detail);
   const reason = [errorType, detail].filter(Boolean).join(": ");
   const reasonParts = modelErrorParts(reason);
-  modelErrorToast(title, {
-    description: hasReason && !reasonParts.details ? (
-      <span className="[overflow-wrap:anywhere]">
-        {errorType && <code className="font-mono">{errorType}</code>}
-        {errorType && detail ? ": " : null}
-        {detail}
-      </span>
-    ) : undefined,
-    duration: hasReason ? FAILURE_WITH_REASON_TOAST_MS : undefined,
-    action: generationFailureLogsAction(title),
-  }, reasonParts.details ? reason : undefined);
+  const longReason = reasonParts.details !== null;
+  modelErrorToast(
+    title,
+    {
+      description: hasReason ? (
+        <span className="[overflow-wrap:anywhere]">
+          {longReason ? (
+            reasonParts.summary
+          ) : (
+            <>
+              {errorType && <code className="font-mono">{errorType}</code>}
+              {errorType && detail ? ": " : null}
+              {detail}
+            </>
+          )}
+        </span>
+      ) : undefined,
+      duration: hasReason ? FAILURE_WITH_REASON_TOAST_MS : undefined,
+      action: generationFailureLogsAction(title),
+    },
+    longReason ? reason : undefined,
+  );
   return true;
 }
 

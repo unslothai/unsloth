@@ -1075,6 +1075,7 @@ export const pl = {
     saving: "Zapisywanie...",
     search: "Szukaj",
     shutdown: "Zamknij",
+    technicalDetails: "Szczegóły techniczne",
   },
   shell: {
     helpMenu: {

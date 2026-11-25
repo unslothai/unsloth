@@ -1069,6 +1069,7 @@ export const vi = {
     saving: "Đang lưu...",
     search: "Tìm kiếm",
     shutdown: "Tắt",
+    technicalDetails: "Chi tiết kỹ thuật",
   },
   shell: {
     helpMenu: {
