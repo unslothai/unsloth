@@ -156,7 +156,17 @@ def _gpu_rows() -> list:
         utilization = hw.get_visible_gpu_utilization()
     except Exception:  # noqa: BLE001
         utilization = {}
-    for device in utilization.get("devices", []) or []:
+    names: list = []
+    devices = utilization.get("devices", []) or []
+    if any(not d.get("name") for d in devices):
+        try:
+            from utils.hardware import nvidia
+
+            # By visible ordinal, from nvidia-smi (no CUDA context in the server); the utilization rows can lack names.
+            names = [row[3] if row else None for row in (nvidia.get_cuda_device_info() or [])]
+        except Exception:  # noqa: BLE001
+            names = []
+    for ordinal, device in enumerate(devices):
         total = device.get("vram_total_gb")
         used = device.get("vram_used_gb")
         if device.get("index") is None or total is None:
@@ -164,7 +174,14 @@ def _gpu_rows() -> list:
         rows.append(
             {
                 "index": int(device["index"]),
-                "name": device.get("name") or device.get("gpu_name") or "GPU",
+                "name": device.get("name")
+                or device.get("gpu_name")
+                or (
+                    names[device.get("visible_ordinal", ordinal)]
+                    if device.get("visible_ordinal", ordinal) < len(names)
+                    else None
+                )
+                or "GPU",
                 "total_gb": round(float(total), 2),
                 "free_gb": round(max(float(total) - float(used or 0.0), 0.0), 2),
             }
