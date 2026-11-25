@@ -533,7 +533,8 @@ $predicate = @($lockSrc -split "`n" | Where-Object {
 Check "the predicate is one line of the shipped source" ($predicate.Count -eq 1)
 $test = $null
 if ($predicate.Count -eq 1) {
-    # Two statements: one expression would bind C to Create as an extra argument and fail.
+    # Two statements, not one expression: [scriptblock]::Create(A -replace B, C) binds C as a
+    # second ARGUMENT to Create rather than to -replace, and fails on the overload.
     $rewritten = ($predicate[0].Trim() -replace '^if \(', 'return (') -replace '\) \{$', ')'
     $test = [scriptblock]::Create($rewritten)
 }
