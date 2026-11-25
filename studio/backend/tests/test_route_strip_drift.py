@@ -129,6 +129,11 @@ def test_route_strip_is_disabled_when_healing_is_off(route_strip):
             'foo[ARGS]{} foo[ARGS]{"q":"search[ARGS]{}"} Answer.',
             'foo[ARGS]{} foo[ARGS]{"q":"search[ARGS]{}"} Answer.',
         ),
+        ('search[ARGS]{"q":"`"}search[ARGS]{} Answer: `42`.', " Answer: `42`."),
+        (
+            '```\nsearch[ARGS]{}\n<tool_call>{"name":"search","arguments":{}}</tool_call>\n```',
+            "```\nsearch[ARGS]{}\n\n```",
+        ),
     ],
 )
 def test_route_strip_keeps_rehearsal_and_marker_rules_apart(route_strip, text, expected):

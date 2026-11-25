@@ -6976,6 +6976,7 @@ def _display_tool_name_gate(active_tools):
 
 
 _SHIELD_REHEARSAL_RE = _re.compile(r"(?<!\[CALL_ID\])\b([\w-]+)\[ARGS\]\s*\{")
+_BODILESS_REHEARSAL_TAIL_RE = _re.compile(r"(?<!\[CALL_ID\])\b([\w-]+)\[ARGS\]\s*\Z")
 
 
 def _strip_tool_xml_for_display(
@@ -6994,12 +6995,11 @@ def _strip_tool_xml_for_display(
     ):
         return text
     from core.tool_healing import (
-        _REHEARSAL_TAIL_STRIP_RE,
         _balanced_json_span,
         _code_spans,
+        _in_code,
         _markerless_promotable,
         _strip_bracket_tag_calls,
-        apply_tool_strip_patterns,
         strip_outside_think,
     )
 
@@ -7009,40 +7009,42 @@ def _strip_tool_xml_for_display(
         # llama-server leaves MiniMax blocks in content when tool_choice is "none".
         seg = _strip_minimax_calls(seg, final = is_last)
         seg = _strip_lfm_calls(seg, final = is_last)
-        seg = bracketed = _strip_bracket_tag_calls(seg, enabled_tool_names = enabled_tool_names)
+        seg = _strip_bracket_tag_calls(seg, enabled_tool_names = enabled_tool_names)
         if is_last:
             seg = _strip_gemma_wrapperless_calls(seg, enabled_tool_names)
         seg = _strip_glm_calls(seg, final = is_last)
         seg = _strip_function_xml_calls(seg, final = is_last)
         if is_last:
-            # Leftmost wins: a rehearsal the bracket scan kept is an example and shields markup quoted in it (never past
-            # its code span), while a real call starting first takes a rehearsal quoted in its arguments with it.
-            spans, si, unchanged = _code_spans(seg), 0, seg == bracketed
+            # Leftmost wins: a rehearsal kept as an example shields markup quoted in it (never past its code span), while a
+            # real call starting first takes a rehearsal quoted in its arguments with it.
+            spans, si = _code_spans(seg), 0
 
-            def _next_example(lo):
-                # (start, end) of the next example from lo; end None marks an unfinished call, which no example follows.
+            def _next_rehearsal(lo):
+                # (start, end, keep) from lo, judged as the bracket scan judges it: an example is kept, a call removed. An
+                # unfinished call has end None: the rest of the segment is its body.
                 nonlocal si
                 m = _SHIELD_REHEARSAL_RE.search(seg, lo)
                 if m is None:
                     return None
+                brace = m.end() - 1
                 while si < len(spans) and spans[si][1] <= m.start():
                     si += 1
                 if si < len(spans) and spans[si][0] <= m.start():
-                    # The rest of its code span is quoted too, so the passes below start outside code.
-                    return m.start(), spans[si][1]
-                end = _balanced_json_span(seg, m.end() - 1)
+                    code_end = spans[si][1] - 1
+                    body = _balanced_json_span(seg[brace : code_end + 1], 0)
+                    return m.start(), (code_end if body is None else brace + body) + 1, True
+                end = _balanced_json_span(seg, brace)
+                promotable = _markerless_promotable(m.group(1), enabled_tool_names)
                 if end is not None:
-                    return m.start(), end + 1
-                if not _markerless_promotable(m.group(1), enabled_tool_names):
-                    # An unfinished inactive example is kept to the end, as the old rehearsal arm kept it.
-                    return m.start(), len(seg)
-                return m.start(), None
+                    return m.start(), end + 1, not promotable
+                # An unfinished inactive example is kept to the end, as the old rehearsal arm kept it.
+                return m.start(), None if promotable else len(seg), True
 
-            def _next_call(lo, example):
-                # Ends at the example's end, so an opener quoted in it never scans to EOS; a hit before it is re-matched whole.
-                hi = len(seg) if example is None else example[1]
+            def _next_call(lo, bound):
+                # Ends at the rehearsal's end, so an opener quoted in it never scans to EOS; a hit before it is re-matched.
+                hi = len(seg) if bound is None else bound[1]
                 while (call := _TOOL_XML_RE.search(seg, lo, hi)) is not None:
-                    if example is None or call.start() >= example[0]:
+                    if bound is None or call.start() >= bound[0]:
                         return call
                     full = _TOOL_XML_RE.match(seg, call.start())
                     if full is not None:
@@ -7050,30 +7052,42 @@ def _strip_tool_xml_for_display(
                     lo = call.start() + 1
                 return None
 
-            out, pos, removed_len, kept_end, example = [], 0, 0, 0, _next_example(0)
+            out, pos, removed_len, kept_end, xml_removed = [], 0, 0, 0, False
+            rehearsal = _next_rehearsal(0)
             while True:
-                if example is not None and example[0] < pos:
-                    example = _next_example(pos)
-                keep = example if example is not None and example[1] is not None else None
-                call = _next_call(pos, keep)
-                if call is not None and (keep is None or call.start() < keep[0]):
+                if rehearsal is not None and rehearsal[0] < pos:
+                    rehearsal = _next_rehearsal(pos)
+                bound = rehearsal if rehearsal is not None and rehearsal[1] is not None else None
+                call = _next_call(pos, bound)
+                if call is not None and (rehearsal is None or call.start() < rehearsal[0]):
                     out.append(seg[pos : call.start()])
                     removed_len += call.end() - call.start()
-                    pos = call.end()
-                elif keep is not None:
-                    out.append(seg[pos : keep[1]])
-                    pos = keep[1]
-                    kept_end = pos - removed_len
-                else:
+                    pos, xml_removed = call.end(), True
+                elif rehearsal is not None and bound is None:
+                    out.append(seg[pos : rehearsal[0]])
+                    pos = len(seg)
                     break
-            out.append(seg[pos:])
+                elif bound is not None:
+                    start, end, keep = bound
+                    out.append(seg[pos : end if keep else start])
+                    if keep:
+                        kept_end = end - removed_len
+                    else:
+                        removed_len += end - start
+                    pos = end
+                else:
+                    out.append(seg[pos:])
+                    break
             seg = "".join(out)
-            # The truncated rehearsal tail, gated and code-aware as in strip_segment, after the last example only, so a
-            # prefix quoted in an example cannot cut it.
-            seg = seg[:kept_end] + apply_tool_strip_patterns(
-                seg[kept_end:], [_REHEARSAL_TAIL_STRIP_RE], enabled_tool_names
-            )
-            if unchanged and not removed_len:
+            # A bodiless call at the very end, never one inside a kept example.
+            tail = _BODILESS_REHEARSAL_TAIL_RE.search(seg, kept_end)
+            if (
+                tail is not None
+                and _markerless_promotable(tail.group(1), enabled_tool_names)
+                and not _in_code(_code_spans(seg), tail.start())
+            ):
+                seg = seg[: tail.start()]
+            if not xml_removed:
                 return seg
             # A removed call can hold a backtick that made a later complete call read as code: rescan without it.
             return _strip_bracket_tag_calls(seg, enabled_tool_names = enabled_tool_names)
