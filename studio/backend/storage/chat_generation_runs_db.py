@@ -25,8 +25,7 @@ ACTIVE_STATUSES = frozenset({"queued", "running", "cancelling"})
 TERMINAL_STATUSES = frozenset({"cancelled", "completed", "failed"})
 ALL_STATUSES = ACTIVE_STATUSES | TERMINAL_STATUSES
 _EVENTS_LOCK = threading.RLock()
-# run id -> [condition on _EVENTS_LOCK, notifying commits for that run, parked waiters]; an entry lives
-# only while a waiter holds it, so a commit for one run wakes that run's followers, not every follower.
+# run id -> [condition, commit count, parked waiters]; per-run so commits wake only that run's followers.
 _RUN_WAITERS: dict[str, list[Any]] = {}
 _RUN_TOMBSTONE_PREFIX = "chat-generation-run-tombstone:"
 ChatGenerationEventInput = Union[tuple[str, dict[str, Any]], tuple[str, dict[str, Any], int]]
@@ -1058,8 +1057,7 @@ def wait_for_events(
         if slot is None:
             slot = _RUN_WAITERS[run_id] = [threading.Condition(_EVENTS_LOCK), 0, 0]
         slot[2] += 1
-        # Bumped under the lock after each commit notifying this run: unchanged means the unlocked
-        # read saw them all.
+        # Snapshot the commit count before the unlocked read; unchanged under the lock = no missed wakeup.
         seen = slot[1]
     try:
         events = read(run_id, after)

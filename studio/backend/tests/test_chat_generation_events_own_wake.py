@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A parked follower wakes for its own run's commits (events, cancel, terminal, reconcile), not for
-other runs streaming at the flush rate."""
+"""A parked follower wakes only for its own run's commits."""
 
 import threading
 import time
@@ -59,7 +58,6 @@ def _park(
     reads,
     timeout = 10,
 ):
-    """Starts wait_for_events in a thread and returns once its first read is done (it is parking)."""
     cursor = int(runs_db.get_run_state(run_id)["lastEventSeq"])
     before = reads.count(run_id)
     result = {}
