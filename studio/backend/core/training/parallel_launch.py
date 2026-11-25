@@ -153,6 +153,12 @@ def launch_ranks(
     if sys.platform.startswith("linux"):
         os.environ.setdefault("NCCL_SOCKET_IFNAME", "lo")
         os.environ.setdefault("GLOO_SOCKET_IFNAME", "lo")
+    if not config.get("output_dir") and not config.get("resume_from_checkpoint"):
+        # The worker names a fresh run directory from the clock; every rank must use rank 0's.
+        from utils.training_runs import build_default_output_dir_name
+        config["output_dir"] = build_default_output_dir_name(
+            config["model_name"], config.get("project_name")
+        )
     base = dict(os.environ)
     base["PYTHONPATH"] = os.pathsep.join([_backend_dir(), *filter(None, [base.get("PYTHONPATH")])])
     base[_PARENT_ENV] = str(os.getpid())

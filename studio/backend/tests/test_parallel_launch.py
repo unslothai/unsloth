@@ -45,6 +45,7 @@ def _start(tmp_path, monkeypatch, **extra):
         "parallel": {"launcher": "multi_process", "world_size": 2, "spec": "dp=2", "mode": "ddp"},
         "resolved_gpu_ids": [0, 1],
         "out_dir": str(tmp_path),
+        "model_name": "unsloth/Qwen3-0.6B",
         **extra,
     }
     ctx = mp.get_context("spawn")
@@ -87,6 +88,8 @@ def test_ranks_get_the_torchrun_env_and_stop_at_the_same_step(tmp_path, monkeypa
         assert [r["is_main_rank"] for r in ranks] == [True, False]
         # Rank 0 narrowed the GPU mask; the others inherit it rather than narrowing again.
         assert ranks[0]["resolved_gpu_ids"] == [0, 1] and ranks[1]["resolved_gpu_ids"] is None
+        # One run directory, named by rank 0 before the others started.
+        assert ranks[0]["output_dir"] and ranks[0]["output_dir"] == ranks[1]["output_dir"]
         # The stop and its save choice reached rank 1 at rank 0's step.
         assert ranks[0]["last_step"] == ranks[1]["last_step"]
         assert all(r["stopped"] and r["save"] is False for r in ranks)

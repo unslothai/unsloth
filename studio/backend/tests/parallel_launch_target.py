@@ -31,6 +31,7 @@ def train(event_queue, stop_queue, config):
         )
     }
     info["resolved_gpu_ids"] = config.get("resolved_gpu_ids")
+    info["output_dir"] = config.get("output_dir")
     info["is_main_rank"] = parallel_launch.is_main_rank()
     stop = save = False
     step = 0
