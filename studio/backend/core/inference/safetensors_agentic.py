@@ -51,6 +51,7 @@ from core.inference.tool_call_parser import (
 
 from core.tool_healing import (
     _markerless_promotable,
+    parse_tool_calls_from_text as _parse_spanned_tool_calls,
     _THINK_CLOSE_RE,
     _think_spans_outside_tool_markup,
     strip_outside_think,
@@ -340,6 +341,22 @@ def _assistant_turn_msg(content: str, *, split: bool) -> dict:
             msg["content"] = _THINK_BLOCK_RE.sub("", content)
             msg["reasoning_content"] = "\n".join(thoughts)
     return msg
+
+
+def _without_call_spans(text: str, *, allow_incomplete: bool, enabled_tool_names) -> str:
+    """Cut the parsed calls' spans out of ``text``; Inkling's own call is a native block the strippers keep."""
+    _calls, spans = _parse_spanned_tool_calls(
+        text,
+        allow_incomplete = allow_incomplete,
+        enabled_tool_names = enabled_tool_names,
+        with_spans = True,
+    )
+    out, pos = [], 0
+    for start, end in spans:
+        out.append(text[pos:start])
+        pos = max(pos, end)
+    out.append(text[pos:])
+    return "".join(out)
 
 
 def _append_raw_turn(conversation: list, assistant_msg: dict, *, continue_final_message: bool):
@@ -1316,10 +1333,24 @@ def run_safetensors_tool_loop(
                 enabled_tool_names = _enabled_names_gate,
             )
 
+        replay_text = None
         if tool_calls:
             next_call_id += len(tool_calls)
             # Strip a leading bare-JSON call from kept content, since _strip_tool_markup_final only knows XML.
             content_text = strip_leading_bare_json_call(content_text, _enabled_tool_names)
+            if split_reasoning_content:
+                # Replay only, the shown text stays as streamed: left in content the template renders the call twice.
+                replay_text = _strip_tool_markup_final(
+                    _without_call_spans(
+                        content_accum,
+                        allow_incomplete = auto_heal_tool_calls,
+                        enabled_tool_names = _enabled_names_gate,
+                    ),
+                    auto_heal_tool_calls = auto_heal_tool_calls,
+                    tool_protocol_active = True,
+                    enabled_tool_names = _enabled_names_gate,
+                )
+                replay_text = strip_leading_bare_json_call(replay_text, _enabled_tool_names)
 
         # Transformers/MLX report the finished turn here; never run a healed, token-cut call.
         turn_stats = (generation_stats_holder or {}).get("stats") or {}
@@ -1423,7 +1454,9 @@ def run_safetensors_tool_loop(
             if disable_parallel_tool_use and len(tool_calls) > 1:
                 tool_calls, over_cap = tool_calls[:1], []
 
-        assistant_msg = _assistant_turn_msg(content_text, split = split_reasoning_content)
+        assistant_msg = _assistant_turn_msg(
+            content_text if replay_text is None else replay_text, split = split_reasoning_content
+        )
         assistant_appended = False
         # Defer no-op nudges so one no-op does not abort the rest of the batch.
         deferred_noop_msgs: list = []
@@ -1460,6 +1493,8 @@ def run_safetensors_tool_loop(
                         assistant_msg,
                         continue_final_message = continue_final_message,
                     )
+                    # A resumed partial merges into a copy; later calls must reach the stored message.
+                    assistant_msg = conversation[-1]
                     assistant_appended = True
                 if provisional_match and not provisional_resolved:
                     # Close a shown provisional render_html card so it never dangles if the call becomes a no-op.
