@@ -2647,18 +2647,26 @@ def test_a_failure_after_the_sweep_is_an_incomplete_replacement(tmp_path, monkey
     assert "part way through a replacement" in str(exc.value)
 
 
-def test_a_failure_finalising_the_new_tree_is_an_incomplete_replacement(tmp_path, monkeypatch):
+@pytest.mark.parametrize("step", ["_locate_sd_cli", "_make_executable"])
+def test_a_failure_finalising_the_new_tree_is_an_incomplete_replacement(
+    tmp_path, monkeypatch, step
+):
     """A chmod or locate failure after the sweep leaves a mixed tree; as an ordinary error it
     memoises the accelerator and returns a path the sweep may have removed."""
+    if step == "_make_executable" and sys.platform == "win32":
+        pytest.skip("install never chmods on Windows")
     zb = _zip_with_sd_cli()
     _stub_release(monkeypatch, zip_bytes = zb, digest = "sha256:" + hashlib.sha256(zb).hexdigest())
+    calls = []
 
-    def _chmod_fails(_path):
+    def _fails(_path):
+        calls.append(_path)
         raise OSError("read-only filesystem")
 
-    monkeypatch.setattr(sdmod, "_make_executable", _chmod_fails)
+    monkeypatch.setattr(sdmod, step, _fails)
     with pytest.raises(sdmod.SupersededBinaryError) as exc:
         install(install_dir = tmp_path)
+    assert calls, f"install never reached {step}, so nothing failed"
     assert "part way through a replacement" in str(exc.value)
 
 
