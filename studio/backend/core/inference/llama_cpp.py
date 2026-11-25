@@ -33671,7 +33671,6 @@ class LlamaCppBackend:
                     _crash_text = "\n".join(self._stdout_lines[-200:])
                     if (
                         not _fit_retry_pool
-                        or _fit_retry_restore is not None
                         # Only an allocation failure disproves the estimate; a kernel-image
                         # crash belongs to the arch-crash rung, which blames the planned cards.
                         or not self._is_gpu_memory_start_failure(_crash_text)
@@ -33730,8 +33729,8 @@ class LlamaCppBackend:
                     retry without the MoE expert cache, and one --fit recovery.
                     Separate flags, so a library mix does not spend the fit slot
                     and a VRAM crash after the correction can still fit-retry. A
-                    widened --fit recovery that hits a kernel-image error gets one
-                    more launch on the planned cards.
+                    widened --fit recovery that crashes gets one more launch on the
+                    planned cards.
                     """
                     # _mem_host_resident too: the --fit on retry re-arms the
                     # page-lock and writes it back, which without this makes the
@@ -34172,16 +34171,17 @@ class LlamaCppBackend:
                         _capability_crash = _capability_crash or (
                             self._cuda_kernel_image_error("\n".join(self._stdout_lines)) is not None
                         )
-                        if _fit_retry_restore is not None and self._kernel_image_invalid(
-                            "\n".join(self._stdout_lines[-80:])
-                        ):
-                            # A card the widen added has no kernels in this build: the --fit on
-                            # retry still gets the planned cards, as it did before the widen.
+                        if _fit_retry_restore is not None and _startup_crashed:
+                            # The widened launch is an extra attempt: whatever sank it (a
+                            # card without kernels, a fitter misjudgment), the --fit on retry
+                            # on the planned cards runs next, and every rung after it sees
+                            # what it would have seen without the widen.
                             logger.warning(
-                                "The --fit on retry over GPUs %s hit a kernel-image error; "
-                                "retrying once with --fit on over the planned GPU(s). "
-                                "Crash log: %s",
+                                "The --fit on retry over GPUs %s crashed during startup "
+                                "(exit code %s); retrying once with --fit on over the "
+                                "planned GPU(s). Crash log: %s",
                                 list(_child_gpu_physical_ids or ()),
+                                _crashed_proc.returncode,
                                 self._llama_log_path,
                             )
                             _restore_fit_retry_mask()

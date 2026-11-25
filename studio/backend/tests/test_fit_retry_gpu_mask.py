@@ -258,19 +258,18 @@ def test_a_card_the_build_cannot_run_is_not_added(monkeypatch, tmp_path):
 
 
 def test_a_failed_widened_retry_hands_later_rungs_the_planned_mask(monkeypatch, tmp_path):
-    # The widened retry hard-crashes, so the flash-attention rung respawns; the shared env
-    # it inherits must be the planned one again.
+    # The widened retry and the planned-card retry both hard-crash, so the flash-attention
+    # rung respawns; the shared env it inherits must be the planned one again.
     _backend, launches, error = _load(
         monkeypatch,
         tmp_path,
-        returncodes = [1, -11, None],
-        outputs = [_OOM, "Segmentation fault"],
+        returncodes = [1, -11, -11, None],
+        outputs = [_OOM, "Segmentation fault", "Segmentation fault"],
     )
     assert error is None
-    assert len(launches) == 3
-    assert "--flash-attn" in launches[2][0]
-    assert launches[2][0][launches[2][0].index("--flash-attn") + 1] == "off"
-    assert [_mask(launch) for launch in launches] == ["0", "0,1", "0"]
+    assert len(launches) == 4
+    assert launches[3][0][launches[3][0].index("--flash-attn") + 1] == "off"
+    assert [_mask(launch) for launch in launches] == ["0", "0,1", "0", "0"]
 
 
 def test_a_trailing_user_fit_off_keeps_the_planned_mask(monkeypatch, tmp_path):
@@ -308,22 +307,31 @@ def test_a_failed_widened_pick_publishes_the_planned_card_again(monkeypatch, tmp
     assert backend.gpu_ids == [1]
 
 
-def test_a_kernel_error_on_an_added_card_falls_back_to_the_planned_card(monkeypatch, tmp_path):
-    # GPU 0 runs out of memory, then the widened child hits a kernel-image error on GPU 1.
-    # The --fit on retry main runs on GPU 0 alone still gets its turn, and comes up.
+@pytest.mark.parametrize(
+    ("returncode", "crash"),
+    [
+        (1, "CUDA error: no kernel image is available for execution on the device"),
+        (-11, "Segmentation fault"),
+        (1, _OOM),
+    ],
+    ids = ["added-card-has-no-kernels", "signal", "out-of-memory-again"],
+)
+def test_a_crashed_widened_retry_falls_back_to_the_planned_card(
+    monkeypatch, tmp_path, returncode, crash
+):
+    # Whatever sinks the widened launch, the --fit on retry main runs on GPU 0 alone still
+    # gets its turn, and comes up.
     backend, launches, error = _load(
         monkeypatch,
         tmp_path,
-        returncodes = [1, 1, None],
-        outputs = [
-            _OOM,
-            "CUDA error: no kernel image is available for execution on the device",
-        ],
+        returncodes = [1, returncode, None],
+        outputs = [_OOM, crash],
     )
     assert error is None
     assert backend._healthy
     assert [_mask(launch) for launch in launches] == ["0", "0,1", "0"]
     assert [_fit_mode(launch[0]) for launch in launches] == ["off", "on", "on"]
+    assert backend._child_gpu_physical_ids == (0,)
 
 
 def test_the_arch_rung_fit_retry_stays_on_the_cards_it_kept(monkeypatch, tmp_path):
