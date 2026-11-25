@@ -4082,8 +4082,28 @@ def _references_studio_credential_here(
     _assign_expand_depth: int = 0,
     _quoted_assignments: bool = False,
     _positional_assignments: bool = False,
+    _cleared: "set | None" = None,
+    _depth: int = 0,
 ) -> bool:
     """Checks credential refs and .. paths from the tool cwd (the one shape that can leave the sandbox); a binding of the variable first names its own dir"""
+    # The bracket rewrites reach one text along many paths: a nested `[[...]]` took minutes. Only clean
+    # results are kept (a True ends the call), per call and per recursion depth, so every answer and
+    # RecursionError stay as a rescan gives; a digest keeps long texts from piling up in memory.
+    if _cleared is None:
+        _cleared = set()
+    key = None
+    if type(text) is str and (workdir is None or type(workdir) is str):
+        key = (
+            hashlib.sha256(text.encode("utf-8", "surrogatepass")).digest(),
+            workdir,
+            _unescaped,
+            _assign_expand_depth,
+            _quoted_assignments,
+            _positional_assignments,
+            _depth,
+        )
+        if key in _cleared:
+            return False
     if "=" in text and _rebinds_the_studio_home_first(text):
         text = _expand_shell_assignments(text)
     if _references_studio_credential(text):
@@ -4103,18 +4123,22 @@ def _references_studio_credential_here(
         # One level only: recursing per pass raised RecursionError on long `\\` runs.
         unescaped = _ESCAPED_WORD_CHAR_RE.sub(r"\1", text)
         if unescaped != text and _references_studio_credential_here(
-            unescaped, workdir, _unescaped = True
+            unescaped, workdir, _unescaped = True, _cleared = _cleared, _depth = _depth + 1
         ):
             return True
     if "[" in text:
         # Read one-char classes as literals before the wildcard collapse discards them.
         literal = _SINGLETON_CLASS_RE.sub(r"\1", text)
-        if literal != text and _references_studio_credential_here(literal, workdir):
+        if literal != text and _references_studio_credential_here(
+            literal, workdir, _cleared = _cleared, _depth = _depth + 1
+        ):
             return True
     # `aut[h]` splits at the brackets, which also end a path token; `aut?` keeps it whole.
     if "[" in text:
         collapsed = _BRACKET_CLASS_RE.sub("?", text)
-        if collapsed != text and _references_studio_credential_here(collapsed, workdir):
+        if collapsed != text and _references_studio_credential_here(
+            collapsed, workdir, _cleared = _cleared, _depth = _depth + 1
+        ):
             return True
     # The kernel resolves the symlink before `..`; lexical normpath would miss it.
     if workdir and "/proc/" in text:
@@ -4124,13 +4148,17 @@ def _references_studio_credential_here(
     # Bypass repoints HOME at the workdir; substitute rather than replace.
     if workdir and ("pwd" in text.lower() or "%cd%" in text.lower()):
         here = _CWD_VARIABLE_RE.sub(lambda _m: workdir.rstrip("/\\"), text)
-        if here != text and _references_studio_credential_here(here, workdir):
+        if here != text and _references_studio_credential_here(
+            here, workdir, _cleared = _cleared, _depth = _depth + 1
+        ):
             return True
     if workdir and ("home" in text.lower() or "~" in text):
         homed = _HOME_VARIABLE_RE.sub(lambda _m: workdir.rstrip("/\\"), text)
         # A workdir spelling `~` would substitute to another match, so recurse only once it is gone.
         if homed != text and not _HOME_VARIABLE_RE.search(homed):
-            if _references_studio_credential_here(homed, workdir):
+            if _references_studio_credential_here(
+                homed, workdir, _cleared = _cleared, _depth = _depth + 1
+            ):
                 return True
     # One level of variable indirection; it only adds detections.
     if "$" in text:
@@ -4175,6 +4203,8 @@ def _references_studio_credential_here(
                     _assign_expand_depth = _assign_expand_depth + 1,
                     _quoted_assignments = include_quoted,
                     _positional_assignments = positional,
+                    _cleared = _cleared,
+                    _depth = _depth + 1,
                 ):
                     return True
     # A `cd` earlier in the command moves where every later relative path opens from.
@@ -4196,6 +4226,8 @@ def _references_studio_credential_here(
                 ):
                     return True
     if not workdir or ".." not in text:
+        if key is not None:
+            _cleared.add(key)
         return False
     for token in (m.group(0) for m in _path_tokens_containing(text, "..")):
         if "/" not in token and "\\" not in token:
@@ -4205,6 +4237,8 @@ def _references_studio_credential_here(
             for spelling in _token_spellings(token)
         ):
             return True
+    if key is not None:
+        _cleared.add(key)
     return False
 
 
