@@ -397,8 +397,7 @@ def _doc_column(key: str) -> str:
 
 
 def _gold_options(value, top = True):
-    # a scalar or a list of them, nested or not; null alternates are ignored, a gold with no options
-    # matches its literal text, and trailing whitespace is dropped as the stripped response lacks it
+    # None alternates drop, an option-less list matches its literal text; rstrip: responses are stripped
     if isinstance(value, list):
         options = [o for item in value if item is not None for o in _gold_options(item, False)]
         return options or ([str(value)] if top else [])
