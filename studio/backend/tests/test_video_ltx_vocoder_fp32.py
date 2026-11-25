@@ -40,7 +40,18 @@ def _tiny_vocoder(dtype):
     with torch.no_grad():
         for p in voc.parameters():
             p.add_(torch.randn_like(p) * 0.05)
+        # a bf16 checkpoint: weights and persistent buffers hold bf16 values; the non-persistent resampler
+        # filter is computed at build time in float32
+        for t in voc.state_dict().values():
+            if t.is_floating_point():
+                t.copy_(t.bfloat16().float())
     return voc.to(dtype)
+
+
+def _reference_and_studio():
+    """(float32 build of a bf16 checkpoint, the same model as Studio loads it: everything cast to bf16)."""
+    ref = _tiny_vocoder(torch.float32)
+    return ref, copy.deepcopy(ref).to(torch.bfloat16)
 
 
 def _mel(dtype = torch.bfloat16):
@@ -54,21 +65,47 @@ def _clean_env(monkeypatch):
 
 
 @torch.no_grad()
-def test_bf16_vocoder_matches_float32_copy_bit_for_bit():
-    voc = _tiny_vocoder(torch.bfloat16)
-    ref = copy.deepcopy(voc).float()
-    L.install_vocoder_fp32_forward(voc)
+def test_bf16_vocoder_matches_the_float32_build_bit_for_bit():
+    ref, voc = _reference_and_studio()
     mel = _mel()
+    # the bf16 cast rounded the resampler filter: a plain .float() copy is not the reference
+    assert not torch.equal(copy.deepcopy(voc).float()(mel.float()), ref(mel.float()))
+    L.install_vocoder_fp32_forward(voc)
     out = voc(mel)
     assert out.dtype == torch.float32
     assert torch.equal(out, ref(mel.float()))
-    # weights stay at their stored dtype after the call
+    # weights and the stored filter keep their dtype: the float32 filter is swapped in for the call only
     assert {p.dtype for p in voc.parameters()} == {torch.bfloat16}
+    assert voc.resampler.filter.dtype == torch.bfloat16
+    assert torch.equal(voc(mel), out)
+
+
+@torch.no_grad()
+def test_filter_computed_in_bf16_is_rebuilt(monkeypatch):
+    """diffusers' from_pretrained builds under torch_dtype as the default dtype: the filter is computed in bf16."""
+    ref = _tiny_vocoder(torch.float32)
+    prev = torch.get_default_dtype()
+    torch.set_default_dtype(torch.bfloat16)
+    try:
+        bf16_filter = type(ref.resampler)(
+            ratio = ref.resampler.ratio, window_type = "hann", persistent = False
+        ).filter
+    finally:
+        torch.set_default_dtype(prev)
+    voc = copy.deepcopy(ref).to(torch.bfloat16)
+    voc.resampler._buffers["filter"] = bf16_filter
+    assert not torch.equal(bf16_filter, ref.resampler.filter.bfloat16())
+    base = copy.deepcopy(voc)
+    L.install_vocoder_fp32_forward(voc)
+    mel = _mel()
+    assert torch.equal(voc(mel), ref(mel.float()))
+    monkeypatch.setenv(L.VOCODER_FP32_ENV, "0")
+    assert torch.equal(voc(mel), base(mel))
 
 
 @torch.no_grad()
 def test_kill_switch_runs_the_stored_dtype(monkeypatch):
-    voc = _tiny_vocoder(torch.bfloat16)
+    _, voc = _reference_and_studio()
     base = copy.deepcopy(voc)
     L.install_vocoder_fp32_forward(voc)
     mel = _mel()
@@ -98,8 +135,17 @@ def test_install_never_raises_on_a_non_module():
     L.install_vocoder_fp32_forward(object())
 
 
+def test_a_changed_resampler_filter_is_left_alone():
+    _, voc = _reference_and_studio()
+    with torch.no_grad():
+        voc.resampler.filter.mul_(0.5)
+    stored = voc.resampler.filter.clone()
+    L.install_vocoder_fp32_forward(voc)
+    assert torch.equal(voc.resampler.filter, stored)
+
+
 def test_loader_installs_the_float32_forward(monkeypatch):
-    voc = _tiny_vocoder(torch.bfloat16)
+    _, voc = _reference_and_studio()
     state = dict(voc.state_dict())
 
     class _Fake:

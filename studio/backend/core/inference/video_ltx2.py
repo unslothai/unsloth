@@ -1530,6 +1530,54 @@ def _module_in_fp32(module: Any) -> Iterator[None]:
         module.to(stored)
 
 
+def _fp32_resampler_filter(vocoder: Any) -> Any:
+    """The BWE skip resampler's sinc filter rebuilt in float32, or None. It is a non-persistent buffer, so no
+    checkpoint holds it: the reference builds it in float32 beside bf16 weights, while a bf16 load either rounds it
+    (``.to(bf16)``) or computes it in bf16 (diffusers' from_pretrained sets the default dtype). Returned only when it
+    matches the stored filter to bf16 accuracy, so a changed upstream filter is left alone."""
+    import torch
+
+    res = getattr(vocoder, "resampler", None)
+    stored = getattr(res, "_buffers", {}).get("filter") if res is not None else None
+    if (
+        stored is None
+        or "filter" not in res._non_persistent_buffers_set
+        or stored.dtype == torch.float32
+    ):
+        return None
+    with torch.device("cpu"):
+        fresh = type(res)(
+            ratio = res.ratio,
+            window_type = "hann",
+            padding_mode = getattr(res, "padding_mode", "replicate"),
+            persistent = False,
+        ).filter.float()
+    old = stored.detach().float().cpu()
+    if fresh.shape != old.shape or not torch.allclose(
+        fresh, old, rtol = 0, atol = 0.02 * float(fresh.abs().max())
+    ):
+        return None
+    return fresh
+
+
+@contextlib.contextmanager
+def _swapped_filter(res: Any, fp32_filter: Any, cache: dict) -> Iterator[None]:
+    """The float32 filter for this call only; the stored buffer is put back after, so the module (and the
+    kill-switch path) never changes."""
+    saved = res._buffers.get("filter")
+    if fp32_filter is None or saved is None:
+        yield
+        return
+    dev = saved.device
+    if dev not in cache:
+        cache[dev] = fp32_filter.to(dev)
+    res._buffers["filter"] = cache[dev]
+    try:
+        yield
+    finally:
+        res._buffers["filter"] = saved
+
+
 def install_vocoder_fp32_forward(vocoder: Any) -> None:
     """Run this vocoder instance's forward in float32 and return a float32 waveform; idempotent, never raises."""
     try:
@@ -1539,26 +1587,24 @@ def install_vocoder_fp32_forward(vocoder: Any) -> None:
         if getattr(vocoder, "_unsloth_fp32_forward", False):
             return
         inner = vocoder.forward
+        fp32_filter = _fp32_resampler_filter(vocoder)
+        filter_cache: dict = {}
 
         def forward(self, mel_spec, *args, **kwargs):
             param = next(self.parameters(), None)
-            if (
-                param is None
-                or not vocoder_fp32_enabled()
-                or not torch.is_floating_point(mel_spec)
-                or (param.dtype == torch.float32 and mel_spec.dtype == torch.float32)
-            ):
+            if param is None or not vocoder_fp32_enabled() or not torch.is_floating_point(mel_spec):
                 return inner(mel_spec, *args, **kwargs)
-            if param.dtype == torch.float32:
-                return inner(mel_spec.float(), *args, **kwargs)
-            # CUDA (and ROCm) autocast upcasts bf16 weights per op: bit-equal to .float() at +~70 MB, not +~300 MB.
-            # Other autocast backends refuse float32, so their weights are upcast for the call.
-            if mel_spec.device.type == "cuda":
-                ctx = torch.autocast(device_type = "cuda", dtype = torch.float32)
-            else:
-                ctx = _module_in_fp32(self)
-            with ctx:
-                return inner(mel_spec.float(), *args, **kwargs)
+            with _swapped_filter(self.resampler, fp32_filter, filter_cache):
+                if param.dtype == torch.float32:
+                    return inner(mel_spec.float(), *args, **kwargs)
+                # CUDA (and ROCm) autocast upcasts bf16 weights per op: bit-equal to a float32 build, at a fraction
+                # of the memory of .float(). Other autocast backends refuse float32: weights upcast for the call.
+                if mel_spec.device.type == "cuda":
+                    ctx = torch.autocast(device_type = "cuda", dtype = torch.float32)
+                else:
+                    ctx = _module_in_fp32(self)
+                with ctx:
+                    return inner(mel_spec.float(), *args, **kwargs)
 
         vocoder.forward = types.MethodType(forward, vocoder)
         vocoder._unsloth_fp32_forward = True
