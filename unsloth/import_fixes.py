@@ -24,6 +24,7 @@ from importlib.metadata import version as importlib_version
 from importlib.metadata import PackageNotFoundError
 from packaging.version import Version as TrueVersion
 import re
+import json
 import logging
 import textwrap
 import warnings
@@ -2029,12 +2030,133 @@ _TOKENIZER_FILES_READ_BY_LOADER = (
 )
 
 
+_TOKENIZER_HOST_PATH_PATCH_FLAG = "_unsloth_refuses_tokenizer_host_paths"
+# Loader bookkeeping keys; a locally saved legacy config can hold a real path here.
+_TOKENIZER_CONFIG_PATH_KEYS_IGNORED = frozenset(
+    ("name_or_path", "tokenizer_config_file", "special_tokens_map_file", "added_tokens_file")
+)
+# A string `"vocab": "..."` / `"merges": "..."` in tokenizer.json; real files hold a dict or list.
+_TOKENIZER_JSON_STRING_MODEL_FILE = re.compile(rb'"(?:vocab|merges)"\s*:\s*"')
+
+
+def _tokenizer_value_names_host_file(value, repo_dirs):
+    """True when a config string names an existing file outside the repo folder."""
+    if not isinstance(value, str) or not value or len(value) > 4096 or "\n" in value:
+        return False
+    if not (os.path.isabs(value) or "/" in value or os.sep in value):
+        return False
+    try:
+        if not os.path.isfile(value):
+            return False
+        candidates = {os.path.abspath(value), os.path.realpath(value)}
+    except (OSError, ValueError):
+        return False
+    for repo_dir in repo_dirs:
+        for candidate in candidates:
+            try:
+                if os.path.commonpath([candidate, repo_dir]) == repo_dir:
+                    return False
+            except ValueError:
+                continue
+    return True
+
+
+def _tokenizer_files_naming_host_paths(resolved_vocab_files, caller_kwargs):
+    """Entries of tokenizer_config.json, special_tokens_map.json and tokenizer.json naming a host
+    file outside the repo. Repo-resolved files and caller kwargs are skipped."""
+    files = {k: v for k, v in dict(resolved_vocab_files or {}).items() if isinstance(v, str)}
+    repo_dirs = set()
+    for path in files.values():
+        parent = os.path.dirname(os.path.abspath(path))
+        repo_dirs.update((parent, os.path.realpath(parent)))
+    if not repo_dirs:
+        return []
+    skip = set(_TOKENIZER_CONFIG_PATH_KEYS_IGNORED) | set(resolved_vocab_files or {})
+    skip.update(k for k, v in (caller_kwargs or {}).items() if v is not None)
+    found = []
+    for file_key in ("tokenizer_config_file", "special_tokens_map_file"):
+        path = files.get(file_key)
+        if not path or not os.path.isfile(path):
+            continue
+        try:
+            with open(path, encoding = "utf-8") as handle:
+                data = json.load(handle)
+        except Exception:
+            continue  # transformers reports the broken file itself
+        if not isinstance(data, dict):
+            continue
+        for key, value in data.items():
+            # *_file keys reach the class only when resolved in the repo (skipped above).
+            if key in skip or key.endswith("_file"):
+                continue
+            values = value if isinstance(value, (list, tuple)) else [value]
+            if any(_tokenizer_value_names_host_file(v, repo_dirs) for v in values):
+                found.append(f"{os.path.basename(path)}:{key}")
+    path = files.get("tokenizer_file")
+    if path and os.path.isfile(path):
+        try:
+            with open(path, "rb") as handle:
+                raw = handle.read()
+            if _TOKENIZER_JSON_STRING_MODEL_FILE.search(raw):
+                model = json.loads(raw).get("model") or {}
+                for key in ("vocab", "merges"):
+                    if _tokenizer_value_names_host_file(model.get(key), repo_dirs):
+                        found.append(f"{os.path.basename(path)}:model.{key}")
+        except Exception:
+            pass
+    return found
+
+
+def fix_transformers_tokenizer_config_host_paths():
+    """Refuse a tokenizer whose own JSON names a host file outside its folder: transformers 5.x
+    opens a string vocab / merges / init_inputs / special token entry or tokenizer.json
+    model.vocab as a path, so a repo could read any host file back as tokens. Idempotent."""
+    try:
+        from transformers.tokenization_utils_base import PreTrainedTokenizerBase
+
+        current = PreTrainedTokenizerBase.__dict__["_from_pretrained"]
+        if not isinstance(current, classmethod):
+            return
+        original = current.__func__
+        function = original
+        while function is not None:
+            if getattr(function, _TOKENIZER_HOST_PATH_PATCH_FLAG, False):
+                return
+            function = getattr(function, "__wrapped__", None)
+        params = list(inspect.signature(original).parameters)
+        if params[1:2] != ["resolved_vocab_files"]:
+            logger.info("Unsloth: Skipping the tokenizer host path guard (unknown signature)")
+            return
+    except Exception as e:
+        logger.info(f"Unsloth: Skipping the tokenizer host path guard ({e})")
+        return
+
+    @functools.wraps(original)
+    def _from_pretrained(cls, resolved_vocab_files, *args, **kwargs):
+        found = _tokenizer_files_naming_host_paths(resolved_vocab_files, kwargs)
+        if found:
+            raise ValueError(
+                "Unsloth: Refusing to load this tokenizer: "
+                + ", ".join(found)
+                + " names a file outside the tokenizer folder. Remove that entry from the file."
+            )
+        return original(cls, resolved_vocab_files, *args, **kwargs)
+
+    setattr(_from_pretrained, _TOKENIZER_HOST_PATH_PATCH_FLAG, True)
+    try:
+        PreTrainedTokenizerBase._from_pretrained = classmethod(_from_pretrained)
+    except Exception as e:
+        logger.info(f"Unsloth: Failed installing the tokenizer host path guard ({e})")
+
+
 def fix_transformers_tokenizer_config_vocab_file_override():
     """Back-port of the 5.17.0 vocab file precedence: below it `_from_pretrained` keeps a
     `vocab_file` / `merges_file` / `tokenizer_file` from tokenizer_config.json over the file it
     resolved inside the repo, and the tokenizer opens that path as given, even outside the repo.
     save_pretrained never writes these keys. Hand the resolved paths over as keyword arguments,
-    which apply after the config, so only an explicit caller path overrides them."""
+    which apply after the config, so only an explicit caller path overrides them.
+    Also installs the host path guard for the keys not covered here."""
+    fix_transformers_tokenizer_config_host_paths()
     try:
         import transformers
 
