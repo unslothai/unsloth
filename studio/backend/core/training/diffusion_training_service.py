@@ -209,7 +209,13 @@ def _resume_fields(
 ) -> dict[str, Any]:
     """Derived from disk; write_error is sticky and blocks resume; started_at and ended_at fence off bundles from other runs. Never raises."""
     try:
+        from core.training.account_jobs import account_path
         from core.training.diffusion_checkpoint import describe_resume_state
+
+        # A managed account's run record is a file in its own workspace, so its folders must be too:
+        # the scan probes (and may rename inside) output_dir. Owner records pass unchanged.
+        account_path(output_dir)
+        account_path(source_checkpoint)
         state = describe_resume_state(
             output_dir,
             status = status,
