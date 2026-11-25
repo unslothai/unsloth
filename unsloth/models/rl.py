@@ -3768,11 +3768,8 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             # None = unset: resolved below to 0.0 for dapo / dr_grpo, else 0.001 (verl's recommendation; TRL used 0.04, now 0.0, huggingface/trl#3516).
             "beta": None,
             "auto_find_batch_size": False,  # Cannot work on GRPO
-            # On (TRL's default too): vLLM and the trainer score the same weights differently (kernels, LoRA merge,
-            # MoE routing), so even num_iterations = 1 rollouts are slightly off-policy. Measured with fast_inference
-            # (bf16): mean |logp_train - logp_vllm| 0.012-0.014 nats/token at step 1, growing to 0.03-0.05 as the LoRA
-            # trains, raw token ratios up to ~18 (Qwen3-0.6B) and ~8 (Qwen3-30B-A3B). Truncated per token, see the mode
-            # below. See fengyao.notion.site/off-policy-rl and huggingface/trl#3867. Set False to turn it off.
+            # On, as in TRL: colocated vLLM and the trainer score the same weights differently. Default since
+            # #3390 / zoo #308, lost in the 2026-01-15 refactor (#3628 / zoo #357). See huggingface/trl#3867.
             "vllm_importance_sampling_correction": True,
             # None = unset: resolved below to "token_truncate" instead of TRL's "sequence_mask".
             "vllm_importance_sampling_mode": None,
