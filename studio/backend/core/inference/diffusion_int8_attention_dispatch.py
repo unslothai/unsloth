@@ -475,11 +475,9 @@ def _calls_dispatch(proc: Any) -> bool:
 
 def routable_modules(dit: Any) -> list:
     """The attention modules of a DiT whose processor can take an ``Int8Route``."""
-    modules = getattr(dit, "modules", None)
-    if not callable(modules):
-        return []
     out = []
-    for m in modules():
+    # a tensor-parallel denoiser's attention lives in its per-card shards (their head count is the one raced)
+    for m in _dit_modules(dit, first_card_only = True):
         proc = getattr(m, "processor", None)
         if proc is None or not hasattr(m, "heads") or not hasattr(proc, "_attention_backend"):
             continue
@@ -525,14 +523,15 @@ def _dits(pipe: Any) -> list:
         return []
 
 
-def _dit_modules(dit: Any) -> list:
-    """``dit.modules()`` plus a tensor-parallel denoiser's per-card block shards (outside the module tree)."""
+def _dit_modules(dit: Any, first_card_only: bool = False) -> list:
+    """``dit.modules()`` plus a tensor-parallel denoiser's per-card block shards (outside the module tree).
+    ``first_card_only``: one shard per block (both cards' shards share each block's processor)."""
     modules = getattr(dit, "modules", None)
     if not callable(modules):
         return []
     from .diffusion_tp2 import shard_modules
 
-    return [*modules(), *shard_modules(dit)]
+    return [*modules(), *shard_modules(dit, first_card_only = first_card_only)]
 
 
 def remove(pipe: Any) -> int:

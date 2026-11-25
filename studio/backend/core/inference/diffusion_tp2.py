@@ -92,6 +92,11 @@ def _linear_refusal(lin: Any, path: str) -> Optional[str]:
     return None
 
 
+def _flex_name(block: Any) -> Optional[str]:
+    name = type(getattr(getattr(block, "attn", None), "processor", None)).__name__
+    return name if "Flex" in name else None
+
+
 def refusal(transformer: Any, devices: Sequence[Any]) -> Optional[str]:
     """Why TP-2 cannot run this transformer on these cards, or None."""
     import torch
@@ -120,6 +125,10 @@ def refusal(transformer: Any, devices: Sequence[Any]) -> Optional[str]:
     if heads % 2 or mlp % 2:
         return f"{heads} heads / {mlp} MLP width do not split in two"
     for blk in transformer.transformer_blocks:
+        flex = _flex_name(blk)
+        if flex is not None:
+            # its BlockMask's mask_mod closes over tensors built on the first card, which no .to() reaches
+            return f"{flex} drives flex attention through a BlockMask built on the first card"
         for path in _COLUMN + _ROW:
             lin = _get(blk, path)
             why = _linear_refusal(lin, path)
@@ -146,9 +155,33 @@ def _mm_fp32(x2: Any, w: Any) -> Any:
     if _MM_OUT_DTYPE.get(key, True):
         try:
             return torch.mm(x2, w.t(), out_dtype = torch.float32)
+        except torch.OutOfMemoryError:
+            raise  # a full card is not a missing overload: never cache a decline for it
         except (TypeError, RuntimeError, NotImplementedError):
             _MM_OUT_DTYPE[key] = False
     return torch.mm(x2.float(), w.float().t())
+
+
+def _own(t: Any, device: Any) -> Any:
+    """``t`` on ``device`` in a fresh allocation of exactly its size: a slice ``.contiguous().to()`` on the same
+    device can return a view that keeps the whole original weight alive."""
+    import torch
+
+    out = torch.empty(t.shape, dtype = t.dtype, device = device)
+    out.copy_(t)
+    return out
+
+
+def _is_compile_failure(exc: BaseException) -> bool:
+    try:
+        from .diffusion_speed import is_compile_failure
+    except Exception:  # noqa: BLE001 - Studio's predicate unavailable: dynamo's own exception family
+        import torch
+
+        exc_mod = getattr(getattr(torch, "_dynamo", None), "exc", None)
+        base = getattr(exc_mod, "TorchDynamoException", None)
+        return base is not None and isinstance(exc, base)
+    return is_compile_failure(exc)
 
 
 @lru_cache(maxsize = 1)
@@ -205,8 +238,8 @@ def shard_linear(lin: Any, dim: int, index: int, parts: int, device: Any) -> Any
         if dim == 0:
             k = lin.out_features // parts
             sl = slice(index * k, (index + 1) * k)
-            new._buffers["weight_q"] = wq[sl].contiguous().to(device)
-            new._buffers["weight_scale"] = ws[sl].contiguous().to(device)
+            new._buffers["weight_q"] = _own(wq[sl], device)
+            new._buffers["weight_scale"] = _own(ws[sl], device)
             new.out_features = k
             bias = lin.bias[sl] if lin.bias is not None else None
         else:
@@ -216,17 +249,17 @@ def shard_linear(lin: Any, dim: int, index: int, parts: int, device: Any) -> Any
                 raise ValueError(
                     f"row split of {lin.in_features} channels cuts a {g}-channel ConvRot group"
                 )
-            new._buffers["weight_q"] = wq[:, index * k : (index + 1) * k].contiguous().to(device)
-            new._buffers["weight_scale"] = ws.clone().to(device)
+            new._buffers["weight_q"] = _own(wq[:, index * k : (index + 1) * k], device)
+            new._buffers["weight_scale"] = _own(ws, device)
             new.in_features = k
             bias = lin.bias if (lin.bias is not None and index == 0) else None  # added once
         for name in list(new._buffers):
             if name not in ("weight_q", "weight_scale") and new._buffers[name] is not None:
-                new._buffers[name] = new._buffers[name].to(device)
+                new._buffers[name] = _own(new._buffers[name], device)
         new._parameters.pop("bias", None)
         new.__dict__.pop("bias", None)
         new.bias = (
-            None if bias is None else nn.Parameter(bias.detach().to(device), requires_grad = False)
+            None if bias is None else nn.Parameter(_own(bias.detach(), device), requires_grad = False)
         )
         return new
     w = lin.weight.detach()
@@ -240,9 +273,9 @@ def shard_linear(lin: Any, dim: int, index: int, parts: int, device: Any) -> Any
         wk = w[:, index * k : (index + 1) * k]
         bias = lin.bias if (lin.bias is not None and index == 0) else None
         out = nn.Linear(k, lin.out_features, bias = bias is not None, device = "meta", dtype = w.dtype)
-    out.weight = nn.Parameter(wk.contiguous().to(device), requires_grad = False)
+    out.weight = nn.Parameter(_own(wk, device), requires_grad = False)
     if bias is not None:
-        out.bias = nn.Parameter(bias.detach().contiguous().to(device), requires_grad = False)
+        out.bias = nn.Parameter(_own(bias.detach(), device), requires_grad = False)
     for attr in ("_unsloth_compute_dtype",):
         if hasattr(lin, attr):
             setattr(out, attr, getattr(lin, attr))
@@ -402,6 +435,13 @@ def make_all_reduce(kind: str, devices: Sequence[Any]) -> Callable[[list], list]
     raise ValueError(f"unknown all-reduce {kind!r}")
 
 
+def _sync(devices: Sequence[Any]) -> None:
+    import torch
+    for d in devices:
+        if getattr(d, "type", None) == "cuda":
+            torch.cuda.synchronize(d)
+
+
 def choose_comm(timings: dict) -> Optional[str]:
     """NCCL unless a working backend is more than ``COMM_MARGIN`` faster (a single-size probe is noisy)."""
     ok = {k: v for k, v in timings.items() if isinstance(v, (int, float))}
@@ -418,11 +458,14 @@ def pick_all_reduce(
     numel: int,
     dtype: Any,
     logger: Any = None,
+    only: Optional[str] = None,
 ) -> tuple:
-    """(name, fn, {name: ms}): the fastest working backend for one ``numel`` all-reduce, or the env's pin."""
+    """(name, fn, {name: ms}): the fastest working backend for one ``numel`` all-reduce. A pin (``only`` or the
+    env) is probed the same way (one real collective, result checked) and raises when it does not work, so a build
+    without NCCL (native Windows) never publishes a load that fails on the first denoise step."""
     import torch
 
-    forced = _comm_choice()
+    forced = only or _comm_choice()
     names = [forced] if forced != "auto" else list(_COMMS)
     timings: dict = {}
     fns: dict = {}
@@ -433,15 +476,13 @@ def pick_all_reduce(
             ys = fn([x.clone() for x in xs])
             for _ in range(2):
                 fn([x.clone() for x in xs])
-            for d in devices:
-                torch.cuda.synchronize(d)
+            _sync(devices)
             if not all(bool((y == 3).all()) for y in ys):
                 raise RuntimeError("wrong sum")
             t = time.perf_counter()
             for _ in range(10):
                 fn(xs)
-            for d in devices:
-                torch.cuda.synchronize(d)
+            _sync(devices)
             timings[name] = round((time.perf_counter() - t) * 1000 / 10, 3)  # ms per call
             fns[name] = fn
         except Exception as exc:  # noqa: BLE001 - a backend that fails here is simply not used
@@ -552,9 +593,36 @@ def _stack_class():
             ):
                 return
             kw = dict(kwargs)
-            object.__setattr__(self, "_stage_attn", torch.compile(_attn_half, *args, **kw))
-            object.__setattr__(self, "_stage_mlp", torch.compile(_mlp_half, *args, **kw))
+            object.__setattr__(
+                self,
+                "_stage_attn",
+                self._guarded(torch.compile(_attn_half, *args, **kw), _attn_half),
+            )
+            object.__setattr__(
+                self, "_stage_mlp", self._guarded(torch.compile(_mlp_half, *args, **kw), _mlp_half)
+            )
             self.compiled = True
+
+        def _guarded(self, compiled: Any, eager: Any) -> Callable:
+            """Studio's compile recovery for the stages: a failure while BUILDING the graph (``is_compile_failure``)
+            puts both stages back on eager for this and every later call; any other error propagates."""
+            stack = self
+
+            def call(*args: Any, **kwargs: Any) -> Any:
+                if not stack.compiled:
+                    return eager(*args, **kwargs)
+                try:
+                    return compiled(*args, **kwargs)
+                except Exception as exc:  # noqa: BLE001 - reraised unless a compile-time failure
+                    if not _is_compile_failure(exc):
+                        raise
+                    stack.compile_error = f"{type(exc).__name__}: {exc}"[:300]
+                    object.__setattr__(stack, "_stage_attn", _attn_half)
+                    object.__setattr__(stack, "_stage_mlp", _mlp_half)
+                    stack.compiled = False
+                return eager(*args, **kwargs)
+
+            return call
 
         def forward(
             self,
@@ -573,6 +641,12 @@ def _stack_class():
 
             devs, ar = self._devices, self._all_reduce
             home = hidden_states.device
+            if attention_mask is not None and not torch.is_tensor(attention_mask):
+                # a flex BlockMask (processor switched after install): its mask_mod captures first-card tensors
+                raise RuntimeError(
+                    "tensor parallelism cannot run a flex-attention BlockMask on the second card; "
+                    f"reload without {TP_ENV} or with the default attention processor"
+                )
             hs = [_move(hidden_states, d) for d in devs]
             mods = [_move(modulation, d) for d in devs]
             ropes = [_move(rotary_emb, d) for d in devs]
@@ -683,13 +757,11 @@ def install(
     # the dtype the row-parallel partials travel in (float32 on fp16 activations, see RowParallelOut)
     red_dtype = torch.float32 if (act_dtype == torch.float16 and reduce_fp32()) else act_dtype
     # 1. the all-reduce first: nothing of the model has changed yet
-    if devices[0].type == "cpu":
+    if devices[0].type == "cpu" and comm in (None, "cpu"):
         name, fn, probe = "cpu", make_all_reduce("cpu", devices), {}
-    elif comm:
-        name, fn, probe = comm, make_all_reduce(comm, devices), {}
     else:
         dim = int(transformer.config.num_attention_heads * transformer.config.attention_head_dim)
-        name, fn, probe = pick_all_reduce(devices, probe_tokens * dim, red_dtype, logger)
+        name, fn, probe = pick_all_reduce(devices, probe_tokens * dim, red_dtype, logger, only = comm)
     # 2. shards next to the untouched blocks; 3. swap; the originals go only once everything is placed
     shards: list = [[] for _ in devices]
     original_blocks = transformer.transformer_blocks
@@ -715,17 +787,17 @@ def install(
         shards.clear()
         _free_cards(devices)
         raise
-    with torch.no_grad():
-        for blk in blocks:
-            blk.to("meta")  # the whole-block originals are no longer needed
+    setattr(transformer, TP_ATTR, {"devices": [str(d) for d in devices], "comm": name})
 
     def _local_mib(c: int) -> int:
+        # storage bytes, not logical ones: a view would keep (and should report) its whole storage
         seen, total = set(), 0
         for blk in shards[c]:
             for t in list(blk.parameters()) + list(blk.buffers()):
-                if id(t) not in seen:
-                    seen.add(id(t))
-                    total += t.numel() * t.element_size()
+                st = t.untyped_storage()
+                if st.data_ptr() not in seen:
+                    seen.add(st.data_ptr())
+                    total += st.nbytes()
         return round(total / 2**20)
 
     record = {
@@ -738,6 +810,15 @@ def install(
     }
     record["stage_compile"] = bool(stack.compiled)
     setattr(transformer, TP_ATTR, record)
+    # the whole-block originals are no longer needed; TP is complete and marked whatever happens here
+    try:
+        with torch.no_grad():
+            for blk in blocks:
+                blk.to("meta")
+    except Exception as exc:  # noqa: BLE001 - they stay in host memory, TP itself is intact
+        record["originals_kept"] = f"{type(exc).__name__}: {exc}"[:200]
+        if logger is not None:
+            logger.warning("diffusion.tp2: original blocks kept after setup: %s", exc)
     # A later regional compile reaches the stages through TPStack.compile.
     transformer._repeated_blocks = (type(stack).__name__,)
     # One recorded graph cannot hold both cards' launches and the all-reduce between them.
@@ -762,6 +843,74 @@ def status(transformer: Any) -> Optional[dict]:
     return out
 
 
+def _card_free_total_mib(device: Any) -> tuple:
+    import torch
+    free, total = torch.cuda.mem_get_info(device)
+    return int(free // 2**20), int(total // 2**20)
+
+
+def _storage_mib(tensors: Any) -> int:
+    seen, total = set(), 0
+    for t in tensors:
+        st = t.untyped_storage()
+        if st.data_ptr() not in seen:
+            seen.add(st.data_ptr())
+            total += st.nbytes()
+    return -(-total // 2**20)
+
+
+def fit_refusal(transformer: Any, devices: Sequence[Any]) -> Optional[str]:
+    """Per-card render headroom: each card holds half the blocks plus Studio's denoiser working set (twice on the
+    first card, which also runs the embedders, encode and decode) and the reserve a CFG replica keeps; the first card
+    also holds the prologue / epilogue. None when both fit."""
+    try:
+        blocks = list(transformer.transformer_blocks)
+        block_mib = _storage_mib(t for b in blocks for t in (*b.parameters(), *b.buffers()))
+        all_mib = _storage_mib((*transformer.parameters(), *transformer.buffers()))
+    except Exception as exc:  # noqa: BLE001
+        return f"denoiser size unreadable ({exc})"
+    prologue = max(0, all_mib - block_mib)
+    shard = -(-block_mib // len(devices))
+    try:
+        from .diffusion_multigpu import _replica_reserve_mib, replica_working_mib
+        working = int(replica_working_mib(transformer))
+    except Exception:  # noqa: BLE001
+        working, _replica_reserve_mib = 1024, None
+    for i, d in enumerate(devices):
+        try:
+            free, total = _card_free_total_mib(d)
+        except Exception as exc:  # noqa: BLE001
+            return f"{d}: free memory unreadable ({exc})"
+        reserve = _replica_reserve_mib(free, total) if _replica_reserve_mib is not None else 1024
+        need = shard + working * (2 if i == 0 else 1) + reserve + (prologue if i == 0 else 0)
+        if free < need:
+            return f"{d} needs {need} MiB for its shard, working set and reserve; {free} MiB free"
+    return None
+
+
+def _tp_plan(plan: Any, record: dict) -> Any:
+    """The plan with the denoiser resident on its shards: no split, no denoiser offload. A plan that offloads keeps
+    offloading the encoders through group offload (the only tier whose denoiser can stay resident); the others
+    (whole-module, sequential, streaming) would move or hook the denoiser."""
+    import dataclasses
+
+    policy = getattr(plan, "offload_policy", "none")
+    offloads = policy != "none"
+    return dataclasses.replace(
+        plan,
+        offload_policy = "group" if offloads else "none",
+        stream_transformer = False,
+        stream_text_encoders = bool(getattr(plan, "stream_text_encoders", False) or offloads),
+        resident_transformer_mib = None,
+        secondary_ordinal = None,
+        secondary_components = None,
+        layer_split = None,
+        fallback_plan = None,
+        reasons = tuple(plan.reasons)
+        + (f"denoiser tensor parallel over {', '.join(record['devices'])}",),
+    )
+
+
 def engage_for_plan(
     pipe: Any,
     plan: Any,
@@ -769,12 +918,10 @@ def engage_for_plan(
     loras: Any = None,
 ) -> Any:
     """Opt-in (``UNSLOTH_DIFFUSION_TP=1``) step after the multi-GPU plan refinement: shard the denoiser over the
-    selection's primary and first secondary card and return the plan with the denoiser resident and no split (the
-    shards are placed already; text encoders / VAE keep the plan's policy). Any refusal keeps ``plan``."""
+    selection's primary and the secondary with the most headroom that fits, and return the plan with the denoiser
+    resident and no split (``_tp_plan``). Any refusal or failure keeps ``plan``."""
     if not requested():
         return plan
-    import dataclasses
-
     import torch
 
     def keep(reason: str) -> Any:
@@ -789,10 +936,6 @@ def engage_for_plan(
         return keep(f"no card selection ({exc})")
     if sel is None or not sel.secondaries:
         return keep("one card selected")
-    devices = [
-        torch.device("cuda", int(sel.primary)),
-        torch.device("cuda", int(sel.secondaries[0])),
-    ]
     if any(w for (_i, w) in _lora_pairs(loras)):
         # PEFT target discovery cannot see the shards: a load that names adapters keeps the normal plan
         return keep("the load names LoRA adapters")
@@ -803,9 +946,17 @@ def engage_for_plan(
         # the plan was sized with those components on the other card; TP would bring them back to the first
         return keep(f"the plan places {', '.join(plan.secondary_components)} on another card")
     tr = getattr(pipe, "transformer", None)
-    why = refusal(tr, devices)
-    if why is not None:
-        return keep(why)
+    primary = torch.device("cuda", int(sel.primary))
+    reasons, devices = [], None
+    for ordinal in sel.secondaries:
+        cand = [primary, torch.device("cuda", int(ordinal))]
+        why = refusal(tr, cand) or fit_refusal(tr, cand)
+        if why is None:
+            devices = cand
+            break
+        reasons.append(why)
+    if devices is None:
+        return keep("; ".join(reasons))
     try:
         record = install(
             tr, devices, comm = None if _comm_choice() == "auto" else _comm_choice(), logger = logger
@@ -817,19 +968,7 @@ def engage_for_plan(
             )
         return plan
     pipe._unsloth_tp2 = record
-    return dataclasses.replace(
-        plan,
-        stream_transformer = False,
-        # the plan's offload now covers only the encoders (the tier that keeps the denoiser resident)
-        stream_text_encoders = bool(plan.stream_text_encoders or plan.offload_policy != "none"),
-        resident_transformer_mib = None,
-        secondary_ordinal = None,
-        secondary_components = None,
-        layer_split = None,
-        fallback_plan = None,
-        reasons = tuple(plan.reasons)
-        + (f"denoiser tensor parallel over {', '.join(record['devices'])}",),
-    )
+    return _tp_plan(plan, record)
 
 
 def _lora_pairs(loras: Any) -> list:
@@ -854,13 +993,14 @@ def lora_block_reason(pipe: Any) -> Optional[str]:
     )
 
 
-def shard_modules(transformer: Any) -> list:
+def shard_modules(transformer: Any, first_card_only: bool = False) -> list:
     """Every module of every card's block shards (outside the module tree), for censuses that walk the attention
     modules (INT8 attention routing and its status); empty when ``transformer`` is not tensor parallel."""
     if getattr(transformer, TP_ATTR, None) is None:
         return []
     try:
         stack = transformer.transformer_blocks[0]
-        return [m for card in stack.shards() for blk in card for m in blk.modules()]
+        cards = stack.shards()[:1] if first_card_only else stack.shards()
+        return [m for card in cards for blk in card for m in blk.modules()]
     except Exception:  # noqa: BLE001 - a census never fails the caller
         return []

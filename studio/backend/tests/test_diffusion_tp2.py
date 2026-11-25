@@ -173,6 +173,7 @@ def test_engage_for_plan(monkeypatch):
     )
     seen = {}
     monkeypatch.setattr(tp2, "refusal", lambda tr, devs: None)
+    monkeypatch.setattr(tp2, "_card_free_total_mib", lambda d: (15000, 15360))
     monkeypatch.setattr(
         tp2,
         "install",
@@ -375,6 +376,7 @@ def _two_cards(monkeypatch):
         mg, "current_selection", lambda: mg.MultiGpuSelection(primary = 0, secondaries = (1,))
     )
     monkeypatch.setattr(tp2, "refusal", lambda tr, devs: None)
+    monkeypatch.setattr(tp2, "_card_free_total_mib", lambda d: (15000, 15360))
 
 
 def test_engage_falls_back_to_the_plan_when_setup_fails(monkeypatch):
