@@ -182,12 +182,6 @@ def _redact_worker_output(text: str) -> str:
     except Exception:  # noqa: BLE001 -- a redactor that cannot run must not lose the others
         pass
     try:
-        from hub.utils.download_registry import scrub_secrets
-        redacted = scrub_secrets(redacted)
-    except Exception:  # noqa: BLE001
-        pass
-    try:
-        # `redact_log_text` is idempotent, so it runs after `scrub_secrets`.
         from utils.log_redaction import redact_log_text
         redacted = redact_log_text(redacted)
     except Exception:  # noqa: BLE001
@@ -3907,6 +3901,7 @@ class InferenceOrchestrator:
             mapped_chat_template,
             markup_for_tokenizer,
             renderable_tool_catalog,
+            replays_reasoning_content,
         )
 
         _model_info = self.models.get(self.active_model_name) or {}
@@ -3973,6 +3968,9 @@ class InferenceOrchestrator:
 
         yield from run_safetensors_tool_loop(
             markup = markup_for_tokenizer(_model_info.get("tokenizer"), tools, _mapped_tpl),
+            split_reasoning_content = replays_reasoning_content(
+                _model_info.get("tokenizer"), _model_info, tools, _mapped_tpl
+            ),
             renderable_tools = renderable_tool_catalog(
                 tools,
                 _model_info.get("tokenizer"),

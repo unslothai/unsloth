@@ -19,41 +19,52 @@ import { chatViewOf, setChatView } from "../chat-view";
 import type { ChatView } from "../types";
 import { useThreadScene } from "./use-thread-scene";
 
-/** The chat's characters at the top of a character chat; opens their panel. */
-export function CastChip({ threadId, onOpen }: { threadId: string | null | undefined; onOpen: () => void }) {
+/** The chat's characters beside its title: portraits only, since the title already names them. Toggles their panel. */
+export function CastChip({
+  threadId,
+  expanded,
+  onToggle,
+}: {
+  threadId: string | null | undefined;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
   const t = useT();
   const locale = useLocale();
   const thread = useThreadScene(threadId);
   if (!thread) return null;
   const shown = thread.cast.slice(0, 3);
-  const names = new Intl.ListFormat(locale, { style: "short", type: "conjunction" });
-  const label =
-    thread.cast.length <= 2
-      ? names.format(thread.cast.map((c) => c.name))
-      : t("characters.chat.castMore", {
-          names: names.format(thread.cast.slice(0, 2).map((c) => c.name)),
-          count: thread.cast.length - 2,
-        });
+  const names = new Intl.ListFormat(locale, { style: "long", type: "conjunction" }).format(
+    thread.cast.map((c) => c.name),
+  );
   return (
-    // Named by its visible text, so a screen reader hears who is in the chat.
-    <button
-      type="button"
-      onClick={onOpen}
-      title={t("characters.chat.openCast")}
-      data-testid="cast-chip"
-      className="ml-1 flex h-[var(--studio-chat-control-height,34px)] min-w-0 max-w-[42vw] cursor-pointer items-center gap-2 rounded-full py-1 pl-1 pr-3 text-ui-14 font-medium text-foreground transition-colors hover:bg-nav-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-    >
-      <span className="flex shrink-0 -space-x-2">
-        {shown.map((character) => (
-          <Portrait
-            key={character.id}
-            subject={character}
-            className="size-6.5 rounded-full text-[0.62rem] ring-2 ring-background"
-          />
-        ))}
-      </span>
-      <span className="truncate">{label}</span>
-    </button>
+    <Tooltip>
+      <TooltipTrigger asChild={true}>
+        <button
+          type="button"
+          onClick={onToggle}
+          aria-expanded={expanded}
+          data-testid="cast-chip"
+          className="flex h-[var(--studio-chat-control-height,34px)] shrink-0 cursor-pointer items-center rounded-full px-1 transition-colors hover:bg-nav-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          {/* The portraits are decorative, so the names name the button. */}
+          <span className="sr-only">{names}</span>
+          <span className="flex -space-x-2" aria-hidden={true}>
+            {shown.map((character) => (
+              <Portrait
+                key={character.id}
+                subject={character}
+                className="size-6.5 rounded-full text-[0.62rem] ring-2 ring-background"
+              />
+            ))}
+          </span>
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="bottom" sideOffset={6} className="tooltip-compact flex max-w-72 flex-col gap-0.5">
+        <span className="font-medium">{names}</span>
+        <span className="opacity-80">{t("characters.chat.openCast")}</span>
+      </TooltipContent>
+    </Tooltip>
   );
 }
 

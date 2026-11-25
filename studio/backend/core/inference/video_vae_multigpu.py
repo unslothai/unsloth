@@ -25,11 +25,8 @@ ENV = "UNSLOTH_VIDEO_VAE_MULTIGPU"
 _ATTR = "_unsloth_vae_multigpu"
 # ast.unparse of AutoencoderKLWan.tiled_decode's body without its docstring (diffusers 0.42.1 and 0.43.0).
 _KNOWN_BODIES = frozenset({"3b78672ea534d444"})
-# Partner-card memory the split takes (allocator reserved, which is what the card loses): the copy's weights plus a
-# fixed part plus a part per tile pixel, times a margin. Fitted on Kaggle 2x T4 (Wan 2.2 TI2V 5B, fp16 decode,
-# 1280x704x49, 1629 MiB of VAE weights), reserved peak above the split's start: 256x256 tiles 2656 MiB, 704x496
-# 6370 MiB (allocated 2422 / 5307 MiB); 704x704 allocated 6371 MiB (its reserved peak sat on cache the render had
-# already reserved), which the line predicts at 8288 MiB reserved.
+# Partner reserved MiB = weights + fixed + per-tile-px, times a margin. Fitted on Kaggle 2x T4, Wan 2.2 TI2V 5B
+# fp16 1280x704x49: 256x256 tiles peaked 2656 MiB reserved, 704x496 6370 MiB.
 _WORKING_FIXED_MIB = 169
 _WORKING_MIB_PER_TILE_PX = 3714 / 283648  # (6370 - 2656) MiB over (704 * 496 - 256 * 256) px
 _NEED_MARGIN = 1.25
@@ -130,10 +127,21 @@ def install(
         if logger is not None:
             logger.info("video.vae_multigpu: not installed (%s)", why)
         return False
+    automatic = _selection_automatic()
     if _ATTR in vae.__dict__:
-        vae.__dict__[_ATTR]["partner"] = int(partner)
+        vae.__dict__[_ATTR].update(partner = int(partner), automatic = automatic)
         return True
-    state = {"partner": int(partner), "split": 0, "one_card": 0, "last": None}
+    state = {
+        "partner": int(partner),
+        "split": 0,
+        "one_card": 0,
+        "last": None,
+        "automatic": automatic,
+        "plan": None,
+        "tiles": None,
+        "resized_failures": 0,
+        "resized_oom_px": None,
+    }
     vae.__dict__[_ATTR] = state
     stock = _stock_tiled_decode(vae)
 
@@ -147,9 +155,11 @@ def install(
         if dec is None:
             state["one_card"] += 1
             state["last"] = why
+            state["plan"] = "one card"
+            state["tiles"] = _tile_plan(self)
             return stock(self, z, return_dict = return_dict)
         state["split"] += 1
-        state["last"] = "split"
+        state["last"] = why
         if not return_dict:
             return (dec,)
         from diffusers.models.autoencoders.vae import DecoderOutput
@@ -174,7 +184,12 @@ def stats(pipe: Any) -> Optional[dict]:
     vae = getattr(pipe, "vae", None)
     state = getattr(vae, "__dict__", {}).get(_ATTR) if vae is not None else None
     return (
-        None if state is None else {k: state[k] for k in ("partner", "split", "one_card", "last")}
+        None
+        if state is None
+        else {
+            k: state.get(k)
+            for k in ("partner", "split", "one_card", "last", "plan", "tiles", "resized_failures")
+        }
     )
 
 
@@ -450,6 +465,83 @@ def sticky_cuda_error(exc: Optional[BaseException]) -> bool:
     return False
 
 
+PARTNER_TILES_ENV = "UNSLOTH_VIDEO_VAE_PARTNER_TILES"
+_TILE_ATTRS = (
+    "tile_sample_min_height",
+    "tile_sample_stride_height",
+    "tile_sample_min_width",
+    "tile_sample_stride_width",
+)
+_PARTNER_TILE_STEP = 32
+_PARTNER_TILE_OVERLAP = 64
+_PARTNER_TILE_MIN = 256
+
+
+def _selection_automatic() -> bool:
+    """Whether the load's selection is Automatic placement. Read at install (the load): the selection is a context
+    variable of the load and is not set on the render thread that runs the decode."""
+    try:
+        from .diffusion_multigpu import current_selection
+        selection = current_selection()
+    except Exception:  # noqa: BLE001 - unknown placement: treated as an explicit pick
+        return False
+    return bool(selection is not None and selection.automatic)
+
+
+def partner_tiles_enabled(automatic: bool) -> bool:
+    """Partner-sized tiles when the stock-size split does not fit the partner: on under Automatic placement (the
+    CFG copy leaves the partner too little for the stock tiles), ``UNSLOTH_VIDEO_VAE_PARTNER_TILES=1`` also for an
+    explicit card pick, ``=0`` off. Never used when the stock-size split fits."""
+    raw = (os.environ.get(PARTNER_TILES_ENV) or "").strip().lower()
+    if raw in ("0", "off", "false", "no"):
+        return False
+    if raw in ("1", "on", "true", "yes", "force"):
+        return True
+    return bool(automatic)
+
+
+def partner_sized_tiles(vae: Any, z: Any, usable_mib: int) -> Optional[tuple]:
+    """(min_h, stride_h, min_w, stride_w): the largest tiles (the larger side shrunk first, 32 px steps, the stock
+    64 px blend overlap, 256 px floor) whose split need fits ``usable_mib`` on the partner, or None."""
+    h = int(vae.tile_sample_min_height)
+    w = int(vae.tile_sample_min_width)
+    saved = tuple(getattr(vae, a) for a in _TILE_ATTRS)
+    try:
+        while True:
+            for attr, value in zip(
+                _TILE_ATTRS, (h, h - _PARTNER_TILE_OVERLAP, w, w - _PARTNER_TILE_OVERLAP)
+            ):
+                setattr(vae, attr, value)
+            if need_mib(vae, z) <= usable_mib:
+                return (h, h - _PARTNER_TILE_OVERLAP, w, w - _PARTNER_TILE_OVERLAP)
+            if h >= w and h - _PARTNER_TILE_STEP >= _PARTNER_TILE_MIN:
+                h -= _PARTNER_TILE_STEP
+            elif w - _PARTNER_TILE_STEP >= _PARTNER_TILE_MIN:
+                w -= _PARTNER_TILE_STEP
+            elif h - _PARTNER_TILE_STEP >= _PARTNER_TILE_MIN:
+                h -= _PARTNER_TILE_STEP
+            else:
+                return None
+    finally:
+        for attr, value in zip(_TILE_ATTRS, saved):
+            setattr(vae, attr, value)
+
+
+@contextlib.contextmanager
+def _tiles(vae: Any, tiles: Optional[tuple]):
+    if tiles is None:
+        yield
+        return
+    saved = tuple(getattr(vae, a) for a in _TILE_ATTRS)
+    for attr, value in zip(_TILE_ATTRS, tiles):
+        setattr(vae, attr, value)
+    try:
+        yield
+    finally:
+        for attr, value in zip(_TILE_ATTRS, saved):
+            setattr(vae, attr, value)
+
+
 def _try_split(vae: Any, z: Any, state: dict, logger: Any) -> tuple[Optional[Any], str]:
     import torch
 
@@ -469,18 +561,53 @@ def _try_split(vae: Any, z: Any, state: dict, logger: Any) -> tuple[Optional[Any
         return None, f"cuda:{partner} unreadable ({exc})"
     need = need_mib(vae, z)
     reserve = _partner_reserve_mib(torch, partner, free)
+    resized = None
     if free - reserve < need:
-        return None, (
-            f"cuda:{partner} has {free} MiB free ({reserve} MiB kept free), the copy needs ~{need}"
-        )
+        if partner_tiles_enabled(bool(state.get("automatic"))):
+            resized = partner_sized_tiles(vae, z, free - reserve)
+            limit = state.get("resized_oom_px")
+            if resized is not None and limit is not None and resized[0] * resized[2] >= limit:
+                resized = None  # this size (or a larger one) ran out of memory before: one card
+        if resized is None:
+            return None, (
+                f"cuda:{partner} has {free} MiB free ({reserve} MiB kept free), the copy needs ~{need}"
+            )
     try:
-        return split_tiled_decode(vae, z, partner), "split"
+        with _tiles(vae, resized):
+            out = split_tiled_decode(vae, z, partner)
+        state["plan"] = "split" if resized is None else "resized split"
+        state["tiles"] = resized if resized is not None else _tile_plan(vae)
+        return out, "split" if resized is None else f"split, partner-sized tiles {resized}"
     except Exception as exc:  # noqa: BLE001 - the stock decode reruns every tile on the load card
         if sticky_cuda_error(exc):
             raise  # the context is lost: a one-card retry would fail on its first kernel
+        what = "split"
+        if resized is not None:
+            # the stock-size split never fitted: the one-card stock decode is what ran before partner tiles
+            what = f"partner-sized split {resized}"
+            state["resized_failures"] = int(state.get("resized_failures") or 0) + 1
+            if _is_oom(exc):
+                state["resized_oom_px"] = resized[0] * resized[2]
         if logger is not None:
-            logger.warning("video.vae_multigpu: split decode failed, one card: %s", exc)
-        return None, f"split failed ({type(exc).__name__}: {exc})"
+            logger.warning("video.vae_multigpu: %s decode failed, one card: %s", what, exc)
+        return None, f"{what} failed ({type(exc).__name__}: {exc})"
+
+
+def _tile_plan(vae: Any) -> Optional[tuple]:
+    try:
+        return tuple(int(getattr(vae, a)) for a in _TILE_ATTRS)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _is_oom(exc: BaseException) -> bool:
+    try:
+        import torch
+        if isinstance(exc, torch.OutOfMemoryError):
+            return True
+    except (ImportError, AttributeError):
+        pass
+    return "out of memory" in str(exc).lower()
 
 
 def _cleanup(

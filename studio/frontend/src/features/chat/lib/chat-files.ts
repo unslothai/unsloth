@@ -47,14 +47,67 @@ const IMAGE_EXT = /\.(png|jpe?g|gif|webp|bmp|avif|svg)$/i;
 // Cheap gate before parsing: a fence opener or an indented code line.
 const MAY_HOLD_CODE_RE = /```|~~~|^(?: {4}|\t)/m;
 
+type CodeBlock = { language: string | null; source: string };
+
+// Reopened chats re-import messages as new objects, so cache by text (LRU, bounded by entries and chars).
+export const FENCE_CACHE_MAX_ENTRIES = 1024;
+export const FENCE_CACHE_MAX_CHARS = 2_000_000;
+const fenceCache = new Map<
+  string,
+  { blocks: readonly CodeBlock[]; chars: number }
+>();
+let fenceCacheChars = 0;
+
+/** Test hook. */
+export function fenceCacheStats(): { keys: string[]; chars: number } {
+  return { keys: [...fenceCache.keys()], chars: fenceCacheChars };
+}
+
+export function clearFenceCache(): void {
+  fenceCache.clear();
+  fenceCacheChars = 0;
+}
+
+function cachedCodeFences(markdown: string): readonly CodeBlock[] {
+  const hit = fenceCache.get(markdown);
+  if (hit) {
+    fenceCache.delete(markdown);
+    fenceCache.set(markdown, hit);
+    return hit.blocks;
+  }
+  const blocks = parseCodeFences(markdown);
+  const chars = blocks.reduce(
+    (sum, block) => sum + block.source.length + (block.language?.length ?? 0),
+    markdown.length,
+  );
+  if (chars > FENCE_CACHE_MAX_CHARS) {
+    return blocks;
+  }
+  fenceCache.set(markdown, { blocks, chars });
+  fenceCacheChars += chars;
+  for (const [key, entry] of fenceCache) {
+    if (
+      fenceCache.size <= FENCE_CACHE_MAX_ENTRIES &&
+      fenceCacheChars <= FENCE_CACHE_MAX_CHARS
+    ) {
+      break;
+    }
+    fenceCache.delete(key);
+    fenceCacheChars -= entry.chars;
+  }
+  return blocks;
+}
+
 /** Code blocks as the renderer sees them (CommonMark: lists, indentation, CRLF). */
-export function extractCodeFences(
-  markdown: string,
-): { language: string | null; source: string }[] {
+export function extractCodeFences(markdown: string): CodeBlock[] {
   if (!MAY_HOLD_CODE_RE.test(markdown)) {
     return [];
   }
-  const blocks: { language: string | null; source: string }[] = [];
+  return cachedCodeFences(markdown).map((block) => ({ ...block }));
+}
+
+function parseCodeFences(markdown: string): CodeBlock[] {
+  const blocks: CodeBlock[] = [];
   const visit = (node: Nodes) => {
     if (node.type === "code") {
       if (node.value.trim()) {
@@ -83,13 +136,21 @@ function extFromMime(mime: string): string {
   return sub === "jpeg" ? "jpg" : sub || "png";
 }
 
-function uniqueName(name: string, used: Set<string>): string {
+// `next` resumes each name's suffix search: `used` only grows, so the result is unchanged and linear.
+function uniqueName(
+  name: string,
+  used: Set<string>,
+  next: Map<string, number>,
+): string {
   const dot = name.lastIndexOf(".");
+  let n = next.get(name) ?? 2;
   let candidate = name;
-  for (let n = 2; used.has(candidate); n += 1) {
+  while (used.has(candidate)) {
     candidate =
       dot > 0 ? `${name.slice(0, dot)}-${n}${name.slice(dot)}` : `${name}-${n}`;
+    n += 1;
   }
+  next.set(name, n);
   used.add(candidate);
   return candidate;
 }
@@ -256,25 +317,50 @@ export function collectChatFiles(
     }
   }
   const used = new Set<string>();
-  return found.map((file) => ({ ...file, name: uniqueName(file.name, used) }));
+  const next = new Map<string, number>();
+  return found.map((file) => ({
+    ...file,
+    name: uniqueName(file.name, used, next),
+  }));
 }
 
-/** collectChatFiles that hands back its last result while the messages and folders are the same objects. */
-export function createChatFilesCollector(): typeof collectChatFiles {
-  let last: {
-    messages: readonly MessageLike[];
-    folders: readonly ChatFolder[];
-    files: ChatFile[];
-  } | null = null;
-  return (messages, folders = []) => {
-    const same =
-      last !== null &&
-      last.folders === folders &&
-      last.messages.length === messages.length &&
-      messages.every((message, index) => message === last?.messages[index]);
-    if (!(same && last)) {
-      last = { messages, folders, files: collectChatFiles(messages, folders) };
+type Schedule = (run: () => void) => void;
+
+const idleSchedule: Schedule = (run) => {
+  const idle = (
+    globalThis as {
+      requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => number;
     }
-    return last.files;
+  ).requestIdleCallback;
+  if (typeof idle === "function") idle(run, { timeout: 1000 });
+  else setTimeout(run, 50);
+};
+
+/** collectChatFiles in slices of at most `sliceMs` (one message can overrun), off the render path. Returns a cancel. */
+export function scheduleChatFiles(
+  messages: readonly MessageLike[],
+  folders: readonly ChatFolder[],
+  done: (files: ChatFile[]) => void,
+  {
+    sliceMs = 8,
+    schedule = idleSchedule,
+  }: { sliceMs?: number; schedule?: Schedule } = {},
+): () => void {
+  let cancelled = false;
+  let next = 0;
+  const step = () => {
+    if (cancelled) return;
+    const end = performance.now() + sliceMs;
+    do {
+      const message = messages[next];
+      if (message && message.role === "assistant") collectMessageFiles(message);
+      next += 1;
+    } while (next < messages.length && performance.now() < end);
+    if (next < messages.length) schedule(step);
+    else done(collectChatFiles(messages, folders));
+  };
+  schedule(step);
+  return () => {
+    cancelled = true;
   };
 }

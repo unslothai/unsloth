@@ -76,6 +76,7 @@ def _run(
     mixed_precision = "float32",
     user_float32 = None,
     device_type = "cuda",
+    forced_stamp = None,
 ):
     """Execute the block and report what it decided."""
     config = types.SimpleNamespace(dtype = model_dtype, torch_dtype = model_dtype)
@@ -86,6 +87,13 @@ def _run(
             (model_dtype is torch.float32) if user_float32 is None else user_float32 == "1"
         ),
     )
+    # Every Unsloth load stamps the forced-float32 decision on the model it returns, and the trainer
+    # reads that stamp, not the process-wide UNSLOTH_FORCE_FLOAT32 (#19442). Stamp it the way the
+    # loader would for this env; forced_stamp = "none" leaves the model unstamped (not loaded by Unsloth).
+    if forced_stamp is None:
+        model._unsloth_forced_float32 = force_float32 == "1"
+    elif forced_stamp != "none":
+        model._unsloth_forced_float32 = forced_stamp == "1"
     args = _Args(fp16 = fp16, bf16 = bf16)
     env = {
         "UNSLOTH_FORCE_FLOAT32": force_float32,

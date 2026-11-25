@@ -232,10 +232,11 @@ def cache_reads_authorized(
         return False
     if not hf_token:
         return True
-    if isinstance(hf_token, AmbientAuthorizedToken):
-        # Same caller class reads the cache tokenless from the None branch above.
-        return True
     repo = (repo_id or "").strip()
+    if isinstance(hf_token, AmbientAuthorizedToken):
+        # A managed session reads the shared cache only for a granted or public repo.
+        if not _managed_cache_read_ungranted(repo, repo_type, offline = offline):
+            return True
     if not repo:
         return False
     if _is_local_path(repo):
@@ -280,6 +281,22 @@ def cached_read_refused(
         is_anonymous(hf_token)
         and public_cache_read_authorized(repo_id = repo_id, repo_type = repo_type, offline = offline)
     )
+
+
+def _managed_cache_read_ungranted(repo_id: str, repo_type: str, *, offline: bool) -> bool:
+    """True only for a managed account and a repo it holds no grant for and is not public."""
+    from utils.account_context import is_owner_context
+
+    if is_owner_context():
+        return False
+    if not repo_id or _is_local_path(repo_id):
+        return True
+    try:
+        from hub.services.models import account_access
+        return not account_access.repo_visible(repo_id, repo_type, offline = offline)
+    except Exception:
+        # Fail closed: the caller then asks the Hub with the account's own token.
+        return True
 
 
 def _is_local_path(repo_id: str) -> bool:

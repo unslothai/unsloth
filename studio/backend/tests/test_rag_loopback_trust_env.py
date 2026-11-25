@@ -6,6 +6,8 @@ import os
 
 RAG_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "core", "rag")
 HTTPX_CALLEES = {"get", "post", "stream", "request", "Client", "AsyncClient"}
+# Talks to a user's saved connection, not loopback, so it follows chat's proxy policy instead.
+REMOTE_CLIENT_FILES = {"embed_connection.py"}
 
 
 def _httpx_calls(path):
@@ -36,7 +38,9 @@ def _sets_trust_env_false(call):
 def test_rag_loopback_httpx_clients_disable_trust_env():
     # Scan every .py in the package so a new file with an httpx call can't bypass this.
     checked = 0
-    for fname in sorted(f for f in os.listdir(RAG_DIR) if f.endswith(".py")):
+    for fname in sorted(
+        f for f in os.listdir(RAG_DIR) if f.endswith(".py") and f not in REMOTE_CLIENT_FILES
+    ):
         path = os.path.join(RAG_DIR, fname)
         for call in _httpx_calls(path):
             checked += 1

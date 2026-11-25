@@ -13,7 +13,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { useAui, useAuiState } from "@assistant-ui/react";
 import { useEffect, useRef, useState } from "react";
 import { Portrait } from "../components/portrait";
-import { lastSpeakerId, roleplayMetaOf } from "../meta";
+import { roleplayMetaOf } from "../meta";
 import { shortName } from "../prompt/speakers";
 import { writeMyReply } from "./write-my-reply";
 import { useAskToReply } from "./ask-bridge";
@@ -32,7 +32,6 @@ export function CharacterSpeakerBar() {
   // Every composer mounts this bar; in an ordinary chat its selectors do no work per token.
   const active = thread !== null;
   const running = useAuiState(({ thread: state }) => active && state.isRunning);
-  const lastReplySpeakerId = useAuiState(({ thread: state }) => (active ? lastSpeakerId(state.messages) : null));
   const runningSpeakerId = useAuiState(({ thread: state }) => {
     if (!active) return null;
     const last = state.messages[state.messages.length - 1];
@@ -115,7 +114,6 @@ export function CharacterSpeakerBar() {
                       "pl-0.5 pr-3",
                       speaking && "bg-primary/15 ring-1 ring-primary/40 disabled:opacity-100",
                       isMuted && "opacity-55",
-                      lastReplySpeakerId === character.id && !speaking && "ring-1 ring-border",
                     )}
                   >
                     <Portrait

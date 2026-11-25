@@ -116,6 +116,8 @@ export interface PickerRow {
   rank?: number;
   /** In the listing's own units. */
   updatedAt?: number;
+  /** Runs on that page: a pick opens it there instead of loading into Chat. */
+  media?: "audio" | "images" | "video";
 }
 
 export interface LoadedCopy {
@@ -143,19 +145,34 @@ export const DEVICE_SORT_DESC: Record<DeviceSort, boolean> = {
   size: true,
   name: false,
 };
-export type FormatFilter = "all" | "gguf" | "mlx" | "safetensors" | "npu";
+export type FormatFilter =
+  | "all"
+  | "gguf"
+  | "mlx"
+  | "safetensors"
+  | "npu"
+  | "media";
 export const FORMAT_FILTER_LABEL: Record<FormatFilter, string> = {
   all: "All",
   gguf: "GGUF",
   mlx: "MLX",
   safetensors: "Safetensors",
   npu: "NPU",
+  media: "Image/video gen",
 };
 
+export function isGenerationMedia(media: PickerRow["media"]): boolean {
+  return media === "images" || media === "video";
+}
+
 export function matchesFormat(
-  row: Pick<PickerRow, "format" | "kind">,
+  row: Pick<PickerRow, "format" | "kind" | "media">,
   filter: FormatFilter,
 ): boolean {
+  // Only their own filter lists them: they open on their own pages.
+  if (filter === "media" || isGenerationMedia(row.media)) {
+    return filter === "media" && isGenerationMedia(row.media);
+  }
   switch (filter) {
     case "all":
       return true;

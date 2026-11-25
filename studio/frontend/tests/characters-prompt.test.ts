@@ -12,7 +12,7 @@ import {
   type PromptCharacter,
   resumedPrefill,
 } from "../src/features/characters/prompt/build.ts";
-import { activateLorebook, parseKeyList } from "../src/features/characters/prompt/lorebook.ts";
+import { activateLorebook, loreBudget, parseKeyList } from "../src/features/characters/prompt/lorebook.ts";
 import { applyMacros, applyNameMacros } from "../src/features/characters/prompt/macros.ts";
 import { alternatingTurns, hiddenRoleplayTurnKind } from "../src/features/characters/meta.ts";
 import { tidyCharacterDisplay } from "../src/features/characters/prompt/display.ts";
@@ -522,6 +522,24 @@ test("natural order: the named character answers, an open line gets one voice, r
   assert.equal(self[0], "rin");
 });
 
+// The prompt's regex budget, counting every step charged to it.
+function meteredBudget(lore: Lorebook) {
+  const budget = loreBudget([lore]);
+  const cap = budget.regexSteps.left;
+  let left = cap;
+  let charged = 0;
+  budget.regexSteps = {
+    get left() {
+      return left;
+    },
+    set left(value: number) {
+      charged += left - value;
+      left = value;
+    },
+  };
+  return { budget, cap, charged: () => charged };
+}
+
 test("a card's regex keys share one matching budget per prompt", () => {
   const entries = Array.from({ length: 400 }, (_, i) =>
     entry({ id: `r${i}`, keys: [`/(x|y|z)*${i}q/`], content: `lore ${i}` }),
@@ -530,13 +548,14 @@ test("a card's regex keys share one matching budget per prompt", () => {
     token_budget: 1_000_000,
   });
   const text = `${"xyz".repeat(5000)} dragon ${Array.from({ length: 400 }, (_, i) => `${i}q`).join(" ")}`;
-  const started = performance.now();
-  const fired = activateLorebook(lore, [text]);
-  const elapsed = performance.now() - started;
+  const { budget, cap, charged } = meteredBudget(lore);
+  const fired = activateLorebook(lore, [text], budget);
   const regexFired = fired.fired.filter((f) => String(f.id).startsWith("r")).length;
   assert.ok(regexFired > 0 && regexFired < 400, `${regexFired} regex keys fired`);
   assert.ok(fired.fired.some((f) => f.id === "word"));
-  assert.ok(elapsed < 1_000, `took ${elapsed} ms`);
+  // Spent, then each later key stops at its first step: the overshoot is a small fraction of the cap.
+  assert.ok(budget.regexSteps.left < 0, "the budget ran out");
+  assert.ok(charged() < cap * 1.05, `charged ${charged()} of ${cap}`);
 });
 
 test("the regex budget counts matching work, not keys", () => {
@@ -544,10 +563,11 @@ test("the regex budget counts matching work, not keys", () => {
   const entries = Array.from({ length: 200 }, (_, i) =>
     entry({ id: `h${i}`, keys: [`/(?:.?){100}A${i}/s`], content: `lore ${i}` }),
   );
-  const started = performance.now();
-  activateLorebook(book(entries), ["x".repeat(16_000)]);
-  const elapsed = performance.now() - started;
-  assert.ok(elapsed < 1_000, `took ${elapsed} ms`);
+  const lore = book(entries);
+  const { budget, cap, charged } = meteredBudget(lore);
+  activateLorebook(lore, ["x".repeat(16_000)], budget);
+  assert.ok(budget.regexSteps.left < 0, "the budget ran out");
+  assert.ok(charged() < cap * 1.05, `charged ${charged()} of ${cap}`);
 });
 
 test("keys and names in scripts without spaces fire inside a sentence; a card can turn whole words off", () => {

@@ -5523,6 +5523,19 @@ main[data-translate-page] {
 	scrollbar-gutter: stable;
 }
 
+.translate-page .composer-model-chip {
+	font-size: var(--text-ui-17);
+	/* Uneven: the chevron glyph has its own side bearing. */
+	padding-left: calc(14px * var(--ui-space-scale, 1));
+	padding-right: calc(11.5px * var(--ui-space-scale, 1));
+}
+.translate-page .unsloth-thinking-pill:is(:hover:not(:disabled), [data-state="open"]) {
+	background-color: var(--muted);
+}
+.dark .translate-page .unsloth-thinking-pill:is(:hover:not(:disabled), [data-state="open"]) {
+	background-color: color-mix(in oklab, var(--muted) 50%, transparent);
+}
+
 /* Dark keeps its wash: --accent would read as a second selection colour. */
 html.dark .translate-page .hub-tab-toggle-pill {
 	background-color: rgb(255 255 255 / calc(0.09 * var(--contrast-wash-gain, 1)));
@@ -6959,8 +6972,8 @@ html[data-chat-compare] :is([data-wallpaper-workspace], [data-chat-content-root]
   background: transparent;
 }
 /* The header is see-through here, so the thread fades out under it; the second layer keeps a classic scrollbar's strip. */
-:is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] .aui-thread-viewport:not(.chat-full-view-dock *),
-html[data-glass="macos"] .aui-thread-viewport:not(.chat-full-view-dock *) {
+:is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] .aui-thread-viewport:not(.chat-full-view-dock *, .character-novel-dialogue *),
+html[data-glass="macos"] .aui-thread-viewport:not(.chat-full-view-dock *, .character-novel-dialogue *) {
   mask-image:
     linear-gradient(to bottom, transparent var(--thread-header-offset, -1.5rem), #000 calc(var(--thread-header-offset, -1.5rem) + 1.5rem)),
     linear-gradient(#000, #000);
@@ -6969,7 +6982,7 @@ html[data-glass="macos"] .aui-thread-viewport:not(.chat-full-view-dock *) {
   mask-repeat: no-repeat;
 }
 /* Masks the thread only inside the composer's rounded box; side strips and top-corner layers keep text beside it. */
-:is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] .aui-thread-viewport:not(.chat-full-view-dock *) {
+:is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] .aui-thread-viewport:not(.chat-full-view-dock *, .character-novel-dialogue *) {
   --clip: var(--thread-composer-clip, 0px);
   --fade: var(--thread-composer-fade, 0px);
   --radius: var(--thread-composer-radius, 0px);
@@ -7003,8 +7016,8 @@ html[data-glass="macos"] .aui-thread-viewport:not(.chat-full-view-dock *) {
 :is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] .compare-pane-fade {
   visibility: hidden;
 }
-/* On the root, not the masked viewport, so the header strip gets the same shade. */
-html:not([data-chat-welcome]) :is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] .aui-thread-root:not(.chat-full-view-dock *) {
+/* On the root, not the masked viewport, so the header strip gets the same shade. The visual novel panel brings its own rounded glass. */
+html:not([data-chat-welcome]) :is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] .aui-thread-root:not(.chat-full-view-dock *, .character-novel-dialogue *) {
   background: color-mix(in srgb, var(--background) calc((1 - var(--wallpaper-safe, 0)) * (1 - .65 * var(--wallpaper-conversation, 0)) * 100%), transparent);
 }
 html:not([data-chat-welcome]) :is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] .aui-thread-root:not(.chat-full-view-dock *) > .aui-thread-viewport {
@@ -8179,6 +8192,8 @@ html.dark[data-glass] {
   border-radius: inherit;
   overflow: hidden;
   pointer-events: none;
+  /* Own layer, or WebKit paints a square box behind the host's rounded corners. */
+  transform: translateZ(0);
 }
 .glass-lens-fill,
 .glass-lens-rim {
@@ -8296,10 +8311,22 @@ html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root])[data-
 .character-novel-figure-waiting:hover {
   filter: drop-shadow(0 20px 26px rgb(0 0 0 / .28)) brightness(.95) saturate(1);
 }
-/* The dialogue panel: messages fade in under its top edge, and the composer sits on the panel itself. */
+/* The dialogue panel: messages fade in under its top edge and out above the speaker bar (one 2.625rem row over
+   the composer), so none show through the bar or the composer. The second layer keeps a classic scrollbar's strip. */
 .character-novel-dialogue .aui-thread-viewport {
-  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 1.25rem);
-  mask-image: linear-gradient(to bottom, transparent 0, #000 1.25rem);
+  --novel-dock: calc(var(--thread-composer-clip, 0px) + 2.625rem);
+  -webkit-mask-image:
+    linear-gradient(to bottom, transparent 0, #000 1.25rem, #000 calc(100% - var(--novel-dock) - 1rem), transparent calc(100% - var(--novel-dock))),
+    linear-gradient(#000, #000);
+  mask-image:
+    linear-gradient(to bottom, transparent 0, #000 1.25rem, #000 calc(100% - var(--novel-dock) - 1rem), transparent calc(100% - var(--novel-dock))),
+    linear-gradient(#000, #000);
+  -webkit-mask-size: 100% 100%, min(var(--thread-scrollbar-gutter, 10px), var(--classic-scrollbar-width, 0px)) 100%;
+  mask-size: 100% 100%, min(var(--thread-scrollbar-gutter, 10px), var(--classic-scrollbar-width, 0px)) 100%;
+  -webkit-mask-position: 0 0, right;
+  mask-position: 0 0, right;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
 }
 .character-novel-dialogue .thread-bottom-fade {
   display: none;
@@ -8359,8 +8386,9 @@ html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root])[data-
   pointer-events: none;
   background: linear-gradient(to top, var(--background) 72%, transparent);
 }
+/* The novel panel fades its messages out above the bar instead: a backdrop would read as a band on its glass. */
 .character-novel-dialogue .character-speaker-bar::before {
-  background: linear-gradient(to top, color-mix(in oklab, var(--background) 80%, transparent) 72%, transparent);
+  display: none;
 }
 
 /* Stage view: keep the conversation centered beside the docked picture when there's room.
@@ -8383,9 +8411,6 @@ html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root])[data-
    Keep measured placeholders and reconnected display:contents bodies at natural height. */
 .aui-thread-viewport [data-message-windowed] {
 	flex-shrink: 0;
-	/* duration-150 on user rows otherwise transitions the placeholder's height
-	   from its empty padding box, moving the reader as every batch is parked. */
-	transition-property: none;
 }
 
 /* Keep WebKitGTK thumb jumps synchronized with paints of newly mounted bodies.

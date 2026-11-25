@@ -1085,6 +1085,9 @@ class TestEstimateMemoryRoute:
             "latest_tier_active_for",
             lambda name, token = None: asked.append((name, token)) or True,
         )
+        # The precision check reads the adapter and config next; keep both off the Hub.
+        monkeypatch.setattr(tv, "_remote_lora_base", lambda *a, **kw: None)
+        monkeypatch.setattr(tv, "_load_config_json", lambda *a, **kw: None)
         monkeypatch.setattr(
             ri,
             "_offline_guarded",
@@ -1092,7 +1095,7 @@ class TestEstimateMemoryRoute:
         )
         _estimate(model_path = "org/model", max_seq_length = 16384, load_in_4bit = True, hf_token = "tok")
         assert seen["load_in_4bit"] is False
-        assert asked == [("org/model", "tok")] and guarded == [tv.latest_tier_active_for]
+        assert asked == [("org/model", "tok")] and guarded == [tv.latest_tier_forces_16bit]
         monkeypatch.setattr(tv, "latest_tier_active_for", lambda *a, **kw: False)
 
         monkeypatch.setattr(

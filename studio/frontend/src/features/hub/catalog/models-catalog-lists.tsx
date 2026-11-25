@@ -208,7 +208,6 @@ export function DiscoverList({
           </>
         ) : suppressEmptyState ? null : searchError ? (
           <NetworkErrorState
-            online={online}
             message={searchError}
             failure={searchFailure}
             onRetry={onRetry}
@@ -241,7 +240,6 @@ export function DiscoverList({
         )
       ) : suppressEmptyState ? null : (
         <NetworkErrorState
-          online={online}
           // The raw SDK error includes the request URL (with the query), so prefer the classified one.
           message={searchFailure ? "" : (searchError ?? "")}
           failure={searchFailure}

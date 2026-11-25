@@ -73,29 +73,13 @@ from utils.hf_cache_settings import get_hf_cache_paths
 from utils.subprocess_compat import (
     windows_hidden_subprocess_kwargs as _windows_hidden_subprocess_kwargs,
 )
+from utils.utils import hf_env_offline
 
 # Safe at module scope, unlike utils.models below: utils.training_runs is stdlib-only, so it
 # cannot pin a transformers version into sys.modules before the sidecar is activated.
 from utils.training_runs import base_model_from_run_dir_name
 
 logger = get_logger(__name__)
-
-
-_OFFLINE_TRUE_VALUES = {"1", "true", "yes", "on"}
-
-
-def _env_offline() -> bool:
-    """An open force_hf_offline window counts too, since a spawn briefly restores the user's env values."""
-    try:
-        from utils.utils import force_hf_offline_active
-        if force_hf_offline_active():
-            return True
-    except Exception:
-        pass
-    return (
-        os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in _OFFLINE_TRUE_VALUES
-        or os.environ.get("TRANSFORMERS_OFFLINE", "").strip().lower() in _OFFLINE_TRUE_VALUES
-    )
 
 
 def _hf_raw_url(model_name: str, filename: str) -> str:
@@ -139,7 +123,7 @@ _hf_json_ahead: dict[tuple[str, str | None], Future] = {}
 
 def read_activation_files_ahead(model_name: str, hf_token: str | None) -> None:
     """Start activation's raw Hub reads together so TLS handshakes overlap; each answer serves one read."""
-    if not _is_canonical_repo_id(model_name) or _env_offline():
+    if not _is_canonical_repo_id(model_name) or hf_env_offline():
         return
     from utils.paths import is_local_path
 
@@ -573,6 +557,63 @@ def latest_tier_active_for(model_name: str, hf_token: str | None = None) -> bool
         return False
 
 
+# Latest-sidecar architectures whose bnb 4-bit load Unsloth core validates, so they keep QLoRA.
+LATEST_TIER_4BIT_MODEL_TYPES = frozenset(
+    {"inkling2", "inkling2_text", "inkling2_loop", "inkling2_loop_text"}
+)
+
+
+def latest_tier_keeps_4bit(model_type) -> bool:
+    return isinstance(model_type, str) and model_type in LATEST_TIER_4BIT_MODEL_TYPES
+
+
+def latest_tier_upgrade_keeps_4bit(
+    model_type,
+    model_name: str,
+    hf_token: str | None = None,
+) -> bool:
+    """Whether the load after installing the offered release stays 4-bit: a validated type or a bnb checkpoint. Never raises."""
+    return latest_tier_keeps_4bit(model_type) or not _sidecar_forces_16bit(model_name, hf_token)
+
+
+def latest_tier_load_policy(model_name: str, hf_token: str | None = None) -> tuple[bool, bool]:
+    """(latest sidecar active, it forces 16-bit), resolving a remote adapter once; never raises."""
+    with remote_lora_base_scope():
+        if not latest_tier_active_for(model_name, hf_token):
+            return False, False
+        return True, _sidecar_forces_16bit(model_name, hf_token)
+
+
+def latest_tier_forces_16bit(model_name: str, hf_token: str | None = None) -> bool:
+    """latest_tier_active_for, minus architectures validated in 4-bit; never raises."""
+    return latest_tier_load_policy(model_name, hf_token)[1]
+
+
+def _sidecar_forces_16bit(model_name: str, hf_token: str | None = None) -> bool:
+    try:
+        if _is_lora_adapter_dir(Path(model_name)):
+            resolved = _resolve_base_model(model_name)
+        else:
+            resolved = _remote_lora_base(model_name, hf_token = hf_token) or model_name
+        cfg = _load_config_json(resolved, hf_token)
+        # Activation also tiers by a local adapter's own config.json, so read it when the base is unreadable.
+        if (
+            not isinstance(cfg, dict)
+            and model_name != resolved
+            and _safe_is_file(Path(model_name) / "config.json")
+        ):
+            cfg = _load_config_json(model_name, hf_token)
+        if not isinstance(cfg, dict):
+            return True
+        # A bnb-quantized checkpoint loads 4-bit from its own config whatever the flag says.
+        quant = cfg.get("quantization_config")
+        if isinstance(quant, dict) and quant.get("quant_method") == "bitsandbytes":
+            return False
+        return not any(latest_tier_keeps_4bit(t) for t in _model_types_from_config(cfg))
+    except Exception:
+        return True
+
+
 def _has_adapter_weights(path: Path) -> bool:
     """True if *path* holds LoRA adapter weight files (``adapter_model.*``)."""
     try:
@@ -797,7 +838,7 @@ def _remote_lora_base(model_name: str, hf_token: str | None = None) -> str | Non
             return None  # an existing relative path is a local checkpoint, not a Hub repo
     except Exception:
         pass
-    if _env_offline():
+    if hf_env_offline():
         return _adapter_base_from_hf_cache(model_name)
 
     import urllib.error
@@ -864,7 +905,7 @@ def _check_tokenizer_config_needs_v5(model_name: str, hf_token: str | None = Non
         return False
 
     # Offline: skip the 10s fetch (fail open). Don't cache this assumed negative.
-    if _env_offline():
+    if hf_env_offline():
         return False
 
     # --- Fall back to fetching from HuggingFace ---
@@ -985,7 +1026,7 @@ def _load_config_json(model_name: str, hf_token: str | None = None) -> dict | No
     # Hub cache reads skip authorization, so a caller denied the ambient credential gets none.
     cache_denied = not cache_reads_authorized(hf_token, repo_id = model_name)
 
-    if _env_offline():
+    if hf_env_offline():
         # Offline: tier from hub cache; cache hits but never misses (so online reads still fetch); an unverified explicit token is denied here.
         if cache_denied:
             return None
@@ -1602,7 +1643,7 @@ def _probe_autoconfig(target_dir: str, model_name: str, hf_token: str | None) ->
     env = get_hf_cache_paths().child_env(child_env_without_native_path_secret())
     # The probe reads the implicit HF_TOKEN env, so grant or scrub here, not via argv.
     apply_token_to_child_env(env, hf_token)
-    if _env_offline():
+    if hf_env_offline():
         env["HF_HUB_OFFLINE"] = "1"
         env["TRANSFORMERS_OFFLINE"] = "1"
     try:
@@ -2437,9 +2478,64 @@ def _venv_t5_is_valid() -> bool:
     return _venv_dir_is_valid(_VENV_T5_550_DIR, _VENV_T5_550_PACKAGES)
 
 
+# spec -> PyPI sha256 digests the pre-install scan verified; set only inside install_with_hashes().
+_install_hashes: dict[str, tuple[str, ...]] = {}
+# The hash-pinned spec whose download did not match its digest, inside install_with_hashes().
+_hash_mismatch: str | None = None
+# uv: "Hash mismatch for `pkg==x`"; pip: "THESE PACKAGES DO NOT MATCH THE HASHES ...".
+_HASH_MISMATCH_RE = re.compile(r"hash mismatch|do not match the hashes", re.IGNORECASE)
+
+
+@contextlib.contextmanager
+def install_with_hashes(hashes: dict):
+    """Installs of a spec in *hashes* inside this block verify its digests."""
+    global _install_hashes, _hash_mismatch
+    previous, _install_hashes = _install_hashes, dict(hashes or {})
+    _hash_mismatch = None
+    try:
+        yield
+    finally:
+        _install_hashes = previous
+
+
+def install_hash_mismatch() -> str | None:
+    """The spec refused for a digest mismatch by the last install_with_hashes() block, or None."""
+    return _hash_mismatch
+
+
 def _install_to_dir(pkg: str, target_dir: str) -> bool:
     """Install a single package into *target_dir*, preferring uv then pip."""
-    pkg = _install_source(pkg)
+    digests = _install_hashes.get(pkg)
+    source = _install_source(pkg)
+    if not digests or source != pkg:
+        return _install_args_to_dir([source], [source], source, target_dir)
+    # A hash-pinned requirement file: uv and pip both refuse a download whose sha256 differs.
+    req_dir = tempfile.mkdtemp(prefix = "unsloth_req_")
+    try:
+        req_file = os.path.join(req_dir, "requirements.txt")
+        with open(req_file, "w", encoding = "utf-8") as handle:
+            handle.write(pkg + "".join(f" --hash=sha256:{d}" for d in digests) + "\n")
+        # uv's --require-hashes also rejects any unpinned UV_CONSTRAINT entry; --verify-hashes
+        # checks the listed digests without that. pip enables hash checking from the file alone.
+        return _install_args_to_dir(
+            ["--verify-hashes", "-r", req_file],
+            ["--require-hashes", "-r", req_file],
+            pkg,
+            target_dir,
+            hashed = True,
+        )
+    finally:
+        shutil.rmtree(req_dir, ignore_errors = True)
+
+
+def _install_args_to_dir(
+    uv_args: list[str],
+    pip_args: list[str],
+    pkg: str,
+    target_dir: str,
+    hashed: bool = False,
+) -> bool:
+    global _hash_mismatch
     # Try uv first (faster) if on PATH -- do NOT install uv at runtime.
     if shutil.which("uv"):
         result = subprocess.run(
@@ -2453,7 +2549,7 @@ def _install_to_dir(pkg: str, target_dir: str) -> bool:
                 target_dir,
                 "--no-deps",
                 "--upgrade",
-                pkg,
+                *uv_args,
             ],
             stdout = subprocess.PIPE,
             stderr = subprocess.STDOUT,
@@ -2467,6 +2563,11 @@ def _install_to_dir(pkg: str, target_dir: str) -> bool:
         )
         if result.returncode == 0:
             return True
+        if hashed and _HASH_MISMATCH_RE.search(result.stdout or ""):
+            # The download is not the inspected artifact: refuse, never retry it another way.
+            _hash_mismatch = pkg
+            logger.error("uv refused %s: hash mismatch\n%s", pkg, result.stdout)
+            return False
         logger.warning("uv install of %s failed", pkg)
     if _runtime_repair_is_offline() and not _pip_is_configured_offline():
         # pip has no offline mode except a local wheelhouse (PIP_NO_INDEX + PIP_FIND_LINKS).
@@ -2485,7 +2586,7 @@ def _install_to_dir(pkg: str, target_dir: str) -> bool:
             target_dir,
             "--no-deps",
             "--upgrade",
-            pkg,
+            *pip_args,
         ],
         stdout = subprocess.PIPE,
         stderr = subprocess.STDOUT,
@@ -2496,6 +2597,8 @@ def _install_to_dir(pkg: str, target_dir: str) -> bool:
         **_windows_hidden_subprocess_kwargs(),
     )
     if result.returncode != 0:
+        if hashed and _HASH_MISMATCH_RE.search(result.stdout or ""):
+            _hash_mismatch = pkg
         logger.error("install failed:\n%s", result.stdout)
         return False
     return True
@@ -2656,7 +2759,9 @@ def _top_up_optional_packages(venv_dir: str, packages: tuple[str, ...]) -> bool:
     """Installs to a scratch dir and renames in, dist-info last, so no RECORD precedes its files."""
     usable = True
     # Offline installs can only miss and the miss is remembered, unless pip has a local wheelhouse.
-    offline = _env_offline() or (_runtime_repair_is_offline() and not _pip_is_configured_offline())
+    offline = hf_env_offline() or (
+        _runtime_repair_is_offline() and not _pip_is_configured_offline()
+    )
     for pkg in packages:
         if not _sidecar_package_is_optional(pkg):
             continue
@@ -2845,7 +2950,7 @@ def _optional_top_up_lock(venv_dir: str):
         yield held
 
 
-_UV_OFFLINE_TRUE_VALUES = _OFFLINE_TRUE_VALUES | {"t", "y"}
+_UV_OFFLINE_TRUE_VALUES = {"1", "true", "t", "yes", "y", "on"}
 
 
 _PIP_TRUE_VALUES = frozenset({"1", "true", "t", "yes", "y", "on"})
@@ -3555,7 +3660,7 @@ def _ensure_venv_t5_latest_exists() -> bool:
             version,
         )
         return False
-    if _env_offline():
+    if hf_env_offline():
         logger.warning(
             ".venv_t5_latest (transformers %s) is incomplete and offline mode is set; "
             "cannot repair it.",
@@ -3601,7 +3706,7 @@ def ensure_latest_transformers_venv(
     if not _is_valid_version_string(version):
         logger.error("Refusing to install invalid transformers version %r", version)
         return False
-    if _env_offline():
+    if hf_env_offline():
         logger.warning(
             "Cannot install transformers %s: HF/transformers offline mode is set.", version
         )
@@ -3687,7 +3792,7 @@ def _ensure_venv_llmcompressor_exists() -> bool:
             "compressed export of newer-transformers models will fail fast."
         )
         return False
-    if _env_offline():
+    if hf_env_offline():
         logger.warning(
             "llm-compressor-main shadow missing and HF/offline mode is set; cannot provision it."
         )

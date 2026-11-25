@@ -1805,7 +1805,31 @@ def _qwen21_pipeline_cls():
 
 
 def _qwen21_load_conditioners(cfg, device, weight_dtype):
-    return _load_pipe_without_transformer(_qwen21_pipeline_cls(), cfg, device)
+    pipe, vae = _load_pipe_without_transformer(_qwen21_pipeline_cls(), cfg, device)
+    _trim_caption_encoder(pipe, "qwen-image-2.1")
+    return pipe, vae
+
+
+def _trim_caption_encoder(pipe, family) -> None:
+    """Caption caching reads hidden_states[-1] only, so the untied lm_head (Qwen3-VL-8B: 151936 x 4096, about
+    1.2 GB bf16) is dropped before the encoder reaches the card, as inference and the H3 trainer already do.
+    Bit-identical embeds; UNSLOTH_TE_KEEP_LM_HEAD=1 keeps it."""
+    import logging
+
+    from core.inference.diffusion_text_encoder_trim import trim_text_encoder
+
+    log = logging.getLogger(__name__)
+    try:
+        result = trim_text_encoder(getattr(pipe, "text_encoder", None), family = family)
+    except Exception as exc:  # noqa: BLE001 -- the full encoder still encodes identically
+        log.warning("Kept the %s text encoder lm_head (%s)", family, exc)
+        return
+    if result.get("lm_head") == "dropped" and result.get("params"):
+        log.info(
+            "Dropped the %s text encoder lm_head for caption caching (%.2f GB)",
+            family,
+            result["params"] * 2 / 1e9,
+        )
 
 
 def _qwen21_load_transformer(cfg, device, weight_dtype, base_precision):
