@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A folder counts as GGUF when it has .gguf files and no .safetensors or .bin weights."""
+"""A local folder's rows carry the formats its weights show; an mmproj or calibration file alone is no GGUF."""
 
 from __future__ import annotations
 
@@ -25,6 +25,7 @@ if "structlog" not in sys.modules:
     )
 
 import routes.models as models_route
+from hub.services.models import local_inventory
 
 
 def _touch(path: Path) -> Path:
@@ -73,14 +74,16 @@ def _complete(root: Path, *name: str, **kwargs) -> bool:
     return local_pipeline_components_are_complete(root, *(name or ("model_index.json",)), **kwargs)
 
 
-def _empty_compat_sources(tmp_path: Path):
+def _empty_sources(tmp_path: Path):
     empty = tmp_path / "empty"
-    return models_route._CompatLocalInventorySources(
-        empty / "active",
-        empty / "legacy",
-        empty / "default",
-        (),
-        (),
+    return local_inventory._LocalInventorySources(
+        hf_cache_dir = empty / "active",
+        legacy_hf = empty / "legacy",
+        hf_default = empty / "default",
+        lm_dirs = (),
+        ollama_dirs = (),
+        hermes_dirs = (),
+        known_hf_caches = (),
     )
 
 
@@ -93,7 +96,7 @@ def test_compat_inventory_groups_custom_gguf_variants(tmp_path):
     rows = models_route.collect_local_models(
         tmp_path / "models",
         custom_folders = [{"path": str(root)}],
-        sources = _empty_compat_sources(tmp_path),
+        sources = _empty_sources(tmp_path),
     )
 
     assert [(row.source, Path(row.path)) for row in rows] == [("custom", model)]
@@ -108,7 +111,7 @@ def test_compat_inventory_preserves_distinct_custom_ggufs(tmp_path):
     rows = models_route.collect_local_models(
         tmp_path / "models",
         custom_folders = [{"path": str(root)}],
-        sources = _empty_compat_sources(tmp_path),
+        sources = _empty_sources(tmp_path),
     )
 
     assert {Path(row.path) for row in rows} == {first, second}
@@ -123,7 +126,7 @@ def test_compat_inventory_dedupes_overlapping_custom_roots(tmp_path):
     rows = models_route.collect_local_models(
         tmp_path / "models",
         custom_folders = [{"path": str(root)}, {"path": str(model)}],
-        sources = _empty_compat_sources(tmp_path),
+        sources = _empty_sources(tmp_path),
     )
 
     assert [(row.source, Path(row.path)) for row in rows] == [("custom", model)]
@@ -140,7 +143,7 @@ def test_compat_inventory_dedupes_nested_quant_root(tmp_path):
     rows = models_route.collect_local_models(
         tmp_path / "models",
         custom_folders = [{"path": str(root)}, {"path": str(quant_dir)}],
-        sources = _empty_compat_sources(tmp_path),
+        sources = _empty_sources(tmp_path),
     )
 
     assert [(row.source, Path(row.path)) for row in rows] == [("custom", model)]
@@ -158,7 +161,7 @@ def test_compat_inventory_preserves_nested_independent_model_root(tmp_path):
     rows = models_route.collect_local_models(
         tmp_path / "models",
         custom_folders = [{"path": str(root)}, {"path": str(child)}],
-        sources = _empty_compat_sources(tmp_path),
+        sources = _empty_sources(tmp_path),
     )
 
     assert {(row.source, Path(row.path)) for row in rows} == {
@@ -176,7 +179,7 @@ def test_compat_inventory_keeps_custom_section_copy(tmp_path):
     rows = models_route.collect_local_models(
         root,
         custom_folders = [{"path": str(model)}],
-        sources = _empty_compat_sources(tmp_path),
+        sources = _empty_sources(tmp_path),
     )
 
     assert {(row.source, Path(row.path)) for row in rows} == {
@@ -191,7 +194,7 @@ def test_compat_inventory_does_not_cross_dedupe_default_sources(tmp_path):
     holder = root / "publisher"
     first = _touch(holder / "model-a-Q4_K_M.gguf")
     second = _touch(holder / "model-b-Q4_K_M.gguf")
-    empty = _empty_compat_sources(tmp_path)
+    empty = _empty_sources(tmp_path)
     sources = empty._replace(lm_dirs = (root,))
 
     rows = models_route.collect_local_models(
@@ -213,7 +216,7 @@ def test_compat_inventory_lists_hermes_downloads(tmp_path):
     hermes = tmp_path / ".hermes" / "models"
     weight = _touch(hermes / "Qwen3.8-27B-UD-Q4_K_M.gguf")
     _touch(hermes / "assets" / "mmproj-Qwen3.8-27B-BF16.gguf")
-    empty = _empty_compat_sources(tmp_path)
+    empty = _empty_sources(tmp_path)
     sources = empty._replace(hermes_dirs = (hermes,))
 
     rows = models_route.collect_local_models(
@@ -226,41 +229,14 @@ def test_compat_inventory_lists_hermes_downloads(tmp_path):
     assert rows[0].display_name == "Qwen3.8-27B-UD-Q4_K_M"
 
 
-def test_compat_inventory_lists_a_hermes_dir_registered_as_a_scan_folder_once(tmp_path):
-    models_root = tmp_path / "models"
-    models_root.mkdir()
-    hermes = tmp_path / ".hermes" / "models"
-    weight = _touch(hermes / "Qwen3.8-27B-UD-Q4_K_M.gguf")
-    extra = _touch(hermes / "extra" / "Other-Q4_K_M.gguf")
-    sources = _empty_compat_sources(tmp_path)._replace(hermes_dirs = (hermes,))
-
-    rows = models_route.collect_local_models(
-        models_root,
-        custom_folders = [{"path": str(hermes)}],
-        sources = sources,
-    )
-
-    assert sorted((row.source, Path(row.path)) for row in rows) == [
-        ("custom", extra.parent),
-        ("hermes", weight),
-    ]
-
-
 def test_local_route_returns_hermes_downloads(monkeypatch, tmp_path):
     models_dir = tmp_path / "models"
     models_dir.mkdir()
     hermes = tmp_path / ".hermes" / "models"
     weight = _touch(hermes / "Qwen3.8-27B-UD-Q4_K_M.gguf")
-    sources = models_route._CompatLocalInventorySources(
-        hf_cache_dir = models_dir,
-        legacy_hf = tmp_path / "legacy",
-        hf_default = tmp_path / "default",
-        lm_dirs = (),
-        known_hf_caches = (),
-        hermes_dirs = (hermes,),
-    )
-    monkeypatch.setattr(models_route, "_compat_local_inventory_sources", lambda: sources)
-    monkeypatch.setattr("storage.studio_db.list_scan_folders", lambda: [])
+    sources = _empty_sources(tmp_path)._replace(hf_cache_dir = models_dir, hermes_dirs = (hermes,))
+    monkeypatch.setattr(local_inventory, "_local_inventory_sources", lambda: sources)
+    monkeypatch.setattr(local_inventory, "list_scan_folders", lambda: [])
 
     response = asyncio.run(
         models_route.list_local_models(models_dir = str(models_dir), current_subject = "test")
@@ -268,28 +244,6 @@ def test_local_route_returns_hermes_downloads(monkeypatch, tmp_path):
 
     assert response.hermes_dirs == [str(hermes)]
     assert [(m.source, Path(m.path)) for m in response.models] == [("hermes", weight)]
-
-
-@pytest.mark.parametrize("registered", [("hf_home",), ("hf_home/hub",), ("hf_home", "hf_home/hub")])
-def test_compat_inventory_lists_a_registered_hf_home(tmp_path, registered):
-    repo = tmp_path / "hf_home" / "hub" / "models--Org--Model-GGUF"
-    blob = repo / "blobs" / ("a" * 64)
-    blob.parent.mkdir(parents = True)
-    blob.write_bytes(b"GGUF" + b"\x03\x00\x00\x00" + b"\x00" * 64)
-    snapshot = repo / "snapshots" / ("0" * 40)
-    snapshot.mkdir(parents = True)
-    (snapshot / "Model-Q4_K_M.gguf").symlink_to(blob)
-    (repo / "refs").mkdir()
-    (repo / "refs" / "main").write_text("0" * 40)
-
-    rows = models_route.collect_local_models(
-        tmp_path / "models",
-        custom_folders = [{"path": str(tmp_path / path)} for path in registered],
-        sources = _empty_compat_sources(tmp_path),
-        materialize_ollama_links = False,
-    )
-
-    assert [(row.source, row.model_id) for row in rows] == [("hf_cache", "Org/Model-GGUF")]
 
 
 def test_compat_inventory_preserves_ollama_tags_sharing_a_blob(tmp_path):
@@ -314,41 +268,10 @@ def test_compat_inventory_preserves_ollama_tags_sharing_a_blob(tmp_path):
     rows = models_route.collect_local_models(
         tmp_path / "models",
         custom_folders = [{"path": str(root)}],
-        sources = _empty_compat_sources(tmp_path),
+        sources = _empty_sources(tmp_path),
     )
 
     assert {row.model_id for row in rows} == {"ollama/model:latest", "ollama/model:v1"}
-
-
-def test_compat_inventory_preserves_same_ollama_tag_from_distinct_stores(tmp_path):
-    roots = [tmp_path / "ollama-one", tmp_path / "ollama-two"]
-    for index, root in enumerate(roots):
-        digest = f"sha256-model-{index}"
-        _touch(root / "blobs" / digest)
-        tag = root / "manifests" / "registry.ollama.ai" / "library" / "model" / "latest"
-        tag.parent.mkdir(parents = True)
-        tag.write_text(
-            json.dumps(
-                {
-                    "layers": [
-                        {
-                            "mediaType": "application/vnd.ollama.image.model",
-                            "digest": digest.replace("-", ":", 1),
-                        }
-                    ]
-                }
-            ),
-            encoding = "utf-8",
-        )
-
-    rows = models_route.collect_local_models(
-        tmp_path / "models",
-        custom_folders = [{"path": str(root)} for root in roots],
-        sources = _empty_compat_sources(tmp_path),
-    )
-
-    assert [row.model_id for row in rows] == ["ollama/model:latest"] * 2
-    assert len({Path(row.path).resolve() for row in rows}) == 2
 
 
 def test_compat_inventory_dedupes_lmstudio_publisher_named_ollama(tmp_path):
@@ -360,7 +283,7 @@ def test_compat_inventory_dedupes_lmstudio_publisher_named_ollama(tmp_path):
     rows = models_route.collect_local_models(
         tmp_path / "models",
         custom_folders = [{"path": str(root)}, {"path": str(model)}],
-        sources = _empty_compat_sources(tmp_path),
+        sources = _empty_sources(tmp_path),
     )
 
     assert [Path(row.path) for row in rows] == [model]
@@ -385,102 +308,62 @@ def test_local_adapter_chat_capability_uses_its_local_base(tmp_path):
     assert models_route._local_model_can_chat(rows[0]) is False
 
 
-def test_dir_model_format_gguf_only(tmp_path):
-    d = tmp_path / "model"
-    _touch(d / "model-Q4_K_M.gguf")
-    assert models_route._dir_model_format(d) == "gguf"
+@pytest.mark.parametrize(
+    "files, source, expected",
+    [
+        (("model-Q4_K_M.gguf",), "models_dir", ["gguf"]),
+        (("mmproj-F16.gguf",), "models_dir", ["unknown"]),
+        (("mmproj-F16.gguf", "model-Q4_K_M.gguf"), "models_dir", ["gguf"]),
+        (("config.json", "model-Q4_K_M.gguf"), "models_dir", ["gguf"]),
+        (("tokenizer.bin", "model-Q4_K_M.gguf"), "models_dir", ["gguf"]),
+        (("pytorch_model.bin", "model-Q4_K_M.gguf"), "models_dir", ["gguf"]),
+        (("config.json", "model.safetensors"), "models_dir", ["safetensors"]),
+        (
+            ("config.json", "model.safetensors", "model-Q4_K_M.gguf"),
+            "models_dir",
+            ["gguf", "safetensors"],
+        ),
+        # HF snapshots keep split quants in per-quant folders.
+        (("UD-Q4_K_XL/model-00001-of-00002.gguf",), "hf_cache", ["gguf"]),
+        (("mmproj/mmproj-F16.gguf",), "hf_cache", ["unknown"]),
+        (("MTP/mtp-model-Q8_0.gguf",), "hf_cache", ["unknown"]),
+    ],
+)
+def test_folder_rows_follow_their_weights(tmp_path, files, source, expected):
+    folder = tmp_path / "model"
+    for name in files:
+        _touch(folder / name)
+    from hub.services.models.common import _classify_local_path
+
+    assert [row.model_format for row in _classify_local_path(folder, source)] == expected
 
 
-def test_dir_model_format_mmproj_only_is_not_gguf(tmp_path):
-    d = tmp_path / "model"
-    _touch(d / "mmproj-F16.gguf")
-    assert models_route._dir_model_format(d) is None
-
-
-def test_dir_model_format_mmproj_beside_weights_is_still_gguf(tmp_path):
-    d = tmp_path / "model"
-    _touch(d / "mmproj-F16.gguf")
-    _touch(d / "model-Q4_K_M.gguf")
-    assert models_route._dir_model_format(d) == "gguf"
-
-
-def test_dir_model_format_recursive_sees_split_quant_subdirs(tmp_path):
-    # HF cache snapshots keep split quants in per-quant subdirs.
-    d = tmp_path / "snapshot"
-    _touch(d / "UD-Q4_K_XL" / "model-00001-of-00002.gguf")
-    assert models_route._dir_model_format(d) is None
-    assert models_route._dir_model_format(d, recursive = True) == "gguf"
-
-
-def test_dir_model_format_recursive_ignores_mmproj_only_subdirs(tmp_path):
-    d = tmp_path / "snapshot"
-    _touch(d / "mmproj" / "mmproj-F16.gguf")
-    assert models_route._dir_model_format(d, recursive = True) is None
-
-
-def test_scan_models_dir_mmproj_only_folder_is_not_gguf(tmp_path):
+def test_scan_models_dir_skips_an_mmproj_only_folder(tmp_path):
     _touch(tmp_path / "vision" / "mmproj-F16.gguf")
     _touch(tmp_path / "real" / "model-Q4_K_M.gguf")
-    formats = {m.display_name: m.model_format for m in models_route._scan_models_dir(tmp_path)}
-    assert formats["vision"] is None
-    assert formats["real"] == "gguf"
+    formats = {m.display_name: m.model_format for m in local_inventory._scan_models_dir(tmp_path)}
+    assert formats == {"real": "gguf"}
 
 
 def test_scan_models_dir_skips_standalone_mmproj_file(tmp_path):
     _touch(tmp_path / "mmproj-F16.gguf")
     _touch(tmp_path / "model-Q4_K_M.gguf")
-    names = {m.display_name for m in models_route._scan_models_dir(tmp_path)}
+    names = {m.display_name for m in local_inventory._scan_models_dir(tmp_path)}
     assert names == {"model-Q4_K_M"}
 
 
 def test_scan_lmstudio_dir_skips_standalone_mmproj_file(tmp_path):
     _touch(tmp_path / "mmproj-F16.gguf")
     _touch(tmp_path / "model-Q4_K_M.gguf")
-    names = {m.display_name for m in models_route._scan_lmstudio_dir(tmp_path)}
+    names = {m.display_name for m in local_inventory._scan_lmstudio_dir(tmp_path)}
     assert names == {"model-Q4_K_M"}
 
 
 def test_scan_lmstudio_dir_skips_mmproj_under_publisher(tmp_path):
     _touch(tmp_path / "Publisher" / "mmproj-F16.gguf")
     _touch(tmp_path / "Publisher" / "model-Q4_K_M.gguf")
-    names = {m.display_name for m in models_route._scan_lmstudio_dir(tmp_path)}
+    names = {m.display_name for m in local_inventory._scan_lmstudio_dir(tmp_path)}
     assert names == {"model-Q4_K_M"}
-
-
-def test_dir_model_format_gguf_with_config_is_still_gguf(tmp_path):
-    d = tmp_path / "model"
-    _touch(d / "config.json")
-    _touch(d / "model-Q4_K_M.gguf")
-    assert models_route._dir_model_format(d) == "gguf"
-
-
-def test_dir_model_format_mixed_weights_is_not_gguf(tmp_path):
-    d = tmp_path / "model"
-    _touch(d / "model.safetensors")
-    _touch(d / "model-Q4_K_M.gguf")
-    assert models_route._dir_model_format(d) is None
-
-
-def test_dir_model_format_no_gguf(tmp_path):
-    d = tmp_path / "model"
-    _touch(d / "config.json")
-    _touch(d / "model.safetensors")
-    assert models_route._dir_model_format(d) is None
-
-
-def test_dir_model_format_ignores_tokenizer_bin(tmp_path):
-    # A companion tokenizer.bin is not a weight file.
-    d = tmp_path / "model"
-    _touch(d / "tokenizer.bin")
-    _touch(d / "model-Q4_K_M.gguf")
-    assert models_route._dir_model_format(d) == "gguf"
-
-
-def test_dir_model_format_weight_bin_is_not_gguf(tmp_path):
-    d = tmp_path / "model"
-    _touch(d / "pytorch_model.bin")
-    _touch(d / "model-Q4_K_M.gguf")
-    assert models_route._dir_model_format(d) is None
 
 
 def test_scan_models_dir_classifies_gguf_with_config(tmp_path):
@@ -491,11 +374,9 @@ def test_scan_models_dir_classifies_gguf_with_config(tmp_path):
     _touch(root / "st_repo" / "model.safetensors")
     _touch(root / "loose.gguf")
 
-    fmt = {Path(m.path).name: m.model_format for m in models_route._scan_models_dir(root)}
+    fmt = {Path(m.path).name: m.model_format for m in local_inventory._scan_models_dir(root)}
 
-    assert fmt["gguf_repo"] == "gguf"
-    assert fmt["st_repo"] is None
-    assert fmt["loose.gguf"] == "gguf"
+    assert fmt == {"gguf_repo": "gguf", "st_repo": "safetensors", "loose.gguf": "gguf"}
 
 
 def test_scan_models_dir_classifies_root_gguf_with_config(tmp_path):
@@ -503,7 +384,7 @@ def test_scan_models_dir_classifies_root_gguf_with_config(tmp_path):
     _touch(root / "config.json")
     _touch(root / "model-Q4_K_M.gguf")
 
-    [row] = models_route._scan_models_dir(root)
+    [row] = local_inventory._scan_models_dir(root)
 
     assert row.path == str(root)
     assert row.model_format == "gguf"
@@ -515,10 +396,10 @@ def test_scan_models_dir_surfaces_diffusers_pipeline_folder(tmp_path):
     _pipeline_manifest(pipe)
     _touch(pipe / "vae" / "diffusion_pytorch_model.safetensors")
 
-    rows = {Path(m.path).name: m for m in models_route._scan_models_dir(root)}
+    rows = {Path(m.path).name: m for m in local_inventory._scan_models_dir(root)}
 
-    assert "my-pipeline" in rows
-    assert rows["my-pipeline"].model_format is None
+    assert rows["my-pipeline"].model_format == "unknown"
+    assert rows["my-pipeline"].artifact_kind == "diffusers_pipeline"
 
 
 def test_scan_models_dir_surfaces_root_diffusers_pipeline(tmp_path):
@@ -526,10 +407,10 @@ def test_scan_models_dir_surfaces_root_diffusers_pipeline(tmp_path):
     _pipeline_manifest(root)
     _touch(root / "vae" / "diffusion_pytorch_model.safetensors")
 
-    rows = models_route._scan_models_dir(root)
+    rows = local_inventory._scan_models_dir(root)
 
     assert [r.path for r in rows] == [str(root)]
-    assert rows[0].model_format is None
+    assert rows[0].artifact_kind == "diffusers_pipeline"
 
 
 def _bom(pipeline):
@@ -762,10 +643,10 @@ def test_scan_models_dir_surfaces_root_single_file_checkpoint(tmp_path):
     root = tmp_path / "qwen-image-2509"
     _touch(root / "qwen-image-2509.safetensors")
 
-    rows = models_route._scan_models_dir(root)
+    rows = local_inventory._scan_models_dir(root)
 
-    assert [r.path for r in rows] == [str(root)]
-    assert rows[0].model_format is None
+    assert [r.path for r in rows] == [str(root / "qwen-image-2509.safetensors")]
+    assert rows[0].artifact_kind == "single_file_checkpoint"
 
 
 def test_scan_models_dir_root_weights_do_not_hide_child_models(tmp_path):
@@ -774,7 +655,7 @@ def test_scan_models_dir_root_weights_do_not_hide_child_models(tmp_path):
     _touch(root / "llama" / "config.json")
     _touch(root / "llama" / "model.safetensors")
 
-    assert [Path(r.path).name for r in models_route._scan_models_dir(root)] == ["llama"]
+    assert [Path(r.path).name for r in local_inventory._scan_models_dir(root)] == ["llama"]
 
 
 from models.models import LocalModelInfo  # noqa: E402
@@ -1040,20 +921,14 @@ def test_compat_local_inventory_preserves_minimax_music3_audio_type(monkeypatch,
         _class_name = "MiniMaxMusic3ModularPipeline",
         _blocks_class_name = "MiniMaxMusic3Blocks",
     )
-    sources = models_route._CompatLocalInventorySources(
-        hf_cache_dir = models_dir,
-        legacy_hf = tmp_path / "legacy",
-        hf_default = tmp_path / "default",
-        lm_dirs = (),
-        known_hf_caches = (),
+    sources = _empty_sources(tmp_path)._replace(hf_cache_dir = models_dir)
+    row = local_inventory._classify_local_path(d, "models_dir")
+
+    monkeypatch.setattr(local_inventory, "_local_inventory_sources", lambda: sources)
+    monkeypatch.setattr(
+        local_inventory, "_collect_models_from_default_sources", lambda *_a, **_k: row
     )
-
-    def scan(_models_root, *, custom_folders, sources):
-        return [_local(d, model_format = "safetensors", id = str(d))]
-
-    monkeypatch.setattr(models_route, "_compat_local_inventory_sources", lambda: sources)
-    monkeypatch.setattr(models_route, "collect_local_models", scan)
-    monkeypatch.setattr("storage.studio_db.list_scan_folders", lambda: [])
+    monkeypatch.setattr(local_inventory, "list_scan_folders", lambda: [])
 
     response = asyncio.run(
         models_route.list_local_models(models_dir = str(models_dir), current_subject = "test")
@@ -1112,12 +987,12 @@ def test_local_task_ignores_family_token_in_parent_path(tmp_path):
 
 def test_a_modular_pipeline_root_counts_as_a_pipeline_index(tmp_path):
     """A modular_model_index.json alone marks a pipeline root, else its components are offered as models."""
-    from routes.models import _local_pipeline_index
+    from hub.services.models.common import _is_diffusers_pipeline_dir
 
     modular = tmp_path / "modular"
     (modular / "transformer").mkdir(parents = True)
     _pipeline_manifest(modular, "modular_model_index.json")
-    assert _local_pipeline_index(modular) is True
+    assert _is_diffusers_pipeline_dir(modular) is True
     assert (
         models_route._local_is_diffusers(_local(modular, display_name = "opaque", id = str(modular)))
         is True
@@ -1126,11 +1001,11 @@ def test_a_modular_pipeline_root_counts_as_a_pipeline_index(tmp_path):
     conventional = tmp_path / "conventional"
     conventional.mkdir()
     _pipeline_manifest(conventional)
-    assert _local_pipeline_index(conventional) is True
+    assert _is_diffusers_pipeline_dir(conventional) is True
 
     neither = tmp_path / "neither"
     neither.mkdir()
-    assert _local_pipeline_index(neither) is False
+    assert _is_diffusers_pipeline_dir(neither) is False
 
 
 def test_a_single_file_video_repo_is_flagged_diffusers(monkeypatch):

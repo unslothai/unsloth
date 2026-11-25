@@ -170,21 +170,6 @@ def test_hub_scan_lists_each_dit_file_of_a_multi_file_folder(tmp_path):
     assert "qwen-image-Q4_K_M.gguf" in rows
 
 
-def test_compat_scan_lists_each_dit_file_of_a_multi_file_folder(tmp_path):
-    _comfy_diffusion_folder(tmp_path)
-    rows = _rows_by_name(models_route._scan_models_dir(tmp_path))
-    assert {n for n in rows if n.endswith(".safetensors")} == _EXPECTED_DIT_FILES
-    assert "qwen-image-Q4_K_M.gguf" in rows
-    assert str(tmp_path) not in {row.path for row in rows.values()}
-
-
-def test_compat_scan_keeps_the_bare_single_file_folder_row(tmp_path):
-    # Exactly one checkpoint and nothing else: unchanged, the folder row the loader rescues.
-    _st(tmp_path / "flux1-dev.safetensors")
-    [row] = models_route._scan_models_dir(tmp_path)
-    assert row.path == str(tmp_path)
-
-
 def test_hub_scan_respects_the_per_folder_limit(tmp_path):
     for i in range(5):
         _st(tmp_path / f"flux1-dev-{i}.safetensors")
@@ -330,8 +315,14 @@ def test_compat_inventory_of_a_registered_comfy_root(tmp_path):
     rows = models_route.collect_local_models(
         tmp_path / "models_root",
         custom_folders = [{"path": str(tmp_path / "ComfyUI")}],
-        sources = models_route._CompatLocalInventorySources(
-            tmp_path / "e" / "active", tmp_path / "e" / "legacy", tmp_path / "e" / "default", (), ()
+        sources = local_inventory._LocalInventorySources(
+            hf_cache_dir = tmp_path / "e" / "active",
+            legacy_hf = tmp_path / "e" / "legacy",
+            hf_default = tmp_path / "e" / "default",
+            lm_dirs = (),
+            ollama_dirs = (),
+            hermes_dirs = (),
+            known_hf_caches = (),
         ),
     )
     names = {Path(r.path).name for r in rows if r.path.endswith(".safetensors")}

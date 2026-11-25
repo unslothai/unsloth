@@ -146,9 +146,9 @@ def test_local_listing_and_load_path_skip_the_imatrix(tmp_path):
     )
 
 
-def test_the_local_models_route_does_not_list_an_imatrix(tmp_path):
-    # routes/models.py keeps its own copies of these predicates (used by GET /models/local).
-    from routes.models import _dir_model_format, _is_main_gguf_filename, _is_model_directory
+def test_the_local_model_scan_does_not_list_an_imatrix(tmp_path):
+    from hub.services.models.common import _classify_local_path, _is_model_directory
+    from routes.models import _is_main_gguf_filename
 
     assert _is_main_gguf_filename("Qwen3.8-27B-UD-Q4_K_XL.gguf")
     assert not _is_main_gguf_filename("imatrix_unsloth.gguf")
@@ -156,79 +156,63 @@ def test_the_local_models_route_does_not_list_an_imatrix(tmp_path):
     (tmp_path / "imatrix_unsloth.gguf").write_bytes(b"GGUF" + b"0" * 8)
     (tmp_path / "config.json").write_text("{}", encoding = "utf-8")
     assert not _is_model_directory(tmp_path)
-    assert _dir_model_format(tmp_path) is None
+    assert [r.model_format for r in _classify_local_path(tmp_path, "models_dir")] == ["unknown"]
 
     (tmp_path / "Qwen3.8-27B-UD-Q4_K_XL.gguf").write_bytes(b"GGUF" + b"0" * 64)
     assert _is_model_directory(tmp_path)
-    assert _dir_model_format(tmp_path) == "gguf"
+    assert [r.model_format for r in _classify_local_path(tmp_path, "models_dir")] == ["gguf"]
 
 
 def test_the_models_dir_scanner_does_not_publish_an_imatrix_only_child(tmp_path):
-    # _scan_models_dir decides child presence from any .gguf; an imatrix is not a model artifact.
-
-    from routes.models import _scan_models_dir
+    # An imatrix is calibration data, not a model artifact.
+    from hub.services.models import local_inventory
 
     repo = tmp_path / "Qwen3.8-27B-GGUF"
     repo.mkdir()
     (repo / "imatrix_unsloth.gguf").write_bytes(b"GGUF" + b"0" * 8)
-    assert _scan_models_dir(tmp_path) == []
+    assert local_inventory._scan_models_dir(tmp_path) == []
 
     (repo / "Qwen3.8-27B-UD-Q4_K_XL.gguf").write_bytes(b"GGUF" + b"0" * 64)
-    rows = _scan_models_dir(tmp_path)
+    rows = local_inventory._scan_models_dir(tmp_path)
     assert [(Path(r.path).name, r.model_format) for r in rows] == [("Qwen3.8-27B-GGUF", "gguf")]
-
-
-def test_an_mmproj_only_child_still_decides_presence(tmp_path):
-    # A lone vision projector keeps its row (format None).
-
-    from routes.models import _scan_models_dir
-
-    repo = tmp_path / "gemma-4-GGUF"
-    repo.mkdir()
-    (repo / "mmproj-F16.gguf").write_bytes(b"GGUF" + b"0" * 8)
-
-    rows = _scan_models_dir(tmp_path)
-    assert [(Path(r.path).name, r.model_format) for r in rows] == [("gemma-4-GGUF", None)]
 
 
 def test_a_recommended_folder_chip_matches_what_the_picker_would_show(tmp_path):
     # _dir_has_downloaded_model mirrors the scanners so a chip never leads to an empty picker.
-    from routes.models import _scan_models_dir
-
-    from routes.models import _dir_has_downloaded_model, _scan_models_dir
+    from hub.services.models import local_inventory
+    from routes.models import _dir_has_downloaded_model
 
     (tmp_path / "imatrix_unsloth.gguf").write_bytes(b"GGUF" + b"0" * 8)
     assert _dir_has_downloaded_model(tmp_path) is False
-    assert _scan_models_dir(tmp_path) == []
+    assert local_inventory._scan_models_dir(tmp_path) == []
 
     (tmp_path / "Qwen3.8-27B-UD-Q4_K_XL.gguf").write_bytes(b"GGUF" + b"0" * 64)
     assert _dir_has_downloaded_model(tmp_path) is True
 
 
 def test_a_config_beside_an_imatrix_lists_for_the_reason_a_lone_config_does(tmp_path):
-    # A config-only folder is listed (format None) so in-flight downloads stay visible.
-
-    from routes.models import _scan_models_dir
+    # A config-only folder is listed so in-flight downloads stay visible.
+    from hub.services.models import local_inventory
 
     for name in ("config-only", "config-and-imatrix"):
         (tmp_path / name).mkdir()
         (tmp_path / name / "config.json").write_text("{}", encoding = "utf-8")
     (tmp_path / "config-and-imatrix" / "imatrix_unsloth.gguf").write_bytes(b"GGUF" + b"0" * 8)
 
-    rows = {Path(r.path).name: r.model_format for r in _scan_models_dir(tmp_path)}
-    assert rows == {"config-only": None, "config-and-imatrix": None}
+    rows = {Path(r.path).name: r.model_format for r in local_inventory._scan_models_dir(tmp_path)}
+    assert rows == {"config-only": "unknown", "config-and-imatrix": "unknown"}
 
 
 def test_the_lmstudio_scanner_does_not_publish_an_imatrix_only_model_dir(tmp_path):
-    from routes.models import _scan_lmstudio_dir
+    from hub.services.models import local_inventory
 
     model_dir = tmp_path / "unsloth" / "Qwen3.8-27B-GGUF"
     model_dir.mkdir(parents = True)
     (model_dir / "imatrix_unsloth.gguf").write_bytes(b"GGUF" + b"0" * 8)
-    assert _scan_lmstudio_dir(tmp_path) == []
+    assert local_inventory._scan_lmstudio_dir(tmp_path) == []
 
     (model_dir / "Qwen3.8-27B-UD-Q4_K_XL.gguf").write_bytes(b"GGUF" + b"0" * 64)
-    rows = _scan_lmstudio_dir(tmp_path)
+    rows = local_inventory._scan_lmstudio_dir(tmp_path)
     assert [(r.model_id, r.model_format) for r in rows] == [("unsloth/Qwen3.8-27B-GGUF", "gguf")]
 
 

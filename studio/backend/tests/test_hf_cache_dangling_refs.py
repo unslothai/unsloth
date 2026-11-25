@@ -1458,14 +1458,7 @@ _MTIME_READERS = {
     "hub/services/models/cache_inventory.py": frozenset({"_blob_mtime"}),
     "hub/utils/inventory_scan.py": frozenset({"_recover_repo_dropped_by_scan"}),
     # Listed so the snapshot selectors cannot reintroduce their own mtime reads.
-    "routes/models.py": frozenset(
-        {
-            "_blob_mtime",
-            "_scan_hf_cache",
-            "_scan_lmstudio_dir",
-            "_scan_models_dir",
-        }
-    ),
+    "routes/models.py": frozenset({"_blob_mtime"}),
     "hub/services/models/ollama.py": frozenset({"_ollama_model_info_from_manifest"}),
 }
 

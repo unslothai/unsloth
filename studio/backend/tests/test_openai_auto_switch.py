@@ -37,7 +37,6 @@ import io
 import routes.models as models_route
 import routes.settings as settings_route
 import storage.studio_db as db
-import utils.paths as paths
 from core.inference.tools import cached_mcp_tools
 from hub.services import download_lifecycle
 from models.inference import ChatMessage, ImageContentPart, ImageUrl
@@ -2218,8 +2217,47 @@ def test_v1_models_retrieve_is_case_insensitive(monkeypatch):
     assert unknown.value.status_code == 404
 
 
+def _local_sources(monkeypatch, tmp_path, **roots):
+    """Point the shared local scan at empty roots under tmp_path, plus the given ones."""
+    from hub.services.models import local_inventory
+
+    sources = local_inventory._LocalInventorySources(
+        **{
+            "hf_cache_dir": tmp_path / "no-active-cache",
+            "legacy_hf": tmp_path / "no-legacy-cache",
+            "hf_default": tmp_path / "no-default-cache",
+            "lm_dirs": (),
+            "ollama_dirs": (),
+            "hermes_dirs": (),
+            "known_hf_caches": (),
+            **roots,
+        }
+    )
+    monkeypatch.setattr(local_inventory, "_local_inventory_sources", lambda: sources)
+    return sources
+
+
+def _scanned_row(
+    path,
+    *,
+    source = "models_dir",
+    model_id = None,
+    display_name = None,
+):
+    from hub.services.models.common import _local_model_info
+    return _local_model_info(
+        scan_path = Path(path),
+        load_path = Path(path),
+        source = source,
+        model_format = "gguf",
+        model_id = model_id,
+        display_name = display_name,
+    )
+
+
 def test_index_excludes_hidden_models(tmp_path, monkeypatch):
     # The validation probe and RAG embedding weights must never become auto-switch targets.
+    from hub.services.models import local_inventory
 
     normal = tmp_path / "normal-Q4_K_M.gguf"
     normal.write_bytes(b"x" * 32)
@@ -2230,31 +2268,22 @@ def test_index_excludes_hidden_models(tmp_path, monkeypatch):
     local_default_embedder = tmp_path / "bge-small-en-v1.5-F16.gguf"
     local_default_embedder.write_bytes(b"x" * 32)
 
-    def _info(mid, path):
-        return SimpleNamespace(id = mid, path = str(path), model_id = mid, display_name = mid)
-
+    _local_sources(monkeypatch, tmp_path)
+    monkeypatch.setattr(studio_db, "list_scan_folders", lambda: [])
     monkeypatch.setattr(
-        models_route,
+        local_inventory,
         "_scan_models_dir",
         lambda *a, **k: [
-            _info("org/Normal-GGUF", normal),
-            _info("ggml-org/models", probe),
-            SimpleNamespace(
-                id = str(embedder),
-                path = str(embedder),
+            _scanned_row(normal, model_id = "org/Normal-GGUF"),
+            _scanned_row(probe, model_id = "ggml-org/models"),
+            _scanned_row(
+                embedder,
                 model_id = "unsloth/bge-small-en-v1.5-GGUF",
                 display_name = "embedding-Q8_0",
             ),
-            SimpleNamespace(
-                id = str(local_default_embedder),
-                path = str(local_default_embedder),
-                model_id = None,
-                display_name = local_default_embedder.name,
-            ),
+            _scanned_row(local_default_embedder, display_name = local_default_embedder.name),
         ],
     )
-    monkeypatch.setattr(models_route, "_scan_hf_cache", lambda *a, **k: [])
-    monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: tmp_path)
     resolver._scan = (0.0, {})
 
     index = resolver._index()
@@ -2439,35 +2468,34 @@ def test_keepwarm_tracks_inflight_even_when_auto_switch_off(monkeypatch):
 
 def test_build_index_covers_legacy_default_lmstudio_and_custom_roots(monkeypatch, tmp_path):
     # _build_index must scan every root the picker lists, or shown models get the loaded one.
-    from utils import paths as upaths
+    from hub.services.models import local_inventory
     import storage.studio_db as studio_db
 
     scanned = []
     monkeypatch.setattr(
-        models_route,
+        local_inventory,
         "_scan_models_dir",
-        lambda d, limit = None: scanned.append(("models", str(Path(d).resolve()))) or [],
+        lambda d, **_: scanned.append(("models", str(Path(d).resolve()))) or [],
     )
     monkeypatch.setattr(
-        models_route,
-        "_scan_hf_cache",
+        local_inventory,
+        "_discover_hf_cache",
         lambda d, **_: scanned.append(("hf", str(Path(d).resolve()))) or [],
     )
     monkeypatch.setattr(
-        models_route,
+        local_inventory,
         "_scan_lmstudio_dir",
-        lambda d: scanned.append(("lm", str(Path(d).resolve()))) or [],
+        lambda d, **_: scanned.append(("lm", str(Path(d).resolve()))) or [],
     )
-    monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: tmp_path / "active")
-    monkeypatch.setattr(models_route, "_is_hidden_model", lambda *a, **k: False)
-    monkeypatch.setattr(
-        hf_cache_settings,
-        "known_hf_hub_caches",
-        lambda: [tmp_path / "active", tmp_path / "previous"],
+    _local_sources(
+        monkeypatch,
+        tmp_path,
+        hf_cache_dir = tmp_path / "active",
+        legacy_hf = tmp_path / "legacy",
+        hf_default = tmp_path / "default",
+        lm_dirs = (tmp_path / "lmstudio",),
+        known_hf_caches = (tmp_path / "active", tmp_path / "previous"),
     )
-    monkeypatch.setattr(upaths, "legacy_hf_cache_dir", lambda: tmp_path / "legacy")
-    monkeypatch.setattr(upaths, "hf_default_cache_dir", lambda: tmp_path / "default")
-    monkeypatch.setattr(upaths, "lmstudio_model_dirs", lambda: [tmp_path / "lmstudio"])
     monkeypatch.setattr(
         studio_db, "list_scan_folders", lambda: [{"path": str(tmp_path / "custom")}]
     )
@@ -2489,33 +2517,21 @@ def test_build_index_covers_legacy_default_lmstudio_and_custom_roots(monkeypatch
 def test_build_index_covers_hermes_downloads(monkeypatch, tmp_path):
     # Hermes requests its staged GGUF by name, so the name must resolve to that exact file.
     from pathlib import Path
-    import routes.models as models_route
-    from hub.services.models import hermes as hermes_scan
-    from utils import paths as upaths
-    from utils import hf_cache_settings
+    from hub.services.models import local_inventory
     import storage.studio_db as studio_db
 
-    monkeypatch.setattr(models_route, "_scan_models_dir", lambda d, limit = None: [])
-    monkeypatch.setattr(models_route, "_scan_hf_cache", lambda d, **_: [])
-    monkeypatch.setattr(models_route, "_scan_lmstudio_dir", lambda d: [])
-    monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: tmp_path / "active")
-    monkeypatch.setattr(models_route, "_is_hidden_model", lambda *a, **k: False)
-    monkeypatch.setattr(hf_cache_settings, "known_hf_hub_caches", lambda: [])
-    monkeypatch.setattr(upaths, "legacy_hf_cache_dir", lambda: tmp_path / "legacy")
-    monkeypatch.setattr(upaths, "hf_default_cache_dir", lambda: tmp_path / "default")
-    monkeypatch.setattr(upaths, "lmstudio_model_dirs", lambda: [])
     monkeypatch.setattr(studio_db, "list_scan_folders", lambda: [])
 
     hermes_models = tmp_path / ".hermes" / "models"
     hermes_models.mkdir(parents = True)
     weight = hermes_models / "Qwen3.8-27B-UD-Q4_K_M.gguf"
     weight.write_bytes(b"\x00" * 32)
-    monkeypatch.setattr(upaths, "hermes_model_dirs", lambda: [hermes_models])
+    _local_sources(monkeypatch, tmp_path, hermes_dirs = (hermes_models,))
 
     scanned = []
-    real_scan = hermes_scan.scan_hermes_dir
+    real_scan = local_inventory.scan_hermes_dir
     monkeypatch.setattr(
-        hermes_scan,
+        local_inventory,
         "scan_hermes_dir",
         lambda d, **kw: scanned.append(str(Path(d).resolve())) or real_scan(d, **kw),
     )
@@ -3256,11 +3272,9 @@ def test_inactive_hf_cache_entry_skips_newer_companion_only_snapshot(tmp_path):
     os.utime(old, (1_000, 1_000))
     os.utime(newer.parent, (2_000, 2_000))
 
-    [info] = models_route._scan_hf_cache(
-        tmp_path,
-        active_cache = False,
-        classify_format = False,
-    )
+    from hub.services.models import local_inventory
+
+    [info] = local_inventory._scan_hf_cache(tmp_path, active_cache = False)
     assert Path(info.path) == newer.parent.resolve()
 
     entry = resolver._local_gguf_entry("org/Repo", info)
@@ -4396,12 +4410,7 @@ def test_index_advertises_alias_not_filesystem_path(tmp_path, monkeypatch):
         model_id = "org/Repo-GGUF",
         display_name = "Repo",
     )
-    monkeypatch.setattr(models_route, "_scan_models_dir", lambda *a, **k: [info])
-    monkeypatch.setattr(models_route, "_scan_hf_cache", lambda *a, **k: [])
-    monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: tmp_path)
-    monkeypatch.setattr(models_route, "_is_hidden_model", lambda *a, **k: False)
-    monkeypatch.setattr(paths, "lmstudio_model_dirs", lambda: [])
-    monkeypatch.setattr(studio_db, "list_scan_folders", lambda: [])
+    monkeypatch.setattr(models_route, "collect_local_models", lambda *a, **k: [info])
     resolver._scan = (0.0, {})
 
     # The advertised id is the alias, never the absolute path.
@@ -4432,16 +4441,7 @@ def test_inactive_cache_revision_aliases_keep_exact_companion_scope(tmp_path, mo
         display_name = "Vision-GGUF",
         source = "hf_cache",
     )
-    monkeypatch.setattr(models_route, "_scan_models_dir", lambda *a, **k: [info])
-    monkeypatch.setattr(models_route, "_scan_hf_cache", lambda *a, **k: [])
-    monkeypatch.setattr(models_route, "_scan_lmstudio_dir", lambda *a, **k: [])
-    monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: tmp_path / "active")
-    monkeypatch.setattr(models_route, "_is_hidden_model", lambda *a, **k: False)
-    monkeypatch.setattr(hf_cache_settings, "known_hf_hub_caches", lambda: [])
-    monkeypatch.setattr(paths, "legacy_hf_cache_dir", lambda: None)
-    monkeypatch.setattr(paths, "hf_default_cache_dir", lambda: None)
-    monkeypatch.setattr(paths, "lmstudio_model_dirs", lambda: [])
-    monkeypatch.setattr(studio_db, "list_scan_folders", lambda: [])
+    monkeypatch.setattr(models_route, "collect_local_models", lambda *a, **k: [info])
 
     index = resolver._build_index()
 
@@ -4466,17 +4466,15 @@ def test_build_index_survives_a_failing_scanner(tmp_path, monkeypatch):
     def _boom(*a, **k):
         raise OSError("permission denied")
 
-    lm_info = SimpleNamespace(
-        id = "org/Repo-GGUF", path = "/lm/Repo", model_id = "org/Repo-GGUF", display_name = "Repo"
+    from hub.services.models import local_inventory
+
+    lm_info = _scanned_row(
+        "/lm/Repo", source = "lmstudio", model_id = "org/Repo-GGUF", display_name = "Repo"
     )
-    monkeypatch.setattr(models_route, "_scan_models_dir", _boom)
-    monkeypatch.setattr(models_route, "_scan_hf_cache", lambda *a, **k: [])
-    monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: tmp_path)
-    monkeypatch.setattr(models_route, "_is_hidden_model", lambda *a, **k: False)
-    monkeypatch.setattr(models_route, "_scan_lmstudio_dir", lambda *a, **k: [lm_info])
-    monkeypatch.setattr(paths, "legacy_hf_cache_dir", lambda: None)
-    monkeypatch.setattr(paths, "hf_default_cache_dir", lambda: None)
-    monkeypatch.setattr(paths, "lmstudio_model_dirs", lambda: [tmp_path])
+    monkeypatch.setattr(local_inventory, "_scan_models_dir", _boom)
+    monkeypatch.setattr(local_inventory, "_scan_lmstudio_dir", lambda *a, **k: [lm_info])
+    _local_sources(monkeypatch, tmp_path, lm_dirs = (tmp_path,))
+    monkeypatch.setattr(studio_db, "list_scan_folders", lambda: [])
     monkeypatch.setattr(
         resolver,
         "_local_gguf_entry",
@@ -4496,26 +4494,15 @@ def test_build_index_groups_overlapping_custom_gguf_roots(tmp_path, monkeypatch)
     quant_dir.mkdir()
     (quant_dir / "model-Q8_0.gguf").write_bytes(b"xx")
     (quant_dir / "config.json").write_text("{}", encoding = "utf-8")
-    scan_models_dir = models_route._scan_models_dir
-    scan_lmstudio_dir = models_route._scan_lmstudio_dir
+    from hub.services.models import local_inventory
 
+    scan_models_dir = local_inventory._scan_models_dir
     monkeypatch.setattr(
-        models_route,
+        local_inventory,
         "_scan_models_dir",
         lambda path, **kwargs: scan_models_dir(path, **kwargs) if path in {root, quant_dir} else [],
     )
-    monkeypatch.setattr(
-        models_route,
-        "_scan_lmstudio_dir",
-        lambda path: scan_lmstudio_dir(path) if path in {root, quant_dir} else [],
-    )
-    monkeypatch.setattr(models_route, "_scan_hf_cache", lambda *a, **k: [])
-    monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: tmp_path / "active")
-    monkeypatch.setattr(models_route, "_is_hidden_model", lambda *a, **k: False)
-    monkeypatch.setattr(hf_cache_settings, "known_hf_hub_caches", lambda: [])
-    monkeypatch.setattr(paths, "legacy_hf_cache_dir", lambda: None)
-    monkeypatch.setattr(paths, "hf_default_cache_dir", lambda: None)
-    monkeypatch.setattr(paths, "lmstudio_model_dirs", lambda: [])
+    _local_sources(monkeypatch, tmp_path)
     monkeypatch.setattr(
         studio_db,
         "list_scan_folders",
@@ -4536,16 +4523,7 @@ def test_non_gguf_entries_skip_gguf_sibling_revision_scans(tmp_path, monkeypatch
         model_id = "org/Repo",
         display_name = "Repo",
     )
-    monkeypatch.setattr(models_route, "_scan_models_dir", lambda *a, **k: [info])
-    monkeypatch.setattr(models_route, "_scan_hf_cache", lambda *a, **k: [])
-    monkeypatch.setattr(models_route, "_scan_lmstudio_dir", lambda *a, **k: [])
-    monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: tmp_path)
-    monkeypatch.setattr(models_route, "_is_hidden_model", lambda *a, **k: False)
-    monkeypatch.setattr(hf_cache_settings, "known_hf_hub_caches", lambda: [])
-    monkeypatch.setattr(paths, "legacy_hf_cache_dir", lambda: None)
-    monkeypatch.setattr(paths, "hf_default_cache_dir", lambda: None)
-    monkeypatch.setattr(paths, "lmstudio_model_dirs", lambda: [])
-    monkeypatch.setattr(studio_db, "list_scan_folders", lambda: [])
+    monkeypatch.setattr(models_route, "collect_local_models", lambda *a, **k: [info])
     monkeypatch.setattr(
         resolver,
         "_local_servable_entry",
@@ -11199,18 +11177,12 @@ def test_an_adapter_only_directory_is_not_a_servable_chat_model(tmp_path):
 
 def test_an_installed_mlx_model_is_indexed_and_resolves(tmp_path, monkeypatch):
     # An unloaded MLX model must be visible to the resolver, not 404 as not downloaded.
-    from utils import paths
-
     path = _local_checkpoint(tmp_path)
     (path / "config.json").write_text(
         '{"architectures": ["Qwen3ForCausalLM"], "model_type": "qwen3", "quantization": {"group_size": 64, "bits": 4}}'
     )
     monkeypatch.setattr(hw, "DEVICE", hw.DeviceType.MLX)
-    monkeypatch.setattr(models_route, "_scan_hf_cache", lambda *a, **k: [])
-    monkeypatch.setattr(models_route, "_scan_lmstudio_dir", lambda *a, **k: [])
-    monkeypatch.setattr(paths, "legacy_hf_cache_dir", lambda: None)
-    monkeypatch.setattr(paths, "hf_default_cache_dir", lambda: None)
-    monkeypatch.setattr(paths, "lmstudio_model_dirs", lambda: [])
+    _local_sources(monkeypatch, tmp_path)
     monkeypatch.setattr("storage.studio_db.list_scan_folders", lambda: [{"path": str(tmp_path)}])
 
     resolver._scan = (0.0, {})

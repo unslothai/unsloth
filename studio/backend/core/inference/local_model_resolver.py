@@ -608,9 +608,9 @@ def _model_type_is_audio(model_type) -> bool:
 
 def _weights_are_servable(load_dir) -> bool:
     """On-disk shape only: safetensors weights, and no diffusers, bare LoRA or embedder markers."""
-    from routes.models import _local_pipeline_index
+    from hub.services.models.common import _is_diffusers_pipeline_dir
 
-    if _local_pipeline_index(load_dir) or not (load_dir / "config.json").is_file():
+    if _is_diffusers_pipeline_dir(load_dir) or not (load_dir / "config.json").is_file():
         return False
     if not _has_safetensors_weights(load_dir):
         return False
@@ -769,11 +769,14 @@ def _local_servable_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
         ):
             return None
         return _LocalGgufEntry(loader_id, raw_id, (), is_gguf = False)
+    # A local row is partial only when none of its quants is whole; an HF repo still serves its complete ones.
+    if getattr(info, "partial", False) and getattr(info, "source", None) != "hf_cache":
+        return None
     return _local_gguf_entry(loader_id, info) or _local_weights_entry(loader_id, info)
 
 
 def local_servable_model(info) -> Optional[tuple[bool, tuple[str, ...]]]:
-    """Reads the files, not info.model_format: the HF-cache scanner leaves it unset for GGUF snapshots."""
+    """Reads the files, not info.model_format: an HF row the scanner cannot classify says "unknown"."""
     from pathlib import Path
 
     path = getattr(info, "path", None)
@@ -819,122 +822,21 @@ def local_load_dir(path: Optional[str]) -> Optional[str]:
 
 @in_scan_memo
 def _build_index() -> dict[str, _LocalGgufEntry]:
-    """Scans the model picker's roots; Ollama manifests are read only, since load materializes the .gguf."""
+    """Indexes the rows /v1/models lists; Ollama manifests are read only, since load materializes the .gguf."""
     # Lazy import: routes.models imports core.inference.
     from pathlib import Path
-    from routes.models import (
-        _scan_models_dir,
-        _scan_hf_cache,
-        _scan_lmstudio_dir,
-        _scan_ollama_dir,
-        _resolve_hf_cache_dir,
-        _is_hidden_model,
-    )
-    from hub.utils.gguf import dedupe_custom_gguf_rows, suppress_grouped_gguf_file_rows
-    from hub.utils.inventory_scan import scan_folder_hf_caches
-    from utils.paths import legacy_hf_cache_dir, hf_default_cache_dir, lmstudio_model_dirs
-    from utils.hf_cache_settings import known_hf_hub_caches
+    from routes.models import collect_local_models
     from core.inference.model_ids import public_model_id
 
     index: dict[str, _LocalGgufEntry] = {}
-    seen_hf: set[str] = set()
-
     try:
-        active_root = str(Path(_resolve_hf_cache_dir()).resolve())
-    except Exception:
-        active_root = None
-
-    def _scan_hf_once(directory) -> list:
-        if directory is None:
-            return []
-        try:
-            d = Path(directory)
-            if not d.is_dir():
-                return []
-            rp = str(d.resolve())
-            if rp in seen_hf:
-                return []
-            seen_hf.add(rp)
-            # Only the active cache loads by repo id, so an inactive repo must not be indexed under one; no format classification on this request path.
-            return _scan_hf_cache(directory, active_cache = rp == active_root, classify_format = False)
-        except Exception as exc:  # a missing/malformed root must skip, never crash the index
-            logger.debug("auto-switch: skipping HF cache dir %r: %s", directory, exc)
-            return []
-
-    # Guard each source separately so one bad root drops only that source, not the whole index.
-    found: list = []
-    try:
-        found += _scan_models_dir(Path("./models").resolve())
+        found = collect_local_models(Path("./models").resolve(), materialize_ollama_links = False)
     except Exception as exc:
-        logger.debug("auto-switch: ./models scan failed: %s", exc)
-    try:
-        for hf_dir in (
-            *known_hf_hub_caches(),
-            _resolve_hf_cache_dir(),
-            legacy_hf_cache_dir(),
-            hf_default_cache_dir(),
-        ):
-            found += _scan_hf_once(hf_dir)
-    except Exception as exc:
-        logger.debug("auto-switch: HF cache scan failed: %s", exc)
-    try:
-        for lm_dir in lmstudio_model_dirs():
-            found += _scan_lmstudio_dir(lm_dir)
-    except Exception as exc:
-        logger.debug("auto-switch: LM Studio scan failed: %s", exc)
-    try:
-        from utils.paths import omlx_model_dirs
-        for omlx_dir in omlx_model_dirs():
-            found += _scan_hf_once(omlx_dir) + _scan_lmstudio_dir(omlx_dir, source = "omlx")
-    except Exception as exc:
-        logger.debug("auto-switch: oMLX scan failed: %s", exc)
-    # Read-only like the LM Studio scan, so it is safe on the request path. This is the path Hermes
-    # itself takes: it downloads the GGUF, then asks Unsloth for it by name.
-    try:
-        from hub.services.models.hermes import scan_hermes_dir
-        from utils.paths import hermes_model_dirs
-        for hermes_dir in hermes_model_dirs():
-            found += scan_hermes_dir(hermes_dir)
-    except Exception as exc:
-        logger.debug("auto-switch: Hermes scan failed: %s", exc)
-    try:
-        from utils.paths import ollama_model_dirs
-        for ollama_dir in ollama_model_dirs():
-            found += _scan_ollama_dir(ollama_dir, materialize_links = False)
-    except Exception as exc:
-        logger.debug("auto-switch: Ollama scan failed: %s", exc)
-    try:
-        from storage.studio_db import list_scan_folders
-
-        custom_found = []
-        for folder in list_scan_folders():
-            try:
-                fp = Path(folder["path"])
-                rows = (
-                    _scan_models_dir(fp, limit = 200)
-                    + [row for hub in scan_folder_hf_caches(fp) for row in _scan_hf_once(hub)]
-                    + _scan_lmstudio_dir(fp)
-                    + _scan_ollama_dir(fp, limit = 200, materialize_links = False)
-                )
-                if folder.get("recursive"):
-                    from routes.models import _scan_nested_compat_rows
-                    rows += _scan_nested_compat_rows(fp, rows, limit = 200)
-                custom_found += dedupe_custom_gguf_rows(rows)
-            except Exception as exc:
-                logger.debug("auto-switch: scan folder %r failed: %s", folder, exc)
-        found += suppress_grouped_gguf_file_rows(custom_found)
-    except Exception as exc:
-        logger.debug("auto-switch: scan folders enumerate failed: %s", exc)
+        logger.debug("auto-switch: local model scan failed: %s", exc)
+        return index
     for info in found:
         raw_id = getattr(info, "id", None)
         if not raw_id:
-            continue
-        # Skip models hidden from pickers (validation probe, RAG embed); never an auto-switch target.
-        if _is_hidden_model(
-            raw_id,
-            getattr(info, "model_id", None),
-            getattr(info, "path", None),
-        ):
             continue
         # Advertise a client-facing alias, not an absolute filesystem path.
         loader_id = _advertised_loader_id(info)

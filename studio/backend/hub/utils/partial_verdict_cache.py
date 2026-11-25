@@ -20,7 +20,7 @@ import threading
 import time
 from collections import OrderedDict
 from pathlib import Path
-from typing import Callable, Hashable, NamedTuple, Optional
+from typing import Callable, Hashable, NamedTuple, Optional, TypeVar
 
 from utils.scan_memo import memoized, scan_memo_active
 
@@ -50,6 +50,8 @@ _TRUSTED_FS_TYPES = frozenset(
     }
 )
 
+_V = TypeVar("_V")
+
 _lock = threading.Lock()
 _entries: "OrderedDict[Hashable, _Entry]" = OrderedDict()
 _generation = 0
@@ -61,7 +63,7 @@ class _Unstable(Exception):
 
 
 class _Entry(NamedTuple):
-    verdict: bool
+    verdict: object
     token: tuple
     dirs: tuple
     files: tuple
@@ -274,7 +276,7 @@ def _signature(dirs: tuple, files: tuple) -> tuple:
     return tuple(_stat(p) for p in dirs) + tuple(_stat(p) for p in files)
 
 
-def cached_verdict(key: Hashable, repo_dir: Path, compute: Callable[[], bool]) -> bool:
+def cached_verdict(key: Hashable, repo_dir: Path, compute: Callable[[], _V]) -> _V:
     """compute()'s verdict for *repo_dir*, reused while nothing it reads has changed."""
     token = scan_token()
     if token is None:

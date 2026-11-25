@@ -28,6 +28,7 @@ from hub.storage.scan_folders import (
     remove_scan_folder,
 )
 from hub.utils import download_manifest, gguf, inventory_scan as hf_cache_scan
+from hub.utils import partial_verdict_cache
 from hub.utils.host_paths import scrub_paths, short_path_for_log
 from hub.utils.paths import (
     hermes_model_dirs,
@@ -72,7 +73,7 @@ class _LocalInventorySources(NamedTuple):
     omlx_dirs: tuple[Path, ...] = ()
 
 
-_LocalInventoryKey = tuple[str, _LocalInventorySources, tuple[str, ...], int]
+_LocalInventoryKey = tuple[str, _LocalInventorySources, tuple[str, ...], int, bool]
 _local_inventory_flights: dict[
     tuple[asyncio.AbstractEventLoop, _LocalInventoryKey], asyncio.Task[LocalModelListResponse]
 ] = {}
@@ -394,9 +395,10 @@ def _scan_models_dir(
             break
         try:
             is_dir = child.is_dir()
+            # A loose mmproj, MTP drafter or imatrix is a companion, not a model of its own.
             is_gguf_file = (
                 not is_dir
-                and child.suffix.lower() == ".gguf"
+                and _is_main_gguf_filename(child.name)
                 and child.is_file()
                 and not is_appledouble_metadata(child)
                 and not _is_image_lora_file(child)
@@ -597,16 +599,8 @@ def _scan_hf_cache(
             if variant_states is not None
             else None
         )
-        snapshot_partial = hf_cache_scan.is_snapshot_partial(
-            "model",
-            model_id,
-            repo_dir,
-            variant_state = variant_state,
-        )
-        gguf_partial = hf_cache_scan.is_gguf_repo_partial(
-            model_id,
-            repo_dir,
-            variant_state = variant_state,
+        snapshot_partial, gguf_partial = hf_cache_scan.repo_partial_verdicts(
+            model_id, repo_dir, variant_state = variant_state
         )
         has_gguf_variant_state, gguf_variant_state_size = _gguf_variant_state_summary(
             model_id,
@@ -858,7 +852,7 @@ def _scan_lmstudio_dir(
         try:
             if not child.is_dir():
                 if (
-                    child.suffix.lower() == ".gguf"
+                    _is_main_gguf_filename(child.name)
                     and child.is_file()
                     and not is_appledouble_metadata(child)
                     and not _is_image_lora_file(child)
@@ -913,7 +907,7 @@ def _scan_lmstudio_dir(
                         )
                         found.extend(_apply_payload_partial(model_dir, rows))
                     elif (
-                        model_dir.suffix.lower() == ".gguf"
+                        _is_main_gguf_filename(model_dir.name)
                         and model_dir.is_file()
                         and not is_appledouble_metadata(model_dir)
                         and not _is_image_lora_file(model_dir)
@@ -1095,9 +1089,9 @@ def _coerce_scan_folder_path(raw_path: str) -> str:
     return str(normalized)
 
 
-async def _scan_source(label: str, scanner, path: Path) -> List[LocalModelInfo]:
+def _scan_source(label: str, scanner, path: Path) -> List[LocalModelInfo]:
     try:
-        return await asyncio.to_thread(scanner, path)
+        return scanner(path)
     except Exception as e:
         logger.warning(
             "Skipping %s scan for %s: %s", label, short_path_for_log(path), scrub_paths(e)
@@ -1156,20 +1150,9 @@ def _abandon_custom_folder_scan(row_path: str, future: concurrent.futures.Future
     future.add_done_callback(lambda _f: clear_scan_slow(row_path))
 
 
-async def _run_custom_folder_bounded(row_path: str, work):
-    """``work()`` for one custom folder, or None when it was skipped for being slow."""
-    future = _submit_custom_folder_scan(row_path, work)
-    if future is None:
-        return None
-    try:
-        return await asyncio.wait_for(asyncio.wrap_future(future), _CUSTOM_FOLDER_SCAN_TIMEOUT_S)
-    except asyncio.TimeoutError:
-        _abandon_custom_folder_scan(row_path, future)
-        return None
-
-
 def run_custom_folder_bounded_sync(row_path: str, work):
-    """``_run_custom_folder_bounded`` for a caller already off the event loop."""
+    """``work()`` for one custom folder, or None when it was skipped for being slow. Blocks, so call it off the
+    event loop."""
     future = _submit_custom_folder_scan(row_path, work)
     if future is None:
         return None
@@ -1203,19 +1186,26 @@ def _discover_custom_folder_hf_caches(folder_path: Path) -> list[tuple[Path, Opt
     return hf_caches
 
 
-async def _collect_models_from_default_sources(
+def _collect_models_from_default_sources(
     models_root: Path,
-    hf_cache_dir: Path,
-    legacy_hf: Path,
-    hf_default: Path,
-    lm_dirs: tuple[Path, ...],
-    ollama_dirs: tuple[Path, ...],
-    hermes_dirs: tuple[Path, ...],
-    known_hf_caches: tuple[Path, ...],
+    sources: _LocalInventorySources,
     custom_folders: list[dict],
-    omlx_dirs: tuple[Path, ...] = (),
+    *,
+    materialize_ollama_links: bool = False,
 ) -> List[LocalModelInfo]:
-    local_models = await _scan_source("models directory", _scan_models_dir, models_root)
+    """Rows from every on-device source, before the hidden filter and dedupe. Blocks, so call it off the event
+    loop. ``materialize_ollama_links`` lists Ollama tags by a ``.gguf`` link path instead of a manifest ref."""
+    (
+        hf_cache_dir,
+        legacy_hf,
+        hf_default,
+        lm_dirs,
+        ollama_dirs,
+        hermes_dirs,
+        known_hf_caches,
+        omlx_dirs,
+    ) = sources
+    local_models = _scan_source("models directory", _scan_models_dir, models_root)
     hf_sources = [("HF cache", hf_cache_dir, True)]
 
     if _safe_is_dir(legacy_hf) and legacy_hf.resolve() != hf_cache_dir.resolve():
@@ -1249,7 +1239,7 @@ async def _collect_models_from_default_sources(
     custom_sources = []
     state_repositories = []
     for label, cache_dir, active_cache in hf_sources:
-        discovered = await _scan_source(label, _discover_hf_cache, cache_dir)
+        discovered = _scan_source(label, _discover_hf_cache, cache_dir)
         discovered_sources.append((label, cache_dir, active_cache, discovered))
         state_repositories.extend(
             ("model", model_id, cache_dir) for _repo, model_id, _updated in discovered
@@ -1258,7 +1248,7 @@ async def _collect_models_from_default_sources(
         folder_path = Path(normalize_path(folder["path"])).expanduser()
         # Carry the registered path: the status registry is keyed on the row, not on the normalized Path this scan walks.
         row_path = str(folder["path"])
-        hf_caches = await _run_custom_folder_bounded(
+        hf_caches = run_custom_folder_bounded_sync(
             row_path, lambda path = folder_path: _discover_custom_folder_hf_caches(path)
         )
         if hf_caches is None:
@@ -1269,8 +1259,9 @@ async def _collect_models_from_default_sources(
             )
         custom_sources.append((folder_path, hf_caches, row_path, bool(folder.get("recursive"))))
     try:
-        variant_states = await asyncio.to_thread(
-            download_manifest.build_variant_state_index,
+        # Taken before the index reads the Hub state, so a write in between misses next time.
+        partial_verdict_cache.scan_token()
+        variant_states = download_manifest.build_variant_state_index(
             state_repositories,
             active_hub_cache = hf_cache_dir,
         )
@@ -1282,7 +1273,7 @@ async def _collect_models_from_default_sources(
         hf_rows_by_root.append(
             (
                 cache_dir,
-                await _scan_source(
+                _scan_source(
                     label,
                     lambda path, rows = discovered, active = active_cache: _scan_hf_cache(
                         path,
@@ -1298,20 +1289,24 @@ async def _collect_models_from_default_sources(
     local_models += _merge_artifact_mirror_roots(hf_rows_by_root)
 
     for lm_dir in lm_dirs:
-        local_models += await _scan_source("LM Studio", _scan_lmstudio_dir, lm_dir)
+        local_models += _scan_source("LM Studio", _scan_lmstudio_dir, lm_dir)
 
     for omlx_dir in omlx_dirs:
-        local_models += await _scan_source(
+        local_models += _scan_source(
             "oMLX",
             lambda path: _scan_lmstudio_dir(path, source = "omlx"),
             omlx_dir,
         )
 
     for ollama_dir in ollama_dirs:
-        local_models += await _scan_source("Ollama", scan_ollama_dir, ollama_dir)
+        local_models += _scan_source(
+            "Ollama",
+            lambda path: scan_ollama_dir(path, materialize_links = materialize_ollama_links),
+            ollama_dir,
+        )
 
     for hermes_dir in hermes_dirs:
-        local_models += await _scan_source("Hermes", scan_hermes_dir, hermes_dir)
+        local_models += _scan_source("Hermes", scan_hermes_dir, hermes_dir)
 
     hermes_identities = {_inventory_physical_identity(str(d)) for d in hermes_dirs}
 
@@ -1323,6 +1318,7 @@ async def _collect_models_from_default_sources(
             variant_states = variant_states,
             active_hub_cache = hf_cache_dir,
             nested_roots = nested_roots,
+            materialize_ollama_links = materialize_ollama_links,
         )
         if _inventory_physical_identity(str(folder_path)) in hermes_identities:
             # Hermes-registered folder: its downloads come from the Hermes scan (the walk would list
@@ -1339,7 +1335,7 @@ async def _collect_models_from_default_sources(
 
     for folder_path, hf_caches, row_path, recursive in custom_sources:
         try:
-            custom_models = await _run_custom_folder_bounded(
+            custom_models = run_custom_folder_bounded_sync(
                 row_path,
                 lambda path = folder_path, caches = hf_caches, rec = recursive: scan_folder(
                     path, caches, rec
@@ -1357,8 +1353,7 @@ async def _collect_models_from_default_sources(
             if isinstance(e, OSError):
                 record_scan_failure(row_path, e)
             continue
-        # Off the loop, like the scan above it: the probe opens directories, and on a stalled network mount scandir sits in the kernel with nothing to yield to.
-        await asyncio.to_thread(note_scan_folder_scanned, row_path, found = bool(custom_models))
+        note_scan_folder_scanned(row_path, found = bool(custom_models))
         for model in custom_models:
             row = _promote_to_custom_source(model)
             row._scan_root = str(folder_path)
@@ -1407,6 +1402,7 @@ def _scan_custom_folder(
     variant_states: Optional[download_manifest.VariantStateIndex] = None,
     active_hub_cache: Optional[Path] = None,
     nested_roots: tuple[Path, ...] = (),
+    materialize_ollama_links: bool = False,
 ) -> List[LocalModelInfo]:
     from utils.models.model_config import detect_gguf_model
 
@@ -1421,13 +1417,20 @@ def _scan_custom_folder(
         return _is_diffusers_pipeline_dir(Path(m.path))
 
     # A ComfyUI root / models/: its denoiser folders are scanned like nested roots.
-    from hub.utils.comfy_models import comfy_dit_scan_roots
+    from hub.utils.comfy_models import comfy_dit_scan_roots, comfy_role_dirs
 
     comfy_roots = tuple(
         root for root in comfy_dit_scan_roots(folder_path) if root not in nested_roots
     )
     if comfy_roots:
         nested_roots = (*nested_roots, *comfy_roots)
+    # Its role folders (diffusion_models/, vae/, ...) hold models but are not one.
+    role_dirs = comfy_role_dirs(folder_path)
+
+    def _is_listed(m: LocalModelInfo) -> bool:
+        return _is_supported(m) and (
+            not role_dirs or os.path.normcase(os.path.realpath(m.path)) not in role_dirs
+        )
 
     generic = [
         m
@@ -1457,7 +1460,7 @@ def _scan_custom_folder(
             )
             + _scan_lmstudio_dir(folder_path, entry_limit = _MAX_CUSTOM_FOLDER_ENTRIES)
         )
-        if _is_supported(m)
+        if _is_listed(m)
         if not any(p in (".studio_links", "ollama_links") for p in Path(m.path).parts)
     ]
     if nested_roots:
@@ -1468,7 +1471,7 @@ def _scan_custom_folder(
                 seen = {_scan_row_key(m) for m in generic},
                 active_hub_cache = active_hub_cache,
             )
-            if _is_supported(m)
+            if _is_listed(m)
         ]
     selectable = []
     for model in generic:
@@ -1477,9 +1480,12 @@ def _scan_custom_folder(
             continue
         path = Path(model.path)
         if path.is_dir():
+            # An HF snapshot may keep each quant in its own folder (UD-Q4_K_XL/).
+            patterns = ("*", "*/*") if model.source == "hf_cache" else ("*",)
             if any(
                 detect_gguf_model(str(file), model_root = str(folder_path)) is not None
-                for file in path.glob("*")
+                for pattern in patterns
+                for file in path.glob(pattern)
                 if not _safe_is_dir(file) and file.suffix.lower() == ".gguf"
             ):
                 selectable.append(model)
@@ -1489,7 +1495,11 @@ def _scan_custom_folder(
     selectable = gguf.dedupe_custom_gguf_rows(selectable)
     remaining = _MAX_MODELS_PER_CUSTOM_FOLDER - len(selectable)
     if remaining > 0:
-        selectable.extend(scan_ollama_dir(folder_path, limit = remaining))
+        selectable.extend(
+            scan_ollama_dir(
+                folder_path, limit = remaining, materialize_links = materialize_ollama_links
+            )
+        )
     return selectable[:_MAX_MODELS_PER_CUSTOM_FOLDER]
 
 
@@ -1634,19 +1644,13 @@ def _filter_and_dedupe_local_models(local_models: List[LocalModelInfo]) -> list[
 
 
 async def _scan_local_models_response(
-    models_dir: str, custom_folders: list[dict], sources: _LocalInventorySources
+    models_dir: str,
+    custom_folders: list[dict],
+    sources: _LocalInventorySources,
+    materialize_ollama_links: bool = False,
 ) -> LocalModelListResponse:
     """List local model candidates from every supported on-device source."""
-    (
-        hf_cache_dir,
-        legacy_hf,
-        hf_default,
-        lm_dirs,
-        ollama_dirs,
-        hermes_dirs,
-        known_hf_caches,
-        omlx_dirs,
-    ) = sources
+    hf_cache_dir, legacy_hf, hf_default, lm_dirs, ollama_dirs, hermes_dirs, *_ = sources
 
     allowed_roots: list[Path] = [Path("./models").resolve(), hf_cache_dir]
     if _safe_is_dir(legacy_hf):
@@ -1661,17 +1665,12 @@ async def _scan_local_models_response(
         raise _http_error(status_code = 403, detail = "Directory not allowed")
 
     try:
-        local_models = await _collect_models_from_default_sources(
+        local_models = await asyncio.to_thread(
+            _collect_models_from_default_sources,
             models_root,
-            hf_cache_dir,
-            legacy_hf,
-            hf_default,
-            lm_dirs,
-            ollama_dirs,
-            hermes_dirs,
-            known_hf_caches,
+            sources,
             custom_folders,
-            omlx_dirs = omlx_dirs,
+            materialize_ollama_links = materialize_ollama_links,
         )
         models = await asyncio.to_thread(_filter_and_dedupe_local_models, local_models)
         return LocalModelListResponse(
@@ -1746,7 +1745,9 @@ async def _account_local_response(response):
 
 
 @in_scan_memo
-async def list_local_models_response(models_dir: str = "./models") -> LocalModelListResponse:
+async def list_local_models_response(
+    models_dir: str = "./models", *, materialize_ollama_links: bool = False
+) -> LocalModelListResponse:
     """Coalesce overlapping local inventory requests for the same models root."""
 
     def classify(response: LocalModelListResponse) -> LocalModelListResponse:
@@ -1775,7 +1776,9 @@ async def list_local_models_response(models_dir: str = "./models") -> LocalModel
     async def scan_and_classify(
         expected_epoch: int, custom_folders: list[dict], sources: _LocalInventorySources
     ) -> LocalModelListResponse:
-        response = await _scan_local_models_response(models_dir, custom_folders, sources)
+        response = await _scan_local_models_response(
+            models_dir, custom_folders, sources, materialize_ollama_links
+        )
         if hf_cache_scan.hf_cache_scans_epoch() != expected_epoch:
             raise _LocalCacheChanged(response)
         classified = await asyncio.to_thread(classify, response)
@@ -1800,6 +1803,7 @@ async def list_local_models_response(models_dir: str = "./models") -> LocalModel
                 for folder in custom_folders
             ),
             epoch,
+            materialize_ollama_links,
         )
         try:
             response = await hf_cache_scan.shared_scan(

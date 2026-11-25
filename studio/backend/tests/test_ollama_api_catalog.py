@@ -9,7 +9,7 @@ from unittest.mock import patch
 import pytest
 
 from core.inference import local_model_resolver as resolver
-from hub.services.models import account_access, ollama
+from hub.services.models import account_access, local_inventory, ollama
 from models.inference import LoadRequest
 from routes import inference as inf, models as models_route
 from storage import studio_db
@@ -53,6 +53,16 @@ def store(tmp_path, monkeypatch):
         monkeypatch.setattr(paths, name, lambda: empty)
     monkeypatch.setattr(hf_cache_settings, "known_hf_hub_caches", lambda: [])
     monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: empty)
+    sources = local_inventory._LocalInventorySources(
+        hf_cache_dir = empty,
+        legacy_hf = empty,
+        hf_default = empty,
+        lm_dirs = (),
+        ollama_dirs = (root,),
+        hermes_dirs = (),
+        known_hf_caches = (),
+    )
+    monkeypatch.setattr(local_inventory, "_local_inventory_sources", lambda: sources)
     monkeypatch.setattr(studio_db, "list_scan_folders", lambda: [])
     monkeypatch.setattr(inf, "_CATALOG_CACHE", {"at": 0.0, "models": []})
     monkeypatch.setattr(inf, "_SERVABLE_SCAN_CACHE", {"entry": None})
@@ -70,7 +80,7 @@ def store(tmp_path, monkeypatch):
 def aliased(store):
     tags = store / "manifests/registry.ollama.ai/library/llama3"
     (tags / "8b").write_bytes((tags / "latest").read_bytes())
-    return {r.model_id: r.id for r in models_route._scan_ollama_dir(store, materialize_links = False)}
+    return {r.model_id: r.id for r in ollama.scan_ollama_dir(store)}
 
 
 @pytest.fixture
@@ -85,7 +95,12 @@ def serving(monkeypatch):
 
 def test_the_compat_inventory_still_hands_out_a_gguf_path(store):
     """Its readers treat a row's id and path as filenames; a suffixless blob is not loadable."""
-    (row,) = models_route.collect_local_models(Path("models").resolve())
+    listing = asyncio.run(
+        models_route.list_local_models(
+            models_dir = "./models", current_subject = "test", via_api_key = False
+        )
+    )
+    (row,) = listing.models
     assert row.model_id == "ollama/llama3:latest"
     assert row.id == row.path
     assert row.path.endswith(".gguf")
@@ -119,10 +134,10 @@ def test_catalog_and_resolver_are_read_only_and_share_the_public_id(store, monke
 
 
 def test_a_tag_being_loaded_stays_in_the_inventory(store):
-    ref = models_route._scan_ollama_dir(store, materialize_links = False)[0].id
+    ref = ollama.scan_ollama_dir(store)[0].id
     lease = ollama.acquire_ollama_model_ref(ref)
     try:
-        rows = models_route._scan_ollama_dir(store, materialize_links = True)
+        rows = ollama.scan_ollama_dir(store, materialize_links = True)
     finally:
         lease.release()
     assert [row.path for row in rows] == [lease.path]
@@ -143,7 +158,7 @@ def _resident(ref: str, *, advertised: str = "") -> _FakeBackend:
 
 
 def test_a_repulled_tag_is_not_reported_loaded_while_it_cannot_be_answered(store, serving):
-    ref = models_route._scan_ollama_dir(store, materialize_links = False)[0].id
+    ref = ollama.scan_ollama_dir(store)[0].id
     backend = serving(_resident(ref))
     assert inf._loaded_satisfies("ollama/llama3:latest") is True
     assert inf._loaded_satisfies("ollama/llama3:latest:Q8_0") is False
@@ -165,7 +180,7 @@ def _rewritten(model_path: str) -> str:
 
 def test_a_link_is_loaded_as_the_tag_that_materialized_it(store, monkeypatch, serving):
     """Its directory names the tag, so a selection stored under an older link name resolves too."""
-    ref = models_route._scan_ollama_dir(store, materialize_links = False)[0].id
+    ref = ollama.scan_ollama_dir(store)[0].id
     link = Path(ollama.materialize_ollama_model_ref(ref))
     data = json.loads((store / "manifests/registry.ollama.ai/library/llama3/latest").read_text())
     for named in (link, link.with_name("llama3-latest-Q4_K_M.gguf")):
@@ -310,14 +325,14 @@ def test_a_symlinked_manifests_dir_still_resolves(tmp_path, monkeypatch):
     for module in (paths, ollama):
         monkeypatch.setattr(module, "ollama_model_dirs", lambda: [root])
 
-    (row,) = models_route._scan_ollama_dir(root, materialize_links = False)
+    (row,) = ollama.scan_ollama_dir(root)
     assert ollama.ollama_model_ref_files(row.id)[0].startswith(str(root / "blobs"))
 
 
 def test_stop_loading_reaches_a_tag_the_load_renamed(store):
     """Chat holds the link it picked; the load runs as the tag. Stop must still find it."""
-    ref = models_route._scan_ollama_dir(store, materialize_links = False)[0].id
-    link = models_route._scan_ollama_dir(store, materialize_links = True)[0].id
+    ref = ollama.scan_ollama_dir(store)[0].id
+    link = ollama.scan_ollama_dir(store, materialize_links = True)[0].id
     assert link != ref
     assert inf._names_the_resident_model(ref, link)
     assert inf._names_the_loading_model(ref, link)

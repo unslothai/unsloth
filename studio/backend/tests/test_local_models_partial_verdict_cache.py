@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pytest
 
-import routes.models as models_route
+from hub.services.models import local_inventory
 from hub.utils import download_manifest, inventory_scan, partial_verdict_cache
 
 pytestmark = pytest.mark.skipif(
@@ -79,15 +79,19 @@ _REV2 = "b" * 40
 def hub(monkeypatch, tmp_path):
     active = tmp_path / "hub"
     active.mkdir()
-    monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active)
-    monkeypatch.setattr("utils.paths.legacy_hf_cache_dir", lambda: tmp_path / "legacy")
-    monkeypatch.setattr("utils.paths.hf_default_cache_dir", lambda: tmp_path / "default")
-    monkeypatch.setattr("utils.paths.lmstudio_model_dirs", lambda: [])
-    monkeypatch.setattr("utils.paths.hermes_model_dirs", lambda: [])
-    monkeypatch.setattr("utils.paths.ollama_model_dirs", lambda: [])
-    monkeypatch.setattr("utils.paths.omlx_model_dirs", lambda: [])
-    monkeypatch.setattr("utils.hf_cache_settings.known_hf_hub_caches", lambda: [active])
-    monkeypatch.setattr("storage.studio_db.list_scan_folders", lambda: [])
+    sources = local_inventory._LocalInventorySources(
+        hf_cache_dir = active,
+        legacy_hf = tmp_path / "legacy",
+        hf_default = tmp_path / "default",
+        lm_dirs = (),
+        ollama_dirs = (),
+        hermes_dirs = (),
+        known_hf_caches = (active,),
+    )
+    monkeypatch.setattr(local_inventory, "_local_inventory_sources", lambda: sources)
+    monkeypatch.setattr(local_inventory, "list_scan_folders", lambda: [])
+    # The listing scans a models dir only under its allowed roots.
+    monkeypatch.setattr(local_inventory, "studio_root", lambda: tmp_path)
     _hf_repo(
         active,
         "org/chat",
@@ -105,8 +109,10 @@ def hub(monkeypatch, tmp_path):
 
 
 def _scan(models_root: Path) -> list[dict]:
-    rows = asyncio.run(models_route._shared_compat_local_inventory_scan(models_root))
-    return [row.model_dump(mode = "json") for row in rows]
+    listing = asyncio.run(
+        local_inventory.list_local_models_response(str(models_root), materialize_ollama_links = True)
+    )
+    return [row.model_dump(mode = "json") for row in listing.models]
 
 
 def _uncached_scan(models_root: Path, monkeypatch) -> list[dict]:

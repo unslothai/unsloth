@@ -23,7 +23,6 @@ if "structlog" not in sys.modules:
         get_logger = lambda *args, **kwargs: _DummyLogger(),
     )
 
-import routes.models as models_route
 from hub.services.models import local_inventory
 
 REPO = "unsloth/Tiny-GGUF"
@@ -89,13 +88,6 @@ def test_copy_layout_gguf_is_listed_as_a_loadable_gguf_row(tmp_path):
 def test_copy_layout_subdirectory_weights_are_discovered(tmp_path):
     _copy_layout(tmp_path, files = ("UD-Q4_K_XL/Tiny-UD-Q4_K_XL-00001-of-00002.gguf",))
     assert _discovered_ids(tmp_path) == [REPO]
-
-
-def test_both_inventories_agree_on_a_copy_layout_repo(tmp_path):
-    _copy_layout(tmp_path)
-    hub_page = {row.id for row in local_inventory._scan_hf_cache(tmp_path)}
-    models_page = {row.id for row in models_route._scan_hf_cache(tmp_path)}
-    assert hub_page == models_page == {REPO}
 
 
 def test_symlink_layout_is_still_discovered(tmp_path):
