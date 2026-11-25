@@ -286,7 +286,6 @@ export function InferenceEnginesSection({
   const t = useT();
   const isOwner = useIsAccountOwner();
   const { engines, error } = useEngines();
-  // The installed version, or why the engine can't be installed, shown under its name.
   const engineNote = (engine: EngineStatus) => {
     const installed = engine.installed
       ? t("managedEngines.installed", {
