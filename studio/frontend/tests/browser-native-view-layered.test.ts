@@ -78,7 +78,12 @@ Object.assign(globalThis, {
     querySelectorAll: (selector: string) =>
       selector.startsWith("[data-sonner-toast]") ? clickable : selector.startsWith("[data-radix") ? blocking : [],
   },
-  getComputedStyle: (element: FakeNode) => ({ backgroundColor: element.background, backgroundImage: "none" }),
+  getComputedStyle: (element: FakeNode & { position?: string; zIndex?: string }) => ({
+    backgroundColor: element.background,
+    backgroundImage: "none",
+    position: element.position ?? "static",
+    zIndex: element.zIndex ?? "auto",
+  }),
   CSS: { escape: (value: string) => value },
   DOMRect: class {
     constructor(x: number, y: number, width: number, height: number) {
@@ -600,13 +605,11 @@ test("the app under the dialog a layered page opens in is cut too, though no anc
 });
 
 test("the notification rail above the dialog a layered page opens in is not cut", async () => {
-  const backdrop = node("backdrop", "rgba(255, 255, 255, 0.8)", section);
+  const backdrop = Object.assign(node("backdrop", "rgba(255, 255, 255, 0.8)", section), { position: "fixed", zIndex: "50" });
   const dialog = Object.assign(node("dialog", "rgb(255, 255, 255)", backdrop), {
     getAttribute: (name: string) => (name === "aria-modal" ? "true" : null),
   });
-  const rail = Object.assign(node("rail", "rgba(0, 0, 0, 0)", html), {
-    hasAttribute: (name: string) => name === "data-native-rail",
-  });
+  const rail = Object.assign(node("rail", "rgba(0, 0, 0, 0)", html), { position: "fixed", zIndex: "9000" });
   const sidebar = Object.assign(node("sidebar", "rgb(250, 250, 250)", html), { previousElementSibling: rail });
   Object.assign(section, { previousElementSibling: sidebar });
   const parent = wrapper.parentElement;
@@ -618,6 +621,34 @@ test("the notification rail above the dialog a layered page opens in is not cut"
     await frame();
     assert.ok(sidebar.attributes.has("data-native-hole-mask"));
     assert.equal(rail.attributes.has("data-native-hole-mask"), false, "its cards stay visible over the page");
+  } finally {
+    stop();
+    Object.assign(wrapper, { parentElement: parent });
+    Object.assign(section, { previousElementSibling: undefined });
+  }
+});
+
+test("the resource monitor raised over the dialog a layered page opens in is not cut", async () => {
+  const backdrop = Object.assign(node("backdrop", "rgba(255, 255, 255, 0.8)", section), { position: "fixed", zIndex: "50" });
+  const dialog = Object.assign(node("dialog", "rgb(255, 255, 255)", backdrop), {
+    getAttribute: (name: string) => (name === "aria-modal" ? "true" : null),
+  });
+  const monitor = Object.assign(node("monitor", "rgba(0, 0, 0, 0)", html), { position: "fixed", zIndex: "9100" });
+  const sidebar = Object.assign(node("sidebar", "rgb(250, 250, 250)", html), {
+    position: "fixed",
+    zIndex: "10",
+    previousElementSibling: monitor,
+  });
+  Object.assign(section, { previousElementSibling: sidebar });
+  const parent = wrapper.parentElement;
+  Object.assign(wrapper, { parentElement: dialog });
+  useBrowserStore.getState().openUrl("https://project.example/");
+  const stop = startNativeViews();
+  try {
+    await frame();
+    await frame();
+    assert.ok(sidebar.attributes.has("data-native-hole-mask"), "a fixed layer below the dialog is still cut");
+    assert.equal(monitor.attributes.has("data-native-hole-mask"), false, "its controls stay visible over the page");
   } finally {
     stop();
     Object.assign(wrapper, { parentElement: parent });

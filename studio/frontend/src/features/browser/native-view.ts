@@ -699,14 +699,30 @@ function modalUnderlay(chain: HTMLElement[]): HTMLElement[] {
   const modal = chain.findIndex((node) => node.getAttribute?.("aria-modal") === "true");
   if (modal < 0) return [];
   const under: HTMLElement[] = [];
+  let level = 0;
   for (const node of chain.slice(modal)) {
-    // Earlier siblings paint below it; later ones (toasts, menus) draw over the page.
+    level = stackLevel(getComputedStyle(node)) ?? level;
+    // Earlier siblings paint below it unless raised over it (the notification rail, the resource
+    // monitor); later ones (toasts, menus) draw over the page.
     for (let sibling = node.previousElementSibling; sibling; sibling = sibling.previousElementSibling) {
-      // The notification rail sits above the dialog by z-index, though earlier in the tree.
-      if (!sibling.hasAttribute?.("data-native-rail")) under.push(sibling as HTMLElement);
+      if (zIndex(getComputedStyle(sibling)) <= level) under.push(sibling as HTMLElement);
     }
   }
   return under;
+}
+
+function zIndex(computed: CSSStyleDeclaration): number {
+  const z = Number.parseInt(computed.zIndex, 10);
+  return computed.position && computed.position !== "static" && Number.isFinite(z) ? z : 0;
+}
+
+/** The z-index a node's subtree stacks at, if it starts a stacking context. */
+function stackLevel(computed: CSSStyleDeclaration): number | null {
+  if (computed.position && computed.position !== "static" && computed.zIndex !== "auto") return zIndex(computed);
+  if (computed.position === "fixed" || computed.position === "sticky") return 0;
+  if (computed.isolation === "isolate" || (computed.transform && computed.transform !== "none")) return 0;
+  if (computed.opacity && Number.parseFloat(computed.opacity) < 1) return 0;
+  return null;
 }
 
 function unmarkHole(): void {
