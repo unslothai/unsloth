@@ -262,3 +262,21 @@ def test_a_mount_inside_the_cache_is_handed_to_its_own_owner(entrypoint, tmp_pat
     assert logged.pop(str(hf_home / "xet")) == "4242:-1"
     assert set(logged) == {str(p) for p in entries if p != hub}, sorted(logged)
     assert set(logged.values()) == {f"{os.getuid()}:-1"}
+
+
+@pytest.mark.skipif(
+    os.name == "posix" and os.geteuid() == 0, reason = "the recording sweep needs a non-root uid"
+)
+def test_an_empty_mounted_hub_is_opened_to_group_root(entrypoint, tmp_path):
+    hf_home = tmp_path / "hf"
+    hub = hf_home / "hub"
+    hub.mkdir(parents = True)
+    hub.chmod(0o755)
+    mountinfo = tmp_path / "mountinfo"
+    mountinfo.write_text(f"1 0 0:1 / / rw - x x rw\n2 1 0:2 / {hub} rw - x x rw\n")
+    bindir, calls = _recording_python(tmp_path, mountinfo)
+
+    _boot(entrypoint, tmp_path, hf_home, bindir, lambda: str(hub) in _logged(calls))
+
+    assert _logged(calls) == {str(hub): "-1:0"}
+    assert stat.S_IMODE(os.stat(hub).st_mode) == 0o775

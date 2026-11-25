@@ -115,6 +115,22 @@ def mount_points():
         return set()
 
 
+def open_root(root):
+    """A fresh (empty) mount root gets the group root rwX a handed-over entry has, so the tool sandbox can fill it."""
+    try:
+        fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except OSError:
+        return
+    try:
+        if not os.listdir(fd) and not has_acl(fd):
+            os.fchown(fd, -1, 0)
+            os.fchmod(fd, stat.S_IMODE(os.fstat(fd).st_mode) | 0o070)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
 # A mount inside the cache (run.sh's separate HF_HUB_CACHE) has its own owner: a root-owned shared hub stays root's.
 top = os.path.realpath(top)
 nested = {m for m in mount_points() if m.startswith(top + "/")}
@@ -125,6 +141,8 @@ for root in [top, *sorted(nested)]:
         continue
     if owner == 0:
         continue
+    if root != top:
+        open_root(root)
     for path, dirs, files, dfd in os.fwalk(root, follow_symlinks = False):
         dirs[:] = [d for d in dirs if os.path.join(path, d) not in nested]
         # Studio resumes only partials it owns; they are handed over once published as blobs.
