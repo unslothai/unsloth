@@ -14,11 +14,6 @@ import pytest
 torch = pytest.importorskip("torch")
 peft = pytest.importorskip("peft")
 pytest.importorskip("safetensors")
-try:
-    from peft.tuners.lora.layer import ParamWrapper  # noqa: F401
-except ImportError:
-    pytest.skip("PEFT without target_parameters", allow_module_level = True)
-
 from peft import LoraConfig, get_peft_model
 from safetensors.torch import load_file
 
