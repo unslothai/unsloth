@@ -47,6 +47,7 @@ __all__ = [
     "ep_env_size",
     "ep_env_mesh",
     "ep_env_load",
+    "ep_refuse_fast_inference",
     "ep_env_apply",
     "ep_trainer_setup",
     "ep_sync_expert_grads",
@@ -93,9 +94,9 @@ def ep_env_mesh():
     return _ENV_MESH[0]
 
 
-def ep_env_load(fn, args, kwargs, four_bit):
-    """from_pretrained under UNSLOTH_EP_SIZE: a 4-bit quantize-on-load keeps only this rank's experts."""
-    if not four_bit:
+def ep_env_load(fn, args, kwargs, sharded):
+    """from_pretrained under UNSLOTH_EP_SIZE; `sharded` False (adapter or QAT load) loads in full."""
+    if not sharded:
         return fn(*args, **kwargs)
     try:
         with expert_parallel_loading(_split_mesh(ep_env_mesh())[0]):
@@ -119,6 +120,17 @@ def ep_env_apply(model):
     return model
 
 
+def ep_refuse_fast_inference(values):
+    """vLLM's LoRA sync gathers only DTensor adapters; ep keeps expert LoRA as local parameters."""
+    if values.get("fast_inference"):
+        raise NotImplementedError(
+            f"Unsloth: {_EP_ENV}={ep_env_size()} (expert parallel) does not support vLLM (fast_inference = True): "
+            "each rank holds only its own experts' LoRA, and the vLLM LoRA sync would send one rank's slice. "
+            f"Unset {_EP_ENV} (or ep in UNSLOTH_PARALLEL) to run this script with DDP or UNSLOTH_FSDP2=1, "
+            "or load with fast_inference = False."
+        )
+
+
 def _tpn():
     from . import tp_native
     return tp_native
@@ -126,8 +138,7 @@ def _tpn():
 
 @contextlib.contextmanager
 def expert_parallel_loading(ep_mesh = None):
-    """A bitsandbytes 4-bit quantize-on-load (transformers 5) keeps only this rank's routed expert stacks, cut as
-    transformers quantizes them (the tensor parallel cut); everything else loads whole. Other loads are untouched."""
+    """16-bit or bitsandbytes 4-bit loads (transformers 5) keep only this rank's routed expert stacks; others load whole."""
     tpn = _tpn()
     with tpn._sharded_from_pretrained(
         {
@@ -562,15 +573,41 @@ def ep_sync_expert_grads(model):
                 if p.grad is None:
                     p.grad = torch.zeros_like(p)
                 grads.append(p.grad)
-    buckets = {}
-    for g in grads:
-        buckets.setdefault((g.device, g.dtype), []).append(g)
+    group = rep.get_group()
     with torch.no_grad():
-        for tensors in buckets.values():
+        for tensors in _replica_buckets(grads, _REPLICA_BUCKET_BYTES):
+            if len(tensors) == 1 and tensors[0].is_contiguous():
+                dist.all_reduce(tensors[0], group = group)
+                continue
             flat = _flatten_dense_tensors(tensors)
-            dist.all_reduce(flat, group = rep.get_group())
+            dist.all_reduce(flat, group = group)
             for t, v in zip(tensors, _unflatten_dense_tensors(flat, tensors)):
                 t.copy_(v)
+            del flat, v  # a view of flat in v would keep it alive beside the next bucket's buffer
+
+
+# One flat copy of every expert gradient would double their memory.
+_REPLICA_BUCKET_BYTES = 256 << 20
+
+
+def _replica_buckets(grads, cap):
+    """Shape-only split, so every replica reduces the same buckets."""
+    open_buckets = {}
+    for g in grads:
+        nbytes = g.numel() * g.element_size()
+        if nbytes >= cap:
+            yield [g]
+            continue
+        key = (g.device, g.dtype)
+        bucket = open_buckets.setdefault(key, [[], 0])
+        if bucket[1] + nbytes > cap:
+            yield bucket[0]
+            bucket[0], bucket[1] = [], 0
+        bucket[0].append(g)
+        bucket[1] += nbytes
+    for tensors, _ in open_buckets.values():
+        if tensors:
+            yield tensors
 
 
 def _gather_expert(

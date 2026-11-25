@@ -1700,6 +1700,22 @@ def detect_reasoning_channel_markers_from_model_info(
     return None
 
 
+def replays_reasoning_content(
+    tokenizer,
+    model_info: Optional[dict] = None,
+    tools = None,
+    template = None,
+) -> bool:
+    """Inkling's thought replays as a field; read the rendering template, not the cached native one an override hides."""
+    if template is None and tokenizer is None and isinstance(model_info, dict):
+        template = (model_info.get("chat_template_info") or {}).get("template")
+    if template is not None:
+        markers = detect_reasoning_channel_markers_from_template(template, tools)
+    else:
+        markers = detect_reasoning_channel_markers(tokenizer, tools = tools)
+    return markers == (_INKLING_THOUGHT_OPEN, _INKLING_MESSAGE_END)
+
+
 @dataclass(frozen = True)
 class ChatTemplateRenderResult:
     """Prompt plus response-protocol metadata selected by the renderer."""

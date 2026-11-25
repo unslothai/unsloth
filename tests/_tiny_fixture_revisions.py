@@ -25,6 +25,9 @@ REVISIONS = {
     "trl-internal-testing/tiny-DeepseekV3ForCausalLM": "2fb366d060ad5cea8917909f28ec1219ccb1ad2d",
     "hf-internal-testing/tiny-random-OlmoeForCausalLM": "99e4bc8eb1a024e46da438c410d7e707ed49d15a",
     "trl-internal-testing/tiny-BloomForCausalLM": "fb6f154da5e58e70d7a62bafe35c0f0da99691cb",
+    "hf-internal-testing/tiny-random-MixtralForCausalLM": "ccb12fe2fc142cb752085506c3db22572290e90c",
+    "hf-internal-testing/tiny-random-Qwen2MoeForCausalLM": "f736f270816032b3c721f7422c62dea1381f49d7",
+    "hf-internal-testing/tiny-random-Qwen3NextForCausalLM": "7ea3967d1838708278eaf094e2a9162e273a3f98",
 }
 
 

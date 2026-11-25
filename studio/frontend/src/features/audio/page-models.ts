@@ -70,6 +70,13 @@ export const PAGE_ORDER: Partial<Record<AudioWorkflowId, readonly string[]>> = {
     "BS-RoFormer-ep368-GGUF",
     "HTDemucs-6stems-GGUF",
     "Mel-Band-RoFormer-GGUF",
+    "voice-isolator-GGUF",
+    "Sidon-GGUF",
+    "Apollo-GGUF",
+    "UniverSR-GGUF",
+    "AudioSR-GGUF",
+    "MossFormer2-GGUF",
+    "TF-GridNet-GGUF",
   ],
 };
 

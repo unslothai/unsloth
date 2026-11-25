@@ -440,6 +440,11 @@ def _core_check(
     if cp_backend == "auto":
         cp_backend = None
     sm = _sm(gpus or []) if any(g.get("sm") is not None for g in gpus or []) else host.get("sm")
+    ep = int(sizes.get("ep") or 1)
+    ep_blocker = model.get("ep_blocker")
+    if ep_blocker is None and ep > 1 and callable(getattr(caps, "_ep_blocker", None)):
+        # Only the model_type is known here: Core's table of families expert parallel cannot shard.
+        ep_blocker = caps._ep_blocker(str(model.get("family") or ""), ep)
     values = {
         "trainer": model.get("trainer", "sft"),
         "family": model.get("family", ""),
@@ -454,6 +459,8 @@ def _core_check(
         "tp": sizes["tp"],
         "pp": sizes["pp"],
         "cp": sizes["cp"],
+        "ep": ep,
+        "ep_blocker": ep_blocker,
         "fsdp2": bool(sizes["fsdp"]),
         "moe": bool(model.get("is_moe")),
         "optim": str(request.get("optim") or "").lower(),

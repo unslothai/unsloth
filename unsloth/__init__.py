@@ -2433,11 +2433,6 @@ try:
 except Exception:
     pass
 
-from ._import_metadata_cache import uninstall as _uninstall_metadata_cache
-
-_uninstall_metadata_cache(_metadata_cache_token)
-del _uninstall_metadata_cache, _metadata_cache_token
-
 # GPU backend only: the CPU backend (and MLX) never loads unsloth.kernels, and sets no compile cache tag.
 if not globals().get("_IS_CPU_BACKEND", True):
     try:
@@ -2462,6 +2457,11 @@ if not globals().get("_IS_CPU_BACKEND", True):
         del _require_marker
     except Exception:
         pass
+
+from ._import_metadata_cache import uninstall as _uninstall_metadata_cache
+
+_uninstall_metadata_cache(_metadata_cache_token)
+del _uninstall_metadata_cache, _metadata_cache_token
 
 from ._import_gc import restore_gc_threshold as _restore_gc_threshold
 

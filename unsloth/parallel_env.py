@@ -572,8 +572,10 @@ class ParallelLayout:
         cp = 1,
         cp_backend = None,
         schedule_auto = False,
+        ep = 1,
     ):
         self.tp, self.dp, self.world, self.fsdp2 = tp, dp, world, fsdp2
+        self.ep = ep  # set only by the Trainer pre-check; read_layout keeps 1
         self.pp, self.microbatches, self.schedule = pp, microbatches, schedule
         # UNSLOTH_PP_SCHEDULE unset: 1F1B, run as GPipe on a step with fewer micro-batches than stages (no
         # fully masked filler rows); an explicit schedule is kept as given.

@@ -8520,7 +8520,8 @@ def fix_dynamo_config_thread_visibility():
     except Exception:
         return
 
-    mirrored_modules = ("torch._dynamo.config", "torch._inductor.config")
+    # functorch too: pp_schedules.allow_split_backward turns donated_buffer off for every thread.
+    mirrored_modules = ("torch._dynamo.config", "torch._inductor.config", "torch._functorch.config")
 
     # config.patch()/load_config() writes are thread-local by design; a per-thread depth counter
     # keeps them out of the global default.

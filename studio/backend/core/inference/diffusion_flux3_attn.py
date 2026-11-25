@@ -51,6 +51,9 @@ def strided_processor_class() -> Any:
         # set by install_int8_attention: unmasked calls of at least this many tokens run the INT8 kernel
         _unsloth_int8 = False
         _unsloth_int8_min_tokens = 0
+        # {secondary card: its own race's floor} (diffusion_int8_attention.card_floor); replaced per install, never
+        # mutated in place
+        _unsloth_int8_cards: dict = {}
         # the kernel's mode for this processor (diffusion_int8_attention.sink_mode), set with _unsloth_int8
         _unsloth_int8_sinks = 0
 
@@ -61,11 +64,13 @@ def strided_processor_class() -> Any:
             self,
             tokens: int,
             attention_mask: Any = None,
+            device: Any = None,
         ) -> Optional[tuple]:
-            """(cudnn, int8) for a call this class runs; None: the stock call. Traced: plain reads only."""
+            """(cudnn, int8) for a call this class runs on ``device``; None: the stock call. Traced: plain reads only."""
             cudnn = _backend_value(self._attention_backend) == _CUDNN
-            # below the INT8 floor: the stock call
-            int8 = self._unsloth_int8 and tokens >= self._unsloth_int8_min_tokens
+            # below the INT8 floor on this card (a secondary card that lost its own race: never): the stock call, the
+            # incumbent it raced against
+            int8 = bool(self._unsloth_int8) and tokens >= _i8.card_floor(self, device)
             if (
                 attention_mask is not None
                 or self._parallel_config is not None
@@ -144,7 +149,7 @@ def strided_processor_class() -> Any:
         ) -> Optional[Any]:
             """This processor's output for unmasked ``hidden_states`` of ``tokens`` tokens whose projections are
             ``query`` / ``key`` / ``value`` (the same ops ``__call__`` runs below them); None: the stock call applies."""
-            route = self._unsloth_route(tokens)
+            route = self._unsloth_route(tokens, None, query.device)
             if route is None:
                 return None
             return self._unsloth_attend(attn, query, key, value, image_rotary_emb, *route)
@@ -156,7 +161,9 @@ def strided_processor_class() -> Any:
             attention_mask: Any = None,
             image_rotary_emb: Any = None,
         ) -> Any:
-            route = self._unsloth_route(hidden_states.shape[1], attention_mask)
+            route = self._unsloth_route(
+                hidden_states.shape[1], attention_mask, hidden_states.device
+            )
             if route is None:
                 return super().__call__(attn, hidden_states, attention_mask, image_rotary_emb)
             query, key, value = tf3._get_qkv_projections(attn, hidden_states)

@@ -882,7 +882,7 @@ export const hi = {
   chatMenu: {
     more: "चैट विकल्प",
     copy: "कॉपी करें",
-    addScheduledTask: "शेड्यूल किया गया कार्य जोड़ें…",
+    addScheduledTask: "शेड्यूल किया गया कार्य जोड़ें",
     compact: "बातचीत कॉम्पैक्ट करें",
     compactEmpty: "अभी कॉम्पैक्ट करने के लिए कुछ नहीं है",
     compactUnsupported: "कॉम्पैक्शन के लिए टूल सपोर्ट वाला GGUF या MLX मॉडल आवश्यक है",

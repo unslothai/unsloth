@@ -25,10 +25,27 @@ EVAL_MAX = 2000
 MIN_REPORTED_ITEMS = 50
 # The from-LM recipe's head rate (scripts/train_decision_from_lm.py --head-lr).
 FRESH_HEAD_LEARNING_RATE = 3e-4
+# How to store a state for a Clef or d1 head so it reads like the object a request sends.
+OBJECT_STATE_FORM = (
+    "an object in a local JSON or JSONL file, or as json.dumps(state, sort_keys = True, "
+    "separators = (',', ':'), ensure_ascii = False) with no image or audio parts for a Clef head, "
+    "json.dumps(state, indent = 2, ensure_ascii = False) with no image, audio or video parts for "
+    "a d1 head (LFM3-VL and LFM3-Omni on Apple Silicon, given an unsloth-zoo that trains d1)"
+)
 STRUCT_COLUMNS_WARNING = (
     "The state, questions or gold columns are stored as objects rather than JSON strings, so "
     "missing fields come back as nulls and choice options can change order. Store them as JSON "
-    "strings to train on what the Decision API sees."
+    "strings to train on what the Decision API sees, except the state of a model with a Clef or "
+    "d1 head: it reads a state stored as a string as that text, as the Decision API does, so "
+    "store its state as " + OBJECT_STATE_FORM + "."
+)
+JSON_TEXT_STATES_WARNING = (
+    "JSON text states that read differently from the object they hold: {count:,}. They are read "
+    "as written, as the Decision API reads a text state, so they differ from requests that send "
+    "the state as an object. To match those, store the state as "
+    + OBJECT_STATE_FORM
+    + ". Training still reads media parts in an object state as text, except image parts on "
+    "Apple Silicon."
 )
 
 
@@ -716,7 +733,11 @@ def _run(event_queue: Any, stop_queue: Any, config: dict, output_dir: str) -> No
             "total": report["total"] + eval_report["total"],
             "skipped": report["skipped"] + eval_report["skipped"],
             "reason": report["reason"] or eval_report["reason"],
+            "json_text_states": report["json_text_states"] + eval_report["json_text_states"],
         }
+    # Before the no-decisions error: read as text, every row's state can stop fitting.
+    if report["json_text_states"]:
+        warn(JSON_TEXT_STATES_WARNING.format(count = report["json_text_states"]))
     if not items:
         send("error", error = _no_decisions_message(report["reason"]), stack = "")
         return
