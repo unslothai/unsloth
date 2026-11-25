@@ -281,12 +281,18 @@ def test_run_encode_on_a_real_card(tmp_path, monkeypatch, streamed):
     ref.load_state_dict(model.state_dict())
     monkeypatch.setattr(worker, "_discrete_card", lambda _d: True)
     monkeypatch.setattr(worker, "_host_fits", lambda *_a, **_k: True)
-    config = {"device": "cuda:0", "resident": False}
-    stream = worker._stream_parts(model) if streamed else None
     ids, mask = torch.tensor([[1, 2, 3, 4]]), torch.tensor([[0, 1, 1, 1]])
-    embeds, _ = worker._run_encode(
-        model, config, SimpleNamespace(input_ids = ids, attention_mask = mask), "cuda:0", stream
-    )
-    assert config["_embed_host_bytes"] == VOCAB * WIDTH * 4
-    with torch.inference_mode():
-        assert torch.equal(embeds, worker._pack_hidden_states(ref, ids, mask))
+
+    def encode(m, switch):
+        monkeypatch.setenv(eh.EMBED_HOST_ENV, switch)
+        config = {"device": "cuda:0", "resident": False}
+        stream = worker._stream_parts(m) if streamed else None
+        inputs = SimpleNamespace(input_ids = ids, attention_mask = mask)
+        out, _ = worker._run_encode(m, config, inputs, "cuda:0", stream)
+        return out, config
+
+    # the same encode with the switch off, on the same card, is the reference (CPU math would differ in the last bit)
+    expected, off = encode(ref, "0")
+    embeds, on = encode(model, "1")
+    assert not off["_embed_host_bytes"] and on["_embed_host_bytes"] == VOCAB * WIDTH * 4
+    assert embeds.device.type == "cpu" and torch.equal(embeds, expected)
