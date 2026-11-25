@@ -55,8 +55,7 @@ else
     UBUNTU_VERSION="${UBUNTU_VERSION:-24.04}"
 fi
 
-# Resolve refs to a commit: docker caches RUN layers by command string, so "main" would
-# never rebuild.
+# Resolve refs to commits: docker caches RUN layers by command string, so main never rebuilds.
 resolve_git_ref() {
     local repo="$1" ref="$2" ls_out sha
     printf '%s' "$ref" | grep -Eq '^[0-9a-f]{40}$' && { printf '%s' "$ref"; return 0; }

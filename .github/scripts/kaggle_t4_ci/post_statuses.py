@@ -95,9 +95,8 @@ def valid(status: dict) -> str | None:
 
 
 def merge_by_commit(resolved: list[tuple[str, dict]]) -> list[tuple[str, dict]]:
-    """One status per (full sha, context), failure winning, every slug named; merging waits for
-    resolved full shas, since an 8 and a 12 character slug of one commit match but two commits
-    can share 8 characters."""
+    """One status per (full sha, context), failure winning, every slug named; wait for resolved full
+    shas, since two commits can share 8 characters."""
     out: dict[tuple[str, str], dict] = {}
     for full, status in resolved:
         key = (full, status["context"])

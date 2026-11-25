@@ -2,8 +2,7 @@
 # coding: utf-8
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team.
-"""CPU-only notebook validator with subcommands drift, convert, lint, exceptions, api, all, refresh-
-colab; never imports torch or unsloth at module load"""
+"""CPU-only notebook validator CLI; never imports torch or unsloth at module load."""
 
 from __future__ import annotations
 
@@ -1062,8 +1061,7 @@ def _substitution_bodies(command: str, conditional: bool = False) -> list[str]:
 
 
 def _piece_is_pip(piece: str) -> bool:
-    """Is this chunk of a chained line a pip command? `!` only ever leads the first piece,
-    and the splitter re-adds it to the rest, so it is normalised before asking."""
+    """`!` only leads the first piece and is re-added to the rest, so normalise it first."""
     # Strip the bang first so `!env X=1 pip ...` matches the env prefix.
     stripped = _strip_exec_prefixes(piece.strip().lstrip("!").strip())[0].strip()
     return bool(stripped) and bool(PIP_LINE_RE.match("!" + stripped))
@@ -1840,8 +1838,7 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
                 maybe_called.add((_invoked_name(inner_text), index))
                 ordered.append((inner_text, True))
         if text:
-            # A never-true test makes the body unreachable, not conditional. Fold condition pieces until
-            # then/do closes it.
+            # Never-true test: body unreachable, not conditional; fold pieces until then/do.
             if body_levels and not body_levels[-1]:
                 model = (
                     _for_list_is_nonempty(text) or None
@@ -1927,8 +1924,7 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
                     depth = int(level.strip()) if level.strip().isdigit() else 1
                     broke_at = loop[max(len(loop) - depth, 0)] + 1
 
-    # A body is conditional until called; walk the call graph to a fixed point. A call reaches
-    # only a definition that already exists.
+    # A body is conditional until called; walk calls to a fixpoint, reaching only prior defs.
     def _definition_in_force(name: str, at: int) -> str | None:
         """The definition of `name` complete before position `at`, or None."""
         best = None
@@ -2192,8 +2188,7 @@ def _git_source_repository(source: str) -> str:
 
 
 def _git_source_is_allowed(source: str) -> bool:
-    """Exact repository match. Every allowlist entry is one `host/org/repo`, and pip puts a
-    subdirectory in the URL fragment rather than on the path, so nothing needs a prefix."""
+    """Exact host/org/repo match; pip's subdirectory lives in the URL fragment, so no prefix."""
     repository = _git_source_repository(source)
     return any(repository == allowed.lower() for allowed in GIT_PLUS_ALLOWLIST)
 
@@ -2708,8 +2703,7 @@ def rule_inst_004_torchcodec_torch(
     )
     if not torch_v or not codec_v:
         return findings
-    # torchcodec 0.12+ is ABI-stable against torch >= 2.11 (TORCH_TARGET_VERSION 2.11).
-    # An inexact prerelease floor admits the stable release above it.
+    # torchcodec 0.12+ ABI-stable on torch>=2.11; an inexact prerelease floor admits the final.
     codec_clears_abi = at_least(codec_v, TORCHCODEC_ABI_STABLE_CODEC) or (
         not codec_exact and cmp_versions(version_minor(codec_v), TORCHCODEC_ABI_STABLE_CODEC) >= 0
     )

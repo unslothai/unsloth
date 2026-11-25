@@ -26,7 +26,6 @@
 # WEEKLY accelerator quota is exhausted (the gate says so before any kernel is pushed). An UNREADABLE
 # quota and every other infrastructure outcome skips; the in-job recheck uses --soft-fail.
 # ---------------------------------------------------------------------
-#
 # ---------------------------------------------------------------------
 # ---------------------------------------------------------------------
 # Red only for a failed payload on a T4 or an exhausted weekly quota; every other outcome skips.
@@ -61,8 +60,7 @@ on:
       # The gated t4-smoke job runs these scripts by path when the kernel carries Studio.
       - '.github/scripts/kaggle_studio_ci/**'
       - 'pyproject.toml'
-  # Nightly for legs too flaky to gate PRs (grpo's intermittent vLLM standby crash on Turing).
-  # Off the hour to avoid the scheduler peak.
+  # Nightly: grpo's vLLM standby crash on Turing is flaky; off-hour to dodge scheduler peak.
   schedule:
     - cron: '17 3 * * *'
   workflow_dispatch:
@@ -104,8 +102,7 @@ on:
 permissions:
   contents: read
 
-# Not latest-only: a cancelled runner cannot stop kernels it already pushed. The slot is in this
-# group too, or two dispatches meant for both session slots would discard each other while pending.
+# Not latest-only: cancel cannot stop pushed kernels; slot in group so slots don't discard.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.slot || '1' }}
   cancel-in-progress: false
@@ -146,11 +143,10 @@ jobs:
         # kaggle imports six without declaring it; python-dateutil 4.0 stopped pulling it in.
         run: python -m pip install --quiet 'kaggle==2.2.4' 'six'
 
-      # budget-hours is the worst case of ONE invocation from launch.py's constants (2 sessions x ~13800s,
-      # ~8 GPU-h); the harness suite recomputes it. reserve-hours 20 caps this leg at 40h spent and is
-      # deliberately above the Unsloth leg's 10. The event action and label stop non-opt-in labels from
-      # forcing runs; label text goes through env, never the shell.
-      # Keyed on the commit under test (not github.sha) so dispatches of one ref collide in the in-flight check.
+      # budget-hours: worst case of one launch.py run (2 sessions x ~13800s, ~8 GPU-h), recomputed
+      # by harness suite; reserve-hours 20 caps spend at 40h, above the Unsloth leg's 10; event
+      # action and label stop non-opt-in labels forcing runs; label text goes via env, never the
+      # shell; keyed on the tested commit, not github.sha, so same-ref dispatches collide in-flight.
       - name: Name the commit under test
         id: ref
         env:
@@ -224,11 +220,9 @@ jobs:
     # the harness suite recomputes this relation.
     #   ----------------------------------------------------------------
     timeout-minutes: 260
-    # Not keyed on the ref: the Kaggle account is global. One kernel here plus one Studio kernel is
-    # exactly Kaggle's 2-session cap per account, so each workflow must keep pushing ONE kernel.
+    # Not keyed on ref: Kaggle's 2-session cap is per account; each workflow pushes ONE kernel.
     concurrency:
-      # Slotted and per account: a group allows one runner and only one PENDING run (a second cancels
-      # it), while an account allows 2 sessions. The slot input is 1 or 2 only.
+      # Slots 1 or 2: one PENDING run per group (a second cancels it); 2 sessions per account.
       group: kaggle-t4-account-${{ needs.gate.outputs.account }}-notebook-${{ inputs.slot || '1' }}
       cancel-in-progress: false
     steps:
@@ -263,8 +257,7 @@ jobs:
       - name: Test the harness
         run: |
           python -m pip install --quiet --index-url https://download.pytorch.org/whl/cpu torch
-          # Every third-party module tests/kaggle/test_*.py imports unguarded; test_harness_dependencies.py
-          # keeps this line and that import set in agreement.
+          # Must cover unguarded tests/kaggle imports; test_harness_dependencies.py checks it.
           python -m pip install --quiet pytest transformers peft datasets pillow pyyaml huggingface_hub
           python -c "import torch, sys; sys.exit(None if torch.version.cuda is None else 'torch %s is built for CUDA %s: the CPU-index install was skipped as already satisfied' % (torch.__version__, torch.version.cuda))"
           python -m pytest tests/kaggle -q
@@ -346,8 +339,7 @@ jobs:
             --max-steps "$MAX_STEPS" \
             --payload-dir tests/kaggle/t4_smoke
 
-      # A reference compares only to a run of its own step count; recapture runs need skip_reference_band.
-      # See tests/kaggle/t4_smoke/references/README.md.
+      # A reference compares only at its own step count; recaptures need skip_reference_band.
       - name: Build the kernel notebooks
         id: build
         if: steps.ref.outputs.stand_down != 'true' && steps.pins.outputs.stand_down != 'true' && steps.stepcount.outputs.stand_down != 'true'

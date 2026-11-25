@@ -58,8 +58,7 @@ permissions:
   contents: read
 
 jobs:
-  # Resolve refs to commits: docker caches RUN layers on the command string, so a mutable "main"
-  # would reuse a stale pip layer.
+  # Pin to commits: docker caches RUN layers by command, so a mutable main reuses stale pip.
   prepare:
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -249,8 +248,7 @@ jobs:
           file: ./docker/Dockerfile.rocm
           platforms: linux/amd64
           labels: ${{ steps.meta.outputs.labels }}
-          # No GHA cache: this ~21 GB image's layers would evict the shared cache, and weekly runs would
-          # find it cold anyway (7-day eviction).
+          # No GHA cache: ~21 GB layers evict it; weekly runs find it cold (7-day eviction).
           outputs:    type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
           build-args: |
             ROCM_VERSION=${{ needs.prepare.outputs.rocm_version }}

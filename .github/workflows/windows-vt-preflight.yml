@@ -1,17 +1,15 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-# Measurement only: does $Host.UI.SupportsVirtualTerminal agree with the native console
-# checks, so the native VT code in the installers can be removed? Steps are redirected,
-# so the console case runs under conhost.exe and reports through a file.
+# Measures whether $Host.UI.SupportsVirtualTerminal agrees with native console checks, so native VT
+# code can be removed; redirected steps run the console case under conhost.exe.
 
 name: "Windows: virtual terminal preflight"
 
 on:
   workflow_dispatch:
   pull_request:
-    # ready_for_review: Windows/macOS jobs below skip draft pull requests, so marking
-    # one ready has to start the run that tests it.
+    # ready_for_review: Windows/macOS jobs skip drafts, so marking one ready starts the run.
     types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - '.github/scripts/Probe-VirtualTerminal.ps1'
@@ -31,8 +29,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     strategy:
-      # Every hosted Windows image: VT behaviour comes from the OS. fail-fast off so one UNSAFE
-      # answer keeps its comparison.
+      # Every hosted image: VT behaviour is OS-set; fail-fast off keeps UNSAFE comparisons.
       fail-fast: false
       matrix:
         os: [windows-latest, windows-2022, windows-11-arm]

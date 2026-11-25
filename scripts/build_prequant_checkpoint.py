@@ -29,8 +29,7 @@ def resolve_build_family(base: str, override: Optional[str] = None) -> Optional[
 def convrot_refusal(
     group: int, rotatable: Sequence[str], not_divisible: Sequence[str]
 ) -> Optional[str]:
-    """Refuse a ConvRot build with no rotatable Linear before the hours of quantising, not after:
-    its empty fqn list is refused at load time, leaving an unopenable artifact"""
+    """Refuse a ConvRot build with no rotatable Linear before quantising; load would refuse it."""
     if rotatable:
         return None
     return (

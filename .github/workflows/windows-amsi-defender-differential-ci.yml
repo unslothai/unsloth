@@ -48,8 +48,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
-          # Exclude BEFORE writing: on-access protection could remove a copy mid-layout. The
-          # explicit scan ignores exclusions, so the verdict is unaffected.
+          # Exclude before writing (on-access may remove a copy); explicit scans ignore them.
           $root = Join-Path $env:RUNNER_TEMP 'sides'
           New-Item -ItemType Directory -Force -Path $root | Out-Null
           Add-MpPreference -ExclusionPath $root -ErrorAction Continue
@@ -97,8 +96,7 @@ jobs:
                 Write-Host "::notice::$f does not exist at $($sha.Substring(0,8)) ($side); skipping it on that side"
                 continue
               }
-              # Copy the blob as bytes: capturing as PowerShell text changes line endings and encoding,
-              # so the scanned file would not be the shipped file.
+              # Copy bytes, not text: text capture changes line endings and encoding.
               $psi = New-Object System.Diagnostics.ProcessStartInfo
               $psi.FileName = 'git'
               $psi.ArgumentList.Add('show')
@@ -379,8 +377,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path $controlDir | Out-Null
           $controlFile = Join-Path $controlDir 'control.txt'
           $fired = $false
-          # A control fires only on something observed. Write a benign canary of the same size
-          # first, so a missing EICAR file means Defender rather than an ACL or I/O error.
+          # Canary first: a missing EICAR file then means Defender, not an ACL or I/O error.
           $canaryFile = Join-Path $controlDir 'canary.txt'
           $canaryOk = $false
           try {

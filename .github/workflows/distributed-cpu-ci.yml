@@ -93,13 +93,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Native FSDP2's gloo tests spawn 2 to 4 ranks each: about ten minutes of this
-          # runner on their own, which pushed the catch-all to the 2100 s step cap. They run
-          # beside it instead.
-          # They then grew to 2092 s of the same cap on their own (364 tests by 2026-10-28)
-          # and were interrupted after passing, so they are split in two by file name: native_d
-          # onwards is about 55% of the measured time, everything else about 45%. Each glob
-          # must match a file, or bash hands pytest the literal pattern
+          # Native FSDP2 gloo tests pushed the catch-all to its 2100 s cap, so they run beside it,
+          # split at native_d by file name; each glob must match a file or bash passes it literally
           # (tests/test_ci_repo_cpu_shards.py checks both).
           - shard: fsdp2
             selection: >-
@@ -109,33 +104,27 @@ jobs:
           - shard: fsdp2-native
             selection: >-
               tests/test_fsdp2_native_[!abc]*.py
-          # The other multi-rank gloo suites (tensor, pipeline and context parallel, float8 and
-          # fp8 under FSDP2) did the same again: with them the catch-all hit the 2100 s cap and was
-          # interrupted at 74 to 98% on most runs. Locally on 4 cores they are 578 s of the
-          # catch-all's 1258 s. The two globs are every *gloo* file except test_fs*, which is
-          # fsdp2's: an explicit file root cannot be filtered by --ignore, so the split is done in
-          # the globs themselves. A *gloo* file starting with d, i, m, s or u is rest-2's
-          # (tests/test_[dimsu]*.py), so the first glob leaves those letters out.
+          # Other gloo suites (tensor, pipeline, context parallel, float8/fp8) also hit the 2100 s
+          # cap; --ignore cannot filter an explicit file root, so the globs do the split: they cover
+          # every gloo file except test_fs* and those starting with d, i, m, s or u, which are
+          # rest-2's (tests/test_[dimsu]*.py).
           - shard: gloo
             selection: >-
               tests/test_[!dfimpstu]*gloo*.py
               tests/test_f[!s]*gloo*.py
               tests/test_parallel_[!c]*gloo*.py
-          # Gloo hit its 2100 s cap after 17886, 17930, DeepSeek-V4.1 tests; non-native TP files
-          # split off.
+          # Gloo hit the 2100 s cap (17886, 17930, DeepSeek-V4.1); non-native TP split off.
           - shard: gloo-tp-env
             selection: >-
               tests/test_tp_[!n]*gloo*.py
-          # Issue 16407 grew the cp gloo file to a third of the shard; each gloo test spawns 2 to 8
-          # ranks, four at once peaked near 20 GB on a 16 GB runner, so 2 workers; test_p[!ap]*
-          # matches no shard.
+          # Issue 16407 grew the cp gloo file; each gloo test spawns 2 to 8 ranks, four at once
+          # peaked near 20 GB on a 16 GB runner, so 2 workers; test_p[!ap]* matches no shard.
           - shard: gloo-cp
             workers: 2
             selection: >-
               tests/test_parallel_c*gloo*.py
-          # Pipeline parallel growth (15655, 15656, 16167, 16417) hit the 2100 s cap, so TP and PP
-          # split; a gloo file named test_t[!p]* or test_tp[!_]* matches no shard and is reported
-          # dropped.
+          # Pipeline growth (15655, 15656, 16167, 16417) hit the 2100 s cap, so TP/PP split; gloo
+          # files named test_t[!p]* or test_tp[!_]* match no shard and are reported dropped.
           - shard: gloo-tp
             selection: >-
               tests/test_tp_n*gloo*.py
@@ -189,8 +178,7 @@ jobs:
             python-multipart aiofiles sqlalchemy cryptography psutil \
             pyyaml jinja2 mammoth unpdf requests typer \
             'numpy<3' 'pytest<9.2' pytest-asyncio pytest-xdist pytest-timeout httpx
-          # pytest<9.2: see the first install step. pytest-timeout names a hung test instead of a `cancelled` job.
-          # torchvision: unsloth_zoo.vision_utils imports it at module scope.
+          # pytest<9.2: pytest-timeout names hung tests; unsloth_zoo imports torchvision.
           uv pip install --system --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple \
             'torch>=2.4,<2.11' 'torchvision<0.26' 'torchaudio<2.11'
           # sentence-transformers rides the transformers pin so it cannot raise the ceiling, and
@@ -217,8 +205,7 @@ jobs:
             echo "::error::.pre-commit-config.yaml no longer pins ruff-unsloth for ruff-format-with-kwargs"
             exit 1
           fi
-          # The wheel is a GitHub release asset; a 504 there is not retried by pip, so retry here.
-          # Those 504s come in bursts lasting minutes, so back off for about five minutes in total.
+          # GitHub asset 504s are not retried by pip; bursts last minutes, so back off ~5 min.
           for attempt in 1 2 3 4 5 6; do
             if pip install -r "$RUNNER_TEMP/ruff-unsloth.txt"; then
               break
@@ -232,8 +219,7 @@ jobs:
           # tests/python/* import install_python_stack from studio/.
           PYTHONPATH: ${{ github.workspace }}/studio
           UNSLOTH_COMPILE_DISABLE: '1'
-        # Spoofing and load_freeze files run isolated below: hardware-spoof files mutate module
-        # globals. The outer timeout must fire before the job cap.
+        # Spoof and load_freeze files mutate globals: run isolated; timeout must beat job cap.
         run: |
           timeout --signal=INT --kill-after=60 2100 \
           python -m pytest ${{ matrix.selection }} -q -rs --tb=short -n ${{ matrix.workers || 4 }} --dist loadgroup --timeout=330 \

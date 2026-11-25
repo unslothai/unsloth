@@ -64,8 +64,7 @@ def _server() -> tuple[str, str]:
 
 
 def _read_backend_status() -> dict:
-    """What the server says it loaded. Split out so the assertion below is reachable
-    from a test without standing a server up, the same reason _server() exists."""
+    """Returns what the server says it loaded; split out so tests can skip a live server."""
     base, token = _server()
     request = urllib.request.Request(
         f"{base}/api/inference/status", headers = {"Authorization": f"Bearer {token}"}
@@ -197,8 +196,7 @@ def check(label: str, first: list[str], second: list[str]) -> None:
 def main() -> int:
     assert_reproducible_backend()
     for label, runner in (("openai", run_openai), ("anthropic", run_anthropic)):
-        # Only replay disagreement is retried: the second replay meets different cache and slot state.
-        # Do not soften check(); a softened warning once went unnoticed for months.
+        # Retry only replay disagreement (cache and slot state differ); never soften check().
         for attempt in range(1, ATTEMPTS + 1):
             try:
                 check(label, runner(), runner())

@@ -6,8 +6,7 @@
 name: Security audit
 
 on:
-  # PRs run this only when they touch an input it reads; floating pins are covered by the
-  # daily cron and every push to main.
+  # PRs run only when listed inputs change; daily cron and main pushes cover floating pins.
   pull_request:
     paths:
       - 'pyproject.toml'
@@ -64,8 +63,7 @@ env:
 
 jobs:
   # ─────────────────────────────────────────────────────────────────────
-  # pip-audit + npm audit + cargo audit on one runner; each step is continue-on-error so
-  # one finding does not suppress the others.
+  # Advisory audits on one runner; continue-on-error so one finding does not hide the others.
   # ─────────────────────────────────────────────────────────────────────
   advisory-audit:
     name: advisory audit (pip + npm + cargo)
@@ -246,8 +244,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       # ─────────────────────────────────────────────────────────────
-      # Structural lockfile scan (non-registry URLs, missing integrity, IOC strings); catches
-      # attacks before an advisory exists.
+      # Scan for non-registry URLs, missing integrity, IOCs; catches pre-advisory attacks.
       # ─────────────────────────────────────────────────────────────
       - name: Lockfile supply-chain audit (pre-install scan)
         run: |
@@ -314,8 +311,7 @@ jobs:
       # ─────────────────────────────────────────────────────────────
       # ─────────────────────────────────────────────────────────────
       - name: Download + verify OSV-Scanner
-        # Separate step so binary integrity is a hard gate; a download failure only skips the scan.
-        # Bump OSV_SHA256 together with OSV_VERSION.
+        # Bump OSV_SHA256 with OSV_VERSION; a hash mismatch fails hard, a download error skips.
         run: |
           set -euo pipefail
           OSV_VERSION="v2.0.2"
@@ -444,8 +440,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       # ─────────────────────────────────────────────────────────────
-      # Trivy is deliberately not used: its action tags were hijacked in the litellm 1.82.7
-      # compromise. OSV-Scanner and TruffleHog cover its CVE and secret detection.
+      # Trivy is not used: its action tags were hijacked in the litellm 1.82.7 compromise.
       # ─────────────────────────────────────────────────────────────
 
       # ─────────────────────────────────────────────────────────────
@@ -492,9 +487,8 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       # ─────────────────────────────────────────────────────────────
-      # Mutable tags were the tj-actions attack vector. Catch every
-      # non-SHA-pinned `uses:` across the workflows tree. Warn-only
-      # initially so the existing baseline does not block PRs.
+      # Mutable tags were the tj-actions attack vector; flag every non-SHA-pinned uses: line in the
+      # workflows tree. Warn-only initially so the existing baseline does not block PRs.
       # ─────────────────────────────────────────────────────────────
       - name: GitHub Actions pinning verifier
         continue-on-error: true

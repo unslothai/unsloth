@@ -83,8 +83,7 @@ def log(message: str) -> None:
     print(f"audio.cpp: {message}", file = sys.stderr, flush = True)
 
 
-# Late-binding seam for prebuilt_core: its downloader and release lookup read USER_AGENT, log and the
-# asset names above from here, and see a test's monkeypatch of any core name set on this module.
+# Late-bound seam: prebuilt_core reads USER_AGENT, log and asset names here, so patches apply.
 _OPS = core.ModuleOps(globals())
 
 _OS_TOKENS = {
@@ -115,8 +114,7 @@ def _pinned_tag() -> Optional[str]:
 
 
 def _user_picked_release() -> bool:
-    """The user chose the repo or tag, so a release without a sha256 index is theirs to trust
-    on GitHub's digest."""
+    """User picked the repo or tag, so an unindexed release is trusted on GitHub's digest."""
     return (
         bool((os.environ.get("UNSLOTH_AUDIO_CPP_REPO") or "").strip()) or _pinned_tag() is not None
     )
@@ -161,9 +159,8 @@ _GLIBC_MIN_OS = re.compile(r"glibc-(\d+)\.(\d+)")
 
 
 def _glibc_below(min_os: Optional[str]) -> Optional[str]:
-    """The host glibc when it is older than a Linux bundle's manifest ``min_os`` (``glibc-2.35``),
-    else ``None``. Checked before the download: without it the start check fails after a full
-    download (~1 GB for CUDA) on every setup run. No manifest (a user-picked release) skips it."""
+    """Host glibc if older than a bundle's min_os (glibc-2.35), else None; checked before download
+    so the start check does not fail after it; no manifest (a user-picked release) skips it."""
     if not sys.platform.startswith("linux") or not isinstance(min_os, str):
         return None
     floor = _GLIBC_MIN_OS.fullmatch(min_os.strip())
@@ -879,9 +876,8 @@ def _retire_tree(target: Path, retired: Path) -> None:
 
 
 def _is_unreadable(target: Path) -> bool:
-    """Whether this account cannot look inside ``target``: a tree an elevated run staged under
-    mkdtemp's Windows ACL is owned by Administrators and denies the same user unelevated (#14052).
-    Renaming it is refused too, so only an elevated shell can clear it."""
+    """Whether target is unreadable to this account: an elevated run's mkdtemp tree is owned by
+    Administrators (#14052); renames fail too, so only an elevated shell can clear it."""
     try:
         os.stat(target / OWNERSHIP_MARKER)
     except PermissionError:
@@ -940,8 +936,7 @@ def _intact_install(target: Path, record: dict) -> Optional[Path]:
 
 
 def _record_fits_request(record: dict, requested: str, detected: Optional[str]) -> bool:
-    """The record was installed for the same accelerator request (and, for auto, the same detected
-    host), and is not a CPU fallback that torch's CUDA runtime, here now, would replace."""
+    """Same accelerator request (and host for auto); not a CPU fallback CUDA would now replace."""
     if record.get("accelerator_request") != requested:
         return False
     if requested == "auto" and record.get("detected_accelerator") != detected:
@@ -1022,9 +1017,8 @@ def _loader_env(server: Path, extra_dirs: Sequence[Path] = ()) -> dict:
 
 
 def _cuda_runtime_dirs(backend: str) -> list[str]:
-    """The CUDA libraries the backend's ``child_env`` puts after the bundle dir: the Linux CUDA server
-    links cuBLAS, cudart, cuFFT and NCCL dynamically and finds them in torch's nvidia-* wheels, and a
-    Windows bundle installed without its cudart archive uses torch's DLLs."""
+    """Dirs the backend's child_env adds after the bundle: Linux CUDA finds cuBLAS, cudart, cuFFT
+    and NCCL in torch's nvidia wheels; Windows without a cudart archive uses torch's DLLs."""
     if backend != "cuda" or sys.platform == "darwin":
         return []
     try:
@@ -1336,8 +1330,7 @@ def _install_locked(
         and _record_is_current(existing.get("release_tag"), release_tag)
         and _record_fits_request(existing, requested, detected)
     ):
-        # Checked under the install lock: a setup run that got here first with a newer release wins over a
-        # stale offer the in-app update pinned.
+        # Under the install lock, a newer release from setup beats a stale in-app update offer.
         server = _intact_install(target, existing)
         if server is not None:
             print(f"audio.cpp: already matches {existing.get('asset')}", flush = True)

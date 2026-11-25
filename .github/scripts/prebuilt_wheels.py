@@ -86,8 +86,7 @@ def cuda_archs(package: str, platform: str) -> str:
     return SSM_SASS_BY_PLATFORM.get(platform, SSM_SASS)
 
 
-# Wheel tagged linux_x86_64 rather than manylinux like upstream, so pip accepts any glibc; the
-# practical floor is the runner glibc, hence ubuntu-22.04 (glibc 2.35), not ubuntu-latest.
+# Not manylinux, so pip accepts any glibc; floor is ubuntu-22.04 (2.35), not ubuntu-latest.
 PLATFORM_TAG = "linux_x86_64"
 
 # Keyed by pip platform tag, and no upstream release ships a Windows wheel; abi is
@@ -101,9 +100,8 @@ PLATFORMS = {
         "abi": "TRUE",
         "label": "",
         "pytorch_nvcc": "ccache /usr/local/cuda-13.0/bin/nvcc",
-        # Upstream's torch2.10 causal-conv1d / mamba-ssm wheels (205 / 351 MB, reused on 2.11 and
-        # 2.12) carry -lineinfo and every arch; ours are ~30 / ~55 MB. Upstream flash-attn 2.8.1 is
-        # already smaller than ours there (125 MB, no PTX), so it is not built for these torches.
+        # Only causal-conv1d and mamba-ssm get extra torches: upstream wheels carry -lineinfo and
+        # every arch (205/351 MB vs ~30/55 ours); upstream flash-attn is already smaller.
         "extra_torches": ("2.10.0", "2.11.0", "2.12.0"),
         "extra_torch_packages": ("causal-conv1d", "mamba-ssm"),
     },
@@ -130,9 +128,8 @@ PLATFORMS = {
         "extra_torches": ("2.10.0", "2.11.0", "2.12.0"),
         "extra_torch_packages": ("causal-conv1d", "mamba-ssm"),
     },
-    # NVIDIA publishes flash-attn for Windows on ARM itself (studio resolves it), so only the other
-    # two are built here, against the only CUDA torch that exists for it: NVIDIA's 2.14.0+cu134,
-    # which needs CUDA 13.4, the first toolkit with a Windows ARM64 nvcc.
+    # NVIDIA publishes flash-attn for Windows ARM64 (studio resolves it), so only the other two are
+    # built, against the only CUDA torch for it: 2.14.0+cu134, which needs CUDA 13.4.
     "win_arm64": {
         "os": "windows",
         "runner": "windows-11-arm",
@@ -154,8 +151,7 @@ _PLATFORM_DEFAULTS = {
     "torch_local": "",
     "torch_index_args": "--index-url https://download.pytorch.org/whl/cu130",
 }
-# What the build asserts about its own interpreter and output, so an emulated x64 Python on an
-# ARM runner cannot quietly produce an x64 wheel under an arm64 name.
+# Checks interpreter arch: emulated x64 Python on ARM must not make an x64 wheel named arm64.
 _PY_PLATFORM = {
     "linux_x86_64": "linux-x86_64",
     "win_amd64": "win-amd64",
@@ -208,8 +204,7 @@ SPECS = {
         # Leave time to upload partial caches after a build timeout.
         "build_timeout": "300m",
         "import_names": ["flash_attn", "flash_attn_2_cuda"],
-        # Largest CUDA extension the size gate lets through, in MB. SASS only and compressed it is
-        # ~176 (PTX was 23% of each measured TU); with the PTX ~229, uncompressed 1,488.
+        # Size cap for flash-attn, in MB; SASS-only compressed ~176, with PTX ~229.
         "max_extension_mb": 230,
     },
     "causal-conv1d": {
@@ -245,8 +240,7 @@ SPECS = {
         "patch": "cxx20",
         "build_timeout": "180m",
         "import_names": ["mamba_ssm", "selective_scan_cuda"],
-        # x86 ~62 trimmed without -lineinfo (Arm ~88), 241 before, 358 in default mode: the gate
-        # catches flags or a trim that never reached nvcc.
+        # Cap for mamba-ssm; the gate catches flags or a trim that never reached nvcc.
         "max_extension_mb": 130,
     },
 }
@@ -279,9 +273,8 @@ ALLOWED_TORCH = tuple(
     )
 )
 
-# cp313 is the default because each extra interpreter is a whole flash-attn build; 3.11 and 3.12 can
-# be added as separate cells; 3.14 is absent since torch has a cu130 wheel for it but nothing in the
-# Unsloth stack is tested on 3.14 yet.
+# cp313 is the default because each extra interpreter is a whole flash-attn build; 3.14 is absent:
+# torch has a cu130 wheel for it, but nothing in the Unsloth stack is tested on 3.14 yet.
 PYTHON_VERSIONS = ("3.11", "3.12", "3.13")
 
 DEFAULT_PACKAGES = tuple(SPECS)
@@ -588,7 +581,6 @@ def _join(items: list[str]) -> str:
     return items[0] if len(items) == 1 else ", ".join(items[:-1]) + " and " + items[-1]
 
 
-# How the release body names each platform.
 PLATFORM_NAMES = {
     "linux_x86_64": "Linux x86_64",
     "win_amd64": "Windows x86_64",
@@ -794,9 +786,8 @@ def _cmd_size_gate(args: argparse.Namespace) -> int:
     return 0
 
 
-# Fatbin container: magic, version 1, a 16-byte header, then entries with kind (1 PTX, 2 ELF) and
-# target arch at byte 28; read directly because cuobjdump only reads its host object format and
-# names PTX entries sm_XX.ptx.
+# Fatbin layout: magic, version 1, 16-byte header, entries of kind (1 PTX, 2 ELF) with arch at byte
+# 28; parsed directly since cuobjdump reads only host objects and names PTX sm_XX.ptx.
 _FATBIN_MAGIC = (0xBA55ED50).to_bytes(4, "little")
 _FATBIN_PTX, _FATBIN_ELF = 1, 2
 
@@ -867,8 +858,7 @@ def _cmd_targets_gate(args: argparse.Namespace) -> int:
             )
             problems += check_targets(member, sass, ptx, want)
     if not checked:
-        # Every package here is a CUDA extension; none with device code means the scan found
-        # nothing, not that there was nothing to check.
+        # Every package is a CUDA extension, so no device code means the scan found nothing.
         problems.append(f"{args.wheel}: no extension with device code")
     for problem in problems:
         print(f"::error::{problem}")

@@ -3,11 +3,10 @@
 
 name: CI capacity
 
-# Frees runner slots in this repo so release pipelines elsewhere in the org stop queueing.
-# Each CI repo sweeps itself with its own GITHUB_TOKEN; a release only asks via dispatch.
-# Inert unless repo variable CI_PREEMPT_ENABLED is exactly 'true'; otherwise it only reports.
-# Resume before clearing the variable, since the guard is gated on it too.
-# Dispatch credential: a GitHub App with only Contents: write on target repos, never an account PAT.
+# Each repo sweeps itself with its own GITHUB_TOKEN to free runner slots for release pipelines;
+# inert unless CI_PREEMPT_ENABLED is exactly 'true' (else report only); resume before clearing it,
+# as the guard is gated on it; dispatch uses a GitHub App with Contents: write only, never an
+# account PAT.
 
 on:
   repository_dispatch:
@@ -316,8 +315,7 @@ jobs:
           fi
 
           if [ "$MODE" = "pause" ]; then
-            # Disabling stops the pool refilling, but pushes during the window get no run at all.
-            # A failed disable is counted but not fatal: nothing needs recovering.
+            # Disabling stops refilling; pushes then get no run; a failed disable is not fatal.
             while read -r ID; do
               [ "$DRY" = 1 ] && { echo "would disable workflow ${ID}"; PAUSED=$(( PAUSED + 1 )); continue; }
               if gh api -X PUT "repos/${GITHUB_REPOSITORY}/actions/workflows/${ID}/disable"; then

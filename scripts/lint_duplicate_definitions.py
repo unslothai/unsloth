@@ -226,8 +226,7 @@ def _scope_duplicates(body, scope, out, overloads, module_overloads) -> None:
             else:
                 seen[name] = (node.lineno, kind)
         if isinstance(node, ast.ClassDef):
-            # A class body resolves unbound names in the module namespace, so it gets the module's aliases,
-            # never the enclosing class's.
+            # A class body's unbound names resolve in the module, never in the enclosing class.
             _scope_duplicates(
                 node.body,
                 f"{scope}{node.name}.",

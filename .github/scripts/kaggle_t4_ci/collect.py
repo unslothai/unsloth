@@ -177,8 +177,7 @@ def _status_of(api, slug: str) -> str:
 
 
 def verdict_of(reports: list[dict], expect: int) -> tuple[str, str]:
-    """Turns payload reports into a verdict exactly as launch.py does inline; kept identical so
-    dispatched and waited-on runs reach the same conclusion from the same evidence."""
+    """Verdict must match launch.py's inline logic so dispatched and waited-on runs agree."""
     if not reports:
         return "infra", (
             "the kernel finished but produced no payload report; "
@@ -274,8 +273,7 @@ def collect_one(
     delete: bool = True,
     deadline: float | None = None,
 ) -> dict:
-    """Reads one kernel to a conclusion and returns its result record; deadline covers the whole
-    pass, while the evidence download gets its own budget clamped to what is left."""
+    """Returns the result; deadline covers the pass, evidence download gets what is left."""
     slug = entry["slug"]
     state = _status_of(api, slug)
     record = {
@@ -446,9 +444,8 @@ RELEASE_BUDGET_SEC = 600
 
 
 def delete_collected(result_path: Path, posted_path: Path | None) -> int:
-    """Releases kernels a --no-delete pass judged, once posted.json has them as delivered, refused
-    or gone; a refused post keeps its kernel as the only retry, and a gone commit releases it,
-    since holding it only bills."""
+    """Releases kernels a --no-delete pass judged once posted.json marks delivered, refused or gone;
+    a refused kernel is the only retry, a gone one is freed since holding it only bills."""
     data = json.loads(result_path.read_text(encoding = "utf-8"))
     posted = (
         json.loads(posted_path.read_text(encoding = "utf-8"))

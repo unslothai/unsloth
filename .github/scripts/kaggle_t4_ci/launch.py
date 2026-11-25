@@ -256,8 +256,7 @@ def username_of(api) -> str | None:
         return None
 
 
-# Registry of pushed but undeleted kernels so a later launch can reclaim them after kill -9.
-# Keyed on pid: a live owner's kernels must never be deleted.
+# Kernels pushed but not deleted, reclaimed after kill -9; keyed on pid, live owners' are kept.
 INFLIGHT = (
     Path(os.environ.get("UNSLOTH_WORKSPACE") or Path(__file__).resolve().parents[3])
     / "logs"

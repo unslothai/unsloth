@@ -32,8 +32,7 @@ if [[ -n "${SSH_KEY:-${PUBLIC_KEY:-}}" ]] && (( UNSLOTH_STUDIO_PORT == 22 )); th
     printf "\033[1;31mERROR:\033[0m UNSLOTH_STUDIO_PORT=22 is sshd's port inside the container when SSH_KEY or PUBLIC_KEY is set.\n" >&2
     exit 1
 fi
-# JupyterLab binds first, so Studio would silently move; compare ports via int() as
-# traitlets does.
+# JupyterLab binds first so Studio would silently move; compare ports via int() like traitlets.
 jupyter_port_digits="${JUPYTER_PORT//[[:space:]_]/}"
 jupyter_port_digits="${jupyter_port_digits#+}"
 if [[ "$jupyter_port_digits" =~ ^[0-9]+$ ]] && (( 10#$jupyter_port_digits == UNSLOTH_STUDIO_PORT )); then
@@ -128,8 +127,7 @@ fi
 
 mkdir -p /workspace
 
-# AGPLv3: refuse to start if the Unsloth attribution is stripped. The same checker
-# runs at build time and as a jupyter_server extension.
+# AGPLv3: refuse to start if attribution is stripped; same checker also runs as an extension.
 if [[ "${UNSLOTH_SKIP_BRANDING_CHECK:-0}" != "1" ]]; then
     if ! /opt/unsloth-venv/bin/python -m unsloth_branding --verify; then
         echo "Refusing to start the container." >&2

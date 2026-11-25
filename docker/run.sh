@@ -197,8 +197,7 @@ if [ "$HF_HUB" != "$HF_CACHE/hub" ]; then
 fi
 TRITON_CACHE="${TRITON_CACHE_DIR:-$HOME/.cache/unsloth-triton}"
 WORK_DIR="${UNSLOTH_WORKDIR:-$PWD}"
-# The image relinks its code into the volume at every start. `-`, not `:-`: an explicitly
-# empty value disables the mount.
+# Image relinks code into the volume each start; use - not :-, so an empty value disables it.
 STUDIO_VOLUME="${UNSLOTH_STUDIO_VOLUME-unsloth-studio}"
 STUDIO_MOUNT=()
 if [ -n "$STUDIO_VOLUME" ]; then
@@ -273,8 +272,7 @@ mount_models Ollama "${UNSLOTH_OLLAMA_DIR:-$(ollama_dir)}" /root/.ollama/models
 mount_models Hermes "${UNSLOTH_HERMES_DIR:-$(hermes_dir)}" /root/.hermes/models
 mount_models local "${UNSLOTH_MODELS_DIR:-}" /workspace/models
 
-# --gpus fails in the daemon (exit 125) on a host without NVIDIA, before the entrypoint can
-# explain; drop the flag instead.
+# Without NVIDIA, --gpus fails in the daemon (exit 125) before entrypoint can explain; drop it.
 host_has_nvidia() {
     local listing
     [[ -e "$DEV_ROOT/dev/nvidiactl" ]] && return 0
@@ -348,8 +346,7 @@ elif [[ $ROCM -eq 0 && ${#GPU_FLAG[@]} -gt 0 ]] && host_has_nvidia \
     esac
 fi
 
-# Only if set, else an empty string shadows the image's. The dash-only `-e VAR` form
-# makes Docker read the value from the parent shell, so it never lands in argv.
+# Forward only if set (empty would shadow the image's); bare -e VAR keeps secrets out of argv.
 declare -a ENV_FORWARD=(-e HF_HUB_ENABLE_HF_TRANSFER=1)
 [[ -n "${HF_TOKEN:-}"          ]] && ENV_FORWARD+=(-e HF_TOKEN)
 [[ -n "${WANDB_API_KEY:-}"     ]] && ENV_FORWARD+=(-e WANDB_API_KEY)
