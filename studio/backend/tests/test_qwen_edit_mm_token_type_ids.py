@@ -130,7 +130,7 @@ def test_text_only_and_kill_switch(tiny_vl, monkeypatch):
 def test_loader_installs_it():
     source = (
         Path(__file__).resolve().parents[1] / "core" / "inference" / "diffusion.py"
-    ).read_text()
+    ).read_text(encoding = "utf-8")
     calls = [
         node
         for node in ast.walk(ast.parse(source))

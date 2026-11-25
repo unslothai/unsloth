@@ -2876,7 +2876,7 @@ class PipelineParallel:
         divided by the ranks holding a copy of it, summed over every rank)."""
         import torch.distributed as dist
 
-        from .tp_native import _square_sum
+        from .tp_native import _scale_tensors_, _square_sum
 
         self._check_unscaled()
         params = self.parameters() if parameters is None else list(parameters)
@@ -2896,9 +2896,7 @@ class PipelineParallel:
         elif self.num_stages > 1:
             dist.all_reduce(sq, group = self.group)
         total = sq.sqrt()
-        coef = torch.clamp(float(max_norm) / (total + eps), max = 1.0)
-        for g in grads:
-            g.mul_(coef.to(g.dtype))
+        _scale_tensors_(grads, total, float(max_norm), eps)
         return total.float()
 
     def unscale_(self, scaler, optimizer):
@@ -3075,37 +3073,45 @@ class PipelineParallel:
             dist.all_gather_object(parts, tables, group = self.group)
             tables = provenance.merge_provenance(parts)
         merged = self.adapter_state_dict(**kwargs)
-        if merged is not None:
-            import peft.peft_model as peft_model
 
-            selection = peft_model.get_peft_model_state_dict
+        def write():
+            if merged is not None:
+                import peft.peft_model as peft_model
 
-            def gathered(
-                model,
-                state_dict = None,
-                adapter_name = "default",
-                **unused,
-            ):
-                return merged[adapter_name]
+                selection = peft_model.get_peft_model_state_dict
 
-            kwargs.pop("state_dict", None)
-            kwargs.setdefault("is_main_process", True)
-            # PEFT's own writer (files, config, card), fed the merged selection of every stage.
-            peft_model.get_peft_model_state_dict = gathered
-            try:
-                peft_model.PeftModel.save_pretrained(self.model, save_directory, **kwargs)
-            finally:
-                peft_model.get_peft_model_state_dict = selection
-            if kwargs.get("is_main_process", True):
-                # Every stage's tables, next to each adapter PEFT wrote ("default" here, others in <name>/),
-                # replacing the writer stage's own record that PEFT's save wrote there.
-                provenance.write_adapter_provenance(
-                    self.model, save_directory, tables, kwargs.get("selected_adapters")
-                )
+                def gathered(
+                    model,
+                    state_dict = None,
+                    adapter_name = "default",
+                    **unused,
+                ):
+                    return merged[adapter_name]
+
+                kwargs.pop("state_dict", None)
+                kwargs.setdefault("is_main_process", True)
+                # PEFT's own writer (files, config, card), fed the merged selection of every stage.
+                peft_model.get_peft_model_state_dict = gathered
+                try:
+                    peft_model.PeftModel.save_pretrained(self.model, save_directory, **kwargs)
+                finally:
+                    peft_model.get_peft_model_state_dict = selection
+                if kwargs.get("is_main_process", True):
+                    # Every stage's tables, next to each adapter PEFT wrote ("default" here, others in <name>/),
+                    # replacing the writer stage's own record that PEFT's save wrote there.
+                    provenance.write_adapter_provenance(
+                        self.model, save_directory, tables, kwargs.get("selected_adapters")
+                    )
+
         if self.composed:
-            dist.barrier()
+            group = None
         elif self.num_stages > 1:
-            dist.barrier(group = self.group)
+            group = self.group
+        else:
+            return write()
+        from .tp_native import _agree_write
+
+        _agree_write(write, group)
 
 
 def _default_activation_dtype(model, parts):
@@ -3208,6 +3214,14 @@ def apply_pipeline_parallel(
         existing = existing or level.__dict__.get("_unsloth_pp_stage")
     if existing is not None:
         return existing
+    if any(
+        level.__dict__.get("_unsloth_ep") is not None
+        for level in (_model_chain(model) if isinstance(model, nn.Module) else ())
+    ):
+        raise NotImplementedError(
+            "Unsloth: apply_pipeline_parallel cannot split an expert parallel model (apply_expert_parallel): its "
+            "experts are already split by index over the ranks. ep with pipeline parallel is not supported."
+        )
     _check_torch_pipelining()
     config = config or PPConfig()
     spec = schedule_spec(schedule)

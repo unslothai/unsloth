@@ -12787,15 +12787,29 @@ class DiffusionBackend:
                     # a refinement may have re-tiered the plan; routed encoders need group offload
                     plan = self._small_host_plan(pipe, plan, fam, logger)
                     plan = refine_plan_for_multigpu(pipe, plan, logger)
+                    from .diffusion_tp2 import engage_for_plan as _tp2_engage
+                    from .diffusion_tp2 import place_atomically as _tp2_place
+
+                    # opt-in UNSLOTH_DIFFUSION_TP=1: denoiser sharded over two cards, kept resident
+                    plan_without_tp = plan
+                    plan = _tp2_engage(pipe, plan, logger, loras = loras)
                     # streamed text encoders pin after the load returns, before or during the first encode
                     request_background_encoder_pins(pipe)
-                    effective_policy, effective_tiling = apply_memory_plan(
+                    # TP placement is atomic: a placement that cannot keep the shards resident uninstalls TP and
+                    # places the unsplit denoiser with the plan it had before TP
+                    (effective_policy, effective_tiling), plan = _tp2_place(
                         pipe,
                         plan,
-                        device = device,
-                        # Indexed: CPU-offload APIs default to cuda:0 without an index.
-                        placement_device = target.torch_device,
-                        logger = logger,
+                        plan_without_tp,
+                        lambda p: apply_memory_plan(
+                            pipe,
+                            p,
+                            device = device,
+                            # Indexed: CPU-offload APIs default to cuda:0 without an index.
+                            placement_device = target.torch_device,
+                            logger = logger,
+                        ),
+                        logger,
                     )
                     start_background_pins(pipe)
                     # a transient OOM during setup may have re-planned to lower residency
@@ -18202,6 +18216,11 @@ def _grouped_form_status(pipe: Any) -> Optional[dict]:
 
 def _lora_load_block_reason(pipe: Any) -> Optional[str]:
     """Why this load's transformer cannot carry adapters whatever the family and quant allow, or None."""
+    from .diffusion_tp2 import lora_block_reason as _tp2_lora_block
+
+    tp_block = _tp2_lora_block(pipe)
+    if tp_block:
+        return tp_block
     if _small_host_int8(pipe):
         return (
             "LoRA is not available on this load: system RAM was too small for the dense model, so Unsloth "
