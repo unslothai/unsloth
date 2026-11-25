@@ -48,7 +48,7 @@ env:
   GFX906_ROCM_VERSION: '6.3.4'
 
 # On main each RUN gets its own group so a pending run is not discarded. Never cancel in
-# progress: a half-pushed digest is worse than a briefly stale :latest.
+# progress: a half-pushed digest is worse than a briefly stale :nightly.
 concurrency:
   group: docker-publish-rocm-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.run_id || '' }}
   cancel-in-progress: false
@@ -307,7 +307,7 @@ jobs:
               docker buildx imagetools inspect "$tag"
           done
 
-  # Builds Studio on the base by DIGEST: :latest may already be a newer run's.
+  # Builds Studio on the base by DIGEST: the base's tags may already be a newer run's.
   build-studio:
     needs: [prepare, build]
     runs-on: ubuntu-latest
