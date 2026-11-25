@@ -153,3 +153,22 @@ def test_a_relaunch_in_the_same_second_keeps_the_earlier_log(monkeypatch):
     assert first.name == second.name
     with open(second.name, encoding = "utf-8") as handle:
         assert "crash trace" in handle.read()
+
+
+def test_a_real_child_writes_both_streams_to_the_log():
+    import sys
+
+    handle = mtmd._open_server_log(4001)
+    try:
+        process = subprocess.Popen(
+            [sys.executable, "-c", "import sys; print('out'); print('err', file = sys.stderr)"],
+            stdout = handle,
+            stderr = subprocess.STDOUT,
+            stdin = subprocess.DEVNULL,
+        )
+    finally:
+        handle.close()
+    assert process.wait(timeout = 60) == 0
+    with open(handle.name, encoding = "utf-8") as log:
+        lines = log.read().split()
+    assert "out" in lines and "err" in lines
