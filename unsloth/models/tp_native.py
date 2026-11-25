@@ -2303,7 +2303,14 @@ def _sharded_experts(shard, prior, hidden, index, weights):
     shape, group = hidden.shape, shard.group
     x = hidden.reshape(-1, shape[-1])
     tokens = x.shape[0]
-    index = index.reshape(tokens, -1)
+    if tokens == 0:
+        # No rows to route: one zero row routed nowhere (dropped below) keeps every grad defined.
+        width = index.shape[-1] if index.dim() > 1 else 1
+        x = torch.cat([x, x.new_zeros((1, x.shape[-1]))])
+        index = index.new_full((1, width), -1)
+        weights = weights.new_zeros((1, weights.shape[-1] if weights.dim() > 1 else width))
+    rows = x.shape[0]
+    index = index.reshape(rows, -1)
     dense = (
         weights.dim() == 2
         and weights.shape[-1] == shard.experts
@@ -2324,13 +2331,13 @@ def _sharded_experts(shard, prior, hidden, index, weights):
         wc = weights.index_select(0, token)[:, lo:hi]
         wc = F.pad(wc, (0, shard.per_rank - wc.shape[1]))
     else:
-        wc = weights.reshape(tokens, -1)[token, slot].unsqueeze(1)
+        wc = weights.reshape(rows, -1)[token, slot].unsqueeze(1)
     if empty:
         wc = wc * 0
     with _expert_locals(shard):
         yc = prior(xc, ic, wc)
-    y = yc.new_zeros((tokens, yc.shape[-1])).index_add(0, token, yc)
-    y = _experts_reduce(y, group)
+    y = yc.new_zeros((rows, yc.shape[-1])).index_add(0, token, yc)
+    y = _experts_reduce(y, group)[:tokens]
     return y.reshape(*shape[:-1], y.shape[-1])
 
 
@@ -4259,11 +4266,16 @@ def tp_clip_grad_norm_(
 def _scale_grads_(params, total, max_norm, eps):
     """torch's clip: a tensor coefficient clamped at 1 and applied unconditionally (no host sync, no
     data-dependent branch). DTensor grads are scaled through their local shard."""
+    _scale_tensors_(
+        [p.grad.to_local() if _is_dtensor(p.grad) else p.grad for p in params], total, max_norm, eps
+    )
+
+
+def _scale_tensors_(tensors, total, max_norm, eps):
+    """_scale_grads_ on plain (local) gradient tensors."""
     with torch.no_grad():
         coef = torch.clamp(max_norm / (total + eps), max = 1.0)
-        for p in params:
-            g = p.grad
-            local = g.to_local() if _is_dtensor(g) else g
+        for local in tensors:
             c = coef.to(device = local.device, dtype = torch.float32)
             if local.dtype in (torch.float16, torch.bfloat16):
                 # A small coefficient rounds to 0 in fp16 (a device tensor is cast to the grad dtype).

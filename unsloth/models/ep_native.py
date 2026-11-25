@@ -32,11 +32,11 @@ them on the same layout. Merged / GGUF exports are refused under expert parallel
 from __future__ import annotations
 
 import contextlib
+import functools
 import os
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 __all__ = [
     "apply_expert_parallel",
@@ -177,6 +177,28 @@ class _Exchange(torch.autograd.Function):
         return (None, None, None) + tuple(_a2a(g, recv, send, group) for g in grads)
 
 
+def _compiler_disable(fn):
+    disable = getattr(getattr(torch, "compiler", None), "disable", None)
+    if disable is None:  # torch < 2.1
+        import torch._dynamo as dynamo
+        disable = dynamo.disable
+    return disable(fn)
+
+
+def _route_width(route, tokens):
+    """reshape(tokens, -1) cannot infer the width of an empty tensor."""
+    if tokens:
+        return -1
+    return route.shape[-1] if route.dim() > 1 else 1
+
+
+def _destinations(owner, ep):
+    """[tokens, ep] bool: token t is sent to rank r (owner: [tokens, k] owning ranks)."""
+    return owner.new_zeros((owner.shape[0], ep), dtype = torch.bool).scatter_(1, owner, True)
+
+
+# Data-dependent splits, a Python call counter and all_to_all: comm-bound, kept out of Dynamo graphs.
+@_compiler_disable
 def _ep_experts(shard, prior, hidden, index, weights):
     import torch.distributed as dist
 
@@ -190,17 +212,17 @@ def _ep_experts(shard, prior, hidden, index, weights):
     shape = hidden.shape
     x = hidden.reshape(-1, shape[-1])
     tokens = x.shape[0]
-    index = index.reshape(tokens, -1)
+    index = index.reshape(tokens, _route_width(index, tokens))
     if (
         weights.dim() == 2
         and weights.shape[-1] == shard.experts
         and index.shape[-1] != shard.experts
     ):
         weights = weights.gather(1, index)  # dense [tokens, E] routing weights
-    weights = weights.reshape(tokens, -1)
+    weights = weights.reshape(tokens, _route_width(weights, tokens))
     # Each token goes once to every rank owning one of its experts.
     owner = torch.div(index, shard.per_rank, rounding_mode = "floor").clamp_(0, ep - 1)
-    need = F.one_hot(owner, ep).amax(1).bool()  # [tokens, ep]
+    need = _destinations(owner, ep)
     dest, token = need.t().nonzero(as_tuple = True)  # grouped by destination rank
     send = torch.bincount(dest, minlength = ep)
     counts = torch.empty_like(send)
@@ -442,6 +464,7 @@ def _guard_bypass(block, shard):
 
     inner = block.forward
 
+    @functools.wraps(inner)
     def forward(*args, **kwargs):
         before = shard.calls
         try:
@@ -461,6 +484,7 @@ def _sync_generate(level):
     running forwards until every rank is done (transformers' synced_gpus)."""
     prior = level.generate
 
+    @functools.wraps(prior)
     def generate(*args, **kwargs):
         kwargs.setdefault("synced_gpus", True)
         return prior(*args, **kwargs)
@@ -481,6 +505,7 @@ def _ep_save_entrypoints(level):
     prior_save = level.__dict__.get("save_pretrained") or getattr(level, "save_pretrained", None)
     if callable(prior_save) and not getattr(prior_save, "_unsloth_ep_save", False):
 
+        @functools.wraps(prior_save)
         def save_pretrained(*args, **kwargs):
             if _SAVING or kwargs.get("state_dict") is not None:
                 return prior_save(*args, **kwargs)
@@ -686,11 +711,16 @@ def ep_clip_grad_norm_(
     over the expert parallel ranks. Returns the same total norm on every rank."""
     import torch.distributed as dist
 
+    if isinstance(parameters, torch.Tensor):
+        parameters = [parameters]
+    parameters = list(parameters)
     params = [p for p in parameters if p.grad is not None]
-    if not params:
-        return torch.tensor(0.0)
     norm_type = float(norm_type)
-    device = params[0].grad.device
+    # A rank without gradients still enters the all_reduce its peers enter, with the identity.
+    if params:
+        device = params[0].grad.device
+    else:
+        device = parameters[0].device if parameters else _group_device(group)
     local = [p.grad for p in params if getattr(p, _EP, None) is not None]
     shared = [p.grad for p in params if getattr(p, _EP, None) is None]
 
@@ -710,23 +740,36 @@ def ep_clip_grad_norm_(
         b = b**norm_type
         dist.all_reduce(b, group = group)
         total = (a**norm_type + b) ** (1.0 / norm_type)
-    coef = torch.clamp(max_norm / (total + 1e-6), max = 1.0)
-    for p in params:
-        p.grad.mul_(coef.to(p.grad.device, p.grad.dtype))
+    _tpn()._scale_grads_(params, total, max_norm, 1e-6)  # fp32 coefficient, no fp16 underflow
     return total
 
 
+def _group_device(group):
+    import torch.distributed as dist
+    if dist.get_backend(group) == "nccl" and torch.cuda.is_available():
+        return torch.device("cuda", torch.cuda.current_device())
+    return torch.device("cpu")
+
+
 def _sync_nonfinite(model, group):
-    """One rank's non-finite expert gradient poisons every rank's (GradScaler then skips the step everywhere)."""
+    """One rank's non-finite expert gradient poisons every rank's (GradScaler then skips the step everywhere).
+    A rank without expert gradients still takes part; no host sync."""
     import torch.distributed as dist
 
-    grads = [p.grad for _, p in _ep_params(model) if p.grad is not None]
-    if not grads:
-        return
-    bad = torch.stack([~torch.isfinite(g).all() for g in grads]).any().to(torch.int32).reshape(1)
+    params = [p for _, p in _ep_params(model)]
+    grads = [p.grad for p in params if p.grad is not None]
+    if grads:
+        device = grads[0].device
+    else:
+        device = params[0].device if params else _group_device(group)
+    bad = torch.zeros(1, dtype = torch.int32, device = device)
+    if grads:
+        bad = (
+            torch.stack([~torch.isfinite(g).all() for g in grads]).any().to(torch.int32).reshape(1)
+        )
     dist.all_reduce(bad, op = dist.ReduceOp.MAX, group = group)
-    if bad.item():
-        grads[0].view(-1)[0] = float("inf")
+    if grads:
+        grads[0].view(-1)[:1].masked_fill_(bad.to(grads[0].device).bool(), float("inf"))
 
 
 _CKPT_DIR = "unsloth_ep"
@@ -888,9 +931,13 @@ def ep_trainer_setup(trainer):
 
     def ep_backward(*args, **kwargs):
         out = backward(*args, **kwargs)
-        if accelerator.sync_gradients:
+        # UNSLOTH_TOKEN_BUDGET's earlier chunks of a step: the replicas are summed once, after the last one.
+        if accelerator.sync_gradients and not trainer.__dict__.get("_unsloth_token_budget_partial"):
             ep_sync_expert_grads(model)
-            _sync_nonfinite(model, None)  # every rank (replicas included) must skip the same steps
+            scaler = getattr(accelerator, "scaler", None)
+            # Under an enabled GradScaler every rank (replicas included) must skip the same steps.
+            if scaler is not None and scaler.is_enabled():
+                _sync_nonfinite(model, None)
         return out
 
     accelerator.backward = ep_backward
