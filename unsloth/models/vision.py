@@ -4078,6 +4078,9 @@ class FastBaseModel:
         text_intent = None,
         **kwargs,
     ):
+        from ._utils import _unsloth_load_begins
+
+        _unsloth_load_begins()
         user_config = kwargs.pop("config", None)
         user_rope_scaling = kwargs.pop("rope_scaling", None)
         if auto_config is None and user_config is not None:

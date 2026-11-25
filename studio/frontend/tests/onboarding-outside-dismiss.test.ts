@@ -61,3 +61,20 @@ test("Escape and the close controls still dismiss in one step", () => {
   assert.match(dialog, /<DialogClose asChild=\{true\}>/);
   assert.match(dialog, /onClick=\{skipAll\}/);
 });
+
+test("the first outside click shows no hint text, only the nudge", () => {
+  assert.doesNotMatch(dialog, /outsideAgain/);
+  assert.match(dialog, /animate\(NUDGE/);
+});
+
+test("the model picker card is not drawn under the open onboarding dialog", () => {
+  const card = readFileSync(
+    new URL(
+      "../src/components/assistant-ui/model-picker-announcement.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(card, /useOnboardingStore\(\(s\) => s\.pages !== null\)/);
+  assert.match(card, /\{!dismissed && !onboarding && \(/);
+});

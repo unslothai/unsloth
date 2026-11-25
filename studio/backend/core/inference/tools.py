@@ -22998,6 +22998,10 @@ def _truncate(
     if limit <= 0:
         # No room: a one-line stub keeps the thread servable so the next fit can recover.
         stub = _zero_room_stub(size, spill, complete)
+        # The call already ran: without its exit status a failure reads as a success (#19352).
+        status = _EXIT_STATUS_LINE.match(text)
+        if status:
+            stub = status.group(0) + stub
         # A short result costs less than any notice about it; a longer rewording saves nothing.
         return (stub if len(stub) < len(text) else text) + hint
     head, on_boundary = _head_whole_lines(text, limit)
@@ -23723,6 +23727,9 @@ def _spill_phrase(spill: str, complete: bool) -> str:
 def _capitalise(phrase: str) -> str:
     """First letter only. `str.capitalize` lower-cases the rest, including a path."""
     return phrase[:1].upper() + phrase[1:]
+
+
+_EXIT_STATUS_LINE = re.compile(r"Exit code -?\d+:\n")
 
 
 def _zero_room_stub(size: int, spill: "str | None", complete: bool) -> str:
