@@ -165,9 +165,12 @@ def tensor_parallel_env_load(fn):
             if ep_env_size() > 1:  # expert parallel (UNSLOTH_EP_SIZE): the experts load per rank
                 from .ep_native import ep_env_load, ep_refuse_fast_inference
 
-                ep_refuse_fast_inference(_bound(fn, args, kwargs))
+                from .tp_native import refuse_hf_distributed_kwargs
 
                 values = _bound(fn, args, kwargs)
+                ep_refuse_fast_inference(values)
+                # Every branch, the whole adapter / QAT load included: apply_expert_parallel shards it later.
+                refuse_hf_distributed_kwargs(values, "expert parallel", "apply_expert_parallel")
                 sharded = not _is_adapter(values) and values.get("qat_scheme") is None
                 _DEPTH["load"] += 1
                 try:
@@ -402,7 +405,7 @@ def _levels(model):
 def parallel_env_requested():
     return any(
         str(os.environ.get(name, "")).strip() not in ("", "1")
-        for name in ("UNSLOTH_TP_SIZE", "UNSLOTH_PP_SIZE", "UNSLOTH_CP_SIZE")
+        for name in ("UNSLOTH_TP_SIZE", "UNSLOTH_PP_SIZE", "UNSLOTH_CP_SIZE", "UNSLOTH_EP_SIZE")
     )
 
 

@@ -6944,6 +6944,7 @@ def patch_gradient_accumulation_fix(Trainer):
             _pipeline_parallel_env_refusals(self, _original_trainer_init, args, kwargs, model)
             # UNSLOTH_TP_SIZE / UNSLOTH_PP_SIZE (unmodified scripts): the pipeline split, then tensor parallel,
             # before native FSDP2 shards the dp dimension.
+            _refuse_expert_parallel_env_model_init(_original_trainer_init, args, kwargs)
             tp_env = _tensor_parallel_env_trainer_pre(model)
             if tp_env is None and model is not None:
                 from .ep_native import ep_env_apply, ep_refuse_prebuilt_optimizer
@@ -7047,6 +7048,9 @@ def patch_gradient_accumulation_fix(Trainer):
                             pass
             except Exception:
                 pass
+            from .ep_native import ep_refuse_trainer_fsdp
+
+            ep_refuse_trainer_fsdp(self)
             if getattr(self, "is_fsdp_enabled", False):
                 # FSDP2 keeps the fused LoRA kernels when each decoder block is its own unit (checked
                 # again once accelerate has wrapped); FSDP1 and a root-only wrap decline them here.
@@ -7469,6 +7473,34 @@ def _tensor_parallel_env_trainer_pre(model):
 def _refuse_tensor_parallel_env_model_init(layout, init, args, kwargs):
     """UNSLOTH_TP_SIZE / UNSLOTH_PP_SIZE setup runs on the __init__ model, so a model_init model would silently
     train as plain DDP."""
+    model_init = _trainer_model_init(init, args, kwargs)
+    if model_init is not None:
+        pp = getattr(layout, "pp", 1) > 1
+        what = "pipeline parallel" if pp else "tensor parallel"
+        if pp and layout.tp > 1:
+            what += " x tensor parallel"
+        names = (
+            " and ".join(v.split("=")[0] for v in layout.env_vars.split())
+            if pp
+            else "UNSLOTH_TP_SIZE"
+        )
+        raise RuntimeError(
+            f"Unsloth: {layout.env_vars if pp else f'UNSLOTH_TP_SIZE={layout.tp}'} ({what}) does not support "
+            "`Trainer(model_init = ...)` or `hyperparameter_search`: the model model_init builds would not "
+            f"be {what}. Build the model first and pass it as `Trainer(model = model)`, or unset "
+            f"{names}."
+        )
+
+
+def _refuse_expert_parallel_env_model_init(init, args, kwargs):
+    """UNSLOTH_EP_SIZE: the expert parallel setup runs on the __init__ model, so a model_init model (full
+    finetuning, or one built without Unsloth's get_peft_model) would silently train as plain DDP."""
+    from .ep_native import _MODEL_INIT_REFUSAL, ep_env_size
+    if ep_env_size() > 1 and _trainer_model_init(init, args, kwargs) is not None:
+        raise NotImplementedError(_MODEL_INIT_REFUSAL)
+
+
+def _trainer_model_init(init, args, kwargs):
     model_init = kwargs.get("model_init")
     if model_init is None:
         import inspect
@@ -7498,22 +7530,7 @@ def _refuse_tensor_parallel_env_model_init(layout, init, args, kwargs):
         if "model_init" in names:
             index = names.index("model_init")
             model_init = args[index] if index < len(args) else None
-    if model_init is not None:
-        pp = getattr(layout, "pp", 1) > 1
-        what = "pipeline parallel" if pp else "tensor parallel"
-        if pp and layout.tp > 1:
-            what += " x tensor parallel"
-        names = (
-            " and ".join(v.split("=")[0] for v in layout.env_vars.split())
-            if pp
-            else "UNSLOTH_TP_SIZE"
-        )
-        raise RuntimeError(
-            f"Unsloth: {layout.env_vars if pp else f'UNSLOTH_TP_SIZE={layout.tp}'} ({what}) does not support "
-            "`Trainer(model_init = ...)` or `hyperparameter_search`: the model model_init builds would not "
-            f"be {what}. Build the model first and pass it as `Trainer(model = model)`, or unset "
-            f"{names}."
-        )
+    return model_init
 
 
 def _tensor_parallel_trainer_pre(model):

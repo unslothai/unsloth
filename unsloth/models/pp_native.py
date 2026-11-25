@@ -3202,6 +3202,14 @@ def apply_pipeline_parallel(
         existing = existing or level.__dict__.get("_unsloth_pp_stage")
     if existing is not None:
         return existing
+    if any(
+        level.__dict__.get("_unsloth_ep") is not None
+        for level in (_model_chain(model) if isinstance(model, nn.Module) else ())
+    ):
+        raise NotImplementedError(
+            "Unsloth: apply_pipeline_parallel cannot split an expert parallel model (apply_expert_parallel): its "
+            "experts are already split by index over the ranks. ep with pipeline parallel is not supported."
+        )
     _check_torch_pipelining()
     config = config or PPConfig()
     spec = schedule_spec(schedule)

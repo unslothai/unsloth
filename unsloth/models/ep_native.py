@@ -48,6 +48,8 @@ __all__ = [
     "ep_env_mesh",
     "ep_env_load",
     "ep_refuse_fast_inference",
+    "ep_refuse_composition",
+    "ep_refuse_trainer_fsdp",
     "ep_env_apply",
     "ep_trainer_setup",
     "ep_sync_expert_grads",
@@ -77,6 +79,13 @@ def ep_env_mesh():
         from torch.distributed.device_mesh import init_device_mesh
 
         cuda = torch.cuda.is_available()
+        if cuda and not dist.is_initialized() and not dist.is_nccl_available():
+            raise RuntimeError(
+                f"Unsloth: {_EP_ENV}={ep_env_size()} (expert parallel) runs its collectives over NCCL on CUDA GPUs, "
+                "but this PyTorch build has no NCCL backend (torch.distributed.is_nccl_available() is False; "
+                "native Windows builds ship without it). Use a PyTorch build with NCCL (Linux or WSL), or "
+                "train on one GPU."
+            )
         if cuda:
             torch.cuda.set_device(int(os.environ.get("LOCAL_RANK", "0")))
         if not dist.is_initialized():
@@ -101,6 +110,8 @@ def ep_env_load(fn, args, kwargs, sharded):
     try:
         with expert_parallel_loading(_split_mesh(ep_env_mesh())[0]):
             return fn(*args, **kwargs)
+    except _tpn().HFDistributedKwargsError:
+        raise  # a whole load would forward the same kwarg to transformers
     except ValueError as exc:
         if not str(exc).startswith("Unsloth:") or "sharded loading" not in str(exc):
             raise
@@ -118,6 +129,46 @@ def ep_env_apply(model):
     if ep_env_size() > 1 and isinstance(model, nn.Module) and not is_expert_parallel(model):
         apply_expert_parallel(model, ep_env_mesh())
     return model
+
+
+def ep_refuse_composition(model):
+    """Before apply_expert_parallel changes anything: a pipeline stage, a tensor parallel model or a live vLLM
+    engine (its LoRA sync would send one rank's expert slice)."""
+    levels = _levels(model)
+    if any(
+        m.__dict__.get("_unsloth_pp") is not None or m.__dict__.get("_unsloth_pp_stage")
+        for m in levels
+    ):
+        raise NotImplementedError(
+            "Unsloth: expert parallel cannot be applied to a pipeline parallel stage (apply_pipeline_parallel): "
+            "ep with pipeline parallel is not supported."
+        )
+    if _tpn().is_tensor_parallel(model):
+        raise NotImplementedError(
+            "Unsloth: expert parallel cannot be applied to a tensor parallel model (apply_tensor_parallel): "
+            "ep with tensor parallel is not supported."
+        )
+    if any(getattr(m, "vllm_engine", None) is not None for m in levels):
+        raise NotImplementedError(
+            "Unsloth: expert parallel cannot be applied to a model with a live vLLM engine (fast_inference = "
+            "True): each rank would hold only its own experts' LoRA, and the vLLM LoRA sync would send one "
+            "rank's slice. Load with fast_inference = False."
+        )
+
+
+def ep_refuse_trainer_fsdp(trainer):
+    """Trainer.__init__: accelerate's FSDP (an `accelerate launch` FSDP config / fsdp args) would wrap and shard
+    the per-rank expert slices at train() as if they were one tensor."""
+    model = getattr(trainer, "model", None)
+    if (
+        getattr(trainer, "is_fsdp_enabled", False)
+        and isinstance(model, nn.Module)
+        and is_expert_parallel(model)
+    ):
+        raise NotImplementedError(
+            "Unsloth: expert parallel cannot be combined with accelerate's FSDP (an accelerate FSDP config or "
+            "TrainingArguments fsdp): every rank holds different experts. Launch with torchrun and DDP, or drop ep."
+        )
 
 
 def ep_refuse_fast_inference(values):
@@ -306,6 +357,7 @@ def apply_expert_parallel(model, mesh = None):
         mesh = tpn._world_mesh()
     if is_expert_parallel(model):
         return model
+    ep_refuse_composition(model)
     ep_mesh, rep_mesh = _split_mesh(mesh)
     ep, rank = ep_mesh.size(), ep_mesh.get_local_rank()
     world = dist.get_world_size()
