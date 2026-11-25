@@ -85,5 +85,11 @@ def test_cut_code_block_still_closes_its_fence(page):
     assert body.count("```") == 2
 
 
+def test_fence_outlasts_backticks_in_the_code(page):
+    code = "Write:\n```python\nprint(1)\n```"
+    text = page(f"<pre>{code}</pre><p>Done</p>")
+    assert f"````\n{code}\n````" in text
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q", "--confcutdir", str(Path(__file__).parent)]))

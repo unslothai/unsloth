@@ -380,10 +380,12 @@ export function installPageAgent(): PageAgent {
       // A lone symbol is an icon or a bullet; a lone digit or letter is a count or a grade.
       if (text && bufferShown && (text.length > 1 || /[\p{L}\p{N}]/u.test(text))) {
         // Cut inside the fence so the "more below" note never lands in an open code block.
-        const room = budget - used - 1 - (code ? 8 : 0);
+        // Longer than any backtick run inside, so the body can't close it (CommonMark fenced code).
+        const fence = code ? "`".repeat(Math.max(3, ...(text.match(/`+/g) ?? []).map((run) => run.length + 1))) : "";
+        const room = budget - used - 1 - (code ? 2 * fence.length + 2 : 0);
         const fits = text.length <= room || room <= 1;
         const body = fits ? text : `${text.slice(0, room - 1)}…`;
-        push(code ? `\`\`\`\n${body}\n\`\`\`` : body);
+        push(code ? `${fence}\n${body}\n${fence}` : body);
         if (!fits) cut = true;
       }
       buffer = "";
