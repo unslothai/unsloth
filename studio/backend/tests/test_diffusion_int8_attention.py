@@ -2721,7 +2721,9 @@ def test_a_cuda_graph_of_another_card_replays_the_call():
                 dst.copy_(src)
             graph.replay()
             torch.cuda.synchronize()
-            assert torch.equal(out, I.int8_attention(*fresh))
+            # a fallback card records torch's attention (its finite check cannot run while a graph records)
+            fallback = I._fallback_card(OTHER, 128, I.implementation(OTHER, 128))
+            assert torch.equal(out, (I.native_attention if fallback else I.int8_attention)(*fresh))
 
 
 @needs_kernel
