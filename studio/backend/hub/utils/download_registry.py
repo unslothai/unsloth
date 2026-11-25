@@ -11,7 +11,6 @@ import hashlib
 import importlib.util
 import json
 import os
-import re
 import shlex
 import signal
 import subprocess
@@ -27,6 +26,7 @@ from loggers import get_logger
 
 # One floor, one name, shared: hand-written copies meant the site that got missed was missed because "who enforces it" had to be read rather than grepped.
 from utils.process_lifetime import is_signalable_pid, pid_is_running
+from utils.log_redaction import REDACTED, redact_log_text
 
 from hub.utils import state_dir
 from hub.utils.hf_errors import modelscope_missing
@@ -762,19 +762,10 @@ def prepare_cache_for_transport(
     return total_purged
 
 
-_HF_TOKEN_RE = re.compile(r"hf_(?:oauth_[A-Za-z0-9._~+/=-]{20,}|[A-Za-z0-9]{20,})")
-_BEARER_RE = re.compile(r"(?i)bearer\s+[A-Za-z0-9._\-]+")
-
-
 def scrub_secrets(text: str, *, hf_token: Optional[str] = None) -> str:
-    if not text:
-        return text
-    cleaned = text
-    if hf_token:
-        cleaned = cleaned.replace(hf_token, "***")
-    cleaned = _BEARER_RE.sub("Bearer ***", cleaned)
-    cleaned = _HF_TOKEN_RE.sub("hf_***", cleaned)
-    return cleaned
+    if text and hf_token:
+        text = text.replace(hf_token, REDACTED)
+    return redact_log_text(text)
 
 
 def purge_empty_marker_dir(

@@ -361,7 +361,9 @@ def test_video_kick_runs_under_the_teardown_lock_after_the_token_check():
     """An unload between the load's lock release and the kick would run cancel_all() before the child exists."""
     import ast
 
-    src = (Path(__file__).resolve().parents[1] / "core" / "inference" / "video.py").read_text()
+    src = (Path(__file__).resolve().parents[1] / "core" / "inference" / "video.py").read_text(
+        encoding = "utf-8"
+    )
     tree = ast.parse(src)
     hits = []
     for node in ast.walk(tree):

@@ -499,32 +499,52 @@ def spawn_worker(
             hf_xet_fallback.bind_worker_budget(proc.pid if proc is not None else None)
 
 
-def drain_stderr_excerpt(stream, edge_bytes: int = 500) -> bytes:
-    """Drain a worker's stderr to EOF, retaining the first and last bytes. Incremental reads keep the pipe from filling while bounding memory; long messages keep both ends since stderr prefixes often name the failing repo."""
+def _drop_cut_line(part: bytearray, at_end: bool) -> bytearray:
+    kept = part[: part.rfind(b"\n") + 1] if at_end else part[part.find(b"\n") + 1 :]
+    # A window that is one cut line is the error itself.
+    return kept if kept.strip() else part
+
+
+def _redacted_edge(part: bytes, edge: int, at_end: bool, hf_token: Optional[str]) -> str:
+    """What the raw `edge` bytes at that end redact to, with all of `part` as context: slicing the redacted text lets a collapsed token pull the cut-off window start into view."""
+    scrub = lambda raw: download_registry.scrub_secrets(
+        raw.decode("utf-8", "replace"), hf_token = hf_token
+    )
+    whole = scrub(part)
+    if at_end:
+        n = len(os.path.commonprefix([whole, scrub(part[:-edge])]))
+        return whole[n:][-edge:]
+    n = len(os.path.commonprefix([whole[::-1], scrub(part[edge:])[::-1]]))
+    return whole[: len(whole) - n][:edge]
+
+
+def drain_stderr_excerpt(stream, hf_token: Optional[str] = None) -> str:
+    """Drain stderr to EOF; return its first and last 500 bytes, redacted with 4 KiB of context and without the line each cut splits (the extra byte shows whether it split one), so a credential whose name was cut off is never shown."""
     if stream is None:
-        return b""
-    edge_bytes = max(1, edge_bytes)
-    max_bytes = edge_bytes * 2
+        return ""
+    edge, window = 500, 500 + 4096 + 1
     full = bytearray()
-    head = bytearray()
-    tail = bytearray()
-    truncated = False
+    head = tail = None
     for chunk in iter(lambda: stream.read(4096), b""):
-        if not truncated:
+        if head is None:
             full.extend(chunk)
-            if len(full) <= max_bytes:
-                continue
-            truncated = True
-            head.extend(full[:edge_bytes])
-            tail.extend(full[-edge_bytes:])
-            full.clear()
+            if len(full) > 2 * window:
+                head, tail, full = _drop_cut_line(full[:window], True), full[-window:], None
             continue
         tail.extend(chunk)
-        if len(tail) > edge_bytes:
-            del tail[:-edge_bytes]
-    if not truncated:
-        return bytes(full)
-    return bytes(head + b"\n...[stderr truncated]...\n" + tail)
+        del tail[:-window]
+    if head is None:
+        text = download_registry.scrub_secrets(full.decode("utf-8", "replace"), hf_token = hf_token)
+        return (
+            text
+            if len(text) <= 2 * edge
+            else text[:edge] + "\n...[stderr truncated]...\n" + text[-edge:]
+        )
+    return (
+        _redacted_edge(head, edge, False, hf_token)
+        + "\n...[stderr truncated]...\n"
+        + _redacted_edge(_drop_cut_line(tail, False), edge, True, hf_token)
+    )
 
 
 def _cancellation_return_codes() -> frozenset[int]:
@@ -606,16 +626,12 @@ def finalize_worker_exit(
     largest_file_bytes: Optional[int] = None,
 ) -> str:
     """deferred_error_out captures a deferred error for callers that exhaust all retry rungs."""
-    stderr_data = drain_stderr_excerpt(proc.stderr)
+    stderr_text = drain_stderr_excerpt(proc.stderr, hf_token = hf_token).strip()
     rc = proc.wait()
     _cleanup_worker_files(proc)
     cancel_requested = registry.cancel_requested(key)
     if not registry.drop_process(key, proc):
         return "idle"
-    stderr_text = download_registry.scrub_secrets(
-        (stderr_data or b"").decode("utf-8", "replace").strip(),
-        hf_token = hf_token,
-    )
     metadata = registry.get_job_metadata(key)
     state = classify_exit(rc, cancel_requested = cancel_requested)
     if repo_type == "model" and state == "complete":
