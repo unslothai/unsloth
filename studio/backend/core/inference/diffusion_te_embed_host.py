@@ -17,6 +17,8 @@ from typing import Any, Optional
 
 EMBED_HOST_ENV = "UNSLOTH_DIFFUSION_TE_EMBED_HOST"
 ATTR = "_unsloth_te_embed_host"
+# The compute device the gathered rows go to, set by the caller per encode.
+TARGET_ATTR = "_unsloth_te_embed_target"
 
 
 def enabled() -> bool:
@@ -51,19 +53,13 @@ def is_host_embedding(module: Any) -> bool:
     return bool(getattr(module, "__dict__", {}).get(ATTR))
 
 
-def _reference_param(model: Any, skip: Any) -> Optional[Any]:
-    for p in model.parameters():
-        if p is not skip:
-            return p
-    return None
-
-
 def keep_on_host(model: Any) -> int:
     """Pin ``model``'s input embedding to its file mapping; returns the table's bytes, 0 when not applicable.
 
-    The ids go to wherever the table is at call time and the rows to wherever the rest of the encoder is, so a CPU
-    encode, a whole onload and a layer-streamed encode all keep working. Callers that copy or move the encoder's
-    host tensors skip modules for which ``is_host_embedding`` holds."""
+    The ids go to wherever the table is at call time and the rows to the encode device the caller last named with
+    ``set_device``. That device is never inferred from another parameter: a layer-streamed encode leaves every decoder
+    layer on the host until its own forward starts. Callers that copy or move the encoder's host tensors skip modules
+    for which ``is_host_embedding`` holds."""
     if not enabled() or model is None:
         return 0
     try:
@@ -82,17 +78,14 @@ def keep_on_host(model: Any) -> int:
             return 0  # a quantized / wrapped table: not a plain file view
         if not file_mapped(weight.data):
             return 0
-        ref = _reference_param(model, weight)
-        if ref is None:
-            return 0
 
         def before(module: Any, args: Any) -> Any:
             home = module.weight.device
             return tuple(a.to(home) if torch.is_tensor(a) and a.device != home else a for a in args)
 
-        def after(_module: Any, _args: Any, out: Any) -> Any:
-            target = ref.device
-            return out if out.device == target else out.to(target)
+        def after(module: Any, _args: Any, out: Any) -> Any:
+            target = module.__dict__.get(TARGET_ATTR)
+            return out if target is None or out.device == target else out.to(target)
 
         handles = [emb.register_forward_pre_hook(before), emb.register_forward_hook(after)]
         emb.__dict__[ATTR] = handles
@@ -101,12 +94,27 @@ def keep_on_host(model: Any) -> int:
         return 0
 
 
+def set_device(model: Any, device: Any) -> bool:
+    """Name the device the next encode computes on (rows are sent there); whether the host table is engaged."""
+    try:
+        import torch
+
+        emb = model.get_input_embeddings()
+        if not is_host_embedding(emb):
+            return False
+        emb.__dict__[TARGET_ATTR] = torch.device(device)
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def release(model: Any) -> bool:
     """Undo ``keep_on_host`` (the table stays where it is); whether it was on."""
     try:
         emb = model.get_input_embeddings()
     except Exception:  # noqa: BLE001
         return False
+    getattr(emb, "__dict__", {}).pop(TARGET_ATTR, None)
     handles = getattr(emb, "__dict__", {}).pop(ATTR, None)
     for handle in handles or ():
         handle.remove()

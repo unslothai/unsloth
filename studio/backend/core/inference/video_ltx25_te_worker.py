@@ -1265,6 +1265,11 @@ def _run_encode(model: Any, config: dict, inputs: Any, device: str, stream: Any)
             config["_pinned_bytes"] = _pin_host_copy(model, config)
         if not config.get("_pinned_bytes") and not config.get("_owned_host"):
             config["_owned_host"] = _own_host_copy(model)
+    if config.get("_embed_host_bytes"):
+        from core.inference.diffusion_te_embed_host import set_device
+
+        # Rows go to this encode's device: under layer streaming every decoder layer is still on the host here.
+        set_device(model, device)
     # Onload copies host tensors up and restores by repointing: no 23 GB device-to-host copy per prompt.
     whole = (
         _Onload(device) if onloaded and _discrete_card(device) and _onloads_whole(model) else None
