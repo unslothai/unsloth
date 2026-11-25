@@ -19,8 +19,7 @@ _UNSLOTH_STUDIO_FOOTER = (
 )
 
 
-# Data Designer names every batch `batch_{n:05d}.parquet`. Unlike `*`, which fnmatch lets cross `/`,
-# `[0-9]` keeps the match out of subfolders such as other splits.
+# Data Designer's `batch_{n:05d}.parquet`; `[0-9]`, not `*`, which fnmatch lets cross `/` into other splits.
 _BATCH_FILE_PATTERN = "batch_" + "[0-9]" * 5 + ".parquet"
 
 
