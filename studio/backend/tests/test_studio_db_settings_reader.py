@@ -183,3 +183,33 @@ def test_a_forked_child_never_reuses_the_parent_reader():
     os.close(read)
     os.waitpid(pid, 0)
     assert studio_db._settings_readers == parent
+
+
+def test_a_reader_opening_during_a_close_is_never_published(monkeypatch):
+    studio_db.close_settings_readers()
+    real = studio_db.connect_studio_db
+
+    def open_then_close_all(*a, **k):
+        conn = real(*a, **k)
+        studio_db.close_settings_readers()  # the WAL keeper closes while this reader opens
+        return conn
+
+    monkeypatch.setattr(studio_db, "connect_studio_db", open_then_close_all)
+    assert studio_db.get_app_setting("reader_probe", "fallback") == "fallback"
+    assert not studio_db._settings_readers
+
+
+def test_a_file_replaced_while_the_reader_opens_is_not_cached(monkeypatch):
+    studio_db.upsert_app_settings({"reader_probe": "x"})
+    studio_db.close_settings_readers()
+    real = studio_db._db_file_identity
+    seen = []
+
+    def moving(path):
+        seen.append(1)
+        identity = real(path)
+        return identity if len(seen) == 1 else (identity[0], -len(seen))
+
+    monkeypatch.setattr(studio_db, "_db_file_identity", moving)
+    assert studio_db.get_app_setting("reader_probe") == "x"
+    assert not studio_db._settings_readers

@@ -5987,6 +5987,7 @@ class _SettingsReader(NamedTuple):
 _settings_readers: dict[Path, _SettingsReader] = {}
 # Guards the map only; queries run outside it, so a database waiting on a lock stalls no other.
 _settings_reader_lock = threading.Lock()
+_settings_generation = 0
 
 
 def _reset_settings_readers_after_fork() -> None:
@@ -6023,9 +6024,11 @@ def _close_reader(reader: _SettingsReader) -> None:
 
 
 def close_settings_readers() -> None:
+    global _settings_generation
     with _settings_reader_lock:
         readers = list(_settings_readers.values())
         _settings_readers.clear()
+        _settings_generation += 1  # a reader opening right now is used once, never published
     for reader in readers:
         _close_reader(reader)
 
@@ -6048,18 +6051,20 @@ def _settings_reader(db_path: Path) -> _SettingsReader | None:
             return reader
         # The database was replaced or removed (restore, account reset): never read a stale file.
         stale = _settings_readers.pop(db_path, None)
+        generation = _settings_generation
     if stale is not None:
         _close_reader(stale)
-    conn = get_connection(check_same_thread = False)
-    identity = _db_file_identity(db_path)
-    if identity is None:
-        conn.close()
-        return None
-    reader = _SettingsReader(identity, conn, threading.Lock())
+    conn = get_connection(check_same_thread = False)  # creates the database on first use
+    opened = _db_file_identity(db_path)
+    reader = _SettingsReader(opened, conn, threading.Lock())
     with _settings_reader_lock:
-        current = _settings_readers.setdefault(db_path, reader)
+        # Published only if the file did not move while it opened and no close ran meanwhile.
+        if opened is not None and identity in (None, opened) and generation == _settings_generation:
+            current = _settings_readers.setdefault(db_path, reader)
+        else:
+            current = None
     if current is not reader:
-        _close_reader(reader)  # another thread opened one first
+        _close_reader(reader)
     return current
 
 
