@@ -1380,7 +1380,8 @@ def dataset_files_in_dir(directory: Path, splits: tuple[str, ...] = TRAIN_SPLITS
 
 
 def _refuse_network_share_dataset(raw: str) -> None:
-    """Refuse before realpath() (NTLM to the share host); dataset roots on shares stay allowed."""
+    """Refused before realpath() touches it: that alone makes Windows sign in to the share's host (NTLM).
+    A dataset root the owner placed on a share keeps working."""
     from utils.datasets.remote_images import is_network_share
     if is_network_share(raw) and not any(
         is_network_share(str(root))

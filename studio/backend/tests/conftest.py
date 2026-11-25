@@ -296,7 +296,8 @@ def pytest_collection_modifyitems(config, items):
 
 @pytest.fixture(autouse = True)
 def _no_deleted_torch_config_entries():
-    """Deleted dynamo/inductor config entries fail a test's teardown (torch_config_guard.py)."""
+    """A test that leaves a dynamo / inductor config entry deleted errors at its own teardown; see
+    tests/_shared/torch_config_guard.py."""
     from torch_config_guard import check_after_test, install_delete_recorder
 
     install_delete_recorder()
