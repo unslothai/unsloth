@@ -48,6 +48,7 @@ from unsloth._decision_common import (
     _metrics,
     _option_keys,
     _parsed,
+    _parsed_state,
     _predicted,
     _refuse_private_push_to_public_repo,
     _row_images,
@@ -94,7 +95,7 @@ def _decision_clef_items(rows, options: Callable, encode: Callable, validate, re
     items = []
     for index, row in enumerate(rows):
         row = row if isinstance(row, dict) else {}
-        state = _parsed(row.get("state"))
+        state = _parsed_state(row.get("state"))
         questions = _parsed(row.get("questions"))
         gold = _parsed(row["gold"] if row.get("gold") is not None else row.get("answers"))
         if state is None or not isinstance(questions, dict) or not isinstance(gold, dict):
@@ -169,7 +170,7 @@ def _decision_dataset(
         common = _laya().common
     for index, row in enumerate(rows):
         row = row if isinstance(row, dict) else {}
-        state = _parsed(row.get("state"))
+        state = _parsed_state(row.get("state"))
         questions = _parsed(row.get("questions"))
         gold = _parsed(row["gold"] if row.get("gold") is not None else row.get("answers"))
         if state is None or not isinstance(questions, dict) or not isinstance(gold, dict):
@@ -1021,7 +1022,7 @@ class FastDecisionModel:
 
         if not isinstance(questions, dict) or not questions:
             raise DecisionDataError("questions must be a non-empty dict of name to question")
-        state, config, zoo = _parsed(state), model.decision_config, _decision_zoo()
+        state, config, zoo = _parsed_state(state), model.decision_config, _decision_zoo()
         images, audio = _row_images({"images": images}), _row_audio({"audio": audio})
         if _is_clef(model):
             pipeline = model._unsloth_pipeline

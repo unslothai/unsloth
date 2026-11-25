@@ -251,6 +251,21 @@ def test_dataset_skips_bad_rows_and_names_the_most_common_reason(checkpoint):
     assert torch.allclose(batch["target"].sum(-1), torch.ones(3))
 
 
+def test_a_json_string_state_warns_once_that_it_is_read_as_json(checkpoint, monkeypatch):
+    model, tokenizer = FastDecisionModel.from_pretrained(
+        str(checkpoint), use_gradient_checkpointing = False
+    )
+    monkeypatch.setattr(_decision_common, "_STATE_WARNED", False)
+    rows = [{**_row(i), "state": '{"refund": "my card", "now": "please"}'} for i in range(2)]
+    with pytest.warns(UserWarning, match = "read as JSON") as caught:
+        FastDecisionModel.build_dataset(rows, tokenizer, model)
+        FastDecisionModel.predict(model, tokenizer, rows[0]["state"], QUESTIONS)
+    assert sum("read as JSON" in str(w.message) for w in caught) == 1
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        FastDecisionModel.predict(model, tokenizer, "the server is down again", QUESTIONS)
+
+
 @pytest.mark.parametrize("clef", [False, True])
 def test_rows_problem_needs_no_model_and_stops_at_the_first_usable_row(clef):
     assert FastDecisionModel.rows_problem([], clef) == ""
@@ -1071,6 +1086,21 @@ def test_clef_items_tokenize_each_repeated_string_once():
     # Every distinct string once: the fixed prompt and option texts are shared by every row.
     assert len(texts) == len(set(texts))
     assert len(texts) < 2 * len(rows) + 30
+
+
+def test_clef_trains_a_json_string_state_as_its_sorted_compact_text():
+    # What Studio's Decision API sends a Clef for the same string (laya_runtime._as_trained).
+    from transformers import AutoTokenizer
+
+    from unsloth.models.clef import encode_record
+
+    tokenizer = AutoTokenizer.from_pretrained(TINY_QWEN3_5)
+    state = '{"scope": "mail", "request": "the invoice?"}'
+    items, report = _clef_items_with(tokenizer, [{**_row(0), "state": state}])
+    assert report["skipped"] == 0
+    canonical = json.dumps(json.loads(state), separators = (",", ":"), sort_keys = True)
+    served = encode_record(tokenizer, {"state": canonical, "questions": QUESTIONS}, max_length = 4096)
+    assert items[0][1] == served.input_ids
 
 
 def test_memo_tokenizer_returns_fresh_lists_and_passes_other_calls_through():

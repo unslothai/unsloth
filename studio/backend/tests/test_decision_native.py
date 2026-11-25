@@ -670,6 +670,32 @@ def test_auto_serves_a_stock_clef_through_llama_cpp(home, client, stub):
     assert home.torch_agents == []
 
 
+def test_a_json_string_state_reaches_llama_cpp_as_a_clef_trained_on_it(home, client, stub):
+    # The trainer parses a JSON string state, so a Clef learned it with sorted keys and compact separators.
+    _cache_gguf(home.cache)
+    _put(client, enabled = True, model = "clef-flash")
+    response = _post(client, state = '{"scope": "mail", "request": "the invoice?"}')
+    assert response.status_code == 200, response.text
+    assert stub.records("request")[0]["body"]["state"] == (
+        '{"request":"the invoice?","scope":"mail"}'
+    )
+
+
+@pytest.mark.parametrize(
+    "layout, state, expected",
+    [
+        ("laya", '{"scope": "mail","request": 1}', '{"scope": "mail", "request": 1}'),
+        ("clef", ' ["b", {"z": 1, "a": 2}]', '["b",{"a":2,"z":1}]'),
+        ("clef", "{not json", "{not json"),
+        ("clef", "The parcel never arrived.", "The parcel never arrived."),
+        ("gguf", '{"z": 1, "a": 2}', '{"z": 1, "a": 2}'),
+        ("clef", {"z": 1, "a": 2}, {"z": 1, "a": 2}),
+    ],
+)
+def test_only_json_string_states_of_unsloth_trained_layouts_are_rewritten(layout, state, expected):
+    assert laya_runtime._as_trained(layout, state) == expected
+
+
 def test_both_backends_answer_the_same_body(home, client, stub):
     _cache_gguf(home.cache)
     _put(client, enabled = True, model = "clef-flash")

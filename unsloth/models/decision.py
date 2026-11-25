@@ -373,7 +373,7 @@ def _clef_items(rows, tokenizer, max_len, validate, report, skip) -> list:
     items = []
     for index, row in enumerate(rows):
         row = row if isinstance(row, dict) else {}
-        state = _parsed(row.get("state"))
+        state = _parsed_state(row.get("state"))
         questions = _parsed(row.get("questions"))
         gold = _parsed(row["gold"] if row.get("gold") is not None else row.get("answers"))
         if state is None or not isinstance(questions, dict) or not isinstance(gold, dict):
@@ -589,7 +589,7 @@ def _laya_decide(
     for name, question in questions.items():
         internal = _internal(question, name)
         ids, markers = common.build_sequence(
-            tokenizer, _parsed(state), internal, max_len, int(config.get("head_max_len", 192))
+            tokenizer, _parsed_state(state), internal, max_len, int(config.get("head_max_len", 192))
         )
         if len(markers) != len(_option_keys(internal)):
             raise DecisionDataError(f'"{name}" has more options than fit in {max_len} tokens')
@@ -1763,7 +1763,7 @@ class FastDecisionModel:
             common = _laya().common
         for index, row in enumerate(rows):
             row = row if isinstance(row, dict) else {}
-            state = _parsed(row.get("state"))
+            state = _parsed_state(row.get("state"))
             questions = _parsed(row.get("questions"))
             gold = _parsed(row["gold"] if row.get("gold") is not None else row.get("answers"))
             if state is None or not isinstance(questions, dict) or not isinstance(gold, dict):
@@ -1858,7 +1858,7 @@ class FastDecisionModel:
         A Clef also reads ordered `images` when tokenizer is the processor from from_pretrained."""
         if not isinstance(questions, dict) or not questions:
             raise DecisionDataError("questions must be a non-empty dict of name to question")
-        state = _parsed(state)
+        state = _parsed_state(state)
         if getattr(model, "is_clef", False):
             questions = {str(name): _clef_question(q) for name, q in questions.items()}
             # Read up to CLEF_SERVE_MAX_LEN tokens, like serving, even past the training cut.

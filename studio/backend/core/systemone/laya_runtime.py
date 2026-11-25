@@ -9,6 +9,7 @@ import dataclasses
 import functools
 import gc
 import importlib.util
+import json
 import logging
 import sys
 import threading
@@ -2450,6 +2451,7 @@ def _route(
     if checkpoint.layout != "laya" and hardware.is_apple_silicon():
         # A request, unlike a settings read, waits for device detection, so the first one already knows of MLX.
         hardware.get_device()
+    state = _as_trained(checkpoint.layout, state)
     state_images = _state_has_images(state)
     target, reason = select(checkpoint, images, questions, state_images = state_images, audio = audio)
     if not _stock_laya(checkpoint):
@@ -2482,6 +2484,25 @@ def _route(
             raise
         _fallback_reason = reason
         return _decide(retry, state, questions, None)
+
+
+def _as_trained(layout: str, state):
+    """A JSON string state as Unsloth's decision trainer reads it. The trainer parses one, so a Clef learned it with
+    sorted keys and compact separators and a Laya as json.dumps of the parsed value, while every runtime reads a
+    string as is. Other strings, objects and GGUF-only models (trained elsewhere) pass unchanged."""
+    if (
+        layout not in ("clef", "laya")
+        or not isinstance(state, str)
+        or state.strip()[:1] not in ("{", "[")
+    ):
+        return state
+    try:
+        value = json.loads(state)
+    except ValueError:
+        return state
+    if layout == "laya":
+        return json.dumps(value, ensure_ascii = False)
+    return json.dumps(value, ensure_ascii = False, separators = (",", ":"), sort_keys = True)
 
 
 def _state_has_images(state) -> bool:

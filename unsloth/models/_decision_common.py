@@ -28,6 +28,7 @@ __all__ = [
     "_checkpoint_folder",
     "_lm_subfolder",
     "_parsed",
+    "_parsed_state",
     "_row_images",
     "_internal",
     "_option_keys",
@@ -50,6 +51,7 @@ import importlib.util
 import json
 import math
 import sys
+import warnings
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -249,6 +251,26 @@ def _parsed(value):
         except ValueError:
             return value
     return value
+
+
+_STATE_WARNED = False
+
+
+def _parsed_state(value):
+    # A JSON string state trains as its parsed value: a Clef sees it with sorted keys and compact separators.
+    # Studio's Decision API reads it the same way; a direct llama-server client must send that form itself.
+    global _STATE_WARNED
+    state = _parsed(value)
+    if state is not value and not _STATE_WARNED:
+        _STATE_WARNED = True
+        warnings.warn(
+            "Unsloth: a JSON string state is read as JSON, so a Clef sees it with sorted keys and compact "
+            "separators and a Laya as json.dumps of it. Studio's Decision API serves it the same way. A client "
+            "of llama-server's /v1/systemone should send that exact text, for Clef "
+            'json.dumps(state, ensure_ascii = False, separators = (",", ":"), sort_keys = True).',
+            stacklevel = 3,
+        )
+    return state
 
 
 def _row_images(row: dict) -> list:
