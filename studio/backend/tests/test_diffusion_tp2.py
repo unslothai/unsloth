@@ -230,6 +230,7 @@ def test_hook_is_a_no_op_when_off_or_on_one_card(monkeypatch):
 
 def test_install_marks_graph_unsafe_and_keeps_regional_compile(monkeypatch):
     compiled = []
+    monkeypatch.setenv(tp2.TP_COMPILE_ENV, "1")  # opt-in; the default is eager stages
 
     def fake_compile(fn, *a, **kw):
         compiled.append((fn.__name__, kw))
@@ -249,13 +250,20 @@ def test_install_marks_graph_unsafe_and_keeps_regional_compile(monkeypatch):
     shards = m.transformer_blocks[0].shards()
     assert all(a.attn.processor is b.attn.processor for a, b in zip(*shards))
     torch.testing.assert_close(_run(m), _run(ref), rtol = 1e-5, atol = 1e-5)
-    # a later compile_repeated_blocks reaches the stages; the env keeps them eager
-    compiled.clear()
-    monkeypatch.setenv(tp2.TP_COMPILE_ENV, "0")
-    e = copy.deepcopy(ref)
-    e.transformer_blocks[0]._compiled_call_impl = e.transformer_blocks[0]._call_impl
-    assert tp2.install(e, CPU2)["stage_compile"] is False and compiled == []
-    monkeypatch.delenv(tp2.TP_COMPILE_ENV)
+    # default (unset) and explicit off keep the stages eager, even under a regional compile
+    for off in (None, "0"):
+        compiled.clear()
+        if off is None:
+            monkeypatch.delenv(tp2.TP_COMPILE_ENV)
+        else:
+            monkeypatch.setenv(tp2.TP_COMPILE_ENV, off)
+        e = copy.deepcopy(ref)
+        e.transformer_blocks[0]._compiled_call_impl = e.transformer_blocks[0]._call_impl
+        assert tp2.install(e, CPU2)["stage_compile"] is False and compiled == []
+        e.compile_repeated_blocks(fullgraph = True)
+        assert compiled == [] and not tp2.status(e)["stage_compiled"]
+    # opted in: a later compile_repeated_blocks reaches the stages
+    monkeypatch.setenv(tp2.TP_COMPILE_ENV, "1")
     e.compile_repeated_blocks(fullgraph = True)
     assert [n for n, _ in compiled] == ["_attn_half", "_mlp_half"]
 

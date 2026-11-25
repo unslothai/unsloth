@@ -25,9 +25,8 @@ from typing import Any, Callable, Optional, Sequence
 
 TP_ENV = "UNSLOTH_DIFFUSION_TP"
 TP_COMM_ENV = "UNSLOTH_DIFFUSION_TP_COMM"  # auto | nccl | swap | peer
-TP_COMPILE_ENV = (
-    "UNSLOTH_DIFFUSION_TP_COMPILE"  # 0 keeps the shards eager when the denoiser compiles
-)
+# 1 compiles each card's stages when the denoiser compiles; default eager (2x T4: no per-step gain, +58 s first image)
+TP_COMPILE_ENV = "UNSLOTH_DIFFUSION_TP_COMPILE"
 GRAPH_UNSAFE_ATTR = "_unsloth_cuda_graph_unsafe"
 TP_ATTR = "_unsloth_tp2"
 _DITS = frozenset({"QwenImage21Transformer2DModel"})
@@ -433,15 +432,15 @@ def _stack_class():
 
         def compile(self, *args: Any, **kwargs: Any) -> None:  # noqa: A003 - nn.Module.compile's name
             """Regional compile of a TP denoiser: compile the two per-card stages (attention half, MLP half), the
-            all-reduce stays eager between them. Reached through ``compile_repeated_blocks`` (the transformer's
+            all-reduce stays eager between them. Opt-in (``UNSLOTH_DIFFUSION_TP_COMPILE=1``). Reached through ``compile_repeated_blocks`` (the transformer's
             ``_repeated_blocks`` names this class) or at install when the blocks were compiled already."""
             import torch
 
-            if (os.environ.get(TP_COMPILE_ENV) or "").strip().lower() in (
-                "0",
-                "off",
-                "false",
-                "no",
+            if (os.environ.get(TP_COMPILE_ENV) or "").strip().lower() not in (
+                "1",
+                "on",
+                "true",
+                "yes",
             ):
                 return
             kw = dict(kwargs)
