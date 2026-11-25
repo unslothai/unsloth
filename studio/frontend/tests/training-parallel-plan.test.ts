@@ -260,3 +260,22 @@ test("the wizard section renders nothing until capabilities list two or more GPU
   assert.match(body, /!showsGpuSection\(capabilities\.gpus\.length\)/);
   assert.match(body, /return null;/);
 });
+
+test("a GPU override edit while Start is pending counts as an edit, like any other form change", () => {
+  const src = readFileSync(
+    new URL(
+      "../src/features/training/lib/start-fresh-training-run.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const capture = src.slice(
+    src.indexOf("function captureTrainingStartInputs"),
+    src.indexOf("type TrainingStartInputs"),
+  );
+  assert.match(
+    capture,
+    /parallelOverride: useTrainingParallelStore\.getState\(\)\.override/,
+  );
+  assert.doesNotMatch(capture, /currentParallelRequestFields|\.capabilities/);
+});

@@ -12,7 +12,10 @@ import { toast } from "@/lib/toast";
 import { DatasetFormatError, checkDatasetFormat } from "../api/datasets-api";
 import { getCachedSystemInfo } from "@/hooks/use-system";
 import { buildTrainingStartPayload } from "../api/mappers";
-import { currentParallelRequestFields } from "../stores/training-parallel-store";
+import {
+  currentParallelRequestFields,
+  useTrainingParallelStore,
+} from "../stores/training-parallel-store";
 import {
   TrainingStartError,
   isTrainingStartOutcomeUnknownError,
@@ -62,10 +65,14 @@ type AttemptPhase = "preflight" | "transport" | "finished";
 
 function captureTrainingStartInputs(config: TrainingConfigState) {
   // No hardware info: /api/system answering mid-start is not a user edit.
-  return createTrainingStartInputIdentity(
-    buildTrainingStartPayload(config, null),
-    config,
-  );
+  return {
+    ...createTrainingStartInputIdentity(
+      buildTrainingStartPayload(config, null),
+      config,
+    ),
+    // The user's GPU choice, not capabilities: a capabilities refresh is not an edit.
+    parallelOverride: useTrainingParallelStore.getState().override,
+  };
 }
 
 type TrainingStartInputs = ReturnType<typeof captureTrainingStartInputs>;
