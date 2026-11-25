@@ -8996,6 +8996,39 @@ _DECISION_ONLY_GGUF_TYPES = frozenset(
 )
 
 
+def client_tool_calls_in(tool_calls, client_tool_names) -> list[dict]:
+    """The calls in one model turn that name a caller-run tool, shaped as OpenAI tool_calls.
+
+    Arguments are always a JSON string and every call has an id, so the caller can execute the
+    call and answer it with a role=tool message.
+    """
+    if not tool_calls or not client_tool_names:
+        return []
+    calls = []
+    for call in tool_calls:
+        function = call.get("function") or {}
+        name = str(function.get("name") or "").strip()
+        if name not in client_tool_names:
+            continue
+        arguments = function.get("arguments")
+        if arguments is None:
+            arguments = "{}"
+        elif not isinstance(arguments, str):
+            arguments = json.dumps(arguments, ensure_ascii = False)
+        call_id = call.get("id")
+        # The text parser numbers calls per turn (call_0, call_1, ...); those repeat across turns.
+        if not isinstance(call_id, str) or not call_id.strip() or re.fullmatch(r"call_\d+", call_id):
+            call_id = f"call_{uuid.uuid4().hex[:24]}"
+        calls.append(
+            {
+                "id": call_id,
+                "type": "function",
+                "function": {"name": name, "arguments": arguments},
+            }
+        )
+    return calls
+
+
 class LlamaCppBackend:
     """Held across the teardown check and publish, never a health wait; class-level for __new__ doubles."""
 
@@ -41091,6 +41124,8 @@ class LlamaCppBackend:
         chat_template_kwargs: Optional[dict] = None,
         mcp_match_exchange: Optional[dict] = None,
         record_cut_thought: bool = True,
+        # Names in ``tools`` the caller runs itself: a call to one ends the loop as a client_tool_calls event.
+        client_tool_names: Optional[frozenset] = None,
     ) -> Generator[dict, None, None]:
         """
         Agentic loop: let the model call tools, execute them, and continue.
@@ -43282,6 +43317,35 @@ class LlamaCppBackend:
                         "text": notice + TRUNCATED_TOOL_TURN_MESSAGE,
                     }
                     yield _build_metadata_event(_iter_usage, _iter_timings, _iter_finish_reason)
+                    return
+
+                # A call to a caller-run tool ends the turn: the caller executes it and sends the
+                # result back. Unsloth calls in the same batch are left for the model to repeat.
+                _client_calls = client_tool_calls_in(tool_calls, client_tool_names)
+                if disable_parallel_tool_use:
+                    _client_calls = _client_calls[:1]
+                if _client_calls:
+                    for _pid, _pname in provisional_started_tool_calls.items():
+                        if _pid not in resolved_provisional_tool_call_ids:
+                            resolved_provisional_tool_call_ids.add(_pid)
+                            yield {
+                                "type": "tool_end",
+                                "tool_name": _pname,
+                                "tool_call_id": _pid,
+                                "result": "",
+                                "provenance": provisional_tool_provenance(_pname),
+                            }
+                    logger.info(
+                        f"Returning {len(_client_calls)} client tool call(s) to the caller: "
+                        + ", ".join(call["function"]["name"] for call in _client_calls)
+                    )
+                    yield {"type": "status", "text": ""}
+                    yield {
+                        "type": "client_tool_calls",
+                        "tool_calls": _client_calls,
+                        "content": content_text or "",
+                    }
+                    yield _build_metadata_event(_iter_usage, _iter_timings, "tool_calls")
                     return
 
                 # ── Execute tool calls ──
