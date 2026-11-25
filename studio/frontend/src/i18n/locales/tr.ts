@@ -974,7 +974,7 @@ export const tr = {
   chatMenu: {
     more: "Sohbet seçenekleri",
     copy: "Kopyala",
-    addScheduledTask: "Zamanlanmış görev ekle…",
+    addScheduledTask: "Zamanlanmış görev ekle",
     compact: "Konuşmayı sıkıştır",
     compactEmpty: "Henüz sıkıştırılacak bir şey yok",
     compactUnsupported:
@@ -5379,6 +5379,7 @@ export const tr = {
     model: {
       label: "Çeviri modeli",
       fast: "Hızlı",
+      balanced: "Dengeli",
       quality: "En iyi kalite",
       chat: "Sohbet modeli",
       recommended: "Önerilen",
@@ -6530,7 +6531,6 @@ export const tr = {
     back: "Geri",
     continue: "Devam",
     skipSetup: "Kurulumu atla",
-    outsideAgain: "Kapatmak için dışarıya tekrar tıklayın",
     getStarted: "Başlayın",
     progress: "Adım {current} / {total}",
     welcome: {

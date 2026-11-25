@@ -12,6 +12,7 @@ import dataclasses
 import functools
 import math
 import os
+import re
 import sys
 import types
 from typing import Callable, Optional, Union
@@ -935,6 +936,71 @@ def _supports_ignored_params(fully_shard):
 # A minority dtype group up to this fraction of a unit's trainable elements stays replicated.
 _REPLICATE_MINORITY_FRACTION = 0.10
 
+# Computed in float32 by the modeling code (GDN / Mamba decay), beside `_keep_in_fp32_modules[_strict]`.
+_ALWAYS_FLOAT32_PARAMS = ("A_log", "dt_bias")
+
+
+def _float32_local_views(module, install):
+    for name in module.__dict__.get("_unsloth_fsdp2_float32_views", ()):
+        module.__dict__.pop(name, None)
+        if install:
+            # An instance attribute shadows the Parameter; the gradient flows back into the DTensor.
+            module.__dict__[name] = module._parameters[name].to_local()
+
+
+def _float32_views_pre_hook(module, args):
+    _float32_local_views(module, True)
+
+
+def _float32_views_post_hook(module, args, output):
+    _float32_local_views(module, False)
+
+
+def _replicate_float32_kept(model, mesh, replicated):
+    """The float32 params kept out of the 16-bit gather become Replicate DTensors on the FSDP mesh, so a
+    user-built foreach optimizer sees only DTensors; each forward of their module reads the local tensor.
+    Gradients stay per rank until reduce_unsharded_trainable_grads averages them."""
+    try:
+        from torch.distributed.tensor import DTensor, Replicate
+    except ImportError:
+        from torch.distributed._tensor import DTensor, Replicate
+    done = {}
+    for module in model.modules():
+        names = []
+        for name, p in list(module._parameters.items()):
+            if p is None or not getattr(p, "_unsloth_fsdp2_float32_replicate", False):
+                continue
+            new = done.get(id(p))
+            if new is None:
+                local = DTensor.from_local(
+                    p.detach(), mesh, [Replicate()] * mesh.ndim, run_check = False
+                )
+                new = nn.Parameter(local, requires_grad = p.requires_grad)
+                new._unsloth_fsdp2_float32_replicate = True
+                done[id(p)] = new
+                if p in replicated:
+                    replicated.discard(p)
+                    replicated.add(new)
+            module._parameters[name] = new
+            names.append(name)
+        if names:
+            module.__dict__["_unsloth_fsdp2_float32_views"] = tuple(names)
+            module.register_forward_pre_hook(_float32_views_pre_hook)
+            module.register_forward_hook(_float32_views_post_hook)
+    return len(done)
+
+
+def _float32_kept_param_ids(model):
+    """ids of params one GPU keeps in float32, matched on whole dotted path components."""
+    names = set(_ALWAYS_FLOAT32_PARAMS)
+    for module in model.modules():
+        for attr in ("_keep_in_fp32_modules", "_keep_in_fp32_modules_strict"):
+            value = getattr(module, attr, None)
+            if isinstance(value, (list, tuple, set, frozenset)):
+                names.update(v for v in value if isinstance(v, str) and v)
+    keep = re.compile("|".join(rf"(^|\.){re.escape(name)}($|\.)" for name in sorted(names)))
+    return {id(p) for name, p in model.named_parameters() if keep.search(name)}
+
 
 def _unify_dtypes(
     model,
@@ -954,6 +1020,12 @@ def _unify_dtypes(
     groups.append([p for p in model.parameters() if id(p) not in inside])
     ignored = set()
     frozen_kept = []
+    float32_kept = []
+    float32_ids = (
+        _float32_kept_param_ids(model)
+        if can_ignore and param_dtype in (torch.bfloat16, torch.float16)
+        else set()
+    )
     n = 0
     seen = set()
     for params in groups:
@@ -973,6 +1045,29 @@ def _unify_dtypes(
                     if p.dtype != torch.float32 and type(p) is nn.Parameter:
                         p.data = p.data.to(torch.float32)
                         n += 1
+        if float32_ids:
+            # The 16-bit gather would round float32-computed masters; one GPU never does. Replicate small ones.
+            floats = [p for p in params if _floating(p)]
+            budget = _REPLICATE_MINORITY_FRACTION * sum(p.numel() for p in floats)
+            picked = []
+            for p in sorted(
+                (
+                    p
+                    for p in trainable
+                    if id(p) in float32_ids
+                    and p.dtype == torch.float32
+                    and p not in ignored
+                    and getattr(p, "device_mesh", None) is None  # not a tensor parallel DTensor
+                ),
+                key = lambda p: p.numel(),
+            ):
+                if p.numel() > budget or len(picked) + 1 >= len(floats):
+                    break
+                budget -= p.numel()
+                picked.append(p)
+                p._unsloth_fsdp2_float32_replicate = True
+            ignored.update(picked)
+            float32_kept.extend(picked)
         if can_ignore and param_dtype in (torch.bfloat16, torch.float16):
             # Frozen float32 weights next to 16-bit ones (GDN A_log / dt_bias, fp32 norms, routers): the
             # gather would cast them to 16-bit, which one GPU never does. Keep small ones replicated.
@@ -1005,7 +1100,15 @@ def _unify_dtypes(
             f"({sum(p.numel() for p in frozen_kept)} elements) replicated, so they are not cast to "
             f"{str(param_dtype).replace('torch.', '')} as one GPU never does."
         )
-    trainable_kept = [p for p in ignored if p.requires_grad]
+    if float32_kept:
+        _print_rank0(
+            f"Unsloth: native FSDP2 keeps {len(float32_kept)} trainable float32 parameters the model "
+            f"computes in float32 (A_log / dt_bias, _keep_in_fp32_modules; "
+            f"{sum(p.numel() for p in float32_kept)} elements) replicated, so the gather does not "
+            f"round them to {str(param_dtype).replace('torch.', '')}."
+        )
+    float32_kept_ids = {id(p) for p in float32_kept}
+    trainable_kept = [p for p in ignored if p.requires_grad and id(p) not in float32_kept_ids]
     if trainable_kept:
         ignored_trainable = trainable_kept
         _print_rank0(
@@ -2138,6 +2241,7 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
             ),
         )
         finish_shard(model, pending)
+        _replicate_float32_kept(model, mesh, replicated)
         for m in cpu_tables:
             m.to("cpu")  # fully_shard(root) moved its buffers (Gemma's embed_scale)
         if (

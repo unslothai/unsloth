@@ -402,7 +402,18 @@ def _speech_only(llama: Any, orchestrator: Any) -> bool:
 
 
 # Translate's models (frontend lib/translation-models.ts): Chat reads their slot as empty, so a run does too.
-_TRANSLATION_ONLY_REPOS = frozenset({"unsloth/hy-mt2-1.8b-gguf", "unsloth/hy-mt2-7b-gguf"})
+_TRANSLATION_ONLY_REPOS = frozenset(
+    {
+        "unslothai/hy-mt3-1.8b-gguf",
+        "unslothai/hy-mt3-7b-gguf",
+        "unslothai/hy-mt3-30b-a3b-gguf",
+        "unslothai/hy-mt3-1.8b-fp8",
+        "unslothai/hy-mt3-7b-fp8",
+        "unslothai/hy-mt3-30b-a3b-fp8",
+        "unsloth/hy-mt2-1.8b-gguf",
+        "unsloth/hy-mt2-7b-gguf",
+    }
+)
 
 
 def _translation_only(name: Optional[str]) -> bool:

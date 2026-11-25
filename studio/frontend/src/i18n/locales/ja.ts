@@ -883,7 +883,7 @@ export const ja = {
   chatMenu: {
     more: "チャットのオプション",
     copy: "コピー",
-    addScheduledTask: "スケジュールタスクを追加…",
+    addScheduledTask: "スケジュールタスクを追加",
     compact: "会話を圧縮",
     compactEmpty: "まだ圧縮する内容がありません",
     compactUnsupported: "会話の圧縮にはツール対応のGGUFまたはMLXモデルが必要です",
@@ -4988,6 +4988,7 @@ export const ja = {
     model: {
       label: "翻訳モデル",
       fast: "高速",
+      balanced: "バランス",
       quality: "最高品質",
       chat: "チャットモデル",
       recommended: "おすすめ",
@@ -6075,7 +6076,6 @@ export const ja = {
     back: "戻る",
     continue: "続ける",
     skipSetup: "セットアップをスキップ",
-    outsideAgain: "もう一度外側をクリックすると閉じます",
     getStarted: "はじめる",
     progress: "ステップ {current}/{total}",
     welcome: {

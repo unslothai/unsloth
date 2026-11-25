@@ -989,7 +989,7 @@ export const nl = {
   chatMenu: {
     more: "Chatopties",
     copy: "Kopiëren",
-    addScheduledTask: "Geplande taak toevoegen…",
+    addScheduledTask: "Geplande taak toevoegen",
     compact: "Gesprek comprimeren",
     compactEmpty: "Nog niets om te comprimeren",
     compactUnsupported:
@@ -5429,6 +5429,7 @@ export const nl = {
     model: {
       label: "Vertaalmodel",
       fast: "Snel",
+      balanced: "Gebalanceerd",
       quality: "Beste kwaliteit",
       chat: "Chatmodel",
       recommended: "Aanbevolen",
@@ -6592,7 +6593,6 @@ export const nl = {
     back: "Terug",
     continue: "Doorgaan",
     skipSetup: "Instellen overslaan",
-    outsideAgain: "Klik nogmaals buiten het venster om te sluiten",
     getStarted: "Aan de slag",
     progress: "Stap {current} van {total}",
     welcome: {

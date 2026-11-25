@@ -47,6 +47,7 @@ __all__ = [
     "ep_env_size",
     "ep_env_mesh",
     "ep_env_load",
+    "ep_refuse_fast_inference",
     "ep_env_apply",
     "ep_trainer_setup",
     "ep_sync_expert_grads",
@@ -117,6 +118,17 @@ def ep_env_apply(model):
     if ep_env_size() > 1 and isinstance(model, nn.Module) and not is_expert_parallel(model):
         apply_expert_parallel(model, ep_env_mesh())
     return model
+
+
+def ep_refuse_fast_inference(values):
+    """vLLM's LoRA sync gathers only DTensor adapters; ep keeps expert LoRA as local parameters."""
+    if values.get("fast_inference"):
+        raise NotImplementedError(
+            f"Unsloth: {_EP_ENV}={ep_env_size()} (expert parallel) does not support vLLM (fast_inference = True): "
+            "each rank holds only its own experts' LoRA, and the vLLM LoRA sync would send one rank's slice. "
+            f"Unset {_EP_ENV} (or ep in UNSLOTH_PARALLEL) to run this script with DDP or UNSLOTH_FSDP2=1, "
+            "or load with fast_inference = False."
+        )
 
 
 def _tpn():
@@ -560,15 +572,41 @@ def ep_sync_expert_grads(model):
                 if p.grad is None:
                     p.grad = torch.zeros_like(p)
                 grads.append(p.grad)
-    buckets = {}
-    for g in grads:
-        buckets.setdefault((g.device, g.dtype), []).append(g)
+    group = rep.get_group()
     with torch.no_grad():
-        for tensors in buckets.values():
+        for tensors in _replica_buckets(grads, _REPLICA_BUCKET_BYTES):
+            if len(tensors) == 1 and tensors[0].is_contiguous():
+                dist.all_reduce(tensors[0], group = group)
+                continue
             flat = _flatten_dense_tensors(tensors)
-            dist.all_reduce(flat, group = rep.get_group())
+            dist.all_reduce(flat, group = group)
             for t, v in zip(tensors, _unflatten_dense_tensors(flat, tensors)):
                 t.copy_(v)
+            del flat, v  # a view of flat in v would keep it alive beside the next bucket's buffer
+
+
+# One flat copy of every expert gradient would double their memory.
+_REPLICA_BUCKET_BYTES = 256 << 20
+
+
+def _replica_buckets(grads, cap):
+    """Shape-only split, so every replica reduces the same buckets."""
+    open_buckets = {}
+    for g in grads:
+        nbytes = g.numel() * g.element_size()
+        if nbytes >= cap:
+            yield [g]
+            continue
+        key = (g.device, g.dtype)
+        bucket = open_buckets.setdefault(key, [[], 0])
+        if bucket[1] + nbytes > cap:
+            yield bucket[0]
+            bucket[0], bucket[1] = [], 0
+        bucket[0].append(g)
+        bucket[1] += nbytes
+    for tensors, _ in open_buckets.values():
+        if tensors:
+            yield tensors
 
 
 def _gather_expert(

@@ -980,7 +980,7 @@ export const vi = {
   chatMenu: {
     more: "Tùy chọn cuộc trò chuyện",
     copy: "Sao chép",
-    addScheduledTask: "Thêm tác vụ đã lên lịch…",
+    addScheduledTask: "Thêm tác vụ đã lên lịch",
     compact: "Thu gọn cuộc trò chuyện",
     compactEmpty: "Chưa có gì để thu gọn",
     compactUnsupported:
@@ -5377,6 +5377,7 @@ export const vi = {
     model: {
       label: "Mô hình dịch",
       fast: "Nhanh",
+      balanced: "Cân bằng",
       quality: "Chất lượng tốt nhất",
       chat: "Mô hình trò chuyện",
       recommended: "Đề xuất",
@@ -6533,7 +6534,6 @@ export const vi = {
     back: "Quay lại",
     continue: "Tiếp tục",
     skipSetup: "Bỏ qua thiết lập",
-    outsideAgain: "Nhấp ra ngoài lần nữa để đóng",
     getStarted: "Bắt đầu",
     progress: "Bước {current}/{total}",
     welcome: {

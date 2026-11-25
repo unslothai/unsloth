@@ -7367,10 +7367,10 @@ def _parallel_capabilities_pre(trainer, init, args, kwargs, model):
     _refuse_unwrapped_config_cp(trainer, init, args, kwargs)
     if not any(
         os.environ.get(name, "").strip() not in ("", "1")
-        for name in ("UNSLOTH_TP_SIZE", "UNSLOTH_PP_SIZE", "UNSLOTH_CP_SIZE")
+        for name in ("UNSLOTH_TP_SIZE", "UNSLOTH_PP_SIZE", "UNSLOTH_CP_SIZE", "UNSLOTH_EP_SIZE")
     ):
         return
-    from ..parallel_env import env_cp_size
+    from ..parallel_env import env_cp_backend, env_cp_size
     from ..parallel_capabilities import check_layout
 
     cp = env_cp_size()
@@ -7381,7 +7381,23 @@ def _parallel_capabilities_pre(trainer, init, args, kwargs, model):
     layout = env_layout()
     training_args = _trainer_init_args(trainer, init, args, kwargs)
     if layout is None:
-        return  # context parallel alone: the CP trainer setup checks it
+        from .ep_native import ep_env_size
+
+        ep = ep_env_size()
+        if ep <= 1:
+            return  # context parallel alone: the CP trainer setup checks it
+        from ..parallel_env import ParallelLayout
+
+        world = int(os.environ.get("WORLD_SIZE", "1") or 1)
+        layout = ParallelLayout(
+            1,
+            world,
+            world,
+            native_fsdp2 or bool(_launch.unsloth_fsdp2_requested()),
+            cp = cp,
+            cp_backend = env_cp_backend(),
+            ep = ep,
+        )
     backend = getattr(training_args, "context_parallel_backend", None) or layout.cp_backend
     check_layout(layout, type(trainer), model, training_args, cp_backend = backend)
 

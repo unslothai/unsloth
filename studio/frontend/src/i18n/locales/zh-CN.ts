@@ -882,7 +882,7 @@ export const zhCN = {
   chatMenu: {
     more: "聊天选项",
     copy: "复制",
-    addScheduledTask: "添加定时任务…",
+    addScheduledTask: "添加定时任务",
     compact: "压缩对话",
     compactEmpty: "暂无可压缩的内容",
     compactUnsupported: "对话压缩需要支持工具调用的 GGUF 或 MLX 模型",
@@ -4939,6 +4939,7 @@ export const zhCN = {
     model: {
       label: "翻译模型",
       fast: "快速",
+      balanced: "均衡",
       quality: "最佳质量",
       chat: "聊天模型",
       recommended: "推荐",
@@ -6026,7 +6027,6 @@ export const zhCN = {
     back: "返回",
     continue: "继续",
     skipSetup: "跳过设置",
-    outsideAgain: "再次点击外部即可关闭",
     getStarted: "开始使用",
     progress: "第 {current} 步，共 {total} 步",
     welcome: {

@@ -882,7 +882,7 @@ export const ptBR = {
   chatMenu: {
     more: "Opções do chat",
     copy: "Copiar",
-    addScheduledTask: "Adicionar tarefa agendada…",
+    addScheduledTask: "Adicionar tarefa agendada",
     compact: "Compactar conversa",
     compactEmpty: "Ainda não há nada para compactar",
     compactUnsupported: "A compactação requer um modelo GGUF ou MLX com suporte a ferramentas",
@@ -5068,6 +5068,7 @@ export const ptBR = {
     model: {
       label: "Modelo de tradução",
       fast: "Rápido",
+      balanced: "Equilibrado",
       quality: "Melhor qualidade",
       chat: "Modelo do chat",
       recommended: "Recomendados",
@@ -6155,7 +6156,6 @@ export const ptBR = {
     back: "Voltar",
     continue: "Continuar",
     skipSetup: "Pular configuração",
-    outsideAgain: "Clique fora novamente para fechar",
     getStarted: "Começar",
     progress: "Etapa {current} de {total}",
     welcome: {
