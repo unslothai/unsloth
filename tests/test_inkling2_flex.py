@@ -468,6 +468,9 @@ def test_rocm_compiles_flex_with_static_shapes(fx, monkeypatch):
     monkeypatch.setattr(torch, "compile", lambda fn, **kw: calls.append(kw) or fn)
     for hip, expected in (("6.4.0", False), (None, None)):
         monkeypatch.setattr(torch.version, "hip", hip, raising = False)
+        monkeypatch.setattr(
+            torch, "__version__", _CUDA_VERSION if hip is None else "2.11.0+rocm7.13.0"
+        )
         monkeypatch.setattr(fx, "_COMPILED_FLEX", None)
         fx._flex_function(torch.device("cuda", 0))
         assert calls[-1]["dynamic"] is expected
