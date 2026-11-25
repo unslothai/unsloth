@@ -1487,6 +1487,11 @@ def _split_layer_rope_tables(model, device, position_embeddings, rope_len, rows)
             if layer_device.type != device.type or layer_device.index is None:
                 tables[layer_device] = position_embeddings
             else:
+                # get_cached's fast path only checks rope_len; first rebuild this card if the first
+                # card's cache grew (explicit positions can index every row it materialized).
+                ensure = getattr(model.rotary_emb, "_ensure_rope_cache", None)
+                if ensure is not None:
+                    ensure(layer_device.index)
                 cos_sin = model.rotary_emb.get_cached(rope_len, layer_device.index)
                 if rope_len < rows and cos_sin[0].shape[0] < rows:
                     # Same padding as the first card's tables in LlamaModel_fast_forward.

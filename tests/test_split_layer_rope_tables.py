@@ -70,6 +70,14 @@ def test_split_layers_get_their_card_table_once():
     assert model.rotary_emb.calls == [(8, 1), (8, 2)]
 
 
+def test_secondary_card_cache_is_refreshed_before_reading():
+    model = _model("cuda:0", "cuda:1")
+    ensured = []
+    model.rotary_emb._ensure_rope_cache = ensured.append
+    _split_layer_rope_tables(model, CUDA0, BASE, 8, 8)
+    assert ensured == [1]
+
+
 def test_short_packed_tables_get_the_same_padding():
     # rope_len < rows (packed positions restart): the first card's tables are padded to rows.
     model = _model("cuda:0", "cuda:1", rows = 4)
@@ -142,6 +150,44 @@ SCRIPT = textwrap.dedent(
 )
 
 
+GROW_SCRIPT = textwrap.dedent(
+    """
+    import json, sys
+    import unsloth
+    from unsloth import FastLanguageModel
+    import torch
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+
+    out_dir = sys.argv[1]
+    repo = "trl-internal-testing/tiny-Qwen3ForCausalLM"
+    AutoTokenizer.from_pretrained(repo).save_pretrained(out_dir)
+    base = AutoModelForCausalLM.from_pretrained(repo)
+    # Past the 32768-row starting cache, so explicit positions can need more rows later.
+    base.config.max_position_embeddings = 131072
+    base.save_pretrained(out_dir)
+    devmap = {"model.embed_tokens": 0, "model.rotary_emb": 0, "model.layers.0": 0,
+              "model.layers.1": 1, "model.norm": 1, "lm_head": 1}
+    model, tok = FastLanguageModel.from_pretrained(
+        out_dir, max_seq_length = 256, load_in_4bit = False, device_map = devmap,
+    )
+    from unsloth.models import llama
+    rope = model.model.rotary_emb
+    ids = torch.randint(100, 2000, (1, 24), device = "cuda:0")
+    model.eval()
+    with torch.no_grad():
+        model(input_ids = ids)  # short forward without positions: 32768 rows on both cards
+        far = torch.arange(40000, 40024, device = "cuda:0")[None]
+        got = model(input_ids = ids, position_ids = far).logits.float().cpu()
+        rows = [rope.multi_gpu_cos_cached[i].shape[0] for i in (0, 1)]
+        original = llama._split_layer_rope_tables
+        llama._split_layer_rope_tables = lambda *a, **k: None  # every layer reads card 0's table
+        ref = model(input_ids = ids, position_ids = far).logits.float().cpu()
+        llama._split_layer_rope_tables = original
+    print("RESULT " + json.dumps({"rows": rows, "same": bool(torch.equal(got, ref))}))
+    """
+)
+
+
 # has_real_cuda(): the zoo CUDA spoof patches torch.cuda.is_available() True on CPU runners.
 @pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
 def test_split_model_copies_no_rope_table(tmp_path):
@@ -163,3 +209,30 @@ def test_split_model_copies_no_rope_table(tmp_path):
     res = json.loads(line[len("RESULT ") :])
     assert res["rope_copies"] == 0
     assert res["same_table"]
+
+
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
+def test_split_model_far_positions_after_a_short_forward(tmp_path):
+    count = subprocess.run(
+        [sys.executable, "-c", "import torch; print(torch.cuda.device_count())"],
+        capture_output = True,
+        text = True,
+    )
+    if int((count.stdout.strip() or "0").splitlines()[-1]) < 2:
+        pytest.skip("needs 2 CUDA GPUs")
+    env = {**os.environ, "UNSLOTH_COMPILE_LOCATION": str(tmp_path / "cache")}
+    proc = subprocess.run(
+        [sys.executable, "-c", GROW_SCRIPT, str(tmp_path / "model")],
+        capture_output = True,
+        text = True,
+        env = env,
+        timeout = 900,
+    )
+    assert proc.returncode == 0, proc.stdout[-3000:] + proc.stderr[-3000:]
+    import json
+
+    line = [l for l in proc.stdout.splitlines() if l.startswith("RESULT ")][-1]
+    res = json.loads(line[len("RESULT ") :])
+    # The second card's table covers the rows the far positions index, and matches card 0's output.
+    assert res["rows"][1] >= 40024 and res["rows"][1] == res["rows"][0]
+    assert res["same"]
