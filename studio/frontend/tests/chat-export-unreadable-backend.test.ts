@@ -103,3 +103,84 @@ test("a failed server export fails instead of saving only old browser chats", as
   });
   await assert.rejects(storage.buildStoredChatExport(), /500/);
 });
+
+test("a chat backup longer than the browser's longest string still downloads", async () => {
+  const videoChars = 300 * 1024 * 1024;
+  const block = new TextEncoder().encode("A".repeat(1024 * 1024));
+  const encoder = new TextEncoder();
+  async function* body() {
+    yield encoder.encode(
+      '{"exportedAt":"2026-11-24T00:00:00Z","version":1,"threadCount":1,"projects":[],"threads":[{"id":"t1"}],"messages":[',
+    );
+    for (const id of ["m1", "m2"]) {
+      yield encoder.encode(
+        `${id === "m1" ? "\n" : ",\n"}{"id":"${id}","threadId":"t1","role":"user","createdAt":1,"content":[{"type":"video","data":"`,
+      );
+      for (let sent = 0; sent < videoChars; sent += block.length) yield block;
+      yield encoder.encode('"}]}');
+    }
+    yield encoder.encode("\n]}");
+  }
+  const chunks = body();
+  const stream = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      const { done, value } = await chunks.next();
+      if (done) controller.close();
+      else controller.enqueue(value);
+    },
+  });
+  const api = loadChatApi(new Response(stream));
+  const backup = (await api.buildBackendChatExport()) as {
+    threads: unknown[];
+    messages: { id: string; content: { data: string }[] }[];
+  };
+  assert.deepEqual(
+    backup.messages.map((message) => [message.id, message.content[0].data.length]),
+    [
+      ["m1", videoChars],
+      ["m2", videoChars],
+    ],
+  );
+
+  let saved: unknown;
+  const download = loadWithStubs<{ downloadChatExport: () => Promise<void> }>(
+    new URL("../src/features/chat/utils/export-chat-history.ts", import.meta.url),
+    {
+      "@/lib/native-files": {
+        downloadBlobStreaming: async (content: unknown) => {
+          saved = content;
+        },
+      },
+      "./archived-chat-export": { filterArchivedChatExport: () => undefined },
+      "./chat-history-storage": { buildStoredChatExport: async () => backup },
+    },
+  );
+  await download.downloadChatExport();
+  assert.ok(saved instanceof Blob);
+  assert.ok(saved.size > 2 * videoChars);
+});
+
+test("a chat backup writes strings longer than one slice as the same JSON", async () => {
+  const { chatExportBlob } = loadWithStubs<{
+    chatExportBlob: (data: unknown) => Blob;
+  }>(new URL("../src/features/chat/utils/export-chat-history.ts", import.meta.url), {
+    "@/lib/native-files": { downloadBlobStreaming: async () => undefined },
+    "./archived-chat-export": { filterArchivedChatExport: () => undefined },
+    "./chat-history-storage": { buildStoredChatExport: async () => undefined },
+  });
+  const slice = 1 << 24;
+  const data = "x".repeat(slice - 1) + '😀"\\\n' + "y".repeat(slice);
+  const backup = {
+    exportedAt: "x",
+    version: 1,
+    threadCount: 1,
+    projects: [],
+    threads: [{ id: "t1" }],
+    messages: [
+      { id: "m1", content: [{ type: "video", data }], skip: undefined },
+      { id: "m2", content: "short" },
+    ],
+  };
+  const text = await chatExportBlob(backup).text();
+  assert.deepEqual(JSON.parse(text), JSON.parse(JSON.stringify(backup)));
+});

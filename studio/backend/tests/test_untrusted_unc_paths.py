@@ -48,7 +48,7 @@ def test_remote_adapter_base_on_a_share_is_dropped(monkeypatch, tmp_path, base):
 def test_activation_tier_never_probes_a_share_base(monkeypatch, base):
     from utils import transformers_version as tv
 
-    monkeypatch.setattr(tv, "_env_offline", lambda: False)
+    monkeypatch.setattr(tv, "hf_env_offline", lambda: False)
     monkeypatch.setattr(tv, "_hf_json", lambda url, token: {"base_model_name_or_path": base})
     assert tv._remote_lora_base("someone/lora") is None
     seen = []

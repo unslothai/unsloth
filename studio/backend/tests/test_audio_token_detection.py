@@ -138,7 +138,7 @@ def _detect_checked(
 
     monkeypatch.setattr(mc, "_audio_detection_cache", {})
     monkeypatch.setattr(mc, "get_cache_path", lambda *a, **k: None)
-    monkeypatch.setattr(mc, "_env_offline", lambda: False)
+    monkeypatch.setattr(mc, "hf_env_offline", lambda: False)
 
     import requests
 
@@ -366,7 +366,7 @@ def _detect_against_cache(
     monkeypatch.setattr(mc, "_audio_detection_cache", {})
     monkeypatch.setattr(mc, "_audio_offline_miss_cache", {})
     monkeypatch.setattr(mc, "get_cache_path", lambda *a, **k: snapshot_repo_dir)
-    monkeypatch.setattr(mc, "_env_offline", lambda: False)
+    monkeypatch.setattr(mc, "hf_env_offline", lambda: False)
 
     def _info(
         model_name,

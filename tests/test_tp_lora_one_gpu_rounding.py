@@ -99,7 +99,10 @@ def _peft_forward_of(peft):
             from peft.tuners.lora.bnb import Linear4bit as Linear
     except Exception:
         return None
-    return Linear.forward
+    # A FastModel load earlier in this process compiles PEFT's forward onto the class in place (zoo
+    # patch_lora_forwards); the generated forward keeps PEFT's own as _unsloth_original_forward.
+    forward = Linear.forward
+    return getattr(forward, "_unsloth_original_forward", forward)
 
 
 def _generated_forward(flag, peft):

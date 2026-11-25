@@ -337,6 +337,16 @@ def _no_real_mxc_drive_aliases(monkeypatch):
 
 
 @pytest.fixture(autouse = True)
+def _no_sdpa_align_wrapper_left_installed():
+    # _maybe_compile_transformer installs it for a compiled diffusion run; tests that drive it never reach the
+    # training loop's uninstall, and the wrapper's cache_key_tag suffix then leaks into every later test.
+    yield
+    sdpa_align = sys.modules.get("core.training.diffusion_sdpa_align")
+    if sdpa_align is not None and sdpa_align.installed():
+        sdpa_align.uninstall_sdpa_align_without_guard()
+
+
+@pytest.fixture(autouse = True)
 def _forget_hub_unreachable_verdict():
     # Per-process Hub verdict must not leak between tests.
     def _forget():
@@ -445,6 +455,17 @@ def _restore_dynamo_process_knobs():
     for k, v in before.items():
         if getattr(cfg, k, v) != v:
             setattr(cfg, k, v)
+
+
+@pytest.fixture(autouse = True)
+def _uninstall_sdpa_align_wrapper():
+    # The DiT trainer's compile step wraps inductor's SDPA layout constraint and appends its cache_key_tag; only the
+    # full run's finally takes it out. A test that called the compile step alone left both on the xdist worker, and
+    # test_diffusion_cache_tag_contexts.py then read "|unsloth_sdpa_align=unguarded;..." for its own tags.
+    yield
+    align = sys.modules.get("core.training.diffusion_sdpa_align")
+    if align is not None and align.installed():
+        align.uninstall_sdpa_align_without_guard()
 
 
 @pytest.fixture(autouse = True)
@@ -842,6 +863,8 @@ def _isolate_wal_keepers():
             rag_db.start_wal_keepers()
         else:
             rag_db.close_wal_keeper()
+        # Per-test homes: drop the reader so handles never pile up (and Windows can delete the folder).
+        studio_db.close_settings_readers()
     finally:
         os.name = patched_os_name
 

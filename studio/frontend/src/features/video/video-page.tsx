@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { modelErrorParts } from "@/lib/model-error-message";
+import { modelErrorToast } from "@/lib/model-error-toast";
 import { generationFailureLogsAction } from "@/features/settings/lib/view-logs-action";
 import {
   type DragEvent,
@@ -364,17 +366,30 @@ function showVideoFailureToast(error: string | null | undefined): boolean {
   if (!failure) return false;
   const { title, errorType, detail } = failure;
   const hasReason = Boolean(errorType || detail);
-  toast.error(title, {
-    description: hasReason ? (
-      <span className="[overflow-wrap:anywhere]">
-        {errorType && <code className="font-mono">{errorType}</code>}
-        {errorType && detail ? ": " : null}
-        {detail}
-      </span>
-    ) : undefined,
-    duration: hasReason ? FAILURE_WITH_REASON_TOAST_MS : undefined,
-    action: generationFailureLogsAction(title),
-  });
+  const reason = [errorType, detail].filter(Boolean).join(": ");
+  const reasonParts = modelErrorParts(reason);
+  const longReason = reasonParts.details !== null;
+  modelErrorToast(
+    title,
+    {
+      description: hasReason ? (
+        <span className="[overflow-wrap:anywhere]">
+          {longReason ? (
+            reasonParts.summary
+          ) : (
+            <>
+              {errorType && <code className="font-mono">{errorType}</code>}
+              {errorType && detail ? ": " : null}
+              {detail}
+            </>
+          )}
+        </span>
+      ) : undefined,
+      duration: hasReason ? FAILURE_WITH_REASON_TOAST_MS : undefined,
+      action: generationFailureLogsAction(title),
+    },
+    longReason ? reason : undefined,
+  );
   return true;
 }
 
@@ -813,7 +828,7 @@ function reportLoadFailure(failure: unknown, fallback: string): void {
     });
     return;
   }
-  toast.error(text || fallback);
+  modelErrorToast(text || fallback);
 }
 
 const COSMOS_GUARDRAIL_TITLE = "The Cosmos safety checker needs cosmos-guardrail";

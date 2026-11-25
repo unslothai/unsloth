@@ -490,11 +490,15 @@ def _inject_local_providers(
         providers[i].pop("extra_headers", None)
         providers[i].pop("extra_body", None)
 
+    # Data Designer sends a provider-less model config to the first provider, which can be local.
+    first = providers[0] if isinstance(providers[0], dict) else {}
+    default_name = first.get("name")
+
     # llama-server's /v1/models ids can differ from the selection, so skip the health check.
     for mc in recipe.get("model_configs", []):
         if not isinstance(mc, dict):
             continue
-        if mc.get("provider") in local_names:
+        if (mc.get("provider") or default_name) in local_names:
             mc["skip_health_check"] = True
             if served:
                 mc["model"] = served

@@ -290,6 +290,17 @@ def test_seed_is_offered_and_forwarded_only_when_the_request_has_the_field(
     assert seen == [{"prompt": "x", **({"seed": 7} if has_seed else {})}]
 
 
+def test_seed_minus_one_draws_a_random_seed(tmp_path, backend, keepwarm):
+    text = _run(tmp_path, {"prompt": "x", "seed": -1}).split("\n__FILES__:")[0]
+    assert text.startswith("Generated a video (") and "seed" not in text
+    assert 0 <= backend.last_generate_kwargs["seed"] < 2**53
+
+
+def test_a_fractional_seed_is_rejected_instead_of_rounded_to_random(tmp_path, backend, keepwarm):
+    assert "Generated a video" not in _run(tmp_path, {"prompt": "x", "seed": -1.5})
+    assert video_routes._jobs == {} and "seed" not in backend.last_generate_kwargs
+
+
 def test_the_schema_names_the_tool_and_appends_the_prompt_hint(backend):
     schema = tool.generate_video_schema({**backend.status(), "prompt_hint": "Say the camera move."})
     fn = schema["function"]

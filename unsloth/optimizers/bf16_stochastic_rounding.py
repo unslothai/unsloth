@@ -12,6 +12,7 @@ state, so its weights still step a float32 copy, rounded back in one pass. UNSLO
 the float32-copy route with torch.randint draws everywhere.
 """
 
+import contextlib
 import os
 import types
 
@@ -389,9 +390,14 @@ def _wrap_torch(optimizer, tracked, seed):
                 # Step hooks fire per weight when the optimizer has its own (state offload, idle experts,
                 # DP sync), as torch's per-weight steps did before; else once for the group.
                 batches = [[p] for p in mine] if _step_hooks(self) else ([mine] if mine else [])
-                for batch in batches:
-                    self.param_groups = [dict(group, params = batch)]
-                    hooked(self, None)
+                # State offload copies the next weights' state in while each one steps.
+                pipelined = getattr(
+                    getattr(self, "_unsloth_state_offloader", None), "pipelined", None
+                )
+                with pipelined(batches) if callable(pipelined) else contextlib.nullcontext():
+                    for batch in batches:
+                        self.param_groups = [dict(group, params = batch)]
+                        hooked(self, None)
         finally:
             self.param_groups = groups
         return loss

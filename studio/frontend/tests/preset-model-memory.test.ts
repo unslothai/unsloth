@@ -377,7 +377,7 @@ test("saving a preset hands the loaded model's sampling to it, as a pick does", 
   assert.ok(save, "savePresetWithName");
   assert.match(save, /const live = useChatRuntimeStore\.getState\(\)\.params;/);
   assert.match(save, /params: toPresetParams\(saved\),/);
-  assert.match(save, /setParams\(saved, \{ fromPreset: true \}\);/);
+  assert.match(save, /setParams\(saved, \{ fromPreset: true, pinsSampling: true \}\);/);
   assert.doesNotMatch(save, /paramsWithCommittedSeed/);
 });
 

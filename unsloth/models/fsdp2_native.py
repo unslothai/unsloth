@@ -17,6 +17,8 @@ import types
 from typing import Callable, Optional, Union
 
 import torch
+
+from ._cache_kwarg import get_cache_kwarg
 import torch.nn as nn
 
 
@@ -2690,7 +2692,7 @@ def _generate_request_bytes(model, args, kwargs):
         if (
             isinstance(embeds, torch.Tensor)
             and embeds.dim() >= 2
-            and kwargs.get("past_key_values") is None
+            and get_cache_kwarg(kwargs) is None
         ):
             prompt = max(prompt, int(embeds.shape[1]))
         # Media prompts run a vision / audio tower in prefill whose activations depend on the media
@@ -2717,7 +2719,7 @@ def _generate_request_bytes(model, args, kwargs):
         # A supplied cache holds history the suffix-only ids do not show; the decode allocator sizes its
         # new paged cache from the whole length, so count it (or decline when it cannot be read).
         cached = 0
-        past = kwargs.get("past_key_values")
+        past = get_cache_kwarg(kwargs)
         if past is not None:
             if hasattr(past, "get_seq_length"):
                 cached = int(past.get_seq_length())

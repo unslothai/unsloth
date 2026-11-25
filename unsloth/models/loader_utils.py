@@ -11,6 +11,7 @@
 
 from ..device_type import DEVICE_TYPE_TORCH, clean_gpu_cache
 from ..fsdp2_launch import fsdp_version_from_env
+from ._cache_kwarg import get_cache_kwarg
 import hashlib
 import importlib
 import os
@@ -2220,6 +2221,64 @@ def get_model_name(
     return new_model_name
 
 
+def hub_cache_snapshot_repo(path):
+    """(repo id, revision) when `path` is a Hugging Face hub cache snapshot folder
+    (``.../models--org--name/snapshots/<revision>``), else None. A snapshot's files link into the cache's
+    content-addressed blobs, so the folder is that repo at that revision: a training run started from a cached model
+    (Studio's pinned snapshot) records the folder, not the repo id."""
+    if not isinstance(path, (str, os.PathLike)):
+        return None
+    parts = re.split(r"[\\/]+", os.path.abspath(os.fspath(path)).rstrip("\\/"))
+    if (
+        len(parts) < 3
+        or parts[-2] != "snapshots"
+        or not parts[-3].startswith("models--")
+        or not parts[-1]
+    ):
+        return None
+    # The Hub forbids "--" inside a namespace or name, so it only ever stands for the "/".
+    names = parts[-3][len("models--") :].split("--")
+    if not 1 <= len(names) <= 2 or not all(names):
+        return None
+    return "/".join(names), parts[-1]
+
+
+def checkpoint_folder_quant_method(folder):
+    """quant_method of the checkpoint config in a local folder (lowercase), "" when it has none or no config."""
+    import json
+
+    path = os.path.join(folder, "config.json")
+    try:
+        with open(path, encoding = "utf-8") as f:
+            config = json.load(f)
+    except (OSError, ValueError):
+        return ""
+    if not isinstance(config, dict):
+        return ""
+    for cfg in (config, config.get("text_config") or {}):
+        quant = cfg.get("quantization_config") if isinstance(cfg, dict) else None
+        if isinstance(quant, dict) and quant.get("quant_method"):
+            return str(quant["quant_method"]).lower()
+    return ""
+
+
+def prequantized_snapshot_original(path):
+    """Hub id of the 16-bit checkpoint a cached pre-quantized bitsandbytes snapshot was made from, else None.
+
+    `path` must be a hub cache snapshot of a repo the mapper lists as a pre-quantized copy of an original, and the
+    answer is the one a merge of the repo id gets. Any other folder, even one named like the repo, is not mapped: its
+    tensors are not provably the repo's."""
+    if not os.path.isdir(str(path)):
+        return None
+    snapshot = hub_cache_snapshot_repo(path)
+    if snapshot is None or checkpoint_folder_quant_method(path) != "bitsandbytes":
+        return None
+    original = get_model_name(snapshot[0], load_in_4bit = False)
+    if not isinstance(original, str) or original.lower() == snapshot[0].lower():
+        return None
+    return original
+
+
 def _refuse_unless_private(path, what):
     """On POSIX, refuse a path that is a symlink, not ours, or writable by group/other."""
     import stat
@@ -3643,7 +3702,7 @@ def _checkpointed_layer_forward(original):
             or not torch.is_grad_enabled()
             # A cache would be written a second time by the recompute.
             or kwargs.get("past_key_value") is not None
-            or kwargs.get("past_key_values") is not None
+            or get_cache_kwarg(kwargs) is not None
         ):
             return original(self, *args, **kwargs)
         if not args and "hidden_states" in kwargs:

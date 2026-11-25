@@ -364,6 +364,16 @@ _LLAMA_CLIENT_ERROR_RE = _re.compile(r"llama-server returned (?:4\d\d|501): (.*)
 _LLAMA_SERVER_ERROR_RE = _re.compile(r"llama-server returned 5\d\d: (.*)", _re.DOTALL)
 
 
+_SGLANG_CONTEXT_LIMIT_RE = _re.compile(
+    r"The input \((\d{1,12}) tokens\) is longer than the model's context length \((\d{1,12}) tokens\)"
+)
+# vLLM <= 0.30 "you requested", later "your prompt contains"; SGLang when prompt + max_tokens overflow.
+_VLLM_CONTEXT_LIMIT_RE = _re.compile(
+    r"This model's maximum context length is (\d{1,12}) tokens\. However, (?:you requested|your prompt contains)"
+    r"|Requested token count exceeds the model's maximum context length of (\d{1,12}) tokens"
+)
+
+
 def _friendly_error(exc: Exception) -> str:
     """Extract a user-friendly message from known llama-server errors."""
     if isinstance(exc, context_refusal.ContextBudgetExceeded):
@@ -393,6 +403,15 @@ def _friendly_error(exc: Exception) -> str:
     if m:
         # llama-server only knows the prompt total; let the fit's diagnosis pick the wording.
         return context_refusal.describe_oversize(int(m.group(1)), int(m.group(2)))
+    m = _SGLANG_CONTEXT_LIMIT_RE.search(msg)
+    if m:
+        return context_refusal.describe_oversize(int(m[1]), int(m[2]))
+    m = _VLLM_CONTEXT_LIMIT_RE.search(msg)
+    if m:
+        return (
+            f"The prompt and requested reply exceed the model's {m[1] or m[2]}-token context window. "
+            "Shorten the prompt or request fewer output tokens."
+        )
     if "Lost connection to llama-server" in msg:
         return _LOST_CONNECTION_MSG
     template_msg = _template_raise_message(msg, _loaded_chat_template())
@@ -403,12 +422,7 @@ def _friendly_error(exc: Exception) -> str:
         return exc.friendly
     client_error = _LLAMA_CLIENT_ERROR_RE.match(msg)
     if client_error:
-        body = client_error.group(1)
-        try:
-            body = error_message_from_chunk(json.loads(body)) or body
-        except ValueError:
-            pass
-        return _friendly_upstream_error(body[:500])
+        return _friendly_upstream_error(client_error.group(1))
     # Other 5xx stay redacted; media/KV failures are fixed strings that name no path.
     server_error = _LLAMA_SERVER_ERROR_RE.match(msg)
     if server_error:
@@ -435,10 +449,13 @@ def _refused_parameter(value) -> Optional[str]:
     return param if getattr(value, "public", False) and param else None
 
 
-def _friendly_upstream_error(text: str) -> str:
-    """Rewrite a grammar compile failure from llama-server into advice; other errors keep their own text."""
-    lowered = text.lower()
-    if "failed to parse grammar" in lowered:
+def _friendly_upstream_error(text: str, extracted: bool = False) -> str:
+    """The message from a JSON error body, else the raw text, cut to 500 unless ``extracted``; grammar compile failures become advice."""
+    try:
+        text = text if extracted else (error_message_from_chunk(json.loads(text)) or text)
+    except ValueError:
+        pass
+    if "failed to parse grammar" in text.lower():
         return (
             "The model couldn't compile a grammar for this request. A top-level grammar or "
             "json_schema is forwarded as sent, so it must compile in llama-server as written. "
@@ -447,7 +464,7 @@ def _friendly_upstream_error(text: str) -> str:
             "which does not depend on the model or quant. Update Unsloth, which drops the "
             "constraints known to break it, and report the schemas if it still fails."
         )
-    return f"llama-server error: {text}"
+    return f"llama-server error: {text if extracted else text[:500]}"
 
 
 def _oversize_counts(text: str):
@@ -459,12 +476,13 @@ def _oversize_counts(text: str):
 
 
 def _anthropic_upstream_error(text: str, counts_source: Optional[str] = None) -> str:
-    """`text` is what the client is told; `counts_source` is the fuller body it came
-    from, used only to recover token counts the message itself does not spell out."""
+    """`counts_source`, the body `text` was extracted from, only supplies token counts and marks `text` as extracted, shown whole."""
+    # Raw bodies classify on their head, like the status: a long one can echo schema names that read as an overflow.
+    head = text if counts_source is not None else text[:500]
     # KV starvation means retry, not shorten the conversation.
-    if is_kv_starvation(text):
+    if is_kv_starvation(head):
         return KV_STARVATION_MESSAGE
-    if _classify_llama_generation_error(Exception(text)):
+    if _classify_llama_generation_error(Exception(head)):
         counts = _oversize_counts(text)
         if counts is None and counts_source:
             counts = _oversize_counts(counts_source)
@@ -478,7 +496,7 @@ def _anthropic_upstream_error(text: str, counts_source: Optional[str] = None) ->
             "Prompt is too long. Try increasing the Context Length in Model settings, "
             "or shorten the conversation."
         )
-    return _friendly_upstream_error(text)
+    return _friendly_upstream_error(text, extracted = counts_source is not None)
 
 
 def _clamp_finish_reason(value) -> str:
@@ -497,12 +515,16 @@ def _clamp_finish_reason(value) -> str:
     )
 
 
+def _cut_thought_recoverable(payload) -> bool:
+    return getattr(payload, "context_overflow", None) not in ("error", "truncate_middle")
+
+
 def _recover_cut_thought(payload) -> Optional[tuple[str, bool, bool]]:
     """When this thread's previous reply ended in a thought the window cut, do not resume it (it
     cannot fit): keep it, cut back a few tokens, as a finished thought (the template writes the
     model's own closing marker), force the reset /compact does, archive it for search_conversation,
     write a transcript, and add the note. Returns (note, searchable, note_is_a_user_turn), or None."""
-    if getattr(payload, "context_overflow", None) in ("error", "truncate_middle"):
+    if not _cut_thought_recoverable(payload):
         return None
     from core.inference import cut_thought
     from models.inference import ChatMessage
@@ -1006,7 +1028,7 @@ def _openai_passthrough_error(status_code, text) -> "HTTPException":
         )
     return HTTPException(
         status_code = status_code,
-        detail = _friendly_upstream_error(text[:500]),
+        detail = _friendly_upstream_error(text),
     )
 
 
@@ -6424,6 +6446,7 @@ async def _select_request_tools(
         apply_full_access_tool_descriptions,
         get_enabled_mcp_tools,
         set_mcp_project_scope,
+        set_mcp_server_scope,
     )
 
     if not tools_on:
@@ -6519,8 +6542,19 @@ async def _select_request_tools(
         from core.inference.media_chat_tools import remember_server_loop
 
         remember_server_loop(asyncio.get_running_loop())
-        await set_mcp_project_scope(getattr(payload, "session_id", None))
-        tools = tools + await get_enabled_mcp_tools()
+        scheduled_server_ids = getattr(payload, "_scheduled_mcp_server_ids", None)
+        if scheduled_server_ids is None:
+            await set_mcp_project_scope(getattr(payload, "session_id", None))
+        else:
+            set_mcp_server_scope(scheduled_server_ids)
+        mcp_tools = await get_enabled_mcp_tools()
+        if scheduled_server_ids is not None and not mcp_tools:
+            raise HTTPException(
+                status_code = 400,
+                detail = "No tools are available from the selected MCP servers. "
+                "Check that they are enabled and reachable.",
+            )
+        tools += mcp_tools
     # Some callers pass lighter payloads that may lack deep_research_armed, so read it with getattr.
     if getattr(payload, "deep_research_armed", None):
         # Past every filter incl. tools_on: arming research is what offers this tool.
@@ -6978,6 +7012,74 @@ def _display_tool_name_gate(active_tools):
     return names or None
 
 
+def _strip_tool_xml_keeping_examples(
+    seg: str,
+    enabled_tool_names,
+    reply: str = "",
+) -> str:
+    """``_TOOL_XML_RE`` removal that keeps a rehearsal the parser does not promote (inactive name, or quoted in code).
+
+    An example quoted in code is kept only once its body is balanced within the code span, and only up to that body,
+    so the arm's open-ended fallback cannot also keep a real call after it. One whose body holds a parser tool signal
+    is removed whole: the parser runs a marker call wherever it sits. Until the body closes the example is removed
+    too, so a stream never shows an example that later text would take back. ``reply`` (whose last think-split segment
+    is ``seg``) gives code context as the parser sees it: the whole reply, reasoning masked."""
+    import bisect
+
+    from core.inference.tool_call_parser import TOOL_XML_SIGNALS, _mask_blocked_bodies
+    from core.tool_healing import (
+        _balanced_json_span,
+        _code_spans,
+        _in_code,
+        _markerless_promotable,
+        _think_spans_outside_tool_markup,
+    )
+
+    spans = None
+    prefix = ""
+    out: list[str] = []
+    pos = 0
+    while (m := _TOOL_XML_RE.search(seg, pos)) is not None:
+        name = m.group("reh")
+        end = m.start()
+        if name is not None and not _markerless_promotable(name, enabled_tool_names):
+            end = m.end()
+        elif name is not None:
+            if spans is None:
+                think = _think_spans_outside_tool_markup(reply) if reply else None
+                prefix = (
+                    _mask_blocked_bodies(reply, enabled_tool_names, think = True)[0][: think[-1][1]]
+                    if think
+                    else ""
+                )
+                spans = _code_spans(prefix + seg)
+            at = len(prefix) + m.start()
+            if _in_code(spans, at):
+                span_end = spans[bisect.bisect_right(spans, (at, at)) - 1][1] - len(prefix)
+                brace = seg.find("{", m.end("reh"), min(m.end(), span_end))
+                body_end = _balanced_json_span(seg[:span_end], brace) if brace >= 0 else None
+                if body_end is None and span_end >= len(seg):
+                    # Still arriving in an open block: keep it as it streams, or drop the rest if it holds a call.
+                    rest = seg[m.end("reh") :]
+                    signal = any(sig in rest for sig in TOOL_XML_SIGNALS if sig != "[ARGS]")
+                    out.append(seg[pos : m.start()] if signal else seg[pos:])
+                    return "".join(out)
+                body = seg[brace + 1 : body_end] if body_end is not None else ""
+                # A rehearsal nested in the body is in code too, so its [ARGS] is never run.
+                if body_end is not None and not any(
+                    signal in body for signal in TOOL_XML_SIGNALS if signal != "[ARGS]"
+                ):
+                    end = body_end + 1
+        if end == m.start():
+            out.append(seg[pos : m.start()])
+            pos = m.end()
+        else:
+            out.append(seg[pos:end])
+            pos = end
+    out.append(seg[pos:])
+    return "".join(out)
+
+
 def _strip_tool_xml_for_display(
     text: str,
     *,
@@ -6993,18 +7095,7 @@ def _strip_tool_xml_for_display(
         and _DISPLAY_GEMMA_CALL_RE.search(text) is None
     ):
         return text
-    from core.tool_healing import (
-        _markerless_promotable,
-        _strip_bracket_tag_calls,
-        strip_outside_think,
-    )
-
-    def _keep_inactive_rehearsal(m) -> str:
-        # Deleting a call the parser will not promote leaves the turn empty.
-        name = m.groupdict().get("reh")
-        if name is not None and not _markerless_promotable(name, enabled_tool_names):
-            return m.group(0)
-        return ""
+    from core.tool_healing import _strip_bracket_tag_calls, strip_outside_think
 
     def _strip_segment(seg: str, is_last: bool) -> str:
         # Strips close at each call's real terminator, so a quoted </function> cannot truncate them.
@@ -7018,18 +7109,22 @@ def _strip_tool_xml_for_display(
         seg = _strip_glm_calls(seg, final = is_last)
         seg = _strip_function_xml_calls(seg, final = is_last)
         if is_last:
-            return _TOOL_XML_RE.sub(_keep_inactive_rehearsal, seg)
+            return _strip_tool_xml_keeping_examples(seg, enabled_tool_names, source)
         return _TOOL_XML_CLOSED_RE.sub("", seg)
 
     # Mask blocked-call bodies and lone backticked tags (prose) so these passes do not edit them.
     from core.inference.tool_call_parser import _mask_blocked_bodies, _unmask_blocked_bodies
 
     masked, bodies = _mask_blocked_bodies(text, enabled_tool_names, mentions = True)
+    source = masked
     result = strip_outside_think(masked, _strip_segment)
     if not bodies:
         return result
     restored = _unmask_blocked_bodies(result, bodies)
-    return restored if restored is not None else strip_outside_think(text, _strip_segment)
+    if restored is not None:
+        return restored
+    source = text
+    return strip_outside_think(text, _strip_segment)
 
 
 # Every literal some arm of ``_strip_tool_xml_for_display`` needs before it can edit text. Markerless Gemma has
@@ -7065,9 +7160,83 @@ _PENDING_MENTION_RE = _re.compile(
 _PENDING_MENTION_MAX_CHARS = 256
 
 
-def _pending_mention_cut(text: str) -> int:
-    """Where to cut a cumulative stream so a still-open backticked tool tag is held back, else -1. The cut keeps
-    the backticks, so for a tag the strip would remove anyway the held display equals the full strip."""
+def _pending_inline_rehearsal_cut(text: str, enabled_tool_names) -> int:
+    """Where a promotable rehearsal, or a tail that may still become one, starts in an inline code span still open on
+    the last line, else -1: its closing backticks turn a removed rehearsal into a kept example, which would insert
+    text before what the stream already sent. A rehearsal the strip never removes passes through, so holding it would
+    take back what was sent; a tail is held before it is sent, so releasing it only appends."""
+    line = text.rfind("\n") + 1
+    if len(text) - line > _PENDING_INLINE_MAX_CHARS or text.find("`", line) < 0:
+        return -1
+    from core.inference.tool_call_parser import _mask_blocked_bodies
+    from core.tool_healing import _markerless_promotable, _think_spans_outside_tool_markup
+
+    starts = []
+    if text.find("[ARGS]", line) >= 0:
+        starts = [
+            m.start()
+            for m in _PENDING_REHEARSAL_RE.finditer(text, line)
+            if _markerless_promotable(m.group(1), enabled_tool_names)
+        ]
+    tail = _PENDING_REHEARSAL_TAIL_RE.search(text, max(line, len(text) - 128))
+    if tail is not None and (
+        _markerless_promotable(tail.group(1), enabled_tool_names)
+        if tail.group(2)
+        else enabled_tool_names is None
+        or any(n.startswith(tail.group(1)) for n in enabled_tool_names)
+    ):
+        starts.append(tail.start())
+    if not starts:
+        return -1
+    t0 = max(0, len(text) - _PENDING_THINK_WINDOW)
+    opened = max(text.rfind("<think", t0), text.rfind("[THINK]", t0))
+    if opened > max(text.rfind("</think", t0), text.rfind("[/THINK]", t0)):
+        think = _think_spans_outside_tool_markup(text[t0:])
+        if think and think[-1][1] == len(text) - t0:
+            return -1
+    # Pair delimiters on the parser's masked view, over a bounded window.
+    lo = max(0, line - _PENDING_MASK_WINDOW)
+    masked = text[lo:]
+    if "<" in masked or "[" in masked:
+        masked = _mask_blocked_bodies(masked, enabled_tool_names, think = True)[0]
+    if len(masked) != len(text) - lo:
+        return -1
+    open_end = open_len = 0
+    i = line - lo
+    while (i := masked.find("`", i)) >= 0:
+        j = i
+        while j < len(masked) and masked[j] == "`":
+            j += 1
+        if not open_len:
+            open_end, open_len = j, j - i
+        elif j - i == open_len:
+            open_len = 0
+        i = j
+    if not open_len:
+        return -1
+    return next(
+        (s for s in sorted(starts) if s - lo >= open_end and masked[s - lo] != "\ue000"), -1
+    )
+
+
+# Bounds the per-event scan: a longer last line streams unheld.
+_PENDING_INLINE_MAX_CHARS = 4096
+_PENDING_MASK_WINDOW = 2048
+_PENDING_THINK_WINDOW = 65536
+# Call-shaped only: the strip removes ``NAME[ARGS]{``, never a bare ``NAME[ARGS]`` mention.
+_PENDING_REHEARSAL_RE = _re.compile(r"\b([\w-]+)\[ARGS\]\s*\{")
+# A name, or a name and part of ``[ARGS]`` before its ``{``, that the next chunk could still make call-shaped.
+_PENDING_REHEARSAL_TAIL_RE = _re.compile(r"\b([\w-]+)(\[(?:A(?:R(?:G(?:S(?:\]\s*)?)?)?)?)?)?\Z")
+
+
+def _pending_mention_cut(text: str, enabled_tool_names = None) -> int:
+    """Where to cut a cumulative stream so a still-open backticked tool tag or rehearsal is held back, else -1. The
+    cut keeps the backticks, so for a tag the strip would remove anyway the held display equals the full strip."""
+    cut = _pending_tag_cut(text)
+    return cut if cut >= 0 else _pending_inline_rehearsal_cut(text, enabled_tool_names)
+
+
+def _pending_tag_cut(text: str) -> int:
     lo = max(0, len(text) - _PENDING_MENTION_MAX_CHARS)
     # The tag holds no backtick, so its opening run is the last one before any trailing closers.
     end = len(text)
@@ -7087,19 +7256,32 @@ def _pending_mention_cut(text: str) -> int:
     return m.start(2)
 
 
-def _hold_pending_mention(text: str, auto_heal_tool_calls: bool) -> str:
+def _hold_pending_mention(
+    text: str,
+    auto_heal_tool_calls: bool,
+    enabled_tool_names = None,
+) -> str:
     """A cumulative stream event with a still-open backticked tool tag held back; the strips only remove text
     with Auto-Heal on, so only then can a shown tag be taken back."""
     if not auto_heal_tool_calls:
         return text
-    cut = _pending_mention_cut(text)
+    cut = _pending_mention_cut(text, enabled_tool_names)
     return text[:cut] if cut >= 0 else text
 
 
-def _held_mention_display(display_strip, raw_text: str, auto_heal_tool_calls: bool):
+def _held_mention_display(
+    display_strip,
+    raw_text: str,
+    auto_heal_tool_calls: bool,
+    enabled_tool_names = None,
+):
     """The display a turn owes when it ends with ``_hold_pending_mention`` still holding a backticked tag, else None.
     Its closing backticks never came, so it is not a mention: the full strip decides, as for a non-streaming reply."""
-    if not raw_text or not auto_heal_tool_calls or _pending_mention_cut(raw_text) < 0:
+    if (
+        not raw_text
+        or not auto_heal_tool_calls
+        or _pending_mention_cut(raw_text, enabled_tool_names) < 0
+    ):
         return None
     return display_strip.strip(raw_text)
 
@@ -7291,6 +7473,8 @@ class _ReasoningSpanGuard:
         self._claimed = False
         self._display = None
         self._display_key = None
+        # Whether the last ``strip`` held text back, judged on the very slice it held.
+        self.held = False
 
     @property
     def claimed(self) -> bool:
@@ -7342,13 +7526,16 @@ class _ReasoningSpanGuard:
         """``hold=False`` is the end-of-turn strip: a backticked tag still open there is final text."""
         wrap = self._wrap_for(text, wrapped_so_far)
         display = self._display_strip(auto_heal_tool_calls, enabled_tool_names)
-        if wrap is None:
-            return display.strip(_hold_pending_mention(text, auto_heal_tool_calls and hold))
         # Clamp: mid-stream the close tag has not arrived yet, so the whole text is trace.
-        end = min(len(self._OPEN) + int(wrap.get("len", 0)) + len(self._CLOSE), len(text))
-        return text[:end] + display.strip(
-            _hold_pending_mention(text[end:], auto_heal_tool_calls and hold)
+        end = (
+            0
+            if wrap is None
+            else min(len(self._OPEN) + int(wrap.get("len", 0)) + len(self._CLOSE), len(text))
         )
+        answer = text[end:]
+        kept = _hold_pending_mention(answer, auto_heal_tool_calls and hold, enabled_tool_names)
+        self.held = len(kept) < len(answer)
+        return text[:end] + display.strip(kept)
 
     def _display_strip(
         self, auto_heal_tool_calls: bool, enabled_tool_names
@@ -27827,8 +28014,14 @@ async def transcribe_audio_raw(
             media_type = "application/x-ndjson",
             headers = {"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
         )
-    return JSONResponse(
-        content = await _transcribe_audio_result(
+    _requested = (model or "").strip()
+    async with _monitored_media_request(
+        request,
+        model = public_model_id(_requested) or _requested,
+        prompt = title,
+        subject = current_subject,
+    ) as monitor_id:
+        result = await _transcribe_audio_result(
             b"".join(chunks),
             model,
             language,
@@ -27839,7 +28032,10 @@ async def transcribe_audio_raw(
             context_length = context_length,
             timestamps = timestamps,
         )
-    )
+        _served_model = str(result.get("model") or "")
+        api_monitor.relabel(monitor_id, public_model_id(_served_model) or _served_model)
+        api_monitor.set_reply(monitor_id, str(result.get("text", "")))
+    return JSONResponse(content = result)
 
 
 def _refuse_stt_caps(caps: dict, *, timestamps: bool, speakers: bool) -> None:
@@ -30444,6 +30640,7 @@ def _fit_external_context(
     first_pass: bool = True,
     replays_manual: bool = False,
     keep_ids: Optional[set[int]] = None,
+    count_tokens: Optional[Callable[[list[dict]], int]] = None,
 ) -> tuple[list[dict], Optional[dict], Optional[int]]:
     """``branch`` is the client's request when ``messages`` is a tool loop's conversation: recall
     queries the user's turn, not a controller re-prompt, and still filters on the loop's turns.
@@ -30467,7 +30664,7 @@ def _fit_external_context(
         _sticky_compaction_state,
     )
 
-    _count = _external_token_counter(payload, tools)
+    _count = count_tokens or _external_token_counter(payload, tools)
     prompt_tokens = _count(messages)
     context_length, max_tokens = _external_fit_limits(payload, prompt_tokens)
     policy = _request_context_policy(payload)
@@ -31590,19 +31787,22 @@ async def _proxy_to_external_provider(
                 _external_nudge, external_studio_tools, payload = payload
             )
     _served_template = None
+    _date_provider_type = None if _external_nudge else provider_type
     if (
-        provider_type == "llama_cpp"
-        and not _external_nudge
+        _date_provider_type in ("llama_cpp", "custom")
         and not _date_gate_blocks(request, run_studio_tool_loop)
         and current_date_prompt_line(request = request)
         and not any(m.get("role") in ("system", "developer") for m in chat_messages)
     ):
-        _served_template = await client.served_chat_template(model)
+        if provider_type == "llama_cpp":
+            _served_template = await client.served_chat_template(model)
+        elif await client.serves_ollama():
+            _date_provider_type = "ollama"
     chat_messages = _prepend_current_date_to_messages(
         chat_messages,
         request,
         include_api_key = run_studio_tool_loop,
-        provider_type = None if _external_nudge else provider_type,
+        provider_type = _date_provider_type,
         served_template = _served_template,
         tools = bool(external_studio_tools or payload.tools),
         controls = llama_cpp_template_controls(
@@ -35170,6 +35370,7 @@ async def produce_openai_chat_completions(
                     context_policy = _request_context_policy(payload),
                     compaction_headroom_ratio = _request_compaction_headroom_ratio(payload),
                     compact_context = getattr(payload, "compact_context", None) is True,
+                    record_cut_thought = _cut_recovery is None and _cut_thought_recoverable(payload),
                 )
 
             _tool_admission_mode = "chat_tool_stream" if payload.stream else "chat_tool_nonstream"
@@ -35327,7 +35528,10 @@ async def produce_openai_chat_completions(
                         nonlocal prev_text, _gguf_turn_raw
                         span = reasoning_extractor.server_wrap_span(_gguf_turn_raw)
                         clean = _held_mention_display(
-                            _gguf_display_strip, _gguf_turn_raw[span:], _gguf_auto_heal_tool_calls
+                            _gguf_display_strip,
+                            _gguf_turn_raw[span:],
+                            _gguf_auto_heal_tool_calls,
+                            _gguf_display_tool_names,
                         )
                         if clean is not None:
                             clean = _gguf_turn_raw[:span] + clean
@@ -35526,7 +35730,11 @@ async def produce_openai_chat_completions(
                         _gguf_turn_raw = raw_cumulative
                         span = reasoning_extractor.server_wrap_span(raw_cumulative)
                         clean_cumulative = raw_cumulative[:span] + _gguf_display_strip.strip(
-                            _hold_pending_mention(raw_cumulative[span:], _gguf_auto_heal_tool_calls)
+                            _hold_pending_mention(
+                                raw_cumulative[span:],
+                                _gguf_auto_heal_tool_calls,
+                                _gguf_display_tool_names,
+                            )
                         )
                         new_text = clean_cumulative[len(prev_text) :]
                         prev_text = clean_cumulative
@@ -37273,7 +37481,10 @@ async def produce_openai_chat_completions(
                 def _sf_release_held_mention():
                     nonlocal prev_text, _sf_turn_raw
                     clean = _held_mention_display(
-                        _sf_display_strip, _sf_turn_raw, _sf_auto_heal_tool_calls
+                        _sf_display_strip,
+                        _sf_turn_raw,
+                        _sf_auto_heal_tool_calls,
+                        _sf_display_tool_names,
                     )
                     _sf_turn_raw = ""
                     if clean is None:
@@ -37427,7 +37638,9 @@ async def produce_openai_chat_completions(
                     raw_cumulative = event.get("text", "")
                     _sf_turn_raw = raw_cumulative
                     clean_cumulative = _sf_display_strip.strip(
-                        _hold_pending_mention(raw_cumulative, _sf_auto_heal_tool_calls)
+                        _hold_pending_mention(
+                            raw_cumulative, _sf_auto_heal_tool_calls, _sf_display_tool_names
+                        )
                     )
                     new_text = clean_cumulative[len(prev_text) :]
                     prev_text = clean_cumulative
@@ -41126,6 +41339,9 @@ def _names_studio_embedder(requested: str) -> Optional[str]:
     repo = rag_config.effective_gguf_repo_for_embedding_model(model)
     label = _public_embedding_name(model)
     wanted = requested.strip()
+    # A connection reference reads as a tagged identity, so the configured name is matched first.
+    if wanted == model:
+        return model
     if rag_config.embedding_identity_model(wanted) is not None:
         current = rag_embeddings.embedding_identity(model)
         if wanted in (current, _public_embedding_identity(current, model, label)):
@@ -41276,6 +41492,14 @@ async def _studio_embeddings(
         encoding_format = "float"
     dimensions = body.get("dimensions")
     model_name = model_name or rag_config.effective_embedding_model()
+    # Same rule as chat: an API key must not spend a saved connection's credential.
+    if rag_config.is_connection_model(model_name) and not _request_may_use_saved_provider_key(
+        request
+    ):
+        raise HTTPException(
+            status_code = 403,
+            detail = "Studio's embedding model runs on a saved connection, which needs a UI session.",
+        )
     label = _public_embedding_name(model_name)
 
     def _embed():
@@ -44043,7 +44267,7 @@ async def _responses_stream(
                                 "output": [],
                                 "error": {
                                     "code": _responses_error_code(RuntimeError(err_text)),
-                                    "message": _friendly_upstream_error(err_text[:500]),
+                                    "message": _friendly_upstream_error(err_text),
                                 },
                             },
                         },
@@ -47838,6 +48062,8 @@ async def anthropic_messages(
                 ),
                 replay_preserve_thinking = not _anthropic_history_has_thinking(payload),
                 website_policy = website_policy,
+                # This route never runs _recover_cut_thought: keep the exhaustion notice.
+                record_cut_thought = False,
                 **_reasoning_args,
             )
 
@@ -48010,9 +48236,9 @@ class _AnthropicToolEventRules:
         return released + self._emitter.feed(event)
 
     def _release_held_mention(self) -> list:
-        """A backticked tag still held when its turn ends never closed: emit what the full strip keeps."""
+        """Whatever a turn still holds never closed: emit what the unheld strip keeps."""
         raw, self._turn_raw = self._turn_raw, ""
-        if not raw or _pending_mention_cut(raw) < 0:
+        if not raw or not self._span_guard.held:
             return []
         return self._emitter.feed(
             {
@@ -48403,7 +48629,7 @@ def _anthropic_tool_response_from_events(
     def _release_held_mention() -> None:
         nonlocal turn_event
         last, turn_event = turn_event, None
-        if last is None or _pending_mention_cut(last["text"]) < 0:
+        if last is None or not _span_guard.held:
             return
         _add_text(
             _span_guard.strip(
@@ -49134,14 +49360,13 @@ async def _anthropic_passthrough_stream(
                         pass
                     resp = None
                     continue
-                _err_text = _err_text[:500]
                 # The outer 200 stream headers are already flushed, so flag the failure: the
                 # middleware must not claim a preview-owned model on a passthrough whose
                 # upstream errored before any SSE.
                 from core.inference.llama_keepwarm import mark_response_failed
 
                 mark_response_failed(getattr(request, "scope", None))
-                _over = bool(_classify_llama_generation_error(Exception(_err_text)))
+                _over = bool(_classify_llama_generation_error(Exception(_err_text[:500])))
                 yield build_anthropic_sse_event(
                     "error",
                     anthropic_error_body(
@@ -49432,8 +49657,8 @@ async def _anthropic_passthrough_non_streaming(
             resp = await upstream.post(body, timeout = _timeout)
 
         if resp.status_code != 200:
-            _err_text = resp.text[:500]
-            _over = bool(_classify_llama_generation_error(Exception(_err_text)))
+            _err_text = resp.text
+            _over = bool(_classify_llama_generation_error(Exception(_err_text[:500])))
             raise HTTPException(
                 status_code = 400 if _over else resp.status_code,
                 detail = _anthropic_upstream_error(_err_text),

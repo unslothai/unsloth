@@ -4553,6 +4553,33 @@ from ._gc_train_scope import patch_trainer_train_gc_scope as _patch_trainer_trai
 _patch_trainer_train_gc_scope(transformers.trainer.Trainer)
 
 
+def _trainer_marking_wrapper(original, when):
+    @functools.wraps(original)
+    def wrapper(self, *args, **kwargs):
+        if when == "before":
+            _mark_trainer_models(self)
+        output = original(self, *args, **kwargs)
+        if when == "after":
+            _mark_trainer_models(self)
+        elif when == "result" and isinstance(output, torch.nn.Module):
+            _mark_unsloth_model(output)
+        return output
+
+    wrapper._unsloth_marks_models = True
+    return wrapper
+
+
+def _patch_trainer_marks_models(Trainer):
+    """Mark every model a Trainer holds; train() again, as TRL builds GRPO's reference model after __init__."""
+    for name, when in (("__init__", "after"), ("call_model_init", "result"), ("train", "before")):
+        original = getattr(Trainer, name, None)
+        if original is not None and not getattr(original, "_unsloth_marks_models", False):
+            setattr(Trainer, name, _trainer_marking_wrapper(original, when))
+
+
+_patch_trainer_marks_models(transformers.trainer.Trainer)
+
+
 def patch_mistral_nemo_config(config):
     if "head_dim (" not in config:
         add_head_dim = (
@@ -5866,12 +5893,42 @@ def _requested_float32(dtype):
     return dtype is torch.float32
 
 
+def _unsloth_load_begins():
+    try:
+        from ..import_fixes import apply_cudnn_sdpa_for_unsloth_load
+        apply_cudnn_sdpa_for_unsloth_load()
+    except Exception:
+        pass
+
+
+def _mark_unsloth_model(model):
+    try:
+        from unsloth_zoo.fused_losses.forward_install import mark_model
+    except Exception:
+        return model
+    try:
+        mark_model(model)
+    except Exception:
+        pass
+    return model
+
+
+def _mark_trainer_models(trainer):
+    seen = set()
+    for value in list(vars(trainer).values()):
+        for item in value if isinstance(value, (list, tuple)) else (value,):
+            if isinstance(item, torch.nn.Module) and id(item) not in seen:
+                seen.add(id(item))
+                _mark_unsloth_model(item)
+
+
 def _mark_requested_float32(model, requested):
     """Record on the model, not in the environment: with two models loaded before a trainer is built, an env var describes whichever loaded last. Outermost caller wins, since only it saw dtype before normalization."""
     try:
         model._unsloth_user_float32 = bool(requested)
     except Exception:
         pass
+    _mark_unsloth_model(model)
     # Every from_pretrained return passes here, so this is the opt-in UNSLOTH_MEMORY_REPORT "load" point.
     if os.environ.get("UNSLOTH_MEMORY_REPORT", "0") != "0":
         try:
@@ -5898,6 +5955,25 @@ def _mark_forced_float32(model, forced):
     except Exception:
         pass
     return model
+
+
+def _model_forced_float32(model, max_depth = 6):
+    """Whether Unsloth loaded `model`, or the model a wrapper of it holds (PeftModel, SentenceTransformer), with
+    forced float32. Every Unsloth load stamps it, so an unstamped model was loaded without Unsloth and is not forced:
+    UNSLOTH_FORCE_FLOAT32 is process wide, and a plain model trained after an fp16 Gemma 3 load would read its "1"."""
+    level = [model]
+    for _ in range(max_depth + 1):
+        children = []
+        for m in level:
+            # __dict__, not getattr: PeftModel forwards unknown attributes to the model it wraps.
+            forced = getattr(m, "__dict__", {}).get("_unsloth_forced_float32")
+            if forced is not None:
+                return bool(forced)
+            children.extend((getattr(m, "__dict__", {}).get("_modules") or {}).values())
+        level = [c for c in children if c is not None]
+        if not level:
+            break
+    return False
 
 
 def _drop_float16_overflowing_attention_dropout(model, dtype):
@@ -6282,10 +6358,7 @@ def _unsloth_forced_float32_grad_scaler(trainer, model):
         return None
     if getattr(accelerator, "mixed_precision", None) != "no":
         return None
-    forced = getattr(model, "_unsloth_forced_float32", None)
-    if forced is None:
-        forced = os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1"
-    if not forced:
+    if not _model_forced_float32(model):
         return None
     try:
         from accelerate.utils import DistributedType
@@ -8701,6 +8774,8 @@ def patch_tokenizer(model, tokenizer):
     model, tokenizer = _patch_tokenizer(model, tokenizer)
     if model is not None:
         model.config.update({"unsloth_version": __version__})
+        # FastLlamaModel / FastBaseModel called directly never reach loader.py's return marks.
+        _mark_unsloth_model(model)
     model = patch_harmony_tool_call_eos(model, tokenizer)
     model = patch_harmony_tool_call_eos_vllm(model, tokenizer)
     return model, tokenizer

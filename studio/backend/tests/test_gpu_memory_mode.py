@@ -1241,7 +1241,7 @@ def _launch_diffusion(monkeypatch, tmp_path, *, gguf_gib, gpus, gpu_ids, **kwarg
     monkeypatch.setattr(
         LlamaCppBackend, "_effective_gpu_count", staticmethod(lambda *_a: len(gpus))
     )
-    monkeypatch.setattr(llama_cpp_module, "_swa_cache_path", lambda: tmp_path / "swa.json")
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     monkeypatch.setattr(llama_cpp_module.subprocess, "Popen", _FakePopen)
     monkeypatch.setattr(
         backend,

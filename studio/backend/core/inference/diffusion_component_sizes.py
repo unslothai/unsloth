@@ -444,7 +444,9 @@ def hub_disabled() -> bool:
         "no",
     ):
         return True
-    return (os.environ.get("HF_HUB_OFFLINE") or "").strip().lower() in ("1", "on", "true", "yes")
+    from utils.utils import hf_env_offline
+
+    return hf_env_offline()
 
 
 def _hub_header(

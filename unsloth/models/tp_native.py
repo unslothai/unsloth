@@ -3221,10 +3221,19 @@ def _refuse_cached_forward(module):
         names = list(inspect.signature(forward).parameters)
     except (TypeError, ValueError):
         names = []
-    index = names.index("past_key_values") if "past_key_values" in names else None
+    # transformers 5.24 renamed past_key_values to cache.
+    name = next((n for n in ("cache", "past_key_values") if n in names), None)
+    index = names.index(name) if name is not None else None
 
     def forward_without_cache(*args, **kwargs):
-        past = kwargs.get("past_key_values", kwargs.get("past_key_value"))
+        past = next(
+            (
+                kwargs[n]
+                for n in ("cache", "past_key_values", "past_key_value")
+                if kwargs.get(n) is not None
+            ),
+            None,
+        )
         if past is None and index is not None and len(args) > index:
             past = args[index]
         if _cache_in_use(past) and not _replica_in(module):

@@ -2192,3 +2192,37 @@ def test_deferred_mcp_schema_reaches_external_transports(monkeypatch, executed):
     )
     _run(transport, tools = [search])
     assert transport.requests[1]["tools"] == [search, ping]
+
+
+def test_each_python_call_runs_with_the_analysis_its_own_classification_made(executed, monkeypatch):
+    """Auto mode screens the code once: each run gets the handoff its own approval check used."""
+    from core.inference import tools as tools_mod
+
+    classified: list = []
+
+    def _is_high_risk(name, arguments):
+        classified.append((arguments.get("code"), tools_mod._python_call_analyses.get()))
+        return False
+
+    monkeypatch.setattr(loop_mod, "is_high_risk_tool_call", _is_high_risk)
+    calls = [
+        {
+            "index": i,
+            "id": f"c{i}",
+            "function": {"name": "python", "arguments": json.dumps({"code": f"print({i})"})},
+        }
+        for i in range(2)
+    ]
+    transport = FakeTransport(
+        [
+            [_sse({"tool_calls": calls}), _sse(finish = "tool_calls"), _DONE],
+            [_sse({"content": "ok"}), _sse(finish = "stop"), _DONE],
+        ]
+    )
+    _run(transport, tools = [PY], permission_mode = "auto", confirm_calls = True)
+
+    assert [call["arguments"]["code"] for call in executed] == ["print(0)", "print(1)"]
+    handed = [call["python_analyses"] for call in executed]
+    assert all(isinstance(a, tools_mod.PythonCallAnalyses) for a in handed)
+    assert handed[0] is not handed[1]
+    assert [a for _code, a in classified] == handed

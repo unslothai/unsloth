@@ -276,6 +276,89 @@ def _managed_refusal(primary: str) -> RemoteCodeDecision:
     )
 
 
+_MAX_ADAPTER_CHAIN = 4
+
+
+def _adapter_base_of(target: str, hf_token) -> Optional[str]:
+    """base_model_name_or_path from a target's own adapter_config.json (local or Hub), else None."""
+    import json
+    from pathlib import Path
+
+    from utils.datasets.remote_images import is_network_share
+
+    if is_network_share(target):
+        return None
+    try:
+        cfg = Path(target) / "adapter_config.json"
+        if cfg.is_file():
+            base = json.loads(cfg.read_text(encoding = "utf-8-sig")).get("base_model_name_or_path")
+        else:
+            from utils.transformers_version import _remote_lora_base
+            base = _remote_lora_base(target, hf_token = hf_token or None)
+    except Exception:
+        return None
+    if not isinstance(base, str) or not base.strip() or is_network_share(base.strip()):
+        return None
+    return base.strip()
+
+
+def _discovered_root_allowed(path: str) -> bool:
+    """A root found by following a config is scanned for a managed account only inside its own
+    workspace: the scan returns snippets of what it reads, and the load refuses the rest anyway."""
+    from pathlib import Path
+
+    from utils.paths.storage_roots import within_account
+
+    try:
+        if not Path(path).exists():
+            return True  # a Hub id
+        return within_account(Path(path))
+    except (OSError, ValueError):
+        return False
+
+
+# A trained EAGLE-3 drafter folder: GGUF export runs the converter on it under the load's trust.
+_DRAFTER_SUBDIR = "eagle3"
+
+
+def _local_drafter_dir(target: str) -> Optional[str]:
+    from pathlib import Path
+
+    from utils.datasets.remote_images import is_network_share
+
+    if is_network_share(target):
+        return None
+    try:
+        drafter = Path(target) / _DRAFTER_SUBDIR
+        if not (drafter / "config.json").is_file() or not _discovered_root_allowed(str(drafter)):
+            return None
+        return str(drafter)
+    except (OSError, ValueError):
+        return None
+
+
+def _with_adapter_chains(targets, hf_token) -> list:
+    """transformers follows a base's own adapter_config.json to the model named there and runs its
+    auto_map code, so every model along an adapter chain is scanned, not only the first base; a
+    local checkpoint's drafter folder is converted under the same trust, so it is scanned too."""
+    out = list(targets)
+    seen = set(out)
+    for target in list(targets):
+        drafter = _local_drafter_dir(target)
+        if drafter and drafter not in seen:
+            seen.add(drafter)
+            out.append(drafter)
+        current = target
+        for _ in range(_MAX_ADAPTER_CHAIN):
+            nxt = _adapter_base_of(current, hf_token)
+            if not nxt or nxt in seen or not _discovered_root_allowed(nxt):
+                break
+            seen.add(nxt)
+            out.append(nxt)
+            current = nxt
+    return out
+
+
 def evaluate_remote_code_consent_for_targets(
     targets,
     hf_token: Optional[str] = None,
@@ -310,7 +393,7 @@ def evaluate_remote_code_consent_for_targets(
     combined: dict = {}
     has_remote_code = False
     load_subdirs_by_target = load_subdirs_by_target or {}
-    for target in targets:
+    for target in _with_adapter_chains(targets, hf_token):
         load_subdirs = tuple(load_subdirs_by_target.get(target, ()))
         scan_kwargs = {"load_subdirs": load_subdirs} if load_subdirs else {}
         declares_code = _config_has_auto_map(target, hf_token, **scan_kwargs)

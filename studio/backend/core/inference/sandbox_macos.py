@@ -4,6 +4,8 @@
 """Default-deny Seatbelt profiles for sandbox-exec; file rules do not block AF_UNIX connect, so sockets get their own."""
 
 from __future__ import annotations
+import contextvars
+import functools
 import json
 import os
 import posixpath
@@ -224,9 +226,16 @@ def available() -> tuple[bool, str]:
     return True, "the system Seatbelt launcher is present and executable"
 
 
+@functools.lru_cache(maxsize = 4096)
 def _sbpl_string(value: str) -> str:
     """An SBPL string literal with non-ASCII left RAW: TinyScheme has no u-escape, so json's default breaks accented paths."""
     return json.dumps(value, ensure_ascii = False)
+
+
+# One render's path spellings (each a realpath, asked for by several rules); a later launch re-resolves.
+_render_spellings: contextvars.ContextVar = contextvars.ContextVar(
+    "seatbelt_render_spellings", default = None
+)
 
 
 def _validated(path: str) -> str:
@@ -272,6 +281,18 @@ def _rule(operations: str, filters: list[str]) -> str:
 
 def _sbpl_spellings(path: str, *, resolve: bool = True) -> tuple[str, ...]:
     """Both /private aliases even when absent; ``resolve = False`` keeps symlink targets out."""
+    memo = _render_spellings.get()
+    if memo is None:
+        return _compute_sbpl_spellings(path, resolve)
+    key = (path, resolve)
+    found = memo.get(key)
+    if found is None:
+        # A rejected path raises and is not stored, so every use still refuses it.
+        found = memo[key] = _compute_sbpl_spellings(path, resolve)
+    return found
+
+
+def _compute_sbpl_spellings(path: str, resolve: bool) -> tuple[str, ...]:
     selected = [posixpath.abspath(_validated(path))]
     if resolve:
         # Validated: a newline in a symlink target would end up inside a quoted string.
@@ -418,7 +439,7 @@ def runtime_read_paths(workdir: str | None = None) -> tuple[str, ...]:
         pass
 
     selected: list[str] = []
-    for candidate in candidates:
+    for candidate in dict.fromkeys(candidates):
         if not candidate or not posixpath.isabs(candidate):
             continue
         written = posixpath.abspath(candidate)
@@ -463,7 +484,8 @@ def runtime_paths_under(workdir: str) -> tuple[str, ...]:
             posixpath.join(prefix, name)
             for name in ("bin", "include", "lib", "lib64", "libexec", "pyvenv.cfg", "ssl", "Python")
         )
-    for candidate in candidates:
+    # sys.executable stays first, keeping its identity check below.
+    for candidate in dict.fromkeys(candidates):
         if not os.path.exists(candidate):
             continue
         resolved = os.path.realpath(candidate)
@@ -536,6 +558,27 @@ def build_profile(
     egress_port: int | None = None,
 ) -> str:
     """Writes and spawns nothing, so a test can assert on the text anywhere."""
+    token = _render_spellings.set({})
+    try:
+        return _build_profile(
+            workdir = workdir,
+            private_tmp = private_tmp,
+            runtime_paths = runtime_paths,
+            developer_paths = developer_paths,
+            egress_port = egress_port,
+        )
+    finally:
+        _render_spellings.reset(token)
+
+
+def _build_profile(
+    *,
+    workdir: str,
+    private_tmp: str,
+    runtime_paths: tuple[str, ...],
+    developer_paths: tuple[str, ...],
+    egress_port: int | None,
+) -> str:
     readable_paths = (
         *_READ_ROOTS,
         *_TLS_TRUST_PATHS,
