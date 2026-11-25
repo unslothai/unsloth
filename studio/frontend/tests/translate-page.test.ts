@@ -114,6 +114,42 @@ test("a line longer than a chunk breaks at sentence ends", () => {
   );
 });
 
+test("hard-wrapped text is cut between sentences, not inside one", () => {
+  const words =
+    "the court held that any party may seek relief under applicable law when".split(
+      " ",
+    );
+  const sentence = (i: number) =>
+    `${Array.from({ length: 6 + ((i * 7) % 15) }, (_, j) => words[(i + j) % words.length]).join(" ")}.`;
+  const wrap = (paragraph: string) =>
+    paragraph
+      .split(" ")
+      .reduce((lines, word) => {
+        const last = lines[lines.length - 1];
+        if (last && last.length + word.length < 90)
+          lines[lines.length - 1] = `${last} ${word}`;
+        else lines.push(word);
+        return lines;
+      }, [] as string[])
+      .join("\n");
+  const paragraphs = Array.from({ length: 6 }, (_, p) =>
+    wrap(Array.from({ length: 6 }, (_, s) => sentence(p * 6 + s)).join(" ")),
+  );
+  for (const source of [paragraphs.join("\n\n"), wrap(paragraphs.join(" "))]) {
+    const chunks = splitForTranslation(source);
+    assert.ok(chunks.length > 2);
+    assert.equal(rejoin(source), source);
+    for (const chunk of chunks.slice(0, -1)) {
+      assert.ok(chunk.text.length <= 1000);
+      assert.match(
+        chunk.text,
+        /\.$/,
+        `cut mid-sentence: ...${chunk.text.slice(-40)}`,
+      );
+    }
+  }
+});
+
 test("the translation keeps the source's own surrounding whitespace", () => {
   assert.equal(
     restoreChunkWhitespace({ text: "  Hello ", after: "\n\n" }, "\nBonjour\n"),
@@ -124,7 +160,7 @@ test("the translation keeps the source's own surrounding whitespace", () => {
 const auto = { sourceName: null, mode: "automatic", tone: "default" } as const;
 
 test("Hy-MT2 gets its model card's prompt: one user turn, no system prompt", () => {
-  const [message, ...rest] = translateMessages("hy-mt2-1.8b", "Hello", {
+  const [message, ...rest] = translateMessages("hy-mt3-1.8b", "Hello", {
     ...auto,
     targetName: "French",
   });
@@ -134,7 +170,7 @@ test("Hy-MT2 gets its model card's prompt: one user turn, no system prompt", () 
     message.content,
     "Translate the following text into French. Note that you should only output the translated result without any additional explanation:\n\nHello",
   );
-  const [styled] = translateMessages("hy-mt2-7b", "Hello", {
+  const [styled] = translateMessages("hy-mt3-7b", "Hello", {
     sourceName: "English",
     targetName: "French",
     mode: "literal",
@@ -193,7 +229,7 @@ test("an edited prompt replaces the built one and keeps its language placeholder
   } as const;
   assert.equal(
     translateInstruction(
-      "hy-mt2-1.8b",
+      "hy-mt3-1.8b",
       templateOptions({ ...auto, targetName: "French" }),
     ),
     `Translate the following text into ${TARGET_PLACEHOLDER}. Note that you should only output the translated result without any additional explanation:`,
@@ -204,7 +240,7 @@ test("an edited prompt replaces the built one and keeps its language placeholder
   );
   const custom = `Render this ${SOURCE_PLACEHOLDER} text in ${TARGET_PLACEHOLDER}, as a pirate:`;
   assert.equal(
-    translateMessages("hy-mt2-1.8b", "Hello", { ...options, custom })[0]
+    translateMessages("hy-mt3-1.8b", "Hello", { ...options, custom })[0]
       .content,
     "Render this English text in French, as a pirate:\n\nHello",
   );
@@ -231,14 +267,14 @@ test("a reasoning block that opens the reply is dropped, closed or not", () => {
   );
 });
 
-test("the model list is the two downloads plus the chat model", () => {
+test("the model list is the Hy-MT3 downloads plus the chat model", () => {
   assert.equal(isTranslateModelId(DEFAULT_TRANSLATE_MODEL), true);
   assert.equal(isTranslateModelId(CHAT_TRANSLATE_MODEL), true);
   assert.equal(isTranslateModelId("gpt"), false);
   assert.equal(dedicatedTranslateModel(CHAT_TRANSLATE_MODEL), null);
   assert.deepEqual(
     DEDICATED_TRANSLATE_MODELS.map((model) => model.repo),
-    [...TRANSLATION_ONLY_REPOS],
+    TRANSLATION_ONLY_REPOS.filter((repo) => repo.includes("Hy-MT3")),
   );
 });
 
@@ -258,7 +294,7 @@ test("the first target is the first browser language the model knows", () => {
   assert.equal(suggestedTargetLanguage(["fil-PH"]), "tl");
   assert.equal(suggestedTargetLanguage(["sv-SE"]), "en");
   assert.equal(suggestedTargetLanguage([]), "en");
-  // Hy-MT2, the default model, does not translate Hmong.
+  // Hy-MT3, the default model, does not translate Hmong.
   assert.equal(suggestedTargetLanguage(["hmn", "fr-FR"]), "fr");
   assert.equal(suggestedTargetLanguage(["sw-KE", "af-ZA"]), "en");
 });
@@ -483,13 +519,13 @@ test("a model from the picker keeps its own identity and takes the right prompt"
     translatePromptModel(CUSTOM_TRANSLATE_MODEL, hyMt),
     DEFAULT_TRANSLATE_MODEL,
   );
-  assert.equal(translatePromptModel("hy-mt2-7b", gemma), "hy-mt2-7b");
+  assert.equal(translatePromptModel("hy-mt3-7b", gemma), "hy-mt3-7b");
 
   assert.notEqual(
     translateModelKey(CUSTOM_TRANSLATE_MODEL, gemma),
     translateModelKey(CUSTOM_TRANSLATE_MODEL, hyMt),
   );
-  assert.equal(translateModelKey("hy-mt2-7b", gemma), "hy-mt2-7b");
+  assert.equal(translateModelKey("hy-mt3-7b", gemma), "hy-mt3-7b");
 });
 
 test("read aloud asks for a voice of the translation's language", () => {

@@ -173,9 +173,9 @@ test("a Translate click is never replaced by a later typed draft", async () => {
 });
 
 test("a model marked ready can be forgotten without touching the others", () => {
-  state().setModelReady("hy-mt2-1.8b", true);
+  state().setModelReady("hy-mt3-1.8b", true);
   state().setModelReady("chat", true);
-  state().setModelReady("hy-mt2-1.8b", false);
+  state().setModelReady("hy-mt3-1.8b", false);
   assert.deepEqual(state().readyModels, ["chat"]);
 });
 
@@ -278,7 +278,7 @@ test("Hy-MT2 never keeps a chat-only language; a chat model offers it again", as
     state().setTarget("hmn");
     assert.equal(state().prefs.target, "hmn");
 
-    state().setPrefs({ modelId: "hy-mt2-1.8b" });
+    state().setPrefs({ modelId: "hy-mt3-1.8b" });
     assert.equal(state().prefs.target, "de");
     state().setTarget("hmn");
     assert.equal(state().prefs.target, "de");
@@ -294,7 +294,7 @@ test("Hy-MT2 never keeps a chat-only language; a chat model offers it again", as
     await state().translate();
     const entry = state().history[0];
     assert.equal(entry.target, "hmn");
-    state().setPrefs({ modelId: "hy-mt2-1.8b" });
+    state().setPrefs({ modelId: "hy-mt3-1.8b" });
     state().restore(entry);
     assert.notEqual(state().prefs.target, "hmn");
     // The saved Hmong output is still labelled Hmong, so it reads aloud and moves on as Hmong.
@@ -318,6 +318,6 @@ test("Hy-MT2 never keeps a chat-only language; a chat model offers it again", as
     });
     assert.notEqual(state().prefs.target, "hmn");
   } finally {
-    state().setPrefs({ modelId: "hy-mt2-1.8b", customModel: null });
+    state().setPrefs({ modelId: "hy-mt3-1.8b", customModel: null });
   }
 });

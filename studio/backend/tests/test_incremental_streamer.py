@@ -195,19 +195,78 @@ _INDENTED = (
 )
 
 
+def _tokenizer_is_whole(tokenizer):
+    """A cache caught mid-download (config.json and tokenizer_config.json, no tokenizer.json /
+    tokenizer.model yet) still loads with local_files_only, as a vocabulary of only the added
+    tokens: every word becomes <unk>, so Gemma decodes to bare newlines and Llama 2 to ''."""
+    probe = "def f(x):\n    if x:"
+    ids = tokenizer.encode(probe, add_special_tokens = False)
+    return tokenizer.decode(ids, skip_special_tokens = True).strip() == probe.strip()
+
+
 @pytest.fixture(scope = "module", params = _REAL_TOKENIZERS)
-def real_tokenizer(request, allow_outbound_network):
+def real_tokenizer(request, allow_outbound_network, tmp_path_factory):
+    from filelock import FileLock
     from transformers import AutoTokenizer
-    try:
-        return AutoTokenizer.from_pretrained(request.param, local_files_only = True)
-    except Exception:  # noqa: BLE001 -- not cached yet
-        pass
-    try:
-        with allow_outbound_network():
-            return AutoTokenizer.from_pretrained(request.param)
-    except Exception as e:  # noqa: BLE001 -- offline or hub unavailable
-        # Skips when this machine has no Hub access: the tokenizer files come from the Hub.
-        pytest.skip(reason = f"tokenizer {request.param} not downloadable (no Hub access): {e}")
+
+    repo = request.param
+    # One lock per repo for every xdist worker (they share the Hub cache): a worker reading the
+    # cache while another is still downloading into it gets the partial vocabulary above.
+    lock = tmp_path_factory.getbasetemp().parent / f"tokenizer-{repo.replace('/', '--')}.lock"
+    with FileLock(str(lock)):
+        try:
+            tokenizer = AutoTokenizer.from_pretrained(repo, local_files_only = True)
+            if _tokenizer_is_whole(tokenizer):
+                return tokenizer
+        except Exception:  # noqa: BLE001 -- not cached yet
+            pass
+        try:
+            with allow_outbound_network():
+                tokenizer = AutoTokenizer.from_pretrained(repo)
+        except Exception as e:  # noqa: BLE001 -- offline or hub unavailable
+            # Skips when this machine has no Hub access: the tokenizer files come from the Hub.
+            pytest.skip(reason = f"tokenizer {repo} not downloadable (no Hub access): {e}")
+    assert _tokenizer_is_whole(
+        tokenizer
+    ), f"{repo}: the downloaded tokenizer does not round-trip plain text"
+    return tokenizer
+
+
+def test_partial_tokenizer_cache_is_not_taken_for_a_tokenizer():
+    """The vocabulary a half-downloaded cache yields: only special tokens, so text decodes to ''."""
+
+    class _AddedTokensOnly:
+        def encode(
+            self,
+            text,
+            add_special_tokens = False,
+        ):
+            return [0 if ch != "\n" else 1 for ch in text]
+
+        def decode(
+            self,
+            ids,
+            skip_special_tokens = True,
+        ):
+            return "".join("\n" if i == 1 else "" for i in ids)
+
+    class _Whole:
+        def encode(
+            self,
+            text,
+            add_special_tokens = False,
+        ):
+            return [ord(ch) for ch in text]
+
+        def decode(
+            self,
+            ids,
+            skip_special_tokens = True,
+        ):
+            return "".join(map(chr, ids))
+
+    assert not _tokenizer_is_whole(_AddedTokensOnly())
+    assert _tokenizer_is_whole(_Whole())
 
 
 @pytest.mark.parametrize("mode", ["plain", "native-tool"])

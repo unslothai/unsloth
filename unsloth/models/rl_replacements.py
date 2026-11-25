@@ -1857,11 +1857,9 @@ RL_FUNCTIONS["sft_trainer"].append(sft_trainer_assistant_mask_fallback)
 
 
 def _unsloth_grpo_autocast_forced_float32(self):
-    # Stamped by from_pretrained: UNSLOTH_FORCE_FLOAT32 is process wide, so a model loaded after this trainer was built would answer for it here.
-    forced = getattr(getattr(self, "model", None), "_unsloth_forced_float32", None)
-    if forced is None:
-        forced = os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1"
-    return forced
+    # Stamped by from_pretrained: UNSLOTH_FORCE_FLOAT32 is process wide, so a model loaded after this trainer was built, or a model Unsloth never loaded, would answer for it here.
+    from unsloth.models._utils import _model_forced_float32
+    return _model_forced_float32(getattr(self, "model", None))
 
 
 def _unsloth_seq_packing_verify_verdict(model, kind, diff, result, ref, cmask):

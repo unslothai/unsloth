@@ -387,3 +387,64 @@ def test_video_reads_pass_the_base_check_for_the_official_hosted_files():
         assert fam is not None and NH.native_hosted_family(fam)
         assert _same_base_model(header, fam.base_repo)
         assert not _same_base_model("Lightricks/LTX-2", fam.base_repo)
+
+
+def test_fp16_card_read_holds_every_dense_tensor_in_float16(tmp_path):
+    # An fp16-only card (Turing) reads the same hosted codes, computing and holding the rest in float16, as its
+    # at-load build of a float16 from_pretrained does.
+    path, cfg_dir, built = _write_hosted(tmp_path)
+    model = NH.load_native_from_hosted(
+        str(path),
+        CLS,
+        str(cfg_dir),
+        spec = _spec(),
+        family = FAMILY,
+        logger = None,
+        compute_dtype = torch.float16,
+    )
+    assert model is not None
+    native = {n: m for n, m in model.named_modules() if is_native_linear(m)}
+    assert sorted(native) == built["quantised"]
+    for fqn, layer in native.items():
+        assert layer.compute_dtype is torch.float16
+        assert torch.equal(layer.weight_q, built["state"][fqn + "._weight_qdata"])
+        if layer.rot_group:
+            assert layer.rot_h.dtype is torch.float16
+        if layer.bias is not None:
+            assert layer.bias.dtype is torch.float16
+    dense = [
+        (n, p.dtype)
+        for n, p in model.named_parameters()
+        if p.is_floating_point() and p.dtype is not torch.float16
+    ]
+    assert dense == []
+    # The runtime fp16-card build of the dense model makes the same layers with the same compute dtype.
+    runtime = _dense().to(torch.float16)
+    apply_native_weight_quant(
+        runtime,
+        "int8",
+        filter_fn = make_filter_fn(
+            int(_spec()["min_features"]),
+            tuple(_spec()["exclude_name_tokens"]),
+            require_dtype = torch.float16,
+        ),
+        act_int8 = True,
+    )
+    expect = {n: m for n, m in runtime.named_modules() if is_native_linear(m)}
+    assert sorted(expect) == sorted(native)
+    for fqn, layer in expect.items():
+        assert layer.compute_dtype is torch.float16
+        assert layer.rot_group == native[fqn].rot_group
+        same = (layer.weight_q == native[fqn].weight_q).float().mean().item()
+        assert same > 0.999, (fqn, same)
+
+
+def test_fp16_card_read_refuses_a_pickle(tmp_path):
+    path = tmp_path / "x-INT8.pt"
+    path.write_bytes(b"")
+    assert (
+        NH.load_native_from_hosted(
+            str(path), CLS, "unused", spec = _spec(), family = FAMILY, compute_dtype = torch.float16
+        )
+        is None
+    )

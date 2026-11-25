@@ -3,19 +3,13 @@
 
 "use client";
 
-import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
-import { useToolOutputFor, useToolPaneScope } from "@/features/chat";
+import { useToolOutput } from "@/features/chat";
 import { stripAnsi, tailToolOutput } from "@/lib/strip-ansi";
 import { useEffect, useMemo, useRef } from "react";
 
 /** Fed by `tool_output` SSE events; mounted only while running. */
 export function ToolLiveOutput({ toolCallId }: { toolCallId: string }) {
-  const paneScope = useToolPaneScope();
-  const output = useToolOutputFor(
-    useChatRuntimeStore((s) => s.toolLiveOutput),
-    paneScope,
-    toolCallId,
-  );
+  const output = useToolOutput("toolLiveOutput", toolCallId);
   return output ? <ToolLiveOutputPane output={output} /> : null;
 }
 

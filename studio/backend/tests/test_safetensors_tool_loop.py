@@ -5817,3 +5817,51 @@ def test_split_reasoning_content_leaves_the_shown_final_turn_alone():
 
     # The route streams deltas, so a final snapshot shorter than the streamed one would leave the call shown.
     assert shown(True) == shown(False)
+
+
+def test_a_python_call_runs_with_the_analysis_its_classification_made():
+    """Auto mode screens the code once: each run gets the handoff its own approval check filled."""
+    from core.inference import tools as tools_mod
+
+    seen: list = []
+
+    def _execute(
+        name,
+        arguments,
+        *,
+        python_analyses = None,
+        **_kwargs,
+    ):
+        seen.append((name, arguments.get("code"), python_analyses))
+        return "OK"
+
+    turn_iter = iter(
+        [
+            [
+                "<function=python><parameter=code>print(1)</parameter></function>"
+                "<function=python><parameter=code>print(2)</parameter></function>"
+            ],
+            ["Done."],
+        ]
+    )
+
+    def _gen(_messages):
+        yield next(turn_iter)[0]
+
+    _collect_events(
+        run_safetensors_tool_loop(
+            single_turn = _gen,
+            messages = [{"role": "user", "content": "run"}],
+            tools = [{"type": "function", "function": {"name": "python"}}],
+            execute_tool = _execute,
+            confirm_tool_calls = True,
+            permission_mode = "auto",
+            session_id = "sess",
+            max_tool_iterations = 3,
+        )
+    )
+
+    assert [code for _name, code, _a in seen] == ["print(1)", "print(2)"]
+    first, second = (analyses for _name, _code, analyses in seen)
+    assert isinstance(first, tools_mod.PythonCallAnalyses) and first is not second
+    assert list(first._by_source) == ["print(1)"] and list(second._by_source) == ["print(2)"]

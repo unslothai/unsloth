@@ -73,29 +73,13 @@ from utils.hf_cache_settings import get_hf_cache_paths
 from utils.subprocess_compat import (
     windows_hidden_subprocess_kwargs as _windows_hidden_subprocess_kwargs,
 )
+from utils.utils import hf_env_offline
 
 # Safe at module scope, unlike utils.models below: utils.training_runs is stdlib-only, so it
 # cannot pin a transformers version into sys.modules before the sidecar is activated.
 from utils.training_runs import base_model_from_run_dir_name
 
 logger = get_logger(__name__)
-
-
-_OFFLINE_TRUE_VALUES = {"1", "true", "yes", "on"}
-
-
-def _env_offline() -> bool:
-    """An open force_hf_offline window counts too, since a spawn briefly restores the user's env values."""
-    try:
-        from utils.utils import force_hf_offline_active
-        if force_hf_offline_active():
-            return True
-    except Exception:
-        pass
-    return (
-        os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in _OFFLINE_TRUE_VALUES
-        or os.environ.get("TRANSFORMERS_OFFLINE", "").strip().lower() in _OFFLINE_TRUE_VALUES
-    )
 
 
 def _hf_raw_url(model_name: str, filename: str) -> str:
@@ -139,7 +123,7 @@ _hf_json_ahead: dict[tuple[str, str | None], Future] = {}
 
 def read_activation_files_ahead(model_name: str, hf_token: str | None) -> None:
     """Start activation's raw Hub reads together so TLS handshakes overlap; each answer serves one read."""
-    if not _is_canonical_repo_id(model_name) or _env_offline():
+    if not _is_canonical_repo_id(model_name) or hf_env_offline():
         return
     from utils.paths import is_local_path
 
@@ -854,7 +838,7 @@ def _remote_lora_base(model_name: str, hf_token: str | None = None) -> str | Non
             return None  # an existing relative path is a local checkpoint, not a Hub repo
     except Exception:
         pass
-    if _env_offline():
+    if hf_env_offline():
         return _adapter_base_from_hf_cache(model_name)
 
     import urllib.error
@@ -921,7 +905,7 @@ def _check_tokenizer_config_needs_v5(model_name: str, hf_token: str | None = Non
         return False
 
     # Offline: skip the 10s fetch (fail open). Don't cache this assumed negative.
-    if _env_offline():
+    if hf_env_offline():
         return False
 
     # --- Fall back to fetching from HuggingFace ---
@@ -1042,7 +1026,7 @@ def _load_config_json(model_name: str, hf_token: str | None = None) -> dict | No
     # Hub cache reads skip authorization, so a caller denied the ambient credential gets none.
     cache_denied = not cache_reads_authorized(hf_token, repo_id = model_name)
 
-    if _env_offline():
+    if hf_env_offline():
         # Offline: tier from hub cache; cache hits but never misses (so online reads still fetch); an unverified explicit token is denied here.
         if cache_denied:
             return None
@@ -1659,7 +1643,7 @@ def _probe_autoconfig(target_dir: str, model_name: str, hf_token: str | None) ->
     env = get_hf_cache_paths().child_env(child_env_without_native_path_secret())
     # The probe reads the implicit HF_TOKEN env, so grant or scrub here, not via argv.
     apply_token_to_child_env(env, hf_token)
-    if _env_offline():
+    if hf_env_offline():
         env["HF_HUB_OFFLINE"] = "1"
         env["TRANSFORMERS_OFFLINE"] = "1"
     try:
@@ -2775,7 +2759,9 @@ def _top_up_optional_packages(venv_dir: str, packages: tuple[str, ...]) -> bool:
     """Installs to a scratch dir and renames in, dist-info last, so no RECORD precedes its files."""
     usable = True
     # Offline installs can only miss and the miss is remembered, unless pip has a local wheelhouse.
-    offline = _env_offline() or (_runtime_repair_is_offline() and not _pip_is_configured_offline())
+    offline = hf_env_offline() or (
+        _runtime_repair_is_offline() and not _pip_is_configured_offline()
+    )
     for pkg in packages:
         if not _sidecar_package_is_optional(pkg):
             continue
@@ -2964,7 +2950,7 @@ def _optional_top_up_lock(venv_dir: str):
         yield held
 
 
-_UV_OFFLINE_TRUE_VALUES = _OFFLINE_TRUE_VALUES | {"t", "y"}
+_UV_OFFLINE_TRUE_VALUES = {"1", "true", "t", "yes", "y", "on"}
 
 
 _PIP_TRUE_VALUES = frozenset({"1", "true", "t", "yes", "y", "on"})
@@ -3674,7 +3660,7 @@ def _ensure_venv_t5_latest_exists() -> bool:
             version,
         )
         return False
-    if _env_offline():
+    if hf_env_offline():
         logger.warning(
             ".venv_t5_latest (transformers %s) is incomplete and offline mode is set; "
             "cannot repair it.",
@@ -3720,7 +3706,7 @@ def ensure_latest_transformers_venv(
     if not _is_valid_version_string(version):
         logger.error("Refusing to install invalid transformers version %r", version)
         return False
-    if _env_offline():
+    if hf_env_offline():
         logger.warning(
             "Cannot install transformers %s: HF/transformers offline mode is set.", version
         )
@@ -3806,7 +3792,7 @@ def _ensure_venv_llmcompressor_exists() -> bool:
             "compressed export of newer-transformers models will fail fast."
         )
         return False
-    if _env_offline():
+    if hf_env_offline():
         logger.warning(
             "llm-compressor-main shadow missing and HF/offline mode is set; cannot provision it."
         )

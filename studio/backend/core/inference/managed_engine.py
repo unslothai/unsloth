@@ -1295,6 +1295,13 @@ class ManagedEngine:
         }
         if kwargs.get("tools"):
             body["tools"] = kwargs["tools"]
+        if (
+            kwargs.get("continue_final_message")
+            and messages
+            and messages[-1].get("role") == "assistant"
+        ):
+            # Price what the request sends: SGLang folds the partial's thought into its content.
+            self.continue_final_message(body)
         return self._tokenize(body), self.model
 
     def generate(

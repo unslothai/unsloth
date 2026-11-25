@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { modelErrorToast } from "@/lib/model-error-toast";
 import {
   CACHE_MISS_DOWNLOAD_DESCRIPTION,
   EMPTY_CACHE_MISS_WATCH,
@@ -3716,7 +3717,7 @@ export function useChatModelRuntime() {
           error instanceof Error ? error.message : "Failed to load model";
         setModelsError(message);
         setLastModelLoadError(message);
-        toast.error(message, {
+        modelErrorToast(message, {
           id: toastId,
           closeButton: true,
           duration: 8000,

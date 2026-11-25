@@ -53,7 +53,11 @@ def _load(names):
     return nodes
 
 
-def _writer(tmp_path, converter_source):
+def _writer(
+    tmp_path,
+    converter_source,
+    base = "unsloth/Inkling-2-Mini",
+):
     llama_dir = tmp_path / "llama.cpp"
     llama_dir.mkdir()
     (llama_dir / "convert_lora_to_gguf.py").write_text(converter_source, encoding = "utf-8")
@@ -67,7 +71,7 @@ def _writer(tmp_path, converter_source):
         "PeftModel": _Peft,
         "_clean_save_token": lambda token: None,
         "get_token": lambda: None,
-        "_lora_base_model_id": lambda model: "unsloth/Inkling-2-Mini",
+        "_lora_base_model_id": lambda model: base,
         "get_model_name": lambda name, load_in_4bit = False: name,
         "_model_basename": lambda name: name.split("/")[-1],
         "save_lora_to_custom_dir": save_lora_to_custom_dir,
@@ -76,6 +80,8 @@ def _writer(tmp_path, converter_source):
         "_loaded_via_remote_code": lambda model: False,
         "_base_config_dir": lambda base, token: None,
         "_apply_token_to_child_env": lambda env, token, explicit = False: None,
+        "is_inkling2_config": lambda config: False,
+        "inkling2_lora_gguf_adapter": None,
         "collections": collections,
         "os": os,
         "re": re,
@@ -89,9 +95,72 @@ def _writer(tmp_path, converter_source):
         "_lora_target_parameters",
         "_converter_error_line",
         "_lora_gguf_conversion_error",
+        "_local_base_config_dir",
     }
     exec(compile(ast.Module(_load(names), []), str(_SAVE), "exec"), namespace)
+    loader = _SAVE.parent / "models" / "loader_utils.py"
+    helpers = [
+        n
+        for n in ast.parse(loader.read_text(encoding = "utf-8")).body
+        if isinstance(n, ast.FunctionDef) and n.name == "checkpoint_folder_quant_method"
+    ]
+    exec(compile(ast.Module(helpers, []), str(loader), "exec"), namespace)
     return namespace["_unsloth_save_lora_gguf"]
+
+
+# Stands in for llama.cpp's converter, which indexes every tensor in --base: Inkling2 rejects bnb's packed 4-bit
+# weights there (uint8 / quant_state companions), and a LoRA needs only the config.
+_CONVERTER_READS_BASE = """
+import json, os, sys
+base = sys.argv[sys.argv.index("--base") + 1]
+names = sorted(os.listdir(base))
+config = json.load(open(os.path.join(base, "config.json"), encoding = "utf-8"))
+if any(n.endswith(".safetensors") for n in names) or "quantization_config" in config:
+    print("ValueError: Inkling2: unexpected packed tensor or orphan companion model.layers.0.attn.attn_sink_proj.weight")
+    sys.exit(1)
+out = sys.argv[sys.argv.index("--outfile") + 1]
+open(out, "w", encoding = "utf-8").write(json.dumps({"base": base, "names": names, "config": config}))
+"""
+
+
+def _local_checkpoint(tmp_path, name, quant):
+    import json
+
+    folder = tmp_path / name
+    folder.mkdir()
+    config = {"model_type": "inkling2_loop", "text_config": {"model_type": "inkling2_loop_text"}}
+    if quant:
+        config["quantization_config"] = {"quant_method": "bitsandbytes", "load_in_4bit": True}
+    (folder / "config.json").write_text(json.dumps(config), encoding = "utf-8")
+    (folder / "model.safetensors").write_bytes(b"packed")
+    return str(folder)
+
+
+def test_prequantized_local_base_gives_the_converter_only_its_config(tmp_path):
+    import json
+
+    base = _local_checkpoint(tmp_path, "inkling2_bnb", quant = True)
+    save = _writer(tmp_path, _CONVERTER_READS_BASE, base = base)
+    gguf = save(_Peft(), None, str(tmp_path / "export"), outtype = "q8_0")
+    seen = json.loads(pathlib.Path(gguf).read_text(encoding = "utf-8"))
+    assert seen["base"] != base and seen["names"] == ["config.json"]
+    assert seen["config"] == {
+        "model_type": "inkling2_loop",
+        "text_config": {"model_type": "inkling2_loop_text"},
+    }
+    # The config-only folder is temporary; the checkpoint is untouched.
+    assert not os.path.exists(seen["base"])
+    assert sorted(os.listdir(base)) == ["config.json", "model.safetensors"]
+
+
+def test_16bit_local_base_is_still_passed_as_is(tmp_path):
+    import json
+
+    base = _local_checkpoint(tmp_path, "inkling2_bf16", quant = False)
+    os.remove(os.path.join(base, "model.safetensors"))
+    save = _writer(tmp_path, _CONVERTER_READS_BASE, base = base)
+    gguf = save(_Peft(), None, str(tmp_path / "export"), outtype = "q8_0")
+    assert json.loads(pathlib.Path(gguf).read_text(encoding = "utf-8"))["base"] == base
 
 
 def test_expert_adapter_stops_with_the_converters_reason(tmp_path):

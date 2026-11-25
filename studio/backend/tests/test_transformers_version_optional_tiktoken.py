@@ -355,7 +355,7 @@ def test_a_partial_payload_behind_an_unobtainable_lock_withholds_the_sidecar(tmp
     root.mkdir()
     _partial_tiktoken(root)
     monkeypatch.delenv("UV_OFFLINE", raising = False)
-    monkeypatch.setattr(tv, "_env_offline", lambda: False)
+    monkeypatch.setattr(tv, "hf_env_offline", lambda: False)
     monkeypatch.setattr(tv, "_install_to_dir", lambda pkg, target_dir: False)
 
     @contextlib.contextmanager
@@ -381,7 +381,7 @@ def test_a_sidecar_whose_top_up_remnants_will_not_go_is_not_activated(tmp_path, 
     root.mkdir()
     _partial_tiktoken(root)
     monkeypatch.delenv("UV_OFFLINE", raising = False)
-    monkeypatch.setattr(tv, "_env_offline", lambda: False)
+    monkeypatch.setattr(tv, "hf_env_offline", lambda: False)
     monkeypatch.setattr(tv, "_install_to_dir", lambda pkg, target_dir: False)
     monkeypatch.setattr(tv, "_venv_dir_is_valid_and_undamaged", lambda *a, **k: True)
     real_rmtree = tv.shutil.rmtree
@@ -559,7 +559,7 @@ def test_a_recordless_record_beside_a_complete_install_is_removed_without_a_top_
     stale = root / "tiktoken-0.7.0.dist-info"
     stale.mkdir()
     (stale / "METADATA").write_text("Name: tiktoken\nVersion: 0.7.0\n", encoding = "utf-8")
-    monkeypatch.setattr(tv, "_env_offline", lambda: False)
+    monkeypatch.setattr(tv, "hf_env_offline", lambda: False)
     monkeypatch.delenv("UV_OFFLINE", raising = False)
     monkeypatch.setattr(
         tv, "_install_to_dir", lambda *a, **k: pytest.fail("installed over a present package")
@@ -770,7 +770,7 @@ def test_a_rebuild_takes_the_tiers_lock_and_keeps_a_tree_finished_under_it(tmp_p
     monkeypatch.setattr(tv, "_venv_dir_is_valid_and_undamaged", lambda *a, **k: next(answers))
     monkeypatch.setattr(tv, "_top_up_optional_packages", lambda *a, **k: True)
     monkeypatch.delenv("UV_OFFLINE", raising = False)
-    monkeypatch.setattr(tv, "_env_offline", lambda: False)
+    monkeypatch.setattr(tv, "hf_env_offline", lambda: False)
     monkeypatch.setattr(tv, "_runtime_repair_is_offline", lambda: False)
     installed = []
     monkeypatch.setattr(tv, "_install_to_dir", lambda pkg, target: installed.append(pkg) or True)

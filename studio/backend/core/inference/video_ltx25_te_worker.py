@@ -750,7 +750,19 @@ def _pin_host_copy(model: Any, config: dict) -> int:
 
         if not _exact_pin_supported(device):
             return 0
-        host = {name: p.data for name, p in model.named_parameters() if p.device.type == "cpu"}
+        from core.inference.diffusion_te_embed_host import is_host_embedding
+
+        skip = {
+            f"{prefix}.{name}" if prefix else name
+            for prefix, sub in model.named_modules()
+            if is_host_embedding(sub)
+            for name, _ in sub.named_parameters(recurse = False)
+        }
+        host = {
+            name: p.data
+            for name, p in model.named_parameters()
+            if p.device.type == "cpu" and name not in skip
+        }
         buffers = {name: b for name, b in _named_buffers(model) if b.device.type == "cpu"}
         if not _pin_fits_twice(list(host.values()) + list(buffers.values())):
             return 0
@@ -774,9 +786,13 @@ def _own_host_copy(model: Any) -> bool:
         return False
     try:
         # Keyed by identity: a tied tensor is copied once and stays shared.
+        from core.inference.diffusion_te_embed_host import is_host_embedding
+
         done: dict = {}
         with torch.no_grad():
             for module in model.modules():
+                if is_host_embedding(module):
+                    continue  # stays on its file mapping: only the prompt's rows are ever paged in
                 for table in (module._parameters, module._buffers):
                     for key, tensor in list(table.items()):
                         if tensor is None or tensor.device.type != "cpu":
@@ -846,8 +862,11 @@ class _Onload:
         recurse: bool = True,
     ) -> None:
         import torch
+        from core.inference.diffusion_te_embed_host import is_host_embedding
         for module in modules:
             for sub in module.modules() if recurse else (module,):
+                if is_host_embedding(sub):
+                    continue  # gathers on the host from its file mapping
                 for table in _tensor_tables(sub):
                     for key, tensor in list(table.items()):
                         if tensor is None:
@@ -1237,10 +1256,20 @@ def _run_encode(model: Any, config: dict, inputs: Any, device: str, stream: Any)
     resident = bool(config.get("resident"))
     onloaded = not resident and device != "cpu" and stream is None
     if not resident and device != "cpu" and _discrete_card(device):
+        if "_embed_host_bytes" not in config and _onloads_whole(model):
+            from core.inference.diffusion_te_embed_host import keep_on_host
+
+            # Before the copies below, while the table is still the checkpoint's file view.
+            config["_embed_host_bytes"] = keep_on_host(model)
         if config.get("_pin_host") and "_pinned_bytes" not in config:
             config["_pinned_bytes"] = _pin_host_copy(model, config)
         if not config.get("_pinned_bytes") and not config.get("_owned_host"):
             config["_owned_host"] = _own_host_copy(model)
+    if config.get("_embed_host_bytes"):
+        from core.inference.diffusion_te_embed_host import set_device
+
+        # Rows go to this encode's device: under layer streaming every decoder layer is still on the host here.
+        set_device(model, device)
     # Onload copies host tensors up and restores by repointing: no 23 GB device-to-host copy per prompt.
     whole = (
         _Onload(device) if onloaded and _discrete_card(device) and _onloads_whole(model) else None
@@ -1367,6 +1396,7 @@ def run_text_encoder_worker(*, cmd_queue: Any, resp_queue: Any, config: dict) ->
                         (config.get("_stream_stats") or {}).get("prefetched_layers") or 0
                     ),
                     "pinned_mib": int(config.get("_pinned_bytes") or 0) >> 20,
+                    "embed_host_mib": int(config.get("_embed_host_bytes") or 0) >> 20,
                     **_memory_stats(config.get("device") or ""),
                 }
             )
