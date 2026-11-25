@@ -14,7 +14,6 @@ type MathState =
   | "inlineLatex"
   | "blockLatex";
 
-// Mirrors remend's internal code lookup: lookup[i] is whether index i sits in code.
 function codeLookup(text: string): Uint8Array {
   const lookup = new Uint8Array(text.length + 1);
   let inline = false;
@@ -61,9 +60,7 @@ function nextDollarState(state: MathState, block: boolean): MathState {
   return state === "inlineDollar" ? "none" : "inlineDollar";
 }
 
-// Mirrors remend's isWithinMathBlock in one pass, ignoring characters that are code. Only `$$`
-// counts while still open (remend closes it); other math counts once it closes, so an unclosed
-// `$` stays prose as remark-math reads it, like `echo $PATH <done`.
+// Only `$$` counts while open (remend closes it); an unclosed `$` stays prose, like `echo $PATH <done`.
 function mathAt(
   text: string,
   code: Uint8Array,
