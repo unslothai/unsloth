@@ -302,6 +302,21 @@ def _adapter_base_of(target: str, hf_token) -> Optional[str]:
     return base.strip()
 
 
+def _discovered_root_allowed(path: str) -> bool:
+    """A root found by following a config is scanned for a managed account only inside its own
+    workspace: the scan returns snippets of what it reads, and the load refuses the rest anyway."""
+    from pathlib import Path
+
+    from utils.paths.storage_roots import within_account
+
+    try:
+        if not Path(path).exists():
+            return True  # a Hub id
+        return within_account(Path(path))
+    except (OSError, ValueError):
+        return False
+
+
 # A trained EAGLE-3 drafter folder: GGUF export runs the converter on it under the load's trust.
 _DRAFTER_SUBDIR = "eagle3"
 
@@ -315,7 +330,9 @@ def _local_drafter_dir(target: str) -> Optional[str]:
         return None
     try:
         drafter = Path(target) / _DRAFTER_SUBDIR
-        return str(drafter) if (drafter / "config.json").is_file() else None
+        if not (drafter / "config.json").is_file() or not _discovered_root_allowed(str(drafter)):
+            return None
+        return str(drafter)
     except (OSError, ValueError):
         return None
 
@@ -334,7 +351,7 @@ def _with_adapter_chains(targets, hf_token) -> list:
         current = target
         for _ in range(_MAX_ADAPTER_CHAIN):
             nxt = _adapter_base_of(current, hf_token)
-            if not nxt or nxt in seen:
+            if not nxt or nxt in seen or not _discovered_root_allowed(nxt):
                 break
             seen.add(nxt)
             out.append(nxt)

@@ -98,3 +98,43 @@ def test_trust_off_reads_nothing(tmp_path, monkeypatch):
     )
     decision = evaluate_remote_code_consent_for_targets([str(tmp_path)], trust_remote_code = False)
     assert decision.blocked is False
+
+
+def _managed_workspace(monkeypatch, workspace):
+    import os
+
+    from utils.paths import storage_roots
+
+    root = os.path.realpath(workspace)
+    monkeypatch.setattr(
+        storage_roots,
+        "within_account",
+        lambda path: os.path.realpath(path).startswith(root + os.sep),
+    )
+
+
+def test_a_managed_scan_does_not_follow_a_drafter_link_out_of_its_workspace(tmp_path, monkeypatch):
+    workspace, other = tmp_path / "ws", tmp_path / "other"
+    ckpt = workspace / "ckpt"
+    _write(ckpt, "config.json", {"model_type": "llama"})
+    _code_model(other)
+    (ckpt / "eagle3").symlink_to(other, target_is_directory = True)
+    _managed_workspace(monkeypatch, workspace)
+
+    decision = evaluate_remote_code_consent_for_targets([str(ckpt)], trust_remote_code = True)
+    assert decision.has_remote_code is False
+
+
+def test_a_managed_scan_does_not_follow_a_chain_base_out_of_its_workspace(tmp_path, monkeypatch):
+    workspace, other = tmp_path / "ws", tmp_path / "other"
+    adapter, base = workspace / "adapter", workspace / "base"
+    _write(adapter, "adapter_config.json", {"base_model_name_or_path": str(base)})
+    _write(base, "config.json", {"model_type": "llama"})
+    _write(base, "adapter_config.json", {"base_model_name_or_path": str(other)})
+    _code_model(other)
+    _managed_workspace(monkeypatch, workspace)
+
+    decision = evaluate_remote_code_consent_for_targets(
+        [str(adapter), str(base)], trust_remote_code = True
+    )
+    assert decision.has_remote_code is False
