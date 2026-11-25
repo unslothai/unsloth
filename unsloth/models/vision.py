@@ -903,6 +903,22 @@ def _unsloth_generate_accepts_kwarg(model, key):
     return key in model_args
 
 
+def _router_logits_off_for_generate(model, kwargs):
+    """generate never needs the MoE aux loss; TRL < 1.18 leaves config.output_router_logits on after SFT, and a hybrid
+    model then feeds generate's per-layer-type attention_mask dict to load_balancing_loss_func. Explicit kwarg kept."""
+    if "output_router_logits" in kwargs:
+        return
+    config = getattr(model, "config", None)
+    text = config.get_text_config() if hasattr(config, "get_text_config") else config
+    if not (
+        getattr(text, "output_router_logits", False)
+        or getattr(config, "output_router_logits", False)
+    ):
+        return
+    if _unsloth_generate_accepts_kwarg(model, "output_router_logits"):
+        kwargs["output_router_logits"] = False
+
+
 def _is_scaled_word_embedding_forward(cls, forward):
     """Exactly transformers' `*ScaledWordEmbedding.forward` over nn.Embedding.forward: the op
     reproduces only that product (Unsloth's float32 Gemma patch, or any extra work, is declined)."""
@@ -2384,6 +2400,7 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
     bsz = input_ids.shape[0]
 
     FastBaseModel.for_inference(self)
+    _router_logits_off_for_generate(self, kwargs)
     dtype = _get_dtype(dtype_from_config(self.config))
     # Stamped by from_pretrained: the env var stays "1" after one float32 mixed precision load, so it only answers for unstamped models.
     do_bfloat16_mixed_precision = getattr(self, "_unsloth_bfloat16_mixed_precision", None)
