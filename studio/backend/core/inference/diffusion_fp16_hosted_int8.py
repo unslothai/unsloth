@@ -10,8 +10,10 @@ build (same layers, g256 rotation, per-row int8 codes and float32 scales, made f
 Linears are read from it instead (``load_native_from_hosted`` refuses any file that is not that build), computing and
 holding every dense tensor in the card's dtype as the at-load build does.
 
-The runtime build rounds each weight to float16 before rotating it; the hosted codes come from the bf16 weights, so a
-code can differ where a weight sits in the float16 subnormal range: images are close, not bit-identical.
+The hosted codes are not the at-load codes: about 7.4% of the Qwen-Image-2.1 codes differ by one step and the per-row
+scales by -0.4% to +0.6% (same weights: every unquantised tensor is bit-equal to the released shards; the float16
+rounding of the at-load build is not the cause), and the hosted reconstruction error is 1.1% to 1.7% higher per layer.
+Images are close, not bit-identical, so only families scored against a dense reference take the route.
 
 Used only when the hosted file is in the local Hugging Face cache, or the load is online (it is then fetched once).
 Kill switch ``UNSLOTH_FP16_CARD_HOSTED_INT8=0``. Torch-free at import."""
@@ -22,6 +24,9 @@ import os
 from typing import Any, Optional
 
 FP16_CARD_HOSTED_INT8_ENV = "UNSLOTH_FP16_CARD_HOSTED_INT8"
+# Families whose hosted read was scored on a T4 against a dense float16 reference (16 prompts). Others keep the at-load
+# build until measured: the hosted codes are not the at-load codes (see the module docstring).
+FP16_CARD_HOSTED_INT8_FAMILIES = frozenset({"qwen-image-2.1"})
 _TAG = "diffusion.fp16_hosted_int8"
 
 
@@ -54,6 +59,8 @@ def fp16_card_hosted_int8_reason(
         ):
             return None
         name = getattr(fam, "name", None)
+        if name not in FP16_CARD_HOSTED_INT8_FAMILIES:
+            return None
         if _hosted_convrot_file(fam) is None or not int8_convrot_enabled(name):
             return None
         if int(int8_rotation_group() or 0) <= 0:
