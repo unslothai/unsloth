@@ -1111,6 +1111,47 @@ def test_a_reused_summary_still_recalls_for_the_newest_turn(rag_home, rag_conn, 
     assert truncation["recalled_chunks"] > 0
 
 
+def _long_system_prompt_chat(thread: str) -> list[dict]:
+    chat = _recall_chat(thread)
+    # Too long for the summary alone to bring the prompt under the trigger.
+    chat[0] = {"role": "system", "content": "Answer briefly. " + "rule " * 4_000}
+    return chat
+
+
+def test_a_summary_that_still_needs_trimming_recalls_the_summarised_wording(
+    rag_home, rag_conn, stub_embeddings
+):
+    thread = "thread-summary-trim-recall"
+    chat = _long_system_prompt_chat(thread)
+    chunks, [_], [sent] = _bodies(
+        _SummarisingHandler, messages = chat, thread_id = thread, **_SMALL_TRIGGER
+    )
+    assert _SUMMARY in _system_text(sent)
+    [truncation] = _truncations(chunks)
+    assert truncation["dropped_messages"] > 0 and "summarized" not in truncation
+    assert all("055 794 3321" not in str(m["content"]) for m in sent["messages"][:-1])
+    assert "055 794 3321" in str(sent["messages"][-1]["content"])
+    assert "Was there a phone number on the report?" in str(sent["messages"][-1]["content"])
+
+
+def test_a_saved_summary_trimmed_after_a_failed_one_recalls_the_summarised_wording(
+    rag_home, rag_conn, stub_embeddings
+):
+    thread = "thread-summary-trim-recall-after-failure"
+    chat = _long_system_prompt_chat(thread)
+    _bodies(_SummarisingHandler, messages = chat, thread_id = thread, **_SMALL_TRIGGER)
+    later = [
+        *chat,
+        {"role": "assistant", "content": "I cannot see one."},
+        {"role": "user", "content": "Check the cardiology report again for the telefono."},
+    ]
+    chunks, _, [sent] = _bodies(_CutOffSummary, messages = later, thread_id = thread, **_SMALL_TRIGGER)
+    assert _SUMMARY in _system_text(sent)
+    [truncation] = _truncations(chunks)
+    assert truncation["summary_failed"] is True and truncation["dropped_messages"] > 0
+    assert "055 794 3321" in str(sent["messages"][-1]["content"])
+
+
 # Every chat connection without server-side compaction: native Anthropic and OpenAI have their own
 # tests, the ChatGPT subscription needs a saved login, Lemonade is a managed engine.
 _SUMMARISED_PROVIDERS = sorted(
@@ -1170,20 +1211,15 @@ def test_a_self_hosted_server_without_a_catalogued_window_is_summarised(provider
 
 
 def test_summarised_turns_are_archived_when_more_must_be_dropped(
-    rag_home, rag_conn, stub_embeddings, monkeypatch
+    rag_home, rag_conn, stub_embeddings
 ):
     from core.rag import conversation_archive
 
-    def fit(messages, payload, **_):
-        body = [m for m in messages if m["role"] != "system"]
-        kept = [m for m in messages if m["role"] == "system"] + body[2:]
-        return kept, {"dropped_messages": 2, "boundary_messages": 2, "fits": True}, 256
-
-    monkeypatch.setattr(ri, "_fit_external_context", fit)
     thread = "thread-summary-drop-archive"
-    chat = _recall_chat(thread)
+    chat = _long_system_prompt_chat(thread)
     chunks, [_], _ = _bodies(_SummarisingHandler, messages = chat, thread_id = thread, **_SMALL_TRIGGER)
     [truncation] = _truncations(chunks)
+    assert truncation["dropped_messages"] > 0 and "summarized" not in truncation
     assert truncation["archived_messages"] > 2
     assert conversation_archive.has_archive(thread)
 
