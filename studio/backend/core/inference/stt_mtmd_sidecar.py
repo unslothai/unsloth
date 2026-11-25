@@ -207,8 +207,7 @@ def ensure_engine_available() -> str:
 
 
 def _open_server_log(port: int):
-    """Beside the chat server's logs so Settings > Debugging lists it; None (output dropped) on any
-    error, since logging must never block a load. The epoch leads the name: the log list presorts by it."""
+    """None on any error: logging must never block a load. Epoch first: the log list presorts by name."""
     try:
         from core.inference.llama_cpp import _swa_cache_path
         from utils.log_retention import prune_log_dir
@@ -1158,7 +1157,6 @@ class MtmdSttSidecar:
                     **child_popen_kwargs(),
                 )
             finally:
-                # The child holds its own copy.
                 if log_handle is not None:
                     log_handle.close()
             # Published before the wait so training can preempt a startup that is already allocating.

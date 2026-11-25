@@ -27827,7 +27827,6 @@ async def transcribe_audio_raw(
             media_type = "application/x-ndjson",
             headers = {"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
         )
-    # In-app dictation gets the API monitor row chat and /v1/audio/transcriptions already open.
     _requested = (model or "").strip()
     async with _monitored_media_request(
         request,
