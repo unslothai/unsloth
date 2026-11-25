@@ -115,8 +115,8 @@ def load_native_from_hosted(
     keep_fp32: bool = False,
     compute_dtype: Any = None,
 ) -> Any:
-    """The native ``component`` built from hosted ``path``, or None (the caller falls back to the dense build). Never
-    raises. Refuses unless the file holds exactly the layers, rotation and activation path the runtime build makes.
+    """The native ``component`` built from hosted ``path``, or None (the caller falls back to the dense build). Raises
+    only an allocation failure. Refuses unless the file holds exactly the layers, rotation and activation path the runtime build makes.
 
     ``compute_dtype`` (float16 on an fp16-only card): the native Linears compute in it and every other floating
     tensor is held in it, as a float16 ``from_pretrained`` would hold it (``keep_fp32`` modules in float32).
@@ -307,6 +307,8 @@ def load_native_from_hosted(
         )
         return model
     except Exception as exc:  # noqa: BLE001 - an unusable file falls back to the dense build
+        # Out of memory is not an unusable file: the dense load + quantise would need more, so it surfaces.
+        raise_if_allocation_failure(exc)
         _log(
             logger,
             "warning",
@@ -316,10 +318,23 @@ def load_native_from_hosted(
         return None
 
 
+def raise_if_allocation_failure(exc: BaseException) -> None:
+    """Re-raises ``exc`` when it is an allocation failure (host ``MemoryError``, torch ``OutOfMemoryError``, also
+    wrapped), which the hosted readers must not turn into a dense fallback."""
+    if isinstance(exc, MemoryError):
+        raise exc
+    from .diffusion_batched import is_oom_error
+
+    if is_oom_error(exc):
+        raise exc
+
+
 def _hold_in_compute_dtype(model: Any, compute_dtype: Any, kept: set) -> None:
     """Every dense floating parameter / buffer of ``model`` in ``compute_dtype`` (``kept`` modules in float32), as a
     ``from_pretrained(torch_dtype = compute_dtype)`` of the released shards holds them. Native Linears keep their int8
-    codes and float32 scales (integer views); their bias goes to the compute dtype, as the runtime build casts it."""
+    codes and float32 scales (integer views); their bias goes to the compute dtype, as the runtime build casts it.
+    Non-persistent buffers keep the dtype their constructor built them in (Qwen-Image-2.1's float32 timestep
+    ``freqs``): ``from_pretrained`` never casts them, and the file does not hold them."""
     import torch
     for name, module in model.named_modules():
         keep = bool(kept & set(name.split("."))) if name else False
@@ -337,6 +352,7 @@ def _hold_in_compute_dtype(model: Any, compute_dtype: Any, kept: set) -> None:
                 and buf.is_floating_point()
                 and buf.dtype != want
                 and bname != "rot_h"
+                and bname not in getattr(module, "_non_persistent_buffers_set", ())
             ):
                 module._buffers[bname] = buf.to(want)
 
@@ -561,5 +577,6 @@ def _load_native_from_pickle(
         )
         return model
     except Exception as exc:  # noqa: BLE001 - an unusable file falls back to the dense build
+        raise_if_allocation_failure(exc)
         _log(logger, "warning", f"hosted int8 read failed: {type(exc).__name__}: {str(exc)[:200]}")
         return None

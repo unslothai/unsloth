@@ -463,6 +463,8 @@ from .diffusion_fast_load import _snapshot_dir as _load_snapshot_dir
 from .diffusion_fast_load import start_load_prefetch, stop_prefetch, te_precast_components
 from .diffusion_fp16_hosted_int8 import (
     fp16_card_hosted_int8_cached,
+    fp16_card_hosted_int8_plan_source,
+    fp16_card_hosted_int8_planned_scheme,
     fp16_card_hosted_int8_reason,
     fp16_card_hosted_int8_transformer,
 )
@@ -6697,6 +6699,8 @@ class DiffusionBackend:
                 )
             )
             kwargs["_pipeline_prequant_skipped"] = tuple(skipped_transformer_files)
+            # No seed, yet the DiT shards were swapped for a staged file: the fp16-card hosted int8 ConvRot read.
+            kwargs["_fp16_hosted_planned"] = bool(skip_transformer_weights and not pipeline_planned)
             kwargs["_te_prequant_resolved"] = bool(te_prequant_files)
             if dit_prequant is not None:
                 expected += int(dit_prequant[2])
@@ -7602,6 +7606,55 @@ class DiffusionBackend:
             logger.warning("diffusion.rocm_hosted_int8_plan_failed: %s", exc)
             return None
 
+    def _fp16_hosted_int8_plan_entry(
+        self,
+        fam: Any,
+        hf_token: Optional[str],
+        kwargs: dict[str, Any],
+        failures_out: Optional[list] = None,
+    ) -> Optional[tuple[str, str, int]]:
+        """The hosted int8 ConvRot file an fp16-only card's int8 load reads (``diffusion_fp16_hosted_int8``), as the
+        hub entry that replaces the dense DiT shards in the download plan, else None. Never raises."""
+        try:
+            with diffusion_device_scope(kwargs.get("gpu_ordinal")):
+                target = self._target_for_ordinal(fam, kwargs.get("gpu_ordinal"))
+                native_scheme = fp16_card_hosted_int8_planned_scheme(
+                    fam,
+                    target,
+                    kwargs.get("transformer_quant"),
+                    kind = "pipeline",
+                    speed_mode = kwargs.get("speed_mode"),
+                    forces_offload = _memory_request_forces_offload(
+                        kwargs.get("memory_mode"), bool(kwargs.get("cpu_offload"))
+                    ),
+                    has_lora = _has_active_lora(kwargs.get("loras")),
+                )
+                if native_scheme is None or kwargs.get("transformer_prequant_path"):
+                    return None
+                # The load prices the never-fetched dense DiT from the family table: unsized keeps the shards.
+                if (
+                    estimate_dense_quant(
+                        fam, TQ_INT8, base_repo = kwargs.get("base_repo"), prequant_available = False
+                    )
+                    is None
+                ):
+                    return None
+                source = fp16_card_hosted_int8_plan_source(
+                    fam,
+                    native_scheme,
+                    target,
+                    base = kwargs.get("base_repo"),
+                    hf_token = hf_token,
+                    cache_dir = hub_cache_dir(),
+                    local_files_only = bool(kwargs.get("local_files_only")),
+                )
+            if source is None:
+                return None
+            return self._prequant_source_hub_entry(source, hf_token, failures_out, scheme = TQ_INT8)
+        except Exception as exc:  # noqa: BLE001 - unanswerable keeps the dense shards in the plan
+            logger.warning("diffusion.fp16_hosted_int8_plan_failed: %s", exc)
+            return None
+
     def _dit_prequant_plan_source(
         self,
         fam: Any,
@@ -7615,7 +7668,10 @@ class DiffusionBackend:
             return None
         planned = kwargs.get("_pipeline_prequant_planned") if kind == "pipeline" else None
         if kind == "pipeline":
-            if not planned or planned == PIPELINE_SEED_DECLINED:
+            if not planned:
+                # No seed: an fp16-only card's int8 build may still read the hosted ConvRot file, staged here.
+                return self._fp16_hosted_int8_plan_entry(fam, hf_token, kwargs, failures_out)
+            if planned == PIPELINE_SEED_DECLINED:
                 return None
         elif kind != "gguf":
             return None
@@ -9457,6 +9513,8 @@ class DiffusionBackend:
         # The scheme the plan settled, or PIPELINE_SEED_DECLINED; None for a direct call, which the pull never scoped.
         _pipeline_prequant_planned: Optional[str] = None,
         _pipeline_prequant_skipped: tuple[str, ...] = (),
+        # The plan swapped the dense DiT shards for the fp16-card hosted int8 ConvRot file (no seed scheme).
+        _fp16_hosted_planned: bool = False,
         _prequant_unreachable: tuple[str, ...] = (),
         _te_prequant_resolved: bool = True,
         # _run_load proved room for the bf16 encoder on an unset request (diffusion_precision.te_bf16_auto_fits).
@@ -9704,6 +9762,26 @@ class DiffusionBackend:
                     fetch_base = fetch_base,
                     text_encoder_quant = text_encoder_quant,
                 )
+                if kind == "pipeline" and _fp16_hosted_planned and _pipeline_prequant_skipped:
+                    # The cache holds no dense DiT (the plan staged the hosted int8 file instead): price it as the
+                    # dense build it stands in for, so placement matches the at-load route.
+                    plan = (
+                        self._fp16_hosted_int8_plan(
+                            target,
+                            single_file_path,
+                            base,
+                            fam,
+                            memory_mode,
+                            cpu_offload,
+                            kind = kind,
+                            lora = _has_active_lora(loras),
+                            repo_id = repo_id,
+                            base_local_dir = _base_local_dir,
+                            fetch_base = fetch_base,
+                            text_encoder_quant = text_encoder_quant,
+                        )
+                        or plan
+                    )
                 pipeline_seed_scheme: Optional[str] = None
                 bf16_pipeline_plan = plan
                 if kind == "pipeline" and _pipeline_prequant_planned not in (
@@ -10739,7 +10817,7 @@ class DiffusionBackend:
                                     ("transformer",)
                                     if pipeline_seed_scheme is None
                                     and not _has_active_lora(loras)
-                                    and not _pipeline_prequant_skipped
+                                    and (not _pipeline_prequant_skipped or _fp16_hosted_planned)
                                     and fp16_card_hosted_int8_cached(
                                         fam,
                                         native_scheme,
@@ -10940,12 +11018,13 @@ class DiffusionBackend:
                                 if (
                                     pipeline_seed_scheme is None
                                     and not _has_active_lora(loras)
-                                    and not _pipeline_prequant_skipped
+                                    and (not _pipeline_prequant_skipped or _fp16_hosted_planned)
                                     and "transformer" not in pipe_kwargs
                                     and fp16_card_hosted_int8_reason(fam, native_scheme, target)
                                     is not None
                                 ):
-                                    # An fp16-only card's int8 build is the hosted ConvRot file: read it, not the dense DiT.
+                                    # An fp16-only card's int8 build is the hosted ConvRot file: read it, not the dense
+                                    # DiT. Cache only: an online load's plan staged it in place of the dense shards.
                                     hosted_native = fp16_card_hosted_int8_transformer(
                                         fam,
                                         target,
@@ -10954,13 +11033,19 @@ class DiffusionBackend:
                                         config_source = _base_local_dir or fetch_base,
                                         hf_token = hf_token,
                                         cache_dir = hub_cache_dir(),
-                                        local_files_only = local_files_only,
                                         logger = logger,
                                     )
                                     if hosted_native is not None:
                                         pipe_kwargs["transformer"] = hosted_native
                                         hosted_native_scheme = native_scheme
-                                if pipeline_seed_scheme is None and _pipeline_prequant_skipped:
+                                        transformer_quant_artifact = getattr(
+                                            hosted_native, "_unsloth_prequant_artifact", None
+                                        )
+                                if (
+                                    pipeline_seed_scheme is None
+                                    and _pipeline_prequant_skipped
+                                    and hosted_native_scheme is None
+                                ):
                                     # from_pretrained cannot re-fetch these from a local snapshot dir, so top them up here.
                                     _base_local_dir = self._restore_skipped_transformer_shards(
                                         repo_id,
@@ -14233,6 +14318,35 @@ class DiffusionBackend:
             return False
         except Exception:  # noqa: BLE001 -- unreadable cache: treat the shards as missing
             return False
+
+    def _fp16_hosted_int8_plan(
+        self,
+        target: Any,
+        single_file_path: Optional[str],
+        base: str,
+        fam: Any,
+        memory_mode: Optional[str],
+        cpu_offload: bool,
+        **kwargs: Any,
+    ):
+        """The memory plan of an fp16-card hosted int8 read whose dense DiT shards were never fetched: the DiT priced
+        at its dense size (the at-load route's plan), companions as the table prices them. None when unsized."""
+        dense = estimate_dense_quant(fam, TQ_INT8, base_repo = base, prequant_available = False)
+        if dense is None:
+            return None
+        return self._plan_memory(
+            target,
+            single_file_path,
+            base,
+            fam,
+            memory_mode,
+            cpu_offload,
+            transformer_resident_override_mib = dense.transient_transformer_mib,
+            **self._candidate_companion_overrides(
+                dense, fam, base, target, kwargs.get("text_encoder_quant")
+            ),
+            **kwargs,
+        )
 
     @staticmethod
     def _candidate_companion_overrides(

@@ -142,7 +142,8 @@ def load_rocm_hosted_transformer(
 ) -> Any:
     """The native W8A8 denoiser read from ``source``'s hosted int8 ConvRot file, or None (the caller restores the
     dense shards). ``compute_dtype``: see ``load_native_from_hosted`` (float16 on an fp16-only CUDA card).
-    ``config_source``: where the transformer config is read (default ``base_repo``). Never raises."""
+    ``config_source``: where the transformer config is read (default ``base_repo``). Raises only an allocation
+    failure."""
     try:
         from .diffusion_families import pinned_revision_kwargs
         from .diffusion_native_cache import native_spec
@@ -208,6 +209,9 @@ def load_rocm_hosted_transformer(
             pass
         return module
     except Exception as exc:  # noqa: BLE001 - a hosted problem keeps the dense build
+        from .diffusion_native_hosted import raise_if_allocation_failure
+
+        raise_if_allocation_failure(exc)
         if logger is not None:
             logger.warning("%s: hosted read skipped (%s)", tag, exc)
         return None

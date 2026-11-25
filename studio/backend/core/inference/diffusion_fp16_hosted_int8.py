@@ -15,8 +15,9 @@ scales by -0.4% to +0.6% (same weights: every unquantised tensor is bit-equal to
 rounding of the at-load build is not the cause), and the hosted reconstruction error is 1.1% to 1.7% higher per layer.
 Images are close, not bit-identical, so only families scored against a dense reference take the route.
 
-Used only when the hosted file is in the local Hugging Face cache, or the load is online (it is then fetched once).
-Kill switch ``UNSLOTH_FP16_CARD_HOSTED_INT8=0``. Torch-free at import."""
+The file is read from the local Hugging Face cache only. An online load plans it (``fp16_card_hosted_int8_plan_source``)
+in place of the dense DiT shards, so the download plan, its byte total and the staged assets name what is read; a
+load that did not stage it (offline, unplanned) keeps the dense build. Kill switch ``UNSLOTH_FP16_CARD_HOSTED_INT8=0``. Torch-free at import."""
 
 from __future__ import annotations
 
@@ -79,23 +80,24 @@ def fp16_card_hosted_int8_transformer(
     config_source: Optional[str],
     hf_token: Optional[str] = None,
     cache_dir: Optional[str] = None,
-    local_files_only: bool = False,
     logger: Any = None,
 ) -> Any:
-    """The native W8A8 ``transformer`` read from the hosted int8 ConvRot file in the card's dtype, or None (the dense
-    shards load and are quantised at load, as before). Never raises."""
+    """The native W8A8 ``transformer`` read from the cached hosted int8 ConvRot file in the card's dtype, or None (the
+    dense shards load and are quantised at load, as before). Cache only: the download plan stages the file, so the
+    load never pulls bytes it did not account for. The module carries ``_unsloth_prequant_artifact`` (the file that
+    ran, for the resolved status). Raises only an allocation failure."""
     try:
         if not base or transformer_cls is None:
             return None
-        from .diffusion_denoiser_prequant import denoiser_prequant_source
-        from .diffusion_rocm_hosted_int8 import load_rocm_hosted_transformer
+        from .diffusion_denoiser_prequant import denoiser_prequant_source, prequant_artifact_label
+        from .diffusion_rocm_hosted_int8 import load_rocm_hosted_transformer, rocm_convrot_source
         from .diffusion_transformer_quant import TQ_INT8
 
         source = denoiser_prequant_source(
             fam,
             TQ_INT8,
             base_repo = base,
-            local_files_only = local_files_only,
+            local_files_only = True,
             hf_token = hf_token,
             cache_dir = cache_dir,
         )
@@ -108,13 +110,21 @@ def fp16_card_hosted_int8_transformer(
             source,
             hf_token = hf_token,
             cache_dir = cache_dir,
-            local_files_only = local_files_only,
+            local_files_only = True,
             logger = logger,
             compute_dtype = getattr(target, "dtype", None),
             config_source = config_source,
             tag = _TAG,
         )
-        if module is not None and logger is not None:
+        if module is None:
+            return None
+        try:
+            module._unsloth_prequant_artifact = prequant_artifact_label(
+                rocm_convrot_source(source) or source, module
+            )
+        except Exception:  # noqa: BLE001 - the status label only
+            pass
+        if logger is not None:
             logger.info(
                 "%s: %s int8 denoiser read from the hosted ConvRot checkpoint as native W8A8 Linears in %s "
                 "(no dense shards read, no load-time quantise; %s=0 keeps the at-load build)",
@@ -125,8 +135,103 @@ def fp16_card_hosted_int8_transformer(
             )
         return module
     except Exception as exc:  # noqa: BLE001 - a hosted problem keeps the at-load build
+        from .diffusion_native_hosted import raise_if_allocation_failure
+
+        raise_if_allocation_failure(exc)
         if logger is not None:
             logger.warning("%s: hosted read skipped (%s)", _TAG, exc)
+        return None
+
+
+def fp16_card_hosted_int8_planned_scheme(
+    fam: Any,
+    target: Any,
+    transformer_quant: Optional[str],
+    *,
+    kind: str,
+    speed_mode: Optional[str] = None,
+    forces_offload: bool = False,
+    has_lora: bool = False,
+) -> Optional[str]:
+    """The native scheme the load will build on this fp16-only card, settled before any download the way the load
+    settles it (an explicit pick, or AUTO's measured Turing int8), else None. Never raises."""
+    try:
+        if kind != "pipeline" or fam is None or has_lora:
+            return None
+        from .diffusion_transformer_quant import (
+            TQ_INT8,
+            fp16_card_native_scheme,
+            native_quant_scheme,
+            normalize_transformer_quant,
+            turing_auto_int8_reason,
+        )
+
+        name = getattr(fam, "name", None)
+        raw = transformer_quant
+        if raw is None or str(raw).strip().lower() in ("", "auto"):
+            # Speed off rewrites AUTO to off (``diffusion_speed.SPEED_OFF``).
+            if speed_mode is not None and str(speed_mode).strip().lower() == "off":
+                return None
+            if forces_offload or turing_auto_int8_reason(target, name) is None:
+                return None
+            pinned = TQ_INT8
+        else:
+            pinned = normalize_transformer_quant(raw)
+        if native_quant_scheme(target, pinned, family = name) is not None:
+            return None
+        return fp16_card_native_scheme(target, pinned, family = name)
+    except Exception:  # noqa: BLE001 - unanswerable keeps the dense shards in the plan
+        return None
+
+
+def fp16_card_hosted_int8_plan_source(
+    fam: Any,
+    native_scheme: Optional[str],
+    target: Any,
+    *,
+    base: Optional[str],
+    hf_token: Optional[str] = None,
+    cache_dir: Optional[str] = None,
+    local_files_only: bool = False,
+) -> Any:
+    """The hosted int8 ConvRot source the download plan stages in place of the dense DiT shards, or None (the plan
+    keeps them). The same gate and header check the load applies, so the plan never drops the dense shards for a file
+    the load refuses. Never raises."""
+    try:
+        if not base or fp16_card_hosted_int8_reason(fam, native_scheme, target) is None:
+            return None
+        from .diffusion_denoiser_prequant import denoiser_prequant_source
+        from .diffusion_prequant import _planning_min_features, hosted_prequant_refusal
+        from .diffusion_rocm_hosted_int8 import rocm_convrot_source
+        from .diffusion_transformer_quant import TQ_INT8
+
+        source = denoiser_prequant_source(
+            fam,
+            TQ_INT8,
+            base_repo = base,
+            local_files_only = local_files_only,
+            hf_token = hf_token,
+            cache_dir = cache_dir,
+        )
+        if source is None or getattr(source, "kind", None) != "repo":
+            return None
+        convrot = rocm_convrot_source(source)
+        if convrot is None:
+            return None
+        if (
+            hosted_prequant_refusal(
+                convrot,
+                TQ_INT8,
+                base = base,
+                min_features = _planning_min_features(None),
+                cache_dir = cache_dir,
+                local_files_only = local_files_only,
+            )
+            is not None
+        ):
+            return None
+        return convrot
+    except Exception:  # noqa: BLE001 - unanswerable keeps the dense shards in the plan
         return None
 
 
