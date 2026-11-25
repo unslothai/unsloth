@@ -2301,6 +2301,25 @@ def colocated_split_shards(path: Path) -> tuple[list[Path], bool]:
     return [found[i] for i in sorted(found)], len(found) == total
 
 
+def split_set_is_loadable(path: Path) -> bool:
+    """Whether llama-server can open this GGUF: every shard of its set is present and non-empty,
+    here or, like _local_gguf_load_path, behind a shard-1 symlink."""
+    candidates = [path]
+    try:
+        if path.is_symlink():
+            candidates.append(path.resolve())
+    except OSError:
+        pass
+    for candidate in candidates:
+        shards, complete = colocated_split_shards(candidate)
+        try:
+            if complete and all(shard.stat().st_size > 0 for shard in shards):
+                return True
+        except OSError:
+            continue
+    return False
+
+
 def _engram_table_shard_skipped(path: Path) -> bool:
     """A split set short only of the table shard a --ple download skips loads from its snapshot."""
     from core.inference.engram_tables import table_shard_skipped

@@ -246,6 +246,30 @@ def test_local_route_returns_hermes_downloads(monkeypatch, tmp_path):
     assert [(m.source, Path(m.path)) for m in response.models] == [("hermes", weight)]
 
 
+def test_local_route_reads_its_sources_once_off_the_event_loop(monkeypatch, tmp_path):
+    """The probes stat every source root, so a slow drive on the event loop stalls every request."""
+    models_dir = tmp_path / "models"
+    models_dir.mkdir()
+    sources = _empty_sources(tmp_path)._replace(hf_cache_dir = models_dir)
+    on_loop: list[bool] = []
+
+    def probe():
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            on_loop.append(False)
+        else:
+            on_loop.append(True)
+        return sources
+
+    monkeypatch.setattr(local_inventory, "_local_inventory_sources", probe)
+    monkeypatch.setattr(local_inventory, "list_scan_folders", lambda: [])
+
+    asyncio.run(models_route.list_local_models(models_dir = str(models_dir), current_subject = "test"))
+
+    assert on_loop == [False]
+
+
 def test_compat_inventory_preserves_ollama_tags_sharing_a_blob(tmp_path):
     root = tmp_path / "ollama"
     digest = "sha256-model"

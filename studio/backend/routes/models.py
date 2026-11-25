@@ -371,9 +371,11 @@ def collect_local_models(
     custom_folders: Optional[list[dict]] = None,
     sources: Optional[tuple] = None,
     materialize_ollama_links: bool = True,
+    folded: Optional[list] = None,
 ) -> list:
     """The Model Hub inventory rows, shared by /v1/models, the model resolver and the media index so they
-    cannot drift; models_root is caller-validated. Blocks, so call it off the event loop."""
+    cannot drift; models_root is caller-validated. ``folded`` receives the rows the listing drops as copies
+    of a listed one. Blocks, so call it off the event loop."""
     from storage.studio_db import list_scan_folders
     from hub.services.models import local_inventory
 
@@ -389,7 +391,12 @@ def collect_local_models(
         custom_folders,
         materialize_ollama_links = materialize_ollama_links,
     )
-    return local_inventory._filter_and_dedupe_local_models(rows)
+    rows = local_inventory._filter_hidden_models(rows)
+    listed = local_inventory._dedupe_local_models(rows)
+    if folded is not None:
+        kept = {id(row) for row in listed}
+        folded.extend(row for row in rows if id(row) not in kept)
+    return listed
 
 
 def _one_row_per_id(models: list) -> List[LocalModelInfo]:
@@ -462,7 +469,7 @@ async def list_local_models(
     try:
         # Readers of this route open an Ollama row's id as a file, so it lists the .gguf link.
         listing = await local_inventory.list_local_models_response(
-            str(models_root), materialize_ollama_links = True
+            str(models_root), materialize_ollama_links = True, sources = sources
         )
         return redact_inventory_host_paths(
             LocalModelListResponse(

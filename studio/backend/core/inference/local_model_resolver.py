@@ -339,7 +339,7 @@ def _local_gguf_entry(
 
     # The lister every stored per-model setting is keyed by, so one file has one identity.
     from hub.utils.gguf import list_local_gguf_variants
-    from utils.models.model_config import detect_gguf_model
+    from utils.models.model_config import detect_gguf_model, split_set_is_loadable
 
     path = getattr(info, "path", None)
     if not isinstance(path, str):
@@ -406,7 +406,7 @@ def _local_gguf_entry(
                 variant
                 for variant in variants
                 if getattr(variant, "filename", None)
-                and _split_set_is_loadable(Path(load_dir) / variant.filename)
+                and split_set_is_loadable(Path(load_dir) / variant.filename)
             ]
             kept = {str(v.quant).lower() for v in variants if getattr(v, "quant", None)}
             withheld = tuple(
@@ -829,12 +829,19 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
     from core.inference.model_ids import public_model_id
 
     index: dict[str, _LocalGgufEntry] = {}
+    folded: list = []
     try:
-        found = collect_local_models(Path("./models").resolve(), materialize_ollama_links = False)
+        found = collect_local_models(
+            Path("./models").resolve(), materialize_ollama_links = False, folded = folded
+        )
     except Exception as exc:
         logger.debug("auto-switch: local model scan failed: %s", exc)
         return index
-    for info in found:
+    # Another HF cache's copy of a listed repo is not listed, but a pin on its exact snapshot still loads it.
+    copies = {
+        id(info): info for info in folded if info.source == "hf_cache" and _is_abs_path_id(info.id)
+    }
+    for info in (*found, *copies.values()):
         raw_id = getattr(info, "id", None)
         if not raw_id:
             continue
@@ -853,13 +860,15 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
         snapshot_name = (
             Path(raw_id).name if entry.repo_level_companions and _is_abs_path_id(raw_id) else None
         )
-        for key, alias_entry in (
+        aliases = (
             (raw_id, path_alias_entry),
             (snapshot_name, path_alias_entry),
             (getattr(info, "model_id", None), entry),
             (getattr(info, "display_name", None), entry),
             (public_model_id(raw_id), path_alias_entry),
-        ):
+        )
+        # The repo id and display name stay with the listed copy.
+        for key, alias_entry in aliases[:2] if id(info) in copies else aliases:
             if key and alias_entry is not None:
                 index.setdefault(key.strip().lower(), alias_entry)
         # Sibling revisions keep their own weights, so a pin survives a newer Hugging Face snapshot.
@@ -1201,18 +1210,6 @@ def _resolve_from_index(
         return _result(entry, entry.variants[0] if entry.variants else None)
     except Exception:
         return None
-
-
-def _split_set_is_loadable(path) -> bool:
-    """Whether the loader finds a complete shard set here or, like it, behind a shard-1 symlink."""
-    from utils.models.model_config import colocated_split_shards
-
-    if colocated_split_shards(path)[1]:
-        return True
-    try:
-        return path.is_symlink() and colocated_split_shards(path.resolve())[1]
-    except OSError:
-        return False
 
 
 def local_gguf_pinned_variant(requested: str, allow_scan: bool = True) -> Optional[str]:

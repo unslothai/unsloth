@@ -4460,6 +4460,22 @@ def test_inactive_cache_revision_aliases_keep_exact_companion_scope(tmp_path, mo
     } == {str(selected)}
 
 
+def test_a_repo_in_two_hf_caches_keeps_the_other_copys_revision_pins(tmp_path, monkeypatch):
+    # The listing keeps the active cache's copy; a pin on the other copy's exact revision still loads it.
+    active, previous = tmp_path / "active", tmp_path / "previous"
+    for hub, revision, quant in ((active, "a" * 40, "Q4_K_M"), (previous, "b" * 40, "Q8_0")):
+        snapshot = hub / "models--org--Two-GGUF" / "snapshots" / revision
+        snapshot.mkdir(parents = True)
+        (snapshot / f"Two-{quant}.gguf").write_bytes(b"GGUF" + b"\0" * 60)
+    _local_sources(monkeypatch, tmp_path, hf_cache_dir = active, known_hf_caches = (previous, active))
+    monkeypatch.setattr(studio_db, "list_scan_folders", lambda: [])
+
+    assert resolver.resolve_local_gguf("org/Two-GGUF")[1] == "Q4_K_M"
+    pinned = previous / "models--org--Two-GGUF" / "snapshots" / ("b" * 40)
+    for name in (str(pinned), "b" * 40):
+        assert resolver.resolve_local_gguf(name)[:2] == (str(pinned), "Q8_0")
+
+
 def test_build_index_survives_a_failing_scanner(tmp_path, monkeypatch):
     # One failing scanner must drop only its own source, not abort the whole index.
 

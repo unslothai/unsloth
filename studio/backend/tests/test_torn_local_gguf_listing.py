@@ -3,8 +3,10 @@
 
 """A GGUF in a scan folder that is missing a shard, or has an empty one, is partial in the local
 scan, so /v1/models does not offer it and a request naming it does not resolve: the treatment an
-HF-cache repo with no whole quant already gets."""
+HF-cache repo with no whole quant already gets. Beside a whole quant, the torn one is not offered
+either, and a Hermes split with an empty part is not listed."""
 
+import json
 from pathlib import Path
 
 import pytest
@@ -38,6 +40,17 @@ def sources(tmp_path, monkeypatch):
     _gguf(folder / "Loose-Q8_0-00001-of-00002.gguf")
     _gguf(folder / "Loose-Q8_0-00002-of-00002.gguf", size = 0)
     _gguf(folder / "whole" / "Whole-Q4_K_M.gguf")
+    _gguf(folder / "mixed" / "Mixed-Q8_0.gguf")
+    _gguf(folder / "mixed" / "Mixed-Q6_K.gguf", size = 0)
+    _gguf(folder / "mixed" / "Mixed-Q4_K_M-00001-of-00002.gguf")
+    _gguf(folder / "mixed" / "Mixed-Q4_K_M-00002-of-00002.gguf", size = 0)
+    _gguf(folder / "hybrid" / "Hybrid-Q4_K_M-00001-of-00002.gguf")
+    _gguf(folder / "hybrid" / "Hybrid-Q4_K_M-00002-of-00002.gguf", size = 0)
+    (folder / "hybrid" / "config.json").write_text(json.dumps({"model_type": "llama"}))
+    (folder / "hybrid" / "model.safetensors").write_bytes(b"\0" * 64)
+    hermes = tmp_path / "hermes"
+    _gguf(hermes / "Hermes-Q4_K_M-00001-of-00002.gguf")
+    _gguf(hermes / "Hermes-Q4_K_M-00002-of-00002.gguf", size = 0)
     hub = tmp_path / "hub"
     _hf_repo_with_one_of_two_shards(hub)
     empty = tmp_path / "empty"
@@ -47,11 +60,13 @@ def sources(tmp_path, monkeypatch):
         hf_default = empty,
         lm_dirs = (),
         ollama_dirs = (),
-        hermes_dirs = (),
+        hermes_dirs = (hermes,),
         known_hf_caches = (),
     )
     monkeypatch.setattr(local_inventory, "_local_inventory_sources", lambda: roots)
     monkeypatch.setattr("storage.studio_db.list_scan_folders", lambda: [{"path": str(folder)}])
+    # GGUF only, so the hybrid folder's safetensors cannot stand in for its torn quant.
+    monkeypatch.setattr(resolver, "_host_has_a_non_gguf_backend", lambda: False)
     monkeypatch.chdir(tmp_path)
     resolver._scan = (0.0, {})
     yield roots
@@ -78,7 +93,25 @@ def test_a_torn_local_gguf_is_partial_unlisted_and_unresolved(sources):
             inference_route._classified_catalog(rows)
         )
     }
-    assert served == {"whole"}
+    assert served == {"whole", "mixed"}
 
     assert [name for name in _TORN if resolver.resolve_local_gguf(name) is not None] == []
     assert resolver.resolve_local_gguf("whole")[1] == "Q4_K_M"
+
+
+def test_a_torn_quant_beside_whole_weights_is_not_offered(sources):
+    rows = models_route.collect_local_models(
+        Path("models").resolve(), sources = sources, materialize_ollama_links = False
+    )
+    offered = {
+        _name(info): quants
+        for info, _is_gguf, quants, _resident in inference_route._servable_catalog_rows(
+            inference_route._classified_catalog(rows)
+        )
+    }
+    assert offered == {"whole": ("Q4_K_M",), "mixed": ("Q8_0",)}
+    assert resolver.resolve_local_gguf("mixed")[1] == "Q8_0"
+    # hermes_cli stages a split once every part exists; an empty part still fails the load.
+    assert "Hermes-Q4_K_M" not in {_name(row) for row in rows}
+    torn = ("mixed:Q4_K_M", "mixed:Q6_K", "hybrid", "Hermes-Q4_K_M")
+    assert [name for name in torn if resolver.resolve_local_gguf(name) is not None] == []

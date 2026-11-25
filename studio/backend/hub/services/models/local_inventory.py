@@ -298,22 +298,9 @@ def _apply_payload_partial(scan_path: Path, rows: List[LocalModelInfo]) -> List[
         return rows
     if scan_path.is_file():
         # A loose quant, split or not: llama-server opens every part, so a missing or empty one fails the load.
-        from utils.models.model_config import colocated_split_shards
-
-        candidates = [scan_path]
-        try:
-            if scan_path.is_symlink():
-                # Same fallback as _local_gguf_load_path: a lone link loads from its target's set.
-                candidates.append(scan_path.resolve())
-        except OSError:
-            pass
-        for candidate in candidates:
-            shards, complete = colocated_split_shards(candidate)
-            try:
-                if complete and all(shard.stat().st_size > 0 for shard in shards):
-                    return rows
-            except OSError:
-                continue
+        from utils.models.model_config import split_set_is_loadable
+        if split_set_is_loadable(scan_path):
+            return rows
         return _apply_format_aware_partial(rows, snapshot_partial = False, gguf_partial = True)
     if not scan_path.is_dir():
         return rows
@@ -1746,9 +1733,14 @@ async def _account_local_response(response):
 
 @in_scan_memo
 async def list_local_models_response(
-    models_dir: str = "./models", *, materialize_ollama_links: bool = False
+    models_dir: str = "./models",
+    *,
+    materialize_ollama_links: bool = False,
+    sources: Optional[_LocalInventorySources] = None,
 ) -> LocalModelListResponse:
-    """Coalesce overlapping local inventory requests for the same models root."""
+    """Coalesce overlapping local inventory requests for the same models root. A caller's ``sources`` stay
+    pinned: it read them off the event loop and validated ``models_dir`` against them."""
+    requested_sources = sources
 
     def classify(response: LocalModelListResponse) -> LocalModelListResponse:
         # Classified inside the shared worker so retrying waiters do not repeat GGUF metadata reads, and off the event loop, since classification reads GGUF headers.
@@ -1793,7 +1785,7 @@ async def list_local_models_response(
         # Epoch first: the sources and folders below are read after it, so any change to them lands in a later epoch and the post-scan check sees it.
         epoch = hf_cache_scan.hf_cache_scans_epoch()
         custom_folders = await _load_custom_folders()
-        sources = _local_inventory_sources()
+        sources = requested_sources or _local_inventory_sources()
         key: _LocalInventoryKey = (
             _inventory_path_identity(models_dir),
             sources,

@@ -66,6 +66,14 @@ def test_a_download_still_in_flight_is_not_offered(tmp_path):
     assert scan_hermes_dir(tmp_path) == []
 
 
+def test_a_split_with_an_empty_part_is_not_offered(tmp_path):
+    _gguf(tmp_path / "Big-Model-00001-of-00002.gguf")
+    _gguf(tmp_path / "Big-Model-00002-of-00002.gguf", size = 0)
+
+    assert staged_gguf_files(tmp_path) == []
+    assert scan_hermes_dir(tmp_path) == []
+
+
 def test_a_continuation_part_is_never_a_row_of_its_own(tmp_path):
     _gguf(tmp_path / "Big-Model-00002-of-00003.gguf")
     _gguf(tmp_path / "Big-Model-00003-of-00003.gguf")
