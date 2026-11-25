@@ -138,6 +138,46 @@ def test_select_module_takes_an_offloaded_denoiser_unless_switched_off(monkeypat
     assert bg.select_module(pipe, **{**kwargs, "denoiser_hooked": False}) is pipe.transformer
 
 
+def test_select_module_never_takes_a_model_offloaded_denoiser(monkeypatch):
+    import logging
+    import types
+
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_BG_COMPILE", raising = False)
+    monkeypatch.delenv(bg.OFFLOADED_ENV, raising = False)
+    monkeypatch.setattr(cg, "_denoiser_modules", lambda pipe: [pipe.transformer])
+    pipe = types.SimpleNamespace(transformer = torch.nn.Linear(2, 2))
+    kwargs = dict(
+        speed_optims = ("compiled",),
+        default_tier = True,
+        quantized = False,
+        gguf = False,
+        step_cache = False,
+        device = "cuda",
+        backend = "cuda",
+        denoiser_hooked = True,
+    )
+    records = []
+
+    class _Sink(logging.Handler):
+        def emit(self, record):
+            records.append(record.getMessage())
+
+    log = logging.getLogger("test.bg_compile.model_offload")
+    log.addHandler(_Sink())
+    log.setLevel(logging.DEBUG)
+    # Even with the offloaded env on (the default), and whether or not the hook was seen.
+    assert bg.select_module(pipe, **kwargs, model_offload = True, logger = log) is None
+    assert bg.select_module(pipe, **{**kwargs, "denoiser_hooked": False}, model_offload = True) is None
+    assert len(records) == 1 and "model offload" in records[0]
+    # Default (False) keeps today's behaviour.
+    assert bg.select_module(pipe, **kwargs) is pipe.transformer
+    assert bg.select_module(pipe, **kwargs, model_offload = False) is pipe.transformer
+    # Another gate refusing first logs nothing about model offload.
+    records.clear()
+    assert bg.select_module(pipe, **{**kwargs, "gguf": True}, model_offload = True, logger = log) is None
+    assert records == []
+
+
 class _PlainNet(torch.nn.Module):
     def __init__(self) -> None:
         super().__init__()

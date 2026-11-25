@@ -4787,6 +4787,8 @@ def _bg_compile_module(
         device = getattr(target, "device", None),
         backend = getattr(target, "backend", None),
         denoiser_hooked = offload_policy != OFFLOAD_NONE and _denoiser_hooked(pipe),
+        model_offload = offload_policy == OFFLOAD_MODEL,
+        logger = logger,
     )
 
 
