@@ -8566,10 +8566,14 @@ def _unsloth_save_torchao_with_given_config(
     del arguments["untied_lm_head"]
     torchao_save_directory = os.fspath(save_directory) + "-torchao"
 
-    # Keep the intermediate checkpoint out of the caller's directory, including on retries.
+    # Stage beside the output, not in the caller's directory, and not in TMPDIR: a tmpfs /tmp cannot hold the 16-bit merge.
     import tempfile
 
-    staging = tempfile.mkdtemp(prefix = "unsloth-torchao-")
+    staging_parent = (
+        os.getcwd() if push_to_hub else os.path.dirname(os.path.abspath(torchao_save_directory))
+    )
+    os.makedirs(staging_parent, exist_ok = True)
+    staging = tempfile.mkdtemp(prefix = ".unsloth-torchao-", dir = staging_parent)
     try:
         arguments["save_directory"] = staging
         if not isinstance(model, PeftModelForCausalLM) and not isinstance(model, PeftModel):

@@ -102,6 +102,8 @@ def test_torchao_staging_is_cleaned_without_touching_the_user_directory(
 
     assert keep.read_bytes() == b"user checkpoint"
     assert len(staging) == 1
+    assert staging[0].parent.resolve() == tmp_path.resolve()
     assert not staging[0].exists()
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["model"]
     assert outputs == ([target + "-torchao"] if failure in ("save", None) else [])
     assert restores == ([] if failure == "merge" else ["state"])
