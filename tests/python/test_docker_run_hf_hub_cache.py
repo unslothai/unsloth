@@ -101,3 +101,9 @@ def test_only_a_hub_created_here_is_flagged(tmp_path):
     (tmp_path / "bin").rename(tmp_path / "bin1")
     _mounts(tmp_path, HF_HUB_CACHE = str(hub))
     assert "UNSLOTH_HF_HUB_CREATED" not in (tmp_path / "argv").read_text(encoding = "utf-8")
+
+
+def test_a_differently_spelled_default_hub_is_not_mounted_twice(tmp_path):
+    hf = tmp_path / "hf"
+    mounts = _mounts(tmp_path, HF_HOME = f"{hf}/", HF_HUB_CACHE = f"{tmp_path}//hf/hub/")
+    assert mounts == {"/workspace/.cache/huggingface": str(hf)}

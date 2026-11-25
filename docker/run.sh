@@ -176,12 +176,17 @@ host_path() {
 }
 
 # huggingface_hub's resolution order; it expands ~ in both
-hf_raw="${HF_HOME:-${XDG_CACHE_HOME:-$HOME/.cache}/huggingface}"
-HF_CACHE="$(host_path "$hf_raw")"
-HF_CACHE="${HF_CACHE:-$hf_raw}"
-hf_raw="${HF_HUB_CACHE:-${HUGGINGFACE_HUB_CACHE:-$HF_CACHE/hub}}"
-HF_HUB="$(host_path "$hf_raw")"
-HF_HUB="${HF_HUB:-$hf_raw}"
+# Collapsed // and no trailing /, so a hub spelled differently from $HF_CACHE/hub is not mounted twice
+hf_path() {
+    local path
+    path="$(host_path "$1")"
+    path="${path:-$1}"
+    while [[ "$path" == *//* ]]; do path="${path//\/\//\/}"; done
+    [[ "$path" == */ && "$path" != / ]] && path="${path%/}"
+    printf '%s' "$path"
+}
+HF_CACHE="$(hf_path "${HF_HOME:-${XDG_CACHE_HOME:-$HOME/.cache}/huggingface}")"
+HF_HUB="$(hf_path "${HF_HUB_CACHE:-${HUGGINGFACE_HUB_CACHE:-$HF_CACHE/hub}}")"
 HF_HUB_MOUNT=()
 if [ "$HF_HUB" != "$HF_CACHE/hub" ]; then
     HF_HUB_MOUNT=(-v "$HF_HUB":/workspace/.cache/huggingface/hub)
