@@ -80,7 +80,7 @@ class Query:
     ep: int = 1  # UNSLOTH_EP_SIZE
     fsdp2: bool = False
     vllm: bool = False
-    pp_schedule: Optional[str] = None  # gpipe, 1f1b, interleaved
+    pp_schedule: Optional[str] = None  # gpipe, 1f1b, interleaved1f1b
     attention: str = "sdpa"  # sdpa, eager, flash, flash_varlen, fa3, fa4, flex, flex_sparse
     compile: str = "eager"  # eager, block (Unsloth's per decoder layer torch.compile)
     # none, gc, unsloth_gc, unsloth_offload (Unsloth's checkpoint), unsloth_offload_legacy (old zoo shim), tiled_mlp
@@ -241,10 +241,20 @@ RULES = (
     ),
     Rule(
         "pp x schedule",
-        "interleaved pipeline schedules",
-        lambda q: q.pp > 1 and q.pp_schedule == "interleaved",
-        "one stage per rank in v1",
-        "pp_schedule=gpipe or 1f1b",
+        "interleaved pipeline schedules other than interleaved1f1b",
+        lambda q: q.pp > 1 and q.pp_schedule not in (None, "gpipe", "1f1b", "interleaved1f1b"),
+        "the env / Trainer path runs gpipe, 1f1b and interleaved1f1b",
+        "pp_schedule=1f1b or interleaved1f1b",
+    ),
+    # Multi-stage parity is proven on a pp-only mesh (tests/test_pp_env_gloo.py interleaved cases).
+    Rule(
+        "pp x schedule",
+        "interleaved1f1b with data / tensor / context parallel",
+        lambda q: q.pp > 1
+        and q.pp_schedule == "interleaved1f1b"
+        and (q.dp > 1 or q.tp > 1 or q.cp > 1),
+        "interleaved1f1b is proven on a pp-only mesh",
+        "pp_schedule=1f1b, or run pp alone",
     ),
     # Kept: flex backward cannot run on CPU (no parity evidence) and generic would lose block sparsity. Inkling 2's
     # own flex (models/inkling2_flex.py) is the exception: its Ulysses path builds the mask over the whole sequence
