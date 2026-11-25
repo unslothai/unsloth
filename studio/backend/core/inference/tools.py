@@ -5562,18 +5562,29 @@ _PATH_NAME_REWRITES = frozenset({"with_name", "with_stem", "with_suffix"})
 _PERCENT_NAMED_RE = re.compile(r"%\((\w+)\)[-#0 +]*\d*(?:\.\d+)?[a-zA-Z]")
 
 
+_NOT_FOLDED = object()
+
+
 def _folded_path(
     node,
     literals = None,
     ctors = None,
     join_names = None,
+    memo = None,
 ) -> "str | None":
-    """Folds literal pieces; a dynamic piece is a NUL placeholder, so a dynamic name stays detectable."""
+    """Folds literal pieces; a dynamic piece is a NUL placeholder, so a dynamic name stays detectable.
+    *memo* (id(node) -> fold) is shared by folds over one tree with the same arguments; a fold over
+    _MAX_PATH_SCAN_CHARS is not kept since the scan refuses it on sight."""
     literals = literals or {}
     ctors = ctors or _PATH_CTORS
     join_names = join_names or frozenset()
 
     def fold(node) -> "str | None":
+        # A chain re-folded from every one of its nodes was quadratic; reuse a subtree already folded.
+        if memo is not None:
+            known = memo.get(id(node), _NOT_FOLDED)
+            if known is not _NOT_FOLDED:
+                return known
         if isinstance(node, ast.Constant) and isinstance(node.value, (str, bytes)):
             # bytes paths are valid too (open(b'/etc/passwd')); decode for scan.
             return (
@@ -5593,7 +5604,7 @@ def _folded_path(
         ):
             return "\x02"  # Path(...).parents[1]
         if isinstance(node, ast.JoinedStr):
-            return "".join(
+            joined = "".join(
                 v.value
                 if isinstance(v, ast.Constant) and isinstance(v.value, str)
                 else (fold(v.value) or "\x00")
@@ -5601,13 +5612,19 @@ def _folded_path(
                 else "\x00"
                 for v in node.values
             )
+            if memo is not None and len(joined) <= _MAX_PATH_SCAN_CHARS:
+                memo[id(node)] = joined
+            return joined
         if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Add, ast.Div)):
             left = fold(node.left)
             right = fold(node.right)
             left = "\x00" if left is None else left
             right = "\x00" if right is None else right
             # `/` is a JOIN: an absolute right side discards the left, as os.path.join does.
-            return _posix_join((left, right)) if isinstance(node.op, ast.Div) else left + right
+            joined = _posix_join((left, right)) if isinstance(node.op, ast.Div) else left + right
+            if memo is not None and len(joined) <= _MAX_PATH_SCAN_CHARS:
+                memo[id(node)] = joined
+            return joined
         if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod):
             # Old-style formatting: '%s/%s' % ('/etc', 'passwd') -> /etc/passwd.
             template = fold(node.left)
@@ -5630,9 +5647,12 @@ def _folded_path(
                     single = fold(rhs)
                     args = (single if single is not None else "\x00",)
                 try:
-                    return template % args
+                    formatted = template % args
                 except (TypeError, ValueError, KeyError):
                     return None
+                if memo is not None and len(formatted) <= _MAX_PATH_SCAN_CHARS:
+                    memo[id(node)] = formatted
+                return formatted
             return None
         if isinstance(node, ast.Call):
             func = node.func
@@ -5713,11 +5733,21 @@ def _folded_path(
     return fold(node)
 
 
+_NUL_RUN_RE = re.compile("\x00{2,}")
+
+
 def _dynamic_name_hits_sensitive(folded) -> bool:
     """A NUL placeholder matches any run within one segment, so a split sensitive name still matches."""
     if not folded or "\x00" not in folded:
         return False
-    pattern = "".join(r"[^/\\]*" if ch == "\x00" else re.escape(ch) for ch in folded)
+    # Each literal character matches exactly one target character, so more of them than the longest
+    # target holds can never match; skipping the compile keeps long concatenations linear.
+    if len(folded) - folded.count("\x00") > max(map(len, _SENSITIVE_GLOB_TARGETS), default = 0):
+        return False
+    # Adjacent placeholders match exactly what one does, so a run of them compiles to one class.
+    pattern = "".join(
+        r"[^/\\]*" if ch == "\x00" else re.escape(ch) for ch in _NUL_RUN_RE.sub("\x00", folded)
+    )
     try:
         rx = re.compile(pattern + r"\Z")
     except re.error:
@@ -9394,9 +9424,11 @@ def _python_is_high_risk(code: str) -> bool:
             if folded and "\x00" not in folded and "\x02" not in folded:
                 str_vars[node.targets[0].id] = folded
 
+    # str_vars is final here, so every fold below shares one memo.
+    fold_memo: "dict[int, str | None]" = {}
     for node in _tree_nodes(tree):
         if isinstance(node, (ast.BinOp, ast.JoinedStr, ast.Call)):
-            folded = _folded_path(node, str_vars)
+            folded = _folded_path(node, str_vars, memo = fold_memo)
             if folded and _folded_is_sensitive(folded):
                 return True
     # name -> possible runner modules; sets only grow, so alias propagation converges.
