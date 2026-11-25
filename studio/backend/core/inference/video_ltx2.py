@@ -1504,7 +1504,66 @@ def load_ltx23_audio_vae_and_vocoder(
     with init_empty_weights():
         vocoder = LTX2VocoderWithBWE.from_config(_VOCODER_CONFIG)
     vocoder.load_state_dict(vocoder_state, strict = True, assign = True)
-    return audio_vae, vocoder.to(torch_dtype)
+    vocoder = vocoder.to(torch_dtype)
+    install_vocoder_fp32_forward(vocoder)
+    return audio_vae, vocoder
+
+
+# Lightricks' LTX-2.3+ VocoderWithBWE runs its whole forward in float32 on bf16 weights (autocast on CUDA, weights
+# upcast for the call elsewhere): bf16 accumulation through BigVGAN's ~108 convs degrades mel / MRSTFT error 40-90%.
+# diffusers' LTX2VocoderWithBWE has no upcast. "0" runs the stored dtype again.
+VOCODER_FP32_ENV = "UNSLOTH_LTX_VOCODER_FP32"
+
+
+def vocoder_fp32_enabled() -> bool:
+    return (os.environ.get(VOCODER_FP32_ENV) or "").strip().lower() not in _SWITCH_OFF
+
+
+@contextlib.contextmanager
+def _module_in_fp32(module: Any) -> Iterator[None]:
+    """Float32 weights for the call, the stored dtype back after (devices without float32 autocast)."""
+    stored = next(module.parameters()).dtype
+    module.float()
+    try:
+        yield
+    finally:
+        module.to(stored)
+
+
+def install_vocoder_fp32_forward(vocoder: Any) -> None:
+    """Run this vocoder instance's forward in float32 and return a float32 waveform; idempotent, never raises."""
+    try:
+        import torch
+        import types
+
+        if getattr(vocoder, "_unsloth_fp32_forward", False):
+            return
+        inner = vocoder.forward
+
+        def forward(self, mel_spec, *args, **kwargs):
+            param = next(self.parameters(), None)
+            if (
+                param is None
+                or not vocoder_fp32_enabled()
+                or not torch.is_floating_point(mel_spec)
+                or (param.dtype == torch.float32 and mel_spec.dtype == torch.float32)
+            ):
+                return inner(mel_spec, *args, **kwargs)
+            if param.dtype == torch.float32:
+                return inner(mel_spec.float(), *args, **kwargs)
+            # CUDA (and ROCm) autocast upcasts bf16 weights per op: bit-equal to .float() at +~70 MB, not +~300 MB.
+            # Other autocast backends refuse float32, so their weights are upcast for the call.
+            if mel_spec.device.type == "cuda":
+                ctx = torch.autocast(device_type = "cuda", dtype = torch.float32)
+            else:
+                ctx = _module_in_fp32(self)
+            with ctx:
+                return inner(mel_spec.float(), *args, **kwargs)
+
+        vocoder.forward = types.MethodType(forward, vocoder)
+        vocoder._unsloth_fp32_forward = True
+    except Exception as exc:  # the render keeps the stored-dtype vocoder
+        logger.debug("LTX vocoder float32 forward not installed: %s", exc)
 
 
 PREFETCH_ENV = "UNSLOTH_VIDEO_PREFETCH"
