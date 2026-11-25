@@ -1,9 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-"""Expert parallel checkpoint integrity (gloo CPU ranks, tiny OLMoE): the per-rank state file is replaced
-atomically, a write failure on one rank raises on every rank instead of stranding its peers at the barrier, a
-resume on another rank layout is refused, save_on_each_node gathers only onto the writers, and the plain save /
-resume round trip stays bitwise."""
+"""Expert parallel checkpoint integrity on gloo CPU ranks with tiny OLMoE."""
 
 import multiprocessing
 import os
@@ -11,7 +8,7 @@ import os
 if multiprocessing.parent_process() is not None or getattr(
     multiprocessing.current_process(), "_inheriting", False
 ):
-    os.environ["CUDA_VISIBLE_DEVICES"] = ""  # spawned gloo ranks: CPU only, also on GPU hosts
+    os.environ["CUDA_VISIBLE_DEVICES"] = ""
 
 import subprocess  # noqa: E402
 import sys  # noqa: E402
@@ -26,7 +23,7 @@ sys.path.insert(0, os.path.join(HERE, "_shared"))
 
 OLMOE = "hf-internal-testing/tiny-random-OlmoeForCausalLM"
 EXPERT_LORA = dict(target_parameters = ["mlp.experts.gate_up_proj", "mlp.experts.down_proj"])
-_TIMEOUT_S = 20  # gloo collective timeout: a rank stranded at a barrier errors out within it
+_TIMEOUT_S = 20  # gloo collective timeout
 
 
 def _modules():
@@ -81,8 +78,7 @@ def _readable(path):
 
 
 def _case_rank_failure(rank, world, tmp):
-    """Commit a rank state, then overwrite it with a larger one while rank 1 cannot grow files past the old
-    size (RLIMIT_FSIZE, as a full disk would fail the write part-way)."""
+    """Overwrite a committed rank state while rank 1 is capped by RLIMIT_FSIZE (simulated full disk)."""
     import resource
     import signal
 
@@ -123,8 +119,7 @@ def _case_rank_failure(rank, world, tmp):
 
 
 def _case_reordered_mesh(rank, world, tmp):
-    """ep 2 x 2 replicas saved with ep groups [0, 1] / [2, 3], resumed with [0, 2] / [1, 3]: the same world,
-    ep and replica sizes, and the same local shapes, but each rank's shards belong to other experts."""
+    """Saved with ep groups [0, 1] / [2, 3], resumed with [0, 2] / [1, 3]: same sizes and shapes, other experts."""
     from torch.distributed.device_mesh import DeviceMesh, init_device_mesh
 
     build, tpn, epn = _modules()
@@ -166,7 +161,7 @@ def _case_round_trip(rank, world, tmp):
     ddp = _step(model, optimizer, rank)
     directory = os.path.join(tmp, "ckpt")
     epn._save_rank_state(model, optimizer, directory)
-    epn._save_rank_state(model, optimizer, directory)  # an overwrite of a committed file
+    epn._save_rank_state(model, optimizer, directory)
     fresh = _ep_model(build, epn, mesh)
     fresh_opt = torch.optim.AdamW([p for p in fresh.parameters() if p.requires_grad], lr = 1e-3)
     epn._load_rank_weights(fresh, directory)
@@ -191,8 +186,7 @@ def _case_round_trip(rank, world, tmp):
 
 
 def _case_each_node(rank, world, tmp):
-    """save_on_each_node with two "nodes" of two ranks (writers 0 and 2) over one ep group of 4: only the
-    writers receive the gathered expert LoRA, and both write the adapter one process saves."""
+    """save_on_each_node, writers 0 and 2 over one ep group of 4: only writers get the gathered LoRA."""
     import types
 
     import torch.distributed as dist
@@ -245,7 +239,7 @@ def _case_each_node(rank, world, tmp):
     finally:
         dist.gather, dist.all_gather = gather, all_gather
     one = os.path.join(tmp, "one")
-    model.save_pretrained(one)  # one writer (rank 0): the reference adapter
+    model.save_pretrained(one)
     want = load_file(os.path.join(one, "adapter_model.safetensors"))
     got = load_file(os.path.join(out, "adapter_model.safetensors"))
     same = sorted(got) == sorted(want) and all(torch.equal(got[k], want[k]) for k in want)
@@ -274,9 +268,7 @@ def _worker(rank, world, tmp, case):
         import traceback
         res = {"error": f"{type(exc).__name__}: {exc}"[:600] + traceback.format_exc()[-3000:]}
     torch.save(res, os.path.join(tmp, f"result_{rank}.pt"))
-    # Alive (its sockets open) until every rank reported: a peer stuck in a collective then waits out the timeout
-    # as it would beside a live job, instead of seeing this rank's exit. No destroy_process_group: a rank whose
-    # peer raised must not wait on it again.
+    # Stay alive until every rank reported; no destroy_process_group: a rank whose peer raised must not wait on it.
     deadline = time.monotonic() + 3 * _TIMEOUT_S
     while time.monotonic() < deadline and not all(
         os.path.exists(os.path.join(tmp, f"result_{r}.pt")) for r in range(world)
@@ -362,14 +354,11 @@ def test_write_failure_on_one_rank_raises_on_every_rank():
     results = _spawn("_case_rank_failure")
     assert all(r is not None and r["error"] is None for r in results), results
     rank0, rank1 = results
-    # Rank 1's write failed; rank 0 learns it from the agreement, well inside the collective timeout.
     assert rank1["save_error"] and "RuntimeError" in rank1["save_error"], rank1
-    # Main: rank 0 sits at the barrier for the whole collective timeout, then fails with a gloo timeout.
+    # Without the agreement rank 0 would wait out the whole gloo timeout.
     assert rank0["elapsed"] < _TIMEOUT_S / 2, rank0
     assert rank0["save_error"] and "another rank failed" in rank0["save_error"], rank0
-    assert (
-        rank1["readable"] and rank1["old_kept"]
-    ), rank1  # the committed file survives the failed overwrite
+    assert rank1["readable"] and rank1["old_kept"], rank1
     assert rank0["readable"] and rank0["new_written"], rank0
     assert not rank0["leftovers"] and not rank1["leftovers"], results
 

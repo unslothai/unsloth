@@ -5917,8 +5917,7 @@ def _ckpt_path(directory, rank):
 
 
 def _atomic_torch_save(obj, path):
-    """torch.save onto `path` through a temp file in the same directory: a write that fails part-way (disk
-    full, quota, killed) leaves the previous file whole instead of truncated."""
+    """torch.save via a same-directory temp file, so a failed write leaves the previous file whole."""
     import os
 
     tmp = f"{path}.tmp{os.getpid()}"
@@ -5932,7 +5931,7 @@ def _atomic_torch_save(obj, path):
         with contextlib.suppress(OSError):
             os.remove(tmp)
         raise
-    try:  # the rename itself durable; directories cannot be opened on Windows
+    try:  # directories cannot be opened on Windows
         fd = os.open(os.path.dirname(path) or ".", os.O_RDONLY)
     except OSError:
         return
@@ -5945,7 +5944,6 @@ def _atomic_torch_save(obj, path):
 
 
 def _flag_device(group = None):
-    """The device a small int collective on `group` runs on: the accelerator for NCCL / XCCL, else the CPU."""
     import torch.distributed as dist
 
     backend = str(dist.get_backend(group)).lower()
@@ -5957,8 +5955,7 @@ def _flag_device(group = None):
 
 
 def _agree_write(fn, group = None):
-    """Run this rank's write, then raise on every rank of `group` if any rank's write failed. Collective (it is
-    also the barrier after the write), so no rank waits on a peer that already raised."""
+    """Collective (also the post-write barrier): raise on every rank of `group` if any rank's write failed."""
     import torch.distributed as dist
 
     failed, out = None, None
@@ -6112,7 +6109,6 @@ def _tp_save_optimizer_and_scheduler(self, output_dir):
             from transformers.trainer import SCHEDULER_NAME
             _atomic_torch_save(scheduler.state_dict(), os.path.join(output_dir, SCHEDULER_NAME))
 
-    # Every rank's file is on disk (or every rank raises) before the Trainer state marks the checkpoint complete.
     _agree_write(write)
 
 

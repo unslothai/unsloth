@@ -769,8 +769,6 @@ def _save_rank_state(model, optimizer, directory):
         os.makedirs(os.path.dirname(path), exist_ok = True)
         tpn._atomic_torch_save(payload, path)
 
-    # Atomic: a failed overwrite keeps the previous file, the only copy of this rank's expert shards and their
-    # optimizer state. World agreement: every rank raises if any rank's write failed (no peer left waiting).
     tpn._agree_write(write)
 
 
@@ -785,7 +783,7 @@ def _read_rank_state(model, directory):
     payload = _tpn()._resume_torch_load(path, map_location = "cpu")
     saved, want = dict(payload["layout"]), _layout(model)
     saved_b, want_b = saved.pop("lora_b", None), want.pop("lora_b")
-    # Not recorded before: such checkpoints still load, on the layout check alone.
+    # Older checkpoints lack these keys and still load.
     member = {k: want.pop(k) for k in ("ep_rank", "ep_members")}
     saved_member = {k: saved.pop(k) for k in ("ep_rank", "ep_members") if k in saved}
     if saved != want:
@@ -928,9 +926,8 @@ def ep_trainer_setup(trainer):
     save_model = trainer.save_model
 
     def ep_save_model(output_dir = None, _internal_call = False):
-        # Every rank takes part in gathering the expert LoRA (collective) onto global rank 0, the main process
-        # that writes (onto each node's writer when each node saves: one gather per writer, onto its CPU), then
-        # the Trainer's own save there.
+        # Every rank takes part in gathering the expert LoRA onto rank 0 (each node's writer under
+        # save_on_each_node), then the Trainer's own save there.
         import torch.distributed as dist
 
         if trainer.args.save_on_each_node:
@@ -958,7 +955,7 @@ def ep_trainer_setup(trainer):
                     tok.save_pretrained(directory)
                 torch.save(trainer.args, os.path.join(directory, "training_args.bin"))
 
-        # The whole world: the other replica groups took no part in the gather and must not run ahead of the write.
+        # World, not group: other replica groups must not run ahead of the write.
         _tpn()._agree_write(write)
 
     trainer.save_model = ep_save_model

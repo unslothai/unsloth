@@ -3107,7 +3107,6 @@ class PipelineParallel:
             return write()
         from .tp_native import _agree_write
 
-        # Every rank raises if the writer's save failed, instead of waiting at the barrier for it.
         _agree_write(write, group)
 
 
