@@ -12,6 +12,7 @@ import {
   audioEjectAvailable,
   audioGenerationPresentation,
   audioModelToReplace,
+  audioRestoreRequest,
   canTransitionAudioMode,
   describeAudioSlot,
   exactGgufLoadSelector,
@@ -1298,6 +1299,104 @@ test("a local speech model is replaced by its path, not its short name", () => {
   assert.equal(audioModelToReplace(local, "pocket"), "/models/custom/MyVoice.gguf");
   assert.equal(audioModelToReplace(local, "/models/custom/MyVoice.gguf"), null);
   assert.equal(audioModelToReplace(local, "MyVoice"), null);
+});
+
+const restoreDefaults = {
+  hf_token: null,
+  max_seq_length: 4096,
+  audio_device: "auto" as const,
+};
+
+test("a failed speech switch reloads the replaced model with the request that loaded it", () => {
+  const loaded = {
+    model_path: "audio-cpp/audio.cpp-gguf/Kokoro-82M-GGUF",
+    load_request_id: "first",
+    force_cancel_active: true,
+    hf_token: "hf_x",
+    max_seq_length: 2048,
+    load_in_4bit: false,
+    is_lora: false,
+    gguf_variant: "kokoro-82m-q8_0.gguf",
+    trust_remote_code: true,
+    approved_remote_code_fingerprint: "abc",
+    alongside: true,
+    audio_device: "cpu" as const,
+  };
+  const request = audioRestoreRequest(
+    kokoroSlot,
+    "audio-cpp/audio.cpp-gguf/Kokoro-82M-GGUF",
+    loaded,
+    restoreDefaults,
+  );
+  assert.deepEqual(
+    { ...request, load_request_id: undefined },
+    { ...loaded, load_request_id: undefined, force_cancel_active: false },
+  );
+  assert.notEqual(request.load_request_id, "first");
+});
+
+test("a failed speech switch reloads a model loaded before the page was opened from its status", () => {
+  const status = { ...kokoroSlot, gguf_variant: "kokoro-82m-q8_0.gguf" };
+  const other = {
+    model_path: "audio-cpp/audio.cpp-gguf/KittenTTS-GGUF",
+    hf_token: null,
+    max_seq_length: 2048,
+    load_in_4bit: false,
+    is_lora: false,
+    trust_remote_code: true,
+  };
+  for (const lastLoad of [null, other]) {
+    const request = audioRestoreRequest(
+      status,
+      "audio-cpp/audio.cpp-gguf/Kokoro-82M-GGUF",
+      lastLoad,
+      restoreDefaults,
+    );
+    assert.equal(
+      request.model_path,
+      "audio-cpp/audio.cpp-gguf/Kokoro-82M-GGUF",
+    );
+    assert.equal(request.gguf_variant, "kokoro-82m-q8_0.gguf");
+    assert.equal(request.alongside, true);
+    assert.equal(request.max_seq_length, 4096);
+    assert.equal(request.audio_device, "auto");
+    assert.equal(request.trust_remote_code, undefined);
+    assert.equal(request.force_cancel_active, false);
+    assert.ok(request.load_request_id);
+  }
+});
+
+test("a failed switch from a local speech model reloads it by its path", () => {
+  const local = {
+    ...kokoroSlot,
+    active_model: "MyVoice",
+    model_identifier: "/models/custom/MyVoice.gguf",
+  };
+  const loaded = {
+    model_path: "/models/custom/MyVoice.gguf",
+    hf_token: null,
+    max_seq_length: 2048,
+    load_in_4bit: false,
+    is_lora: false,
+  };
+  assert.equal(
+    audioRestoreRequest(
+      local,
+      "/models/custom/MyVoice.gguf",
+      loaded,
+      restoreDefaults,
+    ).max_seq_length,
+    2048,
+  );
+  assert.equal(
+    audioRestoreRequest(
+      local,
+      "/models/custom/MyVoice.gguf",
+      null,
+      restoreDefaults,
+    ).model_path,
+    "/models/custom/MyVoice.gguf",
+  );
 });
 
 test("a kept speech model sharing the chat model's short name is still found", async () => {

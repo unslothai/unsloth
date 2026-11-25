@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { InferenceStatusResponse } from "@/features/chat";
+import type { LoadModelRequest } from "@/features/chat/types/api";
 import type { ModelSelectorChangeMeta } from "@/features/model-picker/components/model-selector/types";
 import { nativeAudioCheckpointIsLoadable } from "../model-picker/components/model-selector/audio-picker-policy.ts";
 import {
@@ -828,4 +829,32 @@ export function audioModelToReplace(
   if (!status?.is_audio || !status.active_model) return null;
   const current = status.model_identifier || status.active_model;
   return current !== target && status.active_model !== target ? current : null;
+}
+
+export function audioRestoreRequest(
+  status: InferenceStatusResponse,
+  modelPath: string,
+  lastLoad: LoadModelRequest | null,
+  defaults: Pick<
+    LoadModelRequest,
+    "hf_token" | "max_seq_length" | "audio_device"
+  >,
+): LoadModelRequest {
+  const ids = [modelPath, status.model_identifier, status.active_model];
+  const base =
+    lastLoad && ids.includes(lastLoad.model_path)
+      ? lastLoad
+      : {
+          ...defaults,
+          model_path: modelPath,
+          load_in_4bit: false,
+          is_lora: false,
+          gguf_variant: status.gguf_variant ?? null,
+          alongside: true,
+        };
+  return {
+    ...base,
+    load_request_id: crypto.randomUUID(),
+    force_cancel_active: false,
+  };
 }

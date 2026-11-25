@@ -23,7 +23,7 @@ test("a speech load from Audio keeps the chat model loaded", () => {
   // Without it, When they fit replaced the chat model and Always refused the load.
   assert.match(
     slotHook,
-    /const res = await loadModel\([\s\S]*?alongside: true,[\s\S]*?runtime: "tts",/,
+    /const request: LoadModelRequest = \{[\s\S]*?alongside: true,[\s\S]*?const res = await loadModel\(request, \{[\s\S]*?runtime: "tts",/,
   );
   // The speech model it replaces is unloaded just before /load goes out: as a third model, Always
   // refuses a load that fits only in its place, and a load cancelled earlier keeps it.
@@ -32,6 +32,15 @@ test("a speech load from Audio keeps the chat model loaded", () => {
     /audioModelToReplace\(statusRef\.current, loadId \|\| repoId\)[\s\S]*?const replacePrevious = previous\s*\? \(\) =>\s*unloadModel\(\{\s*model_path: audioSlotRoutingId\(previous\) \?\? previous,\s*\}\)[\s\S]*?const res = await loadModel\([\s\S]*?beforeRequest: replacePrevious,/,
   );
   assert.doesNotMatch(slotHook, /await unloadModel\(\{\s*model_path: audioSlotRoutingId\(previous\)/);
+  // A load that fails after the replaced model was unloaded puts it back.
+  assert.match(
+    slotHook,
+    /lastTtsLoadRequest\.current = request;[\s\S]*?\} catch \(error\) \{[\s\S]*?if \(\s*restore &&\s*pending\.requestStarted &&\s*isCurrent\(\) &&\s*shouldRestorePreviousModel\(error\)\s*\) \{[\s\S]*?await loadModel\(restore\.request, \{ runtime: "tts" \}\);[\s\S]*?\} finally \{/,
+  );
+  assert.match(
+    slotHook,
+    /restore = \{\s*label: audioModelLabel\(previous\),\s*request: audioRestoreRequest\(\s*statusRef\.current,\s*audioSlotRoutingId\(previous\) \?\? previous,\s*lastTtsLoadRequest\.current,/,
+  );
   // A refused unload stops the switch: swallowed, the busy old model kept answering Read aloud.
   assert.match(
     slotHook,
