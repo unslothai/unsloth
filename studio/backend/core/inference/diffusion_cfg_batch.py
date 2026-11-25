@@ -585,6 +585,8 @@ class CfgBatchRouter:
         self.identity: Optional[str] = (
             None  # the load's verdict-store identity (None: verdicts stay per load)
         )
+        # per render: False when the current step runs one branch by design (a guidance interval ended)
+        self.guided_step: Optional[Any] = None
 
     def _reset_step(self) -> None:
         self.branch = 0
@@ -636,6 +638,7 @@ class CfgBatchRouter:
         self.prev_calls = 0
         self.render_off = None
         self.render_checked = False
+        self.guided_step = None
         self._reset_step()
         for shape in self.shapes.values():
             shape.render_steps = 0
@@ -738,6 +741,9 @@ class CfgBatchRouter:
             self.branch += 1
         else:
             self._new_step(args, kwargs, latent)
+            if self.guided_step is not None and not self._guided():
+                # no second branch is coming: nothing to batch, and its absence is not a miss
+                return self._plain(args, kwargs)
         shape = self.shape
         if self.branch == 0 and self.paired is not None:
             # the first plain pair records the second call's template
@@ -809,6 +815,12 @@ class CfgBatchRouter:
             return out
         self.disable("more than two denoiser calls per step")
         return self._plain(args, kwargs)
+
+    def _guided(self) -> bool:
+        try:
+            return bool(self.guided_step())
+        except Exception:  # noqa: BLE001 - unknown: treat the step as guided, as without a probe
+            return True
 
     def _untimed_mode(self) -> bool:
         """No timing trial: an offloaded denoiser batches whenever the doubled call fits (it saves one weight upload
@@ -1501,6 +1513,14 @@ def router_for(pipe: Any) -> Optional[CfgBatchRouter]:
         return _ROUTERS.get(pipe)
     except TypeError:
         return None
+
+
+def set_guided_step_probe(pipe: Any, probe: Optional[Any]) -> None:
+    """For this render: ``probe()`` says whether the current step runs the unconditional branch (None = every
+    step does). Cleared by ``end_render``."""
+    router = router_for(pipe)
+    if router is not None:
+        router.guided_step = probe
 
 
 def end_cfg_batch_render(pipe: Any) -> None:

@@ -543,10 +543,11 @@ class AudioCppBackend:
         only its new header. False means download it as usual; never raises."""
         try:
             from hub.utils import gguf_header_delta as delta
-            from core.inference.audio_cpp_models import hub_offline, snapshot_dirs
+            from core.inference.audio_cpp_models import snapshot_dirs
+            from utils.utils import hf_env_offline
 
             if (
-                hub_offline()
+                hf_env_offline()
                 or not path.lower().endswith(".gguf")
                 or not delta.delta_enabled()
                 or (cancel_event is not None and cancel_event.is_set())

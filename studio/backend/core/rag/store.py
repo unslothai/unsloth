@@ -1103,6 +1103,36 @@ def all_chunks_for_scope(conn: sqlite3.Connection, scope) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def opening_chunks(
+    conn: sqlite3.Connection,
+    scope: str,
+    min_tokens: int,
+    document_id: str,
+    max_chunks: int = 3,
+) -> list[dict]:
+    doc = conn.execute(
+        "SELECT id, filename FROM documents d WHERE scope=? AND id=? AND status='completed' "
+        "AND num_chunks > 0 AND NOT EXISTS "
+        "(SELECT 1 FROM linked_folder_retired_scopes r WHERE r.scope=d.scope)",
+        (scope, document_id),
+    ).fetchone()
+    if doc is None:
+        return []
+    rows, total = [], 0
+    for r in conn.execute(
+        "SELECT id, text, document_id, chunk_index, page_number, source_page_index, "
+        "page_char_start, page_char_end, token_count "
+        # Chunks never span pages, so a sparse deck would otherwise pull in a chunk per page.
+        "FROM chunks WHERE document_id=? ORDER BY chunk_index LIMIT ?",
+        (doc["id"], max_chunks),
+    ):
+        rows.append({**dict(r), "filename": doc["filename"]})
+        total += r["token_count"] or max(1, len(r["text"] or "") // 4)
+        if total >= min_tokens:
+            break
+    return rows
+
+
 def scope_token_estimate(conn: sqlite3.Connection, scope) -> int:
     """Upper-bound token total for a scope's completed chunks without hydrating text.
     Mirrors ``all_chunks_for_scope`` + whole-document token budgeting (unique stored

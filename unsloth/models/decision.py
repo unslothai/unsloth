@@ -1239,7 +1239,11 @@ class DecisionTrainer(Trainer):
             args.gradient_checkpointing = False
             if hasattr(args, "activation_checkpointing"):
                 args.activation_checkpointing = False
-            if not clef and not model.encoder.is_gradient_checkpointing:
+            from unsloth.models._gc_config_default import (
+                is_activation_checkpointing as _is_activation_checkpointing,
+            )
+
+            if not clef and not _is_activation_checkpointing(model.encoder):
                 _gradient_checkpointing(model, True)
         if kwargs.get("processing_class") is None:
             kwargs["processing_class"] = tokenizer
@@ -1722,9 +1726,13 @@ class FastDecisionModel:
         model.train()
         if getattr(model, "is_clef", False):
             return model
+        from unsloth.models._gc_config_default import (
+            is_activation_checkpointing as _is_activation_checkpointing,
+        )
+
         if not use_gradient_checkpointing:
             model.encoder.gradient_checkpointing_disable()
-        elif not model.encoder.is_gradient_checkpointing:
+        elif not _is_activation_checkpointing(model.encoder):
             _gradient_checkpointing(model, use_gradient_checkpointing)
         return model
 

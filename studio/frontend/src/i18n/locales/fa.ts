@@ -982,6 +982,13 @@ export const fa = {
     compactUnsupported:
       "فشرده‌سازی به یک مدل GGUF یا MLX با پشتیبانی از ابزار نیاز دارد",
   },
+  chatFiles: {
+    title: "فایل‌های این گفتگو",
+    code: "قطعه‌کدها",
+    showInChat: "نمایش در گفتگو",
+    download: "دانلود {name}",
+    saveFailed: "ذخیرهٔ {name} ممکن نشد.",
+  },
   welcome: {
     goodToSeeYou: "از دیدنتان خوشحالیم",
     goodToSeeYouName: "از دیدنتان خوشحالیم، {name}",
@@ -1062,6 +1069,7 @@ export const fa = {
     saving: "در حال ذخیره...",
     search: "جستجو",
     shutdown: "خاموش کردن",
+    technicalDetails: "جزئیات فنی",
   },
   shell: {
     helpMenu: {
@@ -2786,7 +2794,7 @@ export const fa = {
         oldWebkitWarning:
           "WebKitGTK {version} روی Wayland: رندرینگ با GPU ممکن است هنگام اجرا روی NVIDIA با مقیاس‌بندی کسری از کار بیفتد (باگ WebKit شمارهٔ 280210). در این صورت، Unsloth خودبه‌خود به رندرینگ با CPU برمی‌گردد. روی WebKitGTK 2.50.4 هیچ افزایش سرعت قابل اندازه‌گیری نداشت (در هر دو حالت 8 fps)، بنابراین گزینهٔ «روشن» اینجا توصیه نمی‌شود.",
         oldDriverWarning:
-          "درایور NVIDIA {version} روی X11: Unsloth تا وقتی درایور 610 یا جدیدتر نشده است رندرینگ با GPU را خاموش نگه می‌دارد. درایورهای قدیمی‌تر در هر فریم یک توصیف‌گر فایل نشت می‌دهند و پنجره در عرض چند دقیقه دیگر ترسیم نمی‌شود.",
+          "درایور NVIDIA {version} روی X11: Unsloth تا وقتی درایور 590 یا جدیدتر نشده است رندرینگ با GPU را خاموش نگه می‌دارد. درایورهای قدیمی‌تر در هر فریم یک توصیف‌گر فایل نشت می‌دهند و پنجره در عرض چند دقیقه دیگر ترسیم نمی‌شود.",
         fallbackNote:
           "رندرینگ با GPU هنگام اجرا روی این سیستم از کار افتاد، بنابراین Unsloth از رندرینگ با CPU استفاده می‌کند.",
         tryAgain: "امتحان دوبارهٔ GPU",
@@ -3062,6 +3070,15 @@ export const fa = {
         runningOn: "llama.cpp در حال حاضر روی {backend} اجرا می‌شود.",
         hint: "بیلد llama.cpp مربوط به این بک‌اند را نصب می‌کند و در به‌روزرسانی‌ها حفظ می‌کند. وقتی انتخاب خودکار از کار می‌افتد یا درایور GPU شما از آن پشتیبانی نمی‌کند مفید است. فقط بک‌اندهایی فهرست شده‌اند که برای این دستگاه بیلد دارند؛ آموزش تحت تأثیر قرار نمی‌گیرد.",
         autoWith: "خودکار ({backend})",
+        unavailableOption: "{backend} ({reason})",
+        unavailableHint: "{backend}: {hint}",
+        unavailable: {
+          rocmNotInstalled: "ROCm نصب نشده است",
+          rocmNoAccess: "دسترسی به GPU وجود ندارد",
+          otherRelease: "به به‌روزرسانی llama.cpp نیاز دارد",
+          checkFailed: "بررسی ممکن نشد",
+          noBuild: "بیلدی برای این دستگاه وجود ندارد",
+        },
         apply: "اعمال",
         applying: "در حال نصب...",
         applyHint:
@@ -4365,6 +4382,54 @@ export const fa = {
       cachedDatasetGoneDescription:
         "فایل‌های مجموعه‌داده دیگر روی این دستگاه نیستند، بنابراین آموزش آن‌ها را دوباره دانلود می‌کند.",
     },
+    gpus: {
+      title: "GPUها",
+      description: "GPUهای این دستگاه و نحوه استفاده آموزش از آن‌ها",
+      gpuIndex: "GPU {index}",
+      vram: "{gb} GiB",
+      free: "{gb} GiB آزاد",
+      pickModel: "یک مدل انتخاب کنید تا ببینید آموزش چگونه از این GPUها استفاده می‌کند.",
+      planning: "در حال بررسی جا شدن این مدل...",
+      planFailed: "بررسی برنامه GPU ممکن نشد: {message}",
+      perGpu: "(~{gb} GB برای هر GPU)",
+      alternative: "به‌جای آن امتحان کنید: {alternative}",
+      override: "انتخاب حالت و GPUها",
+      overrideHint: "خودکار سریع‌ترین حالتی را که جا می‌شود انتخاب می‌کند. تیک یک GPU را بردارید تا برای گفتگو یا اجرای دیگر آزاد بماند.",
+      modeLabel: "حالت",
+      specLabel: "چیدمان",
+      unavailable: "اینجا در دسترس نیست",
+      runChip: "{mode} · {count} GPU",
+      rankGpu: "رتبه {rank} · GPU {index}",
+      mode: {
+        auto: "خودکار",
+        single: "یک GPU",
+        layerSplit: "تقسیم لایه‌ای",
+        ddp: "موازی‌سازی داده (DDP)",
+        fsdp2: "موازی‌سازی داده تکه‌تکه (FSDP2)",
+        tp: "موازی‌سازی تنسور",
+        pp: "موازی‌سازی خط لوله",
+        cp: "موازی‌سازی زمینه",
+        ep: "موازی‌سازی متخصص‌ها",
+        custom: "چیدمان سفارشی",
+      },
+      summary: {
+        single: "آموزش روی یک GPU",
+        layerSplit: "مدل لایه به لایه بین {count} GPU تقسیم می‌شود",
+        ddp: "مدل در یک GPU جا می‌شود: موازی‌سازی داده روی {count} GPU",
+        fsdp2: "مدل برای یک GPU بیش از حد بزرگ است: تکه‌تکه روی {count} GPU",
+        tp: "هر لایه بین {count} GPU تقسیم می‌شود",
+        pp: "لایه‌ها به‌صورت {count} مرحله خط لوله اجرا می‌شوند، هر GPU یک مرحله",
+        cp: "هر دنباله بین {count} GPU تقسیم می‌شود",
+        ep: "متخصص‌های MoE بین {count} GPU پخش می‌شوند",
+        custom: "چیدمان سفارشی {spec} روی {count} GPU",
+      },
+      error: {
+        noGpu: "دست‌کم یک GPU انتخاب کنید.",
+        singleNeedsOne: "حالت یک GPU دقیقاً از یک GPU استفاده می‌کند. تیک بقیه را بردارید.",
+        needsTwo: "این حالت دست‌کم به دو GPU نیاز دارد.",
+        customSpec: "یک چیدمان وارد کنید، مثلاً dp=2,tp=2.",
+      },
+    },
     preview: {
       title: "پیش‌نمایش اجرا",
       ready: "آماده",
@@ -4390,8 +4455,10 @@ export const fa = {
       lr: "نرخ یادگیری",
       hardware: "سخت‌افزار",
       vram: "VRAM",
+      vramTotal: "{size} در مجموع",
       noGpu: "هیچ GPU شناسایی نشد",
       hfToken: "توکن HF",
+      gpus: "GPUها",
       saved: "ذخیره‌شده",
       notSet: "تنظیم نشده",
       files: "فایل‌ها",
@@ -5290,6 +5357,7 @@ export const fa = {
     model: {
       label: "مدل ترجمه",
       fast: "سریع",
+      balanced: "متعادل",
       quality: "بهترین کیفیت",
       chat: "مدل گفتگو",
       recommended: "پیشنهادی",
@@ -5311,13 +5379,11 @@ export const fa = {
       toneFormal: "رسمی",
       toneCasual: "غیررسمی",
       auto: "ترجمه هنگام تایپ",
-      autoDescription:
-        "پس از بارگذاری مدل شروع می‌شود. تایپ کردن هرگز دانلودی را شروع نمی‌کند.",
+      autoDescription: "وقتی مدل بارگذاری شد، خودکار شروع می‌شود.",
       saveHistory: "ذخیرهٔ سابقه",
       saveHistoryDescription: "فقط در همین مرورگر نگهداری می‌شود.",
       showPrompt: "نمایش پرامپت",
-      showPromptDescription:
-        "دستورهای دقیقی را که برای مدل فرستاده می‌شود ببینید.",
+      showPromptDescription: "دستورالعمل‌های دقیق ارسال‌شده به مدل را ببینید.",
     },
     history: {
       title: "سابقه",
@@ -5423,6 +5489,11 @@ export const fa = {
       notifyNone: "خاموش",
       archiveSuccessful: "بایگانی اجراهای موفق",
       webSearch: "جستجوی وب",
+      mcpServers: "اجازه به ابزارهای MCP برای این کار",
+      mcpServersHint: "هر اجرا می‌تواند بدون تأیید از ابزارهای سرورهای انتخاب‌شده استفاده کند.",
+      mcpServersEmpty: "هیچ سروری فعال نیست. برای استفاده در اینجا، یک سرور MCP را در گفتگو فعال کنید.",
+      mcpServersLoadError: "بارگیری سرورهای MCP ممکن نشد.",
+      mcpServerUnavailable: "{name} (در دسترس نیست)",
       project: "پروژه",
       projectNone: "هیچ‌کدام",
       model: "مدل",

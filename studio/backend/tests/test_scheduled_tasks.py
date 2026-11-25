@@ -4,7 +4,9 @@
 """Scheduled tasks: schedule math, storage, routes, and the runner that posts answers to chats."""
 
 import asyncio
+import json
 import sqlite3
+import sys
 import threading
 from datetime import datetime
 from pathlib import Path
@@ -402,7 +404,18 @@ def test_web_search_is_off_unless_the_task_turns_it_on(client):
     assert off.json()["webSearch"] is False
 
 
-def test_an_older_database_gains_the_web_search_column_once(tmp_path):
+def test_a_task_defaults_to_no_mcp_servers_and_can_change_its_selection(client):
+    assert create(client).json()["mcpServerIds"] == []
+    task = create(client, mcpServerIds = ["feeds", "feeds", "notes"]).json()
+    assert task["mcpServerIds"] == ["feeds", "notes"]
+    url = f"/api/scheduled-tasks/{task['id']}"
+    renamed = client.patch(url, json = {"title": "Renamed"}).json()
+    assert renamed["mcpServerIds"] == ["feeds", "notes"]
+    cleared = client.patch(url, json = {"mcpServerIds": []}).json()
+    assert cleared["mcpServerIds"] == []
+
+
+def test_an_older_database_gains_tool_columns_once(tmp_path):
     conn = sqlite3.connect(tmp_path / "old.db")
     conn.execute(
         "CREATE TABLE scheduled_tasks (id TEXT NOT NULL PRIMARY KEY, owner_subject TEXT NOT NULL,"
@@ -415,7 +428,9 @@ def test_an_older_database_gains_the_web_search_column_once(tmp_path):
     )
     studio_db._ensure_schema(conn)
     studio_db._ensure_schema(conn)
-    assert conn.execute("SELECT web_search FROM scheduled_tasks").fetchall() == [(0,)]
+    assert conn.execute(
+        "SELECT web_search, mcp_server_ids_json FROM scheduled_tasks"
+    ).fetchall() == [(0, "[]")]
 
 
 def test_create_list_and_read(client, monkeypatch):
@@ -1079,6 +1094,136 @@ def test_a_web_search_task_may_search_and_run_nothing_else(monkeypatch):
     assert not inference_routes._confirm_gate_needs_stream(payload)
     assert payload.bypass_permissions is False
     assert payload.run_tools_locally is True
+
+
+@pytest.mark.parametrize("source", ["schedule", "manual"])
+def test_a_run_can_call_only_its_selected_stdio_mcp_server(monkeypatch, source):
+    from core.inference import mcp_client, tools
+    from core.inference.tool_loop_controller import ToolLoopController
+    from models.mcp_servers import McpStdioCommand
+    from routes import mcp_servers as mcp_routes
+    from storage import mcp_servers_db
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_ALLOW_STDIO_MCP", "1")
+    fixture = Path(__file__).parent / "fixtures" / "mcp_argument_echo_server.py"
+    for server_id in ("selected", "unselected"):
+        url = mcp_routes.encode_stdio_command(
+            McpStdioCommand(command = sys.executable, arguments = [str(fixture), server_id]),
+            current_subject = "unsloth",
+        ).url
+        mcp_servers_db.create_server(server_id, server_id, url)
+
+    async def producer(payload, request, current_subject, *, cancel_on_disconnect):
+        assert payload.mcp_enabled and payload.enabled_tools == []
+        assert not inference_routes._confirm_gate_needs_stream(payload)
+        assert payload.thread_id == f"run-{source}"
+        tools.set_mcp_listing_context_tokens(4096, payload.thread_id)
+        catalog = await inference_routes._select_request_tools(
+            payload, tools_on = True, mcp_allowed = True, ui_events = False
+        )
+        name = "mcp__selected__launch_state"
+        assert [tool["function"]["name"] for tool in catalog] == [name]
+        controller = ToolLoopController(tools = catalog)
+        rejected = controller.prepare_call(
+            {"function": {"name": "mcp__unselected__launch_state", "arguments": {}}}
+        )
+        assert rejected.action == "disabled"
+        outside_scope = await asyncio.to_thread(
+            tools.execute_tool, "mcp__unselected__launch_state", {}, thread_id = payload.thread_id
+        )
+        assert "outside this run's selection" in outside_scope
+        result = await asyncio.to_thread(tools.execute_tool, name, {}, thread_id = payload.thread_id)
+        assert run_sessions()
+        return completion(json.loads(result)["arguments"][0])
+
+    def run_sessions():
+        return [k for k in mcp_client._mcp_sessions if k[2].endswith(f":t=run-{source}")]
+
+    monkeypatch.setattr(inference_routes, "produce_openai_chat_completions", producer)
+    try:
+        answer = asyncio.run(
+            generate_answer(
+                SimpleNamespace(state = SimpleNamespace()),
+                make_task(mcpServerIds = ["selected"]),
+                {"id": f"run-{source}", "source": source},
+                threading.Event(),
+            )
+        )
+        assert answer.content == "selected"
+        assert run_sessions() == []
+    finally:
+        mcp_client.close_mcp_sessions()
+        mcp_client.invalidate_tool_cache()
+
+
+def test_a_run_budgets_the_catalog_without_exposing_unselected_mcp_tools(monkeypatch):
+    from core.inference import mcp_client, tools
+    from storage import mcp_servers_db
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_MCP_SEARCH_ONLY", "1")
+    for server_id in ("selected", "unselected"):
+        mcp_servers_db.create_server(server_id, server_id, f"https://{server_id}.example/mcp")
+    selected_tools = [
+        {
+            "name": f"lookup-{index}",
+            "description": "Look up RSS feed entries with optional filters.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    f"filter_{field}": {
+                        "type": "string",
+                        "description": "Filter feed entries by matching this text in the item metadata.",
+                    }
+                    for field in range(8)
+                },
+            },
+        }
+        for index in range(40)
+    ]
+    mcp_client.cache_tools("selected", selected_tools)
+    mcp_client.cache_tools("unselected", [{"name": "lookup-private"}])
+
+    async def producer(payload, request, current_subject, *, cancel_on_disconnect):
+        context_length = 4096
+        tools.set_mcp_listing_context_tokens(context_length, payload.thread_id)
+        catalog = await inference_routes._select_request_tools(
+            payload, tools_on = True, mcp_allowed = True, ui_events = False
+        )
+        assert [tool["function"]["name"] for tool in catalog] == ["mcp_tool_search"]
+        loadable = tools.mcp_loadable_specs(catalog)
+        assert len(loadable) == len(selected_tools)
+        assert tools._text_token_cost(json.dumps(loadable), context_length) > context_length
+        result = tools.mcp_tool_search_specs({"query": "mcp__selected__lookup-0", "limit": 1})
+        assert [tool["function"]["name"] for tool in result] == ["mcp__selected__lookup-0"]
+        assert tools.mcp_tool_specs({"mcp__unselected__lookup-private"}) == {}
+        return completion("Found the requested feed entries.")
+
+    try:
+        generate(monkeypatch, producer, task = make_task(mcpServerIds = ["selected"]))
+    finally:
+        mcp_client.invalidate_tool_cache()
+
+
+def test_a_run_reports_unavailable_mcp_servers(monkeypatch):
+    monkeypatch.setattr(scheduler_module, "_chat_model_loaded", lambda: True)
+
+    async def producer(payload, request, current_subject, *, cancel_on_disconnect):
+        await inference_routes._select_request_tools(
+            payload, tools_on = True, mcp_allowed = True, ui_events = False
+        )
+        pytest.fail("A scheduled run must report when its selected servers provide no tools")
+
+    with pytest.raises(RunFailed, match = "No tools are available from the selected MCP servers"):
+        generate(monkeypatch, producer, task = make_task(mcpServerIds = ["missing"]))
+
+
+def test_a_run_reports_when_selected_mcp_tools_are_disabled(monkeypatch):
+    from state import tool_policy
+
+    monkeypatch.setattr(tool_policy, "get_tool_policy", lambda: False)
+    producer = FakeProducer(completion("Text only."))
+    with pytest.raises(RunFailed, match = "MCP tools are disabled"):
+        generate(monkeypatch, producer, task = make_task(mcpServerIds = ["selected"]))
 
 
 def test_disable_tools_keeps_a_web_search_task_text_only(monkeypatch):

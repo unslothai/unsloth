@@ -110,6 +110,7 @@ import {
 import { MAX_HIGHLIGHT_CHARS } from "@/lib/markdown-plugins";
 import { markdownBlockFallback } from "./markdown-block-fallback";
 import { createCodePlugin } from "./code-plugin";
+import { getCodeFilename } from "./code-filename";
 import { mermaid } from "./mermaid-plugin";
 import { CodeHighlightModeContext } from "./code-highlight-context";
 import { spellLines } from "./reasoning-code-colour";
@@ -656,40 +657,6 @@ function mermaidSourceOf(blockContent: string, found: MermaidFence): string | nu
     return source.length > 0 ? source : null;
   }
   return null;
-}
-
-function getCodeFilename(language: string | null) {
-  const extByLanguage: Record<string, string> = {
-    bash: "sh",
-    "c++": "cpp",
-    csharp: "cs",
-    javascript: "js",
-    js: "js",
-    json: "json",
-    jsx: "jsx",
-    markdown: "md",
-    md: "md",
-    python: "py",
-    py: "py",
-    ruby: "rb",
-    rust: "rs",
-    shell: "sh",
-    sh: "sh",
-    sql: "sql",
-    ts: "ts",
-    tsx: "tsx",
-    typescript: "ts",
-    svg: "svg",
-    yaml: "yml",
-    yml: "yml",
-  };
-
-  const normalized = language?.toLowerCase();
-  const fallbackExt = normalized?.replace(/[^a-z0-9]+/g, "-");
-  const ext = normalized
-    ? extByLanguage[normalized] || fallbackExt || "txt"
-    : "txt";
-  return `snippet.${ext}`;
 }
 
 const UNSAFE_SVG_RE =

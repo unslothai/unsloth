@@ -3,7 +3,7 @@
 
 """transformers' every_n_layers / offload gradient checkpointing options under Unsloth's checkpoint shims."""
 
-import ast, contextlib, functools, inspect, os
+import ast, builtins, contextlib, functools, inspect, os, symtable
 import pytest
 import torch
 
@@ -15,6 +15,7 @@ HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 UTILS = os.path.join(HERE, "unsloth", "_gc_kwargs.py")
 VISION = os.path.join(HERE, "unsloth", "models", "vision.py")
 LOADER_UTILS = os.path.join(HERE, "unsloth", "models", "loader_utils.py")
+CACHE_KWARG = os.path.join(HERE, "unsloth", "models", "_cache_kwarg.py")
 FUNCS = (
     "_skip_aware_flag",
     "_apply_every_n_layers",
@@ -372,17 +373,41 @@ def test_native_offload_dropped_under_vision_non_reentrant_offload(patched, monk
         torch.testing.assert_close(grads[name], ref_grads[name], rtol = 0, atol = 1e-6, msg = name)
 
 
+def _free_globals(segment):
+    """Names a function's body (nested functions included) reads from module globals."""
+    found, stack = set(), [symtable.symtable(segment, "<segment>", "exec")]
+    while stack:
+        table = stack.pop()
+        if table.get_type() != "module":
+            found.update(
+                s.get_name() for s in table.get_symbols() if s.is_global() and s.is_referenced()
+            )
+        stack.extend(table.get_children())
+    return found
+
+
 def _load_remote_gc():
     src = open(LOADER_UTILS, encoding = "utf-8").read()
-    ns = {"torch": torch, "functools": functools}
+    # The torch-free cache kwarg helper loader_utils imports (transformers 5.24 renamed past_key_values to cache).
+    helper = {}
+    exec(open(CACHE_KWARG, encoding = "utf-8").read(), helper)
+    ns = {"torch": torch, "functools": functools, **{k: helper[k] for k in helper["__all__"]}}
     names = (
         "_forward_calls_checkpointing",
         "_checkpointed_layer_forward",
         "install_remote_gradient_checkpointing",
     )
-    for n in ast.parse(src).body:
-        if isinstance(n, ast.FunctionDef) and n.name in names:
-            exec(ast.get_source_segment(src, n), ns)
+    segments = [
+        ast.get_source_segment(src, n)
+        for n in ast.parse(src).body
+        if isinstance(n, ast.FunctionDef) and n.name in names
+    ]
+    assert len(segments) == len(names), names
+    # A helper loader_utils starts calling must be added above, not surface as a NameError mid-backward.
+    missing = set().union(*map(_free_globals, segments)) - set(ns) - set(names) - set(dir(builtins))
+    assert not missing, f"extracted loader_utils functions read globals this harness does not provide: {sorted(missing)}"
+    for segment in segments:
+        exec(segment, ns)
     return ns["install_remote_gradient_checkpointing"]
 
 

@@ -171,31 +171,42 @@ jobs:
         run: pip install uv
 
       - name: Install deps (shared shape with backend pytest job)
+        env:
+          # uv installs exactly what pip installed here (same packages and versions, checked by
+          # comparing pip freeze): unsafe-best-match picks across both indexes the way pip's
+          # --extra-index-url does, and bytecode is compiled like pip's. uv's cache stays in the
+          # runner's temp dir: it is never saved, so the pip cache family keeps what it held.
+          UV_INDEX_STRATEGY: unsafe-best-match
+          UV_COMPILE_BYTECODE: '1'
+          UV_LINK_MODE: copy
+          UV_CACHE_DIR: ${{ runner.temp }}/uv-cache
+          # No uv.toml or user config may add an index or change how it resolves.
+          UV_NO_CONFIG: '1'
         run: |
           python -m pip install --upgrade pip
-          pip install -r studio/backend/requirements/studio.txt
-          pip install \
+          uv pip install --system -r studio/backend/requirements/studio.txt
+          uv pip install --system \
             python-multipart aiofiles sqlalchemy cryptography psutil \
             pyyaml jinja2 mammoth unpdf requests typer \
             'numpy<3' 'pytest<9.2' pytest-asyncio pytest-xdist pytest-timeout httpx
           # pytest<9.2: see the first install step. pytest-timeout names a hung test instead of a `cancelled` job.
           # torchvision: unsloth_zoo.vision_utils imports it at module scope.
-          pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple \
+          uv pip install --system --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple \
             'torch>=2.4,<2.11' 'torchvision<0.26' 'torchaudio<2.11'
           # sentence-transformers rides the transformers pin so it cannot raise the ceiling, and
           # makes tests/test_st_modules_json_trust_gate.py run instead of skip.
-          pip install 'transformers>=4.51,<=5.18.0' sentence-transformers
+          uv pip install --system 'transformers>=4.51,<=5.18.0' sentence-transformers
           # bitsandbytes: hard import in unsloth/models/_utils.py; recent versions import on CPU.
-          pip install 'bitsandbytes>=0.45'
+          uv pip install --system 'bitsandbytes>=0.45'
           # zoo from git main (needed by the conftest preload), with deps so triton is installed.
           for attempt in 1 2 3; do
-            if pip install "unsloth_zoo @ git+https://github.com/unslothai/unsloth-zoo"; then
+            if uv pip install --system "unsloth_zoo @ git+https://github.com/unslothai/unsloth-zoo"; then
               break
             fi
             [ "$attempt" -eq 3 ] && { echo "::error::unsloth_zoo install failed after 3 attempts"; exit 1; }
             sleep $((5 * attempt))
           done
-          pip install -e . --no-deps
+          uv pip install --system -e . --no-deps
 
       # ruff-unsloth wheels read from .pre-commit-config.yaml so test_formatter_fixed_point.py
       # does not skip. pip keeps the one whose marker matches this runner and checks its sha256.

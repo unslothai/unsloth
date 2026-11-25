@@ -486,7 +486,7 @@ def test_audit_runs_before_npm_install_in_consumer_workflows():
     install_re = re.compile(r"\bnpm\s+(?:install|ci)\b")
 
     workflows_dir = REPO_ROOT / ".github" / "workflows"
-    for wf_name in ("studio-tauri-smoke.yml", "release-desktop.yml"):
+    for wf_name in ("studio-tauri-smoke.yml", "studio-tauri-native-ci.yml", "release-desktop.yml"):
         wf = workflows_dir / wf_name
         assert wf.is_file(), f"missing workflow: {wf}"
         doc = yaml.safe_load(wf.read_text(encoding = "utf-8"))

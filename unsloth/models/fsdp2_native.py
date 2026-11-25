@@ -17,6 +17,8 @@ import types
 from typing import Callable, Optional, Union
 
 import torch
+
+from ._cache_kwarg import get_cache_kwarg
 import torch.nn as nn
 
 
@@ -2690,7 +2692,7 @@ def _generate_request_bytes(model, args, kwargs):
         if (
             isinstance(embeds, torch.Tensor)
             and embeds.dim() >= 2
-            and kwargs.get("past_key_values") is None
+            and get_cache_kwarg(kwargs) is None
         ):
             prompt = max(prompt, int(embeds.shape[1]))
         # Media prompts run a vision / audio tower in prefill whose activations depend on the media
@@ -2717,7 +2719,7 @@ def _generate_request_bytes(model, args, kwargs):
         # A supplied cache holds history the suffix-only ids do not show; the decode allocator sizes its
         # new paged cache from the whole length, so count it (or decline when it cannot be read).
         cached = 0
-        past = kwargs.get("past_key_values")
+        past = get_cache_kwarg(kwargs)
         if past is not None:
             if hasattr(past, "get_seq_length"):
                 cached = int(past.get_seq_length())
@@ -5194,6 +5196,22 @@ def _expert_parallel_requested(model):
     return False
 
 
+def _is_unsloth_expert_parallel(model):
+    """apply_expert_parallel keeps its ep mesh under `_unsloth_ep` on every wrapper level. The same walk as
+    _utils._is_unsloth_expert_parallel, kept here because this module also runs without `unsloth` imported
+    (the gloo tests load it by path), and importing _utils pulls unsloth_zoo's accelerator check in."""
+    m, depth = model, 0
+    while isinstance(getattr(m, "__dict__", None), dict) and depth < 8:
+        if m.__dict__.get("_unsloth_ep") is not None:
+            return True
+        modules = m.__dict__.get("_modules") or {}
+        m, depth = (
+            modules.get("base_model") or modules.get("model") or modules.get("module"),
+            depth + 1,
+        )
+    return False
+
+
 def _refuse_tensor_parallel_model(
     model,
     mesh = None,
@@ -5206,6 +5224,13 @@ def _refuse_tensor_parallel_model(
     mesh = that dp mesh): returns True then."""
     if not isinstance(model, nn.Module) or getattr(model, _NATIVE_FLAG, False):
         return False
+    if _is_unsloth_expert_parallel(model):
+        # Each rank holds its own expert slices: FSDP2 would sync rank 0's values into them before sharding.
+        raise RuntimeError(
+            "Unsloth: native FSDP2 does not compose with Unsloth expert parallelism (apply_expert_parallel / "
+            'UNSLOTH_PARALLEL="ep=N"): every rank holds different expert slices. Unset UNSLOTH_FSDP2 for '
+            "expert parallel, or drop ep for FSDP2."
+        )
     tp_size = getattr(model, "tp_size", None)
     try:
         tp_size = int(tp_size) if tp_size is not None else None

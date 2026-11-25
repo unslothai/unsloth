@@ -40,6 +40,12 @@ LOADED = {
 }
 STATUS = {"loaded": [LLM], "serving": [LLM], "serving_checkpoints": ["/srv/models/llama.gguf"]}
 EMPTY_STATUS = {"loaded": [], "serving": [], "serving_checkpoints": []}
+TWO_QUANTS = {
+    "loaded": [LLM],
+    "serving": [LLM, LLM],
+    "serving_checkpoints": [f"{LLM}:Q8_0", f"{LLM}:Q4_K_M"],
+}
+ONE_QUANT = {"loaded": [LLM], "serving": [LLM], "serving_checkpoints": [LLM]}
 LOAD = ("POST", "/api/inference/load")
 # A load that finished inside its wait.
 SETTLED = {"status": "loaded", "fraction": None, "job_id": None, "poll_after_s": None}
@@ -183,6 +189,15 @@ def test_download_progress_is_used_before_the_load_starts(monkeypatch, fast_poll
         ({"model": "unsloth/not-loaded"}, (STATUS,), "unsloth/not-loaded", None),
         ({"model": LLM}, (STATUS,), LLM, None),
         ({}, (EMPTY_STATUS,), None, []),
+        ({"model": LLM}, (TWO_QUANTS, ONE_QUANT), LLM, [{"model_path": LLM}]),
+        ({"model": LLM}, (TWO_QUANTS,), LLM, None),
+        ({}, (TWO_QUANTS, ONE_QUANT), LLM, [{"model_path": f"{LLM}:Q8_0"}]),
+        (
+            {"model": f"{LLM}:Q4_K_M"},
+            (TWO_QUANTS, ONE_QUANT),
+            f"{LLM}:Q4_K_M",
+            [{"model_path": f"{LLM}:Q4_K_M"}],
+        ),
     ],
 )
 def test_unload_picks_the_serving_checkpoint_and_checks_the_result(

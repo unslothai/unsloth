@@ -122,6 +122,11 @@ def closes_an_open_envelope(text: str, token: str) -> bool:
 
 _ATEM_REASONING_MARKERS = ("self", "user")
 _ATEM_REASONING_CONTROL_TOKENS = frozenset({"<|start|>", "<|message|>", "<|eom|>", "<|eot|>"})
+# Inkling 2 also needs its message headers, so the normalizer can drop a tool call's name prefix.
+_INKLING_REASONING_MARKERS = ("<|content_thinking|>", "<|end_message|>")
+_INKLING_REASONING_CONTROL_TOKENS = frozenset(
+    _INKLING_REASONING_MARKERS + ("<|message_model|>", "<|content_text|>")
+)
 
 
 def reasoning_control_tokens(markers) -> frozenset[str]:
@@ -130,6 +135,8 @@ def reasoning_control_tokens(markers) -> frozenset[str]:
         return frozenset()
     if tuple(markers) == _ATEM_REASONING_MARKERS:
         return _ATEM_REASONING_CONTROL_TOKENS
+    if tuple(markers) == _INKLING_REASONING_MARKERS:
+        return _INKLING_REASONING_CONTROL_TOKENS
     return frozenset(str(marker) for marker in markers if marker)
 
 
@@ -187,7 +194,15 @@ def _special_token_sets(tokenizer, preserved_tokens = ()) -> tuple[frozenset[int
     return special_ids, frozenset(kept_ids)
 
 
+def _as_id_sequence(token_ids):
+    """transformers 5.24's ``TextStreamer`` decodes one bare id (``token_cache[-1]``) after each newline."""
+    if isinstance(token_ids, int) or getattr(token_ids, "ndim", None) == 0:
+        return [int(token_ids)]
+    return token_ids
+
+
 def _decode_with_token_sets(tokenizer, token_ids, special_ids, tool_ids) -> str:
+    token_ids = _as_id_sequence(token_ids)
     if not special_ids:
         return _decode_without_special_spacing(tokenizer, token_ids, skip_special_tokens = True)
     filtered = [

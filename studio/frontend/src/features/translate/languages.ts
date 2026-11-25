@@ -138,7 +138,6 @@ export function suggestedTargetLanguage(preferred: readonly string[]): string {
     const lower = tag.toLowerCase();
     if (/^zh-(tw|hk|mo)\b|hant/.test(lower)) return "zh-Hant";
     const primary = lower.split("-")[0];
-    // The default model is Hy-MT2.
     const match = translateLanguagesFor(true).find(
       (language) => language.code === primary || language.intl === primary,
     );

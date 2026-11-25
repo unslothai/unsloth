@@ -20,8 +20,10 @@ from typing import Optional, Tuple, List, Union
 
 from ._utils import *
 from ._utils import apply_unsloth_gradient_checkpointing
+from ..import_fixes import assign_rope_scaling
 from ._utils import _ignore_block_swap_params_for_ddp
 from ._frozen_prefix import install_frozen_prefix_skip
+from ._cache_kwarg import CACHE_KWARG_NAMES, get_cache_kwarg, output_cache, pop_cache_kwarg
 from .fused_label_smoothing import output_head_not_fusable
 from ._utils import _tensor_parallel_for_inference, _tensor_parallel_for_training
 from ._utils import __version__, importlib_version
@@ -431,7 +433,10 @@ def _fast_prepare_inputs_for_generation(
     inputs_embeds = None,
     **kwargs,
 ):
-    past_key_values = kwargs.get("past_key_values", None)
+    # transformers 5.24 generate passes the cache as `cache`; the fast forwards read past_key_values.
+    past_key_values = pop_cache_kwarg(kwargs)
+    if past_key_values is not None:
+        kwargs["past_key_values"] = past_key_values
     original_attention_mask = attention_mask
 
     # Only use inputs_embeds on the first step (no cache); fixes #3798.
@@ -2202,6 +2207,9 @@ def CausalLM_fast_forward(fast_forward_inference):
     ) -> Union[Tuple, CausalLMOutputWithPast]:
         # Not a named parameter: HF's find_labels would make it a required eval label.
         shift_labels = kwargs.pop("shift_labels", None)
+        # transformers 5.24 callers pass the cache as `cache`, which would otherwise ride along in kwargs.
+        if "cache" in kwargs:
+            past_key_values = pop_cache_kwarg(kwargs, past_key_values)
         # Training may resume without for_training() (trainer callback sampling): free kept graphs here.
         if _decode_graphs.HELD in self.__dict__ and self.training and torch.is_grad_enabled():
             _decode_graphs.release_if_training(self)
@@ -2649,7 +2657,7 @@ def _compute_config_rope_inv_freq(config, rope_scaling):
                 import copy as _copy
 
                 config_copy = _copy.copy(config)
-                config_copy.rope_scaling = rope_scaling
+                assign_rope_scaling(config_copy, rope_scaling)
                 inv_freq, attention_scaling = rope_init_fn(config_copy, torch.device("cpu"))
         return inv_freq.to(dtype = torch.float32, device = "cpu"), float(attention_scaling)
     except Exception as exception:
@@ -3331,14 +3339,16 @@ def unsloth_fast_generate(self, *args, **kwargs):
 
     # Must patch accelerate for Xformers.
 
-    # transformers raises if cache_implementation is set beside a user-supplied cache.
-    if kwargs.get("past_key_values", None) is not None:
+    # transformers raises if cache_implementation is set beside a user-supplied cache
+    # (transformers 5.24 spells it cache=, past_key_values= is its deprecated alias).
+    _cache_key = next((k for k in CACHE_KWARG_NAMES if kwargs.get(k, None) is not None), None)
+    if _cache_key is not None:
         # FalconH1 keeps its own input preparation for its hybrid Mamba/attention cache.
         if getattr(getattr(self, "config", None), "model_type", None) == "falcon_h1":
             raise NotImplementedError(
                 "Unsloth: passing past_key_values to generate() is not supported for FalconH1 yet."
             )
-        kwargs["past_key_values"] = _ensure_cache_is_dynamic(kwargs["past_key_values"])
+        kwargs[_cache_key] = _ensure_cache_is_dynamic(kwargs[_cache_key])
         # The fast decode path only seeds missing KV buffers; drop the previous generate()'s.
         for module in self.modules():
             if hasattr(module, "paged_attention"):
@@ -3425,7 +3435,7 @@ def unsloth_fast_generate(self, *args, **kwargs):
         # Back to training: free the graphs and decode buffers for it, unless they fit beside it
         # (keep_for_training; they replay the updated adapters after the optimizer step).
         _decode_graphs.release_for_training(self)
-    elif graphs and getattr(output, "past_key_values", None) is not None:
+    elif graphs and output_cache(output) is not None:
         # The returned cache views the persistent decode buffers: hand them over, so a later
         # generate() allocates its own instead of overwriting a cache the caller kept.
         _decode_graphs.release(self)
@@ -3982,6 +3992,9 @@ class FastLlamaModel:
         load_in_fp8 = False,  # fp8 LoRA (True, False, 'block')
         **kwargs,
     ):
+        from ._utils import _unsloth_load_begins
+
+        _unsloth_load_begins()
         os.environ["UNSLOTH_USE_NEW_MODEL"] = "0"
         # loader.py sends full finetuning to FastModel, so this load is always LoRA. Say so, or load-time readers (packed experts, MXFP4, expert quantization) inherit an earlier full finetuning load's "1".
         os.environ["UNSLOTH_ENABLE_FULL_FINETUNING"] = "0"
@@ -4259,7 +4272,7 @@ class FastLlamaModel:
             # On the config for the in-process load and in kwargs for load_vllm, else vLLM keeps the
             # checkpoint's RoPE and indexes past its cos/sin cache (#3083).
             rope_scaling = _user_rope_scaling(model_config, rope_scaling)
-            model_config.rope_scaling = rope_scaling
+            assign_rope_scaling(model_config, rope_scaling)
             kwargs["rope_scaling"] = rope_scaling
         elif not caller_rope_scaling and max_seq_length > model_max_seq_length:
             factor = max_seq_length / model_max_seq_length
@@ -4645,7 +4658,7 @@ class FastLlamaModel:
                         model_config.max_position_embeddings = max_position_embeddings
                     _rope_scaling = kwargs.pop("rope_scaling", None)
                     if _rope_scaling is not None:
-                        model_config.rope_scaling = _rope_scaling
+                        assign_rope_scaling(model_config, _rope_scaling)
                     if (
                         _modelopt_rewritten or _fp8_to_nf4 or _fp8_backfilled
                     ) and user_config is None:
@@ -4800,7 +4813,7 @@ class FastLlamaModel:
                 )
                 # The rebuilt model takes the checkpoint's config, so put the caller's RoPE back for saving.
                 if rope_scaling is not None:
-                    model.config.rope_scaling = rope_scaling
+                    assign_rope_scaling(model.config, rope_scaling)
                 model.vllm_engine = llm
                 llm.shared_weights = True
                 model.fast_generate = model.vllm_engine.generate

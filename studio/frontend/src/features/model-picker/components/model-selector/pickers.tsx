@@ -4639,6 +4639,14 @@ export function HubModelPicker({
     if (AUDIO_GEN_TASKS.some((t) => tasks.includes(t))) return [];
     return null;
   }, [task]);
+  const imageGenPicker = useMemo(() => {
+    const tasks: readonly string[] = task
+      ? typeof task === "string"
+        ? [task]
+        : task
+      : [];
+    return IMAGE_GEN_TASKS.some((t) => tasks.includes(t));
+  }, [task]);
 
   const hubRowsShowSize =
     formatFilter === "mlx" || formatFilter === "safetensors";
@@ -6318,6 +6326,8 @@ export function HubModelPicker({
         return false;
       }
       if (connectedModality === "all") return true;
+      // An image page lists only connections it generates through; the chat marks know only a built-in image tool.
+      if (connectedModality === "imageGen" && imageGenPicker) return true;
       const marks = connectedModelMarks({
         providerType: model.providerType,
         modelId: parseExternalModelId(model.id)?.modelId ?? model.name,
@@ -6334,6 +6344,7 @@ export function HubModelPicker({
     externalModels,
     debouncedQuery,
     connectedModality,
+    imageGenPicker,
     externalBaseUrlById,
     externalApiTypeById,
     catalogVersion,

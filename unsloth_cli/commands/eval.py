@@ -396,37 +396,90 @@ def _doc_column(key: str) -> str:
     return key
 
 
+def _gold_options(value, top = True):
+    # None alternates drop, an option-less list matches its literal text; rstrip: responses are stripped
+    if isinstance(value, list):
+        options = [o for item in value if item is not None for o in _gold_options(item, False)]
+        return options or ([str(value)] if top else [])
+    return [str(value).rstrip()]
+
+
+# the task's scorer; doc_to_target is a callable because lm-eval parses bracketed template results as lists
+_TASK_MODULE = """
+GOLD_OPTIONS
+
+def doc_to_target(row):
+    value = row[TARGET_KEY]
+    return value if isinstance(value, list) else str(value)
+
+
+def process_results(doc, results):
+    # few-shot examples still show gold as written
+    golds = _gold_options(doc_to_target(doc))
+    response = results[0]
+    # a single-line option ends at the first newline, where a single-line dataset's stop ends it
+    first_line = response.split("\\n")[0]
+    match = any((response if "\\n" in gold else first_line).strip() == gold for gold in golds)
+    return {"exact_match": float(match)}
+"""
+
+
+def _stop_sequence(data_file: Path, target_key: str) -> str:
+    # a newline run longer than any answer holds, so multi-line answers are generated whole
+    text = data_file.read_text(encoding = "utf-8-sig")
+    if data_file.suffix.lower() == ".csv":
+        import csv
+        import io
+
+        limit = csv.field_size_limit(2**31 - 1)
+        try:
+            rows = list(csv.DictReader(io.StringIO(text)))
+        finally:
+            csv.field_size_limit(limit)
+    else:
+        try:
+            rows = json.loads(text)
+        except json.JSONDecodeError:
+            rows = []
+            for number, line in enumerate(text.split("\n"), 1):
+                try:
+                    rows += [json.loads(line)] if line.strip() else []
+                except json.JSONDecodeError as e:
+                    raise ValueError(
+                        f"Dataset file '{data_file}' line {number} is not valid JSON: {e.msg}"
+                    ) from None
+    rows = rows if isinstance(rows, list) else [rows]
+    values = [row.get(target_key) for row in rows if isinstance(row, dict)]
+    targets = [option for value in values for option in _gold_options(value)]
+    longest = max((len(run) for t in targets for run in re.findall(r"\n+", t)), default = 0)
+    return "\n" * (longest + 1)
+
+
 def make_dataset_task(
     data_file: Path, input_key: str, target_key: str, out_dir: Path, name: str
 ) -> None:
     """Write an exact-match generate_until task over a .jsonl/.json/.csv file."""
+    import inspect
+
     builder = "json" if data_file.suffix.lower() in {".json", ".jsonl"} else "csv"
+    stop = _stop_sequence(data_file, target_key)
     spec = {
         "task": name,
         "dataset_path": builder,
         "dataset_kwargs": {"data_files": str(data_file.resolve())},
         "test_split": "train",
         "fewshot_split": "train",
+        "fewshot_delimiter": max(stop, "\n\n", key = len),
         "output_type": "generate_until",
         "doc_to_text": _doc_column(input_key),
-        "generation_kwargs": {"until": ["\n"]},
-        # strip so " 2" matches gold "2"; with one capture group re.findall yields the group text
-        "filter_list": [
-            {
-                "name": "strip",
-                "filter": [
-                    {"function": "regex", "regex_pattern": r"^\s*(.*?)\s*$", "group_select": 0},
-                    {"function": "take_first"},
-                ],
-            },
-        ],
+        "generation_kwargs": {"until": [stop]},
+        # process_results strips and compares; the filter keeps its name for the exact_match,strip key
+        "filter_list": [{"name": "strip", "filter": [{"function": "take_first"}]}],
         "metric_list": [{"metric": "exact_match", "aggregation": "mean", "higher_is_better": True}],
     }
     import yaml
 
     out_dir.mkdir(parents = True, exist_ok = True)
-    # lm-eval parses bracketed template results as lists. Use a callable to keep
-    # literal strings, preserve list-valued references and stringify scalars for few-shot prompts.
     with tempfile.NamedTemporaryFile(
         mode = "w",
         prefix = "_target_",
@@ -436,13 +489,15 @@ def make_dataset_task(
         delete = False,
     ) as target:
         target.write(
-            "def doc_to_target(row):\n"
-            f"    value = row[{target_key!r}]\n"
-            "    return value if isinstance(value, list) else str(value)\n"
+            _TASK_MODULE.replace("GOLD_OPTIONS", inspect.getsource(_gold_options)).replace(
+                "TARGET_KEY", repr(target_key)
+            )
         )
+    module = Path(target.name).stem
     (out_dir / f"{name}.yaml").write_text(
         yaml.safe_dump(spec, sort_keys = False)
-        + f"doc_to_target: !function {Path(target.name).stem}.doc_to_target\n",
+        + f"doc_to_target: !function {module}.doc_to_target\n"
+        + f"process_results: !function {module}.process_results\n",
         encoding = "utf-8",
     )
 
@@ -624,7 +679,7 @@ def _backend_tokenizer(eval_kwargs: dict):
 
 
 def _thinking_off(model_cls) -> dict:
-    # Qwen3-style templates otherwise open a <think> block, which the dataset task's "\n" stop cuts to "<think>"
+    # Qwen3-style templates otherwise open a <think> block, which the dataset task's newline stop cuts mid-thought
     import inspect
     return (
         {"enable_thinking": False}

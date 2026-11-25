@@ -1117,7 +1117,7 @@ export function ChatProvidersSettings({
       if (silent && autoLoadedCatalogRef.current !== autoLoad) return null;
       if (!owned()) return null;
       // The picker keeps only ids, so per-model capabilities are learned here or lost.
-      learnCatalogModelCapabilities(providerType, models);
+      learnCatalogModelCapabilities(providerType, models, baseUrl);
       learnModelDisplayNames(providerType, models);
       const registryDefaults = supportsRemoteModelCatalog(providerType)
         ? []

@@ -16,7 +16,7 @@ export interface GpuRenderingStatus {
   envOverride: string | null;
   /** Runtime WebKitGTK version; set on Linux Wayland below 2.54.2 only. */
   oldWebkitWarning: string | null;
-  /** NVIDIA driver branch; set on Linux X11 below 610, where On keeps compositing off. */
+  /** NVIDIA driver branch; set on Linux X11 below 590, where On keeps compositing off. */
   oldDriverWarning: string | null;
   /** This launch's web view paints on the CPU (Linux). Missing from older shells. */
   cpuPainting?: boolean;
