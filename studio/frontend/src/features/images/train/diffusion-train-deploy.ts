@@ -36,7 +36,6 @@ export function resolveDiffusionDeployBase(
   return trainedBase;
 }
 
-/** Null when the run has no base to load the adapter on. */
 export function diffusionDeployRequest(
   families: DiffusionTrainableFamily[] | undefined,
   run: DiffusionDeployRun,

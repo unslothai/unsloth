@@ -2096,7 +2096,6 @@ def test_complete_event_records_family_and_catalog():
     assert st["catalog_path"] == "/loras/w.safetensors"
 
 
-# Deploy is offered as soon as the status has a catalog_path, before the run record is readable.
 def test_status_reports_the_jobs_trigger_for_deploy(_isolated_runs_dir):
     svc = DiffusionTrainingService(ctx = _FakeCtx(), target = _happy_target)
     job_id = svc.start({**_CFG, "instance_prompt": "a photo in mystyle"})

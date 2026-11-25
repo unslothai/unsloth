@@ -195,19 +195,16 @@ const finishedRun = {
 };
 const form = { baseModel: "black-forest-labs/FLUX.1-dev", family: "flux.1", trigger: "" };
 
-// A resumed run replays the record's config and a reload clears the form, so the form trigger was empty or another run's.
 test("Deploy on a finished run uses the trigger it was trained on, not the form's", () => {
   const record = { ...finishedRun, instance_prompt: "a photo in mystyle" };
   for (const trigger of ["", "a photo in otherstyle"]) {
     const live = liveDeployRun(finishedRun, record, { ...form, trigger });
     assert.equal(diffusionDeployRequest([klein], live)?.trigger, "a photo in mystyle");
   }
-  // The same run from Previous runs hands over the same request.
   assert.deepEqual(
     diffusionDeployRequest([klein], liveDeployRun(finishedRun, record, form)),
     diffusionDeployRequest([klein], record),
   );
-  // A run trained without a trigger does not borrow the one typed since.
   const captioned = liveDeployRun(finishedRun, { ...finishedRun, instance_prompt: null }, {
     ...form,
     trigger: "a photo in otherstyle",
@@ -215,7 +212,6 @@ test("Deploy on a finished run uses the trigger it was trained on, not the form'
   assert.equal(diffusionDeployRequest([klein], captioned)?.trigger, "");
 });
 
-// Deploy shows as soon as the status has a catalog_path; the record may lag, or never load if history fails.
 test("Deploy on a finished run uses the job's trigger before the run record is available", () => {
   const status = { ...finishedRun, instance_prompt: "trained-style" };
   for (const trigger of ["", "new-style"]) {
