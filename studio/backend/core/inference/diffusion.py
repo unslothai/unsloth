@@ -6423,11 +6423,11 @@ class DiffusionBackend:
         return bool(bg is not None and bg.compiling())
 
     @contextmanager
-    def _int8_defer_render(self):
+    def _int8_defer_render(self, cancel: Any = None):
         """The deferred CUTLASS race (diffusion_int8_cutlass_defer) runs only between renders: this render waits for a
         race unit in flight (one weight shape), re-records its CUDA graphs once winners landed, and lets the race go
-        on once it ends and Studio stays idle."""
-        refresh = int8_defer.render_begin()
+        on once it ends and Studio stays idle. The wait ends when ``cancel`` (this generation's cancel event) is set."""
+        refresh = int8_defer.render_begin(cancel = cancel)
         try:
             if refresh:
                 with self._lock:
@@ -16268,7 +16268,7 @@ class DiffusionBackend:
             bind_generation_cancel(cancel)
         with (
             nullcontext() if _hires_pass is not None else self._generation_slot(cancel),
-            self._int8_defer_render(),
+            self._int8_defer_render(cancel),
         ):
             # Wait outside the state lock so status polls keep answering.
             pending_bg = getattr(self._state, "bg_compile", None)

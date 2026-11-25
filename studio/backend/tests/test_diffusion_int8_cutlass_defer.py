@@ -630,24 +630,37 @@ def _back_to_back(monkeypatch):
 
 def test_back_to_back_renders_run_the_race_before_render_3(monkeypatch):
     """An external benchmark renders cold + 2 warm-ups + 3 timed images back to back: before the bound no idle spell
-    came, the race never ran and every timed render kept the Triton kernel (2-4% slower than a load-time race)."""
+    came, the race never ran and every timed render kept the Triton kernel (3-6% slower on an L4)."""
     _back_to_back(monkeypatch)
-    raced = _env(monkeypatch, {})
+    release = threading.Event()
+
+    def gate(n, m):
+        assert release.wait(10)
+
+    raced = _env(monkeypatch, {}, gate = gate)
     _image_load(0, [_rec(), _rec(96, 32)])
-    for _ in range(2):  # image 1 keeps its head start, image 2 does not wait
+    for i in range(2):  # image 1 keeps its head start, image 2 does not wait
         t0 = time.perf_counter()
         assert defer.render_begin() is False
         assert time.perf_counter() - t0 < 0.5
         g8._defer_note_rows(0, *_call(4176))
+        if i == 0:
+            time.sleep(0.2)
+            assert raced == [] and defer.status()["state"] == "pending"
         defer.render_end()
-    time.sleep(0.2)
-    assert raced == [] and defer.status()["state"] == "pending"
-    # render 3 runs the whole pending race first, then re-records its CUDA graphs on the winners
-    assert defer.render_begin() is True
+    # render 2's end starts the whole race; render 3, arriving at once, waits for all of it, then re-records
+    out = []
+    t = threading.Thread(target = lambda: out.append(defer.render_begin()))
+    t.start()
+    time.sleep(0.3)
+    assert not out and defer.status()["drains"] == 1
+    release.set()
+    t.join(10)
+    assert out == [True]
     assert [r[0] for r in raced] == [64, 64, 64, 96, 96, 96]
     st = defer.status()
     assert (
-        st["state"] == "done" and st["drains"] == 1 and st["won"] == 2 and st["pending_units"] == 0
+        st["state"] == "done" and st["won"] == 2 and st["pending_units"] == 0 and st["gave_up"] == 0
     )
     assert g8._cutlass_tile(0, *_call(4176)) == 8
     defer.render_end()
@@ -655,6 +668,123 @@ def test_back_to_back_renders_run_the_race_before_render_3(monkeypatch):
     assert defer.render_begin() is False
     defer.render_end()
     assert defer.status()["drains"] == 1
+
+
+def test_the_drain_starts_when_render_2_ends_so_a_short_pause_absorbs_it(monkeypatch):
+    """A client that pauses even briefly after render 2 (shorter than the idle spell) gets the race in that pause:
+    render 3 then neither waits nor runs Triton."""
+    _back_to_back(monkeypatch)
+    raced = _env(monkeypatch, {})
+    _image_load(0, [_rec(), _rec(96, 32)])
+    for _ in range(2):
+        defer.render_begin()
+        defer.render_end()
+    _wait_state("done")  # no render 3 has arrived yet
+    assert len(raced) == 6
+    t0 = time.perf_counter()
+    assert defer.render_begin() is True
+    assert time.perf_counter() - t0 < 0.5 and defer.status()["waits"] == 0
+    defer.render_end()
+
+
+def _held_race(monkeypatch):
+    """Back to back, with the race's first unit held open until the returned event is set."""
+    _back_to_back(monkeypatch)
+    release, racing = threading.Event(), threading.Event()
+
+    def gate(n, m):
+        racing.set()
+        assert release.wait(20)
+
+    raced = _env(monkeypatch, {}, gate = gate)
+    _image_load(0, [_rec(), _rec(96, 32)])
+    return release, racing, raced
+
+
+def _begin_in_thread(**kw):
+    out = []
+    t = threading.Thread(
+        target = lambda: out.append((defer.render_begin(**kw), time.perf_counter())), daemon = True
+    )
+    t0 = time.perf_counter()
+    t.start()
+    return t, out, t0
+
+
+def test_a_stuck_unit_never_holds_a_render_past_the_deadline(monkeypatch):
+    """The wait on the drain and on the unit in flight share one deadline: the render then goes on, on Triton, and no
+    later render of this load waits on the race again."""
+    release, racing, raced = _held_race(monkeypatch)
+    monkeypatch.setattr(defer, "_WAIT_MAX_S", 0.2)
+    for _ in range(2):
+        defer.render_begin()
+        defer.render_end()
+    assert racing.wait(10)  # the drain's first unit is in flight and stuck
+    try:
+        t, out, t0 = _begin_in_thread()
+        t.join(3)
+        assert out, "render 3 is still blocked on the stuck race unit"
+        assert out[0][1] - t0 < 2.0
+        assert out[0][0] is False and g8._cutlass_tile(0, *_call(4176)) is None  # Triton serves it
+        st = defer.status()
+        assert st["gave_up"] == 1 and st["running"]
+        defer.render_end()
+        t0 = time.perf_counter()
+        defer.render_begin()  # no second drain for this load: it waits at most the deadline for the stuck unit
+        assert time.perf_counter() - t0 < 1.0 and defer.status()["drains"] == 1
+        defer.render_end()
+    finally:
+        release.set()
+
+
+def test_a_cancel_releases_a_render_waiting_on_the_race(monkeypatch):
+    """Unload / a superseding load / a user cancel sets the generation's cancel event: a render waiting on the drain
+    or on a unit in flight stops waiting at once (the generation then raises its cancel)."""
+    release, racing, raced = _held_race(monkeypatch)
+    for _ in range(2):
+        defer.render_begin()
+        defer.render_end()
+    assert racing.wait(10)
+    cancel = threading.Event()
+    try:
+        t, out, t0 = _begin_in_thread(cancel = cancel)
+        time.sleep(0.3)
+        assert not out  # still waiting on the race (the deadline is 600 s)
+        cancel.set()
+        t.join(3)
+        assert out and out[0][1] - t0 < 2.0
+        assert defer.status()["gave_up"] == 0  # a cancel is not a stuck race: the bound stays on
+        defer.render_end()
+    finally:
+        release.set()
+    _wait_state("done")
+
+
+def test_a_cancel_releases_a_render_waiting_on_an_idle_spell_unit(monkeypatch):
+    """The same for #19308's own wait: a render arriving while an idle-spell unit runs."""
+    release, racing = threading.Event(), threading.Event()
+
+    def gate(n, m):
+        racing.set()
+        assert release.wait(20)
+
+    _env(monkeypatch, {}, gate = gate)
+    _image_load(0, [_rec()])
+    defer.render_begin()
+    defer.render_end()  # IDLE 0: the race starts in this idle spell
+    assert racing.wait(10)
+    cancel = threading.Event()
+    try:
+        t, out, t0 = _begin_in_thread(cancel = cancel)
+        time.sleep(0.3)
+        assert not out
+        cancel.set()
+        t.join(3)
+        assert out and out[0][1] - t0 < 2.0
+        defer.render_end()
+    finally:
+        release.set()
+    _wait_state("done")
 
 
 def test_the_bound_is_configurable_and_0_waits_for_an_idle_spell(monkeypatch):
@@ -689,18 +819,20 @@ def test_a_nested_pass_never_runs_the_race(monkeypatch):
     _back_to_back(monkeypatch)
     raced = _env(monkeypatch, {})
     _image_load(0, [_rec()])
+    compiling = [True]  # keeps render 2's end from starting the drain
     for _ in range(2):
         defer.render_begin()
-        defer.render_end()
-    defer._STATE["active"] = (
-        1  # an outer render already under way (started before the bound was reached)
-    )
+        defer.render_end(busy = lambda: compiling[0])
+    compiling[0] = False
+    defer._STATE["active"] = 1  # an outer render already under way (it began while the compile ran)
     assert defer.render_begin() is False  # hires / Detailer pass inside it
     time.sleep(0.2)
     assert raced == [] and defer.status()["drains"] == 0
     defer.render_end()
-    defer.render_end()
-    assert defer.render_begin() is True and len(raced) == 3  # the next outer render runs it
+    defer.render_end()  # the outer render: this end starts the drain
+    _wait_state("done")
+    assert len(raced) == 3 and defer.status()["drains"] == 1
+    assert defer.render_begin() is True
     defer.render_end()
 
 
@@ -759,3 +891,19 @@ def test_an_idle_gap_still_runs_the_race_without_a_wait(monkeypatch):
     defer.render_end()
     st = defer.status()
     assert st.get("drains", 0) == 0 and st["waits"] == 0 and st["won"] == 2
+
+
+def test_the_image_backend_hands_the_generation_cancel_to_the_wait(monkeypatch):
+    from core.inference.diffusion import DiffusionBackend
+
+    seen = []
+    monkeypatch.setattr(defer, "render_begin", lambda cancel = None: seen.append(cancel) or False)
+    backend = object.__new__(DiffusionBackend)
+    backend._lock = threading.RLock()
+    backend._state = types.SimpleNamespace(cuda_graphs = (), bg_compile = None)
+    ev = threading.Event()
+    with backend._int8_defer_render(ev):
+        pass
+    assert seen == [ev]
+    src = __import__("inspect").getsource(DiffusionBackend.generate)
+    assert "self._int8_defer_render(cancel)" in src
