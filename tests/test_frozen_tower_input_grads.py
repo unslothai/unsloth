@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""A frozen vision tower runs no backward under enable_input_require_grads (transformers >= 5 hooks every
-sub-model's input embeddings), and the trainable parameters get the same gradients."""
+"""A frozen vision tower runs no backward, and trainable grads are unchanged."""
 
 import inspect
 
@@ -25,7 +24,7 @@ if "for module in self.modules()" not in inspect.getsource(
     pytest.skip("this transformers hooks only the text embeddings", allow_module_level = True)
 
 IMAGE_TOKEN = 7
-GRID = (1, 4, 4)  # 16 patches, 4 image tokens after the 2 x 2 merge
+GRID = (1, 4, 4)  # 4 image tokens after the 2 x 2 merge
 
 
 def _model(train_tower = False):
@@ -61,7 +60,6 @@ def _model(train_tower = False):
     )
     model = Qwen2_5_VLForConditionalGeneration(config).float()
     model.requires_grad_(False)
-    # Stand-ins for LoRA weights: one inside a checkpointed text layer, optionally one in the tower.
     trainable = [model.model.language_model.layers[0].self_attn.q_proj.weight]
     if train_tower:
         trainable.append(model.model.visual.blocks[0].mlp.up_proj.weight)
@@ -126,9 +124,7 @@ def test_frozen_tower_runs_no_backward_and_grads_match():
     model, trainable = _model()
     loss_ref, grads_ref, ref = _step(model, trainable, force_tower_grad = True)
     loss, grads, state = _step(model, trainable)
-    assert (
-        ref["backward"] == 1 and ref["out_requires_grad"]
-    )  # the old path ran the tower's backward
+    assert ref["backward"] == 1 and ref["out_requires_grad"]
     assert state["backward"] == 0 and state["out_requires_grad"] is False
     assert torch.equal(loss, loss_ref)
     assert grads[0].abs().sum() > 0

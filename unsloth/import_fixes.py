@@ -6135,9 +6135,7 @@ def patch_enable_input_require_grads():
     keep_frozen_towers = os.environ.get("UNSLOTH_FROZEN_TOWER_INPUT_GRAD", "0") == "1"
 
     def _sub_model_hook(owner):
-        # transformers >= 5 hooks every sub-model's input embeddings, so a frozen vision / audio tower ran a full
-        # backward that no parameter reads. Its output still joins a graph that needs grad downstream (projector,
-        # LoRA), so skipping the flag only drops the tower's own backward.
+        # transformers >= 5 hooks every sub-model; a frozen tower's backward is wasted, downstream still gets grad.
         def make_inputs_require_grads(module, input, output):
             if torch.compiler.is_compiling():
                 trains = owner.__dict__.get("_unsloth_sub_model_trains", True)
