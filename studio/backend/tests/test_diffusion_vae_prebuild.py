@@ -276,3 +276,25 @@ def test_child_fills_the_triton_cache_the_full_size_decode_then_reads(tmp_path):
     assert child["files"] > 0
     parent = _run(tmp_path, "parent")
     assert parent["after"] == parent["before"], parent
+
+
+def test_video_kick_runs_under_the_teardown_lock_after_the_token_check():
+    """An unload between the load's lock release and the kick would run cancel_all() before the child exists."""
+    import ast
+
+    src = (Path(__file__).resolve().parents[1] / "core" / "inference" / "video.py").read_text()
+    tree = ast.parse(src)
+    hits = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.With):
+            continue
+        ctx = [ast.unparse(item.context_expr) for item in node.items]
+        if ctx != ["self._lock"]:
+            continue
+        body = ast.unparse(node)
+        if "maybe_kick_video" in body:
+            hits.append(body)
+    assert len(hits) == 1, "maybe_kick_video must be called inside one `with self._lock:` block"
+    body = hits[0]
+    assert body.index("_load_token != self._load_token") < body.index("maybe_kick_video")
+    assert src.count("maybe_kick_video(") == 1

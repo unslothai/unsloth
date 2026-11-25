@@ -13145,6 +13145,14 @@ class VideoBackend:
                     and pending_encoder[1] is ltx25_client
                 ):
                     self._ltx25_pending_encoder = None
+                try:
+                    # A fresh Triton cache compiles the fused VAE kernels inside the first decode (~5 s for
+                    # LTX-2.5 on an L4). Started under the teardown lock, after the load-token check, so an
+                    # unload's cancel_all() always sees the child.
+                    from . import diffusion_vae_prebuild
+                    diffusion_vae_prebuild.maybe_kick_video(pipe, logger)
+                except Exception:  # noqa: BLE001 - a prebuild, never a failed load
+                    pass
         logger.info(
             "video.loaded: %s (%s, %s, offload=%s, speed=%s, quant=%s)",
             repo_id,
@@ -13154,12 +13162,6 @@ class VideoBackend:
             effective_speed,
             transformer_quant_engaged or "off",
         )
-        try:
-            # A fresh Triton cache compiles the fused VAE kernels inside the first decode (~5 s for LTX-2.5 on an L4).
-            from . import diffusion_vae_prebuild
-            diffusion_vae_prebuild.maybe_kick_video(pipe, logger)
-        except Exception:  # noqa: BLE001 - a prebuild, never a failed load
-            pass
         if fam.is_moe:
             defer_late_expert_pins(pipe, (getattr(pipe, "transformer_2", None),), logger)
         start_background_pins(pipe)
