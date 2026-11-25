@@ -136,9 +136,14 @@ def load_rocm_hosted_transformer(
     cache_dir: Optional[str] = None,
     local_files_only: bool = False,
     logger: Any = None,
+    compute_dtype: Any = None,
+    config_source: Optional[str] = None,
+    tag: str = "diffusion.rocm_hosted_int8",
 ) -> Any:
     """The native W8A8 denoiser read from ``source``'s hosted int8 ConvRot file, or None (the caller restores the
-    dense shards). Never raises."""
+    dense shards). ``compute_dtype``: see ``load_native_from_hosted`` (float16 on an fp16-only CUDA card).
+    ``config_source``: where the transformer config is read (default ``base_repo``). Raises only an allocation
+    failure."""
     try:
         from .diffusion_families import pinned_revision_kwargs
         from .diffusion_native_cache import native_spec
@@ -150,7 +155,8 @@ def load_rocm_hosted_transformer(
         if convrot is None:
             if logger is not None:
                 logger.info(
-                    "diffusion.rocm_hosted_int8: %s offers no int8 ConvRot safetensors build",
+                    "%s: %s offers no int8 ConvRot safetensors build",
+                    tag,
                     getattr(source, "location", None),
                 )
             return None
@@ -166,7 +172,8 @@ def load_rocm_hosted_transformer(
         if not _is_convrot_safetensors(base_name):
             if path is not None and logger is not None:
                 logger.info(
-                    "diffusion.rocm_hosted_int8: %s is not an int8 ConvRot safetensors build",
+                    "%s: %s is not an int8 ConvRot safetensors build",
+                    tag,
                     base_name,
                 )
             return None
@@ -174,7 +181,7 @@ def load_rocm_hosted_transformer(
         module = load_native_from_hosted(
             path,
             transformer_cls,
-            base_repo,
+            config_source or base_repo,
             spec = native_spec(TQ_INT8, name, act_int8 = True),
             family = name,
             component = "transformer",
@@ -182,12 +189,17 @@ def load_rocm_hosted_transformer(
                 "token": hf_token,
                 "cache_dir": cache_dir,
                 "local_files_only": local_files_only,
-                **pinned_revision_kwargs(base_repo),
+                **(
+                    {}
+                    if config_source and os.path.isdir(str(config_source))
+                    else pinned_revision_kwargs(config_source or base_repo)
+                ),
             },
             base = base_repo,
             logger = logger,
-            tag = "diffusion.rocm_hosted_int8",
+            tag = tag,
             keep_fp32 = True,
+            compute_dtype = compute_dtype,
         )
         if module is None:
             return None
@@ -197,6 +209,9 @@ def load_rocm_hosted_transformer(
             pass
         return module
     except Exception as exc:  # noqa: BLE001 - a hosted problem keeps the dense build
+        from .diffusion_native_hosted import raise_if_allocation_failure
+
+        raise_if_allocation_failure(exc)
         if logger is not None:
-            logger.warning("diffusion.rocm_hosted_int8: hosted read skipped (%s)", exc)
+            logger.warning("%s: hosted read skipped (%s)", tag, exc)
         return None

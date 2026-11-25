@@ -55,6 +55,7 @@ from typing import Any, Dict, List, Optional, Callable, Union
 from datasets import Dataset
 from core.training.eval_dataset import STREAMING_EVAL_MAX_SAMPLES, evaluation_enabled
 from core.training import parallel_launch as _parallel_launch
+from core.training.resume import checked_resume_checkpoint
 from utils.datasets.audio_decode import ensure_audio_decoding
 from utils.datasets.audio_rows import (
     audio_transcription_messages,
@@ -4433,7 +4434,9 @@ class UnslothTrainer:
                 self._update_progress(total_steps = total, status_message = "Starting CSM training...")
                 logger.info(f"CSM training config: {config}\n")
                 self.trainer.train(
-                    resume_from_checkpoint = training_args.get("resume_from_checkpoint")
+                    resume_from_checkpoint = checked_resume_checkpoint(
+                        training_args.get("resume_from_checkpoint")
+                    )
                 )
                 self._finalize_training(output_dir, "CSM")
                 return
@@ -4478,7 +4481,9 @@ class UnslothTrainer:
                 self._update_progress(total_steps = total, status_message = "Starting SNAC training...")
                 logger.info(f"SNAC training config: {config}\n")
                 self.trainer.train(
-                    resume_from_checkpoint = training_args.get("resume_from_checkpoint")
+                    resume_from_checkpoint = checked_resume_checkpoint(
+                        training_args.get("resume_from_checkpoint")
+                    )
                 )
                 self._finalize_training(output_dir, "SNAC")
                 return
@@ -4538,7 +4543,9 @@ class UnslothTrainer:
                 )
                 logger.info(f"Whisper training config: {config}\n")
                 self.trainer.train(
-                    resume_from_checkpoint = training_args.get("resume_from_checkpoint")
+                    resume_from_checkpoint = checked_resume_checkpoint(
+                        training_args.get("resume_from_checkpoint")
+                    )
                 )
                 self._finalize_training(output_dir, "Whisper")
                 return
@@ -5305,7 +5312,9 @@ class UnslothTrainer:
             logger.info("Starting training...\n")
             try:
                 self.trainer.train(
-                    resume_from_checkpoint = training_args.get("resume_from_checkpoint")
+                    resume_from_checkpoint = checked_resume_checkpoint(
+                        training_args.get("resume_from_checkpoint")
+                    )
                 )
             finally:
                 # Release before finalize: workers hold a fork during merge/export.

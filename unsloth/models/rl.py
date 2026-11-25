@@ -2501,7 +2501,10 @@ def _unsloth_average_gradients(ddp, bucket_bytes = 64 << 20):
 
     group = ddp.process_group
     world_size = dist.get_world_size(group)
-    params = [p for p in ddp.module.parameters() if p.requires_grad]
+    # DDP never reduces its ignored parameters (expert parallel puts every expert shard there: each rank holds
+    # different experts of the same shape, synced by ep_native itself), so neither does this.
+    ignored = getattr(ddp, "parameters_to_ignore", None) or ()
+    params = [p for n, p in ddp.module.named_parameters() if p.requires_grad and n not in ignored]
     if world_size <= 1 or len(params) == 0:
         return
     device = params[0].device

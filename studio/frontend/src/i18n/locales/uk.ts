@@ -5420,6 +5420,7 @@ export const uk = {
     model: {
       label: "Модель перекладу",
       fast: "Швидка",
+      balanced: "Збалансована",
       quality: "Найкраща якість",
       chat: "Модель чату",
       recommended: "Рекомендовані",
@@ -5441,11 +5442,11 @@ export const uk = {
       toneFormal: "Офіційний",
       toneCasual: "Невимушений",
       auto: "Перекладати під час введення",
-      autoDescription: "Починається, щойно модель завантажено. Введення тексту ніколи не запускає завантаження.",
+      autoDescription: "Запускається автоматично, коли модель завантажено.",
       saveHistory: "Зберігати історію",
       saveHistoryDescription: "Зберігається лише в цьому браузері.",
       showPrompt: "Показувати промпт",
-      showPromptDescription: "Перегляньте точні інструкції, надіслані моделі.",
+      showPromptDescription: "Переглянути точні інструкції, надіслані моделі.",
     },
     history: {
       title: "Історія",
@@ -6578,7 +6579,6 @@ export const uk = {
     back: "Назад",
     continue: "Далі",
     skipSetup: "Пропустити налаштування",
-    outsideAgain: "Клацніть ззовні ще раз, щоб закрити",
     getStarted: "Почати",
     progress: "Крок {current} з {total}",
     welcome: {

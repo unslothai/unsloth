@@ -19,16 +19,52 @@ _WXC = b"official-wxc-test-payload"
 _REAL_ARCHITECTURE = mxc_runtime._expected_architecture
 
 
+def _use_pin(
+    monkeypatch,
+    approved: dict,
+    *,
+    base = None,
+):
+    """Make selected_pin() a pin shaped like the legacy one whose approved bytes are ``approved``.
+
+    ``approved`` maps (architecture, kind) to payload bytes, or to a raw (size, sha256) pair.
+    """
+    base = base or mxc_runtime.selected_pin()
+    artifacts = dict(base.artifacts)
+    for key, value in approved.items():
+        member = mxc_runtime.LEGACY_PIN.artifacts[key][0]
+        size, sha256 = (
+            value if isinstance(value, tuple) else (len(value), hashlib.sha256(value).hexdigest())
+        )
+        artifacts[key] = (member, size, sha256)
+    pin = mxc_runtime.MxcPin(
+        version = base.version,
+        revision = base.revision,
+        archive_size = base.archive_size,
+        archive_sha256 = base.archive_sha256,
+        artifacts = artifacts,
+    )
+    monkeypatch.setattr(mxc_runtime, "selected_pin", lambda: pin)
+    return pin
+
+
 @pytest.fixture
 def runtime(tmp_path, monkeypatch):
     # Pinned to x64 so an arm64 test host (Apple Silicon CI) checks the same pins.
     monkeypatch.setattr(mxc_runtime, "_expected_architecture", lambda: "x86_64")
+    monkeypatch.delenv(mxc_runtime.PIN_ENV, raising = False)
     root = tmp_path / "managed" / "windows-x86_64"
     root.mkdir(parents = True)
     (root / "wxc-exec.exe").write_bytes(_WXC)
     monkeypatch.setattr(mxc_runtime.sys, "platform", "win32")
-    monkeypatch.setattr(mxc_runtime, "WXC_EXEC_SIZE", len(_WXC))
-    monkeypatch.setattr(mxc_runtime, "WXC_EXEC_SHA256", hashlib.sha256(_WXC).hexdigest())
+    # A supported build whatever the test host runs (Windows Server 2022 CI is build 20348).
+    monkeypatch.setattr(
+        mxc_runtime.sys,
+        "getwindowsversion",
+        lambda: SimpleNamespace(build = mxc_runtime.MIN_WINDOWS_BUILD, product_type = 1),
+        raising = False,
+    )
+    _use_pin(monkeypatch, {("x86_64", "exec"): _WXC}, base = mxc_runtime.LEGACY_PIN)
     return root
 
 
@@ -81,8 +117,7 @@ def test_arm64_pc_selects_only_the_arm64_build(runtime, monkeypatch, tmp_path):
     arm64 = b"official-wxc-arm64-payload"
     monkeypatch.setattr(mxc_runtime, "_expected_architecture", _REAL_ARCHITECTURE)
     monkeypatch.setattr(wsl_host, "native_machine", lambda: "arm64")
-    monkeypatch.setattr(mxc_runtime, "ARM64_WXC_EXEC_SIZE", len(arm64))
-    monkeypatch.setattr(mxc_runtime, "ARM64_WXC_EXEC_SHA256", hashlib.sha256(arm64).hexdigest())
+    _use_pin(monkeypatch, {("arm64", "exec"): arm64})
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
     assert mxc_runtime._installed_package_root().name == "windows-arm64"
     with pytest.raises(mxc_runtime.MxcRuntimeUnavailable, match = "size|digest"):
@@ -100,8 +135,8 @@ def test_x64_identity_and_folder_are_unchanged(runtime, monkeypatch, tmp_path):
     info = mxc_runtime.selected_runtime(package_root = runtime)
     material = {
         "architecture": "x86_64",
-        "mxcRevision": mxc_runtime.MXC_REVISION,
-        "releaseTag": mxc_runtime.RELEASE_TAG,
+        "mxcRevision": mxc_runtime.LEGACY_PIN.revision,
+        "releaseTag": "v1.0.1",
         "sha256": hashlib.sha256(_WXC).hexdigest(),
         "size": len(_WXC),
     }
@@ -138,21 +173,14 @@ def test_reparse_runtime_directory_is_rejected(runtime, tmp_path):
         mxc_runtime.selected_runtime(package_root = link)
 
 
-def test_release_identity_is_fixed_to_microsoft_v080():
-    assert mxc_runtime.RELEASE_URL == (
-        "https://registry.npmjs.org/@microsoft/mxc-sdk/-/mxc-sdk-0.8.0.tgz"
-    )
-    assert mxc_runtime.MXC_REVISION == "7dac1a952f0c9ad13f0a4cb089c4e0e8b3e0013a"
-    assert mxc_runtime.RELEASE_ARCHIVE_SIZE == 25_881_758
-    assert mxc_runtime.RELEASE_ARCHIVE_SHA256 == (
-        "06bb2399d7e98ab1907acf851e12a4e44748dd467b79d3e53c2f2fbf569da14e"
-    )
-    assert mxc_runtime.RELEASE_MEMBER == "package/bin/x64/wxc-exec.exe"
-    assert mxc_runtime.RELEASE_HOST_PREP_MEMBER == "package/bin/x64/wxc-host-prep.exe"
-    assert mxc_runtime.WXC_EXEC_SIZE == 9_478_968
-    assert mxc_runtime.WXC_EXEC_SHA256 == (
-        "6049c64723af1173c3739dc6cd6b2f33f6c021bb2832c4216233cba7f71aee9a"
-    )
+def test_each_pin_names_its_own_microsoft_release():
+    for pin, tag in ((mxc_runtime.PRIMARY_PIN, "v1.1.0"), (mxc_runtime.LEGACY_PIN, "v1.0.1")):
+        assert pin.tag == tag
+        assert pin.url == (f"https://registry.npmjs.org/@microsoft/mxc-sdk/-/mxc-sdk-{tag[1:]}.tgz")
+    # The identity differs per pin, so a probe verdict for one never answers for the other.
+    one = mxc_runtime.RuntimeInfo(Path("w"), "a" * 64, "x86_64", mxc_runtime.PRIMARY_PIN)
+    two = mxc_runtime.RuntimeInfo(Path("w"), "a" * 64, "x86_64", mxc_runtime.LEGACY_PIN)
+    assert one.identity != two.identity
 
 
 def test_corrupt_managed_wxc_is_never_executed(runtime, monkeypatch):
@@ -189,8 +217,7 @@ _HOST_PREP = b"official-host-prep-test-payload"
 @pytest.fixture
 def host_prep(runtime, monkeypatch):
     (runtime / "wxc-host-prep.exe").write_bytes(_HOST_PREP)
-    monkeypatch.setattr(mxc_runtime, "WXC_HOST_PREP_SIZE", len(_HOST_PREP))
-    monkeypatch.setattr(mxc_runtime, "WXC_HOST_PREP_SHA256", hashlib.sha256(_HOST_PREP).hexdigest())
+    _use_pin(monkeypatch, {("x86_64", "prep"): _HOST_PREP})
     return runtime
 
 
@@ -358,7 +385,7 @@ def test_installation_identity_cache_keys_on_the_approved_pin(runtime, monkeypat
     mxc_runtime.forget_verified_runtime()
     mxc_runtime.installation_identity()
     # A new pin with the same file on disk must not reuse the old verdict.
-    monkeypatch.setattr(mxc_runtime, "WXC_EXEC_SHA256", "0" * 64)
+    _use_pin(monkeypatch, {("x86_64", "exec"): (len(_WXC), "0" * 64)})
     with pytest.raises(mxc_runtime.MxcRuntimeUnavailable, match = "digest"):
         mxc_runtime.installation_identity()
 

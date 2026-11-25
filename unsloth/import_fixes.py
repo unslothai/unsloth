@@ -5318,6 +5318,87 @@ def fix_vllm_lora_tokenizer_module():
     )
 
 
+# TRL >= 1.11 imports vllm.distributed.weight_transfer.nccl_engine at module scope whenever vLLM is importable, but
+# vLLM added it in 0.16, so `from trl import GRPOTrainer` fails on vLLM 0.11.2 - 0.15.x. Only TRL's vLLM server
+# client (vllm_mode="server") uses it; fast_inference does not. A finder appended after the real ones serves
+# placeholders that raise on use, only when the real modules are missing.
+_VLLM_WEIGHT_TRANSFER_MODULES = (
+    "vllm.distributed.weight_transfer",
+    "vllm.distributed.weight_transfer.nccl_engine",
+)
+_VLLM_WEIGHT_TRANSFER_STUB_SENTINEL = "__unsloth_vllm_weight_transfer_stub__"
+_VLLM_WEIGHT_TRANSFER_MESSAGE = (
+    "Unsloth: TRL's vLLM server weight transfer needs vLLM >= 0.16, but this vLLM has no "
+    "`vllm.distributed.weight_transfer`. Upgrade vLLM, or use fast_inference = True (colocated vLLM)."
+)
+
+
+class _VllmWeightTransferUnavailableMeta(type):
+    def __getattr__(cls, name):
+        # TRL calls static methods on the class (trainer_init, trainer_send_weights): fail at the call.
+        if name.startswith("__"):
+            raise AttributeError(name)
+
+        def _unavailable(*args, **kwargs):
+            raise ImportError(_VLLM_WEIGHT_TRANSFER_MESSAGE)
+
+        return _unavailable
+
+
+class _VllmWeightTransferUnavailable(metaclass = _VllmWeightTransferUnavailableMeta):
+    def __init__(self, *args, **kwargs):
+        raise ImportError(_VLLM_WEIGHT_TRANSFER_MESSAGE)
+
+
+class _VllmWeightTransferStubLoader(importlib.abc.Loader):
+    def create_module(self, spec):
+        import types
+
+        module = types.ModuleType(spec.name)
+        module.__file__ = f"<unsloth stub: {spec.name}>"
+        setattr(module, _VLLM_WEIGHT_TRANSFER_STUB_SENTINEL, True)
+        if spec.name == _VLLM_WEIGHT_TRANSFER_MODULES[0]:
+            module.__path__ = []
+            module.__package__ = spec.name
+        else:
+            module.__package__ = spec.name.rpartition(".")[0]
+            for name in ("NCCLTrainerSendWeightsArgs", "NCCLWeightTransferEngine"):
+                setattr(module, name, type(name, (_VllmWeightTransferUnavailable,), {}))
+        return module
+
+    def exec_module(self, module):
+        return None
+
+
+class _VllmWeightTransferStubFinder(importlib.abc.MetaPathFinder):
+    def __init__(self):
+        setattr(self, _VLLM_WEIGHT_TRANSFER_STUB_SENTINEL, True)
+
+    def find_spec(
+        self,
+        fullname,
+        path = None,
+        target = None,
+    ):
+        if fullname not in _VLLM_WEIGHT_TRANSFER_MODULES:
+            return None
+        return importlib.machinery.ModuleSpec(
+            name = fullname,
+            loader = _VllmWeightTransferStubLoader(),
+            is_package = fullname == _VLLM_WEIGHT_TRANSFER_MODULES[0],
+        )
+
+
+def fix_vllm_weight_transfer_module():
+    if importlib.util.find_spec("vllm") is None:
+        return
+    for finder in sys.meta_path:
+        if getattr(finder, _VLLM_WEIGHT_TRANSFER_STUB_SENTINEL, False):
+            return
+    # Appended, not inserted at 0, so the real module on vLLM >= 0.16 always wins.
+    sys.meta_path.append(_VllmWeightTransferStubFinder())
+
+
 def fix_vllm_guided_decoding_params():
     def _maybe_raise_vllm_transformers_mismatch(error):
         error_text = str(error)
@@ -12349,6 +12430,52 @@ _VLLM_COMPILED_EXTENSIONS = (
     "vllm._moe_C",
     "vllm._rocm_C",
 )
+
+
+# Importing vllm.platforms.cuda turns cuDNN SDPA off process-wide (a torch 2.5.0 workaround, diffusers#9704,
+# fixed in 2.5.1). Unsloth's import probes vLLM, so restore the caller's value after import and re-apply
+# vLLM's only on Unsloth loads. Known-bad cuDNN cases are avoided per call (fix_cudnn_sdpa_known_bad_shapes).
+_CUDNN_SDPA_BEFORE_IMPORT = [None]
+_CUDNN_SDPA_OFF_FOR_LOADS = [False]
+
+
+def _cudnn_sdpa_enabled():
+    torch = sys.modules.get("torch")
+    if torch is None:
+        return None
+    try:
+        return bool(torch.backends.cuda.cudnn_sdp_enabled())
+    except Exception:
+        return None
+
+
+def snapshot_cudnn_sdpa_before_import():
+    """torch not imported yet means torch's default (on)."""
+    if _CUDNN_SDPA_BEFORE_IMPORT[0] is None:
+        enabled = _cudnn_sdpa_enabled()
+        _CUDNN_SDPA_BEFORE_IMPORT[0] = True if enabled is None else enabled
+
+
+def restore_cudnn_sdpa_after_import():
+    if _CUDNN_SDPA_BEFORE_IMPORT[0] is not True or _cudnn_sdpa_enabled() is not False:
+        return
+    try:
+        import torch
+        torch.backends.cuda.enable_cudnn_sdp(True)
+    except Exception as e:
+        logger.info(f"Unsloth: could not restore cuDNN SDPA after import ({e})")
+        return
+    _CUDNN_SDPA_OFF_FOR_LOADS[0] = True
+
+
+def apply_cudnn_sdpa_for_unsloth_load():
+    if not _CUDNN_SDPA_OFF_FOR_LOADS[0] or _cudnn_sdpa_enabled() is not True:
+        return
+    try:
+        import torch
+        torch.backends.cuda.enable_cudnn_sdp(False)
+    except Exception:
+        pass
 
 
 def disable_broken_vllm(error = None):

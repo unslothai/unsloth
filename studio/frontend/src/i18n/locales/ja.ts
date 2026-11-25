@@ -4988,6 +4988,7 @@ export const ja = {
     model: {
       label: "翻訳モデル",
       fast: "高速",
+      balanced: "バランス",
       quality: "最高品質",
       chat: "チャットモデル",
       recommended: "おすすめ",
@@ -5009,11 +5010,11 @@ export const ja = {
       toneFormal: "フォーマル",
       toneCasual: "カジュアル",
       auto: "入力と同時に翻訳",
-      autoDescription: "モデルの読み込み後に開始します。入力によってダウンロードが始まることはありません。",
+      autoDescription: "モデルが読み込まれると自動的に開始します。",
       saveHistory: "履歴を保存",
       saveHistoryDescription: "このブラウザにのみ保存されます。",
       showPrompt: "プロンプトを表示",
-      showPromptDescription: "モデルに送信される指示をそのまま確認できます。",
+      showPromptDescription: "モデルに送られる正確な指示を表示します。",
     },
     history: {
       title: "履歴",
@@ -6075,7 +6076,6 @@ export const ja = {
     back: "戻る",
     continue: "続ける",
     skipSetup: "セットアップをスキップ",
-    outsideAgain: "もう一度外側をクリックすると閉じます",
     getStarted: "はじめる",
     progress: "ステップ {current}/{total}",
     welcome: {

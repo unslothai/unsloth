@@ -5442,6 +5442,8 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                     completion_input_ids_chunk,
                                     temperature,
                                 )
+                    # The [B, L, V] logits (or hidden states) of this chunk must not live through the next chunk's forward.
+                    del logits_chunk, completion_input_ids_chunk
                     # Avoids a race with GPT OSS offload_embbed=True; it does not appear to slow models down.
                     device_synchronize()
                     all_logprobs_list.append(logprobs_chunk)

@@ -5153,6 +5153,7 @@ export const th = {
     model: {
       label: "โมเดลแปลภาษา",
       fast: "เร็ว",
+      balanced: "สมดุล",
       quality: "คุณภาพดีที่สุด",
       chat: "โมเดลแชท",
       recommended: "แนะนำ",
@@ -5174,11 +5175,11 @@ export const th = {
       toneFormal: "ทางการ",
       toneCasual: "เป็นกันเอง",
       auto: "แปลขณะพิมพ์",
-      autoDescription: "เริ่มเมื่อโหลดโมเดลแล้ว การพิมพ์จะไม่เริ่มการดาวน์โหลด",
+      autoDescription: "เริ่มอัตโนมัติเมื่อโหลดโมเดลแล้ว",
       saveHistory: "บันทึกประวัติ",
       saveHistoryDescription: "เก็บไว้ในเบราว์เซอร์นี้เท่านั้น",
       showPrompt: "แสดงพรอมต์",
-      showPromptDescription: "ดูคำสั่งที่ส่งให้โมเดลแบบคำต่อคำ",
+      showPromptDescription: "ดูคำสั่งที่ส่งไปยังโมเดลอย่างละเอียด",
     },
     history: {
       title: "ประวัติ",
@@ -6254,7 +6255,6 @@ export const th = {
     back: "ย้อนกลับ",
     continue: "ดำเนินการต่อ",
     skipSetup: "ข้ามการตั้งค่า",
-    outsideAgain: "คลิกด้านนอกอีกครั้งเพื่อปิด",
     getStarted: "เริ่มต้นใช้งาน",
     progress: "ขั้นตอนที่ {current} จาก {total}",
     welcome: {

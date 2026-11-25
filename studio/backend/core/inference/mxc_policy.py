@@ -58,7 +58,9 @@ class MxcPolicyError(RuntimeError):
 
 
 def dacl_fallback_enabled() -> bool:
-    """Opt-in to the AppContainer tier (temporarily adds ACEs); env var if set, else the saved choice."""
+    """Opt-in to the AppContainer tier (temporarily adds ACEs); always off on MXC 1.1.0, which has none."""
+    if not mxc_runtime.selected_pin().has_host_prep:
+        return False
     if DACL_FALLBACK_ENV in os.environ:
         return os.environ[DACL_FALLBACK_ENV].strip() == "1"
     try:
@@ -381,7 +383,7 @@ def _selected_runtime(plan) -> str:
 
 
 def canonical_config_bytes(config: dict) -> bytes:
-    """Serialize exactly the deterministic stable-v0.8 request sent to WXC."""
+    """Serialize exactly the deterministic request sent to WXC."""
     return json.dumps(
         config,
         ensure_ascii = False,
@@ -496,12 +498,10 @@ def build_launch_request(
             "readonlyPaths": readonly,
             "deniedPaths": [],
         },
+        # 0.8.0 blocked host loopback too, and "deny" is the only value the DACL tier accepts.
         "network": {
-            "defaultPolicy": "allow",
-            "allowLocalNetwork": True,
-            "allowedHosts": [],
-            "blockedHosts": [],
-            "enforcementMode": "capabilities",
+            "egress": {"default": "allow"},
+            "ingress": {"default": "allow", "hostLoopback": "deny"},
         },
         "processContainer": {
             "leastPrivilege": False,
