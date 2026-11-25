@@ -112,7 +112,6 @@ test("tool code cells pass Streamdown stable plugins and controls", () => {
     new URL("../src/components/assistant-ui/tool-code-cell.tsx", import.meta.url),
     "utf8",
   );
-  // Streamdown's memo compares plugins by identity; an inline object re-parses every render.
   assert.doesNotMatch(source, /plugins=\{\{/);
   assert.doesNotMatch(source, /controls=\{\{/);
   assert.match(source, /^const STREAMDOWN_PLUGINS = \{ code: codePlugin \};$/m);
