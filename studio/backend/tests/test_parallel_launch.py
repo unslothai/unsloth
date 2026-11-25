@@ -135,6 +135,7 @@ def test_an_error_event_on_another_rank_ends_the_run(tmp_path, monkeypatch):
             if ev["type"] == "error":
                 error = ev["error"]
         assert error is not None and "rank 1 of 2 exited with code 2" in error
+        assert "model load failed" in error  # the rank's own reason, not just its exit code
         proc.join(30)
         assert proc.exitcode == 1
     finally:

@@ -120,11 +120,21 @@ def _rank_env(base: dict, r: int, world: int) -> dict:
     return env
 
 
-def _pump(stream, prefix: str) -> None:
+_LAST_ERROR: dict = {}  # rank -> its last reported error line, quoted when that rank ends the run
+
+
+def _pump(
+    stream,
+    prefix: str,
+    r: int = 0,
+) -> None:
     try:
         for raw in iter(stream.readline, b""):
+            line = raw.decode("utf-8", "replace")
+            if line.startswith("error: "):
+                _LAST_ERROR[r] = line[len("error: ") :].strip()[:500]
             try:
-                sys.stderr.write(prefix + raw.decode("utf-8", "replace"))
+                sys.stderr.write(prefix + line)
                 sys.stderr.flush()
             except Exception:  # noqa: BLE001 -- a closed log must not stop the rank
                 pass
@@ -266,7 +276,9 @@ def launch_ranks(
                 cwd = os.getcwd(),
             )
             _PROCS.append(proc)
-            threading.Thread(target = _pump, args = (proc.stdout, f"[rank {r}] "), daemon = True).start()
+            threading.Thread(
+                target = _pump, args = (proc.stdout, f"[rank {r}] ", r), daemon = True
+            ).start()
             proc.stdin.write(payload)
             proc.stdin.close()
     except BaseException:
@@ -278,10 +290,15 @@ def launch_ranks(
             for r, proc in enumerate(_PROCS, start = 1):
                 exit_code = proc.poll()
                 if exit_code not in (None, 0) and not _CLOSING.is_set():
+                    time.sleep(0.5)  # the pump may still be reading the rank's last lines
+                    reason = _LAST_ERROR.get(r)
                     message = (
                         f"Multi-GPU training: rank {r} of {world} exited with code {exit_code}; stopping the run. "
-                        "The server log has that rank's error (lines starting with [rank "
-                        f"{r}])."
+                        + (
+                            f"Rank {r}: {reason}"
+                            if reason
+                            else f"The server log has that rank's error (lines starting with [rank {r}])."
+                        )
                     )
                     try:
                         event_queue.put(

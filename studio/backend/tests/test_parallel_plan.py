@@ -117,6 +117,10 @@ def test_moe_uses_ep_only_when_core_has_it():
     assert without["mode"] == "ddp"
     with_ep = pp.plan({"parallel_mode": "auto"}, _host(2, ep = True), _model(need = 6.0, moe = True))
     assert with_ep["mode"] == "ep" and with_ep["spec"] == "ep=2"
+    # transformers 4.x keeps most families' experts unfused, which expert parallel refuses at load.
+    old_tf = dict(_host(2, ep = True), transformers = (4, 57))
+    assert pp.plan({"parallel_mode": "auto"}, old_tf, _model(need = 6.0, moe = True))["mode"] == "ddp"
+    assert pp.plan({"parallel_mode": "ep"}, old_tf, _model(need = 6.0, moe = True))["mode"] == "ep"
 
 
 def test_busy_gpu_counts_its_free_memory():

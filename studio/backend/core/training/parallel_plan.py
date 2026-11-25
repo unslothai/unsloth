@@ -216,6 +216,7 @@ def detect_host(max_age_s: float = 5.0) -> dict:
         "multi_process_reason": reason,
         "gpus": gpus,
         "core": core_axes(),
+        "transformers": _transformers_version(),
         "torch": _torch_version(),
     }
     with _HOST_LOCK:
@@ -228,6 +229,15 @@ def _torch_version() -> tuple:
     try:
         major, minor = str(torch.__version__).split("+")[0].split(".")[:2]
         return (int(major), int(minor))
+    except Exception:  # noqa: BLE001
+        return (0, 0)
+
+
+def _transformers_version() -> tuple:
+    try:
+        from importlib.metadata import version
+        major, minor = version("transformers").split(".")[:2]
+        return (int(major), int("".join(ch for ch in minor if ch.isdigit()) or 0))
     except Exception:  # noqa: BLE001
         return (0, 0)
 
@@ -597,7 +607,13 @@ def plan(request: dict, host: dict, model: Optional[dict]) -> dict:
         if multi_reason:
             return _legacy(multi_reason)
         core = host.get("core") or {}
-        if model.get("is_moe") and core.get(EP):
+        # Expert parallel shards fused expert stacks; transformers 4.x keeps most families' experts as separate
+        # modules, which Unsloth refuses at load, so auto picks it on transformers 5+ only.
+        if (
+            model.get("is_moe")
+            and core.get(EP)
+            and tuple(host.get("transformers") or (5, 0)) >= (5, 0)
+        ):
             try:
                 _core_check(
                     _sizes_for(EP, len(gpus)), model, host, {**request, "parallel_mode": EP}, gpus
