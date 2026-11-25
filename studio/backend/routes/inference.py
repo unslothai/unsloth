@@ -515,12 +515,16 @@ def _clamp_finish_reason(value) -> str:
     )
 
 
+def _cut_thought_recoverable(payload) -> bool:
+    return getattr(payload, "context_overflow", None) not in ("error", "truncate_middle")
+
+
 def _recover_cut_thought(payload) -> Optional[tuple[str, bool, bool]]:
     """When this thread's previous reply ended in a thought the window cut, do not resume it (it
     cannot fit): keep it, cut back a few tokens, as a finished thought (the template writes the
     model's own closing marker), force the reset /compact does, archive it for search_conversation,
     write a transcript, and add the note. Returns (note, searchable, note_is_a_user_turn), or None."""
-    if getattr(payload, "context_overflow", None) in ("error", "truncate_middle"):
+    if not _cut_thought_recoverable(payload):
         return None
     from core.inference import cut_thought
     from models.inference import ChatMessage
@@ -35204,6 +35208,7 @@ async def produce_openai_chat_completions(
                     context_policy = _request_context_policy(payload),
                     compaction_headroom_ratio = _request_compaction_headroom_ratio(payload),
                     compact_context = getattr(payload, "compact_context", None) is True,
+                    record_cut_thought = _cut_recovery is None and _cut_thought_recoverable(payload),
                 )
 
             _tool_admission_mode = "chat_tool_stream" if payload.stream else "chat_tool_nonstream"
@@ -47883,6 +47888,8 @@ async def anthropic_messages(
                 ),
                 replay_preserve_thinking = not _anthropic_history_has_thinking(payload),
                 website_policy = website_policy,
+                # This route never runs _recover_cut_thought: keep the exhaustion notice.
+                record_cut_thought = False,
                 **_reasoning_args,
             )
 

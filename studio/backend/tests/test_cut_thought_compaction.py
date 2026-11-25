@@ -15,6 +15,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_length_truncated_reasoning_continuation import (  # noqa: E402
     _LONG_THOUGHT,
+    _WEB_SEARCH_TOOL,
     _done,
     _finish,
     _make_backend,
@@ -23,6 +24,7 @@ from test_length_truncated_reasoning_continuation import (  # noqa: E402
 )
 
 from core.inference import cut_thought  # noqa: E402
+from core.inference.llama_cpp import _MAX_LENGTH_CONTINUATIONS  # noqa: E402
 
 THREAD = "thread-cut"
 
@@ -133,6 +135,86 @@ def test_only_a_thought_the_window_cut_is_held(monkeypatch, persisted, stream, k
     _plain(backend, **kwargs)
 
     assert cut_thought.take(THREAD) is None
+
+
+def _with_tools(backend, **kwargs) -> list:
+    return list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "Plan the migration"}],
+            tools = [_WEB_SEARCH_TOOL],
+            enable_thinking = True,
+            thread_id = THREAD,
+            max_tool_iterations = 3,
+            **kwargs,
+        )
+    )
+
+
+def _content(events) -> str:
+    return "".join(e["text"] for e in events if e.get("type") == "content")
+
+
+def test_a_tool_turn_the_window_cut_is_held_for_the_threads_next_request(monkeypatch, persisted):
+    streams = [_thought_cut() for _ in range(_MAX_LENGTH_CONTINUATIONS + 1)]
+    backend = _with_server_helpers(_make_backend(monkeypatch, streams, []), monkeypatch)
+
+    events = _with_tools(backend)
+
+    cut = cut_thought.take(THREAD)
+    assert cut is not None and cut.close_marker == _TEMPLATE_CLOSE
+    assert "Lower the reasoning effort" not in _content(events)
+    assert [e["finish_reason"] for e in events if e.get("type") == "metadata"] == ["length"]
+
+
+def test_a_tool_turn_cut_across_retries_keeps_every_attempts_thought(monkeypatch, persisted):
+    attempts = [f"attempt{i} " * 200 for i in range(_MAX_LENGTH_CONTINUATIONS + 1)]
+    streams = [
+        [_sse({"reasoning_content": thought}), _finish("length"), _usage(3_000), _done()]
+        for thought in attempts
+    ]
+    backend = _with_server_helpers(_make_backend(monkeypatch, streams, []), monkeypatch)
+
+    _with_tools(backend)
+
+    cut = cut_thought.take(THREAD)
+    assert cut is not None
+    for i in range(len(attempts)):
+        assert f"attempt{i}" in cut.thought
+
+
+def test_a_tool_recovery_whose_own_thought_is_cut_ends_as_before(monkeypatch, persisted):
+    streams = [_thought_cut() for _ in range(_MAX_LENGTH_CONTINUATIONS + 1)]
+    backend = _make_backend(monkeypatch, streams, [])
+
+    events = _with_tools(backend, record_cut_thought = False)
+
+    assert cut_thought.take(THREAD) is None
+    assert "Lower the reasoning effort" in _content(events)
+
+
+def _record_cut_thought_args(route) -> list:
+    import ast
+    import inspect
+    return [
+        ast.unparse(kw.value)
+        for node in ast.walk(ast.parse(inspect.getsource(route)))
+        if isinstance(node, ast.Call)
+        and ast.unparse(node.func).endswith("generate_chat_completion_with_tools")
+        for kw in node.keywords
+        if kw.arg == "record_cut_thought"
+    ]
+
+
+def test_a_tool_chat_that_cannot_recover_keeps_the_exhaustion_message():
+    from routes import inference as inference_route
+
+    records = _record_cut_thought_args(inference_route.produce_openai_chat_completions)
+    assert records == ["_cut_recovery is None and _cut_thought_recoverable(payload)"]
+    assert _record_cut_thought_args(inference_route.anthropic_messages) == ["False"]
+    for policy, recoverable in (("error", False), ("truncate_middle", False), (None, True)):
+        payload = _continuation()
+        payload.context_overflow = policy
+        assert inference_route._cut_thought_recoverable(payload) is recoverable
 
 
 def test_a_thread_studio_does_not_keep_is_left_alone(monkeypatch):
