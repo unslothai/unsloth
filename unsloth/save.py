@@ -6813,9 +6813,18 @@ def _merge_base_model_name(model_name, load_in_4bit = True):
     return get_model_name(model_name, load_in_4bit = load_in_4bit)
 
 
+def _merge_base_resolver(in_place):
+    """Base-name resolver for zoo's merge_and_overwrite_lora. An in-place merge (merged_4bit) folds LoRA into the loaded weights and keeps resolving the recorded base as is: zoo calls the resolver with load_in_4bit = False for every method, and remapping a local snapshot there would send an offline 4-bit merge to the Hub."""
+    if in_place:
+        return get_model_name
+    if os.environ.get("UNSLOTH_USE_MODELSCOPE", "0") == "1":
+        return _modelscope_base_model_name
+    return _merge_base_model_name
+
+
 def _modelscope_base_model_name(model_name, load_in_4bit = True):
     """`get_model_name` for a merge under UNSLOTH_USE_MODELSCOPE=1: the 16bit base comes from ModelScope, like the model it was trained on, not the Hugging Face Hub (#3726)."""
-    name = _merge_base_model_name(model_name, load_in_4bit = load_in_4bit)
+    name = get_model_name(model_name, load_in_4bit = load_in_4bit)
     if not name or os.path.exists(name):
         return name
     try:
@@ -7784,9 +7793,7 @@ def unsloth_generic_save(
         relative = nullcontext() if in_place else lora_relative_to_original_base(model)
         with relative, _unmerge_flags_on_error(streamed):
             merge_and_overwrite_lora(
-                _modelscope_base_model_name
-                if os.environ.get("UNSLOTH_USE_MODELSCOPE", "0") == "1" and not in_place
-                else _merge_base_model_name,
+                _merge_base_resolver(in_place),
                 model = model,
                 tokenizer = tokenizer,
                 save_directory = save_directory,

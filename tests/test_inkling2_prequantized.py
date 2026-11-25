@@ -343,3 +343,31 @@ def test_generic_merge_maps_a_cached_prequantized_snapshot_like_its_repo_id(tmp_
         assert resolve(local, load_in_4bit = False) == get_model_name(local, load_in_4bit = False)
         # 4-bit lookups are untouched.
         assert resolve(snapshot, load_in_4bit = True) == get_model_name(snapshot, load_in_4bit = True)
+
+
+def test_in_place_4bit_merge_keeps_resolving_the_recorded_base(monkeypatch):
+    # merged_4bit folds LoRA into the loaded weights: zoo still resolves the base (always with load_in_4bit = False),
+    # so a cached snapshot must stay local there instead of being sent to the 16-bit original on the Hub.
+    import ast
+    import pathlib
+
+    source = pathlib.Path(loader_utils.__file__).resolve().parents[1] / "save.py"
+    tree = ast.parse(source.read_text(encoding = "utf-8"))
+    nodes = [
+        n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "_merge_base_resolver"
+    ]
+    assert nodes, "save.py has no _merge_base_resolver"
+    sentinels = {
+        "get_model_name": object(),
+        "_merge_base_model_name": object(),
+        "_modelscope_base_model_name": object(),
+    }
+    namespace = {"os": __import__("os"), **sentinels}
+    exec(compile(ast.Module(nodes, []), str(source), "exec"), namespace)
+    resolver = namespace["_merge_base_resolver"]
+    monkeypatch.delenv("UNSLOTH_USE_MODELSCOPE", raising = False)
+    assert resolver(True) is sentinels["get_model_name"]
+    assert resolver(False) is sentinels["_merge_base_model_name"]
+    monkeypatch.setenv("UNSLOTH_USE_MODELSCOPE", "1")
+    assert resolver(True) is sentinels["get_model_name"]
+    assert resolver(False) is sentinels["_modelscope_base_model_name"]
