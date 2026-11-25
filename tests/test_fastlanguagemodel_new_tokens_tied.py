@@ -181,3 +181,21 @@ def test_new_tokens_train_only_trainable_token_indices(
     model = get_peft_model(_tiny_llama(tie = tie), config)
     assert not any(type(m).__name__ == "ModulesToSaveWrapper" for m in model.modules())
     assert _rows_changed_by_one_step(model) == [input_rows, output_rows]
+
+
+@pytest.mark.parametrize("entry", [_lora_config_for, _base_lora_config_for])
+def test_new_tokens_list_indices_keep_fully_trained_head(monkeypatch, entry):
+    monkeypatch.setenv("UNSLOTH_USE_NEW_MODEL", "0")
+    monkeypatch.setenv("UNSLOTH_ENABLE_FULL_FINETUNING", "0")
+    config = entry(
+        _tiny_llama(tie = False),
+        monkeypatch,
+        modules_to_save = ["lm_head"],
+        trainable_token_indices = NEW_TOKEN_IDS,
+    )
+    assert _leaves(config.modules_to_save) == {"lm_head"}
+    assert config.trainable_token_indices == NEW_TOKEN_IDS
+    model = get_peft_model(_tiny_llama(tie = False), config)
+    input_rows, output_rows = _rows_changed_by_one_step(model)
+    assert input_rows == NEW_TOKEN_IDS
+    assert len(output_rows) == 64

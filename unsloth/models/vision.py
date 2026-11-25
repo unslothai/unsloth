@@ -5932,7 +5932,7 @@ class FastBaseModel:
             and kwargs.get("trainable_token_indices")
         ):
             kwargs["trainable_token_indices"] = _cover_untied_new_token_rows(
-                model, kwargs["trainable_token_indices"]
+                model, kwargs["trainable_token_indices"], modules_to_save
             )
         elif (
             getattr(model, "_need_to_train_embeddings", False)

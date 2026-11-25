@@ -13570,7 +13570,11 @@ def _effective_weight_tying(model, modules_to_save, requested):
     return "embed_tokens" in _embedding_leaves(modules_to_save)
 
 
-def _cover_untied_new_token_rows(model, trainable_token_indices):
+def _cover_untied_new_token_rows(
+    model,
+    trainable_token_indices,
+    modules_to_save = None,
+):
     if isinstance(trainable_token_indices, dict):
         return trainable_token_indices
     input_embeddings = model.get_input_embeddings()
@@ -13583,6 +13587,9 @@ def _cover_untied_new_token_rows(model, trainable_token_indices):
     names = {id(m): n for n, m in model.named_modules()}
     input_name, output_name = names.get(id(input_embeddings)), names.get(id(output_embeddings))
     if input_name is None or output_name is None:
+        return trainable_token_indices
+    full = [modules_to_save] if isinstance(modules_to_save, str) else list(modules_to_save or ())
+    if output_name in full or _embedding_leaf(output_name) in _embedding_leaves(full):
         return trainable_token_indices
     print(
         f"Unsloth: You added new tokens, so `{output_name}` also trains the rows in `trainable_token_indices`."
