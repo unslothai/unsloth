@@ -128,7 +128,7 @@ def test_moe_uses_ep_only_when_core_has_it():
 
 
 def test_auto_falls_back_when_ep_cannot_shard_the_family():
-    # Nemotron-H: non-gated up_proj / down_proj experts, which expert parallel cannot shard (Core's family table).
+    # Nemotron-H experts are non-gated: ep cannot shard them.
     ep_host = _host(2, ep = True)
     fits = pp.plan(
         {"parallel_mode": "auto"}, ep_host, _model(need = 6.0, moe = True, family = "nemotron_h")

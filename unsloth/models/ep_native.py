@@ -95,8 +95,7 @@ def ep_env_mesh():
 
 
 def ep_refuse_fast_inference(values):
-    """from_pretrained under UNSLOTH_EP_SIZE, before any weight loads: vLLM's LoRA sync gathers only DTensor
-    adapters, and expert parallel keeps each rank's expert LoRA as local parameters."""
+    """vLLM's LoRA sync gathers only DTensor adapters; ep keeps expert LoRA as local parameters."""
     if values.get("fast_inference"):
         raise NotImplementedError(
             f"Unsloth: {_EP_ENV}={ep_env_size()} (expert parallel) does not support vLLM (fast_inference = True): "

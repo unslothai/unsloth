@@ -575,7 +575,7 @@ class ParallelLayout:
         ep = 1,
     ):
         self.tp, self.dp, self.world, self.fsdp2 = tp, dp, world, fsdp2
-        self.ep = ep  # expert parallel (UNSLOTH_EP_SIZE): set only by the Trainer pre-check, read_layout keeps 1
+        self.ep = ep  # set only by the Trainer pre-check; read_layout keeps 1
         self.pp, self.microbatches, self.schedule = pp, microbatches, schedule
         # UNSLOTH_PP_SCHEDULE unset: 1F1B, run as GPipe on a step with fewer micro-batches than stages (no
         # fully masked filler rows); an explicit schedule is kept as given.

@@ -67,7 +67,7 @@ class Query:
     direct_params: bool = False  # an attention / MLP block owns a parameter (attention sinks)
     # tp_native's refusal at q.tp ranks; "" when it shards or the model is already split (_tp_blocker).
     tp_blocker: str = ""
-    # apply_expert_parallel's refusal at q.ep ranks; "" when a MoE block shards or the model is already split.
+    # apply_expert_parallel's refusal reason, "" if it shards.
     ep_blocker: str = ""
     mode: str = "lora"  # lora, qlora, full, fp8 (float8_training, LoRA or full)
     packing: bool = False
@@ -78,7 +78,7 @@ class Query:
     tp: int = 1
     pp: int = 1
     cp: int = 1
-    ep: int = 1  # expert parallel (UNSLOTH_EP_SIZE): every rank data parallel, the experts split over ep ranks
+    ep: int = 1  # UNSLOTH_EP_SIZE
     fsdp2: bool = False
     vllm: bool = False
     pp_schedule: Optional[str] = None  # gpipe, 1f1b, interleaved
@@ -972,7 +972,6 @@ _MOE_MODES = {
         "ep": _ONE,
     },
     "tp": {"tp": (2, 4, 8), "ep": _ONE},
-    # Expert parallel: every rank data parallel (DDP), the routed experts split by index over the ep ranks.
     "ep": {"ep": (2, 4, 8), "dp": (2, 4, 8), "fsdp2": (False,), "cp": _ONE, "tp": _ONE, "pp": _ONE},
 }
 _MOE_COMMON = {
@@ -1202,7 +1201,7 @@ _MOE_EVIDENCE = {
     )
     * 2
     + ("eager: no compiled region",),
-    # 2 gloo ranks, expert LoRA, a custom loop over DDP + ep_sync_expert_grads (the Trainer's path) vs one process.
+    # 2 gloo ranks, DDP + ep_sync_expert_grads vs one process.
     **{
         (family, "lora+experts", False, "ep"): (_EP_FAMILY + f"[{family}]",) * 2
         + ("eager: no compiled region",)
@@ -1411,8 +1410,6 @@ CELLS = (
             _INKLING2_PP_ENGAGED,
             "eager: Inkling 2 trains with UNSLOTH_COMPILE_DISABLE=partial",
         ),
-        # Inkling 2 under expert parallel: LoRA (attention + experts) and 4-bit experts quantized on load, 2 gloo
-        # ranks vs one process; UNSLOTH_PARALLEL="ep=2" through Trainer.__init__.
         Cell(
             "Inkling 2 x ep",
             {
@@ -1677,9 +1674,8 @@ def _tp_blocker(model, tp) -> str:
 
 
 def _ep_blocker(model, ep) -> str:
-    """Why apply_expert_parallel would find no shardable MoE block in `model` at `ep` ranks, "" when one shards or
-    the model is already split. A module is read by structure (meta-device safe); a model_type string, or a model
-    with no readable structure, by _EP_BLOCKED_FAMILIES."""
+    """Why apply_expert_parallel would refuse `model` at `ep` ranks, "" if it shards. Strings and
+    structureless models fall back to _EP_BLOCKED_FAMILIES."""
     if not isinstance(ep, int) or ep <= 1 or model is None:
         return ""
     family = model if isinstance(model, str) else _model_traits(model)[0]
