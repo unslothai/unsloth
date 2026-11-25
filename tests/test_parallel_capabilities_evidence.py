@@ -781,7 +781,7 @@ def test_legacy_layout_cell_cites_real_test_ids(layout):
     cited = _cited(" ".join((cell.parity, cell.engagement, cell.note)))
     assert len(cited) >= 2, cited
     for path, name, params in cited:
-        source = open(os.path.join(root, path)).read()
+        source = open(os.path.join(root, path), encoding = "utf-8").read()
         assert re.search(rf"^def {name}\(", source, re.M), (path, name)
         for param in filter(None, (params or "").split("|")):
             assert f'"{param}"' in source, (path, name, param)
