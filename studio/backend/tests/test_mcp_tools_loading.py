@@ -130,18 +130,31 @@ def test_evicted_merges_the_route_list_and_status(
     assert result["structuredContent"]["evicted"] == expected
 
 
-SAVED_ROW = {"max_seq_length": 100_000, "kv_cache_dtype": "q8_0", "llama_extra_args": ["-cmoe"]}
+SAVED_ROW = {
+    "max_seq_length": 100_000,
+    "kv_cache_dtype": "q8_0",
+    "llama_extra_args": ["-cmoe"],
+    "gpu_memory_mode": "manual",
+    "gpu_layers": 0,
+}
+SAVED_CPU = {"gpu_memory_mode": "manual", "gpu_layers": 0}
+GPU_AUTO = {"gpu_memory_mode": "auto", "gpu_layers": -1}
 
 
 @pytest.mark.parametrize(
     "args,expected",
     [
-        ({}, {"max_seq_length": 100_000, "cache_type_kv": "q8_0", "load_in_4bit": True}),
+        (
+            {},
+            {"max_seq_length": 100_000, "cache_type_kv": "q8_0", "load_in_4bit": True, **SAVED_CPU},
+        ),
         (
             {"max_seq_length": 4096, "kv_cache_type": "f16", "load_in_4bit": False},
             {"max_seq_length": 4096, "cache_type_kv": "f16", "load_in_4bit": False},
         ),
         ({"max_seq_length": 0}, {"max_seq_length": 0, "cache_type_kv": "q8_0"}),
+        # An explicit GPU choice replaces the saved CPU placement and keeps the rest of the row.
+        ({"device": "gpu"}, {"max_seq_length": 100_000, "cache_type_kv": "q8_0", **GPU_AUTO}),
     ],
 )
 def test_a_load_takes_saved_settings_for_what_it_leaves_unset(monkeypatch, args, expected):
@@ -790,6 +803,30 @@ def test_a_chat_load_asking_for_a_variant_never_follows_another_load(monkeypatch
     routes = {**PAYLOADS, STATUS_ROUTE: sequence(loading_now, STATUS)}
     _result, studio = run_tool(monkeypatch, routes, "load_model", {"model": LLM, "variant": "Q8_0"})
     assert len(bodies(studio, "/api/inference/load")) == 1
+
+
+@pytest.mark.parametrize("args", [{"max_seq_length": 0}, {"load_in_4bit": True}])
+def test_a_chat_load_with_an_explicit_choice_never_follows_another_load(
+    monkeypatch, fast_polls, args
+):
+    # The load running elsewhere may use the saved settings this call overrides.
+    loading_now = {"loading": [LLM], "serving": [], "loaded": []}
+    routes = {**PAYLOADS, STATUS_ROUTE: sequence(loading_now, STATUS)}
+    _result, studio = run_tool(monkeypatch, routes, "load_model", {"model": LLM, **args})
+    assert len(bodies(studio, "/api/inference/load")) == 1
+
+
+@pytest.mark.parametrize("args", [{"max_seq_length": 0}, {"load_in_4bit": True}])
+def test_an_explicit_choice_is_not_the_same_job_as_an_unset_one(monkeypatch, fast_polls, args):
+    studio = fake_studio({**PAYLOADS, LOAD: slow(LOADED, 0.3)})
+    with session(monkeypatch, studio) as call:
+        first = call("load_model", {"model": LLM, "wait_s": 0})["structuredContent"]
+        second = call("load_model", {"model": LLM, "wait_s": 0, **args})["structuredContent"]
+        assert first["job_id"] != second["job_id"]
+        for early in (first, second):
+            call("get_job", {"kind": "load", "id": early["job_id"], "wait_s": 30})
+    sent = bodies(studio, "/api/inference/load")
+    assert [body.get(name) for body in sent for name in args] == [None, *args.values()]
 
 
 def test_one_failed_status_read_does_not_end_a_followed_load(monkeypatch, fast_polls):

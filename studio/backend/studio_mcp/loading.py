@@ -489,7 +489,7 @@ async def load_llm(
         run = run,
         # A load asked with other placement fields is a different load, not one to follow.
         options = (
-            max_seq_length or 0,
+            max_seq_length,
             load_in_4bit,
             device,
             alongside,
@@ -499,9 +499,10 @@ async def load_llm(
         hub_token = token,
         # A load asked with its own settings is never the one already running; following it would
         # skip them (and the CPU check).
-        attach = not max_seq_length
-        and load_in_4bit is not False
-        and all(v is None for v in (device, alongside, kv_cache_type, gpu_layers)),
+        attach = all(
+            v is None
+            for v in (max_seq_length, load_in_4bit, device, alongside, kv_cache_type, gpu_layers)
+        ),
     )
 
 

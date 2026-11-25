@@ -142,8 +142,9 @@ def test_cpu_needs_a_confirmed_gguf(monkeypatch, listing, args, refusal):
         (OUTETTS, "tts", "cpu", {"audio_device": "cpu", **CPU}),
         # A chat GGUF must never be sent audio_device, which the route refuses for it.
         (QWEN, "llm", "cpu", CPU),
-        (OUTETTS, "audio", "gpu", {"audio_device": "gpu"}),
-        (QWEN, "llm", "gpu", {}),
+        # An explicit GPU choice is sent as automatic GPU placement, so a saved CPU row cannot replace it.
+        (OUTETTS, "audio", "gpu", {"audio_device": "gpu", "gpu_memory_mode": "auto"}),
+        (QWEN, "llm", "gpu", {"gpu_memory_mode": "auto"}),
     ],
 )
 def test_device_maps_to_the_load_fields(monkeypatch, model, kind, device, expected):
