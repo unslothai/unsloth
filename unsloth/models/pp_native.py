@@ -903,11 +903,17 @@ def _load_balancing_from_statistics(stats, num_experts):
     return torch.sum((counts / rows) * (probs / rows)) * num_experts
 
 
-def _statistics_match_transformers(module, num_experts, top_k):
+def _statistics_match_transformers(
+    module,
+    num_experts,
+    top_k,
+    reference = None,
+):
     """The family's own load_balancing_loss_func equals the loss formed from per-stage statistics on random
     router logits (with and without a padding mask): a transformers change to the formula refuses instead of
-    training on a different loss."""
-    reference = getattr(sys.modules.get(module), "load_balancing_loss_func", None)
+    training on a different loss. `reference` checks that function instead of the module's."""
+    if reference is None:
+        reference = getattr(sys.modules.get(module), "load_balancing_loss_func", None)
     if not callable(reference):
         return False
     g = torch.Generator().manual_seed(0)
@@ -2244,6 +2250,12 @@ def _batch_kwargs(kwargs, bsz, device, what):
     return out
 
 
+def _restore_grads(kept):
+    """Add gradients set aside by PipelineParallel._take_fsdp_grads back onto the step's own."""
+    for p, grad in kept:
+        p.grad = grad if p.grad is None else p.grad + grad
+
+
 class PipelineParallel:
     """This rank's pipeline stage of a model split by apply_pipeline_parallel."""
 
@@ -2646,6 +2658,7 @@ class PipelineParallel:
         num_items_in_batch = max(num_items_in_batch, 1)
         # FSDP2 / DDP-style dp average the gradients over dp: dp x (this replica's token loss sum / global tokens).
         self._loss_multiplier = (dp_mesh.size() if dp_mesh is not None else 1) * float(loss_scale)
+        fresh = (bsz // m, seq, m, True) not in self._shapes
         schedule = self._schedule_for(bsz // m, seq, m)
         step_kwargs = _batch_kwargs(kwargs, bsz, device, "step")
         step_kwargs["labels"] = labels.to(device)
@@ -2664,17 +2677,31 @@ class PipelineParallel:
         args = (input_ids.to(device),) if self.is_first else ()
         target = step_kwargs["labels"] if self.is_last else None
         tables = self._size_frozen_table_memo(m)
+        # torch >= 2.12 sets every FSDP2 parameter's grad to None when a schedule runs its first step
+        # (_post_metadata_inference_cleanup): a new shape mid accumulation window would drop the earlier
+        # steps' gradients. Keep them aside and add them back.
+        kept = self._take_fsdp_grads() if fresh and self.dp_mesh is not None else None
         try:
             schedule.step(*args, target = target, return_outputs = False, **step_kwargs)
         finally:
             self._scaler = None
             self.ctx.num_items_in_batch = None
+            if kept:
+                _restore_grads(kept)
         if tables is not None:
             self.last_table_memo = tables.frozen_table_step_stats()
         if self.dp_mesh is not None:
             self._average_replicated_grads()
         total = self._batch_loss(m, device, dp_group)
         return total * float(loss_scale) if loss_scale != 1 else total
+
+    def _take_fsdp_grads(self):
+        kept = []
+        for p in self.module.parameters():
+            if p.grad is not None:
+                kept.append((p, p.grad))
+                p.grad = None
+        return kept
 
     def step_schedule(self, m):
         """The schedule a training step with `m` micro-batches runs: the default 1F1B (schedule_auto) falls back
