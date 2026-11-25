@@ -779,6 +779,43 @@ def test_images_reach_llama_cpp_and_laya_refuses_them(home, client, stub):
     )
 
 
+def _image_state(text = "The parcel never arrived."):
+    content = [{"type": "text", "text": text}, {"type": "image_url", "image_url": {"url": PNG}}]
+    return {"messages": [{"role": "user", "content": content}]}
+
+
+def test_auto_never_sends_images_in_the_state_to_pytorch(home, client, stub, monkeypatch):
+    _cache_gguf(home.cache)
+    _put(client, enabled = True, model = "clef-flash", native_ctx = 1024)
+    assert _post(client, state = "word " * 1100).headers["x-unsloth-decision-backend"] == "pytorch"
+    response = _post(client, state = _image_state())
+    assert response.status_code == 200, response.text
+    assert response.headers["x-unsloth-decision-backend"] == "llama.cpp"
+    assert stub.records("request")[-1]["body"]["state"] == _image_state()
+
+    refused = _post(client, state = _image_state("word " * 1100))
+    assert refused.status_code == 422 and "at most 1024" in refused.json()["detail"]["message"]
+
+    laya_runtime.unload()
+    stub.set_mode("nodecisions")
+    assert _post(client, state = _image_state()).status_code != 200
+    assert len(home.torch_agents) == 1
+
+    monkeypatch.setattr(native_worker, "resolve_binary", lambda: None)
+    refused = _post(client, state = _image_state())
+    assert refused.status_code == 400
+    assert "Images are served only by llama.cpp" in refused.json()["detail"]["message"]
+    _put(client, backend = "pytorch")
+    refused = _post(client, state = _image_state())
+    assert refused.status_code == 400 and "Auto or llama.cpp" in refused.json()["detail"]["message"]
+    assert len(home.torch_agents) == 1
+    _put(client, model = "laya-multilingual", backend = "auto")
+    refused = _post(client, state = _image_state())
+    assert (
+        refused.status_code == 400 and "Laya reads text only" in refused.json()["detail"]["message"]
+    )
+
+
 @pytest.mark.parametrize("ctx, retried", [(1024, True), (16384, False)])
 def test_auto_retries_an_over_long_state_on_pytorch_only_when_it_is_longer(
     home, client, stub, ctx, retried
@@ -1238,10 +1275,10 @@ def test_a_gguf_entry_is_served_only_by_llama_cpp(home, client, stub, monkeypatc
     companion = catalog.GGUF_COMPANIONS["kev-0.8b"]
     assert argv[argv.index("-m") + 1].endswith(f"{companion.revision}/{companion.model}")
     assert "--mmproj" not in argv and argv[argv.index("--alias") + 1] == "kev-0.8b"
-    refused = _post(client, images = [PNG])
-    assert (
-        refused.status_code == 422 and "no vision projector" in refused.json()["detail"]["message"]
-    )
+    for refused in (_post(client, images = [PNG]), _post(client, state = _image_state())):
+        assert refused.status_code == 422
+        assert "no vision projector" in refused.json()["detail"]["message"]
+    assert len(stub.records("start")) == 1 and len(stub.records("request")) == 1
 
     _put(client, backend = "pytorch")
     settings = client.get("/api/settings/systemone").json()
