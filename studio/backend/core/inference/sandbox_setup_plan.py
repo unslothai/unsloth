@@ -350,10 +350,9 @@ def windows_runtime_unsupported() -> str | None:
     return "build" if build < MXC_MIN_WINDOWS_BUILD else None
 
 
-# First update revision (UBR) with Windows' built-in container (BaseContainer) per release, from MXC's
-# docs/backends/process-container/os-version-support.md ("Process Isolation"). Older revisions fall back to
-# AppContainer, which needs Unsloth's fallback sandbox and its administrator step.
-BUILTIN_CONTAINER_MIN_UBR = {26100: 9278, 26200: 9278, 26300: 9550, 28000: 2804}
+# Older revisions fall back to AppContainer (MXC 1.0.1), which needs Unsloth's fallback sandbox and its
+# administrator step.
+from .mxc_runtime import BUILTIN_CONTAINER_MIN_UBR  # noqa: E402
 
 
 def windows_builtin_container_update() -> tuple[str, str] | None:
@@ -446,6 +445,14 @@ def _windows_plan() -> SetupPlan:
     unsupported = windows_runtime_unsupported()
     if unsupported is not None:
         return SetupPlan(platform = sys.platform, reason = _UNSUPPORTED_NOTES[unsupported])
+    if not mxc_runtime.selected_pin().has_host_prep:
+        # MXC 1.1.0 runs only in Windows' built-in container: no fallback sandbox to allow or prepare.
+        if windows_runtime_installed():
+            return SetupPlan(
+                platform = sys.platform,
+                reason = "MXC is installed, but its live check did not pass.",
+            )
+        return windows_runtime_plan()
     installed = windows_runtime_installed()
     missing = None
     if installed:

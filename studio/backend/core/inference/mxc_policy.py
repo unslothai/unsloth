@@ -381,7 +381,7 @@ def _selected_runtime(plan) -> str:
 
 
 def canonical_config_bytes(config: dict) -> bytes:
-    """Serialize exactly the deterministic stable-v0.8 request sent to WXC."""
+    """Serialize exactly the deterministic request sent to WXC."""
     return json.dumps(
         config,
         ensure_ascii = False,
@@ -496,12 +496,11 @@ def build_launch_request(
             "readonlyPaths": readonly,
             "deniedPaths": [],
         },
+        # Schema 1.0.0's directional form of 0.8.0's allow-all: host loopback stays blocked, as 0.8.0 did,
+        # and "deny" is also the only value the AppContainer + DACL tier (MXC 1.0.1) accepts.
         "network": {
-            "defaultPolicy": "allow",
-            "allowLocalNetwork": True,
-            "allowedHosts": [],
-            "blockedHosts": [],
-            "enforcementMode": "capabilities",
+            "egress": {"default": "allow"},
+            "ingress": {"default": "allow", "hostLoopback": "deny"},
         },
         "processContainer": {
             "leastPrivilege": False,

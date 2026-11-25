@@ -24,6 +24,12 @@ _SPEC.loader.exec_module(installer)
 _HARDLINK = -1
 
 
+@pytest.fixture(autouse = True)
+def _legacy_pin(monkeypatch):
+    # Host preparation exists only in the 1.0.1 pin (the AppContainer + DACL tier).
+    monkeypatch.setenv(installer.mxc_runtime.PIN_ENV, installer.mxc_runtime.LEGACY_PIN.version)
+
+
 def _archive(entries: list[tuple[str, bytes, int | None]]) -> bytes:
     output = io.BytesIO()
     with tarfile.open(fileobj = output, mode = "w:gz") as bundle:
@@ -41,25 +47,49 @@ def _archive(entries: list[tuple[str, bytes, int | None]]) -> bytes:
 
 
 _HOST_PREP = b"official-host-prep"
+_LEGACY = installer.mxc_runtime.LEGACY_PIN
+_EXEC_MEMBER = _LEGACY.artifacts[("x86_64", "exec")][0]
+_PREP_MEMBER = _LEGACY.artifacts[("x86_64", "prep")][0]
+_ARM64_EXEC_MEMBER = _LEGACY.artifacts[("arm64", "exec")][0]
+_ARM64_PREP_MEMBER = _LEGACY.artifacts[("arm64", "prep")][0]
 
 
-def _pin_host_prep(monkeypatch, payload = _HOST_PREP):
-    monkeypatch.setattr(installer.mxc_runtime, "WXC_HOST_PREP_SIZE", len(payload))
-    monkeypatch.setattr(
-        installer.mxc_runtime, "WXC_HOST_PREP_SHA256", hashlib.sha256(payload).hexdigest()
+def _digest(payload: bytes) -> tuple[int, str]:
+    return len(payload), hashlib.sha256(payload).hexdigest()
+
+
+def _pin(
+    archive: bytes,
+    payloads: dict,
+    *,
+    version = "9.9.9",
+):
+    """A pin shaped like LEGACY_PIN whose approved bytes are this test's payloads."""
+    artifacts = {}
+    for (architecture, kind), payload in payloads.items():
+        member = _LEGACY.artifacts[(architecture, kind)][0]
+        artifacts[(architecture, kind)] = (member, *_digest(payload))
+    return installer.mxc_runtime.MxcPin(
+        version = version,
+        revision = "0" * 40,
+        archive_size = len(archive),
+        archive_sha256 = hashlib.sha256(archive).hexdigest(),
+        artifacts = artifacts,
     )
 
 
-def _serve(monkeypatch, archive):
-    monkeypatch.setattr(installer.mxc_runtime, "RELEASE_ARCHIVE_SIZE", len(archive))
+def _serve(
+    monkeypatch,
+    archive,
+    payloads = None,
+):
+    payloads = payloads or {("x86_64", "exec"): b"official-wxc", ("x86_64", "prep"): _HOST_PREP}
+    pin = _pin(archive, payloads)
+    monkeypatch.setattr(installer.mxc_runtime, "selected_pin", lambda: pin)
     monkeypatch.setattr(
-        installer.mxc_runtime,
-        "RELEASE_ARCHIVE_SHA256",
-        hashlib.sha256(archive).hexdigest(),
+        installer, "_download", lambda destination, _pin: destination.write_bytes(archive)
     )
-    monkeypatch.setattr(
-        installer, "_download", lambda destination: destination.write_bytes(archive)
-    )
+    return pin
 
 
 @pytest.fixture
@@ -68,30 +98,16 @@ def official_release(tmp_path, monkeypatch):
     archive = _archive(
         [
             ("README.txt", b"Microsoft MXC release", None),
-            (installer.mxc_runtime.RELEASE_MEMBER, payload, stat.S_IFREG | 0o644),
-            (installer.mxc_runtime.RELEASE_HOST_PREP_MEMBER, _HOST_PREP, stat.S_IFREG | 0o644),
+            (_EXEC_MEMBER, payload, stat.S_IFREG | 0o644),
+            (_PREP_MEMBER, _HOST_PREP, stat.S_IFREG | 0o644),
             ("package/bin/arm64/wxc-host-prep.exe", b"arm64", stat.S_IFREG | 0o644),
         ]
     )
-    _pin_host_prep(monkeypatch)
-    source = tmp_path / "official.tgz"
-    source.write_bytes(archive)
+    monkeypatch.delenv(installer.mxc_runtime.PIN_ENV, raising = False)
     monkeypatch.setattr(installer.sys, "platform", "win32")
     monkeypatch.setattr(installer.mxc_runtime.sys, "platform", "win32")
     monkeypatch.setattr(installer.mxc_runtime, "_expected_architecture", lambda: "x86_64")
-    monkeypatch.setattr(installer.mxc_runtime, "WXC_EXEC_SIZE", len(payload))
-    monkeypatch.setattr(
-        installer.mxc_runtime, "WXC_EXEC_SHA256", hashlib.sha256(payload).hexdigest()
-    )
-    monkeypatch.setattr(installer.mxc_runtime, "RELEASE_ARCHIVE_SIZE", len(archive))
-    monkeypatch.setattr(
-        installer.mxc_runtime,
-        "RELEASE_ARCHIVE_SHA256",
-        hashlib.sha256(archive).hexdigest(),
-    )
-    monkeypatch.setattr(
-        installer, "_download", lambda destination: destination.write_bytes(archive)
-    )
+    _serve(monkeypatch, archive)
     return payload, archive
 
 
@@ -113,29 +129,45 @@ def test_installs_only_the_official_wxc_member(tmp_path, official_release):
     )
 
 
+def test_a_pin_without_host_prep_installs_only_wxc_exec(tmp_path, monkeypatch, official_release):
+    payload = b"official-wxc-native-only"
+    archive = _archive(
+        [
+            (_EXEC_MEMBER, payload, stat.S_IFREG | 0o644),
+            (_PREP_MEMBER, _HOST_PREP, stat.S_IFREG | 0o644),
+        ]
+    )
+    _serve(monkeypatch, archive, {("x86_64", "exec"): payload})
+    install_dir = tmp_path / "installed" / "windows-x86_64"
+    assert installer.install_mxc_release(install_dir) is True
+    assert sorted(path.name for path in install_dir.iterdir()) == ["wxc-exec.exe"]
+    assert installer.install_mxc_release(install_dir) is False
+
+
 def test_arm64_pc_installs_the_arm64_members(tmp_path, monkeypatch):
     x64, arm64, arm64_prep = b"official-wxc", b"official-wxc-arm64", b"official-host-prep-arm64"
     archive = _archive(
         [
-            (installer.mxc_runtime.RELEASE_MEMBER, x64, stat.S_IFREG | 0o644),
-            (installer.mxc_runtime.RELEASE_HOST_PREP_MEMBER, _HOST_PREP, stat.S_IFREG | 0o644),
-            (installer.mxc_runtime.ARM64_RELEASE_MEMBER, arm64, stat.S_IFREG | 0o644),
-            (
-                installer.mxc_runtime.ARM64_RELEASE_HOST_PREP_MEMBER,
-                arm64_prep,
-                stat.S_IFREG | 0o644,
-            ),
+            (_EXEC_MEMBER, x64, stat.S_IFREG | 0o644),
+            (_PREP_MEMBER, _HOST_PREP, stat.S_IFREG | 0o644),
+            (_ARM64_EXEC_MEMBER, arm64, stat.S_IFREG | 0o644),
+            (_ARM64_PREP_MEMBER, arm64_prep, stat.S_IFREG | 0o644),
         ]
     )
+    monkeypatch.delenv(installer.mxc_runtime.PIN_ENV, raising = False)
     monkeypatch.setattr(installer.sys, "platform", "win32")
     monkeypatch.setattr(installer.mxc_runtime.sys, "platform", "win32")
     monkeypatch.setattr(installer.mxc_runtime, "_expected_architecture", lambda: "arm64")
-    for name, payload in (("WXC_EXEC", arm64), ("WXC_HOST_PREP", arm64_prep)):
-        monkeypatch.setattr(installer.mxc_runtime, f"ARM64_{name}_SIZE", len(payload))
-        monkeypatch.setattr(
-            installer.mxc_runtime, f"ARM64_{name}_SHA256", hashlib.sha256(payload).hexdigest()
-        )
-    _serve(monkeypatch, archive)
+    _serve(
+        monkeypatch,
+        archive,
+        {
+            ("x86_64", "exec"): x64,
+            ("x86_64", "prep"): _HOST_PREP,
+            ("arm64", "exec"): arm64,
+            ("arm64", "prep"): arm64_prep,
+        },
+    )
     install_dir = tmp_path / "installed" / "windows-arm64"
     assert installer.install_mxc_release(install_dir) is True
     assert (install_dir / "wxc-exec.exe").read_bytes() == arm64
@@ -150,7 +182,7 @@ def test_matching_install_is_reused_without_download(tmp_path, monkeypatch, offi
     monkeypatch.setattr(
         installer,
         "_download",
-        lambda _destination: pytest.fail("verified installation was downloaded again"),
+        lambda _destination, _pin: pytest.fail("verified installation was downloaded again"),
     )
     assert installer.install_mxc_release(install_dir) is False
 
@@ -174,7 +206,15 @@ def test_install_without_host_prep_is_refreshed(tmp_path, official_release):
 
 def test_archive_checksum_mismatch_never_becomes_active(tmp_path, monkeypatch, official_release):
     install_dir = tmp_path / "installed" / "windows-x86_64"
-    monkeypatch.setattr(installer.mxc_runtime, "RELEASE_ARCHIVE_SHA256", "0" * 64)
+    pin = installer.mxc_runtime.selected_pin()
+    bad = installer.mxc_runtime.MxcPin(
+        version = pin.version,
+        revision = pin.revision,
+        archive_size = pin.archive_size,
+        archive_sha256 = "0" * 64,
+        artifacts = pin.artifacts,
+    )
+    monkeypatch.setattr(installer.mxc_runtime, "selected_pin", lambda: bad)
     with pytest.raises(installer.MxcInstallError, match = "checksum mismatch"):
         installer.install_mxc_release(install_dir)
     assert not install_dir.exists()
@@ -185,21 +225,21 @@ def test_archive_checksum_mismatch_never_becomes_active(tmp_path, monkeypatch, o
     [
         [("other.exe", b"official-wxc", None)],
         [
-            (installer.mxc_runtime.RELEASE_MEMBER, b"official-wxc", None),
-            (installer.mxc_runtime.RELEASE_MEMBER, b"official-wxc", None),
+            (_EXEC_MEMBER, b"official-wxc", None),
+            (_EXEC_MEMBER, b"official-wxc", None),
         ],
         [("../package/bin/x64/wxc-exec.exe", b"official-wxc", None)],
-        [(installer.mxc_runtime.RELEASE_MEMBER, b"target", stat.S_IFLNK | 0o777)],
-        [(installer.mxc_runtime.RELEASE_MEMBER, b"package/other.exe", _HARDLINK)],
-        [(installer.mxc_runtime.RELEASE_MEMBER, b"official-wxc", None)],
+        [(_EXEC_MEMBER, b"target", stat.S_IFLNK | 0o777)],
+        [(_EXEC_MEMBER, b"package/other.exe", _HARDLINK)],
+        [(_EXEC_MEMBER, b"official-wxc", None)],
         [
-            (installer.mxc_runtime.RELEASE_MEMBER, b"official-wxc", None),
-            (installer.mxc_runtime.RELEASE_HOST_PREP_MEMBER, b"resized-host-prep", None),
+            (_EXEC_MEMBER, b"official-wxc", None),
+            (_PREP_MEMBER, b"resized-host-prep", None),
         ],
         [
-            (installer.mxc_runtime.RELEASE_MEMBER, b"official-wxc", None),
-            (installer.mxc_runtime.RELEASE_HOST_PREP_MEMBER, _HOST_PREP, None),
-            (installer.mxc_runtime.RELEASE_HOST_PREP_MEMBER.upper(), _HOST_PREP, None),
+            (_EXEC_MEMBER, b"official-wxc", None),
+            (_PREP_MEMBER, _HOST_PREP, None),
+            (_PREP_MEMBER.upper(), _HOST_PREP, None),
         ],
     ],
     ids = [
@@ -239,7 +279,7 @@ def test_non_windows_host_never_downloads(tmp_path, monkeypatch):
     monkeypatch.setattr(
         installer,
         "_download",
-        lambda _destination: pytest.fail("non-Windows installer attempted a download"),
+        lambda _destination, _pin: pytest.fail("non-Windows installer attempted a download"),
     )
     with pytest.raises(installer.MxcInstallError, match = "Windows-only"):
         installer.install_mxc_release(tmp_path / "installed")
@@ -478,3 +518,99 @@ def test_prepare_host_cli_defaults_to_the_managed_runtime(monkeypatch, tmp_path)
     assert seen == [managed]
     with pytest.raises(SystemExit):
         installer.main([])
+
+
+@pytest.mark.parametrize(
+    ("tier", "falls_back"),
+    [("base-container", False), ("appcontainer-dacl", True), (None, True)],
+)
+def test_primary_install_falls_back_to_legacy_when_the_probe_finds_no_built_in_container(
+    tmp_path, monkeypatch, tier, falls_back
+):
+    monkeypatch.delenv(installer.mxc_runtime.PIN_ENV, raising = False)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(installer.mxc_runtime, "_windows_release", lambda: (1, 29000, 1))
+    installed = []
+    monkeypatch.setattr(
+        installer,
+        "install_mxc_release",
+        lambda _dir, pin = None: installed.append(pin.version) or True,
+    )
+    monkeypatch.setattr(
+        installer.mxc_runtime, "selected_pin", lambda: installer.mxc_runtime.PRIMARY_PIN
+    )
+    monkeypatch.setattr(installer.mxc_runtime, "probe_tier", lambda _root: tier)
+    assert installer.main(["--install-dir", str(tmp_path / "rt")]) == 0
+    legacy = installer.mxc_runtime.LEGACY_PIN.version
+    primary = installer.mxc_runtime.PRIMARY_PIN.version
+    assert installed == ([primary, legacy] if falls_back else [primary])
+    assert installer.mxc_runtime.demoted_by_probe((1, 29000, 1)) is falls_back
+
+
+def test_a_probe_that_cannot_run_never_demotes(tmp_path, monkeypatch):
+    monkeypatch.delenv(installer.mxc_runtime.PIN_ENV, raising = False)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(installer.mxc_runtime, "_windows_release", lambda: (1, 29000, 1))
+    monkeypatch.setattr(installer, "install_mxc_release", lambda _dir, pin = None: True)
+    monkeypatch.setattr(
+        installer.mxc_runtime, "selected_pin", lambda: installer.mxc_runtime.PRIMARY_PIN
+    )
+
+    def broken(_root):
+        raise installer.mxc_runtime.MxcRuntimeUnavailable("could not be locked")
+
+    monkeypatch.setattr(installer.mxc_runtime, "probe_tier", broken)
+    assert installer.main(["--install-dir", str(tmp_path / "rt")]) == 0
+    assert not installer.mxc_runtime.demoted_by_probe((1, 29000, 1))
+
+
+def test_a_forced_pin_is_never_second_guessed(tmp_path, monkeypatch):
+    installed = []
+    monkeypatch.setenv(installer.mxc_runtime.PIN_ENV, installer.mxc_runtime.PRIMARY_PIN.version)
+    monkeypatch.setattr(
+        installer, "install_mxc_release", lambda _dir, pin = None: installed.append(pin) or True
+    )
+    monkeypatch.setattr(
+        installer.mxc_runtime, "probe_tier", lambda _root: pytest.fail("probed a forced pin")
+    )
+    assert installer.main(["--install-dir", str(tmp_path / "rt")]) == 0
+    assert installed == [installer.mxc_runtime.PRIMARY_PIN]
+
+
+@pytest.mark.parametrize("known", [True, False])
+def test_the_runtime_being_replaced_replays_its_dacl_journal_first(tmp_path, monkeypatch, known):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    journal = installer.mxc_runtime.dacl_state_dir()
+    (journal / "pending.json").write_text("{}", encoding = "utf-8")
+    old = tmp_path / "rt"
+    old.mkdir()
+    payload = b"retiring-wxc"
+    (old / "wxc-exec.exe").write_bytes(payload)
+    digest = hashlib.sha256(payload).hexdigest()
+    monkeypatch.setattr(
+        installer.mxc_runtime, "RETIRED_DACL_EXEC_SHA256", {digest} if known else set()
+    )
+    ran = []
+    monkeypatch.setattr(
+        installer.subprocess,
+        "run",
+        lambda argv, **kwargs: ran.append((argv, kwargs["env"]["MXC_DACL_STATE_DIR"]))
+        or subprocess_result(0),
+    )
+    installer._replay_retiring_journal(old)
+    if known:
+        assert ran == [([str(old / "wxc-exec.exe"), "--probe"], str(journal))]
+    else:
+        assert ran == []
+
+
+def test_no_journal_means_no_replay(tmp_path, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    installer.mxc_runtime.dacl_state_dir()
+    old = tmp_path / "rt"
+    old.mkdir()
+    (old / "wxc-exec.exe").write_bytes(b"x")
+    monkeypatch.setattr(
+        installer.subprocess, "run", lambda *_a, **_k: pytest.fail("replayed an empty journal")
+    )
+    installer._replay_retiring_journal(old)

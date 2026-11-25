@@ -16,30 +16,99 @@ import sys
 import tempfile
 import threading
 
-MXC_REVISION = "7dac1a952f0c9ad13f0a4cb089c4e0e8b3e0013a"
-MXC_SCHEMA_VERSION = "0.8.0-alpha"
-PROFILE_ID = "unsloth-mxc-windows-processcontainer-v2"
+MXC_SCHEMA_VERSION = "1.0.0"
+PROFILE_ID = "unsloth-mxc-windows-processcontainer-v3"
 RELEASE_REPOSITORY = "microsoft/mxc"
-RELEASE_TAG = "v0.8.0"
-# @microsoft/mxc-sdk 0.8.0 npm: x64 binaries identical to the release zip, 26 MB vs 358 MB
-RELEASE_ASSET = "@microsoft/mxc-sdk@0.8.0"
-RELEASE_URL = "https://registry.npmjs.org/@microsoft/mxc-sdk/-/mxc-sdk-0.8.0.tgz"
-RELEASE_ARCHIVE_SIZE = 25_881_758
-RELEASE_ARCHIVE_SHA256 = "06bb2399d7e98ab1907acf851e12a4e44748dd467b79d3e53c2f2fbf569da14e"
-RELEASE_MEMBER = "package/bin/x64/wxc-exec.exe"
-WXC_EXEC_SIZE = 9_478_968
-WXC_EXEC_SHA256 = "6049c64723af1173c3739dc6cd6b2f33f6c021bb2832c4216233cba7f71aee9a"
-# Tier 3 host preparation, elevated; never needed by the BaseContainer path.
-RELEASE_HOST_PREP_MEMBER = "package/bin/x64/wxc-host-prep.exe"
-WXC_HOST_PREP_SIZE = 913_728
-WXC_HOST_PREP_SHA256 = "a9b8b14a11a1c5888641297c26abca547c2afa4435085c03ccfebd1deface310"
-# The same package's ARM64 build: ARM64 PCs need it (the x64 one fails its live check under emulation).
-ARM64_RELEASE_MEMBER = "package/bin/arm64/wxc-exec.exe"
-ARM64_WXC_EXEC_SIZE = 4_836_152
-ARM64_WXC_EXEC_SHA256 = "dde1c592270e9a659b01dccad70362da7b99fec114885fa4d625507aa775a503"
-ARM64_RELEASE_HOST_PREP_MEMBER = "package/bin/arm64/wxc-host-prep.exe"
-ARM64_WXC_HOST_PREP_SIZE = 804_664
-ARM64_WXC_HOST_PREP_SHA256 = "c8ddcf0461ae3d7ddff4656abb87b51236146742bb711a2e03fdc23cb8a966b0"
+_NPM_TARBALL = "https://registry.npmjs.org/@microsoft/mxc-sdk/-/mxc-sdk-{version}.tgz"
+
+
+@dataclass(frozen = True, eq = False)
+class MxcPin:
+    """One pinned @microsoft/mxc-sdk npm release: the archive and each approved (architecture, kind) member."""
+
+    version: str
+    revision: str
+    archive_size: int
+    archive_sha256: str
+    # (architecture, "exec" | "prep") -> (archive member, size, sha256)
+    artifacts: dict
+
+    @property
+    def tag(self) -> str:
+        return f"v{self.version}"
+
+    @property
+    def asset(self) -> str:
+        return f"@microsoft/mxc-sdk@{self.version}"
+
+    @property
+    def url(self) -> str:
+        return _NPM_TARBALL.format(version = self.version)
+
+    @property
+    def has_host_prep(self) -> bool:
+        return any(kind == "prep" for _architecture, kind in self.artifacts)
+
+
+# Native BaseContainer only (1.1.0 removed the AppContainer + DACL tier, microsoft/mxc#1558).
+PRIMARY_PIN = MxcPin(
+    version = "1.1.0",
+    revision = "c66201839d63cae2239db5e92f1f1d6076cf5181",
+    archive_size = 40_567_504,
+    archive_sha256 = "22806bcc1ff61768c47c8463905129cd479a96bcfcd54c9acf93f316e4b82e19",
+    artifacts = {
+        ("x86_64", "exec"): (
+            "package/bin/x64/wxc-exec.exe",
+            12_700_520,
+            "6d466c6b0109bab4bcace6738e11f886d801ea977346db49707488fcbd3afc8a",
+        ),
+        ("arm64", "exec"): (
+            "package/bin/arm64/wxc-exec.exe",
+            7_278_392,
+            "afbffebc7ba0ef06c6cd24eff0a3792db3e25faca388e4aaca092745ea328fd6",
+        ),
+    },
+)
+# The newest release with the AppContainer + DACL tier and wxc-host-prep: Windows without the built-in container.
+LEGACY_PIN = MxcPin(
+    version = "1.0.1",
+    revision = "fda29ac63bc306b7f97f3b86b4b63d44f7f40cf2",
+    archive_size = 38_256_855,
+    archive_sha256 = "416d9607c9d4652395d95c3d9c5f5605f1f2f845da1a63228bee41b7392cef49",
+    artifacts = {
+        ("x86_64", "exec"): (
+            "package/bin/x64/wxc-exec.exe",
+            12_152_632,
+            "090f5d1f7bb93104ab08dcd4e8034ef954aeefcdaf6658dde5f7dff4cfc12f3a",
+        ),
+        ("x86_64", "prep"): (
+            "package/bin/x64/wxc-host-prep.exe",
+            1_275_200,
+            "c18783ad3dd62c0a54530b25192b7c4015706b3f518cd9619259ae9750d4ab6e",
+        ),
+        ("arm64", "exec"): (
+            "package/bin/arm64/wxc-exec.exe",
+            5_945_656,
+            "91aa4171e8809f33f19622c381116188eab7d8c8cffad231230a31b58146ee77",
+        ),
+        ("arm64", "prep"): (
+            "package/bin/arm64/wxc-host-prep.exe",
+            804_704,
+            "74ccae215a9c5e81215bc7124aa31cdd7a0b2215a79b5cf8865865bbdaaf93e2",
+        ),
+    },
+)
+# Earlier pins, recognised only to replay their DACL journal before an upgrade replaces them.
+RETIRED_DACL_EXEC_SHA256 = {
+    "6049c64723af1173c3739dc6cd6b2f33f6c021bb2832c4216233cba7f71aee9a",  # 0.8.0 x64
+    "dde1c592270e9a659b01dccad70362da7b99fec114885fa4d625507aa775a503",  # 0.8.0 arm64
+}
+PINS = (PRIMARY_PIN, LEGACY_PIN)
+PIN_ENV = "UNSLOTH_MXC_PIN"
+# First update revision (UBR) with Windows' built-in container (BaseContainer) per Windows 11 release, from
+# MXC's docs/backends/process-container/os-version-support.md. MXC 1.1.0 runs only on these or newer.
+BUILTIN_CONTAINER_MIN_UBR = {26100: 9278, 26200: 9278, 26300: 9550, 28000: 2804}
+_DEMOTED_MARKER = "pin-demoted.json"
 _ARCHITECTURES = ("x86_64", "arm64")
 HOST_PREP_STEPS = ("prepare-system-drive", "prepare-null-device")
 HOST_PREP_PROBE_SECONDS = 10.0
@@ -63,15 +132,16 @@ class RuntimeInfo:
     path: Path
     sha256: str
     architecture: str = "x86_64"
+    pin: MxcPin = PRIMARY_PIN
 
     @property
     def identity(self) -> str:
         material = {
             "architecture": self.architecture,
-            "mxcRevision": MXC_REVISION,
-            "releaseTag": RELEASE_TAG,
+            "mxcRevision": self.pin.revision,
+            "releaseTag": self.pin.tag,
             "sha256": self.sha256,
-            "size": _artifact(self.architecture, "exec")[1],
+            "size": _artifact(self.architecture, "exec", self.pin)[1],
         }
         encoded = json.dumps(material, sort_keys = True, separators = (",", ":")).encode()
         return hashlib.sha256(encoded).hexdigest()
@@ -156,29 +226,114 @@ def _expected_architecture() -> str:
     machine = native_machine()
     if machine not in _ARCHITECTURES:
         raise MxcRuntimeUnavailable(
-            f"Microsoft MXC v0.8.0 is supported only on Windows x64 and ARM64, not {machine or 'unknown'}",
+            f"Microsoft MXC is supported only on Windows x64 and ARM64, not {machine or 'unknown'}",
         )
     return machine
 
 
-def _artifact(architecture: str, kind: str) -> tuple[str, int, str]:
-    if architecture == "arm64":
-        if kind == "exec":
-            return ARM64_RELEASE_MEMBER, ARM64_WXC_EXEC_SIZE, ARM64_WXC_EXEC_SHA256
-        return ARM64_RELEASE_HOST_PREP_MEMBER, ARM64_WXC_HOST_PREP_SIZE, ARM64_WXC_HOST_PREP_SHA256
-    if kind == "exec":
-        return RELEASE_MEMBER, WXC_EXEC_SIZE, WXC_EXEC_SHA256
-    return RELEASE_HOST_PREP_MEMBER, WXC_HOST_PREP_SIZE, WXC_HOST_PREP_SHA256
+def _windows_release() -> tuple[int, int, int] | None:
+    """(product type, build, UBR) of this Windows; None when it cannot be read."""
+    try:
+        import winreg
+
+        version = sys.getwindowsversion()
+        with winreg.OpenKey(
+            winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows NT\CurrentVersion"
+        ) as key:
+            ubr = int(winreg.QueryValueEx(key, "UBR")[0])
+        return int(version.product_type), int(version.build), ubr
+    except (OSError, ValueError, TypeError, AttributeError, ImportError):
+        return None
 
 
-def artifact(kind: str) -> tuple[str, int, str]:
+def builtin_container_supported(release: tuple[int, int, int] | None) -> bool | None:
+    """Whether this Windows has the built-in container MXC 1.1.0 needs; None when it cannot tell."""
+    if release is None:
+        return None
+    product_type, build, ubr = release
+    if product_type != 1:  # not VER_NT_WORKSTATION: Windows Server has no BaseContainer
+        return False
+    if build in BUILTIN_CONTAINER_MIN_UBR:
+        return ubr >= BUILTIN_CONTAINER_MIN_UBR[build]
+    if build < min(BUILTIN_CONTAINER_MIN_UBR):
+        return False
+    # A newer release than the table, or an Insider build between two of its rows: the installer's live
+    # --probe decides, and demotes to the legacy pin if 1.1.0 finds no built-in container.
+    return True if build > max(BUILTIN_CONTAINER_MIN_UBR) else None
+
+
+def _demoted_marker_path() -> Path:
+    return _studio_root() / "mxc-runtime" / _DEMOTED_MARKER
+
+
+def _release_label(release: tuple[int, int, int] | None) -> str | None:
+    return None if release is None else f"{release[0]}:{release[1]}.{release[2]}"
+
+
+def demoted_by_probe(release: tuple[int, int, int] | None = None) -> bool:
+    """The installer saw MXC 1.1.0 report no built-in container on this exact Windows release."""
+    label = _release_label(_windows_release() if release is None else release)
+    try:
+        recorded = json.loads(_demoted_marker_path().read_text(encoding = "utf-8"))
+    except (OSError, ValueError):
+        return False
+    # Keyed on the release: a Windows update that adds the container brings 1.1.0 back.
+    return isinstance(recorded, dict) and label is not None and recorded.get("windows") == label
+
+
+def record_probe_demotion(reason: str) -> None:
+    label = _release_label(_windows_release())
+    path = _demoted_marker_path()
+    path.parent.mkdir(parents = True, exist_ok = True)
+    path.write_text(
+        json.dumps({"windows": label, "from": PRIMARY_PIN.version, "reason": reason[:500]}),
+        encoding = "utf-8",
+    )
+
+
+def selected_pin() -> MxcPin:
+    """MXC 1.1.0 where Windows has the built-in container, else 1.0.1 and its AppContainer + DACL tier."""
+    override = (os.environ.get(PIN_ENV) or "").strip()
+    for pin in PINS:
+        if override == pin.version:
+            return pin
+    if sys.platform != "win32":
+        return PRIMARY_PIN
+    release = _windows_release()
+    if builtin_container_supported(release) is False or demoted_by_probe(release):
+        return LEGACY_PIN
+    return PRIMARY_PIN
+
+
+def _artifact(
+    architecture: str,
+    kind: str,
+    pin: MxcPin | None = None,
+) -> tuple[str, int, str]:
+    pin = pin or selected_pin()
+    try:
+        return pin.artifacts[(architecture, kind)]
+    except KeyError:
+        raise MxcRuntimeUnavailable(
+            f"Microsoft MXC {pin.version} has no {'wxc-host-prep' if kind == 'prep' else 'wxc-exec'} "
+            f"for {architecture}"
+        ) from None
+
+
+def artifact(kind: str, pin: MxcPin | None = None) -> tuple[str, int, str]:
     """(package member, size, sha256) of ``exec`` or ``prep`` for this PC's architecture."""
-    return _artifact(_expected_architecture(), kind)
+    return _artifact(_expected_architecture(), kind, pin)
 
 
-def _validate_artifact(package_root: Path, name: str, kind: str) -> RuntimeInfo:
+def _validate_artifact(
+    package_root: Path,
+    name: str,
+    kind: str,
+    pin: MxcPin | None = None,
+) -> RuntimeInfo:
+    pin = pin or selected_pin()
     architecture = _expected_architecture()
-    _member, size, sha256 = _artifact(architecture, kind)
+    _member, size, sha256 = _artifact(architecture, kind, pin)
     root = _require_plain_directory(package_root)
     executable = root / name
     if not executable.is_file() or executable.is_symlink():
@@ -196,15 +351,15 @@ def _validate_artifact(package_root: Path, name: str, kind: str) -> RuntimeInfo:
     digest = _sha256_file(executable)
     if digest != sha256:
         raise MxcRuntimeUnavailable(f"the managed {name} digest is not approved")
-    return RuntimeInfo(path = executable.resolve(), sha256 = digest, architecture = architecture)
+    return RuntimeInfo(path = executable.resolve(), sha256 = digest, architecture = architecture, pin = pin)
 
 
-def _validate_runtime(package_root: Path) -> RuntimeInfo:
-    return _validate_artifact(package_root, _WXC_EXEC_NAME, "exec")
+def _validate_runtime(package_root: Path, pin: MxcPin | None = None) -> RuntimeInfo:
+    return _validate_artifact(package_root, _WXC_EXEC_NAME, "exec", pin)
 
 
-def _validate_host_prep(package_root: Path) -> RuntimeInfo:
-    return _validate_artifact(package_root, _WXC_HOST_PREP_NAME, "prep")
+def _validate_host_prep(package_root: Path, pin: MxcPin | None = None) -> RuntimeInfo:
+    return _validate_artifact(package_root, _WXC_HOST_PREP_NAME, "prep", pin)
 
 
 def selected_runtime(*, package_root: Path | None = None) -> RuntimeInfo:
@@ -256,7 +411,8 @@ def installation_identity() -> str:
     if sys.platform != "win32":
         raise MxcRuntimeUnavailable("the MXC runtime is Windows-only")
     architecture = _expected_architecture()
-    _member, size, sha256 = _artifact(architecture, "exec")
+    pin = selected_pin()
+    _member, size, sha256 = _artifact(architecture, "exec", pin)
     root = _require_plain_directory(_installed_package_root())
     path = root / _WXC_EXEC_NAME
     try:
@@ -265,13 +421,13 @@ def installation_identity() -> str:
         raise MxcRuntimeUnavailable(
             f"the managed {_WXC_EXEC_NAME} is missing or unreadable"
         ) from exc
-    key = (str(path), architecture, size, sha256)
+    key = (str(path), architecture, pin.version, size, sha256)
     with _lock:
         hit = _identity_cache.get(key)
         if hit is not None and hit[0] == before:
             return hit[1].identity
         _identity_cache.pop(key, None)
-    info = selected_runtime(package_root = root)
+    info = _validate_runtime(root, pin)
     try:
         after = _file_stamp(path)
     except OSError:
@@ -431,6 +587,8 @@ def probe_host_prep_steps(
     replay_journal: bool = True,
 ) -> tuple[str, ...] | None:
     """Host preparation `wxc-exec --probe` reports missing; None when it cannot tell."""
+    if not selected_pin().has_host_prep:
+        return ()  # MXC 1.1.0 has no AppContainer + DACL tier, so nothing to prepare
     try:
         completed = _run_wxc_probe(package_root, env, replay_journal = replay_journal)
         warnings = json.loads(completed.stdout).get("warnings")
@@ -444,3 +602,15 @@ def probe_host_prep_steps(
         for step in HOST_PREP_STEPS
         if any(isinstance(item, str) and f"wxc-host-prep {step}" in item for item in warnings)
     )
+
+
+def probe_tier(package_root: Path, env: dict[str, str] | None = None) -> str | None:
+    """The tier `wxc-exec --probe` reports ("base-container", "appcontainer-dacl", ...); None when it names none."""
+    completed = _run_wxc_probe(package_root, env, timeout = DACL_RECOVERY_SECONDS)
+    if completed.returncode != 0:
+        return None
+    try:
+        tier = json.loads(completed.stdout).get("tier")
+    except (ValueError, AttributeError):
+        return None
+    return tier if isinstance(tier, str) and tier else None
