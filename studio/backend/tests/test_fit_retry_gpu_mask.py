@@ -72,6 +72,11 @@ def _load(
         LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda _binary = None: False)
     )
     monkeypatch.setattr(LlamaCppBackend, "_is_datacenter_gpu", staticmethod(lambda *_a: False))
+    # Simulated cards: never let the probe open a context on the host's real ones.
+    monkeypatch.setattr(LlamaCppBackend, "_integrated_cuda_gpu_ids", staticmethod(lambda: set()))
+    monkeypatch.setattr(
+        LlamaCppBackend, "_unmasked_child_gpu_physical_ids", staticmethod(lambda: None)
+    )
     backend.probe_server_capabilities = lambda _binary: {"found": True}
     backend._record_server_pid = lambda _pid: None
     backend._clear_server_pid = lambda: None
