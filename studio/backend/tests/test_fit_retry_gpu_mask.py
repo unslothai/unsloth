@@ -148,7 +148,6 @@ _TWO_PICKED = {"pick": ([1], False), "gpu_ids": [0, 1]}
     ("kwargs", "masks"),
     [
         ({}, ["0", "0,1"]),
-        # The user picked both cards and Auto pinned one: the retry may use the pick.
         (_TWO_PICKED, ["1", "0,1"]),
         ({"extra_args": ["-ot", "exps=CPU"]}, ["0", "0,1"]),
         # Iterating {8, 1} yields the parent's own order, where the order helper answers None.
@@ -168,7 +167,6 @@ def test_the_fit_on_retry_sees_the_cards_auto_left_out(monkeypatch, tmp_path, kw
     assert error is None
     assert [_mask(launch) for launch in launches] == masks
     assert [_fit_mode(launch[0]) for launch in launches] == ["off", "on"]
-    # Footprint attribution reads the child's cards.
     assert backend._child_gpu_physical_ids == tuple(int(i) for i in masks[1].split(","))
 
 
@@ -183,11 +181,9 @@ _KEEPS_PLANNED_MASK = {
     "override-tensor-draft": {"extra_args": ["-otd", "blk\\..*=CUDA0"]},
     "env-main-gpu": {"parent_env": {"LLAMA_ARG_MAIN_GPU": "0"}},
     "env-override-tensor": {"parent_env": {"LLAMA_ARG_OVERRIDE_TENSOR": "exps=CUDA0"}},
-    # The retry flips Studio's --fit, but the user's later off still wins.
     "user-fit-off": {"extra_args": ["--fit", "off"]},
     "sm-gate": {"sm_gate_error": "no kernels for GPU 1"},
     "single-card-pick": {"gpu_ids": [0]},
-    # Only an allocation failure disproves Auto's estimate.
     "not-out-of-memory": {"outputs": ["llama_model_load: error loading model: bad tensor"]},
 }
 
@@ -216,9 +212,7 @@ def test_a_pick_publishes_the_cards_its_child_runs_on(
     assert error is None
     assert [_mask(launch) for launch in launches] == masks
     assert backend.gpu_ids == pin
-    # A later request for GPU 1 alone must reload unless the child runs on GPU 1 alone.
     assert backend.matches_gpu_ids([1]) == (pin == [1])
-    # The plan other loads and eviction read covers the same cards.
     assert set(backend._planned_vram_mib) == set(pin)
 
 
@@ -235,8 +229,6 @@ def test_a_pick_publishes_the_cards_its_child_runs_on(
 def test_a_failed_widened_retry_falls_back_to_the_planned_card(
     monkeypatch, tmp_path, returncode, crash
 ):
-    # Whatever sinks the widened launch, the --fit on retry main runs on GPU 0 alone still
-    # gets its turn, and comes up.
     backend, launches, error = _load(
         monkeypatch,
         tmp_path,
@@ -251,8 +243,7 @@ def test_a_failed_widened_retry_falls_back_to_the_planned_card(
 
 
 def test_a_failed_widened_retry_hands_later_rungs_the_planned_mask(monkeypatch, tmp_path):
-    # The widened retry and the planned-card retry both hard-crash, so the flash-attention
-    # rung respawns; the shared env it inherits must be the planned one again.
+    # Both retries hard-crash, so the flash-attention rung respawns on the planned mask.
     _backend, launches, error = _load(
         monkeypatch,
         tmp_path,
@@ -266,8 +257,7 @@ def test_a_failed_widened_retry_hands_later_rungs_the_planned_mask(monkeypatch, 
 
 
 def test_the_arch_rung_fit_retry_stays_on_the_cards_it_kept(monkeypatch, tmp_path):
-    # GPU 0 has no kernels; the arch rung moves to GPU 1, which then runs out of memory
-    # under --fit off. Its --fit on retry must not add GPU 0 back.
+    # GPU 0 has no kernels and GPU 1 then runs out of memory: its retry must not add GPU 0.
     backend, launches, error = _load(
         monkeypatch,
         tmp_path,
@@ -281,8 +271,7 @@ def test_the_arch_rung_fit_retry_stays_on_the_cards_it_kept(monkeypatch, tmp_pat
 
 
 def test_the_widened_attempt_records_no_scheduler_abort(monkeypatch, tmp_path):
-    # A scheduler assert on the two-card attempt says nothing about the planned card; only
-    # its own retry decides what Studio remembers for the next load.
+    # Only the planned card's own retry decides what Studio remembers for the next load.
     recorded = []
     monkeypatch.setattr(
         LlamaCppBackend,

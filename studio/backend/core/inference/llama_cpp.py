@@ -7326,7 +7326,6 @@ def _widen_pin_ids_for_companion_devices(
     return widened, f"{main_ids} -> {widened}"
 
 
-# What a widened --fit on retry rewrites in the child env, and puts back if it fails.
 _FIT_RETRY_RESTORED_ENV = (
     "CUDA_VISIBLE_DEVICES",
     "HIP_VISIBLE_DEVICES",
@@ -7337,15 +7336,13 @@ _GPU_BUFFER_NAME_RE = re.compile(r"(?:CUDA|ROCm)\d", re.IGNORECASE)
 
 
 def _argv_places_by_device_position(cmd: Iterable[str], env: Mapping[str, str]) -> bool:
-    """Whether the argv or its env twins place work by device position or split mode, so
-    adding a card to the child's mask would move it."""
+    """Whether argv or its env twins place work by device position, which a wider mask moves."""
     if _extra_args_set_any_flag(cmd, _DEVICE_FLAGS | _TENSOR_SPLIT_FLAGS | _SPLIT_MODE_FLAGS):
         return True
     for flags in _COMPANION_DEVICE_FLAG_GROUPS:
         value = _extra_args_device(cmd, flags) or ""
         if any(_GPU_DEVICE_TOKEN_RE.match(token.strip()) for token in value.split(",")):
             return True
-    # -ot / -otd repeat, and each rule can name a CUDA<n>/ROCm<n> buffer.
     args = [str(a) for a in cmd]
     for i, raw in enumerate(args):
         if _flag_name(raw) in _OVERRIDE_TENSOR_FLAGS:
@@ -33170,11 +33167,8 @@ class LlamaCppBackend:
                 # companion flags fitted to the child's mask, refitted by the arch-crash retry
                 _companion_fit_mask: Optional[list[int]] = None
                 _companion_added_device: Optional[list[str]] = None
-                # Every card Auto could have picked, when its estimate pinned fewer: the
-                # --fit on retry gets them back once that estimate fails.
+                # Every card Auto could have picked, for the --fit on retry once its estimate fails.
                 _fit_retry_pool: Optional[list[int]] = None
-                # Visibility env, child ids, effective pin and per-GPU plan the widened retry
-                # replaced, put back when it fails so later rungs respawn on the planned cards.
                 _fit_retry_restore: Optional[tuple] = None
                 if not is_vulkan_backend and _gpu_mem:
                     _child_gpu_physical_ids = self._unmasked_child_gpu_physical_ids()
@@ -33304,16 +33298,14 @@ class LlamaCppBackend:
                         )
                     else:
                         self._emit_child_gpu_visibility(env, _child_mask, prefer_rocr = True)
-                        # Only Auto's own narrowing: manual placement and companion-fitted
-                        # masks are positions the user chose.
+                        # Only Auto's own narrowing; manual and companion masks are the user's.
                         _pool_ids = sorted({int(i) for i, _free in _detected_gpus})
                         if (
                             gpu_memory_mode != "manual"
                             and not _companion_widen
                             and set(_pool_ids) - {int(i) for i in _pin_ids}
                         ):
-                            # The order an unpinned launch would see: the pick's, else the
-                            # parent's mask (None when that is already ascending).
+                            # The pick's order, else the parent mask's (None if ascending).
                             _fit_retry_pool = (
                                 [int(i) for i in gpu_ids if int(i) in _pool_ids]
                                 if gpu_ids
@@ -33661,18 +33653,13 @@ class LlamaCppBackend:
                     _fit_retry_restore = None
 
                 def _widen_fit_retry_mask(run_cmd) -> None:
-                    """Give the --fit on retry every card Auto could have picked.
-
-                    Auto pinned a subset because its estimate said the model fits there.
-                    The crash disproved that estimate, so the fitter may use the cards it
-                    excluded, as it does when Auto finds no subset at all.
-                    """
+                    """Give the --fit on retry every card Auto could have picked: the crash
+                    disproved the estimate that excluded them."""
                     nonlocal _child_gpu_physical_ids, _fit_retry_restore
                     _crash_text = "\n".join(self._stdout_lines[-200:])
                     if (
                         not _fit_retry_pool
-                        # Only an allocation failure disproves the estimate; a kernel-image
-                        # crash belongs to the arch-crash rung, which blames the planned cards.
+                        # A kernel-image crash belongs to the arch-crash rung.
                         or not self._is_gpu_memory_start_failure(_crash_text)
                         or self._kernel_image_invalid(_crash_text)
                         # Decided for the pinned cards.
@@ -33711,8 +33698,7 @@ class LlamaCppBackend:
                         list(_child_gpu_physical_ids or ()),
                     )
                     _child_gpu_physical_ids = tuple(_fit_retry_pool)
-                    # /status and load dedupe echo the cards the child runs on (a pick only;
-                    # Auto records none), and the plan other loads place against spans them.
+                    # /status and load dedupe echo a pick's cards; the plan spans them too.
                     if self._gpu_ids is not None:
                         self._gpu_ids = list(_fit_retry_pool)
                     if self._pending_plan_mib:
@@ -34143,10 +34129,8 @@ class LlamaCppBackend:
                         # Here rather than per rung, so a later rung cannot forget it.
                         self._memory_pending_launch = _mem_settings
                         if _fit_retry_restore is not None:
-                            # The widened launch is an extra attempt: whatever sank it (a crash,
-                            # a card without kernels, a stall), the --fit on retry on the planned
-                            # cards runs next, before anything is read off the widened child, so
-                            # every later rung and record sees what it would without the widen.
+                            # An extra attempt: the planned-card retry runs before anything is
+                            # read off the widened child, so later rungs see no trace of it.
                             logger.warning(
                                 "The --fit on retry over GPUs %s did not come up; retrying "
                                 "once with --fit on over the planned GPU(s). Log: %s",
