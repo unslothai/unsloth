@@ -31,8 +31,9 @@ def _stub(path, body):
     os.chmod(path, os.stat(path).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
 
 
-def _boot(entrypoint, tmp_path, hf_home, bindir, until):
+def _boot(entrypoint, tmp_path, hf_home, bindir, until, **extra):
     env = {
+        **extra,
         "PATH": f"{bindir}:/usr/bin:/bin",
         "HOME": str(tmp_path),
         "HF_HOME": str(hf_home),
@@ -154,12 +155,20 @@ exec(compile(sys.stdin.read(), "<entrypoint>", "exec"), {"__name__": "__main__"}
 """
 
 
-def _recording_python(tmp_path):
+def _recording_python(tmp_path, mountinfo = None):
     """Runs the entrypoint's own sweep with our uid standing in for root's, logging its chowns."""
     bindir = tmp_path / "bin"
     bindir.mkdir()
     calls = tmp_path / "chown.calls"
-    (tmp_path / "boot.py").write_text(_BOOT)
+    boot = _BOOT
+    if mountinfo is not None:
+        boot = boot.replace(
+            "exec(",
+            "import builtins\n_o = builtins.open\n"
+            f"builtins.open = lambda f, *a, **k: _o({str(mountinfo)!r} if f == '/proc/self/mountinfo' else f, *a, **k)\n"
+            "exec(",
+        )
+    (tmp_path / "boot.py").write_text(boot)
     _stub(str(bindir / "id"), "echo 0\n")
     _stub(
         str(bindir / "python3"),
@@ -230,3 +239,87 @@ def test_a_root_user_outside_group_root_hands_nothing_over(entrypoint, tmp_path)
     _boot(entrypoint, tmp_path, hf_home, bindir, lambda: False)
 
     assert not calls.exists(), calls.read_text()
+
+
+@pytest.mark.skipif(
+    os.name == "posix" and os.geteuid() == 0, reason = "the recording sweep needs a non-root uid"
+)
+def test_a_mount_inside_the_cache_is_handed_to_its_own_owner(entrypoint, tmp_path):
+    hf_home = tmp_path / "hf"
+    hub = hf_home / "hub"
+    entries, _ = _download_as_root(hub, tmp_path / "outside")
+    (hf_home / "xet").mkdir()
+    mountinfo = tmp_path / "mountinfo"
+    mountinfo.write_text(f"1 0 0:1 / / rw - x x rw\n2 1 0:2 / {hub} rw - x x rw\n")
+    bindir, calls = _recording_python(tmp_path, mountinfo)
+    # HF_HOME reads as owned by 4242; the hub keeps our uid
+    _stub(
+        str(bindir / "stat"), f'[[ "$3" == "{hf_home}" ]] && echo 4242 || exec /usr/bin/stat "$@"\n'
+    )
+
+    _boot(entrypoint, tmp_path, hf_home, bindir, lambda: len(_logged(calls)) >= len(entries))
+
+    logged = _logged(calls)
+    assert logged.pop(str(hf_home / "xet")) == "4242:-1"
+    assert set(logged) == {str(p) for p in entries if p != hub}, sorted(logged)
+    assert set(logged.values()) == {f"{os.getuid()}:-1"}
+
+
+@pytest.mark.skipif(
+    os.name == "posix" and os.geteuid() == 0, reason = "the recording sweep needs a non-root uid"
+)
+@pytest.mark.parametrize("created", [True, False])
+def test_only_a_hub_run_sh_created_is_opened_to_group_root(entrypoint, tmp_path, created):
+    hf_home = tmp_path / "hf"
+    hub = hf_home / "hub"
+    hub.mkdir(parents = True)
+    hub.chmod(0o755)
+    (hub / "early").write_text("{}")  # the workload may write before the first sweep
+    (hub / "early").chmod(0o644)
+    mountinfo = tmp_path / "mountinfo"
+    mountinfo.write_text(f"1 0 0:1 / / rw - x x rw\n2 1 0:2 / {hub} rw - x x rw\n")
+    bindir, calls = _recording_python(tmp_path, mountinfo)
+
+    extra = {"UNSLOTH_HF_HUB_CREATED": "1"} if created else {}
+
+    _boot(entrypoint, tmp_path, hf_home, bindir, lambda: str(hub) in _logged(calls), **extra)
+
+    # an existing empty hub may be shared through its group: left alone
+    opened = {str(hub): "-1:0"} if created else {}
+    assert {p: w for p, w in _logged(calls).items() if p == str(hub)} == opened
+    assert stat.S_IMODE(os.stat(hub).st_mode) == (0o775 if created else 0o755)
+
+
+@pytest.mark.skipif(
+    os.name == "posix" and os.geteuid() == 0, reason = "the recording sweep needs a non-root uid"
+)
+def test_a_symlinked_cache_is_not_followed(entrypoint, tmp_path):
+    real = tmp_path / "real"
+    _download_as_root(real / "hub", tmp_path / "outside")
+    hf_home = tmp_path / "hf"
+    hf_home.symlink_to(real)
+    bindir, calls = _recording_python(tmp_path)
+
+    _boot(entrypoint, tmp_path, hf_home, bindir, lambda: False)
+
+    assert _logged(calls) == {}
+
+
+@pytest.mark.skipif(
+    os.name == "posix" and os.geteuid() == 0, reason = "the recording sweep needs a non-root uid"
+)
+def test_a_deep_mount_behind_a_swapped_symlink_is_not_walked(entrypoint, tmp_path):
+    hf_home = tmp_path / "hf"
+    (hf_home / "hub").mkdir(parents = True)
+    elsewhere = tmp_path / "elsewhere"
+    _download_as_root(elsewhere / "cache", tmp_path / "outside")
+    (hf_home / "hub" / "holder").symlink_to(elsewhere)
+    mountinfo = tmp_path / "mountinfo"
+    mountinfo.write_text(
+        f"1 0 0:1 / / rw - x x rw\n2 1 0:2 / {hf_home}/hub/holder/cache rw - x x rw\n"
+    )
+    bindir, calls = _recording_python(tmp_path, mountinfo)
+
+    _boot(entrypoint, tmp_path, hf_home, bindir, lambda: False)
+
+    assert [p for p in _logged(calls) if not p.startswith(str(hf_home) + "/")] == []
