@@ -7144,15 +7144,22 @@ def _pending_inline_rehearsal_cut(text: str, enabled_tool_names) -> int:
         i = j
     if not open_len:
         return -1
-    from core.tool_healing import _markerless_promotable
+    from core.tool_healing import _in_code, _markerless_promotable, _think_spans_outside_tool_markup
 
+    think = None
     for m in _PENDING_REHEARSAL_RE.finditer(text, open_end):
-        if _markerless_promotable(m.group(1), enabled_tool_names):
+        if not _markerless_promotable(m.group(1), enabled_tool_names):
+            continue
+        # The strip leaves reasoning alone, so a rehearsal there is never removed.
+        if think is None:
+            think = _think_spans_outside_tool_markup(text)
+        if not _in_code(think, m.start()):
             return m.start()
     return -1
 
 
-_PENDING_REHEARSAL_RE = _re.compile(r"\b([\w-]+)\[ARGS\]")
+# Call-shaped only: the strip removes ``NAME[ARGS]{``, never a bare ``NAME[ARGS]`` mention.
+_PENDING_REHEARSAL_RE = _re.compile(r"\b([\w-]+)\[ARGS\]\s*\{")
 
 
 def _pending_mention_cut(text: str, enabled_tool_names = None) -> int:
