@@ -590,21 +590,26 @@ def hold() -> WorkloadLease | None:
     return WorkloadLease(path, handle)
 
 
-def hold_if_needed() -> WorkloadLease | None:
-    """Leases an MXC launch or probe that may run on the DACL tier, so no revocation runs under it; only a launch needing grants refuses if unrecorded.
+def hold_before_build() -> tuple[WorkloadLease | None, bool]:
+    """Leases an MXC launch or probe that may run on the DACL tier, so no revocation runs under it; only a
+    launch needing grants refuses if unrecorded. Returns (lease, tried): hold_for_request leases late
+    only when this did not try, so a failed lease never waits on the record lock twice.
 
     With the DACL fallback off the request carries allowDaclMutation false, so wxc-exec cannot pick the
     AppContainer + DACL tier: the only tier that skips its own grant where a recorded entry already covers
     a path. A revocation under such a workload removes nothing it reads through, so it takes no lease
-    (one record lock, a lease file and a deferred-cleanup check per call). hold_for_request covers a switch
-    turned on before the request is built.
+    (one record lock, a lease file and a deferred-cleanup check per call).
     """
     from . import mxc_policy
 
     refresh_saved_switches()
     if not mxc_policy.dacl_fallback_enabled():
-        return None
-    return _hold(needed = enabled())
+        return None, False
+    return _hold(needed = enabled()), True
+
+
+def hold_if_needed() -> WorkloadLease | None:
+    return hold_before_build()[0]
 
 
 def _hold(*, needed: bool) -> WorkloadLease | None:
@@ -616,9 +621,10 @@ def _hold(*, needed: bool) -> WorkloadLease | None:
         return None
 
 
-def hold_for_request(request, held: WorkloadLease | None) -> WorkloadLease | None:
-    """The lease a built request needs: one that allows DACL mutation is leased even if the switch turned on after hold_if_needed."""
-    if held is not None:
+def hold_for_request(request, held: WorkloadLease | None, *, tried: bool) -> WorkloadLease | None:
+    """The lease a built request needs: one allowing DACL mutation is leased, with the same rules, even if
+    the switch turned on after hold_before_build looked. Before spawn, so a revocation still waits for it."""
+    if held is not None or tried:
         return held
     config = request.get("config") if isinstance(request, dict) else None
     fallback = config.get("fallback") if isinstance(config, dict) else None

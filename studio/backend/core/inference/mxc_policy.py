@@ -231,11 +231,11 @@ def _runtime_read_roots(executable: str, extra: list[str] = ()) -> list[str]:
     for root in roots:
         if not root:
             continue
-        # sys.prefix is also site.getsitepackages()[0] on Windows, base_prefix often equals it: check each spelling once.
-        spelling = os.path.normcase(os.path.abspath(root))
-        if spelling in seen:
+        # sys.prefix is also site.getsitepackages()[0] on Windows, base_prefix often equals it: an exact
+        # repeat is skipped, any other spelling still gets its own checks below.
+        if root in seen:
             continue
-        seen.add(spelling)
+        seen.add(root)
         if not os.path.isdir(root):
             continue
         canonical = _safe_canonical_path(root, directory = True)

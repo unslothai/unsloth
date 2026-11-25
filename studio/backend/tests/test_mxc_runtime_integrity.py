@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
 from types import SimpleNamespace
@@ -360,3 +361,39 @@ def test_installation_identity_cache_keys_on_the_approved_pin(runtime, monkeypat
     monkeypatch.setattr(mxc_runtime, "WXC_EXEC_SHA256", "0" * 64)
     with pytest.raises(mxc_runtime.MxcRuntimeUnavailable, match = "digest"):
         mxc_runtime.installation_identity()
+
+
+def test_status_and_repair_verify_the_bytes_even_with_a_cached_identity(runtime, monkeypatch):
+    monkeypatch.setattr(mxc_runtime, "_installed_package_root", lambda: runtime)
+    mxc_runtime.forget_verified_runtime()
+    mxc_runtime.installation_identity()
+    path = runtime / "wxc-exec.exe"
+    stamp = path.stat()
+    with open(path, "r+b") as stream:  # corrupt in place, keeping size and timestamps
+        stream.write(b"x")
+    os.utime(path, ns = (stamp.st_atime_ns, stamp.st_mtime_ns))
+    calls = _count_hashes(monkeypatch)
+    mxc_runtime.installation_identity()  # the per-call fingerprint keeps its cached answer
+    assert calls == []
+    with pytest.raises(mxc_runtime.MxcRuntimeUnavailable, match = "digest"):
+        mxc_runtime.verified_installation_identity()
+    from core.inference import sandbox_setup_plan
+
+    assert sandbox_setup_plan.windows_runtime_installed() is False
+
+
+@pytest.mark.parametrize("acquire", ["acquire_runtime", "acquire_host_prep"])
+def test_an_unsupported_host_is_refused_before_any_artifact_is_opened(
+    runtime, monkeypatch, acquire
+):
+    monkeypatch.setattr(mxc_runtime, "_require_supported_windows", lambda: None)
+    monkeypatch.setattr(
+        mxc_runtime, "_open_artifact_guard", lambda path: pytest.fail(f"opened {path}")
+    )
+
+    def unsupported():
+        raise mxc_runtime.MxcRuntimeUnavailable("unsupported architecture")
+
+    monkeypatch.setattr(mxc_runtime, "_expected_architecture", unsupported)
+    with pytest.raises(mxc_runtime.MxcRuntimeUnavailable, match = "unsupported architecture"):
+        getattr(mxc_runtime, acquire)(package_root = runtime)

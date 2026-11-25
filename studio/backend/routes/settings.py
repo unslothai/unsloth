@@ -6013,7 +6013,7 @@ def _sandbox_windows_status() -> SandboxWindowsStatus:
     from utils import mxc_isolation_settings as saved
 
     try:
-        mxc_runtime.installation_identity()
+        mxc_runtime.verified_installation_identity()
         installed = True
     except Exception:
         installed = False
@@ -6317,7 +6317,7 @@ async def start_sandbox_prepare(
     if sys.platform != "win32":
         raise HTTPException(status_code = 409, detail = "Host preparation is Windows-only.")
     try:
-        await asyncio.to_thread(mxc_runtime.installation_identity)
+        await asyncio.to_thread(mxc_runtime.verified_installation_identity)
     except Exception as exc:
         raise HTTPException(
             status_code = 409,

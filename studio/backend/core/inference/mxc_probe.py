@@ -256,13 +256,13 @@ def _probe(
         grant_lease = None
         try:
             # The probe reads Python through the same grants, so a revocation waits for it too.
-            grant_lease = mxc_read_grants.hold_if_needed()
+            grant_lease, tried = mxc_read_grants.hold_before_build()
             request = (
                 mxc_policy.build_launch_request(probe_plan, cwd_alias = lease.root)
                 if lease
                 else mxc_policy.build_launch_request(probe_plan)
             )
-            grant_lease = mxc_read_grants.hold_for_request(request, grant_lease)
+            grant_lease = mxc_read_grants.hold_for_request(request, grant_lease, tried = tried)
             proc = mxc_adapter.spawn(
                 request,
                 cancel_event = cancel_event,

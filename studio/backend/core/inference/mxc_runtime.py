@@ -241,11 +241,16 @@ def _file_stamp(path: Path) -> tuple:
     )
 
 
-def installation_identity() -> str:
-    """The verified runtime's identity, rehashed only when the file's identity or timestamps change.
+def verified_installation_identity() -> str:
+    """The runtime's identity from a full verification: what status, setup and repair decide on."""
+    return selected_runtime().identity
 
-    Capability fingerprints read this several times per tool call. It never authorizes a launch:
-    acquire_runtime still verifies the digest under its deny-write lock before wxc-exec starts.
+
+def installation_identity() -> str:
+    """The verified runtime's identity for the per-call capability fingerprints, rehashed only when the
+    file's identity or timestamps change. It never authorizes a launch or reports the runtime healthy
+    (verified_installation_identity does): acquire_runtime still verifies the digest under its
+    deny-write lock before wxc-exec starts.
     """
     if sys.platform != "win32":
         raise MxcRuntimeUnavailable("the MXC runtime is Windows-only")
@@ -330,6 +335,10 @@ def _require_supported_windows() -> None:
 
 def _acquire(select, package_root: Path | None, name: str) -> RuntimeLease:
     _require_supported_windows()
+    # The selectors' own host gates, before any artifact is opened.
+    if sys.platform != "win32":
+        raise MxcRuntimeUnavailable("the MXC runtime is Windows-only")
+    _expected_architecture()
     with _lock:
         # Lock, then verify once: the guard denies write, rename and delete for the whole lease, so one
         # digest taken under it covers the bytes wxc-exec runs. Hashing before and after the open cost
