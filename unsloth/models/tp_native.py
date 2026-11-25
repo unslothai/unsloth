@@ -5094,8 +5094,7 @@ def _tp_load_quantizing(original, cls, name, args, kwargs, mesh, state):
         return t.numel() * t.element_size()
 
     def shard_experts(module):
-        # Every stack of a block or none, once all its parameters are set: one cut stack would leave the block
-        # unshardable. Plain stacks (16-bit, block-FP8 codes and scales) are cut only under expert parallel.
+        # Every stack of a block or none: one cut stack would leave the block unshardable.
         params = {n: p for n, p in module._parameters.items() if p is not None}
         if not params or any(
             p.is_meta or getattr(p, _EXPERT_PRELOAD, None) is not None for p in params.values()

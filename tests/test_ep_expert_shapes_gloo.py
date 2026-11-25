@@ -1,12 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-"""Expert parallel finds the routed expert stacks by shape, not by name (gloo CPU, 2 ranks, fp32, transformers 5).
-
-Nemotron-H's non-gated experts (up_proj / down_proj) shard under apply_expert_parallel and under
-expert_parallel_loading, matching one process. Block-FP8 experts (transformers FP8Experts: e4m3 codes plus fp32
-scale grids, all stacked by expert) are cut by expert index: at apply and when loading an FP8 checkpoint each rank
-keeps bitwise its experts' codes and scales, and a training step matches one process. FP8Experts has no CPU kernel,
-so its per-expert linear is a dequantize + F.linear here."""
+"""Expert parallel finds routed expert stacks by shape, not name: Nemotron-H up/down and block-FP8 codes + scales."""
 
 import multiprocessing
 import os
@@ -130,7 +124,6 @@ def _same(a, b):
 
 
 def _stacks(tpn, model):
-    """{name: tensor} of every routed experts module parameter."""
     names = {id(tpn._experts_chain(b)[-1]) for b in tpn.moe_blocks_with_experts(model)}
     out = {}
     for path, module in model.named_modules():
@@ -174,9 +167,6 @@ def _grads_match(
             )
 
 
-# ---------------------------------------------------------------------------------------------- Nemotron-H
-
-
 def _case_nemotron_h(rank, world, tmp):
     import torch.distributed as dist
     from torch.distributed.device_mesh import init_device_mesh
@@ -216,7 +206,6 @@ def test_ep_nemotron_h_non_gated_experts_shard_by_shape_and_match_one_process():
     for r in results:
         assert r["problem"] is None, r["problem"]
         assert set(r["stacks"]) == {"up_proj", "down_proj"}, r["stacks"]
-        # apply_expert_parallel of a full load and expert_parallel_loading keep this rank's experts bitwise
         assert r["local"] == (True, 2, 2), r["local"]
         assert r["sliced"] == (True, 2, 2) and r["stats"]["sharded_expert_stacks"] == 2, (
             r["sliced"],
@@ -227,9 +216,6 @@ def test_ep_nemotron_h_non_gated_experts_shard_by_shape_and_match_one_process():
         assert r["full"][0] == pytest.approx(r["ref"][0], rel = 1e-6)
         _grads_match(r, "full", "ref")
         assert any("experts.lora_" in k for k in r["ref"][1])
-
-
-# ---------------------------------------------------------------------------------------------- block FP8
 
 
 def _fp8_on_cpu():
@@ -326,7 +312,6 @@ def test_ep_block_fp8_experts_keep_bitwise_local_codes_and_scales_and_match_one_
     for r in results:
         assert r["fp8_experts"] == 2 and r["dtypes"] == ["torch.float32", "torch.float8_e4m3fn"], r
         assert r["problem"] is None, r["problem"]
-        # codes + scale grids of 2 layers: apply's dim-0 slices and the sharded load's are the full load's bitwise
         assert r["local"] == (True, 2, 8), r["local"]
         assert r["sliced"] == (True, 2, 8), r["sliced"]
         assert r["held"] * 2 == r["whole"]
