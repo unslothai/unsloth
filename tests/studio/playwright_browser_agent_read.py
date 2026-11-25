@@ -136,5 +136,17 @@ def test_spacing_between_inline_elements_does_not_cut_early(page):
     assert "more below" not in text
 
 
+def test_hidden_code_line_stays_out(page):
+    line = '<span style="display: block{}">{}</span>'
+    html = (
+        "<pre>"
+        + line.format("", "one()")
+        + line.format("; height: 0; overflow: hidden", "hidden()")
+        + line.format("", "two()")
+        + "</pre>"
+    )
+    assert page(html) == "```\none()\ntwo()\n```"
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q", "--confcutdir", str(Path(__file__).parent)]))

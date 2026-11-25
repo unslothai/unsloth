@@ -504,9 +504,9 @@ export function installPageAgent(): PageAgent {
         }
         if (node.nodeType === Node.TEXT_NODE) {
           const raw = node.nodeValue ?? "";
-          // A code line above the screen: the view starts below it, as it does inside one long line.
-          const above = !wholePage && inPre > 0 && rect.height > 0 && rect.bottom <= 0;
-          const value = above ? "" : wholePage || rect.top >= 0 || !shown || !raw.trim() ? raw : onScreenPart(node as Text, keepsLines);
+          // Code lines share one buffer, so each keeps the per-block rule: off screen or zero-size stays out.
+          const skipped = inPre > 0 && !(shown && sized(rect));
+          const value = skipped ? "" : wholePage || rect.top >= 0 || !shown || !raw.trim() ? raw : onScreenPart(node as Text, keepsLines);
           if (unreadable) add(" ");
           else if (!labelled) {
             add(keepsLines ? value : value.replace(/\s+/g, " "));
