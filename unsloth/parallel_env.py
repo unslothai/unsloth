@@ -54,7 +54,7 @@ __all__ = [
 FLAG = "UNSLOTH_PARALLEL"
 CP_BACKENDS = ("auto", "ulysses", "ring")
 PP_SCHEDULES = ("gpipe", "1f1b", "interleaved1f1b")
-# Several stages per rank (the decoder cut into pp x pp_stages_per_rank stages).
+# Several stages per rank (pp x pp_stages_per_rank stages).
 _MULTI_STAGE_SCHEDULES = ("interleaved1f1b",)
 DEFAULT_PP_SCHEDULE = "1f1b"  # UNSLOTH_PP_SCHEDULE unset (layout.schedule_auto)
 _SIZE_KEYS = ("dp", "tp", "pp", "cp")

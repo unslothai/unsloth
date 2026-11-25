@@ -293,7 +293,6 @@ def test_interleaved1f1b_flag_translates_and_reads_into_the_layout(clean_env):
     clean_env.delenv("UNSLOTH_PP_MICROBATCHES")
     with pytest.raises(ValueError, match = "UNSLOTH_PP_MICROBATCHES"):
         read()
-    # One stage per rank schedules keep stages_per_rank None, and refuse a multi-stage count.
     clean_env.setenv("UNSLOTH_PP_SCHEDULE", "1f1b")
     assert read().stages_per_rank is None
     clean_env.setenv("UNSLOTH_PP_STAGES_PER_RANK", "2")

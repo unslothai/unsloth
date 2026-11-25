@@ -246,7 +246,6 @@ RULES = (
         "the env / Trainer path runs gpipe, 1f1b and interleaved1f1b",
         "pp_schedule=1f1b or interleaved1f1b",
     ),
-    # Multi-stage parity is proven on a pp-only mesh (tests/test_pp_env_gloo.py interleaved cases).
     Rule(
         "pp x schedule",
         "interleaved1f1b with data / tensor / context parallel",

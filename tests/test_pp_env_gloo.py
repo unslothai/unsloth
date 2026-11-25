@@ -962,12 +962,10 @@ def test_pp_env_gradient_accumulation_and_microbatches(ga, bs, mb, schedule, arc
         _spawn("env", 2, env, bs = bs, ga = ga, evaluate = False, post = False, arch = arch)
     ):
         if schedule == "interleaved1f1b":
-            # 4 layers over 2 ranks x 2 stages: rank r keeps stages r and r + 2, run by torch's interleaved 1F1B.
+            # 4 layers over 2 ranks x 2 stages: rank r keeps stages r and r + 2
             assert res["local_stages"] == (rank, rank + 2), res["local_stages"]
             assert res["step_schedules"] == ["ScheduleInterleaved1F1B"], res["step_schedules"]
-            assert not res["fold"].get("windows"), res[
-                "fold"
-            ]  # multi-stage schedules do not fold GA
+            assert not res["fold"].get("windows"), res["fold"]
         _close(res, ref, what = rank)
         # _close already pins every loss and grad norm. The trained adapter after several steps carries
         # more of the reduction-order noise: GitHub runners put gemma3_ga1_bs4's lora_A 1.6e-5 from the
