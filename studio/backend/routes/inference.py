@@ -21438,6 +21438,7 @@ async def _load_model_impl(
             audio_options_by_workflow = _model_info.get("audio_options_by_workflow"),
             audio_workflow_tasks = _model_info.get("audio_workflow_tasks"),
             audio_server_task = _model_info.get("audio_server_task"),
+            audio_separation = _model_info.get("audio_separation"),
             audio_convert = _model_info.get("audio_convert"),
             audio_convert_route = _model_info.get("audio_convert_route"),
             audio_clone = _model_info.get("audio_clone"),
@@ -24188,6 +24189,7 @@ async def _slot_status(current_subject: str):
             audio_options_by_workflow = model_info.get("audio_options_by_workflow"),
             audio_workflow_tasks = model_info.get("audio_workflow_tasks"),
             audio_server_task = model_info.get("audio_server_task"),
+            audio_separation = model_info.get("audio_separation"),
             audio_convert = model_info.get("audio_convert"),
             audio_convert_route = model_info.get("audio_convert_route"),
             audio_clone = model_info.get("audio_clone"),
@@ -25896,25 +25898,24 @@ _SEPARATE_MAX_SECONDS = 600.0
 _SEPARATE_RATE = 44100
 
 
-def _separation_options(body: AudioRunRequest, family: Optional[str], label: str) -> Optional[dict]:
-    """The run's separation options, checked against what the loaded family takes."""
-    from core.inference.audio_cpp_models import FAMILIES
+def _separation_options(body: AudioRunRequest, model_info: dict, label: str) -> Optional[dict]:
+    """The run's separation options as the policy accepts them; a refusal is a 400."""
+    from core.inference.audio_cpp_models import SeparationOptionsError, separation_options
 
-    options = body.options or {}
-    if not options:
-        return None
-    policy = FAMILIES.get(family or "")
-    if policy is None or policy.separation is None or not policy.separation.overlap_option:
-        raise HTTPException(status_code = 400, detail = f"{label} has no separation options.")
-    for name in options:
-        if name != "num_overlap":
-            raise HTTPException(status_code = 400, detail = f"Unknown option '{name}'.")
-    value = options["num_overlap"]
-    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 8:
-        raise HTTPException(
-            status_code = 400, detail = "num_overlap must be a whole number from 1 to 8."
+    # The options Separate shows, which is what the page sends.
+    offered = (model_info.get("audio_options_by_workflow") or {}).get("separate") or (
+        model_info.get("audio_options") or []
+    )
+    try:
+        return separation_options(
+            body.options,
+            server_task = model_info.get("audio_server_task"),
+            family = model_info.get("audio_family"),
+            offered = offered,
+            label = label,
         )
-    return {"num_overlap": value}
+    except SeparationOptionsError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from None
 
 
 def _clock(seconds: float) -> str:
@@ -25941,8 +25942,8 @@ def _probe_audio_with_av(path) -> Optional[tuple[int, float]]:
         return None
 
 
-def _prepare_separation_source(ref: dict[str, Any]):
-    """``(source, prepared 44.1 kHz path)``, after the 10-minute cap; stereo stays stereo."""
+def _prepare_separation_source(ref: dict[str, Any], rate: int):
+    """``(source, path prepared at ``rate``)``, after the 10-minute cap; stereo stays stereo."""
     import wave
 
     from core.inference import audio_inputs
@@ -25963,7 +25964,7 @@ def _prepare_separation_source(ref: dict[str, Any]):
             detail = "Separate tracks up to 10 minutes long. This one is "
             f"{_clock(seconds)}. Pick a shorter track.",
         )
-    return source, audio_inputs.prepared_path(source, _SEPARATE_RATE, stereo = channels == 2)
+    return source, audio_inputs.prepared_path(source, rate, stereo = channels == 2)
 
 
 def _stem_rank(ids: list[str]):
@@ -26065,12 +26066,11 @@ async def _run_separation(
     if "separate" not in (model_info.get("audio_workflows") or []):
         raise HTTPException(status_code = 400, detail = "Load a model that can separate audio.")
     model_name = _orchestrator_public_model_id(backend)
-    options = _separation_options(
-        body, model_info.get("audio_family"), _audio_model_label(model_name)
-    )
+    options = _separation_options(body, model_info, _audio_model_label(model_name))
     ref = source_ref.model_dump(exclude_none = True)
     try:
-        source, prepared = await asyncio.to_thread(_prepare_separation_source, ref)
+        rate = (model_info.get("audio_separation") or {}).get("rate") or _SEPARATE_RATE
+        source, prepared = await asyncio.to_thread(_prepare_separation_source, ref, int(rate))
     except audio_inputs.AudioInputError as exc:
         if exc.status == 404 and source_ref.input_id:
             raise HTTPException(status_code = 404, detail = "This track expired. Add it again.")
@@ -26120,6 +26120,11 @@ async def _run_separation(
             "settings": {
                 "stems": [stem["id"] for stem in stems],
                 "num_overlap": (options or {}).get("num_overlap"),
+                **(
+                    {"options": options}
+                    if options and model_info.get("audio_server_task") == "s2s"
+                    else {}
+                ),
             },
         }
         if source.kind == "clip":

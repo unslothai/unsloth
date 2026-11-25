@@ -1181,6 +1181,31 @@ def test_options_only_for_a_family_that_takes_them(sep, stub):
     assert sep.separations == []
 
 
+def test_a_speech_filter_takes_the_options_its_status_lists(stub):
+    info = {
+        **_sep_info("apollo"),
+        "audio_server_task": "s2s",
+        "audio_options": [{"name": "audio_chunk_duration_sec", "type": "float"}],
+        "audio_separation": {"goal": "restore", "output": "restored", "rate": 48000},
+    }
+    apollo = _SepBackend("audio-cpp/audio.cpp-gguf/Apollo-GGUF", info, ["restored"])
+    stub["backend"] = apollo
+    source = {"input_id": _input(ALICE)}
+    with _client(ALICE) as client:
+        unknown = _separate(client, source, options = {"num_overlap": 1})
+        assert (unknown.status_code, unknown.json()["detail"]) == (
+            400,
+            "Unknown option 'num_overlap'.",
+        )
+        ok = _separate(client, source, options = {"audio_chunk_duration_sec": 5.0})
+    assert ok.status_code == 200, ok.text
+    (call,) = apollo.separations
+    assert call["audio_options"] == {"audio_chunk_duration_sec": 5.0}
+    # A 48 kHz filter gets its track at 48 kHz, not the stem models' 44.1 kHz.
+    assert ".48000." in Path(call["source_path"]).name
+    assert [clip["role"] for clip in ok.json()["clips"]] == ["restored"]
+
+
 def test_a_track_over_ten_minutes_is_refused(sep):
     input_id = _wav_input(ALICE, 601.0)
     with _client(ALICE) as client:

@@ -188,10 +188,12 @@ def extract_named_outputs(
     out_dir: Path | str,
     *,
     chunk: int = 4 << 20,
+    single_id: Optional[str] = None,
 ) -> list[dict[str, Any]]:
     """Decode ``named_audio_outputs[*]`` into ``out_dir/<id>.wav``, all or none.
 
-    Top-level ``audio`` is ignored: in a batch answer it repeats the first named output."""
+    Top-level ``audio`` is ignored: in a batch answer it repeats the first named output. An s2s
+    answer has only that one, which is saved as ``single_id`` when given."""
     json_path = Path(json_path)
     out_dir = Path(out_dir)
     try:
@@ -204,7 +206,10 @@ def extract_named_outputs(
     try:
         with open(json_path, "rb") as f, mmap.mmap(f.fileno(), 0, access = mmap.ACCESS_READ) as mm:
             spans = _audio_spans(mm)
-            outputs = _find_outputs(_redacted(mm, spans))
+            document = _redacted(mm, spans)
+            outputs = _find_outputs(document)
+            if not outputs and single_id and isinstance(document, dict):
+                outputs = [{"id": single_id, "audio": document.get("audio")}]
             if not outputs:
                 raise SeparationOutputError()
             taken: set[str] = set()

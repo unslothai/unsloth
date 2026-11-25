@@ -445,6 +445,7 @@ def _mirrored_model_entry(model_info: dict, model_name: str) -> dict:
         "audio_options_by_workflow": model_info.get("audio_options_by_workflow"),
         "audio_workflow_tasks": model_info.get("audio_workflow_tasks"),
         "audio_server_task": model_info.get("audio_server_task"),
+        "audio_separation": model_info.get("audio_separation"),
         "audio_convert": model_info.get("audio_convert"),
         "audio_convert_route": model_info.get("audio_convert_route"),
         "audio_convert_rules": model_info.get("audio_convert_rules"),
@@ -4323,7 +4324,7 @@ class InferenceOrchestrator:
         audio_options: Optional[dict] = None,
         cancel_event = None,
     ) -> list[dict]:
-        """Split a prepared 44.1 kHz WAV into stems under ``output_dir``; the full token budget
+        """Split a prepared WAV into stems under ``output_dir`` (or filter it into one file); the full token budget
         gives the watchdog the same hour the runtime request has."""
         outputs, _sample_rate = self.generate_audio_response(
             text = "",

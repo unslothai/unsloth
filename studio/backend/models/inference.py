@@ -1842,6 +1842,11 @@ class _InferenceRuntimeFields(BaseModel):
     audio_server_task: Optional[str] = Field(
         None, description = "audio.cpp server task the running server was started with."
     )
+    audio_separation: Optional[Dict[str, Any]] = Field(
+        None,
+        description = "What the model does on Separate: goal (stems, speakers, voice, restore) "
+        "and the id of its one output when it filters a recording; None when it does not separate.",
+    )
     audio_convert: Optional[Dict[str, Any]] = Field(
         None, description = "What the model offers on Convert; None when it does not convert."
     )
@@ -7484,6 +7489,8 @@ class AudioCatalogModel(BaseModel):
     display_name: str
     family: Optional[str] = None
     task: Literal["tts", "music", "asr", "sep", ""] = ""
+    # What Separate offers a sep row for: stems, speakers, voice or restore.
+    separation_goal: Optional[Literal["stems", "speakers", "voice", "restore"]] = None
     workflows: List[
         Literal["speak", "clone", "edit", "convert", "music", "separate", "transcribe"]
     ] = Field(default_factory = list)
