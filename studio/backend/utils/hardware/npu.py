@@ -17,10 +17,26 @@ _PCI_ROOT = Path("/sys/bus/pci/devices")
 _MODULE_ROOT = Path("/sys/module")
 # On unless set to a false value: the NPU section, NPU loads and the CLI's NPU ids all wait on this.
 ENABLE_ENV = "UNSLOTH_STUDIO_ENABLE_NPU"
+LEMONADE_ARCHIVE_ENV = "UNSLOTH_LEMONADE_ARCHIVE"
+FLM_BINARY_ENV = "UNSLOTH_FLM_NPU_BIN"
 
 
 def npu_enabled() -> bool:
     return os.environ.get(ENABLE_ENV, "").strip().lower() not in ("0", "false", "no", "off")
+
+
+def local_lemonade_archive() -> Optional[Path]:
+    value = os.environ.get(LEMONADE_ARCHIVE_ENV, "").strip()
+    return Path(value) if value else None
+
+
+def local_flm_binary() -> Optional[Path]:
+    value = os.environ.get(FLM_BINARY_ENV, "").strip()
+    return Path(value) if value else None
+
+
+def custom_runtime_configured() -> bool:
+    return local_lemonade_archive() is not None or local_flm_binary() is not None
 
 
 def _read(path: Path) -> Optional[str]:
@@ -130,7 +146,10 @@ def detect_amd_npu() -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001 -- detection must never break startup or /status
         info = {"present": False, "error": str(exc)}
     info["enabled"] = npu_enabled()
-    info["supported"] = (
-        info["enabled"] and bool(info.get("present")) and info.get("family") == "XDNA2"
+    known_npu = bool(info.get("present")) and info.get("family") == "XDNA2"
+    runtime_probe = (sys.platform.startswith("linux") or sys.platform == "win32") and (
+        custom_runtime_configured()
     )
+    # An explicitly configured runtime gets to probe the device when the user enables it.
+    info["supported"] = info["enabled"] and (known_npu or runtime_probe)
     return info
