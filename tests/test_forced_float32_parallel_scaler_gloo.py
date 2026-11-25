@@ -5,6 +5,7 @@
 found_inf over ranks. gloo CPU world of 2; the CUDA scaler is swapped for a CPU one."""
 
 import ast
+import builtins
 import math
 import multiprocessing
 import os
@@ -28,6 +29,21 @@ _UTILS = pathlib.Path(__file__).resolve().parents[1] / "unsloth" / "models" / "_
 _FORCED_INIT = 2.0**8
 
 
+def _free_globals(source):
+    """Names a function (nested functions included) reads from module globals."""
+    import symtable
+
+    found, stack = set(), [symtable.symtable(source, "<extracted>", "exec")]
+    while stack:
+        table = stack.pop()
+        if table.get_type() != "module":
+            found.update(
+                s.get_name() for s in table.get_symbols() if s.is_global() and s.is_referenced()
+            )
+        stack.extend(table.get_children())
+    return found
+
+
 def _forced_scaler_fn():
     """Load the forced scaler functions without importing unsloth."""
     tree = ast.parse(_UTILS.read_text(encoding = "utf-8"))
@@ -35,6 +51,8 @@ def _forced_scaler_fn():
         "_unsloth_forced_float32_init_scale",
         "_unsloth_forced_float32_grad_scaler",
         "_parallel_forced_scaler",
+        # #19442: the scaler asks the model being trained, not UNSLOTH_FORCE_FLOAT32.
+        "_model_forced_float32",
     )
     nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in names]
     ns = {
@@ -44,6 +62,14 @@ def _forced_scaler_fn():
         "__name__": "unsloth.models._utils",
         "__package__": "unsloth.models",
     }
+    # A helper these functions start calling must be added above, not surface as a NameError on a rank.
+    missing = (
+        set().union(*(_free_globals(ast.unparse(n)) for n in nodes))
+        - set(ns)
+        - set(names)
+        - set(dir(builtins))
+    )
+    assert not missing, f"the extracted scaler functions read globals this harness does not provide: {sorted(missing)}"
     exec(compile(ast.Module(nodes, []), str(_UTILS), "exec"), ns)
     return ns["_unsloth_forced_float32_grad_scaler"]
 
