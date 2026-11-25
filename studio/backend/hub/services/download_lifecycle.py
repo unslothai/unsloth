@@ -501,12 +501,12 @@ def spawn_worker(
 
 def _drop_cut_line(part: bytearray, at_end: bool) -> bytearray:
     kept = part[: part.rfind(b"\n") + 1] if at_end else part[part.find(b"\n") + 1 :]
-    # A window that is one cut line keeps it: dropping it would lose the error itself.
+    # A window that is one cut line is the error itself.
     return kept if kept.strip() else part
 
 
 def _redacted_edge(part: bytes, edge: int, at_end: bool, hf_token: Optional[str]) -> str:
-    """Redact `part` with all of it as context, but show only what the raw `edge` bytes at that end redact to. Slicing the redacted text instead lets a collapsed token pull the cut-off start of the window into view."""
+    """What the raw `edge` bytes at that end redact to, with all of `part` as context: slicing the redacted text lets a collapsed token pull the cut-off window start into view."""
     scrub = lambda raw: download_registry.scrub_secrets(
         raw.decode("utf-8", "replace"), hf_token = hf_token
     )
@@ -519,7 +519,7 @@ def _redacted_edge(part: bytes, edge: int, at_end: bool, hf_token: Optional[str]
 
 
 def drain_stderr_excerpt(stream, hf_token: Optional[str] = None) -> str:
-    """Drain a worker's stderr to EOF and return it redacted, keeping the first and last 500 bytes (stderr prefixes often name the failing repo). Each end is redacted with 4 KiB of context past the cut and drops the line the cut splits (the extra byte shows whether it split one), so a credential whose header or parameter name was cut off is never shown."""
+    """Drain stderr to EOF; return its first and last 500 bytes, redacted with 4 KiB of context and without the line each cut splits (the extra byte shows whether it split one), so a credential whose name was cut off is never shown."""
     if stream is None:
         return ""
     edge, window = 500, 500 + 4096 + 1

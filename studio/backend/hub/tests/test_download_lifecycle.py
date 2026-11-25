@@ -123,7 +123,7 @@ def test_completion_invalidates_inventory_before_publishing_state(monkeypatch):
     assert events == ["invalidate", "complete"]
 
 
-# drain_stderr_excerpt's raw window: 500 shown characters, 4 KiB of redaction context and one byte to see a line boundary.
+# drain_stderr_excerpt's window: 500 shown + 4 KiB context + 1 byte to see a line boundary.
 WINDOW = 4597
 
 
@@ -162,7 +162,6 @@ FILLER = "Downloading Org/Model\n" + "progress line\n" * 1000
 
 def test_worker_error_hides_a_signature_whose_name_the_excerpt_cut_off():
     signature = "0123456789abcdef" * 4
-    # The kept tail starts inside "X-Amz-Signature=", after the "&" the rule anchors on.
     url = (
         "https://cas-bridge.xethub.hf.co/xet-bridge-us/abc?X-Amz-Algorithm=AWS4-HMAC-SHA256"
         f"&X-Amz-Signature={signature}&response-content-disposition={'x' * 400}"
@@ -179,7 +178,6 @@ def test_worker_error_hides_a_signature_whose_name_the_excerpt_cut_off():
 def test_worker_error_hides_a_signature_split_by_the_redaction_window():
     signature = "".join(f"{i:02d}" for i in range(32))
     trailer = "&x-id=GetObject\nhuggingface_hub.errors.HfHubHTTPError: 403 Forbidden"
-    # The tail window starts 20 characters into the signature, and the long security token after it shrinks to one marker once redacted.
     token = "T" * (WINDOW - 44 - len("&X-Amz-Security-Token=") - len(trailer))
     stderr = (
         FILLER
@@ -196,7 +194,6 @@ def test_worker_error_hides_a_signature_split_by_the_redaction_window():
 
 def test_worker_error_hides_a_credential_whose_header_the_window_cut_off():
     trailer = "\nrequests.exceptions.HTTPError: 401 Client Error"
-    # The tail window starts inside "Basic", so the long credential after it has no header in view.
     credential = "".join(f"{i:05d}" for i in range(1000))[: WINDOW - len("sic ") - len(trailer)]
     stderr = FILLER + f"Authorization: Basic {credential}{trailer}"
     assert stderr[-WINDOW:].startswith("sic " + credential)
@@ -221,7 +218,6 @@ def test_worker_error_keeps_a_last_line_longer_than_the_window():
 
 
 def test_worker_error_hides_a_password_whose_scheme_the_window_cut_off():
-    # The tail window starts after "https://", and the security token after the password shrinks to one marker once redacted.
     start = "alice:MirrorPassword42@mirror.example/f?X-Amz-Security-Token="
     stderr = FILLER + "OSError: 403 for https://" + start + "T" * (WINDOW - len(start) - 1) + "\n"
     assert stderr[-WINDOW:].startswith(start)

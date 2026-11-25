@@ -95,11 +95,11 @@ _SECRET_KEYS = (
 _KEY_START = r"(?<![A-Za-z0-9])"
 
 _PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
-    # Hugging Face. No leading boundary: an escaped "\nhf_..." or URL-encoded "Bearer%20hf_..." still carries the token.
+    # Hugging Face, no \b: an escaped "\nhf_..." or "Bearer%20hf_..." still carries the token.
     (re.compile(r"hf_(?:oauth_[A-Za-z0-9._~+/=-]{20,}|[A-Za-z0-9]{20,})"), "hf_" + REDACTED),
     # OpenAI and other sk- keys (project, Anthropic, OpenRouter). Not a word boundary: that also fires after a hyphen, eating checkpoint-sk-9f8a... in a filename.
     (
-        # Studio's own sk-unsloth- keys are masked after a hyphen too (run-sk-unsloth-....json), but not inside a word (task-unsloth-lora).
+        # sk-unsloth- also after a hyphen (run-sk-unsloth-x.json), never inside a word (task-unsloth-lora).
         re.compile(
             r"(?<![A-Za-z0-9-])sk-(?:proj-|ant-api\d{2}-|or-v1-)?[A-Za-z0-9_-]{16,}"
             r"|(?<![A-Za-z0-9])sk-unsloth-\w+"
