@@ -111,7 +111,7 @@ def _hf_cache_repo(root, repo_id, *, files):
     (repo_dir / "refs" / "main").write_text(sha)
     for index, name in enumerate(files):
         blob = blobs / f"blob{index}"
-        blob.write_bytes(b"")
+        blob.write_bytes(b"\0")
         (snapshot / name).symlink_to(blob)
     return repo_dir, snapshot
 
@@ -155,7 +155,7 @@ def test_a_gguf_repo_resolves_bare_and_per_quant(catalog, tmp_path):
     repo.mkdir()
     (repo / "model_index.json").write_text("{}")
     for quant in ("Q4_K_M", "Q8_0"):
-        (repo / f"flux1-dev-{quant}.gguf").write_bytes(b"")
+        (repo / f"flux1-dev-{quant}.gguf").write_bytes(b"\0")
     catalog.append(_info("city96/FLUX.1-dev-gguf", repo, task = mas.IMAGE_TASK))
 
     qualified = mas.resolve_local_media_model("city96/FLUX.1-dev-gguf:Q8_0", task = mas.IMAGE_TASK)
@@ -199,7 +199,7 @@ def test_a_cached_pipeline_resolves_to_its_snapshot_directory(catalog, tmp_path)
 
 def test_a_standalone_gguf_resolves_to_its_directory(catalog, tmp_path):
     weights = tmp_path / "z-image-Q4_K_M.gguf"
-    weights.write_bytes(b"")
+    weights.write_bytes(b"\0")
     catalog.append(_info("z-image", weights, task = mas.IMAGE_TASK, model_format = "gguf"))
 
     pick = mas.resolve_local_media_model("z-image", task = mas.IMAGE_TASK)
@@ -229,7 +229,7 @@ def test_what_the_index_refuses_to_advertise(catalog, tmp_path):
     ambiguous = tmp_path / "two-checkpoints"
     ambiguous.mkdir()
     for name in ("a.safetensors", "b.safetensors"):
-        (ambiguous / name).write_bytes(b"")
+        (ambiguous / name).write_bytes(b"\0")
     catalog.append(_info("org/ambiguous", ambiguous, task = mas.IMAGE_TASK))
 
     local = tmp_path / "local-only"
@@ -340,7 +340,7 @@ def cached_gguf(catalog, tmp_path):
 def two_bpw(catalog, tmp_path):
     """Two builds of one quant, which the backend's published token cannot tell apart."""
     for bpw in ("3.53", "3.97"):
-        (tmp_path / f"z-IQ4_XS-{bpw}bpw.gguf").write_bytes(b"")
+        (tmp_path / f"z-IQ4_XS-{bpw}bpw.gguf").write_bytes(b"\0")
         catalog.append(
             _gguf_info(
                 f"z-IQ4_XS-{bpw}bpw",
@@ -628,7 +628,7 @@ def test_a_sibling_loose_gguf_is_not_treated_as_already_serving(
 ):
     # Loose .gguf files share their folder as model_path, so path alone would match a sibling.
     for quant in ("Q4_K_M", "Q8_0"):
-        (tmp_path / f"z-image-{quant}.gguf").write_bytes(b"")
+        (tmp_path / f"z-image-{quant}.gguf").write_bytes(b"\0")
         catalog.append(
             _gguf_info(
                 f"z-image-{quant}",
@@ -883,7 +883,7 @@ def test_the_exact_resident_shortcut_never_answers_for_a_gguf(
     repo.mkdir()
     (repo / "model_index.json").write_text("{}")
     for quant in ("Q4_K_M", "Q8_0"):
-        (repo / f"flux1-dev-{quant}.gguf").write_bytes(b"")
+        (repo / f"flux1-dev-{quant}.gguf").write_bytes(b"\0")
     catalog.append(_info("city96/FLUX.1-dev-gguf", repo, task = mas.IMAGE_TASK))
     backend.repo_id = "city96/FLUX.1-dev-gguf"
     backend.gguf_variant = "Q8_0"
@@ -902,7 +902,7 @@ def test_a_bare_single_file_directory_is_planned_as_the_load_reads_it(
     # Load routes treat such a directory as single_file and resolve that family's companions.
     checkpoint = tmp_path / "solo"
     checkpoint.mkdir()
-    (checkpoint / "model.safetensors").write_bytes(b"")
+    (checkpoint / "model.safetensors").write_bytes(b"\0")
     catalog.append(_info("some/solo", checkpoint, task = mas.IMAGE_TASK))
     pick = mas.resolve_local_media_model("some/solo", task = mas.IMAGE_TASK)
     seen: list = []
@@ -938,7 +938,7 @@ def test_paths_differing_only_in_case_are_different_models(
         directory = tmp_path / name
         if not directory.exists():
             directory.mkdir()
-        (directory / f"{name}-Q4_K_M.gguf").write_bytes(b"")
+        (directory / f"{name}-Q4_K_M.gguf").write_bytes(b"\0")
         catalog.append(_info(f"org/{name}", directory, task = mas.IMAGE_TASK, model_format = "gguf"))
     upper = mas.resolve_local_media_model("org/Foo", task = mas.IMAGE_TASK)
     lower = mas.resolve_local_media_model("org/foo", task = mas.IMAGE_TASK)
@@ -1044,8 +1044,8 @@ def test_a_bare_id_takes_a_root_variant_over_a_qualified_one(catalog, tmp_path):
     # A plain local load always takes the root, so a bare id must not pick a subdirectory build.
     repo = tmp_path / "flux-gguf"
     (repo / "distilled").mkdir(parents = True)
-    (repo / "flux1-Q4_K_M.gguf").write_bytes(b"")
-    (repo / "distilled" / "flux1-Q8_0.gguf").write_bytes(b"")
+    (repo / "flux1-Q4_K_M.gguf").write_bytes(b"\0")
+    (repo / "distilled" / "flux1-Q8_0.gguf").write_bytes(b"\0")
     catalog.append(_info("city96/FLUX.1-dev-gguf", repo, task = mas.IMAGE_TASK))
 
     bare = mas.resolve_local_media_model("city96/FLUX.1-dev-gguf", task = mas.IMAGE_TASK)
@@ -1137,7 +1137,7 @@ def test_a_request_parked_on_the_held_gate_does_not_abort_the_switch(
 
 def test_a_ref2va_checkpoint_expects_its_own_partition(catalog, enabled, tmp_path, backend, loads):
     # The native backend publishes ref2va for a minimax_h3_ref2va denoiser.
-    (tmp_path / "minimax_h3_ref2va-Q4_K_M.gguf").write_bytes(b"")
+    (tmp_path / "minimax_h3_ref2va-Q4_K_M.gguf").write_bytes(b"\0")
     catalog.append(
         _gguf_info(
             "minimax_h3_ref2va-Q4_K_M",
@@ -1329,7 +1329,7 @@ def test_the_ltx23_extras_check_names_the_exact_companions(tmp_path, monkeypatch
     import core.inference.video_families as video_families
 
     checkpoint = tmp_path / "generic-Q4_K_M.gguf"
-    checkpoint.write_bytes(b"")
+    checkpoint.write_bytes(b"\0")
     pick = mas.MediaModelPick("local/ltx", str(tmp_path), checkpoint.name, "gguf")
     monkeypatch.setattr(
         video_families, "detect_video_family", lambda *a, **k: types.SimpleNamespace(name = "ltx-2")
@@ -1370,7 +1370,7 @@ def test_an_edit_only_single_file_directory_is_refused(catalog, enabled, tmp_pat
     # The load route treats the directory as single_file, so the guard must see that filename.
     directory = tmp_path / "mystuff"
     directory.mkdir()
-    (directory / "qwen_image_edit_2509_fp8.safetensors").write_bytes(b"")
+    (directory / "qwen_image_edit_2509_fp8.safetensors").write_bytes(b"\0")
     catalog.append(_info("local/edit", directory, task = mas.IMAGE_TASK))
     backend.repo_id = "Qwen/Qwen-Image"
 
@@ -1454,7 +1454,7 @@ def test_a_lone_unlabelled_gguf_is_not_reloaded_on_every_request(
 ):
     # An unlabelled file and the backend both publish an empty quant token, so they match.
     checkpoint = tmp_path / "plain.gguf"
-    checkpoint.write_bytes(b"")
+    checkpoint.write_bytes(b"\0")
     catalog.append(_info("local/plain", checkpoint, task = mas.IMAGE_TASK, model_format = "gguf"))
 
     _switch("local/plain")
@@ -1598,7 +1598,7 @@ def test_a_generically_named_ltx23_checkpoint_is_still_header_checked(
     from core.inference.video_families import detect_video_family
 
     checkpoint = tmp_path / "model-Q4_K_M.gguf"
-    checkpoint.write_bytes(b"")
+    checkpoint.write_bytes(b"\0")
     catalog.append(_info("local/generic", checkpoint, task = mas.VIDEO_TASK, model_format = "gguf"))
     monkeypatch.setattr(video_module, "_picked_gguf_arch", lambda repo_id, gguf_filename: "ltxv")
     monkeypatch.setattr(ltx2, "is_ltx23_checkpoint", lambda path: True)
@@ -1834,7 +1834,7 @@ def test_a_complete_local_pipeline_still_needs_no_plan(catalog, enabled, tmp_pat
     for component in ("vae", "transformer"):
         (pipeline / component).mkdir(parents = True)
         (pipeline / component / "config.json").write_text("{}")
-        (pipeline / component / "model.safetensors").write_bytes(b"")
+        (pipeline / component / "model.safetensors").write_bytes(b"\0")
     (pipeline / "model_index.json").write_text(
         '{"_class_name": "ZImagePipeline", "vae": ["diffusers", "AutoencoderKL"],'
         ' "transformer": ["diffusers", "ZImageTransformer2DModel"],'
@@ -1857,7 +1857,7 @@ def test_a_sharded_component_missing_a_shard_is_refused(catalog, enabled, tmp_pa
     pipeline = tmp_path / "z-image"
     (pipeline / "transformer").mkdir(parents = True)
     (pipeline / "transformer" / "config.json").write_text("{}")
-    (pipeline / "transformer" / "model-00001-of-00002.safetensors").write_bytes(b"")
+    (pipeline / "transformer" / "model-00001-of-00002.safetensors").write_bytes(b"\0")
     (pipeline / "transformer" / "model.safetensors.index.json").write_text(
         '{"weight_map": {"a": "model-00001-of-00002.safetensors",'
         ' "b": "model-00002-of-00002.safetensors"}}'
@@ -2013,7 +2013,7 @@ def test_a_single_file_hidream_still_checks_its_encoder(
     # A standalone checkpoint skipped the encoder check, but single-file assembly loads the Llama repo.
     directory = tmp_path / "hidream-i1-dev"
     directory.mkdir()
-    (directory / "hidream-i1-dev.safetensors").write_bytes(b"")
+    (directory / "hidream-i1-dev.safetensors").write_bytes(b"\0")
     catalog.append(_info("HiDream-ai/HiDream-I1-Dev", directory, task = mas.IMAGE_TASK))
     monkeypatch.setattr(locality, "encoder_repo_complete", lambda repo_id: False)
 
@@ -2100,7 +2100,7 @@ def test_a_hosted_modular_component_is_checked_against_the_cache(
     if cached:
         component.mkdir(parents = True)
         (component / "config.json").write_text("{}")
-        (component / "model.safetensors").write_bytes(b"")
+        (component / "model.safetensors").write_bytes(b"\0")
     monkeypatch.setattr(diffusion_module, "hub_cache_dir", lambda: str(cache))
 
     modular = tmp_path / "h3"
@@ -2209,7 +2209,7 @@ def test_a_superseded_snapshot_does_not_vouch_for_the_active_one(
     old = repo / "snapshots" / ("a" * 40) / "vae"
     old.mkdir(parents = True)
     (old / "config.json").write_text("{}")
-    (old / "model.safetensors").write_bytes(b"")
+    (old / "model.safetensors").write_bytes(b"\0")
     (repo / "snapshots" / ("b" * 40)).mkdir(parents = True)
     (repo / "refs").mkdir(parents = True)
     (repo / "refs" / "main").write_text("b" * 40)
@@ -2239,7 +2239,7 @@ def test_a_root_level_hosted_component_needs_more_than_one_shard(
     snapshot = cache / "models--unsloth--MiniMax-H3-VAE" / "snapshots" / ("a" * 40)
     snapshot.mkdir(parents = True)
     (snapshot / "config.json").write_text("{}")
-    (snapshot / "model-00001-of-00002.safetensors").write_bytes(b"")
+    (snapshot / "model-00001-of-00002.safetensors").write_bytes(b"\0")
     (snapshot / "model.safetensors.index.json").write_text(
         '{"weight_map": {"a": "model-00001-of-00002.safetensors",'
         ' "b": "model-00002-of-00002.safetensors"}}'
@@ -2263,7 +2263,7 @@ def test_a_root_level_hosted_component_needs_more_than_one_shard(
 
 def test_a_split_gguf_missing_a_shard_is_not_advertised(catalog, tmp_path):
     # The loader opens sibling shards implicitly, so half a split set must be refused up front.
-    (tmp_path / "z-image-Q4_K_M-00001-of-00002.gguf").write_bytes(b"")
+    (tmp_path / "z-image-Q4_K_M-00001-of-00002.gguf").write_bytes(b"\0")
     catalog.append(
         _gguf_info(
             "z-image",
@@ -2274,10 +2274,27 @@ def test_a_split_gguf_missing_a_shard_is_not_advertised(catalog, tmp_path):
 
     assert mas.resolve_local_media_model("z-image", task = mas.IMAGE_TASK) is None
 
-    (tmp_path / "z-image-Q4_K_M-00002-of-00002.gguf").write_bytes(b"")
+    (tmp_path / "z-image-Q4_K_M-00002-of-00002.gguf").write_bytes(b"\0")
     mas.invalidate_index()
 
     assert mas.resolve_local_media_model("z-image", task = mas.IMAGE_TASK) is not None
+
+
+def test_a_split_gguf_with_an_empty_shard_is_not_advertised(catalog, tmp_path):
+    # An empty shard fails the load like a missing one, so the bare id takes the whole quant.
+    repo = tmp_path / "flux-gguf"
+    repo.mkdir()
+    (repo / "model_index.json").write_text("{}")
+    (repo / "flux1-dev-Q8_0.gguf").write_bytes(b"\0")
+    (repo / "flux1-dev-Q4_K_M-00001-of-00002.gguf").write_bytes(b"\0")
+    (repo / "flux1-dev-Q4_K_M-00002-of-00002.gguf").write_bytes(b"")
+    catalog.append(_info("city96/FLUX.1-dev-gguf", repo, task = mas.IMAGE_TASK))
+
+    assert preferred_quant(["Q4_K_M", "Q8_0"]) == "Q4_K_M"
+    pinned = mas.resolve_local_media_model("city96/FLUX.1-dev-gguf:Q4_K_M", task = mas.IMAGE_TASK)
+    assert pinned is None
+    bare = mas.resolve_local_media_model("city96/FLUX.1-dev-gguf", task = mas.IMAGE_TASK)
+    assert bare.gguf_filename == "flux1-dev-Q8_0.gguf"
 
 
 def test_a_pinned_component_revision_is_the_one_checked(
@@ -2290,7 +2307,7 @@ def test_a_pinned_component_revision_is_the_one_checked(
     main = repo / "snapshots" / ("a" * 40) / "vae"
     main.mkdir(parents = True)
     (main / "config.json").write_text("{}")
-    (main / "model.safetensors").write_bytes(b"")
+    (main / "model.safetensors").write_bytes(b"\0")
     (repo / "refs").mkdir(parents = True)
     (repo / "refs" / "main").write_text("a" * 40)
     monkeypatch.setattr(diffusion_module, "hub_cache_dir", lambda: str(cache))
@@ -2320,7 +2337,7 @@ def test_a_pinned_component_variant_needs_its_own_weights(
     component = cache / "models--unsloth--MiniMax-H3" / "snapshots" / ("a" * 40) / "vae"
     component.mkdir(parents = True)
     (component / "config.json").write_text("{}")
-    (component / "diffusion_pytorch_model.safetensors").write_bytes(b"")
+    (component / "diffusion_pytorch_model.safetensors").write_bytes(b"\0")
     monkeypatch.setattr(diffusion_module, "hub_cache_dir", lambda: str(cache))
 
     modular = tmp_path / "h3"
@@ -2337,7 +2354,7 @@ def test_a_pinned_component_variant_needs_its_own_weights(
 
     assert excinfo.value.status_code == 409
 
-    (component / "diffusion_pytorch_model.fp16.safetensors").write_bytes(b"")
+    (component / "diffusion_pytorch_model.fp16.safetensors").write_bytes(b"\0")
     mas.invalidate_index()
     loads.clear()
 
@@ -2398,7 +2415,7 @@ def test_a_cached_split_gguf_missing_a_shard_is_not_advertised(catalog, tmp_path
 
     assert mas.resolve_local_media_model("unsloth/Z-Image-Turbo-GGUF", task = mas.IMAGE_TASK) is None
 
-    (snapshot / "z-image-Q4_K_M-00002-of-00002.gguf").write_bytes(b"")
+    (snapshot / "z-image-Q4_K_M-00002-of-00002.gguf").write_bytes(b"\0")
     mas.invalidate_index()
 
     assert (
@@ -2453,7 +2470,7 @@ def test_two_h3_partitions_of_one_quant_are_told_apart(catalog, enabled, tmp_pat
     # Both denoisers share a quant token, but status publishes h3_task for partition_matches.
     for partition in ("fl2va", "ref2va"):
         name = f"minimax_h3_{partition}-Q4_K_M.gguf"
-        (tmp_path / name).write_bytes(b"")
+        (tmp_path / name).write_bytes(b"\0")
         catalog.append(
             _gguf_info(f"minimax_h3_{partition}-Q4_K_M", tmp_path / name, task = mas.VIDEO_TASK)
         )
@@ -2527,7 +2544,7 @@ def test_only_a_load_nobody_asked_for_is_kept_off_the_hub(monkeypatch, user_init
 def test_a_non_h3_sibling_stays_in_the_ambiguity_group(catalog, enabled, tmp_path, backend, loads):
     # H3 and other-family builds sharing a dir and quant token look identical to status.
     for name in ("minimax_h3_fl2va-Q4_K_M.gguf", "wan-Q4_K_M.gguf"):
-        (tmp_path / name).write_bytes(b"")
+        (tmp_path / name).write_bytes(b"\0")
         catalog.append(_gguf_info(name.removesuffix(".gguf"), tmp_path / name, task = mas.VIDEO_TASK))
     backend.repo_id = str(tmp_path)
     backend.gguf_variant = "Q4_K_M"

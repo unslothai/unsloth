@@ -115,3 +115,22 @@ def test_a_torn_quant_beside_whole_weights_is_not_offered(sources):
     assert "Hermes-Q4_K_M" not in {_name(row) for row in rows}
     torn = ("mixed:Q4_K_M", "mixed:Q6_K", "hybrid", "Hermes-Q4_K_M")
     assert [name for name in torn if resolver.resolve_local_gguf(name) is not None] == []
+
+
+def test_a_shard_symlink_is_checked_against_the_set_the_loader_opens(sources, tmp_path):
+    hermes = sources.hermes_dirs[0]
+    for name in ("Linked-Q4_K_M", "Followed-Q4_K_M"):
+        for part in (1, 2):
+            _gguf(tmp_path / "backing" / f"{name}-0000{part}-of-00002.gguf")
+        first = f"{name}-00001-of-00002.gguf"
+        (hermes / first).symlink_to(tmp_path / "backing" / first)
+    # Both names exist beside this link, so the loader opens them and the empty second shard.
+    _gguf(hermes / "Linked-Q4_K_M-00002-of-00002.gguf", size = 0)
+
+    rows = models_route.collect_local_models(
+        Path("models").resolve(), sources = sources, materialize_ollama_links = False
+    )
+    names = {_name(row) for row in rows}
+    assert "Followed-Q4_K_M" in names and "Linked-Q4_K_M" not in names
+    assert resolver.resolve_local_gguf("Linked-Q4_K_M") is None
+    assert resolver.resolve_local_gguf("Followed-Q4_K_M") is not None

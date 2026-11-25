@@ -92,13 +92,13 @@ def _gguf_load_path(info, on_disk: Path, load_dir: Path) -> str:
 
 def _loader_can_open(load_path: str, filename: str) -> bool:
     """A split checkpoint needs its whole shard set beside it, or the load fails after evicting."""
-    from utils.models.model_config import colocated_split_shards
+    from utils.models.model_config import split_set_is_loadable
 
     root = Path(load_path)
     if not root.is_dir():
         # Cached repo id skips containment but needs a whole split set; uncached is the download guard's.
         cached = _cached_repo_file(load_path, filename)
-        return True if cached is None else bool(colocated_split_shards(cached)[1])
+        return cached is None or split_set_is_loadable(cached)
     from core.inference.diffusion_families import resolve_local_gguf_child
 
     try:
@@ -106,7 +106,7 @@ def _loader_can_open(load_path: str, filename: str) -> bool:
     except Exception:  # noqa: BLE001 -- whatever the loader refuses, the index does not advertise
         return False
     # a split checkpoint opens its siblings implicitly, so an incomplete set fails at load time
-    return bool(colocated_split_shards(child)[1])
+    return split_set_is_loadable(child)
 
 
 def _cached_repo_file(repo_id: str, filename: str) -> Optional[Path]:
