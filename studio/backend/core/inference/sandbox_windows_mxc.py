@@ -110,8 +110,6 @@ def capability_snapshot(
             "the Python tool, which is sandboxed separately."
         )
     elif not mxc_runtime.selected_pin().has_host_prep:
-        # MXC 1.1.0 has no fallback sandbox to turn on: its installer moves a PC without the built-in
-        # container to MXC 1.0.1 instead.
         remediation = (
             "Install the pinned Microsoft WXC runtime (Settings > Sandbox) and enable BaseContainer/PSEC. "
             "If this Windows has no built-in container, installing again switches to the MXC runtime "

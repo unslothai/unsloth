@@ -69,7 +69,7 @@ PRIMARY_PIN = MxcPin(
         ),
     },
 )
-# The newest release with the AppContainer + DACL tier and wxc-host-prep: Windows without the built-in container.
+# Newest release with the AppContainer + DACL tier and wxc-host-prep.
 LEGACY_PIN = MxcPin(
     version = "1.0.1",
     revision = "fda29ac63bc306b7f97f3b86b4b63d44f7f40cf2",
@@ -105,8 +105,7 @@ RETIRED_DACL_EXEC_SHA256 = {
 }
 PINS = (PRIMARY_PIN, LEGACY_PIN)
 PIN_ENV = "UNSLOTH_MXC_PIN"
-# First update revision (UBR) with Windows' built-in container (BaseContainer) per Windows 11 release, from
-# MXC's docs/backends/process-container/os-version-support.md. MXC 1.1.0 runs only on these or newer.
+# First UBR with BaseContainer per release (MXC docs/backends/process-container/os-version-support.md).
 BUILTIN_CONTAINER_MIN_UBR = {26100: 9278, 26200: 9278, 26300: 9550, 28000: 2804}
 _DEMOTED_MARKER = "pin-demoted.json"
 _ARCHITECTURES = ("x86_64", "arm64")
@@ -246,7 +245,6 @@ def _windows_release() -> tuple[int, int, int] | None:
         ) as key:
             ubr = int(winreg.QueryValueEx(key, "UBR")[0])
     except (OSError, ValueError, TypeError, ImportError):
-        # Product type and build still rule out Windows Server and releases older than the table.
         ubr = -1
     return product_type, build, ubr
 
@@ -264,8 +262,7 @@ def builtin_container_supported(release: tuple[int, int, int] | None) -> bool | 
         return ubr >= BUILTIN_CONTAINER_MIN_UBR[build]
     if build < min(BUILTIN_CONTAINER_MIN_UBR):
         return False
-    # A newer release than the table, or an Insider build between two of its rows: the installer's live
-    # --probe decides, and demotes to the legacy pin if 1.1.0 finds no built-in container.
+    # Newer than the table, or an Insider build between rows: the installer's --probe decides.
     return True if build > max(BUILTIN_CONTAINER_MIN_UBR) else None
 
 
@@ -332,11 +329,7 @@ def _legacy_still_installed() -> bool:
 
 
 def selected_pin() -> MxcPin:
-    """The pin Studio runs: target_pin(), except that MXC 1.0.1 keeps running until the installer replaces it.
-
-    A Windows update can add the built-in container to a PC on 1.0.1. 1.0.1 uses that container too, so it
-    stays in use, with its own settings, until the next install moves this PC to 1.1.0.
-    """
+    """target_pin(), but an installed 1.0.1 (which also uses the built-in container) runs until replaced."""
     target = target_pin()
     if target is PRIMARY_PIN and forced_pin() is None and sys.platform == "win32":
         if _legacy_still_installed():
@@ -660,10 +653,7 @@ def probe_tier(
     *,
     pin: MxcPin | None = None,
 ) -> str | None:
-    """The tier `wxc-exec --probe` reports ("base-container", "appcontainer-dacl", ...); None when it names none.
-
-    Raises MxcRuntimeUnavailable when the probe fails or prints no report: that is no verdict at all.
-    """
+    """The tier `wxc-exec --probe` names, or None; raises MxcRuntimeUnavailable when it prints no report."""
     # The installer may run elevated, and the tier needs no journal: never replay Studio's here.
     completed = _run_wxc_probe(
         package_root, env, replay_journal = False, timeout = DACL_RECOVERY_SECONDS, pin = pin

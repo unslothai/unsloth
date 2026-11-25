@@ -350,8 +350,6 @@ def windows_runtime_unsupported() -> str | None:
     return "build" if build < MXC_MIN_WINDOWS_BUILD else None
 
 
-# Older revisions fall back to AppContainer (MXC 1.0.1), which needs Unsloth's fallback sandbox and its
-# administrator step.
 from .mxc_runtime import BUILTIN_CONTAINER_MIN_UBR  # noqa: E402
 
 
@@ -448,8 +446,7 @@ def _windows_plan() -> SetupPlan:
     if not mxc_runtime.selected_pin().has_host_prep:
         # MXC 1.1.0 runs only in Windows' built-in container: no fallback sandbox to allow or prepare.
         step = tuple(windows_runtime_install_command())
-        # The same action as the fallback setup, so Chat and Settings offer it, minus consent and elevation.
-        # Installed but failing: the installer probes it again and moves a PC without the container to 1.0.1.
+        # windows-setup, which Chat and Settings already offer; a rerun re-probes 1.1.0 and may move to 1.0.1.
         return SetupPlan(
             platform = sys.platform,
             action = WINDOWS_SETUP,

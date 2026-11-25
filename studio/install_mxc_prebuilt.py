@@ -1,12 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-"""Install Microsoft's pinned WXC executables for Studio on Windows.
-
-MXC 1.1.0 where Windows has the built-in container (BaseContainer); otherwise 1.0.1, the newest release with
-the AppContainer + DACL tier. A 1.1.0 install whose live probe finds no built-in container is replaced by
-1.0.1 and the choice is recorded for this Windows release.
-"""
+"""Install Microsoft's pinned WXC executables for Studio on Windows: MXC 1.1.0, or 1.0.1 without BaseContainer."""
 
 from __future__ import annotations
 
@@ -71,17 +66,12 @@ def _already_installed(install_dir: Path, pin: mxc_runtime.MxcPin) -> bool:
         _validate_install(install_dir, pin)
     except mxc_runtime.MxcRuntimeUnavailable:
         return False
-    # A newer pin never ships wxc-host-prep: an old one left behind would be run elevated by no one, but
-    # it must not linger as an unapproved binary either.
+    # A wxc-host-prep left beside a pin without one is an unapproved binary.
     return pin.has_host_prep or not (install_dir / "wxc-host-prep.exe").exists()
 
 
 def _replay_retiring_journal(install_dir: Path, incoming: mxc_runtime.MxcPin | None = None) -> None:
-    """Before a swap, let the DACL-capable runtime being replaced restore the ACEs its journal names.
-
-    A pin without the DACL tier (1.1.0) never reads that journal, so when ``incoming`` is one and the
-    replay cannot finish cleanly, raise: the retiring runtime stays in place to try again next time.
-    """
+    """Let the retiring DACL runtime restore its journal's ACEs; raise (keeping it) if 1.1.0 would replace it unrestored."""
     journal = mxc_runtime.dacl_state_path()
     executable = install_dir / "wxc-exec.exe"
     try:
@@ -203,7 +193,7 @@ def _require_builtin_container(root: Path) -> None:
     try:
         tier = mxc_runtime.probe_tier(root, pin = mxc_runtime.PRIMARY_PIN)
     except (mxc_runtime.MxcRuntimeUnavailable, OSError, subprocess.SubprocessError) as exc:
-        # No verdict is not a verdict: a timeout or a locked file must not move this PC to 1.0.1.
+        # No verdict: a timeout or a locked file must not demote.
         print(
             f"[mxc-prebuilt] could not probe MXC {mxc_runtime.PRIMARY_PIN.version}, keeping it: {exc}",
             file = sys.stderr,
@@ -219,11 +209,7 @@ def install_mxc_release(
     *,
     qualify: Callable[[Path], None] | None = None,
 ) -> bool:
-    """Install the approved WXC binaries of ``pin`` (default: this PC's); ``True`` only when files changed.
-
-    ``qualify`` runs on the verified candidate before it replaces anything (and on a matching install),
-    so a runtime that cannot work here never becomes the active one.
-    """
+    """Install ``pin``'s approved binaries; True only when files changed. ``qualify`` vets a candidate before the swap."""
     if sys.platform != "win32":
         raise MxcInstallError("the MXC runtime installer is Windows-only")
     mxc_runtime._expected_architecture()
@@ -481,7 +467,6 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--install-dir is required")
     try:
         pin = mxc_runtime.target_pin()
-        # A pin forced by UNSLOTH_MXC_PIN is never second-guessed; a chosen 1.1.0 must prove itself first.
         auto = pin is mxc_runtime.PRIMARY_PIN and mxc_runtime.forced_pin() is None
         try:
             changed = install_mxc_release(
