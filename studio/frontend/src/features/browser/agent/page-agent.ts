@@ -417,8 +417,7 @@ export function installPageAgent(): PageAgent {
       const text = bufferKeepsLines ? buffer.replace(/[^\S\n]+$/gm, "").replace(/^\n+|\s+$/g, "") : clean(buffer, Infinity);
       // A lone symbol is an icon or a bullet; a lone digit or letter is a count or a grade.
       if (text && bufferShown && (text.length > 1 || /[\p{L}\p{N}]/u.test(text))) {
-        // Cut inside the fence so the "more below" note never lands in an open code block.
-        // Longer than any backtick run inside, so the body can't close it (CommonMark fenced code).
+        // Fence longer than any backtick run inside (CommonMark), cut inside it so the more-below note stays out.
         let longest = 2;
         if (code) for (const run of text.match(/`+/g) ?? []) longest = Math.max(longest, run.length);
         const fence = code ? "`".repeat(longest + 1) : "";
@@ -431,7 +430,6 @@ export function installPageAgent(): PageAgent {
       buffer = "";
       bufferShown = false;
       bufferKeepsLines = false;
-      // A link inside code splits it; the rest is still code.
       bufferCode = code && inPre > 0;
       lineOpen = false;
       bufferChars = 0;
@@ -498,7 +496,6 @@ export function installPageAgent(): PageAgent {
       const keepsLines = /^(pre|break-spaces)/.test(style.whiteSpace);
       const children = el.shadowRoot ? [...Array.from(el.shadowRoot.childNodes), ...Array.from(el.childNodes)] : Array.from(el.childNodes);
       for (const node of children) {
-        // Already past what fits: the rest would be cut, so the final flush ends the read.
         if (cut || overflow) return;
         if (bufferShown && bufferChars > budget - used) {
           overflow = true;
