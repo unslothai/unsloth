@@ -607,8 +607,7 @@ def plan(request: dict, host: dict, model: Optional[dict]) -> dict:
         if multi_reason:
             return _legacy(multi_reason)
         core = host.get("core") or {}
-        # Expert parallel shards fused expert stacks; transformers 4.x keeps most families' experts as separate
-        # modules, which Unsloth refuses at load, so auto picks it on transformers 5+ only.
+        # EP needs fused expert stacks; transformers 4.x leaves most families unfused (refused at load).
         if (
             model.get("is_moe")
             and core.get(EP)

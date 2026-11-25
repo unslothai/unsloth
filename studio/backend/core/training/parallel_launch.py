@@ -445,7 +445,7 @@ def sync_stop(should_stop: bool, save_on_stop: bool) -> tuple:
     try:
         dist.broadcast(flags, src = 0)
     except Exception:
-        # A peer's socket can close before its exit is visible: give the watcher the time to name the rank.
+        # A dead peer's socket closes before its exit shows: let the watcher name the rank.
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline and not any(p.poll() not in (None, 0) for p in _PROCS):
             time.sleep(0.1)

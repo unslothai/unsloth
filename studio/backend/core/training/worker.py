@@ -5803,8 +5803,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 )
             return
         if _parallel_launch.is_multi_process() and not trainer.get_training_progress().error:
-            # TP / PP ranks write rank-local checkpoint files: report done only after all exit cleanly. A rank 0
-            # error is reported below at once (peers may be stuck in a collective; exit stops them).
+            # TP / PP ranks write rank-local checkpoints: report done only once all exit cleanly.
             rank_failure = _parallel_launch.wait_for_ranks()
             if rank_failure:
                 event_queue.put(

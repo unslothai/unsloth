@@ -945,7 +945,7 @@ class TrainingStatus(BaseModel):
 
     @model_serializer(mode = "wrap")
     def _omit_absent_layout(self, handler):
-        # A run without a layout serialises exactly as before the field existed.
+        # Byte-identical status JSON for runs without a layout.
         data = handler(self)
         if isinstance(data, dict) and data.get("parallel") is None:
             data.pop("parallel", None)
