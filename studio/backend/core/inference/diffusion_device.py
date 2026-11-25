@@ -89,7 +89,8 @@ def _prepend_zero_frames(module: Any, args: tuple) -> Optional[tuple]:
     return (torch.cat([zeros, x], dim = 2), *args[1:])
 
 
-_CAUSAL_PAD_CLASSES = frozenset({"WanCausalConv3d"})
+# Same 6-tuple causal ``_padding`` and F.pad forward: Wan 2.x and the Qwen-Image VAE (Qwen-Image, Krea-2, Anima).
+_CAUSAL_PAD_CLASSES = frozenset({"WanCausalConv3d", "QwenImageCausalConv3d"})
 
 
 def _zero_buffer_causal_conv(
