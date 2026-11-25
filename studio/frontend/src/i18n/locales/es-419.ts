@@ -5684,7 +5684,6 @@ export const es419 = {
       showOnStage: "Mostrar a {name} en el escenario",
       noCast: "Este chat no tiene personajes.",
       castUnavailable: "No se pudieron cargar los personajes de este chat, así que el mensaje no se envió. Inténtalo de nuevo en un momento.",
-      castMore: "{names} +{count}",
     },
     panel: {
       title: "Personajes",

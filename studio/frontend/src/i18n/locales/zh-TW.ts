@@ -5325,7 +5325,6 @@ export const zhTW = {
       showOnStage: "在舞台上顯示 {name}",
       noCast: "此聊天沒有角色。",
       castUnavailable: "無法載入此聊天的角色，因此訊息未送出。請稍後再試。",
-      castMore: "{names} +{count}",
     },
     panel: {
       title: "角色",

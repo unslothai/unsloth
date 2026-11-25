@@ -5327,7 +5327,6 @@ export const de = {
       showOnStage: "{name} auf der Bühne zeigen",
       noCast: "Dieser Chat hat keine Charaktere.",
       castUnavailable: "Die Charaktere dieses Chats konnten nicht geladen werden, daher wurde die Nachricht nicht gesendet. Versuchen Sie es gleich noch einmal.",
-      castMore: "{names} +{count}",
     },
     panel: {
       title: "Charaktere",

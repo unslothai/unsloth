@@ -5574,7 +5574,6 @@ export const fa = {
       showOnStage: "نمایش {name} روی صحنه",
       noCast: "این گفتگو هیچ شخصیتی ندارد.",
       castUnavailable: "شخصیت‌های این گفتگو بارگیری نشدند، پس پیام فرستاده نشد. کمی بعد دوباره امتحان کنید.",
-      castMore: "{names} +{count}",
     },
     panel: {
       title: "شخصیت‌ها",

@@ -5593,7 +5593,6 @@ export const tr = {
       showOnStage: "{name} sahnede göster",
       noCast: "Bu sohbette karakter yok.",
       castUnavailable: "Bu sohbetin karakterleri yüklenemedi, bu yüzden mesaj gönderilmedi. Biraz sonra tekrar deneyin.",
-      castMore: "{names} +{count}",
     },
     panel: {
       title: "Karakterler",

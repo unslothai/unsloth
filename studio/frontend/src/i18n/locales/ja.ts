@@ -5202,7 +5202,6 @@ export const ja = {
       showOnStage: "{name}をステージに表示",
       noCast: "このチャットにはキャラクターがいません。",
       castUnavailable: "このチャットのキャラクターを読み込めなかったため、メッセージは送信されませんでした。しばらくしてからもう一度お試しください。",
-      castMore: "{names} +{count}",
     },
     panel: {
       title: "キャラクター",

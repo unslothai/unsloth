@@ -5644,7 +5644,6 @@ export const pl = {
       showOnStage: "Pokaż {name} na scenie",
       noCast: "Ten czat nie ma żadnych postaci.",
       castUnavailable: "Nie udało się wczytać postaci tego czatu, więc wiadomość nie została wysłana. Spróbuj ponownie za chwilę.",
-      castMore: "{names} +{count}",
     },
     panel: {
       title: "Postacie",

@@ -5264,7 +5264,6 @@ export const hi = {
       showOnStage: "{name} को मंच पर दिखाएं",
       noCast: "इस चैट में कोई किरदार नहीं है।",
       castUnavailable: "इस चैट के किरदार लोड नहीं हो सके, इसलिए संदेश नहीं भेजा गया। थोड़ी देर में फिर कोशिश करें।",
-      castMore: "{names} +{count}",
     },
     panel: {
       title: "किरदार",

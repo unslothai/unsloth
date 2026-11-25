@@ -5242,7 +5242,6 @@ export const ko = {
       showOnStage: "{name}을(를) 무대에 표시",
       noCast: "이 채팅에는 캐릭터가 없습니다.",
       castUnavailable: "이 채팅의 캐릭터를 불러올 수 없어 메시지를 보내지 않았습니다. 잠시 후 다시 시도하세요.",
-      castMore: "{names} +{count}",
     },
     panel: {
       title: "캐릭터",

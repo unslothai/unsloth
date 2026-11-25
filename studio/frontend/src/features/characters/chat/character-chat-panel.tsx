@@ -29,6 +29,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { useOpenCharacterChat } from "../actions";
 import { updateCharacter, type ScenePatch } from "../api";
+import { castNames, retitleForCast } from "../chat-title";
 import { ClampedNumberInput } from "../components/clamped-number-input";
 import { Portrait } from "../components/portrait";
 import { useAccountName } from "../persona";
@@ -58,8 +59,16 @@ export function CharacterChatPanel({ threadId }: { threadId: string }) {
   const settings = scene.settings;
 
   async function patch(update: ScenePatch) {
+    const store = useCharactersStore.getState();
+    const before = castNames(store.scenes[threadId], store.characters);
     try {
-      await useCharactersStore.getState().patchScene(threadId, update);
+      const next = await store.patchScene(threadId, update);
+      // Best effort: the cast change saved, and a title left as it was is no error to report.
+      if (update.add?.length || update.remove?.length) {
+        void retitleForCast(threadId, before, castNames(next, useCharactersStore.getState().characters)).catch(
+          () => undefined,
+        );
+      }
     } catch (error) {
       toast.error(t("characters.panel.updateFailed"), { description: errorMessage(error) });
     }

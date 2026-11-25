@@ -5596,7 +5596,6 @@ export const id = {
       showOnStage: "Tampilkan {name} di panggung",
       noCast: "Chat ini tidak punya karakter.",
       castUnavailable: "Karakter chat ini tidak dapat dimuat, jadi pesan tidak terkirim. Coba lagi sebentar lagi.",
-      castMore: "{names} +{count}",
     },
     panel: {
       title: "Karakter",

@@ -5618,7 +5618,6 @@ export const cs = {
       showOnStage: "Zobrazit {name} na scéně",
       noCast: "Tento chat nemá žádné postavy.",
       castUnavailable: "Postavy tohoto chatu se nepodařilo načíst, takže zpráva nebyla odeslána. Zkuste to za chvíli znovu.",
-      castMore: "{names} +{count}",
     },
     panel: {
       title: "Postavy",

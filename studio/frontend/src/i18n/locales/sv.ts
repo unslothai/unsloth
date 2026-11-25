@@ -5468,7 +5468,6 @@ export const sv = {
       showOnStage: "Visa {name} på scenen",
       noCast: "Den här chatten har inga karaktärer.",
       castUnavailable: "Den här chattens karaktärer kunde inte läsas in, så meddelandet skickades inte. Försök igen om en stund.",
-      castMore: "{names} +{count}",
     },
     panel: {
       title: "Karaktärer",

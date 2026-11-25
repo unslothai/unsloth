@@ -5153,7 +5153,6 @@ export const zhCN = {
       showOnStage: "在舞台上显示 {name}",
       noCast: "此聊天没有角色。",
       castUnavailable: "无法加载此聊天的角色，因此消息未发送。请稍后重试。",
-      castMore: "{names} +{count}",
     },
     panel: {
       title: "角色",

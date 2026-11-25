@@ -5367,7 +5367,6 @@ export const th = {
       showOnStage: "แสดง {name} บนเวที",
       noCast: "แชทนี้ไม่มีตัวละคร",
       castUnavailable: "โหลดตัวละครของแชทนี้ไม่ได้ จึงไม่ได้ส่งข้อความ ลองอีกครั้งในอีกสักครู่",
-      castMore: "{names} +{count}",
     },
     panel: {
       title: "ตัวละคร",

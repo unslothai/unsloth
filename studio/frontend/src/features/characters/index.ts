@@ -5,6 +5,7 @@
 // @/features/chat loads itself (chat-runtime, export-transcript, use-thread-scene): these message parts import it back.
 export { CharacterStage } from "./chat/character-stage";
 export { CastChip, ChatViewMenu } from "./chat/chat-chrome";
+export { requestCastReveal } from "./chat/cast-reveal";
 export { useInCharacterChat } from "./chat/character-chat-context";
 export {
   CharacterReplyFrame,

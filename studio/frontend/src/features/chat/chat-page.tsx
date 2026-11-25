@@ -208,7 +208,7 @@ import {
 import { contextUsageRows } from "./lib/context-usage-bar-state";
 import { ModelLoadInlineStatus } from "./components/model-load-status";
 import { ProjectSwitcher } from "./components/project-switcher";
-import { CastChip, CharacterStage, ChatViewMenu } from "@/features/characters";
+import { CastChip, CharacterStage, ChatViewMenu, requestCastReveal } from "@/features/characters";
 import { EditProjectDialog } from "./components/edit-project-dialog";
 import { ProjectFolderChip } from "./components/project-folder-chip";
 import {
@@ -2894,6 +2894,16 @@ export function ChatPage({
 
   const settingsOpen = useChatRuntimeStore((s) => s.settingsPanelOpen);
   const setSettingsOpen = useChatRuntimeStore((s) => s.setSettingsPanelOpen);
+  // The header's cast button: opens the run settings on the Characters section, or closes them.
+  const toggleCastPanel = () => {
+    if (settingsOpen) {
+      setSettingsOpen(false);
+      return;
+    }
+    useResearchRunStore.getState().closePanel();
+    requestCastReveal();
+    setSettingsOpen(true);
+  };
   const incognito = useChatRuntimeStore((s) => s.incognito);
   const setIncognito = useChatRuntimeStore((s) => s.setIncognito);
   const toggleIncognito = useCallback(() => {
@@ -5041,6 +5051,14 @@ export function ChatPage({
             {view.mode === "single" && !currentProjectId && !incognito && (
               <ChatTitleMenu threadId={activeThreadId} />
             )}
+            {/* Beside the title, so the portraits read as part of it. */}
+            {view.mode === "single" && !currentProjectId ? (
+              <CastChip
+                threadId={activeThreadId}
+                expanded={settingsOpen}
+                onToggle={toggleCastPanel}
+              />
+            ) : null}
             {view.mode === "single" && (
               <ChatModelNotice
                 active={active}
@@ -5080,13 +5098,11 @@ export function ChatPage({
                 ) : null}
               </nav>
             )}
-            {view.mode === "single" ? (
+            {view.mode === "single" && currentProjectId ? (
               <CastChip
                 threadId={activeThreadId}
-                onOpen={() => {
-                  useResearchRunStore.getState().closePanel();
-                  setSettingsOpen(true);
-                }}
+                expanded={settingsOpen}
+                onToggle={toggleCastPanel}
               />
             ) : null}
             {pendingNativeModelIntent && view.mode !== "compare" ? (

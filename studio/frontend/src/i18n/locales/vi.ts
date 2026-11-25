@@ -5591,7 +5591,6 @@ export const vi = {
       showOnStage: "Hiển thị {name} trên sân khấu",
       noCast: "Cuộc trò chuyện này không có nhân vật.",
       castUnavailable: "Không thể tải các nhân vật của cuộc trò chuyện này nên tin nhắn chưa được gửi. Hãy thử lại sau giây lát.",
-      castMore: "{names} +{count}",
     },
     panel: {
       title: "Nhân vật",

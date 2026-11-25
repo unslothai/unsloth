@@ -5643,7 +5643,6 @@ export const nl = {
       showOnStage: "{name} op het podium tonen",
       noCast: "Deze chat heeft geen personages.",
       castUnavailable: "De personages van deze chat konden niet worden geladen, dus het bericht is niet verzonden. Probeer het zo opnieuw.",
-      castMore: "{names} +{count}",
     },
     panel: {
       title: "Personages",

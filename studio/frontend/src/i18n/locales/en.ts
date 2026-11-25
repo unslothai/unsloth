@@ -5277,7 +5277,6 @@ export const en = {
       showOnStage: "Show {name} on stage",
       noCast: "This chat has no characters.",
       castUnavailable: "This chat's characters couldn't be loaded, so the message wasn't sent. Try again in a moment.",
-      castMore: "{names} +{count}",
     },
     panel: {
       title: "Characters",

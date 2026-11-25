@@ -5282,7 +5282,6 @@ export const ptBR = {
       showOnStage: "Mostrar {name} no palco",
       noCast: "Este chat não tem personagens.",
       castUnavailable: "Não foi possível carregar os personagens deste chat, então a mensagem não foi enviada. Tente de novo em instantes.",
-      castMore: "{names} +{count}",
     },
     panel: {
       title: "Personagens",

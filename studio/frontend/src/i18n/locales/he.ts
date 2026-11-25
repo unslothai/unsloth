@@ -5335,7 +5335,6 @@ export const he = {
       showOnStage: "הצגת {name} על הבמה",
       noCast: "אין דמויות בצ'אט הזה.",
       castUnavailable: "לא ניתן היה לטעון את הדמויות של הצ'אט הזה, ולכן ההודעה לא נשלחה. נסו שוב בעוד רגע.",
-      castMore: "{names} +{count}",
     },
     panel: {
       title: "דמויות",

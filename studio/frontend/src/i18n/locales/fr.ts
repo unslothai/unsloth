@@ -5337,7 +5337,6 @@ export const fr = {
       showOnStage: "Afficher {name} sur scène",
       noCast: "Cette discussion n'a aucun personnage.",
       castUnavailable: "Les personnages de cette discussion n'ont pas pu être chargés, le message n'a donc pas été envoyé. Réessayez dans un instant.",
-      castMore: "{names} +{count}",
     },
     panel: {
       title: "Personnages",

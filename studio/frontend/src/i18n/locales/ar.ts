@@ -5253,7 +5253,6 @@ export const ar = {
       showOnStage: "عرض {name} على المسرح",
       noCast: "لا توجد شخصيات في هذه المحادثة.",
       castUnavailable: "تعذّر تحميل شخصيات هذه المحادثة، لذلك لم تُرسل الرسالة. حاول مرة أخرى بعد قليل.",
-      castMore: "{names} +{count}",
     },
     panel: {
       title: "الشخصيات",
