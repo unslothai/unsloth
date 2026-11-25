@@ -1792,7 +1792,310 @@ def load_ltx23_audio_vae_and_vocoder(
     with init_empty_weights():
         vocoder = LTX2VocoderWithBWE.from_config(_VOCODER_CONFIG)
     vocoder.load_state_dict(vocoder_state, strict = True, assign = True)
-    return audio_vae, vocoder.to(torch_dtype)
+    vocoder = vocoder.to(torch_dtype)
+    install_vocoder_fp32_forward(vocoder)
+    return audio_vae, vocoder
+
+
+# Lightricks' LTX-2.3+ VocoderWithBWE runs its whole forward in float32 on bf16 weights (autocast on CUDA, weights
+# upcast for the call elsewhere): bf16 accumulation through BigVGAN's ~108 convs degrades mel / MRSTFT error 40-90%.
+# diffusers' LTX2VocoderWithBWE has no upcast. "0" runs the stored dtype again.
+VOCODER_FP32_ENV = "UNSLOTH_LTX_VOCODER_FP32"
+_STORED_FILTER = "_unsloth_stored_filter"
+
+
+def vocoder_fp32_enabled() -> bool:
+    return (os.environ.get(VOCODER_FP32_ENV) or "").strip().lower() not in _SWITCH_OFF
+
+
+def _is_compiling() -> bool:
+    try:
+        import torch
+        check = getattr(getattr(torch, "compiler", None), "is_compiling", None)
+        return bool(check()) if check is not None else False
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _no_autocast(device_type: str) -> Any:
+    """The caller's autocast switched off for ``device_type``: the float32 pass must not be re-lowered."""
+    import torch
+    try:
+        return torch.autocast(device_type = device_type, enabled = False)
+    except Exception:  # noqa: BLE001 -- a backend without autocast has none to override
+        return contextlib.nullcontext()
+
+
+def _stage_fp32(module: Any) -> list:
+    """Float32 copies of every floating parameter / buffer not already float32, as (owner, name, is_param, copy).
+    Allocates only: the module is untouched, so an out-of-memory here leaves nothing to roll back."""
+    import torch
+
+    staged = []
+    for owner in module.modules():
+        for name, p in owner._parameters.items():
+            if p is not None and p.is_floating_point() and p.dtype != torch.float32:
+                staged.append((owner, name, True, p.detach().float()))
+        for name, b in owner._buffers.items():
+            if b is not None and b.is_floating_point() and b.dtype != torch.float32:
+                staged.append((owner, name, False, b.float()))
+    return staged
+
+
+@contextlib.contextmanager
+def _swapped_in(staged: list) -> Iterator[None]:
+    """Point the module at the staged float32 tensors for the call and back after. Reference swaps only (``.data``
+    on the existing Parameters, buffer dict entries): nothing allocates, so the restore cannot fail half way."""
+    saved = []
+    try:
+        for owner, name, is_param, copy in staged:
+            if is_param:
+                p = owner._parameters[name]
+                saved.append((owner, name, True, p.data))
+                p.data = copy
+            else:
+                saved.append((owner, name, False, owner._buffers[name]))
+                owner._buffers[name] = copy
+        yield
+    finally:
+        for owner, name, is_param, old in reversed(saved):
+            if is_param:
+                owner._parameters[name].data = old
+            else:
+                owner._buffers[name] = old
+
+
+def _fp32_resampler_filter(vocoder: Any) -> Any:
+    """The BWE skip resampler's sinc filter rebuilt in float32, or None. It is a non-persistent buffer, so no
+    checkpoint holds it: the reference builds it in float32 beside bf16 weights, while a bf16 load either rounds it
+    (``.to(bf16)``) or computes it in bf16 (diffusers' from_pretrained sets the default dtype). Returned only when it
+    matches the stored filter to bf16 accuracy, so a changed upstream filter is left alone."""
+    import torch
+
+    res = getattr(vocoder, "resampler", None)
+    stored = getattr(res, "_buffers", {}).get("filter") if res is not None else None
+    if (
+        stored is None
+        or "filter" not in res._non_persistent_buffers_set
+        or stored.dtype == torch.float32
+    ):
+        return None
+    with torch.device("cpu"):
+        fresh = type(res)(
+            ratio = res.ratio,
+            window_type = "hann",
+            padding_mode = getattr(res, "padding_mode", "replicate"),
+            persistent = False,
+        ).filter.float()
+    old = stored.detach().float().cpu()
+    if fresh.shape != old.shape or not torch.allclose(
+        fresh, old, rtol = 0, atol = 0.02 * float(fresh.abs().max())
+    ):
+        return None
+    return fresh
+
+
+def _install_fp32_filter(res: Any, fp32_filter: Any) -> None:
+    """The float32 filter becomes the resampler's ``filter`` buffer (so the float32 forward reads it with no swap and
+    stays traceable); the loaded one is kept beside it as a buffer for the stored-dtype path."""
+    stored = res._buffers["filter"]
+    res.register_buffer(_STORED_FILTER, stored, persistent = False)
+    res.register_buffer("filter", fp32_filter.to(stored.device), persistent = False)
+
+
+@contextlib.contextmanager
+def _stored_filter(res: Any) -> Iterator[None]:
+    """The filter the vocoder was loaded with, for a stored-dtype (main) call: that path stays bit-identical."""
+    stored = getattr(res, "_buffers", {}).get(_STORED_FILTER) if res is not None else None
+    if stored is None:
+        yield
+        return
+    current = res._buffers["filter"]
+    res._buffers["filter"] = stored
+    try:
+        yield
+    finally:
+        res._buffers["filter"] = current
+
+
+def _refresh_fp32_filter(res: Any, fp32_filter: Any) -> None:
+    """A cast of the whole pipe (``.to(bf16)``) rounds the float32 filter: put the exact one back (eager only)."""
+    import torch
+
+    current = res._buffers.get("filter")
+    if current is not None and current.dtype != torch.float32:
+        res._buffers["filter"] = fp32_filter.to(current.device)
+
+
+# Extra peak of the float32 forward over bf16, measured on an L4 (LTX-2.5 vocoder, 5.04 s clip = 501 mel frames):
+# +104.5 MiB, linear in the clip length. Below it (with margin) free on the card, the call runs the stored dtype.
+_FP32_EXTRA_MIB_PER_MEL_FRAME = 105.0 / 501
+_FP32_MARGIN = 1.5
+_FP32_MARGIN_MIB = 64
+_fallback_logged = [False]
+# Stored-dtype fallbacks taken so far: a request whose vocoder fell back records no float32 render peak.
+_fallbacks = [0]
+
+
+def vocoder_fallback_count() -> int:
+    return _fallbacks[0]
+
+
+def vocoder_precision(vocoder: Any) -> Optional[str]:
+    """The precision this vocoder decodes in, for the render-peak calibration key: "fp32" (the float32 pass is on, or
+    the weights are float32), "stored" (switched off), None for any other vocoder."""
+    if not getattr(vocoder, "_unsloth_fp32_forward", False):
+        return None
+    try:
+        param = next(vocoder.parameters(), None)
+        if param is not None and str(param.dtype) == "torch.float32":
+            return "fp32"
+    except Exception:  # noqa: BLE001
+        return None
+    return "fp32" if vocoder_fp32_enabled() else "stored"
+
+
+def vocoder_fp32_extra_bytes(mel_spec: Any) -> int:
+    """Bytes the float32 forward needs beyond the bf16 one for this mel input, margin included."""
+    frames = int(mel_spec.shape[-2]) if getattr(mel_spec, "dim", lambda: 0)() >= 2 else 0
+    batch = int(mel_spec.shape[0]) if getattr(mel_spec, "dim", lambda: 0)() >= 4 else 1
+    mib = _FP32_EXTRA_MIB_PER_MEL_FRAME * frames * batch * _FP32_MARGIN + _FP32_MARGIN_MIB
+    return int(mib * (1 << 20))
+
+
+def _cuda_room(device: Any) -> Optional[int]:
+    """Free bytes on ``device``: the driver's free memory plus the caching allocator's unused reserve."""
+    try:
+        import torch
+        free, _ = torch.cuda.mem_get_info(device)
+        return (
+            int(free)
+            + int(torch.cuda.memory_reserved(device))
+            - int(torch.cuda.memory_allocated(device))
+        )
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _is_oom(exc: BaseException) -> bool:
+    import torch
+
+    oom = getattr(torch, "OutOfMemoryError", None) or getattr(torch.cuda, "OutOfMemoryError", None)
+    if oom is not None and isinstance(exc, oom):
+        return True
+    return isinstance(exc, RuntimeError) and "out of memory" in str(exc).lower()
+
+
+def _note_fallback(reason: str) -> None:
+    _fallbacks[0] += 1
+    if not _fallback_logged[0]:
+        _fallback_logged[0] = True
+        logger.warning(
+            "LTX vocoder: %s; this decode runs in the stored dtype (bf16) instead of float32",
+            reason,
+        )
+
+
+def install_vocoder_fp32_forward(vocoder: Any) -> None:
+    """Run this vocoder instance's forward in float32 and return a float32 waveform; idempotent, never raises.
+
+    Eager calls never fail a render: short of room on the card, or out of memory (while staging float32 weights or
+    in the pass), the call runs the stored dtype on an unchanged module. Under torch.compile the forward is a plain
+    traceable graph: CUDA autocast in float32, or the stored dtype where float32 needs eager-only weight staging."""
+    try:
+        import torch
+        import types
+
+        if getattr(vocoder, "_unsloth_fp32_forward", False):
+            return
+        inner = vocoder.forward
+        fp32_filter = _fp32_resampler_filter(vocoder)
+        res = getattr(vocoder, "resampler", None)
+        if fp32_filter is not None:
+            try:
+                _install_fp32_filter(res, fp32_filter)
+            except Exception as exc:  # noqa: BLE001 -- the loaded filter stays: float32 weights, rounded filter
+                logger.debug("LTX vocoder float32 filter not installed: %s", exc)
+                fp32_filter = None
+
+        def stored_call(self, mel_spec, args, kwargs):
+            if _is_compiling():
+                return inner(mel_spec, *args, **kwargs)
+            with _stored_filter(self.resampler if fp32_filter is not None else None):
+                return inner(mel_spec, *args, **kwargs)
+
+        def fallback(self, mel_spec, args, kwargs, reason):
+            _note_fallback(reason)
+            if mel_spec.device.type == "cuda":
+                torch.cuda.empty_cache()
+            return stored_call(self, mel_spec, args, kwargs)
+
+        def forward(self, mel_spec, *args, **kwargs):
+            param = next(self.parameters(), None)
+            compiling = _is_compiling()
+            if (
+                param is None
+                or not torch.is_floating_point(mel_spec)
+                or (not compiling and not vocoder_fp32_enabled())
+            ):
+                return stored_call(self, mel_spec, args, kwargs)
+            device_type = mel_spec.device.type
+            if param.dtype == torch.float32:
+                with _no_autocast(device_type):
+                    return inner(mel_spec.float(), *args, **kwargs)
+            if compiling:
+                if device_type == "cuda":
+                    with torch.autocast(device_type = "cuda", dtype = torch.float32):
+                        return inner(mel_spec.float(), *args, **kwargs)
+                return inner(mel_spec, *args, **kwargs)
+            if fp32_filter is not None:
+                _refresh_fp32_filter(self.resampler, fp32_filter)
+            if device_type == "cuda":
+                room = _cuda_room(mel_spec.device)
+                need = vocoder_fp32_extra_bytes(mel_spec)
+                if room is not None and room < need:
+                    return fallback(
+                        self,
+                        mel_spec,
+                        args,
+                        kwargs,
+                        f"{room >> 20} MiB free, the float32 pass needs about {need >> 20} MiB",
+                    )
+                failed = False
+                try:
+                    # CUDA (and ROCm) autocast upcasts bf16 weights per op: bit-equal to a float32 build, at a
+                    # fraction of the memory of .float(). It overrides an enclosing autocast.
+                    with torch.autocast(device_type = "cuda", dtype = torch.float32):
+                        return inner(mel_spec.float(), *args, **kwargs)
+                except Exception as exc:  # noqa: BLE001
+                    if not _is_oom(exc):
+                        raise
+                    failed = True
+                if (
+                    failed
+                ):  # outside the except block, so the failed pass's tensors are released first
+                    return fallback(
+                        self, mel_spec, args, kwargs, "out of memory in the float32 pass"
+                    )
+            # Other backends refuse float32 autocast: float32 copies of the weights for the call, staged before the
+            # module is touched and swapped by reference, so any failure leaves the stored weights in place.
+            failed = False
+            try:
+                staged = _stage_fp32(self)
+                with _swapped_in(staged), _no_autocast(device_type):
+                    return inner(mel_spec.float(), *args, **kwargs)
+            except Exception as exc:  # noqa: BLE001
+                if not _is_oom(exc):
+                    raise
+                failed = True
+            staged = None
+            if failed:
+                return fallback(self, mel_spec, args, kwargs, "out of memory in the float32 pass")
+
+        vocoder.forward = types.MethodType(forward, vocoder)
+        vocoder._unsloth_fp32_forward = True
+    except Exception as exc:  # the render keeps the stored-dtype vocoder
+        logger.debug("LTX vocoder float32 forward not installed: %s", exc)
 
 
 PREFETCH_ENV = "UNSLOTH_VIDEO_PREFETCH"

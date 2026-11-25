@@ -5753,6 +5753,17 @@ def _video_calibration_companions(pipe: Any) -> dict[str, str]:
     return {"run_once_companions": "streamed" if streamed else "resident"}
 
 
+def _video_calibration_vocoder(pipe: Any) -> dict[str, str]:
+    """The peak calibration key's vocoder entry: the LTX-2.3/2.5 vocoder's decode precision (its float32 pass and
+    the switched-off stored dtype peak differently, so they never share peaks). Empty for every other vocoder."""
+    try:
+        from .video_ltx2 import vocoder_precision
+        precision = vocoder_precision(getattr(pipe, "vocoder", None))
+    except Exception:  # noqa: BLE001 -- unreadable: the key as before
+        return {}
+    return {"vocoder_precision": precision} if precision else {}
+
+
 def _video_offload_vram_floor_mib(
     pipe: Any,
     plan: Any,
@@ -12105,6 +12116,11 @@ class VideoBackend:
             if vae is not None and getattr(vae, "dtype", None) is not torch.float32:
                 vae.to(torch.float32)
 
+        # LTX-2.3/2.5 BWE vocoder (any load route): float32 forward on its stored weights, as Lightricks runs it.
+        if type(getattr(pipe, "vocoder", None)).__name__ == "LTX2VocoderWithBWE":
+            from .video_ltx2 import install_vocoder_fp32_forward
+            install_vocoder_fp32_forward(pipe.vocoder)
+
         if ltx25_client is not None:
             from .video_ltx25 import attach_to_pipeline
             attach_to_pipeline(
@@ -15803,6 +15819,7 @@ class VideoBackend:
                         references = len(references or ()),
                         cfg = bool(getattr(fam, "supports_cfg", True)) and float(guidance) > 1.0,
                         **_video_calibration_companions(state.pipe),
+                        **_video_calibration_vocoder(state.pipe),
                         # only when engaged, so a lever-off load keeps the key (and the peaks) it had before
                         **_memory_levers_key(state),
                     )
