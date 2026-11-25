@@ -34,7 +34,7 @@
 #   UNSLOTH_GPUS=all                        "all" | "0" | "0,1" | "none"
 #   UNSLOTH_ALLOW_CPU=                      set to 1 to allow GPU-less runs
 #   UNSLOTH_PORTS=                          extra -p publish flags
-#   HF_HOME=$HOME/.cache/huggingface        host HF cache dir to mount
+#   HF_HOME=$XDG_CACHE_HOME/huggingface     host HF cache dir to mount (XDG default ~/.cache)
 #   HF_HUB_CACHE=$HF_HOME/hub               host HF hub cache dir to mount
 #   TRITON_CACHE_DIR=...unsloth-triton      host Triton cache dir to mount
 #   UNSLOTH_WORKDIR=$PWD                    host dir mounted at /workspace/host
