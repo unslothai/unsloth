@@ -204,6 +204,16 @@ def _host_copy_of(tensor: Any) -> Any:
     return _pin_host_tensor(host)
 
 
+def _rebuild_pin_cost(group: Any) -> int:
+    """Host bytes the allocator's pinned copies of ``group``'s device weights take (a power-of-two block each)."""
+    from .diffusion_pinned_arena import _pow2_ceil
+    return sum(
+        _pow2_ceil(int(leaf.numel()) * int(leaf.element_size()))
+        for t in _group_tensors(group)
+        for leaf in _host_leaves(t if _is_wrapper(t) else t.data)
+    )
+
+
 def rebuild_host_copy(
     group: Any,
     *,
@@ -217,13 +227,14 @@ def rebuild_host_copy(
         return 0
     import torch
 
+    cost = need if _registers_host() else _rebuild_pin_cost(group)
     if host_yield is not None:
         try:
             from .diffusion_small_host import encoder_resident_keep_mib, host_ram_mib
             total, available = host_ram_mib()
             if available is not None:
                 keep = max(H3_REBUILD_KEEP_MIB, int(encoder_resident_keep_mib(total)))
-                deficit = (need >> 20) + keep - int(available)
+                deficit = (cost >> 20) + keep - int(available)
                 if deficit > 0:
                     host_yield(deficit << 20)
         except Exception as exc:  # noqa: BLE001 -- rebuild anyway
@@ -1065,7 +1076,14 @@ def _pin_host_tensor(src: Any) -> Any:
             return registered_host_copy(src)
         except Exception:  # noqa: BLE001 -- registration refused: the allocator's pin for this tensor
             pass
-    return src.pin_memory()
+    pinned = src.pin_memory()
+    if type(src) is torch.Tensor and (
+        pinned is src or pinned.untyped_storage().data_ptr() == src.untyped_storage().data_ptr()
+    ):
+        # pin_memory() hands an already-pinned tensor (a slab view) back as itself, keeping the whole slab alive
+        pinned = torch.empty_like(src, pin_memory = True)
+        pinned.copy_(src)
+    return pinned
 
 
 def _reads(tensor: Any, src: Any) -> bool:
