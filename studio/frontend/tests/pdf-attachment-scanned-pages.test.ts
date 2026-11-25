@@ -12,14 +12,14 @@ const { extractPdfAttachmentText } = await import("../src/features/chat/attachme
 const { setAuthFetchHandler } = await import("./helpers/store-stubs/auth.ts");
 const { recordedToasts } = await import("./helpers/store-stubs/toast.ts");
 
-function pdf(pages: { content: string; resources: string; annots?: string }[], extra: string[]): Uint8Array<ArrayBuffer> {
+function pdf(pages: { content: string; resources: string; annots?: string; rotate?: number }[], extra: string[]): Uint8Array<ArrayBuffer> {
   const first = 3 + pages.length;
   const objects = [
     "<< /Type /Catalog /Pages 2 0 R >>",
     `<< /Type /Pages /Kids [${pages.map((_, i) => `${3 + i} 0 R`).join(" ")}] /Count ${pages.length} >>`,
     ...pages.map(
-      ({ resources, annots }, i) =>
-        `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Resources ${resources} /Contents ${first + i} 0 R${annots ? ` /Annots ${annots}` : ""} >>`,
+      ({ resources, annots, rotate }, i) =>
+        `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Resources ${resources} /Contents ${first + i} 0 R${annots ? ` /Annots ${annots}` : ""}${rotate ? ` /Rotate ${rotate}` : ""} >>`,
     ),
     ...pages.map(({ content }) => `<< /Length ${content.length} >>\nstream\n${content}\nendstream`),
     ...extra,
@@ -123,6 +123,18 @@ for (const [edge, y] of [["footer", 5], ["header", 190]] as const) {
     assert.equal(requests.length, 1);
   });
 }
+
+test("a landscape scan's footer along the rotated page edge is still read by the server", async () => {
+  const requests = serve({ filename: "landscape.pdf", text: "Invoice total", truncated: false });
+  const page = {
+    content: "q 200 0 0 200 0 0 cm /Im1 Do Q BT /F1 8 Tf 0 1 -1 0 195 30 Tm (ACME Corp Confidential - Page 1 of 1) Tj ET",
+    resources: "<< /XObject << /Im1 6 0 R >> /Font << /F1 5 0 R >> >>",
+    rotate: 90,
+  };
+  const file = new File([pdf([page], [FONT, IMAGE])], "landscape.pdf", { type: "application/pdf" });
+  assert.equal(await extractPdfAttachmentText(file), "Invoice total");
+  assert.equal(requests.length, 1);
+});
 
 test("a typed title over a background image with a footer stays in the browser", async () => {
   const requests = serve({ text: "unused", truncated: false });

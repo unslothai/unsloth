@@ -1912,10 +1912,16 @@ export async function extractPdfAttachmentText(file: File): Promise<string> {
     // A scan's header or footer sits in the top or bottom tenth; any body text, even a slide title, means typed.
     const candidates = await Promise.all(
       items.map(async (page, index) => {
-        const [, bottom, , top] = (await pdf.getPage(index + 1)).view;
-        const margin = (top - bottom) * 0.1;
+        const { view, rotate } = await pdf.getPage(index + 1);
+        // On a /Rotate 90 or 270 page the visual top and bottom are the x edges.
+        const sideways = rotate % 180 === 90;
+        const [low, high] = sideways ? [view[0]!, view[2]!] : [view[1]!, view[3]!];
+        const margin = (high - low) * 0.1;
         const hasBody = page.some(
-          ({ y, str }) => y > bottom + margin && y < top - margin && str.trim(),
+          (item) =>
+            (sideways ? item.x : item.y) > low + margin &&
+            (sideways ? item.x : item.y) < high - margin &&
+            item.str.trim(),
         );
         return text[index]!.trim().length < SCANNED_PAGE_MAX_CHARS || !hasBody ? [index] : [];
       }),
