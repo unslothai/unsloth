@@ -498,15 +498,17 @@ def _ep_save_entrypoints(level):
             # Only global rank 0 writes: only it receives the gathered tensors (the adapter's alone for a PEFT
             # model), so no rank holds the whole expert set.
             state = ep_full_adapter_state_dict(level, dst = 0)
-            _SAVING.append(True)
-            try:
-                out = (
-                    prior_save(*args, state_dict = state, **kwargs) if dist.get_rank() == 0 else None
-                )
-            finally:
-                _SAVING.pop()
-            dist.barrier()
-            return out
+
+            def write():
+                if dist.get_rank() != 0:
+                    return None
+                _SAVING.append(True)
+                try:
+                    return prior_save(*args, state_dict = state, **kwargs)
+                finally:
+                    _SAVING.pop()
+
+            return _tpn()._agree_write(write)
 
         save_pretrained._unsloth_ep_save = True
         level.save_pretrained = save_pretrained
@@ -733,10 +735,14 @@ _CKPT_DIR = "unsloth_ep"
 
 def _layout(model):
     import torch.distributed as dist
+
     rep = _replicas(model)
+    group = _mesh(model).get_group()
     return {
         "world": dist.get_world_size(),
         "ep": _mesh(model).size(),
+        "ep_rank": dist.get_rank(group),
+        "ep_members": list(dist.get_process_group_ranks(group)),
         "replicas": rep.size() if rep is not None else 1,
         # rank_major and grouped_by_expert cut lora_B into same-shaped but different column sets per rank.
         "lora_b": {
@@ -752,14 +758,17 @@ def _rank_path(directory):
 
 def _save_rank_state(model, optimizer, directory):
     """Every rank: its trainable tensors as held (expert LoRA shards local) and its optimizer state."""
-    import torch.distributed as dist
-
     path = _rank_path(directory)
-    os.makedirs(os.path.dirname(path), exist_ok = True)
     weights = {n: p.detach().cpu() for n, p in model.named_parameters() if p.requires_grad}
     optim = optimizer.state_dict() if optimizer is not None else None
-    torch.save({"layout": _layout(model), "weights": weights, "optimizer": optim}, path)
-    dist.barrier()
+    payload = {"layout": _layout(model), "weights": weights, "optimizer": optim}
+    tpn = _tpn()
+
+    def write():
+        os.makedirs(os.path.dirname(path), exist_ok = True)
+        tpn._atomic_torch_save(payload, path)
+
+    tpn._agree_write(write)
 
 
 def _read_rank_state(model, directory):
@@ -773,10 +782,20 @@ def _read_rank_state(model, directory):
     payload = _tpn()._resume_torch_load(path, map_location = "cpu")
     saved, want = dict(payload["layout"]), _layout(model)
     saved_b, want_b = saved.pop("lora_b", None), want.pop("lora_b")
+    # Older checkpoints lack these keys and still load.
+    member = {k: want.pop(k) for k in ("ep_rank", "ep_members")}
+    saved_member = {k: saved.pop(k) for k in ("ep_rank", "ep_members") if k in saved}
     if saved != want:
         raise ValueError(
             f"Unsloth: the checkpoint {directory} was written with expert parallel layout {saved}, "
             f"not this run's {want}; resume with the same world size and ep."
+        )
+    if saved_member and saved_member != member:
+        raise ValueError(
+            f"Unsloth: {path} was written by expert parallel rank {saved_member.get('ep_rank')} of the group "
+            f"{saved_member.get('ep_members')}, but this rank is {member['ep_rank']} of {member['ep_members']}: "
+            "the expert shards and their optimizer state belong to other experts. Resume on the same rank "
+            "layout (the same ep mesh over the same global ranks)."
         )
     if (
         saved_b is None
@@ -906,19 +925,37 @@ def ep_trainer_setup(trainer):
     save_model = trainer.save_model
 
     def ep_save_model(output_dir = None, _internal_call = False):
-        # Every rank takes part in gathering the expert LoRA (collective) onto global rank 0, the main process
-        # that writes (onto every rank when each node saves), then the Trainer's own save there.
-        state = ep_full_adapter_state_dict(model, dst = None if trainer.args.save_on_each_node else 0)
-        directory = output_dir or trainer.args.output_dir
-        if trainer.args.should_save:
-            model.save_pretrained(directory, state_dict = state)
-            tok = getattr(trainer, "processing_class", None) or getattr(trainer, "tokenizer", None)
-            if tok is not None and hasattr(tok, "save_pretrained"):
-                tok.save_pretrained(directory)
-            torch.save(trainer.args, os.path.join(directory, "training_args.bin"))
+        # Every rank takes part in gathering the expert LoRA onto rank 0 (each node's writer under
+        # save_on_each_node), then the Trainer's own save there.
         import torch.distributed as dist
 
-        dist.barrier(group = group)
+        if trainer.args.save_on_each_node:
+            flags = torch.zeros(
+                dist.get_world_size(), dtype = torch.int32, device = _tpn()._flag_device()
+            )
+            flags[dist.get_rank()] = int(bool(trainer.args.should_save))
+            dist.all_reduce(flags)
+            state = None
+            for writer in flags.nonzero().flatten().tolist():
+                part = ep_full_adapter_state_dict(model, dst = writer)
+                if writer == dist.get_rank():
+                    state = part
+        else:
+            state = ep_full_adapter_state_dict(model, dst = 0)
+        directory = output_dir or trainer.args.output_dir
+
+        def write():
+            if trainer.args.should_save:
+                model.save_pretrained(directory, state_dict = state)
+                tok = getattr(trainer, "processing_class", None) or getattr(
+                    trainer, "tokenizer", None
+                )
+                if tok is not None and hasattr(tok, "save_pretrained"):
+                    tok.save_pretrained(directory)
+                torch.save(trainer.args, os.path.join(directory, "training_args.bin"))
+
+        # World, not group: other replica groups must not run ahead of the write.
+        _tpn()._agree_write(write)
 
     trainer.save_model = ep_save_model
     # Checkpoints: the adapter is the 1-GPU one (save_model above); each rank also writes its own trainable
