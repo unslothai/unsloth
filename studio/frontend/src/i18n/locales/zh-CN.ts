@@ -4960,11 +4960,11 @@ export const zhCN = {
       toneFormal: "正式",
       toneCasual: "随意",
       auto: "边输入边翻译",
-      autoDescription: "模型加载后开始。输入文字不会触发下载。",
+      autoDescription: "模型加载后自动开始。",
       saveHistory: "保存历史记录",
       saveHistoryDescription: "仅保存在此浏览器中。",
       showPrompt: "显示提示词",
-      showPromptDescription: "查看发送给模型的完整指令。",
+      showPromptDescription: "查看发送给模型的确切指令。",
     },
     history: {
       title: "历史记录",

@@ -5129,11 +5129,11 @@ export const it = {
       toneFormal: "Formale",
       toneCasual: "Informale",
       auto: "Traduci mentre scrivi",
-      autoDescription: "Si avvia quando il modello è caricato. La digitazione non avvia mai un download.",
+      autoDescription: "Si avvia automaticamente quando il modello è caricato.",
       saveHistory: "Salva cronologia",
       saveHistoryDescription: "Conservata solo in questo browser.",
       showPrompt: "Mostra prompt",
-      showPromptDescription: "Visualizza le istruzioni esatte inviate al modello.",
+      showPromptDescription: "Vedi le istruzioni esatte inviate al modello.",
     },
     history: {
       title: "Cronologia",

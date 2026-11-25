@@ -5071,7 +5071,7 @@ export const hi = {
       toneFormal: "औपचारिक",
       toneCasual: "अनौपचारिक",
       auto: "टाइप करते ही अनुवाद करें",
-      autoDescription: "मॉडल लोड होने के बाद शुरू होता है। टाइप करने से कभी डाउनलोड शुरू नहीं होता।",
+      autoDescription: "मॉडल लोड होने पर अपने-आप शुरू होता है।",
       saveHistory: "हिस्ट्री सहेजें",
       saveHistoryDescription: "सिर्फ़ इसी ब्राउज़र में रखी जाती है।",
       showPrompt: "प्रॉम्प्ट दिखाएँ",

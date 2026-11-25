@@ -5420,12 +5420,11 @@ export const cs = {
       toneFormal: "Formální",
       toneCasual: "Neformální",
       auto: "Překládat při psaní",
-      autoDescription:
-        "Spustí se po načtení modelu. Psaní nikdy nespustí stahování.",
+      autoDescription: "Spustí se automaticky po načtení modelu.",
       saveHistory: "Ukládat historii",
       saveHistoryDescription: "Ukládá se pouze v tomto prohlížeči.",
       showPrompt: "Zobrazit prompt",
-      showPromptDescription: "Zobrazí přesné pokyny odeslané modelu.",
+      showPromptDescription: "Zobrazit přesné pokyny odeslané modelu.",
     },
     history: {
       title: "Historie",

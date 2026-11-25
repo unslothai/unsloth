@@ -5275,11 +5275,11 @@ export const sv = {
       toneFormal: "Formell",
       toneCasual: "Ledig",
       auto: "Översätt medan du skriver",
-      autoDescription: "Startar när modellen är inläst. Att skriva startar aldrig en hämtning.",
+      autoDescription: "Startar automatiskt när modellen har laddats.",
       saveHistory: "Spara historik",
       saveHistoryDescription: "Sparas bara i den här webbläsaren.",
       showPrompt: "Visa prompt",
-      showPromptDescription: "Se de exakta instruktionerna som skickas till modellen.",
+      showPromptDescription: "Se exakta instruktioner som skickas till modellen.",
     },
     history: {
       title: "Historik",
