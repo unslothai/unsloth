@@ -151,7 +151,7 @@ def test_kill_switch_and_foreign_forward(monkeypatch):
 
 def test_fused_cuda_decoder_replaces_the_patched_up_block():
     """``install_wan_vae`` skips instance forwards it did not set, except this module's up blocks."""
-    source = (BACKEND / "core" / "inference" / "diffusion_vae_fused.py").read_text()
+    source = (BACKEND / "core" / "inference" / "diffusion_vae_fused.py").read_text(encoding = "utf-8")
     tree = ast.parse(source)
     fn = next(
         n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "install_wan_vae"
@@ -162,7 +162,7 @@ def test_fused_cuda_decoder_replaces_the_patched_up_block():
 
 @pytest.mark.parametrize("loader", ["diffusion.py", "video.py"])
 def test_both_loaders_install_it(loader):
-    source = (BACKEND / "core" / "inference" / loader).read_text()
+    source = (BACKEND / "core" / "inference" / loader).read_text(encoding = "utf-8")
     calls = [
         node
         for node in ast.walk(ast.parse(source))
