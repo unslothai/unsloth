@@ -386,6 +386,7 @@ from .import_fixes import (
     fix_flash_attn_4_namespace_shadow,
     fix_vllm_aimv2_issue,
     fix_vllm_lora_tokenizer_module,
+    fix_vllm_weight_transfer_module,
     fix_torchao_nf4tensor_move,
     fix_compressed_tensors_activation_quant_gradient,
     fix_torchao_safe_int_mm_repr_probe,
@@ -410,6 +411,7 @@ from .import_fixes import (
     patch_psutil_cpu_freq,
     patch_enable_input_require_grads,
     patch_unsafe_trainer_rng_load,
+    patch_peft_bin_load_old_torch,
     patch_torch_export_pt2_unsafe_load,
     fix_openenv_no_vllm,
     patch_openspiel_env_async,
@@ -482,6 +484,7 @@ fix_xformers_performance_issue()
 fix_flash_attn_4_namespace_shadow()
 fix_vllm_aimv2_issue()
 fix_vllm_lora_tokenizer_module()
+fix_vllm_weight_transfer_module()
 # torchao 0.18.0 moved nf4tensor; torchtune (via xcodec2) imports the old path. Lazy alias.
 fix_torchao_nf4tensor_move()
 fix_compressed_tensors_activation_quant_gradient()
@@ -540,6 +543,8 @@ patch_peft_shared_active_adapter()
 fix_peft_stale_torchao_import_error()
 # peft.tuners.lora.model imported dispatch_torchao by value, so both copies must be replaced.
 fix_peft_torchao_missing_tensor_subclass()
+# After the PEFT import shims above: on an import failure the guard would silently not install.
+patch_peft_bin_load_old_torch()
 patch_accelerate_recursively_apply()
 
 del fix_transformers5_bare_annotation_configs
@@ -563,6 +568,7 @@ del fix_xformers_performance_issue
 del fix_flash_attn_4_namespace_shadow
 del fix_vllm_aimv2_issue
 del fix_vllm_lora_tokenizer_module
+del fix_vllm_weight_transfer_module
 del fix_torchao_nf4tensor_move
 del fix_compressed_tensors_activation_quant_gradient
 del fix_torchao_safe_int_mm_repr_probe

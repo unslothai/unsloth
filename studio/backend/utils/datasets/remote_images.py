@@ -163,6 +163,17 @@ def fetch_opted_in_image_bytes(url):
     return b"".join(chunks)
 
 
+def _disable_ghostscript() -> None:
+    """Pillow opens any cell starting with %!PS as EPS and renders it with the host's ``gs``, with no
+    timeout: a dataset row would run PostScript of its author's choosing. No dataset image needs it."""
+    try:
+        from PIL import EpsImagePlugin
+    except Exception:
+        return
+    EpsImagePlugin.gs_binary = False
+    EpsImagePlugin.gs_windows_binary = False
+
+
 def install_guarded_image_decode(hf_image = None):
     """``datasets.Image`` decodes a bytes-less URL cell by fetching it itself, wherever a row is
     read (detection, previews, conversion, streaming, nested features). Route those fetches through
@@ -173,6 +184,7 @@ def install_guarded_image_decode(hf_image = None):
             from datasets.features import image as hf_image
     except Exception:
         return
+    _disable_ghostscript()
     original = hf_image.Image.decode_example
     if getattr(original, "_unsloth_guarded", False):
         return

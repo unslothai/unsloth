@@ -615,8 +615,26 @@ def validate_recipe_access(recipe) -> None:
                                 )
                         else:
                             account_path(path)
+                            _require_contained_glob(path)
             if isinstance(value, (dict, list)):
                 validate_recipe_access(value)
+
+
+def _require_contained_glob(path: str) -> None:
+    """The engine opens a seed path with wildcards as a glob, cutting it at the first wildcard and
+    resolving the rest on its own: ``x.jsonl/..*.jsonl`` climbs where account_path saw a literal name.
+    A wildcard path may not walk up at all, and the folder it starts from must be the account's."""
+    if not any(char in path for char in "*?["):
+        return
+    parts = path.replace("\\", "/").split("/")
+    if any(part.startswith("..") for part in parts):
+        raise HTTPException(status_code = 403, detail = "Path is outside this account's workspace")
+    static = []
+    for part in parts:
+        if any(char in part for char in "*?["):
+            break
+        static.append(part)
+    account_path("/".join(static) or ".")
 
 
 async def account_event_stream(service, events):

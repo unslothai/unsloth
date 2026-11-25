@@ -136,6 +136,80 @@ export const PROVIDER_LOGOS: readonly ProviderLogo[] = [
 	},
 
 	{
+		id: "liquidai",
+		name: "Liquid AI",
+		logoPath: "/provider-logos/liquid.svg",
+		treatment: "mono-black",
+		background: "white",
+		prefixes: ["LFM2", "LFM-"],
+		owners: ["LiquidAI"],
+	},
+
+	{
+		id: "thinkingmachines",
+		name: "Thinking Machines Lab",
+		logoPath: "/hub/profile/logo/thinkingmachines.png",
+		treatment: "original",
+		background: "white",
+		fit: "cover",
+		prefixes: ["Inkling-", "inkling-"],
+		owners: ["thinkingmachines"],
+	},
+
+	{
+		id: "black-forest-labs",
+		name: "Black Forest Labs",
+		logoPath: "/hub/profile/logo/black-forest-labs.png",
+		treatment: "original",
+		background: "white",
+		fit: "cover",
+		prefixes: ["FLUX.", "flux-"],
+		owners: ["black-forest-labs"],
+	},
+
+	{
+		id: "lightricks",
+		name: "LTX",
+		logoPath: "/hub/profile/logo/ltx.png",
+		treatment: "original",
+		background: "transparent",
+		fit: "cover",
+		prefixes: ["LTX-"],
+		owners: ["Lightricks"],
+	},
+
+	{
+		id: "openmoss",
+		name: "OpenMOSS",
+		logoPath: "/hub/profile/logo/openmoss.png",
+		treatment: "original",
+		background: "white",
+		prefixes: ["MOSS-"],
+		owners: ["OpenMOSS-Team"],
+	},
+
+	{
+		id: "ornith-ai",
+		name: "Ornith",
+		logoPath: "/hub/profile/logo/ornith.png",
+		treatment: "original",
+		background: "transparent",
+		fit: "cover",
+		prefixes: ["Ornith-"],
+		owners: ["ornith-ai"],
+	},
+
+	{
+		id: "recursivesi",
+		name: "Recursive Superintelligence",
+		logoPath: "/hub/profile/logo/recursivesi.png",
+		treatment: "mono-theme",
+		background: "transparent",
+		prefixes: ["flint-"],
+		owners: ["RecursiveSI"],
+	},
+
+	{
 		id: "huggingface",
 		name: "Hugging Face",
 		logoPath: "/hub/profile/logo/hf.svg",

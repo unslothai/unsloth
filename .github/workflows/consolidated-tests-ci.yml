@@ -150,7 +150,9 @@ jobs:
             trl_spec: "trl>=0.18.2,<1.0.0"
           - id: tlatest5-trl1latest
             label: "HF=latest + TRL=latest"
-            transformers_spec: "transformers>=5,<6"
+            # Held below 5.24 until unsloth-zoo's patches are ported: 5.24.0 rewrote the sources they
+            # match (GLM-5-Next, Qwen4-Exp, DSA indexers, Cache.update, masking_utils). pyproject caps <=5.18.
+            transformers_spec: "transformers>=5,<5.24"
             trl_spec: "trl>=1,<2"
           - id: pyproject
             label: "HF=default + TRL=default"
@@ -243,8 +245,21 @@ jobs:
 
       - name: python floor compatibility (HARD GATE)
         # Every job pins 3.12, so this AST check guards the requires-python floor from pyproject.
+        # One leg: it reads only pyproject.toml and the .py files on disk under the packaged roots
+        # (unsloth/, unsloth_cli/, studio/) through ast/compile, never an installed package, so
+        # every leg computed the same verdict. !cancelled() plus the pytest fallback and
+        # --noconftest (the conftest imports unsloth) keep the verdict when setup failed on this
+        # leg, which the other legs used to cover.
+        if: ${{ !cancelled() && matrix.combo.id == 'pyproject' }}
         run: |
-          python -m pytest -v --tb=short tests/test_python39_compatibility.py
+          python -c 'import pytest' 2> /dev/null || python -m pip install pytest==9.0.3
+          python -m pytest -v --tb=short --noconftest -p no:cacheprovider tests/test_python39_compatibility.py
+
+      - name: SFT assistant-mask fallback through the real trainer (HARD GATE)
+        # Needs real torch, TRL and unsloth, so it cannot ride the pytest-only version-compat bundle.
+        run: |
+          python -m pytest -v --tb=short \
+            tests/version_compat/test_sft_assistant_mask_fallback_trainer.py
 
       - name: generation correctness guards (HARD GATE)
         run: |
@@ -2046,7 +2061,9 @@ jobs:
             trl_spec: "trl>=0.18.2,<1.0.0"
           - id: tlatest5-trl1latest
             label: "HF=latest + TRL=latest"
-            transformers_spec: "transformers>=5,<6"
+            # Held below 5.24 until unsloth-zoo's patches are ported: 5.24.0 rewrote the sources they
+            # match (GLM-5-Next, Qwen4-Exp, DSA indexers, Cache.update, masking_utils). pyproject caps <=5.18.
+            transformers_spec: "transformers>=5,<5.24"
             trl_spec: "trl>=1,<2"
           - id: pyproject
             label: "HF=default + TRL=default"
@@ -2098,6 +2115,42 @@ jobs:
           transformers-spec: ${{ matrix.combo.transformers_spec }}
           trl-spec: ${{ matrix.combo.trl_spec }}
           unsloth-zoo-ref: ${{ env.UNSLOTH_ZOO_REF }}
+
+      # The zoo suite's CPU compile tests rebuild every Inductor kernel with g++ on every run.
+      # A warm cache cut the 25 heaviest zoo files by ~14.5% in a same-runner A/B (cold, warm,
+      # cold on Intel Xeon 6975P-C and AMD EPYC 7763, identical pass/skip/fail IDs). The cache
+      # is ~50-80 MB per leg. Inductor keys entries by graph, config and torch version, so a
+      # generation saved for an older zoo SHA only costs misses. Saved on main only, like pip.
+      - name: Point Inductor at a restorable cache dir
+        id: inductor-stack
+        run: |
+          echo "TORCHINDUCTOR_CACHE_DIR=$RUNNER_TEMP/inductor-cache" >> "$GITHUB_ENV"
+          # The installed compiler stack resolves at run time; a new torch, triton or transformers starts a
+          # fresh cache rather than restoring one whose entries it can never hit.
+          #
+          # Inductor builds its CPU kernels with -march=native, and its own cache key does not name the
+          # CPU, so a cache saved on one runner model hands its shared objects to another. GitHub mixes
+          # Intel Xeon and AMD EPYC generations under ubuntu-24.04; a cross-model restore crashed pytest
+          # workers (free(): invalid pointer, buffer overflow detected) in every leg. Key on the target
+          # gcc resolves for -march=native, so a cache is only ever restored on the CPU that built it.
+          native=$(gcc -march=native -Q --help=target 2>/dev/null)
+          if [ -z "$native" ]; then
+            echo "::error::gcc -march=native -Q --help=target printed nothing; cannot key the Inductor cache"
+            exit 1
+          fi
+          echo "Inductor cache CPU: $(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2-) ($(printf '%s\n' "$native" | awk '$1 == "-march=" {print $2; exit}'))"
+          stack=$( { python -c "import importlib.metadata as m; print(*(m.version(p) for p in ('torch', 'triton', 'transformers')))"; printf '%s\n' "$native"; } | sha256sum | cut -c1-16)
+          echo "stack=$stack" >> "$GITHUB_OUTPUT"
+
+      - name: Restore the Inductor cache
+        id: inductor-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        continue-on-error: true
+        with:
+          path: ${{ runner.temp }}/inductor-cache
+          key: zoo-inductor-v2-${{ matrix.combo.id }}-${{ steps.inductor-stack.outputs.stack }}-${{ hashFiles('pyproject.toml') }}-${{ env.UNSLOTH_ZOO_REF }}
+          # A pyproject change (new dependency pins) starts a fresh cache instead of growing the old one.
+          restore-keys: zoo-inductor-v2-${{ matrix.combo.id }}-${{ steps.inductor-stack.outputs.stack }}-${{ hashFiles('pyproject.toml') }}-
 
       - name: unsloth_zoo @ ${{ env.UNSLOTH_ZOO_REF }} — full pytest (CPU)
         # 106 of 111 test_* in unsloth_zoo are CPU-only. The CUDA-skip case
@@ -2169,6 +2222,20 @@ jobs:
           fi
           python -m pytest -q -rs --tb=short $mlx_group || _keep "$?" "the mlx group"
           exit "$rc"
+
+      - name: Save the Inductor cache
+        # Only after a green suite, so a run cut short never stores a partial cache under a key
+        # that later runs cannot overwrite.
+        # Pushes only: a dispatch can pin a candidate unsloth_zoo_ref, and PRs would then restore its kernels.
+        if: >-
+          github.event_name == 'push'
+          && (github.ref == 'refs/heads/main' || (github.ref == 'refs/heads/upstream-main' && github.repository != 'unslothai/unsloth'))
+          && steps.inductor-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        continue-on-error: true
+        with:
+          path: ${{ runner.temp }}/inductor-cache
+          key: zoo-inductor-v2-${{ matrix.combo.id }}-${{ steps.inductor-stack.outputs.stack }}-${{ hashFiles('pyproject.toml') }}-${{ env.UNSLOTH_ZOO_REF }}
 
       - name: unsloth_zoo — test_apply_fused_lm_head (lives in compiler.py)
         # test_apply_fused_lm_head lives in unsloth_zoo/compiler.py, so run it via a shim in tests/

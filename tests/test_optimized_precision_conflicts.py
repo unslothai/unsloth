@@ -150,6 +150,10 @@ def loader():
         _revision_for_tokenizer_repo = lambda *args: None,
         _raise_if_modeling_ignores_config = lambda *args: None,
         raise_if_fast_inference_under_fsdp2 = lambda fast_inference: None,
+        _refuse_network_share_raw_adapter_base = lambda *args, **kwargs: None,
+        _resolved_revision = lambda model_name, revision, *args, **kwargs: revision,
+        # #19464: from_pretrained starts every load with a backend switch that needs a real torch.
+        _unsloth_load_begins = lambda: None,
     )
     # No fixture is Mistral-format: stub each loader.py helper deciding that, new ones included.
     for name in _mistral_format_names(tree):
@@ -171,8 +175,31 @@ def loader():
     for node in helpers:
         if isinstance(node, ast.FunctionDef):
             node.decorator_list = []
+    # Relative imports inside from_pretrained cannot run here (no package context): a stubbed name
+    # is read from env instead, and an unstubbed one fails by name if a test reaches it.
+    ast.fix_missing_locations(_RelativeImports(env).visit(method))
     exec(compile(ast.Module(body = [*helpers, method], type_ignores = []), str(path), "exec"), env)
     return env, captured
+
+
+class _RelativeImports(ast.NodeTransformer):
+    def __init__(self, env):
+        self.env = env
+
+    def visit_ImportFrom(self, node):
+        if not node.level:
+            return node
+        missing = [a.name for a in node.names if (a.asname or a.name) not in self.env]
+        if not missing:
+            return ast.copy_location(ast.Pass(), node)
+        message = f"from_pretrained reached `from {'.' * node.level}{node.module or ''} import {', '.join(missing)}`: stub it in the loader fixture"
+        return ast.copy_location(
+            ast.Raise(
+                exc = ast.Call(ast.Name("AssertionError", ast.Load()), [ast.Constant(message)], []),
+                cause = None,
+            ),
+            node,
+        )
 
 
 @pytest.mark.parametrize(
@@ -306,6 +333,25 @@ def test_modelscope_conflicts_do_not_download_weights(
     assert "adapter_config.json" in downloaded
     assert "configuration_custom.py" in downloaded
     assert len(calls) == 1
+
+
+def test_modelscope_adapter_with_network_share_base_is_refused(
+    loader, modelscope_snapshot, monkeypatch
+):
+    env, captured = loader
+    cache, _, _ = modelscope_snapshot
+    env["USE_MODELSCOPE"] = True
+    use_modelscope_adapter(env, cache, r"\\evil.example\share\model")
+    monkeypatch.setitem(sys.modules, "unsloth_zoo", SimpleNamespace())
+    monkeypatch.setitem(
+        sys.modules,
+        "unsloth_zoo.vision_utils",
+        SimpleNamespace(_is_network_share = lambda path: path.startswith("\\\\")),
+    )
+
+    with pytest.raises(ValueError, match = "network share"):
+        env["from_pretrained"](model_name = "owner/model", load_in_4bit = False)
+    assert "dispatch" not in captured
 
 
 @pytest.mark.parametrize(

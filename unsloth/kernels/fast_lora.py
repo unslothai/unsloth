@@ -184,6 +184,58 @@ def _autocast_dtype_mismatch(X):
     )
 
 
+# Set by patch_peft_model on attention / MLP modules whose LoRA bases are float32: their fused kernels run
+# only under bfloat16 autocast (cast as below), and float32 training keeps PEFT's own forward.
+_BF16_AUTOCAST_ONLY = "_unsloth_fused_lora_bf16_autocast_only"
+
+
+def _autocast_master_dtype(module, projs, X):
+    # float32 master weights under bfloat16 autocast: a float32 model trained with bf16 = True, or with
+    # neither flag on a bf16 GPU (rl.py picks bf16 autocast). PEFT's forward adds the LoRA term to a base
+    # output autocast already rounded to bfloat16, so a LoRA update under half a bfloat16 ulp of it is lost
+    # (about 95% of it at |lora_B| ~ 2e-5, the first Adam steps at lr 2e-5). Returns bfloat16 when every base
+    # is a frozen, plain float32 weight: the caller then casts X and the bases as autocast would and runs
+    # the fused kernels, which round base + LoRA once, exactly like a bfloat16 model. Else None.
+    if X.dtype is not torch.float32 and not (
+        X.dtype is torch.bfloat16 and module.__dict__.get(_BF16_AUTOCAST_ONLY, False)
+    ):
+        return None
+    if (
+        _is_any_autocast_enabled is not None
+        and not _is_compiling()
+        and not _is_any_autocast_enabled()
+    ):
+        return None
+    device_type = "cuda" if X.is_cuda else X.device.type
+    if (
+        not torch.is_autocast_enabled(device_type)
+        or torch.get_autocast_dtype(device_type) is not torch.bfloat16
+    ):
+        return None
+    for proj in projs:
+        if proj.__dict__.get("_unsloth_tp_local") is not None:
+            return None
+        base = proj._modules.get("base_layer")
+        if base is None or getattr(base, "weight_fake_quantizer", None) is not None:
+            return None
+        if getattr(type(base), "_unsloth_mxfp4_packed_linear", False):
+            return None
+        if getattr(base, "quant_method", None) is not None:
+            return None
+        W = base._parameters.get("weight")
+        if (
+            type(W) is not torch.nn.Parameter
+            or type(W.data) is not torch.Tensor
+            or W.dtype is not torch.float32
+            or W.requires_grad
+            or W.ndim != 2
+            or W.shape[1] == 1
+            or getattr(W, "quant_state", None) is not None
+        ):
+            return None
+    return torch.bfloat16
+
+
 def _is_plain_lora(proj):
     # One enabled, unmerged adapter with no dropout module and no lora_B bias (the default LoRA config).
     # Reads PEFT's instance state directly: getattr through nn.Module / properties costs more than the
@@ -336,6 +388,9 @@ def _base_dgrad_accum(dX, dY, W, W_quant):
     if _dq.traced_route(W, W_quant):
         return _dq.nf4_addmm_(dX, dY, W.t(), W_quant)
     W = _dq.dequantize(W.t(), W_quant, dtype = dY.dtype, rows = _dq.rows_of(dY))
+    if W.dtype != dX.dtype and _dq._is_bnb_nf4(W_quant):
+        # NF4 decodes to the quant state's dtype and in-place addmm_ skips autocast: as nf4_addmm_.
+        W = W.to(dX.dtype)
     return addmm_(dX, dY, W.t())
 
 
@@ -349,6 +404,9 @@ def _base_dgrad(
     if out is None and _dq.traced_route(W, W_quant):
         return _dq.nf4_matmul(dY, W.t(), W_quant)
     W = _dq.dequantize(W.t(), W_quant, dtype = dY.dtype, rows = _dq.rows_of(dY))
+    if W.dtype != dY.dtype and _dq._is_bnb_nf4(W_quant):
+        # matmul(out = ...) skips autocast too: as nf4_matmul.
+        W = W.to(dY.dtype)
     return torch.matmul(dY, W.t(), out = out)
 
 
@@ -511,10 +569,33 @@ def _replay_module():
     return gradient_checkpoint_replay_module()
 
 
-def _no_forward_hooks(*modules):
-    if torch.nn.modules.module._global_forward_hooks:
+def _mlp_output_unobserved(layer, mlp):
+    """True when nothing outside `layer` can read or re-enter mlp(x), checked on every call: the MLP's own
+    `forward` is a fused LoRA MLP bound directly to it (no accelerate hook or tiled MLP around it), the MLP
+    has no forward pre / post hook, the layer has no forward hook or accelerate wrapper (whose post_forward
+    sees the layer output), and no global forward hook is registered."""
+    module = torch.nn.modules.module
+    if module._global_forward_hooks or module._global_forward_pre_hooks:
         return False
-    return not any(getattr(m, "_forward_hooks", None) for m in modules)
+    slots = getattr(mlp, "__dict__", None)
+    layer_slots = getattr(layer, "__dict__", None)
+    if slots is None or layer_slots is None:
+        return False
+    if "_hf_hook" in slots or "_old_forward" in slots or hasattr(mlp, "_unsloth_forward"):
+        return False
+    if type(mlp).__call__ is not torch.nn.Module.__call__:
+        # An overridden __call__ wraps forward and can read or transform mlp(x) outside it.
+        return False
+    forward = slots.get("forward")
+    if getattr(forward, "__self__", None) is not mlp:
+        return False
+    if getattr(forward, "__func__", None) not in _SKIP_DOWN_MLP_FUNCTIONS:
+        return False
+    if slots.get("_forward_hooks") or slots.get("_forward_pre_hooks"):
+        return False
+    if "_hf_hook" in layer_slots or "_old_forward" in layer_slots:
+        return False
+    return not layer_slots.get("_forward_hooks")
 
 
 def arm_mlp_output_unread(layer, mlp):
@@ -524,7 +605,7 @@ def arm_mlp_output_unread(layer, mlp):
     fold _is_compiling() to True and keep no trace of it."""
     if _is_compiling() or not _SKIP_DOWN_ENABLED:
         return False
-    if _replay_module() is not layer or not _no_forward_hooks(layer, mlp):
+    if _replay_module() is not layer or not _mlp_output_unobserved(layer, mlp):
         return False
     _SKIP_DOWN_TLS.armed = (layer, mlp)
     return True
@@ -535,36 +616,48 @@ def disarm_mlp_output_unread():
 
 
 # Block compile (torch >= 2.11) traces the decoder layer, where the thread-local token above cannot be read.
-# The block's eager wrapper instead sets this plain global around a replay of a layer that qualifies
-# (block_skip_down_eligible); the traced LoRA_MLP reads it, so dynamo guards on it: the replay (grad mode)
-# graph is compiled with the skip and the forward (no grad) graph without, the same two graphs as before.
-_BLOCK_SKIP_DOWN = False
-
-
-def set_block_skip_down(value):
-    global _BLOCK_SKIP_DOWN
-    previous = _BLOCK_SKIP_DOWN
-    _BLOCK_SKIP_DOWN = bool(value)
-    return previous
-
-
+# The block's eager wrapper instead passes `_unsloth_skip_down=True` into the one replay call of a layer that
+# qualifies (block_skip_down_eligible); the tagged layer forward hands it to its MLP and the fused MLP to
+# LoRA_MLP as a plain argument. Dynamo specialises on the constant, so the replay (grad mode) graph is
+# compiled with the skip and the forward (no grad) graph without, and no other call, thread or layer sees it.
 def block_skip_down_eligible(layer, layer_forward):
-    """True when a compiled replay of `layer` may skip its down projection: the layer runs a forward whose
-    MLP output only feeds `residual + mlp(x)`, its MLP's own `forward` is the fused SwiGLU LoRA (no
-    accelerate hook or tiled MLP around it), and no forward hook could read an output. The caller still
-    checks that the checkpoint replays exactly this layer (_replay_module)."""
+    """True when a compiled replay of `layer` may skip its down projection: the layer runs a tagged forward
+    whose MLP output only feeds `residual + mlp(x)` and nothing outside the layer can observe mlp(x)
+    (_mlp_output_unobserved). The caller still checks that the checkpoint replays exactly this layer
+    (_replay_module). LoRA dropout / bias take LoRA_MLP's other branch, which always runs the projection, so
+    they are not eligible: the block would count a skip that never happened and compile a replay graph for it."""
     if not (_SKIP_DOWN_ENABLED and TRACE_LORA_FUNCTIONS):
         return False
     if not getattr(layer_forward, "_unsloth_mlp_output_unread", False):
         return False
     mlp = getattr(layer, "mlp", None)
-    slots = getattr(mlp, "__dict__", {})
-    if "_hf_hook" in slots or "_unsloth_forward" in slots:
+    if not _mlp_output_unobserved(layer, mlp):
         return False
-    if getattr(slots.get("forward"), "__func__", None) is not apply_lora_mlp_swiglu:
+    return all(
+        _no_lora_dropout_or_bias(getattr(mlp, name, None))
+        for name in ("gate_proj", "up_proj", "down_proj")
+    )
+
+
+def _no_lora_dropout_or_bias(proj):
+    """False when the active adapter of `proj` has a dropout module or a lora_B bias, which send LoRA_MLP down
+    the branch that always runs the down projection (_lora_dropout_and_bias)."""
+    if proj is None:
         return False
-    # LoRA dropout / bias take LoRA_MLP's other branch, which always runs the down projection.
-    return _no_forward_hooks(layer, mlp)
+    if _is_plain_lora(proj):
+        return True
+    adapter = _active_lora_adapter(proj)
+    if adapter is None:  # disabled, merged or no adapter: the base matmul alone
+        return True
+    dropout = getattr(proj, "lora_dropout", None)
+    if (
+        dropout is not None
+        and adapter in dropout
+        and type(dropout[adapter]) is not torch.nn.Identity
+    ):
+        return False
+    lora_B = getattr(proj, "lora_B", None)
+    return not (lora_B is not None and adapter in lora_B and lora_B[adapter].bias is not None)
 
 
 def _take_skip_down(mlp):
@@ -644,6 +737,7 @@ class LoRA_MLP(torch.autograd.Function):
         gateBias = None,
         upBias = None,
         downBias = None,
+        replay_skip_down = False,
     ):
         dtype = X.dtype
 
@@ -672,8 +766,9 @@ class LoRA_MLP(torch.autograd.Function):
                 X, upW, upW_quant, upA, upB, upS, XA = upXA, fused = fused, fused_checked = checked
             )
             del gateXA, upXA
-            if _is_compiling():
-                skip_down = _BLOCK_SKIP_DOWN  # guarded: set around a compiled block replay
+            if replay_skip_down or _is_compiling():
+                # Passed by the one compiled block replay that qualified (block_skip_down_eligible).
+                skip_down = replay_skip_down
             else:
                 skip_down = getattr(_SKIP_DOWN_TLS, "active", False)
                 if skip_down:
@@ -870,6 +965,7 @@ class LoRA_MLP(torch.autograd.Function):
                 d_gateBias,
                 d_upBias,
                 d_downBias,
+                None,
             )
 
         up_dB = df @ upB.t()
@@ -936,6 +1032,7 @@ class LoRA_MLP(torch.autograd.Function):
             d_gateBias,
             d_upBias,
             d_downBias,
+            None,
         )
 
 
@@ -946,22 +1043,31 @@ def apply_lora_mlp_swiglu(
     self,
     X,
     inplace = True,
+    *,
+    _unsloth_skip_down = False,
 ):
     projs = (self.gate_proj, self.up_proj, self.down_proj)
     extras = None
+    cast = None
     if not any(
         _has_multiple_active_adapters(proj)
         or _has_active_dora_adapter(proj)
         or _has_activation_fake_quantizer(proj)
         for proj in projs
     ):
-        extras = _lora_dropout_and_bias(projs, X)
+        cast = _autocast_master_dtype(self, projs, X)
+        X_cast = X if cast is None else X.to(cast)
+        if cast is not None or not self.__dict__.get(_BF16_AUTOCAST_ONLY, False):
+            extras = _lora_dropout_and_bias(projs, X_cast)
     if extras is None:
         return self.down_proj(self.act_fn(self.gate_proj(X)) * self.up_proj(X))
     dropout_p, biases = extras
     gateW, gateW_quant, gateA, gateB, gateS = get_lora_parameters(self.gate_proj)
     upW, upW_quant, upA, upB, upS = get_lora_parameters(self.up_proj)
     downW, downW_quant, downA, downB, downS = get_lora_parameters(self.down_proj)
+    if cast is not None:
+        X = X_cast
+        gateW, upW, downW = gateW.to(cast), upW.to(cast), downW.to(cast)
     skip = _take_skip_down(self) and dropout_p is None and all(b is None for b in biases)
     if skip:
         _SKIP_DOWN_TLS.active = True
@@ -989,6 +1095,7 @@ def apply_lora_mlp_swiglu(
             inplace,
             dropout_p,
             *biases,
+            _unsloth_skip_down,
         )
     finally:
         if skip:
@@ -1003,93 +1110,138 @@ def apply_lora_mlp_geglu_exact(
     self,
     X,
     inplace = True,
+    *,
+    _unsloth_skip_down = False,
 ):
     projs = (self.gate_proj, self.up_proj, self.down_proj)
     extras = None
+    cast = None
     if not any(
         _has_multiple_active_adapters(proj)
         or _has_active_dora_adapter(proj)
         or _has_activation_fake_quantizer(proj)
         for proj in projs
     ):
-        extras = _lora_dropout_and_bias(projs, X)
+        cast = _autocast_master_dtype(self, projs, X)
+        X_cast = X if cast is None else X.to(cast)
+        if cast is not None or not self.__dict__.get(_BF16_AUTOCAST_ONLY, False):
+            extras = _lora_dropout_and_bias(projs, X_cast)
     if extras is None:
         return self.down_proj(self.act_fn(self.gate_proj(X)) * self.up_proj(X))
     dropout_p, biases = extras
     gateW, gateW_quant, gateA, gateB, gateS = get_lora_parameters(self.gate_proj)
     upW, upW_quant, upA, upB, upS = get_lora_parameters(self.up_proj)
     downW, downW_quant, downA, downB, downS = get_lora_parameters(self.down_proj)
-    out = _apply(
-        LoRA_MLP,
-        X,
-        gateW,
-        gateW_quant,
-        gateA,
-        gateB,
-        gateS,
-        upW,
-        upW_quant,
-        upA,
-        upB,
-        upS,
-        downW,
-        downW_quant,
-        downA,
-        downB,
-        downS,
-        geglu_exact_forward_kernel,
-        geglu_exact_backward_kernel,
-        inplace,
-        dropout_p,
-        *biases,
-    )
+    if cast is not None:
+        X = X_cast
+        gateW, upW, downW = gateW.to(cast), upW.to(cast), downW.to(cast)
+    skip = _take_skip_down(self) and dropout_p is None and all(b is None for b in biases)
+    if skip:
+        _SKIP_DOWN_TLS.active = True
+    try:
+        out = _apply(
+            LoRA_MLP,
+            X,
+            gateW,
+            gateW_quant,
+            gateA,
+            gateB,
+            gateS,
+            upW,
+            upW_quant,
+            upA,
+            upB,
+            upS,
+            downW,
+            downW_quant,
+            downA,
+            downB,
+            downS,
+            geglu_exact_forward_kernel,
+            geglu_exact_backward_kernel,
+            inplace,
+            dropout_p,
+            *biases,
+            _unsloth_skip_down,
+        )
+    finally:
+        if skip:
+            _SKIP_DOWN_TLS.active = False
     return out
 
 
 from .geglu import geglu_approx_forward_kernel, geglu_approx_backward_kernel
 
 
-def apply_lora_mlp_geglu_approx(self, X):
+def apply_lora_mlp_geglu_approx(
+    self,
+    X,
+    *,
+    _unsloth_skip_down = False,
+):
     projs = (self.gate_proj, self.up_proj, self.down_proj)
     extras = None
+    cast = None
     if not any(
         _has_multiple_active_adapters(proj)
         or _has_active_dora_adapter(proj)
         or _has_activation_fake_quantizer(proj)
         for proj in projs
     ):
-        extras = _lora_dropout_and_bias(projs, X)
+        cast = _autocast_master_dtype(self, projs, X)
+        X_cast = X if cast is None else X.to(cast)
+        if cast is not None or not self.__dict__.get(_BF16_AUTOCAST_ONLY, False):
+            extras = _lora_dropout_and_bias(projs, X_cast)
     if extras is None:
         return self.down_proj(self.act_fn(self.gate_proj(X)) * self.up_proj(X))
     dropout_p, biases = extras
     gateW, gateW_quant, gateA, gateB, gateS = get_lora_parameters(self.gate_proj)
     upW, upW_quant, upA, upB, upS = get_lora_parameters(self.up_proj)
     downW, downW_quant, downA, downB, downS = get_lora_parameters(self.down_proj)
-    out = _apply(
-        LoRA_MLP,
-        X,
-        gateW,
-        gateW_quant,
-        gateA,
-        gateB,
-        gateS,
-        upW,
-        upW_quant,
-        upA,
-        upB,
-        upS,
-        downW,
-        downW_quant,
-        downA,
-        downB,
-        downS,
-        geglu_approx_forward_kernel,
-        geglu_approx_backward_kernel,
-        True,
-        dropout_p,
-        *biases,
-    )
+    if cast is not None:
+        X = X_cast
+        gateW, upW, downW = gateW.to(cast), upW.to(cast), downW.to(cast)
+    skip = _take_skip_down(self) and dropout_p is None and all(b is None for b in biases)
+    if skip:
+        _SKIP_DOWN_TLS.active = True
+    try:
+        out = _apply(
+            LoRA_MLP,
+            X,
+            gateW,
+            gateW_quant,
+            gateA,
+            gateB,
+            gateS,
+            upW,
+            upW_quant,
+            upA,
+            upB,
+            upS,
+            downW,
+            downW_quant,
+            downA,
+            downB,
+            downS,
+            geglu_approx_forward_kernel,
+            geglu_approx_backward_kernel,
+            True,
+            dropout_p,
+            *biases,
+            _unsloth_skip_down,
+        )
+    finally:
+        if skip:
+            _SKIP_DOWN_TLS.active = False
     return out
+
+
+# The fused MLP forwards that take the replay token (block_skip_down_eligible).
+_SKIP_DOWN_MLP_FUNCTIONS = (
+    apply_lora_mlp_swiglu,
+    apply_lora_mlp_geglu_exact,
+    apply_lora_mlp_geglu_approx,
+)
 
 
 class LoRA_QKV(torch.autograd.Function):
@@ -1398,19 +1550,26 @@ def apply_lora_qkv(
 ):
     projs = (self.q_proj, self.k_proj, self.v_proj)
     extras = None
+    cast = None
     if not any(
         _has_multiple_active_adapters(proj)
         or _has_active_dora_adapter(proj)
         or _has_activation_fake_quantizer(proj)
         for proj in projs
     ):
-        extras = _lora_dropout_and_bias(projs, X)
+        cast = _autocast_master_dtype(self, projs, X)
+        X_cast = X if cast is None else X.to(cast)
+        if cast is not None or not self.__dict__.get(_BF16_AUTOCAST_ONLY, False):
+            extras = _lora_dropout_and_bias(projs, X_cast)
     if extras is None:
         return self.q_proj(X), self.k_proj(X), self.v_proj(X)
     dropout_p, biases = extras
     QW, QW_quant, QA, QB, QS = get_lora_parameters(self.q_proj)
     KW, KW_quant, KA, KB, KS = get_lora_parameters(self.k_proj)
     VW, VW_quant, VA, VB, VS = get_lora_parameters(self.v_proj)
+    if cast is not None:
+        X = X_cast
+        QW, KW, VW = QW.to(cast), KW.to(cast), VW.to(cast)
     Q, K, V = _apply(
         LoRA_QKV,
         X,
@@ -1554,16 +1713,23 @@ class LoRA_W(torch.autograd.Function):
 
 def apply_lora_o(self, X):
     extras = None
+    cast = None
     if not (
         _has_multiple_active_adapters(self.o_proj)
         or _has_active_dora_adapter(self.o_proj)
         or _has_activation_fake_quantizer(self.o_proj)
     ):
-        extras = _lora_dropout_and_bias((self.o_proj,), X)
+        cast = _autocast_master_dtype(self, (self.o_proj,), X)
+        X_cast = X if cast is None else X.to(cast)
+        if cast is not None or not self.__dict__.get(_BF16_AUTOCAST_ONLY, False):
+            extras = _lora_dropout_and_bias((self.o_proj,), X_cast)
     if extras is None:
         return self.o_proj(X)
     dropout_p, (bias,) = extras
     OW, OW_quant, OA, OB, OS = get_lora_parameters(self.o_proj)
+    if cast is not None:
+        X = X_cast
+        OW = OW.to(cast)
     if dropout_p is None and bias is None:
         return _apply(LoRA_W, X, OW, OW_quant, OA, OB, OS)
     return _apply(LoRA_W, X, OW, OW_quant, OA, OB, OS, dropout_p and dropout_p[0], bias)

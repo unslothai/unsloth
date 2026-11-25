@@ -128,8 +128,14 @@ function recoveredToolResult(
 /** Re-arms a tool call still waiting on approval after a tab reopens; the caller owns the store.
  *  Both calls must be idempotent: a card can be re-raised from the seed and its frame. */
 export type RecoveredToolConfirmations = {
-  /** `partId` is the card's toolCallId; `sessionId` scopes the decision and "Always allow". */
-  register: (partId: string, approvalId: string, sessionId: string) => void;
+  /** `partId` is the card's toolCallId; `sessionId` scopes the decision and "Always allow";
+   *  `toolName` is the tool the approval is for. */
+  register: (
+    partId: string,
+    approvalId: string,
+    sessionId: string,
+    toolName?: string,
+  ) => void;
   resolve: (partId: string) => void;
   /** A running call's question about a website; null once it is answered or the call ends. */
   network?: (partId: string, request: NetworkRequest | null, requestId?: string) => void;
@@ -158,10 +164,16 @@ export function createGenerationToolRecovery(
       approved.has(approvalId)
     )
       return;
-    const partId = record(entry.part)?.toolCallId;
+    const part = record(entry.part);
+    const partId = part?.toolCallId;
     if (typeof partId === "string" && partId) {
       armed.add(partId);
-      toolConfirmations.register(partId, approvalId, sessionId);
+      toolConfirmations.register(
+        partId,
+        approvalId,
+        sessionId,
+        typeof part?.toolName === "string" ? part.toolName : undefined,
+      );
     }
   };
   const disarmApproval = (entry: CarriedPart) => {

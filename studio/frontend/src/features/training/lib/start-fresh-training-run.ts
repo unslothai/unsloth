@@ -13,6 +13,10 @@ import { DatasetFormatError, checkDatasetFormat } from "../api/datasets-api";
 import { getCachedSystemInfo } from "@/hooks/use-system";
 import { buildTrainingStartPayload } from "../api/mappers";
 import {
+  currentParallelRequestFields,
+  useTrainingParallelStore,
+} from "../stores/training-parallel-store";
+import {
   TrainingStartError,
   isTrainingStartOutcomeUnknownError,
   startTraining,
@@ -61,10 +65,14 @@ type AttemptPhase = "preflight" | "transport" | "finished";
 
 function captureTrainingStartInputs(config: TrainingConfigState) {
   // No hardware info: /api/system answering mid-start is not a user edit.
-  return createTrainingStartInputIdentity(
-    buildTrainingStartPayload(config, null),
-    config,
-  );
+  return {
+    ...createTrainingStartInputIdentity(
+      buildTrainingStartPayload(config, null),
+      config,
+    ),
+    // The user's GPU choice, not capabilities: a capabilities refresh is not an edit.
+    parallelOverride: useTrainingParallelStore.getState().override,
+  };
 }
 
 type TrainingStartInputs = ReturnType<typeof captureTrainingStartInputs>;
@@ -543,12 +551,15 @@ async function submitFreshTrainingRun(
     return attempt.cancel(translate(validation.errorKey));
   }
 
-  const payload = buildTrainingStartPayload(
-    attempt.config,
-    hfToken,
-    getCachedSystemInfo(),
-    usePlatformStore.getState().isCpuTrainingHost(),
-  );
+  const payload = {
+    ...buildTrainingStartPayload(
+      attempt.config,
+      hfToken,
+      getCachedSystemInfo(),
+      usePlatformStore.getState().isCpuTrainingHost(),
+    ),
+    ...currentParallelRequestFields(),
+  };
   if (!attempt.enterTransport()) {
     return false;
   }

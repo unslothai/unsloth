@@ -971,6 +971,17 @@ def test_calibration_dataset_with_several_splits_and_no_train_is_refused(monkeyp
         reap_mod._calibration_dataset("org/calib", None)
 
 
+@pytest.mark.parametrize("name", ["pandas", "json"])
+def test_calibration_dataset_refuses_a_datasets_builder_name(monkeypatch, name):
+    # load_dataset takes its own builders ahead of the Hub and reads the worker's cwd with them.
+    import datasets
+    monkeypatch.setattr(
+        datasets, "load_dataset", lambda *a, **k: pytest.fail("a builder name was loaded")
+    )
+    with pytest.raises(ValueError, match = "not a Hugging Face dataset id"):
+        reap_mod._calibration_dataset(name, None)
+
+
 def test_probe_follows_an_adapter_even_beside_a_dense_config(tmp_path):
     # A LoRA folder may also hold a config.json (dense, stale or the base's); the export loader
     # follows adapter_config.json, so the probe reads the base it names.

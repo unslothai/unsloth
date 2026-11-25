@@ -737,6 +737,9 @@ def _fast_args(packed, qs):
             _FAST_CHECKED[key] = bool(
                 ((got - ref).abs().max() <= 1e-2 * ref.abs().max() + 1e-3).item()
             )
+        except torch.cuda.OutOfMemoryError:
+            # Transient: caching it would keep the slow path for the whole process.
+            raise
         except RuntimeError:
             # An op signature this code does not know: keep the exact dequantize + matmul path.
             _FAST_CHECKED[key] = False

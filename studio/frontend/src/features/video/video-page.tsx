@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { modelErrorParts } from "@/lib/model-error-message";
+import { modelErrorToast } from "@/lib/model-error-toast";
 import { generationFailureLogsAction } from "@/features/settings/lib/view-logs-action";
 import {
   type DragEvent,
@@ -183,6 +185,7 @@ import {
 import {
   VIDEO_CATALOG,
   catalogToModelOptions,
+  downloadRepoIdFor,
   loadSpecFor,
 } from "@/features/model-picker/components/model-selector/model-catalog";
 import {
@@ -209,6 +212,7 @@ import { getHfToken, hfApiToken } from "@/features/hub/stores/hf-token-store";
 import { formatBytes, formatEta } from "@/features/hub/lib/format";
 import { generatePhaseLabel, sameGenerateProgress } from "@/lib/media-generate-phase";
 import { useNavigate, useSearch } from "@tanstack/react-router";
+import { confirmLinkedModel, modelLinkedFromOutside } from "@/lib/linked-model-arrival";
 import { useStagedDownload } from "@/features/hub/download-manager";
 import { MediaHeaderActions } from "@/components/media-header-actions";
 import { isTauri } from "@/lib/api-base";
@@ -238,7 +242,11 @@ import {
   int8AttentionSelection,
   type Int8AttentionChoice,
 } from "@/lib/int8-attention";
-import { diffusionPipelineLoadTarget, diffusionStagingEntries } from "@/lib/diffusion-pipeline-load-target";
+import {
+  diffusionPipelineLoadTarget,
+  diffusionStagingEntries,
+  stagedDownloadRepoId,
+} from "@/lib/diffusion-pipeline-load-target";
 import {
   routedGgufFilename,
   routedGgufLabel,
@@ -358,17 +366,30 @@ function showVideoFailureToast(error: string | null | undefined): boolean {
   if (!failure) return false;
   const { title, errorType, detail } = failure;
   const hasReason = Boolean(errorType || detail);
-  toast.error(title, {
-    description: hasReason ? (
-      <span className="[overflow-wrap:anywhere]">
-        {errorType && <code className="font-mono">{errorType}</code>}
-        {errorType && detail ? ": " : null}
-        {detail}
-      </span>
-    ) : undefined,
-    duration: hasReason ? FAILURE_WITH_REASON_TOAST_MS : undefined,
-    action: generationFailureLogsAction(title),
-  });
+  const reason = [errorType, detail].filter(Boolean).join(": ");
+  const reasonParts = modelErrorParts(reason);
+  const longReason = reasonParts.details !== null;
+  modelErrorToast(
+    title,
+    {
+      description: hasReason ? (
+        <span className="[overflow-wrap:anywhere]">
+          {longReason ? (
+            reasonParts.summary
+          ) : (
+            <>
+              {errorType && <code className="font-mono">{errorType}</code>}
+              {errorType && detail ? ": " : null}
+              {detail}
+            </>
+          )}
+        </span>
+      ) : undefined,
+      duration: hasReason ? FAILURE_WITH_REASON_TOAST_MS : undefined,
+      action: generationFailureLogsAction(title),
+    },
+    longReason ? reason : undefined,
+  );
   return true;
 }
 
@@ -807,7 +828,7 @@ function reportLoadFailure(failure: unknown, fallback: string): void {
     });
     return;
   }
-  toast.error(text || fallback);
+  modelErrorToast(text || fallback);
 }
 
 const COSMOS_GUARDRAIL_TITLE = "The Cosmos safety checker needs cosmos-guardrail";
@@ -3260,7 +3281,8 @@ function VideoGenerator({
       if (!owns()) return true;
       const advanced = currentLoadAdvanced(opts.kind, familyOverrideRequired);
       if (source !== "hub") return handleLoadRef.current(repoId, opts, advanced);
-      const pickToastId = pickToast.show(opts.displayRepoId ?? repoId);
+      // Label with the repo actually fetched (a vendor id's unsloth mirror), not the picked id.
+      const pickToastId = pickToast.show(downloadRepoIdFor(opts.displayRepoId ?? repoId, VIDEO_CATALOG));
       // Read before the await: a newer pick replaces quantRevert.
       const ownRevert = quantRevert.current;
       let incompatible: string | null = null;
@@ -3303,7 +3325,12 @@ function VideoGenerator({
           };
           stagedQuantRevert.current = ownRevert;
           const staged = stage(entries);
-          pickToast.setPhase(pickToastId, "downloading", staged);
+          pickToast.setPhase(
+            pickToastId,
+            "downloading",
+            staged,
+            stagedDownloadRepoId(entries, opts.displayRepoId ?? repoId),
+          );
           return true;
         }
       } catch {
@@ -3426,6 +3453,12 @@ function VideoGenerator({
     const key = `${wanted}|${routeSearch?.quant ?? ""}|${routeSearch?.ggufQuant ?? ""}`;
     if (handledRouteModel.current === key) return;
     handledRouteModel.current = key;
+    if (modelLinkedFromOutside(wanted)) {
+      const linked = { model: wanted, quant: routeSearch?.quant, ggufQuant: routeSearch?.ggufQuant };
+      void navigateSelf({ to: "/video", search: {}, replace: true });
+      confirmLinkedModel(wanted, () => void navigateSelf({ to: "/video", search: linked, replace: true }));
+      return;
+    }
     setFamilyOverride("auto");
     // Owns the page like a direct pick, so an earlier staged download cannot land on top.
     const token = pickGuard.claim();

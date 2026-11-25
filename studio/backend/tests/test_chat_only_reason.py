@@ -177,12 +177,18 @@ def test_a_torch_install_off_mac_without_an_accelerator_stays_no_gpu(monkeypatch
     assert hw.CHAT_ONLY_REASON == "no_gpu"
 
 
-def test_apple_silicon_no_torch_install_without_mlx_is_off_by_request(monkeypatch):
+@pytest.mark.parametrize(
+    "release, reason",
+    [("15.1", "mlx_unavailable"), ("13.6.1", "no_torch")],
+    ids = ["mlx-installable", "mlx-wheels-skip"],
+)
+def test_apple_silicon_no_torch_install_without_mlx(monkeypatch, release, reason):
+    # Chat only serves MLX models too, so a Mac the MLX wheels support waits for the self-heal.
     _no_torch_apple_silicon(monkeypatch, mlx_on_disk = False)
+    monkeypatch.setattr(hw.platform, "mac_ver", lambda: (release, ("", "", ""), ""))
     assert hw.detect_hardware() == hw.DeviceType.CPU
     assert hw.CHAT_ONLY is True
-    assert hw.CHAT_ONLY_REASON == "no_torch"
-    assert hw.CHAT_ONLY_DETAIL is None
+    assert hw.CHAT_ONLY_REASON == reason
     assert hw.trains_on_cpu("no_torch") is False
 
 
@@ -207,7 +213,7 @@ def test_a_no_torch_mac_the_mlx_wheels_skip_gets_no_full_install_offer(
     monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CPU)
     monkeypatch.setattr(hw, "current_chat_only_verdict", lambda: ("no_torch", None))
     hw.detect_hardware()
-    assert hw.CHAT_ONLY_REASON == "no_torch"
+    assert hw.CHAT_ONLY_REASON == ("mlx_unavailable" if blocker is None else "no_torch")
     hint = hw.chat_only_permission_hint("no_torch", None)
     message = hw.export_capability()["export_unsupported_message"]
     if blocker is None:
@@ -278,11 +284,23 @@ def test_a_declined_settle_does_not_mark_the_epoch(monkeypatch):
     assert hw.CHAT_ONLY_REASON == "mlx_unavailable"
 
 
-def test_apple_silicon_no_torch_install_with_usable_mlx_enables_training(monkeypatch):
+def test_apple_silicon_no_torch_install_with_usable_mlx_chats_on_mlx_without_training(monkeypatch):
     monkeypatch.setattr(hw, "is_apple_silicon", lambda: True)
     monkeypatch.setattr(hw, "_installed_without_torch", lambda: True)
     monkeypatch.setattr(hw, "_has_usable_mlx_stack", lambda: True)
-    hw.detect_hardware()
+    assert hw.detect_hardware() == hw.DeviceType.MLX
+    assert hw.CHAT_ONLY is True
+    assert hw.CHAT_ONLY_REASON == "no_torch"
+    capability = hw.export_capability()
+    assert capability["export_supported"] is False
+    assert capability["export_unsupported_reason"] == "no_torch"
+
+
+def test_apple_silicon_full_install_with_usable_mlx_enables_training(monkeypatch):
+    monkeypatch.setattr(hw, "is_apple_silicon", lambda: True)
+    monkeypatch.setattr(hw, "_installed_without_torch", lambda: False)
+    monkeypatch.setattr(hw, "_has_usable_mlx_stack", lambda: True)
+    assert hw.detect_hardware() == hw.DeviceType.MLX
     assert hw.CHAT_ONLY is False
     assert hw.CHAT_ONLY_REASON is None
 

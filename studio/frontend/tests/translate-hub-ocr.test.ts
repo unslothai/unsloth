@@ -103,7 +103,7 @@ test("only Translate sends its character limit to the document reader", () => {
   const page = readText("../src/features/translate/translate-page.tsx");
   assert.match(
     page,
-    /extractDocumentText\(\s*file,\s*undefined,\s*TRANSLATE_SOURCE_MAX_CHARS,\s*\)/,
+    /extractDocumentText\(\s*upload,\s*undefined,\s*TRANSLATE_SOURCE_MAX_CHARS,\s*OVERLAY_IMAGE\.test\(file\.name\),\s*\)/,
   );
   const api = readText("../src/features/rag/api/rag-api.ts");
   assert.match(

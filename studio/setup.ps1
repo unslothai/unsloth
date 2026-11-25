@@ -104,8 +104,11 @@ try { $script:StudioStdoutRedirected = [Console]::IsOutputRedirected } catch { }
 
 # 5.1's Write-Host uses the OEM code page even when redirected, so use one sink:
 # the console handle when redirected, Write-Host (colorized) when interactive.
+# Only install.ps1 mutes; set here for Set-StrictMode callers.
+$script:StudioMuteLines = $false
 function Write-StudioLine {
     param([string]$Message = "", [string]$ForegroundColor)
+    if ($script:StudioMuteLines) { return }
     if ($script:StudioStdoutRedirected) {
         try { [Console]::Out.WriteLine($Message); [Console]::Out.Flush() } catch {}
         return
@@ -4022,11 +4025,25 @@ $HasNvidiaDriverEvidence = $HasNvidiaSmi -and -not $script:NvidiaPresenceOnly
 $NvidiaGpuName = $null
 $NvidiaSmArch = $null
 $NvidiaDriverVersion = $null
-$nvMaskHidesAll = $false
-if ($null -ne $env:CUDA_VISIBLE_DEVICES) {
-    $nvMask = ($env:CUDA_VISIBLE_DEVICES -replace '\s', '')
-    $nvMaskHidesAll = ($nvMask -eq '' -or $nvMask -eq '-1')
+function Test-CudaMaskHidesNvidia {
+    if ($null -eq $env:CUDA_VISIBLE_DEVICES) { return $false }
+    $mask = $env:CUDA_VISIBLE_DEVICES -replace '\s', ''
+    return ($mask -eq '' -or $mask -eq '-1')
 }
+function Test-RocmTorchExplicitlyRequested {
+    return ("$env:UNSLOTH_FORCE_ROCM_TORCH".Trim() -match '^(?i)(1|true|yes|on)$')
+}
+# install.sh _warn_if_cuda_mask_hides_amd: HIP reads the mask too.
+function Write-CudaMaskHidesAmdWarning {
+    Write-StudioLine ""
+    Write-StudioLine "[WARN] CUDA_VISIBLE_DEVICES=`"$env:CUDA_VISIBLE_DEVICES`" hid the NVIDIA GPU, so ROCm torch was selected." -ForegroundColor Yellow
+    Write-StudioLine "[WARN] ROCm reads CUDA_VISIBLE_DEVICES too: left set, it also hides the AMD GPU and" -ForegroundColor Yellow
+    Write-StudioLine "[WARN] Unsloth Studio / Desktop will run CPU-only. Unset it before launching" -ForegroundColor Yellow
+    Write-StudioLine "[WARN] (HIP_VISIBLE_DEVICES=0 picks the AMD card), and reinstall with" -ForegroundColor Yellow
+    Write-StudioLine "[WARN] UNSLOTH_FORCE_ROCM_TORCH=1 rather than the mask to ask for ROCm torch." -ForegroundColor Yellow
+    Write-StudioLine ""
+}
+$nvMaskHidesAll = Test-CudaMaskHidesNvidia
 if ($HasNvidiaSmi -and $NvidiaSmiExe -and -not $script:NvidiaSmiWedged -and -not $nvMaskHidesAll) {
     try {
         # -StdoutOnly: driver warnings on stderr would corrupt the CSV.
@@ -4246,7 +4263,10 @@ function Resolve-ShadowingGfxPick {
     substep "Run 'setx HIP_VISIBLE_DEVICES $discreteIdx' and reopen your terminal so Unsloth uses $discreteArch at runtime too, not just at install time" "Cyan"
     return $discreteArch
 }
-if (-not $HasNvidiaSmi) {
+# Only the flag or a hiding mask probes AMD beside NVIDIA, so a plain update keeps CUDA.
+$script:ProbeAmdBesideNvidia = $HasNvidiaSmi -and -not (Get-PinnedTorchIndexUrl) -and
+    ((Test-RocmTorchExplicitlyRequested) -or $nvMaskHidesAll)
+if (-not $HasNvidiaSmi -or $script:ProbeAmdBesideNvidia) {
     # The venv hipInfo.exe comes from an AMD wheel, not a HIP SDK.
     function Test-HipinfoIsVenvInternal {
         param([AllowNull()][string]$HipinfoPath)
@@ -4601,6 +4621,27 @@ $_rocmWheelArches = @(
 )
 # "AMD gets GPU wheels", not "AMD GPU present": unmapped arches install CPU torch.
 $AmdHasGpuWheels = [bool]($script:ROCmGfxArch -and ($_rocmWheelArches -contains $script:ROCmGfxArch))
+if ($script:ProbeAmdBesideNvidia) {
+    # UNSLOTH_ROCM_GFX_ARCH names an arch, not a card: hipinfo, amd-smi or WMI must see one.
+    if ($AmdHasGpuWheels -and ($HasROCm -or @($script:ROCmGpuLabels).Count -gt 0)) {
+        # An AMD host from here on, so the stale check keeps ROCm torch rather than restoring CUDA.
+        $HasNvidiaSmi = $false
+        $_rocmWhy = if (Test-RocmTorchExplicitlyRequested) { "UNSLOTH_FORCE_ROCM_TORCH is set" } else { "CUDA_VISIBLE_DEVICES hides the NVIDIA GPU" }
+        substep "$_rocmWhy -- ROCm PyTorch for the AMD GPU ($script:ROCmGfxArch), not CUDA" "Cyan"
+        # install.ps1 (SKIP_STUDIO_BASE=1) already warned.
+        if ($nvMaskHidesAll -and $null -eq $env:HIP_VISIBLE_DEVICES -and $env:SKIP_STUDIO_BASE -ne "1") {
+            Write-CudaMaskHidesAmdWarning
+        }
+    } else {
+        if ((Test-RocmTorchExplicitlyRequested) -and $env:SKIP_STUDIO_BASE -ne "1") {
+            substep "[WARN] UNSLOTH_FORCE_ROCM_TORCH is set, but no ROCm wheel index could be selected for this host; keeping CUDA." "Yellow"
+        }
+        # NVIDIA keeps torch: forget the AMD probe.
+        $HasROCm = $false; $HipSdkInstalled = $false; $ROCmGpuLabel = $null; $ROCmGpuName = $null
+        $script:ROCmGpuLabels = @(); $script:ROCmPeerLabels = @(); $script:ROCmGfxArch = $null
+        $script:ROCmUnsupportedGfxArch = $null; $script:ROCmVersion = $null; $script:ROCmVersionFull = $null
+    }
+}
 
 # Mirrors install.ps1's Intel scan; self-contained since `studio update` runs setup.ps1 standalone.
 $script:IsIntelXpu = $false
@@ -9177,13 +9218,13 @@ if ((Test-Path -LiteralPath $VenvT5Legacy) -and ($script:OfflineFastPath -or (Te
 }
 if (-not (Test-SidecarCurrent -TargetDir $VenvT5_530Dir -Version "5.3.0")) { $_NeedT5_530 = $true }
 if (-not (Test-SidecarCurrent -TargetDir $VenvT5_550Dir -Version "5.5.4")) { $_NeedT5_550 = $true }
-if (-not (Test-SidecarCurrent -TargetDir $VenvT5_510Dir -Version "5.13.1")) { $_NeedT5_510 = $true }
+if (-not (Test-SidecarCurrent -TargetDir $VenvT5_510Dir -Version "5.15.1")) { $_NeedT5_510 = $true }
 # Offline keep: defer sidecar rebuilds; the runtime self-heal covers a missing tier. Mirrors setup.sh.
 $_DeferT5_530 = $false
 $_DeferT5_550 = $false
 $_DeferT5_510 = $false
 if (-not $script:OfflineFastPath -and (Test-UvOfflineRequested)) {
-    foreach ($tier in @(@("530", "5.3.0"), @("550", "5.5.4"), @("510", "5.13.1"))) {
+    foreach ($tier in @(@("530", "5.3.0"), @("550", "5.5.4"), @("510", "5.15.1"))) {
         $flag = "_NeedT5_$($tier[0])"
         if ((Get-Variable -Name $flag -ValueOnly)) {
             substep "transformers $($tier[1]) sidecar is stale or missing but UV_OFFLINE is set -- left for the next online update" "Yellow"
@@ -9193,7 +9234,7 @@ if (-not $script:OfflineFastPath -and (Test-UvOfflineRequested)) {
     }
 }
 if ($script:OfflineFastPath) {
-    foreach ($tier in @(@("530", "5.3.0"), @("550", "5.5.4"), @("510", "5.13.1"))) {
+    foreach ($tier in @(@("530", "5.3.0"), @("550", "5.5.4"), @("510", "5.15.1"))) {
         $flag = "_NeedT5_$($tier[0])"
         if ((Get-Variable -Name $flag -ValueOnly)) {
             substep "transformers $($tier[1]) sidecar is stale but UV_OFFLINE is set -- left for the next online update" "Yellow"
@@ -9227,11 +9268,11 @@ if ($_NeedT5_550) {
     Repair-SidecarTiktoken -TargetDir $VenvT5_550Dir -DirName ".venv_t5_550"
 }
 if ($_NeedT5_510) {
-    Install-T5Sidecar -TargetDir $VenvT5_510Dir -Version "5.13.1" -Label "5.13" -DirName ".venv_t5_510" -Reason "for Gemma 4 Unified support"
+    Install-T5Sidecar -TargetDir $VenvT5_510Dir -Version "5.15.1" -Label "5.15" -DirName ".venv_t5_510" -Reason "for Gemma 4 Unified support"
 } elseif ($_DeferT5_510) {
-    step "transformers" "5.13.1 sidecar stale -- left for the next online update"
+    step "transformers" "5.15.1 sidecar stale -- left for the next online update"
 } else {
-    step "transformers" "5.13.1 sidecar current"
+    step "transformers" "5.15.1 sidecar current"
     Repair-SidecarTiktoken -TargetDir $VenvT5_510Dir -DirName ".venv_t5_510"
 }
 $ErrorActionPreference = $script:PrevEAP_T5

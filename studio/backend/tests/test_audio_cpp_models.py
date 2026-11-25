@@ -447,6 +447,166 @@ def test_separation_families_resolve_runnable(hub, folder, family):
     assert acm.family_from_names([folder]) == family
 
 
+_ENHANCES = {"tasks": ["s2s"], "capabilities": {"s2s": ["audio_enhancement"]}}
+_CHUNK = {"name": "audio_chunk_duration_sec", "type": "float", "min": 0, "default": 0}
+
+
+@pytest.mark.parametrize(
+    "folder, family, goal, output",
+    [
+        ("Apollo-GGUF", "apollo", "restore", "restored"),
+        ("Sidon-GGUF", "sidon", "restore", "restored"),
+        ("UniverSR-GGUF", "universr", "restore", "restored"),
+        ("AudioSR-GGUF", "audiosr", "restore", "restored"),
+        ("voice-isolator-GGUF", "voice_isolator", "voice", "voice"),
+    ],
+)
+def test_speech_filters_run_s2s_on_separate_with_their_spec_options(
+    hub, monkeypatch, folder, family, goal, output
+):
+    monkeypatch.setattr(acm, "runtime_knows_family", lambda name: True)
+    spec = {**_ENHANCES, "options": {"request": [_CHUNK]}}
+    header = _gguf_bytes(family = family, spec = spec)
+    _put(_snapshot(hub), f"{folder}/{folder.lower()}-f32.gguf", header)
+    model = acm.resolve(f"{AUDIO_CPP_REPO}/{folder}", network = False)
+    assert (model.task, model.server_task, model.unsupported) == ("sep", "s2s", None)
+    assert model.workflows == {"separate": acm.WorkflowBinding("s2s", "tasks", None, ("audio",))}
+    assert (model.separation.goal, model.separation.output) == (goal, output)
+    assert [o["name"] for o in acm.workflow_options(model, "separate")] == [
+        "audio_chunk_duration_sec"
+    ]
+    assert model.audio_type == "audiocpp_sep"
+
+
+@pytest.mark.parametrize(
+    "family",
+    ["voice_isolator", "sidon", "apollo", "audiosr", "universr", "mossformer2", "tf_gridnet"],
+)
+def test_separate_filters_need_a_runtime_that_knows_them(monkeypatch, family):
+    monkeypatch.setattr(acm, "runtime_knows_family", lambda name: False)
+    policy = acm.family_policy(family, label = "M-GGUF")
+    assert policy.unsupported == "M-GGUF needs a newer audio runtime than the one installed."
+
+
+def test_the_stem_models_load_on_any_runtime(monkeypatch):
+    monkeypatch.setattr(acm, "runtime_knows_family", lambda name: False)
+    for family in ("htdemucs", "htdemucs_6stems", "bs_roformer", "mel_band_roformer"):
+        assert acm.family_policy(family).unsupported is None, family
+
+
+def test_an_unlisted_s2s_family_runs_on_separate_only_when_it_enhances(monkeypatch):
+    monkeypatch.setattr(acm, "runtime_knows_family", lambda name: True)
+    enhancer = acm.family_policy("new_restorer", _ENHANCES)
+    assert (enhancer.task, enhancer.default_server_task) == ("sep", "s2s")
+    assert (enhancer.separation.goal, enhancer.separation.output) == ("restore", "restored")
+    talker = acm.family_policy(
+        "new_talker", {"tasks": ["s2s"], "capabilities": {"s2s": ["speaker_reference"]}}
+    )
+    assert talker.unsupported == "Speech-to-speech models are not supported in Unsloth Studio yet."
+    # A spec that also speaks lands on its speech pages, not on Separate.
+    both = acm.family_policy("new_both", {**_ENHANCES, "tasks": ["tts", "s2s"]})
+    assert both.task == "tts"
+
+
+def test_prompted_and_conversational_s2s_models_say_why_they_are_refused():
+    assert "voice conversation model" in acm.family_policy("personaplex").unsupported
+    assert "needs a prompt" in acm.family_policy("sam_audio").unsupported
+
+
+def test_separation_options_follow_the_loaded_models_kind():
+    check = acm.separation_options
+    offered = [
+        {"name": "audio_chunk_duration_sec", "type": "float", "min": 0},
+        {"name": "sampler_mode", "type": "enum", "values": ["euler", "rk4"]},
+    ]
+    s2s = {"server_task": "s2s", "family": "apollo", "offered": offered}
+    assert check({}, **s2s, label = "Apollo") is None
+    assert check({"audio_chunk_duration_sec": 5.0}, **s2s, label = "Apollo") == {
+        "audio_chunk_duration_sec": 5.0
+    }
+    # What is recorded is what the run sends: values the backend would drop or clamp, never are.
+    assert check(
+        {"audio_chunk_duration_sec": -3, "sampler_mode": "nope"}, **s2s, label = "Apollo"
+    ) == {"audio_chunk_duration_sec": 0.0}
+    assert check({"sampler_mode": "nope"}, **s2s, label = "Apollo") is None
+    with pytest.raises(acm.SeparationOptionsError, match = "Unknown option 'num_overlap'"):
+        check({"num_overlap": 1}, **s2s, label = "Apollo")
+    sep = {"server_task": "sep", "offered": []}
+    overlap = check({"num_overlap": 1}, **sep, family = "bs_roformer", label = "R")
+    assert overlap == {"num_overlap": 1}
+    with pytest.raises(acm.SeparationOptionsError, match = "HTDemucs has no separation options"):
+        check({"num_overlap": 1}, **sep, family = "htdemucs", label = "HTDemucs")
+    with pytest.raises(acm.SeparationOptionsError, match = "from 1 to 8"):
+        check({"num_overlap": 9}, **sep, family = "bs_roformer", label = "R")
+
+
+def test_mossformer2_runs_the_task_of_the_file_it_serves(hub):
+    folder = "MossFormer2-GGUF"
+    snap = _snapshot(hub)
+    names = (
+        "mossformer2-ss-16k-f32.gguf",
+        "mossformer2-se-48k-f32.gguf",
+        "mossformer2-sr-48k-f16.gguf",
+    )
+    spec = {"tasks": ["sep", "s2s"], "options": {"request": [_CHUNK]}}
+    for name in names:
+        _put(snap, f"{folder}/{name}", _gguf_bytes(family = "mossformer2", spec = spec))
+    model = acm.resolve(f"{AUDIO_CPP_REPO}/{folder}", network = False)
+    by_file = {Path(v.primary).name: model.with_variant(v) for v in model.variants}
+    ss, se, sr = (by_file[name] for name in names)
+    assert (ss.server_task, ss.separation.goal, ss.separation.output, ss.options) == (
+        "sep",
+        "speakers",
+        None,
+        (),
+    )
+    assert (se.server_task, se.separation.goal, se.separation.output) == ("s2s", "voice", "voice")
+    assert (sr.server_task, sr.separation.goal, sr.separation.output) == (
+        "s2s",
+        "restore",
+        "restored",
+    )
+    for filtered in (se, sr):
+        assert filtered.workflows["separate"].server_task == "s2s"
+        assert [o["name"] for o in filtered.options] == ["audio_chunk_duration_sec"]
+        assert filtered.separation.rate == 48000
+    assert ss.separation.rate == 44100
+
+
+@pytest.mark.parametrize(
+    "name, task, goal",
+    [
+        ("mossformer2-se.gguf", "s2s", "voice"),
+        ("mossformer2_sr.gguf", "s2s", "restore"),
+        ("mossformer2.gguf", "sep", "speakers"),
+        ("mossformer2-sense-f32.gguf", "sep", "speakers"),
+    ],
+)
+def test_mossformer2_reads_the_kind_from_any_file_name(hub, name, task, goal):
+    folder = "MossFormer2-GGUF"
+    spec = {"tasks": ["sep", "s2s"]}
+    _put(_snapshot(hub), f"{folder}/{name}", _gguf_bytes(family = "mossformer2", spec = spec))
+    model = acm.resolve(f"{AUDIO_CPP_REPO}/{folder}", network = False)
+    (variant,) = model.variants
+    served = model.with_variant(variant)
+    assert (served.server_task, served.separation.goal) == (task, goal)
+
+
+def test_apollo_gets_44k_and_the_48k_filters_get_48k():
+    families = ("apollo", "sidon", "voice_isolator", "universr")
+    specs = {f: acm.family_policy(f).separation for f in families}
+    assert {f: s.rate for f, s in specs.items()} == {
+        "apollo": 44100,
+        "sidon": 48000,
+        "voice_isolator": 48000,
+        "universr": 48000,
+    }
+    # Only UniverSR needs the source's bandwidth (it refuses an effective 48 kHz input).
+    assert {f: s.input_rates for f, s in specs.items() if s.input_rates} == {
+        "universr": (8000, 12000, 16000, 24000)
+    }
+
+
 def test_qwen3_tts_package_kind_comes_from_its_name(hub):
     snap = _snapshot(hub)
     for folder in (
@@ -3186,6 +3346,22 @@ def test_voice_fold_and_alias_json_rows_hidden_for_tts_only():
     assert _names("magpie_tts", spec) == ["steps", "note"]
     music = _spec_rows({"name": "complete_track_classes", "description": "A JSON list of classes."})
     assert _names("controlfoley", music) == ["complete_track_classes"]
+
+
+def test_options_that_name_host_files_are_never_offered_or_sent():
+    # The spec's type and wording do not decide: VibeVoice's voice_samples is a plain string.
+    rows = [{"name": name, "description": "Plain text."} for name in sorted(acm.FILE_OPTIONS)]
+    rows[0] = {**rows[0], "type": "enum", "values": ["/a.wav", "/b.wav"]}
+    spec = _spec_rows(*rows, {"name": "note"})
+    for family in ("vibevoice", "moss_ttsd", "fish_audio", "controlfoley"):
+        assert _names(family, spec) == ["note"]
+    schema = acm.option_schema(acm.FAMILIES["vibevoice"], spec, None)
+    b, srv = _backend_with(_speech_model("vibevoice", options = schema), SPEECH_WAV)
+    b.generate_audio_response(
+        "Speaker 1: hi", audio_options = {"voice_samples": "/etc/passwd", "note": "n"}
+    )
+    assert srv.calls[0][1]["options"] == {"note": "n"}
+    assert b.last_generation_stats["ignored_options"] == ["voice_samples"]
 
 
 def test_audio_request_inputs_and_seed_row_follow_the_declared_keys():

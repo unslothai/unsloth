@@ -6,6 +6,7 @@
 from pathlib import Path
 from typing import Dict, Any, Optional
 from functools import lru_cache
+import glob
 import json
 import math
 import os
@@ -77,7 +78,7 @@ def _has_specific_yaml(model_identifier: str) -> bool:
     return any(
         config_path.is_file()
         for name in names
-        for config_path in defaults_dir.rglob(name.replace("/", "_") + ".yaml")
+        for config_path in defaults_dir.rglob(glob.escape(name.replace("/", "_")) + ".yaml")
     )
 
 

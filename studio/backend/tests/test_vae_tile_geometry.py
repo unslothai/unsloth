@@ -110,6 +110,8 @@ KNOWN_SEAMS: dict[str, str] = {
 
 GEOMETRY_PRESERVING = {
     "diffusion_vae_fused": "batched stock tiled_decode: the stock attributes' tiles, decoded as one batch",
+    "video_vae_multigpu": "stock Wan tiled_decode body (AST-fingerprinted), tiles shared by two cards; "
+    "test_video_vae_multigpu.py checks it bitwise against the stock decode",
 }
 
 

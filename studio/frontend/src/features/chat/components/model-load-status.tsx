@@ -158,6 +158,13 @@ export function ModelLoadInlineStatus({
             </span>
           </div>
         </div>
+      ) : progressLabel ? (
+        <span
+          className="min-w-0 truncate text-ui-10 font-medium tracking-[0.08em] text-muted-foreground/80"
+          title={progressLabel}
+        >
+          {splitProgressLabel(progressLabel).primary}
+        </span>
       ) : null}
       {onStop ? (
         <Button

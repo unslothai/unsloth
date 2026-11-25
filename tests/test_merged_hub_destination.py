@@ -168,9 +168,11 @@ def saving(monkeypatch, tmp_path):
             cuda = SimpleNamespace(is_bf16_supported = lambda: False),
         ),
         get_token = lambda: "cached-fixture",
+        _defer_to_main_process = lambda is_main_process, model = None: not is_main_process,
         _determine_username = lambda repo, old, token: (repo, repo.split("/")[0]),
         _prewarm_base_model_hub_cache = lambda *args, **kwargs: None,
         get_model_name = lambda name: name,
+        _merge_base_model_name = lambda name, load_in_4bit = True: name,
         _normalize_compressed_method = lambda method: None,
         _normalize_torchao_method = lambda method: None,
         _is_qwen3_5_vlm = lambda model: False,
@@ -180,7 +182,11 @@ def saving(monkeypatch, tmp_path):
         _internal_mtp_save = contextlib.nullcontext,
         _stitch_mtp_head = lambda model, directory: None,
         _mtp_head_tensor_names = lambda model: [],
+        # Separately trained lm_head: these fixtures train no vocab layers.
+        _untied_trained_vocab = lambda model: None,
         raise_if_merging_mistral_format_view = lambda model, save_method: None,
+        raise_if_merging_inkling2 = lambda model, save_method: None,
+        is_inkling2_config = lambda config: False,
         lora_relative_to_original_base = lambda model: contextlib.nullcontext(),
         _unmerge_flags_on_error = lambda streamed: contextlib.nullcontext(),
         nullcontext = contextlib.nullcontext,
@@ -211,6 +217,13 @@ def saving(monkeypatch, tmp_path):
         "_push_lfm3_audio_release_config",
         # Real code: a private push into an existing public repo is refused before any upload.
         "_refuse_private_push_to_public_repo",
+        "_left_padding_side",
+        # Real code: a non-Gemma model leaves the merged config.json alone.
+        "_gemma_live_linear_rope",
+        "_gemma_rope_the_zoo_export_drops",
+        "_write_trained_gemma_rope",
+        "_is_main_rank",
+        "_merge_base_resolver",
     }
     nodes = []
     for node in tree.body:
@@ -231,6 +244,7 @@ def saving(monkeypatch, tmp_path):
     )
     code = compile(ast.fix_missing_locations(module), str(source), "exec")
     exec(code, env)
+    env["_left_padding_side"] = contextlib.contextmanager(env["_left_padding_side"])
     # A save.py helper these functions start calling would otherwise fail as a bare NameError deep in
     # some test. Names only reached on branches the tests never take stay unstubbed on purpose.
     for name in _loaded_globals(code):

@@ -76,7 +76,7 @@ CATALOG: tuple[CatalogUpscaler, ...] = (
     ),
 )
 _CATALOG_BY_ID = {entry.id: entry for entry in CATALOG}
-# Loadable without pickle by spandrel and resolvable by sd.cpp --hires-upscalers-dir.
+# Read by _read_state_dict, which runs nothing a file carries, and resolvable by sd.cpp --hires-upscalers-dir.
 LOCAL_SUFFIXES = (".pth", ".pt", ".safetensors")
 _STEM_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _.+()\-]{0,127}$")
 
@@ -400,11 +400,48 @@ def _pick_dtype(descriptor: Any, device: Any) -> Any:
     return torch.float32
 
 
+def _weights_only_refuses_torchscript() -> bool:
+    """Checked by version: below torch 2.6, weights_only still hands a TorchScript archive to torch.jit.load
+    (CVE-2025-32434)."""
+    try:
+        import torch
+        parts = str(torch.__version__).split("+")[0].split(".")
+        return (int(parts[0]), int(parts[1])) >= (2, 6)
+    except Exception:  # noqa: BLE001 - an unreadable version is not a safe one
+        return False
+
+
+def _pinned_catalog_file(path: Path) -> bool:
+    """A catalog file whose bytes match its SHA-256; a drop-in never is (_local_files skips catalog names)."""
+    return any(path.name == entry.filename and _verified_file(path, entry) for entry in CATALOG)
+
+
+def _read_state_dict(path: Path) -> Any:
+    """The file's tensors, read without running anything it carries.
+
+    Not spandrel's load_from_file: that gives a .pt to torch.jit.load, and its torch.load (a pickle_module, so
+    weights_only is off) does the same with a .pth that is a TorchScript archive; the archive's code then runs here."""
+    if path.suffix.lower() == ".safetensors":
+        from safetensors.torch import load_file
+        return load_file(str(path), device = "cpu")
+    import torch
+
+    if not _weights_only_refuses_torchscript() and not _pinned_catalog_file(path):
+        raise ValueError(
+            f"'{path.name}' is a pickle file, which this torch cannot read safely (needs torch 2.6 or newer). "
+            "Use a .safetensors upscaler instead."
+        )
+    return torch.load(str(path), map_location = "cpu", weights_only = True)
+
+
 def _load(path: Path, device: Any) -> tuple[Any, Any]:
     import torch
-    from spandrel import ImageModelDescriptor, ModelLoader
+    from spandrel import ImageModelDescriptor, ModelLoader, canonicalize_state_dict
 
-    descriptor = ModelLoader(device = "cpu").load_from_file(str(path))
+    # load_from_file's own two steps after the read, so architecture detection is unchanged.
+    descriptor = ModelLoader(device = "cpu").load_from_state_dict(
+        canonicalize_state_dict(_read_state_dict(path))
+    )
     if not isinstance(descriptor, ImageModelDescriptor):
         raise ValueError(f"'{path.name}' is not a single-image upscaler model.")
     if int(getattr(descriptor, "input_channels", 3)) != 3:

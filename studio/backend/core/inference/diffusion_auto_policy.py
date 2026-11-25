@@ -206,6 +206,7 @@ def hub_download_factor(fam: Any, base_repo: Optional[str] = None) -> float:
 _BASE_REPO_BF16_GB: dict[str, tuple[float, float, float]] = {
     "black-forest-labs/flux.2-klein-9b": (18.2, 16.4, 0.2),
     "black-forest-labs/flux.2-klein-base-9b": (18.2, 16.4, 0.2),
+    "black-forest-labs/flux.2-klein-9b-kv": (18.2, 16.4, 0.2),
 }
 
 

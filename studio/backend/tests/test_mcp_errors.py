@@ -506,3 +506,16 @@ def test_a_hint_never_names_a_tool_the_owner_turned_off(monkeypatch):
     # Unsloth MCP off: every tool counts as off, so no hint names one.
     monkeypatch.setattr(mcp_access, "disabled_tools", lambda: None)
     assert problems.caller_tools() == frozenset()
+
+
+@pytest.mark.parametrize(
+    "chat, says",
+    [
+        (False, "with load_model(kind='image') first."),
+        (True, "load_model(model=<its id in list_models"),
+    ],
+)
+def test_a_chats_load_hint_names_a_catalog_model(chat, says):
+    headers = {"X-Unsloth-Problem": "not_loaded kind=image page=Images"}
+    message = _message_as(chat, _v1(400, "No image model.", code = "not_loaded", headers = headers))
+    assert says in message, message

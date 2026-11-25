@@ -89,6 +89,26 @@ export const COMPACTION_NOTICE_TEXT: Record<CompactionNoticeKind, string> = {
     "A summary of the older messages could not be written, so the oldest were dropped from the model's context instead.",
 };
 
+export type CompactionFailureReason = "cut_off" | "timed_out" | "empty" | "error";
+
+export function isCompactionFailureReason(
+  value: unknown,
+): value is CompactionFailureReason {
+  return (
+    value === "cut_off" ||
+    value === "timed_out" ||
+    value === "empty" ||
+    value === "error"
+  );
+}
+
+export const COMPACTION_FAILURE_TEXT: Record<CompactionFailureReason, string> = {
+  cut_off: "The model hit its length limit before it finished the summary.",
+  timed_out: "The model took too long to start or continue the summary.",
+  empty: "The model returned an empty summary.",
+  error: "The summary request failed.",
+};
+
 /** afterToolCallId is null when the fit ran before the reply began. */
 export interface CompactionMarker {
   afterToolCallId: string | null;

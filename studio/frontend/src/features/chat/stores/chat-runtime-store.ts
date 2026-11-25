@@ -64,9 +64,13 @@ import {
   type RecommendedSamplingKey,
   RECOMMENDED_SAMPLING_KEYS,
   getPresetOwnedParams,
+  isRecommendedSamplingKey,
   getPresetSource,
 } from "../presets/preset-policy";
-import { normalizeModelIdentity } from "../../hub/lib/model-identity";
+import {
+  normalizeModelIdentity,
+  withoutNamedQuant,
+} from "../../hub/lib/model-identity";
 import { normalizePresetLoadConfig } from "../presets/preset-load-config";
 import {
   CHAT_PROJECT_ATTACHMENT_TARGET_KEY,
@@ -185,6 +189,8 @@ export const DEFAULT_MAX_TOOL_CALLS_PER_MESSAGE = 50;
 export const UNLIMITED_TOOL_CALLS = 9999;
 // The slider value from before MCP lifted it to Max, so turning MCP off can put it back.
 const MAX_TOOL_CALLS_BEFORE_MCP_KEY = "unsloth_max_tool_calls_before_mcp";
+const MAX_TOOL_CALLS_PICKED_WITH_MCP_KEY =
+  "unsloth_max_tool_calls_picked_with_mcp";
 export const CHAT_CONFIRM_TOOL_CALLS_KEY = "unsloth_chat_confirm_tool_calls";
 export const CHAT_EXPAND_QUANTIZATIONS_KEY =
   "unsloth_chat_expand_quantizations";
@@ -1018,13 +1024,29 @@ export function threadScopedOverride<K extends ThreadScopedSettingKey>(
       }
     } else {
       const live = readThreadScopedSettings(useChatRuntimeStore.getState());
-      if (live[key] !== undefined) return live[key];
+      if (live[key] !== undefined && !isUnownedSampling(key)) return live[key];
     }
   }
   return activeThreadScopedSettings?.[key];
 }
 
 const explicitlyEditedThreadFields = new Set<string>();
+
+// A model's recommendation is not an edit: storing it would pin it over the next model's.
+function isUnownedSampling(key: string): boolean {
+  return (
+    isRecommendedSamplingKey(key) &&
+    !explicitlyEditedThreadFields.has(key) &&
+    (activeThreadScopedSettings as Record<string, unknown> | null)?.[key] === undefined
+  );
+}
+
+function withoutUnownedSampling(settings: ThreadScopedSettings): ThreadScopedSettings {
+  for (const key of RECOMMENDED_SAMPLING_KEYS) {
+    if (isUnownedSampling(key)) delete (settings as Record<string, unknown>)[key];
+  }
+  return settings;
+}
 
 /** Fields a provider constraint moved without persisting; no snapshot may save them. */
 const constraintSuppressedThreadFields = new Set<string>();
@@ -1442,6 +1464,7 @@ function buildThreadScopedSnapshot(
     settings.permissionMode = activeThreadScopedSettings.permissionMode;
   }
   restoreChatOwnedValues(threadId, settings);
+  if (threadId === threadScopedSettingsThreadId) withoutUnownedSampling(settings);
   // Not a store field, so a snapshot read from the store lacks it and a replacement would erase it.
   Object.assign(settings, withSavedChatFullAccess(threadId, {}));
   if (threadId === threadScopedSettingsThreadId) {
@@ -2668,6 +2691,8 @@ type ChatRuntimeStore = {
       runId?: string;
       /** A computer call's reasons for asking; absent on a card restored after a reload. */
       computerUse?: ComputerUseAsk;
+      /** The tool the approval is for: only a card naming that tool may ask or answer. */
+      toolName?: string;
     }
   >;
   toolNetworkRequests: Record<string, NetworkRequest>;
@@ -2828,6 +2853,8 @@ type ChatRuntimeStore = {
       /** A preset pick or save: not an edit of the loaded model, so its remembered params are dropped
        *  instead of overwritten, and its recommendation applies again on the next load. */
       fromPreset?: boolean;
+      /** A custom preset pick or save: the open chat owns every recommended value, unchanged ones too. */
+      pinsSampling?: boolean;
     },
   ) => void;
   setCustomPresets: (presets: Preset[]) => void;
@@ -2920,6 +2947,7 @@ type ChatRuntimeStore = {
     imageDisclosure?: ImageDisclosure,
     runId?: string,
     computerUse?: ComputerUseAsk,
+    toolName?: string,
   ) => void;
   clearToolConfirmation: (toolCallId: string) => void;
   /** null clears it, but only while `requestId` (when given) is still the one shown. */
@@ -3901,6 +3929,10 @@ function saveCapBeforeMcp(value: number | null): void {
   );
 }
 
+function saveCapPickedWithMcp(value: boolean): void {
+  writeStorageValue(MAX_TOOL_CALLS_PICKED_WITH_MCP_KEY, value ? "true" : "");
+}
+
 // MCP chains run long: MCP on lifts the cap to Max, MCP off restores the saved value unless the user
 // set one since. A store listener, so chat switches and settings hydrated after a reload reconcile too.
 function reconcileMcpToolCallCap(
@@ -3914,7 +3946,13 @@ function reconcileMcpToolCallCap(
   if (state.mcpEnabledForChat) {
     const turnedOn =
       !previous.mcpEnabledForChat || !previous.settingsHydrated;
-    if (!turnedOn || current >= UNLIMITED_TOOL_CALLS) return;
+    if (
+      !turnedOn ||
+      current >= UNLIMITED_TOOL_CALLS ||
+      readStorageValue(MAX_TOOL_CALLS_PICKED_WITH_MCP_KEY) === "true"
+    ) {
+      return;
+    }
     saveCapBeforeMcp(current);
     next = UNLIMITED_TOOL_CALLS;
   } else {
@@ -4938,6 +4976,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         options?.persist !== false
           ? withoutCapturedThreadEdits(changedParams, fromModelDefaults)
           : changedParams;
+      if (options?.pinsSampling === true && options?.persist !== false) {
+        for (const key of RECOMMENDED_SAMPLING_KEYS) captureThreadScopedEdit(key);
+      }
       // An edit belongs to the model the params now describe, so a call moving checkpoint and
       // sliders at once files them under the destination.
       const fromPreset = options?.fromPreset === true;
@@ -5189,6 +5230,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   setModelsError: (modelsError) => set({ modelsError }),
   setLastModelLoadError: (lastModelLoadError) => set({ lastModelLoadError }),
   setCheckpoint: (modelId, ggufVariant, options) => {
+    modelId = withoutNamedQuant(modelId, ggufVariant);
     let scheduleQwenMigration = false;
     set((state) => {
       // Only external selections persist; a stale local id would race the freshly loaded model.
@@ -5398,6 +5440,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       }
       threadScopedSettingsThreadId = threadId;
       explicitlyEditedThreadFields.clear();
+      for (const field of heldFields) {
+        if (isRecommendedSamplingKey(field)) explicitlyEditedThreadFields.add(field);
+      }
       constraintSuppressedThreadFields.clear();
       const stored = hasThreadScopedSettings(settings)
         ? (settings as ThreadScopedSettings)
@@ -5491,7 +5536,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       if (threadId !== null && (stored === null || heldFields.size > 0)) {
         scheduleThreadScopedSettingsWrite(
           threadId,
-          stored === null ? sanitizeThreadScopedSettings(applied) : null,
+          stored === null
+            ? withoutUnownedSampling(sanitizeThreadScopedSettings(applied))
+            : null,
         );
       }
       if (!hasKeys(nextState)) {
@@ -5902,6 +5949,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     set((state) => {
       saveBool(CHAT_MCP_ENABLED_KEY, mcpEnabledForChat);
       if (mcpEnabledForChat) saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false);
+      if (mcpEnabledForChat && !state.mcpEnabledForChat) {
+        saveCapPickedWithMcp(false);
+      }
       return {
         ...(mcpEnabledForChat
           ? { mcpEnabledForChat, deepResearchEnabled: false }
@@ -6083,6 +6133,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     imageDisclosure,
     runId,
     computerUse,
+    toolName,
   ) =>
     set((state) => ({
       toolConfirmations: {
@@ -6095,6 +6146,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           imageDisclosure,
           runId,
           computerUse,
+          toolName,
         },
       },
     })),
@@ -6487,6 +6539,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     set((state) => {
       // A value the user picks, Max included, is theirs: turning MCP off must not replace it.
       saveCapBeforeMcp(null);
+      saveCapPickedWithMcp(state.mcpEnabledForChat);
       setScalarSettingVersion(
         "maxToolCallsPerMessage",
         maxToolCallsPerMessage,

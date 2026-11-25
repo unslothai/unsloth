@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import http.client
 import json
 import os
 import platform
@@ -40,11 +41,35 @@ DEFAULT_REPO = "unslothai/stable-diffusion.cpp"
 UPSTREAM_FALLBACK_REPO = "leejet/stable-diffusion.cpp"
 # Pinned for reproducibility; UNSLOTH_SD_CPP_TAG overrides (empty tracks latest) and a missing tag falls back to latest. The -u<id> suffix is the mirror's patch set: an unpatched build aborts on the default --cfg-scale and on --vae-on-cpu, and quantizes MiniMax-H3's 1-D norms into an output uncorrelated with its own bf16 reference (leejet/stable-diffusion.cpp#1861, #1862, #1863).
 # The base must carry every family's sd_cpp_arch_marker / sd_cpp_edit_marker: hosts the mirror does
-# not build (ROCm) install it from upstream. -ud331c66, the previous pin on this base, ignores the MOSS-Image
+# not build (ROCm) install it from upstream. -u9455ee1 is -u27b9ddc plus the implicit GEMM Metal CONV_2D
+# (unslothai/stable-diffusion.cpp#103). -ud331c66, an earlier pin on this base, ignores the MOSS-Image
 # moss_uncond_skip* sample args; master-968 predates MOSS-Image (master-975, split-QKV GGUF loading in the same
 # release); master-951 before it predated FLUX.3 Image Klein (master-968), and master-813 Qwen-Image-2.1 (master-883)
 # and its reference-alpha fix (master-896). CUDA bundles carry no CUDA runtime.
-DEFAULT_TAG = "master-982-0518b34-u27b9ddc"
+DEFAULT_TAG = "master-982-0518b34-u9455ee1"
+
+# Every asset of DEFAULT_TAG on DEFAULT_REPO with its sha256 (the release's GitHub asset digests), so the pin
+# still installs when the releases API refuses an anonymous lookup (60/h per IP: offices, CGNAT, CI runners) or
+# is unreachable: the assets are then fetched from their fixed github.com/.../releases/download/ URLs and still
+# verified against these digests. Refresh together with DEFAULT_TAG (test_sd_cpp_install_ratelimit checks it).
+PINNED_RELEASE_ASSETS: dict[str, dict[str, str]] = {
+    DEFAULT_TAG: {
+        "sd-master-982-0518b34-u9455ee1-bin-Darwin-macOS-arm64.zip": "f48ce406308107b2f68e2310b9a7684b537280a2b172798703f8e3c4540a3adc",
+        "sd-master-982-0518b34-u9455ee1-bin-Darwin-macOS-x86_64.zip": "f440cd58668314ec66db056d99eb4177d41ef07b3941fddedafde0747091a7c9",
+        "sd-master-982-0518b34-u9455ee1-bin-Linux-Ubuntu-22.04-x86_64-cuda12.zip": "eb464f0d8e750d6e860d0e90188627eb5fb045b4027f5e18788095488f645327",
+        "sd-master-982-0518b34-u9455ee1-bin-Linux-Ubuntu-22.04-x86_64-cuda13.zip": "8a7d756d4e0664dcfcd9a164723eb88ab54e2e6db2a356feb66a43445a075454",
+        "sd-master-982-0518b34-u9455ee1-bin-Linux-Ubuntu-22.04-x86_64-vulkan.zip": "b37a96f1b8b1503fd26ade909f215f6321d23eb8508f8d391b8dc3b47f40e280",
+        "sd-master-982-0518b34-u9455ee1-bin-Linux-Ubuntu-22.04-x86_64.zip": "31a68a34f7e34ce83448a02f1cafc3f651314063bfb167c272320a93b2302d47",
+        "sd-master-982-0518b34-u9455ee1-bin-Linux-Ubuntu-24.04-aarch64.zip": "6ce3fe62dd9a31ce20a878362116379a2c7d79400b964ecfe2a15b32d85bdf37",
+        "sd-master-982-0518b34-u9455ee1-bin-win-cpu-arm64.zip": "c10267c18502c6914883f1b3768f1963979abe9b14b1bdb758c2c8e19ac69b73",
+        "sd-master-982-0518b34-u9455ee1-bin-win-cpu-x64.zip": "ea7fd7d451834eec3f96e156f485f72b7347965fb7a5b6356edaf0e872aef635",
+        "sd-master-982-0518b34-u9455ee1-bin-win-cuda12-x64.zip": "d2a50f75395daed840d30ef2d91c4f72ea39ffc59bcb8bbf58097eddbeca33e9",
+        "sd-master-982-0518b34-u9455ee1-bin-win-cuda13-x64.zip": "6d997b457ced7b85d3181f3cdc5749eb5805221e1d7d06df7ce673cc2e81b76c",
+        "sd-master-982-0518b34-u9455ee1-bin-win-vulkan-x64.zip": "b5656e3dc1001c822f68f23e81a7901995526db45eac6e3cd536f0827b86139e",
+        "sd-prebuilt-manifest.json": "9f6d883aed79027772628f2ec6f7bc7002a05316ba5a2ef469f7d1d73dc9a6e2",
+        "sd-prebuilt-sha256.json": "9bc9730eb7899089de6898b383cf224679eb3667fcd02d61c7492c71a5d37e10",
+    },
+}
 
 REPO = DEFAULT_REPO
 
@@ -165,9 +190,7 @@ def _pinned_tag() -> Optional[str]:
 
 
 def install_is_stale(root: Path) -> bool:
-    """True when ``root`` was installed for another pin, or is a per-GPU-family CUDA bundle that does
-    not serve a GPU this process can use (a card swapped since the install). Unknown (no record / tag,
-    tracking latest, undetectable GPUs) is not stale."""
+    """True for another pin, or a per-GPU CUDA bundle that no usable GPU matches; unknown is not stale."""
     return _pin_is_stale(root) or _cuda_coverage_is_stale(root)
 
 
@@ -183,9 +206,8 @@ def _cuda_coverage_is_stale(root: Path) -> bool:
             _INSTALLED_CUDA_SMS_MEMO.pop(str(root), None)
     if rec.get("accelerator") != "cuda" or not isinstance(sms, list) or not sms:
         return False
-    # The visible GPUs only: when no bundle covers a masked card the selection falls back to a
-    # visible-only bundle, and checking the hidden card would reinstall it forever. None visible
-    # (an empty or unmatched mask) is unknown, not stale.
+    # Visible GPUs only: a masked card would reinstall forever; no visible GPU is unknown, not
+    # stale.
     _physical, visible = host_cuda_sms()
     missing = [sm for sm in visible if sm not in {str(v) for v in sms}]
     if missing:
@@ -404,11 +426,9 @@ def select_cuda_bundles(
     cuda_major: Optional[str],
     host_sms: Sequence[str],
 ) -> tuple[list[CudaBundle], list[str]]:
-    """Ordered CUDA bundle attempts for this host plus a selection log; pure. llama.cpp's order: the
-    tightest covering family bundle ((max_sm - min_sm), rank, max_sm), then the portable one; with
-    unknown compute capability only the portable one. A host no bundle lists (a card newer than the
-    build) takes the bundles whose PTX it can JIT, family before portable, where llama.cpp would build
-    from source. Empty when nothing applies, so the caller keeps the name-based pick."""
+    """Ordered CUDA bundles: tightest covering family ((max_sm - min_sm), rank, max_sm), then
+    portable; unknown compute capability gets portable only; newer uncovered cards take PTX-JIT
+    bundles, family first; empty keeps the name pick."""
     line = f"cuda{cuda_major or '12'}"
     present = set(asset_names)
     host_sms = _core.normalize_compute_caps(host_sms)
@@ -534,8 +554,7 @@ _SELECTED_CUDA_SMS: dict[str, list[str]] = {}
 def _resolve_cuda_bundle(
     release: dict, names: Sequence[str], *, system: str, machine: str, cuda_major: Optional[str]
 ) -> Optional[str]:
-    """The per-GPU-family bundle for this host, or None to keep the name-based pick (a release
-    without the split, no covering bundle, or no manifest)."""
+    """Per-GPU-family bundle, or None (keep the name pick) if no split, covering bundle or manifest."""
     if SD_MANIFEST_ASSET not in names:
         return None
     if not any(n.endswith(".tar.gz") or "-x64-cuda" in n for n in names):
@@ -566,9 +585,8 @@ def _resolve_cuda_bundle(
 
 
 def _tar_gz_to_zip(archive: Path, dest: Path) -> None:
-    """Repack a .tar.gz bundle (Linux per-family CUDA) as a stored zip, so it goes through exactly
-    the extraction, sweep and replacement path a .zip does. Regular files and directories only:
-    the bundles hold no links, so any link, device or path escaping the archive is refused."""
+    """Repack tar.gz as stored zip to share the .zip extract, sweep and replace path; only regular
+    files and dirs (bundles hold no links), so links, devices, escaping paths are refused."""
     with tarfile.open(archive, "r:gz") as tf, zipfile.ZipFile(dest, "w", zipfile.ZIP_STORED) as zf:
         for m in tf:
             name = m.name
@@ -587,6 +605,31 @@ def _tar_gz_to_zip(archive: Path, dest: Path) -> None:
                 raise RuntimeError(f"archive {archive.name}: cannot read {name!r}")
             with src, zf.open(info, "w", force_zip64 = True) as out:
                 shutil.copyfileobj(src, out, 1 << 20)
+
+
+_API_BASE = "https://api.github.com"
+# Marks a release built from PINNED_RELEASE_ASSETS, whose direct URLs were never confirmed by the API.
+_SHIPPED_KEY = "_unsloth_shipped_asset_list"
+
+
+def _pinned_release_offline(repo: str, tag: Optional[str]) -> Optional[dict]:
+    """A release dict for ``tag`` built from PINNED_RELEASE_ASSETS (direct download URLs, shipped sha256
+    digests), or None when ``repo``/``tag`` is not the shipped pin. Lets the pin install without the API."""
+    assets = PINNED_RELEASE_ASSETS.get(tag or "") if repo == DEFAULT_REPO else None
+    if not assets:
+        return None
+    return {
+        "tag_name": tag,
+        _SHIPPED_KEY: True,
+        "assets": [
+            {
+                "name": name,
+                "browser_download_url": f"https://github.com/{repo}/releases/download/{tag}/{name}",
+                "digest": f"sha256:{digest}",
+            }
+            for name, digest in assets.items()
+        ],
+    }
 
 
 def _fetch_release(
@@ -608,7 +651,7 @@ def _fetch_release(
         with auth_safe_open(req, timeout = timeout) as resp:
             return json.loads(resp.read().decode("utf-8"))
 
-    base = f"https://api.github.com/repos/{repo}/releases"
+    base = f"{_API_BASE}/repos/{repo}/releases"
     if tag:
         try:
             return _get(f"{base}/tags/{tag}")
@@ -649,6 +692,27 @@ def _is_rate_limited(exc: BaseException) -> bool:
     except Exception:  # noqa: BLE001 - an unreadable body names nothing
         return False
     return "rate limit" in body or "abuse detection" in body
+
+
+def _api_unavailable(exc: BaseException) -> bool:
+    """A refused (403), throttled (429) or failing (5xx) API answer, or no answer at all (DNS, refused
+    connection, TLS, timeout). Other HTTP codes (404 and the rest of 4xx) are real answers about the release."""
+    code = getattr(exc, "code", None)
+    if isinstance(exc, urllib.error.HTTPError) or isinstance(code, int):
+        return code in (403, 429) or (isinstance(code, int) and code >= 500)
+    # http.client.HTTPException covers IncompleteRead (body cut short) and RemoteDisconnected; a truncated
+    # body that still decodes to broken JSON fails as JSONDecodeError.
+    return isinstance(
+        exc,
+        (
+            urllib.error.URLError,
+            OSError,
+            TimeoutError,
+            ConnectionError,
+            http.client.HTTPException,
+            json.JSONDecodeError,
+        ),
+    )
 
 
 def _rate_limit_message() -> str:
@@ -823,8 +887,9 @@ _DOWNLOAD_BACKOFF_S = 2.0
 # PATH_MAX: a larger link payload is a decompression bomb.
 _MAX_LINK_TARGET_BYTES = 4096
 
-# Linux ELOOP limit.
-_MAX_LINK_DEPTH = 40
+# The kernel's ELOOP limit: Linux follows 40 links, macOS (MAXSYMLINKS) 32. A deeper chain
+# installs but the loader cannot open it.
+_MAX_LINK_DEPTH = 32 if sys.platform == "darwin" else 40
 
 
 # Creators whose external_attr high bits are a Unix st_mode (Info-ZIP, Apple ditto); FAT/NTFS are not.
@@ -1239,15 +1304,31 @@ def _resolve_repo_asset(
     *,
     allow_latest: bool = True,
     cuda_major: Optional[str] = None,
+    use_shipped: bool = True,
 ) -> tuple[Optional[dict], Optional[str]]:
     """Fetch ``repo``'s release and pick the asset for this host. Returns ``(release, asset_name)`` or ``(None, None)`` when the repo has no usable release (fetch failed, or the pinned tag is missing and ``allow_latest`` is False) or no asset for this host, so the caller can fall back. A quota refusal raises ``GitHubRateLimited`` instead: every rung shares that quota."""
     try:
         release = _fetch_release(tag, repo = repo, token = token, allow_latest = allow_latest)
     except Exception as exc:  # noqa: BLE001 - network -> fall back
-        if _is_rate_limited(exc):
+        limited = _is_rate_limited(exc)
+        release = (
+            _pinned_release_offline(repo, tag)
+            if use_shipped and (limited or _api_unavailable(exc))
+            else None
+        )
+        if release is not None:
+            # stderr: --print-asset reserves stdout for the asset name.
+            print(
+                f"sd-cli: {repo} release lookup failed ({exc}); using the shipped asset list for "
+                f"{tag} (direct download, sha256 to be verified against the shipped digest)",
+                file = sys.stderr,
+                flush = True,
+            )
+        elif limited:
             raise GitHubRateLimited(_rate_limit_message()) from exc
-        print(f"sd-cli: {repo} release fetch failed ({exc})", flush = True)
-        return None, None
+        else:
+            print(f"sd-cli: {repo} release fetch failed ({exc})", flush = True)
+            return None, None
     if release is None:
         return None, None
     names = [a["name"] for a in (release.get("assets") or [])]
@@ -1277,6 +1358,8 @@ def _resolve_with_fallback(
     accelerator: str,
     token: Optional[str],
     cuda_major: Optional[str] = None,
+    *,
+    use_shipped: bool = True,
 ) -> tuple[str, Optional[dict], Optional[str]]:
     """Resolve ``(used_repo, release, asset_name)`` for this host across the primary repo and, only when the built-in default is in use and the user did not pin a repo, the upstream fallback. Ordering guarantees reproducibility: a pinned tag is tried EXACTLY on every candidate repo before any repo's unpinned latest, so a mirror missing the pinned release prefers the pinned upstream build over an unpinned mirror-latest. Returns ``(primary, None, None)`` when nothing serves this host. Shared by ``install`` and ``--print-asset`` so both honour the same fallback."""
     tag = _pinned_tag()
@@ -1303,7 +1386,13 @@ def _resolve_with_fallback(
 
     for repo, want_tag, allow_latest in attempts:
         release, chosen = _resolve_repo_asset(
-            repo, want_tag, accelerator, token, allow_latest = allow_latest, cuda_major = cuda_major
+            repo,
+            want_tag,
+            accelerator,
+            token,
+            allow_latest = allow_latest,
+            cuda_major = cuda_major,
+            use_shipped = use_shipped,
         )
         if release is not None and chosen:
             if repo != primary:
@@ -1379,7 +1468,35 @@ def install(
     replacing = False
     print(f"downloading {chosen} -> {archive}", flush = True)
     try:
-        _download(url, archive)
+        try:
+            _download(url, archive)
+        except (urllib.error.URLError, OSError, http.client.HTTPException) as exc:
+            if not release.get(_SHIPPED_KEY):
+                raise
+            # The shipped URL was never confirmed by the API: walk the rest of the repo ladder instead of
+            # failing (a sha mismatch is raised by _verify_sha256 below, never here, so it stays fatal).
+            print(
+                f"sd-cli: direct download of {chosen} failed ({exc}); trying the other release sources",
+                file = sys.stderr,
+                flush = True,
+            )
+            archive.unlink(missing_ok = True)
+            used_repo, release, chosen = _resolve_with_fallback(
+                accelerator, token, cuda_major, use_shipped = False
+            )
+            if release is None or not chosen:
+                raise RuntimeError(
+                    f"No prebuilt sd-cli for {platform.system()}/{platform.machine()} "
+                    f"(accelerator={accelerator}) from {used_repo}: the API lookup failed and the "
+                    f"direct download failed ({exc}). Build from source: https://github.com/{used_repo}"
+                ) from exc
+            print(f"sd-cli: source {used_repo} release {release.get('tag_name', '?')}", flush = True)
+            asset = next(a for a in release["assets"] if a["name"] == chosen)
+            url = asset["browser_download_url"]
+            archive = target / chosen
+            repacked = target / (chosen + ".zip") if chosen.endswith(".tar.gz") else None
+            print(f"downloading {chosen} -> {archive}", flush = True)
+            _download(url, archive)
         _verify_sha256(archive, asset.get("digest"))
         if repacked is not None:
             _tar_gz_to_zip(archive, repacked)

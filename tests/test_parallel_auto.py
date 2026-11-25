@@ -522,12 +522,30 @@ def test_float_weights_count_at_the_loaded_dtype(clean):
     assert auto.checkpoint_estimate(packed, dtype_bytes = 2)[0] == 1024 + 4 * 256
 
 
+def _loader_unc_guard_module():
+    """unsloth.models.loader with only the real network-share guard: importing the whole loader would need the
+    _utils module _auto_env stubs out, so the guard is taken from the loader's source instead."""
+    import ast
+
+    source = open(os.path.join(REPO, "unsloth", "models", "loader.py"), encoding = "utf-8").read()
+    fn = next(
+        node
+        for node in ast.parse(source).body
+        if isinstance(node, ast.FunctionDef) and node.name == "_refuse_network_share_adapter_base"
+    )
+    module = types.ModuleType("unsloth.models.loader")
+    module.os = os
+    exec(compile(ast.Module(body = [fn], type_ignores = []), "loader.py", "exec"), module.__dict__)
+    return module
+
+
 def _auto_env(mp, auto, budget_mib):
     mp.setattr(auto, "_world", lambda environ: 2)
     mp.setattr(auto, "_gather", lambda entry: [entry, entry])
     utils = types.ModuleType("unsloth.models._utils")
     utils.patch_gradient_accumulation_fix = lambda cls: None
     mp.setitem(sys.modules, "unsloth.models._utils", utils)
+    mp.setitem(sys.modules, "unsloth.models.loader", _loader_unc_guard_module())
     for key in ("UNSLOTH_FSDP2", "UNSLOTH_PARALLEL_AUTO_RESOLVED"):
         mp.setenv(key, "")
         mp.delenv(key)
@@ -876,3 +894,40 @@ def test_auto_trains_like_the_explicit_layout_it_picked(tmp_path, budget_gb, exp
         assert a["ddp"] == b["ddp"] == (expected == "ddp"), r
         assert len(a["losses"]) == STEPS and a["losses"] == b["losses"], r
         assert r["n_params"] > 0 and r["max_diff"] == 0.0, r
+
+
+@pytest.mark.parametrize("base", [r"\\evil.example\share\model", "//evil.example/share/model"])
+def test_hub_adapter_network_share_base_is_refused_before_any_probe(clean, base):
+    """A Hub adapter's UNC base_model_name_or_path must not reach get_model_name / a filesystem probe while
+    sizing (Windows: SMB + NTLM to a host the repo chose); the loaders refuse it the same way."""
+    mp, _, auto = clean
+    windows_share = lambda p: p.replace("\\", "/").startswith(
+        "//"
+    )  # the Windows answer, on any host
+    mp.setitem(
+        sys.modules,
+        "unsloth_zoo.vision_utils",
+        types.SimpleNamespace(_is_network_share = windows_share),
+    )
+    calls, fetched = [], []
+    mp.setitem(sys.modules, "unsloth.models.loader_utils", _stub_name_mapping(calls = calls))
+    mp.setattr(auto, "_peft_base", lambda name, call, revision: base)
+
+    def tensors(name, **kwargs):
+        fetched.append(name)
+        return [("model.layers.0.mlp.up_proj.weight", "BF16", (64, 64))]
+
+    _auto_env(mp, auto, budget_mib = 25)
+    mp.setattr(auto, "_checkpoint_tensors", tensors)
+
+    def from_pretrained(
+        model_name = "x",
+        load_in_4bit = True,
+        load_in_16bit = False,
+        **kwargs,
+    ):
+        return model_name
+
+    got = auto.resolve_for_load(from_pretrained, ("someone/adapter",), {"load_in_4bit": False})
+    assert base not in fetched and all(name != base for name, _ in calls), (fetched, calls)
+    assert got == "fsdp2" and "network share" in auto._STATE["reason"], auto._STATE["reason"]

@@ -23,11 +23,33 @@ _NAMES = (
     "pre_detect_and_load_tokenizer",
     "resolve_spark_tts_repo",
     "_preprocess_bicodec_dataset",
+    "_remember_model_source",
 )
 
 
 class _CodecReached(Exception):
     pass
+
+
+def _assert_self_calls_resolve(nodes, owner):
+    """Names every self.<method>() the exec'd methods call that the fake owner lacks, so a new trainer helper
+    fails here with the fix spelled out instead of as an AttributeError deep inside the run."""
+    missing = sorted(
+        {
+            call.func.attr
+            for node in nodes
+            for call in ast.walk(node)
+            if isinstance(call, ast.Call)
+            and isinstance(call.func, ast.Attribute)
+            and isinstance(call.func.value, ast.Name)
+            and call.func.value.id == "self"
+            and not hasattr(owner, call.func.attr)
+        }
+    )
+    assert not missing, (
+        f"the trainer methods under test call self.{missing} which the fake owner lacks: add each to _NAMES "
+        "(a real UnslothTrainer method) or stub it on the owner"
+    )
 
 
 def _run(
@@ -90,7 +112,11 @@ def _run(
         _detect_diffusion_lm = lambda *args: None,
         diffusion_lm_profile = None,
     )
-    owner.resolve_spark_tts_repo = MethodType(ns["resolve_spark_tts_repo"], owner)
+    # Bind every extracted UnslothTrainer method, so a helper the real methods call on self is the real one.
+    for node in nodes:
+        if node in trainer.body:
+            setattr(owner, node.name, MethodType(ns[node.name], owner))
+    _assert_self_calls_resolve(nodes, owner)
     dataset = SimpleNamespace(column_names = ["audio", "text"])
     dataset.cast_column = lambda *args: dataset
     audio = ModuleType("torchaudio")

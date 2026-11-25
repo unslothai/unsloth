@@ -776,11 +776,13 @@ _TE_EQUIVALENT_BASES: tuple[frozenset[str], ...] = (
             "black-forest-labs/flux.2-klein-base-4b",
         }
     ),
-    # Stock Qwen3-8B (= unsloth/Qwen3-8B): likewise for the 9B pair (compared 2026-10-16)
+    # Stock Qwen3-8B (= unsloth/Qwen3-8B): likewise for the 9B pair (compared 2026-10-16) and the 9B KV checkpoint
+    # (LFS sha256 of all four shards equal to the 9B's, 2026-11-21)
     frozenset(
         {
             "black-forest-labs/flux.2-klein-9b",
             "black-forest-labs/flux.2-klein-base-9b",
+            "black-forest-labs/flux.2-klein-9b-kv",
         }
     ),
     # MOSS-Image SFT and Base share identical text_encoder shards (LFS sha256).
@@ -831,12 +833,42 @@ TE_INT8_FP16_ENV = "UNSLOTH_TE_INT8_FP16"
 _TE_INT8_FP16_FAMILIES = frozenset({"qwen-image-2.1"})
 
 
-def int8_convrot_te_runs_fp16(fam: Any, target: Any) -> bool:
-    """float16 CUDA (no bf16/fp8) runs the hosted int8 ConvRot encoder; ``UNSLOTH_TE_INT8_FP16=0`` keeps the dense one."""
+# One float16 encoder pick per load: ``_run_load`` decides it before staging (the planner then skips the dense shards
+# only when it picked int8) and hands it to ``load_pipeline``, which runs under the same pick, so assembly never re-reads
+# host RAM. A direct ``load_pipeline`` call decides on first use and keeps that answer for the rest of the load. State:
+# {"pick": Optional[bool], "supplied": tuple of components the load takes from elsewhere}.
+_FP16_TE_PICK: ContextVar[Optional[dict]] = ContextVar("unsloth_fp16_te_pick", default = None)
+
+
+@contextmanager
+def fp16_te_pick_scope(pick: Optional[bool] = None, supplied: Iterable[str] = ()):
+    token = _FP16_TE_PICK.set({"pick": pick, "supplied": tuple(supplied)})
+    try:
+        yield
+    finally:
+        _FP16_TE_PICK.reset(token)
+
+
+def fp16_te_pick_applies(fam: Any, target: Any, te_quant_mode: Any) -> bool:
+    """Whether the host-RAM rule decides this load's encoder: an automatic int8 pick for a listed family on a float16
+    CUDA card with the switch unset."""
     import os
 
-    if os.environ.get(TE_INT8_FP16_ENV, "1").strip().lower() in ("0", "false", "no", "off"):
+    try:
+        from .diffusion_precision import normalize_te_quant, te_quant_picked_automatically
+        if normalize_te_quant(te_quant_mode) != "int8" or not te_quant_picked_automatically(
+            te_quant_mode
+        ):
+            return False
+    except Exception:  # noqa: BLE001
         return False
+    raw = (os.environ.get(TE_INT8_FP16_ENV) or "").strip().lower()
+    if raw in ("0", "false", "no", "off", "1", "true", "yes", "on"):
+        return False
+    return _fp16_family_target(fam, target)
+
+
+def _fp16_family_target(fam: Any, target: Any) -> bool:
     name = str(getattr(fam, "name", fam) or "").strip().lower()
     if name not in _TE_INT8_FP16_FAMILIES or getattr(target, "device", None) != "cuda":
         return False
@@ -845,6 +877,137 @@ def int8_convrot_te_runs_fp16(fam: Any, target: Any) -> bool:
         return getattr(target, "dtype", None) is torch.float16
     except Exception:  # noqa: BLE001
         return False
+
+
+def _base_components(
+    fam: Any,
+    base: Optional[str],
+    supplied: Iterable[str] = (),
+) -> tuple[dict, str]:
+    """The components the dense load reads from the base, chosen as the loader chooses them
+    (``diffusion_small_host.small_host_components``: the snapshot minus what the load supplies from elsewhere), with
+    the source that priced them. A snapshot that is not complete for those components (an interrupted or partial
+    download: the loader downloads before it decides) is priced from the family's bf16 table instead, minus the same
+    supplied components."""
+    from .diffusion_small_host import (
+        StoredComponent,
+        resolve_snapshot_dir,
+        small_host_components,
+        snapshot_weights_complete,
+        stored_components,
+    )
+
+    supplied = tuple(supplied)
+    repo = base or str(getattr(fam, "base_repo", "") or "")
+    if repo:
+        try:
+            from utils.hf_cache_settings import active_hf_hub_cache
+            cache = active_hf_hub_cache()
+        except Exception:  # noqa: BLE001
+            cache = None
+        snapshot = resolve_snapshot_dir(repo, cache)
+        if snapshot is not None and snapshot_weights_complete(snapshot, skip = supplied):
+            comps = small_host_components(stored_components(snapshot), supplied)
+            if "text_encoder" in comps:
+                return comps, "snapshot"
+    from .diffusion_auto_policy import family_bf16_components_gb
+
+    table = family_bf16_components_gb(fam, repo or None)
+    if table is None:
+        return {}, "none"
+    mib_per_gb = 1000.0**3 / (1024.0 * 1024.0)
+    return {
+        name: StoredComponent(name, int(gb * mib_per_gb), "bfloat16")
+        for name, gb in zip(("transformer", "text_encoder", "vae"), table)
+        if gb and name not in supplied
+    }, "family table"
+
+
+def dense_fp16_encoder_fits_host(
+    fam: Any,
+    base: Optional[str] = None,
+    supplied: Iterable[str] = (),
+) -> tuple[Optional[bool], str]:
+    """Whether the dense load (dense encoder plus every other component the load reads from the base, float16) fits
+    host RAM, priced by the small-host route's own resolver (``diffusion_small_host.dense_load_fits``) on the
+    loader's own component selection: (fits, why). fits is None when the components or host RAM cannot be read."""
+    try:
+        import torch
+
+        from .diffusion_small_host import dense_load_fits, host_commit_mib, host_ram_mib
+        from .safetensors_pread import pread_available
+
+        comps, source = _base_components(fam, base, supplied)
+        if "text_encoder" not in comps:
+            return None, "text encoder size unknown"
+        total, available = host_ram_mib()
+        fits, dense = dense_load_fits(
+            comps,
+            torch.float16,
+            host_total_mib = total,
+            host_available_mib = available,
+            host_commit_mib = host_commit_mib(),
+            pread_libraries = ("transformers",) if pread_available() else (),
+        )
+        return fits, (
+            f"dense float16 load ~{dense} MiB ({', '.join(sorted(comps))}; {source}), {available} MiB available host RAM"
+        )
+    except Exception as exc:  # noqa: BLE001
+        return None, f"host RAM check failed: {exc}"
+
+
+def decide_fp16_te_int8(
+    fam: Any,
+    base: Optional[str] = None,
+    supplied: Iterable[str] = (),
+) -> bool:
+    """The automatic float16 pick: int8 only when the dense load does not fit host RAM (or cannot be priced, the
+    memory-safe side). Reads host RAM once; callers carry the answer (``fp16_te_pick_scope``)."""
+    fits, why = dense_fp16_encoder_fits_host(fam, base, supplied)
+    use_int8 = fits is not True
+    name = str(getattr(fam, "name", fam) or "").strip().lower()
+    log = _module_logger()
+    if log is not None:
+        log.info(
+            "diffusion.te_prequant: float16 card, automatic %s text encoder for %s (%s)",
+            "int8 ConvRot" if use_int8 else "dense",
+            name,
+            why if fits is not None else f"{why}; dense fit unknown",
+        )
+    return use_int8
+
+
+def int8_convrot_te_runs_fp16(
+    fam: Any,
+    target: Any,
+    *,
+    auto: bool = False,
+    base: Optional[str] = None,
+) -> bool:
+    """float16 CUDA (no bf16/fp8) may run the hosted int8 ConvRot encoder. An explicit int8 request takes it; an
+    automatic pick takes it only when the dense float16 encoder cannot be held in host RAM (the load would otherwise
+    take the low-RAM route and re-read the encoder from disk per prompt), and keeps the dense encoder when it fits:
+    the int8 encoder is 0.045 relative L2 from an fp32 encode against 0.009 for the dense fp16 one (Qwen-Image-2.1-Turbo,
+    T4, renders +0.027 LPIPS). ``UNSLOTH_TE_INT8_FP16=1`` always takes the int8 encoder, ``=0`` never does. Inside a
+    load the automatic pick is decided once and reused (``fp16_te_pick_scope``)."""
+    import os
+
+    raw = (os.environ.get(TE_INT8_FP16_ENV) or "").strip().lower()
+    if raw in ("0", "false", "no", "off"):
+        return False
+    if not _fp16_family_target(fam, target):
+        return False
+    if raw in ("1", "true", "yes", "on") or not auto:
+        return True
+    state = _FP16_TE_PICK.get()
+    if state is not None and state.get("pick") is not None:
+        return bool(state["pick"])
+    use_int8 = decide_fp16_te_int8(
+        fam, base, state.get("supplied", ()) if state is not None else ()
+    )
+    if state is not None:
+        state["pick"] = use_int8
+    return use_int8
 
 
 def hosted_int8_convrot_te_runs_on(fam: Any, target: Any) -> bool:
@@ -1047,6 +1210,7 @@ def te_prequant_sources(
     te_quant_mode: Optional[str],
     target: Any,
     components: Iterable[str] = TE_PREQUANT_COMPONENTS,
+    base: Optional[str] = None,
 ) -> dict[str, TePrequantSource]:
     """Shares the download plan's resolver, so the plan and load agree on which dense encoders to fetch."""
     try:
@@ -1072,7 +1236,10 @@ def te_prequant_sources(
         fp8_runs = te_quant_supported(target, TE_QUANT_FP8)
         if not fp8_runs and not (
             mode == "int8"
-            and (int8_convrot_te_runs_on(target) or int8_convrot_te_runs_fp16(fam, target))
+            and (
+                int8_convrot_te_runs_on(target)
+                or int8_convrot_te_runs_fp16(fam, target, auto = auto, base = base)
+            )
         ):
             return {}
         sources: dict[str, TePrequantSource] = {}
@@ -1126,6 +1293,7 @@ def te_prequant_sources_for_base(
         te_quant_mode = te_quant_mode,
         target = target,
         components = components,
+        base = base,
     )
     registered_base = str(getattr(fam, "base_repo", "") or "")
     standalone = standalone_component_bases or {}

@@ -77,7 +77,7 @@ def test_the_scan_finds_the_macos_workflows_it_claims_to():
     for expected in (
         "studio-mac-ui-smoke.yml",
         "studio-mac-install-matrix.yml",
-        "studio-tauri-smoke.yml",
+        "studio-tauri-native-ci.yml",
         "mlx-ci.yml",
         "clean-machine-install-ci.yml",
     ):
@@ -107,6 +107,7 @@ def test_no_macos_workflow_runs_on_every_push_to_main():
         "studio-mac-ui-smoke.yml",
         "studio-mac-install-matrix.yml",
         "studio-tauri-smoke.yml",
+        "studio-tauri-native-ci.yml",
         "clean-machine-install-ci.yml",
         "mlx-ci.yml",
     ],
@@ -144,6 +145,7 @@ def _covered(path: str, patterns) -> bool:
         "studio-mac-ui-smoke.yml",
         "studio-mac-install-matrix.yml",
         "studio-tauri-smoke.yml",
+        "studio-tauri-native-ci.yml",
     ],
 )
 def test_every_helper_a_workflow_executes_is_in_its_trigger(name):
@@ -181,6 +183,7 @@ def test_every_helper_a_workflow_executes_is_in_its_trigger(name):
         "studio-mac-ui-smoke.yml",
         "studio-mac-install-matrix.yml",
         "studio-tauri-smoke.yml",
+        "studio-tauri-native-ci.yml",
     ],
 )
 def test_a_listed_python_input_brings_its_sibling_imports(name):
@@ -217,8 +220,14 @@ def test_a_listed_python_input_brings_its_sibling_imports(name):
 
 
 def test_a_commit_that_touches_nothing_relevant_starts_no_macos_job():
-    """A README-only commit starts no macOS job; the matcher handles literals, dir/** and single * globs."""
+    """A README-only commit starts no macOS job; the matcher handles literals, dir/** and single *
+    globs, and `!` exclusions with GitHub's last-matching-pattern rule."""
     import fnmatch
+
+    def matches(path, pattern):
+        return fnmatch.fnmatch(path, pattern) or (
+            pattern.endswith("/**") and path.startswith(pattern[:-2])
+        )
 
     changed = ["README.md"]
     triggered = []
@@ -226,16 +235,13 @@ def test_a_commit_that_touches_nothing_relevant_starts_no_macos_job():
         push = (_on(doc) or {}).get("push")
         if not isinstance(push, dict):
             continue
-        for pattern in push.get("paths") or []:
-            assert "!" not in pattern, (
-                f"{name} uses a negated push path ({pattern!r}); this matcher does not "
-                f"model negation, so extend it before relying on this test"
-            )
-            for path in changed:
-                if fnmatch.fnmatch(path, pattern) or (
-                    pattern.endswith("/**") and path.startswith(pattern[:-2])
-                ):
-                    triggered.append(f"{name} via {pattern!r}")
+        for path in changed:
+            hit = None
+            for pattern in push.get("paths") or []:
+                if matches(path, pattern.lstrip("!")):
+                    hit = None if pattern.startswith("!") else pattern
+            if hit:
+                triggered.append(f"{name} via {hit!r}")
     assert not triggered, (
         f"a README-only commit still starts macOS jobs: {triggered}. That was the "
         f"original symptom: seven macOS legs against a five-slot cap for a docs typo."

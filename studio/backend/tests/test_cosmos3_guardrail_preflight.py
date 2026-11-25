@@ -118,11 +118,10 @@ def test_a_cached_guardrail_offline_mode_and_local_only_loads_send_nothing(guard
     state["raise"] = _http_error("GatedRepoError", 401)
     assert vc3.guardrail_access_preflight(NANO, None, local_files_only = True) is None
     import huggingface_hub
-    from huggingface_hub import constants
 
-    monkeypatch.setattr(constants, "HF_HUB_OFFLINE", True, raising = False)
+    monkeypatch.setenv("TRANSFORMERS_OFFLINE", "1")
     assert vc3.guardrail_access_preflight(NANO, None) is None
-    monkeypatch.setattr(constants, "HF_HUB_OFFLINE", False, raising = False)
+    monkeypatch.delenv("TRANSFORMERS_OFFLINE")
     seen = []
 
     def cached(repo_id, filename, **kwargs):

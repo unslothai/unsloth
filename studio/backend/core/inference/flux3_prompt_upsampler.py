@@ -298,10 +298,9 @@ _TIGHT_FREE_MIB = 6144
 _TIGHT_FREE_FRACTION = 0.20
 _CACHE_ENTRIES = 128
 
-# "1": a generate's upsampler may start with only part of the model on the GPU (the old behaviour). By default a
-# generate skips the upsampler (prompt as typed, status "unavailable") when the image model leaves too little free
-# memory for the whole GGUF: the CPU layers decode so slowly that one caption took minutes (Qwen3.5-9B thinking for
-# MiniMax-H3-Image ran into the 600 s request timeout on an 8-16 GB card) for a ~7 s render.
+# UNSLOTH_PROMPT_UPSAMPLER_PARTIAL_OFFLOAD=1 lets a generate start with only part of the upsampler
+# on the GPU; by default it is skipped (status unavailable) when free memory is too low for the
+# whole GGUF, since CPU layers decode too slowly to be worth it for a short render.
 ENV_ALLOW_PARTIAL_OFFLOAD = "UNSLOTH_PROMPT_UPSAMPLER_PARTIAL_OFFLOAD"
 # Set by enhance_for_generation: the start (or reuse) has to hold every layer on the accelerator.
 _GENERATE_NEEDS_FULL_OFFLOAD: contextvars.ContextVar[bool] = contextvars.ContextVar(
@@ -1240,15 +1239,7 @@ def _accelerator_memory_mib(
 
         with diffusion_device_scope(ordinal if device == "cuda" else None):
             snap = snapshot_device_memory(SimpleNamespace(device = device, backend = device))
-            free_mib = snap.free_mib
-            if device == "cuda" and free_mib is not None:
-                from utils.hardware.hardware import rocm_linux_kernel_free_mib
-
-                # Linux ROCm: HIP's free figure misses Vulkan users (this server, sd-server) and the desktop.
-                kernel_free = rocm_linux_kernel_free_mib()
-                if kernel_free is not None:
-                    free_mib = min(free_mib, kernel_free)
-        return free_mib, snap.total_mib, device
+        return snap.free_mib, snap.total_mib, device
     except Exception:  # noqa: BLE001 -- unknown memory leaves the choice to the defaults
         return None, None, "unknown"
 

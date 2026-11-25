@@ -32,6 +32,7 @@ globalThis.fetch = (async (url: string) => {
 }) as unknown as typeof fetch;
 
 const { fetchDeviceType, forgetMeasuredVerdict, usePlatformStore } = await import("../src/config/env.ts");
+const { isServedByMlx } = await import("../src/features/model-picker/model-config/per-model-config.ts");
 const { routeNeedsHardware } = await import("../src/config/hardware-verdict.ts");
 
 function reset() {
@@ -43,6 +44,7 @@ function reset() {
     detectionDeferred: false,
     chatOnly: true,
     chatOnlyReason: null,
+    mlxInference: null,
   });
   urls = [];
   replies = [];
@@ -80,6 +82,21 @@ test("explicit detection bypasses a cached platform and honours an unsupported r
   assert.equal(state.capabilitiesUnknown(), false);
   assert.equal(state.isTrainUnavailable(), true);
   assert.equal(state.chatOnlyReason, "no_torch");
+});
+
+test("mlx_inference rides with a settled verdict and resets on a backend that omits it", async () => {
+  reset();
+  const chatOnlyMac = { device_type: "mac", chat_only: true, chat_only_reason: "no_torch", version: "2026.1.1" };
+  replies = [{ ...chatOnlyMac, mlx_inference: true }];
+  await fetchDeviceType({ detectHardware: true });
+  assert.equal(usePlatformStore.getState().mlxInference, true);
+  // An older backend on the same port: no field, so the reason has to answer again.
+  replies = [chatOnlyMac];
+  await fetchDeviceType({ detectHardware: true });
+  assert.equal(usePlatformStore.getState().mlxInference, null);
+  replies = [{ ...chatOnlyMac, mlx_inference: false }];
+  await fetchDeviceType({ detectHardware: true });
+  assert.equal(usePlatformStore.getState().mlxInference, false);
 });
 
 test("an unauthenticated navigation never requests a hardware probe", async () => {
@@ -158,24 +175,56 @@ test("the real route guard keeps hover preloads cold and starts detection on nav
 test("auto-load keeps cached non-GGUF models while detection is deferred", () => {
   reset();
   const adapterSource = readSrc("features/chat/api/chat-adapter.ts");
-  const lift = (name: string) => {
-    const match = new RegExp(`function ${name}\\([^)]*\\): boolean \\{([\\s\\S]*?)\\n\\}`).exec(adapterSource);
+  const servesMatch = /function platformServesMlx\(\s*platform[^)]*\): boolean \{([\s\S]*?)\n\}/.exec(adapterSource);
+  assert.ok(servesMatch, "platformServesMlx moved");
+  const platformServesMlx = new Function("isServedByMlx", "platform", servesMatch[1]).bind(null, isServedByMlx);
+  const lift = (name: string, param: string) => {
+    const match = new RegExp(`function ${name}\\(${param}[^)]*\\): boolean \\{([\\s\\S]*?)\\n\\}`).exec(adapterSource);
     assert.ok(match, `${name} moved`);
-    return new Function("usePlatformStore", "isGgufLocalRow", "isMlxId", "row", match[1])
-      .bind(null, usePlatformStore, (row: { path: string }) => row.path.endsWith(".gguf"), () => false);
+    return new Function(
+      "usePlatformStore",
+      "isGgufLocalRow",
+      "platformServesMlx",
+      ...(param ? [param] : []),
+      match[1],
+    ).bind(
+      null,
+      usePlatformStore,
+      (row: { path: string }) => row.path.endsWith(".gguf"),
+      platformServesMlx,
+    );
   };
-  const cachedModelsRun = lift("cachedModelsRunOnThisPlatform");
-  const runsHere = lift("runsOnThisPlatform");
+  const cachedModelRuns = lift("cachedModelRunsOnThisPlatform", "");
+  const runsHere = lift("runsOnThisPlatform", "row");
   const safetensors = { id: "org/model", path: "/models/org/model" };
+  const mlxRow = { id: "mlx-community/Qwen2.5-0.5B-Instruct-4bit", path: "/models/qwen-mlx" };
 
   usePlatformStore.setState({ fetched: true, detectionDeferred: true, chatOnly: true, deviceType: "linux" });
-  assert.equal(cachedModelsRun(), true);
+  assert.equal(cachedModelRuns(), true);
   assert.equal(runsHere(safetensors), true);
 
   usePlatformStore.setState({ detectionDeferred: false });
-  assert.equal(cachedModelsRun(), false);
+  assert.equal(cachedModelRuns(), false);
   assert.equal(runsHere(safetensors), false);
   assert.equal(runsHere({ id: "org/model-GGUF", path: "/models/m.gguf" }), true);
+
+  usePlatformStore.setState({ deviceType: "mac", mlxInference: true });
+  // MLX loads plain checkpoints too, so a served Chat only Mac lists them as a full Mac does.
+  assert.equal(cachedModelRuns(), true);
+  assert.equal(runsHere(mlxRow), true);
+  assert.equal(runsHere(safetensors), true);
+  usePlatformStore.setState({ mlxInference: false });
+  assert.equal(cachedModelRuns(), false);
+  assert.equal(runsHere(mlxRow), false);
+  assert.equal(runsHere(safetensors), false);
+  assert.equal(runsHere({ id: "org/model-GGUF", path: "/models/m.gguf" }), true);
+  // An older backend sends no mlx_inference: the verdict's reason decides, for local and cached rows alike.
+  usePlatformStore.setState({ mlxInference: null, chatOnlyReason: null });
+  assert.equal(cachedModelRuns(), true);
+  assert.equal(runsHere(safetensors), true);
+  usePlatformStore.setState({ chatOnlyReason: "no_torch" });
+  assert.equal(cachedModelRuns(), false);
+  assert.equal(runsHere(safetensors), false);
 });
 
 test("a deferred reply names the server platform and is re-read until measured", async () => {

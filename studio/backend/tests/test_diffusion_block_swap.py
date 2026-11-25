@@ -63,11 +63,16 @@ def test_default_config_is_off(monkeypatch):
     )
 
 
-def test_gating():
+def test_gating(monkeypatch):
     assert bs.block_swap_error(None, "nf4", "cpu", False) is None
     assert "CUDA" in bs.block_swap_error("auto", "bf16", "cpu", True)
-    for mode in ("nf4", "int8", "fp8", "mxfp8"):
+    for mode in ("nf4", "mxfp8"):
         assert "bf16" in bs.block_swap_error("auto", mode, "cuda", True)
+    # int8 streams as the default W8A8 base; the weight-only opt-out cannot stream.
+    monkeypatch.delenv(bs._INT8_TRAIN_ENV, raising = False)
+    assert bs.block_swap_error("auto", "int8", "cuda", True) is None
+    monkeypatch.setenv(bs._INT8_TRAIN_ENV, "weight-only")
+    assert "bf16" in bs.block_swap_error("auto", "int8", "cuda", True)
     assert "gradient_checkpointing" in bs.block_swap_error(4, "bf16", "cuda", False)
     assert bs.block_swap_error(4, "bf16", "cuda", True) is None
     assert "integrated" in bs.block_swap_error(4, "bf16", "cuda", True, integrated = True)
@@ -138,7 +143,9 @@ def test_maybe_compile_routes_swap_to_forward_compile(monkeypatch):
     monkeypatch.setattr(dit, "_compile_toolchain_missing", lambda: None)
     used = []
     monkeypatch.setattr(
-        dit, "compile_swapped_blocks", lambda t, fullgraph, dynamic: used.append(fullgraph) or 3
+        dit,
+        "compile_swapped_blocks",
+        lambda t, fullgraph, dynamic, **kw: used.append(fullgraph) or 3,
     )
     m = _Model()
     m.compile_repeated_blocks = lambda **kw: used.append("regional")
@@ -163,6 +170,8 @@ def test_auto_upgrades_only_the_int8_band(monkeypatch):
     import importlib.util
 
     monkeypatch.delenv(dit.AUTO_BLOCK_SWAP_ENV, raising = False)
+    # The swap replaces the eager weight-only int8 base; the compiled W8A8 default keeps int8 (tested below).
+    monkeypatch.setenv(dit.INT8_TRAIN_ENV, "weight-only")
     monkeypatch.setattr(dit, "torch_is_rocm", lambda: False)
     monkeypatch.setattr(dit, "_device_is_integrated", lambda d: False)
     real = importlib.util.find_spec
@@ -192,6 +201,8 @@ def test_auto_keeps_int8_without_zoo_block_swap(monkeypatch):
     import importlib.util
 
     monkeypatch.delenv(dit.AUTO_BLOCK_SWAP_ENV, raising = False)
+    # The swap replaces the eager weight-only int8 base; the compiled W8A8 default keeps int8 (tested below).
+    monkeypatch.setenv(dit.INT8_TRAIN_ENV, "weight-only")
     monkeypatch.setattr(dit, "torch_is_rocm", lambda: False)
     monkeypatch.setattr(dit, "_device_is_integrated", lambda d: False)
 
@@ -213,6 +224,8 @@ def test_auto_swap_needs_host_ram_for_the_dense_base(monkeypatch, avail_gib, wan
     import importlib.util
 
     monkeypatch.delenv(dit.AUTO_BLOCK_SWAP_ENV, raising = False)
+    # The swap replaces the eager weight-only int8 base; the compiled W8A8 default keeps int8 (tested below).
+    monkeypatch.setenv(dit.INT8_TRAIN_ENV, "weight-only")
     monkeypatch.setattr(dit, "torch_is_rocm", lambda: False)
     monkeypatch.setattr(dit, "_device_is_integrated", lambda d: False)
     real = importlib.util.find_spec
@@ -227,6 +240,53 @@ def test_auto_swap_needs_host_ram_for_the_dense_base(monkeypatch, avail_gib, wan
     monkeypatch.setattr(dit, "_dense_bf16_gb", lambda spec, base: 12.0)
     spec = types.SimpleNamespace(dense_bf16_gb = 12.0)
     assert dit._auto_block_swap_wanted(_auto_cfg(), "int8", "cuda", spec) is wanted
+
+
+def test_auto_keeps_compiled_w8a8_int8_over_the_bf16_swap(monkeypatch):
+    """Auto's int8 band trains the compiled W8A8 base (faster than the bf16 swap); the swap still replaces int8 when
+    that base would not run compiled W8A8: weight-only opt-out, compile off, or no int8 GEMM on the card."""
+    import importlib.util
+
+    monkeypatch.delenv(dit.AUTO_BLOCK_SWAP_ENV, raising = False)
+    monkeypatch.delenv(dit.INT8_TRAIN_ENV, raising = False)
+    monkeypatch.setattr(dit, "torch_is_rocm", lambda: False)
+    monkeypatch.setattr(dit, "_device_is_integrated", lambda d: False)
+    real = importlib.util.find_spec
+    monkeypatch.setattr(
+        importlib.util,
+        "find_spec",
+        lambda n, *a: object() if n in ("unsloth_zoo.block_swap", "triton") else real(n, *a),
+    )
+    monkeypatch.setattr(dit, "_int8_mm_probe_ok", lambda d: True)
+    monkeypatch.setattr(dit, "_compile_toolchain_missing", lambda: None)
+
+    def q21(**kw):
+        return _auto_cfg(
+            **{
+                "resolved_family": "qwen-image-2.1",
+                "compile_transformer": "auto",
+                "train_steps": 10,
+                **kw,
+            }
+        )
+
+    assert not dit._auto_block_swap_wanted(q21(), "int8", "cuda")
+    # A family whose compiled W8A8 base was not measured keeps main's swap.
+    assert dit._auto_block_swap_wanted(
+        _auto_cfg(resolved_family = "flux.1", compile_transformer = "auto", train_steps = 10),
+        "int8",
+        "cuda",
+    )
+    # The compile helper's own gates decide: compile off, or no toolchain, keeps the swap.
+    assert dit._auto_block_swap_wanted(q21(compile_transformer = "off"), "int8", "cuda")
+    monkeypatch.setattr(dit, "_compile_toolchain_missing", lambda: "no C++ compiler")
+    assert dit._auto_block_swap_wanted(q21(), "int8", "cuda")
+    monkeypatch.setattr(dit, "_compile_toolchain_missing", lambda: None)
+    monkeypatch.setattr(dit, "_int8_mm_probe_ok", lambda d: False)
+    assert dit._auto_block_swap_wanted(q21(), "int8", "cuda")
+    monkeypatch.setattr(dit, "_int8_mm_probe_ok", lambda d: True)
+    monkeypatch.setenv(dit.INT8_TRAIN_ENV, "weight-only")
+    assert dit._auto_block_swap_wanted(q21(), "int8", "cuda")
 
 
 def test_swapping_checkpoints_every_block_even_with_partial_mode(monkeypatch):

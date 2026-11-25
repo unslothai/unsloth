@@ -2,7 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """ROCm TunableOp GEMM tables for diffusion denoisers on gfx1151 (hipBLASLt's default pick is 20-38% slow at DiT
-shapes). Tuning costs 17-215 s per shape, so by default only READ the AMD CI tables in ``rocm_gemm_tables/`` whose
+shapes; training GEMMs too). Tuning costs 17-215 s per shape, so by default only READ the AMD CI tables in ``rocm_gemm_tables/`` whose
 validators match exactly. ``UNSLOTH_DIFFUSION_ROCM_TUNABLEOP=tune`` also tunes on steady denoiser calls; ``=0`` off."""
 
 from __future__ import annotations
@@ -32,13 +32,19 @@ _STATE: dict = {
     "file": None,
     "last_key": None,
     "tune": False,
-    # Pipe tags using the table; the last release() restores prev_enabled.
+    # Pipe tags using the table; the last release() restores the pre-activation snapshot.
     "owners": set(),
-    "prev_enabled": False,
+    "snapshot": None,
+    "train": False,
 }
 
 
 _TABLE_DIR = Path(__file__).resolve().parent / "rocm_gemm_tables"
+# Tables with this stem suffix also carry training GEMM rows (NT / NN).
+TRAIN_SUFFIX = "_train"
+# Tables were measured at torch's default hipBLASLt workspace; torch 2.11-2.14 drops a saved solution needing more
+# without falling back, which can leave the GEMM output unwritten.
+_WORKSPACE_ENVS = ("HIPBLASLT_WORKSPACE_SIZE", "CUBLASLT_WORKSPACE_SIZE")
 
 
 def _env() -> str:
@@ -69,7 +75,7 @@ def shipped_tables(arch: str, validators: dict) -> list:
     for path in sorted(_TABLE_DIR.glob(f"{arch}_*.csv")):
         try:
             have = _validators(path.read_text(encoding = "utf-8"))
-        except OSError:
+        except (OSError, ValueError):
             continue
         if have and have == want:
             out.append(path)
@@ -105,6 +111,12 @@ def eligible(device: Any = None) -> tuple:
         return False, f"{TUNABLEOP_ENV}=0"
     if _user_owns_tunableop():
         return False, "PYTORCH_TUNABLEOP_* set by the user"
+    capped = [k for k in _WORKSPACE_ENVS if os.environ.get(k)]
+    if capped:
+        return (
+            False,
+            f"{capped[0]} set by the user: saved hipBLASLt solutions may not fit the workspace",
+        )
     try:
         import torch
     except Exception:  # noqa: BLE001
@@ -205,13 +217,57 @@ def _post(_module: Any, _args: Any, _kwargs: Any, _out: Any) -> None:
             _write(torch.cuda.tunable)
 
 
-def _activate(arch: str, logger: Any = None) -> bool:
+_SNAPSHOT_GETTERS = {
+    "enabled": "is_enabled",
+    "tuning": "tuning_is_enabled",
+    "iterations": "get_max_tuning_iterations",
+    "duration": "get_max_tuning_duration",
+    "filename": "get_filename",
+}
+
+
+def _snapshot(tunable: Any) -> dict:
+    snap = {}
+    for key, getter in _SNAPSHOT_GETTERS.items():
+        try:
+            snap[key] = getattr(tunable, getter)()
+        except Exception:  # noqa: BLE001
+            snap[key] = None
+    return snap
+
+
+def _apply_snapshot(tunable: Any, snap: Optional[dict]) -> None:
+    snap = snap or {}
+    setters = (
+        ("filename", lambda v: tunable.set_filename(v, insert_device_ordinal = False)),
+        ("iterations", tunable.set_max_tuning_iterations),
+        ("duration", tunable.set_max_tuning_duration),
+        ("tuning", lambda v: tunable.tuning_enable(bool(v))),
+        ("enabled", lambda v: tunable.enable(bool(v))),
+    )
+    for key, setter in setters:
+        value = snap.get(key)
+        if value is None and key == "enabled":
+            value = False
+        if value is None:
+            continue
+        try:
+            setter(value)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _activate(
+    arch: str,
+    logger: Any = None,
+    training: bool = False,
+) -> bool:
     import torch
 
     tunable = torch.cuda.tunable
     with _LOCK:
         if _STATE["active"]:
-            return True
+            return _STATE["train"] or not training
         tune = tuning_requested()
         path = results_file(arch)
         try:
@@ -219,43 +275,54 @@ def _activate(arch: str, logger: Any = None) -> bool:
         except OSError:
             if tune:
                 return False
+        snap = _snapshot(tunable)
         try:
-            prev_enabled = bool(tunable.is_enabled())
-        except Exception:  # noqa: BLE001
-            prev_enabled = False
-        tunable.tuning_enable(False)
-        tunable.enable(True)
-        _prime(torch)
-        try:
-            validators = dict(tunable.get_validators() or ())
-        except Exception:  # noqa: BLE001
-            validators = {}
-        tables = shipped_tables(arch, validators)
-        cached = path.exists() and _validators(_read(path)) == {
-            str(k): str(v) for k, v in validators.items()
-        }
-        if not tune and not tables and not cached:
-            tunable.enable(prev_enabled)
-            return False
-        tunable.set_filename(str(path), insert_device_ordinal = False)
-        tunable.set_max_tuning_duration(MAX_TUNING_MS)
-        tunable.set_max_tuning_iterations(MAX_TUNING_ITERS)
-        for src in ([path] if cached else []) + tables:
+            tunable.tuning_enable(False)
+            tunable.enable(True)
+            _prime(torch)
+            # torch picks its default filename on the first tunable GEMM, so read it after the prime.
             try:
-                tunable.read_file(str(src))
-            except Exception:  # noqa: BLE001 - a stale / foreign file: the default pick
+                snap["filename"] = tunable.get_filename()
+            except Exception:  # noqa: BLE001
                 pass
-        try:
-            _STATE["written"] = len(tunable.get_results() or ())
-        except Exception:  # noqa: BLE001
-            _STATE["written"] = 0
+            try:
+                validators = dict(tunable.get_validators() or ())
+            except Exception:  # noqa: BLE001
+                validators = {}
+            tables = shipped_tables(arch, validators)
+            train_tables = [p for p in tables if p.stem.endswith(TRAIN_SUFFIX)]
+            if training:
+                tables = train_tables
+            cached = path.exists() and _validators(_read(path)) == {
+                str(k): str(v) for k, v in validators.items()
+            }
+            if training:
+                cached = cached and bool(tables)
+            if not tables and (training or (not tune and not cached)):
+                _apply_snapshot(tunable, snap)
+                return False
+            tunable.set_filename(str(path), insert_device_ordinal = False)
+            tunable.set_max_tuning_duration(MAX_TUNING_MS)
+            tunable.set_max_tuning_iterations(MAX_TUNING_ITERS)
+            for src in ([path] if cached else []) + tables:
+                if not tunable.read_file(str(src)):
+                    raise RuntimeError(f"TunableOp could not read {src.name}")
+            try:
+                written = len(tunable.get_results() or ())
+            except Exception:  # noqa: BLE001
+                written = 0
+        except BaseException:
+            _apply_snapshot(tunable, snap)
+            raise
         _STATE.update(
             active = True,
             depth = 0,
+            written = written,
             file = str(path),
             last_key = None,
             tune = tune,
-            prev_enabled = prev_enabled,
+            snapshot = snap,
+            train = bool(train_tables),
         )
     if logger is not None:
         logger.info(
@@ -280,7 +347,7 @@ def _prime(torch: Any) -> None:
 def _read(path: Path) -> str:
     try:
         return path.read_text(encoding = "utf-8")
-    except OSError:
+    except (OSError, ValueError):
         return ""
 
 
@@ -339,13 +406,9 @@ def _restore(tunable: Any) -> None:
     # Caller holds _LOCK.
     if _STATE["active"]:
         _write(tunable)
-        try:
-            tunable.tuning_enable(False)
-            tunable.enable(bool(_STATE.get("prev_enabled")))
-        except Exception:  # noqa: BLE001
-            pass
+        _apply_snapshot(tunable, _STATE.get("snapshot"))
     _STATE["owners"].clear()
-    _STATE.update(active = False, depth = 0)
+    _STATE.update(active = False, depth = 0, snapshot = None, train = False)
 
 
 def _remove_hooks(pipe: Any) -> None:
@@ -415,6 +478,25 @@ def release(pipe: Any) -> None:
             except Exception:  # noqa: BLE001
                 pass
     _remove_hooks(pipe)
+
+
+_TRAIN_OWNER = object()
+
+
+def install_for_training(device: Any = None, logger: Any = None) -> bool:
+    """Read-only (never tunes). gfx1151 FLUX.2-klein-4B LoRA: 8.34 -> 7.39 s/step with the 39 training shapes."""
+    ok, why = eligible(device)
+    if not ok:
+        return False
+    with _LOCK:
+        if not _activate(why, logger, training = True):
+            return False
+        _STATE["owners"].add(_TRAIN_OWNER)
+    return True
+
+
+def release_training() -> None:
+    _drop(_TRAIN_OWNER)
 
 
 def is_active() -> bool:

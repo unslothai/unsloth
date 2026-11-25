@@ -1512,6 +1512,16 @@ def verdict_pending_mlx_repair(chat_only: bool, reason: Optional[str]) -> bool:
         return False
 
 
+def mlx_serves_chat_only() -> bool:
+    """A Chat only (--no-torch) Mac: MLX serves chat, but unsloth_zoo's MLX trainer and export import torch."""
+    return DEVICE == DeviceType.MLX and bool(CHAT_ONLY) and CHAT_ONLY_REASON == "no_torch"
+
+
+def chat_only_mac_install() -> bool:
+    """Apple Silicon --no-torch (Chat only) install: never trains, whatever its MLX state."""
+    return is_apple_silicon() and _installed_without_torch()
+
+
 def verdict_blames_the_mlx_stack() -> bool:
     """Unlocked deliberately: _DETECT_LOCK spans a whole detection pass, imports included, so taking it would park the post-warm worker behind an early request's first import. The overturn re-reads under the lock, so a straddling read costs one needless measurement."""
     return bool(CHAT_ONLY) and CHAT_ONLY_REASON == "mlx_unavailable"
@@ -1835,10 +1845,17 @@ def _detect_hardware_locked() -> DeviceType:
     # Require the full mlx/mlx-lm/mlx-vlm stack so the gate matches utils.mlx_repair: a partial stack stays chat-only ("mlx_unavailable") and the background self-heal repairs it.
     if is_apple_silicon() and _has_usable_mlx_stack():
         DEVICE = DeviceType.MLX
-        CHAT_ONLY = False
         # platform.machine() ("arm64"), not platform.processor(), which returns "i386" on universal2 / Rosetta builds even on native arm64.
         chip = platform.machine() or "arm64"
         print(f"Hardware detected: MLX — Apple Silicon ({chip})")
+        if _installed_without_torch():
+            CHAT_ONLY_REASON = "no_torch"
+            logger.info(
+                "Apple Silicon installed --no-torch (Chat only); MLX serves chat, Train/Export "
+                "are off by request. Reinstall without --no-torch to enable them."
+            )
+            return DEVICE
+        CHAT_ONLY = False
         return DEVICE
 
     DEVICE = DeviceType.CPU
@@ -1848,10 +1865,10 @@ def _detect_hardware_locked() -> DeviceType:
         and _installed_without_torch()
         and (
             _NO_TORCH_SETTLED_EPOCH == current_detection_epoch()
-            or not _mlx_distribution_installed()
+            or (not _mlx_distribution_installed() and _no_torch_mac_without_mlx_wheels())
         )
     ):
-        # GGUF-only by request, not a broken stack, and `unsloth studio update` cannot change it. With mlx on disk the verdict stays mlx_unavailable until the post-warm probe measures it, so a stack that only lost the import race is still overturned and the sidebar keeps polling until settle_the_no_torch_verdict() lands.
+        # A Mac that can install MLX stays mlx_unavailable until the self-heal ran.
         CHAT_ONLY_REASON = "no_torch"
         _MLX_BLOCKERS_MEASURED = None
         logger.info(
@@ -2182,7 +2199,7 @@ def export_capability() -> dict:
         torchao_export_supported = torchao_export_loadable()
     except Exception:
         torchao_export_supported = not _windows_rocm
-    if device in (DeviceType.CUDA, DeviceType.XPU, DeviceType.MLX):
+    if device in (DeviceType.CUDA, DeviceType.XPU, DeviceType.MLX) and not mlx_serves_chat_only():
         return {
             "export_supported": True,
             "export_unsupported_reason": None,
@@ -2774,7 +2791,8 @@ def _context_free_cuda_memory_info(
         free_mib, total_mib = _cuda_instance_free_total_mib(idx)
         if free_mib is None or total_mib is None:
             return None
-        if abs(total_mib * 1024**2 - total_bytes) > max(total_bytes // 100, 16 * 1024**2):
+        # 10%: nvidia-smi totals include the driver-reserved framebuffer torch excludes (#18732).
+        if abs(total_mib * 1024**2 - total_bytes) > max(total_bytes // 10, 1024 * 1024**2):
             return None
         return _free_in_torch_scope(total_bytes, (total_mib - free_mib) / 1024)
 
@@ -2800,7 +2818,8 @@ def _context_free_cuda_memory_info(
             if used_gb is None or driver_total_gb is None:
                 break
             driver_total_bytes = round(driver_total_gb * (1024**3))
-            total_tolerance = max(total_bytes // 100, 16 * 1024**2)
+            # 10%: nvidia-smi totals include the driver-reserved framebuffer torch excludes (#18732); partitions differ by GiBs.
+            total_tolerance = max(total_bytes // 10, 1024 * 1024**2)
             if abs(driver_total_bytes - total_bytes) > total_tolerance:
                 logger.debug("Skipping whole-GPU VRAM telemetry for a partitioned GPU device")
                 break
@@ -3089,16 +3108,31 @@ def _torch_get_physical_gpu_count() -> Optional[int]:
 
 def rocm_windows_free_is_untrusted() -> bool:
     """Whether ``mem_get_info``'s FREE half must be treated as an over-report. AMD documents it: on Windows the free memory only accounts for this process's allocations, because WDDM virtualises video memory, so a fresh process sees free at or near total whatever else is resident (ROCm/librocdxg#57 measured 24410 of 24560 MiB free on a filled card; ROCm/TheRock#3724 is the same symptom). Near ``total``, not equal, so callers cap rather than test a sentinel. The TOTAL half is fine, and WSL is deliberately left alone: sys.platform is "linux" there and free tracks physical residency."""
-    return sys.platform == "win32" and IS_ROCM
+    if sys.platform != "win32":
+        return False
+    if IS_ROCM:
+        return True
+    # A spawned child that never ran detect_hardware() (the diffusion trainer) keeps IS_ROCM False: until detection
+    # has answered, the torch build already imported here decides. Never imports torch.
+    if DEVICE is not None:
+        return False
+    mod = sys.modules.get("torch")
+    return mod is not None and bool(
+        getattr(getattr(mod, "version", None), "hip", None)
+        or "rocm" in str(getattr(mod, "__version__", "")).lower()
+    )
 
 
 def trusted_mem_get_info(device: Any = None, *, module: Any = None) -> tuple[int, int]:
-    """``mem_get_info`` with the Windows ROCm free over-report capped (#8403). Guards that budget against free VRAM cannot be handed a figure saying the whole card is free while a model is resident: on WDDM the overflow does not raise, the driver satisfies it from host RAM, and the process grows past the card. Free is capped at what this process's torch allocator has NOT reserved, a true upper bound but still blind to other processes, so a ceiling rather than a measurement. Off Windows ROCm the driver's own numbers pass through untouched. ``module`` defaults to torch.cuda; exceptions propagate."""
+    """``mem_get_info`` with ROCm's free over-report capped. Linux: at the kernel DRM figure, which also counts Vulkan users and the desktop that hipMemGetInfo misses. Windows (#8403): WDDM overflows into host RAM instead of raising, so free is capped at what torch has not reserved, an upper bound blind to other processes. ``module`` defaults to torch.cuda; exceptions propagate."""
     import torch
 
     mod = module if module is not None else torch.cuda
     free_bytes, total_bytes = mod.mem_get_info() if device is None else mod.mem_get_info(device)
     free_bytes, total_bytes = int(free_bytes), int(total_bytes)
+    kernel_free_mib = rocm_linux_kernel_free_mib(device, module = mod, total_bytes = total_bytes)
+    if kernel_free_mib is not None:
+        free_bytes = min(free_bytes, kernel_free_mib * 1024 * 1024)
     if not rocm_windows_free_is_untrusted():
         return free_bytes, total_bytes
     try:
@@ -4221,8 +4255,13 @@ def _rocm_linux_sysfs_vram_by_pci_gb() -> dict[str, tuple[float, float]]:
         return {}
 
 
-def rocm_linux_kernel_free_mib(device: Any = None, *, module: Any = None) -> Optional[int]:
-    """Free MiB of a ROCm device per DRM sysfs, which counts the Vulkan users and desktop hipMemGetInfo misses on Linux, or None. Matched by PCI address; a sysfs total off torch's by >10% (APU carve-out, partitioned card) is another scope. Never raises."""
+def rocm_linux_kernel_free_mib(
+    device: Any = None,
+    *,
+    module: Any = None,
+    total_bytes: Optional[int] = None,
+) -> Optional[int]:
+    """Free MiB of a ROCm device per DRM sysfs (counts Vulkan users and the desktop), or None. Matched by PCI address; reads the pool whose total is closest to hipMemGetInfo's (``total_bytes`` if the caller has it), within 10%: VRAM, or on a known APU the GTT pool, shared by every amdgpu device (``amdgpu_gtt_reading``). Neither (partitioned card) is another scope. Never raises."""
     if platform.system() != "Linux":
         return None
     try:
@@ -4235,21 +4274,23 @@ def rocm_linux_kernel_free_mib(device: Any = None, *, module: Any = None) -> Opt
         index = mod.current_device() if device is None else device
         props = mod.get_device_properties(index)
         prefix = f"{int(props.pci_domain_id):04x}:{int(props.pci_bus_id):02x}:{int(props.pci_device_id):02x}."
-        torch_total = int(props.total_memory)
+        torch_total = int(total_bytes or mod.mem_get_info(index)[1])
         for bdf, _card_no, dev_dir in _rocm_linux_amdgpu_cards():
             if not bdf.lower().startswith(prefix):
                 continue
-            with open(os.path.join(dev_dir, "mem_info_vram_used"), encoding = "utf-8") as f:
-                used_bytes = int(f.read().strip())
-            with open(os.path.join(dev_dir, "mem_info_vram_total"), encoding = "utf-8") as f:
-                total_bytes = int(f.read().strip())
-            if (
-                total_bytes <= 0
-                or torch_total <= 0
-                or abs(total_bytes - torch_total) > 0.1 * torch_total
-            ):
+            from core.inference.video_minimax_h3 import _sysfs_int, amdgpu_gtt_reading
+
+            pools = ["vram"] + (["gtt"] if _rocm_props_unified_status(props) is True else [])
+            totals = {p: _sysfs_int(Path(dev_dir, f"mem_info_{p}_total")) or 0 for p in pools}
+            # min keeps the first of equal gaps: VRAM wins a size tie, as in the driver.
+            pool = min(pools, key = lambda p: abs(totals[p] - torch_total))
+            if not totals[pool] or abs(totals[pool] - torch_total) > 0.1 * torch_total:
                 return None
-            return max(0, total_bytes - used_bytes) // (1024 * 1024)
+            if pool == "vram":
+                used = _sysfs_int(Path(dev_dir, "mem_info_vram_used"))
+                return max(0, totals["vram"] - used) // (1024 * 1024)
+            gtt_free, gtt_known = amdgpu_gtt_reading(bdf)
+            return gtt_free // (1024 * 1024) if gtt_known and gtt_free is not None else None
         return None
     except Exception:
         return None

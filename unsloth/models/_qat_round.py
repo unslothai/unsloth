@@ -318,11 +318,10 @@ def _before_load(
     try:
         same = incoming.shape == weight.shape
         if same:
-            # The rounded weight state_dict() marked, unchanged since (any edit or replacement changes the
-            # checksum; checked before any dtype cast, which the checksum includes), still exact in this
-            # module's dtype, or the rounded values this module already holds.
-            # The marker also names the fake quantization recipe: values rounded on another grid (an int8
-            # model's state_dict loaded into an int4 one) are not rounded for this module.
+            # The state_dict marker holds a checksum taken before any dtype cast (any edit or
+            # replacement changes it) and the fake quantization recipe; a marked weight counts as
+            # rounded only if still exact in this dtype or already held, and values rounded on
+            # another grid (int8 into int4) do not count.
             marked = isinstance(marker, (tuple, list)) and list(marker) == [
                 *_checksum(incoming),
                 _recipe(quantizer),

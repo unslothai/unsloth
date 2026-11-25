@@ -234,9 +234,23 @@ def _permitted_tokens(value, token_per_repo_id):
     return tokens
 
 
+def _refuse_network_share(value) -> None:
+    """A bytes-less cell naming a Windows share: opening it signs in to that host (NTLM), owner or not."""
+    path = (
+        value if isinstance(value, str) else value.get("path") if isinstance(value, dict) else None
+    )
+    if not isinstance(path, str) or (isinstance(value, dict) and value.get("bytes") is not None):
+        return
+    from utils.datasets.remote_images import is_network_share, private_sources_allowed
+
+    if any(is_network_share(hop) for hop in path.split("::")) and not private_sources_allowed():
+        raise MediaPathRefused(f"Refusing a dataset media path on a network share: {path}")
+
+
 def _decode_guard(decode_example):
     @functools.wraps(decode_example)
     def guarded(self, value, *args, **kwargs):
+        _refuse_network_share(value)
         if _is_owner():
             return decode_example(self, value, *args, **kwargs)
         tokens = kwargs.pop("token_per_repo_id", args[0] if args else None)

@@ -1008,9 +1008,8 @@ def _make_lora_optimizer(
 
 
 def _drain_stop_queue(stop_queue: Any, event_queue: Any) -> Any:
-    """Drain the queue and return the last stop message (True or a dict with save=False); else False.
-    A {"vram": "lend" | "return"} message is the parent asking for the GPU room the trainer keeps idle
-    (the DiT dequant cache): served here, between steps, and acknowledged; never a stop."""
+    """Drain the queue, returning the last stop message (True or a dict with save=False) else False;
+    a vram lend/return message (idle GPU cache) is served between steps, never a stop."""
     got: Any = None
     saw = False
     try:
@@ -1050,6 +1049,15 @@ def run_diffusion_training_process(*, event_queue: Any, stop_queue: Any, config:
         # normalized() validates the family; the registry sends DiT families to their own trainer.
         cfg = _config_from_dict(config).normalized()
         trainer = get_trainer(cfg.resolved_family)
+        if cfg.num_gpus > 1 and getattr(trainer, "__name__", "") != "run_dit_lora_training":
+            on_event(
+                {
+                    "type": "warning",
+                    "message": f"num_gpus={cfg.num_gpus} applies to DiT families only; "
+                    f"{cfg.resolved_family} trains on one GPU.",
+                    "ts": time.time(),
+                }
+            )
         from .diffusion_download_progress import TrainingDownloadProgress
 
         with TrainingDownloadProgress(on_event) as report:

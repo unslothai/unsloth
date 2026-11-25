@@ -235,6 +235,24 @@ dedicated memory plus 80% of the RAM Windows reports available. When Windows rep
 budget falls back to the WSL VM's available memory, and the load is refused when that cannot be
 read either. This was measured on one Strix Halo machine.
 
+## Custom FastFlowLM runtimes
+
+Studio normally provisions FastFlowLM automatically. To use a local runtime on
+Windows or Linux x86-64, set either of these in the environment that starts
+Studio, then enable the NPU in the app.
+
+- `UNSLOTH_LEMONADE_ARCHIVE` takes the absolute path to a Lemonade embeddable
+  archive for the current platform (`.zip` on Windows or `.tar.gz` on Linux).
+  Studio uses that build's FastFlowLM download settings.
+- `UNSLOTH_FLM_NPU_BIN` takes the absolute path to an extracted
+  `flm.exe` or `flm`. Keep its companion files beside it. Use a Lemonade build
+  that supports an external FastFlowLM binary, supplying its archive with the
+  first option if needed.
+
+For an explicitly configured runtime, Studio checks NPU availability and backend
+readiness with Lemonade and lets it download the models. Unset both variables
+and restart Studio to return to automatic provisioning.
+
 ## Maintaining profiles
 
 Run from the repository root using uv. Seed each output file with `uv pip freeze`

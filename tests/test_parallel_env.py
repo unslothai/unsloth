@@ -778,6 +778,9 @@ def test_compile_counters_count_breaks_and_recompiles():
         ("dp_shard=1,dp_replicate=2", {"dp": 2, "fsdp": False}),
         ("dp_shard=2,dp_replicate=1", {"dp": 2, "fsdp": True}),
         ("dp=2,dp_shard=1,dp_replicate=2", {"dp": 2, "fsdp": False}),
+        # Expert parallel (models/ep_native.py); ep with tp / pp / cp / fsdp is refused by translate.
+        ("ep=2", {"ep": 2}),
+        ("ep_size=2,tp=2", {"ep": 2, "tp": 2}),
     ],
 )
 def test_distributed_config_names_are_accepted(raw, want):
@@ -788,8 +791,6 @@ def test_distributed_config_names_are_accepted(raw, want):
 @pytest.mark.parametrize(
     "raw, match",
     [
-        ("ep=2", "expert parallel"),
-        ("ep_size=2,tp=2", "expert parallel"),
         ("efsdp=2", "expert FSDP"),
         ("dp_shard=2,dp_replicate=2", "HSDP"),
         ("dp=4,dp_shard=2", "disagrees"),
@@ -862,6 +863,32 @@ def test_a_shard_unaware_muon_is_refused_before_native_fsdp2_shards(clean_env):
     )
 
 
+def test_adafactor_is_refused_on_native_fsdp2_shards():
+    # Both Adafactors fail at step one on fully_shard DTensors (factored row / column statistics).
+    import types
+
+    from transformers.optimization import Adafactor
+
+    from unsloth import parallel_capabilities as caps
+    from unsloth.models import fsdp2_native
+
+    p = [torch.nn.Parameter(torch.randn(4, 4))]
+    for optimizer in (
+        Adafactor(p, lr = 1e-3, relative_step = False, scale_parameter = False),
+        torch.optim.Adafactor(p, lr = 1e-3),
+        "adafactor",
+    ):
+        with pytest.raises(
+            NotImplementedError,
+            match = r"^Unsloth: fsdp2 x optimizer: Adafactor .*Instead: adamw_torch",
+        ):
+            caps.refuse_shard_unaware_optimizer(optimizer, "fsdp2")
+    caps.check(_q(dp = 2, optim = "adafactor"))  # DDP holds whole matrices
+    with pytest.raises(ValueError, match = r"optim = 'adafactor'.*Use optim = 'adamw_torch'"):
+        fsdp2_native._refuse_projection_optim(types.SimpleNamespace(optim = "adafactor"))
+    fsdp2_native._refuse_projection_optim(types.SimpleNamespace(optim = "adamw_torch"))
+
+
 # MoE cells.
 
 
@@ -876,7 +903,7 @@ def test_moe_rows_cover_family_precision_aux_and_mode():
         if c.name.startswith("MoE ")
         and not c.name.endswith((", block compile", ", Unsloth checkpoint", ", multimodal"))
     ]
-    assert len(moe) == len(caps.MOE_FAMILIES) * 4 * 2 * 6
+    assert len(moe) == len(caps.MOE_FAMILIES) * 4 * 2 * 7
     proven = sorted(c.name for c in moe if not c.missing())
     assert "MoE qwen3_moe x lora+experts x aux off x cp" in proven
     assert "MoE qwen3_moe x full x aux off x fsdp2" in proven
@@ -1096,10 +1123,10 @@ def test_launcher_flag_with_a_disagreeing_legacy_variable_is_refused(clean_env, 
         pe.apply_parallel_env()
 
 
-def test_the_launcher_keys_are_accepted_and_ep_is_reserved():
+def test_the_launcher_keys_are_accepted_and_efsdp_is_reserved():
     from unsloth import parallel_env as pe
     assert set(LAUNCHER_KEYS) <= set(pe._KEYS)
-    assert {"ep", "efsdp"} <= set(pe._RESERVED)
+    assert "ep" in pe._KEYS and "efsdp" in pe._RESERVED
 
 
 @pytest.mark.parametrize("kind", ["sft", "dpo", "grpo"])

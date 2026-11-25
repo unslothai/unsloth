@@ -370,10 +370,10 @@ def _clef_items(rows, tokenizer, max_len, validate, report, skip) -> list:
 
     processor = tokenizer if hasattr(tokenizer, "tokenizer") else None
     tokenizer = _MemoTokenizer(getattr(tokenizer, "tokenizer", tokenizer))
-    items = []
+    items, read, json_text = [], 0, 0
     for index, row in enumerate(rows):
         row = row if isinstance(row, dict) else {}
-        state = _parsed(row.get("state"))
+        state = row.get("state")
         questions = _parsed(row.get("questions"))
         gold = _parsed(row["gold"] if row.get("gold") is not None else row.get("answers"))
         if state is None or not isinstance(questions, dict) or not isinstance(gold, dict):
@@ -398,6 +398,7 @@ def _clef_items(rows, tokenizer, max_len, validate, report, skip) -> list:
             kept[str(name)], targets, labels = clef_question, targets + [target], labels + [label]
         if not kept:
             continue
+        read, json_text = read + 1, json_text + _reads_apart_from_its_object(state)
         source = {"state": state, "questions": kept}
         try:
             images = _row_images(row)
@@ -423,6 +424,7 @@ def _clef_items(rows, tokenizer, max_len, validate, report, skip) -> list:
                 "source": source,
             }
         )
+    _report_json_text_states(json_text, read, report)
     return items
 
 
@@ -688,11 +690,19 @@ def _load_clef(
     adapter = _is_clef_adapter(folder)
     if adapter:
         # LoRA adapters over the base LLM: the base comes from where it was trained from.
-        base = config.get("base_model") or json.loads(
-            (folder / _ADAPTER_CONFIG).read_text(encoding = "utf-8")
-        ).get("base_model_name_or_path")
+        adapter_base = json.loads((folder / _ADAPTER_CONFIG).read_text(encoding = "utf-8")).get(
+            "base_model_name_or_path"
+        )
+        base = config.get("base_model") or adapter_base
         if not base:
             raise ValueError(f"Unsloth: {folder} has adapters but does not name their base model.")
+        # A Hub repo resolves to a local snapshot, so the loader's own check would see a folder.
+        from .loader import _refuse_network_share_adapter_base
+
+        for named in {str(base), str(adapter_base or base)}:
+            _refuse_network_share_adapter_base(
+                str(model_name or folder), types.SimpleNamespace(base_model_name_or_path = named)
+            )
         if full_finetuning:
             # PEFT would freeze the base and the adapters, leaving only the head to train.
             raise ValueError(
@@ -1231,7 +1241,11 @@ class DecisionTrainer(Trainer):
             args.gradient_checkpointing = False
             if hasattr(args, "activation_checkpointing"):
                 args.activation_checkpointing = False
-            if not clef and not model.encoder.is_gradient_checkpointing:
+            from unsloth.models._gc_config_default import (
+                is_activation_checkpointing as _is_activation_checkpointing,
+            )
+
+            if not clef and not _is_activation_checkpointing(model.encoder):
                 _gradient_checkpointing(model, True)
         if kwargs.get("processing_class") is None:
             kwargs["processing_class"] = tokenizer
@@ -1714,9 +1728,13 @@ class FastDecisionModel:
         model.train()
         if getattr(model, "is_clef", False):
             return model
+        from unsloth.models._gc_config_default import (
+            is_activation_checkpointing as _is_activation_checkpointing,
+        )
+
         if not use_gradient_checkpointing:
             model.encoder.gradient_checkpointing_disable()
-        elif not model.encoder.is_gradient_checkpointing:
+        elif not _is_activation_checkpointing(model.encoder):
             _gradient_checkpointing(model, use_gradient_checkpointing)
         return model
 
@@ -1729,7 +1747,11 @@ class FastDecisionModel:
     ) -> tuple:
         max_len = int(model.decision_config.get("max_len", 512))
         head_max_len = int(model.decision_config.get("head_max_len", 192))
-        items, report, skips = [], {"total": 0, "skipped": 0, "reason": None, "truncated": 0}, {}
+        items, report, skips = (
+            [],
+            {"total": 0, "skipped": 0, "reason": None, "truncated": 0, "json_text_states": 0},
+            {},
+        )
 
         def skip(
             index,
@@ -1842,7 +1864,6 @@ class FastDecisionModel:
         A Clef also reads ordered `images` when tokenizer is the processor from from_pretrained."""
         if not isinstance(questions, dict) or not questions:
             raise DecisionDataError("questions must be a non-empty dict of name to question")
-        state = _parsed(state)
         if getattr(model, "is_clef", False):
             questions = {str(name): _clef_question(q) for name, q in questions.items()}
             # Read up to CLEF_SERVE_MAX_LEN tokens, like serving, even past the training cut.
@@ -1861,7 +1882,8 @@ class FastDecisionModel:
         tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
         if images:
             raise DecisionDataError("images require a Clef multimodal model and processor")
-        return _laya_decide(model, tokenizer, state, questions, predicted = True)["answers"]
+        decided = _laya_decide(model, tokenizer, _parsed(state), questions, predicted = True)
+        return decided["answers"]
 
     @staticmethod
     def evaluate(

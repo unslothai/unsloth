@@ -778,6 +778,17 @@ def test_known_unloaded_model_switches_once(monkeypatch):
     assert backend.model_identifier == "unsloth/B-GGUF"
 
 
+def test_a_switch_into_the_primary_counts_as_its_use(monkeypatch):
+    from core.inference import model_slots
+
+    _wired(
+        monkeypatch, _FakeBackend("unsloth/A-GGUF"), ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF")
+    )
+    monkeypatch.setattr(model_slots, "primary_last_used", 0.0)
+    _run_hook("unsloth/B-GGUF:Q4_K_M")
+    assert model_slots.primary_last_used > 0.0
+
+
 def test_a_late_cancel_keeps_the_completed_switch_metadata(monkeypatch):
     backend = _FakeBackend("unsloth/A-GGUF")
     cancel_event = threading.Event()
@@ -3795,7 +3806,8 @@ def test_saved_settings_are_found_under_the_on_disk_copy(monkeypatch, named):
     request = LoadRequest(**named, use_saved_settings = True)
     filled = asyncio.run(inference_route._with_saved_settings(request))
     assert asked == [("/cache/snap/A", "org/A-GGUF", "Q4_K_M")]
-    assert (filled.model_path, filled.cache_type_kv) == (named["model_path"], "q8_0")
+    assert (filled.model_path, filled.cache_type_kv) == ("org/A-GGUF", "q8_0")
+    assert filled.gguf_variant == "q4_k_m"
 
 
 def test_a_bare_id_reads_no_quant_the_load_may_not_pick(monkeypatch):
@@ -3908,6 +3920,23 @@ def test_a_saved_gpu_pin_is_kept_only_while_this_machine_has_it(monkeypatch, pre
     filled = asyncio.run(inference_route._with_saved_settings(request))
     pin = ([0, 1], [2.0, 1.0]) if present else (None, None)
     assert (filled.gpu_ids, filled.tensor_split) == pin
+    assert filled.cache_type_kv == "q8_0"
+
+
+@pytest.mark.parametrize("extras", [["--device", "CUDA1"], ["-mg", "1"]])
+def test_a_sent_device_flag_beats_a_saved_gpu_pin(monkeypatch, extras):
+    _saved(
+        monkeypatch,
+        {"gpu_ids": [0, 1], "tensor_split": [2.0, 1.0], "kv_cache_dtype": "q8_0"},
+    )
+
+    async def _resolves(gpu_ids, kind = "physical"):
+        return True
+
+    monkeypatch.setattr(inference_route, "_override_gpu_ids_still_resolve", _resolves)
+    request = LoadRequest(model_path = "org/A-GGUF", llama_extra_args = extras, use_saved_settings = True)
+    filled = asyncio.run(inference_route._with_saved_settings(request))
+    assert (filled.gpu_ids, filled.tensor_split) == (None, None)
     assert filled.cache_type_kv == "q8_0"
 
 

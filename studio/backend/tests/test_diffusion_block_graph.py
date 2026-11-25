@@ -1290,3 +1290,19 @@ def test_a_refused_block_recording_runs_eager_and_records_later(monkeypatch):
     assert handle.stats["captures"] > 0 and handle.stats["fallbacks"] == 0
     assert handle.stats["replays"] > 0
     handle.free()
+
+
+def test_reusable_cache_of_a_non_cuda_device_is_zero(monkeypatch):
+    # A CPU device parsed to index None read the current CUDA card's cache: on a 2-GPU host that ran a CUDA test first,
+    # test_prefix_kv_cache_too_large_for_the_replica_card_stays_on_the_primary saw the cache as free and mirrored it.
+    seen = []
+    monkeypatch.setattr(
+        dm, "cuda_reclaimable_bytes", lambda index = None: seen.append(index) or 4 << 30
+    )
+    assert dm.cuda_reusable_cache_bytes(torch.device("cpu")) == 0
+    assert dm.cuda_reusable_cache_bytes("cpu") == 0
+    assert seen == []
+    assert dm.cuda_reusable_cache_bytes(torch.device("cuda", 1)) == 4 << 30
+    assert dm.cuda_reusable_cache_bytes(0) == 4 << 30
+    assert dm.cuda_reusable_cache_bytes() == 4 << 30
+    assert seen == [1, 0, None]

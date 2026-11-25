@@ -503,6 +503,7 @@ class ReasoningTextIteratorStreamer(IncrementalTextIteratorStreamer):
         timeout: float = 0.2,
         cancel_event = None,
         in_reasoning: bool = False,
+        continued: bool = False,
         **decode_kwargs,
     ):
         decode_kwargs["skip_special_tokens"] = False
@@ -512,7 +513,9 @@ class ReasoningTextIteratorStreamer(IncrementalTextIteratorStreamer):
         super().__init__(
             stream_tokenizer, skip_prompt = skip_prompt, timeout = timeout, **decode_kwargs
         )
-        self._normalizer = make_reasoning_normalizer(markers, in_reasoning = in_reasoning)
+        self._normalizer = make_reasoning_normalizer(
+            markers, in_reasoning = in_reasoning, continued = continued
+        )
         self._cancel_event = cancel_event
         self._aborted = False
 
@@ -1658,8 +1661,17 @@ class InferenceBackend:
 
             raise Exception(error_msg)
 
+    def unload_model_for_exit(self, model_name: str) -> bool:
+        """unload_model for an exiting worker: os._exit frees the CUDA context, so skip the cache clear."""
+        return self.unload_model(model_name, process_exiting = True)
+
     @_invalidates_gpu_memory("transformers unload")
-    def unload_model(self, model_name: str) -> bool:
+    def unload_model(
+        self,
+        model_name: str,
+        *,
+        process_exiting: bool = False,
+    ) -> bool:
         """Remove a model from the registry and clear GPU memory."""
         if model_name in self.models:
             try:
@@ -1669,13 +1681,15 @@ class InferenceBackend:
                 logger.info(f"Unloading model '{model_name}' from memory.")
                 model = self.models[model_name].get("model")
                 del self.models[model_name]
-                _release_decode_graphs(model, getattr(self, "_generation_lock", None))
+                if not process_exiting:
+                    _release_decode_graphs(model, getattr(self, "_generation_lock", None))
                 model = None
 
                 if self.active_model_name == model_name:
                     self.active_model_name = None
 
-                clear_gpu_cache()
+                if not process_exiting:
+                    clear_gpu_cache()
 
                 # On spawn platforms keep trainer files so concurrent dataset.map() workers can import them.
                 import sys as _sys
@@ -1869,8 +1883,7 @@ class InferenceBackend:
                 model.base_model.enable_adapter_layers()
 
     def image_tokens(self, width: int, height: int) -> Optional[int]:
-        """Prompt tokens one computer-use screenshot of this size adds under the screenshot budget;
-        None without an image processor."""
+        """Tokens a screenshot this size adds to the budget; None without an image processor."""
         from PIL import Image
 
         processor = (self.models.get(self.active_model_name) or {}).get("processor")
@@ -1977,6 +1990,7 @@ class InferenceBackend:
             mapped_chat_template,
             markup_for_tokenizer,
             renderable_tool_catalog,
+            replays_reasoning_content,
         )
 
         _model_info = self.models.get(self.active_model_name) or {}
@@ -1985,6 +1999,9 @@ class InferenceBackend:
 
         yield from run_safetensors_tool_loop(
             markup = markup_for_tokenizer(_model_info.get("tokenizer"), tools, _mapped_tpl),
+            split_reasoning_content = replays_reasoning_content(
+                _model_info.get("tokenizer"), _model_info, tools, _mapped_tpl
+            ),
             renderable_tools = renderable_tool_catalog(
                 tools,
                 _model_info.get("tokenizer"),
@@ -3147,6 +3164,7 @@ class InferenceBackend:
                 timeout = timeout,
                 cancel_event = cancel_event,
                 in_reasoning = prompt_opens_reasoning_channel(prompt, markers, continued),
+                continued = continued,
             )
         stream_tokenizer = NativeToolTokenDecoder(tokenizer) if preserve_tool_tokens else tokenizer
         return IncrementalTextIteratorStreamer(
