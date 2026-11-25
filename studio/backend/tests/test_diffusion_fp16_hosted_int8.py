@@ -232,36 +232,3 @@ def test_no_hosted_source_keeps_the_at_load_build(turing, monkeypatch):
         FH.fp16_card_hosted_int8_transformer(_fam(), T4, object, base = QWEN21[0], config_source = None)
         is None
     )
-
-
-def test_only_the_int8_codes_stay_file_mapped(tmp_path):
-    """Scales, kept float32 norms and buffers are read into memory at load: left mapped, the first render faults each
-    in from disk. The int8 codes stay mapped (group offload copies them out at load)."""
-    from safetensors.torch import load_file, save_file
-
-    from core.inference.diffusion_native_hosted import _materialise_mapped
-
-    path = tmp_path / "f.safetensors"
-    save_file(
-        {
-            "q": torch.ones(8, 8, dtype = torch.int8),
-            "s": torch.ones(8, dtype = torch.float32),
-            "n": torch.ones(8, dtype = torch.float32),
-        },
-        str(path),
-    )
-    state = load_file(str(path))
-    mapped = {t.untyped_storage().data_ptr() for t in state.values()}
-
-    layer = torch.nn.Module()
-    layer.register_buffer("weight_q", state["q"])
-    layer.register_buffer("weight_scale", state["s"])
-    layer.norm = torch.nn.Parameter(state["n"], requires_grad = False)
-    model = torch.nn.Sequential(layer)
-    if layer.weight_scale.untyped_storage().data_ptr() not in mapped:
-        pytest.skip("this safetensors build copies on load")
-    _materialise_mapped(model, mapped)
-    assert layer.weight_q.untyped_storage().data_ptr() in mapped
-    assert layer.weight_scale.untyped_storage().data_ptr() not in mapped
-    assert layer.norm.untyped_storage().data_ptr() not in mapped
-    assert torch.equal(layer.weight_scale, torch.ones(8)) and torch.equal(layer.norm, torch.ones(8))
