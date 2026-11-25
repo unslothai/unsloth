@@ -220,6 +220,8 @@ def test_new_dependency_needs_review(index):
     index.requires.append("brand-new-thing>=1")
     result = ps.scan_pypi_install(PLAN)
     assert result.status == ps.REVIEW and "brand-new-thing" in result.reason
+    # The inspected wheel stays pinned for a confirmed install past the review.
+    assert result.hashes[f"transformers=={VERSION}"] == (index.published_sha,)
 
 
 def test_name_mismatch_and_foreign_host_are_flagged(index):

@@ -434,9 +434,9 @@ def _scan(packages: Sequence[str], primary: str) -> PackageScanResult:
         verdict = _check_release(spec, name, version, primary = name == primary)
         if verdict.status == FLAGGED:
             return verdict
-        if verdict.clean:
-            hashes.update(verdict.hashes)
-        else:
+        # A review still carries the digests it verified; a confirmed install keeps them pinned.
+        hashes.update(verdict.hashes)
+        if not verdict.clean:
             review = review or verdict.reason
     advisories = _check_advisories(pinned)
     if advisories.status == FLAGGED:
