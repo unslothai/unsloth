@@ -201,7 +201,8 @@ def real_tokenizer(request):
         from transformers import AutoTokenizer
         return AutoTokenizer.from_pretrained(request.param)
     except Exception as e:  # noqa: BLE001 -- offline or hub unavailable
-        pytest.skip(f"tokenizer {request.param} unavailable (offline?): {e}")
+        # Skips when this machine has no Hub access: the tokenizer files come from the Hub.
+        pytest.skip(reason = f"tokenizer {request.param} not downloadable (no Hub access): {e}")
 
 
 @pytest.mark.parametrize("mode", ["plain", "native-tool"])
