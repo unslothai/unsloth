@@ -67,7 +67,6 @@ class Query:
     direct_params: bool = False  # an attention / MLP block owns a parameter (attention sinks)
     # tp_native's refusal at q.tp ranks; "" when it shards or the model is already split (_tp_blocker).
     tp_blocker: str = ""
-    # apply_expert_parallel's refusal reason, "" if it shards.
     ep_blocker: str = ""
     mode: str = "lora"  # lora, qlora, full, fp8 (float8_training, LoRA or full)
     packing: bool = False
@@ -1218,7 +1217,7 @@ _TP_BLOCKED_FAMILIES = {
     "deepseek_v32": "multi-head latent attention (MLA, kv_lora_rank)",
     "olmoe": "q_norm / k_norm normalize all heads' features, not one head",
 }
-# models/tp_native.py expert_shard_problem on transformers 5.24 (tests/test_ep_moe_families_gloo.py measures the rest).
+# From tp_native.expert_shard_problem on transformers 5.24.
 _EP_BLOCKED_FAMILIES = {
     "nemotron_h": "no fused gate_up_proj / down_proj (non-gated up_proj / down_proj experts)",
 }
