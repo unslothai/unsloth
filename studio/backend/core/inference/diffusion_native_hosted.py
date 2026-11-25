@@ -264,6 +264,7 @@ def load_native_from_hosted(
 
         # No-copy aliases: a view's base survives offload's ``.data =`` re-point and keeps the whole file mapped.
         state = {key: _unviewed(value) for key, value in state.items()}
+        mapped = {value.untyped_storage().data_ptr() for value in state.values()}
         model.load_state_dict(state, strict = True, assign = True)
         del state
         if any(t.device.type == "meta" for t in (*model.parameters(), *model.buffers())):
@@ -288,6 +289,7 @@ def load_native_from_hosted(
             return None
         if compute_dtype is not None:
             _hold_in_compute_dtype(model, compute_dtype, kept)
+            _materialise_mapped(model, mapped)
         model.eval()
         try:
             model._unsloth_runtime_quant = "int8"
@@ -327,6 +329,27 @@ def raise_if_allocation_failure(exc: BaseException) -> None:
 
     if is_oom_error(exc):
         raise exc
+
+
+def _materialise_mapped(model: Any, mapped: set) -> None:
+    """Reads into memory every tensor of ``model`` still backed by the checkpoint's file mapping, except the int8
+    codes (``weight_q``: group offload copies them out at load). Scales, kept float32 norms and buffers are small and
+    scattered through the file: left mapped, each is faulted in from disk on the first render, one readahead window
+    at a time. Same bytes; only tensors still mapped are copied (the cast ones already are)."""
+    import torch
+    for module in model.modules():
+        for pname, param in list(module.named_parameters(recurse = False)):
+            if pname == "weight_q" or param.untyped_storage().data_ptr() not in mapped:
+                continue
+            setattr(
+                module,
+                pname,
+                torch.nn.Parameter(param.detach().clone(), requires_grad = param.requires_grad),
+            )
+        for bname, buf in list(module.named_buffers(recurse = False)):
+            if buf is None or bname == "weight_q" or buf.untyped_storage().data_ptr() not in mapped:
+                continue
+            module._buffers[bname] = buf.clone()
 
 
 def _hold_in_compute_dtype(model: Any, compute_dtype: Any, kept: set) -> None:
