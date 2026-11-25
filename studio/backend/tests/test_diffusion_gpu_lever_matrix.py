@@ -393,7 +393,11 @@ def probe_segment_quant(p: GpuProfile) -> dict:
             why = sq.unsupported_reason(prec, device, torch.bfloat16)
         except Exception as exc:  # noqa: BLE001 - recorded, never read as engaged
             why = f"error {type(exc).__name__}"
-        out[f"any.segment_quant.{prec}"] = lever(why is None, why = _code(why, codes))
+        code = _code(why, codes)
+        if code == "not_cuda" and not p.cuda:
+            # the production refusal, under the code the golden has always used for the platform
+            code = _na_code(p)
+        out[f"any.segment_quant.{prec}"] = lever(why is None, why = code)
     try:
         chosen, _why = sq.resolve_precision(device, torch.bfloat16, memory_tight = True)
     except Exception as exc:  # noqa: BLE001
@@ -1057,6 +1061,9 @@ def _collected_profiles() -> list:
     return [PROFILES[k] for k in keys]
 
 
+_OFFLOAD_ONLY_RESIDENT = "the family records offloaded steps only, and it stays resident"
+
+
 def armed_after_placement(pipe: Any, views: list) -> bool:
     """What the loader's post-placement step really installs for an offloaded load (``arm_graphs_after_placement``,
     the call image and video loads make once placement is final): its ``cuda_graph`` after arming, never the pending
@@ -1065,10 +1072,18 @@ def armed_after_placement(pipe: Any, views: list) -> bool:
 
     armed = False
     for view in views:
+        pending = bool(getattr(pipe, "_unsloth_cuda_graph_after_placement", False))
         try:
             armed |= bool(arm_graphs_after_placement(pipe, dict(view)).get("cuda_graph"))
         except Exception:  # noqa: BLE001 - recorded as not armed
-            pass
+            continue
+        # An offload-only family (Wan) arms only on a denoiser an offload hook moves; the stub has none, so the
+        # arming's sole refusal is the stub staying resident. That placement is the real load's to make: keep the
+        # deferred arming. Any other refusal (or an arming that installs nothing) loses the lever.
+        reason = str(getattr(pipe, "_unsloth_cuda_graph_reason", "") or "")
+        parts = [r for r in reason.split("; ") if r]
+        if pending and parts and all(r.endswith(_OFFLOAD_ONLY_RESIDENT) for r in parts):
+            armed = True
     try:
         from core.inference.diffusion_cuda_graph import uninstall_all
         uninstall_all(getattr(pipe, "_unsloth_cuda_graphs", ()) or ())
@@ -1087,7 +1102,7 @@ def collect_autoopt(blocks: dict) -> dict:
             target = _autoopt_target(p)
             dtype = str(target.dtype).replace("torch.", "")
             # offload: the streamed / offloaded tier (8-16 GB cards), where graphs arm after placement (R3 / R4): the cell records
-            # what arm_graphs_after_placement installs (cuda_graph_armed), not the speed layer's pending flag
+            # what arm_graphs_after_placement installs (cuda_graph_after_placement), not the speed layer's pending flag
             for (backend, fam), offload in itertools.product(par._families(), (False, True)):
                 key = f"{p.key}.{fam.name}.autoopt" + ("_offload" if offload else "")
                 fam_target = family_target(backend, fam, target)
@@ -1103,7 +1118,7 @@ def collect_autoopt(blocks: dict) -> dict:
                     if offload:
                         engaged.discard("cuda_graph")
                         if armed_after_placement(pipe, result["views"]):
-                            engaged.add("cuda_graph_armed")
+                            engaged.add("cuda_graph_after_placement")
                     engaged = sorted(engaged)
                     cells[key] = {"on": bool(engaged), "engaged": engaged, "cfg": f"dtype={dtype}"}
                 except Exception as exc:  # noqa: BLE001 - recorded: a load that now raises is a lost cell
@@ -1637,6 +1652,49 @@ def test_streamed_graph_cell_is_what_the_arming_installs(monkeypatch):
     assert run() is True
     monkeypatch.setattr(
         cg, "arm_after_placement", lambda pipe, logger = None, **k: ([], "nothing installed")
+    )
+    assert run() is False
+
+
+def test_offload_only_family_keeps_its_deferred_graphs_only_for_the_stub_placement(monkeypatch):
+    """Wan records offloaded steps only, so on the hook-less stub its arming refuses with "stays resident": the cell
+    keeps cuda_graph_after_placement (the real offloaded load arms). Any other refusal loses it."""
+    import test_diffusion_autoopt_parity as par
+
+    from core.inference import diffusion_cuda_graph as cg
+    from core.inference import diffusion_speed as ds
+
+    backend, fam = next((b, f) for b, f in par._families() if f.name == "wan2.2-ti2v-5b")
+    blocks = load_golden()["inputs"]["denoiser_blocks"]
+    p = PROFILES["l4"]
+
+    def run() -> bool:
+        with clean_policy_env(), mock_profile(p, extra = _speed_layer_extra):
+            pipe = _autoopt_pipe(backend, fam, blocks)
+            flags = ds.snapshot_backend_flags()
+            try:
+                res = par.autoopt_entry(
+                    backend,
+                    pipe,
+                    family_target(backend, fam, _autoopt_target(p)),
+                    fam,
+                    AUTOOPT_SPEED,
+                    True,
+                    False,
+                )
+                return armed_after_placement(pipe, res["views"])
+            finally:
+                ds.restore_backend_flags(flags)
+                par._teardown()
+
+    assert run() is True
+    monkeypatch.setattr(
+        cg,
+        "arm_after_placement",
+        lambda pipe, logger = None, **k: (
+            [],
+            "WanTransformer3DModel: offload hook X moves the weights inside the forward",
+        ),
     )
     assert run() is False
 
@@ -2355,4 +2413,4 @@ def test_incident_r3_stream_tier_keeps_cuda_graphs(matrix, key):
         resident = cells[f"{key}.{fam}.autoopt"]
         streamed = cells[f"{key}.{fam}.autoopt_offload"]
         if "cuda_graph" in resident.get("engaged", ()):
-            assert "cuda_graph_armed" in streamed.get("engaged", ()), (key, fam, streamed)
+            assert "cuda_graph_after_placement" in streamed.get("engaged", ()), (key, fam, streamed)
