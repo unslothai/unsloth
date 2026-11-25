@@ -5,6 +5,7 @@ import asyncio
 import hashlib
 import json
 import threading
+from uuid import uuid4
 from types import SimpleNamespace
 
 import pytest
@@ -879,3 +880,120 @@ def test_every_ml_warmup_selection_round_trips_without_persisting_dependencies(
     assert client.get("/settings/ml-warmup").json() == expected
     assert run_as(OWNER, studio_db.get_app_setting, ML_WARMUP_FEATURES_SETTING_KEY) == selected
     assert run_as(ALICE, studio_db.get_app_setting, ML_WARMUP_FEATURES_SETTING_KEY, None) is None
+
+
+def test_sidebar_sections_merge_browser_imports_and_keep_account_isolation(client):
+    from copy import deepcopy
+
+    path = "/chat/sidebar-sections"
+
+    def save(
+        layout,
+        base = None,
+        operation_id = None,
+    ):
+        response = client.post(
+            path, json = {"operationId": operation_id or str(uuid4()), "base": base, "layout": layout}
+        )
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    a = {
+        "sections": {"research": {"name": "Research", "sort": "manual"}},
+        "sectionByChatId": {"chat": "research", "pair": "research"},
+        "sectionByProjectId": {"project": "research"},
+        "sectionByPageId": {"page": "research"},
+        "sectionOrder": ["projects", "research", "pinned"],
+        "rowOrder": {"research": ["project", "page", "pair", "chat"]},
+    }
+    assert save(a) == a
+    b = {
+        "sections": {**a["sections"], "notes": {"name": "Notes", "sort": "updated"}},
+        "sectionByChatId": {"chat": "notes", "other": "notes", "new": "research"},
+        "rowOrder": {"research": ["pair", "new", "project"]},
+        "sectionOrder": ["pinned", "notes", "research", "projects"],
+    }
+    merged = save(b)
+    assert merged["sectionOrder"] == ["projects", "notes", "research", "pinned"]
+    assert merged["sectionByChatId"] == {
+        **a["sectionByChatId"],
+        "other": "notes",
+        "new": "research",
+    }
+    assert merged["rowOrder"]["research"] == ["new", "project", "page", "pair", "chat"]
+    assert client.get(path).json() == merged
+    assert not client.get(path, headers = {"x-test-account": "bob"}).json()["sections"]
+
+    edited = deepcopy(merged)
+    edited["sections"]["research"]["name"] = "Lab"
+    edited["sections"]["research"]["sort"] = "updated"
+    del edited["sectionByChatId"]["pair"]
+    del edited["sectionByProjectId"]["project"]
+    edited["sectionByPageId"]["page"] = "notes"
+    edited["rowOrder"]["research"] = ["chat"]
+    edited["sectionOrder"] = ["research", "projects", "notes", "pinned"]
+    assert save(edited, merged, "edit-research") == edited
+    assert save(a) == edited
+    assert save(b) == edited
+
+    deleted = deepcopy(edited)
+    del deleted["sections"]["notes"]
+    del deleted["sectionByChatId"]["other"]
+    del deleted["sectionByPageId"]["page"]
+    deleted["sectionOrder"].remove("notes")
+    assert save(deleted, edited) == deleted
+    assert save(b) == deleted
+    # A client that lost the reply to its rename retries after a later rename and deletion.
+    final = deepcopy(deleted)
+    final["sections"]["research"]["name"] = "Final name"
+    assert save(final, deleted) == final
+    assert save(edited, merged, "edit-research") == final
+    assert client.get(path).json() == final
+
+
+def test_sidebar_sections_concurrent_clients_keep_unrelated_edits(client):
+    from concurrent.futures import ThreadPoolExecutor
+    from copy import deepcopy
+
+    path = "/chat/sidebar-sections"
+    initial = client.post(
+        path,
+        json = {
+            "operationId": "initial",
+            "base": None,
+            "layout": {"sections": {"a": {"name": "A", "sort": "manual"}}},
+        },
+    ).json()
+    rename = deepcopy(initial)
+    rename["sections"]["a"]["name"] = "Renamed"
+    file = deepcopy(initial)
+    file["sectionByChatId"]["comparison-pair"] = "a"
+    file["sections"]["a"]["modifiedAt"] = 12345
+    with ThreadPoolExecutor(max_workers = 2) as pool:
+        responses = list(
+            pool.map(
+                lambda layout: client.post(
+                    path,
+                    json = {
+                        "operationId": str(uuid4()),
+                        "base": initial,
+                        "layout": layout,
+                    },
+                ),
+                [rename, file],
+            )
+        )
+    assert all(response.status_code == 200 for response in responses)
+    current = client.get(path).json()
+    assert current["sections"]["a"] == {"name": "Renamed", "sort": "manual", "modifiedAt": 12345}
+    assert current["sectionByChatId"] == {"comparison-pair": "a"}
+
+    moved = deepcopy(current)
+    moved["sections"]["b"] = {"name": "B", "sort": "manual"}
+    moved["sectionByChatId"]["comparison-pair"] = "b"
+    assert client.post(
+        path, json = {"operationId": "move", "base": current, "layout": moved}
+    ).is_success
+    # The stale client deleting A saw the pair in A. Its deletion must leave the pair in B.
+    result = client.post(path, json = {"operationId": "delete", "base": current, "layout": {}})
+    assert result.json()["sectionByChatId"] == {"comparison-pair": "b"}

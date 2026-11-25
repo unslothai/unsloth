@@ -28,6 +28,7 @@ from pydantic import (
 from auth.authentication import get_current_subject
 from core import chat_originals
 from auth import policy
+from routes.sidebar_sections import router as sidebar_sections_router
 from routes.chat_generation_runs import cancel_account_run
 from core.inference.llama_server_args import (
     BATCH_MAX,
@@ -107,6 +108,7 @@ from storage.studio_db import (
 )
 
 router = APIRouter()
+router.include_router(sidebar_sections_router)
 
 logger = get_logger(__name__)
 

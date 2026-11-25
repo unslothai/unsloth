@@ -107,6 +107,9 @@ function withoutSection(
 }
 
 export interface SidebarOrganizationState {
+  /** Last acknowledged shared layout, persisted with the view so offline edits survive reload. */
+  syncedLayout?: string;
+  pendingLayoutEdit?: { id: string; layout: string };
   organizeBy: SidebarOrganizeBy;
   chatSort: SidebarChatSort;
   pinnedSort: SidebarChatSort;
@@ -323,6 +326,9 @@ export function mergePersistedOrganization(
     : [];
   return {
     ...current,
+    pendingLayoutEdit: typeof saved?.pendingLayoutEdit?.id === "string" &&
+      typeof saved.pendingLayoutEdit.layout === "string" ? saved.pendingLayoutEdit : undefined,
+    syncedLayout: typeof saved?.syncedLayout === "string" ? saved.syncedLayout : undefined,
     organizeBy,
     chatSort,
     pinnedSort,

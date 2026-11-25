@@ -30,6 +30,7 @@ import {
   SIDEBAR_ORGANIZATION_STORAGE_KEY,
   useSidebarOrganizationStore,
 } from "../src/features/chat/stores/sidebar-organization-store.ts";
+import { applySidebarLayout, sidebarLayout } from "../src/features/chat/sidebar-layout.ts";
 import { readSrcAsync } from "./helpers/kit.ts";
 
 const APP_SIDEBAR = await readSrcAsync("components/app-sidebar.tsx");
@@ -1075,4 +1076,28 @@ test("undoing a removed section files its pages back into it", async () => {
   assert.deepEqual({ ...useSidebarOrganizationStore.getState().sectionByPageId }, {});
   undo();
   assert.deepEqual({ ...useSidebarOrganizationStore.getState().sectionByPageId }, { pg: id });
+});
+
+test("a server layout round trips every section row kind and leaves local preferences intact", () => {
+  resetStore();
+  const actions = useSidebarOrganizationStore.getState();
+  const id = actions.createCustomSection("Research")!;
+  actions.setChatsSection(["chat", "pair"], id);
+  actions.setProjectsSection(["project"], id);
+  actions.setPagesSection(["page"], id);
+  actions.setManualOrder(customSectionScope(id), ["pair", "project", "page", "chat"]);
+  actions.setManualOrder("recents", ["only-in-first-browser"]);
+  actions.setSectionHidden(id, true);
+
+  const first = useSidebarOrganizationStore.getState();
+  const shared = sidebarLayout(first);
+  const second = { ...useSidebarOrganizationStore.getInitialState(), manualOrder: { recents: ["local"] } };
+  const received = { ...second, ...applySidebarLayout(second, shared) };
+  assert.deepEqual(sidebarLayout(received), shared);
+  assert.deepEqual(received.manualOrder.recents, ["local"]);
+  assert.deepEqual(received.hiddenSections, []);
+  assert.deepEqual(received.manualOrder[customSectionScope(id)], ["pair", "project", "page", "chat"]);
+  assert.equal(received.sectionByChatId.pair, id);
+  assert.equal(received.sectionByProjectId.project, id);
+  assert.equal(received.sectionByPageId.page, id);
 });

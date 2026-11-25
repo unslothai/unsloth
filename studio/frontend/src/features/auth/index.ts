@@ -17,6 +17,8 @@ export {
   AUTH_SESSION_STORED_EVENT,
   AUTH_TOKEN_KEY,
   clearAuthTokens,
+  ensureAuthSessionMark,
+  getAuthSessionMark,
   getAuthToken,
   getAuthSessionEpoch,
   getPostAuthRoute,
