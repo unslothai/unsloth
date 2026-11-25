@@ -352,12 +352,12 @@ RULES = (
     ),
     # Repeats parallel_env.parse_parallel_spec and ep_native.apply_expert_parallel, for the variables set alone.
     Rule(
-        "ep x tp / pp / cp / fsdp2",
-        "expert parallel with tensor / pipeline / context parallel or native FSDP2",
-        lambda q: q.ep > 1 and (q.tp > 1 or q.pp > 1 or q.cp > 1 or q.fsdp2),
-        "expert parallel v1 shards the experts over data parallel ranks that each hold the rest of the model "
-        "whole (models/ep_native.py refuses the composition)",
-        "ep alone, or drop ep (tp / pp / cp / UNSLOTH_FSDP2=1)",
+        "ep x tp / pp / fsdp2",
+        "expert parallel with tensor / pipeline parallel or native FSDP2",
+        lambda q: q.ep > 1 and (q.tp > 1 or q.pp > 1 or q.fsdp2),
+        "expert parallel shards the experts over data / context parallel ranks that each hold the rest of the "
+        "model whole (models/ep_native.py refuses the composition)",
+        "ep alone or with cp, or drop ep (tp / pp / UNSLOTH_FSDP2=1)",
     ),
     Rule(
         "ep x model",
@@ -988,6 +988,16 @@ _MOE_MODES = {
     },
     "tp": {"tp": (2, 4, 8), "ep": _ONE},
     "ep": {"ep": (2, 4, 8), "dp": (2, 4, 8), "fsdp2": (False,), "cp": _ONE, "tp": _ONE, "pp": _ONE},
+    # Experts are token-local: a cp shard's tokens dispatch like a data parallel row's (ep over the dp x cp ranks).
+    "ep_cp": {
+        "ep": (2, 4, 8),
+        "dp": (1, 2, 4),
+        "fsdp2": (False,),
+        "cp": (2, 4, 8),
+        "cp_backend": ("ulysses",),
+        "tp": _ONE,
+        "pp": _ONE,
+    },
 }
 _MOE_COMMON = {
     "trainer": ("sft",),
@@ -1008,6 +1018,7 @@ _MOE_CP_GC = "test_moe_under_cp_with_unsloth_checkpointing_matches_one_process"
 _MOE_CP_GC_COMPILE = "test_moe_block_compile_under_cp_with_unsloth_checkpointing_is_compile_clean"
 _MOE_PP = "tests/test_pp_moe_aux_gloo.py::test_pp2_moe_aux_matches_gradient_accumulation"
 _MOE_CP_AUX = "tests/test_cp_router_aux_gloo.py::test_router_aux_loss_under_cp_matches_one_process"
+_EP_CP = "tests/test_ep_x_cp_gloo.py::test_ep_x_cp_qwen3_moe_lora_matches_one_process"
 _MOE_CP_AUX_GC = (
     "lora+experts",
     "cp",
@@ -1135,6 +1146,13 @@ _MOE_EVIDENCE = {
     + ("eager: no compiled region",),
     ("qwen3_moe", "full", True, "cp"): (_MOE_CP_AUX + "[full-cp2-right_pad]",) * 2
     + ("eager: no compiled region",),
+    ("qwen3_moe", "lora+experts", False, "ep_cp"): (
+        _EP_CP + "[ep2_cp2|dp2_cp2-ep2_replicas|dp2_cp2-ep4]",
+    )
+    * 2
+    + ("eager: no compiled region",),
+    ("qwen3_moe", "lora+experts", True, "ep_cp"): (_EP_CP + "[ep2_cp2-router_aux]",) * 2
+    + ("eager: no compiled region",),
     ("qwen3_moe", "lora+experts", True, "ddp"): (_MOE_AUX_TEST,) * 2
     + ("eager: no compiled region",),
     ("qwen3_moe", "lora+experts", True, "fsdp2"): (_MOE_AUX_TEST,) * 2
@@ -1257,6 +1275,10 @@ _EP_BLOCKED_FAMILIES = {
 
 
 def _moe_note(family, precision, aux, mode):
+    if mode == "ep_cp":
+        if family in _EP_BLOCKED_FAMILIES:
+            return f"refused by the ep x model rule (models/tp_native.py: {_EP_BLOCKED_FAMILIES[family]})"
+        return "expert parallel x Ulysses context parallel runs; no gloo parity run covers this cell yet"
     if mode == "ep":
         if family in _EP_BLOCKED_FAMILIES:
             return f"refused by the ep x model rule (models/tp_native.py: {_EP_BLOCKED_FAMILIES[family]})"

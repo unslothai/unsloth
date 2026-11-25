@@ -253,13 +253,14 @@ def translate(spec, environ = None):
         )
     ep = spec.get("ep", 1)
     if ep > 1:
-        # Expert parallel v1: the experts sharded over every rank, which are all data parallel.
-        others = [f"{k}={v}" for k, v in sizes.items() if v > 1] + (
+        # Expert parallel: the experts sharded over every rank; the rest of the model stays whole on each rank, data
+        # parallel or context parallel (experts are token-local, so a cp shard's tokens dispatch like a dp row's).
+        others = [f"{k}={v}" for k, v in sizes.items() if v > 1 and k != "cp"] + (
             ["fsdp=1"] if spec.get("fsdp") else []
         )
         # The inherited legacy variables too: only the spec was checked, so an exported UNSLOTH_FSDP2=1 would
         # shard (and sync rank 0's values into) every rank's own expert slices.
-        for key in ("tp", "pp", "cp", "fsdp"):
+        for key in ("tp", "pp", "fsdp"):
             if key in spec:
                 continue  # the spec value is checked above; a disagreeing variable is refused below
             current = _legacy_value(key, environ)
@@ -270,14 +271,18 @@ def translate(spec, environ = None):
             raise ValueError(
                 f'Unsloth: {FLAG}="{given}": expert parallel (ep) cannot be combined with {", ".join(others)} yet.'
             )
-        # Every rank is data parallel; ep ranks share one copy of the experts (replica groups when ep < world).
-        dp = spec.get("dp", world)
-        if (world is not None and (world % ep or (dp is not None and dp != world))) or (
-            dp is not None and dp % ep
+        # Every rank (dp x cp) holds the rest of the model; ep ranks share one copy of the experts (replica
+        # groups when ep < world).
+        cp = sizes["cp"]  # an exported UNSLOTH_CP_SIZE that disagrees is refused below
+        dp = spec.get("dp", None if world is None else world // cp)
+        ranks = None if dp is None else dp * cp
+        if (world is not None and (world % ep or (ranks is not None and ranks != world))) or (
+            ranks is not None and ranks % ep
         ):
             raise ValueError(
-                f'Unsloth: {FLAG}="{given}": ep={ep} must divide the data parallel size, which is every rank '
-                f"(got dp={dp}, WORLD_SIZE={world}); launch with torchrun --nproc-per-node a multiple of {ep}."
+                f'Unsloth: {FLAG}="{given}": ep={ep} must divide the number of ranks (dp x cp = '
+                f"{ranks if ranks is not None else '?'}, WORLD_SIZE={world}); launch with torchrun "
+                f"--nproc-per-node a multiple of {ep}."
             )
     out = {}
     wanted = {

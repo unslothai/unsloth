@@ -7391,7 +7391,7 @@ def _parallel_capabilities_pre(trainer, init, args, kwargs, model):
         world = int(os.environ.get("WORLD_SIZE", "1") or 1)
         layout = ParallelLayout(
             1,
-            world,
+            max(world // max(cp, 1), 1),
             world,
             native_fsdp2 or bool(_launch.unsloth_fsdp2_requested()),
             cp = cp,

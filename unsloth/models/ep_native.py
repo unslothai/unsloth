@@ -11,8 +11,9 @@
     model = FastModel.get_peft_model(model, ...)
     apply_expert_parallel(model, mesh)               # 1-D ep mesh, or 2-D (replicas, "ep"), ep innermost
 
-Every rank reads its own batches (DDP). Everything but the routed experts stays whole and data parallel: DDP
-averages its gradients. Within an ep group rank r owns the contiguous experts [r E / ep, (r + 1) E / ep) and their
+Every rank reads its own batches (DDP), or with Ulysses context parallel (UNSLOTH_PARALLEL="ep=2,cp=2") its shard
+of each row's sequence: the experts are token-local, so a cp shard's tokens dispatch like a data parallel row's.
+Everything but the routed experts stays whole and data parallel: DDP averages its gradients. Within an ep group rank r owns the contiguous experts [r E / ep, (r + 1) E / ep) and their
 LoRA factors (sliced from the 1-GPU init, so the adapter equals one GPU's). Each experts call sends every token
 once to each rank of its group owning one of its top-k experts (all-to-all), that rank runs its experts on the
 (token, slot) pairs it got and the weighted outputs come back the same way, summed per token; the backward is the

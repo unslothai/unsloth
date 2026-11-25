@@ -88,13 +88,21 @@ def test_ep_with_vllm_is_refused():
 
 @pytest.mark.parametrize(
     "axis",
-    [dict(tp = 2), dict(pp = 2), dict(cp = 2, cp_backend = "ulysses"), dict(fsdp2 = True)],
-    ids = ["tp", "pp", "cp", "fsdp2"],
+    [dict(tp = 2), dict(pp = 2), dict(fsdp2 = True), dict(cp = 2, cp_backend = "ulysses", fsdp2 = True)],
+    ids = ["tp", "pp", "fsdp2", "cp_fsdp2"],
 )
 def test_ep_with_another_model_axis_or_fsdp2_is_refused(axis):
     message = _refusal(_ep_query(**axis))
-    assert message.startswith("Unsloth: ep x tp / pp / cp / fsdp2: "), message
+    assert message.startswith("Unsloth: ep x tp / pp / fsdp2: "), message
     assert "ep 2" in message, message
+
+
+def test_ep_with_ulysses_cp_has_a_supported_cell_and_ring_is_refused():
+    ulysses = _ep_query(dp = 1, cp = 2, cp_backend = "ulysses", expert_lora = True, mode = "lora")
+    status, cell = caps.cell_status(ulysses)
+    assert status == "supported" and "x ep_cp" in cell.name, (status, cell)
+    message = _refusal(_ep_query(dp = 1, cp = 2, cp_backend = "ring", expert_lora = True, mode = "lora"))
+    assert "no supported cell covers it" in message, message
 
 
 @pytest.mark.parametrize(

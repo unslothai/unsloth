@@ -1605,6 +1605,11 @@ def _refuse_model_parallel_cp(
             fsdp2 = bool(unsloth_fsdp2_native_requested())
         except Exception:
             fsdp2 = False
+        try:
+            from .models.ep_native import ep_env_size
+            ep = ep_env_size()
+        except Exception:
+            ep = 1
         alone = types.SimpleNamespace(
             dp = max(world // size, 1),
             tp = 1,
@@ -1613,6 +1618,7 @@ def _refuse_model_parallel_cp(
             fsdp2 = fsdp2,
             cp_backend = None,
             schedule = None,
+            ep = ep,  # UNSLOTH_EP_SIZE beside a cp from the trainer config: the ep x cp cells decide
         )
         # A constructor kwarg (context_parallel_backend = ...) overrides the config's value.
         backend = backend or getattr(config, "context_parallel_backend", None)
