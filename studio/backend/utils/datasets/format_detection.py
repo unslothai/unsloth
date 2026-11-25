@@ -652,7 +652,11 @@ def detect_multimodal_dataset(dataset):
         if col_name in already_detected:
             continue
         value = sample[col_name]
-        if _is_image_value(value) or _holds_images(value):
+        if (
+            _is_image_value(value)
+            or _holds_images(value)
+            or (_is_file_name_column(col_name) and _names_local_image(value))
+        ):
             multimodal_columns.append(col_name)
             modality_types.add("image")
 
@@ -722,6 +726,30 @@ def detect_multimodal_dataset(dataset):
         "detected_text_column": detected_text_col,
         "detected_speaker_column": detected_speaker_col,
     }
+
+
+# A file-name column names documents as often as images: only its value decides.
+def _is_file_name_column(col_name) -> bool:
+    return _keyword_in_column("file_name", col_name) or _keyword_in_column("filename", col_name)
+
+
+def _names_local_image(value) -> bool:
+    if not isinstance(value, str) or not value.strip():
+        return False
+    import os
+
+    from .remote_images import is_network_share
+
+    path = os.path.expanduser(value.strip())
+    # Opening a share signs Windows in to its host (NTLM).
+    if is_network_share(path):
+        return False
+    try:
+        with open(path, "rb") as file:
+            head = file.read(12)
+    except (OSError, ValueError):
+        return False
+    return _has_image_header(head) or head[:4] in (b"II*\x00", b"MM\x00*")
 
 
 def _is_decoded_image_value(value) -> bool:

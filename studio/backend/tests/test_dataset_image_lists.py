@@ -269,6 +269,18 @@ def test_filename_column_only_counts_as_image_when_it_names_an_image(column):
     assert image_info["multimodal_columns"] == [column]
 
 
+@pytest.mark.parametrize("header, image", [(b"\x89PNG\r\n\x1a\n", True), (b"# Read me\n", False)])
+def test_extensionless_file_name_counts_as_image_only_when_the_file_is_one(tmp_path, header, image):
+    referenced = tmp_path / "README"
+    referenced.write_bytes(header)
+    dataset = Dataset.from_list(
+        [{"instruction": "Summarise", "output": "A readme", "file_name": str(referenced)}]
+    )
+
+    assert format_detection.detect_multimodal_dataset(dataset)["is_image"] is image
+    assert dataset_format.check_dataset_format(dataset, is_vlm = False)["is_image"] is image
+
+
 @pytest.mark.parametrize("detector", [dataset_format, format_detection])
 def test_image_list_detection_requires_values_the_converter_can_open(detector, tmp_path):
     png_path = tmp_path / "image.png"
