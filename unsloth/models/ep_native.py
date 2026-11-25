@@ -566,7 +566,7 @@ def ep_sync_expert_grads(model):
     with torch.no_grad():
         for tensors in _replica_buckets(grads, _REPLICA_BUCKET_BYTES):
             if len(tensors) == 1 and tensors[0].is_contiguous():
-                dist.all_reduce(tensors[0], group = group)  # in place: no staging copy
+                dist.all_reduce(tensors[0], group = group)
                 continue
             flat = _flatten_dense_tensors(tensors)
             dist.all_reduce(flat, group = group)
@@ -575,13 +575,12 @@ def ep_sync_expert_grads(model):
             del flat, v  # a view of flat in v would keep it alive beside the next bucket's buffer
 
 
-# Staging cap of the replica gradient sum: one flat copy of every expert gradient would double their memory.
+# One flat copy of every expert gradient would double their memory.
 _REPLICA_BUCKET_BYTES = 256 << 20
 
 
 def _replica_buckets(grads, cap):
-    """Same-(device, dtype) runs in issue order, each at most `cap` bytes; a larger gradient goes alone. The split
-    depends only on shapes, so every replica reduces the same buckets."""
+    """Shape-only split, so every replica reduces the same buckets."""
     open_buckets = {}
     for g in grads:
         nbytes = g.numel() * g.element_size()
