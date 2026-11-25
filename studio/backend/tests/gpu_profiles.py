@@ -733,32 +733,104 @@ def _clear_device_caches() -> None:
 
 # Env prefixes a policy reads its switches from; cleared while a profile resolves so a developer's shell (or a CI
 # default) never decides a golden cell.
-POLICY_ENV_PREFIXES = (
-    "UNSLOTH_DIFFUSION_",
-    "UNSLOTH_H3_",
-    "UNSLOTH_VIDEO_",
-    "UNSLOTH_IMAGE_",
-    "UNSLOTH_SD_CPP_",
+# Every Studio lever, opt-out and kill switch is an UNSLOTH_* variable (plus torch's compile switches): all of them
+# are cleared for a profile, so an operator's shell (UNSLOTH_DISABLE_CUDA_GRAPH=1, UNSLOTH_STUDIO_FLUX3_FP16=1, ...)
+# never moves a cell. Only the guard's own controls and import plumbing pass.
+POLICY_ENV_PREFIXES = ("UNSLOTH_",)
+POLICY_ENV_NAMES = ("TORCHDYNAMO_DISABLE", "TORCH_COMPILE_DISABLE")
+POLICY_ENV_KEEP = (
+    "UNSLOTH_UPDATE_GPU_GOLDEN",
+    "UNSLOTH_GPU_GOLDEN_REASON",
+    "UNSLOTH_IS_PRESENT",
+    "UNSLOTH_COMPILE_LOCATION",
 )
-POLICY_ENV_NAMES = ("TORCHDYNAMO_DISABLE", "UNSLOTH_COMPILE_DISABLE", "UNSLOTH_DISABLE_FP16_ACCUM")
+
+
+def _policy_env(name: str) -> bool:
+    return (
+        name.startswith(POLICY_ENV_PREFIXES) or name in POLICY_ENV_NAMES
+    ) and name not in POLICY_ENV_KEEP
+
+
+# The matrix child starts from an allowlist, not the parent's environment: process plumbing only (paths, locale,
+# temp dirs, the venv, the Windows system variables Python needs), so a setting read at import time (FLUX.3's fp16
+# opt-in) cannot reach the golden either.
+CHILD_ENV_ALLOW = (
+    "PATH",
+    "PATHEXT",
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "USERNAME",
+    "SHELL",
+    "TERM",
+    "LANG",
+    "LANGUAGE",
+    "TMPDIR",
+    "TMP",
+    "TEMP",
+    "PYTHONPATH",
+    "PYTHONHOME",
+    "PYTHONIOENCODING",
+    "PYTHONUTF8",
+    "VIRTUAL_ENV",
+    "CONDA_PREFIX",
+    "LD_LIBRARY_PATH",
+    "DYLD_LIBRARY_PATH",
+    "DYLD_FALLBACK_LIBRARY_PATH",
+    "SYSTEMROOT",
+    "SYSTEMDRIVE",
+    "WINDIR",
+    "COMSPEC",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "USERPROFILE",
+    "PROGRAMDATA",
+    "PROGRAMFILES",
+    "PROGRAMFILES(X86)",
+    "NUMBER_OF_PROCESSORS",
+    "PROCESSOR_ARCHITECTURE",
+    "HF_HOME",
+    "HF_HUB_CACHE",
+    "HF_HUB_OFFLINE",
+    "XDG_CACHE_HOME",
+    "TRITON_CACHE_DIR",
+    "TORCHINDUCTOR_CACHE_DIR",
+    "TORCH_EXTENSIONS_DIR",
+    "CUDA_CACHE_PATH",
+    "PYTHONUNBUFFERED",
+    # the host's device masks only limit what the real driver enumerates (every profile mocks its own devices); without
+    # them a many-GPU host initialises every card
+    "CUDA_VISIBLE_DEVICES",
+    "HIP_VISIBLE_DEVICES",
+    "ROCR_VISIBLE_DEVICES",
+)
+CHILD_ENV_ALLOW_PREFIXES = ("LC_",)
+
+
+def child_env_base(environ: Any = None) -> dict:
+    """The allowlisted part of ``environ`` (default ``os.environ``) a matrix child inherits."""
+    import os
+
+    environ = os.environ if environ is None else environ
+    allow = {n.upper() for n in CHILD_ENV_ALLOW}
+    return {
+        k: v
+        for k, v in environ.items()
+        if k.upper() in allow or k.upper().startswith(CHILD_ENV_ALLOW_PREFIXES)
+    }
 
 
 @contextlib.contextmanager
 def clean_policy_env() -> Iterator[None]:
     import os
 
-    saved = {
-        k: v
-        for k, v in os.environ.items()
-        if k.startswith(POLICY_ENV_PREFIXES) or k in POLICY_ENV_NAMES
-    }
+    saved = {k: v for k, v in os.environ.items() if _policy_env(k)}
     for k in saved:
         os.environ.pop(k, None)
     try:
         yield
     finally:
-        for k in [
-            k for k in os.environ if k.startswith(POLICY_ENV_PREFIXES) or k in POLICY_ENV_NAMES
-        ]:
+        for k in [k for k in os.environ if _policy_env(k)]:
             os.environ.pop(k, None)
         os.environ.update(saved)

@@ -1071,6 +1071,12 @@ def _autoopt_pipe(backend: str, fam: Any, blocks: dict) -> Any:
     return pipe
 
 
+def _stub_denoisers(pipe: Any) -> list:
+    """The denoisers ``_autoopt_pipe`` built (one, or a MoE's two experts): the views the load must cover."""
+    names = ("transformer", "unet", "transformer_2")
+    return [getattr(pipe, n) for n in names if getattr(pipe, n, None) is not None]
+
+
 def _speed_layer_extra(patch: Any, p: GpuProfile) -> None:
     """What the parity harness pins besides the device: unsloth_zoo's patch helpers, graph install, Triton kernels."""
     from core.inference import diffusion_cuda_graph, diffusion_gguf_compile, diffusion_patch_backend
@@ -1151,34 +1157,49 @@ def _collected_profiles() -> list:
     return [PROFILES[k] for k in keys]
 
 
-_OFFLOAD_ONLY_RESIDENT = "the family records offloaded steps only, and it stays resident"
+# The arming's own labels (diffusion_cuda_graph.arm_after_placement) for the placement each graph recorded under.
+_ARMING_LABELS = (
+    ("model offload over a stable device range", "model_stable"),
+    ("block-streamed", "group"),
+    ("model offload", "model"),
+    ("resident", "resident"),
+)
+
+
+class CpuOffload:
+    """What accelerate's ``add_hook_to_module`` leaves on a module under ``enable_model_cpu_offload``: a hook named
+    ``CpuOffload`` and the module's own forward kept as ``_old_forward`` (the arming wraps the replay under it)."""
+
+    def __init__(self, execution_device: str = "cuda:0"):
+        self.execution_device = execution_device
+
+
+def place_model_offload(pipe: Any) -> None:
+    """Placement for an offloaded load, after the speed layer as in the loaders: each denoiser gets accelerate's
+    whole-module CPU offload hook (Studio's model-offload policy)."""
+    for module in _stub_denoisers(pipe):
+        module._old_forward = module.forward
+        module._hf_hook = CpuOffload()
 
 
 def armed_after_placement(pipe: Any, views: list) -> Optional[str]:
-    """What the loader's post-placement step really installs for an offloaded load (``arm_graphs_after_placement``,
-    the call image and video loads make once placement is final): its ``cuda_graph`` after arming, never the pending
-    flag the speed layer leaves. Returns the branch that armed, else None:
-
-    - ``"resident"``: the stub denoiser carries no offload hook, so the arming takes its resident branch. The block-
-      streamed and model-offload branches (copies recorded in the graph, the stable arena) need a real hook and run in
-      the GPU test ``test_diffusion_offload_cuda_graph.py``;
-    - ``"deferred"``: an offload-only family (Wan) arms only on a denoiser an offload hook moves; the stub staying
-      resident is the arming's only refusal, so the arming is left to the real offloaded load."""
+    """What the loader's post-placement step installs for an offloaded load: ``arm_graphs_after_placement`` (the call
+    the image and video loaders make once placement is final) on denoisers an offload hook really moves, never the
+    pending flag the speed layer leaves. Returns the placement the graphs recorded under (the arming's own label:
+    ``model_stable``, ``model``, ``group`` or ``resident``), else None. Block-streamed copies recorded in the graph
+    and the replay itself need a real card: the GPU test ``test_diffusion_offload_cuda_graph.py``."""
     from core.inference.diffusion_speed import arm_graphs_after_placement
 
+    place_model_offload(pipe)
     branch = None
     for view in views:
-        pending = bool(getattr(pipe, "_unsloth_cuda_graph_after_placement", False))
         try:
-            if arm_graphs_after_placement(pipe, dict(view)).get("cuda_graph"):
-                branch = "resident"
-                continue
+            armed = bool(arm_graphs_after_placement(pipe, dict(view)).get("cuda_graph"))
         except Exception:  # noqa: BLE001 - recorded as not armed
             continue
-        reason = str(getattr(pipe, "_unsloth_cuda_graph_reason", "") or "")
-        parts = [r for r in reason.split("; ") if r]
-        if pending and parts and all(r.endswith(_OFFLOAD_ONLY_RESIDENT) for r in parts):
-            branch = branch or "deferred"
+        if armed:
+            reason = str(getattr(pipe, "_unsloth_cuda_graph_reason", "") or "")
+            branch = next((code for text, code in _ARMING_LABELS if text in reason), "other")
     try:
         from core.inference.diffusion_cuda_graph import uninstall_all
         uninstall_all(getattr(pipe, "_unsloth_cuda_graphs", ()) or ())
@@ -1201,8 +1222,24 @@ def autoopt_cell(
     flags = ds.snapshot_backend_flags()
     try:
         result = par.autoopt_entry(backend, pipe, fam_target, fam, AUTOOPT_SPEED, offload, False)
-        engaged = {k for view in result["views"] for k, v in view.items() if v}
+        views = list(result["views"])
+        engaged = {k for view in views for k, v in view.items() if v}
         engaged |= {f"patch:{k}" for k, v in result["patches"].items() if v}
+        # A dual-DiT MoE (Wan 2.2 A14B) runs the speed layer once per expert: each expert's engagement is recorded on
+        # its own (the union above could hide a lever lost on one expert), and a view missing is a lost cell.
+        experts = _stub_denoisers(pipe)
+        if len(views) != len(experts):
+            return {
+                "on": False,
+                "why": f"views:{len(views)}/{len(experts)}",
+                "cfg": f"dtype={dtype}",
+            }
+        per_expert = None
+        if len(experts) > 1:
+            per_expert = [
+                sorted(k for k, v in view.items() if v and not (offload and k == "cuda_graph"))
+                for view in views
+            ]
         branch = None
         if offload:
             engaged.discard("cuda_graph")
@@ -1213,6 +1250,8 @@ def autoopt_cell(
         cell = {"on": bool(engaged), "engaged": engaged, "cfg": f"dtype={dtype}"}
         if branch:
             cell["arming"] = branch
+        if per_expert is not None:
+            cell["experts"] = per_expert
         return cell
     except Exception as exc:  # noqa: BLE001 - recorded: a load that now raises is a lost cell
         return {"on": False, "why": f"error:{type(exc).__name__}"}
@@ -1377,14 +1416,16 @@ def _flip_code(flip: str) -> str:
     return "\n".join(HOST_FLIPS[n] for n in names)
 
 
-def _child_env(flip: Optional[str] = None) -> dict:
+def _child_env(flip: Optional[str] = None, profiles: Optional[Any] = None) -> dict:
     import json
-    import os
 
-    env = dict(os.environ)
-    env.pop("UNSLOTH_UPDATE_GPU_GOLDEN", None)
-    env.pop("GPU_LEVER_HOST_FLIP", None)
-    env.pop("GPU_LEVER_PROFILES", None)
+    from gpu_profiles import child_env_base
+
+    env = (
+        child_env_base()
+    )  # an allowlist: no inherited UNSLOTH_* lever or import-time opt-in reaches the child
+    if profiles:
+        env["GPU_LEVER_PROFILES"] = ",".join(profiles)
     if flip:
         env["GPU_LEVER_HOST_FLIP"] = flip
         env["GPU_LEVER_HOST_FLIP_CODE"] = json.dumps(_flip_code(flip))
@@ -1403,7 +1444,11 @@ def _child_result(proc: Any, stdout: str, stderr: str) -> dict:
     return json.loads(stdout.rsplit(marker, 1)[1])
 
 
-def _collect_in_child(blocks: dict, flip: Optional[str] = None) -> dict:
+def _collect_in_child(
+    blocks: dict,
+    flip: Optional[str] = None,
+    profiles: Optional[Any] = None,
+) -> dict:
     import json
     import subprocess
 
@@ -1413,7 +1458,7 @@ def _collect_in_child(blocks: dict, flip: Optional[str] = None) -> dict:
         capture_output = True,
         text = True,
         cwd = str(_BACKEND),
-        env = _child_env(flip),
+        env = _child_env(flip, profiles),
         timeout = 600,
     )
     return _child_result(proc, proc.stdout, proc.stderr)
@@ -1789,10 +1834,14 @@ def test_streamed_graph_cell_is_what_the_arming_installs(monkeypatch):
                 ds.restore_backend_flags(flags)
                 par._teardown()
 
-    assert run() == "resident"
+    assert run() == "model_stable"
     monkeypatch.setattr(
         cg, "arm_after_placement", lambda pipe, logger = None, **k: ([], "nothing installed")
     )
+    assert run() is None
+    monkeypatch.undo()
+    # an armer that refuses every denoiser an offload hook moves (resident ones would still arm)
+    monkeypatch.setattr(cg, "offload_placement", lambda module: (None, "refused under offload"))
     assert run() is None
 
 
@@ -1822,6 +1871,26 @@ def test_speed_cells_read_the_real_compile_gate_and_graph_installer(monkeypatch)
     monkeypatch.undo()
     monkeypatch.setattr(cg, "install_cuda_graphs", lambda pipe, logger = None, **k: ())
     assert "cuda_graph" not in _klein_cell()["engaged"]
+
+
+_INHERITED_STUDIO_ENV = {
+    "UNSLOTH_DISABLE_CUDA_GRAPH": "1",  # read per call: every graph lever off
+    "UNSLOTH_STUDIO_FLUX3_FP16": "1",  # read at import: FLUX.3 on fp16 cards changes dtype
+}
+
+
+def test_inherited_studio_settings_cannot_move_the_golden(monkeypatch):
+    """An operator's Studio settings in the shell running the tests reach neither the matrix child (it starts from an
+    allowlisted environment, before any production import) nor the in-process cells (``clean_policy_env`` clears
+    every UNSLOTH_* lever and opt-out)."""
+    for k, v in _INHERITED_STUDIO_ENV.items():
+        monkeypatch.setenv(k, v)
+    golden = load_golden()
+    keys = ("t4", "l4")
+    got = _collect_in_child(golden["inputs"]["denoiser_blocks"], profiles = keys)["cells"]
+    want = {k: v for k, v in golden["cells"].items() if k.split(".", 1)[0] in keys}
+    assert not diff_cells(want, got), format_diffs(diff_cells(want, got))
+    assert "cuda_graph" in _klein_cell()["engaged"]
 
 
 def test_int8_gemm_install_cell_is_the_installers_outcome(monkeypatch):
@@ -1905,21 +1974,22 @@ def test_mock_profile_never_touches_the_hosts_mps_device(monkeypatch):
 
 
 def test_streamed_cells_name_the_arming_branch(matrix):
-    """Every offloaded cell that records graphs after placement says which branch armed: ``resident`` (the stub has
-    no offload hook) or ``deferred`` (an offload-only family left to the real offloaded load)."""
+    """Every offloaded cell that records graphs after placement says which placement they recorded under, read from
+    the real arming on a denoiser the CPU-offload hook moves (Wan 2.2 5B, which records offloaded steps only, arms
+    there too)."""
     armed = {
         k: v
         for k, v in matrix["cells"].items()
         if k.endswith("_offload") and "cuda_graph_after_placement" in (v.get("engaged") or ())
     }
     assert armed
-    assert all(v.get("arming") in ("resident", "deferred") for v in armed.values()), armed
-    assert {v["arming"] for k, v in armed.items() if ".wan2.2-ti2v-5b." in k} == {"deferred"}
+    assert all(v.get("arming") in ("model_stable", "model", "group") for v in armed.values()), armed
+    assert any(".wan2.2-ti2v-5b." in k for k in armed)
 
 
-def test_offload_only_family_keeps_its_deferred_graphs_only_for_the_stub_placement(monkeypatch):
-    """Wan records offloaded steps only, so on the hook-less stub its arming refuses with "stays resident": the cell
-    keeps cuda_graph_after_placement (the real offloaded load arms). Any other refusal loses it."""
+def test_offload_only_family_arms_on_its_offloaded_denoiser(monkeypatch):
+    """Wan records offloaded steps only: on the offloaded denoiser the arming records under the model-offload
+    placement, and an armer that refuses offloaded denoisers loses the lever."""
     import test_diffusion_autoopt_parity as par
 
     from core.inference import diffusion_cuda_graph as cg
@@ -1948,16 +2018,52 @@ def test_offload_only_family_keeps_its_deferred_graphs_only_for_the_stub_placeme
                 ds.restore_backend_flags(flags)
                 par._teardown()
 
-    assert run() == "deferred"
-    monkeypatch.setattr(
-        cg,
-        "arm_after_placement",
-        lambda pipe, logger = None, **k: (
-            [],
-            "WanTransformer3DModel: offload hook X moves the weights inside the forward",
-        ),
-    )
+    assert run() == "model_stable"
+    monkeypatch.setattr(cg, "offload_placement", lambda module: (None, "refused under offload"))
     assert run() is None
+
+
+# Every loader that places a denoiser and then arms its graphs: (module, function). The arming call is inline in these
+# (a full diffusers load drives it); the cells above run the same call on an offloaded stub.
+_ARMING_LOADERS = (
+    ("diffusion.py", "load_pipeline"),
+    ("diffusion.py", "_engage_deferred_profile"),
+    ("video.py", "load_pipeline"),
+    ("video.py", "_load_h3_modular_pipeline"),
+)
+
+
+def test_every_loader_arms_graphs_after_placement():
+    """Deleting a loader's ``arm_graphs_after_placement`` call drops whole-step graphs from its streamed renders; each
+    loader must still make it, after its speed layer."""
+    import ast
+    for fname, func in _ARMING_LOADERS:
+        tree = ast.parse((_BACKEND / "core" / "inference" / fname).read_text(encoding = "utf-8"))
+        node = next(
+            (
+                n
+                for n in ast.walk(tree)
+                if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == func
+            ),
+            None,
+        )
+        assert node is not None, f"{fname}:{func} is gone"
+        calls = [
+            c.lineno
+            for c in ast.walk(node)
+            if isinstance(c, ast.Call)
+            and getattr(c.func, "id", getattr(c.func, "attr", None)) == "arm_graphs_after_placement"
+        ]
+        assert calls, f"{fname}:{func} no longer arms graphs after placement"
+        speed = [
+            c.lineno
+            for c in ast.walk(node)
+            if isinstance(c, ast.Call)
+            and getattr(c.func, "id", getattr(c.func, "attr", None))
+            in ("run_speed_layer", "apply_speed_optims", "_apply_video_speed")
+        ]
+        if speed:
+            assert max(calls) > min(speed), f"{fname}:{func} arms before its speed layer"
 
 
 def test_gemm_tile_cells_follow_the_shape_rules(monkeypatch):
