@@ -9017,7 +9017,11 @@ def client_tool_calls_in(tool_calls, client_tool_names) -> list[dict]:
             arguments = json.dumps(arguments, ensure_ascii = False)
         call_id = call.get("id")
         # The text parser numbers calls per turn (call_0, call_1, ...); those repeat across turns.
-        if not isinstance(call_id, str) or not call_id.strip() or re.fullmatch(r"call_\d+", call_id):
+        if (
+            not isinstance(call_id, str)
+            or not call_id.strip()
+            or re.fullmatch(r"call_\d+", call_id)
+        ):
             call_id = f"call_{uuid.uuid4().hex[:24]}"
         calls.append(
             {

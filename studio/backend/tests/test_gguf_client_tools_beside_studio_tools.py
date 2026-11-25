@@ -44,7 +44,12 @@ def _sse(delta: dict) -> str:
     return "data: " + json.dumps({"choices": [{"index": 0, "delta": delta}]}) + "\n"
 
 
-def _tool_call(name: str, arguments: dict, call_id: str, index: int = 0) -> str:
+def _tool_call(
+    name: str,
+    arguments: dict,
+    call_id: str,
+    index: int = 0,
+) -> str:
     return _sse(
         {
             "tool_calls": [
@@ -78,7 +83,12 @@ def _backend(monkeypatch, streams: list[list[str]]):
 
     @contextlib.contextmanager
     def fake_stream_with_retry(
-        _client, _url, payload, _cancel_event, headers = None, first_token_deadline = None
+        _client,
+        _url,
+        payload,
+        _cancel_event,
+        headers = None,
+        first_token_deadline = None,
     ):
         payloads.append(copy.deepcopy(payload))
         yield type(
@@ -87,7 +97,11 @@ def _backend(monkeypatch, streams: list[list[str]]):
             {"status_code": 200, "chunks": streams.pop(0), "close": lambda self: None},
         )()
 
-    def fake_iter_text_cancellable(response, _cancel_event, first_token_deadline = None):
+    def fake_iter_text_cancellable(
+        response,
+        _cancel_event,
+        first_token_deadline = None,
+    ):
         yield from response.chunks
 
     monkeypatch.setattr(backend, "_stream_with_retry", fake_stream_with_retry)
