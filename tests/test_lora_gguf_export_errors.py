@@ -137,3 +137,13 @@ def test_converter_error_line_is_the_last_exception_line():
     line = namespace["_converter_error_line"]
     assert line(["INFO: start", "Traceback (most recent call last):", _UNMAPPED]) == _UNMAPPED
     assert line(["INFO: nothing went wrong"]) == ""
+    assert (
+        line(["Traceback (most recent call last):", "NotImplementedError"]) == "NotImplementedError"
+    )
+    # Unsupported architectures and adapter layouts exit 1 through logger.error, with no traceback.
+    logged = [
+        "INFO:lora-to-gguf:Loading base model: base",
+        "ERROR:lora-to-gguf:Model Foo is not supported",
+    ]
+    assert line(logged) == "Model Foo is not supported"
+    assert line(logged + ["Traceback (most recent call last):", _UNMAPPED]) == _UNMAPPED

@@ -6527,11 +6527,13 @@ def _lora_target_parameters(model) -> list:
 
 
 def _converter_error_line(lines) -> str:
-    for line in reversed(list(lines)):
-        stripped = line.strip()
-        if re.match(r"^[A-Za-z_][\w.]*(Error|Exception): ", stripped):
-            return stripped
-    return ""
+    # The last exception line, else the reasons the converter logs before sys.exit(1) ("ERROR:lora-to-gguf:...").
+    lines = [line.strip() for line in lines]
+    for line in reversed(lines):
+        if re.match(r"^[A-Za-z_][\w.]*(Error|Exception)(: |$)", line):
+            return line
+    logged = [m.group(1) for m in map(re.compile(r"^ERROR:[^:\s]+:\s*(\S.*)$").match, lines) if m]
+    return " ".join(logged[:3])
 
 
 def _lora_gguf_conversion_error(returncode, cause, expert_targets) -> Exception:
