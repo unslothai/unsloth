@@ -22377,8 +22377,12 @@ async def install_latest_transformers_route(
     request: InstallLatestTransformersRequest, current_subject: str = Depends(get_current_subject)
 ):
     """
-    Consented install of the latest transformers release into the persistent
-    .venv_t5_latest sidecar.
+    Install of the latest transformers release into the persistent .venv_t5_latest sidecar.
+
+    PyPI releases are package-scanned first (utils.security.package_scan) and installed
+    with their sha256 digests pinned; a flagged release is refused. With ``auto`` (no
+    dialog shown) only a clean scan installs, otherwise this answers requires_consent
+    before reserving anything. transformers main always needs the user's confirmation.
 
     Called after the user confirms the transformers-upgrade dialog raised by /validate
     (requires_transformers_upgrade). The requested version must match the current latest
@@ -22386,8 +22390,15 @@ async def install_latest_transformers_route(
     re-verified server-side); the sidecar then participates in routing on
     this and every future start. A pip install runs off-loop, so this can take a minute.
     """
-    from utils.transformers_latest import install_latest_transformers
+    from utils.transformers_latest import auto_install_preflight, install_latest_transformers
     from utils.transformers_version import end_sidecar_swap, try_begin_sidecar_swap
+
+    if request.auto:
+        # Scan before reserving or waiting on any gate: a release that needs the user's
+        # confirmation must not cancel chats or unload anything first.
+        blocked = await asyncio.to_thread(auto_install_preflight, request.version)
+        if blocked is not None:
+            return InstallLatestTransformersResponse(**blocked)
 
     # Reserve the swap FIRST, before any await: training/export starts check this reservation,
     # and a live worker would lazy-import from the swapped .venv_t5_latest.
@@ -22490,7 +22501,9 @@ async def install_latest_transformers_route(
         def _run_install() -> dict:
             # Release in the thread, not the route, so cancellation keeps the reservation held.
             try:
-                return install_latest_transformers(request.version, _unload_before_swap, True)
+                return install_latest_transformers(
+                    request.version, _unload_before_swap, True, auto = request.auto
+                )
             finally:
                 end_sidecar_swap()
 
@@ -22545,6 +22558,9 @@ async def install_latest_transformers_route(
         if owns_reservation:
             end_sidecar_swap()
     if not result["success"]:
+        if result.get("requires_consent") or result.get("scan_status") == "flagged":
+            # Structured so the client can raise the dialog with the reason.
+            return InstallLatestTransformersResponse(**result, model_unloaded = unloaded_chat["v"])
         if result.get("latest_version") or result.get("latest_main_version"):
             # Structured failure so the dialog can update to the newer release
             # and offer a retry that can actually succeed.
