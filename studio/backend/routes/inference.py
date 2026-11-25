@@ -7154,12 +7154,20 @@ def _pending_inline_rehearsal_cut(text: str, enabled_tool_names) -> int:
         starts.append(tail.start())
     if not starts:
         return -1
-    # Pair delimiters as the parser sees the text: backticks in reasoning or blocked-call bodies do not count.
-    masked = _mask_blocked_bodies(text, enabled_tool_names, think = True)[0]
-    if len(masked) != len(text):
+    # The strip leaves still-open reasoning alone, so nothing there is held.
+    t0 = max(0, len(text) - _PENDING_THINK_WINDOW)
+    opened = max(text.rfind("<think", t0), text.rfind("[THINK]", t0))
+    if opened > max(text.rfind("</think", t0), text.rfind("[/THINK]", t0)):
+        return -1
+    # Pair delimiters as the parser sees the text (reasoning and blocked-call bodies masked), over a bounded window.
+    lo = max(0, line - _PENDING_MASK_WINDOW)
+    masked = text[lo:]
+    if "<" in masked or "[" in masked:
+        masked = _mask_blocked_bodies(masked, enabled_tool_names, think = True)[0]
+    if len(masked) != len(text) - lo:
         return -1
     open_end = open_len = 0
-    i = line
+    i = line - lo
     while (i := masked.find("`", i)) >= 0:
         j = i
         while j < len(masked) and masked[j] == "`":
@@ -7171,11 +7179,15 @@ def _pending_inline_rehearsal_cut(text: str, enabled_tool_names) -> int:
         i = j
     if not open_len:
         return -1
-    return next((s for s in sorted(starts) if s >= open_end and masked[s] != "\ue000"), -1)
+    return next(
+        (s for s in sorted(starts) if s - lo >= open_end and masked[s - lo] != "\ue000"), -1
+    )
 
 
 # Past this, a last line is not scanned per stream event; such a line streams as before.
 _PENDING_INLINE_MAX_CHARS = 4096
+_PENDING_MASK_WINDOW = 2048
+_PENDING_THINK_WINDOW = 65536
 # Call-shaped only: the strip removes ``NAME[ARGS]{``, never a bare ``NAME[ARGS]`` mention.
 _PENDING_REHEARSAL_RE = _re.compile(r"\b([\w-]+)\[ARGS\]\s*\{")
 # A name, or a name and part of ``[ARGS]`` before its ``{``, that the next chunk could still make call-shaped.
