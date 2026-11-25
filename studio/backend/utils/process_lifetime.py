@@ -471,6 +471,112 @@ def _same_identity(recorded: str, current: str) -> bool:
     return recorded == current
 
 
+# macOS: libproc answers what `ps` did, without a subprocess per adopt/forget. Sentinel = "ask ps".
+_DARWIN_ASK_PS = object()
+_DARWIN_SZOMB = 5  # sys/proc.h; ps prints 'Z' for p_stat == SZOMB
+_DARWIN_PROC_PIDTBSDINFO = 3  # sys/proc_info.h
+_darwin_libproc_state: list = []  # [] = not tried, [None] = unavailable, [(lib, struct)] = loaded
+
+
+def _darwin_libproc():
+    if _darwin_libproc_state:
+        return _darwin_libproc_state[0]
+    loaded = None
+    try:
+        import ctypes
+
+        lib = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno = True)
+        lib.proc_pidinfo.argtypes = [
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_uint64,
+            ctypes.c_void_p,
+            ctypes.c_int,
+        ]
+        lib.proc_pidinfo.restype = ctypes.c_int
+        loaded = (lib, _darwin_bsdinfo_type())
+    except Exception:  # noqa: BLE001 - no libproc: every lookup keeps using ps
+        loaded = None
+    _darwin_libproc_state.append(loaded)
+    return loaded
+
+
+def _darwin_bsdinfo_type():
+    import ctypes
+    class ProcBsdInfo(ctypes.Structure):
+        # struct proc_bsdinfo, xnu bsd/sys/proc_info.h (MAXCOMLEN 16).
+        _fields_ = [
+            ("pbi_flags", ctypes.c_uint32),
+            ("pbi_status", ctypes.c_uint32),
+            ("pbi_xstatus", ctypes.c_uint32),
+            ("pbi_pid", ctypes.c_uint32),
+            ("pbi_ppid", ctypes.c_uint32),
+            ("pbi_uid", ctypes.c_uint32),
+            ("pbi_gid", ctypes.c_uint32),
+            ("pbi_ruid", ctypes.c_uint32),
+            ("pbi_rgid", ctypes.c_uint32),
+            ("pbi_svuid", ctypes.c_uint32),
+            ("pbi_svgid", ctypes.c_uint32),
+            ("rfu_1", ctypes.c_uint32),
+            ("pbi_comm", ctypes.c_char * 16),
+            ("pbi_name", ctypes.c_char * 32),
+            ("pbi_nfiles", ctypes.c_uint32),
+            ("pbi_pgid", ctypes.c_uint32),
+            ("pbi_pjobc", ctypes.c_uint32),
+            ("e_tdev", ctypes.c_uint32),
+            ("e_tpgid", ctypes.c_uint32),
+            ("pbi_nice", ctypes.c_int32),
+            ("pbi_start_tvsec", ctypes.c_uint64),
+            ("pbi_start_tvusec", ctypes.c_uint64),
+        ]
+
+    return ProcBsdInfo
+
+
+def _darwin_bsdinfo(pid: int):
+    """struct proc_bsdinfo for pid, None when it does not exist, _DARWIN_ASK_PS when libproc cannot say."""
+    loaded = _darwin_libproc()
+    if loaded is None:
+        return _DARWIN_ASK_PS
+    import ctypes
+    import errno as errno_mod
+
+    lib, struct = loaded
+    info = struct()
+    # arg 1: XNU proc_pidinfo then also finds zombies (proc_info.c findzomb), as ps's sysctl does.
+    size = lib.proc_pidinfo(
+        pid, _DARWIN_PROC_PIDTBSDINFO, 1, ctypes.byref(info), ctypes.sizeof(info)
+    )
+    if size == ctypes.sizeof(info) and info.pbi_pid == pid:
+        return info
+    if size <= 0 and ctypes.get_errno() == errno_mod.ESRCH:
+        return None
+    return _DARWIN_ASK_PS
+
+
+def _darwin_c_locale_time() -> bool:
+    """ps formats lstart with strftime("%c") in the inherited locale; C and en_US give the format built here."""
+    for name in ("LC_ALL", "LC_TIME", "LANG"):
+        value = os.environ.get(name)
+        if value:
+            return value in ("C", "POSIX") or value.startswith(("C.", "en_US"))
+    return True
+
+
+def _darwin_native_identity(pid: int):
+    """The `ps -o lstart=,comm=` line under TZ=UTC, from libproc; _DARWIN_ASK_PS when only ps can answer."""
+    if not _darwin_c_locale_time():
+        return _DARWIN_ASK_PS
+    info = _darwin_bsdinfo(pid)
+    if info is None or info is _DARWIN_ASK_PS:
+        return info
+    # ps lstart: strftime("%c") of p_start.tv_sec (the field pbi_start_tvsec copies), left-justified in 28.
+    lstart = time.strftime("%a %b %e %H:%M:%S %Y", time.gmtime(info.pbi_start_tvsec)).ljust(28)
+    comm = info.pbi_comm.decode("utf-8", "replace")
+    # _same_identity compares only the five lstart fields on macOS; the comm column is informational.
+    return f"{lstart} {comm}".strip() if comm else lstart.strip()
+
+
 def _pid_identity(pid: int) -> Optional[str]:
     # Start time pins identity so a reused pid is never signalled later.
     if _is_linux():
@@ -513,6 +619,9 @@ def _pid_identity(pid: int) -> Optional[str]:
         except Exception:
             return None
     if sys.platform == "darwin":
+        native = _darwin_native_identity(pid)
+        if native is not _DARWIN_ASK_PS:
+            return native
         try:
             import subprocess
 
@@ -1331,6 +1440,12 @@ def _pid_is_zombie(pid: int) -> bool:
                 return fh.read().rsplit(")", 1)[1].split()[0] == "Z"
         except Exception:
             return False
+    if sys.platform == "darwin":
+        info = _darwin_bsdinfo(pid)
+        if info is None:
+            return False
+        if info is not _DARWIN_ASK_PS:
+            return info.pbi_status == _DARWIN_SZOMB
     try:
         import subprocess
         out = subprocess.run(
