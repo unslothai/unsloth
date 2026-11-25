@@ -11,7 +11,8 @@ export {
   ModelRow,
 } from "./components/model-selector/pickers";
 export {
-  makePinRank,
+  makeRepoPinRank,
+  pinCoversId,
   pinKey,
   usePinnedModelsStore,
 } from "./components/model-selector/pinned-models";

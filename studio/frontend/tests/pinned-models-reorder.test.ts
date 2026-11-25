@@ -16,9 +16,10 @@ registerBundlerResolver();
 // Installed before the import so the store hydrates from it.
 const { store: storageStore, fireWindowEvent } = installLocalStorageFake();
 
-const { pinKey, usePinnedModelsStore } = await import(
-  "../src/features/model-picker/components/model-selector/pinned-models.ts"
-);
+const { makeRepoPinRank, pinCoversId, pinKey, usePinnedModelsStore } =
+  await import(
+    "../src/features/model-picker/components/model-selector/pinned-models.ts"
+  );
 
 const MODELS_CATALOG_ROWS = readSrc("features/hub/catalog/models-catalog-rows.tsx");
 
@@ -430,6 +431,63 @@ test("the hub's pinned grid never makes a dataset row draggable", async () => {
     MODELS_CATALOG_ROWS,
     /pin=\{\s*isDataset \|\| !deletableRepoId\s*\?\s*undefined/,
   );
+});
+
+test("favorites read the header picker's keys: a repo or any of its quants", () => {
+  const pinned = ["unsloth/gemma-4-E2B-it-GGUF::UD-Q4_K_XL", "org/plain-model"];
+  assert.equal(pinCoversId(pinned, "unsloth/gemma-4-E2B-it-GGUF"), true);
+  assert.equal(pinCoversId(pinned, "org/plain-model"), true);
+  assert.equal(pinCoversId(pinned, "unsloth/gemma-4-E2B"), false);
+});
+
+test("the hub's Pin menu reads and clears a repo pinned only per quant", () => {
+  const repo = "unsloth/Qwen3-8B-GGUF";
+  setPinned([`${repo}::Q4_K_M`, "org/other", `${repo}::Q8_0`]);
+  assert.match(
+    MODELS_CATALOG_ROWS,
+    /const rowPinned =\s*cacheDeletableRepoId != null &&\s*pinCoversId\(pinnedKeys, cacheDeletableRepoId\);/,
+  );
+  assert.ok(
+    MODELS_CATALOG_ROWS.includes(
+      "onToggle: () => toggleRepoPinned(deletableRepoId),",
+    ),
+  );
+  assert.equal(pinCoversId(usePinnedModelsStore.getState().pinned, repo), true);
+
+  usePinnedModelsStore.getState().toggleRepoPinned(repo);
+  assert.deepEqual(usePinnedModelsStore.getState().pinned, ["org/other"]);
+  assert.deepEqual(storedPinned(), ["org/other"]);
+
+  usePinnedModelsStore.getState().toggleRepoPinned(repo);
+  assert.deepEqual(usePinnedModelsStore.getState().pinned, [repo, "org/other"]);
+});
+
+test("the hub ranks a repo pinned only per quant under Pinned", async () => {
+  const rank = makeRepoPinRank(["org/a", "org/b::Q4_K_M", "org/b::Q8_0"]);
+  assert.equal(rank("org/b"), 1);
+  assert.equal(rank("org/a"), 0);
+  assert.equal(rank("org/c"), Number.MAX_SAFE_INTEGER);
+  const lists = await readSrcAsync("features/hub/catalog/models-catalog-lists.tsx");
+  assert.match(
+    lists,
+    /const pinRank = \(item: InventoryItem\) =>\s*item\.row\.repoId \? rank\(item\.row\.repoId\)/,
+  );
+  assert.match(
+    lists,
+    /!isDataset &&\s*item\.row\.repoId &&\s*pinCoversId\(pinnedIds, item\.row\.repoId\)/,
+  );
+});
+
+test("dragging a repo with a repo pin and a quant pin changes its rank", () => {
+  setPinned(["org/a::Q4_K_M", "org/a", "org/b"]);
+  usePinnedModelsStore.getState().movePinned("org/a", "org/b");
+  const rank = makeRepoPinRank(usePinnedModelsStore.getState().pinned);
+  assert.ok(rank("org/b") < rank("org/a"));
+});
+
+test("the hub does not rank a dataset by a model pin", async () => {
+  const lists = await readSrcAsync("features/hub/catalog/models-catalog-lists.tsx");
+  assert.ok(lists.includes("const rank = makeRepoPinRank(isDataset ? [] : pinnedIds);"));
 });
 
 test("deleting a repo drops its quant pins, not just the repo's own", () => {

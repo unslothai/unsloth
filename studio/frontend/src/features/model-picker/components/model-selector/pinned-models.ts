@@ -24,6 +24,27 @@ export function makePinRank(
   return (key) => pinIndex.get(key) ?? Number.MAX_SAFE_INTEGER;
 }
 
+export function pinCoversId(pinned: readonly string[], id: string): boolean {
+  const base = id.trim().toLowerCase();
+  return pinned.some((key) => {
+    const k = key.trim().toLowerCase();
+    return k === base || k.startsWith(`${base}::`);
+  });
+}
+
+/** Ranks a repo by its own pin, the one a drag moves, else by the first pin that covers it. */
+export function makeRepoPinRank(
+  pinned: readonly string[],
+): (repoId: string) => number {
+  const rank = makePinRank(pinned);
+  return (repoId) =>
+    rank(
+      pinned.includes(repoId)
+        ? repoId
+        : (pinned.find((key) => pinCoversId([key], repoId)) ?? repoId),
+    );
+}
+
 /** Key to `movePinned` onto so `fromKey` lands on `edge` of `targetKey`, or null if nothing moves. */
 export function pinDropAnchor(
   pinned: readonly string[],
@@ -93,6 +114,7 @@ interface PinnedModelsState {
   togglePinned: (repoId: string, quant?: string) => void;
   /** Also drops per-quant pins, which would otherwise outlive the row and be impossible to unpin. */
   unpinRepo: (repoId: string) => void;
+  toggleRepoPinned: (repoId: string) => void;
   replacePinned: (fromKey: string, toKey: string) => void;
   /** Both keys must be pinned. Persisted immediately outside a drag, else held until endPinnedDrag. */
   movePinned: (fromKey: string, toKey: string) => void;
@@ -101,7 +123,7 @@ interface PinnedModelsState {
   endPinnedDrag: (commit: boolean) => void;
 }
 
-export const usePinnedModelsStore = create<PinnedModelsState>((set) => ({
+export const usePinnedModelsStore = create<PinnedModelsState>((set, get) => ({
   pinned: readPinned(),
   togglePinned: (repoId, quant) =>
     set((state) => {
@@ -122,6 +144,10 @@ export const usePinnedModelsStore = create<PinnedModelsState>((set) => ({
       writePinned(next);
       return { pinned: next };
     }),
+  toggleRepoPinned: (repoId) =>
+    pinCoversId(get().pinned, repoId)
+      ? get().unpinRepo(repoId)
+      : get().togglePinned(repoId),
   replacePinned: (fromKey, toKey) =>
     set((state) => {
       if (!state.pinned.includes(fromKey) || fromKey === toKey) return state;
