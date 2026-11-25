@@ -51,12 +51,14 @@ def turing(monkeypatch):
     monkeypatch.setattr(tq, "_capability", lambda ordinal = None: (7, 5))
 
 
-def test_turing_w8a8_build_reads_the_hosted_file(turing):
-    assert FH.fp16_card_hosted_int8_reason(_fam(QWEN21), "int8", T4) is not None
+@pytest.mark.parametrize("pair", [QWEN21, FLUX3])
+def test_turing_w8a8_build_reads_the_hosted_file(turing, pair):
+    assert FH.fp16_card_hosted_int8_reason(_fam(pair), "int8", T4) is not None
 
 
-def test_unscored_families_keep_the_at_load_build(turing):
-    # FLUX.3 klein hosts the same kind of file but was not scored against a dense reference on a T4.
+def test_unscored_families_keep_the_at_load_build(turing, monkeypatch):
+    # A family outside the scored set keeps the at-load build even when it hosts a ConvRot file.
+    monkeypatch.setattr(FH, "FP16_CARD_HOSTED_INT8_FAMILIES", frozenset({"qwen-image-2.1"}))
     assert FH.fp16_card_hosted_int8_reason(_fam(FLUX3), "int8", T4) is None
 
 
