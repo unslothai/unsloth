@@ -976,7 +976,7 @@ export const fa = {
   chatMenu: {
     more: "گزینه‌های گفتگو",
     copy: "کپی",
-    addScheduledTask: "افزودن کار زمان‌بندی‌شده…",
+    addScheduledTask: "افزودن کار زمان‌بندی‌شده",
     compact: "فشرده‌سازی گفتگو",
     compactEmpty: "هنوز چیزی برای فشرده‌سازی وجود ندارد",
     compactUnsupported:

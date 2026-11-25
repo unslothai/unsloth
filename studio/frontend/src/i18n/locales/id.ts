@@ -978,7 +978,7 @@ export const id = {
   chatMenu: {
     more: "Opsi chat",
     copy: "Salin",
-    addScheduledTask: "Tambahkan tugas terjadwal…",
+    addScheduledTask: "Tambahkan tugas terjadwal",
     compact: "Padatkan percakapan",
     compactEmpty: "Belum ada yang dapat dipadatkan",
     compactUnsupported:

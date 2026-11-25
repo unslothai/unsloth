@@ -933,7 +933,7 @@ export const th = {
   chatMenu: {
     more: "ตัวเลือกแชท",
     copy: "คัดลอก",
-    addScheduledTask: "เพิ่มงานตามกำหนดเวลา…",
+    addScheduledTask: "เพิ่มงานตามกำหนดเวลา",
     compact: "ย่อการสนทนา",
     compactEmpty: "ยังไม่มีอะไรให้ย่อ",
     compactUnsupported: "การย่อการสนทนาต้องใช้โมเดล GGUF หรือ MLX ที่รองรับเครื่องมือ",

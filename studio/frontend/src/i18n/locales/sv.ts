@@ -935,7 +935,7 @@ export const sv = {
   chatMenu: {
     more: "Chattalternativ",
     copy: "Kopiera",
-    addScheduledTask: "Lägg till schemalagd uppgift…",
+    addScheduledTask: "Lägg till schemalagd uppgift",
     compact: "Komprimera konversationen",
     compactEmpty: "Inget att komprimera än",
     compactUnsupported: "Komprimering kräver en GGUF- eller MLX-modell med verktygsstöd",

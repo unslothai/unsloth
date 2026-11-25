@@ -1884,9 +1884,12 @@ const PromptQueueContext = createContext<PromptQueueCallbacks>({
   stopQueue: noopStopPromptQueue,
 });
 
-// Gap between last message and floating composer, added to the bottom spacer height.
-const COMPOSER_SCROLL_GAP_PX = 24;
-const FOOTER_GAP_BELOW_SPACER_PX = 10;
+// With the message's own bottom padding, the last action row ends ~46px above the composer.
+const COMPOSER_SCROLL_GAP_PX = 8;
+// The scroll-to-bottom row follows the spacer in flow, so the spacer gives its height back; 28px until it renders.
+const SCROLL_BUTTON_ROW_PX = 28;
+// The scroll-to-bottom button's bottom edge, above the composer.
+const SCROLL_BUTTON_GAP_PX = 14;
 const THREAD_COMPOSER_VARS = [
   "--thread-composer-clip",
   "--thread-composer-bottom",
@@ -2199,7 +2202,7 @@ export const Thread: FC<{
   const footerBottomPx =
     composerHeight == null
       ? null
-      : composerHeight + COMPOSER_SCROLL_GAP_PX - FOOTER_GAP_BELOW_SPACER_PX;
+      : composerHeight + SCROLL_BUTTON_GAP_PX;
 
   // Viewport element is owned by the autoscroll hook; mirror it locally for
   // the spacer clamp math. State, not a ref: the keyed provider remounts the
@@ -2291,7 +2294,12 @@ export const Thread: FC<{
       autoScrollContext.notifyContentResized();
       return;
     }
-    const desired = composerHeight + COMPOSER_SCROLL_GAP_PX;
+    const footerRow =
+      viewportEl && childWithClass(viewportEl, "aui-thread-viewport-footer");
+    const desired =
+      composerHeight +
+      COMPOSER_SCROLL_GAP_PX -
+      (footerRow instanceof HTMLElement ? footerRow.offsetHeight : SCROLL_BUTTON_ROW_PX);
     desiredSpacerPxRef.current = desired;
     const applied = appliedSpacerPxRef.current;
     if (applied == null || desired >= applied) {
@@ -2687,7 +2695,19 @@ const ThreadComposerDock: FC<{
   useEffect(() => {
     const el = dockRef.current;
     if (!el || !onHeightChange) return;
-    const measure = () => onHeightChange(el.offsetHeight);
+    // Report the height the editor is easing to: following each frame of its 280ms transition
+    // shrank the thread's bottom spacer under an open conversation, sliding it down.
+    const measure = () => {
+      const editor = el.querySelector<HTMLElement>(".unsloth-composer-editor");
+      const target = Number.parseFloat(
+        editor?.style.getPropertyValue("--composer-editor-height") ?? "",
+      );
+      onHeightChange(
+        editor && Number.isFinite(target)
+          ? el.offsetHeight + target - editor.offsetHeight
+          : el.offsetHeight,
+      );
+    };
     measure();
     const resizeObserver = new ResizeObserver(measure);
     resizeObserver.observe(el);

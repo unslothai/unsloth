@@ -882,7 +882,7 @@ export const es = {
   chatMenu: {
     more: "Opciones del chat",
     copy: "Copiar",
-    addScheduledTask: "Añadir tarea programada…",
+    addScheduledTask: "Añadir tarea programada",
     compact: "Compactar conversación",
     compactEmpty: "Aún no hay nada que compactar",
     compactUnsupported: "La compactación requiere un modelo GGUF o MLX compatible con herramientas",

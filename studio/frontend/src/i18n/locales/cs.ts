@@ -980,7 +980,7 @@ export const cs = {
   chatMenu: {
     more: "Možnosti chatu",
     copy: "Kopírovat",
-    addScheduledTask: "Přidat naplánovanou úlohu…",
+    addScheduledTask: "Přidat naplánovanou úlohu",
     compact: "Zkomprimovat konverzaci",
     compactEmpty: "Zatím není co komprimovat",
     compactUnsupported:

@@ -882,7 +882,7 @@ export const zhCN = {
   chatMenu: {
     more: "聊天选项",
     copy: "复制",
-    addScheduledTask: "添加定时任务…",
+    addScheduledTask: "添加定时任务",
     compact: "压缩对话",
     compactEmpty: "暂无可压缩的内容",
     compactUnsupported: "对话压缩需要支持工具调用的 GGUF 或 MLX 模型",

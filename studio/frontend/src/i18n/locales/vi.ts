@@ -980,7 +980,7 @@ export const vi = {
   chatMenu: {
     more: "Tùy chọn cuộc trò chuyện",
     copy: "Sao chép",
-    addScheduledTask: "Thêm tác vụ đã lên lịch…",
+    addScheduledTask: "Thêm tác vụ đã lên lịch",
     compact: "Thu gọn cuộc trò chuyện",
     compactEmpty: "Chưa có gì để thu gọn",
     compactUnsupported:
