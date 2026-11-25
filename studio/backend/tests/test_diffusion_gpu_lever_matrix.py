@@ -1896,7 +1896,9 @@ def test_mock_profile_never_touches_the_hosts_mps_device(monkeypatch):
                 int(p.vram_gb * GIB) if p.mps else 0
             )
             if p.mps:
-                assert torch.mps.recommended_max_memory() == int(p.vram_gb * GIB)
+                # torch < 2.5 has no recommended_max_memory (Studio then sizes from system RAM)
+                if hasattr(torch.mps, "recommended_max_memory"):
+                    assert torch.mps.recommended_max_memory() == int(p.vram_gb * GIB)
                 assert torch.mps.driver_allocated_memory() == 0
             if p.mps:
                 assert _device_target(p).dtype == torch.bfloat16
