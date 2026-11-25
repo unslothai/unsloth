@@ -292,9 +292,6 @@ def test_int8_attention_census_sees_the_shards():
     assert tp2.shard_modules(_tiny(layers = 1)) == []
 
 
-# ---------------------------------------------------------------------------------------- recheck #19460 findings
-
-
 def test_convrot_linear_and_linear_subclasses_are_refused():
     from core.inference.diffusion_convrot import _install_rotation
 

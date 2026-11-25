@@ -5,13 +5,8 @@
 
 Megatron split of every block: q/k/v and the MLP input layers by output rows (each card its heads and its share
 of the hidden width), attention out-proj and MLP out by input channels, one all-reduce after each. One Python
-thread drives both cards in lockstep (kernel launches are async, so the cards run together). The block shards
-live outside the module tree, so moving, hooking or counting the transformer never touches them; the transformer
-keeps its prologue / epilogue on the first card. Qwen-Image-2.1 only for now.
-
-INT8 / FP8 ``NativeWeightOnlyLinear``: a column split slices codes and per-row scales (bit-equal outputs); a row
-split slices codes by whole ConvRot groups and keeps the per-row scales, and each card quantizes its own input
-slice, so the int8 result differs slightly from one card's (its own accuracy gate).
+thread drives both cards. Shards live outside the module tree, so moving / hooking the transformer never touches
+them. Qwen-Image-2.1 only. INT8 row splits quantize per card, so results differ slightly from one card's.
 """
 
 from __future__ import annotations
@@ -361,7 +356,6 @@ def shard_block(block: Any, index: int, parts: int, device: Any) -> Any:
     return sb.to(device)
 
 
-# ------------------------------------------------------------------------------------------------- all-reduce
 def _evict(host: Any, tmp: Any, keep: int) -> None:
     """Drop the least recently used sizes until ``keep`` remain. Safe while copies are in flight: the pinned
     allocator holds a freed block until its recorded copies finish, and every later use of a device scratch
@@ -515,12 +509,8 @@ def pick_all_reduce(
 ) -> tuple:
     """(name, fn, {name: ms}): the fastest working backend for one ``numel`` all-reduce. A pin (``only`` or the
     env) is probed the same way (one real collective, result checked) and raises when it does not work, so a build
-    without NCCL (native Windows) never publishes a load that fails on the first denoise step.
-
-    The winner is picked once per load at one size (``probe_tokens`` x hidden, 4096 tokens: the 1 MP decode step's
-    activation) and kept for every render shape. On the 2x T4 (no P2P) the three backends stayed within 10-40 % of
-    each other at that size and the all-reduce is 4-7 % of a TP block, so a shape where another backend would win
-    moves the step time by well under that share; ``UNSLOTH_DIFFUSION_TP_COMM`` pins one when it matters."""
+    without NCCL (native Windows) never publishes a load that fails on the first denoise step. Picked once per load
+    at one size: on 2x T4 the all-reduce is 4-7 % of a TP block, so per-shape picks gain little."""
     import torch
 
     forced = only or _comm_choice()
@@ -558,7 +548,6 @@ def pick_all_reduce(
     return best[0], best[1], timings
 
 
-# ---------------------------------------------------------------------------------------------------- stack
 def _move(t: Any, device: Any) -> Any:
     import torch
 
@@ -640,14 +629,8 @@ def _stack_class():
             return per
 
         def compile(self, *args: Any, **kwargs: Any) -> None:  # noqa: A003 - nn.Module.compile's name
-            """Regional compile of a TP denoiser: compile the two per-card stages (attention half, MLP half), the
-            all-reduce stays eager between them. Opt-in (``UNSLOTH_DIFFUSION_TP_COMPILE=1``). Reached through ``compile_repeated_blocks`` (the transformer's
-            ``_repeated_blocks`` names this class) or at install when the blocks were compiled already.
-
-            Two stages instead of one block mean more Dynamo graph variants over a prefill / extract / cached
-            sequence (6 to 8 by default, 3 to 4 with ``dynamic=True``; marking the token dimension dynamic does not
-            merge them), all compiled once per shape with no graph breaks. Confined to this opt-in; default TP runs
-            the stages eager."""
+            """Opt-in (``UNSLOTH_DIFFUSION_TP_COMPILE=1``) compile of the two per-card stages; the all-reduce stays
+            eager. Reached via ``compile_repeated_blocks`` or at install when the blocks were compiled already."""
             import torch
 
             if (os.environ.get(TP_COMPILE_ENV) or "").strip().lower() not in (
@@ -895,7 +878,6 @@ def install(
     object.__setattr__(stack, "_originals", (original_blocks, home))
     if retire:
         commit(transformer, logger)
-    # A later regional compile reaches the stages through TPStack.compile.
     transformer._repeated_blocks = (type(stack).__name__,)
     # One recorded graph cannot hold both cards' launches and the all-reduce between them.
     transformer.__dict__[GRAPH_UNSAFE_ATTR] = "the denoiser is tensor parallel across two cards"
@@ -1043,12 +1025,8 @@ def _storage_mib(tensors: Any) -> int:
 def fit_refusal(transformer: Any, devices: Sequence[Any]) -> Optional[str]:
     """Per-card render headroom: each card holds half the blocks plus Studio's denoiser working set (twice on the
     first card, which also runs the embedders, encode and decode) and the reserve a CFG replica keeps; the first card
-    also holds the prologue / epilogue. None when both fit.
-
-    VAE decode is not priced here: it runs after the last denoise step on the first card for every plan, and Studio's
-    decode OOM recovery (components to the host, then tiles) owns it. Measured on 2x T4 at 1 MP: card 0 peaks at
-    8.0-8.8 GB before decode in both the eager (deferred Auto, renders 1-2) and the default profile; decode adds
-    0.6 GB with the fused VAE and 5.3 GB with the unfused one of the eager renders (14.0 GB of 15.4)."""
+    also holds the prologue / epilogue. None when both fit. VAE decode is not priced: Studio's decode OOM recovery
+    owns it."""
     try:
         blocks = list(transformer.transformer_blocks)
         block_mib = _storage_mib(t for b in blocks for t in (*b.parameters(), *b.buffers()))

@@ -116,9 +116,6 @@ def two_cards(monkeypatch):
     return calls
 
 
-# ------------------------------------------------------------------------------------------ type / attention gates
-
-
 def test_only_exact_linear_types_and_plain_weights_shard():
     from core.inference.diffusion_convrot import _install_rotation
 
@@ -153,9 +150,6 @@ def test_flex_attention_is_refused_and_a_block_mask_never_reaches_card_two():
             torch.zeros(2, 4 * DIM),
             attention_mask = SimpleNamespace(mask_mod = None),
         )
-
-
-# ------------------------------------------------------------------------------------------------ setup / rollback
 
 
 @pytest.mark.parametrize("where", ["comm", "shard", "place"])
@@ -232,9 +226,6 @@ def test_shards_own_their_storage_and_shard_mib_counts_storage():
     # shard accounting counts storage: a view of the whole weight would report the whole weight
     view = full[: DIM // 2]
     assert tp2._storage_mib([view]) == tp2._storage_mib([full])
-
-
-# ------------------------------------------------------------------------------------------- placement / fit / plan
 
 
 def test_engage_prices_per_card_headroom(two_cards, monkeypatch):
@@ -326,9 +317,6 @@ def test_engage_declines_a_companion_split_and_load_time_loras(two_cards):
     assert tp2.engage_for_plan(pipe, plan, loras = [("style", 0.8)]) is plan and two_cards == []
 
 
-# ---------------------------------------------------------------------------------------- numerics / comm / compile
-
-
 def test_fp16_row_partials_do_not_overflow_into_nan():
     lin = nn.Linear(4, 1, bias = False).half()
     with torch.no_grad():
@@ -401,9 +389,6 @@ def test_compiled_stage_build_failure_falls_back_to_eager(monkeypatch):
         stack._guarded(runtime_error, lambda *a, **k: "eager")("blk")
 
 
-# ----------------------------------------------------------------------------------- CFG / LoRA / INT8 attention
-
-
 def test_cfg_replica_and_lora_decline_a_tensor_parallel_denoiser():
     from core.inference import diffusion_multigpu as mg
 
@@ -447,9 +432,6 @@ def test_release_kv_frees_the_per_card_caches():
     stack._kv[key] = layers
     assert tp2.release_kv(m) == 8 * 4 * 4
     assert all(layer.k is None and layer.v is None for card in layers for layer in card)
-
-
-# ------------------------------------------------------------------------------------------- round 3 (#19460)
 
 
 def _memory_plan(
@@ -618,9 +600,6 @@ def test_hostswap_orders_scratch_reuse_after_the_add_on_its_own_stream(monkeypat
         assert (
             first_add[c] in hs.h2d[c].waits
         )  # the H2D into tmp[c] waited for the previous add on stream A
-
-
-# ------------------------------------------------------------------------------------------- round 4 (#19460)
 
 
 @pytest.mark.parametrize("marker", ["_diffusers_hook", "_unsloth_mmap_streamed"])

@@ -83,9 +83,7 @@ jobs:
         working-directory: studio/backend
         run: python -m pytest tests/test_diffusion_autoopt_parity.py -q -rxXs --tb=short --timeout=600
 
-      # Backend CI has no diffusers, so the TP-2 suite's real Qwen-Image-2.1 blocks run here; the switch turns a
-      # missing import into a collection error instead of a skipped module. Last, so PEFT (its render-time adapter
-      # check) is installed after every other step here ran without it.
+      # Backend CI lacks diffusers, so the TP-2 suite runs here; last, so PEFT installs after the other steps.
       - name: Tensor-parallel denoiser on real Qwen-Image-2.1 blocks
         working-directory: studio/backend
         env:
