@@ -59,3 +59,10 @@ test("opening or switching a thread never leaves stabilizer padding under the re
   );
   assert.match(stabilize, /const followActive =\s*runSettling &&/);
 });
+
+test("a conversation still attaching from the URL keeps the one-row composer", () => {
+  assert.match(
+    thread,
+    /const threadEmpty = useAuiState\(\s*\(\{ thread, threads \}\) =>\s*thread\.isEmpty &&\s*!thread\.isLoading &&\s*\(threadId == null \|\| threads\.mainThreadId === threadId\),\s*\);/,
+  );
+});

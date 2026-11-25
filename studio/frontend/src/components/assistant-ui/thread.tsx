@@ -3388,7 +3388,13 @@ const Composer: FC<{
   const editorRef = useRef<HTMLDivElement>(null);
   const inputId = useId();
   const uiSpaceScale = useUiSpaceScale();
-  const threadEmpty = useAuiState(({ thread }) => thread.isEmpty);
+  // A conversation opening from the URL reads empty until it attaches; it must not get the new-chat floor.
+  const threadEmpty = useAuiState(
+    ({ thread, threads }) =>
+      thread.isEmpty &&
+      !thread.isLoading &&
+      (threadId == null || threads.mainThreadId === threadId),
+  );
   // Empty saved chats and the floating chat have no welcome.
   const welcomeShown = useChatWelcomeShown();
   const newChatPage = threadEmpty && welcomeShown;
