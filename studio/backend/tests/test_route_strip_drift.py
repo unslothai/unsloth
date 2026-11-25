@@ -153,6 +153,7 @@ def test_streamed_unpromotable_inline_example_is_never_held(text):
         ['```\nsearch[ARGS]{"q":"a } b', '"}\n```\nDone.'],
         ["Use `search", "[ARGS] syntax", "` here."],
         ["<think>Try `search[AR", "GS]{} for this", "` then answer.</think>Done."],
+        ['python[ARGS]{"code":"Use `search', "[ARGS]{", '}` here."}'],
     ],
 )
 def test_streamed_chunks_never_rewind(chunks):

@@ -7144,16 +7144,17 @@ def _pending_inline_rehearsal_cut(text: str, enabled_tool_names) -> int:
         i = j
     if not open_len:
         return -1
-    from core.tool_healing import _in_code, _markerless_promotable, _think_spans_outside_tool_markup
+    from core.inference.tool_call_parser import _mask_blocked_bodies
+    from core.tool_healing import _markerless_promotable
 
-    think = None
+    masked = None
     for m in _PENDING_REHEARSAL_RE.finditer(text, open_end):
         if not _markerless_promotable(m.group(1), enabled_tool_names):
             continue
-        # The strip leaves reasoning alone, so a rehearsal there is never removed.
-        if think is None:
-            think = _think_spans_outside_tool_markup(text)
-        if not _in_code(think, m.start()):
+        # The strip leaves reasoning and blocked-call bodies alone, so a rehearsal there is never removed.
+        if masked is None:
+            masked = _mask_blocked_bodies(text, enabled_tool_names, think = True)[0]
+        if len(masked) == len(text) and masked[m.start()] != "\ue000":
             return m.start()
     return -1
 
