@@ -11062,6 +11062,17 @@ class DiffusionBackend:
                                         transformer_quant_artifact = getattr(
                                             hosted_native, "_unsloth_prequant_artifact", None
                                         )
+                                if small_host_hosted is not None and hosted_native_scheme is None:
+                                    # AUTO took int8 only for the hosted file, and it was not read: back to the
+                                    # AUTO small-host per-row build exactly as without the hosted file.
+                                    logger.info(
+                                        "diffusion.small_host: the hosted int8 ConvRot DiT was not read; AUTO keeps "
+                                        "the small-host per-row int8 build (%s)",
+                                        small_host_hosted,
+                                    )
+                                    transformer_quant = TQ_AUTO
+                                    transformer_quant_pinned = native_scheme = None
+                                    turing_auto_int8 = small_host_hosted = None
                                 if (
                                     pipeline_seed_scheme is None
                                     and _pipeline_prequant_skipped

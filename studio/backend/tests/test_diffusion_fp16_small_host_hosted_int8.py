@@ -215,3 +215,83 @@ def test_the_loader_marks_the_hosted_dit_after_the_pipeline_is_built():
     guard = src.rindex("small_host_hosted is not None", 0, call)
     assert "hosted_native_scheme is not None" in src[guard:call]
     assert src.rindex("plan = self._apply_small_host_route(", 0, call) < guard
+
+
+def _hosted_read_statements():
+    """The loader's statements from the hosted read up to the skipped-shard restore, as written in diffusion.py."""
+    import ast
+
+    path = BACKEND / "core" / "inference" / "diffusion.py"
+    tree = ast.parse(path.read_text(encoding = "utf-8"))
+    bodies = (
+        getattr(node, field, None)
+        for node in ast.walk(tree)
+        for field in ("body", "orelse", "finalbody")
+    )
+    for body in bodies:
+        if not isinstance(body, list):
+            continue
+        for i, stmt in enumerate(body):
+            if (
+                isinstance(stmt, ast.If)
+                and "fp16_card_hosted_int8_reason(" in ast.unparse(stmt.test)
+                and "fp16_card_hosted_int8_transformer(" in ast.unparse(stmt)
+            ):
+                end = next(
+                    j
+                    for j in range(i + 1, len(body))
+                    if isinstance(body[j], ast.If)
+                    and "_pipeline_prequant_skipped" in ast.unparse(body[j].test)
+                    and "hosted_native_scheme is None" in ast.unparse(body[j].test)
+                )
+                return ast.Module(body = body[i:end], type_ignores = []), str(path)
+    raise AssertionError("hosted read not found in the loader")
+
+
+@pytest.mark.parametrize("read", ["declined", "read"])
+def test_a_declined_hosted_read_returns_to_the_auto_per_row_route(read):
+    """AUTO pinned int8 only for the hosted file. When the read declines (a non-allocation failure returns None), the
+    load must continue exactly as AUTO did without it: no pinned int8, no native scheme, so the small-host per-row
+    build is not re-armed as an int8 request."""
+    module, path = _hosted_read_statements()
+    logged = []
+    hosted = types.SimpleNamespace(_unsloth_prequant_artifact = "prequant:x")
+    ns = dict(
+        pipeline_seed_scheme = None,
+        _has_active_lora = lambda loras: False,
+        loras = None,
+        _pipeline_prequant_skipped = (),
+        _fp16_hosted_planned = False,
+        pipe_kwargs = {},
+        fp16_card_hosted_int8_reason = lambda *a: "hosted",
+        fp16_card_hosted_int8_transformer = lambda *a, **k: None if read == "declined" else hosted,
+        fam = None,
+        target = T4,
+        transformer_cls = object,
+        base = BASE,
+        _base_local_dir = None,
+        fetch_base = BASE,
+        hf_token = None,
+        hub_cache_dir = lambda: None,
+        logger = types.SimpleNamespace(info = lambda *a, **k: logged.append(a)),
+        TQ_AUTO = tq.TQ_AUTO,
+        TQ_INT8 = tq.TQ_INT8,
+        transformer_quant = tq.TQ_INT8,
+        transformer_quant_pinned = tq.TQ_INT8,
+        native_scheme = tq.TQ_INT8,
+        turing_auto_int8 = "small host",
+        small_host_hosted = "small host",
+        hosted_native_scheme = None,
+        transformer_quant_artifact = None,
+    )
+    exec(compile(module, path, "exec"), ns)
+    if read == "declined":
+        assert ns["transformer_quant"] == tq.TQ_AUTO
+        assert ns["transformer_quant_pinned"] is None and ns["native_scheme"] is None
+        assert ns["turing_auto_int8"] is None and ns["small_host_hosted"] is None
+        assert "transformer" not in ns["pipe_kwargs"]
+        assert any("was not read" in str(a[0]) for a in logged)
+    else:
+        assert ns["pipe_kwargs"]["transformer"] is hosted
+        assert ns["native_scheme"] == tq.TQ_INT8 and ns["hosted_native_scheme"] == tq.TQ_INT8
+        assert ns["small_host_hosted"] == "small host"
