@@ -175,6 +175,17 @@ def test_trainer_marks_every_model_it_holds():
     for model in (policy, ref, reward):
         assert getattr(model, model_marker.MODEL_MARKER, False) is True
     assert not hasattr(other, model_marker.MODEL_MARKER)
-    # Installed on the transformers Trainer at import, before any Unsloth load.
+    # Installed on the transformers Trainer at import, before any Unsloth load. Later Unsloth patches
+    # (patch_gradient_accumulation_fix wraps __init__) sit on top and call through via __wrapped__.
     for name in ("__init__", "call_model_init", "train"):
-        assert getattr(getattr(transformers.Trainer, name), "_unsloth_marks_models", False), name
+        assert _wrapper_chain_marks(getattr(transformers.Trainer, name)), name
+
+
+def _wrapper_chain_marks(fn):
+    seen = set()
+    while fn is not None and id(fn) not in seen:
+        if getattr(fn, "_unsloth_marks_models", False):
+            return True
+        seen.add(id(fn))
+        fn = getattr(fn, "__wrapped__", None)
+    return False
