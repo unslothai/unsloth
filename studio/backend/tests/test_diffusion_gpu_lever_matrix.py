@@ -31,6 +31,7 @@ the decision that would have caught it.
 from __future__ import annotations
 
 import contextlib as _contextlib
+import itertools
 import os
 import sys
 import types as _types
@@ -212,9 +213,10 @@ def probe_int8_gemm(p: GpuProfile) -> dict:
         why = "rocm" if rocm else "listed_arch" if arch is not None else "below_sm80"
     out["any.int8_gemm.unlisted_race"] = lever(unl and not rocm, why = why)
     fam = cut.family(cap) if not rocm else None
-    out["any.int8_gemm.cutlass_prebuilt"] = lever(
-        pre, why = None if pre else ("rocm" if rocm else "no_family")
-    )
+    # The prebuilt wheel counts as installed under the mock (Studio's installer puts it on NVIDIA); a real host
+    # without it reads ``no_wheel`` here, not ``no_family``.
+    no_pre = "rocm" if rocm else ("no_family" if cut.family(cap) not in (75, 80) else "no_wheel")
+    out["any.int8_gemm.cutlass_prebuilt"] = lever(pre, why = None if pre else no_pre)
     out["any.int8_gemm.cutlass_family"] = lever(
         fam is not None, cfg = fam, why = None if fam else "no_family"
     )
@@ -697,6 +699,15 @@ def probe_device_target(p: GpuProfile) -> dict:
             bool(getattr(target, "supports_default_torch_compile", False))
         ),
     }
+    # A request with no speed_mode compiles from the deferred profile only where the dtype allows it: fp16 cards (T4)
+    # compile on an explicit tier only, so their Studio-default load runs eager (real T4 load, 2026-11-24).
+    from core.inference.diffusion_speed import fp16_compile_explicit_only
+
+    explicit_only = target.device != "cpu" and fp16_compile_explicit_only(target)
+    out["any.unset_speed_may_compile"] = lever(
+        target.device != "cpu" and not explicit_only,
+        why = "fp16_explicit_tier_only" if explicit_only else None,
+    )
     if p.rocm:
         import torch
         arch = dd._rocm_bf16_decode_arch(torch, target)
@@ -945,6 +956,23 @@ def _speed_layer_extra(patch: Any, p: GpuProfile) -> None:
             pass
 
 
+def family_target(backend: str, fam: Any, target: Any) -> Any:
+    """The load target with the compute dtype the image load resolves for the family (fp16-incompatible families
+    promote fp16 to fp32: a real T4 Qwen-Image load ran fp32), as ``diffusion._resolve_diffusion_compute_dtype``."""
+    if backend != "image" or getattr(target, "dtype", None) is None:
+        return target
+    from core.inference.diffusion import _resolve_diffusion_compute_dtype
+
+    dtype = _resolve_diffusion_compute_dtype(fam, target.dtype)
+    if dtype == target.dtype:
+        return target
+    import dataclasses
+
+    if dataclasses.is_dataclass(target):
+        return dataclasses.replace(target, dtype = dtype)
+    return _types.SimpleNamespace(**{**vars(target), "dtype": dtype})
+
+
 def collect_autoopt(blocks: dict) -> dict:
     import test_diffusion_autoopt_parity as par
     from core.inference import diffusion_speed as ds
@@ -954,18 +982,22 @@ def collect_autoopt(blocks: dict) -> dict:
         with clean_policy_env(), mock_profile(p, extra = _speed_layer_extra):
             target = _autoopt_target(p)
             dtype = str(target.dtype).replace("torch.", "")
-            for backend, fam in par._families():
-                key = f"{p.key}.{fam.name}.autoopt"
+            # offload: the streamed / offloaded tier (8-16 GB cards), where graphs arm after placement (R3 / R4)
+            for (backend, fam), offload in itertools.product(par._families(), (False, True)):
+                key = f"{p.key}.{fam.name}.autoopt" + ("_offload" if offload else "")
+                fam_target = family_target(backend, fam, target)
+                dtype = str(fam_target.dtype).replace("torch.", "")
                 pipe = _autoopt_pipe(backend, fam, blocks)
                 flags = ds.snapshot_backend_flags()
                 try:
                     result = par.autoopt_entry(
-                        backend, pipe, target, fam, AUTOOPT_SPEED, False, False
+                        backend, pipe, fam_target, fam, AUTOOPT_SPEED, offload, False
                     )
-                    engaged = sorted(
-                        {k for view in result["views"] for k, v in view.items() if v}
-                        | {f"patch:{k}" for k, v in result["patches"].items() if v}
-                    )
+                    engaged = {k for view in result["views"] for k, v in view.items() if v}
+                    engaged |= {f"patch:{k}" for k, v in result["patches"].items() if v}
+                    if offload and getattr(pipe, "_unsloth_cuda_graph_after_placement", False):
+                        engaged.add("cuda_graph_after_placement")
+                    engaged = sorted(engaged)
                     cells[key] = {"on": bool(engaged), "engaged": engaged, "cfg": f"dtype={dtype}"}
                 except Exception as exc:  # noqa: BLE001 - recorded: a load that now raises is a lost cell
                     cells[key] = {"on": False, "why": f"error:{type(exc).__name__}"}
@@ -1555,7 +1587,7 @@ def test_incident_r5_18105_int8_gemm_race_at_the_long_row_bucket(monkeypatch):
 
 @pytest.mark.parametrize("steps", [1, 8, 20, 30])
 def test_incident_r4_17362_h3_steps_equal_evaluations(steps, monkeypatch):
-    """R4, #17362: H3 video ran 19 denoiser passes for 20 requested steps (the tester's +1 to +4% was 1 to 5% behind
+    """R3 / R4, #17362: H3 video ran 19 denoiser passes for 20 requested steps (the tester's +1 to +4% was 1 to 5% behind
     at equal passes). diffusers' H3 grid of n points (terminal 0 included) runs n - 1 evaluations, so Studio asks for
     steps + 1; PDD keeps steps + 1 too. Checked on the real scheduler when this diffusers has it."""
     from core.inference import video_minimax_h3 as h3
@@ -1775,3 +1807,203 @@ def test_incident_r4_h3_flash_over_cudnn_where_measured(key, flash):
             "_native_cudnn", capability = p.capability, requested = None, target = target
         )
     assert got == ("_native_flash" if flash else "_native_cudnn"), (key, got)
+
+
+# ------------------------------------------------------------------------------------------- incident replays R1-R3
+def test_incident_r1_12874_convrot_default_has_a_fused_route_on_every_arch():
+    """R1, #12874 (fixed by #14988): INT8 ConvRot became Qwen-Image-2.1's default while sm86 had neither an
+    ``_ARCH_CONFIG`` GEMM tile nor a ``_ROTQ_CONFIG`` rotation tile, so the 3090 ran stock int8 plus a separate
+    Hadamard pass: 22% slower (15.99 vs 12.41 s at 1024^2). Wherever a family defaults ConvRot on, every sm80+
+    NVIDIA profile must get a fused rotation (its tile, or the raced unlisted rotq_h16 path) and a fused / raced
+    GEMM route; B200-class cards skip the Triton GEMM on purpose (measured slower than cuBLAS, ``_UNLISTED_SKIP``)."""
+    from core.inference import diffusion_convrot_quant as cq
+    from core.inference import diffusion_int8_gemm as g
+    from core.inference import diffusion_transformer_quant as tq
+
+    def routes(p: GpuProfile) -> tuple:
+        with clean_policy_env(), mock_profile(p):
+            cap = p.capability
+            rotation = cq.rotquant_config(cap) is not None or cq.unlisted_wanted(cap)
+            gemm = g.arch_config(cap) is not None or g.unlisted_wanted(cap) or g.cutlass_wanted(cap)
+            return rotation, gemm
+
+    with clean_policy_env():
+        families = sorted(
+            f for f in tq._INT8_FAMILY_CONVROT_DEFAULT_ON if tq.int8_convrot_enabled(f)
+        )
+    assert "qwen-image-2.1" in families
+    cards = [p for p in PROFILES.values() if nvidia(p) and p.capability >= (8, 0)]
+    assert any(p.capability == (8, 6) for p in cards)
+    for p in cards:
+        rotation, gemm = routes(p)
+        assert rotation, f"{p.key}: ConvRot defaults on for {families} with no fused rotation"
+        assert (
+            gemm or tuple(p.capability) in g._UNLISTED_SKIP
+        ), f"{p.key}: ConvRot on, no fused / raced GEMM"
+    # The replay bites: without #14988's unlisted-arch route the 3090 is back to stock rotation.
+    from unittest import mock
+
+    with mock.patch.object(cq, "unlisted_mode", lambda: "off"):
+        assert routes(PROFILES["rtx3090"])[0] is False
+
+
+def test_incident_r1_14979_learned_peak_keeps_the_encoders_resident(tmp_path, monkeypatch):
+    """R1, #14979 / #15048: the learned activation peak (per GPU name) only ever rose; after one Qwen-Image-2.1 render
+    the 3090's reserve went 2304 -> 6912 MiB and later loads kept 4877 of 8917 MiB of text encoders resident, so every
+    new prompt streamed the rest (+0.9-1.3 s, +6-10%). With the per-phase peaks a later load on the 24 GB card keeps
+    every encoder resident."""
+    import core.inference.diffusion_measured_peaks as mp
+    import core.inference.diffusion_memory as dm
+
+    p = PROFILES["rtx3090"]
+    with clean_policy_env(), mock_profile(p):
+        monkeypatch.setenv(mp.LEARNED_PEAKS_FILE_ENV, str(tmp_path / "peaks.json"))
+        mp._cache.update(path = None, mtime = None, data = None)
+        monkeypatch.setattr(dm, "_free_reading_untrusted", lambda: False, raising = False)
+        monkeypatch.setattr(mp, "current_device_name", lambda: p.name)
+        monkeypatch.setattr(mp, "device_name", lambda dev: p.name)
+        loaded = {
+            "transformer": (6922, "dit"),
+            "text_encoder": (8917, "text_encoder"),
+            "vae": (254, "other"),
+        }
+        monkeypatch.setattr(dm, "_loaded_component_mib", lambda pipe: dict(loaded))
+        monkeypatch.setattr(dm, "_pipe_denoisers_hold_torchao", lambda pipe: True)
+        monkeypatch.setattr(dm, "denoiser_quant_label", lambda pipe: "torchao:Int8Tensor")
+        total = int(p.vram_gb * 1024)
+        budget = 21013  # what the tester's auto load logged on this card
+        memory = dm.DeviceMemory(
+            "cuda", "cuda", "discrete_vram", budget + dm._reserve_mib("discrete_vram", total), total
+        )
+        plan = dm.plan_diffusion_memory(
+            target = _types.SimpleNamespace(supports_model_cpu_offload = True),
+            device_memory = memory,
+            runtime_headroom_mib = dm.estimate_image_runtime_mib(
+                width = None, height = None, family = "qwen-image-2.1"
+            ),
+            requested_mode = None,
+            model_dense_mib = 6922 + 8917 + 254,
+            companion_dense_mib = 8917 + 254,
+            text_encoder_dense_mib = 8917,
+        )
+        if plan.offload_policy == dm.OFFLOAD_MODEL:
+            plan = dm.torchao_streaming_plan(plan)
+        pipe = _types.SimpleNamespace(_unsloth_phase_seeds = True)
+
+        def refine() -> Any:
+            return dm.refine_plan_from_loaded_weights(
+                pipe, plan, family = "qwen-image-2.1", speed_mode = "default"
+            )
+
+        first = refine()
+        assert first.resident_text_encoder_mib == 8917
+        pad = 4187  # a render's peak: 1864 MiB decode (encode + steps ~900) plus the streamed-window pad
+        mp.record(
+            family = "qwen-image-2.1",
+            quant = "torchao:Int8Tensor",
+            speed_mode = "default",
+            width = 1024,
+            height = 1024,
+            peak_mib = 1864 + pad,
+            phases = {
+                mp.PHASE_PRE_DECODE: 900 + pad,
+                mp.PHASE_DECODE: 1864 + pad,
+                mp.PHASE_DECODE_UNPADDED: 1864,
+                mp.PHASE_UNPADDED: 1864,
+            },
+        )
+        assert (
+            refine().resident_text_encoder_mib == 8917
+        ), "a learned peak shrank the encoder residency"
+        # The replay bites: the whole-render peak alone (pre-#14979) keeps only part of the encoders resident.
+        monkeypatch.setenv(mp.PHASE_PEAKS_ENV, "0")
+        whole = refine()
+        assert (
+            whole.estimates.get("flat_resident_text_encoder_mib", whole.resident_text_encoder_mib)
+            < 8917
+        )
+
+
+def test_incident_r2_15642_pin_budget_inside_a_memorymax_scope(tmp_path, monkeypatch):
+    """R2, #15642: inside a MemoryMax=70G scope ``_pin_budget_mib()`` read 7.7 GB one day and 0 the next for the same
+    live set (mapped checkpoint pages credited only on the inactive LRU list), so H3 at 12 GB streamed from unpinned
+    memory: 9% slower. The budget is the same, and not 0, on either list."""
+    from core.inference import diffusion_memory as dm
+    from utils import host_memory
+
+    root, proc = tmp_path / "cgroup", tmp_path / "proc_self_cgroup"
+    root.mkdir()
+    monkeypatch.setattr(host_memory, "CGROUP_ROOT", str(root))
+    monkeypatch.setattr(host_memory, "PROC_SELF_CGROUP", str(proc))
+    from core.inference import llama_cpp
+
+    monkeypatch.setattr(llama_cpp, "_CGROUP_ROOT", str(root), raising = False)
+    monkeypatch.setattr(llama_cpp, "_PROC_SELF_CGROUP", str(proc), raising = False)
+    gib = 1024**3
+
+    def budget(inactive: int, active: int) -> int:
+        proc.write_text("0::/app.slice/run-x.scope\n", encoding = "utf-8")
+        d = root / "app.slice" / "run-x.scope"
+        d.mkdir(parents = True, exist_ok = True)
+        (d / "memory.max").write_text(str(70 * gib), encoding = "utf-8")
+        (d / "memory.current").write_text(str(60 * gib), encoding = "utf-8")
+        stat = dict(
+            anon = 40 * gib,
+            file_mapped = 20 * gib,
+            file_dirty = 0,
+            file_writeback = 0,
+            inactive_file = inactive,
+            active_file = active,
+        )
+        (d / "memory.stat").write_text(
+            "".join(f"{k} {v}\n" for k, v in stat.items()), encoding = "utf-8"
+        )
+        return dm._pin_budget_mib()
+
+    p = dataclasses_replace(PROFILES["rtx6000_ada"], host_ram_gb = 94.0)
+    with clean_policy_env(), mock_profile(p):
+        on_inactive, on_active = budget(20 * gib, 0), budget(0, 20 * gib)
+        assert on_inactive == on_active > 0, (on_inactive, on_active)
+        # The replay bites: without the mapped-page credit the active-list reading drops to 0.
+        monkeypatch.setenv(dm.PIN_CREDIT_MAPPED_ENV, "0")
+        assert budget(0, 20 * gib) == 0
+
+
+def dataclasses_replace(p: GpuProfile, **changes: Any) -> GpuProfile:
+    import dataclasses
+    return dataclasses.replace(p, **changes)
+
+
+@pytest.mark.parametrize("speed", ["default", "max"])
+def test_incident_r2_16764_h3_int8_vae_decoder_on_by_default(speed):
+    """R2, #16764: the H3 INT8 video decoder was opt-in only (``UNSLOTH_H3_VAE_INT8=1``) and decode took 13-17 s of the
+    render (full card 3%, 3090 5% slower). It is a lossless-enough lever (LPIPS 0.0004-0.0013, 30-33% faster decode)
+    and is on at the default and max tiers without any env."""
+    from core.inference import video_minimax_h3_vae as hv
+    with clean_policy_env():
+        assert hv.LEVER_INT8_DECODER in hv.plan_h3_vae_levers(speed)
+        assert hv.LEVER_INT8_DECODER not in hv.plan_h3_vae_levers(
+            "off"
+        )  # speed off stays bit-identical
+
+
+@pytest.mark.parametrize(
+    "key", ["rtx3090", "a10g", "l4", "rtx6000_ada", "t4", "a100_40", "rtx5090"]
+)
+def test_incident_r3_stream_tier_keeps_cuda_graphs(matrix, key):
+    """R3 / R4: the 8 GB streaming tier ran with CUDA graphs off. Offloaded / streamed loads arm graphs after
+    placement on every family that is capture-safe; H3 video stays off by measurement (its streamed group onloads
+    wait on the host, which a graph cannot record), so it is not asserted here."""
+    cells = matrix["cells"]
+    for fam in (
+        "flux.1",
+        "flux.2-klein",
+        "flux.3-klein",
+        "z-image",
+        "wan2.2-ti2v-5b",
+        "minimax-h3-image",
+    ):
+        resident = cells[f"{key}.{fam}.autoopt"]
+        streamed = cells[f"{key}.{fam}.autoopt_offload"]
+        if "cuda_graph" in resident.get("engaged", ()):
+            assert "cuda_graph_after_placement" in streamed.get("engaged", ()), (key, fam, streamed)

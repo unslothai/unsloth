@@ -503,6 +503,7 @@ class ReasoningTextIteratorStreamer(IncrementalTextIteratorStreamer):
         timeout: float = 0.2,
         cancel_event = None,
         in_reasoning: bool = False,
+        continued: bool = False,
         **decode_kwargs,
     ):
         decode_kwargs["skip_special_tokens"] = False
@@ -512,7 +513,9 @@ class ReasoningTextIteratorStreamer(IncrementalTextIteratorStreamer):
         super().__init__(
             stream_tokenizer, skip_prompt = skip_prompt, timeout = timeout, **decode_kwargs
         )
-        self._normalizer = make_reasoning_normalizer(markers, in_reasoning = in_reasoning)
+        self._normalizer = make_reasoning_normalizer(
+            markers, in_reasoning = in_reasoning, continued = continued
+        )
         self._cancel_event = cancel_event
         self._aborted = False
 
@@ -3157,6 +3160,7 @@ class InferenceBackend:
                 timeout = timeout,
                 cancel_event = cancel_event,
                 in_reasoning = prompt_opens_reasoning_channel(prompt, markers, continued),
+                continued = continued,
             )
         stream_tokenizer = NativeToolTokenDecoder(tokenizer) if preserve_tool_tokens else tokenizer
         return IncrementalTextIteratorStreamer(
