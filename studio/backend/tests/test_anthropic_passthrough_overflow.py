@@ -289,6 +289,21 @@ def test_stream_rejection_shows_a_message_past_character_500(monkeypatch):
     assert "dddd" not in text
 
 
+def test_rejection_naming_context_length_past_character_500_is_not_an_overflow(monkeypatch):
+    from fastapi import HTTPException
+
+    message = "JSON schema error at #/properties/" + "p/properties/" * 34 + "context_length: bad"
+    body = json.dumps({"error": {"code": 500, "message": message, "type": "server_error"}})
+    _install_responses(monkeypatch, lambda: httpx.Response(500, content = body.encode()))
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(_non_streaming())
+    assert excinfo.value.status_code == 500
+    assert excinfo.value.detail == f"llama-server error: {message}"
+
+    text = asyncio.run(_stream_text())
+    assert '"api_error"' in text and "context_length: bad" in text
+
+
 def test_stream_in_band_error_message_is_not_parsed_again(monkeypatch):
     message = '{"error":"invalid sampler","parameter":"penalty_repeat"}'
     error = json.dumps({"error": {"code": 400, "message": message}})
@@ -302,7 +317,7 @@ def test_stream_in_band_error_message_is_not_parsed_again(monkeypatch):
 
     text = asyncio.run(_stream_text())
 
-    assert "penalty_repeat" in text
+    assert json.dumps(f"llama-server error: {message}") in text
 
 
 def test_stream_in_band_error_message_is_not_cut(monkeypatch):

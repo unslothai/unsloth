@@ -431,7 +431,7 @@ def _refused_parameter(value) -> Optional[str]:
 
 
 def _friendly_upstream_error(text: str, extracted: bool = False) -> str:
-    """llama-server's message from a JSON error body, else the raw text, cut to 500; an ``extracted`` message is used as is. Grammar compile failures become advice."""
+    """The message from a JSON error body, else the raw text, cut to 500 unless ``extracted``; grammar compile failures become advice."""
     try:
         text = text if extracted else (error_message_from_chunk(json.loads(text)) or text)
     except ValueError:
@@ -457,12 +457,15 @@ def _oversize_counts(text: str):
 
 
 def _anthropic_upstream_error(text: str, counts_source: Optional[str] = None) -> str:
-    """`text` is what the client is told; `counts_source` is the fuller body it came
-    from, used only to recover token counts, and marks `text` as an extracted message, shown whole."""
+    """`text` is what the client is told; `counts_source`, the fuller body it was extracted from,
+    only supplies token counts and marks `text` as an extracted message, shown whole."""
+    # A raw body is classified on its head, as the passthrough status is: a long body can echo a
+    # request schema whose names would read as an overflow.
+    head = text if counts_source is not None else text[:500]
     # KV starvation means retry, not shorten the conversation.
-    if is_kv_starvation(text):
+    if is_kv_starvation(head):
         return KV_STARVATION_MESSAGE
-    if _classify_llama_generation_error(Exception(text)):
+    if _classify_llama_generation_error(Exception(head)):
         counts = _oversize_counts(text)
         if counts is None and counts_source:
             counts = _oversize_counts(counts_source)
@@ -49094,7 +49097,7 @@ async def _anthropic_passthrough_stream(
                 from core.inference.llama_keepwarm import mark_response_failed
 
                 mark_response_failed(getattr(request, "scope", None))
-                _over = bool(_classify_llama_generation_error(Exception(_err_text)))
+                _over = bool(_classify_llama_generation_error(Exception(_err_text[:500])))
                 yield build_anthropic_sse_event(
                     "error",
                     anthropic_error_body(
@@ -49386,7 +49389,7 @@ async def _anthropic_passthrough_non_streaming(
 
         if resp.status_code != 200:
             _err_text = resp.text
-            _over = bool(_classify_llama_generation_error(Exception(_err_text)))
+            _over = bool(_classify_llama_generation_error(Exception(_err_text[:500])))
             raise HTTPException(
                 status_code = 400 if _over else resp.status_code,
                 detail = _anthropic_upstream_error(_err_text),
