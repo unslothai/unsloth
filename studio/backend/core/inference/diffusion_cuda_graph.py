@@ -168,6 +168,15 @@ class _ThreadGateState(threading.local):
     depth = 0
     recording = 0
     lock_held = 0
+    device_held = 0
+    device_card = None
+
+
+# Long single-card work (the deferred int8 CUTLASS timing race) holds only its card off captures, so a capture on
+# another card (a video render) never waits on it: card index -> holds (``hold_device_off_capture``), and card index
+# -> recordings (None = a capture whose card could not be read: it conflicts with every card).
+_DEVICE_HOLDS: dict = {}
+_DEVICE_DEPTH: dict = {}
 
 
 _OUTSIDE_LOCAL = _ThreadGateState()
@@ -179,6 +188,12 @@ _OUTSIDE_STUCK = [False]
 # Holds owned by threads parked in ``_capturing`` waiting to record: a parked thread issues no CUDA calls, so another
 # held thread may record while it waits (two replica workers that both want to capture do not wait each other out).
 _OUTSIDE_PARKED = [0]
+
+
+def _graph_unsafe(module: Any) -> Optional[str]:
+    """Why ``module`` must never be recorded (``_unsloth_cuda_graph_unsafe``, set by a per-step route), or None."""
+    reason = (getattr(module, "__dict__", None) or {}).get("_unsloth_cuda_graph_unsafe")
+    return str(reason) if reason else None
 
 
 class CaptureExclusionTimeout(RuntimeError):
@@ -236,14 +251,47 @@ def await_outside_drained() -> None:
         _wait_outside_drained(own)
 
 
+def _capture_card(device: Any) -> Optional[int]:
+    """The card a capture records on: ``device`` if given, else the current one; None when unreadable."""
+    try:
+        if device is None:
+            return int(_torch().cuda.current_device())
+        index = getattr(device, "index", device)
+        return None if index is None else int(index)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _device_holds(card: Optional[int]) -> int:
+    """Under ``_CAPTURE_IDLE``: other threads' single-card holds a capture on ``card`` must wait for (this thread's
+    own hold is discounted: its capture runs serially with the held work)."""
+    held = sum(_DEVICE_HOLDS.values()) if card is None else _DEVICE_HOLDS.get(card, 0)
+    own = _OUTSIDE_LOCAL.device_held
+    if own and (card is None or card == _OUTSIDE_LOCAL.device_card):
+        held -= own
+    return held
+
+
+def _wait_device_holds(card: Optional[int]) -> None:
+    """Under ``_CAPTURE_IDLE``: wait for the single-card work on ``card``, else raise ``CaptureRefused``."""
+    if _device_holds(card) <= 0:
+        return
+    if not _CAPTURE_IDLE.wait_for(lambda: _device_holds(card) <= 0, timeout = OUTSIDE_WAIT_S):
+        raise CaptureRefused(
+            f"single-card CUDA work on cuda:{card} still running after {OUTSIDE_WAIT_S:g}s; capture deferred"
+        )
+
+
 @contextlib.contextmanager
-def _capturing():
+def _capturing(device: Any = None):
     """Mark a capture as recording: the depth must rise before torch.cuda.graph is entered, so this
     stays the outermost context manager; raises CaptureRefused (depth untouched) if replica work
-    did not drain, and every capture settles retired pools here."""
+    did not drain, and every capture settles retired pools here. ``device``: the card it records
+    on (default: the current one), which waits out only that card's ``hold_device_off_capture``."""
     global _CAPTURE_DEPTH
     own = getattr(_OUTSIDE_LOCAL, "depth", 0)
     mine = getattr(_OUTSIDE_LOCAL, "recording", 0)
+    card = _capture_card(device)
     seen = _retired_pools_seen()
     with _CAPTURE_IDLE:
         for _ in range(_ENTRY_SETTLE_TRIES):
@@ -251,13 +299,15 @@ def _capturing():
             if seen is not None:
                 _settle_retired_pools(seen)
             _wait_outside_drained(own)
-            if _CAPTURE_DEPTH - mine > 0:
-                continue  # a capture entered while this one waited (the lock was released): wait it out again
+            _wait_device_holds(card)
+            if _CAPTURE_DEPTH - mine > 0 or _device_holds(card) > 0:
+                continue  # a capture or a card hold entered while this one waited (the lock was released): again
             # Retirement takes _RETIRE_LOCK, so one is either counted before this check (flush again, still under
             # the capture lock) or lands once the depth is up (due for the next capture): never in between.
             with _RETIRE_LOCK:
                 if _RETIRED_POOLS[1] >= _RETIRED_POOLS[0]:
                     _CAPTURE_DEPTH += 1
+                    _DEVICE_DEPTH[card] = _DEVICE_DEPTH.get(card, 0) + 1
                     break
                 seen = _RETIRED_POOLS[0]
         else:
@@ -271,6 +321,11 @@ def _capturing():
         _OUTSIDE_LOCAL.recording = mine
         with _CAPTURE_IDLE:
             _CAPTURE_DEPTH -= 1
+            left = _DEVICE_DEPTH.get(card, 0) - 1
+            if left > 0:
+                _DEVICE_DEPTH[card] = left
+            else:
+                _DEVICE_DEPTH.pop(card, None)
             _CAPTURE_IDLE.notify_all()
         if _DEFERRED_RELEASES and not mine:
             drain_deferred_releases()
@@ -291,6 +346,11 @@ def recording_here() -> bool:
     return getattr(_OUTSIDE_LOCAL, "recording", 0) > 0
 
 
+def device_held_here() -> bool:
+    """Whether THIS thread is inside ``hold_device_off_capture`` (only its card is held off captures)."""
+    return _OUTSIDE_LOCAL.device_held > 0
+
+
 def _sync_device(torch: Any, device: Any) -> None:
     if device is None:
         torch.cuda.synchronize()
@@ -302,10 +362,11 @@ def synchronize_outside_capture(device: Any = None, *, refuse: bool = False) -> 
     """Device sync that waits out another thread's recording and holds captures off while it runs.
 
     After ``RETIRED_FLUSH_WAIT_S`` it raises ``CaptureRefused`` if ``refuse`` (nothing recorded yet), else syncs anyway.
-    Under ``hold_off_capture`` or this thread's own recording it syncs at once, so it never self-deadlocks.
+    Under ``hold_off_capture`` / ``hold_device_off_capture`` (whose card no capture records on) or this thread's own
+    recording it syncs at once, so it never self-deadlocks.
     Not for finalizers: one can run while its thread holds the (non-reentrant) capture lock."""
     torch = _torch()
-    if _OUTSIDE_LOCAL.recording or _OUTSIDE_LOCAL.lock_held:
+    if _OUTSIDE_LOCAL.recording or _OUTSIDE_LOCAL.lock_held or _OUTSIDE_LOCAL.device_held:
         _sync_device(torch, device)
         return
     global _OUTSIDE_JOBS
@@ -434,6 +495,43 @@ def hold_off_capture():
     finally:
         _OUTSIDE_LOCAL.lock_held = held
         _CAPTURE_LOCK.release()
+
+
+@contextlib.contextmanager
+def hold_device_off_capture(index: int):
+    """``hold_off_capture`` for long work on one card (the deferred int8 CUTLASS timing race): yields True while no
+    capture records or enters on card ``index``, without holding the process-wide lock, so a capture on another card
+    records meanwhile; a capture on this card waits for it (``OUTSIDE_WAIT_S``, then runs eager). On False a capture
+    is recording on this card (or one whose card is unknown): skip the CUDA work. The body may launch and sync on
+    ``index`` only; a process-wide call (``empty_cache``) goes through ``run_if_capture_idle``. Never blocks."""
+    card = int(index)
+    if not _CAPTURE_LOCK.acquire(blocking = False):
+        yield False
+        return
+    try:
+        safe = not _DEVICE_DEPTH.get(card, 0) and not _DEVICE_DEPTH.get(None, 0)
+        if safe:
+            _DEVICE_HOLDS[card] = _DEVICE_HOLDS.get(card, 0) + 1
+    finally:
+        _CAPTURE_LOCK.release()
+    if not safe:
+        yield False
+        return
+    held, held_card = _OUTSIDE_LOCAL.device_held, _OUTSIDE_LOCAL.device_card
+    _OUTSIDE_LOCAL.device_held = held + 1
+    _OUTSIDE_LOCAL.device_card = card
+    try:
+        yield True
+    finally:
+        _OUTSIDE_LOCAL.device_held = held
+        _OUTSIDE_LOCAL.device_card = held_card
+        with _CAPTURE_IDLE:
+            left = _DEVICE_HOLDS.get(card, 0) - 1
+            if left > 0:
+                _DEVICE_HOLDS[card] = left
+            else:
+                _DEVICE_HOLDS.pop(card, None)
+            _CAPTURE_IDLE.notify_all()
 
 
 # A retired pool's segments stay cached until empty_cache, which cannot run while a capture records, so a capture
@@ -2178,7 +2276,7 @@ class GraphedForward:
                 card = torch.cuda.current_device()
             try:
                 # _capturing hands back any retired pool first, so the no-flush re-record never records beside one.
-                with _capturing(), recorder(graph, pool = pool, stream = _capture_stream(card)):
+                with _capturing(card), recorder(graph, pool = pool, stream = _capture_stream(card)):
                     out = record(*static_args, **static_kwargs)
             except BaseException as exc:
                 # A refusal is raised before the recording begins: the graph and the pool were never touched.
@@ -2989,6 +3087,10 @@ def graph_eligible(
         for m in _denoiser_dits(pipe)
     ):
         return False, "SageAttention is not CUDA-graph safe"
+    # a denoiser that routes per denoise step (H3's INT8 attention exact start) would replay one route for all
+    unsafe = next((r for r in (_graph_unsafe(m) for m in _denoiser_dits(pipe)) if r), None)
+    if unsafe:
+        return False, unsafe
 
     try:
         cuda = getattr(_torch(), "cuda", None)
@@ -3426,6 +3528,12 @@ def arm_block_graphs(
         applied["cuda_graph"] = False
         pipe._unsloth_cuda_graphs = ()
         _set_reason(pipe, "SageAttention is not CUDA-graph safe")
+        return ()
+    unsafe = next((r for r in (_graph_unsafe(t) for t in _denoiser_dits(pipe)) if r), None)
+    if unsafe:
+        applied["cuda_graph"] = False
+        pipe._unsloth_cuda_graphs = ()
+        _set_reason(pipe, unsafe)
         return ()
     model_offload = any(getattr(t, "_hf_hook", None) is not None for t in _denoiser_dits(pipe))
     stays = (not hooked or bool(pinned)) and not model_offload

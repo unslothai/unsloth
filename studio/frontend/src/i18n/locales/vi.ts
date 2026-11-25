@@ -4416,6 +4416,7 @@ export const vi = {
       lr: "LR",
       hardware: "Phần cứng",
       vram: "VRAM",
+      vramTotal: "Tổng {size}",
       noGpu: "Không phát hiện GPU",
       hfToken: "Token HF",
       saved: "Đã lưu",

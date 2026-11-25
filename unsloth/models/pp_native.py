@@ -126,6 +126,14 @@ _MULTI_STAGE_DP = (
     "(each FSDP2 root must be one stage's module); use one stage per rank (schedule = 'gpipe' / '1f1b') "
     "with a dp mesh, or no dp mesh."
 )
+# Root mesh dimension names FSDP2 shards over (the base `dp`, the launcher's / torchtitan's `dp_shard`). A
+# replicated dp axis (dp_replicate: DDP-style gradient all-reduce) and model parallel axes under any name
+# compose with several stages per rank; FSDP2 under another name is still refused at shard_model.
+_SHARDED_DP_DIMS = (
+    "dp",
+    "dp_shard",
+    "fsdp",
+)
 _SIMPLE = (bool, int, float, str, type(None))
 
 
@@ -234,6 +242,26 @@ def pipeline_stage_of(model):
     return None
 
 
+@functools.lru_cache(maxsize = None)
+def _forward_only_stage_class():
+    """A PipelineStage for forward-only steps (has_backward False): the in-place gradient hand-over between two
+    adjacent stages on one rank (V schedules) is a no-op, as every backward action already is there."""
+    from torch.distributed.pipelining import PipelineStage
+
+    class _ForwardOnlyStage(PipelineStage):
+        def get_local_bwd_output(self, mb_index):
+            if not self.has_backward:
+                return ()
+            return super().get_local_bwd_output(mb_index)
+
+        def set_local_bwd_input(self, next_stage_bwd_outputs, mb_index):
+            if not self.has_backward:
+                return None
+            return super().set_local_bwd_input(next_stage_bwd_outputs, mb_index)
+
+    return _ForwardOnlyStage
+
+
 # ------------------------------------------------------------------------------- composed meshes
 
 
@@ -249,6 +277,22 @@ def _root_mesh(mesh):
         return _mesh_resources.get_root_mesh(mesh)
     except Exception:
         return None
+
+
+def check_multi_stage_dp(pp_mesh, stages_per_rank):
+    """Several stages per rank do not compose with native FSDP2 data parallel: ValueError when the root mesh
+    of `pp_mesh` has an FSDP2 data parallel dimension (dp, dp_shard, fsdp) of size > 1 besides `pp_mesh`'s own
+    dimension (whatever its name). Run before the model is cut or a checkpoint is read; nothing is changed."""
+    if stages_per_rank <= 1 or pp_mesh is None:
+        return
+    root = _root_mesh(pp_mesh)
+    if root is None or root is pp_mesh:
+        return
+    own = set(getattr(pp_mesh, "mesh_dim_names", None) or ())
+    names = tuple(getattr(root, "mesh_dim_names", None) or ())
+    for i, name in enumerate(names):
+        if name in _SHARDED_DP_DIMS and name not in own and root.size(i) > 1:
+            raise ValueError(f"{_MULTI_STAGE_DP} (mesh dimension {name!r} of size {root.size(i)})")
 
 
 def check_mesh_composition(meshes, what = "pipeline parallel composition"):
@@ -2428,6 +2472,10 @@ class PipelineParallel:
                 (mb, seq, width), dtype = self.activation_dtype, device = "meta", requires_grad = True
             )
 
+        # eval_loss with two adjacent stages on this rank (V schedules, loop schedules at pp 1): they hand over
+        # their gradients in place, which a forward-only step has none of (torch asserts there).
+        adjacent = any(k + 1 in self.local_stages for k in self.local_stages)
+        stage_cls = _forward_only_stage_class() if not train and adjacent else PipelineStage
         for index, module in zip(self.local_stages, self.stage_modules):
             if index == 0:
                 example_in = torch.empty((mb, seq), dtype = torch.long, device = "meta")
@@ -2460,7 +2508,7 @@ class PipelineParallel:
                 if index != self.total_stages - 1:
                     example_out = plus(example_out)
             stages.append(
-                PipelineStage(
+                stage_cls(
                     module,
                     index,
                     self.total_stages,
@@ -2719,6 +2767,10 @@ class PipelineParallel:
         finally:
             schedule._has_backward = has_backward
             self.ctx.num_items_in_batch = None
+            # No backward pops the forward caches: free each micro-batch's stage inputs / outputs now, not at the
+            # next eval_loss (this cached schedule is not the training one).
+            for st in getattr(schedule, "_stages", None) or (schedule._stage,):
+                st.clear_runtime_states()
         return self._batch_loss(m, device, None)
 
     def _average_replicated_grads(self):
@@ -3159,11 +3211,7 @@ def apply_pipeline_parallel(
         _refuse_aux_with_reentrant_checkpointing(model, moe.config)
     total_stages = pp * stages_per_rank
     rank = pp_mesh.get_local_rank()
-    if stages_per_rank > 1:
-        root = _root_mesh(pp_mesh)
-        names = tuple(getattr(root, "mesh_dim_names", None) or ()) if root is not None else ()
-        if "dp" in names:
-            raise ValueError(_MULTI_STAGE_DP)
+    check_multi_stage_dp(pp_mesh, stages_per_rank)
     # The torch schedule's own checks, on placeholder stages: before anything is cut.
     props = validate_schedule(spec, pp_mesh.get_group(), pp, stages_per_rank, n_microbatches, rank)
     _check_schedule(model, spec, props)
