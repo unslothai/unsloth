@@ -332,7 +332,7 @@ def test_a_writers_own_spelling_of_a_path_resolves_to_its_source():
 
 
 def test_a_relative_spelling_resolves_to_the_same_source(monkeypatch):
-    """A relative UNSLOTH_STUDIO_HOME makes the runner print a relative path; it still matches."""
+    """A relative spelling of a listed log, resolved against the cwd, still matches it."""
     path = _seed("llama-server", "llama-1765000102-port-8080.log")
     expected = next(s for s in debug_log_sources.list_sources() if s.label == path.name).id
     monkeypatch.chdir(_home())
