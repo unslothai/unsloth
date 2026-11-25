@@ -203,6 +203,7 @@ def prepare(plan, capability):
         timeout_seconds = plan.timeout_seconds,
         execution_record = record,
         launch_limitations = launch_limitations,
+        egress_proxy = "mxc-egress-rules" if request.get("egressRules") else None,
     )
     if grant_lease is not None:
         # Appended first so it runs last (LIFO): the grants outlive the workload that may use them.

@@ -36,10 +36,13 @@ class EgressRefused(Exception):
     pass
 
 
+RC_FILES = ((".curlrc", ""), ("wgetrc", "netrc = off\n"))
+
+
 def write_empty_rc_files(directory: str) -> None:
     # curl takes the first .curlrc it finds from CURL_HOME on, so an empty one here hides the workdir's.
     # wget reads .netrc credentials unless told not to; curl only with -n, which is not allowlisted.
-    for name, text in ((".curlrc", ""), ("wgetrc", "netrc = off\n")):
+    for name, text in RC_FILES:
         with open(os.path.join(directory, name), "w", encoding = "utf-8") as f:
             f.write(text)
 

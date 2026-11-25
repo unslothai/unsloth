@@ -320,6 +320,7 @@ _OS_SANDBOX_CONTAINED_COMMANDS = frozenset(
 # The sandbox shares the host network, so these get only the per-call proxy that refuses metadata addresses.
 _OS_SANDBOX_PROXIED_COMMANDS = frozenset({"curl", "wget"})
 _OS_SANDBOX_BACKENDS = frozenset({"bubblewrap", "macos-seatbelt"})
+_MXC_BACKENDS = frozenset({"mxc-processcontainer"})
 _CHMOD_MODE_RE = re.compile(r"[0-7]{3,4}|[ugoa]*[-+=][rwxXst]*(,[ugoa]*[-+=][rwxXst]*)*")
 _CHMOD_OPTION_RE = re.compile(r"-[vcf]+")
 _SHELL_ASSIGNMENT_RE = re.compile(r"[A-Za-z_]\w*\+?=")
@@ -762,23 +763,44 @@ def _is_plain_download(command: str) -> bool:
     return seen > 0 and not {"curl", "wget"} & _find_blocked_commands("".join(rest))
 
 
+# Where cmd and the lexer above part ways: ^ % ! ' ; and a backslash before a quote, space or operator.
+_CMD_PLAIN_DOWNLOAD_UNREADABLE_RE = re.compile(r"""[\^%!'`;|]|\\(?:[\s"&<>()]|$)""")
+
+
+def _on_cmd_isolated_path(name: str) -> bool:
+    return shutil.which(name, path = _safe_path("cmd_isolated")[0]) is not None
+
+
+def _is_plain_cmd_download(command: str, names) -> bool:
+    return (
+        not _CMD_PLAIN_DOWNLOAD_UNREADABLE_RE.search(command)
+        and all(_on_cmd_isolated_path(name) for name in names)
+        and _is_plain_download(command)
+    )
+
+
 # Without these the model reads the block as final and gives up on the download.
 _PLAIN_DOWNLOAD_HINT = (
     "In the OS sandbox curl and wget run only as a plain download: common options, http(s) URLs, "
     "no $ or globs, piped only into head, tail, jq, grep, wc, cat or a checksum tool. "
     "Run the download as its own command, then unpack or run it in the next one."
 )
+_PLAIN_CMD_DOWNLOAD_HINT = (
+    "In the isolated Terminal curl and wget run only as a plain download: common options, http(s) "
+    "URLs, double quotes only, no %, ^, !, ; or pipe, so a URL containing % cannot be fetched "
+    "here. Run the download as its own command, then unpack or run it in the next one."
+)
 _PLAIN_CHMOD_HINT = (
     "In the OS sandbox chmod runs only as a plain `chmod MODE FILE...`: no -R, globs, $ or xargs."
 )
 
 
-def _runs_in_os_sandbox(prepared) -> bool:
+def _runs_in_os_sandbox(prepared, backends = _OS_SANDBOX_BACKENDS) -> bool:
     record = getattr(prepared, "execution_record", None)
     return bool(
         record is not None
         and record.os_isolation
-        and getattr(prepared, "backend", None) in _OS_SANDBOX_BACKENDS
+        and getattr(prepared, "backend", None) in backends
     )
 
 
@@ -24989,7 +25011,13 @@ def _bash_exec(
             if profile in _CMD_PROFILES or not _is_approvable_rm(command):
                 return _APPROVED_RM_REFUSED
             blocked = set()
-        if sys.platform != "win32" and profile not in _CMD_PROFILES:
+        if profile == "cmd_isolated":
+            contained = blocked & _OS_SANDBOX_PROXIED_COMMANDS
+            if contained and not _is_plain_cmd_download(command, contained):
+                contained = set()
+                hints.append(_PLAIN_CMD_DOWNLOAD_HINT)
+            blocked -= contained
+        elif sys.platform != "win32" and profile not in _CMD_PROFILES:
             # Decided at launch: allowed only if this call really runs inside the OS sandbox.
             contained = blocked & _OS_SANDBOX_CONTAINED_COMMANDS
             if "chmod" in contained and not _is_plain_chmod(command):
@@ -25098,7 +25126,15 @@ def _bash_exec(
                 host_access_approved = host_reach_approved,
                 user_folder = chosen_folder,
             )
-            if contained and (chosen_folder or not _runs_in_os_sandbox(prepared)):
+            in_mxc = profile == "cmd_isolated"
+            if contained and (
+                chosen_folder
+                # An MXC launch in auto replays on the host when the container fails to start.
+                or (in_mxc and requested_mode != "required")
+                or not _runs_in_os_sandbox(
+                    prepared, _MXC_BACKENDS if in_mxc else _OS_SANDBOX_BACKENDS
+                )
+            ):
                 return _truncate(f"Blocked command(s) for safety: {', '.join(sorted(contained))}")
             proxied = contained & _OS_SANDBOX_PROXIED_COMMANDS
             if proxied and not prepared.egress_proxy:
