@@ -320,6 +320,12 @@ def flux3_pipeline_class() -> type:
     return _PIPELINE_CLASS
 
 
+def _guider_runs_both(mp: Any) -> bool:
+    """The guider runs the conditional and unconditional branch at its current step (read after ``set_state``)."""
+    guider = getattr(mp, "guider", None)
+    return guider is not None and int(getattr(guider, "num_conditions", 1)) > 1
+
+
 def _reset_guider_step(mp: Any) -> None:
     """Rewind the guider's step state. diffusers keeps the last call's step: after a call whose last steps ran past a
     Fast CFG stop, the next text step would read one condition and skip the negative embeddings its CFG steps need."""
@@ -547,7 +553,7 @@ class _Flux3KleinPipelineMixin:
                 # The base model's text and reference streams run once per call, not once per step and branch.
                 transformer = getattr(self, "transformer", None)
                 if not self.is_distilled:
-                    cond_blocks.begin_render(transformer)
+                    cond_blocks.begin_render(transformer, guided = lambda: _guider_runs_both(mp))
                 try:
                     _reset_guider_step(mp)
                     with self._step_hooks(

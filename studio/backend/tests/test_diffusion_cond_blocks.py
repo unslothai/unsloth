@@ -668,3 +668,173 @@ def test_span_blocks_compile_without_breaks_and_match_compiled_per_token_rows(re
     torch._dynamo.reset()
     assert counters[True] == len(blocks)
     assert all(torch.equal(a, b) for a, b in zip(outs[True], outs[False]))
+
+
+def _guided_steps(
+    model,
+    cond,
+    uncond,
+    steps = 3,
+):
+    """Two branches per step sharing one latents / timestep object, as the modular guider calls them."""
+    outs = []
+    for i in range(steps):
+        latents = cond["hidden_states"] * (1.0 - 0.1 * i)
+        t = torch.tensor([0.9 - 0.2 * i])
+        for kw in (cond, uncond):
+            outs.append(model(**dict(kw, hidden_states = latents, timestep = t))[0])
+    return outs
+
+
+@pytest.mark.parametrize("refs", [False, True])
+@pytest.mark.parametrize("compact", ["0", "1"])
+def test_guided_steps_share_the_image_prefix_bitwise(refs, compact, monkeypatch):
+    cls = _flux3()
+    monkeypatch.delenv(cb.COND_BLOCKS_ENV, raising = False)
+    monkeypatch.delenv(cb.IMAGE_PREFIX_ENV, raising = False)
+    monkeypatch.setenv(cb.COMPACT_MOD_ENV, compact)
+    model = _tiny(cls)
+    model.__dict__["_unsloth_cond_text_only"] = not refs
+    cond = _inputs(refs, seed = 1)
+    uncond = dict(cond, encoder_hidden_states = torch.randn(1, 7, 24), txt_ids = torch.zeros(7, 4))
+    with torch.no_grad():
+        stock = _guided_steps(model, cond, uncond)
+        assert cb.prepare(model)
+        # the same cached path with the prefix inside every call: the reference under compact rows too
+        monkeypatch.setenv(cb.IMAGE_PREFIX_ENV, "0")
+        assert cb.begin_render(model, guided = lambda: True)
+        try:
+            per_call = _guided_steps(model, cond, uncond)
+        finally:
+            cb.end_render(model)
+        assert "prefix_misses" not in cb.status(model)
+        monkeypatch.delenv(cb.IMAGE_PREFIX_ENV)
+        assert cb.begin_render(model, guided = lambda: True)
+        calls = []
+        original = model.mode_blocks["image"][0].forward
+        model.mode_blocks["image"][0].forward = lambda *a, **k: calls.append(1) or original(*a, **k)
+        try:
+            cached = _guided_steps(model, cond, uncond)
+        finally:
+            del model.mode_blocks["image"][0].forward
+            cb.end_render(model)
+    for a, b, c in zip(stock, per_call, cached):
+        assert torch.equal(b, c)
+        if compact == "0":
+            assert torch.equal(a, c)
+    stats = cb.status(model)
+    # one image prefix per step: the second branch reuses the first one's
+    assert (stats["prefix_misses"], stats["prefix_hits"]) == (3, 3)
+    assert len(calls) == 3
+    assert cb._PREFIX_ATTR not in model.__dict__ and cb._GUIDED_ATTR not in model.__dict__
+
+
+@pytest.mark.parametrize("why", ["unguided", "env", "no_probe", "latents_changed"])
+def test_image_prefix_stays_per_call_when_not_shared(why, monkeypatch):
+    cls = _flux3()
+    monkeypatch.delenv(cb.COND_BLOCKS_ENV, raising = False)
+    monkeypatch.delenv(cb.IMAGE_PREFIX_ENV, raising = False)
+    monkeypatch.setenv(cb.COMPACT_MOD_ENV, "0")
+    if why == "env":
+        monkeypatch.setenv(cb.IMAGE_PREFIX_ENV, "0")
+    model = _tiny(cls)
+    model.__dict__["_unsloth_cond_text_only"] = True
+    cond = _inputs(False, seed = 2)
+    uncond = dict(cond, encoder_hidden_states = torch.randn(1, 7, 24), txt_ids = torch.zeros(7, 4))
+    probe = {
+        "unguided": lambda: False,
+        "env": lambda: True,
+        "no_probe": None,
+        "latents_changed": lambda: True,
+    }[why]
+    with torch.no_grad():
+        stock = _guided_steps(model, cond, uncond, steps = 2)
+        assert cb.prepare(model)
+        assert cb.begin_render(model, guided = probe)
+        try:
+            if why == "latents_changed":
+                outs = []
+                for i in range(2):
+                    latents = cond["hidden_states"] * (1.0 - 0.1 * i)
+                    t = torch.tensor([0.9 - 0.2 * i])
+                    outs.append(model(**dict(cond, hidden_states = latents, timestep = t))[0])
+                    latents.mul_(1.0)  # an in-place write between the branches: never reuse
+                    outs.append(model(**dict(uncond, hidden_states = latents, timestep = t))[0])
+                cached = outs
+            else:
+                cached = _guided_steps(model, cond, uncond, steps = 2)
+        finally:
+            cb.end_render(model)
+    for a, b in zip(stock, cached):
+        assert torch.equal(a, b)
+    assert cb.status(model).get("prefix_hits", 0) == 0
+
+
+def test_a_prefix_for_another_batch_runs_the_stock_prefix():
+    """A CFG-batched call doubles the latents: a batch-1 prefix must not be used for it."""
+    cls = _flux3()
+    model = _tiny(cls)
+    kw = _inputs(False, seed = 3)
+    with torch.no_grad():
+        assert cb.prepare(model)
+        cond = cb.flux3_conditioning(
+            model,
+            encoder_hidden_states = kw["encoder_hidden_states"].repeat(2, 1, 1),
+            txt_ids = kw["txt_ids"],
+            image_cond_hidden_states = None,
+            image_cond_ids = None,
+            batch_size = 2,
+            dtype = torch.float32,
+            device = torch.device("cpu"),
+            compact = bool(model.__dict__.get(cb._COMPACT_ATTR)),
+        )
+        one = cb.flux3_image_prefix(
+            model,
+            hidden_states = kw["hidden_states"],
+            timestep = kw["timestep"],
+            img_ids = kw["img_ids"],
+            compact = bool(model.__dict__.get(cb._COMPACT_ATTR)),
+        )
+        two = dict(
+            kw,
+            hidden_states = kw["hidden_states"].repeat(2, 1, 1),
+            timestep = kw["timestep"].repeat(2),
+            encoder_hidden_states = kw["encoder_hidden_states"].repeat(2, 1, 1),
+        )
+        want = model(**two, unsloth_cond = cond)[0]
+        got = model(**two, unsloth_cond = cond, unsloth_prefix = one)[0]
+    assert got.shape[0] == 2 and torch.equal(got, want)
+
+
+def test_facade_probe_reads_the_guider_conditions():
+    from types import SimpleNamespace as NS
+
+    from core.inference import diffusion_flux3 as f3
+
+    assert f3._guider_runs_both(NS(guider = NS(num_conditions = 2)))
+    assert not f3._guider_runs_both(NS(guider = NS(num_conditions = 1)))
+    assert not f3._guider_runs_both(NS(guider = None))
+
+
+def test_image_prefix_under_inference_mode(monkeypatch):
+    """Studio renders under inference_mode, whose tensors have no version counter: still shared, still bitwise."""
+    cls = _flux3()
+    monkeypatch.delenv(cb.COND_BLOCKS_ENV, raising = False)
+    monkeypatch.delenv(cb.IMAGE_PREFIX_ENV, raising = False)
+    monkeypatch.setenv(cb.COMPACT_MOD_ENV, "0")
+    model = _tiny(cls)
+    model.__dict__["_unsloth_cond_text_only"] = True
+    with torch.inference_mode():
+        cond = _inputs(False, seed = 4)
+        uncond = dict(cond, encoder_hidden_states = torch.randn(1, 7, 24), txt_ids = torch.zeros(7, 4))
+        stock = _guided_steps(model, cond, uncond)
+        assert cb.prepare(model)
+        assert cb.begin_render(model, guided = lambda: True)
+        try:
+            cached = _guided_steps(model, cond, uncond)
+        finally:
+            cb.end_render(model)
+    for a, b in zip(stock, cached):
+        assert torch.equal(a, b)
+    stats = cb.status(model)
+    assert (stats["prefix_misses"], stats["prefix_hits"]) == (3, 3)
