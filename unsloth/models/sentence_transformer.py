@@ -3550,8 +3550,11 @@ def _patch_sentence_transformer_trainer():
         _original_init(self, *args, **kwargs)
         _check_live_placement(self)
 
-        # Disable mixed precision when FORCE_FLOAT32 is active (matches rl.py behavior)
-        if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1":
+        # Disable mixed precision for a forced float32 model (matches rl.py). Read from the model, not
+        # UNSLOTH_FORCE_FLOAT32: that is process wide, and the fast encoder route never resets it.
+        from ._utils import _model_forced_float32
+
+        if _model_forced_float32(getattr(self, "model", None)):
             if hasattr(self, "args") and self.args is not None:
                 if self.args.fp16 or self.args.bf16:
                     print(

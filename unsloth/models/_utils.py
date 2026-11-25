@@ -5900,6 +5900,25 @@ def _mark_forced_float32(model, forced):
     return model
 
 
+def _model_forced_float32(model, max_depth = 6):
+    """Whether Unsloth loaded `model`, or the model a wrapper of it holds (PeftModel, SentenceTransformer), with
+    forced float32. Every Unsloth load stamps it, so an unstamped model was loaded without Unsloth and is not forced:
+    UNSLOTH_FORCE_FLOAT32 is process wide, and a plain model trained after an fp16 Gemma 3 load would read its "1"."""
+    level = [model]
+    for _ in range(max_depth + 1):
+        children = []
+        for m in level:
+            # __dict__, not getattr: PeftModel forwards unknown attributes to the model it wraps.
+            forced = getattr(m, "__dict__", {}).get("_unsloth_forced_float32")
+            if forced is not None:
+                return bool(forced)
+            children.extend((getattr(m, "__dict__", {}).get("_modules") or {}).values())
+        level = [c for c in children if c is not None]
+        if not level:
+            break
+    return False
+
+
 def _drop_float16_overflowing_attention_dropout(model, dtype):
     """Granite 3.0-3.2 dense ship attention_dropout = 0.1 (3.3+ ship 0). Dropping the attention sink in training pushes the last layer's SwiGLU past float16's 65504 (85k measured in bfloat16), so float16 training NaNs (#3002)."""
     if dtype != torch.float16:
@@ -6282,10 +6301,7 @@ def _unsloth_forced_float32_grad_scaler(trainer, model):
         return None
     if getattr(accelerator, "mixed_precision", None) != "no":
         return None
-    forced = getattr(model, "_unsloth_forced_float32", None)
-    if forced is None:
-        forced = os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1"
-    if not forced:
+    if not _model_forced_float32(model):
         return None
     try:
         from accelerate.utils import DistributedType
