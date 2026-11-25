@@ -66,9 +66,12 @@ export interface LlamaUpdateStatus {
   job: LlamaUpdateJob;
 }
 
+const installChangedListeners = new Set<() => void>();
+
 export function afterLlamaInstallChanged(): void {
   invalidateLlamaFlagCatalog();
   void refreshHardwareInfo();
+  for (const listener of installChangedListeners) listener();
 }
 
 export function llamaUpdateOffered(status: LlamaUpdateStatus): boolean {
@@ -659,9 +662,14 @@ export function useLlamaUpdateCheck({
 
   useEffect(() => {
     if (!enabled) return;
-    return subscribeToLlamaJobStarted(() => {
-      readStatus().then(surfaceIfAvailable);
-    });
+    const reread = () => void readStatus().then(surfaceIfAvailable);
+    // A llama.cpp folder change runs no job, so the installed tag held here would stay the old folder's.
+    installChangedListeners.add(reread);
+    const unsubscribe = subscribeToLlamaJobStarted(reread);
+    return () => {
+      installChangedListeners.delete(reread);
+      unsubscribe();
+    };
   }, [enabled, readStatus, surfaceIfAvailable]);
 
   const dismiss = useCallback((): string | null => {

@@ -8,30 +8,65 @@ import assert from "node:assert/strict";
 import { mock, test } from "node:test";
 import * as lifecycle from "../src/lib/llama-job-lifecycle.ts";
 import type * as HookModule from "../src/hooks/use-llama-update-check.ts";
+import type * as SwitchModule from "../src/features/settings/hooks/use-llama-backend-switch.ts";
 import { readSrc } from "./helpers/kit.ts";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 
-function loadHook(jobState: string) {
-  const calls: string[] = [];
-  const react = {
-    useState: (initial: unknown) => [initial, () => {}],
-    useRef: (current: unknown) => ({ current }),
-    useCallback: (fn: unknown) => fn,
-    useEffect() {},
+function reactStub(options: { runEffects?: boolean; states?: unknown[] } = {}) {
+  const states = [...(options.states ?? [])];
+  const cleanups: (() => void)[] = [];
+  return {
+    cleanups,
+    react: {
+      useState: (initial: unknown) => [
+        states.length ? states.shift() : initial,
+        () => {},
+      ],
+      useRef: (current: unknown) => ({ current }),
+      useCallback: (fn: unknown) => fn,
+      useEffect(effect: () => (() => void) | undefined) {
+        if (!options.runEffects) return;
+        const cleanup = effect();
+        if (cleanup) cleanups.push(cleanup);
+      },
+    },
   };
+}
+
+function loadHook(
+  jobState: string,
+  options: { installedTag?: () => string | null; runEffects?: boolean } = {},
+) {
+  const calls: string[] = [];
+  const committed: (string | null)[] = [];
+  const { react, cleanups } = reactStub(options);
+  react.useState = (initial: unknown) => [
+    initial,
+    (next: unknown) => {
+      const status = next as { llama?: { installed_tag: string | null } };
+      if (status?.llama) committed.push(status.llama.installed_tag);
+    },
+  ];
   const job = (state: string) => ({
     state,
     operation: "update",
     started_at: "2026-11-25T10:00:00Z",
     finished_at: state === "running" ? null : "2026-11-25T10:01:00Z",
   });
-  const authFetch = async (url: string) => ({
-    ok: true,
-    json: async () =>
-      url === "/api/llama/update"
-        ? { started: true, job: job("running") }
-        : { update_available: false, job: job(jobState) },
-  });
+  const authFetch = async (url: string) => {
+    if (url.startsWith("/api/llama/update-status")) calls.push("status");
+    return {
+      ok: true,
+      json: async () =>
+        url === "/api/llama/update"
+          ? { started: true, job: job("running") }
+          : {
+              update_available: false,
+              installed_tag: options.installedTag?.() ?? null,
+              job: job(jobState),
+            },
+    };
+  };
   const hook = loadWithStubs<typeof HookModule>(
     new URL("../src/hooks/use-llama-update-check.ts", import.meta.url),
     {
@@ -51,10 +86,31 @@ function loadHook(jobState: string) {
       "@/lib/llama-job-lifecycle": lifecycle,
     },
   );
-  return { hook, calls };
+  const unmount = () => {
+    for (const cleanup of cleanups) cleanup();
+  };
+  return { hook, calls, committed, unmount };
 }
 
 const flush = () => new Promise((resolve) => setImmediate(resolve));
+
+function withWindow(run: () => Promise<void>) {
+  return async () => {
+    const previous = (globalThis as { window?: unknown }).window;
+    (globalThis as { window?: unknown }).window = {
+      addEventListener() {},
+      removeEventListener() {},
+      dispatchEvent() {},
+    };
+    mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+    try {
+      await run();
+    } finally {
+      mock.timers.reset();
+      (globalThis as { window?: unknown }).window = previous;
+    }
+  };
+}
 
 test("the shared refresh drops the flag catalog and re-reads the hardware info", () => {
   const { hook, calls } = loadHook("idle");
@@ -63,7 +119,7 @@ test("the shared refresh drops the flag catalog and re-reads the hardware info",
 });
 
 for (const state of ["success", "error"]) {
-  test(`an update or switch job that ends in ${state} runs the shared refresh once`, async () => {
+  test(`an update job that ends in ${state} runs the shared refresh once`, async () => {
     mock.timers.enable({ apis: ["setInterval"] });
     try {
       const { hook, calls } = loadHook(state);
@@ -71,12 +127,104 @@ for (const state of ["success", "error"]) {
       await flush();
       mock.timers.tick(500);
       await done;
-      assert.deepEqual(calls, ["flags", "hardware"]);
+      assert.deepEqual(calls, ["status", "flags", "hardware"]);
     } finally {
       mock.timers.reset();
     }
   });
 }
+
+test(
+  "the shared refresh makes a mounted update check re-read the installed tag",
+  withWindow(async () => {
+    let installed: string | null = "b9585";
+    const { hook, calls, committed, unmount } = loadHook("idle", {
+      installedTag: () => installed,
+      runEffects: true,
+    });
+    hook.useLlamaUpdateCheck({ passive: true });
+    await flush();
+    assert.deepEqual(committed, ["b9585"]);
+
+    // A custom folder reports no managed release.
+    installed = null;
+    hook.afterLlamaInstallChanged();
+    await flush();
+    assert.deepEqual(committed, ["b9585", null]);
+
+    unmount();
+    calls.length = 0;
+    hook.afterLlamaInstallChanged();
+    await flush();
+    assert.deepEqual(calls, ["flags", "hardware"]);
+  }),
+);
+
+test(
+  "a backend switch runs the shared refresh when its own job ends",
+  withWindow(async () => {
+    const calls: string[] = [];
+    const switchJob = (state: string) => ({
+      state,
+      operation: "switch",
+      startedAt: "2026-11-25T10:00:00Z",
+      message: "",
+      error: null,
+    });
+    let current = switchJob("idle");
+    const { react } = reactStub({
+      runEffects: true,
+      states: [{ backendRequest: "cuda", backend: "cpu", job: current }],
+    });
+    const { useLlamaBackendSwitch } = loadWithStubs<typeof SwitchModule>(
+      new URL(
+        "../src/features/settings/hooks/use-llama-backend-switch.ts",
+        import.meta.url,
+      ),
+      {
+        react,
+        "@/hooks/use-llama-update-check": {
+          afterLlamaInstallChanged: () => calls.push("refresh"),
+        },
+        "@/i18n": { useT: () => (key: string) => key },
+        "@/lib/llama-job-events": {
+          signalLlamaJobStarted() {},
+          subscribeToLlamaJobStarted: () => () => {},
+        },
+        "@/lib/llama-job-lifecycle": lifecycle,
+        "@/lib/toast": {
+          toast: {
+            success: (title: string) => calls.push(title),
+            error: (title: string) => calls.push(title),
+          },
+        },
+        "../api/llama-backend": {
+          loadLlamaBackendStatus: async () => ({
+            backendRequest: "cuda",
+            backend: "cuda",
+            job: current,
+          }),
+          switchLlamaBackend: async () => {
+            current = switchJob("running");
+            return { started: true, job: current };
+          },
+        },
+        "../lib/llama-backend-labels": { backendDisplayName: (b: string) => b },
+      },
+    );
+    useLlamaBackendSwitch().apply();
+    await flush();
+    assert.deepEqual(calls, []);
+
+    current = switchJob("success");
+    mock.timers.tick(700);
+    await flush();
+    assert.deepEqual(calls, [
+      "refresh",
+      "settings.resources.llamaBackend.switchedTo",
+    ]);
+  }),
+);
 
 test("saving or resetting the llama.cpp folder runs the shared refresh", () => {
   const section = readSrc(
