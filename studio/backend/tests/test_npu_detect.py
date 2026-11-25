@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from utils.hardware import npu
+from utils.npu_runtime_config import FLM_BINARY_ENV, LEMONADE_ARCHIVE_ENV
 
 
 def _device(
@@ -119,7 +120,7 @@ def test_detection_never_raises(monkeypatch):
 def test_custom_runtime_allows_probe_and_respects_disable_flag(monkeypatch):
     monkeypatch.setattr(npu.sys, "platform", "win32")
     monkeypatch.setattr(npu, "_windows_probe", lambda: {"present": False})
-    monkeypatch.setenv(npu.FLM_BINARY_ENV, "custom-flm.exe")
+    monkeypatch.setenv(FLM_BINARY_ENV, "custom-flm.exe")
     monkeypatch.setenv(npu.ENABLE_ENV, "1")
 
     assert npu.detect_amd_npu() == {"present": False, "enabled": True, "supported": True}
@@ -131,8 +132,8 @@ def test_custom_runtime_allows_probe_and_respects_disable_flag(monkeypatch):
 def test_supported_windows_npu_needs_no_runtime_override(monkeypatch):
     monkeypatch.setattr(npu.sys, "platform", "win32")
     monkeypatch.setattr(npu, "_windows_probe", lambda: {"present": True, "family": "XDNA2"})
-    monkeypatch.delenv(npu.FLM_BINARY_ENV, raising = False)
-    monkeypatch.delenv(npu.LEMONADE_ARCHIVE_ENV, raising = False)
+    monkeypatch.delenv(FLM_BINARY_ENV, raising = False)
+    monkeypatch.delenv(LEMONADE_ARCHIVE_ENV, raising = False)
     monkeypatch.setenv(npu.ENABLE_ENV, "1")
 
     assert npu.detect_amd_npu()["supported"]

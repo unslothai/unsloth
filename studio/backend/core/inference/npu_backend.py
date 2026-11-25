@@ -38,13 +38,13 @@ from core.inference.lemonade_server import LemonadeServer, LemonadeUnavailable, 
 from core.inference.npu_context import DEFAULT_CONTEXT_LENGTH, plan_context
 from core.inference.npu_flm_args import clamp_prefill_chunk, merge_flm_args
 from utils.code_integrity import code_integrity_block_reason, code_integrity_user_message
-from utils.hardware.npu import (
+from utils.hardware.npu import detect_amd_npu
+from utils.native_path_leases import child_env_without_native_path_secret
+from utils.npu_runtime_config import (
     FLM_BINARY_ENV,
     custom_runtime_configured,
-    detect_amd_npu,
     local_flm_binary,
 )
-from utils.native_path_leases import child_env_without_native_path_secret
 from utils.process_lifetime import (
     adopt_pid,
     child_popen_kwargs,

@@ -10,6 +10,8 @@ import sys
 from pathlib import Path
 from typing import Any, Optional
 
+from ..npu_runtime_config import custom_runtime_configured
+
 _AMD_VENDOR = "1022"
 _XDNA2_DEVICE = "17f0"
 _XDNA1_DEVICE = "1502"
@@ -17,26 +19,10 @@ _PCI_ROOT = Path("/sys/bus/pci/devices")
 _MODULE_ROOT = Path("/sys/module")
 # On unless set to a false value: the NPU section, NPU loads and the CLI's NPU ids all wait on this.
 ENABLE_ENV = "UNSLOTH_STUDIO_ENABLE_NPU"
-LEMONADE_ARCHIVE_ENV = "UNSLOTH_LEMONADE_ARCHIVE"
-FLM_BINARY_ENV = "UNSLOTH_FLM_NPU_BIN"
 
 
 def npu_enabled() -> bool:
     return os.environ.get(ENABLE_ENV, "").strip().lower() not in ("0", "false", "no", "off")
-
-
-def local_lemonade_archive() -> Optional[Path]:
-    value = os.environ.get(LEMONADE_ARCHIVE_ENV, "").strip()
-    return Path(value) if value else None
-
-
-def local_flm_binary() -> Optional[Path]:
-    value = os.environ.get(FLM_BINARY_ENV, "").strip()
-    return Path(value) if value else None
-
-
-def custom_runtime_configured() -> bool:
-    return local_lemonade_archive() is not None or local_flm_binary() is not None
 
 
 def _read(path: Path) -> Optional[str]:

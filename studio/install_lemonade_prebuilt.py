@@ -30,7 +30,7 @@ if _STUDIO_DIR not in sys.path:
 
 import prebuilt_core as core  # noqa: E402
 from backend.utils.auth_safe import auth_safe_open  # noqa: E402
-from backend.utils.hardware.npu import (  # noqa: E402
+from backend.utils.npu_runtime_config import (  # noqa: E402
     LEMONADE_ARCHIVE_ENV,
     custom_runtime_configured,
     local_lemonade_archive,

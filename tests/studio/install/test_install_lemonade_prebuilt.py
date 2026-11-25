@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import subprocess
 import sys
 import tarfile
 import threading
@@ -27,6 +28,20 @@ if str(STUDIO_DIR) not in sys.path:
     sys.path.insert(0, str(STUDIO_DIR))
 
 import install_lemonade_prebuilt as lp  # noqa: E402
+
+
+def test_installer_imports_without_the_studio_backend_on_sys_path():
+    subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-B",
+            "-c",
+            "import sys; sys.path.insert(0, sys.argv[1]); import install_lemonade_prebuilt",
+            str(STUDIO_DIR),
+        ],
+        check = True,
+    )
 
 
 def _archive(directory: Path, key: str) -> Path:
