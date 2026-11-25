@@ -166,7 +166,11 @@ def test_merged_export_refuses_to_overwrite_the_prequantized_snapshot(tmp_path, 
 
     import huggingface_hub
 
-    pytest.importorskip("transformers.core_model_loading")
+    cml = pytest.importorskip("transformers.core_model_loading")
+    # The merged export imports the expert dequantizer transformers 5.24 added with Inkling 2 itself; the
+    # pyproject pin (5.18) and the 5.23 latest leg have core_model_loading but not it.
+    if not hasattr(cml, "Inkling2LoopDequantizeExperts"):
+        pytest.skip("Inkling 2 needs transformers >= 5.24 (no Inkling2LoopDequantizeExperts here)")
     from unsloth.models.inkling2 import save_inkling2_merged_16bit
 
     snapshot = _config_dir(tmp_path, "snapshot", BNB)
