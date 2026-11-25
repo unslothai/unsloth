@@ -89,8 +89,13 @@ def read_lora_metadata(path: str) -> Optional[dict]:
     return config if "lora_alpha" in config else None
 
 
-# Values a newer PEFT writes for a config field left off: dropping the field then changes nothing.
-_UNSET_CONFIG_VALUES = (None, False, {}, [], "")
+# safetensors' own cap on the JSON header it will parse.
+_MAX_HEADER_BYTES = 100_000_000
+
+
+def _is_unset(value: Any) -> bool:
+    """A newer PEFT's value for a config field left off: dropping the field then changes nothing."""
+    return value is None or value is False or (isinstance(value, (dict, list, str)) and not value)
 
 
 def _lora_config_fields() -> Optional[frozenset]:
@@ -102,43 +107,61 @@ def _lora_config_fields() -> Optional[frozenset]:
         return None
 
 
-def compatible_lora_header(path: str) -> Optional[dict]:
-    """The safetensors header with the ``lora_adapter_metadata`` fields this PEFT's ``LoraConfig`` lacks removed, or
-    None when it has none. diffusers calls ``LoraConfig(**metadata)`` on a path load, so a file saved by a newer PEFT
-    (Qwen-Image-2.1-Lightning: PEFT 0.20's ``lora_ga_config`` / ``use_bdlora`` / ...) raised "``LoraConfig`` class
-    could not be instantiated". Only unset fields are dropped, as PEFT's ``from_pretrained`` does; a set one raises."""
+def _read_header(path: str) -> Optional[dict]:
+    """The safetensors JSON header, or None when it is unreadable or its declared length is implausible."""
     import json
     import struct
+
+    try:
+        size = os.path.getsize(str(path))
+        with open(str(path), "rb") as handle:
+            prefix = handle.read(8)
+            if len(prefix) != 8:
+                return None
+            (length,) = struct.unpack("<Q", prefix)
+            if length > _MAX_HEADER_BYTES or 8 + length > size:
+                return None
+            header = json.loads(handle.read(length))
+    except Exception:  # noqa: BLE001 - unreadable header: the plain load reports it itself
+        return None
+    return header if isinstance(header, dict) else None
+
+
+def compatible_lora_header(path: str) -> Optional[dict]:
+    """The safetensors header with the unset ``lora_adapter_metadata`` fields this PEFT's ``LoraConfig`` lacks removed,
+    or None when there are none. diffusers calls ``LoraConfig(**metadata)`` on a path load, so a file saved by a newer
+    PEFT (Qwen-Image-2.1-Lightning: PEFT 0.20's ``lora_ga_config`` / ``use_bdlora`` / ...) raised "``LoraConfig`` class
+    could not be instantiated". Unset fields are dropped, as PEFT's ``from_pretrained`` ignores them; every other key
+    stays, so diffusers sees the rest of the header (and any component it does not load) exactly as before."""
+    import json
 
     fields = _lora_config_fields()
     if fields is None:
         return None
+    header = _read_header(path)
+    if header is None:
+        return None
     try:
-        with open(str(path), "rb") as handle:
-            (length,) = struct.unpack("<Q", handle.read(8))
-            header = json.loads(handle.read(length))
         metadata = json.loads(header["__metadata__"][_METADATA_KEY])
-    except Exception:  # noqa: BLE001 - no metadata or unreadable header: diffusers reports it itself
+    except Exception:  # noqa: BLE001 - no metadata: nothing for LoraConfig to reject
         return None
     if not isinstance(metadata, dict):
         return None
     # Keys are "<component>.<field>" ("transformer.r", "unet.lora_alpha").
-    unknown = [key for key in metadata if "." in key and key.split(".", 1)[1] not in fields]
-    if not unknown:
+    dropped = [
+        key
+        for key, value in metadata.items()
+        if "." in key and key.split(".", 1)[1] not in fields and _is_unset(value)
+    ]
+    if not dropped:
         return None
-    set_fields = [k for k in unknown if not any(metadata[k] == v for v in _UNSET_CONFIG_VALUES)]
-    if set_fields:
-        raise ValueError(
-            f"{os.path.basename(str(path))} sets LoRA options this PEFT does not support "
-            f"({', '.join(sorted(set_fields))}); a newer peft is needed to load it"
-        )
     logger.info(
         "diffusion.lora: %s ignores unset LoRA options this PEFT lacks: %s",
         os.path.basename(str(path)),
-        ", ".join(sorted(unknown)),
+        ", ".join(sorted(dropped)),
     )
     header["__metadata__"][_METADATA_KEY] = json.dumps(
-        {k: v for k, v in metadata.items() if k not in unknown}, indent = 2, sort_keys = True
+        {k: v for k, v in metadata.items() if k not in dropped}, indent = 2, sort_keys = True
     )
     return header
 

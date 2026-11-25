@@ -111,15 +111,57 @@ def test_newer_peft_metadata_loads_every_module(tmp_path, alpha):
     assert path.exists() and len(list(tmp_path.iterdir())) == 1
 
 
-def test_a_set_unknown_field_refuses_with_a_clear_error(tmp_path):
+def test_a_set_field_of_a_component_diffusers_does_not_load_still_loads(tmp_path):
+    """Qwen-Image loads only ``transformer.*`` metadata: a set unknown field elsewhere never reaches LoraConfig."""
     path = tmp_path / "adapter.safetensors"
-    save_file(
-        _state(),
-        str(path),
-        metadata = {"lora_adapter_metadata": _metadata(_RANK, future_lora_option = {"k": 1})},
+    meta = json.dumps(
+        {
+            "transformer.r": _RANK,
+            "transformer.lora_alpha": 2 * _RANK,
+            "transformer.target_modules": ["attn.to_out.0", "attn.to_v", "attn.to_q", "attn.to_k"],
+            "text_encoder.future_lora_option": {"enabled": True},
+        }
     )
-    with pytest.raises(ValueError, match = "future_lora_option"):
-        lf.load_adapter(_pipe(), str(path), "lightning", "qwen-image-2.1")
+    save_file(_state(), str(path), metadata = {"lora_adapter_metadata": meta})
+    pipe = _pipe()
+    lf.load_adapter(pipe, str(path), "lightning", "qwen-image-2.1")
+    modules = dict(pipe.transformer.named_modules())
+    assert modules["transformer_blocks.0.attn.to_q"].scaling["lightning"] == 2.0
+
+
+def test_only_unset_unknown_fields_are_dropped(tmp_path):
+    path = tmp_path / "adapter.safetensors"
+    meta = {
+        "transformer.r": _RANK,
+        "transformer.lora_alpha": _RANK,
+        "transformer.future_lora_option": None,
+        "transformer.other_future_option": {"k": 1},
+        "text_encoder.future_lora_option": {"enabled": True},
+    }
+    save_file(_state(), str(path), metadata = {"lora_adapter_metadata": json.dumps(meta)})
+    header = lf.compatible_lora_header(str(path))
+    kept = json.loads(header["__metadata__"]["lora_adapter_metadata"])
+    assert kept == {k: v for k, v in meta.items() if k != "transformer.future_lora_option"}
+
+
+def test_a_forged_header_length_is_not_read(tmp_path):
+    import struct
+    import tracemalloc
+
+    huge = tmp_path / "huge.safetensors"
+    huge.write_bytes(struct.pack("<Q", 1 << 40) + b"{}")
+    past_end = tmp_path / "past_end.safetensors"
+    past_end.write_bytes(struct.pack("<Q", 64) + b"{}")
+    short = tmp_path / "short.safetensors"
+    short.write_bytes(b"\x01\x02")
+    tracemalloc.start()
+    try:
+        for path in (huge, past_end, short):
+            assert lf.compatible_lora_header(str(path)) is None
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert peak < 1 << 20
 
 
 def test_a_header_this_peft_takes_is_left_alone(tmp_path):
