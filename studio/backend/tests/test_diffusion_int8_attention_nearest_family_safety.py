@@ -502,6 +502,27 @@ def test_a_fallback_card_runs_sdpa_while_a_graph_records(monkeypatch):
     assert torch.equal(got, want)
 
 
+def test_the_unguarded_entry_runs_sdpa_while_a_graph_records_on_a_fallback_card(monkeypatch):
+    """``int8_attention`` on a fallback card never reads the finite check on the host while a CUDA graph records."""
+    from torch.nn.attention import SDPBackend, sdpa_kernel
+
+    _mixed_cards(monkeypatch)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 1)
+    monkeypatch.setattr(I, "unsupported_reason", lambda q, k, v: None)
+    monkeypatch.setattr(I, "implementation", lambda index, hd: "cuda")
+    monkeypatch.setattr(I, "_fallback_card", lambda index, hd, impl: True)
+    monkeypatch.setattr(I, "_capturing_on", lambda device: True, raising = False)
+
+    def host_read(*a):
+        raise AssertionError("host read of the finite check while a graph records")
+
+    monkeypatch.setattr(I, "_nonfinite_inputs", host_read)
+    monkeypatch.setattr(I, "_run", lambda *a, **k: torch.ones(1, 16, 2, 64))
+    q, k, v = _qkv_with("finite")
+    with sdpa_kernel(SDPBackend.MATH):
+        assert torch.equal(I.int8_attention(q, k, v), I.native_attention(q, k, v))
+
+
 def test_a_listed_card_output_is_untouched_by_the_non_finite_check(monkeypatch):
     got, _, kernel_out = _fallback_impl(monkeypatch, card = 0)(*_qkv_with("nan k"))
     assert torch.equal(got, kernel_out)  # sm89 is listed: as before

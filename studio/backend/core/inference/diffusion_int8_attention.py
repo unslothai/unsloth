@@ -1696,7 +1696,10 @@ def int8_attention(
         raise ValueError(f"INT8 attention cannot take this call: {reason}")
     index = q.device.index if q.device.index is not None else torch.cuda.current_device()
     impl = implementation(index, int(q.shape[-1]))
-    if _fallback_card(index, int(q.shape[-1]), impl) and _nonfinite_inputs(q, k, v):
+    # a fallback card: torch's attention for non-finite inputs, and while a graph records (the check reads the host)
+    if _fallback_card(index, int(q.shape[-1]), impl) and (
+        _capturing_on(q.device) or _nonfinite_inputs(q, k, v)
+    ):
         return native_attention(q, k, v) if scale is None else native_attention(q, k, v, scale)
     return _run(q, k, v, impl, config, scale, mode)
 
