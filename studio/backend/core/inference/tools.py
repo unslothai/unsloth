@@ -16393,6 +16393,7 @@ _UNMEASURED_ROOM_MARGIN = 0.5
 _MIN_PAGE_CHARS = 2000
 # a percent escape is one non-ASCII byte in ASCII and tokenizes like one.
 _HEX_PAIR_RE = re.compile(r"[0-9A-Fa-f]{2}")
+_ESCAPE_RE = re.compile(r"%[0-9A-Fa-f]{2}")
 # raw cap exceeds _MAX_PAGE_CHARS because conversion strips large SSR <head> sections.
 _MAX_FETCH_BYTES = 512 * 1024
 # news pages can inline about 2.5 MB in <head>, so reserve _MAX_FETCH_BYTES beyond its end.
@@ -18007,18 +18008,56 @@ def _window_context_tokens() -> int | None:
     return ctx if ctx else None
 
 
+def _escape_aligned(text: str, index: int) -> int:
+    """Moves `index` past an escape covering it; a `%` is never inside an earlier escape."""
+    if index >= 2 and _ESCAPE_RE.match(text, index - 2):
+        return index + 1
+    if index >= 1 and _ESCAPE_RE.match(text, index - 1):
+        return index + 2
+    return index
+
+
+def _charged_quarters(piece: str) -> int:
+    """Cost in quarter tokens of a slice starting and ending on escape-aligned indices."""
+    cost = 4 * len(piece) - 3 * len(piece.encode("ascii", "ignore"))
+    if "%" in piece:
+        cost += 9 * len(_ESCAPE_RE.findall(piece))
+    return cost
+
+
 def _dense_prefix_chars(text: str, token_budget: float) -> int:
     """Charges non-ASCII one token each: CJK runs 1.3-1.6 chars per token, so the share stays a share."""
-    # Escape-free ASCII costs 0.25 a char: the loop would stop at floor(budget * 4).
-    if (
-        type(text) is str
-        and type(token_budget) in (int, float)
-        and text.isascii()
-        and 0.0 <= token_budget < 2**50
-    ):
-        end = min(len(text), int(token_budget * 4))
-        if text.find("%", 0, end + 1) < 0:
-            return end
+    if type(text) is str and type(token_budget) in (int, float) and 0.0 <= token_budget < 2**50:
+        # Quarter tokens: plain ASCII 1, non-ASCII 4, escape 12.
+        allowed = int(token_budget * 4)
+        length = len(text)
+        # Escape-free ASCII costs 0.25 a char: the loop would stop at floor(budget * 4).
+        if text.isascii() and text.find("%", 0, min(length, allowed) + 1) < 0:
+            return min(length, allowed)
+        # No char costs over 4, so the next quarter of the room nearly always fits: gallop on
+        # C-speed block sums, halving on an overshoot, then step the last few characters.
+        spent = 0
+        pos = 0
+        cap = length
+        while pos < length:
+            step = min(cap, max(16, (allowed - spent) // 4))
+            stop = _escape_aligned(text, min(length, pos + step))
+            cost = _charged_quarters(text[pos:stop])
+            if spent + cost <= allowed:
+                spent += cost
+                pos = stop
+            elif stop - pos > 18:
+                cap = (stop - pos) // 2
+            else:
+                break
+        else:
+            return length
+        while True:
+            width = 3 if _ESCAPE_RE.match(text, pos) else 1
+            spent += _charged_quarters(text[pos : pos + width])
+            if spent > allowed:
+                return pos
+            pos += width
     spent = 0.0
     index = 0
     length = len(text)
