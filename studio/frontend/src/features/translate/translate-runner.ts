@@ -124,7 +124,6 @@ type LocalModel = {
   /** Null for a model with no quants to pick from; the load fetches whatever it needs. */
   variant: string | null;
   sizeBytes: number;
-  /** A safetensors repo with no quants, downloaded whole like a quant. */
   fp8?: true;
 };
 

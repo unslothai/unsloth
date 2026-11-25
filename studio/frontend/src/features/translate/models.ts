@@ -31,11 +31,9 @@ export type DedicatedTranslateModel = {
     | "hy-mt3-30b-a3b-fp8";
   label: string;
   repo: string;
-  /** Null for a safetensors repo, downloaded whole. */
   variant: string | null;
   sizeBytes: number;
   sampling: TranslateSampling;
-  /** Offered only where the GPU runs FP8 checkpoints natively. */
   fp8?: true;
 };
 
