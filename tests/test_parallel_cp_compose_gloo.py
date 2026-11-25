@@ -138,7 +138,8 @@ _PAD_LENGTHS = {"right": (16, 11, 7, 13, 9, 16, 12, 5), "short": (6, 8, 5, 3, 7,
 
 def _padded_rows(batch, kind, rows):
     if kind == "odd":
-        return {k: v[:, : SEQ - 1].contiguous() for k, v in batch.items()}
+        # No attention_mask (eval adds one): only the cp-appended token is padding.
+        return {k: v[:, : SEQ - 1].contiguous() for k, v in batch.items() if k != "attention_mask"}
     lengths = torch.tensor([_PAD_LENGTHS[kind][r % len(_PAD_LENGTHS[kind])] for r in rows])
     keep = torch.arange(SEQ)[None] < lengths[:, None]
     batch["input_ids"] = batch["input_ids"].masked_fill(~keep, 0)
@@ -681,10 +682,21 @@ def _case_train(
     )
     if eval_only:
         trainer.args.per_device_eval_batch_size = bs
+        eval_aux_calls = []
+        original_eval_stats = pp_native._router_statistics
+
+        def counted_eval_stats(*a, **k):
+            eval_aux_calls.append(1)
+            return original_eval_stats(*a, **k)
+
+        pp_native._router_statistics = counted_eval_stats
         metrics = trainer.evaluate(eval_dataset = data)
         stage = pp_native.pipeline_stage_of(trainer.model)
+        manager = getattr(trainer, "_context_parallel_manager", None)
         return {
             "eval_loss": metrics["eval_loss"],
+            "cp_aux_calls": len(eval_aux_calls),
+            "router_aux_scale": getattr(manager, "router_aux_scale", None),
             "rows_read": rows_read,
             "stage": None if stage is None else int(stage.stage_index),
             "cpu_compute_loss": bool(getattr(type(trainer).compute_loss, "_unsloth_cpu", False)),

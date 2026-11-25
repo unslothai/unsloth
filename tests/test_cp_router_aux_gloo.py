@@ -82,3 +82,35 @@ def test_router_aux_loss_under_cp_with_reentrant_checkpointing_is_refused():
     for res in _spawn("train", 2, bs = 2, cp = 2, router_aux = True, gc = "unsloth", **_AUX):
         error = res.get("error") or ""
         assert "reentrant checkpointing would drop its gradient" in error, error or res["losses"]
+
+
+_ROUTES = {
+    "trl": ({}, {}),
+    "forward_aux_scaled": ({}, {"hf_loss": True}),
+    "forward_aux_plain": (_NO_FUSED_FORWARD, {"hf_loss": True}),
+}
+
+
+@pytest.mark.parametrize("padding", ["right", "odd"], ids = ["right_pad", "cp_pad"])
+@pytest.mark.parametrize("route", list(_ROUTES))
+def test_router_aux_eval_loss_under_cp_matches_one_process(route, padding):
+    """evaluate() under cp 2 reports one process's eval loss (token CE + coef x aux) for each route the aux term
+    enters by, with right padded rows or a cp-appended token and no attention_mask."""
+    env, kw = _ROUTES[route]
+    args = dict(bs = 2, ga = 1, steps = 2, eval_only = True, padding = padding, **_AUX, **kw)
+    (ref,) = _spawn("train", 1, env, router_aux = True, **args)
+    (off,) = _spawn("train", 1, env, **{**args, "aux_coef": None})
+    assert "error" not in ref and "error" not in off, (ref, off)
+    assert ref["eval_loss"] != pytest.approx(off["eval_loss"], rel = 1e-4), (ref, off)
+    for rank, res in enumerate(_spawn("train", 2, env, cp = 2, router_aux = True, **args)):
+        assert "error" not in res, (rank, res.get("error"), res.get("trace"))
+        assert res["cp_aux_calls"] > 0 and res["router_aux_scale"] is not None, res
+        assert res["rows_read"] == ref["rows_read"], (res["rows_read"], ref["rows_read"])
+        assert res["eval_loss"] == pytest.approx(ref["eval_loss"], rel = 1e-5), (
+            route,
+            padding,
+            rank,
+            res["eval_loss"],
+            ref["eval_loss"],
+            off["eval_loss"],
+        )

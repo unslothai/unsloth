@@ -567,6 +567,9 @@ def _cp_load_balancing_loss(original):
             or not gate_logits
         ):
             return original(gate_logits, num_experts, top_k, attention_mask)
+        if not manager.in_training_step:
+            # The 1 / cp offsets the world-size factor training_step puts on the loss; evaluation has none.
+            scale = 1.0
         from .models.pp_native import _load_balancing_from_statistics, _router_statistics
 
         if torch.is_grad_enabled() and not any(g.requires_grad for g in gate_logits):
@@ -910,6 +913,9 @@ class ContextParallelManager:
     rotate_method = "allgather"
     router_aux_scale = (
         None  # set by _install_cp_router_aux: the router aux loss is formed over the cp group
+    )
+    in_training_step = (
+        False  # inside Trainer.training_step (the loss there is multiplied by the world size)
     )
 
     def __init__(
@@ -2398,8 +2404,14 @@ def patch_sft_trainer(install_cp_methods: bool = False) -> None:
                 window = _optimizer_window(self),
             )
         # Forward and backward both inside, so gradient checkpointing recomputes with ring attention.
-        with manager.apply(inputs) if manager else contextlib.nullcontext():
+        if manager is None:
             return original_training_step(self, model, inputs, *args, **kwargs)
+        manager.in_training_step = True
+        try:
+            with manager.apply(inputs):
+                return original_training_step(self, model, inputs, *args, **kwargs)
+        finally:
+            manager.in_training_step = False
 
     if has_total_train_batch_size:
 
