@@ -32,9 +32,9 @@ FAMILIES = {
     # (hidden_states, router_indices, routing_weights), transposed stacks, per-expert biases
     "gpt_oss": "trl-internal-testing/tiny-GptOssForCausalLM",
     "mixtral": "hf-internal-testing/tiny-random-MixtralForCausalLM",
-    "qwen2_moe": "hf-internal-testing/tiny-random-Qwen2MoeForCausalLM",  # shared expert
-    "qwen3_next": "hf-internal-testing/tiny-random-Qwen3NextForCausalLM",  # gated deltanet hybrid + shared
-    # The tiny repo's layers are all dense (first_k_dense_replace=3 of 2 layers).
+    "qwen2_moe": "hf-internal-testing/tiny-random-Qwen2MoeForCausalLM",
+    "qwen3_next": "hf-internal-testing/tiny-random-Qwen3NextForCausalLM",
+    # The tiny repo is all dense (first_k_dense_replace=3 of 2 layers).
     "deepseek_v3": dict(
         repo = "trl-internal-testing/tiny-DeepseekV3ForCausalLM",
         overrides = dict(
