@@ -265,3 +265,44 @@ test("a cancelled scheduleChatFiles never reports", () => {
   while (queue.length) queue.shift()?.();
   assert.equal(reported, false);
 });
+
+test("repeated names get the same suffixes as a fresh search from 2", () => {
+  const oldUnique = (name: string, used: Set<string>) => {
+    const dot = name.lastIndexOf(".");
+    let candidate = name;
+    for (let n = 2; used.has(candidate); n += 1) {
+      candidate =
+        dot > 0
+          ? `${name.slice(0, dot)}-${n}${name.slice(dot)}`
+          : `${name}-${n}`;
+    }
+    used.add(candidate);
+    return candidate;
+  };
+  let seed = 7;
+  const rand = (n: number) => {
+    seed = (seed * 1103515245 + 12345) % 2147483648;
+    return seed % n;
+  };
+  const pool = [
+    "snippet.py",
+    "snippet-2.py",
+    "snippet-3.py",
+    "notes",
+    "notes-2",
+  ];
+  const messages = Array.from({ length: 60 }, (_, i) =>
+    python(`a${i}`, sandboxResult(`t${i}`, [pool[rand(pool.length)]])),
+  );
+  const used = new Set<string>();
+  const expected = messages.map((m) =>
+    oldUnique(
+      (m.content[0].result as { files: { name: string }[] }).files[0].name,
+      used,
+    ),
+  );
+  assert.deepEqual(
+    collectChatFiles(messages).map((f) => f.name),
+    expected,
+  );
+});

@@ -136,13 +136,21 @@ function extFromMime(mime: string): string {
   return sub === "jpeg" ? "jpg" : sub || "png";
 }
 
-function uniqueName(name: string, used: Set<string>): string {
+// `next` resumes each name's suffix search: `used` only grows, so the result is unchanged and linear.
+function uniqueName(
+  name: string,
+  used: Set<string>,
+  next: Map<string, number>,
+): string {
   const dot = name.lastIndexOf(".");
+  let n = next.get(name) ?? 2;
   let candidate = name;
-  for (let n = 2; used.has(candidate); n += 1) {
+  while (used.has(candidate)) {
     candidate =
       dot > 0 ? `${name.slice(0, dot)}-${n}${name.slice(dot)}` : `${name}-${n}`;
+    n += 1;
   }
+  next.set(name, n);
   used.add(candidate);
   return candidate;
 }
@@ -309,7 +317,11 @@ export function collectChatFiles(
     }
   }
   const used = new Set<string>();
-  return found.map((file) => ({ ...file, name: uniqueName(file.name, used) }));
+  const next = new Map<string, number>();
+  return found.map((file) => ({
+    ...file,
+    name: uniqueName(file.name, used, next),
+  }));
 }
 
 type Schedule = (run: () => void) => void;
