@@ -1323,6 +1323,101 @@ class _AboveOne:
         return iter(("2+",))
 
 
+# Layouts that shipped before the registry (pp x tp, pp x dp, dp x tp), as their gloo runs train them: the HF
+# Trainer on a tiny Llama, LoRA, fp32, eager attention, no checkpointing, UNSLOTH_PP_SIZE / UNSLOTH_TP_SIZE /
+# UNSLOTH_FSDP2 from the environment, one stage per rank.
+_LEGACY = {
+    "trainer": ("trainer",),
+    "family": ("llama",),
+    "hybrid": (False,),
+    "multimodal": (False,),
+    "windowed": (False,),
+    "mode": ("lora",),
+    "packing": (False,),
+    "cp": _ONE,
+    "attention": ("eager",),
+    "compile": ("eager",),
+    "memory": ("none",),
+    "kernels": (False,),
+    "loss": ("standard",),
+    "vllm": (False,),
+    "moe": (False,),
+    "tiled": (False,),
+    "block_swap": (False,),
+}
+_PP_ENV = "tests/test_pp_env_gloo.py::"
+_PP_PARITY = _PP_ENV + "test_pp_env_trainer_matches_one_process"
+_PP_ENGAGED = "tests/test_pp_env_engagement_gloo.py::test_pp_env_composed_axis_engages"
+_PP_API = "tests/test_pp_fsdp2_gloo.py::"
+_TP_ENV = "tests/test_tp_env_gloo.py::"
+_TP_PARITY = _TP_ENV + "test_env_tp2_x_dp2_trainer_matches_one_process"
+_TP_RESUME = _TP_ENV + "test_env_tp_checkpoint_resume_equals_uninterrupted"
+_LEGACY_EAGER = "eager: no compiled region"
+_LEGACY_NOTE = (
+    "not measured here: SFTTrainer / TRL trainers, other families, QLoRA, sdpa / flash attention, gradient "
+    "checkpointing, block compile, Unsloth's fast kernels, sizes above 2"
+)
+_PP_ONLY = {"pp": (2,), "pp_schedule": ("1f1b",)}
+_LEGACY_CELLS = (
+    Cell(
+        "pp x tp (one stage per rank), eager",
+        {**_LEGACY, **_PP_ONLY, "dp": _ONE, "tp": (2,), "fsdp2": (False,)},
+        parity = _PP_PARITY + "[pp2_x_tp2]",
+        engagement = _PP_ENGAGED
+        + "[pp2_x_tp2] (stage 1 runs on stage 0's rows, tp DTensor shards on each stage); "
+        + _PP_ENV
+        + "test_pp_env_tensor_peers_train_on_one_batch",
+        compile = _LEGACY_EAGER,
+        note = _LEGACY_NOTE
+        + "; direct API (gpipe, llama / qwen3 / gemma3): "
+        + _PP_API
+        + "test_pp2_x_tp2_matches_one_process",
+    ),
+    Cell(
+        "pp x dp (DDP), eager",
+        {**_LEGACY, **_PP_ONLY, "dp": (2,), "tp": _ONE, "fsdp2": (False,)},
+        parity = _PP_PARITY + "[pp2_x_ddp2]",
+        engagement = _PP_ENGAGED
+        + "[pp2_x_ddp2] (stage 1 runs on stage 0's rows, dp replicas on different rows)",
+        compile = _LEGACY_EAGER,
+        note = _LEGACY_NOTE
+        + "; resume: "
+        + _PP_ENV
+        + "test_pp_env_checkpoint_resume_equals_uninterrupted[pp2_x_ddp2]",
+    ),
+    Cell(
+        "pp x dp (native FSDP2), eager",
+        {**_LEGACY, **_PP_ONLY, "dp": (2,), "tp": _ONE, "fsdp2": (True,)},
+        parity = _PP_PARITY + "[pp2_x_fsdp2_dp2]",
+        engagement = _PP_ENGAGED
+        + "[pp2_x_fsdp2_dp2] (stage 1 runs on stage 0's rows, FSDP2 shards over dp, replicas on different rows)",
+        compile = _LEGACY_EAGER,
+        note = _LEGACY_NOTE
+        + "; direct API (gpipe / 1f1b, llama / qwen3 / gemma3): "
+        + _PP_API
+        + "test_pp2_x_fsdp2_dp2_matches_one_process",
+    ),
+    Cell(
+        "dp x tp (DDP), eager",
+        {**_LEGACY, "pp": _ONE, "dp": (2,), "tp": (2,), "fsdp2": (False,)},
+        parity = _TP_PARITY + "[ddp_dp2]",
+        engagement = _TP_PARITY
+        + "[ddp_dp2] (tp sharded, the DDP mesh averages over dp, tp peers on the same rows, dp replicas "
+        "on different ones)",
+        compile = _LEGACY_EAGER,
+        note = _LEGACY_NOTE + "; resume: " + _TP_RESUME + "[tp2_ddp_dp2]",
+    ),
+    Cell(
+        "dp (native FSDP2) x tp, eager",
+        {**_LEGACY, "pp": _ONE, "dp": (2,), "tp": (2,), "fsdp2": (True,)},
+        parity = _TP_PARITY + "[fsdp2_dp2]",
+        engagement = _TP_PARITY
+        + "[fsdp2_dp2] (tp sharded, native FSDP2 over dp, tp peers on the same rows, dp replicas on "
+        "different ones)",
+        compile = _LEGACY_EAGER,
+        note = _LEGACY_NOTE + "; resume: " + _TP_RESUME + "[tp2_fsdp2_dp2]",
+    ),
+)
 # The refusal names the knob to turn off: dropping an axis is not the fix for a swapped model.
 _NO_BLOCK_SWAP = (
     "; load with offload_layers = 0 (and get_peft_model(offload_layers = 0)) to run this layout"
@@ -1357,6 +1452,9 @@ CELLS = (
             _INKLING2_PP_ENGAGED,
             "eager: Inkling 2 trains with UNSLOTH_COMPILE_DISABLE=partial",
         ),
+    )
+    + _LEGACY_CELLS
+    + (
         Cell(
             "block swap x tp",
             {"block_swap": (True,), "tp": _AboveOne()},
