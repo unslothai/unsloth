@@ -27,9 +27,10 @@ def route_strip():
     "text",
     [
         '```\nget_weather[ARGS]{"city": "Paris"}\n```',
-        '~~~\nget_weather[ARGS]{"city": "Paris"}\n~~~',
+        '~~~\nget_weather[ARGS]{"city": "call: Paris [ARGS]"}\n~~~',
         "`get_weather[ARGS]{}`",
         'Call it as `search[ARGS]{"q": "x"}` when needed.',
+        'Call it as `search[ARGS]{"q": "a } b"}` after this.',
     ],
 )
 def test_route_strip_keeps_a_rehearsal_quoted_in_code(route_strip, text):
@@ -55,6 +56,25 @@ def test_route_strip_keeps_a_rehearsal_quoted_in_code(route_strip, text):
         (
             '<tool_call>{"name":"web_search","arguments":{"q":"web_search[ARGS]{ syntax"}}</tool_call>Here.',
             "Here.",
+        ),
+        # An example the rehearsal arm over-matches (3-level JSON, unbalanced placeholder) ends at its body and span.
+        (
+            '```\nsearch[ARGS]{"a": {"b": {"c": 1}}}\n```\nOK <tool_call>{"name":"search","arguments":{}}</tool_call>',
+            '```\nsearch[ARGS]{"a": {"b": {"c": 1}}}\n```\nOK ',
+        ),
+        (
+            '```\nsearch[ARGS]{"a": {"b": {"c": 1}}} <|tool_call>call:search{}<tool_call|>\n```',
+            '```\nsearch[ARGS]{"a": {"b": {"c": 1}}} \n```',
+        ),
+        # An example whose body is unbalanced in its span, or holds a call the parser runs, goes as before.
+        ("`search[ARGS]{` and `}` done", "`` done"),
+        (
+            '```\nsearch[ARGS]{\n<tool_call>{"name":"search","arguments":{}}</tool_call>\n}\n```\nDone.',
+            "```\n",
+        ),
+        (
+            '~~~\nsearch[ARGS]{\n<|content_invoke_tool_json|>{"name":"search","args":{}}<|end_message|>\n}\n~~~',
+            "~~~\n",
         ),
     ],
 )

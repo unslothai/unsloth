@@ -6978,6 +6978,54 @@ def _display_tool_name_gate(active_tools):
     return names or None
 
 
+def _strip_tool_xml_keeping_examples(seg: str, enabled_tool_names) -> str:
+    """``_TOOL_XML_RE`` removal that keeps a rehearsal the parser does not promote (inactive name, or quoted in code).
+
+    An example quoted in code is kept only once its body is balanced within the code span, and only up to that body,
+    so the arm's open-ended fallback cannot also keep a real call after it. One whose body holds a parser tool signal
+    is removed whole: the parser runs a marker call wherever it sits. Until the body closes the example is removed
+    too, so a stream never shows an example that later text would take back."""
+    import bisect
+
+    from core.inference.tool_call_parser import TOOL_XML_SIGNALS
+    from core.tool_healing import (
+        _balanced_json_span,
+        _code_spans,
+        _in_code,
+        _markerless_promotable,
+    )
+
+    spans = None
+    out: list[str] = []
+    pos = 0
+    while (m := _TOOL_XML_RE.search(seg, pos)) is not None:
+        name = m.group("reh")
+        end = m.start()
+        if name is not None and not _markerless_promotable(name, enabled_tool_names):
+            end = m.end()
+        elif name is not None:
+            if spans is None:
+                spans = _code_spans(seg)
+            if _in_code(spans, m.start()):
+                span_end = spans[bisect.bisect_right(spans, (m.start(), m.start())) - 1][1]
+                brace = seg.find("{", m.end("reh"), min(m.end(), span_end))
+                body_end = _balanced_json_span(seg[:span_end], brace) if brace >= 0 else None
+                body = seg[brace + 1 : body_end] if body_end is not None else ""
+                # A rehearsal nested in the body is in code too, so its [ARGS] is never run.
+                if body_end is not None and not any(
+                    signal in body for signal in TOOL_XML_SIGNALS if signal != "[ARGS]"
+                ):
+                    end = body_end + 1
+        if end == m.start():
+            out.append(seg[pos : m.start()])
+            pos = m.end()
+        else:
+            out.append(seg[pos:end])
+            pos = end
+    out.append(seg[pos:])
+    return "".join(out)
+
+
 def _strip_tool_xml_for_display(
     text: str,
     *,
@@ -6993,13 +7041,7 @@ def _strip_tool_xml_for_display(
         and _DISPLAY_GEMMA_CALL_RE.search(text) is None
     ):
         return text
-    from core.tool_healing import (
-        _code_spans,
-        _in_code,
-        _markerless_promotable,
-        _strip_bracket_tag_calls,
-        strip_outside_think,
-    )
+    from core.tool_healing import _strip_bracket_tag_calls, strip_outside_think
 
     def _strip_segment(seg: str, is_last: bool) -> str:
         # Strips close at each call's real terminator, so a quoted </function> cannot truncate them.
@@ -7013,22 +7055,7 @@ def _strip_tool_xml_for_display(
         seg = _strip_glm_calls(seg, final = is_last)
         seg = _strip_function_xml_calls(seg, final = is_last)
         if is_last:
-            spans = None
-
-            def _keep_example(m) -> str:
-                # A rehearsal the parser does not promote (inactive name, or quoted in code) is text: deleting it would
-                # empty the turn or a code block. Matching it still keeps markup quoted in its arguments from other arms.
-                nonlocal spans
-                name = m.groupdict().get("reh")
-                if name is None:
-                    return ""
-                if not _markerless_promotable(name, enabled_tool_names):
-                    return m.group(0)
-                if spans is None:
-                    spans = _code_spans(seg)
-                return m.group(0) if _in_code(spans, m.start()) else ""
-
-            return _TOOL_XML_RE.sub(_keep_example, seg)
+            return _strip_tool_xml_keeping_examples(seg, enabled_tool_names)
         return _TOOL_XML_CLOSED_RE.sub("", seg)
 
     # Mask blocked-call bodies and lone backticked tags (prose) so these passes do not edit them.
