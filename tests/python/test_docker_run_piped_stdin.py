@@ -21,6 +21,7 @@ def _docker_flags(
     tmp_path,
     stdin,
     stdout = subprocess.DEVNULL,
+    close_stdin = False,
 ):
     bindir = tmp_path / "bin"
     bindir.mkdir(exist_ok = True)
@@ -38,7 +39,9 @@ def _docker_flags(
         UNSLOTH_GPUS = "none",
     )
     proc = subprocess.run(
-        [shutil.which("bash"), str(RUN_SH), "python"],
+        [shutil.which("bash"), "-c", f'exec bash "{RUN_SH}" python <&-']
+        if close_stdin
+        else [shutil.which("bash"), str(RUN_SH), "python"],
         cwd = tmp_path,
         env = env,
         stdin = stdin,
@@ -83,3 +86,7 @@ def test_terminal_stdin(tmp_path):
 def test_dev_null_stdin(tmp_path):
     with open(os.devnull, "rb") as f:
         assert _docker_flags(tmp_path, f) == ["run", "--rm", "-i"]
+
+
+def test_closed_stdin(tmp_path):
+    assert _docker_flags(tmp_path, None, close_stdin = True) == ["run", "--rm"]
