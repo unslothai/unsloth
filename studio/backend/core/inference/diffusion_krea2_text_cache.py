@@ -1,21 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Krea 2 text fusion, text projection and rotary table run once per prompt, not once per step.
+"""Krea 2 text_fusion / txt_in / rotary_emb run once per prompt, not once per step (none reads timestep or latents).
 
-``Krea2Transformer2DModel.forward`` runs ``text_fusion`` (four text blocks over every token's 12 tapped encoder
-layers), ``txt_in`` and ``rotary_emb`` on every denoise call, though none of them reads the timestep or the latents:
-they see the same prompt embeddings, mask and position ids at every step of a render (the text trim hands the same
-trimmed tensors back each step). Each module keeps its last outputs per input (a CFG pair is two entries) and returns
-them while the same, unmodified input memory comes back: bit-identical. 9.4 of 186 ms per 1024^2 forward on G4.
-
-Entries live for one render: Studio's generate clears them when the render ends. Within a render the inputs are
-matched on identity / address and, where torch keeps one, the version counter (inference-mode tensors have none, so an
-in-place edit of the prompt tensor in the middle of a render is not seen); the autocast dtype is part of the key.
-
-Resident modules only: a streamed module keeps stock calls (skipping its forward would leave its offload group out
-of the prefetch order). Calls under CUDA-graph capture or tracing run stock, so a graph never records a cached
-output's address. ``UNSLOTH_DIFFUSION_KREA2_TEXT_CACHE=0`` runs them every step again.
+Entries live for one render (cleared by Studio's generate ``finally``); inputs match on identity / address and the
+version counter where one exists (inference tensors have none). Streamed modules, graph capture and tracing run
+stock. ``UNSLOTH_DIFFUSION_KREA2_TEXT_CACHE=0`` disables.
 """
 
 from __future__ import annotations
@@ -28,11 +18,10 @@ TEXT_CACHE_ENV = "UNSLOTH_DIFFUSION_KREA2_TEXT_CACHE"
 CLASS_NAME = "Krea2Transformer2DModel"
 MODULES = ("text_fusion", "txt_in", "rotary_emb")
 _INSTALLED_ATTR = "_unsloth_krea2_text_cache"
-# module -> its entries / the forward it had before install; keyed by module object (weakly), never stored on the
-# module, so a deepcopy (CFG-parallel replica) starts with neither and holds nothing of the source's
+# keyed weakly by module, never stored on it: a deepcopy (CFG-parallel replica) holds nothing of the source's
 _MEMOS: Any = weakref.WeakKeyDictionary()
 _STOCK: Any = weakref.WeakKeyDictionary()
-_MEMO_MAX = 4  # a CFG pair of this render, and the last render's
+_MEMO_MAX = 4
 _OFF = ("0", "off", "false", "no")
 STATS = {"hits": 0, "misses": 0, "stock": 0}
 
@@ -42,12 +31,10 @@ def enabled() -> bool:
 
 
 def _version(t: Any) -> Any:
-    # inference tensors have no version counter (Studio renders under inference_mode)
     return "inference" if t.is_inference() else t._version
 
 
 def _sources(args: tuple, kwargs: dict) -> Optional[tuple]:
-    """The call's inputs as (positional tensors, sorted keyword items), or None when one is not a tensor / None."""
     import torch
 
     flat = []
@@ -64,9 +51,8 @@ def _geometry(t: Any) -> tuple:
 
 
 def _key(t: Any) -> tuple:
-    """(the tensor itself, its address and geometry, version). The forward re-slices its mask every call
-    (``mask[:, None, None, :]``): a new view object, and under inference_mode one with no ``_base``. Holding the
-    earlier view keeps its storage alive, so an equal address, geometry and dtype is the same memory."""
+    # the mask is re-sliced each call (new view, no _base under inference_mode); holding the old view keeps its
+    # storage alive, so equal address + geometry means the same memory
     return (t, _geometry(t))
 
 
@@ -96,8 +82,7 @@ def _streamed(module: Any) -> bool:
 
 
 def _amp_state(flat: tuple) -> Optional[tuple]:
-    """Autocast state for the inputs' device (part of the key: an fp32 entry must not answer a bf16 autocast call);
-    None when it cannot be read (then the call runs stock)."""
+    """Part of the key: an fp32 entry must not answer a bf16 autocast call."""
     import torch
 
     device = next((t.device.type for t in flat if t is not None), "cpu")
@@ -119,14 +104,10 @@ def _uncacheable() -> bool:
 
 
 def _cached_forward(self: Any, *args: Any, **kwargs: Any) -> Any:
-    """The instance forward, bound to its module (``types.MethodType``): a deepcopy (a CFG-parallel replica) rebinds
-    it to the copy, whose memo and stock call start empty (``_MEMOS`` / ``_STOCK`` are keyed by module object), so a
-    replica never reaches the source module or its card."""
     import torch
 
     if torch.compiler.is_compiling():
-        # first, before any Python state is read or written: a counter or memo touched here becomes a Dynamo guard
-        # that fails on every call (one recompile per step)
+        # before touching any Python state: it would become a Dynamo guard failing every step
         return type(self).forward(self, *args, **kwargs)
     held_stock = _STOCK.get(self)
     if held_stock is None:
@@ -164,12 +145,10 @@ _cached_forward._unsloth_krea2_text_cache = True
 
 
 def _wrap(module: Any, stock: Any) -> Any:
-    """``module``'s cached forward around ``stock`` (the forward it had: the class one, or an earlier override)."""
     import types
-
     if isinstance(stock, types.MethodType):
         if stock.__self__ is module and stock.__func__ is not type(module).forward:
-            # an earlier bound override: its function only, rebound per call, so the table never holds the module
+            # store the function only so the table never holds the module
             _STOCK[module] = ("method", stock.__func__)
     elif stock is not None:
         _STOCK[module] = ("plain", stock)
@@ -181,7 +160,6 @@ def installed(transformer: Any) -> bool:
 
 
 def install(transformer: Any, logger: Any = None) -> bool:
-    """Per transformer instance: wrap each module's forward (the instance attribute, inside any hooks it carries)."""
     if type(transformer).__name__ != CLASS_NAME or not enabled():
         return False
     if installed(transformer):
@@ -211,9 +189,7 @@ def clear(transformer: Any) -> None:
 
 
 def end_render(pipe: Any) -> None:
-    """Drop every entry when a render ends (Studio's generate ``finally``): an entry never outlives its request, so a
-    later in-place edit of an inference-mode prompt tensor (no version counter) cannot be answered from the cache.
-    Never raises."""
+    """Never raises; inference-mode prompt tensors have no version counter, so entries must not outlive a render."""
     try:
         transformer = getattr(pipe, "transformer", None)
         if installed(transformer):

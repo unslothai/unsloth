@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Krea 2 text fusion / text projection / rotary table once per prompt (diffusion_krea2_text_cache): a tiny random
-Krea2Transformer2DModel on CPU, stepped like the pipeline (same text tensors every step, new latents and timestep),
-with and without the text trim, CFG pairs, inference mode; bit-identical outputs, one fusion run per prompt."""
+"""diffusion_krea2_text_cache on a tiny CPU Krea2Transformer2DModel: bit-identical, one fusion run per prompt."""
 
 from __future__ import annotations
 
@@ -136,7 +134,7 @@ def test_switch_off_and_new_prompt_recompute(monkeypatch):
         assert tc.install(model)
         a, b = _branch(1, 12), _branch(3, 20)
         _render(model, [a], steps = 2)
-        _render(model, [b], steps = 2)  # a new prompt: its own entry
+        _render(model, [b], steps = 2)
         assert calls["text_fusion"] == 2
         monkeypatch.setenv(tc.TEXT_CACHE_ENV, "0")
         _render(model, [b], steps = 2)
@@ -150,7 +148,7 @@ def test_in_place_edit_of_the_prompt_recomputes():
         assert tc.install(model)
         b = _branch(1, 12)
         first = _render(model, [b], steps = 1)
-        b["encoder_hidden_states"].mul_(2.0)  # the same object, new values
+        b["encoder_hidden_states"].mul_(2.0)
         again = _render(model, [b], steps = 1)
     assert calls["text_fusion"] == 2 and not torch.equal(first[0], again[0])
 
@@ -193,8 +191,7 @@ def _projection():
 
 
 def test_compiled_caller_traces_once():
-    """Under a compile the wrapper must touch no Python state before handing off: a counter bumped inside the trace
-    became a guard that failed on every call (one graph per call)."""
+    """State touched inside the trace became a guard failing every call."""
     from torch._dynamo.utils import counters
 
     proj = _projection()
@@ -220,18 +217,17 @@ def test_autocast_dtype_is_part_of_the_key():
             want = proj(x)
             got = wrapped(x)
         assert got.dtype == want.dtype == torch.bfloat16 and torch.equal(got, want)
-        assert wrapped(x).dtype == torch.float32  # the fp32 entry still answers fp32 calls
+        assert wrapped(x).dtype == torch.float32
 
 
 def test_entries_end_with_the_render():
-    """Inference tensors have no version counter: an in-place edit after a render must not be answered from the cache
-    (Studio's generate calls end_render in its finally)."""
+    """Inference tensors have no version counter: end_render must drop entries."""
     with torch.inference_mode():
         model = _model()
         assert tc.install(model)
         x = torch.randn(2, 5, 32)
         first = model.txt_in(x)
-        assert torch.equal(model.txt_in(x), first)  # same render: cached
+        assert torch.equal(model.txt_in(x), first)
         tc.end_render(_Pipe(model))
         x.zero_()
         want = type(model.txt_in).forward(model.txt_in, x)
@@ -247,8 +243,7 @@ def test_generate_ends_the_text_cache_render():
 
 
 def test_cfg_parallel_keeps_krea2_with_the_cache_installed():
-    """The cached forward is a bound method holding nothing of its module: CFG-parallel's replica check accepts it
-    (a closure over the module and its stock method read as an unportable instance override and declined)."""
+    """A closure over the module was declined by CFG-parallel's replica check; a bound method is accepted."""
     from core.inference import diffusion_multigpu as mg
 
     model = _model()
@@ -278,4 +273,4 @@ def test_replica_rebinds_and_starts_empty():
         got = _render(replica, [b], steps = 2)
     for a, c in zip(want, got):
         assert torch.equal(a, c)
-    assert tc.STATS["hits"] > hits  # the replica caches on its own entries
+    assert tc.STATS["hits"] > hits
