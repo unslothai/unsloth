@@ -1380,8 +1380,8 @@ _HUB_LISTING_MAX = 256
 _hub_listings: dict[tuple, tuple[float, object]] = {}
 _hub_rate_limited: dict[tuple, tuple[float, BaseException]] = {}
 _hub_listing_lock = threading.Lock()
-# Listings the caller's own credential answered (not an anonymous retry after a refusal), by id:
-# ModelInfo is an unhashable dataclass.
+# Listings answered by the caller's own credential; an anonymous retry may see a different repo state, so
+# only these seed the arch. Keyed by id + weakref identity check: ModelInfo is unhashable and ids get reused.
 _hub_token_answers: dict[int, "weakref.ref"] = {}
 
 
@@ -1393,7 +1393,7 @@ def hub_model_info_from_token(info) -> bool:
 
 
 def _note_token_answer(info) -> None:
-    """Records ``info`` for hub_model_info_from_token; the caller holds _hub_listing_lock."""
+    # Caller holds _hub_listing_lock.
     try:
         _hub_token_answers[id(info)] = weakref.ref(info)
     except TypeError:

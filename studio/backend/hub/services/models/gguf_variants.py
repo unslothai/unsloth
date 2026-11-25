@@ -1527,8 +1527,7 @@ def _hub_repo_architecture(repo_id: str, hf_token: Optional[str]) -> Optional[st
 
 
 def _seed_listing_architecture(repo_id: str, hf_token: Optional[str], info) -> Optional[str]:
-    """Caches ``gguf.architecture`` from this request's own listing, the answer
-    ``_hub_repo_architecture`` would fetch: same repo, same credential, no anonymous retry."""
+    """Caches ``gguf.architecture`` from this request's own listing (same repo + credential), skipping a fetch."""
     if info is None or not (hf_token is None or (isinstance(hf_token, str) and hf_token)):
         return None
     if str(getattr(info, "id", "") or "").lower() != repo_id.lower():
@@ -1608,8 +1607,7 @@ async def _with_lookup_tables(
     local_path: Optional[str] = None,
     listing_info = None,
 ) -> "VariantsAnswer":
-    """``answer`` with ``lookup_table_bytes`` filled per variant. ``listing_info`` is the
-    model_info this request listed with, when it did."""
+    """``answer`` with ``lookup_table_bytes`` filled per variant."""
     try:
         from core.inference.lookup_tables import LAZY_READ_AUTO_MIN_BYTES
         from hub.utils.gguf_lookup_tables import (
@@ -1667,7 +1665,6 @@ async def _with_lookup_tables(
                             for _i, v in unresolved
                         )
                     ):
-                        # This request's own listing carries it: no second round trip.
                         arch = _seed_listing_architecture(repo_id, hf_token, listing_info)
                         if arch is None:
                             arch = await _lookup_await_once(
