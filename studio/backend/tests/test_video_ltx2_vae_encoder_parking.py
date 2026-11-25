@@ -199,3 +199,39 @@ def test_an_image_conditioned_request_keeps_the_encoder_on_the_card_for_the_requ
     assert _encoder_device(vae, card) == "cpu"
     # tiers that never park: nothing to count
     assert L.unpark_ltx2_vae_encoder(pipe, "none") == 0
+
+
+def test_a_request_wide_onload_that_fails_partway_leaves_the_encoder_whole_on_the_host(monkeypatch):
+    """An OOM on the second child of the image-conditioned request's move: the encoder must not stay split (the encode
+    wrapper would then skip its move and fail on mixed devices); it goes back to the host and moves per call."""
+    vae = AutoencoderKLLTX2Video()
+    vae.encoder = torch.nn.Sequential(torch.nn.Linear(4, 4), torch.nn.Linear(4, 4))
+    where: dict[int, str] = {}
+    real_to = torch.nn.Module.to
+    fail = {"armed": False, "n": 0}
+
+    def to(self, *args, **kwargs):
+        target = str(args[0] if args else kwargs.get("device"))
+        for m in self.modules():
+            if target != "cpu" and fail["armed"] and isinstance(m, torch.nn.Linear):
+                fail["n"] += 1
+                if fail["n"] == 2:
+                    raise torch.OutOfMemoryError("injected on the second child")
+            where[id(m)] = target
+        return real_to(self, "cpu")
+
+    monkeypatch.setattr(torch.nn.Module, "to", to)
+    monkeypatch.setattr(
+        L,
+        "_module_device",
+        lambda m: torch.device(where.get(id(m), "cuda:0")) if m is not None else None,
+    )
+    pipe = types.SimpleNamespace(vae = vae)
+    L.park_ltx2_vae_encoder(pipe, "streaming")
+    fail["armed"] = True
+    assert L.unpark_ltx2_vae_encoder(pipe, "streaming") == 0  # 2 tiny Linears: under 1 MiB
+    assert {where[id(m)] for m in vae.encoder} == {"cpu"}
+    # the per-call wrapper still sees a parked encoder: it moves the whole encoder and sends it back
+    fail["armed"] = False
+    vae.encode(torch.randn(1, 4))
+    assert {where[id(m)] for m in vae.encoder} == {"cpu"}

@@ -1931,6 +1931,31 @@ def release_prompt_rows_enabled() -> bool:
     )
 
 
+_RELEASE_SUPPORTED: list = []
+
+
+def prompt_rows_release_supported() -> bool:
+    """Whether this torch can tell a tensor is alone on its storage (the binding ``_release_rows`` needs), probed once;
+    without it nothing is released."""
+    if not _RELEASE_SUPPORTED:
+        try:
+            import torch
+
+            probe = torch.zeros(4)
+            alone = torch._C._storage_Use_Count(probe.untyped_storage()._cdata)
+            alias = probe.detach()
+            shared = torch._C._storage_Use_Count(probe.untyped_storage()._cdata)
+            del alias
+            _RELEASE_SUPPORTED.append(alone == 2 and shared == 3)
+        except Exception:  # noqa: BLE001 -- absent (torch 2.4 / 2.6) or changed: no release
+            _RELEASE_SUPPORTED.append(False)
+    return bool(_RELEASE_SUPPORTED[0])
+
+
+# Set on the connectors when a release freed less than both prompt copies: the measured denoise price stops applying.
+RELEASE_SHORT_ATTR = "_unsloth_prompt_rows_release_short"
+
+
 def _release_rows(t: Any, like: Any) -> int:
     """Free ``t``'s storage (its metadata stays: dtype, shape) when it is a whole prompt tensor shaped like ``like``
     and the only tensor on its storage (no view, ``detach()`` alias or other tensor shares it); the bytes freed,
@@ -1943,6 +1968,8 @@ def _release_rows(t: Any, like: Any) -> int:
             or t._base is not None
             or t.storage_offset() != 0
         ):
+            return 0
+        if not prompt_rows_release_supported():
             return 0
         storage = t.untyped_storage()
         nbytes = int(storage.nbytes())
@@ -2035,10 +2062,14 @@ def reuse_connector_outputs(runner: Any):
                 rows = [args[0]]
                 if isinstance(kept, tuple) and kept and isinstance(kept[0], torch.Tensor):
                     rows.append(kept[0])
+                expected = sum(_tensor_bytes(t) for t in {id(t): t for t in rows}.values())
                 freed = sum(_release_rows(t, args[0]) for t in rows)
                 if freed:
                     released.add(source)
                     CONDITIONING_STATS["released_rows_bytes"] += freed
+                if freed < expected:
+                    # kept rows (shared storage, no binding): later requests on this load pay the base overhead
+                    connectors.__dict__[RELEASE_SHORT_ATTR] = True
         return out
 
     runner.encode_prompt = encode_prompt

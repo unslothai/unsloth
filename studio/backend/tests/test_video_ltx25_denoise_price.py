@@ -39,6 +39,8 @@ def _env(monkeypatch):
     ):
         monkeypatch.delenv(env, raising = False)
     monkeypatch.setattr(v25, "two_stage_enabled", lambda: True)
+    monkeypatch.setattr(V.sys if hasattr(V, "sys") else __import__("sys"), "platform", "linux")
+    monkeypatch.setattr(torch.version, "hip", None, raising = False)
 
 
 class AutoencoderKLLTX2Video(torch.nn.Module):
@@ -56,7 +58,9 @@ def _state(**overrides):
         vae_spatial_compression_ratio = 32,
         vae_temporal_compression_ratio = 8,
     )
-    state = types.SimpleNamespace(pipe = pipe, offload_policy = "streaming", transformer_quant = "int8")
+    state = types.SimpleNamespace(
+        pipe = pipe, offload_policy = "streaming", transformer_quant = "int8", device = "cuda"
+    )
     for k, v in overrides.items():
         setattr(state, k, v)
     return state
@@ -216,3 +220,59 @@ def test_the_measured_peak_key_names_the_engaged_levers(monkeypatch):
     state.pipe.connectors = types.SimpleNamespace()
     # nothing engaged: no entry, so the key (and its peaks) is the one a load without the levers always had
     assert V._memory_levers_key(state) == {}
+
+
+@pytest.fixture
+def no_release_binding(monkeypatch):
+    monkeypatch.setattr(v25, "_RELEASE_SUPPORTED", [])
+    monkeypatch.delattr(torch._C, "_storage_Use_Count")
+    yield
+    v25._RELEASE_SUPPORTED.clear()
+
+
+def test_without_the_storage_binding_nothing_is_released_and_nothing_is_discounted(
+    no_release_binding,
+):
+    """torch 2.4 / 2.6 lack ``_storage_Use_Count``: the rows stay allocated, so the measured price must not apply."""
+    assert not v25.prompt_rows_release_supported()
+    rows = torch.zeros(4, 8)
+    assert (
+        v25._release_rows(rows, rows) == 0 and rows.untyped_storage().nbytes() == rows.numel() * 4
+    )
+    shape = (768, 512, 49)
+    assert _price(_state(), shape) is None
+    assert _guard(shape, _price(_state(), shape)) is not None
+    state = _state()
+    state.pipe._unsloth_ltx25_encoder = object()
+    assert "released_prompt_rows" not in V._memory_levers_key(state).get("memory_levers", "")
+
+
+def test_a_release_that_fell_short_stops_the_discount_for_the_load():
+    state = _state()
+    assert _price(state, (768, 512, 49)) is not None
+    setattr(state.pipe.connectors, v25.RELEASE_SHORT_ATTR, True)
+    assert _price(state, (768, 512, 49)) is None
+
+
+@pytest.mark.parametrize("where", ["windows", "rocm", "xpu"])
+def test_the_allowance_outside_the_allocator_applies_only_where_it_was_measured(where, monkeypatch):
+    state = _state()
+    if where == "windows":
+        monkeypatch.setattr(__import__("sys"), "platform", "win32")
+    elif where == "rocm":
+        monkeypatch.setattr(torch.version, "hip", "6.4", raising = False)
+    else:
+        state.device = "xpu"
+    assert _price(state, (768, 512, 49)) is None
+
+
+@pytest.mark.parametrize("why", ["one_stage", "dev"])
+def test_the_peak_key_names_released_rows_only_where_they_are_released(why, monkeypatch):
+    state = _state()
+    state.pipe._unsloth_ltx25_encoder = object()
+    assert "released_prompt_rows" in V._memory_levers_key(state)["memory_levers"]
+    if why == "one_stage":
+        monkeypatch.setattr(v25, "two_stage_enabled", lambda: False)
+    else:
+        state.pipe._unsloth_ltx25_dev = True
+    assert "released_prompt_rows" not in V._memory_levers_key(state)["memory_levers"]

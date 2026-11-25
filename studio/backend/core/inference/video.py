@@ -6148,8 +6148,11 @@ def _video_tiled_decode_mib(
     frames: Optional[int],
     available_mib: int,
     device: Any = None,
+    decode_floor_mib: Optional[int] = None,
 ) -> Optional[int]:
     """The request guard's decode-phase price above the decode-phase weights (LTX-2 wide tiles), or None (flat estimate).
+    ``decode_floor_mib``: the decode-phase weights this request holds (the request guard's own figure, e.g. with an
+    image-conditioned request's VAE encoder), so they are not charged a second time as credit beyond the room.
     Priced at the tile the decode takes with the room the live tiler reads (driver free + reusable cache, CUDA graph
     pools excluded, less the VRAM Budget reserve); whatever ``available_mib`` credits beyond that room (graph pools,
     groups still resident) is charged to the decode too, so the guard admits it only when the tile fits that room."""
@@ -6162,7 +6165,9 @@ def _video_tiled_decode_mib(
         return None
     if not (width and height and frames):
         return None
-    decode_floor = getattr(state, "vram_decode_floor_mib", None)
+    decode_floor = decode_floor_mib
+    if decode_floor is None:
+        decode_floor = getattr(state, "vram_decode_floor_mib", None)
     if decode_floor is None:
         decode_floor = getattr(state, "vram_floor_mib", None)
     if decode_floor is None:
@@ -6245,7 +6250,9 @@ def _ltx25_denoise_price_mib(
 
         from .video_ltx2 import _LTX2_LEAN_CONNECTOR_ATTR, ltx2_vae_encoder_parks
         from .video_ltx25 import (
+            RELEASE_SHORT_ATTR,
             compact_conditioning_enabled,
+            prompt_rows_release_supported,
             release_prompt_rows_enabled,
             two_stage_enabled,
         )
@@ -6258,7 +6265,23 @@ def _ltx25_denoise_price_mib(
         if not getattr(connectors, _LTX2_LEAN_CONNECTOR_ATTR, False):
             return None
         if not (
-            two_stage_enabled() and compact_conditioning_enabled() and release_prompt_rows_enabled()
+            two_stage_enabled()
+            and compact_conditioning_enabled()
+            and release_prompt_rows_enabled()
+            and prompt_rows_release_supported()
+        ):
+            return None
+        if getattr(connectors, RELEASE_SHORT_ATTR, False):
+            return None
+        # the allowance outside the allocator was measured on Linux CUDA (Colab G4)
+        import sys
+
+        import torch
+
+        if (
+            not sys.platform.startswith("linux")
+            or getattr(torch.version, "hip", None)
+            or not str(getattr(state, "device", "") or "").startswith("cuda")
         ):
             return None
         if vae is None or not ltx2_vae_encoder_parks(vae, state.offload_policy):
@@ -15830,6 +15853,7 @@ class VideoBackend:
                             frames = frames,
                             available_mib = int(available_bytes // (1024 * 1024)),
                             device = device_obj,
+                            decode_floor_mib = request_decode_floor_mib,
                         ),
                         denoise_mib = _ltx25_denoise_price_mib(
                             state,

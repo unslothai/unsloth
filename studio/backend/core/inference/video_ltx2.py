@@ -1413,6 +1413,19 @@ def _module_device(module: Any) -> Any:
     return None if first is None else first.device
 
 
+def _module_devices(module: Any) -> set:
+    """Every device ``module``'s submodules hold parameters on: a move that failed partway leaves more than one."""
+    devices = set()
+    for sub in module.modules():
+        own = next(iter(sub.parameters(recurse = False)), None)
+        if own is None:
+            own = next(iter(sub.buffers(recurse = False)), None)
+        if own is not None:
+            device = _module_device(sub)
+            devices.add(own.device if device is None else device)
+    return devices
+
+
 def park_ltx2_vae_encoder(
     pipe: Any,
     offload_policy: Any,
@@ -1435,8 +1448,9 @@ def park_ltx2_vae_encoder(
 
             def encode(*args: Any, **kwargs: Any) -> Any:
                 target = vae.__dict__.get(_LTX2_ENCODER_HOME)
-                here = _module_device(encoder)
-                moved = target is not None and here is not None and here != target
+                devices = _module_devices(encoder)
+                # parked (or split by a failed move): onto the card for the call, back to the host after
+                moved = target is not None and bool(devices) and devices != {target}
                 try:
                     if moved:
                         encoder.to(target)
@@ -1444,12 +1458,12 @@ def park_ltx2_vae_encoder(
                 finally:
                     if moved:
                         # also after a partial onload: the whole encoder goes back to the host
-                        encoder.to(here)
+                        encoder.to("cpu")
 
             vae.encode = encode
             vae.__dict__[_LTX2_ENCODE_WRAPPED] = True
         vae.__dict__[_LTX2_ENCODER_HOME] = home
-        if _module_device(encoder) == torch.device("cpu"):
+        if _module_devices(encoder) == {torch.device("cpu")}:
             return 0
         moved = sum(
             int(t.numel()) * int(t.element_size())
@@ -1485,18 +1499,22 @@ def unpark_ltx2_vae_encoder(
         )
         >> 20
     )
+    home = vae.__dict__.get(_LTX2_ENCODER_HOME)
+    if home is None or _module_devices(encoder) in (set(), {home}):
+        return mib
     try:
-        home = vae.__dict__.get(_LTX2_ENCODER_HOME)
-        if home is not None and _module_device(encoder) != home:
-            encoder.to(home)
-            if logger is not None:
-                logger.info(
-                    "video.ltx2: VAE encoder (%d MiB) on the card for an image-conditioned request",
-                    mib,
-                )
+        encoder.to(home)
+    except Exception:  # noqa: BLE001 -- e.g. an OOM partway: the whole encoder back on the host, moved per call
+        try:
+            encoder.to("cpu")
+        except Exception:  # noqa: BLE001
+            pass
         return mib
-    except Exception:  # noqa: BLE001 -- the wrapper still moves it per call; the floor counts it either way
-        return mib
+    if logger is not None:
+        logger.info(
+            "video.ltx2: VAE encoder (%d MiB) on the card for an image-conditioned request", mib
+        )
+    return mib
 
 
 def ltx2_memory_levers(pipe: Any, offload_policy: Any) -> str:
@@ -1508,11 +1526,17 @@ def ltx2_memory_levers(pipe: Any, offload_policy: Any) -> str:
             levers.append("lean_connectors")
         from .video_ltx25 import compact_conditioning_enabled, release_prompt_rows_enabled
 
+        from .video_ltx25 import prompt_rows_release_supported, two_stage_enabled
+
         if (
             getattr(pipe, "_unsloth_ltx25_encoder", None) is not None
+            and not bool(getattr(pipe, "_unsloth_ltx25_dev", False))
+            and two_stage_enabled()
             and release_prompt_rows_enabled()
             and compact_conditioning_enabled()
+            and prompt_rows_release_supported()
         ):
+            # only the two-stage render releases them (CFG, which batches the rows, has its own key entry)
             levers.append("released_prompt_rows")
         vae = getattr(pipe, "vae", None)
         if vae is not None and ltx2_vae_encoder_parks(vae, offload_policy):
