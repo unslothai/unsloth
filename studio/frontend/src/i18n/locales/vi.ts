@@ -986,6 +986,13 @@ export const vi = {
     compactUnsupported:
       "Cần mô hình GGUF hoặc MLX có hỗ trợ công cụ để thu gọn",
   },
+  chatFiles: {
+    title: "Tệp trong cuộc trò chuyện này",
+    code: "Đoạn mã",
+    showInChat: "Hiển thị trong cuộc trò chuyện",
+    download: "Tải xuống {name}",
+    saveFailed: "Không thể lưu {name}.",
+  },
   welcome: {
     goodToSeeYou: "Rất vui được gặp bạn",
     goodToSeeYouName: "Rất vui được gặp bạn, {name}",

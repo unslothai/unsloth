@@ -984,6 +984,13 @@ export const id = {
     compactUnsupported:
       "Pemadatan memerlukan model GGUF atau MLX yang mendukung alat",
   },
+  chatFiles: {
+    title: "File di obrolan ini",
+    code: "Cuplikan kode",
+    showInChat: "Tampilkan di obrolan",
+    download: "Unduh {name}",
+    saveFailed: "Tidak dapat menyimpan {name}.",
+  },
   welcome: {
     goodToSeeYou: "Senang bertemu Anda",
     goodToSeeYouName: "Senang bertemu Anda, {name}",

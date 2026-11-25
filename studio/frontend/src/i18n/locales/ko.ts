@@ -887,6 +887,13 @@ export const ko = {
     compactEmpty: "아직 압축할 내용이 없습니다",
     compactUnsupported: "대화 압축에는 도구를 지원하는 GGUF 또는 MLX 모델이 필요합니다",
   },
+  chatFiles: {
+    title: "이 채팅의 파일",
+    code: "코드 스니펫",
+    showInChat: "채팅에서 보기",
+    download: "{name} 다운로드",
+    saveFailed: "{name}을(를) 저장할 수 없습니다.",
+  },
   welcome: {
     goodToSeeYou: "반가워요",
     goodToSeeYouName: "{name}님, 반가워요",
