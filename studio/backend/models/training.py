@@ -817,28 +817,31 @@ class TrainingStartRequest(BaseModel):
 
 
 class ParallelPlanRequest(BaseModel):
-    """POST /api/train/parallel/plan: the /start fields the multi-GPU plan reads."""
+    """POST /api/train/parallel/plan: the /start fields the multi-GPU plan reads, with /start's defaults."""
 
     model_name: str = Field(..., max_length = 512)
-    training_type: str = "LoRA/QLoRA"
-    load_in_4bit: bool = True
-    batch_size: int = Field(4, ge = 1)
-    max_seq_length: int = Field(2048, ge = 1)
-    lora_r: int = Field(16, ge = 1)
+    training_type: Literal["LoRA/QLoRA", "Full Finetuning", "Continued Pretraining"] = "LoRA/QLoRA"
+    load_in_4bit: bool = TrainingStartRequest.model_fields["load_in_4bit"].default
+    batch_size: int = Field(TrainingStartRequest.model_fields["batch_size"].default, ge = 1)
+    max_seq_length: int = Field(TrainingStartRequest.model_fields["max_seq_length"].default, ge = 1)
+    lora_r: int = Field(TrainingStartRequest.model_fields["lora_r"].default, ge = 1)
     target_modules: Optional[List[str]] = None
-    gradient_checkpointing: str = "unsloth"
-    optim: str = "adamw_8bit"
+    gradient_checkpointing: str = TrainingStartRequest.model_fields[
+        "gradient_checkpointing"
+    ].default
+    optim: str = TrainingStartRequest.model_fields["optim"].default
     gpu_ids: Optional[List[int]] = None
     parallel_mode: Optional[
         Literal["auto", "single", "layer_split", "ddp", "fsdp2", "tp", "pp", "cp", "ep", "custom"]
     ] = "auto"
     parallel_spec: Optional[str] = Field(None, max_length = 200)
     offload_layers: Optional[Union[int, str]] = None
-    packing: bool = False
+    packing: bool = TrainingStartRequest.model_fields["packing"].default
     is_dataset_image: bool = False
     is_dataset_audio: bool = False
     is_embedding: bool = False
     is_decision: bool = False
+    drafter: Optional[DrafterTrainingConfig] = None
 
 
 class TrainingJobResponse(BaseModel):

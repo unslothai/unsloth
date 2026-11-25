@@ -98,6 +98,11 @@ def _output_dir_from_resume_checkpoint(resume_from_checkpoint: str | None) -> st
     return str(path.parent if path.name.startswith("checkpoint-") else path)
 
 
+def _studio_main_rank() -> bool:
+    from core.training.parallel_launch import is_main_rank
+    return is_main_rank()
+
+
 def _data_parallel_world_size() -> int:
     """Larger of env world size and CUDA device count, never the sum: distributed runs force n_gpu to 1."""
     sizes = [world_size_from_env()]
@@ -5728,8 +5733,12 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         output_dir = str(resolve_output_dir(output_dir))
         ensure_dir(Path(output_dir))
         _emit_output_dir(event_queue, output_dir)
-        # Pinned before any checkpoint, so resume reads it back rather than re-deriving it.
-        if not record_row_bound(output_dir, max_train_rows, max_train_rows_seed) and max_train_rows:
+        # Pinned before any checkpoint, so resume reads it back rather than re-deriving it (rank 0 writes it).
+        if (
+            _studio_main_rank()
+            and not record_row_bound(output_dir, max_train_rows, max_train_rows_seed)
+            and max_train_rows
+        ):
             # Not fatal, no fallback: the dataset is already bounded; a resume will read this run as unbounded.
             logger.warning(
                 f"Could not record the max_steps row bound in {output_dir}: "
@@ -5784,6 +5793,21 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         )
 
         _tqdm_stop.set()
+
+        from core.training import parallel_launch as _parallel_launch
+
+        if not _parallel_launch.is_main_rank():
+            # Ranks 1..N-1 took part in the collective save; the run's own bookkeeping is rank 0's.
+            progress = trainer.get_training_progress()
+            if progress.error:
+                event_queue.put(
+                    {"type": "error", "error": progress.error, "stack": "", "ts": time.time()}
+                )
+            return
+        if _parallel_launch.is_multi_process():
+            # Rank-local checkpoint files (tensor / pipeline parallel) are written by each rank: report the run done
+            # only once they all exited.
+            _parallel_launch.wait_for_ranks()
 
         progress = trainer.get_training_progress()
         drafter_note = ""

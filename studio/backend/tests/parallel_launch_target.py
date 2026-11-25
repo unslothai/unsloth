@@ -14,10 +14,11 @@ def train(event_queue, stop_queue, config):
     from core.training import parallel_launch
 
     # Rank 0 is started like the Studio worker; it starts the others exactly as the worker does.
-    parallel_launch.launch_ranks(config, event_queue)
+    parallel_launch.launch_ranks(config, event_queue, entry = ("parallel_launch_target", "train"))
     import torch.distributed as dist
 
-    dist.init_process_group("gloo")
+    # launch_ranks / rank_main created the group on rank 0's loopback store.
+    assert dist.is_initialized() and dist.get_world_size() == 2
     rank = dist.get_rank()
     info = {
         key: os.environ.get(key)

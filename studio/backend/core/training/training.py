@@ -368,13 +368,15 @@ def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
         "subject": values.get("subject"),
         "allow_ambient": values.get("allow_ambient", True),
         "gpu_ids": values.get("gpu_ids"),
-        "parallel": values.get("parallel"),
         "s3_config": values.get("s3_config"),
         "disable_xet": values.get("disable_xet", False),
     }
     for key in ("output_dir", "allow_external_output_dir"):
         if key in values:
             config[key] = values.get(key)
+    if values.get("parallel"):
+        # Only a start that asked for a layout carries one: older starts keep their exact worker config.
+        config["parallel"] = values["parallel"]
     if config["training_type"] == "Full Finetuning":
         config["load_in_4bit"] = False
     # The parent's detected backend: the worker's apply_gpu_ids() uses it without probing torch.
@@ -2233,6 +2235,7 @@ class TrainingBackend:
                 self.grad_norm_step_history.clear()
                 self._needs_xet_respawn = False
                 self._status_start_request_id = None
+                self.parallel_plan = None
             return "reset"
 
     def _start_stop_watchdog(

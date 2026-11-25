@@ -292,3 +292,56 @@ def test_unknown_mode():
     with pytest.raises(pp.ParallelPlanError) as err:
         pp.plan({"parallel_mode": "zero3"}, _host(2), _model())
     assert err.value.payload["code"] == "parallel_bad_spec"
+
+
+def test_duplicate_gpu_ids_are_refused():
+    with pytest.raises(pp.ParallelPlanError) as err:
+        pp.plan({"parallel_mode": "ddp", "gpu_ids": [0, 0]}, _host(2), _model())
+    assert err.value.payload["code"] == "parallel_gpu_ids"
+
+
+def test_explicit_gpus_keep_layer_split_without_multi_process():
+    # Today an explicit [0, 1] splits layers across both even when one would do; auto keeps that off Linux.
+    host = _host(2, reason = "Windows has no NCCL ...", platform = "windows")
+    plan = pp.plan({"parallel_mode": "auto", "gpu_ids": [0, 1]}, host, _model(need = 6.0))
+    assert plan["mode"] == "layer_split" and plan["gpu_ids"] == [0, 1]
+
+
+def test_custom_spec_carries_backend_and_schedule_to_core():
+    # Ring attention is refused below compute capability 8.0 (T4); Ulysses is not.
+    with pytest.raises(pp.ParallelPlanError) as err:
+        pp.plan(
+            {"parallel_mode": "custom", "parallel_spec": "cp=2,cp_backend=ring"}, _host(2), _model()
+        )
+    assert (
+        err.value.payload["code"] == "parallel_unsupported"
+        and "ring" in err.value.payload["message"]
+    )
+    assert pp.plan(
+        {"parallel_mode": "custom", "parallel_spec": "cp=2,cp_backend=ulysses"}, _host(2), _model()
+    )["spec"]
+    assert pp.plan(
+        {"parallel_mode": "custom", "parallel_spec": "pp=2,pp_schedule=gpipe"}, _host(2), _model()
+    )["spec"]
+    with pytest.raises(pp.ParallelPlanError) as err:
+        pp.plan({"parallel_mode": "custom", "parallel_spec": ","}, _host(2), _model())
+    assert err.value.payload["code"] == "parallel_bad_spec"
+
+
+def test_custom_spec_checks_installed_axes():
+    host = _host(2)
+    host["core"]["tp"] = False
+    with pytest.raises(pp.ParallelPlanError) as err:
+        pp.plan({"parallel_mode": "custom", "parallel_spec": "tp=2"}, host, _model())
+    assert err.value.payload["code"] == "parallel_mode_unavailable"
+
+
+def test_compute_capability_comes_from_the_run_gpus():
+    # A T4 (sm 7) beside two sm 8 cards: a run on the sm 8 cards is judged on sm 8.
+    gpus = [dict(_t4(0), sm = 7), dict(_t4(1), sm = 8), dict(_t4(2), sm = 8)]
+    host = _host(gpus = gpus)
+    host["sm"] = None
+    spec = {"parallel_mode": "custom", "parallel_spec": "cp=2,cp_backend=ring"}
+    with pytest.raises(pp.ParallelPlanError):
+        pp.plan({**spec, "gpu_ids": [0, 1]}, host, _model())
+    assert pp.plan({**spec, "gpu_ids": [1, 2]}, host, _model())["spec"] == "cp=2,cp_backend=ring"

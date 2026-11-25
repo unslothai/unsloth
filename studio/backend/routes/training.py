@@ -1780,12 +1780,26 @@ async def plan_parallel_training(
     from models.inference import resolve_inventory_handle
 
     values = request.model_dump()
-    values["model_name"] = resolve_inventory_handle((request.model_name or "").strip())
+    values["drafter"] = (
+        values["drafter"] if request.drafter is not None and request.drafter.enabled else None
+    )
+    name = resolve_inventory_handle((request.model_name or "").strip())
+    if not name:
+        raise HTTPException(status_code = 400, detail = "model_name is required")
+    values["model_name"] = name
     managed = managed_account()
     token = hf_token_arg(hf_token, allow_ambient_token = not (via_api_key is True or managed))
 
     def _plan():
-        return parallel_plan.plan_for_request(values, hf_token = token, inline_error = True)
+        sizing = values
+        if managed:
+            # Same rule as the training routes: a managed account reads only Hub ids or its own workspace paths.
+            try:
+                account_path(name, reference = True, shared_cache = True)
+                _authorize_cache_fallback(name)
+            except HTTPException:
+                sizing = {**values, "model_name": None}  # host-only plan, no model facts
+        return parallel_plan.plan_for_request(sizing, hf_token = token, inline_error = True)
 
     return await asyncio.to_thread(_plan)
 
@@ -2422,17 +2436,29 @@ def _parallel_plan_input(training_kwargs: dict, request) -> dict:
     return values
 
 
+def _parent_mask_takes_gpu_ids() -> bool:
+    try:
+        from utils.hardware import hardware as hw
+        return bool(hw._get_parent_visible_gpu_spec().get("supports_explicit_gpu_ids", True))
+    except Exception:  # noqa: BLE001
+        return True
+
+
 async def _plan_parallel_training(request, training_kwargs: dict, hf_token) -> None:
     """Resolve parallel_mode before any VRAM moves: a refused layout is a 400 with the contract's error object;
     an accepted one rides in training_kwargs["parallel"] to the worker (rank 0 starts the other ranks)."""
     from core.training import parallel_plan
 
-    try:
-        plan = await asyncio.to_thread(
-            parallel_plan.plan_for_request,
+    def _plan():
+        # Fresh GPU telemetry: a start must not reuse a display read cached by the capabilities route.
+        return parallel_plan.plan_for_request(
             _parallel_plan_input(training_kwargs, request),
             hf_token = hf_token,
+            host = parallel_plan.detect_host(max_age_s = 0),
         )
+
+    try:
+        plan = await asyncio.to_thread(_plan)
     except parallel_plan.ParallelPlanError as exc:
         raise HTTPException(status_code = 400, detail = exc.payload) from None
     training_kwargs["parallel"] = {
@@ -2448,8 +2474,9 @@ async def _plan_parallel_training(request, training_kwargs: dict, hf_token) -> N
             "reason",
         )
     }
-    if plan["gpu_ids"]:
-        # Multi-process ranks and an explicit single / layer split run on exactly the planned GPUs.
+    if plan["gpu_ids"] and _parent_mask_takes_gpu_ids():
+        # Multi-process ranks and an explicit single / layer split run on exactly the planned GPUs. A UUID / MIG /
+        # tile mask cannot be narrowed by id: there the ranks take every GPU it shows, which is what the plan counted.
         training_kwargs["gpu_ids"] = list(plan["gpu_ids"])
     logger.info(
         "Multi-GPU plan: mode=%s world_size=%s gpu_ids=%s spec=%s (%s)",

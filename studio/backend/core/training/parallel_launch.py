@@ -3,26 +3,29 @@
 
 """Multi-process training ranks for the Studio worker, launched the way torchrun would.
 
-The training worker Studio already spawns is rank 0. Before torch or unsloth is imported it sets the torchrun
-environment (RANK, LOCAL_RANK, WORLD_SIZE, MASTER_ADDR / MASTER_PORT on loopback) and UNSLOTH_PARALLEL, then starts
-ranks 1..N-1 as its own child processes running the same worker entry on the same config. Unsloth builds the mesh
-from that environment. Only rank 0 talks to the UI: the other ranks' events go to the log with a rank prefix.
-Stop: rank 0 broadcasts (stop, save) at every step end (`sync_stop`), so every rank leaves the loop at the same step.
-A rank that dies ends the run (rank 0 reports it); a rank whose parent is gone exits within 2 s; cancel kills the
-worker's process tree, which holds every rank.
+The training worker Studio already spawns is rank 0. Before unsloth is imported it sets the torchrun environment
+(RANK, LOCAL_RANK, WORLD_SIZE, MASTER_ADDR / MASTER_PORT) and UNSLOTH_PARALLEL, starts ranks 1..N-1 as its own child
+processes running the same worker entry on the same config, and creates the default process group on a store that
+listens on loopback only (a plain env:// store would listen on every interface). Unsloth and the Trainer reuse that
+group. Only rank 0 talks to the UI: the other ranks' events go to the log with a rank prefix.
+Stop: rank 0 broadcasts (stop, save) at every step end and once more before the final save (`sync_stop`), so every
+rank leaves the loop at the same step and takes the same save path. A rank that dies, or whose worker reports an
+error, ends the run (rank 0 reports it); a rank whose parent is gone exits; cancel kills the worker's process tree.
 """
 
 from __future__ import annotations
 
 import atexit
+import dataclasses
+import json
 import os
-import pickle
-import socket
+import re
 import subprocess
 import sys
 import threading
 import time
-from typing import Any, Optional
+from datetime import timedelta
+from typing import Any, Callable, Optional
 
 __all__ = [
     "CHILD_ENV",
@@ -30,18 +33,35 @@ __all__ = [
     "rank_main",
     "rank",
     "world_size",
+    "data_parallel_size",
     "is_main_rank",
     "is_multi_process",
     "sync_stop",
+    "wait_for_ranks",
 ]
 
 CHILD_ENV = "UNSLOTH_STUDIO_PARALLEL_RANK"  # set in ranks 1..N-1
 _WORLD_ENV = "UNSLOTH_STUDIO_PARALLEL_WORLD"  # set in every rank of a Studio multi-process run
 _PARENT_ENV = "UNSLOTH_STUDIO_PARALLEL_PARENT"
-# module:function ranks 1..N-1 run (tests point it at a small target).
-_ENTRY_ENV = "UNSLOTH_STUDIO_PARALLEL_ENTRY"
-_DEFAULT_ENTRY = "core.training.worker:run_training_process"
+# Rank 0 cleared Unsloth's compiled cache before the other ranks started; no rank clears it again.
+CACHE_CLEARED_ENV = "UNSLOTH_STUDIO_COMPILED_CACHE_CLEARED"
+TIMEOUT_ENV = "UNSLOTH_STUDIO_PARALLEL_TIMEOUT_S"
+_DEFAULT_ENTRY = ("core.training.worker", "run_training_process")
+# Layout variables UNSLOTH_PARALLEL writes; one left in the server's environment would override or conflict with it.
+_LAYOUT_ENV = (
+    "UNSLOTH_TP_SIZE",
+    "UNSLOTH_PP_SIZE",
+    "UNSLOTH_CP_SIZE",
+    "UNSLOTH_CP_BACKEND",
+    "UNSLOTH_EP_SIZE",
+    "UNSLOTH_FSDP2",
+    "UNSLOTH_FSDP2_BACKEND",
+    "UNSLOTH_PP_SCHEDULE",
+    "UNSLOTH_PP_MICROBATCHES",
+    "UNSLOTH_PARALLEL_AUTO_RESOLVED",
+)
 _HOST = "127.0.0.1"
+_MODULE_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$")
 _PROCS: list = []
 _CLOSING = threading.Event()
 
@@ -68,10 +88,27 @@ def is_main_rank() -> bool:
     return rank() == 0
 
 
-def _free_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind((_HOST, 0))
-        return s.getsockname()[1]
+def data_parallel_size() -> int:
+    """Ranks that see different rows: the world over the tensor / pipeline / context parallel sizes of the spec."""
+    world = world_size()
+    if world <= 1:
+        return 1
+    model_ranks = 1
+    for part in str(os.environ.get("UNSLOTH_PARALLEL", "")).replace(";", ",").split(","):
+        key, _, value = (x.strip().lower() for x in part.partition("="))
+        if key in ("tp", "pp", "cp", "tp_size", "pp_size", "cp_size"):
+            try:
+                model_ranks *= max(1, int(value))
+            except ValueError:
+                pass
+    return max(1, world // model_ranks)
+
+
+def _timeout() -> timedelta:
+    try:
+        return timedelta(seconds = max(60, int(os.environ.get(TIMEOUT_ENV, "") or 1800)))
+    except ValueError:
+        return timedelta(seconds = 1800)
 
 
 def _backend_dir() -> str:
@@ -126,27 +163,55 @@ def _terminate_children() -> None:
                 pass
 
 
+def wait_for_ranks(timeout: float = 600.0) -> bool:
+    """Rank 0, after its own save: let ranks 1..N-1 finish theirs (rank-local checkpoint files) and exit before the
+    run is reported done. False when one is still running at the timeout (it is stopped at exit)."""
+    deadline = time.monotonic() + timeout
+    for proc in _PROCS:
+        try:
+            proc.wait(timeout = max(0.1, deadline - time.monotonic()))
+        except Exception:  # noqa: BLE001
+            return False
+    return True
+
+
+def _group_backend(plan: dict) -> str:
+    import torch
+    import torch.distributed as dist
+
+    if (
+        plan.get("distributed_backend") in ("nccl", "rccl")
+        and torch.cuda.is_available()
+        and dist.is_nccl_available()
+    ):
+        return "nccl"  # RCCL on ROCm builds answers to the same name
+    return "gloo"
+
+
+def _jsonable(value):
+    return str(value)
+
+
 def launch_ranks(
     config: dict,
     event_queue: Any,
     *,
+    entry: tuple = _DEFAULT_ENTRY,
     python: Optional[str] = None,
 ) -> int:
-    """In rank 0, before torch / unsloth import: export the torchrun env, start ranks 1..N-1. Returns N."""
+    """In rank 0, before unsloth is imported: export the torchrun env, start ranks 1..N-1 running `entry`
+    (module, function) on the same config, join the process group with them. Returns N."""
     plan = config.get("parallel") or {}
     world = int(plan.get("world_size") or 1)
     if world <= 1 or plan.get("launcher") != "multi_process":
         return 1
     if os.environ.get(CHILD_ENV):
         return world  # ranks 1..N-1 run the same entry; only rank 0 starts ranks
-    port = _free_port()
-    os.environ.update(
-        MASTER_ADDR = _HOST,
-        MASTER_PORT = str(port),
-        **{_WORLD_ENV: str(world)},
-    )
-    os.environ.update(_rank_env(os.environ, 0, world))
-    os.environ.pop(CHILD_ENV, None)
+    module, name = entry
+    if not _MODULE_NAME.match(module) or not name.isidentifier():
+        raise ValueError(f"launch_ranks: bad entry {entry!r}")
+    for key in _LAYOUT_ENV:
+        os.environ.pop(key, None)
     if plan.get("spec"):
         os.environ["UNSLOTH_PARALLEL"] = str(plan["spec"])
     # Every rank is on this host: NCCL's bootstrap needs loopback only (a user's own NCCL_SOCKET_IFNAME wins).
@@ -159,6 +224,24 @@ def launch_ranks(
         config["output_dir"] = build_default_output_dir_name(
             config["model_name"], config.get("project_name")
         )
+    try:
+        # Each rank's load would clear the shared compiled cache, deleting modules a faster rank just wrote.
+        from utils.cache_cleanup import clear_unsloth_compiled_cache
+        clear_unsloth_compiled_cache()
+        os.environ[CACHE_CLEARED_ENV] = "1"
+    except Exception:  # noqa: BLE001 -- the load clears it as before
+        pass
+    from core.training.diffusion_ddp import _loopback_store
+
+    store, port = _loopback_store(world)
+    os.environ.update(
+        MASTER_ADDR = _HOST,
+        MASTER_PORT = str(port),
+        **{_WORLD_ENV: str(world)},
+    )
+    os.environ.update(_rank_env(os.environ, 0, world))
+    os.environ.pop(CHILD_ENV, None)
+    backend = _group_backend(plan)
     base = dict(os.environ)
     base["PYTHONPATH"] = os.pathsep.join([_backend_dir(), *filter(None, [base.get("PYTHONPATH")])])
     base[_PARENT_ENV] = str(os.getpid())
@@ -168,38 +251,47 @@ def launch_ranks(
     child_config["resolved_gpu_ids"] = None
     try:
         from utils.account_context import current_account
-        account = current_account()  # a ContextVar: a fresh interpreter would start as the owner
+        account = dataclasses.asdict(
+            current_account()
+        )  # a ContextVar: a new interpreter starts as the owner
     except Exception:  # noqa: BLE001
         account = None
-    payload = pickle.dumps({"config": child_config, "account": account})
-    for r in range(1, world):
-        env = _rank_env(base, r, world)
-        env[CHILD_ENV] = str(r)
-        proc = subprocess.Popen(
-            [
-                python or sys.executable,
-                "-c",
-                "from core.training.parallel_launch import rank_main; rank_main()",
-            ],
-            stdin = subprocess.PIPE,
-            stdout = subprocess.PIPE,
-            stderr = subprocess.STDOUT,
-            env = env,
-            cwd = os.getcwd(),
-        )
-        proc.stdin.write(payload)
-        proc.stdin.close()
-        _PROCS.append(proc)
-        threading.Thread(target = _pump, args = (proc.stdout, f"[rank {r}] "), daemon = True).start()
+    payload = json.dumps(
+        {"config": child_config, "account": account, "port": port, "backend": backend},
+        default = _jsonable,
+    ).encode("utf-8")
+    code = (
+        "from core.training.parallel_launch import rank_main; "
+        f"from {module} import {name} as _entry; rank_main(_entry)"
+    )
     atexit.register(_terminate_children)
+    try:
+        for r in range(1, world):
+            env = _rank_env(base, r, world)
+            env[CHILD_ENV] = str(r)
+            proc = subprocess.Popen(
+                [python or sys.executable, "-c", code],
+                stdin = subprocess.PIPE,
+                stdout = subprocess.PIPE,
+                stderr = subprocess.STDOUT,
+                env = env,
+                cwd = os.getcwd(),
+            )
+            _PROCS.append(proc)
+            threading.Thread(target = _pump, args = (proc.stdout, f"[rank {r}] "), daemon = True).start()
+            proc.stdin.write(payload)
+            proc.stdin.close()
+    except BaseException:
+        _terminate_children()
+        raise
 
     def _watch():
         while not _CLOSING.is_set():
             for r, proc in enumerate(_PROCS, start = 1):
-                code = proc.poll()
-                if code not in (None, 0) and not _CLOSING.is_set():
+                exit_code = proc.poll()
+                if exit_code not in (None, 0) and not _CLOSING.is_set():
                     message = (
-                        f"Multi-GPU training: rank {r} of {world} exited with code {code}; stopping the run. "
+                        f"Multi-GPU training: rank {r} of {world} exited with code {exit_code}; stopping the run. "
                         "The server log has that rank's error (lines starting with [rank "
                         f"{r}])."
                     )
@@ -216,6 +308,9 @@ def launch_ranks(
             time.sleep(0.5)
 
     threading.Thread(target = _watch, name = "studio-parallel-watch", daemon = True).start()
+    import torch.distributed as dist
+
+    dist.init_process_group(backend, store = store, rank = 0, world_size = world, timeout = _timeout())
     return world
 
 
@@ -265,8 +360,9 @@ class _NoStop:
         return None
 
 
-def rank_main() -> None:
-    """Entry of ranks 1..N-1: config from stdin, the same worker entry as rank 0, exit without NCCL teardown."""
+def rank_main(target: Callable[..., Any]) -> None:
+    """Entry of ranks 1..N-1: payload from stdin, join rank 0's process group, run `target` (the worker entry) as
+    rank 0's account, exit without NCCL teardown."""
     r = rank()
     parent = int(os.environ.get(_PARENT_ENV, "0") or 0)
 
@@ -285,20 +381,32 @@ def rank_main() -> None:
         bind_current_process_to_parent_lifetime()
     except Exception:  # noqa: BLE001 -- the parent watch above still ends an orphaned rank
         pass
-    payload = pickle.loads(sys.stdin.buffer.read())
+    payload = json.loads(sys.stdin.buffer.read().decode("utf-8"))
     code = 0
     sink = _RankEvents(r)
     try:
-        module, _, name = (os.environ.get(_ENTRY_ENV) or _DEFAULT_ENTRY).partition(":")
+        import torch.distributed as dist
+
+        store = dist.TCPStore(
+            _HOST, int(payload["port"]), world_size(), is_master = False, timeout = _timeout()
+        )
+        dist.init_process_group(
+            payload["backend"], store = store, rank = r, world_size = world_size(), timeout = _timeout()
+        )
         kwargs = {"event_queue": sink, "stop_queue": _NoStop(), "config": payload["config"]}
         account = payload.get("account")
-        if account is not None:
+        if account:
             # Rank 0's account, as account_process_spec runs rank 0: same storage roots, same credential scrub.
             from core.training.account_jobs import run_account_child
-            run_account_child(account = account, job_module = module, job_target = name, **kwargs)
+            from utils.account_context import AccountContext
+            run_account_child(
+                account = AccountContext(**account),
+                job_module = target.__module__,
+                job_target = target.__name__,
+                **kwargs,
+            )
         else:
-            import importlib
-            getattr(importlib.import_module(module), name)(**kwargs)
+            target(**kwargs)
     except BaseException:  # noqa: BLE001
         import traceback
         traceback.print_exc()
@@ -312,24 +420,26 @@ def rank_main() -> None:
 
 
 def sync_stop(should_stop: bool, save_on_stop: bool) -> tuple:
-    """Every rank's view of rank 0's (stop, save) at this step. One 2-int broadcast; a no-op outside a Studio
-    multi-process run or before the process group exists."""
+    """Every rank's view of rank 0's (stop, save) at this point. One 2-int broadcast; a no-op outside a Studio
+    multi-process run or before the process group exists. Every rank must call it at the same point."""
     if not is_multi_process():
         return should_stop, save_on_stop
-    try:
-        import torch
-        import torch.distributed as dist
+    import torch
+    import torch.distributed as dist
 
-        if not (dist.is_available() and dist.is_initialized()):
-            return should_stop, save_on_stop
-        device = "cpu"
-        if dist.get_backend() == "nccl" and torch.cuda.is_available():
-            device = f"cuda:{torch.cuda.current_device()}"
-        flags = torch.tensor(
-            [int(bool(should_stop)), int(bool(save_on_stop))], dtype = torch.int32, device = device
-        )
-        dist.broadcast(flags, src = 0)
-        values = flags.tolist()
-        return bool(values[0]), bool(values[1])
-    except Exception:  # noqa: BLE001 -- a failed broadcast must not hide rank 0's own stop
+    if not (dist.is_available() and dist.is_initialized()):
         return should_stop, save_on_stop
+    device = "cpu"
+    if dist.get_backend() == "nccl" and torch.cuda.is_available():
+        device = f"cuda:{torch.cuda.current_device()}"
+    flags = torch.tensor(
+        [int(bool(should_stop)), int(bool(save_on_stop))], dtype = torch.int32, device = device
+    )
+    try:
+        dist.broadcast(flags, src = 0)
+    except Exception:
+        if any(proc.poll() not in (None, 0) for proc in _PROCS):
+            time.sleep(5)  # a rank died: the watcher reports which one and ends the run
+        raise
+    values = flags.tolist()
+    return bool(values[0]), bool(values[1])

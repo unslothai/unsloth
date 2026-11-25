@@ -26,7 +26,6 @@ if not dist.is_available():
 from core.training import parallel_launch
 
 _TESTS = os.path.dirname(os.path.abspath(__file__))
-_ENTRY = "parallel_launch_target:train"
 
 
 def _start(
@@ -35,7 +34,6 @@ def _start(
     target = "train",
     **extra,
 ):
-    monkeypatch.setenv(parallel_launch._ENTRY_ENV, _ENTRY)
     monkeypatch.setenv(
         "PYTHONPATH", os.pathsep.join(filter(None, [_TESTS, os.environ.get("PYTHONPATH")]))
     )

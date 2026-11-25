@@ -166,24 +166,36 @@ def _gpu_rows() -> list:
             names = [row[3] if row else None for row in (nvidia.get_cuda_device_info() or [])]
         except Exception:  # noqa: BLE001
             names = []
+    try:
+        # Cards the installed torch has no kernels for (ROCm), as the legacy auto selection drops them.
+        uncovered = (
+            set(hw.rocm_gpu_ids_without_torch_kernels()) if getattr(hw, "IS_ROCM", False) else set()
+        )
+    except Exception:  # noqa: BLE001
+        uncovered = set()
+    try:
+        from utils.hardware import nvidia
+        capabilities = {} if getattr(hw, "IS_ROCM", False) else nvidia.get_compute_capabilities()
+    except Exception:  # noqa: BLE001
+        capabilities = {}
     for ordinal, device in enumerate(devices):
         total = device.get("vram_total_gb")
         used = device.get("vram_used_gb")
-        if device.get("index") is None or total is None:
+        if device.get("index") is None or total is None or device["index"] in uncovered:
             continue
+        visible = device.get("visible_ordinal")
+        visible = ordinal if visible is None else visible
+        index = int(device["index"])
         rows.append(
             {
-                "index": int(device["index"]),
+                "index": index,
                 "name": device.get("name")
                 or device.get("gpu_name")
-                or (
-                    names[device.get("visible_ordinal", ordinal)]
-                    if device.get("visible_ordinal", ordinal) < len(names)
-                    else None
-                )
+                or (names[visible] if 0 <= visible < len(names) else None)
                 or "GPU",
                 "total_gb": round(float(total), 2),
                 "free_gb": round(max(float(total) - float(used or 0.0), 0.0), 2),
+                "sm": (capabilities.get(index) or (None,))[0],
             }
         )
     return rows
@@ -215,7 +227,6 @@ def detect_host(max_age_s: float = 5.0) -> dict:
         "gpus": gpus,
         "core": core_axes(),
         "torch": _torch_version(),
-        "sm": _sm(),
     }
     with _HOST_LOCK:
         _HOST_CACHE.update(at = time.monotonic(), value = host)
@@ -231,18 +242,10 @@ def _torch_version() -> tuple:
         return (0, 0)
 
 
-def _sm() -> Optional[int]:
-    torch = sys.modules.get("torch")
-    try:
-        if (
-            torch is not None
-            and torch.cuda.is_available()
-            and not getattr(torch.version, "hip", None)
-        ):
-            return int(torch.cuda.get_device_capability(0)[0])
-    except Exception:  # noqa: BLE001
-        pass
-    return None
+def _sm(gpus: list) -> Optional[int]:
+    """The lowest compute capability major among the run's GPUs (nvidia-smi, no CUDA context); None off NVIDIA."""
+    majors = [g.get("sm") for g in gpus if g.get("sm") is not None]
+    return min(majors) if majors else None
 
 
 # -------------------------------------------------------------------------------------------- model
@@ -374,6 +377,10 @@ def _parse_spec(raw: str, world: int) -> dict:
         raise ParallelPlanError(
             "parallel_bad_spec", CUSTOM, 'Use parallel_mode "auto" instead of the spec "auto".'
         )
+    if not spec:
+        raise ParallelPlanError(
+            "parallel_bad_spec", CUSTOM, 'Custom layout needs a parallel_spec such as "dp=2,tp=2".'
+        )
     sizes = {k: int(spec.get(k, 1)) for k in ("tp", "pp", "cp")}
     sizes["ep"] = int(spec.get("ep", 1)) if not isinstance(spec.get("ep"), bool) else 1
     model_ranks = sizes["tp"] * sizes["pp"] * sizes["cp"]
@@ -394,15 +401,28 @@ def _parse_spec(raw: str, world: int) -> dict:
         )
     sizes["dp"] = dp
     sizes["fsdp"] = bool(spec.get("fsdp")) or int(spec.get("dp_shard", 1) or 1) > 1
+    # Carried to Unsloth's capability table: its rules and cells read the effective backend and schedule.
+    sizes["cp_backend"] = spec.get("cp_backend")
+    sizes["pp_schedule"] = spec.get("pp_schedule")
     return sizes
 
 
-def _core_check(sizes: dict, model: dict, host: dict, request: dict) -> None:
+def _core_check(
+    sizes: dict,
+    model: dict,
+    host: dict,
+    request: dict,
+    gpus: Optional[list] = None,
+) -> None:
     """Unsloth's capability table on what is known before load; NotImplementedError -> parallel_unsupported."""
     caps = _core_module("parallel_capabilities")
     if caps is None or not hasattr(caps, "Query"):
         return
     fields = getattr(caps.Query, "__dataclass_fields__", {})
+    cp_backend = sizes.get("cp_backend")
+    if cp_backend == "auto":
+        cp_backend = None
+    sm = _sm(gpus or []) if any(g.get("sm") is not None for g in gpus or []) else host.get("sm")
     values = {
         "trainer": model.get("trainer", "sft"),
         "family": model.get("family", ""),
@@ -410,7 +430,7 @@ def _core_check(sizes: dict, model: dict, host: dict, request: dict) -> None:
         "mode": model.get("mode", "lora"),
         "packing": bool(request.get("packing")),
         "torch": tuple(host.get("torch") or (0, 0)),
-        "sm": host.get("sm"),
+        "sm": sm,
         "dp": sizes["dp"],
         "tp": sizes["tp"],
         "pp": sizes["pp"],
@@ -418,10 +438,14 @@ def _core_check(sizes: dict, model: dict, host: dict, request: dict) -> None:
         "fsdp2": bool(sizes["fsdp"]),
         "moe": bool(model.get("is_moe")),
         "optim": str(request.get("optim") or "").lower(),
+        "cp_backend": cp_backend,
+        "pp_schedule": sizes.get("pp_schedule"),
     }
-    query = caps.Query(**{k: v for k, v in values.items() if k in fields})
+    query = caps.Query(**{k: v for k, v in values.items() if k in fields and v is not None})
     try:
-        caps.check(query)
+        # A context parallel backend left to "auto" is resolved from the loaded model; until then the composed-cell
+        # gate cannot tell, so only the rules and feature declarations run here and Unsloth checks the cell at load.
+        caps.check(query, cells = not (sizes["cp"] > 1 and cp_backend is None))
     except NotImplementedError as exc:
         text = str(exc)
         message, _, alternative = text.partition(" Instead: ")
@@ -441,6 +465,10 @@ def _usable_gpus(host: dict, gpu_ids: Optional[list]) -> list:
     rows = list(host.get("gpus") or [])
     if not gpu_ids:
         return rows
+    if len(set(gpu_ids)) != len(gpu_ids):
+        raise ParallelPlanError(
+            "parallel_gpu_ids", None, f"gpu_ids {list(gpu_ids)} names a GPU twice."
+        )
     by_index = {g["index"]: g for g in rows}
     missing = [i for i in gpu_ids if i not in by_index]
     if missing:
@@ -452,8 +480,9 @@ def _usable_gpus(host: dict, gpu_ids: Optional[list]) -> list:
     return [by_index[i] for i in gpu_ids]
 
 
-def _mode_rows(host: dict, model: Optional[dict], request: dict, n_gpus: int) -> list:
+def _mode_rows(host: dict, model: Optional[dict], request: dict, gpus: list) -> list:
     """Per mode: can it run here (and, with a model, for this model)."""
+    n_gpus = len(gpus)
     rows = []
     multi_reason = host.get("multi_process_reason")
     feature = _single_process_feature(request)
@@ -477,10 +506,15 @@ def _mode_rows(host: dict, model: Optional[dict], request: dict, n_gpus: int) ->
         min_gpus = 1 if mode in (AUTO, SINGLE) else 2
         if reason is None and min_gpus > 1 and n_gpus < min_gpus:
             reason = f"Needs at least {min_gpus} GPUs; {n_gpus} usable."
-        if reason is None and model is not None and mode in (TP, PP, CP, EP, FSDP2) and n_gpus >= 2:
+        if (
+            reason is None
+            and model is not None
+            and mode in (DDP, TP, PP, CP, EP, FSDP2)
+            and n_gpus >= 2
+        ):
             try:
                 _core_check(
-                    _sizes_for(mode, n_gpus), model, host, {**request, "parallel_mode": mode}
+                    _sizes_for(mode, n_gpus), model, host, {**request, "parallel_mode": mode}, gpus
                 )
             except ParallelPlanError as exc:
                 reason = exc.payload["message"]
@@ -557,7 +591,7 @@ def plan(request: dict, host: dict, model: Optional[dict]) -> dict:
             "estimate": {"required_gb": need, "per_gpu_gb": _estimate_row(model, n or 1)},
             "is_moe": bool(model.get("is_moe")),
             "warnings": warnings,
-            "modes": _mode_rows(host, model or None, request, len(gpus)),
+            "modes": _mode_rows(host, model or None, request, gpus),
             "error": None,
         }
 
@@ -565,11 +599,11 @@ def plan(request: dict, host: dict, model: Optional[dict]) -> dict:
         # Today's behaviour: explicit gpu_ids as given; otherwise the start-time auto selection (the fewest GPUs that
         # fit, layers split when that is more than one) still picks, so gpu_ids stays unset.
         chosen = gpus if gpu_ids else []
-        if (
-            len(gpus) <= 1
-            or (gpu_ids and len(gpu_ids) == 1)
-            or (need is not None and _fits(need, gpus[:1]))
-        ):
+        if gpu_ids and len(gpu_ids) > 1:
+            # Explicit ids are used exactly, layers split across them even when fewer would do (prepare_gpu_selection).
+            return _result(LAYER_SPLIT, chosen, why + " Layers are split across the chosen GPUs.")
+        freest = sorted(gpus, key = lambda g: -g["free_gb"])[:1]
+        if len(gpus) <= 1 or gpu_ids or (need is not None and _fits(need, freest)):
             return _result(SINGLE, chosen[:1], why)
         return _result(
             LAYER_SPLIT,
@@ -586,7 +620,7 @@ def plan(request: dict, host: dict, model: Optional[dict]) -> dict:
         if model.get("is_moe") and core.get(EP):
             try:
                 _core_check(
-                    _sizes_for(EP, len(gpus)), model, host, {**request, "parallel_mode": EP}
+                    _sizes_for(EP, len(gpus)), model, host, {**request, "parallel_mode": EP}, gpus
                 )
                 return _result(
                     EP,
@@ -599,17 +633,27 @@ def plan(request: dict, host: dict, model: Optional[dict]) -> dict:
         if need is None:
             return _legacy("The model size could not be estimated, so Studio keeps one process.")
         if _fits(need, gpus) and core.get(DDP):
-            return _result(
-                DDP,
-                gpus,
-                f"The model needs about {need:.1f} GB per GPU and every GPU has room, so each GPU trains a full copy (DDP).",
-                _spec_for(DDP, len(gpus), None),
-            )
+            try:
+                _core_check(
+                    _sizes_for(DDP, len(gpus)), model, host, {**request, "parallel_mode": DDP}, gpus
+                )
+                return _result(
+                    DDP,
+                    gpus,
+                    f"The model needs about {need:.1f} GB per GPU and every GPU has room, so each GPU trains a full copy (DDP).",
+                    _spec_for(DDP, len(gpus), None),
+                )
+            except ParallelPlanError:
+                pass
         shard = (model.get("per_gpu_gb") or {}).get(len(gpus))
         if core.get(FSDP2) and shard is not None and _fits(shard, gpus):
             try:
                 _core_check(
-                    _sizes_for(FSDP2, len(gpus)), model, host, {**request, "parallel_mode": FSDP2}
+                    _sizes_for(FSDP2, len(gpus)),
+                    model,
+                    host,
+                    {**request, "parallel_mode": FSDP2},
+                    gpus,
                 )
                 return _result(
                     FSDP2,
@@ -692,11 +736,21 @@ def plan(request: dict, host: dict, model: Optional[dict]) -> dict:
     world = len(gpus)
     spec = _spec_for(requested, world, custom)
     sizes = _parse_spec(spec, world) if requested == CUSTOM else _sizes_for(requested, world)
-    if requested == CUSTOM and sizes.get("ep", 1) > 1 and not (host.get("core") or {}).get(EP):
-        raise ParallelPlanError(
-            "parallel_mode_unavailable", CUSTOM, "This Unsloth version has no expert parallel yet."
-        )
-    _core_check(sizes, model, host, request)
+    if requested == CUSTOM:
+        core = host.get("core") or {}
+        for axis, mode in (("ep", EP), ("tp", TP), ("pp", PP), ("cp", CP)):
+            if sizes.get(axis, 1) > 1 and not core.get(mode):
+                msg = (
+                    "This Unsloth version has no expert parallel yet."
+                    if mode == EP
+                    else f"This Unsloth version has no {_LABEL[mode]}."
+                )
+                raise ParallelPlanError("parallel_mode_unavailable", CUSTOM, msg)
+        if sizes.get("fsdp") and not core.get(FSDP2):
+            raise ParallelPlanError(
+                "parallel_mode_unavailable", CUSTOM, f"This Unsloth version has no {_LABEL[FSDP2]}."
+            )
+    _core_check(sizes, model, host, request, gpus)
     if requested == DDP and need is not None and not _fits(need, gpus):
         warnings.append(
             f"The model needs about {need:.1f} GB per GPU, which may not fit; FSDP2 shards it."
@@ -721,7 +775,7 @@ def capabilities(host: Optional[dict] = None) -> dict:
         "gpus": gpus,
         "identical_gpus": len({(g["name"], round(g["total_gb"])) for g in gpus}) <= 1,
         "core": dict(host.get("core") or {}),
-        "modes": _mode_rows(host, None, {}, len(gpus)),
+        "modes": _mode_rows(host, None, {}, gpus),
     }
 
 

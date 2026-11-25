@@ -1041,12 +1041,14 @@ class UnslothTrainer:
                 )
 
             def on_step_end(self, args, state, control, **kwargs):
+                stop = trainer_ref.should_stop
                 if _parallel_launch.is_multi_process():
-                    # Rank 0 holds the UI's stop; every rank must leave the loop at the same step.
-                    trainer_ref.should_stop, trainer_ref.save_on_stop = _parallel_launch.sync_stop(
-                        trainer_ref.should_stop, trainer_ref.save_on_stop
-                    )
-                if trainer_ref.should_stop:
+                    # Rank 0 holds the UI's stop; every rank acts on the value rank 0 sent, so all leave the loop at
+                    # the same step. A stop arriving during the broadcast stays set and is sent at the next step.
+                    stop, save = _parallel_launch.sync_stop(stop, trainer_ref.save_on_stop)
+                    if stop:
+                        trainer_ref.should_stop, trainer_ref.save_on_stop = True, save
+                if stop:
                     logger.info(f"Stop detected at step {state.global_step}\n")
                     control.should_training_stop = True
                     return control
@@ -1143,8 +1145,13 @@ class UnslothTrainer:
     ):
         """Save model after training and update progress. Used by all training branches."""
         # Trainer's own saves are collective (FSDP2 gathers on every rank) and write on rank 0; Studio's files are
-        # written by rank 0 only.
+        # written by rank 0 only. A stop that reached rank 0 after the last step must not send it down another save
+        # path than the other ranks.
         main_rank = _parallel_launch.is_main_rank()
+        if _parallel_launch.is_multi_process():
+            self.should_stop, self.save_on_stop = _parallel_launch.sync_stop(
+                self.should_stop, self.save_on_stop
+            )
         if self.should_stop and self.save_on_stop:
             self.trainer._save_checkpoint(self.trainer.model, trial = None)
             self.trainer.save_model()
@@ -1273,7 +1280,8 @@ class UnslothTrainer:
             from utils.cache_cleanup import clear_unsloth_compiled_cache
 
             _preserve = ["Unsloth*Trainer.py"] if sys.platform in ("win32", "darwin") else None
-            clear_unsloth_compiled_cache(preserve_patterns = _preserve)
+            if not os.environ.get(_parallel_launch.CACHE_CLEARED_ENV):
+                clear_unsloth_compiled_cache(preserve_patterns = _preserve)
             # Use the checked variant: it reassigns _audio_type, else the flag describes the previous probe.
             self._audio_type, self._audio_type_known = detect_audio_type_checked(
                 metadata_name,
@@ -4376,7 +4384,11 @@ class UnslothTrainer:
 
             self._update_progress(is_training = True, error = None)
 
-            if training_args.get("enable_wandb", False) and training_args.get("wandb_token"):
+            if (
+                training_args.get("enable_wandb", False)
+                and training_args.get("wandb_token")
+                and _parallel_launch.is_main_rank()
+            ):
                 os.environ["WANDB_API_KEY"] = training_args["wandb_token"]
                 import wandb
                 wandb.init(project = training_args.get("wandb_project", "unsloth-training"))
@@ -5273,7 +5285,10 @@ class UnslothTrainer:
                         num_samples = None
                 if num_samples is None:
                     num_samples = len(train_dataset_obj)
-                batch_size = training_args.get("batch_size", 2)
+                # Data parallel ranks each take batch_size rows per step.
+                batch_size = (
+                    training_args.get("batch_size", 2) * _parallel_launch.data_parallel_size()
+                )
                 total_steps = self._calculate_total_steps(
                     num_samples,
                     batch_size,
