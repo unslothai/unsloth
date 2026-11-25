@@ -4432,10 +4432,12 @@ def save_tp_adapter(model, save_directory, **kwargs):
     state = _peft_state_dict(model, **kwargs)
     rank = dist.get_rank() if dist.is_initialized() else 0
     kwargs.setdefault("is_main_process", rank == 0)
-    if kwargs["is_main_process"]:
-        model.save_pretrained(save_directory, state_dict = state, **kwargs)
-    if dist.is_initialized():
-        dist.barrier()
+
+    def write():
+        if kwargs["is_main_process"]:
+            model.save_pretrained(save_directory, state_dict = state, **kwargs)
+
+    _agree_write(write)
 
 
 # Sharded loading (v2): each rank reads only its slices of the sharded projections from the checkpoint, so the
@@ -5914,6 +5916,74 @@ def _ckpt_path(directory, rank):
     return os.path.join(directory, _CKPT_DIR, f"rank{rank:05d}.pt")
 
 
+def _atomic_torch_save(obj, path):
+    """torch.save onto `path` through a temp file in the same directory: a write that fails part-way (disk
+    full, quota, killed) leaves the previous file whole instead of truncated."""
+    import os
+
+    tmp = f"{path}.tmp{os.getpid()}"
+    try:
+        with open(tmp, "wb") as f:
+            torch.save(obj, f)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.remove(tmp)
+        raise
+    try:  # the rename itself durable; directories cannot be opened on Windows
+        fd = os.open(os.path.dirname(path) or ".", os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
+def _flag_device(group = None):
+    """The device a small int collective on `group` runs on: the accelerator for NCCL / XCCL, else the CPU."""
+    import torch.distributed as dist
+
+    backend = str(dist.get_backend(group)).lower()
+    if "nccl" in backend and torch.cuda.is_available():
+        return torch.device("cuda", torch.cuda.current_device())
+    if "xccl" in backend and hasattr(torch, "xpu") and torch.xpu.is_available():
+        return torch.device("xpu", torch.xpu.current_device())
+    return torch.device("cpu")
+
+
+def _agree_write(fn, group = None):
+    """Run this rank's write, then raise on every rank of `group` if any rank's write failed. Collective (it is
+    also the barrier after the write), so no rank waits on a peer that already raised."""
+    import torch.distributed as dist
+
+    failed, out = None, None
+    try:
+        out = fn()
+    except Exception as exc:
+        failed = exc
+    if not dist.is_initialized():
+        if failed is not None:
+            raise failed
+        return out
+    flag = torch.tensor([0 if failed is None else 1], dtype = torch.int32, device = _flag_device(group))
+    dist.all_reduce(flag, op = dist.ReduceOp.MAX, group = group)
+    if failed is not None:
+        raise RuntimeError(
+            f"Unsloth: rank {dist.get_rank()} failed to write its checkpoint state: {failed}"
+        ) from failed
+    if flag.item():
+        raise RuntimeError(
+            f"Unsloth: another rank failed to write its checkpoint state (rank {dist.get_rank()} wrote its "
+            "own); the checkpoint is incomplete, see that rank's error."
+        )
+    return out
+
+
 def _cp_width():
     from . import tp_env
     layout = tp_env._LAYOUT if tp_env._LAYOUT is not tp_env._UNSET else None
@@ -6020,7 +6090,6 @@ def _tp_save_optimizer_and_scheduler(self, output_dir):
 
     rank = dist.get_rank() if dist.is_initialized() else 0
     path = _ckpt_path(output_dir, rank)
-    os.makedirs(os.path.dirname(path), exist_ok = True)
     trainables = {
         name: (p._local_tensor if _is_dtensor(p) else p).detach()
         for name, p in self.model.named_parameters()
@@ -6034,13 +6103,17 @@ def _tp_save_optimizer_and_scheduler(self, output_dir):
         if getattr(self, "optimizer", None) is not None
         else None,
     }
-    torch.save(payload, path)
     scheduler = getattr(self, "lr_scheduler", None)
-    if self.args.should_save and scheduler is not None:
-        from transformers.trainer import SCHEDULER_NAME
-        torch.save(scheduler.state_dict(), os.path.join(output_dir, SCHEDULER_NAME))
-    if dist.is_initialized():
-        dist.barrier()  # every rank's file is on disk before the Trainer state marks the checkpoint complete
+
+    def write():
+        os.makedirs(os.path.dirname(path), exist_ok = True)
+        _atomic_torch_save(payload, path)
+        if self.args.should_save and scheduler is not None:
+            from transformers.trainer import SCHEDULER_NAME
+            _atomic_torch_save(scheduler.state_dict(), os.path.join(output_dir, SCHEDULER_NAME))
+
+    # Every rank's file is on disk (or every rank raises) before the Trainer state marks the checkpoint complete.
+    _agree_write(write)
 
 
 def _tp_resume_payload(self, checkpoint):

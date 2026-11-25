@@ -3069,37 +3069,46 @@ class PipelineParallel:
             dist.all_gather_object(parts, tables, group = self.group)
             tables = provenance.merge_provenance(parts)
         merged = self.adapter_state_dict(**kwargs)
-        if merged is not None:
-            import peft.peft_model as peft_model
 
-            selection = peft_model.get_peft_model_state_dict
+        def write():
+            if merged is not None:
+                import peft.peft_model as peft_model
 
-            def gathered(
-                model,
-                state_dict = None,
-                adapter_name = "default",
-                **unused,
-            ):
-                return merged[adapter_name]
+                selection = peft_model.get_peft_model_state_dict
 
-            kwargs.pop("state_dict", None)
-            kwargs.setdefault("is_main_process", True)
-            # PEFT's own writer (files, config, card), fed the merged selection of every stage.
-            peft_model.get_peft_model_state_dict = gathered
-            try:
-                peft_model.PeftModel.save_pretrained(self.model, save_directory, **kwargs)
-            finally:
-                peft_model.get_peft_model_state_dict = selection
-            if kwargs.get("is_main_process", True):
-                # Every stage's tables, next to each adapter PEFT wrote ("default" here, others in <name>/),
-                # replacing the writer stage's own record that PEFT's save wrote there.
-                provenance.write_adapter_provenance(
-                    self.model, save_directory, tables, kwargs.get("selected_adapters")
-                )
+                def gathered(
+                    model,
+                    state_dict = None,
+                    adapter_name = "default",
+                    **unused,
+                ):
+                    return merged[adapter_name]
+
+                kwargs.pop("state_dict", None)
+                kwargs.setdefault("is_main_process", True)
+                # PEFT's own writer (files, config, card), fed the merged selection of every stage.
+                peft_model.get_peft_model_state_dict = gathered
+                try:
+                    peft_model.PeftModel.save_pretrained(self.model, save_directory, **kwargs)
+                finally:
+                    peft_model.get_peft_model_state_dict = selection
+                if kwargs.get("is_main_process", True):
+                    # Every stage's tables, next to each adapter PEFT wrote ("default" here, others in <name>/),
+                    # replacing the writer stage's own record that PEFT's save wrote there.
+                    provenance.write_adapter_provenance(
+                        self.model, save_directory, tables, kwargs.get("selected_adapters")
+                    )
+
         if self.composed:
-            dist.barrier()
+            group = None
         elif self.num_stages > 1:
-            dist.barrier(group = self.group)
+            group = self.group
+        else:
+            return write()
+        from .tp_native import _agree_write
+
+        # Every rank raises if the writer's save failed, instead of waiting at the barrier for it.
+        _agree_write(write, group)
 
 
 def _default_activation_dtype(model, parts):
