@@ -49,9 +49,7 @@ const MAY_HOLD_CODE_RE = /```|~~~|^(?: {4}|\t)/m;
 
 type CodeBlock = { language: string | null; source: string };
 
-// Reopening a chat re-imports its messages as new objects, so the per-message cache misses and
-// every reply would be parsed again. The blocks depend only on the text: remember them by text,
-// least recently used first out, bounded by entries and by characters held (texts + sources).
+// Reopened chats re-import messages as new objects, so cache by text (LRU, bounded by entries and chars).
 export const FENCE_CACHE_MAX_ENTRIES = 1024;
 export const FENCE_CACHE_MAX_CHARS = 2_000_000;
 const fenceCache = new Map<
@@ -60,12 +58,11 @@ const fenceCache = new Map<
 >();
 let fenceCacheChars = 0;
 
-/** Test hook: cached texts, least recently used first, and characters held. */
+/** Test hook. */
 export function fenceCacheStats(): { keys: string[]; chars: number } {
   return { keys: [...fenceCache.keys()], chars: fenceCacheChars };
 }
 
-/** Test hook: drop every cached entry. */
 export function clearFenceCache(): void {
   fenceCache.clear();
   fenceCacheChars = 0;
