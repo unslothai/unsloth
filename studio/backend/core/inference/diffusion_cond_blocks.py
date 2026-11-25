@@ -9,10 +9,8 @@ not per token (any FLUX.3), UNSLOTH_DIFFUSION_FLUX3_COMPACT_MOD=0 restores per-t
 images the joint blocks take one row per span (image, references) instead of a per-token copy, bit-identical;
 UNSLOTH_DIFFUSION_FLUX3_SPAN_MOD=0 restores the per-token rows. Text-to-image renders on a resident denoiser cache the
 text stream too (its five blocks were 1.4-1.6% of a 1024^2 step on L4 / A100);
-UNSLOTH_DIFFUSION_FLUX3_TEXT_COND_CACHE=0 runs them every step again. On a resident denoiser a guided step computes its
-image prefix (embedders, modulations, RoPE, the image per-mode blocks; it depends on the latents and timestep only)
-once, before the call, and both branches reuse it, bit-identical; UNSLOTH_DIFFUSION_FLUX3_IMAGE_PREFIX=0 runs it
-inside every call again"""
+UNSLOTH_DIFFUSION_FLUX3_TEXT_COND_CACHE=0 runs them every step again. Guided steps on a resident denoiser compute the
+image prefix once and share it across both branches; UNSLOTH_DIFFUSION_FLUX3_IMAGE_PREFIX=0 disables"""
 
 from __future__ import annotations
 
@@ -215,8 +213,8 @@ def flux3_conditioning(
 def flux3_image_prefix(
     module: Any, *, hidden_states: Any, timestep: Any, img_ids: Any, compact: bool
 ) -> dict:
-    """The image half of ``Flux3Transformer2DModel.forward`` before the joint blocks, op for op. It reads only the
-    latents, the timestep and ``img_ids``, so both guidance branches of a step get the same tensors from it."""
+    """Stock image half of ``Flux3Transformer2DModel.forward`` before the joint blocks; depends only on latents,
+    timestep and ``img_ids``."""
     import torch.nn.functional as F
 
     batch_size, image_seq_len = hidden_states.shape[:2]
@@ -242,7 +240,6 @@ def flux3_image_prefix(
 
 
 def _prefix_fits(prefix: Any, hidden_states: Any) -> bool:
-    """A prefix built for this call's batch and token count (a CFG-batched call doubles the batch: stock then)."""
     states = prefix.get("image_states") if isinstance(prefix, dict) else None
     return states is not None and tuple(states.shape[:2]) == tuple(hidden_states.shape[:2])
 
@@ -313,8 +310,7 @@ def _flux3_cached_forward(
     unsloth_cond: Optional[dict] = None,
     unsloth_prefix: Optional[dict] = None,
 ) -> Any:
-    """Stock forward op for op, with precomputed ``unsloth_cond`` (and its step's ``unsloth_prefix``) and / or compact
-    modulation; else stock."""
+    """Stock forward op for op, with precomputed ``unsloth_cond`` / ``unsloth_prefix`` and / or compact modulation."""
     if isinstance(unsloth_cond, Pending):
         unsloth_cond = _claim_pending(
             self,
@@ -684,19 +680,17 @@ def _pre_hook(module: Any, args: tuple, kwargs: dict) -> Any:
 
 
 def _guided(module: Any) -> bool:
-    """This step runs both guidance branches (begin_render's probe; none: unknown, so no prefix)."""
     probe = module.__dict__.get(_GUIDED_ATTR)
     if probe is None:
         return False
     try:
         return bool(probe())
-    except Exception:  # noqa: BLE001 - unknown: keep the stock call
+    except Exception:  # noqa: BLE001
         return False
 
 
 def _version(t: Any) -> Optional[int]:
-    """In-place write counter, or None for an inference tensor (Studio renders under inference_mode): then only the
-    object identity ties the second branch to the first, as the guider passes it the same latents and timestep."""
+    """None for inference tensors (no counter): then object identity alone ties the branches."""
     try:
         return int(t._version)
     except RuntimeError:
@@ -704,8 +698,7 @@ def _version(t: Any) -> Optional[int]:
 
 
 def _step_prefix(module: Any, kwargs: dict, hidden_states: Any, stats: dict) -> Optional[dict]:
-    """The image prefix for this step: computed by the first branch's call, reused by the second (same latents,
-    timestep and ids objects, unmodified). Resident and guided steps only: a single call per step gains nothing."""
+    """Image prefix computed by the first branch, reused by the second if its inputs are the same unmodified objects."""
     if not image_prefix_enabled() or not _guided(module):
         return None
     timestep = kwargs.get("timestep")
@@ -783,8 +776,7 @@ def begin_render(
     guided: Any = None,
 ) -> bool:
     """Arm for one pipeline call. The pre-hook must stay LAST so it runs inside earlier hooks' scope (dynamic text
-    dims marks the text length dynamic for the compiled blocks). ``guided()`` says whether the current step runs
-    both guidance branches (then they share one image prefix); None: never assumed."""
+    dims marks the text length dynamic for the compiled blocks). ``guided()``: this step runs both CFG branches."""
     if transformer is None:
         return False
     clear(transformer)

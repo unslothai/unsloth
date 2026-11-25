@@ -676,7 +676,6 @@ def _guided_steps(
     uncond,
     steps = 3,
 ):
-    """Two branches per step sharing one latents / timestep object, as the modular guider calls them."""
     outs = []
     for i in range(steps):
         latents = cond["hidden_states"] * (1.0 - 0.1 * i)
@@ -700,7 +699,6 @@ def test_guided_steps_share_the_image_prefix_bitwise(refs, compact, monkeypatch)
     with torch.no_grad():
         stock = _guided_steps(model, cond, uncond)
         assert cb.prepare(model)
-        # the same cached path with the prefix inside every call: the reference under compact rows too
         monkeypatch.setenv(cb.IMAGE_PREFIX_ENV, "0")
         assert cb.begin_render(model, guided = lambda: True)
         try:
@@ -723,7 +721,6 @@ def test_guided_steps_share_the_image_prefix_bitwise(refs, compact, monkeypatch)
         if compact == "0":
             assert torch.equal(a, c)
     stats = cb.status(model)
-    # one image prefix per step: the second branch reuses the first one's
     assert (stats["prefix_misses"], stats["prefix_hits"]) == (3, 3)
     assert len(calls) == 3
     assert cb._PREFIX_ATTR not in model.__dict__ and cb._GUIDED_ATTR not in model.__dict__
@@ -758,7 +755,7 @@ def test_image_prefix_stays_per_call_when_not_shared(why, monkeypatch):
                     latents = cond["hidden_states"] * (1.0 - 0.1 * i)
                     t = torch.tensor([0.9 - 0.2 * i])
                     outs.append(model(**dict(cond, hidden_states = latents, timestep = t))[0])
-                    latents.mul_(1.0)  # an in-place write between the branches: never reuse
+                    latents.mul_(1.0)
                     outs.append(model(**dict(uncond, hidden_states = latents, timestep = t))[0])
                 cached = outs
             else:
@@ -830,8 +827,7 @@ def test_facade_probe_is_off_for_a_guidance_interval(start, stop):
 
 @pytest.mark.parametrize("stop", [1.0, 0.5])
 def test_fast_cfg_keeps_whole_forward_graph_replay(stop):
-    """Real tiny FLUX.3, diffusers guider and Studio's graph dispatcher (capture / replay stubbed on CPU), the probe
-    from the facade: every call replays (a capture replays too); none goes eager after a Fast CFG cutoff."""
+    """Real tiny FLUX.3 + guider + graph dispatcher (stubbed on CPU): no call goes eager after a Fast CFG cutoff."""
     from types import SimpleNamespace as NS
 
     diffusers = pytest.importorskip("diffusers")
