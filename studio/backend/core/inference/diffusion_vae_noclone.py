@@ -1,14 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Wan 2.2 / Qwen-Image-2.1 VAE residual blocks without the input copy (UNSLOTH_VAE_RESIDUAL_NO_CLONE=0 disables).
-
-``ResidualDownBlock.forward`` (encoder) and ``ResidualUpBlock.forward`` (decoder) start with ``x_copy = x.clone()``
-for the shortcut, but no module below writes its input in place, so the copy only holds one more full activation
-for the whole block (diffusers #15278). The fused CUDA decoder already drops it in its own up block
-(``diffusion_vae_fused._fast_wan_residual_up``) and replaces this patch there; this one covers the encoder on every
-device and the decoder wherever the fused path does not run (ROCm, MPS, CPU, fused off). Bitwise the stock output.
-Patched per instance and only when the class's ``forward`` source is a known diffusers release."""
+"""Wan 2.2 / Qwen-Image-2.1 VAE residual blocks without the redundant ``x.clone()`` (diffusers #15278); bitwise
+stock. Covers the encoder everywhere and the decoder where the fused CUDA up block does not replace it.
+UNSLOTH_VAE_RESIDUAL_NO_CLONE=0 disables; patched only when the class forward source is a known release."""
 
 from __future__ import annotations
 
@@ -52,7 +47,6 @@ def _sha(fn: Any) -> Optional[str]:
 
 
 def _kind(module: Any) -> Optional[str]:
-    """ "down" / "up" for a residual block whose class forward is a known stock release, else None."""
     cls = type(module)
     if cls not in _VERIFIED:
         name = cls.__name__
@@ -125,8 +119,7 @@ def _up_forward(block: Any) -> Any:
 
 
 def install(vae: Any, logger: Any = None) -> int:
-    """Patch ``vae``'s residual down / up blocks. Returns the number of patched blocks; idempotent. A block another
-    speed path already replaced (the fused CUDA up block) is left alone."""
+    """Patch ``vae``'s residual blocks; idempotent, skips blocks another speed path already replaced."""
     if vae is None or disabled() or not callable(getattr(vae, "modules", None)):
         return 0
     patched = 0

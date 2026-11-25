@@ -141,7 +141,7 @@ def test_kill_switch_and_foreign_forward(monkeypatch):
     vae = _tiny_wan22()
     up = next(m for m in vae.modules() if type(m).__name__.endswith("ResidualUpBlock"))
     foreign = up.forward
-    up.forward = foreign  # another speed path's instance forward (the fused CUDA up block)
+    up.forward = foreign  # e.g. the fused CUDA up block
     monkeypatch.setenv(noclone.NO_CLONE_ENV, "0")
     assert noclone.install(vae) == 0
     monkeypatch.delenv(noclone.NO_CLONE_ENV)
