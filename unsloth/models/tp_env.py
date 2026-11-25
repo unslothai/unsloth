@@ -166,10 +166,10 @@ def tensor_parallel_env_load(fn):
                 from .ep_native import ep_env_load
 
                 values = _bound(fn, args, kwargs)
-                four_bit = _four_bit(values, fn) and not _is_adapter(values)
+                sharded = not _is_adapter(values) and values.get("qat_scheme") is None
                 _DEPTH["load"] += 1
                 try:
-                    return ep_env_load(fn, args, kwargs, four_bit)
+                    return ep_env_load(fn, args, kwargs, sharded)
                 finally:
                     _DEPTH["load"] -= 1
         if layout is None or _DEPTH["load"]:
