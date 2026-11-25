@@ -6374,8 +6374,59 @@ def test_a_mixed_tensor_launch_prices_the_lazy_table(tmp_path, _moe_cache_host, 
     assert backend.last_load_warning, cmd
 
 
+@pytest.mark.parametrize(
+    "model_gib, host_gib, gpu_ids, device, fit",
+    [
+        (34, 110, None, "Vulkan1", "off"),
+        (14, 110, None, "Vulkan0", "off"),
+        (34, 12, None, "Vulkan0", "on"),
+        (34, 110, [0], "Vulkan0", "on"),
+        (34, 110, [0, 1], "Vulkan0,Vulkan1", "off"),
+    ],
+)
+def test_vulkan_auto_can_use_a_large_integrated_gpu(
+    tmp_path, monkeypatch, model_gib, host_gib, gpu_ids, device, fit
+):
+    backend, gguf = _backend(
+        tmp_path, vulkan = True, memory = [(0, 23 * 1024, 24 * 1024), (1, 99 * 1024, 0)]
+    )
+    backend._gguf_read_bytes = lambda _path, **_kw: model_gib * 1024**3
+    monkeypatch.setattr(
+        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: host_gib * 1024)
+    )
+    cmd = _launch(backend, gguf, n_ctx = 32768, gpu_ids = gpu_ids, speculative_type = "off")["cmd"]
+    assert _modes(cmd, "--device") == [device]
+    assert _modes(cmd, "--fit") == [fit]
+    if fit == "off":
+        assert _modes(cmd, "-ngl") == ["-1"]
+
+
+@pytest.mark.parametrize(
+    "second_discrete, host_weights_gib, extra_args",
+    [
+        (True, 0, []),
+        (False, 16, []),
+        (False, 0, ["--n-cpu-moe", "12"]),
+        (False, 0, ["--device", "Vulkan0"]),
+    ],
+)
+def test_vulkan_auto_keeps_the_discrete_pool(
+    tmp_path, second_discrete, host_weights_gib, extra_args
+):
+    discrete = [(0, 23 * 1024, 24 * 1024)]
+    if second_discrete:
+        discrete.append((2, 23 * 1024, 24 * 1024))
+    rows = [*discrete, (1, 99 * 1024, 0)]
+    backend, gguf = _backend(tmp_path, vulkan = True, memory = rows)
+    backend._gguf_read_bytes = lambda _path, **_kw: 34 * 1024**3
+    backend._gguf_tensor_scan = lambda _: (
+        "llama", {"token_embd.weight": host_weights_gib * 1024**3, "output.weight": 1}, 0
+    )
+    assert backend._vulkan_auto_gpu_memory(rows, str(gguf), extra_args) == discrete
+
+
 def test_a_device_list_still_sees_an_auto_filtered_vulkan_igpu(monkeypatch):
-    """Automatic Vulkan placement drops iGPUs from its candidates, so they leave _shared_gpu_ids."""
+    """An explicit device list can still name an iGPU outside the automatic placement pool."""
     import inspect
 
     off = LlamaCppBackend()._lazy_auto_resolves_off
@@ -6392,7 +6443,7 @@ def test_a_device_list_still_sees_an_auto_filtered_vulkan_igpu(monkeypatch):
     assert off(**dict(kw, extra_args = ["--device", "Vulkan0"]), integrated_gpu_ids = {1}) is False
     src = inspect.getsource(LlamaCppBackend.load_model)
     assert src.index("_vulkan_igpu_ids = (") < src.index(
-        "_gpu_mem = self._vulkan_auto_gpu_memory(_gpu_mem)"
+        "_gpu_mem = self._vulkan_auto_gpu_memory("
     )
     assert src.count("integrated_gpu_ids = _vulkan_igpu_ids") == 7
 

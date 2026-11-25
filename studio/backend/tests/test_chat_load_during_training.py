@@ -763,6 +763,32 @@ class TestChatLoadGuardRoute(unittest.TestCase):
             )
         self.assertEqual(captured[0]["vulkan_free_vram_gb"], {1: 2.0})
 
+    def test_auto_vulkan_budgets_the_large_igpu_selected_for_chat(self):
+        captured = []
+        backend = self.route.LlamaCppBackend
+        config = SimpleNamespace(is_gguf = True, gguf_file = "large.gguf")
+        with (
+            patch.object(self.route, "_classify_diffusion_gguf", return_value = False),
+            patch.object(self.route, "_estimate_gguf_required_gb", return_value = 40.0),
+            patch.object(backend, "_find_llama_server_binary", return_value = "/tmp/llama-server"),
+            patch.object(backend, "_is_vulkan_backend", return_value = True),
+            patch.object(
+                backend,
+                "_get_gpu_memory",
+                return_value = [(0, 23 * 1024, 24 * 1024), (1, 99 * 1024, 0)],
+            ),
+            patch.object(backend, "_gguf_read_bytes", return_value = 34 * 1024**3),
+            patch.object(backend, "_gguf_tensor_scan", return_value = None),
+            patch.object(backend, "_igpu_backed_usable_mib", return_value = 80 * 1024),
+        ):
+            self._guard(
+                config = config,
+                captured = captured,
+                training_active = True,
+                decision = (True, {"mode": "gguf_vulkan"}),
+            )
+        self.assertEqual(captured[0]["vulkan_free_vram_gb"], {1: 80.0})
+
     def test_unclassified_gguf_budget_depends_on_the_pin(self):
         # An unclassifiable remote GGUF may be the CUDA-only diffusion runner.
         cases = (

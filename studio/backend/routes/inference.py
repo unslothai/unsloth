@@ -17943,8 +17943,17 @@ def _guard_chat_load_against_training(
     ):
         vulkan_gpu_memory = LlamaCppBackend._get_gpu_memory(binary)
         if not requested_gpu_ids:
-            # automatic placement prefers the discrete cards, like the loader's fit
-            vulkan_gpu_memory = LlamaCppBackend._vulkan_auto_gpu_memory(vulkan_gpu_memory)
+            # Price the same device pool the GGUF loader will pin.
+            auto_model = (
+                getattr(config, "gguf_file", None)
+                if diffusion_kind is False
+                and not _guard_tensor_parallel
+                and not getattr(request, "n_cpu_moe", 0)
+                else None
+            )
+            vulkan_gpu_memory = get_llama_cpp_backend()._vulkan_auto_gpu_memory(
+                vulkan_gpu_memory, auto_model, llama_extra_args
+            )
 
     guard_tensor_parallel = _effective_tensor_parallel(
         llama_extra_args, _guard_tensor_parallel
