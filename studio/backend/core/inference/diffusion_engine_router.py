@@ -814,9 +814,8 @@ _NO_SNAPSHOT = object()
 def loaded_state_of(engine: Any) -> Any:
     """The engine's published load state (identity only), for ``note_engine_pick``'s before-load snapshot.
 
-    Held weakly: ``_pending_engine_pick`` keeps the snapshot for the whole next load, and a strong reference pinned
-    the old pipeline (its whole VRAM footprint) past ``_unload_locked``, so the new load's memory plan saw the old
-    model still resident. A state that takes no weakref (test doubles) is kept as is."""
+    Held weakly: the snapshot spans the next load, and a strong one pinned the old pipeline's VRAM past
+    ``_unload_locked``. A state that takes no weakref (test doubles) is kept as is."""
     state = getattr(engine, "_state", None)
     if state is None:
         return None

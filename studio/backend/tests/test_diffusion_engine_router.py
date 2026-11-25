@@ -804,8 +804,6 @@ class _Weakrefable:
 
 
 def test_the_pending_pick_does_not_keep_the_torn_down_state_alive():
-    # The snapshot outlives the old state's teardown (it spans the whole next load); held strongly, it pinned the old
-    # pipeline's VRAM through the new load's memory plan, which then refused an int8 U-Net that fits once it is freed.
     import gc
     import weakref
 
@@ -820,7 +818,6 @@ def test_the_pending_pick_does_not_keep_the_torn_down_state_alive():
     gc.collect()
     assert gone() is None
     assert r._pending_engine_pick is not None and r._engine_pick is None
-    # The dead snapshot still reads as "old": the next published state commits the pick.
     engine._state = _Weakrefable()
     assert r._engine_resolved(ENGINE_SD_CPP)["source"] == "explicit"
     assert r._engine_pick == ENGINE_SD_CPP
@@ -831,7 +828,6 @@ def test_a_same_state_snapshot_held_weakly_does_not_commit_early():
     r._engine_pick = None
     r._pending_engine_pick = None
     r.note_engine_pick("sd_cpp", engine, r.loaded_state_of(engine))
-    # Still the old state (the load has not torn it down or published yet).
     assert r._engine_pick is None
     assert r._engine_resolved(ENGINE_SD_CPP)["source"] == "auto"
 
