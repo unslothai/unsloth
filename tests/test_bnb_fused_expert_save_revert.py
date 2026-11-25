@@ -30,6 +30,16 @@ def _modules():
     return core_model_loading
 
 
+def _inkling2_transformers(cml):
+    """The fused stack these tests model is Inkling 2's, which needs transformers >= 5.24 (unsloth/models/inkling2.py),
+    the first release with its expert dequantizer. On the pyproject pin (5.18) transformers' own revert still
+    matches `experts.gate_up_proj` against `experts.gate_up_proj_bias` and fails inside transformers."""
+    if not hasattr(cml, "Inkling2LoopDequantizeExperts"):
+        pytest.skip(
+            "Inkling 2 layouts need transformers >= 5.24 (no Inkling2LoopDequantizeExperts here)"
+        )
+
+
 def _unwrapped(fn):
     while getattr(fn, _BNB_PREQUANTIZED_SAVE_FLAG, False):
         fn = fn.__wrapped__
@@ -173,6 +183,7 @@ def _packed_saved(saved, state_dict, prefix):
 def test_a_dense_sibling_sharing_the_stack_prefix_does_not_keep_the_converter():
     # transformers matches a target on a name boundary: `experts.gate_up_proj` is not `experts.gate_up_proj_bias`.
     cml = _modules()
+    _inkling2_transformers(cml)
     fix_transformers_bnb_prequantized_save()
     model = _Model(quantized = True)
     experts = model.model.language_model.experts
