@@ -657,7 +657,8 @@ def record_request_peak(pipe: Any, *, logger: Any = None) -> Optional[int]:
             and _failed_captures() == getattr(module, "_unsloth_video_failed_captures", 0)
             # a vocoder that fell back to its stored dtype (out of memory, or short of room) ran a pass this key
             # does not describe: its peak is not the float32 decode's
-            and _vocoder_fallbacks() == getattr(module, "_unsloth_video_vocoder_fallbacks", 0)
+            and getattr(module, "_unsloth_video_vocoder_fallbacks", None)
+            in (None, _vocoder_fallbacks())
             and _keyed_graphs_live(pipe, key)
         ):
             graphs, generation = _live_graphs(dev), _capture_generation(dev)
