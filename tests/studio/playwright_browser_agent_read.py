@@ -148,5 +148,12 @@ def test_hidden_code_line_stays_out(page):
     assert page(html) == "```\none()\ntwo()\n```"
 
 
+def test_boxless_wrapper_in_code_keeps_its_text(page):
+    assert (
+        page('<pre>a = <span style="display: contents">value</span> + 1</pre>')
+        == "```\na = value + 1\n```"
+    )
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q", "--confcutdir", str(Path(__file__).parent)]))

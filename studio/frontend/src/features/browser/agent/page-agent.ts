@@ -482,6 +482,8 @@ export function installPageAgent(): PageAgent {
       const block = BLOCK.test(style.display);
       // A block inside a code block is one of its lines (highlighters wrap each line), not a paragraph.
       const codeLine = block && inPre > 0;
+      // Code lines share one buffer, so each keeps the per-block rule: a line off screen or with no size stays out.
+      if (codeLine && !(shown && sized(rect))) return;
       if (block && !codeLine) flush();
       if (codeLine && lineOpen) add("\n");
       if (tag === "pre") {
@@ -504,9 +506,7 @@ export function installPageAgent(): PageAgent {
         }
         if (node.nodeType === Node.TEXT_NODE) {
           const raw = node.nodeValue ?? "";
-          // Code lines share one buffer, so each keeps the per-block rule: off screen or zero-size stays out.
-          const skipped = inPre > 0 && !(shown && sized(rect));
-          const value = skipped ? "" : wholePage || rect.top >= 0 || !shown || !raw.trim() ? raw : onScreenPart(node as Text, keepsLines);
+          const value = wholePage || rect.top >= 0 || !shown || !raw.trim() ? raw : onScreenPart(node as Text, keepsLines);
           if (unreadable) add(" ");
           else if (!labelled) {
             add(keepsLines ? value : value.replace(/\s+/g, " "));
