@@ -93,7 +93,9 @@ def test_generation_turns_on_untruncated_logprobs(
     module = types.ModuleType("unsloth_zoo.vllm_utils")
     calls = []
     if zoo:
-        module.set_vllm_untruncated_logprobs = lambda on: calls.append(on) or on
+        module.set_vllm_untruncated_logprobs = (
+            lambda on, llm = None: calls.append((on, llm is not None)) or on
+        )
     monkeypatch.setitem(sys.modules, "unsloth_zoo.vllm_utils", module)
     ns = {}
     exec(block, ns)
@@ -107,4 +109,4 @@ def test_generation_turns_on_untruncated_logprobs(
     ns["run"](trainer)
     assert trainer._unsloth_vllm_untruncated_logprobs is expected
     if zoo:
-        assert calls == [bool(use_vllm and correction and colocated)]
+        assert calls == [(bool(use_vllm and correction and colocated), bool(colocated))]
