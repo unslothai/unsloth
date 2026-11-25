@@ -453,6 +453,33 @@ def test_fp8_single_file_with_the_dense_dit_pinned_is_priced_float32(host, tmp_p
     )
 
 
+@pytest.mark.parametrize("pin", [None, "auto"])
+def test_fp8_single_file_under_speed_off_is_refused_as_float32(host, tmp_path, pin):
+    """Speed "off" with transformer_quant unset / auto: the loader resolves it to "off" (video_transformer_quant_request),
+    comfy_keep is False and the fp8 file dequantizes, so the route prices 47.1 GB and a 34 GB host refuses; the same
+    request at the default speed keeps the packed 32.1 GB price and loads."""
+    host("cpu", 64 * GB_PER_GIB, 34.0)
+    name = _sparse_safetensors(
+        tmp_path / "wan2.2_ti2v_5B_scaled.safetensors", "F8_E4M3", 5_000_000_000
+    )
+    msg = _refusal(
+        WAN5B,
+        "single_file",
+        checkpoint_repo = str(tmp_path),
+        checkpoint_filename = name,
+        transformer_quant = pin,
+        speed_mode = "off",
+    )
+    assert "47.1" in msg
+    _load(
+        WAN5B,
+        "single_file",
+        checkpoint_repo = str(tmp_path),
+        checkpoint_filename = name,
+        transformer_quant = pin,
+    )
+
+
 def test_unsized_dual_expert_gguf_copy_is_not_doubled(monkeypatch):
     """Unreadable GGUF size: the table's denoiser term already holds both A14B experts, so the fallback is that share
     once (57.2 GB x the smallest quant fraction), while a measured single-expert file still counts twice."""

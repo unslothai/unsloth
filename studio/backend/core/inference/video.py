@@ -655,7 +655,8 @@ def refuse_video_cpu_host_ram(
         te_scheme = scheme,
         te_hosted = te_hosted,
         te_hosted_available = te_hosted_available,
-        transformer_quant = transformer_quant,
+        # What _load_impl resolves the request to: Speed "off" keeps an unset / auto DiT dense (comfy_keep False).
+        transformer_quant = video_transformer_quant_request(transformer_quant, speed_mode),
         gguf_copy = copy_gb,
         single_file_packed = packed_gb,
         release_gb = _resident_video_cpu_release_gb(),
