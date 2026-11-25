@@ -744,10 +744,11 @@ def _get_heuristic_configs(
     )
 
     configs = _fit_configs_to_dims((config_fwd, config_bwd_dx, config_bwd_dw), n_dim, k_dim)
-    # BLOCK_SIZE_K 64 (gpt-oss K=2880) starves 64x64 tile: 128-wide N at 3 stages wins at equal
-    # error; keep fit for other K, N not div by 128, or N x K too small to fill card at half the
-    # programs (legacy 5-23% slower at N1024 x K<=576); SMEM fit shrinks it; float32 on sm100 keeps
-    # it (B200 13-15% slower).
+    # dW tiles N x K and reduces over tokens. When K leaves only BLOCK_SIZE_K 64 (gpt-oss: K = 2880), a 64 x 64
+    # output tile starves the kernel; a 128-wide N tile at 3 stages is faster at the same error. Other K, an N
+    # that 128 does not divide, or an N x K output too small to fill the card at half the programs (the legacy
+    # kernel was 5-23% slower at N 1024 x K <= 576) keep the fitted tile. The SMEM fit below still shrinks it.
+    # float32 activations keep it on sm100, where the wide tile is 13-15% slower (B200).
     config_bwd_dw = configs[2]
     if (
         config_bwd_dw.BLOCK_SIZE_K == 64
