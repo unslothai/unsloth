@@ -129,9 +129,12 @@ def test_rocm_config_is_keyed_by_measured_gfx_arch(monkeypatch):
 
 
 def test_nvidia_keeps_its_capability_table(monkeypatch):
+    from core.inference import diffusion_int8_attention_cuda as cuda_kernel
     from core.inference import rocm_bf16
 
     monkeypatch.setattr(rocm_bf16, "is_rocm_torch", lambda *a, **k: False)
+    # a toolchain that targets every arch: the fallback is then the nearest listed card's entry
+    monkeypatch.setattr(cuda_kernel, "nvrtc_arch_supported", lambda capability: True)
     for capability in [*I.KERNEL_CONFIGS, (9, 0), (7, 5), (11, 5), (7, 0)]:
         monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a, c = capability, **k: c)
         for head_dim in (64, 128, 96):

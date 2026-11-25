@@ -437,25 +437,81 @@ def nearest_kernel_config(
     return None, None
 
 
+# device index -> {"cap": (major, minor), "via": the capability reader that answered, "smem": opt-in shared memory or
+# None, "nvrtc": whether NVRTC targets the arch}: read once per device, so a listed card's serving call reads no
+# device property (one capability read per device, ever). A replaced reader (a test or a profile mock patching
+# torch.cuda.get_device_capability) refills the entry; ``reset_device_facts`` drops them all.
+_DEVICE_FACTS: dict = {}
+_UNREAD = object()
+
+
+def reset_device_facts() -> None:
+    """Forget every card's cached facts (a new device set, a mocked profile switching cards)."""
+    _DEVICE_FACTS.clear()
+
+
+def _facts(index: int) -> dict:
+    import torch
+
+    reader = torch.cuda.get_device_capability
+    facts = _DEVICE_FACTS.get(int(index))
+    if facts is None or facts["via"] is not reader:
+        capability = reader(index)
+        facts = {
+            "cap": (int(capability[0]), int(capability[1])),
+            "via": reader,
+            "smem": _UNREAD,
+            "nvrtc": _UNREAD,
+        }
+        _DEVICE_FACTS[int(index)] = facts
+    return facts
+
+
+def _device_capability(index: int) -> tuple:
+    return _facts(index)["cap"]
+
+
 def _shared_limit(index: int) -> Optional[int]:
-    try:
-        import torch
-        return (
-            int(
-                getattr(torch.cuda.get_device_properties(index), "shared_memory_per_block_optin", 0)
+    facts = _facts(index)
+    if facts["smem"] is _UNREAD:
+        try:
+            import torch
+            facts["smem"] = (
+                int(
+                    getattr(
+                        torch.cuda.get_device_properties(index), "shared_memory_per_block_optin", 0
+                    )
+                )
+                or None
             )
-            or None
-        )
-    except Exception:  # noqa: BLE001
-        return None
+        except Exception:  # noqa: BLE001
+            facts["smem"] = None
+    return facts["smem"]
+
+
+def _nvrtc_targets(index: int) -> bool:
+    """Whether the installed NVRTC can build for this card's arch (asked once per card); read through the module
+    attribute at call time, so a profile mock pins it."""
+    facts = _facts(index)
+    if facts["nvrtc"] is _UNREAD:
+        try:
+            from . import diffusion_int8_attention_cuda as cuda_kernel
+            facts["nvrtc"] = bool(cuda_kernel.nvrtc_arch_supported(facts["cap"]))
+        except Exception:  # noqa: BLE001 - an unreadable toolchain offers no fallback
+            facts["nvrtc"] = False
+    return facts["nvrtc"]
 
 
 def cuda_kernel_config(index: int, head_dim: int) -> Optional[dict]:
-    """The CUDA kernel config the device ``index`` runs at ``head_dim`` (``nearest_kernel_config`` with its shared
-    memory), or None."""
-    import torch
-
-    capability = torch.cuda.get_device_capability(index)
+    """The CUDA kernel config the device ``index`` runs at ``head_dim``: a listed card's own entry (no device
+    property read), else ``nearest_kernel_config`` with its shared memory, only where the installed NVRTC can target
+    the arch (the kernel is compiled for the card's own arch, so an arch NVRTC predates would only fail its check)."""
+    capability = _device_capability(index)
+    exact = kernel_config(capability, head_dim)
+    if exact is not None:
+        return exact
+    if not _nvrtc_targets(index):
+        return None
     return nearest_kernel_config(capability, head_dim, _shared_limit(index))[1]
 
 
@@ -518,13 +574,11 @@ def triton_decline(index: int, head_dim: int) -> str:
 def _serving(index: int, head_dim: int) -> tuple:
     """(implementation, config) for this device and head dim (``implementation``, ``device_config``), the device
     facts read once."""
-    import torch
-
     if _is_rocm():
         config = rocm_kernel_config(_gfx_arch(index), head_dim)
         return ("triton", config) if config is not None else (None, None)
     setting = impl_setting()
-    capability = torch.cuda.get_device_capability(index)
+    capability = _device_capability(index)
     if setting != "triton" and (int(index), int(head_dim)) not in _CUDA_FAILED:
         config = cuda_kernel_config(index, head_dim)
         if config is not None:
@@ -557,7 +611,7 @@ def device_config(
         return _serving(index, head_dim)[1]
     if _is_rocm():
         return rocm_kernel_config(_gfx_arch(index), head_dim)
-    capability = torch.cuda.get_device_capability(index)
+    capability = _device_capability(index)
     if impl == "triton":
         return triton_kernel_config(capability, head_dim)
     return cuda_kernel_config(index, head_dim)
@@ -1069,9 +1123,10 @@ def _plan(
 
 
 def forget_plans() -> None:
-    """Drop launch plans, sink decisions and routes: a new pipeline decides again."""
+    """Drop launch plans, sink decisions, routes and secondary-card race floors: a new pipeline decides again."""
     _plans().clear()
     _decisions().clear()
+    _CARD_FLOORS.clear()
     _sink_unsafe().clear()
     with _ROUTES_LOCK:
         _ROUTES.clear()
@@ -1524,6 +1579,9 @@ def _call_route(q: Any, k: Any, v: Any) -> tuple:
         return "no kernel config for this card", index, None, None
     if (index, D) in _BROKEN:
         return "kernel failed on this card", index, impl, config
+    card_floor = _CARD_FLOORS.get((index, H, D), Sq) if _CARD_FLOORS else Sq
+    if card_floor is None or Sq < card_floor:
+        return "this card lost or is under its own race", index, impl, config
     return None, index, impl, config
 
 
@@ -2180,6 +2238,54 @@ def _secondary_cards(primary: int, transformer: Any = None) -> tuple:
         return ()
 
 
+# (card, heads, head dim) -> the token floor that card's own Auto race set for a secondary card of a multi-GPU load,
+# None where it lost (native there). Only raced secondaries have an entry: the load card is governed by the
+# processor's floor and a forced install by the accuracy check alone.
+_CARD_FLOORS: dict = {}
+
+
+def _secondary_races(
+    index: int,
+    transformer: Any,
+    dtype: Any,
+    heads: int,
+    head_dim: int,
+    fn: Any,
+    name: str,
+    floor: Optional[Callable],
+    forced: bool,
+    impl: Optional[str],
+    report: dict,
+) -> dict:
+    """{card: token floor or None} for the selection's other cards that can serve this head dim. Forced: the
+    accuracy check only (``timed=False``) on the primary's implementation, as before. Auto: each card's own race,
+    through ``floor`` (``install_auto``'s, the dispatch route's floors) or a timed verdict on the primary's
+    implementation; a card that does not win serves native."""
+    import torch
+
+    out: dict = {}
+    for card in _secondary_cards(index, transformer):
+        if implementation(card, head_dim) is None:
+            continue
+        dev = torch.device("cuda", card)
+        if forced:
+            found = verdict(dev, dtype, heads, head_dim, fn, name, timed = False, impl_only = impl)
+            minimum = 0 if found.get("ok") else None
+        elif floor is not None:
+            # the primary's implementation only (a secondary whose CUDA kernel fails keeps native, not an unraced
+            # Triton stand-in), then that card's own race through the load's floor
+            found = verdict(dev, dtype, heads, head_dim, fn, name, timed = False, impl_only = impl)
+            minimum = None
+            if found.get("ok"):
+                found, minimum = floor(dev, dtype, heads, head_dim, fn, name)
+        else:
+            found = verdict(dev, dtype, heads, head_dim, fn, name, timed = True, impl_only = impl)
+            minimum = found.get("min_tokens") if found.get("ok") else None
+        report[(card, heads, head_dim, name)] = found
+        out[card] = None if minimum is None else int(minimum)
+    return out
+
+
 def sink_mode(dit_name: str, forced: bool) -> int:
     """The ``mode`` a route of DiT class ``dit_name`` runs the kernel in: the attention-sink path only for SINK_DITS,
     the families it was measured on."""
@@ -2253,6 +2359,10 @@ def _install(
     int8_attention_op()
     engaged = 0
     report: dict = {}
+    # Every card's probe (accuracy check, race) runs before any processor changes: one that raises (an OOM on a
+    # secondary card) leaves every processor as it was, so the caller's 0 means nothing runs INT8 (H3 video installs
+    # its 16-bit exact start only after a nonzero install). The decisions are applied after the loop.
+    pending: list = []
     for m in candidates:
         proc = m.processor
         head_dim = _head_dim(m)
@@ -2265,34 +2375,29 @@ def _install(
             if incumbent is not None
             else _sdpa_incumbent(getattr(proc, "_attention_backend", None))
         )
+        heads = int(m.heads)
         if floor is not None and not force:
-            found, minimum = floor(dev, dtype, int(m.heads), head_dim, fn, name)
-            report[(int(m.heads), head_dim, name)] = found
-            proc._unsloth_int8_impl = found.get("impl")
+            found, minimum = floor(dev, dtype, heads, head_dim, fn, name)
+            report[(heads, head_dim, name)] = found
             if minimum is None:
+                pending.append((m, found.get("impl"), None, False, None))
                 continue
-            proc._unsloth_int8 = True
-            proc._unsloth_int8_min_tokens = int(minimum)
-            proc._unsloth_int8_sinks = sink_mode(type(transformer).__name__, False)
-            register_route(index, head_dim, _raise_processor_floor(proc, m))
-            engaged += 1
-            for card in _secondary_cards(index, transformer):
-                if implementation(card, head_dim) is None:
-                    continue
-                # only the implementation the primary card's floor raced and accepted: a secondary whose CUDA
-                # kernel fails must not adopt an unraced Triton stand-in (or one the family policy rejects)
-                report[(card, int(m.heads), head_dim, name)] = verdict(
-                    torch.device("cuda", card),
-                    dtype,
-                    int(m.heads),
-                    head_dim,
-                    fn,
-                    name,
-                    timed = False,
-                    impl_only = found.get("impl"),
-                )
+            cards = _secondary_races(
+                index,
+                transformer,
+                dtype,
+                heads,
+                head_dim,
+                fn,
+                name,
+                floor,
+                False,
+                found.get("impl"),
+                report,
+            )
+            pending.append((m, found.get("impl"), int(minimum), False, cards))
             continue
-        found = verdict(dev, dtype, int(m.heads), head_dim, fn, name, timed = not force)
+        found = verdict(dev, dtype, heads, head_dim, fn, name, timed = not force)
         # a Triton stand-in races even when requested by name (only the env switch or IMPL=triton skip it)
         stand_in = (
             found.get("impl") == "triton"
@@ -2301,39 +2406,54 @@ def _install(
             and not _is_rocm()
         )
         if force and stand_in and found.get("ok"):
-            found = verdict(dev, dtype, int(m.heads), head_dim, fn, name, timed = True)
-        report[(int(m.heads), head_dim, name)] = found
-        proc._unsloth_int8_impl = found.get("impl")
+            found = verdict(dev, dtype, heads, head_dim, fn, name, timed = True)
+        report[(heads, head_dim, name)] = found
         if not found.get("ok"):
+            pending.append((m, found.get("impl"), None, False, None))
             continue
         if force and not stand_in:
             minimum = 0
         elif found.get("min_tokens") is None:
+            pending.append((m, found.get("impl"), None, False, None))
             continue
         else:
             minimum = int(found["min_tokens"])
+        # A layer split or CFG replica runs this processor on the selection's other cards too: the op runs the kernel
+        # only on a card whose own accuracy check passed, on the primary's implementation only (a secondary whose CUDA
+        # kernel fails keeps native, not unraced Triton); under Auto each of them also runs its own race.
+        cards = _secondary_races(
+            index,
+            transformer,
+            dtype,
+            heads,
+            head_dim,
+            fn,
+            name,
+            None,
+            force,
+            found.get("impl"),
+            report,
+        )
+        pending.append((m, found.get("impl"), minimum, force, cards))
+    for m, impl, minimum, forced, cards in pending:
+        proc = m.processor
+        proc._unsloth_int8_impl = impl
+        if minimum is None:
+            continue
         proc._unsloth_int8 = True
-        proc._unsloth_int8_min_tokens = minimum
-        proc._unsloth_int8_sinks = sink_mode(type(transformer).__name__, force)
-        if not force:
+        proc._unsloth_int8_min_tokens = int(minimum)
+        proc._unsloth_int8_sinks = sink_mode(type(transformer).__name__, forced)
+        heads, head_dim = int(m.heads), int(_head_dim(m))
+        # the load card is governed by the processor's own floor; a raced secondary by its race (None: native there)
+        _CARD_FLOORS.pop((index, heads, head_dim), None)
+        for card, card_floor in (cards or {}).items():
+            if forced:
+                _CARD_FLOORS.pop((card, heads, head_dim), None)
+            else:
+                _CARD_FLOORS[(card, heads, head_dim)] = card_floor
+        if not forced:
             register_route(index, head_dim, _raise_processor_floor(proc, m))
         engaged += 1
-        # A layer split or CFG replica runs this processor on the selection's other cards too: the op runs the kernel
-        # only on a card whose own accuracy check passed, so check each of them here (the race stays the primary's),
-        # on the primary's implementation only: a secondary whose CUDA kernel fails keeps native, not unraced Triton.
-        for card in _secondary_cards(index, transformer):
-            if implementation(card, head_dim) is None:
-                continue
-            report[(card, int(m.heads), head_dim, name)] = verdict(
-                torch.device("cuda", card),
-                dtype,
-                int(m.heads),
-                head_dim,
-                fn,
-                name,
-                timed = False,
-                impl_only = found.get("impl"),
-            )
     if logger is not None:
         for key, found in report.items():
             card, heads, head_dim, name = key if len(key) == 4 else (index, *key)

@@ -41,9 +41,11 @@ SM_REGISTERS = 65536
 
 
 def _cuda_config(head_dim: int = 128):
-    if not torch.cuda.is_available():
+    """The CUDA kernel config this card runs (its own entry or the nearest-family fallback), so a newly eligible
+    card runs the kernel tests instead of skipping them; None off NVIDIA CUDA."""
+    if not torch.cuda.is_available() or I._is_rocm():
         return None
-    return I.kernel_config(torch.cuda.get_device_capability(), head_dim)
+    return I.device_config(torch.cuda.current_device(), head_dim, "cuda")
 
 
 needs_kernel = pytest.mark.skipif(
