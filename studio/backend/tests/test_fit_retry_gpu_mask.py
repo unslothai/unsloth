@@ -150,6 +150,7 @@ _TWO_PICKED = {"pick": ([1], False), "gpu_ids": [0, 1]}
         ({}, ["0", "0,1"]),
         (_TWO_PICKED, ["1", "0,1"]),
         ({"extra_args": ["-ot", "exps=CPU"]}, ["0", "0,1"]),
+        ({"extra_args": ["--fit-target", "4096"]}, ["0", "0,1"]),
         # Iterating {8, 1} yields the parent's own order, where the order helper answers None.
         (
             {
@@ -160,7 +161,7 @@ _TWO_PICKED = {"pick": ([1], False), "gpu_ids": [0, 1]}
             ["8", "8,1"],
         ),
     ],
-    ids = ["auto", "pick-bounds-it", "cpu-only-override", "parent-order"],
+    ids = ["auto", "pick-bounds-it", "cpu-only-override", "fit-target-scalar", "parent-order"],
 )
 def test_the_fit_on_retry_sees_the_cards_auto_left_out(monkeypatch, tmp_path, kwargs, masks):
     backend, launches, error = _load(monkeypatch, tmp_path, returncodes = [1, None], **kwargs)
@@ -182,6 +183,8 @@ _KEEPS_PLANNED_MASK = {
     "env-main-gpu": {"parent_env": {"LLAMA_ARG_MAIN_GPU": "0"}},
     "env-override-tensor": {"parent_env": {"LLAMA_ARG_OVERRIDE_TENSOR": "exps=CUDA0"}},
     "user-fit-off": {"extra_args": ["--fit", "off"]},
+    "fit-target-list": {"extra_args": ["--fit-target", "12000,1024"]},
+    "env-fit-target-list": {"parent_env": {"LLAMA_ARG_FIT_TARGET": "12000/1024"}},
     "sm-gate": {"sm_gate_error": "no kernels for GPU 1"},
     "single-card-pick": {"gpu_ids": [0]},
     "not-out-of-memory": {"outputs": ["llama_model_load: error loading model: bad tensor"]},

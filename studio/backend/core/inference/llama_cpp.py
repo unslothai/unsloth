@@ -33667,6 +33667,11 @@ class LlamaCppBackend:
                         # A trailing user --fit off wins over the retry's on.
                         or not fit_is_effectively_on(run_cmd, env)
                         or _argv_places_by_device_position(run_cmd, env)
+                        # A user's per-device --fit-target list is positional too.
+                        or any(
+                            len(re.split(r"[,/]+", str(v).strip())) > 1
+                            for v in _fit_target_values(extra_args or (), env)
+                        )
                     ):
                         return
                     _wide_mask = LlamaCppBackend._pinned_child_visibility(_fit_retry_pool)
