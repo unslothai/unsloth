@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
+import { isUnderKeepaliveBudget } from "@/lib/keepalive-budget";
 import type {
   ChatPresetSource,
   RecommendedSamplingKey,
@@ -23,7 +24,6 @@ import {
   ChatSettingsRequestError,
   asBodyTransportFailure,
   isAbortOrTimeout,
-  isUnderKeepaliveBudget,
 } from "../utils/settings-retry";
 
 export type { PersistedInferenceParams };

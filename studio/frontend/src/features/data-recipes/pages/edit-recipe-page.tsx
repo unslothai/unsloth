@@ -8,6 +8,7 @@ import { useNavigate } from "@tanstack/react-router";
 import type { ReactElement } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getCachedRecipe, getRecipe, primeRecipeCache, saveRecipe } from "../data/recipes-db";
+import { RecipeApiError } from "../data/recipes-api";
 import type { RecipeRecord } from "../types";
 
 type EditRecipePageProps = {
@@ -101,17 +102,60 @@ export function EditRecipePage({ recipeId }: EditRecipePageProps): ReactElement 
     editedVersion.current = loadedRecord?.updatedAt;
   }, [loadedRecord]);
 
+  const inFlightVersion = useRef<number | undefined>(undefined);
+  const unansweredVersion = useRef<number | undefined>(undefined);
   const handlePersist = useCallback(
-    async (input: { id: string | null; name: string; payload: RecipePayload }) => {
-      const record = await saveRecipe({
-        id: input.id ?? recipeId,
-        name: input.name,
-        payload: input.payload,
-        baseUpdatedAt: editedVersion.current,
-      });
-      editedVersion.current = record.updatedAt;
-      primeRecipeCache(record);
-      return { id: record.id, updatedAt: record.updatedAt };
+    async (input: {
+      id: string | null;
+      name: string;
+      payload: RecipePayload;
+      keepalive?: boolean;
+    }) => {
+      // The server keeps the updatedAt sent, so a save builds on one in flight; an unanswered
+      // one tries both.
+      const confirmed = editedVersion.current;
+      const inFlight = inFlightVersion.current;
+      const unanswered = input.keepalive ? unansweredVersion.current : undefined;
+      const bases =
+        inFlight !== undefined
+          ? [inFlight]
+          : unanswered !== undefined
+            ? [unanswered, confirmed]
+            : [confirmed];
+      const updatedAt = Math.max(
+        Date.now(),
+        Math.max(confirmed ?? 0, inFlight ?? unanswered ?? 0) + 1,
+      );
+      inFlightVersion.current = updatedAt;
+      try {
+        const record = await Promise.any(
+          bases.map((baseUpdatedAt) =>
+            saveRecipe({
+              id: input.id ?? recipeId,
+              name: input.name,
+              payload: input.payload,
+              baseUpdatedAt,
+              updatedAt,
+              keepalive: input.keepalive,
+            }),
+          ),
+        ).catch((error: AggregateError) => {
+          throw error.errors[0];
+        });
+        unansweredVersion.current = undefined;
+        if (record.updatedAt >= (editedVersion.current ?? 0)) {
+          editedVersion.current = record.updatedAt;
+        }
+        return { id: record.id, updatedAt: record.updatedAt };
+      } catch (error) {
+        unansweredVersion.current =
+          error instanceof RecipeApiError ? undefined : updatedAt;
+        throw error;
+      } finally {
+        if (inFlightVersion.current === updatedAt) {
+          inFlightVersion.current = undefined;
+        }
+      }
     },
     [recipeId],
   );

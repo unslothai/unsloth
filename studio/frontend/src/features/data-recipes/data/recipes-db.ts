@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { createEmptyRecipePayload } from "@/features/recipe-studio";
+import { isUnderKeepaliveBudget } from "@/lib/keepalive-budget";
 import { normalizeNonEmptyName } from "@/utils";
 import { useEffect, useState } from "react";
 import type { RecipeRecord, SaveRecipeInput } from "../types";
@@ -77,26 +78,28 @@ export function primeRecipeCache(record: RecipeRecord): void {
 export async function saveRecipe(
   input: SaveRecipeInput,
 ): Promise<RecipeRecord> {
-  const now = Date.now();
+  const now = input.updatedAt ?? Date.now();
   const id = input.id ?? crypto.randomUUID();
   const existing = input.id
     ? (recentRecipeCache.get(input.id) ?? (await getRecipe(input.id)))
     : undefined;
+  const body = JSON.stringify({
+    id,
+    name: normalizeNonEmptyName(input.name),
+    payload: input.payload,
+    createdAt: existing?.createdAt ?? now,
+    updatedAt: now,
+    learningRecipeId: input.learningRecipeId ?? existing?.learningRecipeId,
+    learningRecipeTitle:
+      input.learningRecipeTitle ?? existing?.learningRecipeTitle,
+    baseUpdatedAt: input.baseUpdatedAt ?? existing?.updatedAt,
+  });
   let record: RecipeRecord;
   try {
     record = await recipeRequest<RecipeRecord>(`/${encodeURIComponent(id)}`, {
       method: "PUT",
-      body: JSON.stringify({
-        id,
-        name: normalizeNonEmptyName(input.name),
-        payload: input.payload,
-        createdAt: existing?.createdAt ?? now,
-        updatedAt: now,
-        learningRecipeId: input.learningRecipeId ?? existing?.learningRecipeId,
-        learningRecipeTitle:
-          input.learningRecipeTitle ?? existing?.learningRecipeTitle,
-        baseUpdatedAt: input.baseUpdatedAt ?? existing?.updatedAt,
-      }),
+      body,
+      keepalive: input.keepalive ? isUnderKeepaliveBudget(body) : undefined,
     });
   } catch (error) {
     if (error instanceof RecipeApiError && error.status === 409) {
@@ -105,6 +108,10 @@ export async function saveRecipe(
     throw error;
   }
   mutationVersion += 1;
+  // Saves can overlap when a closing page sends its last edit; a late reply must not roll back.
+  if ((recentRecipeCache.get(id)?.updatedAt ?? -1) > record.updatedAt) {
+    return record;
+  }
   recentRecipeCache.set(id, record);
   if (recipeListReady) {
     publishRecipeList([

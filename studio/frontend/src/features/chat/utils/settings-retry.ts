@@ -88,12 +88,3 @@ export function retryablePatchAfterFailure<T extends object>(
     progressed: Object.keys(kept).length > 0,
   };
 }
-
-// Fetch caps total in-flight keepalive bodies at 64 KiB; larger patches go without keepalive.
-const KEEPALIVE_BODY_BUDGET_BYTES = 60 * 1024;
-
-export function isUnderKeepaliveBudget(body: string): boolean {
-  // JSON is at least one byte per UTF-16 unit, so short bodies skip encoding.
-  if (body.length <= KEEPALIVE_BODY_BUDGET_BYTES / 3) return true;
-  return new TextEncoder().encode(body).byteLength <= KEEPALIVE_BODY_BUDGET_BYTES;
-}
