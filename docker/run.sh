@@ -374,9 +374,8 @@ if [[ -n "${UNSLOTH_PORTS:-}" ]]; then
     PORT_FLAGS=(${UNSLOTH_PORTS})
 fi
 
-# -t needs a terminal ("the input device is not a TTY"); -i forwards piped or redirected stdin.
-# No -i for a terminal stdin under redirected stdout (`run.sh > log &` stops on SIGTTIN) or a
-# closed stdin (docker could reuse fd 0 for its own files).
+# -t needs a terminal; -i forwards piped stdin, never a terminal one (`run.sh > log &` would
+# stop on SIGTTIN) or a closed one (docker could reuse fd 0)
 TTY_FLAG=()
 if [ -t 0 ] && [ -t 1 ]; then
     TTY_FLAG=(-it)
