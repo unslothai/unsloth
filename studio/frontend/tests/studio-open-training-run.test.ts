@@ -271,3 +271,22 @@ test("Back and the History tab open the History grid and keep it through the nex
   assert.deepEqual(visible(studio), ["history", null]);
   studio.unmount();
 });
+
+for (const [label, next] of [
+  ["nothing", null],
+  ["another job", "job-next"],
+] as const) {
+  test(`deleting a run opened live, after it finished, returns to the History grid while ${label} is training`, () => {
+    lastSeenJob("job-live", true);
+    const studio = mountStudio();
+    openFromRecents("job-live");
+    assert.deepEqual(visible(studio), ["current-run", "job-live"]);
+    status("job-live", false);
+    if (next) status(next, true);
+    assert.deepEqual(visible(studio), ["history", "job-live"]);
+    // The sidebar clears the selection after a delete.
+    useTrainingRuntimeStore.getState().setSelectedHistoryRunId(null);
+    assert.deepEqual(visible(studio), ["history", null]);
+    studio.unmount();
+  });
+}

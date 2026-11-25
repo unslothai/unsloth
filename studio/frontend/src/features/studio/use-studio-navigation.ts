@@ -56,12 +56,13 @@ function runtimeRequestedTab({
   selectedHistoryRunId: string | null;
   trainingRunActive: boolean;
 }): TrainSubTab | null {
+  // A selected run's visible tab comes from studioTabFor; History is where clearing it lands.
   if (
     selectedHistoryRunId &&
-    selectedHistoryRunId !== previousSelectedHistoryRunId
+    selectedHistoryRunId !== previousSelectedHistoryRunId &&
+    requestedTab !== "history"
   ) {
-    const tab = studioTabFor(selectedHistoryRunId, jobId, trainingRunActive);
-    return tab === requestedTab ? null : tab;
+    return "history";
   }
   if (
     ((jobId !== null && jobId !== previousJobId && trainingRunActive) ||
@@ -114,7 +115,9 @@ export function useStudioNavigation() {
     })),
   );
   const [requestedTab, setRequestedTabState] = useState<TrainSubTab>(() =>
-    studioTabFor(selectedHistoryRunId, currentJobId, trainingRunActive),
+    selectedHistoryRunId
+      ? "history"
+      : studioTabFor(null, currentJobId, trainingRunActive),
   );
   const requestedTabRef = useRef(requestedTab);
   const setRequestedTab = useCallback((next: TrainSubTab) => {
