@@ -2526,15 +2526,13 @@ def _install(
         proc._unsloth_int8_sinks = sink_mode(type(transformer).__name__, forced)
         # The load card is governed by the processor's own floor; a raced secondary by its own race, kept on this
         # processor (its incumbent, dtype, heads and head dim): another processor's or load's race never moves it.
-        # Forced: the accuracy check alone decides each card, in the op.
-        proc._unsloth_int8_cards = (
-            {}
-            if forced
-            else {
-                int(card): CARD_DECLINED if found is None else int(found)
-                for card, found in (cards or {}).items()
-            }
-        )
+        # Forced: the accuracy check alone decides each passing card, in the op; a card that declined (no kernel, or
+        # its probe ran out of memory after the op had verified it) keeps its incumbent.
+        proc._unsloth_int8_cards = {
+            int(card): CARD_DECLINED if found is None else int(found)
+            for card, found in (cards or {}).items()
+            if not forced or found is None
+        }
         if not forced:
             register_route(index, head_dim, _raise_processor_floor(proc, m))
         engaged += 1

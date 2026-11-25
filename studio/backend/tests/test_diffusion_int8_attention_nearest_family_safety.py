@@ -221,6 +221,26 @@ def test_forced_install_keeps_the_accuracy_only_secondary_check(monkeypatch):
     assert _serves(dit.blocks[0].processor, 1, 1)
 
 
+def test_forced_install_keeps_a_secondary_that_ran_out_of_memory_on_its_incumbent(monkeypatch):
+    """On (forced): a secondary whose probe verified the kernel and then ran out of memory (the long check) declines;
+    the op's verification alone must not serve it."""
+    _mixed_cards(monkeypatch)
+
+    def probe(device, dtype, heads, hd, *a, **k):
+        card = torch.device(device).index
+        I._VERIFIED.add((card, int(hd), str(dtype), "cuda"))
+        if card == 1:
+            raise torch.OutOfMemoryError("CUDA out of memory (secondary long check)")
+        return {"ok": True, "ms": {}, "min_tokens": 0, "impl": "cuda"}
+
+    monkeypatch.setattr(I, "verdict", probe)
+    dit = _dit()
+    assert I.install_int8_attention(dit, device = "cuda:0", dtype = torch.bfloat16, force = True) == 2
+    for m in dit.blocks:
+        assert _serves(m.processor, 0, 1)
+        assert not _serves(m.processor, 1), "INT8 served on a forced secondary that declined"
+
+
 # --------------------------------------------------------------------------------------- 3. the NVRTC toolchain gate
 _NVRTC_12_6 = {75, 80, 86, 87, 89, 90}
 _NVRTC_13_0 = {75, 80, 86, 87, 89, 90, 100, 103, 110, 120, 121}
