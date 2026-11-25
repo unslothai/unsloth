@@ -10,6 +10,7 @@
 # limitations under the License.
 
 from .loader_utils import DEFAULT_DEVICE_MAP
+from ._cache_kwarg import pop_cache_kwarg
 from .llama import *
 import os
 from ._utils import __version__, config_return_dict
@@ -203,6 +204,9 @@ def MistralForCausalLM_fast_forward(
     **kwargs,
 ) -> Union[Tuple, CausalLMOutputWithPast]:
     shift_labels = kwargs.pop("shift_labels", None)
+    # transformers 5.24 callers pass the cache as `cache`, which would otherwise ride along in kwargs.
+    if "cache" in kwargs:
+        past_key_values = pop_cache_kwarg(kwargs, past_key_values)
     # Training may resume without for_training() (trainer callback sampling): free kept graphs here.
     if _decode_graphs.HELD in self.__dict__ and self.training and torch.is_grad_enabled():
         _decode_graphs.release_if_training(self)
