@@ -23,7 +23,10 @@ _MARKER_DIR = "unsloth_vae_prebuild"
 # Free VRAM needed after the load before a second CUDA context opens.
 _MIN_FREE_BYTES = 6 * 1024**3
 _CHILD_TIMEOUT_S = 180.0
-_LIVE: set = set()
+# Card-wide VRAM a video prebuild child holds while it builds (measured 2.4 GiB on B200 for LTX-2.5), with margin.
+_CHILD_BYTES = 3 * 1024**3
+# Live children -> (owner, device): an image unload must not cancel a video load's child, nor the reverse.
+_LIVE: dict = {}
 _LIVE_LOCK = threading.Lock()
 
 
@@ -109,6 +112,7 @@ def maybe_kick(
                     pending >> 20,
                 )
             return False
+        job["owner"] = "image"
         return _spawn(job, logger)
     except Exception as exc:  # noqa: BLE001 - a prebuild, never a failed load
         if logger is not None:
@@ -122,9 +126,21 @@ def _triton_cache_dir() -> Optional[str]:
         try:
             import triton
             path = triton.knobs.cache.dir
-        except Exception:  # noqa: BLE001 - an older Triton: its documented default
-            path = os.path.join(os.path.expanduser("~"), ".triton", "cache")
+        except Exception:  # noqa: BLE001 - an older Triton: its documented default, rooted at TRITON_HOME
+            home = os.environ.get("TRITON_HOME") or os.path.expanduser("~")
+            path = os.path.join(home, ".triton", "cache")
     return str(path) if path else None
+
+
+def _fused_source_digest() -> Optional[str]:
+    """The fused kernels' source: an edited kernel is a new Triton cache entry, so it must be a new marker too."""
+    import hashlib
+    try:
+        from . import diffusion_vae_fused
+        with open(diffusion_vae_fused.__file__, "rb") as f:
+            return hashlib.sha256(f.read()).hexdigest()[:16]
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _marker_path(job: dict) -> Optional[str]:
@@ -151,6 +167,9 @@ def _marker_path(job: dict) -> Optional[str]:
             str(torch.__version__),
             triton_version,
             list(torch.cuda.get_device_capability(job["device"])),
+            _fused_source_digest(),
+            # Triton keys its cache on these too (TRITON_DISABLE_LINE_INFO, TRITON_DEFAULT_FP_FUSION, ...).
+            sorted((k, v) for k, v in os.environ.items() if k.startswith("TRITON_")),
         ],
         sort_keys = True,
     )
@@ -176,9 +195,11 @@ def maybe_kick_video(pipe: Any, logger: Any = None) -> bool:
         from .diffusion_memory import user_budget_reserve_bytes
 
         free, total = torch.cuda.mem_get_info(job["device"])
-        if free - user_budget_reserve_bytes(job["device"], total) < _MIN_FREE_BYTES:
+        pending = _pending_runtime_bytes(pipe)
+        if free - user_budget_reserve_bytes(job["device"], total) - pending < _MIN_FREE_BYTES:
             return False
         job["marker"] = marker
+        job["owner"] = "video"
         return _spawn(job, logger)
     except Exception as exc:  # noqa: BLE001 - a prebuild, never a failed load
         if logger is not None:
@@ -217,7 +238,7 @@ def _spawn(job: dict, logger: Any) -> bool:
         )
         proc.start()
     with _LIVE_LOCK:
-        _LIVE.add(proc)
+        _LIVE[proc] = (job.get("owner", "image"), int(job["device"]))
     try:
         adopt_pid(proc.pid)
     except Exception:  # noqa: BLE001
@@ -245,7 +266,7 @@ def _spawn(job: dict, logger: Any) -> bool:
 
 def _stop(proc: Any) -> None:
     with _LIVE_LOCK:
-        _LIVE.discard(proc)
+        _LIVE.pop(proc, None)
     if proc.is_alive():
         proc.kill()
         proc.join(5.0)
@@ -257,16 +278,48 @@ def _stop(proc: Any) -> None:
         pass
 
 
-def cancel_all() -> int:
-    """Kill every live prebuild child (unload: its CUDA context and VAE must not shadow the next load). Never raises."""
+def cancel_all(owner: Optional[str] = None) -> int:
+    """Kill the live prebuild children of ``owner`` ("image" / "video"; None = all): an unload's CUDA context and VAE
+    must not shadow the next load. Never raises."""
     with _LIVE_LOCK:
-        procs = list(_LIVE)
+        procs = [p for p, (o, _d) in _LIVE.items() if owner is None or o == owner]
     for proc in procs:
         try:
             _stop(proc)
         except Exception:  # noqa: BLE001
             pass
     return len(procs)
+
+
+def yield_to_render(owner: str, logger: Any = None) -> int:
+    """A render is starting: stop ``owner``'s still-building children on a card too tight to hold the child beside
+    the render. Its admission and tile choice read live free VRAM, which the child's context would take; the render
+    then compiles in the foreground, as without the prebuild. Never raises."""
+    stopped = 0
+    try:
+        import torch
+
+        from .diffusion_memory import user_budget_reserve_bytes
+
+        with _LIVE_LOCK:
+            live = [(p, d) for p, (o, d) in _LIVE.items() if o == owner]
+        for proc, device in live:
+            if not proc.is_alive():
+                continue
+            free, total = torch.cuda.mem_get_info(device)
+            if free - user_budget_reserve_bytes(device, total) >= _MIN_FREE_BYTES + _CHILD_BYTES:
+                continue
+            _stop(proc)
+            stopped += 1
+            if logger is not None:
+                logger.info(
+                    "diffusion.vae_prebuild: stopped the %s child (pid %s): the render needs the VRAM",
+                    owner,
+                    proc.pid,
+                )
+    except Exception:  # noqa: BLE001 - a prebuild, never a failed render
+        pass
+    return stopped
 
 
 def _child_entry(job: dict) -> None:
@@ -289,6 +342,9 @@ def _child_entry(job: dict) -> None:
         z = torch.zeros(job["shape"], device = f"cuda:{job['device']}", dtype = dtype)
         vae.decode(z)
     torch.cuda.synchronize()
+    # A fused pass that fell back to stock compiled nothing: no marker, so the next load tries again.
+    if any(getattr(m, "_unsloth_vae_fused_failed", False) for m in vae.modules()):
+        return
     marker = job.get("marker")
     if marker:
         os.makedirs(os.path.dirname(marker), exist_ok = True)

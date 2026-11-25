@@ -96,7 +96,7 @@ def test_restart_and_kill_switch_never_spawn(monkeypatch):
     )  # too little VRAM for a 2nd context
     monkeypatch.setattr(torch.cuda, "mem_get_info", lambda device: (64 * 1024**3, 96 * 1024**3))
     assert prebuild.maybe_kick(pipe, types.SimpleNamespace(hit = False)) is True
-    assert spawned == [{"device": 0}]
+    assert spawned == [{"device": 0, "owner": "image"}]
 
 
 def test_a_video_vae_plans_a_5d_latent():
@@ -206,10 +206,89 @@ def test_unload_kills_a_child_that_is_still_building():
             pass
 
     proc = _Proc()
-    prebuild._LIVE.add(proc)
-    assert prebuild.cancel_all() == 1
+    prebuild._LIVE[proc] = ("image", 0)
+    assert prebuild.cancel_all("image") == 1
     assert proc.alive is False and proc not in prebuild._LIVE
     assert prebuild.cancel_all() == 0
+
+
+class _LiveProc:
+    pid = None
+
+    def __init__(self):
+        self.alive = True
+
+    def is_alive(self):
+        return self.alive
+
+    def kill(self):
+        self.alive = False
+
+    def join(self, timeout = None):
+        pass
+
+
+def test_an_unload_cancels_only_its_own_kind_of_child():
+    image, video = _LiveProc(), _LiveProc()
+    prebuild._LIVE[image] = ("image", 0)
+    prebuild._LIVE[video] = ("video", 0)
+    try:
+        assert prebuild.cancel_all("video") == 1
+        assert video.alive is False and image.alive is True and image in prebuild._LIVE
+        assert prebuild.cancel_all("image") == 1
+        assert image.alive is False and not prebuild._LIVE
+    finally:
+        prebuild._LIVE.clear()
+
+
+@pytest.mark.parametrize("free_gib, stopped", [(6.5, True), (12.0, False)])
+def test_a_render_on_a_tight_card_stops_the_building_video_child(monkeypatch, free_gib, stopped):
+    import core.inference.diffusion_memory as mem
+
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda d: (int(free_gib * 2**30), 24 * 2**30))
+    monkeypatch.setattr(mem, "user_budget_reserve_bytes", lambda d, t: 0)
+    video, image = _LiveProc(), _LiveProc()
+    prebuild._LIVE[video] = ("video", 0)
+    prebuild._LIVE[image] = ("image", 0)
+    try:
+        assert prebuild.yield_to_render("video") == int(stopped)
+        assert video.alive is (not stopped)
+        assert image.alive is True  # another owner's child is never touched
+    finally:
+        prebuild._LIVE.clear()
+
+
+def test_the_video_marker_follows_the_triton_cache_key_env(monkeypatch, tmp_path):
+    monkeypatch.setenv("TRITON_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda d: (8, 9))
+    job = {
+        "name": "AutoencoderKLLTX2Video",
+        "config": {"a": 1},
+        "dtype": "bfloat16",
+        "shape": [1, 128, 2, 8, 8],
+        "device": 0,
+    }
+    monkeypatch.delenv("TRITON_DISABLE_LINE_INFO", raising = False)
+    a = prebuild._marker_path(job)
+    monkeypatch.setenv("TRITON_DISABLE_LINE_INFO", "1")
+    b = prebuild._marker_path(job)
+    assert a != b and a.startswith(str(tmp_path)) and b.startswith(str(tmp_path))
+
+
+def test_legacy_triton_cache_dir_honours_triton_home(monkeypatch, tmp_path):
+    import builtins
+
+    real_import = builtins.__import__
+
+    def no_triton(name, *args, **kwargs):
+        if name == "triton":
+            raise ImportError("no triton")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.delenv("TRITON_CACHE_DIR", raising = False)
+    monkeypatch.setenv("TRITON_HOME", str(tmp_path))
+    monkeypatch.setattr(builtins, "__import__", no_triton)
+    assert prebuild._triton_cache_dir() == os.path.join(str(tmp_path), ".triton", "cache")
 
 
 _SCRIPT = textwrap.dedent(

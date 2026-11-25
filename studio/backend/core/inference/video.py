@@ -15319,6 +15319,12 @@ class VideoBackend:
                 self._active_generate_cancel = cancel
                 begin_attention_run(state)
             apply_cpu_render_threads(state.device)
+            # A VAE prebuild child still building holds a CUDA context: on a tight card, free it before admission.
+            import sys
+
+            prebuild = sys.modules.get(f"{__package__}.diffusion_vae_prebuild")
+            if prebuild is not None:
+                prebuild.yield_to_render("video", logger)
             # Bound below, once the request is resolved. None means the failure beat the resolution, and there is
             # nothing truthful to report.
             request_shape: Optional[dict[str, Any]] = None
@@ -17263,7 +17269,7 @@ class VideoBackend:
 
             prebuild = sys.modules.get(f"{__package__}.diffusion_vae_prebuild")
             if prebuild is not None:
-                prebuild.cancel_all()
+                prebuild.cancel_all("video")
             restore_backend_flags(state.backend_flags)
             _release_video_expandable()
             _release_rocm_tunableop(getattr(state, "pipe", None))
