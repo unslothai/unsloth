@@ -536,6 +536,7 @@ from state.tool_approvals import (
     wait_tool_decision,
 )
 from utils.paths.path_utils import _is_wsl, is_appledouble_metadata
+from utils.paths.storage_roots import studio_root
 from utils.code_integrity import code_integrity_block_reason, code_integrity_user_message
 from utils.first_token_timeout import (
     finish_first_token_wait,
@@ -2919,9 +2920,7 @@ class _SlotLaunchFingerprint(NamedTuple):
 
 
 def _swa_cache_path() -> Path:
-    home = os.environ.get("UNSLOTH_STUDIO_HOME") or os.environ.get("STUDIO_HOME")
-    base = Path(home) if home else Path.home() / ".unsloth" / "studio"
-    return base / "swa_cache.json"
+    return studio_root() / "swa_cache.json"
 
 
 def _load_swa_cache() -> dict:
@@ -21655,7 +21654,7 @@ class LlamaCppBackend:
         self._llama_log_fh = None
         self._llama_log_path = None
         try:
-            log_dir = _swa_cache_path().parent / "logs" / "diffusion-server"
+            log_dir = studio_root() / "logs" / "diffusion-server"
             log_dir.mkdir(parents = True, exist_ok = True)
             self._llama_log_path = log_dir / f"diffusion-{int(time.time())}-port-{self._port}.log"
             self._llama_log_fh = open(self._llama_log_path, "w", encoding = "utf-8", buffering = 1)
@@ -25454,7 +25453,7 @@ class LlamaCppBackend:
         self._cleanup_cpu_fallback_runtime()
         staged_runtime = None
         try:
-            runtime_root = _swa_cache_path().parent / "runtime"
+            runtime_root = studio_root() / "runtime"
             runtime_root.mkdir(parents = True, exist_ok = True)
             _sweep_abandoned_cpu_runtimes(runtime_root)
             staged_runtime = tempfile.TemporaryDirectory(
@@ -25602,7 +25601,7 @@ class LlamaCppBackend:
         # Tees llama-server output to a log file for post-mortems; the parent keeps only the last 50 lines.
         self._llama_log_fh = None
         try:
-            log_dir = _swa_cache_path().parent / "logs" / "llama-server"
+            log_dir = studio_root() / "logs" / "llama-server"
             log_dir.mkdir(parents = True, exist_ok = True)
             self._llama_log_path = log_dir / f"llama-{int(time.time())}-port-{self._port}.log"
             self._llama_log_fh = open(
@@ -33755,7 +33754,7 @@ class LlamaCppBackend:
                         # pointed the user at.
                         self._llama_log_fh = None
                         try:
-                            log_dir = _swa_cache_path().parent / "logs" / "llama-server"
+                            log_dir = studio_root() / "logs" / "llama-server"
                             log_dir.mkdir(parents = True, exist_ok = True)
                             self._llama_log_path = log_dir / (
                                 f"llama-{int(time.time())}{label}-port-{self._port}"
@@ -37649,7 +37648,6 @@ class LlamaCppBackend:
         (per-root, so concurrent Unsloth instances with distinct UNSLOTH_STUDIO_HOME stay
         isolated, mirroring the reaper's custom-root isolation)."""
         try:
-            from utils.paths.storage_roots import studio_root  # noqa: WPS433
             return studio_root() / "llama-server.pid"
         except Exception:
             return None

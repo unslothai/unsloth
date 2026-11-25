@@ -5759,7 +5759,7 @@ def get_debug_log_sources(
     from utils import debug_log_sources
 
     sources = debug_log_sources.list_sources()
-    # Walk prefers the first root; file logging may be off before logs/ exists, so reveal the home.
+    # File logging may be off before logs/ exists, so reveal the home.
     roots = debug_log_sources.candidate_roots()
     log_root = None
     if roots:
