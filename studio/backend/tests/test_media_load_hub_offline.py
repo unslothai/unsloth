@@ -73,6 +73,8 @@ def _run(monkeypatch, media, repo):
         raise _Built("stub build")
 
     monkeypatch.setattr(cls, "load_pipeline", _load_pipeline)
+    # Not a host RAM test: a CPU-only runner (16 GB on CI) would refuse the float32 load before the load reaches the Hub.
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_HOST_RAM_CHECK", "0")
     backend = cls()
     backend.begin_load(repo)
     deadline = time.monotonic() + 60

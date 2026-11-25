@@ -5113,6 +5113,7 @@ export const de = {
     model: {
       label: "Übersetzungsmodell",
       fast: "Schnell",
+      balanced: "Ausgewogen",
       quality: "Beste Qualität",
       chat: "Chat-Modell",
       recommended: "Empfohlen",
@@ -5134,11 +5135,11 @@ export const de = {
       toneFormal: "Förmlich",
       toneCasual: "Locker",
       auto: "Beim Tippen übersetzen",
-      autoDescription: "Startet, sobald das Modell geladen ist. Tippen löst nie einen Download aus.",
+      autoDescription: "Startet automatisch, sobald das Modell geladen ist.",
       saveHistory: "Verlauf speichern",
       saveHistoryDescription: "Wird nur in diesem Browser gespeichert.",
       showPrompt: "Prompt anzeigen",
-      showPromptDescription: "Zeigt die genauen Anweisungen, die an das Modell gesendet werden.",
+      showPromptDescription: "Genaue Anweisungen an das Modell anzeigen.",
     },
     history: {
       title: "Verlauf",
@@ -6200,7 +6201,6 @@ export const de = {
     back: "Zurück",
     continue: "Weiter",
     skipSetup: "Einrichtung überspringen",
-    outsideAgain: "Zum Schließen erneut außerhalb klicken",
     getStarted: "Los geht’s",
     progress: "Schritt {current} von {total}",
     welcome: {

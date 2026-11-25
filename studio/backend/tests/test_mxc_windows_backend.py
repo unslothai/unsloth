@@ -990,3 +990,10 @@ def test_uv_base_prefix_junction_grants_concrete_runtime(monkeypatch, tmp_path):
         mxc_policy._runtime_read_roots(str(prefix / "python.exe"), [str(alias)])
     with pytest.raises(mxc_policy.MxcPolicyError, match = "reparse point"):
         mxc_policy._safe_canonical_path(str(alias), directory = True)
+
+
+@pytest.fixture(autouse = True)
+def _dacl_capable_pin(monkeypatch):
+    # The AppContainer + DACL tier exists only in the MXC 1.0.1 pin; 1.1.0 turns all of it off.
+    from core.inference import mxc_runtime
+    monkeypatch.setenv(mxc_runtime.PIN_ENV, mxc_runtime.LEGACY_PIN.version)

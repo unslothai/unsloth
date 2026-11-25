@@ -2643,6 +2643,8 @@ def test_the_video_refusal_also_names_a_broken_torchao_rather_than_the_gpu(
 
 def test_begin_load_refuses_dense_quant_on_a_non_pipeline_video_kind(fake_runtime, monkeypatch):
     # The DiT quant exists only on the pipeline path, so refuse it on a GGUF pick.
+    # Not a host RAM test: a CPU-only runner (16 GB on CI) would refuse the float32 load before the quant check.
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_HOST_RAM_CHECK", "0")
     backend = VideoBackend()
     with pytest.raises(RuntimeError) as excinfo:
         backend.begin_load(
@@ -3978,6 +3980,8 @@ def test_begin_load_claims_no_companion_repos_for_a_non_h3_family(fake_runtime, 
     from types import SimpleNamespace
 
     H3_COMPONENT_REPO, H3_GGUF_REPO, _ = _shared_setup_3()
+    # Not a host RAM test: a CPU-only runner (16 GB on CI) would refuse the float32 load before the claim.
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_HOST_RAM_CHECK", "0")
 
     backend = VideoBackend()
     monkeypatch.setattr(

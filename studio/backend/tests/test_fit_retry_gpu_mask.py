@@ -155,6 +155,7 @@ _TWO_PICKED = {"pick": ([1], False), "gpu_ids": [0, 1]}
         ({}, ["0", "0,1"]),
         (_TWO_PICKED, ["1", "0,1"]),
         ({"extra_args": ["-ot", "exps=CPU"]}, ["0", "0,1"]),
+        # A user --fit-target keeps the fitter on for the first launch too (#19269).
         ({"extra_args": ["--fit-target", "4096"]}, ["0", "0,1"]),
         # Iterating {8, 1} yields the parent's own order, where the order helper answers None.
         (
@@ -172,7 +173,8 @@ def test_the_fit_on_retry_sees_the_cards_auto_left_out(monkeypatch, tmp_path, kw
     backend, launches, error = _load(monkeypatch, tmp_path, returncodes = [1, None], **kwargs)
     assert error is None
     assert [_mask(launch) for launch in launches] == masks
-    assert [_fit_mode(launch[0]) for launch in launches] == ["off", "on"]
+    first = "on" if "--fit-target" in kwargs.get("extra_args", ()) else "off"
+    assert [_fit_mode(launch[0]) for launch in launches] == [first, "on"]
     assert backend._child_gpu_physical_ids == tuple(int(i) for i in masks[1].split(","))
 
 

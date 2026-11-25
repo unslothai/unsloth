@@ -109,6 +109,12 @@ def capability_snapshot(
             "Set tool isolation to auto to run Terminal commands with software safeguards, or use "
             "the Python tool, which is sandboxed separately."
         )
+    elif not mxc_runtime.selected_pin().has_host_prep:
+        remediation = (
+            "Install the pinned Microsoft WXC runtime (Settings > Sandbox) and enable BaseContainer/PSEC. "
+            "If this Windows has no built-in container, installing again switches to the MXC runtime "
+            "with the fallback sandbox."
+        )
     elif dacl:
         remediation = (
             "Install the pinned Microsoft WXC runtime and prepare this host once as an "
@@ -181,7 +187,7 @@ def prepare(plan, capability):
         record,
         network_policy = "mxc_compatibility_requested_unverified",
         backend_tier = "unknown",
-        runtime_revision = mxc_runtime.MXC_REVISION,
+        runtime_revision = mxc_runtime.selected_pin().revision,
         runtime_artifact_digest = f"sha256:{mxc_runtime.artifact('exec')[2]}",
         schema_version = mxc_runtime.MXC_SCHEMA_VERSION,
         policy_hash = request["policyHash"],

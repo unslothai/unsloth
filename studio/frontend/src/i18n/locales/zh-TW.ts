@@ -5111,6 +5111,7 @@ export const zhTW = {
     model: {
       label: "翻譯模型",
       fast: "快速",
+      balanced: "均衡",
       quality: "最佳品質",
       chat: "聊天模型",
       recommended: "推薦",
@@ -5132,11 +5133,11 @@ export const zhTW = {
       toneFormal: "正式",
       toneCasual: "輕鬆",
       auto: "邊輸入邊翻譯",
-      autoDescription: "模型載入後開始。輸入文字不會觸發下載。",
+      autoDescription: "模型載入後自動開始。",
       saveHistory: "儲存記錄",
       saveHistoryDescription: "僅保存在這個瀏覽器中。",
       showPrompt: "顯示提示詞",
-      showPromptDescription: "查看傳送給模型的完整指示。",
+      showPromptDescription: "查看傳送給模型的確切指示。",
     },
     history: {
       title: "記錄",
@@ -6205,7 +6206,6 @@ export const zhTW = {
     back: "返回",
     continue: "繼續",
     skipSetup: "略過設定",
-    outsideAgain: "再次點擊外部即可關閉",
     getStarted: "開始使用",
     progress: "第 {current} 步，共 {total} 步",
     welcome: {

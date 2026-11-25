@@ -9339,7 +9339,7 @@ const UserMessage: FC = () => {
     <MessagePrimitive.Root
       className={cn(
         "aui-user-message-root mx-auto flex w-full max-w-(--thread-content-max-width) flex-col items-end gap-y-2 pt-6 pb-4 text-ui-15p5 [font-weight:410] tracking-[0.01em] dark:tracking-[0.02em]",
-        arriving && "fade-in slide-in-from-bottom-1 animate-in duration-150",
+        arriving && "fade-in slide-in-from-bottom-1 animate-in",
       )}
       data-role="user"
       tabIndex={0}

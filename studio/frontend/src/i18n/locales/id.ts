@@ -5382,6 +5382,7 @@ export const id = {
     model: {
       label: "Model terjemahan",
       fast: "Cepat",
+      balanced: "Seimbang",
       quality: "Kualitas terbaik",
       chat: "Model chat",
       recommended: "Direkomendasikan",
@@ -5403,7 +5404,7 @@ export const id = {
       toneFormal: "Formal",
       toneCasual: "Santai",
       auto: "Terjemahkan saat mengetik",
-      autoDescription: "Dimulai setelah model dimuat. Mengetik tidak pernah memulai unduhan.",
+      autoDescription: "Mulai otomatis saat model dimuat.",
       saveHistory: "Simpan riwayat",
       saveHistoryDescription: "Hanya disimpan di browser ini.",
       showPrompt: "Tampilkan prompt",
@@ -6535,7 +6536,6 @@ export const id = {
     back: "Kembali",
     continue: "Lanjutkan",
     skipSetup: "Lewati penyiapan",
-    outsideAgain: "Klik di luar sekali lagi untuk menutup",
     getStarted: "Mulai",
     progress: "Langkah {current} dari {total}",
     welcome: {

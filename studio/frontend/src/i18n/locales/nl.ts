@@ -5429,6 +5429,7 @@ export const nl = {
     model: {
       label: "Vertaalmodel",
       fast: "Snel",
+      balanced: "Gebalanceerd",
       quality: "Beste kwaliteit",
       chat: "Chatmodel",
       recommended: "Aanbevolen",
@@ -5450,11 +5451,11 @@ export const nl = {
       toneFormal: "Formeel",
       toneCasual: "Informeel",
       auto: "Vertalen tijdens het typen",
-      autoDescription: "Begint zodra het model is geladen. Typen start nooit een download.",
+      autoDescription: "Start automatisch zodra het model is geladen.",
       saveHistory: "Geschiedenis opslaan",
       saveHistoryDescription: "Wordt alleen in deze browser bewaard.",
       showPrompt: "Prompt tonen",
-      showPromptDescription: "Bekijk de exacte instructies die naar het model worden gestuurd.",
+      showPromptDescription: "Bekijk de exacte instructies die naar het model gaan.",
     },
     history: {
       title: "Geschiedenis",
@@ -6592,7 +6593,6 @@ export const nl = {
     back: "Terug",
     continue: "Doorgaan",
     skipSetup: "Instellen overslaan",
-    outsideAgain: "Klik nogmaals buiten het venster om te sluiten",
     getStarted: "Aan de slag",
     progress: "Stap {current} van {total}",
     welcome: {

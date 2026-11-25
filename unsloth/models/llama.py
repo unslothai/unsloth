@@ -3992,6 +3992,9 @@ class FastLlamaModel:
         load_in_fp8 = False,  # fp8 LoRA (True, False, 'block')
         **kwargs,
     ):
+        from ._utils import _unsloth_load_begins
+
+        _unsloth_load_begins()
         os.environ["UNSLOTH_USE_NEW_MODEL"] = "0"
         # loader.py sends full finetuning to FastModel, so this load is always LoRA. Say so, or load-time readers (packed experts, MXFP4, expert quantization) inherit an earlier full finetuning load's "1".
         os.environ["UNSLOTH_ENABLE_FULL_FINETUNING"] = "0"
