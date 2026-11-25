@@ -618,3 +618,64 @@ def test_hostswap_orders_scratch_reuse_after_the_add_on_its_own_stream(monkeypat
         assert (
             first_add[c] in hs.h2d[c].waits
         )  # the H2D into tmp[c] waited for the previous add on stream A
+
+
+# ------------------------------------------------------------------------------------------- round 4 (#19460)
+
+
+@pytest.mark.parametrize("marker", ["_diffusers_hook", "_unsloth_mmap_streamed"])
+def test_layerwise_cast_leaves_decline_tp(marker):
+    # the small-host dense load keeps bf16 storage with an fp16 compute cast on each Linear; a plain shard would
+    # drop that cast and the first denoise would mix dtypes
+    m = _stub()
+    leaf = m.transformer_blocks[1].attn.to_q
+    object.__setattr__(leaf, marker, object() if marker == "_diffusers_hook" else True)
+    why = tp2.refusal(m, CPU2)
+    assert why is not None and ("to_q" in why or "small-host" in why)
+
+
+def test_recompile_limit_under_fullgraph_falls_back_to_eager(monkeypatch):
+    from torch._dynamo.exc import FailOnRecompileLimitHit
+
+    m = _stub()
+    tp2.install(m, CPU2)
+    stack = m.transformer_blocks[0]
+    monkeypatch.setenv(tp2.TP_COMPILE_ENV, "1")
+
+    def limit(*a, **k):
+        raise FailOnRecompileLimitHit("recompile_limit reached with fullgraph=True")
+
+    monkeypatch.setattr(torch, "compile", lambda fn, *a, **k: limit)
+    stack.compile(fullgraph = True)
+    assert stack._guarded(limit, lambda *a, **k: "eager")("blk") == "eager"
+    assert stack.compiled is False and "recompile_limit" in stack.compile_error
+
+
+def test_fp16_autocast_on_bf16_activations_keeps_fp32_partials():
+    lin = nn.Linear(4, 1, bias = False).bfloat16()
+    with torch.no_grad():
+        lin.weight.fill_(256.0)
+    x = torch.tensor([[256.0, 256.0, -256.0, -256.0]], dtype = torch.bfloat16)
+    rows = [tp2._row_parallel_class()(tp2.shard_linear(lin, 1, i, 2, "cpu")) for i in range(2)]
+    with torch.autocast("cpu", dtype = torch.float16):
+        whole = lin(x)
+        parts = [rows[0](x[:, :2]), rows[1](x[:, 2:])]
+    assert torch.isfinite(whole).all() and float(whole) == 0.0
+    assert all(p.dtype == torch.float32 for p in parts)
+    out = tp2.make_all_reduce("cpu", CPU2)(parts)[0]
+    assert torch.isfinite(out).all() and float(out) == 0.0
+
+
+def test_deferred_int8_census_sees_the_tp_cards(monkeypatch):
+    from core.inference import diffusion_int8_attention_dispatch as disp
+    from core.inference import diffusion_multigpu as mg
+
+    dit = _stub()
+    dit.__dict__[tp2.TP_ATTR] = {
+        "devices": ["cuda:0", "cuda:1"]
+    }  # what install records on two cards
+    assert set(disp._denoiser_cards([dit])) == {0, 1}
+    monkeypatch.setattr(
+        mg, "current_selection", lambda: None
+    )  # the deferred profile runs outside the load
+    assert disp._secondary_cards(0, [dit]) == (1,)

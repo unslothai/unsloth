@@ -7,11 +7,17 @@ the unsplit model (prefill, KV-cache extract and cached steps); native int8 Conv
 from __future__ import annotations
 
 import copy
+import os
 
 import pytest
 
-torch = pytest.importorskip("torch")
-q21 = pytest.importorskip("diffusers.models.transformers.transformer_qwenimage21")
+if os.environ.get("UNSLOTH_TP2_REQUIRE_REAL_MODEL") == "1":
+    # the CI step that installs the Studio diffusers pin: a missing import fails collection instead of skipping
+    import torch
+    from diffusers.models.transformers import transformer_qwenimage21 as q21
+else:
+    torch = pytest.importorskip("torch")
+    q21 = pytest.importorskip("diffusers.models.transformers.transformer_qwenimage21")
 from torch import nn  # noqa: E402
 
 from core.inference import diffusion_tp2 as tp2  # noqa: E402
@@ -477,7 +483,10 @@ def test_fp16_tp_forward_stays_fp16_and_matches(monkeypatch):
 
 
 def test_lora_is_blocked_under_tp_and_peft_cannot_see_the_shards():
-    peft = pytest.importorskip("peft")
+    if os.environ.get("UNSLOTH_TP2_REQUIRE_REAL_MODEL") == "1":
+        import peft
+    else:
+        peft = pytest.importorskip("peft")
     from types import SimpleNamespace
 
     cfg = peft.LoraConfig(r = 4, target_modules = ["to_q"])
@@ -587,3 +596,17 @@ def test_speed_profile_backend_change_is_refused_under_tp():
     # the shards cannot be reached by diffusers' setter, so nothing changes and nothing new is reported
     assert engaged == kept and getattr(m, da.ATTENTION_BACKEND_ATTR, None) == kept
     assert [getattr(p, "_attention_backend", None) for p in procs] == before
+
+
+def test_small_host_dense_denoiser_declines_tp():
+    # Studio's small-host dense load: bf16 storage, fp16 compute casts on each Linear (diffusers layerwise casting)
+    from core.inference.diffusion_small_host import prepare_streamed_encoder_
+
+    m = _tiny(layers = 2).to(torch.bfloat16)
+    prepare_streamed_encoder_(m, torch.float16)
+    blocks = list(m.transformer_blocks)
+    why = tp2.refusal(m, CPU2)
+    assert why is not None and "hooks" in why
+    with pytest.raises(RuntimeError, match = "declined"):
+        tp2.install(m, CPU2)
+    assert list(m.transformer_blocks) == blocks

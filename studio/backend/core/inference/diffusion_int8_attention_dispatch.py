@@ -726,6 +726,12 @@ def _denoiser_cards(dits: Any) -> tuple:
             and secondary.index is not None
         ):
             cards[int(secondary.index)] = None
+        # a tensor-parallel denoiser's shards sit outside its module tree: its record names their cards
+        tp = getattr(dit, "__dict__", {}).get("_unsloth_tp2")
+        for name in (tp or {}).get("devices", ()) if isinstance(tp, dict) else ():
+            kind, _, index = str(name).partition(":")
+            if kind == "cuda" and index.isdigit():
+                cards[int(index)] = None
         tensors = getattr(dit, "parameters", None), getattr(dit, "buffers", None)
         for fn in tensors:
             if not callable(fn):

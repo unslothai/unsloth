@@ -134,8 +134,14 @@ def refusal(transformer: Any, devices: Sequence[Any]) -> Optional[str]:
             why = _linear_refusal(lin, path)
             if why is not None:
                 return why
-        if getattr(blk, "_diffusers_hook", None) is not None:
-            return "the denoiser carries offload hooks (TP replaces offload)"
+        for sub_name, sub in blk.named_modules():
+            if getattr(sub, "_diffusers_hook", None) is not None:
+                # block level: offload hooks (TP replaces offload); a leaf: a layerwise compute cast (the small-host
+                # load keeps bf16 storage and casts each Linear to fp16) that a plain shard would not carry
+                where = f" on {sub_name}" if sub_name else ""
+                return f"the denoiser carries diffusers hooks{where} (offload or layerwise casting)"
+            if getattr(sub, "_unsloth_mmap_streamed", False):
+                return f"{sub_name or 'a block'} streams its weights with a layerwise cast (small-host load)"
     return None
 
 
@@ -184,6 +190,32 @@ def _is_compile_failure(exc: BaseException) -> bool:
     return is_compile_failure(exc)
 
 
+def _autocast_fp16(x: Any) -> bool:
+    """True inside an fp16 autocast region for ``x``'s device."""
+    import torch
+    try:
+        kind = x.device.type
+        return (
+            bool(torch.is_autocast_enabled(kind))
+            and torch.get_autocast_dtype(kind) == torch.float16
+        )
+    except Exception:  # noqa: BLE001 - a torch without the per-device query: no autocast assumed
+        return False
+
+
+def _stage_compile_failure(exc: BaseException) -> bool:
+    """Studio's compile-time failure predicate, plus Dynamo's recompile limit under ``fullgraph=True``: the stages
+    trace per token length / cache mode / card, and hitting the limit raises before anything ran."""
+    if _is_compile_failure(exc):
+        return True
+    try:
+        import torch
+        hit = getattr(getattr(torch._dynamo, "exc", None), "FailOnRecompileLimitHit", None)
+    except Exception:  # noqa: BLE001
+        return False
+    return isinstance(hit, type) and isinstance(exc, hit)
+
+
 @lru_cache(maxsize = 1)
 def _row_parallel_class():
     """Built once: a fresh class per shard would make every compiled stage retrace on the type guard."""
@@ -208,14 +240,23 @@ def _row_parallel_class():
             import torch
 
             inner = self.inner
-            if x.dtype != torch.float16 or not reduce_fp32():
+            # fp16 autocast turns a bf16 / fp32 activation into fp16 partials inside inner(x): same overflow
+            cast16 = x.dtype != torch.float16 and _autocast_fp16(x)
+            if (x.dtype != torch.float16 and not cast16) or not reduce_fp32():
                 return inner(x)
             if _is_native(inner):
                 return inner(x.float())
             x2 = x.reshape(-1, x.shape[-1])
-            y = _mm_fp32(x2, inner.weight)
-            if inner.bias is not None:
-                y = y + inner.bias.float()
+            if cast16:
+                # what autocast would feed the unsplit GEMM (fp16 operands), with a float32 partial out
+                with torch.autocast(device_type = x.device.type, enabled = False):
+                    y = _mm_fp32(x2.to(torch.float16), inner.weight.to(torch.float16))
+                    if inner.bias is not None:
+                        y = y + inner.bias.float()
+            else:
+                y = _mm_fp32(x2, inner.weight)
+                if inner.bias is not None:
+                    y = y + inner.bias.float()
             return y.reshape(*x.shape[:-1], y.shape[-1])
 
     return RowParallelOut
@@ -474,7 +515,12 @@ def pick_all_reduce(
 ) -> tuple:
     """(name, fn, {name: ms}): the fastest working backend for one ``numel`` all-reduce. A pin (``only`` or the
     env) is probed the same way (one real collective, result checked) and raises when it does not work, so a build
-    without NCCL (native Windows) never publishes a load that fails on the first denoise step."""
+    without NCCL (native Windows) never publishes a load that fails on the first denoise step.
+
+    The winner is picked once per load at one size (``probe_tokens`` x hidden, 4096 tokens: the 1 MP decode step's
+    activation) and kept for every render shape. On the 2x T4 (no P2P) the three backends stayed within 10-40 % of
+    each other at that size and the all-reduce is 4-7 % of a TP block, so a shape where another backend would win
+    moves the step time by well under that share; ``UNSLOTH_DIFFUSION_TP_COMM`` pins one when it matters."""
     import torch
 
     forced = only or _comm_choice()
@@ -633,7 +679,7 @@ def _stack_class():
                 try:
                     return compiled(*args, **kwargs)
                 except Exception as exc:  # noqa: BLE001 - reraised unless a compile-time failure
-                    if not _is_compile_failure(exc):
+                    if not _stage_compile_failure(exc):
                         raise
                     stack.compile_error = f"{type(exc).__name__}: {exc}"[:300]
                     object.__setattr__(stack, "_stage_attn", _attn_half)
