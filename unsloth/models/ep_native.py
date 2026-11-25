@@ -573,15 +573,41 @@ def ep_sync_expert_grads(model):
                 if p.grad is None:
                     p.grad = torch.zeros_like(p)
                 grads.append(p.grad)
-    buckets = {}
-    for g in grads:
-        buckets.setdefault((g.device, g.dtype), []).append(g)
+    group = rep.get_group()
     with torch.no_grad():
-        for tensors in buckets.values():
+        for tensors in _replica_buckets(grads, _REPLICA_BUCKET_BYTES):
+            if len(tensors) == 1 and tensors[0].is_contiguous():
+                dist.all_reduce(tensors[0], group = group)
+                continue
             flat = _flatten_dense_tensors(tensors)
-            dist.all_reduce(flat, group = rep.get_group())
+            dist.all_reduce(flat, group = group)
             for t, v in zip(tensors, _unflatten_dense_tensors(flat, tensors)):
                 t.copy_(v)
+            del flat, v  # a view of flat in v would keep it alive beside the next bucket's buffer
+
+
+# One flat copy of every expert gradient would double their memory.
+_REPLICA_BUCKET_BYTES = 256 << 20
+
+
+def _replica_buckets(grads, cap):
+    """Shape-only split, so every replica reduces the same buckets."""
+    open_buckets = {}
+    for g in grads:
+        nbytes = g.numel() * g.element_size()
+        if nbytes >= cap:
+            yield [g]
+            continue
+        key = (g.device, g.dtype)
+        bucket = open_buckets.setdefault(key, [[], 0])
+        if bucket[1] + nbytes > cap:
+            yield bucket[0]
+            bucket[0], bucket[1] = [], 0
+        bucket[0].append(g)
+        bucket[1] += nbytes
+    for tensors, _ in open_buckets.values():
+        if tensors:
+            yield tensors
 
 
 def _gather_expert(
