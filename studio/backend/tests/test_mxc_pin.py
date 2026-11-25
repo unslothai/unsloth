@@ -161,16 +161,6 @@ def test_the_demotion_marker_is_written_whole(monkeypatch, tmp_path):
     assert [path.name for path in (tmp_path / "mxc-runtime").iterdir()] == ["pin-demoted.json"]
 
 
-@pytest.mark.parametrize(("pin", "enabled"), [(_PRIMARY, False), (_LEGACY, True)])
-def test_a_saved_dacl_choice_applies_only_to_the_legacy_pin(monkeypatch, pin, enabled):
-    from core.inference import mxc_policy
-
-    monkeypatch.setattr(mxc_runtime, "selected_pin", lambda: pin)
-    monkeypatch.setenv(mxc_policy.DACL_FALLBACK_ENV, "1")
-    # 1.1.0 has no AppContainer + DACL tier: no grants, no leases, no allowDaclMutation.
-    assert mxc_policy.dacl_fallback_enabled() is enabled
-
-
 def test_host_preparation_is_never_asked_of_the_primary_pin(monkeypatch):
     monkeypatch.setattr(mxc_runtime, "selected_pin", lambda: _PRIMARY)
     monkeypatch.setattr(

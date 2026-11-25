@@ -574,3 +574,14 @@ def _dacl_capable_pin(monkeypatch):
     # The AppContainer + DACL tier exists only in the MXC 1.0.1 pin; 1.1.0 turns all of it off.
     from core.inference import mxc_runtime
     monkeypatch.setenv(mxc_runtime.PIN_ENV, mxc_runtime.LEGACY_PIN.version)
+
+
+# Not in test_mxc_pin.py: the daily npm check runs that file with pytest alone, and mxc_policy needs the backend.
+@pytest.mark.parametrize(
+    ("pin", "enabled"), [(mxc_runtime.PRIMARY_PIN, False), (mxc_runtime.LEGACY_PIN, True)]
+)
+def test_a_saved_dacl_choice_applies_only_to_the_legacy_pin(monkeypatch, pin, enabled):
+    monkeypatch.setattr(mxc_runtime, "selected_pin", lambda: pin)
+    monkeypatch.setenv(mxc_policy.DACL_FALLBACK_ENV, "1")
+    # 1.1.0 has no AppContainer + DACL tier: no grants, no leases, no allowDaclMutation.
+    assert mxc_policy.dacl_fallback_enabled() is enabled
