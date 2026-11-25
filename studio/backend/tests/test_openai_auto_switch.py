@@ -2605,7 +2605,13 @@ def test_a_folder_with_gguf_and_safetensors_is_listed_and_loaded_as_its_name(
         for m in asyncio.run(local_inventory.list_local_models_response()).models
         if m.display_name.startswith("both")
     )
-    assert hub_names[0] == "both (GGUF)"
+    # The Hub's own scan lists a .bin checkpoint beside a GGUF only by its GGUF.
+    expected = (
+        ["both (GGUF)", "both (Safetensors)"]
+        if weights.endswith(".safetensors")
+        else ["both (GGUF)"]
+    )
+    assert hub_names == expected
     local = asyncio.run(
         models_route.list_local_models(
             models_dir = "./models", current_subject = "tester", via_api_key = False
