@@ -907,10 +907,12 @@ export function hasIncompleteLinkRepair(
 export const LITERAL_LINK_REMEND = { links: false, images: false } as const;
 
 // A finished reply keeps remend's literal escapes (`- > 25`, `20~25`) but not its marker completions.
+// Nor its trailing-tag strip, which cuts maths such as `x_{<i}` at the `<`.
 export const FINISHED_TEXT_REMEND = {
   ...LITERAL_LINK_REMEND,
   bold: false,
   boldItalic: false,
+  htmlTags: false,
   inlineCode: false,
   italic: false,
   strikethrough: false,
