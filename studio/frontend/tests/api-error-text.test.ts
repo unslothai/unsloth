@@ -25,9 +25,7 @@ const prompts = loadWithStubs<
 });
 
 const dictation = loadWithStubs<
-  typeof import(
-    "../src/features/chat/adapters/studio-model-dictation-adapter.ts",
-  )
+  typeof import("../src/features/chat/adapters/studio-model-dictation-adapter.ts")
 >(
   new URL(
     "../src/features/chat/adapters/studio-model-dictation-adapter.ts",
