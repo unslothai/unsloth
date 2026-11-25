@@ -733,6 +733,11 @@ class Unsloth{RLTrainer_name}(_Unsloth{RLTrainer_name}):
         **kwargs
     ):
         if args is None: args = Unsloth{RLConfig_name}()
+        if isinstance(locals().get("model"), str) and locals().get("peft_config") is not None:
+            raise ValueError(
+                "Unsloth: `peft_config` is not applied to a model passed by name or path. Load it with "
+                "`FastLanguageModel.from_pretrained`, add LoRA with `FastLanguageModel.get_peft_model`, and pass that model instead."
+            )
 {RLTrainer_extra_args}
         # [TODO] Fix up DataParallel multiplying batch sizes
         # [TODO] DDP works, but DP seems to not work? [TODO]
@@ -755,6 +760,7 @@ class Unsloth{RLTrainer_name}(_Unsloth{RLTrainer_name}):
             except Exception:
                 pass
         super().__init__({RLTrainer_call_args}{RLTrainer_kwargs})
+        if "model" in locals() and isinstance(model, str): model = self.model
         # A tensor parallel model (tp_native.tp_trainer_setup) stays on its training path: for_inference would
         # route the decoder layers onto decode paths outside the tensor parallel regions.
         if "model" in locals() and hasattr(model, "for_inference") and not getattr(self, "_unsloth_tensor_parallel", False):
@@ -2998,8 +3004,8 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "    print('Unsloth: Switching to float32 training since model cannot work with float16')\n"
             "    force_float32 = True\n"
             "mixed_precision_dtype = os.environ.get('UNSLOTH_MIXED_PRECISION', 'float32')\n"
-            "dtype = getattr(model.config, 'dtype', None) or getattr(model.config, 'torch_dtype', None)\n"
-            "if dtype is None: dtype = model.get_input_embeddings().weight.dtype\n"
+            "dtype = getattr(getattr(model, 'config', None), 'dtype', None) or getattr(getattr(model, 'config', None), 'torch_dtype', None)\n"
+            "if dtype is None and not isinstance(model, str): dtype = model.get_input_embeddings().weight.dtype\n"
             "from unsloth_zoo.utils import _get_dtype\n"
             "dtype = _get_dtype(dtype)\n"
             "float16 = dtype == torch.float16\n"
@@ -3117,7 +3123,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
     if "model" in call_args:
         # No UNSLOTH_RETURN_LOGITS=1 for compute_metrics here: prediction_step forces it per eval call; here it leaked into training (#3071).
         warnings_issued_check = (
-            "if model is not None:\n"
+            "if model is not None and not isinstance(model, str):\n"
             "    _warnings_issued = getattr(model, 'warnings_issued', None)\n"
             "    if _warnings_issued is None:\n"
             "        model.warnings_issued = {}\n"
@@ -3191,7 +3197,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                 "        elif hasattr(args, 'max_length') and args.max_length is not None:\n"
                 "            max_length = args.max_length\n"
                 "            # if we are here, then we are in a weird case where max_length is set but max_seq_length is not set\n"
-                "            setattr(model, 'max_seq_length', max_length)\n"
+                "            if not isinstance(model, str): setattr(model, 'max_seq_length', max_length)\n"
                 "        else:\n"
                 "            print('Unsloth: We did not find `max_seq_length` or `max_length` in the model or args. We will set it to 1024.')\n"
                 "            args.max_length = 1024\n"

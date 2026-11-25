@@ -215,7 +215,7 @@ def sft_trainer_fix_untrained_tokens(call_args, extra_args):
             "from unsloth_zoo.tokenizer_utils import fix_untrained_tokens\n"
             "from unsloth_zoo.training_utils  import fix_zero_training_loss\n"
             "if 'tokenizer' not in locals(): tokenizer = processing_class\n"
-            "fix_untrained_tokens(model, tokenizer, train_dataset, IGNORED_TOKENIZER_NAMES, eps = 1e-16)\n"
+            "if not isinstance(model, str): fix_untrained_tokens(model, tokenizer, train_dataset, IGNORED_TOKENIZER_NAMES, eps = 1e-16)\n"
             "fix_zero_training_loss(model, tokenizer, train_dataset)\n"
         )
         return fix_tokenizer
@@ -3036,7 +3036,7 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
             left_pad_tokens_per_prompt = calculate_pad_tokens_in_prompt(prompt_completion_ids, logits_to_keep, self.processing_class.pad_token_id)
             max_left_pad = torch.max(left_pad_tokens_per_prompt).item()
         _use_gc = self.model._unsloth_gradient_checkpointing if hasattr(self.model, '_unsloth_gradient_checkpointing') else getattr(self.args, 'gradient_checkpointing', True)
-        self.model.for_training(use_gradient_checkpointing=_use_gc)"""
+        if hasattr(self.model, 'for_training'): self.model.for_training(use_gradient_checkpointing=_use_gc)"""
 
     # TRL 0.22.x-0.23.x has no forward_kwargs / num_images, so a multi-image row is sliced as several
     # rows. Count images off the same normalised cells. Emitted only for those versions so newer
