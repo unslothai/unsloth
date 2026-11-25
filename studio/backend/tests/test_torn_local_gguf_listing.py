@@ -134,3 +134,30 @@ def test_a_shard_symlink_is_checked_against_the_set_the_loader_opens(sources, tm
     assert "Followed-Q4_K_M" in names and "Linked-Q4_K_M" not in names
     assert resolver.resolve_local_gguf("Linked-Q4_K_M") is None
     assert resolver.resolve_local_gguf("Followed-Q4_K_M") is not None
+
+
+def test_a_torn_build_does_not_hide_a_whole_one_in_its_folder(sources, tmp_path):
+    models = tmp_path / "models"
+    _gguf(models / "pair" / "alpha-Q4_K_M-00001-of-00002.gguf")
+    _gguf(models / "pair" / "beta-Q4_K_M.gguf")
+    for part in (1, 2):
+        _gguf(tmp_path / "backing" / f"Link-Q8_0-0000{part}-of-00002.gguf")
+    first = "Link-Q8_0-00001-of-00002.gguf"
+    (models / "linked").mkdir()
+    (models / "linked" / first).symlink_to(tmp_path / "backing" / first)
+
+    rows = models_route.collect_local_models(
+        models.resolve(), sources = sources, materialize_ollama_links = False
+    )
+    partial = {_name(row): row.partial for row in rows}
+    assert (partial.get("pair"), partial.get("linked")) == (False, False)
+    offered = {
+        _name(info): quants
+        for info, _is_gguf, quants, _resident in inference_route._servable_catalog_rows(
+            inference_route._classified_catalog(rows)
+        )
+    }
+    assert (offered.get("pair"), offered.get("linked")) == (("beta-Q4_K_M",), ("Q8_0",))
+    assert resolver.resolve_local_gguf("pair")[1] == "beta-Q4_K_M"
+    assert resolver.resolve_local_gguf("pair:Q4_K_M") is None
+    assert resolver.resolve_local_gguf("linked")[1] == "Q8_0"

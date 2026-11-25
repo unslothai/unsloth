@@ -292,6 +292,15 @@ def _weights_complete(scan_path: Path, fingerprint: tuple) -> bool:
     return complete
 
 
+def _a_gguf_build_loads(folder: Path) -> bool:
+    """The resolver's check of each build in a local folder, so a torn build does not hide a whole one."""
+    from hub.utils.gguf import list_local_gguf_variants
+    from utils.models.model_config import split_set_is_loadable
+
+    variants, _ = list_local_gguf_variants(str(folder), require_existing_files = True)
+    return not variants or any(split_set_is_loadable(folder / v.filename) for v in variants)
+
+
 def _apply_payload_partial(scan_path: Path, rows: List[LocalModelInfo]) -> List[LocalModelInfo]:
     """Local folders carry no downloader markers, so only the payload shows a torn download. ``unknown`` is skipped: a diffusers pipeline's weights live in component subdirs."""
     if not rows:
@@ -311,11 +320,7 @@ def _apply_payload_partial(scan_path: Path, rows: List[LocalModelInfo]) -> List[
     snapshot_partial = (
         weights and bool(judged - {"gguf"}) and not _weights_complete(scan_path, fingerprint)
     )
-    gguf_partial = (
-        quants
-        and "gguf" in judged
-        and not hf_cache_scan.snapshot_holds_a_complete_payload(scan_path, quants = True)
-    )
+    gguf_partial = quants and "gguf" in judged and not _a_gguf_build_loads(scan_path)
     if not snapshot_partial and not gguf_partial:
         return rows
     return _apply_format_aware_partial(
