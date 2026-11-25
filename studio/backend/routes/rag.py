@@ -1282,7 +1282,9 @@ def search(payload: SearchRequest, subject: str = Depends(get_current_subject)) 
         elif payload.mode == "dense":
             hits = retrieval.retrieve_dense(conn, scope, payload.query, payload.top_k)
         else:
-            hits = retrieval.retrieve_hybrid(conn, scope, payload.query, k = payload.top_k)
+            hits = retrieval.retrieve_hybrid(
+                conn, scope, payload.query, k = payload.top_k, min_score = payload.min_score
+            )
         hits = retrieval.filter_min_score(hits, payload.min_score)
         rows = store.chunks_by_id(conn, [h.chunk_id for h in hits])
         results = []

@@ -217,6 +217,7 @@ def search_knowledge_base_with_sources(
             k = top_k or config.TOP_K_HYBRID,
             model_name = model_name,
             mode = mode,
+            min_score = min_score,
         )
         hits = retrieval.filter_min_score(hits, min_score)
         rows = store_rows(conn, hits)
@@ -248,13 +249,15 @@ def search_for_autoinject(
     if scope is None:
         return None
     k = top_k or config.TOP_K_HYBRID
+    # Floor before cap: fused keyword-only hits carry no cosine and would take capped slots.
+    fused = mode == "hybrid" and min_dense_score is not None
     conn = rag_db.get_connection()
     try:
         hits = retrieval.retrieve_hybrid(
             conn,
             scope,
             query,
-            k = k,
+            k = config.TOP_K_LEXICAL + config.TOP_K_DENSE if fused else k,
             model_name = model_name,
             mode = mode,
         )
