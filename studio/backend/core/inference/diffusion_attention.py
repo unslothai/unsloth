@@ -4344,6 +4344,20 @@ def _apply_attention_backend_impl(
         if _target_device(target).split(":")[0] == "mps":
             from core._mps_sdpa_guard import install_mps_large_attention_guard
             install_mps_large_attention_guard(logger)
+    from .diffusion_tp2 import is_installed as _tp_installed
+
+    tp = [t for t in _attention_dits(pipe) if _tp_installed(t)]
+    if tp:
+        # diffusers' setter walks modules(), which cannot reach the TP shards' processors: the shards keep the
+        # backend they were built with, and that is what is reported (no silent mismatch)
+        kept = getattr(tp[0], ATTENTION_BACKEND_ATTR, None)
+        if logger is not None:
+            logger.info(
+                "diffusion.attention: tensor-parallel denoiser keeps backend=%s (request %s not applied)",
+                kept or "native",
+                backend,
+            )
+        return kept
     setters = [
         s
         for s in (getattr(t, "set_attention_backend", None) for t in _attention_dits(pipe))

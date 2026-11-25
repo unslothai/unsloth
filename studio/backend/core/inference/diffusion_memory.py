@@ -7214,6 +7214,15 @@ def apply_memory_plan(
             tiling_engaged = _enable_vae_saver(pipe, "enable_vae_tiling", "enable_tiling", logger)
 
     policy = plan.offload_policy
+    from .diffusion_tp2 import PlacementError as _TPPlacementError
+    from .diffusion_tp2 import is_installed as _tp_installed
+
+    tp_denoiser = _tp_installed(getattr(pipe, "transformer", None))
+    if tp_denoiser and policy not in (OFFLOAD_NONE, OFFLOAD_GROUP):
+        # every other tier moves or hooks the denoiser, whose shards it cannot see (diffusion_tp2)
+        raise _TPPlacementError(
+            f"offload policy {policy!r} cannot keep a tensor-parallel denoiser resident"
+        )
     unet_whole = (
         _low_vram_whole_module(
             plan,
@@ -7257,6 +7266,11 @@ def apply_memory_plan(
         _set_group_offload_failure(pipe, None)
         applied = _apply_group_offload(pipe, placement, logger, **group_kwargs)
         failure = getattr(pipe, _GROUP_OFFLOAD_FAILURE_ATTR, None)
+        if not applied and tp_denoiser:
+            # the fallbacks below stream or whole-module offload the denoiser: TP must be undone first
+            raise _TPPlacementError(
+                f"the encoders could not be group offloaded beside the shards ({failure})"
+            )
         if not applied and failure is not None and _is_oom(failure):
             _set_group_offload_failure(pipe, None)  # the retry records its own failure, if any
             lowered = _retry_group_offload_lower(pipe, plan, placement, logger, failure)
