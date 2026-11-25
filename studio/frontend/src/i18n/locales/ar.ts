@@ -4119,6 +4119,7 @@ export const ar = {
       lr: "معدل التعلّم",
       hardware: "الأجهزة",
       vram: "VRAM",
+      vramTotal: "{size} إجمالًا",
       noGpu: "لم يتم اكتشاف GPU",
       hfToken: "توكن HF",
       saved: "محفوظ",

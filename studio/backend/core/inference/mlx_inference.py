@@ -8289,6 +8289,7 @@ class MLXInferenceBackend:
                 in_reasoning = prompt_opens_reasoning_channel(
                     prompt, reasoning_channel_markers, _resumed_partial
                 ),
+                continued = _resumed_partial,
             )
             if preserve_native_channels
             else None
@@ -8566,6 +8567,7 @@ class MLXInferenceBackend:
                 in_reasoning = prompt_opens_reasoning_channel(
                     prompt, reasoning_channel_markers, _resumed_partial
                 ),
+                continued = _resumed_partial,
             )
             if preserve_native_channels
             else None
@@ -8919,14 +8921,12 @@ class MLXInferenceBackend:
                     self._tokenizer,
                     preserved_tokens = reasoning_control_tokens(markers),
                 )
+        _continued = bool(continue_final_message and trailing_assistant_text(messages))
         normalizer = (
             make_reasoning_normalizer(
                 markers,
-                in_reasoning = prompt_opens_reasoning_channel(
-                    prompt,
-                    markers,
-                    bool(continue_final_message and trailing_assistant_text(messages)),
-                ),
+                in_reasoning = prompt_opens_reasoning_channel(prompt, markers, _continued),
+                continued = _continued,
             )
             # The normalizer would rewrite marker text inside the document.
             if markers is not None and (constraint is None or constraint.allows_reasoning)

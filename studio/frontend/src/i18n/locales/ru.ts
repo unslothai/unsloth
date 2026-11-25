@@ -4136,6 +4136,7 @@ export const ru = {
       lr: "LR",
       hardware: "Оборудование",
       vram: "VRAM",
+      vramTotal: "Всего {size}",
       noGpu: "GPU не обнаружен",
       hfToken: "Токен HF",
       saved: "Сохранён",

@@ -4086,6 +4086,7 @@ export const ja = {
       lr: "LR",
       hardware: "ハードウェア",
       vram: "VRAM",
+      vramTotal: "合計 {size}",
       noGpu: "GPU が検出されませんでした",
       hfToken: "HF トークン",
       saved: "保存済み",
