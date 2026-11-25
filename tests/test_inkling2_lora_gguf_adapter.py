@@ -257,3 +257,22 @@ def test_vision_lora_is_named_as_left_out(tmp_path, capsys):
     model, adapter = _peft_model(tmp_path, vision = True)
     _rewrite(model, adapter)
     assert "vision tower's LoRA weights are not in the GGUF LoRA" in capsys.readouterr().out
+
+
+def test_the_saved_default_adapter_keeps_its_own_scaling_when_another_is_active(tmp_path):
+    model, adapter = _peft_model(tmp_path)
+    expected, _, _ = _rewrite(model, adapter)
+    model.add_adapter(
+        "other",
+        LoraConfig(
+            r = R,
+            lora_alpha = 32,
+            # PEFT allows target_parameters on one adapter only.
+            target_modules = [f"layers.{i}.{leaf}" for i in range(2) for leaf in _LINEARS],
+        ),
+    )
+    model.set_adapter("other")
+    got, _, _ = _rewrite(model, adapter)  # the root files are still the default adapter's
+    assert set(got) == set(expected)
+    for key in expected:
+        torch.testing.assert_close(got[key], expected[key])
