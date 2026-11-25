@@ -131,6 +131,73 @@ export function constrainWindowSize(
   );
 }
 
+// Windows counts its invisible resize borders in the outer rectangle, so a snapped window pokes a
+// few pixels past the screen edge; that alone must not move it.
+const OFF_SCREEN_TOLERANCE_PX = 16;
+
+function overlapArea(a: PhysicalWindowRect, b: PhysicalWindowRect): number {
+  const width =
+    Math.min(a.position.x + a.size.width, b.position.x + b.size.width) -
+    Math.max(a.position.x, b.position.x);
+  const height =
+    Math.min(a.position.y + a.size.height, b.position.y + b.size.height) -
+    Math.max(a.position.y, b.position.y);
+  return width > 0 && height > 0 ? width * height : 0;
+}
+
+/**
+ * Where a restored outer window rectangle must go so that none of it is off every screen, or null
+ * when it is already on screen. A layout saved at a larger resolution can open partly or fully
+ * past the edge (#19590); it is shrunk to the work area and moved inside it. A window spanning
+ * several monitors stays put while they cover it.
+ */
+export function calculateOnScreenRect(
+  window: PhysicalWindowRect,
+  screens: PhysicalWindowRect[],
+  workArea: PhysicalWindowRect,
+): PhysicalWindowRect | null {
+  const inset = Math.min(
+    OFF_SCREEN_TOLERANCE_PX,
+    Math.floor(window.size.width / 4),
+    Math.floor(window.size.height / 4),
+  );
+  const core: PhysicalWindowRect = {
+    position: { x: window.position.x + inset, y: window.position.y + inset },
+    size: {
+      width: Math.max(1, window.size.width - 2 * inset),
+      height: Math.max(1, window.size.height - 2 * inset),
+    },
+  };
+  const visible = screens.reduce(
+    (total, screen) => total + overlapArea(core, screen),
+    0,
+  );
+  if (visible >= core.size.width * core.size.height) return null;
+
+  const width = Math.max(1, Math.min(window.size.width, workArea.size.width));
+  const height = Math.max(
+    1,
+    Math.min(window.size.height, workArea.size.height),
+  );
+  const clamp = (value: number, start: number, room: number) =>
+    Math.min(Math.max(value, start), start + Math.max(0, room));
+  return {
+    position: {
+      x: clamp(
+        window.position.x,
+        workArea.position.x,
+        workArea.size.width - width,
+      ),
+      y: clamp(
+        window.position.y,
+        workArea.position.y,
+        workArea.size.height - height,
+      ),
+    },
+    size: { width, height },
+  };
+}
+
 export function calculateCenteredPosition(
   workArea: PhysicalWindowRect,
   windowSize: { width: number; height: number },
