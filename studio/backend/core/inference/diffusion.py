@@ -4895,12 +4895,12 @@ def _image_cast_cached(cands: list, variant: Optional[str]) -> list:
 def _converted_shards_pread(dtype: Any, small_host: Any) -> Any:
     """Windows: transformers components converted to ``dtype`` read through ``pread`` (no copy-on-write commit for the
     stored bytes, #14513); components the small-host route loads at their stored dtype stay memory-mapped. An Intel
-    iGPU reads every shard through ``pread`` (#17137)."""
+    iGPU (#17137) and a Linux ROCm integrated GPU read every shard through ``pread``."""
     from .host_pinning import xpu_is_integrated
-    from .safetensors_pread import pread_safetensors, pread_wanted
+    from .safetensors_pread import pread_safetensors, pread_wanted, rocm_integrated
 
     keep = tuple(small_host.storage_dtypes) if small_host is not None and small_host.engaged else ()
-    every = pread_wanted() and xpu_is_integrated()
+    every = pread_wanted() and (xpu_is_integrated() or rocm_integrated())
     return pread_safetensors(convert_to = dtype, keep = keep, every_shard = every)
 
 

@@ -1,7 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Windows converting loads use pread instead of mmap to save commit; UNSLOTH_SAFETENSORS_PREAD=0|1."""
+"""Windows converting loads, and every load on a Linux ROCm integrated GPU (unified memory), read safetensors shards
+with pread instead of mmap: no copy-on-write commit on Windows, no mapped shard held in the shared pool until its last
+tensor moved on an APU. transformers' ``safe_open`` and diffusers' ``safetensors.torch.load_file`` are routed inside a
+scope (diffusers' only on a ROCm integrated GPU). UNSLOTH_SAFETENSORS_PREAD=0 turns it off everywhere, =1 on."""
 
 from __future__ import annotations
 
@@ -17,6 +20,7 @@ PREAD_ENV = "UNSLOTH_SAFETENSORS_PREAD"
 _lock = threading.Lock()
 _depth = 0
 _original: Any = None
+_original_load_file: Any = None
 # per load thread, so concurrent media loads never share rules: (target dtype or None = fp32-only video rule, kept dirs,
 # every shard)
 _local = threading.local()
@@ -32,7 +36,26 @@ def pread_wanted() -> bool:
         return False
     if value in ("1", "on", "true", "yes"):
         return True
-    return sys.platform == "win32"
+    return sys.platform == "win32" or rocm_integrated()
+
+
+def rocm_integrated() -> bool:
+    """Linux ROCm on an integrated GPU (unified memory: VRAM is host RAM). CUDA, discrete cards and anything
+    unclassifiable answer False. Never raises."""
+    if not sys.platform.startswith("linux"):
+        return False
+    try:
+        import torch
+
+        from .rocm_bf16 import is_rocm_torch
+
+        if not is_rocm_torch(torch) or not torch.cuda.is_available():
+            return False
+        from .host_pinning import device_is_integrated
+
+        return device_is_integrated()
+    except Exception:  # noqa: BLE001 - unclassifiable: keep mmap
+        return False
 
 
 def _supports_backend(safe_open: Any) -> bool:
@@ -113,6 +136,59 @@ def _with_pread(safe_open: Any) -> Any:
     return pread_safe_open
 
 
+def _with_pread_load_file(load_file: Any, safe_open: Any) -> Any:
+    """``safetensors.torch.load_file`` (diffusers' shard reader) through ``safe_open(backend="pread")`` for shards the
+    active scope routes; everything else, and every call outside a scope, keeps the original."""
+
+    @functools.wraps(load_file)
+    def pread_load_file(
+        filename: Any,
+        device: Any = "cpu",
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
+        if args or kwargs or not _active_rules() or _backend_for(filename) != "pread":
+            return load_file(filename, device, *args, **kwargs)
+        out = {}
+        with safe_open(filename, framework = "pt", device = device, backend = "pread") as fh:
+            for key in fh.keys():
+                out[key] = fh.get_tensor(key)
+        return out
+
+    pread_load_file._unsloth_pread = True
+    return pread_load_file
+
+
+def _install_load_file() -> None:
+    global _original_load_file
+    try:
+        import safetensors.torch as st_torch
+        from safetensors import safe_open
+
+        if not _supports_backend(safe_open):
+            return
+        current = getattr(st_torch, "load_file", None)
+        if current is not None and not getattr(current, "_unsloth_pread", False):
+            _original_load_file = current
+            st_torch.load_file = _with_pread_load_file(current, safe_open)
+    except Exception:  # noqa: BLE001 - diffusers keeps the mmap reader
+        _original_load_file = None
+
+
+def _restore_load_file() -> None:
+    global _original_load_file
+    try:
+        import safetensors.torch as st_torch
+        if (
+            _original_load_file is not None
+            and getattr(st_torch.load_file, "__wrapped__", None) is _original_load_file
+        ):
+            st_torch.load_file = _original_load_file
+    except Exception:  # noqa: BLE001
+        pass
+    _original_load_file = None
+
+
 @contextlib.contextmanager
 def pread_safetensors(
     convert_to: Any = None,
@@ -137,6 +213,9 @@ def pread_safetensors(
                 elif current is not None and _supports_backend(current):
                     _original = current
                     modeling_utils.safe_open = _with_pread(current)
+                    if rocm_integrated():
+                        # diffusers' reader too, only where the shared pool is the point (CUDA / Windows untouched)
+                        _install_load_file()
                     installed = True
                 if installed:
                     _depth += 1
@@ -155,6 +234,8 @@ def pread_safetensors(
                 _depth -= 1
                 if not _depth:
                     import transformers.modeling_utils as modeling_utils
+
                     if getattr(modeling_utils.safe_open, "__wrapped__", None) is _original:
                         modeling_utils.safe_open = _original
                     _original = None
+                    _restore_load_file()

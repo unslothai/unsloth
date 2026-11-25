@@ -7698,7 +7698,7 @@ class VideoBackend:
                         pinned_snapshot[0],
                         pinned_snapshot[1][:12],
                     )
-            from .safetensors_pread import pread_safetensors
+            from .safetensors_pread import pread_safetensors, rocm_integrated
 
             from .diffusion_families import pinned_repo_revision
 
@@ -7717,7 +7717,8 @@ class VideoBackend:
             def _load(offline: bool) -> None:
                 if forced_offline:
                     kwargs["local_files_only"] = offline
-                with pread_safetensors():
+                # a ROCm integrated GPU reads every shard through pread (unified memory), else fp32 shards only
+                with pread_safetensors(every_shard = rocm_integrated()):
                     with pinned_repo_revision(
                         kwargs.get("_base_fetch_repo"), kwargs.get("_base_fetch_revision")
                     ):
