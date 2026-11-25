@@ -150,7 +150,8 @@ function subscribeToConfigChanges(onChange: () => void): () => void {
   };
 }
 
-/** A function, not an array: an import cycle may leave chat-runtime-store's consts in TDZ. */
+/** A function, not a module array: an import cycle means chat-runtime-store's consts can be in
+ * their TDZ here. */
 const watchedStorageKeys = () => [
   PER_MODEL_CONFIG_STORAGE_KEY,
   CHAT_GPU_MEMORY_MODE_KEY,

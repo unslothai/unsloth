@@ -22,7 +22,8 @@ export interface GgufVariantsRequestOptions {
   signal?: AbortSignal;
 }
 
-/** GET /api/models/gguf-variants; an offline Hub gets the cached answer, not a remote listing. */
+/** Query for GET /api/models/gguf-variants. A Hub already known to be unreachable is asked for the
+ *  cached answer instead of a remote listing that cannot arrive, as the Hub client does. */
 export function ggufVariantsQuery(
   repoId: string,
   options: GgufVariantsRequestOptions | undefined,

@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Adds vite/tsconfig "bundler" resolution bare node lacks: "@/" alias, extensionless imports.
+// Adds vite/tsconfig "bundler" resolution that bare node lacks: the "@/*" alias and
+// extensionless relative imports.
 import { existsSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 

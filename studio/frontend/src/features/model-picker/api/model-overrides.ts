@@ -523,7 +523,8 @@ export function toApiOverride(config: PerModelConfig | null): ApiModelOverride {
 
 // One in-flight write per model so an older response cannot resurrect a replaced entry.
 const writesByKey = new Map<string, Promise<ModelOverrideWriteResult>>();
-// A forget clears all aliases, so it waits for in-flight writes and blocks later writes.
+// A forget clears every alias of a cached repo on the server, so per-key order is not enough: it
+// waits for every write in flight, and every write after it waits for the forget.
 let forgetBarrier: Promise<unknown> = Promise.resolve();
 
 export interface ModelOverrideWriteResult {

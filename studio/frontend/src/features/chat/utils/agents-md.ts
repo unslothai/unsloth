@@ -16,7 +16,8 @@ export function agentsMdEditCount(): number {
   return agentsMdEdits;
 }
 
-/** AGENTS.md first, so project instructions and typed prompt win; no AGENTS.md means no change. */
+/** System prompt for one request. AGENTS.md first, so project instructions and the typed system prompt
+ *  have the last word; with no AGENTS.md this is byte-identical to the prompt before AGENTS.md support. */
 export function composeChatInstructions(parts: {
   agentsMd?: AgentsMdRecord;
   projectInstructions: string;

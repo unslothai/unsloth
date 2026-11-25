@@ -132,7 +132,8 @@ function mentioned(host: string, text: string): boolean {
   // Only on the big generic TLDs: "wikipedia" must not approve a made-up wikipedia.xyz.
   if (SHARED_HOSTS.some((suffix) => host.endsWith(`.${suffix}`))) return false;
   const labels = host.split(".");
-  // Approve the bare site only: a brand's subdomains can hold anyone's data.
+  // Only the site itself: a brand's subdomains can carry anyone's data (docs.google.com/forms,
+  // script.google.com), so "google" approves google.com and nothing under it.
   if (labels.length !== 2) return false;
   const [name, tld] = labels;
   if (!NAMED_TLDS.has(tld ?? "")) return false;

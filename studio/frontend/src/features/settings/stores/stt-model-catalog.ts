@@ -44,14 +44,16 @@ export const AUDIO_CPP_STT_MODELS: ReadonlySet<SttModel> = new Set(
 const KEYED_FOLDERS = new Set(
   AUDIO_CPP_DICTATION_MODELS.map((model) => model.id.toLowerCase()),
 );
-/** audio.cpp folders with no key above are listed by folder id, in catalog order, largest last. */
+/** The Transcribe page's audio.cpp ASR folders no key above names; dictation
+ * lists them by folder id, in catalog order (the largest come last). */
 export const AUDIO_CPP_STT_FOLDER_IDS: readonly string[] =
   AUDIO_CPP_MODELS.filter(
     (model) =>
       audioCppWorkflowsFor(model).includes("transcribe") &&
       !KEYED_FOLDERS.has(model.id.toLowerCase()),
   ).map((model) => model.id);
-/** Voice picker lists the curated models, then every other ASR model Transcribe offers. */
+/** What the Voice picker lists: the curated models, then every other ASR model
+ * Transcribe offers. */
 export const STT_PICKER_MODELS: readonly SttModel[] = [
   ...STT_MODELS,
   ...AUDIO_CPP_STT_FOLDER_IDS,
@@ -92,7 +94,8 @@ export const STT_MODEL_REPOS: Record<DefaultSttModel, string> = {
 export const DEFAULT_STT_MODEL: DefaultSttModel = "qwen3-asr-0.6b";
 const LEGACY_DEFAULT_STT_MODEL = "small";
 
-/** Stored v0 "small" is usually untouched, so it migrates; re-picking Small at v1 sticks. */
+/** v0 defaulted to Whisper Small, so a stored "small" is usually untouched; move it to the
+ * recommended model. Re-picking Small persists at v1 and sticks. */
 export function migrateVoiceSettings(
   persisted: unknown,
   fromVersion: number,

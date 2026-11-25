@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** Video LoRA helpers; adapters merge at load, so picks stay pending (see baked_lora_specs). */
+/** Load-time LoRA helpers for the Video page. A video adapter is merged into the denoiser at load, so the
+ * picker holds a pending selection and the resident build reports what it baked (`baked_lora_specs`). */
 
 import type { LoraSpecInput } from "@/features/images/api";
 

@@ -103,7 +103,8 @@ export function typesInTextField(binding: ShortcutBinding): boolean {
 export interface UseShortcutOptions {
   enabled?: boolean;
   skipInTextFields?: boolean;
-  /** Exempt from skipInTextFields for chords typing nothing; Escape still declines a request. */
+  /** Fields exempt from skipInTextFields for a chord that types nothing there (Escape in the
+   * composer must still decline a tool request). */
   textFieldException?: string;
   /** Run on auto-repeat; one-shot otherwise, since a held toggle lands wherever released. */
   repeats?: boolean;
@@ -252,7 +253,8 @@ export function useShortcut(
       const hit = bindings.find((binding) => matchesBinding(binding, event));
       if (!hit) return;
       if (zoomTypedOffZoomKey(event, hit.code, isMacPlatform())) return;
-      // Exempt only chords typing nothing; Decline rebound to Enter would be denied mid-edit.
+      // The exception is for a chord that types nothing there. Decline ships on Escape; rebound to
+      // Enter or a letter, the same pass would deny the request as the user edits the prompt.
       const exception = typesInTextField(hit) ? undefined : textFieldException;
       if (skipInTextFields && isTextEntryFocused(exception)) return;
       if (

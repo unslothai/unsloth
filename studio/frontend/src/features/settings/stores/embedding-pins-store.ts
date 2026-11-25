@@ -7,7 +7,8 @@ import { mirrorPins, onPinsRestored } from "../../../lib/pins-mirror.ts";
 
 export const EMBEDDING_PINS_STORAGE_KEY = "unsloth_embedding_pins";
 
-/** RAG menu pins: localStorage list, mirrored to the account so account-switch purges keep it. */
+/** Embedding models pinned to the RAG menu for quick switching. A plain id list in localStorage,
+ *  mirrored to the account so an account switch's purge does not lose it. */
 interface EmbeddingPinsState {
   pinned: string[];
   togglePin: (model: string) => void;

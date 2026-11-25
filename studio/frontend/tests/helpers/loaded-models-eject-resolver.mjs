@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// TSX: chat/images/video/embedder go to loaded-models-eject-stub.ts; auth to its store stub.
+// bundler-resolver's two rules, plus the barrels loaded-models-api.ts reaches that pull in
+// TSX: chat, images, video and the embedder go to loaded-models-eject-stub.ts, auth to its store stub.
 import { resolve as resolveBundler } from "../bundler-resolver.mjs";
 
 const EJECT_STUB = new URL("./loaded-models-eject-stub.ts", import.meta.url)

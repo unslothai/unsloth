@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Injected deps: loaded-models-api.ts reaches the chat store, which node --test cannot import.
+// Separate module with injected deps: loaded-models-api.ts reaches the chat store and
+// cannot be imported by node --test.
 
 // Extension-qualified so node --test resolves it.
 import { unloadResident } from "../api-monitor/unload-resident.ts";
@@ -50,7 +51,8 @@ export async function ejectChatModel(
   if (unloadedAliases.length > 0) {
     return { unloadedAliases, stillResident, replacedBy: null };
   }
-  // Transformers keeps replaced models in backend.models as loaded; check what's really held.
+  // Transformers keeps a replaced model in backend.models (reported as `loaded`), so check
+  // what the runtime really holds before calling the row somebody else's.
   const holdsTarget = (names: string[] | undefined) =>
     names?.some((name) => deps.matches(target, name)) ?? false;
   // Re-read even for a cached row, since another tab may have evicted it; unloading a name nobody

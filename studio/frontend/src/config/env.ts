@@ -41,7 +41,8 @@ interface PlatformState {
   // MLX gate covers mlx, mlx-lm, and mlx-vlm together; record the blocker when known.
   chatOnlyDetail: string | null;
   chatOnlyHint: string | null;
-  // Dev-mode CPU video opt-in from authed /api/health keeps Video navigable on a no-GPU host.
+  // Developer mode's CPU video opt-in, from authed /api/health; keeps the Video row navigable
+  // on a no-GPU host that opted in.
   videoCpuOptIn: boolean;
   // authed /api/health cpu_training: training runs (or would, on "no_torch") on the CPU backend.
   cpuTraining: boolean;
@@ -170,7 +171,8 @@ let sharedHealthRead: {
 } | null = null;
 
 function readAuthToken(): string | null {
-  // Read token directly: device_type is authed-only, and importing features/auth would cycle.
+  // device_type is only reported to authed callers. Read the token directly: importing
+  // features/auth would cycle.
   return typeof window === "undefined"
     ? null
     : localStorage.getItem("unsloth_auth_token");
