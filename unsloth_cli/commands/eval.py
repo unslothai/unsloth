@@ -412,7 +412,14 @@ def _stop_sequence(data_file: Path, target_key: str) -> str:
         try:
             rows = json.loads(text)
         except json.JSONDecodeError:
-            rows = [json.loads(line) for line in text.split("\n") if line.strip()]
+            rows = []
+            for number, line in enumerate(text.split("\n"), 1):
+                try:
+                    rows += [json.loads(line)] if line.strip() else []
+                except json.JSONDecodeError as e:
+                    raise ValueError(
+                        f"Dataset file '{data_file}' line {number} is not valid JSON: {e.msg}"
+                    ) from None
     rows = rows if isinstance(rows, list) else [rows]
     values = [row.get(target_key) for row in rows if isinstance(row, dict)]
     targets = [str(t) for v in values for t in (v if isinstance(v, list) else [v])]

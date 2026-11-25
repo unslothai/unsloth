@@ -213,6 +213,13 @@ def test_stop_sequence_reads_long_csv_fields_and_unicode_separators(tmp_path):
     assert evalmod._stop_sequence(jsonl, "answer") == "\n"
 
 
+def test_stop_sequence_names_the_bad_jsonl_line(tmp_path):
+    jsonl = tmp_path / "qa.jsonl"
+    jsonl.write_text('{"question": "a", "answer": "b"}\n{"question": oops}\n', encoding = "utf-8")
+    with pytest.raises(ValueError, match = r"qa\.jsonl' line 2 is not valid JSON"):
+        evalmod._stop_sequence(jsonl, "answer")
+
+
 def test_dataset_task_stays_clear_of_names_requested_alongside(tmp_path):
     (tmp_path / "gsm8k.jsonl").write_text("{}\n")
     (tmp_path / "sub").mkdir()
