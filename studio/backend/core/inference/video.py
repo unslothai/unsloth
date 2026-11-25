@@ -6282,9 +6282,11 @@ def _ltx25_denoise_price_mib(
 
         import torch
 
+        from .rocm_bf16 import is_rocm_torch
+
         if (
             not sys.platform.startswith("linux")
-            or getattr(torch.version, "hip", None)
+            or is_rocm_torch(torch)
             or not str(getattr(state, "device", "") or "").startswith("cuda")
         ):
             return None
