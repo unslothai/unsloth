@@ -222,7 +222,6 @@ def test_auto_mode_off_on_unmeasured_gpu_and_rocm(monkeypatch):
 
 
 def test_auto_mode_on_measured_rocm_registers_the_selector(monkeypatch):
-    """Measured gfx1151 routes from 8K in auto mode and registers the ROCm SDPA selector."""
     if not hasattr(SA, "_AUTO_MIN_SEQ_ROCM"):
         pytest.skip("unsloth_zoo without automatic mode on ROCm")
     import types
