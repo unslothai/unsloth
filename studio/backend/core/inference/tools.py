@@ -2447,12 +2447,12 @@ def _find_blocked_commands(command: str, posix: "bool | None" = None) -> set[str
 
 # Holds the sandbox sitecustomize.py shim; put on the child's PYTHONPATH in _build_safe_env.
 _SANDBOX_SITE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sandbox_site")
-# (mtime_ns, size) of the shim whose bytecode this process last confirmed or wrote.
+# (path, mtime_ns, size) of the shim whose bytecode this process last confirmed or wrote.
 _sandbox_site_bytecode_for: "tuple | None" = None
 
 
-def _pyc_matches_source(cfile: str, source_stat) -> bool:
-    """A timestamp-mode pyc header (PEP 552) for exactly this source mtime and size."""
+def _pyc_matches_source(cfile: str, source: bytes) -> bool:
+    """A checked hash-based pyc (PEP 552) for exactly these source bytes."""
     import importlib.util
 
     try:
@@ -2460,22 +2460,19 @@ def _pyc_matches_source(cfile: str, source_stat) -> bool:
             header = stream.read(16)
     except OSError:
         return False
-    if len(header) != 16 or header[:4] != importlib.util.MAGIC_NUMBER:
-        return False
-    flags = int.from_bytes(header[4:8], "little")
-    mtime = int.from_bytes(header[8:12], "little")
-    size = int.from_bytes(header[12:16], "little")
     return (
-        flags == 0
-        and mtime == int(source_stat.st_mtime) & 0xFFFFFFFF
-        and size == source_stat.st_size & 0xFFFFFFFF
+        len(header) == 16
+        and header[:4] == importlib.util.MAGIC_NUMBER
+        and int.from_bytes(header[4:8], "little") == 0b11
+        and header[8:16] == importlib.util.source_hash(source)
     )
 
 
 def _ensure_sandbox_site_bytecode() -> None:
     """Write the shim's bytecode from Studio, once per shim version. The OS sandboxes mount this folder
     read-only, so a child can never cache it and recompiled ~1,800 lines on every Python start (~12 ms
-    on Linux). An interpreter with another cache tag just ignores the file."""
+    on Linux). Checked hash mode: the child validates it against the source bytes, never mtime, so an
+    edit can never run stale bytecode. An interpreter with another cache tag just ignores the file."""
     global _sandbox_site_bytecode_for
     if sys.dont_write_bytecode:
         return
@@ -2484,7 +2481,7 @@ def _ensure_sandbox_site_bytecode() -> None:
         source_stat = os.stat(shim)
     except OSError:
         return
-    key = (source_stat.st_mtime_ns, source_stat.st_size)
+    key = (shim, source_stat.st_mtime_ns, source_stat.st_size)
     if _sandbox_site_bytecode_for == key:
         return
     try:
@@ -2492,9 +2489,16 @@ def _ensure_sandbox_site_bytecode() -> None:
         import py_compile
 
         cfile = importlib.util.cache_from_source(shim)
-        if not _pyc_matches_source(cfile, source_stat):
+        with open(shim, "rb") as stream:
+            source = stream.read()
+        if not _pyc_matches_source(cfile, source):
             # Atomic (temp file + replace); a read-only install just keeps compiling in the child as before.
-            py_compile.compile(shim, cfile = cfile, doraise = True)
+            py_compile.compile(
+                shim,
+                cfile = cfile,
+                doraise = True,
+                invalidation_mode = py_compile.PycInvalidationMode.CHECKED_HASH,
+            )
     except Exception:  # noqa: BLE001 - bytecode is an optimization, never a launch failure
         logger.debug("could not write the sandbox shim bytecode", exc_info = True)
     _sandbox_site_bytecode_for = key

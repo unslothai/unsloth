@@ -7,6 +7,7 @@ from __future__ import annotations
 import importlib.util
 import os
 import py_compile
+import subprocess
 import sys
 
 import pytest
@@ -14,27 +15,34 @@ import pytest
 from core.inference import tools
 
 
-def _shim() -> str:
-    return os.path.join(tools._SANDBOX_SITE_DIR, "sitecustomize.py")
+@pytest.fixture
+def shim(monkeypatch, tmp_path):
+    """A private copy of the shim, so parallel workers never share one cache file."""
+    site_dir = tmp_path / "sandbox_site"
+    site_dir.mkdir()
+    with open(os.path.join(tools._SANDBOX_SITE_DIR, "sitecustomize.py"), "rb") as stream:
+        (site_dir / "sitecustomize.py").write_bytes(stream.read())
+    monkeypatch.setattr(tools, "_SANDBOX_SITE_DIR", str(site_dir))
+    monkeypatch.setattr(tools, "_sandbox_site_bytecode_for", None)
+    monkeypatch.setattr(sys, "dont_write_bytecode", False)
+    return str(site_dir / "sitecustomize.py")
 
 
-def test_the_sandbox_shim_has_bytecode_before_a_child_starts(monkeypatch, tmp_path):
+def _matches(shim) -> bool:
+    with open(shim, "rb") as stream:
+        return tools._pyc_matches_source(importlib.util.cache_from_source(shim), stream.read())
+
+
+def test_the_sandbox_shim_has_bytecode_before_a_child_starts(shim, tmp_path):
     # The sandboxes mount sandbox_site read-only, so only Studio can cache the shim's bytecode.
-    monkeypatch.setattr(sys, "dont_write_bytecode", False)
-    cfile = importlib.util.cache_from_source(_shim())
-    try:
-        os.unlink(cfile)
-    except FileNotFoundError:
-        pass
-    monkeypatch.setattr(tools, "_sandbox_site_bytecode_for", None)
-    tools._build_safe_env(str(tmp_path))
-    assert os.path.isfile(cfile)
-    assert tools._pyc_matches_source(cfile, os.stat(_shim()))
+    work = tmp_path / "work"
+    work.mkdir()
+    tools._build_safe_env(str(work))
+    assert os.path.isfile(importlib.util.cache_from_source(shim))
+    assert _matches(shim)
 
 
-def test_the_shim_is_compiled_once_per_version(monkeypatch, tmp_path):
-    monkeypatch.setattr(sys, "dont_write_bytecode", False)
-    monkeypatch.setattr(tools, "_sandbox_site_bytecode_for", None)
+def test_the_shim_is_compiled_once_per_version(shim, tmp_path, monkeypatch):
     tools._build_safe_env(str(tmp_path))
     compiled = []
     real = py_compile.compile
@@ -44,16 +52,37 @@ def test_the_shim_is_compiled_once_per_version(monkeypatch, tmp_path):
     assert compiled == []
 
 
-def test_a_stale_shim_pyc_is_rewritten(monkeypatch, tmp_path):
-    monkeypatch.setattr(sys, "dont_write_bytecode", False)
-    cfile = importlib.util.cache_from_source(_shim())
+def test_a_stale_shim_pyc_is_rewritten(shim, tmp_path):
+    cfile = importlib.util.cache_from_source(shim)
     os.makedirs(os.path.dirname(cfile), exist_ok = True)
     with open(cfile, "wb") as stream:
-        stream.write(importlib.util.MAGIC_NUMBER + b"\0" * 12)  # wrong mtime and size
-    assert not tools._pyc_matches_source(cfile, os.stat(_shim()))
-    monkeypatch.setattr(tools, "_sandbox_site_bytecode_for", None)
+        stream.write(
+            importlib.util.MAGIC_NUMBER + b"\0" * 12
+        )  # timestamp mode, wrong mtime and size
+    assert not _matches(shim)
     tools._build_safe_env(str(tmp_path))
-    assert tools._pyc_matches_source(cfile, os.stat(_shim()))
+    assert _matches(shim)
+
+
+def test_a_same_size_shim_edit_never_runs_the_old_bytecode(shim, tmp_path):
+    # Timestamp pycs keep whole seconds: a same-size edit inside one second would load stale code.
+    with open(shim, "w") as stream:
+        stream.write("VALUE = 'A'\n")
+    second = 1_900_000_000 * 10**9
+    os.utime(shim, ns = (second, second))
+    tools._ensure_sandbox_site_bytecode()
+    with open(shim, "w") as stream:
+        stream.write("VALUE = 'B'\n")
+    os.utime(shim, ns = (second, second + 500_000_000))
+    tools._ensure_sandbox_site_bytecode()
+    probe = subprocess.run(
+        [sys.executable, "-B", "-c", "import sitecustomize; print(sitecustomize.VALUE)"],
+        env = {**os.environ, "PYTHONPATH": os.path.dirname(shim)},
+        capture_output = True,
+        text = True,
+        check = True,
+    )
+    assert probe.stdout.strip() == "B"
 
 
 @pytest.mark.parametrize(
@@ -91,3 +120,18 @@ def test_runtime_read_paths_resolve_each_candidate_once(monkeypatch, tmp_path):
     sandbox_linux._runtime_read_paths(str(tmp_path), ())
     # Four prefixes spell the same venv; resolving its bin/ four times bought nothing.
     assert seen.count(target) == 1
+
+
+def test_one_launch_runs_inside_one_scan_memo_scope(monkeypatch):
+    from core.inference import os_sandbox
+    from utils.scan_memo import scan_memo_active
+
+    seen = []
+    monkeypatch.setattr(
+        os_sandbox, "_prepare_tool_launch", lambda plan: seen.append(scan_memo_active())
+    )
+    os_sandbox.prepare_tool_launch(object())
+    os_sandbox.prepare_tool_launch(object())
+    # Active while the policy is built, and closed between launches so nothing carries over.
+    assert seen == [True, True]
+    assert not scan_memo_active()

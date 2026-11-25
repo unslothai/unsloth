@@ -5973,7 +5973,15 @@ def list_chat_messages_for_threads(
 # dozen settings, and a fresh connection per read (open, three PRAGMAs, close, all under the
 # process-wide sqlite_gate) cost 1-3 ms each. Every autocommit SELECT starts a new read
 # transaction, so writes from any connection or process are seen by the next read.
-_settings_readers: dict[Path, tuple[tuple[int, int], sqlite3.Connection]] = {}
+class _SettingsReader(NamedTuple):
+    identity: tuple[int, int]
+    conn: sqlite3.Connection
+    # Held while a query runs: one connection serves one query at a time.
+    busy: threading.Lock
+
+
+_settings_readers: dict[Path, _SettingsReader] = {}
+# Guards the map only; queries run outside it, so a database waiting on a lock stalls no other.
 _settings_reader_lock = threading.Lock()
 
 
@@ -5985,49 +5993,73 @@ def _db_file_identity(path: Path) -> tuple[int, int] | None:
     return (metadata.st_dev, metadata.st_ino)
 
 
-def close_settings_readers() -> None:
-    with _settings_reader_lock:
-        readers = list(_settings_readers.values())
-        _settings_readers.clear()
-    for _identity, conn in readers:
+def _close_reader(reader: _SettingsReader) -> None:
+    # Waits out a query in flight on this connection; later borrowers see it closed and read once.
+    with reader.busy:
         try:
-            conn.close()
+            reader.conn.close()
         except Exception as exc:  # noqa: BLE001 - a failed close must not block the keeper close
             logger.warning("Could not close a studio.db settings reader: %s", exc)
 
 
+def close_settings_readers() -> None:
+    with _settings_reader_lock:
+        readers = list(_settings_readers.values())
+        _settings_readers.clear()
+    for reader in readers:
+        _close_reader(reader)
+
+
+def _read_once(sql: str, params: tuple | list) -> list:
+    conn = get_connection()
+    try:
+        return conn.execute(sql, params).fetchall()
+    finally:
+        conn.close()
+
+
+def _settings_reader(db_path: Path) -> _SettingsReader | None:
+    identity = _db_file_identity(db_path)
+    with _settings_reader_lock:
+        reader = _settings_readers.get(db_path)
+        if reader is not None and reader.identity == identity:
+            return reader
+        # The database was replaced or removed (restore, account reset): never read a stale file.
+        stale = _settings_readers.pop(db_path, None)
+    if stale is not None:
+        _close_reader(stale)
+    try:
+        conn = get_connection(check_same_thread = False)
+    except TypeError:
+        # A substituted get_connection (test doubles) may not take the keyword: read uncached.
+        return None
+    identity = _db_file_identity(db_path)
+    if identity is None:
+        conn.close()
+        return None
+    reader = _SettingsReader(identity, conn, threading.Lock())
+    with _settings_reader_lock:
+        current = _settings_readers.setdefault(db_path, reader)
+    if current is not reader:
+        _close_reader(reader)  # another thread opened one first
+    return current
+
+
 def _shared_read_rows(sql: str, params: tuple | list) -> list:
     db_path = studio_db_path()
-    with _settings_reader_lock:
-        entry = _settings_readers.get(db_path)
-        identity = _db_file_identity(db_path)
-        if entry is not None and (identity is None or entry[0] != identity):
-            # The database was replaced or removed (restore, account reset): reopen, never read a stale file.
-            _settings_readers.pop(db_path, None)
-            try:
-                entry[1].close()
-            except Exception:  # noqa: BLE001
-                pass
-            entry = None
-        if entry is None:
-            try:
-                conn = get_connection(check_same_thread = False)
-            except TypeError:
-                # A substituted get_connection (test doubles) may not take the keyword: read through it, uncached.
-                conn = get_connection()
-                try:
-                    return conn.execute(sql, params).fetchall()
-                finally:
-                    conn.close()
-            identity = _db_file_identity(db_path)
-            if identity is None:
-                try:
-                    return conn.execute(sql, params).fetchall()
-                finally:
-                    conn.close()
-            entry = (identity, conn)
-            _settings_readers[db_path] = entry
-        return entry[1].execute(sql, params).fetchall()
+    # The account-retirement check get_connection runs before every fresh connection.
+    ensure_account_dir(db_path.parent)
+    reader = _settings_reader(db_path)
+    if reader is None or not reader.busy.acquire(blocking = False):
+        # Another read is using the connection: a one-shot read, as before the cache, so readers never queue.
+        return _read_once(sql, params)
+    try:
+        return reader.conn.execute(sql, params).fetchall()
+    except sqlite3.ProgrammingError:
+        pass  # closed by close_settings_readers between the lookup and this query
+    finally:
+        reader.busy.release()
+    return _read_once(sql, params)
 
 
 on_wal_keeper_closed(close_settings_readers)

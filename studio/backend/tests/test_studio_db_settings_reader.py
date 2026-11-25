@@ -80,9 +80,57 @@ def test_a_missing_key_returns_the_fallback():
 def test_a_changed_file_identity_reopens_the_reader(monkeypatch):
     studio_db.upsert_app_settings({"reader_probe": 2})
     assert studio_db.get_app_setting("reader_probe") == 2
-    first = next(iter(studio_db._settings_readers.values()))[1]
+    first = next(iter(studio_db._settings_readers.values())).conn
     real = studio_db._db_file_identity
     monkeypatch.setattr(studio_db, "_db_file_identity", lambda path: (real(path)[0], -1))
     assert studio_db.get_app_setting("reader_probe") == 2
-    second = next(iter(studio_db._settings_readers.values()))[1]
+    second = next(iter(studio_db._settings_readers.values())).conn
     assert second is not first
+
+
+def test_a_warm_reader_still_refuses_a_retired_account(monkeypatch):
+    import pytest
+
+    from core.training import account_jobs
+    from utils.paths import storage_roots
+
+    studio_db.upsert_app_settings({"reader_probe": 3})
+    assert studio_db.get_app_setting("reader_probe") == 3  # warm the cached reader
+    monkeypatch.setattr(storage_roots, "is_owner_context", lambda: False)
+    monkeypatch.setattr(account_jobs, "account_is_retired", lambda: True)
+    for read in (
+        lambda: studio_db.get_app_setting("reader_probe"),
+        lambda: studio_db.get_app_settings(["reader_probe"]),
+        studio_db.list_scan_folders,
+    ):
+        with pytest.raises(storage_roots.RetiredAccountError):
+            read()
+
+
+def test_a_read_never_queues_behind_another_on_the_shared_connection(monkeypatch):
+    studio_db.upsert_app_settings({"reader_probe": 4})
+    assert studio_db.get_app_setting("reader_probe") == 4
+    reader = next(iter(studio_db._settings_readers.values()))
+    opened = []
+    real = studio_db.get_connection
+    monkeypatch.setattr(
+        studio_db, "get_connection", lambda *a, **k: opened.append(1) or real(*a, **k)
+    )
+    # A query in flight (or stuck on a locked database) holds the connection: the next read goes around it.
+    assert reader.busy.acquire(blocking = False)
+    try:
+        assert studio_db.get_app_setting("reader_probe") == 4
+    finally:
+        reader.busy.release()
+    assert opened == [1]
+    assert studio_db.get_app_setting("reader_probe") == 4
+    assert opened == [1]
+
+
+def test_a_reader_closed_mid_lookup_falls_back_to_a_fresh_read(monkeypatch):
+    studio_db.upsert_app_settings({"reader_probe": 5})
+    assert studio_db.get_app_setting("reader_probe") == 5
+    reader = next(iter(studio_db._settings_readers.values()))
+    reader.conn.close()  # as close_settings_readers would, after this caller looked the reader up
+    monkeypatch.setattr(studio_db, "_settings_reader", lambda db_path: reader)
+    assert studio_db.get_app_setting("reader_probe") == 5
