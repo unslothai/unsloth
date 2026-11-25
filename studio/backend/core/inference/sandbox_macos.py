@@ -486,7 +486,8 @@ def runtime_paths_under(workdir: str) -> tuple[str, ...]:
             posixpath.join(prefix, name)
             for name in ("bin", "include", "lib", "lib64", "libexec", "pyvenv.cfg", "ssl", "Python")
         )
-    for candidate in candidates:
+    # sys.executable stays first, so its identity check below still applies.
+    for candidate in dict.fromkeys(candidates):
         if not os.path.exists(candidate):
             continue
         resolved = os.path.realpath(candidate)

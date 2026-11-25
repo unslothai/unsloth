@@ -476,12 +476,23 @@ _DARWIN_ASK_PS = object()
 _DARWIN_SZOMB = 5  # sys/proc.h; ps prints 'Z' for p_stat == SZOMB
 _DARWIN_PROC_PIDTBSDINFO = 3  # sys/proc_info.h
 _darwin_libproc_state: list = []  # [] = not tried, [None] = unavailable, [(lib, struct)] = loaded
+_darwin_libproc_lock = threading.Lock()
+# ps formats lstart with strftime("%c") in the locale it inherits; these give the C-locale text.
+_DARWIN_C_TIME_LOCALES = frozenset(
+    {"C", "POSIX", "C.UTF-8", "en_US", "en_US.UTF-8", "en_US.US-ASCII", "en_US.ISO8859-1"}
+)
 
 
 def _darwin_libproc():
     if _darwin_libproc_state:
         return _darwin_libproc_state[0]
-    loaded = None
+    with _darwin_libproc_lock:
+        if not _darwin_libproc_state:
+            _darwin_libproc_state.append(_load_darwin_libproc())
+    return _darwin_libproc_state[0]
+
+
+def _load_darwin_libproc():
     try:
         import ctypes
 
@@ -497,7 +508,6 @@ def _darwin_libproc():
         loaded = (lib, _darwin_bsdinfo_type())
     except Exception:  # noqa: BLE001 - no libproc: every lookup keeps using ps
         loaded = None
-    _darwin_libproc_state.append(loaded)
     return loaded
 
 
@@ -535,31 +545,40 @@ def _darwin_bsdinfo_type():
 
 def _darwin_bsdinfo(pid: int):
     """struct proc_bsdinfo for pid, None when it does not exist, _DARWIN_ASK_PS when libproc cannot say."""
-    loaded = _darwin_libproc()
-    if loaded is None:
+    # pid_t range only: ctypes would truncate a larger int (or a bool) into another pid.
+    if type(pid) is not int or not 0 < pid <= 0x7FFFFFFF:
         return _DARWIN_ASK_PS
-    import ctypes
-    import errno as errno_mod
+    try:
+        loaded = _darwin_libproc()
+        if loaded is None:
+            return _DARWIN_ASK_PS
+        import ctypes
+        import errno as errno_mod
 
-    lib, struct = loaded
-    info = struct()
-    # arg 1: XNU proc_pidinfo then also finds zombies (proc_info.c findzomb), as ps's sysctl does.
-    size = lib.proc_pidinfo(
-        pid, _DARWIN_PROC_PIDTBSDINFO, 1, ctypes.byref(info), ctypes.sizeof(info)
-    )
-    if size == ctypes.sizeof(info) and info.pbi_pid == pid:
-        return info
-    if size <= 0 and ctypes.get_errno() == errno_mod.ESRCH:
-        return None
+        lib, struct = loaded
+        info = struct()
+        ctypes.set_errno(0)  # a failure that leaves errno alone must not read a stale ESRCH
+        # arg 1: XNU proc_pidinfo then also finds zombies (proc_info.c findzomb), as ps's sysctl does.
+        size = lib.proc_pidinfo(
+            pid, _DARWIN_PROC_PIDTBSDINFO, 1, ctypes.byref(info), ctypes.sizeof(info)
+        )
+        if size == ctypes.sizeof(info) and info.pbi_pid == pid:
+            return info
+        if size <= 0 and ctypes.get_errno() == errno_mod.ESRCH:
+            return None
+    except Exception:  # noqa: BLE001 - any native failure: ps answers as before
+        pass
     return _DARWIN_ASK_PS
 
 
 def _darwin_c_locale_time() -> bool:
     """ps formats lstart with strftime("%c") in the inherited locale; C and en_US give the format built here."""
+    if os.environ.get("PATH_LOCALE"):
+        return False  # libc may load custom locale data
     for name in ("LC_ALL", "LC_TIME", "LANG"):
         value = os.environ.get(name)
         if value:
-            return value in ("C", "POSIX") or value.startswith(("C.", "en_US"))
+            return value in _DARWIN_C_TIME_LOCALES
     return True
 
 
@@ -572,7 +591,10 @@ def _darwin_native_identity(pid: int):
         return info
     # ps lstart: strftime("%c") of p_start.tv_sec (the field pbi_start_tvsec copies), left-justified in 28.
     # asctime is the C-locale %c and ignores Python's own LC_TIME, which ps never sees.
-    lstart = time.asctime(time.gmtime(info.pbi_start_tvsec)).ljust(28)
+    try:
+        lstart = time.asctime(time.gmtime(info.pbi_start_tvsec)).ljust(28)
+    except (OverflowError, ValueError, OSError):
+        return _DARWIN_ASK_PS
     comm = info.pbi_comm.decode("utf-8", "replace")
     # _same_identity compares only the five lstart fields on macOS; the comm column is informational.
     return f"{lstart} {comm}".strip() if comm else lstart.strip()

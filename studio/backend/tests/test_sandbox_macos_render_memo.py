@@ -128,3 +128,17 @@ def test_runtime_read_paths_resolves_a_repeated_prefix_once(tmp_path, monkeypatc
     monkeypatch.setattr(backend.os.path, "realpath", counted)
     assert backend.runtime_read_paths().count(str(library)) == 1
     assert calls.count(str(library)) == 1
+
+
+def test_runtime_paths_under_checks_a_repeated_prefix_once(tmp_path, monkeypatch):
+    work = tmp_path / "work"
+    library = work / "venv" / "lib"
+    library.mkdir(parents = True)
+    for name in ("prefix", "base_prefix", "exec_prefix", "base_exec_prefix"):
+        monkeypatch.setattr(backend.sys, name, str(work / "venv"))
+    monkeypatch.setattr(backend, "editable_source_roots", lambda: ())
+    probed = []
+    exists = os.path.exists
+    monkeypatch.setattr(backend.os.path, "exists", lambda path: probed.append(path) or exists(path))
+    assert str(library) in backend.runtime_paths_under(str(work))
+    assert probed.count(str(library)) == 1

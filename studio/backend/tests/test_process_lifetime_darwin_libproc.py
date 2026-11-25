@@ -5,7 +5,9 @@
 from __future__ import annotations
 
 import calendar
+import os
 import subprocess
+import sys
 import time
 from types import SimpleNamespace
 
@@ -39,8 +41,10 @@ def darwin(monkeypatch):
         if "state=" in argv:
             return SimpleNamespace(stdout = "Z+\n")
         # What macOS ps prints under TZ=UTC: strftime("%c") left-justified in 28, then comm.
-        lstart = time.strftime("%a %b %e %H:%M:%S %Y", time.gmtime(_START))
-        return SimpleNamespace(stdout = f"{lstart:<28} /opt/homebrew/bin/python3.12\n")
+        # A fixed C-locale line, independent of this interpreter's locale.
+        return SimpleNamespace(
+            stdout = "Wed Nov  4 09:05:07 2026      /opt/homebrew/bin/python3.12\n"
+        )
 
     monkeypatch.setattr(subprocess, "run", run)
     return spawned
@@ -140,3 +144,99 @@ def test_bsdinfo_layout_matches_xnu():
     info = pl._darwin_bsdinfo_type()
     assert ctypes.sizeof(info) == 136
     assert info.pbi_comm.offset == 48 and info.pbi_start_tvsec.offset == 120
+
+
+@pytest.mark.parametrize("pid", [True, 0, -1, 2**31, 2**32 + 4242])
+def test_pids_outside_pid_t_never_reach_libproc(darwin, monkeypatch, pid):
+    monkeypatch.setattr(pl, "_darwin_libproc", lambda: pytest.fail("called libproc"))
+    assert pl._darwin_bsdinfo(pid) is pl._DARWIN_ASK_PS
+
+
+def test_a_native_failure_falls_back_to_ps(darwin, monkeypatch):
+    def broken():
+        raise OSError("dyld failure")
+
+    monkeypatch.setattr(pl, "_darwin_libproc", broken)
+    assert pl._pid_identity(4242).split()[:5] == ["Wed", "Nov", "4", "09:05:07", "2026"]
+    assert darwin and darwin[-1][2] == "lstart=,comm="
+
+
+def test_a_failed_call_that_leaves_errno_alone_asks_ps(monkeypatch):
+    import ctypes
+    import errno
+
+    ctypes.set_errno(errno.ESRCH)
+    struct = pl._darwin_bsdinfo_type()
+    lib = SimpleNamespace(proc_pidinfo = lambda *args: 0)
+    monkeypatch.setattr(pl, "_darwin_libproc", lambda: (lib, struct))
+    assert pl._darwin_bsdinfo(4242) is pl._DARWIN_ASK_PS
+
+
+def test_ctypes_results_map_to_info_gone_or_ps(monkeypatch):
+    import ctypes
+    import errno
+
+    struct = pl._darwin_bsdinfo_type()
+
+    def answer(size, pid, err):
+        def call(want, flavor, arg, buffer, length):
+            assert (flavor, arg, length) == (pl._DARWIN_PROC_PIDTBSDINFO, 1, ctypes.sizeof(struct))
+            ctypes.cast(buffer, ctypes.POINTER(struct)).contents.pbi_pid = pid
+            ctypes.set_errno(err)
+            return size
+
+        return SimpleNamespace(proc_pidinfo = call)
+
+    full = ctypes.sizeof(struct)
+    for size, pid, err, expected in (
+        (full, 4242, 0, "info"),
+        (full, 4243, 0, "ps"),  # another pid's record
+        (full - 8, 4242, 0, "ps"),  # short read
+        (0, 0, errno.ESRCH, None),
+        (0, 0, errno.EPERM, "ps"),
+    ):
+        monkeypatch.setattr(pl, "_darwin_libproc", lambda: (answer(size, pid, err), struct))
+        got = pl._darwin_bsdinfo(4242)
+        if expected == "info":
+            assert got.pbi_pid == 4242
+        elif expected == "ps":
+            assert got is pl._DARWIN_ASK_PS
+        else:
+            assert got is None
+
+
+@pytest.mark.parametrize(
+    ("value", "native"),
+    [("en_US.UTF-8@euro", False), ("C.anything", False), ("en_USX", False), ("C.UTF-8", True)],
+)
+def test_the_locale_gate_admits_only_known_spellings(monkeypatch, value, native):
+    monkeypatch.setenv("LC_ALL", value)
+    monkeypatch.delenv("PATH_LOCALE", raising = False)
+    assert pl._darwin_c_locale_time() is native
+
+
+def test_custom_locale_data_keeps_ps(monkeypatch):
+    for name in ("LC_ALL", "LC_TIME", "LANG"):
+        monkeypatch.delenv(name, raising = False)
+    monkeypatch.setenv("PATH_LOCALE", "/tmp/locales")
+    assert pl._darwin_c_locale_time() is False
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason = "native libproc and ps exist only on macOS")
+def test_native_identity_matches_the_system_ps_on_this_mac():
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        native = pl._darwin_native_identity(child.pid)
+        assert native is not pl._DARWIN_ASK_PS and native is not None
+        out = subprocess.run(
+            ["ps", "-o", "lstart=,comm=", "-p", str(child.pid)],
+            env = {**os.environ, "TZ": "UTC", "LC_ALL": "C"},
+            capture_output = True,
+            text = True,
+            check = True,
+        ).stdout
+        assert native.split()[:5] == out.split()[:5]
+        assert pl._pid_is_zombie(child.pid) is False
+    finally:
+        child.kill()
+        child.wait()
