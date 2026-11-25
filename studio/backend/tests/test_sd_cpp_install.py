@@ -3171,6 +3171,8 @@ def test_a_rate_limit_stops_the_fallback_ladder(
 
     monkeypatch.delenv("GH_TOKEN", raising = False)
     monkeypatch.delenv("GITHUB_TOKEN", raising = False)
+    # A tag with no shipped asset list: the shipped pin installs without the API (test_sd_cpp_install_ratelimit).
+    monkeypatch.setenv("UNSLOTH_SD_CPP_TAG", "master-1-deadbee-u1234567")
     monkeypatch.setattr(sdmod, "_fetch_release", fake_fetch)
     if not throttled:
         assert sdmod._resolve_with_fallback("auto", None)[2] is None
