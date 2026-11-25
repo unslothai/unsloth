@@ -16512,12 +16512,12 @@ def _mlx_estimate_load_in_4bit(config, request) -> bool:
     # Same order as the load route: a full-finetune output loads 16-bit before any tier check.
     if not _effective_load_in_4bit(config, request.load_in_4bit):
         return False
-    from utils.transformers_version import latest_tier_active_for
+    from utils.transformers_version import latest_tier_forces_16bit
 
     identifier = getattr(config, "identifier", None)
     return not _offline_guarded(
         (identifier, getattr(config, "base_model", None)),
-        latest_tier_active_for,
+        latest_tier_forces_16bit,
         identifier,
         request.hf_token,
     )
@@ -20718,11 +20718,11 @@ async def _load_model_impl(
             )
         # Latest-sidecar models load 16-bit (worker refuses bnb 4-bit); size the guard to match.
         if effective_load_in_4bit and not config.is_gguf:
-            from utils.transformers_version import latest_tier_active_for
+            from utils.transformers_version import latest_tier_forces_16bit
             if await asyncio.to_thread(
                 _offline_guarded,
                 (model_identifier, config.identifier, getattr(config, "base_model", None)),
-                latest_tier_active_for,
+                latest_tier_forces_16bit,
                 config.identifier,
                 request.hf_token,
             ):
@@ -21943,16 +21943,27 @@ async def validate_model(
         # Mirror /load's latest-sidecar 16-bit flip: an active sidecar forces 16-bit; an offered upgrade
         # only without a custom-code (auto_map) fallback, which still loads 4-bit.
         if effective_load_in_4bit and not is_gguf:
-            from utils.transformers_version import latest_tier_active_for
+            from utils.transformers_version import (
+                latest_tier_forces_16bit,
+                latest_tier_upgrade_keeps_4bit,
+            )
             _install_only_upgrade = (
                 transformers_upgrade is not None
                 and transformers_upgrade.installable
                 and not requires_trust_remote_code
+                and not await asyncio.to_thread(
+                    _offline_guarded,
+                    (model_identifier, config.identifier, getattr(config, "base_model", None)),
+                    latest_tier_upgrade_keeps_4bit,
+                    transformers_upgrade.model_type,
+                    config.identifier,
+                    request.hf_token,
+                )
             )
             if _install_only_upgrade or await asyncio.to_thread(
                 _offline_guarded,
                 (model_identifier, config.identifier, getattr(config, "base_model", None)),
-                latest_tier_active_for,
+                latest_tier_forces_16bit,
                 config.identifier,
                 request.hf_token,
             ):
@@ -22235,7 +22246,7 @@ async def check_transformers_upgrade_route(
     for training. Never raises: an unreadable model reports "no upgrade needed" and the
     caller proceeds exactly as it did before.
     """
-    from utils.transformers_version import latest_tier_active_for
+    from utils.transformers_version import latest_tier_load_policy, latest_tier_upgrade_keeps_4bit
 
     if account_access.managed_account():
         for ref in (
@@ -22302,27 +22313,42 @@ async def check_transformers_upgrade_route(
         logger.debug("Custom-code check failed for '%s': %s", model_name, exc)
 
     latest_tier_active = False
+    active_forces_16bit = False
     try:
-        latest_tier_active = await asyncio.to_thread(
+        latest_tier_active, active_forces_16bit = await asyncio.to_thread(
             _offline_guarded,
-            # latest_tier_active_for resolves a remote adapter's base itself, so fetch it too.
+            # The policy resolves a remote adapter's base itself, so fetch it too.
             tuple(targets),
-            latest_tier_active_for,
+            latest_tier_load_policy,
             load_target,
             request.hf_token,
         )
     except Exception as exc:
         logger.debug("Latest-tier check failed for '%s': %s", model_name, exc)
+    upgrade_keeps_4bit = False
+    if transformers_upgrade is not None:
+        try:
+            upgrade_keeps_4bit = await asyncio.to_thread(
+                _offline_guarded,
+                tuple(targets),
+                latest_tier_upgrade_keeps_4bit,
+                transformers_upgrade.model_type,
+                load_target,
+                request.hf_token,
+            )
+        except Exception as exc:
+            logger.debug("4-bit check failed for '%s': %s", model_name, exc)
 
     # Only install-only upgrades or active sidecars force 16-bit; offered ones do not (bnb 4-bit feeds unvalidated paths for new architectures).
     install_only_upgrade = bool(
         transformers_upgrade is not None
         and transformers_upgrade.installable
         and not requires_trust_remote_code
+        and not upgrade_keeps_4bit
     )
     # Already on the sidecar: the install does not strand the checkpoint; resume is refused regardless.
     install_breaks_exact_resume = False
-    if request.resume_run_id and not latest_tier_active:
+    if request.resume_run_id and not latest_tier_active and not upgrade_keeps_4bit:
         install_breaks_exact_resume = await asyncio.to_thread(
             _install_breaks_exact_resume, request.resume_run_id
         )
@@ -22335,7 +22361,9 @@ async def check_transformers_upgrade_route(
         # Already booleans; bool() here would trip the GGUF consistency guard's raw-YAML check.
         requires_trust_remote_code = requires_trust_remote_code,
         latest_tier_active = latest_tier_active,
-        forces_16bit = latest_tier_active or install_only_upgrade,
+        forces_16bit = active_forces_16bit or install_only_upgrade,
+        # The Configure card reads this: installable && !forces_16bit alone means the custom-code case.
+        sidecar_keeps_4bit = upgrade_keeps_4bit or (latest_tier_active and not active_forces_16bit),
         install_breaks_exact_resume = install_breaks_exact_resume,
     )
 

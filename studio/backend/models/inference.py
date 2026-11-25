@@ -1064,6 +1064,12 @@ class TransformersUpgradeCheckResponse(BaseModel):
         "when the latest sidecar already routes the model, and when an install-only upgrade "
         "would put it there. Lets the UI state the real precision before the run starts.",
     )
+    sidecar_keeps_4bit: bool = Field(
+        False,
+        description = "Whether a load on the latest sidecar stays bnb 4-bit for this model: an "
+        "architecture validated in 4-bit there, or a checkpoint already quantized with "
+        "bitsandbytes. When true, installing the offered release does not switch the run to 16-bit.",
+    )
     install_breaks_exact_resume: bool = Field(
         False,
         description = "Set only for a resume_run_id: installing the offered release would "
