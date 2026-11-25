@@ -2876,7 +2876,7 @@ class PipelineParallel:
         divided by the ranks holding a copy of it, summed over every rank)."""
         import torch.distributed as dist
 
-        from .tp_native import _square_sum
+        from .tp_native import _scale_tensors_, _square_sum
 
         self._check_unscaled()
         params = self.parameters() if parameters is None else list(parameters)
@@ -2896,9 +2896,7 @@ class PipelineParallel:
         elif self.num_stages > 1:
             dist.all_reduce(sq, group = self.group)
         total = sq.sqrt()
-        coef = torch.clamp(float(max_norm) / (total + eps), max = 1.0)
-        for g in grads:
-            g.mul_(coef.to(g.dtype))
+        _scale_tensors_(grads, total, float(max_norm), eps)
         return total.float()
 
     def unscale_(self, scaler, optimizer):
