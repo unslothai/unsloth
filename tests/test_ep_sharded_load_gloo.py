@@ -143,7 +143,7 @@ def _case_sharded_16bit(rank, world, tmp):
         model(input_ids = torch.zeros(1, 3, dtype = torch.long))
         out["unapplied_forward"] = "ran"
     except RuntimeError as exc:
-        out["unapplied_forward"] = str(exc)[:200]
+        out["unapplied_forward"] = str(exc)
 
     ref, model, full = _lora(_load(ckpt)), _lora(model), _lora(full)
     lora = lambda m: {k: p.detach().clone() for k, p in m.named_parameters() if "lora_" in k}  # noqa: E731
