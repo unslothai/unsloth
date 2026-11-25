@@ -1645,6 +1645,8 @@ async def _stream_with_studio_tools(
         session_id = session_id,
         thread_id = thread_id,
     )
+    if hasattr(transport, "reword_messages"):
+        transport.reword_messages = controller.reword_stale_notes
     tool_hint = ", ".join(sorted(allowed_tool_names))
     reprompts = 0
     max_reprompts = MAX_ACT_REPROMPTS

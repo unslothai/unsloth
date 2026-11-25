@@ -1803,6 +1803,56 @@ def test_rebuild_without_an_edit_runs_again_only_when_deduplication_is_off(
     assert calls == [("terminal", build)] * (1 if deduplicate else 2)
 
 
+def _duplicate_after_a_fit(monkeypatch, context_length):
+    from core.inference import checkpoint
+
+    monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "rolling")
+    search_a = {"query": "harbor ledger"}
+    streams = [
+        _structured_tool_call("web_search", search_a, "call_0"),
+        _structured_tool_call("web_search", {"query": "tram loop"}, "call_0"),
+        _structured_tool_call("web_search", search_a, "call_0"),
+        [_sse({"content": "Done."}), _done()],
+    ]
+    backend, payloads = _backend_and_payloads(monkeypatch, streams)
+    backend._effective_context_length = context_length
+    monkeypatch.setattr(
+        backend,
+        "count_chat_tokens",
+        lambda candidate, *_a, **_k: sum(len(str(m.get("content") or "")) for m in candidate),
+    )
+    results = iter(["A" * 700, "B" * 700])
+    monkeypatch.setattr("core.inference.tools.execute_tool", lambda *_a, **_k: next(results))
+    _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "search a and b"}],
+        [{"type": "function", "function": {"name": "web_search"}}],
+        max_tool_iterations = 3,
+        max_tokens = 256,
+        permission_mode = "off",
+        context_overflow = "truncate_oldest",
+    )
+    last = payloads[-1]["messages"]
+    note = "\n".join(
+        str(m.get("content")) for m in last if "was not executed" in str(m.get("content"))
+    )
+    return note, any("A" * 700 in str(m.get("content")) for m in last)
+
+
+def test_local_duplicate_note_does_not_point_above_once_the_fit_drops_that_result(monkeypatch):
+    note, result_sent = _duplicate_after_a_fit(monkeypatch, 2000)
+    assert not result_sent
+    assert "already completed successfully" in note
+    assert "result above" not in note
+    assert "removed from the conversation" in note
+
+
+def test_local_duplicate_note_is_unchanged_while_its_result_is_still_sent(monkeypatch):
+    note, result_sent = _duplicate_after_a_fit(monkeypatch, 8192)
+    assert result_sent
+    assert "so its result above still holds. Do not repeat" in note
+
+
 def test_repeated_duplicate_noop_transitions_to_final_pass(monkeypatch):
     first_search = [
         _tool_call_sse("web_search", {"query": "gpu prices 2026"}, "call_search_1"),
