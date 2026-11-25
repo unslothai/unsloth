@@ -748,6 +748,78 @@ def test_hub_result_with_a_failed_header_is_rejected(monkeypatch):
     assert dcs.hub_component_sizes("o/r") is None
 
 
+def _sharded(n):
+    files = ["text_encoder/model.safetensors", "vae/diffusion_pytorch_model.safetensors"]
+    files += [f"transformer/s-{i:05d}.safetensors" for i in range(n)]
+    return files
+
+
+def _shard_header(f):
+    # every shard different, so a reordered result changes the totals and the file tuple
+    i = int(f.rsplit("-", 1)[1].split(".")[0]) if "/s-" in f else 0
+    width = 10 * (i + 1)
+    return {"w": {"dtype": "BF16", "shape": [width], "data_offsets": [0, 2 * width]}}
+
+
+def test_hub_headers_read_concurrently_bounded_and_in_order(monkeypatch):
+    import random
+    import threading
+    import time
+
+    files = _sharded(9)
+    _hub_with(monkeypatch, files, _shard_header)
+    monkeypatch.setattr(dcs, "_pick_files", lambda names, _read, folder: sorted(names))
+    monkeypatch.setattr(dcs, "HUB_HEADER_WORKERS", 1)
+    serial = dcs.hub_component_sizes("o/r")
+    assert serial is not None
+
+    lock = threading.Lock()
+    live, peak = [0], [0]
+
+    def slow(f):
+        with lock:
+            live[0] += 1
+            peak[0] = max(peak[0], live[0])
+        time.sleep(random.uniform(0.01, 0.05))  # finish out of submission order
+        with lock:
+            live[0] -= 1
+        return _shard_header(f)
+
+    _hub_with(monkeypatch, files, slow)
+    monkeypatch.setattr(dcs, "HUB_HEADER_WORKERS", 4)
+    pooled = dcs.hub_component_sizes("o/r")
+    assert peak[0] == 4  # overlapped, never past the bound
+    assert pooled.components == serial.components
+    assert pooled.get("transformer").files == tuple(f"s-{i:05d}.safetensors" for i in range(9))
+
+
+def test_hub_concurrent_header_failure_or_deadline_voids_the_answer(monkeypatch):
+    import time
+
+    files = _sharded(6)
+    monkeypatch.setattr(dcs, "_pick_files", lambda names, _read, folder: sorted(names))
+    monkeypatch.setattr(dcs, "HUB_HEADER_WORKERS", 4)
+    _hub_with(
+        monkeypatch,
+        files,
+        lambda f: None if f.endswith("s-00004.safetensors") else _shard_header(f),
+    )
+    assert dcs.hub_component_sizes("o/r") is None
+    assert not dcs._HUB_SHA_CACHE
+
+    # one shard that never answers: the shared deadline still bounds the whole read
+    def hang(f):
+        if f.endswith("s-00002.safetensors"):
+            time.sleep(3.0)
+        return _shard_header(f)
+
+    _hub_with(monkeypatch, files, hang)
+    start = time.monotonic()
+    assert dcs.hub_component_sizes("o/r", timeout_seconds = 0.5) is None
+    assert time.monotonic() - start < 2.0
+    assert not dcs._HUB_SHA_CACHE
+
+
 class _Resp:
     def __init__(
         self,

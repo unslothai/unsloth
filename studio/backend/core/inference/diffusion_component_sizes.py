@@ -477,6 +477,52 @@ def _hub_header(
         return None
 
 
+# Concurrent ranged header reads: each shard header is two small round trips, independent of every other.
+HUB_HEADER_WORKERS = 4
+
+
+def _read_headers(
+    repo_id: str, wanted: list, revision: Optional[str], token: Any, deadline: float
+) -> Optional[list]:
+    """``_hub_header`` for each ``(filename, size)`` in ``wanted``, in order, at most ``HUB_HEADER_WORKERS`` at
+    once under the one shared ``deadline``. None as soon as any header is missing or the deadline passes, so the
+    answer stays all-or-nothing."""
+    import time
+
+    workers = max(1, min(int(HUB_HEADER_WORKERS), len(wanted)))
+    if workers <= 1:
+        out = []
+        for filename, size in wanted:
+            header = _hub_header(repo_id, filename, revision, token, size, deadline)
+            if header is None:
+                return None
+            out.append(header)
+        return out
+    from concurrent.futures import ThreadPoolExecutor
+
+    pool = ThreadPoolExecutor(max_workers = workers, thread_name_prefix = "component-sizes-header")
+    try:
+        futures = [
+            pool.submit(_hub_header, repo_id, filename, revision, token, size, deadline)
+            for filename, size in wanted
+        ]
+        out = []
+        for future in futures:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return None
+            header = future.result(timeout = remaining)
+            if header is None:
+                return None
+            out.append(header)
+        return out
+    except Exception:  # noqa: BLE001 - a timeout or a worker failure voids the answer
+        return None
+    finally:
+        # every read is itself bounded by ``deadline``; never block the caller on stragglers
+        pool.shutdown(wait = False, cancel_futures = True)
+
+
 MAX_INDEX_BYTES = 64 * 1024 * 1024
 MAX_MANIFEST_BYTES = 1 << 20
 
@@ -700,6 +746,7 @@ def _read_hub_sizes(
     out: dict[str, ComponentSize] = {}
     unknown: set = set()
     unknown_bytes: dict = {}
+    planned: list[tuple[str, list, dict]] = []
     try:
         for folder, files in sorted(by_folder.items()):
             if (
@@ -731,18 +778,24 @@ def _read_hub_sizes(
                     )  # a loaded .bin component: its term is unknown, never smaller
                     unknown_bytes[folder] = sum(b for n, b in files.items() if _is_weight_file(n))
                 continue
-            size = _accumulate(
-                folder,
-                (
-                    (
-                        f,
-                        _hub_header(
-                            repo_id, f"{folder}/{f}", commit, token, files.get(f, 0), deadline
-                        ),
-                    )
-                    for f in picked
-                ),
-            )
+            planned.append((folder, list(picked), files))
+        headers = _read_headers(
+            repo_id,
+            [
+                (f"{folder}/{f}", files.get(f, 0))
+                for folder, picked, files in planned
+                for f in picked
+            ],
+            commit,
+            token,
+            deadline,
+        )
+        if headers is None:
+            return None  # any failed header of a loaded folder voids the answer
+        at = 0
+        for folder, picked, _files in planned:
+            size = _accumulate(folder, zip(picked, headers[at : at + len(picked)]))
+            at += len(picked)
             if size is None:
                 # any failed header of a loaded folder voids the answer: a partial one would be cached smaller
                 return None
