@@ -128,16 +128,14 @@ def test_moe_uses_ep_only_when_core_has_it():
 
 
 def test_auto_falls_back_when_ep_cannot_shard_the_family():
-    # Nemotron-H experts are non-gated: ep cannot shard them.
+    # JetMoE's experts take (layer_input,), not the routed experts call: ep cannot shard them.
     ep_host = _host(2, ep = True)
-    fits = pp.plan(
-        {"parallel_mode": "auto"}, ep_host, _model(need = 6.0, moe = True, family = "nemotron_h")
-    )
+    fits = pp.plan({"parallel_mode": "auto"}, ep_host, _model(need = 6.0, moe = True, family = "jetmoe"))
     assert fits["mode"] == "ddp" and fits["spec"] == "dp=2", fits
     sharded = pp.plan(
         {"parallel_mode": "auto"},
         ep_host,
-        _model(need = 20.0, shard = 11.0, moe = True, family = "nemotron_h"),
+        _model(need = 20.0, shard = 11.0, moe = True, family = "jetmoe"),
     )
     assert sharded["mode"] == "fsdp2" and sharded["spec"] == "dp=2,fsdp=1", sharded
     rows = {r["mode"]: r for r in sharded["modes"]}
@@ -147,7 +145,7 @@ def test_auto_falls_back_when_ep_cannot_shard_the_family():
     )
     assert qwen["mode"] == "ep" and qwen["spec"] == "ep=2", qwen
     with pytest.raises(pp.ParallelPlanError) as err:
-        pp.plan({"parallel_mode": "ep"}, ep_host, _model(moe = True, family = "nemotron_h"))
+        pp.plan({"parallel_mode": "ep"}, ep_host, _model(moe = True, family = "jetmoe"))
     payload = err.value.payload
     assert payload["code"] == "parallel_unsupported" and "ep x model" in payload["message"], payload
     assert payload["alternative"] and "drop ep" in payload["alternative"], payload

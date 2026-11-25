@@ -1219,7 +1219,9 @@ _TP_BLOCKED_FAMILIES = {
 }
 # From tp_native.expert_shard_problem on transformers 5.24.
 _EP_BLOCKED_FAMILIES = {
-    "nemotron_h": "no fused gate_up_proj / down_proj (non-gated up_proj / down_proj experts)",
+    "jetmoe": "its experts forward takes (layer_input,), not (hidden_states, top_k_index, top_k_weights)",
+    "longcat_flash": "zero / identity experts: the experts module has no integer num_experts",
+    "hunyuan_v1_moe": "the experts module has no integer num_experts",
 }
 
 

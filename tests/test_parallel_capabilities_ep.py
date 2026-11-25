@@ -39,22 +39,12 @@ _SMALL = dict(vocab_size = 128, hidden_size = 64, num_hidden_layers = 2, num_att
 
 
 def _meta(family):
-    from transformers import AutoModelForCausalLM, LlamaConfig, NemotronHConfig, Qwen3MoeConfig
+    from transformers import AutoConfig, AutoModelForCausalLM, LlamaConfig, Qwen3MoeConfig
 
-    if family == "nemotron_h":
-        config = NemotronHConfig(
-            **_SMALL,
-            num_key_value_heads = 4,
-            n_routed_experts = 4,
-            num_experts_per_tok = 2,
-            moe_intermediate_size = 32,
-            moe_shared_expert_intermediate_size = 32,
-            mamba_num_heads = 4,
-            mamba_head_dim = 16,
-            ssm_state_size = 16,
-            n_groups = 1,
-            layers_block_type = ["moe", "attention"],
-        )
+    if family == "jetmoe":
+        config = AutoConfig.for_model("jetmoe")
+        for key, value in dict(_SMALL, intermediate_size = 32, num_key_value_heads = 2).items():
+            setattr(config, key, value)
     elif family == "llama":
         config = LlamaConfig(**_SMALL, intermediate_size = 32)
     else:
@@ -110,7 +100,7 @@ def test_ep_with_another_model_axis_or_fsdp2_is_refused(axis):
 @pytest.mark.parametrize(
     "family, reason",
     [
-        ("nemotron_h", "no fused gate_up_proj / down_proj"),
+        ("jetmoe", "its experts forward takes ('layer_input',)"),
         ("llama", "no module has an `experts` child"),
     ],
 )
@@ -130,14 +120,14 @@ def test_a_model_ep_shards_is_not_refused_and_no_ep_asks_nothing():
     model = _meta("qwen3_moe")
     caps.check_layout(_ep_layout(), None, model, types.SimpleNamespace(packing = False))
     assert caps.query_from(_ep_layout(), None, model).ep_blocker == ""
-    nemotron = _meta("nemotron_h")
-    assert caps.query_from(ParallelLayout(1, 2, 2, False), None, nemotron).ep_blocker == ""
+    jetmoe = _meta("jetmoe")
+    assert caps.query_from(ParallelLayout(1, 2, 2, False), None, jetmoe).ep_blocker == ""
 
 
 def test_family_table_answers_when_only_the_model_type_is_known():
-    assert "no fused gate_up_proj" in caps._ep_blocker("nemotron_h", 2)
-    assert caps._ep_blocker("qwen3_moe", 2) == "" and caps._ep_blocker("nemotron_h", 1) == ""
-    message = _refusal(_ep_query(family = "nemotron_h", ep_blocker = caps._ep_blocker("nemotron_h", 2)))
+    assert "layer_input" in caps._ep_blocker("jetmoe", 2)
+    assert caps._ep_blocker("qwen3_moe", 2) == "" and caps._ep_blocker("jetmoe", 1) == ""
+    message = _refusal(_ep_query(family = "jetmoe", ep_blocker = caps._ep_blocker("jetmoe", 2)))
     assert message.startswith("Unsloth: ep x model: "), message
 
 
@@ -152,10 +142,7 @@ def test_ep_cells_cite_the_gloo_tests_and_leave_dp_cells_alone():
     )
     ddp = caps.cell_status(_ep_query(ep = 1, expert_lora = True))[1]
     assert ddp.name.endswith(" x ddp"), ddp.name
-    rows = [
-        c for c in caps.CELLS if c.name.startswith("MoE nemotron_h x ") and c.name.endswith(" x ep")
-    ]
-    assert rows and all("refused by the ep x model rule" in c.note for c in rows)
+    assert "refused by the ep x model rule" in caps._moe_note("jetmoe", None, False, "ep")
     inkling = caps.cell_status(_ep_query(family = "inkling2", expert_lora = True))[1]
     assert inkling.name == "Inkling 2 x ep" and not inkling.missing(), inkling
 
@@ -177,9 +164,9 @@ def test_trainer_precheck_runs_for_an_ep_only_environment(clean_env):
 
     trainer = object.__new__(Trainer)
     args = types.SimpleNamespace(packing = False)
-    with pytest.raises(NotImplementedError, match = "ep x model: .*no fused gate_up_proj"):
+    with pytest.raises(NotImplementedError, match = "ep x model: .*layer_input"):
         _utils._parallel_capabilities_pre(
-            trainer, Trainer.__init__, (), {"args": args}, _meta("nemotron_h")
+            trainer, Trainer.__init__, (), {"args": args}, _meta("jetmoe")
         )
     vllm = types.SimpleNamespace(packing = False, use_vllm = True)
     with pytest.raises(NotImplementedError, match = "ep x vLLM"):
