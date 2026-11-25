@@ -419,8 +419,12 @@ def sync_stop(should_stop: bool, save_on_stop: bool) -> tuple:
     try:
         dist.broadcast(flags, src = 0)
     except Exception:
-        if any(proc.poll() not in (None, 0) for proc in _PROCS):
-            time.sleep(5)  # a rank died: the watcher reports which one and ends the run
+        # A peer's socket can close before its exit is visible: give the watcher the time to name the rank.
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and not any(p.poll() not in (None, 0) for p in _PROCS):
+            time.sleep(0.1)
+        if any(p.poll() not in (None, 0) for p in _PROCS):
+            time.sleep(5)
         raise
     values = flags.tolist()
     return bool(values[0]), bool(values[1])

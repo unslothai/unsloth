@@ -6,7 +6,14 @@
 import math
 import re
 from pathlib import Path, PureWindowsPath
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 from typing import Annotated, Any, Optional, List, Dict, Literal, Union
 
 from hub.schemas.inventory import ModelFormat
@@ -928,13 +935,21 @@ class TrainingStatus(BaseModel):
     parallel: Optional[dict] = Field(
         None,
         description = "Multi-GPU layout of the run (mode, world_size, gpu_ids, spec, launcher, "
-        "distributed_backend, reason); null when started without parallel_mode.",
+        "distributed_backend, reason); absent when started without parallel_mode.",
     )
     metric_history: Optional[dict] = Field(
         None,
         description = "Full metric history arrays for chart recovery after SSE reconnection. "
         "Keys: 'steps', 'loss', 'lr', 'grad_norm', 'grad_norm_steps' — each a list of numeric values.",
     )
+
+    @model_serializer(mode = "wrap")
+    def _omit_absent_layout(self, handler):
+        # A run without a layout serialises exactly as before the field existed.
+        data = handler(self)
+        if isinstance(data, dict) and data.get("parallel") is None:
+            data.pop("parallel", None)
+        return data
 
 
 class TrainingProgress(BaseModel):
