@@ -482,6 +482,30 @@ def video_te_quant_request(
     return mode, True
 
 
+def settle_video_te_quant(
+    fam: Any,
+    text_encoder_quant: Optional[str],
+    *,
+    base: Optional[str],
+    speed_mode: Optional[str],
+    target: Any,
+    failures: Optional[dict] = None,
+) -> tuple[Optional[str], bool, bool]:
+    """The loader's one text-encoder decision: ``(scheme, auto_selected, auto_dropped)``. ``scheme`` is the request
+    after auto resolution (LTX-2.5's hosted int8 settled too); ``auto_dropped``: an automatic pick ``target`` cannot run,
+    which the load replaces with the released (dense) encoder. The CPU host-RAM check prices this same answer."""
+    scheme, auto = video_te_quant_request(fam, text_encoder_quant, base = base, speed_mode = speed_mode)
+    if getattr(fam, "name", None) == "ltx-2.5":
+        # Settle auto once so the memory plan and the encoder worker read one decision.
+        from .video_ltx25 import ltx25_resolve_te_request
+        scheme = ltx25_resolve_te_request(scheme, base, failures)
+    dropped = False
+    if auto:
+        from . import diffusion_precision as _precision
+        dropped = not _precision.te_quant_supported(target, scheme)
+    return scheme, auto, dropped
+
+
 def _te_base_is_official(fam: Any, base: str) -> bool:
     """The load's base is the family's registered base (or a verified equivalent), by exact id after mirror and HF
     cache canonicalization: no final-folder-name match."""
@@ -533,6 +557,116 @@ def refuse_cpu_dense_video_pick(
     )
 
 
+def _resident_video_cpu_release_gb() -> float:
+    """CPU host GB the resident video model hands back when a load replaces it (0 when none is resident on the CPU)."""
+    try:
+        state = getattr(_backend, "_state", None) if _backend is not None else None
+        if state is None or getattr(state, "device", None) != "cpu":
+            return 0.0
+        from .video_cpu_host import (
+            cpu_video_host_need,
+            cpu_video_working_set_gb,
+            gguf_copy_gb,
+            single_file_packed_gb,
+        )
+
+        fam = state.family
+        kind = state.kind
+        repo = getattr(state, "repo_id", None)
+        filename = getattr(state, "gguf_filename", None)
+        # The resident checkpoint's own storage: a GGUF copied into memory (mmap hook off) or packed fp8 single file.
+        copy_gb = gguf_copy_gb(fam, repo, filename) if kind == "gguf" else None
+        packed_gb = single_file_packed_gb(fam, repo, filename) if kind == "single_file" else None
+        scheme = getattr(state, "text_encoder_quant", None)
+        scheme = (
+            None if str(scheme or "").strip().lower() in ("", "none", "off", "auto") else scheme
+        )
+        need = cpu_video_host_need(
+            fam,
+            model_kind = kind,
+            te_scheme = scheme,
+            te_hosted = bool(scheme) and getattr(fam, "name", None) == "ltx-2.5",
+            transformer_quant = getattr(state, "transformer_quant", None),
+            gguf_copy_gb = copy_gb,
+            single_file_packed_gb = packed_gb,
+        )
+        return max(0.0, need.total_gb - cpu_video_working_set_gb(fam)) if need is not None else 0.0
+    except Exception:  # noqa: BLE001 -- no reading credits nothing
+        return 0.0
+
+
+def refuse_video_cpu_host_ram(
+    fam: Any,
+    *,
+    model_kind: str,
+    text_encoder_quant: Optional[str] = None,
+    transformer_quant: Optional[str] = None,
+    speed_mode: Optional[str] = None,
+    base_repo: Optional[str] = None,
+    checkpoint_filename: Optional[str] = None,
+    checkpoint_repo: Optional[str] = None,
+) -> None:
+    """RuntimeError (the routes' 409) for a video load the CPU-only host cannot hold. A no-op unless the diffusion
+    target is the CPU: the probe-free reading returns first on an accelerator host, so this runs no GPU probe and is
+    safe while training holds the card. Prices the encoder this loader settles on (``settle_video_te_quant``) and
+    the GGUF storage path its mmap hook takes."""
+    from . import diffusion_device
+    from .video_cpu_host import cpu_video_host_shortfall, gguf_copy_gb, single_file_packed_gb
+
+    if not diffusion_device.diffusion_target_is_cpu():
+        return
+    target = resolve_diffusion_device_target()
+    if getattr(target, "backend", None) != "cpu":
+        return
+    if getattr(fam, "name", None) != "minimax-h3" and not getattr(fam, "bf16_components_gb", None):
+        return  # nothing to size
+    try:
+        base = (
+            checkpoint_repo
+            if model_kind == "pipeline"
+            else resolve_video_base_repo(fam, base_repo, checkpoint_repo)
+        )
+        scheme, auto, dropped = settle_video_te_quant(
+            fam, text_encoder_quant, base = base, speed_mode = speed_mode, target = target
+        )
+        from .diffusion_precision import normalize_te_quant
+
+        scheme = None if (auto and dropped) else normalize_te_quant(scheme)
+        te_hosted = te_hosted_available = False
+        if getattr(fam, "name", None) == "ltx-2.5":
+            from .video_ltx25 import ltx25_te_prequant_sources
+            te_hosted_available = bool(ltx25_te_prequant_sources("int8", base))
+            te_hosted = bool(scheme) and te_hosted_available
+        copy_gb = (
+            gguf_copy_gb(fam, checkpoint_repo, checkpoint_filename)
+            if model_kind == "gguf"
+            else None
+        )
+        packed_gb = (
+            single_file_packed_gb(fam, checkpoint_repo, checkpoint_filename)
+            if model_kind == "single_file"
+            else None
+        )
+    except Exception:  # noqa: BLE001 -- unsizable (an unsupported request is refused by the precision checks)
+        return
+    shortfall = cpu_video_host_shortfall(
+        fam,
+        model_kind = model_kind,
+        te_scheme = scheme,
+        te_hosted = te_hosted,
+        te_hosted_available = te_hosted_available,
+        # What _load_impl resolves the request to: Speed "off" keeps an unset / auto DiT dense (comfy_keep False).
+        transformer_quant = video_transformer_quant_request(transformer_quant, speed_mode),
+        gguf_copy = copy_gb,
+        single_file_packed = packed_gb,
+        release_gb = _resident_video_cpu_release_gb(),
+    )
+    if shortfall is None:
+        return
+    logger.error("video.cpu_host_ram: refusing load: %s", shortfall)
+    raise RuntimeError(shortfall)
+
+
 def assert_video_precision_available(
     fam: Any,
     *,
@@ -545,12 +679,24 @@ def assert_video_precision_available(
     checkpoint_repo: Optional[str] = None,
     speed_mode: Optional[str] = None,
     loras_active: bool = False,
+    base_repo: Optional[str] = None,
 ) -> None:
     """Must run in the route before the GPU is taken, because begin_load evicts chat first."""
     from .diffusion_nvfp4_flag import refuse_disabled_nvfp4
 
     refuse_disabled_nvfp4(
         transformer_quant = transformer_quant, text_encoder_quant = text_encoder_quant
+    )
+    # CPU-only torch: refuse a load the float32 host floor cannot fit, before the eviction and the pull.
+    refuse_video_cpu_host_ram(
+        fam,
+        model_kind = model_kind,
+        text_encoder_quant = text_encoder_quant,
+        transformer_quant = transformer_quant,
+        speed_mode = speed_mode,
+        base_repo = base_repo,
+        checkpoint_filename = checkpoint_filename,
+        checkpoint_repo = checkpoint_repo,
     )
     if getattr(fam, "name", None) == "minimax-h3" and model_kind == "pipeline":
         # Refuse before the eviction and the pull: without bf16 every precision lands on the dense weights.
@@ -6945,6 +7091,7 @@ class VideoBackend:
             checkpoint_repo = repo_id,
             speed_mode = speed_mode,
             loras_active = video_lora.has_active(loras),
+            base_repo = base_repo,
         )
         # Publish the companion claim with _loading, or a delete in the gap removes a needed repo.
         from .video_minimax_h3 import (
@@ -10511,27 +10658,20 @@ class VideoBackend:
         # matches), "none" / "off" keep the released one, an explicit scheme pins itself. An automatic pick this card
         # cannot run is dropped rather than refused.
         text_encoder_quant_requested = text_encoder_quant
-        text_encoder_quant, text_encoder_quant_auto = video_te_quant_request(
+        text_encoder_quant, text_encoder_quant_auto, te_auto_dropped = settle_video_te_quant(
             fam,
             text_encoder_quant,
             base = repo_id if kind == "pipeline" else base,
             speed_mode = speed_mode,
+            target = target,
+            failures = _te_prequant_failed,
         )
-        if fam.name == "ltx-2.5":
-            # Settle auto once so the memory plan and the encoder worker read one decision.
-            from .video_ltx25 import ltx25_resolve_te_request
-            text_encoder_quant = ltx25_resolve_te_request(
-                text_encoder_quant,
-                repo_id if kind == "pipeline" else base,
-                _te_prequant_failed,
-            )
         # An automatic pick whose hosted pre-cast encoder could not be fetched loads the dense encoder: say so.
         te_auto_unavailable = auto_te_fetch_failure(
             fam, text_encoder_quant if text_encoder_quant_auto else None, _te_prequant_failed
         )
         if text_encoder_quant_auto:
-            from . import diffusion_precision as _precision
-            if not _precision.te_quant_supported(target, text_encoder_quant):
+            if te_auto_dropped:
                 text_encoder_quant = None
             elif not te_auto_unavailable:
                 logger.info(*auto_te_outcome_log(text_encoder_quant, fam.name, None, True))
