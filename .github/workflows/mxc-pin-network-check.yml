@@ -1,0 +1,65 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+#
+# Asks npm whether Studio's MXC pins are still current.
+#
+# Studio pins Microsoft MXC twice (studio/backend/core/inference/mxc_runtime.py): the primary pin is the
+# release npm tags `latest`, used where Windows has the built-in container, and the legacy pin is the
+# newest release that still has the AppContainer + DACL tier. A red run here means a newer MXC is out
+# and the primary pin needs a reviewed bump, not a re-run.
+#
+# Schedule + manual only, never on pull_request: an npm outage must not fail an unrelated PR. The same
+# test file runs offline in the normal suite and keeps every other assertion.
+
+name: MXC pin network check
+
+on:
+  schedule:
+    - cron: '27 6 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  mxc-pin:
+    name: MXC pins match npm
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Harden runner (egress block)
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
+        with:
+          egress-policy: block
+          disable-sudo: true
+          allowed-endpoints: >
+            api.github.com:443
+            github.com:443
+            codeload.github.com:443
+            objects.githubusercontent.com:443
+            pypi.org:443
+            files.pythonhosted.org:443
+            registry.npmjs.org:443
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: '3.12'
+
+      # The pin module and its test need only the standard library and pytest.
+      - name: Install pytest
+        run: python -m pip install pytest
+
+      - name: MXC pins must match the npm registry
+        working-directory: studio/backend
+        env:
+          PYTHONPATH: .
+          UNSLOTH_MXC_PIN_NETWORK: '1'
+        run: python -m pytest -q --noconftest -p no:cacheprovider -o addopts= tests/test_mxc_pin.py
