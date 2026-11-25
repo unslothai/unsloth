@@ -164,15 +164,24 @@ def _terminate_children() -> None:
                 pass
 
 
-def wait_for_ranks(timeout: float = 600.0) -> bool:
-    """Rank 0 waits for the other ranks to finish their rank-local saves before the run is reported done."""
+def wait_for_ranks(timeout: float = 600.0) -> Optional[str]:
+    """Rank 0 waits for the other ranks to finish their rank-local saves before the run is reported done.
+    None when every rank exited cleanly, else the error to report instead of completion."""
     deadline = time.monotonic() + timeout
-    for proc in _PROCS:
+    for r, proc in enumerate(_PROCS, start = 1):
         try:
-            proc.wait(timeout = max(0.1, deadline - time.monotonic()))
+            code = proc.wait(timeout = max(0.1, deadline - time.monotonic()))
         except Exception:  # noqa: BLE001
-            return False
-    return True
+            _CLOSING.set()
+            return f"Multi-GPU training: rank {r} did not finish its save within {int(timeout)} s."
+        if code != 0:
+            _CLOSING.set()  # reported here; the watcher must not end the process first
+            time.sleep(0.5)  # the pump may still be reading the rank's last lines
+            reason = _LAST_ERROR.get(r)
+            return f"Multi-GPU training: rank {r} exited with code {code} while saving." + (
+                f" Rank {r}: {reason}" if reason else ""
+            )
+    return None
 
 
 def _group_backend(plan: dict) -> str:

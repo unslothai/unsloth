@@ -189,3 +189,25 @@ def test_single_process_plans_start_nothing(monkeypatch):
     )
     assert "WORLD_SIZE" not in os.environ
     assert parallel_launch.sync_stop(True, False) == (True, False)
+
+
+def test_wait_for_ranks_reports_a_rank_that_failed_its_save(monkeypatch):
+    class _Proc:
+        def __init__(self, code):
+            self.code = code
+
+        def wait(self, timeout = None):
+            return self.code
+
+        def poll(self):
+            return self.code
+
+    monkeypatch.setattr(parallel_launch, "_PROCS", [_Proc(0), _Proc(3)])
+    monkeypatch.setattr(parallel_launch, "_LAST_ERROR", {2: "disk full"})
+    monkeypatch.setattr(parallel_launch, "_CLOSING", parallel_launch.threading.Event())
+    message = parallel_launch.wait_for_ranks(timeout = 5)
+    assert (
+        message and "rank 2 exited with code 3 while saving" in message and "disk full" in message
+    )
+    monkeypatch.setattr(parallel_launch, "_PROCS", [_Proc(0), _Proc(0)])
+    assert parallel_launch.wait_for_ranks(timeout = 5) is None

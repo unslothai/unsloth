@@ -5803,8 +5803,13 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 )
             return
         if _parallel_launch.is_multi_process():
-            # TP / PP ranks write rank-local checkpoint files: report done only after all exit.
-            _parallel_launch.wait_for_ranks()
+            # TP / PP ranks write rank-local checkpoint files: report done only after all exit cleanly.
+            rank_failure = _parallel_launch.wait_for_ranks()
+            if rank_failure:
+                event_queue.put(
+                    {"type": "error", "error": rank_failure, "stack": "", "ts": time.time()}
+                )
+                return
 
         progress = trainer.get_training_progress()
         drafter_note = ""
