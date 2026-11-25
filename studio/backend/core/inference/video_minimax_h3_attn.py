@@ -270,6 +270,9 @@ def _strided_processor_for(base: Any) -> Any:
         # set by install_int8_attention: unmasked calls of at least this many tokens run the INT8 kernel
         _unsloth_int8 = False
         _unsloth_int8_min_tokens = 0
+        # {secondary card: its own race's floor} (diffusion_int8_attention.card_floor); replaced per install, never
+        # mutated in place
+        _unsloth_int8_cards: dict = {}
         _unsloth_int8_sinks = 0
         # set by install_int8_exact_start: INT8 calls go through the step-gated op (16-bit kernel code, _EXACT_KERNELS)
         _unsloth_int8_exact = False
@@ -337,8 +340,9 @@ def _strided_processor_for(base: Any) -> Any:
                     key = _apply_rotary_emb(key, *rotary_emb)
 
             if (
-                self._unsloth_int8
-                and query.shape[1] >= self._unsloth_int8_min_tokens
+                # installed and at least the floor on this call's card (a secondary card that lost its own race keeps
+                # this processor's 16-bit path below, the incumbent it raced against)
+                _i8.takes_int8(self, query)
                 # no backward in the kernel: gradient calls run native here, not inside the op (autograd cannot see in)
                 and not (
                     torch.is_grad_enabled()
