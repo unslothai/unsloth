@@ -7154,14 +7154,13 @@ def _pending_inline_rehearsal_cut(text: str, enabled_tool_names) -> int:
         starts.append(tail.start())
     if not starts:
         return -1
-    # The strip leaves still-open reasoning alone, so nothing there is held.
     t0 = max(0, len(text) - _PENDING_THINK_WINDOW)
     opened = max(text.rfind("<think", t0), text.rfind("[THINK]", t0))
     if opened > max(text.rfind("</think", t0), text.rfind("[/THINK]", t0)):
         think = _think_spans_outside_tool_markup(text[t0:])
         if think and think[-1][1] == len(text) - t0:
             return -1
-    # Pair delimiters as the parser sees the text (reasoning and blocked-call bodies masked), over a bounded window.
+    # Pair delimiters on the parser's masked view, over a bounded window.
     lo = max(0, line - _PENDING_MASK_WINDOW)
     masked = text[lo:]
     if "<" in masked or "[" in masked:
@@ -7186,7 +7185,7 @@ def _pending_inline_rehearsal_cut(text: str, enabled_tool_names) -> int:
     )
 
 
-# Past this, a last line is not scanned per stream event; such a line streams as before.
+# Bounds the per-event scan: a longer last line streams unheld.
 _PENDING_INLINE_MAX_CHARS = 4096
 _PENDING_MASK_WINDOW = 2048
 _PENDING_THINK_WINDOW = 65536
