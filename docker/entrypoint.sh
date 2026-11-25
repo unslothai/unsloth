@@ -206,7 +206,7 @@ MSG
     exit 1
 fi
 
-# One interpreter for both checks: each `python -` re-imports torch (seconds per start).
+# One interpreter: each `python -` re-imports torch (seconds per container start).
 python - >&2 <<'PY' || exit 1
 import sys
 import torch
@@ -224,8 +224,6 @@ if not torch.cuda.is_available():
     print("Check the host (NOT the container) with:  nvidia-smi")
     print("Then upgrade the driver to match.")
     sys.exit(1)
-# the end of what was a separate process: keep its output ahead of any later warning
-sys.stdout.flush()
 
 major, minor = torch.cuda.get_device_capability(0)
 name = torch.cuda.get_device_name(0)

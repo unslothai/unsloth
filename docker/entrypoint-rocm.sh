@@ -274,7 +274,7 @@ PY
 fi
 
 # Check 3: torch.cuda.is_available() on a HIP build; check torch.version.hip first.
-# One interpreter for checks 3 and 4: each `python -` re-imports torch (seconds per start).
+# Checks 3 and 4 share one interpreter: each `python -` re-imports torch (seconds per start).
 IMAGE_ROCM="$IMAGE_ROCM" UNSLOTH_ROCM_DEV_PATH="$UNSLOTH_ROCM_DEV_PATH" IMAGE_GFX="$IMAGE_GFX" python - >&2 <<'PY' || exit 1
 import os
 import sys
@@ -336,7 +336,7 @@ if not torch.cuda.is_available():
     print("    bash docker/build.sh --rocm")
     print("If HSA_OVERRIDE_GFX_VERSION is set, a wrong value also produces this.")
     sys.exit(1)
-# the end of what was a separate process: keep its output ahead of any later warning
+# Check 3's output must stay ahead of Check 4 warnings (stdout is block buffered).
 sys.stdout.flush()
 
 # Check 4 (not a gate): the card's gfx arch vs this image's wheels.
