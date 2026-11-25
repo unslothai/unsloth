@@ -142,3 +142,35 @@ def test_vram_floor_leaves_out_a_parked_encoder(monkeypatch):
     monkeypatch.setenv(L.LTX2_PARK_VAE_ENCODER_ENV, "0")
     assert _video_offload_vram_floor_mib(pipe, plan("streaming")) == 26
     assert _video_offload_vram_floor_mib(pipe, plan("streaming"), phase = "decode") == 14
+
+
+def test_a_failed_onload_sends_the_whole_encoder_back_to_the_host(monkeypatch):
+    """An OOM on the second tensor must not leave the encoder split across host and card."""
+    vae = AutoencoderKLLTX2Video()
+    vae.encoder = torch.nn.Sequential(torch.nn.Linear(4, 4), torch.nn.Linear(4, 4))
+    where: dict[int, str] = {}
+    real_to = torch.nn.Module.to
+    moves = {"n": 0}
+
+    def to(self, *args, **kwargs):
+        target = str(args[0] if args else kwargs.get("device"))
+        for m in self.modules():
+            if target != "cpu" and isinstance(m, torch.nn.Linear):
+                moves["n"] += 1
+                if moves["n"] == 2:
+                    raise torch.OutOfMemoryError("injected on the second tensor")
+            where[id(m)] = target
+        return real_to(self, "cpu")
+
+    monkeypatch.setattr(torch.nn.Module, "to", to)
+    monkeypatch.setattr(
+        L,
+        "_module_device",
+        lambda m: torch.device(where.get(id(m), "cuda:0")) if m is not None else None,
+    )
+    L.park_ltx2_vae_encoder(types.SimpleNamespace(vae = vae), "streaming")
+    assert {where[id(m)] for m in vae.encoder.modules()} == {"cpu"}
+    with pytest.raises(torch.OutOfMemoryError):
+        vae.encode(torch.randn(1, 4))
+    # the first layer had reached the card: the finally sent the whole encoder back
+    assert {where[id(m)] for m in vae.encoder.modules()} == {"cpu"}

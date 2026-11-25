@@ -384,3 +384,35 @@ def test_cfg_concatenation_keeps_the_prompt_rows(monkeypatch):
     monkeypatch.delenv(v25.RELEASE_PROMPT_ROWS_ENV, raising = False)
     _, _, stats, _ = _two_stage(monkeypatch, "1", guidance = True)
     assert stats["released_rows_bytes"] == 0
+
+
+def test_rows_another_tensor_shares_are_kept(monkeypatch):
+    """A ``detach()`` alias shares the encode output's storage: releasing it would empty the alias too."""
+    monkeypatch.setenv(v25.COMPACT_CONDITIONING_ENV, "1")
+    monkeypatch.delenv(v25.RELEASE_PROMPT_ROWS_ENV, raising = False)
+    pipe = _KeepingPipe(_connectors(True))
+    pipe.kept = []
+    v25.install_remote_encode_prompt(pipe, _client(32, 5))
+    encode = pipe.encode_prompt
+    aliases = []
+
+    def aliasing(**kw):
+        out = encode(**kw)
+        if not aliases:
+            aliases.append(out[0].detach())
+        return out
+
+    pipe.encode_prompt = aliasing
+    before = _stats()
+    with torch.inference_mode(), MS.encode_once(pipe), v25.reuse_connector_outputs(pipe):
+        first = pipe()
+        memo = dict(pipe.__dict__[MS.ENCODE_ONCE_MEMO_ATTR])
+        second = pipe()
+    (memo_rows,) = [v[0] for v in memo.values()]
+    size = memo_rows.numel() * memo_rows.element_size()
+    alias = aliases[0]
+    # the aliased encode output keeps its rows (the alias its values); the unshared memo copy is still released
+    assert alias.untyped_storage().nbytes() == size and torch.equal(alias, pipe.kept[0])
+    assert memo_rows.untyped_storage().nbytes() == 0
+    assert _delta(before)["released_rows_bytes"] == size
+    assert all(torch.equal(a, b) for a, b in zip(first, second))

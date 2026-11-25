@@ -1932,8 +1932,9 @@ def release_prompt_rows_enabled() -> bool:
 
 
 def _release_rows(t: Any, like: Any) -> int:
-    """Free ``t``'s storage (its metadata stays: dtype, shape) when it is a whole, unshared prompt tensor shaped like
-    ``like``; the bytes freed, else 0."""
+    """Free ``t``'s storage (its metadata stays: dtype, shape) when it is a whole prompt tensor shaped like ``like``
+    and the only tensor on its storage (no view, ``detach()`` alias or other tensor shares it); the bytes freed,
+    else 0."""
     try:
         if (
             t.device.type == "meta"
@@ -1946,6 +1947,11 @@ def _release_rows(t: Any, like: Any) -> int:
         storage = t.untyped_storage()
         nbytes = int(storage.nbytes())
         if nbytes == 0 or nbytes != int(t.numel()) * int(t.element_size()):
+            return 0
+        import torch
+
+        # ``t`` plus the one Python storage object held here; any other tensor on it raises the count
+        if torch._C._storage_Use_Count(storage._cdata) != 2:
             return 0
         storage.resize_(0)
         return nbytes

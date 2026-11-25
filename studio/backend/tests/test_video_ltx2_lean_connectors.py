@@ -150,3 +150,26 @@ def test_not_installed_where_it_would_change_or_bypass_anything(monkeypatch):
 def test_the_pinned_diffusers_forward_is_the_one_the_lean_copy_follows():
     # fails when a diffusers bump changes LTX2TextConnectors.forward: re-check the copy, then add the new digest
     assert L._ltx2_connectors_forward_matches(connectors_mod.LTX2TextConnectors)
+
+
+def test_compiling_the_lean_connectors_adds_no_recompile():
+    """The engagement count is eager-only: the compiled lean forward captures as often as the compiled diffusers
+    forward (a counter write inside the trace guarded on its value and recompiled)."""
+    from torch._dynamo.testing import CompileCounter
+
+    def captures(lean):
+        torch._dynamo.reset()
+        module = _connectors()
+        if lean:
+            assert L.install_ltx2_lean_connector_features(types.SimpleNamespace(connectors = module))
+        counter = CompileCounter()
+        compiled = torch.compile(module, backend = counter)
+        g = torch.Generator().manual_seed(2)
+        with torch.inference_mode():
+            for seq in (12, 12, 12, 16, 20):
+                hidden = torch.randn(1, seq, CAPTION * FACTOR, generator = g)
+                compiled(hidden, torch.ones(1, seq, dtype = torch.int64))
+        return counter.frame_count
+
+    base = captures(False)
+    assert captures(True) == base

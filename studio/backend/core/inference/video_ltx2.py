@@ -1323,9 +1323,11 @@ def _ltx2_lean_connectors_forward(
     features = scaled_input(self.config.audio_hidden_dim)
     audio_text_emb_proj = self.audio_text_proj_in(features)
     del features
-    self.__dict__["_unsloth_lean_connector_runs"] = (
-        self.__dict__.get("_unsloth_lean_connector_runs", 0) + 1
-    )
+    if not torch.compiler.is_compiling():
+        # eager-only engagement count: a traced attribute write would add a Dynamo guard and a recompile
+        self.__dict__["_unsloth_lean_connector_runs"] = (
+            self.__dict__.get("_unsloth_lean_connector_runs", 0) + 1
+        )
 
     # from here on the diffusers forward, unchanged
     text_dtype = video_text_emb_proj.dtype
@@ -1435,12 +1437,13 @@ def park_ltx2_vae_encoder(
                 target = vae.__dict__.get(_LTX2_ENCODER_HOME)
                 here = _module_device(encoder)
                 moved = target is not None and here is not None and here != target
-                if moved:
-                    encoder.to(target)
                 try:
+                    if moved:
+                        encoder.to(target)
                     return inner(*args, **kwargs)
                 finally:
                     if moved:
+                        # also after a partial onload: the whole encoder goes back to the host
                         encoder.to(here)
 
             vae.encode = encode
@@ -1461,6 +1464,29 @@ def park_ltx2_vae_encoder(
             moved >> 20,
         )
     return moved
+
+
+def ltx2_memory_levers(pipe: Any, offload_policy: Any) -> str:
+    """The memory levers engaged on ``pipe`` ("" when none): part of the measured-peak key, so a peak recorded with a
+    lever on never lowers the headroom of a load or request running with it off."""
+    levers = []
+    try:
+        if getattr(getattr(pipe, "connectors", None), _LTX2_LEAN_CONNECTOR_ATTR, False):
+            levers.append("lean_connectors")
+        from .video_ltx25 import compact_conditioning_enabled, release_prompt_rows_enabled
+
+        if (
+            getattr(pipe, "_unsloth_ltx25_encoder", None) is not None
+            and release_prompt_rows_enabled()
+            and compact_conditioning_enabled()
+        ):
+            levers.append("released_prompt_rows")
+        vae = getattr(pipe, "vae", None)
+        if vae is not None and ltx2_vae_encoder_parks(vae, offload_policy):
+            levers.append("parked_vae_encoder")
+    except Exception:  # noqa: BLE001
+        pass
+    return ",".join(levers)
 
 
 def ltx23_verbatim_sigmas(pipe: Any) -> Any:
