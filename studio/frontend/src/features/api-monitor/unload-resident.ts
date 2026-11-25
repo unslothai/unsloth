@@ -10,10 +10,13 @@ export type ResidentModel = {
 
 export type UnloadResidentDeps = {
   readResident: () => Promise<ResidentModel | null>;
+  /** Reconfirm each target if an API auto-switch replaces it. */
+  confirmUnload?: (checkpoint: string) => Promise<boolean>;
   unload: (checkpoint: string) => Promise<void>;
 };
 
 export type UnloadResidentResult = {
+  declined?: boolean;
   unloadedAliases: string[];
   stillResident: string | null;
 };
@@ -29,6 +32,9 @@ export async function unloadResident(
   const unloadedAliases: string[] = [];
   let resident = await deps.readResident();
   for (let pass = 0; pass < passes && resident !== null; pass += 1) {
+    if (deps.confirmUnload && !(await deps.confirmUnload(resident.checkpoint))) {
+      return { unloadedAliases, stillResident: resident.checkpoint, declined: true };
+    }
     await deps.unload(resident.checkpoint);
     unloadedAliases.push(...resident.aliases);
     // Re-read rather than assume: only the backend knows whether that id matched.

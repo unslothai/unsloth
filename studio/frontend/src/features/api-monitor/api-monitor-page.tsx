@@ -96,6 +96,8 @@ import { useApiMonitorOverlayStore } from "./overlay-store";
 import { useSingleLine } from "./use-single-line";
 import { PAYLOAD_SHOW_ALL_MAX_CHARS, payloadPreview } from "./payload-preview";
 import { ToolbarTooltip } from "./components/toolbar-tooltip";
+import { confirmStopRunningChatsIfNeeded, type StopRunningChatsDecision } from "@/features/chat/utils/confirm-stop-running-chats";
+import { requestScopedLocalPromptQueueStop } from "@/features/chat/utils/prompt-queue-boundary";
 import { unloadResident } from "./unload-resident";
 import { useApiModelReload } from "./use-api-model-reload";
 import { ContextUsageBar as ContextUsageChip } from "@/features/chat/components/context-usage-bar";
@@ -1093,9 +1095,16 @@ export function ApiMonitorPage(): ReactElement {
 
   // read status for /unload's internal id; recheck because an API auto-switch can make it a no-op.
   const unloadActiveModel = async (): Promise<void> => {
+    const lifecycleLease = useChatRuntimeStore.getState().beginModelLoading("unloading");
+    if (lifecycleLease === null) return;
     setUnloading(true);
     try {
-      const { unloadedAliases, stillResident } = await unloadResident({
+      let decision: StopRunningChatsDecision | null = null;
+      const { unloadedAliases, stillResident, declined } = await unloadResident({
+        confirmUnload: async (checkpoint) => {
+          decision = await confirmStopRunningChatsIfNeeded("Unloading this model", "unloadOne", checkpoint);
+          return decision.proceed;
+        },
         readResident: async () => {
           const status = await getInferenceStatus();
           const checkpoint = servedInferenceCheckpointId(status);
@@ -1110,7 +1119,10 @@ export function ApiMonitorPage(): ReactElement {
             ),
           };
         },
-        unload: (checkpoint) => unloadModel({ model_path: checkpoint }),
+        unload: (checkpoint) => {
+          requestScopedLocalPromptQueueStop(decision?.promptQueueThreadIds ?? []);
+          return unloadModel({ model_path: checkpoint, force_cancel_active: decision?.forceCancelActive ?? false });
+        },
       });
       // Only clear when the store holds the model just unloaded: an external provider may be selected.
       const store = useChatRuntimeStore.getState();
@@ -1123,7 +1135,7 @@ export function ApiMonitorPage(): ReactElement {
         store.clearCheckpoint();
       }
       setUnloadError(
-        stillResident
+        !declined && stillResident
           ? `The API loaded "${stillResident}" while unloading, so it is still using memory. Unload again to release it.`
           : null,
       );
@@ -1134,6 +1146,7 @@ export function ApiMonitorPage(): ReactElement {
       );
     } finally {
       setUnloading(false);
+      useChatRuntimeStore.getState().endModelLoading(lifecycleLease);
     }
   };
   const [statusFilter, setStatusFilter] = useState<MonitorStatusFilter>("all");

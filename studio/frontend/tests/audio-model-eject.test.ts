@@ -46,7 +46,7 @@ test("Speak eject asks about running chats before tearing anything down", () => 
   );
   assert.match(
     source,
-    /if \(!slotEject\) \{\s*cancelPreStreamRunReservations\(stopDecision\.preStreamRunTokens\);\s*requestLocalPromptQueueStop\(stopDecision\.promptQueueThreadIds\);\s*\}\s*await unloadModel/,
+    /if \(slotEject\) \{\s*requestScopedLocalPromptQueueStop\(stopDecision\.promptQueueThreadIds\);\s*\} else \{\s*cancelPreStreamRunReservations\(stopDecision\.preStreamRunTokens\);\s*requestLocalPromptQueueStop\(stopDecision\.promptQueueThreadIds\);\s*\}\s*await unloadModel/,
   );
 });
 
