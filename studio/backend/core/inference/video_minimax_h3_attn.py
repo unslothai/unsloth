@@ -38,11 +38,6 @@ H3_INT8_AUTO_OFF_ARCHS: frozenset = frozenset()
 H3_INT8_EXACT_START_STEPS = 4
 # Overrides the exact-start step count under Auto (0 = INT8 on every step); unset = H3_INT8_EXACT_START_STEPS.
 H3_INT8_EXACT_STEPS_ENV = "UNSLOTH_H3_INT8_EXACT_STEPS"
-# Transformer blocks (``transformer_blocks`` indices) whose attention Auto keeps on the 16-bit kernel on every denoise
-# step, on top of the exact start (none by default).
-H3_INT8_EXACT_BLOCKS: tuple = ()
-# Overrides the kept blocks under Auto: comma-separated block indices, "none" / "" = no block kept.
-H3_INT8_EXACT_BLOCKS_ENV = "UNSLOTH_H3_INT8_EXACT_BLOCKS"
 
 _CUDNN = "_native_cudnn"
 _FLASH = "_native_flash"
@@ -109,29 +104,6 @@ def h3_int8_exact_steps() -> int:
     return int(H3_INT8_EXACT_START_STEPS)
 
 
-def h3_int8_exact_blocks() -> tuple:
-    """Transformer blocks Auto keeps on 16-bit attention on every step: the env override (sorted, unique), else (unset,
-    or not a list of block indices: with a warning) ``H3_INT8_EXACT_BLOCKS``."""
-    raw = os.environ.get(H3_INT8_EXACT_BLOCKS_ENV)
-    if raw is not None:
-        text = raw.strip().lower()
-        if text in ("", "none", "-"):
-            return ()
-        try:
-            blocks = sorted({int(x) for x in text.split(",") if x.strip()})
-        except ValueError:
-            blocks = [-1]
-        if blocks and min(blocks) >= 0:
-            return tuple(blocks)
-        logging.getLogger(__name__).warning(
-            "%s=%r is not a list of block indices; using the default %s",
-            H3_INT8_EXACT_BLOCKS_ENV,
-            raw,
-            H3_INT8_EXACT_BLOCKS,
-        )
-    return tuple(int(b) for b in H3_INT8_EXACT_BLOCKS)
-
-
 class H3Int8Gate(NamedTuple):
     """The H3 video load's INT8 attention decision: ``forced`` installs unconditionally, ``auto`` races it, and
     ``reason`` is the status text when nothing gets installed (None where there is nothing to explain).
@@ -141,7 +113,6 @@ class H3Int8Gate(NamedTuple):
     auto: bool
     reason: Optional[str]
     exact_steps: int = 0
-    exact_blocks: tuple = ()
 
 
 def h3_int8_load_gate(
@@ -188,10 +159,7 @@ def h3_int8_load_gate(
     else:
         reason = None
     exact = h3_int8_exact_steps() if auto else 0
-    blocks = h3_int8_exact_blocks() if auto else ()
-    return H3Int8Gate(
-        forced = forced, auto = auto, reason = reason, exact_steps = exact, exact_blocks = blocks
-    )
+    return H3Int8Gate(forced = forced, auto = auto, reason = reason, exact_steps = exact)
 
 
 def _flash_sdpa_ready(target: Any = None) -> bool:
@@ -774,22 +742,15 @@ def finish_h3_int8_auto(
     policy: Any,
     status_pipe: Any,
     logger: Any = None,
-    blocks: tuple = (),
 ) -> tuple:
-    """After Auto engaged INT8 on ``modules`` attention modules: keep ``blocks`` on 16-bit attention, then install the
-    exact start (``steps`` > 0). ``(modules, reason)``: the status reason naming them, or, when the exact start cannot
-    be installed (an error, or no processor took it), INT8 taken off for the load (``modules`` 0), never INT8 on every
-    step under Auto."""
+    """After Auto engaged INT8 on ``modules`` attention modules: install the exact start. ``(modules, reason)``: the
+    status reason naming it, or, when it cannot be installed (an error, or no processor took it), INT8 taken off for
+    the load (``modules`` 0), never INT8 on every step under Auto."""
     try:
-        kept = install_int8_exact_blocks(transformer, tuple(blocks or ()), logger = logger)
-        if int(steps) > 0 and not install_int8_exact_start(transformer, pipe, steps, logger = logger):
+        if not install_int8_exact_start(transformer, pipe, steps, logger = logger):
             raise RuntimeError("no INT8 attention processor took it")
-        parts = [str(_i8.resolved_entry(policy, status_pipe)[2])]
-        if int(steps) > 0:
-            parts.append(f"the first {int(steps)} denoise steps on 16-bit attention")
-        if kept:
-            parts.append(f"{kept} blocks on 16-bit attention on every step")
-        return modules - kept, ", ".join(parts)
+        reason = f"{_i8.resolved_entry(policy, status_pipe)[2]}, the first {int(steps)} denoise steps on 16-bit attention"
+        return modules, reason
     except Exception as exc:  # noqa: BLE001 -- back to 16-bit attention
         try:
             remove_int8_exact_start(transformer)
@@ -804,59 +765,6 @@ def finish_h3_int8_auto(
             0,
             f"Auto turned it off for this load: its exact start could not be installed ({exc})",
         )
-
-
-def install_int8_exact_blocks(
-    transformer: Any,
-    blocks: tuple,
-    logger: Any = None,
-) -> int:
-    """Keep the attention of ``transformer.transformer_blocks[i]`` (``i`` in ``blocks``) on its processor's own 16-bit
-    kernel on every step: INT8 comes off those processors (and the exact-start op with it). Returns the blocks taken
-    off INT8; indices past the model's block count are ignored."""
-    tb = getattr(transformer, "transformer_blocks", None)
-    if not blocks or tb is None:
-        return 0
-    kept = []
-    for i in blocks:
-        if not 0 <= int(i) < len(tb):
-            continue
-        proc = getattr(getattr(tb[int(i)], "attn", None), "processor", None)
-        if proc is None or not getattr(proc, "_unsloth_int8", False):
-            continue
-        proc._unsloth_int8 = False
-        proc._unsloth_int8_exact = False
-        kept.append(int(i))
-    if logger is not None and kept:
-        logger.info(
-            "video.h3_attn: INT8 attention kept off blocks %s (16-bit attention on every step)",
-            ",".join(map(str, kept)),
-        )
-    return len(kept)
-
-
-def int8_exact_block_count(transformer: Any) -> int:
-    """Engagement census: strided processors of ``transformer_blocks`` running their 16-bit kernel while the rest of
-    the denoiser runs INT8."""
-    tb = getattr(transformer, "transformer_blocks", None) or []
-    procs = [getattr(getattr(b, "attn", None), "processor", None) for b in tb]
-    if not any(
-        getattr(getattr(m, "processor", None), "_unsloth_int8", False)
-        for m in _h3_attention_modules(transformer)
-    ):
-        return 0
-    cls = None
-    try:
-        cls = strided_processor_class(h3_processor_base(tb[0].attn)) if tb else None
-    except Exception:  # noqa: BLE001
-        cls = None
-    return sum(
-        1
-        for p in procs
-        if p is not None
-        and not getattr(p, "_unsloth_int8", False)
-        and (cls is None or isinstance(p, cls))
-    )
 
 
 def int8_exact_start_count(transformer: Any) -> int:

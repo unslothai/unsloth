@@ -764,17 +764,12 @@ def probe_h3_video_attention(p: GpuProfile) -> dict:
     # Flash over cuDNN is its own lever (H3_FLASH_FASTER_ARCHS): losing it on a measured arch is a regression.
     out["minimax-h3.flash_sdpa"] = lever(str(getattr(backend, "value", backend)) == "_native_flash")
     out[keys[2]] = lever(strided_install_backend(backend))
-    # Where Auto runs INT8 attention, which part of each render stays on 16-bit attention and on which kernel: the
-    # exact-start step count, the blocks kept on 16-bit on every step, and the kernel those calls run (#19344). A change
-    # to any of them moves the clip time on every card, so it must show up here as an explicit golden diff.
-    exact_on = gate.auto and (gate.exact_steps > 0 or bool(gate.exact_blocks))
+    # Where Auto runs INT8 attention, how many denoise steps stay on 16-bit attention and on which kernel (#19344). A
+    # change to either moves the clip time on every card, so it must show up here as an explicit golden diff.
+    exact_on = gate.auto and gate.exact_steps > 0
     out[keys[4]] = lever(
         exact_on,
-        cfg = {
-            "steps": gate.exact_steps,
-            "blocks": "x".join(map(str, gate.exact_blocks)) or "none",
-            "kernel": h3_int8_exact_kernel(backend),
-        }
+        cfg = {"steps": gate.exact_steps, "kernel": h3_int8_exact_kernel(backend)}
         if exact_on
         else None,
         why = None if exact_on else ("int8_every_step" if on else "int8_off"),
@@ -2390,9 +2385,8 @@ def test_incident_r7_19098_h3_video_auto_int8_on_sm89_and_sm86(key, monkeypatch)
 @pytest.mark.parametrize("key", ["rtx3090", "rtx6000_ada", "l4", "a100_40"])
 def test_h3_exact_start_policy_is_a_golden_cell(key, golden, monkeypatch):
     """R8 (after #19344): the 4-step exact start cost the tester's RTX 3090 11% (each exact step ~1.6x an INT8 step
-    there) and the Ada 5%. The exact start's step count, the blocks kept on 16-bit attention on every step and the
-    16-bit kernel those calls run are one golden cell per profile, so changing any of them is an explicit golden diff,
-    never a silent clip-time change."""
+    there) and the Ada 5%. The exact start's step count and the 16-bit kernel its calls run are one golden cell per
+    profile, so changing either is an explicit golden diff, never a silent clip-time change."""
     from core.inference import video_minimax_h3_attn as h3
 
     p = PROFILES[key]
@@ -2405,25 +2399,20 @@ def test_h3_exact_start_policy_is_a_golden_cell(key, golden, monkeypatch):
     base = cell()
     assert base == golden["cells"][cid], (base, golden["cells"][cid])
     assert base["on"] and f"steps={h3.H3_INT8_EXACT_START_STEPS}" in base["cfg"], base
-    blocks = "x".join(map(str, h3.H3_INT8_EXACT_BLOCKS)) or "none"
-    assert f"blocks={blocks}" in base["cfg"], base
-    for attr, value in (
-        ("H3_INT8_EXACT_START_STEPS", h3.H3_INT8_EXACT_START_STEPS + 1),
-        ("H3_INT8_EXACT_BLOCKS", tuple(h3.H3_INT8_EXACT_BLOCKS) + (49,)),
-    ):
+    for steps in (h3.H3_INT8_EXACT_START_STEPS - 1, h3.H3_INT8_EXACT_START_STEPS + 1):
         with monkeypatch.context() as m:
-            m.setattr(h3, attr, value)
+            m.setattr(h3, "H3_INT8_EXACT_START_STEPS", steps)
             changed = cell()
         diffs = diff_cells({cid: golden["cells"][cid]}, {cid: changed})
-        assert diffs and cid in format_diffs(diffs), (attr, changed)
+        assert diffs and cid in format_diffs(diffs), (steps, changed)
     # the exact calls run the strided processor's own kernel: moving this arch on or off flash moves the cell
     with monkeypatch.context() as m:
         m.setattr(h3, "H3_FLASH_FASTER_ARCHS", h3.H3_FLASH_FASTER_ARCHS ^ {tuple(p.capability)})
         moved = cell()
-    assert moved["cfg"] != base["cfg"], (moved, base)
-    # the per-load env overrides never reach the golden (the matrix runs with a clean policy env)
+    diffs = diff_cells({cid: golden["cells"][cid]}, {cid: moved})
+    assert diffs and cid in format_diffs(diffs), (moved, base)
+    # the per-load env override never reaches the golden (the matrix runs with a clean policy env)
     monkeypatch.setenv(h3.H3_INT8_EXACT_STEPS_ENV, "0")
-    monkeypatch.setenv(h3.H3_INT8_EXACT_BLOCKS_ENV, "1,2")
     assert cell() == base
 
 
