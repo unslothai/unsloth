@@ -992,6 +992,13 @@ export const pl = {
     compactUnsupported:
       "Kompaktowanie wymaga modelu GGUF lub MLX z obsługą narzędzi",
   },
+  chatFiles: {
+    title: "Pliki w tym czacie",
+    code: "Fragmenty kodu",
+    showInChat: "Pokaż w czacie",
+    download: "Pobierz {name}",
+    saveFailed: "Nie udało się zapisać {name}.",
+  },
   welcome: {
     goodToSeeYou: "Miło Cię widzieć",
     goodToSeeYouName: "Miło Cię widzieć, {name}",

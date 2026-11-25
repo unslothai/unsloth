@@ -986,6 +986,13 @@ export const cs = {
     compactUnsupported:
       "Komprimace vyžaduje model GGUF nebo MLX s podporou nástrojů",
   },
+  chatFiles: {
+    title: "Soubory v tomto chatu",
+    code: "Úryvky kódu",
+    showInChat: "Zobrazit v chatu",
+    download: "Stáhnout {name}",
+    saveFailed: "{name} se nepodařilo uložit.",
+  },
   welcome: {
     goodToSeeYou: "Je fajn vás vidět",
     goodToSeeYouName: "Je fajn vás vidět, {name}",

@@ -887,6 +887,13 @@ export const de = {
     compactEmpty: "Noch nichts zu komprimieren",
     compactUnsupported: "Die Komprimierung erfordert ein GGUF- oder MLX-Modell mit Tool-Unterstützung",
   },
+  chatFiles: {
+    title: "Dateien in diesem Chat",
+    code: "Code-Schnipsel",
+    showInChat: "Im Chat anzeigen",
+    download: "{name} herunterladen",
+    saveFailed: "{name} konnte nicht gespeichert werden.",
+  },
   welcome: {
     goodToSeeYou: "Schön, dich zu sehen",
     goodToSeeYouName: "Schön, dich zu sehen, {name}",

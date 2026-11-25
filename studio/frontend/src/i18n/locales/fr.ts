@@ -887,6 +887,13 @@ export const fr = {
     compactEmpty: "Rien à compacter pour le moment",
     compactUnsupported: "Le compactage nécessite un modèle GGUF ou MLX prenant en charge les outils",
   },
+  chatFiles: {
+    title: "Fichiers de cette discussion",
+    code: "Extraits de code",
+    showInChat: "Afficher dans la discussion",
+    download: "Télécharger {name}",
+    saveFailed: "Impossible d’enregistrer {name}.",
+  },
   welcome: {
     goodToSeeYou: "Ravi de vous voir",
     goodToSeeYouName: "Ravi de vous voir, {name}",

@@ -891,6 +891,13 @@ export const en = {
     compactEmpty: "Nothing to compact yet",
     compactUnsupported: "Compaction requires a GGUF or MLX model with tool support",
   },
+  chatFiles: {
+    title: "Files in this chat",
+    code: "Code snippets",
+    showInChat: "Show in chat",
+    download: "Download {name}",
+    saveFailed: "Could not save {name}.",
+  },
   // The empty chat's greeting; {name} is the user's nickname or first name.
   welcome: {
     goodToSeeYou: "Good to see you",

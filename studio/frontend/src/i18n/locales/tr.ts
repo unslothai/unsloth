@@ -980,6 +980,13 @@ export const tr = {
     compactUnsupported:
       "Sıkıştırma için araç desteği olan bir GGUF veya MLX modeli gerekir",
   },
+  chatFiles: {
+    title: "Bu sohbetteki dosyalar",
+    code: "Kod parçacıkları",
+    showInChat: "Sohbette göster",
+    download: "{name} dosyasını indir",
+    saveFailed: "{name} kaydedilemedi.",
+  },
   welcome: {
     goodToSeeYou: "Sizi görmek güzel",
     goodToSeeYouName: "Sizi görmek güzel, {name}",

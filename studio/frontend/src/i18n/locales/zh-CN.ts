@@ -887,6 +887,13 @@ export const zhCN = {
     compactEmpty: "暂无可压缩的内容",
     compactUnsupported: "对话压缩需要支持工具调用的 GGUF 或 MLX 模型",
   },
+  chatFiles: {
+    title: "此聊天中的文件",
+    code: "代码片段",
+    showInChat: "在聊天中显示",
+    download: "下载 {name}",
+    saveFailed: "无法保存 {name}。",
+  },
   welcome: {
     goodToSeeYou: "很高兴见到你",
     goodToSeeYouName: "很高兴见到你，{name}",

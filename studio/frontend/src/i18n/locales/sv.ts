@@ -940,6 +940,13 @@ export const sv = {
     compactEmpty: "Inget att komprimera än",
     compactUnsupported: "Komprimering kräver en GGUF- eller MLX-modell med verktygsstöd",
   },
+  chatFiles: {
+    title: "Filer i den här chatten",
+    code: "Kodavsnitt",
+    showInChat: "Visa i chatten",
+    download: "Ladda ned {name}",
+    saveFailed: "Det gick inte att spara {name}.",
+  },
   welcome: {
     goodToSeeYou: "Kul att se dig",
     goodToSeeYouName: "Kul att se dig, {name}",
