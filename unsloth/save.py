@@ -61,6 +61,7 @@ from .kernels import fast_dequantize, QUANT_STATE, get_lora_parameters_bias
 import subprocess
 import traceback
 import psutil
+import collections
 import re
 from .models.loader_utils import (
     get_model_name,
@@ -6518,6 +6519,36 @@ def _resolve_imatrix_file(model, imatrix_file, token, dest_dir):
     )
 
 
+def _lora_target_parameters(model) -> list:
+    names = set()
+    for config in (getattr(model, "peft_config", None) or {}).values():
+        names.update(getattr(config, "target_parameters", None) or ())
+    return sorted(str(name) for name in names)
+
+
+def _converter_error_line(lines) -> str:
+    # The last exception line, else the reasons the converter logs before sys.exit(1) ("ERROR:lora-to-gguf:...").
+    lines = [line.strip() for line in lines]
+    for line in reversed(lines):
+        if re.match(r"^[A-Za-z_][\w.]*(Error|Exception)(: |$)", line):
+            return line
+    logged = [m.group(1) for m in map(re.compile(r"^ERROR:[^:\s]+:\s*(\S.*)$").match, lines) if m]
+    return " ".join(logged[:3])
+
+
+def _lora_gguf_conversion_error(returncode, cause, expert_targets) -> Exception:
+    if expert_targets and "Can not map tensor" in cause and ".experts" in cause:
+        return NotImplementedError(
+            "Unsloth: llama.cpp's LoRA GGUF converter cannot map this adapter's MoE expert weights "
+            f"(target_parameters: {', '.join(expert_targets)}) yet: {cause}. Export the merged model as "
+            "GGUF instead, or save the adapter as safetensors."
+        )
+    return RuntimeError(
+        f"Unsloth: LoRA -> GGUF conversion failed (exit {returncode})"
+        + (f": {cause}" if cause else ". See the output above for details.")
+    )
+
+
 @_model_parallel_refuses_save("save_pretrained_gguf")
 def _unsloth_save_lora_gguf(
     model,
@@ -6551,6 +6582,9 @@ def _unsloth_save_lora_gguf(
     token_is_explicit = token is not None
     if token is None or token is True:
         token = get_token()
+
+    # Not refused up front: the converter decides, so expert LoRA works as soon as llama.cpp can map it.
+    expert_targets = _lora_target_parameters(model)
 
     # Resolve the dequantized base id, since the adapter usually references a 4bit repo.
     base_model_id = _lora_base_model_id(model)
@@ -6616,6 +6650,7 @@ def _unsloth_save_lora_gguf(
         _apply_token_to_child_env(env, token, explicit = token_is_explicit)
 
         print(f"Unsloth: Converting LoRA adapter at '{lora_dir}' to GGUF -> '{out_gguf}'")
+        output_tail = collections.deque(maxlen = 40)
         # Resolve the cache from the live env like the merge, not huggingface_hub's frozen constants: a runtime cache redirect (read-only default, Unsloth) would else miss (#6890).
         try:
             with subprocess.Popen(
@@ -6630,13 +6665,13 @@ def _unsloth_save_lora_gguf(
             ) as sp:
                 for line in sp.stdout:
                     print(line, end = "", flush = True)
+                    output_tail.append(line.rstrip())
                 sp.wait()
                 if sp.returncode != 0:
                     raise subprocess.CalledProcessError(sp.returncode, sp.args)
         except subprocess.CalledProcessError as e:
-            raise RuntimeError(
-                f"Unsloth: LoRA -> GGUF conversion failed (exit {e.returncode}). "
-                "See the output above for details."
+            raise _lora_gguf_conversion_error(
+                e.returncode, _converter_error_line(output_tail), expert_targets
             )
 
         if not os.path.isfile(out_gguf):
