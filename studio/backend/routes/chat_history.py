@@ -2697,17 +2697,27 @@ def get_thread_fork_counts(thread_id: str, current_subject: str = Depends(get_cu
 
 
 @router.get("/export", response_model = ChatExportResponse)
-def export_history(current_subject: str = Depends(get_current_subject)):
+def export_history(
+    archived: bool = Query(False), current_subject: str = Depends(get_current_subject)
+):
     from datetime import datetime, timezone
-    projects, threads, messages = build_chat_history_export()
-    return ChatExportResponse(
+
+    projects, threads, messages = build_chat_history_export(archived_only = archived)
+    head = ChatExportResponse(
         exportedAt = datetime.now(timezone.utc).isoformat(),
         version = 1,
         threadCount = len(threads),
         projects = [ChatProject(**project) for project in projects],
         threads = [thread_from_row(thread) for thread in threads],
-        messages = [ChatMessage(**message) for message in messages],
-    )
+        messages = [],
+    ).model_dump_json(by_alias = True)
+    # One message per line lets the browser read a backup larger than its longest string.
+    parts = [head.removesuffix("]}").encode()]
+    for i, message in enumerate(messages):
+        parts.append(b",\n" if i else b"\n")
+        parts.append(_MESSAGE_JSON.dump_json(ChatMessage(**message), by_alias = True))
+    parts.append(b"\n]}")
+    return _json_response(parts)
 
 
 @router.get("/memory-context")
