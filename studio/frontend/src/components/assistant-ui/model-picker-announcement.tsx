@@ -154,7 +154,7 @@ export const ModelPickerAnnouncement: FC<{ className?: string }> = ({
 }) => {
   const source = useComposerModelPickerSource();
   const dismissed = useSyncExternalStore(subscribe, readDismissed, () => true);
-  // Under the open onboarding dialog its edge sits beside the dialog's and reads as a doubled border.
+  // Beside the onboarding dialog's edge it read as a doubled border.
   const onboarding = useOnboardingStore((s) => s.pages !== null);
   const [open, setOpen] = useState(false);
   const [page, setPage] = useState(0);
