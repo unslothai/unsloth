@@ -69,6 +69,8 @@ class _Model(torch.nn.Module):
         self.model = torch.nn.Module()
         self.model.language_model = torch.nn.Module()
         self.model.language_model.layers = torch.nn.ModuleList([_Layer(), _Layer()])
+        self.model.vision_tower = torch.nn.Module()
+        self.model.vision_tower.proj = torch.nn.Linear(H, H, bias = False)
 
     def forward(self, x):
         return x
@@ -84,14 +86,19 @@ _LINEARS = [
 ]
 
 
-def _peft_model(tmp_path, **config):
+def _peft_model(
+    tmp_path,
+    vision = False,
+    **config,
+):
     torch.manual_seed(0)
     model = get_peft_model(
         _Model(),
         LoraConfig(
             r = R,
             lora_alpha = 8,
-            target_modules = [f"layers.{i}.{leaf}" for i in range(2) for leaf in _LINEARS],
+            target_modules = [f"layers.{i}.{leaf}" for i in range(2) for leaf in _LINEARS]
+            + (["vision_tower.proj"] if vision else []),
             target_parameters = ["mlp.experts.gate_up_proj", "mlp.experts.down_proj"],
             **config,
         ),
@@ -241,3 +248,12 @@ def test_unknown_layout_is_refused(tmp_path):
     config_path.write_text(json.dumps(config), encoding = "utf-8")
     with pytest.raises(NotImplementedError, match = "lora_B layout"):
         inkling2.inkling2_lora_gguf_adapter(model, str(adapter))
+
+
+def test_vision_lora_is_named_as_left_out(tmp_path, capsys):
+    model, adapter = _peft_model(tmp_path)
+    _rewrite(model, adapter)
+    assert "vision tower" not in capsys.readouterr().out
+    model, adapter = _peft_model(tmp_path, vision = True)
+    _rewrite(model, adapter)
+    assert "vision tower's LoRA weights are not in the GGUF LoRA" in capsys.readouterr().out

@@ -1008,6 +1008,11 @@ def inkling2_lora_gguf_adapter(model, adapter_dir):
             if abs(factor - 1.0) > 1e-6:
                 tensor = (tensor.float() * factor).to(tensor.dtype)
         out[f"{prefix}.{kind}.weight"] = tensor
+    if any(_LORA_KEY.match(k) and ("vision_tower." in k or ".visual." in k) for k in out):
+        print(
+            "Unsloth: llama.cpp converts Inkling 2's text backbone only, so the vision tower's LoRA weights are "
+            "not in the GGUF LoRA; export the merged model to keep them."
+        )
     for prefix in swapped_roles:
         A, B = out[f"{prefix}.lora_A.weight"], out[f"{prefix}.lora_B.weight"]
         out[f"{prefix}.lora_A.weight"] = B.transpose(1, 2).contiguous()
