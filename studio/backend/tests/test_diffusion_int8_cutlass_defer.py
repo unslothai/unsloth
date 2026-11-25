@@ -46,6 +46,7 @@ def _clean(monkeypatch):
         cut.LIVE_RACE_ENV,
         cut.CUTLASS_ENV,
         defer.DEFER_ENV,
+        defer.MAX_RENDERS_ENV,
     ):
         monkeypatch.delenv(env, raising = False)
     monkeypatch.setenv(defer.IDLE_ENV, "0")
@@ -620,3 +621,141 @@ def test_an_unrelated_gemm_edit_keeps_the_stored_tile_verdicts(monkeypatch):
     assert digest() == before
     # the probe's diffusion_int8_gemm input still keys it, through the race code digest in _probe_extra
     assert "tie_operands" in g8._RACE_SOURCES["diffusion_int8_gemm"]
+
+
+def _back_to_back(monkeypatch):
+    """A client that sends the next render as soon as one ends: no idle spell ever reaches the race."""
+    monkeypatch.setenv(defer.IDLE_ENV, "600")
+
+
+def test_back_to_back_renders_run_the_race_before_render_3(monkeypatch):
+    """An external benchmark renders cold + 2 warm-ups + 3 timed images back to back: before the bound no idle spell
+    came, the race never ran and every timed render kept the Triton kernel (2-4% slower than a load-time race)."""
+    _back_to_back(monkeypatch)
+    raced = _env(monkeypatch, {})
+    _image_load(0, [_rec(), _rec(96, 32)])
+    for _ in range(2):  # image 1 keeps its head start, image 2 does not wait
+        t0 = time.perf_counter()
+        assert defer.render_begin() is False
+        assert time.perf_counter() - t0 < 0.5
+        g8._defer_note_rows(0, *_call(4176))
+        defer.render_end()
+    time.sleep(0.2)
+    assert raced == [] and defer.status()["state"] == "pending"
+    # render 3 runs the whole pending race first, then re-records its CUDA graphs on the winners
+    assert defer.render_begin() is True
+    assert [r[0] for r in raced] == [64, 64, 64, 96, 96, 96]
+    st = defer.status()
+    assert (
+        st["state"] == "done" and st["drains"] == 1 and st["won"] == 2 and st["pending_units"] == 0
+    )
+    assert g8._cutlass_tile(0, *_call(4176)) == 8
+    defer.render_end()
+    # nothing left: later renders neither wait nor re-record
+    assert defer.render_begin() is False
+    defer.render_end()
+    assert defer.status()["drains"] == 1
+
+
+def test_the_bound_is_configurable_and_0_waits_for_an_idle_spell(monkeypatch):
+    _back_to_back(monkeypatch)
+    monkeypatch.setenv(defer.MAX_RENDERS_ENV, "0")
+    raced = _env(monkeypatch, {})
+    _image_load(0, [_rec()])
+    for _ in range(5):
+        defer.render_begin()
+        defer.render_end()
+    time.sleep(0.2)
+    assert (
+        raced == [] and defer.status()["drains"] == 0
+    )  # #19308's behaviour: only an idle spell runs it
+    for bad, want in (("x", 2), ("-3", 0), ("", 2), (" 4 ", 4)):
+        monkeypatch.setenv(defer.MAX_RENDERS_ENV, bad)
+        assert defer.max_renders() == want
+
+
+def test_a_bound_of_1_runs_the_race_before_image_2(monkeypatch):
+    _back_to_back(monkeypatch)
+    monkeypatch.setenv(defer.MAX_RENDERS_ENV, "1")
+    raced = _env(monkeypatch, {})
+    _image_load(0, [_rec()])
+    defer.render_begin()
+    defer.render_end()
+    assert defer.render_begin() is True and len(raced) == 3  # image 2 runs it
+    defer.render_end()
+
+
+def test_a_nested_pass_never_runs_the_race(monkeypatch):
+    _back_to_back(monkeypatch)
+    raced = _env(monkeypatch, {})
+    _image_load(0, [_rec()])
+    for _ in range(2):
+        defer.render_begin()
+        defer.render_end()
+    defer._STATE["active"] = (
+        1  # an outer render already under way (started before the bound was reached)
+    )
+    assert defer.render_begin() is False  # hires / Detailer pass inside it
+    time.sleep(0.2)
+    assert raced == [] and defer.status()["drains"] == 0
+    defer.render_end()
+    defer.render_end()
+    assert defer.render_begin() is True and len(raced) == 3  # the next outer render runs it
+    defer.render_end()
+
+
+def test_the_bound_waits_for_a_background_compile(monkeypatch):
+    _back_to_back(monkeypatch)
+    raced = _env(monkeypatch, {})
+    _image_load(0, [_rec()])
+    compiling = [True]
+    for _ in range(2):
+        defer.render_begin()
+        defer.render_end(busy = lambda: compiling[0])
+    assert (
+        defer.render_begin() is False
+    )  # a compile is running: this render goes on, the next one asks again
+    defer.render_end(busy = lambda: compiling[0])
+    assert raced == [] and defer.status()["drains"] == 0
+    compiling[0] = False
+    assert defer.render_begin() is True and len(raced) == 3
+    defer.render_end()
+
+
+def test_an_idle_spell_restarts_the_back_to_back_count(monkeypatch):
+    """A unit raced in an idle spell means the client is not back to back: the remaining shapes get the full bound."""
+    release = threading.Event()
+
+    def gate(n, m):
+        if n == 96:
+            assert release.wait(10)
+
+    raced = _env(monkeypatch, {}, gate = gate)
+    _image_load(0, [_rec(), _rec(96, 32)])
+    defer.render_begin()
+    defer.render_end()
+    deadline = time.perf_counter() + 10
+    while [r[0] for r in raced] != [64, 64, 64] and time.perf_counter() < deadline:
+        time.sleep(0.01)
+    assert defer._STATE["ended"] == 0
+    release.set()
+    _wait_state("done")
+    assert defer.status()["drains"] == 0
+
+
+def test_an_idle_gap_still_runs_the_race_without_a_wait(monkeypatch):
+    """With the bound in place, a client that pauses between renders (the Studio UI) still gets the race in the idle
+    spell, exactly as #19308: no render waits for it and none is counted as back to back."""
+    monkeypatch.setenv(defer.IDLE_ENV, "0.05")
+    raced = _env(monkeypatch, {})
+    _image_load(0, [_rec(), _rec(96, 32)])
+    defer.render_begin()
+    defer.render_end()
+    _wait_state("done")  # the idle spell after image 1 runs every shape
+    assert [r[0] for r in raced] == [64, 64, 64, 96, 96, 96]
+    t0 = time.perf_counter()
+    assert defer.render_begin() is True  # re-records once on the winners, without waiting
+    assert time.perf_counter() - t0 < 0.5
+    defer.render_end()
+    st = defer.status()
+    assert st.get("drains", 0) == 0 and st["waits"] == 0 and st["won"] == 2

@@ -12,6 +12,12 @@ next idle spell. Verdicts persist exactly as a load-time race's, so later proces
 wins is published before a waiting render is let in, and that render drops its CUDA graphs so it re-records them on
 the winning kernels.
 
+A client that renders back to back never leaves Studio idle, so the race would wait forever and every render would
+keep the Triton kernel (an external benchmark's warm renders, 2-4% slower on an RTX 6000 Ada and an RTX 3090, about
+6% on an L4). Once ``UNSLOTH_DIFFUSION_INT8_CUTLASS_DEFER_MAX_RENDERS`` renders (default 2) have ended with the race
+still pending and no idle spell, the next render runs the whole pending race before it starts, like the warm-up a
+load-time race used to be, and re-records its CUDA graphs on the winners. ``0`` keeps waiting for an idle spell.
+
 Only image loads arm it (``allow``); each arm is an owner, and its queued shapes and finalizer belong to it
 (``cancel(owner = ...)`` on a failed load, ``cancel()`` on unload). ``UNSLOTH_DIFFUSION_INT8_CUTLASS_DEFER=0`` races at
 load, as before."""
@@ -28,9 +34,16 @@ from typing import Any, Callable, Optional
 
 DEFER_ENV = "UNSLOTH_DIFFUSION_INT8_CUTLASS_DEFER"
 IDLE_ENV = "UNSLOTH_DIFFUSION_INT8_CUTLASS_DEFER_IDLE_S"
+MAX_RENDERS_ENV = "UNSLOTH_DIFFUSION_INT8_CUTLASS_DEFER_MAX_RENDERS"
 # Covers the route saving the image and a back-to-back client's next request.
 _IDLE_S = 2.0
 _IDLE_MAX_S = 600.0
+# Renders that may end back to back with the race pending before the next one runs it first: image 1 keeps the
+# fresh-install head start and a quick second image does not wait; a longer back-to-back run (an API client, a
+# benchmark's warm-ups) gets the CUTLASS kernels from render 3 on instead of never.
+_MAX_RENDERS = 2
+# A render running the pending race gives up on it after this long (a unit that keeps retrying), and goes on.
+_DRAIN_MAX_S = 600.0
 # A unit refused because a CUDA graph was recording elsewhere retries after this long.
 _RETRY_S = 0.5
 _CANCEL_WAIT_S = 60.0
@@ -72,6 +85,16 @@ def allow():
         yield
     finally:
         disarm(token)
+
+
+def max_renders() -> int:
+    """Back-to-back renders allowed with the race pending; 0 = no bound (the race waits for an idle spell)."""
+    raw = (os.environ.get(MAX_RENDERS_ENV) or "").strip()
+    try:
+        value = int(raw) if raw else _MAX_RENDERS
+    except ValueError:
+        value = _MAX_RENDERS
+    return max(0, value)
 
 
 def idle_seconds() -> float:
@@ -125,6 +148,9 @@ _STATE: dict = {
     "refresh": False,  # winners landed since the last render began: it re-records its graphs
     "thread": None,
     "busy": None,  # extra idle check (a background compile running)
+    "ended": 0,  # outermost renders ended since the pending race was scheduled, with no idle spell running it
+    "drain": False,  # a render waits for the whole pending race: run its units now, idle or not
+    "retry_at": 0.0,  # perf_counter before which a refused unit is not retried while draining
 }
 _STATUS: dict = {
     "state": "none",
@@ -135,6 +161,7 @@ _STATUS: dict = {
     "raced": 0,
     "won": 0,
     "waits": 0,
+    "drains": 0,
     "error": None,
 }
 
@@ -176,18 +203,43 @@ def schedule(
         job.n_shapes += len(units)
         if _STATUS["state"] not in ("pending", "running"):
             _STATUS.update(scheduled_at = time.time(), started_at = None, shapes = 0, raced = 0, won = 0)
+            _STATE["ended"] = 0
         _STATUS.update(state = "pending", done_at = None, error = None)
         _STATUS["shapes"] += len(units)
         _COND.notify_all()
 
 
+def _starved() -> bool:
+    """The pending race has waited ``max_renders`` back-to-back renders for an idle spell: run it before this one.
+    Never while a background compile runs (the race waits for it, as in an idle spell; the next render asks again)."""
+    bound = max_renders()
+    return bool(bound and _JOBS and _STATE["rendered"] and _STATE["ended"] >= bound and not _busy())
+
+
 def render_begin() -> bool:
-    """A render starts: waits for a race unit in flight (one weight shape), then returns True once if winners
-    landed since the last render began (drop the CUDA graphs so they re-record on the winning kernels). A unit
-    publishes its winner and this flag together, before it lets a waiting render in."""
+    """A render starts: waits for a race unit in flight (one weight shape), or for the whole pending race once
+    ``max_renders`` renders ran back to back without it (``_starved``), then returns True once if winners landed since
+    the last render began (drop the CUDA graphs so they re-record on the winning kernels). A unit publishes its winner
+    and this flag together, before it lets a waiting render in."""
+    drained = None
     with _COND:
         _STATE["active"] += 1
         waited = False
+        if _STATE["active"] == 1 and _starved():
+            # the worker runs every queued unit now (``_idle_left``); a nested pass never drains
+            _STATE["drain"] = True
+            _STATUS["drains"] += 1
+            drained = (
+                [job.logger for job in _JOBS.values() if job.logger is not None],
+                _STATE["ended"],
+            )
+            _ensure_worker()
+            _COND.notify_all()
+            deadline = time.perf_counter() + _DRAIN_MAX_S
+            while (_JOBS or _STATE["running"]) and time.perf_counter() < deadline:
+                waited = True
+                _COND.wait(1.0)
+            _STATE["drain"] = False
         while _STATE["running"]:
             waited = True
             _COND.wait(1.0)
@@ -196,7 +248,14 @@ def render_begin() -> bool:
         if _STATE["active"] != 1:
             return False  # a nested pass (hires, Detailer) never drops the outer render's graphs
         refresh, _STATE["refresh"] = _STATE["refresh"], False
-        return refresh
+    if drained and drained[0]:
+        drained[0][0].info(
+            "diffusion.int8_gemm: %d render(s) ran back to back on the Triton int8 GEMM with the CUTLASS race "
+            "pending; this render ran the race first (%s=0 waits for an idle spell instead)",
+            drained[1],
+            MAX_RENDERS_ENV,
+        )
+    return refresh
 
 
 def render_end(busy: Optional[Callable[[], bool]] = None) -> None:
@@ -207,13 +266,19 @@ def render_end(busy: Optional[Callable[[], bool]] = None) -> None:
         _STATE["rendered"] = True
         if busy is not None:
             _STATE["busy"] = busy
-        if _JOBS and _STATE["thread"] is None:
-            thread = threading.Thread(
-                target = _worker, name = "unsloth-int8-cutlass-defer", daemon = True
-            )
-            thread.start()
-            _STATE["thread"] = thread
+        if _JOBS and not _STATE["active"]:
+            _STATE["ended"] += 1
+        if _JOBS:
+            _ensure_worker()
         _COND.notify_all()
+
+
+def _ensure_worker() -> None:
+    """Start the race thread if none runs (caller holds ``_COND``)."""
+    if _STATE["thread"] is None:
+        thread = threading.Thread(target = _worker, name = "unsloth-int8-cutlass-defer", daemon = True)
+        thread.start()
+        _STATE["thread"] = thread
 
 
 def _busy() -> bool:
@@ -228,6 +293,9 @@ def _busy() -> bool:
 
 def _idle_left() -> Optional[float]:
     """Seconds until the race may run (0 = now), None = wait for a notify (a render is under way)."""
+    if _STATE["drain"]:
+        # a render waits for the whole race (``render_begin``): idle or not, only a refused unit's retry delay
+        return max(0.0, _STATE["retry_at"] - time.perf_counter())
     if _STATE["active"] or not _STATE["rendered"]:
         return None
     if _busy():
@@ -254,6 +322,10 @@ def _worker() -> None:
                     unit = None
                 else:
                     unit = job.units.pop(0)
+                    if not _STATE["drain"]:
+                        _STATE["ended"] = (
+                            0  # an idle spell runs it: the back-to-back count starts over
+                        )
                     if _STATUS["started_at"] is None:
                         _STATUS["started_at"] = time.time()
                     _STATUS["state"] = "running"
@@ -275,6 +347,7 @@ def _worker() -> None:
                     if result is False:
                         job.units.insert(0, unit)
                         _STATE["last_end"] = time.perf_counter() - idle_seconds() + _RETRY_S
+                        _STATE["retry_at"] = time.perf_counter() + _RETRY_S
                     else:
                         if unit is not job.before:
                             _STATUS["raced"] += 1
@@ -351,6 +424,7 @@ def cancel(timeout: float = _CANCEL_WAIT_S, owner: Any = None) -> None:
             _STATE["refresh"] = False
             _STATE["rendered"] = False
             _STATE["busy"] = None
+            _STATE["ended"] = 0
         if had and not _JOBS and _STATUS["state"] in ("pending", "running"):
             _STATUS["state"] = "cancelled"
         _COND.notify_all()
@@ -360,7 +434,15 @@ def _reset_for_tests() -> None:
     cancel(timeout = 5.0)
     with _COND:
         _STATE.update(
-            active = 0, last_end = None, rendered = False, running = False, job = None, refresh = False
+            active = 0,
+            last_end = None,
+            rendered = False,
+            running = False,
+            job = None,
+            refresh = False,
+            ended = 0,
+            drain = False,
+            retry_at = 0.0,
         )
         _STATUS.update(
             state = "none",
@@ -371,5 +453,6 @@ def _reset_for_tests() -> None:
             raced = 0,
             won = 0,
             waits = 0,
+            drains = 0,
             error = None,
         )
