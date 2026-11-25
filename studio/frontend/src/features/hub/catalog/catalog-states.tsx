@@ -62,7 +62,6 @@ function describeFailure(
     default:
       break;
   }
-  // Every other failure reads as unreachable: the cause is rarely knowable and the fix is the same.
   return {
     title: `Can't reach ${hub}`,
     body: offersModelScope

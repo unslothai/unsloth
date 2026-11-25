@@ -18,7 +18,6 @@ test("any failure without its own copy reads as unreachable, with the ModelScope
     )?.[1] ?? "";
   assert.match(fallback, /title: `Can't reach \$\{hub\}`/);
   assert.match(fallback, /try ModelScope instead/);
-  // A plain error with no failure object offers ModelScope too.
   assert.doesNotMatch(states, /(shown|failure) && !offlineLike/);
   assert.equal(
     states.match(/!offlineLike && !tokenRejected \? <UseModelScopeButton \/>/g)
