@@ -925,13 +925,6 @@ export const he = {
     compactEmpty: "אין עדיין מה לכווץ",
     compactUnsupported: "כיווץ שיחה דורש מודל GGUF או MLX עם תמיכה בכלים",
   },
-  chatFiles: {
-    title: "קבצים בצ׳אט הזה",
-    code: "קטעי קוד",
-    showInChat: "הצג בצ׳אט",
-    download: "הורדת {name}",
-    saveFailed: "לא ניתן היה לשמור את {name}.",
-  },
   welcome: {
     goodToSeeYou: "טוב לראות אותך",
     goodToSeeYouName: "טוב לראות אותך, {name}",
