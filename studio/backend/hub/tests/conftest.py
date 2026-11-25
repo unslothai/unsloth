@@ -138,6 +138,11 @@ def _isolate_studio_home(_hub_studio_home_root, monkeypatch):
     for name, module in tuple(sys.modules.items()):
         if name.startswith(("storage.", "hub.storage.")) and hasattr(module, "_schema_ready"):
             monkeypatch.setattr(module, "_schema_ready", set())
+    yield
+    # A fresh home per test: drop its settings reader so handles never pile up across the session.
+    studio_db = sys.modules.get("storage.studio_db")
+    if studio_db is not None and hasattr(studio_db, "close_settings_readers"):
+        studio_db.close_settings_readers()
 
 
 @pytest.fixture(autouse = True)

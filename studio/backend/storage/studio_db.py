@@ -1474,6 +1474,7 @@ _CONTENDED_BUSY_TIMEOUT_SECONDS = 30.0
 def reset_schema_state_for_tests() -> None:
     with _schema_lock:
         _schema_ready.clear()
+    close_settings_readers()
 
 
 def get_connection(
@@ -1516,6 +1517,9 @@ def get_connection(
             conn.close()
             raise
     return conn
+
+
+_get_connection = get_connection  # the real factory: only its connections are cached
 
 
 # Held open so the last-writer close does not checkpoint the WAL several times a second (#9934).
@@ -5985,10 +5989,26 @@ _settings_readers: dict[Path, _SettingsReader] = {}
 _settings_reader_lock = threading.Lock()
 
 
+def _reset_settings_readers_after_fork() -> None:
+    # A child must not reuse, close or free the parent's handles; it opens its own.
+    global _settings_reader_lock, _settings_readers
+    _inherited_settings_readers.extend(_settings_readers.values())
+    _settings_readers = {}
+    _settings_reader_lock = threading.Lock()
+
+
+_inherited_settings_readers: list[_SettingsReader] = []
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child = _reset_settings_readers_after_fork)
+
+
 def _db_file_identity(path: Path) -> tuple[int, int] | None:
     try:
         metadata = os.stat(path)
     except OSError:
+        return None
+    if not metadata.st_ino:
+        # No file id here, so a replaced database could not be told apart: read uncached.
         return None
     return (metadata.st_dev, metadata.st_ino)
 
@@ -6019,6 +6039,8 @@ def _read_once(sql: str, params: tuple | list) -> list:
 
 
 def _settings_reader(db_path: Path) -> _SettingsReader | None:
+    if get_connection is not _get_connection:
+        return None  # a substituted factory (tests) is read through, never cached
     identity = _db_file_identity(db_path)
     with _settings_reader_lock:
         reader = _settings_readers.get(db_path)
@@ -6028,11 +6050,7 @@ def _settings_reader(db_path: Path) -> _SettingsReader | None:
         stale = _settings_readers.pop(db_path, None)
     if stale is not None:
         _close_reader(stale)
-    try:
-        conn = get_connection(check_same_thread = False)
-    except TypeError:
-        # A substituted get_connection (test doubles) may not take the keyword: read uncached.
-        return None
+    conn = get_connection(check_same_thread = False)
     identity = _db_file_identity(db_path)
     if identity is None:
         conn.close()
@@ -6055,11 +6073,25 @@ def _shared_read_rows(sql: str, params: tuple | list) -> list:
         return _read_once(sql, params)
     try:
         return reader.conn.execute(sql, params).fetchall()
-    except sqlite3.ProgrammingError:
-        pass  # closed by close_settings_readers between the lookup and this query
+    except sqlite3.Error as exc:
+        # Never keep a failed handle: closed by close_settings_readers between the lookup and this
+        # query, or broken. A busy database raises as an uncached read would; anything else is retried once.
+        _drop_reader(db_path, reader)
+        if isinstance(exc, sqlite3.OperationalError):
+            raise
     finally:
         reader.busy.release()
     return _read_once(sql, params)
+
+
+def _drop_reader(db_path: Path, reader: _SettingsReader) -> None:
+    with _settings_reader_lock:
+        if _settings_readers.get(db_path) is reader:
+            del _settings_readers[db_path]
+    try:
+        reader.conn.close()  # the caller holds reader.busy
+    except Exception:  # noqa: BLE001
+        pass
 
 
 on_wal_keeper_closed(close_settings_readers)

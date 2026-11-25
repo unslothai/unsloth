@@ -291,6 +291,8 @@ class EgressProxy:
 
     def close(self) -> None:
         with self._lock:
+            if self._closed:
+                return  # one wake-up only: a second could reach whatever reused the port
             self._closed = True
             sockets = list(self._sockets)
             self._sockets.clear()

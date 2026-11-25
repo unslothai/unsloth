@@ -464,3 +464,13 @@ def test_closing_an_idle_proxy_does_not_wait_out_the_accept_timeout(tmp_path, mo
     assert not proxy._thread.is_alive()
     # Every proxied curl/wget call paid up to the 0.25 s accept timeout here.
     assert elapsed < 0.15, elapsed
+
+
+def test_a_second_close_sends_no_second_wake_up(monkeypatch):
+    proxy = sandbox_egress.EgressProxy()
+    wakes = []
+    real = proxy._wake_listener
+    monkeypatch.setattr(proxy, "_wake_listener", lambda: wakes.append(1) or real())
+    proxy.close()
+    proxy.close()
+    assert wakes == [1]

@@ -25,9 +25,9 @@ def _write_directly(key: str, value_json: str) -> None:
 def test_settings_reads_reuse_one_connection(monkeypatch):
     studio_db.upsert_app_settings({"reader_probe": 1})
     opened = []
-    real = studio_db.get_connection
+    real = studio_db.connect_studio_db
     monkeypatch.setattr(
-        studio_db, "get_connection", lambda *a, **k: opened.append(1) or real(*a, **k)
+        studio_db, "connect_studio_db", lambda *a, **k: opened.append(1) or real(*a, **k)
     )
     studio_db.close_settings_readers()
     for _ in range(20):
@@ -80,11 +80,11 @@ def test_a_missing_key_returns_the_fallback():
 def test_a_changed_file_identity_reopens_the_reader(monkeypatch):
     studio_db.upsert_app_settings({"reader_probe": 2})
     assert studio_db.get_app_setting("reader_probe") == 2
-    first = next(iter(studio_db._settings_readers.values())).conn
+    first = studio_db._settings_readers[studio_db.studio_db_path()].conn
     real = studio_db._db_file_identity
     monkeypatch.setattr(studio_db, "_db_file_identity", lambda path: (real(path)[0], -1))
     assert studio_db.get_app_setting("reader_probe") == 2
-    second = next(iter(studio_db._settings_readers.values())).conn
+    second = studio_db._settings_readers[studio_db.studio_db_path()].conn
     assert second is not first
 
 
@@ -110,11 +110,11 @@ def test_a_warm_reader_still_refuses_a_retired_account(monkeypatch):
 def test_a_read_never_queues_behind_another_on_the_shared_connection(monkeypatch):
     studio_db.upsert_app_settings({"reader_probe": 4})
     assert studio_db.get_app_setting("reader_probe") == 4
-    reader = next(iter(studio_db._settings_readers.values()))
+    reader = studio_db._settings_readers[studio_db.studio_db_path()]
     opened = []
-    real = studio_db.get_connection
+    real = studio_db.connect_studio_db
     monkeypatch.setattr(
-        studio_db, "get_connection", lambda *a, **k: opened.append(1) or real(*a, **k)
+        studio_db, "connect_studio_db", lambda *a, **k: opened.append(1) or real(*a, **k)
     )
     # A query in flight (or stuck on a locked database) holds the connection: the next read goes around it.
     assert reader.busy.acquire(blocking = False)
@@ -130,7 +130,56 @@ def test_a_read_never_queues_behind_another_on_the_shared_connection(monkeypatch
 def test_a_reader_closed_mid_lookup_falls_back_to_a_fresh_read(monkeypatch):
     studio_db.upsert_app_settings({"reader_probe": 5})
     assert studio_db.get_app_setting("reader_probe") == 5
-    reader = next(iter(studio_db._settings_readers.values()))
+    reader = studio_db._settings_readers[studio_db.studio_db_path()]
     reader.conn.close()  # as close_settings_readers would, after this caller looked the reader up
     monkeypatch.setattr(studio_db, "_settings_reader", lambda db_path: reader)
     assert studio_db.get_app_setting("reader_probe") == 5
+
+
+def test_a_substituted_factory_is_read_through_and_never_cached(monkeypatch):
+    studio_db.upsert_app_settings({"reader_probe": 6})
+    studio_db.close_settings_readers()
+    real = studio_db.get_connection
+    monkeypatch.setattr(studio_db, "get_connection", lambda *a, **k: real(*a, **k))
+    assert studio_db.get_app_setting("reader_probe") == 6
+    assert not studio_db._settings_readers
+
+
+def test_a_failed_reader_is_dropped_not_reused():
+    studio_db.upsert_app_settings({"reader_probe": 7})
+    assert studio_db.get_app_setting("reader_probe") == 7
+    path = studio_db.studio_db_path()
+    broken = studio_db._settings_readers[path]
+    broken.conn.close()
+    assert studio_db.get_app_setting("reader_probe") == 7
+    assert studio_db._settings_readers.get(path) is not broken
+
+
+def test_a_schema_reset_closes_the_readers():
+    assert studio_db.get_app_setting("reader_probe", "fallback") == "fallback"
+    assert studio_db._settings_readers
+    studio_db.reset_schema_state_for_tests()
+    assert not studio_db._settings_readers
+
+
+def test_a_forked_child_never_reuses_the_parent_reader():
+    import os
+
+    import pytest
+
+    if not hasattr(os, "fork"):
+        pytest.skip("no fork on this platform")
+    assert studio_db.get_app_setting("reader_probe", "fallback") == "fallback"
+    parent = dict(studio_db._settings_readers)
+    assert parent
+    read, write = os.pipe()
+    pid = os.fork()
+    if pid == 0:  # pragma: no cover - runs in the child
+        ok = not studio_db._settings_readers and not studio_db._settings_reader_lock.locked()
+        os.write(write, b"1" if ok else b"0")
+        os._exit(0)
+    os.close(write)
+    assert os.read(read, 1) == b"1"
+    os.close(read)
+    os.waitpid(pid, 0)
+    assert studio_db._settings_readers == parent

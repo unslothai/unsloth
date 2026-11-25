@@ -2449,6 +2449,13 @@ def _find_blocked_commands(command: str, posix: "bool | None" = None) -> set[str
 _SANDBOX_SITE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sandbox_site")
 # (path, mtime_ns, size) of the shim whose bytecode this process last confirmed or wrote.
 _sandbox_site_bytecode_for: "tuple | None" = None
+_sandbox_site_bytecode_lock = threading.Lock()
+
+
+def _sandbox_site_pyc(shim: str) -> str:
+    """Where a default child looks: next to the shim, never under this host's PYTHONPYCACHEPREFIX or -O tag."""
+    tag = sys.implementation.cache_tag
+    return os.path.join(os.path.dirname(shim), "__pycache__", f"sitecustomize.{tag}.pyc")
 
 
 def _pyc_matches_source(cfile: str, source: bytes) -> bool:
@@ -2484,24 +2491,27 @@ def _ensure_sandbox_site_bytecode() -> None:
     key = (shim, source_stat.st_mtime_ns, source_stat.st_size)
     if _sandbox_site_bytecode_for == key:
         return
-    try:
-        import importlib.util
-        import py_compile
+    with _sandbox_site_bytecode_lock:
+        if _sandbox_site_bytecode_for == key:
+            return
+        try:
+            import py_compile
 
-        cfile = importlib.util.cache_from_source(shim)
-        with open(shim, "rb") as stream:
-            source = stream.read()
-        if not _pyc_matches_source(cfile, source):
-            # Atomic (temp file + replace); a read-only install just keeps compiling in the child as before.
-            py_compile.compile(
-                shim,
-                cfile = cfile,
-                doraise = True,
-                invalidation_mode = py_compile.PycInvalidationMode.CHECKED_HASH,
-            )
-    except Exception:  # noqa: BLE001 - bytecode is an optimization, never a launch failure
-        logger.debug("could not write the sandbox shim bytecode", exc_info = True)
-    _sandbox_site_bytecode_for = key
+            cfile = _sandbox_site_pyc(shim)
+            with open(shim, "rb") as stream:
+                source = stream.read()
+            if not _pyc_matches_source(cfile, source):
+                # Atomic (temp file + replace); a read-only install keeps compiling in the child as before.
+                py_compile.compile(
+                    shim,
+                    cfile = cfile,
+                    doraise = True,
+                    invalidation_mode = py_compile.PycInvalidationMode.CHECKED_HASH,
+                )
+        except Exception:  # noqa: BLE001 - bytecode is an optimization, never a launch failure
+            logger.debug("could not write the sandbox shim bytecode", exc_info = True)
+        # Also after a failure: a read-only install would otherwise pay a compile on every call.
+        _sandbox_site_bytecode_for = key
 
 
 # Auto mode prompting gate; fails closed: anything not provably read-only asks.
@@ -24173,7 +24183,7 @@ def _snapshot_workdir_views(workdir: "str | None", views: "tuple") -> "list":
         for d in dirs:
             owners[os.path.join(base, d)] = children[d]
         # os.path.join's result for every name here, without its per-call overhead on thousands of files.
-        joined = base if base.endswith(os.sep) else base + os.sep
+        joined = os.path.join(base, "")
         for name in names:
             # ignore internal markers only at the root; nested files with these names remain valid artifacts.
             if base == workdir and name in _INTERNAL_SANDBOX_FILES:

@@ -30,7 +30,7 @@ def shim(monkeypatch, tmp_path):
 
 def _matches(shim) -> bool:
     with open(shim, "rb") as stream:
-        return tools._pyc_matches_source(importlib.util.cache_from_source(shim), stream.read())
+        return tools._pyc_matches_source(tools._sandbox_site_pyc(shim), stream.read())
 
 
 def test_the_sandbox_shim_has_bytecode_before_a_child_starts(shim, tmp_path):
@@ -38,22 +38,30 @@ def test_the_sandbox_shim_has_bytecode_before_a_child_starts(shim, tmp_path):
     work = tmp_path / "work"
     work.mkdir()
     tools._build_safe_env(str(work))
-    assert os.path.isfile(importlib.util.cache_from_source(shim))
+    assert os.path.isfile(tools._sandbox_site_pyc(shim))
     assert _matches(shim)
 
 
 def test_the_shim_is_compiled_once_per_version(shim, tmp_path, monkeypatch):
-    tools._build_safe_env(str(tmp_path))
     compiled = []
     real = py_compile.compile
     monkeypatch.setattr(py_compile, "compile", lambda *a, **k: compiled.append(a) or real(*a, **k))
     for _ in range(5):
         tools._build_safe_env(str(tmp_path))
-    assert compiled == []
+    assert len(compiled) == 1
+
+
+def test_the_pyc_lands_where_a_default_child_looks(shim, monkeypatch, tmp_path):
+    monkeypatch.setattr(sys, "pycache_prefix", str(tmp_path / "elsewhere"))
+    tools._ensure_sandbox_site_bytecode()
+    tag = sys.implementation.cache_tag
+    expected = os.path.join(os.path.dirname(shim), "__pycache__", f"sitecustomize.{tag}.pyc")
+    assert os.path.isfile(expected)
+    assert not (tmp_path / "elsewhere").exists()
 
 
 def test_a_stale_shim_pyc_is_rewritten(shim, tmp_path):
-    cfile = importlib.util.cache_from_source(shim)
+    cfile = tools._sandbox_site_pyc(shim)
     os.makedirs(os.path.dirname(cfile), exist_ok = True)
     with open(cfile, "wb") as stream:
         stream.write(
