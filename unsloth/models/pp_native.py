@@ -2485,9 +2485,7 @@ class PipelineParallel:
                 (mb, seq, width), dtype = self.activation_dtype, device = "meta", requires_grad = True
             )
 
-        # Two adjacent stages on this rank (V schedules, loop schedules at pp 1): no warm-up send to this rank
-        # (torch < 2.12), and eval_loss skips the in-place gradient hand-over, which a forward-only step has
-        # none of (torch asserts there).
+        # Adjacent stages on this rank (V schedules, loop schedules at pp 1): see _adjacent_stage_class.
         adjacent = any(k + 1 in self.local_stages for k in self.local_stages)
         stage_cls = _adjacent_stage_class(not train) if adjacent else PipelineStage
         for index, module in zip(self.local_stages, self.stage_modules):
