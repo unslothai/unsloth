@@ -5527,7 +5527,7 @@ class DiffusionDetailerSpec(BaseModel):
     )
 
 
-# Image and video seeds. -1 = random (A1111, sd.cpp). le = 2**53-1: seeds round-trip through JSON recipes, where JavaScript rounds larger integers and a restored recipe would differ.
+# -1 = random (A1111, sd.cpp). le = 2**53-1: seeds round-trip through JSON recipes, where JavaScript rounds larger integers.
 MediaSeed = Annotated[
     Optional[int], Field(ge = -1, le = 2**53 - 1), AfterValidator(lambda v: None if v == -1 else v)
 ]
