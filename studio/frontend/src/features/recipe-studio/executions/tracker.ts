@@ -105,7 +105,6 @@ export async function trackRecipeExecution({
   let completedEventPayload: Record<string, unknown> | null = null;
   let latestExecution: RecipeExecutionRecord = initialExecution;
   let lastDatasetPollAt = 0;
-  // Ends the current poll sleep early; set only while the loop is sleeping.
   let wakePollSleep: (() => void) | null = null;
   const sleepUntilNextPoll = (ms: number): Promise<void> =>
     new Promise((resolve) => {
@@ -266,7 +265,7 @@ export async function trackRecipeExecution({
         }
       }
       if (!done) {
-        // A terminal SSE event wakes this early so completion is not held for the rest of the interval.
+        // A terminal SSE event wakes this early.
         await sleepUntilNextPoll(1200);
       }
     }

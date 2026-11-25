@@ -30,7 +30,6 @@ async function run(options: {
   kind: "preview" | "full";
   terminal: Terminal;
   terminalStatus: string;
-  // Fires the terminal event this long after the given status call starts or resolves.
   at: { call: number; when: "start" | "resolved"; ms: number };
   statusLatencyMs?: number;
 }) {
@@ -190,7 +189,6 @@ for (const [type, status, toast] of [
       toast,
     ]);
     assert.ok(outcome.sseToReturnMs < 300);
-    // The cleared poll timer must not linger after the tracker returns.
     assert.equal(outcome.pendingTimers, 0);
   });
 }
