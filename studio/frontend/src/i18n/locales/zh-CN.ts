@@ -6026,7 +6026,6 @@ export const zhCN = {
     back: "返回",
     continue: "继续",
     skipSetup: "跳过设置",
-    outsideAgain: "再次点击外部即可关闭",
     getStarted: "开始使用",
     progress: "第 {current} 步，共 {total} 步",
     welcome: {

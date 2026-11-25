@@ -6530,7 +6530,6 @@ export const tr = {
     back: "Geri",
     continue: "Devam",
     skipSetup: "Kurulumu atla",
-    outsideAgain: "Kapatmak için dışarıya tekrar tıklayın",
     getStarted: "Başlayın",
     progress: "Adım {current} / {total}",
     welcome: {

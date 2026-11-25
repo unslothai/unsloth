@@ -194,20 +194,17 @@ export function OnboardingDialog({ pages }: { pages: OnboardingPageId[] }) {
 
   const current = pages.indexOf(page);
 
-  const [armed, setArmed] = useState(false);
   const armedAt = useRef<number | null>(null);
   const disarmTimer = useRef<number | undefined>(undefined);
   const disarm = useCallback(() => {
     if (armedAt.current === null) return;
     armedAt.current = null;
     window.clearTimeout(disarmTimer.current);
-    setArmed(false);
   }, []);
   useEffect(() => () => window.clearTimeout(disarmTimer.current), []);
 
   const armOutsideDismiss = useCallback(() => {
     armedAt.current = Date.now();
-    setArmed(true);
     window.clearTimeout(disarmTimer.current);
     disarmTimer.current = window.setTimeout(disarm, OUTSIDE_DISMISS_WINDOW_MS);
     if (!window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
@@ -249,20 +246,6 @@ export function OnboardingDialog({ pages }: { pages: OnboardingPageId[] }) {
             total: pages.length,
           })}
         </DialogDescription>
-        <AnimatePresence>
-          {armed && (
-            <motion.p
-              role="status"
-              className="text-muted-foreground pointer-events-none absolute inset-x-0 top-6 z-10 text-center text-xs font-medium"
-              initial={{ opacity: 0, y: -4 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0 }}
-              transition={{ duration: 0.2 }}
-            >
-              {t("onboarding.outsideAgain")}
-            </motion.p>
-          )}
-        </AnimatePresence>
         <div className="absolute top-4 right-4 z-10">
           <DialogClose asChild={true}>
             <Button

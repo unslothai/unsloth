@@ -6578,7 +6578,6 @@ export const uk = {
     back: "Назад",
     continue: "Далі",
     skipSetup: "Пропустити налаштування",
-    outsideAgain: "Клацніть ззовні ще раз, щоб закрити",
     getStarted: "Почати",
     progress: "Крок {current} з {total}",
     welcome: {

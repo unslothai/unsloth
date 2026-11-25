@@ -6200,7 +6200,6 @@ export const de = {
     back: "Zurück",
     continue: "Weiter",
     skipSetup: "Einrichtung überspringen",
-    outsideAgain: "Zum Schließen erneut außerhalb klicken",
     getStarted: "Los geht’s",
     progress: "Schritt {current} von {total}",
     welcome: {
