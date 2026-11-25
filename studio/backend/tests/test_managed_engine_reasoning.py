@@ -878,3 +878,68 @@ def test_managed_overflow_reports_the_window_without_copying_engine_details(mess
     assert detail["code"] == "context_length_exceeded"
     assert "2048-token context window" in detail["message"]
     assert "/private/path" not in detail["message"]
+
+
+def test_a_continuation_count_prices_the_body_the_engine_receives(monkeypatch):
+    from core.inference import managed_engine
+
+    sent = []
+
+    class _Client:
+        def __init__(self, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def post(
+            self,
+            url,
+            headers = None,
+            json = None,
+        ):
+            sent.append(json)
+            return SimpleNamespace(raise_for_status = lambda: None, json = lambda: {"count": 7})
+
+    monkeypatch.setattr(managed_engine.httpx, "Client", _Client)
+    engine = ManagedEngine("sglang")
+    engine.base_url, engine.model, engine.reasoning_parser = "http://engine", "m", "qwen3"
+    partial = {"role": "assistant", "content": "The sum", "reasoning_content": "Two plus two."}
+    messages = [{"role": "user", "content": "2+2?"}, partial]
+    engine.count_tokens(messages, continue_final_message = True)
+    assert sent[-1]["continue_final_message"] is True
+    assert sent[-1]["add_generation_prompt"] is False
+    assert "Two plus two." in sent[-1]["messages"][-1]["content"]
+    assert "reasoning_content" not in sent[-1]["messages"][-1]
+    assert messages[-1] is partial and "reasoning_content" in partial
+    engine.count_tokens(messages)
+    assert sent[-1]["add_generation_prompt"] is True and "continue_final_message" not in sent[-1]
+    engine.count_tokens([{"role": "user", "content": "hi"}], continue_final_message = True)
+    assert sent[-1]["add_generation_prompt"] is True
+
+
+def test_the_managed_fit_counts_a_continuation_as_one(monkeypatch):
+    import asyncio
+
+    from routes.managed_engine_chat import _message_fitter
+
+    engine = _Engine()
+    seen = []
+
+    def count_tokens(messages, **kwargs):
+        seen.append(kwargs["continue_final_message"])
+        return 10, "m"
+
+    engine.count_tokens = count_tokens
+    payload = _tool_payload(context_overflow = "truncate_oldest")
+    payload.continue_final_message = True
+    payload.messages = [
+        *payload.messages,
+        payload.messages[0].model_copy(update = {"role": "assistant", "content": "The"}),
+    ]
+    fit = _message_fitter(payload, engine, "m", None)
+    asyncio.run(fit([{"role": "user", "content": "hi"}, {"role": "assistant", "content": "The"}]))
+    assert seen and all(seen)

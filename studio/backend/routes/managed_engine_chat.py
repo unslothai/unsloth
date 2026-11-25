@@ -155,6 +155,7 @@ def _message_fitter(
         }
     )
     estimate = api._external_token_counter(fit_payload, tools)
+    continuing = api._continue_final_message(payload)
 
     def count_tokens(messages):
         if not _has_image(messages):
@@ -165,6 +166,7 @@ def _message_fitter(
                     enable_thinking = payload.enable_thinking,
                     reasoning_effort = payload.reasoning_effort,
                     preserve_thinking = payload.preserve_thinking,
+                    continue_final_message = continuing,
                 )[0]
             except (httpx.HTTPError, RuntimeError, ValueError, KeyError, TypeError):
                 pass
