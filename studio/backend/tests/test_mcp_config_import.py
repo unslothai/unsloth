@@ -341,6 +341,49 @@ def test_import_route_creates_and_dedups(tmp_path, monkeypatch):
     assert set(res2.skipped) == {"fs", "remote", "oauth", "disabled"}
 
 
+def test_import_keeps_named_connections_sharing_a_url(tmp_path, monkeypatch):
+    import asyncio
+
+    from models.mcp_servers import McpServerImportRequest
+    import routes.mcp_servers as routes_mcp
+
+    _reset_db(tmp_path, monkeypatch)
+    _enable(monkeypatch)
+    url = "https://api.githubcopilot.com/mcp/"
+    cfg = {
+        "mcpServers": {
+            "github-work": {"url": url, "headers": {"Authorization": "Bearer WORK"}},
+            "github-personal": {"url": url, "headers": {"Authorization": "Bearer PERSONAL"}},
+            "github-copy": {"url": url, "headers": {"Authorization": "Bearer WORK"}},
+            "fs-a": {"command": "npx", "args": ["server"], "env": {"ROOT": "/a"}},
+            "fs-b": {"command": "npx", "args": ["server"], "env": {"ROOT": "/b"}},
+        }
+    }
+
+    def run(config):
+        return asyncio.run(
+            routes_mcp.import_mcp_servers(
+                McpServerImportRequest(config = config), current_subject = "u"
+            )
+        )
+
+    res = run(cfg)
+    assert {c.display_name for c in res.created} == {
+        "github-work",
+        "github-personal",
+        "fs-a",
+        "fs-b",
+    }
+    assert res.skipped == ["github-copy"]
+
+    rotated = {
+        "mcpServers": {"github-work": {"url": url, "headers": {"Authorization": "Bearer NEW"}}}
+    }
+    assert run(rotated).skipped == ["github-work"]
+    assert set(run(cfg).skipped) == set(cfg["mcpServers"])
+    assert len(mcp_servers_db.list_servers()) == 4
+
+
 def test_import_route_gates_stdio_when_disabled(tmp_path, monkeypatch):
     import asyncio
 

@@ -791,13 +791,17 @@ async def import_mcp_servers(
     """Bulk-register servers from a standard mcpServers JSON config (issue
     #5936). Each entry rides the existing create path: _validate_url applies
     the same stdio gate (a stdio entry becomes a per-entry error when stdio is
-    off; http still imports), and entries whose url already exists are skipped
-    so re-importing the same file is idempotent. One bad entry never 400s the
-    whole batch -- failures are reported per entry."""
+    off; http still imports), and entries whose url already exists under the
+    same name or with the same headers are skipped so re-importing the same
+    file is idempotent. One bad entry never 400s the whole batch -- failures
+    are reported per entry."""
     entries, errors = parse_mcp_config(payload.config)
     created: list[McpServerResponse] = []
     skipped: list[str] = []
-    seen_urls = {row["url"] for row in mcp_servers_db.list_servers()}
+    seen = [
+        (row["display_name"], row["url"], parse_server_headers(row))
+        for row in mcp_servers_db.list_servers()
+    ]
 
     for entry in entries:
         try:
@@ -811,7 +815,10 @@ async def import_mcp_servers(
         except HTTPException as exc:
             errors.append(f"{entry.display_name}: {exc.detail}")
             continue
-        if url in seen_urls:
+        if any(
+            seen_url == url and (seen_name == entry.display_name or seen_headers == headers)
+            for seen_name, seen_url, seen_headers in seen
+        ):
             skipped.append(entry.display_name)
             continue
         server_id = uuid.uuid4().hex[:16]
@@ -823,7 +830,7 @@ async def import_mcp_servers(
             is_enabled = entry.is_enabled,
             use_oauth = entry.use_oauth and not is_stdio(url),
         )
-        seen_urls.add(url)
+        seen.append((entry.display_name, url, headers))
         created.append(_row_to_response(mcp_servers_db.get_server(server_id)))
 
     return McpServerImportResult(created = created, skipped = skipped, errors = errors)
