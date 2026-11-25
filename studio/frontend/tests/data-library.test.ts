@@ -39,12 +39,16 @@ const items: LibraryItem[] = [
   { id: "c", title: "日本語", createdAt: 20, type: "single" },
 ];
 const ids = (rows: LibraryItem[]) => rows.map((row) => row.id);
-const filter = (overrides: Partial<typeof DEFAULT_LIBRARY_FILTERS>) =>
+const filter = (
+  overrides: Partial<typeof DEFAULT_LIBRARY_FILTERS>,
+  locale?: string,
+) =>
   filterLibraryItems(
     items,
     { ...DEFAULT_LIBRARY_FILTERS, ...overrides },
     projects,
     labels,
+    locale,
   );
 
 test("search matches normalized title and project terms in any order", () => {
@@ -75,7 +79,7 @@ test("sorts use the requested timestamp with a creation fallback", () => {
   assert.deepEqual(ids(filter({ sort: "updated" })), ["a", "c", "b"]);
   assert.deepEqual(ids(filter({ sort: "created" })), ["b", "c", "a"]);
   assert.deepEqual(ids(filter({ sort: "oldest" })), ["a", "c", "b"]);
-  assert.deepEqual(ids(filter({ sort: "alphabetical" })).slice(0, 2), [
+  assert.deepEqual(ids(filter({ sort: "alphabetical" }, "en")).slice(0, 2), [
     "b",
     "a",
   ]);
