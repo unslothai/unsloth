@@ -30664,17 +30664,18 @@ def _clip_turn_tool_results(
     kept_ids: set[int],
     target: int,
     count_tokens: Callable[[list[dict]], int],
-) -> None:
-    # In place: eviction and the archive match messages by identity.
+) -> bool:
+    # Shortens only when that fits the turn, in place: eviction and the archive match by identity.
     from core.inference.context_window import estimate_message_tokens_without_unpriced_media
 
+    turn = [dict(m) for m in messages[start:]]
     floor = [
         m for m in messages[:start] if m.get("role") in ("system", "developer") or id(m) in kept_ids
-    ] + messages[start:]
+    ] + turn
     over = count_tokens(floor) - target
-    for message in messages[start:]:
+    for message in turn:
         if over <= 0:
-            return
+            break
         text = message.get("content")
         if message.get("role") != "tool" or not isinstance(text, str):
             continue
@@ -30685,6 +30686,12 @@ def _clip_turn_tool_results(
         if len(text) - keep > _CLIP_NOTICE_CHARS:
             message["content"] = _clip_text(text, keep)
             over = count_tokens(floor) - target
+    if over > 0:
+        return False
+    for original, clipped in zip(messages[start:], turn):
+        if clipped.get("content") is not original.get("content"):
+            original["content"] = clipped["content"]
+    return True
 
 
 def _fit_external_context(
@@ -30765,18 +30772,18 @@ def _fit_external_context(
     ) | (keep_ids or set())
     turn = _active_turn_start(messages, branch) if tool_loop else None
     if turn is not None:
-        # The reply in progress is never evicted: its oldest tool results are shortened instead.
-        anchors |= {id(m) for m in messages[turn:]}
         messages = fit_oversized_attachments(
             messages, context_length = context_length, max_tokens = max_tokens, count_tokens = _count
         )
-        _clip_turn_tool_results(
+        # The reply in progress is never evicted, unless shortening its tool results cannot fit it.
+        if _clip_turn_tool_results(
             messages,
             turn,
             keep_ids or set(),
             int(prompt_budget(context_length, max_tokens) * (1 - _ATTACHMENT_FIT_MARGIN)),
             _count,
-        )
+        ):
+            anchors |= {id(m) for m in messages[turn:]}
     # A replay recalls inline only when search_conversation cannot reach the epoch this turn.
     recall_offered = can_reset and "search_conversation" in _catalog_names(tools)
     fitted, truncation = _fit_with_instruction_pins(
@@ -32062,6 +32069,7 @@ async def _proxy_to_external_provider(
     _first_payload = _evicting_payload
     # The prompt last sent, so an overflow refit evicts below what the provider refused.
     _last_fit = None
+    _overflow_shrunk = False
     _written_summaries: list[dict] = []
 
     # As the plain fit decides it: a cloud model that never gets Studio tools cannot search an epoch.
@@ -32129,17 +32137,18 @@ async def _proxy_to_external_provider(
         """Yields a progress line when a summary has to be written first, then
         ``(messages, max_tokens, truncation_line)``."""
         nonlocal _external_truncation, _manual_summary_pending
-        nonlocal _evicting_payload, _first_payload, _last_fit
+        nonlocal _evicting_payload, _first_payload, _last_fit, _overflow_shrunk
         from core.inference import cloud_compaction
 
         if force is None and _manual_summary_pending:
             force = "manual"
         _manual_summary_pending = False
+        if force == "overflow":
+            refused = _last_fit if _last_fit is not None else messages
+            refused_tokens = _external_token_counter(payload, tools)(refused)
         if _evict_only and force == "overflow":
             # Half the refused prompt first, looser only when what the fit keeps is larger; kept for
             # the loop's later passes. The window stays: the fit clamps the reply cap against it.
-            refused = _last_fit if _last_fit is not None else messages
-            refused_tokens = _external_token_counter(payload, tools)(refused)
             unbounded, first_unbounded = _evicting_payload, _first_payload
             for threshold in _overflow_retry_thresholds(
                 refused_tokens, _effective_max_tokens(unbounded)
@@ -32153,6 +32162,9 @@ async def _proxy_to_external_provider(
                     copy.deepcopy(messages), tools
                 )
                 if truncation and truncation.get("dropped_messages") and truncation.get("fits"):
+                    break
+                if truncation is None:
+                    # Shortening the reply in progress's tool results fit it.
                     break
         elif _evicting_fit:
             fitted, truncation, fallback_max_tokens = await _managed_context_fitter(messages, tools)
@@ -32185,6 +32197,12 @@ async def _proxy_to_external_provider(
                 yield cloud_compaction.compaction_failed_sse_line(plan.summary_error)
         _refuse_what_ollama_would_cut(provider_type, truncation, payload.context_window)
         fitted = _date_a_fitted_system_turn(fitted, request, run_studio_tool_loop)
+        # Nothing dropped, yet smaller than what the provider refused: worth sending again.
+        _overflow_shrunk = (
+            force == "overflow"
+            and not (truncation and truncation.get("dropped_messages"))
+            and _external_token_counter(payload, tools)(fitted) < refused_tokens
+        )
         _last_fit = fitted
         if truncation and truncation.get("dropped_messages"):
             _external_truncation = truncation
@@ -32216,8 +32234,10 @@ async def _proxy_to_external_provider(
                 yield step
                 continue
             truncation = _external_truncation or {}
-            changed = truncation.get("checkpoint_started") or (
-                truncation.get("dropped_messages") and not truncation.get("summarized")
+            changed = (
+                truncation.get("checkpoint_started")
+                or (truncation.get("dropped_messages") and not truncation.get("summarized"))
+                or _overflow_shrunk
             )
             if not changed:
                 _external_truncation = earlier

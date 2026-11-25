@@ -164,3 +164,98 @@ def test_a_tool_loop_keeps_its_request_and_results_when_the_window_fills(
         assert any(m["role"] == "user" and m["content"].endswith(_TASK) for m in body["messages"])
     # One compaction per reply: its summary calls all come before the same chat request.
     assert "C" not in calls.strip("C")
+
+
+def test_a_tool_loop_whose_call_arguments_fill_the_window_still_evicts_older_exchanges():
+    import routes.inference as ri
+    from models.inference import ChatCompletionRequest
+
+    task = "Write the six files with edit_file."
+    messages = [{"role": "system", "content": "Be brief."}, {"role": "user", "content": task}]
+    for n in range(6):
+        arguments = json.dumps({"path": f"f{n}.py", "content": "x = compute(a, b)\n" * 120})
+        fn = {"name": "edit_file", "arguments": arguments}
+        call = {"id": f"c{n}", "type": "function", "function": fn}
+        messages += [
+            {"role": "assistant", "content": None, "tool_calls": [call]},
+            {"role": "tool", "tool_call_id": f"c{n}", "content": "ok"},
+        ]
+    payload = ChatCompletionRequest(
+        messages = [{"role": "user", "content": task}],
+        provider_type = "openrouter",
+        model = "a-model",
+        context_overflow = "truncate_oldest",
+        compaction_threshold = 3_000,
+        context_window = 4_096,
+        max_tokens = 512,
+    )
+
+    fitted, truncation, _ = ri._fit_external_context(
+        messages, payload, branch = [{"role": "user", "content": task}], tool_loop = True
+    )
+    assert truncation["fits"] and truncation["dropped_messages"] > 0
+    assert any(m.get("content") == task for m in fitted)
+
+
+_OVERFLOW_CHARS = 9_000
+
+
+class _RefusesPastALimit(_Handler):
+    def do_POST(self) -> None:  # noqa: N802
+        length = int(self.headers.get("Content-Length") or 0)
+        body = json.loads(self.rfile.read(length) or b"{}")
+        recorded = self.server.recorded  # type: ignore[attr-defined]
+        recorded.append(body)
+        if len(json.dumps(body["messages"])) > _OVERFLOW_CHARS:
+            error = {
+                "message": "This model's maximum context length is 8192 tokens. "
+                "However, your messages resulted in 9000 tokens.",
+                "code": "context_length_exceeded",
+            }
+            payload = json.dumps({"error": error}).encode()
+            self.send_response(400)
+            self.send_header("Content-Type", "application/json")
+        else:
+            sent = sum(
+                1 for b in recorded[:-1] if len(json.dumps(b["messages"])) <= _OVERFLOW_CHARS
+            )
+            fn = {"name": "python", "arguments": json.dumps({"code": f"step({sent})"})}
+            call = {"index": 0, "id": f"c{sent}", "type": "function", "function": fn}
+            payload = _reply({"tool_calls": [call]} if sent < 4 else {"content": "DONE"})
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+
+@pytest.mark.parametrize("mode", ["summary", "rolling", "checkpoint"])
+def test_an_overflow_inside_the_only_turn_resends_with_its_results_shortened(monkeypatch, mode):
+    async def connected(self) -> bool:
+        return False
+
+    def execute(name, arguments, **kwargs):
+        return "RESULT " + "harbor ledger canal " * 150
+
+    monkeypatch.setattr(studio_tool_loop, "execute_tool", execute)
+    monkeypatch.setattr(Request, "is_disconnected", connected)
+    recorded: list[dict] = []
+
+    class Recording(_RefusesPastALimit):
+        def do_POST(self) -> None:  # noqa: N802
+            self.server.recorded = recorded  # type: ignore[attr-defined]
+            super().do_POST()
+
+    chunks, _ = _proxy(
+        "openrouter",
+        [{"role": "user", "content": "Run four python steps."}],
+        handler = Recording,
+        enable_tools = True,
+        enabled_tools = ["python"],
+        permission_mode = "off",
+        context_overflow = "truncate_oldest",
+        compaction_threshold = 200_000,
+        compaction_mode = mode,
+    )
+    assert not [c for c in chunks if "error" in c]
+    assert len(json.dumps(recorded[-1]["messages"])) <= _OVERFLOW_CHARS
