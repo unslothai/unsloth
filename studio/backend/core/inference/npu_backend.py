@@ -934,6 +934,7 @@ class LemonadeNpuBackend:
         rows = self._flm_rows()
         models: list[NpuModel] = []
         flm_binary = self._flm_binary()
+        custom_runtime = custom_runtime_configured()
         window_gb = npu_memory.npu_memory_window_gb(npu_memory.system_ram_gb())
         for row in rows:
             # A registered conversion is listed from the acting account's exports below.
@@ -948,7 +949,9 @@ class LemonadeNpuBackend:
             size_gb = float(size) if isinstance(size, (int, float)) else None
             checkpoint = str(row.get("checkpoint") or "")
             downloaded = bool(row.get("downloaded"))
-            files = None if downloaded else self._model_files(checkpoint, flm_binary)
+            files = (
+                None if downloaded or custom_runtime else self._model_files(checkpoint, flm_binary)
+            )
             hf_repo, hf_revision = read_model_repo(flm_binary, checkpoint)
             models.append(
                 NpuModel(
@@ -1172,8 +1175,6 @@ class LemonadeNpuBackend:
         return matches[0].model_path if matches else None
 
     def _model_files(self, checkpoint: str, flm_binary: Optional[Path]) -> Optional[FlmModelFiles]:
-        if custom_runtime_configured():
-            return None
         return read_model_files(flm_binary, self._flm_model_dir, checkpoint)
 
     def _model(self, model_id: str) -> NpuModel:
@@ -1224,8 +1225,11 @@ class LemonadeNpuBackend:
             raise NpuError(f"{model_id} is a converted model already on this device.")
         model = self._model(model_id)
         server = self._ensure_running()
+        custom_runtime = custom_runtime_configured()
         files = (
-            None if model.downloaded else self._model_files(model.checkpoint, self._flm_binary())
+            None
+            if model.downloaded or custom_runtime
+            else self._model_files(model.checkpoint, self._flm_binary())
         )
         if files is not None:
             try:
@@ -1235,7 +1239,7 @@ class LemonadeNpuBackend:
             except FlmDownloadError as exc:
                 raise NpuError(str(exc)) from exc
             yield {"event": "finishing", "percent": 99}
-        elif not model.downloaded and not custom_runtime_configured():
+        elif not model.downloaded and not custom_runtime:
             logger.warning(
                 "FastFlowLM's file list is unreadable; lemond downloads %s, without resume",
                 model.id,

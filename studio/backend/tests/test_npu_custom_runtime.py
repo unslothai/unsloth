@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+from contextlib import contextmanager
 from types import SimpleNamespace
 
 import httpx
@@ -94,3 +95,38 @@ def test_custom_runtime_requires_an_installed_backend(configure):
     with pytest.raises(nb.NpuError, match = "configured NPU runtime is not ready"):
         backend.enable()
     assert not backend.status()["ready"]
+
+
+def test_custom_runtime_preserves_model_file_discovery(configure, monkeypatch):
+    backend, _, exe = configure()
+    files = nb.FlmModelFiles(folder = backend._flm_model_dir / "downloaded-model", files = ())
+
+    def read(binary, model_dir, checkpoint):
+        assert (binary, model_dir, checkpoint) == (exe, backend._flm_model_dir, "model:small")
+        return files
+
+    monkeypatch.setattr(nb, "read_model_files", read)
+    assert backend._model_files("model:small", backend._flm_binary()) is files
+
+
+def test_custom_runtime_delegates_download_without_reading_the_file_list(configure, monkeypatch):
+    backend, runtime, _ = configure()
+    backend.enable()
+    model = SimpleNamespace(id = "model-FLM", checkpoint = "model:small", downloaded = False)
+    monkeypatch.setattr(backend, "_model", lambda model_id: model)
+    monkeypatch.setattr(
+        backend, "_model_files", lambda *args: pytest.fail("download read the custom file list")
+    )
+
+    @contextmanager
+    def stream(method, path, *, json_body):
+        assert (method, path) == ("POST", "/v1/pull")
+        assert json_body["model_name"] == model.id
+        yield httpx.Response(200, text = 'event: complete\ndata: {"status":"complete"}\n')
+
+    monkeypatch.setattr(runtime, "stream", stream, raising = False)
+    assert list(backend.download(model.id))[-1] == {
+        "event": "complete",
+        "model": model.id,
+        "percent": 100,
+    }
