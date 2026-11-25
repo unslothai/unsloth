@@ -16512,12 +16512,12 @@ def _mlx_estimate_load_in_4bit(config, request) -> bool:
     # Same order as the load route: a full-finetune output loads 16-bit before any tier check.
     if not _effective_load_in_4bit(config, request.load_in_4bit):
         return False
-    from utils.transformers_version import latest_tier_active_for
+    from utils.transformers_version import latest_tier_forces_16bit
 
     identifier = getattr(config, "identifier", None)
     return not _offline_guarded(
         (identifier, getattr(config, "base_model", None)),
-        latest_tier_active_for,
+        latest_tier_forces_16bit,
         identifier,
         request.hf_token,
     )
@@ -20718,11 +20718,11 @@ async def _load_model_impl(
             )
         # Latest-sidecar models load 16-bit (worker refuses bnb 4-bit); size the guard to match.
         if effective_load_in_4bit and not config.is_gguf:
-            from utils.transformers_version import latest_tier_active_for
+            from utils.transformers_version import latest_tier_forces_16bit
             if await asyncio.to_thread(
                 _offline_guarded,
                 (model_identifier, config.identifier, getattr(config, "base_model", None)),
-                latest_tier_active_for,
+                latest_tier_forces_16bit,
                 config.identifier,
                 request.hf_token,
             ):
@@ -21943,16 +21943,27 @@ async def validate_model(
         # Mirror /load's latest-sidecar 16-bit flip: an active sidecar forces 16-bit; an offered upgrade
         # only without a custom-code (auto_map) fallback, which still loads 4-bit.
         if effective_load_in_4bit and not is_gguf:
-            from utils.transformers_version import latest_tier_active_for
+            from utils.transformers_version import (
+                latest_tier_forces_16bit,
+                latest_tier_upgrade_keeps_4bit,
+            )
             _install_only_upgrade = (
                 transformers_upgrade is not None
                 and transformers_upgrade.installable
                 and not requires_trust_remote_code
+                and not await asyncio.to_thread(
+                    _offline_guarded,
+                    (model_identifier, config.identifier, getattr(config, "base_model", None)),
+                    latest_tier_upgrade_keeps_4bit,
+                    transformers_upgrade.model_type,
+                    config.identifier,
+                    request.hf_token,
+                )
             )
             if _install_only_upgrade or await asyncio.to_thread(
                 _offline_guarded,
                 (model_identifier, config.identifier, getattr(config, "base_model", None)),
-                latest_tier_active_for,
+                latest_tier_forces_16bit,
                 config.identifier,
                 request.hf_token,
             ):
@@ -22235,7 +22246,7 @@ async def check_transformers_upgrade_route(
     for training. Never raises: an unreadable model reports "no upgrade needed" and the
     caller proceeds exactly as it did before.
     """
-    from utils.transformers_version import latest_tier_active_for
+    from utils.transformers_version import latest_tier_load_policy, latest_tier_upgrade_keeps_4bit
 
     if account_access.managed_account():
         for ref in (
@@ -22302,27 +22313,42 @@ async def check_transformers_upgrade_route(
         logger.debug("Custom-code check failed for '%s': %s", model_name, exc)
 
     latest_tier_active = False
+    active_forces_16bit = False
     try:
-        latest_tier_active = await asyncio.to_thread(
+        latest_tier_active, active_forces_16bit = await asyncio.to_thread(
             _offline_guarded,
-            # latest_tier_active_for resolves a remote adapter's base itself, so fetch it too.
+            # The policy resolves a remote adapter's base itself, so fetch it too.
             tuple(targets),
-            latest_tier_active_for,
+            latest_tier_load_policy,
             load_target,
             request.hf_token,
         )
     except Exception as exc:
         logger.debug("Latest-tier check failed for '%s': %s", model_name, exc)
+    upgrade_keeps_4bit = False
+    if transformers_upgrade is not None:
+        try:
+            upgrade_keeps_4bit = await asyncio.to_thread(
+                _offline_guarded,
+                tuple(targets),
+                latest_tier_upgrade_keeps_4bit,
+                transformers_upgrade.model_type,
+                load_target,
+                request.hf_token,
+            )
+        except Exception as exc:
+            logger.debug("4-bit check failed for '%s': %s", model_name, exc)
 
     # Only install-only upgrades or active sidecars force 16-bit; offered ones do not (bnb 4-bit feeds unvalidated paths for new architectures).
     install_only_upgrade = bool(
         transformers_upgrade is not None
         and transformers_upgrade.installable
         and not requires_trust_remote_code
+        and not upgrade_keeps_4bit
     )
     # Already on the sidecar: the install does not strand the checkpoint; resume is refused regardless.
     install_breaks_exact_resume = False
-    if request.resume_run_id and not latest_tier_active:
+    if request.resume_run_id and not latest_tier_active and not upgrade_keeps_4bit:
         install_breaks_exact_resume = await asyncio.to_thread(
             _install_breaks_exact_resume, request.resume_run_id
         )
@@ -22335,7 +22361,9 @@ async def check_transformers_upgrade_route(
         # Already booleans; bool() here would trip the GGUF consistency guard's raw-YAML check.
         requires_trust_remote_code = requires_trust_remote_code,
         latest_tier_active = latest_tier_active,
-        forces_16bit = latest_tier_active or install_only_upgrade,
+        forces_16bit = active_forces_16bit or install_only_upgrade,
+        # The Configure card reads this: installable && !forces_16bit alone means the custom-code case.
+        sidecar_keeps_4bit = upgrade_keeps_4bit or (latest_tier_active and not active_forces_16bit),
         install_breaks_exact_resume = install_breaks_exact_resume,
     )
 
@@ -22349,8 +22377,12 @@ async def install_latest_transformers_route(
     request: InstallLatestTransformersRequest, current_subject: str = Depends(get_current_subject)
 ):
     """
-    Consented install of the latest transformers release into the persistent
-    .venv_t5_latest sidecar.
+    Install of the latest transformers release into the persistent .venv_t5_latest sidecar.
+
+    PyPI releases are package-scanned first (utils.security.package_scan) and installed
+    with their sha256 digests pinned; a flagged release is refused. With ``auto`` (no
+    dialog shown) only a clean scan installs, otherwise this answers requires_consent
+    before reserving anything. transformers main always needs the user's confirmation.
 
     Called after the user confirms the transformers-upgrade dialog raised by /validate
     (requires_transformers_upgrade). The requested version must match the current latest
@@ -22358,8 +22390,15 @@ async def install_latest_transformers_route(
     re-verified server-side); the sidecar then participates in routing on
     this and every future start. A pip install runs off-loop, so this can take a minute.
     """
-    from utils.transformers_latest import install_latest_transformers
+    from utils.transformers_latest import auto_install_preflight, install_latest_transformers
     from utils.transformers_version import end_sidecar_swap, try_begin_sidecar_swap
+
+    if request.auto:
+        # Scan before reserving or waiting on any gate: a release that needs the user's
+        # confirmation must not cancel chats or unload anything first.
+        blocked = await asyncio.to_thread(auto_install_preflight, request.version)
+        if blocked is not None:
+            return InstallLatestTransformersResponse(**blocked)
 
     # Reserve the swap FIRST, before any await: training/export starts check this reservation,
     # and a live worker would lazy-import from the swapped .venv_t5_latest.
@@ -22462,7 +22501,9 @@ async def install_latest_transformers_route(
         def _run_install() -> dict:
             # Release in the thread, not the route, so cancellation keeps the reservation held.
             try:
-                return install_latest_transformers(request.version, _unload_before_swap, True)
+                return install_latest_transformers(
+                    request.version, _unload_before_swap, True, auto = request.auto
+                )
             finally:
                 end_sidecar_swap()
 
@@ -22517,6 +22558,9 @@ async def install_latest_transformers_route(
         if owns_reservation:
             end_sidecar_swap()
     if not result["success"]:
+        if result.get("requires_consent") or result.get("scan_status") == "flagged":
+            # Structured so the client can raise the dialog with the reason.
+            return InstallLatestTransformersResponse(**result, model_unloaded = unloaded_chat["v"])
         if result.get("latest_version") or result.get("latest_main_version"):
             # Structured failure so the dialog can update to the newer release
             # and offer a retry that can actually succeed.

@@ -1865,12 +1865,19 @@ def _moe_post_hook(module, args, output):
 _MOE_SHARD_ENV = "UNSLOTH_TP_MOE_SHARD"
 _EXPERT_STACKS = ("gate_up_proj", "down_proj")
 _EXPERT_CALL = ("hidden_states", "top_k_index", "top_k_weights")
+# Other names for the same experts call: gpt-oss (hidden_states, router_indices, routing_weights).
+_EXPERT_CALL_ALIASES = {"router_indices": "top_k_index", "routing_weights": "top_k_weights"}
 _EXPERT_DTYPES = (torch.float16, torch.bfloat16, torch.float32, torch.float64)
 
 
 def moe_shard_enabled():
     import os
     return os.environ.get(_MOE_SHARD_ENV, "1").strip().lower() not in ("0", "false", "off", "no")
+
+
+def moe_blocks_with_experts(model):
+    """Every module with an `experts` child (the block whose experts call takes the routed tokens)."""
+    return [m for m in model.modules() if isinstance(m._modules.get("experts"), nn.Module)]
 
 
 def _experts_chain(block):
@@ -2014,7 +2021,7 @@ def expert_shard_problem(block, tp = None):
         names = tuple(inspect.signature(type(leaf).forward).parameters)[1:]
     except (TypeError, ValueError):
         names = ()
-    if names != _EXPERT_CALL:
+    if tuple(_EXPERT_CALL_ALIASES.get(n, n) for n in names) != _EXPERT_CALL:
         return f"its experts forward takes {names}, not {_EXPERT_CALL}"
     if getattr(type(leaf), "_unsloth_expert_lora_factors_swapped", False):
         return "swapped expert LoRA factors"
@@ -2167,6 +2174,7 @@ def _expert_call_args(args, kwargs):
     values, kwargs = list(args), dict(kwargs)
     if not values and "x" in kwargs:  # PEFT ParamWrapper.forward(x, *args, **kwargs)
         values.append(kwargs.pop("x"))
+    kwargs = {_EXPERT_CALL_ALIASES.get(k, k): v for k, v in kwargs.items()}
     for name in _EXPERT_CALL[len(values) :]:
         if name not in kwargs:
             return None
@@ -2238,7 +2246,13 @@ def _tp_experts_forward(shard, prior):
     return forward
 
 
-def _shard_moe_experts(block, mesh, rank, tp):
+def _shard_moe_experts(
+    block,
+    mesh,
+    rank,
+    tp,
+    make_forward = None,
+):
     chain = _experts_chain(block)
     leaf, wrappers = chain[-1], chain[:-1]
     E = leaf.num_experts
@@ -2285,7 +2299,7 @@ def _shard_moe_experts(block, mesh, rank, tp):
     outer = chain[0]
     prior = outer.__dict__.get("forward", outer.forward)
     outer.__dict__["_unsloth_tp_experts_prior_forward"] = outer.__dict__.get("forward", _MISSING)
-    outer.forward = _tp_experts_forward(shard, prior)
+    outer.forward = (make_forward or _tp_experts_forward)(shard, prior)
     block.__dict__["_unsloth_tp_expert_shard"] = shard
     return shard
 
@@ -4505,6 +4519,12 @@ def _parameter_slots(model):
     return slots
 
 
+class _TensorByTensorUnsupported(ValueError):
+    """_fill_from_checkpoint cannot read a model tensor as one checkpoint tensor: transformers builds it with a
+    weight conversion (merged / unpadded tensors), or the checkpoint stores it as bare bitsandbytes 4-bit bytes
+    (a pre-quantized fused expert stack). Raised before any tensor is read."""
+
+
 def _fill_from_checkpoint(
     model,
     name,
@@ -4541,7 +4561,7 @@ def _fill_from_checkpoint(
         for n in names:
             if n in aliases:
                 if aliases[n] is None:
-                    raise ValueError(
+                    raise _TensorByTensorUnsupported(
                         f"Unsloth: {label} sharded loading cannot read '{n}': transformers builds it from several "
                         f"checkpoint tensors (a weight conversion); load this model without sharded loading "
                         f"({fallback})."
@@ -4549,6 +4569,8 @@ def _fill_from_checkpoint(
                 return aliases[n]
         return None
 
+    # Every tensor resolved and checked before the first read (a refusal reads nothing).
+    slots = []
     for old, where, names in _parameter_slots(model).values():
         key = find(names)
         if key is None:
@@ -4557,20 +4579,36 @@ def _fill_from_checkpoint(
                 f"this model without sharded loading ({fallback})."
             )
         quantized_module = quantized.get(id(old))
+        stored = reader.shape(key)
         if quantized_module is not None:
             shape = (quantized_module.out_features, quantized_module.in_features)
-            stored = reader.shape(key)
             nbytes = math.prod(stored) * reader.quant.packed_dtype(key).itemsize
             if len(stored) != 2 or stored[1] != 1 or nbytes * 2 != math.prod(shape):
                 raise ValueError(
                     f"Unsloth: {label} sharded loading: checkpoint tensor '{key}' ({stored}) is not the packed "
                     f"4-bit form of a {shape} weight; load this model without sharded loading ({fallback})."
                 )
-        elif reader.shape(key) != tuple(old.shape):
+        elif stored != tuple(old.shape):
+            if len(stored) == 2 and stored[1] == 1 and f"{key}.absmax" in index:
+                raise _TensorByTensorUnsupported(
+                    f"Unsloth: {label} sharded loading cannot read '{names[0]}' {tuple(old.shape)}: the "
+                    f"checkpoint stores it as bare bitsandbytes 4-bit bytes '{key}' {stored} (a pre-quantized "
+                    f"fused expert stack); load this model without sharded loading ({fallback})."
+                )
             raise ValueError(
-                f"Unsloth: checkpoint tensor '{key}' has shape {reader.shape(key)}, the model expects "
+                f"Unsloth: checkpoint tensor '{key}' has shape {stored}, the model expects "
                 f"{tuple(old.shape)}."
             )
+        slots.append((old, where, key, quantized_module))
+    buffers = []
+    for module_name, module in model.named_modules():
+        for bname, buf in list(module._buffers.items()):
+            if buf is None or not buf.is_meta:
+                continue
+            key = f"{module_name}.{bname}" if module_name else bname
+            source = find([key]) if bname not in module._non_persistent_buffers_set else None
+            buffers.append((module, bname, buf, key, source))
+    for old, where, key, quantized_module in slots:
         new = read_local(old, reader, key)
         if new is None and quantized_module is not None:
             new = reader.quant.whole(key, quantized_module, device)
@@ -4585,20 +4623,15 @@ def _fill_from_checkpoint(
         for module, pname in where:
             module._parameters[pname] = new
     skeleton = None
-    for module_name, module in model.named_modules():
-        for bname, buf in list(module._buffers.items()):
-            if buf is None or not buf.is_meta:
-                continue
-            key = f"{module_name}.{bname}" if module_name else bname
-            source = find([key]) if bname not in module._non_persistent_buffers_set else None
-            if source is not None:
-                value = reader.full(source)
-            else:
-                skeleton = skeleton if skeleton is not None else _buffer_skeleton(model)
-                value = skeleton.get_buffer(key)
-                if value.is_meta:
-                    raise ValueError(f"Unsloth: sharded loading cannot rebuild the buffer '{key}'.")
-            module._buffers[bname] = value.to(device = device, dtype = buf.dtype)
+    for module, bname, buf, key, source in buffers:
+        if source is not None:
+            value = reader.full(source)
+        else:
+            skeleton = skeleton if skeleton is not None else _buffer_skeleton(model)
+            value = skeleton.get_buffer(key)
+            if value.is_meta:
+                raise ValueError(f"Unsloth: sharded loading cannot rebuild the buffer '{key}'.")
+        module._buffers[bname] = value.to(device = device, dtype = buf.dtype)
     if isinstance(getattr(model, "hf_device_map", None), dict):
         model.hf_device_map = {"": device.index if device.type == "cuda" else device.type}
     return reader, sharded_numel, full_numel
@@ -4737,15 +4770,18 @@ def _tp_load_quantizing(original, cls, name, args, kwargs, mesh, state):
 
     def plan_for(model):
         # The meta model as transformers built it (Linear4bit already swapped in): the plan apply derives later.
-        tp_plan = derive_tp_plan(model, tp, state["plan"])
+        # Expert parallel (ep_native.expert_parallel_loading): only the routed expert stacks are cut.
+        experts_only = state.get("experts_only")
+        tp_plan = None if experts_only else derive_tp_plan(model, tp, state["plan"])
         projs = {}
-        for region in tp_plan.regions:
+        for region in tp_plan.regions if tp_plan is not None else ():
             for proj in region.projs:
                 if proj.style != KV_REPLICATED:
                     projs[id(_weight(proj.module)[1])] = (f"{region.path}.{proj.name}", proj)
         experts = {}
-        if moe_shard_enabled() and tp > 1:
-            for block in tp_plan.moe_blocks:
+        if (moe_shard_enabled() or experts_only) and tp > 1:
+            blocks = moe_blocks_with_experts(model) if experts_only else tp_plan.moe_blocks
+            for block in blocks:
                 chain = _experts_chain(block)
                 if chain:
                     experts[id(chain[-1])] = block
@@ -4969,7 +5005,7 @@ def _from_pretrained_sharded(original, cls, name, args, kwargs, state):
                 ):
                     return original(cls, name, *args, **original_kwargs)
             return chunked(original, cls, name, args, original_kwargs, mesh, state)
-    if state.get("prequantized_only") and quantized is None:
+    if state.get("experts_only") or (state.get("prequantized_only") and quantized is None):
         return original(cls, name, *args, **original_kwargs)
     if state.get("auto"):
         # Only a checkpoint too large for a whole load on this GPU loads sharded (the full load stays the
@@ -5033,9 +5069,26 @@ def _from_pretrained_sharded(original, cls, name, args, kwargs, state):
             f"{state.get('prequantized_hint', 'Load it in full and call apply_tensor_parallel.')}"
         )
     materialize = state.get("materialize", _materialize_sharded)
-    materialize(
-        model, name, kwargs, mesh, state["plan"], device, **state.get("materialize_kwargs", {})
-    )
+    try:
+        materialize(
+            model, name, kwargs, mesh, state["plan"], device, **state.get("materialize_kwargs", {})
+        )
+    except _TensorByTensorUnsupported:
+        # A pre-quantized bitsandbytes 4-bit checkpoint whose tensors transformers converts on load (Inkling 2:
+        # merged loop queries, the unpadded lm_head, zoo's fused 4-bit expert stacks): transformers' own load,
+        # each 4-bit projection / expert stack / FSDP2 chunk kept as it is set (the quantize-on-load path).
+        # Pipeline parallel registers its per-stage load. A 16-bit checkpoint with a weight conversion keeps the
+        # refusal (those loaders would load it in full).
+        fallback = state.get("prequantized_fallback", chunked)
+        if fallback is None or quantized is None:
+            raise
+        del loaded, model, reader
+        loaded = fallback(original, cls, name, args, original_kwargs, mesh, state)
+        model = loaded[0] if isinstance(loaded, tuple) else loaded
+        for key in ("_unsloth_tp_load_stats", "_unsloth_fsdp2_load_stats", "_unsloth_pp_preload"):
+            if isinstance(model.__dict__.get(key), dict):
+                model.__dict__[key]["prequantized"] = True
+        return loaded
     state["models"].append(model)
     return loaded
 

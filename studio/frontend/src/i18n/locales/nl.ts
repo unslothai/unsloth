@@ -4464,6 +4464,7 @@ export const nl = {
       lr: "LR",
       hardware: "Hardware",
       vram: "VRAM",
+      vramTotal: "{size} totaal",
       noGpu: "Geen GPU gedetecteerd",
       hfToken: "HF-token",
       saved: "Opgeslagen",

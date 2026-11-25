@@ -28,7 +28,7 @@ export interface TrainingTransformersUpgradeNotice {
 }
 
 /** With custom code and an installable release, the fallback keeps 4-bit while Install trains
- * 16-bit. `installable && !forces16Bit` is exactly that case. */
+ * 16-bit. `installable && !forces16Bit` is that case, unless the sidecar keeps 4-bit anyway. */
 export function trainingTransformersUpgradeNotice(
   check: TransformersUpgradeCheck,
   loadsIn4Bit: boolean,
@@ -38,7 +38,11 @@ export function trainingTransformersUpgradeNotice(
   return {
     installVersion,
     fourBitUnavailable: check.forces16Bit && loadsIn4Bit,
-    installSwitchesTo16Bit: installable && !check.forces16Bit && loadsIn4Bit,
+    installSwitchesTo16Bit:
+      installable &&
+      !check.forces16Bit &&
+      !check.sidecarKeeps4Bit &&
+      loadsIn4Bit,
   };
 }
 
@@ -153,11 +157,11 @@ export async function confirmTrainingTransformersUpgrade({
       requiresTrustRemoteCode,
     };
   }
-  // Installed: the latest sidecar trains 16-bit. The custom-code fallback still loads 4-bit.
+  // Installed: 16-bit on the sidecar unless it keeps 4-bit; the custom-code fallback loads 4-bit.
   return {
     proceed: true,
     error: null,
-    forces16Bit: installRan,
+    forces16Bit: installRan && !check.sidecarKeeps4Bit,
     requiresTrustRemoteCode,
   };
 }
