@@ -106,5 +106,13 @@ def test_scrolling_moves_through_a_block_taller_than_the_budget(page):
     assert page(html, scroll = 20 * 1000, fullPage = True).splitlines()[1] == "line_0000 = 0"
 
 
+def test_highlighter_lines_stay_one_fenced_block(page):
+    lines = "".join(
+        f'<span style="display: block">{line or chr(10)}</span>' for line in CODE.split("\n")
+    )
+    text = page(f"<p>Example:</p><pre>&gt;&gt;&gt; x<code>{lines}</code></pre><p>Done</p>")
+    assert f"```\n>>> x\n{CODE}\n```" in text
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q", "--confcutdir", str(Path(__file__).parent)]))

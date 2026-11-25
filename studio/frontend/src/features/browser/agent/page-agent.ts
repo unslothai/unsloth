@@ -388,6 +388,7 @@ export function installPageAgent(): PageAgent {
     let buffer = "";
     let bufferShown = false;
     let bufferKeepsLines = false;
+    let inPre = 0;
     const push = (line: string) => {
       if (cut) return;
       if (used + line.length + 1 > budget) {
@@ -457,7 +458,11 @@ export function installPageAgent(): PageAgent {
         return;
       }
       const block = BLOCK.test(style.display);
-      if (block) flush();
+      // A block inside a code block is one of its lines (highlighters wrap each line), not a paragraph.
+      const codeLine = block && inPre > 0;
+      if (block && !codeLine) flush();
+      if (codeLine && buffer && !buffer.endsWith("\n")) buffer += "\n";
+      if (tag === "pre") inPre++;
       // A label's words are already its field's name.
       const labelled = tag === "label" && Boolean((el as HTMLLabelElement).control);
       // Text too small to read is there for the model, not the user. Only this element's own text:
@@ -480,7 +485,11 @@ export function installPageAgent(): PageAgent {
           walk(node as Element);
         }
       }
-      if (block) flush(tag === "pre");
+      if (tag === "pre") inPre--;
+      if (codeLine) {
+        if (buffer && !buffer.endsWith("\n")) buffer += "\n";
+        bufferKeepsLines = true;
+      } else if (block) flush(tag === "pre");
     };
     walk(root);
     flush();
