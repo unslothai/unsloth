@@ -292,12 +292,22 @@ class _Patch:
         self._undo.append((obj, name, old))
         setattr(obj, name, value)
 
+    def defer(self, fn: Any) -> None:
+        """Run ``fn()`` at undo time (in reverse order with the restores)."""
+        self._undo.append((fn, ("__call__",), None))
+
     def setitem(self, mapping: Any, key: Any, value: Any) -> None:
         self._undo.append((mapping, ("__item__", key), mapping.get(key, self._MISSING)))
         mapping[key] = value
 
     def undo(self) -> None:
         for obj, name, old in reversed(self._undo):
+            if name == ("__call__",):
+                try:
+                    obj()
+                except Exception:  # noqa: BLE001 - a cache clear never fails the restore
+                    pass
+                continue
             if isinstance(name, tuple) and name[:1] == ("__item__",):
                 if old is self._MISSING:
                     obj.pop(name[1], None)
@@ -363,6 +373,12 @@ def _triton_overrides(p: GpuProfile) -> list:
         ("core.inference.diffusion_int8_attention", "triton_available", lambda: has),
         ("core.inference.diffusion_int8_gemm", "_triton_at_least", at_least),
         ("core.inference.diffusion_int8_gemm", "_triton_version_ok", version_ok),
+        # Triton present = the INT8 GEMM kernels build (they compile lazily at the first launch)
+        (
+            "core.inference.diffusion_int8_gemm",
+            "_kernels",
+            lambda: types.SimpleNamespace() if has else None,
+        ),
         ("core.inference.diffusion_convrot_quant", "_triton_ok", lambda: has),
         (
             "core.inference.diffusion_grouped_int8_gemm",
@@ -543,12 +559,15 @@ def mock_profile(
         except Exception:  # noqa: BLE001
             pass
         try:
-            # Linux + Triton: torch.compile runs (lru-cached in production, so pinned as a cached-looking callable).
+            # The real compile-runtime decision, read under the declared OS (sys.platform is pinned above): its
+            # lru cache is dropped on entry and exit, so neither the host's answer nor this profile's leaks.
             from core.inference import diffusion_speed
 
-            compile_ok = lambda: True  # noqa: E731
-            compile_ok.cache_clear = lambda: None
-            patch.setattr(diffusion_speed, "torch_compile_runtime_available", compile_ok)
+            gate = diffusion_speed.torch_compile_runtime_available
+            clear = getattr(gate, "cache_clear", None)
+            if clear is not None:
+                clear()
+                patch.defer(clear)
         except Exception:  # noqa: BLE001
             pass
         try:

@@ -33,6 +33,7 @@ from __future__ import annotations
 import contextlib as _contextlib
 import itertools
 import os
+import subprocess
 import sys
 import types as _types
 from pathlib import Path
@@ -201,8 +202,13 @@ def probe_int8_gemm(p: GpuProfile) -> dict:
             for n, on in (("arch", gemm), ("unlisted", unl), ("cutlass", pre), ("rotq", rotq))
             if on
         ]
+        # The cell is the real installer's outcome on a denoiser with one eligible int8 Linear (its mode, kernel
+        # availability, arch gates and eligible-Linear scan, and the first-forward swap it arms); cfg names the routes.
+        installed = _int8_gemm_installs() if routes else False
         out["any.int8_gemm.install_gate"] = lever(
-            bool(routes), cfg = "+".join(routes) or None, why = None if routes else "no_route"
+            bool(routes) and installed,
+            cfg = "+".join(routes) or None,
+            why = None if (routes and installed) else ("installs_nothing" if routes else "no_route"),
         )
     out["any.int8_gemm.arch_tile"] = lever(
         arch is not None, cfg = arch, why = None if arch else "no_arch_tile"
@@ -231,6 +237,51 @@ def probe_int8_gemm(p: GpuProfile) -> dict:
         why = None if tiles else "no_shape_rules",
     )
     return out
+
+
+class _PerRow:
+    pass
+
+
+_PerRow.__name__ = "PerRow"
+
+
+def _int8_weight(n: int, k: int) -> Any:
+    """A torchao ``Int8Tensor`` as the INT8 transformer quant leaves it (dynamic symmetric per-row activation quant,
+    bf16 per-row scale), duck-typed so the fixture needs no torchao on the host: only its fields are read."""
+    import enum
+
+    import torch
+
+    mapping = enum.Enum("MappingType", "SYMMETRIC ASYMMETRIC").SYMMETRIC
+    w = type("Int8Tensor", (), {})()
+    w.qdata = torch.zeros(n, k, dtype = torch.int8)
+    w.scale = torch.ones(n, 1, dtype = torch.bfloat16)
+    w.block_size = [1, k]
+    w.act_quant_kwargs = _types.SimpleNamespace(
+        mapping_type = mapping, granularity = _PerRow(), reduce_range = False
+    )
+    w.act_pre_scale = w.act_quant_scale = w.act_quant_zero_point = w.zero_point = None
+    return w
+
+
+def _int8_gemm_installs() -> bool:
+    """``diffusion_int8_gemm.install()`` on a stub denoiser holding one eligible int8 Linear (weights not on the card
+    yet, as at load): True when it counts the Linear and arms the first-forward swap."""
+    from torch import nn
+
+    from core.inference import diffusion_int8_gemm as g
+    from core.inference.diffusion_int8_fused import cancel_first_call
+
+    stub = nn.Sequential(nn.Linear(256, 256, bias = False))
+    stub[0]._parameters["weight"] = _int8_weight(256, 256)
+    try:
+        n = int(g.install(stub) or 0)
+    except Exception:  # noqa: BLE001 - an installer that raises installs nothing
+        return False
+    armed = "int8_gemm" in stub.__dict__.get("_unsloth_first_call_hooks", {})
+    cancel_first_call(stub, "int8_gemm")
+    return n > 0 and armed
 
 
 # Production GEMM shapes (M rows, N, K): H3 video fused QKV and FFN down at a 960x544x124 render, Qwen-Image-2.1 MLP
@@ -919,6 +970,29 @@ def probe_cfg_batch(p: GpuProfile) -> dict:
 AUTOOPT_SPEED = "default"
 
 
+def _mps_target(bf16_probe_ok: bool) -> Any:
+    """Studio's MPS target (``_mps_or_cpu_target``) with its on-device bf16 probe pinned: bf16 when the probe passes
+    (macOS 14+), fp32 when it fails, never fp16. The allocator cap (a real-device call) is left out; the env it would
+    set is restored."""
+    import torch
+
+    from core.inference import diffusion_device as dd
+
+    env = dd.MPS_HIGH_WATERMARK_ENV
+    saved_env = os.environ.get(env)
+    saved = (dd._mps_supports_bfloat16, dd.apply_mps_memory_cap)
+    dd._mps_supports_bfloat16 = lambda torch_mod: bf16_probe_ok
+    dd.apply_mps_memory_cap = lambda torch_mod, logger = None: None
+    try:
+        return dd._mps_or_cpu_target(torch)
+    finally:
+        dd._mps_supports_bfloat16, dd.apply_mps_memory_cap = saved
+        if saved_env is None:
+            os.environ.pop(env, None)
+        else:
+            os.environ[env] = saved_env
+
+
 def _autoopt_target(p: GpuProfile) -> Any:
     import torch
 
@@ -927,18 +1001,16 @@ def _autoopt_target(p: GpuProfile) -> Any:
     if p.cuda:
         return dd._cuda_or_rocm_target(torch, is_rocm = p.rocm)
     if p.mps:
-        # The MPS target without its on-device bf16 probe (CPU torch has no MPS): fp16, as before macOS 14.
-        return _types.SimpleNamespace(
-            device = "mps",
-            backend = "mps",
-            vendor = "apple",
-            dtype = torch.float16,
-            ordinal = None,
-            torch_device = "mps",
-            supports_default_torch_compile = False,
-            supports_model_cpu_offload = False,
-        )
+        return _mps_target(True)
     return dd._cpu_target(torch)
+
+
+def _autoopt_targets(p: GpuProfile) -> list:
+    """``[(key suffix, target)]``: one target per dtype branch Studio's resolver can take on the profile. MPS has two:
+    the bf16 probe passing (the default row) or failing (``autoopt_fp32`` rows)."""
+    if p.mps:
+        return [("", _mps_target(True)), ("_fp32", _mps_target(False))]
+    return [("", _autoopt_target(p))]
 
 
 def _stub_denoiser(fam: Any, blocks: dict) -> Any:
@@ -1015,7 +1087,8 @@ def _speed_layer_extra(patch: Any, p: GpuProfile) -> None:
     patch.setattr(diffusion_gguf_compile, "_gguf_utils", lambda: fake_gguf_utils)
     patch.setattr(diffusion_gguf_compile, "_compiled_dequant_installed", False)
     patch.setattr(diffusion_gguf_compile, "_compile_error", None)
-    patch.setattr(diffusion_cuda_graph, "install_cuda_graphs", lambda pipe, logger = None: True)
+    # install_cuda_graphs runs for real: it only wraps each denoiser (the first step captures), so the cell reads
+    # what it armed, as the load does.
     # Freeing a graph's pool runs gc.collect + empty_cache: memory upkeep on a real card, ~75 ms per stub here.
     if hasattr(diffusion_cuda_graph, "release_cached_outside_capture"):
         patch.setattr(diffusion_cuda_graph, "release_cached_outside_capture", lambda *a, **k: None)
@@ -1064,68 +1137,86 @@ def _collected_profiles() -> list:
 _OFFLOAD_ONLY_RESIDENT = "the family records offloaded steps only, and it stays resident"
 
 
-def armed_after_placement(pipe: Any, views: list) -> bool:
+def armed_after_placement(pipe: Any, views: list) -> Optional[str]:
     """What the loader's post-placement step really installs for an offloaded load (``arm_graphs_after_placement``,
     the call image and video loads make once placement is final): its ``cuda_graph`` after arming, never the pending
-    flag the speed layer leaves. The stub denoiser carries no offload hook, so the resident placement records."""
+    flag the speed layer leaves. Returns the branch that armed, else None:
+
+    - ``"resident"``: the stub denoiser carries no offload hook, so the arming takes its resident branch. The block-
+      streamed and model-offload branches (copies recorded in the graph, the stable arena) need a real hook and run in
+      the GPU test ``test_diffusion_offload_cuda_graph.py``;
+    - ``"deferred"``: an offload-only family (Wan) arms only on a denoiser an offload hook moves; the stub staying
+      resident is the arming's only refusal, so the arming is left to the real offloaded load."""
     from core.inference.diffusion_speed import arm_graphs_after_placement
 
-    armed = False
+    branch = None
     for view in views:
         pending = bool(getattr(pipe, "_unsloth_cuda_graph_after_placement", False))
         try:
-            armed |= bool(arm_graphs_after_placement(pipe, dict(view)).get("cuda_graph"))
+            if arm_graphs_after_placement(pipe, dict(view)).get("cuda_graph"):
+                branch = "resident"
+                continue
         except Exception:  # noqa: BLE001 - recorded as not armed
             continue
-        # An offload-only family (Wan) arms only on a denoiser an offload hook moves; the stub has none, so the
-        # arming's sole refusal is the stub staying resident. That placement is the real load's to make: keep the
-        # deferred arming. Any other refusal (or an arming that installs nothing) loses the lever.
         reason = str(getattr(pipe, "_unsloth_cuda_graph_reason", "") or "")
         parts = [r for r in reason.split("; ") if r]
         if pending and parts and all(r.endswith(_OFFLOAD_ONLY_RESIDENT) for r in parts):
-            armed = True
+            branch = branch or "deferred"
     try:
         from core.inference.diffusion_cuda_graph import uninstall_all
         uninstall_all(getattr(pipe, "_unsloth_cuda_graphs", ()) or ())
     except Exception:  # noqa: BLE001
         pass
-    return armed
+    return branch
+
+
+def autoopt_cell(
+    p: GpuProfile, backend: str, fam: Any, blocks: dict, target: Any, offload: bool
+) -> dict:
+    """One speed-layer cell, inside ``mock_profile(p, extra = _speed_layer_extra)``: the family through the parity
+    harness's entry point at the family's resolved dtype, resident or offloaded."""
+    import test_diffusion_autoopt_parity as par
+    from core.inference import diffusion_speed as ds
+
+    fam_target = family_target(backend, fam, target)
+    dtype = str(fam_target.dtype).replace("torch.", "")
+    pipe = _autoopt_pipe(backend, fam, blocks)
+    flags = ds.snapshot_backend_flags()
+    try:
+        result = par.autoopt_entry(backend, pipe, fam_target, fam, AUTOOPT_SPEED, offload, False)
+        engaged = {k for view in result["views"] for k, v in view.items() if v}
+        engaged |= {f"patch:{k}" for k, v in result["patches"].items() if v}
+        branch = None
+        if offload:
+            engaged.discard("cuda_graph")
+            branch = armed_after_placement(pipe, result["views"])
+            if branch:
+                engaged.add("cuda_graph_after_placement")
+        engaged = sorted(engaged)
+        cell = {"on": bool(engaged), "engaged": engaged, "cfg": f"dtype={dtype}"}
+        if branch:
+            cell["arming"] = branch
+        return cell
+    except Exception as exc:  # noqa: BLE001 - recorded: a load that now raises is a lost cell
+        return {"on": False, "why": f"error:{type(exc).__name__}"}
+    finally:
+        ds.restore_backend_flags(flags)
+        par._teardown()
 
 
 def collect_autoopt(blocks: dict) -> dict:
     import test_diffusion_autoopt_parity as par
-    from core.inference import diffusion_speed as ds
 
     cells: dict = {}
     for p in _collected_profiles():
         with clean_policy_env(), mock_profile(p, extra = _speed_layer_extra):
-            target = _autoopt_target(p)
-            dtype = str(target.dtype).replace("torch.", "")
-            # offload: the streamed / offloaded tier (8-16 GB cards), where graphs arm after placement (R3 / R4): the cell records
-            # what arm_graphs_after_placement installs (cuda_graph_after_placement), not the speed layer's pending flag
-            for (backend, fam), offload in itertools.product(par._families(), (False, True)):
-                key = f"{p.key}.{fam.name}.autoopt" + ("_offload" if offload else "")
-                fam_target = family_target(backend, fam, target)
-                dtype = str(fam_target.dtype).replace("torch.", "")
-                pipe = _autoopt_pipe(backend, fam, blocks)
-                flags = ds.snapshot_backend_flags()
-                try:
-                    result = par.autoopt_entry(
-                        backend, pipe, fam_target, fam, AUTOOPT_SPEED, offload, False
-                    )
-                    engaged = {k for view in result["views"] for k, v in view.items() if v}
-                    engaged |= {f"patch:{k}" for k, v in result["patches"].items() if v}
-                    if offload:
-                        engaged.discard("cuda_graph")
-                        if armed_after_placement(pipe, result["views"]):
-                            engaged.add("cuda_graph_after_placement")
-                    engaged = sorted(engaged)
-                    cells[key] = {"on": bool(engaged), "engaged": engaged, "cfg": f"dtype={dtype}"}
-                except Exception as exc:  # noqa: BLE001 - recorded: a load that now raises is a lost cell
-                    cells[key] = {"on": False, "why": f"error:{type(exc).__name__}"}
-                finally:
-                    ds.restore_backend_flags(flags)
-                    par._teardown()
+            # offload: the streamed / offloaded tier (8-16 GB cards), where graphs arm after placement (R3 / R4): the
+            # cell records what arm_graphs_after_placement installs (cuda_graph_after_placement) and the branch that
+            # armed (``arming``), not the speed layer's pending flag
+            for suffix, target in _autoopt_targets(p):
+                for (backend, fam), offload in itertools.product(par._families(), (False, True)):
+                    key = f"{p.key}.{fam.name}.autoopt{suffix}" + ("_offload" if offload else "")
+                    cells[key] = autoopt_cell(p, backend, fam, blocks, target, offload)
     return cells
 
 
@@ -1553,6 +1644,8 @@ def test_every_probe_returns_the_same_cells_on_every_profile(matrix):
     by_profile: dict = {}
     for cid in matrix["cells"]:
         profile, _, rest = cid.partition(".")
+        # a profile's extra dtype branch (MPS: autoopt_fp32) repeats its default rows, it adds no other cell
+        rest = rest.replace(".autoopt_fp32", ".autoopt")
         by_profile.setdefault(profile, set()).add(rest)
     sets = list(by_profile.values())
     assert sets and all(s == sets[0] for s in sets), {
@@ -1635,7 +1728,7 @@ def test_streamed_graph_cell_is_what_the_arming_installs(monkeypatch):
     blocks = load_golden()["inputs"]["denoiser_blocks"]
     p = PROFILES["l4"]
 
-    def run() -> bool:
+    def run() -> Optional[str]:
         with clean_policy_env(), mock_profile(p, extra = _speed_layer_extra):
             pipe = _autoopt_pipe("image", fam, blocks)
             flags = ds.snapshot_backend_flags()
@@ -1649,11 +1742,89 @@ def test_streamed_graph_cell_is_what_the_arming_installs(monkeypatch):
                 ds.restore_backend_flags(flags)
                 par._teardown()
 
-    assert run() is True
+    assert run() == "resident"
     monkeypatch.setattr(
         cg, "arm_after_placement", lambda pipe, logger = None, **k: ([], "nothing installed")
     )
-    assert run() is False
+    assert run() is None
+
+
+def _klein_cell(offload: bool = False) -> dict:
+    import test_diffusion_autoopt_parity as par
+
+    backend, fam = next((b, f) for b, f in par._families() if f.name == "flux.2-klein")
+    p = PROFILES["l4"]
+    blocks = load_golden()["inputs"]["denoiser_blocks"]
+    with clean_policy_env(), mock_profile(p, extra = _speed_layer_extra):
+        return autoopt_cell(p, backend, fam, blocks, _autoopt_target(p), offload)
+
+
+def test_speed_cells_read_the_real_compile_gate_and_graph_installer(monkeypatch):
+    """The speed layer's compile decision and resident graph install are production's own (under the pinned host),
+    so a change that turns either off loses the lever in the cell instead of hiding behind a pinned True."""
+    import functools
+
+    from core.inference import diffusion_cuda_graph as cg
+    from core.inference import diffusion_speed as ds
+
+    base = _klein_cell()
+    assert {"compiled", "cuda_graph"} <= set(base["engaged"]), base
+    no_compile = functools.lru_cache(maxsize = 1)(lambda: False)
+    monkeypatch.setattr(ds, "torch_compile_runtime_available", no_compile)
+    assert "compiled" not in _klein_cell()["engaged"]
+    monkeypatch.undo()
+    monkeypatch.setattr(cg, "install_cuda_graphs", lambda pipe, logger = None, **k: ())
+    assert "cuda_graph" not in _klein_cell()["engaged"]
+
+
+def test_int8_gemm_install_cell_is_the_installers_outcome(monkeypatch):
+    """install_gate is what diffusion_int8_gemm.install() does on a denoiser with an eligible int8 Linear: an installer
+    that installs nothing (or arms no first-forward swap) turns the cell off even with every route's policy on."""
+    from core.inference import diffusion_int8_gemm as g
+
+    p = PROFILES["l4"]
+
+    def cell() -> dict:
+        with clean_policy_env(), mock_profile(p):
+            return probe_int8_gemm(p)["any.int8_gemm.install_gate"]
+
+    assert cell() == {"on": True, "cfg": "arch+cutlass+rotq"}
+    monkeypatch.setattr(g, "install", lambda *a, **k: 0)
+    assert cell() == {"on": False, "cfg": "arch+cutlass+rotq", "why": "installs_nothing"}
+    monkeypatch.undo()
+    monkeypatch.setattr(g, "candidates", lambda *a, **k: 0)  # no eligible Linear found
+    assert cell()["on"] is False
+
+
+def test_mps_speed_rows_follow_studios_dtype_resolver(matrix):
+    """Studio's MPS target is bf16 when its on-device bf16 probe passes and fp32 when it fails, never fp16: the
+    default MPS rows carry bf16 and the ``autoopt_fp32`` rows the fallback branch."""
+    import test_diffusion_autoopt_parity as par
+
+    cells = matrix["cells"]
+    for _backend, fam in par._families():
+        for off in ("", "_offload"):
+            assert cells[f"mps.{fam.name}.autoopt{off}"].get("cfg") == "dtype=bfloat16", (
+                fam.name,
+                off,
+            )
+            assert cells[f"mps.{fam.name}.autoopt_fp32{off}"].get("cfg") == "dtype=float32", (
+                fam.name,
+                off,
+            )
+
+
+def test_streamed_cells_name_the_arming_branch(matrix):
+    """Every offloaded cell that records graphs after placement says which branch armed: ``resident`` (the stub has
+    no offload hook) or ``deferred`` (an offload-only family left to the real offloaded load)."""
+    armed = {
+        k: v
+        for k, v in matrix["cells"].items()
+        if k.endswith("_offload") and "cuda_graph_after_placement" in (v.get("engaged") or ())
+    }
+    assert armed
+    assert all(v.get("arming") in ("resident", "deferred") for v in armed.values()), armed
+    assert {v["arming"] for k, v in armed.items() if ".wan2.2-ti2v-5b." in k} == {"deferred"}
 
 
 def test_offload_only_family_keeps_its_deferred_graphs_only_for_the_stub_placement(monkeypatch):
@@ -1668,7 +1839,7 @@ def test_offload_only_family_keeps_its_deferred_graphs_only_for_the_stub_placeme
     blocks = load_golden()["inputs"]["denoiser_blocks"]
     p = PROFILES["l4"]
 
-    def run() -> bool:
+    def run() -> Optional[str]:
         with clean_policy_env(), mock_profile(p, extra = _speed_layer_extra):
             pipe = _autoopt_pipe(backend, fam, blocks)
             flags = ds.snapshot_backend_flags()
@@ -1687,7 +1858,7 @@ def test_offload_only_family_keeps_its_deferred_graphs_only_for_the_stub_placeme
                 ds.restore_backend_flags(flags)
                 par._teardown()
 
-    assert run() is True
+    assert run() == "deferred"
     monkeypatch.setattr(
         cg,
         "arm_after_placement",
@@ -1696,7 +1867,7 @@ def test_offload_only_family_keeps_its_deferred_graphs_only_for_the_stub_placeme
             "WanTransformer3DModel: offload hook X moves the weights inside the forward",
         ),
     )
-    assert run() is False
+    assert run() is None
 
 
 def test_gemm_tile_cells_follow_the_shape_rules(monkeypatch):
@@ -2021,7 +2192,7 @@ def test_incident_r4_17362_h3_steps_equal_evaluations(steps, monkeypatch):
 _H3I_STREAM = dict(dit_gb = 21.9, te_gb = 27.2, inflight = 2)
 
 
-def test_incident_r5_18183_h3_image_8gb_plan_fits_or_refuses(monkeypatch):
+def _h3i_planner_replay() -> None:
     """R5, #18183: H3-Image 2048^2 on the tester's RTX 6000 Ada capped to 8 GB went out of memory at step 1 (5.52 GiB
     of session weights left 1.46 GiB) while the reference stack rendered in 8.1 s; the 3090 on PCIe 3.0 x4 streamed 19
     of 50 blocks and was 18% slower because the plan never priced the link. A card gets a layout that fits it, is
@@ -2056,9 +2227,34 @@ def test_incident_r5_18183_h3_image_8gb_plan_fits_or_refuses(monkeypatch):
         )
         assert slow.parked and slow.dit_resident_blocks > unpriced.dit_resident_blocks, slow.reasons
         # The replay bites: today's layout regardless of fit (pre-#18183) leaves the 8 GB card unparked.
-        monkeypatch.setattr(h3i, "_choose_layout", lambda candidates, **_k: (candidates[0], ""))
-        bad = h3i.plan_placement(vram_gb = 7.73, host_gb = 80.53, **_H3I_STREAM)
+        real = h3i._choose_layout
+        h3i._choose_layout = lambda candidates, **_k: (candidates[0], "")
+        try:
+            bad = h3i.plan_placement(vram_gb = 7.73, host_gb = 80.53, **_H3I_STREAM)
+        finally:
+            h3i._choose_layout = real
         assert bad.layout == h3i.LAYOUT_TODAY and bad.dit_resident_blocks == 0
+
+
+def test_incident_r5_18183_h3_image_8gb_plan_fits_or_refuses():
+    """R5, #18183 (see ``_h3i_planner_replay``). The planner module imports diffusers when present, and a broken
+    optional diffusers (a lazy import against a mismatched huggingface_hub) must not fail the replay: it runs in a child
+    with diffusers hidden, as the matrix and Backend CI do."""
+    code = (
+        "import sys; sys.modules['diffusers'] = None; "
+        f"sys.path[:0] = [{str(_BACKEND)!r}, {str(_TESTS)!r}]; "
+        "import test_diffusion_gpu_lever_matrix as m; m._h3i_planner_replay(); print('REPLAY_OK')"
+    )
+    run = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output = True,
+        text = True,
+        timeout = 600,
+        env = _child_env(None),
+    )
+    assert run.returncode == 0 and "REPLAY_OK" in run.stdout, (
+        run.stdout[-2000:] + run.stderr[-6000:]
+    )
 
 
 class _Spec:
