@@ -377,6 +377,19 @@ def test_full_finetuning_skips_lora():
     assert not any("lora_" in name for name, _ in m.named_parameters())
 
 
+@pytest.mark.skipif(not has_real_cuda(), reason = "the CPU backend refuses qat_scheme")
+def test_full_finetuning_applies_qat():
+    pytest.importorskip("torchao")
+    from torchao.quantization.qat import FakeQuantizedLinear
+
+    from unsloth import FastModel
+
+    m, _ = FastModel.from_pretrained(
+        TINY, dtype = torch.float32, full_finetuning = True, qat_scheme = "int8-int4"
+    )
+    assert any(isinstance(x, FakeQuantizedLinear) for x in m.modules())
+
+
 def test_caller_config_is_the_one_loaded():
     from unsloth import FastModel
 
