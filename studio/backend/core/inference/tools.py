@@ -16162,6 +16162,7 @@ def _build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> d
     thread_id = rag_scope.get("thread_id")
     query = _last_user_text(conversation)
     try:
+        from core.inference import instruction_pin
         from core.rag.tool import render_sources, search_for_autoinject, whole_document_context
     except Exception as exc:  # noqa: BLE001
         logger.warning("RAG auto-inject unavailable: %s", exc)
@@ -16311,6 +16312,16 @@ def _build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> d
                             found = (render_sources(merged), merged)
                     elif thread_found:
                         found = thread_found
+                if (
+                    not found
+                    and rag_scope.get("kb_id")
+                    and not instruction_pin.is_thin_query(query)
+                ):
+                    found = retrieve(
+                        scope_kb_id = rag_scope["kb_id"],
+                        min_dense_score = None,
+                        **_scope_retrieval_kwargs(rag_scope),
+                    )
         except Exception as exc:  # noqa: BLE001
             logger.warning("RAG auto-inject retrieval failed: %s", exc)
             return None
