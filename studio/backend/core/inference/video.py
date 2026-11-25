@@ -6196,12 +6196,9 @@ def _video_tiled_decode_mib(
 
 # "0" prices LTX-2.5's denoise phase with the generic base overhead again.
 VIDEO_LTX25_DENOISE_PRICE_ENV = "UNSLOTH_VIDEO_LTX25_DENOISE_PRICE"
-# LTX-2.5 text-to-video, streaming tier, int8 DiT, two-stage, with the lean connector inputs, the prompt rows released
-# after the connectors and the VAE encoder parked. Colab G4, 6 and 8 GiB free: allocated peak above the floor (held
-# weights + the connectors' streamed window) is 424 MiB in the connector phase whatever the shape, and in the denoise
-# 536 / 900 / 899 / 1,725 MiB at 2,688 / 6,144 / 6,160 / 14,080 final-stage latent tokens (768x512x49, 768x512x121,
-# 1280x704x49, 1280x704x121). Outside the torch allocator the request then grows by ~564 MiB (encoder worker,
-# kernel workspaces): what a 6 GiB card had left at the OOM of 1280x704x121.
+# Measured on Colab G4 (LTX-2.5 t2v, streaming, int8 DiT, two-stage, all three levers): peak above the floor is 424 MiB
+# in the connector phase; in the denoise 536 / 900 / 899 / 1,725 MiB at 2,688 / 6,144 / 6,160 / 14,080 final-stage
+# latent tokens, plus ~564 MiB outside the allocator (the 6 GiB OOM margin at 1280x704x121).
 _LTX25_CONNECTOR_PHASE_MIB = 430
 _LTX25_DENOISE_FIXED_MIB = 260
 _LTX25_DENOISE_MIB_PER_TOKEN = 0.105
@@ -6217,7 +6214,6 @@ def _memory_levers_key(state: Any) -> dict[str, str]:
     return {"memory_levers": levers} if levers else {}
 
 
-# The frame rate the LTX-2.5 denoise price was measured at (the family default).
 _LTX25_MEASURED_FPS = 24
 
 
@@ -15806,8 +15802,7 @@ class VideoBackend:
                         device = device_obj,
                         rearm = False,
                     )
-                    # The floor leaves a parked LTX-2 VAE encoder out. An image-conditioned request keeps it on the
-                    # card for the request (and the floor counts it); any other request parks it again.
+                    # the floor omits a parked encoder: an image-conditioned request onloads (and counts) it
                     from .video_ltx2 import park_ltx2_vae_encoder, unpark_ltx2_vae_encoder
 
                     if first_pil is not None or last_pil is not None or bool(references):

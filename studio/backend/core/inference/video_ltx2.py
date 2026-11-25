@@ -1254,11 +1254,9 @@ def install_ltx2_full_mask_drop(pipe: Any, logger: Any = None) -> int:
     return count
 
 
-# LTX-2.3 / 2.5 connectors (per-modality projections): diffusers builds the masked norm, then the video- and the
-# audio-scaled copies of it, all [batch, 1024, 49 * 3840] (368 MiB each in bf16) and all alive when the 1.44 GiB
-# video projection onloads. The lean forward builds each scaled input from the hidden states when its projection
-# runs (norm, mask in place, scale in place) and frees it after, so only the hidden states and one input are held:
-# same ops on the same values, bit-identical. =0 keeps the diffusers forward.
+# LTX-2.3 / 2.5 connectors: diffusers keeps the masked norm and both scaled copies ([B, 1024, 49 * 3840], 368 MiB each
+# in bf16) alive while the 1.44 GiB video projection onloads; the lean forward builds each input when its projection
+# runs and frees it after (same ops, bit-identical). =0 keeps the diffusers forward.
 LTX2_LEAN_CONNECTOR_ENV = "UNSLOTH_LTX2_LEAN_CONNECTOR_FEATURES"
 _LTX2_CONNECTORS_CLS = "LTX2TextConnectors"
 _LTX2_LEAN_CONNECTOR_ATTR = "_unsloth_lean_connector_features"
@@ -1329,7 +1327,6 @@ def _ltx2_lean_connectors_forward(
             self.__dict__.get("_unsloth_lean_connector_runs", 0) + 1
         )
 
-    # from here on the diffusers forward, unchanged
     text_dtype = video_text_emb_proj.dtype
     attention_mask = (attention_mask.to(torch.int64) - 1).to(text_dtype)
     attention_mask = attention_mask.reshape(
@@ -1381,9 +1378,8 @@ def install_ltx2_lean_connector_features(pipe: Any, logger: Any = None) -> bool:
     return True
 
 
-# Under a streamed tier the LTX-2 VAE stays on the card whole, but a text-to-video request never runs its encoder
-# (612 MiB on LTX-2.5): the encoder waits on the host and joins the card only for a ``vae.encode`` call (image
-# conditioning), the same weights either way. =0 keeps it on the card.
+# Streamed tiers: text-to-video never runs the LTX-2 VAE encoder (612 MiB on LTX-2.5), so it waits on the host and
+# joins the card only for ``vae.encode``. =0 keeps it on the card.
 LTX2_PARK_VAE_ENCODER_ENV = "UNSLOTH_LTX2_PARK_VAE_ENCODER"
 _LTX2_VAE_CLS = "AutoencoderKLLTX2Video"
 _LTX2_ENCODER_HOME = "_unsloth_encoder_home"
