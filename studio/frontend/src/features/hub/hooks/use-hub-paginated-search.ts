@@ -183,6 +183,13 @@ export function useHubPaginatedSearch<T>(
     if (sameQuery && fresh && iterRef.current !== null) {
       return;
     }
+    // A stale refresh of the same query keeps its rows until the new page lands: clearing them
+    // flashed an empty list, then the same rows, on every reopen past the TTL.
+    const revalidate =
+      sameQuery &&
+      stateRef.current.queryKey === queryKey &&
+      stateRef.current.results.length > 0 &&
+      stateRef.current.error === null;
     loadedFactoryRef.current = createIter;
     loadedMapItemRef.current = mapItem;
     loadedNonceRef.current = retryNonce;
@@ -197,11 +204,13 @@ export function useHubPaginatedSearch<T>(
     const controller = new AbortController();
     abortRef.current = controller;
     lastFireAtRef.current = Date.now();
-    setState({
-      ...(INITIAL as HfPaginatedState<T>),
-      isLoading: true,
-      queryKey,
-    });
+    if (!revalidate) {
+      setState({
+        ...(INITIAL as HfPaginatedState<T>),
+        isLoading: true,
+        queryKey,
+      });
+    }
 
     const iter = createIter(controller.signal);
     iterRef.current = iter;
@@ -223,6 +232,11 @@ export function useHubPaginatedSearch<T>(
       })
       .catch((err) => {
         if (versionRef.current !== v || isAbortError(err)) return;
+        // The old rows are still valid; the next stale check retries.
+        if (revalidate) {
+          iterDeadRef.current = true;
+          return;
+        }
         setState({
           results: [],
           scannedCount: 0,
