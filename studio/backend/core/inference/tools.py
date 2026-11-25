@@ -2447,21 +2447,18 @@ def _find_blocked_commands(command: str, posix: "bool | None" = None) -> set[str
 
 # Holds the sandbox sitecustomize.py shim; put on the child's PYTHONPATH in _build_safe_env.
 _SANDBOX_SITE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sandbox_site")
-# (path, mtime_ns, size) of the shim whose bytecode this process last confirmed or wrote.
 _sandbox_site_bytecode_for: "tuple | None" = None
 _sandbox_site_bytecode_lock = threading.Lock()
 
 
 def _sandbox_site_pyc(shim: str) -> str:
-    """Where a default child looks: next to the shim, never under this host's PYTHONPYCACHEPREFIX or -O tag."""
+    """Where a default child looks, whatever this host's PYTHONPYCACHEPREFIX or -O."""
     tag = sys.implementation.cache_tag
     return os.path.join(os.path.dirname(shim), "__pycache__", f"sitecustomize.{tag}.pyc")
 
 
 def _pyc_matches_source(cfile: str, source: bytes) -> bool:
-    """A checked hash-based pyc (PEP 552) for exactly these source bytes."""
     import importlib.util
-
     try:
         with open(cfile, "rb") as stream:
             header = stream.read(16)
@@ -2476,10 +2473,8 @@ def _pyc_matches_source(cfile: str, source: bytes) -> bool:
 
 
 def _ensure_sandbox_site_bytecode() -> None:
-    """Write the shim's bytecode from Studio, once per shim version. The OS sandboxes mount this folder
-    read-only, so a child can never cache it and recompiled ~1,800 lines on every Python start (~12 ms
-    on Linux). Checked hash mode: the child validates it against the source bytes, never mtime, so an
-    edit can never run stale bytecode. An interpreter with another cache tag just ignores the file."""
+    """The sandboxes mount the shim read-only, so a child recompiled it on every start (~12 ms). Checked
+    hash (PEP 552): validated against the source bytes, so an edit never runs stale bytecode."""
     global _sandbox_site_bytecode_for
     if sys.dont_write_bytecode:
         return
@@ -2501,7 +2496,6 @@ def _ensure_sandbox_site_bytecode() -> None:
             with open(shim, "rb") as stream:
                 source = stream.read()
             if not _pyc_matches_source(cfile, source):
-                # Atomic (temp file + replace); a read-only install keeps compiling in the child as before.
                 py_compile.compile(
                     shim,
                     cfile = cfile,
@@ -2510,8 +2504,9 @@ def _ensure_sandbox_site_bytecode() -> None:
                 )
         except Exception:  # noqa: BLE001 - bytecode is an optimization, never a launch failure
             logger.debug("could not write the sandbox shim bytecode", exc_info = True)
-        # Also after a failure: a read-only install would otherwise pay a compile on every call.
-        _sandbox_site_bytecode_for = key
+        _sandbox_site_bytecode_for = (
+            key  # also on failure: a read-only install would compile per call
+        )
 
 
 # Auto mode prompting gate; fails closed: anything not provably read-only asks.
@@ -24047,8 +24042,7 @@ _SURROGATE_RE = re.compile("[\ud800-\udfff]")
 def _servable_segment(name: str) -> bool:
     if name in (".", "..") or not _SERVABLE_SEGMENT_RE.match(name):
         return False
-    # Lone surrogates make encodeURIComponent throw. ASCII cannot hold one; the regex replaces a per-character
-    # Python loop that every workdir snapshot ran on every file name.
+    # Lone surrogates make encodeURIComponent throw.
     return name.isascii() or _SURROGATE_RE.search(name) is None
 
 
@@ -24182,7 +24176,6 @@ def _snapshot_workdir_views(workdir: "str | None", views: "tuple") -> "list":
         dirs[:] = [d for d in kept if d in children]
         for d in dirs:
             owners[os.path.join(base, d)] = children[d]
-        # os.path.join's result for every name here, without its per-call overhead on thousands of files.
         joined = os.path.join(base, "")
         for name in names:
             # ignore internal markers only at the root; nested files with these names remain valid artifacts.

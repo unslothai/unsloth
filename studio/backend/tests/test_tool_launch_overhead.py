@@ -34,7 +34,6 @@ def _matches(shim) -> bool:
 
 
 def test_the_sandbox_shim_has_bytecode_before_a_child_starts(shim, tmp_path):
-    # The sandboxes mount sandbox_site read-only, so only Studio can cache the shim's bytecode.
     work = tmp_path / "work"
     work.mkdir()
     tools._build_safe_env(str(work))
@@ -126,7 +125,6 @@ def test_runtime_read_paths_resolve_each_candidate_once(monkeypatch, tmp_path):
         lambda p, *a, **k: (seen.append(p) if p == target else None) or real(p, *a, **k),
     )
     sandbox_linux._runtime_read_paths(str(tmp_path), ())
-    # Four prefixes spell the same venv; resolving its bin/ four times bought nothing.
     assert seen.count(target) == 1
 
 

@@ -95,7 +95,7 @@ def test_a_warm_reader_still_refuses_a_retired_account(monkeypatch):
     from utils.paths import storage_roots
 
     studio_db.upsert_app_settings({"reader_probe": 3})
-    assert studio_db.get_app_setting("reader_probe") == 3  # warm the cached reader
+    assert studio_db.get_app_setting("reader_probe") == 3
     monkeypatch.setattr(storage_roots, "is_owner_context", lambda: False)
     monkeypatch.setattr(account_jobs, "account_is_retired", lambda: True)
     for read in (
@@ -116,7 +116,6 @@ def test_a_read_never_queues_behind_another_on_the_shared_connection(monkeypatch
     monkeypatch.setattr(
         studio_db, "connect_studio_db", lambda *a, **k: opened.append(1) or real(*a, **k)
     )
-    # A query in flight (or stuck on a locked database) holds the connection: the next read goes around it.
     assert reader.busy.acquire(blocking = False)
     try:
         assert studio_db.get_app_setting("reader_probe") == 4

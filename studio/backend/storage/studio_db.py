@@ -2106,7 +2106,6 @@ def cleanup_orphaned_runs() -> None:
 
 
 def list_scan_folders() -> list[dict]:
-    # Read on every sandboxed tool launch (model folders are granted read-only): the shared reader.
     rows = _shared_read_rows(
         "SELECT id, path, created_at, recursive FROM scan_folders ORDER BY created_at", ()
     )
@@ -5973,25 +5972,22 @@ def list_chat_messages_for_threads(
         conn.close()
 
 
-# One long-lived read connection per database for app-setting lookups. A tool launch reads about a
-# dozen settings, and a fresh connection per read (open, three PRAGMAs, close, all under the
-# process-wide sqlite_gate) cost 1-3 ms each. Every autocommit SELECT starts a new read
-# transaction, so writes from any connection or process are seen by the next read.
+# One read connection per database for settings: a tool launch reads ~10, and a fresh connection cost
+# 1-3 ms each. Each autocommit SELECT is its own read transaction, so every committed write is seen.
 class _SettingsReader(NamedTuple):
     identity: tuple[int, int]
     conn: sqlite3.Connection
-    # Held while a query runs: one connection serves one query at a time.
     busy: threading.Lock
 
 
 _settings_readers: dict[Path, _SettingsReader] = {}
-# Guards the map only; queries run outside it, so a database waiting on a lock stalls no other.
+# The map only: a query runs outside it, so one locked database stalls no other.
 _settings_reader_lock = threading.Lock()
 _settings_generation = 0
 
 
 def _reset_settings_readers_after_fork() -> None:
-    # A child must not reuse, close or free the parent's handles; it opens its own.
+    # Never reuse, close or free the parent's handles in a child.
     global _settings_reader_lock, _settings_readers
     _inherited_settings_readers.extend(_settings_readers.values())
     _settings_readers = {}
@@ -6009,13 +6005,11 @@ def _db_file_identity(path: Path) -> tuple[int, int] | None:
     except OSError:
         return None
     if not metadata.st_ino:
-        # No file id here, so a replaced database could not be told apart: read uncached.
-        return None
+        return None  # no file id: a replaced database could not be told apart
     return (metadata.st_dev, metadata.st_ino)
 
 
 def _close_reader(reader: _SettingsReader) -> None:
-    # Waits out a query in flight on this connection; later borrowers see it closed and read once.
     with reader.busy:
         try:
             reader.conn.close()
@@ -6028,7 +6022,7 @@ def close_settings_readers() -> None:
     with _settings_reader_lock:
         readers = list(_settings_readers.values())
         _settings_readers.clear()
-        _settings_generation += 1  # a reader opening right now is used once, never published
+        _settings_generation += 1  # a reader opening now is never published
     for reader in readers:
         _close_reader(reader)
 
@@ -6043,22 +6037,21 @@ def _read_once(sql: str, params: tuple | list) -> list:
 
 def _settings_reader(db_path: Path) -> _SettingsReader | None:
     if get_connection is not _get_connection:
-        return None  # a substituted factory (tests) is read through, never cached
+        return None  # substituted factory (tests): uncached
     identity = _db_file_identity(db_path)
     with _settings_reader_lock:
         reader = _settings_readers.get(db_path)
         if reader is not None and reader.identity == identity:
             return reader
-        # The database was replaced or removed (restore, account reset): never read a stale file.
         stale = _settings_readers.pop(db_path, None)
         generation = _settings_generation
     if stale is not None:
         _close_reader(stale)
-    conn = get_connection(check_same_thread = False)  # creates the database on first use
+    conn = get_connection(check_same_thread = False)
     opened = _db_file_identity(db_path)
     reader = _SettingsReader(opened, conn, threading.Lock())
     with _settings_reader_lock:
-        # Published only if the file did not move while it opened and no close ran meanwhile.
+        # Not if the file moved while opening or a close ran meanwhile.
         if opened is not None and identity in (None, opened) and generation == _settings_generation:
             current = _settings_readers.setdefault(db_path, reader)
         else:
@@ -6070,17 +6063,14 @@ def _settings_reader(db_path: Path) -> _SettingsReader | None:
 
 def _shared_read_rows(sql: str, params: tuple | list) -> list:
     db_path = studio_db_path()
-    # The account-retirement check get_connection runs before every fresh connection.
-    ensure_account_dir(db_path.parent)
+    ensure_account_dir(db_path.parent)  # get_connection's account-retirement check
     reader = _settings_reader(db_path)
     if reader is None or not reader.busy.acquire(blocking = False):
-        # Another read is using the connection: a one-shot read, as before the cache, so readers never queue.
         return _read_once(sql, params)
     try:
         return reader.conn.execute(sql, params).fetchall()
     except sqlite3.Error as exc:
-        # Never keep a failed handle: closed by close_settings_readers between the lookup and this
-        # query, or broken. A busy database raises as an uncached read would; anything else is retried once.
+        # Never reuse a failed handle. Busy raises as an uncached read would; anything else retries once.
         _drop_reader(db_path, reader)
         if isinstance(exc, sqlite3.OperationalError):
             raise
@@ -6094,7 +6084,7 @@ def _drop_reader(db_path: Path, reader: _SettingsReader) -> None:
         if _settings_readers.get(db_path) is reader:
             del _settings_readers[db_path]
     try:
-        reader.conn.close()  # the caller holds reader.busy
+        reader.conn.close()
     except Exception:  # noqa: BLE001
         pass
 

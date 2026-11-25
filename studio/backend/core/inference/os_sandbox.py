@@ -1453,8 +1453,7 @@ def prepare_tool_launch(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
         from utils.scan_memo import scan_memo
     except ImportError:  # outside the backend (probe child, installer) there is no memo
         return _prepare_tool_launch(plan)
-    # One scope per launch: the grant-root checks re-read the HF cache homes and scan folders
-    # several times while building a single policy; nothing is kept across launches.
+    # One scope per launch: the grant-root checks re-read HF homes and scan folders; nothing carries over.
     with scan_memo():
         return _prepare_tool_launch(plan)
 

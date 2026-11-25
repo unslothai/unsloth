@@ -292,7 +292,7 @@ class EgressProxy:
     def close(self) -> None:
         with self._lock:
             if self._closed:
-                return  # one wake-up only: a second could reach whatever reused the port
+                return  # a second wake-up could reach whatever reused the port
             self._closed = True
             sockets = list(self._sockets)
             self._sockets.clear()
@@ -302,9 +302,7 @@ class EgressProxy:
                 sock.shutdown(socket.SHUT_RDWR)
             except OSError:
                 pass
-        # Wake the accept loop now: closing the listener does not interrupt a blocked accept(), so
-        # every proxied call otherwise waited out the 0.25 s accept timeout here. _track refuses the
-        # wake-up connection once _closed is set.
+        # Closing the listener does not interrupt accept(), which waited out its 0.25 s timeout.
         self._wake_listener()
         self._listener.close()
         self._thread.join(timeout = 2)

@@ -691,7 +691,7 @@ def _runtime_read_paths(
         candidates.extend(os.path.join(prefix, "lib", multiarch) for prefix in prefixes)
 
     selected: list[str] = []
-    # Exact duplicates only (sys.prefix == sys.exec_prefix in most venvs): a repeat can only be skipped below.
+    # sys.prefix == sys.exec_prefix in most venvs.
     for candidate in dict.fromkeys(candidates):
         if not candidate or not os.path.isabs(candidate):
             continue
