@@ -167,14 +167,18 @@ def test_select_module_never_takes_a_model_offloaded_denoiser(monkeypatch):
     log.setLevel(logging.DEBUG)
     # Even with the offloaded env on (the default), and whether or not the hook was seen.
     assert bg.select_module(pipe, **kwargs, model_offload = True, logger = log) is None
-    assert bg.select_module(pipe, **{**kwargs, "denoiser_hooked": False}, model_offload = True) is None
+    assert (
+        bg.select_module(pipe, **{**kwargs, "denoiser_hooked": False}, model_offload = True) is None
+    )
     assert len(records) == 1 and "model offload" in records[0]
     # Default (False) keeps today's behaviour.
     assert bg.select_module(pipe, **kwargs) is pipe.transformer
     assert bg.select_module(pipe, **kwargs, model_offload = False) is pipe.transformer
     # Another gate refusing first logs nothing about model offload.
     records.clear()
-    assert bg.select_module(pipe, **{**kwargs, "gguf": True}, model_offload = True, logger = log) is None
+    assert (
+        bg.select_module(pipe, **{**kwargs, "gguf": True}, model_offload = True, logger = log) is None
+    )
     assert records == []
 
 
