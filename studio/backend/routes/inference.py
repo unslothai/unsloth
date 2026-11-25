@@ -7013,18 +7013,20 @@ def _strip_tool_xml_for_display(
         seg = _strip_glm_calls(seg, final = is_last)
         seg = _strip_function_xml_calls(seg, final = is_last)
         if is_last:
-            spans = _code_spans(seg)
+            spans = None
 
             def _keep_example(m) -> str:
                 # A rehearsal the parser does not promote (inactive name, or quoted in code) is text: deleting it would
                 # empty the turn or a code block. Matching it still keeps markup quoted in its arguments from other arms.
+                nonlocal spans
                 name = m.groupdict().get("reh")
-                if name is not None and (
-                    not _markerless_promotable(name, enabled_tool_names)
-                    or _in_code(spans, m.start())
-                ):
+                if name is None:
+                    return ""
+                if not _markerless_promotable(name, enabled_tool_names):
                     return m.group(0)
-                return ""
+                if spans is None:
+                    spans = _code_spans(seg)
+                return m.group(0) if _in_code(spans, m.start()) else ""
 
             return _TOOL_XML_RE.sub(_keep_example, seg)
         return _TOOL_XML_CLOSED_RE.sub("", seg)
