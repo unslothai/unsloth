@@ -7025,8 +7025,10 @@ def _strip_tool_xml_keeping_examples(
                 brace = seg.find("{", m.end("reh"), min(m.end(), span_end))
                 body_end = _balanced_json_span(seg[:span_end], brace) if brace >= 0 else None
                 if body_end is None and span_end >= len(seg):
-                    # Still arriving in an open block: showing what follows would put the example ahead of sent text.
-                    out.append(seg[pos : m.start()])
+                    # Still arriving in an open block: keep it as it streams, or drop the rest if it holds a call.
+                    rest = seg[m.end("reh") :]
+                    signal = any(sig in rest for sig in TOOL_XML_SIGNALS if sig != "[ARGS]")
+                    out.append(seg[pos : m.start()] if signal else seg[pos:])
                     return "".join(out)
                 body = seg[brace + 1 : body_end] if body_end is not None else ""
                 # A rehearsal nested in the body is in code too, so its [ARGS] is never run.
@@ -7125,11 +7127,12 @@ _PENDING_MENTION_MAX_CHARS = 256
 
 
 def _pending_inline_rehearsal_cut(text: str, enabled_tool_names) -> int:
-    """Where a promotable rehearsal starts in an inline code span still open on the last line, else -1: its closing
-    backticks turn a removed rehearsal into a kept example, which would insert text before what the stream already
-    sent. A rehearsal the strip never removes passes through, so holding it would take back what was sent."""
+    """Where a promotable rehearsal, or a tail that may still become one, starts in an inline code span still open on
+    the last line, else -1: its closing backticks turn a removed rehearsal into a kept example, which would insert
+    text before what the stream already sent. A rehearsal the strip never removes passes through, so holding it would
+    take back what was sent; a tail is held before it is sent, so releasing it only appends."""
     line = text.rfind("\n") + 1
-    if text.find("[ARGS]", line) < 0:
+    if text.find("`", line) < 0:
         return -1
     open_end = open_len = 0
     i = line
@@ -7147,20 +7150,32 @@ def _pending_inline_rehearsal_cut(text: str, enabled_tool_names) -> int:
     from core.inference.tool_call_parser import _mask_blocked_bodies
     from core.tool_healing import _markerless_promotable
 
-    masked = None
-    for m in _PENDING_REHEARSAL_RE.finditer(text, open_end):
-        if not _markerless_promotable(m.group(1), enabled_tool_names):
-            continue
-        # The strip leaves reasoning and blocked-call bodies alone, so a rehearsal there is never removed.
-        if masked is None:
-            masked = _mask_blocked_bodies(text, enabled_tool_names, think = True)[0]
-        if len(masked) == len(text) and masked[m.start()] != "\ue000":
-            return m.start()
-    return -1
+    starts = [
+        m.start()
+        for m in _PENDING_REHEARSAL_RE.finditer(text, open_end)
+        if _markerless_promotable(m.group(1), enabled_tool_names)
+    ]
+    tail = _PENDING_REHEARSAL_TAIL_RE.search(text, open_end)
+    if tail is not None and (
+        _markerless_promotable(tail.group(1), enabled_tool_names)
+        if tail.group(2)
+        else enabled_tool_names is None
+        or any(n.startswith(tail.group(1)) for n in enabled_tool_names)
+    ):
+        starts.append(tail.start())
+    if not starts:
+        return -1
+    # The strip leaves reasoning and blocked-call bodies alone, so a rehearsal there is never removed.
+    masked = _mask_blocked_bodies(text, enabled_tool_names, think = True)[0]
+    if len(masked) != len(text):
+        return -1
+    return next((s for s in starts if masked[s] != "\ue000"), -1)
 
 
 # Call-shaped only: the strip removes ``NAME[ARGS]{``, never a bare ``NAME[ARGS]`` mention.
 _PENDING_REHEARSAL_RE = _re.compile(r"\b([\w-]+)\[ARGS\]\s*\{")
+# A name, or a name and part of ``[ARGS]`` before its ``{``, that the next chunk could still make call-shaped.
+_PENDING_REHEARSAL_TAIL_RE = _re.compile(r"\b([\w-]+)(\[(?:A(?:R(?:G(?:S(?:\]\s*)?)?)?)?)?)?\Z")
 
 
 def _pending_mention_cut(text: str, enabled_tool_names = None) -> int:

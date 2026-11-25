@@ -120,7 +120,7 @@ def test_streamed_inline_example_is_append_only(text):
         auto_heal_tool_calls = True, enabled_tool_names = ENABLED
     )
     shown = ""
-    for i in range(text.index("[ARGS]") + len("[ARGS]"), len(text) + 1):
+    for i in range(1, len(text) + 1):
         out = strip.strip(routes_inference._hold_pending_mention(text[:i], True, ENABLED))
         assert out.startswith(shown)
         shown = out
@@ -154,6 +154,8 @@ def test_streamed_unpromotable_inline_example_is_never_held(text):
         ["Use `search", "[ARGS] syntax", "` here."],
         ["<think>Try `search[AR", "GS]{} for this", "` then answer.</think>Done."],
         ['python[ARGS]{"code":"Use `search', "[ARGS]{", '}` here."}'],
+        ["Use `search", "[ARGS]{", "}` here."],
+        ["Use `sea", "rch[AR", "GS]{", "}` and `searching` here."],
     ],
 )
 def test_streamed_chunks_never_rewind(chunks):
