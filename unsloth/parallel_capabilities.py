@@ -112,8 +112,7 @@ def _rl(q):
     return q.trainer in ("dpo", "grpo", "other_rl")
 
 
-# MoE families whose router auxiliary loss Ulysses cp forms from statistics summed over the cp group
-# (context_parallel._cp_load_balancing_loss; UNSLOTH_CP_ROUTER_AUX=0 turns it off and refuses again).
+# UNSLOTH_CP_ROUTER_AUX=0 turns cp router aux off (refused again).
 CP_ROUTER_AUX_FAMILIES = ("qwen3_moe",)
 
 
@@ -972,7 +971,6 @@ _MOE_COMPILE = _GLOO + "test_moe_block_compile_under_cp_is_compile_clean"
 _MOE_CP_GC = "test_moe_under_cp_with_unsloth_checkpointing_matches_one_process"
 _MOE_CP_GC_COMPILE = "test_moe_block_compile_under_cp_with_unsloth_checkpointing_is_compile_clean"
 _MOE_PP = "tests/test_pp_moe_aux_gloo.py::test_pp2_moe_aux_matches_gradient_accumulation"
-# Router aux loss on under Ulysses cp: statistics summed over the cp group (context_parallel._cp_load_balancing_loss).
 _MOE_CP_AUX = "tests/test_cp_router_aux_gloo.py::test_router_aux_loss_under_cp_matches_one_process"
 _MOE_CP_AUX_GC = (
     "lora+experts",

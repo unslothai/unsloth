@@ -938,8 +938,7 @@ def test_moe_rows_cover_family_precision_aux_and_mode():
     ):
         with pytest.raises(NotImplementedError, match = why):
             caps.check(_q(cp = 2, cp_backend = "ulysses", **{**moe_q, **extra}))
-    # Ulysses cp forms the Qwen3-MoE router aux loss from statistics summed over the cp group
-    # (tests/test_cp_router_aux_gloo.py); other families, HF checkpointing and the kill switch stay refused.
+    # Qwen3-MoE aux under Ulysses cp is supported; other families, HF checkpointing and the kill switch stay refused.
     aux_cp = _q(cp = 2, cp_backend = "ulysses", router_aux_loss = True, **moe_q)
     assert caps.cell_status(aux_cp)[0] == "supported"
     caps.check(aux_cp)

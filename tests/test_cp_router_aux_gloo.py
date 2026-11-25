@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""The MoE router auxiliary (load balancing) loss under Ulysses context parallel, through SFTTrainer on a gloo CPU
-world, vs the same script in one process: losses (CE + coef x aux), grad norms, every gradient of the first
-optimizer step (router, attention and expert LoRA, or every weight) and the weights after the run.
-
-The loss is E x sum_e f_e P_e over the whole micro-batch (f: routed fraction, P: mean routing probability, both
-over every layer and valid token). Each cp rank sees only its shard's router logits, so context parallel sums
-the per-expert counts, probability sums and row counts over the cp group and forms the loss from those
-(context_parallel._cp_load_balancing_loss). Harness: tests/test_parallel_cp_compose_gloo.py (production env,
-mesh, sharding, token count and gradient reduction; nothing patched open)."""
+"""MoE router aux loss under Ulysses cp (statistics summed over the cp group) vs one process, via SFTTrainer on gloo."""
 
 import os
 import sys
@@ -53,10 +45,7 @@ _NO_FUSED_FORWARD = {"UNSLOTH_FUSED_FORWARD": "0"}
     ],
 )
 def test_router_aux_loss_under_cp_matches_one_process(mode, world, env, kw):
-    """cp 2 (alone, beside DDP dp 2, or native FSDP2 over dp x cp) equals one process accumulating the same
-    micro-batches (the aux loss is per micro-batch, so dp replicas count as accumulation steps) with the router
-    aux loss on (coef 0.5): padded rows, an empty shard and a cp-appended token included. The aux enters through
-    stock TRL's compute_loss, or (hf_loss, the GPU route) the model forward, rewritten by zoo or plain."""
+    """The aux loss is per micro-batch, so dp replicas count as accumulation steps in the reference."""
     cp, dp = 2, world // 2
     ref_kw = {k: v for k, v in kw.items() if k != "gc"}  # checkpointing does not change the math
     ref_env = {k: v for k, v in env.items() if k == "UNSLOTH_FUSED_FORWARD"}
@@ -64,13 +53,11 @@ def test_router_aux_loss_under_cp_matches_one_process(mode, world, env, kw):
     (ref,) = _spawn("train", 1, ref_env, router_aux = True, **_AUX, **ref_args)
     (off,) = _spawn("train", 1, ref_env, **{**_AUX, "aux_coef": None}, **ref_args)
     assert "error" not in off, off
-    # The aux term moves the loss: a run that dropped it could not match.
     assert ref["losses"] != pytest.approx(off["losses"], rel = 1e-4), (ref["losses"], off["losses"])
     results = _spawn("train", world, env, bs = 2, cp = cp, mode = mode, router_aux = True, **_AUX, **kw)
     _same_rows(results, ref, what = (mode, world, env, kw))
     for rank, res in enumerate(results):
         assert "error" not in res, (rank, res.get("error"), res.get("trace"))
-        # Engaged: the cp statistics ran, scaled for the route the aux loss enters by.
         plain = kw.get("hf_loss") and not res["aux_scaler"]
         assert res["cp_aux_calls"] > 0, res["cp_aux_calls"]
         assert res["router_aux_scale"] == (1 / cp if plain else 1.0), (
@@ -91,8 +78,7 @@ def test_router_aux_loss_under_cp_matches_one_process(mode, world, env, kw):
 
 
 def test_router_aux_loss_under_cp_with_reentrant_checkpointing_is_refused():
-    """Reentrant checkpointing runs the layers under no_grad, so the router logits carry no graph: refused at the
-    first forward instead of training without the aux gradient."""
+    """Reentrant checkpointing runs under no_grad, so the aux loss would get no gradient."""
     for res in _spawn("train", 2, bs = 2, cp = 2, router_aux = True, gc = "unsloth", **_AUX):
         error = res.get("error") or ""
         assert "reentrant checkpointing would drop its gradient" in error, error or res["losses"]

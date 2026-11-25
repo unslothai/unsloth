@@ -132,9 +132,7 @@ def _packed_row(batch, kind, row):
     }
 
 
-# Right padded rows (attention_mask, pad labels -100): "right" leaves every cp 2 shard some real tokens, "short"
-# leaves none in the second half of the batch (one shard without a valid token); "odd" drops the last column, so
-# context parallel appends a token to reach the cp multiple (no attention_mask: only the appended one is padding).
+# "right": padded rows; "short": one cp shard without a valid token; "odd": cp appends a token to reach the cp multiple.
 _PAD_LENGTHS = {"right": (16, 11, 7, 13, 9, 16, 12, 5), "short": (6, 8, 5, 3, 7, 2, 8, 4)}
 
 
@@ -556,8 +554,7 @@ def _case_train(
             return torch.utils.data.SequentialSampler(self.train_dataset)
 
     if hf_loss:
-        # The GPU route: Unsloth's SFT compute_loss hands nll to Trainer.compute_loss, so the model forward
-        # adds the router aux loss to its own loss.
+        # GPU route: the model forward adds the router aux loss.
         SequentialSFT.compute_loss = transformers.Trainer.compute_loss
 
     grads, query = {}, None
@@ -1471,9 +1468,7 @@ def test_moe_block_compile_under_cp_is_compile_clean(mode):
     "config_flag", [True, False], ids = ["output_router_logits", "trl_default_coef"]
 )
 def test_moe_with_router_aux_loss_under_cp_is_refused(config_flag):
-    """With UNSLOTH_CP_ROUTER_AUX=0 (cp does not form the loss over the group): refused before the split, also
-    when only TRL's default router_aux_loss_coef would turn the loss on. The loss formed over the cp group:
-    tests/test_cp_router_aux_gloo.py."""
+    """UNSLOTH_CP_ROUTER_AUX=0: refused before the split, also via TRL's default router_aux_loss_coef."""
     for res in _spawn(
         "train",
         2,

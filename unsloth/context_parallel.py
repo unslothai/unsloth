@@ -454,17 +454,13 @@ def _hybrid_config_blocker(model) -> Optional[str]:
     return None
 
 
-# MoE families (parallel_capabilities.CP_ROUTER_AUX_FAMILIES) whose CausalLM forward adds transformers'
-# load_balancing_loss_func and whose cp run matches one process with it on (tests/test_cp_router_aux_gloo.py).
-# Under context parallel each rank sees its shard's router logits only; _cp_load_balancing_loss forms the loss
-# from statistics summed over the cp group instead.
+# Each cp rank sees only its shard's router logits: _cp_load_balancing_loss sums the statistics over the cp group.
 def _cp_router_aux_enabled() -> bool:
     import os
     return os.environ.get("UNSLOTH_CP_ROUTER_AUX", "1") != "0"
 
 
 def _causal_lm(model):
-    # The module whose forward adds the router auxiliary loss, under PEFT / DDP / compile wrapping.
     if not isinstance(model, torch.nn.Module):
         return None
     for module in model.modules():
@@ -474,8 +470,7 @@ def _causal_lm(model):
 
 
 def _forward_functions(owner):
-    """The installed forward of `owner`, the functions it wraps, and the module-level *_forward it calls (Unsloth
-    Zoo's compiled CausalLM forward delegates to `<Class>_forward`)."""
+    """Zoo's compiled CausalLM forward delegates to a module-level `<Class>_forward`."""
     found, todo = (
         [],
         [(owner.__dict__.get("forward"), 1), (getattr(type(owner), "forward", None), 1)],
@@ -501,8 +496,7 @@ def _forward_functions(owner):
 
 
 def _forward_globals(owner):
-    # The globals the CausalLM forward resolves load_balancing_loss_func in (a zoo rewrite compiles its own;
-    # TRL's fused-head forward names it without defining it there, and leaves the aux loss to the original).
+    # TRL's fused-head forward names load_balancing_loss_func without defining it: skip such globals.
     for fn in _forward_functions(owner):
         if "load_balancing_loss_func" in fn.__code__.co_names and callable(
             fn.__globals__.get("load_balancing_loss_func")
@@ -512,8 +506,7 @@ def _forward_globals(owner):
 
 
 def _cp_router_aux_target(model):
-    """(globals, original load_balancing_loss_func) the model's CausalLM forward calls, for a family in
-    _CP_ROUTER_AUX_FAMILIES whose function is the statistics form (pp_native's check); else None."""
+    """(globals, original load_balancing_loss_func) of the CausalLM forward, or None."""
     if not _cp_router_aux_enabled():
         return None
     inner = _causal_lm(model)
@@ -541,8 +534,7 @@ def _cp_router_aux_target(model):
 
 
 class _SumOverGroup(torch.autograd.Function):
-    """All-reduce (sum) whose backward sums the incoming gradients too: every cp peer forms the same loss from
-    the summed statistics, so each shard's probabilities receive the gradient of all peers' terms."""
+    """All-reduce (sum) whose backward also sums: each shard gets the gradient of all peers' terms."""
 
     @staticmethod
     def forward(ctx, x, group):
@@ -612,10 +604,7 @@ def _cp_load_balancing_loss(original):
 
 
 def _router_aux_scale(trainer, size: int) -> float:
-    """Every cp peer returns the whole group's loss (summed backward). Zoo's rewritten forward scales it by the
-    shard's share of the token count, and stock TRL >= 1.15 (the CPU route) adds it outside the token loss the
-    trainer multiplies by the world size: either way the peers' terms average to one process. A plain forward
-    adds it inside that multiplied loss, which would count it once per peer: divide by the cp size there."""
+    """Zoo's forward and TRL >= 1.15 already average peers; a plain forward would count it per peer: 1 / cp."""
     from .models.pp_env import _compute_loss_adds_router_aux
 
     inner = _causal_lm(getattr(trainer, "model", None))
@@ -630,8 +619,7 @@ def _router_aux_scale(trainer, size: int) -> float:
 
 
 def _install_cp_router_aux(trainer, manager) -> None:
-    """Under Ulysses cp, a family in _CP_ROUTER_AUX_FAMILIES forms the router auxiliary loss from statistics summed
-    over the cp group (equal to one process on the whole batch); nothing for other runs."""
+    """Under Ulysses cp, form the router aux loss over the cp group; no-op otherwise."""
     if not getattr(trainer, "_unsloth_cp_router_aux", False):
         return
     target = _cp_router_aux_target(getattr(trainer, "model", None))
