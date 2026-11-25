@@ -126,7 +126,11 @@ def test_llada_projects_only_the_active_block(monkeypatch):
     rows = []
     linear = torch.nn.functional.linear
 
-    def observe(inputs, weight, bias = None):
+    def observe(
+        inputs,
+        weight,
+        bias = None,
+    ):
         if weight is model.head.weight:
             rows.append(inputs.shape[1])
         return linear(inputs, weight, bias)
