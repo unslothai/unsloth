@@ -113,6 +113,7 @@ test("character bound holds and an oversized text is answered but not kept", () 
     assert.deepEqual(extractCodeFences(big(i)), reference(big(i)));
     assert.ok(fenceCacheStats().chars <= FENCE_CACHE_MAX_CHARS);
   }
+  assert.ok(fenceCacheStats().keys.length > 0);
   assert.ok(fenceCacheStats().keys.length < 6);
   clearFenceCache();
   const huge = `\`\`\`\n${"y".repeat(FENCE_CACHE_MAX_CHARS)}\n\`\`\``;
@@ -126,6 +127,7 @@ test("characters held match the entries after evictions", () => {
     extractCodeFences(`\`\`\`ts\nconst v${i} = ${"z".repeat(i % 97)};\n\`\`\``);
   }
   const { keys, chars } = fenceCacheStats();
+  assert.equal(keys.length, FENCE_CACHE_MAX_ENTRIES);
   const expected = keys.reduce(
     (sum, key) =>
       sum +
@@ -148,8 +150,14 @@ test("a reopened chat (new message objects, same texts) lists the same files", (
       content: [{ type: "text", text }],
     }));
   const first = collectChatFiles(thread());
+  const held = fenceCacheStats();
+  assert.deepEqual(
+    held.keys,
+    CORPUS.filter((text) => /```|~~~|^(?: {4}|\t)/m.test(text)),
+  );
   const reopened = collectChatFiles(thread());
   assert.deepEqual(reopened, first);
+  assert.deepEqual(fenceCacheStats(), held);
   clearFenceCache();
   assert.deepEqual(collectChatFiles(thread()), first);
   assert.ok(first.length > 10);
