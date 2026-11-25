@@ -46302,24 +46302,77 @@ class _StopSequenceFilter:
         return out
 
 
+class _ThinkAwareStops:
+    """Stops for visible text only: the provider proxy relays thinking as <think>...</think> in
+    content, and a speaker label quoted in reasoning must not end the reply."""
+
+    _MARKERS = {False: "<think>", True: "</think>"}
+
+    def __init__(self, stops: Any) -> None:
+        self.stop = _StopSequenceFilter(stops)
+        self.thinking = False
+        self.tag = ""  # a possible marker split across chunks
+
+    @property
+    def hit(self) -> Optional[str]:
+        return self.stop.hit
+
+    @property
+    def held(self) -> str:
+        return self.stop.held + self.tag
+
+    def feed(self, text: str) -> str:
+        text, self.tag, out = self.tag + text, "", []
+        while text and self.stop.hit is None:
+            marker = self._MARKERS[self.thinking]
+            index = text.find(marker)
+            if index < 0:
+                keep = next(
+                    (
+                        n
+                        for n in range(min(len(marker) - 1, len(text)), 0, -1)
+                        if marker.startswith(text[-n:])
+                    ),
+                    0,
+                )
+                body, self.tag = text[: len(text) - keep], text[len(text) - keep :]
+                out.append(body if self.thinking else self.stop.feed(body))
+                break
+            body, text = text[:index], text[index + len(marker) :]
+            if self.thinking:
+                out.append(body + marker)
+            else:
+                out.append(self.stop.feed(body))
+                if self.stop.hit is not None:
+                    break
+                out.append(self.stop.flush() + marker)
+            self.thinking = not self.thinking
+        return "".join(out)
+
+    def flush(self) -> str:
+        out, self.tag = self.stop.flush() + self.tag, ""
+        return out
+
+
 async def _enforce_stop_sequences(gen, stops: list[str], model: str):
     """Applies ``stops`` to the OpenAI SSE lines of a provider that was not sent them."""
-    stop = _StopSequenceFilter(stops)
+    stop = _ThinkAwareStops(stops)
     last_id = None
 
-    def held_chunk() -> Optional[str]:
-        held = stop.flush()
-        if not held:
-            return None
+    def text_chunk(text: str) -> str:
         return "data: " + json.dumps(
             {
                 "id": last_id or f"chatcmpl-{uuid.uuid4().hex}",
                 "object": "chat.completion.chunk",
                 "created": int(time.time()),
                 "model": model,
-                "choices": [{"index": 0, "delta": {"content": held}, "finish_reason": None}],
+                "choices": [{"index": 0, "delta": {"content": text}, "finish_reason": None}],
             }
         )
+
+    def held_chunk() -> Optional[str]:
+        held = stop.flush()
+        return text_chunk(held) if held else None
 
     try:
         async for line in gen:
@@ -46344,6 +46397,12 @@ async def _enforce_stop_sequences(gen, stops: list[str], model: str):
             delta = choice.get("delta") if isinstance(choice.get("delta"), dict) else None
             if delta is not None and isinstance(delta.get("content"), str):
                 delta["content"] = stop.feed(delta["content"])
+            tool_boundary = chunk.get("_toolEvent") is not None or bool(
+                (delta or {}).get("tool_calls")
+            )
+            if tool_boundary and stop.held and stop.hit is None:
+                # Text before a tool goes out before it: the chat records where in the reply each call came.
+                yield text_chunk(((delta or {}).pop("content", None) or "") + stop.flush())
             if choice.get("finish_reason") is not None and stop.held:
                 # The reply ended partway into a stop sequence, so what was held back is text.
                 choice["delta"] = {
