@@ -185,8 +185,11 @@ HF_HUB="${HF_HUB:-$hf_raw}"
 HF_HUB_MOUNT=()
 if [ "$HF_HUB" != "$HF_CACHE/hub" ]; then
     HF_HUB_MOUNT=(-v "$HF_HUB":/workspace/.cache/huggingface/hub)
-    # only a separate hub: the default one is left for the container to create, group root writable
-    mkdir -p "$HF_HUB"
+    # The default hub is left for the container to create, group root writable; one made here is opened likewise.
+    if [ ! -d "$HF_HUB" ]; then
+        mkdir -p "$HF_HUB"
+        HF_HUB_MOUNT+=(-e UNSLOTH_HF_HUB_CREATED=1)
+    fi
 fi
 TRITON_CACHE="${TRITON_CACHE_DIR:-$HOME/.cache/unsloth-triton}"
 WORK_DIR="${UNSLOTH_WORKDIR:-$PWD}"

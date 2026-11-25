@@ -92,3 +92,12 @@ def test_home_relative_paths_are_expanded(tmp_path):
     }
     assert (home / "models" / "hub").is_dir()
     assert not (tmp_path / "~").exists()
+
+
+def test_only_a_hub_created_here_is_flagged(tmp_path):
+    hub = tmp_path / "models" / "hub"
+    _mounts(tmp_path, HF_HUB_CACHE = str(hub))
+    assert "UNSLOTH_HF_HUB_CREATED=1" in (tmp_path / "argv").read_text(encoding = "utf-8")
+    (tmp_path / "bin").rename(tmp_path / "bin1")
+    _mounts(tmp_path, HF_HUB_CACHE = str(hub))
+    assert "UNSLOTH_HF_HUB_CREATED" not in (tmp_path / "argv").read_text(encoding = "utf-8")

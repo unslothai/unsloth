@@ -85,7 +85,7 @@ def mount_points():
 
 
 def open_root(root):
-    """A fresh (empty) mount root gets the group root rwX a handed-over entry has, so the tool sandbox can fill it."""
+    """A hub run.sh just created gets the group root rwX a handed-over entry has, so the tool sandbox can fill it."""
     try:
         fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
     except OSError:
@@ -110,7 +110,7 @@ for root in [top, *sorted(nested)]:
         continue
     if owner == 0:
         continue
-    if root != top:
+    if root == os.path.join(top, "hub") and os.environ.get("UNSLOTH_HF_HUB_CREATED") == "1":
         open_root(root)
     for path, dirs, files, dfd in os.fwalk(root, follow_symlinks = False):
         dirs[:] = [d for d in dirs if os.path.join(path, d) not in nested]

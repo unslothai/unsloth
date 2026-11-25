@@ -31,8 +31,9 @@ def _stub(path, body):
     os.chmod(path, os.stat(path).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
 
 
-def _boot(entrypoint, tmp_path, hf_home, bindir, until):
+def _boot(entrypoint, tmp_path, hf_home, bindir, until, **extra):
     env = {
+        **extra,
         "PATH": f"{bindir}:/usr/bin:/bin",
         "HOME": str(tmp_path),
         "HF_HOME": str(hf_home),
@@ -267,7 +268,8 @@ def test_a_mount_inside_the_cache_is_handed_to_its_own_owner(entrypoint, tmp_pat
 @pytest.mark.skipif(
     os.name == "posix" and os.geteuid() == 0, reason = "the recording sweep needs a non-root uid"
 )
-def test_an_empty_mounted_hub_is_opened_to_group_root(entrypoint, tmp_path):
+@pytest.mark.parametrize("created", [True, False])
+def test_only_a_hub_run_sh_created_is_opened_to_group_root(entrypoint, tmp_path, created):
     hf_home = tmp_path / "hf"
     hub = hf_home / "hub"
     hub.mkdir(parents = True)
@@ -276,7 +278,10 @@ def test_an_empty_mounted_hub_is_opened_to_group_root(entrypoint, tmp_path):
     mountinfo.write_text(f"1 0 0:1 / / rw - x x rw\n2 1 0:2 / {hub} rw - x x rw\n")
     bindir, calls = _recording_python(tmp_path, mountinfo)
 
-    _boot(entrypoint, tmp_path, hf_home, bindir, lambda: str(hub) in _logged(calls))
+    extra = {"UNSLOTH_HF_HUB_CREATED": "1"} if created else {}
 
-    assert _logged(calls) == {str(hub): "-1:0"}
-    assert stat.S_IMODE(os.stat(hub).st_mode) == 0o775
+    _boot(entrypoint, tmp_path, hf_home, bindir, lambda: str(hub) in _logged(calls), **extra)
+
+    # an existing empty hub may be shared through its group: left alone
+    assert _logged(calls) == ({str(hub): "-1:0"} if created else {})
+    assert stat.S_IMODE(os.stat(hub).st_mode) == (0o775 if created else 0o755)
