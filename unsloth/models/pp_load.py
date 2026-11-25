@@ -133,12 +133,19 @@ def install_placeholder_aware_lora_init():
 
 
 def _split_for(model, mesh, schedule, config):
-    from .pp_native import PPConfig, _find_parts, _refuse_unsupported, derive_pp_split
+    from .pp_native import (
+        PPConfig,
+        _find_parts,
+        _refuse_unsupported,
+        check_multi_stage_dp,
+        derive_pp_split,
+    )
     from .pp_schedules import resolve_stages_per_rank, schedule_spec, stage_indices
 
     config = config or PPConfig()
     spec = schedule_spec(schedule)
     v = resolve_stages_per_rank(spec, config.stages_per_rank)
+    check_multi_stage_dp(mesh, v)  # apply_pipeline_parallel would refuse this split after the read
     pp, rank = mesh.size(), mesh.get_local_rank()
     parts = _find_parts(model)
     if parts.ple is not None:
@@ -317,13 +324,19 @@ def _pipeline_loading(
     """pipeline_sharded_loading; `auto`: only checkpoints larger than the GPU (UNSLOTH_PP_SIZE), `pp_mesh` then
     a callable returning it (read at the first from_pretrained)."""
     from .pp_schedules import schedule_spec
-    from .tp_native import _sharded_from_pretrained
+    from .tp_native import _sharded_from_pretrained, refuse_hf_distributed_kwargs
 
-    schedule_spec(schedule)  # refuse an unknown schedule before loading anything
+    spec = schedule_spec(schedule)  # refuse an unknown schedule before loading anything
     if pp_mesh is None:
         pp_mesh = _default_load_mesh()
     if not callable(pp_mesh) and pp_mesh.ndim != 1:
         raise ValueError("Unsloth: pipeline_sharded_loading takes a 1-D pp mesh (pass mesh['pp']).")
+    from .pp_native import PPConfig, check_multi_stage_dp
+    from .pp_schedules import resolve_stages_per_rank
+
+    stages = resolve_stages_per_rank(spec, (config or PPConfig()).stages_per_rank)
+    if not callable(pp_mesh):
+        check_multi_stage_dp(pp_mesh, stages)
     state = {
         "mesh": pp_mesh,
         "plan": (schedule, config),
@@ -333,6 +346,15 @@ def _pipeline_loading(
         "prequantized_hint": _QUANTIZED_HINT,
         "mesh_hint": "Unsloth: pipeline_sharded_loading takes a 1-D pp mesh (pass mesh['pp']).",
         "auto": auto,
+        # A pre-quantized bnb 4-bit checkpoint whose tensors transformers converts on load (Inkling 2): its own
+        # load, per stage, as for a quantize-on-load.
+        "prequantized_fallback": lambda original,
+        cls,
+        name,
+        args,
+        kwargs,
+        mesh,
+        live: _load_quantizing(original, cls, name, args, kwargs, live),
     }
     from transformers import PreTrainedModel
 
@@ -344,6 +366,13 @@ def _pipeline_loading(
         quantizing = {"active": False}
 
         def from_pretrained(cls, pretrained_model_name_or_path, *args, **kwargs):
+            if not live["active"] and not quantizing["active"]:
+                refuse_hf_distributed_kwargs(kwargs, "pipeline parallel", "apply_pipeline_parallel")
+                if stages > 1 and callable(live["mesh"]):
+                    # A mesh factory: resolve it now, before the checkpoint is sized or read.
+                    mesh = live["mesh"]()
+                    check_multi_stage_dp(mesh, stages)
+                    live["mesh"] = mesh
             if (
                 not live["active"]
                 and not quantizing["active"]
