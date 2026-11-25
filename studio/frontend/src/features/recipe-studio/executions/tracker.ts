@@ -105,6 +105,18 @@ export async function trackRecipeExecution({
   let completedEventPayload: Record<string, unknown> | null = null;
   let latestExecution: RecipeExecutionRecord = initialExecution;
   let lastDatasetPollAt = 0;
+  // Ends the current poll sleep early; set only while the loop is sleeping.
+  let wakePollSleep: (() => void) | null = null;
+  const sleepUntilNextPoll = (ms: number): Promise<void> =>
+    new Promise((resolve) => {
+      const finish = () => {
+        window.clearTimeout(timer);
+        wakePollSleep = null;
+        resolve();
+      };
+      const timer = window.setTimeout(finish, ms);
+      wakePollSleep = finish;
+    });
 
   const eventsAbortController = new AbortController();
   void streamRecipeJobEvents({
@@ -160,6 +172,7 @@ export async function trackRecipeExecution({
           error: null,
         };
         onUpsert(latestExecution);
+        wakePollSleep?.();
         return;
       }
 
@@ -176,6 +189,7 @@ export async function trackRecipeExecution({
               : (latestExecution.error ?? `${label} failed.`),
         };
         onUpsert(latestExecution);
+        wakePollSleep?.();
         return;
       }
 
@@ -198,6 +212,7 @@ export async function trackRecipeExecution({
           error: latestExecution.error ?? "Run cancelled.",
         };
         onUpsert(latestExecution);
+        wakePollSleep?.();
         return;
       }
 
@@ -251,7 +266,8 @@ export async function trackRecipeExecution({
         }
       }
       if (!done) {
-        await delay(1200);
+        // A terminal SSE event wakes this early so completion is not held for the rest of the interval.
+        await sleepUntilNextPoll(1200);
       }
     }
   } catch (error) {
