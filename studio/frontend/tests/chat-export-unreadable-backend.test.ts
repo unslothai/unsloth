@@ -159,3 +159,28 @@ test("a chat backup longer than the browser's longest string still downloads", a
   assert.ok(saved instanceof Blob);
   assert.ok(saved.size > 2 * videoChars);
 });
+
+test("a chat backup writes strings longer than one slice as the same JSON", async () => {
+  const { chatExportBlob } = loadWithStubs<{
+    chatExportBlob: (data: unknown) => Blob;
+  }>(new URL("../src/features/chat/utils/export-chat-history.ts", import.meta.url), {
+    "@/lib/native-files": { downloadBlobStreaming: async () => undefined },
+    "./archived-chat-export": { filterArchivedChatExport: () => undefined },
+    "./chat-history-storage": { buildStoredChatExport: async () => undefined },
+  });
+  const slice = 1 << 24;
+  const data = "x".repeat(slice - 1) + '😀"\\\n' + "y".repeat(slice);
+  const backup = {
+    exportedAt: "x",
+    version: 1,
+    threadCount: 1,
+    projects: [],
+    threads: [{ id: "t1" }],
+    messages: [
+      { id: "m1", content: [{ type: "video", data }], skip: undefined },
+      { id: "m2", content: "short" },
+    ],
+  };
+  const text = await chatExportBlob(backup).text();
+  assert.deepEqual(JSON.parse(text), JSON.parse(JSON.stringify(backup)));
+});
