@@ -41,7 +41,6 @@ def invalidate_cache() -> None:
         _cache.clear()
         _host_prep_cache.clear()
         _generation += 1
-    # Setup completion and Settings refresh land here: the next fingerprint rehashes the runtime.
     mxc_runtime.forget_verified_runtime()
     # Only when already loaded: the MXC child paths import this module without the tool stack.
     os_sandbox = sys.modules.get(f"{__package__}.os_sandbox")

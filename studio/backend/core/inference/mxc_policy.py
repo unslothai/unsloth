@@ -231,8 +231,7 @@ def _runtime_read_roots(executable: str, extra: list[str] = ()) -> list[str]:
     for root in roots:
         if not root:
             continue
-        # sys.prefix is also site.getsitepackages()[0] on Windows, base_prefix often equals it: an exact
-        # repeat is skipped, any other spelling still gets its own checks below.
+        # sys.prefix is also site.getsitepackages()[0] on Windows; other spellings keep their checks.
         if root in seen:
             continue
         seen.add(root)
@@ -396,7 +395,7 @@ def compute_policy_hash(config: dict) -> str:
 
 
 def policy_hash_of_bytes(config_bytes: bytes) -> str:
-    """The policy hash of bytes canonical_config_bytes just produced: one serialization per phase, not two."""
+    """The policy hash of bytes canonical_config_bytes already produced."""
     return "sha256:" + hashlib.sha256(config_bytes).hexdigest()
 
 

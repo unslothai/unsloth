@@ -116,7 +116,7 @@ def test_a_failed_early_lease_never_waits_on_the_record_lock_again(monkeypatch):
         raise mxc_read_grants.ReadGrantError("controlled lease failure")
 
     monkeypatch.setattr(mxc_policy, "dacl_fallback_enabled", lambda: True)
-    monkeypatch.setattr(mxc_read_grants, "enabled", lambda: False)  # best effort: not needed
+    monkeypatch.setattr(mxc_read_grants, "enabled", lambda: False)
     monkeypatch.setattr(mxc_read_grants, "hold", refuse)
     held, tried = mxc_read_grants.hold_before_build()
     assert (held, tried) == (None, True)

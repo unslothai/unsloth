@@ -369,10 +369,10 @@ def test_status_and_repair_verify_the_bytes_even_with_a_cached_identity(runtime,
     mxc_runtime.forget_verified_runtime()
     mxc_runtime.installation_identity()
     path = runtime / "wxc-exec.exe"
-    with open(path, "r+b") as stream:  # corrupt in place; the stamp is pinned as if it did not move
+    with open(path, "r+b") as stream:
         stream.write(b"x")
     calls = _count_hashes(monkeypatch)
-    mxc_runtime.installation_identity()  # the per-call fingerprint keeps its cached answer
+    mxc_runtime.installation_identity()
     assert calls == []
     with pytest.raises(mxc_runtime.MxcRuntimeUnavailable, match = "digest"):
         mxc_runtime.verified_installation_identity()

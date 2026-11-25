@@ -225,7 +225,6 @@ def wxc_path() -> Path:
     return selected_runtime().path
 
 
-# (path, architecture, approved size, approved digest) -> (file stamp, verified RuntimeInfo)
 _identity_cache: dict[tuple, tuple[tuple, RuntimeInfo]] = {}
 
 
@@ -237,26 +236,23 @@ def _file_stamp(path: Path) -> tuple:
         metadata.st_size,
         metadata.st_mtime_ns,
         getattr(metadata, "st_birthtime_ns", None),
-        metadata.st_ctime_ns,  # creation time on Windows before Python 3.12, which lacks st_birthtime_ns
+        metadata.st_ctime_ns,  # creation time on Windows before Python 3.12
         getattr(metadata, "st_nlink", 1),
     )
 
 
 def verified_installation_identity() -> str:
-    """The runtime's identity from a full verification: what status, setup and repair decide on."""
+    """A full verification: what status, setup and repair decide on."""
     try:
         return selected_runtime().identity
     except Exception:
-        forget_verified_runtime()  # the per-call fingerprints must not keep vouching for it
+        forget_verified_runtime()
         raise
 
 
 def installation_identity() -> str:
-    """The verified runtime's identity for the per-call capability fingerprints, rehashed only when the
-    file's identity or timestamps change. It never authorizes a launch or reports the runtime healthy
-    (verified_installation_identity does): acquire_runtime still verifies the digest under its
-    deny-write lock before wxc-exec starts.
-    """
+    """For the per-call fingerprints: rehashed only when the file's stamp changes. Never authorizes a
+    launch (acquire_runtime verifies the bytes) nor reports the runtime healthy (verified_installation_identity)."""
     if sys.platform != "win32":
         raise MxcRuntimeUnavailable("the MXC runtime is Windows-only")
     architecture = _expected_architecture()
@@ -274,7 +270,6 @@ def installation_identity() -> str:
         hit = _identity_cache.get(key)
         if hit is not None and hit[0] == before:
             return hit[1].identity
-        # A changed stamp retires the old verdict even if this verification fails.
         _identity_cache.pop(key, None)
     info = selected_runtime(package_root = root)
     try:
@@ -343,14 +338,11 @@ def _require_supported_windows() -> None:
 
 def _acquire(select, package_root: Path | None, name: str) -> RuntimeLease:
     _require_supported_windows()
-    # The selectors' own host gates, before any artifact is opened.
     if sys.platform != "win32":
         raise MxcRuntimeUnavailable("the MXC runtime is Windows-only")
     _expected_architecture()
     with _lock:
-        # Lock, then verify once: the guard denies write, rename and delete for the whole lease, so one
-        # digest taken under it covers the bytes wxc-exec runs. Hashing before and after the open cost
-        # a second full SHA-256 of the executable on every tool call.
+        # One digest, under the guard: it denies write, rename and delete for the whole lease.
         root = _require_plain_directory(package_root or _installed_package_root())
         candidate = root / name
         try:
@@ -359,7 +351,7 @@ def _acquire(select, package_root: Path | None, name: str) -> RuntimeLease:
             reparse = True
         if reparse or not candidate.is_file() or candidate.is_symlink():
             raise MxcRuntimeUnavailable(f"the managed {name} is missing or is not a regular file")
-        # Resolved before the guard opens: a path redirected while it opens no longer matches.
+        # Before the guard opens, so a path redirected meanwhile no longer matches.
         expected = candidate.resolve()
         guard = _open_artifact_guard(candidate)
         try:

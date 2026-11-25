@@ -591,14 +591,10 @@ def hold() -> WorkloadLease | None:
 
 
 def hold_before_build() -> tuple[WorkloadLease | None, bool]:
-    """Leases an MXC launch or probe that may run on the DACL tier, so no revocation runs under it; only a
-    launch needing grants refuses if unrecorded. Returns (lease, tried): hold_for_request leases late
-    only when this did not try, so a failed lease never waits on the record lock twice.
+    """(lease, tried) for a launch or probe that may run on the DACL tier, so no revocation runs under it.
 
-    With the DACL fallback off the request carries allowDaclMutation false, so wxc-exec cannot pick the
-    AppContainer + DACL tier: the only tier that skips its own grant where a recorded entry already covers
-    a path. A revocation under such a workload removes nothing it reads through, so it takes no lease
-    (one record lock, a lease file and a deferred-cleanup check per call).
+    With the fallback off the request carries allowDaclMutation false, so wxc-exec cannot pick that tier,
+    the only one that skips its own grant where a recorded ACE covers a path: no lease is needed.
     """
     from . import mxc_policy
 
@@ -622,14 +618,13 @@ def _hold(*, needed: bool) -> WorkloadLease | None:
 
 
 def hold_for_request(request, held: WorkloadLease | None, *, tried: bool) -> WorkloadLease | None:
-    """The lease a built request needs: one allowing DACL mutation is leased, with the same rules, even if
-    the switch turned on after hold_before_build looked. Before spawn, so a revocation still waits for it."""
+    """Leases a request built with DACL allowed after hold_before_build saw it off; never retries a tried lease."""
     if held is not None or tried:
         return held
     config = request.get("config") if isinstance(request, dict) else None
     fallback = config.get("fallback") if isinstance(config, dict) else None
     if isinstance(fallback, dict) and fallback.get("allowDaclMutation") is True:
-        refresh_saved_switches()  # another Studio process may have turned persistent grants on
+        refresh_saved_switches()
         return _hold(needed = enabled())
     return None
 
