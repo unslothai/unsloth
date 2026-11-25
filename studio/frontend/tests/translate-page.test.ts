@@ -44,6 +44,7 @@ import {
   SOURCE_PLACEHOLDER,
   TARGET_PLACEHOLDER,
   clipText,
+  joinPassage,
   restoreChunkWhitespace,
   splitForTranslation,
   stripLeadingReasoning,
@@ -537,6 +538,76 @@ test("read aloud asks for a voice of the translation's language", () => {
   assert.equal(translateSpeechTag("ja", ["en-US"]), "ja");
   const page = readText("../src/features/translate/translate-page.tsx");
   assert.match(page, /readAloud\.speak\(\s*output,\s*translateSpeechTag\(/);
+});
+
+const translateEach = (
+  source: string,
+  translate: (text: string) => string,
+  limit?: number,
+) =>
+  splitForTranslation(source, limit).reduce(
+    (output, chunk) =>
+      chunk.text
+        ? joinPassage(
+            output,
+            restoreChunkWhitespace(chunk, translate(chunk.text)),
+          )
+        : output + chunk.after,
+    "",
+  );
+
+test("passages of a long line read as one text in the target language", () => {
+  const toEnglish = (text: string) =>
+    text.replace(/[^。！？]+[。！？]/g, "One sentence. ").trim();
+  for (const end of ["。", "！", "？"]) {
+    const source = `一二三四五六七八九${end}`.repeat(20);
+    const output = translateEach(source, toEnglish, 50);
+    assert.equal(output, "One sentence. ".repeat(20).trim());
+  }
+  const japanese = "これは日本語の文です。".repeat(20);
+  assert.equal(
+    translateEach(japanese, toEnglish, 50),
+    "One sentence. ".repeat(20).trim(),
+  );
+  const toKorean = (text: string) =>
+    text.replace(/[^。]+。/g, "한 문장이다. ").trim();
+  assert.equal(
+    translateEach("一二三四五六七八九。".repeat(20), toKorean, 50),
+    "한 문장이다. ".repeat(20).trim(),
+  );
+  const toChinese = (text: string) =>
+    text.replace(/[^.]+\./g, "一个句子。").replace(/ /g, "");
+  assert.equal(
+    translateEach("One short sentence. ".repeat(20).trim(), toChinese, 50),
+    "一个句子。".repeat(20),
+  );
+  const quoted = "他说：“一二三四五六七八九。”".repeat(10);
+  assert.equal(
+    translateEach(quoted, (text) => text, 50),
+    quoted,
+  );
+  assert.equal(
+    translateEach("一二三四五六七八九。".repeat(20), (text) => text, 50),
+    "一二三四五六七八九。".repeat(20),
+  );
+  const french = "Une phrase courte ici. ".repeat(20).trim();
+  assert.equal(
+    translateEach(french, (text) => text, 50),
+    french,
+  );
+  assert.equal(
+    translateEach("一二三。\n\n四五六。", toEnglish, 5),
+    "One sentence.\n\nOne sentence.",
+  );
+});
+
+test("the runner and the image overlay join passages the same way", () => {
+  const runner = readText("../src/features/translate/translate-runner.ts");
+  assert.match(runner, /onOutput\(joinPassage\(output, partial\)\)/);
+  assert.match(
+    runner,
+    /output = joinPassage\(\s*output,\s*restoreChunkWhitespace\(chunk, translated\),?\s*\)/,
+  );
 });
 
 test("a hard cut never lands inside a surrogate pair", () => {

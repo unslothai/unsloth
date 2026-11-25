@@ -3,6 +3,7 @@
 
 import {
   TRANSLATE_CHUNK_CHARS,
+  joinPassage,
   restoreChunkWhitespace,
   splitForTranslation,
 } from "./translate-text.ts";
@@ -291,9 +292,12 @@ export async function translateTextList(
     let joined = "";
     for (const chunk of splitForTranslation(text)) {
       options.signal.throwIfAborted();
-      joined += chunk.text
-        ? restoreChunkWhitespace(chunk, await complete(chunk.text))
-        : chunk.after;
+      joined = chunk.text
+        ? joinPassage(
+            joined,
+            restoreChunkWhitespace(chunk, await complete(chunk.text)),
+          )
+        : joined + chunk.after;
     }
     out.push(joined.trim());
   }

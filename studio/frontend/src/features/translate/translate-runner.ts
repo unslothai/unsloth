@@ -55,6 +55,7 @@ import {
 } from "./translate-subtitles";
 import {
   type TranslatePromptOptions,
+  joinPassage,
   restoreChunkWhitespace,
   splitForTranslation,
   stripLeadingReasoning,
@@ -486,9 +487,9 @@ export async function runTranslation(
       part += 1;
       onPhase({ kind: "translating", part, parts });
       const translated = await complete(chunk.text, (partial) =>
-        onOutput(output + partial),
+        onOutput(joinPassage(output, partial)),
       );
-      output += restoreChunkWhitespace(chunk, translated);
+      output = joinPassage(output, restoreChunkWhitespace(chunk, translated));
       onOutput(output);
     }
   }

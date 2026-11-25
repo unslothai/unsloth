@@ -237,3 +237,16 @@ export function restoreChunkWhitespace(
   const trail = chunk.text.slice(chunk.text.trimEnd().length);
   return lead + translated.trim() + trail + chunk.after;
 }
+
+const UNSPACED = String.raw`[\p{Script=Han}\u3000-\u30ff\uff00-\uffef]`;
+const UNSPACED_END = new RegExp(`${UNSPACED}["'”’)\\]]*$`, "u");
+const UNSPACED_GAP = new RegExp(`(${UNSPACED}["'”’)\\]]*)[^\\S\\n]+$`, "u");
+const UNSPACED_START = new RegExp(`^${UNSPACED}`, "u");
+
+export function joinPassage(output: string, piece: string): string {
+  if (UNSPACED_START.test(piece))
+    return output.replace(UNSPACED_GAP, "$1") + piece;
+  const gap =
+    /\S$/.test(output) && /^\S/.test(piece) && !UNSPACED_END.test(output);
+  return output + (gap ? " " : "") + piece;
+}
