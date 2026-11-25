@@ -1,13 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Which multi-GPU layout a Studio training run uses, decided before anything loads.
+"""Picks a Studio training run's multi-GPU layout before anything loads.
 
-`plan(request, host, model)` is pure: the host (platform, GPUs, collective backend, what the installed Unsloth can
-split) and the model (VRAM estimate, MoE, family) come in as dicts, so tests spoof them. `detect_host()` and
-`model_facts()` read the real ones. A multi-process plan becomes the UNSLOTH_PARALLEL spec every rank gets
-(core/training/parallel_launch.py starts the ranks); `single` and `layer_split` keep today's one process.
-A layout Unsloth's capability table refuses is refused here, with Unsloth's own reason, before any VRAM moves.
+`plan(request, host, model)` is pure (host / model facts come in as dicts). Layouts Unsloth's capability table
+refuses are refused here, with Unsloth's reason, before any VRAM moves.
 """
 
 from __future__ import annotations
@@ -46,14 +43,11 @@ _LABEL = {
     EP: "expert parallel",
     CUSTOM: "custom layout",
 }
-# A GPU is judged on its free memory less this share, the same headroom Core's UNSLOTH_PARALLEL=auto keeps for
-# allocator fragmentation and the collective's buffers.
+# Same headroom Core's UNSLOTH_PARALLEL=auto keeps.
 _FIT_MARGIN = 0.9
 
 
 class ParallelPlanError(ValueError):
-    """A refused layout: `.payload` is the contract's error object (code, mode, message, alternative)."""
-
     def __init__(
         self,
         code: str,
@@ -69,7 +63,7 @@ class ParallelPlanError(ValueError):
 
 
 def _core_file(*parts: str) -> Optional[str]:
-    """Path of a file inside the installed unsloth package, found without importing it (that patches torch)."""
+    """Found without importing unsloth (that patches torch)."""
     try:
         spec = importlib.util.find_spec("unsloth")
     except (ImportError, ValueError):
@@ -87,7 +81,6 @@ _CORE_MODULES: dict = {}
 
 
 def _core_module(name: str):
-    """unsloth/<name>.py executed standalone (both modules import nothing heavy at module level); None if absent."""
     if name in _CORE_MODULES:
         return _CORE_MODULES[name]
     module = None
@@ -108,7 +101,6 @@ def _core_module(name: str):
 
 
 def core_axes() -> dict:
-    """Which parallel axes the installed Unsloth implements (files present, ep not reserved)."""
     env = _core_module("parallel_env")
     has_env = env is not None
     reserved = getattr(env, "_RESERVED", {}) if has_env else {}
@@ -123,7 +115,6 @@ def core_axes() -> dict:
 
 
 def _distributed_backend(device: str) -> tuple[Optional[str], Optional[str]]:
-    """(backend, reason it is None)."""
     if sys.platform == "win32":
         return None, (
             "Windows has no NCCL, so multi-process training (DDP, FSDP2, tensor / pipeline / context / expert "
@@ -162,12 +153,12 @@ def _gpu_rows() -> list:
         try:
             from utils.hardware import nvidia
 
-            # By visible ordinal, from nvidia-smi (no CUDA context in the server); the utilization rows can lack names.
+            # nvidia-smi: no CUDA context in the server.
             names = [row[3] if row else None for row in (nvidia.get_cuda_device_info() or [])]
         except Exception:  # noqa: BLE001
             names = []
     try:
-        # Cards the installed torch has no kernels for (ROCm), as the legacy auto selection drops them.
+        # ROCm cards torch has no kernels for, dropped as the legacy auto selection does.
         uncovered = (
             set(hw.rocm_gpu_ids_without_torch_kernels()) if getattr(hw, "IS_ROCM", False) else set()
         )
@@ -206,7 +197,6 @@ _HOST_LOCK = threading.Lock()
 
 
 def detect_host(max_age_s: float = 5.0) -> dict:
-    """The host half of the plan: platform, device, collective backend, GPUs, Unsloth's axes."""
     with _HOST_LOCK:
         cached = _HOST_CACHE["value"]
         if cached is not None and time.monotonic() - _HOST_CACHE["at"] < max_age_s:
@@ -243,7 +233,6 @@ def _torch_version() -> tuple:
 
 
 def _sm(gpus: list) -> Optional[int]:
-    """The lowest compute capability major among the run's GPUs (nvidia-smi, no CUDA context); None off NVIDIA."""
     majors = [g.get("sm") for g in gpus if g.get("sm") is not None]
     return min(majors) if majors else None
 
@@ -275,7 +264,6 @@ def model_facts(
     gradient_checkpointing: str = "unsloth",
     optimizer: str = "adamw_8bit",
 ) -> dict:
-    """The model half: one-GPU training estimate, per-GPU sharded estimates, MoE / family / multimodal."""
     from utils.hardware import hardware as hw
 
     facts: dict = {
@@ -354,7 +342,6 @@ def _spec_for(mode: str, world: int, custom: Optional[str]) -> str:
 
 
 def _parse_spec(raw: str, world: int) -> dict:
-    """Core's parser, plus the world check; {'dp','tp','pp','cp','ep','fsdp'} sizes."""
     env = _core_module("parallel_env")
     if env is None:
         raise ParallelPlanError(
@@ -401,7 +388,6 @@ def _parse_spec(raw: str, world: int) -> dict:
         )
     sizes["dp"] = dp
     sizes["fsdp"] = bool(spec.get("fsdp")) or int(spec.get("dp_shard", 1) or 1) > 1
-    # Carried to Unsloth's capability table: its rules and cells read the effective backend and schedule.
     sizes["cp_backend"] = spec.get("cp_backend")
     sizes["pp_schedule"] = spec.get("pp_schedule")
     return sizes
@@ -414,7 +400,6 @@ def _core_check(
     request: dict,
     gpus: Optional[list] = None,
 ) -> None:
-    """Unsloth's capability table on what is known before load; NotImplementedError -> parallel_unsupported."""
     caps = _core_module("parallel_capabilities")
     if caps is None or not hasattr(caps, "Query"):
         return
@@ -443,8 +428,7 @@ def _core_check(
     }
     query = caps.Query(**{k: v for k, v in values.items() if k in fields and v is not None})
     try:
-        # A context parallel backend left to "auto" is resolved from the loaded model; until then the composed-cell
-        # gate cannot tell, so only the rules and feature declarations run here and Unsloth checks the cell at load.
+        # cp_backend "auto" resolves only at load, so the cell check is left to Unsloth then.
         caps.check(query, cells = not (sizes["cp"] > 1 and cp_backend is None))
     except NotImplementedError as exc:
         text = str(exc)
@@ -481,7 +465,6 @@ def _usable_gpus(host: dict, gpu_ids: Optional[list]) -> list:
 
 
 def _mode_rows(host: dict, model: Optional[dict], request: dict, gpus: list) -> list:
-    """Per mode: can it run here (and, with a model, for this model)."""
     n_gpus = len(gpus)
     rows = []
     multi_reason = host.get("multi_process_reason")
@@ -530,7 +513,7 @@ def _sizes_for(mode: str, world: int) -> dict:
         sizes["dp"] = world
         sizes["fsdp"] = mode == FSDP2
     elif mode == EP:
-        sizes["dp"] = world  # experts split over the data parallel ranks
+        sizes["dp"] = world
         sizes["ep"] = world
     else:
         sizes[_AXIS_OF_MODE[mode]] = world
@@ -544,7 +527,6 @@ def _estimate_row(model: dict, n: int) -> dict:
 
 
 def plan(request: dict, host: dict, model: Optional[dict]) -> dict:
-    """The contract's plan object for one request. Raises ParallelPlanError for a refused explicit mode."""
     requested = request.get("parallel_mode") or None
     if requested is not None and requested not in MODES:
         raise ParallelPlanError(
@@ -596,11 +578,9 @@ def plan(request: dict, host: dict, model: Optional[dict]) -> dict:
         }
 
     def _legacy(why: str) -> dict:
-        # Today's behaviour: explicit gpu_ids as given; otherwise the start-time auto selection (the fewest GPUs that
-        # fit, layers split when that is more than one) still picks, so gpu_ids stays unset.
+        # Pre-parallel behaviour: without explicit gpu_ids the start-time auto selection still picks.
         chosen = gpus if gpu_ids else []
         if gpu_ids and len(gpu_ids) > 1:
-            # Explicit ids are used exactly, layers split across them even when fewer would do (prepare_gpu_selection).
             return _result(LAYER_SPLIT, chosen, why + " Layers are split across the chosen GPUs.")
         freest = sorted(gpus, key = lambda g: -g["free_gb"])[:1]
         if len(gpus) <= 1 or gpu_ids or (need is not None and _fits(need, freest)):
@@ -694,7 +674,6 @@ def plan(request: dict, host: dict, model: Optional[dict]) -> dict:
             LAYER_SPLIT, gpus, f"Layers split across {len(gpus)} GPUs in one process, as requested."
         )
 
-    # Multi-process modes.
     if host.get("multi_process_reason"):
         code = (
             "parallel_no_backend"
@@ -786,8 +765,7 @@ def plan_for_request(
     host: Optional[dict] = None,
     inline_error: bool = False,
 ) -> dict:
-    """plan() on the live host and model. A refusal raises ParallelPlanError (/start), or with inline_error comes back
-    in `error` beside the auto plan (/plan, so the Train page can show it next to the default)."""
+    """With inline_error a refusal comes back in `error` beside the auto plan instead of raising."""
     host = host or detect_host()
     model = None
     if request.get("model_name"):

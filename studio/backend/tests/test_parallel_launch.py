@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Multi-process ranks (core/training/parallel_launch.py) on CPU gloo: the worker process is rank 0 and starts the
-others with the torchrun environment; a UI stop reaches every rank at the same step; a dead rank ends the run with
-an error naming it; killing rank 0 (cancel) leaves no rank behind."""
+"""Multi-process ranks (parallel_launch.py) on CPU gloo: stop, dead rank, cancel."""
 
 from __future__ import annotations
 
@@ -95,11 +93,8 @@ def test_ranks_get_the_torchrun_env_and_stop_at_the_same_step(tmp_path, monkeypa
         assert {r["MASTER_ADDR"] for r in ranks} == {"127.0.0.1"}
         assert {r["UNSLOTH_PARALLEL"] for r in ranks} == {"dp=2"}
         assert [r["is_main_rank"] for r in ranks] == [True, False]
-        # Rank 0 narrowed the GPU mask; the others inherit it rather than narrowing again.
         assert ranks[0]["resolved_gpu_ids"] == [0, 1] and ranks[1]["resolved_gpu_ids"] is None
-        # One run directory, named by rank 0 before the others started.
         assert ranks[0]["output_dir"] and ranks[0]["output_dir"] == ranks[1]["output_dir"]
-        # The stop and its save choice reached rank 1 at rank 0's step.
         assert ranks[0]["last_step"] == ranks[1]["last_step"]
         assert all(r["stopped"] and r["save"] is False for r in ranks)
     finally:
@@ -128,7 +123,6 @@ def test_a_dead_rank_ends_the_run_with_an_error(tmp_path, monkeypatch):
 
 
 def test_an_error_event_on_another_rank_ends_the_run(tmp_path, monkeypatch):
-    # The worker reports a handled failure (model load, dataset) as an error event and returns normally.
     proc, events, _ = _start(tmp_path, monkeypatch, fail_rank = 1, fail_step = 2, fail_by_event = True)
     try:
         error = None

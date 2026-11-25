@@ -1,16 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Multi-process training ranks for the Studio worker, launched the way torchrun would.
+"""Torchrun-style training ranks: the Studio worker is rank 0 and spawns ranks 1..N-1 on the same config.
 
-The training worker Studio already spawns is rank 0. Before unsloth is imported it sets the torchrun environment
-(RANK, LOCAL_RANK, WORLD_SIZE, MASTER_ADDR / MASTER_PORT) and UNSLOTH_PARALLEL, starts ranks 1..N-1 as its own child
-processes running the same worker entry on the same config, and creates the default process group on a store that
-listens on loopback only (a plain env:// store would listen on every interface). Unsloth and the Trainer reuse that
-group. Only rank 0 talks to the UI: the other ranks' events go to the log with a rank prefix.
-Stop: rank 0 broadcasts (stop, save) at every step end and once more before the final save (`sync_stop`), so every
-rank leaves the loop at the same step and takes the same save path. A rank that dies, or whose worker reports an
-error, ends the run (rank 0 reports it); a rank whose parent is gone exits; cancel kills the worker's process tree.
+The process group's store listens on loopback only (a plain env:// store would listen on every interface).
+Only rank 0 talks to the UI. Rank 0 broadcasts (stop, save) via `sync_stop` so every rank stops at the same step.
 """
 
 from __future__ import annotations
@@ -40,14 +34,13 @@ __all__ = [
     "wait_for_ranks",
 ]
 
-CHILD_ENV = "UNSLOTH_STUDIO_PARALLEL_RANK"  # set in ranks 1..N-1
-_WORLD_ENV = "UNSLOTH_STUDIO_PARALLEL_WORLD"  # set in every rank of a Studio multi-process run
+CHILD_ENV = "UNSLOTH_STUDIO_PARALLEL_RANK"
+_WORLD_ENV = "UNSLOTH_STUDIO_PARALLEL_WORLD"
 _PARENT_ENV = "UNSLOTH_STUDIO_PARALLEL_PARENT"
-# Rank 0 cleared Unsloth's compiled cache before the other ranks started; no rank clears it again.
 CACHE_CLEARED_ENV = "UNSLOTH_STUDIO_COMPILED_CACHE_CLEARED"
 TIMEOUT_ENV = "UNSLOTH_STUDIO_PARALLEL_TIMEOUT_S"
 _DEFAULT_ENTRY = ("core.training.worker", "run_training_process")
-# Layout variables UNSLOTH_PARALLEL writes; one left in the server's environment would override or conflict with it.
+# Stale layout vars in the server env would conflict with UNSLOTH_PARALLEL.
 _LAYOUT_ENV = (
     "UNSLOTH_TP_SIZE",
     "UNSLOTH_PP_SIZE",
@@ -89,7 +82,6 @@ def is_main_rank() -> bool:
 
 
 def data_parallel_size() -> int:
-    """Ranks that see different rows: the world over the tensor / pipeline / context parallel sizes of the spec."""
     world = world_size()
     if world <= 1:
         return 1
@@ -129,7 +121,6 @@ def _rank_env(base: dict, r: int, world: int) -> dict:
 
 
 def _pump(stream, prefix: str) -> None:
-    """Child output -> this process's stderr (the server log), one prefixed line at a time."""
     try:
         for raw in iter(stream.readline, b""):
             try:
@@ -164,8 +155,7 @@ def _terminate_children() -> None:
 
 
 def wait_for_ranks(timeout: float = 600.0) -> bool:
-    """Rank 0, after its own save: let ranks 1..N-1 finish theirs (rank-local checkpoint files) and exit before the
-    run is reported done. False when one is still running at the timeout (it is stopped at exit)."""
+    """Rank 0 waits for the other ranks to finish their rank-local saves before the run is reported done."""
     deadline = time.monotonic() + timeout
     for proc in _PROCS:
         try:
@@ -199,14 +189,12 @@ def launch_ranks(
     entry: tuple = _DEFAULT_ENTRY,
     python: Optional[str] = None,
 ) -> int:
-    """In rank 0, before unsloth is imported: export the torchrun env, start ranks 1..N-1 running `entry`
-    (module, function) on the same config, join the process group with them. Returns N."""
     plan = config.get("parallel") or {}
     world = int(plan.get("world_size") or 1)
     if world <= 1 or plan.get("launcher") != "multi_process":
         return 1
     if os.environ.get(CHILD_ENV):
-        return world  # ranks 1..N-1 run the same entry; only rank 0 starts ranks
+        return world
     module, name = entry
     if not _MODULE_NAME.match(module) or not name.isidentifier():
         raise ValueError(f"launch_ranks: bad entry {entry!r}")
@@ -214,18 +202,18 @@ def launch_ranks(
         os.environ.pop(key, None)
     if plan.get("spec"):
         os.environ["UNSLOTH_PARALLEL"] = str(plan["spec"])
-    # Every rank is on this host: NCCL's bootstrap needs loopback only (a user's own NCCL_SOCKET_IFNAME wins).
+    # All ranks are local: bootstrap on loopback unless the user set an interface.
     if sys.platform.startswith("linux"):
         os.environ.setdefault("NCCL_SOCKET_IFNAME", "lo")
         os.environ.setdefault("GLOO_SOCKET_IFNAME", "lo")
     if not config.get("output_dir") and not config.get("resume_from_checkpoint"):
-        # The worker names a fresh run directory from the clock; every rank must use rank 0's.
+        # The run dir is named from the clock; every rank must use rank 0's.
         from utils.training_runs import build_default_output_dir_name
         config["output_dir"] = build_default_output_dir_name(
             config["model_name"], config.get("project_name")
         )
     try:
-        # Each rank's load would clear the shared compiled cache, deleting modules a faster rank just wrote.
+        # Clear once here: per-rank clears would delete modules a faster rank just wrote.
         from utils.cache_cleanup import clear_unsloth_compiled_cache
         clear_unsloth_compiled_cache()
         os.environ[CACHE_CLEARED_ENV] = "1"
@@ -247,7 +235,7 @@ def launch_ranks(
     base[_PARENT_ENV] = str(os.getpid())
     base["PYTHONUNBUFFERED"] = "1"
     child_config = dict(config)
-    # The mask rank 0 narrowed is inherited; re-applying physical ids to it would narrow twice.
+    # Children inherit rank 0's narrowed mask; re-applying ids would narrow twice.
     child_config["resolved_gpu_ids"] = None
     try:
         from utils.account_context import current_account
@@ -315,12 +303,9 @@ def launch_ranks(
 
 
 class _RankEvents:
-    """Event sink of ranks 1..N-1: errors and warnings reach the log, nothing reaches the UI."""
-
     def __init__(self, r: int):
         self.rank = r
-        # The worker reports a handled failure as an error event and returns; the rank must still exit non-zero so
-        # rank 0 ends the run at once instead of waiting in a collective.
+        # A handled error must still exit non-zero so rank 0 does not wait in a collective.
         self.failed = False
 
     def put(self, event: Any, *args, **kwargs) -> None:
@@ -340,7 +325,7 @@ class _RankEvents:
 
 
 class _NoStop:
-    """Stop queue of ranks 1..N-1: never yields; rank 0's broadcast stops them."""
+    """Never yields; rank 0's broadcast stops ranks 1..N-1."""
 
     def get(
         self,
@@ -361,8 +346,6 @@ class _NoStop:
 
 
 def rank_main(target: Callable[..., Any]) -> None:
-    """Entry of ranks 1..N-1: payload from stdin, join rank 0's process group, run `target` (the worker entry) as
-    rank 0's account, exit without NCCL teardown."""
     r = rank()
     parent = int(os.environ.get(_PARENT_ENV, "0") or 0)
 
@@ -396,7 +379,6 @@ def rank_main(target: Callable[..., Any]) -> None:
         kwargs = {"event_queue": sink, "stop_queue": _NoStop(), "config": payload["config"]}
         account = payload.get("account")
         if account:
-            # Rank 0's account, as account_process_spec runs rank 0: same storage roots, same credential scrub.
             from core.training.account_jobs import run_account_child
             from utils.account_context import AccountContext
             run_account_child(
@@ -420,8 +402,7 @@ def rank_main(target: Callable[..., Any]) -> None:
 
 
 def sync_stop(should_stop: bool, save_on_stop: bool) -> tuple:
-    """Every rank's view of rank 0's (stop, save) at this point. One 2-int broadcast; a no-op outside a Studio
-    multi-process run or before the process group exists. Every rank must call it at the same point."""
+    """Broadcast rank 0's (stop, save). Every rank must call it at the same point (it is a collective)."""
     if not is_multi_process():
         return should_stop, save_on_stop
     import torch

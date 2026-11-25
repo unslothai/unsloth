@@ -1759,10 +1759,8 @@ async def get_drafter_capability(
 
 @router.get("/parallel/capabilities")
 async def get_parallel_capabilities(current_subject: str = Depends(get_current_subject)):
-    """Host-level multi-GPU support: GPUs, collective backend, which parallel modes can run here."""
     from core.training import parallel_plan
     from utils.hardware import gpu_query
-
     with gpu_query.display_reads():
         return await asyncio.to_thread(parallel_plan.capabilities)
 
@@ -1774,8 +1772,7 @@ async def plan_parallel_training(
     via_api_key: bool = Depends(authenticated_via_api_key),
     hf_token: Optional[str] = Depends(get_hf_token),
 ):
-    """What /start would launch for these settings (mode, GPUs, UNSLOTH_PARALLEL spec, per-mode availability). A
-    refused mode comes back in `error`, not as a 400, so the Train page can show it inline."""
+    """A refused mode comes back in `error`, not as a 400, so the Train page can show it inline."""
     from core.training import parallel_plan
     from models.inference import resolve_inventory_handle
 
@@ -2408,7 +2405,6 @@ async def _admit_training_request(
 
 
 def _parallel_plan_input(training_kwargs: dict, request) -> dict:
-    """The planner's view of a start: the sizing fields plus the single-process-only features."""
     keys = (
         "model_name",
         "training_type",
@@ -2445,12 +2441,11 @@ def _parent_mask_takes_gpu_ids() -> bool:
 
 
 async def _plan_parallel_training(request, training_kwargs: dict, hf_token) -> None:
-    """Resolve parallel_mode before any VRAM moves: a refused layout is a 400 with the contract's error object;
-    an accepted one rides in training_kwargs["parallel"] to the worker (rank 0 starts the other ranks)."""
+    """Resolve parallel_mode before any VRAM moves: a refused layout is a 400."""
     from core.training import parallel_plan
 
     def _plan():
-        # Fresh GPU telemetry: a start must not reuse a display read cached by the capabilities route.
+        # Fresh telemetry, not the capabilities route's cached read.
         host = parallel_plan.detect_host(max_age_s = 0)
         plan = parallel_plan.plan_for_request(
             _parallel_plan_input(training_kwargs, request), hf_token = hf_token, host = host
@@ -2492,7 +2487,6 @@ async def _plan_parallel_training(request, training_kwargs: dict, hf_token) -> N
         )
     }
     if pin:
-        # Multi-process ranks and an explicit single / layer split run on exactly the planned GPUs.
         training_kwargs["gpu_ids"] = list(plan["gpu_ids"])
     logger.info(
         "Multi-GPU plan: mode=%s world_size=%s gpu_ids=%s spec=%s (%s)",
@@ -2690,8 +2684,7 @@ async def start_training(
 
                 def _can_keep_resident_models():
                     if (training_kwargs.get("parallel") or {}).get("launcher") == "multi_process":
-                        # Every rank holds a full copy or a shard on each GPU: the per-card sizing below is for one
-                        # process, so free resident models rather than guess.
+                        # Per-card sizing below assumes one process: free resident models rather than guess.
                         return False, {"mode": "multi_process", "reason": "multi_process"}
                     members = batch_members or [training_kwargs]
                     return can_keep_chat_during_training(

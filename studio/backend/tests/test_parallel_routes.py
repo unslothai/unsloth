@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""GET /api/train/parallel/capabilities, POST /api/train/parallel/plan, and /start's plan step (400 before any
-VRAM moves), on a spoofed 2x T4 host."""
+"""Parallel capabilities / plan routes and /start's plan step on a spoofed 2x T4 host."""
 
 from __future__ import annotations
 

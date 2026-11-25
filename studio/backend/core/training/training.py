@@ -375,7 +375,6 @@ def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
         if key in values:
             config[key] = values.get(key)
     if values.get("parallel"):
-        # Only a start that asked for a layout carries one: older starts keep their exact worker config.
         config["parallel"] = values["parallel"]
     if config["training_type"] == "Full Finetuning":
         config["load_in_4bit"] = False

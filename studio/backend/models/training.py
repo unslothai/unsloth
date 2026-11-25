@@ -817,7 +817,7 @@ class TrainingStartRequest(BaseModel):
 
 
 class ParallelPlanRequest(BaseModel):
-    """POST /api/train/parallel/plan: the /start fields the multi-GPU plan reads, with /start's defaults."""
+    """POST /api/train/parallel/plan body."""
 
     model_name: str = Field(..., max_length = 512)
     training_type: Literal["LoRA/QLoRA", "Full Finetuning", "Continued Pretraining"] = "LoRA/QLoRA"

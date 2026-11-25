@@ -1043,8 +1043,7 @@ class UnslothTrainer:
             def on_step_end(self, args, state, control, **kwargs):
                 stop = trainer_ref.should_stop
                 if _parallel_launch.is_multi_process():
-                    # Rank 0 holds the UI's stop; every rank acts on the value rank 0 sent, so all leave the loop at
-                    # the same step. A stop arriving during the broadcast stays set and is sent at the next step.
+                    # Every rank acts on rank 0's stop so all leave the loop at the same step.
                     stop, save = _parallel_launch.sync_stop(stop, trainer_ref.save_on_stop)
                     if stop:
                         trainer_ref.should_stop, trainer_ref.save_on_stop = True, save
@@ -1144,9 +1143,7 @@ class UnslothTrainer:
         label = "",
     ):
         """Save model after training and update progress. Used by all training branches."""
-        # Trainer's own saves are collective (FSDP2 gathers on every rank) and write on rank 0; Studio's files are
-        # written by rank 0 only. A stop that reached rank 0 after the last step must not send it down another save
-        # path than the other ranks.
+        # Saves are collective (FSDP2 gathers on every rank): all ranks must take the same save path.
         main_rank = _parallel_launch.is_main_rank()
         if _parallel_launch.is_multi_process():
             self.should_stop, self.save_on_stop = _parallel_launch.sync_stop(
@@ -5285,7 +5282,6 @@ class UnslothTrainer:
                         num_samples = None
                 if num_samples is None:
                     num_samples = len(train_dataset_obj)
-                # Data parallel ranks each take batch_size rows per step.
                 batch_size = (
                     training_args.get("batch_size", 2) * _parallel_launch.data_parallel_size()
                 )

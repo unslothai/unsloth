@@ -4540,8 +4540,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
 
     if not _validate_training_worker_config(config, event_queue):
         return
-    # Multi-process plan (DDP / FSDP2 / TP / PP / CP / EP): this worker is rank 0; start the other ranks before torch
-    # or unsloth is imported, so every rank reads the same torchrun env and UNSLOTH_PARALLEL spec.
+    # Start the other ranks before torch / unsloth import so every rank reads the same env.
     if (config.get("parallel") or {}).get("launcher") == "multi_process":
         from core.training.parallel_launch import launch_ranks
         launch_ranks(config, event_queue)
@@ -5733,7 +5732,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         output_dir = str(resolve_output_dir(output_dir))
         ensure_dir(Path(output_dir))
         _emit_output_dir(event_queue, output_dir)
-        # Pinned before any checkpoint, so resume reads it back rather than re-deriving it (rank 0 writes it).
+        # Pinned before any checkpoint so resume reads it back rather than re-deriving it.
         if (
             _studio_main_rank()
             and not record_row_bound(output_dir, max_train_rows, max_train_rows_seed)
@@ -5797,7 +5796,6 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         from core.training import parallel_launch as _parallel_launch
 
         if not _parallel_launch.is_main_rank():
-            # Ranks 1..N-1 took part in the collective save; the run's own bookkeeping is rank 0's.
             progress = trainer.get_training_progress()
             if progress.error:
                 event_queue.put(
@@ -5805,8 +5803,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 )
             return
         if _parallel_launch.is_multi_process():
-            # Rank-local checkpoint files (tensor / pipeline parallel) are written by each rank: report the run done
-            # only once they all exited.
+            # TP / PP ranks write rank-local checkpoint files: report done only after all exit.
             _parallel_launch.wait_for_ranks()
 
         progress = trainer.get_training_progress()

@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Multi-GPU plan (core/training/parallel_plan.py) on spoofed hosts and models: the auto default, explicit modes,
-and the refusals, with Unsloth's own capability table from this checkout."""
+"""parallel_plan.py on spoofed hosts and models, with this checkout's capability table."""
 
 from __future__ import annotations
 
@@ -152,7 +151,6 @@ def test_windows_refuses_multi_process_clearly():
         pp.plan({"parallel_mode": "ddp"}, host, _model())
     assert err.value.payload["code"] == "parallel_platform"
     assert "layer_split" in err.value.payload["alternative"]
-    # Layer split still runs there.
     assert pp.plan({"parallel_mode": "layer_split"}, host, _model())["mode"] == "layer_split"
 
 
