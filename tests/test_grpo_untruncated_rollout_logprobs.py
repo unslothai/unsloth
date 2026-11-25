@@ -53,8 +53,13 @@ def _block(patched):
     )
     assert match is not None
     assert patched.count("set_vllm_untruncated_logprobs") == 1
-    # Before generation, so the first rollout batch already carries untruncated logprobs.
-    assert match.start() < patched.index("if self.use_vllm")
+    # First statement of the body, so the flag describes the rollouts this call generates.
+    header = re.search(r"def _generate_and_score_completions\([^)]*\)[^:\n]*:[ \t]*\n", patched)
+    assert match.start() == header.end() - 1
+    first_generate = min(
+        i for i in (patched.find(x, header.end()) for x in ("generate(", "_generate(")) if i != -1
+    )
+    assert match.end() < first_generate
     return "def run(self):\n" + textwrap.indent(textwrap.dedent(match.group(0)), "    ")
 
 

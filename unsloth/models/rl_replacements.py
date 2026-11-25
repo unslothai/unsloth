@@ -3570,20 +3570,29 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
         )
 
     # Colocated vLLM IS: ask the engine for temperature-scaled logprobs from before min_p / top_k / top_p, so the
-    # ratio compares full-vocabulary distributions and the trainer skips the kept-set rebuild (zoo decides per trainer).
-    _untruncated_anchor = "\n        max_left_pad = None\n"
-    if function.count(_untruncated_anchor) == 1:
-        function = function.replace(
-            _untruncated_anchor,
-            _untruncated_anchor + "        try:\n"
-            "            from unsloth_zoo.vllm_utils import set_vllm_untruncated_logprobs as _unsloth_untruncated\n"
-            "            self._unsloth_vllm_untruncated_logprobs = bool(_unsloth_untruncated(\n"
-            "                getattr(self, 'use_vllm', False)\n"
-            "                and getattr(self, 'vllm_importance_sampling_correction', False)\n"
-            "                and (getattr(self, 'llm', None) or getattr(getattr(self, 'vllm_generation', None), 'llm', None)) is not None\n"
-            "            ))\n"
-            "        except Exception:\n"
-            "            self._unsloth_vllm_untruncated_logprobs = False\n",
+    # ratio compares full-vocabulary distributions and the trainer skips the kept-set rebuild. First in the body:
+    # the flag must describe the rollouts this call generates (zoo decides per trainer).
+    _untruncated_header = re.search(
+        r"\n?([ \t]*)def _generate_and_score_completions\([^)]*\)[^:\n]*:[ \t]*\n", function
+    )
+    if _untruncated_header is not None and "set_vllm_untruncated_logprobs" not in function:
+        _body = re.match(r"([ \t]+)", function[_untruncated_header.end() :])
+        _indent = _body.group(1) if _body else _untruncated_header.group(1) + "    "
+        _setter = (
+            "try:\n"
+            "    from unsloth_zoo.vllm_utils import set_vllm_untruncated_logprobs as _unsloth_untruncated\n"
+            "    self._unsloth_vllm_untruncated_logprobs = bool(_unsloth_untruncated(\n"
+            "        getattr(self, 'use_vllm', False)\n"
+            "        and getattr(self, 'vllm_importance_sampling_correction', False)\n"
+            "        and (getattr(self, 'llm', None) or getattr(getattr(self, 'vllm_generation', None), 'llm', None)) is not None\n"
+            "    ))\n"
+            "except Exception:\n"
+            "    self._unsloth_vllm_untruncated_logprobs = False\n"
+        )
+        function = (
+            function[: _untruncated_header.end()]
+            + textwrap.indent(_setter, _indent)
+            + function[_untruncated_header.end() :]
         )
 
     return function
