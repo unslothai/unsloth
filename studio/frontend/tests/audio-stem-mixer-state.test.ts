@@ -122,6 +122,9 @@ test("long multi-byte titles keep stem and zip names under 255 bytes", () => {
     assert.ok(stem.endsWith(" - Instrumental.wav"));
     assert.ok(bytes(stem) <= 255, `${bytes(stem)} bytes`);
     assert.ok(bytes(stemZipName(title)) <= 255);
+    const clip = clipFileName({ prompt: title, workflow: "speak" });
+    assert.ok(clip.endsWith(" - Text to Speech.wav"));
+    assert.ok(bytes(clip) <= 255, `${bytes(clip)} bytes`);
   }
   assert.equal(
     stemFileName("音".repeat(70), "Vocals"),
