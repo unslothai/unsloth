@@ -4,10 +4,7 @@
 """Token-aware SFT micro-batches: UNSLOTH_TOKEN_BALANCE=1 keeps num_items_in_batch unchanged;
 UNSLOTH_TOKEN_BUDGET passes sum to the unsplit loss.
 
-Under multi-process data parallel (WORLD_SIZE > 1) balancing is on by default (UNSLOTH_TOKEN_BALANCE
-unset or "auto"): the gradient all-reduce waits for the rank with the most tokens, and each step keeps
-exactly its rows, so the loss is unchanged. It engages only when rows can move between ranks
-(average_tokens_across_devices) and every exactness check passes; UNSLOTH_TOKEN_BALANCE=0 turns it off.
+Under torchrun (WORLD_SIZE > 1) balancing across ranks is the default; UNSLOTH_TOKEN_BALANCE=0 turns it off.
 
 UNSLOTH_TOKEN_BALANCE=labels also regroups rows across UNSLOTH_TOKEN_BALANCE_WINDOW (default 8)
 consecutive optimizer steps so every step carries a similar number of supervised tokens (shifted
@@ -386,7 +383,7 @@ def _arrow_lengths(dataset):
     try:
         import pyarrow.compute as pc
 
-        # A set_transform / with_transform output may not be the stored column.
+        # A transform may not return the stored column.
         if getattr(dataset, "_format_type", None) == "custom":
             return None
         lengths = pc.list_value_length(dataset.data.column("input_ids"))
@@ -502,7 +499,6 @@ def _data_parallel_world():
 def _balance_mode():
     value = os.environ.get(_TOKEN_BALANCE_ENV, "auto").strip().lower()
     if value in ("", "auto"):
-        # Default under torchrun: balance tokens across data-parallel ranks (see the module docstring).
         return "auto" if _data_parallel_world() > 1 else None
     if value in ("1", "true", "yes", "on", "exact", "tokens"):
         return "exact"
@@ -627,7 +623,7 @@ def _balance_dataloader(
         getattr(trainer, "is_deepspeed_enabled", False)
         or getattr(trainer, "is_fsdp_enabled", False)
     ):
-        # The default covers DDP and Unsloth's native FSDP2; DeepSpeed / accelerate FSDP stay opt-in.
+        # DeepSpeed / accelerate FSDP stay opt-in.
         return False
     # The labels mode regroups rows across steps (a data order change), so it does not need the
     # within-step exactness guards; it then length-balances inside each step only when they pass.
@@ -680,7 +676,6 @@ def _balance_dataloader(
     # Moving rows between ranks keeps the loss exact only when the token count is global.
     cross_rank = world_size > 1 and bool(getattr(args, "average_tokens_across_devices", False))
     if auto and not cross_rank:
-        # The default only evens out ranks; one rank's accumulation slots stay as the user ordered them.
         return False
     batch_sampler.sampler = TokenBalancedSampler(
         sampler,
