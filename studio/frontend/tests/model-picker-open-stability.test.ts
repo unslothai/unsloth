@@ -72,3 +72,12 @@ test("a failed stale refresh is rerun by the next page request, rows kept", asyn
   assert.match(dead, /setRefreshTick\(\(n\) => n \+ 1\)/, "pagination must not stay dead");
   assert.match(src, /retryNonce,\s+refreshTick,\s+queryKey,/, "the rerun keeps the query, so revalidate keeps the rows");
 });
+
+test("a page request during a stale refresh is queued and sent once it lands", async () => {
+  const src = await readText(PAGINATED);
+  const busy = body(src, "if (busyRef.current) {\n      if (busyKindRef", "const iter = iterRef.current;");
+  assert.match(busy, /busyKindRef\.current === "initial" && revalidatingRef\.current[\s\S]*?queuedAfterBusyRef\.current = true;/);
+  const settle = body(src, ".finally(() => {", "return () => {");
+  assert.match(settle, /if \(revalidate && queuedAfterBusyRef\.current\) \{[\s\S]*?fetchMoreRef\.current\(\);/);
+  assert.match(src, /fetchMoreRef\.current = fetchMore;/);
+});

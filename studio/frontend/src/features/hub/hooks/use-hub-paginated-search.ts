@@ -94,6 +94,8 @@ export function useHubPaginatedSearch<T>(
   const [retryNonce, setRetryNonce] = useState(0);
   const [refreshTick, setRefreshTick] = useState(0);
   const staleFailedRef = useRef(false);
+  const revalidatingRef = useRef(false);
+  const fetchMoreRef = useRef<() => boolean>(() => false);
   // A thrown async generator is closed, so a failed page can only be restarted.
   const iterDeadRef = useRef(false);
   const queryKey = useMemo(
@@ -201,6 +203,7 @@ export function useHubPaginatedSearch<T>(
     const busyToken = ++busyTokenRef.current;
     busyRef.current = true;
     busyKindRef.current = "initial";
+    revalidatingRef.current = revalidate;
     clearDeferredFetch();
     abortRef.current?.abort();
     const controller = new AbortController();
@@ -254,6 +257,12 @@ export function useHubPaginatedSearch<T>(
         if (busyTokenRef.current === busyToken) {
           busyRef.current = false;
           busyKindRef.current = null;
+          revalidatingRef.current = false;
+          // A refresh changes no loading flag, so a sentinel already in view would not ask again.
+          if (revalidate && queuedAfterBusyRef.current) {
+            queuedAfterBusyRef.current = false;
+            fetchMoreRef.current();
+          }
         }
       });
 
@@ -283,6 +292,10 @@ export function useHubPaginatedSearch<T>(
       return false;
     }
     if (busyRef.current) {
+      if (busyKindRef.current === "initial" && revalidatingRef.current) {
+        queuedAfterBusyRef.current = true;
+        return true;
+      }
       if (busyKindRef.current === "more" && stateRef.current.isLoadingMore) {
         if (queuedAfterBusyRef.current) return false;
         queuedAfterBusyRef.current = true;
@@ -393,6 +406,7 @@ export function useHubPaginatedSearch<T>(
       });
     return true;
   }, [enabled, mapItem, cancelTrailing]);
+  fetchMoreRef.current = fetchMore;
 
   useEffect(() => {
     if (!enabled || typeof document === "undefined") return;
