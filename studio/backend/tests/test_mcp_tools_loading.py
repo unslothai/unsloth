@@ -153,7 +153,6 @@ GPU_AUTO = {"gpu_memory_mode": "auto", "gpu_layers": -1}
             {"max_seq_length": 4096, "cache_type_kv": "f16", "load_in_4bit": False},
         ),
         ({"max_seq_length": 0}, {"max_seq_length": 0, "cache_type_kv": "q8_0"}),
-        # An explicit GPU choice replaces the saved CPU placement and keeps the rest of the row.
         ({"device": "gpu"}, {"max_seq_length": 100_000, "cache_type_kv": "q8_0", **GPU_AUTO}),
     ],
 )

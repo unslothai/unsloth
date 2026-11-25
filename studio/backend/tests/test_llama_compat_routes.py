@@ -1239,7 +1239,7 @@ def test_management_load_keeps_the_matched_saved_row_key(
     """Replay and the managed path check re-read the row by this key, as after a Studio load."""
     import utils.openai_auto_switch_settings as overrides
 
-    # Only the listed id resolves (a snapshot outside the known caches): the listed alias still keys the lookup.
+    # Only the listed id resolves, so the listed alias keys the lookup.
     monkeypatch.setattr(
         _no_local_gguf,
         "resolve_local_gguf",
