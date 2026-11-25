@@ -8179,6 +8179,8 @@ html.dark[data-glass] {
   border-radius: inherit;
   overflow: hidden;
   pointer-events: none;
+  /* Own layer: without it WebKit paints a square, darker box behind a lens host's rounded corners (the update cards). */
+  transform: translateZ(0);
 }
 .glass-lens-fill,
 .glass-lens-rim {
