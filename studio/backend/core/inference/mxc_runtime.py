@@ -282,8 +282,12 @@ def demoted_by_probe(release: tuple[int, int, int] | None = None) -> bool:
         recorded = json.loads(_demoted_marker_path().read_text(encoding = "utf-8"))
     except (OSError, ValueError):
         return False
-    # Keyed on the release: a Windows update that adds the container brings 1.1.0 back.
-    return isinstance(recorded, dict) and recorded.get("windows") == label
+    # Keyed on the release and the demoted pin: a Windows update or a newer primary pin is tried again.
+    return (
+        isinstance(recorded, dict)
+        and recorded.get("windows") == label
+        and recorded.get("from") == PRIMARY_PIN.version
+    )
 
 
 def record_probe_demotion(reason: str) -> None:

@@ -786,11 +786,30 @@ def test_an_unfinished_replay_keeps_the_runtime_only_a_dacl_less_pin_would_repla
     assert "[mxc-prebuilt]" in capsys.readouterr().out
 
 
-def test_a_clean_replay_lets_a_dacl_less_pin_replace_the_runtime(tmp_path, monkeypatch):
+@pytest.mark.parametrize("drained", [True, False])
+def test_a_clean_replay_lets_a_dacl_less_pin_replace_the_runtime_once_the_journal_is_empty(
+    tmp_path, monkeypatch, drained
+):
     old = _retiring_runtime(
         tmp_path, monkeypatch, stderr = "DACL recovery: restored 2 ACE(s), 0 error(s)"
     )
-    installer._replay_retiring_journal(old, installer.mxc_runtime.PRIMARY_PIN)
+    journal = installer.mxc_runtime.dacl_state_path()
+
+    def replay(*_a, **_k):
+        if drained:
+            for entry in journal.glob("*.json"):
+                entry.unlink()
+        return SimpleNamespace(
+            returncode = 0, stdout = "{}", stderr = "DACL recovery: restored 2 ACE(s), 0 error(s)"
+        )
+
+    monkeypatch.setattr(installer.subprocess, "run", replay)
+    if drained:
+        installer._replay_retiring_journal(old, installer.mxc_runtime.PRIMARY_PIN)
+    else:
+        # A live run's entry is skipped without an error: 1.1.0 could never replay it later.
+        with pytest.raises(installer.MxcInstallError, match = "still lists entries"):
+            installer._replay_retiring_journal(old, installer.mxc_runtime.PRIMARY_PIN)
 
 
 def test_a_failed_replay_leaves_the_retiring_runtime_installed(
@@ -826,3 +845,97 @@ def test_a_failed_replay_leaves_the_retiring_runtime_installed(
     with pytest.raises(installer.MxcInstallError):
         installer.install_mxc_release(install_dir, candidate)
     assert {path.name: path.read_bytes() for path in install_dir.iterdir()} == before
+
+
+def _no_verdict(_root, pin = None):
+    raise installer.mxc_runtime.MxcRuntimeUnavailable("wxc-exec --probe exited 1 without a report")
+
+
+@pytest.mark.parametrize("legacy_installed", [True, False])
+def test_no_verdict_keeps_a_working_legacy_runtime(tmp_path, monkeypatch, legacy_installed):
+    install_dir = tmp_path / "rt"
+    monkeypatch.setattr(installer, "_is_elevated", lambda: False)
+    monkeypatch.setattr(installer.mxc_runtime, "probe_tier", _no_verdict)
+    monkeypatch.setattr(
+        installer,
+        "_already_installed",
+        lambda root, pin: legacy_installed
+        and root == install_dir
+        and pin is installer.mxc_runtime.LEGACY_PIN,
+    )
+    stage = tmp_path / ".rt-stage"
+    if legacy_installed:
+        # An unproven 1.1.0 never replaces a 1.0.1 that works; the next install asks again.
+        with pytest.raises(installer.KeptCurrentRuntime):
+            installer._require_builtin_container(stage, install_dir = install_dir)
+    else:
+        installer._require_builtin_container(stage, install_dir = install_dir)
+    # An installed 1.1.0 that cannot be probed stays: there is nothing better to keep.
+    installer._require_builtin_container(install_dir, install_dir = install_dir)
+
+
+def test_main_keeping_the_current_runtime_is_not_an_error(tmp_path, monkeypatch, capsys):
+    _auto_primary(monkeypatch, tmp_path)
+
+    def install(
+        _dir,
+        pin = None,
+        *,
+        qualify = None,
+    ):
+        raise installer.KeptCurrentRuntime(
+            "MXC 1.1.0 could not be probed; kept the installed MXC 1.0.1"
+        )
+
+    monkeypatch.setattr(installer, "install_mxc_release", install)
+    assert installer.main(["--install-dir", str(tmp_path / "rt")]) == 0
+    assert "kept the installed MXC 1.0.1" in capsys.readouterr().out
+    assert not installer.mxc_runtime.demoted_by_probe((1, 29000, 1))
+
+
+def test_an_elevated_installer_never_probes_the_candidate(tmp_path, monkeypatch):
+    monkeypatch.setattr(installer, "_is_elevated", lambda: True)
+    monkeypatch.setattr(
+        installer.mxc_runtime, "probe_tier", lambda *_a, **_k: pytest.fail("probed elevated")
+    )
+    monkeypatch.setattr(installer, "_already_installed", lambda _root, _pin: True)
+    with pytest.raises(installer.KeptCurrentRuntime, match = "elevated"):
+        installer._require_builtin_container(tmp_path / "stage", install_dir = tmp_path / "rt")
+
+
+@pytest.mark.parametrize("unreadable", ["journal", "runtime"])
+def test_an_unreadable_journal_or_runtime_blocks_only_a_dacl_less_swap(
+    tmp_path, monkeypatch, capsys, unreadable
+):
+    old = _retiring_runtime(tmp_path, monkeypatch)
+    if unreadable == "journal":
+        real_iterdir = Path.iterdir
+
+        def iterdir(self):
+            if self == installer.mxc_runtime.dacl_state_path():
+                raise PermissionError("access denied")
+            return real_iterdir(self)
+
+        monkeypatch.setattr(Path, "iterdir", iterdir)
+    else:
+
+        def unreadable_hash(_path):
+            raise PermissionError("access denied")
+
+        monkeypatch.setattr(installer.mxc_runtime, "_sha256_file", unreadable_hash)
+    with pytest.raises(installer.MxcInstallError, match = "could not be read"):
+        installer._replay_retiring_journal(old, installer.mxc_runtime.PRIMARY_PIN)
+    installer._replay_retiring_journal(old, installer.mxc_runtime.LEGACY_PIN)
+    assert "could not be read" in capsys.readouterr().out
+
+
+def test_the_marker_follows_the_install_dir_studio_home(tmp_path, monkeypatch):
+    monkeypatch.delenv("UNSLOTH_STUDIO_HOME", raising = False)
+    monkeypatch.delenv("STUDIO_HOME", raising = False)
+    install_dir = tmp_path / "custom" / "studio" / "mxc-runtime" / "windows-x86_64"
+    installer._align_studio_home(install_dir)
+    # setup.ps1 resolves UNSLOTH_HOME for --install-dir; the marker and journal now land beside it.
+    assert installer.mxc_runtime._studio_root() == tmp_path / "custom" / "studio"
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "explicit"))
+    installer._align_studio_home(install_dir)
+    assert installer.mxc_runtime._studio_root() == tmp_path / "explicit"

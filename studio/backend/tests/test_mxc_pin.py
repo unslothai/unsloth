@@ -174,6 +174,10 @@ def test_the_demotion_marker_is_keyed_on_the_windows_release(monkeypatch, tmp_pa
     # A Windows update re-opens the question: 1.1.0 is tried again.
     monkeypatch.setattr(mxc_runtime, "_windows_release", lambda: (1, 26150, 8))
     assert not mxc_runtime.demoted_by_probe()
+    # A marker left by an older primary pin never demotes a newer one.
+    marker = tmp_path / "mxc-runtime" / "pin-demoted.json"
+    marker.write_text(json.dumps({"windows": "1:26150.8", "from": "1.0.9"}), encoding = "utf-8")
+    assert not mxc_runtime.demoted_by_probe()
     (tmp_path / "mxc-runtime" / "pin-demoted.json").write_text("not json", encoding = "utf-8")
     assert not mxc_runtime.demoted_by_probe((1, 26150, 7))
 
