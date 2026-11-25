@@ -344,7 +344,7 @@ unsloth studio -p 8888
 
 #### Advanced launch options
 
-Skip PyTorch (Chat only mode: GGUF models, plus MLX models on Apple Silicon):
+Installer options are environment variables. Set them in front of the install command, for example to skip PyTorch:
 ```bash
 curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_NO_TORCH=1 sh
 ```
@@ -352,97 +352,34 @@ curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_NO_TORCH=1 sh
 $env:UNSLOTH_NO_TORCH=1; irm https://unsloth.ai/install.ps1 | iex
 ```
 
-Skip the post-install prompt that starts Unsloth (useful for automated installs):
-```bash
-curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_SKIP_AUTOSTART=1 sh
-```
-```powershell
-$env:UNSLOTH_SKIP_AUTOSTART=1; irm https://unsloth.ai/install.ps1 | iex
-```
+| Variable | Effect |
+| --- | --- |
+| `UNSLOTH_NO_TORCH=1` | Skip PyTorch. Chat only mode: GGUF models, plus MLX models on Apple Silicon. |
+| `UNSLOTH_LLAMA_CPP_BACKEND=vulkan` | Pick the `llama.cpp` build for GGUF chat: `vulkan`, `cpu`, `cuda`, `rocm` or `auto`. PyTorch is chosen separately. |
+| `UNSLOTH_PYTHON=3.12` | Pin the Python version. |
+| `UNSLOTH_STUDIO_HOME=/abs/path` | Install to a custom location (`C:\path` on Windows). |
+| `UNSLOTH_SKIP_AUTOSTART=1` | Skip the post-install prompt that starts Unsloth (automated installs). |
 
-Keep the install-time package cache under the Unsloth Studio directory instead of reusing an existing uv cache. Downloads are slower the first time, and an explicit `UV_CACHE_DIR` still wins over this:
-```bash
-curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_ISOLATE_UV_CACHE=1 sh
-```
-```powershell
-$env:UNSLOTH_ISOLATE_UV_CACHE=1; irm https://unsloth.ai/install.ps1 | iex
-```
-For a local run the flag is `--isolated-uv-cache`:
-```bash
-./install.sh --local --isolated-uv-cache
-```
-```powershell
-.\install.ps1 --local --isolated-uv-cache
-```
+Cap Unsloth's native CPU thread pools on high-core hosts at launch: `UNSLOTH_CPU_THREADS=8 unsloth studio -p 8888`.
 
-Discard the previous environment immediately when reinstalling, instead of keeping a copy until the new one works. A reinstall normally holds both at once, so it needs room for two; this needs room for one, at the cost of not being able to undo a failed install:
-```bash
-curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_INSTALL_NO_ROLLBACK=1 sh
-```
-```powershell
-$env:UNSLOTH_INSTALL_NO_ROLLBACK=1; irm https://unsloth.ai/install.ps1 | iex
-```
-For a local run the flag is `--no-rollback`:
-```bash
-./install.sh --local --no-rollback
-```
-```powershell
-.\install.ps1 --local --no-rollback
-```
+<details>
+<summary>More installer options: PyTorch index, uv cache, rollback, npm mirror, audio.cpp</summary>
 
-Pinning the Python version:
-```bash
-curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_PYTHON=3.12 sh
-```
-```powershell
-$env:UNSLOTH_PYTHON='3.12'; irm https://unsloth.ai/install.ps1 | iex
-```
+| Variable | Local flag | Effect |
+| --- | --- | --- |
+| `UNSLOTH_TORCH_INDEX_FAMILY=cpu` | | Set the PyTorch index family, e.g. `cpu` or `rocm7.2`. |
+| `UNSLOTH_ISOLATE_UV_CACHE=1` | `--isolated-uv-cache` | Keep the package cache under the Studio directory instead of reusing an existing uv cache. Slower first download; an explicit `UV_CACHE_DIR` still wins. |
+| `UNSLOTH_INSTALL_NO_ROLLBACK=1` | `--no-rollback` | Discard the previous environment immediately on reinstall. Needs disk room for one environment instead of two, but a failed install cannot be undone. |
+| `UNSLOTH_NPM_REGISTRY=https://...` | | Point the frontend build at a corporate npm mirror or proxy (`./install.sh --local`). |
 
-Install to a custom location with `UNSLOTH_STUDIO_HOME`:
-```bash
-curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_STUDIO_HOME=/abs/path sh
-```
-```powershell
-$env:UNSLOTH_STUDIO_HOME='C:\path'; irm https://unsloth.ai/install.ps1 | iex
-```
+Local flags go after `--local`, e.g. `./install.sh --local --no-rollback` or `.\install.ps1 --local --no-rollback`.
 
-Point the frontend build at a corporate npm mirror/proxy with `UNSLOTH_NPM_REGISTRY`:
-```bash
-UNSLOTH_NPM_REGISTRY=https://artifactory.example.com/api/npm/npm/ ./install.sh --local
-```
-```powershell
-$env:UNSLOTH_NPM_REGISTRY='https://artifactory.example.com/api/npm/npm/'; .\install.ps1 --local
-```
-
-Cap Unsloth's native CPU thread pools on high-core hosts: `UNSLOTH_CPU_THREADS=8 unsloth studio -p 8888`.
-
-#### Vulkan, custom llama.cpp backends:
-
-Choose the `llama.cpp` build for GGUF chat at install time. The installer chooses PyTorch separately based on your GPU.
-```bash
-export UNSLOTH_LLAMA_CPP_BACKEND=vulkan   # or cpu, cuda, rocm, auto
-curl -fsSL https://unsloth.ai/install.sh | sh
-```
-```powershell
-$env:UNSLOTH_LLAMA_CPP_BACKEND="vulkan"   # or cpu, cuda, rocm, auto
-irm https://unsloth.ai/install.ps1 | iex
-```
-
-Set the PyTorch index family.
-```bash
-curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_TORCH_INDEX_FAMILY=cpu sh   # or a family like rocm7.2
-```
-For chat only (GGUF models, plus MLX models on Apple Silicon), skip PyTorch.
-```bash
-curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_NO_TORCH=1 sh
-```
-
-#### audio.cpp audio engine:
-
-Setup also installs [audio.cpp](https://github.com/0xShug0/audio.cpp) (prebuilt by [unslothai/audio.cpp](https://github.com/unslothai/audio.cpp)), which runs the audio.cpp speech, music and speech-to-text models on the Audio page, in Voice settings and behind `/v1/audio/*`. It is optional and never blocks setup:
+Setup also installs [audio.cpp](https://github.com/0xShug0/audio.cpp) (prebuilt by [unslothai/audio.cpp](https://github.com/unslothai/audio.cpp)) for the speech, music and speech-to-text models on the Audio page, in Voice settings and behind `/v1/audio/*`. It is optional and never blocks setup:
 - `UNSLOTH_SKIP_AUDIO_CPP_INSTALL=1` skips it.
 - `UNSLOTH_AUDIO_CPP_ACCELERATOR=cpu` (or `cuda`, `vulkan`, `metal`) picks the bundle instead of auto-detecting.
 - `AUDIOCPP_SERVER_PATH=/path/to/audiocpp_server` uses your own build.
+
+</details>
 
 #### Uninstall
 
