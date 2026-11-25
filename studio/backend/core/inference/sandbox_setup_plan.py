@@ -447,19 +447,20 @@ def _windows_plan() -> SetupPlan:
         return SetupPlan(platform = sys.platform, reason = _UNSUPPORTED_NOTES[unsupported])
     if not mxc_runtime.selected_pin().has_host_prep:
         # MXC 1.1.0 runs only in Windows' built-in container: no fallback sandbox to allow or prepare.
-        if windows_runtime_installed():
-            return SetupPlan(
-                platform = sys.platform,
-                reason = "MXC is installed, but its live check did not pass.",
-            )
         step = tuple(windows_runtime_install_command())
         # The same action as the fallback setup, so Chat and Settings offer it, minus consent and elevation.
+        # Installed but failing: the installer probes it again and moves a PC without the container to 1.0.1.
         return SetupPlan(
             platform = sys.platform,
             action = WINDOWS_SETUP,
             steps = (step,),
             manual_command = powershell_command((step,)),
-            reason = "The MXC runtime is not installed.",
+            reason = (
+                "MXC is installed, but its live check did not pass; installing again checks which MXC "
+                "this Windows can run."
+                if windows_runtime_installed()
+                else "The MXC runtime is not installed."
+            ),
         )
     installed = windows_runtime_installed()
     missing = None
