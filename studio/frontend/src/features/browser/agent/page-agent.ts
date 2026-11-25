@@ -376,15 +376,15 @@ export function installPageAgent(): PageAgent {
       used += line.length + 1;
     };
     const flush = (code = false) => {
-      let text = bufferKeepsLines ? buffer.replace(/[^\S\n]+$/gm, "").replace(/^\n+|\s+$/g, "") : clean(buffer, Infinity);
-      if (code && text) text = `\`\`\`\n${text}\n\`\`\``;
+      const text = bufferKeepsLines ? buffer.replace(/[^\S\n]+$/gm, "").replace(/^\n+|\s+$/g, "") : clean(buffer, Infinity);
       // A lone symbol is an icon or a bullet; a lone digit or letter is a count or a grade.
       if (text && bufferShown && (text.length > 1 || /[\p{L}\p{N}]/u.test(text))) {
-        const room = budget - used - 1;
-        if (text.length > room && room > 1) {
-          push(`${text.slice(0, room - 1)}…`);
-          cut = true;
-        } else push(text);
+        // Cut inside the fence so the "more below" note never lands in an open code block.
+        const room = budget - used - 1 - (code ? 8 : 0);
+        const fits = text.length <= room || room <= 1;
+        const body = fits ? text : `${text.slice(0, room - 1)}…`;
+        push(code ? `\`\`\`\n${body}\n\`\`\`` : body);
+        if (!fits) cut = true;
       }
       buffer = "";
       bufferShown = false;

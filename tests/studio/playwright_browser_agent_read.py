@@ -77,5 +77,13 @@ def test_page_text_stays_within_the_budget(page):
     assert text.endswith("(more below: use browser_scroll, browser_find, or a snapshot ref)")
 
 
+def test_cut_code_block_still_closes_its_fence(page):
+    code = "\n".join(f"line_{i} = {i}" for i in range(2000))
+    text = page(f"<p>Example:</p><pre><code>{code}</code></pre>")
+    body = text.rsplit("\n…", 1)[0]
+    assert body.endswith("…\n```")
+    assert body.count("```") == 2
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q", "--confcutdir", str(Path(__file__).parent)]))
