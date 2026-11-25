@@ -1380,8 +1380,14 @@ def _compile_repeated_blocks(
     except Exception as exc:  # noqa: BLE001 - optimisation only
         _warn(logger, "sdpa aot cache", exc)
     if unet is not None:
-        # dynamic always False, so each new (height, width, batch) recompiles.
-        unet_kwargs: dict[str, Any] = {"fullgraph": kwargs["fullgraph"], "dynamic": False}
+        # dynamic False, so each new (height, width, batch) recompiles; automatic dynamic where the static GroupNorm
+        # reductions would not split on this card (unet_static_reductions_unsplit).
+        unet_kwargs: dict[str, Any] = {
+            "fullgraph": kwargs["fullgraph"],
+            "dynamic": None
+            if not max_autotune and unet_static_reductions_unsplit(unet, logger)
+            else False,
+        }
         if max_autotune:
             unet_kwargs["mode"] = "max-autotune-no-cudagraphs"
         if filter_reductions:
@@ -1522,6 +1528,48 @@ def unet_compiles_regionally(unet: Any, *, max_autotune: bool = False) -> bool:
 
 
 _UNET_RECOMPILE_LIMIT = 256
+
+# "0" keeps every U-Net block compile static (dynamic=False) on small cards too.
+UNET_SMALL_CARD_DYNAMIC_ENV = "UNSLOTH_DIFFUSION_UNET_SMALL_CARD_DYNAMIC"
+# Rows of a U-Net GroupNorm at a CFG batch of 2: 2 x 32 groups.
+_UNET_CFG_GROUPNORM_ROWS = 64
+
+
+def unet_static_reductions_unsplit(unet: Any = None, logger: Any = None) -> bool:
+    """Whether a static (dynamic=False) compile of the U-Net blocks would run their GroupNorm reductions unsplit.
+
+    Inductor splits a reduction only while its rows stay under twice the SM count. A CFG U-Net's GroupNorm has 64 rows
+    (batch 2 x 32 groups), so on a card with at most 32 SMs each row of the 960 / 640-channel 128x128 up-block maps
+    (491_520 elements) runs as one loop: on a 24-SM RTX 4060 Laptop that fused GroupNorm + SiLU took 43 ms a call and
+    the SDXL step 714 ms against 562 eager. Automatic dynamic shapes (dynamic=None) compile those blocks with symbolic
+    sizes: 570 ms. Never raises; False off CUDA or when the card is unreadable."""
+    if (os.environ.get(UNET_SMALL_CARD_DYNAMIC_ENV) or "").strip().lower() in ("0", "off", "false", "no"):
+        return False
+    try:
+        import torch
+
+        if not torch.cuda.is_available():
+            return False
+        index = None
+        for tensor in (unet.parameters() if unet is not None else ()):
+            if tensor.device.type == "cuda":
+                index = tensor.device.index
+            break
+        if index is None:
+            index = torch.cuda.current_device()
+        sms = int(torch.cuda.get_device_properties(index).multi_processor_count)
+    except Exception:  # noqa: BLE001 - unreadable: the static compile as before
+        return False
+    unsplit = 0 < sms and 2 * sms <= _UNET_CFG_GROUPNORM_ROWS
+    if unsplit and logger is not None:
+        logger.info(
+            "diffusion.speed: U-Net blocks compile with automatic dynamic shapes: %d SMs would leave a static "
+            "compile's %d-row GroupNorm reductions unsplit (%s=0 keeps them static)",
+            sms,
+            _UNET_CFG_GROUPNORM_ROWS,
+            UNET_SMALL_CARD_DYNAMIC_ENV,
+        )
+    return unsplit
 
 
 def _compile_unet_blocks(unet: Any, unet_kwargs: dict[str, Any], logger: Any) -> bool:
