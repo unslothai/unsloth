@@ -467,6 +467,7 @@ from .diffusion_fp16_hosted_int8 import (
     fp16_card_hosted_int8_planned_scheme,
     fp16_card_hosted_int8_reason,
     fp16_card_hosted_int8_transformer,
+    small_host_hosted_int8_reason,
 )
 from .diffusion_hosted_vae import hosted_vae_pipe_kwargs, hosted_vae_plan_files
 from .diffusion_fp16_variant import (
@@ -7628,6 +7629,8 @@ class DiffusionBackend:
                         kwargs.get("memory_mode"), bool(kwargs.get("cpu_offload"))
                     ),
                     has_lora = _has_active_lora(kwargs.get("loras")),
+                    base = kwargs.get("base_repo"),
+                    cache_dir = hub_cache_dir(),
                 )
                 if native_scheme is None or kwargs.get("transformer_prequant_path"):
                     return None
@@ -9878,6 +9881,22 @@ class DiffusionBackend:
                     and not _memory_request_forces_offload(memory_mode, cpu_offload)
                     else None
                 )
+                small_host_hosted = (
+                    small_host_hosted_int8_reason(
+                        fam,
+                        target,
+                        base = base,
+                        cache_dir = hub_cache_dir(),
+                        require_cached = True,
+                        has_lora = _has_active_lora(loras),
+                    )
+                    if turing_auto_int8 is None
+                    and transformer_quant == TQ_AUTO
+                    and kind == "pipeline"
+                    and not _memory_request_forces_offload(memory_mode, cpu_offload)
+                    else None
+                )
+                turing_auto_int8 = turing_auto_int8 or small_host_hosted
                 if turing_auto_int8 is not None:
                     logger.info(
                         "diffusion.transformer_quant: auto picks int8 on this Turing GPU (%s; "
@@ -11041,6 +11060,16 @@ class DiffusionBackend:
                                         transformer_quant_artifact = getattr(
                                             hosted_native, "_unsloth_prequant_artifact", None
                                         )
+                                if small_host_hosted is not None and hosted_native_scheme is None:
+                                    # Hosted read declined: restore AUTO exactly as without the hosted file.
+                                    logger.info(
+                                        "diffusion.small_host: the hosted int8 ConvRot DiT was not read; AUTO keeps "
+                                        "the small-host per-row int8 build (%s)",
+                                        small_host_hosted,
+                                    )
+                                    transformer_quant = TQ_AUTO
+                                    transformer_quant_pinned = native_scheme = None
+                                    turing_auto_int8 = small_host_hosted = None
                                 if (
                                     pipeline_seed_scheme is None
                                     and _pipeline_prequant_skipped
@@ -11338,6 +11367,14 @@ class DiffusionBackend:
                                         fam,
                                         logger,
                                         _load_token,
+                                    )
+                                if (
+                                    small_host_hosted is not None
+                                    and hosted_native_scheme is not None
+                                    and pipe is not None
+                                ):
+                                    plan = self._mark_small_host_hosted(
+                                        pipe, plan, small_host_hosted, fam, logger
                                     )
                         elif kind in ("single_file", "gguf") and fam.single_file_is_pipeline:
                             # A single-file SDXL-style checkpoint is the WHOLE pipeline: load it through the pipeline
@@ -14870,6 +14907,20 @@ class DiffusionBackend:
         logger.info("diffusion.small_host: %s", info["components"])
         return self._small_host_plan(pipe, plan, fam, logger)
 
+    def _mark_small_host_hosted(
+        self, pipe: Any, plan: Any, reason: str, fam: Any, logger: Any
+    ) -> Any:
+        """Mark and place the hosted int8 DiT exactly as the small-host route's per-row int8 build."""
+        from .diffusion_small_host import mark
+
+        info = dict(small_host_engaged_on(pipe) or {"reason": reason})
+        components = dict(info.get("components") or {})
+        components["transformer"] = SMALL_HOST_HOSTED_INT8_COMPONENT
+        info["components"] = components
+        mark(pipe, info)
+        logger.info("diffusion.small_host: %s", components)
+        return self._small_host_plan(pipe, plan, fam, logger)
+
     def _small_host_encoders_resident(
         self,
         pipe: Any,
@@ -18190,6 +18241,11 @@ def _small_host_int8(pipe: Any) -> bool:
     info = small_host_engaged_on(pipe) or {}
     return any(str(v).startswith("int8") for v in (info.get("components") or {}).values())
 
+
+# Must start with "int8" but not "int8 weights" (that prefix means the per-row build, re-armed for W8A8).
+SMALL_HOST_HOSTED_INT8_COMPONENT = (
+    "int8 ConvRot weights (hosted checkpoint, memory-mapped, native W8A8)"
+)
 
 SMALL_HOST_INT8_REASON = (
     "system RAM is too small for the dense float16 transformer, so the small-host route stores it as per-row int8 "
