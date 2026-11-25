@@ -12,12 +12,15 @@ import { useShallow } from "zustand/react/shallow";
 
 export type TrainSubTab = "configure" | "current-run" | "history";
 
-function initialStudioTab(
+function studioTabFor(
   selectedHistoryRunId: string | null,
+  jobId: string | null,
   trainingRunActive: boolean,
 ): TrainSubTab {
   if (selectedHistoryRunId) {
-    return "history";
+    return trainingRunActive && selectedHistoryRunId === jobId
+      ? "current-run"
+      : "history";
   }
   return trainingRunActive ? "current-run" : "configure";
 }
@@ -55,10 +58,10 @@ function runtimeRequestedTab({
 }): TrainSubTab | null {
   if (
     selectedHistoryRunId &&
-    selectedHistoryRunId !== previousSelectedHistoryRunId &&
-    requestedTab !== "history"
+    selectedHistoryRunId !== previousSelectedHistoryRunId
   ) {
-    return "history";
+    const tab = studioTabFor(selectedHistoryRunId, jobId, trainingRunActive);
+    return tab === requestedTab ? null : tab;
   }
   if (
     ((jobId !== null && jobId !== previousJobId && trainingRunActive) ||
@@ -111,18 +114,16 @@ export function useStudioNavigation() {
     })),
   );
   const [requestedTab, setRequestedTabState] = useState<TrainSubTab>(() =>
-    initialStudioTab(selectedHistoryRunId, trainingRunActive),
+    studioTabFor(selectedHistoryRunId, currentJobId, trainingRunActive),
   );
   const requestedTabRef = useRef(requestedTab);
   const setRequestedTab = useCallback((next: TrainSubTab) => {
     requestedTabRef.current = next;
     setRequestedTabState(next);
   }, []);
-  const activeTab = activeStudioTab(
-    requestedTab,
-    trainingRunActive,
-    showTrainingView,
-  );
+  const activeTab = selectedHistoryRunId
+    ? studioTabFor(selectedHistoryRunId, currentJobId, trainingRunActive)
+    : activeStudioTab(requestedTab, trainingRunActive, showTrainingView);
 
   useEffect(() => {
     setCurrentRunViewActive(activeTab === "current-run");
@@ -132,19 +133,6 @@ export function useStudioNavigation() {
   useEffect(() => {
     return () => setSelectedHistoryRunId(null);
   }, [setSelectedHistoryRunId]);
-
-  useEffect(() => {
-    if (activeTab !== "current-run" || selectedHistoryRunId === null) {
-      return;
-    }
-    if (
-      requestedTabRef.current === "current-run" &&
-      useTrainingRuntimeStore.getState().selectedHistoryRunId ===
-        selectedHistoryRunId
-    ) {
-      setSelectedHistoryRunId(null);
-    }
-  }, [activeTab, selectedHistoryRunId, setSelectedHistoryRunId]);
 
   useEffect(() => {
     return useTrainingRuntimeStore.subscribe((state, previousState) => {
@@ -171,37 +159,23 @@ export function useStudioNavigation() {
   const handleTabChange = useCallback(
     (value: TrainSubTab) => {
       setRequestedTab(value);
-      if (value !== "history") {
-        setSelectedHistoryRunId(null);
-      }
+      setSelectedHistoryRunId(null);
     },
     [setRequestedTab, setSelectedHistoryRunId],
   );
 
   const clearHistorySelection = useCallback(() => {
-    setSelectedHistoryRunId(null);
-  }, [setSelectedHistoryRunId]);
-
-  const handleHistoryRunSelected = useCallback(
-    (runId: string) => {
-      if (runId === currentJobId && trainingRunActive) {
-        handleTabChange("current-run");
-        return;
-      }
-      setSelectedHistoryRunId(runId);
-    },
-    [currentJobId, handleTabChange, setSelectedHistoryRunId, trainingRunActive],
-  );
+    handleTabChange("history");
+  }, [handleTabChange]);
 
   const handleResumeStarted = useCallback(() => {
-    setSelectedHistoryRunId(null);
     handleTabChange("current-run");
-  }, [handleTabChange, setSelectedHistoryRunId]);
+  }, [handleTabChange]);
 
   return {
     activeTab,
     clearHistorySelection,
-    handleHistoryRunSelected,
+    handleHistoryRunSelected: setSelectedHistoryRunId,
     handleResumeStarted,
     handleTabChange,
     trainingRunActive,
