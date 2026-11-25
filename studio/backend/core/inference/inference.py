@@ -2000,7 +2000,7 @@ class InferenceBackend:
         yield from run_safetensors_tool_loop(
             markup = markup_for_tokenizer(_model_info.get("tokenizer"), tools, _mapped_tpl),
             split_reasoning_content = replays_reasoning_content(
-                _model_info.get("tokenizer"), _model_info, tools
+                _model_info.get("tokenizer"), _model_info, tools, _mapped_tpl
             ),
             renderable_tools = renderable_tool_catalog(
                 tools,

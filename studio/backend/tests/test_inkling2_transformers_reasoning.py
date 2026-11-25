@@ -5,6 +5,7 @@
 
 import json
 import sys
+from types import SimpleNamespace
 from pathlib import Path
 
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
@@ -61,6 +62,12 @@ def test_template_selects_the_inkling_markers():
     # The orchestrator has no tokenizer: the forwarded template decides, and only Inkling's does.
     assert replays_reasoning_content(None, {"chat_template_info": {"template": INKLING_TEMPLATE}})
     assert not replays_reasoning_content(None, {"chat_template_info": {"template": "<think>"}})
+    # An override renders, so the cached native Inkling template must not turn the split on.
+    native = {"native_chat_template": INKLING_TEMPLATE}
+    override = SimpleNamespace(chat_template = "{{ messages[0].content }}<think>")
+    assert not replays_reasoning_content(override, native)
+    assert not replays_reasoning_content(None, native, template = "{{ messages }}")
+    assert replays_reasoning_content(SimpleNamespace(chat_template = INKLING_TEMPLATE), native)
 
 
 def test_thought_then_answer():
