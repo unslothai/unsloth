@@ -5,8 +5,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { readSrc } from "./helpers/kit.ts";
 
-// A bare duration-* sets transition-duration with the default transition-property: all, so the
-// distant-row flex-shrink flip animates the row's height and moves the reply below it.
+// A bare duration-* transitions `all`, so the distant-row flex-shrink flip collapses the row for a frame.
 test("the user message row does not transition its layout", () => {
   const thread = readSrc("components/assistant-ui/thread.tsx");
   const start = thread.indexOf("const UserMessage: FC");
