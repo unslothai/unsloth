@@ -191,12 +191,14 @@ def _ep_experts(shard, prior, hidden, index, weights):
     x = hidden.reshape(-1, shape[-1])
     tokens = x.shape[0]
     index = index.reshape(tokens, -1)
-    if (
+    dense = (
         weights.dim() == 2
         and weights.shape[-1] == shard.experts
         and index.shape[-1] != shard.experts
-    ):
-        weights = weights.gather(1, index)  # dense [tokens, E] routing weights
+    )
+    if dense:
+        # Dense [tokens, E] routing weights (gpt-oss on transformers 4.x): only the top-k columns travel.
+        weights = weights.gather(1, index)
     weights = weights.reshape(tokens, -1)
     # Each token goes once to every rank owning one of its experts.
     owner = torch.div(index, shard.per_rank, rounding_mode = "floor").clamp_(0, ep - 1)
@@ -222,8 +224,13 @@ def _ep_experts(shard, prior, hidden, index, weights):
         xc = got_x.index_select(0, row)
         ic = (got_index[row, slot] - lo).unsqueeze(1)
         wc = got_w[row, slot].unsqueeze(1)
+    if dense:
+        # The experts read routing_weights[token, local expert] and take its width as their expert count
+        # (an index equal to it is the "no expert" class), so rebuild a dense [rows, E / ep] tensor.
+        wc = wc.new_zeros((wc.shape[0], shard.per_rank)).scatter(1, ic, wc)
     with tpn._expert_locals(shard):
         yc = prior(xc, ic, wc)
+    yc = yc.reshape(-1, yc.shape[-1])  # transformers 4.x gpt-oss returns [rows, 1, hidden]
     y_got = yc.new_zeros((got_x.shape[0], yc.shape[-1]))
     if row.numel():
         y_got = y_got.index_add(0, row, yc)

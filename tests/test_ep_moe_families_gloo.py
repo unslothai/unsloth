@@ -156,6 +156,62 @@ def _build(
     return model
 
 
+def _transformers4_gpt_oss_contract():
+    """gpt-oss as transformers 4.x runs it, on any version: the router returns dense [tokens, E] scores, the
+    experts take their expert count from routing_weights' width (an index equal to it is the "no expert" class),
+    read routing_weights[token, expert] and return [batch, -1, hidden]."""
+    import torch.nn.functional as F
+    from transformers.models.gpt_oss import modeling_gpt_oss as mod
+
+    def router_forward(self, hidden_states):
+        hidden_states = hidden_states.reshape(-1, self.hidden_dim)
+        logits = F.linear(hidden_states, self.weight, self.bias)
+        top_value, indices = torch.topk(logits, self.top_k, dim = -1)
+        top_value = torch.nn.functional.softmax(top_value, dim = 1, dtype = top_value.dtype)
+        return torch.zeros_like(logits).scatter_(1, indices, top_value), indices
+
+    def experts_forward(
+        self,
+        hidden_states,
+        router_indices = None,
+        routing_weights = None,
+    ):
+        batch_size = hidden_states.shape[0]
+        hidden_states = hidden_states.reshape(-1, self.hidden_size)
+        num_experts = routing_weights.shape[1]
+        next_states = torch.zeros_like(hidden_states)
+        with torch.no_grad():
+            mask = torch.nn.functional.one_hot(router_indices, num_classes = num_experts + 1).permute(
+                2, 1, 0
+            )
+            hit = torch.greater(mask.sum(dim = (-1, -2)), 0).nonzero()
+        for expert in hit[:]:
+            expert = expert[0]
+            if expert == num_experts:
+                continue
+            with torch.no_grad():
+                _, token = torch.where(mask[expert])
+            gate_up = (
+                hidden_states[token] @ self.gate_up_proj[expert] + self.gate_up_proj_bias[expert]
+            )
+            gate, up = gate_up[..., ::2], gate_up[..., 1::2]
+            gate = gate.clamp(min = None, max = self.limit)
+            up = up.clamp(min = -self.limit, max = self.limit)
+            out = ((up + 1) * (gate * torch.sigmoid(gate * self.alpha))) @ self.down_proj[expert]
+            out = out + self.down_proj_bias[expert]
+            next_states.index_add_(0, token, out * routing_weights[token, expert, None])
+        return next_states.view(batch_size, -1, self.hidden_size)
+
+    def mlp_forward(self, hidden_states):
+        scores, indices = self.router(hidden_states)
+        out = self.experts(hidden_states, router_indices = indices, routing_weights = scores)
+        return out.reshape(hidden_states.shape), scores
+
+    mod.GptOssTopKRouter.forward = router_forward
+    mod.GptOssExperts.forward = experts_forward
+    mod.GptOssMLP.forward = mlp_forward
+
+
 def _case_family(
     rank,
     world,
@@ -165,11 +221,14 @@ def _case_family(
     overrides = None,
     config = None,
     experts = None,
+    dense_routing = False,
 ):
     import torch.distributed as dist
     from torch.distributed.device_mesh import init_device_mesh
     from torch.nn.parallel import DistributedDataParallel
 
+    if dense_routing:
+        _transformers4_gpt_oss_contract()
     build, tpn, epn = _modules()
     if config is not None:
         repo = _local_config(tmp, rank, config)
@@ -267,7 +326,10 @@ def _zoo_like_gpt_oss_decode(enable, last_expert = False):
         bsz, qlen, hd = hidden_states.shape
         if qlen == 1 and not self.training:
             flat = hidden_states.reshape(-1, hd)
-            _, scores, indices = self.router(flat)
+            router_out = self.router(
+                flat
+            )  # transformers 5: (logits, scores, indices); 4.x: (scores, indices)
+            scores, indices = router_out[-2:]
             if last_expert:
                 indices = torch.full_like(indices, self.router.num_experts - 1)
             out = type(self.experts).forward(self.experts, flat, indices, scores)
@@ -512,6 +574,12 @@ def test_ep_family_matches_one_process(family):
         assert results[0]["has_bias_shards"] == ["down_proj_bias", "gate_up_proj_bias"], results[0][
             "has_bias_shards"
         ]
+
+
+def test_ep_gpt_oss_dense_routing_weights_match_one_process():
+    # transformers 4.x gpt-oss (dense [tokens, E] routing weights, expert count read from their width): each rank
+    # must hand its experts a dense [rows, E / ep] tensor, or it runs only its first local expert.
+    _check_family(_spawn("_case_family", repo = FAMILIES["gpt_oss"], dense_routing = True), 2)
 
 
 def test_ep_three_ranks_pad_experts_and_leave_one_rank_only_padding():
