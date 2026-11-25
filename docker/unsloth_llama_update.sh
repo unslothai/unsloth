@@ -106,6 +106,17 @@ fi
 # a sibling temp dir is on the same filesystem, so the swap is an atomic rename
 parent="$(dirname "$INSTALL_DIR")"
 
+# a SIGKILL between the two renames of the swap runs no trap and leaves only the backup
+if [ ! -e "$INSTALL_DIR" ]; then
+    stranded="$(ls -1dt -- "$INSTALL_DIR".old.* 2>/dev/null | head -n 1 || true)"
+    if [ -n "$stranded" ]; then
+        echo "[llama-update] restoring the install an interrupted update left at $stranded"
+        mv -T "$stranded" "$INSTALL_DIR"
+    else
+        echo "[llama-update] no llama.cpp at $INSTALL_DIR; installing it"
+    fi
+fi
+
 # A named volume mounted AT the install dir cannot be renamed (EBUSY), so swap its
 # CONTENTS instead. UNSLOTH_LLAMA_UPDATE_IN_PLACE=1/0 overrides autodetection.
 IN_PLACE="${UNSLOTH_LLAMA_UPDATE_IN_PLACE:-}"
@@ -113,7 +124,7 @@ if [ -z "$IN_PLACE" ]; then
     IN_PLACE=0
     if command -v mountpoint >/dev/null 2>&1 && mountpoint -q "$INSTALL_DIR" 2>/dev/null; then
         IN_PLACE=1
-    elif [ "$(stat -c %d "$INSTALL_DIR" 2>/dev/null)" != "$(stat -c %d "$parent" 2>/dev/null)" ]; then
+    elif [ -e "$INSTALL_DIR" ] && [ "$(stat -c %d "$INSTALL_DIR" 2>/dev/null)" != "$(stat -c %d "$parent" 2>/dev/null)" ]; then
         IN_PLACE=1   # filesystem boundary = a volume, on hosts without mountpoint(1)
     fi
 fi
@@ -195,12 +206,12 @@ if [ "$IN_PLACE" = "1" ]; then
         exit 1
     fi
 else
-    mv "$INSTALL_DIR" "$backup"
+    [ ! -e "$INSTALL_DIR" ] || mv "$INSTALL_DIR" "$backup"
     if mv "$new" "$INSTALL_DIR"; then
         swap_done=1
     else
         echo "[llama-update] swap failed; restoring previous install" >&2
-        mv "$backup" "$INSTALL_DIR"
+        [ ! -e "$backup" ] || mv "$backup" "$INSTALL_DIR"
         exit 1
     fi
 fi
