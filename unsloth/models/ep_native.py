@@ -126,7 +126,7 @@ def _tpn():
 
 @contextlib.contextmanager
 def expert_parallel_loading(ep_mesh = None):
-    """16-bit or bitsandbytes 4-bit loads (transformers 5) keep only this rank's routed expert stacks; others load whole."""
+    """16-bit, bitsandbytes 4-bit or block-FP8 loads (transformers 5) keep only this rank's routed expert stacks; others load whole."""
     tpn = _tpn()
     with tpn._sharded_from_pretrained(
         {
@@ -250,8 +250,7 @@ def _localize(shard, ep):
         setattr(local, _EP, (dim, groups, per, E, E_pad, ep))
         owner._parameters[name] = local
     shard.swaps = []  # nothing left to swap: the parameters are local
-    for name in tpn._EXPERT_STACKS:
-        p = shard.leaf._parameters.get(name)
+    for p in shard.leaf._parameters.values():
         if tpn._is_params4bit(p):
             p.__dict__.pop("_unsloth_tp_layout", None)
             setattr(p, _EP, ("4bit", shard.experts, ep))
@@ -320,11 +319,11 @@ def apply_expert_parallel(model, mesh = None):
     for block, problem in kept:
         chain = tpn._experts_chain(block)
         if chain and any(
-            getattr(chain[-1]._parameters.get(n), tpn._EXPERT_PRELOAD, None) is not None
-            for n in tpn._EXPERT_STACKS
+            getattr(p, tpn._EXPERT_PRELOAD, None) is not None
+            for p in chain[-1]._parameters.values()
         ):
             raise ValueError(
-                f"Unsloth: expert_parallel_loading kept only this rank's 4-bit experts of "
+                f"Unsloth: expert_parallel_loading kept only this rank's experts of "
                 f"{type(block).__name__}, but they cannot be sharded now ({problem}); load in full."
             )
     if not sharded:

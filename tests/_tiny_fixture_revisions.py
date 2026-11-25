@@ -25,6 +25,7 @@ REVISIONS = {
     "trl-internal-testing/tiny-DeepseekV3ForCausalLM": "2fb366d060ad5cea8917909f28ec1219ccb1ad2d",
     "hf-internal-testing/tiny-random-OlmoeForCausalLM": "99e4bc8eb1a024e46da438c410d7e707ed49d15a",
     "trl-internal-testing/tiny-BloomForCausalLM": "fb6f154da5e58e70d7a62bafe35c0f0da99691cb",
+    "trl-internal-testing/tiny-NemotronHForCausalLM-3.5-lightning": "0fd0a2356bc9530b41fb96f4981b52c6a2ac95fd",
 }
 
 

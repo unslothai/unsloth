@@ -1865,11 +1865,22 @@ def _moe_post_hook(module, args, output):
 # Rank r keeps ceil(E / tp) contiguous experts on the same tokens; one sum all-reduce replaces the mean (no all-to-all).
 # Uneven E is padded with zero experts the router never selects; inexact blocks keep the replicated path.
 _MOE_SHARD_ENV = "UNSLOTH_TP_MOE_SHARD"
-_EXPERT_STACKS = ("gate_up_proj", "down_proj")
 _EXPERT_CALL = ("hidden_states", "top_k_index", "top_k_weights")
 # Other names for the same experts call: gpt-oss (hidden_states, router_indices, routing_weights).
 _EXPERT_CALL_ALIASES = {"router_indices": "top_k_index", "routing_weights": "top_k_weights"}
 _EXPERT_DTYPES = (torch.float16, torch.bfloat16, torch.float32, torch.float64)
+# Frozen block-FP8 expert codes (transformers FP8Experts; e8m0 scale grids): sliced by expert, never computed on here.
+_EXPERT_CODE_DTYPES = tuple(
+    getattr(torch, n)
+    for n in (
+        "float8_e4m3fn",
+        "float8_e5m2",
+        "float8_e4m3fnuz",
+        "float8_e5m2fnuz",
+        "float8_e8m0fnu",
+    )
+    if hasattr(torch, n)
+)
 
 
 def moe_shard_enabled():
@@ -1896,6 +1907,13 @@ def _plain_float(t):
     return type(t) in (nn.Parameter, torch.Tensor) and t.dtype in _EXPERT_DTYPES
 
 
+def _plain_expert(t):
+    """A plain expert stack cut by a dim-0 slice: 16 / 32-bit, or block-FP8 codes / their scale grids."""
+    return (
+        type(t) in (nn.Parameter, torch.Tensor) and t.dtype in _EXPERT_DTYPES + _EXPERT_CODE_DTYPES
+    )
+
+
 # A bitsandbytes 4-bit expert stack (zoo moe_utils_bnb4bit: packed [n, 1] bytes, expert-major, logical shape in
 # _original_shape) sharded by expert index: rank r keeps the bytes and absmax blocks of experts [lo, hi).
 EXPERT_STACK = "expert_stack"
@@ -1908,6 +1926,20 @@ def _expert_stack_shape(p):
     if shape is None and state is not None:
         shape = state.shape
     return None if shape is None else tuple(shape)
+
+
+def expert_stacks(leaf):
+    """The routed expert stacks of an experts module: each parameter whose (logical) dim 0 is num_experts."""
+    E = leaf.__dict__.get("num_experts")
+    out = []
+    for name, p in leaf._parameters.items():
+        if p is None:
+            continue
+        shape = _expert_stack_shape(p) if _is_params4bit(p) else tuple(p.shape)
+        preload = getattr(p, _EXPERT_PRELOAD, None)  # cut by expert_parallel_loading: a local stack
+        if preload is not None or (shape and shape[0] == E):
+            out.append(name)
+    return tuple(out)
 
 
 def _expert_params4bit_problem(p, E, tp):
@@ -2089,12 +2121,14 @@ def expert_shard_problem(block, tp = None):
         b is not None for b in leaf._buffers.values()
     ):
         return "expert submodules / buffers"
-    if any(leaf._parameters.get(name) is None for name in _EXPERT_STACKS):
-        return "no fused gate_up_proj / down_proj"
+    stacks = expert_stacks(leaf)
+    if not stacks:
+        return f"no fused expert stack of {E} experts"
+    codes = False
     for name, p in leaf._parameters.items():
         if p is None:
             continue
-        if name in _EXPERT_STACKS and _is_params4bit(p):
+        if _is_params4bit(p):
             preload = getattr(p, _EXPERT_PRELOAD, None)
             if preload is not None:
                 local = (preload[0] // preload[1],) + _expert_stack_shape(p)[1:]
@@ -2109,8 +2143,9 @@ def expert_shard_problem(block, tp = None):
             if problem is not None:
                 return f"{name}: {problem}"
             continue
+        codes = codes or p.dtype in _EXPERT_CODE_DTYPES
         preload = getattr(p, _EXPERT_PRELOAD, None)
-        if preload is not None and _plain_float(p):
+        if preload is not None and _plain_expert(p):
             if (
                 preload[0] != E
                 or (tp is not None and preload[1] != tp)
@@ -2119,10 +2154,12 @@ def expert_shard_problem(block, tp = None):
             ):
                 return f"{name} was sharded by expert_parallel_loading as {preload}, not for {E} experts over {tp}"
             continue
-        if not _plain_float(p) or _preloaded(p) is not None:
+        if not _plain_expert(p) or _preloaded(p) is not None:
             return f"{name} is {type(p).__name__} {p.dtype} (quantized, packed or distributed)"
-        if p.dim() < 2 or p.shape[0] != E:
+        if p.dim() < 2 or name not in stacks:
             return f"{name} {tuple(p.shape)} is not stacked by expert"
+    if codes and tp is not None and (E % tp or E // tp < 2):
+        return f"FP8 experts: {E} experts do not split into at least 2 per rank over {tp}"
     for wrapper in wrappers:
         if type(wrapper).__name__ != "ParamWrapper" or not isinstance(
             getattr(wrapper, "lora_A", None), nn.ModuleDict
@@ -5057,22 +5094,25 @@ def _tp_load_quantizing(original, cls, name, args, kwargs, mesh, state):
         return t.numel() * t.element_size()
 
     def shard_experts(module):
-        # Both stacks of a block or neither: one cut stack would leave the block unshardable.
-        stacks = {n: module._parameters.get(n) for n in _EXPERT_STACKS}
-        if any(
-            p is None or p.is_meta or getattr(p, _EXPERT_PRELOAD, None) is not None
-            for p in stacks.values()
+        # Every stack of a block or none, once all its parameters are set: one cut stack would leave the block
+        # unshardable. Plain stacks (16-bit, block-FP8 codes and scales) are cut only under expert parallel.
+        params = {n: p for n, p in module._parameters.items() if p is not None}
+        if not params or any(
+            p.is_meta or getattr(p, _EXPERT_PRELOAD, None) is not None for p in params.values()
         ):
-            return 0
-        if all(_is_params4bit(p) for p in stacks.values()):
-            cut = _preload_expert_params4bit
-        elif experts_only and all(_plain_float(p) for p in stacks.values()):
-            cut = _preload_expert_plain
-        else:
             return 0
         if expert_shard_problem(plan["experts"][id(module)], tp) is not None:
             return 0
-        shards = {n: cut(module, p, rank, tp, ranks) for n, p in stacks.items()}
+        cuts = {}
+        for n, p in params.items():
+            if _is_params4bit(p):
+                cuts[n] = _preload_expert_params4bit
+            elif experts_only and _plain_expert(p):
+                cuts[n] = _preload_expert_plain
+        if not cuts:
+            return 0
+        stacks = {n: params[n] for n in cuts}
+        shards = {n: cuts[n](module, p, rank, tp, ranks) for n, p in stacks.items()}
         if any(new is None for new in shards.values()):
             return 0
         module._parameters.update(shards)
@@ -5120,11 +5160,7 @@ def _tp_load_quantizing(original, cls, name, args, kwargs, mesh, state):
             setattr(new, _PRELOADED, (proj.style, tuple(proj.parts), tp))
             counts["sharded_weights"] += 1
             counts["kept_bytes"] += nbytes(new) - nbytes(p)
-        elif (
-            pname in _EXPERT_STACKS
-            and id(module) in plan["experts"]
-            and (_is_params4bit(p) or (experts_only and _plain_float(p)))
-        ):
+        elif id(module) in plan["experts"]:
             counts["kept_bytes"] += shard_experts(module)
 
     loading.set_param_for_module = set_and_shard
@@ -5142,7 +5178,7 @@ def _tp_load_quantizing(original, cls, name, args, kwargs, mesh, state):
         if "_unsloth_tp_load_guard" in module.__dict__:
             continue
         if _preloaded(module._parameters.get("weight")) is not None or any(
-            getattr(module._parameters.get(n), _EXPERT_PRELOAD, None) for n in _EXPERT_STACKS
+            getattr(p, _EXPERT_PRELOAD, None) for p in module._parameters.values()
         ):
             module.__dict__["_unsloth_tp_load_guard"] = module.register_forward_pre_hook(
                 _refuse_unapplied_forward
@@ -5177,6 +5213,19 @@ def _text_config_quantized(config):
         getattr(c, "quantization_config", None)
         for c in (config, text() if callable(text) else None)
     )
+
+
+def _block_fp8_quantization(config):
+    """Whether `config` (a model config or a quantization config) is transformers' fine-grained FP8 (e4m3 codes)."""
+    text = getattr(config, "get_text_config", None)
+    for c in (config, text() if callable(text) else None):
+        qc = getattr(c, "quantization_config", c)
+        get = qc.get if isinstance(qc, dict) else lambda k, d = None: getattr(qc, k, d)
+        method = get("quant_method", None)
+        method = getattr(method, "value", method)
+        if method == "fp8" and get("expert_dtype", "fp8") in (None, "fp8"):
+            return True
+    return False
 
 
 def _whole_load_exceeds_device(
@@ -5281,13 +5330,22 @@ def _from_pretrained_sharded(original, cls, name, args, kwargs, state):
                     return original(cls, name, *args, **original_kwargs)
             return chunked(original, cls, name, args, original_kwargs, mesh, state)
     if state.get("experts_only"):
-        # Other quantizations, transformers 4.x and 2-D meshes load in full.
+        # Other quantizations (block FP8 aside), transformers 4.x and 2-D meshes load in full.
         mesh = state["mesh"] if state["mesh"] is not None else _world_mesh()
-        on_load = other or (
-            quantized is None
-            and any(
-                original_kwargs.get(k)
-                for k in ("load_in_4bit", "load_in_8bit", "quantization_config")
+        fp8 = (
+            other
+            and _block_fp8_quantization(config)
+            and (asked is None or _block_fp8_quantization(asked))
+            and not any(original_kwargs.get(k) for k in ("load_in_4bit", "load_in_8bit"))
+        )
+        on_load = not fp8 and (
+            other
+            or (
+                quantized is None
+                and any(
+                    original_kwargs.get(k)
+                    for k in ("load_in_4bit", "load_in_8bit", "quantization_config")
+                )
             )
         )
         if chunked is None or on_load or mesh.ndim != 1:
@@ -5300,7 +5358,7 @@ def _from_pretrained_sharded(original, cls, name, args, kwargs, state):
         stats = (loaded[0] if isinstance(loaded, tuple) else loaded).__dict__.get(
             "_unsloth_tp_load_stats"
         )
-        if quantized is not None and isinstance(stats, dict):
+        if (quantized is not None or fp8) and isinstance(stats, dict):
             stats["prequantized"] = True
         return loaded
     if state.get("prequantized_only") and quantized is None:
