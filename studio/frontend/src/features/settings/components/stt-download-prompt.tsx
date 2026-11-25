@@ -17,6 +17,7 @@ import {
   hfApiToken,
   useHfTokenStore,
 } from "@/features/hub/stores/hf-token-store";
+// eslint-disable-next-line no-restricted-imports -- The hub index would put the Hub pages in the startup bundle.
 import { formatBytes } from "@/features/hub/lib/format";
 import { listGgufVariants } from "@/features/hub/inventory/api";
 import { useT } from "@/i18n";

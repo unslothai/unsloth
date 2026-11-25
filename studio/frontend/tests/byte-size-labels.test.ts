@@ -4,10 +4,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { AUDIO_CPP_DICTATION_MODELS } from "../src/features/audio/audio-cpp-catalog.ts";
 import { getEstimatedSize } from "../src/features/export/constants.ts";
 import { formatBytes } from "../src/features/hub/lib/format.ts";
 import { formatSize as formatLibrarySize } from "../src/features/library/format.ts";
-import { sttModelSize } from "../src/features/settings/stores/stt-model-catalog.ts";
+import {
+  sttModelBytes,
+  sttModelSize,
+} from "../src/features/settings/stores/stt-model-catalog.ts";
 import { readSrc } from "./helpers/kit.ts";
 
 const GGUF_BYTES = 4_900_000_000;
@@ -28,6 +32,7 @@ test("Settings, chat and update screens size files with the shared formatter", (
     "components/llama-update-banner.tsx",
     "features/model-picker/components/model-config-page.tsx",
     "features/model-picker/components/model-selector/pickers.tsx",
+    "components/assistant-ui/tool-confirmation-controls.tsx",
   ]) {
     const source = readSrc(path);
     assert.ok(/\bformatBytes\(/.test(source), path);
@@ -46,8 +51,31 @@ test("a Library file reads the same size as in chat and Settings", () => {
   assert.equal(formatLibrarySize(1_500_000, "en", t as never), "1.5 MB");
 });
 
+test("Library and Hub round a size up to the next unit the same way", () => {
+  const t = (key: string, values?: { value?: unknown }) =>
+    `${String(values?.value)} ${key.split(".").pop()}`;
+  for (const [bytes, hub, library] of [
+    [999_999, "1.0 MB", "1.0 megabytes"],
+    [9_960, "10 KB", "10 kilobytes"],
+    [999, "999 B", "999 bytes"],
+  ] as const) {
+    assert.equal(formatBytes(bytes), hub);
+    assert.equal(formatLibrarySize(bytes, "en", t as never), library);
+  }
+});
+
 test("an audio.cpp dictation model reads the same size as the Hub file", () => {
   // qwen3-asr-1.7b-q8_0.gguf is 2,473,017,600 bytes on Hugging Face.
   assert.equal(sttModelSize("audiocpp-qwen3-asr-1.7b"), "2.5 GB");
   assert.equal(sttModelSize("qwen3-asr-1.7b"), "2.5 GB");
+});
+
+test("the Audio picker sorts dictation models by their byte size, not their label", () => {
+  const model = AUDIO_CPP_DICTATION_MODELS.find((m) => m.key === "audiocpp-qwen3-asr-1.7b");
+  assert.ok(model);
+  assert.equal(sttModelBytes(model.key), model.sizeBytes);
+  assert.equal(sttModelBytes("qwen3-asr-1.7b"), 2.5e9);
+  const page = readSrc("features/audio/audio-page.tsx");
+  assert.match(page, /deviceSizeBytes: sttModelBytes\(/);
+  assert.ok(!/deviceSizeBytes\(size\)/.test(page));
 });
