@@ -17,15 +17,10 @@ How the values are quantised (ideas from the cited papers, written from scratch 
   accumulator lane (SageAttention2, arXiv 2411.10958), so scores are rescaled without a per-key load.
 * The probabilities are 8-bit integers too, rescaled per key tile so every tile uses the full range, and the softmax
   denominator is summed over the rounded values (INT-FlashAttention, arXiv 2409.16997).
-* V is centred and divided by a per-channel gain taken over every key (both undone on the output), with one scale per
-  key tile. A head whose V has an attention sink (a few keys far from the rest in most channels: the first text
-  tokens of a joint sequence) takes the range without the stats chunk that holds it, clips that chunk in place and
-  adds the far-out parts back exactly in a launch after the kernel, so the sink no longer costs every other key its
-  resolution (CUDA kernel; the Triton kernel keeps the range over every key). A launch plan none of whose first
-  calls had a sink runs the kernels without that path from then on, so calls without sinks cost what they did; one
-  with sinks keeps the path only where it still beats torch's attention on its own inputs (a race at that call).
-  A seed renders the same image on the first render of a load as on the next: a plan whose sink-path calls were used
-  in a render where V clipped keeps that path for the load.
+* V is centred and divided by a per-channel gain (both undone on the output), one scale per key tile. A head whose V
+  has an attention sink takes the range without the sink's stats chunk, clips it and adds the far-out parts back in a
+  later launch (CUDA kernel only). Plans with no sink in their first calls drop that path; plans with sinks keep it
+  only where it beats torch's attention, and keep it for the load once V clipped in a render (seed reproducibility).
 
 The kernel never replaces attention on its own: a strided processor runs it only after ``install_int8_attention``
 found the kernel accurate on this card and, unless it was asked for by name, more than 2% faster than what the
@@ -34,12 +29,9 @@ processor ran before. Calls it cannot take (masks, other head dims, other device
 ``UNSLOTH_DIFFUSION_INT8_ATTENTION_KERNEL``: ``0`` never engages it, ``1`` engages it wherever it is accurate without
 the race, unset races it where INT8 attention is already wanted (an INT8 checkpoint) or it was requested by name.
 
-Where the CUDA kernel cannot be built or loaded on an NVIDIA card (no NVRTC, as on a Windows install without the CUDA
-runtime wheels, or a failed compile, module load or first launch), the same calls run the Triton kernel of
-``diffusion_int8_attention_triton`` instead (int8 Q.K^T, 16-bit P.V), when Triton imports and ``TRITON_KERNEL_CONFIGS``
-has the card. That path passes its own accuracy check, and it races the incumbent even where the kernel was asked for
-by name (only the env switch ``1`` skips that race), so it stands in only where it is faster. ``UNSLOTH_DIFFUSION_INT8_ATTENTION_IMPL``: ``auto`` (default),
-``cuda`` (never Triton on NVIDIA) or ``triton`` (skip the CUDA kernel).
+If the CUDA kernel cannot be built or loaded on NVIDIA (no NVRTC, failed compile/load/launch), the Triton kernel of
+``diffusion_int8_attention_triton`` runs instead when ``TRITON_KERNEL_CONFIGS`` has the card; it is always raced
+(except env switch ``1``). ``UNSLOTH_DIFFUSION_INT8_ATTENTION_IMPL``: ``auto`` (default), ``cuda`` or ``triton``.
 """
 
 from __future__ import annotations
@@ -1710,12 +1702,9 @@ def _fallback_card(index: int, head_dim: int, impl: Optional[str]) -> bool:
 
 
 def _nonfinite_inputs(q: Any, k: Any, v: Any) -> bool:
-    """Whether q, k or v holds a NaN or an infinity: one max-|x| reduction per operand (it keeps NaN and inf) and one
-    host read. Asked only on cards the nearest-family fallback serves (not while a CUDA graph records there: that call
-    runs torch's attention, see ``int8_attention_impl``): such a call runs torch's attention, so its output is SDPA's
-    exactly. The kernel cannot give that: its quantisers' max-reductions drop NaN and turn one infinite element into an
-    infinite block scale, while SDPA masks a -inf score and is non-finite only where a NaN, a +inf score, an infinite
-    value or an all -inf row reaches. Finite inputs pay the three reductions and the read."""
+    """Whether q, k or v holds a NaN or inf (one max-|x| reduction each, one host read). Asked only on nearest-family
+    cards, where such a call runs torch's attention: the kernel's max-reduction quantisers drop NaN and turn one inf
+    into an infinite block scale, so they cannot match SDPA's non-finite semantics."""
     import torch
 
     inf = float("inf")
@@ -2035,12 +2024,9 @@ def _check(
     timed: bool,
     impl: str = "cuda",
 ) -> dict:
-    """``ok``: the kernel runs here and matches fp32 attention on the probe, also with q and k scaled up. ``ms``: int8 and incumbent milliseconds
-    per call at each RACE_TOKENS size (when ``timed``). ``min_tokens``: the sequence length from which the kernel
-    is more than 2% faster than the incumbent, or None when it is not at the larger size. ``failed``: the kernel
-    raised (it could not be built, loaded or launched) rather than missed the accuracy bar. ``impl`` is the
-    implementation ``int8_attention`` runs here; a pass is recorded for it alone. ``long``: the check of the
-    card's long variant (``_long_check``), where its config has one; it never changes ``ok``."""
+    """``ok``: matches fp32 attention on the probe (also with q, k scaled up). ``ms``: int8 / incumbent ms per
+    RACE_TOKENS size. ``min_tokens``: length from which int8 is 2% faster, else None. ``failed``: the kernel raised.
+    ``long``: the long-variant check (``_long_check``); never changes ``ok``. A pass is recorded for ``impl`` alone."""
     import torch
 
     out: dict = {"ok": False, "ms": {}, "min_tokens": None, "impl": impl}
@@ -2389,16 +2375,12 @@ def install_int8_attention(
     floor: Optional[Callable] = None,
     policy: Any = None,
 ) -> int:
-    """Route strided attention processors to the INT8 kernel. Returns how many now run it.
+    """Route strided attention processors to the INT8 kernel. Returns how many now run it. Never raises.
 
-    ``modules`` limits the attention modules considered (default: every one with a strided processor).
-    ``incumbent`` is ``(name, callable(q, k, v))`` for what those modules run now (default: their native backend).
-    The kernel must match fp32 attention on this card; unless ``force`` (or the env switch is ``1``) it must also be
-    more than 2% faster than the incumbent on the timed probe. The Triton stand-in for a CUDA kernel that cannot load
-    must be faster also under ``force`` (not under the env switch). ``floor(device, dtype, heads, head_dim, incumbent,
-    name)`` -> ``(verdict, token floor or None)`` replaces the card race when not forced (``install_auto``: the
-    dispatch route's races and token floor). ``policy``: the load's ``Int8Policy`` (or ``int8_attention`` request);
-    None reads the env switch. Never raises."""
+    ``incumbent`` is ``(name, callable(q, k, v))`` (default: native backend). The kernel must match fp32 attention and,
+    unless ``force`` or env ``1``, beat the incumbent by 2%; the Triton stand-in must win even under ``force``.
+    ``floor(device, dtype, heads, head_dim, incumbent, name)`` -> ``(verdict, token floor or None)`` replaces the card
+    race when not forced. ``policy``: the load's ``Int8Policy``; None reads the env switch."""
     try:
         return _install(
             transformer, device, dtype, modules, incumbent, force, logger, floor, policy
