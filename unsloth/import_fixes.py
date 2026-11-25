@@ -2089,7 +2089,9 @@ def _tokenizer_files_naming_host_paths(resolved_vocab_files, caller_kwargs):
         if not isinstance(data, dict):
             continue
         for key, value in data.items():
-            if key in skip:
+            # *_file keys reach the class only when it resolved that file in the repo (skipped
+            # above, and kept over the config by the back-port); elsewhere they are unused.
+            if key in skip or key.endswith("_file"):
                 continue
             values = value if isinstance(value, (list, tuple)) else [value]
             if any(_tokenizer_value_names_host_file(v, repo_dirs) for v in values):
