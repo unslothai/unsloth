@@ -30522,12 +30522,10 @@ def _extends_turn(old: Any, new: Any) -> bool:
     return isinstance(old, list) and isinstance(new, list) and new[: len(old)] == old
 
 
-def _active_turn_anchors(messages: list[dict], branch: Optional[list[dict]]) -> Optional[set[int]]:
-    """The user's own turn and the loop's latest exchange: a controller re-prompt after them reads
-    as the newest turn, and a reset would otherwise drop the evidence the final answer needs."""
+def _active_turn_start(messages: list[dict], branch: Optional[list[dict]]) -> Optional[int]:
     asked = next((m for m in reversed(branch or ()) if m.get("role") == "user"), None)
     # Only the active copy: pinning every repeat of "continue" would pin their whole groups.
-    start = next(
+    return next(
         (
             i
             for i in range(len(messages) - 1, -1, -1)
@@ -30537,6 +30535,12 @@ def _active_turn_anchors(messages: list[dict], branch: Optional[list[dict]]) -> 
         ),
         None,
     )
+
+
+def _active_turn_anchors(messages: list[dict], branch: Optional[list[dict]]) -> Optional[set[int]]:
+    """The user's own turn and the loop's latest exchange: a controller re-prompt after them reads
+    as the newest turn, and a reset would otherwise drop the evidence the final answer needs."""
+    start = _active_turn_start(messages, branch)
     if start is None:
         return None
     latest = next(
@@ -30642,6 +30646,47 @@ def _overflow_retry_thresholds(refused_tokens: int, max_tokens: Optional[int]) -
     return [max(1, refused_tokens * eighths // 8) for eighths in (4, 5, 6, 7)] + [low]
 
 
+_CLIPPED_RESULT_MIN_CHARS = 400
+_CLIP_NOTICE_CHARS = 128
+
+
+def _clip_text(text: str, keep: int) -> str:
+    half = keep // 2
+    return (
+        f"{text[:half]}\n\n[... {len(text) - 2 * half:,} characters of this result were cut to fit "
+        f"the context window ...]\n\n{text[len(text) - half :]}"
+    )
+
+
+def _clip_turn_tool_results(
+    messages: list[dict],
+    start: int,
+    kept_ids: set[int],
+    target: int,
+    count_tokens: Callable[[list[dict]], int],
+) -> None:
+    # In place: eviction and the archive match messages by identity.
+    from core.inference.context_window import estimate_message_tokens_without_unpriced_media
+
+    floor = [
+        m for m in messages[:start] if m.get("role") in ("system", "developer") or id(m) in kept_ids
+    ] + messages[start:]
+    over = count_tokens(floor) - target
+    for message in messages[start:]:
+        if over <= 0:
+            return
+        text = message.get("content")
+        if message.get("role") != "tool" or not isinstance(text, str):
+            continue
+        per_token = len(text) / max(1, estimate_message_tokens_without_unpriced_media(message))
+        keep = max(
+            _CLIPPED_RESULT_MIN_CHARS, len(text) - int(over * per_token) - _CLIP_NOTICE_CHARS
+        )
+        if len(text) - keep > _CLIP_NOTICE_CHARS:
+            message["content"] = _clip_text(text, keep)
+            over = count_tokens(floor) - target
+
+
 def _fit_external_context(
     messages: list[dict],
     payload,
@@ -30660,7 +30705,9 @@ def _fit_external_context(
     ``can_reset`` lets the fit start a checkpoint epoch, which /compact needs; ``replays_manual``
     replays a /compact epoch on a request that may not start one."""
     from core.inference.context_window import (
+        _ATTACHMENT_FIT_MARGIN,
         estimate_message_tokens_without_unpriced_media,
+        fit_oversized_attachments,
         prompt_budget,
         retrieval_budget,
     )
@@ -30713,17 +30760,28 @@ def _fit_external_context(
             can_reset = False,
             compaction_headroom_ratio = ratio,
         )
+    anchors = (
+        (_active_turn_anchors(messages, branch) or set()) if can_reset or replays_manual else set()
+    ) | (keep_ids or set())
+    turn = _active_turn_start(messages, branch) if tool_loop else None
+    if turn is not None:
+        # The reply in progress is never evicted: its oldest tool results are shortened instead.
+        anchors |= {id(m) for m in messages[turn:]}
+        messages = fit_oversized_attachments(
+            messages, context_length = context_length, max_tokens = max_tokens, count_tokens = _count
+        )
+        _clip_turn_tool_results(
+            messages,
+            turn,
+            keep_ids or set(),
+            int(prompt_budget(context_length, max_tokens) * (1 - _ATTACHMENT_FIT_MARGIN)),
+            _count,
+        )
     # A replay recalls inline only when search_conversation cannot reach the epoch this turn.
     recall_offered = can_reset and "search_conversation" in _catalog_names(tools)
     fitted, truncation = _fit_with_instruction_pins(
         messages,
-        anchor_ids = (
-            (_active_turn_anchors(messages, branch) or set())
-            if can_reset or replays_manual
-            else set()
-        )
-        | (keep_ids or set())
-        or None,
+        anchor_ids = anchors or None,
         context_length = context_length,
         max_tokens = max_tokens,
         count_tokens = _count,
@@ -30791,6 +30849,7 @@ class _ExternalCompactionPlan:
         "summarise",
         "summary_failed",
         "summary_error",
+        "record",
     )
 
 
@@ -30802,6 +30861,8 @@ def _plan_external_compaction(
     auto: bool = True,
     force: Optional[str] = None,
     summarise: bool = True,
+    branch: Optional[list[dict]] = None,
+    written: tuple[dict, ...] = (),
 ) -> _ExternalCompactionPlan:
     """``auto`` fits to the request's compaction_threshold; without it only a saved summary is
     replayed. ``force`` summarises everything before the newest user turn whether or not the
@@ -30819,6 +30880,7 @@ def _plan_external_compaction(
     plan.summarise = summarise
     plan.summary_failed = None
     plan.summary_error = None
+    plan.record = None
     plan.to_summarise = []
     plan.body = cloud_compaction.body_messages(messages)
     count = _external_token_counter(payload, tools)
@@ -30836,7 +30898,7 @@ def _plan_external_compaction(
         plan.pins = set()
 
     thread_id = str(payload.thread_id) if payload.thread_id else None
-    record = cloud_compaction.stored_summary(thread_id, plan.body) if summarise else None
+    record = cloud_compaction.stored_summary(thread_id, plan.body, written) if summarise else None
     plan.covered = int(record["covered_messages"]) if record else 0
     plan.summary = record["summary"] if record else None
     plan.current = (
@@ -30853,14 +30915,16 @@ def _plan_external_compaction(
         plan.summary_failed = True
     elif summarise and (force or over):
         tail_tokens = 0 if force else cloud_compaction.tail_token_budget(plan.budget)
+        # A tool loop's re-prompts are user turns too: the reply in progress is never summarised.
+        turn = _active_turn_start(plan.body, branch)
         cut = cloud_compaction.tail_start(
-            plan.body, estimate_message_tokens_without_unpriced_media, tail_tokens
+            plan.body, estimate_message_tokens_without_unpriced_media, tail_tokens, turn
         )
         if cut <= plan.covered and tail_tokens:
             # The tail is within its share and the prompt still does not fit (a large tool
             # catalogue, a long system prompt): summarise up to the newest turn before evicting.
             cut = cloud_compaction.tail_start(
-                plan.body, estimate_message_tokens_without_unpriced_media, 0
+                plan.body, estimate_message_tokens_without_unpriced_media, 0, turn
             )
         if cut > plan.covered:
             plan.cut = cut
@@ -30966,7 +31030,7 @@ async def _finish_external_compaction(
             if isinstance(exc, (cloud_compaction.SummaryCutOff, cloud_compaction.SummaryTimedOut)):
                 cloud_compaction.remember_cut_off(thread_id, model)
         else:
-            await asyncio.to_thread(
+            plan.record = await asyncio.to_thread(
                 cloud_compaction.save_summary,
                 thread_id,
                 covered = plan.body[: plan.cut],
@@ -31998,6 +32062,7 @@ async def _proxy_to_external_provider(
     _first_payload = _evicting_payload
     # The prompt last sent, so an overflow refit evicts below what the provider refused.
     _last_fit = None
+    _written_summaries: list[dict] = []
 
     # As the plain fit decides it: a cloud model that never gets Studio tools cannot search an epoch.
     _model_can_reset = managed is not None or provider_model_runs_local_tools(
@@ -32100,6 +32165,8 @@ async def _proxy_to_external_provider(
                     tools = tools,
                     auto = _auto_summary if auto is None else auto,
                     force = force,
+                    branch = _request_branch,
+                    written = tuple(_written_summaries),
                 )
             if plan.to_summarise and not _non_stream_custom_responses:
                 yield cloud_compaction.COMPACTING_SSE_LINE
@@ -32112,6 +32179,8 @@ async def _proxy_to_external_provider(
                 branch = _request_branch,
                 tool_loop = run_studio_tool_loop and not _tool_calls_are_disabled(payload),
             )
+            if plan.record is not None:
+                _written_summaries.append(plan.record)
             if plan.force == "manual" and plan.summary_error and not _non_stream_custom_responses:
                 yield cloud_compaction.compaction_failed_sse_line(plan.summary_error)
         _refuse_what_ollama_would_cut(provider_type, truncation, payload.context_window)
