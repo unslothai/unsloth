@@ -220,7 +220,6 @@ def test_files_written_within_the_settle_window_are_not_kept(tmp_path, monkeypat
     assert len(reads) == 2 * first
     assert resume_mod._STATE_CACHE == {}
 
-    # Same size, same mtime, inside the window: still read fresh.
     _same_size_rewrite(checkpoint / "trainer_state.json", json.dumps({"global_step": 11}).encode())
     assert _listed(run) is None
 
@@ -275,7 +274,6 @@ def test_symlinked_state_files_follow_their_target(tmp_path, monkeypatch):
     link.symlink_to(tmp_path / "dangling.pt")
     assert _listed(run) is None is _uncached(run)
 
-    # A symlinked checkpoint folder retargeted to another checkpoint of the same step.
     other = tmp_path / "other" / "checkpoint-10"
     _build(other, 10, "ok", "ok", "truncated", "ok")
     alias_run = tmp_path / "alias"
