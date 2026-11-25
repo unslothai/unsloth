@@ -244,3 +244,38 @@ def test_generate_ends_the_text_cache_render():
     src = (Path(tc.__file__).parent / "diffusion.py").read_text(encoding = "utf-8")
     finally_block = src[src.index('end_cfg_batch_render(getattr(state, "pipe", None))') :][:400]
     assert 'end_krea2_text_render(getattr(state, "pipe", None))' in finally_block
+
+
+def test_cfg_parallel_keeps_krea2_with_the_cache_installed():
+    """The cached forward is a bound method holding nothing of its module: CFG-parallel's replica check accepts it
+    (a closure over the module and its stock method read as an unportable instance override and declined)."""
+    from core.inference import diffusion_multigpu as mg
+
+    model = _model()
+    assert tc.install(model)
+    assert mg._hooks_present(model) is None
+
+    class Pipe:
+        transformer = model
+
+    sel = mg.MultiGpuSelection(primary = 0, secondaries = (1,))
+    why = mg.cfg_parallel_decline(Pipe(), offload_policy = "none", selection = sel)
+    assert why is None or ("hooked" not in why and "override" not in why), why
+
+
+def test_replica_rebinds_and_starts_empty():
+    import copy
+
+    with torch.no_grad():
+        model = _model()
+        assert tc.install(model)
+        b = _branch(1, 12)
+        want = _render(model, [b], steps = 2)
+        replica = copy.deepcopy(model)
+        assert replica.text_fusion.forward.__self__ is replica.text_fusion
+        assert replica.text_fusion not in tc._MEMOS  # noqa: SLF001
+        hits = tc.STATS["hits"]
+        got = _render(replica, [b], steps = 2)
+    for a, c in zip(want, got):
+        assert torch.equal(a, c)
+    assert tc.STATS["hits"] > hits  # the replica caches on its own entries

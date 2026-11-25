@@ -21,13 +21,17 @@ output's address. ``UNSLOTH_DIFFUSION_KREA2_TEXT_CACHE=0`` runs them every step 
 from __future__ import annotations
 
 import os
+import weakref
 from typing import Any, Optional
 
 TEXT_CACHE_ENV = "UNSLOTH_DIFFUSION_KREA2_TEXT_CACHE"
 CLASS_NAME = "Krea2Transformer2DModel"
 MODULES = ("text_fusion", "txt_in", "rotary_emb")
 _INSTALLED_ATTR = "_unsloth_krea2_text_cache"
-_MEMO_ATTR = "_unsloth_krea2_text_cache_memo"
+# module -> its entries / the forward it had before install; keyed by module object (weakly), never stored on the
+# module, so a deepcopy (CFG-parallel replica) starts with neither and holds nothing of the source's
+_MEMOS: Any = weakref.WeakKeyDictionary()
+_STOCK: Any = weakref.WeakKeyDictionary()
 _MEMO_MAX = 4  # a CFG pair of this render, and the last render's
 _OFF = ("0", "off", "false", "no")
 STATS = {"hits": 0, "misses": 0, "stock": 0}
@@ -114,40 +118,62 @@ def _uncacheable() -> bool:
         return True
 
 
-def _wrap(module: Any, stock: Any) -> Any:
+def _cached_forward(self: Any, *args: Any, **kwargs: Any) -> Any:
+    """The instance forward, bound to its module (``types.MethodType``): a deepcopy (a CFG-parallel replica) rebinds
+    it to the copy, whose memo and stock call start empty (``_MEMOS`` / ``_STOCK`` are keyed by module object), so a
+    replica never reaches the source module or its card."""
     import torch
 
-    def forward(*args: Any, **kwargs: Any) -> Any:
-        if torch.compiler.is_compiling():
-            # first, before any Python state is read or written: a counter or memo touched here becomes a Dynamo
-            # guard that fails on every call (one recompile per step)
-            return stock(*args, **kwargs)
-        if not enabled() or _uncacheable() or _streamed(module):
-            STATS["stock"] += 1
-            return stock(*args, **kwargs)
-        found = _sources(args, kwargs)
-        if found is None:
-            STATS["stock"] += 1
-            return stock(*args, **kwargs)
-        flat, names = found
-        amp = _amp_state(flat)
-        if amp is None:
-            STATS["stock"] += 1
-            return stock(*args, **kwargs)
-        memo = module.__dict__.setdefault(_MEMO_ATTR, [])
-        for held, held_names, held_amp, out in memo:
-            if held_names == names and held_amp == amp and _same(held, flat):
-                STATS["hits"] += 1
-                return out
-        out = stock(*args, **kwargs)
-        held = tuple(None if t is None else _key(t) for t in flat)
-        memo.insert(0, (held, names, amp, out))
-        del memo[_MEMO_MAX:]
-        STATS["misses"] += 1
-        return out
+    if torch.compiler.is_compiling():
+        # first, before any Python state is read or written: a counter or memo touched here becomes a Dynamo guard
+        # that fails on every call (one recompile per step)
+        return type(self).forward(self, *args, **kwargs)
+    held_stock = _STOCK.get(self)
+    if held_stock is None:
+        stock = type(self).forward.__get__(self)
+    elif held_stock[0] == "method":
+        stock = held_stock[1].__get__(self)
+    else:
+        stock = held_stock[1]
+    if not enabled() or _uncacheable() or _streamed(self):
+        STATS["stock"] += 1
+        return stock(*args, **kwargs)
+    found = _sources(args, kwargs)
+    if found is None:
+        STATS["stock"] += 1
+        return stock(*args, **kwargs)
+    flat, names = found
+    amp = _amp_state(flat)
+    if amp is None:
+        STATS["stock"] += 1
+        return stock(*args, **kwargs)
+    memo = _MEMOS.setdefault(self, [])
+    for held, held_names, held_amp, out in memo:
+        if held_names == names and held_amp == amp and _same(held, flat):
+            STATS["hits"] += 1
+            return out
+    out = stock(*args, **kwargs)
+    held = tuple(None if t is None else _key(t) for t in flat)
+    memo.insert(0, (held, names, amp, out))
+    del memo[_MEMO_MAX:]
+    STATS["misses"] += 1
+    return out
 
-    forward._unsloth_krea2_text_cache = True
-    return forward
+
+_cached_forward._unsloth_krea2_text_cache = True
+
+
+def _wrap(module: Any, stock: Any) -> Any:
+    """``module``'s cached forward around ``stock`` (the forward it had: the class one, or an earlier override)."""
+    import types
+
+    if isinstance(stock, types.MethodType):
+        if stock.__self__ is module and stock.__func__ is not type(module).forward:
+            # an earlier bound override: its function only, rebound per call, so the table never holds the module
+            _STOCK[module] = ("method", stock.__func__)
+    elif stock is not None:
+        _STOCK[module] = ("plain", stock)
+    return types.MethodType(_cached_forward, module)
 
 
 def installed(transformer: Any) -> bool:
@@ -181,7 +207,7 @@ def clear(transformer: Any) -> None:
     for name in MODULES:
         module = getattr(transformer, name, None)
         if module is not None:
-            module.__dict__.pop(_MEMO_ATTR, None)
+            _MEMOS.pop(module, None)
 
 
 def end_render(pipe: Any) -> None:
