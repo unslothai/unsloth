@@ -573,6 +573,15 @@ const CONDITIONING_LABELS: Record<string, string> = {
   v2v: "Continued a clip",
 };
 
+const CONDITIONING_INPUTS: Record<string, string> = {
+  i2va: "the start frame",
+  l2va: "the end frame",
+  fl2va: "the start and end frames",
+  ref2va: "the references",
+  v2v: "the clip to continue",
+  restyle: "the source clip on the Restyle tab",
+};
+
 function clipMeta(video: GalleryVideo): string {
   const secs = video.duration_s > 0 ? `${video.duration_s.toFixed(1)}s` : `${video.num_frames}f`;
   return `${secs} · ${video.width}×${video.height}`;
@@ -2656,7 +2665,21 @@ function VideoGenerator({
         setDurationIntentSeconds(video.num_frames / fps);
         setNumFrames(video.num_frames);
       }
-      toast.success("Settings restored to inputs");
+      setFirstFrame(null);
+      setLastFrame(null);
+      setContinuationClip(null);
+      setContinuationKeep("last");
+      setReferenceImages([]);
+      setReferenceVideos([]);
+      setReferenceAudios([]);
+      setReferenceImageSize("match");
+      setCropPictureIndex(null);
+      const conditioned = CONDITIONING_INPUTS[video.conditioning ?? ""];
+      toast.success(
+        conditioned
+          ? `Settings restored. Add ${conditioned} again to reproduce this clip.`
+          : "Settings restored to inputs",
+      );
     },
     [sizeLimits, durationOptions, fps, fpsOptions, durationTargets, frameStep, frameOffset, minFrames, maxFrames, setPickedFps, statusKnown],
   );
