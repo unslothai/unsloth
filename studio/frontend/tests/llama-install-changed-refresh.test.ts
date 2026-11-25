@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Settings > Engine versions and About read the llama.cpp build from the hardware info cache, so
-// every action that swaps llama-server has to drop it, or they keep the previous install's version.
-
 import assert from "node:assert/strict";
 import { mock, test } from "node:test";
 import * as lifecycle from "../src/lib/llama-job-lifecycle.ts";
