@@ -274,6 +274,8 @@ def test_only_a_hub_run_sh_created_is_opened_to_group_root(entrypoint, tmp_path,
     hub = hf_home / "hub"
     hub.mkdir(parents = True)
     hub.chmod(0o755)
+    (hub / "early").write_text("{}")  # the workload may write before the first sweep
+    (hub / "early").chmod(0o644)
     mountinfo = tmp_path / "mountinfo"
     mountinfo.write_text(f"1 0 0:1 / / rw - x x rw\n2 1 0:2 / {hub} rw - x x rw\n")
     bindir, calls = _recording_python(tmp_path, mountinfo)
@@ -283,7 +285,8 @@ def test_only_a_hub_run_sh_created_is_opened_to_group_root(entrypoint, tmp_path,
     _boot(entrypoint, tmp_path, hf_home, bindir, lambda: str(hub) in _logged(calls), **extra)
 
     # an existing empty hub may be shared through its group: left alone
-    assert _logged(calls) == ({str(hub): "-1:0"} if created else {})
+    opened = {str(hub): "-1:0"} if created else {}
+    assert {p: w for p, w in _logged(calls).items() if p == str(hub)} == opened
     assert stat.S_IMODE(os.stat(hub).st_mode) == (0o775 if created else 0o755)
 
 

@@ -118,7 +118,7 @@ def mount_points():
 def open_root(fd):
     """A hub run.sh just created gets the group root rwX a handed-over entry has, so the tool sandbox can fill it."""
     try:
-        if not os.listdir(fd) and not has_acl(fd):
+        if not has_acl(fd):
             os.fchown(fd, -1, 0)
             os.fchmod(fd, stat.S_IMODE(os.fstat(fd).st_mode) | 0o070)
     except OSError:
