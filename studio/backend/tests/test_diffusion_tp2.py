@@ -159,6 +159,8 @@ def test_engage_for_plan(monkeypatch):
         layer_split: object = "split"
         fallback_plan: object = None
         reasons: tuple = ("planned",)
+        offload_policy: str = "group"
+        stream_text_encoders: bool = False
 
     plan, pipe = Plan(), SimpleNamespace(transformer = _tiny(layers = 1))
     monkeypatch.delenv(tp2.TP_ENV, raising = False)
@@ -185,6 +187,7 @@ def test_engage_for_plan(monkeypatch):
         and out.secondary_components is None
     )
     assert out.resident_transformer_mib is None and "tensor parallel" in out.reasons[-1]
+    assert out.stream_text_encoders is True  # the plan's offload now covers only the encoders
     monkeypatch.setattr(tp2, "refusal", lambda tr, devs: "nope")
     assert tp2.engage_for_plan(pipe, plan) is plan
 
@@ -198,3 +201,60 @@ def test_compiled_block_shard_runs_eager_on_its_own_weights():
     sb = tp2.shard_block(blk, 1, 2, "cpu")
     assert sb._compiled_call_impl is None
     assert sb.attn.to_q.weight.data_ptr() != blk.attn.to_q.weight.data_ptr()
+
+
+def test_hook_is_a_no_op_when_off_or_on_one_card(monkeypatch):
+    from types import SimpleNamespace
+
+    from core.inference import diffusion_multigpu as mg
+
+    calls = []
+    monkeypatch.setattr(tp2, "install", lambda *a, **k: calls.append(a))
+    plan, pipe = object(), SimpleNamespace(transformer = _tiny(layers = 1))
+    monkeypatch.setattr(
+        mg, "current_selection", lambda: mg.MultiGpuSelection(primary = 0, secondaries = (1,))
+    )
+    for off in (None, "0", "off", ""):
+        if off is None:
+            monkeypatch.delenv(tp2.TP_ENV, raising = False)
+        else:
+            monkeypatch.setenv(tp2.TP_ENV, off)
+        assert tp2.engage_for_plan(pipe, plan) is plan
+    monkeypatch.setenv(tp2.TP_ENV, "1")
+    for one_card in (None, mg.MultiGpuSelection(primary = 0, secondaries = ())):
+        monkeypatch.setattr(mg, "current_selection", lambda sel = one_card: sel)
+        assert tp2.engage_for_plan(pipe, plan) is plan
+    assert calls == [] and not hasattr(pipe, "_unsloth_tp2")
+    assert not tp2.is_installed(pipe.transformer)
+
+
+def test_install_marks_graph_unsafe_and_keeps_regional_compile(monkeypatch):
+    compiled = []
+
+    def fake_compile(fn, *a, **kw):
+        compiled.append((fn.__name__, kw))
+        return fn
+
+    monkeypatch.setattr(torch, "compile", fake_compile)
+    ref = _tiny(layers = 2)
+    m = copy.deepcopy(ref)
+    m._unsloth_regional_compile_kwargs = {"fullgraph": False, "dynamic": False}
+    rec = tp2.install(m, CPU2)
+    assert rec["stage_compile"] is True
+    assert sorted(n for n, _ in compiled) == ["_attn_half", "_mlp_half"]
+    assert all(kw == {"fullgraph": False, "dynamic": False} for _, kw in compiled)
+    assert m.__dict__[tp2.GRAPH_UNSAFE_ATTR]
+    assert m._repeated_blocks == ("TPStack",)
+    # both cards' shards of a block share its processor object (configuration only, never copied)
+    shards = m.transformer_blocks[0].shards()
+    assert all(a.attn.processor is b.attn.processor for a, b in zip(*shards))
+    torch.testing.assert_close(_run(m), _run(ref), rtol = 1e-5, atol = 1e-5)
+    # a later compile_repeated_blocks reaches the stages; the env keeps them eager
+    compiled.clear()
+    monkeypatch.setenv(tp2.TP_COMPILE_ENV, "0")
+    e = copy.deepcopy(ref)
+    e.transformer_blocks[0]._compiled_call_impl = e.transformer_blocks[0]._call_impl
+    assert tp2.install(e, CPU2)["stage_compile"] is False and compiled == []
+    monkeypatch.delenv(tp2.TP_COMPILE_ENV)
+    e.compile_repeated_blocks(fullgraph = True)
+    assert [n for n, _ in compiled] == ["_attn_half", "_mlp_half"]

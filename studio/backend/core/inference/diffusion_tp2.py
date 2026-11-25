@@ -25,6 +25,10 @@ from typing import Any, Callable, Optional, Sequence
 
 TP_ENV = "UNSLOTH_DIFFUSION_TP"
 TP_COMM_ENV = "UNSLOTH_DIFFUSION_TP_COMM"  # auto | nccl | swap | peer
+TP_COMPILE_ENV = (
+    "UNSLOTH_DIFFUSION_TP_COMPILE"  # 0 keeps the shards eager when the denoiser compiles
+)
+GRAPH_UNSAFE_ATTR = "_unsloth_cuda_graph_unsafe"
 TP_ATTR = "_unsloth_tp2"
 _DITS = frozenset({"QwenImage21Transformer2DModel"})
 _COLUMN = ("attn.to_q", "attn.to_k", "attn.to_v", "img_mlp.gate_layer", "img_mlp.proj")
@@ -173,6 +177,10 @@ def shard_block(block: Any, index: int, parts: int, device: Any) -> Any:
         lin = _get(block, path)
         for t in list(lin.parameters(recurse = False)) + list(lin.buffers(recurse = False)):
             memo[id(t)] = t
+    # Attention processors hold configuration only: both cards' shards share the block's own (never copied).
+    proc = getattr(block.attn, "processor", None)
+    if proc is not None:
+        memo[id(proc)] = proc
     # Fused whole-width projections (diffusion_qwenimage21_dense_fused / _fused) are left behind: they hold all
     # heads; the shard runs the stock per-layer path, which those installers may fuse again per card.
     stripped = []
@@ -397,6 +405,9 @@ def _stack_class():
             object.__setattr__(self, "_all_reduce", all_reduce)
             self.comm = comm
             self.calls = 0
+            self.compiled = False
+            object.__setattr__(self, "_stage_attn", _attn_half)
+            object.__setattr__(self, "_stage_mlp", _mlp_half)
             self._kv = weakref.WeakKeyDictionary()
 
         def shards(self) -> list:
@@ -419,6 +430,24 @@ def _stack_class():
                 per = [[QwenImage21KVLayerCache() for _ in s] for s in self._shards]
                 self._kv[layer_cache] = per
             return per
+
+        def compile(self, *args: Any, **kwargs: Any) -> None:  # noqa: A003 - nn.Module.compile's name
+            """Regional compile of a TP denoiser: compile the two per-card stages (attention half, MLP half), the
+            all-reduce stays eager between them. Reached through ``compile_repeated_blocks`` (the transformer's
+            ``_repeated_blocks`` names this class) or at install when the blocks were compiled already."""
+            import torch
+
+            if (os.environ.get(TP_COMPILE_ENV) or "").strip().lower() in (
+                "0",
+                "off",
+                "false",
+                "no",
+            ):
+                return
+            kw = dict(kwargs)
+            object.__setattr__(self, "_stage_attn", torch.compile(_attn_half, *args, **kw))
+            object.__setattr__(self, "_stage_mlp", torch.compile(_mlp_half, *args, **kw))
+            self.compiled = True
 
         def forward(
             self,
@@ -448,7 +477,7 @@ def _stack_class():
                 parts, gates, mod2s = [], [], []
                 for c, d in enumerate(devs):
                     with _CardContext(d):
-                        a, g1, m2 = _attn_half(
+                        a, g1, m2 = self._stage_attn(
                             self._shards[c][i],
                             hs[c],
                             mods[c],
@@ -469,7 +498,7 @@ def _stack_class():
                 for c, d in enumerate(devs):
                     with _CardContext(d):
                         hs[c] = hs[c] + gates[c].tanh() * parts[c]
-                        m, g2 = _mlp_half(self._shards[c][i], hs[c], mod2s[c], ttms[c])
+                        m, g2 = self._stage_mlp(self._shards[c][i], hs[c], mod2s[c], ttms[c])
                     mlps.append(m)
                     gates2.append(g2)
                 mlps = ar(mlps)
@@ -502,6 +531,10 @@ def install(
         raise RuntimeError(f"tensor parallelism declined: {why}")
     t0 = time.perf_counter()
     blocks = list(transformer.transformer_blocks)
+    compile_kw = getattr(transformer, "_unsloth_regional_compile_kwargs", None)
+    was_compiled = compile_kw is not None or any(
+        b.__dict__.get("_compiled_call_impl") is not None for b in blocks
+    )
     shards: list = [[] for _ in devices]
     with torch.no_grad():
         for blk in blocks:
@@ -517,6 +550,8 @@ def install(
         dim = int(transformer.config.num_attention_heads * transformer.config.attention_head_dim)
         name, fn, probe = pick_all_reduce(devices, probe_tokens * dim, act_dtype, logger)
     stack = _stack_class()(shards, devices, fn, name)
+    if was_compiled:
+        stack.compile(**dict(compile_kw or {}))
     transformer.transformer_blocks = nn.ModuleList([stack])
     transformer.to(devices[0])
 
@@ -537,7 +572,12 @@ def install(
         "shard_mib": [_local_mib(c) for c in range(len(devices))],
         "build_s": round(time.perf_counter() - t0, 1),
     }
+    record["stage_compile"] = bool(stack.compiled)
     setattr(transformer, TP_ATTR, record)
+    # A later regional compile reaches the stages through TPStack.compile.
+    transformer._repeated_blocks = (type(stack).__name__,)
+    # One recorded graph cannot hold both cards' launches and the all-reduce between them.
+    transformer.__dict__[GRAPH_UNSAFE_ATTR] = "the denoiser is tensor parallel across two cards"
     if logger is not None:
         logger.info("diffusion.tp2: %s", record)
     return record
@@ -554,6 +594,7 @@ def status(transformer: Any) -> Optional[dict]:
     out = dict(rec)
     stack = transformer.transformer_blocks[0]
     out["calls"] = int(getattr(stack, "calls", 0))
+    out["stage_compiled"] = bool(getattr(stack, "compiled", False))
     return out
 
 
@@ -601,6 +642,8 @@ def engage_for_plan(
     return dataclasses.replace(
         plan,
         stream_transformer = False,
+        # the plan's offload now covers only the encoders (the tier that keeps the denoiser resident)
+        stream_text_encoders = bool(plan.stream_text_encoders or plan.offload_policy != "none"),
         resident_transformer_mib = None,
         secondary_ordinal = None,
         secondary_components = None,
