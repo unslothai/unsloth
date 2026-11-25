@@ -713,7 +713,7 @@ def auto_install_preflight(version: str) -> dict | None:
     and the package scan of its install plan is clean. Otherwise the structured result to return
     instead, before anything is reserved or unloaded. Never raises."""
     try:
-        if _disabled() or _env_offline():
+        if _disabled() or hf_env_offline():
             return _consent_required(
                 version, "Unsloth is offline, so the release could not be scanned."
             )
