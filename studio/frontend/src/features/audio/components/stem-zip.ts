@@ -35,7 +35,6 @@ function utf8Bytes(text: string): number {
   return bytes;
 }
 
-/** `<title> - <label>.wav`, the title cut so the label always survives within MAX_NAME_BYTES. */
 function titledFileName(
   title: string,
   maxChars: number,
