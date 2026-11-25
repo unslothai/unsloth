@@ -17,10 +17,8 @@ from typing import Callable, Optional
 from utils.paths import outputs_root, resolve_output_dir
 from utils.scan_memo import memoized, scan_memo_active
 
-# The history listing re-checks every stopped run's checkpoint on each poll: trainer_state.json,
-# the adapter header and the optimizer/scheduler pickles. Inside a listing (scan_memo) a verdict is
-# kept per unchanged file; resume start paths run outside one and always read. Files changed within
-# the settle window are not kept: a coarse filesystem clock can give a same-size rewrite equal stamps.
+# Inside scan_memo, verdicts are cached per unchanged file; resume start paths always read. Files changed
+# within the settle window are not cached: a coarse fs clock can give a same-size rewrite equal stamps.
 _STATE_CACHE: "OrderedDict[tuple, tuple[tuple, object]]" = OrderedDict()
 _STATE_CACHE_MAX = 4096
 _STATE_CACHE_SETTLE_NS = 2_000_000_000
@@ -97,7 +95,7 @@ _MODEL_INDEXES = ("model.safetensors.index.json", "pytorch_model.bin.index.json"
 def _read_state_file(path: Path, require_tensor: bool, io_error: Callable[[], None]) -> bool:
     try:
         if not path.is_file() or path.stat().st_size == 0:
-            # The caller saw a non-empty regular file: a swallowed stat error or a change, not a verdict.
+            # Caller saw a non-empty file, so False here is a swallowed stat error or a change: not a verdict.
             io_error()
             return False
         if path.suffix == ".safetensors":

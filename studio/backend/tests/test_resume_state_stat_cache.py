@@ -38,7 +38,6 @@ def _reads(monkeypatch) -> list:
     real_loads = json.loads
 
     def read(path, require_tensor, io_error):
-        # Missing and empty files answer from one stat and are never kept.
         if Path(path).is_file() and Path(path).stat().st_size:
             calls.append(Path(path).name)
         return real_read(path, require_tensor, io_error)
