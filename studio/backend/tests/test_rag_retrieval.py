@@ -539,3 +539,37 @@ def test_build_rag_autoinject_scope_overrides_env(monkeypatch):
         )
         is None
     )
+
+
+def test_search_for_autoinject_caps_after_dense_floor(rag_conn, bow_embeddings, monkeypatch):
+    for i in range(4):
+        _add_doc(rag_conn, "kb_a", f"s{i}", "guide.pdf", f"s{i}", "alpha bravo")
+        _add_doc(rag_conn, "kb_a", f"z{i}", "log.txt", f"z{i}", "zulu")
+    # Keyword-only hits outside the dense leg tie the floor-clearing dense hits rank for rank.
+    monkeypatch.setattr(
+        retrieval,
+        "retrieve_lexical",
+        lambda *a, **kw: [retrieval.Hit(f"z{i}:0", 1.0, lexical_score = 1.0) for i in range(4)],
+    )
+    monkeypatch.setattr(
+        retrieval,
+        "retrieve_dense",
+        lambda *a, **kw: [retrieval.Hit(f"s{i}:0", 0.9, dense_score = 0.9) for i in range(4)],
+    )
+    found = tool.search_for_autoinject(
+        query = "alpha bravo", scope_kb_id = "a", top_k = 4, min_dense_score = 0.70
+    )
+    assert found is not None
+    assert [s["chunkId"] for s in found[1]] == [f"s{i}:0" for i in range(4)]
+
+
+def test_knowledge_search_floors_before_top_k(rag_conn, bow_embeddings):
+    filler = " ".join(f"note{i}" for i in range(200))
+    _add_doc(rag_conn, "kb_a", "best", "guide.pdf", "h0", f"alpha bravo {filler}")
+    for i in range(12):
+        text = "alpha bravo charlie delta echo" + " foxtrot" * i
+        _add_doc(rag_conn, "kb_a", f"d{i}", "faq.pdf", f"h{i + 1}", text)
+    _, sources = tool.search_knowledge_base_with_sources(
+        query = "alpha bravo", scope_kb_id = "a", top_k = 4, min_score = 0.70
+    )
+    assert [s["chunkId"] for s in sources] == ["best:0"]
