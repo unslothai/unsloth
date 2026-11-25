@@ -47,7 +47,7 @@ def test_probe_routing(
 ):
     monkeypatch.setattr(lce, "_llmcompressor_shadow_is_valid", lambda: shadow_valid)
     monkeypatch.setattr(lce, "_llmcompressor_main_disabled", lambda: shadow_disabled)
-    monkeypatch.setattr(lce, "_env_offline", lambda: offline)
+    monkeypatch.setattr(lce, "hf_env_offline", lambda: offline)
     monkeypatch.setattr(lce, "_workspace_llmcompressor_ok", lambda spec: workspace_ok)
     monkeypatch.setenv(
         "UNSLOTH_DISABLE_LLM_COMPRESSOR_AUTOINSTALL", "1" if autoinstall_off else "0"

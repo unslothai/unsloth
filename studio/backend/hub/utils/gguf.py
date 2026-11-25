@@ -26,6 +26,7 @@ from utils.paths.path_utils import (
     is_appledouble_metadata,
 )
 from utils.models.gguf_metadata import mmproj_accepts_image
+from utils.utils import hf_env_offline
 
 logger = get_logger(__name__)
 _GGUF_MODEL_INFO_TIMEOUT_SECONDS = 5.0
@@ -1044,14 +1045,6 @@ def group_gguf_variant_files(
     return grouped
 
 
-def _env_offline() -> bool:
-    return os.environ.get("HF_HUB_OFFLINE", "").lower() in (
-        "1",
-        "true",
-        "yes",
-    ) or os.environ.get("TRANSFORMERS_OFFLINE", "").lower() in ("1", "true", "yes")
-
-
 def iter_hf_cache_snapshots(repo_id: str, root: Optional[Path] = None):
     from hub.utils.hf_cache_state import (
         iter_active_repo_cache_dirs,
@@ -1468,7 +1461,7 @@ def _hub_model_info(repo_id: str, hf_token):
 def list_gguf_variants(
     repo_id: str, hf_token: Optional[str] = None
 ) -> tuple[list[GgufVariantInfo], bool, Optional[list]]:
-    if _env_offline():
+    if hf_env_offline():
         cached = list_gguf_variants_from_hf_cache(repo_id)
         if cached is not None:
             return _ready_cached_variants(cached)

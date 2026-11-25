@@ -364,7 +364,7 @@ class TestCheckTokenizerConfigNeedsV5:
         # The unauthenticated miss must not block a later authed fetch (separate cache key).
         import utils.transformers_version as tv
 
-        monkeypatch.setattr(tv, "_env_offline", lambda: False)
+        monkeypatch.setattr(tv, "hf_env_offline", lambda: False)
         seen_auth = []
 
         class _Resp:
@@ -396,7 +396,7 @@ class TestCheckTokenizerConfigNeedsV5:
     def test_remote_fetch_respects_hf_endpoint(self, monkeypatch):
         import utils.transformers_version as tv
 
-        monkeypatch.setattr(tv, "_env_offline", lambda: False)
+        monkeypatch.setattr(tv, "hf_env_offline", lambda: False)
         monkeypatch.setenv("HF_ENDPOINT", "https://hf.mirror.internal/")
         seen = {}
 
@@ -2779,18 +2779,18 @@ class TestOfflineCacheNotPoisoned:
     def test_offline_tokenizer_assumption_not_cached(self, monkeypatch):
         import utils.transformers_version as tv
 
-        monkeypatch.setattr(tv, "_env_offline", lambda: True)
+        monkeypatch.setattr(tv, "hf_env_offline", lambda: True)
         assert _check_tokenizer_config_needs_v5("org/uncached") is False
         assert ("org/uncached", None) not in _tokenizer_class_cache
 
     def test_offline_then_online_refetches(self, monkeypatch):
         import utils.transformers_version as tv
 
-        monkeypatch.setattr(tv, "_env_offline", lambda: True)
+        monkeypatch.setattr(tv, "hf_env_offline", lambda: True)
         assert _check_tokenizer_config_needs_v5("org/needs5") is False
         assert ("org/needs5", None) not in _tokenizer_class_cache
 
-        monkeypatch.setattr(tv, "_env_offline", lambda: False)
+        monkeypatch.setattr(tv, "hf_env_offline", lambda: False)
 
         class _Resp:
             def read(self):
@@ -2808,7 +2808,7 @@ class TestOfflineCacheNotPoisoned:
     def test_offline_config_miss_not_cached(self, monkeypatch):
         import utils.transformers_version as tv
 
-        monkeypatch.setattr(tv, "_env_offline", lambda: True)
+        monkeypatch.setattr(tv, "hf_env_offline", lambda: True)
         monkeypatch.setattr(tv, "_config_json_from_hf_cache", lambda name: None)
         assert _load_config_json("org/uncached-config", None) is None
         assert ("org/uncached-config", None) not in _config_json_cache
@@ -3181,7 +3181,7 @@ class TestSidecarSwapReservation:
             },
         )
         monkeypatch.setattr(tv, "_venv_dir_is_valid", lambda d, p: False)
-        monkeypatch.setattr(tv, "_env_offline", lambda: False)
+        monkeypatch.setattr(tv, "hf_env_offline", lambda: False)
         return tv
 
     def test_repair_holds_reservation_during_swap(self, monkeypatch, tmp_path):
@@ -3610,7 +3610,7 @@ class TestDamagedLatestSidecarRepairHandoff:
                 continue  # already pointed at `live`, which is the sidecar under test
             monkeypatch.setattr(tv, _tier_dir, str(live.parent / _tier_dir.lower().strip("_")))
         monkeypatch.setattr(tv, "_latest_tier_disabled", lambda: False)
-        monkeypatch.setattr(tv, "_env_offline", lambda: False)
+        monkeypatch.setattr(tv, "hf_env_offline", lambda: False)
         monkeypatch.setattr(tv, "_workers_active_for_repair", lambda: False)
         monkeypatch.setattr(tv, "_config_mapping_cache", {})
         monkeypatch.setattr(tv, "_latest_repair_failed_at", 0.0)
@@ -3778,7 +3778,7 @@ class TestDamagedLatestSidecarRepairHandoff:
         import multiprocessing
 
         bailouts = {
-            "offline": lambda tv: monkeypatch.setattr(tv, "_env_offline", lambda: True),
+            "offline": lambda tv: monkeypatch.setattr(tv, "hf_env_offline", lambda: True),
             "child": lambda tv: monkeypatch.setattr(
                 multiprocessing, "parent_process", lambda: object()
             ),

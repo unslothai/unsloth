@@ -71,6 +71,7 @@ from hub.utils.paths import (
 
 # Loader's normalizer, not the hub's: they disagree on WSL, and only it names what the load opens.
 from utils.paths import normalize_path as _loader_normalize_path
+from utils.utils import hf_env_offline
 from hub.services.models.common import (
     _is_imatrix_filename,
     _is_mmproj_filename,
@@ -1100,7 +1101,7 @@ async def _audio_cpp_variants_answer(
     ):
         return None
     real_repo = audio_cpp_models.repo_of(text) or text
-    network = not (offline or audio_cpp_models.hub_offline())
+    network = not (offline or hf_env_offline())
     if account_access.managed_account():
         # Offline: the disk pool and a disk-only grant check, never queued behind Hub listings.
         await listing_thread(
