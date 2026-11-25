@@ -115,43 +115,57 @@ def mount_points():
         return set()
 
 
-def open_root(root):
+def open_root(fd):
     """A hub run.sh just created gets the group root rwX a handed-over entry has, so the tool sandbox can fill it."""
-    try:
-        fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
-    except OSError:
-        return
     try:
         if not os.listdir(fd) and not has_acl(fd):
             os.fchown(fd, -1, 0)
             os.fchmod(fd, stat.S_IMODE(os.fstat(fd).st_mode) | 0o070)
     except OSError:
         pass
-    finally:
-        os.close(fd)
 
 
-# A mount inside the cache (run.sh's separate HF_HUB_CACHE) has its own owner: a root-owned shared hub stays root's.
-# mountinfo names resolved paths; the walk keeps top as given, so a symlinked HF_HOME is still not followed
-real = os.path.realpath(top)
-nested = {os.path.join(top, os.path.relpath(m, real)) for m in mount_points() if m.startswith(real + "/")}
-for root in [top, *sorted(nested)]:
-    try:
-        owner = uid if root == top else os.stat(root).st_uid
-    except OSError:
-        continue
-    if owner == 0:
-        continue
-    if root == os.path.join(top, "hub") and os.environ.get("UNSLOTH_HF_HUB_CREATED") == "1":
-        open_root(root)
-    for path, dirs, files, dfd in os.fwalk(root, follow_symlinks = False):
-        dirs[:] = [d for d in dirs if os.path.join(path, d) not in nested]
+def sweep(walk, owner):
+    for _, dirs, files, dfd in walk:
         # Studio resumes only partials it owns; they are handed over once published as blobs.
         for name in dirs + [f for f in files if not f.endswith(".incomplete")]:
             try:
                 hand_over(name, dfd, owner)
             except OSError:
                 pass
+
+
+def pruned(walk, skip):
+    for step in walk:
+        if step[0] == top:
+            step[1][:] = [d for d in step[1] if d not in skip]
+        yield step
+
+
+# A mount directly in the cache (run.sh's separate HF_HUB_CACHE) has its own owner, so a root-owned shared hub stays
+# root's; it is opened no-follow relative to top (a mount point cannot be swapped), and a symlinked top is never followed.
+nofollow_dir = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+real = os.path.realpath(top)
+nested = {os.path.basename(m) for m in mount_points() if os.path.dirname(m) == real}
+if uid != 0:
+    sweep(pruned(os.fwalk(top, follow_symlinks = False), nested), uid)
+try:
+    top_fd = os.open(top, nofollow_dir)
+except OSError:
+    nested = set()
+for name in sorted(nested):
+    try:
+        fd = os.open(name, nofollow_dir, dir_fd = top_fd)
+    except OSError:
+        continue
+    try:
+        owner = os.fstat(fd).st_uid
+        if owner != 0:
+            if name == "hub" and os.environ.get("UNSLOTH_HF_HUB_CREATED") == "1":
+                open_root(fd)
+            sweep(os.fwalk(".", dir_fd = fd, follow_symlinks = False), owner)
+    finally:
+        os.close(fd)
 PY
         sleep 30
     done </dev/null >/dev/null 2>&1 &

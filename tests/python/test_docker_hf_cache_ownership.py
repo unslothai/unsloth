@@ -300,3 +300,23 @@ def test_a_symlinked_cache_is_not_followed(entrypoint, tmp_path):
     _boot(entrypoint, tmp_path, hf_home, bindir, lambda: False)
 
     assert _logged(calls) == {}
+
+
+@pytest.mark.skipif(
+    os.name == "posix" and os.geteuid() == 0, reason = "the recording sweep needs a non-root uid"
+)
+def test_a_deep_mount_behind_a_swapped_symlink_is_not_walked(entrypoint, tmp_path):
+    hf_home = tmp_path / "hf"
+    (hf_home / "hub").mkdir(parents = True)
+    elsewhere = tmp_path / "elsewhere"
+    _download_as_root(elsewhere / "cache", tmp_path / "outside")
+    (hf_home / "hub" / "holder").symlink_to(elsewhere)
+    mountinfo = tmp_path / "mountinfo"
+    mountinfo.write_text(
+        f"1 0 0:1 / / rw - x x rw\n2 1 0:2 / {hf_home}/hub/holder/cache rw - x x rw\n"
+    )
+    bindir, calls = _recording_python(tmp_path, mountinfo)
+
+    _boot(entrypoint, tmp_path, hf_home, bindir, lambda: False)
+
+    assert [p for p in _logged(calls) if not p.startswith(str(hf_home) + "/")] == []
