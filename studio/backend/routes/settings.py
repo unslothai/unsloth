@@ -5546,14 +5546,46 @@ class MaterialPrefsPayload(BaseModel):
     scope: Optional[Literal["newChat", "chats", "all"]] = None
 
 
+_SidebarId = Annotated[str, Field(min_length = 1, max_length = 512)]
+_SidebarIds = Annotated[list[_SidebarId], Field(max_length = 100_000)]
+
+
+class SidebarSectionPayload(BaseModel):
+    id: _SidebarId
+    name: Annotated[str, Field(min_length = 1, max_length = 60)]
+    sort: Literal["updated", "manual"]
+    parentId: Optional[_SidebarId] = None
+    createdAt: Optional[int] = None
+    modifiedAt: Optional[int] = None
+
+
+class SidebarPrefsPayload(BaseModel):
+    organizeBy: Optional[Literal["project", "list"]] = None
+    chatSort: Optional[Literal["updated", "manual"]] = None
+    pinnedSort: Optional[Literal["updated", "manual"]] = None
+    projectSort: Optional[Literal["updated", "name", "created", "manual"]] = None
+    manualOrder: Optional[dict[_SidebarId, _SidebarIds]] = Field(None, max_length = 100_000)
+    customSections: Optional[list[SidebarSectionPayload]] = Field(None, max_length = 100_000)
+    sectionByChatId: Optional[dict[_SidebarId, _SidebarId]] = Field(None, max_length = 100_000)
+    sectionByProjectId: Optional[dict[_SidebarId, _SidebarId]] = Field(None, max_length = 100_000)
+    sectionByPageId: Optional[dict[_SidebarId, _SidebarId]] = Field(None, max_length = 100_000)
+    hiddenSections: Optional[_SidebarIds] = None
+    sectionOrder: Optional[_SidebarIds] = None
+
+
 class ClientPreferencesPayload(BaseModel):
     interfaceScale: Optional[int] = Field(None, ge = 50, le = 200)
     browser: Optional[BrowserPrefsPayload] = None
     chat: Optional[ChatPrefsPayload] = None
     plusMenu: Optional[PlusMenuPrefsPayload] = None
+    sidebar: Optional[SidebarPrefsPayload] = None
     material: Optional[MaterialPrefsPayload] = None
     timeFormat: Optional[Literal["system", "12h", "24h"]] = None
     spellcheck: Optional[bool] = None
+
+
+class ClientPreferencesUpdate(ClientPreferencesPayload):
+    sidebarBase: Optional[SidebarPrefsPayload] = None
 
 
 class ClientPreferencesResponse(ClientPreferencesPayload):
@@ -5578,7 +5610,7 @@ def get_client_preferences_settings(
 
 @_account_settings_router.put("/client-preferences", response_model = ClientPreferencesResponse)
 def update_client_preferences_settings(
-    payload: ClientPreferencesPayload, current_subject: str = Depends(get_current_subject)
+    payload: ClientPreferencesUpdate, current_subject: str = Depends(get_current_subject)
 ) -> ClientPreferencesResponse:
     changes = payload.model_dump(exclude_none = True)
     return _client_preferences_response(update_client_preferences(changes))

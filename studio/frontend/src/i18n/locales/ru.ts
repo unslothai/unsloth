@@ -1179,6 +1179,7 @@ export const ru = {
       removeFromSection: "Убрать из раздела",
       removeFrom: "Убрать из {name}",
       empty: "Перетащите сюда чаты или проекты",
+      newSubsection: "Новый подраздел",
       sectionOptions: "Параметры раздела",
       newChatInSection: "Новый чат в «{name}»",
       deleted: "Раздел «{name}» удалён",

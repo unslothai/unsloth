@@ -1229,6 +1229,7 @@ export const th = {
       removeFromSection: "นำออกจากส่วน",
       removeFrom: "นำออกจาก {name}",
       empty: "ลากแชทหรือโปรเจกต์มาที่นี่",
+      newSubsection: "ส่วนย่อยใหม่",
       sectionOptions: "ตัวเลือกส่วน",
       newChatInSection: "แชทใหม่ใน {name}",
       deleted: "ลบส่วน “{name}” แล้ว",

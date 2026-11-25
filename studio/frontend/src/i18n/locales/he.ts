@@ -1213,6 +1213,7 @@ export const he = {
       removeFromSection: "הסר מהמקטע",
       removeFrom: "הסר מ-{name}",
       empty: "גרור לכאן צ'אטים או פרויקטים",
+      newSubsection: "תת־מדור חדש",
       sectionOptions: "אפשרויות מקטע",
       newChatInSection: "צ'אט חדש ב-{name}",
       deleted: "המקטע “{name}” נמחק",

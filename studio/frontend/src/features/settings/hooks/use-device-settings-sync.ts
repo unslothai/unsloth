@@ -10,6 +10,10 @@ import { startChatBackgroundSync } from "@/features/chat-background/sync";
 // eslint-disable-next-line no-restricted-imports
 import { useChatPreferencesStore } from "@/features/chat/stores/chat-preferences-store";
 // eslint-disable-next-line no-restricted-imports
+import { SIDEBAR_SYNC_BASE_KEY } from "@/features/chat/stores/sidebar-organization-keys";
+// eslint-disable-next-line no-restricted-imports
+import { useSidebarOrganizationStore } from "@/features/chat/stores/sidebar-organization-store";
+// eslint-disable-next-line no-restricted-imports
 import { usePlusMenuPrefsStore } from "@/features/chat/stores/plus-menu-prefs-store";
 import {
   accountTransitionPending,
@@ -72,7 +76,7 @@ const LOCAL_CHAT_PREFS = new Set(["notifyWhenReplyFinishes", "filesPanelCollapse
 const LOCAL_MATERIAL = new Set(["nativeFailed", "here"]);
 
 type Section = {
-  field: keyof ClientPreferencesChanges;
+  field: Exclude<keyof ClientPreferencesChanges, "sidebarBase">;
   fallback: unknown;
   read: () => unknown;
   apply: (remote: unknown) => void;
@@ -125,6 +129,7 @@ function sections(): Record<keyof Pending, Section> {
     },
     browser: storeSection("browser", useBrowserPrefsStore),
     chat: storeSection("chat", useChatPreferencesStore, LOCAL_CHAT_PREFS),
+    sidebar: storeSection("sidebar", useSidebarOrganizationStore, new Set(["pendingNewChatSection"])),
     plusMenu: storeSection("plusMenu", usePlusMenuPrefsStore),
     material: storeSection("material", useMaterialStore, LOCAL_MATERIAL),
     timeFormat: {
@@ -154,6 +159,16 @@ export function startClientPreferencesSync(): () => void {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const touched = readPending();
   let edits = 0;
+  // Persist the common ancestor for offline edits. Account transitions clear this key.
+  let sidebarBase: Prefs = {};
+  try {
+    const saved = JSON.parse(localStorage.getItem(SIDEBAR_SYNC_BASE_KEY) ?? "null");
+    if (saved && typeof saved === "object" && !Array.isArray(saved)) sidebarBase = saved;
+  } catch { /* No usable base: migrate this browser's local sections on its first sync. */ }
+  const rememberSidebar = (base: Prefs) => {
+    sidebarBase = base;
+    try { localStorage.setItem(SIDEBAR_SYNC_BASE_KEY, JSON.stringify(base)); } catch { /* storage full */ }
+  };
   const touch = (section: keyof Pending) => {
     touched[section] = true;
     edits++;
@@ -173,11 +188,22 @@ export function startClientPreferencesSync(): () => void {
           const sent = edits;
           const edited = PENDING_SECTIONS.filter((section) => touched[section]);
           if (edited.length === 0 || switched()) return;
-          await saveClientPreferences(
-            Object.fromEntries(
-              edited.map((section) => [all[section].field, all[section].read()]),
-            ),
+          const changes = Object.fromEntries(
+            edited.map((section) => [all[section].field, all[section].read()]),
           );
+          if (changes.sidebar) changes.sidebarBase = sidebarBase;
+          const response = await saveClientPreferences(changes);
+          if (changes.sidebar && !cancelled && !switched() && response.sidebar) {
+            if (same(all.sidebar.read(), changes.sidebar)) {
+              applying = true;
+              try { all.sidebar.apply(response.sidebar); } finally { applying = false; }
+              last.sidebar = all.sidebar.read();
+              rememberSidebar(last.sidebar as Prefs);
+            } else {
+              // Another local edit is queued. Its delta starts at the state we just sent.
+              rememberSidebar(changes.sidebar as Prefs);
+            }
+          }
           if (edits === sent && !switched()) {
             for (const section of edited) touched[section] = false;
             markPending(edited, false);
@@ -204,6 +230,11 @@ export function startClientPreferencesSync(): () => void {
     .then((remote) => {
       if (cancelled || switched()) return;
       loaded = true;
+      // A second browser may already have its own pre-sync sections. Merge those
+      // from an empty base instead of replacing them with the first browser's copy.
+      if (remote.sidebar && !Object.keys(sidebarBase).length && !same(all.sidebar.read(), all.sidebar.fallback)) {
+        touch("sidebar");
+      }
       applying = true;
       for (const section of PENDING_SECTIONS) {
         const value = remote[all[section].field];
@@ -211,6 +242,7 @@ export function startClientPreferencesSync(): () => void {
         last[section] = all[section].read();
       }
       applying = false;
+      if (remote.sidebar && !touched.sidebar) rememberSidebar(last.sidebar as Prefs);
       for (const section of PENDING_SECTIONS) {
         if (
           remote[all[section].field] == null &&

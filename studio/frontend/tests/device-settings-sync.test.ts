@@ -44,6 +44,9 @@ globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
 const { startClientPreferencesSync } = await import(
   "../src/features/settings/hooks/use-device-settings-sync.ts"
 );
+const { useSidebarOrganizationStore } = await import(
+  "../src/features/chat/stores/sidebar-organization-store.ts"
+);
 const { useChatPreferencesStore } = await import(
   "../src/features/chat/stores/chat-preferences-store.ts"
 );
@@ -67,6 +70,7 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 1600));
 function freshBrowser() {
   store.clear();
   puts.length = 0;
+  useSidebarOrganizationStore.setState(useSidebarOrganizationStore.getInitialState());
   useChatPreferencesStore.setState(useChatPreferencesStore.getInitialState());
   usePlusMenuPrefsStore.setState(usePlusMenuPrefsStore.getInitialState());
   useMaterialStore.setState(useMaterialStore.getInitialState());
@@ -278,4 +282,50 @@ test("the server accepts every window material, lens and scope this build can sa
   assert.deepEqual(["solid", ...glass].sort(), [...MATERIALS].sort());
   assert.deepEqual(literal(/lens: Optional\[Literal\[([^\]]+)\]\]/).sort(), [...LENS_MODES].sort());
   assert.deepEqual(literal(/scope: Optional\[Literal\[([^\]]+)\]\]/).sort(), [...SCOPES].sort());
+});
+
+test("a fresh browser restores the section tree and assignments without starting a new chat", async () => {
+  freshBrowser();
+  account = { ...empty, sidebar: {
+    customSections: [
+      { id: "a", name: "Fiction", sort: "manual" },
+      { id: "b", parentId: "a", name: "Mystery", sort: "updated" },
+    ],
+    sectionByChatId: { thread: "b" },
+    pendingNewChatSection: { sectionId: "a", nonce: "another-device" },
+  } };
+  const stop = startClientPreferencesSync();
+  try {
+    await settle();
+    const state = useSidebarOrganizationStore.getState();
+    assert.equal(state.customSections[1].parentId, "a");
+    assert.equal(state.sectionByChatId.thread, "b");
+    assert.equal(state.pendingNewChatSection, null);
+    assert.deepEqual(puts, []);
+    state.renameCustomSection("a", "Writing");
+    await settle();
+    assert.equal(puts.length, 1);
+    const { sidebar, sidebarBase } = puts[0] as Record<string, typeof state>;
+    assert.equal(sidebar.customSections[0].name, "Writing");
+    assert.equal(sidebarBase.customSections[0].name, "Fiction");
+    assert.equal("pendingNewChatSection" in sidebar, false);
+  } finally {
+    stop();
+  }
+});
+
+test("first sync retains a second browser's existing local sections", async () => {
+  freshBrowser();
+  useSidebarOrganizationStore.getState().createCustomSection("Local");
+  account = { ...empty, sidebar: { customSections: [{ id: "remote", name: "Remote", sort: "manual" }] } };
+  const stop = startClientPreferencesSync();
+  try {
+    await settle();
+    assert.equal(puts.length, 1);
+    const sent = puts[0].sidebar as { customSections: { name: string }[] };
+    assert.equal(sent.customSections[0].name, "Local");
+    assert.deepEqual(puts[0].sidebarBase, {});
+  } finally {
+    stop();
+  }
 });

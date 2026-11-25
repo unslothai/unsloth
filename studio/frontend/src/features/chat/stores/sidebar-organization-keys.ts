@@ -3,4 +3,5 @@
 
 /** Imports nothing: the store is in an import cycle, so keys there hit the TDZ. Add no imports. */
 
+export const SIDEBAR_SYNC_BASE_KEY = "unsloth_sidebar_sync_base";
 export const SIDEBAR_ORGANIZATION_STORAGE_KEY = "unsloth_sidebar_organization";

@@ -22,6 +22,7 @@ export function removeCustomSectionWithUndo(section: SidebarCustomSection): () =
   const pageIds = Object.keys(state.sectionByPageId).filter(
     (id) => state.sectionByPageId[id] === section.id,
   );
+  const children = new Set(state.customSections.filter(s => s.parentId === section.id).map(s => s.id));
   const order = state.manualOrder[customSectionScope(section.id)];
   const hidden = state.hiddenSections.includes(section.id);
   const drawnOrder = resolveSectionOrder(state.sectionOrder, state.customSections);
@@ -30,7 +31,9 @@ export function removeCustomSectionWithUndo(section: SidebarCustomSection): () =
   return () => {
     useSidebarOrganizationStore.setState((now) => {
       if (now.customSections.some((s) => s.id === section.id)) return now;
-      const restored = [...now.customSections];
+      const restored = now.customSections.map(s =>
+        children.has(s.id) && s.parentId === section.parentId ? { ...s, parentId: section.id } : s,
+      );
       restored.splice(Math.min(index, restored.length), 0, section);
       const sectionByChatId = assignmentMap(now.sectionByChatId);
       for (const id of chatIds) sectionByChatId[id] ??= section.id;

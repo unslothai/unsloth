@@ -1179,6 +1179,7 @@ export const ptBR = {
       removeFromSection: "Remover da seção",
       removeFrom: "Remover de {name}",
       empty: "Arraste conversas ou projetos para cá",
+      newSubsection: "Nova subseção",
       sectionOptions: "Opções da seção",
       newChatInSection: "Novo chat em {name}",
       deleted: "Seção “{name}” excluída",

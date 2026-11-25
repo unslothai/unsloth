@@ -1287,6 +1287,7 @@ export const es419 = {
       removeFromSection: "Quitar de la sección",
       removeFrom: "Quitar de {name}",
       empty: "Arrastra chats o proyectos aquí",
+      newSubsection: "Nueva subsección",
       sectionOptions: "Opciones de sección",
       newChatInSection: "Nuevo chat en {name}",
       deleted: "Sección “{name}” eliminada",

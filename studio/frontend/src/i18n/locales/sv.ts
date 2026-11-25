@@ -1231,6 +1231,7 @@ export const sv = {
       removeFromSection: "Ta bort från avsnitt",
       removeFrom: "Ta bort från {name}",
       empty: "Dra chattar eller projekt hit",
+      newSubsection: "Nytt underavsnitt",
       sectionOptions: "Avsnittsalternativ",
       newChatInSection: "Ny chatt i {name}",
       deleted: "Avsnittet ”{name}” togs bort",

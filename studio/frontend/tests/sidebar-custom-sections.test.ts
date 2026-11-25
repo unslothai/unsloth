@@ -27,6 +27,7 @@ import {
   PINNED_SECTION_KEY,
   PROJECTS_SECTION_KEY,
   resolveSectionOrder,
+  visibleSectionTree,
   SIDEBAR_ORGANIZATION_STORAGE_KEY,
   useSidebarOrganizationStore,
 } from "../src/features/chat/stores/sidebar-organization-store.ts";
@@ -566,7 +567,8 @@ test("each list header's menu carries only what that list is about, as in ChatGP
   assert.doesNotMatch(APP_SIDEBAR, /setSectionHidden\(PINNED_SECTION_KEY/);
   assert.match(section, /mode: "rename", section/);
   assert.match(section, /removeCustomSection\(section\)/);
-  assert.doesNotMatch(section, /organizeSubmenu|setSectionHidden|mode: "create"/);
+  assert.match(section, /mode: "create", parentId: section.id/);
+  assert.doesNotMatch(section, /organizeSubmenu|setSectionHidden|mode: "create" \}/);
   for (const kind of ["pinned", "projects", "recents", "section"]) {
     assert.match(APP_SIDEBAR, new RegExp(`renderSidebarHeaderMenu\\(\\{\\n[^}]*kind: "${kind}",`));
   }
@@ -686,6 +688,7 @@ test("a custom section's menu edits it, acts on its chats, and removes it", () =
   );
   const labels = [...menu.matchAll(/t\("(shell\.[\w.]+)"\)/g)].map((match) => match[1]);
   assert.deepEqual(labels, [
+    "shell.sections.newSubsection",
     "shell.sections.edit",
     "shell.sections.markAllRead",
     "shell.selection.archiveChats",
@@ -1075,4 +1078,35 @@ test("undoing a removed section files its pages back into it", async () => {
   assert.deepEqual({ ...useSidebarOrganizationStore.getState().sectionByPageId }, {});
   undo();
   assert.deepEqual({ ...useSidebarOrganizationStore.getState().sectionByPageId }, { pg: id });
+});
+
+test("nested sections respect sibling order, ancestor visibility and saved state", () => {
+  resetStore();
+  const store = useSidebarOrganizationStore.getState();
+  const root = store.createCustomSection("Fiction")!;
+  const child = store.createCustomSection("Mystery", root)!;
+  const leaf = store.createCustomSection("Outlines", child)!;
+  const other = store.createCustomSection("Research")!;
+  const state = useSidebarOrganizationStore.getState();
+  const order = resolveSectionOrder(state.sectionOrder, state.customSections);
+  const tree = (hidden: string[], closed: string[]) =>
+    visibleSectionTree(order, state.customSections, new Set(hidden), new Set(closed));
+  assert.equal(tree([], []).get(leaf), 2);
+  assert.equal(tree([], [root]).has(child), false);
+  assert.equal(tree([child], []).has(leaf), false);
+  assert.equal(tree([root], []).has(other), true);
+  const hydrated = mergePersistedOrganization(state, store);
+  assert.equal(hydrated.customSections.find(s => s.id === child)?.parentId, root);
+  store.deleteCustomSection(child);
+  assert.equal(useSidebarOrganizationStore.getState().customSections.find(s => s.id === leaf)?.parentId, root);
+});
+
+test("stale parent links and cycles cannot strand saved sections", () => {
+  resetStore();
+  const sections = [{ id: "x", parentId: "y" }, { id: "y", parentId: "x" }, { id: "z", parentId: "gone" }]
+    .map(s => ({ ...s, name: s.id, sort: "manual" }));
+  const state = mergePersistedOrganization({ customSections: sections }, useSidebarOrganizationStore.getState());
+  const visible = visibleSectionTree(resolveSectionOrder([], state.customSections), state.customSections, new Set(), new Set());
+  assert.equal(visible.get("z"), 0);
+  assert.ok(visible.has("x") && visible.has("y"));
 });

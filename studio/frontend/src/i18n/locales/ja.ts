@@ -1178,6 +1178,7 @@ export const ja = {
       removeFromSection: "セクションから削除",
       removeFrom: "{name}から削除",
       empty: "ここにチャットやプロジェクトをドラッグ",
+      newSubsection: "サブセクションを作成",
       sectionOptions: "セクションのオプション",
       newChatInSection: "{name} に新しいチャット",
       deleted: "セクション「{name}」を削除しました",

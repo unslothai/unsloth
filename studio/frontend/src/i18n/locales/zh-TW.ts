@@ -1225,6 +1225,7 @@ export const zhTW = {
       removeFromSection: "從區段中移除",
       removeFrom: "從 {name} 中移除",
       empty: "將聊天或專案拖曳到這裡",
+      newSubsection: "新增子分組",
       sectionOptions: "區段選項",
       newChatInSection: "在 {name} 中新增聊天",
       deleted: "已刪除區段「{name}」",

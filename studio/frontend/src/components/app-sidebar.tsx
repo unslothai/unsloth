@@ -235,6 +235,7 @@ import {
   PROJECTS_SECTION_KEY,
   PINNED_SECTION_KEY,
   resolveSectionOrder,
+  visibleSectionTree,
   type SidebarChatSort,
   type SidebarCustomSection,
   type SidebarOrganizeBy,
@@ -1656,11 +1657,14 @@ export function AppSidebar() {
   );
   const hiddenSections = useSidebarOrganizationStore((s) => s.hiddenSections);
   const hiddenSectionSet = useMemo(() => new Set(hiddenSections), [hiddenSections]);
+  const sectionById = useMemo(() => new Map(customSections.map(section => [section.id, section])), [customSections]);
+  const parentSectionIds = useMemo(() => new Set(customSections.map(section => section.parentId)), [customSections]);
   const savedSectionOrder = useSidebarOrganizationStore((s) => s.sectionOrder);
-  const orderedSectionKeys = useMemo(
-    () => resolveSectionOrder(savedSectionOrder, customSections),
-    [savedSectionOrder, customSections],
-  );
+  const [collapsedSectionIds, setCollapsedSectionIds] = useState<ReadonlySet<string>>(() => new Set());
+  const sectionDepths = useMemo(() => visibleSectionTree(
+    resolveSectionOrder(savedSectionOrder, customSections), customSections, hiddenSectionSet, collapsedSectionIds,
+  ), [savedSectionOrder, customSections, hiddenSectionSet, collapsedSectionIds]);
+  const orderedSectionKeys = useMemo(() => Array.from(sectionDepths.keys()), [sectionDepths]);
   const moveSection = useSidebarOrganizationStore((s) => s.moveSection);
   // Pinned, Projects and custom sections drag by their headers. The hook draws the drag itself,
   // so the sidebar re-renders once, on the drop.
@@ -2358,8 +2362,8 @@ export function AppSidebar() {
     displayManualOrder,
   ]);
   const visibleCustomSections = useMemo(
-    () => customSections.filter((section) => !hiddenSectionSet.has(section.id)),
-    [customSections, hiddenSectionSet],
+    () => customSections.filter((section) => sectionDepths.has(section.id)),
+    [customSections, sectionDepths],
   );
   const customSectionIds = useMemo(() => {
     const map = new Map<string, { rows: string[]; chats: string[]; folders: string[] }>();
@@ -2372,9 +2376,6 @@ export function AppSidebar() {
     }
     return map;
   }, [customSectionRows]);
-  const [collapsedSectionIds, setCollapsedSectionIds] = useState<ReadonlySet<string>>(
-    () => new Set(),
-  );
   const setCustomSectionOpen = useCallback((sectionId: string, open: boolean) => {
     setCollapsedSectionIds((prev) => {
       if (prev.has(sectionId) !== open) return prev;
@@ -3721,7 +3722,7 @@ export function AppSidebar() {
   }, [allChatItems, pendingRename]);
   const [creatingProject, setCreatingProject] = useState(false);
   const [sectionDialog, setSectionDialog] = useState<
-    | ({ mode: "create" } & Omit<SectionTarget, "selection">)
+    | ({ mode: "create"; parentId?: string } & Omit<SectionTarget, "selection">)
     | { mode: "rename"; section: SidebarCustomSection }
     | null
   >(null);
@@ -4584,6 +4585,10 @@ export function AppSidebar() {
       };
       body = (
         <>
+          <DropdownMenuItem onSelect={() => setSectionDialog({ mode: "create", parentId: section.id })}>
+            <HugeiconsIcon icon={PlusSignIcon} strokeWidth={1.75} className="size-icon" />
+            <span>{t("shell.sections.newSubsection")}</span>
+          </DropdownMenuItem>
           <DropdownMenuItem onSelect={() => setSectionDialog({ mode: "rename", section })}>
             <HugeiconsIcon icon={Settings01Icon} strokeWidth={1.75} className="size-icon" />
             <span>{t("shell.sections.edit")}</span>
@@ -4642,12 +4647,14 @@ export function AppSidebar() {
     if (key === PINNED_SECTION_KEY) content = renderPinnedSection();
     else if (key === PROJECTS_SECTION_KEY) content = renderProjectsSection();
     else {
-      const section = customSections.find((candidate) => candidate.id === key);
+      const section = sectionById.get(key);
       if (section) content = renderCustomSection(section);
     }
     if (content === null) return null;
     return (
       <div
+        style={{ marginInlineStart: Math.min(sectionDepths.get(key) ?? 0, 4) * 12 }}
+        data-section-parent={sectionById.get(key)?.parentId}
         data-sidebar-section={key}
         onPointerDown={(event) => startSectionDrag(event, key)}
         // Alt + arrow moves the section: keyboards never start a pointer drag.
@@ -4883,7 +4890,7 @@ export function AppSidebar() {
                         })
                   }
                 />
-                {rows.length === 0 ? (
+                {rows.length === 0 && !parentSectionIds.has(section.id) ? (
                   <SidebarMenuItem>
                     <p className="flex h-[calc(30px*var(--ui-space-scale,1))] items-center pl-3 pr-4 text-ui-13 leading-ui-18 tracking-nav text-nav-fg-muted">
                       {t("shell.sections.empty")}
@@ -7161,7 +7168,8 @@ export function AppSidebar() {
           renameCustomSection(sectionDialog.section.id, name);
           return;
         }
-        const sectionId = createCustomSection(name);
+        const sectionId = createCustomSection(name, sectionDialog.parentId);
+        if (sectionDialog.parentId) setCustomSectionOpen(sectionDialog.parentId, true);
         if (!sectionId) return;
         fileSectionTarget(
           {

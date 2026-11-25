@@ -28,6 +28,7 @@ export interface SidebarCustomSection {
   id: string;
   name: string;
   sort: SidebarChatSort;
+  parentId?: string;
   createdAt?: number;
   modifiedAt?: number;
 }
@@ -81,6 +82,32 @@ export function inSectionOrder(
   );
 }
 
+/** Pre-order keeps siblings in manual order and removes descendants of a closed section. */
+export function visibleSectionTree(
+  order: readonly string[], sections: readonly SidebarCustomSection[],
+  hidden: ReadonlySet<string>, collapsed: ReadonlySet<string>,
+): Map<string, number> {
+  const parents = new Map(sections.map(s => [s.id, s.parentId]));
+  const children = new Map<string | undefined, string[]>();
+  for (const key of order) {
+    const parent = parents.get(key);
+    const siblings = children.get(parent);
+    if (siblings) siblings.push(key);
+    else children.set(parent, [key]);
+  }
+  const visible = new Map<string, number>();
+  const stack = (children.get(undefined) ?? []).map(key => ({ key, depth: 0 })).reverse();
+  while (stack.length) {
+    const { key, depth } = stack.pop()!;
+    if (hidden.has(key) || visible.has(key)) continue;
+    visible.set(key, depth);
+    if (collapsed.has(key)) continue;
+    const nested = children.get(key) ?? [];
+    for (let i = nested.length - 1; i >= 0; i--) stack.push({ key: nested[i], depth: depth + 1 });
+  }
+  return visible;
+}
+
 function newSectionId(): string {
   // randomUUID needs a secure context, which a LAN address over plain http is not.
   return typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
@@ -127,7 +154,7 @@ export interface SidebarOrganizationState {
   setPinnedSort: (value: SidebarChatSort) => void;
   setProjectSort: (value: SidebarProjectSort) => void;
   setManualOrder: (scope: string, ids: string[]) => void;
-  createCustomSection: (name: string) => string | null;
+  createCustomSection: (name: string, parentId?: string) => string | null;
   renameCustomSection: (sectionId: string, name: string) => void;
   deleteCustomSection: (sectionId: string) => void;
   setCustomSectionSort: (sectionId: string, sort: SidebarChatSort) => void;
@@ -287,10 +314,28 @@ export function mergePersistedOrganization(
         id: entry.id,
         name,
         sort: readSort(entry.sort, "manual"),
+        ...(typeof entry.parentId === "string" ? { parentId: entry.parentId } : {}),
         ...(readTime(entry.createdAt) ? { createdAt: entry.createdAt } : {}),
         ...(readTime(entry.modifiedAt) ? { modifiedAt: entry.modifiedAt } : {}),
       });
     }
+  }
+  // Older records have no parent. Promote broken links and break cycles on hydration.
+  const byId = new Map(customSections.map(s => [s.id, s]));
+  const checked = new Set<string>();
+  for (const section of customSections) {
+    const path = new Set<string>();
+    let cursor = section;
+    while (cursor.parentId && !checked.has(cursor.id)) {
+      path.add(cursor.id);
+      const parent = byId.get(cursor.parentId);
+      if (!parent || path.has(parent.id)) {
+        delete cursor.parentId;
+        break;
+      }
+      cursor = parent;
+    }
+    for (const id of path) checked.add(id);
   }
   const readAssignments = (value: unknown): Record<string, string> => {
     const out = assignmentMap();
@@ -339,7 +384,7 @@ export function mergePersistedOrganization(
 
 export const useSidebarOrganizationStore = create<SidebarOrganizationState>()(
   persist(
-    (set) => ({
+    (set, get) => ({
       organizeBy: "project",
       chatSort: "updated",
       pinnedSort: "manual",
@@ -360,7 +405,8 @@ export const useSidebarOrganizationStore = create<SidebarOrganizationState>()(
         set((state) => ({
           manualOrder: { ...state.manualOrder, [scope]: ids },
         })),
-      createCustomSection: (name) => {
+      createCustomSection: (name, parentId) => {
+        if (parentId && !get().customSections.some(s => s.id === parentId)) return null;
         const clean = normalizeSectionName(name);
         if (!clean) return null;
         const id = newSectionId();
@@ -372,7 +418,7 @@ export const useSidebarOrganizationStore = create<SidebarOrganizationState>()(
           const at = firstCustom !== -1 ? firstCustom : order.indexOf(PINNED_SECTION_KEY) + 1;
           return {
             customSections: [
-              { id, name: clean, sort: "manual", createdAt: Date.now(), modifiedAt: Date.now() },
+              { id, name: clean, ...(parentId ? { parentId } : {}), sort: "manual", createdAt: Date.now(), modifiedAt: Date.now() },
               ...state.customSections,
             ],
             sectionOrder: [...order.slice(0, at), id, ...order.slice(at)],
@@ -396,8 +442,11 @@ export const useSidebarOrganizationStore = create<SidebarOrganizationState>()(
           const manualOrder = { ...state.manualOrder };
           delete manualOrder[customSectionScope(sectionId)];
           const gone = (id: string) => id === sectionId;
+          const parentId = state.customSections.find(s => s.id === sectionId)?.parentId;
           return {
-            customSections: state.customSections.filter((s) => s.id !== sectionId),
+            customSections: state.customSections.filter((s) => s.id !== sectionId).map(s =>
+              s.parentId === sectionId ? { ...s, parentId } : s,
+            ),
             sectionByChatId: withoutSection(state.sectionByChatId, gone),
             sectionByProjectId: withoutSection(state.sectionByProjectId, gone),
             sectionByPageId: withoutSection(state.sectionByPageId, gone),
@@ -409,6 +458,9 @@ export const useSidebarOrganizationStore = create<SidebarOrganizationState>()(
       moveSection: (key, targetKey, edge) =>
         set((state) => {
           const order = resolveSectionOrder(state.sectionOrder, state.customSections);
+          const parentOf = (id: string) => state.customSections.find(s => s.id === id)?.parentId;
+          // A section drag reorders siblings. A child cannot drag its parent into itself.
+          if (parentOf(key) !== parentOf(targetKey)) return state;
           const next = insertIdAt(order, key, targetKey, edge);
           if (next === order) return state;
           return {

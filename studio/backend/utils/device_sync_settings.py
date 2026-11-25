@@ -37,8 +37,67 @@ def get_client_preferences() -> dict:
     return _read(CLIENT_PREFERENCES_KEY)
 
 
+def _merge_sidebar(stored: dict, base: dict, edited: dict) -> dict:
+    """Apply only this browser's edits to the latest account snapshot."""
+    merged = dict(stored)
+    for key, value in edited.items():
+        before = base.get(key)
+        if value == before:
+            continue
+        current = stored.get(key)
+        if key == "customSections":
+            old = {s["id"]: s for s in before or []}
+            new = {s["id"]: s for s in value}
+            live = {s["id"]: s for s in current or []}
+            for removed in old.keys() - new.keys():
+                live.pop(removed, None)
+            for section_id, section in new.items():
+                if section_id not in old:
+                    live[section_id] = section
+                elif section_id in live and section != old[section_id]:
+                    previous = old[section_id]
+                    updated = dict(live[section_id])
+                    for removed in previous.keys() - section.keys():
+                        updated.pop(removed, None)
+                    updated.update({k: v for k, v in section.items() if previous.get(k) != v})
+                    live[section_id] = updated
+            merged[key] = list(live.values())
+        elif isinstance(value, dict):
+            mapping = dict(current or {})
+            previous = before or {}
+            for removed in previous.keys() - value.keys():
+                mapping.pop(removed, None)
+            mapping.update({k: v for k, v in value.items() if previous.get(k) != v})
+            merged[key] = mapping
+        elif isinstance(value, list):
+            # Preserve remote additions, but do not resurrect remotely removed identifiers.
+            prior, live = set(before or []), set(current or [])
+            retained = [item for item in value if item not in prior or item in live]
+            known = set(retained)
+            merged[key] = retained + [item for item in current or [] if item not in prior and item not in known]
+        else:
+            merged[key] = value
+
+    # A different browser may file a chat or create a child while its parent is
+    # being deleted. Never leave that assignment pointing at a missing section.
+    sections = merged.get("customSections", [])
+    live_ids = {section["id"] for section in sections}
+    if sections:
+        merged["customSections"] = [
+            {k: v for k, v in section.items() if k != "parentId"}
+            if "parentId" in section and section["parentId"] not in live_ids else section
+            for section in sections
+        ]
+    for field in ("sectionByChatId", "sectionByProjectId", "sectionByPageId"):
+        if field in merged:
+            merged[field] = {k: v for k, v in merged[field].items() if v in live_ids}
+    return merged
+
+
 def update_client_preferences(changes: dict) -> dict:
     from storage.studio_db import compare_and_set_app_setting, get_app_setting
+    changes = dict(changes)
+    base = changes.pop("sidebarBase", {})
     while True:
         previous = get_app_setting(CLIENT_PREFERENCES_KEY, None)
         stored = previous if isinstance(previous, dict) else {}
@@ -47,6 +106,8 @@ def update_client_preferences(changes: dict) -> dict:
             **{k: v for k, v in changes.items() if v is not None},
             "updatedAt": _now_ms(),
         }
+        if "sidebar" in changes:
+            merged["sidebar"] = _merge_sidebar(stored.get("sidebar", {}), base, changes["sidebar"])
         if compare_and_set_app_setting(CLIENT_PREFERENCES_KEY, previous, merged):
             return merged
 

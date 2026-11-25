@@ -1185,6 +1185,7 @@ export const en = {
       // Names the project or section the row leaves.
       removeFrom: "Remove from {name}",
       empty: "Drag chats or projects here",
+      newSubsection: "New subsection",
       sectionOptions: "Section options",
       newChatInSection: "New chat in {name}",
       deleted: "Deleted section “{name}”",

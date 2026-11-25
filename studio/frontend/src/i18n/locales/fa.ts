@@ -1274,6 +1274,7 @@ export const fa = {
       removeFromSection: "برداشتن از بخش",
       removeFrom: "برداشتن از {name}",
       empty: "گفتگوها یا پروژه‌ها را به اینجا بکشید",
+      newSubsection: "زیربخش جدید",
       sectionOptions: "گزینه‌های بخش",
       newChatInSection: "گفتگوی جدید در {name}",
       deleted: "بخش «{name}» حذف شد",
