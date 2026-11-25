@@ -38,7 +38,6 @@ export function makeRepoPinRank(
   pinned: readonly string[],
 ): (repoId: string) => number {
   const own = makePinRank(pinned);
-  // Built once: each pin under every id pinCoversId would match it for, first pin winning.
   const covering = new Map<string, number>();
   pinned.forEach((key, index) => {
     const k = key.trim().toLowerCase();
