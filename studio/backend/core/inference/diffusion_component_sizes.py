@@ -477,18 +477,15 @@ def _hub_header(
         return None
 
 
-# Concurrent ranged header reads: each shard header is two small round trips, independent of every other.
 HUB_HEADER_WORKERS = 4
 
 
 def _iter_headers(
     repo_id: str, wanted: list, revision: Optional[str], token: Any, deadline: float
 ) -> Iterator[Optional[dict]]:
-    """``_hub_header`` for each ``(filename, size)`` in ``wanted``, yielded in order as the caller consumes them, at
-    most ``HUB_HEADER_WORKERS`` reads at once under the one shared ``deadline``. Only a small window of parsed headers
-    is held ahead of the caller, so host memory stays bounded on many-shard repos. Yields None and stops as soon as
-    any read fails, returns nothing or the deadline passes, so the answer stays all-or-nothing; closing the iterator
-    early cancels the reads not started yet."""
+    """``_hub_header`` per ``(filename, size)``, yielded in order, at most ``HUB_HEADER_WORKERS`` reads in flight and a
+    2x window parsed ahead (bounded host memory). Yields None and stops on any failure or the shared ``deadline``:
+    all-or-nothing."""
     import time
 
     workers = max(1, min(int(HUB_HEADER_WORKERS), len(wanted)))
@@ -816,7 +813,6 @@ def _read_hub_sizes(
         )
         try:
             for folder, picked, _files in planned:
-                # shard by shard: the accumulator sees each header once, in order, and none is kept after it
                 size = _accumulate(folder, zip(picked, islice(headers, len(picked))))
                 if size is None:
                     # any failed header of a loaded folder voids the answer: a partial one would be cached smaller
