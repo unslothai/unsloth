@@ -1576,9 +1576,8 @@ def test_a_transformers_install_stops_the_workers_of_models_kept_alongside(backe
 
     real_install = transformers_latest.install_latest_transformers
 
-    def install(
-        *args, **kwargs
-    ):  # bound to the real signature, so a new parameter cannot break the stub
+    # Bound to the real signature, so a new parameter cannot break the stub.
+    def install(*args, **kwargs):
         before_swap = inspect.signature(real_install).bind(*args, **kwargs).arguments["before_swap"]
         before_swap()
         alive_at_swap.append(kept.orchestrator.is_worker_alive())
