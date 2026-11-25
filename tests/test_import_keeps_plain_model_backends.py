@@ -153,3 +153,28 @@ def test_import_requires_the_marker():
     if getattr(unsloth, "_IS_CPU_BACKEND", True):
         pytest.skip("the GPU backend asks for the marker; this run selected the CPU backend")
     assert model_marker.model_marker_required()
+
+
+def test_trainer_marks_every_model_it_holds():
+    model_marker = pytest.importorskip("unsloth_zoo.model_marker")
+    import transformers
+    from transformers import LlamaConfig, LlamaForCausalLM
+    from unsloth.models._utils import _mark_trainer_models
+
+    config = LlamaConfig(
+        vocab_size = 64,
+        hidden_size = 16,
+        intermediate_size = 32,
+        num_hidden_layers = 1,
+        num_attention_heads = 2,
+        num_key_value_heads = 1,
+    )
+    policy, ref, reward, other = (LlamaForCausalLM(config) for _ in range(4))
+    trainer = types.SimpleNamespace(model = policy, ref_model = ref, reward_funcs = [reward, len])
+    _mark_trainer_models(trainer)
+    for model in (policy, ref, reward):
+        assert getattr(model, model_marker.MODEL_MARKER, False) is True
+    assert not hasattr(other, model_marker.MODEL_MARKER)
+    # Installed on the transformers Trainer at import, before any Unsloth load.
+    for name in ("__init__", "call_model_init", "train"):
+        assert getattr(getattr(transformers.Trainer, name), "_unsloth_marks_models", False), name

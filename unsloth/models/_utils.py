@@ -4553,6 +4553,35 @@ from ._gc_train_scope import patch_trainer_train_gc_scope as _patch_trainer_trai
 _patch_trainer_train_gc_scope(transformers.trainer.Trainer)
 
 
+def _trainer_marking_wrapper(original, when):
+    @functools.wraps(original)
+    def wrapper(self, *args, **kwargs):
+        if when == "before":
+            _mark_trainer_models(self)
+        output = original(self, *args, **kwargs)
+        if when == "after":
+            _mark_trainer_models(self)
+        elif when == "result" and isinstance(output, torch.nn.Module):
+            _mark_unsloth_model(output)
+        return output
+
+    wrapper._unsloth_marks_models = True
+    return wrapper
+
+
+def _patch_trainer_marks_models(Trainer):
+    """At import, as the zoo patches are: every model a Trainer holds or builds keeps the fused lm_head + cross
+    entropy branch and Unsloth's causal mask (model_marker). TRL builds some (GRPO's reference model) after
+    Trainer.__init__, so train() marks again."""
+    for name, when in (("__init__", "after"), ("call_model_init", "result"), ("train", "before")):
+        original = getattr(Trainer, name, None)
+        if original is not None and not getattr(original, "_unsloth_marks_models", False):
+            setattr(Trainer, name, _trainer_marking_wrapper(original, when))
+
+
+_patch_trainer_marks_models(transformers.trainer.Trainer)
+
+
 def patch_mistral_nemo_config(config):
     if "head_dim (" not in config:
         add_head_dim = (
@@ -5888,6 +5917,17 @@ def _mark_unsloth_model(model):
     return model
 
 
+def _mark_trainer_models(trainer):
+    """Every model a Trainer holds (policy, reference, reward, teacher) keeps Unsloth's patched path; TRL
+    builds some (GRPO's reference model) after Trainer.__init__, so train() marks again."""
+    seen = set()
+    for value in list(vars(trainer).values()):
+        for item in value if isinstance(value, (list, tuple)) else (value,):
+            if isinstance(item, torch.nn.Module) and id(item) not in seen:
+                seen.add(id(item))
+                _mark_unsloth_model(item)
+
+
 def _mark_requested_float32(model, requested):
     """Record on the model, not in the environment: with two models loaded before a trainer is built, an env var describes whichever loaded last. Outermost caller wins, since only it saw dtype before normalization."""
     try:
@@ -6868,7 +6908,6 @@ def patch_gradient_accumulation_fix(Trainer):
             if model is None and len(args) > 0:
                 model = args[0]
             if model is not None:
-                _mark_unsloth_model(model)
                 try:
                     apply_accepts_loss_kwargs_fix(model)
                 except Exception:
@@ -7054,7 +7093,6 @@ def patch_gradient_accumulation_fix(Trainer):
             # model_init rebuilds the model when training starts: the new instance needs the same
             # DDP exclusions as the one __init__ marked.
             model = _original_call_model_init(self, *args, **kwargs)
-            _mark_unsloth_model(model)
             _refuse_tensor_parallel_for_trainer(model)
             if _is_unsloth_expert_parallel(model):
                 from .ep_native import _MODEL_INIT_REFUSAL
