@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-"""Context parallelism beside expert parallel (UNSLOTH_EP_SIZE or apply_expert_parallel) is refused before the
-trainer __init__: a CP manager would build its own (dp, cp) mesh over ranks holding different experts."""
+"""CP beside EP is refused before trainer __init__: CP would build its own mesh over ranks with different experts."""
 
 import pytest
 import torch

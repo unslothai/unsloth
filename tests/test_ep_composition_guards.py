@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-"""Expert parallel composition and launch guards: launch variables, manual entry points (refused before any
-change), the NCCL preflight, transformers' distributed kwargs on an EP load, and a plain transformers.Trainer
-under UNSLOTH_EP_SIZE (gloo CPU, 2 ranks)."""
+"""Expert parallel composition and launch guards (gloo CPU, 2 ranks)."""
 
 import multiprocessing
 import os
@@ -50,7 +48,6 @@ def _package_modules(*names):
     return out
 
 
-# Launch: UNSLOTH_EP_SIZE beside another axis, set alone or inherited beside UNSLOTH_PARALLEL.
 _AXES = {
     "tp": ("UNSLOTH_TP_SIZE", "2", "tp=2"),
     "pp": ("UNSLOTH_PP_SIZE", "2", "pp=2"),
@@ -139,9 +136,6 @@ def test_trainer_refuses_accelerate_fsdp_on_ep_model():
     epn.ep_refuse_trainer_fsdp(
         types.SimpleNamespace(model = torch.nn.Linear(2, 2), is_fsdp_enabled = True)
     )
-
-
-# gloo cases
 
 
 def _snapshot(model):

@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-"""unsloth.models._utils.is_big_gpu replaces torch._inductor.utils.is_big_gpu: same default index and the same
-SM thresholds as torch's (CUDA), read from the source so no GPU is needed."""
+"""is_big_gpu matches torch._inductor.utils.is_big_gpu's default index and SM thresholds, read from source."""
 
 import ast
 import functools
