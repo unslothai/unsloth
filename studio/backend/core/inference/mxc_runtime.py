@@ -225,8 +225,67 @@ def wxc_path() -> Path:
     return selected_runtime().path
 
 
+_identity_cache: dict[tuple, tuple[tuple, RuntimeInfo]] = {}
+
+
+def _file_stamp(path: Path) -> tuple:
+    metadata = path.lstat()
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+        getattr(metadata, "st_birthtime_ns", None),
+        metadata.st_ctime_ns,  # creation time on Windows before Python 3.12
+        getattr(metadata, "st_nlink", 1),
+    )
+
+
+def verified_installation_identity() -> str:
+    """A full verification: what status, setup and repair decide on."""
+    try:
+        return selected_runtime().identity
+    except Exception:
+        forget_verified_runtime()
+        raise
+
+
 def installation_identity() -> str:
-    return selected_runtime().identity
+    """For the per-call fingerprints: rehashed only when the file's stamp changes. Never authorizes a
+    launch (acquire_runtime verifies the bytes) nor reports the runtime healthy (verified_installation_identity)."""
+    if sys.platform != "win32":
+        raise MxcRuntimeUnavailable("the MXC runtime is Windows-only")
+    architecture = _expected_architecture()
+    _member, size, sha256 = _artifact(architecture, "exec")
+    root = _require_plain_directory(_installed_package_root())
+    path = root / _WXC_EXEC_NAME
+    try:
+        before = _file_stamp(path)
+    except OSError as exc:
+        raise MxcRuntimeUnavailable(
+            f"the managed {_WXC_EXEC_NAME} is missing or unreadable"
+        ) from exc
+    key = (str(path), architecture, size, sha256)
+    with _lock:
+        hit = _identity_cache.get(key)
+        if hit is not None and hit[0] == before:
+            return hit[1].identity
+        _identity_cache.pop(key, None)
+    info = selected_runtime(package_root = root)
+    try:
+        after = _file_stamp(path)
+    except OSError:
+        return info.identity
+    if after == before:
+        with _lock:
+            _identity_cache[key] = (before, info)
+    return info.identity
+
+
+def forget_verified_runtime() -> None:
+    """Drop cached identities, e.g. after the installer swaps the runtime folder."""
+    with _lock:
+        _identity_cache.clear()
 
 
 class _WindowsHandleGuard:
@@ -277,16 +336,28 @@ def _require_supported_windows() -> None:
         )
 
 
-def _acquire(select, package_root: Path | None) -> RuntimeLease:
+def _acquire(select, package_root: Path | None, name: str) -> RuntimeLease:
     _require_supported_windows()
+    if sys.platform != "win32":
+        raise MxcRuntimeUnavailable("the MXC runtime is Windows-only")
+    _expected_architecture()
     with _lock:
-        info = select(package_root = package_root)
-        guard = _open_artifact_guard(info.path)
+        # One digest, under the guard: it denies write, rename and delete for the whole lease.
+        root = _require_plain_directory(package_root or _installed_package_root())
+        candidate = root / name
         try:
-            if select(package_root = package_root) != info:
-                raise MxcRuntimeUnavailable(
-                    f"the managed {info.path.name} changed during acquisition"
-                )
+            reparse = getattr(candidate.lstat(), "st_file_attributes", 0) & 0x400
+        except OSError:
+            reparse = True
+        if reparse or not candidate.is_file() or candidate.is_symlink():
+            raise MxcRuntimeUnavailable(f"the managed {name} is missing or is not a regular file")
+        # Before the guard opens, so a path redirected meanwhile no longer matches.
+        expected = candidate.resolve()
+        guard = _open_artifact_guard(candidate)
+        try:
+            info = select(package_root = root)
+            if info.path != expected:
+                raise MxcRuntimeUnavailable(f"the managed {name} changed during acquisition")
         except Exception:
             guard.close()
             raise
@@ -294,12 +365,12 @@ def _acquire(select, package_root: Path | None) -> RuntimeLease:
 
 
 def acquire_runtime(*, package_root: Path | None = None) -> RuntimeLease:
-    return _acquire(selected_runtime, package_root)
+    return _acquire(selected_runtime, package_root, _WXC_EXEC_NAME)
 
 
 def acquire_host_prep(*, package_root: Path | None = None) -> RuntimeLease:
     """Pinned wxc-host-prep held deny-write, so the elevated launch runs the verified bytes."""
-    return _acquire(selected_host_prep, package_root)
+    return _acquire(selected_host_prep, package_root, _WXC_HOST_PREP_NAME)
 
 
 def _run_wxc_probe(

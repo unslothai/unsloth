@@ -62,6 +62,7 @@ def test_reports_actual_repo_after_mapping_and_capability_normalization(cls, exa
         return "org/resolved-unsloth-bnb-4bit"
 
     scope = dict(
+        fast_inference = False,
         model_name = "org/requested",
         use_exact_model_name = exact,
         load_in_4bit = True,
@@ -106,6 +107,7 @@ def test_adapter_base_resolution_updates_report_before_base_config_load(cls):
     )
     reports = []
     scope = dict(
+        fast_inference = False,
         peft_config = SimpleNamespace(base_model_name_or_path = "org/base"),
         use_exact_model_name = False,
         load_in_4bit = True,
@@ -177,6 +179,7 @@ def test_stripped_prequant_base_can_use_the_legacy_lowercase_cache(cls):
     )
     reports = []
     scope = dict(
+        fast_inference = False,
         model_name = "Org/Requested",
         use_exact_model_name = False,
         load_in_4bit = True,

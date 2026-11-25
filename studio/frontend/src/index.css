@@ -8179,6 +8179,8 @@ html.dark[data-glass] {
   border-radius: inherit;
   overflow: hidden;
   pointer-events: none;
+  /* Own layer, or WebKit paints a square box behind the host's rounded corners. */
+  transform: translateZ(0);
 }
 .glass-lens-fill,
 .glass-lens-rim {

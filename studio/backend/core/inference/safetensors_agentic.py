@@ -613,6 +613,7 @@ def run_safetensors_tool_loop(
 
     # Mirrors GGUF: full == bypass, unset -> auto, unknown -> ask, off keeps sandbox but never prompts; confirm_tool_calls=True alone is resolved to ask upstream.
     from core.inference.tool_stream_exec import stream_tool_execution
+    from core.inference.tools import PythonCallAnalyses
     from state.tool_policy import (
         account_tool_stream,
         needs_tool_confirmation,
@@ -1470,6 +1471,7 @@ def run_safetensors_tool_loop(
             permission_mode, bypass_permissions = live_permissions.apply(
                 permission_mode, bypass_permissions
             )
+            python_analyses = PythonCallAnalyses() if decision.tool_name == "python" else None
             needs_confirm = needs_tool_confirmation(
                 confirm_tool_calls = bool(confirm_tool_calls),
                 bypass_permissions = bypass_permissions,
@@ -1479,6 +1481,7 @@ def run_safetensors_tool_loop(
                 sandbox_level = sandbox_level,
                 session_id = session_id,
                 thread_id = thread_id,
+                python_analyses = python_analyses,
             )
             # Sending the user's image always asks, whatever the permission mode.
             needs_confirm = needs_confirm or image_share is not None
@@ -1490,6 +1493,7 @@ def run_safetensors_tool_loop(
                 arguments = decision.arguments,
                 prompted = needs_confirm,
                 sandbox_level = sandbox_level,
+                python_analyses = python_analyses,
             )
             approval_id = new_approval_id() if needs_confirm else ""
             decision_slot = begin_tool_decision(session_id, approval_id) if needs_confirm else None
@@ -1581,6 +1585,7 @@ def run_safetensors_tool_loop(
                     _decision = decision,
                     _approved = _host_access_approved,
                     _strict = strict_isolation,
+                    _analyses = python_analyses,
                 ):
                     kwargs = dict(
                         cancel_event = cancel_event,
@@ -1668,6 +1673,8 @@ def run_safetensors_tool_loop(
                     kwargs.update(_search_images_kwargs(execute_tool, _decision.tool_name))
                     if image_share is not None:
                         kwargs["mcp_image"] = image_share["image"]
+                    if _analyses is not None and _accepts_kwarg(execute_tool, "python_analyses"):
+                        kwargs["python_analyses"] = _analyses
                     return execute_tool(_decision.tool_name, _decision.arguments, **kwargs)
 
                 try:

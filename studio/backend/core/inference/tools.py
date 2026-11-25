@@ -2447,6 +2447,67 @@ def _find_blocked_commands(command: str, posix: "bool | None" = None) -> set[str
 
 # Holds the sandbox sitecustomize.py shim; put on the child's PYTHONPATH in _build_safe_env.
 _SANDBOX_SITE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sandbox_site")
+_sandbox_site_bytecode_for: "tuple | None" = None
+_sandbox_site_bytecode_lock = threading.Lock()
+
+
+def _sandbox_site_pyc(shim: str) -> str:
+    """Where a default child looks, whatever this host's PYTHONPYCACHEPREFIX or -O."""
+    tag = sys.implementation.cache_tag
+    return os.path.join(os.path.dirname(shim), "__pycache__", f"sitecustomize.{tag}.pyc")
+
+
+def _pyc_matches_source(cfile: str, source: bytes) -> bool:
+    import importlib.util
+    try:
+        with open(cfile, "rb") as stream:
+            header = stream.read(16)
+    except OSError:
+        return False
+    return (
+        len(header) == 16
+        and header[:4] == importlib.util.MAGIC_NUMBER
+        and int.from_bytes(header[4:8], "little") == 0b11
+        and header[8:16] == importlib.util.source_hash(source)
+    )
+
+
+def _ensure_sandbox_site_bytecode() -> None:
+    """The sandboxes mount the shim read-only, so a child recompiled it on every start (~12 ms). Checked
+    hash (PEP 552): validated against the source bytes, so an edit never runs stale bytecode."""
+    global _sandbox_site_bytecode_for
+    if sys.dont_write_bytecode:
+        return
+    shim = os.path.join(_SANDBOX_SITE_DIR, "sitecustomize.py")
+    try:
+        source_stat = os.stat(shim)
+    except OSError:
+        return
+    key = (shim, source_stat.st_mtime_ns, source_stat.st_size)
+    if _sandbox_site_bytecode_for == key:
+        return
+    with _sandbox_site_bytecode_lock:
+        if _sandbox_site_bytecode_for == key:
+            return
+        try:
+            import py_compile
+
+            cfile = _sandbox_site_pyc(shim)
+            with open(shim, "rb") as stream:
+                source = stream.read()
+            if not _pyc_matches_source(cfile, source):
+                py_compile.compile(
+                    shim,
+                    cfile = cfile,
+                    doraise = True,
+                    invalidation_mode = py_compile.PycInvalidationMode.CHECKED_HASH,
+                )
+        except Exception:  # noqa: BLE001 - bytecode is an optimization, never a launch failure
+            logger.debug("could not write the sandbox shim bytecode", exc_info = True)
+        _sandbox_site_bytecode_for = (
+            key  # also on failure: a read-only install would compile per call
+        )
+
 
 # Auto mode prompting gate; fails closed: anything not provably read-only asks.
 _AUTO_SAFE_TERMINAL_COMMANDS = frozenset(
@@ -5826,6 +5887,44 @@ def classifying_under(sandbox_level: "str | None"):
         _classifying_sandbox_level.reset(token)
 
 
+class PythonCallAnalyses:
+    """Per-call cache of static Python analyses keyed by exact source; never share across calls."""
+
+    __slots__ = ("_by_source",)
+
+    def __init__(self) -> None:
+        self._by_source: "dict[str, tuple]" = {}
+
+
+_python_call_analyses: "ContextVar[PythonCallAnalyses | None]" = ContextVar(
+    "unsloth_python_call_analyses", default = None
+)
+
+
+@contextlib.contextmanager
+def using_python_call_analyses(analyses: "PythonCallAnalyses | None"):
+    if analyses is None:
+        yield
+        return
+    token = _python_call_analyses.set(analyses)
+    try:
+        yield
+    finally:
+        _python_call_analyses.reset(token)
+
+
+def _signal_escape_analysis(code: str):
+    """Cached `_check_signal_escape_patterns`; safe because it reads only the source and constants."""
+    analyses = _python_call_analyses.get()
+    if analyses is None or type(code) is not str:
+        return _check_signal_escape_patterns(code)
+    found = analyses._by_source.get(code)
+    if found is None:
+        found = _check_signal_escape_patterns(code)
+        analyses._by_source[code] = found
+    return found
+
+
 # Both run the command through cmd.exe: the isolated one inside MXC, the fallback on a host without Git Bash.
 _CMD_PROFILES = ("cmd_isolated", "cmd_fallback")
 
@@ -9148,7 +9247,7 @@ def _python_is_high_risk(code: str) -> bool:
     if not code or not code.strip():
         return False
     # A confirmation beats a silent refusal at execution time.
-    analysis = _check_signal_escape_patterns(code)
+    analysis = _signal_escape_analysis(code)
     if _check_code_safety(code, analysis = analysis) is not None:
         return True
     if any(_terminal_is_high_risk(command) for command in analysis[1].get("shell_commands", ())):
@@ -9946,6 +10045,7 @@ def _build_safe_env(workdir: str, shell: "str | None" = None) -> dict[str, str]:
     path, git_ext = _safe_path(shell)
     venv = os.environ.get("VIRTUAL_ENV")
     temp_dir = _sandbox_temp_dir(workdir)
+    _ensure_sandbox_site_bytecode()
     env = {
         "PATH": path,
         "HOME": workdir,
@@ -14079,9 +14179,7 @@ _MCP_LISTING_QUERY: ContextVar = ContextVar("mcp_listing_query", default = "")
 _MCP_LISTING_FORCED: ContextVar = ContextVar("mcp_listing_forced", default = None)
 _MCP_LISTING_IMAGE: ContextVar = ContextVar("mcp_listing_image", default = False)
 _MCP_LISTING_REMEMBER: ContextVar = ContextVar("mcp_listing_remember", default = True)
-_MCP_PROJECT_SERVER_IDS: ContextVar[frozenset[str] | None] = ContextVar(
-    "mcp_project_server_ids", default = None
-)
+_MCP_SERVER_IDS: ContextVar[frozenset[str] | None] = ContextVar("mcp_server_ids", default = None)
 # A dict set per request, so the listing can fill it from a thread running in a copy of the request's context.
 _MCP_LISTING_MATCHES: ContextVar = ContextVar("mcp_listing_matches", default = None)
 # (account, thread) -> MCP tools the thread ran while they were deferred, oldest first.
@@ -14977,20 +15075,24 @@ def mcp_project_excludes(server_id: str, session_id: str | None) -> bool:
     return selected is not None and server_id not in selected
 
 
+def set_mcp_server_scope(server_ids: frozenset[str] | None) -> None:
+    _MCP_SERVER_IDS.set(server_ids)
+
+
 async def set_mcp_project_scope(session_id: str | None) -> None:
     selected = (
         await asyncio.to_thread(_mcp_project_server_ids, session_id)
         if session_id and session_id.startswith(_PROJECT_SESSION_PREFIX)
         else None
     )
-    _MCP_PROJECT_SERVER_IDS.set(selected)
+    set_mcp_server_scope(selected)
 
 
 def _enabled_mcp_servers(servers: list[dict]) -> list[dict]:
     from core.inference.studio_tools_mcp import keyless_caller
 
     keyless = keyless_caller(current_account())
-    selected = _MCP_PROJECT_SERVER_IDS.get()
+    selected = _MCP_SERVER_IDS.get()
     enabled = [
         server
         for server in servers
@@ -15171,6 +15273,12 @@ def mcp_session_scope(session_id: "str | None", thread_id: "str | None") -> "str
     return f"s={quote(session_id or '', safe = '')}:t={quote(thread_id, safe = '')}"
 
 
+def close_mcp_thread_sessions(thread_id: str) -> None:
+    from core.inference.mcp_client import close_mcp_scopes
+    suffix = f":t={urllib.parse.quote(thread_id, safe = '')}"
+    close_mcp_scopes(lambda scope: scope.endswith(suffix))
+
+
 _TIMEOUT_UNSET = object()
 
 
@@ -15215,6 +15323,7 @@ def execute_tool(
     host_access_approved: bool = False,
     mcp_image = None,
     started_read: "StartedUrlRead | None" = None,
+    python_analyses: "PythonCallAnalyses | None" = None,
 ) -> str:
     """Runs a tool by name; disable_sandbox skips python/terminal checks, blocklist and caps (secrets stay stripped); tool_execution_mode full is refused here."""
     from state.tool_policy import require_tool_access
@@ -15385,6 +15494,9 @@ def execute_tool(
             return f"Error: MCP server '{display}' is disabled"
         if mcp_project_excludes(server_id, session_id):
             return f"Error: MCP server '{display}' is not enabled for this project"
+        selected = _MCP_SERVER_IDS.get()
+        if selected is not None and server_id not in selected:
+            return f"Error: MCP server '{display}' is outside this run's selection"
         if _runs_local_mcp(server) and not stdio_mcp_enabled():
             return f"Error: stdio MCP server '{display}' is disabled on this host"
         mcp_scope = mcp_session_scope(session_id, thread_id)
@@ -15520,7 +15632,7 @@ def execute_tool(
         )
     # Both run with the session's sandbox as cwd, so a chat deleted mid-call must not unlink it from under them.
     if name == "python":
-        with _session_in_flight(session_id):
+        with _session_in_flight(session_id), using_python_call_analyses(python_analyses):
             return _python_exec(
                 arguments.get("code", ""),
                 cancel_event,
@@ -16172,6 +16284,7 @@ def _build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> d
     thread_id = rag_scope.get("thread_id")
     query = _last_user_text(conversation)
     try:
+        from core.inference import instruction_pin
         from core.rag.tool import render_sources, search_for_autoinject, whole_document_context
     except Exception as exc:  # noqa: BLE001
         logger.warning("RAG auto-inject unavailable: %s", exc)
@@ -16321,6 +16434,16 @@ def _build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> d
                             found = (render_sources(merged), merged)
                     elif thread_found:
                         found = thread_found
+                if (
+                    not found
+                    and rag_scope.get("kb_id")
+                    and not instruction_pin.is_thin_query(query)
+                ):
+                    found = retrieve(
+                        scope_kb_id = rag_scope["kb_id"],
+                        min_dense_score = None,
+                        **_scope_retrieval_kwargs(rag_scope),
+                    )
         except Exception as exc:  # noqa: BLE001
             logger.warning("RAG auto-inject retrieval failed: %s", exc)
             return None
@@ -22399,7 +22522,7 @@ def _check_code_safety(
 ) -> str | None:
     """Validate code safety via static analysis. Returns an error message string if the code is
     unsafe, or None if OK. host_approved lets an approved call reach hosts off the allowlist."""
-    safe, info = analysis or _check_signal_escape_patterns(code)
+    safe, info = analysis or _signal_escape_analysis(code)
     # A literal `python -c PROGRAM` the code launches runs PROGRAM unscreened; screen it the same way.
     if _depth < 3 and not info.get("error"):
         for command in info.get("shell_commands", ()):
@@ -24057,11 +24180,14 @@ def _user_path_parts(parts: "list[str]", root: "str | None" = None) -> "list[str
 _SERVABLE_SEGMENT_RE = re.compile(r"\A[^/\\\x00-\x1f]{1,255}\Z")
 
 
+_SURROGATE_RE = re.compile("[\ud800-\udfff]")
+
+
 def _servable_segment(name: str) -> bool:
     if name in (".", "..") or not _SERVABLE_SEGMENT_RE.match(name):
         return False
     # Lone surrogates make encodeURIComponent throw.
-    return not any("\ud800" <= ch <= "\udfff" for ch in name)
+    return name.isascii() or _SURROGATE_RE.search(name) is None
 
 
 # Exact names we write, not a reserved pattern.
@@ -24194,13 +24320,14 @@ def _snapshot_workdir_views(workdir: "str | None", views: "tuple") -> "list":
         dirs[:] = [d for d in kept if d in children]
         for d in dirs:
             owners[os.path.join(base, d)] = children[d]
+        joined = os.path.join(base, "")
         for name in names:
             # ignore internal markers only at the root; nested files with these names remain valid artifacts.
             if base == workdir and name in _INTERNAL_SANDBOX_FILES:
                 continue
             if not _servable_segment(name):
                 continue
-            path = os.path.join(base, name)
+            path = joined + name
             try:
                 # one lstat replaces isfile, islink, and stat while rejecting the same non-regular entries.
                 stat = os.lstat(path)

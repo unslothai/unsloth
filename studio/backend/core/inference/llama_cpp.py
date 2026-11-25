@@ -40910,6 +40910,7 @@ class LlamaCppBackend:
             build_rag_autoinject,
             compaction_receipt_field,
             execute_tool,
+            PythonCallAnalyses,
             has_text_only_provisional_card,
             is_high_risk_tool_call,
             mcp_image_share,
@@ -43292,6 +43293,9 @@ class LlamaCppBackend:
                     permission_mode, bypass_permissions = live_permissions.apply(
                         permission_mode, bypass_permissions
                     )
+                    python_analyses = (
+                        PythonCallAnalyses() if decision.tool_name == "python" else None
+                    )
                     needs_confirm = needs_tool_confirmation(
                         confirm_tool_calls = bool(confirm_tool_calls),
                         bypass_permissions = bypass_permissions,
@@ -43303,6 +43307,7 @@ class LlamaCppBackend:
                         sandbox_level = sandbox_level,
                         session_id = session_id,
                         thread_id = thread_id,
+                        python_analyses = python_analyses,
                     )
                     # Sending the user's image always asks, whatever the permission mode.
                     needs_confirm = needs_confirm or image_share is not None
@@ -43315,6 +43320,7 @@ class LlamaCppBackend:
                         prompted = needs_confirm,
                         is_high_risk = is_high_risk_tool_call,
                         sandbox_level = sandbox_level,
+                        python_analyses = python_analyses,
                     )
                     approval_id = new_approval_id() if needs_confirm else ""
                     decision_slot = (
@@ -43631,6 +43637,7 @@ class LlamaCppBackend:
                             _approved = _host_access_approved,
                             _strict = strict_isolation,
                             _read = _started_read,
+                            _analyses = python_analyses,
                         ):
                             # Bound top_k to the room left: the result lands in the protected tool exchange, so an oversized top_k ends the turn in an unrecoverable context error.
                             kwargs = dict(
@@ -43872,6 +43879,10 @@ class LlamaCppBackend:
                                 kwargs["mcp_image"] = image_share["image"]
                             if _read is not None:
                                 kwargs["started_read"] = _read
+                            if _analyses is not None and accepts_kwarg(
+                                execute_tool, "python_analyses"
+                            ):
+                                kwargs["python_analyses"] = _analyses
                             return execute_tool(
                                 _decision.tool_name,
                                 _decision.arguments,

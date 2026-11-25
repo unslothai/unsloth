@@ -6424,6 +6424,7 @@ async def _select_request_tools(
         apply_full_access_tool_descriptions,
         get_enabled_mcp_tools,
         set_mcp_project_scope,
+        set_mcp_server_scope,
     )
 
     if not tools_on:
@@ -6519,8 +6520,19 @@ async def _select_request_tools(
         from core.inference.media_chat_tools import remember_server_loop
 
         remember_server_loop(asyncio.get_running_loop())
-        await set_mcp_project_scope(getattr(payload, "session_id", None))
-        tools = tools + await get_enabled_mcp_tools()
+        scheduled_server_ids = getattr(payload, "_scheduled_mcp_server_ids", None)
+        if scheduled_server_ids is None:
+            await set_mcp_project_scope(getattr(payload, "session_id", None))
+        else:
+            set_mcp_server_scope(scheduled_server_ids)
+        mcp_tools = await get_enabled_mcp_tools()
+        if scheduled_server_ids is not None and not mcp_tools:
+            raise HTTPException(
+                status_code = 400,
+                detail = "No tools are available from the selected MCP servers. "
+                "Check that they are enabled and reachable.",
+            )
+        tools += mcp_tools
     # Some callers pass lighter payloads that may lack deep_research_armed, so read it with getattr.
     if getattr(payload, "deep_research_armed", None):
         # Past every filter incl. tools_on: arming research is what offers this tool.
@@ -31590,19 +31602,22 @@ async def _proxy_to_external_provider(
                 _external_nudge, external_studio_tools, payload = payload
             )
     _served_template = None
+    _date_provider_type = None if _external_nudge else provider_type
     if (
-        provider_type == "llama_cpp"
-        and not _external_nudge
+        _date_provider_type in ("llama_cpp", "custom")
         and not _date_gate_blocks(request, run_studio_tool_loop)
         and current_date_prompt_line(request = request)
         and not any(m.get("role") in ("system", "developer") for m in chat_messages)
     ):
-        _served_template = await client.served_chat_template(model)
+        if provider_type == "llama_cpp":
+            _served_template = await client.served_chat_template(model)
+        elif await client.serves_ollama():
+            _date_provider_type = "ollama"
     chat_messages = _prepend_current_date_to_messages(
         chat_messages,
         request,
         include_api_key = run_studio_tool_loop,
-        provider_type = None if _external_nudge else provider_type,
+        provider_type = _date_provider_type,
         served_template = _served_template,
         tools = bool(external_studio_tools or payload.tools),
         controls = llama_cpp_template_controls(
@@ -41126,6 +41141,9 @@ def _names_studio_embedder(requested: str) -> Optional[str]:
     repo = rag_config.effective_gguf_repo_for_embedding_model(model)
     label = _public_embedding_name(model)
     wanted = requested.strip()
+    # A connection reference reads as a tagged identity, so the configured name is matched first.
+    if wanted == model:
+        return model
     if rag_config.embedding_identity_model(wanted) is not None:
         current = rag_embeddings.embedding_identity(model)
         if wanted in (current, _public_embedding_identity(current, model, label)):
@@ -41276,6 +41294,14 @@ async def _studio_embeddings(
         encoding_format = "float"
     dimensions = body.get("dimensions")
     model_name = model_name or rag_config.effective_embedding_model()
+    # Same rule as chat: an API key must not spend a saved connection's credential.
+    if rag_config.is_connection_model(model_name) and not _request_may_use_saved_provider_key(
+        request
+    ):
+        raise HTTPException(
+            status_code = 403,
+            detail = "Studio's embedding model runs on a saved connection, which needs a UI session.",
+        )
     label = _public_embedding_name(model_name)
 
     def _embed():

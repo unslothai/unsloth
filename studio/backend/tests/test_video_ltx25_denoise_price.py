@@ -256,13 +256,16 @@ def test_a_release_that_fell_short_stops_the_discount_for_the_load():
     assert _price(state, (768, 512, 49)) is None
 
 
-@pytest.mark.parametrize("where", ["windows", "rocm", "xpu"])
+@pytest.mark.parametrize("where", ["windows", "rocm", "rocm_sdk_wheel", "xpu"])
 def test_the_allowance_outside_the_allocator_applies_only_where_it_was_measured(where, monkeypatch):
     state = _state()
     if where == "windows":
         monkeypatch.setattr(__import__("sys"), "platform", "win32")
     elif where == "rocm":
         monkeypatch.setattr(torch.version, "hip", "6.4", raising = False)
+    elif where == "rocm_sdk_wheel":
+        # AMD SDK / Radeon wheels leave version.hip unset; the tag is in __version__.
+        monkeypatch.setattr(torch, "__version__", "2.11.0+rocm7.14.0")
     else:
         state.device = "xpu"
     assert _price(state, (768, 512, 49)) is None
