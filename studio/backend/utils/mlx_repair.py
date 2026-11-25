@@ -32,7 +32,7 @@ _MLX_PACKAGE_NAMES = tuple(_MLX_MIN_VERSIONS)
 _MLX_RUNTIME_IMPORTS = ("mlx.core", "mlx_lm", "mlx_lm.sample_utils", "mlx_vlm")
 # What the self-heal INSTALLS; keep in sync with unsloth-zoo's darwin deps. mlx pinned: it breaks in patch releases (unslothai/unsloth#9466), and 0.32.2's GQA-8 decode read row 0's KV for every batch row (mlx#4431). mlx-vlm is a range (the transformers override decides how high it resolves); mlx-lm too: 0.32 needs Python 3.11.
 _MLX_INSTALL_SPECS = {
-    "mlx": "==0.32.4",
+    "mlx": "==0.32.5",
     "mlx-lm": ">=0.31.3,<=0.32.2",
     "mlx-vlm": ">=0.6.4,<=0.8.1",
 }

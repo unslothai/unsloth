@@ -55,7 +55,7 @@ def test_uv_cmd_targets_this_interpreter_with_mlx_packages(monkeypatch):
     assert set(mr.MLX_PACKAGES) <= set(cmd)
     assert "mlx-vlm>=0.6.4,<=0.8.1" in cmd
     # Pinned, not floored: see _MLX_INSTALL_SPECS.
-    assert "mlx==0.32.4" in cmd
+    assert "mlx==0.32.5" in cmd
     assert "mlx-lm>=0.31.3,<=0.32.2" in cmd
     # Look up by name, not prefix: startswith('mlx==') could only be checked on a pinned spec, so it
     # passed vacuously once the pin was relaxed.
@@ -72,7 +72,7 @@ def test_install_narrows_mlx_vlm_to_what_the_installed_zoo_declares(monkeypatch)
     vlm = next(p for p in packages if p.startswith("mlx-vlm"))
     assert "<0.7.0" in vlm
     # mlx is pinned at both ends; intersecting it with an older release empties the range.
-    assert "mlx==0.32.4" in packages
+    assert "mlx==0.32.5" in packages
     assert "mlx-lm>=0.31.3,<=0.32.2" in packages
 
 
