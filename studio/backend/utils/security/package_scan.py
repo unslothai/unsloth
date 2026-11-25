@@ -276,18 +276,27 @@ def _check_release(spec: str, name: str, version: str, primary: bool) -> Package
     files = meta.get("urls")
     if not isinstance(files, list) or not files:
         return PackageScanResult(REVIEW, f"PyPI lists no files for {spec}")
+    # A review reason never ends the checks: only flagged returns early, so a later red flag
+    # still refuses a release an earlier oddity would only have sent to the user.
+    reviews: list[str] = []
     digests = []
     for entry in files:
-        if not isinstance(entry, dict):
-            return PackageScanResult(REVIEW, f"PyPI's file list for {spec} is malformed")
-        if entry.get("yanked"):
-            return PackageScanResult(REVIEW, f"{spec} has a yanked file on PyPI")
-        sha = (entry.get("digests") or {}).get("sha256")
+        sha = (entry.get("digests") or {}).get("sha256") if isinstance(entry, dict) else None
         if not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{64}", sha):
-            return PackageScanResult(REVIEW, f"PyPI publishes no sha256 for a {spec} file")
+            reviews.append(f"PyPI publishes no sha256 for a {spec} file")
+            continue
+        if entry.get("yanked"):
+            reviews.append(f"{spec} has a yanked file on PyPI")
         digests.append(sha)
+
+    def _verdict(pinned: tuple) -> PackageScanResult:
+        hashes = {spec: pinned} if pinned else {}
+        return PackageScanResult(
+            REVIEW if reviews else CLEAN, reviews[0] if reviews else "", hashes
+        )
+
     if not primary:
-        return PackageScanResult(CLEAN, "", {spec: tuple(digests)})
+        return _verdict(tuple(digests))
 
     for dep in _core_requirements(info):
         typo_of = _near_miss(dep, _KNOWN_TRANSFORMERS_DEPS, _DEP_TYPO_DISTANCE)
@@ -296,30 +305,32 @@ def _check_release(spec: str, name: str, version: str, primary: bool) -> Package
                 FLAGGED, f"{spec} depends on {dep!r}, a near miss of {typo_of!r}"
             )
         if dep not in _KNOWN_TRANSFORMERS_DEPS:
-            return PackageScanResult(REVIEW, f"{spec} adds a new dependency, {dep}")
+            reviews.append(f"{spec} adds a new dependency, {dep}")
 
     wheel = next(
         (
             entry
             for entry in files
-            if entry.get("packagetype") == "bdist_wheel"
+            if isinstance(entry, dict)
+            and entry.get("packagetype") == "bdist_wheel"
             and str(entry.get("filename", "")).endswith("-py3-none-any.whl")
         ),
         None,
     )
-    if wheel is None:
-        return PackageScanResult(REVIEW, f"PyPI has no pure-Python wheel for {spec}")
+    expected = (wheel.get("digests") or {}).get("sha256") if wheel else None
+    if wheel is None or expected not in digests:
+        reviews.append(f"PyPI has no pure-Python wheel with a sha256 for {spec}")
+        return _verdict(())
     url = str(wheel.get("url") or "")
     if not url.startswith(_TRUSTED_FILE_HOST):
         return PackageScanResult(FLAGGED, f"the {spec} wheel is not hosted on PyPI ({url})")
-    expected = wheel["digests"]["sha256"]
     workdir = tempfile.mkdtemp(prefix = "unsloth_pkg_scan_")
     try:
         path = os.path.join(workdir, "package.whl")
         if not _download(url, path):
-            return PackageScanResult(REVIEW, f"could not download the {spec} wheel to scan it")
-        actual = _sha256_file(path)
-        if actual != expected:
+            reviews.append(f"could not download the {spec} wheel to scan it")
+            return _verdict(())
+        if _sha256_file(path) != expected:
             return PackageScanResult(
                 FLAGGED,
                 f"the downloaded {spec} wheel does not match PyPI's published sha256",
@@ -331,7 +342,7 @@ def _check_release(spec: str, name: str, version: str, primary: bool) -> Package
         import shutil
         shutil.rmtree(workdir, ignore_errors = True)
     # Only the inspected wheel: an sdist (PIP_NO_BINARY) must not inherit its clean verdict.
-    return PackageScanResult(CLEAN, "", {spec: (expected,)})
+    return _verdict((expected,))
 
 
 def _check_advisories(pinned: list[tuple[str, str, str]]) -> PackageScanResult:

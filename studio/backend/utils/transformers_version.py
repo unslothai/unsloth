@@ -2457,19 +2457,28 @@ def _install_to_dir(pkg: str, target_dir: str) -> bool:
     digests = _install_hashes.get(pkg)
     source = _install_source(pkg)
     if not digests or source != pkg:
-        return _install_args_to_dir([source], source, target_dir)
+        return _install_args_to_dir([source], [source], source, target_dir)
     # A hash-pinned requirement file: uv and pip both refuse a download whose sha256 differs.
     req_dir = tempfile.mkdtemp(prefix = "unsloth_req_")
     try:
         req_file = os.path.join(req_dir, "requirements.txt")
         with open(req_file, "w", encoding = "utf-8") as handle:
             handle.write(pkg + "".join(f" --hash=sha256:{d}" for d in digests) + "\n")
-        return _install_args_to_dir(["--require-hashes", "-r", req_file], pkg, target_dir)
+        # uv's --require-hashes also rejects any unpinned UV_CONSTRAINT entry; --verify-hashes
+        # checks the listed digests without that. pip enables hash checking from the file alone.
+        return _install_args_to_dir(
+            ["--verify-hashes", "-r", req_file],
+            ["--require-hashes", "-r", req_file],
+            pkg,
+            target_dir,
+        )
     finally:
         shutil.rmtree(req_dir, ignore_errors = True)
 
 
-def _install_args_to_dir(install_args: list[str], pkg: str, target_dir: str) -> bool:
+def _install_args_to_dir(
+    uv_args: list[str], pip_args: list[str], pkg: str, target_dir: str
+) -> bool:
     # Try uv first (faster) if on PATH -- do NOT install uv at runtime.
     if shutil.which("uv"):
         result = subprocess.run(
@@ -2483,7 +2492,7 @@ def _install_args_to_dir(install_args: list[str], pkg: str, target_dir: str) -> 
                 target_dir,
                 "--no-deps",
                 "--upgrade",
-                *install_args,
+                *uv_args,
             ],
             stdout = subprocess.PIPE,
             stderr = subprocess.STDOUT,
@@ -2515,7 +2524,7 @@ def _install_args_to_dir(install_args: list[str], pkg: str, target_dir: str) -> 
             target_dir,
             "--no-deps",
             "--upgrade",
-            *install_args,
+            *pip_args,
         ],
         stdout = subprocess.PIPE,
         stderr = subprocess.STDOUT,

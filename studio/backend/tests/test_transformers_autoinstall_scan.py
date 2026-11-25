@@ -202,6 +202,20 @@ def test_typosquatted_dependency_is_flagged(index):
     assert result.status == ps.FLAGGED and "requests" in result.reason
 
 
+@pytest.mark.parametrize("order", [1, -1])
+def test_typosquat_is_flagged_whatever_the_dependency_order(index, order):
+    # An unfamiliar dependency (review) listed first must not stop the typosquat check.
+    index.requires += ["brand-new-thing>=1", "requestss>=2"][::order]
+    assert ps.scan_pypi_install(PLAN).status == ps.FLAGGED
+
+
+def test_review_still_inspects_the_wheel(index):
+    index.requires.append("brand-new-thing>=1")
+    index.wheel = _wheel({"transformers/__init__.py": "", "evil.pth": "import os"})
+    index.published_sha = hashlib.sha256(index.wheel).hexdigest()
+    assert ps.scan_pypi_install(PLAN).status == ps.FLAGGED
+
+
 def test_new_dependency_needs_review(index):
     index.requires.append("brand-new-thing>=1")
     result = ps.scan_pypi_install(PLAN)
@@ -348,8 +362,28 @@ def test_install_to_dir_requires_hashes(monkeypatch, tmp_path):
         assert tv._install_to_dir("tiktoken", str(tmp_path))
     req, pinned_cmd, plain_cmd = seen
     assert req.strip() == f"transformers==5.30.0 --hash=sha256:{'b' * 64}"
-    assert "--require-hashes" in pinned_cmd and "transformers==5.30.0" not in pinned_cmd
-    assert plain_cmd[-1] == "tiktoken" and "--require-hashes" not in plain_cmd
+    # uv: --verify-hashes, since --require-hashes also rejects unpinned UV_CONSTRAINT entries.
+    assert "--verify-hashes" in pinned_cmd and "transformers==5.30.0" not in pinned_cmd
+    assert plain_cmd[-1] == "tiktoken" and "--verify-hashes" not in plain_cmd
+
+
+def test_pip_fallback_requires_hashes(monkeypatch, tmp_path):
+    cmds = []
+
+    def _run(cmd, **kwargs):
+        cmds.append(cmd)
+
+        class _R:
+            returncode = 0 if cmd[0] != "uv" else 1
+            stdout = ""
+
+        return _R()
+
+    monkeypatch.setattr(tv.shutil, "which", lambda name: "/usr/bin/uv")
+    monkeypatch.setattr(tv.subprocess, "run", _run)
+    with tv.install_with_hashes({"transformers==5.30.0": ("b" * 64,)}):
+        assert tv._install_to_dir("transformers==5.30.0", str(tmp_path))
+    assert cmds[0][0] == "uv" and "--require-hashes" in cmds[1]
 
 
 # ---- the route ----
