@@ -147,6 +147,15 @@ def probe_int8_attention(p: GpuProfile) -> dict:
             src = nearest(p.capability, hd, p.smem_optin)[0]
             if src is not None and tuple(src) != tuple(p.capability):
                 why = f"nearest:sm{src[0]}{src[1]}"  # an unlisted arch offered a measured card's config (raced)
+        if (
+            impl is None
+            and not p.rocm  # ROCm serves its own Triton table; NVRTC never builds for it
+            and nearest is not None
+            and nearest(p.capability, hd, p.smem_optin)[0] is not None
+        ):
+            from core.inference import diffusion_int8_attention_cuda as i8c
+            if not i8c.nvrtc_arch_supported(p.capability):
+                why = "no_nvrtc_target"  # a measured config fits, but the pinned NVRTC cannot build for the arch
         out[f"any.int8_attn.serving.hd{hd}"] = lever(
             impl is not None, cfg = f"{impl}:{fmt(cfg)}" if impl else None, why = why
         )
@@ -2238,6 +2247,8 @@ FUTURE_ARCH_EXCLUSIONS: dict = {
     # follows by the nearest-family fallback (int8_attn.serving stays on).
     "sm1[23][01].any.int8_attn.triton_table.*": _NEEDS.format("sm121 / sm130")
     + " (Triton stand-in tiles)",
+    # The fallback compiles for the card's own arch, and the NVRTC the profiles declare (13.0) targets sm75..sm121.
+    "sm130.any.int8_attn.serving.*": "the pinned NVRTC cannot target sm130 (the fallback is gated on the toolchain)",
     "sm1[23][01].any.grouped_int8_gemm.tiles": _NEEDS.format("sm121 / sm130")
     + " (spill-measured grouped tiles)",
     "sm1[123][01].any.nvfp4.*": _NEEDS.format("sm110 / sm121 / sm130")
@@ -2250,8 +2261,6 @@ FUTURE_ARCH_EXCLUSIONS: dict = {
     + " (sd.cpp cuBLAS vs MMQ crossover by major)",
     "sm1[23][01].any.vae_*": _NEEDS.format("sm121 / sm130")
     + " (VAE strip / fold decode measured per card)",
-    # INT8 attention: KERNEL_CONFIGS is keyed by exact capability, so a newer card keeps 16-bit attention.
-    "sm1[23][01].any.int8_attn.serving.*": "no CUDA config for the arch (exact-key KERNEL_CONFIGS lookup)",
     # ROCm: tables keyed by the exact gfx ISA; gfx12 is not gfx11 with more of it.
     "gfx1250.any.int8_attn.serving.*": _NEEDS.format("gfx1250")
     + " (ROCm Triton INT8 attention tiles per gfx ISA)",

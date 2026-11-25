@@ -904,7 +904,7 @@ def test_moe_rows_cover_family_precision_aux_and_mode():
         if c.name.startswith("MoE ")
         and not c.name.endswith((", block compile", ", Unsloth checkpoint", ", multimodal"))
     ]
-    assert len(moe) == len(caps.MOE_FAMILIES) * 4 * 2 * 6
+    assert len(moe) == len(caps.MOE_FAMILIES) * 4 * 2 * 7
     proven = sorted(c.name for c in moe if not c.missing())
     assert "MoE qwen3_moe x lora+experts x aux off x cp" in proven
     assert "MoE qwen3_moe x full x aux off x fsdp2" in proven

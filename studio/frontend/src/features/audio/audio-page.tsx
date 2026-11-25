@@ -771,6 +771,7 @@ export function AudioPage({
     setSelectedId,
     pendingTranscribeRelease,
     replayQueuedTtsPick,
+    audioOptionValues,
   });
   const generationPresentation = audioGenerationPresentation(
     generationPhase,
@@ -2119,6 +2120,7 @@ export function AudioPage({
                         historyClips={clips}
                         pageModelLoaded={pageModelLoaded}
                         pageModelId={lastPageModel}
+                        audioOptionSpecs={pageModelLoaded ? separate.audioOptionSpecs : []}
                       />
                     </AudioActiveProvider>
                   ) : ttsWorkflow === "clone" ? (

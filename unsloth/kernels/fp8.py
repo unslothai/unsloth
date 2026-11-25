@@ -18,6 +18,7 @@ import triton
 import triton.language as tl
 from torch.nn import functional as F
 import math
+from typing import List
 from unsloth_zoo.utils import Version
 
 from .indexing import long_indexing
@@ -764,7 +765,7 @@ def w8a8_block_fp8_matmul_triton(
     B: torch.Tensor,
     As: torch.Tensor,
     Bs: torch.Tensor,
-    block_size: list[int],
+    block_size: List[int],
     output_dtype: torch.dtype = torch.float32,
 ) -> torch.Tensor:
     """Block-wise FP8 matmul."""
@@ -1015,7 +1016,7 @@ def torchao_block_matmul(
     weight_q: torch.Tensor,
     act_scale: torch.Tensor,
     weight_scale: torch.Tensor,
-    block_size: list[int],
+    block_size: List[int],
     output_dtype: torch.dtype = torch.bfloat16,
 ) -> torch.Tensor:
     # torchao's kernel indexes in int32 too, so route launches past 2**31 elements to the int64 one.

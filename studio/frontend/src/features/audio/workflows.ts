@@ -85,7 +85,7 @@ export const AUDIO_WORKFLOWS: ReadonlyArray<{
     label: "Separate",
     heading: "Separate audio",
     icon: SplitIcon,
-    hint: "Split a track into vocals and instruments",
+    hint: "Split, clean or restore a recording",
     slot: "speak",
     createTrain: false,
   },

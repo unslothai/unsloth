@@ -1867,9 +1867,13 @@ def fast_linear_forward(
     bsz, q_len, in_dim = X.shape
     if q_len != 1:
         # A configured lora_dropout keeps the base-then-LoRA order, as the fused training kernels do.
-        return matmul_lora(
+        result = matmul_lora(
             X, W, W_quant, lora_A, lora_B, lora_S, fused = not _has_lora_dropout_module(proj)
         )
+        # matmul_lora is bias-free; the q_len == 1 path below adds the base bias too.
+        if bias is not None:
+            result += bias
+        return result
 
     lora_cast = None
     if W_quant is None and temp_lora is None and _ROCM_SKINNY_LINEAR and not _is_compiling():

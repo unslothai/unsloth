@@ -1914,7 +1914,14 @@ def _expert_params4bit_problem(p, E, tp):
     """Why the 4-bit expert stack `p` cannot be cut by expert index over tp, or None."""
     state = getattr(p, "quant_state", None)
     shape = _expert_stack_shape(p)
-    if state is None or not getattr(p, "bnb_quantized", False) or p.dim() != 2 or p.shape[1] != 1:
+    # Packed [n, 1] bytes, or [E, n / E, 1] from zoo's per-expert pre-quantized stack loader.
+    if (
+        state is None
+        or not getattr(p, "bnb_quantized", False)
+        or p.dim() not in (2, 3)
+        or p.shape[-1] != 1
+        or (p.dim() == 3 and p.shape[0] != E)
+    ):
         return "a 4-bit expert stack without its packed bytes / QuantState"
     if shape is None or len(shape) != 3 or tuple(state.shape) != shape:
         return f"a 4-bit expert stack of logical shape {shape} (not one 3-D QuantState)"
@@ -1957,7 +1964,8 @@ def _expert_params4bit_slice(
         quant_type = state.quant_type,
         dtype = state.dtype,
     )
-    data = flat[lo * per_element : hi * per_element].clone().unsqueeze(-1)
+    data = flat[lo * per_element : hi * per_element].clone()
+    data = data.view(hi - lo, *p.shape[1:]) if p.dim() == 3 else data.unsqueeze(-1)
     new = torch.Tensor._make_subclass(type(p), data, False)
     for attr, value in p.__dict__.items():
         new.__dict__[attr] = value
@@ -1986,6 +1994,64 @@ def _preload_expert_params4bit(owner, p, rank, tp, ranks):
     new._original_shape = torch.Size(_expert_stack_shape(p))
     setattr(new, _EXPERT_PRELOAD, (E, tp, tuple(ranks)))
     return new
+
+
+def _preload_expert_plain(owner, p, rank, tp, ranks):
+    """This rank's experts of a just-loaded 16-bit stack, or None; PEFT still sizes LoRA from the whole stack."""
+    E = owner.__dict__.get("num_experts")
+    if (
+        not isinstance(E, int)
+        or isinstance(E, bool)
+        or E % tp
+        or E // tp < 2
+        or p.dim() < 2
+        or p.shape[0] != E
+    ):
+        return None
+    per_rank = E // tp
+    new = nn.Parameter(
+        p.detach()[rank * per_rank : (rank + 1) * per_rank].clone(), requires_grad = p.requires_grad
+    )
+    if hasattr(p, "_is_hf_initialized"):  # or transformers re-initializes the shard
+        new._is_hf_initialized = p._is_hf_initialized
+    setattr(new, _EXPERT_PRELOAD, (E, tp, tuple(ranks)))
+    _patch_param_wrapper_preloaded_shape()
+    return new
+
+
+class _WholeStackShape:
+    def __init__(self, param, shape):
+        self._param, self.shape = param, torch.Size(shape)
+
+    def dim(self):
+        return len(self.shape)
+
+    @property
+    def ndim(self):
+        return len(self.shape)
+
+    def __getattr__(self, name):
+        return getattr(self._param, name)
+
+
+def _patch_param_wrapper_preloaded_shape():
+    try:
+        from peft.tuners.lora.layer import ParamWrapper
+    except Exception:
+        return
+    original = ParamWrapper.get_param
+    if getattr(original, "_unsloth_ep_preload", False):
+        return
+
+    def get_param(self):
+        param = original(self)
+        preload = getattr(param, _EXPERT_PRELOAD, None)
+        if preload is None or _is_params4bit(param) or not isinstance(param, torch.Tensor):
+            return param
+        return _WholeStackShape(param, (preload[0],) + tuple(param.shape[1:]))
+
+    get_param._unsloth_ep_preload = True
+    ParamWrapper.get_param = get_param
 
 
 def _shard_expert_params4bit(owner, name, lo, hi, E, mesh, rank, tp):
@@ -2050,6 +2116,16 @@ def expert_shard_problem(block, tp = None):
             problem = _expert_params4bit_problem(p, E, tp)
             if problem is not None:
                 return f"{name}: {problem}"
+            continue
+        preload = getattr(p, _EXPERT_PRELOAD, None)
+        if preload is not None and _plain_float(p):
+            if (
+                preload[0] != E
+                or (tp is not None and preload[1] != tp)
+                or p.dim() < 2
+                or p.shape[0] * preload[1] != E
+            ):
+                return f"{name} was sharded by expert_parallel_loading as {preload}, not for {E} experts over {tp}"
             continue
         if not _plain_float(p) or _preloaded(p) is not None:
             return f"{name} is {type(p).__name__} {p.dtype} (quantized, packed or distributed)"
@@ -2117,6 +2193,33 @@ def _trim_expert_pad(full, dim, groups, experts, padded, per):
 
 def _shard_expert_param(owner, name, dim, groups, per, E, E_pad, mesh, rank, tp):
     full = owner._parameters[name]
+    preload = getattr(full, _EXPERT_PRELOAD, None)
+    if preload is not None and not _is_params4bit(full):
+        if (
+            preload != (E, tp, tuple(mesh.mesh.tolist()))
+            or E_pad != E
+            or (dim, groups, per) != (0, 1, 1)
+        ):
+            raise ValueError(
+                f"Unsloth: the experts '{name}' were sharded by expert_parallel_loading as {preload} (experts, "
+                f"ranks, rank ids), not over this mesh; pass the same ep mesh to both."
+            )
+        DTensor, _, _, Shard = _dtensor_api()
+        shape = torch.Size((E,) + tuple(full.shape[1:]))
+        dt = DTensor.from_local(
+            full.detach(),
+            mesh,
+            [Shard(0)],
+            run_check = False,
+            shape = shape,
+            stride = torch.empty(shape, device = "meta").stride(),
+        )
+        param = _as_param(dt, full)
+        owner._parameters[name] = param
+        pad = (1, E, E, 1)
+        param._unsloth_tp_parts = (0, (E,), pad)
+        owner.__dict__.setdefault("_unsloth_tp_layouts", {})[name] = (0, (E,), tp, pad)
+        return param
     t = full.detach()
     if E_pad != E:
         view = t.unflatten(dim, (groups, E, per))
@@ -4455,9 +4558,9 @@ def _param_layouts(model):
 
 def _refuse_unapplied_forward(module, args):
     raise RuntimeError(
-        "Unsloth: this model was loaded with tensor parallel sharded loading (each rank holds slices of the "
-        "attention / MLP weights); call apply_tensor_parallel(model, tp_mesh) after get_peft_model and "
-        "before running it."
+        "Unsloth: this model was loaded with tensor / expert parallel sharded loading (each rank holds slices of "
+        "the attention / MLP weights or only its experts); call apply_tensor_parallel(model, tp_mesh) or "
+        "apply_expert_parallel(model, ep_mesh) after get_peft_model and before running it."
     )
 
 
@@ -4935,6 +5038,7 @@ def _tp_load_quantizing(original, cls, name, args, kwargs, mesh, state):
         return original(cls, name, *args, **kwargs)
     tp, rank = mesh.size(), mesh.get_local_rank()
     ranks = mesh.mesh.tolist()
+    experts_only = bool(state.get("experts_only"))
     owner = object()
     plan = {}
     counts = {"loaded_bytes": 0, "kept_bytes": 0, "sharded_weights": 0, "sharded_expert_stacks": 0}
@@ -4942,7 +5046,6 @@ def _tp_load_quantizing(original, cls, name, args, kwargs, mesh, state):
     def plan_for(model):
         # The meta model as transformers built it (Linear4bit already swapped in): the plan apply derives later.
         # Expert parallel (ep_native.expert_parallel_loading): only the routed expert stacks are cut.
-        experts_only = state.get("experts_only")
         tp_plan = None if experts_only else derive_tp_plan(model, tp, state["plan"])
         projs = {}
         for region in tp_plan.regions if tp_plan is not None else ():
@@ -4962,19 +5065,22 @@ def _tp_load_quantizing(original, cls, name, args, kwargs, mesh, state):
         return t.numel() * t.element_size()
 
     def shard_experts(module):
-        # Both stacks of a block or neither, once both are quantized, and only for a block apply shards (its
-        # structure and both stacks checked as at apply): one cut stack would leave the block unshardable.
+        # Both stacks of a block or neither: one cut stack would leave the block unshardable.
         stacks = {n: module._parameters.get(n) for n in _EXPERT_STACKS}
         if any(
-            not _is_params4bit(p) or p.is_meta or getattr(p, _EXPERT_PRELOAD, None) is not None
+            p is None or p.is_meta or getattr(p, _EXPERT_PRELOAD, None) is not None
             for p in stacks.values()
         ):
             return 0
+        if all(_is_params4bit(p) for p in stacks.values()):
+            cut = _preload_expert_params4bit
+        elif experts_only and all(_plain_float(p) for p in stacks.values()):
+            cut = _preload_expert_plain
+        else:
+            return 0
         if expert_shard_problem(plan["experts"][id(module)], tp) is not None:
             return 0
-        shards = {
-            n: _preload_expert_params4bit(module, p, rank, tp, ranks) for n, p in stacks.items()
-        }
+        shards = {n: cut(module, p, rank, tp, ranks) for n, p in stacks.items()}
         if any(new is None for new in shards.values()):
             return 0
         module._parameters.update(shards)
@@ -5022,7 +5128,11 @@ def _tp_load_quantizing(original, cls, name, args, kwargs, mesh, state):
             setattr(new, _PRELOADED, (proj.style, tuple(proj.parts), tp))
             counts["sharded_weights"] += 1
             counts["kept_bytes"] += nbytes(new) - nbytes(p)
-        elif pname in _EXPERT_STACKS and id(module) in plan["experts"] and _is_params4bit(p):
+        elif (
+            pname in _EXPERT_STACKS
+            and id(module) in plan["experts"]
+            and (_is_params4bit(p) or (experts_only and _plain_float(p)))
+        ):
             counts["kept_bytes"] += shard_experts(module)
 
     loading.set_param_for_module = set_and_shard
@@ -5048,7 +5158,7 @@ def _tp_load_quantizing(original, cls, name, args, kwargs, mesh, state):
     model.__dict__["_unsloth_tp_load_stats"] = {
         "tp": tp,
         "rank": rank,
-        "quantized_on_load": True,
+        "quantized_on_load": state.get("on_load", True),
         **counts,
     }
     state["models"].append(model)
@@ -5178,7 +5288,30 @@ def _from_pretrained_sharded(original, cls, name, args, kwargs, state):
                 ):
                     return original(cls, name, *args, **original_kwargs)
             return chunked(original, cls, name, args, original_kwargs, mesh, state)
-    if state.get("experts_only") or (state.get("prequantized_only") and quantized is None):
+    if state.get("experts_only"):
+        # Other quantizations, transformers 4.x and 2-D meshes load in full.
+        mesh = state["mesh"] if state["mesh"] is not None else _world_mesh()
+        on_load = other or (
+            quantized is None
+            and any(
+                original_kwargs.get(k)
+                for k in ("load_in_4bit", "load_in_8bit", "quantization_config")
+            )
+        )
+        if chunked is None or on_load or mesh.ndim != 1:
+            return original(cls, name, *args, **original_kwargs)
+        state["on_load"] = False
+        try:
+            loaded = chunked(original, cls, name, args, original_kwargs, mesh, state)
+        finally:
+            state.pop("on_load", None)
+        stats = (loaded[0] if isinstance(loaded, tuple) else loaded).__dict__.get(
+            "_unsloth_tp_load_stats"
+        )
+        if quantized is not None and isinstance(stats, dict):
+            stats["prequantized"] = True
+        return loaded
+    if state.get("prequantized_only") and quantized is None:
         return original(cls, name, *args, **original_kwargs)
     if state.get("auto"):
         # Only a checkpoint too large for a whole load on this GPU loads sharded (the full load stays the
