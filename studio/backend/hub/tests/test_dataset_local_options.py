@@ -758,3 +758,19 @@ def test_snapshot_options_reject_a_legacy_lzma_stream(tmp_path):
     )
 
     assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_inferred_split_order_matches_the_loader(tmp_path):
+    snapshot = _snapshot(tmp_path)
+    _rows(
+        snapshot,
+        "data/test-00000-of-00001.parquet",
+        "data/extra-00000-of-00001.parquet",
+        "data/validation-00000-of-00001.parquet",
+    )
+
+    assert [split for _, split in local_options._snapshot_options(snapshot)] == [
+        "validation",
+        "test",
+        "extra",
+    ]

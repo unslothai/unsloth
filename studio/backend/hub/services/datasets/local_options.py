@@ -189,7 +189,7 @@ def _processed_options(path: Path) -> dict[tuple[str, str], None]:
         else:
             dirnames[:] = [
                 name
-                for name in dirnames
+                for name in sorted(dirnames)
                 if not (base / name).is_symlink() and not name.endswith(".incomplete")
             ]
         if "dataset_info.json" not in filenames:
@@ -609,6 +609,9 @@ def _declares_splits(payload: Any) -> bool:
     return any(isinstance(item, dict) and "splits" in item for item in entries)
 
 
+_DEFAULT_SPLIT_ORDER = {"train": 0, "validation": 1, "test": 2}
+
+
 def _malformed_info(payload: Any) -> bool:
     """A dataset_info list holding anything but mappings, which datasets calls .get on."""
     return isinstance(payload, list) and any(not isinstance(item, dict) for item in payload)
@@ -656,8 +659,15 @@ def _snapshot_options(snapshot: Path) -> KeysView[tuple[str, str]]:
             _add_info_options(options, payload)
 
     if not options and not declared:
-        # Nothing declared: the loader still resolves files by pattern, so the picker infers the same splits.
-        options.update(dict.fromkeys(sorted(_inferred_snapshot_options(snapshot))))
+        # Nothing declared: the loader still resolves files by pattern, so the picker infers the same splits, in its order.
+        options.update(
+            dict.fromkeys(
+                sorted(
+                    _inferred_snapshot_options(snapshot),
+                    key = lambda item: (_DEFAULT_SPLIT_ORDER.get(item[1], 3), item[1]),
+                )
+            )
+        )
     return options.keys()
 
 
