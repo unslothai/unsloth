@@ -12494,6 +12494,10 @@ class DiffusionBackend:
                         logger.warning("diffusion.vae_tiling: not installed: %s", exc)
                     install_frame_pad_fix(pipe, target, logger = logger)
                     install_vae_sync(pipe, target, logger = logger)
+                    # Before the speed optims: the fused CUDA decoder replaces the up blocks with its own clone-free one.
+                    from .diffusion_vae_noclone import install_on_pipe as install_vae_noclone
+
+                    install_vae_noclone(pipe, logger)
                     # Before the speed optims so their decode compile lands inside the non-finite check; `off` keeps fp32.
                     vae_fp16 = (
                         str(speed_mode or "").strip().lower() != SPEED_OFF
