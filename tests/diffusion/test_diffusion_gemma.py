@@ -297,6 +297,23 @@ def test_batch_without_encoder_ar_targets_is_finite(model, rows):
     assert float(metrics["encoder_ar_loss"]) == 0.0 and float(metrics["diffusion_loss"]) == 0.0
 
 
+class _ZeroWeight(torch.nn.Module):
+    def forward(self, w):
+        return w * 0
+
+
+def test_encoder_ar_loss_uses_the_fake_quantized_head():
+    m = transformers.DiffusionGemmaForBlockDiffusion.from_pretrained(TINY, dtype = torch.float32)
+    m._unsloth_diffusion_eos_token_id = 1
+    m.train()
+    m.get_output_embeddings().weight_fake_quantizer = _ZeroWeight()
+    batch = _batch(m.config.text_config.vocab_size, m.config.canvas_length)
+    torch.manual_seed(0)
+    _, _, metrics = DIFFUSION_GEMMA_PROFILE.compute_loss(m, batch, _args())
+    expected = torch.log(torch.tensor(float(m.config.text_config.vocab_size)))
+    torch.testing.assert_close(metrics["encoder_ar_loss"], expected)
+
+
 def test_reloaded_adapter_still_refuses_merge(tmp_path):
     from peft import LoraConfig, get_peft_model
 
