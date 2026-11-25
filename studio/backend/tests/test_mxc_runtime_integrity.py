@@ -57,6 +57,13 @@ def runtime(tmp_path, monkeypatch):
     root.mkdir(parents = True)
     (root / "wxc-exec.exe").write_bytes(_WXC)
     monkeypatch.setattr(mxc_runtime.sys, "platform", "win32")
+    # A supported build whatever the test host runs (Windows Server 2022 CI is build 20348).
+    monkeypatch.setattr(
+        mxc_runtime.sys,
+        "getwindowsversion",
+        lambda: SimpleNamespace(build = mxc_runtime.MIN_WINDOWS_BUILD, product_type = 1),
+        raising = False,
+    )
     _use_pin(monkeypatch, {("x86_64", "exec"): _WXC}, base = mxc_runtime.LEGACY_PIN)
     return root
 

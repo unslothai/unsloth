@@ -6,6 +6,7 @@
 import os
 import platform
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -375,6 +376,13 @@ def windows(monkeypatch):
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setattr(platform, "machine", lambda: "AMD64")
     monkeypatch.setattr(wsl_host, "native_machine", lambda: "x86_64")
+    # A supported build whatever the test host runs (Windows Server 2022 CI is build 20348).
+    monkeypatch.setattr(
+        sys,
+        "getwindowsversion",
+        lambda: SimpleNamespace(build = plan_mod.MXC_MIN_WINDOWS_BUILD, product_type = 1),
+        raising = False,
+    )
     state = {
         "installed": True,
         "missing": ("prepare-null-device",),

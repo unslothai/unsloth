@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import stat
 import tarfile
+from types import SimpleNamespace
 
 import pytest
 
@@ -107,6 +108,13 @@ def official_release(tmp_path, monkeypatch):
     monkeypatch.setattr(installer.sys, "platform", "win32")
     monkeypatch.setattr(installer.mxc_runtime.sys, "platform", "win32")
     monkeypatch.setattr(installer.mxc_runtime, "_expected_architecture", lambda: "x86_64")
+    # A supported build whatever the test host runs (Windows Server 2022 CI is build 20348).
+    monkeypatch.setattr(
+        installer.mxc_runtime.sys,
+        "getwindowsversion",
+        lambda: SimpleNamespace(build = installer.mxc_runtime.MIN_WINDOWS_BUILD, product_type = 1),
+        raising = False,
+    )
     _serve(monkeypatch, archive)
     return payload, archive
 
