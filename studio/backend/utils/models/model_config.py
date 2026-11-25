@@ -56,6 +56,7 @@ from utils.models.gguf_metadata import (
     pairing_score,
     read_gguf_general_metadata,
     read_gguf_nextn_predict_layers,
+    read_gguf_split_count,
 )
 from glob import escape as _glob_escape
 import structlog
@@ -2304,7 +2305,7 @@ def colocated_split_shards(path: Path) -> tuple[list[Path], bool]:
 def split_set_is_loadable(path: Path) -> bool:
     """Whether every shard of the set _local_gguf_load_path opens is present and non-empty: the
     local set when it is complete or short only of a --ple table shard, else what a shard symlink
-    points to: its split set, or a whole single-file GGUF (an HF blob, with no .gguf name, is neither)."""
+    points to: its split set, or a GGUF whose split.count says it is whole (an HF blob has no name)."""
     shards, complete = colocated_split_shards(path)
     try:
         if not complete and _engram_table_shard_skipped(path):
@@ -2313,8 +2314,9 @@ def split_set_is_loadable(path: Path) -> bool:
             target = path.resolve()
             if _GGUF_SPLIT_FILE_RE.match(target.name) is not None:
                 shards, complete = colocated_split_shards(target)
-            elif target.suffix.lower() == ".gguf":
-                shards, complete = [target], target.is_file()
+            else:
+                split_count = read_gguf_split_count(str(target))
+                shards, complete = [target], split_count is not None and split_count <= 1
         return complete and all(shard.stat().st_size > 0 for shard in shards)
     except OSError:
         return False

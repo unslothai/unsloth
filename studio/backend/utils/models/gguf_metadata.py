@@ -73,6 +73,8 @@ _NEXTN_CACHE: Dict[_CacheKey, Optional[int]] = {}
 
 _MROPE_SECTIONS_CACHE: Dict[_CacheKey, Optional[bool]] = {}
 
+_SPLIT_COUNT_CACHE: Dict[_CacheKey, Optional[int]] = {}
+
 
 def _cache_key(path: str) -> Optional[_CacheKey]:
     try:
@@ -1004,6 +1006,54 @@ def _read_gguf_string(path: str, wanted_key: str) -> Optional[str]:
             except StopIteration:
                 break
         _STRING_CACHE[ckey] = result
+    return result
+
+
+_INT_FORMATS = {0: "<B", 1: "<b", 2: "<H", 3: "<h", 4: "<I", 5: "<i", 10: "<Q", 11: "<q"}
+
+
+def _parse_gguf_split_count(path: str) -> Optional[int]:
+    try:
+        with open(path, "rb") as f:
+            head = f.read(24)
+            if len(head) < 24:
+                return None
+            magic, _version, _tcount, kv_count = struct.unpack("<IIQQ", head)
+            if magic != _GGUF_MAGIC:
+                return None
+            for _ in range(kv_count):
+                (klen,) = struct.unpack("<Q", f.read(8))
+                if klen > 1 << 20:
+                    return None
+                key = f.read(klen)
+                (vtype,) = struct.unpack("<I", f.read(4))
+                if key == b"split.count" and vtype in _INT_FORMATS:
+                    fmt = _INT_FORMATS[vtype]
+                    return struct.unpack(fmt, f.read(struct.calcsize(fmt)))[0]
+                if not _skip_gguf_value(f, vtype):
+                    return None
+    except (OSError, struct.error) as e:
+        logger.debug(f"_parse_gguf_split_count: cannot read {path}: {e}")
+        return None
+    return 0
+
+
+def read_gguf_split_count(path: str) -> Optional[int]:
+    """``split.count``, ``0`` when absent (as llama.cpp reads it), or ``None`` when the file is not a readable GGUF."""
+    fkey = _cache_key(path)
+    if fkey is None:
+        return None
+    with _CACHE_LOCK:
+        if fkey in _SPLIT_COUNT_CACHE:
+            return _SPLIT_COUNT_CACHE[fkey]
+    result = _parse_gguf_split_count(path)
+    with _CACHE_LOCK:
+        while len(_SPLIT_COUNT_CACHE) >= _CACHE_MAX_ENTRIES:
+            try:
+                _SPLIT_COUNT_CACHE.pop(next(iter(_SPLIT_COUNT_CACHE)))
+            except StopIteration:
+                break
+        _SPLIT_COUNT_CACHE[fkey] = result
     return result
 
 

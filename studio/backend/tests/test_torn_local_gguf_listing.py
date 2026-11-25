@@ -24,6 +24,22 @@ def _gguf(path: Path, size: int = 64) -> None:
     path.write_bytes(b"GGUF" + b"\0" * (size - 4) if size else b"")
 
 
+def _real_gguf(path: Path, split_count: int = 0) -> Path:
+    import numpy as np
+    from gguf import GGUFWriter
+
+    path.parent.mkdir(parents = True, exist_ok = True)
+    writer = GGUFWriter(str(path), "llama")
+    if split_count:
+        writer.add_uint16("split.count", split_count)
+    writer.add_tensor("token_embd.weight", np.zeros((2, 2), dtype = np.float32))
+    writer.write_header_to_file()
+    writer.write_kv_data_to_file()
+    writer.write_tensors_to_file()
+    writer.close()
+    return path
+
+
 def _hf_repo_with_one_of_two_shards(hub: Path) -> None:
     repo = hub / "models--org--Torn-GGUF"
     (repo / "refs").mkdir(parents = True)
@@ -173,3 +189,28 @@ def test_a_torn_build_does_not_hide_a_whole_one_in_its_folder(sources, tmp_path)
     assert resolver.resolve_local_gguf("linked")[1] == "Q8_0"
     assert offered.get("alias") == ("Q6_K",)
     assert resolver.resolve_local_gguf("alias")[1] == "Q6_K"
+
+
+def test_a_shard_link_target_is_judged_by_its_split_metadata(sources, tmp_path):
+    # An HF blob has no name to read; a renamed first shard keeps split.count and llama.cpp rejects it.
+    models = tmp_path / "models"
+    blob = _real_gguf(tmp_path / "blobs" / ("b" * 64))
+    renamed = _real_gguf(tmp_path / "backing" / "renamed-Q6_K.gguf", split_count = 2)
+    for name, target in (("blob", blob), ("renamed", renamed)):
+        (models / name).mkdir(parents = True)
+        (models / name / f"{name}-Q6_K-00001-of-00002.gguf").symlink_to(target)
+
+    rows = models_route.collect_local_models(
+        models.resolve(), sources = sources, materialize_ollama_links = False
+    )
+    partial = {_name(row): row.partial for row in rows}
+    assert (partial.get("blob"), partial.get("renamed")) == (False, True)
+    offered = {
+        _name(info): quants
+        for info, _is_gguf, quants, _resident in inference_route._servable_catalog_rows(
+            inference_route._classified_catalog(rows)
+        )
+    }
+    assert offered.get("blob") == ("Q6_K",) and "renamed" not in offered
+    assert resolver.resolve_local_gguf("blob")[1] == "Q6_K"
+    assert resolver.resolve_local_gguf("renamed") is None

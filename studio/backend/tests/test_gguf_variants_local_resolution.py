@@ -5,6 +5,7 @@
 
 import asyncio
 import os
+import struct
 from pathlib import Path
 
 import pytest
@@ -500,7 +501,7 @@ def test_variantless_pick_keeps_a_symlinked_whole_split(in_tmp_cwd):
 
 def test_split_named_symlink_to_a_plain_target_is_ready(in_tmp_cwd):
     real = in_tmp_cwd / "real-Q4_K_M.gguf"
-    real.write_bytes(b"GGUF")
+    real.write_bytes(b"GGUF" + struct.pack("<IQQ", 3, 0, 0))
     alias = in_tmp_cwd / "alias-Q4_K_M-00001-of-00002.gguf"
     alias.symlink_to(real)
 
