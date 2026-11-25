@@ -120,7 +120,8 @@ def _load(
             self.returncode = returncode
 
         def poll(self):
-            return self.returncode
+            # A stalled child is still running when its health check gives up.
+            return None if self.returncode == "stall" else self.returncode
 
         def terminate(self):
             return None
@@ -143,7 +144,7 @@ def _load(
     def _wait_for_health(timeout = 600.0, **_kw):
         idx = len(launches) - 1
         code = returncodes[idx] if 0 <= idx < len(returncodes) else 1
-        if code is None:
+        if code is None or code == "stall":
             backend._stdout_lines = []
         else:
             backend._stdout_lines = [outputs[idx] if outputs and idx < len(outputs) else _OOM]
@@ -313,8 +314,9 @@ def test_a_failed_widened_pick_publishes_the_planned_card_again(monkeypatch, tmp
         (1, "CUDA error: no kernel image is available for execution on the device"),
         (-11, "Segmentation fault"),
         (1, _OOM),
+        ("stall", ""),
     ],
-    ids = ["added-card-has-no-kernels", "signal", "out-of-memory-again"],
+    ids = ["added-card-has-no-kernels", "signal", "out-of-memory-again", "health-timeout"],
 )
 def test_a_crashed_widened_retry_falls_back_to_the_planned_card(
     monkeypatch, tmp_path, returncode, crash
@@ -376,3 +378,23 @@ def test_a_crash_that_is_not_out_of_memory_keeps_the_planned_mask(monkeypatch, t
     )
     assert len(launches) == 2
     assert _mask(launches[1]) == "0"
+
+
+def test_the_widened_attempt_records_no_scheduler_abort(monkeypatch, tmp_path):
+    # A scheduler assert on the two-card attempt says nothing about the planned card; only
+    # its own retry decides what Studio remembers for the next load.
+    recorded = []
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_record_sched_reserve_abort",
+        staticmethod(lambda *a, **k: recorded.append(a)),
+    )
+    _backend, launches, error = _load(
+        monkeypatch,
+        tmp_path,
+        returncodes = [1, -6, 1],
+        outputs = [_OOM, "GGML_ASSERT(*cur_backend_id != -1) failed", _OOM],
+    )
+    assert error is not None
+    assert [_mask(launch) for launch in launches[:3]] == ["0", "0,1", "0"]
+    assert recorded == []

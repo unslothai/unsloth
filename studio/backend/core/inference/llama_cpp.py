@@ -33729,8 +33729,8 @@ class LlamaCppBackend:
                     retry without the MoE expert cache, and one --fit recovery.
                     Separate flags, so a library mix does not spend the fit slot
                     and a VRAM crash after the correction can still fit-retry. A
-                    widened --fit recovery that crashes gets one more launch on the
-                    planned cards.
+                    widened --fit recovery that does not come up gets one more launch
+                    on the planned cards.
                     """
                     # _mem_host_resident too: the --fit on retry re-arms the
                     # page-lock and writes it back, which without this makes the
@@ -34142,6 +34142,20 @@ class LlamaCppBackend:
                         # captured settings while a crashed child leaves is_active false.
                         # Here rather than per rung, so a later rung cannot forget it.
                         self._memory_pending_launch = _mem_settings
+                        if _fit_retry_restore is not None:
+                            # The widened launch is an extra attempt: whatever sank it (a crash,
+                            # a card without kernels, a stall), the --fit on retry on the planned
+                            # cards runs next, before anything is read off the widened child, so
+                            # every later rung and record sees what it would without the widen.
+                            logger.warning(
+                                "The --fit on retry over GPUs %s did not come up; retrying "
+                                "once with --fit on over the planned GPU(s). Log: %s",
+                                list(_child_gpu_physical_ids or ()),
+                                self._llama_log_path,
+                            )
+                            _restore_fit_retry_mask()
+                            _fit_retry_pool = None
+                            continue
                         # Read once, like the wait itself: a cleared reference is a
                         # teardown, not a startup crash, and re-reading the
                         # attribute per term would race the shutdown thread again.
@@ -34171,22 +34185,6 @@ class LlamaCppBackend:
                         _capability_crash = _capability_crash or (
                             self._cuda_kernel_image_error("\n".join(self._stdout_lines)) is not None
                         )
-                        if _fit_retry_restore is not None and _startup_crashed:
-                            # The widened launch is an extra attempt: whatever sank it (a
-                            # card without kernels, a fitter misjudgment), the --fit on retry
-                            # on the planned cards runs next, and every rung after it sees
-                            # what it would have seen without the widen.
-                            logger.warning(
-                                "The --fit on retry over GPUs %s crashed during startup "
-                                "(exit code %s); retrying once with --fit on over the "
-                                "planned GPU(s). Crash log: %s",
-                                list(_child_gpu_physical_ids or ()),
-                                _crashed_proc.returncode,
-                                self._llama_log_path,
-                            )
-                            _restore_fit_retry_mask()
-                            _fit_retry_pool = None
-                            continue
                         if (
                             not _did_rocm_retry
                             and _startup_crashed
@@ -34444,10 +34442,7 @@ class LlamaCppBackend:
                             self._record_memory_state(run_cmd, env)
                             _ctx_halvings += 1
                             continue
-                        _restore_fit_retry_mask()
                         return False
-                    _restore_fit_retry_mask()
-                    return False
 
                 _launched_mmproj_has_audio = self._mmproj_has_audio
 
