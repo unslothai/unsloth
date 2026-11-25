@@ -3107,8 +3107,6 @@ def test_block_rebinds_hooked_layers_of_a_second_model(monkeypatch):
 
 
 def test_mask_rebuilt_in_inference_mode_is_safe_for_training():
-    # generate() runs under inference_mode; the shared rebuilt mask is reused by the next training step,
-    # where a hybrid model multiplies padding states by the 2D mask (autograd saves it for backward).
     M = _load()
     M._MATERIALISED[0] = None
     layer = _MaskDecoderLayer().train()

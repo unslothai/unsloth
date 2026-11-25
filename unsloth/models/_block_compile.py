@@ -2123,8 +2123,7 @@ def _materialise_mask(layout, causal, batch, seq_len, device):
     if dim == 4 and causal and (2 in broadcast or 3 in broadcast):
         # A causal mask needs both token dims stored; a broadcast one (padding-only layout) keeps None.
         return None
-    # Built as a normal tensor even inside generate()'s inference_mode: the cached mask is reused by later
-    # training steps, where autograd may save it (a 2D mask multiplies padding states in hybrid models).
+    # Not an inference tensor: training reuses the cache and autograd may save it (hybrid padding multiply).
     with torch.inference_mode(False), torch.no_grad():
         if dim == 4 and causal:
             # A fresh tensor in the stored shape (contiguous() keeps a (1, 1, L, L) expand as a view of the 2D base).
