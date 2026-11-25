@@ -112,6 +112,23 @@ def _rl(q):
     return q.trainer in ("dpo", "grpo", "other_rl")
 
 
+# MoE families whose router auxiliary loss Ulysses cp forms from statistics summed over the cp group
+# (context_parallel._cp_load_balancing_loss; UNSLOTH_CP_ROUTER_AUX=0 turns it off and refuses again).
+CP_ROUTER_AUX_FAMILIES = ("qwen3_moe",)
+
+
+def _cp_router_aux_formed(q) -> bool:
+    import os
+    return (
+        os.environ.get("UNSLOTH_CP_ROUTER_AUX", "1") != "0"
+        and q.trainer == "sft"
+        and q.family in CP_ROUTER_AUX_FAMILIES
+        and q.cp_backend == "ulysses"
+        and q.tp == 1
+        and q.pp == 1
+    )
+
+
 RULES = (
     Rule(
         "cp x pp",
@@ -257,7 +274,7 @@ RULES = (
     Rule(
         "MoE x pp / cp",
         "the MoE router auxiliary loss (output_router_logits) under context parallel",
-        lambda q: q.moe and q.router_aux_loss and q.cp > 1,
+        lambda q: q.moe and q.router_aux_loss and q.cp > 1 and not _cp_router_aux_formed(q),
         "the load balancing loss is a product of whole-batch means; per shard pieces would be summed wrong "
         "(pipeline parallel carries the router statistics between stages, context parallel does not yet). "
         "TRL's SFTTrainer turns it on from the architecture's router_aux_loss_coef by default",
@@ -955,6 +972,12 @@ _MOE_COMPILE = _GLOO + "test_moe_block_compile_under_cp_is_compile_clean"
 _MOE_CP_GC = "test_moe_under_cp_with_unsloth_checkpointing_matches_one_process"
 _MOE_CP_GC_COMPILE = "test_moe_block_compile_under_cp_with_unsloth_checkpointing_is_compile_clean"
 _MOE_PP = "tests/test_pp_moe_aux_gloo.py::test_pp2_moe_aux_matches_gradient_accumulation"
+# Router aux loss on under Ulysses cp: statistics summed over the cp group (context_parallel._cp_load_balancing_loss).
+_MOE_CP_AUX = "tests/test_cp_router_aux_gloo.py::test_router_aux_loss_under_cp_matches_one_process"
+_MOE_CP_AUX_GC = (
+    "lora+experts",
+    "cp",
+)  # the aux row that also ran Unsloth's (non-reentrant) checkpoint
 # Native DeepSeek-V4.1 (no router aux): cut where no group state crosses, engram tables on the owning stage.
 _DSV41_PP = (
     "tests/test_parallel_deepseek_v41_gloo.py::test_deepseek_v41_parallel_matches_one_process"
@@ -1066,6 +1089,16 @@ _MOE_EVIDENCE = {
     + ("eager: no compiled region",),
     ("qwen3_moe", "full", False, "cp"): (_MOE_TEST + "[full-cp2]",) * 2
     + (_MOE_COMPILE + "[full]",),
+    ("qwen3_moe", "lora+experts", True, "cp"): (
+        _MOE_CP_AUX
+        + "[lora-cp2|lora-cp2-right_pad|lora-cp2-empty_shard|lora-cp2-cp_pad|lora-dp2_cp2-right_pad]",
+    )
+    * 2
+    + ("eager: no compiled region",),
+    ("qwen3_moe", "lora+experts", True, "fsdp2_cp"): (_MOE_CP_AUX + "[lora-fsdp2_cp2]",) * 2
+    + ("eager: no compiled region",),
+    ("qwen3_moe", "full", True, "cp"): (_MOE_CP_AUX + "[full-cp2-right_pad]",) * 2
+    + ("eager: no compiled region",),
     ("qwen3_moe", "lora+experts", True, "ddp"): (_MOE_AUX_TEST,) * 2
     + ("eager: no compiled region",),
     ("qwen3_moe", "lora+experts", True, "fsdp2"): (_MOE_AUX_TEST,) * 2
@@ -1182,8 +1215,13 @@ def _moe_note(family, precision, aux, mode):
         if family in _TP_BLOCKED_FAMILIES:
             return f"refused by the tp x model rule (models/tp_native.py: {_TP_BLOCKED_FAMILIES[family]})"
         return "tensor parallel MoE runs (models/tp_native.py, its own gloo tests); no registry parity row yet"
-    if aux and mode == "cp":
-        return "refused by the MoE x pp / cp rule (aux-loss injection first)"
+    if aux and mode in ("cp", "fsdp2_cp"):
+        if family in CP_ROUTER_AUX_FAMILIES:
+            return "no gloo parity run for this precision with the router aux loss on under cp yet"
+        return (
+            "refused by the MoE x pp / cp rule: cp forms the router aux loss from summed statistics only for "
+            + ", ".join(CP_ROUTER_AUX_FAMILIES)
+        )
     if mode == "pp":
         if family == "gpt_oss" and aux:
             return (
@@ -1249,7 +1287,21 @@ def _moe_cells():
                         if text_only:
                             match = {**match, "multimodal": (False,)}
                         note = compiled_note = ""
-                        if mode in ("cp", "fsdp2_cp") and family in _MOE_UNSLOTH_GC_FAMILIES:
+                        if mode in ("cp", "fsdp2_cp") and aux:
+                            # HF checkpointing did not run with the aux loss under cp; Unsloth's did for one row.
+                            gc = (precision, mode) == _MOE_CP_AUX_GC
+                            match = {
+                                **match,
+                                "memory": ("none", "unsloth_offload") if gc else ("none",),
+                            }
+                            if gc:
+                                note = (
+                                    _MOE_CP_AUX
+                                    + "[lora-cp2-unsloth_nonre_gc] (Unsloth checkpoints MoE models "
+                                    "with the aux loss on non-reentrantly; reentrant checkpointing is refused at "
+                                    "the first forward)"
+                                )
+                        elif mode in ("cp", "fsdp2_cp") and family in _MOE_UNSLOTH_GC_FAMILIES:
                             match = {**match, "memory": _WITH_UNSLOTH_GC}
                             case = f"{precision.split('+')[0]}-{mode}2"  # lora-cp2, lora-fsdp2_cp2, full-cp2
                             note = (

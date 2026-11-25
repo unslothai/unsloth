@@ -132,6 +132,23 @@ def _packed_row(batch, kind, row):
     }
 
 
+# Right padded rows (attention_mask, pad labels -100): "right" leaves every cp 2 shard some real tokens, "short"
+# leaves none in the second half of the batch (one shard without a valid token); "odd" drops the last column, so
+# context parallel appends a token to reach the cp multiple (no attention_mask: only the appended one is padding).
+_PAD_LENGTHS = {"right": (16, 11, 7, 13, 9, 16, 12, 5), "short": (6, 8, 5, 3, 7, 2, 8, 4)}
+
+
+def _padded_rows(batch, kind, rows):
+    if kind == "odd":
+        return {k: v[:, : SEQ - 1].contiguous() for k, v in batch.items()}
+    lengths = torch.tensor([_PAD_LENGTHS[kind][r % len(_PAD_LENGTHS[kind])] for r in rows])
+    keep = torch.arange(SEQ)[None] < lengths[:, None]
+    batch["input_ids"] = batch["input_ids"].masked_fill(~keep, 0)
+    batch["labels"] = batch["labels"].masked_fill(~keep, -100)
+    batch["attention_mask"] = keep.long()
+    return batch
+
+
 def _packed_oracle(model, batch):
     """The one-process reference itself keeps documents apart: each document's logits in the packed row equal
     the same document alone (eager, so no compiled graph is added to the reference's counters)."""
@@ -374,6 +391,8 @@ def _case_train(
     gc = "none",
     packed = None,
     eval_only = False,
+    padding = None,
+    hf_loss = False,
 ):
     error = _import_checkout_unsloth()
     if error is not None:
@@ -528,11 +547,18 @@ def _case_train(
             batch["attention_mask"] = torch.ones_like(input_ids)
         if packed:
             batch.update(_packed_row(batch, packed, int(rows[0]["row"])))
+        if padding:
+            batch = _padded_rows(batch, padding, [int(r["row"]) for r in rows])
         return batch
 
     class SequentialSFT(trl.SFTTrainer):
         def _get_train_sampler(self, *args, **kwargs):
             return torch.utils.data.SequentialSampler(self.train_dataset)
+
+    if hf_loss:
+        # The GPU route: Unsloth's SFT compute_loss hands nll to Trainer.compute_loss, so the model forward
+        # adds the router aux loss to its own loss.
+        SequentialSFT.compute_loss = transformers.Trainer.compute_loss
 
     grads, query = {}, None
 
@@ -708,6 +734,15 @@ def _case_train(
         if world == 1:
             oracle = _packed_oracle(trainer.model, collate([data[0]]))
             rows_read.clear()  # the oracle's row is not a training micro-batch
+    aux_calls = []
+    if cp > 1:
+        original_stats = pp_native._router_statistics
+
+        def counted_stats(*a, **k):
+            aux_calls.append(1)
+            return original_stats(*a, **k)
+
+        pp_native._router_statistics = counted_stats
     torch._dynamo.reset()
     before = compile_counters.snapshot()
     if packed:
@@ -781,6 +816,16 @@ def _case_train(
         "exchanges": exchanges,
         "n_layers": int(trainer.model.config.num_hidden_layers),
         "gdn_calls": len(gdn_calls),
+        "cp_aux_calls": len(aux_calls),
+        "aux_scaler": any(
+            "unsloth_ga_scale_aux_loss" in fn.__code__.co_names
+            for m in trainer.model.modules()
+            if "router_aux_loss_coef" in vars(m)
+            for fn in cpm._forward_functions(m)
+        )
+        if hasattr(cpm, "_forward_functions")
+        else None,
+        "router_aux_scale": getattr(manager, "router_aux_scale", None),
     }
     if dist.is_initialized():
         dist.barrier()
@@ -1426,9 +1471,18 @@ def test_moe_block_compile_under_cp_is_compile_clean(mode):
     "config_flag", [True, False], ids = ["output_router_logits", "trl_default_coef"]
 )
 def test_moe_with_router_aux_loss_under_cp_is_refused(config_flag):
-    """Refused before the split, also when only TRL's default router_aux_loss_coef would turn the loss on."""
+    """With UNSLOTH_CP_ROUTER_AUX=0 (cp does not form the loss over the group): refused before the split, also
+    when only TRL's default router_aux_loss_coef would turn the loss on. The loss formed over the cp group:
+    tests/test_cp_router_aux_gloo.py."""
     for res in _spawn(
-        "train", 2, bs = 2, cp = 2, arch = "qwen3_moe", router_aux = config_flag, trl_aux = True
+        "train",
+        2,
+        {"UNSLOTH_CP_ROUTER_AUX": "0"},
+        bs = 2,
+        cp = 2,
+        arch = "qwen3_moe",
+        router_aux = config_flag,
+        trl_aux = True,
     ):
         error = res.get("error") or ""
         assert "MoE x pp / cp" in error and "router_aux_loss_coef = 0.0" in error, (

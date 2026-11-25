@@ -441,7 +441,7 @@ def _hybrid_config_blocker(model) -> Optional[str]:
     config = getattr(model, "config", None)
     # vision_config is allowed (Qwen3.5 ships one); image / video batches are refused in _prepare_inputs.
     text_config = getattr(config, "text_config", None) or config
-    if getattr(text_config, "output_router_logits", False):
+    if getattr(text_config, "output_router_logits", False) and _cp_router_aux_target(model) is None:
         # The load balancing loss is a product of per-sequence means, not a sum over shards.
         return "the MoE router auxiliary loss (output_router_logits)"
     if any(
@@ -452,6 +452,195 @@ def _hybrid_config_blocker(model) -> Optional[str]:
         # find_unused_parameters off an expert unused on one rank stalls the gradient reduction.
         return "sparse MoE layers with per-expert modules (transformers 4.x Qwen3-Next)"
     return None
+
+
+# MoE families (parallel_capabilities.CP_ROUTER_AUX_FAMILIES) whose CausalLM forward adds transformers'
+# load_balancing_loss_func and whose cp run matches one process with it on (tests/test_cp_router_aux_gloo.py).
+# Under context parallel each rank sees its shard's router logits only; _cp_load_balancing_loss forms the loss
+# from statistics summed over the cp group instead.
+def _cp_router_aux_enabled() -> bool:
+    import os
+    return os.environ.get("UNSLOTH_CP_ROUTER_AUX", "1") != "0"
+
+
+def _causal_lm(model):
+    # The module whose forward adds the router auxiliary loss, under PEFT / DDP / compile wrapping.
+    if not isinstance(model, torch.nn.Module):
+        return None
+    for module in model.modules():
+        if "router_aux_loss_coef" in vars(module):
+            return module
+    return None
+
+
+def _forward_functions(owner):
+    """The installed forward of `owner`, the functions it wraps, and the module-level *_forward it calls (Unsloth
+    Zoo's compiled CausalLM forward delegates to `<Class>_forward`)."""
+    found, todo = (
+        [],
+        [(owner.__dict__.get("forward"), 1), (getattr(type(owner), "forward", None), 1)],
+    )
+    while todo:
+        fn, depth = todo.pop(0)
+        for _ in range(8):
+            fn = getattr(fn, "__func__", fn)
+            code = getattr(fn, "__code__", None)
+            if code is None:
+                break
+            if fn not in found:
+                found.append(fn)
+                scope = getattr(fn, "__globals__", None) or {}
+                if depth > 0:
+                    todo.extend(
+                        (scope[name], depth - 1)
+                        for name in code.co_names
+                        if name.endswith("_forward") and callable(scope.get(name))
+                    )
+            fn = getattr(fn, "__wrapped__", None)
+    return found
+
+
+def _forward_globals(owner):
+    # The globals the CausalLM forward resolves load_balancing_loss_func in (a zoo rewrite compiles its own;
+    # TRL's fused-head forward names it without defining it there, and leaves the aux loss to the original).
+    for fn in _forward_functions(owner):
+        if "load_balancing_loss_func" in fn.__code__.co_names and callable(
+            fn.__globals__.get("load_balancing_loss_func")
+        ):
+            return fn.__globals__
+    return None
+
+
+def _cp_router_aux_target(model):
+    """(globals, original load_balancing_loss_func) the model's CausalLM forward calls, for a family in
+    _CP_ROUTER_AUX_FAMILIES whose function is the statistics form (pp_native's check); else None."""
+    if not _cp_router_aux_enabled():
+        return None
+    inner = _causal_lm(model)
+    config = getattr(inner, "config", None)
+    text = getattr(config, "text_config", None) or config
+    family = str(getattr(text, "model_type", "") or "").removesuffix("_text")
+    from .parallel_capabilities import CP_ROUTER_AUX_FAMILIES
+
+    if inner is None or family not in CP_ROUTER_AUX_FAMILIES:
+        return None
+    scope = _forward_globals(inner)
+    if scope is None:
+        return None
+    original = scope.get("load_balancing_loss_func")
+    original = getattr(original, "_unsloth_cp_original", original)
+    num_experts = getattr(inner, "num_experts", None)
+    top_k = getattr(inner, "num_experts_per_tok", None)
+    if not callable(original) or not isinstance(num_experts, int) or not isinstance(top_k, int):
+        return None
+    from .models.pp_native import _statistics_match_transformers
+
+    if not _statistics_match_transformers(None, num_experts, top_k, reference = original):
+        return None
+    return scope, original
+
+
+class _SumOverGroup(torch.autograd.Function):
+    """All-reduce (sum) whose backward sums the incoming gradients too: every cp peer forms the same loss from
+    the summed statistics, so each shard's probabilities receive the gradient of all peers' terms."""
+
+    @staticmethod
+    def forward(ctx, x, group):
+        ctx.group = group
+        out = x.detach().clone()
+        dist.all_reduce(out, group = group)
+        return out
+
+    @staticmethod
+    def backward(ctx, grad):
+        grad = grad.contiguous().clone()
+        dist.all_reduce(grad, group = ctx.group)
+        return grad, None
+
+
+def _cp_load_balancing_loss(original):
+    @functools.wraps(original)
+    def load_balancing_loss_func(
+        gate_logits,
+        num_experts = None,
+        top_k = 2,
+        attention_mask = None,
+    ):
+        manager = _ACTIVE_MANAGER
+        scale = getattr(manager, "router_aux_scale", None)
+        if (
+            scale is None
+            or manager.size <= 1
+            or not isinstance(gate_logits, tuple)
+            or not gate_logits
+        ):
+            return original(gate_logits, num_experts, top_k, attention_mask)
+        from .models.pp_native import _load_balancing_from_statistics, _router_statistics
+
+        if torch.is_grad_enabled() and not any(g.requires_grad for g in gate_logits):
+            # Reentrant checkpointing runs the layers under no_grad: the loss would add a value but no gradient.
+            raise ValueError(
+                "Unsloth: context parallelism forms the router auxiliary loss over the cp group only with "
+                "gradient checkpointing off, Unsloth's checkpointing (use_gradient_checkpointing = 'unsloth', "
+                "which checkpoints MoE models non-reentrantly) or gradient_checkpointing_kwargs = "
+                "{'use_reentrant': False}; reentrant checkpointing would drop its gradient. Or train without "
+                "the auxiliary loss (router_aux_loss_coef = 0.0 in SFTConfig)."
+            )
+        rows = gate_logits[0].shape[0]
+        if attention_mask is not None and (
+            not isinstance(attention_mask, torch.Tensor)
+            or attention_mask.dim() != 2
+            or attention_mask.numel() != rows
+        ):
+            raise ValueError(
+                "Unsloth: context parallelism forms the router auxiliary loss from a 2-D [batch, seq] attention "
+                f"mask of the shard's {rows} tokens, got "
+                f"{tuple(attention_mask.shape) if isinstance(attention_mask, torch.Tensor) else type(attention_mask).__name__}."
+            )
+        # The tokens context parallel appended to reach the cp multiple are not in the one-process batch.
+        real = manager.real_token_mask(rows)
+        mask = None if attention_mask is None else attention_mask.reshape(1, -1).ne(0)
+        if real is not None:
+            real = real.reshape(1, -1).to(gate_logits[0].device)
+            mask = real if mask is None else mask.to(real.device) & real
+        stats = _router_statistics(gate_logits, num_experts, top_k, mask)
+        stats = _SumOverGroup.apply(stats, manager.mesh.get_group())
+        return _load_balancing_from_statistics(stats, num_experts) * scale
+
+    load_balancing_loss_func._unsloth_cp_original = original
+    return load_balancing_loss_func
+
+
+def _router_aux_scale(trainer, size: int) -> float:
+    """Every cp peer returns the whole group's loss (summed backward). Zoo's rewritten forward scales it by the
+    shard's share of the token count, and stock TRL >= 1.15 (the CPU route) adds it outside the token loss the
+    trainer multiplies by the world size: either way the peers' terms average to one process. A plain forward
+    adds it inside that multiplied loss, which would count it once per peer: divide by the cp size there."""
+    from .models.pp_env import _compute_loss_adds_router_aux
+
+    inner = _causal_lm(getattr(trainer, "model", None))
+    if inner is not None and any(
+        "unsloth_ga_scale_aux_loss" in fn.__code__.co_names for fn in _forward_functions(inner)
+    ):
+        return 1.0
+    compute_loss = getattr(type(trainer), "compute_loss", None)
+    if getattr(compute_loss, "_unsloth_cpu", False) and _compute_loss_adds_router_aux(compute_loss):
+        return 1.0
+    return 1.0 / size
+
+
+def _install_cp_router_aux(trainer, manager) -> None:
+    """Under Ulysses cp, a family in _CP_ROUTER_AUX_FAMILIES forms the router auxiliary loss from statistics summed
+    over the cp group (equal to one process on the whole batch); nothing for other runs."""
+    if not getattr(trainer, "_unsloth_cp_router_aux", False):
+        return
+    target = _cp_router_aux_target(getattr(trainer, "model", None))
+    if target is None or manager.backend != "ulysses":
+        raise RuntimeError("Unsloth: the context parallel router auxiliary loss lost its target.")
+    scope, original = target
+    if getattr(scope.get("load_balancing_loss_func"), "_unsloth_cp_original", None) is not original:
+        scope["load_balancing_loss_func"] = _cp_load_balancing_loss(original)
+    manager.router_aux_scale = _router_aux_scale(trainer, manager.size)
 
 
 def _runs_every_expert(block) -> bool:
@@ -731,6 +920,9 @@ def _decoder_layer_pre_forward_hook(_module, module_args, module_kwargs):
 class ContextParallelManager:
     backend = "ring"
     rotate_method = "allgather"
+    router_aux_scale = (
+        None  # set by _install_cp_router_aux: the router aux loss is formed over the cp group
+    )
 
     def __init__(
         self,
@@ -863,7 +1055,7 @@ class ContextParallelManager:
                 raise ValueError(
                     f"Unsloth: packed_seq_lengths sum to {used} but the packed row has {seq_len} tokens."
                 )
-        if inputs.get("output_router_logits"):
+        if inputs.get("output_router_logits") and getattr(self, "router_aux_scale", None) is None:
             raise ValueError(
                 "Unsloth: context parallelism does not support the MoE router auxiliary loss "
                 "(output_router_logits): it is a product of per-sequence means, not a sum over shards."
@@ -1678,20 +1870,37 @@ def _check_native_fsdp2_reduces_over_cp(model, manager) -> None:
         )
 
 
-def _refuse_router_aux_loss_after_init(trainer, size: int) -> None:
+def _refuse_router_aux_loss_after_init(
+    trainer,
+    size: int,
+    backend: Optional[str] = None,
+    rl: bool = False,
+) -> None:
     """TRL's SFTTrainer / DPOTrainer set output_router_logits on the config inside their __init__ (from the
     architecture's router_aux_loss_coef unless router_aux_loss_coef = 0.0). A load balancing loss computed per
-    sequence shard is not the one-process objective; this catches what the pre-init registry check predicted."""
+    sequence shard is not the one-process objective; this catches what the pre-init registry check predicted.
+    SFT on a family _cp_load_balancing_loss covers under Ulysses (no tp / pp) is marked for it instead."""
     from .parallel_capabilities import Query, _moe, check
 
-    moe, aux = _moe(getattr(trainer, "model", None))
+    model = getattr(trainer, "model", None)
+    moe, aux = _moe(model)
     # DPO passes output_router_logits per forward instead of writing the config: read the trainer's switch too.
     aux = aux or bool(getattr(trainer, "aux_loss_enabled", False))
-    if moe and aux:
-        check(
-            Query(trainer = "sft", moe = True, router_aux_loss = True, cp = size, torch = (99, 0)),
-            cells = False,
-        )
+    if not (moe and aux):
+        return
+    layout = _composed_layout(size)
+    if (
+        not rl
+        and backend == "ulysses"
+        and (layout is None or (layout.tp == 1 and layout.pp == 1))
+        and _cp_router_aux_target(model) is not None
+    ):
+        trainer._unsloth_cp_router_aux = True
+        return
+    check(
+        Query(trainer = "sft", moe = True, router_aux_loss = True, cp = size, torch = (99, 0)),
+        cells = False,
+    )
 
 
 def _check_cp_runtime(self, size: int, backend: str) -> None:
@@ -2016,7 +2225,7 @@ def patch_sft_trainer(install_cp_methods: bool = False) -> None:
                 _unbind_instance_methods(self)
             return
         _check_cp_runtime(self, size, backend)
-        _refuse_router_aux_loss_after_init(self, size)
+        _refuse_router_aux_loss_after_init(self, size, backend)
         # These recompute loss outside our forward from sharded labels, losing cross-shard targets.
         if (
             getattr(self.args, "label_smoothing_factor", 0)
@@ -2063,6 +2272,7 @@ def patch_sft_trainer(install_cp_methods: bool = False) -> None:
             **({"layout": layout} if layout is not None else {}),
         )
         _check_native_fsdp2_reduces_over_cp(self.model, manager)
+        _install_cp_router_aux(self, manager)
         self._context_parallel_manager = manager
         if "_unsloth_cp_bound_methods" not in self.__dict__:
             _bind_instance_methods(self, cp_methods)
@@ -3065,7 +3275,7 @@ def patch_rl_trainer(trainer_cls, kind: str) -> None:
                 "Unsloth: DPO / GRPO context parallelism needs context_parallel_backend = 'ulysses'."
             )
         _check_cp_runtime(self, size, backend)
-        _refuse_router_aux_loss_after_init(self, size)
+        _refuse_router_aux_loss_after_init(self, size, backend, rl = True)
         _check_rl_config(self, kind)
         ref_model = getattr(self, "ref_model", None)
         _check_cp_trainer(self, size, backend, [self.model, ref_model])
