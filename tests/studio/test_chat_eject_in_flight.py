@@ -13,15 +13,18 @@ HOOK = source_path("studio/frontend/src/features/chat/hooks/use-chat-model-runti
 
 HARNESS = """
 // @ts-nocheck
-export const world: any = { toasts: [], unloads: 0 };
+export const world: any = { toasts: [], unloads: 0, errors: [] };
 
 let phase: string | null = null;
 const chatModelLifecycleGate = { currentPhase: () => phase };
 const checkpoint = "org/model";
-function setModelsError(_message: string | null): void {}
+// The hook's catch reports through here: a stub the body needs but this harness lacks lands as an error.
+function setModelsError(message: string | null): void { if (message) world.errors.push(message); }
 function clearCheckpoint(): void {}
 async function refresh(): Promise<void> {}
 function isExternalModelId(_id: string): boolean { return false; }
+// Module-level in the hook: the model the eject targets, resolved once per click.
+function servedSelection(): string { return checkpoint; }
 function stopQueuedRuns(_decision: unknown, _scoped: boolean): void {}
 function requestLocalPromptQueueStop(): void {}
 async function unloadModel(_payload: unknown): Promise<void> { world.unloads += 1; }
@@ -82,11 +85,12 @@ def test_eject_toasts_before_the_check_and_refuses_a_second_click_as_unloading()
             const second = await ejectModel();
             releaseCheck();
             console.log(JSON.stringify({ beforeCheck, second, first: await first,
-              toasts: world.toasts, unloads: world.unloads }));
+              toasts: world.toasts, unloads: world.unloads, errors: world.errors }));
             """
         ),
         sources = (),
     )
+    assert out["errors"] == [], "the eject body threw inside the harness"
     assert out["beforeCheck"] == [["loading", "Unloading model"]]
     assert out["second"] is False
     assert ["info", "Wait for the model to finish unloading."] in out["toasts"]

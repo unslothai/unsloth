@@ -7,8 +7,11 @@ other parameter types left to the stock hook"""
 from __future__ import annotations
 
 import ctypes
+import logging
 import os
+import sys
 import threading
+import time
 import weakref
 from typing import Any, Optional
 
@@ -134,6 +137,44 @@ def _check(rc: int, what: str) -> None:
         raise RuntimeError(f"{what} failed (CUresult {rc})")
 
 
+# cuMemSetAccess right after cuMemMap can return CUDA_ERROR_NOT_READY on Windows (WDDM) while the OS video memory
+# manager is still paging the new allocation in. Unmapping and releasing it at that moment tears down an allocation
+# the OS paging thread may still be touching, so the transient code is retried with a 1, 2, 4, 8, 16, 16, ... ms
+# backoff until _NOT_READY_MAX_WAIT_S of monotonic time has elapsed (sleep overshoot and time inside the driver call
+# count) before the caller unmaps as it does for any other failure.
+_CUDA_ERROR_NOT_READY = 600
+_NOT_READY_MAX_WAIT_S = 2.0
+_NOT_READY_MAX_DELAY_S = 0.016
+
+
+def _retries_not_ready() -> bool:
+    return sys.platform == "win32"
+
+
+def _set_access_settled(lib: Any, va: int, size: int, access: "_AccessDesc") -> int:
+    """``cuMemSetAccess`` for one device, retrying only CUDA_ERROR_NOT_READY and only on Windows; returns the final
+    CUresult (any other code, or NOT_READY elsewhere, is returned from the first call unchanged)."""
+    rc = lib.cuMemSetAccess(va, size, ctypes.byref(access), 1)
+    if rc != _CUDA_ERROR_NOT_READY or not _retries_not_ready():
+        return rc
+    start = time.monotonic()
+    delay, tries = 0.001, 1
+    while rc == _CUDA_ERROR_NOT_READY and time.monotonic() - start < _NOT_READY_MAX_WAIT_S:
+        time.sleep(delay)
+        delay = min(delay * 2, _NOT_READY_MAX_DELAY_S)
+        rc = lib.cuMemSetAccess(va, size, ctypes.byref(access), 1)
+        tries += 1
+    waited = time.monotonic() - start
+    logging.getLogger(__name__).warning(
+        "cuMemSetAccess returned CUDA_ERROR_NOT_READY for a %d MiB range; waited %.0f ms over %d calls, result %d",
+        int(size) >> 20,
+        waited * 1000,
+        tries,
+        rc,
+    )
+    return rc
+
+
 def arena_disabled() -> bool:
     return (os.environ.get(ARENA_ENV) or "").strip().lower() in _OFF
 
@@ -227,22 +268,20 @@ class VmmArena:
             _check(rc, "cuMemCreate")
             try:
                 _check(lib.cuMemMap(self.va, self.size, 0, handle.value, 0), "cuMemMap")
+            except BaseException:
+                lib.cuMemRelease(handle.value)
+                raise
+            try:
                 access = _AccessDesc()
                 access.location.type = _CU_MEM_LOCATION_TYPE_DEVICE
                 access.location.id = self.device_index
                 access.flags = _CU_MEM_ACCESS_FLAGS_PROT_READWRITE
-                rc = lib.cuMemSetAccess(self.va, self.size, ctypes.byref(access), 1)
-                if rc != 0:
-                    lib.cuMemUnmap(self.va, self.size)
-                    _check(rc, "cuMemSetAccess")
-            except Exception:
-                lib.cuMemRelease(handle.value)
-                raise
-            try:
+                _check(_set_access_settled(lib, self.va, self.size, access), "cuMemSetAccess")
                 base = torch.as_tensor(_CudaArray(self.va, self.size), device = self.device)
-            except Exception:
-                # nothing may keep the mapping a failed map() leaves no tensor over: unmap and release it, so the
-                # arena is unmapped and retryable and the caller's stock fallback holds the only copy
+            except BaseException:
+                # The range is mapped but not yet recorded in self._handle: any failure here (a driver error, an
+                # interrupt during the NOT_READY retry sleep, a failed wrap) unmaps and releases it, so the arena is
+                # unmapped and retryable and the caller's stock fallback holds the only copy.
                 lib.cuMemUnmap(self.va, self.size)
                 lib.cuMemRelease(handle.value)
                 raise

@@ -597,6 +597,35 @@ def test_trainable_token_rows_are_merged(tmp_path):
     assert torch.equal(got[others], original[others])
 
 
+def test_expert_delta_without_the_peft_019_swap_flag(tmp_path):
+    # PEFT 0.18 (Studio pins 0.18.1) has no _did_swap_in_out_features and always contracts "o r e, e r i -> e i o".
+    from peft.tuners.lora.layer import ParamWrapper
+
+    model = _export_setup(
+        tmp_path,
+        loop = False,
+        target_parameters = ["mlp.experts.gate_up_proj", "mlp.experts.down_proj"],
+    )
+    inkling2 = _inkling2()
+    wrappers = {n: m for n, m in model.named_modules() if isinstance(m, ParamWrapper)}
+    assert wrappers
+    for module in wrappers.values():
+        module.__dict__.pop("_did_swap_in_out_features", None)
+    deltas = inkling2._inkling2_lora_deltas(model)
+    for name, module in wrappers.items():
+        E = module.num_experts
+        A = module.lora_A["default"].weight.detach().float()
+        B = module.lora_B["default"].weight.detach().float()
+        expected = (
+            torch.einsum(
+                "o r e, e r i -> e i o", B.reshape(B.shape[0], -1, E), A.reshape(E, -1, A.shape[-1])
+            )
+            * module.scaling["default"]
+        )
+        got = deltas[f"{inkling2._peft_name(name)}.{module.parameter_name}"]()
+        assert torch.allclose(got, expected), name
+
+
 def test_float32_export_writes_float32_merge(tmp_path):
     # save_pretrained_merged(dtype = torch.float32) documents float32 safetensors with the merged delta unrounded;
     # the Inkling 2 writer must honour it (default stays bf16) and refuse dtypes it does not write.

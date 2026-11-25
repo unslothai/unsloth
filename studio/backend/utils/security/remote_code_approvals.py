@@ -21,6 +21,7 @@ from utils.paths import storage_roots
 from hub.services.models import account_access
 from utils.account_context import current_account_id, is_owner_context
 from utils.security.remote_code_scan import CRITICAL, SCAN_RULES_VERSION
+from utils.utils import hf_env_offline
 
 logger = get_logger(__name__)
 
@@ -48,12 +49,6 @@ def _store_path():
     if is_owner_context():
         return storage_roots.studio_root() / "security" / "remote_code_approvals.json"
     return storage_roots.account_path("security/remote_code_approvals.json")
-
-
-def _env_offline() -> bool:
-    return os.environ.get("HF_HUB_OFFLINE", "").lower() in ("1", "true", "yes") or os.environ.get(
-        "TRANSFORMERS_OFFLINE", ""
-    ).lower() in ("1", "true", "yes")
 
 
 def approval_target_key(targets) -> str:
@@ -263,7 +258,7 @@ def resolve_commit_sha(target: str, hf_token: Optional[str] = None) -> Optional[
     from utils.paths import is_local_path
 
     try:
-        if is_local_path(target) or _env_offline():
+        if is_local_path(target) or hf_env_offline():
             return None
         from huggingface_hub import HfApi
         return HfApi().model_info(target, token = hf_token).sha

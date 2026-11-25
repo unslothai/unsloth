@@ -2305,6 +2305,12 @@ if _IS_MLX:
 
 else:
     try:
+        from .import_fixes import snapshot_cudnn_sdpa_before_import as _snapshot_cudnn_sdpa
+        _snapshot_cudnn_sdpa()
+        del _snapshot_cudnn_sdpa
+    except Exception:
+        pass
+    try:
         # GPU path: load everything from _gpu_init
         from ._gpu_init import *
         from ._gpu_init import __version__
@@ -2438,6 +2444,22 @@ if not globals().get("_IS_CPU_BACKEND", True):
         from .kernels.triton_launch import sync_compile_cache_tag_to_workers as _sync_tag
         _sync_tag()
         del _sync_tag
+    except Exception:
+        pass
+
+# Last, after every import that may pull in vLLM (import_fixes.restore_cudnn_sdpa_after_import).
+if not globals().get("_IS_CPU_BACKEND", True):
+    try:
+        from .import_fixes import restore_cudnn_sdpa_after_import as _restore_cudnn_sdpa
+        _restore_cudnn_sdpa()
+        del _restore_cudnn_sdpa
+    except Exception:
+        pass
+    # Zoo's fused forward and mask patch only for models Unsloth loads or trains.
+    try:
+        from unsloth_zoo.fused_losses.forward_install import require_model_marker as _require_marker
+        _require_marker()
+        del _require_marker
     except Exception:
         pass
 

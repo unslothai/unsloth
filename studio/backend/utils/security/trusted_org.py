@@ -7,7 +7,6 @@ uncertainty, never raises; a bare name prefix is spoofable."""
 from __future__ import annotations
 
 import hashlib
-import os
 from typing import Optional
 
 from loggers import get_logger
@@ -27,12 +26,6 @@ def _token_key(hf_token: Optional[str]) -> str:
     if not hf_token:
         return ""
     return hashlib.sha256(hf_token.encode("utf-8")).hexdigest()[:12]
-
-
-def _env_offline() -> bool:
-    return os.environ.get("HF_HUB_OFFLINE", "").lower() in ("1", "true", "yes") or os.environ.get(
-        "TRANSFORMERS_OFFLINE", ""
-    ).lower() in ("1", "true", "yes")
 
 
 def is_trusted_org_repo(
@@ -55,6 +48,9 @@ def is_trusted_org_repo(
     cache_key = (name, verify_remote, _token_key(hf_token), endpoint)
     if cache_key in _verdict_cache:
         return _verdict_cache[cache_key]
+    # Hub client offline: the load reads only the cache, so trust the shape, uncached so an online lookup still verifies.
+    if verify_remote and constants.HF_HUB_OFFLINE:
+        return _evaluate(name, hf_token, False, endpoint)
 
     verdict = _evaluate(name, hf_token, verify_remote, endpoint)
     _verdict_cache[cache_key] = verdict
@@ -82,8 +78,7 @@ def _evaluate(name: str, hf_token: Optional[str], verify_remote: bool, endpoint:
     if ns is None or ns not in TRUSTED_ORGS:
         return False
 
-    # Offline: trust the shape (Hub intentionally unreachable).
-    if not verify_remote or _env_offline():
+    if not verify_remote:
         return True
 
     try:

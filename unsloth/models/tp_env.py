@@ -160,6 +160,18 @@ def tensor_parallel_env_load(fn):
     @functools.wraps(fn)
     def from_pretrained(*args, **kwargs):
         layout = env_layout()
+        if layout is None and not _DEPTH["load"]:
+            from .ep_native import ep_env_size
+            if ep_env_size() > 1:  # expert parallel (UNSLOTH_EP_SIZE): the experts load per rank
+                from .ep_native import ep_env_load
+
+                values = _bound(fn, args, kwargs)
+                four_bit = _four_bit(values, fn) and not _is_adapter(values)
+                _DEPTH["load"] += 1
+                try:
+                    return ep_env_load(fn, args, kwargs, four_bit)
+                finally:
+                    _DEPTH["load"] -= 1
         if layout is None or _DEPTH["load"]:
             return fn(*args, **kwargs)
         values = _bound(fn, args, kwargs)
@@ -180,6 +192,12 @@ def tensor_parallel_env_load(fn):
                 + "; ".join(refused)
                 + f". Unset {unset} to run this script with DDP or UNSLOTH_FSDP2=1."
             )
+        from .tp_native import refuse_hf_distributed_kwargs
+
+        # Every branch below (whole load included): Unsloth splits / shards the model after the load.
+        refuse_hf_distributed_kwargs(
+            values, what, "apply_tensor_parallel" if layout.tp > 1 else "apply_pipeline_parallel"
+        )
         from .fsdp2_load import fsdp2_sharded_load_requested
 
         if fsdp2_sharded_load_requested():
@@ -220,7 +238,11 @@ def tensor_parallel_env_load(fn):
                     *args, **kwargs
                 )  # full load; get_peft_model shards it (Params4bit included)
                 return _check_pipeline_model(out, layout) if layout.pp > 1 else out
-            from .tp_native import _sharded_from_pretrained, _tp_load_quantizing
+            from .tp_native import (
+                HFDistributedKwargsError,
+                _sharded_from_pretrained,
+                _tp_load_quantizing,
+            )
 
             try:
                 # Quantizing on load (load_in_4bit of a 16-bit checkpoint) keeps the full load unless its 4-bit
@@ -239,6 +261,8 @@ def tensor_parallel_env_load(fn):
                     }
                 ) as state:
                     out = fn(*args, **kwargs)
+            except HFDistributedKwargsError:
+                raise  # a whole load would forward the same kwarg to transformers
             except ValueError as exc:
                 if not str(exc).startswith("Unsloth:") or "sharded loading" not in str(exc):
                     raise
@@ -336,6 +360,18 @@ def tensor_parallel_env_peft(fn):
     @functools.wraps(fn)
     def get_peft_model(*args, **kwargs):
         layout = env_layout()
+        if layout is None and not _DEPTH["peft"]:
+            from .ep_native import ep_env_apply, ep_env_size
+            if ep_env_size() > 1:  # expert parallel: shard the experts once LoRA is attached
+                _DEPTH["peft"] += 1
+                try:
+                    out = fn(*args, **kwargs)
+                finally:
+                    _DEPTH["peft"] -= 1
+                model = _model_of(out)
+                if model is not None:
+                    ep_env_apply(model)
+                return out
         if layout is None or _DEPTH["peft"] or layout.tp == 1 or layout.pp > 1:
             # Under UNSLOTH_PP_SIZE tensor parallel comes after the split, at the Trainer.
             return fn(*args, **kwargs)
