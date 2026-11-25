@@ -321,9 +321,22 @@ def flux3_pipeline_class() -> type:
 
 
 def _guider_runs_both(mp: Any) -> bool:
-    """The guider runs the conditional and unconditional branch at its current step (read after ``set_state``)."""
+    """The guider runs the conditional and unconditional branch at its current step (read after ``set_state``), for
+    the whole render. A guidance interval (Fast CFG ``stop`` < 1, or a ``start`` > 0) answers False on every step: its
+    single-branch steps would call without the shared image prefix, a different whole-forward CUDA graph key from the
+    guided steps, and once a guided graph replays the sealed scope sends the new key eager for the rest of the render."""
     guider = getattr(mp, "guider", None)
-    return guider is not None and int(getattr(guider, "num_conditions", 1)) > 1
+    if guider is None or int(getattr(guider, "num_conditions", 1)) <= 1:
+        return False
+    config = getattr(guider, "config", None)
+    try:
+        start = float(getattr(config, "start", 0.0) or 0.0)
+        stop = float(
+            getattr(config, "stop", 1.0) if getattr(config, "stop", None) is not None else 1.0
+        )
+    except (TypeError, ValueError):
+        return False
+    return start <= 0.0 and stop >= 1.0
 
 
 def _reset_guider_step(mp: Any) -> None:

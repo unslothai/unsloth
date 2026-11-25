@@ -812,8 +812,72 @@ def test_facade_probe_reads_the_guider_conditions():
     from core.inference import diffusion_flux3 as f3
 
     assert f3._guider_runs_both(NS(guider = NS(num_conditions = 2)))
+    assert f3._guider_runs_both(NS(guider = NS(num_conditions = 2, config = NS(start = 0.0, stop = 1.0))))
     assert not f3._guider_runs_both(NS(guider = NS(num_conditions = 1)))
     assert not f3._guider_runs_both(NS(guider = None))
+
+
+@pytest.mark.parametrize("start, stop", [(0.0, 0.5), (0.25, 1.0)])
+def test_facade_probe_is_off_for_a_guidance_interval(start, stop):
+    """Fast CFG: the guided steps would carry the prefix and the single-branch steps not (two graph keys)."""
+    from types import SimpleNamespace as NS
+
+    from core.inference import diffusion_flux3 as f3
+
+    guider = NS(num_conditions = 2, config = NS(start = start, stop = stop))
+    assert not f3._guider_runs_both(NS(guider = guider))
+
+
+@pytest.mark.parametrize("stop", [1.0, 0.5])
+def test_fast_cfg_keeps_whole_forward_graph_replay(stop):
+    """Real tiny FLUX.3, diffusers guider and Studio's graph dispatcher (capture / replay stubbed on CPU), the probe
+    from the facade: every call replays (a capture replays too); none goes eager after a Fast CFG cutoff."""
+    from types import SimpleNamespace as NS
+
+    diffusers = pytest.importorskip("diffusers")
+    from core.inference import diffusion_cuda_graph as cg
+    from core.inference import diffusion_flux3 as f3
+
+    model = _tiny(_flux3())
+    model.__dict__["_unsloth_cond_text_only"] = True
+    assert cb.prepare(model)
+    guider = diffusers.ClassifierFreeGuidance(guidance_scale = 3.5, stop = stop)
+    mp = NS(guider = guider)
+    assert cb.begin_render(model, guided = lambda: f3._guider_runs_both(mp))
+
+    def capture_stub(a, kw, call, key):
+        value = call(*a, **kw)[0]
+        return NS(
+            last = None,
+            static = (),
+            graph = NS(replay = lambda: None),
+            out_tensors = (value,),
+            out_spec = ("l", True, [("t", 0)]),
+        )
+
+    graph = cg.GraphedForward(model, warmup = 0, call = model.forward)
+    graph.enabled = True
+    graph._capture = capture_stub
+    real_stream = cg._current_stream
+    cg._current_stream = lambda: None
+    model.forward = graph
+    cond = _inputs(False)
+    uncond = dict(cond, encoder_hidden_states = torch.randn(1, 7, 24), txt_ids = torch.zeros(7, 4))
+    calls = 0
+    try:
+        with torch.no_grad():
+            for step in range(8):
+                t = torch.tensor([0.9 - 0.1 * step])
+                guider.set_state(step = step, num_inference_steps = 8, timestep = t)
+                for kw in (cond, uncond) if guider.num_conditions > 1 else (cond,):
+                    model(**dict(kw, timestep = t))
+                    calls += 1
+    finally:
+        cg._current_stream = real_stream
+        del model.forward
+        cb.end_render(model)
+    assert graph.stats["length_eager"] == 0
+    assert graph.stats["replays"] == calls  # a capture replays too
 
 
 def test_image_prefix_under_inference_mode(monkeypatch):
