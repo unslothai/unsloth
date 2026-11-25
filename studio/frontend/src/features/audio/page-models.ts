@@ -65,7 +65,6 @@ export const PAGE_ORDER: Partial<Record<AudioWorkflowId, readonly string[]>> = {
   clone: ["Qwen3-TTS-12Hz-0.6B-Base-GGUF", "VoxCPM2-GGUF", "Chatterbox-GGUF"],
   convert: CONVERT_MODEL_ORDER,
   edit: ["DotTTS-Edit-GGUF", "Vevo2-GGUF", "FireRedAudio-GGUF"],
-  // Grouped by goal: stems, voice, restore, speakers (SEPARATION_GOAL_LABELS).
   separate: [
     "HTDemucs-GGUF",
     "BS-RoFormer-ep368-GGUF",

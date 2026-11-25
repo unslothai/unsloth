@@ -158,7 +158,6 @@ class SeparationSpec:
     """Changing overlap_option restarts the server"""
 
     overlap_option: Optional[str] = None
-    # What Separate offers it for: stems, speakers, voice (isolate) or restore (enhance, upscale).
     goal: str = "stems"
     # An s2s answer carries one top-level audio and no named outputs; its file gets this id.
     output: Optional[str] = None
@@ -379,7 +378,6 @@ def _bindings_for(
     if task == "asr":
         return {"transcribe": WorkflowBinding("asr", "transcriptions", None, ("audio",))}
     if task == "sep":
-        # A speech-to-speech filter (voice isolation, restoration) runs as s2s on the same page.
         return {"separate": WorkflowBinding(server_task or "sep", "tasks", None, ("audio",))}
     return {}
 
@@ -755,7 +753,6 @@ _RUNTIME_GATED_FAMILIES = frozenset(
         "sopro_tts",
         "xtts_v2",
         "zonos3",
-        # Separate families newer than the stem models.
         "voice_isolator",
         "sidon",
         "apollo",
@@ -2470,7 +2467,6 @@ class AudioCppModel:
             changes = VARIANT_TASKS[self.family](variant)
         model = replace(self, variant = variant, model_options = model_options, **changes)
         if model.task == "sep" and model.server_task != "s2s":
-            # The separation task takes only the track.
             return replace(model, options = (), option_hidden = {})
         options, hidden = apply_option_rules(
             model.family, _rule_text(model), model.spec_options, Path(variant.primary).name
@@ -2488,7 +2484,6 @@ def _mossformer2_variant(variant: AudioCppVariant) -> dict[str, Any]:
     return {"server_task": "sep", "separation": _SPEAKERS}
 
 
-# Families whose files run different tasks: the task and Separate goal of the file served.
 VARIANT_TASKS: dict[str, Callable[[AudioCppVariant], dict[str, Any]]] = {
     "mossformer2": _mossformer2_variant,
 }

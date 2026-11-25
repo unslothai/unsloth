@@ -88,7 +88,6 @@ export function useSeparateGeneration({
   const model = status?.active_model ?? null;
   const family = status?.audio_family ?? null;
   const separation = status?.audio_separation ?? null;
-  // Only a speech-to-speech filter takes spec options; a separation takes the track alone.
   const audioOptionSpecs = useMemo(
     () =>
       status?.audio_server_task === "s2s"

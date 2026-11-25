@@ -104,7 +104,6 @@ export function separateCpuWarning(
   if (ROFORMER_FAMILIES.has(family)) {
     return "RoFormer models are very slow on the CPU: expect minutes for a short clip. Load into GPU when you can.";
   }
-  // Only the families with a measured rate above keep the rough CPU figure.
   return Object.hasOwn(GPU_SECONDS_PER_SECOND, family)
     ? "Separating on the CPU is slower; expect about a second per second of audio."
     : "This model is slower on the CPU. Load into GPU when you can.";
@@ -127,7 +126,6 @@ export function overlapReloads(
   return (lastOverlap ?? true) !== overlap;
 }
 
-/** Copy per goal; a filter (voice, restore) saves one file, stems and speakers several. */
 const GOAL_COPY: Record<
   SeparationGoal,
   { verb: string; emptyTitle: string; oneFile: boolean }
@@ -153,12 +151,10 @@ const GOAL_COPY: Record<
 const goalCopy = (goal: SeparationGoal | null | undefined) =>
   GOAL_COPY[goal ?? "stems"];
 
-/** What a run is doing, by the loaded model's goal. */
 export function separateVerb(goal: SeparationGoal | null | undefined): string {
   return goalCopy(goal).verb;
 }
 
-/** What the results card waits for, by what the loaded model makes. */
 export function separateEmptyTitle(
   goal: SeparationGoal | null | undefined,
 ): string {

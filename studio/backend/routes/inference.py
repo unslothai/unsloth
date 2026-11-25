@@ -25902,7 +25902,6 @@ def _separation_options(body: AudioRunRequest, model_info: dict, label: str) -> 
     """The run's separation options as the policy accepts them; a refusal is a 400."""
     from core.inference.audio_cpp_models import SeparationOptionsError, separation_options
 
-    # The options Separate shows, which is what the page sends.
     offered = (model_info.get("audio_options_by_workflow") or {}).get("separate") or (
         model_info.get("audio_options") or []
     )

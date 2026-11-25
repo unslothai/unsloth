@@ -20,7 +20,6 @@ export type AudioCppTask = "tts" | "music" | "asr" | "sep";
 /** What Separate offers a model for. Mirrors SeparationSpec.goal in audio_cpp_models.py. */
 export type SeparationGoal = "stems" | "speakers" | "voice" | "restore";
 
-/** Picker descriptions and group names, in the order Separate lists them. */
 export const SEPARATION_GOAL_LABELS: Readonly<Record<SeparationGoal, string>> = {
   stems: "Split stems",
   voice: "Isolate voice",
