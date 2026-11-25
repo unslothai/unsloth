@@ -3248,7 +3248,8 @@ class FastSentenceTransformer(FastModel):
         layers_to_transform = None,
         layers_pattern = None,
         use_gradient_checkpointing = False,  # Changed default: conflicts with torch.compile
-        random_state = 3407,
+        # None keeps the caller's RNG (#14327); pass an int for a fixed LoRA init.
+        random_state = None,
         max_seq_length = 2048,
         use_rslora = False,
         use_dora = False,
@@ -3345,12 +3346,10 @@ class FastSentenceTransformer(FastModel):
                                     f"Unsloth Warning: {inner_model.__class__.__name__} does not support gradient checkpointing. Skipping."
                                 )
 
-                # Seed the adapter init like FastModel.get_peft_model: random_state was ignored on this
-                # path, so the LoRA matrices depended on whatever ran before, and every torchrun rank
-                # drew its own.
-                from transformers import set_seed as transformers_set_seed
-
-                transformers_set_seed(random_state)
+                # Seed the adapter init like FastModel.get_peft_model; None keeps the caller's RNG (#14327).
+                if random_state is not None:
+                    from transformers import set_seed as transformers_set_seed
+                    transformers_set_seed(random_state)
                 lora_options = inspect.signature(LoraConfig).parameters
                 lora_config = LoraConfig(
                     r = r,
