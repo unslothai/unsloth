@@ -129,5 +129,12 @@ def test_many_backtick_runs_still_read(page):
     assert text.endswith("(more below: use browser_scroll, browser_find, or a snapshot ref)")
 
 
+def test_spacing_between_inline_elements_does_not_cut_early(page):
+    items = "".join(f"<span> w{i:04d} </span> " for i in range(1200))
+    text = page(f"<p>{items}</p>")
+    assert "w1199" in text
+    assert "more below" not in text
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q", "--confcutdir", str(Path(__file__).parent)]))

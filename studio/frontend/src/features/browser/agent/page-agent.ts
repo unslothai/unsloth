@@ -392,10 +392,15 @@ export function installPageAgent(): PageAgent {
     let overflow = false;
     // Tracked apart: endsWith on a long concatenated buffer flattens it every line (quadratic).
     let lineOpen = false;
+    // Length after flush collapses whitespace, so the stop below never cuts text that fits.
+    let bufferChars = 0;
+    let spaceEnd = true;
     const add = (text: string) => {
       if (!text) return;
       buffer += text;
       lineOpen = !text.endsWith("\n");
+      bufferChars += text.length - (spaceEnd && /^\s/.test(text) ? 1 : 0);
+      spaceEnd = /\s$/.test(text);
     };
     let inPre = 0;
     const push = (line: string) => {
@@ -429,6 +434,8 @@ export function installPageAgent(): PageAgent {
       // A link inside code splits it; the rest is still code.
       bufferCode = code && inPre > 0;
       lineOpen = false;
+      bufferChars = 0;
+      spaceEnd = true;
     };
     const walk = (el: Element) => {
       if (cut) return;
@@ -491,7 +498,7 @@ export function installPageAgent(): PageAgent {
       for (const node of children) {
         // Already past what fits: the rest would be cut, so the final flush ends the read.
         if (cut || overflow) return;
-        if (bufferShown && buffer.length > budget - used) {
+        if (bufferShown && bufferChars > budget - used) {
           overflow = true;
           return;
         }
