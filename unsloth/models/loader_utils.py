@@ -11,6 +11,7 @@
 
 from ..device_type import DEVICE_TYPE_TORCH, clean_gpu_cache
 from ..fsdp2_launch import fsdp_version_from_env
+from ._cache_kwarg import get_cache_kwarg
 import hashlib
 import importlib
 import os
@@ -3701,7 +3702,7 @@ def _checkpointed_layer_forward(original):
             or not torch.is_grad_enabled()
             # A cache would be written a second time by the recompute.
             or kwargs.get("past_key_value") is not None
-            or kwargs.get("past_key_values") is not None
+            or get_cache_kwarg(kwargs) is not None
         ):
             return original(self, *args, **kwargs)
         if not args and "hidden_states" in kwargs:

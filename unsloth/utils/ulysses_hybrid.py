@@ -154,7 +154,7 @@ def ulysses_gated_delta_forward(
     **kwargs,
 ):
     """Training forward of a Qwen3-Next / Qwen3.5 GatedDeltaNet on a contiguous sequence shard."""
-    if cache_params is not None:
+    if cache_params is not None or kwargs.get("cache") is not None:
         raise RuntimeError("Unsloth: Ulysses context parallelism does not support a cache.")
     if isinstance(attention_mask, torch.Tensor) and attention_mask.ndim == 2:
         hidden_states = (hidden_states * attention_mask[:, :, None]).to(hidden_states.dtype)
@@ -375,7 +375,7 @@ def ulysses_kimi_delta_forward(
     """Training forward of a Kimi-Linear / Kimi K3 KimiDeltaAttention on a contiguous sequence shard.
     caller_lengths (per row, the real length of the whole sequence): the output is zero past it, as the
     hub layer's pad_input leaves caller padding when it unpads on the 2D mask."""
-    if cache_params is not None:
+    if cache_params is not None or kwargs.get("cache") is not None:
         raise RuntimeError("Unsloth: Ulysses context parallelism does not support a cache.")
     if kwargs.get("packed_seq_lengths") is not None or kwargs.get("cu_seqlens") is not None:
         raise NotImplementedError(
@@ -445,7 +445,7 @@ def ulysses_lightning_forward(
     **kwargs,
 ):
     """Training forward of a MiniMax LightningAttention on a contiguous sequence shard."""
-    if past_key_values is not None:
+    if past_key_values is not None or kwargs.get("cache") is not None:
         raise RuntimeError("Unsloth: Ulysses context parallelism does not support a cache.")
     if kwargs.get("packed_seq_lengths") is not None:
         raise NotImplementedError(
