@@ -74,7 +74,9 @@ def _merge_sidebar(stored: dict, base: dict, edited: dict) -> dict:
             prior, live = set(before or []), set(current or [])
             retained = [item for item in value if item not in prior or item in live]
             known = set(retained)
-            merged[key] = retained + [item for item in current or [] if item not in prior and item not in known]
+            merged[key] = retained + [
+                item for item in current or [] if item not in prior and item not in known
+            ]
         else:
             merged[key] = value
 
@@ -85,7 +87,8 @@ def _merge_sidebar(stored: dict, base: dict, edited: dict) -> dict:
     if sections:
         merged["customSections"] = [
             {k: v for k, v in section.items() if k != "parentId"}
-            if "parentId" in section and section["parentId"] not in live_ids else section
+            if "parentId" in section and section["parentId"] not in live_ids
+            else section
             for section in sections
         ]
     for field in ("sectionByChatId", "sectionByProjectId", "sectionByPageId"):
@@ -96,6 +99,7 @@ def _merge_sidebar(stored: dict, base: dict, edited: dict) -> dict:
 
 def update_client_preferences(changes: dict) -> dict:
     from storage.studio_db import compare_and_set_app_setting, get_app_setting
+
     changes = dict(changes)
     base = changes.pop("sidebarBase", {})
     while True:
