@@ -482,3 +482,19 @@ def test_post_patch_model_installs_the_routing():
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
     }
     assert "patch_mamba_fused_lora" in called
+
+
+@pytest.mark.parametrize("arch", list(ARCHS))
+def test_mixer_forward_is_patched_whatever_the_cache_argument_is_called(monkeypatch, arch):
+    # transformers 5.24 renamed cache_params to cache; the patch used to skip the mixer silently.
+    model, calls = _build(monkeypatch, arch, ["in_proj", *RAW])
+    mixer_cls = type(_mixers(model)[0])
+    params = list(inspect.signature(mixer_cls.forward).parameters)
+    assert "cache" in params or "cache_params" in params, params
+    assert getattr(
+        mixer_cls.forward, "_unsloth_mamba_fused_lora", False
+    ), "mixer forward left unpatched"
+    _loss(model, torch.randint(0, 64, (2, 8))).backward()
+    for leaf in RAW:
+        grads = [p.grad for p in _lora_param(model, leaf, "B")]
+        assert grads and all(g is not None and g.abs().sum() > 0 for g in grads), leaf
