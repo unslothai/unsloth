@@ -347,7 +347,6 @@ def test_local_adapter_chat_capability_uses_its_local_base(tmp_path):
             "models_dir",
             ["gguf", "safetensors"],
         ),
-        # HF snapshots keep split quants in per-quant folders.
         (("UD-Q4_K_XL/model-00001-of-00002.gguf",), "hf_cache", ["gguf"]),
         (("mmproj/mmproj-F16.gguf",), "hf_cache", ["unknown"]),
         (("MTP/mtp-model-Q8_0.gguf",), "hf_cache", ["unknown"]),

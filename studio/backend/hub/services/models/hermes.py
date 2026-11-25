@@ -42,8 +42,7 @@ def staged_gguf_files(hermes_dir: Path) -> List[Path]:
     staged: List[Path] = []
     for path in files:
         part = _SPLIT_PART.search(path.name)
-        # A hand-dropped companion at top level is not servable. hermes_cli checks only that every
-        # part exists, but an empty part fails the load too.
+        # hermes_cli checks only that every part exists; an empty part fails the load too.
         if (
             _is_main_gguf_filename(path.name)
             and (part is None or part.group(1) == "00001")

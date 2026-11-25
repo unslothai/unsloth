@@ -164,7 +164,6 @@ def test_the_local_model_scan_does_not_list_an_imatrix(tmp_path):
 
 
 def test_the_models_dir_scanner_does_not_publish_an_imatrix_only_child(tmp_path):
-    # An imatrix is calibration data, not a model artifact.
     from hub.services.models import local_inventory
 
     repo = tmp_path / "Qwen3.8-27B-GGUF"
