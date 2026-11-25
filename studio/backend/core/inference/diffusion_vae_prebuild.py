@@ -15,6 +15,11 @@ _ENV = "UNSLOTH_DIFFUSION_VAE_PREBUILD"
 _FALSE = ("0", "false", "no", "off")
 # Multiple of 16 at every decoder stage, well under 1 GiB.
 _LATENT_SIDE = 64
+# A 32x video VAE (LTX-2.x) decodes [1, C, 2, 8, 8] to 9 frames of 256 px: every fused kernel, a few hundred MiB.
+_VIDEO_LATENT = (2, 8, 8)
+# Video loads have no compile bundle, so a marker under the Triton cache dir says a build already ran there.
+_VIDEO_CLASSES = frozenset({"AutoencoderKLLTX2Video"})
+_MARKER_DIR = "unsloth_vae_prebuild"
 # Free VRAM needed after the load before a second CUDA context opens.
 _MIN_FREE_BYTES = 6 * 1024**3
 _CHILD_TIMEOUT_S = 180.0
@@ -57,6 +62,8 @@ def plan(pipe: Any) -> Optional[dict]:
     z_dim = cfg.get("z_dim")
     if isinstance(z_dim, int):
         shape = [1, z_dim, 1, _LATENT_SIDE, _LATENT_SIDE]
+    elif isinstance(cfg.get("latent_channels"), int) and "temporal_compression_ratio" in cfg:
+        shape = [1, cfg["latent_channels"], *_VIDEO_LATENT]  # a video VAE decodes 5D latents
     elif isinstance(cfg.get("latent_channels"), int):
         shape = [1, cfg["latent_channels"], _LATENT_SIDE, _LATENT_SIDE]
     else:
@@ -102,6 +109,76 @@ def maybe_kick(
                     pending >> 20,
                 )
             return False
+        return _spawn(job, logger)
+    except Exception as exc:  # noqa: BLE001 - a prebuild, never a failed load
+        if logger is not None:
+            logger.info("diffusion.vae_prebuild: skipped (%s: %s)", type(exc).__name__, exc)
+        return False
+
+
+def _triton_cache_dir() -> Optional[str]:
+    path = os.environ.get("TRITON_CACHE_DIR")
+    if not path:
+        try:
+            import triton
+            path = triton.knobs.cache.dir
+        except Exception:  # noqa: BLE001 - an older Triton: its documented default
+            path = os.path.join(os.path.expanduser("~"), ".triton", "cache")
+    return str(path) if path else None
+
+
+def _marker_path(job: dict) -> Optional[str]:
+    """One file per (VAE class, config, dtype, latent, torch, Triton, card arch): wiping the Triton cache drops it."""
+    import hashlib
+    import json
+
+    import torch
+
+    root = _triton_cache_dir()
+    if not root:
+        return None
+    try:
+        import triton
+        triton_version = triton.__version__
+    except Exception:  # noqa: BLE001
+        triton_version = None
+    key = json.dumps(
+        [
+            job.get("name"),
+            job.get("config"),
+            job.get("dtype"),
+            job.get("shape"),
+            str(torch.__version__),
+            triton_version,
+            list(torch.cuda.get_device_capability(job["device"])),
+        ],
+        sort_keys = True,
+    )
+    return os.path.join(root, _MARKER_DIR, hashlib.sha256(key.encode()).hexdigest()[:32] + ".done")
+
+
+def maybe_kick_video(pipe: Any, logger: Any = None) -> bool:
+    """The video load's prebuild: same child and gates as ``maybe_kick``, skipped once this Triton cache holds the
+    build (no compile bundle to say so). Never blocks, never raises."""
+    if not enabled():
+        return False
+    try:
+        import torch
+
+        if is_rocm_torch(torch) or not torch.cuda.is_available():
+            return False
+        job = plan(pipe)
+        if job is None or job["name"] not in _VIDEO_CLASSES:
+            return False
+        marker = _marker_path(job)
+        if marker is None or os.path.exists(marker):
+            return False
+        from .diffusion_memory import user_budget_reserve_bytes
+
+        free, total = torch.cuda.mem_get_info(job["device"])
+        if free - user_budget_reserve_bytes(job["device"], total) < _MIN_FREE_BYTES:
+            return False
+        job["marker"] = marker
         return _spawn(job, logger)
     except Exception as exc:  # noqa: BLE001 - a prebuild, never a failed load
         if logger is not None:
@@ -212,3 +289,8 @@ def _child_entry(job: dict) -> None:
         z = torch.zeros(job["shape"], device = f"cuda:{job['device']}", dtype = dtype)
         vae.decode(z)
     torch.cuda.synchronize()
+    marker = job.get("marker")
+    if marker:
+        os.makedirs(os.path.dirname(marker), exist_ok = True)
+        with open(marker, "w", encoding = "utf-8") as f:
+            f.write(job["name"] + "\n")

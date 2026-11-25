@@ -13154,6 +13154,12 @@ class VideoBackend:
             effective_speed,
             transformer_quant_engaged or "off",
         )
+        try:
+            # A fresh Triton cache compiles the fused VAE kernels inside the first decode (~5 s for LTX-2.5 on an L4).
+            from . import diffusion_vae_prebuild
+            diffusion_vae_prebuild.maybe_kick_video(pipe, logger)
+        except Exception:  # noqa: BLE001 - a prebuild, never a failed load
+            pass
         if fam.is_moe:
             defer_late_expert_pins(pipe, (getattr(pipe, "transformer_2", None),), logger)
         start_background_pins(pipe)
@@ -17250,6 +17256,12 @@ class VideoBackend:
                     state.bg_compile.close()
                 except Exception:  # noqa: BLE001 -- teardown is best effort
                     pass
+            # A prebuild child's CUDA context and VAE must not shadow the next load.
+            import sys
+
+            prebuild = sys.modules.get(f"{__package__}.diffusion_vae_prebuild")
+            if prebuild is not None:
+                prebuild.cancel_all()
             restore_backend_flags(state.backend_flags)
             _release_video_expandable()
             _release_rocm_tunableop(getattr(state, "pipe", None))
