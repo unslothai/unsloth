@@ -962,8 +962,7 @@ class TestRevisionAwareAudioReads:
 
 
 class TestEnvOfflineParsing:
-    """hf_env_offline accepts the canonical truthy set (strip+lower, on/true/yes/1); it gates
-    the requests.get fallback and the cache keys, so 'on' or ' 1 ' must still count as offline."""
+    """'on' and ' 1 ' count as offline: they gate the requests.get fallback and the cache keys."""
 
     def test_truthy_values_recognized(self, monkeypatch):
         import utils.models.model_config as mc

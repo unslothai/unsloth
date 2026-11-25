@@ -3246,9 +3246,7 @@ class TestTransformersOfflineDoesNotSilenceDatasets:
 
 
 class TestModelConfigPredicateHonoursTheWindow:
-    """hf_env_offline gates model_config's detect_audio_type raw requests.get, which the
-    patched hub constant does not cover. During hf_environment_restored_for_spawn the env
-    is back to the user's values, so an env-only predicate would fire that 15s request."""
+    """The spawn window restores the user's env, so an env-only predicate would fire a 15s raw request."""
 
     def test_predicate_is_true_inside_the_spawn_window(self, monkeypatch):
         from utils.utils import force_hf_offline
