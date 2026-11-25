@@ -219,3 +219,9 @@ def test_escape_runs_match_reference_on_every_budget():
                     text,
                     budget,
                 )
+
+
+def test_long_percent_runs_match_reference():
+    for text in ("%" * 5000 + "a", "%" * 3000 + "%41" * 500 + "中" * 50, ("%%4" + "%41" * 7) * 300):
+        for budget in (0.0, 0.25, 10.0, 99.75, 750.5, 2000.0, 1e9):
+            assert tools._dense_prefix_chars(text, budget) == _reference(text, budget), budget
