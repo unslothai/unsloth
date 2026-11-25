@@ -310,6 +310,26 @@ def test_an_io_error_is_not_kept(tmp_path, monkeypatch):
     assert _listed(run) == str(checkpoint)
 
 
+def test_a_swallowed_stat_error_is_not_kept(tmp_path, monkeypatch):
+    # Python 3.14 Path.is_file() is os.path.isfile, which turns any stat OSError into False.
+    _skip_settle_window(monkeypatch)
+    run = tmp_path / "run"
+    checkpoint = run / "checkpoint-10"
+    _build(checkpoint, 10, "ok", "ok", "ok", "ok")
+    real_is_file = Path.is_file
+    failing = {"left": 1}
+
+    def flaky(self, *args, **kwargs):
+        if self.name == "optimizer.pt" and failing["left"]:
+            failing["left"] -= 1
+            return False
+        return real_is_file(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "is_file", flaky)
+    assert _listed(run) is None
+    assert _listed(run) == str(checkpoint)
+
+
 def test_resume_start_paths_never_consult_the_cache(tmp_path, monkeypatch):
     _skip_settle_window(monkeypatch)
     run = tmp_path / "run"

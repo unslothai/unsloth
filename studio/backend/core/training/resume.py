@@ -97,6 +97,8 @@ _MODEL_INDEXES = ("model.safetensors.index.json", "pytorch_model.bin.index.json"
 def _read_state_file(path: Path, require_tensor: bool, io_error: Callable[[], None]) -> bool:
     try:
         if not path.is_file() or path.stat().st_size == 0:
+            # The caller saw a non-empty regular file: a swallowed stat error or a change, not a verdict.
+            io_error()
             return False
         if path.suffix == ".safetensors":
             try:
