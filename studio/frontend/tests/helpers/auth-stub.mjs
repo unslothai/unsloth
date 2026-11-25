@@ -6,3 +6,11 @@
 export async function authFetch(input, init) {
   return globalThis.fetch(input, init);
 }
+
+export function getAuthSessionEpoch() {
+  return 0;
+}
+
+export function getConfirmedLoginMode() {
+  return null;
+}

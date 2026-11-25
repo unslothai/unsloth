@@ -78,6 +78,7 @@ from .loader_utils import (
     _offline_aware_load,
     _load_probe_memo_scope,
     _memo_config_probe,
+    _resolved_revision,
     _restore_load_scoped_env,
     _resolve_checkpoint_tokenizer_name,
     _is_offline_related_error,
@@ -535,6 +536,23 @@ def _refuse_network_share_adapter_base(model_name, peft_config):
             f"Unsloth: The adapter {model_name} names a base model on a network share ({base!r}). "
             "Refusing to load it: download the base model and load the adapter from a local folder instead."
         )
+
+
+def _refuse_network_share_raw_adapter_base(model_name, **hub_kwargs):
+    """transformers loads the base a Hub repo's raw adapter_config.json names, even when PEFT cannot parse it."""
+    if os.path.isdir(model_name):
+        return
+    try:
+        import json
+        from transformers.utils import find_adapter_config_file
+        with open(find_adapter_config_file(model_name, **hub_kwargs), encoding = "utf-8") as file:
+            base = json.load(file).get("base_model_name_or_path")
+    except Exception:
+        # No adapter_config.json or not JSON: transformers swaps in no base either.
+        return
+    from types import SimpleNamespace
+
+    _refuse_network_share_adapter_base(model_name, SimpleNamespace(base_model_name_or_path = base))
 
 
 def _adapter_file_shapes(path):
@@ -1388,6 +1406,9 @@ class FastLanguageModel(FastLlamaModel):
         on_model_resolved = None,
         **kwargs,
     ):
+        from ._utils import _unsloth_load_begins
+
+        _unsloth_load_begins()
         rope_scaling = _fold_rope_parameters(rope_scaling, kwargs)
         quantization_config = kwargs.get("quantization_config", None)
         if quantization_config is not None:
@@ -1564,6 +1585,9 @@ class FastLanguageModel(FastLlamaModel):
                 trust_remote_code = trust_remote_code,
                 local_files_only = kwargs.get("local_files_only", False),
                 cache_dir = kwargs.get("cache_dir", None),
+                quantization_config = None
+                if fast_inference
+                else kwargs.get("quantization_config", None),
                 revision = revision,
             )
         else:
@@ -1790,6 +1814,15 @@ class FastLanguageModel(FastLlamaModel):
         if peft_config is not None:
             # A ModelScope adapter is a downloaded folder by now: check it under its repo id.
             _refuse_network_share_adapter_base(modelscope_repo_id or model_name, peft_config)
+        else:
+            # The snapshot the config probe pinned, which the weight load reuses.
+            _refuse_network_share_raw_adapter_base(
+                model_name,
+                token = token,
+                revision = _resolved_revision(model_name, base_revision, token, local_files_only),
+                local_files_only = local_files_only,
+                cache_dir = kwargs.get("cache_dir"),
+            )
         _model_type_config = peft_config if peft_config is not None else model_config
         if peft_config is not None and isinstance(token, str) and token:
             _model_type_config = _memo_config_probe(
@@ -1832,6 +1865,9 @@ class FastLanguageModel(FastLlamaModel):
                     trust_remote_code = trust_remote_code,
                     local_files_only = kwargs.get("local_files_only", False),
                     cache_dir = kwargs.get("cache_dir", None),
+                    quantization_config = None
+                    if fast_inference
+                    else kwargs.get("quantization_config", None),
                 )
             # Pre-quantized models allowed? AMD Instinct GPUs need blocksize = 128 on bitsandbytes < 0.49.2, and our pre-quants use 64.
             if not ALLOW_PREQUANTIZED_MODELS and model_name.lower().endswith(
@@ -2377,6 +2413,9 @@ class FastModel(FastBaseModel):
         on_model_resolved = None,
         **kwargs,
     ):
+        from ._utils import _unsloth_load_begins
+
+        _unsloth_load_begins()
         rope_scaling = _fold_rope_parameters(rope_scaling, kwargs)
         user_config = kwargs.pop("config", None)
         fp8_lora = None
@@ -2546,6 +2585,9 @@ class FastModel(FastBaseModel):
                 load_in_fp8 = load_in_fp8,
                 local_files_only = kwargs.get("local_files_only", False),
                 cache_dir = kwargs.get("cache_dir", None),
+                quantization_config = None
+                if fast_inference
+                else kwargs.get("quantization_config", None),
                 revision = revision,
             )
         else:
@@ -2796,6 +2838,14 @@ class FastModel(FastBaseModel):
         if peft_config is not None:
             # A ModelScope adapter is a downloaded folder by now: check it under its repo id.
             _refuse_network_share_adapter_base(modelscope_repo_id or model_name, peft_config)
+        else:
+            _refuse_network_share_raw_adapter_base(
+                model_name,
+                token = token,
+                revision = _resolved_revision(model_name, base_revision, token, local_files_only),
+                local_files_only = local_files_only,
+                cache_dir = kwargs.get("cache_dir"),
+            )
         _model_type_config = peft_config if peft_config is not None else model_config
         if peft_config is not None and isinstance(token, str) and token:
             _model_type_config = _memo_config_probe(
@@ -3090,6 +3140,9 @@ class FastModel(FastBaseModel):
                     load_in_4bit,
                     local_files_only = kwargs.get("local_files_only", False),
                     cache_dir = kwargs.get("cache_dir", None),
+                    quantization_config = None
+                    if fast_inference
+                    else kwargs.get("quantization_config", None),
                 )
             # Pre-quantized models allowed? AMD Instinct GPUs need blocksize = 128 on bitsandbytes < 0.49.2, and our pre-quants use 64.
             if not ALLOW_PREQUANTIZED_MODELS and model_name.lower().endswith(

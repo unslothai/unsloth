@@ -1867,7 +1867,11 @@ def _check_cp_trainer(
         and (getattr(accelerator, "num_processes", 2) or 2) > 1
     ):
         # Unused trainable towers break DDP (find_unused_parameters = False for reentrant checkpointing).
+        # Native FSDP2 also reports MULTI_* to accelerate, but it reduces only the gradients that exist.
+        from .models.fsdp2_native import is_native_fsdp2
         for model in models:
+            if allow_fsdp2 and is_native_fsdp2(model):
+                continue
             unused = _trainable_media_tower_parameters(model)
             if unused:
                 raise NotImplementedError(
@@ -2305,7 +2309,8 @@ def _rl_decoder_pre_hook(module, args, kwargs):
     if manager is None or manager is not module._unsloth_cp_rl_manager:
         stack.append(None)
         return None
-    if args or kwargs.get("past_key_values") is not None or kwargs.get("input_ids") is None:
+    has_cache = kwargs.get("past_key_values") is not None or kwargs.get("cache") is not None
+    if args or has_cache or kwargs.get("input_ids") is None:
         raise NotImplementedError(
             "Unsloth: DPO / GRPO context parallelism shards keyword input_ids training forwards "
             "only (no positional inputs, inputs_embeds or KV cache)."

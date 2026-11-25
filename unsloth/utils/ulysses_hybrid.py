@@ -154,7 +154,7 @@ def ulysses_gated_delta_forward(
     **kwargs,
 ):
     """Training forward of a Qwen3-Next / Qwen3.5 GatedDeltaNet on a contiguous sequence shard."""
-    if cache_params is not None:
+    if cache_params is not None or kwargs.get("cache") is not None:
         raise RuntimeError("Unsloth: Ulysses context parallelism does not support a cache.")
     if isinstance(attention_mask, torch.Tensor) and attention_mask.ndim == 2:
         hidden_states = (hidden_states * attention_mask[:, :, None]).to(hidden_states.dtype)
@@ -375,7 +375,7 @@ def ulysses_kimi_delta_forward(
     """Training forward of a Kimi-Linear / Kimi K3 KimiDeltaAttention on a contiguous sequence shard.
     caller_lengths (per row, the real length of the whole sequence): the output is zero past it, as the
     hub layer's pad_input leaves caller padding when it unpads on the 2D mask."""
-    if cache_params is not None:
+    if cache_params is not None or kwargs.get("cache") is not None:
         raise RuntimeError("Unsloth: Ulysses context parallelism does not support a cache.")
     if kwargs.get("packed_seq_lengths") is not None or kwargs.get("cu_seqlens") is not None:
         raise NotImplementedError(
@@ -445,7 +445,7 @@ def ulysses_lightning_forward(
     **kwargs,
 ):
     """Training forward of a MiniMax LightningAttention on a contiguous sequence shard."""
-    if past_key_values is not None:
+    if past_key_values is not None or kwargs.get("cache") is not None:
         raise RuntimeError("Unsloth: Ulysses context parallelism does not support a cache.")
     if kwargs.get("packed_seq_lengths") is not None:
         raise NotImplementedError(
@@ -673,16 +673,22 @@ def _refuse_non_causal(module, is_causal = None) -> None:
 def _whole_sequence_mask(total, device, dtype, window, cu_seqlens):
     """Additive [1, 1, T, T] mask over the gathered sequence: causal, the sliding window (key > query - window,
     as transformers' masks), and packed documents closed off from one another (padding past
-    cu_seqlens[-1] is one more segment)."""
+    cu_seqlens[-1] is one more segment).
+
+    Peak memory is the [T, T] bool plus the output (3 bytes per element for 16-bit): every comparison
+    broadcasts two [T] vectors straight to bool, and the bool is combined and inverted in place, so no
+    [T, T] int64 difference or extra bool copy is ever allocated."""
     idx = torch.arange(total, device = device)
     allowed = idx[None, :] <= idx[:, None]
-    if window is not None:
-        allowed = allowed & (idx[:, None] - idx[None, :] < window)
+    if window is not None and window < total:
+        # key > query - window is query - key < window, with the subtraction on [T] only. A window of T or
+        # more keeps every causal key (and could not be subtracted in int64 past 2**63), so it is skipped.
+        allowed &= idx[None, :] > (idx - window)[:, None]
     if cu_seqlens is not None:
         doc = torch.bucketize(idx, cu_seqlens[1:].to(device = device, dtype = idx.dtype), right = True)
-        allowed = allowed & (doc[:, None] == doc[None, :])
+        allowed &= doc[:, None] == doc[None, :]
     mask = torch.zeros(total, total, device = device, dtype = dtype)
-    return mask.masked_fill_(~allowed, torch.finfo(dtype).min)[None, None]
+    return mask.masked_fill_(allowed.logical_not_(), torch.finfo(dtype).min)[None, None]
 
 
 def _is_flash(implementation) -> bool:

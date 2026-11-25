@@ -3692,7 +3692,7 @@ def test_gguf_download_progress_fallback_logs_warning(monkeypatch):
         "PermissionError",
     )
     assert token not in args[4]
-    assert "***" in args[4]
+    assert "<redacted>" in args[4]
     assert kwargs == {}
 
 

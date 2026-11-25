@@ -2888,6 +2888,42 @@ def test_vllm_retries_once_without_a_drafter_that_breaks_startup(isolated, monke
 
 
 @_LOCAL_ENGINE_HOST
+@pytest.mark.parametrize(
+    ("initial_outcome", "use_drafter"),
+    [("mamba", False), ("crash", True)],
+)
+def test_vllm_automatic_retry_preserves_both_logs(
+    isolated, monkeypatch, initial_outcome, use_drafter
+):
+    from core.inference import engine_adapters
+    from utils import debug_log_sources
+
+    if use_drafter:
+        monkeypatch.setattr(
+            engine_adapters, "vllm_speculative_args", lambda _: ["--speculative-config", "{}"]
+        )
+    engine, launches = _scripted_engine(isolated, monkeypatch, [initial_outcome, "crash"])
+    with pytest.raises(RuntimeError, match = "Engine failed to start") as failure:
+        engine.start("model", 4096, [0], dict(os.environ))
+
+    assert len(launches) == 2
+    paths = sorted(
+        Path(source.realpath)
+        for source in debug_log_sources.list_sources()
+        if source.family == "vllm"
+    )
+    assert len(paths) == 2
+    first, final = paths
+    assert str(final) == failure.value.managed_engine_log_path
+    initial_output = _MAMBA_LIMIT_LINE if initial_outcome == "mamba" else "CUDA out of memory"
+    assert initial_output in first.read_text(encoding = "utf-8")
+    assert "CUDA out of memory" in final.read_text(encoding = "utf-8")
+    for path in paths:
+        assert "Managed engine stopped." in path.read_text(encoding = "utf-8")
+    assert engine.process is None and engine._attempt_log is None
+
+
+@_LOCAL_ENGINE_HOST
 def test_vllm_drafter_retry_respects_an_external_stop(isolated, monkeypatch):
     import os
     from core.inference import engine_adapters, managed_engine
@@ -3192,3 +3228,24 @@ def test_local_sglang_checkpoint_served_name(isolated, monkeypatch):
             r"C:\checkpoints\model", 1024, [0], {}, None, {}, False, "/mnt/c/checkpoints/model"
         )
     assert ":" not in managed.model
+
+
+@pytest.mark.parametrize(
+    ("name", "platform", "version", "wsl", "expected"),
+    [
+        ("vllm", "cuda", "0.26.0", True, "1"),
+        ("vllm", "cuda", "0.26.0", False, None),
+        ("vllm", "rocm", "0.26.0", True, None),
+        ("vllm", "cuda", "0.30.0", True, None),
+        ("sglang", "cuda", "0.5.17", True, None),
+    ],
+)
+def test_native_worker_wsl_pinned_memory(monkeypatch, name, platform, version, wsl, expected):
+    from core.inference import managed_engine
+    from utils.paths import path_utils
+
+    monkeypatch.setattr(path_utils, "_is_wsl", lambda: wsl)
+    monkeypatch.setattr(managed_engine, "_deep_gemm_unloadable", lambda _: False)
+    engine = managed_engine.ManagedEngine(name)
+    env = engine._native_runtime_env({"platform": platform, "version": version, "path": "/env"}, 1)
+    assert env.get("VLLM_WSL2_ENABLE_PIN_MEMORY") == expected

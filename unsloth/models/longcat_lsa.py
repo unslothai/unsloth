@@ -19,6 +19,7 @@ Lite network; the indexer weights are kept frozen only to load/save. Longer sequ
 as in transformers/vLLM (SGLang leaves them unscaled). The MTP head is not loaded.
 """
 
+import inspect
 import sys
 import warnings
 
@@ -281,6 +282,12 @@ def _classes():
                     x = x + projected.to(x.device)
             return x / (1 + self.k * (self.n - 1))
 
+    _PARENT_CACHE_KWARG = (
+        "cache"
+        if "cache" in inspect.signature(LongcatFlashModel.forward).parameters
+        else "past_key_values"
+    )
+
     class LongcatLsaModel(LongcatFlashModel):
         config_class = LongcatLsaConfig
 
@@ -319,6 +326,11 @@ def _classes():
             use_cache = None,
             **kwargs,
         ):
+            # transformers 5.24 callers pass the cache as `cache` (past_key_values is its deprecated alias).
+            for name in ("cache", "past_key_values"):
+                if kwargs.get(name) is not None:
+                    past_key_values = kwargs[name]
+                kwargs.pop(name, None)
             if inputs_embeds is not None:
                 raise ValueError(
                     "Unsloth: LongCat-Flash-Lite-Sparse builds its input embeddings from token ids "
@@ -390,7 +402,7 @@ def _classes():
                 input_ids = None,
                 attention_mask = attention_mask,
                 position_ids = position_ids,
-                past_key_values = past_key_values,
+                **{_PARENT_CACHE_KWARG: past_key_values},
                 inputs_embeds = inputs_embeds,
                 use_cache = use_cache,
                 **kwargs,

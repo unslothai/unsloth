@@ -531,3 +531,10 @@ def test_windows_commands_with_host_paths_stay_with_the_owner(host, windows):
     owner = _capability_client(OWNER).get("/api/sandbox/capability").json()
     assert other["manual_command"] == "" and other["setup_blocked"] == "not_owner"
     assert "owner" in owner["manual_command"]
+
+
+@pytest.fixture(autouse = True)
+def _dacl_capable_pin(monkeypatch):
+    # The AppContainer + DACL tier exists only in the MXC 1.0.1 pin; 1.1.0 turns all of it off.
+    from core.inference import mxc_runtime
+    monkeypatch.setenv(mxc_runtime.PIN_ENV, mxc_runtime.LEGACY_PIN.version)

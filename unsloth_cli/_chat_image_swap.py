@@ -24,8 +24,8 @@ def image_tool_turn(api, body, text_id, image_load, on_image):
     first = api(
         "/v1/chat/completions",
         {
-            **body,
             "model": text_id,
+            **body,
             "stream": False,
             "tools": [IMAGE_TOOL],
             "tool_choice": "auto",

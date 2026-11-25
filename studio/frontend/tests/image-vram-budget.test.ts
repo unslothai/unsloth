@@ -41,7 +41,9 @@ function setup() {
     new URL("../src/features/images/api.ts", import.meta.url),
     {
       "@/features/settings/api/vram-budget": budget,
-      "@/features/auth": { authFetch },
+      "@/features/auth": { authFetch, getAuthSessionEpoch: () => 0 },
+      "@/lib/navigation-nonce": { createNavigationNonce: () => "nonce" },
+      "./chat-image-swap-selection": { rememberImageForChat: () => {} },
       "@/lib/model-lifecycle-events": {
         withBackgroundLoadNotice: (
           _kind: string,

@@ -332,8 +332,6 @@ test("image swap streams its proposal and waits for complete tool arguments", as
   const first = await generator.next();
   assert.equal(first.value.choices[0].delta.content, "I can help.");
   assert.equal(proposalEnded, false);
-  for await (const _ of generator) {
-    // Collect the remainder through the restore continuation.
-  }
+  while (!(await generator.next()).done);
   assert.equal(requests, 2);
 });
