@@ -65,6 +65,8 @@ import collections
 import re
 from .models.loader_utils import (
     get_model_name,
+    checkpoint_folder_quant_method,
+    prequantized_snapshot_original,
     sync_load_when_quantizing,
     _resolve_hub_repo_cached_file,
     _tokenizer_cache_dir,
@@ -6413,6 +6415,23 @@ def _base_config_dir(repo_id, token = None):
     return directory
 
 
+def _local_base_config_dir(folder):
+    """Temporary dir with only the config.json of the local checkpoint `folder`, its quantization_config dropped: the
+    LoRA applies to the 16-bit weights that checkpoint was quantized from."""
+    import json
+    import tempfile
+
+    with open(os.path.join(folder, "config.json"), encoding = "utf-8") as f:
+        config = json.load(f)
+    config.pop("quantization_config", None)
+    if isinstance(config.get("text_config"), dict):
+        config["text_config"].pop("quantization_config", None)
+    directory = tempfile.mkdtemp(prefix = "unsloth-lora-gguf-base-")
+    with open(os.path.join(directory, "config.json"), "w", encoding = "utf-8") as f:
+        json.dump(config, f, indent = 2, ensure_ascii = False)
+    return directory
+
+
 def _lora_base_model_id(model):
     """Base model id for a PEFT model: prefer the active adapter's recorded `base_model_name_or_path`, the authoritative source, else the model config."""
     base = None
@@ -6633,7 +6652,12 @@ def _unsloth_save_lora_gguf(
         # --base-model-id's strict AutoConfig rejects an older config (Ling-3.0-tiny's int kda_lower_bound, #13948); --base falls back to config.json.
         local_base = None
         if os.path.isdir(base_model_id):
-            local_base = base_model_id
+            # The converter indexes every tensor in --base; a pre-quantized bitsandbytes folder would hand it the
+            # packed 4-bit weights and their quant_state companions. It only needs the config, as for a Hub base.
+            if checkpoint_folder_quant_method(base_model_id) == "bitsandbytes":
+                local_base = base_config_dir = _local_base_config_dir(base_model_id)
+            else:
+                local_base = base_model_id
         elif not loaded_via_remote_code:
             # False stays anonymous; a token we resolved ourselves is left to huggingface_hub, which honors HF_HUB_DISABLE_IMPLICIT_TOKEN.
             local_base = base_config_dir = _base_config_dir(
@@ -6780,9 +6804,18 @@ from unsloth_zoo.llama_cpp import (
 )
 
 
+def _merge_base_model_name(model_name, load_in_4bit = True):
+    """`get_model_name` for the base a merge re-reads. A hub cache snapshot of a pre-quantized bitsandbytes repo (what a run started from a cached model records) maps to the 16-bit original, as its repo id does: its packed 4-bit tensors cannot take the LoRA deltas."""
+    if not load_in_4bit:
+        original = prequantized_snapshot_original(model_name)
+        if original is not None:
+            return get_model_name(original, load_in_4bit = False)
+    return get_model_name(model_name, load_in_4bit = load_in_4bit)
+
+
 def _modelscope_base_model_name(model_name, load_in_4bit = True):
     """`get_model_name` for a merge under UNSLOTH_USE_MODELSCOPE=1: the 16bit base comes from ModelScope, like the model it was trained on, not the Hugging Face Hub (#3726)."""
-    name = get_model_name(model_name, load_in_4bit = load_in_4bit)
+    name = _merge_base_model_name(model_name, load_in_4bit = load_in_4bit)
     if not name or os.path.exists(name):
         return name
     try:
@@ -6827,7 +6860,7 @@ def _prewarm_base_model_hub_cache(
         if not name_or_path:
             return
         try:
-            model_name = get_model_name(name_or_path, load_in_4bit = False)
+            model_name = _merge_base_model_name(name_or_path, load_in_4bit = False)
         except Exception:
             model_name = name_or_path
         if not model_name or os.path.isdir(model_name):
@@ -7753,7 +7786,7 @@ def unsloth_generic_save(
             merge_and_overwrite_lora(
                 _modelscope_base_model_name
                 if os.environ.get("UNSLOTH_USE_MODELSCOPE", "0") == "1" and not in_place
-                else get_model_name,
+                else _merge_base_model_name,
                 model = model,
                 tokenizer = tokenizer,
                 save_directory = save_directory,
