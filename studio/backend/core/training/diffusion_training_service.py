@@ -212,8 +212,7 @@ def _resume_fields(
         from core.training.account_jobs import account_path
         from core.training.diffusion_checkpoint import describe_resume_state
 
-        # A managed account's run record is a file in its own workspace, so its folders must be too:
-        # the scan probes (and may rename inside) output_dir. Owner records pass unchanged.
+        # The scan probes (and may rename inside) output_dir: keep a managed record in its workspace.
         account_path(output_dir)
         account_path(source_checkpoint)
         state = describe_resume_state(

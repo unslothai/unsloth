@@ -1428,8 +1428,7 @@ def project_item(item_id: str) -> ItemFile:
 
 
 def _foreign_share(path: str) -> bool:
-    """A share or device path in a managed account's model id: realpath / exists on it would already
-    send the service account's SMB sign-in to whatever host the id names."""
+    """A managed account's share / device path: realpath or exists on it is already an SMB sign-in."""
     return bool(path) and is_network_or_device_path(path) and not storage_roots.is_owner_context()
 
 
