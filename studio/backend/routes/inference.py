@@ -7024,6 +7024,10 @@ def _strip_tool_xml_keeping_examples(
                 span_end = spans[bisect.bisect_right(spans, (at, at)) - 1][1] - len(prefix)
                 brace = seg.find("{", m.end("reh"), min(m.end(), span_end))
                 body_end = _balanced_json_span(seg[:span_end], brace) if brace >= 0 else None
+                if body_end is None and span_end >= len(seg):
+                    # Still arriving in an open block: showing what follows would put the example ahead of sent text.
+                    out.append(seg[pos : m.start()])
+                    return "".join(out)
                 body = seg[brace + 1 : body_end] if body_end is not None else ""
                 # A rehearsal nested in the body is in code too, so its [ARGS] is never run.
                 if body_end is not None and not any(
@@ -7121,7 +7125,7 @@ _PENDING_MENTION_MAX_CHARS = 256
 
 
 def _pending_inline_rehearsal_cut(text: str, enabled_tool_names) -> int:
-    """Where an inline code span still open on the last line holds a promotable rehearsal, else -1: its closing
+    """Where a promotable rehearsal starts in an inline code span still open on the last line, else -1: its closing
     backticks turn a removed rehearsal into a kept example, which would insert text before what the stream already
     sent. A rehearsal the strip never removes passes through, so holding it would take back what was sent."""
     line = text.rfind("\n") + 1
@@ -7142,8 +7146,10 @@ def _pending_inline_rehearsal_cut(text: str, enabled_tool_names) -> int:
         return -1
     from core.tool_healing import _markerless_promotable
 
-    names = (m.group(1) for m in _PENDING_REHEARSAL_RE.finditer(text, open_end))
-    return open_end if any(_markerless_promotable(n, enabled_tool_names) for n in names) else -1
+    for m in _PENDING_REHEARSAL_RE.finditer(text, open_end):
+        if _markerless_promotable(m.group(1), enabled_tool_names):
+            return m.start()
+    return -1
 
 
 _PENDING_REHEARSAL_RE = _re.compile(r"\b([\w-]+)\[ARGS\]")

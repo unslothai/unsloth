@@ -110,6 +110,8 @@ def test_route_strip_is_disabled_when_healing_is_off(route_strip):
         "Try `a` then `search[ARGS]{} x` and `b`.",
         "Open `search[ARGS]{} never closed\nnext line",
         "Open `search[ARGS]{} never closed",
+        "Use `Example: search[ARGS]{}` here.",
+        '```\nsearch[ARGS]{"q":"a } b"}\n```\nDone.',
     ],
 )
 def test_streamed_inline_example_is_append_only(text):
@@ -142,3 +144,26 @@ def test_streamed_unpromotable_inline_example_is_never_held(text):
         assert out.startswith(shown)
         shown = out
     assert shown == text
+
+
+@pytest.mark.parametrize(
+    "chunks",
+    [
+        ["Use `Example: ", "search[ARGS]{", "}` here."],
+        ['```\nsearch[ARGS]{"q":"a } b', '"}\n```\nDone.'],
+    ],
+)
+def test_streamed_chunks_never_rewind(chunks):
+    routes_inference = pytest.importorskip("routes.inference")
+    strip = routes_inference._StreamingDisplayStrip(
+        auto_heal_tool_calls = True, enabled_tool_names = ENABLED
+    )
+    shown = text = ""
+    for chunk in chunks:
+        text += chunk
+        out = strip.strip(routes_inference._hold_pending_mention(text, True, ENABLED))
+        assert out.startswith(shown)
+        shown = out
+    assert shown == routes_inference._strip_tool_xml_for_display(
+        text, auto_heal_tool_calls = True, enabled_tool_names = ENABLED
+    )
