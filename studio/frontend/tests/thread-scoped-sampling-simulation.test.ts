@@ -263,8 +263,11 @@ test("the pinned values really are stored on the chat's own row", async (t) => {
   const row = threadRows.rows.get("A") as Record<string, unknown>;
   assert.equal(row.temperature, 1.37);
   assert.equal(row.systemPrompt, "CHAT A ONLY 5f3a");
-  for (const key of SAMPLING_KEYS) {
+  for (const key of ["repetitionPenalty", "systemVariables"]) {
     assert.notEqual(row[key], undefined, `${key} is not on the row`);
+  }
+  for (const key of ["topP", "topK", "minP", "presencePenalty"]) {
+    assert.equal(row[key], undefined, `${key} was pinned without an edit`);
   }
 });
 

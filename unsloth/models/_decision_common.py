@@ -28,6 +28,8 @@ __all__ = [
     "_checkpoint_folder",
     "_lm_subfolder",
     "_parsed",
+    "_reads_apart_from_its_object",
+    "_report_json_text_states",
     "_row_images",
     "_internal",
     "_option_keys",
@@ -246,9 +248,63 @@ def _parsed(value):
     if isinstance(value, str) and value.strip()[:1] in ("{", "["):
         try:
             return json.loads(value)
-        except ValueError:
+        except (ValueError, RecursionError):
             return value
     return value
+
+
+def _object_form(value, d1: bool) -> str:
+    # How a served d1 (mlx-vlm's json_only style) and a served Clef write an object state.
+    if d1:
+        return json.dumps(value, ensure_ascii = False, indent = 2)
+    return json.dumps(value, ensure_ascii = False, separators = (",", ":"), sort_keys = True)
+
+
+def _has_media_parts(value, d1: bool) -> bool:
+    # The chat-message parts llama.cpp's parse_state (server-decision.cpp) takes out of an object.
+    kinds = ("image_url", "input_audio", "video_url") if d1 else ("image_url", "input_audio")
+    messages = value.get("messages") if isinstance(value, dict) else value
+    return any(
+        isinstance(part, dict) and part.get("type") in kinds and part["type"] in part
+        for message in (messages if isinstance(messages, list) else [])
+        if isinstance(message, dict) and isinstance(message.get("content"), list)
+        for part in message["content"]
+    )
+
+
+def _reads_apart_from_its_object(state, d1: bool = False) -> bool:
+    if not isinstance(state, str):
+        return False
+    value = _parsed(state)
+    if not isinstance(value, (dict, list)):
+        return False
+    try:
+        # Servers take the media parts out of an object state, never out of text.
+        return _object_form(value, d1) != state or _has_media_parts(value, d1)
+    except RecursionError:
+        # json.dumps with indent recurses in Python, so some depths decode yet cannot be written.
+        return False
+
+
+def _report_json_text_states(
+    count: int,
+    total: int,
+    report: dict,
+    d1: bool = False,
+) -> None:
+    # `count` of the `total` states that reached the encoder, fitting or not: as text one can stop fitting.
+    report["json_text_states"] = count
+    if count:
+        form = "indent = 2" if d1 else "separators = (',', ':'), sort_keys = True"
+        media = "image, audio or video" if d1 else "image or audio"
+        print(
+            f"Unsloth: {count:,} of {total:,} states are JSON text that a request sending "
+            "the state as an object reads differently. Like the Decision API, training reads a "
+            "text state as written. To train on what an object request reads, store the state as "
+            f"an object, or, with no {media} parts, as "
+            f"json.dumps(state, {form}, ensure_ascii = False). Training still reads media parts "
+            "in an object state as text, except image parts on Apple Silicon."
+        )
 
 
 def _row_images(row: dict) -> list:

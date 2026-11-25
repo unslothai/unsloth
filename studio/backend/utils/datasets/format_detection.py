@@ -630,8 +630,6 @@ def detect_multimodal_dataset(dataset):
         "pic",
         "picture",
         "visual",
-        "file_name",
-        "filename",
     ]
 
     audio_keywords = ["audio", "speech", "wav", "waveform", "sound"]
@@ -654,7 +652,11 @@ def detect_multimodal_dataset(dataset):
         if col_name in already_detected:
             continue
         value = sample[col_name]
-        if _is_image_value(value) or _holds_images(value):
+        if (
+            _is_image_value(value)
+            or _holds_images(value)
+            or (_is_file_name_column(col_name) and _names_local_image(value))
+        ):
             multimodal_columns.append(col_name)
             modality_types.add("image")
 
@@ -724,6 +726,40 @@ def detect_multimodal_dataset(dataset):
         "detected_text_column": detected_text_col,
         "detected_speaker_column": detected_speaker_col,
     }
+
+
+# A file-name column names documents as often as images: only its value decides.
+def _is_file_name_column(col_name) -> bool:
+    return _keyword_in_column("file_name", col_name) or _keyword_in_column("filename", col_name)
+
+
+def _names_local_image(value) -> bool:
+    if not isinstance(value, str) or not value.strip():
+        return False
+    import os
+    import stat
+
+    from utils.security.dataset_media import require_readable_media
+
+    from .remote_images import is_network_share
+
+    path = os.path.expanduser(value.strip())
+    # Opening a share signs Windows in to its host (NTLM).
+    if is_network_share(path):
+        return False
+    try:
+        require_readable_media(path)
+        # Nonblocking, then regular files only: opening a FIFO would hang the request.
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0))
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                return False
+            head = os.read(fd, 12)
+        finally:
+            os.close(fd)
+    except (OSError, ValueError):
+        return False
+    return _has_image_header(head) or head[:4] in (b"II*\x00", b"MM\x00*")
 
 
 def _is_decoded_image_value(value) -> bool:

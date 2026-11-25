@@ -84,7 +84,7 @@ def test_gate_check_reports_a_repo_missing_on_modelscope(monkeypatch, gone, expe
     monkeypatch.setattr(utils.cache_cleanup, "clear_unsloth_compiled_cache", lambda *a, **k: None)
     monkeypatch.setattr(trainer_module, "detect_audio_type_checked", lambda *a, **k: (None, True))
     monkeypatch.setattr(trainer_module, "is_vision_model", lambda *a, **k: False)
-    monkeypatch.setattr(trainer_module, "_env_offline", lambda: False)
+    monkeypatch.setattr(trainer_module, "hf_env_offline", lambda: False)
     trainer = object.__new__(UnslothTrainer)
     trainer.model = trainer.tokenizer = trainer.trainer = None
     errors = []

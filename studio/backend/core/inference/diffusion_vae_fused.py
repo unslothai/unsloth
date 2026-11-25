@@ -1684,8 +1684,8 @@ def install_wan_vae(
             act._unsloth_vae_fused = True
             n += 1
         for module in part.modules():
-            if "forward" in module.__dict__:
-                continue  # already patched (by us or another speed path)
+            if "forward" in module.__dict__ and not getattr(module, "_unsloth_vae_noclone", False):
+                continue  # already patched (by us or another speed path); the clone-free block is replaced
             name = type(module).__name__
             if name.endswith("ResidualBlock") and _wan_resblock_fusable(module):
                 _guard(

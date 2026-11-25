@@ -33,6 +33,7 @@ import torch
 
 from . import _decode_graphs as G
 from . import _kv_cache as KV
+from ._cache_kwarg import get_cache_kwarg, output_cache
 
 __all__ = [
     "wanted",
@@ -619,7 +620,7 @@ def replayable(kwargs):
     """A failed graphed call can be redone eagerly only when no caller object holds its partial state."""
     return not (
         kwargs.get("streamer", None) is not None
-        or kwargs.get("past_key_values", None) is not None
+        or get_cache_kwarg(kwargs) is not None
         or kwargs.get("stopping_criteria", None)
         or kwargs.get("logits_processor", None)
     )
@@ -941,9 +942,9 @@ def keepable(model, kwargs, output):
     caller passed or got back the cache (a later call would overwrite it), nor in training mode."""
     if os.environ.get("UNSLOTH_DECODE_GENERIC_GRAPHS_KEEP", "1") == "0":
         return False
-    if getattr(model, "training", False) or kwargs.get("past_key_values", None) is not None:
+    if getattr(model, "training", False) or get_cache_kwarg(kwargs) is not None:
         return False
-    if getattr(output, "past_key_values", None) is not None:
+    if output_cache(output) is not None:
         return False
     # The next call re-encodes into a new cross-attention cache (reuse_kept_cache never hands one back).
     if _encoder_decoder(model):
@@ -1064,7 +1065,7 @@ class reuse_kept_cache:
         extra = bound.get("kwargs")
         if isinstance(extra, dict):
             bound = {**extra, **bound}
-        cache = bound.get("past_key_values")
+        cache = get_cache_kwarg(bound)
         if KV.is_growable(cache):
             _reserve_step(cache, input_ids, bound, self.reserve_call)
         return self.prepare_inputs(input_ids, *args, **kwargs)
@@ -2012,7 +2013,7 @@ def decode_step(
     state.step += 1
     if ids.shape[0] > MAX_BSZ:
         return _refusal(state, "batch over max")
-    full_cache = kwargs.get("past_key_values")
+    full_cache = get_cache_kwarg(kwargs)
     reason = _cache_reason(full_cache)
     cache = _self_attention_cache(full_cache)
     cross = _cross_attention_layers(full_cache)

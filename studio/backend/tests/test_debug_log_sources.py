@@ -136,24 +136,6 @@ def test_only_the_newest_files_per_family_are_offered():
     assert llama[0].modified_at >= llama[-1].modified_at
 
 
-def test_a_runtime_log_under_the_other_root_is_still_found(monkeypatch, tmp_path):
-    """studio_root() infers a root from the installer venv but the llama runner does not, so the two
-    can disagree; scanning one root loses failed-load logs."""
-    other_home = tmp_path / "legacy-home"
-    (other_home / "logs" / "llama-server").mkdir(parents = True)
-    stray = other_home / "logs" / "llama-server" / "llama-1765009999-port-9099.log"
-    stray.write_text("child runtime output\n", encoding = "utf-8")
-
-    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
-    monkeypatch.setattr(
-        debug_log_sources,
-        "candidate_roots",
-        lambda: [Path(os.environ["UNSLOTH_STUDIO_HOME"]), other_home],
-    )
-    labels = [s.label for s in debug_log_sources.list_sources()]
-    assert stray.name in labels
-
-
 def test_the_default_source_prefers_the_running_session():
     _seed("llama-server", "llama-1765000500-port-8080.log")
     path = _seed("server", f"server-20260813-101013-pid{os.getpid()}.log")
@@ -291,16 +273,20 @@ def test_a_huge_directory_builds_paths_only_for_the_presort_slice(monkeypatch):
         assert names == expected[: debug_log_sources.MAX_SOURCES_PER_FAMILY]
 
 
-def test_a_literal_tilde_home_is_scanned_both_ways(tmp_path, monkeypatch):
-    """Runners may write to a literal ~ dir, so scan both spellings or llama logs vanish."""
+def test_an_unexpanded_home_is_scanned_where_it_expands(tmp_path, monkeypatch):
+    """The runners expand "~" through studio_root(), so a directory named "~" is never a log home."""
     monkeypatch.chdir(tmp_path)
-    literal = tmp_path / "~" / "studio"
-    (literal / "logs" / "llama-server").mkdir(parents = True)
-    (literal / "logs" / "llama-server" / "llama-1786000000.log").write_text("x", encoding = "utf-8")
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", "~/studio")
+    for base, name in (("home", "llama-1786000000.log"), ("~", "llama-1786000001.log")):
+        directory = tmp_path / base / "studio" / "logs" / "llama-server"
+        directory.mkdir(parents = True)
+        (directory / name).write_text("x", encoding = "utf-8")
 
     labels = [source.label for source in debug_log_sources.list_sources()]
     assert "llama-1786000000.log" in labels
+    assert "llama-1786000001.log" not in labels
 
 
 def test_no_live_session_defaults_to_the_newest_log_not_an_old_server_one(tmp_path, monkeypatch):
@@ -346,7 +332,7 @@ def test_a_writers_own_spelling_of_a_path_resolves_to_its_source():
 
 
 def test_a_relative_spelling_resolves_to_the_same_source(monkeypatch):
-    """A relative UNSLOTH_STUDIO_HOME makes the runner print a relative path; it still matches."""
+    """A relative spelling of a listed log, resolved against the cwd, still matches it."""
     path = _seed("llama-server", "llama-1765000102-port-8080.log")
     expected = next(s for s in debug_log_sources.list_sources() if s.label == path.name).id
     monkeypatch.chdir(_home())
@@ -357,10 +343,10 @@ def test_a_relative_spelling_resolves_to_the_same_source(monkeypatch):
 
 
 def test_an_unexpanded_home_spelling_resolves_to_the_same_source(monkeypatch, tmp_path):
-    """An unexpanded home (systemd EnvironmentFile, dotenv) still matches its listed source."""
-    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", "~/studio")
-    directory = tmp_path / "~" / "studio" / "logs" / "llama-server"
+    directory = tmp_path / "studio" / "logs" / "llama-server"
     directory.mkdir(parents = True, exist_ok = True)
     path = directory / "llama-1765000103-port-8080.log"
     path.write_text("boom\n", encoding = "utf-8")

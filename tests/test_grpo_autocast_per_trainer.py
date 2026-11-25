@@ -385,17 +385,18 @@ def test_the_loaders_stamp_the_forced_float32_answer_on_the_model():
         assert "_mark_forced_float32(" in src, rel
 
 
-def test_only_one_place_reads_the_shared_forced_float32_flag():
-    """One fallback read, for models loaded before the stamp existed."""
+def test_no_place_reads_the_shared_forced_float32_flag():
+    """Every Unsloth load stamps the model, so the shared flag never decides a trainer."""
     reads = re.findall(r"environ\.get\(\s*['\"]UNSLOTH_FORCE_FLOAT32", REPL_SRC)
-    assert len(reads) == 1, reads
+    assert reads == [], reads
 
 
-def test_a_model_without_the_stamp_keeps_the_old_environment_answer():
+def test_a_model_unsloth_never_loaded_ignores_the_shared_flag():
+    """A plain model trained after an fp16 Gemma 3 load must not inherit its UNSLOTH_FORCE_FLOAT32 = 1."""
     env = {"UNSLOTH_FORCE_FLOAT32": "1"}
     trainer = _build_trainer(env, torch.float32, bf16_supported = False, mark_forced_float32 = False)
     assert not hasattr(trainer.model, "_unsloth_forced_float32")
-    assert _generate(trainer, env, has_bf16 = False) == (True, torch.float16)
+    assert _generate(trainer, env, has_bf16 = False) == (False, None)
 
 
 def test_a_forced_float32_load_cannot_force_an_unforced_trainer():
@@ -427,19 +428,34 @@ def test_a_forced_load_earlier_in_the_process_cannot_force_this_trainer(
     assert _generate(trainer, env, has_bf16 = bf16_supported) == autocast
 
 
-def test_an_unstamped_model_still_takes_the_environment_answer_in_init():
-    """The fallback, for a model loaded before the stamp existed."""
+@pytest.mark.parametrize(
+    "model_dtype, bf16_supported, fp16, bf16, precision, autocast",
+    [
+        (torch.float16, False, True, False, "fp16", (True, torch.float16)),
+        (torch.bfloat16, True, False, True, "bf16", (True, torch.bfloat16)),
+    ],
+)
+def test_an_unstamped_model_keeps_its_own_precision_in_init(
+    model_dtype, bf16_supported, fp16, bf16, precision, autocast
+):
+    """Unstamped = loaded without Unsloth: its own fp16 / bf16 run, not the float32 switch a forced flag asks."""
     env = {"UNSLOTH_FORCE_FLOAT32": "1"}
-    trainer = _build_trainer(env, torch.float32, bf16_supported = False, mark_forced_float32 = False)
-    assert env["ACCELERATE_MIXED_PRECISION"] == "no"
-    assert _generate(trainer, env, has_bf16 = False) == (True, torch.float16)
+    trainer = _build_trainer(
+        env,
+        model_dtype,
+        bf16_supported = bf16_supported,
+        fp16 = fp16,
+        bf16 = bf16,
+        mark_forced_float32 = False,
+    )
+    assert env["ACCELERATE_MIXED_PRECISION"] == precision
+    assert _generate(trainer, env, has_bf16 = bf16_supported) == autocast
 
 
-def test_the_trainer_init_prefers_the_stamp_over_the_shared_flag():
-    """One fallback read in the __init__ block, as in the generation helper."""
-    assert "_unsloth_forced_float32" in MP_SRC
+def test_the_trainer_init_reads_the_model_not_the_shared_flag():
+    assert "_model_forced_float32(model)" in MP_SRC
     reads = re.findall(r"environ\.get\(\s*['\"]UNSLOTH_FORCE_FLOAT32", MP_SRC)
-    assert len(reads) == 1, reads
+    assert reads == [], reads
 
 
 def _own_returns(node):

@@ -12,15 +12,13 @@ import { isSandboxFileList, type SandboxFile } from "./sandbox-files";
 import {
   preferSanitizedFullToolOutput,
   toolResultText,
-  useChatRuntimeStore,
   useChatPreferencesStore,
   useToolAwaitingApproval,
-  useToolOutputFor,
-  useToolPaneScope,
+  useToolOutput,
 } from "@/features/chat";
 import type { ToolCallMessagePartComponent } from "@assistant-ui/react";
 import { useToolArgsStatus } from "@assistant-ui/react";
-import { memo } from "react";
+import { memo, useMemo } from "react";
 import { pythonToolImagePath } from "./python-tool-image-path";
 import { useSandboxImage } from "./use-sandbox-image";
 import { CopyBtn, ToolCodeCell } from "./tool-code-cell";
@@ -107,13 +105,11 @@ const PythonToolUIImpl: ToolCallMessagePartComponent = ({
   }
 
   // Prefer the fuller live stream over a truncated result; after a reload only the result remains.
-  const paneScope = useToolPaneScope();
-  const fullOutput = useToolOutputFor(
-    useChatRuntimeStore((s) => s.toolFullOutput),
-    paneScope,
-    toolCallId,
+  const fullOutput = useToolOutput("toolFullOutput", toolCallId);
+  const displayOutput = useMemo(
+    () => preferSanitizedFullToolOutput(fullOutput, output),
+    [fullOutput, output],
   );
-  const displayOutput = preferSanitizedFullToolOutput(fullOutput, output);
 
   // The gate opens only once the call parsed, so pending approval means the script is written.
   const awaitingApproval = useToolAwaitingApproval(toolCallId);

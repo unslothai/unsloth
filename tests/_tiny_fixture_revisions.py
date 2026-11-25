@@ -19,12 +19,16 @@ REVISIONS = {
     "trl-internal-testing/tiny-Phi3ForCausalLM-3": "e82e6bc7a65dc695e68b5c80fc92df026948b290",
     "trl-internal-testing/tiny-Qwen2ForCausalLM-2.5-Coder": "fb30b6ef8f125eaea368e40f402311f96bcd6908",
     "hf-internal-testing/tiny-random-StableLmForCausalLM": "c300fb0fb9aa5127fbec3cdda59b30db8326a89d",
+    "trl-internal-testing/tiny-NemotronHForCausalLM-3.5-lightning": "0fd0a2356bc9530b41fb96f4981b52c6a2ac95fd",
     "hf-internal-testing/tiny-random-Olmo2ForCausalLM": "dcdf4af956c38843cac650c839e282349b92382c",
     # The revision before its Nov 2026 re-upload.
     "trl-internal-testing/tiny-Qwen3MoeForCausalLM": "6db57163fa56fa0e00d4b820169908ac0d3a219d",
     "trl-internal-testing/tiny-DeepseekV3ForCausalLM": "2fb366d060ad5cea8917909f28ec1219ccb1ad2d",
     "hf-internal-testing/tiny-random-OlmoeForCausalLM": "99e4bc8eb1a024e46da438c410d7e707ed49d15a",
     "trl-internal-testing/tiny-BloomForCausalLM": "fb6f154da5e58e70d7a62bafe35c0f0da99691cb",
+    "hf-internal-testing/tiny-random-MixtralForCausalLM": "ccb12fe2fc142cb752085506c3db22572290e90c",
+    "hf-internal-testing/tiny-random-Qwen2MoeForCausalLM": "f736f270816032b3c721f7422c62dea1381f49d7",
+    "hf-internal-testing/tiny-random-Qwen3NextForCausalLM": "7ea3967d1838708278eaf094e2a9162e273a3f98",
 }
 
 

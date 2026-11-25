@@ -134,8 +134,19 @@ def _is_version_lookup(node: ast.AST) -> bool:
 def _raw_hip_reads(path: Path) -> list[int]:
     """Lines of ``torch.version.hip`` / ``getattr(torch.version, "hip", ...)`` reads in code (not comments)."""
     tree = ast.parse(path.read_text(encoding = "utf-8"))
-    # Inside an f-string the read labels a cache key with the build string; it gates nothing.
+    # Inside an f-string, or stringified straight into a dict value ({"hip": str(torch.version.hip)}), the
+    # read labels a cache key or stack fingerprint with the build string; it gates nothing.
     labels = {id(n) for js in ast.walk(tree) if isinstance(js, ast.JoinedStr) for n in ast.walk(js)}
+    for d in ast.walk(tree):
+        if isinstance(d, ast.Dict):
+            for value in d.values:
+                if (
+                    isinstance(value, ast.Call)
+                    and isinstance(value.func, ast.Name)
+                    and value.func.id == "str"
+                    and len(value.args) == 1
+                ):
+                    labels.update(id(n) for n in ast.walk(value.args[0]))
     lines = []
     for node in ast.walk(tree):
         if id(node) in labels:
@@ -155,6 +166,23 @@ def _raw_hip_reads(path: Path) -> list[int]:
         ):
             lines.append(node.lineno)
     return sorted(set(lines))
+
+
+@pytest.mark.parametrize(
+    "source, reads",
+    [
+        ('stack = {"hip": str(getattr(torch.version, "hip", None))}', []),
+        ('stack = {"hip": str(torch.version.hip)}', []),
+        ('key = f"hip={torch.version.hip}"', []),
+        ('if str(torch.version.hip) != "None":\n    pass', [1]),
+        ('stack = {"hip": torch.version.hip}', [1]),
+        ('rocm = bool(getattr(torch.version, "hip", None))', [1]),
+    ],
+)
+def test_raw_hip_reads_tells_labels_from_gates(tmp_path, source, reads):
+    path = tmp_path / "diffusion_x.py"
+    path.write_text(source, encoding = "utf-8")
+    assert _raw_hip_reads(path) == reads
 
 
 def test_no_diffusion_or_video_gate_reads_version_hip_directly():

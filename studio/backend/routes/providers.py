@@ -825,6 +825,12 @@ def _bind_saved_provider_target(payload):
         "provider_type": config["provider_type"],
         "api_type": config.get("api_type", "chat_completions"),
     }
+    if (
+        own is not None
+        and config["provider_type"] == "custom"
+        and "api_type" in payload.model_fields_set
+    ):
+        update["api_type"] = payload.api_type
     # Pinning the saved endpoint keeps a saved credential off other hosts; a keyless row has none to protect, so an
     # edited base URL is used as sent.
     # Another account's row is always pinned: whether its key is saved is itself a read that can fail.

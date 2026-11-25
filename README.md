@@ -91,13 +91,12 @@ Unsloth works on **Windows, Linux, WSL** and **macOS**. We support **Multi GPU s
 ### Run & Build with AI
 * Run and train LLMs, MLX, GGUF, diffusion, decision, embedding, audio models: [Qwen3.8](https://unsloth.ai/docs/models/qwen3.8), [GLM-5.3-Flash](https://unsloth.ai/docs/models/glm-5.3-flash), [Kimi K3](https://unsloth.ai/docs/models/kimi-k3), [Qwen-Image-2.1](https://unsloth.ai/docs/models/qwen-image-2.1), MiniMax-H3, [DeepSeek-V4](https://unsloth.ai/docs/models/deepseek-v4), [Gemma 4](https://unsloth.ai/docs/models/gemma-4).
 * **Agents & Tools:** Use local models with [Claude Code](https://unsloth.ai/docs/basics/claude-code), [Codex](https://unsloth.ai/docs/basics/codex), and [MCP](https://unsloth.ai/docs/basics/mcp), including tool calling and code execution.
-* **Browser use:** [Browse sites](https://unsloth.ai/docs/basics/browser-use), fill out forms, read PDFs, and edit files alongside a local-model chat.
+* **Browser & Computer use:** Have local LLMs [edit your desktop](https://unsloth.ai/docs/basics/computer-use), [Edit files & sites](https://unsloth.ai/docs/basics/browser-use), fill out forms, read PDFs
 * **Sandboxing:** [Limit file access](https://unsloth.ai/docs/new/studio/sandboxing-in-unsloth) for commands your model runs.
 * **Search & RAG:** Use private and unlimited web search, deep research, auto-compaction (rolling context window) and RAG.
 * **Image and video:** Run and train [image](https://unsloth.ai/docs/basics/diffusion-image) and video diffusion or multimodal models
 * **Remote & LAN:** Access your local models from any device on [LAN](https://unsloth.ai/docs/basics/lan) or remotely through secure [Cloudflare](https://unsloth.ai/docs/basics/how-to-serve-local-llms-anywhere-secure-remote-access-with-cloudflare-and-unsloth) HTTPS.
-* **Connect:** Serve models through an [OpenAI compatible API](https://unsloth.ai/docs/basics/api). Also connect your ChatGPT/Codex subscription and [cloud providers](https://unsloth.ai/docs/integrations/connections)
-
+* **API:** Serve models through an [OpenAI compatible API](https://unsloth.ai/docs/basics/api). Connect your ChatGPT/Codex subscription, Claude and [cloud providers](https://unsloth.ai/docs/integrations/connections)
 
 ### Train & Deploy
 * **Fine-tuning:** Train LLMs, diffusion, decision, TTS, and embedding models 2× faster with 70% less VRAM with [no accuracy loss](https://unsloth.ai/blog#training)
@@ -273,7 +272,7 @@ Install torchao first on Windows: `--torch-backend` looks for it only on the PyT
 
 #### AMD, Intel, DGX Spark, Blackwell:
 See our [Blackwell guide](https://unsloth.ai/docs/blog/fine-tuning-llms-with-blackwell-rtx-50-series-and-unsloth) and [DGX Spark guide](https://unsloth.ai/docs/blog/fine-tuning-llms-with-nvidia-dgx-spark-and-unsloth). <br>
-To install Unsloth on **AMD** and **Intel** GPUs, follow our [AMD Guide](https://unsloth.ai/docs/basics/amd) and [Intel Guide](https://unsloth.ai/docs/get-started/install/intel).
+To install Unsloth on **AMD** and **Intel** GPUs, follow our [AMD Guide](https://unsloth.ai/docs/basics/amd), [NPU Guide](https://unsloth.ai/docs/get-started/install/amd/amd-npu), and [Intel Guide](https://unsloth.ai/docs/get-started/install/intel).
 
 ## 📒 Free Notebooks
 
