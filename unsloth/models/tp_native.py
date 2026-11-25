@@ -1914,7 +1914,14 @@ def _expert_params4bit_problem(p, E, tp):
     """Why the 4-bit expert stack `p` cannot be cut by expert index over tp, or None."""
     state = getattr(p, "quant_state", None)
     shape = _expert_stack_shape(p)
-    if state is None or not getattr(p, "bnb_quantized", False) or p.dim() != 2 or p.shape[1] != 1:
+    # Packed [n, 1] bytes, or [E, n / E, 1] from zoo's per-expert pre-quantized stack loader.
+    if (
+        state is None
+        or not getattr(p, "bnb_quantized", False)
+        or p.dim() not in (2, 3)
+        or p.shape[-1] != 1
+        or (p.dim() == 3 and p.shape[0] != E)
+    ):
         return "a 4-bit expert stack without its packed bytes / QuantState"
     if shape is None or len(shape) != 3 or tuple(state.shape) != shape:
         return f"a 4-bit expert stack of logical shape {shape} (not one 3-D QuantState)"
@@ -1957,7 +1964,8 @@ def _expert_params4bit_slice(
         quant_type = state.quant_type,
         dtype = state.dtype,
     )
-    data = flat[lo * per_element : hi * per_element].clone().unsqueeze(-1)
+    data = flat[lo * per_element : hi * per_element].clone()
+    data = data.view(hi - lo, *p.shape[1:]) if p.dim() == 3 else data.unsqueeze(-1)
     new = torch.Tensor._make_subclass(type(p), data, False)
     for attr, value in p.__dict__.items():
         new.__dict__[attr] = value
