@@ -67,6 +67,7 @@ class Query:
     direct_params: bool = False  # an attention / MLP block owns a parameter (attention sinks)
     # tp_native's refusal at q.tp ranks; "" when it shards or the model is already split (_tp_blocker).
     tp_blocker: str = ""
+    ep_blocker: str = ""
     mode: str = "lora"  # lora, qlora, full, fp8 (float8_training, LoRA or full)
     packing: bool = False
     cp_backend: Optional[str] = None  # ulysses, ring (resolved)
@@ -76,6 +77,7 @@ class Query:
     tp: int = 1
     pp: int = 1
     cp: int = 1
+    ep: int = 1  # UNSLOTH_EP_SIZE
     fsdp2: bool = False
     vllm: bool = False
     pp_schedule: Optional[str] = None  # gpipe, 1f1b, interleaved
@@ -323,6 +325,31 @@ RULES = (
         lambda q: (q.pp > 1 or q.tp > 1) and q.vllm,
         "vLLM needs the whole model on each rank",
         "fast_inference = False, or drop tp / pp",
+    ),
+    Rule(
+        "ep x vLLM",
+        "expert parallel with vLLM (fast_inference)",
+        lambda q: q.ep > 1 and q.vllm,
+        "the vLLM LoRA sync gathers only DTensor adapters, and each rank holds its own experts' LoRA as local "
+        "parameters, so vLLM would get one rank's slice",
+        "fast_inference = False, or drop ep (DDP / UNSLOTH_FSDP2=1)",
+    ),
+    # Repeats parallel_env.parse_parallel_spec and ep_native.apply_expert_parallel, for the variables set alone.
+    Rule(
+        "ep x tp / pp / cp / fsdp2",
+        "expert parallel with tensor / pipeline / context parallel or native FSDP2",
+        lambda q: q.ep > 1 and (q.tp > 1 or q.pp > 1 or q.cp > 1 or q.fsdp2),
+        "expert parallel v1 shards the experts over data parallel ranks that each hold the rest of the model "
+        "whole (models/ep_native.py refuses the composition)",
+        "ep alone, or drop ep (tp / pp / cp / UNSLOTH_FSDP2=1)",
+    ),
+    Rule(
+        "ep x model",
+        "expert parallel on models with no MoE block expert parallel can shard",
+        lambda q: q.ep > 1 and bool(q.ep_blocker),
+        "models/ep_native.py apply_expert_parallel shards fused expert stacks by expert index and refuses a model "
+        "with none (its reason follows the layout below)",
+        "drop ep (DDP, or UNSLOTH_FSDP2=1, over the dp axis)",
     ),
 )
 
@@ -920,10 +947,17 @@ _MOE_PRECISION = {
 }
 _ONE = (1,)
 _MOE_MODES = {
-    "ddp": {"dp": (2, 4, 8), "fsdp2": (False,), "cp": _ONE, "tp": _ONE, "pp": _ONE},
-    "fsdp2": {"dp": (2, 4, 8), "fsdp2": (True,), "cp": _ONE, "tp": _ONE, "pp": _ONE},
-    "cp": {"dp": (1, 2, 4), "fsdp2": (False,), "cp": (2, 4, 8), "tp": _ONE, "pp": _ONE},
-    "fsdp2_cp": {"dp": (1, 2, 4), "fsdp2": (True,), "cp": (2, 4, 8), "tp": _ONE, "pp": _ONE},
+    "ddp": {"dp": (2, 4, 8), "fsdp2": (False,), "cp": _ONE, "tp": _ONE, "pp": _ONE, "ep": _ONE},
+    "fsdp2": {"dp": (2, 4, 8), "fsdp2": (True,), "cp": _ONE, "tp": _ONE, "pp": _ONE, "ep": _ONE},
+    "cp": {"dp": (1, 2, 4), "fsdp2": (False,), "cp": (2, 4, 8), "tp": _ONE, "pp": _ONE, "ep": _ONE},
+    "fsdp2_cp": {
+        "dp": (1, 2, 4),
+        "fsdp2": (True,),
+        "cp": (2, 4, 8),
+        "tp": _ONE,
+        "pp": _ONE,
+        "ep": _ONE,
+    },
     # Pipeline parallel carries the router auxiliary loss on a pp-only mesh, one stage per rank (gpipe / 1f1b),
     # and refuses it under reentrant checkpointing (models/pp_native.py).
     "pp": {
@@ -934,8 +968,10 @@ _MOE_MODES = {
         "pp": (2, 4, 8),
         "pp_schedule": ("gpipe", "1f1b"),
         "memory": ("none",),
+        "ep": _ONE,
     },
-    "tp": {"tp": (2, 4, 8)},
+    "tp": {"tp": (2, 4, 8), "ep": _ONE},
+    "ep": {"ep": (2, 4, 8), "dp": (2, 4, 8), "fsdp2": (False,), "cp": _ONE, "tp": _ONE, "pp": _ONE},
 }
 _MOE_COMMON = {
     "trainer": ("sft",),
@@ -955,6 +991,8 @@ _MOE_COMPILE = _GLOO + "test_moe_block_compile_under_cp_is_compile_clean"
 _MOE_CP_GC = "test_moe_under_cp_with_unsloth_checkpointing_matches_one_process"
 _MOE_CP_GC_COMPILE = "test_moe_block_compile_under_cp_with_unsloth_checkpointing_is_compile_clean"
 _MOE_PP = "tests/test_pp_moe_aux_gloo.py::test_pp2_moe_aux_matches_gradient_accumulation"
+_EP_FAMILY = "tests/test_ep_moe_families_gloo.py::test_ep_family_matches_one_process"
+_INKLING2_EP = "tests/test_ep_inkling2_gloo.py::"
 # Native DeepSeek-V4.1 (no router aux): cut where no group state crosses, engram tables on the owning stage.
 _DSV41_PP = (
     "tests/test_parallel_deepseek_v41_gloo.py::test_deepseek_v41_parallel_matches_one_process"
@@ -1162,10 +1200,16 @@ _MOE_EVIDENCE = {
     )
     * 2
     + ("eager: no compiled region",),
+    # 2 gloo ranks, DDP + ep_sync_expert_grads vs one process.
+    **{
+        (family, "lora+experts", False, "ep"): (_EP_FAMILY + f"[{family}]",) * 2
+        + ("eager: no compiled region",)
+        for family in ("qwen3_moe", "olmoe", "glm4_moe", "gpt_oss")
+    },
 }
 
 
-# Cells table only; a real model is read by structure (_direct_params, _tp_blocker).
+# Cells table only; a real model is read by structure (_direct_params, _tp_blocker, _ep_blocker).
 _DIRECT_PARAM_FAMILIES = ("gpt_oss",)
 _TP_BLOCKED_FAMILIES = {
     "deepseek_v2": "multi-head latent attention (MLA, kv_lora_rank)",
@@ -1173,9 +1217,19 @@ _TP_BLOCKED_FAMILIES = {
     "deepseek_v32": "multi-head latent attention (MLA, kv_lora_rank)",
     "olmoe": "q_norm / k_norm normalize all heads' features, not one head",
 }
+# From tp_native.expert_shard_problem on transformers 5.24.
+_EP_BLOCKED_FAMILIES = {
+    "jetmoe": "its experts forward takes (layer_input,), not (hidden_states, top_k_index, top_k_weights)",
+    "longcat_flash": "zero / identity experts: the experts module has no integer num_experts",
+    "hunyuan_v1_moe": "the experts module has no integer num_experts",
+}
 
 
 def _moe_note(family, precision, aux, mode):
+    if mode == "ep":
+        if family in _EP_BLOCKED_FAMILIES:
+            return f"refused by the ep x model rule (models/tp_native.py: {_EP_BLOCKED_FAMILIES[family]})"
+        return "expert parallel runs (models/ep_native.py); no gloo parity run covers this cell yet"
     if mode == "tp":
         if family in _DIRECT_PARAM_FAMILIES:
             return "refused by the tp x model rule (its attention owns the sinks parameter)"
@@ -1456,6 +1510,31 @@ CELLS = (
     + _LEGACY_CELLS
     + (
         Cell(
+            "Inkling 2 x ep",
+            {
+                "family": ("inkling2", "inkling2_loop"),
+                "moe": (True,),
+                "ep": (2, 4, 8),
+                "dp": (2, 4, 8),
+                "tp": _ONE,
+                "pp": _ONE,
+                "cp": _ONE,
+                "fsdp2": (False,),
+                "mode": ("lora", "qlora"),
+                "router_aux_loss": (False,),
+                "packing": (False,),
+                "vllm": (False,),
+                "block_swap": (False,),
+                "compile": ("eager",),
+            },
+            _INKLING2_EP
+            + "test_ep_lora_matches_one_process + "
+            + _INKLING2_EP
+            + "test_ep_four_bit_experts_quantized_on_load",
+            _INKLING2_EP + "test_ep_env_trainer_matches_one_process",
+            "eager: Inkling 2 trains with UNSLOTH_COMPILE_DISABLE=partial",
+        ),
+        Cell(
             "block swap x tp",
             {"block_swap": (True,), "tp": _AboveOne()},
             None,
@@ -1556,7 +1635,9 @@ def check(query: Query, cells: bool = True) -> None:
 
 def _describe(q: Query) -> str:
     parts = [
-        f"{name} {getattr(q, name)}" for name in ("pp", "dp", "cp", "tp") if getattr(q, name) > 1
+        f"{name} {getattr(q, name)}"
+        for name in ("pp", "dp", "cp", "tp", "ep")
+        if getattr(q, name) > 1
     ]
     if q.cp > 1 and q.cp_backend:
         parts.append(f"cp_backend {q.cp_backend}")
@@ -1568,6 +1649,7 @@ def _describe(q: Query) -> str:
         + f", trainer {q.trainer}"
         + (f", model {q.family}" if q.family else "")
         + (f"; models/tp_native.py: {q.tp_blocker}" if q.tp > 1 and q.tp_blocker else "")
+        + (f"; models/ep_native.py: {q.ep_blocker}" if q.ep > 1 and q.ep_blocker else "")
     )
 
 
@@ -1688,6 +1770,32 @@ def _tp_blocker(model, tp) -> str:
     except Exception:
         return ""
     return ""
+
+
+def _ep_blocker(model, ep) -> str:
+    """Why apply_expert_parallel would refuse `model` at `ep` ranks, "" if it shards. Strings and
+    structureless models fall back to _EP_BLOCKED_FAMILIES."""
+    if not isinstance(ep, int) or ep <= 1 or model is None:
+        return ""
+    family = model if isinstance(model, str) else _model_traits(model)[0]
+    if not callable(getattr(model, "named_modules", None)):
+        return _EP_BLOCKED_FAMILIES.get(family, "")
+    try:
+        from .models import ep_native, tp_native
+        if ep_native.is_expert_parallel(model):
+            return ""
+        problems = [
+            tp_native.expert_shard_problem(block, ep)
+            for block in tp_native.moe_blocks_with_experts(model)
+        ]
+    except Exception:
+        return _EP_BLOCKED_FAMILIES.get(family, "")
+    if any(problem is None for problem in problems):
+        return ""
+    reasons = (
+        "; ".join(sorted({str(p) for p in problems})[:3]) or "no module has an `experts` child"
+    )
+    return f"no shardable MoE block ({reasons})"
 
 
 def _low_precision(model) -> Optional[str]:
@@ -1980,6 +2088,7 @@ def query_from(
         windowed = windowed,
         direct_params = _direct_params(model),
         tp_blocker = _tp_blocker(model, getattr(layout, "tp", 1)),
+        ep_blocker = _ep_blocker(model, getattr(layout, "ep", 1)),
         mode = mode,
         packing = packing,
         cp_backend = backend,
@@ -1989,6 +2098,7 @@ def query_from(
         tp = getattr(layout, "tp", 1),
         pp = getattr(layout, "pp", 1),
         cp = cp_size,
+        ep = getattr(layout, "ep", 1),
         fsdp2 = bool(getattr(layout, "fsdp2", False)),
         vllm = bool(
             getattr(model, "vllm_engine", None) is not None or getattr(args, "use_vllm", False)
