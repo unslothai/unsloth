@@ -2702,8 +2702,10 @@ const ThreadComposerDock: FC<{
       const target = Number.parseFloat(
         editor?.style.getPropertyValue("--composer-editor-height") ?? "",
       );
+      // Expanded writing sizes the editor to max(target, fill height) with no transition: its live height is final.
+      const expanded = editor?.closest('[data-writing-expanded="true"]') != null;
       onHeightChange(
-        editor && Number.isFinite(target)
+        editor && !expanded && Number.isFinite(target)
           ? el.offsetHeight + target - editor.offsetHeight
           : el.offsetHeight,
       );

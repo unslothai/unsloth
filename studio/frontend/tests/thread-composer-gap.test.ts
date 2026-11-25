@@ -35,6 +35,12 @@ test("the spacer follows the composer's target height, not each eased frame", ()
     /editor\?\.style\.getPropertyValue\("--composer-editor-height"\)/,
   );
   assert.match(thread, /el\.offsetHeight \+ target - editor\.offsetHeight/);
+  // Expanded writing has no transition and may be taller than the target: its live height counts.
+  assert.match(
+    thread,
+    /editor\?\.closest\('\[data-writing-expanded="true"\]'\) != null/,
+  );
+  assert.match(thread, /editor && !expanded && Number\.isFinite\(target\)/);
 });
 
 test("opening or switching a thread never leaves stabilizer padding under the reply", () => {
