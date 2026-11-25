@@ -1466,6 +1466,39 @@ def park_ltx2_vae_encoder(
     return moved
 
 
+def unpark_ltx2_vae_encoder(
+    pipe: Any,
+    offload_policy: Any,
+    logger: Any = None,
+) -> int:
+    """For an image-conditioned request: bring a parked encoder back to the card for the whole request (it encodes in
+    both stages, so per-call moves would copy it four times), and return its MiB for the floor; 0 when it does not
+    park. The next unconditioned request parks it again."""
+    vae = getattr(pipe, "vae", None)
+    if vae is None or not ltx2_vae_encoder_parks(vae, offload_policy):
+        return 0
+    encoder = vae.encoder
+    mib = (
+        sum(
+            int(t.numel()) * int(t.element_size())
+            for t in list(encoder.parameters()) + list(encoder.buffers())
+        )
+        >> 20
+    )
+    try:
+        home = vae.__dict__.get(_LTX2_ENCODER_HOME)
+        if home is not None and _module_device(encoder) != home:
+            encoder.to(home)
+            if logger is not None:
+                logger.info(
+                    "video.ltx2: VAE encoder (%d MiB) on the card for an image-conditioned request",
+                    mib,
+                )
+        return mib
+    except Exception:  # noqa: BLE001 -- the wrapper still moves it per call; the floor counts it either way
+        return mib
+
+
 def ltx2_memory_levers(pipe: Any, offload_policy: Any) -> str:
     """The memory levers engaged on ``pipe`` ("" when none): part of the measured-peak key, so a peak recorded with a
     lever on never lowers the headroom of a load or request running with it off."""

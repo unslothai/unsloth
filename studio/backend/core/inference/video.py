@@ -15614,12 +15614,27 @@ class VideoBackend:
                         device = device_obj,
                         rearm = False,
                     )
+                    # The floor leaves a parked LTX-2 VAE encoder out. An image-conditioned request keeps it on the
+                    # card for the request (and the floor counts it); any other request parks it again.
+                    from .video_ltx2 import park_ltx2_vae_encoder, unpark_ltx2_vae_encoder
+
+                    if first_pil is not None or last_pil is not None or bool(references):
+                        encoder_mib = unpark_ltx2_vae_encoder(
+                            state.pipe, state.offload_policy, logger
+                        )
+                    else:
+                        encoder_mib = 0
+                        park_ltx2_vae_encoder(state.pipe, state.offload_policy, logger)
+                    request_floor_mib = int(state.vram_floor_mib) + encoder_mib
+                    request_decode_floor_mib = getattr(state, "vram_decode_floor_mib", None)
+                    if request_decode_floor_mib is not None:
+                        request_decode_floor_mib = int(request_decode_floor_mib) + encoder_mib
                     if residency_fit:
                         # Resident groups are allocated, so the reserved term below still counts them as available.
                         video_stream_residency.fit_for_request(
                             state.pipe,
                             device = device_obj,
-                            floor_mib = state.vram_floor_mib,
+                            floor_mib = request_floor_mib,
                             width = width,
                             height = height,
                             frames = frames,
@@ -15634,20 +15649,16 @@ class VideoBackend:
                             frames = frames,
                             device = device_obj,
                         )
-                    # the floor excludes a parked LTX-2 VAE encoder: undo a move back onto the card first
-                    from .video_ltx2 import park_ltx2_vae_encoder
-
-                    park_ltx2_vae_encoder(state.pipe, state.offload_policy, logger)
                     available_bytes = _request_available_bytes(device_obj, torch.cuda)
                     shortfall = video_offload_shortfall_message(
                         family = fam.name,
-                        floor_mib = int(state.vram_floor_mib),
+                        floor_mib = request_floor_mib,
                         available_mib = int(available_bytes // (1024 * 1024)),
                         placement = f"'{state.offload_policy}' offload",
                         width = width,
                         height = height,
                         frames = frames,
-                        decode_floor_mib = getattr(state, "vram_decode_floor_mib", None),
+                        decode_floor_mib = request_decode_floor_mib,
                         measured_extra_mib = video_stream_residency.measured_extra_mib(
                             calibration, int(width) * int(height) * int(frames)
                         ),

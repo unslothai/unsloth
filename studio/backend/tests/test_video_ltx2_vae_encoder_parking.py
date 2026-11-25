@@ -174,3 +174,28 @@ def test_a_failed_onload_sends_the_whole_encoder_back_to_the_host(monkeypatch):
         vae.encode(torch.randn(1, 4))
     # the first layer had reached the card: the finally sent the whole encoder back
     assert {where[id(m)] for m in vae.encoder.modules()} == {"cpu"}
+
+
+def test_an_image_conditioned_request_keeps_the_encoder_on_the_card_for_the_request(card):
+    """Two-stage image conditioning encodes in both stages: one move in for the request, none per call, and the
+    floor counts the encoder; the next text-only request parks it again."""
+    vae = AutoencoderKLLTX2Video()
+    vae.encoder = torch.nn.Module()
+    vae.encoder.register_buffer("w", torch.zeros(3 << 19, dtype = torch.bfloat16))  # 3 MiB
+    pipe = types.SimpleNamespace(vae = vae)
+    L.park_ltx2_vae_encoder(pipe, "streaming")
+    assert _encoder_device(vae, card) == "cpu"
+    assert L.unpark_ltx2_vae_encoder(pipe, "streaming") == 3
+    assert _encoder_device(vae, card) == "cuda:0"
+    trail = []
+    real = torch.nn.Module.to
+    torch.nn.Module.to = lambda self, *a, **k: (trail.append(a), real(self, *a, **k))[1]
+    try:
+        L.unpark_ltx2_vae_encoder(pipe, "streaming")
+    finally:
+        torch.nn.Module.to = real
+    assert trail == []  # already on the card: no move
+    L.park_ltx2_vae_encoder(pipe, "streaming")
+    assert _encoder_device(vae, card) == "cpu"
+    # tiers that never park: nothing to count
+    assert L.unpark_ltx2_vae_encoder(pipe, "none") == 0
