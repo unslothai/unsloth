@@ -1582,6 +1582,9 @@ class FastLanguageModel(FastLlamaModel):
                 trust_remote_code = trust_remote_code,
                 local_files_only = kwargs.get("local_files_only", False),
                 cache_dir = kwargs.get("cache_dir", None),
+                quantization_config = None
+                if fast_inference
+                else kwargs.get("quantization_config", None),
                 revision = revision,
             )
         else:
@@ -1859,6 +1862,9 @@ class FastLanguageModel(FastLlamaModel):
                     trust_remote_code = trust_remote_code,
                     local_files_only = kwargs.get("local_files_only", False),
                     cache_dir = kwargs.get("cache_dir", None),
+                    quantization_config = None
+                    if fast_inference
+                    else kwargs.get("quantization_config", None),
                 )
             # Pre-quantized models allowed? AMD Instinct GPUs need blocksize = 128 on bitsandbytes < 0.49.2, and our pre-quants use 64.
             if not ALLOW_PREQUANTIZED_MODELS and model_name.lower().endswith(
@@ -2573,6 +2579,9 @@ class FastModel(FastBaseModel):
                 load_in_fp8 = load_in_fp8,
                 local_files_only = kwargs.get("local_files_only", False),
                 cache_dir = kwargs.get("cache_dir", None),
+                quantization_config = None
+                if fast_inference
+                else kwargs.get("quantization_config", None),
                 revision = revision,
             )
         else:
@@ -3125,6 +3134,9 @@ class FastModel(FastBaseModel):
                     load_in_4bit,
                     local_files_only = kwargs.get("local_files_only", False),
                     cache_dir = kwargs.get("cache_dir", None),
+                    quantization_config = None
+                    if fast_inference
+                    else kwargs.get("quantization_config", None),
                 )
             # Pre-quantized models allowed? AMD Instinct GPUs need blocksize = 128 on bitsandbytes < 0.49.2, and our pre-quants use 64.
             if not ALLOW_PREQUANTIZED_MODELS and model_name.lower().endswith(

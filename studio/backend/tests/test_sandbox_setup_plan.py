@@ -387,7 +387,7 @@ def windows(monkeypatch):
             raise FileNotFoundError("no runtime")
         return "identity"
 
-    monkeypatch.setattr(mxc_runtime, "installation_identity", identity)
+    monkeypatch.setattr(mxc_runtime, "verified_installation_identity", identity)
     monkeypatch.setattr(mxc_runtime, "probe_host_prep_steps", lambda **_kw: state["missing"])
     monkeypatch.setattr(mxc_policy, "dacl_fallback_enabled", lambda: state["opted_in"])
     monkeypatch.setattr(

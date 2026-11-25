@@ -12944,6 +12944,7 @@ async def _maybe_auto_switch_model(
                                         current_request_counted = True,
                                         **load_internal_kw,
                                     )
+                                    model_slots.mark_used(None)
                                     return
                                 await load_model_gated(
                                     load_request,
@@ -16511,12 +16512,12 @@ def _mlx_estimate_load_in_4bit(config, request) -> bool:
     # Same order as the load route: a full-finetune output loads 16-bit before any tier check.
     if not _effective_load_in_4bit(config, request.load_in_4bit):
         return False
-    from utils.transformers_version import latest_tier_active_for
+    from utils.transformers_version import latest_tier_forces_16bit
 
     identifier = getattr(config, "identifier", None)
     return not _offline_guarded(
         (identifier, getattr(config, "base_model", None)),
-        latest_tier_active_for,
+        latest_tier_forces_16bit,
         identifier,
         request.hf_token,
     )
@@ -18633,6 +18634,13 @@ class _ScopedLoadAttempt(NamedTuple):
     subject: str
     cancel_event: threading.Event
     cancel_complete: threading.Event
+    # The model_path as the client sent it; a scoped cancel may name either spelling.
+    submitted: str = ""
+
+
+def _names_attempt(attempt: _ScopedLoadAttempt, model_path: str) -> bool:
+    wanted = model_path.strip().casefold()
+    return wanted in {p.strip().casefold() for p in (attempt.model_path, attempt.submitted) if p}
 
 
 _scoped_load_attempts_lock = threading.Lock()
@@ -18710,6 +18718,7 @@ def _begin_load_attempt(request: LoadRequest, current_subject: str) -> _ScopedLo
         subject = current_subject,
         cancel_event = threading.Event(),
         cancel_complete = threading.Event(),
+        submitted = getattr(request, "_submitted_model_path", None) or request.model_path,
     )
     if attempt.request_id is None:
         return attempt
@@ -18723,10 +18732,7 @@ def _begin_load_attempt(request: LoadRequest, current_subject: str) -> _ScopedLo
                 detail = "A load with this request ID is already in progress",
             )
         tombstone = _scoped_load_cancel_tombstones.pop(key, None)
-        if (
-            tombstone is not None
-            and tombstone[0].strip().casefold() == attempt.model_path.strip().casefold()
-        ):
+        if tombstone is not None and _names_attempt(attempt, tombstone[0]):
             attempt.cancel_event.set()
             attempt.cancel_complete.set()
         _scoped_load_attempts[key] = attempt
@@ -18772,7 +18778,7 @@ def _cancel_scoped_load_attempt(
                 now + _SCOPED_LOAD_CANCEL_TOMBSTONE_TTL_S,
             )
             return None, False
-        if attempt.model_path.strip().casefold() != request.model_path.strip().casefold():
+        if not _names_attempt(attempt, request.model_path):
             return None, False
         attempt.cancel_event.set()
         is_running = _running_load_attempt is attempt
@@ -19096,6 +19102,7 @@ async def load_model_gated(
             replaced_token = _replaced_primary_sink.set(replaced_slots)
             # Chosen under the gate, so two loads cannot both claim an empty primary.
             extra = await _select_load_slot(request)
+            model_slots.mark_used(extra)
             new_slot = extra is not None and extra not in model_slots.slots
             if new_slot:
                 model_slots.slots.append(extra)
@@ -19172,6 +19179,17 @@ async def load_model_gated(
                             # Only a primary beside an image or video model refuses a partial fit.
                             request = await _make_room_for_primary(request, exc, evicted)
                             continue
+                        if (
+                            new_slot
+                            and request.gguf_variant
+                            and await asyncio.to_thread(
+                                _repo_loaded_beside, request.model_path, extra
+                            )
+                        ):
+                            if exc.capped and not request.force_alongside:
+                                request = request.model_copy(update = {"force_alongside": True})
+                                continue
+                            raise _QuantShortBesideItsRepo() from exc
                         from utils.multi_model_settings import get_multi_model_mode
 
                         if await asyncio.to_thread(get_multi_model_mode) == "always":
@@ -19293,9 +19311,24 @@ async def load_model_gated(
                             request.model_path,
                         )
                         extra.llama._last_kill_monotonic = time.monotonic()
-            if extra is not None:
-                from core.inference.llama_keepwarm import _note_activity
+            twin, survivor = (
+                await asyncio.to_thread(_served_twice, extra)
+                if new_slot and extra is not None
+                else (False, None)
+            )
+            from core.inference.llama_keepwarm import _note_activity
 
+            # A request that already reached the new copy keeps it.
+            if twin and model_slots.claim_victim(extra):
+                # A low-disk fallback can land on a quant already served beside it: keep that one.
+                model_slots.loading = None
+                await asyncio.to_thread(model_slots.drop, extra)
+                await asyncio.to_thread(release_chat_gpu_claim)
+                routed_slot.set(survivor)
+                model_slots.mark_used(survivor)
+                _note_activity()
+                extra = None
+            if extra is not None:
                 extra.request = request
                 extra.last_used = time.monotonic()
                 # A fresh load is use: without it the idle loop drops the slot on its next tick.
@@ -19326,6 +19359,8 @@ async def load_model_gated(
     except MultiModelAlwaysRefusal as exc:
         path = getattr(getattr(fastapi_request, "url", None), "path", None)
         raise exc.as_http_exception(path) from exc
+    except _QuantShortBesideItsRepo:
+        pass
     finally:
         if sink_token is not None:
             eviction_sink.reset(sink_token)
@@ -19343,6 +19378,68 @@ async def load_model_gated(
             with _scoped_load_attempts_lock:
                 _pending_load_attempts.pop(attempt.token, None)
             _finish_load_attempt(attempt)
+    token = _replaces_its_repo.set(True)
+    try:
+        return await load_model_gated(
+            request.model_copy(update = {"force_alongside": False}),
+            fastapi_request,
+            current_subject,
+            user_initiated = user_initiated,
+            current_request_counted = current_request_counted,
+            impl_kwargs = impl_kwargs,
+            background = background,
+        )
+    finally:
+        _replaces_its_repo.reset(token)
+
+
+class _QuantShortBesideItsRepo(Exception):
+    pass
+
+
+_TWIN_SETTINGS = (
+    "n_ctx",
+    "chat_template_override",
+    "cache_type_kv",
+    "disable_vision",
+    "speculative_type",
+    "spec_draft_n_max",
+    "n_parallel",
+    "reasoning_budget",
+    "reasoning_budget_message",
+    "engram_precision",
+    "extra_args",
+)
+
+
+def _served_twice(slot) -> tuple[bool, Optional[_ExtraSlot]]:
+    """Whether another slot serves this one's exact checkpoint and quant, and which."""
+
+    def identity(llama):
+        if not getattr(llama, "is_loaded", False) or not getattr(llama, "hf_variant", None):
+            return None
+        # Request-visible settings only, not placement or admission flags.
+        intent = getattr(llama, "last_load_intent", None)
+        served = tuple(getattr(intent, name, None) for name in _TWIN_SETTINGS)
+        # The resolved files too: an updated cache entry is other weights under the same quant.
+        files = getattr(llama, "_gguf_load_identity", None)
+        # Case kept: two local paths differing only in case are two files on most filesystems.
+        return (str(llama.model_identifier), llama.hf_variant.casefold(), served, files)
+
+    own = identity(slot.llama)
+    for other in (None, *model_slots.visible()):
+        if other is not slot and own is not None:
+            if identity(model_slots.in_slot(other, get_llama_cpp_backend)) == own:
+                return True, other
+    return False, None
+
+
+def _repo_loaded_beside(repo: str, exclude) -> bool:
+    return any(
+        model_slots.in_slot(slot, lambda: _loaded_satisfies(repo))
+        for slot in (None, *model_slots.visible())
+        if slot is not exclude
+    )
 
 
 def _refuse_oom_beside_media_under_always() -> None:
@@ -19523,6 +19620,10 @@ def chat_eviction_reports() -> list[dict]:
 
 # The serving primary an ordinary load replaces, reported in ``evicted_slots`` only: the legacy
 # ``evicted`` list drives the "to make room" toast, which an ordinary switch must not show.
+# Set for the retry of a quant that did not fit beside its repo's loaded quant: it replaces that one.
+_replaces_its_repo: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "_replaces_its_repo", default = False
+)
 _replaced_primary_sink: contextvars.ContextVar[Optional[list]] = contextvars.ContextVar(
     "replaced_primary_sink", default = None
 )
@@ -19605,19 +19706,21 @@ async def _select_load_slot(request: LoadRequest) -> Optional[_ExtraSlot]:
     if is_npu_model_path(request.model_path) or request.engine != "auto":
         routed_slot.set(None)
         return None
+    from utils.multi_model_settings import get_multi_model_enabled
+
+    keeps = await asyncio.to_thread(get_multi_model_enabled)
     requested = _model_key(request)
     slot = await _route_to_extra_slot(requested)
-    if slot is None and request.gguf_variant:
-        # Another quant replaces its repo in place: requests name the repo, so a copy beside it is unreachable.
+    beside = keeps and request.alongside and not _replaces_its_repo.get()
+    if slot is None and request.gguf_variant and not beside:
+        # Another quant replaces its repo in place unless models are kept loaded and it fits beside it.
         slot = await _route_to_extra_slot(request.model_path)
         if slot is not None or await asyncio.to_thread(_loaded_satisfies, request.model_path):
             return slot
     if slot is not None:
         return slot
-    from utils.multi_model_settings import get_multi_model_enabled
-
     # Off unless enabled in Settings; a kept model left busy when disabled is evicted once idle.
-    if not await asyncio.to_thread(get_multi_model_enabled):
+    if not keeps:
         if model_slots.slots:
             from core.inference.gpu_arbiter import note_evictions
 
@@ -20615,11 +20718,11 @@ async def _load_model_impl(
             )
         # Latest-sidecar models load 16-bit (worker refuses bnb 4-bit); size the guard to match.
         if effective_load_in_4bit and not config.is_gguf:
-            from utils.transformers_version import latest_tier_active_for
+            from utils.transformers_version import latest_tier_forces_16bit
             if await asyncio.to_thread(
                 _offline_guarded,
                 (model_identifier, config.identifier, getattr(config, "base_model", None)),
-                latest_tier_active_for,
+                latest_tier_forces_16bit,
                 config.identifier,
                 request.hf_token,
             ):
@@ -21840,16 +21943,27 @@ async def validate_model(
         # Mirror /load's latest-sidecar 16-bit flip: an active sidecar forces 16-bit; an offered upgrade
         # only without a custom-code (auto_map) fallback, which still loads 4-bit.
         if effective_load_in_4bit and not is_gguf:
-            from utils.transformers_version import latest_tier_active_for
+            from utils.transformers_version import (
+                latest_tier_forces_16bit,
+                latest_tier_upgrade_keeps_4bit,
+            )
             _install_only_upgrade = (
                 transformers_upgrade is not None
                 and transformers_upgrade.installable
                 and not requires_trust_remote_code
+                and not await asyncio.to_thread(
+                    _offline_guarded,
+                    (model_identifier, config.identifier, getattr(config, "base_model", None)),
+                    latest_tier_upgrade_keeps_4bit,
+                    transformers_upgrade.model_type,
+                    config.identifier,
+                    request.hf_token,
+                )
             )
             if _install_only_upgrade or await asyncio.to_thread(
                 _offline_guarded,
                 (model_identifier, config.identifier, getattr(config, "base_model", None)),
-                latest_tier_active_for,
+                latest_tier_forces_16bit,
                 config.identifier,
                 request.hf_token,
             ):
@@ -22132,7 +22246,7 @@ async def check_transformers_upgrade_route(
     for training. Never raises: an unreadable model reports "no upgrade needed" and the
     caller proceeds exactly as it did before.
     """
-    from utils.transformers_version import latest_tier_active_for
+    from utils.transformers_version import latest_tier_load_policy, latest_tier_upgrade_keeps_4bit
 
     if account_access.managed_account():
         for ref in (
@@ -22199,27 +22313,42 @@ async def check_transformers_upgrade_route(
         logger.debug("Custom-code check failed for '%s': %s", model_name, exc)
 
     latest_tier_active = False
+    active_forces_16bit = False
     try:
-        latest_tier_active = await asyncio.to_thread(
+        latest_tier_active, active_forces_16bit = await asyncio.to_thread(
             _offline_guarded,
-            # latest_tier_active_for resolves a remote adapter's base itself, so fetch it too.
+            # The policy resolves a remote adapter's base itself, so fetch it too.
             tuple(targets),
-            latest_tier_active_for,
+            latest_tier_load_policy,
             load_target,
             request.hf_token,
         )
     except Exception as exc:
         logger.debug("Latest-tier check failed for '%s': %s", model_name, exc)
+    upgrade_keeps_4bit = False
+    if transformers_upgrade is not None:
+        try:
+            upgrade_keeps_4bit = await asyncio.to_thread(
+                _offline_guarded,
+                tuple(targets),
+                latest_tier_upgrade_keeps_4bit,
+                transformers_upgrade.model_type,
+                load_target,
+                request.hf_token,
+            )
+        except Exception as exc:
+            logger.debug("4-bit check failed for '%s': %s", model_name, exc)
 
     # Only install-only upgrades or active sidecars force 16-bit; offered ones do not (bnb 4-bit feeds unvalidated paths for new architectures).
     install_only_upgrade = bool(
         transformers_upgrade is not None
         and transformers_upgrade.installable
         and not requires_trust_remote_code
+        and not upgrade_keeps_4bit
     )
     # Already on the sidecar: the install does not strand the checkpoint; resume is refused regardless.
     install_breaks_exact_resume = False
-    if request.resume_run_id and not latest_tier_active:
+    if request.resume_run_id and not latest_tier_active and not upgrade_keeps_4bit:
         install_breaks_exact_resume = await asyncio.to_thread(
             _install_breaks_exact_resume, request.resume_run_id
         )
@@ -22232,7 +22361,9 @@ async def check_transformers_upgrade_route(
         # Already booleans; bool() here would trip the GGUF consistency guard's raw-YAML check.
         requires_trust_remote_code = requires_trust_remote_code,
         latest_tier_active = latest_tier_active,
-        forces_16bit = latest_tier_active or install_only_upgrade,
+        forces_16bit = active_forces_16bit or install_only_upgrade,
+        # The Configure card reads this: installable && !forces_16bit alone means the custom-code case.
+        sidecar_keeps_4bit = upgrade_keeps_4bit or (latest_tier_active and not active_forces_16bit),
         install_breaks_exact_resume = install_breaks_exact_resume,
     )
 
@@ -22246,8 +22377,12 @@ async def install_latest_transformers_route(
     request: InstallLatestTransformersRequest, current_subject: str = Depends(get_current_subject)
 ):
     """
-    Consented install of the latest transformers release into the persistent
-    .venv_t5_latest sidecar.
+    Install of the latest transformers release into the persistent .venv_t5_latest sidecar.
+
+    PyPI releases are package-scanned first (utils.security.package_scan) and installed
+    with their sha256 digests pinned; a flagged release is refused. With ``auto`` (no
+    dialog shown) only a clean scan installs, otherwise this answers requires_consent
+    before reserving anything. transformers main always needs the user's confirmation.
 
     Called after the user confirms the transformers-upgrade dialog raised by /validate
     (requires_transformers_upgrade). The requested version must match the current latest
@@ -22255,8 +22390,15 @@ async def install_latest_transformers_route(
     re-verified server-side); the sidecar then participates in routing on
     this and every future start. A pip install runs off-loop, so this can take a minute.
     """
-    from utils.transformers_latest import install_latest_transformers
+    from utils.transformers_latest import auto_install_preflight, install_latest_transformers
     from utils.transformers_version import end_sidecar_swap, try_begin_sidecar_swap
+
+    if request.auto:
+        # Scan before reserving or waiting on any gate: a release that needs the user's
+        # confirmation must not cancel chats or unload anything first.
+        blocked = await asyncio.to_thread(auto_install_preflight, request.version)
+        if blocked is not None:
+            return InstallLatestTransformersResponse(**blocked)
 
     # Reserve the swap FIRST, before any await: training/export starts check this reservation,
     # and a live worker would lazy-import from the swapped .venv_t5_latest.
@@ -22359,7 +22501,9 @@ async def install_latest_transformers_route(
         def _run_install() -> dict:
             # Release in the thread, not the route, so cancellation keeps the reservation held.
             try:
-                return install_latest_transformers(request.version, _unload_before_swap, True)
+                return install_latest_transformers(
+                    request.version, _unload_before_swap, True, auto = request.auto
+                )
             finally:
                 end_sidecar_swap()
 
@@ -22414,6 +22558,9 @@ async def install_latest_transformers_route(
         if owns_reservation:
             end_sidecar_swap()
     if not result["success"]:
+        if result.get("requires_consent") or result.get("scan_status") == "flagged":
+            # Structured so the client can raise the dialog with the reason.
+            return InstallLatestTransformersResponse(**result, model_unloaded = unloaded_chat["v"])
         if result.get("latest_version") or result.get("latest_main_version"):
             # Structured failure so the dialog can update to the newer release
             # and offer a retry that can actually succeed.
@@ -22808,7 +22955,7 @@ async def unload_model(request: UnloadRequest, current_subject: str = Depends(ge
 async def _unload_model_impl(request: UnloadRequest, current_subject: str):
     """Routes the unload to llama-server for GGUF models and to Unsloth otherwise."""
     extra = (
-        await _route_to_extra_slot(request.model_path)
+        await _route_to_extra_slot(request.model_path, touch = False)
         if request.cancel_load_request_id is None
         else None
     )
@@ -23227,7 +23374,7 @@ async def get_sampling_defaults(model: str, current_subject: str = Depends(get_c
     """
     # A kept model answers its own requests: route as the request path does, so the backend getters
     # below read that slot rather than the primary.
-    await _route_to_extra_slot(model)
+    await _route_to_extra_slot(model, touch = False)
     return await asyncio.to_thread(_sampling_defaults_for, model)
 
 
@@ -23696,19 +23843,26 @@ async def get_status(current_subject: str, model: Optional[str] = None):
         response.multi_model_mode = await asyncio.to_thread(get_multi_model_mode)
         active = response.active_model
         response.serving = [active] if active else []
-        response.serving_checkpoints = [response.model_identifier or active] if active else []
+        served = [(response.model_identifier or active, response.gguf_variant)] if active else []
         for other in (None, *model_slots.visible()):
             if other is not slot:
-                entries, checkpoints = await asyncio.to_thread(
+                entries, checkpoints, quant = await asyncio.to_thread(
                     model_slots.in_slot, other, _slot_entries_and_checkpoints
                 )
                 response.loaded += [e["id"] for e in entries if e["id"] not in response.loaded]
                 for e in entries:
                     # By checkpoint: two local files can share a label.
-                    checkpoint = checkpoints.get(e["id"]) or e["id"]
-                    if checkpoint not in response.serving_checkpoints:
+                    key = (checkpoints.get(e["id"]) or e["id"], quant.get(e["id"]))
+                    if key not in served:
                         response.serving.append(e["id"])
-                        response.serving_checkpoints.append(checkpoint)
+                        served.append(key)
+        names = [c for c, _ in served]
+        response.serving_checkpoints = [
+            f"{c}:{q}" if q and names.count(c) > 1 else c for c, q in served
+        ]
+        response.serving_quants = [q for _, q in served]
+        if active and response.model_identifier:
+            response.model_identifier = response.serving_checkpoints[0]
     return response
 
 
@@ -23771,19 +23925,22 @@ def _npu_resident_mib() -> "tuple[Optional[int], Optional[bool]]":
         return None, None
 
 
-def _slot_entries_and_checkpoints() -> "tuple[list[dict], dict[str, str]]":
-    """This slot's /v1/models entries, and the checkpoint each local one is loaded from."""
+def _slot_entries_and_checkpoints() -> "tuple[list[dict], dict[str, str], dict[str, str]]":
+    """This slot's /v1/models entries, the checkpoint each local one is loaded from, and its quant."""
     checkpoints: dict[str, str] = {}
+    quant: dict[str, str] = {}
     llama = get_llama_cpp_backend()
     if getattr(llama, "is_loaded", False):
         public = _llama_public_model_id(llama)
         if public:
             checkpoints[public] = _llama_status_model_ids(llama)[1] or public
+            if getattr(llama, "hf_variant", None):
+                quant[public] = llama.hf_variant
     backend = _peek_inference_backend()
     name = getattr(backend, "active_model_name", None)
     if name:
         checkpoints[_orchestrator_public_model_id(backend) or name] = name
-    return _slot_model_objects(), checkpoints
+    return _slot_model_objects(), checkpoints, quant
 
 
 async def _slot_status(current_subject: str):
@@ -38874,11 +39031,19 @@ _OWNED_BY = "unsloth-studio"
 
 
 def _openai_model_objects() -> list[dict]:
-    return [
-        entry
-        for slot in (None, *model_slots.visible())
-        for entry in model_slots.in_slot(slot, _slot_model_objects)
-    ]
+    def objects_and_quant():
+        llama = get_llama_cpp_backend()
+        loaded = getattr(llama, "is_loaded", False)
+        return _slot_model_objects(), getattr(llama, "hf_variant", None) if loaded else None
+
+    models: list[dict] = []
+    for slot in (None, *model_slots.visible()):
+        entries, quant = model_slots.in_slot(slot, objects_and_quant)
+        for entry in entries:
+            if quant and any(m["id"] == entry["id"] and m.get("quant") != quant for m in models):
+                entry = {**entry, "id": f"{entry['id']}:{quant}", "quant": quant}
+            models.append(entry)
+    return models
 
 
 def _slot_model_objects() -> list[dict]:
@@ -40961,6 +41126,9 @@ def _names_studio_embedder(requested: str) -> Optional[str]:
     repo = rag_config.effective_gguf_repo_for_embedding_model(model)
     label = _public_embedding_name(model)
     wanted = requested.strip()
+    # A connection reference reads as a tagged identity, so the configured name is matched first.
+    if wanted == model:
+        return model
     if rag_config.embedding_identity_model(wanted) is not None:
         current = rag_embeddings.embedding_identity(model)
         if wanted in (current, _public_embedding_identity(current, model, label)):
@@ -41111,6 +41279,14 @@ async def _studio_embeddings(
         encoding_format = "float"
     dimensions = body.get("dimensions")
     model_name = model_name or rag_config.effective_embedding_model()
+    # Same rule as chat: an API key must not spend a saved connection's credential.
+    if rag_config.is_connection_model(model_name) and not _request_may_use_saved_provider_key(
+        request
+    ):
+        raise HTTPException(
+            status_code = 403,
+            detail = "Studio's embedding model runs on a saved connection, which needs a UI session.",
+        )
     label = _public_embedding_name(model_name)
 
     def _embed():
@@ -45429,7 +45605,7 @@ async def chat_count_tokens(
     # Admitted only while idle, not atomic by design; also blocks second-tab and /api runs the UI misses.
     from core.chat_memory import apply_to_request
 
-    await _route_to_extra_slot(payload.model)
+    await _route_to_extra_slot(payload.model, touch = False)
     if model_slots.routed_generation_count() > 0:
         raise HTTPException(
             status_code = 503,

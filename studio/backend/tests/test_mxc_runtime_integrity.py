@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
 from types import SimpleNamespace
@@ -289,3 +290,166 @@ def test_windows_11_24h2_still_launches_wxc(runtime, monkeypatch):
     )
     with mxc_runtime.acquire_runtime(package_root = runtime) as lease:
         assert lease.info.path == (runtime / "wxc-exec.exe").resolve()
+
+
+def _count_hashes(monkeypatch):
+    calls = []
+    real = mxc_runtime._sha256_file
+    monkeypatch.setattr(
+        mxc_runtime, "_sha256_file", lambda path: calls.append(Path(path).name) or real(path)
+    )
+    return calls
+
+
+def _no_lock_guard(monkeypatch):
+    monkeypatch.setattr(mxc_runtime, "_require_supported_windows", lambda: None)
+    monkeypatch.setattr(mxc_runtime, "_open_artifact_guard", lambda path: Path(path).open("rb"))
+
+
+def test_a_launch_lease_hashes_the_runtime_once_under_its_guard(runtime, monkeypatch):
+    _no_lock_guard(monkeypatch)
+    order = []
+    real_guard = mxc_runtime._open_artifact_guard
+    monkeypatch.setattr(
+        mxc_runtime, "_open_artifact_guard", lambda path: order.append("guard") or real_guard(path)
+    )
+    real = mxc_runtime._sha256_file
+    monkeypatch.setattr(
+        mxc_runtime, "_sha256_file", lambda path: order.append("hash") or real(path)
+    )
+    with mxc_runtime.acquire_runtime(package_root = runtime) as lease:
+        assert lease.info.sha256 == hashlib.sha256(_WXC).hexdigest()
+    # The digest is taken while the deny-write guard is held, and only once.
+    assert order == ["guard", "hash"]
+
+
+def test_a_corrupt_runtime_still_fails_the_lease_after_identity_was_cached(
+    runtime, monkeypatch, tmp_path
+):
+    _no_lock_guard(monkeypatch)
+    monkeypatch.setattr(mxc_runtime, "_installed_package_root", lambda: runtime)
+    mxc_runtime.forget_verified_runtime()
+    mxc_runtime.installation_identity()
+    (runtime / "wxc-exec.exe").write_bytes(b"x" * len(_WXC))
+    with pytest.raises(mxc_runtime.MxcRuntimeUnavailable, match = "digest"):
+        mxc_runtime.acquire_runtime(package_root = runtime)
+
+
+def test_installation_identity_rehashes_only_when_the_file_changes(runtime, monkeypatch):
+    monkeypatch.setattr(mxc_runtime, "_installed_package_root", lambda: runtime)
+    mxc_runtime.forget_verified_runtime()
+    calls = _count_hashes(monkeypatch)
+    first = mxc_runtime.installation_identity()
+    for _ in range(5):
+        assert mxc_runtime.installation_identity() == first
+    assert calls == ["wxc-exec.exe"]
+
+    # Same size, new bytes: the stamp (mtime / file id) changes, so it is verified again and refused.
+    path = runtime / "wxc-exec.exe"
+    path.unlink()
+    path.write_bytes(b"y" * len(_WXC))
+    with pytest.raises(mxc_runtime.MxcRuntimeUnavailable, match = "digest"):
+        mxc_runtime.installation_identity()
+    assert len(calls) == 2
+
+
+def test_installation_identity_cache_keys_on_the_approved_pin(runtime, monkeypatch):
+    monkeypatch.setattr(mxc_runtime, "_installed_package_root", lambda: runtime)
+    mxc_runtime.forget_verified_runtime()
+    mxc_runtime.installation_identity()
+    # A new pin with the same file on disk must not reuse the old verdict.
+    monkeypatch.setattr(mxc_runtime, "WXC_EXEC_SHA256", "0" * 64)
+    with pytest.raises(mxc_runtime.MxcRuntimeUnavailable, match = "digest"):
+        mxc_runtime.installation_identity()
+
+
+def test_status_and_repair_verify_the_bytes_even_with_a_cached_identity(runtime, monkeypatch):
+    monkeypatch.setattr(mxc_runtime, "_installed_package_root", lambda: runtime)
+    monkeypatch.setattr(mxc_runtime, "_file_stamp", lambda path: ("unchanged",))
+    mxc_runtime.forget_verified_runtime()
+    mxc_runtime.installation_identity()
+    path = runtime / "wxc-exec.exe"
+    with open(path, "r+b") as stream:
+        stream.write(b"x")
+    calls = _count_hashes(monkeypatch)
+    mxc_runtime.installation_identity()
+    assert calls == []
+    with pytest.raises(mxc_runtime.MxcRuntimeUnavailable, match = "digest"):
+        mxc_runtime.verified_installation_identity()
+    from core.inference import sandbox_setup_plan
+
+    assert sandbox_setup_plan.windows_runtime_installed() is False
+
+
+@pytest.mark.parametrize("acquire", ["acquire_runtime", "acquire_host_prep"])
+def test_an_unsupported_host_is_refused_before_any_artifact_is_opened(
+    runtime, monkeypatch, acquire
+):
+    monkeypatch.setattr(mxc_runtime, "_require_supported_windows", lambda: None)
+    monkeypatch.setattr(
+        mxc_runtime, "_open_artifact_guard", lambda path: pytest.fail(f"opened {path}")
+    )
+
+    def unsupported():
+        raise mxc_runtime.MxcRuntimeUnavailable("unsupported architecture")
+
+    monkeypatch.setattr(mxc_runtime, "_expected_architecture", unsupported)
+    with pytest.raises(mxc_runtime.MxcRuntimeUnavailable, match = "unsupported architecture"):
+        getattr(mxc_runtime, acquire)(package_root = runtime)
+
+
+def test_a_failed_reverification_drops_the_old_verdict(runtime, monkeypatch):
+    monkeypatch.setattr(mxc_runtime, "_installed_package_root", lambda: runtime)
+    mxc_runtime.forget_verified_runtime()
+    mxc_runtime.installation_identity()
+    path = runtime / "wxc-exec.exe"
+    good = path.read_bytes()
+    stamp = path.stat()
+    path.write_bytes(b"x" * len(good))
+    os.utime(path, ns = (stamp.st_atime_ns, stamp.st_mtime_ns + 10**9))
+    with pytest.raises(mxc_runtime.MxcRuntimeUnavailable, match = "digest"):
+        mxc_runtime.installation_identity()
+    assert mxc_runtime._identity_cache == {}
+
+
+def test_a_backend_refresh_forgets_the_runtime_identity(runtime, monkeypatch):
+    from core.inference import mxc_probe
+
+    monkeypatch.setattr(mxc_runtime, "_installed_package_root", lambda: runtime)
+    mxc_runtime.forget_verified_runtime()
+    mxc_runtime.installation_identity()
+    assert mxc_runtime._identity_cache
+    mxc_probe.invalidate_cache()
+    assert mxc_runtime._identity_cache == {}
+
+
+def test_a_failed_full_verification_also_drops_the_cached_identity(runtime, monkeypatch):
+    monkeypatch.setattr(mxc_runtime, "_installed_package_root", lambda: runtime)
+    monkeypatch.setattr(mxc_runtime, "_file_stamp", lambda path: ("unchanged",))
+    mxc_runtime.forget_verified_runtime()
+    mxc_runtime.installation_identity()
+    with open(runtime / "wxc-exec.exe", "r+b") as stream:
+        stream.write(b"x")
+    with pytest.raises(mxc_runtime.MxcRuntimeUnavailable):
+        mxc_runtime.verified_installation_identity()
+    with pytest.raises(mxc_runtime.MxcRuntimeUnavailable, match = "digest"):
+        mxc_runtime.installation_identity()
+
+
+def test_a_path_redirected_while_the_guard_opens_is_refused(runtime, monkeypatch):
+    _no_lock_guard(monkeypatch)
+    moved = {}
+    real_resolve = Path.resolve
+
+    def resolve(self, *args, **kwargs):
+        target = real_resolve(self, *args, **kwargs)
+        return moved.get(str(target), target)
+
+    def guard(path):
+        moved[str(real_resolve(path))] = real_resolve(path).with_name("elsewhere.exe")
+        return Path(path).open("rb")
+
+    monkeypatch.setattr(Path, "resolve", resolve)
+    monkeypatch.setattr(mxc_runtime, "_open_artifact_guard", guard)
+    with pytest.raises(mxc_runtime.MxcRuntimeUnavailable, match = "changed during acquisition"):
+        mxc_runtime.acquire_runtime(package_root = runtime)

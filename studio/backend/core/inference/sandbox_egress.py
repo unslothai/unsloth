@@ -291,6 +291,8 @@ class EgressProxy:
 
     def close(self) -> None:
         with self._lock:
+            if self._closed:
+                return  # a second wake-up could reach whatever reused the port
             self._closed = True
             sockets = list(self._sockets)
             self._sockets.clear()
@@ -300,5 +302,21 @@ class EgressProxy:
                 sock.shutdown(socket.SHUT_RDWR)
             except OSError:
                 pass
+        # Closing the listener does not interrupt accept(), which waited out its 0.25 s timeout.
+        self._wake_listener()
         self._listener.close()
         self._thread.join(timeout = 2)
+
+    def _wake_listener(self) -> None:
+        try:
+            address = self._listener.getsockname()
+            waker = socket.socket(self._listener.family, socket.SOCK_STREAM)
+        except OSError:
+            return
+        try:
+            waker.settimeout(0.5)
+            waker.connect(address)
+        except OSError:
+            pass
+        finally:
+            waker.close()

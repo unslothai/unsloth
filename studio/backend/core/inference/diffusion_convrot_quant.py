@@ -2691,7 +2691,7 @@ def _unlisted_latency(
         for name, fn in fns.items():
             graph = torch.cuda.CUDAGraph()
             # Serialised with Studio's captures and recorded thread_local on this card's own capture stream.
-            with _capturing(), card_graph(graph, index):
+            with _capturing(index), card_graph(graph, index):
                 for _ in range(reps):
                     for x in xs:
                         fn(x)
