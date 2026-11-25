@@ -1765,18 +1765,52 @@ export async function clearBackendChats(
   };
 }
 
-export async function buildBackendChatExport(): Promise<{
+type BackendChatExport = {
   exportedAt: string;
   version: number;
   threadCount: number;
   projects?: ProjectRecord[];
   threads: ThreadRecord[];
   messages: MessageRecord[];
-}> {
-  const response = await authFetch("/api/chat/export");
-  const data = await parseJsonOrThrow<Awaited<
-    ReturnType<typeof buildBackendChatExport>
-  > | null>(response);
+};
+
+export async function buildBackendChatExport(
+  archived = false,
+): Promise<BackendChatExport> {
+  const response = await authFetch(
+    `/api/chat/export${archived ? "?archived=true" : ""}`,
+  );
+  if (!response.ok) await parseJsonOrThrow(response);
+  const reader = response.body?.getReader();
+  const decoder = new TextDecoder();
+  const messages: MessageRecord[] = [];
+  let head = null as BackendChatExport | null;
+  let data = null as BackendChatExport | null;
+  let pending: string[] = [];
+  const readLine = (line: string) => {
+    if (head === null) head = JSON.parse(`${line}]}`);
+    else messages.push(JSON.parse(line.endsWith(",") ? line.slice(0, -1) : line));
+  };
+  try {
+    while (reader) {
+      const { done, value } = await reader.read();
+      const text = done ? decoder.decode() : decoder.decode(value, { stream: true });
+      let start = 0;
+      for (let end = text.indexOf("\n"); end !== -1; end = text.indexOf("\n", start)) {
+        pending.push(text.slice(start, end));
+        readLine(pending.join(""));
+        pending = [];
+        start = end + 1;
+      }
+      pending.push(text.slice(start));
+      if (done) break;
+    }
+    const last = pending.join("");
+    if (head === null) data = JSON.parse(last);
+    else if (last === "]}") data = { ...head, messages };
+  } catch {
+    data = null;
+  }
   if (!data) throw new Error("The chat export did not download completely.");
   return data;
 }

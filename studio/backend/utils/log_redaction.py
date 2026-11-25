@@ -95,18 +95,23 @@ _SECRET_KEYS = (
 _KEY_START = r"(?<![A-Za-z0-9])"
 
 _PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
-    # Hugging Face
-    (re.compile(r"\bhf_(?:oauth_[A-Za-z0-9._~+/=-]{20,}|[A-Za-z0-9]{20,})"), "hf_" + REDACTED),
+    # Hugging Face, no \b: an escaped "\nhf_..." or "Bearer%20hf_..." still carries the token.
+    (re.compile(r"hf_(?:oauth_[A-Za-z0-9._~+/=-]{20,}|[A-Za-z0-9]{20,})"), "hf_" + REDACTED),
     # OpenAI and other sk- keys (project, Anthropic, OpenRouter). Not a word boundary: that also fires after a hyphen, eating checkpoint-sk-9f8a... in a filename.
     (
-        re.compile(r"(?<![A-Za-z0-9-])sk-(?:proj-|ant-api\d{2}-|or-v1-)?[A-Za-z0-9_-]{16,}"),
+        # sk-unsloth- also after a hyphen (run-sk-unsloth-x.json), never inside a word (task-unsloth-lora).
+        re.compile(
+            r"(?<![A-Za-z0-9-])sk-(?:proj-|ant-api\d{2}-|or-v1-)?[A-Za-z0-9_-]{16,}"
+            r"|(?<![A-Za-z0-9])sk-unsloth-\w+"
+        ),
         "sk-" + REDACTED,
     ),
     # Other vendor prefixes
     (
         re.compile(
-            r"\b(?:gsk_|xai-|ghp_|gho_|ghu_|ghs_|ghr_|github_pat_|glpat-|"
-            r"xox[abpsr]-|ya29\.)[A-Za-z0-9_.-]{16,}"
+            # Any GitHub token prefix is masked, even one cut short.
+            r"\b(?:(?:gsk_|xai-|glpat-|xox[abpsr]-|ya29\.)[A-Za-z0-9_.-]{16,}"
+            r"|(?:ghp_|gho_|ghu_|ghs_|ghr_|github_pat_)[A-Za-z0-9_.-]+)"
         ),
         REDACTED,
     ),
@@ -141,7 +146,7 @@ _FLAG_RE = re.compile(
 
 # An Authorization value whatever the scheme: the key/value rule captures only "Basic" and leaves the credential behind it. Same for a Cookie, which for Unsloth is the UI session.
 _SCHEMES = ("bearer", "basic", "digest", "token", "apikey")
-# A scheme word only introduces a credential when an Authorization header put it there, and the credential stops at a quote or structural delimiter, since \S+ swallowed the rest of the dict. Bare "digest sha256:..." and "token hf_..." are ordinary log content, and firing on the word alone blanked the digest a user came here to read.
+# A scheme word only introduces a credential when an Authorization header put it there, and the credential stops at a quote or structural delimiter, since \S+ swallowed the rest of the dict. Bare "digest sha256:..." and "token hf_..." are ordinary log content, and firing on the word alone blanked the digest a user came here to read. Inside the header the credential needs no shape check: a short token is still a token.
 _CREDENTIAL = r"[^\s\"',}\]]+"
 _AUTH_HEADER_RE = re.compile(
     r"(?i)((?:proxy-)?authorization[\"']?\s*[:=]\s*[\"']?"
@@ -334,7 +339,7 @@ def redact_log_text(text: str) -> str:
     lowered = _lowered(text)
     # Before the key/value rules: _KV_RE captures "Basic" from "Authorization: Basic dXNlcjpwdw==", masking the scheme and leaving the credential clear.
     if _has_folded(text, lowered, ("authorization",)):
-        text = _AUTH_HEADER_RE.sub(_redact_shaped, text)
+        text = _AUTH_HEADER_RE.sub(r"\1\2" + REDACTED, text)
         lowered = _lowered(text)
     if _has_folded(text, lowered, ("bearer",)):
         text = _SCHEME_RE.sub(_redact_shaped, text)

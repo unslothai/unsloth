@@ -1857,11 +1857,9 @@ RL_FUNCTIONS["sft_trainer"].append(sft_trainer_assistant_mask_fallback)
 
 
 def _unsloth_grpo_autocast_forced_float32(self):
-    # Stamped by from_pretrained: UNSLOTH_FORCE_FLOAT32 is process wide, so a model loaded after this trainer was built would answer for it here.
-    forced = getattr(getattr(self, "model", None), "_unsloth_forced_float32", None)
-    if forced is None:
-        forced = os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1"
-    return forced
+    # Stamped by from_pretrained: UNSLOTH_FORCE_FLOAT32 is process wide, so a model loaded after this trainer was built, or a model Unsloth never loaded, would answer for it here.
+    from unsloth.models._utils import _model_forced_float32
+    return _model_forced_float32(getattr(self, "model", None))
 
 
 def _unsloth_seq_packing_verify_verdict(model, kind, diff, result, ref, cmask):
@@ -3345,14 +3343,20 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
             indent_match = re.match(r"(\s*)", line)
             indent = indent_match.group(1) if indent_match else ""
 
+            # The sleep level is read and checked before wake_up: a bad VLLM_SLEEP_MODE fails before the
+            # rollout, not after it. Unset / blank is level 1 (offload weights); vLLM documents 0, 1 and 2.
             wrapped = (
+                f"{indent}_unsloth_sleep_level = None\n"
                 f"{indent}if hasattr(self, 'llm'):\n"
                 f"{indent}    if getattr(self.llm.llm_engine.vllm_config.model_config, 'enable_sleep_mode', False):\n"
+                f"{indent}        _unsloth_sleep_level = (os.environ.get('VLLM_SLEEP_MODE') or '').strip() or '1'\n"
+                f"{indent}        if _unsloth_sleep_level not in ('0', '1', '2'):\n"
+                f"{indent}            raise ValueError(f'Unsloth: VLLM_SLEEP_MODE must be 0, 1 or 2, got {{_unsloth_sleep_level!r}}.')\n"
+                f"{indent}        _unsloth_sleep_level = int(_unsloth_sleep_level)\n"
                 f"{indent}        self.llm.wake_up()\n"
                 f"{line}\n\n"
-                f"{indent}if hasattr(self, 'llm'):\n"
-                f"{indent}    if getattr(self.llm.llm_engine.vllm_config.model_config, 'enable_sleep_mode', False):\n"
-                f"{indent}        self.llm.sleep(os.environ.get('VLLM_SLEEP_MODE', 1))\n"
+                f"{indent}if _unsloth_sleep_level is not None:\n"
+                f"{indent}    self.llm.sleep(_unsloth_sleep_level)\n"
             )
 
             patched = patched[: match.start()] + wrapped + patched[match.end() :]
@@ -4732,13 +4736,65 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     multiplier = self.args.unsloth_logit_chunk_multiplier
 
             all_logprobs_list = []
+            # pad == eos: rows whose completion EOS shares the pad id (None otherwise, or with an older zoo).
+            _eos_rows = None
+            _eos_cmask = create_completion_attention_mask
             if pixel_values is None:
                 left_pad_tokens_per_prompt = calculate_pad_tokens_in_prompt(
                     input_ids, logits_to_keep, self.processing_class.pad_token_id
                 )
-                max_left_pad = torch.max(left_pad_tokens_per_prompt).item()
+                # Body-local: this source is copied out without this module's imports.
+                try:
+                    from unsloth_zoo.rl_replacements import (
+                        create_completion_attention_mask as _eos_cmask_live,
+                        grpo_pad_is_eos_rows as _grpo_pad_is_eos_rows,
+                    )
+                    import inspect as _eos_inspect
+
+                    # Right padding after a completion that stopped without an EOS (stop string, tool
+                    # turn) has the pad id too: only a helper reading TRL's completion_mask tells them apart.
+                    if (
+                        "completion_mask"
+                        not in _eos_inspect.signature(_grpo_pad_is_eos_rows).parameters
+                    ):
+                        _grpo_pad_is_eos_rows = None
+                except (ImportError, TypeError, ValueError):
+                    _grpo_pad_is_eos_rows = None
+                if _grpo_pad_is_eos_rows is not None and torch.is_tensor(attention_mask):
+                    _eos_rows = _grpo_pad_is_eos_rows(
+                        self,
+                        input_ids[:, -logits_to_keep:],
+                        completion_mask = attention_mask[:, -logits_to_keep:],
+                    )
+                    # The zoo loss keeps the EOS slot with old / ref logps only once this path scores it.
+                    self._unsloth_grpo_logps_cover_eos = True
+                    # The installed zoo's mask helper: a cached trainer copy may predate eos_rows.
+                    _eos_cmask = _eos_cmask_live
+                if _eos_rows is not None:
+                    # One host sync for both; no row ending on the pad id leaves nothing to keep, and
+                    # leaves PrefixGrouper on (Qwen-style pad <|endoftext|>, stop <|im_end|>).
+                    max_left_pad, _eos_any = torch.stack(
+                        [
+                            torch.max(left_pad_tokens_per_prompt),
+                            _eos_rows.any().to(left_pad_tokens_per_prompt.dtype),
+                        ]
+                    ).tolist()
+                    if not _eos_any:
+                        _eos_rows = None
+                else:
+                    max_left_pad = torch.max(left_pad_tokens_per_prompt).item()
                 input_ids = left_pack_padding(input_ids, self.processing_class.pad_token_id)
                 attention_mask = input_ids != self.processing_class.pad_token_id
+                if _eos_rows is not None:
+                    # Same slot as the zoo loss mask: the first pad-id token after the completion start.
+                    _eos_w = logits_to_keep + max_left_pad
+                    attention_mask[:, -_eos_w:] |= _eos_cmask(
+                        input_ids[:, -_eos_w:],
+                        left_pad_tokens_per_prompt,
+                        max_left_pad,
+                        self.processing_class.pad_token_id,
+                        eos_rows = _eos_rows,
+                    )
                 attention_mask = attention_mask.to(attention_mask.dtype)
             else:
                 max_left_pad = 0
@@ -4808,6 +4864,8 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 # Its extract_logps always projects with lm_head.weight.
                 and not _unsloth_head_hooked
                 and not getattr(unwrapped_model, "_unsloth_prefix_grouper_nograd_disabled", False)
+                # Its layout finds tokens by pad id, so it would drop a kept EOS that shares it.
+                and _eos_rows is None
             )
             if _pg_engage:
                 try:
@@ -4968,6 +5026,9 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 try:
                     _pk_pad = self.processing_class.pad_token_id
                     _pk_keep = input_ids != _pk_pad
+                    if _eos_rows is not None:
+                        # Same tokens as attention_mask: keep the real EOS that shares the pad id.
+                        _pk_keep = attention_mask.to(torch.bool)
                     _pk_len = _pk_keep.sum(dim = 1)
                     _pk_len_cpu = _pk_len.tolist()  # single GPU->CPU sync, reused below
                     _pk_nz_cpu = [_n for _n in _pk_len_cpu if _n > 0]
@@ -4997,8 +5058,14 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     if _pk_fits:
                         _pk_flat = input_ids[_pk_keep].unsqueeze(0)
                         # Per-row completion mask (same as the loss); prompt-only rows count as inactive.
-                        _pk_cmask = create_completion_attention_mask(
-                            input_ids[:, -_pk_W:], left_pad_tokens_per_prompt, max_left_pad, _pk_pad
+                        _pk_cmask = (
+                            create_completion_attention_mask if _eos_rows is None else _eos_cmask
+                        )(
+                            input_ids[:, -_pk_W:],
+                            left_pad_tokens_per_prompt,
+                            max_left_pad,
+                            _pk_pad,
+                            **({} if _eos_rows is None else {"eos_rows": _eos_rows}),
                         )
                         _pk_active = int(_pk_cmask.any(dim = 1).sum())
                     if _pk_fits and (_pk_ok is True or _pk_active >= 2):
@@ -5375,6 +5442,8 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                     completion_input_ids_chunk,
                                     temperature,
                                 )
+                    # The [B, L, V] logits (or hidden states) of this chunk must not live through the next chunk's forward.
+                    del logits_chunk, completion_input_ids_chunk
                     # Avoids a race with GPT OSS offload_embbed=True; it does not appear to slow models down.
                     device_synchronize()
                     all_logprobs_list.append(logprobs_chunk)

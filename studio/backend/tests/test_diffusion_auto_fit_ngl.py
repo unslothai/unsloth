@@ -176,9 +176,19 @@ def _launch(
     monkeypatch.delenv("DG_GPU", raising = False)
     seen = {}
 
+    real_popen = llama_cpp_module.subprocess.Popen
+
     class _FakePopen:
         pid = 999_999_999
         stdout = iter(())
+
+        def __new__(cls, cmd, *args, **kw):
+            # subprocess is one module, so this patch also catches other callers: on macOS
+            # process_lifetime reads the child's start time with `ps -o lstart=`. Only the shim
+            # launch is faked and recorded; anything else runs for real.
+            if list(cmd)[:3] != ["python", "-m", "shim"]:
+                return real_popen(cmd, *args, **kw)
+            return super().__new__(cls)
 
         def __init__(self, cmd, **kw):
             seen["cmd"] = list(cmd)
@@ -195,7 +205,7 @@ def _launch(
     monkeypatch.setattr(
         LlamaCppBackend, "_effective_gpu_count", staticmethod(lambda *_a: len(gpus))
     )
-    monkeypatch.setattr(llama_cpp_module, "_swa_cache_path", lambda: tmp_path / "swa.json")
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     monkeypatch.setattr(llama_cpp_module.subprocess, "Popen", _FakePopen)
 
     def _health(**_kw):

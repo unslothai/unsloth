@@ -482,6 +482,30 @@ def video_te_quant_request(
     return mode, True
 
 
+def settle_video_te_quant(
+    fam: Any,
+    text_encoder_quant: Optional[str],
+    *,
+    base: Optional[str],
+    speed_mode: Optional[str],
+    target: Any,
+    failures: Optional[dict] = None,
+) -> tuple[Optional[str], bool, bool]:
+    """The loader's one text-encoder decision: ``(scheme, auto_selected, auto_dropped)``. ``scheme`` is the request
+    after auto resolution (LTX-2.5's hosted int8 settled too); ``auto_dropped``: an automatic pick ``target`` cannot run,
+    which the load replaces with the released (dense) encoder. The CPU host-RAM check prices this same answer."""
+    scheme, auto = video_te_quant_request(fam, text_encoder_quant, base = base, speed_mode = speed_mode)
+    if getattr(fam, "name", None) == "ltx-2.5":
+        # Settle auto once so the memory plan and the encoder worker read one decision.
+        from .video_ltx25 import ltx25_resolve_te_request
+        scheme = ltx25_resolve_te_request(scheme, base, failures)
+    dropped = False
+    if auto:
+        from . import diffusion_precision as _precision
+        dropped = not _precision.te_quant_supported(target, scheme)
+    return scheme, auto, dropped
+
+
 def _te_base_is_official(fam: Any, base: str) -> bool:
     """The load's base is the family's registered base (or a verified equivalent), by exact id after mirror and HF
     cache canonicalization: no final-folder-name match."""
@@ -533,6 +557,116 @@ def refuse_cpu_dense_video_pick(
     )
 
 
+def _resident_video_cpu_release_gb() -> float:
+    """CPU host GB the resident video model hands back when a load replaces it (0 when none is resident on the CPU)."""
+    try:
+        state = getattr(_backend, "_state", None) if _backend is not None else None
+        if state is None or getattr(state, "device", None) != "cpu":
+            return 0.0
+        from .video_cpu_host import (
+            cpu_video_host_need,
+            cpu_video_working_set_gb,
+            gguf_copy_gb,
+            single_file_packed_gb,
+        )
+
+        fam = state.family
+        kind = state.kind
+        repo = getattr(state, "repo_id", None)
+        filename = getattr(state, "gguf_filename", None)
+        # The resident checkpoint's own storage: a GGUF copied into memory (mmap hook off) or packed fp8 single file.
+        copy_gb = gguf_copy_gb(fam, repo, filename) if kind == "gguf" else None
+        packed_gb = single_file_packed_gb(fam, repo, filename) if kind == "single_file" else None
+        scheme = getattr(state, "text_encoder_quant", None)
+        scheme = (
+            None if str(scheme or "").strip().lower() in ("", "none", "off", "auto") else scheme
+        )
+        need = cpu_video_host_need(
+            fam,
+            model_kind = kind,
+            te_scheme = scheme,
+            te_hosted = bool(scheme) and getattr(fam, "name", None) == "ltx-2.5",
+            transformer_quant = getattr(state, "transformer_quant", None),
+            gguf_copy_gb = copy_gb,
+            single_file_packed_gb = packed_gb,
+        )
+        return max(0.0, need.total_gb - cpu_video_working_set_gb(fam)) if need is not None else 0.0
+    except Exception:  # noqa: BLE001 -- no reading credits nothing
+        return 0.0
+
+
+def refuse_video_cpu_host_ram(
+    fam: Any,
+    *,
+    model_kind: str,
+    text_encoder_quant: Optional[str] = None,
+    transformer_quant: Optional[str] = None,
+    speed_mode: Optional[str] = None,
+    base_repo: Optional[str] = None,
+    checkpoint_filename: Optional[str] = None,
+    checkpoint_repo: Optional[str] = None,
+) -> None:
+    """RuntimeError (the routes' 409) for a video load the CPU-only host cannot hold. A no-op unless the diffusion
+    target is the CPU: the probe-free reading returns first on an accelerator host, so this runs no GPU probe and is
+    safe while training holds the card. Prices the encoder this loader settles on (``settle_video_te_quant``) and
+    the GGUF storage path its mmap hook takes."""
+    from . import diffusion_device
+    from .video_cpu_host import cpu_video_host_shortfall, gguf_copy_gb, single_file_packed_gb
+
+    if not diffusion_device.diffusion_target_is_cpu():
+        return
+    target = resolve_diffusion_device_target()
+    if getattr(target, "backend", None) != "cpu":
+        return
+    if getattr(fam, "name", None) != "minimax-h3" and not getattr(fam, "bf16_components_gb", None):
+        return  # nothing to size
+    try:
+        base = (
+            checkpoint_repo
+            if model_kind == "pipeline"
+            else resolve_video_base_repo(fam, base_repo, checkpoint_repo)
+        )
+        scheme, auto, dropped = settle_video_te_quant(
+            fam, text_encoder_quant, base = base, speed_mode = speed_mode, target = target
+        )
+        from .diffusion_precision import normalize_te_quant
+
+        scheme = None if (auto and dropped) else normalize_te_quant(scheme)
+        te_hosted = te_hosted_available = False
+        if getattr(fam, "name", None) == "ltx-2.5":
+            from .video_ltx25 import ltx25_te_prequant_sources
+            te_hosted_available = bool(ltx25_te_prequant_sources("int8", base))
+            te_hosted = bool(scheme) and te_hosted_available
+        copy_gb = (
+            gguf_copy_gb(fam, checkpoint_repo, checkpoint_filename)
+            if model_kind == "gguf"
+            else None
+        )
+        packed_gb = (
+            single_file_packed_gb(fam, checkpoint_repo, checkpoint_filename)
+            if model_kind == "single_file"
+            else None
+        )
+    except Exception:  # noqa: BLE001 -- unsizable (an unsupported request is refused by the precision checks)
+        return
+    shortfall = cpu_video_host_shortfall(
+        fam,
+        model_kind = model_kind,
+        te_scheme = scheme,
+        te_hosted = te_hosted,
+        te_hosted_available = te_hosted_available,
+        # What _load_impl resolves the request to: Speed "off" keeps an unset / auto DiT dense (comfy_keep False).
+        transformer_quant = video_transformer_quant_request(transformer_quant, speed_mode),
+        gguf_copy = copy_gb,
+        single_file_packed = packed_gb,
+        release_gb = _resident_video_cpu_release_gb(),
+    )
+    if shortfall is None:
+        return
+    logger.error("video.cpu_host_ram: refusing load: %s", shortfall)
+    raise RuntimeError(shortfall)
+
+
 def assert_video_precision_available(
     fam: Any,
     *,
@@ -545,12 +679,24 @@ def assert_video_precision_available(
     checkpoint_repo: Optional[str] = None,
     speed_mode: Optional[str] = None,
     loras_active: bool = False,
+    base_repo: Optional[str] = None,
 ) -> None:
     """Must run in the route before the GPU is taken, because begin_load evicts chat first."""
     from .diffusion_nvfp4_flag import refuse_disabled_nvfp4
 
     refuse_disabled_nvfp4(
         transformer_quant = transformer_quant, text_encoder_quant = text_encoder_quant
+    )
+    # CPU-only torch: refuse a load the float32 host floor cannot fit, before the eviction and the pull.
+    refuse_video_cpu_host_ram(
+        fam,
+        model_kind = model_kind,
+        text_encoder_quant = text_encoder_quant,
+        transformer_quant = transformer_quant,
+        speed_mode = speed_mode,
+        base_repo = base_repo,
+        checkpoint_filename = checkpoint_filename,
+        checkpoint_repo = checkpoint_repo,
     )
     if getattr(fam, "name", None) == "minimax-h3" and model_kind == "pipeline":
         # Refuse before the eviction and the pull: without bf16 every precision lands on the dense weights.
@@ -5592,6 +5738,32 @@ def _video_group_hooked(module: Any) -> bool:
     return False
 
 
+def _video_calibration_companions(pipe: Any) -> dict[str, str]:
+    """The peak calibration key's run-once companion entry: whether the LTX-2 text connectors stream or sit resident
+    (a resident sample omits their streamed window, so the two placements never share peaks). Empty without them,
+    leaving every other family's key as it was."""
+    try:
+        from .diffusion_memory import run_once_companions
+        companions = run_once_companions(pipe)
+    except Exception:  # noqa: BLE001 -- unreadable: the key as before
+        return {}
+    if not companions:
+        return {}
+    streamed = any(_video_group_hooked(m) for m in companions.values())
+    return {"run_once_companions": "streamed" if streamed else "resident"}
+
+
+def _video_calibration_vocoder(pipe: Any) -> dict[str, str]:
+    """The peak calibration key's vocoder entry: the LTX-2.3/2.5 vocoder's decode precision (its float32 pass and
+    the switched-off stored dtype peak differently, so they never share peaks). Empty for every other vocoder."""
+    try:
+        from .video_ltx2 import vocoder_precision
+        precision = vocoder_precision(getattr(pipe, "vocoder", None))
+    except Exception:  # noqa: BLE001 -- unreadable: the key as before
+        return {}
+    return {"vocoder_precision": precision} if precision else {}
+
+
 def _video_offload_vram_floor_mib(
     pipe: Any,
     plan: Any,
@@ -5618,6 +5790,12 @@ def _video_offload_vram_floor_mib(
         sizes: dict[str, int] = {}
         modules: dict[str, Any] = {}
         seen: set[int] = set()
+        from .video_ltx2 import ltx2_vae_encoder_parks
+
+        vae = components.get("vae")
+        if isinstance(vae, torch.nn.Module) and ltx2_vae_encoder_parks(vae, policy):
+            # on the host except while an image is encoded, before the connectors and the DiT run
+            seen |= {id(t) for t in chain(vae.encoder.parameters(), vae.encoder.buffers())}
         for name, module in components.items():
             if not isinstance(module, torch.nn.Module):
                 continue
@@ -5647,6 +5825,11 @@ def _video_offload_vram_floor_mib(
             )
             if bool(getattr(plan, "stream_text_encoders", False)):
                 streamed |= encoders
+            from .diffusion_memory import run_once_companions
+
+            # Run-once companions count resident before placement: _apply_group_offload streams them only when the
+            # host can pin them. ``applied`` reads their hooks, so a streamed placement records the lower floor.
+            encoders |= {n for n in run_once_companions(pipe) if n in sizes}
         elif policy == OFFLOAD_STREAMING:
             from .diffusion_memory import run_once_companions
             encoders |= {n for n in run_once_companions(pipe) if n in sizes}
@@ -5976,8 +6159,11 @@ def _video_tiled_decode_mib(
     frames: Optional[int],
     available_mib: int,
     device: Any = None,
+    decode_floor_mib: Optional[int] = None,
 ) -> Optional[int]:
     """The request guard's decode-phase price above the decode-phase weights (LTX-2 wide tiles), or None (flat estimate).
+    ``decode_floor_mib``: the decode-phase weights this request holds (the request guard's own figure, e.g. with an
+    image-conditioned request's VAE encoder), so they are not charged a second time as credit beyond the room.
     Priced at the tile the decode takes with the room the live tiler reads (driver free + reusable cache, CUDA graph
     pools excluded, less the VRAM Budget reserve); whatever ``available_mib`` credits beyond that room (graph pools,
     groups still resident) is charged to the decode too, so the guard admits it only when the tile fits that room."""
@@ -5990,7 +6176,9 @@ def _video_tiled_decode_mib(
         return None
     if not (width and height and frames):
         return None
-    decode_floor = getattr(state, "vram_decode_floor_mib", None)
+    decode_floor = decode_floor_mib
+    if decode_floor is None:
+        decode_floor = getattr(state, "vram_decode_floor_mib", None)
     if decode_floor is None:
         decode_floor = getattr(state, "vram_floor_mib", None)
     if decode_floor is None:
@@ -6017,6 +6205,123 @@ def _video_tiled_decode_mib(
         return None
 
 
+# "0" prices LTX-2.5's denoise phase with the generic base overhead again.
+VIDEO_LTX25_DENOISE_PRICE_ENV = "UNSLOTH_VIDEO_LTX25_DENOISE_PRICE"
+# Measured on Colab G4 (LTX-2.5 t2v, streaming, int8 DiT, two-stage, all three levers): peak above the floor is 424 MiB
+# in the connector phase; in the denoise 536 / 900 / 899 / 1,725 MiB at 2,688 / 6,144 / 6,160 / 14,080 final-stage
+# latent tokens, plus ~564 MiB outside the allocator (the 6 GiB OOM margin at 1280x704x121).
+_LTX25_CONNECTOR_PHASE_MIB = 430
+_LTX25_DENOISE_FIXED_MIB = 260
+_LTX25_DENOISE_MIB_PER_TOKEN = 0.105
+_LTX25_DENOISE_HEADROOM = 1.15
+_LTX25_OUTSIDE_TORCH_MIB = 640
+
+
+def _memory_levers_key(state: Any) -> dict[str, str]:
+    from .video_ltx2 import ltx2_memory_levers
+    levers = ltx2_memory_levers(
+        getattr(state, "pipe", None), getattr(state, "offload_policy", None)
+    )
+    return {"memory_levers": levers} if levers else {}
+
+
+_LTX25_MEASURED_FPS = 24
+
+
+def _ltx25_denoise_price_mib(
+    state: Any,
+    *,
+    family: Optional[str],
+    width: Optional[int],
+    height: Optional[int],
+    frames: Optional[int],
+    conditioned: bool,
+    cfg: bool,
+    fps: Optional[float] = None,
+) -> Optional[int]:
+    """The request guard's denoise headroom above the floor for an LTX-2.5 render the measurements cover, else None
+    (the base overhead stands). Measured: the distilled two-stage render without CFG; the dev checkpoint renders in
+    one stage outside the connector reuse, and CFG batches the negative rows beside the positive ones, so neither
+    releases the prompt rows. Never above the base overhead plus the parked encoder, which the floor without the
+    parking counted: a request the old price admitted stays admitted."""
+    if (os.environ.get(VIDEO_LTX25_DENOISE_PRICE_ENV) or "").strip().lower() in (
+        "0",
+        "off",
+        "false",
+        "no",
+    ):
+        return None
+    if not (width and height and frames) or conditioned or cfg or family != "ltx-2.5":
+        return None
+    # audio tokens scale with frames / fps: below the measured rate the audio branch outgrows the price
+    if fps is not None and float(fps) < _LTX25_MEASURED_FPS:
+        return None
+    if getattr(state, "offload_policy", None) != OFFLOAD_STREAMING:
+        return None
+    if getattr(state, "transformer_quant", None) != "int8":
+        return None
+    try:
+        import math
+
+        from .video_ltx2 import _LTX2_LEAN_CONNECTOR_ATTR, ltx2_vae_encoder_parks
+        from .video_ltx25 import (
+            RELEASE_SHORT_ATTR,
+            compact_conditioning_enabled,
+            prompt_rows_release_supported,
+            release_prompt_rows_enabled,
+            two_stage_enabled,
+        )
+
+        pipe = getattr(state, "pipe", None)
+        connectors = getattr(pipe, "connectors", None)
+        vae = getattr(pipe, "vae", None)
+        if bool(getattr(pipe, "_unsloth_ltx25_dev", False)):
+            return None
+        if not getattr(connectors, _LTX2_LEAN_CONNECTOR_ATTR, False):
+            return None
+        if not (
+            two_stage_enabled()
+            and compact_conditioning_enabled()
+            and release_prompt_rows_enabled()
+            and prompt_rows_release_supported()
+        ):
+            return None
+        if getattr(connectors, RELEASE_SHORT_ATTR, False):
+            return None
+        # the allowance outside the allocator was measured on Linux CUDA (Colab G4)
+        import sys
+
+        import torch
+
+        from .rocm_bf16 import is_rocm_torch
+
+        if (
+            not sys.platform.startswith("linux")
+            or is_rocm_torch(torch)
+            or not str(getattr(state, "device", "") or "").startswith("cuda")
+        ):
+            return None
+        if vae is None or not ltx2_vae_encoder_parks(vae, state.offload_policy):
+            return None
+        encoder = list(vae.encoder.parameters()) + list(vae.encoder.buffers())
+        if not encoder or any(t.device.type != "cpu" for t in encoder):
+            return None
+        parked_mib = sum(int(t.numel()) * int(t.element_size()) for t in encoder) >> 20
+        spatial = int(getattr(pipe, "vae_spatial_compression_ratio", 32) or 32)
+        temporal = int(getattr(pipe, "vae_temporal_compression_ratio", 8) or 8)
+        tokens = (
+            (int(width) // spatial) * (int(height) // spatial) * ((int(frames) - 1) // temporal + 1)
+        )
+        activations = max(
+            _LTX25_CONNECTOR_PHASE_MIB,
+            _LTX25_DENOISE_FIXED_MIB + _LTX25_DENOISE_MIB_PER_TOKEN * tokens,
+        )
+        price = int(math.ceil(activations * _LTX25_DENOISE_HEADROOM)) + _LTX25_OUTSIDE_TORCH_MIB
+        return min(price, DEFAULT_BASE_OVERHEAD_MIB + parked_mib)
+    except Exception:  # noqa: BLE001 -- unpriced: the base overhead stands
+        return None
+
+
 def video_offload_shortfall_message(
     *,
     family: str,
@@ -6029,8 +6334,11 @@ def video_offload_shortfall_message(
     decode_floor_mib: Optional[int] = None,
     measured_extra_mib: Optional[int] = None,
     decode_mib: Optional[int] = None,
+    denoise_mib: Optional[int] = None,
 ) -> Optional[str]:
     """Refusal when co-resident weights plus the activation headroom exceed the device, else None.
+    ``denoise_mib``: the denoise phase's headroom above the floor priced from measurements
+    (``_ltx25_denoise_price_mib``); it replaces the base overhead for that phase only.
     ``measured_extra_mib``: a recorded peak (above the request's start) of a completed request at least this large
     under the same load; it replaces the estimated headroom when it asks for less (margin and slack as the Wan
     residency fit uses).
@@ -6038,7 +6346,8 @@ def video_offload_shortfall_message(
     device during the decode (``decode_floor_mib``, the full floor when unknown), never beside the streamed DiT.
     ``decode_mib``: the decode phase priced from this request's tile (``admission_decode_mib``, headroom included);
     it replaces the base overhead and the decoded-clip share for that phase."""
-    headroom = DEFAULT_BASE_OVERHEAD_MIB
+    base = DEFAULT_BASE_OVERHEAD_MIB
+    headroom = base if denoise_mib is None else max(0, int(denoise_mib))
     full_floor_mib = int(floor_mib)
     required = int(floor_mib) + headroom
     if width and height and frames:
@@ -6051,7 +6360,7 @@ def video_offload_shortfall_message(
             estimate_video_runtime_mib(width = width, height = height, num_frames = frames)
             - _VIDEO_DENOISE_ACTIVATION_MIB,
         )
-        decode_headroom = headroom + clip_mib
+        decode_headroom = base + clip_mib
         if decode_mib is not None:
             # never above the flat estimate: what it admitted stays admitted
             decode_headroom = min(decode_headroom, max(0, int(decode_mib)))
@@ -6925,6 +7234,7 @@ class VideoBackend:
             checkpoint_repo = repo_id,
             speed_mode = speed_mode,
             loras_active = video_lora.has_active(loras),
+            base_repo = base_repo,
         )
         # Publish the companion claim with _loading, or a delete in the gap removes a needed repo.
         from .video_minimax_h3 import (
@@ -10491,27 +10801,20 @@ class VideoBackend:
         # matches), "none" / "off" keep the released one, an explicit scheme pins itself. An automatic pick this card
         # cannot run is dropped rather than refused.
         text_encoder_quant_requested = text_encoder_quant
-        text_encoder_quant, text_encoder_quant_auto = video_te_quant_request(
+        text_encoder_quant, text_encoder_quant_auto, te_auto_dropped = settle_video_te_quant(
             fam,
             text_encoder_quant,
             base = repo_id if kind == "pipeline" else base,
             speed_mode = speed_mode,
+            target = target,
+            failures = _te_prequant_failed,
         )
-        if fam.name == "ltx-2.5":
-            # Settle auto once so the memory plan and the encoder worker read one decision.
-            from .video_ltx25 import ltx25_resolve_te_request
-            text_encoder_quant = ltx25_resolve_te_request(
-                text_encoder_quant,
-                repo_id if kind == "pipeline" else base,
-                _te_prequant_failed,
-            )
         # An automatic pick whose hosted pre-cast encoder could not be fetched loads the dense encoder: say so.
         te_auto_unavailable = auto_te_fetch_failure(
             fam, text_encoder_quant if text_encoder_quant_auto else None, _te_prequant_failed
         )
         if text_encoder_quant_auto:
-            from . import diffusion_precision as _precision
-            if not _precision.te_quant_supported(target, text_encoder_quant):
+            if te_auto_dropped:
                 text_encoder_quant = None
             elif not te_auto_unavailable:
                 logger.info(*auto_te_outcome_log(text_encoder_quant, fam.name, None, True))
@@ -11813,6 +12116,11 @@ class VideoBackend:
             if vae is not None and getattr(vae, "dtype", None) is not torch.float32:
                 vae.to(torch.float32)
 
+        # LTX-2.3/2.5 BWE vocoder (any load route): float32 forward on its stored weights, as Lightricks runs it.
+        if type(getattr(pipe, "vocoder", None)).__name__ == "LTX2VocoderWithBWE":
+            from .video_ltx2 import install_vocoder_fp32_forward
+            install_vocoder_fp32_forward(pipe.vocoder)
+
         if ltx25_client is not None:
             from .video_ltx25 import attach_to_pipeline
             attach_to_pipeline(
@@ -12470,6 +12778,10 @@ class VideoBackend:
         if effective_speed != SPEED_OFF:
             from .video_ltx2 import install_ltx2_full_mask_drop
             ltx2_mask_engaged = install_ltx2_full_mask_drop(pipe, logger = logger) > 0
+        # LTX-2.3 / 2.5 connectors: same maths, two fewer prompt-sized copies; before any offload hook wraps them.
+        from .video_ltx2 import install_ltx2_lean_connector_features
+
+        install_ltx2_lean_connector_features(pipe, logger = logger)
         # Flag read when pipelines first build frequency tables; needed before generation, not placement.
         force_float32_rope(pipe, target, logger = logger)
         # HunyuanVideo-1.5 VAE only: same mask values, so bit-identical, but held off on SPEED_OFF like the trim above.
@@ -12587,6 +12899,10 @@ class VideoBackend:
             # a transient OOM during setup may have re-planned to lower residency
             planned = plan
             plan = applied_plan(pipe, plan)
+            # LTX-2 under a streamed tier: the VAE encoder waits on the host until an image is encoded
+            from .video_ltx2 import park_ltx2_vae_encoder
+
+            park_ltx2_vae_encoder(pipe, offload_policy, logger)
             if cache_engaged == TC_FBCACHE and _step_cache_dropped_by_layer_split(pipe):
                 cache_engaged = _restore_step_cache_after_layer_split(
                     pipe,
@@ -12985,6 +13301,12 @@ class VideoBackend:
                     and pending_encoder[1] is ltx25_client
                 ):
                     self._ltx25_pending_encoder = None
+                try:
+                    # Under the teardown lock, after the token check, so an unload's cancel_all() sees the child.
+                    from . import diffusion_vae_prebuild
+                    diffusion_vae_prebuild.maybe_kick_video(pipe, logger)
+                except Exception:  # noqa: BLE001 - a prebuild, never a failed load
+                    pass
         logger.info(
             "video.loaded: %s (%s, %s, offload=%s, speed=%s, quant=%s)",
             repo_id,
@@ -15151,6 +15473,12 @@ class VideoBackend:
                 self._active_generate_cancel = cancel
                 begin_attention_run(state)
             apply_cpu_render_threads(state.device)
+            # A still-building VAE prebuild child holds VRAM the admission below reads as taken.
+            import sys
+
+            prebuild = sys.modules.get(f"{__package__}.diffusion_vae_prebuild")
+            if prebuild is not None:
+                prebuild.yield_to_render("video", logger)
             # Bound below, once the request is resolved. None means the failure beat the resolution, and there is
             # nothing truthful to report.
             request_shape: Optional[dict[str, Any]] = None
@@ -15490,6 +15818,10 @@ class VideoBackend:
                         last_frame = last_pil is not None,
                         references = len(references or ()),
                         cfg = bool(getattr(fam, "supports_cfg", True)) and float(guidance) > 1.0,
+                        **_video_calibration_companions(state.pipe),
+                        **_video_calibration_vocoder(state.pipe),
+                        # only when engaged, so a lever-off load keeps the key (and the peaks) it had before
+                        **_memory_levers_key(state),
                     )
                     # Tag BEFORE the residency fit: after a reload the fit reads process-wide peaks through this key.
                     video_stream_residency.arm_request(
@@ -15501,12 +15833,26 @@ class VideoBackend:
                         device = device_obj,
                         rearm = False,
                     )
+                    # the floor omits a parked encoder: an image-conditioned request onloads (and counts) it
+                    from .video_ltx2 import park_ltx2_vae_encoder, unpark_ltx2_vae_encoder
+
+                    if first_pil is not None or last_pil is not None or bool(references):
+                        encoder_mib = unpark_ltx2_vae_encoder(
+                            state.pipe, state.offload_policy, logger
+                        )
+                    else:
+                        encoder_mib = 0
+                        park_ltx2_vae_encoder(state.pipe, state.offload_policy, logger)
+                    request_floor_mib = int(state.vram_floor_mib) + encoder_mib
+                    request_decode_floor_mib = getattr(state, "vram_decode_floor_mib", None)
+                    if request_decode_floor_mib is not None:
+                        request_decode_floor_mib = int(request_decode_floor_mib) + encoder_mib
                     if residency_fit:
                         # Resident groups are allocated, so the reserved term below still counts them as available.
                         video_stream_residency.fit_for_request(
                             state.pipe,
                             device = device_obj,
-                            floor_mib = state.vram_floor_mib,
+                            floor_mib = request_floor_mib,
                             width = width,
                             height = height,
                             frames = frames,
@@ -15524,13 +15870,13 @@ class VideoBackend:
                     available_bytes = _request_available_bytes(device_obj, torch.cuda)
                     shortfall = video_offload_shortfall_message(
                         family = fam.name,
-                        floor_mib = int(state.vram_floor_mib),
+                        floor_mib = request_floor_mib,
                         available_mib = int(available_bytes // (1024 * 1024)),
                         placement = f"'{state.offload_policy}' offload",
                         width = width,
                         height = height,
                         frames = frames,
-                        decode_floor_mib = getattr(state, "vram_decode_floor_mib", None),
+                        decode_floor_mib = request_decode_floor_mib,
                         measured_extra_mib = video_stream_residency.measured_extra_mib(
                             calibration, int(width) * int(height) * int(frames)
                         ),
@@ -15541,6 +15887,19 @@ class VideoBackend:
                             frames = frames,
                             available_mib = int(available_bytes // (1024 * 1024)),
                             device = device_obj,
+                            decode_floor_mib = request_decode_floor_mib,
+                        ),
+                        denoise_mib = _ltx25_denoise_price_mib(
+                            state,
+                            family = fam.name,
+                            width = width,
+                            height = height,
+                            frames = frames,
+                            conditioned = first_pil is not None
+                            or last_pil is not None
+                            or bool(references),
+                            cfg = bool(getattr(fam, "supports_cfg", True)) and float(guidance) > 1.0,
+                            fps = out_fps,
                         ),
                     )
                     if shortfall is not None:
@@ -17089,6 +17448,12 @@ class VideoBackend:
                     state.bg_compile.close()
                 except Exception:  # noqa: BLE001 -- teardown is best effort
                     pass
+            # A prebuild child's CUDA context and VAE must not shadow the next load.
+            import sys
+
+            prebuild = sys.modules.get(f"{__package__}.diffusion_vae_prebuild")
+            if prebuild is not None:
+                prebuild.cancel_all("video")
             restore_backend_flags(state.backend_flags)
             _release_video_expandable()
             _release_rocm_tunableop(getattr(state, "pipe", None))

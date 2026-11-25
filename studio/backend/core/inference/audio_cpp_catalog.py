@@ -22,6 +22,7 @@ from core.inference.audio_workflows import AUDIO_WORKFLOW_IDS
 from hub.utils.state_dir import state_root
 from loggers import get_logger
 from models.inference import AudioCatalogModel, AudioCatalogResponse
+from utils.utils import hf_env_offline
 
 logger = get_logger(__name__)
 
@@ -351,7 +352,7 @@ def _build(network: bool, specs_dir: Optional[Path]) -> tuple[AudioCatalogRespon
         snapshots = []
     found: dict[str, tuple[Optional[str], Optional[dict]]] = {}
     probes: dict[str, Callable[[], Any]] = {}
-    online = network and not acm.hub_offline()
+    online = network and not hf_env_offline()
     # A family whose runtime spec places other folders but not this one: the name hint is wrong
     # (Voxtral-4B-TTS reads as voxtral_realtime), so the header decides instead.
     placed = set(targets.values())

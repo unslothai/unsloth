@@ -6,7 +6,7 @@ import test from "node:test";
 
 import {
   collectChatFiles,
-  createChatFilesCollector,
+  scheduleChatFiles,
 } from "../src/features/chat/lib/chat-files.ts";
 
 const sandboxResult = (
@@ -231,19 +231,78 @@ test("remote assistant image URLs are left out", () => {
   assert.equal(files.length, 0);
 });
 
-test("the collector reuses its result while the settled messages are unchanged", () => {
-  const collect = createChatFilesCollector();
-  const first = python("a1", sandboxResult("t1", ["a.txt"]));
-  const folders = [{ sessionId: "t1", names: ["a.txt"] }];
-  const before = collect([first], folders);
-  assert.equal(collect([first], folders), before);
-  const after = collect(
-    [first, python("a2", sandboxResult("t1", ["b.txt"]))],
-    folders,
+test("scheduleChatFiles yields between messages and matches collectChatFiles", () => {
+  const messages = Array.from({ length: 5 }, (_, i) =>
+    python(`a${i}`, sandboxResult("t1", [`f${i}.txt`])),
   );
-  assert.notEqual(after, before);
+  const folders = [{ sessionId: "t1", names: ["f0.txt", "extra.txt"] }];
+  const queue: (() => void)[] = [];
+  let result: unknown = null;
+  scheduleChatFiles(messages, folders, (files) => (result = files), {
+    sliceMs: 0,
+    schedule: (run) => queue.push(run),
+  });
+  let slices = 0;
+  while (queue.length) {
+    assert.equal(result, null);
+    queue.shift()?.();
+    slices += 1;
+  }
+  assert.equal(slices, messages.length);
+  assert.deepEqual(result, collectChatFiles(messages, folders));
+});
+
+test("a cancelled scheduleChatFiles never reports", () => {
+  const queue: (() => void)[] = [];
+  let reported = false;
+  const cancel = scheduleChatFiles(
+    [python("a1", sandboxResult("t1", ["a.txt"]))],
+    [],
+    () => (reported = true),
+    { schedule: (run) => queue.push(run) },
+  );
+  cancel();
+  while (queue.length) queue.shift()?.();
+  assert.equal(reported, false);
+});
+
+test("repeated names get the same suffixes as a fresh search from 2", () => {
+  const oldUnique = (name: string, used: Set<string>) => {
+    const dot = name.lastIndexOf(".");
+    let candidate = name;
+    for (let n = 2; used.has(candidate); n += 1) {
+      candidate =
+        dot > 0
+          ? `${name.slice(0, dot)}-${n}${name.slice(dot)}`
+          : `${name}-${n}`;
+    }
+    used.add(candidate);
+    return candidate;
+  };
+  let seed = 7;
+  const rand = (n: number) => {
+    seed = (seed * 1103515245 + 12345) % 2147483648;
+    return seed % n;
+  };
+  const pool = [
+    "snippet.py",
+    "snippet-2.py",
+    "snippet-3.py",
+    "notes",
+    "notes-2",
+  ];
+  const messages = Array.from({ length: 60 }, (_, i) =>
+    python(`a${i}`, sandboxResult(`t${i}`, [pool[rand(pool.length)]])),
+  );
+  const used = new Set<string>();
+  const expected = messages.map((m) =>
+    oldUnique(
+      (m.content[0].result as { files: { name: string }[] }).files[0].name,
+      used,
+    ),
+  );
   assert.deepEqual(
-    after.map((f) => f.name),
-    ["a.txt", "b.txt"],
+    collectChatFiles(messages).map((f) => f.name),
+    expected,
   );
 });

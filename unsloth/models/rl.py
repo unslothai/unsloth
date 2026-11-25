@@ -2501,7 +2501,10 @@ def _unsloth_average_gradients(ddp, bucket_bytes = 64 << 20):
 
     group = ddp.process_group
     world_size = dist.get_world_size(group)
-    params = [p for p in ddp.module.parameters() if p.requires_grad]
+    # DDP never reduces its ignored parameters (expert parallel puts every expert shard there: each rank holds
+    # different experts of the same shape, synced by ep_native itself), so neither does this.
+    ignored = getattr(ddp, "parameters_to_ignore", None) or ()
+    params = [p for n, p in ddp.module.named_parameters() if p.requires_grad and n not in ignored]
     if world_size <= 1 or len(params) == 0:
         return
     device = params[0].device
@@ -2988,9 +2991,9 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             # FORCE_FLOAT32 models (Gemma3, gpt_oss) cannot use float16: without bf16 keep float32, with bf16 full finetuning may still autocast. Stamped by from_pretrained, since the env is process wide and a later load would otherwise answer for this trainer.
             "full_finetuning = getattr(model, '_unsloth_full_finetuning', None)\n"
             "if full_finetuning is None: full_finetuning = os.environ.get('UNSLOTH_ENABLE_FULL_FINETUNING', '0') == '1'\n"
-            # Stamped by from_pretrained: the env is process wide, so a forced family loaded earlier would answer here for a model that is not forced at all.
-            "model_forced_float32 = getattr(model, '_unsloth_forced_float32', None)\n"
-            "if model_forced_float32 is None: model_forced_float32 = os.environ.get('UNSLOTH_FORCE_FLOAT32', '0') == '1'\n"
+            # Stamped by from_pretrained: the env is process wide, so a forced family loaded earlier would answer here for a model that is not forced at all, including one Unsloth never loaded.
+            "from unsloth.models._utils import _model_forced_float32\n"
+            "model_forced_float32 = _model_forced_float32(model)\n"
             "if model_forced_float32 and not (full_finetuning and _bf16_supported()):\n"
             "    print('Unsloth: Switching to float32 training since model cannot work with float16')\n"
             "    force_float32 = True\n"
@@ -4483,6 +4486,13 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                 patch_rl_trainer(trainer_cls, trainer_file)
         except Exception as e:
             logger.warning(f"Unsloth: Could not add context parallelism to {RLTrainer_name}: {e}")
+            try:
+                from ._utils import guard_config_cp_after_patch_failure
+                guard_config_cp_after_patch_failure(
+                    getattr(created_module, f"Unsloth{RLTrainer_name}"), e
+                )
+            except Exception:
+                pass
     if trainer_file == "ppo_trainer":
         try:
             _wrap_ppo_train(getattr(created_module, f"Unsloth{RLTrainer_name}"))

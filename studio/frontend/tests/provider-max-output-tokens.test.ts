@@ -89,7 +89,7 @@ test("preset application clamps live Max Tokens to the active external cap", () 
   );
   assert.match(
     settings,
-    /setParams\(applyPresetParamsWithinCurrentLimits\(p\),\s*\{\s*minPChoiceEdited: true,\s*fromPreset: true,\s*\}\)/,
+    /setParams\(applyPresetParamsWithinCurrentLimits\(p\),\s*\{\s*minPChoiceEdited: true,\s*fromPreset: true,\s*pinsSampling: getPresetSource\(name\) === "custom",\s*\}\)/,
   );
   assert.match(
     settings,

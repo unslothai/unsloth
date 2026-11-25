@@ -24,10 +24,11 @@ fi
 # Hand root:root downloads in a host-owned HF cache mount back to its owner, keeping group root rwX for Studio's
 # capability-less uid 0 tool sandbox; that sandbox writes this cache, hence fd-relative no-follow updates only.
 hf_cache_uid="$(stat -c '%u' "${HF_HOME:-}" 2>/dev/null || true)"
-if [[ "$(id -u):$(id -g)" == 0:0 && -n "${hf_cache_uid}" && "${hf_cache_uid}" != 0 ]] && command -v python3 >/dev/null 2>&1; then
+hf_hub_uid="$(stat -c '%u' "${HF_HOME:-}/hub" 2>/dev/null || true)"
+if [[ "$(id -u):$(id -g)" == 0:0 && -n "${hf_cache_uid}" && "${hf_cache_uid}${hf_hub_uid}" == *[1-9]* ]] && command -v python3 >/dev/null 2>&1; then
     while :; do
         python3 -I -S - "${HF_HOME}" "${hf_cache_uid}" <<'PY' || true
-import os, stat, sys
+import os, re, stat, sys
 
 top, uid = sys.argv[1], int(sys.argv[2])
 src, src_gid = (int(sys.argv[3]), int(sys.argv[4])) if len(sys.argv) > 4 else (0, 0)
@@ -49,7 +50,7 @@ def still_here(name, dfd, st, is_dir):
     return (now.st_dev, now.st_ino) == (st.st_dev, st.st_ino) and (is_dir or now.st_nlink == 1)
 
 
-def hand_over(name, dfd):
+def hand_over(name, dfd, uid):
     st = os.stat(name, dir_fd = dfd, follow_symlinks = False)
     # Symlinks stay root's: removing one only needs the parent directory, and a path-based lchown can be redirected.
     if (st.st_uid, st.st_gid) != (src, src_gid) or stat.S_ISLNK(st.st_mode) or (st.st_nlink > 1 and not stat.S_ISDIR(st.st_mode)):
@@ -75,13 +76,64 @@ def hand_over(name, dfd):
         os.close(fd)
 
 
-for _, dirs, files, dfd in os.fwalk(top, follow_symlinks = False):
-    # Studio resumes only partials it owns; they are handed over once published as blobs.
-    for name in dirs + [f for f in files if not f.endswith(".incomplete")]:
-        try:
-            hand_over(name, dfd)
-        except OSError:
-            pass
+def mount_points():
+    try:
+        with open("/proc/self/mountinfo", encoding = "utf-8", errors = "surrogateescape") as f:
+            return {re.sub(r"\\([0-7]{3})", lambda m: chr(int(m[1], 8)), line.split()[4]) for line in f}
+    except (OSError, IndexError):
+        return set()
+
+
+def open_root(fd):
+    """A hub run.sh just created gets the group root rwX a handed-over entry has, so the tool sandbox can fill it."""
+    try:
+        if not has_acl(fd):
+            os.fchown(fd, -1, 0)
+            os.fchmod(fd, stat.S_IMODE(os.fstat(fd).st_mode) | 0o070)
+    except OSError:
+        pass
+
+
+def sweep(walk, owner):
+    for _, dirs, files, dfd in walk:
+        # Studio resumes only partials it owns; they are handed over once published as blobs.
+        for name in dirs + [f for f in files if not f.endswith(".incomplete")]:
+            try:
+                hand_over(name, dfd, owner)
+            except OSError:
+                pass
+
+
+def pruned(walk, skip):
+    for step in walk:
+        if step[0] == top:
+            step[1][:] = [d for d in step[1] if d not in skip]
+        yield step
+
+
+# A mount directly in the cache (run.sh's HF_HUB_CACHE) keeps its own owner; opened no-follow from top, never via a symlink.
+nofollow_dir = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+real = os.path.realpath(top)
+nested = {os.path.basename(m) for m in mount_points() if os.path.dirname(m) == real}
+if uid != 0:
+    sweep(pruned(os.fwalk(top, follow_symlinks = False), nested), uid)
+try:
+    top_fd = os.open(top, nofollow_dir)
+except OSError:
+    nested = set()
+for name in sorted(nested):
+    try:
+        fd = os.open(name, nofollow_dir, dir_fd = top_fd)
+    except OSError:
+        continue
+    try:
+        owner = os.fstat(fd).st_uid
+        if owner != 0:
+            if name == "hub" and os.environ.get("UNSLOTH_HF_HUB_CREATED") == "1":
+                open_root(fd)
+            sweep(os.fwalk(".", dir_fd = fd, follow_symlinks = False), owner)
+    finally:
+        os.close(fd)
 PY
         sleep 30
     done </dev/null >/dev/null 2>&1 &
@@ -274,7 +326,8 @@ PY
 fi
 
 # Check 3: torch.cuda.is_available() on a HIP build; check torch.version.hip first.
-IMAGE_ROCM="$IMAGE_ROCM" UNSLOTH_ROCM_DEV_PATH="$UNSLOTH_ROCM_DEV_PATH" python - >&2 <<'PY' || exit 1
+# Checks 3 and 4 share one interpreter: each `python -` re-imports torch (seconds per start).
+IMAGE_ROCM="$IMAGE_ROCM" UNSLOTH_ROCM_DEV_PATH="$UNSLOTH_ROCM_DEV_PATH" IMAGE_GFX="$IMAGE_GFX" python - >&2 <<'PY' || exit 1
 import os
 import sys
 
@@ -310,41 +363,35 @@ if os.environ.get("UNSLOTH_ROCM_DEV_PATH") == "dxg":
         print("UNSLOTH_SKIP_GPU_CHECK=1 reaches the abort itself rather than avoiding it.")
         sys.exit(1)
 
-if torch.cuda.is_available():
-    sys.exit(0)
-image_rocm = os.environ.get("IMAGE_ROCM") or ".".join(hip_ver.split(".")[:2])
-print("ERROR: torch is a ROCm build but torch.cuda.is_available() is False: HIP could")
-print("not open the device the container was given.")
-print()
-if os.environ.get("UNSLOTH_ROCM_DEV_PATH") == "dxg":
-    # WSL has no host amdgpu stack: the Linux driver advice below is wrong here.
-    print("This container is on the WSL2 DXG bridge, so the host amdgpu driver is not")
-    print("involved. Run rocminfo inside the container:")
-    print("  'Failed to load libdxcore.so': /usr/lib/wsl/lib is not mounted or not on")
-    print("    LD_LIBRARY_PATH (measured). Both come from")
-    print("      UNSLOTH_IMAGE=unsloth-rocm:latest bash docker/run.sh --rocm <cmd>")
-    print("  no GPU agent at all: update the Windows AMD driver (a current Adrenalin with")
-    print("    ROCm-on-WSL support, as scripts/install_rocm_wsl_strixhalo.sh documents).")
+if not torch.cuda.is_available():
+    image_rocm = os.environ.get("IMAGE_ROCM") or ".".join(hip_ver.split(".")[:2])
+    print("ERROR: torch is a ROCm build but torch.cuda.is_available() is False: HIP could")
+    print("not open the device the container was given.")
+    print()
+    if os.environ.get("UNSLOTH_ROCM_DEV_PATH") == "dxg":
+        # WSL has no host amdgpu stack: the Linux driver advice below is wrong here.
+        print("This container is on the WSL2 DXG bridge, so the host amdgpu driver is not")
+        print("involved. Run rocminfo inside the container:")
+        print("  'Failed to load libdxcore.so': /usr/lib/wsl/lib is not mounted or not on")
+        print("    LD_LIBRARY_PATH (measured). Both come from")
+        print("      UNSLOTH_IMAGE=unsloth-rocm:latest bash docker/run.sh --rocm <cmd>")
+        print("  no GPU agent at all: update the Windows AMD driver (a current Adrenalin with")
+        print("    ROCm-on-WSL support, as scripts/install_rocm_wsl_strixhalo.sh documents).")
+        print("If HSA_OVERRIDE_GFX_VERSION is set, a wrong value also produces this.")
+        sys.exit(1)
+    print(f"This image was built against ROCm {image_rocm} (HIP {hip_ver}). The host's")
+    print("amdgpu driver has to be at least as new. Check the host (NOT the container):")
+    print("  rocm-smi --version   or   cat /opt/rocm/.info/version   or   dkms status")
+    print()
+    print("If the host is older, upgrade its driver, or rebuild with the matching base:")
+    print("  ROCM_VERSION=<host version> TORCH_INDEX_URL=https://download.pytorch.org/whl/rocm<X.Y> \\")
+    print("    bash docker/build.sh --rocm")
     print("If HSA_OVERRIDE_GFX_VERSION is set, a wrong value also produces this.")
     sys.exit(1)
-print(f"This image was built against ROCm {image_rocm} (HIP {hip_ver}). The host's")
-print("amdgpu driver has to be at least as new. Check the host (NOT the container):")
-print("  rocm-smi --version   or   cat /opt/rocm/.info/version   or   dkms status")
-print()
-print("If the host is older, upgrade its driver, or rebuild with the matching base:")
-print("  ROCM_VERSION=<host version> TORCH_INDEX_URL=https://download.pytorch.org/whl/rocm<X.Y> \\")
-print("    bash docker/build.sh --rocm")
-print("If HSA_OVERRIDE_GFX_VERSION is set, a wrong value also produces this.")
-sys.exit(1)
-PY
+# Check 3's output must stay ahead of Check 4 warnings (stdout is block buffered).
+sys.stdout.flush()
 
 # Check 4 (not a gate): the card's gfx arch vs this image's wheels.
-IMAGE_ROCM="$IMAGE_ROCM" IMAGE_GFX="$IMAGE_GFX" python - >&2 <<'PY' || exit 1
-import os
-import sys
-
-import torch
-
 image_gfx = os.environ.get("IMAGE_GFX", "")
 image_rocm = os.environ.get("IMAGE_ROCM") or ".".join(torch.version.hip.split(".")[:2])
 

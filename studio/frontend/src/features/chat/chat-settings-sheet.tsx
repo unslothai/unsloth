@@ -998,6 +998,7 @@ export function ChatSettingsPanel({
       setParams(applyPresetParamsWithinCurrentLimits(p), {
         minPChoiceEdited: true,
         fromPreset: true,
+        pinsSampling: getPresetSource(name) === "custom",
       });
       if (p.loadConfig) {
         applyPresetLoadConfig(p.loadConfig);
@@ -1041,7 +1042,7 @@ export function ChatSettingsPanel({
     ];
     setCustomPresets(merged);
     // As a pick does: drop the hand edits filed under the loaded model, or Default replays them.
-    setParams(saved, { fromPreset: true });
+    setParams(saved, { fromPreset: true, pinsSampling: true });
     setActivePreset(saveName);
     setActivePresetSource("custom");
     setPresetNameInput(saveName);

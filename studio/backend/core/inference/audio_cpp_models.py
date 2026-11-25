@@ -30,6 +30,7 @@ from core.inference.audio_cpp_option_table import (
     rules_for,
 )
 from loggers import get_logger
+from utils.utils import hf_env_offline
 
 logger = get_logger(__name__)
 
@@ -1473,10 +1474,6 @@ class RepoFile:
     sha256: str = field(default = "", compare = False)
 
 
-def hub_offline() -> bool:
-    return os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in ("1", "true", "yes", "on")
-
-
 def _hub_cache() -> Path:
     from utils.hf_cache_settings import active_hf_hub_cache
     return Path(active_hf_hub_cache())
@@ -1569,7 +1566,7 @@ def list_files(
     from hub.utils.hf_tokens import normalize_token
 
     token = normalize_token(hf_token) if hf_token is not False else None
-    use_hub = network and not hub_offline()
+    use_hub = network and not hf_env_offline()
     key = (repo_id.lower(), folder.lower(), hashlib.sha1(str(token).encode()).hexdigest()[:8])
     if use_hub:
         with _listing_lock:
@@ -2635,7 +2632,7 @@ def _probe_header(
         header = None
         if local is not None:
             header = read_local_header(local)
-        elif network and not hub_offline() and ref.repo_id:
+        elif network and not hf_env_offline() and ref.repo_id:
             header = read_remote_header(ref.repo_id, f.path, hf_token, size = f.size or None)
         if header is None:
             continue
@@ -3063,6 +3060,19 @@ def companion_files(path: str, names: Iterable[str]) -> tuple[str, ...]:
     return tuple(found)
 
 
+def _download_job_offline() -> bool:
+    """The download job's own Hub client decides, so read its env with huggingface_hub's rule (no strip, HF_HUB_OFFLINE first)."""
+    try:
+        from huggingface_hub.constants import ENV_VARS_TRUE_VALUES
+        from utils.hf_cache_settings import get_hf_cache_paths
+
+        env = get_hf_cache_paths().child_env()
+        value = env.get("HF_HUB_OFFLINE") or env.get("TRANSFORMERS_OFFLINE")
+        return bool(value) and value.upper() in ENV_VARS_TRUE_VALUES
+    except Exception:  # noqa: BLE001
+        return hf_env_offline()
+
+
 def _fetches_gguf(
     repo_id: str,
     path: str,
@@ -3078,7 +3088,7 @@ def _fetches_gguf(
     except Exception:  # noqa: BLE001 - an unreadable cache is one to fetch into
         snapshots = []
     on_disk = any((snapshot / path).is_file() for snapshot in snapshots)
-    if hub_offline():
+    if _download_job_offline():
         return not on_disk
     try:
         from huggingface_hub import get_hf_file_metadata, hf_hub_url
@@ -3116,7 +3126,7 @@ def _refuse_stale_download(
     checked = [model]
     for companion in model.companions:
         try:
-            found = resolve(companion.id, companion.variant, hf_token, network = not hub_offline())
+            found = resolve(companion.id, companion.variant, hf_token, network = not hf_env_offline())
         except Exception:  # noqa: BLE001 - the planner reports a companion it cannot find
             found = None
         if found is not None:
@@ -3163,7 +3173,7 @@ def refuse_stale_download(
             rows.setdefault(row, []).append(name)
     elif is_umbrella_id(identifier):
         return
-    network = not hub_offline()
+    network = not hf_env_offline()
     for row, names in sorted(rows.items()):
         try:
             model = resolve(row, None if names else variant, hf_token, network = network)
@@ -3193,7 +3203,7 @@ def download_target(
     """Maps an umbrella folder id to the real repo and path-qualified variant key the downloader uses."""
     if not is_umbrella_id(identifier):
         return None
-    model = resolve(identifier, variant, hf_token, network = not hub_offline())
+    model = resolve(identifier, variant, hf_token, network = not hf_env_offline())
     if model is None or not model.repo_id or not model.variant.primary:
         return None
     if persist:

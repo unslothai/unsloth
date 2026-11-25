@@ -104,6 +104,7 @@ class LemonadeServer:
         flm_model_dir: Path,
         log_dir: Optional[Path] = None,
         flm_config_path: Optional[Path] = None,
+        flm_binary: Optional[Path] = None,
     ) -> None:
         self.binary = Path(binary)
         self.log_dir = Path(log_dir) if log_dir is not None else None
@@ -115,6 +116,7 @@ class LemonadeServer:
         self.flm_model_dir = Path(flm_model_dir)
         # FastFlowLM's model_list.json with Studio's converted model added; None keeps FastFlowLM's.
         self.flm_config_path = Path(flm_config_path) if flm_config_path else None
+        self.flm_binary = flm_binary
         self.port: Optional[int] = None
         self.api_key: Optional[str] = None
         self._process: Optional[subprocess.Popen] = None
@@ -336,6 +338,8 @@ class LemonadeServer:
         env["LEMONADE_API_KEY"] = api_key
         env["FLM_MODEL_PATH"] = str(self.flm_model_dir)
         env["FLM_DISABLE_UPDATE_CHECK"] = "1"
+        if self.flm_binary is not None:
+            env["LEMONADE_FLM_NPU_BIN"] = str(self.flm_binary)
         if self.flm_config_path is not None:
             env["FLM_CONFIG_PATH"] = str(self.flm_config_path)
         # flm_host.py stands in for lemond where it would be refused; it runs on Studio's Python.

@@ -58,7 +58,9 @@ class MxcPolicyError(RuntimeError):
 
 
 def dacl_fallback_enabled() -> bool:
-    """Opt-in to the AppContainer tier (temporarily adds ACEs); env var if set, else the saved choice."""
+    """Opt-in to the AppContainer tier (temporarily adds ACEs); always off on MXC 1.1.0, which has none."""
+    if not mxc_runtime.selected_pin().has_host_prep:
+        return False
     if DACL_FALLBACK_ENV in os.environ:
         return os.environ[DACL_FALLBACK_ENV].strip() == "1"
     try:
@@ -227,9 +229,14 @@ def _runtime_read_roots(executable: str, extra: list[str] = ()) -> list[str]:
     if system_root:
         roots.append(system_root)
     result: list[str] = []
+    seen: set[str] = set()
     for root in roots:
         if not root:
             continue
+        # sys.prefix is also site.getsitepackages()[0] on Windows; other spellings keep their checks.
+        if root in seen:
+            continue
+        seen.add(root)
         if not os.path.isdir(root):
             continue
         canonical = _safe_canonical_path(root, directory = True)
@@ -376,7 +383,7 @@ def _selected_runtime(plan) -> str:
 
 
 def canonical_config_bytes(config: dict) -> bytes:
-    """Serialize exactly the deterministic stable-v0.8 request sent to WXC."""
+    """Serialize exactly the deterministic request sent to WXC."""
     return json.dumps(
         config,
         ensure_ascii = False,
@@ -386,7 +393,12 @@ def canonical_config_bytes(config: dict) -> bytes:
 
 
 def compute_policy_hash(config: dict) -> str:
-    return "sha256:" + hashlib.sha256(canonical_config_bytes(config)).hexdigest()
+    return policy_hash_of_bytes(canonical_config_bytes(config))
+
+
+def policy_hash_of_bytes(config_bytes: bytes) -> str:
+    """The policy hash of bytes canonical_config_bytes already produced."""
+    return "sha256:" + hashlib.sha256(config_bytes).hexdigest()
 
 
 def verify_launch_identities(request: dict) -> None:
@@ -486,12 +498,10 @@ def build_launch_request(
             "readonlyPaths": readonly,
             "deniedPaths": [],
         },
+        # 0.8.0 blocked host loopback too, and "deny" is the only value the DACL tier accepts.
         "network": {
-            "defaultPolicy": "allow",
-            "allowLocalNetwork": True,
-            "allowedHosts": [],
-            "blockedHosts": [],
-            "enforcementMode": "capabilities",
+            "egress": {"default": "allow"},
+            "ingress": {"default": "allow", "hostLoopback": "deny"},
         },
         "processContainer": {
             "leastPrivilege": False,
@@ -501,6 +511,7 @@ def build_launch_request(
         "ui": ui_policy["ui"],
         "fallback": {"allowDaclMutation": dacl_fallback_enabled()},
     }
+    config_bytes = canonical_config_bytes(config)
     request = {
         "runtimePath": os.path.realpath(selected_runtime),
         "runtimeIdentity": _object_identity(selected_runtime, directory = False),
@@ -508,8 +519,8 @@ def build_launch_request(
         "workdirIdentity": workdir_identity,
         "cwdAlias": cwd_alias,
         "config": config,
-        "configBytes": canonical_config_bytes(config),
-        "policyHash": compute_policy_hash(config),
+        "configBytes": config_bytes,
+        "policyHash": policy_hash_of_bytes(config_bytes),
         "requireCompleteScan": required,
         "launchLimitations": limitations,
     }

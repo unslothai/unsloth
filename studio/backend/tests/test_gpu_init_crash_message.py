@@ -78,11 +78,7 @@ def _managed_runtime(monkeypatch, tmp_path):
         "_is_llama_install_tree",
         staticmethod(lambda _binary: True),
     )
-    monkeypatch.setattr(
-        llama_cpp,
-        "_swa_cache_path",
-        lambda: tmp_path / "studio" / "swa_cache.json",
-    )
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
     return binary
 
 
@@ -333,9 +329,7 @@ class TestPlatformMatrix:
         monkeypatch.setattr(
             LlamaCppBackend, "_is_llama_install_tree", staticmethod(lambda _binary: True)
         )
-        monkeypatch.setattr(
-            llama_cpp, "_swa_cache_path", lambda: tmp_path / "studio" / "swa_cache.json"
-        )
+        monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
         return binary
 
     @pytest.mark.parametrize("os_key", list(OSES))
@@ -892,11 +886,7 @@ class TestCpuIsolatedReplay:
             "_is_llama_install_tree",
             staticmethod(lambda _binary: True),
         )
-        monkeypatch.setattr(
-            llama_cpp,
-            "_swa_cache_path",
-            lambda: tmp_path / "studio" / "swa_cache.json",
-        )
+        monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
 
         backend = LlamaCppBackend()
         staged = backend._cpu_isolated_binary(str(wrapper))
@@ -943,6 +933,26 @@ def test_confirmed_projector_signal_retry_keeps_gpu_init_diagnosis(monkeypatch, 
             mmproj_from_argv = True,
             cpu_fallback_available = False,
         )
+
+
+def test_an_unexpanded_studio_home_keeps_runner_files_in_the_real_home(monkeypatch, tmp_path):
+    """A systemd EnvironmentFile or docker env passes "~/x" verbatim; nothing may land in "./~"."""
+    from utils import debug_log_sources
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", "~/x")
+    monkeypatch.chdir(tmp_path)
+    backend, loaded, _launches, _sources = _run_cpu_fallback_load(
+        monkeypatch, tmp_path, returncodes = [None]
+    )
+
+    assert loaded is True
+    log_path = Path(backend._llama_log_path)
+    assert log_path.parent == tmp_path / "x" / "logs" / "llama-server"
+    assert llama_cpp._swa_cache_path() == tmp_path / "x" / "swa_cache.json"
+    assert not (tmp_path / "~").exists()
+    assert log_path.name in [s.label for s in debug_log_sources.list_sources()]
 
 
 @pytest.mark.parametrize("name", ["LLAMA_ARG_MMPROJ", "LLAMA_ARG_MMPROJ_URL"])
@@ -1560,9 +1570,7 @@ def _run_full_offload_spawns(monkeypatch, tmp_path, *, outputs, returncodes):
     backend.probe_server_capabilities = lambda _binary: {"found": True}
     backend._record_server_pid = lambda _pid: None
     backend._clear_server_pid = lambda: None
-    monkeypatch.setattr(
-        llama_cpp, "_swa_cache_path", lambda: tmp_path / "studio" / "swa_cache.json"
-    )
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
 
     def _env_for_binary(
         _binary,
