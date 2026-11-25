@@ -216,7 +216,8 @@ def _open_server_log(port: int):
         log_dir = _swa_cache_path().parent / "logs" / "llama-server"
         log_dir.mkdir(parents = True, exist_ok = True)
         path = log_dir / f"llama-{int(time.time())}-dictation-port-{port}.log"
-        handle = open(path, "w", encoding = "utf-8")
+        # Append: a relaunch in the same second on the same port must not erase a crash log.
+        handle = open(path, "a", encoding = "utf-8")
         prune_log_dir(log_dir, "llama-*.log", protect = path)
         logger.info("dictation llama-server stdout/stderr -> %s", path)
         return handle

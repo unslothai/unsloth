@@ -141,3 +141,15 @@ def test_a_log_that_cannot_open_still_loads(launches, monkeypatch):
     _command, kwargs = launches.seen[-1]
     assert kwargs["stdout"] is subprocess.DEVNULL
     assert kwargs["stderr"] is subprocess.DEVNULL
+
+
+def test_a_relaunch_in_the_same_second_keeps_the_earlier_log(monkeypatch):
+    monkeypatch.setattr(mtmd.time, "time", lambda: 1_700_000_000)
+    first = mtmd._open_server_log(4000)
+    first.write("crash trace\n")
+    first.close()
+    second = mtmd._open_server_log(4000)
+    second.close()
+    assert first.name == second.name
+    with open(second.name, encoding = "utf-8") as handle:
+        assert "crash trace" in handle.read()
