@@ -282,10 +282,41 @@ def test_extensionless_file_name_counts_as_image_only_when_the_file_is_one(tmp_p
     assert dataset_format.check_dataset_format(dataset, is_vlm = False)["is_image"] is image
 
 
-def _file_name_dataset(path):
-    return Dataset.from_list(
+def _file_name_is_image(
+    path,
+    account = None,
+    seconds = 60,
+):
+    # In a thread so a blocking probe fails with every stack instead of hanging the job.
+    import faulthandler
+    import threading
+
+    from utils.account_context import bind_account, reset_account
+
+    dataset = Dataset.from_list(
         [{"instruction": "Summarise", "output": "A file", "file_name": str(path)}]
     )
+    outcome = {}
+
+    def detect():
+        token = bind_account(account) if account else None
+        try:
+            outcome["is_image"] = format_detection.detect_multimodal_dataset(dataset)["is_image"]
+        except BaseException as exc:  # noqa: BLE001 - re-raised on the test thread
+            outcome["error"] = exc
+        finally:
+            if token is not None:
+                reset_account(token)
+
+    worker = threading.Thread(target = detect, daemon = True)
+    worker.start()
+    worker.join(seconds)
+    if worker.is_alive():
+        faulthandler.dump_traceback(all_threads = True)
+        pytest.fail(f"detection on {path} still running after {seconds}s")
+    if "error" in outcome:
+        raise outcome["error"]
+    return outcome["is_image"]
 
 
 @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason = "FIFOs are POSIX only")
@@ -293,22 +324,17 @@ def test_file_name_pointing_at_a_fifo_does_not_block(tmp_path):
     fifo = tmp_path / "source.jsonl"
     os.mkfifo(fifo)
 
-    assert format_detection.detect_multimodal_dataset(_file_name_dataset(fifo))["is_image"] is False
+    assert _file_name_is_image(fifo) is False
 
 
 def test_managed_account_cannot_probe_a_file_it_may_not_read(tmp_path):
-    from utils.account_context import AccountContext, bind_account, reset_account
+    from utils.account_context import AccountContext
 
     png = tmp_path / "owner_photo"
     png.write_bytes(b"\x89PNG\r\n\x1a\n")
-    token = bind_account(AccountContext("a1b2c3d4e5f6a7b8", "alice", "user"))
-    try:
-        assert (
-            format_detection.detect_multimodal_dataset(_file_name_dataset(png))["is_image"] is False
-        )
-    finally:
-        reset_account(token)
-    assert format_detection.detect_multimodal_dataset(_file_name_dataset(png))["is_image"] is True
+
+    assert _file_name_is_image(png, AccountContext("a1b2c3d4e5f6a7b8", "alice", "user")) is False
+    assert _file_name_is_image(png) is True
 
 
 @pytest.mark.parametrize("detector", [dataset_format, format_detection])
