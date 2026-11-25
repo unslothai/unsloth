@@ -512,3 +512,55 @@ def test_end_to_end_run_trains_saves_and_the_pipeline_loads_the_adapter(
     assert len(adapted) == 14
     with_lora = render()
     assert not torch.allclose(base, with_lora)
+
+
+# --- caption caching drops the text encoder lm_head ---------------------------------------------------------------
+
+
+def _load_conditioners(tiny_pipe_dir):
+    import types
+    cfg = types.SimpleNamespace(base_model = tiny_pipe_dir, hf_token = None)
+    return dit._qwen21_load_conditioners(cfg, "cpu", torch.bfloat16)
+
+
+@pytest.mark.allow_network
+def test_caption_cache_drops_the_lm_head_and_keeps_the_embeds(tiny_pipe_dir, monkeypatch):
+    """The trainer's conditioner load drops the untied Qwen3-VL lm_head; the cached caption embeds are bit-identical
+    to the full encoder's, and UNSLOTH_TE_KEEP_LM_HEAD=1 keeps the head."""
+    from core.inference.diffusion_text_encoder_trim import KEEP_LM_HEAD_ENV, is_trimmed
+
+    captions = [
+        "a watercolor fox in the snow",
+        "",
+        "two red apples on a wooden table, studio light",
+    ]
+    monkeypatch.setenv(KEEP_LM_HEAD_ENV, "1")
+    full, _ = _load_conditioners(tiny_pipe_dir)
+    assert not is_trimmed(full.text_encoder)
+    assert full.text_encoder.lm_head.weight.ndim == 2
+    expected = dit._qwen21_encode_prompts(full, captions, "cpu")
+    del full
+
+    monkeypatch.delenv(KEEP_LM_HEAD_ENV)
+    pipe, _ = _load_conditioners(tiny_pipe_dir)
+    assert is_trimmed(pipe.text_encoder)
+    assert not any("lm_head" in name for name, _ in pipe.text_encoder.named_parameters())
+    got = dit._qwen21_encode_prompts(pipe, captions, "cpu")
+    assert len(got) == len(expected)
+    for (a,), (b,) in zip(got, expected):
+        assert a.dtype == b.dtype and torch.equal(a, b)
+
+
+def test_caption_encoder_trim_failure_keeps_the_encoder(monkeypatch):
+    import types
+
+    import core.inference.diffusion_text_encoder_trim as trim
+
+    def boom(*_a, **_k):
+        raise RuntimeError("no")
+
+    monkeypatch.setattr(trim, "trim_text_encoder", boom)
+    head = torch.nn.Linear(4, 8, bias = False)
+    pipe = types.SimpleNamespace(text_encoder = types.SimpleNamespace(lm_head = head))
+    dit._trim_caption_encoder(pipe, FAMILY)
+    assert pipe.text_encoder.lm_head is head
