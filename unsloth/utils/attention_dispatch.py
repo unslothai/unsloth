@@ -1880,9 +1880,9 @@ def _load_saved_attention():
         saved_attention_call = sa.saved_attention_call
     except Exception:
         return None, None
+    register = getattr(sa, "register_rocm_saved_attention_selector", None)
     # Older zoo: save_attention_enabled() is the configuration (and keeps ROCm off).
     if getattr(sa, "save_attention_requested", sa.save_attention_enabled)():
-        register = getattr(sa, "register_rocm_saved_attention_selector", None)
         if _ROCM_SDPA_GUARD and register is not None:
             register(_select_rocm_saved_sdpa)
         return saved_attention_call, None
@@ -1893,6 +1893,10 @@ def _load_saved_attention():
         return None, None
     if min_seq is None:
         return None, None
+    # Automatic mode on ROCm (measured gfx targets): zoo keeps a checkpoint's calls only where this
+    # selector says its SDPA runs a kept kernel under rocm_sdpa_check, as in the explicit mode.
+    if _ROCM_SDPA_GUARD and register is not None:
+        register(_select_rocm_saved_sdpa)
     return saved_attention_call, min_seq
 
 
