@@ -23,6 +23,7 @@ import pytest  # noqa: E402
 import torch  # noqa: E402
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "_shared"))
 
 FAMILIES = {
     "qwen3_moe": "trl-internal-testing/tiny-Qwen3MoeForCausalLM",
@@ -41,8 +42,10 @@ _SEQ = (7, 5, 6, 4)
 def _modules():
     from test_tp_native_oracle import build, tpn
 
-    from test_tp_inkling2_gloo import _load
-    return build, tpn, _load("ep_native")
+    # Not test_tp_inkling2_gloo's loader: that file importorskips Inkling 2 at import, which on a
+    # transformers without it raised Skipped in every rank and left these families with no result.
+    from unsloth_models_loader import load_models_module
+    return build, tpn, load_models_module("ep_native")
 
 
 def _rows(vocab, rank):
@@ -384,7 +387,7 @@ def _worker(rank, world, tmp, case, kwargs):
     )
     try:
         res = globals()[case](rank, world, tmp, **kwargs)
-    except Exception as exc:
+    except BaseException as exc:  # pytest's Skipped / exit too: a rank must report, not vanish
         import traceback
         res = {"error": f"{type(exc).__name__}: {exc}"[:600] + traceback.format_exc()[-4000:]}
     torch.save(res, os.path.join(tmp, f"result_{rank}.pt"))
