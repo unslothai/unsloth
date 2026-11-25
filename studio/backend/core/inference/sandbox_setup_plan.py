@@ -397,7 +397,7 @@ _UNSUPPORTED_NOTES = {
 def windows_runtime_installed() -> bool:
     from . import mxc_runtime
     try:
-        mxc_runtime.installation_identity()
+        mxc_runtime.verified_installation_identity()
     except Exception:  # noqa: BLE001 - no runtime yet
         return False
     return True
