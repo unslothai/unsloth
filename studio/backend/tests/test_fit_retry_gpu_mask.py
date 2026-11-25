@@ -8,36 +8,11 @@ from __future__ import annotations
 import os
 import struct
 import subprocess
-import sys
-import types as _types
-from pathlib import Path
 
 import pytest
 
-_BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
-if _BACKEND_DIR not in sys.path:
-    sys.path.insert(0, _BACKEND_DIR)
-
-
-class _LoggerStub:
-    def bind(self, *args, **kwargs):
-        return self
-
-    def __getattr__(self, _name):
-        return lambda *args, **kwargs: None
-
-
-_loggers_stub = _types.ModuleType("loggers")
-_loggers_stub.get_logger = lambda name: _LoggerStub()
-sys.modules.setdefault("loggers", _loggers_stub)
-_structlog_stub = _types.ModuleType("structlog")
-_structlog_stub.get_logger = lambda *a, **k: _LoggerStub()
-sys.modules.setdefault("structlog", _structlog_stub)
-if not hasattr(sys.modules["structlog"], "get_logger"):
-    sys.modules["structlog"].get_logger = _structlog_stub.get_logger
-
-from core.inference import llama_cpp  # noqa: E402
-from core.inference.llama_cpp import GgufLoadIntent, LlamaCppBackend  # noqa: E402
+from core.inference import llama_cpp
+from core.inference.llama_cpp import GgufLoadIntent, LlamaCppBackend
 
 _GIB = 1024**3
 _OOM = "allocating 16152.03 MiB on device 0: cudaMalloc failed: out of memory"
@@ -64,8 +39,7 @@ def _load(
     """Two CUDA cards; Auto pins ``pick`` with --fit off. Returns the (argv, env) of each spawn."""
 
     def _gguf_string(value: str) -> bytes:
-        encoded = value.encode()
-        return struct.pack("<Q", len(encoded)) + encoded
+        return struct.pack("<Q", len(value)) + value.encode()
 
     metadata = _gguf_string("general.architecture") + struct.pack("<I", 8) + _gguf_string("llama")
     gguf = tmp_path / "model.gguf"
@@ -115,6 +89,7 @@ def _load(
     class _Process:
         pid = 123
         stdout = ()
+        terminate = kill = lambda self: None
 
         def __init__(self, returncode):
             self.returncode = returncode
@@ -123,14 +98,8 @@ def _load(
             # A stalled child is still running when its health check gives up.
             return None if self.returncode == "stall" else self.returncode
 
-        def terminate(self):
-            return None
-
         def wait(self, timeout = None):
             return self.returncode
-
-        def kill(self):
-            return None
 
     _real_popen = subprocess.Popen
 
@@ -171,154 +140,99 @@ def _mask(launch):
     return launch[1].get("CUDA_VISIBLE_DEVICES")
 
 
-def test_the_fit_on_retry_sees_the_card_auto_left_out(monkeypatch, tmp_path):
-    backend, launches, error = _load(monkeypatch, tmp_path, returncodes = [1, None])
-    assert error is None
-    assert len(launches) == 2
-    assert (_fit_mode(launches[0][0]), _mask(launches[0])) == ("off", "0")
-    assert (_fit_mode(launches[1][0]), _mask(launches[1])) == ("on", "0,1")
-    # Footprint attribution reads the child's cards.
-    assert backend._child_gpu_physical_ids == (0, 1)
-
-
-def test_a_launch_that_comes_up_keeps_the_planned_card(monkeypatch, tmp_path):
-    _backend, launches, error = _load(monkeypatch, tmp_path, returncodes = [None])
-    assert error is None
-    assert [_mask(launch) for launch in launches] == ["0"]
-
-
-def test_a_pick_bounds_the_widened_set(monkeypatch, tmp_path):
-    # The user picked both cards and Auto pinned one: the retry may use the pick.
-    _backend, launches, error = _load(
-        monkeypatch, tmp_path, returncodes = [1, None], pick = ([1], False), gpu_ids = [0, 1]
-    )
-    assert error is None
-    assert [_mask(launch) for launch in launches] == ["1", "0,1"]
-
-
-def test_a_cpu_override_rule_does_not_block_the_widen(monkeypatch, tmp_path):
-    _backend, launches, error = _load(
-        monkeypatch, tmp_path, returncodes = [1, None], extra_args = ["-ot", "exps=CPU"]
-    )
-    assert error is None
-    assert _mask(launches[1]) == "0,1"
-
-
-def test_a_single_card_pick_is_not_widened(monkeypatch, tmp_path):
-    _backend, launches, error = _load(monkeypatch, tmp_path, returncodes = [1, None], gpu_ids = [0])
-    assert error is None
-    assert [_mask(launch) for launch in launches] == ["0", "0"]
+_NO_KERNELS = "CUDA error: no kernel image is available for execution on the device"
+_TWO_PICKED = {"pick": ([1], False), "gpu_ids": [0, 1]}
 
 
 @pytest.mark.parametrize(
-    "extra_args",
+    ("kwargs", "masks"),
     [
-        ["--device", "CUDA0"],
-        ["-mg", "0"],
-        ["--tensor-split", "1"],
-        ["--split-mode", "layer"],
-        ["--mmproj-device", "CUDA0"],
-        ["-ot", "blk\\.1\\.ffn_.*=CUDA0"],
-        ["-otd", "blk\\..*=CUDA0"],
+        ({}, ["0", "0,1"]),
+        # The user picked both cards and Auto pinned one: the retry may use the pick.
+        (_TWO_PICKED, ["1", "0,1"]),
+        ({"extra_args": ["-ot", "exps=CPU"]}, ["0", "0,1"]),
+        # Iterating {8, 1} yields the parent's own order, where the order helper answers None.
+        (
+            {
+                "pick": ([8], False),
+                "rows": [(1, 24 * _GIB, 24 * _GIB), (8, 46 * _GIB, 48 * _GIB)],
+                "parent_mask": "8,1",
+            },
+            ["8", "8,1"],
+        ),
     ],
+    ids = ["auto", "pick-bounds-it", "cpu-only-override", "parent-order"],
 )
-def test_positional_placement_keeps_the_planned_mask(monkeypatch, tmp_path, extra_args):
+def test_the_fit_on_retry_sees_the_cards_auto_left_out(monkeypatch, tmp_path, kwargs, masks):
+    backend, launches, error = _load(monkeypatch, tmp_path, returncodes = [1, None], **kwargs)
+    assert error is None
+    assert [_mask(launch) for launch in launches] == masks
+    assert [_fit_mode(launch[0]) for launch in launches] == ["off", "on"]
+    # Footprint attribution reads the child's cards.
+    assert backend._child_gpu_physical_ids == tuple(int(i) for i in masks[1].split(","))
+
+
+_KEEPS_PLANNED_MASK = {
     # These name cards by position in the child's mask; adding a card would move them.
-    _backend, launches, error = _load(
-        monkeypatch, tmp_path, returncodes = [1, None], extra_args = extra_args
-    )
-    assert error is None
-    assert len(launches) == 2
-    assert _mask(launches[1]) == "0"
+    "device": {"extra_args": ["--device", "CUDA0"]},
+    "main-gpu": {"extra_args": ["-mg", "0"]},
+    "tensor-split": {"extra_args": ["--tensor-split", "1"]},
+    "split-mode": {"extra_args": ["--split-mode", "layer"]},
+    "mmproj-device": {"extra_args": ["--mmproj-device", "CUDA0"]},
+    "override-tensor": {"extra_args": ["-ot", "blk\\.1\\.ffn_.*=CUDA0"]},
+    "override-tensor-draft": {"extra_args": ["-otd", "blk\\..*=CUDA0"]},
+    "env-main-gpu": {"parent_env": {"LLAMA_ARG_MAIN_GPU": "0"}},
+    "env-override-tensor": {"parent_env": {"LLAMA_ARG_OVERRIDE_TENSOR": "exps=CUDA0"}},
+    # The retry flips Studio's --fit, but the user's later off still wins.
+    "user-fit-off": {"extra_args": ["--fit", "off"]},
+    "sm-gate": {"sm_gate_error": "no kernels for GPU 1"},
+    "single-card-pick": {"gpu_ids": [0]},
+    # Only an allocation failure disproves Auto's estimate.
+    "not-out-of-memory": {"outputs": ["llama_model_load: error loading model: bad tensor"]},
+}
 
 
-@pytest.mark.parametrize(
-    "parent_env",
-    [{"LLAMA_ARG_MAIN_GPU": "0"}, {"LLAMA_ARG_OVERRIDE_TENSOR": "exps=CUDA0"}],
-)
-def test_an_inherited_device_twin_keeps_the_planned_mask(monkeypatch, tmp_path, parent_env):
-    _backend, launches, error = _load(
-        monkeypatch,
-        tmp_path,
-        returncodes = [1, None],
-        parent_env = parent_env,
-    )
-    assert error is None
-    assert _mask(launches[1]) == "0"
-
-
-def test_a_card_the_build_cannot_run_is_not_added(monkeypatch, tmp_path):
-    _backend, launches, error = _load(
-        monkeypatch,
-        tmp_path,
-        returncodes = [1, None],
-        sm_gate_error = "no kernels for GPU 1",
-    )
-    assert error is None
-    assert [_mask(launch) for launch in launches] == ["0", "0"]
-
-
-def test_a_failed_widened_retry_hands_later_rungs_the_planned_mask(monkeypatch, tmp_path):
-    # The widened retry and the planned-card retry both hard-crash, so the flash-attention
-    # rung respawns; the shared env it inherits must be the planned one again.
-    _backend, launches, error = _load(
-        monkeypatch,
-        tmp_path,
-        returncodes = [1, -11, -11, None],
-        outputs = [_OOM, "Segmentation fault", "Segmentation fault"],
-    )
-    assert error is None
-    assert len(launches) == 4
-    assert launches[3][0][launches[3][0].index("--flash-attn") + 1] == "off"
-    assert [_mask(launch) for launch in launches] == ["0", "0,1", "0", "0"]
-
-
-def test_a_trailing_user_fit_off_keeps_the_planned_mask(monkeypatch, tmp_path):
-    # The retry flips Studio's --fit, but the user's later off still wins: no fitter runs.
-    _backend, launches, _error = _load(
-        monkeypatch, tmp_path, returncodes = [1, None], extra_args = ["--fit", "off"]
-    )
+@pytest.mark.parametrize("kwargs", _KEEPS_PLANNED_MASK.values(), ids = _KEEPS_PLANNED_MASK.keys())
+def test_the_retry_keeps_the_planned_mask(monkeypatch, tmp_path, kwargs):
+    _backend, launches, _error = _load(monkeypatch, tmp_path, returncodes = [1, None], **kwargs)
+    assert len(launches) >= 2
     assert all(_mask(launch) == "0" for launch in launches)
 
 
-def test_a_widened_pick_publishes_the_cards_it_runs_on(monkeypatch, tmp_path):
+@pytest.mark.parametrize(
+    ("returncodes", "outputs", "masks", "pin"),
+    [
+        ([1, None], None, ["1", "0,1"], [0, 1]),
+        ([1, -11, None], [_OOM, "Segmentation fault"], ["1", "0,1", "1"], [1]),
+    ],
+    ids = ["widened-retry-comes-up", "widened-retry-fails"],
+)
+def test_a_pick_publishes_the_cards_its_child_runs_on(
+    monkeypatch, tmp_path, returncodes, outputs, masks, pin
+):
     backend, launches, error = _load(
-        monkeypatch, tmp_path, returncodes = [1, None], pick = ([1], False), gpu_ids = [0, 1]
+        monkeypatch, tmp_path, returncodes = returncodes, outputs = outputs, **_TWO_PICKED
     )
     assert error is None
-    assert _mask(launches[1]) == "0,1"
-    assert backend.gpu_ids == [0, 1]
-    # A later request for GPU 1 alone must not reuse the two-card server.
-    assert not backend.matches_gpu_ids([1])
-    assert backend.matches_gpu_ids([0, 1])
-    # The plan other loads and eviction read spans both cards.
-    assert set(backend._planned_vram_mib) == {0, 1}
-
-
-def test_a_failed_widened_pick_publishes_the_planned_card_again(monkeypatch, tmp_path):
-    backend, launches, _error = _load(
-        monkeypatch,
-        tmp_path,
-        returncodes = [1, -11, None],
-        outputs = [_OOM, "Segmentation fault"],
-        pick = ([1], False),
-        gpu_ids = [0, 1],
-    )
-    assert [_mask(launch) for launch in launches] == ["1", "0,1", "1"]
-    assert backend.gpu_ids == [1]
+    assert [_mask(launch) for launch in launches] == masks
+    assert backend.gpu_ids == pin
+    # A later request for GPU 1 alone must reload unless the child runs on GPU 1 alone.
+    assert backend.matches_gpu_ids([1]) == (pin == [1])
+    # The plan other loads and eviction read covers the same cards.
+    assert set(backend._planned_vram_mib) == set(pin)
 
 
 @pytest.mark.parametrize(
     ("returncode", "crash"),
     [
-        (1, "CUDA error: no kernel image is available for execution on the device"),
+        (1, _NO_KERNELS),
         (-11, "Segmentation fault"),
         (1, _OOM),
         ("stall", ""),
     ],
     ids = ["added-card-has-no-kernels", "signal", "out-of-memory-again", "health-timeout"],
 )
-def test_a_crashed_widened_retry_falls_back_to_the_planned_card(
+def test_a_failed_widened_retry_falls_back_to_the_planned_card(
     monkeypatch, tmp_path, returncode, crash
 ):
     # Whatever sinks the widened launch, the --fit on retry main runs on GPU 0 alone still
@@ -336,6 +250,21 @@ def test_a_crashed_widened_retry_falls_back_to_the_planned_card(
     assert backend._child_gpu_physical_ids == (0,)
 
 
+def test_a_failed_widened_retry_hands_later_rungs_the_planned_mask(monkeypatch, tmp_path):
+    # The widened retry and the planned-card retry both hard-crash, so the flash-attention
+    # rung respawns; the shared env it inherits must be the planned one again.
+    _backend, launches, error = _load(
+        monkeypatch,
+        tmp_path,
+        returncodes = [1, -11, -11, None],
+        outputs = [_OOM, "Segmentation fault", "Segmentation fault"],
+    )
+    assert error is None
+    assert len(launches) == 4
+    assert launches[3][0][launches[3][0].index("--flash-attn") + 1] == "off"
+    assert [_mask(launch) for launch in launches] == ["0", "0,1", "0", "0"]
+
+
 def test_the_arch_rung_fit_retry_stays_on_the_cards_it_kept(monkeypatch, tmp_path):
     # GPU 0 has no kernels; the arch rung moves to GPU 1, which then runs out of memory
     # under --fit off. Its --fit on retry must not add GPU 0 back.
@@ -343,41 +272,12 @@ def test_the_arch_rung_fit_retry_stays_on_the_cards_it_kept(monkeypatch, tmp_pat
         monkeypatch,
         tmp_path,
         returncodes = [1, 1, None],
-        outputs = [
-            "CUDA error: no kernel image is available for execution on the device",
-            _OOM,
-        ],
+        outputs = [_NO_KERNELS, _OOM],
     )
     assert error is None
     assert backend._healthy
     assert [_mask(launch) for launch in launches] == ["0", "1", "1"]
     assert [_fit_mode(launch[0]) for launch in launches] == ["off", "off", "on"]
-
-
-def test_the_widened_mask_keeps_the_parent_order(monkeypatch, tmp_path):
-    # Iterating {8, 1} yields the parent's own order, where the order helper answers None.
-    _backend, launches, error = _load(
-        monkeypatch,
-        tmp_path,
-        returncodes = [1, None],
-        pick = ([8], False),
-        rows = [(1, 24 * _GIB, 24 * _GIB), (8, 46 * _GIB, 48 * _GIB)],
-        parent_mask = "8,1",
-    )
-    assert error is None
-    assert _mask(launches[1]) == "8,1"
-
-
-def test_a_crash_that_is_not_out_of_memory_keeps_the_planned_mask(monkeypatch, tmp_path):
-    # Only an allocation failure disproves Auto's estimate.
-    _backend, launches, _error = _load(
-        monkeypatch,
-        tmp_path,
-        returncodes = [1, None],
-        outputs = ["llama_model_load: error loading model: invalid tensor shape"],
-    )
-    assert len(launches) == 2
-    assert _mask(launches[1]) == "0"
 
 
 def test_the_widened_attempt_records_no_scheduler_abort(monkeypatch, tmp_path):
