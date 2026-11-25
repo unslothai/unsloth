@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-"""Both entrypoints run their torch checks in ONE interpreter (each `python -` re-imports
-torch, seconds per container start), keeping the old two-process output, order and exit codes.
-Driven with a fake torch on PYTHONPATH: no GPU."""
+"""Entrypoint torch checks share one interpreter with the old output, order and exit codes (fake torch, no GPU)."""
 
 import os
 import shutil
