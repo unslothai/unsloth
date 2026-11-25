@@ -10,12 +10,13 @@ test("video-family adapters deploy to Video, image families to Create", () => {
   assert.match(src, /\?\.is_video === true/);
   assert.match(
     src,
-    /viewRun\.catalog_path && canDeployFamily\(viewRun\.family \|\| ""\) && \(\s*<Button[\s\S]{0,400}onDeployVideo : onDeploy\)\?\.\(/,
+    /viewRun\.catalog_path && canDeployFamily\(viewRun\.family \|\| ""\) && \(\s*<Button[\s\S]{0,200}onClick=\{\(\) => deployRun\(viewRun\)\}/,
   );
   assert.match(
     src,
-    /status\?\.catalog_path && canDeployFamily\(status\.family \|\| family\?\.name \|\| ""\) && \(\s*<Button type="button" size="sm" onClick=\{onDeployClick\}>/,
+    /liveDeploy\?\.catalog_path && canDeployFamily\(liveDeploy\.family \|\| ""\) && \(\s*<Button type="button" size="sm" onClick=\{\(\) => deployRun\(liveDeploy\)\}>/,
   );
+  assert.match(src, /\(isVideoFamily\(request\.family\) \? onDeployVideo : onDeploy\)\?\.\(request\)/);
   assert.match(readSrc("features/images/api.ts"), /is_video\?: boolean;/);
 });
 
