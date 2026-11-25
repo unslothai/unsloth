@@ -775,7 +775,10 @@ function hasRowMark(row?: RowMarkRow): boolean {
 
 function RowMark({ row }: { row?: RowMarkRow }) {
   const size = "size-[calc(14px*var(--ui-space-scale,1))] shrink-0";
-  const provider = rowMaker(row);
+  const parts = rowHubParts(row);
+  const provider = parts
+    ? resolveOwnerProviderLogo(parts.owner, parts.name)
+    : null;
   if (provider) {
     return <MakerMark provider={provider} className={size} />;
   }
@@ -794,7 +797,6 @@ function RowMark({ row }: { row?: RowMarkRow }) {
       </span>
     );
   }
-  const parts = rowHubParts(row);
   const name = row?.kind === "external" ? undefined : rowMarkName(row);
   if (parts?.owner) {
     return (

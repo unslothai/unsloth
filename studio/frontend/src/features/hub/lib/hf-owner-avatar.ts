@@ -156,7 +156,7 @@ function release(): void {
   waiting.shift()?.();
 }
 
-// Keyed by endpoint + normalized owner: hits and 404s are held long enough to outlive a late mirror switch.
+// Keyed by endpoint and lowercased owner; hits and 404s outlive a late mirror switch.
 function avatarKey(name: string): string {
   return `${getHfEndpoint()}::${name.trim().toLowerCase()}`;
 }
@@ -177,7 +177,7 @@ export function readCachedHfOwnerAvatar(name: string): string | null {
   return entry?.kind === "url" ? entry.url : null;
 }
 
-/** An avatar <img> failed: expire every owner cached with that URL so the next mount asks HF again. */
+/** An <img> failed: expire every owner cached with that URL so the next mount asks HF again. */
 export function expireHfOwnerAvatarUrl(url: string): void {
   // The cache and the persisted list evict in different orders, so walk both.
   const keys = [...cache.entries()]
