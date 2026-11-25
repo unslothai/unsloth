@@ -391,12 +391,29 @@ def collect_local_models(
         custom_folders,
         materialize_ollama_links = materialize_ollama_links,
     )
-    rows = local_inventory._filter_hidden_models(rows)
+    rows = _without_format_labels(local_inventory._filter_hidden_models(rows))
     listed = local_inventory._dedupe_local_models(rows)
     if folded is not None:
         kept = {id(row) for row in listed}
         folded.extend(row for row in rows if id(row) not in kept)
     return listed
+
+
+def _without_format_labels(models: list) -> list:
+    """The Hub lists a folder or repo holding GGUF and safetensors once per format, as "X (GGUF)" and
+    "X (Safetensors)". These rows name it X, the id /v1/models lists, so a loaded model reports that id."""
+    from hub.services.models.common import _format_label
+
+    formats: dict[str, set] = {}
+    for model in models:
+        formats.setdefault(model.id, set()).add(model.model_format)
+    rows = []
+    for model in models:
+        label = f" ({_format_label(model.model_format)})"
+        if len(formats[model.id]) > 1 and model.display_name.endswith(label):
+            model = model.model_copy(update = {"display_name": model.display_name[: -len(label)]})
+        rows.append(model)
+    return rows
 
 
 def _one_row_per_id(models: list) -> List[LocalModelInfo]:
@@ -477,7 +494,7 @@ async def list_local_models(
                 hf_cache_dir = str(hf_cache_dir),
                 lmstudio_dirs = [str(d) for d in lm_dirs],
                 hermes_dirs = [str(d) for d in sources.hermes_dirs],
-                models = _one_row_per_id(listing.models),
+                models = _one_row_per_id(_without_format_labels(listing.models)),
             ),
             via_api_key = via_api_key,
         )

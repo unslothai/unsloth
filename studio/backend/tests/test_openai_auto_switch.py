@@ -2546,6 +2546,93 @@ def test_build_index_covers_hermes_downloads(monkeypatch, tmp_path):
     assert Path(entry.load_path).resolve() == weight.resolve()
 
 
+def _switch_through_the_local_catalog(monkeypatch):
+    """Auto-switch and /v1/models over the real local scan, with a recorded load."""
+    backend = _FakeBackend(None)
+    rec = _LoadRecorder(backend)
+    monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: True)
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+    monkeypatch.setattr(inference_route, "_load_model_impl", rec)
+    monkeypatch.setattr(inference_route, "_auto_switch_waiters", {})
+    monkeypatch.setattr(inference_route, "_preflight_speech_codec_for_switch", lambda *_a: None)
+    monkeypatch.setattr(inference_route, "_peek_inference_backend", lambda: None)
+    for name in ("_media_model_objects", "_stt_model_objects", "_audio_cpp_speech_model_objects"):
+        monkeypatch.setattr(inference_route, name, lambda *a: [])
+    catalog = inference_route._classified_catalog(
+        models_route.collect_local_models(Path("models").resolve(), materialize_ollama_links = False)
+    )
+
+    async def _catalog():
+        return catalog
+
+    monkeypatch.setattr(inference_route, "_cached_local_catalog", _catalog)
+
+    def listed(prefix):
+        return [
+            (row["id"], row["loaded"])
+            for row in asyncio.run(inference_route._openai_catalog_objects())
+            if row["id"].startswith(prefix)
+        ]
+
+    return backend, rec, listed
+
+
+def test_a_folder_with_gguf_and_safetensors_is_listed_and_loaded_as_its_name(monkeypatch, tmp_path):
+    # The Model Hub labels each format "both (GGUF)"; every other reader names the folder "both".
+    from hub.services.models import local_inventory
+
+    scan = tmp_path / "scan"
+    both = scan / "both"
+    both.mkdir(parents = True)
+    (both / "both-Q6_K.gguf").write_bytes(b"GGUF" + b"\0" * 60)
+    (both / "config.json").write_text(json.dumps({"model_type": "llama"}))
+    (both / "model.safetensors").write_bytes(b"\0" * 64)
+    for module in (studio_db, local_inventory):
+        monkeypatch.setattr(module, "list_scan_folders", lambda: [{"path": str(scan)}])
+    monkeypatch.setattr(resolver, "_host_has_a_non_gguf_backend", lambda: False)
+    monkeypatch.chdir(tmp_path)
+    _local_sources(monkeypatch, tmp_path)
+
+    hub_names = sorted(
+        m.display_name for m in asyncio.run(local_inventory.list_local_models_response()).models
+    )
+    assert hub_names == ["both (GGUF)", "both (Safetensors)"]
+    local = asyncio.run(
+        models_route.list_local_models(
+            models_dir = "./models", current_subject = "tester", via_api_key = False
+        )
+    )
+    assert [m.display_name for m in local.models] == ["both"]
+
+    backend, rec, listed = _switch_through_the_local_catalog(monkeypatch)
+    assert listed("both") == [("both", False)]
+    _run_hook("both")
+    assert [(Path(c.model_path), c.gguf_variant) for c in rec.calls] == [(both, "Q6_K")]
+    assert backend._openai_advertised_id == "both"
+    assert listed("both") == [("both", True)]
+
+
+def test_a_split_hermes_download_loads_under_its_hermes_name_and_settings(monkeypatch, tmp_path):
+    # Hermes names a split download without its split suffix; the load and saved settings use that name.
+    monkeypatch.setattr(studio_db, "list_scan_folders", lambda: [])
+    hermes_models = tmp_path / ".hermes" / "models"
+    hermes_models.mkdir(parents = True)
+    for part in (1, 2):
+        (hermes_models / f"Sample-Q4_K_M-0000{part}-of-00002.gguf").write_bytes(
+            b"GGUF" + b"\0" * 60
+        )
+    _local_sources(monkeypatch, tmp_path, hermes_dirs = (hermes_models,))
+    _mock_override_store(monkeypatch)
+    settings.set_model_override("Sample-Q4_K_M", max_seq_length = 8192)
+
+    backend, rec, _listed = _switch_through_the_local_catalog(monkeypatch)
+    _run_hook("Sample-Q4_K_M")
+    assert [(Path(c.model_path).name, c.max_seq_length) for c in rec.calls] == [
+        ("Sample-Q4_K_M-00001-of-00002.gguf", 8192)
+    ]
+    assert backend._openai_advertised_id == "Sample-Q4_K_M"
+
+
 def _json_body_request(payload):
     class _Req:
         async def json(self):
