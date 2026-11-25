@@ -497,6 +497,9 @@ def main(argv: list[str] | None = None) -> int:
         "(prepare-null-device again after every reboot).",
     )
     args = parser.parse_args(argv)
+    if args.install_dir is not None:
+        # Before either branch: pin selection reads the marker and journal under the Studio home.
+        _align_studio_home(args.install_dir.expanduser().resolve())
     if args.prepare_host:
         try:
             steps = prepare_host(args.install_dir or mxc_runtime._installed_package_root())
@@ -512,7 +515,6 @@ def main(argv: list[str] | None = None) -> int:
     if args.install_dir is None:
         parser.error("--install-dir is required")
     install_dir = args.install_dir.expanduser().resolve()
-    _align_studio_home(install_dir)
     try:
         pin = mxc_runtime.target_pin()
         auto = pin is mxc_runtime.PRIMARY_PIN and mxc_runtime.forced_pin() is None

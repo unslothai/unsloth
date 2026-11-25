@@ -939,3 +939,18 @@ def test_the_marker_follows_the_install_dir_studio_home(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "explicit"))
     installer._align_studio_home(install_dir)
     assert installer.mxc_runtime._studio_root() == tmp_path / "explicit"
+
+
+def test_prepare_host_reads_the_pin_beside_a_custom_install_dir(tmp_path, monkeypatch):
+    monkeypatch.delenv("UNSLOTH_STUDIO_HOME", raising = False)
+    monkeypatch.delenv("STUDIO_HOME", raising = False)
+    install_dir = tmp_path / "custom" / "studio" / "mxc-runtime" / "windows-x86_64"
+    seen = []
+    monkeypatch.setattr(
+        installer,
+        "prepare_host",
+        lambda root: seen.append(installer.mxc_runtime._studio_root()) or (),
+    )
+    assert installer.main(["--prepare-host", "--install-dir", str(install_dir)]) == 0
+    # The demotion marker that picked 1.0.1 there is read from that Studio home, not the default one.
+    assert seen == [tmp_path / "custom" / "studio"]
