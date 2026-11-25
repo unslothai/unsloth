@@ -316,6 +316,32 @@ def test_every_config_fits_its_card():
     assert I.kernel_config(None, 128) is None
 
 
+def test_unlisted_newer_arch_gets_the_nearest_lower_config_that_fits():
+    """An NVIDIA arch newer than a measured one is offered the nearest LOWER measured config (raced and verified on
+    the card like any other); below every listed card, or with too little shared memory, nothing."""
+    sm90 = 227 * 1024
+    for cap, want in (
+        ((9, 0), (8, 9)),
+        ((10, 0), (8, 9)),
+        ((10, 3), (8, 9)),
+        ((11, 0), (8, 9)),
+        ((12, 1), (12, 0)),
+        ((13, 0), (12, 0)),
+        ((8, 7), (8, 6)),
+    ):
+        for head_dim in (64, 128):
+            src, config = I.nearest_kernel_config(cap, head_dim, sm90)
+            assert src == want and config == I.KERNEL_CONFIGS[want][head_dim], (cap, head_dim)
+    for cap in I.KERNEL_CONFIGS:  # a listed card keeps its own entry
+        assert I.nearest_kernel_config(cap, 128, 1)[1] == I.kernel_config(cap, 128)
+    assert I.nearest_kernel_config((7, 0), 128, sm90) == (None, None)
+    assert I.nearest_kernel_config((9, 0), 96, sm90) == (None, None)
+    assert I.nearest_kernel_config(None, 128) == (None, None)
+    # sm89's head-dim-128 tile needs 99 KB: a 64 KB part skips to the next lower card whose tile fits (sm75's)
+    src, config = I.nearest_kernel_config((9, 0), 128, 64 * 1024)
+    assert src == (7, 5) and I.shared_bytes(128, config) <= 64 * 1024
+
+
 def test_long_overrides_apply_from_long_keys_on():
     """A table entry may name another block shape for long sequences: ``select_config`` applies ``long`` from
     ``long_keys`` keys on and returns a plain config either way (one compiled kernel). sm80 at head dim 128 and
@@ -883,7 +909,8 @@ def test_install_scope_incumbent_and_refusals(monkeypatch):
     )
     assert n == 1 and [m.processor._unsloth_int8 for m in dit.blocks] == [True, False, False, False]
     assert seen == [(2, 128, "sage_hub", True)]
-    _fake_cuda(monkeypatch, capability = (9, 0), found = {"ok": True, "min_tokens": 0})
+    # below every listed card (a newer unlisted one is offered the nearest listed config): no kernel, nothing installed
+    _fake_cuda(monkeypatch, capability = (7, 0), found = {"ok": True, "min_tokens": 0})
     assert I.install_int8_attention(_fake_dit(), device = "cuda", dtype = torch.bfloat16) == 0
     _fake_cuda(monkeypatch, found = {"ok": True, "min_tokens": 0})
     assert I.install_int8_attention(_fake_dit(), device = "cuda", dtype = torch.float64) == 0

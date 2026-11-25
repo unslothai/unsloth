@@ -1403,8 +1403,6 @@ FUTURE_ARCH_EXCLUSIONS: dict = {
     + " (sd.cpp cuBLAS vs MMQ crossover by major)",
     "sm1[23][01].any.vae_*": _NEEDS.format("sm121 / sm130")
     + " (VAE strip / fold decode measured per card)",
-    # INT8 attention: KERNEL_CONFIGS is keyed by exact capability, so a newer card keeps 16-bit attention.
-    "sm1[23][01].any.int8_attn.serving.*": "no CUDA config for the arch (exact-key KERNEL_CONFIGS lookup)",
     # ROCm: tables keyed by the exact gfx ISA; gfx12 is not gfx11 with more of it.
     "gfx1250.any.int8_attn.serving.*": _NEEDS.format("gfx1250")
     + " (ROCm Triton INT8 attention tiles per gfx ISA)",

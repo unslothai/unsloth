@@ -86,7 +86,10 @@ LOG2E = 1.4426950408889634
 # long_keys / long: overrides from that many keys on (select_config). A card runs one block per SM, so a call of a
 # few thousand tokens is a handful of blocks per SM and the last round leaves SMs idle: smaller blocks waste less of
 # it, and bigger ones copy each tile for more rows on long calls.
-# Measured per card; a card missing here keeps native. One bn per head dim, so the output does not depend on the card.
+# Measured per card. An unlisted NVIDIA card newer than a listed one (sm90, sm100, sm121, ...) is offered the nearest
+# lower listed config that fits its shared memory (``nearest_kernel_config``), which its own accuracy verdict and the
+# timing race still have to pass; below every listed card it keeps native. One bn per head dim, so the output does not
+# depend on the card.
 KERNEL_CONFIGS: dict = {
     (7, 5): {
         128: {"bn": 128, "wpc": 8, "nq": 1, "stages": 1, "qreg": 2, "qkw": 1, "pvw": 8},
@@ -396,6 +399,66 @@ def kernel_config(capability: Any, head_dim: int) -> Optional[dict]:
     return dict(found) if found else None
 
 
+# Shared memory a block may opt into when the device does not say: the smallest sm8x+ figure (sm86 / sm89 / sm120).
+_FALLBACK_SHARED_LIMIT = 99 * 1024
+
+
+def _fits_shared(head_dim: int, config: dict, limit: int) -> bool:
+    """Both the short and the ``long`` variant of ``config`` fit ``limit`` bytes of shared memory."""
+    return all(
+        shared_bytes(head_dim, select_config(config, keys)) <= limit
+        for keys in (0, int(config.get("long_keys") or 0))
+    )
+
+
+def nearest_kernel_config(
+    capability: Any,
+    head_dim: int,
+    shared_limit: Optional[int] = None,
+) -> tuple:
+    """``(measured capability, config)`` for an NVIDIA capability: its own ``KERNEL_CONFIGS`` entry, else (an arch
+    newer than a measured one: sm90, sm100, sm103, sm121, ...) the nearest LOWER measured capability's config whose
+    tile fits ``shared_limit`` (default 99 KB). ``(None, None)`` below every measured arch or with no config for the
+    head dim. The fallback only makes the kernel a candidate: the per-card accuracy verdict and the timing race
+    against the 16-bit incumbent (``verdict``, ``_choose_path``) still decide whether it runs, and one bn per head
+    dim keeps its output bits the same as on the measured card."""
+    try:
+        cap = (int(capability[0]), int(capability[1]))
+    except Exception:  # noqa: BLE001
+        return None, None
+    exact = kernel_config(cap, head_dim)
+    if exact is not None:
+        return cap, exact
+    limit = int(shared_limit) if shared_limit else _FALLBACK_SHARED_LIMIT
+    for known in sorted((k for k in KERNEL_CONFIGS if k < cap), reverse = True):
+        found = KERNEL_CONFIGS[known].get(int(head_dim))
+        if found and _fits_shared(int(head_dim), found, limit):
+            return known, dict(found)
+    return None, None
+
+
+def _shared_limit(index: int) -> Optional[int]:
+    try:
+        import torch
+        return (
+            int(
+                getattr(torch.cuda.get_device_properties(index), "shared_memory_per_block_optin", 0)
+            )
+            or None
+        )
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def cuda_kernel_config(index: int, head_dim: int) -> Optional[dict]:
+    """The CUDA kernel config the device ``index`` runs at ``head_dim`` (``nearest_kernel_config`` with its shared
+    memory), or None."""
+    import torch
+
+    capability = torch.cuda.get_device_capability(index)
+    return nearest_kernel_config(capability, head_dim, _shared_limit(index))[1]
+
+
 def _is_rocm() -> bool:
     import torch
 
@@ -463,7 +526,7 @@ def _serving(index: int, head_dim: int) -> tuple:
     setting = impl_setting()
     capability = torch.cuda.get_device_capability(index)
     if setting != "triton" and (int(index), int(head_dim)) not in _CUDA_FAILED:
-        config = kernel_config(capability, head_dim)
+        config = cuda_kernel_config(index, head_dim)
         if config is not None:
             return "cuda", config
     if setting == "cuda":
@@ -497,7 +560,7 @@ def device_config(
     capability = torch.cuda.get_device_capability(index)
     if impl == "triton":
         return triton_kernel_config(capability, head_dim)
-    return kernel_config(capability, head_dim)
+    return cuda_kernel_config(index, head_dim)
 
 
 def kernel_defines(head_dim: int, config: dict) -> dict:
