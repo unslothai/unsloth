@@ -448,6 +448,17 @@ def _restore_dynamo_process_knobs():
 
 
 @pytest.fixture(autouse = True)
+def _uninstall_sdpa_align_wrapper():
+    # The DiT trainer's compile step wraps inductor's SDPA layout constraint and appends its cache_key_tag; only the
+    # full run's finally takes it out. A test that called the compile step alone left both on the xdist worker, and
+    # test_diffusion_cache_tag_contexts.py then read "|unsloth_sdpa_align=unguarded;..." for its own tags.
+    yield
+    align = sys.modules.get("core.training.diffusion_sdpa_align")
+    if align is not None and align.installed():
+        align.uninstall_sdpa_align_without_guard()
+
+
+@pytest.fixture(autouse = True)
 def _forget_queued_media_requests():
     def _forget():
         video_routes = sys.modules.get("routes.video")
