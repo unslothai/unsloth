@@ -3569,6 +3569,23 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
             "version and is ignored.",
         )
 
+    # Colocated vLLM IS: ask the engine for temperature-scaled logprobs from before min_p / top_k / top_p, so the
+    # ratio compares full-vocabulary distributions and the trainer skips the kept-set rebuild (zoo decides per trainer).
+    _untruncated_anchor = "\n        max_left_pad = None\n"
+    if function.count(_untruncated_anchor) == 1:
+        function = function.replace(
+            _untruncated_anchor,
+            _untruncated_anchor + "        try:\n"
+            "            from unsloth_zoo.vllm_utils import set_vllm_untruncated_logprobs as _unsloth_untruncated\n"
+            "            self._unsloth_vllm_untruncated_logprobs = bool(_unsloth_untruncated(\n"
+            "                getattr(self, 'use_vllm', False)\n"
+            "                and getattr(self, 'vllm_importance_sampling_correction', False)\n"
+            "                and getattr(self, 'llm', None) is not None\n"
+            "            ))\n"
+            "        except Exception:\n"
+            "            self._unsloth_vllm_untruncated_logprobs = False\n",
+        )
+
     return function
 
 
