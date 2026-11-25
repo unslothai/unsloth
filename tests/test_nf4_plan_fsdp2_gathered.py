@@ -44,8 +44,7 @@ def _gathered_param(q, mark):
 
 
 def _reallocate(p, packed_bytes):
-    """FSDP2's free_storage / alloc_storage around an all-gather, forced onto a new address, then
-    the all-gather's copy-out of `packed_bytes` (uint8)."""
+    """FSDP2 free_storage/alloc_storage forces a new address; copies out uint8 packed_bytes."""
     storage = p.untyped_storage()
     nbytes = storage.nbytes()
     old = p.data_ptr()
@@ -121,8 +120,7 @@ def test_gathered_weight_view_reuses_its_plan_across_reallocation(monkeypatch):
 
 
 def test_gathered_weight_with_swapped_storage_rebuilds(monkeypatch):
-    """A view the plan holds keeps the storage it was built on: when the parameter gets a new
-    storage object instead of a resized one, the plan must not read the old bytes."""
+    """A plan's view keeps the old storage; a swapped storage object must force a rebuild."""
     utils = _utils()
     calls = _count_planned(monkeypatch, utils)
     q, s = _quantize(6)

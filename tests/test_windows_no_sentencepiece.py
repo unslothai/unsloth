@@ -60,8 +60,7 @@ def _clean(monkeypatch):
     "platform,expected", [("win32", True), ("linux", False), ("darwin", False)]
 )
 def test_the_default_is_windows_only(platform, expected, monkeypatch):
-    """WSL reports linux and is deliberately in the second group: App Control does not enforce
-    over ELF binaries in the guest, so there is no extension for it to refuse there."""
+    """WSL reports linux and stays enabled: App Control does not enforce over ELF binaries."""
     monkeypatch.setattr(sys, "platform", platform)
     assert sentencepiece_should_be_disabled() is expected
 
@@ -82,8 +81,7 @@ def test_a_falsy_flag_opts_windows_back_in(value, monkeypatch):
 
 @pytest.mark.parametrize("value", ["maybe", "2", "", "   ", "disable"])
 def test_an_unrecognised_value_is_the_platform_default(value, monkeypatch):
-    """This runs at the top of the process. A typo in an environment variable must not be
-    fatal, and must not silently mean the opposite of what was typed."""
+    """A typo in the environment variable must not be fatal, nor silently mean the opposite."""
     monkeypatch.setenv(DISABLE_SENTENCEPIECE_VARIABLE, value)
     monkeypatch.setattr(sys, "platform", "win32")
     assert sentencepiece_should_be_disabled() is True
@@ -111,8 +109,7 @@ def test_nothing_happens_off_windows(monkeypatch):
 
 
 def test_an_already_imported_sentencepiece_is_left_alone(monkeypatch):
-    """Replacing a live module would break whoever is holding a reference to it, and by this
-    point the extension has already loaded, so there is nothing left to prevent."""
+    """Replacing a live module breaks existing references; the extension is already loaded."""
     sentinel = object()
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setitem(sys.modules, "sentencepiece", sentinel)
@@ -140,8 +137,7 @@ def test_it_declines_once_transformers_is_imported(monkeypatch):
 
 
 def test_a_sentinel_installed_in_time_survives_a_later_transformers_import(monkeypatch):
-    """The late check must not undo the ordinary case, where the rule ran first and
-    transformers was imported after it."""
+    """The late check must not undo the rule when it ran first and transformers came after."""
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setitem(sys.modules, "sentencepiece", None)
     monkeypatch.setitem(sys.modules, "transformers", types.ModuleType("transformers"))
@@ -189,8 +185,7 @@ def test_the_studio_parent_applies_the_same_rule_without_importing_unsloth():
     ],
 )
 def test_the_two_spellings_agree(platform, env, expect_disabled, monkeypatch):
-    """Compares the package helper and Studio's copy by behaviour over the same cases; comparing
-    source text would pass even if the two had stopped agreeing."""
+    """Compares the two copies by behaviour; source text would pass even if they had diverged."""
     monkeypatch.setattr(sys, "platform", platform)
     if env is None:
         monkeypatch.delenv(DISABLE_SENTENCEPIECE_VARIABLE, raising = False)
@@ -254,8 +249,7 @@ def test_the_shared_worker_entrypoint_installs_it_before_the_worker_module(tmp_p
 
 
 def test_the_shared_worker_entrypoint_leaves_it_alone_when_not_asked(tmp_path):
-    """The same entrypoint where the rule does not apply: off Windows and without the flag, a
-    worker still gets the real package."""
+    """Off Windows and without the flag, the shared worker still gets the real package."""
     env = {k: v for k, v in os.environ.items() if k != DISABLE_SENTENCEPIECE_VARIABLE}
     out = _run_shared_entrypoint(tmp_path, env)
     expected = "SENTINEL AT IMPORT " + str(sys.platform == "win32")

@@ -99,8 +99,7 @@ def test_sm120_never_picks_padded_where_it_lost(flops, tokens, gain_214, gain_21
 
 
 def test_sm120_with_the_old_threshold_would_pick_a_losing_cell():
-    # Why sm120 has its own threshold: at 0.10 s the 0.6B Alpaca batch 16 cell (-29% on torch
-    # 2.14.1) is picked.
+    # At 0.10 s the old threshold picks the 0.6B Alpaca batch 16 cell (-29% on torch 2.14.1).
     assert pc.choose_padding(*Q06, *ALP16, 500.0, 10**9)[0] is False
     assert pc.choose_padding(*Q06, *ALP16, 500.0, 10**9, capability = SM120)[0] is True
 

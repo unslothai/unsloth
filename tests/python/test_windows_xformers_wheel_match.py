@@ -138,8 +138,7 @@ def test_windows_extra_documents_the_cuda_matched_route():
 
 
 def test_xformers_matrix_agrees_with_wheel_utils():
-    """One matrix, three consumers (pyproject, wheel_utils, install.ps1). Drift here is
-    exactly the bug: a runtime resolver that disagrees with the packaged pin."""
+    """One matrix, three consumers (pyproject, wheel_utils, install.ps1); drift is the bug."""
     source = (REPO_ROOT / "studio" / "backend" / "utils" / "wheel_utils.py").read_text(
         encoding = "utf-8"
     )

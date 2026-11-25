@@ -102,8 +102,7 @@ def test_an_unreadable_directory_costs_only_itself(tmp_path: pathlib.Path) -> No
 
 def test_the_scan_refuses_to_report_a_truncated_snapshot(tmp_path: pathlib.Path) -> None:
     """Past the ceiling the scan must raise: a partial listing would read as a complete snapshot."""
-    # The real ceiling (200000) is too large to build, so the function is redefined from the
-    # shipped source with a smaller limit.
+    # The real 200000 ceiling is too big to build, so the test lowers it in the shipped source.
     text = SCRIPT.read_text(encoding = "utf-8")
     assert (
         "throw (" in text and "$visited -gt 200000" in text

@@ -76,8 +76,7 @@ def _contain_installer_venv_root(tmp_path_factory, monkeypatch):
 
 @pytest.fixture(autouse = True)
 def _no_deleted_torch_config_entries():
-    """A test that leaves a dynamo / inductor config entry deleted errors at its own teardown; see
-    tests/_shared/torch_config_guard.py."""
+    """Test leaving a torch config entry deleted errors at teardown; see torch_config_guard.py."""
     from torch_config_guard import check_after_test, install_delete_recorder
 
     install_delete_recorder()
@@ -117,9 +116,8 @@ def _has_real_accelerator() -> bool:
 
 
 def _preload_device_type(package: str, prereqs: tuple[str, ...] = ()) -> bool:
-    """Pre-load <package>.device_type under a mocked is_available()==True so its
-    @cache captures "cuda"; prereqs are submodules to load first (e.g. 'utils').
-    Returns False if anything is unimportable, so the caller falls back to a stub."""
+    """Pre-load <package>.device_type with is_available() mocked True so @cache captures cuda;
+    prereqs (e.g. utils) load first; returns False if unimportable, so callers use a stub."""
     target = f"{package}.device_type"
     if target in sys.modules:
         return True
@@ -171,8 +169,7 @@ def _preload_device_type(package: str, prereqs: tuple[str, ...] = ()) -> bool:
 
 
 def _patch_torch_cuda_for_import() -> None:
-    """Stubs the torch.cuda.* probes that fire at import once DEVICE_TYPE is forced to cuda,
-    returning plausible Ampere values so the import finishes; real-tensor tests still run on CPU."""
+    """Stub torch.cuda import probes (DEVICE_TYPE=cuda) with Ampere values; tests run on CPU."""
     try:
         import torch.cuda.memory as _cuda_memory  # type: ignore
 

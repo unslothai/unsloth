@@ -186,8 +186,7 @@ def test_monitor_can_unload_the_loaded_model():
     assert "const unloadActiveModel = async" in src
     assert "onUnloadActive={unloadActiveModel}" in src
     assert "onUnloadActive();" in controls
-    # #11223: no unload while a model loads, or while one is already unloading. Read busy= as a set
-    # of || terms, so the guard is that both stay among them, not the exact spelling.
+    # 11223: no unload while loading or unloading; busy= needs both || terms, not exact text.
     busy = re.search(r"const busy = ([^;]+);", controls)
     assert busy, "the load controls no longer compute busy"
     assert {"modelLoading", "unloading"} <= {term.strip() for term in busy.group(1).split("||")}

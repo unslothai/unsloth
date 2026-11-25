@@ -39,8 +39,7 @@ def test_a_difference_that_is_only_off_screen_passes():
 
 
 def test_a_difference_inside_the_viewport_still_fails():
-    """The exemption is for off-screen differences only. A message the user was looking at is not
-    excused by anything, and the row names it by THREAD position so it is actionable."""
+    """Only off-screen differences are exempt; visible ones fail, named by THREAD position."""
     got = P.compare_visible(_cap({14: "a", 15: "b"}), _cap({14: "a", 15: "CHANGED"}))
     assert got["verdict"] == P.DIFFER, got
     assert any("ordinal 15" in m for m in got["moved"]), got["moved"]
@@ -106,16 +105,14 @@ def test_the_messages_that_could_be_digested_agreeing_is_not_the_claim_this_mode
 
 
 def test_a_pair_with_nothing_left_undigested_still_matches_with_an_empty_residue():
-    """The refusal must not leak into the pairs it does not concern, or the mode stops being able
-    to pass anything and stops being able to fail anything either."""
+    """A refusal must not leak into unrelated pairs, or the mode could neither pass nor fail."""
     got = P.compare_visible(_cap({14: "a", 15: "b"}), _cap({14: "a", 15: "b"}))
     assert got["verdict"] == P.MATCH, got
     assert got["not_digested"] == []
 
 
 def test_an_undigested_ordinal_never_downgrades_a_difference_that_was_found():
-    """A residue withholds a pass; it does not withdraw a finding. Ordinal 3 could not be digested
-    and ordinal 15 rendered differently, and the second of those is still the verdict."""
+    """Undigested ordinals withhold a pass but never withdraw a difference already found."""
     base = _cap({14: "a", 15: "b"}, ever = [3, 14, 15])
     treat = _cap({14: "a", 15: "CHANGED"}, ever = [3, 14, 15])
     got = P.compare_visible(base, treat)
@@ -125,8 +122,7 @@ def test_an_undigested_ordinal_never_downgrades_a_difference_that_was_found():
 
 
 def test_a_pair_where_nothing_visible_could_be_digested_is_not_a_pass():
-    """Every ordinal the viewport showed had been unmounted by capture time, so the comparison
-    observed the visibility but none of the content. That is not agreement."""
+    """Ordinals unmounted by capture time leave visibility but no content, so not agreement."""
     got = P.compare_visible(_cap({}, ever = [3, 4]), _cap({}, ever = [3, 4]))
     # The zero-length scan control fires first; either refusal is correct, MATCH is not.
     assert got["verdict"] == P.NOT_COMPARABLE, got

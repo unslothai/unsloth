@@ -107,8 +107,7 @@ def test_zero_layers_masks_the_child_devices(llama_cpp):
 
 
 def test_explicit_pick_still_wins_when_layers_are_not_zero(llama_cpp):
-    """force_cpu is the only thing above the picker. A host whose GPU torch cannot see
-    (Metal, Vulkan, Windows-HIP, Intel XPU) still has to honour an explicit pick."""
+    """force_cpu is the only override; explicit picks still apply where torch cannot see a GPU."""
     arg = llama_cpp.LlamaCppBackend._diffusion_gpu_arg
     assert arg([3, 1], cpu_only = True) == "1"
     assert arg([3, 1]) == "1"
@@ -192,8 +191,7 @@ def test_backend_dedup_compares_the_requested_split(
 
 
 def test_the_dedupe_compares_the_requested_split_through_the_paravirtual_rewrite():
-    """The split dedupe compares the normalized intent, since a virtualised Metal device launches
-    the CPU-pinned rewrite and comparing the raw ask would reload a healthy server forever."""
+    """Compare normalized intent; raw asks never match the CPU-pinned Metal rewrite, reloading."""
     bodies = {
         node.name: (ast.get_source_segment(SRC, node) or "")
         for node in ast.walk(TREE)
@@ -248,8 +246,7 @@ def test_probe_falls_back_to_a_substring_scan_on_unparseable_source(llama_cpp, t
 
 @pytest.mark.parametrize("name", ["shim", "shim.pyw", "SHIM.PY"])
 def test_probe_keys_on_argv_shape_not_suffix(llama_cpp, tmp_path, name):
-    """Any UNSLOTH_DG_SHIM file launches as-is, so the probe must answer for that exact
-    file; an extensionless or .pyw override used to fall through to the package."""
+    """UNSLOTH_DG_SHIM runs unchanged, so the probe reads that exact file, not its suffix."""
     shim = tmp_path / name
     shim.write_text('ap.add_argument("--ngl", type=int)\n', encoding = "utf-8")
     assert llama_cpp._shim_supports_ngl(["python", str(shim)]) is True
@@ -283,8 +280,7 @@ def test_split_supported_mirrors_the_launch_gate(llama_cpp, tmp_path, monkeypatc
 
 
 def test_training_guard_mirrors_shim_support():
-    """The zero-layer bypass and the split-scaled estimate are only valid when the
-    launcher will actually emit --ngl; a dropped split runs GPU-resident."""
+    """Zero-layer bypass and split-scaled estimate need --ngl; else split runs GPU-resident."""
     route_src = ROUTE_PATH.read_text(encoding = "utf-8")
     route_tree = ast.parse(route_src)
     fn = next(
@@ -315,8 +311,7 @@ def test_positive_split_scales_the_guard_estimate(llama_cpp, required, ngl, n_la
 
 
 def test_probe_ignores_a_sibling_shim_next_to_a_custom_override(llama_cpp, tmp_path):
-    """An override runs as-is; a capable sibling shim.py must not vouch for it, or the
-    launch appends --ngl to a parser that exits on it."""
+    """An override runs as-is; a sibling shim.py must not vouch for it, or --ngl breaks it."""
     override = tmp_path / "my_shim"
     override.write_text('ap.add_argument("--maxtok", type=int)\n', encoding = "utf-8")
     sibling = tmp_path / "shim.py"
@@ -325,8 +320,7 @@ def test_probe_ignores_a_sibling_shim_next_to_a_custom_override(llama_cpp, tmp_p
 
 
 def test_zoo_upgrade_reloads_a_dropped_split(llama_cpp):
-    """manual/20 against an old shim launched with the default and deduped on the
-    ask. Once the shim gains --ngl, the identical ask must reload to apply it."""
+    """Shim without --ngl dedupes manual/20 on the ask; with --ngl the same ask must reload."""
     b = _loaded_diffusion(llama_cpp, recorded_layers = -1, requested_ngl = 20)
     assert _in_target_state(llama_cpp, b, mode = "manual", layers = 20) is True
     b.diffusion_split_supported = lambda: True

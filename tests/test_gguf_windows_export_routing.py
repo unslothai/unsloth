@@ -136,8 +136,7 @@ def _run(
 
 
 class _NoMove:
-    """save_to_gguf relocates initial files with shutil.move, but the sources here are
-    virtual Windows paths that do not exist on POSIX. Neutralise the move."""
+    """Stubs shutil.move: save_to_gguf's sources are virtual Windows paths absent on POSIX."""
 
     def move(self, src, dst):
         return dst

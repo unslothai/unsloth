@@ -35,8 +35,7 @@ def _jobs() -> dict:
 
 
 def _entries(job_name: str) -> list[dict]:
-    """Entries without a `selection` are skipped, since the floor spot-check leg names its files
-    directly."""
+    """Skips entries with no selection key; the floor spot-check leg names its files directly."""
     job = _jobs()[job_name]
     include = job.get("strategy", {}).get("matrix", {}).get("include", [])
     return [entry for entry in include if "selection" in entry]
@@ -115,8 +114,7 @@ def _ignore_glob_hits(pattern: str, path: str) -> bool:
     return fnmatch.fnmatch(path, pattern) or fnmatch.fnmatch(path, f"*/{pattern}")
 
 
-# The repo-root and backend matrix jobs are told apart by membership of each job's own matrix
-# selection; the shape test below keeps the two sets disjoint.
+# Repo-root and backend jobs split by matrix selection; the shape test keeps the sets disjoint.
 
 
 def _over_the_repo_tests(command: str) -> bool:
@@ -153,8 +151,7 @@ BACKEND_ISOLATED = [
     ("tests/test_anthropic_messages.py", "counts SSE keepalives emitted during a 0.24s stall"),
     # Tight at :400: `assert elapsed < 0.2` around a 0.03s join.
     ("tests/test_profile_stats.py", ":400 asserts elapsed < 0.2 around a 0.03s join"),
-    # Timing-tight on a result at :1101 (patched _SWITCH_BUDGET_S = 0.3 vs a 1.98s cold path), and
-    # it mutates keepwarm globals at :2628-2630.
+    # Timing-tight at :1101 (patched 0.3s budget vs 1.98s cold path); mutates keepwarm globals.
     (
         "tests/test_media_auto_switch.py",
         ":1101 asserts started.is_set() under a patched 0.3s budget on a 1.98s cold path, "

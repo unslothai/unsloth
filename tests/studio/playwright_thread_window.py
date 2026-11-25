@@ -74,8 +74,7 @@ WHEEL_PX = 700
 WHEEL_GAP_MS = 40
 # Rows are separated by gaps, so a covered viewport is not rows from edge to edge.
 MIN_COVERAGE = 0.5
-# How long the window may take to catch up with one wheel step before it counts as lost. Not a
-# pace: a shared CI runner serving unminified modules takes whole frames for a commit.
+# Catch-up limit per wheel step before it counts as lost; not a pace, CI runners are slow.
 CATCH_UP_MS = 30_000
 # Very long replies, for the full mount: a few thousand px each.
 TALL_MESSAGES = 60

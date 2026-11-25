@@ -23,8 +23,7 @@ import tempfile
 
 
 def test_pp_prequantized_inkling_sharded_load(ckpt):
-    """pipeline_sharded_loading of the pre-quantized checkpoint (the default 4-bit Inkling-2-Mini repo): each rank
-    keeps its stages' 4-bit tensors, bitwise those of a full load, and placeholders for the rest."""
+    """Each rank keeps its stages' 4-bit tensors, bitwise as in a full load, with placeholders."""
     results = _run("_case_pp", ckpt)
     for r in results:
         assert os.path.realpath(r["pp_load"]).startswith(os.path.realpath(REPO) + os.sep), r[

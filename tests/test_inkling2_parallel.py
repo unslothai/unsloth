@@ -133,8 +133,7 @@ def test_data_parallel_and_other_models_pass(monkeypatch):
 
 
 def test_loader_refuses_in_the_inkling2_branch_before_loading():
-    """FastModel.from_pretrained's model-type branch for Inkling 2 calls the refusal (config time, before the
-    transformers load the tensor parallel sharded loader wraps)."""
+    """Inkling 2 refusal runs at config time in from_pretrained, before the transformers load."""
     tree = ast.parse((_ROOT / "unsloth" / "models" / "loader.py").read_text(encoding = "utf-8"))
     found = False
     for node in ast.walk(tree):

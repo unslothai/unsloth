@@ -130,7 +130,6 @@ def test_unset_variable_reads_as_empty_and_untrusted(monkeypatch):
 
 
 def test_no_producer_bypasses_the_registry():
-    """A direct os.environ write would set the variable without registering it, so
-    its own code fields would then be dropped as untrusted."""
+    """Direct os.environ writes skip registration; their code fields are dropped as untrusted."""
     assert 'os.environ["UNSLOTH_FORCE_CUSTOM_DTYPE"]' not in LOADER
     assert "os.environ['UNSLOTH_FORCE_CUSTOM_DTYPE']" not in LOADER

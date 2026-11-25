@@ -181,8 +181,7 @@ def test_fallback_matches_the_triton_kernel_bit_for_bit(monkeypatch, shape, bloc
 
     from unsloth.kernels import fp8
 
-    # The cache is keyed on the device, so clear it between the simulated capabilities.
-    # Simulated NVIDIA capabilities: hip = None, else a real ROCm host routes on its gfx arch instead.
+    # Cache is per device, so clear it; hip = None stops a ROCm host routing on its gfx arch.
     with monkeypatch.context() as mp:
         mp.setattr(torch.cuda, "get_device_capability", lambda *a, **k: (9, 0))
         mp.setattr(torch.version, "hip", None)

@@ -123,8 +123,7 @@
     st.pending = parts.pop();
     if (carried && parts.length > 0) noteCarried(st);
     for (const part of parts) {
-      // A block may carry id: / event: lines before its data (chat-run events do); per SSE, the
-      // block's data is its data: lines joined by newlines, and comment / other field lines are not data.
+      // Only data: lines form a block's data, joined by newlines; other fields are skipped.
       const dataLines = [];
       for (const raw of part.split("\n")) {
         const field = raw.trim();

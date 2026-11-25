@@ -53,8 +53,7 @@ def _case_trainer_fsdp(native, tmp):
         try:
             targs = _targs(os.path.join(tmp, "out"), fsdp = "full_shard")
             trainer = Trainer(model = model, args = targs)
-            # On CPU accelerate builds no FSDP state (MULTI_CPU), so is_fsdp_enabled stays False
-            # here; the plugin arguments show the Trainer took the FSDP request.
+            # On CPU (MULTI_CPU), is_fsdp_enabled stays False; plugin args show the request.
             res[backend or "none"] = {
                 "error": "",
                 "fsdp_plugin": getattr(trainer.args, "fsdp_plugin_args", None) is not None

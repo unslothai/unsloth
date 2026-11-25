@@ -180,8 +180,7 @@ def test_a_refusal_names_the_cause_and_not_just_the_exception_class(page):
 
 
 def test_the_guard_is_on_the_clipboard_and_not_on_the_engine_name():
-    """No engine list to maintain. An engine that starts performing the copy is admitted with no
-    change here, and one that stops is refused with no change here."""
+    """No engine list to maintain: admitted once it starts copying, refused once it stops."""
     import inspect
 
     src = inspect.getsource(A.select_all_copy)

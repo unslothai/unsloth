@@ -122,8 +122,7 @@ def test_resumed_paged_optimizer_state_stays_paged(optim_name):
         pytest.skip(reason = f"bitsandbytes {bitsandbytes.__version__} has no {optim_name}")
     fixed = _run("fixed", optim_name)
     assert fixed["fresh_paged"] and all(fixed["fresh_paged"].values())
-    # Paged from the load on, so the first resumed forward and backward never hold it in the
-    # CUDA allocator (a fresh run has no state there yet), and never staged there whole either.
+    # Paged from load on: resumed steps never hold state in CUDA allocator or stage it whole.
     assert fixed["after_load_paged"] == fixed["resumed_paged"] == fixed["fresh_paged"]
     assert fixed["placed_after_load"]
     assert fixed["load_cuda_bytes"] < fixed["state_bytes"] // 4

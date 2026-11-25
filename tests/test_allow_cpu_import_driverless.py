@@ -119,8 +119,7 @@ def test_the_devices_really_are_hidden_and_the_variable_is_what_opens_the_import
 
 
 def test_no_unsloth_module_probes_a_device_that_is_not_there(_import_attempt_result):
-    """The claim this repo can make on its own. Scoped to unsloth's own files so a
-    stale `unsloth_zoo` on the path cannot redden it -- see the next case."""
+    """The repo's own claim, scoped to unsloth's files: a stale unsloth_zoo cannot redden it."""
     out = _import_attempt_result
     if out.returncode == 0:
         return
@@ -134,8 +133,7 @@ def test_no_unsloth_module_probes_a_device_that_is_not_there(_import_attempt_res
 
 
 def test_the_import_succeeds_on_a_driverless_host(_import_attempt_result):
-    """End to end; the chain also runs through unsloth_zoo (compiler.py, loss_utils.py), so an
-    unsloth_zoo without those guards leaves this unprovable rather than failed."""
+    """No guards in unsloth_zoo compiler.py and loss_utils.py makes it unprovable, not failed."""
     out = _import_attempt_result
     if out.returncode != 0 and _asked_a_missing_device(out.stderr):
         import unsloth_zoo
@@ -221,8 +219,7 @@ def test_a_driverless_import_does_not_try_to_repair_cuda_linkage(tmp_path):
 
 
 def test_a_host_with_no_device_claims_no_capability(_import_attempt_result):
-    """Where a capability cannot be read, the conservative answer is the one that
-    only costs float32. Claiming bfloat16 here fails at the first cast instead."""
+    """If a capability is unreadable, assume float32; claiming bfloat16 fails at first cast."""
     out = _import_attempt_result
     if out.returncode != 0:
         pytest.skip("the import does not complete here; covered by the cases above")

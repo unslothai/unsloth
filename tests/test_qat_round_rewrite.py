@@ -172,8 +172,7 @@ def test_rounded_provenance_survives_a_device_move(scheme, monkeypatch):
 
 @pytest.mark.parametrize("scheme", ["int4", "int8"])
 def test_rounding_again_after_a_device_move_is_a_no_op(scheme, monkeypatch):
-    # round_frozen_qat_weights after model.cpu() / .to(): same rounded values in new storage, so nothing is
-    # rounded a second time (int8 fake quant is not idempotent); an edited weight is still re-rounded.
+    # Not re-rounded after a move (int8 fake quant is not idempotent); an edit is re-rounded.
     x = torch.randn(4, DIM)
     model = _model(scheme, monkeypatch, "1")
     expected = _out(model, x)
@@ -187,8 +186,7 @@ def test_rounding_again_after_a_device_move_is_a_no_op(scheme, monkeypatch):
 
 @pytest.mark.parametrize("scheme", ["int4", "int8"])
 def test_adopted_rounded_checkpoint_survives_a_device_move(scheme, monkeypatch):
-    # A destination that loaded another prepared model's rounded weights, then moved devices: rounding again is
-    # a no-op and its state_dict() still marks the weights as rounded.
+    # Adopted rounded weights are not re-rounded after a move; state_dict() still marks them.
     x = torch.randn(4, DIM)
     source = _model(scheme, monkeypatch, "1", seed = 1)
     destination = _model(scheme, monkeypatch, "1", seed = 2)
@@ -203,8 +201,7 @@ def test_adopted_rounded_checkpoint_survives_a_device_move(scheme, monkeypatch):
 
 @pytest.mark.parametrize("scheme", ["int4", "int8"])
 def test_copied_model_survives_a_device_move(scheme, monkeypatch):
-    # A deep copied prepared model adopts its rounded weights at the next round call; a device move after that is
-    # still not a rewrite.
+    # A deep copy adopts its rounded weights on the next round; a later move is not a rewrite.
     import copy
 
     x = torch.randn(4, DIM)
@@ -218,8 +215,7 @@ def test_copied_model_survives_a_device_move(scheme, monkeypatch):
 
 @pytest.mark.parametrize("scheme", ["int4", "int8"])
 def test_rounded_checkpoint_in_another_dtype_loads_unchanged(scheme, monkeypatch):
-    # A rounded checkpoint from a bf16 prepared model loaded into an fp32 prepared model: the cast is exact, so
-    # the marker (checked before the cast) still holds and the weights are not rounded a second time.
+    # Exact bf16-to-fp32 cast: the marker (checked before) still holds; nothing is re-rounded.
     source = _model(scheme, monkeypatch, "1", seed = 1, dtype = torch.bfloat16)
     destination = _model(scheme, monkeypatch, "1", seed = 2)
     state = source.state_dict()

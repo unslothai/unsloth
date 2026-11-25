@@ -263,9 +263,8 @@ def test_stateful_mixed_optimizer_is_refused(tmp_path):
 
 
 def test_bnb_optimizer_cls_and_kwargs_is_refused(tmp_path):
-    """A torch class is sharded. A bitsandbytes Adam / AdamW is kept and sharded where this
-    bitsandbytes steps local shards (#15008), else refused. A class that only claims the
-    bitsandbytes module (AdamW8bitLike) cannot step local shards, so it is always refused."""
+    """Torch classes are sharded; bitsandbytes Adam / AdamW is kept only where it steps local shards
+    (#15008), else refused; AdamW8bitLike cannot step local shards, so always refused."""
     pytest.importorskip("transformers")
     pytest.importorskip("peft")
     for rank, r in _run("optimizer_cls", tmp_path).items():

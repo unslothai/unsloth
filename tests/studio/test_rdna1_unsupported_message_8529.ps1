@@ -171,8 +171,7 @@ foreach ($file in @("install.ps1", "studio/setup.ps1")) {
             ($window.Contains("install time"))
     }
 
-    # Evaluate the real if/elseif chain on the reported host and assert the FIRST true clause
-    # is the unsupported arm; offsets cannot see unreachable branches.
+    # First true clause of the if/elseif chain is the unsupported arm; offsets miss dead code.
     $chainAst = [System.Management.Automation.Language.Parser]::ParseFile(
         $path, [ref]$null, [ref]$null)
     $chains = @($chainAst.FindAll({ param($n)
@@ -239,8 +238,7 @@ $unconditional = @($assignments | Where-Object {
 })
 Check "the unsupported-arch state is initialised outside every conditional" ($unconditional.Count -gt 0)
 
-# The WMI fallback takes adapter [0], so a host pairing RX 5700 with RX 7900 must keep the
-# arch-unknown arm. Runs the REAL block via AST.
+# WMI takes adapter [0], so a host pairing RX 5700 with RX 7900 must keep the arch-unknown arm.
 Write-Host ""
 Write-Host "=== install.ps1 mixed-adapter guard ==="
 $installPath = Join-Path $root "install.ps1"

@@ -61,8 +61,7 @@ def _contains(haystack: str, needle: str) -> bool:
 
 
 def test_sharded_openclaw_runs_on_the_latest_node_24_and_the_rest_on_22():
-    """The connection shards loop agents on one runner: openclaw still gets the newest Node 24, every
-    other agent still runs on Node 22, as each did on its own runner."""
+    """Shards loop agents on one runner: openclaw gets the latest Node 24, the rest Node 22."""
     found = list(_sharded_openclaw_jobs())
     assert found, "the connection job no longer runs openclaw in a shard"
     for name, job in found:

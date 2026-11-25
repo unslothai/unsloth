@@ -17,8 +17,7 @@ SETTINGS = REPO / "studio/frontend/src/features/settings"
 def test_dialog_content_can_shrink_inside_the_dialog_grid():
     source = SETTINGS_DIALOG.read_text(encoding = "utf-8")
     assert "flex h-full min-h-0 min-w-0 w-full" in source
-    # Stacks on the dialog's measured width, not a viewport breakpoint, since the UI scale
-    # does not change the viewport. The data variant reads its own element.
+    # Stacks on dialog width, not viewport breakpoints: UI scale does not change the viewport.
     at = source.index("min-w-0 w-full data-stacked:flex-col")
     tag = source[source.rindex("<div", 0, at) : source.index(">", at)]
     assert (
@@ -30,8 +29,7 @@ def test_dialog_content_can_shrink_inside_the_dialog_grid():
 
 def test_api_monitor_entries_and_expanded_text_can_shrink():
     source = API_MONITOR_PAGE.read_text(encoding = "utf-8")
-    # Flex parents need min-w-0, or a long model id widens the layout past the viewport. Entry rows
-    # are rounded cards since #14455, so only the row's own sizing tokens are pinned.
+    # Flex parents need min-w-0 or long model ids widen layout; rows are cards since #14455.
     assert '"flex w-full min-w-0 flex-col gap-1 ' in source
     assert '<section className="flex min-w-0 flex-col gap-1.5">' in source
     # Prompt and reply are unbounded user text: height-capped, scrollable, wrapped; read as tokens.
@@ -90,8 +88,7 @@ def test_embedding_model_controls_stack_on_the_narrowest_viewports():
         str(path.relative_to(REPO))
         for path in owners
         if not (
-            # The quoted class string, whether it is the whole className or one argument of
-            # cn(...) beside a conditional class, which is how #12875 writes it.
+            # Quoted class string: whole className, or a cn(...) argument as #12875 writes it.
             '"max-[360px]:flex-col max-[360px]:items-stretch max-[360px]:gap-3"'
             in (source := path.read_text(encoding = "utf-8"))
             and ("max-[360px]:w-full" in source or "max-[360px]:flex-1" in source)

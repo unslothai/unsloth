@@ -108,8 +108,7 @@ def test_a_broken_binary_raises_something_actionable():
 
 
 def test_the_repair_command_cannot_replace_torch():
-    """Every torchvision wheel requires an exact `torch==X.Y.Z`, so an unpinned
-    upgrade resolves the newest torchvision and drags a new torch in with it."""
+    """Torchvision wheels need exact torch==X.Y.Z, so an unpinned upgrade pulls in a new torch."""
     command = import_fixes._torchvision_repair_command((0, 26))
     assert "--no-deps" in command, "torch must not be a candidate for replacement"
     assert "--upgrade" not in command, "the newest release is not what repairs a binary"
@@ -170,8 +169,7 @@ def test_the_skip_variable_still_skips_everything():
 
 
 def test_the_repair_names_the_wheel_for_this_torch_patch():
-    """A 0.22.* pin on torch 2.7.0 resolves torchvision 0.22.1, which needs torch 2.7.1, and
-    --no-deps keeps the mismatched torch, so the repair pins the exact patch."""
+    """Wheel 0.22.1 needs torch 2.7.1, and --no-deps keeps torch 2.7.0, so pin the exact patch."""
     from unsloth.import_fixes import _torchvision_repair_command
 
     assert '"torchvision==0.22.0"' in _torchvision_repair_command((0, 22, 0))
@@ -180,8 +178,7 @@ def test_the_repair_names_the_wheel_for_this_torch_patch():
 
 
 def test_a_minor_only_pair_still_gets_a_command():
-    """The table and the forward-compat formula both answer with two numbers when
-    the torch version carries no patch. Nothing to derive, so the range stands."""
+    """With no torch patch number there is nothing to derive, so the minor-only range stands."""
     from unsloth.import_fixes import _torchvision_repair_command
 
     assert '"torchvision==0.22.*"' in _torchvision_repair_command((0, 22))
@@ -369,8 +366,7 @@ def test_the_probe_stays_silent_on_a_typo_against_a_healthy_torchvision():
 def test_a_file_shadowing_torchvision_is_named_rather_than_blamed_on_the_binary(
     tmp_path, monkeypatch, kind
 ):
-    """A local torchvision raises the same words while the metadata still reports the
-    installed one. Driven through a real import: the fix turns on which file resolves."""
+    """A local shadow raises the same error while metadata reports the installed torchvision."""
     # A shadow exists only relative to an installed torchvision.
     pytest.importorskip("torchvision")
     body = "import torchvision\ntorchvision.extension\n"
@@ -405,8 +401,7 @@ def test_the_real_torchvision_is_not_mistaken_for_a_shadow():
 
 
 def test_the_marker_matches_what_this_interpreter_actually_says(tmp_path, monkeypatch):
-    """3.13.12 adds a `from '<file>'` clause 3.12.3 does not, and a marker matching nothing
-    looks exactly like a healthy box. So provoke it here rather than quoting a bug report."""
+    """3.13.12 adds a from '<file>' clause 3.12.3 lacks; a missed marker would look healthy."""
     package = tmp_path / "tvshape"
     package.mkdir()
     (package / "__init__.py").write_text("import tvshape\ntvshape.extension\n")

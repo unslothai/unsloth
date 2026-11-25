@@ -90,9 +90,8 @@ def _scenario(
     prelude = None,
     windows = None,
 ):
-    """One fresh auto run; returns the block call tags per step and the final auto phase / why.
-    prelude(model, stack) runs once after the DDP wrapper is built; windows replaces the plain loop
-    with (context factory, steps) pairs and records votes and the session schedule around each."""
+    """Returns per-step block call tags and the final auto phase/why; prelude runs after the DDP
+    wrap; windows swaps the loop for (context factory, steps) pairs recording votes/schedule."""
     bc._CUDAGRAPH_STATE = bc._new_cudagraph_state()
     calls = []
     releases = []
@@ -255,7 +254,6 @@ def _run_eval_first(rank, res, bc):
 
 
 def _run_nosync_first(rank, res, bc):
-    # Rank 0 alone runs one extra no_sync() microbatch before training.
     def prelude(model, stack):
         if rank == 0:
             with model.no_sync():
@@ -265,8 +263,7 @@ def _run_nosync_first(rank, res, bc):
 
 
 def _run_join_active(rank, res, bc):
-    # Production cadence: graphs on, then an uneven DDP.join() window (rank 0: 3 inputs, rank 1: none),
-    # then synced training again with join off.
+    # Graphs on, uneven DDP.join() (rank 0: 3 inputs, rank 1: none), then synced, join off.
     bc._AUTO_DDP_RECHECK = 64
     res["join_active"] = _scenario(
         bc,
@@ -336,9 +333,8 @@ def _run_compiled(rank, res, bc):
 
 
 def _run_rank_local(rank, res, bc):
-    # The same DDP model and data on both ranks, with one rank-local difference each: rank 1 alone
-    # compiles ddp.module, or rank 0 alone cannot allocate a tensor while it builds its vote. Both
-    # ranks must still enter the same collectives, so DDP's gradient all_reduce stays in step.
+    # Same DDP model and data on both ranks, one rank-local difference each (rank 1 compiles
+    # ddp.module; rank 0 cannot allocate a tensor while building its vote); collectives must match.
     votes = [0]
 
     def all_reduce_spy(*args, **kwargs):
@@ -398,8 +394,7 @@ def _worker(
     out,
     group = "main",
 ):
-    # A CI shard may run with UNSLOTH_COMPILE_DISABLE=1 or graphs forced on: every rank starts from
-    # the defaults this test is about, before the module reads them at import.
+    # CI may set UNSLOTH_COMPILE_DISABLE=1 or graphs on; UNSLOTH_ vars cleared before import.
     for key in [k for k in os.environ if k.startswith("UNSLOTH_")]:
         os.environ.pop(key)
     os.environ["UNSLOTH_BLOCK_CUDAGRAPHS"] = "auto"

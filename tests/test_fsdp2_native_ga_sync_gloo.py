@@ -156,8 +156,7 @@ def _check(layout, res):
     # skip: reduce only on the final micro-batch; every micro-batch gathers again.
     assert [m["rs"] for m in skip] == [0] * (MICRO - 1) + [units], skip
     assert all(m["ag"] >= units for m in skip), skip
-    # defer: same reductions; after the first micro-batch no unit is gathered for forward (kept from
-    # the previous backward). Units resharded after forward (sharded layout) still gather for backward.
+    # defer: same reductions; after the first micro-batch no unit is gathered for forward.
     assert [m["rs"] for m in defer] == [0] * (MICRO - 1) + [units], defer
     assert defer[0]["ag"] == skip[0]["ag"], (defer, skip)
     assert all(d["ag"] < s["ag"] for d, s in zip(defer[1:], skip[1:])), (defer, skip)

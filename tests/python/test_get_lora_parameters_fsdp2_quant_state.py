@@ -104,8 +104,7 @@ def test_no_fallback_for_dense_or_non_bnb_weights():
 
 
 def test_dense_weight_never_takes_the_module_getattr_path():
-    # Every 16-bit LoRA forward (training and decode) asks for the quant state; a dense weight must
-    # not pay for nn.Module.__getattr__ raising and catching AttributeError on the base layer.
+    # 16-bit LoRA forwards ask for quant state; dense weights must skip nn.Module.__getattr__.
     get_lora_parameters = _load_function("get_lora_parameters")
     lookups = []
 

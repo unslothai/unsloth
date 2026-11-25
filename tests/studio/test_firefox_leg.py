@@ -149,8 +149,7 @@ def test_the_webkit_leg_keeps_its_own_limits():
 
 
 def test_settled_counts_the_frame_that_renders_the_last_mutation():
-    # A slow layout / paint after the final typing mutation ends its frame long after the mutation; that
-    # frame must still be the "longest frame" (last mutation at 160 ms, a 316 ms frame ending at 460 ms).
+    # A slow frame ending long after the last typing mutation must still count as longest.
     import shutil
     import subprocess
 

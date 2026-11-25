@@ -46,8 +46,7 @@ build_func() {
     echo "$_f"
 }
 
-# make_fixture DXG CPU LIBROCDXG VER HAS2404
-#   DXG/LIBROCDXG/HAS2404 = 1|0 ; CPU = strix|other ; VER = e.g. 26.04|24.04
+# make_fixture DXG CPU LIBROCDXG VER HAS2404: 1|0 flags, CPU strix|other, VER e.g. 26.04|24.04.
 make_fixture() {
     _d=$(mktemp -d -p "$_TMP_ROOT")
     mkdir -p "$_d/bin" "$_d/rocm-lib" "$_d/rocm-lib64"
@@ -199,7 +198,6 @@ assert_contains "forwards --package to reroute"          "$_out" "--package 'uns
 assert_contains "forwards --python to reroute"           "$_out" "--python '3.13'"
 rm -rf "$_d"
 
-# 16) --tauri is forwarded onto the default reroute command.
 _d=$(make_fixture 1 strix 0 26.04 1)
 _out=$(run_func "$_d" PACKAGE_NAME=unsloth TAURI_MODE=true UNSLOTH_WSL_REROUTE_CMD=)
 assert_contains "forwards --tauri to reroute"            "$_out" "--tauri"

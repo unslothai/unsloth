@@ -13,8 +13,7 @@ LOADER_ERROR_MARKERS = (
     "undefined symbol:",
 )
 
-# Not MIN_DESKTOP_BACKEND_VERSION: release builds stamp a newer expected backend version, so the
-# floor would read as outdated and trigger the bundled installer.
+# Not the floor: release builds stamp newer, so the floor would trigger the bundled installer.
 FIXTURE_BACKEND_VERSION = "9999.12.31"
 
 

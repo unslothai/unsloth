@@ -23,8 +23,7 @@ REVIEWED_VENDORED_OFFENDERS = {
     "studio/backend/vendor/laya/agent.py:31: open()",
     "studio/backend/vendor/laya/agent.py:47: open()",
     "studio/backend/vendor/laya/agent.py:156: open()",
-    # Cloudflare's Clef loader (sha256 in unsloth/_vendor/clef/clef_manifest.json) reading
-    # joint_head_config.json, which json.dumps writes as ASCII, so every locale decodes it.
+    # Clef reads joint_head_config.json, which json.dumps writes as ASCII, so any locale decodes it.
     "unsloth/_vendor/clef/joint_schema_model.py:515: read_text()",
 }
 # keyed on path + expression, not line, so unrelated edits above it do not break the scan.
@@ -175,8 +174,7 @@ def _is_path_attr(node) -> bool:
 
 
 def _foreign_receiver(node, modules) -> bool:
-    """True when .open is called on a foreign object like zipfile.ZipFile(p), which yields binary
-    streams."""
+    """True for .open on a foreign object like zipfile.ZipFile(p), which yields binary streams."""
     if not isinstance(node, ast.Call):
         return False
     func = node.func

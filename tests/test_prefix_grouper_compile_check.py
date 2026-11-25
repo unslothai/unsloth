@@ -124,8 +124,7 @@ def test_success_runs_the_check_once_and_keeps_numerics(mods, capsys):
     Q, K, V = _qkv(seg.T)
     rng = torch.get_rng_state()
     out = kernel.flex_shared_prefix_attention(Q, K, V, seg)
-    # First call: the real call, then a grad forward on copies, both under strict mode and with the
-    # real shapes (so the compiled graphs are the ones later calls reuse).
+    # Real call, then grad forward on copies; strict mode, real shapes, so graphs are reused.
     assert calls["strict"] == [False, False]
     assert calls["grad"] == [False, True]
     assert len(set(calls["shapes"])) == 1
@@ -366,9 +365,8 @@ def test_backward_compile_failure_is_caught(mods, monkeypatch):
 
 
 def test_failed_check_backward_frees_its_input_copies(mods, monkeypatch):
-    """The check's pack hook returned its input, so an op that saves its own output formed a cycle gc
-    cannot break: a backward that failed (out of resource retry, compile failure) kept the Q / K / V
-    copies and the check's graph alive."""
+    """The check's pack hook returned its input, so an op saving its own output made a cycle gc
+    cannot break; a failed backward kept the Q / K / V copies and the check's graph alive."""
     import gc
     import weakref
 

@@ -18,8 +18,7 @@ PWSH_CRASH_BANNER = "The PowerShell process will exit"
 PWSH = shutil.which("pwsh") or shutil.which("powershell")
 
 
-# xdist workers sharing one $HOME race on pwsh's StartupProfileData cache and crash;
-# one cache dir per worker removes the race.
+# Workers sharing $HOME race on pwsh's StartupProfileData cache and crash; one dir per worker.
 _CACHE_ROOT = None
 
 

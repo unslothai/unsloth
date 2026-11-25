@@ -308,8 +308,7 @@ def _sized_model(n_bytes):
 
 
 def test_auto_offloads_a_big_embedding_and_declines_a_small_one():
-    """`resolve` must actually consult the size test, not just default to yes: a blanket
-    yes would offload every model on every card and cost PCIe traffic for nothing."""
+    """resolve must consult the size test; a blanket yes offloads every model, wasting PCIe."""
     with _as_platform("posix"), _card(16 * 2**30):
         assert resolve(_sized_model(int(2.5 * 2**30)), "auto") is True
         assert resolve(_sized_model(64 * 2**20), "auto") is False
@@ -346,8 +345,7 @@ def test_a_distributed_launch_declines_the_offload(capsys):
 
 
 def test_a_distributed_launch_also_declines_an_explicit_request(capsys):
-    """Same veto for someone who asked outright, with the reason, as the other declines do.
-    It is a VRAM optimisation, not a correctness switch, so turning it off beats failing."""
+    """A distributed launch declines explicit requests, printing why: offload only saves VRAM."""
     with _as_platform("posix"), _card(16 * 2**30), _under_ddp():
         assert resolve(_sized_model(int(2.5 * 2**30)), True) is False
     assert "distributed launch" in capsys.readouterr().out

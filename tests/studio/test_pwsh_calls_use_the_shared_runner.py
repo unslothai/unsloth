@@ -97,8 +97,7 @@ class _PwshCallFinder(ast.NodeVisitor):
         return False
 
     def _has_private_cache(self, node: ast.Call) -> bool:
-        """True if the spawn's env comes from pwsh_env; checked on the AST, so it vanishes with the
-        argument."""
+        """True if env comes from pwsh_env; checked on the AST so it vanishes with the argument"""
         for kw in node.keywords:
             if kw.arg != "env":
                 continue
@@ -189,8 +188,7 @@ def scan_tests() -> dict[str, list[tuple[int, str]]]:
 
 class TestEveryPwshCallUsesTheSharedRunner:
     def test_no_test_file_spawns_powershell_directly(self):
-        """The guard itself: a new direct call site fails here with its own line number, not as an
-        unrelated FileLoadException in another test."""
+        """New direct PowerShell calls fail here by line, not as FileLoadException elsewhere."""
         offenders = {
             rel: calls
             for rel, calls in scan_tests().items()
@@ -213,8 +211,7 @@ class TestEveryPwshCallUsesTheSharedRunner:
         )
 
     def test_the_scan_reaches_the_backend_test_tree(self):
-        """Checks that a real backend test file is scanned; listing the root alone can pass with no
-        files."""
+        """Checks a real backend test file is scanned; the root alone can pass with no files."""
         backend = REPO_ROOT / "studio" / "backend" / "tests"
         assert backend in _SCAN_ROOTS, "the backend test tree dropped off the scan roots"
         scanned = _scanned_files()
@@ -224,8 +221,7 @@ class TestEveryPwshCallUsesTheSharedRunner:
 
     @pytest.mark.parametrize("rel", sorted(_ALLOWED_DIRECT_PWSH_CALLS))
     def test_every_allowlist_entry_is_still_needed(self, rel):
-        """An allowlist that outlives its call sites is a claim nobody rechecks. This
-        fails once the file stops spawning PowerShell directly, or moves away."""
+        """Nobody rechecks allowlists; fails once an entry's file stops spawning PowerShell."""
         path = REPO_ROOT / rel
         assert path.is_file(), f"allowlisted {rel} does not exist; drop the entry"
         assert direct_pwsh_calls(path), (
@@ -241,8 +237,7 @@ class TestEveryPwshCallUsesTheSharedRunner:
         ), f"{rel} needs a reason saying why the startup-cache race cannot reach it"
 
     def test_the_scanner_sees_a_direct_call_it_is_shown(self, tmp_path):
-        """Non-vacuity. Every shape this guard claims to resolve, against a scanner
-        that is only ever exercised on a suite it currently passes on."""
+        """Non-vacuity: each shape the guard claims to resolve is detected by the scanner."""
         cases = {
             'import subprocess\nsubprocess.run(["pwsh", "-Command", "echo hi"])\n': 2,
             'import subprocess\nsubprocess.run([r"C:\\Program Files\\PowerShell\\7\\pwsh.exe", "-c"])\n': 2,
@@ -260,8 +255,7 @@ class TestEveryPwshCallUsesTheSharedRunner:
             assert [line for line, _ in found] == [lineno], f"missed: {source!r} -> {found!r}"
 
     def test_the_scanner_does_not_flag_the_shared_runner_or_plain_shells(self, tmp_path):
-        """The other half: a run through run_pwsh, and a subprocess spawn of something
-        that is not PowerShell, must both stay clean or the guard is noise."""
+        """run_pwsh calls and non-PowerShell spawns must stay unflagged, or the guard is noise."""
         cases = [
             'from unsloth_pwsh_runner import run_pwsh\nrun_pwsh(["pwsh", "-c", "x"])\n',
             'import subprocess\nsubprocess.run(["bash", "-c", "echo hi"])\n',

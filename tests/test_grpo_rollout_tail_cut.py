@@ -42,8 +42,7 @@ EOS, PAD = 2, 0
 
 
 class FakeEngine:
-    """One token per step; request i stops (EOS) after lengths[i]; length_stop rows end at their
-    length without EOS; same_tokens makes non-EOS tokens 7, so rows can match."""
+    """Stops at EOS after lengths[i]; length_stop omits EOS; same_tokens lets rows match."""
 
     def __init__(
         self,
@@ -157,7 +156,6 @@ def test_cut_only_when_every_running_row_is_expendable():
     assert len(out[7].outputs[0].token_ids) == 180
     assert out[7].outputs[0].token_ids[-1] != EOS and out[7].outputs[0].finish_reason == "abort"
     assert engine.steps == 180 < 400
-    # Every other row is untouched.
     for a, b in zip(base, out):
         if a.request_id != "7":
             assert list(a.outputs[0].token_ids) == list(b.outputs[0].token_ids)
@@ -228,15 +226,13 @@ def test_cut_rows_count_as_truncated_and_off_is_unchanged():
     # Called twice per rollout in TRL (metrics, then the mask): the record is not consumed.
     t = _trainer(cut)
     assert is_trunc(t, rows, None, eos_and_pad) == is_trunc(t, rows, None, eos_and_pad)
-    # A rollout that does not line up with the requests flags every row holding a cut row's tokens:
-    # an extra masked row is safe, an unmasked cut row is not.
+    # Misaligned rollouts flag each cut-token row; an extra mask is safe, a missed one is not.
     for record in (_record([(2, (7, 8, 9))], 5), _record([(0, (7, 8, 9))], 4)):
         assert is_trunc(_trainer(record), rows, None, eos_and_pad) == [False, True, True, True]
 
 
 def test_cut_row_masked_when_an_earlier_finished_row_has_the_same_tokens():
-    # Row 3 (group 0) stops at the context limit without EOS after 180 tokens; row 7 (group 1) is cut at
-    # step 180 with the same 180 tokens. Both must be truncated: the cut row has to leave the loss.
+    # Row 3 (context limit, no EOS) and cut row 7 share 180 tokens; both must be truncated.
     lengths, prompts = _batch()
     engine = FakeEngine(lengths, prompts, length_stop = {3}, same_tokens = True)
     state = _wrap(engine, G = 4, k_min = 3, frac = 0.1, min_tokens = 128)

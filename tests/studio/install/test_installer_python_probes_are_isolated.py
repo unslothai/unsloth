@@ -61,8 +61,7 @@ def test_every_studio_probe_ignores_the_callers_directory(rel):
 
 
 def test_the_scan_finds_the_probes_it_guards():
-    """The sweep must actually see install.sh's setup.sh lookup, or it would pass by finding
-    nothing at all."""
+    """The sweep must see install.sh's setup.sh lookup, or it would pass by finding nothing."""
     programs = [p for _, p in _probes((_ROOT / "install.sh").read_text(encoding = "utf-8"))]
     assert any("files('studio') / 'setup.sh'" in p for p in programs)
     assert any("installed_version_probe" in p for p in programs)

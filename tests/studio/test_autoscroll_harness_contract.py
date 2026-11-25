@@ -167,8 +167,7 @@ def test_harnesses_own_their_dev_server() -> None:
         assert "wait_for_smoke_page" in text, f"{name} gates on status rather than on content"
 
 
-# The thread-weight harness asserts no budgets, so every metric it records must reach the
-# printed table instead.
+# The thread-weight harness asserts no budgets, so every metric it records must be printed.
 THREAD_WEIGHT = "playwright_thread_weight.py"
 
 
@@ -263,8 +262,7 @@ def test_thread_weight_prints_every_metric_it_records() -> None:
 
 
 def test_thread_weight_proves_it_discriminates_rather_than_gating_on_a_budget() -> None:
-    # It must fail when nothing was clicked. Asserted against the verdict region only, since the
-    # verdict text also appears elsewhere in the source.
+    # Fails with no clicks; scoped to the verdict region, since the text recurs in the source.
     main = thread_weight_verdict()
     assert "GROWTH_AXES" in main
     assert "no measured axis rose with N" in main
@@ -314,9 +312,8 @@ def _thread_weight_row(deleted: bool = True, layer: str = "auto") -> dict:
 
 
 def test_thread_weight_rejects_a_dead_delete_at_every_size() -> None:
-    """The delete checks once sat under the whole-run modal-layer `if`, so a table whose delete
-    never removed anything still passed while another axis grew. They belong to the per-size
-    loop: every measured column has to prove its own delete, not just the last one."""
+    """Delete checks belong in the per-size loop, not under the whole-run modal-layer if, so each
+    measured column proves its own delete."""
     import importlib
     import sys
 

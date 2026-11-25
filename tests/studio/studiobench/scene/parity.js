@@ -20,8 +20,7 @@
     "data-tool-call-id", "data-checkpoint-id",
   ]);
 
-  // Any other data-*-id names an instance too: the turn navigator's data-turn-id (#16300) carries
-  // message ids and differed on every action of a null control. Presence is still compared.
+  // Other data-*-id names are volatile too (data-turn-id, #16300); presence is still compared.
   const ID_ATTR_RE = /^data-[a-z0-9-]+-id$/;
   const isVolatile = (name) => VOLATILE_ATTRS.has(name) || ID_ATTR_RE.test(name);
 
@@ -219,8 +218,7 @@
     return out;
   };
 
-  // Computed-style probe digested separately from the structure: getComputedStyle is the only
-  // reading that sees CSS changes and the most likely to catch a transition mid-way.
+  // Style digested apart: getComputedStyle sees CSS and is likeliest to catch transitions.
   const STYLE_CAP = 64;
   const STYLE_PROPS = ["display", "visibility", "pointer-events"];
   const STYLE_SELECTORS = [
@@ -367,8 +365,7 @@
           }
         }, { root: vp, threshold: 0 });
         observeAll();
-        // No characterData: streamed text must not reach this callback. aria-posinset is watched
-        // because a virtualizer renumbers rows in place without a childList mutation.
+        // Streamed text is not watched; aria-posinset is, since renumbering skips childList.
         VIS.mut = new MutationObserver(observeAdded);
         VIS.mut.observe(vp, {
           childList: true,

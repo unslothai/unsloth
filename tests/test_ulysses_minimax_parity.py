@@ -283,8 +283,7 @@ def test_lightning_mutants_break_parity(mutant):
 
 
 def _batch(dp_rank, vocab = 64):
-    """Right padded rows of unequal length; labels stop before position 12, so the CP=2 rank 1
-    shard has none and position 10's target (token 11) crosses the CP=2 seam."""
+    """Labels end before 12: CP=2 rank 1 has none; position 10's target (token 11) crosses the CP=2 seam."""
     g = torch.Generator().manual_seed(10 + dp_rank)
     ids = torch.randint(1, vocab, (2, SEQ), generator = g)
     lengths = [(SEQ, 9), (17, SEQ)][dp_rank]
@@ -457,8 +456,7 @@ MODEL_CASES = {
     "m2_dp2_cp2": ("m2", 2, 4, False, {}),
     # MiniMax with full attention layers only: no Lightning mixer, so main's generic Ulysses route alone.
     "m1_full_attention_only_cp2": ("m1", 2, 2, False, {"layer_types": ["full_attention"] * 2}),
-    # The parallel_capabilities MoE x cp cells (aux loss off): eager attention, HF checkpointing,
-    # full finetuning, attention LoRA and LoRA on the fused experts, CP 2 and DP2 x CP2.
+    # MoE x cp cells (aux loss off): eager attn, HF checkpointing, full FT, attn/expert LoRA.
     "m1_cp2_eager_checkpoint": (
         "m1",
         2,

@@ -69,8 +69,7 @@ def _install_wrapped_trainer_init():
         # _utils.py's module logger; the wrapper warns through it when a best-effort step fails.
         "logger": types.SimpleNamespace(warning_once = noop, warning = noop, info = noop, debug = noop),
     }
-    # Any other module-level helper the wrapper calls is stubbed too, so a new one (#14404 added
-    # _size_auto_checkpoint_skip_for_trainer) cannot fail every rank with a NameError here.
+    # Stub every helper the wrapper calls, so a new one (#14404) cannot NameError on all ranks.
     bound = {
         name.id
         for name in ast.walk(fn)
@@ -162,8 +161,7 @@ def _worker(rank, world, port, out, case, tmp, env):
             optimizer = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad])
             targs = _targs(os.path.join(tmp, "out"))
             try:
-                # Trainer's positional order: model, args, data_collator, train_dataset, eval_dataset,
-                # processing_class, model_init, compute_loss_func, compute_metrics, callbacks, optimizers.
+                # Trainer's 11 positional args: model, args, eight Nones, then optimizers.
                 trainer = Trainer(
                     model, targs, None, None, None, None, None, None, None, None, (optimizer, None)
                 )

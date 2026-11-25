@@ -71,8 +71,7 @@ assert_eq "upgrade env set"    "" "$(UNSLOTH_TORCH_UPGRADE=1 _previous_torch_pin
 assert_eq "upgrade env 0"      "torch==2.10.0" "$(UNSLOTH_TORCH_UPGRADE=0 _previous_torch_pin '2.10.0+cu126' 'torch>=2.4,<2.12.0')"
 
 echo "=== the preservation probe reads off disk, not through the interpreter ==="
-# `import torch` can block forever on a wedged Intel driver. Executed, not grepped: the
-# stub interpreter records being called.
+# import torch can block forever on a wedged Intel driver; the test executes a recording stub.
 _PREVBLK=$(mktemp)
 {
     sed -n '/^_run_bounded()/,/^}/p' "$INSTALL_SH"
@@ -123,8 +122,7 @@ assert_eq "ROCm repairs routed through the kept-release helper" "yes" "$([ "$_re
 assert_eq "flavor repair routed through the kept-release helper" "yes" "$(grep -q '_install_torch_default_index \\' "$INSTALL_SH" && grep -q -- '--reinstall-package torch --reinstall-package torchvision --reinstall-package torchaudio' "$INSTALL_SH" && echo yes)"
 # torchaudio no longer exact-pins torch, so unconstrained it resolves a mismatched build.
 assert_eq "kept-release install pairs torchvision/torchaudio to the kept minor" "yes" "$(grep -q '_itdi_ta=\$(_torchaudio_for_torch_minor "\$_itdi_minor")' "$INSTALL_SH" && grep -q 'torchvision==0.\$((_itdi_minor + 15)).\*' "$INSTALL_SH" && echo yes)"
-# Radeon direct wheels: the exact-first kept-trio attempt runs before the newest-trio search,
-# which only runs when that attempt found nothing.
+# Radeon direct wheels: exact kept-trio first; newest-trio search only if that finds nothing.
 _radeon_kept_line=$(grep -n '_kept_torch=\$(_pick_radeon_wheel "torch" *"\${_prev_kept_base}"' "$INSTALL_SH" | head -1 | cut -d: -f1)
 _radeon_loop_line=$(grep -n 'Loop downwards to find the first complete matching trio' "$INSTALL_SH" | head -1 | cut -d: -f1)
 assert_eq "Radeon kept-trio attempt before the newest-trio search" "yes" "$([ -n "$_radeon_kept_line" ] && [ -n "$_radeon_loop_line" ] && [ "$_radeon_kept_line" -lt "$_radeon_loop_line" ] && echo yes)"

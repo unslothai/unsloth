@@ -179,8 +179,7 @@ def test_the_attached_np_short_is_still_canonicalised(monkeypatch):
 )
 def test_help_matches_the_console_script_under_a_narrow_encoding(argv_builder):
     """rich draws box characters cp1252 cannot encode, so --help must still match; -X utf8 is
-    dropped on purpose since it would give the child a utf stream the stream guard in
-    unsloth_cli/__init__ does not need to handle."""
+    dropped since it would give the child a utf stream unsloth_cli/__init__ need not guard."""
     strip = ("-X", "utf8")
     argv = [arg for arg in argv_builder("--help") if arg not in strip]
     env = dict(os.environ)

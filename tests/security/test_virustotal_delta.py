@@ -106,8 +106,7 @@ def test_a_new_yara_hit_is_worse() -> None:
 
 
 def test_severity_is_compared_per_bucket_and_not_in_total() -> None:
-    """Trading one high for three lows is an improvement that a total calls a regression, and the
-    reverse is a regression a total calls an improvement."""
+    """Compare per bucket: a total would misjudge high-for-lows trades in either direction."""
     payload = copy.deepcopy(vtd._BASELINE_FIXTURE)
     # 17 rules before, 17 after, but one medium became a high.
     payload["data"]["attributes"]["sigma_analysis_stats"] = {"high": 2, "medium": 10, "low": 5}
@@ -157,9 +156,8 @@ def test_a_clear_improvement_passes_and_is_named() -> None:
 
 
 def test_an_unmoved_engine_verdict_is_reported_as_unchanged() -> None:
-    """A cloud behavioural verdict is not recomputed because we deleted some code. Sigma moving
-    while the engine does not is the expected shape of a win here, and reporting it as a clean bill
-    of health would be the overclaim this tool exists to avoid."""
+    """The cloud verdict is not recomputed on code deletion, so sigma moving with the engine
+    unchanged is the expected win; reporting that as a clean bill of health would overclaim."""
     payload = copy.deepcopy(vtd._BASELINE_FIXTURE)
     payload["data"]["attributes"]["sigma_analysis_stats"] = {"medium": 4}
     delta = vtd.compare(_baseline(), _snap(payload))
@@ -229,8 +227,7 @@ def test_the_self_test_can_fail() -> None:
 
 @pytest.mark.parametrize("raw", [None, [], "high", {"high": "two"}, {"high": True}])
 def test_the_sigma_parser_survives_a_schema_change(raw) -> None:
-    """VirusTotal has renamed and added buckets over time. A crash here would break the measurement
-    on precisely the day the schema moved, which is when it is most worth having."""
+    """The sigma parser must survive schema change: VirusTotal has renamed and added buckets."""
     assert vtd.parse_sigma(raw) == {}
 
 
@@ -240,9 +237,8 @@ def test_the_yara_parser_survives_a_schema_change(raw) -> None:
 
 
 def test_the_tool_has_no_upload_path_at_all() -> None:
-    """Not an oversight. A freshly uploaded file is a prevalence-zero first-seen sample, which is
-    what the strict cloud settings punish -- so uploading a candidate can create the detection it
-    was meant to measure, under a hash no user will ever have."""
+    """Deliberate: uploading a candidate makes a prevalence-zero sample that strict cloud settings
+    punish, so it can create the detection it measures under a hash no user has."""
     import ast
 
     tree = ast.parse(SCRIPT.read_text(encoding = "utf-8"))
