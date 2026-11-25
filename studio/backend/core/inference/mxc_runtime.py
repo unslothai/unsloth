@@ -244,7 +244,11 @@ def _file_stamp(path: Path) -> tuple:
 
 def verified_installation_identity() -> str:
     """The runtime's identity from a full verification: what status, setup and repair decide on."""
-    return selected_runtime().identity
+    try:
+        return selected_runtime().identity
+    except Exception:
+        forget_verified_runtime()  # the per-call fingerprints must not keep vouching for it
+        raise
 
 
 def installation_identity() -> str:
@@ -355,10 +359,12 @@ def _acquire(select, package_root: Path | None, name: str) -> RuntimeLease:
             reparse = True
         if reparse or not candidate.is_file() or candidate.is_symlink():
             raise MxcRuntimeUnavailable(f"the managed {name} is missing or is not a regular file")
+        # Resolved before the guard opens: a path redirected while it opens no longer matches.
+        expected = candidate.resolve()
         guard = _open_artifact_guard(candidate)
         try:
             info = select(package_root = root)
-            if info.path != candidate.resolve():
+            if info.path != expected:
                 raise MxcRuntimeUnavailable(f"the managed {name} changed during acquisition")
         except Exception:
             guard.close()

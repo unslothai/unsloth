@@ -421,3 +421,35 @@ def test_a_backend_refresh_forgets_the_runtime_identity(runtime, monkeypatch):
     assert mxc_runtime._identity_cache
     mxc_probe.invalidate_cache()
     assert mxc_runtime._identity_cache == {}
+
+
+def test_a_failed_full_verification_also_drops_the_cached_identity(runtime, monkeypatch):
+    monkeypatch.setattr(mxc_runtime, "_installed_package_root", lambda: runtime)
+    monkeypatch.setattr(mxc_runtime, "_file_stamp", lambda path: ("unchanged",))
+    mxc_runtime.forget_verified_runtime()
+    mxc_runtime.installation_identity()
+    with open(runtime / "wxc-exec.exe", "r+b") as stream:
+        stream.write(b"x")
+    with pytest.raises(mxc_runtime.MxcRuntimeUnavailable):
+        mxc_runtime.verified_installation_identity()
+    with pytest.raises(mxc_runtime.MxcRuntimeUnavailable, match = "digest"):
+        mxc_runtime.installation_identity()
+
+
+def test_a_path_redirected_while_the_guard_opens_is_refused(runtime, monkeypatch):
+    _no_lock_guard(monkeypatch)
+    moved = {}
+    real_resolve = Path.resolve
+
+    def resolve(self, *args, **kwargs):
+        target = real_resolve(self, *args, **kwargs)
+        return moved.get(str(target), target)
+
+    def guard(path):
+        moved[str(real_resolve(path))] = real_resolve(path).with_name("elsewhere.exe")
+        return Path(path).open("rb")
+
+    monkeypatch.setattr(Path, "resolve", resolve)
+    monkeypatch.setattr(mxc_runtime, "_open_artifact_guard", guard)
+    with pytest.raises(mxc_runtime.MxcRuntimeUnavailable, match = "changed during acquisition"):
+        mxc_runtime.acquire_runtime(package_root = runtime)
