@@ -9187,6 +9187,31 @@ def snapshot_residual_lora_init(model, init_lora_weights):
 CONVERT_ON_SAVE_LORA_WEIGHTS = ("lora_ga",)
 
 
+@contextlib.contextmanager
+def snapshot_residual_lora_load(config):
+    """Wrap PeftModel.from_pretrained: PEFT re-runs a residual init there, then overwrites its factors with the saved
+    weights. Snapshot them in between, or a merged save adds the adapter to the original, unrewritten weight."""
+    init = getattr(config, "init_lora_weights", None)
+    # A LoRA-GA init cannot be re-run at load time.
+    if not isinstance(init, str) or init in CONVERT_ON_SAVE_LORA_WEIGHTS:
+        yield
+        return
+    from peft import PeftModel
+
+    original = PeftModel.load_adapter
+
+    @functools.wraps(original)
+    def load_adapter(model, *args, **kwargs):
+        snapshot_residual_lora_init(model, init)
+        return original(model, *args, **kwargs)
+
+    PeftModel.load_adapter = load_adapter
+    try:
+        yield
+    finally:
+        PeftModel.load_adapter = original
+
+
 def _residual_lora_rows(model, adapters):
     from transformers.pytorch_utils import Conv1D
     for name, module in model.named_modules():
