@@ -6420,7 +6420,9 @@ def test_vulkan_auto_keeps_the_discrete_pool(
     backend, gguf = _backend(tmp_path, vulkan = True, memory = rows)
     backend._gguf_read_bytes = lambda _path, **_kw: 34 * 1024**3
     backend._gguf_tensor_scan = lambda _: (
-        "llama", {"token_embd.weight": host_weights_gib * 1024**3, "output.weight": 1}, 0
+        "llama",
+        {"token_embd.weight": host_weights_gib * 1024**3, "output.weight": 1},
+        0,
     )
     assert backend._vulkan_auto_gpu_memory(rows, str(gguf), extra_args) == discrete
 
@@ -6442,9 +6444,7 @@ def test_a_device_list_still_sees_an_auto_filtered_vulkan_igpu(monkeypatch):
     assert off(**kw, integrated_gpu_ids = {1}) is True
     assert off(**dict(kw, extra_args = ["--device", "Vulkan0"]), integrated_gpu_ids = {1}) is False
     src = inspect.getsource(LlamaCppBackend.load_model)
-    assert src.index("_vulkan_igpu_ids = (") < src.index(
-        "_gpu_mem = self._vulkan_auto_gpu_memory("
-    )
+    assert src.index("_vulkan_igpu_ids = (") < src.index("_gpu_mem = self._vulkan_auto_gpu_memory(")
     assert src.count("integrated_gpu_ids = _vulkan_igpu_ids") == 7
 
 
