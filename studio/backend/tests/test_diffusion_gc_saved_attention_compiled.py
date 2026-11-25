@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""CPU test: the saved-attention checkpoint around a torch.compile'd block gives the same gradients as a plain
-checkpoint. Inductor reuses an attention output's buffer after its last use in the graph; when the graph does not
-keep that output for its own backward (no grad reaches q / k / v, e.g. LoRA on the MLP only), the selective
-checkpoint's cached copy was the reused buffer, and the backward recompute replayed overwritten values
-(pytorch #201158)."""
+"""Saved-attention checkpoint around a compiled block matches a plain checkpoint (pytorch #201158)."""
 
 from __future__ import annotations
 
@@ -50,8 +46,7 @@ class _Lora(torch.nn.Module):
 
 
 class _Block(torch.nn.Module):
-    """A first DiT block whose adapters sit only after attention: q / k / v and the output projection are frozen and
-    the block input carries no grad, so the attention output is an intermediate of the compiled graph."""
+    """No grad reaches q / k / v, so the attention output is a compiled-graph intermediate."""
 
     def __init__(
         self,
