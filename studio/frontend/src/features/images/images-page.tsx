@@ -175,6 +175,7 @@ import {
   WORKFLOW_EXAMPLE_PROMPTS,
   WORKFLOW_TABS,
   recipeWorkflowLabel,
+  recipeWorkflowTab,
   type WorkflowId,
 } from "./workflows";
 import {
@@ -3162,11 +3163,9 @@ export function ImagesPage({
     if (maskOptions.maskBlur !== undefined) setMaskBlur(maskOptions.maskBlur);
     if (maskOptions.onlyMasked !== undefined) setInpaintOnlyMasked(maskOptions.onlyMasked);
     if (maskOptions.padding !== undefined) setInpaintPadding(maskOptions.padding);
-    // Conditioning images are not persisted, so every upload is cleared. Edit and Reference reopen
-    // their own workflow, so Generate stays blocked until the inputs are supplied again instead of
-    // replaying as text-to-image; the others return to Create.
-    const reopened: WorkflowId =
-      image.workflow === "edit" ? "edit" : image.workflow === "reference" ? "reference" : "create";
+    // Conditioning images are not persisted, so every upload is cleared. The recipe reopens its own tab, so
+    // Generate stays blocked until the inputs are supplied again instead of replaying as text-to-image.
+    const reopened = recipeWorkflowTab(image.workflow);
     setWorkflow(reopened);
     // An enhanced run restores the user's prompt with Enhance prompt on, or (exactCaption) the caption it ran with
     // the toggle off. Records without an outcome leave the toggle alone.

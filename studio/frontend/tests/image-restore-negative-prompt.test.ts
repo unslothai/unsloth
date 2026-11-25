@@ -9,6 +9,7 @@ import { enhanceRestoreFor } from "../src/features/images/lib/prompt-enhance.ts"
 import { restoredInpaintMaskOptions } from "../src/features/images/lib/inpaint-options.ts";
 import { detailerNotApplied, restoredDetailer } from "../src/features/images/lib/detailer.ts";
 import { fastCfgEndFromRecipe, fastCfgNotApplied } from "../src/features/images/lib/fast-cfg.ts";
+import * as workflows from "../src/features/images/workflows.ts";
 
 function restoreSettingsWith(negativeCapable: boolean) {
   const source = readSrc("features/images/images-page.tsx");
@@ -57,6 +58,7 @@ function restoreSettingsWith(negativeCapable: boolean) {
     detailerNotApplied,
     fastCfgEndFromRecipe,
     fastCfgNotApplied,
+    recipeWorkflowTab: workflows.recipeWorkflowTab,
     toast: { success: () => {} },
   };
   // Every closure name the callback reads that is not a real global resolves to a recording no-op,
@@ -119,4 +121,23 @@ test("restoring an enhanced FLUX.3 image sets the Enhance prompt toggle from its
   const legacy = restoreSettingsWith(true);
   legacy.restore({ ...image, enhanced_prompt: undefined, prompt_enhancement: undefined });
   assert.equal("setEnhanceOverride" in legacy.state, false);
+});
+
+test("restoring an image-input recipe reopens its own tab and leaves the Create draft alone", () => {
+  const cases: Array<[string, string]> = [
+    ["img2img", "transform"],
+    ["inpaint", "inpaint"],
+    ["outpaint", "extend"],
+    ["upscale", "upscale"],
+    ["edit", "edit"],
+    ["reference", "reference"],
+    ["txt2img", "create"],
+    ["controlnet", "create"],
+  ];
+  for (const [workflow, tab] of cases) {
+    const { restore, state } = restoreSettingsWith(true);
+    restore({ prompt: "a fox", guidance: 5, steps: 20, seed: 7, width: 1024, height: 1024, workflow, strength: 0.4 });
+    assert.equal(state.setWorkflow, tab, workflow);
+    assert.deepEqual(state.setPromptFor, [tab, "a fox"], workflow);
+  }
 });
