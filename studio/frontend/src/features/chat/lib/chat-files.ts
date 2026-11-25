@@ -312,22 +312,43 @@ export function collectChatFiles(
   return found.map((file) => ({ ...file, name: uniqueName(file.name, used) }));
 }
 
-/** collectChatFiles that hands back its last result while the messages and folders are the same objects. */
-export function createChatFilesCollector(): typeof collectChatFiles {
-  let last: {
-    messages: readonly MessageLike[];
-    folders: readonly ChatFolder[];
-    files: ChatFile[];
-  } | null = null;
-  return (messages, folders = []) => {
-    const same =
-      last !== null &&
-      last.folders === folders &&
-      last.messages.length === messages.length &&
-      messages.every((message, index) => message === last?.messages[index]);
-    if (!(same && last)) {
-      last = { messages, folders, files: collectChatFiles(messages, folders) };
+type Schedule = (run: () => void) => void;
+
+const idleSchedule: Schedule = (run) => {
+  const idle = (
+    globalThis as {
+      requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => number;
     }
-    return last.files;
+  ).requestIdleCallback;
+  if (typeof idle === "function") idle(run, { timeout: 1000 });
+  else setTimeout(run, 50);
+};
+
+/** collectChatFiles in slices of at most `sliceMs` (one message can overrun), off the render path. Returns a cancel. */
+export function scheduleChatFiles(
+  messages: readonly MessageLike[],
+  folders: readonly ChatFolder[],
+  done: (files: ChatFile[]) => void,
+  {
+    sliceMs = 8,
+    schedule = idleSchedule,
+  }: { sliceMs?: number; schedule?: Schedule } = {},
+): () => void {
+  let cancelled = false;
+  let next = 0;
+  const step = () => {
+    if (cancelled) return;
+    const end = performance.now() + sliceMs;
+    do {
+      const message = messages[next];
+      if (message && message.role === "assistant") collectMessageFiles(message);
+      next += 1;
+    } while (next < messages.length && performance.now() < end);
+    if (next < messages.length) schedule(step);
+    else done(collectChatFiles(messages, folders));
+  };
+  schedule(step);
+  return () => {
+    cancelled = true;
   };
 }

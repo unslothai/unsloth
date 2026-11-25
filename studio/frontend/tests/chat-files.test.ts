@@ -6,7 +6,7 @@ import test from "node:test";
 
 import {
   collectChatFiles,
-  createChatFilesCollector,
+  scheduleChatFiles,
 } from "../src/features/chat/lib/chat-files.ts";
 
 const sandboxResult = (
@@ -231,19 +231,37 @@ test("remote assistant image URLs are left out", () => {
   assert.equal(files.length, 0);
 });
 
-test("the collector reuses its result while the settled messages are unchanged", () => {
-  const collect = createChatFilesCollector();
-  const first = python("a1", sandboxResult("t1", ["a.txt"]));
-  const folders = [{ sessionId: "t1", names: ["a.txt"] }];
-  const before = collect([first], folders);
-  assert.equal(collect([first], folders), before);
-  const after = collect(
-    [first, python("a2", sandboxResult("t1", ["b.txt"]))],
-    folders,
+test("scheduleChatFiles yields between messages and matches collectChatFiles", () => {
+  const messages = Array.from({ length: 5 }, (_, i) =>
+    python(`a${i}`, sandboxResult("t1", [`f${i}.txt`])),
   );
-  assert.notEqual(after, before);
-  assert.deepEqual(
-    after.map((f) => f.name),
-    ["a.txt", "b.txt"],
+  const folders = [{ sessionId: "t1", names: ["f0.txt", "extra.txt"] }];
+  const queue: (() => void)[] = [];
+  let result: unknown = null;
+  scheduleChatFiles(messages, folders, (files) => (result = files), {
+    sliceMs: 0,
+    schedule: (run) => queue.push(run),
+  });
+  let slices = 0;
+  while (queue.length) {
+    assert.equal(result, null);
+    queue.shift()?.();
+    slices += 1;
+  }
+  assert.equal(slices, messages.length);
+  assert.deepEqual(result, collectChatFiles(messages, folders));
+});
+
+test("a cancelled scheduleChatFiles never reports", () => {
+  const queue: (() => void)[] = [];
+  let reported = false;
+  const cancel = scheduleChatFiles(
+    [python("a1", sandboxResult("t1", ["a.txt"]))],
+    [],
+    () => (reported = true),
+    { schedule: (run) => queue.push(run) },
   );
+  cancel();
+  while (queue.length) queue.shift()?.();
+  assert.equal(reported, false);
 });
