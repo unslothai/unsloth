@@ -31,7 +31,9 @@ class Runtime:
         return httpx.Response(
             200,
             json = {
-                "devices": {"amd_npu": {"available": self.available, "error": "Driver unavailable"}},
+                "devices": {
+                    "amd_npu": {"available": self.available, "error": "Driver unavailable"}
+                },
                 "recipes": {"flm": {"backends": {"npu": {"state": self.state}}}},
             },
         )
@@ -53,7 +55,9 @@ def configure(tmp_path, monkeypatch):
     monkeypatch.setattr(
         nb,
         "_installer_module",
-        lambda: SimpleNamespace(install = lambda *a, **kw: lemond, installed_lemond = lambda *a: lemond),
+        lambda: SimpleNamespace(
+            install = lambda *a, **kw: lemond, installed_lemond = lambda *a: lemond
+        ),
     )
     backend = nb.LemonadeNpuBackend(root = tmp_path)
 

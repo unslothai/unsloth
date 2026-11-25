@@ -717,7 +717,9 @@ class LemonadeNpuBackend:
     def _runtime_npu_backend(self, server: LemonadeServer) -> dict[str, Any]:
         response = server.request("GET", "/v1/system-info")
         if _failed(response):
-            raise NpuError(f"Checking the configured NPU runtime failed: {_error_message(response)}")
+            raise NpuError(
+                f"Checking the configured NPU runtime failed: {_error_message(response)}"
+            )
         try:
             info = response.json()
             device = info["devices"]["amd_npu"]
@@ -819,7 +821,8 @@ class LemonadeNpuBackend:
                 marker = self.root / _VALIDATED_MARKER
                 tmp = marker.with_suffix(".json.tmp")
                 tmp.write_text(
-                    json.dumps({"lemond": str(binary), "local_flm": self._local_flm_identity()}) + "\n",
+                    json.dumps({"lemond": str(binary), "local_flm": self._local_flm_identity()})
+                    + "\n",
                     encoding = "utf-8",
                 )
                 tmp.replace(marker)

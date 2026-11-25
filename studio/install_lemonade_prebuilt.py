@@ -152,7 +152,9 @@ def installed_lemond(root: Path, pins: Optional[dict] = None) -> Optional[Path]:
         return None
     archive = local_lemonade_archive()
     asset = (
-        _local_archive_asset(archive, key) if archive is not None else pins["lemonade"]["assets"][key]
+        _local_archive_asset(archive, key)
+        if archive is not None
+        else pins["lemonade"]["assets"][key]
     )
     if marker.get("sha256") != asset["sha256"] or marker.get("asset") != asset["name"]:
         return None
@@ -241,7 +243,9 @@ def install(
         remove_lemond_installs(root)
         return host
     source = local_lemonade_archive()
-    asset = _local_archive_asset(source, key) if source is not None else pins["lemonade"]["assets"][key]
+    asset = (
+        _local_archive_asset(source, key) if source is not None else pins["lemonade"]["assets"][key]
+    )
     target = root / ("local-" + asset["sha256"]) if source is not None else install_dir(root, pins)
     with core.install_lock(core.install_lock_path(target)):
         existing = installed_lemond(root, pins)
