@@ -737,6 +737,9 @@ def _names_local_image(value) -> bool:
     if not isinstance(value, str) or not value.strip():
         return False
     import os
+    import stat
+
+    from utils.security.dataset_media import require_readable_media
 
     from .remote_images import is_network_share
 
@@ -745,8 +748,15 @@ def _names_local_image(value) -> bool:
     if is_network_share(path):
         return False
     try:
-        with open(path, "rb") as file:
-            head = file.read(12)
+        require_readable_media(path)
+        # Nonblocking, then regular files only: opening a FIFO would hang the request.
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0))
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                return False
+            head = os.read(fd, 12)
+        finally:
+            os.close(fd)
     except (OSError, ValueError):
         return False
     return _has_image_header(head) or head[:4] in (b"II*\x00", b"MM\x00*")
