@@ -3,7 +3,7 @@
 
 import type { FC } from "react";
 
-/** Translate's swap-languages button: Keyline Icons `arrow-left-right-3` (MIT, github.com/keyline-icons/keyline-icons), flipped so the right arrow is on top. */
+/** Keyline Icons `arrow-left-right-3` (MIT, github.com/keyline-icons/keyline-icons), flipped vertically. */
 export const SwapArrowsIcon: FC<{ className?: string }> = ({ className }) => (
   <svg
     className={className}

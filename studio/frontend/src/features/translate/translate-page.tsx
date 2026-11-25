@@ -1161,7 +1161,6 @@ function OptionRow({
 }) {
   const id = useId();
   return (
-    // The description keeps to the label's column, so it never runs under the toggle.
     <div className="flex items-start justify-between gap-4">
       <div className="grid min-w-0 gap-2">
         <FieldLabel

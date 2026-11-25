@@ -5523,10 +5523,9 @@ main[data-translate-page] {
 	scrollbar-gutter: stable;
 }
 
-/* Translate's model chip hovers like the options button beside it (ghost), not like a composer pill. */
 .translate-page .composer-model-chip {
 	font-size: var(--text-ui-17);
-	/* Uneven on purpose: the chevron glyph carries its own side bearing, so the text and chevron sit 15px in. */
+	/* Uneven: the chevron glyph has its own side bearing. */
 	padding-left: calc(14px * var(--ui-space-scale, 1));
 	padding-right: calc(11.5px * var(--ui-space-scale, 1));
 }
