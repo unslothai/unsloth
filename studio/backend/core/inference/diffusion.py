@@ -17771,7 +17771,7 @@ class DiffusionBackend:
         _release_rocm_tunableop(state.pipe)
         prebuild = sys.modules.get(f"{__package__}.diffusion_vae_prebuild")
         if prebuild is not None:
-            prebuild.cancel_all()
+            prebuild.cancel_all("image")
         compile_cache.restore(state.compile_cache_ctx, logger = logger)
         uninstall_cfg_parallel(state.pipe)
         uninstall_zimage_cfg_split(state.pipe)

@@ -733,7 +733,8 @@ def _read_rank_state(model, directory):
             f"Unsloth: {directory} has no expert parallel rank state ({path}); it was not written under expert "
             "parallel, so its expert optimizer state cannot be restored."
         )
-    payload = torch.load(path, map_location = "cpu", weights_only = False)
+    # Tensors, ints, strings and an optimizer state dict: weights_only reads it, as tp_native's resume does.
+    payload = _tpn()._resume_torch_load(path, map_location = "cpu")
     saved, want = dict(payload["layout"]), _layout(model)
     saved_b, want_b = saved.pop("lora_b", None), want.pop("lora_b")
     if saved != want:
