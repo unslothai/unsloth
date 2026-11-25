@@ -3,7 +3,7 @@
 
 import { authFetch } from "@/features/auth";
 import {
-  formatFastApiDetail,
+  formatApiErrorBody,
   readFastApiError,
 } from "@/lib/format-fastapi-error";
 import type { DecisionResponse } from "../lib/decision-request";
@@ -374,10 +374,7 @@ export async function runDecision(
       detail && typeof detail === "object"
         ? (detail as Record<string, unknown>)
         : {};
-    const message =
-      (typeof fields.message === "string" ? fields.message : null) ??
-      formatFastApiDetail(detail) ??
-      res.statusText;
+    const message = formatApiErrorBody(data) ?? res.statusText;
     const loading = res.status === 503 && fields.error_type === "model_loading";
     if (!loading || Date.now() > deadline || signal.aborted) {
       throw new DecisionError(message, res.status);
