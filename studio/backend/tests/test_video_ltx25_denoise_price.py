@@ -72,6 +72,7 @@ def _price(
     family = "ltx-2.5",
     conditioned = False,
     cfg = False,
+    fps = None,
 ):
     w, h, f = shape
     return V._ltx25_denoise_price_mib(
@@ -82,6 +83,7 @@ def _price(
         frames = f,
         conditioned = conditioned,
         cfg = cfg,
+        fps = fps,
     )
 
 
@@ -276,3 +278,13 @@ def test_the_peak_key_names_released_rows_only_where_they_are_released(why, monk
     else:
         state.pipe._unsloth_ltx25_dev = True
     assert "released_prompt_rows" not in V._memory_levers_key(state)["memory_levers"]
+
+
+@pytest.mark.parametrize(
+    "fps, priced", [(None, True), (24, True), (30, True), (12, False), (1, False)]
+)
+def test_a_frame_rate_below_the_measured_one_keeps_the_base_overhead(fps, priced):
+    """LTX-2.5's audio latent length is frames / fps: a 121-frame clip at 1 fps carries 24x the audio tokens of the
+    measured 24 fps render, so only the measured rate and above get the measured price."""
+    shape = (768, 512, 49)
+    assert (_price(_state(), shape, fps = fps) is not None) == priced

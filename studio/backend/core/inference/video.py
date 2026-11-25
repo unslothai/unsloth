@@ -6217,6 +6217,10 @@ def _memory_levers_key(state: Any) -> dict[str, str]:
     return {"memory_levers": levers} if levers else {}
 
 
+# The frame rate the LTX-2.5 denoise price was measured at (the family default).
+_LTX25_MEASURED_FPS = 24
+
+
 def _ltx25_denoise_price_mib(
     state: Any,
     *,
@@ -6226,6 +6230,7 @@ def _ltx25_denoise_price_mib(
     frames: Optional[int],
     conditioned: bool,
     cfg: bool,
+    fps: Optional[float] = None,
 ) -> Optional[int]:
     """The request guard's denoise headroom above the floor for an LTX-2.5 render the measurements cover, else None
     (the base overhead stands). Measured: the distilled two-stage render without CFG; the dev checkpoint renders in
@@ -6240,6 +6245,9 @@ def _ltx25_denoise_price_mib(
     ):
         return None
     if not (width and height and frames) or conditioned or cfg or family != "ltx-2.5":
+        return None
+    # audio tokens scale with frames / fps: below the measured rate the audio branch outgrows the price
+    if fps is not None and float(fps) < _LTX25_MEASURED_FPS:
         return None
     if getattr(state, "offload_policy", None) != OFFLOAD_STREAMING:
         return None
@@ -15865,6 +15873,7 @@ class VideoBackend:
                             or last_pil is not None
                             or bool(references),
                             cfg = bool(getattr(fam, "supports_cfg", True)) and float(guidance) > 1.0,
+                            fps = out_fps,
                         ),
                     )
                     if shortfall is not None:
