@@ -13,8 +13,9 @@ Keys: dp, tp, pp, cp (positive integers; dp may be omitted and then fills the wo
 ring), fsdp (0 / 1: native FSDP2 over the data parallel ranks instead of DDP-style averaging; fsdp=N with N > 1
 is dp_shard=N), dp_shard=N / dp_replicate=N (dp with FSDP2 / DDP), pp_schedule (gpipe, 1f1b; default
 1f1b), pp_microbatches.
-transformers' DistributedConfig names are accepted too (tp_size, pp_size, fsdp_size, cp_size); ep / ep_size and
-efsdp are reserved and refused until expert parallel lands. The flag is parsed once, at `import unsloth`, and translated to the variables
+ep=N (ep_size): expert parallel, N dividing the world size (data parallel ranks that each keep E / N of every MoE
+block's routed experts; world / N replica groups, models/ep_native.py); not with tp / pp / cp / fsdp yet. transformers' DistributedConfig names are
+accepted too (tp_size, pp_size, fsdp_size, cp_size, ep_size); efsdp is reserved and refused. The flag is parsed once, at `import unsloth`, and translated to the variables
 the existing paths read: UNSLOTH_TP_SIZE, UNSLOTH_PP_SIZE, UNSLOTH_FSDP2, UNSLOTH_PP_SCHEDULE,
 UNSLOTH_PP_MICROBATCHES, UNSLOTH_CP_SIZE and UNSLOTH_CP_BACKEND. Those variables keep working on their own; a
 variable that disagrees with the flag is refused.
@@ -70,10 +71,10 @@ _ALIASES = {
 }
 # Kept for compatibility with transformers' naming; refused until Unsloth implements them.
 _RESERVED = {
-    "ep": "expert parallel (ep) is not supported yet; MoE trains with its experts whole on every rank",
     "efsdp": "expert FSDP (efsdp) is not supported yet",
 }
 _KEYS = _SIZE_KEYS + (
+    "ep",
     "dp_shard",
     "dp_replicate",
     "cp_backend",
@@ -92,6 +93,7 @@ _LEGACY = {
     "fsdp": "UNSLOTH_FSDP2",
     "pp_schedule": "UNSLOTH_PP_SCHEDULE",
     "pp_microbatches": "UNSLOTH_PP_MICROBATCHES",
+    "ep": "UNSLOTH_EP_SIZE",
 }
 
 
@@ -149,7 +151,7 @@ def parse_parallel_spec(raw, source = FLAG):
             )
         if key in spec:
             raise ValueError(f"Unsloth: {source}={raw!r} gives {key} twice.")
-        if key in _SIZE_KEYS or key in ("pp_microbatches", "dp_shard", "dp_replicate"):
+        if key in _SIZE_KEYS or key in ("ep", "pp_microbatches", "dp_shard", "dp_replicate"):
             spec[key] = _positive(key, value, source)
         elif key == "fsdp":
             low = value.lower()
@@ -249,13 +251,41 @@ def translate(spec, environ = None):
             f'Unsloth: {FLAG}="{given}": pp x cp x tp = {model_ranks} must divide the number of ranks '
             f"(WORLD_SIZE={world}); launch with torchrun --nproc-per-node {model_ranks} (or a multiple of it)."
         )
+    ep = spec.get("ep", 1)
+    if ep > 1:
+        # Expert parallel v1: the experts sharded over every rank, which are all data parallel.
+        others = [f"{k}={v}" for k, v in sizes.items() if v > 1] + (
+            ["fsdp=1"] if spec.get("fsdp") else []
+        )
+        # The inherited legacy variables too: only the spec was checked, so an exported UNSLOTH_FSDP2=1 would
+        # shard (and sync rank 0's values into) every rank's own expert slices.
+        for key in ("tp", "pp", "cp", "fsdp"):
+            if key in spec:
+                continue  # the spec value is checked above; a disagreeing variable is refused below
+            current = _legacy_value(key, environ)
+            if current is None or current is False or (key in _SIZE_KEYS and current == 1):
+                continue
+            others.append(f"{_LEGACY[key]}={environ.get(_LEGACY[key])}")
+        if others:
+            raise ValueError(
+                f'Unsloth: {FLAG}="{given}": expert parallel (ep) cannot be combined with {", ".join(others)} yet.'
+            )
+        # Every rank is data parallel; ep ranks share one copy of the experts (replica groups when ep < world).
+        dp = spec.get("dp", world)
+        if (world is not None and (world % ep or (dp is not None and dp != world))) or (
+            dp is not None and dp % ep
+        ):
+            raise ValueError(
+                f'Unsloth: {FLAG}="{given}": ep={ep} must divide the data parallel size, which is every rank '
+                f"(got dp={dp}, WORLD_SIZE={world}); launch with torchrun --nproc-per-node a multiple of {ep}."
+            )
     out = {}
     wanted = {
         "tp": sizes["tp"],
         "pp": sizes["pp"],
         "cp": sizes["cp"],
     }
-    for key in ("cp_backend", "fsdp", "pp_schedule", "pp_microbatches"):
+    for key in ("cp_backend", "fsdp", "pp_schedule", "pp_microbatches", "ep"):
         if key in spec:
             wanted[key] = spec[key]
     for key, value in wanted.items():
@@ -410,6 +440,7 @@ def parallelize(
     fsdp = None,
     pp_schedule = None,
     pp_microbatches = None,
+    ep = None,
 ):
     """`UNSLOTH_PARALLEL` from Python: call after `import unsloth` and before `from_pretrained`, on every rank.
 
@@ -420,7 +451,7 @@ def parallelize(
     parts = []
     if dp is not None:
         parts.append(f"dp={dp}")
-    for key, value in (("tp", tp), ("pp", pp), ("cp", cp)):
+    for key, value in (("tp", tp), ("pp", pp), ("cp", cp), ("ep", ep)):
         if value is None:
             continue
         if isinstance(value, bool) or not isinstance(value, int) or value < 1:
@@ -584,6 +615,25 @@ class ParallelLayout:
         dims = [("pp", self.pp), (dp_name, self.dp), ("cp", self.cp), ("tp", self.tp)]
         return [(name, size) for name, size in dims if size > 1]
 
+    def check_backend(self):
+        """RuntimeError when mesh() would need NCCL (CUDA GPUs; RCCL under the same name on ROCm, no process
+        group yet) on a PyTorch build without it (native Windows): before any model loads, instead of failing in
+        init_process_group."""
+        import torch
+        import torch.distributed as dist
+
+        if not dist.is_available() or dist.is_initialized() or dist.is_nccl_available():
+            return
+        rocm = getattr(torch.version, "hip", None) is not None
+        if (torch.version.cuda is None and not rocm) or not torch.cuda.is_available():
+            return  # CPU (gloo) or a non-CUDA accelerator build
+        backend, gpus = ("RCCL", "ROCm") if rocm else ("NCCL", "CUDA")
+        raise RuntimeError(
+            f"Unsloth: {self.env_vars} ({self}) runs its collectives over {backend} on {gpus} GPUs, but this "
+            "PyTorch build has no NCCL backend (torch.distributed.is_nccl_available() is False; native Windows "
+            f"builds ship without it). Use a PyTorch build with {backend} (Linux or WSL), or train on one GPU."
+        )
+
     def mesh(self):
         if self._mesh is not None:
             return self._mesh
@@ -591,6 +641,7 @@ class ParallelLayout:
         import torch.distributed as dist
         from torch.distributed.device_mesh import init_device_mesh
 
+        self.check_backend()
         cuda = torch.cuda.is_available()
         if cuda:
             torch.cuda.set_device(int(os.environ.get("LOCAL_RANK", "0")))
@@ -747,6 +798,7 @@ def read_layout():
 
     # Layout-only rules before any model loads (ring x tp is refused here, before the tp split).
     check_layout(layout, cells = False, cp_backend = cp_backend)
+    layout.check_backend()
     return layout
 
 

@@ -842,6 +842,8 @@ def _isolate_wal_keepers():
             rag_db.start_wal_keepers()
         else:
             rag_db.close_wal_keeper()
+        # Per-test homes: drop the reader so handles never pile up (and Windows can delete the folder).
+        studio_db.close_settings_readers()
     finally:
         os.name = patched_os_name
 

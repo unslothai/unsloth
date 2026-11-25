@@ -6424,6 +6424,7 @@ async def _select_request_tools(
         apply_full_access_tool_descriptions,
         get_enabled_mcp_tools,
         set_mcp_project_scope,
+        set_mcp_server_scope,
     )
 
     if not tools_on:
@@ -6519,8 +6520,19 @@ async def _select_request_tools(
         from core.inference.media_chat_tools import remember_server_loop
 
         remember_server_loop(asyncio.get_running_loop())
-        await set_mcp_project_scope(getattr(payload, "session_id", None))
-        tools = tools + await get_enabled_mcp_tools()
+        scheduled_server_ids = getattr(payload, "_scheduled_mcp_server_ids", None)
+        if scheduled_server_ids is None:
+            await set_mcp_project_scope(getattr(payload, "session_id", None))
+        else:
+            set_mcp_server_scope(scheduled_server_ids)
+        mcp_tools = await get_enabled_mcp_tools()
+        if scheduled_server_ids is not None and not mcp_tools:
+            raise HTTPException(
+                status_code = 400,
+                detail = "No tools are available from the selected MCP servers. "
+                "Check that they are enabled and reachable.",
+            )
+        tools += mcp_tools
     # Some callers pass lighter payloads that may lack deep_research_armed, so read it with getattr.
     if getattr(payload, "deep_research_armed", None):
         # Past every filter incl. tools_on: arming research is what offers this tool.
@@ -16512,12 +16524,12 @@ def _mlx_estimate_load_in_4bit(config, request) -> bool:
     # Same order as the load route: a full-finetune output loads 16-bit before any tier check.
     if not _effective_load_in_4bit(config, request.load_in_4bit):
         return False
-    from utils.transformers_version import latest_tier_active_for
+    from utils.transformers_version import latest_tier_forces_16bit
 
     identifier = getattr(config, "identifier", None)
     return not _offline_guarded(
         (identifier, getattr(config, "base_model", None)),
-        latest_tier_active_for,
+        latest_tier_forces_16bit,
         identifier,
         request.hf_token,
     )
@@ -20718,11 +20730,11 @@ async def _load_model_impl(
             )
         # Latest-sidecar models load 16-bit (worker refuses bnb 4-bit); size the guard to match.
         if effective_load_in_4bit and not config.is_gguf:
-            from utils.transformers_version import latest_tier_active_for
+            from utils.transformers_version import latest_tier_forces_16bit
             if await asyncio.to_thread(
                 _offline_guarded,
                 (model_identifier, config.identifier, getattr(config, "base_model", None)),
-                latest_tier_active_for,
+                latest_tier_forces_16bit,
                 config.identifier,
                 request.hf_token,
             ):
@@ -21943,16 +21955,27 @@ async def validate_model(
         # Mirror /load's latest-sidecar 16-bit flip: an active sidecar forces 16-bit; an offered upgrade
         # only without a custom-code (auto_map) fallback, which still loads 4-bit.
         if effective_load_in_4bit and not is_gguf:
-            from utils.transformers_version import latest_tier_active_for
+            from utils.transformers_version import (
+                latest_tier_forces_16bit,
+                latest_tier_upgrade_keeps_4bit,
+            )
             _install_only_upgrade = (
                 transformers_upgrade is not None
                 and transformers_upgrade.installable
                 and not requires_trust_remote_code
+                and not await asyncio.to_thread(
+                    _offline_guarded,
+                    (model_identifier, config.identifier, getattr(config, "base_model", None)),
+                    latest_tier_upgrade_keeps_4bit,
+                    transformers_upgrade.model_type,
+                    config.identifier,
+                    request.hf_token,
+                )
             )
             if _install_only_upgrade or await asyncio.to_thread(
                 _offline_guarded,
                 (model_identifier, config.identifier, getattr(config, "base_model", None)),
-                latest_tier_active_for,
+                latest_tier_forces_16bit,
                 config.identifier,
                 request.hf_token,
             ):
@@ -22235,7 +22258,7 @@ async def check_transformers_upgrade_route(
     for training. Never raises: an unreadable model reports "no upgrade needed" and the
     caller proceeds exactly as it did before.
     """
-    from utils.transformers_version import latest_tier_active_for
+    from utils.transformers_version import latest_tier_load_policy, latest_tier_upgrade_keeps_4bit
 
     if account_access.managed_account():
         for ref in (
@@ -22302,27 +22325,42 @@ async def check_transformers_upgrade_route(
         logger.debug("Custom-code check failed for '%s': %s", model_name, exc)
 
     latest_tier_active = False
+    active_forces_16bit = False
     try:
-        latest_tier_active = await asyncio.to_thread(
+        latest_tier_active, active_forces_16bit = await asyncio.to_thread(
             _offline_guarded,
-            # latest_tier_active_for resolves a remote adapter's base itself, so fetch it too.
+            # The policy resolves a remote adapter's base itself, so fetch it too.
             tuple(targets),
-            latest_tier_active_for,
+            latest_tier_load_policy,
             load_target,
             request.hf_token,
         )
     except Exception as exc:
         logger.debug("Latest-tier check failed for '%s': %s", model_name, exc)
+    upgrade_keeps_4bit = False
+    if transformers_upgrade is not None:
+        try:
+            upgrade_keeps_4bit = await asyncio.to_thread(
+                _offline_guarded,
+                tuple(targets),
+                latest_tier_upgrade_keeps_4bit,
+                transformers_upgrade.model_type,
+                load_target,
+                request.hf_token,
+            )
+        except Exception as exc:
+            logger.debug("4-bit check failed for '%s': %s", model_name, exc)
 
     # Only install-only upgrades or active sidecars force 16-bit; offered ones do not (bnb 4-bit feeds unvalidated paths for new architectures).
     install_only_upgrade = bool(
         transformers_upgrade is not None
         and transformers_upgrade.installable
         and not requires_trust_remote_code
+        and not upgrade_keeps_4bit
     )
     # Already on the sidecar: the install does not strand the checkpoint; resume is refused regardless.
     install_breaks_exact_resume = False
-    if request.resume_run_id and not latest_tier_active:
+    if request.resume_run_id and not latest_tier_active and not upgrade_keeps_4bit:
         install_breaks_exact_resume = await asyncio.to_thread(
             _install_breaks_exact_resume, request.resume_run_id
         )
@@ -22335,7 +22373,9 @@ async def check_transformers_upgrade_route(
         # Already booleans; bool() here would trip the GGUF consistency guard's raw-YAML check.
         requires_trust_remote_code = requires_trust_remote_code,
         latest_tier_active = latest_tier_active,
-        forces_16bit = latest_tier_active or install_only_upgrade,
+        forces_16bit = active_forces_16bit or install_only_upgrade,
+        # The Configure card reads this: installable && !forces_16bit alone means the custom-code case.
+        sidecar_keeps_4bit = upgrade_keeps_4bit or (latest_tier_active and not active_forces_16bit),
         install_breaks_exact_resume = install_breaks_exact_resume,
     )
 
@@ -22349,8 +22389,12 @@ async def install_latest_transformers_route(
     request: InstallLatestTransformersRequest, current_subject: str = Depends(get_current_subject)
 ):
     """
-    Consented install of the latest transformers release into the persistent
-    .venv_t5_latest sidecar.
+    Install of the latest transformers release into the persistent .venv_t5_latest sidecar.
+
+    PyPI releases are package-scanned first (utils.security.package_scan) and installed
+    with their sha256 digests pinned; a flagged release is refused. With ``auto`` (no
+    dialog shown) only a clean scan installs, otherwise this answers requires_consent
+    before reserving anything. transformers main always needs the user's confirmation.
 
     Called after the user confirms the transformers-upgrade dialog raised by /validate
     (requires_transformers_upgrade). The requested version must match the current latest
@@ -22358,8 +22402,15 @@ async def install_latest_transformers_route(
     re-verified server-side); the sidecar then participates in routing on
     this and every future start. A pip install runs off-loop, so this can take a minute.
     """
-    from utils.transformers_latest import install_latest_transformers
+    from utils.transformers_latest import auto_install_preflight, install_latest_transformers
     from utils.transformers_version import end_sidecar_swap, try_begin_sidecar_swap
+
+    if request.auto:
+        # Scan before reserving or waiting on any gate: a release that needs the user's
+        # confirmation must not cancel chats or unload anything first.
+        blocked = await asyncio.to_thread(auto_install_preflight, request.version)
+        if blocked is not None:
+            return InstallLatestTransformersResponse(**blocked)
 
     # Reserve the swap FIRST, before any await: training/export starts check this reservation,
     # and a live worker would lazy-import from the swapped .venv_t5_latest.
@@ -22462,7 +22513,9 @@ async def install_latest_transformers_route(
         def _run_install() -> dict:
             # Release in the thread, not the route, so cancellation keeps the reservation held.
             try:
-                return install_latest_transformers(request.version, _unload_before_swap, True)
+                return install_latest_transformers(
+                    request.version, _unload_before_swap, True, auto = request.auto
+                )
             finally:
                 end_sidecar_swap()
 
@@ -22517,6 +22570,9 @@ async def install_latest_transformers_route(
         if owns_reservation:
             end_sidecar_swap()
     if not result["success"]:
+        if result.get("requires_consent") or result.get("scan_status") == "flagged":
+            # Structured so the client can raise the dialog with the reason.
+            return InstallLatestTransformersResponse(**result, model_unloaded = unloaded_chat["v"])
         if result.get("latest_version") or result.get("latest_main_version"):
             # Structured failure so the dialog can update to the newer release
             # and offer a retry that can actually succeed.
@@ -31546,19 +31602,22 @@ async def _proxy_to_external_provider(
                 _external_nudge, external_studio_tools, payload = payload
             )
     _served_template = None
+    _date_provider_type = None if _external_nudge else provider_type
     if (
-        provider_type == "llama_cpp"
-        and not _external_nudge
+        _date_provider_type in ("llama_cpp", "custom")
         and not _date_gate_blocks(request, run_studio_tool_loop)
         and current_date_prompt_line(request = request)
         and not any(m.get("role") in ("system", "developer") for m in chat_messages)
     ):
-        _served_template = await client.served_chat_template(model)
+        if provider_type == "llama_cpp":
+            _served_template = await client.served_chat_template(model)
+        elif await client.serves_ollama():
+            _date_provider_type = "ollama"
     chat_messages = _prepend_current_date_to_messages(
         chat_messages,
         request,
         include_api_key = run_studio_tool_loop,
-        provider_type = None if _external_nudge else provider_type,
+        provider_type = _date_provider_type,
         served_template = _served_template,
         tools = bool(external_studio_tools or payload.tools),
         controls = llama_cpp_template_controls(
@@ -41082,6 +41141,9 @@ def _names_studio_embedder(requested: str) -> Optional[str]:
     repo = rag_config.effective_gguf_repo_for_embedding_model(model)
     label = _public_embedding_name(model)
     wanted = requested.strip()
+    # A connection reference reads as a tagged identity, so the configured name is matched first.
+    if wanted == model:
+        return model
     if rag_config.embedding_identity_model(wanted) is not None:
         current = rag_embeddings.embedding_identity(model)
         if wanted in (current, _public_embedding_identity(current, model, label)):
@@ -41232,6 +41294,14 @@ async def _studio_embeddings(
         encoding_format = "float"
     dimensions = body.get("dimensions")
     model_name = model_name or rag_config.effective_embedding_model()
+    # Same rule as chat: an API key must not spend a saved connection's credential.
+    if rag_config.is_connection_model(model_name) and not _request_may_use_saved_provider_key(
+        request
+    ):
+        raise HTTPException(
+            status_code = 403,
+            detail = "Studio's embedding model runs on a saved connection, which needs a UI session.",
+        )
     label = _public_embedding_name(model_name)
 
     def _embed():

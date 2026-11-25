@@ -461,3 +461,44 @@ def test_apply_memory_plan_hands_the_unpinned_request_to_the_streaming_installer
         except Exception:  # noqa: BLE001 -- only the installer call is under test
             pass
     assert seen == [True, False]
+
+
+def test_an_image_conditioned_request_counts_its_vae_encoder_once(monkeypatch):
+    """The parked VAE encoder joins the card for an image-conditioned request and the request guard adds it to the
+    decode floor; the tiled-decode price must then not charge it again as credit beyond the tiler's room. 1280x704x121,
+    6,100 MiB available, 3,465 MiB tiler room, a 612 MiB encoder: admitted, as without the parking."""
+    from core.inference import video
+
+    monkeypatch.delenv(video.VIDEO_TILED_DECODE_PRICE_ENV, raising = False)
+    monkeypatch.setattr(U, "_free_bytes", lambda device: 3_465 << 20)
+    vae = _ltx_vae(fused = True)
+    encoder, decoder_floor, available = 612, 1_124, 6_100
+
+    def guard(saved_decode_floor, request_decode_floor, **override):
+        state = types.SimpleNamespace(
+            pipe = types.SimpleNamespace(vae = vae),
+            vram_floor_mib = saved_decode_floor + 2_205,
+            vram_decode_floor_mib = saved_decode_floor,
+        )
+        decode_mib = video._video_tiled_decode_mib(
+            state, width = W, height = H, frames = F, available_mib = available, **override
+        )
+        return video.video_offload_shortfall_message(
+            family = "ltx-2.5",
+            floor_mib = request_decode_floor + 2_205,
+            available_mib = available,
+            placement = "'streaming' offload",
+            width = W,
+            height = H,
+            frames = F,
+            decode_floor_mib = request_decode_floor,
+            decode_mib = decode_mib,
+        )
+
+    held = decoder_floor + encoder
+    # no parking: the encoder is in the saved floor
+    assert guard(held, held) is None
+    # parked encoder brought back for the request: counted once, so the same verdict
+    assert guard(decoder_floor, held, decode_floor_mib = held) is None
+    # the old call (saved floor without the encoder) counted it twice and refused
+    assert guard(decoder_floor, held) is not None

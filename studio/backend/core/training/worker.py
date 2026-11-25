@@ -98,6 +98,11 @@ def _output_dir_from_resume_checkpoint(resume_from_checkpoint: str | None) -> st
     return str(path.parent if path.name.startswith("checkpoint-") else path)
 
 
+def _studio_main_rank() -> bool:
+    from core.training.parallel_launch import is_main_rank
+    return is_main_rank()
+
+
 def _data_parallel_world_size() -> int:
     """Larger of env world size and CUDA device count, never the sum: distributed runs force n_gpu to 1."""
     sizes = [world_size_from_env()]
@@ -858,9 +863,9 @@ def _pre_detect_load_in_4bit(config: dict, model_load_target: str, hf_token: str
     """Mirrors the real load's 4-bit flip so detection reads the repo the loader fetches."""
     if not bool(config.get("load_in_4bit", True)):
         return False
-    from utils.transformers_version import latest_tier_active_for
+    from utils.transformers_version import latest_tier_forces_16bit
 
-    return not latest_tier_active_for(model_load_target, hf_token)
+    return not latest_tier_forces_16bit(model_load_target, hf_token)
 
 
 def _pre_detect_training_model(
@@ -4535,6 +4540,10 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
 
     if not _validate_training_worker_config(config, event_queue):
         return
+    # Start the other ranks before torch / unsloth import so every rank reads the same env.
+    if (config.get("parallel") or {}).get("launcher") == "multi_process":
+        from core.training.parallel_launch import launch_ranks
+        launch_ranks(config, event_queue)
     # Before any backend dispatch: the MLX, decision and embedding runners load these weights too.
     weights_error = _escaping_weights_error(config)
     if weights_error:
@@ -5723,8 +5732,12 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         output_dir = str(resolve_output_dir(output_dir))
         ensure_dir(Path(output_dir))
         _emit_output_dir(event_queue, output_dir)
-        # Pinned before any checkpoint, so resume reads it back rather than re-deriving it.
-        if not record_row_bound(output_dir, max_train_rows, max_train_rows_seed) and max_train_rows:
+        # Pinned before any checkpoint so resume reads it back rather than re-deriving it.
+        if (
+            _studio_main_rank()
+            and not record_row_bound(output_dir, max_train_rows, max_train_rows_seed)
+            and max_train_rows
+        ):
             # Not fatal, no fallback: the dataset is already bounded; a resume will read this run as unbounded.
             logger.warning(
                 f"Could not record the max_steps row bound in {output_dir}: "
@@ -5779,6 +5792,24 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         )
 
         _tqdm_stop.set()
+
+        from core.training import parallel_launch as _parallel_launch
+
+        if not _parallel_launch.is_main_rank():
+            progress = trainer.get_training_progress()
+            if progress.error:
+                event_queue.put(
+                    {"type": "error", "error": progress.error, "stack": "", "ts": time.time()}
+                )
+            return
+        if _parallel_launch.is_multi_process() and not trainer.get_training_progress().error:
+            # TP / PP ranks write rank-local checkpoints: report done only once all exit cleanly.
+            rank_failure = _parallel_launch.wait_for_ranks()
+            if rank_failure:
+                event_queue.put(
+                    {"type": "error", "error": rank_failure, "stack": "", "ts": time.time()}
+                )
+                return
 
         progress = trainer.get_training_progress()
         drafter_note = ""

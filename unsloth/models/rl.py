@@ -4483,6 +4483,13 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                 patch_rl_trainer(trainer_cls, trainer_file)
         except Exception as e:
             logger.warning(f"Unsloth: Could not add context parallelism to {RLTrainer_name}: {e}")
+            try:
+                from ._utils import guard_config_cp_after_patch_failure
+                guard_config_cp_after_patch_failure(
+                    getattr(created_module, f"Unsloth{RLTrainer_name}"), e
+                )
+            except Exception:
+                pass
     if trainer_file == "ppo_trainer":
         try:
             _wrap_ppo_train(getattr(created_module, f"Unsloth{RLTrainer_name}"))
