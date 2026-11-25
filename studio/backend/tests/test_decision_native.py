@@ -670,15 +670,24 @@ def test_auto_serves_a_stock_clef_through_llama_cpp(home, client, stub):
     assert home.torch_agents == []
 
 
-def test_a_json_string_state_reaches_llama_cpp_as_a_clef_trained_on_it(home, client, stub):
-    # The trainer parses a JSON string state, so a Clef learned it with sorted keys and compact separators.
-    _cache_gguf(home.cache)
-    _put(client, enabled = True, model = "clef-flash")
+def test_a_json_string_state_reaches_a_fine_tune_as_its_trainer_read_it(home, client, stub):
+    # The trainer parses a JSON string state, so a fine-tuned Clef learned it with sorted keys and compact separators.
+    folder = _clef_folder(home.outputs, "clef_exported")
+    _export(folder)
+    _put(client, enabled = True, model = catalog.CLEF_FINE_TUNE_PREFIX + folder.name)
     response = _post(client, state = '{"scope": "mail", "request": "the invoice?"}')
-    assert response.status_code == 200, response.text
+    assert response.headers["x-unsloth-decision-backend"] == "llama.cpp", response.text
     assert stub.records("request")[0]["body"]["state"] == (
         '{"request":"the invoice?","scope":"mail"}'
     )
+
+
+def test_a_stock_clef_gets_a_json_string_state_as_sent(home, client, stub):
+    _cache_gguf(home.cache)
+    _put(client, enabled = True, model = "clef-flash")
+    state = '{"scope": "mail", "request": "the invoice?"}'
+    assert _post(client, state = state).status_code == 200
+    assert stub.records("request")[0]["body"]["state"] == state
 
 
 @pytest.mark.parametrize(
