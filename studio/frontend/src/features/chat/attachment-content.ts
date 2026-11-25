@@ -1839,7 +1839,6 @@ const multiply = (m: Matrix, n: Matrix): Matrix => [
   m[1] * n[4] + m[3] * n[5] + m[5],
 ];
 
-// pdf.js passes form and annotation matrices as Float32Arrays.
 const compose = (m: Matrix, n: unknown): Matrix =>
   (n as ArrayLike<number> | null | undefined)?.length === 6
     ? multiply(m, Array.from(n as ArrayLike<number>) as Matrix)
@@ -1869,7 +1868,6 @@ function paintsPageImage(
       ctm = compose(compose([1, 0, 0, 1, 0, 0], args?.[2]), args?.[3]);
     } else if (share === 0 && images.has(fn)) return true;
     else if (images.has(fn)) {
-      // The unit square the image fills, clipped to the page.
       const xs = [ctm[4], ctm[0] + ctm[4], ctm[2] + ctm[4], ctm[0] + ctm[2] + ctm[4]];
       const ys = [ctm[5], ctm[1] + ctm[5], ctm[3] + ctm[5], ctm[1] + ctm[3] + ctm[5]];
       const width = Math.min(right, Math.max(...xs)) - Math.max(left, Math.min(...xs));
