@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Wan-lineage VAE upsample fold (diffusion_vae_fused._fast_wan_resample): a single-frame (or first-chunk) Resample runs
-nearest 2x + conv3x3 as one ConvTranspose2d(k4, s2, p1) on the cards the FLUX / KL fold is measured on. CPU, with the
-switch forced on: equals the stock module to fold rounding, never touches the 2x Triton path, follows the switch, and
-leaves the video interleave (time_conv) path alone."""
+"""CPU tests for the Wan-lineage VAE upsample fold in diffusion_vae_fused._fast_wan_resample."""
 
 from __future__ import annotations
 
@@ -62,7 +59,7 @@ def _no_triton(monkeypatch):
 @pytest.mark.parametrize("frames", [1, 3])
 def test_first_chunk_upsample_runs_the_fold(kind, frames, monkeypatch):
     r = _resample(kind)
-    assert vf._wan_resample_ok(r)  # noqa: SLF001  every Wan-lineage upsampler, QI21's upsample3d included
+    assert vf._wan_resample_ok(r)  # noqa: SLF001
     monkeypatch.setenv(st.UPSAMPLE_FOLD_ENV, "1")
     _no_triton(monkeypatch)
     x = torch.randn(2, 8, frames, 5, 7, dtype = torch.float64)
@@ -127,7 +124,7 @@ def test_batched_frames_over_the_whole_map_limit_decline(monkeypatch):
         assert (
             vf._wan_folded_upsample(conv, torch.randn(2, 8, 1, 4, 4, dtype = torch.float64)) is None
         )  # noqa: SLF001
-        got = vf._wan_folded_upsample(conv, one)  # noqa: SLF001  one frame: folded strip by strip
+        got = vf._wan_folded_upsample(conv, one)  # noqa: SLF001
         ref = conv(torch.nn.functional.interpolate(one[:, :, 0], scale_factor = 2.0))
     assert (got - ref).abs().max().item() < 1e-6
 
@@ -178,8 +175,6 @@ def test_qi21_upsample3d_later_chunk_stays_stock(monkeypatch):
 
 
 def _torch_up(monkeypatch):
-    """A torch stand-in for the 2x Triton kernel (CPU has no Triton launch)."""
-
     def up(
         y,
         interleave,

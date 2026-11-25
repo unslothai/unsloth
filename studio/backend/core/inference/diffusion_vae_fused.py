@@ -1575,11 +1575,8 @@ def up_nearest2x(
 
 
 def _wan_folded_upsample(conv: Any, x: Any) -> Any:
-    """``conv(nearest_2x(frame))`` for every frame of ``x`` (b, c, t, h, w) as one ConvTranspose2d(k4, s2, p1) with the
-    3x3 taps summed (diffusion_vae_strips' FLUX / KL fold, same switch ``UNSLOTH_VAE_UPSAMPLE_FOLD`` and cards):
-    2.25x fewer MACs and no 2x map. Rounding-level, not bit-identical. None: the 2x path, also under torch.compile
-    (the folded-weight cache is mutable Python state a trace would guard on), when autograd would need the conv
-    weight's gradient (the folded weight is detached), and when a folded tap is not finite in the conv dtype."""
+    """Per-frame ``conv(nearest_2x(x))`` via diffusion_vae_strips' folded ConvTranspose2d. None = use the 2x path; also
+    under torch.compile (the mutable fold cache would add guards) and when autograd needs the detached folded weight."""
     torch = _torch()
     if torch.compiler.is_compiling():
         return None
@@ -1609,8 +1606,7 @@ def _fast_wan_resample(mod: Any) -> Any:
     import torch.nn.functional as F
 
     conv = mod.resample[1]
-    # Qwen-Image-2.1's upsample3d time_conv is its one-frame (Conv2d) specialisation: only the first chunk, which
-    # never runs it, takes this path; a later chunk (which its own stock forward refuses) stays stock.
+    # Qwen-Image-2.1's Conv2d time_conv: only the first chunk (which never runs it) is fast; later chunks stay stock.
     time_2d = mod.mode == "upsample3d" and _conv_kind(getattr(mod, "time_conv", None)) == "2d"
     stock = _stock_forward(mod)
 

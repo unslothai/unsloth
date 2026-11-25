@@ -628,7 +628,6 @@ _FOLD_TAPS = {0: (2,), 1: (1, 2), 2: (0, 1), 3: (0,)}
 # conv -> ((data_ptr, dtype, device, shape, version), folded): dies with the conv, and a ``.data`` swap (Studio's fp32
 # retry, module.to) changes the key, which weight identity + version alone miss.
 _FOLD_CACHE: Any = weakref.WeakKeyDictionary()
-# conv -> (the folded-weight key above, every folded tap finite in the conv dtype)
 _FOLD_FINITE: Any = weakref.WeakKeyDictionary()
 _FOLD_CALLS = [0]
 
@@ -683,9 +682,7 @@ def folded_upsample_weight(conv: Any) -> Any:
 
 
 def fold_finite(conv: Any) -> bool:
-    """Every folded tap is finite in the conv dtype. Up to four 3x3 taps are summed (in fp32) into one: fp16 taps near
-    its range can round to inf where the 2x conv's own sums stay finite; such a conv keeps the 2x path. One host read per
-    weight version."""
+    """Summing up to four fp16 taps can overflow to inf where the 2x conv stays finite; such a conv is not folded."""
     torch = fused._torch()
     w = conv.weight
     key = (w.data_ptr(), w.dtype, w.device, tuple(w.shape), w._version)
