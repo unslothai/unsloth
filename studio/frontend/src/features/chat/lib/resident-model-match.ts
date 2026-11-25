@@ -8,6 +8,7 @@ import {
   isStandaloneGgufPath,
   modelIdsMatch,
   residentModelIdMatches,
+  withoutNamedQuant,
 } from "@/features/hub/lib/model-identity";
 
 /** Catalog id and load path; they differ when a cached row pins a snapshot dir. */
@@ -57,7 +58,10 @@ export function residentModelMatchesPick(
   }
   // Only the raw identifier says which snapshot is resident.
   if (status.model_identifier) {
-    return modelIdsMatch(status.model_identifier, pick.loadPath ?? pick.id);
+    return modelIdsMatch(
+      withoutNamedQuant(status.model_identifier, status.gguf_variant),
+      pick.loadPath ?? pick.id,
+    );
   }
   // An older backend put the raw path in active_model.
   const loadName = pick.loadPath ?? pick.id;

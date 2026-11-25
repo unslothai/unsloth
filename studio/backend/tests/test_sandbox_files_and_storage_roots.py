@@ -2914,17 +2914,33 @@ def test_deleting_a_chat_stops_a_generation_that_would_recreate_it(monkeypatch):
         assert source.index("_cancel_active_generations") < source.index("_remove_sandboxes")
 
 
+def _sandbox_file_save_sources() -> tuple[str, str]:
+    """The Files view, and the body of the saveSandboxFile it delegates its Save button to.
+
+    The view and the chat Files menu share one save path in sandbox-download.ts, so the
+    download contract is read there, and the view is held to calling it.
+    """
+    ui = Path(__file__).resolve().parents[2] / "frontend/src/components/assistant-ui"
+    view = (ui / "sandbox-files-view.tsx").read_text(encoding = "utf-8")
+    module = (ui / "sandbox-download.ts").read_text(encoding = "utf-8")
+    assert 'import { saveSandboxFile } from "./sandbox-download";' in view
+    save = view[view.index("const save = useCallback") :]
+    save = save[: save.index("}, [")]
+    assert "saveSandboxFile(sessionId, file.name" in save
+    start = module.index("export async function saveSandboxFile(")
+    end = module.find("\nexport ", start + 1)
+    return view, module[start : end if end != -1 else len(module)]
+
+
 def test_a_large_file_is_streamed_rather_than_buffered():
     """Streaming avoids a Blob and an IPC copy of a multi-gigabyte artifact in the renderer."""
-    view = (
-        Path(__file__).resolve().parents[2]
-        / "frontend/src/components/assistant-ui/sandbox-files-view.tsx"
-    ).read_text(encoding = "utf-8")
+    view, save = _sandbox_file_save_sources()
 
-    assert "downloadUrlStreaming" in view
+    assert "downloadUrlStreaming(" in save
+    assert "response.blob()" not in save
     assert "response.blob()" not in view
     # The streaming path sends no headers, so the bearer travels as a query parameter.
-    assert "token=" in view
+    assert "token=" in save
 
 
 def test_a_same_size_overwrite_is_still_reported(tmp_path, monkeypatch):
@@ -3346,14 +3362,11 @@ def test_deleting_a_project_takes_its_chats_sandboxes(tmp_path, monkeypatch):
 
 def test_a_native_download_gets_an_absolute_url():
     """Native download rejects relative URLs, so a bare /api path failed before the request."""
-    view = (
-        Path(__file__).resolve().parents[2]
-        / "frontend/src/components/assistant-ui/sandbox-files-view.tsx"
-    ).read_text(encoding = "utf-8")
+    _, save = _sandbox_file_save_sources()
 
-    assert "apiUrl(" in view
-    body = view[view.index("const save = useCallback") :]
-    assert body.index("apiUrl(") < body.index("downloadUrlStreaming(")
+    url = save[save.index("const url = ") + len("const url = ") :]
+    assert url.startswith("apiUrl(")
+    assert url.index("apiUrl(") < url.index("downloadUrlStreaming(url")
 
 
 def _forget_sandbox_state(tools):
@@ -5647,10 +5660,11 @@ def test_a_file_outside_the_hash_budget_is_not_reported_as_written(tmp_path, mon
 
 def test_the_file_download_button_refreshes_the_session_first():
     """The URL carries the bearer, so an expired token would save a 401 body as the file."""
-    src = Path(__file__).resolve().parents[2] / "frontend/src"
-    view = (src / "components/assistant-ui/sandbox-files-view.tsx").read_text(encoding = "utf-8")
-    assert 'authFetch(apiUrl(path), { method: "HEAD" })' in view
-    assert view.index("authFetch(apiUrl(path)") < view.index("const token = getAuthToken()")
+    _, save = _sandbox_file_save_sources()
+    assert 'authFetch(apiUrl(path), { method: "HEAD" })' in save
+    assert save.index("authFetch(apiUrl(path)") < save.index("const token = getAuthToken()")
+    # A refused probe stops the save, rather than streaming the error body to disk.
+    assert save.index("if (!probe.ok) throw") < save.index("downloadUrlStreaming(")
 
 
 def test_the_download_route_answers_the_probe_the_button_sends(tmp_path, monkeypatch):

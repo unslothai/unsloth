@@ -26,16 +26,16 @@ import pytest
 LOADER = pathlib.Path(__file__).resolve().parents[1] / "unsloth" / "models" / "loader.py"
 
 
-def _helper():
+def _helper(name = "_refuse_network_share_adapter_base"):
     tree = ast.parse(LOADER.read_text(encoding = "utf-8"))
-    fn = next(
+    fns = [
         n
         for n in tree.body
-        if isinstance(n, ast.FunctionDef) and n.name == "_refuse_network_share_adapter_base"
-    )
+        if isinstance(n, ast.FunctionDef) and n.name.startswith("_refuse_network_share_")
+    ]
     ns = {"os": os}
-    exec(compile(ast.Module(body = [fn], type_ignores = []), str(LOADER), "exec"), ns)
-    return ns["_refuse_network_share_adapter_base"]
+    exec(compile(ast.Module(body = fns, type_ignores = []), str(LOADER), "exec"), ns)
+    return ns[name]
 
 
 @pytest.fixture
@@ -104,6 +104,54 @@ def test_both_loaders_check_before_the_base_is_used():
     ]
     assert len(calls) == 2 and len(uses) == 2
     assert all(c < u for c, u in zip(calls, uses))
+
+
+@pytest.mark.parametrize("peft_type", ["LORA", "NOT_A_PEFT_TYPE"])
+def test_raw_adapter_config_with_unc_base_is_refused(windows, monkeypatch, tmp_path, peft_type):
+    # transformers swaps in base_model_name_or_path from the raw JSON, whether or not PEFT can parse it.
+    import json
+
+    utils = pytest.importorskip("transformers.utils")
+    config = tmp_path / "adapter_config.json"
+    monkeypatch.setattr(utils, "find_adapter_config_file", lambda name, **kwargs: str(config))
+    guard = _helper("_refuse_network_share_raw_adapter_base")
+    config.write_text(
+        json.dumps({"peft_type": peft_type, "base_model_name_or_path": r"\\evil.example\share\m"})
+    )
+    with pytest.raises(ValueError, match = "network share"):
+        guard("someone/model", token = None)
+    config.write_text(json.dumps({"peft_type": peft_type, "base_model_name_or_path": "owner/base"}))
+    guard("someone/model", token = None)
+    monkeypatch.setattr(utils, "find_adapter_config_file", lambda name, **kwargs: None)
+    guard("someone/model")
+    monkeypatch.setattr(utils, "find_adapter_config_file", lambda name, **kwargs: 1 / 0)
+    guard(str(tmp_path))
+
+
+def test_routes_that_hand_a_hub_id_to_transformers_check_the_raw_config():
+    source = LOADER.read_text(encoding = "utf-8")
+    calls = [
+        i
+        for i in range(len(source))
+        if source.startswith("_refuse_network_share_raw_adapter_base(\n", i)
+    ]
+    assert len(calls) == 2
+    for c in calls:
+        assert "revision = _resolved_revision(model_name, base_revision," in source[c : c + 300]
+    st = LOADER.with_name("sentence_transformer.py").read_text(encoding = "utf-8")
+    checks = [
+        i for i in range(len(st)) if st.startswith("_refuse_network_share_raw_adapter_base(\n", i)
+    ]
+    # The third SentenceTransformer(...) is built from already loaded modules, not from a repo id.
+    loads = [
+        i
+        for i in range(len(st))
+        if st.startswith("st_model = SentenceTransformer(", i) and "model_name" in st[i : i + 70]
+    ]
+    assert len(checks) == 2 and len(loads) == 2
+    for c in checks:
+        assert "SENTENCE_TRANSFORMERS_HOME" in st[c : st.index("SentenceTransformer(", c)]
+    assert all(c < l for c, l in zip(checks, loads))
 
 
 def test_older_unsloth_zoo_still_refuses_plain_unc(monkeypatch):

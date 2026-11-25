@@ -18,6 +18,7 @@ import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable, Collection, Iterable, Iterator, Mapping
 
@@ -267,12 +268,22 @@ def is_registered_native_path_label(path_value: str | None, label: str | None) -
         return _NATIVE_PATH_LABELS.get(path_value) == label
 
 
+@lru_cache(maxsize = _MAX_NATIVE_PATH_REDACTIONS)
+def _native_path_log_spellings(path: str) -> tuple[str, ...]:
+    forward = path.replace("\\", "/")
+    spellings = {path, forward, path.replace("/", "\\")}
+    if len(forward) >= 3 and forward[0].isalpha() and forward[1:3] == ":/":
+        # Unsloth's private WSL guest mounts Windows drives under /mnt.
+        spellings.add(f"/mnt/{forward[0].lower()}/{forward[3:]}")
+    return tuple(spellings)
+
+
 def redact_native_paths(value: str) -> str:
     with _REDACTION_LOCK:
         paths = sorted(_NATIVE_PATH_REDACTIONS, key = len, reverse = True)
     redacted = value
     for path in paths:
-        for variant in {path, path.replace("/", "\\"), path.replace("\\", "/")}:
+        for variant in _native_path_log_spellings(path):
             if variant:
                 redacted = redacted.replace(variant, "<native_path>")
     return redacted

@@ -92,6 +92,8 @@ studio = [
     "backend/core/inference/nvfp4_gate_record.json",
     # ROCm GEMM tables: if missing from the wheel, gfx1151 silently falls back to the slower pick.
     "backend/core/inference/rocm_gemm_tables/*.csv",
+    # ROCm MIOpen find-db / perf-db per exact stack: if missing from the wheel, gfx1151 VAE convs take the slower pick.
+    "backend/core/inference/rocm_miopen_db/*/*",
     "backend/core/data_recipe/oxc-validator/*.json",
     "backend/core/data_recipe/oxc-validator/*.mjs",
     "backend/core/inference/bundled_skills/**/*.md",
@@ -199,7 +201,7 @@ triton = [
 ]
 
 huggingfacenotorch = [
-    "unsloth_zoo>=2026.11.10",
+    "unsloth_zoo>=2026.11.11",
     "wheel>=0.42.0",
     "packaging",
     "numpy",
@@ -247,7 +249,7 @@ audio-torch280 = [
 ]
 huggingface = [
     "unsloth[huggingfacenotorch]",
-    "unsloth_zoo>=2026.11.10",
+    "unsloth_zoo>=2026.11.11",
     "torchvision",
     "unsloth[triton]",
 ]
@@ -886,7 +888,7 @@ colab-ampere-torch220 = [
     "flash-attn>=2.6.3 ; ('linux' in sys_platform)",
 ]
 colab-new = [
-    "unsloth_zoo>=2026.11.10",
+    "unsloth_zoo>=2026.11.11",
     "packaging",
     "transformers>=4.52.4,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.18.0",
     "datasets>=3.4.1,!=4.0.*,!=4.1.0,!=4.4.*,!=4.5.0,<5.0.0",

@@ -1867,7 +1867,11 @@ def _check_cp_trainer(
         and (getattr(accelerator, "num_processes", 2) or 2) > 1
     ):
         # Unused trainable towers break DDP (find_unused_parameters = False for reentrant checkpointing).
+        # Native FSDP2 also reports MULTI_* to accelerate, but it reduces only the gradients that exist.
+        from .models.fsdp2_native import is_native_fsdp2
         for model in models:
+            if allow_fsdp2 and is_native_fsdp2(model):
+                continue
             unused = _trainable_media_tower_parameters(model)
             if unused:
                 raise NotImplementedError(
