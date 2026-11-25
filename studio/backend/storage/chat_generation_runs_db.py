@@ -24,8 +24,10 @@ from utils.paths import studio_db_path
 ACTIVE_STATUSES = frozenset({"queued", "running", "cancelling"})
 TERMINAL_STATUSES = frozenset({"cancelled", "completed", "failed"})
 ALL_STATUSES = ACTIVE_STATUSES | TERMINAL_STATUSES
-_EVENTS_CHANGED = threading.Condition()
-_EVENTS_COMMITS = 0
+_EVENTS_LOCK = threading.RLock()
+# run id -> [condition on _EVENTS_LOCK, notifying commits for that run, parked waiters]; an entry lives
+# only while a waiter holds it, so a commit for one run wakes that run's followers, not every follower.
+_RUN_WAITERS: dict[str, list[Any]] = {}
 _RUN_TOMBSTONE_PREFIX = "chat-generation-run-tombstone:"
 ChatGenerationEventInput = Union[tuple[str, dict[str, Any]], tuple[str, dict[str, Any], int]]
 
@@ -450,13 +452,24 @@ def _touch_progress_locked(conn: sqlite3.Connection, run_id: str, tokens: int) -
             raise
 
 
-def _commit(conn: sqlite3.Connection, *, notify: bool = False) -> None:
-    global _EVENTS_COMMITS
+def _commit(
+    conn: sqlite3.Connection,
+    *,
+    notify: bool = False,
+    run_id: str | None = None,
+) -> None:
+    """notify wakes run_id's waiters, or every waiter when run_id is None."""
     conn.commit()
     if notify:
-        with _EVENTS_CHANGED:
-            _EVENTS_COMMITS += 1
-            _EVENTS_CHANGED.notify_all()
+        with _EVENTS_LOCK:
+            if run_id is None:
+                slots = list(_RUN_WAITERS.values())
+            else:
+                slot = _RUN_WAITERS.get(run_id)
+                slots = [slot] if slot is not None else []
+            for slot in slots:
+                slot[1] += 1
+                slot[0].notify_all()
 
 
 def _sync_assistant_status_locked(
@@ -650,7 +663,7 @@ def create_run(
             raise
         _append_events_locked(conn, run_id, [("run.created", {"status": "queued"})])
         row = conn.execute("SELECT * FROM chat_generation_runs WHERE id=?", (run_id,)).fetchone()
-        _commit(conn, notify = True)
+        _commit(conn, notify = True, run_id = run_id)
         return _run_from_row(row), True
     except Exception:
         conn.rollback()
@@ -831,7 +844,7 @@ def append_events(
         sequences = _append_events_locked(conn, run_id, batch)
         # Also the lease renewal: output reaching the db is what this sweep counts as progress.
         _touch_progress_locked(conn, run_id, sum(1 for event in batch if event[0] == "chunk"))
-        _commit(conn, notify = True)
+        _commit(conn, notify = True, run_id = run_id)
         return sequences
     except Exception:
         conn.rollback()
@@ -867,7 +880,7 @@ def mark_running(run_id: str, worker_token: str) -> bool:
         _sync_assistant_status_locked(conn, run_id, "running")
         _append_events_locked(conn, run_id, [("run.started", {"status": "running"})])
         _touch_progress_locked(conn, run_id, 0)
-        _commit(conn, notify = True)
+        _commit(conn, notify = True, run_id = run_id)
         return True
     except Exception:
         conn.rollback()
@@ -919,7 +932,7 @@ def request_cancel(run_id: str, owner_subject: str | None = None) -> dict[str, A
             "SELECT * FROM chat_generation_runs WHERE id=?",
             (run_id,),
         ).fetchone()
-        _commit(conn, notify = True)
+        _commit(conn, notify = True, run_id = run_id)
         return _run_from_row(updated_row)
     except Exception:
         conn.rollback()
@@ -977,7 +990,7 @@ def finish_run(
             "SELECT * FROM chat_generation_runs WHERE id=?",
             (run_id,),
         ).fetchone()
-        _commit(conn, notify = True)
+        _commit(conn, notify = True, run_id = run_id)
         return _run_from_row(updated)
     except Exception:
         conn.rollback()
@@ -1040,18 +1053,30 @@ def wait_for_events(
     raw: bool = False,
 ) -> list[dict[str, Any]]:
     read = partial(list_events, raw = True) if raw else list_events
-    # Bumped under the lock after each notifying commit: unchanged means the unlocked read saw them all.
-    seen = _EVENTS_COMMITS
-    events = read(run_id, after)
-    if events:
-        return events
-    with _EVENTS_CHANGED:
-        if _EVENTS_COMMITS != seen:
-            events = read(run_id, after)
-            if events:
-                return events
-        _EVENTS_CHANGED.wait(timeout)
-    return read(run_id, after)
+    with _EVENTS_LOCK:
+        slot = _RUN_WAITERS.get(run_id)
+        if slot is None:
+            slot = _RUN_WAITERS[run_id] = [threading.Condition(_EVENTS_LOCK), 0, 0]
+        slot[2] += 1
+        # Bumped under the lock after each commit notifying this run: unchanged means the unlocked
+        # read saw them all.
+        seen = slot[1]
+    try:
+        events = read(run_id, after)
+        if events:
+            return events
+        with _EVENTS_LOCK:
+            if slot[1] != seen:
+                events = read(run_id, after)
+                if events:
+                    return events
+            slot[0].wait(timeout)
+        return read(run_id, after)
+    finally:
+        with _EVENTS_LOCK:
+            slot[2] -= 1
+            if slot[2] == 0 and _RUN_WAITERS.get(run_id) is slot:
+                del _RUN_WAITERS[run_id]
 
 
 def reconcile_runs(
