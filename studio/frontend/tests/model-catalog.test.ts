@@ -240,6 +240,7 @@ test("llama.cpp resolves `-hf` repo ids, shards and dated checkpoints like the p
     "unsloth/Qwen3-0.6B-GGUF",
     "unsloth/Qwen3-0.6B-GGUF:Q4_K_M",
     "Qwen3-0.6B-Q8_0-00001-of-00002.gguf",
+    "C:\\models\\Qwen3-0.6B-Q4_K_M.gguf",
   ]) {
     assert.deepEqual(getExternalReasoningCapabilities("llama_cpp", id), file, id);
   }

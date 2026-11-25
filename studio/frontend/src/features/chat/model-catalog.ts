@@ -408,13 +408,14 @@ export function resolveModelCatalogEntryByName(
 }
 
 /** llama-server names a `-hf` model after its repo (unsloth/Qwen3-8B-GGUF) and a `-m` one after its
- * file, maybe a shard; dated checkpoints (-1017) fall back to their family. Ollama keeps the plain lookup. */
+ * path (Windows too), maybe a shard; dated checkpoints (-1017) fall back to their family. Ollama keeps the plain lookup. */
 export function resolveLocalServerCatalogEntry(
   modelId: string | null | undefined,
 ): ModelCatalogEntry | null {
   if (!modelId) return null;
   const repo = modelId
     .trim()
+    .replaceAll("\\", "/")
     .replace(/-gguf(?=$|:)/i, "")
     .replace(/-\d{5}-of-\d{5}(?=\.gguf$)/i, "");
   const entry = resolveModelCatalogEntryByName(repo);
