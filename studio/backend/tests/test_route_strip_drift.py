@@ -76,6 +76,12 @@ def test_route_strip_keeps_a_rehearsal_quoted_in_code(route_strip, text):
             '~~~\nsearch[ARGS]{\n<|content_invoke_tool_json|>{"name":"search","args":{}}<|end_message|>\n}\n~~~',
             "~~~\n",
         ),
+        # A fence closed after a quoted think block is not reopened by the segment split.
+        ("```xml\n<think>x</think>\n```\nsearch[ARGS]{}", "```xml\n<think>x</think>\n```\n"),
+        (
+            "```xml\n<think>x</think>\n```\nUse `search[ARGS]{}` here.",
+            "```xml\n<think>x</think>\n```\nUse `search[ARGS]{}` here.",
+        ),
     ],
 )
 def test_route_strip_still_removes_calls_outside_code(route_strip, text, expected):

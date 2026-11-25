@@ -6978,13 +6978,19 @@ def _display_tool_name_gate(active_tools):
     return names or None
 
 
-def _strip_tool_xml_keeping_examples(seg: str, enabled_tool_names) -> str:
+def _strip_tool_xml_keeping_examples(
+    seg: str,
+    enabled_tool_names,
+    reply: str = "",
+) -> str:
     """``_TOOL_XML_RE`` removal that keeps a rehearsal the parser does not promote (inactive name, or quoted in code).
 
     An example quoted in code is kept only once its body is balanced within the code span, and only up to that body,
     so the arm's open-ended fallback cannot also keep a real call after it. One whose body holds a parser tool signal
     is removed whole: the parser runs a marker call wherever it sits. Until the body closes the example is removed
-    too, so a stream never shows an example that later text would take back."""
+    too, so a stream never shows an example that later text would take back. ``reply`` (whose last think-split segment
+    is ``seg``) gives code context: the parser scans code over the whole reply, so a fence opened before a think block
+    still counts."""
     import bisect
 
     from core.inference.tool_call_parser import TOOL_XML_SIGNALS
@@ -6993,9 +6999,11 @@ def _strip_tool_xml_keeping_examples(seg: str, enabled_tool_names) -> str:
         _code_spans,
         _in_code,
         _markerless_promotable,
+        _think_spans_outside_tool_markup,
     )
 
     spans = None
+    prefix = ""
     out: list[str] = []
     pos = 0
     while (m := _TOOL_XML_RE.search(seg, pos)) is not None:
@@ -7005,9 +7013,12 @@ def _strip_tool_xml_keeping_examples(seg: str, enabled_tool_names) -> str:
             end = m.end()
         elif name is not None:
             if spans is None:
-                spans = _code_spans(seg)
-            if _in_code(spans, m.start()):
-                span_end = spans[bisect.bisect_right(spans, (m.start(), m.start())) - 1][1]
+                think = _think_spans_outside_tool_markup(reply) if reply else None
+                prefix = reply[: think[-1][1]] if think else ""
+                spans = _code_spans(prefix + seg)
+            at = len(prefix) + m.start()
+            if _in_code(spans, at):
+                span_end = spans[bisect.bisect_right(spans, (at, at)) - 1][1] - len(prefix)
                 brace = seg.find("{", m.end("reh"), min(m.end(), span_end))
                 body_end = _balanced_json_span(seg[:span_end], brace) if brace >= 0 else None
                 body = seg[brace + 1 : body_end] if body_end is not None else ""
@@ -7055,18 +7066,22 @@ def _strip_tool_xml_for_display(
         seg = _strip_glm_calls(seg, final = is_last)
         seg = _strip_function_xml_calls(seg, final = is_last)
         if is_last:
-            return _strip_tool_xml_keeping_examples(seg, enabled_tool_names)
+            return _strip_tool_xml_keeping_examples(seg, enabled_tool_names, source)
         return _TOOL_XML_CLOSED_RE.sub("", seg)
 
     # Mask blocked-call bodies and lone backticked tags (prose) so these passes do not edit them.
     from core.inference.tool_call_parser import _mask_blocked_bodies, _unmask_blocked_bodies
 
     masked, bodies = _mask_blocked_bodies(text, enabled_tool_names, mentions = True)
+    source = masked
     result = strip_outside_think(masked, _strip_segment)
     if not bodies:
         return result
     restored = _unmask_blocked_bodies(result, bodies)
-    return restored if restored is not None else strip_outside_think(text, _strip_segment)
+    if restored is not None:
+        return restored
+    source = text
+    return strip_outside_think(text, _strip_segment)
 
 
 # Every literal some arm of ``_strip_tool_xml_for_display`` needs before it can edit text. Markerless Gemma has
