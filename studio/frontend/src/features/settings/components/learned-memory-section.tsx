@@ -103,7 +103,7 @@ async function requestMemory(query: string, patch?: object): Promise<Memory> {
       : undefined,
   );
   if (!response.ok) {
-    const body: unknown = await response.json();
+    const body: unknown = await response.json().catch(() => null);
     throw new Error(formatApiErrorBody(body) ?? "Could not save memory.");
   }
   return parseMemory(await response.json());

@@ -121,6 +121,10 @@ function dictationFilename(contentType: string): string {
 
 async function sttErrorDetail(response: Response): Promise<string> {
   const body = await response.json().catch(() => null);
+  if (body?.detail?.error === "download_busy") {
+    const seconds = Number(body.detail.retry_after) || 1;
+    return `Another speech-to-text download is running. Try again in ${seconds} ${seconds === 1 ? "second" : "seconds"}.`;
+  }
   return formatApiErrorBody(body) ?? `HTTP ${response.status}`;
 }
 
