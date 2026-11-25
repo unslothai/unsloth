@@ -1951,7 +1951,7 @@ export function ComposerModelPicker({
     [hubScrollRef],
   );
   const [chosenFormat, setFormatFilter] = useState<FormatFilter>("all");
-  // Image/video gen is an On Device filter: Discover reads it as All.
+  // On Device only: Discover reads it as All.
   const formatFilter: FormatFilter =
     chosenFormat === "media" ? "all" : chosenFormat;
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
@@ -2090,7 +2090,6 @@ export function ComposerModelPicker({
     },
     [listsAudio, mediaTaskById],
   );
-  // Image and video models stay out of the list until their own filter asks for them.
   const hasGenerationModels = useMemo(
     () =>
       inventory.cachedGguf.some((r) => generationPage(r.repo_id, r.task)) ||

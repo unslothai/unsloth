@@ -6,8 +6,6 @@ import test from "node:test";
 
 import { readText } from "./helpers/kit.ts";
 
-// Image Gen > Connected > "Image gen" listed nothing: the chat marks only know a built-in image tool.
-
 test("an image picker's connected rows all pass the Image gen filter", async () => {
   const src = await readText(
     "../src/features/model-picker/components/model-selector/pickers.tsx",

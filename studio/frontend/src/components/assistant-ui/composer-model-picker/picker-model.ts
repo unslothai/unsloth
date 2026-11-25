@@ -169,7 +169,7 @@ export function matchesFormat(
   row: Pick<PickerRow, "format" | "kind" | "media">,
   filter: FormatFilter,
 ): boolean {
-  // Image and video models open on their own pages, so only their own filter lists them.
+  // Only their own filter lists them: they open on their own pages.
   if (filter === "media" || isGenerationMedia(row.media)) {
     return filter === "media" && isGenerationMedia(row.media);
   }

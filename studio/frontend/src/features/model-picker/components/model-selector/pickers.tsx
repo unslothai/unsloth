@@ -6326,8 +6326,7 @@ export function HubModelPicker({
         return false;
       }
       if (connectedModality === "all") return true;
-      // An image page lists only the connections it generates through; the chat marks below
-      // only know a chat route's built-in image tool, which none of them have.
+      // An image page lists only connections it generates through; the chat marks know only a built-in image tool.
       if (connectedModality === "imageGen" && imageGenPicker) return true;
       const marks = connectedModelMarks({
         providerType: model.providerType,
