@@ -1574,7 +1574,11 @@ def test_a_transformers_install_stops_the_workers_of_models_kept_alongside(backe
     monkeypatch.setattr(keepwarm, "other_inference_request_count", lambda **kwargs: 0)
     alive_at_swap = []
 
-    def install(version, before_swap, *args):
+    real_install = transformers_latest.install_latest_transformers
+
+    # Bound to the real signature, so a new parameter cannot break the stub.
+    def install(*args, **kwargs):
+        before_swap = inspect.signature(real_install).bind(*args, **kwargs).arguments["before_swap"]
         before_swap()
         alive_at_swap.append(kept.orchestrator.is_worker_alive())
         return {"success": False, "message": "stop here"}

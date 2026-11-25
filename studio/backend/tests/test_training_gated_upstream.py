@@ -486,6 +486,9 @@ def test_pre_detect_follows_the_sidecar_flip_like_the_load_does(
     import utils.transformers_version as tv
 
     monkeypatch.setattr(tv, "latest_tier_active_for", lambda *a, **kw: sidecar)
+    # Gemma is not validated in 4-bit on the sidecar; answer that without reading Hub metadata.
+    monkeypatch.setattr(tv, "_remote_lora_base", lambda *a, **kw: None)
+    monkeypatch.setattr(tv, "_load_config_json", lambda *a, **kw: {"model_type": "gemma3_text"})
     config = {"load_in_4bit": config_4bit}
     assert worker_mod._pre_detect_load_in_4bit(config, "google/gemma-3-270m-it", None) is expected
 
