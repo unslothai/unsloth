@@ -62,6 +62,7 @@ import {
   type Preset,
   type RecommendedSamplingKey,
   RECOMMENDED_SAMPLING_KEYS,
+  applyPresetParams,
   getPresetOwnedParams,
   isRecommendedSamplingKey,
   getPresetSource,
@@ -5244,10 +5245,17 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       // A compare pane's load reaches the store only here.
       const previousWindow = rememberedWindow(modelId);
       noteLoadedContext(modelId, options?.maxTokensCap);
+      // A cloud switch has no model-load defaults. Start from the selected preset so
+      // gaps in the destination's memory don't inherit the previous model's edits.
+      const preset =
+        checkpointChanged && isExternalModelId(modelId) &&
+        state.rememberParamsPerModel && state.activePresetSource === "custom"
+          ? state.customPresets.find((p) => p.name === state.activePreset)
+          : undefined;
       let baseParams = getReplayedParams(
         state.rememberParamsPerModel,
         outgoing ?? state.paramsByModel,
-        state.params,
+        preset ? applyPresetParams(state.params, preset.params) : state.params,
         modelId,
         checkpointChanged,
         options?.maxTokensCap,

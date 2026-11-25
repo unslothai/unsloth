@@ -71,7 +71,8 @@ function pickPreset(preset: Preset): void {
   store.setParams(applyPresetForProvider(store.params, preset, null), {
     minPChoiceEdited: true,
     fromPreset: true,
-  } as never);
+    pinsSampling: getPresetSource(preset.name) === "custom",
+  });
   store.setActivePreset(preset.name);
   store.setActivePresetSource(getPresetSource(preset.name));
 }
@@ -253,6 +254,43 @@ test("an edit after a preset pick does not file the preset for the model", () =>
   loadOrPoll(GEMMA);
   assert.deepEqual(sampling(), { ...AUTOMATIC, topK: 5 });
   assert.equal(useChatRuntimeStore.getState().params.fastMode, true);
+});
+
+test("switching cloud models replays the destination's edits over the selected preset", () => {
+  const a = "external::demo::model-a";
+  const b = "external::demo::model-b";
+  const low = { name: "Low", params: { ...DEFAULT_INFERENCE_PARAMS, temperature: 0.1 } };
+  const live = useChatRuntimeStore.getState;
+  useChatRuntimeStore.setState({
+    paramsByModel: { [a]: { temperature: 0.2 }, [b]: { temperature: 0.8 } },
+  });
+  live().setCustomPresets([low]);
+  live().setCheckpoint(a, null);
+  assert.equal(live().params.temperature, 0.2);
+  pickPreset(low);
+
+  function switchTo(modelId: string): number {
+    live().setCheckpoint(modelId, null);
+    assert.equal(live().activePreset, low.name);
+    return live().params.temperature;
+  }
+
+  assert.deepEqual(
+    [live().params.temperature, switchTo(b), switchTo(a)],
+    [0.1, 0.8, 0.1],
+  );
+  assert.equal(live().paramsByModel[a]?.temperature, undefined);
+  assert.equal(live().paramsByModel[b]?.temperature, 0.8);
+
+  live().setActiveThreadId("pinned-chat");
+  try {
+    live().applyThreadScopedSettings("pinned-chat", { temperature: 0.4 });
+    assert.deepEqual([switchTo(b), switchTo(a)], [0.4, 0.4]);
+  } finally {
+    live().setActiveThreadId(null);
+    live().applyThreadScopedSettings(null, null);
+  }
+  assert.deepEqual([switchTo(b), switchTo(a)], [0.8, 0.1]);
 });
 
 // The memory itself still works: a slider moved on a model is that model's and outlasts a switch.
