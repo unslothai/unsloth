@@ -61,6 +61,20 @@ def test_libproc_identity_matches_the_ps_line_and_spawns_nothing(darwin, monkeyp
     assert not pl._same_identity(ps_line, native.replace("09:05:07", "09:05:08"))
 
 
+def test_python_s_own_lc_time_does_not_change_the_native_identity(darwin, monkeypatch):
+    # ps sees only the inherited environment (C here); Python's LC_TIME may still be set by a library.
+    monkeypatch.setattr(pl, "_darwin_bsdinfo", lambda pid: _info(pid))
+    expected = pl._pid_identity(4242)
+    real_strftime = time.strftime
+
+    def localized(fmt, *args):
+        return real_strftime(fmt, *args).replace("Wed", "mer.").replace("Nov", "nov.")
+
+    monkeypatch.setattr(time, "strftime", localized)
+    assert pl._pid_identity(4242) == expected
+    assert expected.split()[:5] == ["Wed", "Nov", "4", "09:05:07", "2026"]
+
+
 def test_a_restarted_pid_is_a_different_identity(darwin, monkeypatch):
     monkeypatch.setattr(pl, "_darwin_bsdinfo", lambda pid: _info(pid))
     first = pl._pid_identity(77)

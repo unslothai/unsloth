@@ -5,8 +5,12 @@
 from __future__ import annotations
 
 import os
+import sys
 
 import pytest
+
+if sys.platform == "win32":
+    pytest.skip("the Seatbelt profile generator is POSIX only", allow_module_level = True)
 
 from core.inference import sandbox_macos as backend
 
@@ -103,3 +107,24 @@ def test_runtime_read_paths_dedupe_keeps_the_same_selection(tmp_path, monkeypatc
     # Duplicate candidates (sys.prefix == sys.base_prefix ...) collapse to the same selection, in order.
     assert backend.runtime_read_paths(work) == expected
     assert len(expected) == len(set(expected))
+
+
+def test_runtime_read_paths_resolves_a_repeated_prefix_once(tmp_path, monkeypatch):
+    prefix = tmp_path / "runtime"
+    library = prefix / "lib"
+    library.mkdir(parents = True)
+    for name in ("prefix", "base_prefix", "exec_prefix", "base_exec_prefix"):
+        monkeypatch.setattr(backend.sys, name, str(prefix))
+    monkeypatch.setattr(backend.sysconfig, "get_paths", lambda: {})
+    monkeypatch.setattr(backend.site, "getsitepackages", lambda: [])
+    monkeypatch.setattr(backend, "editable_source_roots", lambda: ())
+    calls = []
+    realpath = os.path.realpath
+
+    def counted(path, *args, **kwargs):
+        calls.append(path)
+        return realpath(path, *args, **kwargs)
+
+    monkeypatch.setattr(backend.os.path, "realpath", counted)
+    assert backend.runtime_read_paths().count(str(library)) == 1
+    assert calls.count(str(library)) == 1

@@ -571,7 +571,8 @@ def _darwin_native_identity(pid: int):
     if info is None or info is _DARWIN_ASK_PS:
         return info
     # ps lstart: strftime("%c") of p_start.tv_sec (the field pbi_start_tvsec copies), left-justified in 28.
-    lstart = time.strftime("%a %b %e %H:%M:%S %Y", time.gmtime(info.pbi_start_tvsec)).ljust(28)
+    # asctime is the C-locale %c and ignores Python's own LC_TIME, which ps never sees.
+    lstart = time.asctime(time.gmtime(info.pbi_start_tvsec)).ljust(28)
     comm = info.pbi_comm.decode("utf-8", "replace")
     # _same_identity compares only the five lstart fields on macOS; the comm column is informational.
     return f"{lstart} {comm}".strip() if comm else lstart.strip()
