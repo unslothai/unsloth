@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// #19346: a drag whose "leave" never arrives left "Drop files here" over the composer after the
-// window was minimized and restored. A window that loses focus or is hidden clears the overlay.
+// #19346: a drag whose "leave" never arrived left "Drop files here" stuck over the composer.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -21,15 +20,20 @@ type DragEvent = {
 };
 
 async function harness() {
-  const listeners = new Map<string, Set<() => void>>();
-  const target = {
-    addEventListener: (type: string, fn: () => void) => {
-      listeners.set(type, (listeners.get(type) ?? new Set()).add(fn));
-    },
-    removeEventListener: (type: string, fn: () => void) =>
-      listeners.get(type)?.delete(fn),
+  const eventTarget = () => {
+    const listeners = new Map<string, Set<() => void>>();
+    return {
+      listeners,
+      addEventListener: (type: string, fn: () => void) => {
+        listeners.set(type, (listeners.get(type) ?? new Set()).add(fn));
+      },
+      removeEventListener: (type: string, fn: () => void) =>
+        listeners.get(type)?.delete(fn),
+    };
   };
-  Object.assign(globalThis, { window: target, document: target });
+  const window = eventTarget();
+  const document = eventTarget();
+  Object.assign(globalThis, { window, document });
 
   let overlay: Overlay = { status: "idle" };
   let dispose: (() => void) | undefined;
@@ -88,16 +92,20 @@ async function harness() {
     drag: (type: string, paths: string[] = []) =>
       deliver({ payload: { type, paths, position: { x: 0, y: 0 } } }),
     fire: (type: string) => {
-      for (const fn of listeners.get(type) ?? []) fn();
+      const on = type === "visibilitychange" ? document : window;
+      for (const fn of on.listeners.get(type) ?? []) fn();
     },
     listening: () =>
-      [...listeners.values()].reduce((n, set) => n + set.size, 0),
+      [...window.listeners.values(), ...document.listeners.values()].reduce(
+        (n, set) => n + set.size,
+        0,
+      ),
     dispose: () => dispose?.(),
   };
 }
 
-for (const event of ["blur", "visibilitychange"]) {
-  test(`a missed drag leave does not outlive a window ${event}`, async () => {
+for (const event of ["blur", "focus", "pointerdown", "visibilitychange"]) {
+  test(`a missed drag leave does not outlive a ${event}`, async () => {
     const h = await harness();
     await h.drag("enter", ["/tmp/notes.pdf"]);
     assert.deepEqual(h.overlay, { status: "attach" });
