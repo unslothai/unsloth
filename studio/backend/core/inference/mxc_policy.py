@@ -227,9 +227,15 @@ def _runtime_read_roots(executable: str, extra: list[str] = ()) -> list[str]:
     if system_root:
         roots.append(system_root)
     result: list[str] = []
+    seen: set[str] = set()
     for root in roots:
         if not root:
             continue
+        # sys.prefix is also site.getsitepackages()[0] on Windows, base_prefix often equals it: check each spelling once.
+        spelling = os.path.normcase(os.path.abspath(root))
+        if spelling in seen:
+            continue
+        seen.add(spelling)
         if not os.path.isdir(root):
             continue
         canonical = _safe_canonical_path(root, directory = True)
@@ -386,7 +392,12 @@ def canonical_config_bytes(config: dict) -> bytes:
 
 
 def compute_policy_hash(config: dict) -> str:
-    return "sha256:" + hashlib.sha256(canonical_config_bytes(config)).hexdigest()
+    return policy_hash_of_bytes(canonical_config_bytes(config))
+
+
+def policy_hash_of_bytes(config_bytes: bytes) -> str:
+    """The policy hash of bytes canonical_config_bytes just produced: one serialization per phase, not two."""
+    return "sha256:" + hashlib.sha256(config_bytes).hexdigest()
 
 
 def verify_launch_identities(request: dict) -> None:
@@ -501,6 +512,7 @@ def build_launch_request(
         "ui": ui_policy["ui"],
         "fallback": {"allowDaclMutation": dacl_fallback_enabled()},
     }
+    config_bytes = canonical_config_bytes(config)
     request = {
         "runtimePath": os.path.realpath(selected_runtime),
         "runtimeIdentity": _object_identity(selected_runtime, directory = False),
@@ -508,8 +520,8 @@ def build_launch_request(
         "workdirIdentity": workdir_identity,
         "cwdAlias": cwd_alias,
         "config": config,
-        "configBytes": canonical_config_bytes(config),
-        "policyHash": compute_policy_hash(config),
+        "configBytes": config_bytes,
+        "policyHash": policy_hash_of_bytes(config_bytes),
         "requireCompleteScan": required,
         "launchLimitations": limitations,
     }

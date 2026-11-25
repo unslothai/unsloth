@@ -225,8 +225,59 @@ def wxc_path() -> Path:
     return selected_runtime().path
 
 
+# (path, architecture, approved size, approved digest) -> (file stamp, verified RuntimeInfo)
+_identity_cache: dict[tuple, tuple[tuple, RuntimeInfo]] = {}
+
+
+def _file_stamp(path: Path) -> tuple:
+    metadata = path.lstat()
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+        getattr(metadata, "st_birthtime_ns", None),
+        getattr(metadata, "st_nlink", 1),
+    )
+
+
 def installation_identity() -> str:
-    return selected_runtime().identity
+    """The verified runtime's identity, rehashed only when the file's identity or timestamps change.
+
+    Capability fingerprints read this several times per tool call. It never authorizes a launch:
+    acquire_runtime still verifies the digest under its deny-write lock before wxc-exec starts.
+    """
+    if sys.platform != "win32":
+        raise MxcRuntimeUnavailable("the MXC runtime is Windows-only")
+    architecture = _expected_architecture()
+    _member, size, sha256 = _artifact(architecture, "exec")
+    path = _require_plain_directory(_installed_package_root()) / _WXC_EXEC_NAME
+    try:
+        before = _file_stamp(path)
+    except OSError as exc:
+        raise MxcRuntimeUnavailable(
+            f"the managed {_WXC_EXEC_NAME} is missing or unreadable"
+        ) from exc
+    key = (str(path), architecture, size, sha256)
+    with _lock:
+        hit = _identity_cache.get(key)
+        if hit is not None and hit[0] == before:
+            return hit[1].identity
+    info = selected_runtime()
+    try:
+        after = _file_stamp(path)
+    except OSError:
+        return info.identity
+    if after == before:
+        with _lock:
+            _identity_cache[key] = (before, info)
+    return info.identity
+
+
+def forget_verified_runtime() -> None:
+    """Drop cached identities, e.g. after the installer swaps the runtime folder."""
+    with _lock:
+        _identity_cache.clear()
 
 
 class _WindowsHandleGuard:
@@ -277,16 +328,20 @@ def _require_supported_windows() -> None:
         )
 
 
-def _acquire(select, package_root: Path | None) -> RuntimeLease:
+def _acquire(select, package_root: Path | None, name: str) -> RuntimeLease:
     _require_supported_windows()
     with _lock:
-        info = select(package_root = package_root)
-        guard = _open_artifact_guard(info.path)
+        # Lock, then verify once: the guard denies write, rename and delete for the whole lease, so one
+        # digest taken under it covers the bytes wxc-exec runs. Hashing before and after the open cost
+        # a second full SHA-256 of the executable on every tool call.
+        candidate = _require_plain_directory(package_root or _installed_package_root()) / name
+        if not candidate.is_file() or candidate.is_symlink():
+            raise MxcRuntimeUnavailable(f"the managed {name} is missing or is not a regular file")
+        guard = _open_artifact_guard(candidate)
         try:
-            if select(package_root = package_root) != info:
-                raise MxcRuntimeUnavailable(
-                    f"the managed {info.path.name} changed during acquisition"
-                )
+            info = select(package_root = package_root)
+            if info.path != candidate.resolve():
+                raise MxcRuntimeUnavailable(f"the managed {name} changed during acquisition")
         except Exception:
             guard.close()
             raise
@@ -294,12 +349,12 @@ def _acquire(select, package_root: Path | None) -> RuntimeLease:
 
 
 def acquire_runtime(*, package_root: Path | None = None) -> RuntimeLease:
-    return _acquire(selected_runtime, package_root)
+    return _acquire(selected_runtime, package_root, _WXC_EXEC_NAME)
 
 
 def acquire_host_prep(*, package_root: Path | None = None) -> RuntimeLease:
     """Pinned wxc-host-prep held deny-write, so the elevated launch runs the verified bytes."""
-    return _acquire(selected_host_prep, package_root)
+    return _acquire(selected_host_prep, package_root, _WXC_HOST_PREP_NAME)
 
 
 def _run_wxc_probe(
