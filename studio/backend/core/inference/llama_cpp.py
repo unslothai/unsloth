@@ -30584,8 +30584,28 @@ class LlamaCppBackend:
 
                     kv_cache_bytes = _kv_bytes(effective_ctx)
                     # Decide before the log line so it matches the argv.
+                    _user_margin_fit = False
                     if gpu_memory_mode == "manual" and gpu_layers >= 0:
                         use_fit = False
+                    elif (
+                        not use_fit
+                        and not _metal_full_offload_pinned
+                        and not tensor_parallel
+                        and self._pass_through_fit_target_needs_fitter(
+                            extra_args,
+                            # A list is positional over the child's devices: only an explicit
+                            # pick or one spanning every card keeps that order.
+                            spans_every_card = bool(gpu_ids)
+                            or gpu_indices is None
+                            or set(gpu_indices) >= {idx for idx, _free in _detected_gpus},
+                        )
+                    ):
+                        # The plan fits, so this is not a partial placement.
+                        use_fit = _user_margin_fit = True
+                        logger.info(
+                            "Pass-through --fit-target %s: keeping --fit on so llama.cpp honours it",
+                            fit_target_margin_in(extra_args, None),
+                        )
                     # Separate GPU drafter is a second model; None once CPU-offloaded (_mtp_draft_for_budget nulled).
                     _spill_inputs = {
                         "model_size": model_size,
@@ -30671,7 +30691,9 @@ class LlamaCppBackend:
                             LlamaCppBackend._explain_empty_gpu_probe(binary),
                         )
                     # Set last, so any early return or raise leaves it False.
-                    _placement_verdict_partial = bool(_detected_gpus) and bool(use_fit)
+                    _placement_verdict_partial = (
+                        bool(_detected_gpus) and bool(use_fit) and not _user_margin_fit
+                    )
 
                     # Load mode: mmap demand-pages what RAM cannot hold, so a fitting load wants none. Use gpus not _detected_gpus: arch gate empties it on --device none
                     _fit_devices = max(1, len(gpu_indices or ()) or len(gpus))
@@ -38357,6 +38379,23 @@ class LlamaCppBackend:
             layout = None
         self._spill_layout_cache = (key, layout)
         return layout
+
+    @staticmethod
+    def _pass_through_fit_target_needs_fitter(
+        extra_args: Optional[Iterable[str]], *, spans_every_card: bool = True
+    ) -> bool:
+        """A user --fit-target with no -fit / -ngl of its own: llama.cpp reads it only while the
+        fitter runs (common_fit_apply), so --fit off would drop it silently (#19240)."""
+        try:
+            raw = _last_flag_value(extra_args, {"-fitt", "--fit-target"})
+        except ValueError:
+            return False
+        if raw is None or fit_target_margin_in([f"--fit-target={raw}"], None) is None:
+            return False
+        if _extra_args_set_any_flag(extra_args, _LAYER_OFFLOAD_FLAGS):
+            return False
+        # A narrowed pick renumbers the child's devices, so a list would land on the wrong card.
+        return spans_every_card or not any(sep in raw for sep in ",/")
 
     @staticmethod
     def _fit_off_retry_eligible(cmd: "list[str]", use_fit: bool) -> bool:
