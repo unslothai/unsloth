@@ -1,11 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-"""Expert parallel collectives (gloo CPU, 2 and 4 ranks): no rank skips a collective its peers enter.
-
-A rank without gradients still enters the clip and non-finite all-reduces; the clip coefficient is applied in
-fp32 (fp16 gradients are not zeroed); a rank routing zero tokens still runs the exchange; UNSLOTH_TOKEN_BUDGET
-chunks sum the replica gradients once per step; the destination mask is the one_hot one; the experts dispatch
-stays out of Dynamo; the EP wrappers keep the wrapped signature."""
+"""Expert parallel collectives (gloo CPU, 2 and 4 ranks): no rank skips a collective its peers enter."""
 
 import multiprocessing
 import os
@@ -415,7 +410,6 @@ def test_token_budget_chunks_sum_replicas_once():
 def test_nonfinite_sync_only_under_an_enabled_grad_scaler():
     results = _spawn("_case_nonfinite_scaler", world = 4, ep = 2)
     _ok(results)
-    # Without a scaler only rank 1 and its replica (rank 3) hold the inf; with one, every rank skips the step.
     assert [r["none"] for r in results] == [True, False, True, False], results
     assert [r["enabled"] for r in results] == [False] * 4, results
 
@@ -433,7 +427,7 @@ def test_destination_mask_is_the_one_hot_mask(tokens, ep):
 
 
 def test_ep_experts_dispatch_is_compile_disabled():
-    # The real graph-break proof needs a CUDA block compile; here: Dynamo skips the frame (disable marker).
+    # CPU proxy for the CUDA graph-break proof: Dynamo's disable marker.
     epn = _epn()
     assert getattr(epn._ep_experts, "_torchdynamo_disable", False) is True
     assert epn._ep_experts.__name__ == "_ep_experts"

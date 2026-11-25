@@ -2890,7 +2890,6 @@ class PipelineParallel:
         elif self.num_stages > 1:
             dist.all_reduce(sq, group = self.group)
         total = sq.sqrt()
-        # fp32 coefficient: a small one would round to 0 in fp16.
         _scale_tensors_(grads, total, float(max_norm), eps)
         return total.float()
 

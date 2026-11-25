@@ -4272,7 +4272,6 @@ def _scale_grads_(params, total, max_norm, eps):
 
 
 def _scale_tensors_(tensors, total, max_norm, eps):
-    """_scale_grads_ on plain (local) gradient tensors."""
     with torch.no_grad():
         coef = torch.clamp(max_norm / (total + eps), max = 1.0)
         for local in tensors:

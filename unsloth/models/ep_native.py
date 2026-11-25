@@ -193,11 +193,10 @@ def _route_width(route, tokens):
 
 
 def _destinations(owner, ep):
-    """[tokens, ep] bool: token t is sent to rank r (owner: [tokens, k] owning ranks)."""
     return owner.new_zeros((owner.shape[0], ep), dtype = torch.bool).scatter_(1, owner, True)
 
 
-# Data-dependent splits, a Python call counter and all_to_all: comm-bound, kept out of Dynamo graphs.
+# Data-dependent splits and all_to_all: kept out of Dynamo graphs.
 @_compiler_disable
 def _ep_experts(shard, prior, hidden, index, weights):
     import torch.distributed as dist
@@ -740,7 +739,7 @@ def ep_clip_grad_norm_(
         b = b**norm_type
         dist.all_reduce(b, group = group)
         total = (a**norm_type + b) ** (1.0 / norm_type)
-    _tpn()._scale_grads_(params, total, max_norm, 1e-6)  # fp32 coefficient, no fp16 underflow
+    _tpn()._scale_grads_(params, total, max_norm, 1e-6)
     return total
 
 
@@ -752,8 +751,7 @@ def _group_device(group):
 
 
 def _sync_nonfinite(model, group):
-    """One rank's non-finite expert gradient poisons every rank's (GradScaler then skips the step everywhere).
-    A rank without expert gradients still takes part; no host sync."""
+    """One rank's non-finite expert gradient poisons every rank's (GradScaler then skips the step everywhere)."""
     import torch.distributed as dist
 
     params = [p for _, p in _ep_params(model)]
@@ -935,7 +933,6 @@ def ep_trainer_setup(trainer):
         if accelerator.sync_gradients and not trainer.__dict__.get("_unsloth_token_budget_partial"):
             ep_sync_expert_grads(model)
             scaler = getattr(accelerator, "scaler", None)
-            # Under an enabled GradScaler every rank (replicas included) must skip the same steps.
             if scaler is not None and scaler.is_enabled():
                 _sync_nonfinite(model, None)
         return out

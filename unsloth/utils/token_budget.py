@@ -955,8 +955,7 @@ def install_token_budget(trainer):
             try:
                 for i, chunk in enumerate(chunks):
                     partial = i < len(chunks) - 1
-                    # accelerate's sync_gradients stays True per chunk: expert parallel reads this flag so it
-                    # sums the replica gradients once per step, not once per chunk.
+                    # sync_gradients stays True per chunk; expert parallel reads this to sum replicas once per step.
                     trainer._unsloth_token_budget_partial = partial
                     context = (
                         accelerator.no_sync(model)
