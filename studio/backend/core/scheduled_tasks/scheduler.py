@@ -672,18 +672,23 @@ async def _restore_after_swap(swap: _Swap, app: Any) -> None:
         )
 
 
-def _tool_fields(web_search: bool) -> dict:
-    """Web search only, never python or terminal: nobody is there to approve a call, so "off" never prompts."""
+def _tool_fields(web_search: bool, mcp_enabled: bool) -> dict:
+    """Use only tools explicitly enabled on the task, with no interactive approval."""
     from state.tool_policy import get_tool_policy
 
     # --disable-tools also covers a connection's hosted search, which the local loop's veto would not reach.
-    if not web_search or get_tool_policy() is False:
+    if get_tool_policy() is False:
+        if mcp_enabled:
+            raise RunFailed(message = "MCP tools are disabled in Unsloth.")
+        web_search = False
+    if not web_search and not mcp_enabled:
         # Both opt-outs: --enable-tools overrides enable_tools, and an omitted enabled_tools
         # means every built-in, python and terminal included.
         return {"tool_choice": "none", "enabled_tools": []}
     return {
         "enable_tools": True,
-        "enabled_tools": ["web_search"],
+        "enabled_tools": ["web_search"] if web_search else [],
+        "mcp_enabled": mcp_enabled,
         "permission_mode": "off",
         # Studio's search, not a provider's hosted one, as Chat sends it.
         "run_tools_locally": True,
@@ -703,7 +708,7 @@ async def generate_answer(
     cancel_event: threading.Event,
     holder: Optional[SwapHolder] = None,
 ) -> Answer:
-    """Ask the chat model to do the task; web search is the only tool a run may use."""
+    """Ask the chat model to do the task with its explicitly selected tools."""
     from fastapi import HTTPException
 
     from core.inference.gpu_arbiter import GpuBusyForAnotherAccountError
@@ -763,6 +768,7 @@ async def generate_answer(
         activity.reserve()
         producer: Optional[asyncio.Future] = None
         response = None
+        mcp_thread: Optional[str] = None
         try:
             # Also bounds a stuck model load or unload so one wait cannot block other tasks.
             try:
@@ -789,6 +795,8 @@ async def generate_answer(
                 )
             except TimeoutError:
                 raise RunFailed("timeout") from None
+            mcp_server_ids = frozenset(task.get("mcpServerIds", ()))
+            tool_fields = _tool_fields(bool(task.get("webSearch")), bool(mcp_server_ids))
             payload = ChatCompletionRequest.model_validate(
                 {
                     "messages": [
@@ -804,7 +812,7 @@ async def generate_answer(
                         if history
                         else {}
                     ),
-                    **_tool_fields(bool(task.get("webSearch"))),
+                    **tool_fields,
                     **model_fields,
                     **_reasoning_fields(
                         task.get("reasoningEffort"),
@@ -817,6 +825,11 @@ async def generate_answer(
                     ),
                 }
             )
+
+            if mcp_server_ids:
+                payload._scheduled_mcp_server_ids = mcp_server_ids
+                # Stateful MCP sessions last one run, closed in release().
+                payload.thread_id = mcp_thread = run["id"]
 
             serving: dict = {}
 
@@ -884,6 +897,11 @@ async def generate_answer(
 
             def release(*_: Any) -> None:
                 activity.finish(request.scope)
+                if mcp_thread is not None:
+                    from core.inference.tools import close_mcp_thread_sessions
+
+                    # Off the loop: past the cleanup queue's cap a close runs inline.
+                    loop.run_in_executor(None, close_mcp_thread_sessions, mcp_thread)
                 if producer is None:
                     end_in_process_request(request.scope, answered = False)
 

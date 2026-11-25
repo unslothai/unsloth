@@ -14061,9 +14061,7 @@ _MCP_LISTING_QUERY: ContextVar = ContextVar("mcp_listing_query", default = "")
 _MCP_LISTING_FORCED: ContextVar = ContextVar("mcp_listing_forced", default = None)
 _MCP_LISTING_IMAGE: ContextVar = ContextVar("mcp_listing_image", default = False)
 _MCP_LISTING_REMEMBER: ContextVar = ContextVar("mcp_listing_remember", default = True)
-_MCP_PROJECT_SERVER_IDS: ContextVar[frozenset[str] | None] = ContextVar(
-    "mcp_project_server_ids", default = None
-)
+_MCP_SERVER_IDS: ContextVar[frozenset[str] | None] = ContextVar("mcp_server_ids", default = None)
 # A dict set per request, so the listing can fill it from a thread running in a copy of the request's context.
 _MCP_LISTING_MATCHES: ContextVar = ContextVar("mcp_listing_matches", default = None)
 # (account, thread) -> MCP tools the thread ran while they were deferred, oldest first.
@@ -14959,20 +14957,24 @@ def mcp_project_excludes(server_id: str, session_id: str | None) -> bool:
     return selected is not None and server_id not in selected
 
 
+def set_mcp_server_scope(server_ids: frozenset[str] | None) -> None:
+    _MCP_SERVER_IDS.set(server_ids)
+
+
 async def set_mcp_project_scope(session_id: str | None) -> None:
     selected = (
         await asyncio.to_thread(_mcp_project_server_ids, session_id)
         if session_id and session_id.startswith(_PROJECT_SESSION_PREFIX)
         else None
     )
-    _MCP_PROJECT_SERVER_IDS.set(selected)
+    set_mcp_server_scope(selected)
 
 
 def _enabled_mcp_servers(servers: list[dict]) -> list[dict]:
     from core.inference.studio_tools_mcp import keyless_caller
 
     keyless = keyless_caller(current_account())
-    selected = _MCP_PROJECT_SERVER_IDS.get()
+    selected = _MCP_SERVER_IDS.get()
     enabled = [
         server
         for server in servers
@@ -15151,6 +15153,12 @@ def mcp_session_scope(session_id: "str | None", thread_id: "str | None") -> "str
         return None
     quote = urllib.parse.quote
     return f"s={quote(session_id or '', safe = '')}:t={quote(thread_id, safe = '')}"
+
+
+def close_mcp_thread_sessions(thread_id: str) -> None:
+    from core.inference.mcp_client import close_mcp_scopes
+    suffix = f":t={urllib.parse.quote(thread_id, safe = '')}"
+    close_mcp_scopes(lambda scope: scope.endswith(suffix))
 
 
 _TIMEOUT_UNSET = object()
@@ -15364,6 +15372,9 @@ def execute_tool(
             return f"Error: MCP server '{display}' is disabled"
         if mcp_project_excludes(server_id, session_id):
             return f"Error: MCP server '{display}' is not enabled for this project"
+        selected = _MCP_SERVER_IDS.get()
+        if selected is not None and server_id not in selected:
+            return f"Error: MCP server '{display}' is outside this run's selection"
         if _runs_local_mcp(server) and not stdio_mcp_enabled():
             return f"Error: stdio MCP server '{display}' is disabled on this host"
         mcp_scope = mcp_session_scope(session_id, thread_id)

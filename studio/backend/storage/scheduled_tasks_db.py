@@ -107,6 +107,7 @@ def _task_from_row(row: sqlite3.Row) -> dict:
         "archiveSuccessful": bool(row["archive_successful"]),
         "projectId": row["project_id"],
         "webSearch": bool(row["web_search"]),
+        "mcpServerIds": json.loads(row["mcp_server_ids_json"]),
         "threadId": row["thread_id"],
         "nextRunAt": row["next_run_at"],
         "createdAt": row["created_at"],
@@ -190,6 +191,7 @@ _TASK_COLUMNS = (
     "archive_successful",
     "project_id",
     "web_search",
+    "mcp_server_ids_json",
     "thread_id",
     "next_run_at",
 )
@@ -210,6 +212,7 @@ def _task_values(task: dict) -> tuple:
         1 if task.get("archiveSuccessful") else 0,
         task.get("projectId"),
         1 if task.get("webSearch") else 0,
+        json.dumps(task.get("mcpServerIds", [])),
         task.get("threadId"),
         task["nextRunAt"],
     )
