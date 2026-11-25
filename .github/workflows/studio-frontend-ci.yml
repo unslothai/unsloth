@@ -1020,8 +1020,17 @@ jobs:
         shell: bash
         timeout-minutes: 20
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          EVENT_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
+          # The checkout is the PR merge ref; its first parent is the base tip this run merged onto.
+          # pull_request.base.sha does not move when main advances, so measuring against it charges
+          # the PR with everything main merged since. The raw commit object keeps its parent lines
+          # in a depth-1 clone.
+          BASE_SHA="$EVENT_BASE_SHA"
+          if [ "$(git cat-file -p HEAD | grep -c '^parent ')" = 2 ]; then
+            BASE_SHA=$(git cat-file -p HEAD | awk '$1 == "parent" {print $2; exit}')
+          fi
+          echo "long-chat A/B base: $BASE_SHA (event base $EVENT_BASE_SHA)"
           git fetch --no-tags --depth=1 origin "$BASE_SHA"
           ab() {
             rc=0

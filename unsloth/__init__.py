@@ -409,20 +409,44 @@ if _IS_MLX:
     del _raw_text, _raw_text_spec, _raw_text_path, _Path
 
     def _mlx_from_pretrained(*args, **kwargs):
+        # CUDA's vLLM options and defaults; zoo's loader takes none of them.
+        fast_inference = kwargs.pop("fast_inference", False)
+        gpu_memory_utilization = kwargs.pop("gpu_memory_utilization", 0.5)
+        max_lora_rank = kwargs.pop("max_lora_rank", 64)
         # zoo's loader picks the default dtype by device name only; fill it from the GPU family.
         # Not for full finetuning: zoo trains any non-bf16 target in float32, doubling weight memory.
         try:
             bound = _inspect.signature(FastMLXModel.from_pretrained).bind_partial(*args, **kwargs)
-            full_finetuning = bound.arguments.get("full_finetuning", False)
+            bound.apply_defaults()
+            options = bound.arguments
         except Exception:
-            full_finetuning = kwargs.get("full_finetuning", False)
+            options = {"max_seq_length": 2048, "random_state": 3407, **kwargs}
+        full_finetuning = options.get("full_finetuning", False)
         if not full_finetuning and not is_bfloat16_supported():
             if len(args) > 2:
                 if args[2] is None:
                     args = (*args[:2], "float16", *args[3:])
             elif kwargs.get("dtype") is None:
                 kwargs["dtype"] = "float16"
-        return FastMLXModel.from_pretrained(*args, **kwargs)
+        model, tokenizer = FastMLXModel.from_pretrained(*args, **kwargs)
+        try:
+            from unsloth_zoo.mlx import vllm_utils
+        except ImportError:  # a zoo build older than vllm-metal support keeps MLX generation
+            vllm_utils = None
+
+        # fast_inference uses vLLM (vllm-metal) when it is installed, else zoo's batched MLX generation.
+        if vllm_utils is not None and vllm_utils.use_vllm(fast_inference):
+            engine = vllm_utils.load_vllm(
+                model,
+                max_seq_length = options["max_seq_length"],
+                gpu_memory_utilization = gpu_memory_utilization,
+                max_lora_rank = max_lora_rank,
+                enable_lora = not full_finetuning,
+                seed = options["random_state"],
+            )
+            vllm_utils.attach_vllm_engine(model, engine)
+            model.load_lora = _types.MethodType(vllm_utils.load_lora, model)
+        return model, tokenizer
 
     class FastLanguageModel:
         @staticmethod

@@ -126,14 +126,24 @@ def standardize_chat_format(
         content_key = "content"
     elif len(uniques.keys()) == 2:
         keys = list(uniques.keys())
-        length_first = len(set(uniques[keys[0]]))
-        length_second = len(set(uniques[keys[1]]))
-        if length_first < length_second:
-            role_key = keys[0]
-            content_key = keys[1]
-        else:
-            role_key = keys[1]
-            content_key = keys[0]
+        distinct = [set(uniques[key]) for key in keys]
+        known_roles = {
+            _normalize_role_alias(alias)
+            for aliases in (aliases_for_system, aliases_for_user, aliases_for_assistant)
+            for alias in aliases
+        }
+        hits = [sum(_normalize_role_alias(v) in known_roles for v in values) for values in distinct]
+        role_index = 0 if len(distinct[0]) < len(distinct[1]) else 1
+        other = 1 - role_index
+        if len(distinct[0]) == len(distinct[1]):
+            role_like = [2 * hits[i] >= len(distinct[i]) for i in (0, 1)]
+            if role_like[0] != role_like[1]:
+                role_index = 0 if role_like[0] else 1
+        elif hits[other] == len(distinct[other]) and hits[role_index] == 0:
+            # Canned replies (identical text) only; a few "Human" lines in text must not overrule cardinality.
+            role_index = other
+        role_key = keys[role_index]
+        content_key = keys[1 - role_index]
     else:
         raise ValueError(f"Could not infer role/content keys for chat column '{chat_column}'")
 

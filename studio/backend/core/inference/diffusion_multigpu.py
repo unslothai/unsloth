@@ -376,12 +376,19 @@ def probe_devices(ordinals: Sequence[int]) -> dict[int, DeviceProbe]:
                     _NAMES[o] = str(torch.cuda.get_device_name(o))
                 except Exception:  # noqa: BLE001
                     _NAMES[o] = ""
+    from .diffusion_device import smi_rows_snapshot
+
     out: dict[int, DeviceProbe] = {}
-    for o in ords:
-        free, total = _free_total_mib(o)
-        out[o] = DeviceProbe(
-            ordinal = o, name = _NAMES.get(o, ""), total_mib = total, free_mib = free, util_pct = _util_pct(o)
-        )
+    with smi_rows_snapshot():
+        for o in ords:
+            free, total = _free_total_mib(o)
+            out[o] = DeviceProbe(
+                ordinal = o,
+                name = _NAMES.get(o, ""),
+                total_mib = total,
+                free_mib = free,
+                util_pct = _util_pct(o),
+            )
     return out
 
 

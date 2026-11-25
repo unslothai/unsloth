@@ -539,6 +539,27 @@ def _case_export(rank, world, tmp):
     tp_native.apply_tensor_parallel(tp_model, mesh)
     pp_model = build("llama")
     pp_native.apply_pipeline_parallel(pp_model, mesh, n_microbatches = 2)
+    from transformers import AutoModelForCausalLM
+    from transformers.models.auto.configuration_auto import CONFIG_MAPPING
+
+    from unsloth.models import ep_native
+
+    torch.manual_seed(0)
+    ep_model = AutoModelForCausalLM.from_config(
+        CONFIG_MAPPING["olmoe"](
+            vocab_size = 512,
+            hidden_size = 64,
+            intermediate_size = 32,
+            num_hidden_layers = 2,
+            num_attention_heads = 4,
+            num_key_value_heads = 2,
+            num_experts = 4,
+            num_experts_per_tok = 2,
+        ),
+        dtype = torch.float32,
+    )
+    ep_mesh = init_device_mesh("cpu", (world,), mesh_dim_names = ("ep",))["ep"]
+    ep_native.apply_expert_parallel(ep_model, ep_mesh)  # a custom training loop: no Trainer
     calls = {
         "unsloth_save_model": lambda m, d: save.unsloth_save_model(
             m, None, d, save_method = "merged_16bit"
@@ -555,7 +576,7 @@ def _case_export(rank, world, tmp):
         ),
     }
     out = {}
-    for kind, model in (("tp", tp_model), ("pp", pp_model)):
+    for kind, model in (("tp", tp_model), ("pp", pp_model), ("ep", ep_model)):
         for name in EXPORTS:
             directory = os.path.join(tmp, f"{kind}_{name.replace(':', '_')}_{rank}")
             try:
@@ -743,6 +764,21 @@ def test_exports_refuse_pipeline_parallel_before_writing(name):
         r = res[f"pp:{name}"]
         assert (
             r["error"] and "RuntimeError" in r["error"] and "pipeline parallel model" in r["error"]
+        ), r
+        assert not r["wrote"], r
+
+
+@pytest.mark.parametrize("name", EXPORTS)
+def test_exports_refuse_expert_parallel_before_writing(name):
+    """Each rank of an apply_expert_parallel model holds only its routed experts: every export refuses it,
+    also in a custom training loop that never builds a Trainer."""
+    results = _spawn_cached("export")
+    if "skip" in results[0]:
+        pytest.skip(f"import unsloth failed on this host: {results[0]['skip']}")
+    for res in results:
+        r = res[f"ep:{name}"]
+        assert (
+            r["error"] and "RuntimeError" in r["error"] and "expert parallel model" in r["error"]
         ), r
         assert not r["wrote"], r
 

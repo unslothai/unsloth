@@ -61,6 +61,7 @@ from .kernels import fast_dequantize, QUANT_STATE, get_lora_parameters_bias
 import subprocess
 import traceback
 import psutil
+import collections
 import re
 from .models.loader_utils import (
     get_model_name,
@@ -1579,8 +1580,8 @@ def _refuse_tp_in_place_merge(fn, method, args, kwargs):
 
 
 def _model_parallel_refuses_save(method):
-    """Every whole-model export refuses an apply_pipeline_parallel model before it writes anything (see
-    _refuse_model_parallel_export). A tensor parallel model (tp, or tp x DDP-style dp) is gathered to rank 0,
+    """Every whole-model export refuses an apply_pipeline_parallel or apply_expert_parallel model (each rank holds
+    only its experts) before it writes anything (see _refuse_model_parallel_export). A tensor parallel model (tp, or tp x DDP-style dp) is gathered to rank 0,
     which runs the export; the other ranks wait for it (models/tp_replica.py)."""
 
     def decorate(fn):
@@ -5405,19 +5406,7 @@ def unsloth_save_pretrained_gguf(
                 "Unsloth: Please use .push_to_hub_gguf(save_method='lora') instead of "
                 ".save_pretrained_gguf(save_method='lora', push_to_hub=True)."
             )
-        _qm = quantization_method
-        if isinstance(_qm, (list, tuple)) and len(_qm) == 1:
-            _qm = _qm[0]  # the gguf API allows a list; unwrap a single outtype
-        if _qm in _LORA_GGUF_OUTTYPES:
-            _outtype = _qm
-        else:
-            if _qm not in (None, "fast_quantized"):
-                logger.warning_once(
-                    f"Unsloth: LoRA GGUF export does not support "
-                    f"quantization_method={quantization_method!r}; using outtype 'f16'. "
-                    f"Valid LoRA outtypes: {_LORA_GGUF_OUTTYPES}."
-                )
-            _outtype = "f16"
+        _outtype = _lora_gguf_outtype(quantization_method)
         return _unsloth_save_lora_gguf(
             self, tokenizer, save_directory, outtype = _outtype, token = token
         )
@@ -6097,19 +6086,7 @@ def unsloth_push_to_hub_gguf(
 
     # save_method="lora" exports the adapter itself as a GGUF LoRA, not a merged model.
     if save_method is not None and str(save_method).lower() == "lora":
-        _qm = quantization_method
-        if isinstance(_qm, (list, tuple)) and len(_qm) == 1:
-            _qm = _qm[0]  # the gguf API allows a list; unwrap a single outtype
-        if _qm in _LORA_GGUF_OUTTYPES:
-            _outtype = _qm
-        else:
-            if _qm not in (None, "fast_quantized"):
-                logger.warning_once(
-                    f"Unsloth: LoRA GGUF export does not support "
-                    f"quantization_method={quantization_method!r}; using outtype 'f16'. "
-                    f"Valid LoRA outtypes: {_LORA_GGUF_OUTTYPES}."
-                )
-            _outtype = "f16"
+        _outtype = _lora_gguf_outtype(quantization_method)
         return _unsloth_save_lora_gguf(
             self,
             tokenizer,
@@ -6346,6 +6323,25 @@ def save_lora_to_custom_dir(model, tokenizer, save_directory):
 # Valid output float types for llama.cpp's convert_lora_to_gguf.py.
 _LORA_GGUF_OUTTYPES = ("f32", "f16", "bf16", "q8_0", "auto")
 
+
+def _lora_gguf_outtype(quantization_method):
+    """--outtype for a save_method="lora" GGUF export; case-insensitive like the merged GGUF path."""
+    outtype = quantization_method
+    if isinstance(outtype, (list, tuple)) and len(outtype) == 1:
+        outtype = outtype[0]
+    if isinstance(outtype, str):
+        outtype = outtype.lower()
+    if outtype in _LORA_GGUF_OUTTYPES:
+        return outtype
+    if outtype not in (None, "fast_quantized"):
+        logger.warning_once(
+            f"Unsloth: LoRA GGUF export does not support "
+            f"quantization_method={quantization_method!r}; using outtype 'f16'. "
+            f"Valid LoRA outtypes: {_LORA_GGUF_OUTTYPES}."
+        )
+    return "f16"
+
+
 # get_token() reads only the first two; the rest are third-party. HF_OIDC_* mint one, ahead of HF_TOKEN, on hub >= 1.19.
 _HF_TOKEN_ENV_KEYS = (
     "HF_TOKEN",
@@ -6523,6 +6519,36 @@ def _resolve_imatrix_file(model, imatrix_file, token, dest_dir):
     )
 
 
+def _lora_target_parameters(model) -> list:
+    names = set()
+    for config in (getattr(model, "peft_config", None) or {}).values():
+        names.update(getattr(config, "target_parameters", None) or ())
+    return sorted(str(name) for name in names)
+
+
+def _converter_error_line(lines) -> str:
+    # The last exception line, else the reasons the converter logs before sys.exit(1) ("ERROR:lora-to-gguf:...").
+    lines = [line.strip() for line in lines]
+    for line in reversed(lines):
+        if re.match(r"^[A-Za-z_][\w.]*(Error|Exception)(: |$)", line):
+            return line
+    logged = [m.group(1) for m in map(re.compile(r"^ERROR:[^:\s]+:\s*(\S.*)$").match, lines) if m]
+    return " ".join(logged[:3])
+
+
+def _lora_gguf_conversion_error(returncode, cause, expert_targets) -> Exception:
+    if expert_targets and "Can not map tensor" in cause and ".experts" in cause:
+        return NotImplementedError(
+            "Unsloth: llama.cpp's LoRA GGUF converter cannot map this adapter's MoE expert weights "
+            f"(target_parameters: {', '.join(expert_targets)}) yet: {cause}. Export the merged model as "
+            "GGUF instead, or save the adapter as safetensors."
+        )
+    return RuntimeError(
+        f"Unsloth: LoRA -> GGUF conversion failed (exit {returncode})"
+        + (f": {cause}" if cause else ". See the output above for details.")
+    )
+
+
 @_model_parallel_refuses_save("save_pretrained_gguf")
 def _unsloth_save_lora_gguf(
     model,
@@ -6545,6 +6571,8 @@ def _unsloth_save_lora_gguf(
             "Unsloth: LoRA GGUF export needs a PEFT/LoRA model. "
             "For a full or merged model use save_pretrained_gguf(...) instead."
         )
+    if isinstance(outtype, str):
+        outtype = outtype.lower()
     if outtype not in _LORA_GGUF_OUTTYPES:
         raise ValueError(
             f"Unsloth: LoRA GGUF outtype must be one of {_LORA_GGUF_OUTTYPES} (got '{outtype}')."
@@ -6554,6 +6582,9 @@ def _unsloth_save_lora_gguf(
     token_is_explicit = token is not None
     if token is None or token is True:
         token = get_token()
+
+    # Not refused up front: the converter decides, so expert LoRA works as soon as llama.cpp can map it.
+    expert_targets = _lora_target_parameters(model)
 
     # Resolve the dequantized base id, since the adapter usually references a 4bit repo.
     base_model_id = _lora_base_model_id(model)
@@ -6619,6 +6650,7 @@ def _unsloth_save_lora_gguf(
         _apply_token_to_child_env(env, token, explicit = token_is_explicit)
 
         print(f"Unsloth: Converting LoRA adapter at '{lora_dir}' to GGUF -> '{out_gguf}'")
+        output_tail = collections.deque(maxlen = 40)
         # Resolve the cache from the live env like the merge, not huggingface_hub's frozen constants: a runtime cache redirect (read-only default, Unsloth) would else miss (#6890).
         try:
             with subprocess.Popen(
@@ -6633,13 +6665,13 @@ def _unsloth_save_lora_gguf(
             ) as sp:
                 for line in sp.stdout:
                     print(line, end = "", flush = True)
+                    output_tail.append(line.rstrip())
                 sp.wait()
                 if sp.returncode != 0:
                     raise subprocess.CalledProcessError(sp.returncode, sp.args)
         except subprocess.CalledProcessError as e:
-            raise RuntimeError(
-                f"Unsloth: LoRA -> GGUF conversion failed (exit {e.returncode}). "
-                "See the output above for details."
+            raise _lora_gguf_conversion_error(
+                e.returncode, _converter_error_line(output_tail), expert_targets
             )
 
         if not os.path.isfile(out_gguf):

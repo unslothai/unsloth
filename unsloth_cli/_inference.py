@@ -1211,6 +1211,9 @@ class HttpChatBackend:
         if not loaded:
             return False
         loaded = str(loaded)
+        quant = status.get("gguf_variant")
+        if quant and "/" in loaded and loaded.casefold().endswith(f":{quant}".casefold()):
+            loaded = loaded[: -len(quant) - 1]
         if model == status.get("model_identifier"):
             same = True
         elif os.path.exists(model):
@@ -1255,6 +1258,8 @@ class HttpChatBackend:
         body.update({key: value for key, value in sampling.items() if value is not None})
         if max_new_tokens is not None:
             body["max_tokens"] = max_new_tokens
+        if use_adapter is not None:
+            body["use_adapter"] = use_adapter
         resp = self._request("POST", "/v1/chat/completions", body)
 
         self.reply_hit_token_limit = False
