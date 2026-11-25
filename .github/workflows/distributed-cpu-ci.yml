@@ -139,9 +139,18 @@ jobs:
           - shard: gloo-tp
             selection: >-
               tests/test_tp_n*gloo*.py
+          # gloo-pp then ran 1324 to 1764 s of its 2100 s cap on a 4 vCPU runner (2026-11-25) and was
+          # interrupted at about 2095 s with some 200 of 223 tests done on slower ones; four workers
+          # spawning 2 to 4 ranks each oversubscribe the runner. test_pp_env_gloo.py is 64% of the
+          # shard's test time (1681 of 2640 s measured), so it gets a runner of its own. Any other
+          # test_pp_e* or test_pp[!_]* gloo file matches neither shard and is reported dropped.
           - shard: gloo-pp
             selection: >-
-              tests/test_pp*gloo*.py
+              tests/test_pp_[!e]*gloo*.py
+              tests/test_pp_env_[!g]*gloo*.py
+          - shard: gloo-pp-env
+            selection: >-
+              tests/test_pp_env_gloo.py
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
