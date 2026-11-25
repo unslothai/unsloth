@@ -2303,8 +2303,8 @@ def colocated_split_shards(path: Path) -> tuple[list[Path], bool]:
 
 def split_set_is_loadable(path: Path) -> bool:
     """Whether every shard of the set _local_gguf_load_path opens is present and non-empty: the
-    local set when it is complete or short only of a --ple table shard, else the split set a shard
-    symlink points into (an HF blob is not one)."""
+    local set when it is complete or short only of a --ple table shard, else what a shard symlink
+    points to: its split set, or a whole single-file GGUF (an HF blob, with no .gguf name, is neither)."""
     shards, complete = colocated_split_shards(path)
     try:
         if not complete and _engram_table_shard_skipped(path):
@@ -2313,6 +2313,8 @@ def split_set_is_loadable(path: Path) -> bool:
             target = path.resolve()
             if _GGUF_SPLIT_FILE_RE.match(target.name) is not None:
                 shards, complete = colocated_split_shards(target)
+            elif target.suffix.lower() == ".gguf":
+                shards, complete = [target], target.is_file()
         return complete and all(shard.stat().st_size > 0 for shard in shards)
     except OSError:
         return False

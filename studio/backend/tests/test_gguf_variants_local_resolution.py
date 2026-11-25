@@ -507,6 +507,12 @@ def test_split_named_symlink_to_a_plain_target_is_ready(in_tmp_cwd):
     row = _variants(os.fspath(alias)).variants[0]
     assert row.downloaded is True and row.partial is False
 
+    from utils.models.model_config import split_set_is_loadable
+
+    assert split_set_is_loadable(alias) is True
+    real.write_bytes(b"")
+    assert split_set_is_loadable(alias) is False
+
 
 def test_high_count_split_is_still_checked(in_tmp_cwd):
     # Shard counts above the old cap are still real splits.

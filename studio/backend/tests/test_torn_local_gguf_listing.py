@@ -145,12 +145,22 @@ def test_a_torn_build_does_not_hide_a_whole_one_in_its_folder(sources, tmp_path)
     first = "Link-Q8_0-00001-of-00002.gguf"
     (models / "linked").mkdir()
     (models / "linked" / first).symlink_to(tmp_path / "backing" / first)
+    # A split-named link to one whole single-file GGUF.
+    _gguf(tmp_path / "backing" / "whole-Q6_K.gguf")
+    (models / "alias").mkdir()
+    (models / "alias" / "alias-Q6_K-00001-of-00002.gguf").symlink_to(
+        tmp_path / "backing" / "whole-Q6_K.gguf"
+    )
 
     rows = models_route.collect_local_models(
         models.resolve(), sources = sources, materialize_ollama_links = False
     )
     partial = {_name(row): row.partial for row in rows}
-    assert (partial.get("pair"), partial.get("linked")) == (False, False)
+    assert (partial.get("pair"), partial.get("linked"), partial.get("alias")) == (
+        False,
+        False,
+        False,
+    )
     offered = {
         _name(info): quants
         for info, _is_gguf, quants, _resident in inference_route._servable_catalog_rows(
@@ -161,3 +171,5 @@ def test_a_torn_build_does_not_hide_a_whole_one_in_its_folder(sources, tmp_path)
     assert resolver.resolve_local_gguf("pair")[1] == "beta-Q4_K_M"
     assert resolver.resolve_local_gguf("pair:Q4_K_M") is None
     assert resolver.resolve_local_gguf("linked")[1] == "Q8_0"
+    assert offered.get("alias") == ("Q6_K",)
+    assert resolver.resolve_local_gguf("alias")[1] == "Q6_K"
