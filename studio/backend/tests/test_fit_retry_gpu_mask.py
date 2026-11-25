@@ -58,6 +58,8 @@ def _load(
     sm_gate_error = None,
     parent_env = None,
     outputs = None,
+    rows = None,
+    parent_mask = None,
 ):
     """Two CUDA cards; Auto pins ``pick`` with --fit off. Returns the (argv, env) of each spawn."""
 
@@ -71,8 +73,11 @@ def _load(
 
     for name in ("CUDA_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES"):
         monkeypatch.delenv(name, raising = False)
+    if parent_mask is not None:
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", parent_mask)
+        monkeypatch.setenv("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
     monkeypatch.setattr(LlamaCppBackend, "_GPU_IDS_ARE_PCI_INDICES", True)
-    rows = [(0, 46 * _GIB, 48 * _GIB), (1, 24 * _GIB, 24 * _GIB)]
+    rows = rows or [(0, 46 * _GIB, 48 * _GIB), (1, 24 * _GIB, 24 * _GIB)]
     backend = LlamaCppBackend()
     backend._get_gpu_memory = lambda _binary = None, **_kw: list(rows)
     backend._get_gpu_free_memory = lambda _binary = None, **_kw: [(i, f) for i, f, _t in rows]
@@ -213,6 +218,7 @@ def test_a_single_card_pick_is_not_widened(monkeypatch, tmp_path):
         ["--split-mode", "layer"],
         ["--mmproj-device", "CUDA0"],
         ["-ot", "blk\\.1\\.ffn_.*=CUDA0"],
+        ["-otd", "blk\\..*=CUDA0"],
     ],
 )
 def test_positional_placement_keeps_the_planned_mask(monkeypatch, tmp_path, extra_args):
@@ -265,3 +271,82 @@ def test_a_failed_widened_retry_hands_later_rungs_the_planned_mask(monkeypatch, 
     assert "--flash-attn" in launches[2][0]
     assert launches[2][0][launches[2][0].index("--flash-attn") + 1] == "off"
     assert [_mask(launch) for launch in launches] == ["0", "0,1", "0"]
+
+
+def test_a_trailing_user_fit_off_keeps_the_planned_mask(monkeypatch, tmp_path):
+    # The retry flips Studio's --fit, but the user's later off still wins: no fitter runs.
+    _backend, launches, _error = _load(
+        monkeypatch, tmp_path, returncodes = [1, None], extra_args = ["--fit", "off"]
+    )
+    assert all(_mask(launch) == "0" for launch in launches)
+
+
+def test_a_widened_pick_publishes_the_cards_it_runs_on(monkeypatch, tmp_path):
+    backend, launches, error = _load(
+        monkeypatch, tmp_path, returncodes = [1, None], pick = ([1], False), gpu_ids = [0, 1]
+    )
+    assert error is None
+    assert _mask(launches[1]) == "0,1"
+    assert backend.gpu_ids == [0, 1]
+    # A later request for GPU 1 alone must not reuse the two-card server.
+    assert not backend.matches_gpu_ids([1])
+    assert backend.matches_gpu_ids([0, 1])
+    # The plan other loads and eviction read spans both cards.
+    assert set(backend._planned_vram_mib) == {0, 1}
+
+
+def test_a_failed_widened_pick_publishes_the_planned_card_again(monkeypatch, tmp_path):
+    backend, launches, _error = _load(
+        monkeypatch,
+        tmp_path,
+        returncodes = [1, -11, None],
+        outputs = [_OOM, "Segmentation fault"],
+        pick = ([1], False),
+        gpu_ids = [0, 1],
+    )
+    assert [_mask(launch) for launch in launches] == ["1", "0,1", "1"]
+    assert backend.gpu_ids == [1]
+
+
+def test_an_arch_crash_on_the_widened_child_does_not_retry_on_the_card_that_failed(
+    monkeypatch, tmp_path
+):
+    # GPU 0 runs out of memory, then the widened child hits a kernel-image error on
+    # GPU 1. Blaming the planned [0] would send the next launch to GPU 1 alone.
+    _backend, launches, _error = _load(
+        monkeypatch,
+        tmp_path,
+        returncodes = [1, 1, None],
+        outputs = [
+            _OOM,
+            "CUDA error: no kernel image is available for execution on the device",
+        ],
+    )
+    assert [_mask(launch) for launch in launches[:2]] == ["0", "0,1"]
+    assert all(_mask(launch) != "1" for launch in launches[2:])
+
+
+def test_the_widened_mask_keeps_the_parent_order(monkeypatch, tmp_path):
+    # Iterating {8, 1} yields the parent's own order, where the order helper answers None.
+    _backend, launches, error = _load(
+        monkeypatch,
+        tmp_path,
+        returncodes = [1, None],
+        pick = ([8], False),
+        rows = [(1, 24 * _GIB, 24 * _GIB), (8, 46 * _GIB, 48 * _GIB)],
+        parent_mask = "8,1",
+    )
+    assert error is None
+    assert _mask(launches[1]) == "8,1"
+
+
+def test_a_crash_that_is_not_out_of_memory_keeps_the_planned_mask(monkeypatch, tmp_path):
+    # Only an allocation failure disproves Auto's estimate.
+    _backend, launches, _error = _load(
+        monkeypatch,
+        tmp_path,
+        returncodes = [1, None],
+        outputs = ["llama_model_load: error loading model: invalid tensor shape"],
+    )
+    assert len(launches) == 2
+    assert _mask(launches[1]) == "0"
