@@ -16,9 +16,11 @@ import {
   fenceCacheStats,
 } from "../src/features/chat/lib/chat-files.ts";
 
+const MAY_HOLD_CODE_RE = /```|~~~|^(?: {4}|\t)/m;
+
 // Uncached reference extraction.
 function reference(markdown: string) {
-  if (!/```|~~~|^(?: {4}|\t)/m.test(markdown)) return [];
+  if (!MAY_HOLD_CODE_RE.test(markdown)) return [];
   const blocks: { language: string | null; source: string }[] = [];
   const visit = (node: Nodes) => {
     if (node.type === "code") {
@@ -153,7 +155,7 @@ test("a reopened chat (new message objects, same texts) lists the same files", (
   const held = fenceCacheStats();
   assert.deepEqual(
     held.keys,
-    CORPUS.filter((text) => /```|~~~|^(?: {4}|\t)/m.test(text)),
+    CORPUS.filter((text) => MAY_HOLD_CODE_RE.test(text)),
   );
   const reopened = collectChatFiles(thread());
   assert.deepEqual(reopened, first);
