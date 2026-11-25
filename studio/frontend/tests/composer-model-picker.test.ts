@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  CONNECTED_MODALITY_LABEL,
   CONNECTED_TAB,
   DEVICE_TAB,
   FAVORITES_TAB,
@@ -597,7 +598,7 @@ test("the details menu shows modalities with the Model Hub's coloured icons", ()
     picker,
     /<CapabilityGlyph\s+capability=\{c\}\s+className=\{glyphScale\(c\.key, c\.label\)\}/,
   );
-  assert.match(picker, /detectHubCapabilities\(undefined, task, id\)/);
+  assert.match(picker, /detectHubCapabilities\(\s+hit\?\.tags \?\? row\.cached\?\.tags,\s+task,\s+id,\s+\)/);
 });
 
 test("an MLX variant's gear keeps its format, and exported GGUFs delete per quant", () => {
@@ -611,6 +612,71 @@ test("an MLX variant's gear keeps its format, and exported GGUFs delete per quan
     picker,
     /source: "exported",\s+exportType: "gguf",\s+ggufVariant: variant\.quant,/,
   );
+});
+
+test("Discover and Device rows show what the model does, from the facts' own source", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  // One source for the row and its details menu.
+  assert.match(picker, /const found = rowCapabilities\(row, known\);/);
+  assert.match(
+    picker,
+    /row\.kind === "external" \? \[\] : rowCapabilities\(row, known, hubHit\)/,
+  );
+  // A Discover row reads its Hub tags and task.
+  assert.match(picker, /\{ tags: r\.tags, pipelineTag: r\.pipelineTag \}/);
+  assert.match(
+    picker,
+    /<\/span>\s+<RowCapabilities capabilities=\{capabilities\} dimmed=\{dimmed\} \/>/,
+  );
+});
+
+test("Connected filters by Vision or Image gen and sorts by connection or name", () => {
+  const ext = (id: string, provider: string, providerName: string) =>
+    row({
+      key: id,
+      id: `external::${provider}::${id}`,
+      label: id,
+      kind: "external",
+      tab: `ext:${provider}`,
+      groups: [CONNECTED_TAB],
+      providerName,
+    });
+  const rows = [
+    ext("gpt-5", "p2", "OpenAI"),
+    ext("claude-opus", "p1", "Anthropic"),
+    ext("claude-haiku", "p1", "Anthropic"),
+  ];
+  assert.deepEqual(
+    sortConnectedRows(rows, undefined, "name").map((r) => r.key),
+    ["claude-haiku", "claude-opus", "gpt-5"],
+  );
+  assert.deepEqual(
+    sortConnectedRows(rows, (r) => r.key === "gpt-5", "name").map(
+      (r) => r.key,
+    ),
+    ["gpt-5", "claude-haiku", "claude-opus"],
+  );
+  assert.deepEqual(CONNECTED_MODALITY_LABEL, {
+    all: "All",
+    vision: "Vision",
+    imageGen: "Image gen",
+  });
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(
+    picker,
+    /found\.filter\(connectedMatches\),\s+isFavorite,\s+connectedSort,/,
+  );
+  assert.match(picker, /marks\.vision\s+: marks\.capabilities\.imageGen/);
+  // By name it is one list, so no connection headers.
+  assert.match(
+    picker,
+    /viewed === CONNECTED_TAB &&\s+connectedSort === "provider" &&\s+foundRows\.length > 0/,
+  );
+  assert.match(picker, /aria-label=\{`Sort and filter: \$\{CONNECTED_SORT_LABEL/);
 });
 
 test("the details menu lists every modality, preferring the backend's flags", () => {
