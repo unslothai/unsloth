@@ -31590,19 +31590,22 @@ async def _proxy_to_external_provider(
                 _external_nudge, external_studio_tools, payload = payload
             )
     _served_template = None
+    _date_provider_type = None if _external_nudge else provider_type
     if (
-        provider_type == "llama_cpp"
-        and not _external_nudge
+        _date_provider_type in ("llama_cpp", "custom")
         and not _date_gate_blocks(request, run_studio_tool_loop)
         and current_date_prompt_line(request = request)
         and not any(m.get("role") in ("system", "developer") for m in chat_messages)
     ):
-        _served_template = await client.served_chat_template(model)
+        if provider_type == "llama_cpp":
+            _served_template = await client.served_chat_template(model)
+        elif await client.serves_ollama():
+            _date_provider_type = "ollama"
     chat_messages = _prepend_current_date_to_messages(
         chat_messages,
         request,
         include_api_key = run_studio_tool_loop,
-        provider_type = None if _external_nudge else provider_type,
+        provider_type = _date_provider_type,
         served_template = _served_template,
         tools = bool(external_studio_tools or payload.tools),
         controls = llama_cpp_template_controls(

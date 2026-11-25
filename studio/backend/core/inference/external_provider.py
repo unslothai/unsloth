@@ -102,6 +102,7 @@ _served_windows: dict[tuple[str, str, str, str], tuple[float, Optional[int]]] = 
 _served_templates: dict[tuple[str, str, str], tuple[float, Optional[str]]] = {}
 _served_versions: dict[tuple[str, str], tuple[float, bool]] = {}
 _served_vision: dict[tuple[str, str, str, str], tuple[float, Optional[bool]]] = {}
+_served_ollama: dict[tuple[str, str], tuple[float, bool]] = {}
 # outlives the TTL: Ollama unloads an idle model after keep_alive and reloads it at the same window.
 _ollama_last_windows: dict[tuple[str, str, str, str], int] = {}
 
@@ -7922,6 +7923,30 @@ class ExternalProviderClient:
             del _served_templates[stale]
         _served_templates[key] = (now + _SERVED_WINDOW_TTL_S, template)
         return template
+
+    async def serves_ollama(self) -> bool:
+        now = time.monotonic()
+        key = (self.base_url, self._credential_digest())
+        cached = _served_ollama.get(key)
+        if cached is not None and cached[0] > now:
+            return cached[1]
+        found = False
+        try:
+            response = await _client().get(
+                _native_server_path(self.base_url, "/api/version"),
+                headers = self._auth_headers(),
+                timeout = _SERVED_WINDOW_TIMEOUT_S,
+            )
+            body = response.json() if response.status_code == 200 else None
+            found = isinstance(body, dict) and isinstance(body.get("version"), str)
+        except httpx.ConnectError:
+            return False
+        except (httpx.HTTPError, ValueError) as exc:
+            logger.info("No Ollama version from %s: %s", self.base_url, type(exc).__name__)
+        for stale in [k for k, (expiry, _) in _served_ollama.items() if expiry <= now]:
+            del _served_ollama[stale]
+        _served_ollama[key] = (now + _SERVED_WINDOW_TTL_S, found)
+        return found
 
     async def _read_served_vision(self, model: str) -> Optional[bool]:
         if self.provider_type == "ollama":
