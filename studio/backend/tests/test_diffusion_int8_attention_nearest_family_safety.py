@@ -388,7 +388,7 @@ def test_both_strided_processors_route_through_their_own_card_floors():
         ("diffusion_flux3_attn.py", "card_floor"),
         ("video_minimax_h3_attn.py", "takes_int8"),
     ):
-        src = (root / name).read_text()
+        src = (root / name).read_text(encoding = "utf-8")
         calls = [
             n
             for n in ast.walk(ast.parse(src))
@@ -533,7 +533,7 @@ def test_two_card_gpu_tests_look_up_the_served_config():
     import ast
     from pathlib import Path
 
-    src = Path(__file__).with_name("test_diffusion_int8_attention.py").read_text()
+    src = Path(__file__).with_name("test_diffusion_int8_attention.py").read_text(encoding = "utf-8")
     tree = ast.parse(src)
     segments = []
     for node in tree.body:
