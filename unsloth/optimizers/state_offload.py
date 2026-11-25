@@ -39,12 +39,9 @@ def optimizer_state_offload_enabled():
 
 
 def _overlap_enabled():
-    # UNSLOTH_OFFLOAD_OPTIMIZER_STATE_OVERLAP=0 keeps every chunk copy serial on the compute stream.
     return os.environ.get(_ENV + "_OVERLAP", "1").strip().lower() not in ("0", "false", "no", "off")
 
 
-# Staging ring: as large as the biggest serial chunk, so device staging never grows; split in
-# parts so the copy in of one part, the step of another and the copy out of a third overlap.
 _RING_ALIGN = 512
 _RING_PARTS = 4
 _RING_SEGMENT_BYTES = 64 << 20
@@ -144,11 +141,8 @@ def _plain_copy_source(tensor, host):
 
 
 class _Ring:
-    """Device staging buffer for state copies, reused in turn.
-
-    Copies in run on one side stream and copies out on another; events order every reuse of the
-    buffer, and nothing is allocated on a side stream, so the caching allocator holds no extra
-    blocks for them (record_stream only on state a step replaced, which the compute stream owns)."""
+    """Device staging buffer: copies in on one side stream, out on another, events order reuse.
+    Nothing is allocated on a side stream (record_stream only on state a step replaced)."""
 
     def __init__(self, device, capacity, streams):
         self.device, self.capacity = device, capacity
@@ -159,7 +153,7 @@ class _Ring:
         self.h2d.wait_stream(self.compute)
         self.d2h.wait_stream(self.compute)
         self.head = 0
-        self.live = []  # placed ranges not yet copied out
+        self.live = []
         self.done = []  # (start, end, event) of copied out ranges, in copy order
 
     def place(self, tensors):
@@ -198,7 +192,6 @@ class _Ring:
             state[p][key] = view
 
     def copy_out(self, placed, state):
-        """After the step was issued: the part's state back into its host buffers, on the side stream."""
         views, _, (start, end) = placed
         stepped = torch.cuda.Event()
         stepped.record(self.compute)
@@ -214,7 +207,7 @@ class _Ring:
                     host.copy_(current, non_blocking = True)
                     current.record_stream(self.d2h)
                 else:
-                    continue  # left for the caller's serial offload
+                    continue
                 state[p][key] = host
                 copied += n
                 if copied >= _RING_SEGMENT_BYTES:
@@ -457,10 +450,8 @@ class _StateOffloader:
         return ((optimizer,) + tuple(rest) if has_self else tuple(rest)), kwargs
 
     def _ring_tensors(self, params):
-        """(device, {param: [(param, key, host, padded bytes)]}) of the state kept in this offloader's
-        own pinned buffers, all for one CUDA device, or None to stay serial: ROCm, CPU, other
-        devices, the first step (the optimizer creates its state there), DTensor or nested state,
-        pageable host memory, UNSLOTH_OFFLOAD_OPTIMIZER_STATE_OVERLAP=0."""
+        """(device, {param: [(param, key, host, padded bytes)]}) for one CUDA device, or None to stay
+        serial (ROCm, CPU, first step, DTensor / nested state, pageable memory, kill switch)."""
         if not _overlap_enabled() or not self.pin_memory:
             return None
         if getattr(torch.version, "hip", None) or not torch.cuda.is_available():
@@ -506,7 +497,6 @@ class _StateOffloader:
         return self.streams
 
     def _ring_plan(self, params, chunks):
-        """(device, capacity, parts) to step `chunks` through a staging ring, or None."""
         found = self._ring_tensors(params)
         if found is None:
             return None
@@ -529,8 +519,7 @@ class _StateOffloader:
         return device, capacity, [(part, [t for p in part for t in sizes[p]]) for part in parts]
 
     def _step_ring(self, optimizer, step, args, kwargs, params, grads, plan, devices):
-        """The chunked step with the copy in of the next parts and the copy out of the previous ones
-        overlapping each part's step; the updates and the host state are exactly the serial ones."""
+        """Chunked step with neighbouring parts' copies overlapping each part's step; same updates."""
         device, capacity, parts = plan
         state = self.optimizer.state
         grad_of = dict(zip(params, grads))
@@ -554,7 +543,7 @@ class _StateOffloader:
                     p.grad = None
                 ring.copy_out(placed[index], state)
                 placed[index] = None
-                # State the step added or could not be copied on the side stream: serial copy.
+                # State the step added, or could not copy on the side stream.
                 devices |= self.offload(members)
         finally:
             ring.close()
@@ -564,9 +553,8 @@ class _StateOffloader:
 
     @contextlib.contextmanager
     def pipelined(self, batches):
-        """Step calls for these parameter batches follow, in this order (bfloat16 stochastic rounding
-        steps one weight per call): copy the next batches' state in and the stepped ones' out while
-        each one steps, and synchronize once at the end instead of after every call."""
+        """Step calls for these batches follow in order (bf16 stochastic rounding: one weight per call):
+        prefetch the next batches' state while each steps, one sync at the end instead of per call."""
         found = None
         flat = [p for batch in batches for p in batch]
         if self.sequence is None and len(batches) > 1 and len({id(p) for p in flat}) == len(flat):
@@ -600,7 +588,7 @@ class _StateOffloader:
         if self.sequence is sequence:
             self.sequence = None
         sequence.ring.close()
-        # Anything a call left on the device (an error, an unexpected call): copied, then one sync.
+        # Anything an error or an unexpected call left on the device.
         self.finish({sequence.ring.device} | self.offload())
 
     def _sequence_take(self, params):
