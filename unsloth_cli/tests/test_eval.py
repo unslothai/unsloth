@@ -150,7 +150,9 @@ def test_csv_task_preserves_prompt_and_gold_text(tmp_path):
     data = tmp_path / "codes.csv"
     data.write_text("item code,label,id\n001,007,1\n010,042,2\n011,NA,3\n", encoding = "utf-8")
     names, includes = evalmod.resolve_tasks(str(data), "item code", "label", tmp_path / "tasks")
-    task = tasks.TaskManager(include_defaults = False, include_path = includes).load_task_or_group(names)["codes"]
+    task = tasks.TaskManager(include_defaults = False, include_path = includes).load_task_or_group(
+        names
+    )["codes"]
     first, _, last = task.test_docs()
     assert task.doc_to_text(first) == "001"
     assert task.doc_to_target(first) == "007"

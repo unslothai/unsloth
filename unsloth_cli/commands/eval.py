@@ -501,7 +501,9 @@ def make_dataset_task(
         # A CSV field is text even when every value happens to look like a number.
         # Only the prompt and answer need a converter; other columns can still infer types.
         spec["dataset_kwargs"].update(
-            keep_default_na = False, na_values = [""], converters = dict.fromkeys((input_key, target_key), str)
+            keep_default_na = False,
+            na_values = [""],
+            converters = dict.fromkeys((input_key, target_key), str),
         )
 
         class CsvTaskDumper(yaml.SafeDumper):
