@@ -1089,6 +1089,7 @@ def format_and_template_dataset(
                         image_column = user_vlm_image_column,
                         dataset_name = dataset_name,
                         progress_callback = progress_callback,
+                        dataset_revision = dataset_revision,
                     )
                     warnings.append(
                         f"Applied user VLM mapping: image='{user_vlm_image_column}', text='{user_vlm_text_column}'"
@@ -1166,6 +1167,7 @@ def format_and_template_dataset(
                     messages_column = vlm_structure["messages_column"],
                     dataset_name = dataset_name,
                     progress_callback = progress_callback,
+                    dataset_revision = dataset_revision,
                 )
                 warnings.append("Converted from ShareGPT+image format to standard VLM format")
             except Exception as e:
@@ -1297,6 +1299,7 @@ def format_and_template_dataset(
                     image_column = vlm_image_column,
                     dataset_name = dataset_name,
                     progress_callback = progress_callback,
+                    dataset_revision = dataset_revision,
                 )
 
                 if vlm_instruction:
