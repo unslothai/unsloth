@@ -655,7 +655,7 @@ function markHole(): boolean {
   const layers = chain
     .filter((node) => node.hasAttribute?.("data-wallpaper-workspace") || node.hasAttribute?.("data-chat-content-root"))
     .flatMap((node) => [...(node.children ?? [])].filter((child): child is HTMLElement => child.classList.contains("chat-wallpaper")));
-  layers.push(...floatingUnderlay(chain));
+  layers.push(...floatingUnderlay(chain), ...modalUnderlay(chain));
   const signature = `${root.dataset.palette}|${theme}|${chain.map((node) => node.className).join("|")}|${layers.length}`;
   // A node can start painting later with no class change (just floated): uncut, the page stayed white.
   const missed = chain.some((node) => !node.hasAttribute?.(HOLE_ATTRIBUTE) && paints(getComputedStyle(node)));
@@ -690,6 +690,19 @@ function floatingUnderlay(chain: HTMLElement[]): HTMLElement[] {
     if (node.hasAttribute("data-chat-content-root")) break;
     for (const sibling of node.parentElement?.children ?? []) {
       if (sibling !== node && sibling instanceof HTMLElement && !sibling.classList.contains("chat-wallpaper")) under.push(sibling);
+    }
+  }
+  return under;
+}
+
+function modalUnderlay(chain: HTMLElement[]): HTMLElement[] {
+  const modal = chain.findIndex((node) => node.getAttribute?.("aria-modal") === "true");
+  if (modal < 0) return [];
+  const under: HTMLElement[] = [];
+  for (const node of chain.slice(modal)) {
+    // Earlier siblings paint below it; later ones (toasts, menus) draw over the page.
+    for (let sibling = node.previousElementSibling; sibling; sibling = sibling.previousElementSibling) {
+      under.push(sibling as HTMLElement);
     }
   }
   return under;

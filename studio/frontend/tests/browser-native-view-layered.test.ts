@@ -558,3 +558,43 @@ test("a node around a layered page that starts painting later, with no class cha
     wrapper.background = before;
   }
 });
+
+test("the app under the dialog a layered page opens in is cut too, though no ancestor of it", async () => {
+  const backdrop = Object.assign(node("backdrop", "rgba(255, 255, 255, 0.8)", section), {
+    getBoundingClientRect: () => rect(0, 0, 1000, 800),
+  });
+  const dialog = Object.assign(node("dialog", "rgb(255, 255, 255)", backdrop), {
+    getAttribute: (name: string) => (name === "aria-modal" ? "true" : null),
+  });
+  const landing = Object.assign(node("landing", "rgba(0, 0, 0, 0)", section), {
+    getBoundingClientRect: () => rect(300, 0, 700, 800),
+  });
+  const sidebar = Object.assign(node("sidebar", "rgb(250, 250, 250)", html), {
+    getBoundingClientRect: () => rect(0, 0, 300, 800),
+  });
+  const toasts = node("toasts", "rgba(0, 0, 0, 0)", html);
+  Object.assign(backdrop, { previousElementSibling: landing });
+  Object.assign(section, { previousElementSibling: sidebar, nextElementSibling: toasts });
+  const parent = wrapper.parentElement;
+  Object.assign(wrapper, { parentElement: dialog });
+  useBrowserStore.getState().openUrl("https://project.example/");
+  const stop = startNativeViews();
+  try {
+    await frame();
+    await frame();
+    assert.ok(dialog.attributes.has("data-native-hole"));
+    assert.deepEqual(
+      [landing, sidebar].map((element) => element.attributes.has("data-native-hole-mask")),
+      [true, true],
+      "the project page and the sidebar behind the dialog skip the page's rect",
+    );
+    assert.equal(landing.vars.get("--native-hole-x"), "200px");
+    assert.equal(sidebar.vars.get("--native-hole-x"), "500px");
+    assert.equal(toasts.attributes.has("data-native-hole-mask"), false, "what draws over it is left alone");
+  } finally {
+    stop();
+    Object.assign(wrapper, { parentElement: parent });
+    Object.assign(section, { previousElementSibling: undefined, nextElementSibling: undefined });
+  }
+  assert.equal(landing.attributes.has("data-native-hole-mask"), false, "closing the panel fills the hole");
+});
