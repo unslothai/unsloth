@@ -132,8 +132,9 @@ def open_root(root):
 
 
 # A mount inside the cache (run.sh's separate HF_HUB_CACHE) has its own owner: a root-owned shared hub stays root's.
-top = os.path.realpath(top)
-nested = {m for m in mount_points() if m.startswith(top + "/")}
+# mountinfo names resolved paths; the walk keeps top as given, so a symlinked HF_HOME is still not followed
+real = os.path.realpath(top)
+nested = {os.path.join(top, os.path.relpath(m, real)) for m in mount_points() if m.startswith(real + "/")}
 for root in [top, *sorted(nested)]:
     try:
         owner = uid if root == top else os.stat(root).st_uid

@@ -285,3 +285,18 @@ def test_only_a_hub_run_sh_created_is_opened_to_group_root(entrypoint, tmp_path,
     # an existing empty hub may be shared through its group: left alone
     assert _logged(calls) == ({str(hub): "-1:0"} if created else {})
     assert stat.S_IMODE(os.stat(hub).st_mode) == (0o775 if created else 0o755)
+
+
+@pytest.mark.skipif(
+    os.name == "posix" and os.geteuid() == 0, reason = "the recording sweep needs a non-root uid"
+)
+def test_a_symlinked_cache_is_not_followed(entrypoint, tmp_path):
+    real = tmp_path / "real"
+    _download_as_root(real / "hub", tmp_path / "outside")
+    hf_home = tmp_path / "hf"
+    hf_home.symlink_to(real)
+    bindir, calls = _recording_python(tmp_path)
+
+    _boot(entrypoint, tmp_path, hf_home, bindir, lambda: False)
+
+    assert _logged(calls) == {}
