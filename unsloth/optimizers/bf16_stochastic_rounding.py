@@ -203,9 +203,7 @@ def _generator(optimizer, device, seed):
 def _seed_for(optimizer, p, seed, step):
     """Seeded by (param index, optimizer step): a resumed run draws what an uninterrupted one would."""
     index = optimizer._unsloth_sr_index[id(p)]
-    return (int(seed) + 0x5EED + index * 1000003 + int(step) * 2654435761) & (
-        0x7FFFFFFFFFFFFFFF
-    )
+    return (int(seed) + 0x5EED + index * 1000003 + int(step) * 2654435761) & (0x7FFFFFFFFFFFFFFF)
 
 
 def _step_of(optimizer, p):
