@@ -32,6 +32,7 @@ def bnb_host(monkeypatch):
     monkeypatch.setattr(loader, "ALLOW_BITSANDBYTES", True)
     monkeypatch.setattr(loader, "ALLOW_PREQUANTIZED_MODELS", True)
     monkeypatch.setattr(loader_utils, "_get_new_mapper", _no_remote_mapper)
+    monkeypatch.setattr(loader_utils, "_complete_in_cache", lambda *a, **k: True)
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
 
 
@@ -98,6 +99,7 @@ def test_8bit_config_still_maps_a_4bit_name_to_16bit(bnb_host, cls):
 )
 def test_get_model_name_with_quantization_config(monkeypatch, name, config, expected):
     monkeypatch.setattr(loader_utils, "_get_new_mapper", _no_remote_mapper)
+    monkeypatch.setattr(loader_utils, "_complete_in_cache", lambda *a, **k: True)
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
     mapped = loader_utils.get_model_name(name, load_in_4bit = True, quantization_config = config)
     assert mapped.lower() == expected.lower()
@@ -115,3 +117,22 @@ def test_get_model_name_16bit_and_fp8_paths_ignore_the_config(
     kwargs = dict(load_in_4bit = load_in_4bit, load_in_fp8 = load_in_fp8)
     plain = loader_utils.get_model_name(name, **kwargs)
     assert loader_utils.get_model_name(name, quantization_config = dict(FP4), **kwargs) == plain
+
+
+@pytest.mark.parametrize("offline_via", ["env", "local_files_only"])
+def test_offline_without_the_16bit_repo_keeps_the_prequantized_remap(monkeypatch, offline_via):
+    monkeypatch.setattr(loader_utils, "_get_new_mapper", _no_remote_mapper)
+    monkeypatch.setattr(
+        loader_utils, "_complete_in_cache", lambda repo, *a, **k: "bnb-4bit" in repo
+    )
+    kwargs = dict(load_in_4bit = True, quantization_config = dict(FP4))
+    if offline_via == "env":
+        monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    else:
+        monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+        monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
+        kwargs["local_files_only"] = True
+    mapped = loader_utils.get_model_name("unsloth/Qwen3-0.6B", **kwargs)
+    assert mapped == "unsloth/Qwen3-0.6B-unsloth-bnb-4bit"
+    monkeypatch.setattr(loader_utils, "_complete_in_cache", lambda *a, **k: True)
+    assert loader_utils.get_model_name("unsloth/Qwen3-0.6B", **kwargs) == "unsloth/Qwen3-0.6B"
