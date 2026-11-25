@@ -790,8 +790,9 @@ function Install-UnslothStudio {
         $pip = ($Resolver -eq "pip")
         $defaultNames = if ($pip) { @("PIP_INDEX_URL") } else { @("UV_DEFAULT_INDEX", "UV_INDEX_URL") }
         $extraNames = if ($pip) { @("PIP_EXTRA_INDEX_URL") } else { @("UV_INDEX", "UV_EXTRA_INDEX_URL") }
-        # Each variable follows its owner's rule: PIP_NO_INDEX is pip's and pip really reads it;
-        # UV_NO_INDEX is ours alone, so that arm honours the operator.
+        # Each variable by its owner's rule, and they are not symmetric. PIP_NO_INDEX is
+        # pip's and pip really reads it, so naming no index here matches what pip will
+        # then do. UV_NO_INDEX is ours alone, so that arm is us honouring the operator.
         $noIndexRequested = if ($pip) { Test-PipEnvFlag "PIP_NO_INDEX" } else { Test-NoIndexRequested }
         if ($noIndexRequested) { return @() }
         $default = $null
@@ -1914,8 +1915,9 @@ function Install-UnslothStudio {
             $_rest = $_p.Substring(1).TrimStart('/', '\')
             $_p = if ($_rest) { Join-Path $env:USERPROFILE $_rest } else { $env:USERPROFILE }
         }
-        # GetFullPath anchors relative paths to [Environment]::CurrentDirectory, which Set-Location
-        # does not move (PowerShell#10278, by design), so it is only the fallback.
+        # GetFullPath anchors a relative path to [Environment]::CurrentDirectory, which
+        # Set-Location does not move, so it disagreed with the Resolve-Path based resolver
+        # (PowerShell#10278, by design). It stays as the fallback, never the first answer.
         try {
             $_p = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($_p)
         } catch {
@@ -2175,7 +2177,8 @@ function Install-UnslothStudio {
             if (-not (Test-StudioSddlRightsAreWrite -Rights $fields[2])) { continue }
             if (-not (Test-StudioSddlPrincipalIsAdminOnly -Principal $fields[5])) { return $true }
         }
-        # An empty or unparsed DACL is not evidence of safety, so it counts as unsafe.
+        # A DACL with no ACEs in it is not evidence of anything, and neither is one this did not
+        # manage to split.
         if ($seen -eq 0) { return $true }
         return $false
     }
@@ -2185,7 +2188,8 @@ function Install-UnslothStudio {
         if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
         $sddl = ""
         try {
-            # Constrained Language Mode refuses Sddl property reads, so use -ExpandProperty.
+            # Select-Object -ExpandProperty, not a property read: Constrained Language Mode refuses
+            # property access on types outside its allowed list, and the security descriptor is one.
             $sddl = "$(Get-Acl -LiteralPath $Path -ErrorAction Stop |
                 Select-Object -ExpandProperty Sddl)"
         } catch { return $false }
@@ -8064,7 +8068,8 @@ exit 0
     function Test-NvidiaSmiHasGpu {
         param([Parameter(Mandatory = $true)][string]$Exe)
         $out = Invoke-NvidiaSmiBounded $Exe @('-L')
-        # Assigned, not OR-ed: only the binary finally settled on counts, not an earlier hang.
+        # Assigned, not OR-ed: the fallback loop tries several paths, and what matters is
+        # whether the binary it settled on answered, not whether an earlier one hung.
         $script:NvidiaSmiWedged = ($LASTEXITCODE -eq 124)
         return ($LASTEXITCODE -eq 0 -and $out -match '(?m)^GPU\s+\d+:')
     }

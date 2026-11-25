@@ -700,15 +700,20 @@ function Get-PathDenialDetail {
 
     if ([string]::IsNullOrWhiteSpace($Path)) { return "" }
 
-    # Read attributes via System.IO.File.GetAttributes, not Get-Item: FILE_READ_ATTRIBUTES survives
-    # ACLs that deny directory reads, where Get-Item returns nothing and hints are silently lost.
+    # Read attributes through the filesystem API rather than Get-Item. Getting
+    # attributes needs only FILE_READ_ATTRIBUTES, which survives the ACLs that
+    # deny reading the directory itself, so Get-Item returns nothing in exactly
+    # the case this detail is meant to describe and the caller silently loses
+    # every hint below.
     $attrs = $null
     try { $attrs = [System.IO.File]::GetAttributes($Path) } catch { $attrs = $null }
     if ($null -eq $attrs) { return "" }
 
-    # Ordered by how much each one changes the fix; takeown/icacls cannot help with the first three;
-    # on a directory Encrypted only means new descendants are encrypted, so listing needs no key and
-    # a denial is an ACL; only a file's own streams are unreadable without the certificate.
+    # Ordered by how much each one changes the fix. takeown/icacls cannot help
+    # with any of the first three, so name them before falling back to ACLs.
+    # On a directory this attribute only means new descendants are encrypted
+    # by default, so listing it never needs the key and a denial there is an
+    # ACL. Only a file's own streams are unreadable without the certificate.
     $isDirectory = ([int]$attrs -band [int][System.IO.FileAttributes]::Directory) -ne 0
     if (-not $isDirectory -and ($attrs -band [System.IO.FileAttributes]::Encrypted)) {
         return " (it is EFS-encrypted, so it stays unreadable even elevated unless the encrypting account or its recovery certificate is available)"
@@ -1698,7 +1703,8 @@ function Test-StudioSddlWritableByNonAdmin {
         if (-not (Test-StudioSddlRightsAreWrite -Rights $fields[2])) { continue }
         if (-not (Test-StudioSddlPrincipalIsAdminOnly -Principal $fields[5])) { return $true }
     }
-    # An empty DACL, or one it could not split, is no evidence the path is admin-only.
+    # A DACL with no ACEs in it is not evidence of anything, and neither is one this did not
+    # manage to split.
     if ($seen -eq 0) { return $true }
     return $false
 }
@@ -1708,7 +1714,8 @@ function Test-StudioDirectoryIsAdminOnly {
     if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
     $sddl = ""
     try {
-        # Constrained Language Mode refuses property reads on ACLs, so use -ExpandProperty.
+        # Select-Object -ExpandProperty, not a property read: Constrained Language Mode refuses
+        # property access on types outside its allowed list, and the security descriptor is one.
         $sddl = "$(Get-Acl -LiteralPath $Path -ErrorAction Stop |
             Select-Object -ExpandProperty Sddl)"
     } catch { return $false }
@@ -1865,7 +1872,8 @@ function New-StudioChildScriptDirectory {
     # which is the point: a pre-created one carrying an attacker's ACL is refused, not adopted.
     if (-not $made) { return "" }
     if ($env:OS -eq "Windows_NT") {
-        # Until labelled, a standard user can swap it for a junction; links are never followed.
+        # Until it is labelled a standard user can swap this directory for a junction: a link is
+        # never adopted, and cleanup never recurses through one into its target.
         $isLink = { try { "$((Get-Item -LiteralPath $dir -Force -ErrorAction Stop).Attributes)" -match 'ReparsePoint' } catch { $true } }
         $labelled = $false
         $icacls = Get-StudioSystem32Tool -Name "icacls.exe"
@@ -1926,7 +1934,8 @@ function Get-NvidiaSystem32Dir {
 # interpreter ladder; setup.ps1 has the venv a previous run already built.
 function Read-NvidiaLibraryRawViaPython {
     param([int]$TimeoutMs = 10000, [switch]$SkipNvml)
-    # Set only if the deadline kills the child; early returns are answers, so reset it first.
+    # Set only when the child is killed at the deadline, so a caller can tell a hung driver from
+    # an empty answer. Reset first: every early return below is an answer, not a timeout.
     $script:NvidiaPythonProbeTimedOut = $false
     if ("$($env:UNSLOTH_NVIDIA_PYTHON_PROBE)".Trim() -eq "0") { return "" }
     $exe = ""
@@ -2093,7 +2102,8 @@ main()
     $raw = ""
     try {
         if (-not $inline) { Set-Content -LiteralPath $scriptFile -Value $probeSource -Encoding UTF8 -ErrorAction Stop }
-        # Round up by hand: [math]::Ceiling is blocked under CLM, and [int] rounds to nearest.
+        # Whole seconds, rounded up, without [math]::Ceiling: CLM blocks it. PowerShell's / is
+        # floating point and [int] rounds to nearest, so 10000ms must not become 11s.
         $seconds = ($TimeoutMs - ($TimeoutMs % 1000)) / 1000
         if (($TimeoutMs % 1000) -ne 0) { $seconds = $seconds + 1 }
         $seconds = [int]$seconds
@@ -2132,9 +2142,11 @@ main()
             else { $env:UNSLOTH_NVIDIA_PROBE_SKIP_NVML = $savedSkip }
         }
         if (-not $proc) { return "" }
-        # Pass $proc to cmdlets (-InputObject, an error variable), never read its Id or HasExited:
-        # Constrained Language Mode blocks property reads on System.Diagnostics.Process, and cmdlets
-        # run in compiled code.
+        # -InputObject and an error variable, never $proc.Id or $proc.HasExited. Constrained
+        # Language Mode permits property reads only on its allowed type list and
+        # System.Diagnostics.Process is not on it, so reading either one throws on exactly the
+        # hosts this rung exists for. Handing the object to a cmdlet keeps the access inside
+        # compiled code, where the language mode does not reach.
         $waitError = $null
         Wait-Process -InputObject $proc -Timeout $seconds -ErrorAction SilentlyContinue -ErrorVariable waitError
         if ($waitError) {
@@ -2160,8 +2172,9 @@ main()
 # "source;cudaMajor;cudaMinor;cap,cap" from NVML, else the CUDA driver API; "" when neither
 function Read-NvidiaLibraryRaw {
     param([int]$TimeoutMs = 30000)
-    # One 2x-timeout deadline spans both probe children; a hung NVML child leaves the CUDA-only
-    # child the remaining time less 2 s, kept to reap it; CLM refuses [math], so compare by hand.
+    # One deadline for both children, as the two in-process readers had: the first gets a whole
+    # bound, and only a hung NVML earns a CUDA-only child with what is left, less the 2 s kept back
+    # to reap the child it may have to kill. Compared by hand: CLM refuses [math].
     $deadline = (Get-Date).AddMilliseconds($TimeoutMs * 2)
     $raw = ""
     try { $raw = Read-NvidiaLibraryRawViaPython -TimeoutMs $TimeoutMs } catch { return "" }
@@ -2513,15 +2526,17 @@ function Get-IntelRegistryAdapterNames {
         $subs = @(Get-ChildItem -LiteralPath $classKey -ErrorAction SilentlyContinue)
     } catch { return @() }
     foreach ($sub in $subs) {
-        # Matches windows_intel_gpu_in_registry(): skip a bad subkey, never the whole loop.
+        # Guarded per subkey, not around the loop: one unreadable entry must not discard the
+        # adapters found after it. Matches windows_intel_gpu_in_registry()'s per-key skip.
         try {
             # Numeric subkeys only: "Properties" is ACL-restricted and not an adapter.
             if ("$($sub.PSChildName)" -match '^\d+$') {
                 $props = Get-ItemProperty -LiteralPath $sub.PSPath -ErrorAction SilentlyContinue
                 if ($props) {
                     $desc = "$($props.DriverDesc)"
-                    # A vendor-ID hit with a localized or OEM DriverDesc would fail the "Intel"
-                    # re-filter, so tag it; XPU only if the name says Arc or Data Center GPU.
+                    # Callers re-filter on "Intel", so a vendor-ID hit with a localized or
+                    # OEM-branded DriverDesc would be found here and dropped there. Tag it
+                    # instead; still only XPU-capable if the name says Arc / Data Center GPU.
                     if ("$($props.MatchingDeviceId)" -match '(?i)ven_8086') {
                         $names += if ($desc -match '(?i)intel') { $desc }
                                   elseif ($desc) { "Intel $desc" }
@@ -3340,8 +3355,9 @@ if ($env:SKIP_STUDIO_BASE -ne "1") {
             $_rest = $_p.Substring(1).TrimStart('/', '\')
             $_p = if ($_rest) { Join-Path $env:USERPROFILE $_rest } else { $env:USERPROFILE }
         }
-        # GetFullPath anchors relative paths to [Environment]::CurrentDirectory, which Set-Location
-        # does not move, so it disagreed with Resolve-Path (PowerShell#10278); fallback only.
+        # GetFullPath anchors a relative path to [Environment]::CurrentDirectory, which
+        # Set-Location does not move, so it disagreed with the Resolve-Path based resolver
+        # (PowerShell#10278, by design). It stays as the fallback, never the first answer.
         try {
             $_p = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($_p)
         } catch {
@@ -3642,14 +3658,19 @@ function Get-NvidiaSmiCandidatePaths {
     if ($env:ProgramFiles) { $dirs += (Join-Path $env:ProgramFiles "NVIDIA Corporation\NVSMI") }
     $pfx86 = ${env:ProgramFiles(x86)}
     if ($pfx86) { $dirs += (Join-Path $pfx86 "NVIDIA Corporation\NVSMI") }
-    # Bounded on purpose: the cap counts only dirs that hold nvidia-smi, not nv* matches, since HD
-    # audio and network nv* packages would use up the allowance and report no GPU; FileRepository
-    # keeps every driver ever installed; Test-Path is a file check, not a spawn; each candidate
-    # returned costs a probe.
+    # Bounded on purpose. FileRepository holds every driver package the machine has ever had.
+    #
+    # The bound is applied to directories that ACTUALLY HOLD the binary, not to the nv* matches.
+    # NVIDIA ships several packages whose names start nv (HD audio, the virtual audio device,
+    # the network service), so a host with eight of those newer than the display driver would
+    # otherwise spend the whole allowance on directories with no nvidia-smi in them and report
+    # the machine as having none. Test-Path is a file existence check, not a process spawn; the
+    # bound that matters is on the candidates handed back, since each of those costs a probe.
     try {
         $repos = @()
         if ($env:SystemRoot) {
-            # Both WOW64 spellings; at most one resolves per process, so not a doubled scan.
+            # Both spellings, same WOW64 reason as above. At most one resolves in any given process, so
+            # this is not a doubled scan.
             $repos += (Join-Path $env:SystemRoot "System32\DriverStore\FileRepository")
             $repos += (Join-Path $env:SystemRoot "SysNative\DriverStore\FileRepository")
         }
@@ -3659,7 +3680,8 @@ function Get-NvidiaSmiCandidatePaths {
             $packages += @(Get-ChildItem -LiteralPath $repo -Directory -Filter "nv*" -ErrorAction SilentlyContinue |
                 Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName "nvidia-smi.exe") -PathType Leaf })
         }
-        # Bound covers DriverStore as a whole, so the second spelling cannot double probes.
+        # The bound is on the whole DriverStore contribution rather than per root, so adding
+        # the second spelling cannot double the number of probes this hands back.
         foreach ($dir in @($packages | Sort-Object LastWriteTime -Descending | Select-Object -First 8)) {
             $dirs += $dir.FullName
         }
@@ -3669,7 +3691,8 @@ function Get-NvidiaSmiCandidatePaths {
     foreach ($dir in $dirs) {
         if ([string]::IsNullOrWhiteSpace($dir)) { continue }
         $candidate = Join-Path $dir "nvidia-smi.exe"
-        # Case-insensitive dedup, so the same directory reached two ways is not probed twice.
+        # Case-insensitive, because the same directory reached two ways must not be probed twice:
+        # each probe is a bounded process spawn with a wall-clock timeout behind it.
         $key = $candidate.ToLowerInvariant()
         if ($seen.ContainsKey($key)) { continue }
         $seen[$key] = $true
@@ -3692,7 +3715,8 @@ $script:NvidiaPresenceStaleGpuWheel = $null
 function Test-NvidiaSmiHasGpu {
     param([Parameter(Mandatory = $true)][string]$Exe)
     $out = Invoke-NvidiaSmiBounded $Exe @('-L')
-    # Assigned, not OR-ed: only the settled binary matters, not an earlier one that hung.
+    # Assigned, not OR-ed: the fallback loop tries several paths, and what matters is
+    # whether the binary it settled on answered, not whether an earlier one hung.
     $script:NvidiaSmiWedged = ($LASTEXITCODE -eq 124)
     return ($LASTEXITCODE -eq 0 -and $out -match '(?m)^GPU\s+\d+:')
 }
@@ -3810,7 +3834,8 @@ function Get-XpuCapableNameRegex { return "(?i)Intel.*(Arc|Data Center GPU)" }
 
 function Test-IntelXpuRuntimeProven {
     param($Scan = $null, [string]$PythonExe = "")
-    # No WMI check: non-Arc Intel GPUs count once torch proves XPU; any failure means unproven.
+    # The Intel route also serves non-Arc Intel GPUs once the existing torch proves XPU works, with no
+    # WMI precondition, so this asks the same thing. Any failure reads as not proven.
     if (-not $PythonExe -or -not (Test-Path -LiteralPath $PythonExe)) { return $false }
     try {
         $probe = Invoke-BoundedPythonProbe -PythonExe $PythonExe -Code 'import torch; print(torch.xpu.is_available())'
@@ -3823,7 +3848,8 @@ function Test-IntelXpuRuntimeProven {
 function Test-OtherVendorAdapterPresent {
     param($Scan = $null)
     if ($null -eq $Scan) { $Scan = Invoke-BoundedVideoControllerScan }
-    # AMD evidence without WMI (override, forwarded arch, HIP SDK, opted-in amd-smi) vetoes.
+    # AMD evidence the AMD route finds without WMI (override, the installer's forwarded arch, HIP SDK,
+    # opted-in amd-smi) vetoes too.
     if ("$env:UNSLOTH_ROCM_GFX_ARCH".Trim() -or "$env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF".Trim()) { return $true }
     try {
         if (Get-Command hipinfo -CommandType Application -ErrorAction SilentlyContinue) { return $true }
@@ -3847,10 +3873,12 @@ function Test-OtherVendorAdapterPresent {
         } catch {}
     }
     foreach ($adapter in @($Scan.Adapters)) {
-        # AMD vetoes on the AMD route's test (name or 1002, any status); UHD/Iris do not block.
+        # AMD vetoes on the AMD route's own test (name or 1002, any status: it keeps parked and
+        # PNP-less cards). Intel was answered above; UHD/Iris do not block.
         if ("$($adapter.Name)" -match "AMD|Radeon" -or "$($adapter.PNPDeviceID)" -match '(?i)ven_1002') { return $true }
     }
-    # Deliberate registry fallback: staleness only declines a promotion; broken WMI hid an Arc.
+    # Registry fallback here is deliberate: staleness only DECLINES a promotion. Without it, broken WMI
+    # hid the Arc on a hybrid host and cost it its XPU wheels.
     if ($Scan.Ok) { return $false }
     # Same normalized names as the Intel route (it prefixes "Intel" to a VEN_8086 DriverDesc).
     try {
@@ -6236,8 +6264,9 @@ function Get-WoaDependencyIndexArgs {
     $pip = ($Resolver -eq "pip")
     $defaultNames = if ($pip) { @("PIP_INDEX_URL") } else { @("UV_DEFAULT_INDEX", "UV_INDEX_URL") }
     $extraNames = if ($pip) { @("PIP_EXTRA_INDEX_URL") } else { @("UV_INDEX", "UV_EXTRA_INDEX_URL") }
-    # Each variable follows its owner's rule: pip reads PIP_NO_INDEX so naming no index matches pip;
-    # UV_NO_INDEX is ours alone, so that arm honours the operator.
+    # Each variable by its owner's rule, and they are not symmetric. PIP_NO_INDEX is
+    # pip's and pip really reads it, so naming no index here matches what pip will
+    # then do. UV_NO_INDEX is ours alone, so that arm is us honouring the operator.
     $noIndexRequested = if ($pip) { Test-PipEnvFlag "PIP_NO_INDEX" } else { Test-NoIndexRequested }
     if ($noIndexRequested) { return @() }
     $default = $null
@@ -6380,7 +6409,8 @@ function Get-UvSafePath {
         } else {
             $fso.GetFile($Path).ShortPath
         }
-        # Alias may not resolve (#11290); a bogus value breaks UV_OVERRIDE and --find-links.
+        # A space-free alias is not necessarily a name that resolves (#11290). This value
+        # reaches UV_OVERRIDE and --find-links, so a bogus one breaks every later uv call.
         if ($short -and -not $short.Contains(" ") -and (Test-Path -LiteralPath $short -ErrorAction SilentlyContinue)) { return $short }
     } catch {}
     return $Path
