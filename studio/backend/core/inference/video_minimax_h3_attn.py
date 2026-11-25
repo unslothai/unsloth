@@ -521,7 +521,7 @@ EXACT_GRAPH_REASON = "INT8 attention exact start routes per denoise step (not CU
 _EXACT_REGISTRY: dict = {}
 _EXACT_KEYS = itertools.count(1)
 # calls served per path since import (engagement census; the op body runs eagerly, also under torch.compile)
-EXACT_START_STATS = {"exact": 0, "int8": 0}
+EXACT_START_STATS = {"exact": 0, "int8": 0, "declined": 0}
 
 
 def _exact_attention(q: Any, k: Any, v: Any, kernel: int) -> Any:
@@ -572,8 +572,16 @@ def int8_attention_exact_start_impl(q: Any, k: Any, v: Any, flag: Any, kernel: i
             EXACT_START_STATS["exact"] += 1
             out = _exact_attention(q, k, v, int(kernel))
         else:
-            EXACT_START_STATS["int8"] += 1
-            out = _i8.int8_attention_impl(q, k, v)
+            # a call the kernel does not take (a secondary card that lost its race, a failed launch) keeps the
+            # processor's pinned 16-bit kernel, as the exact steps run, not torch's unpinned attention
+            declined = []
+
+            def pinned() -> Any:
+                declined.append(True)
+                return _exact_attention(q, k, v, int(kernel))
+
+            out = _i8.int8_attention_impl(q, k, v, fallback = pinned)
+            EXACT_START_STATS["declined" if declined else "int8"] += 1
     return out.to(v.dtype).contiguous()
 
 

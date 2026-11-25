@@ -303,3 +303,150 @@ def test_a_listed_card_reads_its_device_facts_once(monkeypatch):
         assert I.implementation(0, 128) == "cuda"
         assert I.device_config(0, 128) == I.KERNEL_CONFIGS[(8, 9)][128]
     assert reads == {"cap": 1, "props": 0}, reads
+
+
+# ------------------------------------------------------- 6. a secondary's race loss gates serving, never validation
+def _losing_secondary_install(monkeypatch, incumbent = None):
+    """Install with the H100 secondary losing its own race; returns the DiT."""
+    _mixed_cards(monkeypatch)
+
+    def floor(dev, dt, heads, hd, fn, name):
+        card = torch.device(dev).index
+        I._VERIFIED.add((card, int(hd), str(dt), "cuda"))
+        return {"ok": True, "ms": {}, "impl": "cuda"}, (1024 if card == 0 else None)
+
+    monkeypatch.setattr(I, "verdict", _accepting_verdict)
+    if incumbent is not None:
+        monkeypatch.setattr(I, "_sdpa_incumbent", lambda backend: ("_native_cudnn", incumbent))
+    dit = _dit()
+    assert I.install_int8_attention(dit, device = "cuda:0", dtype = torch.bfloat16, floor = floor) == 2
+    return dit
+
+
+def test_a_secondary_race_loss_never_fails_that_cards_kernel_check(monkeypatch):
+    """The probe and the races call int8_attention: a serving floor there would raise inside the accuracy check,
+    and verdict() would record the card's kernel as failed for the process."""
+    _losing_secondary_install(monkeypatch)
+    monkeypatch.setattr(I, "_run", lambda *a, **k: "kernel ran")
+    monkeypatch.setattr(I, "_keep_nonfinite", lambda q, k, v, out: out)  # shim operands
+    assert (
+        I.unsupported_reason(*_fake_qkv(1)) is not None
+    )  # serving still declines on the losing card
+    assert I.int8_attention(*_fake_qkv(1)) == "kernel ran"
+    assert (1, 64) not in I._CUDA_FAILED
+    assert I.implementation(1, 64) == "cuda"
+
+
+# ----------------------------------------------- 7. a declining secondary keeps its pinned 16-bit incumbent
+def test_a_losing_secondary_runs_its_pinned_incumbent_not_unpinned_sdpa(monkeypatch):
+    calls = []
+
+    def pinned(q, k, v):
+        calls.append("pinned")
+        return torch.zeros(1, 4096, 2, 64, dtype = torch.bfloat16)
+
+    _losing_secondary_install(monkeypatch, incumbent = pinned)
+    monkeypatch.setattr(
+        I, "native_attention", lambda *a, **k: calls.append("sdpa") or torch.zeros(1, 4096, 2, 64)
+    )
+    out = I.int8_attention_impl(*_fake_qkv(1))
+    assert calls == ["pinned"], calls
+    assert out.dtype == torch.bfloat16
+
+
+def test_h3_exact_start_keeps_its_pinned_kernel_when_the_card_declines(monkeypatch):
+    from core.inference import video_minimax_h3_attn as h3
+
+    _losing_secondary_install(monkeypatch)
+    ran = []
+    monkeypatch.setattr(h3, "_capturing_on", lambda device: False)
+    monkeypatch.setattr(
+        h3,
+        "_exact_attention",
+        lambda q, k, v, kernel: ran.append(kernel)
+        or torch.zeros(1, 4096, 2, 64, dtype = torch.bfloat16),
+    )
+    monkeypatch.setattr(
+        I, "native_attention", lambda *a, **k: ran.append("sdpa") or torch.zeros(1, 4096, 2, 64)
+    )
+    before = dict(h3.EXACT_START_STATS)
+    h3.int8_attention_exact_start_impl(*_fake_qkv(1), torch.zeros(1, dtype = torch.int32), 1)
+    assert ran == [1], ran  # the pinned kernel after the boundary, not unrestricted SDPA
+    assert h3.EXACT_START_STATS["int8"] == before["int8"], "a declined call counted as an INT8 call"
+
+
+# ------------------------------------------------- 8. the native fallback keeps V's dtype whatever autocast says
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float16])
+def test_native_fallback_dtype_matches_the_fake_under_autocast(dtype):
+    q, k, v = (torch.randn(1, 16, 2, 64).to(dtype) for _ in range(3))
+    fake = torch.empty(0, dtype = dtype).new_empty(q.shape)  # the op's fake: v.new_empty(q.shape)
+    with torch.autocast("cpu", dtype = torch.bfloat16):
+        eager = I.int8_attention_impl(q, k, v)
+    assert eager.dtype == fake.dtype == dtype
+
+
+# ------------------------------------------------ 9. non-finite inputs stay non-finite on a fallback card
+@pytest.mark.parametrize(
+    "operand,where,spread",
+    [("k", (0, 3, 1, 5), "head"), ("v", (0, 7, 0, 9), "channel"), ("q", (0, 2, 1, 0), "row")],
+)
+def test_a_fallback_card_propagates_non_finite_inputs(monkeypatch, operand, where, spread):
+    """torch's attention, which this card ran before the fallback, returns non-finite where an input is non-finite;
+    the kernel's quantisers would drop the NaN. Finite rows stay exactly the kernel's."""
+    _mixed_cards(monkeypatch)
+    qkv = {n: torch.randn(1, 16, 2, 64, dtype = torch.bfloat16) for n in "qkv"}
+    qkv[operand][where] = float("nan")
+    kernel_out = torch.ones(1, 16, 2, 64, dtype = torch.bfloat16)
+    monkeypatch.setattr(
+        I, "_call_route", lambda q, k, v, floors = True: (None, 1, "cuda", {"bn": 64})
+    )
+    monkeypatch.setattr(I, "_verified_at", lambda *a: True)
+    monkeypatch.setattr(I, "_cuda_attention", lambda *a, **k: kernel_out.clone())
+    out = I.int8_attention_impl(qkv["q"], qkv["k"], qkv["v"])
+    bad = torch.isnan(out)
+    b, s, h, d = where
+    expect = torch.zeros_like(bad)
+    if spread == "head":
+        expect[b, :, h, :] = True
+    elif spread == "channel":
+        expect[b, :, h, d] = True
+    else:
+        expect[b, s, h, :] = True
+    assert torch.equal(bad, expect)
+    assert torch.equal(out[~bad], kernel_out[~bad])
+
+
+def test_a_listed_card_output_is_untouched_by_the_non_finite_guard(monkeypatch):
+    _mixed_cards(monkeypatch)
+    q, k, v = (torch.randn(1, 16, 2, 64, dtype = torch.bfloat16) for _ in range(3))
+    k[0, 3, 1, 5] = float("nan")
+    kernel_out = torch.ones(1, 16, 2, 64, dtype = torch.bfloat16)
+    monkeypatch.setattr(
+        I, "_call_route", lambda q, k, v, floors = True: (None, 0, "cuda", {"bn": 64})
+    )
+    monkeypatch.setattr(I, "_verified_at", lambda *a: True)
+    monkeypatch.setattr(I, "_cuda_attention", lambda *a, **k: kernel_out.clone())
+    assert torch.equal(I.int8_attention_impl(q, k, v), kernel_out)  # sm89 is listed: as before
+
+
+# ---------------------------------------------------- 10. the two-card GPU tests see newly eligible secondaries
+def test_two_card_gpu_tests_look_up_the_served_config():
+    import ast
+    from pathlib import Path
+
+    src = Path(__file__).with_name("test_diffusion_int8_attention.py").read_text()
+    tree = ast.parse(src)
+    segments = []
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(
+            getattr(t, "id", None) == "needs_two_cards" for t in node.targets
+        ):
+            segments.append(ast.get_source_segment(src, node))
+        if (
+            isinstance(node, ast.FunctionDef)
+            and node.name == "test_each_card_loads_its_own_kernels"
+        ):
+            segments.append(ast.get_source_segment(src, node))
+    assert len(segments) == 2
+    for seg in segments:
+        assert "device_config(" in seg and "kernel_config(" not in seg, seg[:200]

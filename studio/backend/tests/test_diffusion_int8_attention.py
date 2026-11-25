@@ -2603,7 +2603,7 @@ OTHER = 1  # the second card of the two-card tests
 needs_two_cards = pytest.mark.skipif(
     _cuda_config() is None
     or torch.cuda.device_count() <= OTHER
-    or I.kernel_config(torch.cuda.get_device_capability(OTHER), 128) is None,
+    or I.device_config(OTHER, 128) is None,  # the card's own entry or the nearest-family fallback
     reason = "needs two CUDA cards with an INT8 kernel config",
 )
 
@@ -2630,7 +2630,7 @@ def test_each_card_loads_its_own_kernels(head_dim):
     assert sorted(plan["index"] for plan in I._plans().values()) == [0, OTHER]
     loaded = {}
     for index in (0, OTHER):
-        config = I.kernel_config(torch.cuda.get_device_capability(index), head_dim)
+        config = I.device_config(index, head_dim)
         attn, quant, _ = I._functions(index, head_dim, config)
         loaded[index] = [attn, *quant.values()]
         assert I.accuracy(out[index], I.reference_attention(*calls[index]))["cos"] >= I.MIN_COSINE

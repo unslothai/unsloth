@@ -1127,6 +1127,7 @@ def forget_plans() -> None:
     _plans().clear()
     _decisions().clear()
     _CARD_FLOORS.clear()
+    _CARD_INCUMBENTS.clear()
     _sink_unsafe().clear()
     with _ROUTES_LOCK:
         _ROUTES.clear()
@@ -1550,9 +1551,17 @@ def attend(p: dict) -> Any:
     return out
 
 
+# why a call is declined where a raced secondary card lost its race or the call is under that card's floor
+_CARD_DECLINE = "this card lost or is under its own race"
+# set while ``int8_attention`` (the accuracy probe, the races) asks whether the kernel takes a call: those test the
+# kernel itself, so a raced secondary card's serving floor never fails its check
+_KERNEL_ONLY = threading.local()
+
+
 def _call_route(q: Any, k: Any, v: Any) -> tuple:
     """(reason, device index, implementation, config): why this call cannot run the kernel (None when it can), and
-    what serves it. Every device fact is read once per call."""
+    what serves it. Every device fact is read once per call. A raced secondary card's serving floor applies to the
+    serving calls only (not inside ``int8_attention``)."""
     import torch
 
     if not (q.is_cuda and k.is_cuda and v.is_cuda) or not (q.device == k.device == v.device):
@@ -1579,9 +1588,10 @@ def _call_route(q: Any, k: Any, v: Any) -> tuple:
         return "no kernel config for this card", index, None, None
     if (index, D) in _BROKEN:
         return "kernel failed on this card", index, impl, config
-    card_floor = _CARD_FLOORS.get((index, H, D), Sq) if _CARD_FLOORS else Sq
+    floors = _CARD_FLOORS and not getattr(_KERNEL_ONLY, "on", False)
+    card_floor = _CARD_FLOORS.get((index, H, D), Sq) if floors else Sq
     if card_floor is None or Sq < card_floor:
-        return "this card lost or is under its own race", index, impl, config
+        return _CARD_DECLINE, index, impl, config
     return None, index, impl, config
 
 
@@ -1665,11 +1675,39 @@ def int8_attention(
     in the dtype of V. Raises where ``unsupported_reason`` says so; ``int8_attention_impl`` is the guarded form."""
     import torch
 
-    reason = unsupported_reason(q, k, v)
+    _KERNEL_ONLY.on = True
+    try:
+        reason = unsupported_reason(q, k, v)
+    finally:
+        _KERNEL_ONLY.on = False
     if reason is not None:
         raise ValueError(f"INT8 attention cannot take this call: {reason}")
     index = q.device.index if q.device.index is not None else torch.cuda.current_device()
-    return _run(q, k, v, implementation(index, int(q.shape[-1])), config, scale, mode)
+    impl = implementation(index, int(q.shape[-1]))
+    out = _run(q, k, v, impl, config, scale, mode)
+    return _keep_nonfinite(q, k, v, out) if _fallback_card(index, int(q.shape[-1]), impl) else out
+
+
+def _fallback_card(index: int, head_dim: int, impl: Optional[str]) -> bool:
+    """Whether the CUDA kernel serves this card through the nearest-family fallback (no measured entry of its own)."""
+    return impl == "cuda" and kernel_config(_device_capability(index), head_dim) is None
+
+
+def _keep_nonfinite(q: Any, k: Any, v: Any, out: Any) -> Any:
+    """NaN where torch's attention would be non-finite: a non-finite key spreads to every query of its batch and
+    head, a non-finite value to its channel of them, a non-finite query to its own row. The kernel's quantisers take
+    max-reductions that drop NaN, so without this a broken input would come back as plausible numbers. Sync-free (three
+    max-|x| reductions and two broadcast fills); applied where the fallback serves a card, so a card that ran torch's
+    attention before the fallback keeps seeing non-finite inputs as non-finite outputs."""
+    import torch
+
+    inf = float("inf")
+    bad_k = ~torch.isfinite(torch.linalg.vector_norm(k, inf, dim = (1, 3)))  # [B, H]
+    bad_q = ~torch.isfinite(torch.linalg.vector_norm(q, inf, dim = 3))  # [B, S, H]
+    bad_v = ~torch.isfinite(torch.linalg.vector_norm(v, inf, dim = 1))  # [B, H, D]
+    out.masked_fill_((bad_q | bad_k[:, None, :])[..., None], float("nan"))
+    out.masked_fill_(bad_v[:, None], float("nan"))
+    return out
 
 
 def native_attention(
@@ -1695,9 +1733,13 @@ def int8_attention_impl(
     k: Any,
     v: Any,
     mode: int = MODE_MAIN,
+    *,
+    fallback: Optional[Callable] = None,
 ) -> Any:
-    """The kernel where it can run, native attention elsewhere and after any failure (``mode``: as for
-    ``int8_attention_call``)."""
+    """The kernel where it can run, 16-bit attention elsewhere and after any failure (``mode``: as for
+    ``int8_attention_call``). The 16-bit call is ``fallback()`` when given (a caller's pinned kernel), else the
+    incumbent a raced secondary card was installed against where that card declines, else torch's attention; always
+    in V's dtype with autocast off, as the op's fake says."""
     import torch
 
     reason, index, impl, config = _call_route(q, k, v)
@@ -1716,6 +1758,8 @@ def int8_attention_impl(
                     out = _cuda_attention(q, k, v, config, None, index, mode)
             else:
                 out = _cuda_attention(q, k, v, config, None, index, mode)
+            if _fallback_card(index, int(q.shape[-1]), impl):
+                out = _keep_nonfinite(q, k, v, out)
             STATS["int8"] += 1
             if impl == "triton":
                 STATS["triton"] += 1
@@ -1738,7 +1782,17 @@ def int8_attention_impl(
                     exc,
                 )
     STATS["native"] += 1
-    return native_attention(q, k, v)
+    with torch.autocast(q.device.type, enabled = False):
+        if fallback is not None:
+            out = fallback()
+        else:
+            pinned = (
+                _CARD_INCUMBENTS.get((index, int(q.shape[2]), int(q.shape[-1])))
+                if reason == _CARD_DECLINE
+                else None
+            )
+            out = (pinned or native_attention)(q, k, v)
+    return out if getattr(out, "dtype", v.dtype) == v.dtype else out.to(v.dtype)
 
 
 def _tracing() -> bool:
@@ -2242,6 +2296,9 @@ def _secondary_cards(primary: int, transformer: Any = None) -> tuple:
 # None where it lost (native there). Only raced secondaries have an entry: the load card is governed by the
 # processor's floor and a forced install by the accuracy check alone.
 _CARD_FLOORS: dict = {}
+# (card, heads, head dim) -> the 16-bit incumbent that card raced against: where it declines a call (lost, or under its
+# floor), the call runs that pinned backend, not torch's unpinned attention.
+_CARD_INCUMBENTS: dict = {}
 
 
 def _secondary_races(
@@ -2435,6 +2492,12 @@ def _install(
             report,
         )
         pending.append((m, found.get("impl"), minimum, force, cards))
+    incumbents = {}
+    for m in candidates:
+        if incumbent is not None:
+            incumbents[id(m)] = incumbent[1]
+        else:
+            incumbents[id(m)] = _sdpa_incumbent(getattr(m.processor, "_attention_backend", None))[1]
     for m, impl, minimum, forced, cards in pending:
         proc = m.processor
         proc._unsloth_int8_impl = impl
@@ -2446,11 +2509,14 @@ def _install(
         heads, head_dim = int(m.heads), int(_head_dim(m))
         # the load card is governed by the processor's own floor; a raced secondary by its race (None: native there)
         _CARD_FLOORS.pop((index, heads, head_dim), None)
+        _CARD_INCUMBENTS.pop((index, heads, head_dim), None)
         for card, card_floor in (cards or {}).items():
             if forced:
                 _CARD_FLOORS.pop((card, heads, head_dim), None)
+                _CARD_INCUMBENTS.pop((card, heads, head_dim), None)
             else:
                 _CARD_FLOORS[(card, heads, head_dim)] = card_floor
+                _CARD_INCUMBENTS[(card, heads, head_dim)] = incumbents.get(id(m))
         if not forced:
             register_route(index, head_dim, _raise_processor_floor(proc, m))
         engaged += 1
