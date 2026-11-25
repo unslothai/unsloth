@@ -213,6 +213,7 @@ class EgressProxy:
             listener.close()
             raise
         self.port = None if unix_path else listener.getsockname()[1]
+        self._wake = (family, listener.getsockname())
         self._listener = listener
         self._sockets: set[socket.socket] = set()
         self._lock = threading.Lock()
@@ -329,5 +330,12 @@ class EgressProxy:
                 sock.shutdown(socket.SHUT_RDWR)
             except OSError:
                 pass
+        # accept() only sees the closed listener at its next timeout, which every call would wait out.
+        try:
+            with socket.socket(self._wake[0], socket.SOCK_STREAM) as waker:
+                waker.settimeout(0.25)
+                waker.connect(self._wake[1])
+        except OSError:
+            pass
         self._listener.close()
         self._thread.join(timeout = 2)

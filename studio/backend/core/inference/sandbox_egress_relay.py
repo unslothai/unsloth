@@ -3,53 +3,55 @@
 
 """Runs inside bubblewrap's private network: relays 127.0.0.1:PORT to Studio's proxy socket, then execs the command."""
 
+import _signal
+import _socket
 import os
-import signal
-import socket
 import sys
-import threading
 
 
-def _pipe(source, sink):
-    try:
-        while True:
-            data = source.recv(65536)
-            if not data:
-                break
-            sink.sendall(data)
-    except OSError:
-        pass
-    try:
-        sink.shutdown(socket.SHUT_WR)
-    except OSError:
-        pass
+def _serve(raw, path):
+    # Imported after the fork, so the command does not wait on them to start.
+    import socket
+    import threading
 
+    def pipe(source, sink):
+        try:
+            while True:
+                data = source.recv(65536)
+                if not data:
+                    break
+                sink.sendall(data)
+        except OSError:
+            pass
+        try:
+            sink.shutdown(socket.SHUT_WR)
+        except OSError:
+            pass
 
-def _relay(client, path):
-    upstream = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    try:
-        upstream.connect(path)
-        back = threading.Thread(target = _pipe, args = (upstream, client), daemon = True)
-        back.start()
-        _pipe(client, upstream)
-        back.join()
-    except OSError:
-        pass
-    finally:
-        upstream.close()
-        client.close()
+    def relay(client):
+        upstream = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            upstream.connect(path)
+            back = threading.Thread(target = pipe, args = (upstream, client), daemon = True)
+            back.start()
+            pipe(client, upstream)
+            back.join()
+        except OSError:
+            pass
+        finally:
+            upstream.close()
+            client.close()
 
-
-def _serve(listener, path):
+    listener = socket.socket(fileno = raw.detach())
     while True:
         client, _ = listener.accept()
-        threading.Thread(target = _relay, args = (client, path), daemon = True).start()
+        threading.Thread(target = relay, args = (client,), daemon = True).start()
 
 
 def main(argv):
     path, port, command = argv[1], int(argv[2]), argv[3:]
-    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+    listener.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
     listener.bind(("127.0.0.1", port))
     listener.listen(64)
     # Listening before the command starts; the namespace's init kills this child when the command exits.
@@ -64,8 +66,8 @@ def main(argv):
     listener.close()
     # Python ignores these at startup and exec would pass that on: `yes | head` must still end quietly.
     for name in ("SIGPIPE", "SIGXFSZ"):
-        if hasattr(signal, name):
-            signal.signal(getattr(signal, name), signal.SIG_DFL)
+        if hasattr(_signal, name):
+            _signal.signal(getattr(_signal, name), _signal.SIG_DFL)
     os.execvp(command[0], command)
 
 
