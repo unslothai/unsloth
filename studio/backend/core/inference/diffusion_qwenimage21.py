@@ -18,6 +18,7 @@ from .diffusion_autoopt.patches import source_digest
 
 FAST_STEP_ENV = "UNSLOTH_DIFFUSION_Q21_FAST_STEP"
 COMPACT_KV_ENV = "UNSLOTH_DIFFUSION_Q21_COMPACT_KV"
+SHARED_PREFIX_KV_ENV = "UNSLOTH_DIFFUSION_Q21_SHARED_PREFIX_KV"
 
 _MODULE = "diffusers.models.transformers.transformer_qwenimage21"
 _CLASS = "QwenImage21Transformer2DModel"
@@ -627,6 +628,7 @@ def _make_forward(mod: Any, stock: Any) -> Any:
             block_key_valid = joint_key_valid
 
         compact_kv = compact_kv_enabled()
+        share_kv = batch_size > 1 and shared_prefix_kv_enabled()
         for index_block, block in enumerate(self.transformer_blocks):
             layer_cache = kv_cache.get_layer(index_block) if kv_cache is not None else None
             joint_hidden_states = block(
@@ -643,6 +645,9 @@ def _make_forward(mod: Any, stock: Any) -> Any:
             )
             if layer_cache is not None and cache_write_slice is not None and compact_kv:
                 _compact_layer_cache(layer_cache)
+            if layer_cache is not None and cache_write_slice is not None and share_kv:
+                # Per block, so the prefill never holds n copies of every layer at once.
+                share_prefix_rows((layer_cache,))
 
         joint_hidden_states = self.norm_out(joint_hidden_states, temb, modulation_mask)
         output = self.proj_out(joint_hidden_states)
@@ -664,6 +669,65 @@ def _make_forward(mod: Any, stock: Any) -> Any:
 
 def compact_kv_enabled() -> bool:
     return (os.environ.get(COMPACT_KV_ENV) or "").strip().lower() not in ("0", "off", "false", "no")
+
+
+def shared_prefix_kv_enabled() -> bool:
+    return (os.environ.get(SHARED_PREFIX_KV_ENV) or "").strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
+
+
+_INT_VIEW = {1: "int8", 2: "int16", 4: "int32", 8: "int64"}
+SHARED_PREFIX_STATS = {"shared": 0, "distinct": 0, "bytes": 0}
+
+
+def share_prefix_rows(entries: Any) -> int:
+    """One prompt rendered n times stores n bit-identical copies of the prefix K/V; keep one, expanded back to n.
+
+    Every cached step reads an entry through ``torch.cat``, which copies an expanded view exactly as it copies the n
+    stored rows. Rows are compared bitwise (one host sync per entry, prefill only), so -0.0 / +0.0 or NaN payloads keep
+    every copy. ``entries``: layer caches holding ``k`` / ``v``. Returns bytes freed."""
+    import torch
+
+    freed = 0
+    try:
+        if torch.compiler.is_compiling() or (
+            torch.cuda.is_available() and torch.cuda.is_current_stream_capturing()
+        ):
+            return 0
+        for entry in entries:
+            pair = [getattr(entry, name, None) for name in ("k", "v")]
+            if any(
+                not torch.is_tensor(t)
+                or t.dim() != 4
+                or t.shape[0] < 2
+                or t.stride(0) == 0
+                or t.shape[0] != pair[0].shape[0]
+                or t.element_size() not in _INT_VIEW
+                for t in pair
+            ):
+                continue
+            same = torch.stack(
+                [
+                    torch.eq(bits[1:], bits[:1]).all()
+                    for bits in (t.view(getattr(torch, _INT_VIEW[t.element_size()])) for t in pair)
+                ]
+            ).all()
+            if not bool(same):
+                SHARED_PREFIX_STATS["distinct"] += 1
+                continue
+            for name, t in zip(("k", "v"), pair):
+                setattr(entry, name, t[:1].clone().expand_as(t))
+                freed += (t.shape[0] - 1) * (t.numel() // t.shape[0]) * t.element_size()
+            SHARED_PREFIX_STATS["shared"] += 1
+        SHARED_PREFIX_STATS["bytes"] += freed
+        return freed
+    except Exception:  # noqa: BLE001 - a memory saving only; an entry not yet shared keeps every row
+        SHARED_PREFIX_STATS["bytes"] += freed
+        return freed
 
 
 def _compact_layer_cache(layer_cache: Any) -> None:
