@@ -3462,6 +3462,18 @@ _STUDIO_CREDENTIAL_BLOCKED = (
     "Blocked for safety: Unsloth Studio's authentication directory holds this install's own "
     "credentials and is not readable by tools."
 )
+_PYTHON_TOO_DEEP_TO_SCREEN = (
+    "Error: the code is nested too deeply for the safety check to analyse, so it was not run. "
+    "Simplify it (for example, split long expressions into several statements) and run it again."
+)
+_TERMINAL_TOO_DEEP_TO_SCREEN = (
+    "Error: the command is nested too deeply for the safety check to analyse, so it was not run. "
+    "Simplify it and run it again."
+)
+_MCP_TOO_DEEP_TO_SCREEN = (
+    "Error: the tool arguments are nested too deeply for the safety check to analyse, so the "
+    "call was not made. Simplify them and try again."
+)
 
 
 def _canonical_path_text(text: str) -> str:
@@ -4143,8 +4155,26 @@ def _references_studio_credential_here(
     _assign_expand_depth: int = 0,
     _quoted_assignments: bool = False,
     _positional_assignments: bool = False,
+    _cleared: "set | None" = None,
+    _depth: int = 0,
 ) -> bool:
     """Checks credential refs and .. paths from the tool cwd (the one shape that can leave the sandbox); a binding of the variable first names its own dir"""
+    # Nested `[[...]]` rewrites reach one text along many paths; keyed on depth so RecursionError matches a rescan.
+    if _cleared is None:
+        _cleared = set()
+    key = None
+    if type(text) is str and (workdir is None or type(workdir) is str):
+        key = (
+            hashlib.sha256(text.encode("utf-8", "surrogatepass")).digest(),
+            workdir,
+            _unescaped,
+            _assign_expand_depth,
+            _quoted_assignments,
+            _positional_assignments,
+            _depth,
+        )
+        if key in _cleared:
+            return False
     if "=" in text and _rebinds_the_studio_home_first(text):
         text = _expand_shell_assignments(text)
     if _references_studio_credential(text):
@@ -4164,18 +4194,22 @@ def _references_studio_credential_here(
         # One level only: recursing per pass raised RecursionError on long `\\` runs.
         unescaped = _ESCAPED_WORD_CHAR_RE.sub(r"\1", text)
         if unescaped != text and _references_studio_credential_here(
-            unescaped, workdir, _unescaped = True
+            unescaped, workdir, _unescaped = True, _cleared = _cleared, _depth = _depth + 1
         ):
             return True
     if "[" in text:
         # Read one-char classes as literals before the wildcard collapse discards them.
         literal = _SINGLETON_CLASS_RE.sub(r"\1", text)
-        if literal != text and _references_studio_credential_here(literal, workdir):
+        if literal != text and _references_studio_credential_here(
+            literal, workdir, _cleared = _cleared, _depth = _depth + 1
+        ):
             return True
     # `aut[h]` splits at the brackets, which also end a path token; `aut?` keeps it whole.
     if "[" in text:
         collapsed = _BRACKET_CLASS_RE.sub("?", text)
-        if collapsed != text and _references_studio_credential_here(collapsed, workdir):
+        if collapsed != text and _references_studio_credential_here(
+            collapsed, workdir, _cleared = _cleared, _depth = _depth + 1
+        ):
             return True
     # The kernel resolves the symlink before `..`; lexical normpath would miss it.
     if workdir and "/proc/" in text:
@@ -4185,13 +4219,17 @@ def _references_studio_credential_here(
     # Bypass repoints HOME at the workdir; substitute rather than replace.
     if workdir and ("pwd" in text.lower() or "%cd%" in text.lower()):
         here = _CWD_VARIABLE_RE.sub(lambda _m: workdir.rstrip("/\\"), text)
-        if here != text and _references_studio_credential_here(here, workdir):
+        if here != text and _references_studio_credential_here(
+            here, workdir, _cleared = _cleared, _depth = _depth + 1
+        ):
             return True
     if workdir and ("home" in text.lower() or "~" in text):
         homed = _HOME_VARIABLE_RE.sub(lambda _m: workdir.rstrip("/\\"), text)
         # A workdir spelling `~` would substitute to another match, so recurse only once it is gone.
         if homed != text and not _HOME_VARIABLE_RE.search(homed):
-            if _references_studio_credential_here(homed, workdir):
+            if _references_studio_credential_here(
+                homed, workdir, _cleared = _cleared, _depth = _depth + 1
+            ):
                 return True
     # One level of variable indirection; it only adds detections.
     if "$" in text:
@@ -4236,6 +4274,8 @@ def _references_studio_credential_here(
                     _assign_expand_depth = _assign_expand_depth + 1,
                     _quoted_assignments = include_quoted,
                     _positional_assignments = positional,
+                    _cleared = _cleared,
+                    _depth = _depth + 1,
                 ):
                     return True
     # A `cd` earlier in the command moves where every later relative path opens from.
@@ -4257,6 +4297,8 @@ def _references_studio_credential_here(
                 ):
                     return True
     if not workdir or ".." not in text:
+        if key is not None:
+            _cleared.add(key)
         return False
     for token in (m.group(0) for m in _path_tokens_containing(text, "..")):
         if "/" not in token and "\\" not in token:
@@ -4266,6 +4308,8 @@ def _references_studio_credential_here(
             for spelling in _token_spellings(token)
         ):
             return True
+    if key is not None:
+        _cleared.add(key)
     return False
 
 
@@ -5589,18 +5633,28 @@ _PATH_NAME_REWRITES = frozenset({"with_name", "with_stem", "with_suffix"})
 _PERCENT_NAMED_RE = re.compile(r"%\((\w+)\)[-#0 +]*\d*(?:\.\d+)?[a-zA-Z]")
 
 
+_NOT_FOLDED = object()
+
+
 def _folded_path(
     node,
     literals = None,
     ctors = None,
     join_names = None,
+    memo = None,
 ) -> "str | None":
-    """Folds literal pieces; a dynamic piece is a NUL placeholder, so a dynamic name stays detectable."""
+    """Folds literal pieces; a dynamic piece is a NUL placeholder, so a dynamic name stays detectable.
+    *memo* (id(node) -> fold) is shared by folds over one tree with the same arguments; a fold over
+    _MAX_PATH_SCAN_CHARS is not kept since the scan refuses it on sight."""
     literals = literals or {}
     ctors = ctors or _PATH_CTORS
     join_names = join_names or frozenset()
 
     def fold(node) -> "str | None":
+        if memo is not None:
+            known = memo.get(id(node), _NOT_FOLDED)
+            if known is not _NOT_FOLDED:
+                return known
         if isinstance(node, ast.Constant) and isinstance(node.value, (str, bytes)):
             # bytes paths are valid too (open(b'/etc/passwd')); decode for scan.
             return (
@@ -5620,7 +5674,7 @@ def _folded_path(
         ):
             return "\x02"  # Path(...).parents[1]
         if isinstance(node, ast.JoinedStr):
-            return "".join(
+            joined = "".join(
                 v.value
                 if isinstance(v, ast.Constant) and isinstance(v.value, str)
                 else (fold(v.value) or "\x00")
@@ -5628,13 +5682,19 @@ def _folded_path(
                 else "\x00"
                 for v in node.values
             )
+            if memo is not None and len(joined) <= _MAX_PATH_SCAN_CHARS:
+                memo[id(node)] = joined
+            return joined
         if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Add, ast.Div)):
             left = fold(node.left)
             right = fold(node.right)
             left = "\x00" if left is None else left
             right = "\x00" if right is None else right
             # `/` is a JOIN: an absolute right side discards the left, as os.path.join does.
-            return _posix_join((left, right)) if isinstance(node.op, ast.Div) else left + right
+            joined = _posix_join((left, right)) if isinstance(node.op, ast.Div) else left + right
+            if memo is not None and len(joined) <= _MAX_PATH_SCAN_CHARS:
+                memo[id(node)] = joined
+            return joined
         if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod):
             # Old-style formatting: '%s/%s' % ('/etc', 'passwd') -> /etc/passwd.
             template = fold(node.left)
@@ -5657,9 +5717,12 @@ def _folded_path(
                     single = fold(rhs)
                     args = (single if single is not None else "\x00",)
                 try:
-                    return template % args
+                    formatted = template % args
                 except (TypeError, ValueError, KeyError):
                     return None
+                if memo is not None and len(formatted) <= _MAX_PATH_SCAN_CHARS:
+                    memo[id(node)] = formatted
+                return formatted
             return None
         if isinstance(node, ast.Call):
             func = node.func
@@ -5740,11 +5803,20 @@ def _folded_path(
     return fold(node)
 
 
+_NUL_RUN_RE = re.compile("\x00{2,}")
+
+
 def _dynamic_name_hits_sensitive(folded) -> bool:
     """A NUL placeholder matches any run within one segment, so a split sensitive name still matches."""
     if not folded or "\x00" not in folded:
         return False
-    pattern = "".join(r"[^/\\]*" if ch == "\x00" else re.escape(ch) for ch in folded)
+    # One literal char matches one target char, so more literals than the longest target can never match.
+    if len(folded) - folded.count("\x00") > max(map(len, _SENSITIVE_GLOB_TARGETS), default = 0):
+        return False
+    # Adjacent placeholders match exactly what one does, so a run of them compiles to one class.
+    pattern = "".join(
+        r"[^/\\]*" if ch == "\x00" else re.escape(ch) for ch in _NUL_RUN_RE.sub("\x00", folded)
+    )
     try:
         rx = re.compile(pattern + r"\Z")
     except re.error:
@@ -9459,9 +9531,10 @@ def _python_is_high_risk(code: str) -> bool:
             if folded and "\x00" not in folded and "\x02" not in folded:
                 str_vars[node.targets[0].id] = folded
 
+    fold_memo: "dict[int, str | None]" = {}
     for node in _tree_nodes(tree):
         if isinstance(node, (ast.BinOp, ast.JoinedStr, ast.Call)):
-            folded = _folded_path(node, str_vars)
+            folded = _folded_path(node, str_vars, memo = fold_memo)
             if folded and _folded_is_sensitive(folded):
                 return True
     # name -> possible runner modules; sets only grow, so alias propagation converges.
@@ -9734,55 +9807,61 @@ def _python_is_high_risk(code: str) -> bool:
 
 def is_high_risk_tool_call(name: str, arguments: dict) -> bool:
     """Auto mode prompts only for sensitive actions (credentials, privilege, destructive, network exfil); unknown tools fail closed; hard blocks still apply."""
-    if _web_search_fetches_url(name, arguments) or _browser_opens_workspace_file(name, arguments):
-        return True
-    if name in _ALWAYS_SAFE_TOOLS:
-        return False
-    if name == "render_html":
-        # A static canvas is fine; only a networked canvas can egress.
-        return _render_html_reaches_network(arguments)
-    if name.startswith(MCP_TOOL_PREFIX):
-        tool_name = _mcp_raw_tool_name(name)
-        if tool_name in _BLENDER_CLI_SUMMARY_TOOLS:
-            return True
-        # Normalize every separator and camelCase boundary to underscore so term regexes match one form.
-        tool_name = _CAMEL_CASE_RE.sub("_", _MCP_TERM_SEPARATOR_RE.sub("_", tool_name))
-        # Exec tools, credential nouns and sensitive paths prompt; ordinary CRUD calls run.
-        _reads = bool(_AUTO_READ_MCP_VERB_RE.search(tool_name))
-        if _AUTO_EXEC_MCP_COMPOUND_RE.search(tool_name):
-            return True
-        if _AUTO_EXEC_MCP_TOOL_RE.search(tool_name) and not (
-            _reads and not _AUTO_EXEC_MCP_VERB_ONLY_RE.search(tool_name)
+    # Caught in the body, not a wrapper: a wrapper frame would move the stack threshold.
+    try:
+        if _web_search_fetches_url(name, arguments) or _browser_opens_workspace_file(
+            name, arguments
         ):
             return True
-        if _AUTO_DESTRUCTIVE_MCP_VERB_RE.search(tool_name):
-            return True
-        if _AUTO_PRIVILEGE_MCP_VERB_RE.search(tool_name):
-            return True
-        if _AUTO_HIGH_IMPACT_MCP_RE.search(tool_name) and not _reads:
-            return True
-        if _AUTO_PRIVILEGE_MCP_NOUN_RE.search(
-            tool_name
-        ) and _AUTO_PRIVILEGE_MCP_SOFT_VERB_RE.search(tool_name):
-            return True
-        if _AUTO_SENSITIVE_MCP_NOUN_RE.search(tool_name):
-            return True
-        if _mcp_resource_names_a_secret(name, tool_name, arguments):
-            return True
-        if _mcp_arguments_reference_sensitive(arguments):
-            return True
-        # A read-named tool carrying a destructive payload masks a destructive action.
-        if _mcp_arguments_mutate(arguments):
-            return True
-        # MCP names are open vocabulary, so a name with no recognised verb asks.
-        if not _mcp_verb_is_known(tool_name):
-            return True
-        return False
-    if name == "terminal":
-        return _terminal_is_high_risk(str(arguments.get("command", "")))
-    if name == "python":
-        return _python_is_high_risk(str(arguments.get("code", "")))
-    return True
+        if name in _ALWAYS_SAFE_TOOLS:
+            return False
+        if name == "render_html":
+            # A static canvas is fine; only a networked canvas can egress.
+            return _render_html_reaches_network(arguments)
+        if name.startswith(MCP_TOOL_PREFIX):
+            tool_name = _mcp_raw_tool_name(name)
+            if tool_name in _BLENDER_CLI_SUMMARY_TOOLS:
+                return True
+            # Normalize every separator and camelCase boundary to underscore so term regexes match one form.
+            tool_name = _CAMEL_CASE_RE.sub("_", _MCP_TERM_SEPARATOR_RE.sub("_", tool_name))
+            # Exec tools, credential nouns and sensitive paths prompt; ordinary CRUD calls run.
+            _reads = bool(_AUTO_READ_MCP_VERB_RE.search(tool_name))
+            if _AUTO_EXEC_MCP_COMPOUND_RE.search(tool_name):
+                return True
+            if _AUTO_EXEC_MCP_TOOL_RE.search(tool_name) and not (
+                _reads and not _AUTO_EXEC_MCP_VERB_ONLY_RE.search(tool_name)
+            ):
+                return True
+            if _AUTO_DESTRUCTIVE_MCP_VERB_RE.search(tool_name):
+                return True
+            if _AUTO_PRIVILEGE_MCP_VERB_RE.search(tool_name):
+                return True
+            if _AUTO_HIGH_IMPACT_MCP_RE.search(tool_name) and not _reads:
+                return True
+            if _AUTO_PRIVILEGE_MCP_NOUN_RE.search(
+                tool_name
+            ) and _AUTO_PRIVILEGE_MCP_SOFT_VERB_RE.search(tool_name):
+                return True
+            if _AUTO_SENSITIVE_MCP_NOUN_RE.search(tool_name):
+                return True
+            if _mcp_resource_names_a_secret(name, tool_name, arguments):
+                return True
+            if _mcp_arguments_reference_sensitive(arguments):
+                return True
+            # A read-named tool carrying a destructive payload masks a destructive action.
+            if _mcp_arguments_mutate(arguments):
+                return True
+            # MCP names are open vocabulary, so a name with no recognised verb asks.
+            if not _mcp_verb_is_known(tool_name):
+                return True
+            return False
+        if name == "terminal":
+            return _terminal_is_high_risk(str(arguments.get("command", "")))
+        if name == "python":
+            return _python_is_high_risk(str(arguments.get("code", "")))
+        return True
+    except RecursionError:
+        return True
 
 
 def _canon_win_path(p: str) -> str:
@@ -15395,8 +15474,11 @@ def execute_tool(
         return _fit_result_to_room(_mcp_tool_search(arguments), name)
     if name.startswith(MCP_TOOL_PREFIX):
         # An MCP server is not inside the terminal sandbox, so the local refusal has to hold here too.
-        if _mcp_arguments_reference_studio_credential(arguments):
-            return _STUDIO_CREDENTIAL_BLOCKED
+        try:
+            if _mcp_arguments_reference_studio_credential(arguments):
+                return _STUDIO_CREDENTIAL_BLOCKED
+        except RecursionError:
+            return _MCP_TOO_DEEP_TO_SCREEN
         try:
             _, server_id, _ = name.split("__", 2)
         except ValueError:
@@ -24632,26 +24714,30 @@ def _python_exec(
     if not code or not code.strip():
         return "No code provided."
 
-    # Refused in every mode, as in _bash_exec. Relative too: the cwd is a sibling of the auth dir.
-    _guard_workdir = _tool_workdir_for_guard(session_id) if _needs_a_workdir(code) else None
-    if _references_studio_credential_here(code, _guard_workdir) or _python_builds_a_credential_path(
-        code, _guard_workdir
-    ):
-        return _STUDIO_CREDENTIAL_BLOCKED
+    try:
+        # Refused in every mode, as in _bash_exec. Relative too: the cwd is a sibling of the auth dir.
+        _guard_workdir = _tool_workdir_for_guard(session_id) if _needs_a_workdir(code) else None
+        if _references_studio_credential_here(
+            code, _guard_workdir
+        ) or _python_builds_a_credential_path(code, _guard_workdir):
+            return _STUDIO_CREDENTIAL_BLOCKED
 
-    source_encoding = _python_source_encoding(code)
-    if source_encoding is None:
-        return (
-            "Error: the code's `# coding:` line would make Python run different source than "
-            "was written. Remove the coding line and run it again."
-        )
+        source_encoding = _python_source_encoding(code)
+        if source_encoding is None:
+            return (
+                "Error: the code's `# coding:` line would make Python run different source than "
+                "was written. Remove the coding line and run it again."
+            )
 
-    # Validate imports and code safety (skipped when the sandbox is disabled)
+        error = None
+        if not disable_sandbox:
+            # The allowlist is advisory (the network is not confined), so a user's approval lifts it; API keys keep it.
+            error = _check_code_safety(
+                code, host_approved = host_access_approved and not _api_host_access_refused()
+            )
+    except RecursionError:
+        return _PYTHON_TOO_DEEP_TO_SCREEN
     if not disable_sandbox:
-        # The allowlist is advisory (the network is not confined), so a user's approval lifts it; API keys keep it.
-        error = _check_code_safety(
-            code, host_approved = host_access_approved and not _api_host_access_refused()
-        )
         if error:
             # Capped: repeated forbidden constructs can produce an oversized error.
             return _truncate(error)
@@ -24855,10 +24941,13 @@ def _bash_exec(
         return "No command provided."
 
     # Refused in every mode: this install's bearer would reach the serving provider.
-    if _references_studio_credential_here(
-        command, _tool_workdir_for_guard(session_id) if _needs_a_workdir(command) else None
-    ):
-        return _STUDIO_CREDENTIAL_BLOCKED
+    try:
+        if _references_studio_credential_here(
+            command, _tool_workdir_for_guard(session_id) if _needs_a_workdir(command) else None
+        ):
+            return _STUDIO_CREDENTIAL_BLOCKED
+    except RecursionError:
+        return _TERMINAL_TOO_DEEP_TO_SCREEN
 
     # Chosen once, so the blocklist, env and argv all agree on the shell that will run this call.
     # Sandbox Low runs on the host shell: cmd is only picked to stay inside MXC.
