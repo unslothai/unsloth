@@ -182,12 +182,6 @@ def _redact_worker_output(text: str) -> str:
     except Exception:  # noqa: BLE001 -- a redactor that cannot run must not lose the others
         pass
     try:
-        from hub.utils.download_registry import scrub_secrets
-        redacted = scrub_secrets(redacted)
-    except Exception:  # noqa: BLE001
-        pass
-    try:
-        # `redact_log_text` is idempotent, so it runs after `scrub_secrets`.
         from utils.log_redaction import redact_log_text
         redacted = redact_log_text(redacted)
     except Exception:  # noqa: BLE001
@@ -451,6 +445,7 @@ def _mirrored_model_entry(model_info: dict, model_name: str) -> dict:
         "audio_options_by_workflow": model_info.get("audio_options_by_workflow"),
         "audio_workflow_tasks": model_info.get("audio_workflow_tasks"),
         "audio_server_task": model_info.get("audio_server_task"),
+        "audio_separation": model_info.get("audio_separation"),
         "audio_convert": model_info.get("audio_convert"),
         "audio_convert_route": model_info.get("audio_convert_route"),
         "audio_convert_rules": model_info.get("audio_convert_rules"),
@@ -3907,6 +3902,7 @@ class InferenceOrchestrator:
             mapped_chat_template,
             markup_for_tokenizer,
             renderable_tool_catalog,
+            replays_reasoning_content,
         )
 
         _model_info = self.models.get(self.active_model_name) or {}
@@ -3973,6 +3969,9 @@ class InferenceOrchestrator:
 
         yield from run_safetensors_tool_loop(
             markup = markup_for_tokenizer(_model_info.get("tokenizer"), tools, _mapped_tpl),
+            split_reasoning_content = replays_reasoning_content(
+                _model_info.get("tokenizer"), _model_info, tools, _mapped_tpl
+            ),
             renderable_tools = renderable_tool_catalog(
                 tools,
                 _model_info.get("tokenizer"),
@@ -4329,7 +4328,7 @@ class InferenceOrchestrator:
         audio_options: Optional[dict] = None,
         cancel_event = None,
     ) -> list[dict]:
-        """Split a prepared 44.1 kHz WAV into stems under ``output_dir``; the full token budget
+        """Split a prepared WAV into stems under ``output_dir`` (or filter it into one file); the full token budget
         gives the watchdog the same hour the runtime request has."""
         outputs, _sample_rate = self.generate_audio_response(
             text = "",

@@ -221,6 +221,38 @@ def test_auto_mode_off_on_unmeasured_gpu_and_rocm(monkeypatch):
     assert ad._load_saved_attention() == (None, None)
 
 
+def test_auto_mode_on_measured_rocm_registers_the_selector(monkeypatch):
+    if not hasattr(SA, "_AUTO_MIN_SEQ_ROCM"):
+        pytest.skip("unsloth_zoo without automatic mode on ROCm")
+    import types
+
+    _fake_gpu(monkeypatch, (11, 5))
+    monkeypatch.setattr(torch.version, "hip", "7.13.0", raising = False)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 1)
+    monkeypatch.setattr(
+        torch.cuda, "get_device_properties", lambda *a: types.SimpleNamespace(gcnArchName = "gfx1151")
+    )
+    monkeypatch.setattr(ad, "_ROCM_SDPA_GUARD", True)
+    monkeypatch.setattr(SA, "_ROCM_SDPA_SELECT", SA._default_rocm_sdpa_selector)
+    assert ad._load_saved_attention() == (SA.saved_attention_call, 8192)
+    assert SA._AUTO_ACTIVE[0] is True
+    assert SA._ROCM_SDPA_SELECT is ad._select_rocm_saved_sdpa
+    monkeypatch.setattr(SA, "_ROCM_SDPA_SELECT", SA._default_rocm_sdpa_selector)
+    monkeypatch.setattr(
+        torch.cuda, "get_device_properties", lambda *a: types.SimpleNamespace(gcnArchName = "gfx1100")
+    )
+    monkeypatch.setattr(SA, "_AUTO_ACTIVE", [False])
+    assert ad._load_saved_attention() == (None, None)
+    assert SA._ROCM_SDPA_SELECT is SA._default_rocm_sdpa_selector
+
+
+@pytest.mark.parametrize("capability", [(8, 6), (9, 0), (10, 0), (12, 0)])
+def test_auto_mode_stays_off_on_unmeasured_nvidia(monkeypatch, capability):
+    _fake_gpu(monkeypatch, capability)
+    assert ad._load_saved_attention() == (None, None)
+    assert SA._AUTO_ACTIVE[0] is False
+
+
 def test_explicit_setting_routes_every_call(monkeypatch):
     _fake_gpu(monkeypatch)
     monkeypatch.setenv("UNSLOTH_GC_SAVE_ATTENTION", "1")

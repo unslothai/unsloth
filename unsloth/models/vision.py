@@ -245,6 +245,7 @@ from ..kernels import (
 )
 from ..kernels.bnb_override import install_bnb_nf4_override as _install_bnb_nf4_override
 from ..kernels.rope_embedding import register_split_model
+from ._cache_kwarg import get_cache_kwarg
 from ._utils import (
     __version__,
     importlib_version,
@@ -296,8 +297,10 @@ from ._mamba_lora import patch_mamba_fused_lora
 from .remote_code_shims import apply_remote_code_shims
 from .grouped_linear_lora import register_grouped_linear_lora
 from . import _decode_graphs, _generic_decode_graphs, _flex_decode
+from .inkling2 import inkling2_owns_modelopt_quantization
 from .loader_utils import (
     _bnb_bits_requested,
+    explain_weight_conversion_error,
     _kwargs_with_resolved_revision,
     _resolved_revision,
     vlm_gradient_checkpointing_reentrant,
@@ -898,6 +901,22 @@ def _unsloth_generate_accepts_kwarg(model, key):
         except (TypeError, ValueError, AttributeError):
             pass
     return key in model_args
+
+
+def _router_logits_off_for_generate(model, kwargs):
+    """generate never needs the MoE aux loss; TRL < 1.18 leaves config.output_router_logits on after SFT, and a hybrid
+    model then feeds generate's per-layer-type attention_mask dict to load_balancing_loss_func. Explicit kwarg kept."""
+    if "output_router_logits" in kwargs:
+        return
+    config = getattr(model, "config", None)
+    text = config.get_text_config() if hasattr(config, "get_text_config") else config
+    if not (
+        getattr(text, "output_router_logits", False)
+        or getattr(config, "output_router_logits", False)
+    ):
+        return
+    if _unsloth_generate_accepts_kwarg(model, "output_router_logits"):
+        kwargs["output_router_logits"] = False
 
 
 def _is_scaled_word_embedding_forward(cls, forward):
@@ -1813,7 +1832,7 @@ class _NonFlexGenerate:
             else:
                 decode = scope.steps > 0
             scope.steps += 1
-            static = _static_cache(kwargs.get("past_key_values"))
+            static = _static_cache(get_cache_kwarg(kwargs))
             ids = args[0] if args else kwargs.get("input_ids")
             batch = ids.shape[0] if isinstance(ids, torch.Tensor) and ids.dim() >= 1 else None
             scope._set(decode, static, batch)
@@ -2141,7 +2160,7 @@ def _static_cache_bytes(
     from transformers import StaticCache
 
     config = model.config
-    if getattr(config, "is_encoder_decoder", False) or kwargs.get("past_key_values") is not None:
+    if getattr(config, "is_encoder_decoder", False) or get_cache_kwarg(kwargs) is not None:
         return None
     text_config = config.get_text_config(decoder = True)
     # transformers fills a caller config's unset fields from the model's before its defaults.
@@ -2381,6 +2400,7 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
     bsz = input_ids.shape[0]
 
     FastBaseModel.for_inference(self)
+    _router_logits_off_for_generate(self, kwargs)
     dtype = _get_dtype(dtype_from_config(self.config))
     # Stamped by from_pretrained: the env var stays "1" after one float32 mixed precision load, so it only answers for unstamped models.
     do_bfloat16_mixed_precision = getattr(self, "_unsloth_bfloat16_mixed_precision", None)
@@ -2481,6 +2501,11 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
 
     # FlashAttention breaks on the forced static cache below (unfilled slots stay unmasked while decoding), so delegate after normalization but before it.
     _clear_generation_caches(self)
+    # The caller's cache: transformers 5.24 spells it cache=, past_key_values= is its deprecated alias.
+    # Inline, not a helper: tests exec this function's source with a hand-built namespace.
+    _caller_cache = kwargs.get("cache")
+    if _caller_cache is None:
+        _caller_cache = kwargs.get("past_key_values")
     # Custom-code generate (LFM3) raises on any cache field it lists as unsupported; leave them unset.
     # Inline, not a helper: tests exec this function's source with a hand-built namespace.
     unsupported_fields = getattr(self, "_generation_fields_unsupported", None)
@@ -2489,7 +2514,7 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
     )
     if _uses_flash_attention_for_generation(self.config):
         # Pin the literal "dynamic": None is merged back to the model default, and a static cache still arrives via kwargs or the caller's generation_config (TRL). The kwarg wins, since update runs last; skip it when the caller passed a cache.
-        if kwargs.get("past_key_values") is None and not rejects_cache_fields:
+        if _caller_cache is None and not rejects_cache_fields:
             kwargs["cache_implementation"] = "dynamic"
         try:
             with (
@@ -2536,19 +2561,24 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
         cache_implementation = None
     # transformers refuses a static cache beside the caller's cache or assisted decoding (kwarg or generation config) (#4232).
     generation_config = kwargs.get("generation_config") or getattr(self, "generation_config", None)
-    if kwargs.get("past_key_values") is not None or any(
+    if _caller_cache is not None or any(
         (kwargs[k] if k in kwargs else getattr(generation_config, k, None)) is not None
         for k in ("assistant_model", "prompt_lookup_num_tokens", "assistant_early_exit")
     ):
         cache_implementation = None
     # A static cache drops the media block mask at prefill (#6028); None would be refilled from default.
-    force_dynamic_cache = kwargs.get(
-        "past_key_values"
-    ) is None and _needs_bidirectional_multimodal_mask(self, kwargs)
+    force_dynamic_cache = _caller_cache is None and _needs_bidirectional_multimodal_mask(
+        self, kwargs
+    )
     # A static cache is sized for the longest reply up front, so on a tight or unified memory
     # device it can OOM where a growing cache would not (#2590).
     if not force_dynamic_cache and cache_implementation is not None:
         force_dynamic_cache = _static_cache_does_not_fit(self, input_ids, kwargs)
+    # synced_gpus (expert parallel sets it; ZeRO-3 callers too): a rank that finishes first keeps running forwards
+    # until every rank is done, past the static cache sized for its own prompt + max_new_tokens (the mask and the
+    # keys then disagree by one slot). A growing cache takes those extra steps.
+    if not force_dynamic_cache and cache_implementation is not None and kwargs.get("synced_gpus"):
+        force_dynamic_cache = True
     if force_dynamic_cache:
         cache_implementation = None
         dynamic_implementation = _dynamic_cache_choice(kwargs)
@@ -2647,7 +2677,7 @@ def unsloth_nested_fast_generate(self, *args, **kwargs):
     Relies on the parent's inference mode/autocast; outside a parent call (or with a caller cache) it is stock."""
     if (
         not torch.is_inference_mode_enabled()
-        or kwargs.get("past_key_values") is not None
+        or get_cache_kwarg(kwargs) is not None
         or "cache_implementation" in kwargs
         or kwargs.get("generation_config") is not None
         # FlashAttention builds no mask for unpadded rows, so a static cache's empty slots would be attended.
@@ -3467,6 +3497,7 @@ _TEXT_BATCH_KEYS = frozenset(
         "labels",
         "position_ids",
         "past_key_values",
+        "cache",
         "use_cache",
         "output_attentions",
         "output_hidden_states",
@@ -4047,6 +4078,9 @@ class FastBaseModel:
         text_intent = None,
         **kwargs,
     ):
+        from ._utils import _unsloth_load_begins
+
+        _unsloth_load_begins()
         user_config = kwargs.pop("config", None)
         user_rope_scaling = kwargs.pop("rope_scaling", None)
         if auto_config is None and user_config is not None:
@@ -4485,6 +4519,8 @@ class FastBaseModel:
         _explicit_bnb_4bit = user_quantization_config is not None and (
             quantization_config_selects_bnb_4bit(user_quantization_config)
         )
+        # Read before the call below drops the marker; merged exports never had it and plan from the repo as before.
+        _inkling2_modelopt = inkling2_owns_modelopt_quantization(auto_config)
         _checked_4bit, _checked_8bit, _ = check_and_disable_bitsandbytes_loading(
             auto_config,
             load_in_4bit = load_in_4bit or _explicit_bnb_4bit,
@@ -4554,6 +4590,12 @@ class FastBaseModel:
         _planner_skip_reason = None
         _planner_config = auto_config if text_only_decoder else None
         _planner_config_reason = "text_only loads a decoder the repo config does not describe"
+        # Inkling 2: the planner refuses config.json's "modelopt" quantization; auto_config has that marker dropped.
+        if _planner_config is None and _inkling2_modelopt:
+            _planner_config = auto_config
+            _planner_config_reason = (
+                "this unsloth_zoo cannot plan from the resolved Inkling 2 config"
+            )
         # Re-quantized packed checkpoint: config.json would size it as compressed-tensors and refuse bnb flags.
         if _planner_config is None and compressed_tensors_prepared_config(auto_config) is not None:
             _planner_config = auto_config
@@ -4956,14 +4998,20 @@ class FastBaseModel:
                                 kwargs.get("quantization_config"), model_config
                             ),
                         ):
-                            model = auto_model.from_pretrained(
-                                model_name,
-                                config = model_config,
-                                device_map = device_map,
-                                token = token,
-                                trust_remote_code = trust_remote_code,
-                                **_kwargs_with_resolved_revision(model_name, kwargs, token),
-                            )
+                            try:
+                                model = auto_model.from_pretrained(
+                                    model_name,
+                                    config = model_config,
+                                    device_map = device_map,
+                                    token = token,
+                                    trust_remote_code = trust_remote_code,
+                                    **_kwargs_with_resolved_revision(model_name, kwargs, token),
+                                )
+                            except RuntimeError as error:
+                                explained = explain_weight_conversion_error(error)
+                                if explained is None:
+                                    raise
+                                raise explained from error
                     finally:
                         # The load deep-copied the config; give the caller's object its fp8 block back.
                         disarm_fp8_to_nf4(model_config)

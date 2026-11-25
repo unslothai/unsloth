@@ -3,16 +3,23 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { isOllamaModelId } from "../src/features/hub/lib/model-identity.ts";
+import {
+  isOllamaModelId,
+  withoutNamedQuant,
+} from "../src/features/hub/lib/model-identity.ts";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 
 type Selection = { target: string; ggufVariant: string; aliases: string[] };
 
 const chat = {
   status: {} as Record<string, unknown>,
+  statusFor: [] as (string | undefined)[],
   validated: [] as string[],
   resident: false,
-  getInferenceStatus: () => Promise.resolve(chat.status),
+  getInferenceStatus: (_signal?: AbortSignal, model?: string) => {
+    chat.statusFor.push(model);
+    return Promise.resolve(chat.status);
+  },
   // biome-ignore lint/style/useNamingConvention: api schema
   validateModel: (request: { model_path: string }) => {
     chat.validated.push(request.model_path);
@@ -30,7 +37,7 @@ const { isLocalModelAlreadyLoaded } = loadWithStubs<{
   ),
   {
     "@/features/chat": chat,
-    "@/features/hub/lib/model-identity": { isOllamaModelId },
+    "@/features/hub/lib/model-identity": { isOllamaModelId, withoutNamedQuant },
     "@/features/chat/presets/preset-policy": {},
     "@/config/env": {},
     "@/features/model-picker": {},
@@ -81,4 +88,29 @@ test("only a name that disagrees and is an Ollama one costs a request", async ()
   assert.deepEqual(chat.validated, []);
   assert.equal(await loaded("/models/mistral.gguf", true), false);
   assert.deepEqual(chat.validated, []);
+});
+
+test("the primary of two loaded quants is loaded under its repo name", async () => {
+  const repo = "unsloth/SmolLM2-135M-Instruct-GGUF";
+  // biome-ignore lint/style/useNamingConvention: api schema
+  chat.status = { model_identifier: `${repo}:Q4_K_M`, gguf_variant: "Q4_K_M" };
+  chat.validated = [];
+  const selection = { target: repo, ggufVariant: "Q4_K_M", aliases: [] };
+  assert.equal(await isLocalModelAlreadyLoaded(selection), true);
+  assert.equal(
+    await isLocalModelAlreadyLoaded({ ...selection, ggufVariant: "Q8_0" }),
+    false,
+  );
+});
+
+test("a recipe asks status for its own quant, and only names a hub repo's quant", async () => {
+  const repo = "unsloth/SmolLM2-135M-Instruct-GGUF";
+  // biome-ignore lint/style/useNamingConvention: api schema
+  chat.status = { model_identifier: `${repo}:Q8_0`, gguf_variant: "Q8_0" };
+  chat.statusFor = [];
+  const selection = { target: repo, ggufVariant: "Q8_0", aliases: [] };
+  assert.equal(await isLocalModelAlreadyLoaded(selection), true);
+  await isLocalModelAlreadyLoaded({ ...selection, target: "/models/x.gguf" });
+  await isLocalModelAlreadyLoaded({ ...selection, ggufVariant: "" });
+  assert.deepEqual(chat.statusFor, [`${repo}:Q8_0`, undefined, undefined]);
 });

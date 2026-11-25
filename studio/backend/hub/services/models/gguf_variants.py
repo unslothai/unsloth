@@ -52,6 +52,7 @@ from hub.utils.gguf import (
     extract_quant_label,
     gguf_variant_family,
     gguf_variant_key,
+    hub_model_info_from_token,
     iter_hf_cache_snapshots,
     is_big_endian_gguf_path,
     list_empty_gguf_variant_dirs,
@@ -70,6 +71,7 @@ from hub.utils.paths import (
 
 # Loader's normalizer, not the hub's: they disagree on WSL, and only it names what the load opens.
 from utils.paths import normalize_path as _loader_normalize_path
+from utils.utils import hf_env_offline
 from hub.services.models.common import (
     _is_imatrix_filename,
     _is_mmproj_filename,
@@ -1099,7 +1101,7 @@ async def _audio_cpp_variants_answer(
     ):
         return None
     real_repo = audio_cpp_models.repo_of(text) or text
-    network = not (offline or audio_cpp_models.hub_offline())
+    network = not (offline or hf_env_offline())
     if account_access.managed_account():
         # Offline: the disk pool and a disk-only grant check, never queued behind Hub listings.
         await listing_thread(
@@ -1525,6 +1527,23 @@ def _hub_repo_architecture(repo_id: str, hf_token: Optional[str]) -> Optional[st
     return arch
 
 
+def _seed_listing_architecture(repo_id: str, hf_token: Optional[str], info) -> Optional[str]:
+    """Caches ``gguf.architecture`` from this request's own listing (same repo + credential), skipping a fetch."""
+    if info is None or not (hf_token is None or (isinstance(hf_token, str) and hf_token)):
+        return None
+    if str(getattr(info, "id", "") or "").lower() != repo_id.lower():
+        return None
+    gguf_meta = getattr(info, "gguf", None)
+    if not isinstance(gguf_meta, dict) or not hub_model_info_from_token(info):
+        return None
+    arch = str(gguf_meta.get("architecture") or "") or None
+    if arch is not None:
+        key = (repo_id.lower(), hf_cache_scan.token_fingerprint(hf_token))
+        with _lookup_arch_lock:
+            _lookup_arch_cache[key] = (arch, time.monotonic() + _LOOKUP_ARCH_TTL_S)
+    return arch
+
+
 def _local_variant_gguf(
     answer: "VariantsAnswer",
     repo_id: str,
@@ -1587,6 +1606,7 @@ async def _with_lookup_tables(
     offline: bool,
     prefer_local_cache: bool,
     local_path: Optional[str] = None,
+    listing_info = None,
 ) -> "VariantsAnswer":
     """``answer`` with ``lookup_table_bytes`` filled per variant."""
     try:
@@ -1646,13 +1666,19 @@ async def _with_lookup_tables(
                             for _i, v in unresolved
                         )
                     ):
-                        arch = await _lookup_await_once(
-                            ("arch", repo_id.lower(), hf_cache_scan.token_fingerprint(hf_token)),
-                            deadline,
-                            _hub_repo_architecture,
-                            repo_id,
-                            hf_token,
-                        )
+                        arch = _seed_listing_architecture(repo_id, hf_token, listing_info)
+                        if arch is None:
+                            arch = await _lookup_await_once(
+                                (
+                                    "arch",
+                                    repo_id.lower(),
+                                    hf_cache_scan.token_fingerprint(hf_token),
+                                ),
+                                deadline,
+                                _hub_repo_architecture,
+                                repo_id,
+                                hf_token,
+                            )
                 if lazy_architecture(arch):
                     _fingerprint = hf_cache_scan.token_fingerprint(hf_token)
                     tasks = {}
@@ -2925,6 +2951,7 @@ async def get_gguf_variants_answer(
             offline = bool(offline),
             prefer_local_cache = bool(prefer_local_cache),
             local_path = local_path,
+            listing_info = hub_model_info[-1] if hub_model_info else None,
         )
     except HTTPException as exc:
         # Offline, a repo with no cached GGUF raises here, before the MLX fallback above.

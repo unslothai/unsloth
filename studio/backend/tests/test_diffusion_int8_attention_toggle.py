@@ -229,11 +229,15 @@ def _family_floor(
     raced = []
     monkeypatch.setattr(I8, "_is_rocm", lambda: False)
     monkeypatch.setattr(I8, "implementation", lambda index, hd: impl)
-    monkeypatch.setattr(
-        I8,
-        "verdict",
-        lambda dev, dt, heads, hd, fn, name, timed = True: {"ok": ok, "impl": impl, "timed": timed},
-    )
+    real_verdict = I8.verdict
+
+    def fake_verdict(*args, **kwargs):
+        # Bound against the real verdict, so a parameter added there cannot turn into a TypeError here.
+        bound = inspect.signature(real_verdict).bind(*args, **kwargs)
+        bound.apply_defaults()
+        return {"ok": ok, "impl": impl, "timed": bound.arguments["timed"]}
+
+    monkeypatch.setattr(I8, "verdict", fake_verdict)
 
     def race(device, dtype, heads, head_dim, incumbent, name, tokens):
         raced.append(tokens)

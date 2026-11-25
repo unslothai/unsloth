@@ -30,6 +30,7 @@ const HOSTILE = [
   'flowchart LR\n  A@{ shape: rect, "img":"https://attacker.example/c", "label":"Quarterly\n    report" }',
   'flowchart LR\n  A@%%{init: {}}%%{ shape: rect, "img":"https://attacker.example/c", "label":"Quarterly report" }',
   'flowchart LR\n  A@{ shape: rect, "#105;mg":"https://attacker.example/c" }',
+  'flowchart LR\n  A@{ "im%%{init: {}}%%g": "https://attacker.example/c", w: 1 }',
   "  ---\n  config:\n    themeVariables:\n      xyChart:\n        plotColorPalette: url(https://attacker.example/x)\n  ---\nxychart-beta\n  bar [1, 2]",
 ];
 

@@ -239,7 +239,7 @@ def ulysses_deepseek_v4_forward(
 ):
     """Training forward of a DeepSeek-V4 attention layer on a contiguous sequence shard."""
     cp = dist.get_world_size(group)
-    if past_key_values is not None:
+    if past_key_values is not None or kwargs.get("cache") is not None:
         raise RuntimeError("DeepSeek-V4 context parallel is the training path; cache is off.")
     if module.num_heads % cp != 0:
         raise RuntimeError(
@@ -432,7 +432,7 @@ def ulysses_deepseek_v32_forward(
 ):
     """Training forward of DeepSeek-V3.2 MLA + DSA indexer on a contiguous sequence shard."""
     cp = dist.get_world_size(group)
-    if past_key_values is not None:
+    if past_key_values is not None or kwargs.get("cache") is not None:
         raise RuntimeError("DeepSeek-V3.2 context parallel is the training path; cache is off.")
     if module.num_heads % cp != 0:
         raise RuntimeError(

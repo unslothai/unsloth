@@ -1090,11 +1090,18 @@ def parse_tool_calls_from_text(
                 if isinstance(arguments, dict):
                     arguments = json.dumps(arguments)
                 # Inkling echoes the bare tool NAME before the marker; fold it into the span so it is stripped.
-                if name and content.startswith("<|content_invoke_tool_json|>", start):
-                    pre = content[:start]
-                    if pre.endswith(name):
+                # Only at a message boundary: normalized text has no header, so "...with python" stays.
+                if (
+                    isinstance(name, str)
+                    and name
+                    and content.startswith("<|content_invoke_tool_json|>", start)
+                ):
+                    head = content[: start - len(name)]
+                    if content[:start].endswith(name) and (
+                        not head or head.endswith(("<|message_model|>", "<|end_message|>"))
+                    ):
                         start -= len(name)
-                        if content[:start].endswith("<|message_model|>"):
+                        if head.endswith("<|message_model|>"):
                             start -= len("<|message_model|>")
             else:
                 name = m.group(1)
