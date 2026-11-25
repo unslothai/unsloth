@@ -375,6 +375,7 @@ def _idle_state() -> dict[str, Any]:
         "catalog_path": None,
         "family": None,
         "base_model": None,
+        "instance_prompt": None,
         "samples_per_second": None,
         "peak_memory_gb": None,
         # block_swap as resolved by the trainer (blocks swapped, host / pinned GiB); None when it did not run.
@@ -767,6 +768,7 @@ class DiffusionTrainingService:
                 in_model_load = True,
                 message = "Starting diffusion LoRA training...",
                 base_model = config.get("base_model") or config.get("model_name"),
+                instance_prompt = config.get("instance_prompt"),
                 started_at = now,
                 updated_at = now,
             )

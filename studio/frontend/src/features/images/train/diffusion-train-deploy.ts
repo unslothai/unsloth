@@ -53,9 +53,9 @@ export function diffusionDeployRequest(
   };
 }
 
-// The trigger is the record's once it lands: the form may have been edited since, or never filled after a reload or resume.
+// The job's own trigger, since the form may be edited or empty after a reload or resume; older backends omit it.
 export function liveDeployRun(
-  status: Pick<DiffusionTrainingStatus, "base_model" | "family" | "catalog_path">,
+  status: Pick<DiffusionTrainingStatus, "base_model" | "family" | "catalog_path" | "instance_prompt">,
   record: DiffusionDeployRun | null,
   form: { baseModel: string; family: string; trigger: string },
 ): DiffusionDeployRun {
@@ -63,7 +63,10 @@ export function liveDeployRun(
     base_model: status.base_model || form.baseModel,
     family: status.family || form.family,
     catalog_path: status.catalog_path,
-    instance_prompt: record ? record.instance_prompt : form.trigger,
+    instance_prompt:
+      status.instance_prompt !== undefined
+        ? status.instance_prompt
+        : record ? record.instance_prompt : form.trigger,
   };
 }
 

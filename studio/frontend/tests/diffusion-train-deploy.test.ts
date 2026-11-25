@@ -215,7 +215,21 @@ test("Deploy on a finished run uses the trigger it was trained on, not the form'
   assert.equal(diffusionDeployRequest([klein], captioned)?.trigger, "");
 });
 
-test("Deploy before the run record lands falls back to the form", () => {
+// Deploy shows as soon as the status has a catalog_path; the record may lag, or never load if history fails.
+test("Deploy on a finished run uses the job's trigger before the run record is available", () => {
+  const status = { ...finishedRun, instance_prompt: "trained-style" };
+  for (const trigger of ["", "new-style"]) {
+    const live = liveDeployRun(status, null, { ...form, trigger });
+    assert.equal(diffusionDeployRequest([klein], live)?.trigger, "trained-style");
+  }
+  const captioned = liveDeployRun({ ...finishedRun, instance_prompt: null }, null, {
+    ...form,
+    trigger: "new-style",
+  });
+  assert.equal(diffusionDeployRequest([klein], captioned)?.trigger, "");
+});
+
+test("Deploy on an older backend without the status trigger falls back to the form", () => {
   const live = liveDeployRun(
     { catalog_path: finishedRun.catalog_path },
     null,
