@@ -184,3 +184,63 @@ def test_install_is_per_krea2_instance_and_idempotent():
     assert tc.install(model) and tc.install(model)
     assert getattr(model.text_fusion.forward, "_unsloth_krea2_text_cache", False)
     assert not tc.install(torch.nn.Linear(2, 2))
+
+
+def _projection():
+    from diffusers.models.transformers.transformer_krea2 import Krea2TextProjection
+    torch.manual_seed(0)
+    return Krea2TextProjection(8, 8, eps = 1e-6).eval()
+
+
+def test_compiled_caller_traces_once():
+    """Under a compile the wrapper must touch no Python state before handing off: a counter bumped inside the trace
+    became a guard that failed on every call (one graph per call)."""
+    from torch._dynamo.utils import counters
+
+    proj = _projection()
+    wrapped = tc._wrap(proj, proj.forward)
+    for config in ({}, {"fullgraph": True}, {"fullgraph": True, "dynamic": True}):
+        torch._dynamo.reset()
+        counters.clear()
+        fn = torch.compile(wrapped, backend = "eager", **config)
+        with torch.no_grad():
+            for _ in range(5):
+                fn(torch.randn(2, 5, 8))
+        assert counters["stats"]["unique_graphs"] == 1, config
+    torch._dynamo.reset()
+
+
+def test_autocast_dtype_is_part_of_the_key():
+    proj = _projection()
+    wrapped = tc._wrap(proj, proj.forward)
+    with torch.inference_mode():
+        x = torch.randn(2, 5, 8)
+        assert wrapped(x).dtype == torch.float32
+        with torch.autocast("cpu", dtype = torch.bfloat16):
+            want = proj(x)
+            got = wrapped(x)
+        assert got.dtype == want.dtype == torch.bfloat16 and torch.equal(got, want)
+        assert wrapped(x).dtype == torch.float32  # the fp32 entry still answers fp32 calls
+
+
+def test_entries_end_with_the_render():
+    """Inference tensors have no version counter: an in-place edit after a render must not be answered from the cache
+    (Studio's generate calls end_render in its finally)."""
+    with torch.inference_mode():
+        model = _model()
+        assert tc.install(model)
+        x = torch.randn(2, 5, 32)
+        first = model.txt_in(x)
+        assert torch.equal(model.txt_in(x), first)  # same render: cached
+        tc.end_render(_Pipe(model))
+        x.zero_()
+        want = type(model.txt_in).forward(model.txt_in, x)
+        assert torch.equal(model.txt_in(x), want)
+
+
+def test_generate_ends_the_text_cache_render():
+    from pathlib import Path
+
+    src = (Path(tc.__file__).parent / "diffusion.py").read_text(encoding = "utf-8")
+    finally_block = src[src.index('end_cfg_batch_render(getattr(state, "pipe", None))') :][:400]
+    assert 'end_krea2_text_render(getattr(state, "pipe", None))' in finally_block

@@ -17715,6 +17715,9 @@ class DiffusionBackend:
                     restore_vae()
                 end_cfg_render(getattr(state, "pipe", None))
                 end_cfg_batch_render(getattr(state, "pipe", None))
+                from .diffusion_krea2_text_cache import end_render as end_krea2_text_render
+
+                end_krea2_text_render(getattr(state, "pipe", None))
                 if restore_resident is not None:
                     try:
                         if kick_bg or not defer_resident_restore(state.pipe, restore_resident):

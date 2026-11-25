@@ -9,6 +9,10 @@ they see the same prompt embeddings, mask and position ids at every step of a re
 trimmed tensors back each step). Each module keeps its last outputs per input (a CFG pair is two entries) and returns
 them while the same, unmodified input memory comes back: bit-identical. 9.4 of 186 ms per 1024^2 forward on G4.
 
+Entries live for one render: Studio's generate clears them when the render ends. Within a render the inputs are
+matched on identity / address and, where torch keeps one, the version counter (inference-mode tensors have none, so an
+in-place edit of the prompt tensor in the middle of a render is not seen); the autocast dtype is part of the key.
+
 Resident modules only: a streamed module keeps stock calls (skipping its forward would leave its offload group out
 of the prefetch order). Calls under CUDA-graph capture or tracing run stock, so a graph never records a cached
 output's address. ``UNSLOTH_DIFFUSION_KREA2_TEXT_CACHE=0`` runs them every step again.
@@ -87,9 +91,22 @@ def _streamed(module: Any) -> bool:
     return False
 
 
+def _amp_state(flat: tuple) -> Optional[tuple]:
+    """Autocast state for the inputs' device (part of the key: an fp32 entry must not answer a bf16 autocast call);
+    None when it cannot be read (then the call runs stock)."""
+    import torch
+
+    device = next((t.device.type for t in flat if t is not None), "cpu")
+    try:
+        on = bool(torch.is_autocast_enabled(device))
+        return (device, on, torch.get_autocast_dtype(device) if on else None)
+    except Exception:  # noqa: BLE001 - older torch: no per-device query
+        return None
+
+
 def _uncacheable() -> bool:
     import torch
-    if torch.compiler.is_compiling() or torch.is_grad_enabled():
+    if torch.is_grad_enabled():
         return True
     try:
         return torch.cuda.is_available() and torch.cuda.is_current_stream_capturing()
@@ -98,7 +115,13 @@ def _uncacheable() -> bool:
 
 
 def _wrap(module: Any, stock: Any) -> Any:
+    import torch
+
     def forward(*args: Any, **kwargs: Any) -> Any:
+        if torch.compiler.is_compiling():
+            # first, before any Python state is read or written: a counter or memo touched here becomes a Dynamo
+            # guard that fails on every call (one recompile per step)
+            return stock(*args, **kwargs)
         if not enabled() or _uncacheable() or _streamed(module):
             STATS["stock"] += 1
             return stock(*args, **kwargs)
@@ -107,14 +130,18 @@ def _wrap(module: Any, stock: Any) -> Any:
             STATS["stock"] += 1
             return stock(*args, **kwargs)
         flat, names = found
+        amp = _amp_state(flat)
+        if amp is None:
+            STATS["stock"] += 1
+            return stock(*args, **kwargs)
         memo = module.__dict__.setdefault(_MEMO_ATTR, [])
-        for held, held_names, out in memo:
-            if held_names == names and _same(held, flat):
+        for held, held_names, held_amp, out in memo:
+            if held_names == names and held_amp == amp and _same(held, flat):
                 STATS["hits"] += 1
                 return out
         out = stock(*args, **kwargs)
         held = tuple(None if t is None else _key(t) for t in flat)
-        memo.insert(0, (held, names, out))
+        memo.insert(0, (held, names, amp, out))
         del memo[_MEMO_MAX:]
         STATS["misses"] += 1
         return out
@@ -155,3 +182,15 @@ def clear(transformer: Any) -> None:
         module = getattr(transformer, name, None)
         if module is not None:
             module.__dict__.pop(_MEMO_ATTR, None)
+
+
+def end_render(pipe: Any) -> None:
+    """Drop every entry when a render ends (Studio's generate ``finally``): an entry never outlives its request, so a
+    later in-place edit of an inference-mode prompt tensor (no version counter) cannot be answered from the cache.
+    Never raises."""
+    try:
+        transformer = getattr(pipe, "transformer", None)
+        if installed(transformer):
+            clear(transformer)
+    except Exception:  # noqa: BLE001
+        pass
