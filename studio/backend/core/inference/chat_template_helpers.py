@@ -1706,8 +1706,7 @@ def replays_reasoning_content(
     tools = None,
     template = None,
 ) -> bool:
-    """Inkling renders assistant content inside its text block, so its thought replays as a field.
-    Read from the template that renders, never the cached native one: an override drops the field."""
+    """Inkling's thought replays as a field; read the rendering template, not the cached native one an override hides."""
     if template is None and tokenizer is None and isinstance(model_info, dict):
         template = (model_info.get("chat_template_info") or {}).get("template")
     if template is not None:

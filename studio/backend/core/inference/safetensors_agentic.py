@@ -1340,7 +1340,7 @@ def run_safetensors_tool_loop(
             # Strip a leading bare-JSON call from kept content, since _strip_tool_markup_final only knows XML.
             content_text = strip_leading_bare_json_call(content_text, _enabled_tool_names)
             if split_reasoning_content:
-                # Replay only, the shown text stays as streamed: left in content the template renders the call twice.
+                # Replay only: left in content, the template renders the call twice.
                 replay_text = _strip_tool_markup_final(
                     _without_call_spans(
                         content_accum,
