@@ -732,6 +732,26 @@ def test_build_rag_autoinject_strong_match_skips_the_opening(rag_conn, monkeypat
     assert "FRONT_MATTER" not in injected.split("ORBIT_PERIOD")[0]
 
 
+def test_build_rag_autoinject_opening_of_a_sparse_deck_stays_small(rag_conn, monkeypatch):
+    scope = store.thread_scope("t1")
+    store.create_document(rag_conn, scope = scope, filename = "deck.pdf", sha256 = "h1", document_id = "d1")
+    n = 510
+    chunks = [_chunk(f"SLIDE_{i}", i, source_page = i, tokens = 1) for i in range(n - 1)]
+    chunks.append(_chunk("BIG_TAIL", n - 1, source_page = n - 1, tokens = 50_000))
+    store.add_chunks(
+        rag_conn, scope, "d1", chunks, [[0.0, 0.0, 1.0, 0.0]] * (n - 1) + [[0.6, 0.8, 0.0, 0.0]]
+    )
+    store.set_document_status(rag_conn, "d1", "completed", num_chunks = n)
+    _encode_as_query(monkeypatch)
+
+    result = inf_tools.build_rag_autoinject(
+        _convo("Summarize this document"), {"thread_id": "t1", "autoinject": True}
+    )
+    injected = _injected_text(result)
+    assert "SLIDE_0" in injected
+    assert injected.count("<chunk id=") <= 3 + inf_tools._autoinject_top_k()
+
+
 def _encode_as_query(monkeypatch):
     from core.rag import embeddings
     monkeypatch.setattr(

@@ -1104,7 +1104,11 @@ def all_chunks_for_scope(conn: sqlite3.Connection, scope) -> list[dict]:
 
 
 def opening_chunks(
-    conn: sqlite3.Connection, scope: str, min_tokens: int, document_id: str
+    conn: sqlite3.Connection,
+    scope: str,
+    min_tokens: int,
+    document_id: str,
+    max_chunks: int = 3,
 ) -> list[dict]:
     doc = conn.execute(
         "SELECT id, filename FROM documents d WHERE scope=? AND id=? AND status='completed' "
@@ -1118,8 +1122,9 @@ def opening_chunks(
     for r in conn.execute(
         "SELECT id, text, document_id, chunk_index, page_number, source_page_index, "
         "page_char_start, page_char_end, token_count "
-        "FROM chunks WHERE document_id=? ORDER BY chunk_index",
-        (doc["id"],),
+        # Chunks never span pages, so a sparse deck would otherwise pull in a chunk per page.
+        "FROM chunks WHERE document_id=? ORDER BY chunk_index LIMIT ?",
+        (doc["id"], max_chunks),
     ):
         rows.append({**dict(r), "filename": doc["filename"]})
         total += r["token_count"] or max(1, len(r["text"] or "") // 4)
