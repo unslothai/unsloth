@@ -16202,7 +16202,12 @@ def _build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> d
     query = _last_user_text(conversation)
     try:
         from core.inference import instruction_pin
-        from core.rag.tool import render_sources, search_for_autoinject, whole_document_context
+        from core.rag.tool import (
+            document_opening,
+            render_sources,
+            search_for_autoinject,
+            whole_document_context,
+        )
     except Exception as exc:  # noqa: BLE001
         logger.warning("RAG auto-inject unavailable: %s", exc)
         return None
@@ -16283,6 +16288,7 @@ def _build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> d
         return _trim(found[0], found[1], max_tokens) if found else None
 
     thread_docs = _thread_document_ids(thread_id) if whole_doc_requested and text is None else set()
+    opening_ids: set = set()
 
     def retrieve_thread_unfloored(*, max_tokens = None):
         # Lexical-only misses generic requests ("summarize this"), so retry with the dense leg.
@@ -16299,7 +16305,39 @@ def _build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> d
                 min_dense_score = None,
                 mode = "hybrid",
             )
-        return found
+        if not found or _strong_thread_match():
+            return found
+        # Nothing clears the floor ("summarize this" ranks mid-document scraps), so the matched file's opening leads.
+        opening = document_opening(
+            scope_thread_id = thread_id, document_id = found[1][0].get("documentId")
+        )
+        if not opening:
+            return found
+        seen = {s["chunkId"] for s in opening}
+        hits = [s for s in found[1] if s.get("chunkId") not in seen]
+        merged = opening + hits
+        kept = _trim(
+            render_sources(merged), merged, max_tokens, keep_first = len(opening) + bool(hits)
+        )
+        if kept is None:
+            # render_sources renumbered these hits in place for the merged list.
+            return render_sources(found[1]), found[1]
+        opening_ids.update(seen)
+        return kept
+
+    def _strong_thread_match() -> bool:
+        try:
+            return bool(
+                search_for_autoinject(
+                    query = query,
+                    scope_thread_id = thread_id,
+                    top_k = 1,
+                    min_dense_score = floor,
+                    mode = "dense",
+                )
+            )
+        except Exception:  # noqa: BLE001 - an unavailable dense leg keeps the plain top-k
+            return True
 
     # With auto-injection off, search the oversized attachment alone, unfloored; budget binds only here, so a small context cannot silently switch RAG off.
     if text is None and (enabled or whole_doc_requested):
@@ -16345,9 +16383,10 @@ def _build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> d
                     if thread_found and found:
                         cited = thread_docs or {s.get("documentId") for s in thread_found[1]}
                         if not any(s.get("documentId") in cited for s in found[1]):
-                            # Still the lean top_k in total, so the unbudgeted path never doubles the injection.
+                            # The lean top_k plus the opening, so the unbudgeted path never doubles the injection.
                             n_proj = min(len(found[1]), top_k // 2)
-                            merged = thread_found[1][: top_k - n_proj] + found[1][:n_proj]
+                            n_open = sum(s.get("chunkId") in opening_ids for s in thread_found[1])
+                            merged = thread_found[1][: n_open + top_k - n_proj] + found[1][:n_proj]
                             found = (render_sources(merged), merged)
                     elif thread_found:
                         found = thread_found
