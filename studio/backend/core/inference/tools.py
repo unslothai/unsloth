@@ -4099,9 +4099,8 @@ def _references_studio_credential_here(
     _depth: int = 0,
 ) -> bool:
     """Checks credential refs and .. paths from the tool cwd (the one shape that can leave the sandbox); a binding of the variable first names its own dir"""
-    # The bracket rewrites reach one text along many paths: a nested `[[...]]` took minutes. Only clean
-    # results are kept (a True ends the call), per call and per recursion depth, so every answer and
-    # RecursionError stay as a rescan gives; a digest keeps long texts from piling up in memory.
+    # Nested `[[...]]` rewrites reach one text along many paths. Cache only clean (False) results (a True
+    # ends the call), keyed per call and recursion depth so answers and RecursionError match a rescan.
     if _cleared is None:
         _cleared = set()
     key = None
@@ -5593,7 +5592,6 @@ def _folded_path(
     join_names = join_names or frozenset()
 
     def fold(node) -> "str | None":
-        # A chain re-folded from every one of its nodes was quadratic; reuse a subtree already folded.
         if memo is not None:
             known = memo.get(id(node), _NOT_FOLDED)
             if known is not _NOT_FOLDED:
@@ -5753,8 +5751,7 @@ def _dynamic_name_hits_sensitive(folded) -> bool:
     """A NUL placeholder matches any run within one segment, so a split sensitive name still matches."""
     if not folded or "\x00" not in folded:
         return False
-    # Each literal character matches exactly one target character, so more of them than the longest
-    # target holds can never match; skipping the compile keeps long concatenations linear.
+    # One literal char matches one target char, so more literals than the longest target can never match.
     if len(folded) - folded.count("\x00") > max(map(len, _SENSITIVE_GLOB_TARGETS), default = 0):
         return False
     # Adjacent placeholders match exactly what one does, so a run of them compiles to one class.
@@ -9437,7 +9434,6 @@ def _python_is_high_risk(code: str) -> bool:
             if folded and "\x00" not in folded and "\x02" not in folded:
                 str_vars[node.targets[0].id] = folded
 
-    # str_vars is final here, so every fold below shares one memo.
     fold_memo: "dict[int, str | None]" = {}
     for node in _tree_nodes(tree):
         if isinstance(node, (ast.BinOp, ast.JoinedStr, ast.Call)):
@@ -9714,7 +9710,7 @@ def _python_is_high_risk(code: str) -> bool:
 
 def is_high_risk_tool_call(name: str, arguments: dict) -> bool:
     """Auto mode prompts only for sensitive actions (credentials, privilege, destructive, network exfil); unknown tools fail closed; hard blocks still apply."""
-    # In the body, not a wrapper: the stack runs out at the same depth as before.
+    # Caught in the body, not a wrapper: a wrapper frame would move the stack threshold.
     try:
         if _web_search_fetches_url(name, arguments) or _browser_opens_workspace_file(
             name, arguments
@@ -9768,7 +9764,7 @@ def is_high_risk_tool_call(name: str, arguments: dict) -> bool:
             return _python_is_high_risk(str(arguments.get("code", "")))
         return True
     except RecursionError:
-        # Nested too deeply to analyse: ask, as for an unknown tool, rather than end the turn.
+        # Only RecursionError (fail closed): too deep to analyse asks, as for an unknown tool.
         return True
 
 
