@@ -160,17 +160,71 @@ def save_attention_context_fn(on_save: Optional[Any] = None) -> Optional[Any]:
     if not ops:
         return None
 
+    def keeps(op: Any, args: tuple) -> bool:
+        if op not in ops:
+            return False
+        key = args[1] if len(args) > 1 else None
+        return getattr(key, "ndim", 0) >= 2 and key.shape[-2] >= _SAVE_ATTENTION_MIN_KEYS
+
     def policy(ctx: Any, op: Any, *args: Any, **kwargs: Any) -> Any:
-        if op in ops:
-            key = args[1] if len(args) > 1 else None
-            if getattr(key, "ndim", 0) >= 2 and key.shape[-2] >= _SAVE_ATTENTION_MIN_KEYS:
-                # torch 2.10 / 2.11 ask again during the recompute: count the first pass only.
-                if on_save is not None and not getattr(ctx, "is_recompute", False):
-                    on_save(_attention_bytes(args))
-                return save
+        if keeps(op, args):
+            # torch 2.10 / 2.11 ask again during the recompute: count the first pass only.
+            if on_save is not None and not getattr(ctx, "is_recompute", False):
+                on_save(_attention_bytes(args))
+            return save
         return recompute
 
-    return functools.partial(create, policy)
+    def contexts() -> tuple:
+        forward, recompute_ctx = create(policy)
+        return _private_saved_outputs(forward, keeps), recompute_ctx
+
+    return contexts
+
+
+def _private_saved_outputs(caching: Any, keeps: Any) -> Any:
+    """Wrap the selective checkpoint's caching mode so the caller gets a copy of each kept output and the cache holds
+    the only reference to the kernel's own tensor. Around a compiled block the caller is Inductor's wrapper, which
+    reuses a buffer after its last use in the graph and writes it from a generated kernel (no version bump): when the
+    graph does not save the attention output for its own backward (no grad reaches q / k / v), the cached value was
+    overwritten and the recompute replayed garbage (pytorch #201158). Costs one copy of each kept output per forward."""
+    import torch
+    from torch.utils._python_dispatch import TorchDispatchMode
+
+    class _PrivateSavedOutputs(TorchDispatchMode):
+        @classmethod
+        def ignore_compile_internals(cls) -> bool:
+            return True
+
+        def __enter__(self):
+            caching.__enter__()
+            try:
+                return super().__enter__()
+            except BaseException:
+                caching.__exit__(None, None, None)
+                raise
+
+        def __exit__(self, *exc: Any):
+            try:
+                return super().__exit__(*exc)
+            finally:
+                caching.__exit__(*exc)
+
+        def __torch_dispatch__(
+            self,
+            func,
+            types,
+            args = (),
+            kwargs = None,
+        ):
+            out = func(*args, **(kwargs or {}))
+            if not keeps(func, args):
+                return out
+            # Plain tensors only: fake / functional tensors mean compile tracing, where nothing is cached for replay.
+            return torch.utils._pytree.tree_map(
+                lambda t: t.clone() if type(t) is torch.Tensor else t, out
+            )
+
+    return _PrivateSavedOutputs()
 
 
 class _Checkpoint:
