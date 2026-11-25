@@ -73,7 +73,7 @@ def check_auto_env(environ = None):
             f"Unsloth: {FLAG}=auto picks DDP or FSDP2 itself, but UNSLOTH_FSDP2={environ.get('UNSLOTH_FSDP2')} "
             f'already does. Use one of the two: unset UNSLOTH_FSDP2, or set {FLAG}="fsdp=1" / "fsdp=0".'
         )
-    for name in ("UNSLOTH_TP_SIZE", "UNSLOTH_PP_SIZE", "UNSLOTH_CP_SIZE"):
+    for name in ("UNSLOTH_TP_SIZE", "UNSLOTH_PP_SIZE", "UNSLOTH_CP_SIZE", "UNSLOTH_EP_SIZE"):
         if str(environ.get(name, "")).strip() not in ("", "1"):
             raise ValueError(
                 f"Unsloth: {FLAG}=auto only chooses the data parallel mode (DDP or FSDP2), but "
@@ -483,6 +483,12 @@ def resolve_for_load(loader, args, kwargs):
         adapter = []
         base = _peft_base(name, call, revision)
         if base is not None:
+            # Before the base reaches a filesystem probe: a Hub adapter's UNC base, as the loaders refuse it.
+            from types import SimpleNamespace
+
+            from .models.loader import _refuse_network_share_adapter_base
+
+            _refuse_network_share_adapter_base(name, SimpleNamespace(base_model_name_or_path = base))
             # A PEFT adapter: the loaders load peft_config.base_model_name_or_path (mapped, no ref) and the adapter.
             adapter = _checkpoint_tensors(name, token = call.get("token"), revision = revision)
             name, revision = mapped(base, None), None

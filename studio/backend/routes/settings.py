@@ -73,6 +73,11 @@ from utils.device_sync_settings import (
     save_background_image,
     update_client_preferences,
 )
+from utils.onboarding_settings import (
+    account_has_history,
+    get_onboarding,
+    update_onboarding,
+)
 from utils.personalization_settings import (
     MAX_AVATAR_DATA_URL_BYTES,
     PERSONALIZATION_VERSION,
@@ -213,6 +218,11 @@ from utils.current_date_prompt_settings import (
     DEFAULT_CURRENT_DATE_PROMPT_ENABLED,
     get_current_date_prompt_enabled,
     set_current_date_prompt_enabled,
+)
+from utils.trusted_tool_folders_settings import (
+    MAX_TRUSTED_TOOL_FOLDERS,
+    get_trusted_tool_folders,
+    set_trusted_tool_folders,
 )
 from utils.lan_access_settings import (
     lan_access_status,
@@ -3310,7 +3320,7 @@ class EmbeddingModelPayload(BaseModel):
     # The repo /resolve named, stored so the loader opens what was downloaded.
     gguf_repo: Optional[str] = Field(default = None, max_length = MAX_EMBEDDING_MODEL_LENGTH)
     # And the backend it needs, so a model with no GGUF is not sent to llama-server.
-    backend: Optional[Literal["llama", "sentence-transformers"]] = None
+    backend: Optional[Literal["llama", "sentence-transformers", "connection"]] = None
     # Token for gated/private repos during verification (not stored).
     hf_token: Optional[str] = Field(default = None, max_length = 512)
     # Skip HF verification (offline installs, local paths HF can't see).
@@ -3529,7 +3539,7 @@ def get_embedding_model(
 
 class EmbeddingModelResolveResponse(BaseModel):
     embedding_model: str
-    backend: Literal["llama", "sentence-transformers"]
+    backend: Literal["llama", "sentence-transformers", "connection"]
     # download source; split plans include every shard; both fields are None on no fetch or error
     download_repo: Optional[str] = None
     files: Optional[list[str]] = None
@@ -3936,6 +3946,11 @@ def _resolve_embedding_model_plan(
             return False
         return not cached_read_refused(token, repo_id = repo, is_cached = lambda: True)
 
+    from core.rag import config as rag_config
+
+    if rag_config.is_connection_model(resolved):
+        return _connection_embedding_plan(resolved)
+
     # Cache lookups are authorized per matched repo; a pre-gate would probe the Hub on every
     # resolve.
 
@@ -4081,6 +4096,31 @@ def _resolve_embedding_model_plan(
     )
 
 
+def _connection_embedding_plan(model: str) -> EmbeddingModelResolveResponse:
+    """Nothing to download; only whether the named connection exists, without a network call."""
+    from core.rag.embed_connection import ConnectionEmbedderError, resolve_connection_model
+
+    try:
+        resolve_connection_model(model)
+        error = None
+    except ConnectionEmbedderError as exc:
+        error = str(exc)
+    return EmbeddingModelResolveResponse(embedding_model = model, backend = "connection", error = error)
+
+
+def _probe_connection_embedder(model: str) -> None:
+    """One live embed, so a chat-only endpoint or a wrong model id is caught at save time (409)."""
+    from core.rag.embed_connection import ConnectionEmbeddingBackend
+
+    probe = ConnectionEmbeddingBackend(attempts = 1)
+    try:
+        probe.warm(model_name = model)
+    except Exception as exc:  # noqa: BLE001 - any failure is the forceable verification error
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+    finally:
+        probe.close()
+
+
 @_owner_settings_router.get(
     "/embedding-model/resolve", response_model = EmbeddingModelResolveResponse
 )
@@ -4153,6 +4193,19 @@ def update_embedding_model(
             status_code = 400,
             detail = "The embedding download repository was not validated for this model.",
         )
+    if plan.backend == "connection":
+        if not payload.force:
+            if plan.error:
+                raise HTTPException(status_code = 409, detail = plan.error)
+            _probe_connection_embedder(model)
+        set_rag_embedding_model(model, backend = "connection")
+        logger.info(
+            "settings.embedding_model_updated subject=%s model=%s forced=%s",
+            current_subject,
+            model,
+            payload.force,
+        )
+        return _embedding_model_response()
     destination_is_llama = plan.backend == "llama"
     # Scan the repo the loader opens (slashless aliases resolve under sentence-transformers/).
     verify_target = model
@@ -4424,6 +4477,16 @@ class CurrentDatePromptPayload(BaseModel):
 class CurrentDatePromptResponse(BaseModel):
     enabled: bool
     default_enabled: bool = DEFAULT_CURRENT_DATE_PROMPT_ENABLED
+
+
+class TrustedToolFoldersPayload(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+
+    folders: list[StrictStr] = Field(max_length = MAX_TRUSTED_TOOL_FOLDERS)
+
+
+class TrustedToolFoldersResponse(BaseModel):
+    folders: list[str]
 
 
 class ChatMemoryPayload(BaseModel):
@@ -4778,6 +4841,49 @@ def update_current_date_prompt(
     return CurrentDatePromptResponse(enabled = enabled)
 
 
+@_owner_settings_router.get("/trusted-tool-folders", response_model = TrustedToolFoldersResponse)
+def get_trusted_tool_folders_setting(
+    current_subject: str = Depends(get_current_subject),
+    # Host paths: the settings page reads them, an API-key integration has no need to.
+    _ui_session: None = Depends(_require_ui_session),
+) -> TrustedToolFoldersResponse:
+    try:
+        folders = get_trusted_tool_folders()
+    except Exception as exc:
+        raise log_and_http_error(
+            exc,
+            500,
+            "Could not read the trusted folders.",
+            event = "settings.trusted_tool_folders_read_failed",
+            log = logger,
+        ) from exc
+    return TrustedToolFoldersResponse(folders = folders)
+
+
+@_owner_settings_router.put("/trusted-tool-folders", response_model = TrustedToolFoldersResponse)
+def update_trusted_tool_folders_setting(
+    payload: TrustedToolFoldersPayload,
+    current_subject: str = Depends(get_current_subject),
+    # Widens what tool calls run without asking: set at the console, never by an API key.
+    _ui_session: None = Depends(_require_ui_session),
+) -> TrustedToolFoldersResponse:
+    """Folders whose files the owner's Python and Terminal calls may read and run without a prompt."""
+    try:
+        folders = set_trusted_tool_folders(payload.folders)
+    except ValueError as exc:
+        raise log_and_http_error(
+            exc,
+            400,
+            safe_curated_detail(exc, fallback = "Invalid trusted folders."),
+            event = "settings.update_trusted_tool_folders_failed",
+            log = logger,
+        ) from exc
+    logger.info(
+        "settings.trusted_tool_folders_updated subject=%s count=%s", current_subject, len(folders)
+    )
+    return TrustedToolFoldersResponse(folders = folders)
+
+
 def _chat_memory_response() -> ChatMemoryResponse:
     from core import agents_md
     return ChatMemoryResponse(
@@ -5062,13 +5168,13 @@ class PersonalizationImportedFont(BaseModel):
         return value
 
 
-# Boolean is each optional user-menu item's default visibility; Settings-tab shortcuts ship hidden.
+# Boolean is each optional user-menu item's default visibility; Settings-tab shortcuts except Appearance ship hidden.
 SIDEBAR_MENU_ITEM_DEFAULTS = {
     "api": True,
     "darkMode": True,
     "guidedTour": True,
     "profile": False,
-    "appearance": False,
+    "appearance": True,
     "resources": False,
     "chat": False,
     "connections": False,
@@ -5478,6 +5584,47 @@ def update_client_preferences_settings(
     return _client_preferences_response(update_client_preferences(changes))
 
 
+_OnboardingPageId = Annotated[str, Field(pattern = r"^[a-z0-9-]{1,40}$")]
+
+
+class OnboardingPayload(BaseModel):
+    pages: list[_OnboardingPageId] = Field(default_factory = list, max_length = 32)
+    completed: bool = False
+
+
+class OnboardingResponse(BaseModel):
+    saved: bool = False
+    pages: list[str] = Field(default_factory = list)
+    completedAt: Optional[int] = None
+    hasHistory: bool = False
+
+
+def _onboarding_response(stored: dict, *, history: bool = False) -> OnboardingResponse:
+    pages = stored.get("pages")
+    completed_at = stored.get("completedAt")
+    return OnboardingResponse(
+        saved = bool(stored),
+        pages = [p for p in pages if isinstance(p, str)] if isinstance(pages, list) else [],
+        completedAt = completed_at if isinstance(completed_at, int) else None,
+        hasHistory = history,
+    )
+
+
+@_account_settings_router.get("/onboarding", response_model = OnboardingResponse)
+def get_onboarding_settings(
+    current_subject: str = Depends(get_current_subject),
+) -> OnboardingResponse:
+    stored = get_onboarding()
+    return _onboarding_response(stored, history = not stored and account_has_history())
+
+
+@_account_settings_router.put("/onboarding", response_model = OnboardingResponse)
+def update_onboarding_settings(
+    payload: OnboardingPayload, current_subject: str = Depends(get_current_subject)
+) -> OnboardingResponse:
+    return _onboarding_response(update_onboarding(payload.pages, payload.completed))
+
+
 class ChatBackgroundImageMeta(BaseModel):
     sha256: str
     type: str
@@ -5612,7 +5759,7 @@ def get_debug_log_sources(
     from utils import debug_log_sources
 
     sources = debug_log_sources.list_sources()
-    # Walk prefers the first root; file logging may be off before logs/ exists, so reveal the home.
+    # File logging may be off before logs/ exists, so reveal the home.
     roots = debug_log_sources.candidate_roots()
     log_root = None
     if roots:
@@ -5796,6 +5943,8 @@ class SandboxMemoryStatus(BaseModel):
     limit_gb: Optional[int] = None
     saved_gb: int
     default_gb: int
+    # True: no saved value, so the limit follows half of this machine's RAM.
+    auto: bool = True
     min_gb: int
     max_gb: int
     locked_by_environment: bool
@@ -5807,7 +5956,7 @@ class SandboxStatusResponse(BaseModel):
     terminal: SandboxToolStatus
     terminal_shell: Optional[str] = None
     windows: Optional[SandboxWindowsStatus] = None
-    # None off Linux, where the rlimit never applied.
+    # None only if the status could not be built.
     memory: Optional[SandboxMemoryStatus] = None
     setup: Optional[SandboxSetupStatus] = None
     checked_at: float
@@ -5824,6 +5973,7 @@ class SandboxSettingsPayload(BaseModel):
         ge = sandbox_memory_limit.MIN_MEMORY_LIMIT_GB,
         le = sandbox_memory_limit.MAX_MEMORY_LIMIT_GB,
     )
+    memory_limit_auto: Optional[Literal[True]] = None
 
 
 class SandboxSetupPayload(BaseModel):
@@ -5906,7 +6056,7 @@ def _sandbox_windows_status() -> SandboxWindowsStatus:
     from utils import mxc_isolation_settings as saved
 
     try:
-        mxc_runtime.installation_identity()
+        mxc_runtime.verified_installation_identity()
         installed = True
     except Exception:
         installed = False
@@ -6017,16 +6167,11 @@ def _sandbox_setup_status(available: bool) -> Optional[SandboxSetupStatus]:
 
 
 def _sandbox_memory_status() -> Optional[SandboxMemoryStatus]:
-    import sys
-
-    # Linux only: Windows never set this rlimit, and on macOS setrlimit(RLIMIT_AS) fails once the forked child
-    # already maps more than the cap, so tool runs there were never capped.
-    if sys.platform != "linux":
-        return None
     return SandboxMemoryStatus(
         limit_gb = sandbox_memory_limit.effective_memory_limit_gb(),
         saved_gb = sandbox_memory_limit.saved_memory_limit_gb(),
-        default_gb = sandbox_memory_limit.DEFAULT_MEMORY_LIMIT_GB,
+        default_gb = sandbox_memory_limit.default_memory_limit_gb(),
+        auto = sandbox_memory_limit.is_auto(),
         min_gb = sandbox_memory_limit.MIN_MEMORY_LIMIT_GB,
         max_gb = sandbox_memory_limit.MAX_MEMORY_LIMIT_GB,
         locked_by_environment = sandbox_memory_limit.locked_by_environment(),
@@ -6079,6 +6224,9 @@ def _sandbox_apply(payload: SandboxSettingsPayload) -> Optional[int]:
     from core.inference import mxc_policy, mxc_read_grants
     from utils import mxc_isolation_settings as saved
 
+    if payload.memory_limit_auto:
+        sandbox_memory_limit.use_auto_memory_limit()
+        return None
     if payload.memory_limit_gb is not None:
         sandbox_memory_limit.set_memory_limit_gb(payload.memory_limit_gb)
         # The route refuses it beside the Windows switches, so the MXC state below is untouched.
@@ -6128,7 +6276,7 @@ async def update_sandbox_settings(
     # Host policy: changed at the console, never by an API key the owner happens to hold.
     _ui_session: None = Depends(_require_ui_session),
 ) -> SandboxStatusResponse:
-    """Save the Windows MXC opt-in, the persistent read grant choice, or the Linux memory limit. Applies to the next
+    """Save the Windows MXC opt-in, the persistent read grant choice, or the memory limit. Applies to the next
     launch."""
     import sys
 
@@ -6138,17 +6286,17 @@ async def update_sandbox_settings(
     windows_fields = (
         payload.allow_dacl_fallback is not None or payload.persistent_read_grants is not None
     )
-    if payload.memory_limit_gb is not None:
-        if sys.platform != "linux":
-            raise HTTPException(
-                status_code = 409, detail = "The sandbox memory limit only applies on Linux."
-            )
-        if sandbox_memory_limit.locked_by_environment():
-            raise HTTPException(
-                status_code = 409,
-                detail = f"{sandbox_memory_limit.MEMORY_LIMIT_ENV} is set in the environment Unsloth runs in, which decides this.",
-            )
-    if sys.platform != "win32" and (windows_fields or payload.memory_limit_gb is None):
+    memory_fields = payload.memory_limit_gb is not None or payload.memory_limit_auto is not None
+    if payload.memory_limit_gb is not None and payload.memory_limit_auto:
+        raise HTTPException(status_code = 422, detail = "Send a memory limit or auto, not both.")
+    if memory_fields and windows_fields:
+        raise HTTPException(status_code = 422, detail = "Save the memory limit on its own.")
+    if memory_fields and sandbox_memory_limit.locked_by_environment():
+        raise HTTPException(
+            status_code = 409,
+            detail = f"{sandbox_memory_limit.MEMORY_LIMIT_ENV} is set in the environment Unsloth runs in, which decides this.",
+        )
+    if sys.platform != "win32" and not memory_fields:
         raise HTTPException(status_code = 409, detail = "These settings only apply on Windows.")
     locks = (
         (payload.allow_dacl_fallback, mxc_policy.DACL_FALLBACK_ENV),
@@ -6172,11 +6320,12 @@ async def update_sandbox_settings(
             log = logger,
         ) from exc
     logger.info(
-        "settings.sandbox_updated subject=%s dacl=%s grants=%s memory_gb=%s",
+        "settings.sandbox_updated subject=%s dacl=%s grants=%s memory_gb=%s memory_auto=%s",
         current_subject,
         payload.allow_dacl_fallback,
         payload.persistent_read_grants,
         payload.memory_limit_gb,
+        payload.memory_limit_auto,
     )
     status = await asyncio.to_thread(_for_request, status, request)
     return status.model_copy(update = {"grants_restored": restored})
@@ -6211,7 +6360,7 @@ async def start_sandbox_prepare(
     if sys.platform != "win32":
         raise HTTPException(status_code = 409, detail = "Host preparation is Windows-only.")
     try:
-        await asyncio.to_thread(mxc_runtime.installation_identity)
+        await asyncio.to_thread(mxc_runtime.verified_installation_identity)
     except Exception as exc:
         raise HTTPException(
             status_code = 409,
@@ -6266,7 +6415,7 @@ async def start_sandbox_setup(
     """
     import sys
 
-    from core.inference import mxc_policy, sandbox_setup_job, sandbox_setup_plan
+    from core.inference import mxc_policy, mxc_runtime, sandbox_setup_job, sandbox_setup_plan
     from utils import mxc_isolation_settings as saved
     from utils.client_ip import is_direct_local_request
 
@@ -6296,6 +6445,7 @@ async def start_sandbox_setup(
     consent = (
         payload.operation == sandbox_setup_plan.WINDOWS_SETUP
         and payload.consent_dacl_fallback
+        and mxc_runtime.selected_pin().has_host_prep
         and not mxc_policy.dacl_fallback_enabled()
     )
     if consent and saved.locked_by_environment(mxc_policy.DACL_FALLBACK_ENV):

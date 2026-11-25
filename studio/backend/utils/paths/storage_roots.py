@@ -1384,10 +1384,22 @@ def dataset_files_in_dir(directory: Path, splits: tuple[str, ...] = TRAIN_SPLITS
     return _split_files(directory, files, splits)
 
 
+def _refuse_network_share_dataset(raw: str) -> None:
+    """Refused before realpath() touches it: that alone makes Windows sign in to the share's host (NTLM).
+    A dataset root the owner placed on a share keeps working."""
+    from utils.datasets.remote_images import is_network_share
+    if is_network_share(raw) and not any(
+        is_network_share(str(root))
+        for root in (datasets_root(), dataset_uploads_root(), recipe_datasets_root())
+    ):
+        raise ValueError(f"dataset path must be relative or under a dataset root: {raw!r}")
+
+
 def resolve_dataset_path(path_value: str) -> Path:
     raw = str(path_value or "").strip()
     if "\x00" in raw:
         raise ValueError("dataset path may not contain null bytes")
+    _refuse_network_share_dataset(raw)
     path = Path(raw).expanduser()
     if ".." in path.parts:
         raise ValueError(f"dataset path may not contain '..' segments: {raw!r}")

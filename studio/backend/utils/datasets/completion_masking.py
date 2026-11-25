@@ -90,6 +90,20 @@ def _mask_tool_responses(trainer, start_id, end_id, turn_id):
     return trainer
 
 
+# Inkling: auto-detection glues the previous turn's end tokens onto both markers, masking every
+# non-final assistant turn's end-of-turn tokens; the bare role tokens are exact.
+_ROLE_TOKEN_MARKERS = (("<|message_user|>", "<|message_model|>"),)
+
+
+def role_token_markers(vocab):
+    """(instruction, response) role tokens when the tokenizer's added vocab has both, else None."""
+    vocab = vocab or {}
+    for instruction, response in _ROLE_TOKEN_MARKERS:
+        if instruction in vocab and response in vocab:
+            return instruction, response
+    return None
+
+
 def apply_completion_masking(
     trainer,
     model_name,
@@ -169,6 +183,30 @@ def apply_completion_masking(
         notify(
             "info",
             "Train on responses only configured via tokenizer preset markers",
+        )
+        return trainer, True
+    role_markers = role_token_markers(vocab)
+    active_template = getattr(processor, "chat_template", None) or getattr(
+        inner, "chat_template", None
+    )
+    # A replaced template (ChatML on an Inkling base) renders no role tokens, so they would mask every token.
+    if (
+        role_markers
+        and isinstance(active_template, str)
+        and any(m not in active_template for m in role_markers)
+    ):
+        role_markers = None
+    if role_markers:
+        trainer = train_fn(
+            trainer,
+            instruction_part = role_markers[0],
+            response_part = role_markers[1],
+            **kwargs,
+        )
+        notify(
+            "info",
+            "Train on responses only configured with role token markers "
+            f"({role_markers[0]} / {role_markers[1]})",
         )
         return trainer, True
     auto_instruction = auto_response = None

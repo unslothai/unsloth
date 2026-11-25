@@ -6,7 +6,7 @@
  *  talk the model into anything, so the rules hold whatever the model says it wants. */
 
 import type { ElementInfo } from "./page-agent";
-import { type AgentPermissions, patternMatches, ruleFor } from "./permissions";
+import { type AgentPermissions, ruleCovers, ruleFor } from "./permissions";
 
 /** `prompt` is for the model; `ask`, `host` and `name` let the panel say it in the reader's language. */
 export type Question = {
@@ -163,7 +163,7 @@ export function gateNavigation(url: string, context: NavigationContext): Gate {
   if (rule.browsing === "allow") return ALLOW;
   if (site) {
     const here = hostOfUrl(context.currentUrl);
-    return here && patternMatches(site, here) ? ALLOW : ask;
+    return ruleCovers(site, rule, here) ? ALLOW : ask;
   }
   if (context.knownHosts.has(host) || mentioned(host, context.userText)) return ALLOW;
   if (context.pageLinks.has(parsed.href)) return LINKED;

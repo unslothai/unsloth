@@ -20,15 +20,22 @@ export function AdvancedDisclosure({
   ),
   children,
   flush = false,
+  classNames,
 }: {
   flush?: boolean;
+  classNames?: { root?: string; body?: string; description?: string };
   open: boolean;
   onOpenChange: (open: boolean) => void;
   description?: ReactNode;
   children: ReactNode;
 }) {
   return (
-    <div className="mt-2 flex flex-col gap-3 border-t border-border/60 pt-4 pb-4">
+    <div
+      className={cn(
+        "mt-2 flex flex-col gap-3 border-t border-border/60 pt-4 pb-4",
+        classNames?.root,
+      )}
+    >
       <button
         type="button"
         onClick={() => onOpenChange(!open)}
@@ -54,8 +61,8 @@ export function AdvancedDisclosure({
         />
       </button>
       {open && (
-        <div className="flex flex-col gap-3">
-          <p className="text-ui-11 leading-snug text-muted-foreground">
+        <div className={cn("flex flex-col gap-3", classNames?.body)}>
+          <p className={cn("text-ui-11 leading-snug text-muted-foreground", classNames?.description)}>
             {description}
           </p>
           {children}

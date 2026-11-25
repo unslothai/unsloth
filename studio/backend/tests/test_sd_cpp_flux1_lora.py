@@ -400,3 +400,29 @@ def test_flux1_malformed_header_links_as_is(tmp_path, extra):
     out = _stage(tmp_path, src, "flux.1")
     assert os.stat(out[0].path).st_ino == os.stat(src).st_ino
     assert not list((tmp_path / "stage").glob("*.partial"))
+
+
+def test_split_copy_refuses_a_header_that_claims_a_huge_hidden_size(tmp_path):
+    """A few-hundred-byte file declaring a giant lora_A width must not make staging allocate the padding."""
+    huge = 1 << 40
+    header = {
+        "single_transformer_blocks.0.attn.to_q.lora_A.weight": {
+            "dtype": "F32",
+            "shape": [1, huge],
+            "data_offsets": [0, 4],
+        },
+        "single_transformer_blocks.0.attn.to_q.lora_B.weight": {
+            "dtype": "F32",
+            "shape": [huge, 1],
+            "data_offsets": [4, 8],
+        },
+    }
+    blob = json.dumps(header).encode()
+    blob += b" " * (-len(blob) % 8)
+    src = tmp_path / "evil.safetensors"
+    src.write_bytes(len(blob).to_bytes(8, "little") + blob + b"\0" * 8)
+    dst = tmp_path / "staged.safetensors"
+    assert dl.flux1_missing_split_pieces(header)
+    assert dl.write_flux1_split_complete_copy(str(src), dst) is False
+    assert not dst.exists()
+    assert not dst.with_name(dst.name + ".partial").exists()

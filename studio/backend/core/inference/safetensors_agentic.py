@@ -21,7 +21,7 @@ from typing import Callable, Generator, Optional
 
 from loggers import get_logger
 
-from core.inference.llama_cpp import _has_answer_artifact
+from core.inference.llama_cpp import _FINAL_ANSWER_TOOL_LIMIT_MESSAGE, _has_answer_artifact
 from core.inference.tool_call_parser import (
     _GEMMA_BARE_TC_PREFIX_RE,
     _balanced_brace_end,
@@ -51,6 +51,7 @@ from core.inference.tool_call_parser import (
 
 from core.tool_healing import (
     _markerless_promotable,
+    parse_tool_calls_from_text as _parse_spanned_tool_calls,
     _THINK_CLOSE_RE,
     _think_spans_outside_tool_markup,
     strip_outside_think,
@@ -329,13 +330,49 @@ def _status_for_tool(tool_name: str, arguments: dict) -> str:
     return status_for_tool(tool_name, arguments)
 
 
+_THINK_BLOCK_RE = re.compile(r"<think>(.*?)</think>", re.DOTALL)
+
+
+def _assistant_turn_msg(content: str, *, split: bool) -> dict:
+    msg: dict = {"role": "assistant", "content": content}
+    if split and "<think>" in content:
+        thoughts = _THINK_BLOCK_RE.findall(content)
+        if thoughts:
+            msg["content"] = _THINK_BLOCK_RE.sub("", content)
+            msg["reasoning_content"] = "\n".join(thoughts)
+    return msg
+
+
+def _without_call_spans(text: str, *, allow_incomplete: bool, enabled_tool_names) -> str:
+    """Cut the parsed calls' spans out of ``text``; Inkling's own call is a native block the strippers keep."""
+    _calls, spans = _parse_spanned_tool_calls(
+        text,
+        allow_incomplete = allow_incomplete,
+        enabled_tool_names = enabled_tool_names,
+        with_spans = True,
+    )
+    out, pos = [], 0
+    for start, end in spans:
+        out.append(text[pos:start])
+        pos = max(pos, end)
+    out.append(text[pos:])
+    return "".join(out)
+
+
 def _append_raw_turn(conversation: list, assistant_msg: dict, *, continue_final_message: bool):
     """``append_assistant_turn`` for raw-text turns: a resumed thought is replayed whole after the
     re-emitted ``<think>``; text without that opener drops it."""
+    resume_kind = trailing_assistant_resume_kind(conversation) if continue_final_message else None
+    added = assistant_msg.get("reasoning_content")
+    if resume_kind == "content" and isinstance(added, str):
+        # The merge keeps one reasoning field: a thought after resumed text must not replace the saved one.
+        saved = conversation[-1].get("reasoning_content")
+        if isinstance(saved, str) and saved:
+            assistant_msg = {**assistant_msg, "reasoning_content": f"{saved}\n{added}"}
     if not (
-        continue_final_message
-        and trailing_assistant_resume_kind(conversation) == "reasoning_content"
+        resume_kind == "reasoning_content"
         and isinstance(assistant_msg.get("content"), str)
+        and not isinstance(assistant_msg.get("reasoning_content"), str)
     ):
         append_assistant_turn(
             conversation, assistant_msg, continue_final_message = continue_final_message
@@ -573,6 +610,7 @@ def run_safetensors_tool_loop(
     sandbox_level: Optional[str] = None,
     reasoning_prefilled: bool = False,
     continue_final_message: bool = False,
+    split_reasoning_content: bool = False,
     markup = None,
     renderable_tools = None,
     context_length: Optional[int] = None,
@@ -583,6 +621,7 @@ def run_safetensors_tool_loop(
     context_fitter: Optional[Callable[[list, list, list], dict]] = None,
     tool_choice = None,
     disable_parallel_tool_use: bool = False,
+    mcp_match_exchange: Optional[dict] = None,
 ) -> Generator[dict, None, None]:
     """Yields status, content, tool_start and tool_end event dicts; content is cumulative text per turn."""
     if mcp_image is not None:
@@ -612,6 +651,7 @@ def run_safetensors_tool_loop(
 
     # Mirrors GGUF: full == bypass, unset -> auto, unknown -> ask, off keeps sandbox but never prompts; confirm_tool_calls=True alone is resolved to ask upstream.
     from core.inference.tool_stream_exec import stream_tool_execution
+    from core.inference.tools import PythonCallAnalyses
     from state.tool_policy import (
         account_tool_stream,
         needs_tool_confirmation,
@@ -663,6 +703,18 @@ def run_safetensors_tool_loop(
     rag_autoinjected = bool(_auto)
     # As on llama-server: a forced tool is the only one offered until a call runs or is denied.
     forced_resolved = rag_autoinjected and forced_tool_name(tool_choice) == "search_knowledge_base"
+    if (
+        mcp_match_exchange
+        and mcp_match_exchange.get("messages")
+        and tool_choice != "none"
+        and not forced_tool_name(tool_choice)
+        and not (
+            continue_final_message and trailing_assistant_resume_kind(conversation) is not None
+        )
+    ):
+        for _ev in mcp_match_exchange["events"]:
+            yield _ev
+        conversation.extend(mcp_match_exchange["messages"])
 
     unrestricted_tools = not tools
     # Gate telling a genuine NAME[ARGS] rehearsal from inactive-name prose; built from the
@@ -1195,10 +1247,16 @@ def run_safetensors_tool_loop(
                         1 if already_acted else MAX_ACT_REPROMPTS,
                         len(intent_text),
                     )
+                    # The intent text has dropped the thought; the split replays it from the raw turn.
+                    replayed = intent_text
+                    if split_reasoning_content and not reasoning_prefilled:
+                        replayed = strip_tool_markup(
+                            content_accum, final = True, enabled_tool_names = _enabled_tool_names
+                        )
                     # Merge into a resumed partial: a second assistant turn breaks alternation.
                     _append_raw_turn(
                         conversation,
-                        {"role": "assistant", "content": intent_text},
+                        _assistant_turn_msg(replayed, split = split_reasoning_content),
                         continue_final_message = continue_final_message,
                     )
                     tool_hint = " or ".join(_active_tool_names(active_tools)) or "an available tool"
@@ -1276,10 +1334,24 @@ def run_safetensors_tool_loop(
                 enabled_tool_names = _enabled_names_gate,
             )
 
+        replay_text = None
         if tool_calls:
             next_call_id += len(tool_calls)
             # Strip a leading bare-JSON call from kept content, since _strip_tool_markup_final only knows XML.
             content_text = strip_leading_bare_json_call(content_text, _enabled_tool_names)
+            if split_reasoning_content:
+                # Replay only: left in content, the template renders the call twice.
+                replay_text = _strip_tool_markup_final(
+                    _without_call_spans(
+                        content_accum,
+                        allow_incomplete = auto_heal_tool_calls,
+                        enabled_tool_names = _enabled_names_gate,
+                    ),
+                    auto_heal_tool_calls = auto_heal_tool_calls,
+                    tool_protocol_active = True,
+                    enabled_tool_names = _enabled_names_gate,
+                )
+                replay_text = strip_leading_bare_json_call(replay_text, _enabled_tool_names)
 
         # Transformers/MLX report the finished turn here; never run a healed, token-cut call.
         turn_stats = (generation_stats_holder or {}).get("stats") or {}
@@ -1307,6 +1379,19 @@ def run_safetensors_tool_loop(
             return
 
         if final_attempt_done:
+            # Only another call (reasoning aside), already without tools: an empty bubble is not actionable.
+            if tool_calls and not _reprompt_intent_text(
+                content_text, reasoning_prefilled = reasoning_prefilled, visible_only = True
+            ):
+                # Extend the shown snapshot, never restart it: a prefilled turn needs its </think> in the same snapshot.
+                display = _strip_streaming_display(cumulative_display)
+                sep = "\n\n" if display.strip() else ""
+                yield {
+                    "type": "content",
+                    "text": f"{display}{sep}{_FINAL_ANSWER_TOOL_LIMIT_MESSAGE}",
+                }
+                yield {"type": "status", "text": ""}
+                return
             if content_text:
                 yield {"type": "content", "text": content_text}
             yield {"type": "status", "text": ""}
@@ -1370,7 +1455,9 @@ def run_safetensors_tool_loop(
             if disable_parallel_tool_use and len(tool_calls) > 1:
                 tool_calls, over_cap = tool_calls[:1], []
 
-        assistant_msg: dict = {"role": "assistant", "content": content_text}
+        assistant_msg = _assistant_turn_msg(
+            content_text if replay_text is None else replay_text, split = split_reasoning_content
+        )
         assistant_appended = False
         # Defer no-op nudges so one no-op does not abort the rest of the batch.
         deferred_noop_msgs: list = []
@@ -1407,6 +1494,8 @@ def run_safetensors_tool_loop(
                         assistant_msg,
                         continue_final_message = continue_final_message,
                     )
+                    # A resumed partial merges into a copy; later calls must reach the stored message.
+                    assistant_msg = conversation[-1]
                     assistant_appended = True
                 if provisional_match and not provisional_resolved:
                     # Close a shown provisional render_html card so it never dangles if the call becomes a no-op.
@@ -1444,6 +1533,7 @@ def run_safetensors_tool_loop(
             permission_mode, bypass_permissions = live_permissions.apply(
                 permission_mode, bypass_permissions
             )
+            python_analyses = PythonCallAnalyses() if decision.tool_name == "python" else None
             needs_confirm = needs_tool_confirmation(
                 confirm_tool_calls = bool(confirm_tool_calls),
                 bypass_permissions = bypass_permissions,
@@ -1453,6 +1543,7 @@ def run_safetensors_tool_loop(
                 sandbox_level = sandbox_level,
                 session_id = session_id,
                 thread_id = thread_id,
+                python_analyses = python_analyses,
             )
             # Sending the user's image always asks, whatever the permission mode.
             needs_confirm = needs_confirm or image_share is not None
@@ -1464,6 +1555,7 @@ def run_safetensors_tool_loop(
                 arguments = decision.arguments,
                 prompted = needs_confirm,
                 sandbox_level = sandbox_level,
+                python_analyses = python_analyses,
             )
             approval_id = new_approval_id() if needs_confirm else ""
             decision_slot = begin_tool_decision(session_id, approval_id) if needs_confirm else None
@@ -1555,6 +1647,7 @@ def run_safetensors_tool_loop(
                     _decision = decision,
                     _approved = _host_access_approved,
                     _strict = strict_isolation,
+                    _analyses = python_analyses,
                 ):
                     kwargs = dict(
                         cancel_event = cancel_event,
@@ -1642,6 +1735,8 @@ def run_safetensors_tool_loop(
                     kwargs.update(_search_images_kwargs(execute_tool, _decision.tool_name))
                     if image_share is not None:
                         kwargs["mcp_image"] = image_share["image"]
+                    if _analyses is not None and _accepts_kwarg(execute_tool, "python_analyses"):
+                        kwargs["python_analyses"] = _analyses
                     return execute_tool(_decision.tool_name, _decision.arguments, **kwargs)
 
                 try:

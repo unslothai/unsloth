@@ -229,9 +229,8 @@ def _rewrite_audio_references(
     bucket: str,
     prefix: Optional[str],
 ) -> None:
-    """Rewrite audio values naming an audio key (prefix-relative, ``s3://`` URI, or
-    manifest-relative) to its local path; anything else is left as written. A value whose
-    prefix- and manifest-relative readings name different keys is refused."""
+    """Rewrite audio values naming a key (prefix-relative, s3:// URI, manifest-relative) to local
+    paths; others left as written; a value whose prefix and manifest readings differ is refused."""
     lookup: dict[str, str] = {}
     for key, local_path in audio_local_by_key.items():
         lookup[_key_relative_to_prefix(key, prefix)] = local_path

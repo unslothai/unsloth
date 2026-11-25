@@ -794,6 +794,30 @@ def test_packing_is_ignored_where_the_single_job_ignores_it(monkeypatch, tmp_pat
     assert steps == 2 * math.ceil(math.ceil(12 / 2) / 2)
 
 
+def test_a_packed_raw_text_member_wraps_long_documents_into_the_next_row(monkeypatch, tmp_path):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    packed = []
+    real = mlt._pack_rows
+
+    def spy(rows, *args, **kwargs):
+        out = real(rows, *args, **kwargs)
+        packed.append((rows, out[0]))
+        return out
+
+    monkeypatch.setattr(mlt, "_pack_rows", spy)
+    texts = _texts(12, 11)
+    raw = {"dataset": Dataset.from_dict({"text": texts}), "final_format": "raw_text"}
+    events, _, _ = _run(monkeypatch, PACKED[:2], max_seq_length = 8, datasets = {"job_a": raw})
+    assert _member_events(events, "job_a")[-1]["type"] == "complete"
+    (raw_docs, raw_rows), (other_docs, _) = packed
+    full = [t for text in texts for t in _tokenizer()(text)["input_ids"]]
+    assert max(len(ids) for ids, _ in raw_docs) > 8
+    assert [t for ids, _ in raw_rows for t in ids] == full
+    assert [t for _, labels in raw_rows for t in labels] == full
+    assert max(len(ids) for ids, _ in raw_rows) == 8
+    assert max(len(ids) for ids, _ in other_docs) == 8
+
+
 @pytest.mark.parametrize("varlen", [True, False])
 def test_a_hybrid_packs_only_with_the_varlen_kernels(monkeypatch, varlen):
     transformers = pytest.importorskip("transformers", minversion = "5.2")

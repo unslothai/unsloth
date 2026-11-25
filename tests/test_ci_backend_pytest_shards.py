@@ -272,6 +272,8 @@ class TestTheSplitKeepsTheSelectionItInherited:
         run = _shared_pytest_step()["run"]
         assert "--timeout=330" in run
         assert "timeout --signal=INT --kill-after=60" in run
+        # SIGALRM cannot interrupt a test blocked in C code; only the thread method names it.
+        assert "--timeout-method=thread" in run
 
     def test_the_serial_files_are_ignored_by_every_shard(self):
         """The twelve cannot share a worker, and sharding does not change that: four
@@ -307,9 +309,8 @@ class TestTheSplitKeepsTheSelectionItInherited:
         raise AssertionError(f"the {_SERIAL_STEP!r} step is gone")
 
     def test_the_serial_step_runs_exactly_the_files_the_parallel_run_ignores(self):
-        """The serial selection includes the timing-sensitive R1 parser regressions. Compared
-        against the parallel step's own ignores, not a count, so isolating a file means
-        editing the two lists together and nothing else."""
+        """The serial step includes timing-sensitive R1 parser regressions; it is checked against
+        the parallel step's ignores, not a count, so edit both lists together."""
         paths = _serial_paths()
         assert len(set(paths)) == len(paths), f"the serial step names a file twice: {paths}"
         assert "tests/test_pr5624_regressions.py" in paths

@@ -31,11 +31,9 @@ DUMP_COOLDOWN_S = 600.0
 
 
 def stand_down_for_the_warm(*, warm_expected: bool = True) -> bool:
-    """Suppress an expected or active warm; a cold launch has no warm to wait for.
-
-    A switch armed before a selected warm's GIL-holding ``import torch`` cannot be
-    disarmed and would dump a known stall. Capture warm_expected for the lifespan.
-    """
+    """Suppresses an expected or active warm (a cold launch has none); a switch armed before the
+    warm's GIL-holding import torch cannot be disarmed and would dump a known stall; capture
+    warm_expected."""
     from utils.torch_warmup import DISABLE_ENV_VAR as _WARM_DISABLED
     from utils.torch_warmup import warm_status
 

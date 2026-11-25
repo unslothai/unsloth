@@ -15,8 +15,7 @@ import {
 } from "../src/hooks/gpu-vram.ts";
 import type { GpuDevice, SystemGpuInfo } from "../src/hooks/use-system.ts";
 
-// `/api/system` on Windows 11, 2x Radeon AI PRO R9700 plus the Ryzen 9 9950X's iGPU: the iGPU
-// has no usage counter.
+// The iGPU in /api/system has no usage counter, so its VRAM tile is unreadable.
 const r9700 = (index: number, used: number): GpuDevice => ({
   index,
   name: "AMD Radeon AI PRO R9700",

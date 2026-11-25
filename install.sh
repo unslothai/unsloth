@@ -4365,6 +4365,9 @@ TORCHVISION_CONSTRAINT="torchvision>=0.19,<${_TORCHVISION_CEILING}"
 TORCHAUDIO_CONSTRAINT="torchaudio>=2.4,<${_TORCHAUDIO_CEILING}"
 _CU130_TORCH_CEILING="2.15.0"
 _CU130_NEW_INSTALL_TORCH="torch>=2.13.0,<2.14.0"
+# Apple Silicon: 2.13 is the first with fused MPS attention (mflux needs >=2.13); 2.15 lacks cp310/torchvision.
+_MACOS_TORCH_CEILING="2.15.0"
+_MACOS_NEW_INSTALL_TORCH="torch>=2.13.0,<2.14.0"
 
 # ── Resolve repo root (for --local installs) ──
 _REPO_ROOT="$(cd "$(dirname "$0" 2>/dev/null || echo ".")" && pwd)"
@@ -4978,6 +4981,13 @@ _amd_sole_index_arch() {
     [ "$(printf '%s\n' "$_sia" | awk 'END{print NR}')" -eq 1 ] || return 1
     _amd_arch_index_family_for_gfx "$_sia" >/dev/null 2>&1 || return 1
     printf '%s\n' "$_sia"
+}
+
+# KFD's sole wheel-backed arch, only when this process can reach the GPU (lspci too old to name it).
+_amd_kfd_sole_index_arch() {
+    [ -e /dev/kfd ] || return 1
+    _amd_visible_masks_select_no_gpu && return 1
+    _amd_sole_index_arch "$(_kfd_gfx_targets 2>/dev/null || true)"
 }
 
 # Mirrors install.ps1 $archFamilyMap.
@@ -5601,6 +5611,12 @@ get_torch_index_url() {
                 echo "[WARN] AMD GPU detected but rocminfo/amd-smi can't read its gfx arch -- inferring $_amd_inferred_gfx from hardware IDs." >&2
                 echo "$_base/cpu"; return
             fi
+            # Same deferral when only KFD names the arch; the reroute reads it too.
+            _amd_kfd_gfx=$(_amd_kfd_sole_index_arch 2>/dev/null) || _amd_kfd_gfx=""
+            if [ -n "$_amd_kfd_gfx" ]; then
+                echo "[WARN] AMD GPU detected but rocminfo/amd-smi can't read its gfx arch -- the kernel driver (KFD) reports $_amd_kfd_gfx." >&2
+                echo "$_base/cpu"; return
+            fi
             # Repairing rocminfo cannot help here: the arch would read fine and still have no wheels (#8529). Advice only, same CPU index either way.
             # gfx1153 is inferred above (no index family), so it gets this warning without a name match.
             if { [ "${_amd_inferred_gfx:-}" = gfx1153 ] && _amd_unsup_gfx=gfx1153; } || \
@@ -5939,6 +5955,28 @@ _cu130_torch213_platform() {
     case "$_ARCH" in x86_64|amd64|aarch64|arm64) ;; *) echo "no"; return ;; esac
     _ctr_py=$("$VENV_DIR/bin/python" -c "import sys; print('%d.%d' % sys.version_info[:2])" 2>/dev/null || echo "")
     [ "$_ctr_py" = "3.13" ] && echo "yes" || echo "no"
+}
+
+# /cpu leaf on arm64 macOS with a Python 2.13 has wheels for; alone sets the preservation window.
+_macos_torch213_platform() {
+    [ "$(_torch_index_url_leaf "$1")" = "cpu" ] || { echo "no"; return; }
+    [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ] || { echo "no"; return; }
+    _mtr_py=$("$VENV_DIR/bin/python" -c "import sys; print('%d.%d' % sys.version_info[:2])" 2>/dev/null || echo "")
+    case "$_mtr_py" in 3.10|3.11|3.12|3.13|3.14) echo "yes" ;; *) echo "no" ;; esac
+}
+
+_macos_product_major() {
+    _mpm=$(sw_vers -productVersion 2>/dev/null) || _mpm=""
+    _mpm="${_mpm%%.*}"
+    case "$_mpm" in ''|*[!0-9]*) echo "" ;; *) echo "$_mpm" ;; esac
+}
+
+# New installs only: torch 2.13's macOS wheels are macosx_14_0 and it has no cp313t build.
+_macos_torch213_host_ok() {
+    _mth_major=$(_macos_product_major)
+    [ -n "$_mth_major" ] && [ "$_mth_major" -ge 14 ] 2>/dev/null || { echo "no"; return; }
+    _mth_gil=$("$VENV_DIR/bin/python" -c "import sysconfig; print('gil-disabled' if sysconfig.get_config_var('Py_GIL_DISABLED') else 'gil-enabled')" 2>/dev/null || echo "")
+    [ "$_mth_gil" = "gil-enabled" ] && echo "yes" || echo "no"
 }
 
 # `studio update` runs the installed release's setup, which would downgrade a newer torch;
@@ -6538,6 +6576,18 @@ if [ "$_torch_index_pinned" = false ] && [ "$SKIP_TORCH" = false ] && \
             _linux_inferred_gfx=$(_infer_linux_amd_gfx_arch 2>/dev/null || true)
             _linux_inferred_gfx=$(_amd_sole_index_arch "$_linux_inferred_gfx") \
                 || _linux_inferred_gfx=""
+            # pci.ids too old to name the card ("Device [1002:7590]"): take KFD's arch, never over a declared one.
+            _amd_kfd_spoof=""
+            if [ -z "$_linux_inferred_gfx" ] && [ -z "${UNSLOTH_ROCM_GFX_ARCH:-}" ] && \
+               [ "${_amd_no_rocm_version_reroute:-false}" != true ]; then
+                _linux_inferred_gfx=$(_amd_kfd_sole_index_arch 2>/dev/null) || _linux_inferred_gfx=""
+                # KFD is immune to the override, so one naming another arch is a spoof the wheels cannot serve.
+                _amd_kfd_hsa=$(_hsa_override_gfx_arch "${HSA_OVERRIDE_GFX_VERSION:-}")
+                if [ -n "$_linux_inferred_gfx" ] && [ -n "$_amd_kfd_hsa" ] && \
+                   [ "$_amd_kfd_hsa" != "$_linux_inferred_gfx" ]; then
+                    _amd_kfd_spoof=1
+                fi
+            fi
             if [ "${_amd_no_rocm_version_reroute:-false}" = true ]; then
                 _linux_inferred_gfx="${_amd_probed_gfx_first:-}"
             fi
@@ -6574,8 +6624,8 @@ if [ "$_torch_index_pinned" = false ] && [ "$SKIP_TORCH" = false ] && \
                     if [ -n "$_linux_inferred_gfx" ]; then
                         export UNSLOTH_ROCM_GFX_ARCH="$_linux_inferred_gfx"
                     fi
-                    if [ "${_amd_no_rocm_version_reroute:-false}" = true ] && \
-                       [ -n "${_amd_spoof_physical:-}" ]; then
+                    if { [ "${_amd_no_rocm_version_reroute:-false}" = true ] && \
+                         [ -n "${_amd_spoof_physical:-}" ]; } || [ -n "$_amd_kfd_spoof" ]; then
                         unset HSA_OVERRIDE_GFX_VERSION
                         echo "  [WARN] Clearing HSA_OVERRIDE_GFX_VERSION for the rest of this install:" >&2
                         echo "  [WARN] these wheels carry $_linux_inferred_gfx kernels, so the runtime has" >&2
@@ -6984,6 +7034,7 @@ fi  # _torch_index_pinned guard (Radeon + Strix reroute)
 # New installs on this route get 2.13; preservation keeps 2.4-2.14 installs on their release.
 _PRESERVE_TORCH_CONSTRAINT="$TORCH_CONSTRAINT"
 _CU130_NEW_INSTALL_ROUTE=false
+_MACOS_NEW_INSTALL_ROUTE=false
 if [ "$SKIP_TORCH" = false ] && [ "$(_cu130_torch213_platform "$TORCH_INDEX_URL")" = "yes" ]; then
     _PRESERVE_TORCH_CONSTRAINT="torch>=2.4,<${_CU130_TORCH_CEILING}"
     # An existing home never takes 2.13 unasked, even when its torch could not be read or kept.
@@ -6994,13 +7045,25 @@ if [ "$SKIP_TORCH" = false ] && [ "$(_cu130_torch213_platform "$TORCH_INDEX_URL"
        && [ "$(_pypi_unsloth_admits_torch "2.13.0")" = "yes" ]; then
         _CU130_NEW_INSTALL_ROUTE=true
     fi
+elif [ "$SKIP_TORCH" = false ] && [ "$(_macos_torch213_platform "$TORCH_INDEX_URL")" = "yes" ]; then
+    # Same policy as cu130: keep a resident 2.4-2.14, move only a fresh home (or an explicit upgrade).
+    _PRESERVE_TORCH_CONSTRAINT="${TORCH_CONSTRAINT%%,*},<${_MACOS_TORCH_CEILING}"
+    if [ "$(printf '%s' "$PACKAGE_NAME" | tr '[:upper:]' '[:lower:]')" = "unsloth" ] \
+       && { [ "$_EXISTING_INSTALL" = false ] || [ "${UNSLOTH_TORCH_UPGRADE:-0}" = "1" ]; } \
+       && [ "${_torch_index_pinned:-false}" = false ] \
+       && [ "$(_macos_torch213_host_ok)" = "yes" ] \
+       && [ "$(_pypi_unsloth_admits_torch "2.13.0")" = "yes" ]; then
+        # an index set with UNSLOTH_TORCH_INDEX_URL (a mirror or snapshot) may not carry 2.13: only the chosen one moves
+        _MACOS_NEW_INSTALL_ROUTE=true
+    fi
 fi
 _PREV_TORCH_PIN=""
 _PREV_FALLBACK_CONSTRAINT="$TORCH_CONSTRAINT"
 if [ "$SKIP_TORCH" = false ]; then
     _prev_pin=$(_previous_torch_pin "$_PREV_TORCH_VER" "$_PRESERVE_TORCH_CONSTRAINT")
     if [ -z "$_prev_pin" ] && [ "${UNSLOTH_TORCH_UPGRADE:-0}" = "1" ] \
-       && [ "$_CU130_NEW_INSTALL_ROUTE" = false ] && [ -n "$_PREV_TORCH_VER" ] \
+       && [ "$_CU130_NEW_INSTALL_ROUTE" = false ] && [ "$_MACOS_NEW_INSTALL_ROUTE" = false ] \
+       && [ -n "$_PREV_TORCH_VER" ] \
        && [ "$(_torch_release_in_window "${_PREV_TORCH_VER%%+*}" "$TORCH_CONSTRAINT")" != "yes" ]; then
         _prev_pin=$(_previous_torch_pin "$_PREV_TORCH_VER" "$_PRESERVE_TORCH_CONSTRAINT" keep)
     fi
@@ -7012,6 +7075,10 @@ if [ "$SKIP_TORCH" = false ]; then
 fi
 if [ -z "$_PREV_TORCH_PIN" ] && [ "$_CU130_NEW_INSTALL_ROUTE" = true ]; then
     TORCH_CONSTRAINT="$_CU130_NEW_INSTALL_TORCH"
+    TORCHVISION_CONSTRAINT="torchvision>=0.28.0,<0.29.0"
+fi
+if [ -z "$_PREV_TORCH_PIN" ] && [ "$_MACOS_NEW_INSTALL_ROUTE" = true ]; then
+    TORCH_CONSTRAINT="$_MACOS_NEW_INSTALL_TORCH"
     TORCHVISION_CONSTRAINT="torchvision>=0.28.0,<0.29.0"
 fi
 
@@ -7672,8 +7739,8 @@ _unsloth_desktop_install_spec=""
 if [ -n "${UNSLOTH_DESKTOP_BACKEND_VERSION:-}" ]; then
     _unsloth_desktop_install_spec="unsloth>=${UNSLOTH_DESKTOP_BACKEND_VERSION}"
 fi
-_unsloth_release_install_spec="${_unsloth_desktop_install_spec:-unsloth>=2026.11.6}"
-_unsloth_zoo_install_spec="unsloth-zoo>=2026.11.6"
+_unsloth_release_install_spec="${_unsloth_desktop_install_spec:-unsloth>=2026.11.12}"
+_unsloth_zoo_install_spec="unsloth-zoo>=2026.11.12"
 
 # An index lagging PyPI (mirror, delayed feed, cutoff) may lack these floors (#14031): lower them to its newest release.
 # The marker tells Desktop preflight this older backend is the newest available, so it is not repaired forever.

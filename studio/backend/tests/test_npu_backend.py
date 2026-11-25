@@ -424,6 +424,94 @@ def test_a_catalog_error_body_is_an_error_not_an_empty_catalog(npu, monkeypatch)
         npu.catalog()
 
 
+def _restarted(npu) -> nb.LemonadeNpuBackend:
+    npu.enable()
+    npu.shutdown()
+    restarted = nb.LemonadeNpuBackend(root = npu.root)
+    assert restarted.status()["ready"] is True
+    return restarted
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason = "POSIX execute bit")
+def test_a_lemond_that_cannot_be_spawned_is_an_npu_error(npu):
+    restarted = _restarted(npu)
+    lemond = npu.installer.binary
+    lemond.chmod(0o644)
+    try:
+        with pytest.raises(
+            nb.NpuError, match = "The NPU runtime could not start .*Permission denied"
+        ):
+            restarted.catalog()
+    finally:
+        lemond.chmod(0o755)
+        restarted.shutdown()
+
+
+def test_a_lemond_that_stops_answering_is_an_npu_error(npu, monkeypatch):
+    npu.enable()
+
+    def gone(self, method, path, **kwargs):
+        raise LemonadeUnavailable(f"Lemonade request {path} failed: Connection refused")
+
+    monkeypatch.setattr(LemonadeServer, "request", gone)
+    with pytest.raises(nb.NpuError, match = "Listing NPU models failed: .*Connection refused"):
+        npu.catalog()
+
+
+def _raising(error: Exception):
+    def start(self, timeout = 60.0):
+        raise error
+
+    return start
+
+
+def _exited(returncode: int) -> LemonadeUnavailable:
+    error = LemonadeUnavailable("Lemonade did not start. Last output:\n")
+    error.returncode = returncode
+    return error
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        OSError(22, "An Application Control policy has blocked this file", None, 4551),
+        _exited(0xC0E90002),
+    ],
+)
+def test_a_windows_code_integrity_block_names_its_fix(npu, monkeypatch, error):
+    restarted = _restarted(npu)
+
+    monkeypatch.setattr(LemonadeServer, "start", _raising(error))
+    with pytest.raises(
+        nb.NpuError, match = "Windows blocked part of the local model runtime"
+    ) as caught:
+        restarted.catalog()
+    assert "Smart App Control" in str(caught.value)
+    assert str(npu.installer.binary.parent) in str(caught.value)
+    restarted.shutdown()
+
+
+def test_a_fail_fast_exit_alone_is_a_crash_not_a_policy_block(npu, monkeypatch):
+    restarted = _restarted(npu)
+    crashed = _exited(0xC0000602)
+    monkeypatch.setattr(LemonadeServer, "start", _raising(crashed))
+    with pytest.raises(nb.NpuError, match = "lemond exited with status") as caught:
+        restarted.catalog()
+    assert "Smart App Control" not in str(caught.value)
+
+    for output in (
+        "This program was blocked by Smart App Control",
+        # The status in the output too: the classifier matches it before the policy wording.
+        "exit 0xC0000602: This program was blocked by Smart App Control",
+    ):
+        refused = LemonadeUnavailable(f"Lemonade did not start. Last output:\n{output}")
+        refused.returncode = 0xC0000602
+        monkeypatch.setattr(LemonadeServer, "start", _raising(refused))
+        with pytest.raises(nb.NpuError, match = "Smart App Control has no per-application exception"):
+            restarted.catalog()
+    restarted.shutdown()
+
+
 def test_unload_then_delete(npu):
     npu.enable()
     list(npu.download("qwen3-0.6b-FLM"))
@@ -1024,6 +1112,35 @@ def test_stop_interrupts_a_start_that_never_becomes_ready(tmp_path):
     server.close()
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason = "POSIX shell stand-in for lemond")
+@pytest.mark.parametrize(
+    "script, returncode, reason",
+    [
+        ("exec sleep 60", None, "did not answer its health check within 1 s"),
+        ("exit 3", 3, "did not start"),
+    ],
+)
+def test_a_failed_start_reports_lemonds_own_exit_status(tmp_path, script, returncode, reason):
+    binary = tmp_path / "lemond"
+    binary.write_text(f"#!/bin/sh\n{script}\n", encoding = "utf-8")
+    binary.chmod(0o755)
+    server = LemonadeServer(
+        binary,
+        cache_dir = tmp_path / "cache",
+        config_dir = tmp_path / "config",
+        flm_model_dir = tmp_path / "flm",
+    )
+    with pytest.raises(LemonadeUnavailable, match = reason) as caught:
+        server.start(timeout = 1)
+    assert caught.value.returncode == returncode
+    message = nb._lemonade_start_error(binary, caught.value)
+    if returncode is None:
+        assert "exited with status" not in message
+    else:
+        assert "lemond exited with status 3." in message
+    server.close()
+
+
 @pytest.mark.parametrize(
     "path, expected",
     [
@@ -1136,3 +1253,36 @@ def test_a_display_name_two_models_share_is_refused(npu, monkeypatch):
 )
 def test_which_names_are_tried_as_npu_display_names(name, expected):
     assert nb.looks_like_npu_display_name(name) is expected
+
+
+# flm_host's answers when flm.exe exits 0xC0E90002 (a DLL Smart App Control refused) with no output.
+_SILENT_REFUSAL = "exit code 3236495362 (0xC0E90002)"
+
+
+def test_a_refused_dll_at_install_is_named_not_left_blank(npu, monkeypatch):
+    monkeypatch.setenv(
+        "FAKE_LEMOND_INSTALL_ERROR", f"FastFlowLM does not run: [ERROR] {_SILENT_REFUSAL}"
+    )
+    with pytest.raises(nb.NpuError, match = "Smart App Control") as info:
+        npu.enable()
+    assert str(npu._flm_binary().parent) in str(info.value)
+
+
+def test_a_refused_dll_at_load_is_named(npu, monkeypatch):
+    monkeypatch.setenv("FAKE_LEMOND_DOWNLOADED", '["qwen3-0.6b-FLM"]')
+    monkeypatch.setenv("FAKE_LEMOND_LOAD_FAILS_FOR", "qwen3-0.6b-FLM")
+    monkeypatch.setenv(
+        "FAKE_LEMOND_LOAD_ERROR",
+        f"Failed to load model 'qwen3-0.6b-FLM': FastFlowLM failed to start: {_SILENT_REFUSAL}",
+    )
+    npu.enable()
+    with pytest.raises(nb.NpuError, match = "Smart App Control") as info:
+        npu.load("qwen3-0.6b-FLM")
+
+
+def test_an_ordinary_install_failure_keeps_its_reason(npu, monkeypatch):
+    monkeypatch.setenv(
+        "FAKE_LEMOND_INSTALL_ERROR", "FastFlowLM does not run: [ERROR] exit code 1 (0x00000001)"
+    )
+    with pytest.raises(nb.NpuError, match = "Installing FastFlowLM failed: .*0x00000001"):
+        npu.enable()

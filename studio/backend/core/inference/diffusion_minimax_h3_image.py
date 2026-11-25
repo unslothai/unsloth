@@ -18,6 +18,7 @@ uniform knot grid at load, so 20B parameters are left to quantize."""
 from __future__ import annotations
 
 import contextlib
+import copy
 import functools
 import gc
 import hashlib
@@ -143,6 +144,8 @@ VRAM_BUDGET_ENV = "UNSLOTH_H3_IMAGE_VRAM_GB"
 HOST_BUDGET_ENV = "UNSLOTH_H3_IMAGE_HOST_GB"
 # "0": stream from pageable memory (ModuleListStreamer) instead of the pinned prefetch streamer
 PINNED_STREAM_ENV = "UNSLOTH_H3_IMAGE_PINNED_STREAM"
+# "0": the pinned DiT streamer streams the last blocks instead of spacing the streamed ones among the resident ones
+STREAM_SPREAD_ENV = "UNSLOTH_H3_IMAGE_STREAM_SPREAD"
 # "0": run every reference through the VAE encoder on every render (no posterior cache)
 REF_CACHE_ENV = "UNSLOTH_H3_IMAGE_REF_CACHE"
 # "0": keep the allocator blocks the load's staging and lever installs freed reserved on the card
@@ -1239,14 +1242,18 @@ def _h3_image_forward(
     text_embeds: Any = None,
     output_indices: Any = None,
     head: Any = None,
+    lockstep: Any = None,
 ) -> Any:
     """The stock transformer forward plus ``text_embeds`` (refined text rows, computed once per render),
     ``output_indices`` (rows the output norm and head run on) and ``head`` (this step's ``(weight, bias)``, in place
-    of ``pdd_proj_out[pdd_step_index]``)."""
+    of ``pdd_proj_out[pdd_step_index]``). ``lockstep``: the keyword arguments of more images' forwards at the same
+    step; each block then runs every image in turn as its own batch-1 call (``lockstep_blocks``), and the result is
+    one output per image."""
     stock = type(self).forward
     # The fp16 contract (float32 conditioning) needs refined_text's dtype hand-off, which the stock forward lacks.
     if (
-        text_embeds is None
+        not lockstep
+        and text_embeds is None
         and output_indices is None
         and head is None
         and not self.__dict__.get(FP16_CONTRACT_ATTR)
@@ -1264,8 +1271,79 @@ def _h3_image_forward(
             pdd_step_index = pdd_step_index,
             return_dict = return_dict,
         )
-    import torch
     from diffusers.models.modeling_outputs import Transformer2DModelOutput
+
+    first = {
+        "hidden_states": hidden_states,
+        "encoder_hidden_states": encoder_hidden_states,
+        "timestep": timestep,
+        "timestep_indices": timestep_indices,
+        "token_tags": token_tags,
+        "position_ids": position_ids,
+        "image_indices": image_indices,
+        "text_indices": text_indices,
+        "pdd_step_index": pdd_step_index,
+        "text_embeds": text_embeds,
+        "output_indices": output_indices,
+        "head": head,
+    }
+    calls = [first] + [dict(kw) for kw in (lockstep or ())]
+    states = [_h3_image_block_inputs(self, **_call_inputs(kw)) for kw in calls]
+    if lockstep:
+        lockstep_blocks(self, states)
+    else:
+        hidden_states, temb, adaln_indices, rotary_emb = states[0]
+        for block in self.transformer_blocks:
+            if torch_grad_checkpointing(self):
+                hidden_states = self._gradient_checkpointing_func(
+                    block, hidden_states, temb, adaln_indices, rotary_emb
+                )
+            else:
+                hidden_states = block(hidden_states, temb, adaln_indices, rotary_emb)
+        states[0][0] = hidden_states
+    outputs = [_h3_image_head(self, state[0], state[1], kw) for state, kw in zip(states, calls)]
+    if lockstep:
+        return tuple(outputs)
+    if not return_dict:
+        return (outputs[0],)
+    return Transformer2DModelOutput(sample = outputs[0])
+
+
+_BLOCK_INPUT_KEYS = (
+    "hidden_states",
+    "encoder_hidden_states",
+    "timestep",
+    "timestep_indices",
+    "token_tags",
+    "position_ids",
+    "image_indices",
+    "text_indices",
+    "text_embeds",
+)
+
+
+def _call_inputs(kw: dict) -> dict:
+    return {key: kw.get(key) for key in _BLOCK_INPUT_KEYS}
+
+
+def torch_grad_checkpointing(transformer: Any) -> bool:
+    import torch
+    return bool(torch.is_grad_enabled() and transformer.gradient_checkpointing)
+
+
+def _h3_image_block_inputs(
+    self: Any,
+    hidden_states: Any,
+    encoder_hidden_states: Any,
+    timestep: Any,
+    timestep_indices: Any,
+    token_tags: Any,
+    position_ids: Any,
+    image_indices: Any,
+    text_indices: Any,
+    text_embeds: Any = None,
+) -> list:
+    """One image's block-stack input: ``[hidden_states, temb, adaln_indices, rotary_emb]``."""
     from diffusers.models.modeling_utils import get_parameter_dtype
 
     if position_ids.ndim != 2 or position_ids.shape[-1] != 3:
@@ -1290,25 +1368,82 @@ def _h3_image_forward(
     temb = self.time_proj(timestep)
     temb = self.time_embedder(temb.to(get_parameter_dtype(self.time_embedder)))
     adaln_indices = timestep_indices * H3_IMAGE_MODALITY_NUM + token_tags
-    for block in self.transformer_blocks:
-        if torch.is_grad_enabled() and self.gradient_checkpointing:
-            hidden_states = self._gradient_checkpointing_func(
-                block, hidden_states, temb, adaln_indices, rotary_emb
-            )
-        else:
-            hidden_states = block(hidden_states, temb, adaln_indices, rotary_emb)
-    proj_out = self.pdd_proj_out[pdd_step_index]
-    rows = image_indices if output_indices is None else output_indices
+    return [hidden_states, temb, adaln_indices, rotary_emb]
+
+
+def _h3_image_head(self: Any, hidden_states: Any, temb: Any, kw: dict) -> Any:
+    """Output norm + this step's head over one image's block-stack output."""
+    import torch
+    from diffusers.models.modeling_utils import get_parameter_dtype
+
+    proj_out = self.pdd_proj_out[kw["pdd_step_index"]]
+    output_indices = kw.get("output_indices")
+    rows = kw["image_indices"] if output_indices is None else output_indices
     hidden_states = self.norm_out(
-        hidden_states.index_select(1, rows), temb, timestep_indices.index_select(0, rows)
+        hidden_states.index_select(1, rows), temb, kw["timestep_indices"].index_select(0, rows)
     ).to(get_parameter_dtype(proj_out))
+    head = kw.get("head")
     if head is not None:
-        output = torch.nn.functional.linear(hidden_states, head[0], head[1])
-    else:
-        output = proj_out(hidden_states)
-    if not return_dict:
-        return (output,)
-    return Transformer2DModelOutput(sample = output)
+        return torch.nn.functional.linear(hidden_states, head[0], head[1])
+    return proj_out(hidden_states)
+
+
+LOCKSTEP_GATE_ATTR = "_unsloth_h3_lockstep_gate"
+
+
+class LockstepGate:
+    """While installed, the DiT streamers' block hooks run once per block of a lockstep forward: the onload before
+    the block's first image, the offload after its last, so every image runs on one upload. Other block hooks run
+    on every call. Outside a lockstep forward (``first`` and ``last`` both True) every hook runs as before."""
+
+    def __init__(self, blocks: Any, handles: Sequence[Any]) -> None:
+        ids = {getattr(h, "id", None) for h in handles} - {None}
+        self.first = True
+        self.last = True
+        self.saved: list = []
+        self.gated = 0
+        for block in blocks:
+            for table, when in (
+                (block._forward_pre_hooks, "first"),
+                (block._forward_hooks, "last"),
+            ):
+                for hid, hook in list(table.items()):
+                    if hid in ids:
+                        self.saved.append((table, hid, hook))
+                        table[hid] = self._gate(hook, when)
+                        self.gated += 1
+
+    def _gate(self, hook: Callable, when: str) -> Callable:
+        def gated(*args: Any) -> Any:
+            if getattr(self, when):
+                return hook(*args)
+            return None
+
+        gated._unsloth_gated = hook
+        return gated
+
+    def remove(self) -> None:
+        for table, hid, hook in self.saved:
+            if hid in table:
+                table[hid] = hook
+        self.saved = []
+        self.first = self.last = True
+
+
+def lockstep_blocks(transformer: Any, states: list) -> None:
+    """Each block runs every image (``states[j][0]`` in place) as its own batch-1 call before the next block, so a
+    streamed block is uploaded once per step for all of them; each image's arithmetic is that of its own forward."""
+    gate = transformer.__dict__.get(LOCKSTEP_GATE_ATTR)
+    last = len(states) - 1
+    try:
+        for block in transformer.transformer_blocks:
+            for j, state in enumerate(states):
+                if gate is not None:
+                    gate.first, gate.last = j == 0, j == last
+                state[0] = block(state[0], state[1], state[2], state[3])
+    finally:
+        if gate is not None:
+            gate.first = gate.last = True
 
 
 def h3_image_forward_active(transformer: Any) -> bool:
@@ -1497,6 +1632,11 @@ def pinned_stream_enabled() -> bool:
     return not _env_off(PINNED_STREAM_ENV)
 
 
+def stream_spread_enabled() -> bool:
+    """Streamed DiT blocks spaced among the resident ones, so their copies overlap resident compute (same weights)."""
+    return not _env_off(STREAM_SPREAD_ENV)
+
+
 def stream_inflight() -> int:
     if not pinned_stream_enabled():
         return 1
@@ -1562,6 +1702,62 @@ def render_resident_blocks(
     if short <= 1e-9:
         return resident
     return max(0, resident - int(math.ceil(short / plan.block_gb - 1e-9)))
+
+
+# "0": the images of one stream-tier request render one after another, each streaming every block itself.
+LOCKSTEP_ENV = "UNSLOTH_H3_IMAGE_LOCKSTEP"
+
+
+def lockstep_enabled() -> bool:
+    """Images of one stream-tier request denoise together: each streamed block is uploaded once per step for all."""
+    return not _env_off(LOCKSTEP_ENV)
+
+
+def lockstep_state_gb(
+    seq: int,
+    text_rows: int,
+    rows: int,
+    row_width: int,
+    hidden: int,
+    rope_width: int,
+    itemsize: int = 2,
+) -> float:
+    """Device memory one more image holds through a lockstep denoise (GB): its block-stack hidden states, refined
+    text, rope tables and indices, and its float32 latent rows and sampler state. Each block's own working set is
+    not counted again: the images run through a block one at a time."""
+    per = (
+        seq
+        * hidden
+        * itemsize
+        * 2  # the hidden states, and a block's output while its input is still held
+        + text_rows * hidden * itemsize
+        + 2 * seq * rope_width * 4
+        + seq * (3 * 8 + 4 * 8)  # float64 positions; tags, indices, timestep and AdaLN indices
+        + rows * row_width * (itemsize + 4 * 3)  # model input rows, x, the scheduler step, velocity
+    )
+    return per / 1e9
+
+
+def lockstep_room_gb(
+    plan: "H3ImagePlan",
+    width: int,
+    height: int,
+    references: int = 0,
+) -> Optional[float]:
+    """GB the stream plan leaves past one image's priced working set at this canvas; None without measured pricing.
+    The working set is priced from a 4 MP floor; a smaller canvas leaves the floor's per-megapixel share unused."""
+    if (
+        plan is None
+        or plan.placement != PLACE_STREAM
+        or plan.working_gb is None
+        or plan.layout is None
+    ):
+        return None
+    need = stream_working_gb(plan.layout, width, height, references, plan.vram_gb)
+    room = float(plan.working_gb) + max(0.0, float(plan.slack_gb or 0.0)) - need
+    mp = width * height / 1e6 * (1 + max(0, int(references)))
+    room += STREAM_WORKING_GB_PER_MP * max(0.0, H3_IMAGE_MIN_GENERATION_AREA / 1e6 - mp)
+    return max(0.0, room)
 
 
 def dit_gb_for(scheme: Optional[str], table: bool = True) -> float:
@@ -1888,11 +2084,14 @@ class ModuleListStreamer:
         self.handles = []
         self.streamed = 0
         self._host: dict = {}
+        modules = list(modules)
+        # host first: rebuilt after a spread pinned streamer, other blocks become resident, so free before placing
+        for module in modules[max(0, int(resident)) :]:
+            module.to("cpu")
         for index, module in enumerate(modules):
             if index < resident:
                 module.to(self.device)
                 continue
-            module.to("cpu")
             self._host[id(module)] = [
                 (owner, kind, name, tensor)
                 for owner in module.modules()
@@ -2005,9 +2204,15 @@ class HostParked:
         self._host = kept
 
     def enter(self) -> None:
+        if self.depth == 0:
+            try:
+                self._put(lambda t: t.to(self.device, non_blocking = True))
+            except BaseException:
+                # an upload that fails part way (out of memory) puts every tensor back on the host and does not
+                # count as an entry, so the caller's retry uploads the whole module again
+                self._put(lambda t: t)
+                raise
         self.depth += 1
-        if self.depth == 1:
-            self._put(lambda t: t.to(self.device, non_blocking = True))
 
     def leave(self) -> None:
         if self.depth == 0:
@@ -2572,7 +2777,36 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
         width = int(width or default_w)
         self._interrupt = False
         images = []
+        done = 0
+        refusal = self._lockstep_refusal(len(jobs))
+        if refusal is None:
+            done, finished = self._render_together(
+                jobs,
+                generators,
+                shared,
+                vae_refs,
+                vision_refs,
+                height,
+                width,
+                latents,
+                min_generation_area,
+                steps,
+                callback_on_step_end,
+                callback_on_step_end_tensor_inputs or ["latents"],
+                output_type,
+            )
+            images.extend(finished)
+            if done < 0:
+                jobs = []  # interrupted
+        elif len(jobs) > 1:
+            logger.debug(
+                "diffusion.minimax_h3_image: %d images render one after another (%s)",
+                len(jobs),
+                refusal,
+            )
         for index, (text, gen) in enumerate(zip(jobs, generators)):
+            if index < done:
+                continue
             args = (
                 text,
                 vae_refs,
@@ -2609,6 +2843,93 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
         return _image_output(images)
 
     @torch_no_grad
+    def _render_together(
+        self,
+        jobs: list,
+        generators: list,
+        shared: bool,
+        vae_refs: list,
+        vision_refs: list,
+        height: int,
+        width: int,
+        latents: Any,
+        min_generation_area: Optional[int],
+        steps: int,
+        callback: Optional[Callable],
+        callback_inputs: list,
+        output_type: str,
+    ) -> tuple:
+        """Render ``jobs`` in lockstep groups the plan has room for: ``(images done, their pixels)``, -1 done when
+        interrupted. Jobs are set up one at a time and join the group while the plan has room for every image's
+        state (one that does not fit is set up again for the next group); a group of one, or one that runs out of
+        memory, leaves the rest to separate renders."""
+        import torch
+
+        def setup(index: int) -> dict:
+            job = self._render_setup(
+                jobs[index],
+                vae_refs,
+                vision_refs,
+                height,
+                width,
+                generators[index],
+                latents if index == 0 else None,
+                min_generation_area,
+                steps,
+                index if shared else 0,
+            )
+            # each image steps its own scheduler; the next set-up resets the pipe's
+            job["scheduler"] = copy.deepcopy(self.scheduler)
+            return job
+
+        done, out = 0, []
+        while len(jobs) - done >= 2:
+            group: list = []
+            oom = None
+            pixels = None
+            try:
+                # set-up (prompt / reference encode, per-image state) can run out of memory too: same fallback
+                group.append(setup(done))
+                room = self._lockstep_room(group[0])
+                while room is not None and done + len(group) < len(jobs):
+                    nxt = setup(done + len(group))
+                    if not self._lockstep_fits(group + [nxt], room):
+                        del nxt  # over the room: set up again when its turn comes
+                        break
+                    group.append(nxt)
+                if len(group) < 2:
+                    logger.info(
+                        "diffusion.minimax_h3_image: no room to denoise %d images together: one after another",
+                        len(jobs) - done,
+                    )
+                    del group
+                    return done, out
+                pixels = self._render_lockstep(
+                    group, callback, callback_inputs, output_type, height, width
+                )
+            except torch.OutOfMemoryError as exc:
+                # fall back outside this handler: its traceback holds the failed render's tensors
+                oom = str(exc).splitlines()[0][:160] if str(exc) else type(exc).__name__
+            if oom is not None:
+                count = len(group)
+                del group
+                gc.collect()
+                _empty_cache()
+                logger.warning(
+                    "diffusion.minimax_h3_image: %d images together ran out of GPU memory (%s): rendering them "
+                    "one after another",
+                    count,
+                    oom,
+                )
+                return done, out
+            if pixels is None:
+                return -1, out
+            for one in pixels:
+                out.extend(one)
+            done += len(group)
+        return done, out
+
+    @torch_no_grad
     def _render_one(
         self,
         prompt: str,
@@ -2625,6 +2946,47 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
         output_type: str,
         batch_index: int = 0,
     ) -> Optional[list]:
+        job = self._render_setup(
+            prompt,
+            vae_refs,
+            vision_refs,
+            height,
+            width,
+            generator,
+            latents,
+            min_generation_area,
+            steps,
+            batch_index,
+        )
+        transformer = self._enter("transformer")
+        job["t1"] = time.perf_counter()
+        try:
+            self._denoise_setup(job, transformer)
+            for i, t in enumerate(job["timesteps"]):
+                if self.interrupt:
+                    return None
+                velocity = transformer(**self._step_inputs(job, i))[0]
+                self._step_update(job, velocity, i, t)
+                if callback is not None:
+                    callback(self, i, t, self._step_payload(job, callback_inputs))
+        finally:
+            self._leave("transformer")
+        return self._render_finish(job, height, width, output_type)
+
+    def _render_setup(
+        self,
+        prompt: str,
+        vae_refs: list,
+        vision_refs: list,
+        height: int,
+        width: int,
+        generator: Any,
+        latents: Any,
+        min_generation_area: Optional[int],
+        steps: int,
+        batch_index: int = 0,
+    ) -> dict:
+        """One image's render up to its denoise loop: canvas, encode, noise, references, layout, schedule."""
         import torch
 
         stats: dict = {"canvas": None}
@@ -2692,76 +3054,119 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
             "image_indices": image_idx.to(device),
             "text_indices": text_idx.to(device),
         }
-        transformer = self._enter("transformer")
-        t1 = time.perf_counter()
-        try:
-            dtype = _module_dtype(transformer, skip_fp32 = True)
-            prompt_embeds = embeds.to(device = device, dtype = dtype)
-            extra: dict = {}
-            ours = h3_image_forward_active(transformer)
-            if ours:
-                if target_head_enabled():
-                    extra["output_indices"] = image_idx[n_ref:].to(device)
-                if refiner_cache_enabled():
-                    # the text rows do not change across steps: refine them once per render
-                    extra["text_embeds"] = refined_text(transformer, prompt_embeds)
-            stats["refiner_cached"] = "text_embeds" in extra
-            stats["steps"] = steps
-            grid = self.scheduler.head_grid
-            sample_sigmas = self.scheduler.sigmas.cpu()
+        return {
+            "stats": stats,
+            "t0": t0,
+            "device": device,
+            "embeds": embeds,
+            "steps": steps,
+            "patch": patch,
+            "channels": channels,
+            "lh": lh,
+            "lw": lw,
+            "rows": rows,
+            "n_ref": n_ref,
+            "ref_images": len(vae_refs),
+            "image_idx": image_idx,
+            "seq": seq,
+            "text_rows": int(text_idx.numel()),
+            "plan": plan,
+            "fields": fields,
+            "timesteps": timesteps,
+            "scheduler": self.scheduler,
+        }
+
+    def _denoise_setup(self, job: dict, transformer: Any) -> None:
+        """The per-render pieces that need the transformer: compute dtype, refined text, the head bank, x."""
+        stats, device, scheduler = job["stats"], job["device"], job["scheduler"]
+        steps, image_idx, n_ref = job["steps"], job["image_idx"], job["n_ref"]
+        dtype = _module_dtype(transformer, skip_fp32 = True)
+        prompt_embeds = job["embeds"].to(device = device, dtype = dtype)
+        extra: dict = {}
+        ours = h3_image_forward_active(transformer)
+        if ours:
+            if target_head_enabled():
+                extra["output_indices"] = image_idx[n_ref:].to(device)
+            if refiner_cache_enabled():
+                # the text rows do not change across steps: refine them once per render
+                extra["text_embeds"] = refined_text(transformer, prompt_embeds)
+        stats["refiner_cached"] = "text_embeds" in extra
+        stats["steps"] = steps
+        grid = scheduler.head_grid
+        sample_sigmas = scheduler.sigmas.cpu()
+        bank = getattr(transformer, PDD_BANK_ATTR, None)
+        if bank is None and steps != H3_IMAGE_STEPS:
+            install_pdd_head_bank(transformer)
             bank = getattr(transformer, PDD_BANK_ATTR, None)
-            if bank is None and steps != H3_IMAGE_STEPS:
-                install_pdd_head_bank(transformer)
-                bank = getattr(transformer, PDD_BANK_ATTR, None)
-            spans = [pdd_head_span(s, sample_sigmas, grid) for s in self.scheduler.model_sigmas]
-            if bank is not None and any(stop - start != 1 for start, stop in spans):
-                bank = tuple(t.to(device) for t in bank)
-            else:
-                # every step spans one grid interval: pdd_proj_out[k] already is the reference's head for it
-                bank = None
-            if bank is not None and not ours:
-                raise ValueError(
-                    f"MiniMax-H3-Image renders {steps} steps through its own forward (blended heads), and this "
-                    "transformer's forward is wrapped."
-                )
-            stats["pdd_blended_steps"] = sum(stop - start != 1 for start, stop in spans)
-            # sampler state stays float32 in x; rows = the model input in the compute dtype, as the reference casts it
-            x = rows[n_ref:].clone()
-            for i, t in enumerate(timesteps):
-                if self.interrupt:
-                    return None
-                unique, index = plan[i]
-                start, _stop = spans[i]
-                if bank is not None:
-                    extra["head"] = pdd_head_weights(
-                        bank, self.scheduler.model_sigmas[i], sample_sigmas, grid
-                    )
-                rows[n_ref:] = model_io(x, dtype)
-                velocity = transformer(
-                    hidden_states = rows[None],
-                    encoder_hidden_states = prompt_embeds,
-                    timestep = unique.to(device),
-                    timestep_indices = index.to(device),
-                    pdd_step_index = start,
-                    return_dict = False,
-                    **fields,
-                    **extra,
-                )[0]
-                if "output_indices" not in extra:
-                    velocity = velocity[:, n_ref:]
-                velocity = model_io(velocity[0], dtype).float()
-                x = self.scheduler.step(velocity, t, x)[0]
-                if callback is not None:
-                    view = unpatchify(x, lh, lw, channels, patch)
-                    payload = {"latents": view} if "latents" in callback_inputs else {}
-                    callback(self, i, t, payload)
-        finally:
-            self._leave("transformer")
+        spans = [pdd_head_span(s, sample_sigmas, grid) for s in scheduler.model_sigmas]
+        if bank is not None and any(stop - start != 1 for start, stop in spans):
+            bank = tuple(t.to(device) for t in bank)
+        else:
+            # every step spans one grid interval: pdd_proj_out[k] already is the reference's head for it
+            bank = None
+        if bank is not None and not ours:
+            raise ValueError(
+                f"MiniMax-H3-Image renders {steps} steps through its own forward (blended heads), and this "
+                "transformer's forward is wrapped."
+            )
+        stats["pdd_blended_steps"] = sum(stop - start != 1 for start, stop in spans)
+        # sampler state stays float32 in x; rows = the model input in the compute dtype, as the reference casts it
+        job.update(
+            dtype = dtype,
+            prompt_embeds = prompt_embeds,
+            extra = extra,
+            ours = ours,
+            grid = grid,
+            sample_sigmas = sample_sigmas,
+            bank = bank,
+            spans = spans,
+            x = job["rows"][n_ref:].clone(),
+        )
+
+    def _step_inputs(self, job: dict, i: int) -> dict:
+        """The transformer keyword arguments of step ``i`` (writes this step's model input into the rows)."""
+        unique, index = job["plan"][i]
+        start, _stop = job["spans"][i]
+        extra, device, rows = job["extra"], job["device"], job["rows"]
+        if job["bank"] is not None:
+            extra["head"] = pdd_head_weights(
+                job["bank"], job["scheduler"].model_sigmas[i], job["sample_sigmas"], job["grid"]
+            )
+        rows[job["n_ref"] :] = model_io(job["x"], job["dtype"])
+        return dict(
+            hidden_states = rows[None],
+            encoder_hidden_states = job["prompt_embeds"],
+            timestep = unique.to(device),
+            timestep_indices = index.to(device),
+            pdd_step_index = start,
+            return_dict = False,
+            **job["fields"],
+            **extra,
+        )
+
+    @staticmethod
+    def _step_update(job: dict, velocity: Any, i: int, t: Any) -> None:
+        if "output_indices" not in job["extra"]:
+            velocity = velocity[:, job["n_ref"] :]
+        velocity = model_io(velocity[0], job["dtype"]).float()
+        job["x"] = job["scheduler"].step(velocity, t, job["x"])[0]
+
+    @staticmethod
+    def _step_payload(job: dict, callback_inputs: list) -> dict:
+        if "latents" not in callback_inputs:
+            return {}
+        view = unpatchify(job["x"], job["lh"], job["lw"], job["channels"], job["patch"])
+        return {"latents": view}
+
+    def _render_finish(self, job: dict, height: int, width: int, output_type: str) -> list:
+        import torch
+
+        stats, device = job["stats"], job["device"]
         if device.type == "cuda":
             torch.cuda.synchronize(device)
-        stats["denoise_s"] = time.perf_counter() - t1
+        stats["denoise_s"] = time.perf_counter() - job["t1"]
         t2 = time.perf_counter()
-        final = unpatchify(x, lh, lw, channels, patch)
+        final = unpatchify(job["x"], job["lh"], job["lw"], job["channels"], job["patch"])
         if output_type == "latent":
             self._unsloth_h3_last_stats = stats
             return [final[0]]
@@ -2770,10 +3175,111 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
         vae_stats = getattr(self.vae, "__dict__", {}).get("_unsloth_canvas_stats")
         if vae_stats:
             stats["vae"] = dict(vae_stats)
-        stats["total_s"] = time.perf_counter() - t0
+        stats["total_s"] = time.perf_counter() - job["t0"]
         stats["streamers"] = self._streamer_stats()
         self._unsloth_h3_last_stats = stats
         return images
+
+    def _dit_streamer(self) -> Any:
+        return next(
+            (
+                s
+                for s in self._unsloth_h3_streamers
+                if getattr(s, "_unsloth_role", None) == "transformer"
+            ),
+            None,
+        )
+
+    def _lockstep_refusal(self, images: int) -> Optional[str]:
+        """Why ``images`` images of one request cannot share their streamed block uploads; None = they can."""
+        if images < 2:
+            return "one image"
+        if not lockstep_enabled():
+            return f"{LOCKSTEP_ENV}=0"
+        if self._placement() != PLACE_STREAM:
+            return "the DiT is not streamed"
+        streamer = self._dit_streamer()
+        if streamer is None or int(getattr(streamer, "streamed", 0) or 0) <= 0:
+            return "no DiT block streams"
+        if not h3_image_forward_active(self.transformer):
+            return "the transformer's forward is wrapped"
+        if not (
+            target_head_enabled()
+            or refiner_cache_enabled()
+            or self.transformer.__dict__.get(FP16_CONTRACT_ATTR)
+        ):
+            return "the stock forward runs each image"
+        return None
+
+    def _lockstep_room(self, job: dict) -> Optional[float]:
+        """GB the plan leaves for more images beside ``job`` (set up), None = not priced."""
+        canvas_w, canvas_h = job["stats"]["canvas"]
+        # the plan prices whole reference images; n_ref counts their packed patch rows
+        return lockstep_room_gb(self._unsloth_h3_plan, canvas_w, canvas_h, job["ref_images"])
+
+    def _lockstep_fits(self, jobs: list, room: float) -> bool:
+        """Whether every image past the first of ``jobs`` (set up) fits ``room``, each priced as the largest."""
+        config = self.transformer.config
+        each = max(
+            lockstep_state_gb(
+                job["seq"],
+                job["text_rows"],
+                int(job["rows"].shape[0]),
+                int(job["rows"].shape[-1]),
+                int(getattr(config, "hidden_size", 5376)),
+                6 * int(getattr(config, "rope_freq_dim", 16)),
+            )
+            for job in jobs
+        )
+        return (len(jobs) - 1) * each <= float(room)
+
+    @torch_no_grad
+    def _render_lockstep(
+        self,
+        jobs: list,
+        callback: Optional[Callable],
+        callback_inputs: list,
+        output_type: str,
+        height: int,
+        width: int,
+    ) -> Optional[list]:
+        """Denoise set-up ``jobs`` together: every step runs one transformer forward in which each block runs each
+        image as its own batch-1 call (``lockstep_blocks``), so a streamed block is uploaded once per step for all of
+        them. Each image keeps its own noise, scheduler and conditioning, so its pixels are those of its own render.
+        The callback runs once per step with the first image's latents. None = interrupted."""
+        transformer = self._enter("transformer")
+        t1 = time.perf_counter()
+        gate = None
+        try:
+            streamer = self._dit_streamer()
+            gate = LockstepGate(transformer.transformer_blocks, getattr(streamer, "handles", ()))
+            transformer.__dict__[LOCKSTEP_GATE_ATTR] = gate
+            # The first image steps the pipe's own scheduler (a step callback reads it), freshly set as its copy was.
+            first = jobs[0]
+            self.scheduler.set_timesteps(first["steps"], device = first["device"])
+            first["scheduler"] = self.scheduler
+            for job in jobs:
+                job["t1"] = t1
+                self._denoise_setup(job, transformer)
+            for i, t in enumerate(jobs[0]["timesteps"]):
+                if self.interrupt:
+                    return None
+                calls = [self._step_inputs(job, i) for job in jobs]
+                velocities = transformer(**calls[0], lockstep = calls[1:])
+                for job, velocity in zip(jobs, velocities):
+                    self._step_update(job, velocity, i, t)
+                if callback is not None:
+                    callback(self, i, t, self._step_payload(jobs[0], callback_inputs))
+        finally:
+            transformer.__dict__.pop(LOCKSTEP_GATE_ATTR, None)
+            if gate is not None:
+                gate.remove()
+            self._leave("transformer")
+        out = []
+        for job in jobs:
+            job["stats"]["lockstep"] = len(jobs)
+            out.append(self._render_finish(job, height, width, output_type))
+        return out
 
     def _decode(self, latents: Any, height: int, width: int, output_type: str) -> list:
         import numpy as np
@@ -3101,9 +3607,7 @@ def quantize_block_(block: Any, scheme: str, *, device: Any) -> int:
     return len(names)
 
 
-# cuBLASLt int8 GEMMs (torch._int_mm) refuse some row counts with CUBLAS_STATUS_NOT_SUPPORTED, and torchao then
-# silently falls back to a much slower fp32 matmul. A packed sequence rarely lands on a supported count; multiples
-# of 32 always ran and also suit the fp8 row-wise GEMM.
+# cuBLASLt refuses some int8 row counts and torchao silently falls back to fp32, so pad rows to 32.
 ROW_MULTIPLE = 32
 
 
@@ -3192,8 +3696,7 @@ def _auto_scheme_by_fit(
     te_gb: Optional[float],
     inflight: int,
 ) -> tuple[Optional[str], str]:
-    """Auto by fit: bf16 when the table-form bf16 DiT stays on the card (beside the encoder with ``te_gb``), else
-    int8."""
+    """Auto picks bf16 DiT only if it fits beside the encoder (te_gb), else int8."""
     need = H3_IMAGE_DIT_TABLE_BF16_GB + activation_gb(width, height) + 1.5
     if vram_gb is not None and vram_gb >= need:
         if te_gb is None:
@@ -3756,9 +4259,8 @@ def _int8_epilogue(module: Any) -> bool:
 
 
 def stream_runs_rescaled(transformer: Any, scale: float = FP16_STREAM_SCALE) -> int:
-    """fp16 runs only (sm75): the stream enters and is written at 1/scale (folded into the writers' float32 epilogue)
-    and every norm reading it is scale invariant (eps / scale^2), so the result is exact up to rounding. Returns the
-    writers rescaled; 0 on a layout it does not know."""
+    """fp16 only (sm75): stream runs at 1/scale, folded into the writers fp32 epilogue; norms are
+    scale invariant (eps / scale^2), so exact up to rounding; returns 0 on an unknown layout"""
     inv = 1.0 / float(scale)
     blocks = list(getattr(transformer, "transformer_blocks", None) or ())
     norm_out = getattr(getattr(transformer, "norm_out", None), "norm", None)
@@ -4405,8 +4907,12 @@ def make_list_streamer(
     reserve_bytes: int = 0,
     max_pin_bytes: Optional[int] = None,
     replaces_counted: bool = False,
+    later_host_bytes: int = 0,
+    spread: bool = False,
 ) -> Any:
-    """A streamer for ``members[resident:]``: the pinned prefetch one where it fits, else ``ModuleListStreamer``."""
+    """A streamer for ``members[resident:]``: the pinned prefetch one where it fits, else ``ModuleListStreamer``.
+    ``later_host_bytes``: host memory the load still takes after this streamer (a split encoder pin leaves it).
+    ``spread``: the pinned streamer spaces as many streamed members among the resident ones instead."""
     streamer = None
     if pinned and pinned_stream_enabled():
         from .diffusion_offload_prefetch import stream_module_list
@@ -4420,11 +4926,179 @@ def make_list_streamer(
             max_pin_bytes = max_pin_bytes,
             replaces_counted = replaces_counted,
             release_after_forward = role == "text_encoder",
+            spread = spread,
+        )
+    if streamer is None and pinned and role == "text_encoder" and te_partial_pin_enabled():
+        streamer = _split_text_encoder_streamer(
+            owner,
+            members,
+            device,
+            resident,
+            reserve_bytes = reserve_bytes + max(0, int(later_host_bytes)),
+            max_pin_bytes = max_pin_bytes,
+            replaces_counted = replaces_counted,
         )
     if streamer is None:
         streamer = ModuleListStreamer(members, device, resident)
     streamer._unsloth_role = role
     return streamer
+
+
+TE_PARTIAL_PIN_ENV = "UNSLOTH_H3_IMAGE_TE_PARTIAL_PIN"
+# kept free of the pin budget for the arena's last slab and allocator rounding
+TE_PARTIAL_PIN_SLACK_BYTES = 1 << 30
+
+
+# Host memory a parked stream-tier render takes past the load; 2 GiB dipped under the reserve on Colab L4, 3 GiB holds.
+TE_PARTIAL_PIN_RENDER_BYTES = 3 << 30
+
+
+def te_later_host_bytes(plan: "H3ImagePlan") -> int:
+    """Host bytes still taken after the encoder is placed (parked refiner / VAE, render working memory)."""
+    if not plan.parked or plan.placement != PLACE_STREAM:
+        return 0
+    parked = DIT_REFINER_GB + (float(plan.vae_gb) if plan.vae_parked else 0.0)
+    return int(parked * 1e9) + TE_PARTIAL_PIN_RENDER_BYTES
+
+
+def dit_restream_pin_bytes(transformer: Any, plan: "H3ImagePlan", early_streamer: Any) -> int:
+    """Pins of a DiT streamer placed after the encoder, else 0; the replaced one's pins stay held, so none are netted."""
+    if plan.placement != PLACE_STREAM:
+        return 0
+    resident = int(plan.dit_resident_blocks or 0)
+    if (
+        early_streamer is not None
+        and getattr(early_streamer, "_unsloth_resident", None) == resident
+    ):
+        return 0
+    from .diffusion_memory import _storage_nbytes
+
+    blocks = list(transformer.transformer_blocks)
+    if stream_spread_enabled():
+        from .diffusion_offload_prefetch import spread_stream_indices
+        blocks = [
+            blocks[i] for i in spread_stream_indices(len(blocks), len(blocks) - max(0, resident))
+        ]
+    else:
+        blocks = blocks[max(0, resident) :]
+    return int(
+        sum(
+            sum(_storage_nbytes(t))
+            for b in blocks
+            for t in list(b.parameters()) + list(b.buffers())
+        )
+    )
+
+
+def te_partial_pin_enabled() -> bool:
+    return pinned_stream_enabled() and not _env_off(TE_PARTIAL_PIN_ENV)
+
+
+class SplitListStreamer:
+    """Pinned prefetch streamer for the leading layers, pageable ``ModuleListStreamer`` for the rest, seen as one."""
+
+    def __init__(self, pinned: Any, pageable: Any) -> None:
+        self.parts = [pinned, pageable]
+        self.pinned_bytes = int(getattr(pinned, "pinned_bytes", 0) or 0)
+        self.replaced_bytes = int(getattr(pinned, "replaced_bytes", 0) or 0)
+        self.streamed = int(getattr(pageable, "streamed", 0) or 0)
+        self._host = pageable._host
+
+    def stats(self) -> dict:
+        read = getattr(self.parts[0], "stats", None)
+        out = dict(read()) if callable(read) else {}
+        out["pageable"] = self.streamed
+        return out
+
+    def remove(self) -> None:
+        for part in self.parts:
+            part.remove()
+            host = getattr(part, "_host", None)
+            if isinstance(host, dict) and host is not self._host:
+                host.clear()
+
+
+def partial_pin_count(
+    sizes: Sequence[int],
+    budget_bytes: Optional[int],
+    *,
+    reserve_bytes: int = 0,
+    max_pin_bytes: Optional[int] = None,
+    replaced: bool = False,
+    slack_bytes: Optional[int] = None,
+) -> int:
+    """Leading members that fit the host pin budget and plan pin room, less ``slack_bytes``."""
+    if budget_bytes is None:
+        return 0
+    if slack_bytes is None:
+        slack_bytes = TE_PARTIAL_PIN_SLACK_BYTES
+    room = int(budget_bytes) - int(reserve_bytes) - int(slack_bytes)
+    if max_pin_bytes is not None and not replaced:
+        room = min(room, int(max_pin_bytes) - int(slack_bytes))
+    count = total = 0
+    for size in sizes:
+        if total + int(size) > room:
+            break
+        total += int(size)
+        count += 1
+    return count
+
+
+def _split_text_encoder_streamer(
+    owner: Any,
+    members: Any,
+    device: Any,
+    resident: int,
+    *,
+    reserve_bytes: int = 0,
+    max_pin_bytes: Optional[int] = None,
+    replaces_counted: bool = False,
+) -> Optional[SplitListStreamer]:
+    """Pin the leading encoder layers the budget holds, stream the rest; None when none or all fit."""
+    from .diffusion_memory import _pin_budget_mib, _storage_nbytes
+    from .diffusion_offload_prefetch import pin_replaces_host_enabled, stream_module_list
+
+    members = list(members)
+    resident = max(0, min(len(members), int(resident)))
+    streamed = members[resident:]
+    sizes = [
+        sum(sum(_storage_nbytes(t)) for t in list(m.parameters()) + list(m.buffers()))
+        for m in streamed
+    ]
+    budget = _pin_budget_mib()
+    count = partial_pin_count(
+        sizes,
+        None if budget is None else int(budget) << 20,
+        reserve_bytes = reserve_bytes,
+        max_pin_bytes = max_pin_bytes,
+        replaced = bool(replaces_counted and pin_replaces_host_enabled()),
+    )
+    if count <= 0 or count >= len(streamed):
+        return None
+    pinned = stream_module_list(
+        owner,
+        members[: resident + count],
+        device,
+        resident,
+        logger = logger,
+        reserve_bytes = reserve_bytes,
+        max_pin_bytes = max_pin_bytes,
+        replaces_counted = replaces_counted,
+        release_after_forward = True,
+    )
+    if pinned is None:
+        return None
+    pageable = ModuleListStreamer(streamed[count:], device, 0)
+    logger.info(
+        "diffusion.minimax_h3_image: text encoder streams %d of %d layers with pinned copies (%.1f GB, the host pin "
+        "budget) and %d pageable (%.1f GB)",
+        count,
+        len(streamed),
+        sum(sizes[:count]) / 1e9,
+        len(streamed) - count,
+        sum(sizes[count:]) / 1e9,
+    )
+    return SplitListStreamer(pinned, pageable)
 
 
 def stream_list(
@@ -4439,6 +5113,7 @@ def stream_list(
     reserve_bytes: int = 0,
     max_pin_bytes: Optional[int] = None,
     replaces_counted: bool = False,
+    later_host_bytes: int = 0,
 ) -> Any:
     """``make_list_streamer``, registered on the pipe by role."""
     streamer = make_list_streamer(
@@ -4451,6 +5126,7 @@ def stream_list(
         reserve_bytes = reserve_bytes,
         max_pin_bytes = max_pin_bytes,
         replaces_counted = replaces_counted,
+        later_host_bytes = later_host_bytes,
     )
     pipe._unsloth_h3_streamers.append(streamer)
     return streamer
@@ -4477,6 +5153,7 @@ def _place_streamed_dit(
         "transformer",
         max_pin_bytes = pin_room_bytes(plan, pinned_already),
         replaces_counted = pins_replace_counted(plan),
+        spread = stream_spread_enabled(),
     )
     streamer._unsloth_resident = resident
     return streamer
@@ -4577,6 +5254,8 @@ def demote_dit_blocks(
                 replaces_counted = pins_replace_counted(plan),
                 reuse = reuse,
                 reuse_arenas = arenas,
+                # spread: the reused (already streamed) blocks stay streamed, the new ones space among the rest
+                spread = bool(getattr(old, "spread", False)),
             )
 
         new = _pinned(keep)
@@ -4660,6 +5339,18 @@ def _attention_processors(module: Any) -> list:
     ]
 
 
+def explicit_attention_pick(requested: Any) -> Optional[str]:
+    """The load's explicit attention alias ("sage", "native", "cudnn", ...), or None when Studio picks (unset, "auto",
+    "unsloth_int8", which is the INT8 attention control's On, or an unknown name)."""
+    from .diffusion_attention import ATTN_AUTO, normalize_attention_backend
+
+    try:
+        alias = normalize_attention_backend(requested)
+    except ValueError:
+        return None
+    return None if alias in (ATTN_AUTO, "unsloth_int8") else alias
+
+
 def install_checkpoint_attention(
     pipe: Any,
     device: Any,
@@ -4667,16 +5358,26 @@ def install_checkpoint_attention(
     scheme: Optional[str] = None,
     logger: Any = None,
     int8_policy: Any = None,
+    attention_backend: Optional[str] = None,
 ) -> Optional[str]:
     """Route the DiT blocks to the declared backend (SageAttention must pass its probe here first); the token refiner
-    keeps its own. Returns the engaged backend, or None with every processor unchanged."""
+    keeps its own. Returns the engaged backend, or None with every processor unchanged. ``attention_backend``: the
+    load's pick; an explicit "sage" pins SageAttention on the blocks (no race against native, and INT8 only when its
+    control is On), any other explicit pick keeps the checkpoint's SageAttention off."""
     import torch
 
     log = logger if logger is not None else _LOG
     transformer = getattr(pipe, "transformer", None)
     if transformer is None or getattr(pipe, ATTENTION_SAVED_ATTR, None):
         return None
-    want = checkpoint_attention_wanted(transformer, scheme)
+    pick = explicit_attention_pick(attention_backend)
+    want = (
+        checkpoint_attention_wanted(transformer, scheme)
+        if pick is None
+        else "sage"
+        if pick == "sage"
+        else None
+    )
     dev = torch.device(device)
     if want is None or dev.type != "cuda":
         return None
@@ -4699,6 +5400,8 @@ def install_checkpoint_attention(
             want,
             logger = log,
             target = target,
+            # an explicit pick is never raced over by the dispatch route
+            **({"requested": attention_backend} if pick is not None else {}),
             # only a load's own policy: a direct call keeps the env switch, as before
             **({"int8_policy": int8_policy} if int8_policy is not None else {}),
         )
@@ -4711,7 +5414,8 @@ def install_checkpoint_attention(
     if not sage_on:
         restore()
         setattr(transformer, ATTENTION_BACKEND_ATTR, tag)
-    forced = (os.environ.get(INT8_ATTENTION_ENV) or "").strip().lower() in (
+    # the env switch, or the user's own SageAttention pick, pins it: no race against native
+    forced = pick == "sage" or (os.environ.get(INT8_ATTENTION_ENV) or "").strip().lower() in (
         "1",
         "on",
         "true",
@@ -4795,12 +5499,16 @@ def _weights_on(module: Any, device: Any) -> Any:
     """Swap ``module``'s host tensors for ``device`` copies, restoring the same host tensors after (streamers hold them)."""
     import torch
 
+    device = torch.device(device)
+    if device.type == "cuda" and device.index is None:
+        device = torch.device("cuda", torch.cuda.current_device())
     swapped: list = []
     try:
         for owner in module.modules():
             for kind, table in (("p", owner._parameters), ("b", owner._buffers)):
                 for name, tensor in list(table.items()):
-                    if tensor is None or tensor.device.type == device.type:
+                    # The full device, index included: a tensor on another card is staged too.
+                    if tensor is None or tensor.device == device:
                         continue
                     moved = tensor.to(device)
                     swapped.append((table, name, tensor))
@@ -5114,9 +5822,11 @@ def _place_text_encoder(
     per_prompt: bool = False,
     reserve_bytes: int = 0,
     pinned_already: Sequence[Any] = (),
+    dit_pin_bytes: int = 0,
 ) -> Any:
     """``per_prompt`` (low-host tier, encoder reloaded each prompt) streams pageable: pinning would copy 27 GB per
-    prompt. ``pinned_already``: streamers whose pins count against the host room first."""
+    prompt. ``pinned_already``: streamers whose pins count against the host room first. ``dit_pin_bytes``: pins a DiT
+    streamer placed after the encoder still takes (``dit_restream_pin_bytes``); a split encoder pin leaves them."""
     if encoder is None:
         return None
     if plan.placement == PLACE_RESIDENT:
@@ -5152,6 +5862,7 @@ def _place_text_encoder(
             reserve_bytes = reserve_bytes,
             max_pin_bytes = pin_room_bytes(plan, pinned_already),
             replaces_counted = pins_replace_counted(plan),
+            later_host_bytes = te_later_host_bytes(plan) + max(0, int(dit_pin_bytes)),
         )
     return encoder
 
@@ -5174,11 +5885,13 @@ def load_minimax_h3_image_pipeline(
     plan_height: int = 2048,
     loras: Sequence[tuple] = (),
     int8_policy: Any = None,
+    attention_backend: Optional[str] = None,
 ) -> Any:
     """A ready ``MiniMaxH3ImagePipeline`` for ``repo_id`` (Hub id or local folder) placed for ``device``.
 
     ``int8_policy``: the load's ``diffusion_int8_attention.Int8Policy`` (or ``int8_attention`` request) for Studio's
-    INT8 attention kernel; None reads the env switch.
+    INT8 attention kernel; None reads the env switch. ``attention_backend``: the load's attention pick (see
+    ``install_checkpoint_attention``).
 
     ``loras``: ``[(path, weight), ...]`` merged into the dense DiT weights at load, before quantization, so every
     placement and speed lever runs them unchanged; a load with LoRAs therefore streams the release DiT (the hosted
@@ -5420,7 +6133,14 @@ def load_minimax_h3_image_pipeline(
 
         pipe._unsloth_h3_te_loader = _te_loader
     else:
-        _place_text_encoder(pipe, text_encoder, plan, device, pinned_already = [early_streamer])
+        _place_text_encoder(
+            pipe,
+            text_encoder,
+            plan,
+            device,
+            pinned_already = [early_streamer],
+            dit_pin_bytes = dit_restream_pin_bytes(transformer, plan, early_streamer),
+        )
     if plan.placement != PLACE_SEQUENTIAL:
         vae.to(device)
     if plan.placement in (PLACE_RESIDENT, PLACE_DIT_RESIDENT):
@@ -5441,10 +6161,22 @@ def load_minimax_h3_image_pipeline(
         early_streamer.remove()
     from .diffusion_minimax_h3_image_speed import install_h3_image_speed
 
-    speed_levers = install_h3_image_speed(pipe, plan, device, logger, int8_policy = int8_policy)
+    speed_levers = install_h3_image_speed(
+        pipe,
+        plan,
+        device,
+        logger,
+        int8_policy = int8_policy,
+        **({"attention_backend": attention_backend} if attention_backend else {}),
+    )
     speed_levers = tuple(speed_levers) + install_h3_image_vae_canvas(vae, device, logger)
     int8_attention = install_checkpoint_attention(
-        pipe, device, scheme = scheme, logger = logger, int8_policy = int8_policy
+        pipe,
+        device,
+        scheme = scheme,
+        logger = logger,
+        int8_policy = int8_policy,
+        **({"attention_backend": attention_backend} if attention_backend else {}),
     )
     if int8_attention:
         speed_levers = tuple(speed_levers) + (f"checkpoint_attention={int8_attention}",)

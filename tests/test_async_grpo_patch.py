@@ -25,6 +25,7 @@ import os
 import sys
 import types
 import warnings
+import weakref
 
 import pytest
 import torch
@@ -35,6 +36,7 @@ NAMES = (
     "_without_instance_bound_methods",
     "_packed_seq_lengths_from_position_ids",
     "_is_unsloth_fast_backbone",
+    "_async_grpo_tree_segment_parents",
     "_forward_tree_unrolled",
     "_unsloth_async_grpo_lm_head",
     "_fast_inference_engine",
@@ -50,6 +52,8 @@ NAMES = (
     "_hold_peft_requires_grad",
     "_allow_moe_parameter_lora",
     "_check_async_grpo_adapter_servable",
+    "_async_grpo_tensor_save",
+    "_async_grpo_tensor_sync_scope",
     "_async_grpo_masked_compute_loss",
     "_import_trl_async_grpo_module",
     "patch_trl_async_grpo",
@@ -73,6 +77,7 @@ def _load(fast_backbone_types = ()):
         "importlib": importlib,
         "warnings": warnings,
         "weakref": __import__("weakref"),
+        "contextvars": __import__("contextvars"),
         "logger": _Logger(),
         "Version": __import__("packaging.version", fromlist = ["Version"]).Version,
         "importlib_version": __import__("importlib.metadata", fromlist = ["version"]).version,
@@ -360,8 +365,9 @@ class _FakeServer:
     started = []
 
     def __init__(self, model):
-        self.url = "http://127.0.0.1:1"
+        self.url = f"http://127.0.0.1:{len(_FakeServer.started) + 1}/secret"
         self.max_num_seqs = 96
+        self.discarded = 0
         self.stopped = 0
         self.aborted = 0
         _FakeServer.started.append(self)
@@ -371,6 +377,13 @@ class _FakeServer:
 
     def abort_all(self):
         self.aborted += 1
+
+    def stage_adapter(self, model, adapter_name, dest_dir):
+        self.staged = (model, adapter_name, dest_dir)
+        return getattr(self, "stage_result", True)
+
+    def discard_staged(self, model):
+        self.discarded += 1
 
 
 def _fast_inference_peft(lm):
@@ -387,6 +400,8 @@ def _fast_inference_peft(lm):
 def fast_inference_trl(fake_trl):
     mod, calls = fake_trl
     mod.select_adapter_sync = lambda *a, **k: True
+    calls["save"] = []
+    mod.save_lora_adapter = lambda *a, **k: calls["save"].append(a)
 
     class AsyncGRPOConfig:
         def __init__(
@@ -401,6 +416,7 @@ def fast_inference_trl(fake_trl):
 
     class AsyncGRPOTrainer:
         lora_sync = True
+        reshard = False
 
         def __init__(
             self,
@@ -412,12 +428,28 @@ def fast_inference_trl(fake_trl):
         ):
             calls["init"].append((model, args))
             self.url_seen = args.vllm_server_base_url
+            if AsyncGRPOTrainer.reshard:
+                # What native FSDP2 does inside Trainer.__init__: a new parameter object under the same name.
+                model.lora = torch.nn.Parameter(model.lora.detach().clone())
             # What TRL does for a VLM: unfreeze the text model.
             model.frozen.requires_grad_(True)
             self._lora_sync = AsyncGRPOTrainer.lora_sync
+            # What TRL builds in __init__ from the URL the config holds then.
+            self.vllm_client = types.SimpleNamespace(
+                server_url = str(args.vllm_server_base_url).rstrip("/")
+            )
+            self.model = model
+            self.accelerator = types.SimpleNamespace(num_processes = 1)
+            self.model_version = 1
 
         def train(self):
             return "trained"
+
+        def _sync_weight_lora(self, t0):
+            # TRL's sync calls the module-level save, then loads the directory on its server.
+            version = self.model_version + 1
+            mod.save_lora_adapter(self.model, self.accelerator, "default", f"/o/policy-v{version}")
+            self.model_version = version
 
     mod.AsyncGRPOConfig = AsyncGRPOConfig
     mod.AsyncGRPOTrainer = AsyncGRPOTrainer
@@ -450,6 +482,20 @@ def test_fast_inference_model_gets_the_in_process_server(fast_inference_trl):
     assert calls_args(mod).max_inflight_tasks == 8
     assert not peft.frozen.requires_grad and peft.lora.requires_grad
     assert trainer.train() == "trained" and server.aborted == 1
+
+
+def test_adapter_stays_trainable_when_init_replaces_its_parameters(fast_inference_trl, monkeypatch):
+    # Native FSDP2 shards inside Trainer.__init__: the LoRA parameters come back as new objects.
+    mod, _ = fast_inference_trl
+    monkeypatch.setattr(mod.AsyncGRPOTrainer, "reshard", True)
+    peft = _fast_inference_peft(CausalLM(FastBackbone()))
+    old_lora = peft.lora
+    mod.AsyncGRPOTrainer(peft, None, args = mod.AsyncGRPOConfig("o"))
+    assert peft.lora is not old_lora
+    assert (
+        peft.lora.requires_grad
+    ), "the re-created adapter parameter was frozen: nothing would train"
+    assert not peft.frozen.requires_grad
 
 
 def test_explicit_server_url_keeps_the_external_server(fast_inference_trl):
@@ -911,3 +957,96 @@ def test_importance_sampling_mask_rewrites_the_installed_trl_loss():
     assert "where" in code.co_names
     assert not any(a == "torch" and b == "min" for a, b in zip(loads, loads[1:]))
     assert masked.__globals__ is AsyncGRPOTrainer.compute_loss.__globals__
+
+
+def _accelerator(processes = 1):
+    return types.SimpleNamespace(num_processes = processes)
+
+
+def test_weight_sync_hands_the_adapter_to_the_in_process_server(fast_inference_trl):
+    mod, ns = fast_inference_trl
+    assert mod.save_lora_adapter._unsloth_tensor_sync
+    assert mod.AsyncGRPOTrainer._sync_weight_lora._unsloth_tensor_sync
+    peft = _fast_inference_peft(CausalLM(FastBackbone()))
+    trainer = mod.AsyncGRPOTrainer(peft, None, args = mod.AsyncGRPOConfig("o"))
+    (server,) = _FakeServer.started
+    trainer._sync_weight_lora(0.0)
+    assert server.staged == (peft, "default", "/o/policy-v2")
+    assert (
+        mod._calls["save"] == []
+    ), "TRL's safetensors save ran although the server took the tensors"
+    assert ns["_ASYNC_GRPO_SYNC_SERVER"].get() is None, "the sync left its server in scope"
+
+
+def test_weight_sync_falls_back_to_trl_files(fast_inference_trl):
+    mod, ns = fast_inference_trl
+    peft = _fast_inference_peft(CausalLM(FastBackbone()))
+    trainer = mod.AsyncGRPOTrainer(peft, None, args = mod.AsyncGRPOConfig("o"))
+    (server,) = _FakeServer.started
+    mod.save_lora_adapter(peft, _accelerator(), "default", "/d1")  # outside a sync: a direct save
+    trainer.accelerator = _accelerator(2)  # every rank gathers; files as TRL writes them
+    trainer._sync_weight_lora(0.0)
+    trainer.accelerator = _accelerator()
+    server.stage_result = False  # the server declined
+    trainer._sync_weight_lora(0.0)
+    assert [call[-1] for call in mod._calls["save"]] == ["/d1", "/o/policy-v2", "/o/policy-v3"]
+    assert server.discarded == 2, "a file save left an older snapshot pending"
+
+
+def test_save_hook_routes_each_sync_to_its_own_trainers_server(fast_inference_trl):
+    # One model shared by an in-process trainer, a trainer on an external vLLM server and a second in-process
+    # trainer: each sync goes to the server its own client talks to, never one looked up by model.
+    mod, ns = fast_inference_trl
+    peft = _fast_inference_peft(CausalLM(FastBackbone()))
+    first = mod.AsyncGRPOTrainer(peft, None, args = mod.AsyncGRPOConfig("o"))
+    external = mod.AsyncGRPOTrainer(
+        peft, None, args = mod.AsyncGRPOConfig("o", vllm_server_base_url = "http://10.0.0.2:8000")
+    )
+    second = mod.AsyncGRPOTrainer(peft, None, args = mod.AsyncGRPOConfig("o"))
+    server1, server2 = _FakeServer.started
+    assert not hasattr(external, "_unsloth_vllm_server")
+    external._sync_weight_lora(0.0)
+    assert [call[-1] for call in mod._calls["save"]] == [
+        "/o/policy-v2"
+    ], "the external trainer's sync skipped the files its vLLM server reads"
+    first._sync_weight_lora(0.0)
+    assert server1.staged[-1] == "/o/policy-v2" and not hasattr(server2, "staged")
+    second._sync_weight_lora(0.0)
+    assert server2.staged[-1] == "/o/policy-v2"
+    # A trainer whose client was pointed elsewhere after init does not hand its sync to the in-process server.
+    first.vllm_client.server_url = "http://10.0.0.2:8000"
+    first.model_version = 7
+    first._sync_weight_lora(0.0)
+    assert mod._calls["save"][-1][-1] == "/o/policy-v8"
+
+
+class _ModelHoldingServer(_FakeServer):
+    # Like the real server, whose engine's `load_lora` is a partial bound to the model.
+    def __init__(self, model):
+        super().__init__(model)
+        self.load_lora = functools.partial(lambda m, *a: None, model)
+
+
+def test_a_discarded_trainer_does_not_keep_its_model_alive(fast_inference_trl):
+    import gc
+
+    mod, ns = fast_inference_trl
+    ns["_start_async_grpo_vllm_server"] = _ModelHoldingServer
+    peft = _fast_inference_peft(CausalLM(FastBackbone()))
+    trainer = mod.AsyncGRPOTrainer(peft, None, args = mod.AsyncGRPOConfig("o"))
+    trainer._sync_weight_lora(0.0)
+    model_ref = weakref.ref(peft)
+    del trainer, peft
+    _FakeServer.started.clear()
+    mod._calls["init"].clear()  # the fake TRL trainer records its arguments
+    gc.collect()
+    assert model_ref() is None, "the tensor sync kept a discarded model (and its GPU memory) alive"
+
+
+def test_tensor_save_wraps_once():
+    ns = _load()
+    calls = []
+    wrapped = ns["_async_grpo_tensor_save"](lambda *a: calls.append(a))
+    assert wrapped._unsloth_tensor_sync
+    wrapped(torch.nn.Linear(1, 1), _accelerator(), "default", "/d")
+    assert len(calls) == 1

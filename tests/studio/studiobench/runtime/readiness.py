@@ -452,8 +452,7 @@ async ([toTop, steps, stepPx]) => {
 }
 """
 
-# A 400 x 2,000px distance budget covers the tallest rung; upward steps are capped to 3/4 of the
-# viewport (TRAVERSE_JS) and reaching either end breaks early.
+# 400 x 2,000px budget covers the tallest rung; upward steps are capped to 3/4 of the viewport.
 TRAVERSE_STEPS = 400
 TRAVERSE_STEP_PX = 2000
 

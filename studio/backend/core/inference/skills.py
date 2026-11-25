@@ -69,6 +69,7 @@ class _FrontmatterLoader(yaml.SafeLoader):
     def __init__(self, stream):
         super().__init__(stream)
         self._pairs_left = MAX_SKILL_FRONTMATTER_PAIRS
+        self._expanded = {}
 
     def construct_mapping(
         self,
@@ -82,18 +83,25 @@ class _FrontmatterLoader(yaml.SafeLoader):
                 raise yaml.YAMLError("YAML frontmatter has too many keys.")
         return super().construct_mapping(node, deep = deep)
 
-    def flatten_mapping(self, node):
+    def expanded_pairs(self, node):
+        # Counted on the composed nodes, not on what flatten_mapping leaves: PyYAML 6.0.4
+        # de-duplicates repeated merges, and the same frontmatter must be refused on every version.
+        if id(node) in self._expanded:
+            return self._expanded[id(node)]
         total = len(node.value)
         for key, value in node.value:
             if key.tag != "tag:yaml.org,2002:merge":
                 continue
             for merged in value.value if isinstance(value, yaml.SequenceNode) else (value,):
                 if isinstance(merged, yaml.MappingNode):
-                    self.flatten_mapping(merged)
-                    total += len(merged.value)
+                    total += self.expanded_pairs(merged)
                 if total > MAX_SKILL_FRONTMATTER_PAIRS:
                     raise yaml.YAMLError("YAML merge keys expand too far.")
-        if total > MAX_SKILL_FRONTMATTER_PAIRS:
+        self._expanded[id(node)] = total
+        return total
+
+    def flatten_mapping(self, node):
+        if self.expanded_pairs(node) > MAX_SKILL_FRONTMATTER_PAIRS:
             raise yaml.YAMLError("YAML frontmatter has too many keys.")
         super().flatten_mapping(node)
 

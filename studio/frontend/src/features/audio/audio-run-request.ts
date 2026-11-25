@@ -3,8 +3,7 @@
 
 // No app imports: the node test runner loads this directly. Clients send ids only, never paths or audio.
 
-/** Mirrors AUDIO_INPUT_MAX_BYTES in studio/backend/utils/upload_limits.py: the floor of the
- * server's audio cap, used until /api/settings/upload-limit answers. */
+/** Mirrors AUDIO_INPUT_MAX_BYTES, the floor used until /api/settings/upload-limit answers. */
 export const AUDIO_INPUT_MAX_BYTES = 200 * 1024 * 1024;
 
 export const REFERENCE_MAX_SECONDS = 30;

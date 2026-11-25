@@ -168,6 +168,19 @@ class TestFriendlyUpstreamError:
         assert "compile a grammar" in exc.detail
         assert "llama-server error:" in _openai_passthrough_error(500, "disk full").detail
 
+    def test_passthrough_paths_show_the_server_message_not_its_json_body(self):
+        from routes.inference import _anthropic_upstream_error, _openai_passthrough_error
+
+        message = "Failed to initialize samplers: penalty_repeat must be finite and greater than 0"
+        raw = json.dumps(
+            {"error": {"code": 400, "message": message, "type": "invalid_request_error"}}
+        )
+        expected = f"llama-server error: {message}"
+        assert _openai_passthrough_error(400, raw).detail == expected
+        assert _anthropic_upstream_error(raw) == expected
+        long_raw = json.dumps({"error": {"code": 400, "message": "x" * 800}})
+        assert _friendly_upstream_error(long_raw) == "llama-server error: " + "x" * 500
+
     def test_anthropic_upstream_error_rewords_context_overflow(self):
         from routes.inference import _anthropic_upstream_error
 
@@ -4610,6 +4623,39 @@ class TestGgufVisionToolRouting:
         else:
             result.body = json.loads(response.body)
         return result
+
+    @pytest.mark.parametrize(
+        "field, value", [("grammar", 'root ::= "a"'), ("json_schema", {"type": "object"})]
+    )
+    def test_diffusion_gguf_refuses_a_raw_grammar(self, monkeypatch, field, value):
+        with pytest.raises(HTTPException) as exc:
+            self._run_gguf_case(
+                monkeypatch,
+                payload_kwargs = {field: value},
+                backend_kwargs = {"is_diffusion": True},
+            )
+        assert exc.value.status_code == 400
+        assert exc.value.detail["error"]["param"] == field
+
+    @pytest.mark.parametrize("field", ["grammar", "json_schema"])
+    @pytest.mark.parametrize("route", ["audio_reply", "tool_loop"])
+    def test_gguf_route_without_grammar_refuses_a_raw_grammar(self, monkeypatch, route, field):
+        def _no_generation(**_kwargs):
+            raise AssertionError("the constraint would be dropped")
+
+        value = 'root ::= "a"' if field == "grammar" else {"type": "object"}
+        if route == "audio_reply":
+            kwargs = {"backend_kwargs": {"_is_audio": True}}
+        else:
+            kwargs = {
+                "tool_generate": _no_generation,
+                "payload_kwargs": {"enable_tools": True, "enabled_tools": ["web_search"]},
+            }
+        kwargs.setdefault("payload_kwargs", {})[field] = value
+        with pytest.raises(HTTPException) as exc:
+            self._run_gguf_case(monkeypatch, generate = _no_generation, **kwargs)
+        assert exc.value.status_code == 400
+        assert exc.value.detail["error"]["param"] == field
 
     def test_image_request_with_enabled_tools_enters_gguf_tool_loop(self, monkeypatch):
         import routes.inference as inf_mod

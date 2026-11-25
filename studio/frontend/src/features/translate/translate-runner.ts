@@ -3,6 +3,7 @@
 
 import {
   getInferenceStatus,
+  listCachedModels,
   listGgufVariants,
   loadModel,
   streamChatCompletions,
@@ -23,7 +24,11 @@ import {
   subscribeJobListeners,
   useDownloadManagerStore,
 } from "@/features/hub/download-manager/download-manager-controller";
-import { modelIdsMatch } from "@/features/hub/lib/model-identity";
+import {
+  modelIdsMatch,
+  pinnedCheckpoint,
+  servedCheckpoint,
+} from "@/features/hub/lib/model-identity";
 import { useHfTokenStore } from "@/features/hub/stores/hf-token-store";
 import { createNavigationNonce } from "@/lib/navigation-nonce";
 import {
@@ -33,7 +38,6 @@ import {
 import {
   CUSTOM_TRANSLATE_MODEL,
   type CustomTranslateModel,
-  HY_MT2_SAMPLING,
   TRANSLATE_CONTEXT_TOKENS,
   TRANSLATE_MAX_TOKENS,
   type TranslateModelId,
@@ -41,7 +45,14 @@ import {
   dedicatedTranslateModel,
   translateMessages,
   translatePromptModel,
+  translationSampling,
 } from "./models";
+import { quantOnDisk } from "./quant-on-disk";
+import {
+  parseSubtitles,
+  translateSubtitles,
+  translateTextList,
+} from "./translate-subtitles";
 import {
   type TranslatePromptOptions,
   restoreChunkWhitespace,
@@ -113,29 +124,43 @@ type LocalModel = {
   /** Null for a model with no quants to pick from; the load fetches whatever it needs. */
   variant: string | null;
   sizeBytes: number;
+  fp8?: true;
 };
 
-export async function translateModelDownloaded(
-  model: LocalModel,
+async function repoOnDisk(
+  repo: string,
   signal?: AbortSignal,
 ): Promise<boolean | null> {
-  const quant = model.variant?.toLowerCase();
-  if (!quant) return null;
   try {
-    const listing = await listGgufVariants(model.repo, undefined, { signal });
-    const variant = listing.variants.find(
-      (entry) => entry.quant?.toLowerCase() === quant,
+    const wanted = repo.toLowerCase();
+    const row = (await listCachedModels(undefined, signal)).find(
+      (entry) => entry.repo_id.toLowerCase() === wanted,
     );
-    return variant
-      ? variant.downloaded === true && variant.partial !== true
-      : null;
+    return row !== undefined && row.partial !== true;
   } catch {
     return null;
   }
 }
 
+/** Disk first: a quant already on disk needs no Hub listing. `remote: false` never asks the Hub. */
+export async function translateModelDownloaded(
+  model: LocalModel,
+  signal?: AbortSignal,
+  options?: { remote?: boolean },
+): Promise<boolean | null> {
+  const quant = model.variant?.toLowerCase();
+  if (!quant) return model.fp8 ? repoOnDisk(model.repo, signal) : null;
+  return quantOnDisk(
+    quant,
+    async (localOnly) =>
+      (await listGgufVariants(model.repo, undefined, { signal, localOnly }))
+        .variants,
+    { remote: options?.remote !== false, signal },
+  );
+}
+
 async function downloadModel(
-  model: LocalModel & { variant: string },
+  model: LocalModel,
   hfToken: string | null,
   signal: AbortSignal,
   onPhase: (phase: TranslatePhase) => void,
@@ -147,7 +172,7 @@ async function downloadModel(
   const kind = DOWNLOAD_KIND.MODEL;
   const jobKey = jobKeyOf(kind, model.repo, model.variant);
   const ours = (variant: string | null) =>
-    (variant ?? "").toLowerCase() === model.variant.toLowerCase();
+    (variant ?? "").toLowerCase() === (model.variant ?? "").toLowerCase();
   onPhase({
     kind: "downloading",
     downloadedBytes: 0,
@@ -265,10 +290,12 @@ async function ensureLocalModel(
 
   const hfToken = useHfTokenStore.getState().token || null;
   // An unreadable listing is left to the load, which fetches a missing file itself.
-  const { variant } = model;
-  if (variant && (await translateModelDownloaded(model, signal)) === false) {
+  if (
+    (model.variant || model.fp8) &&
+    (await translateModelDownloaded(model, signal)) === false
+  ) {
     signal.throwIfAborted();
-    await downloadModel({ ...model, variant }, hfToken, signal, onPhase);
+    await downloadModel(model, hfToken, signal, onPhase);
   }
   signal.throwIfAborted();
   onPhase({ kind: "loading" });
@@ -311,10 +338,14 @@ async function ensureLocalModel(
 }
 
 async function chatModel(signal: AbortSignal): Promise<string> {
-  const picked = useChatRuntimeStore.getState().params.checkpoint;
+  const { params, loadedModels, activeGgufVariant } =
+    useChatRuntimeStore.getState();
+  const picked = params.checkpoint;
   if (isExternalModelId(picked)) return picked;
+  // Two loaded quants of a repo both answer to its bare id: only the quant's own name reaches it.
+  const served = servedCheckpoint(loadedModels, picked, activeGgufVariant);
   // The slot serving Chat's pick, which is not the primary under Keep multiple models loaded.
-  const status = await getInferenceStatus(signal, picked || undefined);
+  const status = await getInferenceStatus(signal, served || undefined);
   if (
     !status.active_model ||
     status.is_audio ||
@@ -323,7 +354,9 @@ async function chatModel(signal: AbortSignal): Promise<string> {
   ) {
     throw new TranslateRunError("noChatModel");
   }
-  return status.active_model;
+  // Pinned: a quant loaded beside it mid-translation would take the bare repo id.
+  const pinned = pinnedCheckpoint(served, activeGgufVariant);
+  return pinned !== picked ? pinned : status.active_model;
 }
 
 /** A provider's model by its own id, never the internal `external::...` one. */
@@ -357,10 +390,16 @@ async function baseRequest(
   };
 }
 
-export async function runTranslation(
-  options: TranslateRunOptions,
-): Promise<{ output: string; model: string }> {
-  const { text, prompt, modelId, signal, onPhase, onOutput } = options;
+type TranslateSetup = Omit<TranslateRunOptions, "text" | "onOutput">;
+
+async function prepareTranslation(options: TranslateSetup): Promise<{
+  complete: (
+    source: string,
+    onText?: (text: string) => void,
+  ) => Promise<string>;
+  model: string;
+}> {
+  const { prompt, modelId, signal, onPhase } = options;
   onPhase({ kind: "preparing" });
   const dedicated = dedicatedTranslateModel(modelId);
   const custom = modelId === CUSTOM_TRANSLATE_MODEL ? options.custom : null;
@@ -381,28 +420,21 @@ export async function runTranslation(
   const promptModel = translatePromptModel(modelId, custom);
   const sampling =
     dedicated?.sampling ??
-    (custom && isTranslationOnlyRepo(custom.id) ? HY_MT2_SAMPLING : null);
+    (custom && isTranslationOnlyRepo(custom.id)
+      ? translationSampling(custom.id)
+      : null);
   const base = await baseRequest(sampling, requestModel);
 
-  const chunks = splitForTranslation(text);
-  const parts = chunks.filter((chunk) => chunk.text).length;
-  let output = "";
-  let part = 0;
-  for (const chunk of chunks) {
-    signal.throwIfAborted();
-    if (!chunk.text) {
-      output += chunk.after;
-      onOutput(output);
-      continue;
-    }
-    part += 1;
-    onPhase({ kind: "translating", part, parts });
+  const complete = async (
+    source: string,
+    onText?: (text: string) => void,
+  ): Promise<string> => {
     let raw = "";
     let finishReason: string | null = null;
     const stream = streamChatCompletions(
       {
         ...base,
-        messages: translateMessages(promptModel, chunk.text, prompt),
+        messages: translateMessages(promptModel, source, prompt),
       },
       signal,
     );
@@ -413,17 +445,63 @@ export async function runTranslation(
       const delta = deltaText(choice?.delta?.content);
       if (!delta) continue;
       raw += delta;
-      onOutput(output + stripLeadingReasoning(raw).trimStart());
+      onText?.(stripLeadingReasoning(raw).trimStart());
     }
     // Either stop leaves a partial passage: never one to save as a finished translation.
     if (finishReason === "length") throw new TranslateRunError("cutOff");
     if (finishReason === "content_filter")
       throw new TranslateRunError("filtered");
-    output += restoreChunkWhitespace(chunk, stripLeadingReasoning(raw));
-    onOutput(output);
-  }
+    return stripLeadingReasoning(raw);
+  };
   return {
-    output,
+    complete,
     model: dedicated?.label ?? custom?.name ?? translateModelName(requestModel),
   };
+}
+
+export async function runTranslation(
+  options: TranslateRunOptions,
+): Promise<{ output: string; model: string }> {
+  const { text, signal, onPhase, onOutput } = options;
+  const { complete, model } = await prepareTranslation(options);
+  const subtitles = parseSubtitles(text);
+  let output = "";
+  if (subtitles) {
+    output = await translateSubtitles(subtitles, complete, {
+      signal,
+      onPhase,
+      onOutput,
+    });
+  } else {
+    const chunks = splitForTranslation(text);
+    const parts = chunks.filter((chunk) => chunk.text).length;
+    let part = 0;
+    for (const chunk of chunks) {
+      signal.throwIfAborted();
+      if (!chunk.text) {
+        output += chunk.after;
+        onOutput(output);
+        continue;
+      }
+      part += 1;
+      onPhase({ kind: "translating", part, parts });
+      const translated = await complete(chunk.text, (partial) =>
+        onOutput(output + partial),
+      );
+      output += restoreChunkWhitespace(chunk, translated);
+      onOutput(output);
+    }
+  }
+  return { output, model };
+}
+
+/** Each text translated on its own, in numbered batches like subtitle cues. */
+export async function runTextListTranslation(
+  options: TranslateSetup & { texts: readonly string[] },
+): Promise<string[]> {
+  const { complete } = await prepareTranslation(options);
+  return translateTextList(options.texts, complete, {
+    signal: options.signal,
+    onPhase: options.onPhase,
+  });
 }

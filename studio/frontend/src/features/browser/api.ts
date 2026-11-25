@@ -66,8 +66,7 @@ export type SiteCookies = Array<[string, string]>;
 /** [process epoch, cookie store version] when the snapshot was taken. */
 export type CookiesVersion = [string, number];
 
-// Cookie writes and clears run one at a time, so writes land in order and none queued before a
-// clear lands after it.
+// Cookie writes and clears run one at a time, so none queued before a clear lands after it.
 let lastCookieWrite: Promise<unknown> | null = null;
 let cookieClears = 0;
 

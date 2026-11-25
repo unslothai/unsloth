@@ -117,9 +117,8 @@ def build_pair_layout(
     min_saved = None,
     max_segment_cap = None,
 ):
-    """PairLayout for ``input_ids`` ``[2B, L]`` (right padded, row ``i`` paired with ``i + B``), or
-    None. Each row keeps at least one own token; positions stay the column index.
-    """
+    """PairLayout for input_ids [2B, L] (right padded, row i paired with row i + B), or None. Each
+    row keeps at least one own token; positions stay the column index."""
     from ..utils.prefix_grouper_kernel import build_seg_info_multigroup
 
     if not (isinstance(input_ids, torch.Tensor) and isinstance(attention_mask, torch.Tensor)):
@@ -307,6 +306,8 @@ def _model_eligible(causal_lm, device):
             pass
     if not cached:
         return False
+    if _forwards_are_collective(causal_lm):
+        return False
     from ..utils.prefix_grouper_kernel import compile_check_failed
 
     if compile_check_failed() is not None:
@@ -335,6 +336,25 @@ def _distributed_world():
     except Exception:
         pass
     return 1
+
+
+def _forwards_are_collective(causal_lm):
+    """ZeRO-3 / FSDP2: every forward all-gathers. A rank whose flex compile check fails reruns its
+    forward unshared, so its collectives no longer line up with the other ranks' (hang or wrong
+    gathers). Read live: the DeepSpeed config can go live after the first call."""
+    if _distributed_world() <= 1:
+        return False
+    try:
+        from unsloth_zoo.rl_replacements import grpo_forwards_are_collective
+    except Exception:
+        grpo_forwards_are_collective = None
+    try:
+        if grpo_forwards_are_collective is not None:
+            return bool(grpo_forwards_are_collective(causal_lm))
+        from unsloth_zoo.temporary_patches.utils import zero3_partitioned_training
+        return bool(zero3_partitioned_training())
+    except Exception:
+        return False
 
 
 def _cp_active():
@@ -399,11 +419,17 @@ def _neftune_active(causal_lm):
 
 def _dropout_active(causal_lm):
     """Shared prompt dropout masks would correlate chosen / rejected and change the DPO objective."""
+    dropout_type = torch.nn.modules.dropout._DropoutNd
+    peft_config = getattr(causal_lm, "peft_config", None)
+    if peft_config and any(
+        getattr(config, "lora_dropout", 0) > 0 for config in peft_config.values()
+    ):
+        return any(
+            isinstance(m, dropout_type) and m.training and m.p > 0 for m in causal_lm.modules()
+        )
     modules = getattr(causal_lm, "_unsloth_dps_dropouts", None)
     if modules is None:
-        modules = [
-            m for m in causal_lm.modules() if isinstance(m, torch.nn.modules.dropout._DropoutNd)
-        ]
+        modules = [m for m in causal_lm.modules() if isinstance(m, dropout_type)]
         try:
             causal_lm._unsloth_dps_dropouts = modules
         except Exception:

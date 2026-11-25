@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 export { validateChatSearch, type ChatSearch } from "./chat-search";
+export { listMcpServers, type McpServerConfig } from "./api/mcp-servers-api";
 export {
   loadChatPage,
   loadedChatPage,
@@ -114,7 +115,7 @@ export {
   toolOutputKey,
   toolResultText,
   toolThreadScope,
-  useToolOutputFor,
+  useToolOutput,
   useUnresolvedToolPaneScope,
   useToolPaneScope,
 } from "./tool-output-scope";
@@ -664,6 +665,8 @@ export {
   startSttDownload,
   sttEngineFor,
   sttEngineStatusFor,
+  transcribeAudioBlob,
+  type TranscriptSegment,
   unloadSttModel,
   validateSttModel,
   type SttDownloadStatus,

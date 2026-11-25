@@ -1,18 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Stream text-encoder layers through the card while a DiT training run encodes its captions.
-
-The conditioning phase used to move each whole bf16 text encoder onto the card (Qwen3-VL 17.5 GB for Qwen-Image-2.1,
-UMT5-XXL 11.4 GB for Wan2.2, Qwen3 8 GB for FLUX.2 klein 4B), which is more than the nf4 training loop needs, so the
-encoder, not training, decided whether a run fit. Here the encoder's non-layer weights (embeddings, norms, any vision
-tower) go to the card and its decoder layers stay on the host: each layer is copied in on a side stream ``DEPTH``
-layers ahead and dropped after its forward. Compute still runs on the card with the same weights and kernels, so the
-embeddings are bit-identical to the whole-module path.
-
-``UNSLOTH_DIFFUSION_TRAIN_TE_STREAM``: ``auto`` (default) streams only when the encoders do not fit in free VRAM, and
-then only as many layers as needed; ``on`` streams every layer; ``off`` is the whole-module move.
-"""
+"""Streams text-encoder layers to the card during DiT captioning; UNSLOTH_DIFFUSION_TRAIN_TE_STREAM:
+auto (default) streams only the layers needed when encoders do not fit free VRAM; on streams all;
+off is whole-module; embeddings bit-identical to it."""
 
 from __future__ import annotations
 
@@ -28,7 +19,8 @@ _MARGIN_BYTES = 3 << 29
 _PIN_RESERVE_MIN_BYTES = 4 << 30
 _PIN_RESERVE_FRACTION = 0.15
 STREAMER_ATTR = "_unsloth_te_streamer"
-LAST_ERROR: Optional[BaseException] = None
+# Only the "Type: message" string: the exception would keep its traceback frames alive.
+LAST_ERROR: Optional[str] = None
 
 
 def te_stream_mode() -> str:
@@ -104,6 +96,8 @@ class _Registered:
         self.buf, self.ptr, self.stream = buf, None, stream
         rc = torch.cuda.cudart().cudaHostRegister(buf.data_ptr(), nbytes, 0)
         if int(rc) != 0:
+            from core.inference.host_pinning import consume_cuda_error
+            consume_cuda_error()
             raise RuntimeError(f"cudaHostRegister failed: {rc}")
         self.ptr = buf.data_ptr()
 
@@ -114,7 +108,9 @@ class _Registered:
 
                 # A prefetch still in flight reads the registered range.
                 self.stream.synchronize()
-                torch.cuda.cudart().cudaHostUnregister(self.ptr)
+                if int(torch.cuda.cudart().cudaHostUnregister(self.ptr)) != 0:
+                    from core.inference.host_pinning import consume_cuda_error
+                    consume_cuda_error()
             except Exception:  # noqa: BLE001
                 pass
             self.ptr = None
@@ -339,10 +335,8 @@ def _plan_resident(layer_bytes: list[int], budget: int) -> int:
 
 
 def place_text_encoders(pipe: Any, device: str) -> list[str]:
-    """Stream the host-resident text encoders of ``pipe`` per ``te_stream_mode()``; returns the attrs it streamed.
-
-    Encoders it does not stream are left for the caller's whole-module move: quantized or already-placed encoders,
-    a non-CUDA device, ROCm under ``auto``, a layout with no layer list, or encoders that fit."""
+    """Stream host-resident encoders per te_stream_mode() and return the attrs streamed; skip
+    quantized or placed encoders, non-CUDA, ROCm under auto, no layer list, or encoders that fit."""
     mode = te_stream_mode()
     if mode == "off" or device != "cuda":
         return []
@@ -412,7 +406,7 @@ def place_text_encoders(pipe: Any, device: str) -> list[str]:
         return streamed_attrs
     except Exception as exc:  # noqa: BLE001 -- an encoder half-streamed is undone; the caller moves the rest whole
         global LAST_ERROR
-        LAST_ERROR = exc
+        LAST_ERROR = f"{type(exc).__name__}: {exc}"
         for attr in TEXT_ENCODER_ATTRS:
             enc = getattr(pipe, attr, None)
             streamer = getattr(enc, STREAMER_ATTR, None) if enc is not None else None

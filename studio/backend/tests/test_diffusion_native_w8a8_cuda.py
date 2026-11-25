@@ -461,10 +461,7 @@ def _arm_all(cr):
 
 
 def test_folds_match_and_keep_the_maths(cr):
-    """All three folds match the decomposed graph (per-token modulation, batch 2): the GELU and the gated residual land
-    in the GEMMs' epilogues, the norm in front of the first quant, the replaced GEMMs and quant leave the graph, and
-    the output stays within int8 code-flip noise of the unfolded graph (the folds read the materialised bf16
-    modulation and gate, as eager does)."""
+    """Folds match the decomposed graph within int8 code-flip noise; they read bf16 modulation and gate."""
     _arm_all(cr)
     gm, args, ref = _fold_block(cr)
     assert cr.fold_gelus(gm.graph) == 1
@@ -614,9 +611,8 @@ def test_pass_uuid_names_the_alpha_aware_folds(cr):
     "fold, expected", [("fold_gelus", 1), ("fold_norms", 0), ("fold_residuals", 0)]
 )
 def test_folds_keep_a_dynamic_graph_dynamic(cr, fold, expected):
-    """A dynamic=True compile traces symbolic token counts: a fold that bakes the count in adds a shape guard, so the
-    graph recompiles per token count where the stock graph compiles once. The norm and residual folds keep the traced
-    maths there; the GELU fold needs no count and still folds."""
+    """dynamic=True: a fold that bakes the token count adds a shape guard and recompiles per count;
+    norm and residual folds keep the traced maths; GELU fold still folds."""
     _arm_all(cr)
     gm, _args, _ref = _fold_block(cr, tracing_mode = "symbolic")
     x = next(n for n in gm.graph.nodes if n.op == "placeholder").meta["val"]

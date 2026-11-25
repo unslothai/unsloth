@@ -25,6 +25,8 @@ on:
       - '.github/workflows/docker-publish.yml'
       - '.pre-commit-config.yaml'
       - '.github/workflows/studio-backend-ci.yml'
+      # Its shard-layout guards (tests/test_ci_repo_cpu_shards.py) run here.
+      - '.github/workflows/distributed-cpu-ci.yml'
       # Tests this workflow collects read these files directly.
       - '.github/scripts/**'
       - '.github/ci/**'
@@ -63,6 +65,8 @@ on:
       - '.github/workflows/docker-publish.yml'
       - '.pre-commit-config.yaml'
       - '.github/workflows/studio-backend-ci.yml'
+      # Its shard-layout guards (tests/test_ci_repo_cpu_shards.py) run here.
+      - '.github/workflows/distributed-cpu-ci.yml'
       # Tests this workflow collects read these files directly.
       - '.github/scripts/**'
       - '.github/ci/**'
@@ -227,10 +231,25 @@ jobs:
           fi
 
       - name: Install backend test dependencies (CPU only)
+        env:
+          # uv installs exactly what pip installed here (same packages and versions, checked by
+          # comparing pip freeze): unsafe-best-match picks across both indexes the way pip's
+          # --extra-index-url does, and bytecode is compiled like pip's. uv's cache stays in the
+          # runner's temp dir: it is never saved, so the pip cache family keeps what it held.
+          UV_INDEX_STRATEGY: unsafe-best-match
+          UV_COMPILE_BYTECODE: '1'
+          UV_LINK_MODE: copy
+          UV_CACHE_DIR: ${{ runner.temp }}/uv-cache
+          # No uv.toml or user config may add an index or change how it resolves.
+          UV_NO_CONFIG: '1'
+          # The tests here never had uv on PATH; installed into a separate target and called by
+          # path, it stays invisible to them.
+          UV: ${{ runner.temp }}/uv-tool/bin/uv
         run: |
           python -m pip install --upgrade pip
-          pip install -r studio/backend/requirements/studio.txt
-          pip install \
+          python -m pip install --target "$RUNNER_TEMP/uv-tool" uv
+          "$UV" pip install --system -r studio/backend/requirements/studio.txt
+          "$UV" pip install --system \
             python-multipart aiofiles sqlalchemy cryptography psutil \
             pyyaml jinja2 mammoth unpdf requests \
             'numpy<3' 'pytest<9.2' pytest-asyncio pytest-xdist pytest-timeout httpx \
@@ -238,15 +257,17 @@ jobs:
           # pytest 9.2.0 deletes torch config keys when undoing monkeypatch.setattr (reads the old value
           # from __dict__, which torch's ConfigModule does not use), breaking every later config read.
           # soundfile + librosa, or the no-torchcodec decode test silently skips.
-          pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple \
+          "$UV" pip install --system --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple \
             'torch>=2.4,<2.11' 'torchaudio<2.11'
           # Tracks pyproject.toml's cap.
-          pip install 'transformers>=4.51,<=5.18.0'
+          "$UV" pip install --system 'transformers>=4.51,<=5.18.0'
           # peft is needed or importorskips of core/inference silently skip (a stub breaks find_spec).
           # Install after CPU torch; version from extras-no-deps.txt.
-          pip install "$(grep -m1 -E '^peft==' studio/backend/requirements/extras-no-deps.txt)"
+          "$UV" pip install --system "$(grep -m1 -E '^peft==' studio/backend/requirements/extras-no-deps.txt)"
           # torchao: the pre-quant allowlist imports its tensor constructors; CPU-only is fine.
-          pip install torchao
+          "$UV" pip install --system torchao
+          # usearch is not in studio.txt: installing via Studio's installer also tests that path.
+          python studio/install_hnsw_prebuilt.py --strict --json
 
       - name: Collect the bubblewrap install
         wait: bubblewrap
@@ -263,11 +284,14 @@ jobs:
         # Wall-clock-bound files run isolated; the isolation guard catches new tight bounds.
         #
         # Outer `timeout` catches a wedged xdist controller that per-test --timeout cannot; SIGINT dumps the stuck frame.
+        # --timeout-method=thread: the default SIGALRM handler never runs while a test is blocked in C code (a lock,
+        # a collective, a native wait), so the shard sat at 99% until the outer timeout and named nothing. The thread
+        # method dumps every stack and ends the worker, and xdist reports the test it was running.
         #
         # Shared selection lives here so every shard inherits one list; shards differ only in matrix.selection.
         run: |
           timeout --signal=INT --kill-after=60 1500 \
-          python -m pytest ${{ matrix.selection }} -q -rs --tb=short -n 4 --dist loadgroup --timeout=330 \
+          python -m pytest ${{ matrix.selection }} -q -rs --tb=short -n 4 --dist loadgroup --timeout=330 --timeout-method=thread \
             --ignore=tests/test_studio_api.py \
             --ignore=tests/test_streaming_stripper.py \
             --ignore=tests/test_llama_cpp_wait_for_vram_settle.py \
@@ -344,10 +368,12 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     strategy:
-      # Three shards balanced on measured runner time. `rest` is "tests/ minus the other roots"
+      # Shards balanced on measured runner time. `rest` is "tests/ minus the other roots"
       # so new files land in exactly one shard (tests/test_ci_repo_cpu_shards.py). Shard 1's
-      # roots are under tests/studio, which shards 2 and 3 exclude. Renaming a shard changes a
-      # check name: update required checks together. fail-fast off to show every red shard.
+      # roots are under tests/studio, which shards 2 and 3 exclude. The multi-rank fsdp2 / gloo
+      # shards live in distributed-cpu-ci.yml, which runs only when what they import changes;
+      # the shard guard reads both matrices. Renaming a shard changes a check name: update
+      # required checks together. fail-fast off to show every red shard.
       fail-fast: false
       matrix:
         include:
@@ -398,68 +424,6 @@ jobs:
               tests/test_[dimsu]*.py
               --deselect tests/test_model_registry.py::test_model_registration
               --deselect tests/test_model_registry.py::test_all_model_registration
-          # Native FSDP2's gloo tests spawn 2 to 4 ranks each: about ten minutes of this
-          # runner on their own, which pushed the catch-all to the 2100 s step cap. They run
-          # beside it instead.
-          # They then grew to 2092 s of the same cap on their own (364 tests by 2026-10-28)
-          # and were interrupted after passing, so they are split in two by file name: native_d
-          # onwards is about 55% of the measured time, everything else about 45%. Each glob
-          # must match a file, or bash hands pytest the literal pattern
-          # (tests/test_ci_repo_cpu_shards.py checks both).
-          - shard: fsdp2
-            selection: >-
-              tests/test_fsdp2_[!n]*.py
-              tests/test_fsdp2_n[!a]*.py
-              tests/test_fsdp2_native_[abc]*.py
-          - shard: fsdp2-native
-            selection: >-
-              tests/test_fsdp2_native_[!abc]*.py
-          # The other multi-rank gloo suites (tensor, pipeline and context parallel, float8 and
-          # fp8 under FSDP2) did the same again: with them the catch-all hit the 2100 s cap and was
-          # interrupted at 74 to 98% on most runs. Locally on 4 cores they are 578 s of the
-          # catch-all's 1258 s. The two globs are every *gloo* file except test_fs*, which is
-          # fsdp2's: an explicit file root cannot be filtered by --ignore, so the split is done in
-          # the globs themselves. A *gloo* file starting with d, i, m, s or u is rest-2's
-          # (tests/test_[dimsu]*.py), so the first glob leaves those letters out.
-          - shard: gloo
-            selection: >-
-              tests/test_[!dfimpstu]*gloo*.py
-              tests/test_f[!s]*gloo*.py
-              tests/test_parallel_[!c]*gloo*.py
-          # On 2026-11-16 the gloo shard reached the 2100 s cap again (interrupted at 2089 to 2096 s
-          # with 251 to 258 tests passed, upstream and on staging) after #17886, #17930 and the
-          # DeepSeek-V4.1 tests landed. The non-native tensor parallel files (tp_env, tp_eval,
-          # tp_full_finetune, tp_replica, ...) were over half of its measured time, so they run on
-          # their own.
-          - shard: gloo-tp-env
-            selection: >-
-              tests/test_tp_[!n]*gloo*.py
-          # #16407 grew test_parallel_cp_compose_gloo.py to about a third of the gloo shard's time
-          # (1143 of 3605 test-seconds measured per file), which took the shard to 1922 s of the
-          # 2100 s cap on main and over it on a slower runner. gloo-tp-pp has no room for it either
-          # (1397 s), so test_parallel_c*gloo* runs on its own. A *gloo* file named test_p[!ap]*
-          # would match no shard; tests/test_ci_repo_cpu_shards.py reports it as dropped.
-          # Its tests spawn 2 to 8 gloo ranks each: four at once peaked at about 20 GB (summed PSS,
-          # measured locally) and the 16 GB runner was shut down mid-run, twice. Two at once peak
-          # at about 12 GB.
-          - shard: gloo-cp
-            workers: 2
-            selection: >-
-              tests/test_parallel_c*gloo*.py
-          # The gloo shard then ran 1331 to 2058 s of the same cap on 2026-10-29. Measured per
-          # file, native tensor parallel plus pipeline parallel are about 51% of it, everything
-          # else about 49%. A *gloo* file named test_t[!p]* or test_tp[!_]* would match neither
-          # shard (a glob for them would match nothing today, and pytest reads an unmatched glob as
-          # a missing file); tests/test_ci_repo_cpu_shards.py reports such a file as dropped.
-          # Pipeline parallel then kept growing (#15655, #15656, #16167, #16417): by 2026-11-04 the
-          # combined shard ran 31 to 36 minutes per job and one run was interrupted at the 2100 s
-          # cap with 174 tests passed, so tensor and pipeline parallel run in separate shards.
-          - shard: gloo-tp
-            selection: >-
-              tests/test_tp_n*gloo*.py
-          - shard: gloo-pp
-            selection: >-
-              tests/test_pp*gloo*.py
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -487,31 +451,42 @@ jobs:
         run: pip install uv
 
       - name: Install deps (shared shape with backend pytest job)
+        env:
+          # uv installs exactly what pip installed here (same packages and versions, checked by
+          # comparing pip freeze): unsafe-best-match picks across both indexes the way pip's
+          # --extra-index-url does, and bytecode is compiled like pip's. uv's cache stays in the
+          # runner's temp dir: it is never saved, so the pip cache family keeps what it held.
+          UV_INDEX_STRATEGY: unsafe-best-match
+          UV_COMPILE_BYTECODE: '1'
+          UV_LINK_MODE: copy
+          UV_CACHE_DIR: ${{ runner.temp }}/uv-cache
+          # No uv.toml or user config may add an index or change how it resolves.
+          UV_NO_CONFIG: '1'
         run: |
           python -m pip install --upgrade pip
-          pip install -r studio/backend/requirements/studio.txt
-          pip install \
+          uv pip install --system -r studio/backend/requirements/studio.txt
+          uv pip install --system \
             python-multipart aiofiles sqlalchemy cryptography psutil \
             pyyaml jinja2 mammoth unpdf requests typer \
             'numpy<3' 'pytest<9.2' pytest-asyncio pytest-xdist pytest-timeout httpx
           # pytest<9.2: see the first install step. pytest-timeout names a hung test instead of a `cancelled` job.
           # torchvision: unsloth_zoo.vision_utils imports it at module scope.
-          pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple \
+          uv pip install --system --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple \
             'torch>=2.4,<2.11' 'torchvision<0.26' 'torchaudio<2.11'
           # sentence-transformers rides the transformers pin so it cannot raise the ceiling, and
           # makes tests/test_st_modules_json_trust_gate.py run instead of skip.
-          pip install 'transformers>=4.51,<=5.18.0' sentence-transformers
+          uv pip install --system 'transformers>=4.51,<=5.18.0' sentence-transformers
           # bitsandbytes: hard import in unsloth/models/_utils.py; recent versions import on CPU.
-          pip install 'bitsandbytes>=0.45'
+          uv pip install --system 'bitsandbytes>=0.45'
           # zoo from git main (needed by the conftest preload), with deps so triton is installed.
           for attempt in 1 2 3; do
-            if pip install "unsloth_zoo @ git+https://github.com/unslothai/unsloth-zoo"; then
+            if uv pip install --system "unsloth_zoo @ git+https://github.com/unslothai/unsloth-zoo"; then
               break
             fi
             [ "$attempt" -eq 3 ] && { echo "::error::unsloth_zoo install failed after 3 attempts"; exit 1; }
             sleep $((5 * attempt))
           done
-          pip install -e . --no-deps
+          uv pip install --system -e . --no-deps
 
       # ruff-unsloth wheels read from .pre-commit-config.yaml so test_formatter_fixed_point.py
       # does not skip. pip keeps the one whose marker matches this runner and checks its sha256.
@@ -538,10 +513,10 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}/studio
           UNSLOTH_COMPILE_DISABLE: '1'
         # Spoofing and load_freeze files run isolated below: hardware-spoof files mutate module
-        # globals. The outer timeout must fire before the job cap.
+        # globals. The outer timeout must fire before the job cap. --timeout-method=thread: see the backend shards.
         run: |
           timeout --signal=INT --kill-after=60 2100 \
-          python -m pytest ${{ matrix.selection }} -q -rs --tb=short -n ${{ matrix.workers || 4 }} --dist loadgroup --timeout=330 \
+          python -m pytest ${{ matrix.selection }} -q -rs --tb=short -n ${{ matrix.workers || 4 }} --dist loadgroup --timeout=330 --timeout-method=thread \
             -m 'not server and not e2e'
 
       - name: Hardware-spoof tests (state-sensitive, run in isolation)

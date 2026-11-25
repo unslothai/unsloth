@@ -888,7 +888,7 @@ def test_a_pip_that_cannot_run_is_bootstrapped_again(monkeypatch) -> None:
 
 
 def test_the_mlx_stack_is_current_only_when_all_four_hold(monkeypatch) -> None:
-    versions = {"mlx": "0.32.4", "mlx-metal": "0.32.4", "mlx-lm": "0.32.2", "mlx-vlm": "0.5.0"}
+    versions = {"mlx": "0.32.4", "mlx-metal": "0.32.4", "mlx-lm": "0.32.2", "mlx-vlm": "0.6.4"}
     monkeypatch.setattr(stack, "_installed_distribution_version", lambda name: versions.get(name))
     monkeypatch.setattr(stack, "_mlx_closure_unmet", lambda: False)
     monkeypatch.setattr(stack, "_mlx_lm_spec_for_installed_zoo", lambda: stack._MLX_LM_SPEC)
@@ -906,7 +906,8 @@ def test_the_mlx_stack_is_current_only_when_all_four_hold(monkeypatch) -> None:
         ("mlx-lm", "0.31.2"),
         ("mlx-lm", "0.32.3"),
         ("mlx-lm", None),
-        ("mlx-vlm", "0.8.1"),
+        ("mlx-vlm", "0.6.3"),
+        ("mlx-vlm", "0.8.2"),
         ("mlx-vlm", None),
     ):
         broken = dict(versions)
@@ -918,7 +919,7 @@ def test_the_mlx_stack_is_current_only_when_all_four_hold(monkeypatch) -> None:
 def test_a_satisfied_mlx_pin_with_a_broken_closure_is_not_current(monkeypatch, tmp_path) -> None:
     """This step installs WITH dependencies, so it is what repairs an mlx-vlm whose own
     miniaudio or mlx-audio is gone. Versions alone would skip that repair."""
-    versions = {"mlx": "0.32.4", "mlx-metal": "0.32.4", "mlx-lm": "0.32.2", "mlx-vlm": "0.5.0"}
+    versions = {"mlx": "0.32.4", "mlx-metal": "0.32.4", "mlx-lm": "0.32.2", "mlx-vlm": "0.6.4"}
     monkeypatch.setattr(stack, "_installed_distribution_version", lambda name: versions.get(name))
     monkeypatch.setattr(stack, "_mlx_closure_unmet", lambda: True)
     assert stack._mlx_stack_is_current() is False
@@ -1018,12 +1019,12 @@ def test_the_pip_fallback_never_names_one_project_twice() -> None:
             "--upgrade-package",
             "mlx-vlm",
             "mlx==0.32.3",
-            "mlx-vlm>=0.4.4,<=0.8.0",
+            "mlx-vlm>=0.6.4,<=0.8.1",
         )
     )
     assert "--upgrade" in cmd and "--upgrade-package" not in cmd
     assert cmd.count("mlx") == 0 and cmd.count("mlx-vlm") == 0
-    assert "mlx==0.32.3" in cmd and "mlx-vlm>=0.4.4,<=0.8.0" in cmd
+    assert "mlx==0.32.3" in cmd and "mlx-vlm>=0.6.4,<=0.8.1" in cmd
 
 
 def test_a_package_named_only_by_the_flag_is_still_passed() -> None:
@@ -1348,8 +1349,21 @@ def mlx(monkeypatch):
     return fake, steps, written, healthy
 
 
-def test_a_recorded_healthy_stack_is_not_re_probed(mlx) -> None:
+def test_a_no_torch_install_reports_mlx_for_chat_not_training(mlx, monkeypatch) -> None:
+    _, steps, _, _ = mlx
+    monkeypatch.setattr(stack, "NO_TORCH", True)
+    stack._report_mlx_stack_health(skipped = False)
+    assert steps == [("mlx", "chat stack ready")]
+    steps.clear()
+    blocked = _FakeSubprocess(stdout = '["mlx-lm is not installed"]')
+    monkeypatch.setattr(stack, "subprocess", blocked)
+    stack._report_mlx_stack_health(skipped = False)
+    assert steps[0] == ("mlx", "MLX models will not load until this is resolved:")
+
+
+def test_a_recorded_healthy_stack_is_not_re_probed(mlx, monkeypatch) -> None:
     fake, steps, written, _ = mlx
+    monkeypatch.setattr(stack, "NO_TORCH", False)
     stack._report_mlx_stack_health(skipped = True)
     assert fake.calls == 0
     assert steps == [("mlx", "training stack ready")]

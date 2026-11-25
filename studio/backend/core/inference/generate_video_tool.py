@@ -139,11 +139,8 @@ def _run(arguments: dict, workdir: str, cancel_event, timeout: Optional[float]) 
     width, height = arguments.get("width"), arguments.get("height")
     if width is not None and height is not None:
         fields["size"] = f"{_number_text(width)}x{_number_text(height)}"
-    seed = arguments.get("seed")
-    if seed is not None and _seed_supported():
-        fields["seed"] = int(seed)
-    else:
-        seed = None
+    if arguments.get("seed") is not None and _seed_supported():
+        fields["seed"] = arguments["seed"]
     body = VideoJobCreateRequest(**fields)
 
     cap = _DEFAULT_TIMEOUT_S if timeout is None or timeout >= 9999 else float(timeout)
@@ -191,7 +188,9 @@ def _run(arguments: dict, workdir: str, cancel_event, timeout: Optional[float]) 
             return NOT_LOADED_MSG
         return f"Error: {message}"
 
-    return _await_job(acct, job.id, workdir, prompt, seed, cancel_event, deadline)
+    return _await_job(
+        acct, job.id, workdir, prompt, getattr(body, "seed", None), cancel_event, deadline
+    )
 
 
 def _cancel_created_job(acct, future) -> None:

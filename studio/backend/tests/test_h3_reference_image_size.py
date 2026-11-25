@@ -37,8 +37,7 @@ def _spec_size(w: int, h: int, gen_w: int, gen_h: int, policy: str) -> tuple[int
 
 
 def _sd_cpp_size(w: int, h: int, gen_w: int, gen_h: int, policy: str) -> tuple[int, int]:
-    """sd.cpp's minimax_h3_reference_size (src/pipeline/video.cpp), line for line: std::round rounds
-    halves away from zero, unlike Python's round."""
+    """Mirrors sd.cpp's minimax_h3_reference_size; std::round rounds halves away from zero."""
     if policy == H3_REF_SIZE_MAX:
         scale = min(1.0, 2048.0 / min(w, h))
     else:

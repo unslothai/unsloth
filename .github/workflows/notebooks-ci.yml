@@ -254,7 +254,7 @@ jobs:
                       'torch>=2.8,<2.11' 'torchvision<0.26'
           # Keep in lockstep with PIN_TRL / PIN_TRANSFORMERS in unslothai/notebooks and pyproject caps.
           # datasets must exclude 4.4.0-4.5.0 (patch_datasets raises NotImplementedError there).
-          pip install 'transformers>=4.56,<=5.18.0' 'trl>=0.22,<=1.15.0' 'accelerate>=1.0' \
+          pip install 'transformers>=4.56,<=5.18.0' 'trl>=0.22,<=1.18.2' 'accelerate>=1.0' \
                       'datasets>=3.4.1,!=4.0.*,!=4.1.0,!=4.4.*,!=4.5.0,<5.0.0' 'peft>=0.15,<0.20' \
                       'bitsandbytes>=0.43' 'sentencepiece' 'protobuf' triton \
                       Pillow safetensors tqdm packaging psutil

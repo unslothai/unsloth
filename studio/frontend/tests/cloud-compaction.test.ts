@@ -15,11 +15,6 @@ import {
   parseAutoCompactTokens,
 } from "../src/features/chat/utils/auto-compaction.ts";
 import {
-  COMPACT_ON_RETURN_MIN_TOKENS,
-  promptCacheLifetimeMs,
-  shouldOfferCompactOnReturn,
-} from "../src/features/chat/utils/compact-on-return.ts";
-import {
   COMPACTION_NOTICE_LABEL,
   compactionNoticeKind,
 } from "../src/features/chat/utils/context-truncation.ts";
@@ -89,14 +84,15 @@ test("the Auto-compact after field takes whole tokens within the server's range"
   assert.equal(parseAutoCompactTokens("  "), null);
   assert.equal(parseAutoCompactTokens("300,000"), 300_000);
   assert.equal(parseAutoCompactTokens("1000"), 1_000);
-  assert.equal(parseAutoCompactTokens("2000000"), 2_000_000);
-  for (const bad of ["999", "2000001", "12.5", "lots", "-5"]) {
+  assert.equal(parseAutoCompactTokens("1200000"), 1_200_000);
+  for (const bad of ["999", "1200001", "12.5", "lots", "-5"]) {
     assert.throws(() => parseAutoCompactTokens(bad), /Auto-compact after/);
   }
   assert.equal(normalizeAutoCompactTokens(300_000), 300_000);
-  for (const bad of [999, 2_000_001, 1.5, "300000", null, undefined]) {
+  for (const bad of [999, 1.5, "300000", null, undefined]) {
     assert.equal(normalizeAutoCompactTokens(bad), undefined);
   }
+  assert.equal(normalizeAutoCompactTokens(2_000_001), 1_200_000);
 });
 
 test("the meter's trigger mirrors what each provider really does", () => {
@@ -171,50 +167,32 @@ test("the thread says whether history was summarized or had to be dropped", () =
   const divider = readSrc("components/assistant-ui/compaction-divider.tsx");
   assert.match(divider, /label=\{COMPACTION_NOTICE_LABEL\[kind\]\}/);
   assert.match(divider, /data-compaction-kind=\{kind\}/);
+  // The divider is the record; only history dropped without a summary also raises a toast.
   const adapter = readSrc("features/chat/api/chat-adapter.ts");
-  assert.match(adapter, /\(dropped \? toast\.warning : toast\.info\)\(/);
+  assert.match(
+    adapter,
+    /if \(\s*\(noticeKind === "dropped" \|\| noticeKind === "dropped-after-failed-summary"\) &&/,
+  );
+  assert.match(adapter, /toast\.warning\(COMPACTION_NOTICE_LABEL\[noticeKind\]/);
+  assert.doesNotMatch(adapter, /This conversation was compacted/);
 });
 
-test("the connection form stores Auto-compact after with the connection", () => {
+test("the connection form stores Auto-compact at with the connection", () => {
   const dialog = readSrc("features/chat/chat-providers-dialog.tsx");
   assert.match(dialog, /id="provider-auto-compact-tokens"/);
-  assert.match(dialog, /parseAutoCompactTokens\(autoCompactTokensDraft\)/);
+  assert.match(dialog, /parseAutoCompactPercent\(autoCompactPercentDraft\)/);
+  assert.match(dialog, /autoCompactPercent != null \? \{ autoCompactTokens: null \} : \{\}/);
   assert.match(dialog, /autoCompactTokens: updated\.auto_compact_tokens \?\? undefined/);
   const api = readSrc("features/chat/api/providers-api.ts");
+  assert.equal(api.match(/auto_compact_percent: payload\.autoCompactPercent/g)?.length, 2);
   assert.equal(api.match(/auto_compact_tokens: payload\.autoCompactTokens/g)?.length, 2);
   const sync = readSrc("features/chat/sync-external-providers.ts");
   assert.match(sync, /autoCompactTokens: config\.auto_compact_tokens \?\? undefined/);
+  assert.match(sync, /autoCompactPercent: normalizeAutoCompactPercent\(config\.auto_compact_percent\)/);
 });
 
-test("the Compact chip is offered only for a large cloud thread left past the cache lifetime", () => {
-  const minute = 60_000;
-  const base = {
-    isCloudModel: true,
-    threadTokens: COMPACT_ON_RETURN_MIN_TOKENS,
-    lastReplyAtMs: 0,
-    nowMs: 6 * minute,
-    cacheLifetimeMs: 5 * minute,
-  };
-  assert.equal(shouldOfferCompactOnReturn(base), true);
-  assert.equal(shouldOfferCompactOnReturn({ ...base, nowMs: 4 * minute }), false);
-  assert.equal(shouldOfferCompactOnReturn({ ...base, threadTokens: 49_999 }), false);
-  assert.equal(shouldOfferCompactOnReturn({ ...base, threadTokens: null }), false);
-  assert.equal(shouldOfferCompactOnReturn({ ...base, isCloudModel: false }), false);
-  assert.equal(shouldOfferCompactOnReturn({ ...base, lastReplyAtMs: null }), false);
-  assert.equal(shouldOfferCompactOnReturn({ ...base, blocked: true }), false);
-
-  assert.equal(promptCacheLifetimeMs({ providerType: "anthropic" }), 5 * minute);
-  assert.equal(promptCacheLifetimeMs({ providerType: "anthropic", promptCacheTtl: "1h" }), 60 * minute);
-  assert.equal(promptCacheLifetimeMs({ providerType: "openai" }), 60 * minute);
-  assert.equal(promptCacheLifetimeMs({ providerType: "openrouter" }), 5 * minute);
-
+test("the composer offers no Compact chip: the header meter shows the context", () => {
   const thread = readSrc("components/assistant-ui/thread.tsx");
-  assert.match(thread, /<CompactOnReturnChip \/>\s*<ComposerPrimitive\.Send asChild=\{true\}>/);
-  const chip = readSrc("components/assistant-ui/compact-on-return-chip.tsx");
-  // It rides the /compact request, and a click withdraws it for that message.
-  assert.match(chip, /store\.request\(threadId\)/);
-  assert.match(chip, /setKeptFor\(offerKey\);\s*store\.clear\(threadId\);/);
-  // Auto-compaction off: the offer is shown but never queued on its own.
-  assert.match(chip, /const autoCompactEnabled = useChatRuntimeStore\(\(s\) => s\.autoCompactEnabled\);/);
-  assert.match(chip, /if \(eligible && !kept && autoCompactEnabled && offeredRef\.current !== offerKey\)/);
+  assert.doesNotMatch(thread, /CompactOnReturnChip|compact-on-return/);
+  assert.match(thread, /<AuiIf[\s\S]{0,200}?>\s*<ComposerPrimitive\.Send asChild=\{true\}>/);
 });

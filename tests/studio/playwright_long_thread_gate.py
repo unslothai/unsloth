@@ -81,9 +81,7 @@ AREAS = os.environ.get("LONG_THREAD_AREAS", "auto")
 ONLY_AREAS = os.environ.get("LONG_THREAD_ONLY_AREAS") == "1"
 # Static lint of the built CSS for new non-subject :has() rules (tests/studio/_has_lint.py).
 HAS_LINT = os.environ.get("LONG_THREAD_HAS_LINT", "1") != "0"
-# The WebKit leg (_webkit_leg.py): surface open/close time and longest frame, short vs long chat, in
-# Playwright WebKit with a macOS and a Linux user agent. Opt-in (one Linux CI lane sets it), as it
-# needs the WebKit browser installed.
+# WebKit leg (_webkit_leg.py): opt-in via LONG_THREAD_WEBKIT, since it needs WebKit installed.
 WEBKIT = os.environ.get("LONG_THREAD_WEBKIT", "0") == "1"
 HEALTHY = "healthy reference: 0.7-1.0 ms/key selector matching, 1.00x, 0.2 ms/key :has()"
 KEYS = "the quick "
@@ -326,14 +324,9 @@ def pin_down(
     base: str,
     budget_s: float = PIN_BUDGET_S,
 ) -> list[str]:
-    """Find the :has() rules whose removal makes the keystroke cheap, one fresh page per probe.
-
-    Untraced style recalc per key with every :has() rule on (E) and off (F). The cost is often not
-    additive: one rule makes the browser restyle a whole subtree and the other rules then pay for
-    it. So the search removes rules: bisect for a set whose removal brings the page back near F,
-    narrowed to single rules. For each rule found it reports the page without that rule and the
-    rule on its own. Up to three rules, time-boxed. Measurements, not a guess.
-    """
+    """Finds :has() rules whose removal makes a keystroke cheap, one fresh page per probe; costs
+    often not additive, so it bisects removal sets toward rules-off, narrows to single rules,
+    reports each (page without it; rule alone); at most three, time-boxed."""
     started = time.time()
     sheet = main_stylesheet(DIST)
     if sheet is None:

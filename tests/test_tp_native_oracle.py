@@ -87,7 +87,9 @@ def build(
 ):
     from transformers import AutoConfig, AutoModelForCausalLM
 
-    config = AutoConfig.from_pretrained(repo)
+    from tests._tiny_fixture_revisions import revision
+
+    config = AutoConfig.from_pretrained(repo, revision = revision(repo))
     text = config.get_text_config()
     for key, value in (overrides or {}).items():
         setattr(text, key, value)

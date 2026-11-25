@@ -412,8 +412,7 @@ def _convert_into(src, tmp, dst):
                 ):
                     t = _dequant_fp8(t, get(scale_name))
                 elif t.dtype == getattr(torch, "float8_e8m0fnu", None):
-                    # engram scales: transformers 4.57's safetensors reader has no F8_E8M0; powers of two are exact
-                    # in fp32
+                    # transformers 4.57 safetensors lacks F8_E8M0; 2^k is exact in fp32.
                     t = t.float()
                 out[key] = t.contiguous()
             for layer, parts in experts.items():

@@ -796,28 +796,27 @@ def test_int8_training_applies_h3s_small_m_guards():
     body = dit_src.split("def _int8_quantize_base", 1)[1].split("\ndef ", 1)[0]
     # training keeps the baked list: the streamed-inference text-stream scope never reaches it
     assert 'exclude_tokens_for_scheme("int8", family, baked = True)' in body
-    assert 'apply_small_m_padding(transformer, "int8", family)' in body
 
 
-def test_int8_quantize_base_pads_the_families_small_m_linears(monkeypatch):
-    # Padding pass with the family must run AFTER quantize_, which reparents the Linears.
-    import torch.nn as nn
+def test_int8_quantize_base_runs_a_weight_only_h3_base_at_one_row():
+    """Weight-only int8 must not get small-M padding, which refuses weight-only Linears."""
+    import torch
 
+    pytest.importorskip("torchao")
     from core.training import diffusion_dit_trainer as dit
 
-    order: list = []
-    fake_ao = types.ModuleType("torchao.quantization")
-    fake_ao.Int8WeightOnlyConfig = lambda: "int8cfg"
-    fake_ao.quantize_ = lambda model, cfg, filter_fn = None: order.append("quantize")
-    monkeypatch.setitem(sys.modules, "torchao", types.ModuleType("torchao"))
-    monkeypatch.setitem(sys.modules, "torchao.quantization", fake_ao)
-    monkeypatch.setattr(
-        "core.inference.diffusion_transformer_quant.apply_small_m_padding",
-        lambda transformer, scheme, family, **kw: order.append(("pad", scheme, family)),
-    )
+    class _Base(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.context_embedder = torch.nn.Linear(512, 512, dtype = torch.bfloat16)
+            self.proj = torch.nn.Linear(512, 512, dtype = torch.bfloat16)
 
-    dit._int8_quantize_base(nn.Linear(4, 4), "minimax-h3")
-    assert order == ["quantize", ("pad", "int8", "minimax-h3")]
+    base = _Base()
+    dit._int8_quantize_base(base, "minimax-h3")
+    assert type(base.context_embedder) is torch.nn.Linear
+    assert hasattr(base.context_embedder.weight, "__tensor_flatten__"), "quantized"
+    out = base.context_embedder(torch.randn(1, 512, dtype = torch.bfloat16))
+    assert out.shape == (1, 512)
 
 
 def test_a_non_default_lora_alpha_survives_the_export(tmp_path):
@@ -968,7 +967,6 @@ def test_the_knobs_h3_cannot_honour_are_refused_or_normalised():
     refused = {
         "mixed_precision": ("no", "requires bf16"),
         "train_batch_size": (2, "batch size 1"),
-        "cond_cache_dir": ("/tmp/cond", "conditioning cache"),
         "cfg_dropout": (0.1, "guidance-distilled"),
         "weighting_scheme": ("bell", "timestep-weighted"),
         "resolution": (700, "multiples of"),
@@ -976,6 +974,8 @@ def test_the_knobs_h3_cannot_honour_are_refused_or_normalised():
     for field, (value, fragment) in refused.items():
         reason = h3_train_unsupported_reason(_replace(base, **{field: value}))
         assert reason and fragment in reason, f"{field} was accepted: {reason!r}"
+    # The persistent conditioning cache now exists on this path, so a directory is accepted.
+    assert h3_train_unsupported_reason(_replace(base, cond_cache_dir = "/tmp/cond")) is None
 
     from core.training.diffusion_train_common import DiffusionLoraConfig
 
@@ -1336,7 +1336,8 @@ def test_the_h3_conditioner_load_carries_the_hub_token(monkeypatch):
 
     assert seen[0] == {"index_token": "hf_secret", "cache_dir": "/live/hub"}
     component_loads = seen[1:]
-    assert len(component_loads) == 2
+    # Tokenizer + processor, then the conditioner alone, then the VAEs.
+    assert len(component_loads) == 3
     assert all(call.get("token") == "hf_secret" for call in component_loads), component_loads
     # Pin cache_dir to the LIVE root: the import-time constant ignores a mid-session folder change.
     assert all(call.get("cache_dir") == "/live/hub" for call in component_loads), component_loads
@@ -1468,7 +1469,7 @@ def _h3_cache_run(
     pipe = types.SimpleNamespace(
         text_encoder = _Placed(), processor = None, vae = _Placed(), audio_vae = _Placed()
     )
-    monkeypatch.setattr(h3, "_load_conditioners", lambda cfg, device: pipe)
+    monkeypatch.setattr(h3, "_load_conditioners", lambda cfg, device, **_k: pipe)
     monkeypatch.setattr(h3, "_encode_prompt", lambda *_a, **_k: torch.zeros(1, 8, 16))
     monkeypatch.setattr(h3, "_dataset_canvas", lambda _path, _short_edge: (64, 64))
     monkeypatch.setattr(h3, "decode_clip", lambda *_a, **_k: (None, None))
@@ -1728,7 +1729,9 @@ def test_h3_routes_its_transformer_through_the_shared_regional_compile(
         order.append("optimizer")
         raise _Stop
 
-    monkeypatch.setattr(diffusion_h3_trainer, "_load_conditioners", lambda cfg, device: _Pipe())
+    monkeypatch.setattr(
+        diffusion_h3_trainer, "_load_conditioners", lambda cfg, device, **_k: _Pipe()
+    )
     monkeypatch.setattr(
         diffusion_h3_trainer, "_encode_prompt", lambda pipe, cap, device: torch.zeros(1, 3, 8)
     )

@@ -13,9 +13,11 @@ may then be absent, so the swap needs no renaming or ``split.no`` stamping.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import struct
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Optional, Sequence
@@ -51,6 +53,78 @@ def engram_tables(files: Iterable[tuple[str, int]]) -> list[EngramTable]:
         # One table per precision; a duplicate label keeps the first listed.
         tables.setdefault(precision.upper(), EngramTable(precision, filename, int(size)))
     return sorted(tables.values(), key = lambda t: (-t.size_bytes, t.precision))
+
+
+_LISTING_FILENAME = "engram-tables.json"
+_LISTING_VERSION = 1
+_LISTING_LOCK = threading.Lock()
+
+
+def _listing_path(*, create: bool = False) -> Optional[Path]:
+    from hub.utils.state_dir import state_root
+    root = state_root(create = create)
+    return root / _LISTING_FILENAME if root is not None else None
+
+
+def _read_listings() -> dict:
+    path = _listing_path()
+    try:
+        payload = json.loads(path.read_text(encoding = "utf-8")) if path else None
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(payload, dict) or payload.get("version") != _LISTING_VERSION:
+        return {}
+    repos = payload.get("repos")
+    return repos if isinstance(repos, dict) else {}
+
+
+def remember_listing(
+    repo_id: str, tables: Sequence[EngramTable], own_by_quant: dict[str, Optional[str]]
+) -> None:
+    """Keeps the Hub's answer so a listing without the Hub can still name the tables and each
+    quant's own one (a quant that swapped its table shard out cannot tell it from disk)."""
+    entry = {
+        "tables": [
+            {"precision": t.precision, "filename": t.filename, "size_bytes": t.size_bytes}
+            for t in tables
+        ],
+        "own": {q.lower(): p for q, p in sorted(own_by_quant.items()) if p},
+    }
+    key = repo_id.strip().lower()
+    with _LISTING_LOCK:
+        repos = _read_listings()
+        if repos.get(key) == entry:
+            return
+        repos[key] = entry
+        path = _listing_path(create = True)
+        if path is None:
+            return
+        tmp = path.with_name(f".{path.name}.tmp-{os.getpid()}-{threading.get_ident()}")
+        try:
+            tmp.write_text(
+                json.dumps({"version": _LISTING_VERSION, "repos": repos}), encoding = "utf-8"
+            )
+            os.replace(tmp, path)
+        except OSError:  # best effort: a lost write only costs the offline row
+            try:
+                tmp.unlink(missing_ok = True)
+            except OSError:
+                pass
+
+
+def remembered_listing(repo_id: str) -> Optional[tuple[list[EngramTable], dict[str, str]]]:
+    """The tables and per-quant own precisions :func:`remember_listing` kept for ``repo_id``."""
+    entry = _read_listings().get(repo_id.strip().lower())
+    if not isinstance(entry, dict):
+        return None
+    try:
+        tables = engram_tables(
+            (str(t["filename"]), int(t["size_bytes"])) for t in entry.get("tables") or ()
+        )
+        own = {str(q): str(p) for q, p in (entry.get("own") or {}).items() if p}
+    except (KeyError, TypeError, ValueError, AttributeError):
+        return None
+    return (tables, own) if tables else None
 
 
 def cached_engram_tables(snapshot: Path) -> list[Path]:
@@ -94,9 +168,7 @@ def _gguf_counts(path: Path, *, split_total: bool) -> Optional[int]:
 
 
 def repo_snapshots(repo_id: str) -> list[Path]:
-    """The cached snapshots of ``repo_id`` in the active and every known Hub cache root: the one
-    place a repo's standalone tables are looked for. A plain listing, so the inventory scan can
-    call it (gguf_cache_snapshots classifies, which reads the scan back)."""
+    """Cached snapshots of repo_id across all Hub cache roots; a plain listing, so the scan can call it."""
     target = f"models--{repo_id.replace('/', '--')}".lower()
     try:
         from hub.utils.hf_cache_state import hf_cache_roots

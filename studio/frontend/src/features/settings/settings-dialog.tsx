@@ -39,7 +39,12 @@ import {
   UserCircleIcon,
 } from "@hugeicons/core-free-icons";
 import { ShieldCogIcon } from "@/lib/shield-cog-icon";
-import { ChipIcon, MessageCircleIcon, Settings01Icon } from "@/lib/hugeicons-derived";
+import {
+  ChipIcon,
+  FileSearchIcon,
+  MessageCircleIcon,
+  Settings01Icon,
+} from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { motion, useReducedMotion } from "motion/react";
 import {
@@ -99,6 +104,8 @@ const TAB_LOADERS = {
   library: () =>
     import("./tabs/library-tab").then((m) => ({ default: m.LibraryTab })),
   data: () => import("./tabs/data-tab").then((m) => ({ default: m.DataTab })),
+  knowledge: () =>
+    import("./tabs/knowledge-tab").then((m) => ({ default: m.KnowledgeTab })),
   "keyboard-shortcuts": () =>
     import("./tabs/keyboard-shortcuts-tab").then((m) => ({
       default: m.KeyboardShortcutsTab,
@@ -258,7 +265,6 @@ const TABS: TabDef[] = [
     id: "appearance",
     labelKey: "settings.tabs.appearance",
     icon: BrushCleaningIcon,
-    badgeKey: "shell.navigation.newBadge",
   },
   {
     id: "resources",
@@ -314,7 +320,6 @@ const TABS: TabDef[] = [
     id: "computer-use",
     labelKey: "computerUse.settings.title",
     icon: Cursor02Icon,
-    badgeKey: "shell.navigation.newBadge",
   },
   {
     id: "keyboard-shortcuts",
@@ -330,6 +335,11 @@ const TABS: TabDef[] = [
     id: "library",
     labelKey: "shell.navigation.library",
     icon: LibrariesIcon,
+  },
+  {
+    id: "knowledge",
+    labelKey: "settings.tabs.knowledge",
+    icon: FileSearchIcon,
   },
   {
     id: "debugging",
@@ -364,7 +374,7 @@ export const SETTINGS_NAV_GROUPS: {
   },
   {
     headingKey: "settings.navGroups.dataAccess",
-    ids: ["sandbox", "accounts", "data", "library"],
+    ids: ["sandbox", "accounts", "data", "library", "knowledge"],
   },
   { headingKey: null, ids: ["debugging", "about"] },
 ];
@@ -486,8 +496,7 @@ const SettingsPanelPane = memo(function SettingsPanelPane({
     return null;
   }
   return (
-    // Only a panel's first view waits, so the fallback is delayed and a
-    // promptly arriving panel never flashes it.
+    // Only a panel's first view waits, so a promptly arriving panel never flashes the fallback.
     <SettingsPanelBoundary
       tab={panelTab}
       message={t("settings.dialog.panelFailed")}
@@ -677,6 +686,7 @@ export function SettingsDialog() {
     "keyboard-shortcuts": null,
     library: null,
     data: null,
+    knowledge: null,
     "api-keys": null,
     "remote-lan": null,
     agents: null,
@@ -921,9 +931,8 @@ export function SettingsDialog() {
                 ref={railRef}
                 onScroll={onRailScroll}
                 className={cn(
-                  // A short window leaves the list taller than the clipped sidebar, so scroll it.
-                  // Full width, so the scroll bar sits at the panel edge; the right padding gives back
-                  // what the bar takes, and a bar wider than the inset widens the left to match.
+                  // Scroll bar at the panel edge: right padding gives back --rail-scrollbar, left
+                  // widens to match.
                   "hover-scrollbar settings-rail-fade -mx-2 flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto py-1 pl-[max(calc(var(--spacing)*3),var(--rail-scrollbar,0px))] pr-[max(0px,calc(var(--spacing)*3-var(--rail-scrollbar,0px)))]",
                   railFadeClass,
                   "group-data-stacked/settings:mx-0 group-data-stacked/settings:flex-none group-data-stacked/settings:flex-row group-data-stacked/settings:overflow-x-auto group-data-stacked/settings:px-1 group-data-stacked/settings:py-0",

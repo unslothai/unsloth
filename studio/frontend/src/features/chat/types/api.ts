@@ -77,7 +77,6 @@ export interface LoadModelRequest {
   nativePathLease?: string | null;
   hf_token: string | null;
   max_seq_length: number;
-  max_seq_length_auto_derived?: boolean;
   load_in_4bit: boolean;
   is_lora: boolean;
   gguf_variant?: string | null;
@@ -390,6 +389,11 @@ export interface InferenceStatusResponse {
   /** e.g. {"clone": "clon"}; a task other than audio_server_task reloads. */
   audio_workflow_tasks?: Record<string, string> | null;
   audio_server_task?: string | null;
+  /** Separate: what the model is for, and the id of its one output when it filters a recording. */
+  audio_separation?: {
+    goal: "stems" | "speakers" | "voice" | "restore";
+    output: string | null;
+  } | null;
   audio_convert_route?: string | null;
   audio_convert?: AudioConvertCaps | null;
   audio_required_inputs?: string[] | null;
@@ -409,6 +413,7 @@ export interface InferenceStatusResponse {
   loaded: string[];
   serving?: string[];
   serving_checkpoints?: string[];
+  serving_quants?: (string | null)[];
   resident_mib?: number | null;
   resident_on_gpu?: boolean | null;
   /** Keep multiple models loaded, as saved on the server. Absent from older servers. */

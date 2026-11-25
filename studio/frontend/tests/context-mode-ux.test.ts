@@ -55,6 +55,10 @@ test("the Auto number editor opens at the fitted or safe offload context", () =>
     panelCode,
     /activeLoadedContext \?\? AUTO_OFFLOAD_CONTEXT_LENGTH/,
   );
+  assert.match(
+    panelCode,
+    /activeLoadedContext=\{autoQuote\.loaded\} refitsLoadedContext=\{autoQuote\.refits\}/,
+  );
   assert.match(panelCode, /const AUTO_OFFLOAD_CONTEXT_LENGTH = 8192;/);
 });
 
@@ -85,8 +89,14 @@ test("once a number is set, the far right is the real maximum and only reset ret
   );
   assert.match(
     panelCode,
-    /<\/InfoHint> \{isAuto \? null : \( <button type="button" onClick=\{\(\) => onChange\(0\)\}[^>]*aria-label="Reset context to Auto"[\s\S]*?<\/button> \)\} <\/span>/,
+    /const reset = isAuto \? null : \( <button type="button" onClick=\{\(\) => onChange\(0\)\}[^>]*aria-label="Reset context to Auto"/,
   );
+});
+
+test("the sidebar puts the context reset beside the number; the picker keeps it by the label", () => {
+  assert.match(panelCode, /<\/InfoHint> \{stacked \? null : reset\} <\/span>/);
+  assert.match(panelCode, /\{stacked \? reset : null\} <NumericValueInput/);
+  assert.match(panelCode, /stacked=\{variant === "sidebar"\}/);
 });
 
 test("the context slider's left gap counts from the label text, with a tighter right gap", () => {
@@ -117,4 +127,18 @@ test("Reset all reads in the same color as Save", () => {
     panelCode,
     /className="text-muted-foreground" disabled=\{ \(pinnedSet !== null/,
   );
+});
+
+test("Auto quotes the loaded window only when the next load keeps it", async () => {
+  const { autoContextQuote } = await import(
+    "../src/features/model-picker/model-config/estimate-context.ts"
+  );
+  const quote = (atBaseline: boolean, active: number | null, pin: number | null) =>
+    autoContextQuote({ atBaseline, activeLoadedContext: active, fixedLayerPin: pin });
+  assert.deepEqual(quote(true, 262144, null), { loaded: 262144, refits: null });
+  // A changed KV cache dtype refits at load.
+  assert.deepEqual(quote(false, 82176, null), { loaded: null, refits: 82176 });
+  // Manual fixed layers reload at the pinned resident window.
+  assert.deepEqual(quote(false, 82176, 82176), { loaded: 82176, refits: null });
+  assert.deepEqual(quote(false, null, null), { loaded: null, refits: null });
 });

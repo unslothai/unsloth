@@ -464,8 +464,7 @@ def test_gemma4_generic_route_gates(monkeypatch):
     assert "sliding" in _check(model, allow_hybrids = False)
     monkeypatch.undo()
     multimodal = _model("mm_e2b", dtype = torch.float32)
-    # CP batches are text only (#17930): the bidirectional vision / audio towers neither refuse the route
-    # nor get CP hooks; every text-stack attention still does.
+    # CP batches are text only: vision and audio towers get no CP hooks; text attention does.
     _manager(2, None, local = 0).attach_attention_hooks(multimodal)
     hooked = {
         name

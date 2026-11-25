@@ -453,7 +453,16 @@ def test_a_streamed_torchao_render_runs_under_no_grad_and_the_rest_keep_inferenc
         'if state.transformer_quant and getattr(state, "denoiser_streamed", False)\n'
         "                    else torch.inference_mode()"
     ) in source
-    assert "with grad_ctx, protect_ctx, progress_ctx(), sigma_ctx:" in source
+    # The denoise loop enters grad_ctx with its other contexts; read the with-items, not one spelling of them.
+    import ast
+    import textwrap
+
+    withs = [
+        [ast.unparse(item.context_expr) for item in node.items]
+        for node in ast.walk(ast.parse(textwrap.dedent(source)))
+        if isinstance(node, ast.With)
+    ]
+    assert any("grad_ctx" in items and "progress_ctx()" in items for items in withs), withs
 
 
 def test_a_failed_streaming_setup_raises_instead_of_pinning(monkeypatch):

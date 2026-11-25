@@ -862,7 +862,7 @@ class TestTheEmbeddingLoaderChangesAreMacOsOnly:
         monkeypatch.setattr(
             mod.LlamaServerBackend,
             "_add_linux_cuda_libs",
-            staticmethod(lambda env, d: seen.setdefault("dir", d)),
+            staticmethod(lambda env, d, *_: seen.setdefault("dir", d)),
         )
         mod.LlamaServerBackend()._build_env(str(wrapper), use_gpu = True)
         assert seen["dir"] == str(wrapper.parent)
@@ -2144,3 +2144,37 @@ def test_spawn_uses_a_per_spawn_key_that_requests_send(monkeypatch, tmp_path):
     assert keys == [b._api_key] and b._auth_headers() == {"Authorization": f"Bearer {b._api_key}"}
     # llama-server read it at startup; nothing is left on disk.
     assert not list(tmp_path.glob("llama_api_key_*"))
+
+
+def test_a_sycl_build_counts_as_a_gpu_for_auto_embedding(monkeypatch):
+    import utils.hardware as uh
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    monkeypatch.setattr(uh, "is_apple_silicon", lambda: False)
+    monkeypatch.setattr(LlamaCppBackend, "_get_gpu_free_memory", staticmethod(lambda **_kw: []))
+    monkeypatch.setattr(LlamaCppBackend, "_is_sycl_only_backend", staticmethod(lambda *_a: True))
+    assert LlamaServerBackend._gpu_available() is True
+    monkeypatch.setattr(LlamaCppBackend, "_is_sycl_only_backend", staticmethod(lambda *_a: False))
+    assert LlamaServerBackend._gpu_available() is False
+
+
+@pytest.mark.skipif(sys.platform in ("win32", "darwin"), reason = "LD_LIBRARY_PATH is Linux-only")
+def test_build_env_gives_a_sycl_build_the_venv_oneapi_runtime(monkeypatch, tmp_path):
+    venv_lib = tmp_path / "venv" / "lib"
+    venv_lib.mkdir(parents = True)
+    (venv_lib / "libsycl.so.8").write_bytes(b"")
+    monkeypatch.setattr(sys, "prefix", str(tmp_path / "venv"))
+    monkeypatch.setattr(LlamaServerBackend, "_arch_gated_gpu_ids", staticmethod(lambda _b: []))
+    bin_dir = tmp_path / "build" / "bin"
+    bin_dir.mkdir(parents = True)
+    binary = bin_dir / "llama-server"
+    binary.write_text("#!/bin/sh\n")
+    root = tmp_path / "llama-server"
+    root.symlink_to(binary)
+
+    env = LlamaServerBackend()._build_env(str(root), use_gpu = True)
+    assert str(venv_lib) not in env["LD_LIBRARY_PATH"].split(":")
+
+    (bin_dir / "libggml-sycl.so").write_bytes(b"")
+    env = LlamaServerBackend()._build_env(str(root), use_gpu = True)
+    assert str(venv_lib) in env["LD_LIBRARY_PATH"].split(":")

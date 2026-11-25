@@ -452,9 +452,7 @@ function ThreadWeightApi({
   return null;
 }
 
-// The checks on this page measure what a whole thread costs in the DOM (the state an open find bar
-// or a print puts the app in), so every row stays mounted. `?window=1` leaves the thread as the
-// app opens it: only the rows near the reader are mounted.
+// Rows stay mounted for the DOM-cost checks unless ?window=1, which shows the app's real windowing.
 if (new URLSearchParams(window.location.search).get("window") !== "1") {
   holdProgressiveMounts();
 }

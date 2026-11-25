@@ -1,9 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-# Windows counterpart to studio-api-smoke.yml (same studio_api_smoke.py).
+# Windows counterpart to studio-api-smoke.yml (same studio_api_smoke.py), plus the Windows update
+# smoke: install.ps1 must pick the prebuilt llama.cpp, two updates must report it validated, the
+# server must still boot, and uninstall.ps1 must leave nothing behind. One install serves both
+# phases, as studio-mac-ui-smoke.yml does on macOS.
 
-name: Windows Unsloth API CI
+name: Windows Unsloth API + Update CI
 
 on:
   pull_request:
@@ -30,6 +33,11 @@ on:
       - 'tests/studio/studio_api_smoke.py'
       # Reached by the installers this workflow triggers on.
       - 'studio/nvidia_probe.py'
+      # Update phase: the uninstall round-trip and the PowerShell unit tests it runs.
+      - 'scripts/uninstall.ps1'
+      - 'tests/studio/test_uninstall_*.ps1'
+      - 'tests/studio/test_psmodulepath_normalization.ps1'
+      - 'studio/setup.bat'
       - '.github/workflows/studio-windows-api-smoke.yml'
       - '.github/scripts/boot-studio-api-only.sh'
       - '.github/scripts/wait-for-health.sh'
@@ -53,6 +61,10 @@ on:
       - 'pyproject.toml'
       - 'tests/studio/studio_api_smoke.py'
       - 'studio/nvidia_probe.py'
+      - 'scripts/uninstall.ps1'
+      - 'tests/studio/test_uninstall_*.ps1'
+      - 'tests/studio/test_psmodulepath_normalization.ps1'
+      - 'studio/setup.bat'
       - '.github/workflows/studio-windows-api-smoke.yml'
       - '.github/scripts/boot-studio-api-only.sh'
       - '.github/scripts/wait-for-health.sh'
@@ -72,9 +84,10 @@ permissions:
 jobs:
   api-smoke:
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
-    name: Unsloth API & Auth Tests
+    name: Unsloth API, Auth & Updating Tests
     runs-on: windows-latest
-    timeout-minutes: 30
+    # The two jobs it replaces were 30 minutes each; one install is shared.
+    timeout-minutes: 45
     defaults:
       run:
         shell: bash
@@ -92,6 +105,35 @@ jobs:
         with:
           persist-credentials: false
 
+      # Update phase: the workflow triggers on uninstall.ps1 but neither test uninstalls; the three
+      # unit-test steps run in the background since they only read the checkout, and the update
+      # phase collects them, so a failure fails the job without blocking the API phase.
+      - name: uninstall.ps1 unit tests (argument guard, dual-install icon preserve)
+        id: ps-uninstall-units
+        background: true
+        shell: pwsh
+        run: |
+          pwsh -NoProfile -File tests/studio/test_uninstall_arg_guard.ps1
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          pwsh -NoProfile -File tests/studio/test_uninstall_dual_install_icon.ps1
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
+      # Refresh-Environment must not reload PSModulePath over the prepended 5.1 module dir.
+      - name: PSModulePath normalization unit tests
+        id: ps-modulepath-units
+        background: true
+        shell: pwsh
+        run: pwsh -NoProfile -File tests/studio/test_psmodulepath_normalization.ps1
+
+      # powershell.exe covers Windows PowerShell 5.1, which differs from pwsh 7 on native stderr.
+      - name: uninstall.ps1 argument guard under Windows PowerShell 5.1
+        id: ps51-uninstall-guard
+        background: true
+        shell: powershell
+        run: |
+          powershell -NoProfile -File tests/studio/test_uninstall_arg_guard.ps1
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
           node-version: '22'
@@ -100,41 +142,9 @@ jobs:
         with:
           python-version: '3.12'
 
-      # Cross-OS key: the hf-cache tree is byte-identical on every OS.
-      - name: Restore HF_HOME for ${{ env.GGUF_REPO }}
-        id: cache-hf
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
-        continue-on-error: true
-        with:
-          path: hf-cache
-          key: hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v3
-          enableCrossOsArchive: true
-
-      - name: Prime HF_HOME with the GGUF
-        id: prime-hf
-        if: steps.cache-hf.outputs.cache-hit != 'true' || steps.cache-hf.outcome != 'success'
-        env:
-          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
-          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
-        run: |
-          python -m pip install --upgrade huggingface_hub
-          mkdir -p hf-cache
-          bash .github/scripts/hf-download-with-retry.sh "$GGUF_REPO" "$GGUF_FILE"
-          bash .github/scripts/hf-download-with-retry.sh ggml-org/models tinyllamas/stories260K.gguf
-
-      - name: Save HF_HOME for ${{ env.GGUF_REPO }}
-        # Save on main only: PR-scoped caches only serve that PR and evict main's shared copies
-        # from the near-full repo cache budget.
-        if: always() && github.ref == 'refs/heads/main' && steps.prime-hf.outcome == 'success' && hashFiles('hf-cache/**/*.gguf') != ''
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
-        with:
-          path: hf-cache
-          key: hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v3
-          enableCrossOsArchive: true
-
       - name: Pre-install Windows tweaks (npm 11 + Defender exclusions)
         shell: pwsh
-        # See studio-windows-update-smoke.yml: npm >= 11 and Defender exclusions.
+        # npm >= 11 and Defender exclusions, which the install needs on the Windows image.
         run: |
           $ProgressPreference = 'SilentlyContinue'
           Write-Host "npm version before upgrade: $(npm -v)"
@@ -166,6 +176,7 @@ jobs:
         uses: ./.github/actions/frontend-dist-restore
 
       - name: Install Unsloth (--local, --no-torch)
+        id: install_unsloth
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -220,6 +231,7 @@ jobs:
           cat "$INFO"
 
       - name: Add Unsloth shim to GITHUB_PATH
+        id: shim
         # The installer's User-PATH update does not reach a running Git Bash.
         run: |
           SHIM_DIR=~/.unsloth/studio/bin
@@ -230,19 +242,72 @@ jobs:
           fi
           cygpath -w "$SHIM_DIR" >> "$GITHUB_PATH"
 
+      # `wait:` takes no `if:` (the workflow is rejected), so the units are collected here, after the
+      # shared setup and before either phase, as the update smoke did on its own. A failed unit
+      # test fails this step; the API steps below chain on the shim and on each other with
+      # !cancelled(), so it does not skip them, as when the API smoke was its own workflow.
+      - name: Collect the PowerShell unit tests
+        wait: [ps-uninstall-units, ps-modulepath-units, ps51-uninstall-guard]
+
+      # API-phase fixture: after the shared install, so a failed download costs the API phase
+      # only and the update phase still runs on the install, as when it was its own workflow.
+      # Cross-OS key: the hf-cache tree is byte-identical on every OS.
+      - name: Restore HF_HOME for ${{ env.GGUF_REPO }}
+        id: cache-hf
+        if: ${{ !cancelled() && steps.shim.outcome == 'success' }}
+        timeout-minutes: 15
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        continue-on-error: true
+        with:
+          path: hf-cache
+          key: hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v3
+          enableCrossOsArchive: true
+
+      - name: Prime HF_HOME with the GGUF
+        id: prime-hf
+        timeout-minutes: 15
+        # Also on the silent restore-failure mode above.
+        if: ${{ !cancelled() && steps.shim.outcome == 'success' && (steps.cache-hf.outputs.cache-hit != 'true' || steps.cache-hf.outcome != 'success') }}
+        env:
+          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
+        run: |
+          python -m pip install --upgrade huggingface_hub
+          mkdir -p hf-cache
+          bash .github/scripts/hf-download-with-retry.sh "$GGUF_REPO" "$GGUF_FILE"
+          bash .github/scripts/hf-download-with-retry.sh ggml-org/models tinyllamas/stories260K.gguf
+
+      - name: Save HF_HOME for ${{ env.GGUF_REPO }}
+        # Save on main only: PR-scoped caches only serve that PR and evict main's shared copies
+        # from the near-full repo cache budget.
+        if: always() && github.ref == 'refs/heads/main' && steps.prime-hf.outcome == 'success' && hashFiles('hf-cache/**/*.gguf') != ''
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: hf-cache
+          key: hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v3
+          enableCrossOsArchive: true
+
       - name: Install pyjwt for the JWT-expiry forge test
+        id: api_pyjwt
+        if: ${{ !cancelled() && steps.shim.outcome == 'success' && (steps.prime-hf.outcome == 'success' || steps.prime-hf.outcome == 'skipped') }}
         run: python -m pip install 'pyjwt>=2.6'
 
       - name: Reset auth + boot Unsloth (API-only)
+        id: api_boot
+        if: ${{ !cancelled() && steps.api_pyjwt.outcome == 'success' }}
         run: |
           # Wipe (not reset-password): the boot below must re-seed a fresh .bootstrap_password.
           bash .github/scripts/boot-studio-api-only.sh --port "$STUDIO_PORT"
 
       - name: Wait for /api/health
+        id: api_health
+        if: ${{ !cancelled() && steps.api_boot.outcome == 'success' }}
         run: |
           bash .github/scripts/wait-for-health.sh --port "$STUDIO_PORT"
 
       - name: Pass bootstrap password + rotated targets to the test
+        id: api_pw
+        if: ${{ !cancelled() && steps.api_health.outcome == 'success' }}
         run: |
           OLD=$(cat ~/.unsloth/studio/auth/.bootstrap_password)
           NEW="ApiSmoke-$(python -c 'import secrets; print(secrets.token_urlsafe(16))')"
@@ -255,16 +320,47 @@ jobs:
           echo "STUDIO_NEW2_PW=$NEW2" >> "$GITHUB_ENV"
 
       - name: Run Unsloth API & Auth tests
+        id: api_test
+        if: ${{ !cancelled() && steps.api_pw.outcome == 'success' }}
         # Do NOT pin STUDIO_AUTH_DIR: the Windows path varies by image; the default is right.
         env:
           BASE_URL: http://127.0.0.1:18895
         run: python tests/studio/studio_api_smoke.py
 
-      - name: Stop Unsloth
+      # The update phase runs on this install next, and uninstall.ps1 must be able to delete every
+      # file: a llama-server.exe the API test loaded, or the studio process, would keep its files
+      # open after a bash kill, so anything left is stopped, and the step fails if it cannot be.
+      - name: Stop API-phase Unsloth
+        id: api_stop
         if: always()
+        shell: pwsh
         run: |
-          kill "${STUDIO_PID}" 2>/dev/null || true
-          sleep 2
+          # The PID goes to bash as an argument, never into its source.
+          if ($env:STUDIO_PID -match '^[0-9]+$') { & bash -c 'kill "$1" 2>/dev/null || true' _ $env:STUDIO_PID }
+          Start-Sleep -Seconds 2
+          # Anything executing from ~/.unsloth (the studio venv's python, llama-server, the shim),
+          # on a path-component boundary as uninstall.ps1 matches it: not ~/.unsloth-backup.
+          $root = (Join-Path $env:USERPROFILE '.unsloth').TrimEnd('\', '/')
+          function Get-UnslothProcess {
+            Get-Process -ErrorAction SilentlyContinue |
+              Where-Object { $_.Path -and ($_.Path -ieq $root -or $_.Path -ilike "$root\*") }
+          }
+          Get-UnslothProcess | ForEach-Object {
+            Write-Host "stopping leftover $($_.ProcessName) (pid $($_.Id)): $($_.Path)"
+            Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
+          }
+          Start-Sleep -Seconds 2
+          $left = @(Get-UnslothProcess)
+          if ($left.Count) {
+            $left | Format-Table Id, ProcessName, Path | Out-String | Write-Host
+            throw "processes from ~/.unsloth still running after the API phase"
+          }
+          # A studio running from an interpreter outside ~/.unsloth escapes the path scan above.
+          $listen = @(Get-NetTCPConnection -LocalPort ([int]$env:STUDIO_PORT) -State Listen -ErrorAction SilentlyContinue)
+          if ($listen.Count) {
+            $listen | Format-Table LocalAddress, LocalPort, OwningProcess | Out-String | Write-Host
+            throw "port $env:STUDIO_PORT is still listening after the API phase"
+          }
 
       - name: Upload API smoke logs
         if: always()
@@ -274,4 +370,163 @@ jobs:
           path: |
             logs/install.log
             logs/studio.log
+          retention-days: 7
+
+      # ---------------------------------------------------------------
+      # Update phase, on the same install. It must stay after the API phase: uninstall is last.
+      # ---------------------------------------------------------------
+      - name: First update should be a no-op (prebuilt already validated)
+        id: update_first
+        # Runs whether or not the API phase passed: each phase reports its own failure.
+        # As in the standalone update smoke: it needs green PowerShell units (collected there before
+        # the install) and an API phase that left nothing running.
+        if: ${{ !cancelled() && steps.install_unsloth.outcome == 'success' && steps.shim.outcome == 'success' && steps.api_stop.outcome == 'success' && steps.ps-uninstall-units.outcome == 'success' && steps.ps-modulepath-units.outcome == 'success' && steps.ps51-uninstall-guard.outcome == 'success' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
+        run: |
+          set -o pipefail
+          # Timestamps go to the step log only; logs/update.log is unchanged.
+          unsloth studio update --local 2>&1 \
+            | tee logs/update.log \
+            | while IFS= read -r line || [ -n "$line" ]; do
+                printf '[%4ds] %s\n' "$SECONDS" "$line"
+              done
+          if grep -q "falling back to source build" logs/update.log; then
+            echo "::error::studio update fell back to source-build llama.cpp on Windows."
+            grep -E "llama-prebuilt|llama.cpp" logs/update.log | tail -60
+            exit 1
+          fi
+          if ! grep -qE "prebuilt up to date and validated|prebuilt installed and validated" logs/update.log; then
+            echo "::error::no prebuilt up-to-date marker in update.log."
+            grep -E "llama-prebuilt|llama.cpp" logs/update.log | tail -60
+            exit 1
+          fi
+          echo "update path took the prebuilt fast path"
+
+      - name: Update must keep the --no-torch install GGUF-only
+        id: update_gguf_only
+        if: ${{ !cancelled() && steps.update_first.outcome == 'success' }}
+        run: |
+          # setup.ps1 must recover --no-torch from the manifest or it deletes its own venv. The skip
+          # line only prints when the dependency pass runs.
+          if grep -q "running ordered dependency installation" logs/update.log \
+             && ! grep -q "skipping direct PyTorch and Triton installation (no-torch mode)" logs/update.log; then
+            echo "::error::studio update left no-torch mode; it would reinstall PyTorch."
+            grep -iE "no-torch|stale venv|PyTorch" logs/update.log | tail -40
+            exit 1
+          fi
+          PY="$HOME/.unsloth/studio/unsloth_studio/Scripts/python.exe"
+          if [ ! -f "$PY" ]; then
+            echo "::error::studio venv interpreter missing at $PY"
+            exit 1
+          fi
+          if "$PY" -c "import torch" 2>/dev/null; then
+            echo "::error::torch was reinstalled into the --no-torch venv."
+            exit 1
+          fi
+          echo "update preserved no-torch mode"
+
+      - name: Second update must also be a no-op
+        id: update_second
+        if: ${{ !cancelled() && steps.update_gguf_only.outcome == 'success' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
+        run: |
+          set -o pipefail
+          # Timestamps go to the step log only; logs/update2.log is unchanged.
+          unsloth studio update --local 2>&1 \
+            | tee logs/update2.log \
+            | while IFS= read -r line || [ -n "$line" ]; do
+                printf '[%4ds] %s\n' "$SECONDS" "$line"
+              done
+          grep -q "falling back to source build" logs/update2.log && {
+              echo "::error::second update fell back to source build on Windows"
+              tail -60 logs/update2.log; exit 1; } || true
+          grep -qE "prebuilt up to date and validated|prebuilt installed and validated" logs/update2.log
+          echo "second update was clean"
+
+      - name: Boot Unsloth briefly to confirm the install is still usable
+        if: ${{ !cancelled() && steps.update_second.outcome == 'success' }}
+        run: |
+          mkdir -p logs
+          UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p 18891 \
+            > logs/studio-update.log 2>&1 &
+          PID=$!
+          HEALTHY=""
+          # jq, not python: MSYS and native Windows resolve `/tmp` to different directories.
+          for i in $(seq 1 60); do
+            if curl -fs http://127.0.0.1:18891/api/health > /tmp/health.json; then
+              if jq -e '.status == "healthy"' /tmp/health.json >/dev/null; then
+                HEALTHY=1
+                break
+              fi
+            fi
+            sleep 1
+          done
+          if [ -z "$HEALTHY" ]; then
+            echo "Unsloth failed to come up after \`update\`"
+            tail -200 logs/studio-update.log
+            kill "$PID" 2>/dev/null || true
+            exit 1
+          fi
+          kill "$PID" 2>/dev/null || true
+          echo "post-update Unsloth /api/health OK"
+
+      - name: Uninstall and verify clean
+        # Round-trip scripts/uninstall.ps1 to catch new install locations it misses. Last: it is
+        # destructive, and it runs even when an update step failed.
+        if: ${{ !cancelled() && steps.install_unsloth.outcome == 'success' }}
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path logs | Out-Null
+          if (-not (Test-Path "$PWD\scripts\uninstall.ps1")) {
+            Write-Host "scripts/uninstall.ps1 not present in this tree; skipping round-trip"
+            "" | Set-Content logs/uninstall.log
+            exit 0
+          }
+          pwsh -NoProfile -File "$PWD\scripts\uninstall.ps1" *>&1 | Tee-Object -FilePath logs/uninstall.log
+          $leak = 0
+          foreach ($p in @(
+            "$env:USERPROFILE\.unsloth\studio",
+            "$env:USERPROFILE\.unsloth\studio\unsloth_studio",
+            "$env:USERPROFILE\.unsloth\studio\bin\unsloth.exe",
+            "$env:USERPROFILE\.unsloth\whisper.cpp",
+            "$env:USERPROFILE\.unsloth\audio.cpp",
+            "$env:USERPROFILE\.unsloth\.llama.cpp.install.lock",
+            "$env:USERPROFILE\.unsloth\.node.install.lock",
+            "$env:USERPROFILE\.unsloth\.whisper.cpp.install.lock",
+            "$env:USERPROFILE\.unsloth\.audio.cpp.install.lock"
+          )) {
+            if (Test-Path -LiteralPath $p) {
+              Write-Host "::error::leak: $p"
+              $leak++
+            }
+          }
+          # Nothing but Unsloth writes under ~/.unsloth, so anything left was missed.
+          if (Test-Path -LiteralPath "$env:USERPROFILE\.unsloth") {
+            Write-Host "::error::leak: ~/.unsloth survived the uninstall"
+            Get-ChildItem -LiteralPath "$env:USERPROFILE\.unsloth" -Force -Recurse -ErrorAction SilentlyContinue |
+              Select-Object -First 40 -ExpandProperty FullName
+            $leak++
+          }
+          if ($leak -gt 0) { exit 1 }
+          pwsh -NoProfile -File "$PWD\scripts\uninstall.ps1" *>&1 | Select-Object -Last 5
+          pwsh -NoProfile -File "$PWD\scripts\uninstall.ps1" *>&1 | Select-Object -Last 5
+          Write-Host "PASS: windows install -> update -> uninstall round-trip clean"
+
+      - name: Upload update logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: windows-studio-update-log
+          path: |
+            logs/install.log
+            logs/update.log
+            logs/update2.log
+            logs/studio-update.log
+            logs/uninstall.log
           retention-days: 7

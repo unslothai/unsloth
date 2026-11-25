@@ -50,12 +50,14 @@ export type SandboxSetupPlan = {
   canRun: boolean;
 };
 
-// null off Linux and on backends without the setting.
+// null on backends without the setting.
 export type SandboxMemoryStatus = {
   // null: no cap.
   limitGb: number | null;
   savedGb: number;
   defaultGb: number;
+  // true: follows half of this computer's RAM (defaultGb). null: a backend without the choice.
+  auto: boolean | null;
   minGb: number;
   maxGb: number;
   lockedByEnvironment: boolean;
@@ -77,6 +79,7 @@ export type SandboxSettingsUpdate = {
   allowDaclFallback?: boolean;
   persistentReadGrants?: boolean;
   memoryLimitGb?: number;
+  memoryLimitAuto?: true;
 };
 
 export type HostPrepState =
@@ -152,6 +155,7 @@ type ApiMemoryStatus = {
   saved_gb?: number;
   // biome-ignore lint/style/useNamingConvention: API schema
   default_gb?: number;
+  auto?: boolean;
   // biome-ignore lint/style/useNamingConvention: API schema
   min_gb?: number;
   // biome-ignore lint/style/useNamingConvention: API schema
@@ -251,6 +255,7 @@ function memoryFromApi(
     limitGb: memory.limit_gb ?? null,
     savedGb: memory.saved_gb,
     defaultGb: memory.default_gb ?? 8,
+    auto: memory.auto ?? null,
     minGb: memory.min_gb ?? 1,
     maxGb: memory.max_gb ?? 4096,
     lockedByEnvironment: memory.locked_by_environment ?? false,
@@ -321,6 +326,9 @@ export async function updateSandboxSettings(
   }
   if (update.memoryLimitGb !== undefined) {
     body.memory_limit_gb = update.memoryLimitGb;
+  }
+  if (update.memoryLimitAuto) {
+    body.memory_limit_auto = true;
   }
   const res = await authFetch(ROUTE, {
     method: "PUT",

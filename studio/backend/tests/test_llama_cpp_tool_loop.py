@@ -7242,7 +7242,7 @@ def test_an_mcp_tool_search_leaves_a_budget_of_one_for_the_tool_it_found(monkeyp
             "parameters": {"type": "object"},
         },
     }
-    monkeypatch.setattr(tools_mod, "mcp_tool_spec", lambda name: ping)
+    monkeypatch.setattr(tools_mod, "mcp_tool_specs", lambda names: {name: ping for name in names})
     monkeypatch.setattr(tools_mod, "mcp_loadable_specs", lambda tools: [ping])
     monkeypatch.setattr(tools_mod, "mcp_record_loaded_tools", lambda *a: None)
     streams = [
@@ -7636,3 +7636,78 @@ def test_without_compaction_the_screenshot_cap_still_steps(monkeypatch):
         7,
         8,
     ]
+
+
+def _mcp_match_exchange(names = ()):
+    from core.inference.tools import build_synthetic_search_exchange
+    exchange = build_synthetic_search_exchange(
+        tool_name = "mcp_tool_search",
+        call_prefix = "mcp_auto_",
+        status_label = "Finding MCP tools",
+        query = "move my page",
+        text = "Loaded 1 MCP tool. Call the one that fits directly, with the parameters in its schema:",
+        sources = None,
+    )
+    return {**exchange, "names": list(names)}
+
+
+@pytest.mark.parametrize(
+    "tool_choice, injected",
+    [
+        (None, True),
+        ("none", False),
+        ({"type": "function", "function": {"name": "render_html"}}, False),
+    ],
+)
+def test_mcp_matches_arrive_as_a_search_after_the_message(monkeypatch, tool_choice, injected):
+    stream = [_sse({"content": "done"}), _done()]
+    backend, payloads = _backend_and_payloads(monkeypatch, [stream])
+    exchange = _mcp_match_exchange()
+    user = {"role": "user", "content": "move it"}
+
+    events = _run_tool_loop(
+        backend,
+        [user],
+        _render_html_tools(),
+        mcp_match_exchange = exchange,
+        tool_choice = tool_choice,
+    )
+
+    sent = payloads[0]["messages"]
+    if injected:
+        assert [m["role"] for m in sent[-3:]] == ["user", "assistant", "tool"]
+        assert sent[-3]["content"] == "move it"
+        assert sent[-2]["tool_calls"][0]["function"]["name"] == "mcp_tool_search"
+        assert sent[-1]["content"] == exchange["messages"][1]["content"]
+        ends = [e for e in events if e.get("type") == "tool_end"]
+        assert [e["tool_name"] for e in ends] == ["mcp_tool_search"]
+        assert ends[0]["result"] == exchange["messages"][1]["content"]
+    else:
+        assert sent[-1]["role"] == "user"
+        assert not any(e.get("type") == "tool_end" for e in events)
+
+
+def test_a_python_call_runs_with_the_analysis_its_classification_made(monkeypatch):
+    """Auto mode screens the code once: the run gets the handoff the approval check filled."""
+    from core.inference import tools as tools_mod
+
+    first_stream = _streamed_structured_tool_call("python", {"code": "print(1)"}, "call_py")
+    final_stream = [_sse({"content": "Done."}), _done()]
+    backend, _payloads = _backend_and_payloads(monkeypatch, [first_stream, final_stream])
+    seen: list = []
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda name, arguments, **kwargs: seen.append(kwargs.get("python_analyses")) or "OK",
+    )
+
+    _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "run it"}],
+        [{"type": "function", "function": {"name": "python"}}],
+        confirm_tool_calls = True,
+        permission_mode = "auto",
+    )
+
+    assert len(seen) == 1
+    assert isinstance(seen[0], tools_mod.PythonCallAnalyses)
+    assert list(seen[0]._by_source) == ["print(1)"]

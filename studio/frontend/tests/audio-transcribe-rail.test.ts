@@ -91,7 +91,7 @@ test("both export menus share the timestamp gate, and a download marks only the 
   assert.equal(gallery.match(/<TranscriptExportItems/g)?.length, 1);
   assert.match(
     hook,
-    /const version = transcriptVersion\.current;[\s\S]*?await downloadTranscript\(format,[\s\S]*?names: speakerNames,[\s\S]*?transcriptVersion\.current === version\s*\)\s*setTranscriptExported\(true\);/,
+    /const version = transcriptVersion\.current;[\s\S]*?let names = speakerNames;[\s\S]*?await downloadTranscript\(format,[\s\S]*?names,[\s\S]*?transcriptVersion\.current === version\s*\)\s*setTranscriptExported\(true\);/,
   );
   assert.match(
     gallery,

@@ -536,9 +536,8 @@ def test_sharded_loading_refuses_dora():
 
 @pytest.mark.parametrize("init", ["orthogonal", "gaussian", True])
 def test_sharded_loading_random_lora_init_matches_one_process(init):
-    """Random LoRA inits read only the full in / out features and the weight dtype, never the sharded-loaded
-    rows: the factors are full size, and after shard_model's first-rank sync every rank holds exactly the
-    one-process init from rank 0's seed; one AdamW step then matches the one-process run."""
+    """Random LoRA inits read only full in/out features and dtype, not sharded rows; after
+    shard_model's sync every rank holds the one-process init, and an AdamW step matches."""
     with tempfile.TemporaryDirectory() as ckpt:
         _save("llama", ckpt, {"intermediate_size": 37})
         results = _spawn("random_init", ckpt = ckpt, init = init)

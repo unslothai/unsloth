@@ -893,9 +893,8 @@ def test_broken_kimi_delta_shards_fail_the_reference(broken, k3):
     ids = ["linear-cp2", "k3-cp4"],
 )
 def test_right_padded_kimi_under_cp_matches_a_masked_one_process(k3, world, cp_size):
-    """Under CP the decoder hook (#16862) and the self_attn hook give Kimi's delta layers no padding
-    mask (Kimi names them self_attn, not linear_attn). CP only accepts right padding, and the scan is
-    causal, so the real tokens match a one-process run whose delta layers do mask the padding."""
+    """Under CP (issue 16862) Kimi delta layers get no padding mask; right padding is still exact
+    since the scan is causal"""
     _spawn(_audit_worker, world, k3, cp_size, "full", True, None, True)
 
 
@@ -1028,10 +1027,7 @@ def test_kimi_moe_under_ulysses_matches_one_process(precision, attn, gc, world, 
 
 
 def _pad_route_worker(rank, world, precision, attn, control):
-    """128 experts, right padded rows of a length the CP size divides: caller padding routes through
-    the MoE in one process, so an expert only padding picks has a zero gradient there (None when no
-    token picks it). CP must give padding the same activations, or such experts differ in None vs
-    zero and AdamW decays / steps a different set. Two AdamW steps, then the optimizer state."""
+    """CP must give padding one process's activations, or padding-only experts get None vs zero grads."""
     import copy
 
     ad.HAS_FLASH_ATTENTION = False

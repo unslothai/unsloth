@@ -39,6 +39,10 @@ function subscribeToListening(notify: () => void): () => void {
   };
 }
 
+export function isTourListening(id: string): boolean {
+  return listening.has(id);
+}
+
 export function useTourAvailable(id: string | null): boolean {
   return useSyncExternalStore(
     subscribeToListening,

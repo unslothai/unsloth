@@ -35,6 +35,7 @@ from .llama import (
     LlamaLinearScalingRotaryEmbedding,
     _gqa_decode_scores,
     _gqa_decode_values,
+    _grouped_decode_batched,
     _LlamaModel_fast_forward_inference,
     original_apply_qkv,
     original_apply_o,
@@ -330,15 +331,22 @@ def Qwen3Attention_fast_forward_inference(
         # Avoid SDPA GQA drift for batched masked decode.
         use_sdpa_gqa = False
 
-    # Grouped query attention; bsz == 1 reads the KV heads in place below.
+    # Grouped query attention: bsz == 1, and bsz > 1 past the card's crossover, read the KV heads
+    # in place below.
     _, _, cached_len, _ = Knn.shape
-    if bsz != 1 and (not use_sdpa_gqa) and n_groups != 1:
+    grouped = bsz == 1 or (
+        n_groups != 1
+        and _grouped_decode_batched(
+            bsz, cached_len, not use_sdpa_gqa, attention_mask is not None, Qn.device
+        )
+    )
+    if not grouped and (not use_sdpa_gqa) and n_groups != 1:
         Knn = Knn[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, cached_len, head_dim)
         Vnn = Vnn[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, cached_len, head_dim)
         Knn = Knn.reshape(bsz, n_heads, cached_len, head_dim)
         Vnn = Vnn.reshape(bsz, n_heads, cached_len, head_dim)
 
-    if bsz == 1:
+    if grouped:
         Qn *= self.scalar
         # (Q * scalar) @ K beats (Q @ K) * scalar for stopping overflows; see ggerganov/llama.cpp#7805
         # (comment 2153349963).

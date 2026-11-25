@@ -13,7 +13,10 @@ import {
 } from "@/features/model-picker/model-config/per-model-config";
 // eslint-disable-next-line no-restricted-imports -- Leaf module; the model-picker index pulls in chat.
 import { pinnedReasoningEnabled } from "@/features/model-picker/components/model-selector/reasoning-enabled-pin";
-import { modelDisplayName } from "@/features/hub/lib/model-identity";
+import {
+  modelDisplayName,
+  withoutNamedQuant,
+} from "@/features/hub/lib/model-identity";
 // eslint-disable-next-line no-restricted-imports -- Leaf module; the npu index pulls in its React views.
 import { npuDisplayNameNow } from "@/features/npu/use-npu-display-name";
 import { getInferenceStatus } from "../api/chat-api";
@@ -96,11 +99,18 @@ export function reasoningCapsFromLoad(resp: {
   };
 }
 
-export function resolveInferenceCheckpointId(
+export function servedInferenceCheckpointId(
   status: InferenceStatusResponse,
 ): string | null {
   if (!status.active_model) return null;
   return status.model_identifier ?? status.active_model;
+}
+
+export function resolveInferenceCheckpointId(
+  status: InferenceStatusResponse,
+): string | null {
+  const served = servedInferenceCheckpointId(status);
+  return served && withoutNamedQuant(served, status.gguf_variant);
 }
 
 function ensureActiveModelInStoreList(
@@ -279,24 +289,25 @@ export function applyActiveModelStatusToStore(
   const rememberedNParallel = remembered?.remembered
     ? (remembered.config.nParallel ?? null)
     : null;
+  const batchesEchoed = (status.is_gguf ?? true) || status.is_mlx === true;
   const rememberedNBatch =
-    status.is_gguf && remembered?.remembered
+    batchesEchoed && remembered?.remembered
       ? (remembered.config.nBatch ?? null)
       : null;
   const rememberedNUbatch =
-    status.is_gguf && remembered?.remembered
+    batchesEchoed && remembered?.remembered
       ? (remembered.config.nUbatch ?? null)
       : null;
   const nBatchSeed = resolveBatchSizeSeed({
     incoming: status.requested_n_batch,
-    isGguf: status.is_gguf ?? true,
+    isGguf: batchesEchoed,
     previous: { value: prevState.nBatch, loaded: prevState.loadedNBatch },
     seedLoadParams,
     modelChanged: slotsModelChanged,
   });
   const nUbatchSeed = resolveBatchSizeSeed({
     incoming: status.requested_n_ubatch,
-    isGguf: status.is_gguf ?? true,
+    isGguf: batchesEchoed,
     previous: { value: prevState.nUbatch, loaded: prevState.loadedNUbatch },
     seedLoadParams,
     modelChanged: slotsModelChanged,
@@ -341,7 +352,8 @@ export function applyActiveModelStatusToStore(
   });
   const cacheRamSeed = resolveBatchSizeSeed({
     incoming: status.requested_cache_ram,
-    isGguf: status.is_gguf ?? true,
+    // MLX sizes its prompt cache from it.
+    isGguf: batchesEchoed,
     previous: { value: prevState.cacheRam, loaded: prevState.loadedCacheRam },
     seedLoadParams,
     modelChanged: slotsModelChanged,
@@ -364,7 +376,8 @@ export function applyActiveModelStatusToStore(
     loadedPin: prevState.loadedCustomContextLength ?? null,
   });
   const reasoningBudgetApplicable =
-    status.is_gguf === true && status.is_diffusion !== true;
+    (status.is_gguf === true || status.is_mlx === true) &&
+    status.is_diffusion !== true;
   const incomingReasoningBudget = reasoningBudgetApplicable
     ? (status.reasoning_budget ?? -1)
     : -1;

@@ -231,3 +231,21 @@ def test_auto_policy_by_card_and_free_vram(monkeypatch):
     assert not S.fused_would_not_fit(vae, z)
     monkeypatch.setattr(vt, "_free_mib", lambda v, zz: None)  # off CUDA
     assert not S.fused_would_not_fit(vae, z)
+
+
+def test_kernel_names_resolve_from_module_globals():
+    """Triton 3.3 (admitted by ``runtime_ok``) looks a kernel's names up in its module globals only: a name bound
+    in the factory's closure fails to lower with ``NameError('tl is not defined')`` (CPU, no compile)."""
+    pytest.importorskip("triton")
+    kernels = [S._residual_kernel()]
+    ns = F._kernels()
+    kernels += [v for v in vars(ns).values() if hasattr(v, "fn")] if ns is not None else []
+    assert kernels[0] is not None
+    missing = []
+    for k in kernels:
+        fn = k.fn
+        cells = dict(zip(fn.__code__.co_freevars, fn.__closure__ or ()))
+        for name, cell in cells.items():
+            if fn.__globals__.get(name) is not cell.cell_contents:
+                missing.append(f"{fn.__name__}:{name}")
+    assert missing == []

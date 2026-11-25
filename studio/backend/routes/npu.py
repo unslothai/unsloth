@@ -91,9 +91,8 @@ _deleting: list[Optional[frozenset[str]]] = []
 
 @contextmanager
 def downloads_held(model_ids: Optional[Iterable[str]] = None):
-    """Keeps new pulls of model_ids (every model when None) out while a delete runs. The lock
-    is held only to check and mark, so a pull asked for meanwhile is refused, not blocked.
-    Raises NpuBusy if one of them is already pulling."""
+    """Refuse new pulls of model_ids (all when None) during a delete; the lock is held only to check
+    and mark, so a pull is refused, not blocked; NpuBusy if one is already pulling."""
     ids = None if model_ids is None else frozenset(model_ids)
     with _downloads_lock:
         for model_id, job in _downloads.items():

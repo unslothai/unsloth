@@ -13,6 +13,8 @@ on:
     paths:
       # Not unsloth/** or studio/src-tauri: the install is --no-torch.
       - 'studio/backend/**'
+      # Backend unit tests are not part of the running Studio this smoke drives.
+      - '!studio/backend/tests/**'
       - 'studio/frontend/**'
       - 'studio/setup.ps1'
       - 'studio/install_*.py'
@@ -42,6 +44,8 @@ on:
     branches: [main]
     paths:
       - 'studio/backend/**'
+      # Backend unit tests are not part of the running Studio this smoke drives.
+      - '!studio/backend/tests/**'
       - 'studio/frontend/**'
       - 'studio/setup.ps1'
       - 'studio/install_*.py'
@@ -149,7 +153,7 @@ jobs:
 
       - name: Pre-install Windows tweaks (npm 11 + Defender exclusions)
         shell: pwsh
-        # See studio-windows-update-smoke.yml: npm >= 11 and Defender exclusions.
+        # See studio-windows-api-smoke.yml: npm >= 11 and Defender exclusions.
         run: |
           $ProgressPreference = 'SilentlyContinue'
           Write-Host "npm version before upgrade: $(npm -v)"

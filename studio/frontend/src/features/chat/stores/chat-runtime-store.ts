@@ -63,9 +63,13 @@ import {
   type RecommendedSamplingKey,
   RECOMMENDED_SAMPLING_KEYS,
   getPresetOwnedParams,
+  isRecommendedSamplingKey,
   getPresetSource,
 } from "../presets/preset-policy";
-import { normalizeModelIdentity } from "../../hub/lib/model-identity";
+import {
+  normalizeModelIdentity,
+  withoutNamedQuant,
+} from "../../hub/lib/model-identity";
 import { normalizePresetLoadConfig } from "../presets/preset-load-config";
 import {
   CHAT_PROJECT_ATTACHMENT_TARGET_KEY,
@@ -184,12 +188,17 @@ export const DEFAULT_MAX_TOOL_CALLS_PER_MESSAGE = 50;
 export const UNLIMITED_TOOL_CALLS = 9999;
 // The slider value from before MCP lifted it to Max, so turning MCP off can put it back.
 const MAX_TOOL_CALLS_BEFORE_MCP_KEY = "unsloth_max_tool_calls_before_mcp";
+const MAX_TOOL_CALLS_PICKED_WITH_MCP_KEY =
+  "unsloth_max_tool_calls_picked_with_mcp";
 export const CHAT_CONFIRM_TOOL_CALLS_KEY = "unsloth_chat_confirm_tool_calls";
 export const CHAT_EXPAND_QUANTIZATIONS_KEY =
   "unsloth_chat_expand_quantizations";
 export const CHAT_SHOW_ALL_QUANTIZATIONS_KEY =
   "unsloth_chat_show_all_quantizations";
 export const CHAT_SHOW_MEMORY_BAR_KEY = "unsloth_chat_show_memory_bar";
+export const PICKER_EXPAND_LOADED_KEY = "unsloth_composer_picker_expand_loaded";
+export const PICKER_MONOCHROME_ICONS_KEY =
+  "unsloth_composer_picker_monochrome_icons";
 export const MODELS_FIT_ON_DEVICE_ONLY_KEY =
   "unsloth_models_fit_on_device_only";
 export const CHAT_BYPASS_PERMISSIONS_KEY = "unsloth_chat_bypass_permissions";
@@ -260,11 +269,13 @@ function loadResearchModelTimeoutSeconds(): number {
   }
 }
 
-function loadResearchWebsitePolicy(): ResearchWebsitePolicy {
+function loadResearchWebsitePolicy(
+  stored = readStorageValue(CHAT_DEEP_RESEARCH_WEBSITE_POLICY_KEY),
+): ResearchWebsitePolicy {
   if (typeof window === "undefined") return DEFAULT_RESEARCH_WEBSITE_POLICY;
   try {
     const parsed = JSON.parse(
-      window.localStorage.getItem(CHAT_DEEP_RESEARCH_WEBSITE_POLICY_KEY) || "{}",
+      stored || "{}",
     ) as Partial<ResearchWebsitePolicy>;
     return {
       allowedDomains: Array.isArray(parsed.allowedDomains)
@@ -283,12 +294,14 @@ function loadResearchWebsitePolicy(): ResearchWebsitePolicy {
   }
 }
 
-function loadResearchMcpSources(): ResearchMcpSource[] {
+function loadResearchMcpSources(
+  stored = readStorageValue(CHAT_DEEP_RESEARCH_MCP_SOURCES_KEY),
+): ResearchMcpSource[] {
   if (typeof window === "undefined") return [];
   try {
     return normalizeResearchMcpSources(
       JSON.parse(
-        window.localStorage.getItem(CHAT_DEEP_RESEARCH_MCP_SOURCES_KEY) || "[]",
+        stored || "[]",
       ),
     );
   } catch {
@@ -566,6 +579,19 @@ function mergePatch(into: SettingsPatch, more: SettingsPatch): void {
     intoAny[key] = merged;
   }
 }
+
+const CROSS_WINDOW_SETTINGS = [
+  [CHAT_DEEP_RESEARCH_WEBSITE_POLICY_KEY, "researchWebsitePolicy", loadResearchWebsitePolicy],
+  [CHAT_DEEP_RESEARCH_MCP_SOURCES_KEY, "researchMcpSources", loadResearchMcpSources],
+  [
+    CHAT_DEEP_RESEARCH_MODEL_TIMEOUT_KEY,
+    "researchModelTimeoutSeconds",
+    (raw: string) => (isSupportedResearchModelTimeout(Number(raw)) ? Number(raw) : DEFAULT_RESEARCH_MODEL_TIMEOUT_SECONDS),
+  ],
+] as const;
+
+// Edits only: a settings load also rewrites the value keys, with whatever the server had when it answered.
+export const CROSS_WINDOW_EDIT_KEY = "unsloth_chat_cross_window_setting_edit";
 
 async function flushSettingsPatch(keepalive = false): Promise<void> {
   if (Object.keys(pendingPatch).length === 0) return;
@@ -884,10 +910,14 @@ function flushPreHydrationSettings(): void {
 function persistSetting(key: string, raw: string): void {
   const mirrored = MIRRORED_SETTING_BY_STORAGE_KEY.get(key);
   const writeGlobal = () => {
-    if (!mirroredSettingsHydrated || readStorageValue(key) !== raw) {
+    const changed = readStorageValue(key) !== raw;
+    if (!mirroredSettingsHydrated || changed) {
       mirrorSettingToBackend(key, raw);
     }
     writeStorageValue(key, raw);
+    if (changed && CROSS_WINDOW_SETTINGS.some(([crossKey]) => crossKey === key)) {
+      writeStorageValue(CROSS_WINDOW_EDIT_KEY, JSON.stringify({ key, raw, nonce: Math.random() }));
+    }
   };
   if (
     mirrored &&
@@ -993,13 +1023,29 @@ export function threadScopedOverride<K extends ThreadScopedSettingKey>(
       }
     } else {
       const live = readThreadScopedSettings(useChatRuntimeStore.getState());
-      if (live[key] !== undefined) return live[key];
+      if (live[key] !== undefined && !isUnownedSampling(key)) return live[key];
     }
   }
   return activeThreadScopedSettings?.[key];
 }
 
 const explicitlyEditedThreadFields = new Set<string>();
+
+// A model's recommendation is not an edit: storing it would pin it over the next model's.
+function isUnownedSampling(key: string): boolean {
+  return (
+    isRecommendedSamplingKey(key) &&
+    !explicitlyEditedThreadFields.has(key) &&
+    (activeThreadScopedSettings as Record<string, unknown> | null)?.[key] === undefined
+  );
+}
+
+function withoutUnownedSampling(settings: ThreadScopedSettings): ThreadScopedSettings {
+  for (const key of RECOMMENDED_SAMPLING_KEYS) {
+    if (isUnownedSampling(key)) delete (settings as Record<string, unknown>)[key];
+  }
+  return settings;
+}
 
 /** Fields a provider constraint moved without persisting; no snapshot may save them. */
 const constraintSuppressedThreadFields = new Set<string>();
@@ -1417,6 +1463,7 @@ function buildThreadScopedSnapshot(
     settings.permissionMode = activeThreadScopedSettings.permissionMode;
   }
   restoreChatOwnedValues(threadId, settings);
+  if (threadId === threadScopedSettingsThreadId) withoutUnownedSampling(settings);
   // Not a store field, so a snapshot read from the store lacks it and a replacement would erase it.
   Object.assign(settings, withSavedChatFullAccess(threadId, {}));
   if (threadId === threadScopedSettingsThreadId) {
@@ -2643,6 +2690,8 @@ type ChatRuntimeStore = {
       runId?: string;
       /** A computer call's reasons for asking; absent on a card restored after a reload. */
       computerUse?: ComputerUseAsk;
+      /** The tool the approval is for: only a card naming that tool may ask or answer. */
+      toolName?: string;
     }
   >;
   webFetchToolsEnabled: boolean;
@@ -2752,6 +2801,8 @@ type ChatRuntimeStore = {
   expandQuantizations: boolean;
   showAllQuantizations: boolean;
   showMemoryBar: boolean;
+  pickerExpandLoaded: boolean;
+  pickerMonochromeIcons: boolean;
   fitOnDeviceOnly: boolean;
   loadedIsMultimodal: boolean;
   loadedIsDiffusion: boolean;
@@ -2800,6 +2851,8 @@ type ChatRuntimeStore = {
       /** A preset pick or save: not an edit of the loaded model, so its remembered params are dropped
        *  instead of overwritten, and its recommendation applies again on the next load. */
       fromPreset?: boolean;
+      /** A custom preset pick or save: the open chat owns every recommended value, unchanged ones too. */
+      pinsSampling?: boolean;
     },
   ) => void;
   setCustomPresets: (presets: Preset[]) => void;
@@ -2892,6 +2945,7 @@ type ChatRuntimeStore = {
     imageDisclosure?: ImageDisclosure,
     runId?: string,
     computerUse?: ComputerUseAsk,
+    toolName?: string,
   ) => void;
   clearToolConfirmation: (toolCallId: string) => void;
   setWebFetchToolsEnabled: (enabled: boolean) => void;
@@ -2952,6 +3006,8 @@ type ChatRuntimeStore = {
   setExpandQuantizations: (value: boolean) => void;
   setShowAllQuantizations: (value: boolean) => void;
   setShowMemoryBar: (value: boolean) => void;
+  setPickerExpandLoaded: (value: boolean) => void;
+  setPickerMonochromeIcons: (value: boolean) => void;
   setFitOnDeviceOnly: (value: boolean) => void;
   setPendingAudio: (base64: string, name: string) => void;
   clearPendingAudio: () => void;
@@ -3865,6 +3921,10 @@ function saveCapBeforeMcp(value: number | null): void {
   );
 }
 
+function saveCapPickedWithMcp(value: boolean): void {
+  writeStorageValue(MAX_TOOL_CALLS_PICKED_WITH_MCP_KEY, value ? "true" : "");
+}
+
 // MCP chains run long: MCP on lifts the cap to Max, MCP off restores the saved value unless the user
 // set one since. A store listener, so chat switches and settings hydrated after a reload reconcile too.
 function reconcileMcpToolCallCap(
@@ -3878,7 +3938,13 @@ function reconcileMcpToolCallCap(
   if (state.mcpEnabledForChat) {
     const turnedOn =
       !previous.mcpEnabledForChat || !previous.settingsHydrated;
-    if (!turnedOn || current >= UNLIMITED_TOOL_CALLS) return;
+    if (
+      !turnedOn ||
+      current >= UNLIMITED_TOOL_CALLS ||
+      readStorageValue(MAX_TOOL_CALLS_PICKED_WITH_MCP_KEY) === "true"
+    ) {
+      return;
+    }
     saveCapBeforeMcp(current);
     next = UNLIMITED_TOOL_CALLS;
   } else {
@@ -4629,9 +4695,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   selectedGpuIndexKind: null,
   loadedGpuIds: null,
   loadedGpuIndexKind: null,
-  expandQuantizations: loadBool(CHAT_EXPAND_QUANTIZATIONS_KEY, false),
+  expandQuantizations: loadBool(CHAT_EXPAND_QUANTIZATIONS_KEY, true),
   showAllQuantizations: loadBool(CHAT_SHOW_ALL_QUANTIZATIONS_KEY, false),
   showMemoryBar: loadBool(CHAT_SHOW_MEMORY_BAR_KEY, false),
+  pickerExpandLoaded: loadBool(PICKER_EXPAND_LOADED_KEY, false),
+  pickerMonochromeIcons: loadBool(PICKER_MONOCHROME_ICONS_KEY, false),
   fitOnDeviceOnly: loadBool(MODELS_FIT_ON_DEVICE_ONLY_KEY, false),
   loadedIsMultimodal: false,
   loadedIsDiffusion: false,
@@ -4899,6 +4967,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         options?.persist !== false
           ? withoutCapturedThreadEdits(changedParams, fromModelDefaults)
           : changedParams;
+      if (options?.pinsSampling === true && options?.persist !== false) {
+        for (const key of RECOMMENDED_SAMPLING_KEYS) captureThreadScopedEdit(key);
+      }
       // An edit belongs to the model the params now describe, so a call moving checkpoint and
       // sliders at once files them under the destination.
       const fromPreset = options?.fromPreset === true;
@@ -5150,6 +5221,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   setModelsError: (modelsError) => set({ modelsError }),
   setLastModelLoadError: (lastModelLoadError) => set({ lastModelLoadError }),
   setCheckpoint: (modelId, ggufVariant, options) => {
+    modelId = withoutNamedQuant(modelId, ggufVariant);
     let scheduleQwenMigration = false;
     set((state) => {
       // Only external selections persist; a stale local id would race the freshly loaded model.
@@ -5359,6 +5431,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       }
       threadScopedSettingsThreadId = threadId;
       explicitlyEditedThreadFields.clear();
+      for (const field of heldFields) {
+        if (isRecommendedSamplingKey(field)) explicitlyEditedThreadFields.add(field);
+      }
       constraintSuppressedThreadFields.clear();
       const stored = hasThreadScopedSettings(settings)
         ? (settings as ThreadScopedSettings)
@@ -5452,7 +5527,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       if (threadId !== null && (stored === null || heldFields.size > 0)) {
         scheduleThreadScopedSettingsWrite(
           threadId,
-          stored === null ? sanitizeThreadScopedSettings(applied) : null,
+          stored === null
+            ? withoutUnownedSampling(sanitizeThreadScopedSettings(applied))
+            : null,
         );
       }
       if (!hasKeys(nextState)) {
@@ -5863,6 +5940,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     set((state) => {
       saveBool(CHAT_MCP_ENABLED_KEY, mcpEnabledForChat);
       if (mcpEnabledForChat) saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false);
+      if (mcpEnabledForChat && !state.mcpEnabledForChat) {
+        saveCapPickedWithMcp(false);
+      }
       return {
         ...(mcpEnabledForChat
           ? { mcpEnabledForChat, deepResearchEnabled: false }
@@ -6044,6 +6124,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     imageDisclosure,
     runId,
     computerUse,
+    toolName,
   ) =>
     set((state) => ({
       toolConfirmations: {
@@ -6056,6 +6137,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           imageDisclosure,
           runId,
           computerUse,
+          toolName,
         },
       },
     })),
@@ -6437,6 +6519,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     set((state) => {
       // A value the user picks, Max included, is theirs: turning MCP off must not replace it.
       saveCapBeforeMcp(null);
+      saveCapPickedWithMcp(state.mcpEnabledForChat);
       setScalarSettingVersion(
         "maxToolCallsPerMessage",
         maxToolCallsPerMessage,
@@ -6481,6 +6564,14 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   setShowMemoryBar: (showMemoryBar) => {
     saveBool(CHAT_SHOW_MEMORY_BAR_KEY, showMemoryBar);
     set({ showMemoryBar });
+  },
+  setPickerExpandLoaded: (pickerExpandLoaded) => {
+    saveBool(PICKER_EXPAND_LOADED_KEY, pickerExpandLoaded);
+    set({ pickerExpandLoaded });
+  },
+  setPickerMonochromeIcons: (pickerMonochromeIcons) => {
+    saveBool(PICKER_MONOCHROME_ICONS_KEY, pickerMonochromeIcons);
+    set({ pickerMonochromeIcons });
   },
   setFitOnDeviceOnly: (fitOnDeviceOnly) => {
     saveBool(MODELS_FIT_ON_DEVICE_ONLY_KEY, fitOnDeviceOnly);
@@ -6534,6 +6625,25 @@ const clearChatFullAccessOnAuthChange = () => useChatRuntimeStore.getState().cle
 if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
   window.addEventListener(AUTH_SESSION_CLEARED_EVENT, clearChatFullAccessOnAuthChange);
   window.addEventListener(AUTH_SESSION_STORED_EVENT, clearChatFullAccessOnAuthChange);
+  window.addEventListener("storage", (event) => {
+    if (event.key !== CROSS_WINDOW_EDIT_KEY || !event.newValue) return;
+    let edit: { key?: unknown; raw?: unknown };
+    try {
+      edit = JSON.parse(event.newValue);
+    } catch {
+      return;
+    }
+    const match = CROSS_WINDOW_SETTINGS.find(([key]) => key === edit.key);
+    if (!match || typeof edit.raw !== "string") return;
+    const [, field, parse] = match;
+    // Counts as an edit here too, so an older settings GET still in flight cannot write it back.
+    scalarSettingMutationVersions[field] += 1;
+    useChatRuntimeStore.setState((state) => ({
+      // The record's own value: by now another window's settings load may have recached the old one.
+      [field]: parse(edit.raw as string),
+      queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+    }));
+  });
 }
 
 const unsubscribeHfTokenMirror = mirrorHfTokenInto(useChatRuntimeStore);

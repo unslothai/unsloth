@@ -85,6 +85,19 @@ def _write_gguf(path: Path, architecture: str = "llama") -> Path:
     return path
 
 
+# Placement reads the host's total RAM (the pinned-host share, #19231). Pin one host so a launch decides the same on a
+# 16 GB runner as on a large one; the tests about host RAM set their own after this.
+_PINNED_HOST_TOTAL_MIB = 256 * 1024
+
+
+@pytest.fixture(autouse = True)
+def _pinned_host_ram(monkeypatch):
+    monkeypatch.setattr(
+        LlamaCppBackend, "_total_system_memory_mib", staticmethod(lambda: _PINNED_HOST_TOTAL_MIB)
+    )
+    monkeypatch.setattr(LlamaCppBackend, "_cgroup_memory_limit_mib", staticmethod(lambda: None))
+
+
 def _backend(tmp_path: Path, *, vulkan: bool, memory):
     backend = LlamaCppBackend()
     gguf = _write_gguf(tmp_path / "model.gguf")
@@ -3019,6 +3032,237 @@ def test_the_igpu_fit_headroom_survives_the_per_device_margin(tmp_path, monkeypa
     ), cmd
 
 
+@pytest.mark.parametrize(
+    "is_vulkan_backend, gpu_id, expected",
+    [(False, 0, "2868"), (False, 1, "16384"), (True, 0, "16384")],
+    ids = ["integrated-cuda", "other-device", "vulkan-index-collision"],
+)
+def test_paged_fit_target_on_windows_integrated_cuda(
+    monkeypatch, is_vulkan_backend, gpu_id, expected
+):
+    monkeypatch.setattr(llama_cpp_module, "_paged_load_needs_fit_headroom", lambda: True)
+    monkeypatch.setattr(LlamaCppBackend, "_GPU_IDS_ARE_PCI_INDICES", True)
+    monkeypatch.setenv("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
+    monkeypatch.setattr(
+        LlamaCppBackend, "_INTEGRATED_CUDA_IDS", {LlamaCppBackend._integrated_cuda_mask_key(): {0}}
+    )
+
+    # llama.cpp reads 18 GiB free. The Studio row has already subtracted its 1 GiB reserve.
+    headroom = LlamaCppBackend._paged_fit_headroom_mib(
+        [(gpu_id, 17 * 1024, 18 * 1024)], set(), is_vulkan_backend = is_vulkan_backend
+    )
+    flags = LlamaCppBackend._paged_fit_headroom_flags(
+        ["--fit", "on"], {}, [], headroom_mib = headroom
+    )
+
+    assert flags == ["--fit-target", expected]
+
+
+def _vulkan_carve_out_igpu_backend(
+    tmp_path,
+    monkeypatch,
+    *,
+    carve_out_mib,
+    row_free_mib,
+    used_mib = 0,
+):
+    """#18001: Radeon 780M on Windows with a 16 GiB carve-out; Vulkan reads 23161 MiB free."""
+    monkeypatch.setattr(llama_cpp_module, "_paged_load_needs_fit_headroom", lambda: True)
+    backend, gguf = _backend(tmp_path, vulkan = True, memory = [(0, row_free_mib, 0)])
+    backend._get_gguf_size_bytes = lambda _path: int(6.24 * _GiB)
+    backend._launch_host_shortfall_message = lambda *a, **k: "About 7 GB of this model ..."
+    backend._lazy_auto_resolves_off = lambda **_kw: True
+    caps = dict(LlamaCppBackend.probe_server_capabilities.__func__(LlamaCppBackend, None))
+    caps.update(supports_load_mode = True, supports_load_mode_auto = True, supports_fit_target = True)
+    monkeypatch.setattr(LlamaCppBackend, "probe_server_capabilities", lambda *a, **k: caps)
+    carve_out = None if carve_out_mib is None else carve_out_mib * 1024 * 1024
+    monkeypatch.setattr(
+        LlamaCppBackend, "_igpu_dedicated_memory_bytes", staticmethod(lambda *_a, **_k: carve_out)
+    )
+    used = None if used_mib is None else used_mib * 1024 * 1024
+    monkeypatch.setattr(LlamaCppBackend, "_igpu_dedicated_used_bytes", staticmethod(lambda: used))
+    return backend, gguf
+
+
+@pytest.mark.parametrize(
+    "carve_out_mib, row_free_mib, used_mib, headroom",
+    [
+        (16 * 1024, 22137, 300, 23161 - (16 * 1024 - 300)),
+        (16 * 1024, 14336, 8 * 1024, 15360 - 8 * 1024),
+        (512, 22137, 300, llama_cpp_module._IGPU_PAGED_FIT_HEADROOM_MIB),
+        (96 * 1024, 120 * 1024, 300, llama_cpp_module._IGPU_PAGED_FIT_HEADROOM_MIB),
+        (None, 22137, 300, llama_cpp_module._IGPU_PAGED_FIT_HEADROOM_MIB),
+        (16 * 1024, 22137, None, llama_cpp_module._IGPU_PAGED_FIT_HEADROOM_MIB),
+        (24 * 1024, 22137, 0, 0),
+    ],
+    ids = [
+        "780m-16g-carve-out",
+        "carve-out-half-occupied",
+        "auto-carve-out",
+        "strix-halo-96g",
+        "unreadable-carve-out",
+        "unreadable-usage",
+        "all-carve-out",
+    ],
+)
+def test_the_paging_headroom_never_starves_the_carve_out(
+    tmp_path, monkeypatch, carve_out_mib, row_free_mib, used_mib, headroom
+):
+    """A flat 15 GiB margin left a 780M's fit 7 GiB of its 16 GiB carve-out."""
+    backend, gguf = _vulkan_carve_out_igpu_backend(
+        tmp_path,
+        monkeypatch,
+        carve_out_mib = carve_out_mib,
+        row_free_mib = row_free_mib,
+        used_mib = used_mib,
+    )
+    logged = _override_log(monkeypatch)
+
+    # The reporter's Manual mode with Auto layers hands placement to --fit.
+    cmd = _launch(backend, gguf, gpu_memory_mode = "manual")["cmd"]
+
+    assert _modes(cmd, "--load-mode") == ["mmap"], cmd
+    assert any("Overriding the unmapped load mode" in line for line in logged), logged
+    margins = [float(v) for v in _modes(cmd, "--fit-target")]
+    if not headroom:
+        assert len(margins) == 1, cmd
+        return
+    assert len(margins) == 2 and margins[-1] == margins[0] + headroom, cmd
+    if carve_out_mib == 16 * 1024 and used_mib is not None:
+        # llama.cpp fits into its raw free reading minus the last margin: the free carve-out.
+        fits = row_free_mib + 1024 - margins[-1]
+        assert carve_out_mib - used_mib - 1024 <= fits <= carve_out_mib - used_mib
+
+
+def test_the_paging_headroom_cap_reads_only_a_lone_windows_vulkan_igpu(monkeypatch):
+    full = llama_cpp_module._IGPU_PAGED_FIT_HEADROOM_MIB
+    headroom = LlamaCppBackend._paged_fit_headroom_mib
+    monkeypatch.setattr(llama_cpp_module, "_paged_load_needs_fit_headroom", lambda: True)
+    monkeypatch.setattr(
+        LlamaCppBackend, "_igpu_dedicated_memory_bytes", staticmethod(lambda *_a, **_k: 16 * _GiB)
+    )
+    monkeypatch.setattr(LlamaCppBackend, "_igpu_dedicated_used_bytes", staticmethod(lambda: 0))
+    assert headroom([(0, 22137)], {0}) == 23161 - 16 * 1024
+    assert headroom([(0, 22137)], set()) == full
+    assert headroom([(0, 22137), (1, 8000)], {0}) == full
+    assert headroom([], {0}) == full
+    monkeypatch.setattr(llama_cpp_module, "_paged_load_needs_fit_headroom", lambda: False)
+    assert headroom([(0, 22137)], {0}) == full
+    monkeypatch.setattr(llama_cpp_module, "_paged_load_needs_fit_headroom", lambda: True)
+
+    def unreadable(*_a, **_k):
+        raise OSError("registry")
+
+    monkeypatch.setattr(LlamaCppBackend, "_igpu_dedicated_memory_bytes", staticmethod(unreadable))
+    assert headroom([(0, 22137)], {0}) == full
+
+    flags = LlamaCppBackend._paged_fit_headroom_flags
+    assert flags(["--fit", "on"], {}, [], headroom_mib = 0) == []
+    pair = flags(["--fit", "on", "--fit-target", "512"], {}, [], headroom_mib = 6777)
+    assert pair == ["--fit-target", "7289"]
+    added = LlamaCppBackend._margins_with_paged_headroom({0: 512.0}, pair, headroom_mib = 6777)
+    assert added == {0: 7289.0}
+    cmd = ["-m", "x.gguf", "--fit-target", "512", *pair]
+    withdrawn = LlamaCppBackend._withdraw_paged_headroom(cmd, added, pair, headroom_mib = 6777)
+    assert withdrawn == (["-m", "x.gguf", "--fit-target", "512"], {0: 512.0})
+
+
+@pytest.mark.parametrize(
+    "gguf_gib, oversized",
+    [(6.24, False), (11.3, False), (21.0, True)],
+    ids = ["gemma-12b", "gpt-oss-20b", "past-the-pool"],
+)
+def test_a_fit_owned_vulkan_igpu_load_credits_what_the_fitter_can_place(
+    tmp_path, monkeypatch, gguf_gib, oversized
+):
+    """#18001: Manual mode with Auto layers (--fit on) priced a 780M's whole model as host RAM."""
+    monkeypatch.setattr(llama_cpp_module, "_paged_load_needs_fit_headroom", lambda: True)
+    backend, gguf = _backend(tmp_path, vulkan = True, memory = [(0, 22137, 0)])
+    _restore_host_guard(backend)
+    backend._get_gguf_size_bytes = lambda _path: int(gguf_gib * _GiB)
+    backend._lazy_auto_resolves_off = lambda **_kw: True
+    caps = dict(LlamaCppBackend.probe_server_capabilities.__func__(LlamaCppBackend, None))
+    caps.update(supports_load_mode = True, supports_load_mode_auto = True, supports_fit_target = True)
+    monkeypatch.setattr(LlamaCppBackend, "probe_server_capabilities", lambda *a, **k: caps)
+    monkeypatch.setattr(LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 7843))
+    monkeypatch.setattr(LlamaCppBackend, "_total_system_memory_mib", staticmethod(lambda: 15992))
+    monkeypatch.setattr(LlamaCppBackend, "_cgroup_available_memory_mib", staticmethod(lambda: None))
+    monkeypatch.setattr(
+        LlamaCppBackend, "_igpu_dedicated_memory_bytes", staticmethod(lambda *_a, **_k: 16 * _GiB)
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_igpu_dedicated_used_bytes", staticmethod(lambda: 300 * 1024 * 1024)
+    )
+    monkeypatch.delenv("UNSLOTH_ALLOW_HOST_OFFLOAD", raising = False)
+
+    cmd = _launch(backend, gguf, gpu_memory_mode = "manual")["cmd"]
+
+    warning = backend.last_load_warning or ""
+    if oversized:
+        assert _modes(cmd, "--load-mode") == ["mmap"], cmd
+        assert "does not fit in GPU memory" in warning, warning
+    else:
+        assert _modes(cmd, "--load-mode") == [], cmd
+        assert "does not fit in GPU memory" not in warning, warning
+
+
+@pytest.mark.parametrize(
+    "argv, env, expected",
+    [
+        (["--fit", "on"], {}, True),
+        (["--fit", "on", "-ngl", "-1"], {}, True),
+        (["--fit", "on", "-ngl", "20"], {}, False),
+        (["--fit", "on"], {"LLAMA_ARG_N_GPU_LAYERS": "0"}, False),
+        (["--fit", "on"], {"LLAMA_ARG_N_GPU_LAYERS": "20"}, False),
+        (["--fit", "on"], {"LLAMA_ARG_N_GPU_LAYERS": "all"}, True),
+        (["--fit", "on"], {"LLAMA_ARG_N_GPU_LAYERS": "auto"}, True),
+        (["--fit", "off"], {}, False),
+        (["--fit", "on", "--device", "none"], {}, False),
+    ],
+)
+def test_the_fitter_owns_igpu_placement_only_without_a_layer_cap(argv, env, expected):
+    backend = LlamaCppBackend()
+    backend._n_layers = 48
+    assert backend._fit_may_place_every_layer(argv, env) is expected
+
+
+def test_a_per_device_fit_target_charges_the_igpu_its_largest_margin(monkeypatch):
+    monkeypatch.setattr(LlamaCppBackend, "_igpu_backed_usable_mib", staticmethod(lambda f: f))
+    backend = LlamaCppBackend()
+    backend._n_layers = 48
+    rows = [(0, 8000), (1, 22137)]
+    argv = ["--fit", "on", "--device", "Vulkan0,Vulkan1", "--fit-target", "512,23000"]
+    pool, _bytes = backend._shared_heap_budget(rows, {1}, 10 * _GiB, argv, {})
+    assert pool == max(0, 22137 + 1024 - 23000)
+    pool, _bytes = backend._shared_heap_budget(rows, {1}, 10 * _GiB, ["--fit", "on"], {})
+    assert pool == 0
+    pool, _bytes = backend._shared_heap_budget(
+        [(1, 22137)], {1}, 10 * _GiB, ["--fit", "on", "--fit-target", "512"], {}
+    )
+    assert pool == 22137
+
+
+def test_the_igpu_dedicated_usage_is_read_for_the_carve_out_adapter(monkeypatch):
+    import utils.hardware.hardware as hw
+
+    luid = (0x1 << 32) | 0xAD4C
+    records = {luid: {"name": "AMD Radeon 780M Graphics", "dedicated_memory_bytes": 16 * _GiB}}
+    samples = [
+        ("luid_0x00000001_0x0000AD4C_phys_0", 2 * _GiB),
+        ("luid_0x00000000_0x00001111_phys_0", 5 * _GiB),
+    ]
+    monkeypatch.setattr(hw, "_windows_amd_adapter_records_by_luid", lambda *_a, **_k: records)
+    monkeypatch.setattr(hw, "_rocm_windows_perf_counter_vram_by_adapter", lambda *_a: samples)
+    assert LlamaCppBackend._igpu_dedicated_used_bytes() == 2 * _GiB
+    monkeypatch.setattr(hw, "_rocm_windows_perf_counter_vram_by_adapter", lambda *_a: None)
+    assert LlamaCppBackend._igpu_dedicated_used_bytes() is None
+    monkeypatch.setattr(hw, "_rocm_windows_perf_counter_vram_by_adapter", lambda *_a: samples)
+    two = {luid: records[luid], luid + 1: records[luid]}
+    monkeypatch.setattr(hw, "_windows_amd_adapter_records_by_luid", lambda *_a, **_k: two)
+    assert LlamaCppBackend._igpu_dedicated_used_bytes() is None
+
+
 def test_a_retry_off_the_igpu_withdraws_the_paging_headroom():
     """The arch-crash respawn on a discrete sibling must not keep the iGPU's 15 GiB margin."""
     import inspect
@@ -5652,9 +5896,7 @@ def test_the_header_scan_sums_shards(tmp_path):
 def test_a_resident_table_that_crowds_out_the_pinned_experts_is_read_lazily_for_the_cache(
     tmp_path, _moe_cache_host
 ):
-    """Qwen3.8-Flash-Next on a 94 GB host: RAM holds the lookup table resident or the
-    experts pinned, not both. The cache beats the --fit split by far, so the table is
-    read lazily (no --lazy-mode off) and the experts stay pinned for the cache."""
+    """RAM fits either the table or pinned experts: read the table lazily (no --lazy-mode off)."""
     lazy = {"per_layer_token_embd.weight": 8 * _GIB}
     # 32 GiB with 20 GiB of experts on the 20,000 MiB card: pinning the experts needs
     # 20 + 8 (prompt cache) beside the 8 GiB table, more than 34 GiB of RAM.
@@ -5673,8 +5915,7 @@ def test_a_resident_table_that_crowds_out_the_pinned_experts_is_read_lazily_for_
     assert cmd[cmd.index("--lazy-mode") + 1] == "off", cmd
     assert backend._lazy_mode_flags == ["--lazy-mode", "off"]
 
-    # Too little RAM even with the table lazy: no cache, and the table decision is the
-    # one a build without the cache makes (here the table already streams).
+    # Too little RAM even with a lazy table: no cache; the table matches a build without one.
     no_cache = dict(_CACHE_CAPS_ON, supports_moe_cache = False, supports_moe_cache_auto = False)
     reference, reference_cmd = _cache_launch(tmp_path, ram_gib = 26, caps = no_cache, **shape)
     backend, cmd = _cache_launch(tmp_path, ram_gib = 26, **shape)
@@ -5725,7 +5966,11 @@ def test_the_launch_discounts_the_lazy_table(tmp_path, _moe_cache_host):
     _b, cmd = _cache_launch(tmp_path, ram_gib = 12, lazy = lazy, caps = no_auto, **card)
     assert _load_mode(cmd) is None, "qwen3moe does not mark the table lazy"
 
-    _b, cmd = _cache_launch(tmp_path, ram_gib = 12, lazy = lazy, arch = "qwen4exp", caps = no_auto, **card)
+    # The prompt cache is off so only the table decides: a pinned load has to leave room for the
+    # cache it would grow into, and 12 GiB cannot hold the 8 GiB default beside the weights.
+    _b, cmd = _cache_launch(
+        tmp_path, ram_gib = 12, lazy = lazy, arch = "qwen4exp", caps = no_auto, cache_ram = 0, **card
+    )
     assert _load_mode(cmd) == "none", cmd
     # And "-lzm off" makes it an ordinary tensor again.
     _b, cmd = _cache_launch(
@@ -5814,7 +6059,7 @@ def test_an_igpu_only_child_gets_no_auto_lazy_discount(tmp_path, _moe_cache_host
     card = dict(memory = _EIGHT_GIB_CARD)
     _b, cmd = _cache_launch(tmp_path, ram_gib = 12, lazy = lazy, arch = "qwen4exp", caps = no_auto, **card)
     assert _load_mode(cmd) is None, cmd
-    # An explicit "on" is read lazily on any device.
+    # An explicit "on" is read lazily on any device (prompt cache off, as above).
     _b, cmd = _cache_launch(
         tmp_path,
         ram_gib = 12,
@@ -5822,6 +6067,7 @@ def test_an_igpu_only_child_gets_no_auto_lazy_discount(tmp_path, _moe_cache_host
         arch = "qwen4exp",
         caps = no_auto,
         extra_args = ["-lzm", "on"],
+        cache_ram = 0,
         **card,
     )
     assert _load_mode(cmd) == "none", cmd
@@ -5965,9 +6211,9 @@ def _apu_qwen38(
 def test_a_mixed_cuda_host_keeps_the_lazy_discount_through_the_preflight(
     tmp_path, _moe_cache_host, monkeypatch, load_kwargs
 ):
-    """No --device list."""
+    """No --device list. The prompt cache is off so only the lazy discount decides the pin."""
     _mixed_cuda_soc_host(monkeypatch)
-    backend, cmd = _mixed_cuda_launch(tmp_path, host_guard = True, **load_kwargs)
+    backend, cmd = _mixed_cuda_launch(tmp_path, host_guard = True, cache_ram = 0, **load_kwargs)
     assert _load_mode(cmd) == "none", cmd
     assert backend.last_load_warning is None, backend.last_load_warning
 

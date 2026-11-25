@@ -238,8 +238,7 @@ def _completeness(browser, mode: str, **kwargs) -> tuple[dict, list[str]]:
 def test_a_virtualised_thread_passes_the_completeness_probe(browser):
     out, _ = _completeness(browser, "windowed")
     assert out["head_reached"] is True, out
-    # The default 2,000px step is capped to 3/4 of the 400px viewport, so the stops overlap and
-    # coverage is measured on a windowed arm without any step override.
+    # The default 2,000px step caps to 3/4 of the 400px viewport (300px), so stops overlap.
     assert out["traverse_step_px"] == 300, out
     assert out["sweep_continuous"] is True, out
     assert out["ordinal_coverage_complete"] is True, out

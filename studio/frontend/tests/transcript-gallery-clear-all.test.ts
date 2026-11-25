@@ -87,7 +87,7 @@ const text = (element: Element): string =>
     )
     .join("");
 
-test("Clear all deletes the history only after the in-app confirmation", async () => {
+test("Delete all deletes the history only after the in-app confirmation", async () => {
   const state: unknown[] = [];
   const refs: { current: unknown }[] = [];
   let stateIndex = 0;
@@ -160,7 +160,7 @@ test("Clear all deletes the history only after the in-app confirmation", async (
       view(),
       (element) =>
         (element.type as { name?: string }).name === "Button" &&
-        text(element) === "Clear all",
+        text(element) === "Delete all",
     );
     assert.equal(clearAll.length, 1);
     (clearAll[0].props.onClick as () => void)();
@@ -168,7 +168,7 @@ test("Clear all deletes the history only after the in-app confirmation", async (
     assert.deepEqual(
       deletes,
       [],
-      "Clear all must not delete before the user confirms",
+      "Delete all must not delete before the user confirms",
     );
 
     const action = find(

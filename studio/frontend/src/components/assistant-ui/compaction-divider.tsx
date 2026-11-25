@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { HugeiconsIcon } from "@hugeicons/react";
-import { ArchiveIcon } from "@hugeicons/core-free-icons";
+import { Clock01Icon } from "@hugeicons/core-free-icons";
 import type { FC, ReactNode } from "react";
 
 import {
@@ -33,22 +33,30 @@ const DetailRow: FC<{ label: string; value: ReactNode }> = ({
 /** renders metadata once per compaction where it cut and survives reloads without entering model context, editable content, or exports. */
 export const CompactionDivider: FC<
   (
-    | { truncation: ContextTruncation; pending?: false }
-    | { truncation?: undefined; pending: true }
+    | { truncation: ContextTruncation; pending?: false; onCancel?: undefined }
+    | { truncation?: undefined; pending: true; onCancel?: () => void }
   ) & { className?: string; /** A cloud connection summarizes instead of starting a checkpoint. */ cloud?: boolean }
-> = ({ truncation, pending, className, cloud }) => {
+> = ({ truncation, pending, onCancel, className, cloud }) => {
   if (pending) {
     return (
       <DividerRule
         className={className}
-        label={cloud ? "Summary on next message" : undefined}
-      >
-        <p className="max-w-72 text-xs leading-snug">
-          {cloud
-            ? "Your next message is sent with a summary of this conversation in place of the older messages. They stay visible and saved here."
-            : "Your next message starts a fresh context. Older messages stay here, and the parts relevant to each question are brought back automatically."}
-        </p>
-      </DividerRule>
+        pending={true}
+        label={cloud ? "Summarizes on next message" : "Compacts on next message"}
+        action={
+          onCancel ? (
+            <button
+              type="button"
+              data-slot="compaction-divider-cancel"
+              onClick={onCancel}
+              aria-label={cloud ? "Cancel summary" : "Cancel compaction"}
+              className="relative shrink-0 rounded-full px-1.5 py-1 leading-none underline-offset-2 transition-colors hover:text-foreground hover:underline focus-visible:outline-2 focus-visible:outline-ring"
+            >
+              Cancel
+            </button>
+          ) : null
+        }
+      />
     );
   }
   if (!promptWasShortened(truncation)) return null;
@@ -95,36 +103,70 @@ export const CompactionDivider: FC<
 };
 
 const DividerRule: FC<{
-  children: ReactNode;
+  children?: ReactNode;
   className?: string;
   label?: string;
   kind?: CompactionNoticeKind;
-}> = ({ children, className = "mb-6", label = "Context compacted", kind }) => (
-  <div
-    data-testid="compaction-divider"
-    data-compaction-kind={kind}
-    className={cn(
-      "mx-auto flex w-full max-w-(--thread-content-max-width) items-center gap-3 text-muted-foreground text-sm",
-      className,
-    )}
-  >
-    <span aria-hidden={true} className="h-px flex-1 bg-border" />
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <button
-          type="button"
-          data-slot="compaction-divider-label"
-          // Negative margins keep the rule put; relative stops the reply covering the target.
-          className="relative -mx-2 -my-2.5 inline-flex shrink-0 cursor-default items-center gap-1.5 whitespace-nowrap rounded-full px-2 py-2.5 leading-none transition-colors hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring"
-        >
-          <HugeiconsIcon icon={ArchiveIcon} className="size-3.5" aria-hidden={true} />
-          {label}
-        </button>
-      </TooltipTrigger>
-      <TooltipContent side="top" sideOffset={8} variant="rich">
-        {children}
-      </TooltipContent>
-    </Tooltip>
-    <span aria-hidden={true} className="h-px flex-1 bg-border" />
-  </div>
-);
+  pending?: boolean;
+  action?: ReactNode;
+}> = ({
+  children,
+  className = "mb-6",
+  label = "Context compacted",
+  kind,
+  pending = false,
+  action,
+}) => {
+  const rule = pending
+    ? "h-0 flex-1 border-border border-t border-dashed"
+    : "h-px flex-1 bg-border";
+  return (
+    <div
+      data-testid="compaction-divider"
+      data-compaction-kind={kind}
+      data-compaction-pending={pending ? "true" : undefined}
+      className={cn(
+        "mx-auto flex w-full max-w-(--thread-content-max-width) items-center gap-3 text-muted-foreground text-sm",
+        className,
+      )}
+    >
+      <span aria-hidden={true} className={rule} />
+      <span className="inline-flex shrink-0 items-center gap-1">
+        {pending ? (
+          <span
+            data-slot="compaction-divider-label"
+            className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap leading-none"
+          >
+            <HugeiconsIcon icon={Clock01Icon} className="size-3.5" aria-hidden={true} />
+            {label}
+          </span>
+        ) : (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                data-slot="compaction-divider-label"
+                // Negative margins keep the rule put; relative stops the reply covering the target.
+                className="relative -mx-2 -my-2.5 inline-flex shrink-0 cursor-default items-center whitespace-nowrap rounded-full px-2 py-2.5 leading-none transition-colors hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring"
+              >
+                {label}
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="top" sideOffset={8} variant="rich">
+              {children}
+            </TooltipContent>
+          </Tooltip>
+        )}
+        {action ? (
+          <>
+            <span aria-hidden={true} className="text-muted-foreground/60">
+              ·
+            </span>
+            {action}
+          </>
+        ) : null}
+      </span>
+      <span aria-hidden={true} className={rule} />
+    </div>
+  );
+};

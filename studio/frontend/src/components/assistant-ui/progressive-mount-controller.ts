@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Pacing and anchor arithmetic for the thread's mount window (progressive-messages.tsx). Which
-// rows are mounted is decided in thread-window.ts.
+// Pacing and anchor math for the mount window; row mounting is decided in thread-window.ts.
 
 /** Messages added per frame while every row is being mounted for a DOM reader (find, print). */
 export const CHUNK_MESSAGES = 32;
@@ -61,10 +60,9 @@ export function watchProgressiveScroll(
 export const FAR_MOUNT_CHUNK = 16;
 
 /**
- * WebKitGTK step size for a full mount. Rows prepended within `reach` px above the viewport top
- * stay unparked and can move what the reader sees, so they mount `near` at a time; past that they
- * are parked as they land, so the step grows fourfold per frame up to `max` (each commit has a
- * fixed cost there). `previous` is 0 before the first step, which stays `near`.
+ * WebKitGTK full mount: prepended rows within reach px above the viewport can move what the reader
+ * sees, so they mount near at a time; past that the step grows fourfold per frame up to max (each
+ * commit has a fixed cost); previous 0 means near.
  */
 export function nextMountChunk(
   previous: number,

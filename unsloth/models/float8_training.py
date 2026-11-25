@@ -136,8 +136,7 @@ def float8_training_filter(
     except Exception:
         pass
     size_recipe = _recipe_scaling(recipe)
-    # Routers found by shape beside an experts container (a router named `wg` or in remote code), on top of the
-    # name rules below.
+    # Routers found by shape beside an experts container, on top of the name rules below.
     try:
         routers = frozenset(_find_routers(model))
     except Exception:

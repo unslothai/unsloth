@@ -10,12 +10,15 @@ import re
 import sqlite3
 from typing import Annotated, Any, Literal, Optional, Union
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile
+from fastapi.concurrency import run_in_threadpool
+from fastapi.routing import APIRoute
 from pydantic import (
     BaseModel,
     BeforeValidator,
     ConfigDict,
     Field,
+    TypeAdapter,
     ValidationError,
     field_serializer,
     field_validator,
@@ -66,6 +69,8 @@ from storage.studio_db import (
     fork_counts_for_thread,
     get_chat_attachment,
     get_chat_project,
+    chat_revision_probe,
+    chat_revision_span,
     get_chat_history_revisions,
     get_chat_thread,
     get_chat_pins,
@@ -322,6 +327,8 @@ class ChatProject(BaseModel):
     id: str
     name: str
     instructions: str = ""
+    # None inherits account defaults. An empty selection disables MCP servers in this project.
+    mcpServerIds: Optional[list[str]] = None
     rootPath: Optional[str] = None
     sandboxPath: Optional[str] = None
     # Read only: a saved record cannot set the folder.
@@ -408,6 +415,7 @@ class ChatProjectDeleted(ChatProject):
 class ChatProjectPatch(BaseModel):
     name: Optional[str] = None
     instructions: Optional[str] = None
+    mcpServerIds: Optional[list[str]] = None
     archived: Optional[bool] = None
     createdAt: Optional[SqliteInt] = None
     updatedAt: Optional[SqliteInt] = None
@@ -815,6 +823,18 @@ class ChatImportLedgerRecordResponse(BaseModel):
 
 # Two 409s mean opposite things (protected: stop resending; thread collision: surface failure); tell them apart by header, not detail; main.py must expose it.
 CONFLICT_KIND_HEADER = "X-Unsloth-Conflict-Kind"
+# "<thread before>,<thread after>,<history before>,<history after>" read inside the write's
+# transaction, so the writing tab can tell its own write from another device's.
+CHAT_REVISION_HEADER = "X-Unsloth-Chat-Revision"
+
+
+def _set_revision_header(response: Optional[Response], probe: dict) -> None:
+    span = chat_revision_span(probe)
+    if response is not None and span is not None:
+        (thread_before, history_before), (thread_after, history_after) = span
+        response.headers[CHAT_REVISION_HEADER] = (
+            f"{thread_before},{thread_after},{history_before},{history_after}"
+        )
 
 
 def _conflict_headers(exc: Exception) -> dict:
@@ -898,11 +918,18 @@ def _deleted_thread_error(thread_id: str) -> HTTPException:
 
 
 @router.post("/threads", response_model = ChatThread)
-def save_thread(payload: ChatThread, current_subject: str = Depends(get_current_subject)):
+def save_thread(
+    payload: ChatThread,
+    current_subject: str = Depends(get_current_subject),
+    response: Response = None,
+):
     if payload.projectId and get_chat_project(payload.projectId) is None:
         raise _missing_project_error(payload.projectId)
     try:
-        return thread_from_row(upsert_chat_thread(payload.model_dump()))
+        with chat_revision_probe(payload.id) as probe:
+            saved = upsert_chat_thread(payload.model_dump())
+        _set_revision_header(response, probe)
+        return thread_from_row(saved)
     except ChatThreadDeletedError as exc:
         raise _deleted_thread_error(payload.id) from exc
     except sqlite3.IntegrityError as exc:
@@ -948,6 +975,7 @@ def patch_thread(
     thread_id: str,
     payload: ChatThreadPatch,
     current_subject: str = Depends(get_current_subject),
+    response: Response = None,
 ):
     patch = payload.model_dump(exclude_unset = True)
     expected_title = patch.pop("expectedTitle", None)
@@ -960,14 +988,15 @@ def patch_thread(
         raise _missing_project_error(patch["projectId"])
     settings_write = _settings_write_from_patch(patch)
     try:
-        thread = update_chat_thread(
-            thread_id,
-            patch,
-            expected_title = expected_title,
-            preserve_title_modified_at = preserve_title_modified_at,
-            expected_opening_message_id = expected_opening_message_id,
-            settings_write = settings_write,
-        )
+        with chat_revision_probe(thread_id) as probe:
+            thread = update_chat_thread(
+                thread_id,
+                patch,
+                expected_title = expected_title,
+                preserve_title_modified_at = preserve_title_modified_at,
+                expected_opening_message_id = expected_opening_message_id,
+                settings_write = settings_write,
+            )
     except sqlite3.IntegrityError as exc:
         # Same race as save_thread: the project can go away before this write lands.
         if not patch.get("projectId"):
@@ -980,6 +1009,7 @@ def patch_thread(
         )
     if thread is None:
         raise HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
+    _set_revision_header(response, probe)
     return thread_from_row(thread)
 
 
@@ -1887,13 +1917,33 @@ async def delete_project(
     return ChatProjectDeleted(**project, sandboxes_kept = sandboxes_kept)
 
 
+_MESSAGE_JSON = TypeAdapter(ChatMessage)
+_KEY_JSON = TypeAdapter(str)
+
+
+def _append_messages_json(parts: list[bytes], messages: list[ChatMessage]) -> None:
+    parts.append(b"[")
+    for i, message in enumerate(messages):
+        if i:
+            parts.append(b",")
+        parts.append(_MESSAGE_JSON.dump_json(message, by_alias = True))
+    parts.append(b"]")
+
+
+def _json_response(parts: list[bytes]) -> Response:
+    # FastAPI serializes a sync route's model on the event loop in one GIL-holding call; image
+    # chats stalled every stream, so we dump per message in the threadpool instead.
+    return Response(content = b"".join(parts), media_type = "application/json")
+
+
 @router.get("/threads/{thread_id}/messages", response_model = ChatMessageListResponse)
 def get_thread_messages(thread_id: str, current_subject: str = Depends(get_current_subject)):
     if get_chat_thread(thread_id) is None:
         raise HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
-    return ChatMessageListResponse(
-        messages = [ChatMessage(**m) for m in list_chat_messages(thread_id)]
-    )
+    parts = [b'{"messages":']
+    _append_messages_json(parts, [ChatMessage(**m) for m in list_chat_messages(thread_id)])
+    parts.append(b"}")
+    return _json_response(parts)
 
 
 # Part types extractText (frontend use-chat-search-index.ts) reads; a frontend test guards drift.
@@ -2061,7 +2111,15 @@ def batch_thread_messages(
         tid = m["threadId"]
         if tid in by_thread:
             by_thread[tid].append(ChatMessage(**(_search_view_message(m) if search_view else m)))
-    return ChatMessagesBatchResponse(messagesByThreadId = by_thread)
+    parts = [b'{"messagesByThreadId":{']
+    for i, (tid, messages) in enumerate(by_thread.items()):
+        if i:
+            parts.append(b",")
+        parts.append(_KEY_JSON.dump_json(tid))
+        parts.append(b":")
+        _append_messages_json(parts, messages)
+    parts.append(b"}}")
+    return _json_response(parts)
 
 
 @router.post("/messages:counts", response_model = ChatMessageCountsResponse)
@@ -2095,15 +2153,17 @@ def save_thread_message(
     payload: ChatMessage,
     allow_generation_edit: Annotated[bool, Query(alias = "allowGenerationEdit")] = False,
     current_subject: str = Depends(get_current_subject),
+    response: Response = None,
 ):
     if thread_id != payload.threadId or message_id != payload.id:
         raise HTTPException(status_code = 400, detail = "Message id mismatch")
     if get_chat_thread(thread_id) is None:
         raise HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
     try:
-        saved = upsert_chat_message(
-            payload.model_dump(), allow_generation_edit = allow_generation_edit
-        )
+        with chat_revision_probe(thread_id) as probe:
+            saved = upsert_chat_message(
+                payload.model_dump(), allow_generation_edit = allow_generation_edit
+            )
     except sqlite3.IntegrityError as exc:
         if get_chat_thread(thread_id) is None:
             raise _missing_thread_error(thread_id) from exc
@@ -2118,14 +2178,121 @@ def save_thread_message(
             headers = _conflict_headers(exc),
         ) from exc
     chat_originals.sweep()
+    _set_revision_header(response, probe)
     return ChatMessage(**saved)
 
 
-@router.put("/threads/{thread_id}/messages", response_model = ChatMessageListResponse)
+# json.decoder.WHITESPACE: the only characters the decoder skips between tokens.
+_JSON_WS = re.compile(r"[ \t\n\r]*")
+_JSON_DECODER = json.JSONDecoder()
+_SPLIT_JSON_MIN_BYTES = 1 << 20
+_SPLIT_JSON_MAX_DEPTH = 200
+_SPLIT_JSON_FALLBACK = object()
+
+
+def _json_depth_within(value: Any, limit: int) -> bool:
+    stack = [(value, 1)]
+    while stack:
+        node, depth = stack.pop()
+        if depth > limit:
+            return False
+        children = node.values() if isinstance(node, dict) else node
+        for child in children:
+            if isinstance(child, (dict, list)):
+                stack.append((child, depth + 1))
+    return True
+
+
+def _split_json_array(s: str, idx: int) -> tuple[list, int]:
+    scan, ws = _JSON_DECODER.scan_once, _JSON_WS.match
+    items: list = []
+    idx = ws(s, idx + 1).end()
+    if s[idx : idx + 1] == "]":
+        return items, idx + 1
+    while True:
+        # One decoder call per element, so the GIL is released between elements.
+        item, idx = scan(s, idx)
+        items.append(item)
+        idx = ws(s, idx).end()
+        char = s[idx : idx + 1]
+        if char == "]":
+            return items, idx + 1
+        if char != ",":
+            raise ValueError("not a JSON array")
+        idx = ws(s, idx + 1).end()
+
+
+def _split_json_loads(body: bytes) -> Any:
+    """json.loads for a top-level object, top-level arrays decoded per element via the same C scanner.
+    Anything else returns the fallback marker so json.loads runs and errors keep their exact form."""
+    try:
+        s = body.decode(json.detect_encoding(body), "surrogatepass")
+        scan, ws = _JSON_DECODER.scan_once, _JSON_WS.match
+        idx = ws(s, 0).end()
+        if s[idx : idx + 1] != "{":
+            return _SPLIT_JSON_FALLBACK
+        obj: dict = {}
+        idx = ws(s, idx + 1).end()
+        if s[idx : idx + 1] == "}":
+            idx += 1
+        else:
+            while True:
+                if s[idx : idx + 1] != '"':
+                    return _SPLIT_JSON_FALLBACK
+                key, idx = scan(s, idx)
+                idx = ws(s, idx).end()
+                if s[idx : idx + 1] != ":":
+                    return _SPLIT_JSON_FALLBACK
+                idx = ws(s, idx + 1).end()
+                if s[idx : idx + 1] == "[":
+                    value, idx = _split_json_array(s, idx)
+                else:
+                    value, idx = scan(s, idx)
+                obj[key] = value
+                idx = ws(s, idx).end()
+                char = s[idx : idx + 1]
+                idx += 1
+                if char == "}":
+                    break
+                if char != ",":
+                    return _SPLIT_JSON_FALLBACK
+                idx = ws(s, idx).end()
+        if ws(s, idx).end() != len(s) or not _json_depth_within(obj, _SPLIT_JSON_MAX_DEPTH):
+            return _SPLIT_JSON_FALLBACK
+        return obj
+    except Exception:
+        return _SPLIT_JSON_FALLBACK
+
+
+class _OffLoopJSONRequest(Request):
+    async def json(self) -> Any:
+        if not hasattr(self, "_json"):
+            body = await self.body()
+            value = _SPLIT_JSON_FALLBACK
+            if len(body) >= _SPLIT_JSON_MIN_BYTES:
+                value = await run_in_threadpool(_split_json_loads, body)
+            self._json = json.loads(body) if value is _SPLIT_JSON_FALLBACK else value
+        return self._json
+
+
+class _OffLoopJSONRoute(APIRoute):
+    """FastAPI decodes JSON on the event loop in one GIL-holding call; big image saves stalled streams."""
+
+    def get_route_handler(self):
+        handler = super().get_route_handler()
+
+        async def off_loop_json_handler(request: Request) -> Response:
+            return await handler(_OffLoopJSONRequest(request.scope, request.receive))
+
+        return off_loop_json_handler
+
+
 def replace_thread_messages(
     thread_id: str,
     payload: ChatMessageSyncRequest,
+    echo_messages: Annotated[bool, Query(alias = "echoMessages")] = True,
     current_subject: str = Depends(get_current_subject),
+    response: Response = None,
 ):
     mismatched_ids = [message.id for message in payload.messages if message.threadId != thread_id]
     if mismatched_ids:
@@ -2139,12 +2306,14 @@ def replace_thread_messages(
         raise HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
     messages = [message.model_dump() for message in payload.messages]
     try:
-        synced = sync_chat_messages(
-            thread_id,
-            messages,
-            prune_missing = payload.pruneMissing,
-            deleted_message_ids = payload.deletedMessageIds,
-        )
+        with chat_revision_probe(thread_id) as probe:
+            synced = sync_chat_messages(
+                thread_id,
+                messages,
+                prune_missing = payload.pruneMissing,
+                deleted_message_ids = payload.deletedMessageIds,
+                return_rows = echo_messages,
+            )
     except sqlite3.IntegrityError as exc:
         if get_chat_thread(thread_id) is None:
             raise _missing_thread_error(thread_id) from exc
@@ -2159,7 +2328,17 @@ def replace_thread_messages(
             headers = _conflict_headers(exc),
         ) from exc
     chat_originals.sweep()
-    return ChatMessageListResponse(messages = [ChatMessage(**m) for m in synced])
+    _set_revision_header(response, probe)
+    return ChatMessageListResponse(messages = [ChatMessage(**m) for m in synced or ()])
+
+
+router.add_api_route(
+    "/threads/{thread_id}/messages",
+    replace_thread_messages,
+    methods = ["PUT"],
+    response_model = ChatMessageListResponse,
+    route_class_override = _OffLoopJSONRoute,
+)
 
 
 @router.get("/count", response_model = ChatCountResponse)
@@ -2518,17 +2697,27 @@ def get_thread_fork_counts(thread_id: str, current_subject: str = Depends(get_cu
 
 
 @router.get("/export", response_model = ChatExportResponse)
-def export_history(current_subject: str = Depends(get_current_subject)):
+def export_history(
+    archived: bool = Query(False), current_subject: str = Depends(get_current_subject)
+):
     from datetime import datetime, timezone
-    projects, threads, messages = build_chat_history_export()
-    return ChatExportResponse(
+
+    projects, threads, messages = build_chat_history_export(archived_only = archived)
+    head = ChatExportResponse(
         exportedAt = datetime.now(timezone.utc).isoformat(),
         version = 1,
         threadCount = len(threads),
         projects = [ChatProject(**project) for project in projects],
         threads = [thread_from_row(thread) for thread in threads],
-        messages = [ChatMessage(**message) for message in messages],
-    )
+        messages = [],
+    ).model_dump_json(by_alias = True)
+    # One message per line lets the browser read a backup larger than its longest string.
+    parts = [head.removesuffix("]}").encode()]
+    for i, message in enumerate(messages):
+        parts.append(b",\n" if i else b"\n")
+        parts.append(_MESSAGE_JSON.dump_json(ChatMessage(**message), by_alias = True))
+    parts.append(b"\n]}")
+    return _json_response(parts)
 
 
 @router.get("/memory-context")

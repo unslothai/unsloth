@@ -125,6 +125,11 @@ class TestTheKeepDecision:
         assert _decide(tmp_path, install_dir, _setup_nvidia_physical = "true") == "KEEP vulkan"
         assert _decide(tmp_path, install_dir) == "REPLACE"
 
+    def test_a_sycl_prebuilt_is_kept_only_on_an_intel_host(self, tmp_path):
+        install_dir = _install(tmp_path, {"backend": "sycl", "install_kind": "linux-sycl"})
+        assert _decide(tmp_path, install_dir, _setup_intel_gpu = "true") == "KEEP sycl"
+        assert _decide(tmp_path, install_dir, _setup_nvidia_physical = "true") == "REPLACE"
+
     def test_the_marker_backend_is_read_case_insensitively(self, tmp_path):
         install_dir = _install(tmp_path, {"backend": " CUDA "})
         assert _decide(tmp_path, install_dir, _setup_nvidia_physical = "true") == "KEEP cuda"

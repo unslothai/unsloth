@@ -55,8 +55,7 @@ def _key(kernel, args):
     return tuple(ints)
 
 
-# Head counts of the served models (Wan 2.2 5B 24, Z-Image 30, FLUX / Qwen-Image / LTX 32, Wan A14B 40,
-# HunyuanVideo 56): both residue classes mod 16.
+# Head counts of the served models; together they hit both residue classes mod 16.
 HEADS = (24, 30, 32, 40, 56)
 
 

@@ -13,7 +13,7 @@ from typing import Optional
 
 import httpx
 
-from integrations.installed import is_installed
+from integrations.installed import is_installed, note_connected
 from core.inference.mcp_client import (
     join_stdio_command,
     list_tools_async,
@@ -137,7 +137,11 @@ def unavailable_reason(builtin_id: str = "") -> Optional[str]:
     return None if stdio_mcp_enabled() else stdio_mcp_disabled_reason()
 
 
-def catalog_item(builtin_id: str, row = None) -> McpBuiltinResponse:
+def catalog_item(
+    builtin_id: str,
+    row = None,
+    detect: bool = True,
+) -> McpBuiltinResponse:
     reason = unavailable_reason(builtin_id)
     settings = settings_for(builtin_id, row)
     return McpBuiltinResponse(
@@ -145,7 +149,7 @@ def catalog_item(builtin_id: str, row = None) -> McpBuiltinResponse:
         display_name = EDITORS[builtin_id].display_name,
         port = settings.port or 0,
         project_path = settings.project_path,
-        installed = is_installed(builtin_id),
+        installed = is_installed(builtin_id) if detect else None,
         server_id = row["id"] if row else None,
         is_enabled = bool(row and row["is_enabled"]),
         available = reason is None,
@@ -158,6 +162,18 @@ async def _unity_connected(port: int) -> bool:
         response = await client.get(f"http://127.0.0.1:{port}/api/instances")
         response.raise_for_status()
         return bool(response.json().get("instances"))
+
+
+def _http_status(exc: BaseException) -> Optional[int]:
+    """httpx is vendored, so match the status by attribute."""
+    seen = 0
+    while exc is not None and seen < 10:
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+        if isinstance(status, int):
+            return status
+        exc = exc.__cause__ or exc.__context__
+        seen += 1
+    return None
 
 
 async def probe(
@@ -180,9 +196,17 @@ async def probe(
         )
     try:
         tools = await list_tools_async(url, headers = headers or None, timeout = 15)
-    except Exception:
+    except Exception as exc:
+        status = _http_status(exc)
+        if status in (401, 403):
+            return McpServerProbeResult(
+                ok = False,
+                error = f"{editor.display_name} answered but refused the connection (HTTP {status}): its MCP server "
+                "requires a token. Turn off token authentication in the editor's MCP settings, then retry.",
+            )
         where = f" (port {settings.port})" if settings.port else ""
         return McpServerProbeResult(ok = False, error = f"{editor.not_ready}{where}")
+    note_connected(builtin_id)
     result = McpServerProbeResult(ok = True, tool_count = len(tools))
     if check_editor:
         result.editor_ready = True

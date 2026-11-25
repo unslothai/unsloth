@@ -126,6 +126,8 @@ async function sttErrorDetail(response: Response): Promise<string> {
   return body?.detail ?? body?.error?.message ?? `HTTP ${response.status}`;
 }
 
+export type TranscriptSegment = { start: number; end: number; text: string };
+
 export async function transcribeAudioBlob(
   blob: Blob,
   options: {
@@ -138,6 +140,8 @@ export async function transcribeAudioBlob(
     ggufVariant?: string | null;
     providerId?: string;
     signal?: AbortSignal;
+    /** Asks for segment timings; called only when the engine reports them. */
+    onSegments?: (segments: TranscriptSegment[]) => void;
   } = {},
 ): Promise<string> {
   const settings = useVoiceSettingsStore.getState();
@@ -222,6 +226,7 @@ export async function transcribeAudioBlob(
   if (context.context_length !== undefined) {
     params.set("context_length", String(context.context_length));
   }
+  if (options.onSegments) params.set("timestamps", "true");
   const response = await authFetch(
     `/api/inference/audio/transcribe/raw?${params.toString()}`,
     {
@@ -240,7 +245,24 @@ export async function transcribeAudioBlob(
     }
     throw sttRequestError(response.status, detail);
   }
-  const data = (await response.json()) as { text?: string };
+  const data = (await response.json()) as {
+    text?: string;
+    segments?: unknown;
+  };
+  if (options.onSegments && Array.isArray(data.segments)) {
+    const segments = (data.segments as Array<Record<string, unknown>>).flatMap(
+      ({ start, end, text }) =>
+        typeof start === "number" &&
+        typeof end === "number" &&
+        Number.isFinite(start) &&
+        Number.isFinite(end) &&
+        typeof text === "string" &&
+        text.trim()
+          ? [{ start, end, text: text.trim() }]
+          : [],
+    );
+    if (segments.length > 0) options.onSegments(segments);
+  }
   return (data.text ?? "").trim();
 }
 

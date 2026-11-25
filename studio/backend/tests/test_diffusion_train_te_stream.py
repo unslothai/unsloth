@@ -140,6 +140,31 @@ def test_kill_switch_and_rocm_auto(fake_cuda, monkeypatch):
     assert _FakeStreamer.made == []
 
 
+def test_a_failed_setup_records_the_error_without_keeping_the_pipeline_alive(
+    fake_cuda, monkeypatch
+):
+    """A streamer that fails part-way is undone; the recorded error must not hold the traceback, whose frames
+    reference the pipeline, its encoders and the half-built streamer."""
+    import gc
+    import weakref
+
+    class _Boom(_FakeStreamer):
+        def __init__(self, encoder, *a, **k):
+            self.arena = torch.empty(1024)
+            raise RuntimeError("arena allocation failed")
+
+    monkeypatch.setattr(ts, "TextEncoderStreamer", _Boom)
+    monkeypatch.setenv(ts.TE_STREAM_ENV, "on")
+    monkeypatch.setattr(ts, "LAST_ERROR", None)
+    pipe = _Pipe(_Encoder())
+    pipe_ref, enc_ref = weakref.ref(pipe), weakref.ref(pipe.text_encoder)
+    assert ts.place_text_encoders(pipe, "cuda") == []
+    assert "RuntimeError" in repr(ts.LAST_ERROR) and "arena allocation failed" in str(ts.LAST_ERROR)
+    del pipe
+    gc.collect()
+    assert pipe_ref() is None and enc_ref() is None
+
+
 def test_quantized_or_placed_encoders_are_left_alone(fake_cuda):
     fake_cuda["free"] = 0
     enc = _Encoder()

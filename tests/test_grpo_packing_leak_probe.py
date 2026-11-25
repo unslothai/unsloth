@@ -16,6 +16,7 @@ transformers = pytest.importorskip("transformers")
 SOURCE_PATH = Path(__file__).resolve().parents[1] / "unsloth" / "models" / "rl_replacements.py"
 HELPER = "_unsloth_grpo_refuse_boundary_blind_packing"
 PROBE = "_unsloth_grpo_packing_leaks"
+VARLEN = "_unsloth_grpo_enable_packed_varlen"
 FLAGS = (
     "_unsloth_seq_packing_nograd_ok",
     "_unsloth_seq_packing_grad_ok",
@@ -45,7 +46,9 @@ def packing_module(monkeypatch):
 
 def _namespace():
     tree = ast.parse(SOURCE_PATH.read_text(encoding = "utf-8"))
-    nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in (HELPER, PROBE)]
+    nodes = [
+        n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in (HELPER, PROBE, VARLEN)
+    ]
     namespace = {"os": os, "torch": torch, "UNSLOTH_ENABLE_LOGGING": False}
     exec(compile(ast.Module(body = nodes, type_ignores = []), str(SOURCE_PATH), "exec"), namespace)
     return namespace
@@ -163,3 +166,54 @@ def test_the_generated_trainer_carries_the_probe():
     src = SOURCE_PATH.read_text(encoding = "utf-8")
     assert f'RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource({PROBE}))' in src
     assert src.index(f"inspect.getsource({PROBE})") < src.index(f"inspect.getsource({HELPER})")
+
+
+@pytest.mark.parametrize("kind", ["opt", "llama"])
+def test_probe_restores_every_submodule_mode(kind):
+    # A training model with one block deliberately kept in eval mode (its dropout must stay off): the probe's
+    # eval() / restore must not flip that block back to training.
+    model = _tiny(kind).train()
+    frozen = model.model.decoder.layers[0] if kind == "opt" else model.model.layers[0]
+    frozen.eval()
+    before = {name: m.training for name, m in model.named_modules()}
+    _namespace()[PROBE](_trainer(), model)
+    assert {name: m.training for name, m in model.named_modules()} == before
+
+
+def test_probe_restores_int4_quant_state_training():
+    # Int4PackedLinear.train() also syncs quant_state.training: the restore must go through it, or the probe's
+    # eval() leaves the packed layer's quantization state in inference mode for the rest of training.
+    import importlib.util
+
+    path = SOURCE_PATH.parent / "compressed_tensors_int4.py"
+    spec = importlib.util.spec_from_file_location("_probe_compressed_tensors_int4", path)
+    int4 = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(int4)
+    model = _tiny("llama").train()
+    layer = int4.Int4PackedLinear.__new__(int4.Int4PackedLinear)  # as the loader builds its shells
+    torch.nn.Module.__init__(layer)
+    qs = SimpleNamespace(training = True, _fast = None)
+    layer.__dict__["_int4_quant_state"] = qs
+    model.model.layers[
+        1
+    ].int4_layer = layer  # not on the forward path: only the mode bookkeeping is under test
+    frozen = model.model.layers[0]
+    frozen.eval()
+    before = {name: m.training for name, m in model.named_modules()}
+    _namespace()[PROBE](_trainer(), model)
+    assert {name: m.training for name, m in model.named_modules()} == before
+    assert layer.training and qs.training is True
+
+
+def test_probe_restores_a_child_shared_by_two_parents():
+    # One Dropout instance under two blocks: modules() yields it once, so restoring the later (training) block
+    # recursively must not leave the shared child, saved in eval mode, in training mode.
+    model = _tiny("llama").train()
+    shared = torch.nn.Dropout(0.5)
+    model.model.layers[0].shared_dropout = shared
+    model.model.layers[1].shared_dropout = shared
+    shared.eval()
+    before = {name: m.training for name, m in model.named_modules(remove_duplicate = False)}
+    _namespace()[PROBE](_trainer(), model)
+    assert shared.training is False
+    assert {name: m.training for name, m in model.named_modules(remove_duplicate = False)} == before

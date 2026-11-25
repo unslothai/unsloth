@@ -17,6 +17,7 @@ from functools import lru_cache
 from typing import Any, Optional
 
 from .rocm_bf16 import is_rocm_torch
+from .triton_closure_globals import publishes_closure_globals
 
 QK_NORM_ROPE_ENV = "UNSLOTH_DIFFUSION_FLUX3_QK_NORM_ROPE"
 # registry switch; strided and ConvRot paths call the helper without the swap
@@ -56,6 +57,7 @@ def reference_qk(x: Any, weight: Any, eps: float, cos: Any, sin: Any, out_dtype:
 
 
 @lru_cache(maxsize = None)
+@publishes_closure_globals
 def _kernel() -> Any:
     import triton
     import triton.language as tl

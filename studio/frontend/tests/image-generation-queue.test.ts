@@ -75,7 +75,9 @@ test("a row shows a one-line prompt snippet and the settings that tell jobs apar
 test("while a render runs the page offers Queue beside Stop, and Generate queues behind waiting jobs", () => {
   const page = readSrc("features/images/images-page.tsx");
   assert.match(page, /\{canQueue && compareRun === null && \(\s*<Button[^>]*onClick=\{handleQueue\}/);
-  assert.match(page, /onClick=\{queueWaiting && canQueue \? handleQueue : handleGenerateWithRecall\}/);
+  // generate-gate.ts turns the button into Queue while jobs wait (tests/images-generate-during-switch.test.ts).
+  assert.match(page, /onClick=\{generateButton\.action === "queue" \? handleQueue : handleGenerateWithRecall\}/);
+  assert.match(page, /queueWaiting,\s*canQueue,\s*\}\);/);
   // Queue reuses Generate's validation and request, then hands the runs to the server.
   assert.match(page, /if \(toQueue && !compare && !external\) \{[\s\S]*?enqueueDiffusionImage\(requestFor\(i\)\)/);
   assert.match(page, /res = await generateDiffusionImage\(requestFor\(i\), { id: sequenceId, more: i < runTotal - 1 }\);/);

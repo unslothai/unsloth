@@ -46,8 +46,7 @@ export function shouldShowCompactionNotice(
 }
 
 /**
- * What a compaction did, for the notice in the thread. Local models keep "compacted"; a cloud
- * connection says whether history was summarized (and by whom) or turns had to be dropped.
+ * Notice kind: local models say compacted; a cloud connection says summarized (by whom) or dropped.
  */
 export type CompactionNoticeKind =
   | "compacted"
@@ -88,6 +87,26 @@ export const COMPACTION_NOTICE_TEXT: Record<CompactionNoticeKind, string> = {
     "The latest messages left no room for the rest, so the oldest were dropped from the model's context.",
   "dropped-after-failed-summary":
     "A summary of the older messages could not be written, so the oldest were dropped from the model's context instead.",
+};
+
+export type CompactionFailureReason = "cut_off" | "timed_out" | "empty" | "error";
+
+export function isCompactionFailureReason(
+  value: unknown,
+): value is CompactionFailureReason {
+  return (
+    value === "cut_off" ||
+    value === "timed_out" ||
+    value === "empty" ||
+    value === "error"
+  );
+}
+
+export const COMPACTION_FAILURE_TEXT: Record<CompactionFailureReason, string> = {
+  cut_off: "The model hit its length limit before it finished the summary.",
+  timed_out: "The model took too long to start or continue the summary.",
+  empty: "The model returned an empty summary.",
+  error: "The summary request failed.",
 };
 
 /** afterToolCallId is null when the fit ran before the reply began. */

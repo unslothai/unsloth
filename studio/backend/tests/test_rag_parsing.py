@@ -998,6 +998,27 @@ def test_docx_numbers_visible_note_references_and_marks_the_body(tmp_path):
     )
 
 
+def _sup(text):
+    return f'<w:r><w:rPr><w:vertAlign w:val="superscript"/></w:rPr><w:t xml:space="preserve">{text}</w:t></w:r>'
+
+
+def test_docx_keeps_superscript_exponents(tmp_path):
+    text = _docx_from_xml(
+        tmp_path,
+        f"<w:p>{_r('The tank holds 2.5 × 10')}{_sup('6')}{_r(' litres over 40 km')}{_sup('2')}{_r('.')}</w:p>",
+        f"<w:p>{_r('Tolerance is 10')}{_sup('-')}{_sup('3')}{_r(' m')}</w:p>",
+        f"<w:p>{_r('Due on the 1')}{_sup('st')}{_r(', as noted.')}{_sup('4')}{_r(' H')}"
+        f'<w:r><w:rPr><w:vertAlign w:val="subscript"/></w:rPr><w:t>2</w:t></w:r>{_r("O")}</w:p>',
+        f"<w:p>{_r('As the clai')}{_r('m')}{_sup('1,2')}{_r(' states.')}</w:p>",
+        f'<w:p>{_r("Line 10")}<w:r><w:rPr><w:vertAlign w:val="superscript"/></w:rPr><w:br/><w:t>6</w:t></w:r>'
+        f'{_r(" 10")}<w:r><w:rPr><w:vertAlign w:val="superscript"/></w:rPr><w:tab/><w:t>6</w:t></w:r></w:p>',
+    )
+    assert text == (
+        "The tank holds 2.5 × 10^6 litres over 40 km^2.\nTolerance is 10^-3 m\nDue on the 1st, as noted.4 H2O\n"
+        "As the claim1,2 states.\nLine 10\n6 10\t6"
+    )
+
+
 def test_docx_keeps_list_numbers(tmp_path):
     document, docx, parsers = _shared_setup_1()
     document.add_paragraph("Lease terms")
@@ -1203,6 +1224,32 @@ def test_html_keeps_inline_elements_in_their_line(tmp_path):
         "<p>It is un<b>believ</b>able.</p>",
     )
     assert text == "The quick brown fox jumps over the lazy dog.\nIt is unbelievable."
+
+
+def test_html_keeps_superscript_exponents(tmp_path):
+    text = _parse_html(
+        tmp_path,
+        "<p>Mass is 1.898×10<sup>27</sup> kg; MAX is 2<sup>53</sup> - 1.</p>"
+        "<p>Tolerance is 10<sup>-3</sup> m over 40 km<sup>2</sup>.</p>"
+        '<p>Held on the 21<sup>st</sup> of June.<sup>4</sup> See Smith<sup class="reference">[2]</sup>'
+        ' and Jones<sup class="footnote-ref">3</sup>.</p>'
+        "<p>As the clai<span>m</span><sup>1,2</sup> states.</p>",
+    )
+    assert text == (
+        "Mass is 1.898×10^27 kg; MAX is 2^53 - 1.\nTolerance is 10^-3 m over 40 km^2.\n"
+        "Held on the 21st of June.4 See Smith[2] and Jones3.\nAs the claim1,2 states."
+    )
+
+
+def test_html_footnote_links_stay_references(tmp_path):
+    text = _parse_html(
+        tmp_path,
+        '<p>Smith<sup id="fnref:1"><a class="footnote-ref" href="#fn:1">1</a></sup>,'
+        ' Jones<sup><a href="#user-content-fn-2" data-footnote-ref>2</a></sup> and'
+        ' Lee<a href="#fn3" class="footnote-ref"><sup>3</sup></a> cover'
+        ' <a href="/area">40 km<sup>2</sup></a>.</p>',
+    )
+    assert text == "Smith1, Jones2 and Lee3 cover 40 km^2."
 
 
 def test_html_adjacent_buttons_stay_separate_words(tmp_path):

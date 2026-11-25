@@ -125,3 +125,33 @@ def test_reference_images_raise_a_priced_lora_request(monkeypatch):
     )
     assert plain == 0
     assert with_refs >= 60_000 * 8192 * 2 // (1 << 20) - 64, with_refs
+
+
+@pytest.mark.parametrize("adapter_dtype", [torch.float16, torch.float32])
+def test_an_embedding_adapter_is_priced_at_least_its_forward(adapter_dtype):
+    # PEFT keeps an Embedding's factors in lora_embedding_A/B (Anima's llm_adapter.embed); a smaller
+    # adapted Linear beside it must not set the price for the whole set
+    tokens = 256
+    torch.manual_seed(0)
+    holder = torch.nn.Module()
+    holder.embed = torch.nn.Embedding(128, 2048, dtype = torch.float16)
+    holder.proj = torch.nn.Linear(16, 8, dtype = torch.float16)
+    x = torch.randint(0, 128, (tokens,))
+    plain = _peak(holder.embed, x)
+    inject_adapter_in_model(
+        LoraConfig(r = 4, lora_alpha = 4, target_modules = ["embed", "proj"]),
+        holder,
+        adapter_name = "s",
+    )
+    for n, p in holder.named_parameters():
+        if "lora_" in n:
+            p.data = p.data.to(adapter_dtype)
+    assert "s" in holder.embed.lora_embedding_A
+    actual = (_peak(holder.embed, x) - plain) / tokens
+    assert actual > 0
+    pipe = types.SimpleNamespace(
+        transformer = holder, _unsloth_loras = (("s", "/l/s.safetensors", 1.0),)
+    )
+    pricing = lm.price_attached_loras(pipe, cfg = False, compute_bytes = 2, compute_dtype = torch.float16)
+    assert pricing is not None
+    assert pricing.bytes_per_token >= actual, (pricing.bytes_per_token, actual)

@@ -126,7 +126,7 @@ def _iter_quantization_methods(quantization):
 
 
 def _save_or_push_model(model, tokenizer, args, is_mlx):
-    if not args.save_model:
+    if not (args.save_model or args.save_gguf or args.push_model or args.push_gguf):
         print("Warning: The model is not saved!")
         return
 
@@ -162,7 +162,8 @@ def _save_or_push_model(model, tokenizer, args, is_mlx):
         )
         return
 
-    model.save_pretrained_merged(args.save_path, tokenizer, save_method = args.save_method)
+    if args.save_model:
+        model.save_pretrained_merged(args.save_path, tokenizer, save_method = args.save_method)
     if args.push_model:
         model.push_to_hub_merged(args.hub_path, tokenizer, args.save_method, token = args.hub_token)
 
@@ -304,7 +305,15 @@ def run(args):
             dataset = _load_raw_text_file(
                 RawTextDataLoader, tokenizer, is_mlx, args, args.raw_text_file
             )
-        elif args.dataset.endswith((".txt", ".md", ".json", ".jsonl")):
+        elif (
+            RawTextDataLoader.supports_file(args.dataset)
+            and not os.path.isdir(args.dataset)
+            and (
+                os.path.isfile(args.dataset)
+                or os.path.isabs(args.dataset)
+                or args.dataset.startswith(("./", "../"))
+            )
+        ):
             dataset = _load_raw_text_file(RawTextDataLoader, tokenizer, is_mlx, args, args.dataset)
         else:
             use_modelscope = strtobool(os.environ.get("UNSLOTH_USE_MODELSCOPE", "False"))

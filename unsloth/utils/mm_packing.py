@@ -164,6 +164,25 @@ class _DocumentRopeIndex:
             for name, value in (("image_token_id", 1), ("video_token_id", 2))
         ]
 
+    def __getstate__(self):
+        # Spawned DataLoader workers pickle the collator: send the class and config, not the bound model
+        # (its weights, or local hooks that cannot pickle). get_rope_index reads only self.config.
+        state = dict(self.__dict__)
+        owner = getattr(self.get_rope_index, "__self__", None)
+        if isinstance(owner, torch.nn.Module):
+            state["get_rope_index"] = (type(owner), getattr(owner, "config", None))
+        return state
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+        if isinstance(self.get_rope_index, tuple):
+            cls, config = self.get_rope_index
+            # Weightless instance: the class's get_rope_index and helpers, over the same config.
+            view = cls.__new__(cls)
+            torch.nn.Module.__init__(view)
+            view.config = config
+            self.get_rope_index = view.get_rope_index
+
     def _token_types(self, input_ids):
         types = torch.zeros_like(input_ids, dtype = torch.int32)
         for token_id, value in self.token_types:
@@ -222,6 +241,19 @@ def _model_types(config) -> set:
     return types
 
 
+def _transformers_isolates_packed_documents() -> bool:
+    """Packed rows carry no mask: transformers derives the per-document one from the reset position_ids, which
+    masking_utils does only on torch >= 2.6 (and not at all before masking_utils). Without it documents mix."""
+    try:
+        from transformers import masking_utils
+    except Exception:
+        return False
+    if not hasattr(masking_utils, "find_packed_sequence_indices"):
+        return False
+    # transformers 4.x gates the packed mask on this flag; 5.x requires torch >= 2.6 and has no flag.
+    return bool(getattr(masking_utils, "_is_torch_greater_or_equal_than_2_6", True))
+
+
 def prepare_packed_multimodal_model(model) -> Optional[_DocumentRopeIndex]:
     """Refuses unsupported models; returns the per-document rope_index for mRoPE ones, else None."""
     types = _model_types(getattr(model, "config", None))
@@ -230,6 +262,13 @@ def prepare_packed_multimodal_model(model) -> Optional[_DocumentRopeIndex]:
             "Unsloth: padding_free=True in UnslothVisionDataCollator is only supported for "
             f"{sorted(SUPPORTED_PACKED_MULTIMODAL_MODEL_TYPES)} for now, got "
             f"{sorted(types) or 'an unknown model'}. Set padding_free=False."
+        )
+    if not _transformers_isolates_packed_documents():
+        raise ValueError(
+            "Unsloth: padding_free=True in UnslothVisionDataCollator needs transformers to build a "
+            "per-document attention mask from packed position_ids, which this install does not do "
+            f"(torch {torch.__version__}; it needs torch >= 2.6). Packed documents would attend to "
+            "each other. Upgrade torch or set padding_free=False."
         )
     rope_index = None
     if types & MROPE_PACKED_MULTIMODAL_MODEL_TYPES and not types & {"gemma4"}:

@@ -28,6 +28,7 @@ export const DEVICE_SECTIONS = [
   "unsloth",
   "other",
   "npu",
+  "exported",
   "fineTuned",
   "custom",
   "lmstudio",
@@ -40,6 +41,7 @@ export const SECTION_LABEL: Record<ListSection, string> = {
   unsloth: "Unsloth",
   other: "Other models",
   npu: "NPU",
+  exported: "Exported",
   fineTuned: "Trained",
   custom: "Custom folders",
   lmstudio: "LM Studio",
@@ -55,7 +57,10 @@ export function localSection(
   source: string | undefined,
   baseModel: string | undefined,
 ): DeviceSection {
-  if (source === "training" || source === "exported") {
+  if (source === "exported") {
+    return "exported";
+  }
+  if (source === "training") {
     return "fineTuned";
   }
   if (baseModel === "LM Studio") {
@@ -111,6 +116,13 @@ export interface PickerRow {
   rank?: number;
   /** In the listing's own units. */
   updatedAt?: number;
+  /** Runs on that page: a pick opens it there instead of loading into Chat. */
+  media?: "audio" | "images" | "video";
+}
+
+export interface LoadedCopy {
+  quant: string;
+  id: string;
 }
 
 export type DeviceSort = "recent" | "size" | "name";
@@ -133,19 +145,34 @@ export const DEVICE_SORT_DESC: Record<DeviceSort, boolean> = {
   size: true,
   name: false,
 };
-export type FormatFilter = "all" | "gguf" | "mlx" | "safetensors" | "npu";
+export type FormatFilter =
+  | "all"
+  | "gguf"
+  | "mlx"
+  | "safetensors"
+  | "npu"
+  | "media";
 export const FORMAT_FILTER_LABEL: Record<FormatFilter, string> = {
   all: "All",
   gguf: "GGUF",
   mlx: "MLX",
   safetensors: "Safetensors",
   npu: "NPU",
+  media: "Image/video gen",
 };
 
+export function isGenerationMedia(media: PickerRow["media"]): boolean {
+  return media === "images" || media === "video";
+}
+
 export function matchesFormat(
-  row: Pick<PickerRow, "format" | "kind">,
+  row: Pick<PickerRow, "format" | "kind" | "media">,
   filter: FormatFilter,
 ): boolean {
+  // Only their own filter lists them: they open on their own pages.
+  if (filter === "media" || isGenerationMedia(row.media)) {
+    return filter === "media" && isGenerationMedia(row.media);
+  }
   switch (filter) {
     case "all":
       return true;
@@ -304,6 +331,8 @@ export function expandQuantFavorites<
   T extends PickerRow & {
     favoriteQuant?: string;
     loadedQuant?: string | null;
+    loadedId?: string;
+    loadedCopies?: LoadedCopy[];
     inventoryKey?: string;
   },
 >(rows: readonly T[], pinned: readonly string[]): T[] {
@@ -325,16 +354,27 @@ export function expandQuantFavorites<
     if (quants.length === 0) {
       return [row];
     }
-    const perQuant = quants.map((quant) => ({
-      ...row,
-      key: `${row.key}::${quant}`,
-      // Disk state is keyed by the repo's row.
-      inventoryKey: row.key,
-      favoriteQuant: quant,
-      loaded:
-        row.loaded === true &&
-        (!row.loadedQuant || norm(row.loadedQuant) === norm(quant)),
-    }));
+    const perQuant = quants.map((quant) => {
+      const copy = row.loadedCopies?.find((c) => norm(c.quant) === norm(quant));
+      return {
+        ...row,
+        key: `${row.key}::${quant}`,
+        inventoryKey: row.key,
+        favoriteQuant: quant,
+        ...(row.loadedCopies
+          ? {
+              loaded: copy !== undefined,
+              loadedQuant: copy?.quant ?? null,
+              loadedId: copy?.id,
+              loadedCopies: copy ? [copy] : [],
+            }
+          : {
+              loaded:
+                row.loaded === true &&
+                (!row.loadedQuant || norm(row.loadedQuant) === norm(quant)),
+            }),
+      };
+    });
     return whole ? [row, ...perQuant] : perQuant;
   });
 }
@@ -470,22 +510,16 @@ export function pickerSide(
 }
 
 export const PICKER_GAP = 8;
-/** In on-screen px, so zoom does not flip the 400/420 choice. */
+/** From the window, never a tab's row count, in on-screen px. */
 export function pickerMinHeight(
   innerWidth: number,
   innerHeight: number,
   zoomOut: number,
 ): number {
-  const shortLandscape =
-    innerWidth > innerHeight && innerHeight / zoomOut <= 900;
-  return shortLandscape ? 400 : 420;
-}
-
-export function pickerRoomBelow(
-  triggerBottom: number,
-  viewportHeight: number,
-): number {
-  return Math.max(0, viewportHeight - triggerBottom - PICKER_GAP - PICKER_EDGE);
+  const screenHeight = innerHeight / zoomOut;
+  if (innerWidth > innerHeight && screenHeight <= 900) return 420;
+  const t = Math.min(1, Math.max(0, (screenHeight - 1080) / 300));
+  return Math.round(440 + 100 * t);
 }
 
 /** Short of room below, a downward panel rides up over the composer, never past the window top. */
@@ -558,6 +592,40 @@ export function discoverUsesFallback(
   return hubQuery === "" || hubResultCount === 0;
 }
 
+/** Discover rows that need a file listing for their size: the listing's dtype counts already size a
+ * plain checkpoint, not packed MLX weights. */
+export function hubSizeIds<
+  T extends { id: string; isGguf: boolean; estimatedSizeBytes?: number },
+>(
+  results: readonly T[],
+  recommended: readonly { id: string }[],
+  isMlx: (result: T) => boolean = () => true,
+): string[] {
+  const rows = new Set(recommended.map((m) => m.id.toLowerCase()));
+  return results.flatMap((r) =>
+    !r.isGguf &&
+    rows.has(r.id.toLowerCase()) &&
+    (!r.estimatedSizeBytes || isMlx(r))
+      ? [r.id]
+      : [],
+  );
+}
+
+/** Discover lists plain safetensors on a Mac, and under the Safetensors filter on any host that runs
+ * them; a chat-only host runs GGUF, plus checkpoints where it serves MLX. On a Mac `chatOnly` is a guess
+ * until measured, so only `chatOnlyKnown` narrows it. */
+export function discoverListsCheckpoints(
+  isMac: boolean,
+  formatFilter: string,
+  chatOnly: boolean,
+  isMlx: boolean,
+  servesMlx: boolean,
+  chatOnlyKnown: boolean,
+): boolean {
+  if (isMac && chatOnlyKnown) return servesMlx;
+  return isMac || (formatFilter === "safetensors" && !chatOnly && !isMlx);
+}
+
 /** Reads `items` with at most `workers` in flight; stops taking new ones once `live()` is false. */
 export async function readBounded<T, R>(
   items: T[],
@@ -582,8 +650,14 @@ export async function readBounded<T, R>(
 
 /** The chosen model goes to the host's guarded unload (no id), as the header picker's Eject did. */
 export function ejectTargetId(
-  row: { id: string; loadedId?: string },
+  row: { id: string; loadedId?: string; loadedCopies?: LoadedCopy[] },
   chosenId: string | undefined,
+  checkpoint?: string | null,
 ): string | undefined {
-  return row.id === chosenId ? undefined : (row.loadedId ?? row.id);
+  if (row.id !== chosenId) {
+    return row.loadedId ?? row.id;
+  }
+  return row.loadedCopies?.every((c) => norm(c.id) !== norm(checkpoint))
+    ? row.loadedId
+    : undefined;
 }
