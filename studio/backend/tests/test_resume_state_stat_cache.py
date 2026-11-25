@@ -155,11 +155,10 @@ def test_cached_answers_match_uncached_for_every_checkpoint_shape(tmp_path, monk
     assert [_listed(run) for run in runs] == expected
     cold = len(reads)
     assert [_listed(run) for run in runs] == expected
-    assert len(reads) == cold  # warm listing re-reads nothing
+    assert len(reads) == cold
     assert [_uncached(run) for run in runs] == expected
-    assert len(reads) > cold  # outside a listing every call reads
+    assert len(reads) > cold
 
-    # Rotate every file of every run to the next variant (new inode each time) and compare again.
     def rotate(variants: dict, name: str) -> str:
         names = list(variants)
         return names[(names.index(name) + 1) % len(names)]
