@@ -14,6 +14,7 @@ The one-GPU reference is zoo's own template source, read without importing zoo; 
 CPU, one process, no DTensor."""
 
 import ast
+import gc
 import importlib.util
 import inspect
 import linecache
@@ -30,6 +31,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from test_tp_native_oracle import tpn  # noqa: E402  (tp_native without the GPU-only unsloth import)
 
 
+_ZOO_FILE = "<unsloth_zoo compiler>"
+
+
 def _zoo_tree():
     """unsloth_zoo/compiler.py parsed, without importing zoo, or None."""
     try:
@@ -42,7 +46,10 @@ def _zoo_tree():
     if not os.path.exists(path):
         return None
     with open(path, encoding = "utf-8") as f:
-        return ast.parse(f.read())
+        text = f.read()
+    # inspect reads the exec'd zoo functions (the LoRA dispatcher) from their real lines, as in a zoo install.
+    linecache.cache[_ZOO_FILE] = (len(text), None, text.splitlines(True), _ZOO_FILE)
+    return ast.parse(text)
 
 
 _PATCHERS = (
@@ -50,6 +57,7 @@ _PATCHERS = (
     "_patch_lora_input_cast",
     "_patch_lora_base_layer_input_cast",
 )
+_OPTIONAL = ("_install_lora_forward_variant",)  # newer zoo: per-flag LoRA forward dispatcher
 
 
 def _zoo_parts():
@@ -68,10 +76,10 @@ def _zoo_parts():
                     templates[n] = node.value.value
             elif "_LORA_INPUT_CASTS" in names:
                 nodes.append(node)
-        elif isinstance(node, ast.FunctionDef) and node.name in _PATCHERS:
+        elif isinstance(node, ast.FunctionDef) and node.name in _PATCHERS + _OPTIONAL:
             nodes.append(node)
-    scope = {"os": os, "re": re}
-    exec(compile(ast.Module(body = nodes, type_ignores = []), "<unsloth_zoo compiler>", "exec"), scope)
+    scope = {"os": os, "re": re, "gc": gc, "torch": torch}
+    exec(compile(ast.Module(body = nodes, type_ignores = []), _ZOO_FILE, "exec"), scope)
     if {"COMPILED_LORA_FORWARD", "COMPILED_LORA_FORWARD_forced_float32"} - templates.keys():
         return None
     if set(_PATCHERS) - scope.keys():
@@ -386,3 +394,49 @@ def test_forced_float32_one_gpu_flushes_what_float32_keeps():
     _, a32, _ = _run(_peft_forward, proj, x, grad)
     rel = float((a16 - a32).norm() / a32.norm())
     assert rel > 1e-2, rel  # a real difference, not rounding noise
+
+
+def _dispatched(
+    first,
+    second,
+    peft = "dense",
+):
+    """zoo's real _install_lora_forward_variant: a class built under `first`, then another family's load under
+    `second` (unsloth_zoo compiler patch_lora_forwards), so the class forward is the `unsloth_forward` dispatcher
+    over both generated variants."""
+    if _ZOO is None or "_install_lora_forward_variant" not in _ZOO[1]:
+        pytest.skip("this unsloth_zoo has no per-flag LoRA forward dispatcher")
+    cls = _with_forward(first, peft)
+    _ZOO[1]["_install_lora_forward_variant"](cls, cls.forward, _generated_forward(second, peft))
+    assert set(cls.forward._unsloth_variants) == {first, second}
+    return cls
+
+
+@pytest.mark.parametrize("order", [("1", "0"), ("0", "1")])
+@pytest.mark.parametrize("stamp", ["0", "1", None])
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+def test_dispatcher_resolves_the_stamped_variant(dtype, stamp, order):
+    """Forced and non-forced families in one process: the class forward is zoo's dispatcher, whose own source has
+    no cast line. tp must read the variant the dispatcher picks (the layer's stamp, else the last build) and match
+    that variant's arithmetic bit for bit."""
+    picked = order[1] if stamp is None else stamp
+    if picked == "1" and dtype is torch.bfloat16:
+        pytest.skip("forced float32 keeps float16 base weights")
+    proj = _dispatched(*order)(dtype)
+    if stamp is not None:
+        proj.__dict__["_unsloth_force_float32"] = stamp
+    want = "float16" if picked == "1" else ("lora_guarded" if _guarded_zoo() else "lora")
+    assert tpn._one_gpu_lora_mode(proj) == want
+    x, grad = _inputs(dtype)
+    ref = _run(lambda p, xx: p.forward(xx), proj, x, grad)
+    _assert_same(ref, _run(tpn._tp_projection_compute, proj, x, grad))
+
+
+def test_dispatcher_reads_the_base_layer_stamp():
+    """A layer wrapped after the dispatcher was installed carries no stamp; the dispatcher then reads its base
+    layer's, and so must tp."""
+    proj = _dispatched("0", "1")(torch.float16)
+    proj.base_layer.__dict__["_unsloth_force_float32"] = "0"
+    assert tpn._one_gpu_lora_mode(proj) == ("lora_guarded" if _guarded_zoo() else "lora")
+    proj.base_layer.__dict__["_unsloth_force_float32"] = "1"
+    assert tpn._one_gpu_lora_mode(proj) == "float16"

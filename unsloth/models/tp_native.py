@@ -2657,6 +2657,24 @@ def _tp_projection_compute(self, x):
 _TP_LORA_NO_COMPILED_ADDMM = tuple(int(v) for v in torch.__version__.split(".")[:2]) < (2, 10)
 
 
+def _one_gpu_lora_forward(proj):
+    """The generated forward the one-GPU run calls for this layer. When families built under different
+    UNSLOTH_FORCE_FLOAT32 values share a process, zoo's _install_lora_forward_variant puts an `unsloth_forward`
+    dispatcher on the class whose `_unsloth_variants` maps each flag to its generated forward; resolved here as the
+    dispatcher does (the layer's stamp, its base layer's, else the forward installed last, whose flag the
+    dispatcher carries), so the variant's own flag and cast line are read, not the dispatcher's."""
+    forward = getattr(type(proj), "forward", None)
+    variants = getattr(forward, "_unsloth_variants", None)
+    if not isinstance(variants, dict) or not variants:
+        return forward
+    stamp = getattr(proj, "_unsloth_force_float32", None)
+    if stamp is None:
+        stamp = getattr(proj._modules.get("base_layer"), "_unsloth_force_float32", None)
+    default = variants.get(getattr(forward, "_unsloth_force_float32", None))
+    variant = variants.get(stamp, default)
+    return variant if callable(variant) else None
+
+
 def _one_gpu_lora_mode(proj):
     """How the one-GPU run computes this layer's low-rank product outside autocast: Unsloth's compiled LoRA
     forward (unsloth_zoo compiler `lora_forward`) in float16 when the layer was built under forced float32
@@ -2668,17 +2686,10 @@ def _one_gpu_lora_mode(proj):
     resolved per adapter at call time). Read from the generated forward's own cast line. None when the class
     keeps PEFT's forward, which casts x to the LoRA weights' dtype (the float32 product), or the generated cast
     cannot be told. Read once at shard time."""
-    forward = getattr(type(proj), "forward", None)
+    forward = _one_gpu_lora_forward(proj)
     if getattr(forward, "__name__", "") != "unsloth_forward":
         return None
-    # The flag the compiled forward dispatches on: the layer's stamp, its base layer's, else the build's.
-    flag = proj.__dict__.get("_unsloth_force_float32")
-    if flag is None:
-        flag = getattr(proj._modules.get("base_layer"), "__dict__", {}).get(
-            "_unsloth_force_float32"
-        )
-    if flag is None:
-        flag = getattr(forward, "_unsloth_force_float32", "0")
+    flag = getattr(forward, "_unsloth_force_float32", "0")
     if str(flag) != "0":  # zoo builds the forced template for every UNSLOTH_FORCE_FLOAT32 but "0"
         return "float16"
     # zoo's _patch_lora_input_cast: a PEFT forward already branching on autocast keeps its own x cast.
