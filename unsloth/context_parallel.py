@@ -2309,7 +2309,8 @@ def _rl_decoder_pre_hook(module, args, kwargs):
     if manager is None or manager is not module._unsloth_cp_rl_manager:
         stack.append(None)
         return None
-    if args or kwargs.get("past_key_values") is not None or kwargs.get("input_ids") is None:
+    has_cache = kwargs.get("past_key_values") is not None or kwargs.get("cache") is not None
+    if args or has_cache or kwargs.get("input_ids") is None:
         raise NotImplementedError(
             "Unsloth: DPO / GRPO context parallelism shards keyword input_ids training forwards "
             "only (no positional inputs, inputs_embeds or KV cache)."

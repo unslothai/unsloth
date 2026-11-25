@@ -46,6 +46,7 @@ Unmodified scripts: UNSLOTH_TP_SIZE=k torchrun ... applies all of the above from
 
 from __future__ import annotations
 
+import ast
 import contextlib
 import contextvars
 import copy
@@ -54,6 +55,7 @@ import functools
 import inspect
 import math
 import re
+import textwrap
 import types
 from typing import Optional
 
@@ -1865,12 +1867,19 @@ def _moe_post_hook(module, args, output):
 _MOE_SHARD_ENV = "UNSLOTH_TP_MOE_SHARD"
 _EXPERT_STACKS = ("gate_up_proj", "down_proj")
 _EXPERT_CALL = ("hidden_states", "top_k_index", "top_k_weights")
+# Other names for the same experts call: gpt-oss (hidden_states, router_indices, routing_weights).
+_EXPERT_CALL_ALIASES = {"router_indices": "top_k_index", "routing_weights": "top_k_weights"}
 _EXPERT_DTYPES = (torch.float16, torch.bfloat16, torch.float32, torch.float64)
 
 
 def moe_shard_enabled():
     import os
     return os.environ.get(_MOE_SHARD_ENV, "1").strip().lower() not in ("0", "false", "off", "no")
+
+
+def moe_blocks_with_experts(model):
+    """Every module with an `experts` child (the block whose experts call takes the routed tokens)."""
+    return [m for m in model.modules() if isinstance(m._modules.get("experts"), nn.Module)]
 
 
 def _experts_chain(block):
@@ -2014,7 +2023,7 @@ def expert_shard_problem(block, tp = None):
         names = tuple(inspect.signature(type(leaf).forward).parameters)[1:]
     except (TypeError, ValueError):
         names = ()
-    if names != _EXPERT_CALL:
+    if tuple(_EXPERT_CALL_ALIASES.get(n, n) for n in names) != _EXPERT_CALL:
         return f"its experts forward takes {names}, not {_EXPERT_CALL}"
     if getattr(type(leaf), "_unsloth_expert_lora_factors_swapped", False):
         return "swapped expert LoRA factors"
@@ -2167,6 +2176,7 @@ def _expert_call_args(args, kwargs):
     values, kwargs = list(args), dict(kwargs)
     if not values and "x" in kwargs:  # PEFT ParamWrapper.forward(x, *args, **kwargs)
         values.append(kwargs.pop("x"))
+    kwargs = {_EXPERT_CALL_ALIASES.get(k, k): v for k, v in kwargs.items()}
     for name in _EXPERT_CALL[len(values) :]:
         if name not in kwargs:
             return None
@@ -2238,7 +2248,13 @@ def _tp_experts_forward(shard, prior):
     return forward
 
 
-def _shard_moe_experts(block, mesh, rank, tp):
+def _shard_moe_experts(
+    block,
+    mesh,
+    rank,
+    tp,
+    make_forward = None,
+):
     chain = _experts_chain(block)
     leaf, wrappers = chain[-1], chain[:-1]
     E = leaf.num_experts
@@ -2285,7 +2301,7 @@ def _shard_moe_experts(block, mesh, rank, tp):
     outer = chain[0]
     prior = outer.__dict__.get("forward", outer.forward)
     outer.__dict__["_unsloth_tp_experts_prior_forward"] = outer.__dict__.get("forward", _MISSING)
-    outer.forward = _tp_experts_forward(shard, prior)
+    outer.forward = (make_forward or _tp_experts_forward)(shard, prior)
     block.__dict__["_unsloth_tp_expert_shard"] = shard
     return shard
 
@@ -2616,7 +2632,14 @@ def _tp_projection_compute(self, x):
     lora_A = self._modules.get("lora_A")
     if lora_A is None or getattr(self, "disable_adapters", True) or getattr(self, "merged", False):
         return out
-    for adapter in _active_adapter(self) or ():
+    mode = self.__dict__.get("_unsloth_tp_lora_mode", _MISSING)
+    if mode is _MISSING:  # a projection not sharded by apply_tensor_parallel (tests)
+        mode = _one_gpu_lora_mode(self)
+    if torch.is_autocast_enabled():  # the generated forward's own (CUDA) query
+        mode = None
+    out_dtype = out.dtype
+    active = _active_adapter(self) or ()
+    for adapter in active:
         if adapter not in lora_A:
             continue
         A = _local(lora_A[adapter].weight)
@@ -2624,10 +2647,146 @@ def _tp_projection_compute(self, x):
         if rows is not None:
             B = B.narrow(0, *rows)
         scaling = self.scaling[adapter]
+        if mode is not None:
+            step = mode
+            if (
+                step == "lora_guarded"
+            ):  # zoo's guard: cast only for a variant or several active adapters
+                variant = adapter in (getattr(self, "lora_variant", None) or {})
+                step = "lora" if variant or len(active) > 1 else "base"
+            if (
+                step == "lora"
+            ):  # the generated forward keeps result in the LoRA dtype until the loop ends
+                out, x = out.to(A.dtype), x.to(A.dtype)
+            out = _tp_lora_update(self, adapter, out, x, A, B, scaling, step)
+            continue
         x_lora = x if torch.is_autocast_enabled() else x.to(A.dtype)
         x_lora = _lora_dropout(self, adapter, x_lora)
         out = out + (F.linear(F.linear(x_lora, A), B) * scaling).to(out.dtype)
-    return out
+    return out.to(out_dtype)
+
+
+# torch 2.8 / 2.9 inductor miscompiles addmm(alpha = scaling, beta = 1) traced inside a compiled block, forward
+# and backward; fixed in 2.10 (unsloth#3271). The same guard as unsloth_zoo's compiled LoRA forward.
+_TP_LORA_NO_COMPILED_ADDMM = tuple(int(v) for v in torch.__version__.split(".")[:2]) < (2, 10)
+
+
+def _one_gpu_lora_forward(proj):
+    """The generated forward the one-GPU run calls for this layer. When families built under different
+    UNSLOTH_FORCE_FLOAT32 values share a process, zoo's _install_lora_forward_variant puts an `unsloth_forward`
+    dispatcher on the class whose `_unsloth_variants` maps each flag to its generated forward; resolved here as the
+    dispatcher does (the layer's stamp, its base layer's, else the forward installed last, whose flag the
+    dispatcher carries), so the variant's own flag and cast line are read, not the dispatcher's."""
+    forward = getattr(type(proj), "forward", None)
+    variants = getattr(forward, "_unsloth_variants", None)
+    if not isinstance(variants, dict) or not variants:
+        return forward
+    stamp = getattr(proj, "_unsloth_force_float32", None)
+    if stamp is None:
+        stamp = getattr(proj._modules.get("base_layer"), "_unsloth_force_float32", None)
+    default = variants.get(getattr(forward, "_unsloth_force_float32", None))
+    variant = variants.get(stamp, default)
+    return variant if callable(variant) else None
+
+
+def _one_gpu_lora_mode(proj):
+    """How the one-GPU run computes this layer's low-rank product outside autocast: Unsloth's compiled LoRA
+    forward (unsloth_zoo compiler `lora_forward`) in float16 when the layer was built under forced float32
+    ("float16", Gemma 3 / 4 on float16 GPUs). Otherwise zoo's _patch_lora_input_cast decides: where PEFT's forward
+    branches on autocast itself (bitsandbytes) only x goes to the LoRA dtype and the product runs in the base
+    output's dtype ("output"); elsewhere (dense Linear) the generated forward casts result and x to the LoRA dtype,
+    so the product runs in the LoRA weights' dtype, either always ("lora") or, in newer zoo, only for a LoRA variant
+    or several active adapters, a single vanilla adapter keeping x and the base output's dtype ("lora_guarded",
+    resolved per adapter at call time). Read from the generated forward's own cast line. None when the class
+    keeps PEFT's forward, which casts x to the LoRA weights' dtype (the float32 product), or the generated cast
+    cannot be told. Read once at shard time."""
+    forward = _one_gpu_lora_forward(proj)
+    if getattr(forward, "__name__", "") != "unsloth_forward":
+        return None
+    flag = getattr(forward, "_unsloth_force_float32", "0")
+    if str(flag) != "0":  # zoo builds the forced template for every UNSLOTH_FORCE_FLOAT32 but "0"
+        return "float16"
+    # zoo's _patch_lora_input_cast: a PEFT forward already branching on autocast keeps its own x cast.
+    try:
+        original = inspect.getsource(forward._unsloth_original_forward)
+    except (AttributeError, OSError, TypeError):
+        return None
+    if "torch.is_autocast_enabled()" in original:
+        return "output"
+    return _generated_lora_cast_mode(_generated_lora_source(forward, original))
+
+
+# The guard zoo's _patch_lora_input_cast writes before `result, x = result.to(lora_A.weight.dtype), ...`.
+_LORA_CAST_LINE = re.compile(
+    r"^\s*if (.+?): result, x = result\.to\(lora_A\.weight\.dtype\), x\.to\(lora_A\.weight\.dtype\)\s*$",
+    re.MULTILINE,
+)
+_LORA_CAST_GUARDS = {
+    "not torch.is_autocast_enabled()": "lora",
+    "not torch.is_autocast_enabled() and (active_adapter in getattr(self, 'lora_variant', {}) "
+    "or len(self.active_adapters) > 1)": "lora_guarded",
+}
+
+
+def _generated_lora_source(forward, original):
+    """The generated forward's source (zoo writes it to unsloth_compiled_cache), else zoo's own rewrite of the
+    original PEFT source; None when neither is readable."""
+    try:
+        return inspect.getsource(forward)
+    except (OSError, TypeError):
+        pass
+    try:
+        from unsloth_zoo import compiler as zoo_compiler
+
+        source = textwrap.dedent(original)
+        source = zoo_compiler._patch_lora_update(source)
+        return zoo_compiler._patch_lora_input_cast(source, force_float32 = False)
+    except Exception:
+        return None
+
+
+def _generated_lora_cast_mode(source):
+    if not source:
+        return None
+    guards = set()
+    for found in _LORA_CAST_LINE.finditer(source):
+        try:
+            guards.add(ast.unparse(ast.parse(found.group(1).strip(), mode = "eval")))
+        except SyntaxError:
+            return None
+    known = {ast.unparse(ast.parse(k, mode = "eval")): v for k, v in _LORA_CAST_GUARDS.items()}
+    modes = {known.get(g) for g in guards}
+    if len(modes) != 1 or None in modes:  # no cast, an unknown guard, or several: never a guess
+        return None
+    return modes.pop()
+
+
+def _tp_lora_update(proj, adapter, out, x, A, B, scaling, mode):
+    """out + scaling * B(A(x)) rounded as the one-GPU compiled LoRA forward (`mode` from _one_gpu_lora_mode):
+    the generated input casts, dropout, x @ A, then one addmm in the result's dtype, restored to out's dtype.
+    The float32 product used before gave the tp ranks LoRA gradients the one-GPU run never computes (under
+    forced float32 the one-GPU float16 product flushes the small loss-scaled gradients of Gemma-4's upper
+    layers), so Gemma-4 tp=2 trained off the one-GPU curve."""
+    result = out
+    if mode == "float16":  # COMPILED_LORA_FORWARD_forced_float32: x as the layer received it
+        xA = _lora_dropout(proj, adapter, x.to(torch.float16)) @ A.to(torch.float16).t()
+    else:  # COMPILED_LORA_FORWARD after the generated cast: dropout before the cast to the result's dtype
+        if mode == "output":  # PEFT's own x cast; "lora" arrives cast, "base" keeps x as received
+            cast = getattr(proj, "_cast_input_dtype", None)
+            x = cast(x, A.dtype) if cast is not None else x.to(A.dtype)
+        xA = _lora_dropout(proj, adapter, x).to(result.dtype) @ A.to(result.dtype).t()
+    dtype = result.dtype
+    xA, Bt = xA.to(dtype), B.to(dtype).t()
+    if _TP_LORA_NO_COMPILED_ADDMM and torch.compiler.is_compiling():
+        return (result + scaling * (xA @ Bt)).to(out.dtype)
+    shape = result.shape
+    flat = torch.addmm(
+        result.reshape(-1, shape[-1]),
+        xA.reshape(-1, xA.shape[-1]),
+        Bt,
+        alpha = scaling,
+    )
+    return flat.view(shape).to(out.dtype)
 
 
 def _tp_grouped_compute(self, base, x, W, bias):
@@ -3062,10 +3221,19 @@ def _refuse_cached_forward(module):
         names = list(inspect.signature(forward).parameters)
     except (TypeError, ValueError):
         names = []
-    index = names.index("past_key_values") if "past_key_values" in names else None
+    # transformers 5.24 renamed past_key_values to cache.
+    name = next((n for n in ("cache", "past_key_values") if n in names), None)
+    index = names.index(name) if name is not None else None
 
     def forward_without_cache(*args, **kwargs):
-        past = kwargs.get("past_key_values", kwargs.get("past_key_value"))
+        past = next(
+            (
+                kwargs[n]
+                for n in ("cache", "past_key_values", "past_key_value")
+                if kwargs.get(n) is not None
+            ),
+            None,
+        )
         if past is None and index is not None and len(args) > index:
             past = args[index]
         if _cache_in_use(past) and not _replica_in(module):
@@ -3763,6 +3931,7 @@ def _shard_projection(region, proj, mesh, rank, tp):
     module._unsloth_tp_local = (
         _tp_lora_parameters  # read by kernels/utils.py get_lora_parameters(_bias)
     )
+    module.__dict__["_unsloth_tp_lora_mode"] = _one_gpu_lora_mode(module)
     module.forward = types.MethodType(_tp_projection_forward, module)
 
 
@@ -4187,6 +4356,22 @@ _UNSUPPORTED_LOAD_KWARGS = (
 )
 
 
+class HFDistributedKwargsError(ValueError):
+    """A from_pretrained under one of Unsloth's sharders also asked transformers to distribute the model."""
+
+
+def refuse_hf_distributed_kwargs(kwargs, label, sharder):
+    """HFDistributedKwargsError (a ValueError) when a from_pretrained under one of Unsloth's sharded loaders also
+    asks transformers to distribute the model (tp_plan / tp_size / device_mesh / distributed_config, any value
+    but None, as transformers reads them: tp_plan = {} is a plan): the two would shard it twice."""
+    key = next((k for k in _HF_DISTRIBUTED_KWARGS if kwargs.get(k) is not None), None)
+    if key is not None:
+        raise HFDistributedKwargsError(
+            f"Unsloth: {label} sharded loading cannot be combined with transformers' own {key}; drop it "
+            f"({sharder} shards the model)."
+        )
+
+
 def _preloaded(t):
     return None if t is None else getattr(t, _PRELOADED, None)
 
@@ -4505,6 +4690,12 @@ def _parameter_slots(model):
     return slots
 
 
+class _TensorByTensorUnsupported(ValueError):
+    """_fill_from_checkpoint cannot read a model tensor as one checkpoint tensor: transformers builds it with a
+    weight conversion (merged / unpadded tensors), or the checkpoint stores it as bare bitsandbytes 4-bit bytes
+    (a pre-quantized fused expert stack). Raised before any tensor is read."""
+
+
 def _fill_from_checkpoint(
     model,
     name,
@@ -4541,7 +4732,7 @@ def _fill_from_checkpoint(
         for n in names:
             if n in aliases:
                 if aliases[n] is None:
-                    raise ValueError(
+                    raise _TensorByTensorUnsupported(
                         f"Unsloth: {label} sharded loading cannot read '{n}': transformers builds it from several "
                         f"checkpoint tensors (a weight conversion); load this model without sharded loading "
                         f"({fallback})."
@@ -4549,6 +4740,8 @@ def _fill_from_checkpoint(
                 return aliases[n]
         return None
 
+    # Every tensor resolved and checked before the first read (a refusal reads nothing).
+    slots = []
     for old, where, names in _parameter_slots(model).values():
         key = find(names)
         if key is None:
@@ -4557,20 +4750,36 @@ def _fill_from_checkpoint(
                 f"this model without sharded loading ({fallback})."
             )
         quantized_module = quantized.get(id(old))
+        stored = reader.shape(key)
         if quantized_module is not None:
             shape = (quantized_module.out_features, quantized_module.in_features)
-            stored = reader.shape(key)
             nbytes = math.prod(stored) * reader.quant.packed_dtype(key).itemsize
             if len(stored) != 2 or stored[1] != 1 or nbytes * 2 != math.prod(shape):
                 raise ValueError(
                     f"Unsloth: {label} sharded loading: checkpoint tensor '{key}' ({stored}) is not the packed "
                     f"4-bit form of a {shape} weight; load this model without sharded loading ({fallback})."
                 )
-        elif reader.shape(key) != tuple(old.shape):
+        elif stored != tuple(old.shape):
+            if len(stored) == 2 and stored[1] == 1 and f"{key}.absmax" in index:
+                raise _TensorByTensorUnsupported(
+                    f"Unsloth: {label} sharded loading cannot read '{names[0]}' {tuple(old.shape)}: the "
+                    f"checkpoint stores it as bare bitsandbytes 4-bit bytes '{key}' {stored} (a pre-quantized "
+                    f"fused expert stack); load this model without sharded loading ({fallback})."
+                )
             raise ValueError(
-                f"Unsloth: checkpoint tensor '{key}' has shape {reader.shape(key)}, the model expects "
+                f"Unsloth: checkpoint tensor '{key}' has shape {stored}, the model expects "
                 f"{tuple(old.shape)}."
             )
+        slots.append((old, where, key, quantized_module))
+    buffers = []
+    for module_name, module in model.named_modules():
+        for bname, buf in list(module._buffers.items()):
+            if buf is None or not buf.is_meta:
+                continue
+            key = f"{module_name}.{bname}" if module_name else bname
+            source = find([key]) if bname not in module._non_persistent_buffers_set else None
+            buffers.append((module, bname, buf, key, source))
+    for old, where, key, quantized_module in slots:
         new = read_local(old, reader, key)
         if new is None and quantized_module is not None:
             new = reader.quant.whole(key, quantized_module, device)
@@ -4585,20 +4794,15 @@ def _fill_from_checkpoint(
         for module, pname in where:
             module._parameters[pname] = new
     skeleton = None
-    for module_name, module in model.named_modules():
-        for bname, buf in list(module._buffers.items()):
-            if buf is None or not buf.is_meta:
-                continue
-            key = f"{module_name}.{bname}" if module_name else bname
-            source = find([key]) if bname not in module._non_persistent_buffers_set else None
-            if source is not None:
-                value = reader.full(source)
-            else:
-                skeleton = skeleton if skeleton is not None else _buffer_skeleton(model)
-                value = skeleton.get_buffer(key)
-                if value.is_meta:
-                    raise ValueError(f"Unsloth: sharded loading cannot rebuild the buffer '{key}'.")
-            module._buffers[bname] = value.to(device = device, dtype = buf.dtype)
+    for module, bname, buf, key, source in buffers:
+        if source is not None:
+            value = reader.full(source)
+        else:
+            skeleton = skeleton if skeleton is not None else _buffer_skeleton(model)
+            value = skeleton.get_buffer(key)
+            if value.is_meta:
+                raise ValueError(f"Unsloth: sharded loading cannot rebuild the buffer '{key}'.")
+        module._buffers[bname] = value.to(device = device, dtype = buf.dtype)
     if isinstance(getattr(model, "hf_device_map", None), dict):
         model.hf_device_map = {"": device.index if device.type == "cuda" else device.type}
     return reader, sharded_numel, full_numel
@@ -4737,15 +4941,18 @@ def _tp_load_quantizing(original, cls, name, args, kwargs, mesh, state):
 
     def plan_for(model):
         # The meta model as transformers built it (Linear4bit already swapped in): the plan apply derives later.
-        tp_plan = derive_tp_plan(model, tp, state["plan"])
+        # Expert parallel (ep_native.expert_parallel_loading): only the routed expert stacks are cut.
+        experts_only = state.get("experts_only")
+        tp_plan = None if experts_only else derive_tp_plan(model, tp, state["plan"])
         projs = {}
-        for region in tp_plan.regions:
+        for region in tp_plan.regions if tp_plan is not None else ():
             for proj in region.projs:
                 if proj.style != KV_REPLICATED:
                     projs[id(_weight(proj.module)[1])] = (f"{region.path}.{proj.name}", proj)
         experts = {}
-        if moe_shard_enabled() and tp > 1:
-            for block in tp_plan.moe_blocks:
+        if (moe_shard_enabled() or experts_only) and tp > 1:
+            blocks = moe_blocks_with_experts(model) if experts_only else tp_plan.moe_blocks
+            for block in blocks:
                 chain = _experts_chain(block)
                 if chain:
                     experts[id(chain[-1])] = block
@@ -4916,6 +5123,15 @@ def _from_pretrained_sharded(original, cls, name, args, kwargs, state):
     )
 
     label = state.get("label", "tensor parallel")
+    if state.get("quantize_on_load") is not None:
+        # Native FSDP2 / tensor parallel: before the mesh, the checkpoint or any whole-load fallback.
+        refuse_hf_distributed_kwargs(
+            kwargs,
+            label,
+            "apply_tensor_parallel"
+            if state["quantize_on_load"] is _tp_load_quantizing
+            else "shard_model",
+        )
     if callable(state["mesh"]):
         state["mesh"] = state["mesh"]()
     original_kwargs = kwargs
@@ -4937,13 +5153,6 @@ def _from_pretrained_sharded(original, cls, name, args, kwargs, state):
     # right after transformers quantizes it (fsdp2_load._load_quantizing, _tp_load_quantizing) instead of the
     # whole model on every rank.
     chunked = state.get("quantize_on_load")
-    if chunked is _tp_load_quantizing:
-        key = next((k for k in _HF_DISTRIBUTED_KWARGS if original_kwargs.get(k)), None)
-        if key is not None:
-            raise ValueError(
-                f"Unsloth: {label} sharded loading cannot be combined with transformers' own {key}; drop it "
-                "(apply_tensor_parallel shards the model)."
-            )
     if chunked is not None and quantized is None and not other:
         from .fsdp2_load import bnb4_on_load, quantized_load_bytes
         if bnb4_on_load(original_kwargs):
@@ -4969,7 +5178,7 @@ def _from_pretrained_sharded(original, cls, name, args, kwargs, state):
                 ):
                     return original(cls, name, *args, **original_kwargs)
             return chunked(original, cls, name, args, original_kwargs, mesh, state)
-    if state.get("prequantized_only") and quantized is None:
+    if state.get("experts_only") or (state.get("prequantized_only") and quantized is None):
         return original(cls, name, *args, **original_kwargs)
     if state.get("auto"):
         # Only a checkpoint too large for a whole load on this GPU loads sharded (the full load stays the
@@ -5033,9 +5242,26 @@ def _from_pretrained_sharded(original, cls, name, args, kwargs, state):
             f"{state.get('prequantized_hint', 'Load it in full and call apply_tensor_parallel.')}"
         )
     materialize = state.get("materialize", _materialize_sharded)
-    materialize(
-        model, name, kwargs, mesh, state["plan"], device, **state.get("materialize_kwargs", {})
-    )
+    try:
+        materialize(
+            model, name, kwargs, mesh, state["plan"], device, **state.get("materialize_kwargs", {})
+        )
+    except _TensorByTensorUnsupported:
+        # A pre-quantized bitsandbytes 4-bit checkpoint whose tensors transformers converts on load (Inkling 2:
+        # merged loop queries, the unpadded lm_head, zoo's fused 4-bit expert stacks): transformers' own load,
+        # each 4-bit projection / expert stack / FSDP2 chunk kept as it is set (the quantize-on-load path).
+        # Pipeline parallel registers its per-stage load. A 16-bit checkpoint with a weight conversion keeps the
+        # refusal (those loaders would load it in full).
+        fallback = state.get("prequantized_fallback", chunked)
+        if fallback is None or quantized is None:
+            raise
+        del loaded, model, reader
+        loaded = fallback(original, cls, name, args, original_kwargs, mesh, state)
+        model = loaded[0] if isinstance(loaded, tuple) else loaded
+        for key in ("_unsloth_tp_load_stats", "_unsloth_fsdp2_load_stats", "_unsloth_pp_preload"):
+            if isinstance(model.__dict__.get(key), dict):
+                model.__dict__[key]["prequantized"] = True
+        return loaded
     state["models"].append(model)
     return loaded
 

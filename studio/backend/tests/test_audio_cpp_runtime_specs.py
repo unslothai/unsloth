@@ -84,7 +84,7 @@ def _hub(monkeypatch, tmp_path, remote: dict) -> Path:
     root = tmp_path / "hub"
     root.mkdir()
     monkeypatch.setattr(hf_cache_settings, "active_hf_hub_cache", lambda: str(root))
-    monkeypatch.setattr(acm, "hub_offline", lambda: False)
+    monkeypatch.setattr(acm, "hf_env_offline", lambda: False)
     monkeypatch.setattr(
         huggingface_hub,
         "get_hf_file_metadata",

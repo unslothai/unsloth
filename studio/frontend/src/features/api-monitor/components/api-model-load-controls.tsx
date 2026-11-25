@@ -38,6 +38,7 @@ import {
   useState,
 } from "react";
 import { monitorSelection } from "../use-resident-run-target";
+import { ModelLoadError } from "./model-load-error";
 
 // A pick superseded by a newer one rejects too; the newer pick owns the outcome.
 function loadErrorMessage(err: unknown, fallback: string): string | null {
@@ -427,12 +428,10 @@ export function ApiModelLoadControls({
         </ComposerModelPickerContext.Provider>
       </div>
       {actionError ? (
-        <span
-          role="alert"
-          className="basis-full break-words text-ui-12 text-red-600 dark:text-red-400"
-        >
-          {actionError}
-        </span>
+        <ModelLoadError
+          message={actionError}
+          onDismiss={() => setActionError(null)}
+        />
       ) : null}
     </div>
   );

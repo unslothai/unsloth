@@ -1682,12 +1682,7 @@ def _iter_frontend_fallback_candidates() -> "list[Path]":
     import re
 
     out: list[Path] = []
-    home_str = (
-        os.environ.get("UNSLOTH_STUDIO_HOME")
-        or os.environ.get("STUDIO_HOME")
-        or str(Path.home() / ".unsloth" / "studio")
-    )
-    venv_dir = Path(home_str).expanduser() / "unsloth_studio"
+    venv_dir = _studio_root() / "unsloth_studio"
     # Installer venv site-packages.
     for pattern in (
         "lib/python*/site-packages/studio/frontend/dist",
@@ -1918,16 +1913,7 @@ def _setup_server_disk_logging():
     if os.environ.get("UNSLOTH_STUDIO_NO_FILE_LOG") == "1":
         return None
     try:
-        from utils.paths import studio_root
-        log_dir = Path(studio_root()) / "logs" / "server"
-    except Exception:
-        home = (
-            os.environ.get("UNSLOTH_STUDIO_HOME")
-            or os.environ.get("STUDIO_HOME")
-            or os.path.join(os.path.expanduser("~"), ".unsloth", "studio")
-        )
-        log_dir = Path(home) / "logs" / "server"
-    try:
+        log_dir = _studio_root() / "logs" / "server"
         log_dir.mkdir(parents = True, exist_ok = True, mode = 0o700)
         _restrict_server_log_perms(log_dir)
         stamp = time.strftime("%Y%m%d-%H%M%S")
@@ -2596,13 +2582,8 @@ def run_server(
                 ", ".join(str(p) for p in attempted) or "(none)",
             )
         else:
-            home_str = (
-                os.environ.get("UNSLOTH_STUDIO_HOME")
-                or os.environ.get("STUDIO_HOME")
-                or str(Path.home() / ".unsloth" / "studio")
-            )
             # Windows $STUDIO_HOME/bin/unsloth.exe; Linux/macOS $STUDIO_HOME/unsloth_studio/bin/unsloth.
-            home = Path(home_str).expanduser()
+            home = _studio_root()
             if sys.platform == "win32":
                 installer_bin = home / "bin" / "unsloth.exe"
             else:

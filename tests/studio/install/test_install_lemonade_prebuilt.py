@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import subprocess
 import sys
 import tarfile
 import threading
@@ -27,6 +28,20 @@ if str(STUDIO_DIR) not in sys.path:
     sys.path.insert(0, str(STUDIO_DIR))
 
 import install_lemonade_prebuilt as lp  # noqa: E402
+
+
+def test_installer_imports_without_the_studio_backend_on_sys_path():
+    subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-B",
+            "-c",
+            "import sys; sys.path.insert(0, sys.argv[1]); import install_lemonade_prebuilt",
+            str(STUDIO_DIR),
+        ],
+        check = True,
+    )
 
 
 def _archive(directory: Path, key: str) -> Path:
@@ -67,6 +82,26 @@ def _flm_archive(directory: Path, key: str) -> Path:
             info.mode = 0o755
             archive.addfile(info, io.BytesIO(b"flm\n"))
     return path
+
+
+def test_custom_lemonade_uses_local_archive_and_preserves_backend_versions(tmp_path, monkeypatch):
+    key = lp.host_asset_key()
+    if key is None:
+        pytest.skip("no Lemonade build for this platform")
+    archive = _archive(tmp_path, key)
+    root = tmp_path / "runtime"
+    monkeypatch.setenv("UNSLOTH_LEMONADE_ARCHIVE", str(archive))
+    monkeypatch.setattr(lp, "_download", lambda *a, **kw: pytest.fail("unexpected download"))
+
+    binary = lp.install(root)
+    assert binary == lp.install(root) == lp.installed_lemond(root)
+    assert binary.parent.parent == root
+    versions = json.loads((binary.parent / "resources" / "backend_versions.json").read_text())
+    assert versions["flm"]["npu"] == "v0.0.1"
+
+    archive.write_bytes(archive.read_bytes() + b"\0")
+    assert lp.installed_lemond(root) is None
+    assert binary.is_file()
 
 
 @pytest.fixture

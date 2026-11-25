@@ -135,7 +135,7 @@ def _build_request(arguments: dict, prompt: str, status: dict):
     if arguments.get("width") is not None or arguments.get("height") is not None:
         fields["width"], fields["height"] = _snap_size(arguments, status)
     if arguments.get("seed") is not None:
-        fields["seed"] = int(arguments["seed"])
+        fields["seed"] = arguments["seed"]
     negative = arguments.get("negative_prompt")
     if status.get("supports_negative_prompt") and isinstance(negative, str) and negative.strip():
         fields["negative_prompt"] = negative.strip()

@@ -24,6 +24,7 @@ from importlib.metadata import version as importlib_version
 from importlib.metadata import PackageNotFoundError
 from packaging.version import Version as TrueVersion
 import re
+import json
 import logging
 import textwrap
 import warnings
@@ -2029,12 +2030,133 @@ _TOKENIZER_FILES_READ_BY_LOADER = (
 )
 
 
+_TOKENIZER_HOST_PATH_PATCH_FLAG = "_unsloth_refuses_tokenizer_host_paths"
+# Loader bookkeeping keys; a locally saved legacy config can hold a real path here.
+_TOKENIZER_CONFIG_PATH_KEYS_IGNORED = frozenset(
+    ("name_or_path", "tokenizer_config_file", "special_tokens_map_file", "added_tokens_file")
+)
+# A string `"vocab": "..."` / `"merges": "..."` in tokenizer.json; real files hold a dict or list.
+_TOKENIZER_JSON_STRING_MODEL_FILE = re.compile(rb'"(?:vocab|merges)"\s*:\s*"')
+
+
+def _tokenizer_value_names_host_file(value, repo_dirs):
+    """True when a config string names an existing file outside the repo folder."""
+    if not isinstance(value, str) or not value or len(value) > 4096 or "\n" in value:
+        return False
+    if not (os.path.isabs(value) or "/" in value or os.sep in value):
+        return False
+    try:
+        if not os.path.isfile(value):
+            return False
+        candidates = {os.path.abspath(value), os.path.realpath(value)}
+    except (OSError, ValueError):
+        return False
+    for repo_dir in repo_dirs:
+        for candidate in candidates:
+            try:
+                if os.path.commonpath([candidate, repo_dir]) == repo_dir:
+                    return False
+            except ValueError:
+                continue
+    return True
+
+
+def _tokenizer_files_naming_host_paths(resolved_vocab_files, caller_kwargs):
+    """Entries of tokenizer_config.json, special_tokens_map.json and tokenizer.json naming a host
+    file outside the repo. Repo-resolved files and caller kwargs are skipped."""
+    files = {k: v for k, v in dict(resolved_vocab_files or {}).items() if isinstance(v, str)}
+    repo_dirs = set()
+    for path in files.values():
+        parent = os.path.dirname(os.path.abspath(path))
+        repo_dirs.update((parent, os.path.realpath(parent)))
+    if not repo_dirs:
+        return []
+    skip = set(_TOKENIZER_CONFIG_PATH_KEYS_IGNORED) | set(resolved_vocab_files or {})
+    skip.update(k for k, v in (caller_kwargs or {}).items() if v is not None)
+    found = []
+    for file_key in ("tokenizer_config_file", "special_tokens_map_file"):
+        path = files.get(file_key)
+        if not path or not os.path.isfile(path):
+            continue
+        try:
+            with open(path, encoding = "utf-8") as handle:
+                data = json.load(handle)
+        except Exception:
+            continue  # transformers reports the broken file itself
+        if not isinstance(data, dict):
+            continue
+        for key, value in data.items():
+            # *_file keys reach the class only when resolved in the repo (skipped above).
+            if key in skip or key.endswith("_file"):
+                continue
+            values = value if isinstance(value, (list, tuple)) else [value]
+            if any(_tokenizer_value_names_host_file(v, repo_dirs) for v in values):
+                found.append(f"{os.path.basename(path)}:{key}")
+    path = files.get("tokenizer_file")
+    if path and os.path.isfile(path):
+        try:
+            with open(path, "rb") as handle:
+                raw = handle.read()
+            if _TOKENIZER_JSON_STRING_MODEL_FILE.search(raw):
+                model = json.loads(raw).get("model") or {}
+                for key in ("vocab", "merges"):
+                    if _tokenizer_value_names_host_file(model.get(key), repo_dirs):
+                        found.append(f"{os.path.basename(path)}:model.{key}")
+        except Exception:
+            pass
+    return found
+
+
+def fix_transformers_tokenizer_config_host_paths():
+    """Refuse a tokenizer whose own JSON names a host file outside its folder: transformers 5.x
+    opens a string vocab / merges / init_inputs / special token entry or tokenizer.json
+    model.vocab as a path, so a repo could read any host file back as tokens. Idempotent."""
+    try:
+        from transformers.tokenization_utils_base import PreTrainedTokenizerBase
+
+        current = PreTrainedTokenizerBase.__dict__["_from_pretrained"]
+        if not isinstance(current, classmethod):
+            return
+        original = current.__func__
+        function = original
+        while function is not None:
+            if getattr(function, _TOKENIZER_HOST_PATH_PATCH_FLAG, False):
+                return
+            function = getattr(function, "__wrapped__", None)
+        params = list(inspect.signature(original).parameters)
+        if params[1:2] != ["resolved_vocab_files"]:
+            logger.info("Unsloth: Skipping the tokenizer host path guard (unknown signature)")
+            return
+    except Exception as e:
+        logger.info(f"Unsloth: Skipping the tokenizer host path guard ({e})")
+        return
+
+    @functools.wraps(original)
+    def _from_pretrained(cls, resolved_vocab_files, *args, **kwargs):
+        found = _tokenizer_files_naming_host_paths(resolved_vocab_files, kwargs)
+        if found:
+            raise ValueError(
+                "Unsloth: Refusing to load this tokenizer: "
+                + ", ".join(found)
+                + " names a file outside the tokenizer folder. Remove that entry from the file."
+            )
+        return original(cls, resolved_vocab_files, *args, **kwargs)
+
+    setattr(_from_pretrained, _TOKENIZER_HOST_PATH_PATCH_FLAG, True)
+    try:
+        PreTrainedTokenizerBase._from_pretrained = classmethod(_from_pretrained)
+    except Exception as e:
+        logger.info(f"Unsloth: Failed installing the tokenizer host path guard ({e})")
+
+
 def fix_transformers_tokenizer_config_vocab_file_override():
     """Back-port of the 5.17.0 vocab file precedence: below it `_from_pretrained` keeps a
     `vocab_file` / `merges_file` / `tokenizer_file` from tokenizer_config.json over the file it
     resolved inside the repo, and the tokenizer opens that path as given, even outside the repo.
     save_pretrained never writes these keys. Hand the resolved paths over as keyword arguments,
-    which apply after the config, so only an explicit caller path overrides them."""
+    which apply after the config, so only an explicit caller path overrides them.
+    Also installs the host path guard for the keys not covered here."""
+    fix_transformers_tokenizer_config_host_paths()
     try:
         import transformers
 
@@ -3314,14 +3436,103 @@ def _bnb_deserialize_ops_without_reverse():
     return tuple(broken)
 
 
+def _bare_params4bit_names(model):
+    """Names of the bitsandbytes 4-bit parameters quantized in place outside a Linear4bit (fused MoE expert
+    stacks, zoo moe_utils_bnb4bit), or an empty set when bitsandbytes is unavailable."""
+    try:
+        from bitsandbytes.nn import Linear4bit, Params4bit
+    except Exception:
+        return set()
+    if (
+        not isinstance(Params4bit, type)
+        or not isinstance(Linear4bit, type)
+        or not callable(getattr(model, "named_modules", None))
+    ):
+        return set()
+    names = set()
+    # Every alias (a shared module or parameter): the state dict being saved names each of them.
+    for module_name, module in model.named_modules(remove_duplicate = False):
+        if isinstance(module, Linear4bit):
+            continue
+        for name, param in module.named_parameters(recurse = False, remove_duplicate = False):
+            if isinstance(param, Params4bit) and getattr(param, "quant_state", None) is not None:
+                names.add(f"{module_name}.{name}" if module_name else name)
+    return names
+
+
+def _converter_matches(conversion, names):
+    """True when `conversion` is a WeightConverter with operations whose reverse (the one save_pretrained applies)
+    matches one of `names`, by transformers' own rules (scope prefix, name boundaries, capture groups)."""
+    operations = getattr(conversion, "operations", None)
+    targets = getattr(conversion, "target_patterns", None)
+    if not operations or not targets or not names:
+        return False
+    if type(conversion).__name__ != "WeightConverter":
+        return False
+    try:
+        # reverse_transform() would build the reverse ops, which a deserializer cannot: same patterns, forward ops.
+        reverse = conversion.copy(
+            conversion._original_target_patterns,
+            conversion._original_source_patterns,
+            operations = list(operations),
+        )
+        return any(reverse.rename_source_key(name)[1] is not None for name in names)
+    except Exception:
+        pass
+    for pattern in targets:
+        try:
+            regex = re.compile(pattern)
+        except (re.error, TypeError):
+            return False
+        if any(regex.search(name) for name in names):
+            return True
+    return False
+
+
+def _packed_4bit(value):
+    """A tensor as a bitsandbytes 4-bit stack stores it: packed [n, 1] bytes."""
+    shape = getattr(value, "shape", None)
+    return shape is not None and len(shape) == 2 and shape[1] == 1
+
+
+def _dense_param_names(
+    model,
+    skip,
+    state_dict = None,
+):
+    """Names saved as dense tensors: the state dict being saved (parameters and persistent buffers), less the 4-bit
+    stacks in `skip` and their QuantState entries; a stack in `skip` whose saved tensor is dense counts as dense.
+    Without a state dict, the model's parameters not in `skip`."""
+    if isinstance(state_dict, dict):
+        names = set()
+        for name, value in state_dict.items():
+            if not isinstance(name, str):
+                continue
+            if name in skip:
+                if not _packed_4bit(value):
+                    names.add(name)
+            elif not any(name.startswith(f"{s}.") for s in skip):
+                names.add(name)
+        return names
+    if not callable(getattr(model, "named_parameters", None)):
+        return set()
+    return {n for n, _ in model.named_parameters(remove_duplicate = False) if n not in skip}
+
+
 def fix_transformers_bnb_prequantized_save():
-    """transformers 5.x: `save_pretrained` reverses the `Bnb{4,8}bitDeserialize` converter a
-    pre-quantized load attaches, and neither op has a `reverse_op` (NotImplementedError, #638;
-    upstream PR #45743 closed unmerged). Quantized modules already emit the checkpoint layout,
-    so skip that converter on save. Probe-gated on `reverse_op` raising."""
+    """transformers 5.x `save_pretrained` reverses the load's weight converters, and two kinds cannot run in
+    reverse on bitsandbytes 4-bit weights:
+
+    - the `Bnb{4,8}bitDeserialize` converter a pre-quantized load attaches has no `reverse_op`
+      (NotImplementedError, #638; upstream PR #45743 closed unmerged). Probe-gated on `reverse_op` raising.
+    - a model converter that builds a fused expert stack (Inkling 2: NVFP4 dequantize + Interleave of
+      `w13_weight` into `gate_up_proj`) would run its inverse on the packed bytes and on the QuantState entries
+      beside them once zoo quantized the stack in place, which raises or writes garbage. Such a stack was
+      quantized in the model's layout and zoo's pre-quantized expert loaders read it back in that layout, so its
+      converter is skipped and the stack is written under the model's own name (the renames still apply).
+
+    Quantized modules already emit the checkpoint layout, so both are skipped on save."""
     broken_ops = _bnb_deserialize_ops_without_reverse()
-    if not broken_ops:
-        return
     try:
         from transformers import core_model_loading, modeling_utils
     except Exception as e:
@@ -3333,15 +3544,53 @@ def fix_transformers_bnb_prequantized_save():
 
     def _is_bnb_deserialize(conversion):
         operations = getattr(conversion, "operations", None)
-        return bool(operations) and all(isinstance(op, broken_ops) for op in operations)
+        return (
+            bool(broken_ops)
+            and bool(operations)
+            and all(isinstance(op, broken_ops) for op in operations)
+        )
+
+    def _skipped(
+        model,
+        conversions,
+        state_dict = None,
+    ):
+        bare = None
+        dense = None
+        skipped = []
+        for conversion in conversions:
+            if _is_bnb_deserialize(conversion):
+                skipped.append(conversion)
+                continue
+            if type(conversion).__name__ != "WeightConverter" or not getattr(
+                conversion, "operations", None
+            ):
+                continue
+            if bare is None:
+                bare = _bare_params4bit_names(model)
+                dense = _dense_param_names(model, bare, state_dict) if bare else set()
+                # A stack the caller saves dense (a supplied state dict) keeps its converter.
+                bare -= dense
+            if not bare or not _converter_matches(conversion, bare):
+                continue
+            # A converter whose target also matches a dense parameter (one stack skipped from quantization)
+            # still has to run for it: keep it, and let a mixed save fail loudly as before.
+            if _converter_matches(conversion, dense):
+                continue
+            skipped.append(conversion)
+        return skipped
 
     @functools.wraps(original)
     def revert_weight_conversion(model, *args, **kwargs):
         conversions = getattr(model, "_weight_conversions", None)
-        if not isinstance(conversions, list) or not any(map(_is_bnb_deserialize, conversions)):
+        if not isinstance(conversions, list):
+            return original(model, *args, **kwargs)
+        state_dict = kwargs.get("state_dict", args[0] if args else None)
+        skipped = _skipped(model, conversions, state_dict)
+        if not skipped:
             return original(model, *args, **kwargs)
         # An empty list, never None: None makes transformers rebuild the default mapping.
-        model._weight_conversions = [c for c in conversions if not _is_bnb_deserialize(c)]
+        model._weight_conversions = [c for c in conversions if not any(c is x for x in skipped)]
         try:
             return original(model, *args, **kwargs)
         finally:
@@ -3355,8 +3604,8 @@ def fix_transformers_bnb_prequantized_save():
         if modeling_utils.__dict__.get("revert_weight_conversion") is original:
             modeling_utils.revert_weight_conversion = revert_weight_conversion
         logger.info(
-            "Unsloth: Patching transformers `revert_weight_conversion` so a pre-quantized "
-            "bitsandbytes model can be saved"
+            "Unsloth: Patching transformers `revert_weight_conversion` so a bitsandbytes 4-bit model "
+            "(pre-quantized, or with fused 4-bit expert stacks) can be saved"
         )
     except Exception as e:
         logger.info(f"Unsloth: Failed patching revert_weight_conversion ({e})")
@@ -5067,6 +5316,87 @@ def fix_vllm_lora_tokenizer_module():
         "Unsloth: Installed `vllm.transformers_utils.tokenizer` compatibility "
         "stub for newer vLLM versions"
     )
+
+
+# TRL >= 1.11 imports vllm.distributed.weight_transfer.nccl_engine at module scope whenever vLLM is importable, but
+# vLLM added it in 0.16, so `from trl import GRPOTrainer` fails on vLLM 0.11.2 - 0.15.x. Only TRL's vLLM server
+# client (vllm_mode="server") uses it; fast_inference does not. A finder appended after the real ones serves
+# placeholders that raise on use, only when the real modules are missing.
+_VLLM_WEIGHT_TRANSFER_MODULES = (
+    "vllm.distributed.weight_transfer",
+    "vllm.distributed.weight_transfer.nccl_engine",
+)
+_VLLM_WEIGHT_TRANSFER_STUB_SENTINEL = "__unsloth_vllm_weight_transfer_stub__"
+_VLLM_WEIGHT_TRANSFER_MESSAGE = (
+    "Unsloth: TRL's vLLM server weight transfer needs vLLM >= 0.16, but this vLLM has no "
+    "`vllm.distributed.weight_transfer`. Upgrade vLLM, or use fast_inference = True (colocated vLLM)."
+)
+
+
+class _VllmWeightTransferUnavailableMeta(type):
+    def __getattr__(cls, name):
+        # TRL calls static methods on the class (trainer_init, trainer_send_weights): fail at the call.
+        if name.startswith("__"):
+            raise AttributeError(name)
+
+        def _unavailable(*args, **kwargs):
+            raise ImportError(_VLLM_WEIGHT_TRANSFER_MESSAGE)
+
+        return _unavailable
+
+
+class _VllmWeightTransferUnavailable(metaclass = _VllmWeightTransferUnavailableMeta):
+    def __init__(self, *args, **kwargs):
+        raise ImportError(_VLLM_WEIGHT_TRANSFER_MESSAGE)
+
+
+class _VllmWeightTransferStubLoader(importlib.abc.Loader):
+    def create_module(self, spec):
+        import types
+
+        module = types.ModuleType(spec.name)
+        module.__file__ = f"<unsloth stub: {spec.name}>"
+        setattr(module, _VLLM_WEIGHT_TRANSFER_STUB_SENTINEL, True)
+        if spec.name == _VLLM_WEIGHT_TRANSFER_MODULES[0]:
+            module.__path__ = []
+            module.__package__ = spec.name
+        else:
+            module.__package__ = spec.name.rpartition(".")[0]
+            for name in ("NCCLTrainerSendWeightsArgs", "NCCLWeightTransferEngine"):
+                setattr(module, name, type(name, (_VllmWeightTransferUnavailable,), {}))
+        return module
+
+    def exec_module(self, module):
+        return None
+
+
+class _VllmWeightTransferStubFinder(importlib.abc.MetaPathFinder):
+    def __init__(self):
+        setattr(self, _VLLM_WEIGHT_TRANSFER_STUB_SENTINEL, True)
+
+    def find_spec(
+        self,
+        fullname,
+        path = None,
+        target = None,
+    ):
+        if fullname not in _VLLM_WEIGHT_TRANSFER_MODULES:
+            return None
+        return importlib.machinery.ModuleSpec(
+            name = fullname,
+            loader = _VllmWeightTransferStubLoader(),
+            is_package = fullname == _VLLM_WEIGHT_TRANSFER_MODULES[0],
+        )
+
+
+def fix_vllm_weight_transfer_module():
+    if importlib.util.find_spec("vllm") is None:
+        return
+    for finder in sys.meta_path:
+        if getattr(finder, _VLLM_WEIGHT_TRANSFER_STUB_SENTINEL, False):
+            return
+    # Appended, not inserted at 0, so the real module on vLLM >= 0.16 always wins.
+    sys.meta_path.append(_VllmWeightTransferStubFinder())
 
 
 def fix_vllm_guided_decoding_params():
@@ -12100,6 +12430,52 @@ _VLLM_COMPILED_EXTENSIONS = (
     "vllm._moe_C",
     "vllm._rocm_C",
 )
+
+
+# Importing vllm.platforms.cuda turns cuDNN SDPA off process-wide (a torch 2.5.0 workaround, diffusers#9704,
+# fixed in 2.5.1). Unsloth's import probes vLLM, so restore the caller's value after import and re-apply
+# vLLM's only on Unsloth loads. Known-bad cuDNN cases are avoided per call (fix_cudnn_sdpa_known_bad_shapes).
+_CUDNN_SDPA_BEFORE_IMPORT = [None]
+_CUDNN_SDPA_OFF_FOR_LOADS = [False]
+
+
+def _cudnn_sdpa_enabled():
+    torch = sys.modules.get("torch")
+    if torch is None:
+        return None
+    try:
+        return bool(torch.backends.cuda.cudnn_sdp_enabled())
+    except Exception:
+        return None
+
+
+def snapshot_cudnn_sdpa_before_import():
+    """torch not imported yet means torch's default (on)."""
+    if _CUDNN_SDPA_BEFORE_IMPORT[0] is None:
+        enabled = _cudnn_sdpa_enabled()
+        _CUDNN_SDPA_BEFORE_IMPORT[0] = True if enabled is None else enabled
+
+
+def restore_cudnn_sdpa_after_import():
+    if _CUDNN_SDPA_BEFORE_IMPORT[0] is not True or _cudnn_sdpa_enabled() is not False:
+        return
+    try:
+        import torch
+        torch.backends.cuda.enable_cudnn_sdp(True)
+    except Exception as e:
+        logger.info(f"Unsloth: could not restore cuDNN SDPA after import ({e})")
+        return
+    _CUDNN_SDPA_OFF_FOR_LOADS[0] = True
+
+
+def apply_cudnn_sdpa_for_unsloth_load():
+    if not _CUDNN_SDPA_OFF_FOR_LOADS[0] or _cudnn_sdpa_enabled() is not True:
+        return
+    try:
+        import torch
+        torch.backends.cuda.enable_cudnn_sdp(False)
+    except Exception:
+        pass
 
 
 def disable_broken_vllm(error = None):

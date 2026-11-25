@@ -395,6 +395,52 @@ export function makeMarkdownNoteConfig(
   };
 }
 
+// Documents seeds concatenate files in upload order: "ordered" would take every row from the first file.
+export function defaultSeedSamplingStrategy(
+  seedSourceType: SeedSourceType,
+): SeedConfig["sampling_strategy"] {
+  return seedSourceType === "unstructured" ? "shuffle" : "ordered";
+}
+
+// Clears every source field; sampling keeps the user's choice only within the same source type.
+export function swapSeedSourceType(
+  existing: SeedConfig,
+  nextSourceType: SeedSourceType,
+): SeedConfig {
+  return {
+    ...existing,
+    seed_source_type: nextSourceType,
+    sampling_strategy:
+      existing.seed_source_type === nextSourceType
+        ? existing.sampling_strategy
+        : defaultSeedSamplingStrategy(nextSourceType),
+    hf_repo_id: "",
+    hf_subset: "",
+    hf_split: "",
+    hf_path: "",
+    hf_token: "",
+    hf_endpoint: "",
+    local_file_name: "",
+    unstructured_upload_uid:
+      nextSourceType === "unstructured" ? makeUnstructuredUploadUid() : "",
+    unstructured_file_ids: [],
+    unstructured_file_names: [],
+    unstructured_file_sizes: [],
+    resolved_paths: [],
+    seed_columns: [],
+    seed_drop_columns: [],
+    seed_preview_rows: [],
+    unstructured_chunk_size: "1200",
+    unstructured_chunk_overlap: "200",
+    github_repo_slug: "",
+    github_token: "",
+    github_limit: "100",
+    github_item_types: ["issues", "pulls"],
+    github_include_comments: true,
+    github_max_comments_per_item: "30",
+  };
+}
+
 export function makeSeedConfig(
   id: string,
   existing: NodeConfig[],
@@ -428,7 +474,7 @@ export function makeSeedConfig(
     seed_splits: [],
     seed_globs_by_split: {},
     seed_columns: [],
-    sampling_strategy: "ordered",
+    sampling_strategy: defaultSeedSamplingStrategy(seedSourceType),
     selection_type: "none",
     selection_start: "0",
     selection_end: "10",
