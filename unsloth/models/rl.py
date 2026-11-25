@@ -3768,8 +3768,12 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             # None = unset: resolved below to 0.0 for dapo / dr_grpo, else 0.001 (verl's recommendation; TRL used 0.04, now 0.0, huggingface/trl#3516).
             "beta": None,
             "auto_find_batch_size": False,  # Cannot work on GRPO
-            # See fengyao.notion.site/off-policy-rl and huggingface/trl#3867.
-            "vllm_importance_sampling_correction": False,
+            # On (TRL's default too): vLLM and the trainer score the same weights differently (kernels, LoRA merge,
+            # MoE routing), so even num_iterations = 1 rollouts are slightly off-policy. Measured with fast_inference
+            # (bf16): mean |logp_train - logp_vllm| 0.012-0.014 nats/token at step 1, growing to 0.03-0.05 as the LoRA
+            # trains, raw token ratios up to ~18 (Qwen3-0.6B) and ~8 (Qwen3-30B-A3B). Truncated per token, see the mode
+            # below. See fengyao.notion.site/off-policy-rl and huggingface/trl#3867. Set False to turn it off.
+            "vllm_importance_sampling_correction": True,
             # None = unset: resolved below to "token_truncate" instead of TRL's "sequence_mask".
             "vllm_importance_sampling_mode": None,
             # TRL >= 1.7.0 enables the MoE router aux loss by default (0.001), but the optimized GRPO forward does not compute it, so default it off.
@@ -3945,7 +3949,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "    vllm_importance_sampling_mode = 'token_truncate'\n"
             + (
                 "    if vllm_importance_sampling_correction:\n"
-                "        print(\"Unsloth: vllm_importance_sampling_correction = True now defaults to token-level truncated importance sampling (vllm_importance_sampling_mode = 'token_truncate'). Set vllm_importance_sampling_mode = 'sequence_mask' for TRL's default.\")\n"
+                "        print(\"Unsloth: the vLLM importance sampling correction is on by default, token-level truncated (vllm_importance_sampling_mode = 'token_truncate'). Set vllm_importance_sampling_correction = False to turn it off, or vllm_importance_sampling_mode = 'sequence_mask' for TRL's mode.\")\n"
                 if "vllm_importance_sampling_correction" in call_args
                 else ""
             )
