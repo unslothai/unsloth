@@ -664,3 +664,33 @@ def test_a_clip_removed_from_the_gallery_has_no_outcome_left_to_read_by_id(
     gone = client.get(progress, params = {"video_id": first["video_id"]}).json()
     assert gone.get("video") is None and gone.get("phase") != "completed"
     backend.gate.set()
+
+
+def test_a_queued_page_clip_never_renders_on_another_checkpoint_of_the_same_repo(
+    client, backend, prompts
+):
+    import types
+
+    from core.inference.video_families import detect_video_family
+
+    def _resident(filename):
+        backend._state = types.SimpleNamespace(
+            family = detect_video_family("Lightricks/LTX-2"),
+            h3_task = None,
+            engine = "diffusers",
+            repo_id = "unsloth/LTX-2.5-GGUF",
+            kind = "gguf",
+            gguf_filename = filename,
+        )
+
+    _resident("ltx-2.5-dev-Q4_K_M.gguf")
+    running = _busy(client, backend)
+    page = client.post(PAGE, json = {"prompt": "judged on the dev checkpoint"}).json()
+    _finish_running(client, backend, running)
+    # Same repo, kind and quant: only the checkpoint file differs.
+    _resident("distilled/ltx-2.5-distilled-Q4_K_M.gguf")
+    _drain()
+    assert [row["prompt"] for row in prompts] == ["running"]
+    [job] = client.get(QUEUE).json()["jobs"]
+    assert (job["video_id"], job["status"]) == (page["video_id"], "failed")
+    assert "model changed" in job["error"]

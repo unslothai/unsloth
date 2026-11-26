@@ -905,7 +905,8 @@ _QUEUED_MODEL_CHANGED_MSG = (
 
 def _resident_identity(status: dict, state) -> tuple:
     """What a queued clip was judged against: the resident build, not just its family. Adapters
-    baked in at load are part of the build: a reload with other LoRAs or weights is another model."""
+    baked in at load, the checkpoint file, its companion base and its precisions are part of the
+    build: a reload that changes any of them is another model."""
     from core.inference.video_lora import baked_lora_specs
 
     try:
@@ -922,6 +923,20 @@ def _resident_identity(status: dict, state) -> tuple:
         status.get("h3_task"),
         getattr(getattr(state, "family", None), "name", None),
         adapters,
+        # The checkpoint itself: one repo can hold several at one quant (LTX-2.5 dev at the root,
+        # distilled under distilled/), and the companion base and precisions are part of the build.
+        *(
+            str(value) if value is not None else None
+            for value in (
+                getattr(state, name, None)
+                for name in (
+                    "gguf_filename",
+                    "base_repo",
+                    "transformer_quant",
+                    "text_encoder_quant",
+                )
+            )
+        ),
     )
 
 
