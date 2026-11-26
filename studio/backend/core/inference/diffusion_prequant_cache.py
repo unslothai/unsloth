@@ -376,8 +376,30 @@ def key_parts(
         else None,
         "fast_accum": _resolve_fast_accum(None) if scheme == TQ_FP8 else None,
         **extra,
+        **_nvfp4_parts(scheme),
         **_toolchain(),
     }
+
+
+def _nvfp4_parts(scheme: str) -> dict:
+    """The NVFP4 converter's identity: the weight quantiser's method and byte version. Empty for every other scheme,
+    so int8 / fp8 entries keep their keys."""
+    if scheme != "nvfp4":
+        return {}
+    from .diffusion_nvfp4_weight_quant import QUANTIZER_VERSION, resolve_method
+
+    return {"nvfp4_weight_quant": resolve_method(), "nvfp4_quantizer": QUANTIZER_VERSION}
+
+
+def _nvfp4_policy_build(fam: Any, base: Optional[str]) -> bool:
+    """Whether an nvfp4 load of ``fam`` on ``base`` takes a per-layer policy (mixed nvfp4 / fp8 / bf16). Those builds
+    are not cached; only the whole-model build is. Unanswerable counts as a policy build, so it is not cached."""
+    try:
+        from .diffusion_nvfp4_policy import resolve_policy
+        name = getattr(fam, "name", fam if isinstance(fam, str) else None)
+        return resolve_policy(name, base) is not None
+    except Exception:  # noqa: BLE001
+        return True
 
 
 def cache_key(parts: dict) -> str:
@@ -386,8 +408,10 @@ def cache_key(parts: dict) -> str:
     ).hexdigest()[:32]
 
 
-# Only schemes whose runtime and hosted builds are identical (nvfp4 converts per family at load; mxfp8 has no twin).
-CACHEABLE_SCHEMES = ("int8", "fp8")
+# Schemes whose runtime build round-trips through the hosted loader bit for bit (mxfp8 has no twin). nvfp4 is the
+# whole-model build only: a family with a per-layer nvfp4 policy is not cached (``_nvfp4_policy_build``), and its key
+# carries the weight quantiser's method and version (``_nvfp4_parts``).
+CACHEABLE_SCHEMES = ("int8", "fp8", "nvfp4")
 
 
 def _key_for(
@@ -402,6 +426,12 @@ def _key_for(
     is recorded and validated against (default ``base``)."""
     if scheme not in CACHEABLE_SCHEMES:
         return None
+    if scheme == "nvfp4":
+        from .diffusion_nvfp4_flag import nvfp4_blocked
+        if nvfp4_blocked(scheme) or _nvfp4_policy_build(
+            fam, base_id if base_id is not None else base
+        ):
+            return None
     if shards is None:
         shards = source_shards(base, component)
     if not shards:
@@ -1206,6 +1236,12 @@ def save_runtime_quant(
         if bool(info.get("convrot_fqns")) != bool(parts["convrot"]):
             _log(logger, "info", "skipped (ConvRot state differs from the key)")
             return None
+        if (
+            "nvfp4_weight_quant" in parts
+            and info.get("nvfp4_weight_quant") != parts["nvfp4_weight_quant"]
+        ):
+            _log(logger, "info", "skipped (nvfp4 weight quantiser differs from the key)")
+            return None
         if not stack.enter_context(_writer_lock(cache_root(), key)):
             _log(logger, "info", "skipped (no cross-process lock available for the build)")
             return None
@@ -1280,6 +1316,9 @@ def save_runtime_quant(
         if scheme == "fp8":
             from .diffusion_transformer_quant import FP8_GRANULARITY
             metadata["fp8_granularity"] = FP8_GRANULARITY
+        if "nvfp4_weight_quant" in parts:
+            metadata["nvfp4_weight_quant"] = parts["nvfp4_weight_quant"]
+            metadata["nvfp4_quantizer"] = parts["nvfp4_quantizer"]
         if wanted_wo:
             metadata["weight_only_name_tokens"] = list(wanted_wo["weight_only_name_tokens"])
             metadata["weight_only_outliers"] = int(wanted_wo["weight_only_outliers"])

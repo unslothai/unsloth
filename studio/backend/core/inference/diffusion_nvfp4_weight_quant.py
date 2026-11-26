@@ -15,6 +15,8 @@ METHOD_MAX6 = "max6"
 METHOD_4OVER6 = "4over6"
 METHODS = (METHOD_MAX6, METHOD_4OVER6)
 DEFAULT_METHOD = METHOD_4OVER6
+# Bump whenever either method writes different bytes for the same weight: the local prequant cache keys on it.
+QUANTIZER_VERSION = 1
 _ALIASES = {
     "max6": METHOD_MAX6,
     "max/6": METHOD_MAX6,

@@ -2428,6 +2428,11 @@ def quantize_transformer(
                 transformer._unsloth_runtime_quant_info.update(
                     getattr(transformer, "_unsloth_weight_only_layout", None) or {}
                 )
+            if scheme == TQ_NVFP4:
+                from .diffusion_nvfp4_weight_quant import resolve_method
+
+                # The quantiser that wrote these weights, so the cache never files them under another method.
+                transformer._unsloth_runtime_quant_info["nvfp4_weight_quant"] = resolve_method()
         except Exception:  # noqa: BLE001 - marker is best-effort
             pass
         return scheme

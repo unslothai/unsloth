@@ -265,7 +265,7 @@ def test_missing_source_shards_is_a_miss(env, tmp_path, scheme):
 
 def test_uncached_schemes_never_key(env, tmp_path):
     base, _ = _write_base(tmp_path)
-    assert C.lookup(_fam(base), "nvfp4", base_repo = str(base)) is None
+    assert C.lookup(_fam(base), "mxfp8", base_repo = str(base)) is None
 
 
 # ------------------------------------------------------------------------------------------------ atomicity
