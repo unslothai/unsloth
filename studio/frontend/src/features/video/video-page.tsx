@@ -1940,6 +1940,13 @@ function VideoGenerator({
   // Select "match source" only after the staged keyframe passes the aspect-ratio check, and only for a family
   // whose keyframes do not keep the chosen canvas.
   const autoMatchSource = keyframeSelectsMatchSource(status?.defaults);
+  // The size Generate sends, memoised over every input so handleGenerate never holds a stale one: a start frame
+  // swapped under Match source updates matchedResolution a render later (the image loads async) while sourceSized
+  // stays true, and MiniMax-H3 would then render the previous picture's canvas with this one stretched onto it.
+  const generateCanvas = useMemo(
+    () => requestCanvas(sourceSized, matchedResolution, videoSize, !autoMatchSource),
+    [autoMatchSource, matchedResolution, sourceSized, videoSize],
+  );
   const hadKeyframeRef = useRef(false);
   useEffect(() => {
     const has = canvasSource != null;
@@ -4035,7 +4042,7 @@ function VideoGenerator({
           status?.supports_cfg !== false && guidance > 0
             ? negativePrompt.trim() || undefined
             : undefined,
-        ...requestCanvas(sourceSized, matchedResolution, videoSize, !autoMatchSource),
+        ...generateCanvas,
         num_frames: numFrames,
         fps,
         steps,
@@ -4093,8 +4100,7 @@ function VideoGenerator({
     negativePrompt,
     guidance,
     seed,
-    videoSize,
-    sourceSized,
+    generateCanvas,
     numFrames,
     fps,
     steps,
