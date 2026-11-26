@@ -178,6 +178,9 @@ def _run(tmp_path, zygote):
         [sys.executable, "-c", code],
         env = env,
         cwd = REPO,
+        stdin = subprocess.DEVNULL,
+        # Its own session: nothing the driver or its ranks signal or inherit reaches this xdist worker.
+        start_new_session = True,
         capture_output = True,
         text = True,
         timeout = 1500,
