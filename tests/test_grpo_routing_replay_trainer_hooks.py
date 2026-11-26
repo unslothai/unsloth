@@ -426,6 +426,8 @@ def test_old_policy_replay_installs_without_vllm(monkeypatch):
         )
     ids = torch.tensor([[5, 6, 7, 8, 9, 10]])
     with torch.no_grad():
+        # HF generation (a KV cache) marks the rollout; the pi_old forward after it records.
+        model.generate(input_ids = ids[:, :2], max_new_tokens = 2, do_sample = False, pad_token_id = PAD)
         model(input_ids = ids, attention_mask = torch.ones_like(ids))
     old = dict(seen)
     with torch.no_grad():
