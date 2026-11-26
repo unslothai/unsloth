@@ -5949,6 +5949,8 @@ def _dp_average(params, mesh):
     import torch.distributed as dist
     from torch._utils import _flatten_dense_tensors, _unflatten_dense_tensors
 
+    from .ep_native import _REPLICA_BUCKET_BYTES, _replica_buckets
+
     params = [p for p in params if p.requires_grad]
     if not params:
         return
@@ -5960,17 +5962,25 @@ def _dp_average(params, mesh):
     )
     has = torch.tensor([p.grad is not None for p in params], dtype = torch.int32, device = device)
     dist.all_reduce(has, op = dist.ReduceOp.MAX, group = group)
-    buckets = {}
+    grads = []
     for p, any_grad in zip(params, has.tolist()):
         if not any_grad:
             continue
         if p.grad is None:
             p.grad = torch.zeros_like(p)
         g = p.grad
-        local = g._local_tensor if _is_dtensor(g) else g
-        buckets.setdefault((local.device, local.dtype), []).append(local)
+        grads.append(g._local_tensor if _is_dtensor(g) else g)
     with torch.no_grad():
-        for tensors in buckets.values():
+        # Capped buckets (as EP's replica sync): one flat copy of every gradient would double their memory.
+        for tensors in _replica_buckets(grads, _REPLICA_BUCKET_BYTES):
+            if (
+                len(tensors) == 1
+                and tensors[0].is_contiguous()
+                and tensors[0].dtype != torch.float16
+            ):
+                dist.all_reduce(tensors[0], group = group)
+                tensors[0].div_(n)
+                continue
             flat = _flatten_dense_tensors(tensors)
             if flat.dtype == torch.float16:
                 # fp16 sum can overflow past 65504 though the mean is finite.
@@ -5979,6 +5989,8 @@ def _dp_average(params, mesh):
             flat.div_(n)
             for t, value in zip(tensors, _unflatten_dense_tensors(flat, tensors)):
                 t.copy_(value)
+            # A view of flat in value would keep it alive beside the next bucket's buffer.
+            del flat, value
 
 
 def _dp_sync_before_step(sync, optimizer, args, kwargs):
