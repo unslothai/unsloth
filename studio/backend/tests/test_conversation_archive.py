@@ -5282,3 +5282,84 @@ def test_deleting_a_thread_scans_the_fts_table_once_not_once_per_turn(conn, monk
     assert removed == archived
     assert conversation_archive.has_archive(thread) is False
     assert sum("DELETE FROM chunks_fts" in s for s in statements) == 1
+
+
+@pytest.mark.parametrize("lexical_only", [False, True])
+@pytest.mark.parametrize("repeated_text", [False, True])
+def test_direct_web_read_tail_is_searchable_after_rearchiving(
+    conn, monkeypatch, lexical_only, repeated_text
+):
+    from core.inference import tools
+    from storage import studio_db
+
+    url = "https://example.com/report"
+    arguments = {"url": url}
+    marker = "NIGHTORCHID"
+    page = (
+        "\n\n".join(
+            f"Section {index} describes the standard procedure for supplies and planning."
+            for index in range(67)
+        )
+        + f"\n\nThe budget authorization code is {marker}.\n"
+    )
+    if repeated_text:
+        page = (
+            "Every department follows standard procedure for supplies and planning. " * 66
+            + f"\n\nThe budget authorization code is {marker}.\n"
+        )
+    monkeypatch.setattr(tools, "_download_page", lambda *_a, **_kw: ("text", url, page))
+    delivered = tools.execute_tool(
+        "web_search", arguments, context_tokens = 8192, result_budget_tokens = 3500
+    )
+    assert delivered.index(marker) > 4000
+    group = [
+        _assistant_call("web_search", json.dumps(arguments)),
+        {"role": "tool", "tool_call_id": "c1", "content": delivered},
+    ]
+
+    _save_thread(THREAD, [])
+    studio_db.upsert_chat_message(
+        {
+            "id": "direct-web-read",
+            "threadId": THREAD,
+            "role": "assistant",
+            "createdAt": 2,
+            "content": [
+                {
+                    "type": "tool-call",
+                    "toolCallId": "c1",
+                    "toolName": "web_search",
+                    "args": arguments,
+                    "result": delivered,
+                },
+            ],
+        }
+    )
+    if lexical_only:
+        _fail_embedder(monkeypatch)
+
+    with monkeypatch.context() as old_archive:
+        old_archive.setattr(tools, "_MAX_PAGE_CHARS", 4000)
+        assert conversation_archive.archive_turns(THREAD, group, branch = group) == 1
+    assert conversation_archive.archive_turns(THREAD, group, branch = group) == 1
+    assert conversation_archive.archive_turns(THREAD, group, branch = group) == 0
+
+    scope = store.conversation_archive_scope(THREAD)
+    rows = conn.execute("SELECT id FROM documents WHERE scope = ?", (scope,)).fetchall()
+    assert len(rows) == 1
+    found = conversation_archive.recall(THREAD, marker, branch_messages = group)
+    assert found and marker in found[0]
+    abandoned = [group[0], {**group[1], "content": delivered.replace(marker, "REPLACEMENT")}]
+    stale = conversation_archive.recall(THREAD, marker, branch_messages = abandoned)
+    assert not stale or marker not in stale[0]
+
+
+@pytest.mark.parametrize("tool_name", ["web_search", "terminal"])
+def test_non_url_tool_output_keeps_the_generic_archive_cap(tool_name):
+    group = [
+        _assistant_call(tool_name, '{"query": "planning"}'),
+        {"role": "tool", "tool_call_id": "c1", "content": "A" * 4200 + " keyword tail"},
+    ]
+    archived = conversation_archive.render_turn(group)
+    assert archived.endswith(" ...")
+    assert "keyword tail" not in archived
