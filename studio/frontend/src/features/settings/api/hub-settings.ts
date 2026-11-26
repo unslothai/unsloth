@@ -14,6 +14,8 @@ export type HubSettings = {
   datasetsServerFollowsEndpoint: boolean;
   source: HubSource;
   activeSource: HubSource;
+  /** From a load only: the Hub web origin this browser may open directly, else null. */
+  pageBase: string | null;
 };
 
 type ApiHubSettings = {
@@ -24,6 +26,8 @@ type ApiHubSettings = {
   source: HubSource;
   // biome-ignore lint/style/useNamingConvention: API schema
   active_source: HubSource;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  page_base?: string | null;
 };
 
 function fromApi(settings: ApiHubSettings): HubSettings {
@@ -32,6 +36,7 @@ function fromApi(settings: ApiHubSettings): HubSettings {
     datasetsServerFollowsEndpoint: settings.datasets_server_follows_endpoint,
     source: settings.source,
     activeSource: settings.active_source,
+    pageBase: settings.page_base ?? null,
   };
 }
 
