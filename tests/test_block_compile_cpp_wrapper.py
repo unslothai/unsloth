@@ -215,6 +215,70 @@ def test_wrapped_oom_is_not_a_failed_cpp_build(monkeypatch):
     assert M.CPP_WRAPPER_STATS["fallbacks"] == 0
 
 
+def _fake_compile_backward_fails(calls):
+    """C++ regions run their forward, then fail like a lazily lowered backward whose C++ build breaks."""
+
+    class _FailingBackward(torch.autograd.Function):
+        @staticmethod
+        def forward(ctx, x):
+            return x.clone()
+
+        @staticmethod
+        def backward(ctx, grad):
+            raise BackendCompilerFailed("C++ compile error in the backward graph")
+
+    def fake_compile(fn, **kwargs):
+        cpp = bool((kwargs.get("options") or {}).get("cpp_wrapper"))
+
+        def compiled(*args, **kw):
+            calls.append("cpp" if cpp else "python")
+            out = fn(*args, **kw)
+            return _FailingBackward.apply(out) if cpp and torch.is_grad_enabled() else out
+
+        return compiled
+
+    return fake_compile
+
+
+def test_backward_build_failure_never_reaches_training(monkeypatch, capsys):
+    """Flip test: the C++ backward fails to build. The switch-time trial (forward + backward on a
+    detached copy) catches it, every block keeps the Python wrapper, and training steps go on with
+    the same gradients as the Python wrapper alone."""
+    monkeypatch.setenv("UNSLOTH_BLOCK_CUDAGRAPHS", "0")
+    M = _load()
+    monkeypatch.setattr(M, "_CPP_WRAPPER_REASON", None)
+    monkeypatch.setattr(M, "_CPP_WRAPPER_AFTER", 2)
+    calls = []
+    monkeypatch.setattr(torch, "compile", _fake_compile_backward_fails(calls))
+    cls = _toy_class()
+    M._wrap(cls, dict(M._COMPILE_OPTIONS))
+    layer = cls()
+    for step in range(6):
+        x = torch.randn(2, 4, 8, generator = torch.Generator().manual_seed(step), requires_grad = True)
+        layer.zero_grad()
+        layer(x).square().sum().backward()  # must not raise, before or after the switch
+        assert x.grad is not None and layer.proj.weight.grad is not None
+    assert M.CPP_WRAPPER_STATS == {"regions": 1, "fallbacks": 1}
+    assert M._CPP_WRAPPER_BROKEN
+    assert "every block keeps the Python wrapper" in capsys.readouterr().out
+    # The trial touched no parameter gradient: one more step equals the plain forward's.
+    layer.zero_grad()
+    x = torch.randn(2, 4, 8)
+    layer(x).square().sum().backward()
+    want = torch.autograd.grad(
+        cls.forward._unsloth_block_original(layer, x).square().sum(), layer.proj.weight
+    )[0]
+    torch.testing.assert_close(layer.proj.weight.grad, want)
+    # Later calls (and a new class) stay on the Python wrapper.
+    calls.clear()
+    other = _toy_class()
+    M._wrap(other, dict(M._COMPILE_OPTIONS))
+    for _ in range(4):
+        other()(torch.randn(2, 4, 8, requires_grad = True)).sum().backward()
+        layer(torch.randn(2, 4, 8, requires_grad = True)).sum().backward()
+    assert "cpp" not in calls, calls
+
+
 def test_kill_switch_keeps_the_python_wrapper(monkeypatch):
     monkeypatch.setenv("UNSLOTH_BLOCK_CUDAGRAPHS", "0")
     monkeypatch.setenv("UNSLOTH_BLOCK_CPP_WRAPPER", "0")

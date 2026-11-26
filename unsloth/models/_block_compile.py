@@ -99,6 +99,8 @@ if os.environ.get("UNSLOTH_BLOCK_CPP_WRAPPER", "").strip() == "1":
     _CPP_WRAPPER_AFTER = 0
 # regions: block classes given a C++ wrapper region; fallbacks: classes whose C++ build failed.
 CPP_WRAPPER_STATS = {"regions": 0, "fallbacks": 0}
+# Non-empty once a C++ trial build failed: no block of the process uses the C++ wrapper after that.
+_CPP_WRAPPER_BROKEN = []
 
 
 # Per-block CUDA graphs only pay off for static shapes on a launch-bound step.
@@ -2635,11 +2637,65 @@ def _wrap(
         # two save.
         return (
             cpp["on"]
+            and not _CPP_WRAPPER_BROKEN
             and not _in_nonreentrant_checkpoint()
             and (not auto or _CUDAGRAPH_STATE["auto"]["phase"] == "off" or _packed_kwargs(kwargs))
         )
 
-    def cpp_in_use(self, kwargs):
+    def cpp_trial(self, hidden_states, args, kwargs, mode):
+        """Grad-mode forward + backward of the new C++ region on a detached copy of this call's input
+        (with and without the skipped down projection), so a failed C++ build of either graph falls
+        back here: AOTAutograd lowers the backward lazily, at loss.backward(), outside any retry.
+        Gradients reach only the copy (no parameter .grad is touched). False when it failed."""
+        devices = [hidden_states.device.index] if hidden_states.is_cuda else []
+        variants = [False]
+        if _skip_down_eligible(self, original):
+            variants.append(True)
+        try:
+            for skip_down in variants:
+                x = hidden_states.detach().requires_grad_()
+                with (
+                    torch.random.fork_rng(devices = devices),
+                    torch.enable_grad(),
+                    _no_output_capture(self),
+                    _strict_dynamo(),
+                ):
+                    _IN_TRIAL[0] = True
+                    try:
+                        out = run(self, x, args, kwargs, mode, skip_down, True)
+                    finally:
+                        _IN_TRIAL[0] = False
+                    leaves = [
+                        t
+                        for t in torch.utils._pytree.tree_leaves(out)
+                        if isinstance(t, torch.Tensor) and t.requires_grad
+                    ]
+                    if leaves:
+                        total = sum(t.float().sum() for t in leaves)
+                        torch.autograd.grad(total, [x], allow_unused = True)
+        except torch.OutOfMemoryError:
+            raise
+        except Exception as e:
+            if isinstance(getattr(e, "inner_exception", None), torch.OutOfMemoryError):
+                # Out of memory while building, not a broken toolchain: this class stays on the Python
+                # wrapper, the others may still try.
+                cpp["on"] = False
+                cpp["region"] = None
+                return False
+            # Any failure here (a missing toolchain shows up in every class): every block keeps the
+            # Python wrapper for the rest of the process.
+            _CPP_WRAPPER_BROKEN.append(type(e).__name__)
+            cpp["on"] = False
+            CPP_WRAPPER_STATS["fallbacks"] += 1
+            first = str(e).strip().splitlines()[0][:200] if str(e).strip() else type(e).__name__
+            print(
+                f"Unsloth: {cls.__name__} block compile with Inductor's C++ wrapper failed ({first}); "
+                "every block keeps the Python wrapper."
+            )
+            return False
+        return True
+
+    def cpp_in_use(self, hidden_states, args, kwargs, mode):
         """Counts this class's calls per layer and builds the C++ region once past the threshold."""
         if not cpp_wanted(kwargs):
             return False
@@ -2663,6 +2719,8 @@ def _wrap(
                 options = {**compile_options, "cpp_wrapper": True},
                 **isolate,
             )
+            if not cpp_trial(self, hidden_states, args, kwargs, mode):
+                return False
         return True
 
     def fast(kwargs):
@@ -2967,7 +3025,7 @@ def _wrap(
         skip_down = bit == 4
         # The C++ wrapper region is built after the first calls (auto mode times launches first):
         # its first call per grad mode also runs with errors raised, so a failed build falls back.
-        cpp_bit = bit if cpp_in_use(self, kwargs) else 0
+        cpp_bit = bit if cpp_in_use(self, hidden_states, args, kwargs, mode) else 0
         cpp_checked = self.__dict__.get("_unsloth_block_cpp_checked", 0)
         if checked & bit and cpp_checked & cpp_bit == cpp_bit:
             return run(self, hidden_states, args, kwargs, mode, skip_down, trial)
