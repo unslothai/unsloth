@@ -201,7 +201,7 @@ export function useDatasetUploads() {
       );
       const uploaded = await uploadNativeTrainingDataset(
         grant.nativePathLease,
-        semicolonCsv && getFileExtension(filename) === ".csv" ? ";" : ",",
+        semicolonCsv && getFileExtension(path) === ".csv" ? ";" : ",",
       );
       bumpInventoryVersion();
       selectLocalDataset(uploaded.stored_path);
