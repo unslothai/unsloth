@@ -81,6 +81,24 @@ def test_deepseek_v41_skips_the_vlm_allowlist_on_the_vllm_path():
 
 def test_vllm_shared_norms_are_not_upcast():
     start = SOURCE.index(
-        'if os.environ.get("UNSLOTH_HIGH_PRECISION_LAYERNORM", "0") == "1" and not getattr('
+        'if os.environ.get("UNSLOTH_HIGH_PRECISION_LAYERNORM", "0") == "1" and not ('
     )
-    assert '"_unsloth_vllm_shared_norms"' in SOURCE[start : start + 200]
+    assert 'getattr(model, "_unsloth_vllm_shared_norms", False)' in SOURCE[start : start + 300]
+
+
+def test_the_upcast_gate_skips_a_model_marked_shared(monkeypatch):
+    import os
+
+    gate = next(
+        node.test
+        for node in ast.walk(TREE)
+        if isinstance(node, ast.If)
+        and "UNSLOTH_HIGH_PRECISION_LAYERNORM" in ast.unparse(node.test)
+        and "_unsloth_vllm_shared_norms" in ast.unparse(node.test)
+    )
+    test = compile(ast.Expression(gate), str(VISION_PATH), "eval")
+    monkeypatch.setenv("UNSLOTH_HIGH_PRECISION_LAYERNORM", "1")
+    shared = SimpleNamespace(_unsloth_vllm_shared_norms = True)
+    for model, upcast in ((shared, False), (SimpleNamespace(), True)):
+        scope = {"os": os, "fast_inference": True, "model_types": ["deepseek_v41"], "model": model}
+        assert eval(test, scope) is upcast

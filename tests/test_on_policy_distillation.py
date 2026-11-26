@@ -224,6 +224,73 @@ def test_score_completion_logps_scores_real_logits(monkeypatch):
     assert os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] == "1"
 
 
+class KeepCausalLM(ToyCausalLM):
+    """ToyCausalLM whose forward honours logits_to_keep like transformers / Unsloth (an int keeps the last columns)."""
+
+    def __init__(
+        self,
+        *args,
+        ignore_keep = False,
+        **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+        self.ignore_keep = ignore_keep
+        self.widths = []
+
+    def forward(
+        self,
+        input_ids,
+        attention_mask = None,
+        use_cache = None,
+        logits_to_keep = 0,
+    ):
+        logits = super().forward(input_ids, attention_mask, use_cache).logits
+        if logits_to_keep and not self.ignore_keep:
+            logits = logits[:, -logits_to_keep:]
+        self.widths.append((input_ids.shape[1], logits.shape[1]))
+        return types.SimpleNamespace(logits = logits)
+
+
+@pytest.mark.parametrize("ignore_keep", (False, True))
+@pytest.mark.parametrize("rows_per_chunk", (None, 1, 2))
+def test_score_completion_logps_keeps_only_completion_columns(ignore_keep, rows_per_chunk):
+    # The head sees only the columns from the earliest predicting position on, with bitwise-identical log-probs.
+    model = KeepCausalLM(ignore_keep = ignore_keep).double()
+    batch = _left_padded_batch()
+    got = opd.score_completion_logps(model, *batch, rows_per_chunk = rows_per_chunk)
+    full = opd.score_completion_logps(ToyCausalLM().double(), *batch, rows_per_chunk = rows_per_chunk)
+    assert torch.equal(got, full)
+    torch.testing.assert_close(
+        got.double(), _oracle_logps(ToyCausalLM().double(), *batch), rtol = 1e-6, atol = 1e-6
+    )
+    P, C = batch[0].shape[1], batch[2].shape[1]
+    max_left_pad = int((batch[1] == 0).sum(1).max())
+    for L, width in model.widths:
+        assert L == P + C
+        if ignore_keep:
+            assert width == L
+        else:
+            assert C + 1 <= width <= C + 1 + max_left_pad < L
+    if not ignore_keep and rows_per_chunk is None:
+        assert model.widths == [(P + C, C + 1 + max_left_pad)]
+
+
+def test_score_completion_logps_rejects_a_wrong_logits_width():
+    class Wrong(KeepCausalLM):
+        def forward(
+            self,
+            input_ids,
+            attention_mask = None,
+            use_cache = None,
+            logits_to_keep = 0,
+        ):
+            logits = ToyCausalLM.forward(self, input_ids).logits[:, -2:]
+            return types.SimpleNamespace(logits = logits)
+
+    with pytest.raises(RuntimeError, match = "logit columns"):
+        opd.score_completion_logps(Wrong().double(), *_left_padded_batch())
+
+
 def test_distillation_advantages_match_tinker():
     g = torch.Generator().manual_seed(0)
     sampled = -torch.rand(4, 6, generator = g, dtype = torch.float64) * 3
