@@ -6,7 +6,6 @@ filename; int8 write needs torchao >= 0.18, reading works on older"""
 
 from __future__ import annotations
 
-import contextlib
 import json
 import os
 import re
@@ -148,19 +147,12 @@ def load_plain_prequant_safetensors(
     *,
     device: str = "cpu",
     skip_names: Iterable[str] = (),
-    backend: Optional[str] = None,
 ) -> dict:
     """Reads plain-tensor prequant file without torchao; refuses subclass metadata and unlisted
-    tensors; skip_names are validated but never read. ``backend="pread"`` reads through pread and drops each read
-    tensor's pages where ``safetensors_pread`` wants that (ROCm integrated GPUs); None keeps mmap."""
+    tensors; skip_names are validated but never read."""
     from safetensors import safe_open
 
-    open_kwargs = {"backend": backend} if backend else {}
-    drops = contextlib.nullcontext(lambda name: None)
-    if backend == "pread":
-        from .safetensors_pread import _page_dropper
-        drops = _page_dropper(path)
-    with safe_open(path, framework = "pt", device = device, **open_kwargs) as handle, drops as drop:
+    with safe_open(path, framework = "pt", device = device) as handle:
         raw = handle.metadata() or {}
         fmt = raw.get(UNSLOTH_FORMAT_KEY)
         if not fmt:
@@ -189,14 +181,12 @@ def load_plain_prequant_safetensors(
             if json.loads(raw.get(name) or "null") != {"_type": "Tensor"}:
                 raise ValueError(f"{path} requires a tensor-subclass reader for {name!r}")
         skip = frozenset(skip_names)
-        state_dict = {}
-        for name in names:
-            if name not in skip:
-                state_dict[name] = _unviewed(handle.get_tensor(name))
-                drop(name)
-        for key in roots:
-            state_dict[key[len(UNSLOTH_ROOT_PREFIX) :]] = _unviewed(handle.get_tensor(key))
-            drop(key)
+        state_dict = {
+            name: _unviewed(handle.get_tensor(name)) for name in names if name not in skip
+        }
+        state_dict.update(
+            (key[len(UNSLOTH_ROOT_PREFIX) :], _unviewed(handle.get_tensor(key))) for key in roots
+        )
     return {"format": str(fmt), "state_dict": state_dict, "metadata": metadata}
 
 

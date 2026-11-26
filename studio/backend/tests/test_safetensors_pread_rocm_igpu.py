@@ -192,10 +192,9 @@ def test_fadvise_kill_switch_keeps_pages(monkeypatch, tmp_path, env):
     "platform, rocm, integrated",
     [("linux", False, False), ("linux", True, False), ("win32", True, True)],
 )
-def test_fadvise_and_te_backend_only_on_rocm_integrated(monkeypatch, platform, rocm, integrated):
+def test_fadvise_only_on_rocm_integrated(monkeypatch, platform, rocm, integrated):
     _platform(monkeypatch, platform, rocm, integrated)
     assert not sp.fadvise_wanted()
-    assert sp.igpu_pread_backend() is None
 
 
 def test_page_dropper_never_raises_on_a_bad_header(monkeypatch, tmp_path):
@@ -206,43 +205,3 @@ def test_page_dropper_never_raises_on_a_bad_header(monkeypatch, tmp_path):
     with sp._page_dropper(str(bad)) as drop:
         drop("x")
     assert calls == []
-
-
-@requires_backend
-def test_precast_text_encoder_reads_through_pread_on_rocm_integrated(monkeypatch, tmp_path):
-    import json
-
-    import core.inference.prequant_safetensors as ps
-
-    _platform(monkeypatch, "linux", True, True)
-    calls = _fadvise_spy(monkeypatch)
-    assert sp.igpu_pread_backend() == "pread"
-    path = tmp_path / "te.safetensors"
-    tensors = {"w": torch.randn(4, 4), "lm_head.weight": torch.randn(2, 4)}
-    meta = {
-        ps.UNSLOTH_FORMAT_KEY: "int8",
-        ps.UNSLOTH_METADATA_KEY: "{}",
-        "tensor_names": json.dumps(sorted(tensors)),
-        **{k: json.dumps({"_type": "Tensor"}) for k in tensors},
-    }
-    save_file(tensors, str(path), metadata = meta)
-    seen = []
-    from safetensors import safe_open as real_safe_open
-
-    import functools
-
-    @functools.wraps(real_safe_open)
-    def spy(*args, **kwargs):
-        seen.append(kwargs.get("backend"))
-        return real_safe_open(*args, **kwargs)
-
-    monkeypatch.setattr("safetensors.safe_open", spy)
-    plain = ps.load_plain_prequant_safetensors(str(path), skip_names = ["lm_head.weight"])
-    routed = ps.load_plain_prequant_safetensors(
-        str(path), skip_names = ["lm_head.weight"], backend = sp.igpu_pread_backend()
-    )
-    assert seen == [None, "pread"]
-    assert set(routed["state_dict"]) == {"w"} and torch.equal(
-        routed["state_dict"]["w"], plain["state_dict"]["w"]
-    )
-    assert [c[:2] for c in calls] == [_spans_of(path)["w"]]

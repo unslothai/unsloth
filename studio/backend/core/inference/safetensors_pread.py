@@ -226,18 +226,6 @@ def _page_dropper(filename: Any) -> Iterator[Any]:
             os.close(fd)
 
 
-def igpu_pread_backend() -> Optional[str]:
-    """``"pread"`` for a direct ``safe_open`` outside a scope (pre-cast text encoders) on a Linux ROCm integrated GPU
-    with a safetensors that has the keyword, else None (the caller's default mmap)."""
-    if not pread_wanted() or not rocm_integrated():
-        return None
-    try:
-        from safetensors import safe_open
-        return "pread" if _supports_backend(safe_open) else None
-    except Exception:  # noqa: BLE001
-        return None
-
-
 def _install_load_file() -> None:
     global _original_load_file
     try:

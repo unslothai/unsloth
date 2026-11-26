@@ -31,6 +31,8 @@ requires_backend = pytest.mark.skipif(
 @pytest.fixture(autouse = True)
 def _clean(monkeypatch):
     monkeypatch.delenv(sp.PREAD_ENV, raising = False)
+    # these cover Windows / CUDA rules: a real ROCm APU host would otherwise turn the Linux default on
+    monkeypatch.setattr(sp, "rocm_integrated", lambda: False)
     yield
     assert sp._depth == 0 and sp._original is None and not sp._active_rules()
 
