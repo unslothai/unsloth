@@ -149,7 +149,6 @@ def test_unsloth_tool_runs_then_a_client_tool_call_ends_the_turn(monkeypatch):
 
     events = _loop(backend)
 
-    # Both catalogs reach the model on every round.
     for payload in payloads:
         assert [tool["function"]["name"] for tool in payload["tools"]] == [
             "web_search",

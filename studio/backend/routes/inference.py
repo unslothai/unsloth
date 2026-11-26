@@ -36110,7 +36110,6 @@ async def produce_openai_chat_completions(
                         if event.get("type") == "client_tool_calls":
                             client_calls = event["tool_calls"]
                             if not round_has_content:
-                                # Not an earlier tool round's text.
                                 snapshot_mark = turn_mark
                                 raw_text = event.get("content") or ""
                             continue

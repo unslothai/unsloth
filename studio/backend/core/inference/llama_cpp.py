@@ -41208,7 +41208,6 @@ class LlamaCppBackend:
         chat_template_kwargs: Optional[dict] = None,
         mcp_match_exchange: Optional[dict] = None,
         record_cut_thought: bool = True,
-        # Names in ``tools`` the caller runs itself.
         client_tool_names: Optional[frozenset] = None,
     ) -> Generator[dict, None, None]:
         """
@@ -43467,8 +43466,7 @@ class LlamaCppBackend:
                     tool_calls = tool_calls[:1]
                     _over_cap = []
 
-                # After dedupe and the parallel cut, before any call runs: Unsloth calls in a batch
-                # with a client call do not run (the model repeats them). Only this round's tools count.
+                # After dedupe and the parallel cut; batched Unsloth calls do not run.
                 _client_calls = client_tool_calls_in(
                     tool_calls,
                     (client_tool_names or frozenset()) & _enabled_tool_names,
