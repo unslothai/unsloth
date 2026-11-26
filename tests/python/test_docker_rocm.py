@@ -433,16 +433,17 @@ class TestBuildShRocm:
         assert "org.opencontainers.image.licenses=Apache-2.0 AND AGPL-3.0-only" in body
 
     @pytest.mark.parametrize(
-        "ref, stable, expected",
+        "ref, stable, newest, expected",
         [
-            ("refs/heads/main", "true", {"nightly", "nightly-studio"}),
-            ("refs/tags/v0.1.916-beta", "true", {"latest", "studio"}),
-            ("refs/heads/main", "false", set()),
-            ("refs/tags/v0.1.916-beta", "false", set()),
-            ("refs/heads/other", "true", set()),
+            ("refs/heads/main", "true", "false", {"nightly", "nightly-studio"}),
+            ("refs/tags/v0.1.916-beta", "true", "true", {"latest", "studio"}),
+            ("refs/tags/v0.1.900-beta", "true", "false", set()),
+            ("refs/heads/main", "false", "false", set()),
+            ("refs/tags/v0.1.916-beta", "false", "true", set()),
+            ("refs/heads/other", "true", "false", set()),
         ],
     )
-    def test_release_and_nightly_aliases_move_on_their_own_events(self, ref, stable, expected):
+    def test_release_and_nightly_aliases_move_on_their_own_events(self, ref, stable, newest, expected):
         # unslothai/unsloth#17470: the weekly main build moved :latest and :studio too.
         import yaml
 
@@ -451,6 +452,7 @@ class TestBuildShRocm:
             "github.event.repository.default_branch": "'main'",
             "github.ref": repr(ref),
             "needs.prepare.outputs.stable": repr(stable),
+            "needs.prepare.outputs.newest_release": repr(newest),
         }
         moved = set()
         for job in ("tag", "tag-studio"):
@@ -1003,6 +1005,37 @@ class TestRocmEntrypoint:
         rc, got, log = self._build_args(tmp_path)
         assert rc == 0 and got["stable"] == "true" and got["gfx_tag"] == "false", got
 
+    def test_only_the_newest_release_tag_moves_latest(self, tmp_path):
+        """Re-running an older release must not roll :latest/:studio back to it."""
+        import yaml
+
+        wf = yaml.safe_load(open(_WORKFLOW, encoding = "utf-8"))
+        step = next(s for s in wf["jobs"]["prepare"]["steps"] if s.get("id") == "newest_release")
+        fake = tmp_path / "bin"
+        fake.mkdir()
+        (fake / "git").write_text(
+            "#!/bin/sh\n[ -n \"$GIT_FAIL\" ] && exit 128\n"
+            "printf 'a\\trefs/tags/v0.1.99-beta\\nb\\trefs/tags/v0.1.930-beta\\n"
+            "c\\trefs/tags/v0.1.916-beta\\n'\n"
+        )
+        (fake / "git").chmod(0o755)
+
+        def newest(tag, **extra):
+            out = tmp_path / f"out{len(os.listdir(tmp_path))}"
+            out.write_text("")
+            env = {"PATH": f"{fake}:{os.environ['PATH']}", "GITHUB_OUTPUT": str(out), "TAG_NAME": tag}
+            env.update(extra)
+            proc = subprocess.run(
+                ["bash", "-e", "-c", step["run"]], env = env, capture_output = True, text = True
+            )
+            return proc.returncode, out.read_text().strip()
+
+        assert newest("v0.1.930-beta") == (0, "newest=true")
+        assert newest("v0.1.916-beta") == (0, "newest=false")
+        assert newest("v0.1.99-beta") == (0, "newest=false")
+        assert newest("") == (0, "newest=false")
+        assert newest("v0.1.930-beta", GIT_FAIL = "1")[0] != 0
+
     def test_the_workflow_accepts_a_gfx906_dispatch(self):
         """Dockerfile.rocm relies on ROCM_GFX=gfx906 to leave out bitsandbytes, so the
         dispatch validation must let it through (with a 6.3 base)."""
@@ -1075,6 +1108,7 @@ class TestRocmEntrypoint:
             lines = meta["with"]["tags"].splitlines()
             alias = [ln for ln in lines if re.search(r"value=(latest|studio),", ln)]
             assert len(alias) == 1, (job, alias)
+            assert "needs.prepare.outputs.newest_release == 'true'" in alias[0], alias[0]
 
     def test_a_notebooks_override_gets_sha_tags_only(self, tmp_path):
         """A dispatch that bakes another notebooks ref is an experiment like any

@@ -74,6 +74,7 @@ jobs:
       stable: ${{ steps.build_args.outputs.stable }}
       # every input at its default except a set gfx: only then the gfx tag
       gfx_tag: ${{ steps.build_args.outputs.gfx_tag }}
+      newest_release: ${{ steps.newest_release.outputs.newest }}
     steps:
       # Precedence: dispatch input, else pushed tag, else trigger sha, else main.
       - name: Resolve unsloth ref
@@ -156,6 +157,24 @@ jobs:
           fi
           echo "commit=${SHA}" >> "$GITHUB_OUTPUT"
           echo "notebooks commit: ${SHA}"
+
+      # :latest/:studio move only for the newest v* tag, so re-running an older release can't roll them back.
+      - name: Is this the newest v* release
+        id: newest_release
+        env:
+          TAG_NAME: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '' }}
+        run: |
+          NEWEST=false
+          if [ -n "$TAG_NAME" ]; then
+              if ! LS_OUT="$(git ls-remote --tags --refs https://github.com/unslothai/unsloth 'v*')"; then
+                  echo "::error::unslothai/unsloth unreachable; cannot tell whether ${TAG_NAME} is the newest release"
+                  exit 1
+              fi
+              TOP="$(printf '%s\n' "$LS_OUT" | sed 's#.*refs/tags/##' | sort -V | tail -n 1)"
+              [ "$TOP" = "$TAG_NAME" ] && NEWEST=true
+              echo "newest v* tag: ${TOP}"
+          fi
+          echo "newest=${NEWEST}" >> "$GITHUB_OUTPUT"
 
       # Stable tags only for the default build; changed inputs get SHA tags only.
       - name: Resolve build args and the stable-tag gate
@@ -261,7 +280,7 @@ jobs:
             UNSLOTH_ZOO_REF=${{ needs.prepare.outputs.zoo_ref }}
 
   # Tag only after both digests exist, so :latest and :studio always move onto the same base.
-  # :latest/:studio follow v* releases; :nightly/:nightly-studio follow main.
+  # :latest/:studio follow the newest v* release; :nightly/:nightly-studio follow main.
   tag:
     runs-on: ubuntu-latest
     needs: [prepare, build, build-studio]
@@ -286,7 +305,7 @@ jobs:
           flavor: latest=false
           # Override builds' sha tags carry the run id so two experiments at one commit do not collide.
           tags: |
-            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') && needs.prepare.outputs.stable == 'true' }}
+            type=raw,value=latest,enable=${{ needs.prepare.outputs.newest_release == 'true' && needs.prepare.outputs.stable == 'true' }}
             type=ref,event=tag,enable=${{ needs.prepare.outputs.stable == 'true' }}
             type=raw,value=nightly,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && needs.prepare.outputs.stable == 'true' }}
             type=raw,value=${{ needs.prepare.outputs.rocm_gfx }},enable=${{ needs.prepare.outputs.gfx_tag == 'true' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
@@ -395,7 +414,7 @@ jobs:
           # format(), not a bare ${{ }}-studio: tests/python/test_docker_rocm.py matches the raw gfx line
           # by name and it must stay unique to the base.
           tags: |
-            type=raw,value=studio,enable=${{ startsWith(github.ref, 'refs/tags/v') && needs.prepare.outputs.stable == 'true' }}
+            type=raw,value=studio,enable=${{ needs.prepare.outputs.newest_release == 'true' && needs.prepare.outputs.stable == 'true' }}
             type=ref,event=tag,suffix=-studio,enable=${{ needs.prepare.outputs.stable == 'true' }}
             type=raw,value=nightly-studio,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && needs.prepare.outputs.stable == 'true' }}
             type=raw,value=${{ format('{0}-studio', needs.prepare.outputs.rocm_gfx) }},enable=${{ needs.prepare.outputs.gfx_tag == 'true' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
