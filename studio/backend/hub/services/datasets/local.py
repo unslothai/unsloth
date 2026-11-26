@@ -608,7 +608,9 @@ def _validate_json_columns_upload(path: Path, json_columns: bool) -> None:
         raise HTTPException(status_code = 400, detail = "Pandas column import requires a .json file.")
 
 
-def _json_columns_input_limit(max_bytes: int, max_label: str, json_columns: bool) -> tuple[int, str]:
+def _json_columns_input_limit(
+    max_bytes: int, max_label: str, json_columns: bool
+) -> tuple[int, str]:
     # Decoding a column object keeps every cell in memory until the transpose is written.
     pandas_limit = upload_limit_bytes(_PANDAS_JSON_MAX_MB)
     if json_columns and pandas_limit < max_bytes:
@@ -656,7 +658,9 @@ def _write_pandas_json_rows(
     index = next(iter(columns.values()))
     if not isinstance(index, dict) or not index:
         raise ValueError("Expected a non-empty object of row indices in each column.")
-    if any(not isinstance(values, dict) or values.keys() != index.keys() for values in columns.values()):
+    if any(
+        not isinstance(values, dict) or values.keys() != index.keys() for values in columns.values()
+    ):
         raise ValueError("Every column must contain the same row indices.")
 
     with converted_path.open("wb") as target:
