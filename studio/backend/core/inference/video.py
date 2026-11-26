@@ -14193,7 +14193,23 @@ class VideoBackend:
             **({"pretrained_model_name_or_path": offline_sources} if offline_sources else {}),
             **({"revision": component_revisions} if component_revisions else {}),
         )
-        if baked_loras:
+        if baked_loras and video_lora.side_branch_enabled(fam):
+            # Unmerged: the denoiser's weights (bf16 or hosted int8 codes) stay as released and every adapted Linear
+            # adds its low-rank branch, so the update is never rounded into a 16-bit or 8-bit weight.
+            adapted = video_lora.attach_side_branch_(
+                getattr(pipe, denoiser_component),
+                [(e[1], e[2]) for e in baked_loras],
+                label = f"{fam.label} denoiser",
+                family = getattr(fam, "name", None),
+            )
+            video_lora.mark_baked(pipe, tuple(e[:3] for e in baked_loras), lora_specs)
+            logger.info(
+                "video.lora_side_branch: %d adapter(s) on %d layer(s) of the %s denoiser, weights unmerged",
+                len(baked_loras),
+                adapted,
+                transformer_quant_engaged or "bf16",
+            )
+        elif baked_loras:
             # Into the released bf16 denoiser, before the forward patch, placement, streaming or compile.
             if transformer_quant_engaged is not None:
                 raise ValueError(

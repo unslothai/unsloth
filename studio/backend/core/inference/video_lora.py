@@ -178,8 +178,12 @@ def load_refusal(
         single = next((i for (i, _w) in active_specs(loras) if not _is_pair(i)), None)
         if single is not None:
             return _pair_mismatch(single, True)
-    if getattr(fam, "modular_workflow", None) and not (
-        _precision_unset(transformer_quant) or _precision_dense(transformer_quant)
+    if (
+        getattr(fam, "modular_workflow", None)
+        and not (_precision_unset(transformer_quant) or _precision_dense(transformer_quant))
+        and not (
+            side_branch_enabled(fam) and str(transformer_quant).strip().lower() in ("int8", "fp8")
+        )
     ):
         return (
             f"{label} LoRAs merge into the released bfloat16 denoiser, so they cannot ride on the hosted "
@@ -191,9 +195,11 @@ def load_refusal(
 def dense_transformer_quant(
     fam: Any, transformer_quant: Optional[str], loras: Any
 ) -> Optional[str]:
-    """MiniMax-H3: an unset precision takes the hosted quantized denoiser, so a LoRA load pins the released one."""
+    """MiniMax-H3: an unset precision takes the hosted quantized denoiser. A baked LoRA pins the released one; the
+    side branch leaves the codes untouched, so it keeps the hosted pick like a plain load."""
     if (
         has_active(loras)
+        and not side_branch_enabled(fam)
         and getattr(fam, "modular_workflow", None)
         and _precision_unset(transformer_quant)
     ):
@@ -541,6 +547,110 @@ def bake_into_module_(
         # Read by every cache writer keyed on the base's shards: a merged build must never be served as the base.
         setattr(module, LORAS_BAKED_ATTR, True)
     return len(deltas)
+
+
+SIDE_BRANCH_ENV = "UNSLOTH_VIDEO_LORA_SIDE_BRANCH"
+SIDE_BRANCH_ADAPTER = "unsloth_video_lora"
+SIDE_BRANCH_ATTR = "_unsloth_lora_side_branch"
+
+
+def side_branch_enabled(fam: Any = None) -> bool:
+    """MiniMax-H3 keeps LoRAs as an unmerged low-rank branch rather than a bf16 bake, whose nearest rounding drops most
+    of a LoRA's per-weight update; ``UNSLOTH_VIDEO_LORA_SIDE_BRANCH=0`` restores the bake."""
+    import os
+
+    if fam is not None and getattr(fam, "name", None) != _H3_FAMILY:
+        return False
+    return (os.environ.get(SIDE_BRANCH_ENV) or "").strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
+
+
+def attach_side_branch_(
+    module: Any,
+    files: Iterable[tuple[str, float]],
+    *,
+    label: str = "denoiser",
+    family: Optional[str] = None,
+    dtype: Any = None,
+) -> int:
+    """Attach every LoRA in ``files`` to ``module`` as one unmerged PEFT LoRA layer per adapted Linear: the forward is
+    ``base(x) + (x @ A.T) @ B.T`` with ``A`` the adapters' factors stacked along the rank and ``B`` carrying each
+    file's ``scale * weight``, so the base weights (bf16 or hosted int8 codes) are never rewritten and the update is
+    never rounded into them. Validates every layer first; returns the number of adapted layers."""
+    import torch
+    from peft import LoraConfig, inject_adapter_in_model
+
+    modules = dict(module.named_modules())
+    deltas = {}
+    for m, terms in read_deltas(files, family = family).items():
+        layer = modules.get(m)
+        # a small-M int8 layer sits inside a row-padding wrapper (diffusion_quant_pad.PadToMinM): adapt its Linear
+        while (
+            layer is not None
+            and not isinstance(layer, torch.nn.Linear)
+            and isinstance(getattr(layer, "inner", None), torch.nn.Module)
+        ):
+            m, layer = m + ".inner", layer.inner
+        deltas[m] = terms
+        if layer is None:
+            raise ValueError(
+                f"This LoRA adapts a layer the {label} does not have ({m}); it was trained for a different model."
+            )
+        if not isinstance(layer, torch.nn.Linear):
+            raise ValueError(f"The {label} layer {m} is a {type(layer).__name__}, not a Linear.")
+        want = (int(layer.out_features), int(layer.in_features))
+        for a, b, _scale in terms:
+            got = (int(b.shape[0]), int(a.shape[1]))
+            if got != want or b.shape[1] != a.shape[0]:
+                raise ValueError(f"LoRA for {m} is {got}, the {label} layer is {want}")
+    if not deltas:
+        return 0
+    factors = {}
+    for m, terms in deltas.items():
+        a = torch.cat([t[0].float() for t in terms], dim = 0)
+        b = torch.cat([t[1].float() * float(t[2]) for t in terms], dim = 1)
+        factors[m] = (a, b)
+    ranks = {m: int(a.shape[0]) for m, (a, _b) in factors.items()}
+    first = next(iter(ranks.values()))
+    config = LoraConfig(
+        r = first,
+        lora_alpha = first,
+        target_modules = sorted(factors),
+        rank_pattern = {m: r for m, r in ranks.items()},
+        alpha_pattern = {m: r for m, r in ranks.items()},
+        lora_dropout = 0.0,
+        bias = "none",
+    )
+    # Plain lora.Linear for every target: PEFT would hand a torchao (hosted int8) weight to TorchaoLoraLinear, whose
+    # merge requantizes the codes; the side branch never merges, so the base stays any Linear's own forward.
+    from peft.tuners.lora.layer import Linear as LoraLinear
+
+    config._register_custom_module({torch.nn.Linear: LoraLinear})
+    inject_adapter_in_model(config, module, adapter_name = SIDE_BRANCH_ADAPTER)
+    wrapped = dict(module.named_modules())
+    with torch.no_grad():
+        for m, (a, b) in factors.items():
+            layer = wrapped[m]
+            base = layer.get_base_layer()
+            target = dtype or (
+                base.weight.dtype if base.weight.dtype.is_floating_point else torch.bfloat16
+            )
+            la, lb = layer.lora_A[SIDE_BRANCH_ADAPTER], layer.lora_B[SIDE_BRANCH_ADAPTER]
+            if float(layer.scaling[SIDE_BRANCH_ADAPTER]) != 1.0:
+                raise ValueError(
+                    f"{m}: side-branch scaling is {layer.scaling[SIDE_BRANCH_ADAPTER]}, expected 1"
+                )
+            la.weight = torch.nn.Parameter(a.to(target).contiguous(), requires_grad = False)
+            lb.weight = torch.nn.Parameter(b.to(target).contiguous(), requires_grad = False)
+    module.requires_grad_(False)
+    setattr(module, SIDE_BRANCH_ATTR, len(factors))
+    # Read by every cache writer keyed on the base's shards: an adapted denoiser must never be served as the base.
+    setattr(module, LORAS_BAKED_ATTR, True)
+    return len(factors)
 
 
 def mark_baked(pipe: Any, baked: tuple, specs: Any) -> None:
