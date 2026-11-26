@@ -279,17 +279,22 @@ jobs:
           # shard's test time (1681 of 2640 s measured), so it gets a runner of its own. Any other
           # test_pp_e* or test_pp[!_]* gloo file matches neither shard and is reported dropped.
           - shard: gloo-pp-1
-            split: 1/3
+            split: 1/4
             selection: >-
               tests/test_pp_[!e]*gloo*.py
               tests/test_pp_env_[!g]*gloo*.py
           - shard: gloo-pp-2
-            split: 2/3
+            split: 2/4
             selection: >-
               tests/test_pp_[!e]*gloo*.py
               tests/test_pp_env_[!g]*gloo*.py
           - shard: gloo-pp-3
-            split: 3/3
+            split: 3/4
+            selection: >-
+              tests/test_pp_[!e]*gloo*.py
+              tests/test_pp_env_[!g]*gloo*.py
+          - shard: gloo-pp-4
+            split: 4/4
             selection: >-
               tests/test_pp_[!e]*gloo*.py
               tests/test_pp_env_[!g]*gloo*.py
