@@ -311,19 +311,34 @@ function toGpuDevices(
     }));
 }
 
-/** Keep the previous array when unchanged: polls re-probe memory, and consumers memoise picker
- * options on this list. */
+function sameSchemes(
+  held: readonly string[],
+  fresh: readonly string[],
+): boolean {
+  return (
+    held === fresh ||
+    (held.length === fresh.length &&
+      held.every((scheme, index) => scheme === fresh[index]))
+  );
+}
+
+/** Keep the previous arrays when unchanged: polls re-probe memory, and consumers memoise picker
+ * options and Translate's disk probes on these lists. */
 export function withStableSchemes(current: GpuInfo, next: GpuInfo): GpuInfo {
-  const held = current.denseQuantSchemes;
-  const fresh = next.denseQuantSchemes;
-  if (held === fresh) return next;
-  if (
-    held.length === fresh.length &&
-    held.every((scheme, index) => scheme === fresh[index])
-  ) {
-    return { ...next, denseQuantSchemes: held };
-  }
-  return next;
+  const keepDense =
+    current.denseQuantSchemes !== next.denseQuantSchemes &&
+    sameSchemes(current.denseQuantSchemes, next.denseQuantSchemes);
+  const keepCheckpoint =
+    current.checkpointQuantFormats !== next.checkpointQuantFormats &&
+    sameSchemes(current.checkpointQuantFormats, next.checkpointQuantFormats);
+  if (!keepDense && !keepCheckpoint) return next;
+  return {
+    ...next,
+    ...(keepDense ? { denseQuantSchemes: current.denseQuantSchemes } : {}),
+    ...(keepCheckpoint
+      ? { checkpointQuantFormats: current.checkpointQuantFormats }
+      : {}),
+  };
 }
 
 const RAM_DRIFT_TOLERANCE_GB = 0.25;

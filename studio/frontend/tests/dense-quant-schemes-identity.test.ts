@@ -142,3 +142,55 @@ test("free RAM drifting under 0.25 GiB keeps the published snapshot, so pages do
   const knownFlip = { ...drift, systemRamAvailableKnown: false };
   assert.equal(hooks.nextGpuInfo(current, knownFlip).systemRamAvailableKnown, false);
 });
+
+test("a probe that only moved free RAM keeps the checkpoint formats array identity", () => {
+  const formats = (reported: readonly string[]) =>
+    normalizeDenseQuantSchemes(reported);
+  for (const reported of [["fp8"], ["fp8", "nvfp4"], []]) {
+    const current = {
+      ...snapshot(normalizeDenseQuantSchemes(["fp8"]), 31.2),
+      checkpointQuantFormats: formats(reported),
+    };
+    const next = {
+      ...snapshot(normalizeDenseQuantSchemes(["fp8"]), 28.7),
+      checkpointQuantFormats: formats(reported),
+    };
+    assert.notEqual(current.checkpointQuantFormats, next.checkpointQuantFormats);
+
+    const published = hooks.nextGpuInfo(current, next);
+
+    assert.equal(published.systemRamAvailableGb, 28.7, "the RAM move is published");
+    assert.equal(
+      published.checkpointQuantFormats,
+      current.checkpointQuantFormats,
+      "Translate's offered models and disk probes must not re-run on a RAM-only probe",
+    );
+    assert.equal(published.denseQuantSchemes, current.denseQuantSchemes);
+  }
+});
+
+test("changed checkpoint formats are published, and each list is held on its own", () => {
+  const current = {
+    ...snapshot(normalizeDenseQuantSchemes(["fp8", "int8"]), 31.2),
+    checkpointQuantFormats: normalizeDenseQuantSchemes(["fp8"]),
+  };
+  const lost = {
+    ...snapshot(normalizeDenseQuantSchemes(["fp8", "int8"]), 31.2),
+    checkpointQuantFormats: normalizeDenseQuantSchemes([]),
+  };
+  const held = hooks.withStableSchemes(current, lost);
+  assert.equal(held.checkpointQuantFormats, lost.checkpointQuantFormats);
+  assert.deepEqual(held.checkpointQuantFormats, []);
+  assert.equal(held.denseQuantSchemes, current.denseQuantSchemes);
+
+  const reordered = {
+    ...snapshot(normalizeDenseQuantSchemes(["int8"]), 31.2),
+    checkpointQuantFormats: normalizeDenseQuantSchemes(["fp8"]),
+  };
+  const kept = hooks.withStableSchemes(current, reordered);
+  assert.equal(kept.denseQuantSchemes, reordered.denseQuantSchemes);
+  assert.equal(kept.checkpointQuantFormats, current.checkpointQuantFormats);
+
+  const same = { ...current, systemRamAvailableGb: 20 };
+  assert.equal(hooks.withStableSchemes(current, same), same, "nothing to hold: next as-is");
+});

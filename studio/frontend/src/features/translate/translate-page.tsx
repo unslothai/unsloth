@@ -170,6 +170,7 @@ import {
 } from "./models";
 import {
   type TranslatePhase,
+  sharedCachedModelsListing,
   translateModelDownloaded,
 } from "./translate-runner";
 import {
@@ -1409,10 +1410,13 @@ export function TranslatePage() {
   useEffect(() => {
     if (busy) return;
     const abort = new AbortController();
+    // The FP8 rows all read the same cache listing: one request per pass, not one per row.
+    const cachedModels = sharedCachedModelsListing(abort.signal);
     for (const model of offeredModels) {
       // After every run: the disk shows a finished download, so the Hub is asked only before it is known missing.
       void translateModelDownloaded(model, abort.signal, {
         remote: downloadedRef.current[model.id] !== false,
+        cachedModels,
       }).then((onDisk) => {
         if (onDisk === null || abort.signal.aborted) return;
         setDownloaded((prev) => ({ ...prev, [model.id]: onDisk }));
