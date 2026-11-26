@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""`studio update` torch repairs on the cu130 torch 2.13 route keep the resident release.
+"""`studio update` torch repairs on the cu130 torch 2.13 / 2.14 route keep the resident release.
 
 install.sh and install.ps1 give new Linux x86_64 and Windows x64 cu130 Python 3.13 installs
-torch 2.13; a repair on that route must not move an existing install to another torch, and every
+torch 2.14; a repair on that route must not move an existing install to another torch, and every
 other route must get exactly the specs it got before.
 """
 
@@ -53,6 +53,7 @@ def _route(
         ("2.12.1", ("torch==2.12.1", "torchvision==0.27.*", "torchaudio==2.11.*")),
         ("2.13.0", ("torch==2.13.0", "torchvision==0.28.*", "torchaudio==2.11.*")),
         ("2.14.0", ("torch==2.14.0", "torchvision==0.29.*", "torchaudio==2.11.*")),
+        ("2.14.1", ("torch==2.14.1", "torchvision==0.29.*", "torchaudio==2.11.*")),
     ],
 )
 @pytest.mark.parametrize(
@@ -155,11 +156,13 @@ def test_both_cuda_repairs_use_the_route_aware_specs(mod):
     [
         ("linux", "2.13.0", True),
         ("linux", "2.14.0", True),
+        ("linux", "2.14.1", True),
         ("linux", "2.12.1", False),
         ("linux", "2.11.0", False),
         ("linux", None, False),
         ("win32", "2.13.0", True),
         ("win32", "2.14.0", True),
+        ("win32", "2.14.1", True),
         ("win32", "2.11.0", False),
         ("darwin", "2.13.0", False),
     ],
@@ -378,3 +381,46 @@ def test_a_directory_whose_acl_cannot_be_set_is_skipped(monkeypatch, tmp_path, m
     monkeypatch.setattr(mod, "_restrict_to_current_user", lambda path: False)
     assert mod._write_space_free_override("torch==2.13.0\n") == ("", None)
     assert list(temp.iterdir()) == [] and list(venv.iterdir()) == [Path(name)]
+
+
+def _assigned(path: Path, pattern: str) -> str:
+    import re
+
+    found = re.findall(pattern, path.read_text(encoding = "utf-8"), re.M)
+    assert len(found) == 1, (path.name, pattern, found)
+    return found[0]
+
+
+@pytest.mark.parametrize(
+    "script, torch_pattern, vision_pattern",
+    [
+        (
+            "install.sh",
+            r'^_CU130_NEW_INSTALL_TORCH="([^"]+)"$',
+            r'^if \[ -z "\$_PREV_TORCH_PIN" \] && \[ "\$_CU130_NEW_INSTALL_ROUTE" = true \]; then\n'
+            r'\s*TORCH_CONSTRAINT="\$_CU130_NEW_INSTALL_TORCH"\n\s*TORCHVISION_CONSTRAINT="([^"]+)"$',
+        ),
+        (
+            "install.ps1",
+            r'^\s*\$script:Cu130NewInstallTorchSpec = "([^"]+)"\s*$',
+            r'^\s*\$script:Cu130NewInstallVisionSpec = "([^"]+)"\s*$',
+        ),
+    ],
+)
+def test_new_cu130_homes_take_the_newest_minor_a_repair_keeps(
+    monkeypatch, mod, script, torch_pattern, vision_pattern
+):
+    """A fresh cu130 home gets torch 2.14 (2.14.1 on whl/cu130), the top of the repair window,
+    and the repair then keeps exactly that release instead of moving it."""
+    repo = _INSTALL_SCRIPT.parents[1]
+    torch_spec = _assigned(repo / script, torch_pattern)
+    vision_spec = _assigned(repo / script, vision_pattern)
+    assert torch_spec == "torch>=2.14.0,<2.15.0"
+    assert vision_spec == "torchvision>=0.29.0,<0.30.0"
+    assert torch_spec.endswith(f",<2.{mod._CU130_PRESERVE_TORCH_CEILING_MINOR}.0")
+    _route(monkeypatch, mod, torch = "2.14.1")
+    assert mod._cuda_repair_torch_specs(CU130, mod._CUDA_TORCH_PKG_SPEC) == (
+        "torch==2.14.1",
+        "torchvision==0.29.*",
+        "torchaudio==2.11.*",
+    )

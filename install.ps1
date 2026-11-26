@@ -9943,10 +9943,12 @@ main()
         }
     }
 
-    # Port of install.sh's cu130 torch 2.13 route (the only one prebuilt-wheels-cu13 serves).
+    # Port of install.sh's cu130 torch 2.13 / 2.14 route (the only one prebuilt-wheels-cu13 serves).
+    # New homes take torch 2.14, the newest on whl/cu130; vLLM is never installed into this venv.
     $script:Cu130TorchCeiling = "2.15.0"
-    $script:Cu130NewInstallTorchSpec = "torch>=2.13.0,<2.14.0"
-    $script:Cu130NewInstallVisionSpec = "torchvision>=0.28.0,<0.29.0"
+    $script:Cu130NewInstallTorchSpec = "torch>=2.14.0,<2.15.0"
+    $script:Cu130NewInstallVisionSpec = "torchvision>=0.29.0,<0.30.0"
+    $script:Cu130NewInstallTorchFloor = "2.14.0"
 
     # Local facts only: decides the keep window, so a PyPI outage cannot shrink it.
     function Test-Cu130Torch213Platform {
@@ -9960,7 +9962,7 @@ main()
         return ($lines[-1].ToLowerInvariant() -eq "3.13 win-amd64")
     }
 
-    # An existing home never takes 2.13 unasked; UNSLOTH_TORCH_UPGRADE=1 (Settings > Repair) asks.
+    # An existing home never takes 2.14 unasked; UNSLOTH_TORCH_UPGRADE=1 (Settings > Repair) asks.
     # The PyPI check reads unsloth's metadata, so a `--package` other than unsloth keeps the default.
     function Resolve-Cu130TorchRoute {
         param([string]$IndexUrl, [string]$PythonExe, [Parameter(Mandatory = $true)][string]$DefaultSpec, [bool]$ExistingInstall, [string]$PackageName = "unsloth")
@@ -9968,7 +9970,7 @@ main()
         if (-not (Test-Cu130Torch213Platform -IndexUrl $IndexUrl -PythonExe $PythonExe)) { return $result }
         $result.PreserveSpec = "torch>=2.4,<$($script:Cu130TorchCeiling)"
         if ($PackageName -eq "unsloth" -and (-not $ExistingInstall -or $env:UNSLOTH_TORCH_UPGRADE -eq '1') -and
-                (Test-PypiUnslothAdmitsTorch -Want "2.13.0")) {
+                (Test-PypiUnslothAdmitsTorch -Want $script:Cu130NewInstallTorchFloor)) {
             $result.NewInstall = $true
         }
         return $result
@@ -10591,11 +10593,11 @@ print(*pair)
                 substep "existing install has torch $script:PrevTorchVer -- keeping it (set UNSLOTH_TORCH_UPGRADE=1 to get the newest release)"
             }
         }
-        # A kept release that fails to reinstall falls back to the pre-route default below, never to 2.13.
+        # A kept release that fails to reinstall falls back to the pre-route default below, never to 2.14.
         if (-not $script:PrevTorchPin -and $_cu130NewInstallRoute) {
             $_pinTorchSpec = $script:Cu130NewInstallTorchSpec
             $_pinVisionSpec = $script:Cu130NewInstallVisionSpec
-            substep "cu130 + Python 3.13: installing torch 2.13, which the prebuilt flash-attn / causal-conv1d / mamba-ssm wheels are built for"
+            substep "cu130 + Python 3.13: installing torch 2.14, which the prebuilt flash-attn / causal-conv1d / mamba-ssm wheels are built for"
         }
         if ($SkipTorch) {
             substep "skipping PyTorch (--no-torch flag set)." "Yellow"

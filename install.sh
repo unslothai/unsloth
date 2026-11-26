@@ -4364,7 +4364,10 @@ fi
 TORCHVISION_CONSTRAINT="torchvision>=0.19,<${_TORCHVISION_CEILING}"
 TORCHAUDIO_CONSTRAINT="torchaudio>=2.4,<${_TORCHAUDIO_CEILING}"
 _CU130_TORCH_CEILING="2.15.0"
-_CU130_NEW_INSTALL_TORCH="torch>=2.13.0,<2.14.0"
+# New cu130 homes: torch 2.14 (newest on whl/cu130; inside the release cap). vLLM is never installed
+# into this venv: a Studio engine shares torch only on an exact match, else gets its own env.
+_CU130_NEW_INSTALL_TORCH="torch>=2.14.0,<2.15.0"
+_CU130_NEW_INSTALL_FLOOR="2.14.0"
 # Apple Silicon: 2.13 is the first with fused MPS attention (mflux needs >=2.13); 2.15 lacks cp310/torchvision.
 _MACOS_TORCH_CEILING="2.15.0"
 _MACOS_NEW_INSTALL_TORCH="torch>=2.13.0,<2.14.0"
@@ -5936,10 +5939,10 @@ _torch_release_in_window() {
 _cu130_torch213_route() {
     [ "$(_cu130_torch213_platform "$1")" = "yes" ] || { echo "no"; return; }
     [ "$(_cu130_torch213_host_ok)" = "yes" ] || { echo "no"; return; }
-    _pypi_unsloth_admits_torch "2.13.0"
+    _pypi_unsloth_admits_torch "$_CU130_NEW_INSTALL_FLOOR"
 }
 
-# New installs only: torch 2.13 has no cp313t wheel, and the kernel wheels need glibc 2.35.
+# New installs only: torch 2.13 / 2.14 have no cp313t wheel, and the kernel wheels need glibc 2.35.
 _cu130_torch213_host_ok() {
     _cth_gil=$("$VENV_DIR/bin/python" -c "import sysconfig; print('gil-disabled' if sysconfig.get_config_var('Py_GIL_DISABLED') else 'gil-enabled')" 2>/dev/null || echo "")
     [ "$_cth_gil" = "gil-enabled" ] || { echo "no"; return; }
@@ -7031,18 +7034,18 @@ case "$_torch_index_leaf" in
         ;;
 esac
 fi  # _torch_index_pinned guard (Radeon + Strix reroute)
-# New installs on this route get 2.13; preservation keeps 2.4-2.14 installs on their release.
+# New installs on this route get 2.14; preservation keeps 2.4-2.14 installs on their release.
 _PRESERVE_TORCH_CONSTRAINT="$TORCH_CONSTRAINT"
 _CU130_NEW_INSTALL_ROUTE=false
 _MACOS_NEW_INSTALL_ROUTE=false
 if [ "$SKIP_TORCH" = false ] && [ "$(_cu130_torch213_platform "$TORCH_INDEX_URL")" = "yes" ]; then
     _PRESERVE_TORCH_CONSTRAINT="torch>=2.4,<${_CU130_TORCH_CEILING}"
-    # An existing home never takes 2.13 unasked, even when its torch could not be read or kept.
+    # An existing home never takes 2.14 unasked, even when its torch could not be read or kept.
     # The PyPI check reads unsloth's metadata, so a --package other than unsloth keeps the default.
     if [ "$(printf '%s' "$PACKAGE_NAME" | tr '[:upper:]' '[:lower:]')" = "unsloth" ] \
        && { [ "$_EXISTING_INSTALL" = false ] || [ "${UNSLOTH_TORCH_UPGRADE:-0}" = "1" ]; } \
        && [ "$(_cu130_torch213_host_ok)" = "yes" ] \
-       && [ "$(_pypi_unsloth_admits_torch "2.13.0")" = "yes" ]; then
+       && [ "$(_pypi_unsloth_admits_torch "$_CU130_NEW_INSTALL_FLOOR")" = "yes" ]; then
         _CU130_NEW_INSTALL_ROUTE=true
     fi
 elif [ "$SKIP_TORCH" = false ] && [ "$(_macos_torch213_platform "$TORCH_INDEX_URL")" = "yes" ]; then
@@ -7075,7 +7078,7 @@ if [ "$SKIP_TORCH" = false ]; then
 fi
 if [ -z "$_PREV_TORCH_PIN" ] && [ "$_CU130_NEW_INSTALL_ROUTE" = true ]; then
     TORCH_CONSTRAINT="$_CU130_NEW_INSTALL_TORCH"
-    TORCHVISION_CONSTRAINT="torchvision>=0.28.0,<0.29.0"
+    TORCHVISION_CONSTRAINT="torchvision>=0.29.0,<0.30.0"
 fi
 if [ -z "$_PREV_TORCH_PIN" ] && [ "$_MACOS_NEW_INSTALL_ROUTE" = true ]; then
     TORCH_CONSTRAINT="$_MACOS_NEW_INSTALL_TORCH"

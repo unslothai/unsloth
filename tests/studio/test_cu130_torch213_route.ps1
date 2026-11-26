@@ -1,7 +1,7 @@
 #!/usr/bin/env pwsh
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-# install.ps1 gives new Windows x64 cu130 Python 3.13 installs torch 2.13 (the only route the
+# install.ps1 gives new Windows x64 cu130 Python 3.13 installs torch 2.14 (the only route the
 # prebuilt-wheels-cu13 release covers) while an existing 2.4-2.14 install keeps its release. The
 # Windows port of tests/sh/test_cu130_torch213_route.sh. Helpers are extracted from install.ps1 by
 # AST; the interpreter, host arch, mirror check and PyPI fetch are stubs.
@@ -34,6 +34,10 @@ foreach ($text in (Get-FunctionAsts $installPath @(
 }
 foreach ($text in (Get-FunctionAsts $setupPath @("Get-TritonWindowsSpec"))) { Invoke-Expression $text }
 $script:Cu130TorchCeiling = "2.15.0"
+# The new-install specs come from install.ps1 itself, so a change there is what gets tested.
+$_routeSpecs = [regex]::Matches((Get-Content -LiteralPath $installPath -Raw), '(?m)^\s*\$script:Cu130NewInstall(TorchSpec|VisionSpec|TorchFloor) = "[^"]*"\s*$')
+if ($_routeSpecs.Count -ne 3) { throw "expected the three Cu130NewInstall assignments in install.ps1, found $($_routeSpecs.Count)" }
+foreach ($m in $_routeSpecs) { Invoke-Expression $m.Value.Trim() }
 
 # Stubs. Functions shadow cmdlets, so Invoke-RestMethod here never reaches the network.
 $script:HostArch = "x86_64"
@@ -139,6 +143,23 @@ try {
         Check ("requires_dist: " + $t.n) ((Test-RequiresDistAdmitsTorch -RequiresDist $t.r -Want "2.13.0") -eq $t.ok)
     }
 
+    Write-Host "=== new-install specs ==="
+    Check "new cu130 homes take torch 2.14" ($script:Cu130NewInstallTorchSpec -eq "torch>=2.14.0,<2.15.0")
+    Check "torch 2.14 pairs torchvision 0.29" ($script:Cu130NewInstallVisionSpec -eq "torchvision>=0.29.0,<0.30.0")
+    Check "the PyPI gate asks for the spec floor" ($script:Cu130NewInstallTorchFloor -eq "2.14.0")
+    Check "the route window still keeps every resident 2.14" ($script:Cu130TorchCeiling -eq "2.15.0")
+    Reset-Stubs
+    $script:RequiresDist = @("torch<2.14.0,>=2.4.0")
+    $r = Resolve-Cu130TorchRoute -IndexUrl $cu130 -PythonExe "py" -DefaultSpec $default -ExistingInstall $false
+    Check "a release capped below 2.14 keeps a new home on the default" ((-not $r.NewInstall) -and $r.PreserveSpec -eq "torch>=2.4,<2.15.0")
+    $script:RequiresDist = @("torch<2.15.0,>=2.4.0")
+    $r = Resolve-Cu130TorchRoute -IndexUrl $cu130 -PythonExe "py" -DefaultSpec $default -ExistingInstall $false
+    Check "a release admitting 2.14 moves a new home" ($r.NewInstall)
+    $installText = Get-Content -LiteralPath $installPath -Raw
+    Check "the gate asks PyPI for the spec floor, not 2.13" (
+        $installText -match 'Test-PypiUnslothAdmitsTorch -Want \$script:Cu130NewInstallTorchFloor' -and
+        $installText -notmatch 'Test-PypiUnslothAdmitsTorch -Want "2\.13\.0"')
+
     Write-Host "=== route decision ==="
     Reset-Stubs
     $r = Resolve-Cu130TorchRoute -IndexUrl $cu130 -PythonExe "py" -DefaultSpec $default -ExistingInstall $false
@@ -217,7 +238,7 @@ try {
     $setup = Get-Content -LiteralPath $setupPath -Raw
     Check "the route is decided before preservation" ($install -match '(?s)Resolve-Cu130TorchRoute -IndexUrl \$TorchIndexUrl.*?\$_routeWindow = \$_preserveTorchSpec')
     Check "the route skips ROCm and --no-torch" ($install -match 'if \(-not \$SkipTorch -and -not \$ROCmIndexUrl\) \{\s*\$_cu130Route = Resolve-Cu130TorchRoute')
-    Check "2.13 applies only when nothing was kept" ($install -match '(?s)if \(-not \$script:PrevTorchPin -and \$_cu130NewInstallRoute\) \{\s*\$_pinTorchSpec = \$script:Cu130NewInstallTorchSpec\s*\$_pinVisionSpec = \$script:Cu130NewInstallVisionSpec')
+    Check "2.14 applies only when nothing was kept" ($install -match '(?s)if \(-not \$script:PrevTorchPin -and \$_cu130NewInstallRoute\) \{\s*\$_pinTorchSpec = \$script:Cu130NewInstallTorchSpec\s*\$_pinVisionSpec = \$script:Cu130NewInstallVisionSpec')
     Check "the generic CUDA install uses the hoisted specs" ($install -match '\$_torchSpecs = @\(\$_pinTorchSpec, \$_pinVisionSpec, \$_pinAudioSpec\)')
     Check "every earlier layout counts as an existing install" (
         ([regex]::Matches($install, '\$script:ExistingInstall = \$true')).Count -eq 3)

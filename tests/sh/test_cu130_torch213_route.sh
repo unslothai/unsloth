@@ -1,7 +1,7 @@
 #!/bin/bash
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-# New Linux x86_64 cu130 Python 3.13 installs get torch 2.13; existing 2.4-2.14 installs keep theirs.
+# New Linux x86_64 cu130 Python 3.13 installs get torch 2.14; existing 2.4-2.14 installs keep theirs.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -9,7 +9,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 INSTALL_SH="${1:-$SCRIPT_DIR/../../install.sh}"
 _FUNC_FILE=$(mktemp)
 {
-    for fn in _mirror_uv_project_config _mirror_configured _run_bounded _pypi_unsloth_admits_torch _torch_index_url_leaf _cu130_torch213_route _cu130_torch213_platform _cu130_torch213_host_ok _torchaudio_for_torch_minor _torch_release_in_window _previous_torch_pin _dir_has_entries; do
+    for fn in _mirror_uv_project_config _mirror_configured _run_bounded _pypi_unsloth_admits_torch _torch_index_url_leaf _cu130_torch213_route _cu130_torch213_platform _cu130_torch213_host_ok _macos_torch213_platform _torchaudio_for_torch_minor _torch_release_in_window _previous_torch_pin _dir_has_entries; do
         sed -n "/^${fn}()/,/^}/p" "$INSTALL_SH"
         echo ""
     done
@@ -18,6 +18,9 @@ _FUNC_FILE=$(mktemp)
 . "$_FUNC_FILE"
 rm -f "$_FUNC_FILE"
 unset UNSLOTH_TORCH_UPGRADE
+# The route specs come from install.sh itself, so a change there is what gets tested.
+_SPEC_LINES=$(grep -E '^_CU130_(TORCH_CEILING|NEW_INSTALL_TORCH|NEW_INSTALL_FLOOR)="[^"$`]*"$' "$INSTALL_SH")
+eval "$_SPEC_LINES"
 
 VENV_DIR=$(mktemp -d)
 mkdir -p "$VENV_DIR/bin"
@@ -79,9 +82,21 @@ GLIBC_MINOR=35; _ARCH=x86_64
 rm -f "$VENV_DIR/bin/python"
 assert_eq "no venv python never"           "no" "$(_cu130_torch213_route "$CU130")"
 
-echo "=== route: only once the PyPI release admits torch 2.13 ==="
+echo "=== new-install specs ==="
+assert_eq "all three route specs are plain assignments" "3" "$(printf '%s\n' "$_SPEC_LINES" | grep -c .)"
+assert_eq "new cu130 homes take torch 2.14"  "torch>=2.14.0,<2.15.0"        "${_CU130_NEW_INSTALL_TORCH:-}"
+assert_eq "PyPI gate asks for the spec floor" "2.14.0"                      "${_CU130_NEW_INSTALL_FLOOR:-}"
+assert_eq "preservation still keeps every 2.14" "2.15.0"                    "${_CU130_TORCH_CEILING:-}"
+assert_eq "spec floor is the new-install floor" "yes" \
+    "$([ "torch>=${_CU130_NEW_INSTALL_FLOOR:-x},<2.15.0" = "${_CU130_NEW_INSTALL_TORCH:-}" ] && echo yes)"
+assert_eq "no cu130 gate asks PyPI for 2.13" "" \
+    "$(sed -n '/^_cu130_torch213_route()/,/^}/p; /^if \[ "\$SKIP_TORCH" = false \] && \[ "\$(_cu130_torch213_platform/,/^elif/p' "$INSTALL_SH" | grep -F '"2.13.0"')"
+
+echo "=== route: only once the PyPI release admits torch 2.14 ==="
 _stub_python 3.13
-assert_eq "release admits 2.13"            "yes" "$(_cu130_torch213_route "$CU130")"
+assert_eq "release admits 2.14"            "yes" "$(_cu130_torch213_route "$CU130")"
+_pypi_fixture "torch<2.14.0,>=2.4.0"
+assert_eq "release capped below 2.14 (admits 2.13)" "no" "$(_cu130_torch213_route "$CU130")"
 _pypi_fixture "torch<2.13.0,>=2.4.0"
 assert_eq "release still capped below 2.13" "no" "$(_cu130_torch213_route "$CU130")"
 _pypi_fixture "torch>=2.4.0"
@@ -105,11 +120,16 @@ assert_eq "UV_INDEX_URL keeps the old window" "no" "$(UV_INDEX_URL=https://mirro
 _UVCFG="$VENV_DIR/uv.toml"; printf '[[index]]\nurl = "https://mirror.example/simple"\ndefault = true\n' > "$_UVCFG"
 assert_eq "uv.toml index keeps the old window" "no" "$(UV_CONFIG_FILE="$_UVCFG" _cu130_torch213_route "$CU130")"
 
-echo "=== preservation never waits on PyPI; only a fresh home takes 2.13 ==="
-_PRESERVE_BLOCK=$(sed -n '/^_PRESERVE_TORCH_CONSTRAINT="\$TORCH_CONSTRAINT"$/,/^    TORCHVISION_CONSTRAINT="torchvision>=0.28.0,<0.29.0"$/p' "$INSTALL_SH"; echo fi)
+echo "=== preservation never waits on PyPI; only a fresh home takes 2.14 ==="
+_PRESERVE_END='^    TORCHVISION_CONSTRAINT="torchvision>=0.29.0,<0.30.0"$'
+_PRESERVE_BLOCK=""
+if grep -q "$_PRESERVE_END" "$INSTALL_SH"; then
+    _PRESERVE_BLOCK=$(sed -n "/^_PRESERVE_TORCH_CONSTRAINT=\"\\\$TORCH_CONSTRAINT\"\$/,/$_PRESERVE_END/p" "$INSTALL_SH"; echo fi)
+fi
 assert_eq "block found in install.sh" "yes" "$(printf '%s' "$_PRESERVE_BLOCK" | grep -q _CU130_NEW_INSTALL_ROUTE && echo yes)"
+[ -n "$_PRESERVE_BLOCK" ] || _PRESERVE_BLOCK=":"
 substep() { :; }
-_CU130_TORCH_CEILING="2.15.0"; _CU130_NEW_INSTALL_TORCH="torch>=2.13.0,<2.14.0"; SKIP_TORCH=false; TORCH_INDEX_URL="$CU130"; PACKAGE_NAME="unsloth"
+SKIP_TORCH=false; TORCH_INDEX_URL="$CU130"; PACKAGE_NAME="unsloth"
 _run_block() {  # $1 existing-install flag, $2 previous torch version
     _EXISTING_INSTALL="$1"; _PREV_TORCH_VER="$2"
     TORCH_CONSTRAINT="torch>=2.4,<2.12.0"; TORCHVISION_CONSTRAINT="torchvision>=0.19,<0.27.0"
@@ -118,7 +138,7 @@ _run_block() {  # $1 existing-install flag, $2 previous torch version
 for gate in unreachable capped open; do
     case "$gate" in
         unreachable) export UNSLOTH_PYPI_JSON_URL="http://127.0.0.1:9/unreachable" ;;
-        capped) _pypi_fixture "torch<2.13.0,>=2.4.0" ;;
+        capped) _pypi_fixture "torch<2.14.0,>=2.4.0" ;;
         open) _pypi_fixture "torch<2.15.0,>=2.4.0" ;;
     esac
     _run_block true "2.13.0+cu130"
@@ -129,20 +149,26 @@ for gate in unreachable capped open; do
     _run_block true ""
     assert_eq "PyPI $gate: existing home with unreadable torch stays on the old default" "torch>=2.4,<2.12.0" "$TORCH_CONSTRAINT"
     _run_block false ""
-    want="torch>=2.4,<2.12.0"; [ "$gate" = open ] && want="torch>=2.13.0,<2.14.0"
+    want="torch>=2.4,<2.12.0"; tv="torchvision>=0.19,<0.27.0"
+    [ "$gate" = open ] && want="torch>=2.14.0,<2.15.0" && tv="torchvision>=0.29.0,<0.30.0"
     assert_eq "PyPI $gate: fresh home default" "$want" "$TORCH_CONSTRAINT"
+    assert_eq "PyPI $gate: fresh home torchvision" "$tv" "$TORCHVISION_CONSTRAINT"
+    _run_block true "2.14.1+cu130"
+    assert_eq "PyPI $gate: existing 2.14.1 kept" "torch==2.14.1" "$TORCH_CONSTRAINT"
 done
 UNSLOTH_TORCH_UPGRADE=1; _run_block true "2.11.0+cu130"; unset UNSLOTH_TORCH_UPGRADE
-assert_eq "UNSLOTH_TORCH_UPGRADE=1 moves an existing home to 2.13" "torch>=2.13.0,<2.14.0" "$TORCH_CONSTRAINT"
+assert_eq "UNSLOTH_TORCH_UPGRADE=1 moves an existing home to 2.14" "torch>=2.14.0,<2.15.0" "$TORCH_CONSTRAINT"
+UNSLOTH_TORCH_UPGRADE=1; _run_block true "2.13.0+cu130"; unset UNSLOTH_TORCH_UPGRADE
+assert_eq "UNSLOTH_TORCH_UPGRADE=1 moves a resident 2.13 to 2.14" "torch>=2.14.0,<2.15.0" "$TORCH_CONSTRAINT"
 PACKAGE_NAME="unsloth-fork"; _run_block false ""; PACKAGE_NAME="unsloth"
 assert_eq "--package other than unsloth: fresh home keeps the old default" "torch>=2.4,<2.12.0" "$TORCH_CONSTRAINT"
 assert_eq "--package other than unsloth: window still wide" "torch>=2.4,<2.15.0" "$_PRESERVE_TORCH_CONSTRAINT"
 PACKAGE_NAME="Unsloth"; _run_block false ""; PACKAGE_NAME="unsloth"
-assert_eq "--package Unsloth is unsloth" "torch>=2.13.0,<2.14.0" "$TORCH_CONSTRAINT"
+assert_eq "--package Unsloth is unsloth" "torch>=2.14.0,<2.15.0" "$TORCH_CONSTRAINT"
 for gate in unreachable capped; do
     case "$gate" in
         unreachable) export UNSLOTH_PYPI_JSON_URL="http://127.0.0.1:9/unreachable" ;;
-        capped) _pypi_fixture "torch<2.13.0,>=2.4.0" ;;
+        capped) _pypi_fixture "torch<2.14.0,>=2.4.0" ;;
     esac
     UNSLOTH_TORCH_UPGRADE=1
     _run_block true "2.13.0+cu130"
@@ -188,11 +214,12 @@ UNSLOTH_TORCH_UPGRADE=1
 assert_eq "UNSLOTH_TORCH_UPGRADE=1 opts out" "" "$(_previous_torch_pin '2.11.0+cu130' "$PRESERVE")"
 unset UNSLOTH_TORCH_UPGRADE
 # The new-install spec must never be the preservation window: that would upgrade 2.11 users.
-assert_eq "new-install spec alone would drop a kept 2.11" "" "$(_previous_torch_pin '2.11.0+cu130' 'torch>=2.13.0,<2.14.0')"
+assert_eq "new-install spec alone would drop a kept 2.11" "" "$(_previous_torch_pin '2.11.0+cu130' "$_CU130_NEW_INSTALL_TORCH")"
+assert_eq "new-install spec alone would drop a kept 2.13" "" "$(_previous_torch_pin '2.13.0+cu130' "$_CU130_NEW_INSTALL_TORCH")"
 assert_eq "kept pin is evaluated against the preservation window" "yes" \
     "$(grep -q '_prev_pin=$(_previous_torch_pin "$_PREV_TORCH_VER" "$_PRESERVE_TORCH_CONSTRAINT")' "$INSTALL_SH" && echo yes)"
-assert_eq "new-install spec is torch 2.13" "yes" \
-    "$(grep -q '^_CU130_NEW_INSTALL_TORCH="torch>=2.13.0,<2.14.0"$' "$INSTALL_SH" && echo yes)"
+assert_eq "new-install spec is torch 2.14" "yes" \
+    "$(grep -q '^_CU130_NEW_INSTALL_TORCH="torch>=2.14.0,<2.15.0"$' "$INSTALL_SH" && echo yes)"
 
 echo "=== torchaudio pairing for a kept minor ==="
 assert_eq "2.10 -> 2.10"  "torchaudio==2.10.*" "$(_torchaudio_for_torch_minor 10)"
