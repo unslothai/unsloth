@@ -29,7 +29,7 @@ _SCHEME_FORMATS = {
     "MXFP4A16": "mxfp4",
     "NVFP4": "nvfp4",
     "NVFP4A16": "nvfp4",
-    "torchao_fp8": "fp8_channel",
+    "torchao_fp8": "fp8_channel_bf16_scale",
 }
 
 
@@ -74,8 +74,11 @@ def _quantize(w, fmt, global_amax):
     if fmt == "fp8_tensor":
         scale = (global_amax / _FP8_MAX).clamp(min = 1e-12)
         return _fp8(w / scale) * scale
-    if fmt == "fp8_channel":
+    if fmt in ("fp8_channel", "fp8_channel_bf16_scale"):
         scale = (w.abs().amax(dim = 1, keepdim = True) / _FP8_MAX).clamp(min = 1e-12)
+        if fmt == "fp8_channel_bf16_scale":
+            # torchao keeps the per-row scale in the (bfloat16) weight dtype.
+            scale = scale.to(torch.bfloat16).float()
         return _fp8(w / scale) * scale
     if fmt == "fp8_block":
         rows, cols = w.shape

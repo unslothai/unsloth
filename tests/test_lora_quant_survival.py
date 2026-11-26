@@ -104,8 +104,9 @@ def test_reference_fp8_grid_matches_torchao():
     # Same per-row e4m3 grid; torchao rounds its scale to the weight dtype, so feed it the same scale.
     assert scale.shape == (64, 1)
     torch.testing.assert_close((M._fp8(w / scale) * scale).bfloat16().float(), deq, rtol = 0, atol = 0)
-    ref = M._quantize(w, "fp8_channel", w.abs().amax())
-    assert ((ref - w).norm() / w.norm() - (deq - w).norm() / w.norm()).abs() < 2e-3
+    # The torchao_fp8 reference reproduces the export bit for bit, scale rounding included.
+    ref = M._quantize(w, M._SCHEME_FORMATS["torchao_fp8"], w.abs().amax())
+    torch.testing.assert_close(ref.bfloat16().float(), deq, rtol = 0, atol = 0)
 
 
 def test_both_quantized_exports_report_before_merging():
