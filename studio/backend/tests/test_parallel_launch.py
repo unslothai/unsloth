@@ -44,11 +44,14 @@ def _start(
         "MASTER_ADDR",
         "MASTER_PORT",
         "UNSLOTH_PARALLEL",
+        "UNSLOTH_FSDP2_LAYOUT",
         parallel_launch.CHILD_ENV,
     ):
         monkeypatch.delenv(key, raising = False)
+    parallel = {"launcher": "multi_process", "world_size": 2, "spec": "dp=2", "mode": "ddp"}
+    parallel.update(extra.pop("parallel", {}))
     config = {
-        "parallel": {"launcher": "multi_process", "world_size": 2, "spec": "dp=2", "mode": "ddp"},
+        "parallel": parallel,
         "resolved_gpu_ids": [0, 1],
         "out_dir": str(tmp_path),
         "model_name": "unsloth/Qwen3-0.6B",
@@ -97,9 +100,37 @@ def test_ranks_get_the_torchrun_env_and_stop_at_the_same_step(tmp_path, monkeypa
         assert ranks[0]["output_dir"] and ranks[0]["output_dir"] == ranks[1]["output_dir"]
         assert ranks[0]["last_step"] == ranks[1]["last_step"]
         assert all(r["stopped"] and r["save"] is False for r in ranks)
+        assert {r["data_parallel_world_size"] for r in ranks} == {2}
     finally:
         if proc.is_alive():
             proc.kill()
+
+
+def _run_to_completion(tmp_path, monkeypatch, **extra):
+    proc, events, _ = _start(tmp_path, monkeypatch, steps = 2, **extra)
+    try:
+        deadline = time.time() + 120
+        while time.time() < deadline and _next(events)["type"] != "complete":
+            pass
+        proc.join(60)
+        assert proc.exitcode == 0
+        return [json.loads((tmp_path / f"rank{r}.json").read_text()) for r in (0, 1)]
+    finally:
+        if proc.is_alive():
+            proc.kill()
+
+
+def test_tensor_parallel_ranks_count_as_one_replica_for_the_row_bound(tmp_path, monkeypatch):
+    ranks = _run_to_completion(tmp_path, monkeypatch, parallel = {"spec": "tp=2", "mode": "tp"})
+    # Tensor parallel ranks read the same rows: one replica, not two, sizes the max_steps subset.
+    assert {r["data_parallel_world_size"] for r in ranks} == {1}
+
+
+def test_ranks_get_only_the_plan_env_on_the_allowlist(tmp_path, monkeypatch):
+    env = {"UNSLOTH_FSDP2_LAYOUT": "sharded", "UNSLOTH_STUDIO_TEST_NOT_ALLOWED": "1"}
+    ranks = _run_to_completion(tmp_path, monkeypatch, parallel = {"env": env})
+    assert {r["UNSLOTH_FSDP2_LAYOUT"] for r in ranks} == {"sharded"}
+    assert {r["UNSLOTH_STUDIO_TEST_NOT_ALLOWED"] for r in ranks} == {None}
 
 
 def test_a_dead_rank_ends_the_run_with_an_error(tmp_path, monkeypatch):

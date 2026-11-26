@@ -18,6 +18,7 @@ HELPER_NAMES = (
     "_unsloth_grpo_hidden_states_signal",
     "_unsloth_seq_packing_verify_verdict",
     "_unsloth_seq_packing_moe_noise",
+    "_unsloth_seq_packing_shape_noise",
 )
 
 

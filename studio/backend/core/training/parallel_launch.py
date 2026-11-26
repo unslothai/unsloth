@@ -53,6 +53,7 @@ _LAYOUT_ENV = (
     "UNSLOTH_PP_MICROBATCHES",
     "UNSLOTH_PARALLEL_AUTO_RESOLVED",
 )
+_PLAN_ENV = ("UNSLOTH_FSDP2_LAYOUT",)
 _HOST = "127.0.0.1"
 _MODULE_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$")
 _PROCS: list = []
@@ -221,6 +222,10 @@ def launch_ranks(
         os.environ.pop(key, None)
     if plan.get("spec"):
         os.environ["UNSLOTH_PARALLEL"] = str(plan["spec"])
+    for key, value in (plan.get("env") or {}).items():
+        # Only the layout knobs the planner sets; one the user exported for the server wins.
+        if key in _PLAN_ENV:
+            os.environ.setdefault(key, str(value))
     # All ranks are local: bootstrap on loopback unless the user set an interface.
     if sys.platform.startswith("linux"):
         os.environ.setdefault("NCCL_SOCKET_IFNAME", "lo")
