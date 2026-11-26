@@ -46,13 +46,16 @@ def test_a_global_deterministic_setting_is_left_on():
     assert torch.backends.cudnn.deterministic is True
 
 
-@pytest.mark.parametrize("case", ["cpu", "rocm", "switch_off"])
+@pytest.mark.parametrize("case", ["cpu", "rocm", "rocm_sdk_wheel", "switch_off"])
 def test_cpu_rocm_and_kill_switch_keep_the_global_setting(case, monkeypatch):
     mel = _cuda_like()
     if case == "cpu":
         mel = torch.zeros(1)
     elif case == "rocm":
         monkeypatch.setattr(torch.version, "hip", "7.1", raising = False)
+    elif case == "rocm_sdk_wheel":
+        # AMD SDK / Radeon wheels: torch.version.hip stays unset, the ROCm tag is only in __version__.
+        monkeypatch.setattr(torch, "__version__", "2.11.0+rocm7.14.0")
     else:
         monkeypatch.setenv(L.VOCODER_DETERMINISTIC_ENV, "0")
     with L._deterministic_cudnn(mel):
