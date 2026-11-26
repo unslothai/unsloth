@@ -577,7 +577,7 @@ def test_compaction_delta_summary_reaches_the_tool_event(monkeypatch):
     ]
 
 
-def _replay(monkeypatch, model: str) -> dict:
+def _replay(monkeypatch, model: str, temperature = 0.7) -> dict:
     captured: dict = {}
 
     def http_handler(request: httpx.Request) -> httpx.Response:
@@ -614,7 +614,7 @@ def _replay(monkeypatch, model: str) -> dict:
                 {"role": "user", "content": "turn 2"},
             ],
             model = model,
-            temperature = 0.7,
+            temperature = temperature,
             top_p = 0.95,
             max_tokens = 32,
         ):
@@ -623,6 +623,12 @@ def _replay(monkeypatch, model: str) -> dict:
     _drive(run())
     _drive(client.close())
     return captured
+
+
+@pytest.mark.parametrize("model", ["claude-sonnet-4-6", "claude-opus-4-6"])
+def test_a_summary_request_without_temperature_omits_it(monkeypatch, model):
+    assert "temperature" not in _replay(monkeypatch, model, temperature = None)["body"]
+    assert _replay(monkeypatch, model)["body"]["temperature"] == 0.7
 
 
 def test_a_replayed_compaction_block_keeps_its_beta(monkeypatch):
