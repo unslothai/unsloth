@@ -9568,6 +9568,17 @@ def _unsloth_dpo_loss_head(
     return _unsloth_dpo_chunked_head(self, model, inputs, "_compute_loss")
 
 
+def _unsloth_top1_half_kwargs(fn, _cache = {}):
+    """TRL <= 1.14 token accuracy is the half-logit argmax; older zoo lacks the kwarg and keeps fp32."""
+    if fn not in _cache:
+        try:
+            import inspect
+            _cache[fn] = "is_top1_half_logits" in inspect.signature(fn).parameters
+        except Exception:
+            _cache[fn] = False
+    return {"is_top1_half_logits": True} if _cache[fn] else {}
+
+
 def _unsloth_dpo_loss_stats(
     self,
     chunked,
@@ -9595,6 +9606,7 @@ def _unsloth_dpo_loss_stats(
             return_mean_logits = not ref,
             return_is_top1 = not ref,
             entropy_requires_grad = False,
+            **({} if ref else _unsloth_top1_half_kwargs(_unsloth_fused_linear_logprobs)),
         )
     if not torch.compiler.is_compiling():
         try:
@@ -9797,6 +9809,7 @@ for _dpo_item in (
     _unsloth_dpo_nll,
     _unsloth_dpo_forward,
     _unsloth_dpo_loss_head,
+    _unsloth_top1_half_kwargs,
     _unsloth_dpo_loss_stats,
 ):
     RL_PRE_ITEMS["dpo_trainer"].append(inspect.getsource(_dpo_item))
