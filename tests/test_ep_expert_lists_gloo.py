@@ -12,7 +12,7 @@ import os
 if multiprocessing.parent_process() is not None or getattr(
     multiprocessing.current_process(), "_inheriting", False
 ):
-    os.environ["CUDA_VISIBLE_DEVICES"] = ""  # spawned gloo ranks: CPU only, also on GPU hosts
+    os.environ["CUDA_VISIBLE_DEVICES"] = ""
 
 import sys  # noqa: E402
 import tempfile  # noqa: E402
@@ -56,9 +56,8 @@ def _build(
     gc,
     experts_and_router_only = False,
 ):
-    model = build(repo, overrides = overrides).train()  # LoRA on all Linear layers
+    model = build(repo, overrides = overrides).train()
     if experts_and_router_only:
-        # The hidden states reaching the experts then need no gradient: only the experts' and routers' LoRA train.
         for name, p in model.named_parameters():
             p.requires_grad_("lora_" in name and (".experts." in name or ".gate." in name))
     g = torch.Generator().manual_seed(1234)
@@ -140,7 +139,6 @@ def _case_list_family(
             [p for p in model.parameters() if p.grad is not None], 1e9, group = group
         )
     )
-    # The adapter as model.save_pretrained writes it: gathered on rank 0 only.
     out_dir = os.path.join(tmp, "adapter")
     model.save_pretrained(out_dir)
     dist.barrier()
@@ -218,7 +216,6 @@ def _case_portable(
         for k in set(want) & set(got):
             for key in ("exp_avg", "exp_avg_sq"):
                 worst = max(worst, float((got[k][key] - want[k][key]).abs().max()))
-    # A 1-GPU adapter (the one-process model after its step) loads into each rank's own experts.
     ckpt = os.path.join(tmp, "ckpt")
     if rank == 0:
         ref.save_pretrained(ckpt)
@@ -235,7 +232,6 @@ def _case_portable(
     experts_loaded = sum(
         1 for k, p in fresh.named_parameters() if ".experts." in k and "lora_" in k
     )
-    # One GPU's positional (int-keyed) optimizer.pt: mapped through the 1-GPU parameter order onto each rank.
     order = [names[id(p)] for p in ref_opt.param_groups[0]["params"]]
     portable_order = state["param_groups"][0]["params"] if rank == 0 else None
     fresh_opt = adam(fresh)
@@ -338,13 +334,13 @@ def _gpt_oss_linear_lists(gc = False):
     """A tiny gpt-oss whose experts are unsloth_zoo's GptOssExpertsBnb4bit (the load_in_4bit layout: one fused
     experts call over per-expert Linear lists), here with plain fp32 Linears; LoRA on every Linear."""
     os.environ.setdefault("UNSLOTH_IS_PRESENT", "1")
-    os.environ.setdefault("UNSLOTH_FORCE_CPU", "1")  # zoo on a CPU-only rank
+    os.environ.setdefault("UNSLOTH_FORCE_CPU", "1")
     import transformers
     from peft import LoraConfig, get_peft_model
 
     try:
         from unsloth_zoo.temporary_patches.gpt_oss import GptOssExpertsBnb4bit
-    except Exception as exc:  # zoo not importable here
+    except Exception as exc:
         return None, f"unsloth_zoo GptOssExpertsBnb4bit unavailable: {type(exc).__name__}: {exc}"[
             :400
         ]
@@ -419,7 +415,7 @@ def _case_fused_lists(
     )
     want_adapter = {k: v.detach().clone() for k, v in get_peft_model_state_dict(ref).items()}
     model, _ = _gpt_oss_linear_lists(gc)
-    epn.ep_refuse_per_expert_lists(model)  # the from_pretrained check no longer refuses this layout
+    epn.ep_refuse_per_expert_lists(model)
     epn.apply_expert_parallel(model, mesh)
     group = epn._mesh(model).get_group()
     ddp = DistributedDataParallel(model)
@@ -489,7 +485,7 @@ def _case_refuse_stacked_read(rank, world, tmp, repo):
     inner = type(block).forward
 
     def reading(*a, **k):
-        _ = block.experts[0].weight_of_a_fused_path  # a stacked fast path reading weights directly
+        _ = block.experts[0].weight_of_a_fused_path
         return inner(block, *a, **k)
 
     block.forward = lists._list_forward(block.__dict__[lists._SHARD], reading)
@@ -519,7 +515,7 @@ def _worker(rank, world, tmp, case, kwargs):
     )
     try:
         res = globals()[case](rank, world, tmp, **kwargs)
-    except BaseException as exc:  # a rank must report, not vanish
+    except BaseException as exc:
         import traceback
         res = {"error": f"{type(exc).__name__}: {exc}"[:600] + traceback.format_exc()[-4000:]}
     torch.save(res, os.path.join(tmp, f"result_{rank}.pt"))
@@ -559,9 +555,7 @@ def _check(results, world):
     held = []
     for r in results:
         assert r["blocks"] == r["moe_blocks"] >= 1, r
-        assert (
-            r["calls"] >= 1
-        ), r  # the exchange ran (one count per block forward of the first block)
+        assert r["calls"] >= 1, r
         got, want = r["loss"]
         assert got == pytest.approx(want, rel = 1e-6), r["loss"]
         got, want = r["norm"]
@@ -573,9 +567,7 @@ def _check(results, world):
             torch.testing.assert_close(got[k], want[k], rtol = 1e-5, atol = 1e-6, msg = k)
         held.append(r["held"])
     lo, hi, E = results[0]["range"]
-    assert sorted(e for h in held for e in h) == list(
-        range(E)
-    ), held  # each expert on exactly one rank
+    assert sorted(e for h in held for e in h) == list(range(E)), held
     saved, want = results[0]["adapter"]
     assert set(saved) == set(want), sorted(set(saved) ^ set(want))[:6]
     for k in want:
@@ -593,12 +585,11 @@ def test_ep_expert_lists_with_checkpointing_match_one_process(family):
 
 
 def test_ep_expert_lists_three_ranks_one_without_experts():
-    # olmoe's tiny config: 4 experts over 3 ranks, 2 per rank, rank 2 holds none (receives nothing, still exchanges).
+    # 4 experts over 3 ranks: rank 2 holds none but still exchanges.
     _check(_spawn("_case_list_family", world = 3, **_spec("olmoe")), 3)
 
 
 def test_ep_expert_lists_three_ranks_only_experts_and_routers_train():
-    # Frozen hidden states: rank 2 (no experts, receives nothing) still runs the return exchange's backward.
     _check(_spawn("_case_list_family", world = 3, experts_and_router_only = True, **_spec("olmoe")), 3)
 
 
@@ -623,8 +614,6 @@ def test_ep_expert_lists_generate_with_uneven_lengths_matches_one_process(family
 
 @pytest.mark.parametrize("gc", (False, True))
 def test_ep_gpt_oss_linear_lists_match_one_process(gc):
-    # unsloth_zoo's load_in_4bit gpt-oss layout (here 16-bit Linears): the fused experts call through ep_native's
-    # exchange, each rank holding gate_up_projs / down_projs [lo, hi) under their global names.
     _check(_spawn("_case_fused_lists", gc = gc), 2)
 
 
@@ -635,7 +624,7 @@ def test_ep_expert_lists_portable_resume_matches_one_process():
     assert results[0]["worst"] <= 1e-6, results[0]
     for r in results:
         assert r["experts_loaded"] > 0 and r["load_worst"] == 0.0, r
-        assert r["order_ok"], r  # the 1-GPU parameter order, experts by global index
+        assert r["order_ok"], r
         assert r["positional_n"] > 0 and r["positional_worst"] == 0.0, r
 
 
@@ -661,9 +650,7 @@ def _case_zoo_fast_paths(rank, world, tmp, repo):
     if spec is None:
         return {"skip": f"no zoo grouped spec for {type(block).__name__}"}
     before = lists.list_shard_problem(block, world)
-    block._orig_moe_forward = (
-        block.forward
-    )  # what the zoo's grouped forward leaves on a patched block
+    block._orig_moe_forward = block.forward
     grouped = lists.list_shard_problem(block, world)
     del block._orig_moe_forward
     stacked = zoo._stack_block_lora(block, spec)
@@ -676,7 +663,6 @@ def _case_zoo_fast_paths(rank, world, tmp, repo):
 
 
 def test_ep_expert_lists_refuse_the_zoo_stacked_lora_and_grouped_forward():
-    # The zoo's stacked expert LoRA and grouped MoE forward are refused by name (the EP load turns both off).
     out = _spawn("_case_zoo_fast_paths", world = 1, repo = FAMILIES["mixtral"])[0]
     assert out is not None and "error" not in out, out
     if "skip" in out:
@@ -690,7 +676,7 @@ def test_ep_expert_lists_refuse_the_zoo_stacked_lora_and_grouped_forward():
 def test_ep_env_load_keeps_the_zoo_per_expert_paths(monkeypatch):
     _, _, epn = _modules()
     monkeypatch.delenv("UNSLOTH_MOE_STACKED_LORA", raising = False)
-    monkeypatch.setenv("UNSLOTH_MOE_GROUPED", "1")  # an explicit setting is kept
+    monkeypatch.setenv("UNSLOTH_MOE_GROUPED", "1")
     assert epn.ep_env_load(lambda: "loaded", (), {}, False) == "loaded"
     assert os.environ["UNSLOTH_MOE_STACKED_LORA"] == "0"
     assert os.environ["UNSLOTH_MOE_GROUPED"] == "1"

@@ -1,16 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Expert parallel over per-expert `nn.ModuleList` experts: the transformers 4.x MoE layout (Mixtral, Qwen2-MoE,
-Qwen3-MoE, OLMoE, DeepSeek-V3, GLM4-MoE, ...) and remote DeepSeek-style ports, where the block itself loops over
-`self.experts[e](rows)` instead of making one fused experts call.
+"""Expert parallel over per-expert `nn.ModuleList` experts (transformers 4.x MoE layout).
 
-Each rank keeps only experts [lo, hi) under their global indices (state dict names unchanged). The block forward runs
-twice: the first pass replaces every expert call with a recorder (its rows kept, autograd attached, zeros returned),
-the recorded rows go to their experts' ranks in one all-to-all, the owners run their real expert modules (LoRA and
-4-bit layers included), the outputs come back in a second all-to-all, and the second pass replays them in call order
-so the block's own weighting and combine run unchanged. The RNG state is restored between the passes (router jitter,
-dropout), and every rank enters both exchanges and their backward even when it routes or receives nothing."""
+Each rank keeps experts [lo, hi) under global indices. The block forward runs twice: pass 1 records expert calls,
+rows are exchanged to owners and back, pass 2 replays outputs in call order. RNG is restored between passes, and
+every rank enters both exchanges and their backward even when it routes or receives nothing."""
 
 import collections
 import contextlib
@@ -74,8 +69,7 @@ _ZOO_STACKED_LORA, _ZOO_GROUPED = "UNSLOTH_MOE_STACKED_LORA", "UNSLOTH_MOE_GROUP
 
 
 def keep_zoo_expert_loops():
-    """Under expert parallel the zoo keeps PEFT's per-expert LoRA and the per-expert loop (an explicit setting
-    wins; list_shard_problem then names it)."""
+    """Under expert parallel the zoo keeps per-expert LoRA and the loop (an explicit setting wins)."""
     os.environ.setdefault(_ZOO_STACKED_LORA, "0")
     os.environ.setdefault(_ZOO_GROUPED, "0")
 
@@ -101,8 +95,7 @@ _LINEAR_LISTS = "per-expert Linear lists"
 
 
 def fused_list_problem(block, ep = None):
-    """Why expert parallel cannot shard `block`'s experts module that takes the fused experts call over per-expert
-    Linear lists (unsloth_zoo's GptOssExpertsBnb4bit, the load_in_4bit gpt-oss layout), None when it can."""
+    """Why `block`'s fused-call per-expert Linear lists (zoo GptOssExpertsBnb4bit) cannot shard, None when they can."""
     tpn = _tpn()
     chain = tpn._experts_chain(block)
     if len(chain) != 1:
@@ -148,8 +141,7 @@ def _linear_lists(leaf):
 
 
 class LocalExpertList(nn.ModuleList):
-    """One per-expert ModuleList of a fused experts module under expert parallel: this rank's experts under their
-    global indices (state dict names unchanged), indexed locally 0 .. hi - lo as the experts call sees them."""
+    """This rank's experts of one per-expert list: global names, local indexing 0 .. hi - lo."""
 
     _unsloth_global_expert_keys = True
 
@@ -185,8 +177,7 @@ class LocalExpertList(nn.ModuleList):
 
 
 def shard_fused_lists(block, mesh, rank, ep):
-    """Keep experts [lo, hi) of every per-expert list of `block`'s experts module (global names, local indexing)
-    and route its fused experts call through ep_native's token exchange."""
+    """Shard `block`'s per-expert lists to [lo, hi) and route its fused call through ep_native's exchange."""
     epn, tpn = _ep(), _tpn()
     leaf = block._modules["experts"]
     E = leaf.num_experts
@@ -201,7 +192,6 @@ def shard_fused_lists(block, mesh, rank, ep):
         shard.containers.append(local)
         for p in local.parameters():
             setattr(p, epn._EP, (LIST, E, ep))
-    # ep_native's exchange: it reads the rank's [lo, hi), per_rank and the experts count from a tp_native shard.
     exchange = tpn._ExpertShard(block, leaf, lo, hi, per_rank, E, mesh.get_group())
     exchange.ep, exchange.calls = ep, 0
     exchange.full_attrs.append((leaf, "num_experts", E))
@@ -230,7 +220,7 @@ class _ListShard:
 
 
 class _Proxy:
-    """experts[e] inside the block forward: records (pass 1) or replays (pass 2) one expert call."""
+    """experts[e] inside the block forward: records (pass 1) or replays (pass 2)."""
 
     __slots__ = ("_owner", "_e")
 
@@ -254,9 +244,7 @@ class _Proxy:
 
 
 class ExpertList(nn.Module):
-    """A block's routed experts under expert parallel: this rank's experts only, kept under their global indices.
-    len() and indexing cover all E experts; inside the block forward an index returns a call recorder / replayer,
-    outside it only this rank's experts can be indexed."""
+    """This rank's experts under global indices; len() covers all E, outside the forward only local ones index."""
 
     _unsloth_global_expert_keys = (
         True  # child names are global expert indices (portable_resume orders by them)
@@ -351,8 +339,7 @@ def _detach_inplace(value):
 
 
 def _exchange(shard, calls, like):
-    """Rows of every recorded call to its expert's rank, the experts run there, the outputs back: one output per
-    call, in call order. Collective over the ep group."""
+    """Exchange recorded rows to owners, run experts, return one output per call in order. Collective."""
     import torch.distributed as dist
 
     epn = _ep()
@@ -366,10 +353,8 @@ def _exchange(shard, calls, like):
     send = [0] * ep
     for i in order:
         send[owners[i]] += rows[i].shape[0]
-    # counts and a "the block reached its experts" flag per destination, in one exchange
     flag = int(not calls and like.reshape(-1, like.shape[-1]).shape[0] > 0)
-    # and whether this rank's experts train: then every rank's return exchange must be in autograd, also on a rank
-    # whose own outputs need no gradient (it holds or receives no trainable expert, the hidden states are frozen).
+    # If any rank's experts train, every rank's return exchange must be in autograd, even with no local gradient.
     lst = shard.block._modules["experts"]
     trains = int(torch.is_grad_enabled() and any(p.requires_grad for p in lst.parameters()))
     info = torch.tensor(
@@ -457,8 +442,7 @@ def _list_forward(shard, prior):
             )
         calls = []
         devices = _rng_devices(args, kwargs)
-        # Both passes draw the same randomness (router jitter, dropout); the experts draw after the router, as in
-        # one process, and the RNG ends where it would there.
+        # Both passes draw the same randomness; the RNG ends where one process would leave it.
         before = _rng_get(devices)
         lst._mode = ("record", calls)
         try:
@@ -497,8 +481,7 @@ def _list_forward(shard, prior):
 
 
 def shard_expert_list(block, mesh, rank, ep):
-    """Keep experts [lo, hi) of `block` on this rank (global names), tag their parameters, and route the block
-    forward through the record / exchange / replay passes."""
+    """Shard `block`'s experts to [lo, hi) and route its forward through record / exchange / replay."""
     epn = _ep()
     experts = block._modules["experts"]
     E = len(experts)
@@ -507,7 +490,6 @@ def shard_expert_list(block, mesh, rank, ep):
     hi = min(lo + per_rank, E)
     local = {e: experts[e] for e in range(lo, hi)}
     lst = ExpertList(local, E, type(block).__name__)
-    # One expert's structure on meta (every rank, also one holding none): gathers and saves lay out by it.
     lst.__dict__["_template"] = _meta_copy(experts[0])
     block._modules["experts"] = lst
     shard = _ListShard(block, lo, hi, per_rank, E, mesh.get_group(), ep)
@@ -526,9 +508,8 @@ def gather_list_state(
     dst = None,
     adapter = False,
 ):
-    """{name: tensor} of every expert's parameters of every listed block (the adapter's only when `adapter`), from
-    all ep ranks: one gather per block and dtype (each rank sends its expert slots in the same layout, a missing
-    expert as zeros). Only `dst` (a global rank) receives when given; None elsewhere. Collective over the group."""
+    """{name: tensor} of every expert's parameters (adapter only if `adapter`) from all ep ranks; only `dst`
+    receives when given, None elsewhere. Collective."""
     import torch.distributed as dist
 
     epn = _ep()
@@ -610,8 +591,7 @@ _HOOK_DICTS = (
 
 
 def _meta_copy(module):
-    """The structure of `module` (an expert of this rank) with meta tensors and no hooks: a stand-in for an expert
-    another rank holds, so a save that selects tensors by module (PEFT >= 0.21) keeps that expert's keys."""
+    """Meta copy of `module` standing in for another rank's expert, so PEFT >= 0.21 saves keep its keys."""
     memo = {}
     for t in itertools.chain(module.parameters(), module.buffers()):
         meta = torch.empty(t.shape, dtype = t.dtype, device = "meta")
@@ -630,8 +610,7 @@ def _meta_copy(module):
 
 @contextlib.contextmanager
 def remote_experts_for_save(model):
-    """On the writing rank, during save_pretrained with the gathered state dict: every other rank's experts present
-    as meta stand-ins under their global indices, removed again after."""
+    """On the writing rank during save_pretrained: other ranks' experts present as meta stand-ins."""
     added = []
     try:
         for _, shard, lst in _containers(model):
