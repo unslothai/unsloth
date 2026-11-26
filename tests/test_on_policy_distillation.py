@@ -362,6 +362,49 @@ def test_grpo_setup_validates(monkeypatch):
     assert not separate.training and not any(p.requires_grad for p in separate.parameters())
 
 
+def test_grpo_setup_refuses_filters_it_cannot_reproduce(monkeypatch):
+    monkeypatch.setattr(opd, "_require_zoo", lambda flag, option: None)
+    for field, value in (
+        ("top_k", 1),
+        ("top_p", 0.9),
+        ("min_p", 0.05),
+        ("repetition_penalty", 1.1),
+    ):
+        trainer = _grpo_trainer(unsloth_distillation_coef = 1.0, use_vllm = False, **{field: value})
+        with pytest.raises(ValueError, match = field):
+            opd.grpo_setup_distillation(trainer)
+        # vLLM's sampling logprobs are the sampler's, filters included.
+        trainer = _grpo_trainer(unsloth_distillation_coef = 1.0, use_vllm = True, **{field: value})
+        assert opd.grpo_setup_distillation(trainer) == 1.0
+    defaults = _grpo_trainer(
+        unsloth_distillation_coef = 1.0,
+        use_vllm = False,
+        top_k = 0,
+        top_p = 1.0,
+        min_p = None,
+        repetition_penalty = 1.0,
+    )
+    assert opd.grpo_setup_distillation(defaults) == 1.0
+
+
+def test_grpo_setup_refuses_a_subclass_objective(monkeypatch):
+    monkeypatch.setattr(opd, "_require_zoo", lambda flag, option: None)
+    import sys
+
+    fake = types.ModuleType("unsloth.models._grpo_subclass_loss")
+    fake.grpo_subclass_compute_loss = lambda trainer: getattr(trainer, "own_objective", None)
+    monkeypatch.setitem(sys.modules, "unsloth.models._grpo_subclass_loss", fake)
+    trainer = _grpo_trainer(unsloth_distillation_coef = 1.0)
+    trainer.own_objective = object()
+    with pytest.raises(ValueError, match = "_compute_loss"):
+        opd.grpo_setup_distillation(trainer)
+    trainer = _grpo_trainer(unsloth_sampler_kl_coef = 0.01, unsloth_sampler_kl_estimator = "k1")
+    trainer.own_objective = object()
+    with pytest.raises(ValueError, match = "_compute_loss"):
+        opd.grpo_check_sampler_kl(trainer)
+    assert opd.grpo_setup_distillation(_grpo_trainer(unsloth_distillation_coef = 1.0)) == 1.0
+
+
 def test_grpo_setup_refuses_an_old_zoo(monkeypatch):
     import unsloth_zoo.rl_replacements as zoo_rl
 

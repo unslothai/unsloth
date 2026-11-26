@@ -285,7 +285,42 @@ def grpo_check_sampler_kl(trainer):
         )
     if coef != 0.0:
         _require_zoo("GRPO_SAMPLER_KL", "unsloth_sampler_kl_coef")
+        _refuse_subclass_objective(trainer, "unsloth_sampler_kl_coef")
     return coef
+
+
+def _refuse_subclass_objective(trainer, option):
+    # A GRPO subclass with its own _compute_loss (TRL's GMPOTrainer) never reaches the fused loss these join.
+    try:
+        from unsloth.models._grpo_subclass_loss import grpo_subclass_compute_loss
+    except Exception:
+        return
+    if grpo_subclass_compute_loss(trainer) is not None:
+        raise ValueError(
+            f"Unsloth: {option} is applied in Unsloth's GRPO loss, but {type(trainer).__name__} overrides "
+            "_compute_loss with its own objective, which would ignore it."
+        )
+
+
+def _refuse_unreconstructable_sampler(trainer):
+    # Without vLLM's logprobs the sampler is rescored over the full vocabulary at the trainer's temperature;
+    # generation filters and penalties would make that a different distribution from the one that sampled.
+    args = getattr(trainer, "args", None)
+    if getattr(trainer, "use_vllm", getattr(args, "use_vllm", False)):
+        return
+    filters = {
+        "top_k": getattr(args, "top_k", None) not in (None, 0, -1),
+        "top_p": getattr(args, "top_p", None) not in (None, 1, 1.0),
+        "min_p": getattr(args, "min_p", None) not in (None, 0, 0.0),
+        "repetition_penalty": getattr(args, "repetition_penalty", None) not in (None, 1, 1.0),
+    }
+    used = [k for k, on in filters.items() if on]
+    if used:
+        raise ValueError(
+            f"Unsloth: unsloth_distillation_coef without vLLM rescores the sampled tokens over the full vocabulary, "
+            f"which does not reproduce the sampler under {', '.join(used)}. Use vLLM (its sampling logprobs are the "
+            "sampler's) or leave those at their defaults."
+        )
 
 
 def _require_zoo(flag, option):
@@ -326,6 +361,8 @@ def grpo_setup_distillation(trainer, teacher_model = None):
         return coef
     # Per-token advantages must be realigned to the zoo's left-packed loss layout.
     _require_zoo("GRPO_TOKEN_ADVANTAGES", "unsloth_distillation_coef")
+    _refuse_subclass_objective(trainer, "unsloth_distillation_coef")
+    _refuse_unreconstructable_sampler(trainer)
     if teacher_model is None:
         teacher_model = getattr(args, "unsloth_distillation_teacher", None) or ADAPTER_OFF_TEACHER
     if isinstance(teacher_model, str):
