@@ -3,7 +3,7 @@
 
 """Custom sidebar layout in the authenticated account's database."""
 
-from typing import Annotated, Literal
+from typing import Annotated, Literal, Optional
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, ConfigDict, Field, FiniteFloat
@@ -19,8 +19,8 @@ Order = Annotated[list[Id], Field(max_length = 50_000)]
 class Section(BaseModel):
     name: Annotated[str, Field(min_length = 1, max_length = 60)]
     sort: Literal["manual", "updated"]
-    createdAt: FiniteFloat | None = None
-    modifiedAt: FiniteFloat | None = None
+    createdAt: Optional[FiniteFloat] = None
+    modifiedAt: Optional[FiniteFloat] = None
 
 
 class Layout(BaseModel):
@@ -36,7 +36,7 @@ class Layout(BaseModel):
 class LayoutEdit(BaseModel):
     operationId: Annotated[str, Field(min_length = 1, max_length = 128)]
     # A browser with no acknowledged layout is importing its legacy data.
-    base: Layout | None
+    base: Optional[Layout]
     layout: Layout
 
 

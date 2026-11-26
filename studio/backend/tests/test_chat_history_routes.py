@@ -13,6 +13,7 @@ from types import SimpleNamespace
 import pytest
 from typing import Optional
 from fastapi import HTTPException
+from fastapi.routing import APIRoute
 from pydantic import ValidationError
 
 _backend = os.path.join(os.path.dirname(__file__), "..")
@@ -38,7 +39,7 @@ def test_async_delete_handlers_dispatch_sqlite_to_the_threadpool():
     coroutine_handlers = sorted(
         route.endpoint.__name__
         for route in chat_history.router.routes
-        if inspect.iscoroutinefunction(route.endpoint)
+        if isinstance(route, APIRoute) and inspect.iscoroutinefunction(route.endpoint)
     )
     assert coroutine_handlers == ["clear_history", "delete_project", "delete_threads"]
     for handler in (
