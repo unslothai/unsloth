@@ -7673,8 +7673,7 @@ function Get-TritonWindowsRocmSpec {
     return $null
 }
 
-# Defined before the fast path: Test-TritonWindowsPairingNeedsPass reads it there, the CUDA install after it.
-# triton-windows follows the Triton each torch pins: 2.12 and 2.13 -> 3.7 (2.12.0 -> 3.7.0), 2.14 -> 3.8, 2.15 -> 3.9, older keeps <3.7.
+# Defined before the fast path, which reads it too.
 function Get-TritonWindowsSpec {
     param([string]$TorchVersion, [bool]$WinArm64 = $false)
     if ($WinArm64) { return "triton-windows>=3.8.0.post28" }
@@ -7689,8 +7688,7 @@ function Get-TritonWindowsSpec {
     return "triton-windows<3.7"
 }
 
-# A triton-windows version as a comparable key: 4 release parts, then the post number (-1 = none). Only the forms
-# triton-windows publishes (3.6.0.post25, 3.8.0, a +local label); anything else (dev, rc) is $null.
+# 4 release parts + post number (-1 = none); dev/rc forms are $null.
 function Get-TritonWindowsVersionKey {
     param([string]$Version)
     if ("$Version".Trim() -notmatch '^(\d+(?:\.\d+){0,3})(?:\.post(\d+))?(?:\+[\w.]+)?$') { return $null }
@@ -7701,7 +7699,6 @@ function Get-TritonWindowsVersionKey {
     return ,$key.ToArray()
 }
 
-# True / false when $Version is inside / outside a Get-TritonWindowsSpec range; $null when either is unreadable.
 function Test-TritonWindowsVersionInSpec {
     param([string]$Version, [string]$Spec)
     $have = Get-TritonWindowsVersionKey $Version
@@ -7722,10 +7719,8 @@ function Test-TritonWindowsVersionInSpec {
 }
 
 function Get-TritonWindowsPairing {
-    # Metadata only, no torch import. No double quotes: Invoke-BoundedPythonProbe wraps $Code in them. Only a CUDA torch
-    # (+cuNNN) is judged: the dependency pass installs Get-TritonWindowsSpec only on its CUDA branch, so forcing the
-    # pass for a CPU / XPU / ROCm torch (ROCm has Get-RocmTritonPairing) would repair nothing. No triton-windows, or
-    # more than one record, is unknown, never stale: a fail-soft install that found no wheel must not force every run.
+    # No double quotes: Invoke-BoundedPythonProbe wraps $Code in them. Only CUDA torch is judged (the pass repairs only
+    # that branch); zero or several triton-windows records are unknown, else a wheel-less install forces every run.
     $code = "import importlib.metadata as m; print('TORCH=' + m.version('torch')); " +
         "vs = [d.version for d in m.distributions(name='triton-windows') if d.version]; " +
         "print('TRITONWIN=' + (vs[0] if len(vs) == 1 else ''))"
@@ -7742,8 +7737,6 @@ function Get-TritonWindowsPairing {
 }
 
 function Test-TritonWindowsPairingNeedsPass {
-    # A verified install skips the CUDA branch that pairs triton-windows with torch (a kept torch 2.15 with 3.6 would
-    # stay broken for torch.compile), so a pair outside Get-TritonWindowsSpec forces the pass that reinstalls it.
     $pair = Get-TritonWindowsPairing
     if (-not $pair.Stale) { return $false }
     if ($script:OfflineFastPath -or (Test-UvOfflineRequested)) {

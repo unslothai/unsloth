@@ -231,9 +231,7 @@ def _crt_headers_reachable() -> bool:
 def _triton_windows_spec() -> str:
     """The triton-windows range for the resident torch, as studio/setup.ps1 installs it.
 
-    Read from package metadata, not `import torch`: this runs before torch is imported. torch 2.12 and
-    2.13 pin triton 3.7 (2.12.0 exactly 3.7.0), 2.14 pins 3.8 and 2.15 pins 3.9; anything older (or
-    unreadable) keeps the long-standing <3.7. A ROCm torch 2.11 / 2.12 gets 3.8, the build setup.ps1 pairs it with.
+    Read from package metadata: this runs before torch is imported. A ROCm torch 2.11 / 2.12 gets 3.8.
     A native ARM64 interpreter gets setup.ps1's Windows-on-ARM floor: no win_arm64 wheel predates it.
     """
     import platform  # noqa: PLC0415

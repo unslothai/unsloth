@@ -111,7 +111,6 @@ def _setup_ps1_triton_spec(torch_version: str) -> str:
     ["2.9.1", "2.11.0", "2.12.0", "2.12.1", "2.13.0", "2.14.0", "2.15.0", "2.15.1", "2.16.0"],
 )
 def test_hint_matches_setup_ps1(monkeypatch, torch_version):
-    # The runtime hint must name exactly what setup.ps1 installs for the same (non-ROCm, x64) torch.
     monkeypatch.setattr(platform, "machine", lambda: "AMD64")
     monkeypatch.setattr(importlib.metadata, "version", lambda name: torch_version)
     monkeypatch.setattr(_msvc_env, "_torch_is_rocm_build", lambda: False)
@@ -140,7 +139,6 @@ def _fast_path_needs_pass(
     offline = False,
 ):
     """Run setup.ps1's Test-TritonWindowsPairingNeedsPass in pwsh against a stubbed metadata probe."""
-    # The stub answers what the real probe prints: one record -> its version, none or several -> empty.
     triton = triton_versions[0] if len(triton_versions) == 1 else ""
     stubs = (
         "function Invoke-BoundedPythonProbe { param([string]$PythonExe, [string]$Code)\n"
@@ -181,7 +179,6 @@ _SKIP_NO_PWSH = pytest.mark.skipif(shutil.which("pwsh") is None, reason = "pwsh 
 @pytest.mark.parametrize(
     "torch_version, triton_versions, needs_pass",
     [
-        # The recheck's case: a verified CUDA install kept torch 2.15 next to triton-windows 3.6.
         ("2.15.0+cu130", ["3.6.0.post25"], True),
         ("2.15.0+cu130", ["3.8.0.post29"], True),
         ("2.15.0+cu130", ["3.9.0.post30"], False),
