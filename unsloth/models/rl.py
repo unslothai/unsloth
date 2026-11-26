@@ -144,7 +144,8 @@ _ONLINE_DPO_VLLM_SYNC_FUNCTIONS = frozenset(
 def _strip_vllm_weight_loads(function, source, trainer_file):
     # GRPO's _move_model_to_vllm returns early under fast_inference (grpo_trainer__move_model_to_vllm),
     # and TRL's own vLLM (colocate or server) needs these lines to receive the trainer weights.
-    if trainer_file == "grpo_trainer" and function in _GRPO_VLLM_SYNC_FUNCTIONS:
+    # RLOO on TRL 0.22 to 0.27 carries the same methods (rloo_trainer__move_model_to_vllm).
+    if trainer_file in ("grpo_trainer", "rloo_trainer") and function in _GRPO_VLLM_SYNC_FUNCTIONS:
         return source
     if trainer_file == "online_dpo_trainer" and function in _ONLINE_DPO_VLLM_SYNC_FUNCTIONS:
         return source
@@ -321,7 +322,11 @@ def PatchRL(FastLanguageModel):
                 gather_deepspeed3_params = True,
             ):
                 unwrapped_model = accelerator.unwrap_model(model)
-                is_gc = getattr(unwrapped_model, "is_gradient_checkpointing", False)
+                from unsloth.models._gc_config_default import (
+                    is_activation_checkpointing as _is_activation_checkpointing,
+                )
+
+                is_gc = _is_activation_checkpointing(unwrapped_model)
                 if is_gc:
                     unwrapped_model.gradient_checkpointing_disable()
                 if (
@@ -988,9 +993,13 @@ def _wrap_distillation_padding_mask(trainer_cls):
     def wrapped(self, unwrapped_model, *args, **kwargs):
         # Distillation calls the backbone directly, bypassing CausalLM's _has_no_labels update.
         missing = object()
+        # teacher_model = "base" holds no modules itself: flag the student it scores.
+        modules_owner = getattr(
+            unwrapped_model, "_unsloth_adapter_off_student_model", unwrapped_model
+        )
         states = [
             (module, getattr(module, "_unsloth_keep_padding_mask", missing))
-            for module in unwrapped_model.modules()
+            for module in modules_owner.modules()
             if hasattr(module, "embed_tokens")
         ]
         for module, _ in states:
@@ -1118,6 +1127,29 @@ def _restore_optimizer_from_host(record):
         state[name] = restored[id(host)]
     for param, host in grads:
         param.grad = restored[id(host)]
+
+
+def _wrap_grpo_vllm_lora_rounding(trainer_cls):
+    """train / evaluate of a GRPO trainer with use_vllm run under vllm_lora_rounding, so the trainer rounds the
+    LoRA term as the rollout does; the previous order comes back afterwards (a later SFT keeps the fused one)."""
+    from ..kernels.utils import vllm_lora_rounding
+    for name in ("train", "evaluate"):
+        original = getattr(trainer_cls, name, None)
+        if original is None or getattr(original, "_unsloth_vllm_lora_rounding", False):
+            continue
+
+        def wrapped(
+            self,
+            *args,
+            _original = original,
+            **kwargs,
+        ):
+            with vllm_lora_rounding(bool(getattr(self, "use_vllm", False))):
+                return _original(self, *args, **kwargs)
+
+        functools.update_wrapper(wrapped, original)
+        wrapped._unsloth_vllm_lora_rounding = True
+        setattr(trainer_cls, name, wrapped)
 
 
 def _wrap_grpo_generate_and_score(trainer_cls):
@@ -1420,12 +1452,29 @@ def _mark_capped(dataset, cap, drop_unsupervised):
     return dataset
 
 
+# A stream view _cap built itself (streams have no _fingerprint): every row passes its own slice + filter, so its mark cannot go stale.
+_CAP_OWN_STREAM_ATTR = "_unsloth_cap_own_stream"
+
+
+def _mark_own_stream(dataset):
+    try:
+        setattr(dataset, _CAP_OWN_STREAM_ATTR, True)
+    except Exception:
+        pass
+    return dataset
+
+
+def _is_own_stream(dataset):
+    own = getattr(dataset, "__dict__", None)
+    return isinstance(own, dict) and own.get(_CAP_OWN_STREAM_ATTR) is True
+
+
 def _cap_still_holds(dataset, cap, drop_unsupervised):
     """Whether an earlier mark of ours still describes this split. Three of the four ``_cap`` outcomes mark the CALLER'S OWN object and hand it back, and that object can be mutated between two ``evaluate()`` calls (a ``set_transform`` yielding longer ``input_ids`` is enough), which let the mark skip the rescan. Our own wrappers hold a fixed slice and are trusted outright; anything else has to still fingerprint the way it did when marked. An unfingerprintable split is simply rescanned, which is safe because ``_column_names`` chains its probed row back on."""
     signature = _cap_signature(dataset)
     if signature is None:
         return False
-    if isinstance(dataset, _CappedBase):
+    if isinstance(dataset, _CappedBase) or _is_own_stream(dataset):
         return tuple(signature[:2]) == (cap, drop_unsupervised)
     token = _mutation_token(dataset)
     return token is not None and tuple(signature) == (cap, drop_unsupervised, token)
@@ -1870,6 +1919,9 @@ def _wrap_sft_evaluate_cap(trainer_cls):
                     new = new if len(kept) == len(new) else kept
                 except Exception:
                     new = kept
+            # Never the caller's split; map-style copies use their fingerprint.
+            if new is not dataset and _is_stream(new):
+                _mark_own_stream(new)
             return _mark_capped(new, cap, drop_unsupervised)
         except Exception:
             return dataset  # never turn an eval call into a hard error
@@ -2477,7 +2529,10 @@ def _unsloth_average_gradients(ddp, bucket_bytes = 64 << 20):
 
     group = ddp.process_group
     world_size = dist.get_world_size(group)
-    params = [p for p in ddp.module.parameters() if p.requires_grad]
+    # DDP never reduces its ignored parameters (expert parallel puts every expert shard there: each rank holds
+    # different experts of the same shape, synced by ep_native itself), so neither does this.
+    ignored = getattr(ddp, "parameters_to_ignore", None) or ()
+    params = [p for n, p in ddp.module.named_parameters() if p.requires_grad and n not in ignored]
     if world_size <= 1 or len(params) == 0:
         return
     device = params[0].device
@@ -2663,6 +2718,42 @@ _SFT_PREPARE_DATASET_REPLACEMENT = (
     r"\1    pass\n"
     r"\1train_dataset = self._prepare_dataset("
 )
+
+
+def _route_default_gradient_checkpointing(arguments, call_args):
+    """Carry a TRL config's ``gradient_checkpointing`` default under ``activation_checkpointing``.
+
+    transformers >= 5.23 renamed the field and warns ("`gradient_checkpointing` is
+    deprecated ... Use `activation_checkpointing`") whenever the old name arrives non-None
+    while the new one is None. TRL <= 1.18.0 defaults ``gradient_checkpointing = True``, and
+    the generated config mirrors that default, so every config built warned although the
+    user passed neither. The default moves to the new name only when the user sets
+    neither, which is the same value transformers would have resolved. An explicit
+    ``gradient_checkpointing = ...`` still goes through (and still warns), and an explicit
+    ``activation_checkpointing`` still wins. Returns ``(arguments, extra_args)``.
+    """
+    if not (
+        re.search(r"\bactivation_checkpointing\b", call_args)
+        and re.search(r"\bgradient_checkpointing\b", call_args)
+    ):
+        return arguments, ""
+    new_default = re.search(r"\bactivation_checkpointing = ([^,\n]+),\n", arguments)
+    if new_default is None or new_default.group(1).strip() != "None":
+        return arguments, ""
+    old_default = re.search(r"\bgradient_checkpointing = ([^,\n]+),\n", arguments)
+    if old_default is None or old_default.group(1).strip() == "None":
+        return arguments, ""
+    default = old_default.group(1).strip()
+    arguments = (
+        arguments[: old_default.start()]
+        + "gradient_checkpointing = None,\n"
+        + arguments[old_default.end() :]
+    )
+    extra_args = (
+        "if gradient_checkpointing is None and activation_checkpointing is None:\n"
+        f"    activation_checkpointing = {default}\n"
+    )
+    return arguments, extra_args
 
 
 def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
@@ -2928,9 +3019,9 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             # FORCE_FLOAT32 models (Gemma3, gpt_oss) cannot use float16: without bf16 keep float32, with bf16 full finetuning may still autocast. Stamped by from_pretrained, since the env is process wide and a later load would otherwise answer for this trainer.
             "full_finetuning = getattr(model, '_unsloth_full_finetuning', None)\n"
             "if full_finetuning is None: full_finetuning = os.environ.get('UNSLOTH_ENABLE_FULL_FINETUNING', '0') == '1'\n"
-            # Stamped by from_pretrained: the env is process wide, so a forced family loaded earlier would answer here for a model that is not forced at all.
-            "model_forced_float32 = getattr(model, '_unsloth_forced_float32', None)\n"
-            "if model_forced_float32 is None: model_forced_float32 = os.environ.get('UNSLOTH_FORCE_FLOAT32', '0') == '1'\n"
+            # Stamped by from_pretrained: the env is process wide, so a forced family loaded earlier would answer here for a model that is not forced at all, including one Unsloth never loaded.
+            "from unsloth.models._utils import _model_forced_float32\n"
+            "model_forced_float32 = _model_forced_float32(model)\n"
             "if model_forced_float32 and not (full_finetuning and _bf16_supported()):\n"
             "    print('Unsloth: Switching to float32 training since model cannot work with float16')\n"
             "    force_float32 = True\n"
@@ -3585,6 +3676,15 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "pass\n"
         )
 
+    # unsloth_distillation_coef / unsloth_sampler_kl_coef: validate once and resolve the teacher (adapter-off base by default).
+    if trainer_file == "grpo_trainer":
+        RLTrainer_post += (
+            "from unsloth.models._on_policy_distillation import grpo_setup_distillation as _unsloth_grpo_setup_distillation\n"
+            "from unsloth.models._on_policy_distillation import grpo_check_sampler_kl as _unsloth_grpo_check_sampler_kl\n"
+            "_unsloth_grpo_setup_distillation(self, locals().get('_unsloth_grpo_teacher_model', None))\n"
+            "_unsloth_grpo_check_sampler_kl(self)\n"
+        )
+
     # GRPO repeats each prompt's images num_generations times; encode each distinct image once (UNSLOTH_GRPO_IMAGE_DEDUP=0 disables).
     if trainer_file == "grpo_trainer":
         RLTrainer_post += (
@@ -3599,18 +3699,20 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
 
     if trainer_file == "grpo_trainer":
         RLTrainer_post += (
-            "if os.environ.get('UNSLOTH_GRPO_ROUTING_REPLAY', '0') == '1' and hasattr(model, 'vllm_engine'):\n"
+            "# R3 replays vLLM's rollout routes (fast_inference); R2 (UNSLOTH_GRPO_ROUTING_REPLAY_R2=1) replays pi_old's, no vLLM needed.\n"
+            "_unsloth_replay_on = os.environ.get('UNSLOTH_GRPO_ROUTING_REPLAY', '0') == '1' and hasattr(model, 'vllm_engine')\n"
+            "if _unsloth_replay_on or os.environ.get('UNSLOTH_GRPO_ROUTING_REPLAY_R2', '0') == '1':\n"
             "    try:\n"
             "        from unsloth_zoo.routing_replay import install_routing_replay\n"
             "    except ImportError:\n"
-            "        print('Unsloth: UNSLOTH_GRPO_ROUTING_REPLAY=1 needs a newer unsloth_zoo: pip install -U unsloth_zoo')\n"
+            "        print('Unsloth: MoE routing replay needs a newer unsloth_zoo: pip install -U unsloth_zoo')\n"
             "    else:\n"
             "        from unsloth.models._routing_replay import routing_replay_hook_snapshot, prepare_routing_replay\n"
             "        # TRL scores the PEFT reference through self.model.disable_adapter(), so prepare that object.\n"
             "        _unsloth_replay_model = getattr(self, 'model', None)\n"
             "        _unsloth_replay_model = model if _unsloth_replay_model is None else _unsloth_replay_model\n"
             "        _unsloth_replay_hooks_before = routing_replay_hook_snapshot(_unsloth_replay_model)\n"
-            "        install_routing_replay(model, model.vllm_engine, getattr(self, 'processing_class', None))\n"
+            "        install_routing_replay(model, getattr(model, 'vllm_engine', None), getattr(self, 'processing_class', None))\n"
             "        # Pick the router weight formulas outside compilation; PEFT reference scoring routes naturally.\n"
             "        prepare_routing_replay(_unsloth_replay_model, _unsloth_replay_hooks_before)\n"
             "pass\n"
@@ -3705,8 +3807,9 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             # None = unset: resolved below to 0.0 for dapo / dr_grpo, else 0.001 (verl's recommendation; TRL used 0.04, now 0.0, huggingface/trl#3516).
             "beta": None,
             "auto_find_batch_size": False,  # Cannot work on GRPO
-            # See fengyao.notion.site/off-policy-rl and huggingface/trl#3867.
-            "vllm_importance_sampling_correction": False,
+            # On, as in TRL: colocated vLLM and the trainer score the same weights differently. Default since
+            # #3390 / zoo #308, lost in the 2026-01-15 refactor (#3628 / zoo #357). See huggingface/trl#3867.
+            "vllm_importance_sampling_correction": True,
             # None = unset: resolved below to "token_truncate" instead of TRL's "sequence_mask".
             "vllm_importance_sampling_mode": None,
             # TRL >= 1.7.0 enables the MoE router aux loss by default (0.001), but the optimized GRPO forward does not compute it, so default it off.
@@ -3729,6 +3832,9 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             y = f"'{v}'" if type(v) is str else f"{v}"
             y = f"{k} = {y},\n"
             arguments = re.sub(x, y, arguments)
+
+    arguments, route_checkpointing = _route_default_gradient_checkpointing(arguments, call_args)
+    extra_args += route_checkpointing
 
     if "learning_rate" in call_args:
         learning_rate_check = (
@@ -3810,6 +3916,38 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "\n        self.context_parallel_backend = context_parallel_backend"
         )
 
+    # On-policy distillation and the StableReinforce sampler KL (unsloth/models/_on_policy_distillation.py).
+    if trainer_file == "grpo_trainer" and "unsloth_distillation_coef" not in call_args:
+        max_seq_length_pre += """
+    unsloth_distillation_coef : Optional[float] = field(
+        default = 0.0,
+        metadata = {'help': 'On-policy distillation: adds -coef * (log q - log p_teacher) per sampled token to the advantages (Tinker uses 1.0). 0 disables it.'},
+    )
+    unsloth_distillation_teacher : Optional[str] = field(
+        default = 'base',
+        metadata = {'help': "Teacher for unsloth_distillation_coef: 'base' is the LoRA student's base model with the adapter disabled. Pass any other teacher as GRPOTrainer(teacher_model = model)."},
+    )
+    unsloth_sampler_kl_coef : Optional[float] = field(
+        default = 0.0,
+        metadata = {'help': 'StableReinforce: adds coef * KL(sampler || policy) per sampled token (Tinker uses 0.01). 0 disables it.'},
+    )
+    unsloth_sampler_kl_estimator : Optional[str] = field(
+        default = 'k1',
+        metadata = {'help': "Estimator for unsloth_sampler_kl_coef: 'k1' (log q - log p) or 'k3' (r - 1 - log r, r = p / q)."},
+    )"""
+        max_seq_length_call += (
+            "unsloth_distillation_coef = 0.0,"
+            "unsloth_distillation_teacher = 'base',"
+            "unsloth_sampler_kl_coef = 0.0,"
+            "unsloth_sampler_kl_estimator = 'k1',"
+        )
+        max_seq_length_post += (
+            "\n        self.unsloth_distillation_coef = unsloth_distillation_coef"
+            "\n        self.unsloth_distillation_teacher = unsloth_distillation_teacher"
+            "\n        self.unsloth_sampler_kl_coef = unsloth_sampler_kl_coef"
+            "\n        self.unsloth_sampler_kl_estimator = unsloth_sampler_kl_estimator"
+        )
+
     if "output_dir" in call_args:
         saving_check = (
             "if output_dir is None and save_strategy == 'steps' and save_steps == 500:\n"
@@ -3879,7 +4017,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "    vllm_importance_sampling_mode = 'token_truncate'\n"
             + (
                 "    if vllm_importance_sampling_correction:\n"
-                "        print(\"Unsloth: vllm_importance_sampling_correction = True now defaults to token-level truncated importance sampling (vllm_importance_sampling_mode = 'token_truncate'). Set vllm_importance_sampling_mode = 'sequence_mask' for TRL's default.\")\n"
+                "        print(\"Unsloth: the vLLM importance sampling correction is on by default, token-level truncated (vllm_importance_sampling_mode = 'token_truncate'). Set vllm_importance_sampling_correction = False to turn it off, or vllm_importance_sampling_mode = 'sequence_mask' for TRL's mode.\")\n"
                 if "vllm_importance_sampling_correction" in call_args
                 else ""
             )
@@ -4092,7 +4230,8 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "epilogue_fusion"   : True,
             "max_autotune"      : False,
             "shape_padding"     : True,
-            "trace.enabled"     : False,"""
+            "trace.enabled"     : False,
+            "triton.cudagraphs" : False,"""
 
         if DEVICE_TYPE == "cuda":
             # TMA only if every visible card is sm90+ (compile options are process-wide); an
@@ -4112,9 +4251,8 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                 cuda_options += f"""
             "cuda.cutlass_epilogue_fusion_enabled": {all_sm90},
             "cuda.cutlass_tma_only": {all_sm90},"""
+            # No cuda.* build knobs: CUTLASS only, and deprecated aliases that warn on torch 2.16.
             cuda_options += """
-            "cuda.compile_opt_level"              : "-O2",
-            "cuda.enable_cuda_lto"                : True,
         }"""
             new_options = base_options + cuda_options
         else:
@@ -4390,6 +4528,16 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         logger.info(f"Unsloth: Could not wrap the full-eval cast for {RLTrainer_name}: {e}")
 
     if trainer_file == "grpo_trainer":
+        # Inside the optimizer-parking wrapper below, so a parked optimizer also covers the partial rollout.
+        try:
+            from ._partial_rollout import wrap_grpo_partial_rollout
+            wrap_grpo_partial_rollout(getattr(created_module, f"Unsloth{RLTrainer_name}"))
+        except Exception as e:
+            logger.info(f"Unsloth: Could not wrap GRPO partial rollout for {RLTrainer_name}: {e}")
+        try:
+            _wrap_grpo_vllm_lora_rounding(getattr(created_module, f"Unsloth{RLTrainer_name}"))
+        except Exception as e:
+            logger.info(f"Unsloth: Could not wrap the vLLM LoRA rounding for {RLTrainer_name}: {e}")
         try:
             _wrap_grpo_generate_and_score(getattr(created_module, f"Unsloth{RLTrainer_name}"))
         except Exception as e:
@@ -4420,6 +4568,13 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                 patch_rl_trainer(trainer_cls, trainer_file)
         except Exception as e:
             logger.warning(f"Unsloth: Could not add context parallelism to {RLTrainer_name}: {e}")
+            try:
+                from ._utils import guard_config_cp_after_patch_failure
+                guard_config_cp_after_patch_failure(
+                    getattr(created_module, f"Unsloth{RLTrainer_name}"), e
+                )
+            except Exception:
+                pass
     if trainer_file == "ppo_trainer":
         try:
             _wrap_ppo_train(getattr(created_module, f"Unsloth{RLTrainer_name}"))
@@ -4427,6 +4582,14 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             logger.info(f"Unsloth: Could not wrap PPO rollouts for {RLTrainer_name}: {e}")
     if trainer_file in ("distillation_trainer", "server_distillation_trainer"):
         _wrap_distillation_padding_mask(getattr(created_module, f"Unsloth{RLTrainer_name}"))
+    if trainer_file == "grpo_trainer":
+        try:
+            from ._on_policy_distillation import wrap_grpo_on_policy_distillation
+            wrap_grpo_on_policy_distillation(getattr(created_module, f"Unsloth{RLTrainer_name}"))
+        except Exception as e:
+            logger.info(
+                f"Unsloth: Could not wrap GRPO on-policy distillation for {RLTrainer_name}: {e}"
+            )
     if trainer_file == "gkd_trainer" and "_unsloth_trl_compute_loss" in RLTrainer_source:
         try:
             _wrap_grpo_hidden_states_fallback(
@@ -5005,6 +5168,48 @@ class _ApplyOnInputDevice:
             return self.function.apply(hidden, *args)
 
 
+def _bf16_autocast_fused_forward(model, fused_forward, *args, **kwargs):
+    # Checked per call: re-preparing the model in float32 removes the autocast subclass but keeps this instance forward.
+    compute_dtype = getattr(type(model), "_unsloth_autocast_dtype", None)
+    if compute_dtype is None or not getattr(model, "_unsloth_bf16_autocast_wrapped", False):
+        return fused_forward(*args, **kwargs)
+    from unsloth_zoo.training_utils import _call_forward_with_bf16_autocast
+
+    return _call_forward_with_bf16_autocast(fused_forward, model, args, kwargs, compute_dtype)
+
+
+def _keep_bf16_autocast_on_fused_forward(model):
+    # bfloat16 full finetuning keeps norms in float32 and runs the model's forward under bfloat16 autocast
+    # (unsloth_zoo.training_utils._wrap_forward_in_bf16_autocast, a class-level forward). TRL's fused head is an
+    # instance forward whose fused_lm_head = True branch calls the backbone directly, skipping that autocast, so the
+    # first float32 norm output reaches a bfloat16 projection: "expected mat1 and mat2 to have the same dtype".
+    # A partial holding (model, fused_forward): each installation keeps its own delegate (a second add_fused_lm_head
+    # wraps the first, it does not loop back into itself), a deepcopy rebinds both to the copy, and __wrapped__
+    # keeps TRL's signature, which generate() validates model kwargs against.
+    if getattr(type(model), "_unsloth_autocast_dtype", None) is None:
+        return
+    if not getattr(model, "_unsloth_bf16_autocast_wrapped", False):
+        return
+    fused_forward = model.__dict__.get("forward")
+    if fused_forward is None or (
+        isinstance(fused_forward, functools.partial)
+        and fused_forward.func is _bf16_autocast_fused_forward
+    ):
+        return
+    try:
+        from unsloth_zoo.training_utils import _call_forward_with_bf16_autocast  # noqa: F401
+    except ImportError:
+        return
+    forward = functools.update_wrapper(
+        functools.partial(_bf16_autocast_fused_forward, model, fused_forward),
+        fused_forward,
+        updated = (),
+    )
+    # It calls fused_forward unchanged (_unsloth_forward_returns_hidden_states).
+    forward._unsloth_forward_delegate = (forward, fused_forward)
+    model.forward = forward
+
+
 def patch_trl_fused_lm_head_devices():
     # TRL >= 1.15's fused head drops accelerate's io_same_device hook: on a split model log_probs stay on lm_head's card (#4030).
     try:
@@ -5018,6 +5223,7 @@ def patch_trl_fused_lm_head_devices():
     @functools.wraps(original)
     def add_fused_lm_head(model, *args, **kwargs):
         result = original(model, *args, **kwargs)
+        _keep_bf16_autocast_on_fused_forward(model)
         if not _spans_several_devices(model):
             return result
         kernel = getattr(_tu, "_ChunkedLogProbFunction", None)
@@ -6229,6 +6435,54 @@ def _async_grpo_masked_compute_loss(compute_loss):
     return functools.wraps(compute_loss)(namespace[compute_loss.__name__])
 
 
+# StableReinforce (Tinker stable_reinforce): coef * KL(sampler || policy) per trained token, k1 = log q - log p or
+# k3 = r - 1 - log r with r = p / q. AsyncGRPO's old_log_probs are the sampler's logprobs. Not IS-weighted or masked:
+# the tokens were drawn from the sampler, and the KL is what keeps a stale or masked token near it.
+_ASYNC_GRPO_SAMPLER_KL = (
+    "{i}_unsloth_kl_log_ratio = torch.clamp(torch.nan_to_num(log_probs - old_log_probs, nan = 0.0), min = -20.0, max = 20.0)\n"
+    "{i}per_token_loss = per_token_loss + self._unsloth_sampler_kl_coef * ("
+    "torch.expm1(_unsloth_kl_log_ratio) - _unsloth_kl_log_ratio "
+    "if self._unsloth_sampler_kl_estimator == 'k3' else -_unsloth_kl_log_ratio)\n"
+)
+
+
+@functools.lru_cache(maxsize = None)
+def _async_grpo_sampler_kl_compute_loss(compute_loss, masked = False):
+    source = textwrap.dedent(inspect.getsource(compute_loss))
+    if masked:
+        if source.count(_ASYNC_GRPO_PPO_LOSS) != 1:
+            raise ValueError(
+                "Unsloth: importance_sampling_mask = True could not find the PPO loss in "
+                f"{compute_loss.__qualname__}, so it cannot be masked. Drop importance_sampling_mask for this trainer."
+            )
+        source = source.replace(_ASYNC_GRPO_PPO_LOSS, _ASYNC_GRPO_MASKED_LOSS)
+        for old, new in _ASYNC_GRPO_MASK_METRICS:
+            source = source.replace(old, new)
+    # The KL joins the per-token loss right before TRL reduces it: `loss = per_token_loss.sum()` (TRL >= 1.16) or
+    # `loss = (per_token_loss * completion_mask).sum()` (1.13 - 1.15).
+    lines = source.splitlines(keepends = True)
+    hits = [
+        n
+        for n, line in enumerate(lines)
+        if line.lstrip().startswith(("loss = per_token_loss", "loss = (per_token_loss"))
+    ]
+    if len(hits) != 1 or "old_log_probs" not in source or "log_probs" not in source:
+        raise ValueError(
+            "Unsloth: unsloth_sampler_kl_coef could not find where "
+            f"{compute_loss.__qualname__} reduces its per-token loss, so the sampler KL cannot be added."
+        )
+    line = lines[hits[0]]
+    indent = line[: len(line) - len(line.lstrip())]
+    lines.insert(hits[0], _ASYNC_GRPO_SAMPLER_KL.format(i = indent))
+    namespace = {}
+    exec(
+        compile("".join(lines), f"<unsloth sampler kl {compute_loss.__qualname__}>", "exec"),
+        compute_loss.__globals__,
+        namespace,
+    )
+    return functools.wraps(compute_loss)(namespace[compute_loss.__name__])
+
+
 def _import_trl_async_grpo_module():
     # TRL >= 1.18: stable module (experimental is a subclassing shim, so both are covered); 1.13-1.17: experimental.
     errors = []
@@ -6311,13 +6565,29 @@ def patch_trl_async_grpo():
         model,
         *args,
         importance_sampling_mask = False,
+        unsloth_sampler_kl_coef = 0.0,
+        unsloth_sampler_kl_estimator = "k1",
         **kwargs,
     ):
-        masked_loss = (
-            _async_grpo_masked_compute_loss(type(self).compute_loss)
-            if importance_sampling_mask
-            else None
-        )
+        sampler_kl_coef = float(unsloth_sampler_kl_coef or 0.0)
+        if not (0.0 <= sampler_kl_coef < float("inf")):
+            raise ValueError(
+                f"Unsloth: unsloth_sampler_kl_coef must be a finite float >= 0, not {unsloth_sampler_kl_coef!r}."
+            )
+        if unsloth_sampler_kl_estimator not in ("k1", "k3"):
+            raise ValueError(
+                f"Unsloth: unsloth_sampler_kl_estimator must be 'k1' or 'k3', not {unsloth_sampler_kl_estimator!r}."
+            )
+        if sampler_kl_coef != 0.0:
+            masked_loss = _async_grpo_sampler_kl_compute_loss(
+                type(self).compute_loss, bool(importance_sampling_mask)
+            )
+        else:
+            masked_loss = (
+                _async_grpo_masked_compute_loss(type(self).compute_loss)
+                if importance_sampling_mask
+                else None
+            )
         config = args[1] if len(args) >= 2 else kwargs.get("args")
         if not isinstance(model, str) and config is None:
             name = getattr(getattr(model, "config", None), "_name_or_path", "") or "model"
@@ -6385,6 +6655,8 @@ def patch_trl_async_grpo():
         if server is not None:
             self._unsloth_vllm_server = server
             weakref.finalize(self, server.stop)
+        self._unsloth_sampler_kl_coef = sampler_kl_coef
+        self._unsloth_sampler_kl_estimator = unsloth_sampler_kl_estimator
         if masked_loss is not None:
             self.compute_loss = types.MethodType(masked_loss, self)
 

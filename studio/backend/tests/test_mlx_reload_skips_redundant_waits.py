@@ -77,7 +77,7 @@ def test_a_supplied_verdict_answers_without_a_probe(monkeypatch):
 def test_nested_scopes_join_and_the_scope_ends_with_the_outermost(monkeypatch):
     reads = []
     monkeypatch.setattr("huggingface_hub.model_info", lambda repo, **_k: reads.append(repo) or repo)
-    monkeypatch.setattr(mc, "_env_offline", lambda: False)
+    monkeypatch.setattr(mc, "hf_env_offline", lambda: False)
     with mc.shared_hub_model_info():
         mc._hub_model_info("org/m")
         with mc.shared_hub_model_info():
@@ -96,7 +96,7 @@ def test_a_shared_answer_replays_its_token_rejection_into_a_later_scope(monkeypa
         return repo
 
     monkeypatch.setattr("huggingface_hub.model_info", model_info)
-    monkeypatch.setattr(mc, "_env_offline", lambda: False)
+    monkeypatch.setattr(mc, "hf_env_offline", lambda: False)
     with mc.shared_hub_model_info():
         mc._hub_model_info("org/m", "hf_expired")
         with token_rejection_scope():

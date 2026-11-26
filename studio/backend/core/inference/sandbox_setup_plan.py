@@ -350,10 +350,7 @@ def windows_runtime_unsupported() -> str | None:
     return "build" if build < MXC_MIN_WINDOWS_BUILD else None
 
 
-# First update revision (UBR) with Windows' built-in container (BaseContainer) per release, from MXC's
-# docs/backends/process-container/os-version-support.md ("Process Isolation"). Older revisions fall back to
-# AppContainer, which needs Unsloth's fallback sandbox and its administrator step.
-BUILTIN_CONTAINER_MIN_UBR = {26100: 9278, 26200: 9278, 26300: 9550, 28000: 2804}
+from .mxc_runtime import BUILTIN_CONTAINER_MIN_UBR  # noqa: E402
 
 
 def windows_builtin_container_update() -> tuple[str, str] | None:
@@ -397,7 +394,7 @@ _UNSUPPORTED_NOTES = {
 def windows_runtime_installed() -> bool:
     from . import mxc_runtime
     try:
-        mxc_runtime.installation_identity()
+        mxc_runtime.verified_installation_identity()
     except Exception:  # noqa: BLE001 - no runtime yet
         return False
     return True
@@ -446,6 +443,22 @@ def _windows_plan() -> SetupPlan:
     unsupported = windows_runtime_unsupported()
     if unsupported is not None:
         return SetupPlan(platform = sys.platform, reason = _UNSUPPORTED_NOTES[unsupported])
+    if not mxc_runtime.selected_pin().has_host_prep:
+        # MXC 1.1.0 runs only in Windows' built-in container: no fallback sandbox to allow or prepare.
+        step = tuple(windows_runtime_install_command())
+        # windows-setup, which Chat and Settings already offer; a rerun re-probes 1.1.0 and may move to 1.0.1.
+        return SetupPlan(
+            platform = sys.platform,
+            action = WINDOWS_SETUP,
+            steps = (step,),
+            manual_command = powershell_command((step,)),
+            reason = (
+                "MXC is installed, but its live check did not pass; installing again checks which MXC "
+                "this Windows can run."
+                if windows_runtime_installed()
+                else "The MXC runtime is not installed."
+            ),
+        )
     installed = windows_runtime_installed()
     missing = None
     if installed:

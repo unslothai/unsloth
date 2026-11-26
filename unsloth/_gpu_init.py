@@ -386,6 +386,7 @@ from .import_fixes import (
     fix_flash_attn_4_namespace_shadow,
     fix_vllm_aimv2_issue,
     fix_vllm_lora_tokenizer_module,
+    fix_vllm_weight_transfer_module,
     fix_torchao_nf4tensor_move,
     fix_compressed_tensors_activation_quant_gradient,
     fix_torchao_safe_int_mm_repr_probe,
@@ -483,6 +484,7 @@ fix_xformers_performance_issue()
 fix_flash_attn_4_namespace_shadow()
 fix_vllm_aimv2_issue()
 fix_vllm_lora_tokenizer_module()
+fix_vllm_weight_transfer_module()
 # torchao 0.18.0 moved nf4tensor; torchtune (via xcodec2) imports the old path. Lazy alias.
 fix_torchao_nf4tensor_move()
 fix_compressed_tensors_activation_quant_gradient()
@@ -566,6 +568,7 @@ del fix_xformers_performance_issue
 del fix_flash_attn_4_namespace_shadow
 del fix_vllm_aimv2_issue
 del fix_vllm_lora_tokenizer_module
+del fix_vllm_weight_transfer_module
 del fix_torchao_nf4tensor_move
 del fix_compressed_tensors_activation_quant_gradient
 del fix_torchao_safe_int_mm_repr_probe

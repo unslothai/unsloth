@@ -44,7 +44,12 @@ def _segments(source, select):
 
 def _is_resolver_node(node):
     if isinstance(node, ast.FunctionDef):
-        return node.name in ("requested_device_map", "resolve_unsloth_device_map", "_as_bytes")
+        return node.name in (
+            "requested_device_map",
+            "resolve_unsloth_device_map",
+            "_placement_report",
+            "_as_bytes",
+        )
     if isinstance(node, ast.ClassDef):
         return node.name == "_DefaultDeviceMap"
     return isinstance(node, ast.Assign) and getattr(node.targets[0], "id", None) in (
@@ -164,6 +169,7 @@ def _build(
         ),
         "DEVICE_TYPE_TORCH": device_type,
         "is_distributed": lambda: distributed,
+        "unsloth_logging_enabled": lambda: False,
     }
     for segment in _segments(_SRC, _is_resolver_node):
         exec(segment, ns)

@@ -298,7 +298,9 @@ export async function runScenario(
     );
     applied = threadId;
     if (!owed.has(threadId)) {
-      owed.set(threadId, sampling(state().params));
+      const { temperature, topP, topK, minP, presencePenalty, ...own } =
+        sampling(state().params);
+      owed.set(threadId, own);
     }
   };
 

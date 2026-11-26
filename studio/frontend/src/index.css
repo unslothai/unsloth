@@ -5523,6 +5523,19 @@ main[data-translate-page] {
 	scrollbar-gutter: stable;
 }
 
+.translate-page .composer-model-chip {
+	font-size: var(--text-ui-17);
+	/* Uneven: the chevron glyph has its own side bearing. */
+	padding-left: calc(14px * var(--ui-space-scale, 1));
+	padding-right: calc(11.5px * var(--ui-space-scale, 1));
+}
+.translate-page .unsloth-thinking-pill:is(:hover:not(:disabled), [data-state="open"]) {
+	background-color: var(--muted);
+}
+.dark .translate-page .unsloth-thinking-pill:is(:hover:not(:disabled), [data-state="open"]) {
+	background-color: color-mix(in oklab, var(--muted) 50%, transparent);
+}
+
 /* Dark keeps its wash: --accent would read as a second selection colour. */
 html.dark .translate-page .hub-tab-toggle-pill {
 	background-color: rgb(255 255 255 / calc(0.09 * var(--contrast-wash-gain, 1)));
@@ -8179,6 +8192,8 @@ html.dark[data-glass] {
   border-radius: inherit;
   overflow: hidden;
   pointer-events: none;
+  /* Own layer, or WebKit paints a square box behind the host's rounded corners. */
+  transform: translateZ(0);
 }
 .glass-lens-fill,
 .glass-lens-rim {
@@ -8256,9 +8271,6 @@ html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root])[data-
    Keep measured placeholders and reconnected display:contents bodies at natural height. */
 .aui-thread-viewport [data-message-windowed] {
 	flex-shrink: 0;
-	/* duration-150 on user rows otherwise transitions the placeholder's height
-	   from its empty padding box, moving the reader as every batch is parked. */
-	transition-property: none;
 }
 
 /* Keep WebKitGTK thumb jumps synchronized with paints of newly mounted bodies.

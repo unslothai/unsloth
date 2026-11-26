@@ -1884,9 +1884,10 @@ const PromptQueueContext = createContext<PromptQueueCallbacks>({
   stopQueue: noopStopPromptQueue,
 });
 
-// Gap between last message and floating composer, added to the bottom spacer height.
-const COMPOSER_SCROLL_GAP_PX = 24;
-const FOOTER_GAP_BELOW_SPACER_PX = 10;
+const COMPOSER_SCROLL_GAP_PX = 8;
+// The scroll-to-bottom row follows the spacer in flow; 28px until it renders.
+const SCROLL_BUTTON_ROW_PX = 28;
+const SCROLL_BUTTON_GAP_PX = 14;
 const THREAD_COMPOSER_VARS = [
   "--thread-composer-clip",
   "--thread-composer-bottom",
@@ -2199,7 +2200,7 @@ export const Thread: FC<{
   const footerBottomPx =
     composerHeight == null
       ? null
-      : composerHeight + COMPOSER_SCROLL_GAP_PX - FOOTER_GAP_BELOW_SPACER_PX;
+      : composerHeight + SCROLL_BUTTON_GAP_PX;
 
   // Viewport element is owned by the autoscroll hook; mirror it locally for
   // the spacer clamp math. State, not a ref: the keyed provider remounts the
@@ -2291,7 +2292,12 @@ export const Thread: FC<{
       autoScrollContext.notifyContentResized();
       return;
     }
-    const desired = composerHeight + COMPOSER_SCROLL_GAP_PX;
+    const footerRow =
+      viewportEl && childWithClass(viewportEl, "aui-thread-viewport-footer");
+    const desired =
+      composerHeight +
+      COMPOSER_SCROLL_GAP_PX -
+      (footerRow instanceof HTMLElement ? footerRow.offsetHeight : SCROLL_BUTTON_ROW_PX);
     desiredSpacerPxRef.current = desired;
     const applied = appliedSpacerPxRef.current;
     if (applied == null || desired >= applied) {
@@ -2687,7 +2693,20 @@ const ThreadComposerDock: FC<{
   useEffect(() => {
     const el = dockRef.current;
     if (!el || !onHeightChange) return;
-    const measure = () => onHeightChange(el.offsetHeight);
+    // The height the editor eases to: tracking each frame slid an opened conversation down.
+    const measure = () => {
+      const editor = el.querySelector<HTMLElement>(".unsloth-composer-editor");
+      const target = Number.parseFloat(
+        editor?.style.getPropertyValue("--composer-editor-height") ?? "",
+      );
+      // Expanded writing does not ease and can exceed the target.
+      const expanded = editor?.closest('[data-writing-expanded="true"]') != null;
+      onHeightChange(
+        editor && !expanded && Number.isFinite(target)
+          ? el.offsetHeight + target - editor.offsetHeight
+          : el.offsetHeight,
+      );
+    };
     measure();
     const resizeObserver = new ResizeObserver(measure);
     resizeObserver.observe(el);
@@ -3369,7 +3388,13 @@ const Composer: FC<{
   const editorRef = useRef<HTMLDivElement>(null);
   const inputId = useId();
   const uiSpaceScale = useUiSpaceScale();
-  const threadEmpty = useAuiState(({ thread }) => thread.isEmpty);
+  // A conversation opening from the URL reads empty until it attaches; it must not get the new-chat floor.
+  const threadEmpty = useAuiState(
+    ({ thread, threads }) =>
+      thread.isEmpty &&
+      !thread.isLoading &&
+      (threadId == null || threads.mainThreadId === threadId),
+  );
   // Empty saved chats and the floating chat have no welcome.
   const welcomeShown = useChatWelcomeShown();
   const newChatPage = threadEmpty && welcomeShown;
@@ -6237,6 +6262,70 @@ const Composer: FC<{
     [],
   );
   const toolStatus = useMemo(() => <ToolStatusDisplay />, []);
+  // Read send/dictate at click time so the controls survive keystrokes without re-running the picker.
+  const rightControlHandlersRef = useRef({ handleSubmit, startDictation });
+  useLayoutEffect(() => {
+    rightControlHandlersRef.current = { handleSubmit, startDictation };
+  });
+  const onRightControlsSend = useCallback(
+    (event: { preventDefault: () => void }) =>
+      rightControlHandlersRef.current.handleSubmit(event),
+    [],
+  );
+  const onRightControlsQueue = useCallback(
+    () => formRef.current?.requestSubmit(),
+    [],
+  );
+  const onRightControlsDictate = useCallback(
+    () => rightControlHandlersRef.current.startDictation(),
+    [],
+  );
+  const rightControlsDisabled =
+    disabled || !hasSendableContent || isComposing || hasPendingAttachments;
+  // disableQueue makes running threads show Stop instead of Queue.
+  const rightControlsQueueDisabled =
+    disableQueue ||
+    !(
+      canQueueCurrentPrompt ||
+      canQueueTextAttachmentsPrompt ||
+      canQueueAttachmentPrompt
+    );
+  const audioUploadBusy = audioUpload.busy;
+  const rightControls = useMemo(
+    () => (
+      <ComposerRightControls
+        disabled={rightControlsDisabled}
+        dictationDisabled={dictationEntryDisabled}
+        queueDisabled={rightControlsQueueDisabled}
+        onQueueClick={onRightControlsQueue}
+        // ComposerPrimitive.Send skips form submit, so run the full queue and capacity path.
+        onSendClick={onRightControlsSend}
+        onStopClick={stopQueue}
+        onResumeClick={resumeQueue}
+        onDictateClick={onRightControlsDictate}
+        audioUploadBusy={audioUploadBusy}
+        onAudioUploadCancel={cancelAudioUpload}
+        pendingSend={pendingSend}
+        menuSide={effectiveMenuSide}
+        queueThreadIds={promptQueueThreadIds}
+      />
+    ),
+    [
+      rightControlsDisabled,
+      dictationEntryDisabled,
+      rightControlsQueueDisabled,
+      onRightControlsQueue,
+      onRightControlsSend,
+      stopQueue,
+      resumeQueue,
+      onRightControlsDictate,
+      audioUploadBusy,
+      cancelAudioUpload,
+      pendingSend,
+      effectiveMenuSide,
+      promptQueueThreadIds,
+    ],
+  );
   const documentsBar = useMemo(
     () => (
       <ThreadDocumentsBar
@@ -6370,34 +6459,7 @@ const Composer: FC<{
                 </TooltipIconButton>
               )}
             </div>
-            <ComposerRightControls
-              disabled={
-                disabled ||
-                !hasSendableContent ||
-                isComposing ||
-                hasPendingAttachments
-              }
-              dictationDisabled={dictationEntryDisabled}
-              // disableQueue makes running threads show Stop instead of Queue.
-              queueDisabled={
-                disableQueue ||
-                !(
-                  canQueueCurrentPrompt ||
-                  canQueueTextAttachmentsPrompt ||
-                  canQueueAttachmentPrompt
-                )
-              }
-              onQueueClick={() => formRef.current?.requestSubmit()}
-              // ComposerPrimitive.Send skips form submit, so run the full queue and capacity path.
-              onSendClick={handleSubmit}
-              onStopClick={stopQueue}
-              onResumeClick={resumeQueue}
-              onDictateClick={startDictation}
-              audioUpload={audioUpload}
-              pendingSend={pendingSend}
-              menuSide={effectiveMenuSide}
-              queueThreadIds={promptQueueThreadIds}
-            />
+            {rightControls}
           </>
         )}
       </div>
@@ -7604,7 +7666,8 @@ const ComposerRightControls: FC<{
   onStopClick?: () => void;
   onResumeClick?: () => void;
   onDictateClick?: () => void;
-  audioUpload: ReturnType<typeof useChatAudioUpload>;
+  audioUploadBusy: boolean;
+  onAudioUploadCancel: () => void;
   pendingSend?: boolean;
   menuSide?: "top" | "bottom";
   queueThreadIds: string[];
@@ -7617,7 +7680,8 @@ const ComposerRightControls: FC<{
   onStopClick,
   onResumeClick,
   onDictateClick,
-  audioUpload,
+  audioUploadBusy,
+  onAudioUploadCancel,
   pendingSend,
   menuSide,
   queueThreadIds,
@@ -7748,7 +7812,7 @@ const ComposerRightControls: FC<{
     >
       <ComposerModelPicker side={menuSide} />
       <ComposerPrimitive.If dictation={false}>
-        {audioUpload.busy ? (
+        {audioUploadBusy ? (
           <Button
             type="button"
             variant="ghost"
@@ -7756,7 +7820,7 @@ const ComposerRightControls: FC<{
             className="h-9 gap-1.5 rounded-full px-2.5 text-muted-foreground"
             aria-label={t("settings.voice.dictation.audioUploadCancel")}
             title={t("settings.voice.dictation.audioUploadCancel")}
-            onClick={audioUpload.cancel}
+            onClick={onAudioUploadCancel}
           >
             <Spinner className="size-4" />
             <span>{t("settings.voice.dictation.audioUploadTranscribing")}</span>
@@ -9300,7 +9364,7 @@ const UserMessage: FC = () => {
     <MessagePrimitive.Root
       className={cn(
         "aui-user-message-root mx-auto flex w-full max-w-(--thread-content-max-width) flex-col items-end gap-y-2 pt-6 pb-4 text-ui-15p5 [font-weight:410] tracking-[0.01em] dark:tracking-[0.02em]",
-        arriving && "fade-in slide-in-from-bottom-1 animate-in duration-150",
+        arriving && "fade-in slide-in-from-bottom-1 animate-in",
       )}
       data-role="user"
       tabIndex={0}

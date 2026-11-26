@@ -8,6 +8,7 @@ import functools
 import gc
 import os
 import threading
+import weakref
 
 __all__ = [
     "unsloth_gc_train_scope",
@@ -18,6 +19,17 @@ __all__ = [
 _lock = threading.Lock()
 _depth = 0
 _owns_freeze = False
+# The innermost Trainer.train in progress (weak), for code that sizes work to the steps left.
+_ACTIVE_TRAINERS = []
+
+
+def active_trainer_state():
+    """TrainerState of the innermost Trainer.train in progress, else None."""
+    for ref in reversed(_ACTIVE_TRAINERS):
+        trainer = ref()
+        if trainer is not None:
+            return getattr(trainer, "state", None)
+    return None
 
 
 def _gc_freeze_enabled():
@@ -111,6 +123,7 @@ def patch_trainer_train_gc_scope(trainer_class):
     @functools.wraps(original_train)
     def train(self, *args, **kwargs):
         with unsloth_gc_train_scope():
+            _ACTIVE_TRAINERS.append(weakref.ref(self))
             callback = None
             if _depth == 1 and _owns_freeze and hasattr(self, "add_callback"):
                 callback = _first_step_callback()
@@ -119,6 +132,8 @@ def patch_trainer_train_gc_scope(trainer_class):
             try:
                 return original_train(self, *args, **kwargs)
             finally:
+                if _ACTIVE_TRAINERS:
+                    _ACTIVE_TRAINERS.pop()
                 if callback is not None:
                     try:
                         self.remove_callback(callback)

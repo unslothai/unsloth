@@ -109,6 +109,12 @@ def capability_snapshot(
             "Set tool isolation to auto to run Terminal commands with software safeguards, or use "
             "the Python tool, which is sandboxed separately."
         )
+    elif not mxc_runtime.selected_pin().has_host_prep:
+        remediation = (
+            "Install the pinned Microsoft WXC runtime (Settings > Sandbox) and enable BaseContainer/PSEC. "
+            "If this Windows has no built-in container, installing again switches to the MXC runtime "
+            "with the fallback sandbox."
+        )
     elif dacl:
         remediation = (
             "Install the pinned Microsoft WXC runtime and prepare this host once as an "
@@ -153,12 +159,13 @@ def prepare(plan, capability):
     grant_lease = None
     try:
         # Before the request is built, so a revocation racing this launch either finishes first or waits.
-        grant_lease = mxc_read_grants.hold_if_needed()
+        grant_lease, tried = mxc_read_grants.hold_before_build()
         request = (
             mxc_policy.build_launch_request(plan, cwd_alias = lease.root)
             if lease
             else mxc_policy.build_launch_request(plan)
         )
+        grant_lease = mxc_read_grants.hold_for_request(request, grant_lease, tried = tried)
     except Exception as exc:
         if lease is not None:
             lease.release()
@@ -180,7 +187,7 @@ def prepare(plan, capability):
         record,
         network_policy = "mxc_compatibility_requested_unverified",
         backend_tier = "unknown",
-        runtime_revision = mxc_runtime.MXC_REVISION,
+        runtime_revision = mxc_runtime.selected_pin().revision,
         runtime_artifact_digest = f"sha256:{mxc_runtime.artifact('exec')[2]}",
         schema_version = mxc_runtime.MXC_SCHEMA_VERSION,
         policy_hash = request["policyHash"],

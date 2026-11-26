@@ -105,6 +105,9 @@ def _grads(weights, attend):
 
 def _force_saved_attention(monkeypatch):
     monkeypatch.setattr(ad, "_SAVE_ATTENTION", True)
+    # The explicit route (every call). Import on a GPU with a measured automatic length (gfx1151, sm75,
+    # sm80, sm89) binds that length instead, which these short CPU calls are below.
+    monkeypatch.setattr(ad, "_SAVE_ATTENTION_MIN_SEQ", None)
     monkeypatch.setattr(ad, "_saved_attention_call", SA.saved_attention_call)
     monkeypatch.setenv("UNSLOTH_GC_SAVE_ATTENTION", "1")
     # A ROCm build keeps the explicit setting off (its GPU SDPA kernels are not intercepted); these tests
@@ -131,6 +134,7 @@ def test_inference_and_unset_flag_take_the_plain_call(monkeypatch, checkpointing
     monkeypatch.setattr(ad, "_ROCM_SDPA_GUARD", False)
     monkeypatch.setattr(ad, "_saved_attention_call", lambda fn, *t: calls.append(1) or fn(*t))
     monkeypatch.setattr(ad, "_saved_attention_active", lambda: True)
+    monkeypatch.setattr(ad, "_SAVE_ATTENTION_MIN_SEQ", None)
     q = torch.randn(1, H, S, D)
     k = torch.randn(1, KV, S, D)
     monkeypatch.setattr(ad, "_SAVE_ATTENTION", False)
@@ -190,11 +194,19 @@ def test_eager_saving_call_keeps_the_operand_device_guard(monkeypatch):
 
 
 def _fake_gpu(monkeypatch, capability = (8, 0)):
+    import types
+
     monkeypatch.delenv("UNSLOTH_GC_SAVE_ATTENTION", raising = False)
     monkeypatch.setattr(SA, "_AUTO_ACTIVE", [False])
     monkeypatch.setattr(torch.version, "hip", None, raising = False)
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 1)
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a: capability)
+    # A faked ROCm build reads gcnArchName: an unmeasured arch unless a test sets its own, so the
+    # host's real GPU (gfx1151 is measured) never decides the answer.
+    monkeypatch.setattr(
+        torch.cuda, "get_device_properties", lambda *a: types.SimpleNamespace(gcnArchName = "gfx1100")
+    )
 
 
 def test_auto_mode_routes_long_calls_on_a_measured_gpu(monkeypatch):
@@ -219,6 +231,47 @@ def test_auto_mode_off_on_unmeasured_gpu_and_rocm(monkeypatch):
     _fake_gpu(monkeypatch, (8, 0))
     monkeypatch.setattr(torch.version, "hip", "6.4", raising = False)
     assert ad._load_saved_attention() == (None, None)
+
+
+def test_auto_mode_on_measured_rocm_registers_the_selector(monkeypatch):
+    if not hasattr(SA, "_AUTO_MIN_SEQ_ROCM"):
+        pytest.skip("unsloth_zoo without automatic mode on ROCm")
+    import types
+
+    _fake_gpu(monkeypatch, (11, 5))
+    monkeypatch.setattr(torch.version, "hip", "7.13.0", raising = False)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 1)
+    monkeypatch.setattr(
+        torch.cuda, "get_device_properties", lambda *a: types.SimpleNamespace(gcnArchName = "gfx1151")
+    )
+    monkeypatch.setattr(ad, "_ROCM_SDPA_GUARD", True)
+    monkeypatch.setattr(SA, "_ROCM_SDPA_SELECT", SA._default_rocm_sdpa_selector)
+    assert ad._load_saved_attention() == (SA.saved_attention_call, 8192)
+    assert SA._AUTO_ACTIVE[0] is True
+    assert SA._ROCM_SDPA_SELECT is ad._select_rocm_saved_sdpa
+    monkeypatch.setattr(SA, "_ROCM_SDPA_SELECT", SA._default_rocm_sdpa_selector)
+    monkeypatch.setattr(
+        torch.cuda, "get_device_properties", lambda *a: types.SimpleNamespace(gcnArchName = "gfx1100")
+    )
+    monkeypatch.setattr(SA, "_AUTO_ACTIVE", [False])
+    assert ad._load_saved_attention() == (None, None)
+    assert SA._ROCM_SDPA_SELECT is SA._default_rocm_sdpa_selector
+
+
+# (6, 1) is never measured, so the off branch runs whatever the zoo table holds.
+@pytest.mark.parametrize(
+    "capability", [(6, 1), (7, 5), (8, 0), (8, 6), (8, 9), (9, 0), (10, 0), (12, 0)]
+)
+def test_auto_mode_follows_the_zoo_measured_table_on_nvidia(monkeypatch, capability):
+    """unsloth_zoo decides which cards were measured (``_AUTO_MIN_SEQ``; sm120 joined in zoo #2796), so the
+    expectation is read from that table: a measured card routes from its threshold, every other one stays off."""
+    _fake_gpu(monkeypatch, capability)
+    if capability in SA._AUTO_MIN_SEQ:
+        assert ad._load_saved_attention() == (SA.saved_attention_call, SA._AUTO_MIN_SEQ[capability])
+        assert SA._AUTO_ACTIVE[0] is True
+    else:
+        assert ad._load_saved_attention() == (None, None)
+        assert SA._AUTO_ACTIVE[0] is False
 
 
 def test_explicit_setting_routes_every_call(monkeypatch):

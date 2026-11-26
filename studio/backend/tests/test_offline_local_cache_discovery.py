@@ -1045,7 +1045,7 @@ def test_tier_detection_reads_a_cached_config_offline(monkeypatch, on_disk):
         "get_hf_cache_paths",
         lambda: SimpleNamespace(hub_cache = on_disk),
     )
-    monkeypatch.setattr(transformers_version, "_env_offline", lambda: True)
+    monkeypatch.setattr(transformers_version, "hf_env_offline", lambda: True)
     _counting_probe(monkeypatch, True, offline = True)
     transformers_version._config_json_cache.clear()
 
@@ -1688,7 +1688,7 @@ def _anonymous_config_read(monkeypatch, tmp_path, probe, env_offline):
     root = _cache_root(monkeypatch, tmp_path)
     _materialize_repo(root, ON_DISK)
     _counting_probe(monkeypatch, probe, offline = False)
-    monkeypatch.setattr(model_config_module, "_env_offline", lambda: env_offline)
+    monkeypatch.setattr(model_config_module, "hf_env_offline", lambda: env_offline)
     monkeypatch.setattr(model_config_module, "_config_json_already_cached", lambda *_a, **_k: True)
     return _stub_autoconfig(monkeypatch)
 

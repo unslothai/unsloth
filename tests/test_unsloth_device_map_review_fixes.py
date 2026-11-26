@@ -68,6 +68,7 @@ def _build(
         "torch": types.SimpleNamespace(cuda = cuda),
         "DEVICE_TYPE_TORCH": "cuda",
         "is_distributed": lambda: False,
+        "unsloth_logging_enabled": lambda: False,
     }
     for node in ast.parse(_SRC).body:
         keep = (
@@ -77,6 +78,7 @@ def _build(
                 in (
                     "requested_device_map",
                     "resolve_unsloth_device_map",
+                    "_placement_report",
                     "_as_bytes",
                     "unmarked_device_map",
                 )

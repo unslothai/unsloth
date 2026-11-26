@@ -53,6 +53,8 @@ _PLAIN_RESPONSE = {
     "seconds",
     "error",
     "remixed_from_video_id",
+    "queue_position",
+    "eta_seconds",
 }
 
 
