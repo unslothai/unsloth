@@ -8,6 +8,7 @@ import dataclasses
 import functools
 import inspect
 import os
+import weakref
 
 import torch
 
@@ -401,6 +402,50 @@ def _gather_units_read_directly(model, blocks, parents, FSDPModule):
     return len(units)
 
 
+# Roots after_fsdp2_wrap prepared. generate() runs on the inner model, so the root's pre-forward
+# (and its gather of the units Unsloth reads directly) never fires there.
+_FSDP2_ROOTS = weakref.WeakSet()
+
+
+def _param_groups(unit):
+    state = unit._get_fsdp_state()
+    groups = getattr(state, "_fsdp_param_groups", None)
+    if groups is None:  # torch < 2.8 keeps a single group
+        group = getattr(state, "_fsdp_param_group", None)
+        groups = [] if group is None else [group]
+    return list(groups)
+
+
+@contextlib.contextmanager
+def fsdp2_full_params_for_generate(module):
+    """Every FSDP2 unit of the prepared root holding `module` gathered, and kept gathered, for one
+    generate(): Unsloth's fast decode reads weights directly (inference RMSNorm, fast linear), which
+    FSDP's per-module hooks never gather, and the post-forward reshard of a block would hand the next
+    decode step its shard. Yields False (nothing done) outside accelerate FSDP2."""
+    FSDPModule = _fsdp_module_class()
+    root = None
+    if FSDPModule is not None:
+        root = next((r for r in list(_FSDP2_ROOTS) if any(m is module for m in r.modules())), None)
+    if root is None:
+        yield False
+        return
+    units = [m for m in root.modules() if isinstance(m, FSDPModule)]
+    saved = []
+    try:
+        for unit in units:
+            for group in _param_groups(unit):
+                if hasattr(group, "post_forward_mesh_info"):
+                    saved.append((group, group.post_forward_mesh_info))
+                    group.post_forward_mesh_info = None  # no reshard after a block's forward
+            unit.unshard()
+        yield True
+    finally:
+        for group, info in saved:
+            group.post_forward_mesh_info = info
+        for unit in reversed(units):
+            unit.reshard()
+
+
 def after_fsdp2_wrap(accelerator, model):
     FSDPModule = _fsdp_module_class()
     if FSDPModule is None or not isinstance(model, FSDPModule):
@@ -408,6 +453,7 @@ def after_fsdp2_wrap(accelerator, model):
     if getattr(model, "_unsloth_fsdp2_prepared", False):
         return
     model._unsloth_fsdp2_prepared = True
+    _FSDP2_ROOTS.add(model)
     parents = _parents(model)
     blocks = _block_units(model, parents, FSDPModule)
     plugin = getattr(getattr(accelerator, "state", None), "fsdp_plugin", None)

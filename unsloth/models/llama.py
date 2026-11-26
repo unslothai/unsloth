@@ -3355,6 +3355,23 @@ def _generation_input_ids(args, kwargs):
 
 
 def unsloth_fast_generate(self, *args, **kwargs):
+    # accelerate FSDP2: gather every unit for the call (the fast decode reads weights directly) and
+    # decode eagerly, since a captured graph would replay storage the reshard after it frees.
+    _fsdp2 = sys.modules.get(__package__ + ".fsdp2")
+    if (
+        _fsdp2 is not None
+        and torch.distributed.is_available()
+        and torch.distributed.is_initialized()
+        and not self.__dict__.get("_unsloth_fsdp2_generate", False)
+    ):
+        with _fsdp2.fsdp2_full_params_for_generate(self) as gathered:
+            if gathered:
+                self.__dict__["_unsloth_fsdp2_generate"] = True
+                try:
+                    with _decode_graphs.eager_scope():
+                        return unsloth_fast_generate(self, *args, **kwargs)
+                finally:
+                    self.__dict__.pop("_unsloth_fsdp2_generate", None)
     restore_training_mode = self.training
     # Snapshot the real GC mode (e.g. unsloth) before for_inference clears it, so restore does not collapse it to a bool
     use_gradient_checkpointing = next(
