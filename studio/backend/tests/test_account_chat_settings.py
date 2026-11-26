@@ -951,7 +951,8 @@ def test_sidebar_sections_merge_browser_imports_and_keep_account_isolation(clien
     assert client.get(path).json() == final
 
 
-def test_sidebar_sections_concurrent_clients_keep_unrelated_edits(client):
+@pytest.mark.parametrize("delete_section", [True, False], ids = ["delete-section", "unfile-row"])
+def test_sidebar_sections_concurrent_clients_keep_unrelated_edits(client, delete_section):
     from concurrent.futures import ThreadPoolExecutor
     from copy import deepcopy
 
@@ -961,7 +962,12 @@ def test_sidebar_sections_concurrent_clients_keep_unrelated_edits(client):
         json = {
             "operationId": "initial",
             "base": None,
-            "layout": {"sections": {"a": {"name": "A", "sort": "manual"}}},
+            "layout": {
+                "sections": {
+                    "a": {"name": "A", "sort": "manual"},
+                    "b": {"name": "B", "sort": "manual"},
+                }
+            },
         },
     ).json()
     rename = deepcopy(initial)
@@ -989,14 +995,18 @@ def test_sidebar_sections_concurrent_clients_keep_unrelated_edits(client):
     assert current["sectionByChatId"] == {"comparison-pair": "a"}
 
     moved = deepcopy(current)
-    moved["sections"]["b"] = {"name": "B", "sort": "manual"}
     moved["sectionByChatId"]["comparison-pair"] = "b"
     assert client.post(
         path, json = {"operationId": "move", "base": current, "layout": moved}
     ).is_success
-    # The stale client deleting A saw the pair in A. Its deletion must leave the pair in B.
-    result = client.post(path, json = {"operationId": "delete", "base": current, "layout": {}})
-    assert result.json()["sectionByChatId"] == {"comparison-pair": "b"}
+    edited = deepcopy(current)
+    del edited["sectionByChatId"]["comparison-pair"]
+    if delete_section:
+        del edited["sections"]["a"]
+    result = client.post(path, json = {"operationId": "unfile", "base": current, "layout": edited})
+    assert result.is_success
+    expected = {"comparison-pair": "b"} if delete_section else {}
+    assert result.json()["sectionByChatId"] == expected
 
 
 def test_sidebar_sections_cancelled_placements_keep_the_concurrent_order(client):

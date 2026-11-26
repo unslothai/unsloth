@@ -88,11 +88,16 @@ def _merge(
     for field in ("sectionByChatId", "sectionByProjectId", "sectionByPageId"):
         assignments = dict(stored.get(field, {}))
         for key in base[field].keys() | layout[field].keys():
+            previous = base[field].get(key)
             target = layout[field].get(key)
-            if target == base[field].get(key) or (importing and key in assignments):
+            if target == previous or (importing and key in assignments):
                 continue
-            # Removing a section unfiles its rows; another client may have moved one first.
-            if target is None and assignments.get(key) != base[field].get(key):
+            # Deleting a section must preserve rows another client moved elsewhere.
+            if (
+                target is None
+                and previous not in layout["sections"]
+                and assignments.get(key) != previous
+            ):
                 continue
             if target is None or target in live:
                 assignments[key] = target
