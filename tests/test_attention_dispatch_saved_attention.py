@@ -105,6 +105,9 @@ def _grads(weights, attend):
 
 def _force_saved_attention(monkeypatch):
     monkeypatch.setattr(ad, "_SAVE_ATTENTION", True)
+    # The explicit route (every call). Import on a GPU with a measured automatic length (gfx1151, sm75,
+    # sm80, sm89) binds that length instead, which these short CPU calls are below.
+    monkeypatch.setattr(ad, "_SAVE_ATTENTION_MIN_SEQ", None)
     monkeypatch.setattr(ad, "_saved_attention_call", SA.saved_attention_call)
     monkeypatch.setenv("UNSLOTH_GC_SAVE_ATTENTION", "1")
     # A ROCm build keeps the explicit setting off (its GPU SDPA kernels are not intercepted); these tests
@@ -131,6 +134,7 @@ def test_inference_and_unset_flag_take_the_plain_call(monkeypatch, checkpointing
     monkeypatch.setattr(ad, "_ROCM_SDPA_GUARD", False)
     monkeypatch.setattr(ad, "_saved_attention_call", lambda fn, *t: calls.append(1) or fn(*t))
     monkeypatch.setattr(ad, "_saved_attention_active", lambda: True)
+    monkeypatch.setattr(ad, "_SAVE_ATTENTION_MIN_SEQ", None)
     q = torch.randn(1, H, S, D)
     k = torch.randn(1, KV, S, D)
     monkeypatch.setattr(ad, "_SAVE_ATTENTION", False)
@@ -190,11 +194,19 @@ def test_eager_saving_call_keeps_the_operand_device_guard(monkeypatch):
 
 
 def _fake_gpu(monkeypatch, capability = (8, 0)):
+    import types
+
     monkeypatch.delenv("UNSLOTH_GC_SAVE_ATTENTION", raising = False)
     monkeypatch.setattr(SA, "_AUTO_ACTIVE", [False])
     monkeypatch.setattr(torch.version, "hip", None, raising = False)
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 1)
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a: capability)
+    # A faked ROCm build reads gcnArchName: an unmeasured arch unless a test sets its own, so the
+    # host's real GPU (gfx1151 is measured) never decides the answer.
+    monkeypatch.setattr(
+        torch.cuda, "get_device_properties", lambda *a: types.SimpleNamespace(gcnArchName = "gfx1100")
+    )
 
 
 def test_auto_mode_routes_long_calls_on_a_measured_gpu(monkeypatch):
