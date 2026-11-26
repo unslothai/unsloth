@@ -64,6 +64,21 @@ export function precisionDisabledReasons(
   return out;
 }
 
+/** The resident family's denials for the options, as advice only: the select also configures the NEXT pick, which may
+ * be another family, so they are shown (tooltip and a note when selected) but never disable an option. */
+export function precisionAdvisoryReasons(
+  options: readonly (readonly [string, string])[],
+  residentFamily: string | null | undefined,
+  denials: TransformerQuantDenials | null | undefined,
+): Record<string, string> {
+  return precisionDisabledReasons(options, {
+    denseQuantSupported: false,
+    denseQuantSchemes: [],
+    family: residentFamily,
+    denials,
+  });
+}
+
 /** The family a pick loads as: an explicit override, else the resident family when the pick is the resident model. */
 export function pickFamily(
   familyOverride: string | null | undefined,

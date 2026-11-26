@@ -11,6 +11,7 @@ import ts from "@typescript/typescript6";
 
 import {
   pickFamily,
+  precisionAdvisoryReasons,
   precisionDisabledReasons,
   precisionUnavailableReason,
 } from "../src/lib/precision-availability.ts";
@@ -43,6 +44,9 @@ test("a family deny greys out that scheme with the backend's reason", () => {
   assert.deepEqual(precisionDisabledReasons(OPTIONS, { ...ctx, family: "ltx-2" }), {});
   // Unknown family: nothing is family-denied.
   assert.deepEqual(precisionDisabledReasons(OPTIONS, { ...ctx, family: null }), {});
+  // The loaded model's denials as advice: the reason without any host ladder check.
+  assert.deepEqual(precisionAdvisoryReasons(OPTIONS, "Wan2.2-TI2V-5B", DENIALS), { nvfp4: WAN_REASON });
+  assert.deepEqual(precisionAdvisoryReasons(OPTIONS, null, DENIALS), {});
 });
 
 test("a ladder scheme the host did not report is disabled, an empty or non-CUDA list never disables", () => {
@@ -135,7 +139,12 @@ for (const page of ["features/images/images-page.tsx", "features/video/video-pag
     assert.match(select, /disabledReasons=\{precisionDisabledReasons\(/);
     assert.match(src, /denials: status\?\.transformer_quant_denials/);
     assert.match(src, /denseQuantSupported: hostClass === "dense-quant"/);
-    assert.match(src, /title=\{disabledReasons\?\.\[v\]\}/);
+    assert.match(src, /title=\{disabledReasons\?\.\[v\] \?\? advisoryReasons\?\.\[v\]\}/);
+    // The select also configures the NEXT pick: only an explicit override disables by family; the loaded model's
+    // denials are advice (tooltip and a note), never a disabled option.
+    assert.match(src, /family: pickFamily\(familyOverride, false, null\),/);
+    assert.match(select, /advisoryReasons=\{precisionAdvisoryReasons\(\s*\[[^\]]*\][^)]*\)?[\s\S]{0,120}status\?\.loaded \? status\.family : null,/);
+    assert.match(src, /Not for the loaded model: \{selectedAdvice\}/);
   });
 }
 
@@ -164,7 +173,7 @@ for (const page of ["images/images-page.tsx", "video/video-page.tsx"]) {
   test(`${page}: a multi-GPU host's scheme intersection never disables Precision`, () => {
     const src = readSrc(`features/${page}`);
     assert.match(src, /const gpuCount = useGpuDeviceCount\(\);/);
-    assert.match(src, /denseQuantSchemes,\s*gpuCount,\s*family: pickFamily\(/);
+    assert.match(src, /denseQuantSchemes,\s*gpuCount,\s*\/\/[^\n]*\n\s*family: pickFamily\(/);
   });
 }
 

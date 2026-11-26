@@ -122,7 +122,7 @@ import {
 } from "@/hooks/use-host-class";
 import { nvfp4SelectionFallback, withNvfp4Option } from "@/lib/nvfp4-options";
 import { ggufQuantLabel } from "@/features/model-picker";
-import { pickFamily, precisionDisabledReasons } from "@/lib/precision-availability";
+import { pickFamily, precisionAdvisoryReasons, precisionDisabledReasons } from "@/lib/precision-availability";
 import {
   recipeModelToReload,
   recipeTextEncoderQuant,
@@ -1068,6 +1068,7 @@ function AdvancedSelect({
   onValueChange,
   options,
   disabledReasons,
+  advisoryReasons,
 }: {
   label: string;
   hint?: ReactNode;
@@ -1078,8 +1079,11 @@ function AdvancedSelect({
   options: Array<[string, string]>;
   /** Options that cannot load here, keyed by value; shown disabled with the reason as their tooltip. */
   disabledReasons?: Record<string, string>;
+  /** Reasons that apply to the loaded model only (the next pick may differ): a tooltip and a note, never disabled. */
+  advisoryReasons?: Record<string, string>;
 }) {
   const selectedReason = disabledReasons?.[value];
+  const selectedAdvice = selectedReason ? undefined : advisoryReasons?.[value];
   return (
     <div className="flex flex-col gap-1">
       <div className="flex items-center justify-between gap-2">
@@ -1098,7 +1102,7 @@ function AdvancedSelect({
                 key={v}
                 value={v}
                 disabled={disabledReasons?.[v] !== undefined && v !== value}
-                title={disabledReasons?.[v]}
+                title={disabledReasons?.[v] ?? advisoryReasons?.[v]}
                 // Disabled items keep pointer events so the reason tooltip still shows on hover.
                 className="text-xs data-[disabled]:pointer-events-auto data-[disabled]:cursor-not-allowed"
               >
@@ -1112,6 +1116,11 @@ function AdvancedSelect({
       {selectedReason && (
         <p role="status" className="text-ui-11 leading-snug text-amber-600 dark:text-amber-400">
           Cannot load here: {selectedReason}
+        </p>
+      )}
+      {selectedAdvice && (
+        <p role="status" className="text-ui-11 leading-snug text-amber-600 dark:text-amber-400">
+          Not for the loaded model: {selectedAdvice}
         </p>
       )}
     </div>
@@ -2217,7 +2226,8 @@ export function ImagesPage({
     denseQuantSupported: hostClass === "dense-quant",
     denseQuantSchemes,
     gpuCount,
-    family: pickFamily(familyOverride, Boolean(status?.loaded), status?.family),
+    // Disabling needs a known target: only an explicit override names the next load's family.
+    family: pickFamily(familyOverride, false, null),
     denials: status?.transformer_quant_denials,
   };
   // A connection is not bound by the resident model's size grid or presets.
@@ -6436,6 +6446,11 @@ export function ImagesPage({
           disabledReasons={precisionDisabledReasons(
             [["fp8", "FP8"], ["int8", "INT8"], ["nvfp4", "NVFP4"], ["mxfp8", "MXFP8"]],
             precisionAvailability,
+          )}
+          advisoryReasons={precisionAdvisoryReasons(
+            [["fp8", "FP8"], ["int8", "INT8"], ["nvfp4", "NVFP4"], ["mxfp8", "MXFP8"]],
+            status?.loaded ? status.family : null,
+            status?.transformer_quant_denials,
           )}
           options={[
             ["auto", "Auto (fastest for GPU)"],
