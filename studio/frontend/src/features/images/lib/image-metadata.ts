@@ -1037,6 +1037,7 @@ export const INFO_RECIPE_KEYS = [
   "created_at",
   "generation_seconds",
   "generation_count",
+  "warmup_render",
   "engine",
   "generator",
   "schema_version",

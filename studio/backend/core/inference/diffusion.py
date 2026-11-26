@@ -2108,6 +2108,12 @@ def _release_render_on_unload(method):
     return wrapped
 
 
+def _is_warmup_render(count_before: int, deferred_before: bool, deferred_after: bool) -> bool:
+    """True for the first generation of a load, or the one where the deferred speed tier engaged (it compiles inline):
+    its elapsed time includes one-time compile, kernel tuning and graph capture, not the steady-state render time."""
+    return count_before == 0 or (deferred_before and not deferred_after)
+
+
 @dataclass
 class _GenState:
     """An in-flight generation, updated per denoising step for the progress bar."""
@@ -16409,6 +16415,10 @@ class DiffusionBackend:
                     )
                     variation_seed_list = sd_controls_mod.variation_seeds(base_variation, len(jobs))
 
+                # The first render of a load (and the one that engages the deferred compile) pays one-time warm-up:
+                # torch.compile, kernel autotuning and CUDA graph capture where enabled. The Recipe labels its time.
+                warmup_count_before = state.generation_count
+                warmup_deferred_before = bool(state.speed_deferred)
                 # Deferred speed auto compiles on the 3rd image, but never with LoRA (compile rejects LoRA).
                 lora_requested = _has_active_lora(loras)
                 # Stay eager while prior adapters are attached: compiling would bake them in.
@@ -17749,6 +17759,9 @@ class DiffusionBackend:
                     "inpaint_only_masked": True if inpaint_padding_applied is not None else None,
                     "inpaint_padding": inpaint_padding_applied,
                     "cfg_interval_end": cfg_interval_applied,
+                    "warmup_render": _is_warmup_render(
+                        warmup_count_before, warmup_deferred_before, bool(state.speed_deferred)
+                    ),
                 }
                 if upscale_model and workflow == "upscale":
                     result["upscale_model"] = upscale_model

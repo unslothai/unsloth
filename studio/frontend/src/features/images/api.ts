@@ -351,6 +351,8 @@ export interface GalleryImage {
   batch_size: number;
   generation_seconds?: number | null;
   generation_count?: number | null;
+  // The first render of a load: generation_seconds includes one-time compile, tuning and graph capture.
+  warmup_render?: boolean | null;
   model: string | null;
   // The load-time build. The repo id alone does not identify a pipeline (quant choice, torchao
   // scheme, baked adapters), so these are what a recipe needs once the model is unloaded.

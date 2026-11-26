@@ -5955,6 +5955,11 @@ class GalleryImage(BaseModel):
     generation_count: Optional[int] = Field(
         None, description = "Number of images in the timed request; absent on older records"
     )
+    warmup_render: Optional[bool] = Field(
+        None,
+        description = "True when this was the first render of the load (or the one that engaged the deferred "
+        "compile), so generation_seconds includes one-time compile, kernel tuning and graph capture",
+    )
     model: Optional[str] = Field(None, description = "Model repo id that produced it")
     # The load-time BUILD. The repo id alone does not identify a pipeline (quant choice, torchao scheme, baked adapters), so without these a recipe cannot be rebuilt.
     engine: Optional[str] = Field(

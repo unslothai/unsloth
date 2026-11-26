@@ -53746,6 +53746,8 @@ async def _generate_diffusion_image_run(
                         "batch_size": 1 if list_driven else request.batch_size,
                         "generation_seconds": generation_seconds,
                         "generation_count": len(result["images"]),
+                        # The first render of a load also paid compile / tuning: the Recipe says so next to its time.
+                        **({"warmup_render": True} if result.get("warmup_render") else {}),
                         "model": result.get("repo_id"),
                         **({"engine": result["engine"]} if result.get("engine") else {}),
                         # The BUILD the image came off, not just the repo id: a GGUF repo holds many quants, a dense load may be torchao-
@@ -56138,6 +56140,7 @@ async def _generate_openai_images(
         "batch_size": body.n,
         "generation_seconds": generation_seconds,
         "generation_count": len(result["images"]),
+        **({"warmup_render": True} if result.get("warmup_render") else {}),
         "model": result.get("repo_id"),
         # Same build record as /images/generate, so the gallery entry can name the GGUF quant and precision.
         "model_kind": result.get("model_kind"),
