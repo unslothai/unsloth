@@ -2497,7 +2497,9 @@ async def _plan_parallel_training(request, training_kwargs: dict, hf_token) -> N
             "launcher",
             "distributed_backend",
             "reason",
+            "env",
         )
+        if key in plan
     }
     if pin:
         # The worker's mask lists these ids in this order, so rank r runs on gpu_ids[r].

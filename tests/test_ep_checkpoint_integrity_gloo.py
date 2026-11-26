@@ -246,6 +246,235 @@ def _case_each_node(rank, world, tmp):
     return {"error": None, "received": sum(received), "same": same}
 
 
+def _plain_model(build, seed = 0):
+    """The one-process twin of _ep_model (same weights, nothing sharded)."""
+    model = build(OLMOE, seed = seed, **EXPERT_LORA).train()
+    g = torch.Generator().manual_seed(1234 + seed)
+    with torch.no_grad():
+        for name, p in model.named_parameters():
+            if "lora_B" in name:
+                p.copy_(torch.randn(p.shape, generator = g) * 0.02)
+    return model
+
+
+def _utils_save_lora_adapter():
+    """models/_utils.py save_lora_adapter (model.save_lora) and the helpers it calls, without importing
+    _utils (which pulls in the whole package)."""
+    import ast
+
+    path = os.path.join(os.path.dirname(HERE), "unsloth", "models", "_utils.py")
+    tree = ast.parse(open(path, encoding = "utf-8").read())
+    wanted = {
+        "_unsloth_model_parallel_marker",
+        "_is_unsloth_tensor_parallel",
+        "_is_unsloth_expert_parallel",
+        "save_lora_adapter",
+    }
+    body = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in wanted]
+    assert "save_lora_adapter" in {n.name for n in body}
+    scope = {"__name__": "unsloth.models._utils", "__package__": "unsloth.models", "torch": torch}
+    exec(compile(ast.Module(body = body, type_ignores = []), path, "exec"), scope)
+    return scope["save_lora_adapter"]
+
+
+def _case_save_lora(rank, world, tmp):
+    """model.save_lora (the GRPO notebook idiom) on every rank: one 1-GPU adapter, written by rank 0 only."""
+    import json
+
+    import torch.distributed as dist
+    from safetensors.torch import load_file
+
+    build, tpn, epn = _modules()
+    save_lora = _utils_save_lora_adapter()
+    model = _ep_model(build, epn, _flat_mesh(world))
+    writes = []
+    level = model
+    prior = level.save_pretrained
+
+    def counted(*args, **kwargs):
+        writes.append(kwargs.get("state_dict") is not None)
+        return prior(*args, **kwargs)
+
+    level.save_pretrained = counted
+    directory = os.path.join(tmp, "lora")
+    try:
+        save_lora(model, directory)
+        error = None
+    except Exception as exc:
+        error = f"{type(exc).__name__}: {exc}"
+    dist.barrier()
+    out = {"error": None, "save_error": error, "writes": len(writes)}
+    if rank == 0:
+        ref = os.path.join(tmp, "one_process")
+        save_lora(_plain_model(build), ref)
+        want = load_file(os.path.join(ref, "adapter_model.safetensors"))
+        try:
+            got = load_file(os.path.join(directory, "adapter_model.safetensors"))
+        except Exception as exc:
+            got = {"UNREADABLE": f"{type(exc).__name__}"}
+        out["missing"] = sorted(set(want) - set(got))
+        out["differ"] = sorted(
+            k
+            for k in want
+            if k in got and not (got[k].shape == want[k].shape and torch.equal(got[k], want[k]))
+        )
+        out["experts"] = sorted(k for k in want if "experts" in k)
+        out["config_same"] = json.load(open(os.path.join(ref, "adapter_config.json"))) == json.load(
+            open(os.path.join(directory, "adapter_config.json"))
+        )
+    return out
+
+
+def _trainer_ns(model, rank, out):
+    """What ep_trainer_setup and the stock Trainer optimizer save / load read, around real optimizer and
+    scheduler objects (the stock methods are transformers' own, bound to this namespace)."""
+    import types
+
+    import transformers
+
+    optimizer = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad], lr = 1e-3)
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda step: 1.0 / (1 + step))
+    args = types.SimpleNamespace(
+        save_on_each_node = False,
+        should_save = rank == 0,
+        output_dir = out,
+        load_best_model_at_end = False,
+        save_only_model = False,
+        world_size = 2,
+        process_index = rank,
+        device = torch.device("cpu"),
+    )
+    accelerator = types.SimpleNamespace(
+        backward = lambda *a, **k: None, prepare_model = lambda *a, **k: None, sync_gradients = True
+    )
+    trainer = types.SimpleNamespace(
+        model = model,
+        model_init = None,
+        accelerator = accelerator,
+        args = args,
+        processing_class = None,
+        optimizer = optimizer,
+        lr_scheduler = scheduler,
+        is_deepspeed_enabled = False,
+        is_fsdp_enabled = False,
+        is_fsdp_xla_v1_enabled = False,
+        is_fsdp_xla_v2_enabled = False,
+        save_model = None,
+        _load_from_checkpoint = None,
+    )
+    stock = transformers.Trainer
+    trainer._save_optimizer_and_scheduler = types.MethodType(
+        stock._save_optimizer_and_scheduler, trainer
+    )
+    trainer._load_optimizer_and_scheduler = types.MethodType(
+        stock._load_optimizer_and_scheduler, trainer
+    )
+    assert _modules()[2].ep_trainer_setup(trainer)
+    return trainer
+
+
+def _case_optimizer_save_failure(rank, world, tmp):
+    """A Trainer checkpoint over a committed one while rank 0 (the stock writer) runs out of disk."""
+    import resource
+    import signal
+
+    build, tpn, epn = _modules()
+    model = _ep_model(build, epn, _flat_mesh(world))
+    directory = os.path.join(tmp, "ckpt")
+    os.makedirs(directory, exist_ok = True)
+    trainer = _trainer_ns(model, rank, directory)
+    trainer._save_optimizer_and_scheduler(directory)  # committed: no optimizer state yet
+    path = epn._rank_path(directory)
+    files = sorted(os.listdir(directory))
+    committed = {f: _readable(os.path.join(directory, f)) for f in files if f.endswith(".pt")}
+    committed_rank = torch.load(path, weights_only = False)
+    ddp = _step(model, trainer.optimizer, rank)
+    trainer.lr_scheduler.step()
+    if rank == 0:
+        signal.signal(signal.SIGXFSZ, signal.SIG_IGN)
+        sizes = [os.path.getsize(os.path.join(directory, f)) for f in files if f.endswith(".pt")]
+        limit = max(sizes + [os.path.getsize(path)]) + 512
+        resource.setrlimit(resource.RLIMIT_FSIZE, (limit, resource.RLIM_INFINITY))
+    start = time.monotonic()
+    try:
+        trainer._save_optimizer_and_scheduler(directory)
+        error = None
+    except Exception as exc:
+        error = f"{type(exc).__name__}: {exc}"
+    elapsed = time.monotonic() - start
+    if rank == 0:
+        resource.setrlimit(resource.RLIMIT_FSIZE, (resource.RLIM_INFINITY, resource.RLIM_INFINITY))
+    after_rank = _readable(path)
+    kept = {}
+    for f, before in committed.items():
+        now = _readable(os.path.join(directory, f))
+        kept[f] = isinstance(now, dict) and isinstance(before, dict) and repr(now) == repr(before)
+    del ddp
+    return {
+        "error": None,
+        "save_error": error,
+        "elapsed": elapsed,
+        "rank_state_kept": isinstance(after_rank, dict)
+        and after_rank["optimizer"] == committed_rank["optimizer"]
+        and all(
+            torch.equal(after_rank["weights"][k], v) for k, v in committed_rank["weights"].items()
+        ),
+        "stock_files_kept": kept,
+        "leftovers": sorted(
+            f for d in (directory, os.path.dirname(path)) for f in os.listdir(d) if ".tmp" in f
+        ),
+    }
+
+
+def _case_optimizer_round_trip(rank, world, tmp):
+    """Trainer checkpoint save then resume: optimizer and scheduler state back bitwise, from the rank state."""
+    import torch.distributed as dist
+
+    build, tpn, epn = _modules()
+    mesh = _flat_mesh(world)
+    model = _ep_model(build, epn, mesh)
+    directory = os.path.join(tmp, "ckpt")
+    os.makedirs(directory, exist_ok = True)
+    trainer = _trainer_ns(model, rank, directory)
+    ddp = _step(model, trainer.optimizer, rank)
+    trainer.lr_scheduler.step()
+    trainer._save_optimizer_and_scheduler(directory)
+    dist.barrier()
+    fresh = _trainer_ns(_ep_model(build, epn, mesh), rank, directory)
+    fresh._load_optimizer_and_scheduler(directory)
+    a, b = trainer.optimizer.state_dict(), fresh.optimizer.state_dict()
+    optim = a["param_groups"] == b["param_groups"] and all(
+        torch.equal(a["state"][i][k], b["state"][i][k]) for i in a["state"] for k in a["state"][i]
+    )
+    del ddp
+    return {
+        "error": None,
+        "optim": optim and len(a["state"]) > 0,
+        "scheduler": fresh.lr_scheduler.state_dict() == trainer.lr_scheduler.state_dict()
+        and trainer.lr_scheduler.last_epoch == 1,
+        "files": sorted(os.listdir(directory)),
+        # The 1-GPU optimizer.pt (keyed by parameter name, every expert), not rank 0's own state.
+        "portable_names": sorted(
+            n
+            for g in torch.load(os.path.join(directory, "optimizer.pt"), weights_only = True)[
+                "param_groups"
+            ]
+            for n in g["params"]
+        ),
+        # Every rank's trainable names: per-expert modules (transformers 4.x) are held by one rank each.
+        "trainable_names": sorted({n for names in _all_names(model) for n in names}),
+    }
+
+
+def _all_names(model):
+    import torch.distributed as dist
+
+    mine = sorted(n for n, p in model.named_parameters() if p.requires_grad)
+    every = [None] * dist.get_world_size()
+    dist.all_gather_object(every, mine)
+    return every
+
+
 def _worker(rank, world, tmp, case):
     os.environ.update(
         RANK = str(rank), WORLD_SIZE = str(world), LOCAL_RANK = str(rank), LOCAL_WORLD_SIZE = str(world)
@@ -393,3 +622,35 @@ def test_save_on_each_node_gathers_only_onto_the_writers():
             assert r["received"] == 0, r  # not a writer: never holds the gathered experts
         else:
             assert r["received"] > 0, r
+
+
+def test_save_lora_writes_the_one_process_adapter_from_rank_0():
+    results = _spawn("_case_save_lora")
+    assert all(r is not None and r["error"] is None for r in results), results
+    rank0, rank1 = results
+    assert rank0["save_error"] is None and rank1["save_error"] is None, results
+    assert rank0["experts"], rank0  # the adapter trains the expert stacks
+    assert not rank0["missing"] and not rank0["differ"], rank0
+    assert rank0["config_same"], rank0
+    assert rank0["writes"] == 1 and rank1["writes"] == 0, results  # only rank 0 wrote
+
+
+def test_optimizer_save_failure_raises_on_every_rank_and_keeps_the_checkpoint():
+    results = _spawn("_case_optimizer_save_failure")
+    assert all(r is not None and r["error"] is None for r in results), results
+    for r in results:
+        # Without the agreement rank 1 would wait out the whole gloo timeout for rank 0.
+        assert r["save_error"] and r["elapsed"] < _TIMEOUT_S / 2, results
+        assert all(r["stock_files_kept"].values()), r  # optimizer.pt / scheduler.pt not truncated
+        assert not r["leftovers"], r
+    assert results[0]["rank_state_kept"], results[0]  # the failed overwrite left the committed file
+    assert "another rank failed" in results[1]["save_error"], results
+
+
+def test_optimizer_checkpoint_round_trip_from_the_rank_state():
+    results = _spawn("_case_optimizer_round_trip")
+    assert all(r is not None and r["error"] is None for r in results), results
+    for r in results:
+        assert r["optim"] and r["scheduler"], r
+        # rank 0's state lives in its rank file; optimizer.pt is the 1-GPU form (portable_resume.py)
+        assert r["portable_names"] == r["trainable_names"], r

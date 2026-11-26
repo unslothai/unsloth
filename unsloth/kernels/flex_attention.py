@@ -80,6 +80,13 @@ if not HAS_FLEX_ATTENTION:
             except torch.OutOfMemoryError:
                 raise
             except Exception as error:
+                # Checkpoint control flow (the non-reentrant recompute's early stop, a CheckpointError) and an
+                # OOM raised while compiling are not compile failures: latching eager would hide them.
+                if type(error).__name__ in (
+                    "_StopRecomputationError",
+                    "CheckpointError",
+                ) or isinstance(getattr(error, "inner_exception", None), torch.OutOfMemoryError):
+                    raise
                 # ROCm torch 2.11 inductor rejects this graph (inductor::_alloc_from_pool aliasing) on gfx1151.
                 logger.warning_once(
                     f"Unsloth: compiled Gemma2 softcapping attention failed on {key}, using eager: {error}"
