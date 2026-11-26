@@ -63,7 +63,8 @@ function withWindow(run: () => Promise<void>) {
       removeEventListener() {},
       dispatchEvent() {},
     };
-    mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+    // Date too: an automatic check reuses a forced read made within the last few minutes.
+    mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
     try {
       await run();
     } finally {
