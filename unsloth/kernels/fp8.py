@@ -2109,26 +2109,37 @@ def _scaled_mm_fp16_bias(x, weight):
     return bias
 
 
-# Keyed by (device, stream) like the zero-bias cache; never filled during CUDA graph capture.
+# One float32 1.0 per device, filled and synchronized once: a dict lookup per call, no per-stream state.
 _FP8_UNIT_SCALE_CACHE = {}
 
 
 def _fp8_unit_scale(device):
     if torch.compiler.is_compiling():
         return torch.ones((), dtype = torch.float32, device = device)
-    cuda = device.type == "cuda" and torch.cuda.is_initialized()
-    if cuda and torch.cuda.is_current_stream_capturing():
-        return torch.ones((), dtype = torch.float32, device = device)
-    key = (device, torch.cuda.current_stream(device).cuda_stream if cuda else None)
-    one = _FP8_UNIT_SCALE_CACHE.get(key)
-    if one is None:
-        with torch.inference_mode(False), torch.no_grad():
-            one = torch.ones((), dtype = torch.float32, device = device)
-        if type(one) is torch.Tensor:  # never cache a fake tensor
-            if len(_FP8_UNIT_SCALE_CACHE) >= _SCALED_MM_FP16_ZERO_BIAS_CACHE_MAX:
-                _FP8_UNIT_SCALE_CACHE.clear()
-            _FP8_UNIT_SCALE_CACHE[key] = one
+    one = _FP8_UNIT_SCALE_CACHE.get(device)
+    if one is not None:
+        return one
+    capturing = device.type == "cuda" and torch.cuda.is_current_stream_capturing()
+    with torch.inference_mode(False), torch.no_grad():
+        one = torch.ones((), dtype = torch.float32, device = device)
+    if type(one) is torch.Tensor and not capturing:  # never cache a fake or graph-pool tensor
+        if device.type == "cuda":
+            torch.cuda.synchronize(device)  # filled before any stream reads it
+        _FP8_UNIT_SCALE_CACHE[device] = one
     return one
+
+
+@triton.jit
+def _fp8_unit_scale_epilogue_kernel(
+    acc_ptr, sx_ptr, sw_ptr, y_ptr, N, numel, BLOCK: tl.constexpr
+):  # block size
+    # (acc * row scale) * column scale in float32, rounded once: the order Inductor emits for the traced path.
+    offs = tl.program_id(0).to(tl.int64) * BLOCK + tl.arange(0, BLOCK)
+    mask = offs < numel
+    acc = tl.load(acc_ptr + offs, mask = mask, other = 0.0)
+    sx = tl.load(sx_ptr + offs // N, mask = mask, other = 0.0)
+    sw = tl.load(sw_ptr + offs % N, mask = mask, other = 0.0).to(tl.float32)
+    tl.store(y_ptr + offs, ((acc * sx) * sw).to(y_ptr.dtype.element_ty), mask = mask)
 
 
 def _fp8_unit_scale_mm(x_quantized, weight, x_scale, weight_scale, out_dtype):
@@ -2144,8 +2155,30 @@ def _fp8_unit_scale_mm(x_quantized, weight, x_scale, weight_scale, out_dtype):
         use_fast_accum = True,
     )
     acc = acc[0] if isinstance(acc, tuple) else acc
-    acc = acc.mul_(x_scale).mul_(weight_scale.to(torch.float32).view(1, -1))
-    return acc if out_dtype == torch.float32 else acc.to(out_dtype)
+    if (
+        torch.compiler.is_compiling()
+        or acc.device.type != "cuda"
+        or torch.version.hip is not None
+        or not (acc.is_contiguous() and x_scale.is_contiguous() and weight_scale.is_contiguous())
+    ):
+        # Traced: Inductor fuses this into one pass.
+        acc = acc * x_scale * weight_scale.to(torch.float32).view(1, -1)
+        return acc if out_dtype == torch.float32 else acc.to(out_dtype)
+    out = torch.empty(acc.shape, device = acc.device, dtype = out_dtype)
+    numel = acc.numel()
+    if numel:
+        with _fp8_triton_device_context(acc, static_device_count = True):
+            _fp8_unit_scale_epilogue_kernel[(triton.cdiv(numel, 1024),)](
+                acc,
+                x_scale,
+                weight_scale,
+                out,
+                acc.shape[1],
+                numel,
+                BLOCK = 1024,
+                num_warps = 4,
+            )
+    return out
 
 
 def _parse_fp8_dequant_max_rows(value):
