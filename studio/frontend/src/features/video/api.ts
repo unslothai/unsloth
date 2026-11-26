@@ -68,6 +68,8 @@ export interface VideoGenerationDefaults {
 
 export interface VideoStatus {
   loaded: boolean;
+  /** Per transformer scheme, why the loaded family or card refuses it (null = nothing known); absent on older backends. */
+  precision_options?: Record<string, string | null> | null;
   repo_id: string | null;
   display_repo_id?: string | null;
   resident_mib?: number | null;

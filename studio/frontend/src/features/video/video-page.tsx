@@ -196,6 +196,12 @@ import {
 } from "@/hooks/use-host-class";
 import { clipPrecisionSelection } from "@/lib/clip-precision";
 import { reseedAction } from "@/lib/failed-load-reseed";
+import {
+  activePrecisionDenials,
+  deniedSelectionFallback,
+  type PrecisionOptions,
+  withPrecisionDenials,
+} from "@/lib/precision-denials";
 import { nvfp4SelectionFallback, type SelectOption, withNvfp4Option } from "@/lib/nvfp4-options";
 import type {
   ModelOption,
@@ -2060,6 +2066,14 @@ function VideoGenerator({
   // the other Advanced selects would keep showing the refused pick while Generate runs the resident build.
   const [failedLoadReseed, setFailedLoadReseed] = useState(0);
   const handledFailedLoadReseed = useRef(0);
+  // The last picked model's per-scheme refusals from its download plan, for the Precision select before it loads.
+  const [plannedPrecisionOptions, setPlannedPrecisionOptions] = useState<PrecisionOptions>(null);
+  // Schemes the loaded (else last planned) family or card refuses (Wan NVFP4's failed accuracy gate): disabled in
+  // Precision with the reason, and a held one falls back to Auto rather than being refused at load.
+  const precisionDenials = activePrecisionDenials(status, plannedPrecisionOptions);
+  useEffect(() => {
+    setTransformerQuant((v) => deniedSelectionFallback(v, precisionDenials));
+  }, [precisionDenials, transformerQuant]);
   useEffect(() => {
     const record = status?.loaded ? status.resolved : null;
     const afterFailedLoad = failedLoadReseed !== handledFailedLoadReseed.current;
@@ -3341,6 +3355,7 @@ function VideoGenerator({
           pickToast.dismiss(pickToastId);
           return true;
         }
+        setPlannedPrecisionOptions(plan.precision_options ?? null);
         // The shared envelope's half of the incompatible-pairing check; video has no live path here.
         incompatible = plan.incompatible_reason ?? null;
         incompatibleCode = plan.incompatible_code ?? null;
@@ -4196,14 +4211,17 @@ function VideoGenerator({
             ["none", "Off (bf16)"],
             // Low-precision schemes need dense tensor cores, which Mac or CPU-only hosts lack.
             ...(hostOffersDensePrecision(hostClass)
-              ? withNvfp4Option(
-                  [
-                    ["fp8", "FP8"],
-                    ["int8", "INT8"],
-                    ["nvfp4", "NVFP4 (Blackwell)"],
-                    ["mxfp8", "MXFP8 (Blackwell)"],
-                  ] as SelectOption[],
-                  nvfp4Diffusion,
+              ? withPrecisionDenials(
+                  withNvfp4Option(
+                    [
+                      ["fp8", "FP8"],
+                      ["int8", "INT8"],
+                      ["nvfp4", "NVFP4 (Blackwell)"],
+                      ["mxfp8", "MXFP8 (Blackwell)"],
+                    ] as SelectOption[],
+                    nvfp4Diffusion,
+                  ),
+                  precisionDenials,
                 )
               : []),
           ]}
