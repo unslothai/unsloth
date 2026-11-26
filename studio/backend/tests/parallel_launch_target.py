@@ -28,6 +28,9 @@ def train(event_queue, stop_queue, config):
             "UNSLOTH_PARALLEL",
         )
     }
+    from core.training import worker
+
+    info["data_parallel_world_size"] = worker._data_parallel_world_size()
     info["resolved_gpu_ids"] = config.get("resolved_gpu_ids")
     info["output_dir"] = config.get("output_dir")
     from utils.account_context import current_account

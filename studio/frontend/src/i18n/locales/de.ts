@@ -4179,8 +4179,8 @@ export const de = {
       summary: {
         single: "Training auf einer GPU",
         layerSplit: "Modell wird schichtweise auf {count} GPUs aufgeteilt",
-        ddp: "Modell passt auf eine GPU: Datenparallel auf {count} GPUs",
-        fsdp2: "Modell ist zu groß für eine GPU: auf {count} GPUs geshardet",
+        ddp: "Jede GPU trainiert eine vollständige Kopie: Datenparallel auf {count} GPUs",
+        fsdp2: "Gewichte und Optimiererzustand auf {count} GPUs geshardet",
         tp: "Jede Schicht wird auf {count} GPUs aufgeteilt",
         pp: "Schichten laufen als {count} Pipeline-Stufen, eine pro GPU",
         cp: "Jede Sequenz wird auf {count} GPUs aufgeteilt",
@@ -4191,7 +4191,7 @@ export const de = {
         noGpu: "Wähle mindestens eine GPU.",
         singleNeedsOne: "Eine GPU nutzt genau eine GPU. Entferne die anderen Haken.",
         needsTwo: "Dieser Modus braucht mindestens zwei GPUs.",
-        customSpec: "Gib ein Layout ein, zum Beispiel dp=2,tp=2.",
+        customSpec: "Gib ein Layout ein, zum Beispiel {example}.",
       },
     },
     preview: {

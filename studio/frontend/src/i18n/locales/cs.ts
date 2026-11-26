@@ -4443,8 +4443,8 @@ export const cs = {
       summary: {
         single: "Trénování na jedné GPU",
         layerSplit: "Model je rozdělen po vrstvách na GPU: {count}",
-        ddp: "Model se vejde na jednu GPU: datový paralelismus na GPU: {count}",
-        fsdp2: "Model je na jednu GPU příliš velký: shardován na GPU: {count}",
+        ddp: "Každá GPU trénuje úplnou kopii: datový paralelismus na GPU: {count}",
+        fsdp2: "Váhy a stav optimalizátoru shardovány na GPU: {count}",
         tp: "Každá vrstva je rozdělena na GPU: {count}",
         pp: "Vrstvy běží jako fáze pipeline ({count}), jedna na GPU",
         cp: "Každá sekvence je rozdělena na GPU: {count}",
@@ -4455,7 +4455,7 @@ export const cs = {
         noGpu: "Vyberte alespoň jednu GPU.",
         singleNeedsOne: "Jedna GPU používá právě jednu GPU. Zrušte zaškrtnutí ostatních.",
         needsTwo: "Tento režim potřebuje alespoň dvě GPU.",
-        customSpec: "Zadejte rozvržení, například dp=2,tp=2.",
+        customSpec: "Zadejte rozvržení, například {example}.",
       },
     },
     preview: {

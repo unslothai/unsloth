@@ -53,6 +53,8 @@ export interface ParallelPlan {
   reason: string | null;
   perGpuGb: number | null;
   warnings: string[];
+  /** Facts about the host (mixed GPUs), shown muted; warnings are risks of this run. */
+  notes: string[];
   modes: ParallelModeAvailability[];
   error: ParallelPlanError | null;
 }

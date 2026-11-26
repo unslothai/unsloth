@@ -4172,8 +4172,8 @@ export const es = {
       summary: {
         single: "Entrenando en una GPU",
         layerSplit: "El modelo se divide capa por capa entre {count} GPU",
-        ddp: "El modelo cabe en una GPU: paralelismo de datos en {count} GPU",
-        fsdp2: "El modelo no cabe en una GPU: fragmentado entre {count} GPU",
+        ddp: "Cada GPU entrena una copia completa: paralelismo de datos en {count} GPU",
+        fsdp2: "Pesos y estado del optimizador fragmentados entre {count} GPU",
         tp: "Cada capa se divide entre {count} GPU",
         pp: "Las capas se ejecutan como {count} etapas de pipeline, una por GPU",
         cp: "Cada secuencia se divide entre {count} GPU",
@@ -4184,7 +4184,7 @@ export const es = {
         noGpu: "Selecciona al menos una GPU.",
         singleNeedsOne: "Una sola GPU usa exactamente una GPU. Desmarca las demás.",
         needsTwo: "Este modo necesita al menos dos GPU.",
-        customSpec: "Escribe una distribución, por ejemplo dp=2,tp=2.",
+        customSpec: "Escribe una distribución, por ejemplo {example}.",
       },
     },
     preview: {

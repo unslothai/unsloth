@@ -139,15 +139,17 @@ def test_auto_falls_back_when_ep_cannot_shard_the_family():
     )
     assert sharded["mode"] == "fsdp2" and sharded["spec"] == "dp=2,fsdp=1", sharded
     rows = {r["mode"]: r for r in sharded["modes"]}
-    assert not rows["ep"]["available"] and "ep x model" in rows["ep"]["reason"], rows["ep"]
-    qwen = pp.plan(
-        {"parallel_mode": "auto"}, ep_host, _model(need = 6.0, moe = True, family = "qwen3_moe")
-    )
-    assert qwen["mode"] == "ep" and qwen["spec"] == "ep=2", qwen
+    assert not rows["ep"]["available"] and "experts forward takes" in rows["ep"]["reason"], rows[
+        "ep"
+    ]
     with pytest.raises(pp.ParallelPlanError) as err:
         pp.plan({"parallel_mode": "ep"}, ep_host, _model(moe = True, family = "jetmoe"))
     payload = err.value.payload
-    assert payload["code"] == "parallel_unsupported" and "ep x model" in payload["message"], payload
+    assert payload["code"] == "parallel_unsupported", payload
+    # The Train page shows the reason, not Core's rule name.
+    assert (
+        not payload["message"].startswith("Unsloth:") and " x model:" not in payload["message"]
+    ), payload
     assert payload["alternative"] and "drop ep" in payload["alternative"], payload
 
 
@@ -283,7 +285,14 @@ def test_mixed_gpus_warn():
         gpus = [_t4(0), {"index": 1, "name": "NVIDIA L4", "total_gb": 22.5, "free_gb": 22.0}]
     )
     plan = pp.plan({"parallel_mode": "ddp"}, host, _model())
-    assert any("differ" in w for w in plan["warnings"])
+    # A fact about the host, not a risk of this run: a note, shown muted, never a warning.
+    assert any("data parallel runs at the pace" in n for n in plan["notes"]), plan
+    assert not plan["warnings"], plan
+    tp = pp.plan({"parallel_mode": "tp"}, host, _model())
+    assert tp["notes"] and not any("data parallel" in n for n in tp["notes"]), tp["notes"]
+    # A run that may not fit stays a warning.
+    big = pp.plan({"parallel_mode": "ddp"}, host, _model(need = 20.0))
+    assert any("may not fit" in w for w in big["warnings"]), big
 
 
 def test_capabilities_rows():
@@ -402,3 +411,26 @@ def test_config_traits_match_core():
         "multimodal": False,
         "windowed": False,
     }
+
+
+def test_core_rule_prefix_is_dropped():
+    assert (
+        pp._plain_core_message(
+            "Unsloth: pp x packing: pipeline parallel with packed rows is not supported."
+        )
+        == "Pipeline parallel with packed rows is not supported."
+    )
+    assert pp._plain_core_message("Unsloth: tp x model x lora: no.") == "No."
+    assert pp._plain_core_message("Plain reason.") == "Plain reason."
+
+
+def test_custom_hint_is_a_layout_this_run_accepts():
+    with pytest.raises(pp.ParallelPlanError) as err:
+        pp.plan({"parallel_mode": "custom", "parallel_spec": ""}, _host(2), _model())
+    # Data parallel over every GPU: a layout every run accepts (a tp axis is refused for some models).
+    assert '"dp=2"' in err.value.payload["message"], err.value.payload
+    assert pp._spec_example(4) == "dp=4" and pp._spec_example(3) == "dp=3"
+    assert (
+        pp.plan({"parallel_mode": "custom", "parallel_spec": "dp=2"}, _host(2), _model())["error"]
+        is None
+    )

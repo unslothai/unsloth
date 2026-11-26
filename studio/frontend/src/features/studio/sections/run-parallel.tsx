@@ -17,15 +17,20 @@ export function RunParallelChip({
 }): ReactElement {
   const t = useT();
   const locale = useLocale();
+  const mode = t(PARALLEL_MODE_LABEL_KEYS[parallel.mode]);
+  const count = runGpuCount(parallel);
   return (
     <span
       className="rounded-full border border-border/60 px-2.5 py-1 text-ui-10 font-medium text-foreground/80"
       data-testid="run-parallel-chip"
     >
-      {t("studio.gpus.runChip", {
-        mode: t(PARALLEL_MODE_LABEL_KEYS[parallel.mode]),
-        count: new Intl.NumberFormat(locale).format(runGpuCount(parallel)),
-      })}
+      {/* A one-GPU run is just its mode, never "1 GPUs". */}
+      {count === 1
+        ? mode
+        : t("studio.gpus.runChip", {
+            mode,
+            count: new Intl.NumberFormat(locale).format(count),
+          })}
     </span>
   );
 }

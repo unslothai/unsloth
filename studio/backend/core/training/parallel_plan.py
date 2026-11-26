@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import re
 import sys
 import threading
 import time
@@ -373,6 +374,12 @@ def _spec_for(mode: str, world: int, custom: Optional[str]) -> str:
     return str(custom or "").strip()
 
 
+def _spec_example(world: int) -> str:
+    """A layout every run accepts, for the hints: data parallel over every GPU (dp=2,tp=2 needs four GPUs, and a
+    tp axis is refused for some models and settings)."""
+    return f"dp={max(world, 1)}"
+
+
 def _parse_spec(raw: str, world: int) -> dict:
     env = _core_module("parallel_env")
     if env is None:
@@ -381,7 +388,9 @@ def _parse_spec(raw: str, world: int) -> dict:
         )
     if not raw:
         raise ParallelPlanError(
-            "parallel_bad_spec", CUSTOM, 'Custom layout needs a parallel_spec such as "dp=2,tp=2".'
+            "parallel_bad_spec",
+            CUSTOM,
+            f'Custom layout needs a layout such as "{_spec_example(world)}".',
         )
     ep_requested = any(
         part.split("=", 1)[0].strip().lower() in ("ep", "ep_size")
@@ -398,7 +407,9 @@ def _parse_spec(raw: str, world: int) -> dict:
         )
     if not spec:
         raise ParallelPlanError(
-            "parallel_bad_spec", CUSTOM, 'Custom layout needs a parallel_spec such as "dp=2,tp=2".'
+            "parallel_bad_spec",
+            CUSTOM,
+            f'Custom layout needs a layout such as "{_spec_example(world)}".',
         )
     sizes = {k: int(spec.get(k, 1)) for k in ("tp", "pp", "cp")}
     sizes["ep"] = int(spec.get("ep", 1)) if not isinstance(spec.get("ep"), bool) else 1
@@ -474,10 +485,29 @@ def _core_check(
     except NotImplementedError as exc:
         text = str(exc)
         message, _, alternative = text.partition(" Instead: ")
+        layout = text.rsplit(" (layout ", 1)[1] if " (layout " in text else ""
         alternative = alternative.rsplit(" (layout", 1)[0].strip().rstrip(".") or None
+        if _REASON_BELOW in message:
+            # Core names the model's own reason only in its layout tail ("...; models/tp_native.py: <why>)").
+            tail = layout[:-1] if layout.endswith(")") else layout  # the "(layout" paren only
+            detail = tail.rsplit("; ", 1)[-1].partition(": ")[2].strip()
+            message = message.split(": models/", 1)[0] + (f": {detail}." if detail else ".")
         raise ParallelPlanError(
-            "parallel_unsupported", request.get("parallel_mode"), message.strip(), alternative
+            "parallel_unsupported",
+            request.get("parallel_mode"),
+            _plain_core_message(message),
+            alternative,
         )
+
+
+_REASON_BELOW = "(its reason follows the layout below)"
+# Core names the rule it applied ("Unsloth: pp x packing: ..."); the Train page shows only the reason.
+_CORE_RULE_PREFIX = re.compile(r"^(?:Unsloth:\s*)?(?:[a-z0-9_]+(?: x [a-z0-9_]+)+:\s*)?")
+
+
+def _plain_core_message(message: str) -> str:
+    text = _CORE_RULE_PREFIX.sub("", message.strip(), count = 1)
+    return text[:1].upper() + text[1:] if text else message.strip()
 
 
 def _fits(need_gb: Optional[float], gpus: list) -> bool:
@@ -567,6 +597,16 @@ def _estimate_row(model: dict, n: int) -> dict:
     return {"single": single, "ddp": single, "fsdp2": sharded, "layer_split": sharded}
 
 
+def _gpus_differ(gpus: list) -> bool:
+    return len({(g["name"], round(g["total_gb"])) for g in gpus}) > 1
+
+
+def _mixed_gpu_note(mode: str) -> str:
+    if mode in (DDP, FSDP2, EP):
+        return "These GPUs differ; data parallel runs at the pace of the slowest."
+    return "These GPUs differ; every GPU holds an equal share, so the slowest and smallest set the pace and the limit."
+
+
 def plan(request: dict, host: dict, model: Optional[dict]) -> dict:
     requested = request.get("parallel_mode") or None
     if requested is not None and requested not in MODES:
@@ -586,6 +626,7 @@ def plan(request: dict, host: dict, model: Optional[dict]) -> dict:
     gpus = _usable_gpus(host, gpu_ids)
     model = model or {}
     warnings: list = []
+    notes: list = []  # facts about the host, not risks of this run: shown muted, unlike warnings
     feature = _single_process_feature(request)
     multi_reason = host.get("multi_process_reason") or (
         f"{feature} train in one process." if feature else None
@@ -600,8 +641,8 @@ def plan(request: dict, host: dict, model: Optional[dict]) -> dict:
     ) -> dict:
         multi = mode in MULTI_PROCESS_MODES
         n = len(chosen)
-        if multi and len({(g["name"], round(g["total_gb"])) for g in chosen}) > 1:
-            warnings.append("These GPUs differ; data parallel runs at the pace of the slowest.")
+        if multi and _gpus_differ(chosen):
+            notes.append(_mixed_gpu_note(mode))
         return {
             "requested_mode": requested or AUTO,
             "mode": mode,
@@ -614,6 +655,7 @@ def plan(request: dict, host: dict, model: Optional[dict]) -> dict:
             "estimate": {"required_gb": need, "per_gpu_gb": _estimate_row(model, n or 1)},
             "is_moe": bool(model.get("is_moe")),
             "warnings": warnings,
+            "notes": notes,
             "modes": _mode_rows(host, model or None, request, gpus),
             "error": None,
         }

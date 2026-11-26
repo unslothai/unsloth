@@ -108,7 +108,13 @@ def _studio_main_rank() -> bool:
 
 
 def _data_parallel_world_size() -> int:
-    """Larger of env world size and CUDA device count, never the sum: distributed runs force n_gpu to 1."""
+    """Larger of env world size and CUDA device count, never the sum: distributed runs force n_gpu to 1.
+    A Studio multi-process run counts only its data parallel replicas: tensor / pipeline / context parallel
+    ranks read the same rows."""
+    from core.training import parallel_launch
+
+    if parallel_launch.is_multi_process():
+        return parallel_launch.data_parallel_size()
     sizes = [world_size_from_env()]
     torch_module = sys.modules.get("torch")
     if torch_module is not None:

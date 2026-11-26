@@ -4064,8 +4064,8 @@ export const zhCN = {
       summary: {
         single: "在一个 GPU 上训练",
         layerSplit: "模型按层拆分到 {count} 个 GPU 上",
-        ddp: "模型可放入单个 GPU：在 {count} 个 GPU 上进行数据并行",
-        fsdp2: "模型太大，单个 GPU 放不下：分片到 {count} 个 GPU 上",
+        ddp: "每个 GPU 训练一份完整副本：在 {count} 个 GPU 上进行数据并行",
+        fsdp2: "权重和优化器状态分片到 {count} 个 GPU 上",
         tp: "每一层都拆分到 {count} 个 GPU 上",
         pp: "各层组成 {count} 个流水线阶段，每个 GPU 一个",
         cp: "每个序列都拆分到 {count} 个 GPU 上",
@@ -4076,7 +4076,7 @@ export const zhCN = {
         noGpu: "请至少选择一个 GPU。",
         singleNeedsOne: "单 GPU 模式只使用一个 GPU，请取消勾选其他 GPU。",
         needsTwo: "此模式至少需要两个 GPU。",
-        customSpec: "请输入布局，例如 dp=2,tp=2。",
+        customSpec: "请输入布局，例如 {example}。",
       },
     },
     preview: {
