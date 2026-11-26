@@ -439,3 +439,47 @@ def test_old_policy_replay_installs_without_vllm(monkeypatch):
     assert all(torch.equal(seen[i], old[i]) for i in old)
     assert rr.routing_replay_stats()["r2_replayed_tokens"] == ids.numel()
     rr.reset_routing_replay()
+
+
+def test_old_policy_replay_skips_peft_reference_forwards(monkeypatch):
+    # The reference forward (disable_adapter) can come first when TRL skips the old logprob forward:
+    # its hooks are detached, so R2 records the policy's first forward, not the reference's routes.
+    if not hasattr(rr, "old_policy_replay_requested"):
+        pytest.skip("needs an unsloth_zoo with R2 routing replay")
+    peft = pytest.importorskip("peft")
+    monkeypatch.delenv(rr.ROUTING_REPLAY_ENV, raising = False)
+    monkeypatch.setenv("UNSLOTH_GRPO_ROUTING_REPLAY_R2", "1")
+    rr.reset_routing_replay()
+    model = peft.get_peft_model(_moe(), peft.LoraConfig(r = 4, target_modules = ["q_proj", "v_proj"]))
+    with torch.no_grad():
+        for name, param in model.named_parameters():
+            if "lora_B" in name:
+                param.normal_(0, 2.0)  # an adapter that moves the routes away from the base's
+    del model.get_base_model().vllm_engine
+    _run_post_init(model)
+    routers = [layer.mlp.gate for layer in model.base_model.model.model.layers]
+    seen = {}
+    for i, r in enumerate(routers):
+        r.register_forward_hook(
+            lambda m, a, out, i = i: seen.__setitem__(i, out[2].sort(-1).values.clone())
+        )
+    ids = torch.tensor([[5, 6, 7, 8, 9, 10, 11, 12]])
+    mask = torch.ones_like(ids)
+    with torch.no_grad():
+        model.generate(input_ids = ids[:, :2], max_new_tokens = 2, do_sample = False, pad_token_id = PAD)
+        with model.disable_adapter():
+            model(input_ids = ids, attention_mask = mask)
+        reference = dict(seen)
+        model(input_ids = ids, attention_mask = mask)
+    policy = dict(seen)
+    assert any(
+        not torch.equal(reference[i], policy[i]) for i in policy
+    ), "adapter does not move routes"
+    with torch.no_grad():
+        for r in routers:
+            r.weight.add_(
+                torch.randn(r.weight.shape, generator = torch.Generator().manual_seed(3)) * 0.5
+            )
+    model(input_ids = ids, attention_mask = mask)
+    assert all(torch.equal(seen[i], policy[i]) for i in policy)
+    rr.reset_routing_replay()
