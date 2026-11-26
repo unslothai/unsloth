@@ -4418,9 +4418,8 @@ def _unsloth_vllm_engine_quantization(llm):
 
 
 def _unsloth_trl_vllm_init_error(error):
-    """TRL's own colocated engine (use_vllm = True, fast_inference = False) for a bitsandbytes checkpoint on vLLM
-    >= 0.28 (#43529 moved bitsandbytes out of tree): vLLM only says "Unknown quantization method: bitsandbytes".
-    Return the error to raise instead, or None to re-raise vLLM's own."""
+    """vLLM >= 0.28 has no built-in bitsandbytes, so TRL's own engine for a bnb checkpoint fails with only
+    "Unknown quantization method: bitsandbytes". The error to raise instead, or None to re-raise vLLM's."""
     text = str(error)
     if "bitsandbytes" not in text or "nknown quantization" not in text:
         return None

@@ -181,8 +181,6 @@ def test_installed_trl_init_vllm_runs_the_engine_check():
 
 
 def test_vllm_without_bitsandbytes_points_to_fast_inference():
-    # vLLM >= 0.28 (#43529) moved bitsandbytes out of tree: TRL's own engine for a bnb checkpoint fails in
-    # ModelConfig validation with only vLLM's list of methods.
     from unsloth.models.rl_replacements import _unsloth_trl_vllm_init_error
 
     vllm_error = ValueError(
