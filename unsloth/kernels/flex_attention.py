@@ -35,6 +35,7 @@ except:
 
 
 if not HAS_FLEX_ATTENTION:
+
     @torch.compile(fullgraph = True, dynamic = True, options = torch_compile_options)
     def _compiled_slow_attention_softcapping(Q, K, V, causal_mask, self, bsz, kv_len):
         # This rank's heads under tensor parallelism (models/tp_native.py); the config counts otherwise.

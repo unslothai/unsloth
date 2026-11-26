@@ -134,7 +134,6 @@ def _count(trainer, key):
 
 def _ddp_finds_unused_parameters(trainer, model):
     from .rl import _unsloth_find_ddp
-
     for candidate in (model, getattr(trainer, "model_wrapped", None)):
         if getattr(candidate, "find_unused_parameters", False):
             return True
