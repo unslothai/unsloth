@@ -155,6 +155,10 @@ ROCM_KERNEL_CONFIGS: dict = {
             "kscale": "tile",
             "long_keys": 8000,
             "long": {"bm": 128, "warps": 8},
+            # long calls with these head counts store V^T block by block (``vblk``, comfy-kitchen #368): one key tile
+            # is one contiguous run. Bit-identical; 56 heads (MiniMax-H3) 4.5-6.7% faster per call at 18k-37.7k keys,
+            # while 24 heads (Wan 16.8k) ran 1.3-2.5% slower and 32 heads (LTX 24.6k) flat, so only 56 takes it.
+            "long_vblk_heads": (56,),
         },
         64: {"bm": 128, "bn": 32, "warps": 4, "stages": 1, "pv": "f16_t", "kscale": "tile"},
     },
@@ -194,6 +198,10 @@ _LONG_VERIFIED: set = set()
 _LONG_CHECKS: dict = {}
 # (index, head dim, impl) whose long variant failed in a real call
 _LONG_BROKEN: set = set()
+# (index, head dim, dtype, impl) whose block V^T long kernel matched the channel-major one bit for bit in the long check
+_VBLK_VERIFIED: set = set()
+# (index, head dim, impl) whose block V^T long kernel failed in a real call: channel-major from then on
+_VBLK_BROKEN: set = set()
 # long probe: queries and heads against long_keys + LONG_PROBE_EXTRA keys (a ragged last key tile)
 LONG_PROBE_QUERIES = 1000
 LONG_PROBE_HEADS = 2
@@ -233,6 +241,8 @@ def _library_versions() -> dict:
         "cudnn": torch.backends.cudnn.version() if torch.backends.cudnn.is_available() else None,
         "nvrtc": nvrtc,
         "native_p": native_p_enabled(),
+        # a verdict stored with the block V^T check off holds no ``vblk_equal``: switching it on re-checks
+        "vblk": vblk_enabled(),
     }
 
 
@@ -266,6 +276,12 @@ def sink_order_enabled() -> bool:
 
 
 NATIVE_P_ENV = "UNSLOTH_DIFFUSION_INT8_ATTENTION_NATIVE_P"
+# ``0`` keeps V^T channel-major on the long calls a config's ``long_vblk_heads`` names (read per call).
+VBLK_ENV = "UNSLOTH_DIFFUSION_INT8_ATTENTION_VBLK"
+
+
+def vblk_enabled() -> bool:
+    return (os.environ.get(VBLK_ENV) or "").strip().lower() not in ("0", "off", "false", "no")
 
 
 def native_p_enabled() -> bool:
@@ -631,7 +647,11 @@ def select_config(config: dict, keys: int) -> dict:
     chosen = (
         {**config, **config.get("long", {})} if long_keys and keys >= int(long_keys) else config
     )
-    return {key: value for key, value in chosen.items() if key not in ("long_keys", "long")}
+    return {
+        key: value
+        for key, value in chosen.items()
+        if key not in ("long_keys", "long", "long_vblk_heads")
+    }
 
 
 def shared_bytes(head_dim: int, config: dict) -> int:
@@ -1640,6 +1660,22 @@ def _uses_long(config: Optional[dict], keys: int) -> bool:
     return bool(long_keys) and int(keys) >= int(long_keys)
 
 
+def _vblk_applies(
+    config: Optional[dict], index: int, impl: Optional[str], q: Any, k: Any, v: Any
+) -> bool:
+    """Whether this Triton call runs the long kernel with V^T stored block by block: a long call whose head count
+    the config lists, on a card where the long variant and the block layout both passed their checks."""
+    heads = (config or {}).get("long_vblk_heads")
+    if impl != "triton" or not heads or int(q.shape[2]) not in heads or not vblk_enabled():
+        return False
+    head_dim = int(q.shape[-1])
+    if not _uses_long(config, k.shape[1]) or (index, head_dim, impl) in _VBLK_BROKEN:
+        return False
+    return _long_ready(index, head_dim, impl, q, k, v) and all(
+        (index, head_dim, str(x.dtype), impl) in _VBLK_VERIFIED for x in (q, k, v)
+    )
+
+
 def _run(
     q: Any,
     k: Any,
@@ -1663,7 +1699,8 @@ def _run(
             config = select_config(config, 0)
     if impl == "triton":
         from . import diffusion_int8_attention_triton as triton_kernel
-
+        if _vblk_applies(config, index, impl, q, k, v):
+            config = {**config, "vblk": 1}
         # the launches run under the card of q here, so the module's own same-card check is skipped
         with torch.no_grad(), torch.cuda.device(q.device):
             return triton_kernel._int8_attention(q, k, v, config, scale = scale)
@@ -1794,7 +1831,14 @@ def int8_attention_impl(
             raise
         except Exception as exc:  # noqa: BLE001 -- a JIT / launch failure keeps native attention on this card
             head_dim = int(q.shape[-1])
-            if _uses_long(config, k.shape[1]) and _long_ready(index, head_dim, impl, q, k, v):
+            if _vblk_applies(config, index, impl, q, k, v):
+                # only the block V^T layout is new in this call: drop it, keep the verified long kernel
+                _VBLK_BROKEN.add((index, head_dim, impl))
+                _log().warning(
+                    "diffusion.int8_attention: long kernel with block V^T failed, channel-major V^T from here on: %s",
+                    exc,
+                )
+            elif _uses_long(config, k.shape[1]) and _long_ready(index, head_dim, impl, q, k, v):
                 # only the long variant failed: the verified short kernel keeps every call, long ones included
                 _LONG_BROKEN.add((index, head_dim, impl))
                 _log().warning(
@@ -1984,7 +2028,19 @@ def _long_check(device: Any, dtype: Any, head_dim: int, impl: str) -> Optional[d
         with torch.no_grad():
             q, k, v = probe_inputs(device, dtype, keys, LONG_PROBE_HEADS, hd, seed = keys)
             q = q[:, :LONG_PROBE_QUERIES]
-            acc = accuracy(int8_attention(q, k, v, config = config), reference_attention(q, k, v))
+            out = int8_attention(q, k, v, config = config)
+            acc = accuracy(out, reference_attention(q, k, v))
+            if impl == "triton" and config.get("long_vblk_heads") and vblk_enabled():
+                # the block V^T layout runs only where it equals the channel-major long kernel bit for bit
+                try:
+                    found["vblk_equal"] = bool(
+                        torch.equal(int8_attention(q, k, v, config = {**config, "vblk": 1}), out)
+                    )
+                except torch.OutOfMemoryError:
+                    raise
+                except Exception as exc:  # noqa: BLE001 -- the layout cannot run here: channel-major stays
+                    found.update(vblk_equal = False, vblk_error = repr(exc)[:300])
+            del out
             q, k = q * SHARP_GAIN, k * SHARP_GAIN
             sharp = int8_attention(q, k, v, config = config)
             finite = bool(torch.isfinite(sharp).all())
@@ -2002,6 +2058,17 @@ def _long_check(device: Any, dtype: Any, head_dim: int, impl: str) -> Optional[d
         )
     if found["ok"]:
         _LONG_VERIFIED.add(key)
+        if found.get("vblk_equal"):
+            _VBLK_VERIFIED.add(key)
+        elif "vblk_equal" in found:
+            _log().warning(
+                "diffusion.int8_attention: block V^T long kernel not verified on cuda:%d (head_dim=%d, %s), "
+                "channel-major runs: %s",
+                index,
+                hd,
+                impl,
+                found.get("vblk_error") or "output differs",
+            )
     else:
         _log().warning(
             "diffusion.int8_attention: long-sequence kernel not verified on cuda:%d (head_dim=%d, %s), the short one "
@@ -2152,6 +2219,8 @@ def _adopt_verdict(index: int, dtype: Any, head_dim: int, key: tuple) -> Optiona
             _LONG_CHECKS[long_key] = long
             if long.get("ok"):
                 _LONG_VERIFIED.add(long_key)
+                if long.get("vblk_equal"):
+                    _VBLK_VERIFIED.add(long_key)
     return found
 
 
