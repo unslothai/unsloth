@@ -468,16 +468,16 @@ def _model_is_loaded(model: str) -> bool:
     )
 
 
-# Levels the request accepts; a template may list others, which a run never sends.
+# Levels Lowest/Highest may pick; a template may list others, which they never send.
 _EFFORT_LEVELS = ("minimal", "low", "medium", "high", "max", "xhigh")
 
 
 def _reasoning_fields(
     effort: Optional[str],
     connection: bool,
-    backend: Any = None,
+    flags: Optional[dict] = None,
 ) -> dict:
-    """The request fields for a task's thinking effort; None keeps the model's default."""
+    """Request fields for a task's effort (None: the model's default) given the model's ``flags``."""
     if effort is None:
         return {}
     relative = {"off": "none", "lowest": "low", "highest": "high"}
@@ -485,27 +485,31 @@ def _reasoning_fields(
         return {"reasoning_effort": relative.get(effort, effort)}
     if effort not in relative:
         return {"enable_thinking": True, "reasoning_effort": effort}
-    if not getattr(backend, "is_loaded", False):
+    if flags is None:
         if effort == "off":
             return {"enable_thinking": False}
         return {
             "enable_thinking": True,
             "reasoning_effort": "low" if effort == "lowest" else "high",
         }
-    if not backend.supports_reasoning:
+    if not flags.get("supports_reasoning"):
         return {}
-    style = backend.reasoning_style
+    style = flags.get("reasoning_style")
+    levels = [
+        level
+        for level in (flags.get("reasoning_effort_levels") or ["low", "medium", "high"])
+        if level in _EFFORT_LEVELS
+    ] or ["low", "high"]
     if effort == "off":
-        if backend.reasoning_always_on or style == "reasoning_effort":
+        if flags.get("reasoning_always_on"):
             return {}
+        if style == "reasoning_effort":
+            # Effort-only templates ignore enable_thinking: name the level, "none" when offered.
+            offers_none = "none" in (flags.get("reasoning_effort_levels") or ())
+            return {"reasoning_effort": "none" if offers_none else levels[0]}
         return {"enable_thinking": False}
     if style == "enable_thinking":
         return {"enable_thinking": True}
-    levels = [
-        level
-        for level in (backend.reasoning_effort_levels or ["low", "medium", "high"])
-        if level in _EFFORT_LEVELS
-    ] or ["low", "high"]
     fields = {"reasoning_effort": levels[0] if effort == "lowest" else levels[-1]}
     if style == "enable_thinking_effort":
         fields["enable_thinking"] = True

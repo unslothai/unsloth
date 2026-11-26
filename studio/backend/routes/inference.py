@@ -8457,6 +8457,27 @@ def _monitor_context_length() -> Optional[int]:
     return None
 
 
+def _serving_reasoning_flags(tools = None) -> Optional[dict]:
+    """The serving model's reasoning flags, read as /status reads them; None when nothing is loaded."""
+    llama_backend = get_llama_cpp_backend()
+    if getattr(llama_backend, "is_loaded", False):
+        return {
+            name: getattr(llama_backend, name)
+            for name in (
+                "supports_reasoning",
+                "reasoning_style",
+                "reasoning_always_on",
+                "reasoning_effort_levels",
+            )
+        }
+    backend = _peek_inference_backend()
+    if backend is None or not backend.active_model_name:
+        return None
+    models = getattr(backend, "models", {}) or {}
+    model_info = models.get(backend.active_model_name, {}) if isinstance(models, dict) else {}
+    return _sf_rendered_features(backend, model_info, tools)[0]
+
+
 def _lifecycle_model_label(model: Optional[str], variant: Optional[str] = None) -> str:
     """A path-free ``repo`` / ``repo:QUANT`` label for a monitor lifecycle row."""
     clean = public_model_id(model) or model or "model"
@@ -34094,8 +34115,12 @@ async def produce_openai_chat_completions(
         _preprepared_audio = _audio_preflight.get("prepared")
     if payload._scheduled_reasoning_effort is not None:
         from core.scheduled_tasks.scheduler import _reasoning_fields
+
+        # A tool run's turns can render the shipped template instead of an override; classify that one.
+        _tool_run = payload.enable_tools and payload.tool_choice != "none"
+        _flags = _serving_reasoning_flags(payload.tools or (({},) if _tool_run else None))
         for _field, _value in _reasoning_fields(
-            payload._scheduled_reasoning_effort, False, get_llama_cpp_backend()
+            payload._scheduled_reasoning_effort, False, _flags
         ).items():
             setattr(payload, _field, _value)
 

@@ -1673,18 +1673,24 @@ def test_a_refusal_from_a_loaded_model_keeps_its_reason(monkeypatch):
     assert (failure.value.code, failure.value.message) == (None, "Too long.")
 
 
-def gguf(**reasoning):
-    backend = SimpleNamespace(
-        is_loaded = True,
-        supports_reasoning = True,
-        reasoning_style = "enable_thinking",
-        reasoning_effort_levels = [],
-        reasoning_always_on = False,
-        model_identifier = None,
+def reasoning_flags(**reasoning):
+    return {
+        "supports_reasoning": True,
+        "reasoning_style": "enable_thinking",
+        "reasoning_effort_levels": [],
+        "reasoning_always_on": False,
+        **reasoning,
+    }
+
+
+def gguf(
+    is_loaded = True,
+    model_identifier = None,
+    **reasoning,
+):
+    return SimpleNamespace(
+        is_loaded = is_loaded, model_identifier = model_identifier, **reasoning_flags(**reasoning)
     )
-    for key, value in reasoning.items():
-        setattr(backend, key, value)
-    return backend
 
 
 class ReachedGeneration(Exception):
@@ -1697,11 +1703,12 @@ def reasoning_at_generation(
     serving,
     state,
     primary = None,
+    orchestrator = None,
 ):
     from core.inference import model_slots
     from core.inference.orchestrator import routed_slot
 
-    slot = SimpleNamespace(llama = serving, last_used = 0.0)
+    slot = SimpleNamespace(llama = serving, orchestrator = orchestrator, last_used = 0.0)
     primary = (
         primary
         or {
@@ -1731,6 +1738,8 @@ def reasoning_at_generation(
     def reached(payload):
         normalize(payload)
         seen["fields"] = (payload.enable_thinking, payload.reasoning_effort)
+        seen["model"] = payload.model if "model" in payload.model_fields_set else None
+        seen["provider_id"] = payload.provider_id
         raise ReachedGeneration
 
     monkeypatch.setattr(inference_routes, "_maybe_auto_switch_model", switch)
@@ -1740,6 +1749,7 @@ def reasoning_at_generation(
     run = {"id": "run-1", "allowModelLoad": state == "cold"}
     with pytest.raises(ReachedGeneration):
         asyncio.run(generate_answer(app, task, run, threading.Event()))
+    assert (seen["model"], seen["provider_id"]) == (task.get("model"), None)
     return seen["fields"]
 
 
@@ -1759,6 +1769,93 @@ def test_thinking_effort_matches_the_model_serving_the_run(
     serving = gguf(reasoning_style = "enable_thinking_effort", reasoning_effort_levels = levels)
     task = make_task(model = "unsloth/GLM-5.2-GGUF", reasoningEffort = effort)
     assert reasoning_at_generation(monkeypatch, task, serving, state) == expected
+
+
+def safetensors_model(name, levels):
+    template = (
+        "{% if enable_thinking %}{% if reasoning_effort in " + repr(levels) + " %}deep{% endif %}"
+        "{% endif %}{{ messages[0]['content'] }}"
+    )
+    return SimpleNamespace(
+        active_model_name = name, models = {name: {"chat_template_info": {"template": template}}}
+    )
+
+
+@pytest.mark.parametrize("state", ["primary", "kept"])
+@pytest.mark.parametrize(
+    "effort, expected",
+    [("highest", (True, "max")), ("lowest", (True, "low")), ("off", (False, None))],
+)
+def test_thinking_effort_matches_a_safetensors_model_serving_the_run(
+    monkeypatch, state, effort, expected
+):
+    from core.inference import orchestrator as orchestrator_module
+
+    serving = safetensors_model("unsloth/GLM-5.2", ["low", "high", "max"])
+    beside = safetensors_model("unsloth/Other", ["medium", "high"])
+    monkeypatch.setattr(
+        orchestrator_module, "_inference_backend", serving if state == "primary" else beside
+    )
+    task = make_task(model = "unsloth/GLM-5.2", reasoningEffort = effort)
+    # Kept beside a safetensors primary: no llama.cpp model is loaded.
+    primary = gguf(is_loaded = False) if state == "kept" else None
+    assert (
+        reasoning_at_generation(
+            monkeypatch, task, gguf(is_loaded = False), state, primary, orchestrator = serving
+        )
+        == expected
+    )
+
+
+@pytest.mark.parametrize("state", ["primary", "cold", "kept"])
+@pytest.mark.parametrize(
+    "levels, expected",
+    [(["none", "low", "high"], (False, "none")), (["low", "high"], (True, "low"))],
+)
+def test_reasoning_off_reaches_a_reasoning_effort_model(monkeypatch, state, levels, expected):
+    serving = gguf(reasoning_style = "reasoning_effort", reasoning_effort_levels = levels)
+    task = make_task(model = "unsloth/Inkling-2-Mini-GGUF", reasoningEffort = "off")
+    assert reasoning_at_generation(monkeypatch, task, serving, state) == expected
+
+
+LEVELS_OVERRIDE = (
+    "{% if enable_thinking %}{% if reasoning_effort in ['low', 'high', 'max'] %}deep{% endif %}"
+    "{% endif %}{{ messages[0]['content'] }}"
+)
+
+
+@pytest.mark.parametrize(
+    "override, web_search, expected",
+    [
+        ("{{ messages[0]['content'] }}", True, (True, None)),
+        ("{{ messages[0]['content'] }}", False, (None, None)),
+        (LEVELS_OVERRIDE, True, (True, None)),
+        (LEVELS_OVERRIDE, False, (True, "max")),
+    ],
+)
+def test_a_tool_run_resolves_for_the_template_its_turns_render(
+    monkeypatch, override, web_search, expected
+):
+    from core.inference import orchestrator as orchestrator_module
+
+    shipped = (
+        "{%- if tools %}<tools>{{ tools | tojson }}</tools> Reply as <tool_call>"
+        "<function=name><parameter=key>value</parameter></function></tool_call>{%- endif %}"
+        "{%- if enable_thinking is defined and enable_thinking %}<think>{%- endif %}"
+    )
+    # An override without tool markup: tool turns render the shipped template instead.
+    serving = SimpleNamespace(
+        active_model_name = "unsloth/Qwen3.5-0.8B",
+        models = {
+            "unsloth/Qwen3.5-0.8B": {
+                "chat_template_override_requested": override,
+                "chat_template_info": {"template": shipped},
+            }
+        },
+    )
+    monkeypatch.setattr(orchestrator_module, "_inference_backend", serving)
+    task = make_task(model = "unsloth/Qwen3.5-0.8B", reasoningEffort = "highest", webSearch = web_search)
+    assert reasoning_at_generation(monkeypatch, task, gguf(is_loaded = False), "primary") == expected
 
 
 def test_reasoning_off_turns_thinking_off_on_a_local_model(monkeypatch):
@@ -1788,7 +1885,25 @@ def test_reasoning_off_turns_thinking_off_on_a_local_model(monkeypatch):
             {"reasoning_effort": "minimal"},
         ),
         ({"reasoning_style": "reasoning_effort"}, "lowest", {"reasoning_effort": "low"}),
-        ({"reasoning_style": "reasoning_effort"}, "off", {}),
+        ({"reasoning_style": "reasoning_effort"}, "off", {"reasoning_effort": "low"}),
+        (
+            {
+                "reasoning_style": "reasoning_effort",
+                "reasoning_effort_levels": ["low", "medium", "high", "xhigh"],
+            },
+            "off",
+            {"reasoning_effort": "low"},
+        ),
+        (
+            {"reasoning_style": "reasoning_effort", "reasoning_effort_levels": ["none", "high"]},
+            "off",
+            {"reasoning_effort": "none"},
+        ),
+        (
+            {"reasoning_style": "reasoning_effort", "reasoning_effort_levels": ["none", "high"]},
+            "lowest",
+            {"reasoning_effort": "high"},
+        ),
         ({}, "lowest", {"enable_thinking": True}),
         ({}, "off", {"enable_thinking": False}),
         ({"reasoning_always_on": True}, "off", {}),
@@ -1804,23 +1919,26 @@ def test_reasoning_off_turns_thinking_off_on_a_local_model(monkeypatch):
     ],
 )
 def test_thinking_effort_resolves_to_the_loaded_model(reasoning, effort, expected):
-    assert scheduler_module._reasoning_fields(effort, False, gguf(**reasoning)) == expected
+    assert (
+        scheduler_module._reasoning_fields(effort, False, reasoning_flags(**reasoning)) == expected
+    )
 
 
 def test_thinking_effort_for_a_model_not_yet_loaded_or_a_connection():
-    unloaded = gguf(is_loaded = False)
-    assert scheduler_module._reasoning_fields("highest", False, unloaded) == {
+    assert scheduler_module._reasoning_fields("highest", False) == {
         "enable_thinking": True,
         "reasoning_effort": "high",
     }
-    assert scheduler_module._reasoning_fields("off", True, gguf()) == {"reasoning_effort": "none"}
-    assert scheduler_module._reasoning_fields(None, False, gguf()) == {}
+    assert scheduler_module._reasoning_fields("off", True, reasoning_flags()) == {
+        "reasoning_effort": "none"
+    }
+    assert scheduler_module._reasoning_fields(None, False, reasoning_flags()) == {}
 
 
 def test_a_connection_task_names_its_level_and_a_local_one_resolves_it():
     assert scheduler_module._reasoning_fields("xhigh", True) == {"reasoning_effort": "xhigh"}
     assert scheduler_module._reasoning_fields(
-        "medium", False, gguf(reasoning_style = "reasoning_effort")
+        "medium", False, reasoning_flags(reasoning_style = "reasoning_effort")
     ) == {"enable_thinking": True, "reasoning_effort": "medium"}
 
 
