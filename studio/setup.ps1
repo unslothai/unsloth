@@ -7678,7 +7678,8 @@ function Get-TritonWindowsSpec {
     param([string]$TorchVersion, [bool]$WinArm64 = $false)
     if ($WinArm64) {
         # Same per-torch-minor upper bound as x64 (a triton-windows built for a newer torch does not pair with
-        # this one), floored at the first win_arm64 wheel. Torch below 2.14 has no win_arm64 pairing: open floor.
+        # this one), floored at the first win_arm64 wheel. Torch below 2.14 has no win_arm64 pairing, and a minor
+        # the x64 table does not name yet (2.16 dev from the nightly index) keeps the open floor too.
         $x64Spec = Get-TritonWindowsSpec -TorchVersion $TorchVersion
         if ($x64Spec -match '^triton-windows>=3\.(\d+),<(\S+)$' -and [int]$Matches[1] -ge 8) {
             $woaFloor = if ([int]$Matches[1] -eq 8) { "3.8.0.post28" } else { "3.$($Matches[1])" }

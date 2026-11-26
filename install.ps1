@@ -8032,7 +8032,7 @@ exit 0
             }
             $WoaOverrideLines += "$candidate ; platform_machine == `"AMD64`""
         }
-        # Released unsloth metadata caps torch below the win_arm64 CUDA build the index publishes (2.14.0+cu134).
+        # Released unsloth metadata caps torch below the win_arm64 CUDA builds (2.14.0+cu134 on the GA index, 2.16 dev on the nightly one).
         $WoaOverrideLines += 'torch>=2.4'
         $WoaOverrideLines += 'torchvision>=0.19'
         # Without this uv takes the newest pyarrow on PyPI, an sdist here. For the PyPI route too.

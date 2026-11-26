@@ -78,6 +78,8 @@ def test_unreadable_torch_keeps_the_old_range(monkeypatch):
         ("2.14.0+cu134", "triton-windows>=3.8.0.post28,<3.9"),
         ("2.15.0", "triton-windows>=3.9,<3.10"),
         ("2.16.0", "triton-windows>=3.8.0.post28"),
+        # The nightly index's torch: a minor the table does not name keeps the open floor.
+        ("2.16.0.dev20261126+cu135", "triton-windows>=3.8.0.post28"),
     ],
 )
 def test_windows_on_arm_pairs_by_torch_minor(monkeypatch, torch_version, spec):
@@ -89,7 +91,16 @@ def test_windows_on_arm_pairs_by_torch_minor(monkeypatch, torch_version, spec):
 
 @pytest.mark.skipif(shutil.which("pwsh") is None, reason = "pwsh unavailable")
 @pytest.mark.parametrize(
-    "torch_version", ["", "2.11.0+cu130", "2.13.0+cu130", "2.14.0+cu134", "2.15.0+cu134", "2.16.0"]
+    "torch_version",
+    [
+        "",
+        "2.11.0+cu130",
+        "2.13.0+cu130",
+        "2.14.0+cu134",
+        "2.15.0+cu134",
+        "2.16.0",
+        "2.16.0.dev20261126+cu135",
+    ],
 )
 def test_windows_on_arm_hint_matches_setup_ps1(monkeypatch, torch_version):
     out = run_pwsh(
@@ -255,6 +266,8 @@ def test_fast_path_pairing_uses_the_windows_on_arm_floor_and_bound():
     assert _fast_path_needs_pass("2.15.0+cu134", ["3.9.0.post30"], arm64 = True) is False
     assert _fast_path_needs_pass("2.15.0+cu134", ["3.8.0.post29"], arm64 = True) is True
     assert _fast_path_needs_pass("2.15.0+cu130", ["3.7.0.post21"], arm64 = True) is True
+    # The nightly index's torch 2.16 dev with the 3.9 wheel the open floor resolves to: kept.
+    assert _fast_path_needs_pass("2.16.0.dev20261126+cu135", ["3.9.0.post30"], arm64 = True) is False
 
 
 @_SKIP_NO_PWSH
