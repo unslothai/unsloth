@@ -64,7 +64,7 @@ import {
 } from "@/features/library";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { buildVideoTourSteps } from "./tour";
-import { VideoRestylePanel } from "./restyle-panel";
+import { type RestyleRecipe, VideoRestylePanel } from "./restyle-panel";
 import { checkMediaCodecsOnce, desktopMissingMediaCodecPackages } from "./media-codec-notice";
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
 import { FullInstallDialog } from "@/features/settings/components/full-install-dialog";
@@ -594,6 +594,14 @@ const CONDITIONING_LABELS: Record<string, string> = {
   fl2va: "Start to end frame",
   ref2va: "From references",
   v2v: "Continued a clip",
+};
+
+const CONDITIONING_INPUTS: Record<string, string> = {
+  i2va: "the start frame",
+  l2va: "the end frame",
+  fl2va: "the start and end frames",
+  ref2va: "the references",
+  v2v: "the clip to continue",
 };
 
 function clipMeta(video: GalleryVideo): string {
@@ -1470,6 +1478,8 @@ function VideoGenerator({
   >([]);
   const [referenceAudios, setReferenceAudios] = useState<ReferenceMedia[]>([]);
   const [referenceImageSize, setReferenceImageSize] = useState<"match" | "max">("match");
+  // Remounts the pickers on Restore, so a file still being read then is dropped with them.
+  const [restoreGeneration, setRestoreGeneration] = useState(0);
   const [flowShift, setFlowShift] = useState<number | null>(null);
   const [audioFlowShift, setAudioFlowShift] = useState<number | null>(null);
   const [numFrames, setNumFrames] = useState(
@@ -1540,6 +1550,7 @@ function VideoGenerator({
   // Kept mounted once opened: its poll is what saves a finished restyle into the gallery.
   const [restyleMounted, setRestyleMounted] = useState(false);
   if (pageMode === "restyle" && !restyleMounted) setRestyleMounted(true);
+  const [restyleRecipe, setRestyleRecipe] = useState<RestyleRecipe | null>(null);
   const [trainFamilies, setTrainFamilies] = useState<TrainFamilyOption[]>([]);
   const [trainFamilyName, setTrainFamilyName] = useState("flux.1");
   const [trainBaseChoice, setTrainBaseChoice] = useState("");
@@ -2714,6 +2725,13 @@ function VideoGenerator({
   // Load a clip's recipe back into the form inputs.
   const restoreSettings = useCallback(
     (video: GalleryVideo) => {
+      // Restyle has its own prompt and seed and fixed settings, so its recipe reopens that tab instead.
+      if (video.conditioning === "restyle") {
+        setRestyleRecipe({ prompt: video.prompt, seed: String(video.seed) });
+        setPageMode("restyle");
+        toast.success("Settings restored. Add the source clip again to reproduce this clip.");
+        return;
+      }
       setPrompt(video.prompt);
       const restoredNegative = video.negative_prompt ?? "";
       setNegativePrompt(restoredNegative);
@@ -2754,7 +2772,23 @@ function VideoGenerator({
         setDurationIntentSeconds(video.num_frames / fps);
         setNumFrames(video.num_frames);
       }
-      toast.success("Settings restored to inputs");
+      // Staged inputs and their options are not saved with the recipe, so they reset to defaults.
+      setFirstFrame(null);
+      setLastFrame(null);
+      setContinuationClip(null);
+      setContinuationKeep("last");
+      setReferenceImages([]);
+      setReferenceVideos([]);
+      setReferenceAudios([]);
+      setReferenceImageSize("match");
+      setCropPictureIndex(null);
+      setRestoreGeneration((n) => n + 1);
+      const conditioned = CONDITIONING_INPUTS[video.conditioning ?? ""];
+      toast.success(
+        conditioned
+          ? `Settings restored. Add ${conditioned} again to reproduce this clip.`
+          : "Settings restored to inputs",
+      );
     },
     [sizeLimits, durationOptions, fps, fpsOptions, durationTargets, frameStep, frameOffset, minFrames, maxFrames, setPickedFps, statusKnown],
   );
@@ -4709,7 +4743,7 @@ function VideoGenerator({
       )}
       {restyleMounted && (
         <div className={pageMode === "restyle" ? "contents" : "hidden"} inert={pageMode !== "restyle" || undefined}>
-          <VideoRestylePanel active={active} />
+          <VideoRestylePanel active={active} restore={restyleRecipe} />
         </div>
       )}
       {pageMode === "create" && (
@@ -4802,6 +4836,7 @@ function VideoGenerator({
                   <div className="grid gap-1.5">
                     <span className="text-ui-11 text-muted-foreground/70">Start frame</span>
                     <ImageDropzone
+                      key={restoreGeneration}
                       value={firstFrame}
                       onChange={(next) => {
                         setFirstFrame(next);
@@ -4816,6 +4851,7 @@ function VideoGenerator({
                   <div className="grid gap-1.5">
                     <span className="text-ui-11 text-muted-foreground/70">End frame</span>
                     <ImageDropzone
+                      key={restoreGeneration}
                       value={lastFrame}
                       onChange={(next) => {
                         setLastFrame(next);
@@ -4903,6 +4939,7 @@ function VideoGenerator({
                       Picture {referenceImages.length + 1}
                     </span>
                     <ImageDropzone
+                      key={restoreGeneration}
                       value={null}
                       onChange={(next) =>
                         next &&
@@ -5035,6 +5072,7 @@ function VideoGenerator({
                 ))}
                 {referenceVideos.length < 3 && hasReferenceRoom && (
                   <ReferenceMediaPicker
+                    key={restoreGeneration}
                     kind="video"
                     value={null}
                     label={`Add video ${referenceVideos.length + 1}`}
@@ -5078,6 +5116,7 @@ function VideoGenerator({
                   hasReferenceRoom &&
                   (referenceImages.length > 0 || referenceVideos.length > 0) && (
                     <ReferenceMediaPicker
+                      key={restoreGeneration}
                       kind="audio"
                       value={null}
                       label={`Add audio ${referenceAudios.length + 1}`}
@@ -5127,6 +5166,7 @@ function VideoGenerator({
                 </InfoHint>
               </span>
               <ReferenceMediaPicker
+                key={restoreGeneration}
                 kind="video"
                 value={continuationClip}
                 label="Clip to continue"
