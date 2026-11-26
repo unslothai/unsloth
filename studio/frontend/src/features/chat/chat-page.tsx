@@ -313,7 +313,7 @@ import { useChatPreferencesStore } from "./stores/chat-preferences-store";
 import { useResearchRunStore } from "./stores/research-run-store";
 import { useExternalProvidersStore } from "./stores/external-providers-store";
 import { buildChatTourSteps } from "./tour";
-import type { ChatView, MessageRecord } from "./types";
+import type { ChatView, MessageRecord, ThreadRecord } from "./types";
 import type { ChatSearch } from "./chat-search";
 import {
   type ComparePairReadState,
@@ -1286,6 +1286,7 @@ const CompareContent = memo(function CompareContent({
   ) : (
     <GeneralCompareContent
       pairId={pairId}
+      initialThreads={compareRead.threads}
       projectId={projectId}
       models={models}
       loraModels={loraModels}
@@ -1718,6 +1719,7 @@ function generalCompareLabels(
 
 const GeneralCompareContent = memo(function GeneralCompareContent({
   pairId,
+  initialThreads,
   projectId,
   models,
   loraModels,
@@ -1731,6 +1733,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
   cancelPaneModelLoad,
 }: {
   pairId: string;
+  initialThreads: ThreadRecord[];
   projectId?: string | null;
   models: ModelOption[];
   loraModels: LoraModelOption[];
@@ -1744,10 +1747,13 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
   cancelPaneModelLoad: () => Promise<boolean>;
 }): ReactElement {
   const handlesRef = useRef<Record<string, CompareHandle>>({});
-  const [model1ThreadId, setModel1ThreadId] = useState<string>();
-  const [model2ThreadId, setModel2ThreadId] = useState<string>();
-  const [threadsSettled, setThreadsSettled] = useState(false);
-  const [pairSaved, setPairSaved] = useState<boolean>();
+  const initialPair = resolveComparePaneThreadIds(initialThreads);
+  const [model1ThreadId, setModel1ThreadId] = useState(initialPair.first);
+  const [model2ThreadId, setModel2ThreadId] = useState(initialPair.second);
+  const [threadsSettled, setThreadsSettled] = useState(true);
+  const [pairSaved, setPairSaved] = useState(
+    Boolean(initialPair.first || initialPair.second),
+  );
   const [submittedPairId, setSubmittedPairId] = useState<string | null>(null);
   const markInitialHistoryReady = useCompareReloadReadiness(pairId);
 
@@ -1761,20 +1767,31 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
   );
   // A compare send is idle between the two sequential runs; a re-list there swaps the pane threads mid-send.
   const [comparing, setComparing] = useState(false);
-  const listedPairRef = useRef<string | null>(null);
-  const restoredPairRef = useRef<string | null>(null);
-  const [model1Selection, setModel1] = useState<CompareModelSelection>({
-    id: globalCheckpoint || "",
-    isLora: loraModels.some(
-      (lora) => lora.id === globalCheckpoint && lora.exportType === "lora",
-    ),
-    ggufVariant: globalGgufVariant ?? undefined,
-    isDiffusion: globalIsDiffusion,
-  });
-  const [model2Selection, setModel2] = useState<CompareModelSelection>({
-    id: "",
-    isLora: false,
-  });
+  const busy = anyRunning || comparing;
+  const wasBusyRef = useRef(busy);
+  const restore = (threadId: string): CompareModelSelection => {
+    const thread = initialThreads.find((candidate) => candidate.id === threadId);
+    return {
+      id: thread?.modelId ?? "",
+      isLora: false,
+      ggufVariant: thread?.modelGgufVariant ?? undefined,
+    };
+  };
+  const [model1Selection, setModel1] = useState<CompareModelSelection>(() =>
+    initialPair.first
+      ? restore(initialPair.first)
+      : {
+          id: globalCheckpoint || "",
+          isLora: loraModels.some(
+            (lora) => lora.id === globalCheckpoint && lora.exportType === "lora",
+          ),
+          ggufVariant: globalGgufVariant ?? undefined,
+          isDiffusion: globalIsDiffusion,
+        },
+  );
+  const [model2Selection, setModel2] = useState<CompareModelSelection>(() =>
+    initialPair.second ? restore(initialPair.second) : { id: "", isLora: false },
+  );
 
   const [model1, model2] = useMemo(() => {
     const resolveLora = (selection: CompareModelSelection): CompareModelSelection =>
@@ -1790,7 +1807,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
     () =>
       registerComparePaneRunPreparer(pairId, async (pane, signal) => {
         const sel = pane === "model1" ? model1 : model2;
-        if (restoredPairRef.current !== pairId || !sel.id) {
+        if (!sel.id) {
           throw new Error("Choose a model for this comparison pane before running it.");
         }
         const store = () => useChatRuntimeStore.getState();
@@ -1846,28 +1863,15 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
   );
 
   useEffect(() => {
-    if (listedPairRef.current !== pairId) setPairSaved(undefined);
-    if ((anyRunning || comparing) && listedPairRef.current === pairId) return;
-    listedPairRef.current = pairId;
+    const wasBusy = wasBusyRef.current;
+    wasBusyRef.current = busy;
+    if (busy || !wasBusy) return;
     let isActive = true;
     setThreadsSettled(false);
     listStoredChatThreads({ pairId })
       .then((threads) => {
         if (!isActive) return;
         const pair = resolveComparePaneThreadIds(threads);
-        if (restoredPairRef.current !== pairId) {
-          restoredPairRef.current = pairId;
-          const restore = (threadId: string | undefined): CompareModelSelection => {
-            const thread = threads.find((candidate) => candidate.id === threadId);
-            return {
-              id: thread?.modelId ?? "",
-              isLora: false,
-              ggufVariant: thread?.modelGgufVariant ?? undefined,
-            };
-          };
-          if (pair.first) setModel1(restore(pair.first));
-          if (pair.second) setModel2(restore(pair.second));
-        }
         setModel1ThreadId(pair.first);
         setModel2ThreadId(pair.second);
         setPairSaved(Boolean(pair.first || pair.second));
@@ -1883,7 +1887,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
     return () => {
       isActive = false;
     };
-  }, [pairId, anyRunning, comparing]);
+  }, [pairId, busy]);
 
   useEffect(() => {
     if (!threadsSettled) return;

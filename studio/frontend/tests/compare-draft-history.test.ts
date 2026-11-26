@@ -53,7 +53,7 @@ const draftKey = find(
   (n) => ts.isVariableDeclaration(n) && n.name.getText(composer) === "draftKey",
 ) as ts.VariableDeclaration;
 
-type Thread = { id: string; modelType: string; modelId?: string; modelGgufVariant?: string };
+type Thread = { id: string; modelType: string };
 for (const name of ["LoraCompareContent", "GeneralCompareContent"]) {
   const component = find(
     source,
@@ -81,6 +81,7 @@ for (const name of ["LoraCompareContent", "GeneralCompareContent"]) {
     "failed-known-empty",
     "failed-known-saved",
   ] as const) {
+    if (name === "GeneralCompareContent" && scenario === "failed") continue;
     test(`${name}: ${scenario} history selects the correct draft scope`, async () => {
       let resolve!: (threads: Thread[]) => void;
       let reject!: (reason: Error) => void;
@@ -100,7 +101,6 @@ for (const name of ["LoraCompareContent", "GeneralCompareContent"]) {
         loraThreadId: undefined,
         model1ThreadId: undefined,
         model2ThreadId: undefined,
-        model1: undefined,
       };
       const cleanup = evaluate(
         `return (${effect.arguments[0].getText(source)})();`,
@@ -111,12 +111,8 @@ for (const name of ["LoraCompareContent", "GeneralCompareContent"]) {
           listedPairRef: {
             current: scenario.startsWith("failed-known") ? "saved-pair" : null,
           },
-          restoredPairRef: { current: null },
-          loraModels: [],
-          setModel1: (value: unknown) => {
-            state.model1 = value;
-          },
-          setModel2: () => {},
+          busy: false,
+          wasBusyRef: { current: true },
           listStoredChatThreads: () => read,
           isExpectedBackgroundChatStorageError: () => true,
           resolveComparePaneThreadIds: (threads: Thread[]) => ({
@@ -154,21 +150,12 @@ for (const name of ["LoraCompareContent", "GeneralCompareContent"]) {
                 {
                   id: "pane",
                   modelType: name === "LoraCompareContent" ? "base" : "model1",
-                  modelId: "unsloth/pane-model-GGUF",
-                  modelGgufVariant: "Q4_K_M",
                 },
               ],
         );
       await read.catch(() => {});
       await Promise.resolve();
       await Promise.resolve();
-      if (scenario === "saved" && name === "GeneralCompareContent") {
-        assert.deepEqual(state.model1, {
-          id: "unsloth/pane-model-GGUF",
-          isLora: false,
-          ggufVariant: "Q4_K_M",
-        });
-      }
       const pairSaved = evaluate(
         `return (${expression.getText(source)});`,
         state,
@@ -205,6 +192,54 @@ for (const name of ["LoraCompareContent", "GeneralCompareContent"]) {
         "failed history still releases shell readiness",
       );
       cleanup();
+    });
+  }
+
+  if (name === "GeneralCompareContent") {
+    test("restores both models from the initial history without another read", () => {
+      const declarations = [
+        "initialPair",
+        "restore",
+        "[model1Selection, setModel1]",
+        "[model2Selection, setModel2]",
+      ].map((name) =>
+        find(
+          component,
+          (n) => ts.isVariableDeclaration(n) && n.name.getText(source) === name,
+        ).getText(source),
+      );
+      const state = evaluate(
+        `const ${declarations.join(", ")};
+        (${effect.arguments[0].getText(source)})();
+        return {model1Selection, model2Selection};`,
+        {
+          initialThreads: [
+            {
+              id: "left",
+              modelId: "unsloth/left-GGUF",
+              modelGgufVariant: "Q4_K_M",
+            },
+            { id: "right", modelId: "unsloth/right" },
+          ],
+          resolveComparePaneThreadIds: () => ({ first: "left", second: "right" }),
+          useState: (initialize: () => unknown) => [initialize()],
+          busy: false,
+          wasBusyRef: { current: false },
+          listStoredChatThreads: () => assert.fail("initial history was already read"),
+        },
+      );
+      assert.deepEqual(state, {
+        model1Selection: {
+          id: "unsloth/left-GGUF",
+          isLora: false,
+          ggufVariant: "Q4_K_M",
+        },
+        model2Selection: {
+          id: "unsloth/right",
+          isLora: false,
+          ggufVariant: undefined,
+        },
+      });
     });
   }
 }
