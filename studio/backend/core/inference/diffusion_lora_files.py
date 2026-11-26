@@ -298,6 +298,19 @@ def _anima_embedding(state: dict) -> dict:
 
 
 _MOSS_QKV = re.compile(r"^(.*\.proj\.)qkv\.(lora_[AB])\.weight$")
+# SimpleTuner trains Krea-2 with ``attn.to_q`` / ``to_k`` / ``to_v`` fused into one ``attn.to_qkv`` (rows q, k, v);
+# the in-tree model keeps the three apart, with k and v narrower than q under grouped-query attention.
+_KREA2_QKV = ("to_q", "to_k", "to_v")
+_KREA2_FUSED_QKV = re.compile(r"^(.*\.attn\.)to_qkv\.(.+)$")
+_KREA2_FUSED_STEM = re.compile(r"^(.*\.attn\.)to_qkv$")
+_MAGNITUDE_SUFFIXES = ("dora_scale", "lora_magnitude_vector", "lora_magnitude_vector.weight")
+# The tensors a module's delta is the product of: one that is all zero leaves the layer untouched.
+_FACTOR_SUFFIXES = (
+    "lora_A.weight",
+    "lora_B.weight",
+    "lora_down.weight",
+    "lora_up.weight",
+) + _LOKR_SUFFIXES
 
 
 def _moss_fused_qkv(state: dict) -> dict:
@@ -316,6 +329,95 @@ def _moss_fused_qkv(state: dict) -> dict:
             rows = int(value.shape[0]) // 3
             for i, name in enumerate(("q", "k", "v")):
                 out[f"{stem}{name}.lora_B.weight"] = value[i * rows : (i + 1) * rows].contiguous()
+    return out
+
+
+def _krea2_module(root: Any, key: str) -> Any:
+    """The layer a Krea-2 path names: the reference layout (``blocks.0.attn.wq``) or the diffusers one
+    (``transformer_blocks.0.attn.to_q``, what SimpleTuner and LyCORIS on the diffusers model write)."""
+    from .diffusion_single_file_converters import krea2_checkpoint_to_diffusers
+
+    try:
+        name = next(iter(krea2_checkpoint_to_diffusers({key + ".weight": None})))[: -len(".weight")]
+    except ValueError:
+        name = key
+    return root.get_submodule(name)
+
+
+def _krea2_is_reference_path(key: str) -> bool:
+    from .diffusion_single_file_converters import krea2_checkpoint_to_diffusers
+    try:
+        krea2_checkpoint_to_diffusers({key + ".weight": None})
+    except ValueError:
+        return False
+    return True
+
+
+def _krea2_qkv_widths(root: Any, attn: str) -> tuple[int, ...]:
+    """Rows of ``attn``'s q, k and v projections in this model, the order they sit in a fused ``to_qkv``."""
+    return tuple(
+        int(_base_layer(root.get_submodule(attn + name)).weight.shape[0]) for name in _KREA2_QKV
+    )
+
+
+def _is_untrained(state: dict, stem: str) -> bool:
+    """True when ``stem`` has factors and one of them is all zero, so its delta is zero."""
+    factors = [
+        v
+        for k, v in state.items()
+        if k.startswith(stem + ".") and k[len(stem) + 1 :] in _FACTOR_SUFFIXES
+    ]
+    return bool(factors) and any(not bool(t.any()) for t in factors)
+
+
+def krea2_drop_unused_projections(state: dict) -> dict:
+    """A trainer that fuses q / k / v still saves the separate ``to_q`` / ``to_k`` / ``to_v`` it never ran, untrained
+    (a zero factor): drop them so the fused delta is the only one on those layers. A trained one beside a fused one
+    has no single meaning, so it is refused."""
+    fused = {m.group(1) for m in map(_KREA2_FUSED_QKV.match, state) if m is not None}
+    if not fused:
+        return state
+    drop: set = set()
+    for attn in fused:
+        for name in _KREA2_QKV:
+            stem = attn + name
+            keys = [k for k in state if k.startswith(stem + ".")]
+            if not keys:
+                continue
+            if not _is_untrained(state, stem):
+                raise ValueError(
+                    f"{stem} is trained beside the fused {attn}to_qkv; the file holds two deltas for one layer"
+                )
+            drop.update(keys)
+    return {k: v for k, v in state.items() if k not in drop}
+
+
+def krea2_fused_qkv(root: Any, state: dict) -> dict:
+    """A fused ``attn.to_qkv`` as the model's ``to_q`` / ``to_k`` / ``to_v``: ``lora_A`` (and ``alpha``) is shared,
+    ``lora_B``, its bias and a DoRA magnitude split by rows. Row ``i`` of the fused delta ``B @ A`` is row ``i`` of
+    ``B`` times ``A``, and a DoRA magnitude scales whole rows, so each piece is exactly that projection's delta."""
+    import torch
+
+    out: dict = {}
+    for key, value in state.items():
+        match = _KREA2_FUSED_QKV.match(key)
+        if match is None:
+            out[key] = value
+            continue
+        attn, suffix = match.groups()
+        if suffix in ("lora_A.weight", "alpha"):
+            for name in _KREA2_QKV:
+                out[f"{attn}{name}.{suffix}"] = value
+            continue
+        if suffix not in ("lora_B.weight", "lora_B.bias") + _MAGNITUDE_SUFFIXES:
+            raise ValueError(f"{key}: a fused q/k/v tensor this loader cannot split")
+        widths = _krea2_qkv_widths(root, _strip(attn))
+        if value.dim() == 0 or int(value.shape[0]) != sum(widths):
+            raise ValueError(
+                f"{key} has {int(value.shape[0]) if value.dim() else 0} rows, but q / k / v here are {widths}"
+            )
+        for name, piece in zip(_KREA2_QKV, torch.split(value, list(widths))):
+            out[f"{attn}{name}.{suffix}"] = piece.contiguous()
     return out
 
 
@@ -501,9 +603,14 @@ def _lokr_targets(
 ) -> list[tuple[Any, Any, Optional[tuple[int, int]]]]:
     key = _strip(stem)
     if family == "krea-2":
-        from .diffusion_single_file_converters import krea2_checkpoint_to_diffusers
-        name = next(iter(krea2_checkpoint_to_diffusers({key + ".weight": None})))[: -len(".weight")]
-        return [(pipe.transformer, pipe.transformer.get_submodule(name), None)]
+        root = pipe.transformer
+        match = _KREA2_FUSED_STEM.match(key)
+        if match is None:
+            return [(root, _krea2_module(root, key), None)]
+        modules = [root.get_submodule(match.group(1) + n) for n in _KREA2_QKV]
+        widths = _krea2_qkv_widths(root, match.group(1))
+        starts = [sum(widths[:i]) for i in range(len(widths))]
+        return [(root, m, (s, s + w)) for m, s, w in zip(modules, starts, widths)]
     if family == "moss-image":
         root = pipe.transformer
         match = re.match(r"^(.*\.proj\.)qkv$", key)
@@ -639,7 +746,14 @@ def _dotted_kohya_keys(pipe: Any, state: dict, family: Optional[str]) -> dict:
         stem, _, suffix = key[len(prefix) :].partition(".")
         if stem not in paths:
             paths[stem] = _resolve_kohya_stem(pipe, stem, family, names)
-        out[f"diffusion_model.{paths[stem]}.{suffix}"] = value
+        path = paths[stem]
+        # diffusers converts only reference-layout names under ``diffusion_model.``; its own layout goes as is.
+        lead = (
+            "transformer."
+            if family == "krea-2" and not _krea2_is_reference_path(path)
+            else "diffusion_model."
+        )
+        out[f"{lead}{path}.{suffix}"] = value
     return out
 
 
@@ -740,8 +854,16 @@ def load_adapter(pipe: Any, path: str, name: str, family: Optional[str]) -> None
         _load_lora_weights(pipe, path, name)
         return
     raw = read_lora_file(path)
-    lokr, rest = split_lokr(_dotted_kohya_keys(pipe, raw, family))
-    plain = normalize_lora(rest, family)
+    dotted = _dotted_kohya_keys(pipe, raw, family)
+    if family == "krea-2":
+        dotted = krea2_drop_unused_projections(dotted)
+    lokr, rest = split_lokr(dotted)
+
+    def normalized(metadata: Optional[dict] = None) -> dict:
+        out = normalize_lora(rest, family, metadata)
+        return krea2_fused_qkv(pipe.transformer, out) if family == "krea-2" else out
+
+    plain = normalized()
     if not any(".lora_" in k for k in plain):
         plain = {}
     if plain:
@@ -755,7 +877,7 @@ def load_adapter(pipe: Any, path: str, name: str, family: Optional[str]) -> None
         ):
             metadata = read_lora_metadata(path)
             if metadata is not None:
-                plain = normalize_lora(rest, family, metadata)
+                plain = normalized(metadata)
         # PEFT injects only into bare Linears: unwrap LoKR while it runs, then rewrap whatever sits there now.
         wrappers = _unwrap_kron(pipe)
         try:
