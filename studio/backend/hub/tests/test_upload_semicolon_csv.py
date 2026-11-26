@@ -68,6 +68,8 @@ def test_default_csv_upload_keeps_semicolons_in_standard_csv(isolate_upload_dir)
     [
         b'instruction;output\r\n"open quote;answer\r\n',
         b"instruction;output\r\nfirst;answer;extra field\r\n",
+        b"instruction;output\r\n" + b"valid;row\r\n" * 1024 + b"wide;row;extra\r\n",
+        b"instruction;output\r\n" + b"valid;row\r\n" * 2048 + b"wide;row;extra\r\n",
     ],
 )
 def test_invalid_semicolon_csv_upload_publishes_nothing(isolate_upload_dir, source):
@@ -82,3 +84,21 @@ def test_invalid_semicolon_csv_upload_publishes_nothing(isolate_upload_dir, sour
         )
     assert exc.value.status_code == 400
     assert list(isolate_upload_dir.iterdir()) == []
+
+
+def test_semicolon_csv_keeps_long_fields_and_pads_short_rows(isolate_upload_dir):
+    import csv
+
+    long_field = b"word" * 50_000 + b';, ""quote""\r\nnext line'
+    source = b'\xef\xbb\xbfsep=;\r\ninstruction;output\r\n"' + long_field + b'";yes\r\n   \r\nshort\r\n'
+    response = asyncio.run(
+        datasets_route.upload_dataset(
+            UploadFile(BytesIO(source), filename = "excel.csv"),
+            native_path_lease = None,
+            current_subject = "test-user",
+            csv_delimiter = ";",
+        )
+    )
+    expected = b'instruction,output\r\n"' + long_field + b'",yes\r\nshort,\r\n'
+    assert Path(response.stored_path).read_bytes() == expected
+    assert csv.field_size_limit() >= 131_072

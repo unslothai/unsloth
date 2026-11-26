@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import csv
 import hashlib
 import json
 import threading
@@ -39,6 +40,7 @@ LOCAL_UPLOAD_CHUNK_BYTES = 1024 * 1024
 LOCAL_DATASETS_ROOT = LazyPath(recipe_datasets_root)
 DATASET_UPLOAD_DIR = LazyPath(dataset_uploads_root)
 _REUSE_LOCK = threading.Lock()
+_CSV_CONVERSION_LOCK = threading.Lock()
 
 
 def _safe_read_metadata(path: Path) -> dict | None:
@@ -612,35 +614,71 @@ def _finish_upload(
 
     converted_path = partial_path.with_suffix(".csv.part")
     try:
-        import pandas as pd
-        with partial_path.open(encoding = "utf-8-sig", newline = "") as source:
-            # Excel also accepts a delimiter directive before the header.
-            if source.readline().rstrip("\r\n").lower() != "sep=;":
-                source.seek(0)
-            with (
-                pd.read_csv(
-                    source,
-                    sep = csv_delimiter,
-                    dtype = str,
-                    keep_default_na = False,
-                    chunksize = 1024,
-                ) as chunks,
-                converted_path.open("w", encoding = "utf-8", newline = "") as target,
-            ):
-                for row_start, rows in enumerate(chunks):
-                    if not isinstance(rows.index, pd.RangeIndex):
-                        raise ValueError("A row has more fields than the header.")
-                    rows.to_csv(target, index = False, header = row_start == 0, lineterminator = "\r\n")
-                    if target.tell() > max_bytes:
-                        raise _upload_too_large(max_label)
+        with _CSV_CONVERSION_LOCK:
+            field_limit = csv.field_size_limit()
+            try:
+                source_bytes = partial_path.stat().st_size
+                if source_bytes > field_limit:
+                    try:
+                        csv.field_size_limit(source_bytes)
+                    except OverflowError:
+                        # Python versions that store this as C long cap it at 2 GiB on Windows.
+                        csv.field_size_limit(2**31 - 1)
+                _convert_semicolon_csv(partial_path, converted_path, max_bytes, max_label, csv_delimiter)
+            finally:
+                csv.field_size_limit(field_limit)
         return _publish_upload(converted_path, stored_path)
-    except ValueError as exc:
+    except (csv.Error, ValueError) as exc:
         raise HTTPException(status_code = 400, detail = f"Invalid semicolon CSV. {exc}") from exc
     finally:
         with suppress(OSError):
             partial_path.unlink(missing_ok = True)
         with suppress(OSError):
             converted_path.unlink(missing_ok = True)
+
+
+def _csv_records(source, delimiter):
+    last_line = ""
+
+    def lines():
+        nonlocal last_line
+        for line in source:
+            last_line = line
+            yield line
+
+    reader = csv.reader(lines(), delimiter = delimiter, strict = True)
+    end = 0
+    for row in reader:
+        line_count = reader.line_num - end
+        end = reader.line_num
+        if line_count == 1 and not last_line.strip():
+            continue
+        yield row
+
+
+def _convert_semicolon_csv(partial_path, converted_path, max_bytes, max_label, delimiter):
+    with (
+        partial_path.open(encoding = "utf-8-sig", newline = "") as source,
+        converted_path.open("w", encoding = "utf-8", newline = "") as target,
+    ):
+        # Excel also accepts a delimiter directive before the header.
+        if source.readline().rstrip("\r\n").lower() != "sep=;":
+            source.seek(0)
+        rows = _csv_records(source, delimiter)
+        header = next(rows, None)
+        if header is None:
+            raise ValueError("Missing CSV header.")
+        writer = csv.writer(target, lineterminator = "\r\n")
+        writer.writerow(header)
+        for row in rows:
+            missing = len(header) - len(row)
+            if missing < 0:
+                raise ValueError("A row has more fields than the header.")
+            writer.writerow(row + [""] * missing if missing else row)
+            if target.tell() > max_bytes:
+                raise _upload_too_large(max_label)
+        if target.tell() > max_bytes:
+            raise _upload_too_large(max_label)
 
 
 def _file_digest(path: Path) -> str:
