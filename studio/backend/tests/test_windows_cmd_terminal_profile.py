@@ -502,6 +502,7 @@ def _launch(
         "curl -LO https://go.dev/dl/go1.25.0.windows-amd64.zip",
         "wget https://example.com",
         "curl -s https://example.com && echo done",
+        "mkdir out && curl -o out\\a.zip https://example.com/a.zip",
     ],
 )
 def test_cmd_isolated_runs_a_download_inside_mxc(windows, monkeypatch, tmp_path, command):
@@ -597,6 +598,8 @@ def test_a_download_does_not_unblock_the_command_next_to_it(
         "curl https://example.com | head",
         "curl -s https://example.com | findstr title",
         "curl https://example.com && tar -xf a.zip",
+        "curl https://example.com && true",
+        "curl https://example.com && ls",
         'curl -w "%{http_code}" https://example.com',
         "curl https://example.com -o %TEMP%\\a",
         "curl https://example.com ^& echo x",
@@ -660,8 +663,19 @@ def test_a_download_program_the_container_cannot_see_keeps_the_block(
 @pytest.mark.skipif(sys.platform != "win32", reason = "looks curl up on a real Windows PATH")
 def test_windows_curl_is_on_the_isolated_terminal_path():
     assert tools._on_cmd_isolated_path("curl")
-    assert tools._is_plain_cmd_download("curl -sSLO https://example.com/a.zip", {"curl"})
-    assert not tools._is_plain_cmd_download("curl -T a.txt https://example.com", {"curl"})
+    assert tools._is_plain_cmd_download("curl -sSLO https://example.com/a.zip")
+    assert not tools._is_plain_cmd_download("curl -T a.txt https://example.com")
+
+
+def test_cmd_download_path_ignores_the_host_current_directory(monkeypatch, tmp_path):
+    readonly = tmp_path / "path"
+    readonly.mkdir()
+    (tmp_path / "curl.EXE").touch()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(tools, "_safe_path", lambda _shell: (str(readonly), ""))
+    assert not tools._on_cmd_isolated_path("curl")
+    (readonly / "curl.EXE").touch()
+    assert tools._on_cmd_isolated_path("curl")
 
 
 def test_a_refused_cmd_download_says_what_would_run(windows, monkeypatch, tmp_path):

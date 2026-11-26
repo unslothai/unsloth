@@ -576,6 +576,8 @@ _DOWNLOAD_OPERATORS = frozenset(
 
 
 _DOWNLOAD_BUILTINS = frozenset({"cd", "echo", "pwd", "test", "[", "true", "false", "fi", "done"})
+_CMD_DOWNLOAD_BUILTINS = frozenset({"cd", "echo", "mkdir"})
+_WINDOWS_NATIVE_EXECUTABLE_EXTENSIONS = (".EXE", ".COM")
 
 
 def _on_safe_path(name: str) -> bool:
@@ -654,8 +656,11 @@ def _plain_download_args(name: str, words: "list[tuple[str, str]]") -> bool:
     return True
 
 
-def _is_plain_download(command: str) -> bool:
+def _is_plain_download(command: str, *, windows_cmd: bool = False) -> bool:
     """Every curl/wget is a plain download at command position: allowlisted options, http(s) URLs, no expansions."""
+    builtins = _CMD_DOWNLOAD_BUILTINS if windows_cmd else _DOWNLOAD_BUILTINS
+    companions = _CMD_DOWNLOAD_BUILTINS if windows_cmd else _DOWNLOAD_COMPANIONS
+    on_safe_path = _on_cmd_isolated_path if windows_cmd else _on_safe_path
     # No $ (but $?) or backticks anywhere: a variable name built at run time could unset CURL_HOME.
     if _DOWNLOADER_CONFIG_NAMES_RE.search(command) or set(command.replace("$?", "")) & set("$`"):
         return False
@@ -709,18 +714,18 @@ def _is_plain_download(command: str) -> bool:
             return False
         if (
             at_start
-            and (token in _DOWNLOAD_COMPANIONS or token in ("curl", "wget"))
-            and token not in _DOWNLOAD_BUILTINS
-            and not _on_safe_path(token)
+            and (token in companions or token in ("curl", "wget"))
+            and token not in builtins
+            and not on_safe_path(token)
         ):
             return False
         name = token
         if not (at_start and name in ("curl", "wget")):
-            is_prefix = command[start:end_offset] in _SHELL_COMMAND_PREFIXES
+            is_prefix = not windows_cmd and command[start:end_offset] in _SHELL_COMMAND_PREFIXES
             # No assignments (PATH=. picks another curl); check the command word only (jq's . is not bash's .).
             if at_start and (
                 _SHELL_ASSIGNMENT_RE.match(token) is not None
-                or (not is_prefix and token not in _DOWNLOAD_COMPANIONS)
+                or (not is_prefix and token not in companions)
             ):
                 return False
             at_start = at_start and is_prefix
@@ -768,14 +773,21 @@ _CMD_PLAIN_DOWNLOAD_UNREADABLE_RE = re.compile(r"""[\^%!'`;|]|\\(?:[\s"&<>()]|$)
 
 
 def _on_cmd_isolated_path(name: str) -> bool:
-    return shutil.which(name, path = _safe_path("cmd_isolated")[0]) is not None
+    # Match the launch PATH before session packages are appended. Host shutil.which also uses cwd and PATHEXT.
+    path, git_ext = _safe_path("cmd_isolated")
+    directories = path.split(os.pathsep)
+    if not all(os.path.isabs(directory) for directory in directories):
+        return False
+    for directory in directories:
+        for extension in _windows_pathext(git_ext):
+            if os.path.isfile(os.path.join(directory, name + extension)):
+                return extension in _WINDOWS_NATIVE_EXECUTABLE_EXTENSIONS
+    return False
 
 
-def _is_plain_cmd_download(command: str, names) -> bool:
-    return (
-        not _CMD_PLAIN_DOWNLOAD_UNREADABLE_RE.search(command)
-        and all(_on_cmd_isolated_path(name) for name in names)
-        and _is_plain_download(command)
+def _is_plain_cmd_download(command: str) -> bool:
+    return not _CMD_PLAIN_DOWNLOAD_UNREADABLE_RE.search(command) and _is_plain_download(
+        command, windows_cmd = True
     )
 
 
@@ -10023,6 +10035,14 @@ _ISOLATED_CMD_GIT_ENV = {
 }
 
 
+def _windows_pathext(git_ext: str) -> tuple[str, ...]:
+    # Keep a trusted Git launcher such as a .CMD shim resolvable.
+    extensions = _WINDOWS_NATIVE_EXECUTABLE_EXTENSIONS
+    if git_ext and git_ext not in extensions:
+        return (*extensions, git_ext)
+    return extensions
+
+
 def _safe_path(shell: "str | None" = None) -> "tuple[str, str]":
     # (PATH, the trusted Windows git's extension); every entry is read-only inside the sandbox.
     exe_dir = os.path.dirname(sys.executable)
@@ -10094,11 +10114,7 @@ def _build_safe_env(workdir: str, shell: "str | None" = None) -> dict[str, str]:
         # Path.home() ignores HOME on Windows; a workdir USERPROFILE would instead send pip's cache to .\pip in the cwd.
         env["HOMEDRIVE"], env["HOMEPATH"] = os.path.splitdrive(workdir)
         # Restrict PATHEXT so cwd .BAT/.CMD cannot hijack bare names (#7317).
-        pathext = ".EXE;.COM"
-        if git_ext and git_ext not in (".EXE", ".COM"):
-            # Keep the host git launcher (e.g. a .CMD shim) resolvable.
-            pathext += ";" + git_ext
-        env["PATHEXT"] = pathext
+        env["PATHEXT"] = ";".join(_windows_pathext(git_ext))
         # Disable cwd-before-PATH lookup on Windows so a workdir rg.exe or git.exe cannot shadow auto-approved commands.
         env["NoDefaultCurrentDirectoryInExePath"] = "1"
         if shell == "cmd_isolated":
@@ -25014,7 +25030,7 @@ def _bash_exec(
             blocked = set()
         if profile == "cmd_isolated":
             contained = blocked & _OS_SANDBOX_PROXIED_COMMANDS
-            if contained and not _is_plain_cmd_download(command, contained):
+            if contained and not _is_plain_cmd_download(command):
                 contained = set()
                 hints.append(_PLAIN_CMD_DOWNLOAD_HINT)
             blocked -= contained

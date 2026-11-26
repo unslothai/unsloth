@@ -546,7 +546,10 @@ def build_launch_request(
     if cwd_alias is not None:
         cwd_alias = _checked_cwd_alias(cwd_alias, workdir_identity)
     run_id = run_id or uuid.uuid4().hex
-    workload_env = _with_session_packages(dict(plan.env), workdir)
+    workload_env = dict(plan.env)
+    # Downloads use the tool binaries on the isolated PATH, with no session-installed executables.
+    if not rc_dir:
+        workload_env = _with_session_packages(workload_env, workdir)
     # MXC ProcessContainer validator requires LOCALAPPDATA; point it inside the session, not at the real profile
     workload_env.setdefault("LOCALAPPDATA", workdir)
     if rc_dir:

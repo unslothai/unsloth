@@ -222,6 +222,7 @@ def test_a_download_launch_denies_what_the_egress_proxy_refuses(tmp_path, system
     egress = config["network"]["egress"]
     assert egress["default"] == "allow"
     env = dict(entry.split("=", 1) for entry in config["process"]["env"])
+    assert env["PATH"] == plan.env["PATH"]
     rc_dir = env["CURL_HOME"]
     assert rc_dir in config["filesystem"]["readonlyPaths"]
     assert os.path.commonpath([rc_dir, plan.workdir]) != plan.workdir
