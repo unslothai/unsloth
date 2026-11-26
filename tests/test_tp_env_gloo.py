@@ -392,8 +392,7 @@ def _case_dp_average_dtypes(rank, world, tmp):
 
 
 def _case_dp_average_buckets(rank, world, tmp):
-    """A 64-byte bucket cap: many buckets, a grad over the cap alone, a non-contiguous grad, every dtype; each
-    grad equals its own all-reduce mean (fp16 through fp32)."""
+    """64-byte cap: every grad (any dtype, over the cap, non-contiguous) equals its own all-reduce mean."""
     error = _import_checkout_unsloth()
     if error is not None:
         return {"skip": error}
