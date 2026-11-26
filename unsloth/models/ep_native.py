@@ -1143,7 +1143,9 @@ def ep_trainer_setup(trainer):
         # Collective: the optimizer state in its 1-GPU form, which also resumes on another layout or one GPU
         # (a stale file is removed when this optimizer's state cannot be converted).
         portable, why = portable_resume.portable_optimizer_state(model, trainer.optimizer)
-        _tpn()._agree_write(lambda: portable_resume.write_portable_optimizer(output_dir, portable, why))
+        _tpn()._agree_write(
+            lambda: portable_resume.write_portable_optimizer(output_dir, portable, why)
+        )
 
     resume_mode = {}
 
