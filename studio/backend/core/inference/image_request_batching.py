@@ -109,6 +109,16 @@ def _share(exc: BaseException, members: list[_Member], owner: Hashable) -> None:
             member.future.set_exception(type(exc)(*exc.args))
 
 
+def _fitting_prefix(members: list[_Member], fits: Callable[[int], bool]) -> list[_Member]:
+    """The longest run of members, in arrival order, whose image total ``fits``; the rest render alone."""
+    best, total = 0, 0
+    for index, member in enumerate(members):
+        total += len(member.seeds)
+        if fits(total):
+            best = index + 1
+    return members[:best]
+
+
 def _close(batch: _Batch) -> None:
     if _OPEN.get(batch.key) is batch:
         del _OPEN[batch.key]
@@ -153,6 +163,7 @@ async def generate(
     owner: Hashable = None,
     check: Optional[Callable[[], None]] = None,
     ride: Optional[Callable[[], ContextManager[Any]]] = None,
+    fits: Optional[Callable[[int], bool]] = None,
 ) -> Optional[dict[str, Any]]:
     """None = render alone. ``key`` names no account, so any account joins; ``owner`` is the caller's.
     ``check`` raises when a joined member must leave (its own Stop); ``ride`` scopes it as rendering."""
@@ -194,7 +205,9 @@ async def generate(
         _close(batch)
         batch.fired = True
         members = list(batch.members)
-        if len(members) == 1:
+        if fits is not None:
+            members = _fitting_prefix(members, fits)
+        if len(members) <= 1:
             return None
         prompts = [member.prompt for member in members for _ in member.seeds]
         seeds = [s for member in members for s in member.seeds]

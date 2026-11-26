@@ -56062,6 +56062,18 @@ async def _coalesced_image_generate(
     def cancelled(exc: BaseException) -> bool:
         return isinstance(exc, RuntimeError) and str(exc) == DIFFUSION_CANCELLED_MSG
 
+    sizes_of = getattr(backend, "coalesce_batch_sizes", None)
+
+    def fits(total: int) -> bool:
+        """Read at fire time: a static-shape load batches only at sizes it already compiled."""
+        if sizes_of is None:
+            return True
+        try:
+            sizes = sizes_of(generate_kwargs.get("width"), generate_kwargs.get("height"))
+        except Exception:  # noqa: BLE001 -- unknown shapes: render alone
+            return False
+        return sizes is None or total in sizes
+
     waiter = getattr(backend, "generation_waiter", None)
     rider = getattr(backend, "generation_rider", None)
     with waiter(stopped) if waiter is not None else nullcontext():
@@ -56077,6 +56089,7 @@ async def _coalesced_image_generate(
             check = check,
             # A Stop from this account reaches its images while another account's call renders them.
             ride = (lambda: rider(stopped)) if rider is not None else None,
+            fits = fits,
         )
         # A Stop recorded while the batch ran is final: never fall back to rendering alone or retry.
         if result is None and stopped.is_set():

@@ -17926,6 +17926,23 @@ class DiffusionBackend:
                 private = True
         return prompt_key, private
 
+    def coalesce_batch_sizes(self, width: int, height: int) -> Optional[frozenset]:
+        """Batch sizes a coalesced txt2img call may use at ``width`` x ``height``: None = any. A static compile or
+        CUDA graphs key their artifacts on the batch, so a new size would compile or capture inside the slot (and an
+        OOM split resets every graph): only sizes this load already compiled at this size are offered."""
+        state = self._state
+        if state is None:
+            return frozenset()
+        static = bool(getattr(state, "cuda_graphs", ())) or (
+            "compiled" in (state.speed_optims or ())
+            and compiled_shapes_are_static(state.pipe, state.speed_mode)
+        )
+        if not static:
+            return None
+        dims = (int(width), int(height))
+        shapes = getattr(state.compile_cache_ctx, "shapes", None) or ()
+        return frozenset(int(shape[2]) for shape in list(shapes) if tuple(shape[:2]) == dims)
+
     @contextmanager
     def generation_rider(self, cancel: threading.Event):
         """A request riding another request's batched call: a Stop from its account sets ``cancel`` even while

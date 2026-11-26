@@ -283,3 +283,84 @@ def test_a_batch_shared_across_accounts_shows_no_live_preview(studio):
     assert all(r.status_code == 200 for r in _post_while_rendering(app, backend, posts, waiting = 2))
     [call] = _batched_calls(backend)
     assert call["kwargs"]["live_preview"] is True
+
+
+def test_a_static_shape_load_batches_only_at_sizes_it_already_compiled(studio):
+    app, backend, _saved = studio
+    asked = []
+
+    def sizes(width, height):
+        asked.append((width, height))
+        return frozenset({1, 2})
+
+    backend.coalesce_batch_sizes = sizes
+    posts = [
+        ("/v1/images/generations", "alice", _openai("a fox")),
+        ("/v1/images/generations", "bob", _openai("a cat")),
+        ("/v1/images/generations", "carol", _openai("an owl")),
+    ]
+    responses = _post_while_rendering(app, backend, posts, waiting = 3)
+    assert all(r.status_code == 200 for r in responses)
+    [call] = _batched_calls(backend)
+    assert call["prompts"] == ["a fox", "a cat"] and call["batch_size"] == 2
+    assert [c["prompt"] for c in backend.calls if c["prompts"] is None] == ["an owl"]
+    assert set(asked) == {(256, 256)}
+
+
+def test_the_engine_offers_only_compiled_batch_sizes_on_a_static_load(monkeypatch):
+    import core.inference.diffusion as diffusion_module
+    from core.inference.diffusion import DiffusionBackend
+
+    engine = DiffusionBackend()
+    engine._state = types.SimpleNamespace(
+        speed_optims = ("compiled",),
+        speed_mode = "default",
+        pipe = None,
+        cuda_graphs = (),
+        compile_cache_ctx = types.SimpleNamespace(
+            shapes = {(512, 512, 1), (512, 512, 4), (768, 768, 2)}
+        ),
+    )
+    monkeypatch.setattr(diffusion_module, "compiled_shapes_are_static", lambda pipe, mode: True)
+    assert engine.coalesce_batch_sizes(512, 512) == frozenset({1, 4})
+    assert engine.coalesce_batch_sizes(1024, 1024) == frozenset()
+    monkeypatch.setattr(diffusion_module, "compiled_shapes_are_static", lambda pipe, mode: False)
+    assert engine.coalesce_batch_sizes(512, 512) is None
+    engine._state.cuda_graphs = (object(),)
+    assert engine.coalesce_batch_sizes(512, 512) == frozenset({1, 4})
+
+
+def test_a_batch_keeps_the_longest_arrival_prefix_that_fits(monkeypatch):
+    rendering = {"on": True}
+    batches = []
+
+    async def run_batch(
+        prompts,
+        seeds,
+        owners = None,
+    ):
+        batches.append(list(prompts))
+        return {"images": list(prompts), "seeds": list(seeds), "seed": seeds[0]}
+
+    async def run():
+        def request(prompt, n):
+            return asyncio.ensure_future(
+                batching.generate(
+                    "key",
+                    prompt,
+                    n,
+                    None,
+                    busy = lambda: rendering["on"],
+                    run_batch = run_batch,
+                    fits = lambda total: total in (1, 4),
+                )
+            )
+
+        tasks = [request("a", 1), request("b", 2), request("c", 1), request("d", 2)]
+        await _until(lambda: _waiting() == 4)
+        rendering["on"] = False
+        return await asyncio.gather(*tasks)
+
+    results = asyncio.run(run())
+    assert batches == [["a", "b", "b", "c"]]
+    assert [r["images"] if r else None for r in results] == [["a"], ["b", "b"], ["c"], None]
