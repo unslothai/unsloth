@@ -951,6 +951,35 @@ def test_sidebar_sections_merge_browser_imports_and_keep_account_isolation(clien
     assert client.get(path).json() == final
 
 
+def test_sidebar_sections_accept_ids_already_valid_in_chat_history(client):
+    thread_id = "imported-" + "0" * 1026
+    for chat_id in (thread_id, "existing"):
+        thread = client.post(
+            "/chat/threads",
+            json = {"id": chat_id, "title": "A chat", "modelType": "base", "createdAt": 100},
+        )
+        assert thread.is_success
+    response = client.post(
+        "/chat/sidebar-sections",
+        json = {
+            "operationId": "file-an-imported-chat",
+            "base": None,
+            "layout": {
+                "sections": {"research": {"name": "Research", "sort": "manual"}},
+                "sectionByChatId": {thread_id: "research", "existing": "research"},
+                "rowOrder": {"research": [thread_id, "existing"]},
+            },
+            "orderMoves": [
+                {"sectionId": "research", "id": thread_id, "targetId": "existing", "edge": "top"}
+            ],
+        },
+    )
+    assert response.status_code == 200, response.status_code
+    saved = client.get("/chat/sidebar-sections").json()
+    assert saved["sectionByChatId"][thread_id] == "research"
+    assert saved["rowOrder"]["research"] == [thread_id, "existing"]
+
+
 @pytest.mark.parametrize("delete_section", [True, False], ids = ["delete-section", "unfile-row"])
 def test_sidebar_sections_concurrent_clients_keep_unrelated_edits(client, delete_section):
     from concurrent.futures import ThreadPoolExecutor

@@ -12,8 +12,11 @@ from auth.authentication import get_current_subject
 from storage.sidebar_sections import get_sidebar_layout, save_sidebar_layout
 
 router = APIRouter(dependencies = [Depends(get_current_subject)])
-Id = Annotated[str, Field(min_length = 1, max_length = 1024)]
-Order = Annotated[list[Id], Field(max_length = 50_000)]
+SectionId = Annotated[str, Field(min_length = 1, max_length = 1024)]
+# Existing chat and project IDs can be longer than the IDs generated for sections.
+RowId = Annotated[str, Field(min_length = 1)]
+RowOrder = Annotated[list[RowId], Field(max_length = 50_000)]
+SectionOrder = Annotated[list[SectionId], Field(max_length = 50_000)]
 
 
 class Section(BaseModel):
@@ -25,18 +28,18 @@ class Section(BaseModel):
 
 class Layout(BaseModel):
     model_config = ConfigDict(extra = "forbid")
-    sections: dict[Id, Section] = Field(default_factory = dict)
-    sectionByChatId: dict[Id, Id] = Field(default_factory = dict)
-    sectionByProjectId: dict[Id, Id] = Field(default_factory = dict)
-    sectionByPageId: dict[Id, Id] = Field(default_factory = dict)
-    rowOrder: dict[Id, Order] = Field(default_factory = dict)
-    sectionOrder: Order = Field(default_factory = list)
+    sections: dict[SectionId, Section] = Field(default_factory = dict)
+    sectionByChatId: dict[RowId, SectionId] = Field(default_factory = dict)
+    sectionByProjectId: dict[RowId, SectionId] = Field(default_factory = dict)
+    sectionByPageId: dict[RowId, SectionId] = Field(default_factory = dict)
+    rowOrder: dict[SectionId, RowOrder] = Field(default_factory = dict)
+    sectionOrder: SectionOrder = Field(default_factory = list)
 
 
 class OrderMove(BaseModel):
-    sectionId: Optional[Id]
-    id: Id
-    targetId: Id
+    sectionId: Optional[SectionId]
+    id: RowId
+    targetId: RowId
     edge: Literal["top", "bottom"]
 
 
