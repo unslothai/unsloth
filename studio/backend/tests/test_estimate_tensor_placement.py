@@ -109,11 +109,32 @@ def test_an_override_reaches_a_layer_already_on_the_cpu():
 def test_a_tied_head_loads_token_embd_again_on_the_output_device():
     tied = _moe(tied = True)
     p = place_weights(tied, None)
-    # The input copy stays on the host; the head copy counts on the device.
+    # The input copy stays on the host; the head copy counts on the device, a second resident copy.
     assert p.host_bytes == EMBD
     assert p.device_bytes == sum(tied.values())
-    # No layer on the GPU: neither copy is.
-    assert place_weights(tied, 0).device_bytes == 0
+    assert p.duplicate_bytes == EMBD
+    # No layer on the GPU: both copies share one host allocation.
+    shared = place_weights(tied, 0)
+    assert (shared.device_bytes, shared.host_bytes, shared.duplicate_bytes) == (
+        0,
+        sum(tied.values()),
+        0,
+    )
+
+
+def test_a_tied_head_moved_with_token_embd_shares_its_allocation():
+    tied = _moe(tied = True)
+    p = place_weights(tied, None, [("token_embd\\.weight", False)])
+    assert p.host_bytes == 0
+    assert p.device_bytes == sum(tied.values())
+    assert p.duplicate_bytes == 0
+
+
+def test_an_encoder_has_no_head_to_tie():
+    encoder = _moe(tied = True)
+    p = place_weights(encoder, None, architecture = "bert")
+    assert p.device_bytes == sum(encoder.values()) - EMBD
+    assert p.duplicate_bytes == 0
 
 
 def test_ranks_follow_the_blocks_present_not_their_indices():
@@ -128,11 +149,29 @@ def test_lookup_tables_are_left_to_their_own_pricing():
     assert place_weights(table, None) == place_weights(_moe(), None)
 
 
-def test_a_pattern_python_cannot_read_like_std_regex_is_flagged_and_skipped():
-    p = place_weights(_moe(), None, [("blk[[:digit:]]+", True)])
+def test_posix_classes_read_as_std_regex_reads_them():
+    p = place_weights(_moe(), None, [("blk\\.[[:digit:]]\\.ffn_gate_up", True)])
+    assert p.resolved
+    assert p.host_bytes == EMBD + 4 * 2 * EXPS
+    moved = place_weights(_moe(), 0, [("blk\\.[[:digit:]]\\.attn_", False)])
+    assert moved.device_bytes == 4 * ATTN
+
+
+def test_only_an_unreadable_cpu_pattern_leaves_the_placement_unresolved():
+    p = place_weights(_moe(), None, [("blk(", True)])
     assert not p.resolved
     assert p.host_bytes == EMBD
-    assert not place_weights(_moe(), None, [("blk(", True)]).resolved
+    # A device pattern Python rejects is one llama.cpp rejects too: the load fails, nothing to flag.
+    assert place_weights(_moe(), None, [("blk(", False)]).resolved
+
+
+def test_the_moe_cache_can_hold_the_host_experts_of_gpu_layers_only():
+    p = place_weights(_moe(), 3, [("blk\\.[0-2]\\.ffn_.*_exps", True)])
+    # Blocks 2 and 3 run on the GPU; only block 2's experts are on the host.
+    assert p.host_expert_bytes == 3 * EXPS
+    partly = place_weights(_moe(), None, [("blk\\.0\\.ffn_gate_up_exps", True)])
+    # A layer with any expert left on the device is not cached.
+    assert partly.host_expert_bytes == 0
 
 
 def test_no_block_tensor_means_no_placement():

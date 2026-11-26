@@ -819,11 +819,35 @@ class TestExpertOffloadIsPlaced:
         weights = resp.gpu_bytes - kv_share - resp.compute_bytes
         assert weights == _EMBD_BYTES + _ATTN_BYTES + _EXPS_BYTES
 
-    def test_a_pattern_python_cannot_read_keeps_the_soft_note(self, estimate):
+    def test_a_cpu_pattern_python_cannot_compile_keeps_the_soft_note(self, estimate):
         base = estimate()
-        resp = estimate(llama_extra_args = ["-ot", "blk[[:digit:]]+=CPU"])
+        resp = estimate(llama_extra_args = ["-ot", "blk(=CPU"])
         assert resp.moe_offload_unmodelled is True
         assert resp.gpu_bytes == base.gpu_bytes
+        # Placed, so no note: a POSIX class reads as std::regex reads it.
+        posix = estimate(llama_extra_args = ["-ot", r"blk\.[[:digit:]]\.ffn_.*_exps=CPU"])
+        assert posix.moe_offload_unmodelled is False
+        assert posix.gpu_bytes < base.gpu_bytes
+
+    def test_a_device_override_counts_with_no_gpu_layers_while_a_gpu_stays_visible(self, estimate):
+        ot = ["-ot", r"token_embd\.weight=CUDA0"]
+        assert estimate(gpu_layers = 0).gpu_bytes == 0
+        # Manual zero layers launches a CPU child unless a --device pin keeps the GPU.
+        assert estimate(gpu_layers = 0, llama_extra_args = ot).gpu_bytes == 0
+        resp = estimate(gpu_layers = 0, llama_extra_args = ["--device", "CUDA0", *ot])
+        assert resp.gpu_bytes == _EMBD_BYTES
+
+    def test_the_moe_cache_is_priced_up_to_the_host_experts(self, estimate):
+        ot = ["-ot", r"blk\.[0-1]\.ffn_.*_exps=CPU"]
+        base = estimate(llama_extra_args = ot)
+        # 64 MiB asked; the two host blocks' experts (768 KiB) are all it can hold.
+        cached = 2 * _EXPS_BYTES
+        resp = estimate(llama_extra_args = [*ot, "--moe-cache-mib", "64"])
+        assert resp.gpu_bytes == base.gpu_bytes + cached
+        assert resp.total_bytes == base.total_bytes + cached
+        # "auto" is the fitter's to size; a pinned Manual launch runs no fitter.
+        auto = estimate(llama_extra_args = [*ot, "--moe-cache-mib", "auto"])
+        assert auto.gpu_bytes == base.gpu_bytes
 
 
 class TestEstimateMemoryRoute:

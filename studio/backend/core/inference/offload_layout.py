@@ -423,14 +423,59 @@ _INPUT_LAYER_TENSORS = frozenset(
         "mask_embd",
     }
 )
+# Encoders whose src/models/*.cpp creates no output head, so token_embd is not loaded twice.
+_HEADLESS_ARCHS = frozenset(
+    {
+        "bert",
+        "nomic-bert",
+        "nomic-bert-moe",
+        "jina-bert-v2",
+        "jina-bert-v3",
+        "neo-bert",
+        "modern-bert",
+        "eurobert",
+    }
+)
 # common.h LLM_FFN_EXPS_REGEX / LLM_FFN_DENSE_REGEX: what -cmoe, -ncmoe and -ncffn push.
 FFN_EXPS_OVERRIDE = r"\.ffn_(up|down|gate|gate_up)_(ch|)exps"
 FFN_DENSE_OVERRIDE = r"\.ffn_(up|down|gate)\."
+_FFN_EXPS_RE = re.compile(FFN_EXPS_OVERRIDE)
+# std::regex (ECMAScript) bracket classes Python spells differently.
+_POSIX_CLASSES = {
+    "alnum": "a-zA-Z0-9",
+    "alpha": "a-zA-Z",
+    "blank": r" \t",
+    "digit": "0-9",
+    "d": "0-9",
+    "lower": "a-z",
+    "space": r"\s",
+    "s": r"\s",
+    "upper": "A-Z",
+    "xdigit": "0-9A-Fa-f",
+    "w": r"\w",
+    "punct": r"!-/:-@\[-`{-~",
+}
+_POSIX_CLASS_RE = re.compile(r"\[:([a-z]+):\]")
 
 
 def block_ffn_overrides(count: int, body: str) -> list[str]:
     """The patterns ``--n-cpu-moe count`` (or ``--n-cpu-ffn``) pushes: blocks 0..count-1."""
     return [rf"blk\.{i}{body}" for i in range(max(0, int(count)))]
+
+
+def _std_regex(pattern: str) -> Optional[re.Pattern]:
+    """``pattern`` compiled to match as llama.cpp's std::regex does, or None if Python cannot."""
+
+    def posix(match: re.Match) -> str:
+        cls = _POSIX_CLASSES.get(match.group(1))
+        if cls is None:
+            raise re.error(f"unknown class [:{match.group(1)}:]")
+        return cls
+
+    try:
+        return re.compile(_POSIX_CLASS_RE.sub(posix, pattern))
+    except re.error:
+        return None
 
 
 @dataclass(frozen = True)
@@ -442,14 +487,19 @@ class WeightPlacement:
     # Largest group of host weights one layer's ops read; CUDA/Vulkan/Metal copy them to the device
     # to run a micro-batch of >= 32 tokens, into the compute buffer.
     host_staging_bytes: int
-    # False when an override pattern is one Python cannot read like std::regex; it is skipped.
+    # False when a CPU override is a pattern Python cannot read like std::regex; it is skipped.
     resolved: bool
+    # A tied head on another device than token_embd: a second resident copy the file size misses.
+    duplicate_bytes: int = 0
+    # Routed experts held on the host for layers that run on a GPU: what --moe-cache-mib can cache.
+    host_expert_bytes: int = 0
 
 
 def place_weights(
     tensor_bytes: dict[str, int],
     gpu_layers: Optional[int],
     overrides: Sequence[tuple[str, bool]] = (),
+    architecture: Optional[str] = None,
 ) -> Optional[WeightPlacement]:
     """llama.cpp's placement of every main-model tensor: the first matching ``(pattern, on_host)``
     override wins, else the layer it belongs to decides. ``gpu_layers`` None offloads every layer.
@@ -468,27 +518,29 @@ def place_weights(
     rank = {index: r for r, index in enumerate(sorted(set(blocks.values())))}
     n_owners = len(rank)
     first_gpu = 0 if gpu_layers is None else max(n_owners + 1 - max(0, int(gpu_layers)), 0)
+    output_on_gpu = first_gpu <= n_owners
 
     resolved = True
-    compiled: list[tuple[Optional[re.Pattern], bool]] = []
+    compiled: list[tuple[re.Pattern, bool]] = []
     for pattern, on_host in overrides:
-        try:
-            # A POSIX class is std::regex syntax that Python reads as a plain set.
-            compiled.append((None if "[:" in pattern else re.compile(pattern), on_host))
-        except re.error:
-            compiled.append((None, on_host))
-        if compiled[-1][0] is None:
+        regex = _std_regex(pattern)
+        if regex is not None:
+            compiled.append((regex, on_host))
+        elif on_host:
+            # llama.cpp refuses a pattern std::regex cannot compile, so only a CPU one can differ.
             resolved = False
 
     def on_host_by_override(name: str) -> Optional[bool]:
         for regex, on_host in compiled:
-            if regex is not None and regex.search(name):
+            if regex.search(name):
                 return on_host
         return None
 
-    device = host = 0
+    device = host = duplicate = 0
     staged: dict[object, int] = {}
-    tied_output = "output.weight" not in tensor_bytes
+    # Per GPU layer: host expert bytes, and whether any expert stays on the device.
+    experts: dict[int, list] = {}
+    tied_head = "output.weight" not in tensor_bytes and architecture not in _HEADLESS_ARCHS
     for name, size in tensor_bytes.items():
         size = int(size)
         if is_per_layer_embedding(name):
@@ -497,31 +549,47 @@ def place_weights(
         override = on_host_by_override(name)
         if stem in _INPUT_LAYER_TENSORS:
             # Read by GET_ROWS, which no backend offloads, so never staged.
-            if override is False:
-                device += size
-            else:
+            input_on_host = override is not False
+            if input_on_host:
                 host += size
-            if name == "token_embd.weight" and tied_output:
-                # A tied head loads token_embd again, on the output layer's device.
-                if override is False or (override is None and first_gpu <= n_owners):
-                    device += size
-                else:
+            else:
+                device += size
+            if name == "token_embd.weight" and tied_head:
+                head_on_host = override is True or (override is None and not output_on_gpu)
+                if head_on_host and output_on_gpu:
                     staged["output"] = staged.get("output", 0) + size
+                # load_tensors reuses token_embd when the head lands in the same buffer type.
+                if head_on_host != input_on_host:
+                    duplicate += size
+                    if head_on_host:
+                        host += size
+                    else:
+                        device += size
             continue
         if name in blocks:
             layer_on_gpu = rank[blocks[name]] >= first_gpu
             group: object = blocks[name]
         else:
-            layer_on_gpu = first_gpu <= n_owners
+            layer_on_gpu = output_on_gpu
             group = "output"
-        if override is False or (override is None and layer_on_gpu):
+        on_device = override is False or (override is None and layer_on_gpu)
+        if on_device:
             device += size
         else:
             host += size
             staged[group] = staged.get(group, 0) + size
+        if name in blocks and layer_on_gpu and _FFN_EXPS_RE.search(name):
+            entry = experts.setdefault(blocks[name], [0, False])
+            if on_device:
+                entry[1] = True
+            else:
+                entry[0] += size
     return WeightPlacement(
         device_bytes = device,
         host_bytes = host,
         host_staging_bytes = max(staged.values(), default = 0),
         resolved = resolved,
+        duplicate_bytes = duplicate,
+        # The cache takes a layer only when all of its experts are on the host.
+        host_expert_bytes = sum(b for b, any_on_device in experts.values() if not any_on_device),
     )

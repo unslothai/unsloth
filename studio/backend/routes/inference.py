@@ -16192,10 +16192,22 @@ def _gguf_memory_breakdown(
         projector_runtime_bytes = int(mmproj_bytes * (LlamaCppBackend._MMPROJ_VRAM_SAFETY - 1.0))
         if _resolved_mmproj_offload(llama_extra_args) is False:
             host_companion_bytes = min(companion_bytes, mmproj_bytes)
-    # Each tensor where llama.cpp puts it: --n-cpu-moe and -ot keep weights of GPU layers on the host.
+    # Each tensor where llama.cpp puts it: --n-cpu-moe and -ot keep weights of GPU layers on the host,
+    # and an -ot naming a device puts weights there even with --gpu-layers 0, while the child sees a
+    # GPU: Manual zero layers hides them unless a --device pin, tensor mode or a GPU projector keeps
+    # them (_zero_offload_keeps_gpu_visible).
     placement = None
     placement_unmodelled = False
-    if gpu_fraction > 0.0:
+    _pl_gpu_visible = device_pin_governs or not (
+        _device_selection_is_cpu(extras, os.environ) or _estimate_host_has_no_gpu()
+    )
+    if _pl_gpu_visible and gpu_fraction == 0.0 and gpu_memory_mode == "manual":
+        _pl_gpu_visible = bool(
+            LlamaCppBackend._cmd_has_gpu_device_pin(_lt_extras, _lt_env)
+            or tensor_parallel
+            or companion_bytes > host_companion_bytes
+        )
+    if _pl_gpu_visible:
         from core.inference.llama_cpp import _main_tensor_overrides
         from core.inference.offload_layout import place_weights
 
@@ -16220,16 +16232,36 @@ def _gguf_memory_breakdown(
             _pl_table or {},
             _gguf_requested_gpu_layers(gpu_memory_mode, gpu_layers, extras),
             _pl_overrides,
+            architecture = getattr(probe, "_architecture", None),
         )
         # Without a tensor table the share below prices every weight of a GPU layer on the GPU.
         placement_unmodelled = (
             not placement.resolved
             if placement is not None
-            else any(on_host for _pattern, on_host in _pl_overrides)
+            else gpu_fraction > 0.0 and any(on_host for _pattern, on_host in _pl_overrides)
         )
+    # --moe-cache-mib N: a GPU copy of up to N MiB of the host experts of GPU layers.
+    moe_cache_bytes = 0
+    if placement is not None and placement.host_expert_bytes and gpu_fraction > 0.0:
+        from core.inference.llama_server_args import _last_flag_value
+
+        try:
+            _mc_raw = _last_flag_value(extras, frozenset({"--moe-cache-mib"}))
+        except ValueError:
+            _mc_raw = None
+        if _mc_raw is None:
+            _mc_raw = os.environ.get("LLAMA_ARG_MOE_CACHE_MIB")
+        try:
+            # "auto" (or -1) is sized by llama.cpp's fitter from the VRAM left after the fit.
+            _mc_mib = int(str(_mc_raw).strip())
+        except (TypeError, ValueError):
+            _mc_mib = 0
+        if _mc_mib > 0:
+            moe_cache_bytes = min(_mc_mib * 1024 * 1024, placement.host_expert_bytes)
     if placement is not None:
         # Per-layer tables are left to the lookup-table terms above.
-        main_gpu_bytes = placement.device_bytes
+        main_gpu_bytes = placement.device_bytes + moe_cache_bytes
+        weights_bytes += placement.duplicate_bytes + moe_cache_bytes
     else:
         main_gpu_bytes = int((main_bytes - lookup_table_bytes - _lt_device_bytes) * gpu_fraction)
     gpu_weights = (
@@ -16242,7 +16274,7 @@ def _gguf_memory_breakdown(
     # Ops on host weights run on the GPU for a micro-batch of >= 32 tokens (op offload), each
     # copying its weights into the compute buffer, which reuses the space split by split.
     host_staging_bytes = 0
-    if placement is not None and placement.host_staging_bytes:
+    if placement is not None and placement.host_staging_bytes and gpu_fraction > 0.0:
         from core.inference.llama_server_args import _flag_name
 
         try:
