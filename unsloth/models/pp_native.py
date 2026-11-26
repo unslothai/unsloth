@@ -63,8 +63,7 @@ _PP_MOE_AUX_WRAPPERS = ("Qwen3_5MoeForConditionalGeneration", "Qwen4ExpForCondit
 _PP_MOE_AUX_FAMILIES = (
     "Qwen3MoeForCausalLM",
     "Qwen4ExpForCausalLM",
-    # Same load_balancing_loss_func over recorded router logits; parity per family in test_pp_moe_aux_gloo.py. OLMoE,
-    # Qwen2-MoE and GraniteMoE record router logits from transformers 5.x on (4.x: aux off only, as before).
+    # Parity per family in test_pp_moe_aux_gloo.py; OLMoE / Qwen2-MoE / GraniteMoE record router logits from 5.x on.
     "MixtralForCausalLM",
     "OlmoeForCausalLM",
     "Qwen2MoeForCausalLM",
@@ -3297,8 +3296,7 @@ def apply_pipeline_parallel(
         and (schedule not in _PP_MOE_AUX_SCHEDULES or stages_per_rank != 1)
         and _router_aux_off(parts.inner, _text_config(model))
     ):
-        # Aux loss off: nothing to carry on this schedule, as for an uncarried family; the stage forward refuses
-        # if it is turned on after the split.
+        # Aux off: nothing to carry here; the stage forward refuses if it is turned on after the split.
         moe, aux_off_route = None, True
     if moe is not None and (schedule not in _PP_MOE_AUX_SCHEDULES or stages_per_rank != 1):
         raise ValueError(
