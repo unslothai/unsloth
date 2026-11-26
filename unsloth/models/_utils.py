@@ -597,13 +597,8 @@ def _is_hip_build():
 
 
 def _triton_probe(index):
-    import triton
-    import triton.language as tl
-
-    @triton.jit
-    def _add_one(X, N, BLOCK: tl.constexpr):  # BLOCK: 16, a fixed probe size
-        offsets = tl.arange(0, BLOCK)
-        tl.store(X + offsets, tl.load(X + offsets, offsets < N) + 1, offsets < N)
+    # Module-level kernel: Triton < 3.4 cannot see a function-local `tl` (NameError, FlexAttention off).
+    from ._triton_probe_kernel import _add_one
 
     x = torch.zeros(16, device = f"cuda:{index}", dtype = torch.float32)
     with torch.cuda.device(index):
