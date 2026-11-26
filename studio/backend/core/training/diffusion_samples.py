@@ -74,6 +74,8 @@ class SampleSettings:
     cfg_mode: str = "uncond"
     # A fixed schedule shift (Krea 2 Turbo pins mu = 1.15, pipeline_krea2.py:615); None derives it.
     mu: Optional[float] = None
+    # Static shift inference samples at when it differs from the training scheduler's (FLUX.3); None keeps it.
+    shift: Optional[float] = None
 
     @property
     def uses_cfg(self) -> bool:
@@ -93,8 +95,12 @@ def sample_inference_settings(family: str, base_model: str) -> SampleSettings:
     if family == "flux.2-klein":
         return SampleSettings(28, 4.0) if "base" in name else SampleSettings(4, 0.0)
     if family == "flux.3-klein-base":
-        # Klein Base runs CFG 3.5 (Studio's and the pipeline's default) over 50 steps; previews take a shorter schedule.
-        return SampleSettings(28, 3.5)
+        # Inference's own shift and base CFG (BFL's reference recipe), on a shorter schedule than its 50 steps.
+        from core.inference.diffusion_families import named_generation_params
+        from core.inference.diffusion_flux3 import FLUX3_REFERENCE_SHIFT
+
+        _steps, guidance = named_generation_params(family)
+        return SampleSettings(28, guidance, shift = FLUX3_REFERENCE_SHIFT)
     if family == "flux.2-dev":
         # Guidance-distilled: the forward feeds the guidance embedding (4.0, the pipeline default) instead of true CFG.
         return SampleSettings(28, 0.0)
@@ -154,6 +160,7 @@ class SamplePlan:
     written: list
     cfg_mode: str = "uncond"
     mu: Optional[float] = None
+    shift: Optional[float] = None
 
     @property
     def uses_cfg(self) -> bool:
@@ -201,6 +208,7 @@ def plan_samples(cfg: Any, family: str, captions: list[str]) -> Optional[SampleP
         guidance = settings.guidance,
         cfg_mode = settings.cfg_mode,
         mu = settings.mu,
+        shift = settings.shift,
         resolution = sample_resolution(getattr(cfg, "resolution", 1024), multiple),
         out_dir = Path(cfg.output_dir).expanduser(),
         tag = f"{time.strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(3)}",
@@ -247,8 +255,10 @@ def flow_sigmas(
     steps: int,
     image_seq_len: int,
     mu: Optional[float] = None,
+    shift: Optional[float] = None,
 ):
-    """Inference sigmas from a FRESH scheduler: set_timesteps on the training one rewrites its tables."""
+    """Inference sigmas from a FRESH scheduler: set_timesteps on the training one rewrites its tables. ``shift``
+    replaces the training scheduler's static shift when inference samples at another one."""
     import numpy as np
     import torch
     from diffusers import FlowMatchEulerDiscreteScheduler
@@ -261,7 +271,8 @@ def flow_sigmas(
         shift = float(scheduler_config.get("shift", 5.0))
         sigmas = sgm_uniform_sigmas(steps, shift, num_train) + [0.0]
         return torch.tensor(sigmas, dtype = torch.float32), float(num_train)
-    sched = FlowMatchEulerDiscreteScheduler.from_config(scheduler_config)
+    overrides = {} if shift is None else {"shift": float(shift)}
+    sched = FlowMatchEulerDiscreteScheduler.from_config(scheduler_config, **overrides)
     sc = sched.config
     kwargs: dict = {}
     if getattr(sc, "use_dynamic_shifting", False):
@@ -411,7 +422,9 @@ def euler_flow_sample(
     (target convention noise - latents) and the family pipeline's CFG combination."""
     import torch
 
-    sigmas, num_train = flow_sigmas(scheduler_config, family, plan.steps, image_seq_len, plan.mu)
+    sigmas, num_train = flow_sigmas(
+        scheduler_config, family, plan.steps, image_seq_len, plan.mu, plan.shift
+    )
     x = initial_noise(plan, index, latent_shape, device)
     for i in range(len(sigmas) - 1):
         if stop_requested is not None and stop_requested():
