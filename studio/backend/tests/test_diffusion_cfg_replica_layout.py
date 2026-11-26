@@ -370,6 +370,7 @@ def test_a_replica_beside_the_companions_is_not_refused_for_their_own_encode(
     if beside:
         router.beside_held_mib, router.beside_keep_mib = 11000, 1024
     monkeypatch.setattr(router, "_secondary_free_total_mib", lambda: (32607 - 11000 - 500, 32607))
+    monkeypatch.setattr(mg, "_free_total_mib", lambda o: (32607 - 11000 - 500, 32607))
     monkeypatch.setattr(mg, "_smi_util_pct", lambda o: 40.0)
 
     def past_the_memory_gate(module):
@@ -378,5 +379,34 @@ def test_a_replica_beside_the_companions_is_not_refused_for_their_own_encode(
     monkeypatch.setattr(mg, "weights_fingerprint", past_the_memory_gate)
     router._build_replica(_wan_latent(49))
     assert ("past the memory gate" in router.disabled_reason) is built, router.disabled_reason
+    if not built:
+        assert "no longer idle" in router.disabled_reason
+
+
+@pytest.mark.parametrize("foreign_mib, built", [(0, True), (4096, False)])
+def test_reusable_encoder_cache_is_not_credited_twice_in_the_idle_check(
+    monkeypatch, foreign_mib, built
+):
+    # the encoder's 4 GiB of cached blocks count as free for the fit (_secondary_free_total_mib); the idle check reads
+    # raw free memory plus this process's reserve, so another job's 4 GiB on the card still makes it busy
+    _pipe, model = _family(_WAN_T4, monkeypatch)
+    router = mg.CfgParallelRouter(model, primary = "cpu", secondary = "cpu")
+    router.automatic_idle_only = True
+    router.beside_held_mib, router.beside_keep_mib = 11000, 1024
+    cache = 4096
+    raw = (
+        32607 - 11000 - cache - foreign_mib - 500
+    )  # companions, their cache, a foreign job, the context
+    monkeypatch.setattr(router, "_secondary_free_total_mib", lambda: (raw + cache, 32607))
+    monkeypatch.setattr(mg, "_free_total_mib", lambda o: (raw, 32607))
+    monkeypatch.setattr(torch.cuda, "memory_reserved", lambda device = None: (11000 + cache) << 20)
+    monkeypatch.setattr(mg, "_smi_util_pct", lambda o: 0.0)
+
+    def past_the_idle_check(module):
+        raise RuntimeError("past the idle check")
+
+    monkeypatch.setattr(mg, "weights_fingerprint", past_the_idle_check)
+    router._build_replica(_wan_latent(49))
+    assert ("past the idle check" in router.disabled_reason) is built, router.disabled_reason
     if not built:
         assert "no longer idle" in router.disabled_reason

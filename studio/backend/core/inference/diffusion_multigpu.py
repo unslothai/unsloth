@@ -4307,23 +4307,27 @@ class CfgParallelRouter:
             # Outside the load scope: read the card directly, before the memory read opens our context (3-7% busy).
             util = _smi_util_pct(self.secondary.index) if automatic else None
             free, total = self._secondary_free_total_mib()
-            held = int(getattr(self, "beside_held_mib", 0) or 0)
             keep_free = int(getattr(self, "beside_keep_mib", 0) or 0)
+            idle_free = free
             if keep_free:
-                # beside a companion split: what this process holds there (the companions, their cached activations)
+                # Beside a companion split: what this process reserves there (the companions, their cached
+                # activations) is not another job's. Read against the raw device free memory, which counts none of
+                # that reserve as free, so no block is credited twice.
+                held = int(getattr(self, "beside_held_mib", 0) or 0)
                 with contextlib.suppress(Exception):
                     held = max(held, int(_torch().cuda.memory_reserved(self.secondary)) >> 20)
+                raw, _total = _free_total_mib(self.secondary.index)
+                idle_free = None if raw is None else int(raw) + held
                 # and its own encoder forward ran there just before this step: the load checked the card idle, and a
                 # utilisation sample now would read that forward as another job
                 util = None
             if automatic:
-                # the companions this load placed there are not another process's memory
                 if not _idle_card(
                     DeviceProbe(
                         ordinal = self.secondary.index,
                         name = "",
                         total_mib = total,
-                        free_mib = None if free is None else int(free) + held,
+                        free_mib = idle_free,
                         util_pct = util,
                     )
                 ):
