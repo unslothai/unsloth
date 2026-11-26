@@ -2108,6 +2108,38 @@ def _release_render_on_unload(method):
     return wrapped
 
 
+# Why the attached LoRA set is or is not folded into the denoiser weights (Loaded build panel); None without LoRAs.
+LORA_FUSE_FUSED = "fused"
+LORA_FUSE_PENDING = "pending"
+LORA_FUSE_DISABLED = "disabled"
+LORA_FUSE_BIT_EXACT = "bit_exact"
+LORA_FUSE_OFFLOAD = "offload"
+LORA_FUSE_QUANTIZED = "quantized"
+LORA_FUSE_UNSUPPORTED = "unsupported"
+_LORA_FUSE_STATUS_ATTR = "_unsloth_lora_fuse_status"
+
+
+def _set_lora_fuse_status(pipe: Any, value: Optional[str]) -> None:
+    try:
+        setattr(pipe, _LORA_FUSE_STATUS_ATTR, value)
+    except Exception:  # noqa: BLE001 - a status note never fails a render
+        pass
+
+
+def lora_fuse_status(pipe: Any) -> Optional[str]:
+    if not getattr(pipe, "_unsloth_loras", ()):
+        return None
+    return getattr(pipe, _LORA_FUSE_STATUS_ATTR, None)
+
+
+def _speed_off_requested(state: Any) -> bool:
+    """Speed mode "off" chosen by the user (bit-exact), not the unset dense default that also resolves to off."""
+    if getattr(state, "speed_mode", None) != SPEED_OFF:
+        return False
+    entry = (getattr(state, "resolved", None) or {}).get("speed_mode") or {}
+    return entry.get("source") == "explicit"
+
+
 @dataclass
 class _GenState:
     """An in-flight generation, updated per denoising step for the progress bar."""
@@ -15709,9 +15741,11 @@ class DiffusionBackend:
             pipe, _QUANT_FILE_LORA_BAKE_ATTR, False
         ):
             self._adjust_baked_loras(state, pipe, specs, current, quant_baked, cancel)
+            _set_lora_fuse_status(pipe, LORA_FUSE_QUANTIZED if specs else None)
             return
 
         if not specs:
+            _set_lora_fuse_status(pipe, None)
             if current:
                 self._unfuse_loras(state, pipe)
                 try:
@@ -15750,6 +15784,8 @@ class DiffusionBackend:
             return
         # a change: put the original weights back first, so the paths below see exactly the unfused model
         self._unfuse_loras(state, pipe)
+        # A new set runs unfused once; the next render with the same set is where it can fold.
+        _set_lora_fuse_status(pipe, LORA_FUSE_PENDING)
         names = [name for name, _p, _w in desired]
         weights = [w for _n, _p, w in desired]
         if _lora_weights_only_change(state, pipe, current, desired):
@@ -15819,12 +15855,22 @@ class DiffusionBackend:
         )
 
     def _fuse_constant_loras(self, state: Any, pipe: Any) -> None:
-        """Fold an unchanged LoRA set into a resident dense denoiser (diffusion_lora_fuse); any failure stays unfused."""
+        """Fold an unchanged LoRA set into a resident dense denoiser (diffusion_lora_fuse); any failure stays unfused.
+        Records why on the pipe (``lora_fuse_status``) for the Loaded build panel."""
         from . import diffusion_lora_fuse as lora_fuse
 
-        if not lora_fuse.enabled() or lora_fuse.fused(pipe):
+        if lora_fuse.fused(pipe):
+            _set_lora_fuse_status(pipe, LORA_FUSE_FUSED)
+            return
+        if not lora_fuse.enabled():
+            _set_lora_fuse_status(pipe, LORA_FUSE_DISABLED)
+            return
+        if _speed_off_requested(state):
+            # Speed "off" promises the unfused forward bit for bit; one bf16 rounding of the merged weight breaks it.
+            _set_lora_fuse_status(pipe, LORA_FUSE_BIT_EXACT)
             return
         if getattr(pipe, "_unsloth_loras_baked", False):
+            _set_lora_fuse_status(pipe, LORA_FUSE_QUANTIZED)
             return  # quantised bakes keep their own path
         denoisers = [
             m for m in (getattr(pipe, "unet", None), *_lora_fuse_dits(pipe)) if m is not None
@@ -15833,11 +15879,15 @@ class DiffusionBackend:
         if not lora_fuse.denoisers_resident(
             getattr(state, "offload_policy", None), getattr(state, "memory_mode", None), denoisers
         ):
+            _set_lora_fuse_status(pipe, LORA_FUSE_OFFLOAD)
             return  # offloaded or streamed denoiser weights move every render
         if denoisers and lora_fuse.fuse(pipe, denoisers, logger):
+            _set_lora_fuse_status(pipe, LORA_FUSE_FUSED)
             # graphs recorded the unfused forward; a CFG replica copied the unfused weights
             cuda_graph.reset_all(getattr(state, "cuda_graphs", ()))
             invalidate_cfg_replica(pipe, "the LoRA set was folded into the weights", logger)
+        else:
+            _set_lora_fuse_status(pipe, LORA_FUSE_UNSUPPORTED)
 
     def _unfuse_loras(self, state: Any, pipe: Any) -> None:
         """Restore the original weights of a folded LoRA set (bit-exact) before any change to it."""
@@ -18182,6 +18232,7 @@ class DiffusionBackend:
             "render_engagement": _render_engagement(state.pipe),
             "baked_loras": _baked_lora_names(state.pipe),
             "baked_lora_specs": _baked_lora_specs(state.pipe),
+            "lora_fuse": lora_fuse_status(state.pipe),
             "load_lora_specs": _load_lora_specs(state.pipe),
             "multi_gpu": multigpu_placement_status(state.pipe),
             "packed_weights": _grouped_form_status(state.pipe),
