@@ -1,12 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Keep Windows from sleeping while an image / video generation or a training job runs.
+"""Keep Windows awake (not the display) while a generation or training job runs; no-op elsewhere.
 
-``SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)`` while at least one job is active, and
-``ES_CONTINUOUS`` alone once the last one ends (finish, error or cancel). The state belongs to the thread that
-set it, and jobs start and end on different threads, so one holder thread owns it for the whole active span.
-The display may still turn off: no ``ES_DISPLAY_REQUIRED``. A no-op on every other platform."""
+The execution state is per thread and jobs start/end on different threads, so one holder thread owns it."""
 
 from __future__ import annotations
 
@@ -36,13 +33,11 @@ def _kernel32() -> Any:
     try:
         import ctypes
         return ctypes.WinDLL("kernel32")  # type: ignore[attr-defined]
-    except Exception:  # noqa: BLE001 - no kernel32: the job runs, the machine may sleep
+    except Exception:  # noqa: BLE001
         return None
 
 
 class _Holder:
-    """One thread that sets the execution state, waits for the release, then clears it."""
-
     def __init__(self, kernel32: Any) -> None:
         self._kernel32 = kernel32
         self._release = threading.Event()
@@ -85,7 +80,7 @@ def _acquire() -> None:
         holder = _Holder(kernel32)
         try:
             holder.start()
-        except Exception as exc:  # noqa: BLE001 - no thread: the job runs, the machine may sleep
+        except Exception as exc:  # noqa: BLE001
             logger.debug("keep-awake holder did not start: %s", exc)
             return
         _holder = holder
@@ -114,8 +109,6 @@ def keep_system_awake() -> Iterator[None]:
 
 
 def keeps_system_awake(fn: _F) -> _F:
-    """Decorator form of ``keep_system_awake`` for a job's run entry point."""
-
     @functools.wraps(fn)
     def wrapper(*args: Any, **kwargs: Any) -> Any:
         with keep_system_awake():

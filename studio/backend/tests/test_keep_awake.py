@@ -101,11 +101,10 @@ def test_overlapping_jobs_are_refcounted(kernel32):
     assert keep_awake.active_holders() == 2
     first_out.set()
     a.join(5)
-    assert kernel32.flags == [HOLD]  # the second job still holds it
+    assert kernel32.flags == [HOLD]
     second_out.set()
     b.join(5)
     assert kernel32.flags == [HOLD, RELEASE]
-    # a later job sets it again
     with keep_system_awake():
         pass
     assert kernel32.flags == [HOLD, RELEASE, HOLD, RELEASE]
