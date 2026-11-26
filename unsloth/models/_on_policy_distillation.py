@@ -13,6 +13,7 @@
 
 import contextlib
 import functools
+import os
 
 import torch
 
@@ -195,6 +196,14 @@ def score_completion_logps(
     # Completion token j sits at P + j - left_pad after the roll, so the logit predicting it is one column earlier.
     pos = (P - 1 - left_pad).unsqueeze(1) + torch.arange(C, device = input_ids.device).unsqueeze(0)
     pos = pos.clamp(min = 0)
+    # A teacher on another device than the rollout: run it where its embeddings live.
+    device = input_ids.device
+    get_embed = getattr(model, "get_input_embeddings", None)
+    try:
+        device = get_embed().weight.device if callable(get_embed) else device
+    except Exception:
+        pass
+    ids, att, pos = ids.to(device), att.to(device), pos.to(device)
     head = None
     get_head = getattr(model, "get_output_embeddings", None)
     if callable(get_head):
@@ -202,28 +211,40 @@ def score_completion_logps(
     vocab = getattr(getattr(head, "weight", None), "shape", (None,))[0]
     if rows_per_chunk is None:
         rows_per_chunk = _rows_per_chunk(L, vocab or 1 << 17)
-    device_type = input_ids.device.type
+    device_type = ids.device.type
     autocast = (
         torch.autocast(device_type = device_type, dtype = autocast_dtype)
         if autocast_dtype is not None and device_type in ("cuda", "xpu", "cpu")
         else contextlib.nullcontext()
     )
-    for start in range(0, B, rows_per_chunk):
-        rows = slice(start, start + rows_per_chunk)
-        with autocast:
-            outputs = model(input_ids = ids[rows], attention_mask = att[rows], use_cache = False)
-        logits = outputs.logits if hasattr(outputs, "logits") else outputs[0]
-        if head is not None and vocab is not None and logits.shape[-1] != vocab:
-            # A forward that returns hidden states (UNSLOTH_RETURN_HIDDEN_STATES) still needs the head.
-            logits = head(logits.to(head.weight.dtype))
-        index = pos[rows].unsqueeze(-1).expand(-1, -1, logits.shape[-1])
-        picked = logits.gather(1, index).to(torch.float32)
-        del logits, outputs
-        if temperature is not None and temperature != 1.0:
-            picked = picked / temperature
-        logps = torch.log_softmax(picked, dim = -1)
-        out[rows] = logps.gather(-1, completion_ids[rows].unsqueeze(-1)).squeeze(-1).to(out.device)
-        del picked, logps
+    # Real logits, with the model's own scaling and softcapping: no hidden-state shortcut while scoring.
+    prior_hidden_states = os.environ.get("UNSLOTH_RETURN_HIDDEN_STATES")
+    os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "0"
+    try:
+        for start in range(0, B, rows_per_chunk):
+            rows = slice(start, start + rows_per_chunk)
+            with autocast:
+                outputs = model(input_ids = ids[rows], attention_mask = att[rows], use_cache = False)
+            logits = outputs.logits if hasattr(outputs, "logits") else outputs[0]
+            if vocab is not None and logits.shape[-1] != vocab:
+                raise RuntimeError(
+                    f"Unsloth: distillation scoring expected logits over {vocab} tokens, but the forward "
+                    f"returned a last dimension of {logits.shape[-1]}."
+                )
+            index = pos[rows].to(logits.device).unsqueeze(-1).expand(-1, -1, logits.shape[-1])
+            picked = logits.gather(1, index).to(torch.float32)
+            del logits, outputs
+            if temperature is not None and temperature != 1.0:
+                picked = picked / temperature
+            logps = torch.log_softmax(picked, dim = -1)
+            targets = completion_ids[rows].to(logps.device).unsqueeze(-1)
+            out[rows] = logps.gather(-1, targets).squeeze(-1).to(out.device)
+            del picked, logps
+    finally:
+        if prior_hidden_states is None:
+            os.environ.pop("UNSLOTH_RETURN_HIDDEN_STATES", None)
+        else:
+            os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = prior_hidden_states
     return out.masked_fill(~completion_mask.to(out.device).bool(), 0.0)
 
 
@@ -313,7 +334,8 @@ def grpo_setup_distillation(trainer, teacher_model = None):
                 "Unsloth: unsloth_distillation_teacher takes 'base' (the adapter-off base model). Pass any other "
                 "teacher as a loaded model: GRPOTrainer(..., teacher_model = teacher)."
             )
-        teacher = AdapterOffTeacher(trainer.model)
+        # Through resolve_teacher_model, which refuses DeepSpeed / FSDP sharding as for GKD.
+        teacher = resolve_teacher_model(ADAPTER_OFF_TEACHER, trainer.model, args, "GRPOTrainer")
     else:
         teacher = teacher_model
         if isinstance(teacher, torch.nn.Module):

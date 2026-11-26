@@ -182,15 +182,12 @@ def test_score_completion_logps_empty():
     assert out.shape == (0, 2) and model.calls == 0
 
 
-def test_score_completion_logps_projects_hidden_states():
-    # A forward that returns hidden states (UNSLOTH_RETURN_HIDDEN_STATES) is projected through the head.
+def test_score_completion_logps_scores_real_logits(monkeypatch):
+    # UNSLOTH_RETURN_HIDDEN_STATES would skip the model's logit scaling / softcapping: off while scoring, restored after.
     model = ToyCausalLM().double()
+    seen = []
 
-    class Hidden(torch.nn.Module):
-        def __init__(self):
-            super().__init__()
-            self.m = model
-
+    class Probe(torch.nn.Module):
         def get_output_embeddings(self):
             return model.lm_head
 
@@ -200,18 +197,31 @@ def test_score_completion_logps_projects_hidden_states():
             attention_mask = None,
             use_cache = None,
         ):
-            h = model.embed(input_ids).double().cumsum(1) / torch.arange(
-                1, input_ids.shape[1] + 1
-            ).view(1, -1, 1)
-            return types.SimpleNamespace(logits = h)
+            seen.append(os.environ.get("UNSLOTH_RETURN_HIDDEN_STATES"))
+            return model(input_ids)
 
+    monkeypatch.setenv("UNSLOTH_RETURN_HIDDEN_STATES", "1")
     batch = _left_padded_batch()
     torch.testing.assert_close(
-        opd.score_completion_logps(Hidden(), *batch).double(),
+        opd.score_completion_logps(Probe(), *batch).double(),
         _oracle_logps(model, *batch),
         rtol = 1e-6,
         atol = 1e-6,
     )
+    assert seen and set(seen) == {"0"} and os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] == "1"
+
+    class Hidden(Probe):
+        def forward(
+            self,
+            input_ids,
+            attention_mask = None,
+            use_cache = None,
+        ):
+            return types.SimpleNamespace(logits = model.embed(input_ids))
+
+    with pytest.raises(RuntimeError, match = "expected logits"):
+        opd.score_completion_logps(Hidden(), *batch)
+    assert os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] == "1"
 
 
 def test_distillation_advantages_match_tinker():
@@ -329,6 +339,10 @@ def test_grpo_setup_validates(monkeypatch):
         opd.grpo_setup_distillation(_grpo_trainer(unsloth_distillation_coef = -1.0))
     with pytest.raises(ValueError, match = "coef is 0"):
         opd.grpo_setup_distillation(_grpo_trainer(unsloth_distillation_coef = 0.0), ToyCausalLM())
+    with pytest.raises(ValueError, match = "DeepSpeed and FSDP"):
+        opd.grpo_setup_distillation(
+            _grpo_trainer(unsloth_distillation_coef = 1.0, deepspeed = "ds.json")
+        )
     with pytest.raises(ValueError, match = "takes 'base'"):
         opd.grpo_setup_distillation(
             _grpo_trainer(
