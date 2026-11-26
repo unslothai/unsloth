@@ -1206,6 +1206,19 @@ def test_pp_pack_plan(checkout_unsloth):
     # GPipe's in-flight cap bounds the micro-batch count: 41 tokens do not fit 2 rows of at most 9.
     assert pp_env._pack_plan([9, 8, 8, 5, 4, 3, 2, 2], 1, 2, 1, 2) is None
     assert pp_env._pack_plan([9, 8, 8, 5, 4, 3, 2, 2], 3, 2, 1, 2)[1:3] == (2, 27)
+    # Large windows plan quickly: lower-bounded counts are skipped, the width is bisected (seconds before).
+    import random
+    import time
+
+    rng = random.Random(0)
+    many = sorted((rng.randint(32, 1024) for _ in range(1024)), reverse = True)
+    start = time.perf_counter()
+    cost, m, width, where = pp_env._pack_plan(many, 2, 2, 1, None)
+    assert time.perf_counter() - start < 2.0
+    assert (
+        len(where) == 1024
+        and max(sum(x for x, b in zip(many, where) if b == i) for i in range(m)) <= width
+    )
     # Packed rows: documents back to back, positions restart per document and for the padding tail, the
     # first label of every document ignored.
     rows = [

@@ -1489,17 +1489,17 @@ _PACK_BUCKET = 32
 def _bins_fit(lengths, m, capacity):
     """Best-fit decreasing of `lengths` (descending) into m bins of `capacity` tokens: the bin of each length,
     or None."""
-    load = [0] * m
+    import bisect
+
+    loads = [(0, b) for b in range(m)]  # (load, bin), ascending
     where = []
     for length in lengths:
-        best = None
-        for b in range(m):
-            if load[b] + length <= capacity and (best is None or load[b] > load[best]):
-                best = b
-        if best is None:
+        k = bisect.bisect_right(loads, (capacity - length, m)) - 1  # the fullest bin it still fits
+        if k < 0:
             return None
-        load[best] += length
-        where.append(best)
+        load, b = loads.pop(k)
+        bisect.insort(loads, (load + length, b))
+        where.append(b)
     return where
 
 
@@ -1507,7 +1507,8 @@ def _pack_plan(lengths, per_mb, num_stages, floor, cap):
     """One schedule step of m single-row micro-batches, each whole documents (descending `lengths`) packed
     into `width` tokens: (cost, m, width, bin of each length), or None. Cost is _fold_plan's,
     (max(m, floor) + p - 1) x width. A micro-batch holds at most what the unfolded step's largest one did
-    (per_mb rows of the longest); GPipe keeps at most `cap` in flight."""
+    (per_mb rows of the longest); GPipe keeps at most `cap` in flight. Counts whose lower bound cannot beat
+    the best so far are skipped, and the smallest fitting width is bisected, so large windows plan quickly."""
     if not lengths:
         return None
     total, longest = sum(lengths), lengths[0]
@@ -1516,17 +1517,30 @@ def _pack_plan(lengths, per_mb, num_stages, floor, cap):
     for m in range(1, len(lengths) + 1):
         if cap is not None and m > max(cap, floor):
             break
+        steps = max(m, floor) + num_stages - 1
+        if best is not None and steps * longest >= best[0]:
+            break  # the width is at least the longest document: no larger m can be cheaper either
         width = max(longest, -(-total // m))
         width = min(-(-width // _PACK_BUCKET) * _PACK_BUCKET, limit)
-        if width * m < total:
+        if width * m < total or (best is not None and steps * width >= best[0]):
             continue
         where = _bins_fit(lengths, m, width)
-        while where is None and width < limit:
-            width = min(width + _PACK_BUCKET, limit)
-            where = _bins_fit(lengths, m, width)
         if where is None:
-            continue
-        cost = (max(m, floor) + num_stages - 1) * width
+            top = limit
+            if best is not None:  # widths stay whole buckets (or the limit): fewer step shapes
+                top = min(top, (best[0] - 1) // steps // _PACK_BUCKET * _PACK_BUCKET)
+            if top <= width or _bins_fit(lengths, m, top) is None:
+                continue
+            low, high = width, top  # fits at high, not at low
+            while high - low > _PACK_BUCKET:
+                mid = low + (high - low) // (2 * _PACK_BUCKET) * _PACK_BUCKET
+                mid = mid if mid > low else low + _PACK_BUCKET
+                if _bins_fit(lengths, m, mid) is None:
+                    low = mid
+                else:
+                    high = mid
+            width, where = high, _bins_fit(lengths, m, high)
+        cost = steps * width
         if best is None or cost < best[0]:
             best = (cost, m, width, where)
     return best
