@@ -52,7 +52,7 @@ def load_krea2_tokenizer(
         check_cancelled()
     from transformers import AutoTokenizer
 
-    from .diffusion_offline_source import offline_snapshot_source
+    from .diffusion_offline_source import tokenizer_snapshot_source
 
     cache_dir = _live_cache_dir()
     kwargs: dict[str, Any] = {
@@ -62,9 +62,14 @@ def load_krea2_tokenizer(
     }
     if hf_token:
         kwargs["token"] = hf_token
-    # Offline by repo id, transformers 5.x fails both attempts below (see diffusion_offline_source).
-    source = offline_snapshot_source(
-        repo_id, "tokenizer", local_files_only = local_files_only, cache_dir = cache_dir
+    # By repo id, transformers 5.x fails both attempts below offline and drops the token on a gated repo
+    # online (see diffusion_offline_source), so both read the snapshot folder.
+    source = tokenizer_snapshot_source(
+        repo_id,
+        "tokenizer",
+        local_files_only = local_files_only,
+        token = hf_token,
+        cache_dir = cache_dir,
     )
     try:
         return AutoTokenizer.from_pretrained(source, **kwargs)

@@ -66,6 +66,50 @@ def offline_snapshot_source(
     return repo_id
 
 
+def tokenizer_snapshot_source(
+    repo_id: Any,
+    subfolder: Optional[str],
+    *,
+    local_files_only: bool,
+    token: Any = None,
+    cache_dir: Optional[str] = None,
+    revision: Optional[str] = None,
+) -> Any:
+    """The snapshot folder holding ``subfolder`` for a tokenizer / processor load, so transformers
+    reads local files only. Online, ``subfolder/*`` is fetched first with ``token``: transformers 5.x
+    ``AutoTokenizer`` falls back to ``PreTrainedConfig.from_pretrained`` when the subfolder has no
+    config.json, and that call drops ``token=``, so a gated repo id 401s anonymously. Offline and
+    local paths behave as ``offline_snapshot_source``."""
+    if (
+        not isinstance(repo_id, str)
+        or not repo_id
+        or _offline_requested(local_files_only)
+        or not subfolder
+    ):
+        return offline_snapshot_source(
+            repo_id,
+            subfolder,
+            local_files_only = local_files_only,
+            cache_dir = cache_dir,
+            revision = revision,
+        )
+    try:
+        if Path(repo_id).expanduser().is_dir():
+            return repo_id
+    except (OSError, ValueError):
+        return repo_id
+    from huggingface_hub import snapshot_download
+
+    sub = PurePosixPath(subfolder.replace("\\", "/").strip("/")).as_posix()
+    kwargs: dict[str, Any] = {"allow_patterns": [f"{sub}/*"], "cache_dir": cache_dir}
+    if revision:
+        kwargs["revision"] = revision
+    # Falsy (None / blank) keeps huggingface_hub's own ambient resolution, as the loaders did.
+    if token:
+        kwargs["token"] = token
+    return snapshot_download(repo_id, **kwargs)
+
+
 def _is_tokenizer_or_processor(type_hint: Any) -> bool:
     if not isinstance(type_hint, type):
         return False
