@@ -60,7 +60,6 @@ def reset_update_status_cache() -> None:
         _cache_condition.notify_all()
 
 
-# Metadata files the answer is derived from; a reinstall or upgrade rewrites at least one.
 _INSTALL_SOURCE_METADATA_FILES = (
     "RECORD",
     "direct_url.json",
@@ -101,7 +100,7 @@ def detect_install_source() -> str:
     except PackageNotFoundError:
         return "local_repo" if _path_has_git_parent(_repo_root_from_this_file()) else "unknown"
 
-    # direct_url.json is one small read, so it is consulted on every call; only the file scan below is memoized.
+    # Only the file scan below is memoized; direct_url.json is cheap and read every call.
     try:
         direct_url = dist.read_text("direct_url.json")
     except Exception:
@@ -113,8 +112,7 @@ def detect_install_source() -> str:
 
 def _source_from_package_paths(dist: Any) -> str:
     global _install_source_memo
-    # Resolving every packaged file costs ~0.2 s on Linux per request; the answer only depends on
-    # the metadata files keyed here, so reuse it until a reinstall or upgrade rewrites them.
+    # Scanning packaged files costs ~0.2 s per request; reuse it until the keyed metadata changes.
     key = _install_source_memo_key(dist)
     memo = _install_source_memo
     if key is not None and memo is not None and memo[0] == key:
