@@ -5189,7 +5189,8 @@ class DiffusionLoadRequest(BaseModel):
         "replica); null may use the other visible cards the same way, a replica only on one idle "
         "card of the same model. CFG-branch parallel "
         "matches one card bit for bit; the batch split of an even batch may differ in the last "
-        "bits (UNSLOTH_DIFFUSION_BATCH_SPLIT=0 keeps it on one card). Refused with a 400 when an "
+        "bits (UNSLOTH_DIFFUSION_BATCH_SPLIT=0 keeps it on one card; for SD 1.x / 2.x / SDXL "
+        "U-Nets, UNSLOTH_DIFFUSION_CFG_PARALLEL_UNET=0). Refused with a 400 when an "
         "index does not exist here; ignored on XPU / MPS / CPU, which have no applicator for a "
         "physical index.",
     )

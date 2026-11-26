@@ -28,3 +28,9 @@ def test_gpu_ids_descriptions_match_multigpu_placement():
         assert "CFG replica" in text or "CFG\nreplica" in text
         assert "batch split" in text and "may differ" in text
         assert "UNSLOTH_DIFFUSION_BATCH_SPLIT=0" in text
+
+
+def test_image_gpu_ids_description_names_the_unet_opt_out():
+    # the U-Net router splits an even batch without reading UNSLOTH_DIFFUSION_BATCH_SPLIT
+    text = DiffusionLoadRequest.model_fields["gpu_ids"].description
+    assert "UNSLOTH_DIFFUSION_CFG_PARALLEL_UNET=0" in text
