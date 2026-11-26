@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Sequence
 
 from core.inference.inference_gate import holds_inference, pauses_background_embedding
+from utils.keep_awake import keeps_system_awake
 from core._torchao_stub import (
     alias_torchao_fqn_to_config,
     hide_xformers_built_for_another_torch,
@@ -16373,6 +16374,7 @@ class DiffusionBackend:
             return None
 
     @_release_render_on_unload
+    @keeps_system_awake
     @holds_inference
     @with_hires
     @vram_budget_scope("image")
