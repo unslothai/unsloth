@@ -44,6 +44,24 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      # The Windows Server image turns Defender's script scanning, real-time protection and cloud
+      # lookups off and excludes all of C:\ and D:\, so the AMSI control can never fire there. Turn
+      # them back on (no Tamper Protection on Server, so this takes); samples are never submitted.
+      - name: Turn Defender protection back on
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          Remove-MpPreference -ExclusionPath 'C:\', 'D:\' -ErrorAction Continue
+          foreach ($pair in @(
+              @{ DisableRealtimeMonitoring = $false }, @{ DisableScriptScanning = $false },
+              @{ DisableBehaviorMonitoring = $false }, @{ DisableIOAVProtection = $false },
+              @{ MAPSReporting = 2 }, @{ SubmitSamplesConsent = 2 })) {
+            try { Set-MpPreference @pair -ErrorAction Stop } catch { Write-Host "::warning::could not set $($pair.Keys): $($_.Exception.Message)" }
+          }
+          $s = Get-MpComputerStatus -ErrorAction SilentlyContinue
+          $p = Get-MpPreference -ErrorAction SilentlyContinue
+          Write-Host "real-time=$($s.RealTimeProtectionEnabled) tamper=$($s.IsTamperProtected) script-scanning-off=$($p.DisableScriptScanning) MAPS=$($p.MAPSReporting) exclusions=$(@($p.ExclusionPath) -join ';')"
+
       - name: Exempt the comparison directory from on-access scanning
         shell: pwsh
         run: |
@@ -456,7 +474,8 @@ jobs:
               $cloudNote = "MAPSReporting is Disabled ($bafsNote)"
             } else {
               $mapsOut = (& $mp -ValidateMapsConnection 2>&1 | Out-String)
-              if ($LASTEXITCODE -eq 0 -and $mapsOut -notmatch 'fail') {
+              # Not a bare 'fail': a successful run prints the legend "other - failure".
+              if ($LASTEXITCODE -eq 0 -and $mapsOut -notmatch 'ValidateMapsConnection failed') {
                 $cloudReady = $true
                 $cloudNote = "MAPSReporting=$($pref.MAPSReporting), connection validated ($bafsNote)"
               } else {
