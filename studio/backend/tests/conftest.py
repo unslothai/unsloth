@@ -358,6 +358,21 @@ def _no_nvfp4_weight_quant_patch_left_installed():
 
 
 @pytest.fixture(autouse = True)
+def _forget_multigpu_card_names():
+    # probe_devices caches each ordinal's torch.cuda.get_device_name per process. A test that probes on the
+    # CPU runner caches "" for every card, and later tests that fake "Tesla T4" then see a primary and
+    # secondary of different models.
+    def _forget():
+        multigpu = sys.modules.get("core.inference.diffusion_multigpu")
+        if multigpu is not None:
+            multigpu._NAMES.clear()
+
+    _forget()
+    yield
+    _forget()
+
+
+@pytest.fixture(autouse = True)
 def _forget_hub_unreachable_verdict():
     # Per-process Hub verdict must not leak between tests.
     def _forget():
