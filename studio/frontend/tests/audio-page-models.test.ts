@@ -232,8 +232,6 @@ test("an empty output pane offers GGUF models only, and Speak and Music name the
   }
 });
 
-// 19131: Separate's buttons offered three models and its blocker menu two, and only the buttons
-// dropped the -GGUF suffix.
 test("the blocker menu offers the empty pane's picks, under the same names", () => {
   const page = readSrc("features/audio/audio-page.tsx");
   assert.match(
