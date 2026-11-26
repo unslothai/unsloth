@@ -116,10 +116,15 @@ import {
 import {
   useDenseQuantSchemes,
   useHostClass,
+  useNvfp4Capable,
   useNvfp4Diffusion,
   useNvfp4DiffusionKnown,
 } from "@/hooks/use-host-class";
-import { nvfp4SelectionFallback, withNvfp4Option } from "@/lib/nvfp4-options";
+import {
+  type PrecisionOption,
+  nvfp4SelectionFallback,
+  withNvfp4Option,
+} from "@/lib/nvfp4-options";
 import type {
   ExternalModelOption,
   ModelOption,
@@ -1064,7 +1069,8 @@ function AdvancedSelect({
   desc?: string;
   value: string;
   onValueChange: (v: string) => void;
-  options: Array<[string, string]>;
+  // A third entry disables the option and is the reason shown on hover.
+  options: PrecisionOption[];
 }) {
   return (
     <div className="flex flex-col gap-1">
@@ -1079,8 +1085,15 @@ function AdvancedSelect({
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            {options.map(([v, l]) => (
-              <SelectItem key={v} value={v} className="text-xs">
+            {options.map(([v, l, disabledReason]) => (
+              <SelectItem
+                key={v}
+                value={v}
+                // Radix never selects a disabled item (click or keyboard); pointer events stay on so the reason shows.
+                disabled={disabledReason !== undefined}
+                title={disabledReason}
+                className="text-xs data-[disabled]:pointer-events-auto data-[disabled]:cursor-not-allowed"
+              >
                 {l}
               </SelectItem>
             ))}
@@ -1842,6 +1855,8 @@ export function ImagesPage({
   const denseQuantSchemes = useDenseQuantSchemes();
   const nvfp4Diffusion = useNvfp4Diffusion();
   const nvfp4DiffusionKnown = useNvfp4DiffusionKnown();
+  // A Blackwell host with the switch off lists NVFP4 disabled, with how to turn it on.
+  const nvfp4Capable = useNvfp4Capable();
   const imageModels = useImageModels(hostClass, denseQuantSchemes);
   const connections = useExternalProvidersStore((s) => s.providers);
   const connectionsEnabled = useExternalProvidersStore((s) => s.connectionsEnabled);
@@ -6390,6 +6405,7 @@ export function ImagesPage({
                     ["mxfp8", "MXFP8 (Blackwell)"],
                   ] as [string, string][],
                   nvfp4Diffusion,
+                  nvfp4Capable,
                 )
               : []),
           ]}
@@ -6421,6 +6437,7 @@ export function ImagesPage({
             ["nvfp4", "NVFP4"],
           ] as [string, string][],
           nvfp4Diffusion,
+          nvfp4Capable,
         )}
       />
       <AdvancedTextField
