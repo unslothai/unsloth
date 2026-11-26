@@ -376,11 +376,13 @@ function TrainingPresetControl({
   currentParams,
   applyParams,
   readyRef,
+  onReady,
 }: {
   defaultParams: TrainingPresetParams;
   currentParams: TrainingPresetParams;
   applyParams: (params: TrainingPresetParams) => TrainingPresetParams;
   readyRef: { current: boolean };
+  onReady: () => void;
 }) {
   const presets = useMediaGenerationPresets({
     kind: "training",
@@ -391,7 +393,8 @@ function TrainingPresetControl({
   });
   useEffect(() => {
     readyRef.current = presets.presetsReady;
-  }, [presets.presetsReady, readyRef]);
+    if (presets.presetsReady) onReady();
+  }, [presets.presetsReady, readyRef, onReady]);
   return (
     <MediaGenerationPresetControl
       kind="training"
@@ -849,6 +852,10 @@ export function DiffusionTrainPanel({
     ],
   );
   const presetsReadyRef = useRef(false);
+  // A finished run seeds the form only after the stored preset has had its turn: seeding first would read as a user
+  // edit to applyPresetParams and drop the preset.
+  const [presetsSettled, setPresetsSettled] = useState(!savedPresets);
+  const markPresetsSettled = useCallback(() => setPresetsSettled(true), []);
   // Not every control sets a dirty ref (family, toggles), so any edit before presets settle counts.
   const editedBeforePresets = useRef(false);
   const trainRailRef = useRef<HTMLDivElement>(null);
@@ -972,12 +979,12 @@ export function DiffusionTrainPanel({
     const jobKey = status?.job_id ?? "";
     if (seededRunJob.current === jobKey) return;
     const run = runningTrainingSelection(status, families, {
-      formUntouched: !modelPickedByUser.current,
+      formUntouched: presetsSettled && !modelPickedByUser.current,
     });
     if (!run) return;
     seededRunJob.current = jobKey;
     applyRunSelection(run);
-  }, [status, families, applyRunSelection]);
+  }, [status, families, applyRunSelection, presetsSettled]);
 
   // The backend keeps the terminal status until the next start, so dismissal is local.
   const [dismissedJobId, setDismissedJobId] = useState<string | null>(null);
@@ -2028,6 +2035,7 @@ export function DiffusionTrainPanel({
                 currentParams={currentPresetParams}
                 applyParams={applyPresetParams}
                 readyRef={presetsReadyRef}
+                onReady={markPresetsSettled}
               />
             ) : null}
           </div>

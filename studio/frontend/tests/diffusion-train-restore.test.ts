@@ -94,7 +94,7 @@ test("the train panel seeds from finished runs and from the resumed run's detail
     new URL("../src/features/images/train/diffusion-train-panel.tsx", import.meta.url),
     "utf8",
   );
-  assert.match(src, /runningTrainingSelection\(status, families, \{\s*formUntouched: !modelPickedByUser\.current/);
+  assert.match(src, /runningTrainingSelection\(status, families, \{\s*formUntouched: presetsSettled && !modelPickedByUser\.current/);
   const resume = src.slice(src.indexOf("const onResume"), src.indexOf("const onStop"));
   assert.ok(
     resume.indexOf("trainingRunSelection(detail, families)") > -1 &&
@@ -110,4 +110,14 @@ test("a restored named preset keeps its model when a finished run's status arriv
   );
   const apply = src.slice(src.indexOf("const applyPresetParams"), src.indexOf("setFamilyName(params.familyName)"));
   assert.match(apply, /if \(owned\) \{[^}]*modelPickedByUser\.current = true/);
+});
+
+test("a finished run waits for the stored preset before seeding the form", () => {
+  const src = readFileSync(
+    new URL("../src/features/images/train/diffusion-train-panel.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(src, /useState\(!savedPresets\)/);
+  assert.match(src, /if \(presets\.presetsReady\) onReady\(\)/);
+  assert.match(src, /onReady=\{markPresetsSettled\}/);
 });
