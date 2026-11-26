@@ -1503,6 +1503,9 @@ function VideoGenerator({
   const queuePollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   // The job the progress poll follows; a record tagged with another job's id is skipped.
   const genVideoId = useRef<string | null>(null);
+  // True while a Generate POST is in flight; a Cancel then waits for the id it returns.
+  const admitting = useRef(false);
+  const cancelOnAdmit = useRef(false);
   // Background tabs clamp setInterval, so returning fires one immediate poll.
   const genVisibilityListener = useRef<(() => void) | null>(null);
   const [status, setStatus] = useState<VideoStatus | null>(null);
@@ -4031,6 +4034,11 @@ function VideoGenerator({
   const queuedVideoId = queuedVideo?.videoId ?? null;
   const handleCancelGenerate = useCallback(async () => {
     setStopping(true);
+    if (admitting.current) {
+      // The new clip has no id yet; the submit cancels it by id once the POST answers.
+      cancelOnAdmit.current = true;
+      return;
+    }
     try {
       // A queued job is dropped by id; a rendering one stops at the next step.
       // While rendering, the followed clip's id: the queue may already have started a successor of
@@ -4153,6 +4161,10 @@ function VideoGenerator({
     setBusy("generating");
     setGenStep(null);
     // The POST only starts the job (minutes, and the secure tunnel caps responses near 100s).
+    // The finished clip is no longer followed: a Cancel from here on is for the new one.
+    genVideoId.current = null;
+    admitting.current = true;
+    cancelOnAdmit.current = false;
     let accepted: VideoGenerateResponse;
     try {
       accepted = await generateVideo({
@@ -4203,6 +4215,8 @@ function VideoGenerator({
         live_preview: livePreview,
       });
     } catch (err) {
+      admitting.current = false;
+      cancelOnAdmit.current = false;
       if (!isMounted.current) return;
       const refusal = err instanceof Error ? err.message : null;
       // A refusal is never the user's own Cancel, so one that mentions "cancelled" still shows.
@@ -4212,6 +4226,19 @@ function VideoGenerator({
       // The refusal can be "No video model is loaded"; re-read status.
       void resyncAfterGenerateRefusal();
       return;
+    }
+    admitting.current = false;
+    if (cancelOnAdmit.current) {
+      cancelOnAdmit.current = false;
+      // Cancel was pressed while the POST was in flight: stop exactly the clip it created. The
+      // follow below then reads its cancelled outcome and clears the page.
+      if (accepted.video_id) {
+        try {
+          await cancelVideoGeneration(accepted.video_id);
+        } catch {
+          // 409: it already ended; its outcome still arrives below.
+        }
+      }
     }
     // A busy engine queues it server-side (FIFO, round-robin across accounts) instead of refusing.
     if (accepted.status === "queued" && accepted.video_id) {

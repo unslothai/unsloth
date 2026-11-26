@@ -17432,8 +17432,19 @@ class VideoBackend:
 
     def forget_terminal_video(self, video_id: Optional[str] = None) -> bool:
         """Drop a deleted clip's terminal record, else the UI resurrects a ghost card; live jobs are
-        kept."""
+        kept. Its by-id outcome goes too (all completed ones when no id is given, as on a clear)."""
         with self._lock:
+            if video_id is not None:
+                kept = self._gen_outcomes.get(str(video_id))
+                if kept is not None and kept[1].get("phase") == "completed":
+                    self._gen_outcomes.pop(str(video_id), None)
+            else:
+                for vid in [
+                    vid
+                    for vid, kept in self._gen_outcomes.items()
+                    if kept[1].get("phase") == "completed"
+                ]:
+                    self._gen_outcomes.pop(vid, None)
             gen = self._gen
             if self._generate_job_active or not isinstance(gen, dict):
                 return False

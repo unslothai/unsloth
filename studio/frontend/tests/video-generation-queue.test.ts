@@ -169,3 +169,12 @@ test("the page queues on submit, cancels by id and resumes the queue on mount", 
   assert.match(page, /if \(next\.kind === "started"\) \{\s*startGenPoll\(job\.videoId\);/);
   assert.match(page, /queuedVideoLabel\(queuedVideo\.position, queuedVideo\.etaSeconds\)/);
 });
+
+test("a new Generate drops the finished clip's id, and a Cancel during the POST stops the clip it creates", () => {
+  const page = readSrc("features/video/video-page.tsx");
+  // Reset before the POST, so a Cancel in flight never names the previous clip.
+  assert.match(page, /genVideoId\.current = null;\s*admitting\.current = true;[\s\S]*?accepted = await generateVideo\(/);
+  // Cancel while admitting waits for the new id instead of sending a stale or bare one.
+  assert.match(page, /if \(admitting\.current\) \{[\s\S]*?cancelOnAdmit\.current = true;\s*return;/);
+  assert.match(page, /if \(cancelOnAdmit\.current\) \{[\s\S]*?await cancelVideoGeneration\(accepted\.video_id\);/);
+});

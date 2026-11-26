@@ -637,3 +637,30 @@ def test_a_queued_page_clip_never_renders_with_adapters_baked_in_while_it_waited
     [job] = client.get(QUEUE).json()["jobs"]
     assert (job["video_id"], job["status"]) == (page["video_id"], "failed")
     assert "model changed" in job["error"]
+
+
+@pytest.mark.parametrize("removal", ["delete", "archive", "clear"])
+def test_a_clip_removed_from_the_gallery_has_no_outcome_left_to_read_by_id(
+    client, backend, removal
+):
+    running = _busy(client, backend)
+    first = client.post(PAGE, json = {"prompt": "removed later"}).json()
+    _queue(client, "successor")
+    _finish_running(client, backend, running)
+    _drain()
+    _wait_idle(backend)
+    backend.gate.clear()
+    _drain()  # the successor holds the shared record
+    progress = "/api/inference/video/generate-progress"
+    mine = client.get(progress, params = {"video_id": first["video_id"]}).json()
+    assert mine["phase"] == "completed" and mine["video"]["id"] == first["video_id"]
+    gallery = f"/api/inference/video/gallery/{first['video_id']}"
+    if removal == "delete":
+        assert client.delete(gallery).status_code == 200
+    elif removal == "archive":
+        assert client.patch(gallery, json = {"archived": True}).status_code == 200
+    else:
+        assert client.delete("/api/inference/video/gallery").status_code == 200
+    gone = client.get(progress, params = {"video_id": first["video_id"]}).json()
+    assert gone.get("video") is None and gone.get("phase") != "completed"
+    backend.gate.set()
