@@ -2353,10 +2353,12 @@ def load_prequantized_transformer(
     Returns None on any problem so the caller quantises dense; never raises for a missing artifact.
     """
     _LAST_FAILURE.text = None
-    if not _is_nvfp4_scheme(scheme) and str(scheme or "").lower() != "int8":
-        # Before any fp8 layer runs: a card without the row-wise fp8 GEMM takes the tensorwise fallback.
+    if str(scheme or "").lower() != "int8":
+        # Before any fp8 layer runs (NVFP4 policies keep some): a card without the row-wise fp8 GEMM takes the
+        # tensorwise fallback. On ``device``, the card that runs the kernels, not ``placement_device`` (cpu when the
+        # weights land in host memory for offload).
         from .diffusion_transformer_quant import engage_fp8_rowwise_fallback
-        engage_fp8_rowwise_fallback(placement_device or device)
+        engage_fp8_rowwise_fallback(device)
     try:
         # Local request paths are arbitrary weights: always read weights_only, even when allowlisted.
         if source.kind == "path" and not _local_prequant_path_allowed(source.location):

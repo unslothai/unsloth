@@ -591,7 +591,8 @@ def test_prequant_load_engages_the_fallback_on_its_card(monkeypatch):
 
     calls = []
     monkeypatch.setattr(tq, "engage_fp8_rowwise_fallback", lambda device = None: calls.append(device))
-    for scheme in ("fp8", "int8", "nvfp4"):
+    # An offloaded load lands the weights on the host; the kernels still run on the CUDA card.
+    for scheme, placement in (("fp8", None), ("int8", None), ("nvfp4", None), ("fp8", "cpu")):
         try:
             dp.load_prequantized_transformer(
                 object,
@@ -600,7 +601,8 @@ def test_prequant_load_engages_the_fallback_on_its_card(monkeypatch):
                 device = "cuda:1",
                 dtype = torch.bfloat16,
                 scheme = scheme,
+                placement_device = placement,
             )
         except Exception:  # noqa: BLE001 - only the engage call before the read matters here
             pass
-    assert calls == ["cuda:1"]
+    assert calls == ["cuda:1", "cuda:1", "cuda:1"]
