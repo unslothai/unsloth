@@ -247,9 +247,20 @@ def test_verdict_trusted_without_a_check(fresh_verdicts, monkeypatch, arch, env,
 
 
 @needs_check
+def test_verdict_refuses_gfx1200_without_a_check(fresh_verdicts, monkeypatch, capsys):
+    # On torch 2.14 + ROCm 7.2 both kernels pass the check, then fault in padding-free training.
+    monkeypatch.setattr(torch.version, "hip", "7.2.0")
+    monkeypatch.setattr(check, "_arch", lambda index: "gfx1200")
+    monkeypatch.setattr(check, "_run_children", _no_children)
+    v = check.rocm_sdpa_verdict(0)
+    assert (v["flash"], v["efficient"], v["source"]) == (False, False, "arch")
+    assert "fault in training on this GPU" in capsys.readouterr().out
+
+
+@needs_check
 def test_verdict_refuses_failed_backends_once(fresh_verdicts, monkeypatch, capsys):
     monkeypatch.setattr(torch.version, "hip", "7.0.0")
-    monkeypatch.setattr(check, "_arch", lambda index: "gfx1200")
+    monkeypatch.setattr(check, "_arch", lambda index: "gfx1201")
     calls = []
 
     def children(index):
@@ -315,7 +326,7 @@ _OOM_TRACE = "torch.OutOfMemoryError: HIP out of memory. Tried to allocate 140.0
 )
 def test_out_of_memory_check_is_inconclusive(fresh_verdicts, monkeypatch, capsys, child, usable):
     monkeypatch.setattr(torch.version, "hip", "7.0.0")
-    monkeypatch.setattr(check, "_arch", lambda index: "gfx1200")
+    monkeypatch.setattr(check, "_arch", lambda index: "gfx1201")
     monkeypatch.setattr(check.subprocess, "Popen", lambda *a, **k: _FakeChild(*child))
     v = check.rocm_sdpa_verdict(0)
     assert (v["flash"], v["efficient"]) == (usable, usable), v
@@ -334,7 +345,7 @@ def test_timeout_stays_a_refusal(fresh_verdicts, monkeypatch):
             return "", ""
 
     monkeypatch.setattr(torch.version, "hip", "7.0.0")
-    monkeypatch.setattr(check, "_arch", lambda index: "gfx1200")
+    monkeypatch.setattr(check, "_arch", lambda index: "gfx1201")
     monkeypatch.setattr(check.subprocess, "Popen", lambda *a, **k: Hung(-_SIGKILL, "", ""))
     v = check.rocm_sdpa_verdict(0)
     assert (v["flash"], v["efficient"]) == (False, False), v

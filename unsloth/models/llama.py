@@ -287,7 +287,6 @@ SDPA_HAS_GQA = "enable_gqa" in (_torch_sdpa.__doc__ or "")
 # Decode paths here and in models importing this name avoid cuDNN on sm90 / sm100.
 from ..utils.attention_dispatch import (
     decode_scaled_dot_product_attention as scaled_dot_product_attention,
-    rocm_gfx1200_requires_expanded_gqa,
 )
 
 from peft.utils.other import ModulesToSaveWrapper
@@ -903,16 +902,15 @@ def LlamaAttention_fast_forward_inference(
         attention_mask = attention_mask.eq(0)
 
     # Grouped query attention: bsz == 1, and bsz > 1 past the card's crossover, read the KV heads
-    # in place below. gfx1200 ROCm expands K/V: its fused GQA decode path is unreliable.
-    use_sdpa_gqa = SDPA_HAS_GQA and not rocm_gfx1200_requires_expanded_gqa(Qn.device)
+    # in place below.
     _, _, cached_len, _ = Knn.shape
     grouped = bsz == 1 or (
         n_groups != 1
         and _grouped_decode_batched(
-            bsz, cached_len, not use_sdpa_gqa, attention_mask is not None, Qn.device
+            bsz, cached_len, not SDPA_HAS_GQA, attention_mask is not None, Qn.device
         )
     )
-    if not grouped and (not use_sdpa_gqa) and n_groups != 1:
+    if not grouped and (not SDPA_HAS_GQA) and n_groups != 1:
         Knn = Knn[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, cached_len, head_dim)
         Vnn = Vnn[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, cached_len, head_dim)
         Knn = Knn.reshape(bsz, n_heads, cached_len, head_dim)
@@ -934,7 +932,7 @@ def LlamaAttention_fast_forward_inference(
         A[:] = torch_nn_functional_softmax(A, dim = -1, dtype = torch.float32)
         A = _gqa_decode_values(A, Vnn, Qn)
     else:
-        if use_sdpa_gqa:
+        if SDPA_HAS_GQA:
             A = scaled_dot_product_attention(
                 Qn,
                 Knn,
@@ -987,7 +985,7 @@ def _decode_attention_core(self, Qn, kv_seq_len, attention_mask, bsz, sdpa_gqa_w
         # Decode is more stable with boolean keep masks than additive bf16 masks.
         attention_mask = attention_mask.eq(0)
 
-    use_sdpa_gqa = SDPA_HAS_GQA and not rocm_gfx1200_requires_expanded_gqa(Qn.device)
+    use_sdpa_gqa = SDPA_HAS_GQA
     if (
         use_sdpa_gqa
         and not sdpa_gqa_with_batch_mask
@@ -1059,11 +1057,7 @@ def _decode_attention_span(self, Qn, static, bsz, sdpa_gqa_with_batch_mask):
     Knn = self.paged_attention_K[:span].permute(1, 2, 0, 3)
     Vnn = self.paged_attention_V[:span].permute(1, 2, 0, 3)
     # The mask is always batched here: as the eager core, Qwen3 expands K / V instead of SDPA GQA.
-    expand = not (
-        SDPA_HAS_GQA
-        and sdpa_gqa_with_batch_mask
-        and not rocm_gfx1200_requires_expanded_gqa(Qn.device)
-    )
+    expand = not (SDPA_HAS_GQA and sdpa_gqa_with_batch_mask)
     if bsz == 1 or (n_groups != 1 and _grouped_decode_batched(bsz, span, expand, True, Qn.device)):
         Qn *= self.scalar
         A = _gqa_decode_scores(Qn, Knn, self.attention[:, :, :, :span])
