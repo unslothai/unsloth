@@ -284,7 +284,12 @@ def _local_state(optimizer):
     return out, None
 
 
-def _group_layout(model, inner, names):
+def _group_layout(
+    model,
+    inner,
+    names,
+    with_keys = False,
+):
     """Collective: [(hyperparameters, [names in 1-GPU order], exact)] per optimizer group, over every rank (a
     pipeline stage holds only its own parameters); None if the ranks' optimizers have different group counts.
     Ranks holding the same names (tensor / expert / data parallel) keep their optimizer's own order; stages are
@@ -298,7 +303,12 @@ def _group_layout(model, inner, names):
         mine.append((hyper, group_names, {n: keys.get(n, ((2, 0),)) for n in group_names}))
     every = _all_gather_object(mine)
     if len({len(x) for x in every}) != 1:
-        return None
+        return (None, {}) if with_keys else None
+    every_key = {}
+    for x in every:
+        for group in x:
+            for n, key in group[2].items():
+                every_key.setdefault(n, key)
     out = []
     for gi in range(len(every[0])):
         hyper = next((x[gi][0] for x in every if x[gi][1]), every[0][gi][0])
@@ -312,7 +322,7 @@ def _group_layout(model, inner, names):
                 order.setdefault(n, x[gi][2][n])
         exact = all(names_ == sorted(names_, key = order.__getitem__) for names_ in lists)
         out.append((hyper, sorted(order, key = order.__getitem__), exact))
-    return out
+    return (out, every_key) if with_keys else out
 
 
 def portable_optimizer_state(model, optimizer):
@@ -503,17 +513,61 @@ def portable_load_weights(model, checkpoint):
     return len(targets) + len(buffers)
 
 
+def _regroup(groups, sizes, keys):
+    """The target's groups merged back into the 1-GPU checkpoint's: tensor parallel / native FSDP2 split each
+    mixed DTensor / plain group into adjacent groups with the same hyperparameters (split_param_groups), so
+    consecutive equal groups are merged until each saved group's size is met, names in module order (one GPU's
+    create_optimizer order). None if they cannot be matched."""
+
+    def same(a, b):
+        # lr follows the scheduler; param_names (torch >= 2.6 named groups) lists each part's own names.
+        skip = ("lr", "initial_lr", "param_names")
+        return {k: v for k, v in a.items() if k not in skip} == {
+            k: v for k, v in b.items() if k not in skip
+        }
+
+    def key(n):
+        return keys.get(n, ((2, 0),))
+
+    out, i = [], 0
+    for size in sizes:
+        start = i
+        if size == 0 and (i >= len(groups) or groups[i][1]):
+            out.append(({}, [], True))  # an empty saved group this optimizer does not keep
+            continue
+        if i >= len(groups):
+            return None
+        hyper, merged = groups[i][0], list(groups[i][1])
+        i += 1
+        while len(merged) < size and i < len(groups) and same(groups[i][0], hyper):
+            merged += groups[i][1]
+            i += 1
+        if len(merged) != size:
+            return None
+        parts = groups[start:i]
+        if len(parts) == 1:
+            out.append(parts[0])
+            continue
+        # Each part keeps the original group's relative order; merged back in module order, which is exact when
+        # every part already follows it.
+        exact = all(g[2] and g[1] == sorted(g[1], key = key) for g in parts)
+        out.append((hyper, sorted(merged, key = key), exact))
+    return out if i == len(groups) else None
+
+
 def _named_from_positional(model, inner, state_dict):
     """Collective: a 1-GPU (int-keyed) optimizer state keyed by name, through the 1-GPU parameter order."""
     names = {id(p): n for n, p in model.named_parameters()}
-    groups = _group_layout(model, inner, names)
+    groups, keys = _group_layout(model, inner, names, with_keys = True)
     saved = state_dict.get("param_groups") or []
     sizes = [len(g.get("params") or []) for g in saved]
-    if groups is None or [len(g[1]) for g in groups] != sizes:
+    if groups is not None and [len(g[1]) for g in groups] != sizes:
+        groups = _regroup(groups, sizes, keys)
+    if groups is None:
         raise RuntimeError(
             "Unsloth: this checkpoint's optimizer.pt was written by one GPU with parameter groups of sizes "
-            f"{sizes}, this run's optimizer has {None if groups is None else [len(g[1]) for g in groups]}; "
-            "resume with the same trainable parameters and optimizer settings."
+            f"{sizes}, which this run's optimizer groups {[len(g['params']) for g in inner.param_groups]} do "
+            "not match; resume with the same trainable parameters and optimizer settings."
         )
     if not all(exact for _, _, exact in groups):
         raise RuntimeError(
@@ -602,9 +656,17 @@ def _load_named(
             "it was not saved from this model's optimizer."
         )
     state, groups, index = {}, [], 0
+    saved_index = {id(g): i for i, g in enumerate(named["param_groups"])}
+    empty = [i for i, g in enumerate(named["param_groups"]) if not g["params"]]
+    origin = []  # the saved group each live group takes its hyperparameters (and scheduler entries) from
     for group in inner.param_groups:
         group_names = [names.get(id(p)) for p in group["params"]]
         saved = next((group_of[n] for n in group_names if n in group_of), None)
+        if saved is None and not group_names and empty:
+            saved = named["param_groups"][empty.pop(0)]
+        origin.append(
+            saved_index[id(saved)] if saved is not None else (origin[-1] if origin else 0)
+        )
         hyper = {
             k: (saved[k] if saved is not None and k in saved else v)
             for k, v in group.items()
@@ -640,10 +702,28 @@ def _load_named(
             index += 1
         groups.append({**hyper, "params": ids})
     loaded = {"state": state, "param_groups": groups}
+    # A scheduler saved over the checkpoint's groups is read through the same map (remap_scheduler_state).
+    inner.__dict__["_unsloth_portable_groups"] = (origin, len(named["param_groups"]))
     if bnb:
         return _bnb_import(inner, loaded)
     # The class method: a Trainer load in progress may have routed the instance's load_state_dict here.
     return type(inner).load_state_dict(inner, loaded)
+
+
+def remap_scheduler_state(optimizer, state):
+    """An LR scheduler state saved over the checkpoint's optimizer groups, re-indexed to this optimizer's groups
+    after a portable load (a group split in two by tensor parallel / native FSDP2 takes its origin's entries)."""
+    inner = _inner(optimizer) if optimizer is not None else None
+    mapping = getattr(inner, "__dict__", {}).get("_unsloth_portable_groups")
+    if mapping is None or not isinstance(state, dict):
+        return state
+    origin, saved = mapping
+    if origin == list(range(saved)):
+        return state
+    return {
+        k: ([v[i] for i in origin] if isinstance(v, list) and len(v) == saved else v)
+        for k, v in state.items()
+    }
 
 
 def portable_load_optimizer(model, optimizer, state_dict):
@@ -748,8 +828,28 @@ def install_portable_resume(trainer):
                 )
             return (own or type(inner).load_state_dict.__get__(inner))(state_dict, *a, **k)
 
-        with _swap_load_state_dict(trainer.optimizer, load):
-            return original(checkpoint, *args, **kwargs)
+        scheduler = getattr(trainer, "lr_scheduler", None)
+        scheduler_load = (
+            scheduler.__dict__.get("load_state_dict") if scheduler is not None else None
+        )
+
+        def load_scheduler(state, *a, **k):
+            state = remap_scheduler_state(trainer.optimizer, state)
+            return (scheduler_load or type(scheduler).load_state_dict.__get__(scheduler))(
+                state, *a, **k
+            )
+
+        if scheduler is not None:
+            scheduler.load_state_dict = load_scheduler
+        try:
+            with _swap_load_state_dict(trainer.optimizer, load):
+                return original(checkpoint, *args, **kwargs)
+        finally:
+            if scheduler is not None:
+                if scheduler_load is None:
+                    scheduler.__dict__.pop("load_state_dict", None)
+                else:
+                    scheduler.load_state_dict = scheduler_load
 
     trainer.__dict__["_load_optimizer_and_scheduler"] = _load_optimizer_and_scheduler
     trainer.__dict__["_unsloth_portable_resume"] = True

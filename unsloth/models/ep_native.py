@@ -1198,7 +1198,11 @@ def ep_trainer_setup(trainer):
         path = os.path.join(checkpoint, SCHEDULER_NAME)
         scheduler = getattr(trainer, "lr_scheduler", None)
         if scheduler is not None and os.path.isfile(path):
-            scheduler.load_state_dict(_tpn()._resume_torch_load(path))
+            scheduler.load_state_dict(
+                portable_resume.remap_scheduler_state(
+                    trainer.optimizer, _tpn()._resume_torch_load(path)
+                )
+            )
         return None
 
     if getattr(trainer.args, "load_best_model_at_end", False) and getattr(

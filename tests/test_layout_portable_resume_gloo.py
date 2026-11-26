@@ -80,6 +80,7 @@ def _case(
     optim = "adamw_torch",
     aux = False,
     adapter_name = "default",
+    modules_to_save = None,
 ):
     error = _import_checkout_unsloth()
     if error is not None:
@@ -161,7 +162,11 @@ def _case(
 
         def fresh():
             config = LoraConfig(
-                r = 4, lora_alpha = 8, target_modules = "all-linear", init_lora_weights = False
+                r = 4,
+                lora_alpha = 8,
+                target_modules = "all-linear",
+                init_lora_weights = False,
+                modules_to_save = modules_to_save,
             )
 
             def peft(m):
@@ -583,3 +588,30 @@ def test_positional_state_keeps_the_optimizer_parameter_order():
     assert named["param_groups"][0]["params"] == ["1.weight", "0.weight"], named["param_groups"]
     assert torch.equal(named["state"]["0.weight"]["exp_avg"], optimizer.state[first]["exp_avg"])
     assert torch.equal(named["state"]["1.weight"]["exp_avg"], optimizer.state[second]["exp_avg"])
+
+
+def test_one_process_checkpoint_with_modules_to_save_resumes_under_tensor_parallel(tmp_path):
+    """A trained plain tensor (modules_to_save) next to the LoRA DTensors: tensor parallel splits the optimizer
+    group into a DTensor and a plain group, the 1-GPU checkpoint has one; the positions (and the LR scheduler's
+    per-group entries) still map."""
+    tmp = str(tmp_path)
+    ckpt = _save_checkpoint("llama", os.path.join(tmp, "base"), {"num_hidden_layers": 4})
+    kw = dict(ckpt = ckpt, family = "llama", modules_to_save = ["lm_head"])
+    src = _run(tmp, "one", out = "mts_src", **kw)
+    got = _run(
+        tmp,
+        "tp2",
+        out = "mts_tp2",
+        resume_from = os.path.join(tmp, "mts_src", f"checkpoint-{_SAVE_AT}"),
+        **kw,
+    )
+    tp_ref = _run(tmp, "tp2", out = "mts_tp2_ref", **kw)
+
+    assert got["calls"]["weights"] == 1 and got["calls"]["optimizer"] == 1, got["calls"]
+    # tp 2's own spread from one process on the vocab-sized lm_head gradient (2e-4 relative in the grad norm) is
+    # above the shared tolerance: compared with the uninterrupted tp 2 run, and its loss with one process.
+    assert got["losses"][2:] == pytest.approx(src["losses"][2:], rel = 1e-5), (
+        got["losses"],
+        src["losses"],
+    )
+    _close(got, tp_ref, "one -> tp2, modules_to_save", grads = False)

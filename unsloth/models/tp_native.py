@@ -6315,7 +6315,10 @@ def _tp_load_optimizer_and_scheduler(self, checkpoint, *args, **kwargs):
 
     path = os.path.join(checkpoint, SCHEDULER_NAME)
     if getattr(self, "lr_scheduler", None) is not None and os.path.isfile(path):
-        self.lr_scheduler.load_state_dict(_resume_torch_load(path))
+        from .portable_resume import remap_scheduler_state
+        self.lr_scheduler.load_state_dict(
+            remap_scheduler_state(self.optimizer, _resume_torch_load(path))
+        )
     self.__dict__.pop("_unsloth_tp_resume", None)
     return None
 
