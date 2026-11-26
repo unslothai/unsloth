@@ -260,3 +260,42 @@ export function memoryRecipeValue(
   if (!memoryMode) return `${offloadPolicy} offload`;
   return `${memoryMode} (${offloadPolicy} offload)`;
 }
+
+/** ``status.multi_gpu.decision``: what the multi-GPU planner chose for a load on several cards. */
+export interface MultiGpuDecision {
+  chosen?: string | null;
+  summary?: string | null;
+  rejected?: Array<{ kind?: string | null; reason?: string | null }> | null;
+}
+
+const MULTI_GPU_KINDS: Record<string, string> = {
+  cfg_replica: "One card + CFG replica",
+  companion_split: "Components split across cards",
+  layer_split: "Denoiser split across cards",
+  one_card: "One card",
+  offload: "One card, offloaded",
+  cfg_parallel: "CFG parallel",
+};
+
+/** Placement row text for a multi-GPU decision, or null on one card (no decision was made). */
+export function multiGpuPlacement(
+  decision: MultiGpuDecision | null | undefined,
+): { label: string; detail: string } | null {
+  const chosen = decision?.chosen;
+  if (!chosen) return null;
+  const summary = (decision.summary ?? "").replace(/^placement:\s*/, "").trim();
+  let label = MULTI_GPU_KINDS[chosen] ?? chosen.replace(/_/g, " ");
+  const card =
+    chosen === "cfg_replica" ? /CFG replica on (cuda:\d+)/.exec(summary)?.[1] : undefined;
+  if (card) label = `${label} on ${card}`;
+  const rejected = (decision.rejected ?? [])
+    .filter((c) => c?.kind && c?.reason)
+    .map((c) => `${MULTI_GPU_KINDS[c.kind as string] ?? c.kind}: ${c.reason}`);
+  const detail = [
+    summary ? `Chosen: ${summary}` : "",
+    ...(rejected.length ? ["Not chosen:", ...rejected.map((r) => `- ${r}`)] : []),
+  ]
+    .filter(Boolean)
+    .join("\n");
+  return { label, detail };
+}

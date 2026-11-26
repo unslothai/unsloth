@@ -227,6 +227,7 @@ import {
   isPrecisionRefusal,
   denoiserPlacement,
   memoryRecipeValue,
+  multiGpuPlacement,
   resolvedBadge,
   resolvedSeedKey,
   resolvedRequestSelectValue,
@@ -1570,6 +1571,7 @@ function LoadedBuildSummary({ status }: { status: DiffusionStatus | null }) {
   if (!status?.loaded) return null;
   const offload = status.offload_policy ?? "none";
   const placement = offload === "group" ? denoiserPlacement(status.denoiser_offload) : null;
+  const multiGpu = multiGpuPlacement(status.multi_gpu?.decision);
   return (
     <div className="flex flex-col gap-1 rounded-lg border border-border/60 px-2.5 py-2 text-ui-11">
       <div className="flex items-center gap-1 pb-0.5 text-xs font-medium text-muted-foreground">
@@ -1614,11 +1616,17 @@ function LoadedBuildSummary({ status }: { status: DiffusionStatus | null }) {
             : `${status.memory_mode ?? "auto"} · ${offload} offload`
         }
       />
-      {placement ? (
+      {placement || multiGpu ? (
         <BuildRow
           label="Placement"
-          value={placement.label}
-          badge={<InfoHint>{placement.detail}</InfoHint>}
+          value={[multiGpu?.label, placement?.label].filter(Boolean).join(" · ")}
+          badge={
+            <InfoHint>
+              <span className="whitespace-pre-line">
+                {[multiGpu?.detail, placement?.detail].filter(Boolean).join("\n\n")}
+              </span>
+            </InfoHint>
+          }
         />
       ) : null}
       <BuildRow

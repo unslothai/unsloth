@@ -229,6 +229,7 @@ import {
   engagedAttentionBackend,
   formatResolvedValue,
   isPrecisionRefusal,
+  multiGpuPlacement,
   resolvedBadge,
   resolvedRequestSelectValue,
   resolvedSeedKey,
@@ -758,6 +759,7 @@ function BuildRow({ label, value, badge }: { label: string; value: string; badge
 function LoadedBuildSummary({ status }: { status: VideoStatus | null }) {
   if (!status?.loaded) return null;
   const offload = status.offload_policy ?? "none";
+  const multiGpu = multiGpuPlacement(status.multi_gpu?.decision);
   return (
     <div className="flex flex-col gap-1 rounded-lg border border-border/60 px-2.5 py-2 text-ui-11">
       <div className="flex items-center gap-1 pb-0.5 text-xs font-medium text-muted-foreground">
@@ -794,6 +796,17 @@ function LoadedBuildSummary({ status }: { status: VideoStatus | null }) {
             : `${status.memory_mode ?? "auto"} · ${offload} offload`
         }
       />
+      {multiGpu ? (
+        <BuildRow
+          label="Placement"
+          value={multiGpu.label}
+          badge={
+            <InfoHint>
+              <span className="whitespace-pre-line">{multiGpu.detail}</span>
+            </InfoHint>
+          }
+        />
+      ) : null}
       <BuildRow
         label="Attention"
         value={

@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { withBackgroundLoadNotice } from "@/lib/model-lifecycle-events";
+import type { MultiGpuDecision } from "@/lib/resolved-precision";
 // eslint-disable-next-line no-restricted-imports -- leaf import; the UI barrels would cycle.
 import { dropVramBudgetRetry, loadVramBudgetSettings, settleVramBudgetSave, setVramBudgetLocked } from "@/features/settings/api/vram-budget";
 import { authFetch } from "@/features/auth";
@@ -36,6 +37,8 @@ export interface DiffusionResolvedControl {
 
 export interface DiffusionStatus {
   loaded: boolean;
+  // Under a multi-card selection: the placement the planner chose and the candidates it rejected.
+  multi_gpu?: { decision?: MultiGpuDecision | null } | null;
   // False when the resident model belongs to another account; the response then carries nothing else.
   yours?: boolean;
   repo_id: string | null;
