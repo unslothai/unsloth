@@ -65,6 +65,7 @@ import {
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { buildVideoTourSteps } from "./tour";
 import { VideoRestylePanel } from "./restyle-panel";
+import { checkMediaCodecsOnce, desktopMissingMediaCodecPackages } from "./media-codec-notice";
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
 import { FullInstallDialog } from "@/features/settings/components/full-install-dialog";
 import { useFullInstallBringsVideo } from "@/hooks/use-full-install-upgrade";
@@ -216,6 +217,7 @@ import { confirmLinkedModel, modelLinkedFromOutside } from "@/lib/linked-model-a
 import { useStagedDownload } from "@/features/hub/download-manager";
 import { MediaHeaderActions } from "@/components/media-header-actions";
 import { isTauri } from "@/lib/api-base";
+import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { cn } from "@/lib/utils";
 import { useIsMobileShell } from "@/hooks/use-mobile";
 import { resolveDiffusionGgufFilename } from "@/lib/diffusion-gguf-filename";
@@ -1280,6 +1282,20 @@ export function VideoPage({
   const offerFullInstall =
     fullInstall !== null &&
     hardware.videoUnsupportedReason === "pytorch_not_installed";
+
+  useEffect(() => {
+    if (!active || !isTauri) return;
+    void checkMediaCodecsOnce(desktopMissingMediaCodecPackages, (command) => {
+      toast.warning(translate("desktopShell.mediaCodecs.title"), {
+        description: translate("desktopShell.mediaCodecs.description", { command }),
+        duration: Infinity,
+        action: {
+          label: translate("desktopShell.mediaCodecs.copy"),
+          onClick: () => void copyToClipboard(command),
+        },
+      });
+    });
+  }, [active]);
 
   useEffect(() => {
     if (active && hardware.loaded && hardware.videoSupported === false) {
@@ -4223,7 +4239,7 @@ function VideoGenerator({
       {gpuChoices.length > 0 && (
         <AdvancedSelect
           label="GPU"
-          hint="Which card this model loads on. Auto uses whichever device torch is pointing at, which on a mixed box is not necessarily the largest. A video model is never split across cards, so this is one choice, not a pool."
+          hint="Which card this model loads on. Auto uses whichever device torch is pointing at, which on a mixed box is not necessarily the largest. A video model is never split across cards, so this is one choice, not a pool. Only cards in this machine are listed: using two machines (for example two DGX Sparks) for one job is not part of this release."
           value={selectedGpu}
           onValueChange={setSelectedGpu}
           options={[
