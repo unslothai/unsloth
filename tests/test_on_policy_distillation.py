@@ -266,6 +266,18 @@ def test_adapter_off_teacher_scores_the_base():
     assert teacher._unsloth_adapter_off_student_model is inner
 
 
+def test_adapter_off_teacher_generates_with_the_adapter_off():
+    # GKD seq_kd calls teacher.generate, which must not resolve to the student's own generate with LoRA on.
+    student = FakeLora(ToyCausalLM())
+    seen = []
+    student.generate = (
+        lambda *a, **k: seen.append((student.enabled, torch.is_grad_enabled())) or "ids"
+    )
+    teacher = opd.AdapterOffTeacher(student)
+    assert teacher.generate(torch.ones(1, 2, dtype = torch.long)) == "ids"
+    assert seen == [(False, False)] and student.enabled
+
+
 def test_adapter_off_teacher_nested_disable_keeps_adapter_off():
     student = FakeLora(ToyCausalLM())
     teacher = opd.AdapterOffTeacher(student)

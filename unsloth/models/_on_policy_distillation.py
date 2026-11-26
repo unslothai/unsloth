@@ -113,6 +113,11 @@ class AdapterOffTeacher(torch.nn.Module):
     def forward(self, *args, **kwargs):
         return self._unsloth_student(*args, **kwargs)
 
+    def generate(self, *args, **kwargs):
+        # GKD seq_kd samples targets from the teacher: the base model's, so with the adapter off as well.
+        with torch.no_grad(), _adapter_off(self._unsloth_student):
+            return self._unsloth_student.generate(*args, **kwargs)
+
     def __repr__(self):
         return f"AdapterOffTeacher({type(self._unsloth_adapter_off_student_model).__name__}, adapter disabled)"
 
