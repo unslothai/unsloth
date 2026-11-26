@@ -187,7 +187,9 @@ def test_download_egress_qualification_respects_cancellation(tmp_path, system_cm
 
     monkeypatch.setattr(mxc_probe, "probe", probe)
     plan = replace(_download_plan(tmp_path), cancel_event = stop)
-    with pytest.raises(mxc_policy.MxcPolicyError, match = "cancelled during MXC egress qualification"):
+    with pytest.raises(
+        mxc_policy.MxcPolicyError, match = "cancelled during MXC egress qualification"
+    ):
         mxc_policy.build_launch_request(plan)
 
 
