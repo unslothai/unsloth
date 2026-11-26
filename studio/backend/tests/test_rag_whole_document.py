@@ -1322,11 +1322,15 @@ def test_attachment_overviews_cover_both_files_without_discarding_project_hits(
         {"chunkId": "a2", "documentId": "a", "text": "Next alpha match"},
         {"chunkId": "p", "documentId": "p", "text": "Related project match"},
     ]
-    monkeypatch.setattr(tool, "search_for_autoinject", lambda **_: (tool.render_sources(hits), hits))
+    monkeypatch.setattr(
+        tool, "search_for_autoinject", lambda **_: (tool.render_sources(hits), hits)
+    )
 
-    text = _injected_text(inf_tools.build_rag_autoinject(
-        _convo(query), {"thread_id": "t1", "project_id": "p1", "default_top_k": 3}
-    ))
+    text = _injected_text(
+        inf_tools.build_rag_autoinject(
+            _convo(query), {"thread_id": "t1", "project_id": "p1", "default_top_k": 3}
+        )
+    )
     assert "Strong alpha match" in text and "Related project match" in text
     assert ("Bravo opening" in text) is include_second
     assert ("Next alpha match" in text) is not include_second
@@ -1340,8 +1344,12 @@ def test_an_opening_that_does_not_fit_preserves_existing_citation_ids(rag_conn, 
         {"chunkId": "a1", "documentId": "a", "text": "Alpha item"},
         {"chunkId": "a2", "documentId": "a", "text": "Another alpha item"},
     ]
-    monkeypatch.setattr(tool, "search_for_autoinject", lambda **_: (tool.render_sources(hits), hits))
-    monkeypatch.setattr(inf_tools, "_text_token_cost", lambda text, _: 2048 if "Bravo opening" in text else 100)
+    monkeypatch.setattr(
+        tool, "search_for_autoinject", lambda **_: (tool.render_sources(hits), hits)
+    )
+    monkeypatch.setattr(
+        inf_tools, "_text_token_cost", lambda text, _: 2048 if "Bravo opening" in text else 100
+    )
 
     result = inf_tools.build_rag_autoinject(
         _convo("Summarize both attached documents."),

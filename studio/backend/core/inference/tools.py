@@ -16539,10 +16539,15 @@ def _build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> d
             covered = None
         if covered:
             candidates, keep_first = covered
-            found = _trim(
-                render_sources(candidates), candidates, budget if not enabled else None,
-                keep_first = keep_first,
-            ) or found
+            found = (
+                _trim(
+                    render_sources(candidates),
+                    candidates,
+                    budget if not enabled else None,
+                    keep_first = keep_first,
+                )
+                or found
+            )
         if not found:
             logger.info("RAG auto-inject: no matching passage; skipping")
             return None
