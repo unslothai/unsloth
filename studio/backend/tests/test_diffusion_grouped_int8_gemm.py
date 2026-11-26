@@ -308,3 +308,50 @@ def test_block_ptr_removed_detection():
     )
     assert kernels.block_ptr_removed(types.SimpleNamespace(make_block_ptr = working))
     assert kernels.block_ptr_removed(types.SimpleNamespace())
+
+
+def _eligible_call(monkeypatch, launch):
+    import torch
+    from types import SimpleNamespace
+
+    rules = ((64, fg._PHASE, (6,)),)
+    monkeypatch.setattr(fg, "_DEVICE", {0: rules})
+    monkeypatch.setattr(fg, "_STATE", dict(fg._STATE))
+    monkeypatch.setattr(fg, "fused_config", lambda index: fg._DEVICE.get(index))
+    monkeypatch.setattr(fg, "covered", lambda *a, **k: True)
+    monkeypatch.setattr(fg, "fused_mode", lambda: "on")
+    monkeypatch.setattr(fg, "launch", launch)
+    xq = SimpleNamespace(is_cuda = True, shape = (17, 3072), device = torch.device("cuda", 0))
+    return lambda: fg.grouped_mm_dequant(xq, None, None, None, None, None, None, 6, 32)
+
+
+def test_launch_oom_falls_back_for_that_call_only(monkeypatch):
+    import torch
+
+    launches = []
+
+    def launch(*_args):
+        launches.append(True)
+        if len(launches) == 1:
+            raise torch.OutOfMemoryError("simulated transient launch allocation failure")
+        return "fused", None
+
+    call = _eligible_call(monkeypatch, launch)
+    assert call() is None
+    assert fg._DEVICE[0] is not None
+    assert call() == "fused"
+    assert len(launches) == 2
+
+
+def test_launch_error_still_disables_the_card(monkeypatch):
+    launches = []
+
+    def launch(*_args):
+        launches.append(True)
+        raise RuntimeError("simulated compile failure")
+
+    call = _eligible_call(monkeypatch, launch)
+    assert call() is None
+    assert fg._DEVICE[0] is None
+    assert call() is None
+    assert len(launches) == 1
