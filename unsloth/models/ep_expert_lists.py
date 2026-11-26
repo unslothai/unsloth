@@ -256,32 +256,58 @@ def keep_remote_on_meta(expert):
 
 
 def remote_stand_in(p, tag):
-    """A meta parameter in place of `p` (another rank's expert): same type for bitsandbytes 4-bit (PEFT reads its
-    quant_type), its logical shape kept for list_shard_problem."""
+    """A meta parameter in place of `p` (another rank's expert). A bitsandbytes 4-bit weight stays a packed
+    Params4bit with a meta QuantState (PEFT reads quant_type, Unsloth sets quant_state.dtype after the load); its
+    logical shape is kept for list_shard_problem."""
     shape = _logical_shape(p)
-    meta = torch.empty(p.shape, dtype = p.dtype, device = "meta")
     new = None
     if _tpn()._is_params4bit(p):
         try:
-            new = type(p)(
-                meta,
-                requires_grad = False,
-                quant_state = None,
-                blocksize = p.blocksize,
-                compress_statistics = p.compress_statistics,
-                quant_type = p.quant_type,
-                quant_storage = p.quant_storage,
-                module = getattr(p, "module", None),
-                bnb_quantized = True,
-            )
+            new = _params4bit_stand_in(p, shape)
         except Exception:
             new = None
     if new is None:
-        new = nn.Parameter(meta, requires_grad = p.requires_grad)
+        new = nn.Parameter(
+            torch.empty(p.shape, dtype = p.dtype, device = "meta"), requires_grad = p.requires_grad
+        )
     if hasattr(p, "_is_hf_initialized"):
         new._is_hf_initialized = p._is_hf_initialized
     setattr(new, _REMOTE, (shape, tag))
     return new
+
+
+def _params4bit_stand_in(p, shape):
+    from bitsandbytes.functional import QuantState
+
+    state = getattr(p, "quant_state", None)
+    dtype = getattr(state, "dtype", None) or (
+        p.dtype if p.dtype.is_floating_point else torch.float16
+    )
+    blocksize = getattr(p, "blocksize", None) or 64
+    numel = 1
+    for n in shape:
+        numel *= n
+    storage = getattr(p, "quant_storage", torch.uint8)
+    packed = torch.empty((-(-numel // 2) // storage.itemsize, 1), dtype = storage, device = "meta")
+    meta_state = QuantState(
+        absmax = torch.empty(-(-numel // blocksize), dtype = torch.float32, device = "meta"),
+        shape = torch.Size(shape),
+        code = torch.empty(16, dtype = torch.float32, device = "meta"),
+        blocksize = blocksize,
+        quant_type = getattr(p, "quant_type", "nf4"),
+        dtype = dtype,
+    )
+    return type(p)(
+        packed,
+        requires_grad = False,
+        quant_state = meta_state,
+        blocksize = blocksize,
+        compress_statistics = getattr(p, "compress_statistics", True),
+        quant_type = getattr(p, "quant_type", "nf4"),
+        quant_storage = storage,
+        module = getattr(p, "module", None),
+        bnb_quantized = True,
+    )
 
 
 def is_remote(p):
