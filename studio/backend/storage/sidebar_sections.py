@@ -30,7 +30,15 @@ def _merge_order(primary: list[str], other: list[str]) -> list[str]:
     return list(dict.fromkeys(result))
 
 
-def _edited_order(saved, base, layout, importing, moves):
+def _edited_order(
+    saved,
+    base,
+    layout,
+    importing,
+    moves,
+    *,
+    switched_to_manual = False,
+):
     if not importing and base != layout:
         common = set(base).intersection(layout)
         reordered = [key for key in base if key in common] != [
@@ -44,7 +52,7 @@ def _edited_order(saved, base, layout, importing, moves):
         elif not moves:
             return _merge_order(layout, saved)
     if moves and base != layout:
-        if saved == base and set(saved).issubset(layout):
+        if saved == base and (switched_to_manual or set(saved).issubset(layout)):
             return _merge_order(layout, saved)
         order = _merge_order(saved, layout)
         for move in moves:
@@ -136,7 +144,13 @@ def _merge(
                 removed = {row for row in set(previous).difference(ids) if pages.get(row) != key}
                 saved = [row for row in saved if row not in removed]
                 previous = [row for row in previous if row not in removed]
-            row_order[key] = _edited_order(saved, previous, ids, importing, moves)
+            switched_to_manual = (
+                base["sections"].get(key, {}).get("sort") == "updated"
+                and layout["sections"].get(key, {}).get("sort") == "manual"
+            )
+            row_order[key] = _edited_order(
+                saved, previous, ids, importing, moves, switched_to_manual = switched_to_manual
+            )
     result["rowOrder"] = {key: ids for key, ids in row_order.items() if key in live}
     return result
 

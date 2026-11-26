@@ -1068,6 +1068,7 @@ def test_sidebar_sections_cancelled_placements_keep_the_concurrent_order(client)
         ("apbc", ("bac", "b", "a", "top"), None, "bapc", "manual"),
         ("abcd", ("cdba", "d", "c", "bottom"), None, "cdba", "updated"),
         ("axbc", ("bca", "b", "c", "top"), None, "bca", "updated"),
+        ("abcp", ("cba", "b", "a", "top"), None, "cbap", "updated"),
     ],
     ids = [
         "independent",
@@ -1076,6 +1077,7 @@ def test_sidebar_sections_cancelled_placements_keep_the_concurrent_order(client)
         "unseen-page",
         "sort-switch",
         "sort-switch-hidden-row",
+        "sort-switch-unseen-page",
     ],
 )
 def test_sidebar_sections_merge_concurrent_row_placements(
