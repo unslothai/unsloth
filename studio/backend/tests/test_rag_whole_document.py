@@ -1300,3 +1300,44 @@ def test_real_ingestion_feeds_whole_document(rag_conn, stub_embeddings, tmp_path
     assert "Revenue rose" in injected
     assert "xyzzy-sentinel" in injected
     assert injected.count("<chunk id=") == doc["num_chunks"]
+
+
+def test_project_sources_retry_below_the_automatic_floor(rag_conn, monkeypatch):
+    calls = []
+
+    def search(**kwargs):
+        calls.append(kwargs)
+        return None if kwargs["min_dense_score"] is not None else (
+            "Annual leave is twenty days.",
+            [{"chunkId": "leave", "documentId": "handbook", "filename": "handbook.txt"}],
+        )
+
+    monkeypatch.setattr(tool, "search_for_autoinject", search)
+    result = inf_tools.build_rag_autoinject(
+        _convo("How many vacation days do I get?"), {"project_id": "p1", "autoinject": True}
+    )
+    assert "Annual leave is twenty days." in _injected_text(result)
+    assert len(calls) == 2 and all(call["scope_project_id"] == "p1" for call in calls)
+
+
+def test_oversized_attachment_does_not_block_project_fallback(rag_conn, monkeypatch):
+    scope = store.thread_scope("t1")
+    _add_doc(rag_conn, scope, "a", "notes.txt", "h1", ["Meeting notes"], tokens = [7000])
+
+    def search(**kwargs):
+        if kwargs["min_dense_score"] is not None:
+            return None
+        if kwargs.get("scope_project_id"):
+            return "Annual leave is twenty days.", [{
+                "chunkId": "leave", "documentId": "handbook", "filename": "handbook.txt",
+                "text": "Annual leave is twenty days.",
+            }]
+        return "Meeting notes", tool.document_opening(scope_thread_id = "t1", document_id = "a")
+
+    monkeypatch.setattr(tool, "search_for_autoinject", search)
+    result = inf_tools.build_rag_autoinject(
+        _convo("How many vacation days do I get?"),
+        {"thread_id": "t1", "project_id": "p1", "autoinject": True},
+    )
+    text = _injected_text(result)
+    assert "Annual leave is twenty days." in text and "Meeting notes" in text

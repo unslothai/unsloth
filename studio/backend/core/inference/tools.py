@@ -16347,13 +16347,15 @@ def _build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> d
             project_id = rag_scope.get("project_id")
             if project_id:
                 try:
-                    proj = search_for_autoinject(
-                        query = query,
-                        scope_project_id = project_id,
-                        top_k = top_k,
-                        min_dense_score = floor,
+                    project_query = {
                         **_scope_retrieval_kwargs(rag_scope),
-                    )
+                        "query": query,
+                        "scope_project_id": project_id,
+                        "top_k": top_k,
+                    }
+                    proj = search_for_autoinject(min_dense_score = floor, **project_query)
+                    if proj is None and enabled and not instruction_pin.is_thin_query(query):
+                        proj = search_for_autoinject(min_dense_score = None, **project_query)
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("RAG project retrieval (whole-doc companion) failed: %s", exc)
                     proj = None
@@ -16450,6 +16452,17 @@ def _build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> d
                     min_dense_score = floor,
                     **_scope_retrieval_kwargs(rag_scope),
                 )
+                if (
+                    not found
+                    and (rag_scope.get("kb_id") or rag_scope.get("project_id"))
+                    and not instruction_pin.is_thin_query(query)
+                ):
+                    found = retrieve(
+                        scope_kb_id = rag_scope.get("kb_id"),
+                        scope_project_id = rag_scope.get("project_id"),
+                        min_dense_score = None,
+                        **_scope_retrieval_kwargs(rag_scope),
+                    )
                 # Do not let project hits crowd out the attachment.
                 grounded = (
                     bool(found)
@@ -16472,16 +16485,6 @@ def _build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> d
                             found = (render_sources(merged), merged)
                     elif thread_found:
                         found = thread_found
-                if (
-                    not found
-                    and rag_scope.get("kb_id")
-                    and not instruction_pin.is_thin_query(query)
-                ):
-                    found = retrieve(
-                        scope_kb_id = rag_scope["kb_id"],
-                        min_dense_score = None,
-                        **_scope_retrieval_kwargs(rag_scope),
-                    )
         except Exception as exc:  # noqa: BLE001
             logger.warning("RAG auto-inject retrieval failed: %s", exc)
             return None
