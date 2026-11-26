@@ -195,7 +195,7 @@ import {
   useNvfp4Diffusion,
   useNvfp4DiffusionKnown,
 } from "@/hooks/use-host-class";
-import { clipPrecisionSelection } from "@/lib/clip-precision";
+import { clipPrecisionSelection, clipTextEncoderPrecisionSelection } from "@/lib/clip-precision";
 import { loraFuseLabel } from "@/features/images/lib/lora-fuse";
 import { reseedAction } from "@/lib/failed-load-reseed";
 import {
@@ -1288,6 +1288,7 @@ type VideoLoadAdvanced = Pick<
   | "int8_attention"
   | "transformer_cache"
   | "transformer_quant"
+  | "text_encoder_quant"
   | "family_override"
   | "gpu_ids"
   | "allow_oversized_load"
@@ -1522,9 +1523,14 @@ function VideoGenerator({
   const [transformerQuant, setTransformerQuant] = useState<
     "auto" | "none" | "fp8" | "int8" | "nvfp4" | "mxfp8"
   >("auto");
+  // Omitted ("auto") takes the family default encoder; "none" pins the dense bf16 one.
+  const [textEncoderQuant, setTextEncoderQuant] = useState<
+    "auto" | NonNullable<VideoLoadAdvanced["text_encoder_quant"]>
+  >("auto");
   useEffect(() => {
     setTransformerQuant((v) => nvfp4SelectionFallback(v, nvfp4DiffusionKnown, nvfp4Diffusion));
-  }, [nvfp4Diffusion, nvfp4DiffusionKnown, transformerQuant]);
+    setTextEncoderQuant((v) => nvfp4SelectionFallback(v, nvfp4DiffusionKnown, nvfp4Diffusion));
+  }, [nvfp4Diffusion, nvfp4DiffusionKnown, transformerQuant, textEncoderQuant]);
   const lastLoad = useRef<({ repoId: string } & VideoLoadOptions) | null>(null);
   const [canReapply, setCanReapply] = useState(false);
   // Pending LoRA picks; the resident build's baked set is status.baked_lora_specs.
@@ -2155,6 +2161,7 @@ function VideoGenerator({
     const action = reseedAction(status, record != null, afterFailedLoad);
     if (action === "auto") {
       setTransformerQuant("auto");
+      setTextEncoderQuant("auto");
       setMemoryMode("auto");
       setAttentionBackend("auto");
       setInt8Attention("auto");
@@ -2170,6 +2177,13 @@ function VideoGenerator({
       ) ?? null,
     );
     if (quant) setTransformerQuant(quant);
+    const encoder = resolvedSelectValue(record.text_encoder_quant, (v) =>
+      // "off" maps to Dense, NOT Default, or a pinned Dense would silently take the family scheme.
+      (["auto", "none", "fp8", "fp8_dynamic", "int8", "nvfp4"] as const).find(
+        (o) => o === v || (o === "none" && v === "off"),
+      ) ?? null,
+    );
+    if (encoder) setTextEncoderQuant(encoder);
     const memory = resolvedSelectValue(record.memory_mode, (v) =>
       (["auto", "fast", "balanced", "low_vram"] as const).find((o) => o === v) ?? null,
     );
@@ -2753,6 +2767,8 @@ function VideoGenerator({
       // The precision the clip ran with, for the next load (an NVFP4 clip on a build with NVFP4 off falls back).
       const precision = clipPrecisionSelection(video.transformer_quant, video.model_kind);
       if (precision) setTransformerQuant(precision);
+      const encoderPrecision = clipTextEncoderPrecisionSelection(video.text_encoder_quant, video.model_kind);
+      if (encoderPrecision) setTextEncoderQuant(encoderPrecision);
       const size = fitVideoSize(video.width, video.height, sizeLimits);
       resolutionChosen.current = true;
       setResolutionIntent(size);
@@ -3215,6 +3231,7 @@ function VideoGenerator({
     int8Attention,
     transformerCache,
     transformerQuant,
+    textEncoderQuant,
     familyOverride,
     selectedGpu,
     gpuChoices,
@@ -3226,6 +3243,7 @@ function VideoGenerator({
     int8Attention,
     transformerCache,
     transformerQuant,
+    textEncoderQuant,
     familyOverride,
     selectedGpu,
     gpuChoices,
@@ -3246,6 +3264,7 @@ function VideoGenerator({
           kind === "pipeline" && controls.transformerQuant !== "auto"
             ? controls.transformerQuant
             : undefined,
+        text_encoder_quant: controls.textEncoderQuant === "auto" ? undefined : controls.textEncoderQuant,
         family_override: familyOverrideRequired ? explicitFamily(controls.familyOverride) : undefined,
         // Dropped when the chosen card is gone so a stale pick loads automatically instead of 400ing.
         gpu_ids:
@@ -3269,6 +3288,7 @@ function VideoGenerator({
         model_kind: "gguf",
         hf_token: hfApiToken(getHfToken()),
         transformer_quant: advanced.transformer_quant,
+        text_encoder_quant: advanced.text_encoder_quant,
         memory_mode: advanced.memory_mode,
         family_override: advanced.family_override,
         // The plan sizes its file set against the chosen card.
@@ -3347,6 +3367,7 @@ function VideoGenerator({
           int8_attention: advanced.int8_attention,
           transformer_cache: advanced.transformer_cache,
           transformer_quant: advanced.transformer_quant,
+          text_encoder_quant: advanced.text_encoder_quant,
           family_override: advanced.family_override,
           // Not an Advanced control: the partition is chosen per pick.
           h3_task: opts.h3Task,
@@ -3513,6 +3534,7 @@ function VideoGenerator({
           // Without the token the lookup fails on a gated base and drops the companion entry.
           hf_token: hfApiToken(getHfToken()),
           transformer_quant: advanced.transformer_quant,
+          text_encoder_quant: advanced.text_encoder_quant,
           memory_mode: advanced.memory_mode,
           family_override: advanced.family_override,
           // The two H3 denoisers are separate downloads.
@@ -4461,6 +4483,24 @@ function VideoGenerator({
           <span className="text-xs text-muted-foreground/60">Full-pipeline models only</span>
         </div>
       )}
+      <AdvancedSelect
+        label="Text encoder precision"
+        hint={`Shrinks the text encoder to save memory, at some cost to quality. Default lets the model choose, which can be its hosted quantized encoder; pick Dense (bf16) to pin the released encoder. FP8 (storage) is the safe pick and the only one that works with CPU offload. FP8 (compute) needs an RTX 40 series or newer.${nvfp4Diffusion ? " NVFP4 is the smallest." : ""} Restoring a clip's settings restores the precision it ran with. The loaded build below reports what was applied.`}
+        badge={<ResolvedBadge status={status} controlKey="text_encoder_quant" />}
+        value={textEncoderQuant}
+        onValueChange={(v) => setTextEncoderQuant(v as typeof textEncoderQuant)}
+        options={withNvfp4Option(
+          [
+            ["auto", "Default"],
+            ["none", "Dense (bf16)"],
+            ["fp8", "FP8 (storage)"],
+            ["fp8_dynamic", "FP8 (compute)"],
+            ["int8", "INT8"],
+            ["nvfp4", "NVFP4"],
+          ] as SelectOption[],
+          nvfp4Diffusion,
+        )}
+      />
       <AdvancedSelect
         label="Attention"
         hint={ATTENTION_SELECT_HINT}

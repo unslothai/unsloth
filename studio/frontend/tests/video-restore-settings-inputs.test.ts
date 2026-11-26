@@ -4,9 +4,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import ts from "@typescript/typescript6";
+import { clipPrecisionSelection, clipTextEncoderPrecisionSelection } from "../src/lib/clip-precision.ts";
 import { readSrc } from "./helpers/kit.ts";
 
-function restoreSettings() {
+function restoreSettings(extra: Record<string, unknown> = {}) {
   const source = readSrc("features/video/video-page.tsx");
   const tree = ts.createSourceFile("video-page.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
   const declarations: string[] = [];
@@ -31,6 +32,7 @@ function restoreSettings() {
     fitVideoSize: (width: number, height: number) => [width, height],
     videoSizeAspect: () => ({ key: "16:9", portrait: false }),
     toast: { success: (message: string) => toasts.push(message) },
+    ...extra,
   };
   const scope = new Proxy(known, {
     has: (target, key) => typeof key === "string" && (key in target || !(key in globalThis)),
@@ -105,4 +107,36 @@ test("restoring a restyle recipe reopens Restyle with its prompt and seed, leavi
   for (const setter of ["setPrompt", "setSteps", "setGuidance", "setResolutionIntent", "setFirstFrame", "setReferenceImages", "setRestoreGeneration"])
     assert.ok(!(setter in state), setter);
   assert.deepEqual(toasts, ["Settings restored. Add the source clip again to reproduce this clip."]);
+});
+
+test("restoring a clip restores the text encoder precision it ran with, beside the transformer one", () => {
+  const helpers = { clipPrecisionSelection, clipTextEncoderPrecisionSelection };
+  for (const [recorded, want] of [
+    ["fp8", "fp8"],
+    ["fp8_dynamic", "fp8_dynamic"],
+    ["int8", "int8"],
+    ["nvfp4", "nvfp4"],
+    ["off", "none"],
+    // no encoder quant recorded: the family default, not a pinned dense encoder
+    [null, "auto"],
+  ] as const) {
+    const { restore, state } = restoreSettings(helpers);
+    restore({ ...recipe, model_kind: "pipeline", transformer_quant: "int8", text_encoder_quant: recorded });
+    assert.equal(state.setTransformerQuant, "int8");
+    assert.equal(state.setTextEncoderQuant, want, String(recorded));
+  }
+  // an old clip with no precision record keeps the current pick
+  const { restore, state } = restoreSettings(helpers);
+  restore({ ...recipe });
+  assert.ok(!("setTextEncoderQuant" in state));
+});
+
+test("the video load sends the text encoder precision the select holds", () => {
+  const source = readSrc("features/video/video-page.tsx");
+  assert.match(source, /label="Text encoder precision"/);
+  assert.match(
+    source,
+    /text_encoder_quant: controls\.textEncoderQuant === "auto" \? undefined : controls\.textEncoderQuant/,
+  );
+  assert.equal(source.match(/text_encoder_quant: advanced\.text_encoder_quant/g)?.length, 3);
 });
