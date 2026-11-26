@@ -275,7 +275,7 @@ def _cached_core(
             rotary_emb = rotary_emb,
             attention_mask = attention_mask,
             target_token_mask = block_rows,
-            layer_cache = layer_cache(index_block),
+            layer_cache = block_layer_cache(block, layer_cache(index_block)),
             kv_cache_mode = "cached",
             cache_write_slice = None,
             segments = None,
@@ -454,6 +454,8 @@ def _graph_plan(module: Any, args: tuple, kwargs: dict) -> Optional[tuple]:
         key, value = getattr(entry, "k", None), getattr(entry, "v", None)
         if not torch.is_tensor(key) or not torch.is_tensor(value):
             return None
+        if _is_shared(key) or _is_shared(value):
+            return None
         kv_bytes += key.numel() * key.element_size() + value.numel() * value.element_size()
         kv.append((key, value))
     if kv_bytes > GRAPH_KV_MAX_BYTES:
@@ -629,6 +631,8 @@ def _make_forward(mod: Any, stock: Any) -> Any:
         share_kv = batch_size > 1 and shared_prefix_kv_enabled()
         for index_block, block in enumerate(self.transformer_blocks):
             layer_cache = kv_cache.get_layer(index_block) if kv_cache is not None else None
+            if layer_cache is not None and kv_cache_mode == "cached":
+                layer_cache = block_layer_cache(block, layer_cache)
             joint_hidden_states = block(
                 hidden_states = joint_hidden_states,
                 modulation = modulation,
@@ -643,7 +647,12 @@ def _make_forward(mod: Any, stock: Any) -> Any:
             )
             if layer_cache is not None and cache_write_slice is not None and compact_kv:
                 _compact_layer_cache(layer_cache)
-            if layer_cache is not None and cache_write_slice is not None and share_kv:
+            if (
+                layer_cache is not None
+                and cache_write_slice is not None
+                and share_kv
+                and _too_large_to_graph(layer_cache, len(self.transformer_blocks))
+            ):
                 # Per block, so the prefill never holds n copies of every layer at once.
                 share_prefix_rows((layer_cache,))
 
@@ -679,53 +688,131 @@ def shared_prefix_kv_enabled() -> bool:
 
 
 _INT_VIEW = {1: "int8", 2: "int16", 4: "int32", 8: "int64"}
-SHARED_PREFIX_STATS = {"shared": 0, "distinct": 0, "bytes": 0}
+SHARED_PREFIX_STATS = {"shared": 0, "distinct": 0, "bytes": 0, "densified": 0}
+
+
+def _is_shared(t: Any) -> bool:
+    """A prefix entry ``share_prefix_rows`` stored as one row expanded to n (stock entries never have batch stride 0)."""
+    import torch
+    return torch.is_tensor(t) and t.dim() == 4 and t.shape[0] > 1 and t.stride(0) == 0
+
+
+def _too_large_to_graph(entry: Any, layers: int) -> bool:
+    """Only a prefix ``graph_plan`` refuses (all layers' K/V over GRAPH_KV_MAX_BYTES) is shared, so a shared entry
+    never reaches a CUDA graph key, which keys on strides; smaller prefixes keep the stock layout."""
+    import torch
+
+    k, v = getattr(entry, "k", None), getattr(entry, "v", None)
+    if not torch.is_tensor(k) or not torch.is_tensor(v):
+        return False
+    per_layer = k.numel() * k.element_size() + v.numel() * v.element_size()
+    return per_layer * max(int(layers), 1) > GRAPH_KV_MAX_BYTES
+
+
+def _plain_eager(block: Any) -> bool:
+    """No compiled call, per-block graph or hook wraps the block, so nothing guards on the K/V strides."""
+    return (
+        getattr(block, "_compiled_call_impl", None) is None
+        and "forward" not in vars(block)
+        and getattr(block, "_diffusers_hook", None) is None
+    )
+
+
+def block_layer_cache(block: Any, entry: Any) -> Any:
+    """The cache entry block ``block`` reads on a cached step. A shared entry goes to a compiled or graphed block as a
+    dense copy with the stock layout, so Dynamo guards and graph keys match a distinct-prompt batch of the same shape
+    (no recompile, no new key); the copy lives for this block's call only, so the cache keeps one row per layer. A plain
+    eager block reads the expanded view directly (``torch.cat`` copies it as it copies n rows)."""
+    if entry is None or not (
+        _is_shared(getattr(entry, "k", None)) or _is_shared(getattr(entry, "v", None))
+    ):
+        return entry
+    if _plain_eager(block):
+        return entry
+    import copy
+
+    dense = copy.copy(entry)
+    dense.k = entry.k.contiguous()
+    dense.v = entry.v.contiguous()
+    SHARED_PREFIX_STATS["densified"] += 1
+    return dense
+
+
+def _capturing_on(device: Any) -> bool:
+    """Whether a CUDA graph records on the current stream of ``device``'s card (queried on that card, not the current
+    one). An unanswerable query counts as capturing: the caller then keeps every row."""
+    import torch
+
+    if getattr(device, "type", None) != "cuda":
+        return False
+    try:
+        current = torch.cuda.current_device()
+        index = current if device.index is None else int(device.index)
+        if index == current:
+            return bool(torch.cuda.is_current_stream_capturing())
+        with torch.cuda.device(index):
+            return bool(torch.cuda.is_current_stream_capturing())
+    except Exception:  # noqa: BLE001
+        return True
 
 
 def share_prefix_rows(entries: Any) -> int:
     """One prompt rendered n times stores n bit-identical copies of the prefix K/V; keep one, expanded back to n.
 
     Every cached step reads an entry through ``torch.cat``, which copies an expanded view exactly as it copies the n
-    stored rows. Rows are compared bitwise (one host sync per entry, prefill only), so -0.0 / +0.0 or NaN payloads keep
-    every copy. ``entries``: layer caches holding ``k`` / ``v``. Returns bytes freed."""
+    stored rows; compiled or graphed blocks get a dense copy instead (``block_layer_cache``). Rows are compared bitwise
+    (one host sync per entry, prefill only), so -0.0 / +0.0 or NaN payloads keep every copy. Both replacements are
+    built before either is stored, and an out-of-memory error propagates with the entry untouched. ``entries``: layer
+    caches holding ``k`` / ``v``. Returns bytes freed."""
     import torch
 
+    oom = getattr(torch, "OutOfMemoryError", torch.cuda.OutOfMemoryError)
+    if torch.compiler.is_compiling():
+        return 0
+    if torch.cuda.is_available() and _capturing_on(torch.device("cuda")):
+        return 0
     freed = 0
     try:
-        if torch.compiler.is_compiling() or (
-            torch.cuda.is_available() and torch.cuda.is_current_stream_capturing()
-        ):
-            return 0
         for entry in entries:
             pair = [getattr(entry, name, None) for name in ("k", "v")]
             if any(
                 not torch.is_tensor(t)
                 or t.dim() != 4
                 or t.shape[0] < 2
-                or t.stride(0) == 0
+                or not t.is_contiguous()
                 or t.shape[0] != pair[0].shape[0]
                 or t.element_size() not in _INT_VIEW
                 for t in pair
             ):
                 continue
-            same = torch.stack(
-                [
-                    torch.eq(bits[1:], bits[:1]).all()
-                    for bits in (t.view(getattr(torch, _INT_VIEW[t.element_size()])) for t in pair)
-                ]
-            ).all()
-            if not bool(same):
-                SHARED_PREFIX_STATS["distinct"] += 1
+            # The comparison syncs the K/V's own card: skip it while that card records a graph.
+            if any(_capturing_on(t.device) for t in pair):
                 continue
-            for name, t in zip(("k", "v"), pair):
-                setattr(entry, name, t[:1].clone().expand_as(t))
-                freed += (t.shape[0] - 1) * (t.numel() // t.shape[0]) * t.element_size()
+            try:
+                same = torch.stack(
+                    [
+                        torch.eq(bits[1:], bits[:1]).all()
+                        for bits in (
+                            t.view(getattr(torch, _INT_VIEW[t.element_size()])) for t in pair
+                        )
+                    ]
+                ).all()
+                if not bool(same):
+                    SHARED_PREFIX_STATS["distinct"] += 1
+                    continue
+                shared = [t[:1].clone().expand_as(t) for t in pair]
+            except oom:
+                raise
+            except Exception:  # noqa: BLE001 - a memory saving only: this entry keeps every row
+                continue
+            entry.k, entry.v = shared
+            freed += sum(
+                (t.shape[0] - 1) * (t.numel() // t.shape[0]) * t.element_size() for t in pair
+            )
             SHARED_PREFIX_STATS["shared"] += 1
+    finally:
         SHARED_PREFIX_STATS["bytes"] += freed
-        return freed
-    except Exception:  # noqa: BLE001 - a memory saving only; an entry not yet shared keeps every row
-        SHARED_PREFIX_STATS["bytes"] += freed
-        return freed
+    return freed
 
 
 def _compact_layer_cache(layer_cache: Any) -> None:
