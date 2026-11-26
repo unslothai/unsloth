@@ -25,6 +25,7 @@ import {
 import { isMobileViewport, useIsMobile } from "@/hooks/use-mobile";
 import { useT } from "@/i18n";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
+import { openLink } from "@/lib/open-link";
 import { snapInlinePadding } from "@/lib/snap-padding";
 import { cn } from "@/lib/utils";
 import {
@@ -138,8 +139,8 @@ interface ModelSelectorProps {
   };
   /** Hub filter the Search Hub button opens with. Also shows Search Hub on curated task pickers. */
   hubCapability?: HubCapabilityFilter;
-  /** Tasks the Search Hub link narrows the Audio filter to, when the page's runs differ from `task`. */
-  hubTask?: HfTaskFilter;
+  /** A page Search Hub opens instead of a Hub search, for a picker whose models no Hub filter lists. */
+  hubLink?: string;
   /** Trigger text when nothing is loaded. Defaults to "Select model"; task pages name what they
    *  pick so it reads as separate from the chat model. */
   placeholder?: string;
@@ -320,6 +321,7 @@ function ModelSelectorContent({
   resolveDownloadFootprint,
   onEject,
   onBrowseHub,
+  browseHubHint,
   onConfigureConnection,
   task,
   catalog,
@@ -342,6 +344,7 @@ function ModelSelectorContent({
   resolveDownloadFootprint?: ModelDownloadFootprintResolver;
   onEject?: (modelId?: string) => void;
   onBrowseHub?: () => void;
+  browseHubHint?: string;
   onConfigureConnection?: (providerId: string) => void;
   task?: HfTaskFilter;
   catalog?: CatalogGroup[];
@@ -593,6 +596,7 @@ function ModelSelectorContent({
               onSelect={handlePick}
               resolveDownloadFootprint={resolveDownloadFootprint}
               onBrowseHub={onBrowseHub}
+              browseHubHint={browseHubHint}
               onConfigureConnection={onConfigureConnection}
               onConfigure={openConfigPage}
               onEject={hasSelection && onEject ? onEject : undefined}
@@ -655,7 +659,7 @@ export function ModelSelector({
   cpuLoad,
   moreModels,
   hubCapability,
-  hubTask,
+  hubLink,
   placeholder,
   loaded,
 }: ModelSelectorProps) {
@@ -783,14 +787,17 @@ export function ModelSelector({
 
   function handleBrowseHub() {
     setOpen(false);
-    const linkedTask = hubTask ?? task;
+    if (hubLink) {
+      openLink(hubLink);
+      return;
+    }
     void navigate({
       to: "/hub",
       search: {
         tab: "discover",
         capability: hubCapability,
         audioTask:
-          hubCapability === "audio" && linkedTask ? [linkedTask].flat() : undefined,
+          hubCapability === "audio" && task ? [task].flat() : undefined,
       },
     });
   }
@@ -829,6 +836,7 @@ export function ModelSelector({
         onSelect={handleSelect}
         resolveDownloadFootprint={resolveDownloadFootprint}
         onEject={onEject ? handleEject : undefined}
+        browseHubHint={hubLink ? "Open these models on Hugging Face" : undefined}
         onBrowseHub={
           task && communityModelPolicy === "none" && !hubCapability
             ? undefined
