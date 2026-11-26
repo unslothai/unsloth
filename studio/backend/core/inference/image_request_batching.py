@@ -63,6 +63,16 @@ def collecting() -> bool:
     return bool(_OPEN)
 
 
+def seeded_join_enabled() -> bool:
+    """An explicit seed joins a batch only when opted in: batched pixels can differ slightly from a solo render's."""
+    return os.environ.get("UNSLOTH_STUDIO_IMAGE_BATCH_SEEDED", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
 def request_seeds(seed: Optional[int], n: int) -> list[int]:
     base = seed if seed is not None else secrets.randbelow(SEED_MASK + 1)
     return [(base + i) & SEED_MASK for i in range(n)]
@@ -147,8 +157,8 @@ async def generate(
     """None = render alone. ``key`` names no account, so any account joins; ``owner`` is the caller's.
     ``check`` raises when a joined member must leave (its own Stop); ``ride`` scopes it as rendering."""
     cap = batch_max()
-    # An explicit seed renders alone: a batch's pixels differ slightly from a lone render's.
-    if cap <= 1 or n >= cap or seed is not None:
+    # An explicit seed renders alone unless opted in: a batch's pixels differ slightly from a lone render's.
+    if cap <= 1 or n >= cap or (seed is not None and not seeded_join_enabled()):
         return None
     loop = asyncio.get_running_loop()
     batch = _OPEN.get(key)

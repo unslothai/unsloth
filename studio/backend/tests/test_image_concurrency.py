@@ -482,3 +482,53 @@ def test_a_lone_images_generate_request_renders_at_once_without_a_batch(studio):
     assert response.status_code == 200, response.text
     [call] = backend.calls
     assert call["prompts"] is None and call["prompt"] == "a fox"
+
+
+@pytest.mark.parametrize("path", ["/v1/images/generations", "/api/inference/images/generate"])
+def test_seeded_requests_join_a_batch_only_when_opted_in(studio, monkeypatch, path):
+    app, backend, saved = studio
+    body = _openai if path.startswith("/v1") else _create
+
+    async def run():
+        transport = httpx.ASGITransport(app = app)
+        async with httpx.AsyncClient(transport = transport, base_url = "http://studio") as client:
+            backend.rendering = True
+            sent = []
+            for account, prompt, seed in (("alice", "a fox", 11), ("bob", "a cat", 22)):
+                sent.append(
+                    asyncio.ensure_future(
+                        client.post(
+                            path,
+                            json = body(
+                                prompt,
+                                seed = seed,
+                                **({"n": 2} if path.startswith("/v1") else {"batch_size": 2}),
+                            ),
+                            headers = {"x-test-account": account},
+                        )
+                    )
+                )
+                await asyncio.sleep(0.2)
+            backend.rendering = False
+            return await asyncio.gather(*sent)
+
+    monkeypatch.delenv("UNSLOTH_STUDIO_IMAGE_BATCH_SEEDED", raising = False)
+    assert all(r.status_code == 200 for r in asyncio.run(run()))
+    assert _batched_calls(backend) == []
+    assert sorted(call["seed"] for call in backend.calls) == [11, 22]
+
+    backend.calls.clear()
+    saved.clear()
+    monkeypatch.setenv("UNSLOTH_STUDIO_IMAGE_BATCH_SEEDED", "1")
+    assert all(r.status_code == 200 for r in asyncio.run(run()))
+    [call] = backend.calls
+    # Each member keeps the seeds a lone request would use: base, base + 1.
+    assert call["seeds"] == [11, 12, 22, 23]
+    assert call["prompts"] == ["a fox", "a fox", "a cat", "a cat"]
+    images = sorted((record["account"], record["seed"], record["image"]) for record in saved)
+    assert images == [
+        ("alice", 11, "a fox#11"),
+        ("alice", 12, "a fox#12"),
+        ("bob", 22, "a cat#22"),
+        ("bob", 23, "a cat#23"),
+    ]
