@@ -1279,3 +1279,18 @@ def test_a_custom_cache_mtp_only_revision_keeps_the_older_quant_resolvable(
     assert len(rows) == 1
     monkeypatch.setattr(resolver, "_scan", (0.0, {}))
     assert "org/model-gguf" in resolver._build_index()
+
+
+def test_a_folded_symlink_alias_still_resolves_by_its_own_name(monkeypatch, tmp_path):
+    """The listing keeps the real folder; requests and per-model settings keyed on the alias still resolve."""
+    from core.inference import local_model_resolver as resolver
+
+    folder = tmp_path / "custom"
+    _touch(folder / "real" / "model-Q4_K_M.gguf")
+    (folder / "alias-a").symlink_to(folder / "real", target_is_directory = True)
+
+    rows = _scan_hub_only(monkeypatch, tmp_path, folders = [folder])
+    assert [Path(row.path).name for row in rows] == ["real"]
+    monkeypatch.setattr(resolver, "_scan", (0.0, {}))
+    assert {"real", "alias-a", str(folder / "alias-a").lower()} <= set(resolver._build_index())
+    assert resolver.local_gguf_pinned_variant("alias-a:Q4_K_M") == "Q4_K_M"

@@ -837,9 +837,13 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
     except Exception as exc:
         logger.debug("auto-switch: local model scan failed: %s", exc)
         return index
-    # Another HF cache's copy of a listed repo is not listed, but a pin on its exact snapshot still loads it.
+    # Rows the listing folds into a listed one still answer to their own names after the listed rows: another HF
+    # cache's copy by its snapshot path, a custom folder's symlink alias (alias-a/) by its path and name.
     copies = {
-        id(info): info for info in folded if info.source == "hf_cache" and _is_abs_path_id(info.id)
+        id(info): info
+        for info in folded
+        if _is_abs_path_id(info.id)
+        and (info.source == "hf_cache" or (info.source == "custom" and Path(info.id).is_symlink()))
     }
     for info in (*found, *copies.values()):
         raw_id = getattr(info, "id", None)
@@ -867,8 +871,9 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
             (getattr(info, "display_name", None), entry),
             (public_model_id(raw_id), path_alias_entry),
         )
-        # The repo id and display name stay with the listed copy.
-        for key, alias_entry in aliases[:2] if id(info) in copies else aliases:
+        # The repo id and display name stay with the listed HF copy.
+        hf_copy = id(info) in copies and info.source == "hf_cache"
+        for key, alias_entry in aliases[:2] if hf_copy else aliases:
             if key and alias_entry is not None:
                 index.setdefault(key.strip().lower(), alias_entry)
         # Sibling revisions keep their own weights, so a pin survives a newer Hugging Face snapshot.
