@@ -303,6 +303,13 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             ],
         )
         conn.execute("PRAGMA user_version = 1")
+    if conn.execute("PRAGMA user_version").fetchone()[0] < 2:
+        from core.rag.embed_connection import stamp_legacy_identities
+        try:
+            stamp_legacy_identities(conn)
+        except Exception:  # noqa: BLE001 - an unstamped row is only offered for re-embedding
+            logger.warning("Could not stamp connection embedding identities", exc_info = True)
+        conn.execute("PRAGMA user_version = 2")
     conn.commit()
 
 

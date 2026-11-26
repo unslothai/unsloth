@@ -8453,6 +8453,27 @@ def _monitor_context_length() -> Optional[int]:
     return None
 
 
+def _serving_reasoning_flags(tools = None) -> Optional[dict]:
+    """The serving model's reasoning flags, read as /status reads them; None when nothing is loaded."""
+    llama_backend = get_llama_cpp_backend()
+    if getattr(llama_backend, "is_loaded", False):
+        return {
+            name: getattr(llama_backend, name)
+            for name in (
+                "supports_reasoning",
+                "reasoning_style",
+                "reasoning_always_on",
+                "reasoning_effort_levels",
+            )
+        }
+    backend = _peek_inference_backend()
+    if backend is None or not backend.active_model_name:
+        return None
+    models = getattr(backend, "models", {}) or {}
+    model_info = models.get(backend.active_model_name, {}) if isinstance(models, dict) else {}
+    return _sf_rendered_features(backend, model_info, tools)[0]
+
+
 def _lifecycle_model_label(model: Optional[str], variant: Optional[str] = None) -> str:
     """A path-free ``repo`` / ``repo:QUANT`` label for a monitor lifecycle row."""
     clean = public_model_id(model) or model or "model"
@@ -8759,17 +8780,21 @@ async def _with_saved_settings(request: LoadRequest) -> LoadRequest:
     )
     from utils.openai_auto_switch_settings import (
         model_override_load_kwargs,
+        resolve_fit_max_seq_length,
         resolve_override_for_load,
         stored_gpu_index_kind,
     )
 
     load_path, variant = request.model_path, request.gguf_variant
-    alias = _snapshot_repo_or_self(load_path, require_cache = True)
+    alias = request._override_alias_id or _snapshot_repo_or_self(load_path, require_cache = True)
     # A row may be keyed by the snapshot path; the scan also warms the index local_target_is_gguf reads.
     ref = f"{load_path}:{variant}" if variant else load_path
-    local = resolve_trusted_cached_local_gguf(ref) or await asyncio.to_thread(
-        resolve_local_gguf, ref
-    )
+    # Set only by a caller that already resolved the on-disk copy; a second resolution can pick another row.
+    local = None
+    if not request._override_alias_id:
+        local = resolve_trusted_cached_local_gguf(ref) or await asyncio.to_thread(
+            resolve_local_gguf, ref
+        )
     if local:
         from core.inference.openai_auto_download import looks_like_quant, split_model_ref
 
@@ -8795,6 +8820,24 @@ async def _with_saved_settings(request: LoadRequest) -> LoadRequest:
     if any(name in sent for name in _PLACEMENT_FIELDS):
         for name in _PLACEMENT_FIELDS:
             fill.pop(name, None)
+        if "max_seq_length" not in sent:
+            from core.inference.llama_server_args import parse_gpu_layers_override
+
+            # The saved context depends on placement (--fit sizes it under manual auto layers); a sent -ngl wins, as in the loader.
+            try:
+                parsed = parse_gpu_layers_override(request.llama_extra_args)
+            except ValueError:
+                parsed = None
+            layers = request.gpu_layers if parsed is None else parsed
+            placed = {
+                **override,
+                "gpu_memory_mode": request.gpu_memory_mode,
+                "gpu_layers": layers if layers >= 0 else None,
+            }
+            context = resolve_fit_max_seq_length(placed, is_gguf = is_gguf)
+            fill.pop("max_seq_length", None)
+            if context is not None:
+                fill["max_seq_length"] = context
     # A filled gpu_ids would strip the sent --device / --main-gpu (_gpu_ids_own_placement).
     if _extra_args_set_any_flag(request.llama_extra_args, _DEVICE_FLAGS):
         fill.pop("gpu_ids", None)
@@ -33997,6 +34040,16 @@ async def produce_openai_chat_completions(
     if _audio_preflight is not None:
         _predecoded_audio = _audio_preflight.get("decoded")
         _preprepared_audio = _audio_preflight.get("prepared")
+    if payload._scheduled_reasoning_effort is not None:
+        from core.scheduled_tasks.scheduler import _reasoning_fields
+
+        # A tool run's turns can render the shipped template instead of an override; classify that one.
+        _tool_run = payload.enable_tools and payload.tool_choice != "none"
+        _flags = _serving_reasoning_flags(payload.tools or (({},) if _tool_run else None))
+        for _field, _value in _reasoning_fields(
+            payload._scheduled_reasoning_effort, False, _flags
+        ).items():
+            setattr(payload, _field, _value)
 
     from core.inference.npu_backend import peek_npu_backend
 
@@ -41264,6 +41317,11 @@ def _names_studio_embedder(requested: str) -> Optional[str]:
         current = rag_embeddings.embedding_identity(model)
         if wanted in (current, _public_embedding_identity(current, model, label)):
             return model
+        # A client may echo a tag issued before tags carried the server; it names the current one.
+        if rag_config.is_connection_model(model):
+            legacy = rag_config.embedding_identity("connection", model)
+            if wanted in (legacy, _public_embedding_identity(legacy, model, label)):
+                return model
         return None
     for name in (model, repo, label, _public_embedding_name(repo)):
         if not name:
@@ -51926,6 +51984,35 @@ async def diffusion_download_plan(
             # Keeps the probe: a capability read, never an allocation; without it a GGUF pick reports 21 GB short
             memory_verdict = not training,
         )
+        if fam is not None and planner is backend:
+            from core.inference.diffusion import _memory_request_forces_offload
+            from core.inference.diffusion_transformer_quant import plan_precision_options
+
+            # Probe verdicts need the planned card's target; while training holds the GPU only the family table answers.
+            plan_target = None
+            if not training and gpu_ordinal is not None:
+                try:
+                    plan_target = await asyncio.to_thread(
+                        backend._target_for_ordinal, fam, gpu_ordinal
+                    )
+                except Exception:  # noqa: BLE001 -- no target, no probe verdicts
+                    plan_target = None
+
+            # What an explicit Precision pick would be refused for on this family and card, so the UI disables it.
+            plan = {
+                **plan,
+                "precision_options": plan_precision_options(
+                    getattr(fam, "name", None),
+                    model_kind = kind,
+                    repo_id = request.model_path,
+                    base_repo = request.base_repo,
+                    gpu_ordinal = gpu_ordinal,
+                    target = plan_target,
+                    offload = _memory_request_forces_offload(
+                        request.memory_mode, bool(request.cpu_offload)
+                    ),
+                ),
+            }
         return DiffusionDownloadPlanResponse(**plan)
     except (ValueError, FileNotFoundError) as exc:
         raise HTTPException(status_code = 400, detail = redact_native_paths(str(exc)))

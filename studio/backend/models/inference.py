@@ -3040,6 +3040,7 @@ class ChatCompletionRequest(BaseModel):
     _website_policy: Optional[dict] = PrivateAttr(default = None)
     # Scheduled runs restrict the MCP catalog to the servers selected on the task.
     _scheduled_mcp_server_ids: Optional[frozenset[str]] = PrivateAttr(default = None)
+    _scheduled_reasoning_effort: Optional[str] = PrivateAttr(default = None)
 
     model: str = Field(
         "default",
@@ -6454,6 +6455,13 @@ class DiffusionDownloadPlanResponse(BaseModel):
         description = "Stable code for incompatible_reason: 'unified-memory-load' when the unified-memory "
         "check refused the pick (send allow_oversized_load to attempt it anyway); null otherwise.",
     )
+    precision_options: Optional[Dict[str, Optional[str]]] = Field(
+        None,
+        description = "Explicit transformer precision (int8, fp8, nvfp4, mxfp8) -> why a request for it would be "
+        "refused for the planned family on the selected card (the family deny list, a measured NVFP4 gate failure, or a recorded kernel-probe failure on "
+        "the card), or null when nothing known rules it out. Null as a whole when no family was resolved. The global NVFP4 switch is "
+        "reported separately.",
+    )
 
 
 class DiffusionStatusResponse(BaseModel):
@@ -6473,6 +6481,19 @@ class DiffusionStatusResponse(BaseModel):
         None,
         description = "Best-effort memory the resident model holds, in MiB; null when unknown.",
     )
+    precision_options: Optional[Dict[str, Optional[str]]] = Field(
+        None,
+        description = "Explicit transformer precision (int8, fp8, nvfp4, mxfp8) -> why a request for it would be "
+        "refused for the loaded family on its card (the family deny list, a measured NVFP4 gate failure, or a recorded kernel-probe failure on "
+        "the card), or null when nothing known rules it out. Null as a whole when nothing is loaded. The global NVFP4 switch is "
+        "reported separately.",
+    )
+    precision_options_card: Optional[int] = Field(
+        None,
+        description = "The PHYSICAL GPU id (the index space of gpu_ids and the UI's GPU picker, not the torch "
+        "ordinal under a CUDA_VISIBLE_DEVICES mask) precision_options was judged on (a kernel-probe verdict is per "
+        "card), so a pick for another card does not inherit it; null when unknown or not on a GPU.",
+    )
     multi_gpu: Optional[Dict[str, Any]] = Field(
         None,
         description = "Multi-GPU placement (component -> card, primary, secondary) and CFG-parallel state (armed, "
@@ -6484,6 +6505,12 @@ class DiffusionStatusResponse(BaseModel):
         description = "Compile / CUDA-graph engagement counters: this load's graph captures, replays and ungraphed "
         "denoiser calls (whole-step, per block, per-card segments, and the per-block graphs a whole-step graph falls "
         "back to), and the process's dynamo frame and graph-break totals; null when nothing is loaded.",
+    )
+    fp8_gemm: Optional[Dict[str, Any]] = Field(
+        None,
+        description = "Which fp8 GEMM an fp8 load runs: path 'torchao_rowwise', or 'unit_scale_fallback' when this "
+        "torch build has no row-wise fp8 kernel on the card (Windows wheels), plus the per-card probe verdict and "
+        "eager call counts; null for a load without fp8.",
     )
     loaded: bool = Field(False, description = "Whether a diffusion model is loaded")
     evicted: List[str] = Field(
@@ -6578,6 +6605,11 @@ class DiffusionStatusResponse(BaseModel):
         default_factory = list,
         description = "The baked adapters as the load requested them, [{id, weight}]; empty when none. The "
         "Images page compares a LoRA selection against it to tell whether Generate needs a reload first",
+    )
+    lora_fuse: Optional[str] = Field(
+        None,
+        description = "Whether the attached LoRA set is folded into the denoiser weights: fused | pending | "
+        "disabled | bit_exact (speed mode off) | offload | quantized | unsupported; null without LoRAs",
     )
     transformer_cache_stats: Optional[dict] = Field(
         None,
@@ -8342,6 +8374,19 @@ class VideoStatusResponse(BaseModel):
     resident_mib: Optional[int] = Field(
         None,
         description = "Best-effort memory the resident model holds, in MiB; null when unknown.",
+    )
+    precision_options: Optional[Dict[str, Optional[str]]] = Field(
+        None,
+        description = "Explicit transformer precision (int8, fp8, nvfp4, mxfp8) -> why a request for it would be "
+        "refused for the loaded family on its card (the family deny list, a measured NVFP4 gate failure, or a recorded kernel-probe failure on "
+        "the card), or null when nothing known rules it out. Null as a whole when nothing is loaded. The global NVFP4 switch is "
+        "reported separately.",
+    )
+    precision_options_card: Optional[int] = Field(
+        None,
+        description = "The PHYSICAL GPU id (the index space of gpu_ids and the UI's GPU picker, not the torch "
+        "ordinal under a CUDA_VISIBLE_DEVICES mask) precision_options was judged on (a kernel-probe verdict is per "
+        "card), so a pick for another card does not inherit it; null when unknown or not on a GPU.",
     )
     multi_gpu: Optional[Dict[str, Any]] = Field(
         None,

@@ -7077,6 +7077,13 @@ def patch_gradient_accumulation_fix(Trainer):
 
             ep_trainer_setup(self)  # expert parallel: clipping, fp16 skip sync, 1-GPU adapter saves
             try:
+                from .portable_resume import install_portable_resume
+
+                # One GPU / DDP: a tensor / pipeline / expert parallel checkpoint's name-keyed optimizer.pt.
+                install_portable_resume(self)
+            except Exception as e:
+                logger.warning_once(f"Unsloth: layout-portable resume not installed ({e})")
+            try:
                 from ._jit_checkpoint import install_jit_checkpoint_agreement
                 install_jit_checkpoint_agreement(self)
             except Exception as e:
@@ -7396,7 +7403,7 @@ def _parallel_capabilities_pre(trainer, init, args, kwargs, model):
         world = int(os.environ.get("WORLD_SIZE", "1") or 1)
         layout = ParallelLayout(
             1,
-            world,
+            max(world // max(cp, 1), 1),
             world,
             native_fsdp2 or bool(_launch.unsloth_fsdp2_requested()),
             cp = cp,
@@ -9533,6 +9540,28 @@ def save_lora_adapter(model, save_directory, *args, **kwargs):
         if collective_applies(model):
             return tp_collective(model, "save_lora", write, "adapters")
         return model.save_pretrained(save_directory, *args, **kwargs)
+    if _is_unsloth_expert_parallel(model):
+        # Each rank holds only its own experts' LoRA: a local state_dict would make every rank write its slice
+        # into the same directory. Gather the expert tensors onto global rank 0 (every rank enters) and write
+        # the 1-GPU adapter there, as trainer.save_model does.
+        import torch.distributed as dist
+
+        from .ep_native import ep_full_adapter_state_dict
+        from .tp_native import _agree_write
+
+        with adapter_only_state_dict():
+            full = ep_full_adapter_state_dict(model, dst = 0)
+
+        def ep_write():
+            if dist.get_rank() != 0:
+                return None
+            dtype = model.get_input_embeddings().weight.dtype
+            kwargs["state_dict"] = {
+                key: (value.to(dtype) if "lora_" in key else value) for key, value in full.items()
+            }
+            return model.save_pretrained(save_directory, *args, **kwargs)
+
+        return _agree_write(ep_write)
     return write()
 
 
