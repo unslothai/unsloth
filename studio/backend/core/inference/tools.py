@@ -16286,7 +16286,7 @@ def build_rag_autoinject(
 
 
 def _build_rag_autoinject(
-    conversation: list[dict], rag_scope: dict | None, *, whole_document_only: bool
+    conversation: list[dict], rag_scope: dict | None, *, whole_document_only: bool = False
 ) -> dict | None:
     enabled, whole_doc_requested = rag_autoinject_reaches_retrieval(conversation, rag_scope)
     if whole_document_only and not whole_doc_requested:

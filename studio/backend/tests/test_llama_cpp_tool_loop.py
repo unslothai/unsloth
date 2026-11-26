@@ -7727,6 +7727,7 @@ def test_a_python_call_runs_with_the_analysis_its_classification_made(monkeypatc
             "Complete document",
         ),
         ("rolling", None, True, 0, "Complete document", "Complete document"),
+        ("rolling", None, True, 0, "Large document " * 50, "Partial passage"),
         ("checkpoint", None, True, 2, "Complete document", "Complete document"),
         ("checkpoint", None, True, 0, "Large document " * 50, "Partial passage"),
         ("checkpoint", None, False, 0, "", None),
@@ -7745,6 +7746,12 @@ def test_first_context_fit_retries_whole_document_in_prompt_order(
         lambda messages, *_a, **_kw: sum(len(str(m.get("content", ""))) for m in messages),
     )
     monkeypatch.setattr(llama_cpp, "_can_reset_epoch", lambda *_a, **_kw: True)
+    monkeypatch.setattr(llama_cpp, "_keeps_compaction_boundary", lambda thread_id: thread_id == "t1")
+    monkeypatch.setattr(
+        llama_cpp,
+        "_archive_and_recall",
+        lambda conversation, *_a, **_kw: dict(conversation = conversation, counts = {}, recalled = False),
+    )
     monkeypatch.setattr(llama_cpp, "_archive_is_degraded", lambda: False)
     monkeypatch.setattr(
         llama_cpp, "_sticky_compaction_details", lambda *_a, **_kw: (sticky, True, False)
@@ -7798,6 +7805,8 @@ def test_first_context_fit_retries_whole_document_in_prompt_order(
             mcp_match_exchange = {**mcp, "names": []},
             context_overflow = "truncate_oldest",
             context_policy = policy,
+            compaction_headroom_ratio = 0.25,
+            thread_id = "t1" if policy == "rolling" else None,
             max_tokens = 80,
             max_tool_iterations = 2,
             tool_choice = tool_choice,

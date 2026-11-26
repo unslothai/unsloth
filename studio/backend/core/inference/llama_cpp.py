@@ -42005,6 +42005,11 @@ class LlamaCppBackend:
                                                 budget - headroom, truncation["prompt_tokens_after"]
                                             ),
                                         )
+                                    elif "trim_target" in truncation:
+                                        budget = min(
+                                            budget,
+                                            max(truncation["trim_target"], truncation["prompt_tokens_after"]),
+                                        )
                                     if measured <= budget:
                                         _auto = refreshed
                                         conversation = candidate
