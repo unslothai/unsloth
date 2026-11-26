@@ -74,6 +74,15 @@ def test_cpu_experts_leave_the_gpu_and_one_layer_of_them_is_staged():
     assert p.host_staging_bytes == 3 * EXPS
 
 
+def test_a_head_held_on_the_host_is_reported_apart_from_the_blocks():
+    p = place_weights(_moe(), None, [("output\\.weight", True)])
+    assert (p.host_head_bytes, p.host_staging_bytes) == (EMBD, 0)
+    tied = place_weights(_moe(tied = True), None, [("token_embd\\.weight", True)])
+    assert tied.host_head_bytes == EMBD
+    # With the output layer on the CPU nothing runs it on a GPU.
+    assert place_weights(_moe(), 0, [("output\\.weight", True)]).host_head_bytes == 0
+
+
 def test_n_cpu_moe_places_what_the_equivalent_override_places():
     count = place_weights(
         _moe(), None, [(p, True) for p in block_ffn_overrides(2, FFN_EXPS_OVERRIDE)]

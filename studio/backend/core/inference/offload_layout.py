@@ -492,7 +492,7 @@ class WeightPlacement:
 
     device_bytes: int
     host_bytes: int
-    # Largest group of host weights one layer's ops read; CUDA/Vulkan/Metal copy them to the device
+    # Largest group of host weights one block's ops read; CUDA/Vulkan/Metal copy them to the device
     # to run a micro-batch of >= 32 tokens, into the compute buffer.
     host_staging_bytes: int
     # False when an override is a pattern Python cannot read like std::regex; it is skipped, so the
@@ -502,6 +502,9 @@ class WeightPlacement:
     duplicate_bytes: int = 0
     # Routed experts held on the host for layers that run on a GPU: what --moe-cache-mib can cache.
     host_expert_bytes: int = 0
+    # Output-layer weights held on the host while the output layer runs on a GPU. The head multiplies
+    # only the reserved output rows, so it is staged only when those reach the offload threshold.
+    host_head_bytes: int = 0
 
 
 def place_weights(
@@ -545,9 +548,8 @@ def place_weights(
         return None
 
     device = host = duplicate = 0
-    # Host bytes per block. The head is left out: it multiplies only the rows that need logits,
-    # under the 32-row offload threshold (a load with every weight on the host staged none of it).
     staged: dict[int, int] = {}
+    head = 0
     # Per GPU layer: host expert bytes, and whether any expert stays on the device.
     experts: dict[int, list] = {}
     tied_head = "output.weight" not in tensor_bytes and architecture not in _HEADLESS_ARCHS
@@ -566,6 +568,8 @@ def place_weights(
                 device += size
             if name == "token_embd.weight" and tied_head:
                 head_on_host = override is True or (override is None and not output_on_gpu)
+                if head_on_host and output_on_gpu:
+                    head += size
                 # load_tensors reuses token_embd when the head lands in the same buffer type.
                 if head_on_host != input_on_host:
                     duplicate += size
@@ -582,6 +586,8 @@ def place_weights(
             host += size
             if name in blocks:
                 staged[blocks[name]] = staged.get(blocks[name], 0) + size
+            elif output_on_gpu:
+                head += size
         if name in blocks and layer_on_gpu and _CACHED_EXPERT_RE.match(name):
             entry = experts.setdefault(blocks[name], [0, False])
             if on_device:
@@ -596,4 +602,5 @@ def place_weights(
         duplicate_bytes = duplicate,
         # The cache takes a layer only when all of its experts are on the host.
         host_expert_bytes = sum(b for b, any_on_device in experts.values() if not any_on_device),
+        host_head_bytes = head,
     )

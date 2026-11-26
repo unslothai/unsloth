@@ -15871,6 +15871,8 @@ def _gguf_memory_breakdown(
 
     # Drafter KV and rollback state, priced wherever the drafter lives.
     drafter_runtime_bytes = 0
+    # Draft tokens per slot the target verifies; each needs an output row.
+    _staged_draft_n_max = 0
     # Allocated in the target's context, so it stays with the target when placed apart.
     target_spec_bytes = 0
     # The verification output rows in that reserve: target compute, not target KV.
@@ -15906,6 +15908,7 @@ def _gguf_memory_breakdown(
         draft_n_max = _estimate_draft_n_max(
             config, drafter_path, requested = spec_draft_n_max, extras = extras
         )
+        _staged_draft_n_max = max(0, int(draft_n_max or 0))
         keeps_target_ctx, target_rollback = _estimate_spec_mode_terms(
             drafter_kind,
             extras,
@@ -16273,7 +16276,7 @@ def _gguf_memory_breakdown(
     # Ops on host weights run on the GPU for a micro-batch of >= 32 tokens (op offload), each
     # copying its weights into the compute buffer, which reuses the space split by split.
     host_staging_bytes = 0
-    if placement is not None and placement.host_staging_bytes and gpu_fraction > 0.0:
+    if placement is not None and gpu_fraction > 0.0:
         from core.inference.llama_server_args import _flag_name
 
         try:
@@ -16285,8 +16288,26 @@ def _gguf_memory_breakdown(
             _flag = _flag_name(str(_token))
             if _flag in {"--op-offload", "--no-op-offload"}:
                 _op_offload = _flag == "--op-offload"
-        if _op_offload and (runtime.n_ubatch or 512) >= _op_min_batch:
+        _ubatch = runtime.n_ubatch or 512
+        if _op_offload and _ubatch >= _op_min_batch:
             host_staging_bytes = placement.host_staging_bytes
+        # The head multiplies the reserved output rows: one per slot and draft token (llama-server's
+        # n_outputs_max), a whole micro-batch on builds before llama.cpp#23861; pooled embeddings
+        # never run it.
+        try:
+            _rows_per_token = bool(
+                getattr(LlamaCppBackend, "reserves_micro_batch_outputs", lambda: False)()
+            )
+        except Exception as _rows_exc:  # noqa: BLE001 -- unprobed build: the current rule
+            logger.debug("llama-server build probe failed: %s", _rows_exc)
+            _rows_per_token = False
+        _out_rows = (
+            _ubatch
+            if _rows_per_token
+            else min(_ubatch, max(1, runtime.n_parallel) * (1 + _staged_draft_n_max))
+        )
+        if _op_offload and _out_rows >= _op_min_batch and not probe.is_embedding_gguf:
+            host_staging_bytes = max(host_staging_bytes, placement.host_head_bytes)
     # --spec-draft-hf drafter: cache unsized without a local header, so the total is a floor.
     drafter_kv_unsized = bool(
         ((host_drafter_bytes or gpu_drafter_bytes) and not charged_drafter)
