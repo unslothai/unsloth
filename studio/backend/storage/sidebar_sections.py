@@ -107,6 +107,9 @@ def _edited_order(
         order = _merge_order(saved, layout)
         for move in moves:
             _apply_placement(order, move)
+        if saved == base:
+            ranked = set(saved)
+            return _merge_order(layout, [row for row in order if row in ranked])
         return order
     return _merge_order(saved, layout)
 

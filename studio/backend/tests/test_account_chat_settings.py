@@ -1243,6 +1243,30 @@ def test_sidebar_sections_only_replays_drag_intent_that_survives_the_batch(
     assert saved["rowOrder"]["work"] == list(merged_order)
 
 
+def test_sidebar_sections_keeps_unranked_chats_before_a_drag_with_an_unseen_page(client):
+    path = "/chat/sidebar-sections"
+    initial = {
+        "sections": {"work": {"name": "Work", "sort": "manual"}},
+        "sectionByChatId": {"a": "work", "b": "work", "c": "work"},
+        "sectionByPageId": {"p": "work"},
+        "rowOrder": {"work": ["a", "p", "b"]},
+    }
+    response = client.post(path, json = {"operationId": "initial", "base": None, "layout": initial})
+    assert response.is_success, response.text
+    base = response.json()
+    response = client.post(
+        path,
+        json = {
+            "operationId": "drag",
+            "base": base,
+            "layout": {**base, "rowOrder": {"work": ["c", "b", "a"]}},
+            "orderMoves": [{"sectionId": "work", "id": "b", "targetId": "a", "edge": "top"}],
+        },
+    )
+    assert response.is_success, response.text
+    assert response.json()["rowOrder"]["work"] == ["c", "b", "a", "p"]
+
+
 @pytest.mark.parametrize(
     ("initial", "first", "second", "expected", "sort"),
     [
