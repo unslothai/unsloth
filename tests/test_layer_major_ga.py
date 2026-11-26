@@ -45,6 +45,13 @@ def ga(monkeypatch):
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     assert mod.run_layer_major is engine.run_layer_major
+    # Patch transformers.Trainer itself, as Unsloth does (monkeypatch puts the originals back after the test).
+    monkeypatch.setattr(transformers.Trainer, "training_step", transformers.Trainer.training_step)
+    monkeypatch.setattr(
+        transformers.Trainer, "get_batch_samples", transformers.Trainer.get_batch_samples
+    )
+    mod.patch_layer_major_gradient_accumulation(transformers.Trainer)
+    assert getattr(transformers.Trainer.training_step, "_unsloth_layer_major", False)
     torch.set_num_threads(min(4, torch.get_num_threads()))
     return mod, engine
 
@@ -146,7 +153,6 @@ def _train(
     monkeypatch.setenv("UNSLOTH_OFFLOAD_LAYER_MAJOR", mode)
     base = trainer_base or transformers.Trainer
     T = type("T", (base,), {})
-    mod.patch_layer_major_gradient_accumulation(T)
     model = _model(dropout)
     sw = _Swap(stall)
     if swap:
@@ -168,10 +174,14 @@ def _train(
         disable_tqdm = True,
     )
     trainer = T(model = model, args = args, train_dataset = _Data(), data_collator = _collate)
+    _LAST[:] = [trainer]
     trainer.train()
     weights = {n: p.detach().clone() for n, p in model.named_parameters() if p.requires_grad}
     losses = [h["loss"] for h in trainer.state.log_history if "loss" in h]
     return weights, losses, sw
+
+
+_LAST = []
 
 
 def _windows(engine):
@@ -208,6 +218,7 @@ def test_instance_level_training_step_wrappers_see_each_micro_batch_once(ga, tmp
             seen.append(int(inputs["input_ids"].shape[1]))
             return inner(model, inputs, *a, **k)
 
+        counting._unsloth_layer_major_observer = counting  # read-only, as UNSLOTH_BATCH_REPORT's
         self.training_step = counting
 
     monkeypatch.setattr(transformers.Trainer, "__init__", init)
@@ -253,6 +264,7 @@ def test_rewritten_inputs_after_a_window_raise_instead_of_counting_twice(ga, tmp
                 inputs = dict(inputs)
             return inner(model, inputs, *a, **k)
 
+        rewriting._unsloth_layer_major_observer = rewriting  # claims to be read-only, but is not
         self.training_step = rewriting
 
     monkeypatch.setattr(transformers.Trainer, "__init__", init)
@@ -306,18 +318,20 @@ def _tokenizer():
     )
 
 
-def _sft(mod, tmp_path, monkeypatch, mode):
+def _sft(
+    mod,
+    tmp_path,
+    monkeypatch,
+    mode,
+    trainer_cls = None,
+    abort_once = False,
+):
     trl = pytest.importorskip("trl")
     monkeypatch.setenv("UNSLOTH_OFFLOAD_LAYER_MAJOR", mode)
-    # Unsloth wraps transformers.Trainer itself; here a copy of the wrapped methods sits under SFTTrainer instead,
-    # so the shared Trainer class stays untouched for the other tests.
-    Base = type("Base", (transformers.Trainer,), {})
-    mod.patch_layer_major_gradient_accumulation(Base)
-    T = type(
-        "SFT",
-        (trl.SFTTrainer,),
-        {"training_step": Base.training_step, "get_batch_samples": Base.get_batch_samples},
-    )
+    monkeypatch.setenv("UNSLOTH_RETURN_LOGITS", "1")  # TRL's entropy metric reads the logits
+    T = (
+        trainer_cls or trl.SFTTrainer
+    )  # the real SFTTrainer chain over the patched transformers.Trainer
     model = _model()
     model.get_base_model().model.layers._unsloth_block_swap = _Swap()
     data = _Data()
@@ -351,10 +365,29 @@ def _sft(mod, tmp_path, monkeypatch, mode):
         data_collator = _collate,
         processing_class = _tokenizer(),
     )
+    if abort_once:
+        # One out-of-memory error in the window's decoder backward (after the loss parts ran): the step is
+        # retried the standard way.
+        armed = [True]
+
+        def oom(module, args, out):
+            if (
+                armed[0]
+                and torch.is_grad_enabled()
+                and mod._TLS.__dict__.get("passthrough") is None
+            ):
+                armed[0] = False
+                raise torch.OutOfMemoryError("simulated")
+
+        model.get_base_model().model.layers[1].register_forward_hook(oom)
     trainer.train()
     weights = {n: p.detach().clone() for n, p in model.named_parameters() if p.requires_grad}
     logs = [
-        {k: v for k, v in h.items() if k in ("loss", "entropy", "mean_token_accuracy")}
+        {
+            k: v
+            for k, v in h.items()
+            if k in ("loss", "entropy", "mean_token_accuracy", "num_tokens")
+        }
         for h in trainer.state.log_history
         if "loss" in h
     ]
@@ -371,3 +404,141 @@ def test_trl_sft_trainer_matches_standard_accumulation_bitwise(ga, tmp_path, mon
     assert l0 == l1 and len(l0) == 2
     for k in w0:
         assert torch.equal(w0[k], w1[k]), k
+
+
+def test_sft_abort_restores_metrics_and_token_counts(ga, tmp_path, monkeypatch):
+    """A window aborted in its decoder backward (TRL already counted tokens and metrics in the loss parts):
+    the retry logs what standard accumulation logs."""
+    mod, engine = ga
+    w0, l0 = _sft(mod, tmp_path, monkeypatch, "0")
+    engine.layer_major_stats(reset = True)
+    w1, l1 = _sft(mod, tmp_path, monkeypatch, "1", abort_once = True)
+    assert engine.layer_major_stats()["aborts"] == 1
+    assert l0 == l1 and len(l0) == 2
+    for k in w0:
+        assert torch.equal(w0[k], w1[k]), k
+
+
+def test_custom_sft_subclass_override_is_ineligible(ga, tmp_path, monkeypatch):
+    trl = pytest.importorskip("trl")
+
+    class CustomSFTTrainer(trl.SFTTrainer):
+        def training_step(self, *args, **kwargs):
+            return super().training_step(*args, **kwargs)
+
+    mod, engine = ga
+    engine.layer_major_stats(reset = True)
+    _sft(mod, tmp_path, monkeypatch, "1", trainer_cls = CustomSFTTrainer)
+    assert _windows(engine) == 0
+
+
+def test_unmarked_instance_wrappers_are_ineligible(ga, tmp_path, monkeypatch):
+    """An instance-level training_step wrapper that edits a micro-batch in place before the trainer step: the
+    window would have trained later micro-batches before it ran, so it falls back (and matches standard)."""
+    mod, engine = ga
+    real_init = transformers.Trainer.__init__
+
+    def init(self, *args, **kwargs):
+        real_init(self, *args, **kwargs)
+        inner = self.training_step
+
+        def masking(model, inputs, *a, **k):
+            inputs["labels"][:, 1] = -100
+            return inner(model, inputs, *a, **k)
+
+        self.training_step = masking
+
+    monkeypatch.setattr(transformers.Trainer, "__init__", init)
+    w0, l0, _ = _train(mod, tmp_path, monkeypatch, "0")
+    engine.layer_major_stats(reset = True)
+    w1, l1, _ = _train(mod, tmp_path, monkeypatch, "1")
+    assert _windows(engine) == 0
+    assert l0 == l1
+    for k in w0:
+        assert torch.equal(w0[k], w1[k]), k
+
+
+def test_substep_callbacks_are_ineligible(ga, tmp_path, monkeypatch):
+    mod, engine = ga
+    grads = []
+
+    class Watch(transformers.TrainerCallback):
+        def on_substep_end(
+            self,
+            args,
+            state,
+            control,
+            model = None,
+            **kwargs,
+        ):
+            grads.append(
+                sum(float(p.grad.abs().sum()) for p in model.parameters() if p.grad is not None)
+            )
+
+    real_init = transformers.Trainer.__init__
+
+    def init(self, *args, **kwargs):
+        real_init(self, *args, **kwargs)
+        self.add_callback(Watch())
+
+    monkeypatch.setattr(transformers.Trainer, "__init__", init)
+    _train(mod, tmp_path, monkeypatch, "0")
+    base, grads[:] = list(grads), []
+    engine.layer_major_stats(reset = True)
+    _train(mod, tmp_path, monkeypatch, "1")
+    assert _windows(engine) == 0
+    assert grads == base
+
+
+def test_optimizers_that_step_inside_backward_are_ineligible(ga):
+    import types
+
+    mod, engine = ga
+    model = _model()
+    layers = model.get_base_model().model.layers
+    stub = types.SimpleNamespace(
+        args = types.SimpleNamespace(optim = "adalomo", n_gpu = 1), accelerator = None
+    )
+    assert "every backward" in mod.layer_major_ineligible(stub, model, layers, _Swap())
+    stub.args.optim = "adamw_torch"
+    assert mod.layer_major_ineligible(stub, model, layers, _Swap()) is None
+    p = next(p for p in model.parameters() if p.requires_grad)
+    p.register_post_accumulate_grad_hook(lambda t: None)
+    assert "inside backward" in mod.layer_major_ineligible(stub, model, layers, _Swap())
+
+
+def test_vram_budget_uses_the_capped_allocator_budget(ga, monkeypatch):
+    mod, engine = ga
+    model = _model()
+    layers = model.get_base_model().model.layers
+    samples = [{"input_ids": torch.zeros(2, 2048, dtype = torch.long)} for _ in range(3)]
+    need = engine.boundary_bytes([2 * 2048] * 3, 64, len(layers), 4)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    monkeypatch.setattr(mod, "_usable_cuda_bytes", lambda device: int(need / 0.6) + 1)
+    assert mod._fits(model, layers, samples)[0] is True
+    monkeypatch.setattr(mod, "_usable_cuda_bytes", lambda device: int(need / 0.6) - 1)
+    assert mod._fits(model, layers, samples)[0] is False
+
+
+def test_prefetched_batches_are_not_kept(ga, tmp_path, monkeypatch):
+    import weakref
+
+    mod, engine = ga
+    refs = []
+    real = transformers.Trainer.get_batch_samples
+
+    def recording(self, *args, **kwargs):
+        out = real(self, *args, **kwargs)
+        refs[:] = [weakref.ref(b["input_ids"]) for b in out[0]]
+        return out
+
+    monkeypatch.setattr(transformers.Trainer, "get_batch_samples", recording)
+    import gc
+
+    for mode, swap in (("0", True), ("1", False), ("1", True)):
+        _train(mod, tmp_path, monkeypatch, mode, swap = swap)
+        gc.collect()
+        # The trainer is still alive (_LAST): it must not hold the last step's micro-batches.
+        assert _LAST and refs and all(r() is None for r in refs), (mode, swap)
+    _LAST.clear()

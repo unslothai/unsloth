@@ -15,6 +15,7 @@ than 5% of the swapped layers' time (always on with UNSLOTH_OFFLOAD_STATS = 0, w
 whenever eligible; "0" never. Without an active block swap nothing here runs.
 """
 
+import copy
 import functools
 import os
 import sys
@@ -78,8 +79,22 @@ def _text_config(model):
     return config
 
 
+def _audited_trainer_classes():
+    """Classes whose training_step / compute_loss run one model forward per micro-batch: TRL's SFTTrainer chain."""
+    sft = getattr(sys.modules.get("trl.trainer.sft_trainer"), "SFTTrainer", None)
+    return set(getattr(sft, "__mro__", ()))
+
+
+def _is_unsloth_trainer(cls):
+    # Unsloth's own SFT trainers (unsloth.trainer, the generated unsloth_compiled_cache classes), not user subclasses.
+    module = getattr(cls, "__module__", "") or ""
+    return cls.__name__ in _SAFE_TRAINERS and (module.startswith("unsloth") or "Unsloth" in module)
+
+
 def _trainer_ok(trainer):
     import transformers
+
+    audited = _audited_trainer_classes()
     for cls in type(trainer).__mro__:
         if cls is transformers.Trainer:
             return True
@@ -87,9 +102,32 @@ def _trainer_ok(trainer):
             fn = cls.__dict__.get(name)
             if fn is None or getattr(fn, "_unsloth_layer_major", False):
                 continue
-            if not (cls.__name__ in _SAFE_TRAINERS or cls.__name__.endswith("SFTTrainer")):
+            if cls not in audited and not _is_unsloth_trainer(cls):
                 return False
     return True
+
+
+def _window_blocker(trainer):
+    """Per step (they can appear after the first): what makes this step's micro-batches run the standard way."""
+    state = trainer.__dict__
+    for name in ("training_step", "compute_loss"):
+        fn = state.get(name)
+        # The window bypasses instance-level wrappers for the micro-batches after the first; only read-only
+        # observers (UNSLOTH_BATCH_REPORT) are allowed.
+        if fn is not None and getattr(fn, "_unsloth_layer_major_observer", None) is not fn:
+            return f"an instance-level {name} wrapper"
+    handler = getattr(trainer, "callback_handler", None)
+    try:
+        from transformers import TrainerCallback
+        base = TrainerCallback.on_substep_end
+    except Exception:
+        base = None
+    for callback in getattr(handler, "callbacks", ()):
+        fn = getattr(type(callback), "on_substep_end", base)
+        if base is not None and fn is not base:
+            # Called between micro-batches: under a window it would see every micro-batch's gradients at once.
+            return f"{type(callback).__name__}.on_substep_end"
+    return None
 
 
 def layer_major_ineligible(trainer, model, layers, swapper):
@@ -117,6 +155,15 @@ def layer_major_ineligible(trainer, model, layers, swapper):
         return "activation_offloading"
     if getattr(args, "torch_compile", False):
         return "torch_compile over the whole model"
+    optim = str(getattr(args, "optim", "")).lower()
+    if "lomo" in optim or "layerwise" in optim:
+        return "this optimizer updates the weights inside every backward"
+    if any(
+        getattr(p, "_post_accumulate_grad_hooks", None)
+        for p in model.parameters()
+        if p.requires_grad
+    ):
+        return "post-accumulate-grad hooks (an optimizer step inside backward)"
     if trainer.__dict__.get("_unsloth_token_budget_installed"):
         # Its instance-level training_step splits micro-batches into chunks the window never sees.
         return "UNSLOTH_TOKEN_BUDGET"
@@ -145,6 +192,11 @@ def _tokens(sample):
     return None
 
 
+def _usable_cuda_bytes(device):
+    from ._utils import usable_cuda_bytes
+    return usable_cuda_bytes(device)
+
+
 def _fits(model, layers, samples):
     """Whether every micro-batch's layer inputs fit on the card at once (standard checkpointing holds one)."""
     tokens = [_tokens(s) for s in samples]
@@ -162,16 +214,13 @@ def _fits(model, layers, samples):
     need = boundary_bytes(tokens, hidden, len(layers), element)
     if not torch.cuda.is_available():
         return True, need
-    device = (
-        weight.device
-        if weight.device.type == "cuda"
-        else torch.device("cuda", torch.cuda.current_device())
-    )
-    free = (
-        torch.cuda.mem_get_info(device)[0]
-        + torch.cuda.memory_reserved(device)
-        - torch.cuda.memory_allocated(device)
-    )
+    devices = {p.device for p in layers.parameters() if p.is_cuda}
+    if weight.device.type == "cuda":
+        devices.add(weight.device)
+    if not devices:
+        devices.add(torch.device("cuda", torch.cuda.current_device()))
+    # Allocator cap (set_per_process_memory_fraction) included; with layers split over cards, the tightest one.
+    free = min(_usable_cuda_bytes(device) for device in devices)
     if need > 0.6 * free:
         return (
             False,
@@ -226,7 +275,6 @@ def _micro_step(trainer, model, inputs, num_items_in_batch, args, kwargs):
 def _layer_major_step(trainer, model, inputs, num_items_in_batch, args, kwargs):
     """The loss of micro-batch `inputs` if a layer-major window ran (or runs now) for it, else None."""
     window = trainer.__dict__.get("_unsloth_layer_major_window")
-    batch = trainer.__dict__.get("_unsloth_layer_major_batch")
     if window is not None:
         samples, losses, k = window
         if k < len(samples) and samples[k] is inputs:
@@ -234,15 +282,16 @@ def _layer_major_step(trainer, model, inputs, num_items_in_batch, args, kwargs):
                 (samples, losses, k + 1) if k + 1 < len(samples) else None
             )
             return losses[k]
+        # get_batch_samples clears a window, so this is still its step, but the trainer passed something other
+        # than the micro-batch the window already accumulated: running it would count that data twice.
         trainer._unsloth_layer_major_window = None
-        if batch is not None and batch[0] is samples:
-            # Same step, but the trainer passed something other than the micro-batch the window already
-            # accumulated (a wrapper that rewrites inputs): running it would count that data twice.
-            raise RuntimeError(
-                "Unsloth: offload_layers layer-major gradient accumulation already ran micro-batch "
-                f"{k} of this step, but training_step got different inputs for it. "
-                "Set UNSLOTH_OFFLOAD_LAYER_MAJOR=0 to turn it off."
-            )
+        raise RuntimeError(
+            "Unsloth: offload_layers layer-major gradient accumulation already ran micro-batch "
+            f"{k} of this step, but training_step got different inputs for it. "
+            "Set UNSLOTH_OFFLOAD_LAYER_MAJOR=0 to turn it off."
+        )
+    # Consumed by the step's first call: the trainer keeps no prefetched batch past it (the window holds its own).
+    batch = trainer.__dict__.pop("_unsloth_layer_major_batch", None)
     if batch is None or trainer.__dict__.get("_unsloth_layer_major_off"):
         return None
     samples, items = batch
@@ -271,6 +320,14 @@ def _layer_major_step(trainer, model, inputs, num_items_in_batch, args, kwargs):
         )
         trainer._unsloth_layer_major_off = True
         return None
+    blocker = _window_blocker(trainer)
+    if blocker is not None:
+        _say_once(
+            trainer,
+            "blocker",
+            f"Unsloth: offload_layers runs micro-batches one after another: {blocker}.",
+        )
+        return None
     if mode == "auto" and not _auto_ready(trainer, swapper):
         return None
     ok, need = _fits(model, layers, samples)
@@ -285,8 +342,17 @@ def _layer_major_step(trainer, model, inputs, num_items_in_batch, args, kwargs):
         functools.partial(_micro_step, trainer, model, s, num_items_in_batch, args, kwargs)
         for s in samples
     ]
+    # The loss parts update TRL's metrics and token count; an abort retries the micro-batches the standard way.
+    counters = {
+        k: copy.deepcopy(trainer.__dict__[k])
+        for k in ("_metrics", "_total_train_tokens")
+        if k in trainer.__dict__
+    }
     losses, why = run_layer_major(layers, fns, swapper = swapper, model = model)
     if losses is None:
+        trainer.__dict__.update(counters)
+        if why.startswith("another layer-major window"):
+            return None  # transient: another trainer in this process holds the window
         _say_once(
             trainer,
             "abort",
@@ -310,7 +376,7 @@ def patch_layer_major_gradient_accumulation(Trainer):
     """Wrap Trainer.get_batch_samples (to see a step's micro-batches) and Trainer.training_step."""
     if getattr(Trainer.training_step, "_unsloth_layer_major", False):
         return
-    if not hasattr(Trainer, "get_batch_samples"):
+    if not hasattr(Trainer, "get_batch_samples") or run_layer_major is None:
         return
     get_batch_samples = Trainer.get_batch_samples
     training_step = Trainer.training_step
@@ -318,13 +384,14 @@ def patch_layer_major_gradient_accumulation(Trainer):
     @functools.wraps(get_batch_samples)
     def _get_batch_samples(self, *args, **kwargs):
         out = get_batch_samples(self, *args, **kwargs)
+        self.__dict__.pop("_unsloth_layer_major_window", None)
+        self.__dict__.pop("_unsloth_layer_major_batch", None)
         try:
             samples, items = out
-            self._unsloth_layer_major_batch = (
-                (samples, items) if isinstance(samples, list) else None
-            )
         except (TypeError, ValueError):
-            self._unsloth_layer_major_batch = None
+            return out
+        if isinstance(samples, list) and len(samples) > 1 and layer_major_mode() != "off":
+            self._unsloth_layer_major_batch = (samples, items)
         return out
 
     @functools.wraps(training_step)
