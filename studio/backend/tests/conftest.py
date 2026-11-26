@@ -337,6 +337,42 @@ def _no_real_mxc_drive_aliases(monkeypatch):
 
 
 @pytest.fixture(autouse = True)
+def _no_sdpa_align_wrapper_left_installed():
+    # _maybe_compile_transformer installs it for a compiled diffusion run; tests that drive it never reach the
+    # training loop's uninstall, and the wrapper's cache_key_tag suffix then leaks into every later test.
+    yield
+    sdpa_align = sys.modules.get("core.training.diffusion_sdpa_align")
+    if sdpa_align is not None and sdpa_align.installed():
+        sdpa_align.uninstall_sdpa_align_without_guard()
+
+
+@pytest.fixture(autouse = True)
+def _no_nvfp4_weight_quant_patch_left_installed():
+    # quantize_transformer installs it process-wide for an NVFP4 load. A test that drives the real quantize
+    # leaves torchao's NVFP4Tensor.to_nvfp4 rewritten to 4over6, so every later "torchao reference" in that
+    # worker is the patch itself and max6 parity fails against it.
+    yield
+    weight_quant = sys.modules.get("core.inference.diffusion_nvfp4_weight_quant")
+    if weight_quant is not None:
+        weight_quant.uninstall_nvfp4_weight_quant_patch()
+
+
+@pytest.fixture(autouse = True)
+def _forget_multigpu_card_names():
+    # probe_devices caches each ordinal's torch.cuda.get_device_name per process. A test that probes on the
+    # CPU runner caches "" for every card, and later tests that fake "Tesla T4" then see a primary and
+    # secondary of different models.
+    def _forget():
+        multigpu = sys.modules.get("core.inference.diffusion_multigpu")
+        if multigpu is not None:
+            multigpu._NAMES.clear()
+
+    _forget()
+    yield
+    _forget()
+
+
+@pytest.fixture(autouse = True)
 def _forget_hub_unreachable_verdict():
     # Per-process Hub verdict must not leak between tests.
     def _forget():
@@ -448,11 +484,27 @@ def _restore_dynamo_process_knobs():
 
 
 @pytest.fixture(autouse = True)
+def _uninstall_sdpa_align_wrapper():
+    # The DiT trainer's compile step wraps inductor's SDPA layout constraint and appends its cache_key_tag; only the
+    # full run's finally takes it out. A test that called the compile step alone left both on the xdist worker, and
+    # test_diffusion_cache_tag_contexts.py then read "|unsloth_sdpa_align=unguarded;..." for its own tags.
+    yield
+    align = sys.modules.get("core.training.diffusion_sdpa_align")
+    if align is not None and align.installed():
+        align.uninstall_sdpa_align_without_guard()
+
+
+@pytest.fixture(autouse = True)
 def _forget_queued_media_requests():
     def _forget():
         video_routes = sys.modules.get("routes.video")
         if video_routes is not None:
             video_routes._VIDEO_QUEUE.clear()
+            video_routes._page_outcomes.clear()
+            video_routes._admitting.clear()
+        video_queue = sys.modules.get("core.inference.video_queue")
+        if video_queue is not None:
+            video_queue.reset()
         batching = sys.modules.get("core.inference.image_request_batching")
         if batching is not None:
             batching._OPEN.clear()
@@ -842,6 +894,8 @@ def _isolate_wal_keepers():
             rag_db.start_wal_keepers()
         else:
             rag_db.close_wal_keeper()
+        # Per-test homes: drop the reader so handles never pile up (and Windows can delete the folder).
+        studio_db.close_settings_readers()
     finally:
         os.name = patched_os_name
 

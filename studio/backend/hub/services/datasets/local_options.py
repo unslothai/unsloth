@@ -8,7 +8,7 @@ import json
 import os
 import re
 from pathlib import Path, PurePosixPath
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, KeysView, Optional
 
 from hub.schemas.datasets import (
     DatasetSplitOption,
@@ -85,7 +85,7 @@ def _config_name(value: Any, fallback: Any = None) -> Optional[str]:
 
 
 def _add_info_options(
-    options: set[tuple[str, str]],
+    options: dict[tuple[str, str], None],
     payload: Any,
     *,
     fallback_config: Optional[str] = None,
@@ -96,12 +96,12 @@ def _add_info_options(
     if config is None:
         return
     for split in _split_names(payload.get("splits")):
-        options.add((config, split))
+        options[(config, split)] = None
         if len(options) >= _MAX_OPTIONS:
             return
 
 
-def _add_dataset_info_options(options: set[tuple[str, str]], payload: Any) -> None:
+def _add_dataset_info_options(options: dict[tuple[str, str], None], payload: Any) -> None:
     if isinstance(payload, list):
         for item in payload:
             _add_info_options(options, item)
@@ -115,7 +115,7 @@ def _add_dataset_info_options(options: set[tuple[str, str]], payload: Any) -> No
         _add_info_options(options, info, fallback_config = config)
 
 
-def _add_config_options(options: set[tuple[str, str]], payload: Any) -> None:
+def _add_config_options(options: dict[tuple[str, str], None], payload: Any) -> None:
     if not isinstance(payload, list):
         return
     for item in payload[:_MAX_OPTIONS]:
@@ -144,7 +144,7 @@ def _add_config_options(options: set[tuple[str, str]], payload: Any) -> None:
             split = _valid_option(split_value, _SPLIT_RE, reject_dotdot = True)
             if split is None:
                 continue
-            options.add((config, split))
+            options[(config, split)] = None
             if len(options) >= _MAX_OPTIONS:
                 return
 
@@ -169,8 +169,8 @@ def _safe_json_file(
         return None
 
 
-def _processed_options(path: Path) -> set[tuple[str, str]]:
-    options: set[tuple[str, str]] = set()
+def _processed_options(path: Path) -> dict[tuple[str, str], None]:
+    options: dict[tuple[str, str], None] = {}
     visited = 0
     try:
         root = path.resolve(strict = True)
@@ -189,7 +189,7 @@ def _processed_options(path: Path) -> set[tuple[str, str]]:
         else:
             dirnames[:] = [
                 name
-                for name in dirnames
+                for name in sorted(dirnames)
                 if not (base / name).is_symlink() and not name.endswith(".incomplete")
             ]
         if "dataset_info.json" not in filenames:
@@ -609,13 +609,16 @@ def _declares_splits(payload: Any) -> bool:
     return any(isinstance(item, dict) and "splits" in item for item in entries)
 
 
+_DEFAULT_SPLIT_ORDER = {"train": 0, "validation": 1, "test": 2}
+
+
 def _malformed_info(payload: Any) -> bool:
     """A dataset_info list holding anything but mappings, which datasets calls .get on."""
     return isinstance(payload, list) and any(not isinstance(item, dict) for item in payload)
 
 
-def _snapshot_options(snapshot: Path) -> set[tuple[str, str]]:
-    options: set[tuple[str, str]] = set()
+def _snapshot_options(snapshot: Path) -> KeysView[tuple[str, str]]:
+    options: dict[tuple[str, str], None] = {}
 
     # Unreadable README or standalone yaml still declares configs, so inference must not step in.
     declared = _unreadable_metadata(snapshot, "README.md") or _declares_configs(
@@ -626,7 +629,7 @@ def _snapshot_options(snapshot: Path) -> set[tuple[str, str]]:
         card_data = _read_card_metadata(readme)
         if card_data is _UNPARSABLE_METADATA:
             # datasets raises out of DatasetCard.load, so no option here would ever start.
-            return options
+            return options.keys()
         if isinstance(card_data, dict):
             # datasets merges the standalone YAML into the card, so a README declaring nothing does not undo it.
             declared = declared or bool(card_data.get("configs"))
@@ -656,20 +659,27 @@ def _snapshot_options(snapshot: Path) -> set[tuple[str, str]]:
             _add_info_options(options, payload)
 
     if not options and not declared:
-        # Nothing declared: the loader still resolves files by pattern, so the picker infers the same splits.
-        options.update(_inferred_snapshot_options(snapshot))
-    return options
+        # Nothing declared: the loader still resolves files by pattern, so the picker infers the same splits, in its order.
+        options.update(
+            dict.fromkeys(
+                sorted(
+                    _inferred_snapshot_options(snapshot),
+                    key = lambda item: (_DEFAULT_SPLIT_ORDER.get(item[1], 3), item[1]),
+                )
+            )
+        )
+    return options.keys()
 
 
-def _sorted_options(options: set[tuple[str, str]], dataset: str = "") -> list[DatasetSplitOption]:
+def _sorted_options(
+    options: Iterable[tuple[str, str]], dataset: str = ""
+) -> list[DatasetSplitOption]:
     ordered = sorted(
         options,
         key = lambda item: (
             item[0].casefold() != "default",
             item[0].casefold(),
             item[1].casefold() != "train",
-            item[1].casefold(),
-            item,
         ),
     )
     return [
@@ -749,7 +759,7 @@ def hub_dataset_options(
         raise HTTPException(status_code = status, detail = detail) from exc
 
     # Builder configs only: card metadata can name configs with no files, which training rejects.
-    options: set[tuple[str, str]] = set()
+    options: dict[tuple[str, str], None] = {}
     for config in module.builder_configs_parameters.builder_configs or []:
         _add_info_options(
             options,

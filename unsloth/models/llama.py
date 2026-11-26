@@ -20,14 +20,17 @@ from typing import Optional, Tuple, List, Union
 
 from ._utils import *
 from ._utils import apply_unsloth_gradient_checkpointing
+from ..import_fixes import assign_rope_scaling
 from ._utils import _ignore_block_swap_params_for_ddp
 from ._frozen_prefix import install_frozen_prefix_skip
+from ._cache_kwarg import CACHE_KWARG_NAMES, get_cache_kwarg, output_cache, pop_cache_kwarg
 from .fused_label_smoothing import output_head_not_fusable
 from ._utils import _tensor_parallel_for_inference, _tensor_parallel_for_training
 from ._utils import __version__, importlib_version
 from ._utils import move_to_device
 from ._utils import per_layer_device, refresh_moved_layer_devices
 from ._utils import embedding_applies_scale
+from ._lora_scale_warning import warn_low_rank_lora_alpha
 from ._utils import (
     _get_inference_mode_context_manager,
     _offload_embedding_for_room,
@@ -431,7 +434,10 @@ def _fast_prepare_inputs_for_generation(
     inputs_embeds = None,
     **kwargs,
 ):
-    past_key_values = kwargs.get("past_key_values", None)
+    # transformers 5.24 generate passes the cache as `cache`; the fast forwards read past_key_values.
+    past_key_values = pop_cache_kwarg(kwargs)
+    if past_key_values is not None:
+        kwargs["past_key_values"] = past_key_values
     original_attention_mask = attention_mask
 
     # Only use inputs_embeds on the first step (no cache); fixes #3798.
@@ -1456,6 +1462,43 @@ def _scale_inputs_embeds(inputs_embeds, factor, from_caller):
     return (inputs_embeds.detach() * factor).requires_grad_(inputs_embeds.requires_grad)
 
 
+def _split_layer_rope_tables(model, device, position_embeddings, rope_len, rows):
+    """Per-layer cos / sin under device_map, or None on one card: each layer reads its own card's
+    (bit-identical) table instead of accelerate copying the first card's on every call."""
+    layers = model.layers
+    if len(layers) < 2 or getattr(layers, "_unsloth_block_swap", None) is not None:
+        return None
+
+    def device_of(layer):
+        return per_layer_device(layer)[0]
+
+    try:
+        if device_of(layers[0]) == device and device_of(layers[-1]) == device:
+            return None
+        devices = [device_of(layer) for layer in layers]
+    except Exception:
+        return None
+    tables = {device: position_embeddings}
+    out = []
+    for layer_device in devices:
+        if layer_device not in tables:
+            if layer_device.type != device.type or layer_device.index is None:
+                tables[layer_device] = position_embeddings
+            else:
+                # get_cached's fast path checks only rope_len: catch up with a grown first card.
+                ensure = getattr(model.rotary_emb, "_ensure_rope_cache", None)
+                if ensure is not None:
+                    ensure(layer_device.index)
+                cos_sin = model.rotary_emb.get_cached(rope_len, layer_device.index)
+                if rope_len < rows and cos_sin[0].shape[0] < rows:
+                    cos_sin = tuple(
+                        torch.nn.functional.pad(x, (0, 0, 0, rows - x.shape[0])) for x in cos_sin
+                    )
+                tables[layer_device] = cos_sin
+        out.append(tables[layer_device])
+    return out
+
+
 # Ported from transformers models/llama/modeling_llama.py#L825
 def LlamaModel_fast_forward(
     self,
@@ -1780,11 +1823,21 @@ def LlamaModel_fast_forward(
             )
     else:
         position_embeddings = None
+    layer_rope_tables = (
+        None
+        if position_embeddings is None
+        else _split_layer_rope_tables(
+            self, hidden_states.device, position_embeddings, rope_len, rows
+        )
+    )
 
     for idx, decoder_layer in enumerate(self.layers):
         if output_hidden_states:
             all_hidden_states += (hidden_states,)
         past_key_value = past_key_values[idx] if past_key_values is not None else None
+        layer_position_embeddings = (
+            position_embeddings if layer_rope_tables is None else layer_rope_tables[idx]
+        )
 
         mask = causal_mask
         if IS_GEMMA2:
@@ -1798,14 +1851,16 @@ def LlamaModel_fast_forward(
         if gradient_checkpointing and not isinstance(decoder_layer, GradientCheckpointingLayer):
             # Bind this layer's values: the reentrant replay runs after the loop, when kwargs
             # (Gemma2 use_sliding_window) and past_key_value hold the last layer's.
-            def create_custom_forward(module, past_key_value, layer_kwargs):
+            def create_custom_forward(
+                module, past_key_value, layer_kwargs, layer_position_embeddings
+            ):
                 def custom_forward(*inputs):
                     return module(
                         *inputs,
                         past_key_value,
                         output_attentions,
                         padding_mask = padding_mask,
-                        position_embeddings = position_embeddings,
+                        position_embeddings = layer_position_embeddings,
                         **layer_kwargs,
                     )
 
@@ -1813,7 +1868,9 @@ def LlamaModel_fast_forward(
                 return custom_forward
 
             layer_outputs = torch.utils.checkpoint.checkpoint(
-                create_custom_forward(decoder_layer, past_key_value, dict(kwargs)),
+                create_custom_forward(
+                    decoder_layer, past_key_value, dict(kwargs), layer_position_embeddings
+                ),
                 hidden_states,
                 mask,
                 attention_mask,
@@ -1833,7 +1890,7 @@ def LlamaModel_fast_forward(
                 output_attentions = output_attentions,
                 use_cache = use_cache,
                 padding_mask = padding_mask,
-                position_embeddings = position_embeddings,
+                position_embeddings = layer_position_embeddings,
                 **kwargs,
             )
             hidden_states = layer_outputs[0]
@@ -2202,6 +2259,9 @@ def CausalLM_fast_forward(fast_forward_inference):
     ) -> Union[Tuple, CausalLMOutputWithPast]:
         # Not a named parameter: HF's find_labels would make it a required eval label.
         shift_labels = kwargs.pop("shift_labels", None)
+        # transformers 5.24 callers pass the cache as `cache`, which would otherwise ride along in kwargs.
+        if "cache" in kwargs:
+            past_key_values = pop_cache_kwarg(kwargs, past_key_values)
         # Training may resume without for_training() (trainer callback sampling): free kept graphs here.
         if _decode_graphs.HELD in self.__dict__ and self.training and torch.is_grad_enabled():
             _decode_graphs.release_if_training(self)
@@ -2649,7 +2709,7 @@ def _compute_config_rope_inv_freq(config, rope_scaling):
                 import copy as _copy
 
                 config_copy = _copy.copy(config)
-                config_copy.rope_scaling = rope_scaling
+                assign_rope_scaling(config_copy, rope_scaling)
                 inv_freq, attention_scaling = rope_init_fn(config_copy, torch.device("cpu"))
         return inv_freq.to(dtype = torch.float32, device = "cpu"), float(attention_scaling)
     except Exception as exception:
@@ -2754,7 +2814,7 @@ class _PerDeviceRopeCache:
         with self._rope_build_mode():
             self._set_cos_sin_cache(
                 seq_len = self._rope_cache_rows(),
-                device = torch.device(device_index),
+                device = torch.device(DEVICE_TYPE_TORCH, device_index),
                 dtype = self._rope_cache_dtype,
             )
         self.current_rope_size = current_rope_size
@@ -3204,7 +3264,7 @@ class LongRopeRotaryEmbedding(_PerDeviceRopeCache, torch.nn.Module):
             self._short_rope_rebuild_for_grad[device_index] and torch.is_grad_enabled()
         )
         if self.multi_gpu_short_cos_cached[device_index] is None or short_rebuild_for_grad:
-            device = torch.device(device_index)
+            device = torch.device(DEVICE_TYPE_TORCH, device_index)
             with self._rope_build_mode():
                 self.multi_gpu_short_cos_cached[device_index] = self._unsloth_short_cos_cpu.to(
                     device = device, non_blocking = True
@@ -3296,6 +3356,23 @@ def _generation_input_ids(args, kwargs):
 
 
 def unsloth_fast_generate(self, *args, **kwargs):
+    # accelerate FSDP2: gather every unit for the call (the fast decode reads weights directly) and
+    # decode eagerly, since a captured graph would replay storage the reshard after it frees.
+    _fsdp2 = sys.modules.get(__package__ + ".fsdp2")
+    if (
+        _fsdp2 is not None
+        and torch.distributed.is_available()
+        and torch.distributed.is_initialized()
+        and not self.__dict__.get("_unsloth_fsdp2_generate", False)
+    ):
+        with _fsdp2.fsdp2_full_params_for_generate(self) as gathered:
+            if gathered:
+                self.__dict__["_unsloth_fsdp2_generate"] = True
+                try:
+                    with _decode_graphs.eager_scope():
+                        return unsloth_fast_generate(self, *args, **kwargs)
+                finally:
+                    self.__dict__.pop("_unsloth_fsdp2_generate", None)
     restore_training_mode = self.training
     # Snapshot the real GC mode (e.g. unsloth) before for_inference clears it, so restore does not collapse it to a bool
     use_gradient_checkpointing = next(
@@ -3331,14 +3408,16 @@ def unsloth_fast_generate(self, *args, **kwargs):
 
     # Must patch accelerate for Xformers.
 
-    # transformers raises if cache_implementation is set beside a user-supplied cache.
-    if kwargs.get("past_key_values", None) is not None:
+    # transformers raises if cache_implementation is set beside a user-supplied cache
+    # (transformers 5.24 spells it cache=, past_key_values= is its deprecated alias).
+    _cache_key = next((k for k in CACHE_KWARG_NAMES if kwargs.get(k, None) is not None), None)
+    if _cache_key is not None:
         # FalconH1 keeps its own input preparation for its hybrid Mamba/attention cache.
         if getattr(getattr(self, "config", None), "model_type", None) == "falcon_h1":
             raise NotImplementedError(
                 "Unsloth: passing past_key_values to generate() is not supported for FalconH1 yet."
             )
-        kwargs["past_key_values"] = _ensure_cache_is_dynamic(kwargs["past_key_values"])
+        kwargs[_cache_key] = _ensure_cache_is_dynamic(kwargs[_cache_key])
         # The fast decode path only seeds missing KV buffers; drop the previous generate()'s.
         for module in self.modules():
             if hasattr(module, "paged_attention"):
@@ -3425,7 +3504,7 @@ def unsloth_fast_generate(self, *args, **kwargs):
         # Back to training: free the graphs and decode buffers for it, unless they fit beside it
         # (keep_for_training; they replay the updated adapters after the optimizer step).
         _decode_graphs.release_for_training(self)
-    elif graphs and getattr(output, "past_key_values", None) is not None:
+    elif graphs and output_cache(output) is not None:
         # The returned cache views the persistent decode buffers: hand them over, so a later
         # generate() allocates its own instead of overwriting a cache the caller kept.
         _decode_graphs.release(self)
@@ -3982,6 +4061,9 @@ class FastLlamaModel:
         load_in_fp8 = False,  # fp8 LoRA (True, False, 'block')
         **kwargs,
     ):
+        from ._utils import _unsloth_load_begins
+
+        _unsloth_load_begins()
         os.environ["UNSLOTH_USE_NEW_MODEL"] = "0"
         # loader.py sends full finetuning to FastModel, so this load is always LoRA. Say so, or load-time readers (packed experts, MXFP4, expert quantization) inherit an earlier full finetuning load's "1".
         os.environ["UNSLOTH_ENABLE_FULL_FINETUNING"] = "0"
@@ -4259,7 +4341,7 @@ class FastLlamaModel:
             # On the config for the in-process load and in kwargs for load_vllm, else vLLM keeps the
             # checkpoint's RoPE and indexes past its cos/sin cache (#3083).
             rope_scaling = _user_rope_scaling(model_config, rope_scaling)
-            model_config.rope_scaling = rope_scaling
+            assign_rope_scaling(model_config, rope_scaling)
             kwargs["rope_scaling"] = rope_scaling
         elif not caller_rope_scaling and max_seq_length > model_max_seq_length:
             factor = max_seq_length / model_max_seq_length
@@ -4645,7 +4727,7 @@ class FastLlamaModel:
                         model_config.max_position_embeddings = max_position_embeddings
                     _rope_scaling = kwargs.pop("rope_scaling", None)
                     if _rope_scaling is not None:
-                        model_config.rope_scaling = _rope_scaling
+                        assign_rope_scaling(model_config, _rope_scaling)
                     if (
                         _modelopt_rewritten or _fp8_to_nf4 or _fp8_backfilled
                     ) and user_config is None:
@@ -4798,9 +4880,12 @@ class FastLlamaModel:
                 model = convert_vllm_to_huggingface(
                     quant_state_dict, model_config, dtype, bnb_config
                 )
+                if getattr(model, "_unsloth_vllm_nvfp4_layers", 0):
+                    # NVFP4 layers hold vLLM's kept compressed-tensors tensors: run them W4A16 like a plain load.
+                    _prepare_compressed_tensors_model(model)
                 # The rebuilt model takes the checkpoint's config, so put the caller's RoPE back for saving.
                 if rope_scaling is not None:
-                    model.config.rope_scaling = rope_scaling
+                    assign_rope_scaling(model.config, rope_scaling)
                 model.vllm_engine = llm
                 llm.shared_weights = True
                 model.fast_generate = model.vllm_engine.generate
@@ -5201,6 +5286,7 @@ class FastLlamaModel:
             raise TypeError(f"Unsloth: Rank of {str(r)} must be an integer.")
         if r <= 0:
             raise TypeError(f"Unsloth: Rank of {str(r)} must be larger than 0.")
+        warn_low_rank_lora_alpha(r, lora_alpha, use_rslora)
 
         if isinstance(model, PeftModelForCausalLM) or isinstance(
             model, PeftModelForSequenceClassification

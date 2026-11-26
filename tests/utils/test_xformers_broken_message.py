@@ -38,8 +38,9 @@ print("XFORMERS_IS_NONE", u.xformers is None)
 """
 
 
-def _run(code):
+def _run(code, **extra_env):
     env = {k: v for k, v in os.environ.items() if k != "UNSLOTH_ENABLE_LOGGING"}
+    env.update(extra_env)
     result = subprocess.run(
         [sys.executable, "-c", code],
         capture_output = True,
@@ -56,6 +57,13 @@ def test_broken_xformers_is_reported():
 
     out = _run(_PAST_VERSION_GUARD + _BREAK_XFORMERS + _IMPORT_UNSLOTH)
     assert "XFORMERS_IS_NONE True" in out
+    # One line by default, FlashAttention installed or not (some paths still use xformers);
+    # the fix and the full error sit behind UNSLOTH_ENABLE_LOGGING=1.
+    notices = [line for line in out.splitlines() if "xformers" in line.lower()]
+    notices = [line for line in notices if not line.startswith("XFORMERS_IS_NONE")]
+    assert len(notices) == 1 and "xformers does not load with torch" in notices[0], out
+    assert "install-kernels" not in out and "xFormers can't load" not in out
+    out = _run(_PAST_VERSION_GUARD + _BREAK_XFORMERS + _IMPORT_UNSLOTH, UNSLOTH_ENABLE_LOGGING = "1")
     assert "xformers is installed but cannot load with torch" in out
     # No build metadata (xformers already failed its own load here) means no version to name.
     assert ("(it was built for " in out) is (c._build_metadata is not None)
@@ -83,3 +91,4 @@ def test_working_xformers_prints_nothing():
     out = _run(_PAST_VERSION_GUARD + _IMPORT_UNSLOTH)
     assert "XFORMERS_IS_NONE False" in out
     assert "xformers is installed but cannot load" not in out
+    assert "xformers does not load" not in out

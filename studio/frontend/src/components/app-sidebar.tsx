@@ -3534,7 +3534,6 @@ export function AppSidebar() {
     translate: {
       icon: AiTranslateIcon,
       label: t("shell.navigation.translate"),
-      badge: t("shell.navigation.newBadge"),
       active: pathname === "/translate",
       onClick: () => {
         navigateFromRow({ to: "/translate" });
@@ -6859,11 +6858,6 @@ export function AppSidebar() {
                     >
                       <HugeiconsIcon icon={tab.icon} strokeWidth={1.75} className="size-icon" />
                       <span>{t(tab.labelKey)}</span>
-                      {settingsTabId === "appearance" && (
-                        <Badge variant="accent" className="-my-0.5 ml-auto">
-                          {t("shell.navigation.newBadge")}
-                        </Badge>
-                      )}
                     </DropdownMenuItem>
                   );
                 })}

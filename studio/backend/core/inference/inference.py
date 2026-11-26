@@ -503,6 +503,7 @@ class ReasoningTextIteratorStreamer(IncrementalTextIteratorStreamer):
         timeout: float = 0.2,
         cancel_event = None,
         in_reasoning: bool = False,
+        continued: bool = False,
         **decode_kwargs,
     ):
         decode_kwargs["skip_special_tokens"] = False
@@ -512,7 +513,9 @@ class ReasoningTextIteratorStreamer(IncrementalTextIteratorStreamer):
         super().__init__(
             stream_tokenizer, skip_prompt = skip_prompt, timeout = timeout, **decode_kwargs
         )
-        self._normalizer = make_reasoning_normalizer(markers, in_reasoning = in_reasoning)
+        self._normalizer = make_reasoning_normalizer(
+            markers, in_reasoning = in_reasoning, continued = continued
+        )
         self._cancel_event = cancel_event
         self._aborted = False
 
@@ -1987,6 +1990,7 @@ class InferenceBackend:
             mapped_chat_template,
             markup_for_tokenizer,
             renderable_tool_catalog,
+            replays_reasoning_content,
         )
 
         _model_info = self.models.get(self.active_model_name) or {}
@@ -1995,6 +1999,9 @@ class InferenceBackend:
 
         yield from run_safetensors_tool_loop(
             markup = markup_for_tokenizer(_model_info.get("tokenizer"), tools, _mapped_tpl),
+            split_reasoning_content = replays_reasoning_content(
+                _model_info.get("tokenizer"), _model_info, tools, _mapped_tpl
+            ),
             renderable_tools = renderable_tool_catalog(
                 tools,
                 _model_info.get("tokenizer"),
@@ -3157,6 +3164,7 @@ class InferenceBackend:
                 timeout = timeout,
                 cancel_event = cancel_event,
                 in_reasoning = prompt_opens_reasoning_channel(prompt, markers, continued),
+                continued = continued,
             )
         stream_tokenizer = NativeToolTokenDecoder(tokenizer) if preserve_tool_tokens else tokenizer
         return IncrementalTextIteratorStreamer(

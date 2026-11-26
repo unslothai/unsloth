@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Chat tool: a clip on the loaded video model, as POST /v1/videos does; never loads/switches/unloads"""
+"""Chat tool: a clip on the loaded video model, as POST /v1/videos does (queued behind other videos
+while busy); never loads/switches/unloads"""
 
 from __future__ import annotations
 
@@ -139,24 +140,22 @@ def _run(arguments: dict, workdir: str, cancel_event, timeout: Optional[float]) 
     width, height = arguments.get("width"), arguments.get("height")
     if width is not None and height is not None:
         fields["size"] = f"{_number_text(width)}x{_number_text(height)}"
-    seed = arguments.get("seed")
-    if seed is not None and _seed_supported():
-        fields["seed"] = int(seed)
-    else:
-        seed = None
+    if arguments.get("seed") is not None and _seed_supported():
+        fields["seed"] = arguments["seed"]
     body = VideoJobCreateRequest(**fields)
 
     cap = _DEFAULT_TIMEOUT_S if timeout is None or timeout >= 9999 else float(timeout)
     deadline = time.monotonic() + cap
 
     async def _create():
-        from routes.video import _create_openai_video
+        from routes.video import _create_or_queue_chat_video
 
         await media_keepwarm.begin_request(VIDEO)
         created = False
         try:
             # No model named: the auto-switch returns at once, so the subject is never consulted.
-            job = await _create_openai_video(body, None, acct.username or "", None)
+            # A busy engine queues the clip, in the same queue as the Video page and /v1/videos.
+            job = await _create_or_queue_chat_video(body, acct.username or "", None)
             created = True
             return job
         finally:
@@ -171,7 +170,7 @@ def _run(arguments: dict, workdir: str, cancel_event, timeout: Optional[float]) 
             concurrent.futures.wait([future], timeout = _STOP_WAIT_S)
             if not future.done():
                 # Stop the job as soon as the create hands one back.
-                future.add_done_callback(lambda f: _cancel_created_job(acct, f))
+                future.add_done_callback(lambda f: _cancel_created_job(acct, f, loop))
                 return STOPPED_MSG
             break
         if time.monotonic() >= create_by:
@@ -191,36 +190,68 @@ def _run(arguments: dict, workdir: str, cancel_event, timeout: Optional[float]) 
             return NOT_LOADED_MSG
         return f"Error: {message}"
 
-    return _await_job(acct, job.id, workdir, prompt, seed, cancel_event, deadline)
+    return _await_job(
+        acct, job.id, workdir, prompt, getattr(body, "seed", None), cancel_event, deadline, loop
+    )
 
 
-def _cancel_created_job(acct, future) -> None:
+def _stop_job(acct, video_id: str, loop) -> None:
+    """Stop this account's clip wherever it is: still queued (removed), starting or rendering."""
+    from routes.video import _cancel_queued_or_running
+    from utils.account_context import arun_as
+
+    from fastapi import HTTPException
+
+    deadline = time.monotonic() + _STOP_WAIT_S
+    while True:
+        try:
+            asyncio.run_coroutine_threadsafe(
+                arun_as(acct, _cancel_queued_or_running(video_id)), loop
+            ).result(_STOP_WAIT_S)
+            return
+        except HTTPException as exc:
+            # 409 while its start is still in flight: stop it once the start lands.
+            if exc.status_code != 409 or time.monotonic() >= deadline:
+                logger.warning("generate_video: stopping job %s failed: %s", video_id, exc)
+                return
+            time.sleep(0.25)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("generate_video: stopping job %s failed: %s", video_id, exc)
+            return
+
+
+def _cancel_created_job(
+    acct,
+    future,
+    loop = None,
+) -> None:
     """Done-callback (server loop): stop the job a create finished after the user pressed Stop."""
     if future.cancelled() or future.exception() is not None:
         return
-
-    def _cancel(video_id: str) -> None:
-        from core.inference.video import get_video_backend
-        from utils.account_context import run_as
-        try:
-            run_as(
-                acct,
-                get_video_backend().cancel_generate,
-                expected_video_id = video_id,
-                expected_account = acct.account_id,
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("generate_video: stopping job %s failed: %s", video_id, exc)
-
-    # Off the loop thread: the backend cancel takes its lock.
-    threading.Thread(target = _cancel, args = (future.result().id,), daemon = True).start()
+    if loop is None:
+        from core.inference.media_chat_tools import server_loop
+        loop = server_loop()
+    # Off the loop thread: the stop waits on the loop, and the backend cancel takes its lock.
+    threading.Thread(target = _stop_job, args = (acct, future.result().id, loop), daemon = True).start()
 
 
-def _await_job(acct, video_id: str, workdir: str, prompt: str, seed, cancel_event, deadline) -> str:
+def _await_job(
+    acct,
+    video_id: str,
+    workdir: str,
+    prompt: str,
+    seed,
+    cancel_event,
+    deadline,
+    loop = None,
+) -> str:
     from core.inference import video_gallery
-    from core.inference.video import get_video_backend
     from routes.video import _lookup_video
     from utils.account_context import run_as
+
+    if loop is None:
+        from core.inference.media_chat_tools import server_loop
+        loop = server_loop()
 
     while True:
         view = run_as(acct, _lookup_video, video_id)
@@ -232,12 +263,7 @@ def _await_job(acct, video_id: str, workdir: str, prompt: str, seed, cancel_even
             message = view.error.message if view.error else "video generation failed."
             return f"Error: {message}"
         if cancel_event is not None and cancel_event.is_set():
-            run_as(
-                acct,
-                get_video_backend().cancel_generate,
-                expected_video_id = video_id,
-                expected_account = acct.account_id,
-            )
+            _stop_job(acct, video_id, loop)
             stop_by = time.monotonic() + _STOP_WAIT_S
             while time.monotonic() < stop_by:
                 view = run_as(acct, _lookup_video, video_id)

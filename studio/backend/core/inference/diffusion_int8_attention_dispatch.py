@@ -126,7 +126,12 @@ def native_block_modules(dit: Any) -> set:
     named = getattr(dit, "named_modules", None)
     if not blocks or not native_blocks_enabled() or not callable(named):
         return set()
-    return {id(m) for name, m in named() if block_index(name) in blocks}
+    from .diffusion_tp2 import shard_named_modules
+
+    # a tensor-parallel denoiser's blocks live in its per-card shards, named as in the unsplit tree
+    return {
+        id(m) for name, m in (*named(), *shard_named_modules(dit)) if block_index(name) in blocks
+    }
 
 
 # (large, small) token counts of the second race, for a card where the kernel loses at RACE_TOKENS
@@ -475,11 +480,9 @@ def _calls_dispatch(proc: Any) -> bool:
 
 def routable_modules(dit: Any) -> list:
     """The attention modules of a DiT whose processor can take an ``Int8Route``."""
-    modules = getattr(dit, "modules", None)
-    if not callable(modules):
-        return []
     out = []
-    for m in modules():
+    # a tensor-parallel denoiser's attention lives in its per-card shards (their head count is the one raced)
+    for m in _dit_modules(dit, first_card_only = True):
         proc = getattr(m, "processor", None)
         if proc is None or not hasattr(m, "heads") or not hasattr(proc, "_attention_backend"):
             continue
@@ -525,14 +528,22 @@ def _dits(pipe: Any) -> list:
         return []
 
 
+def _dit_modules(dit: Any, first_card_only: bool = False) -> list:
+    """``dit.modules()`` plus a tensor-parallel denoiser's per-card block shards (outside the module tree).
+    ``first_card_only``: one shard per block (both cards' shards share each block's processor)."""
+    modules = getattr(dit, "modules", None)
+    if not callable(modules):
+        return []
+    from .diffusion_tp2 import shard_modules
+
+    return [*modules(), *shard_modules(dit, first_card_only = first_card_only)]
+
+
 def remove(pipe: Any) -> int:
     """Every routed processor back to its incumbent backend. Returns how many were routed."""
     count = 0
     for dit in _dits(pipe):
-        modules = getattr(dit, "modules", None)
-        if not callable(modules):
-            continue
-        for m in modules():
+        for m in _dit_modules(dit):
             proc = getattr(m, "processor", None)
             backend = getattr(proc, "_attention_backend", None)
             if isinstance(backend, Int8Route):
@@ -546,7 +557,7 @@ def routed_count(pipe: Any) -> int:
     return sum(
         1
         for dit in _dits(pipe)
-        for m in (dit.modules() if callable(getattr(dit, "modules", None)) else ())
+        for m in _dit_modules(dit)
         if isinstance(getattr(getattr(m, "processor", None), "_attention_backend", None), Int8Route)
     )
 
@@ -554,7 +565,7 @@ def routed_count(pipe: Any) -> int:
 def status(pipe: Any = None) -> dict:
     routes: dict = {}
     for dit in _dits(pipe) if pipe is not None else ():
-        for m in dit.modules():
+        for m in _dit_modules(dit):
             backend = getattr(getattr(m, "processor", None), "_attention_backend", None)
             if isinstance(backend, Int8Route):
                 key = f"{type(dit).__name__} heads={m.heads} head_dim={backend.head_dim} vs {backend.value} cards={backend.cards} impl={backend.impl}"
@@ -594,7 +605,7 @@ def _race_wins(
 ) -> bool:
     """Whether the kernel beats the incumbent by more than ``RACE_MARGIN`` at ``tokens`` tokens on this card. Timed
     like the card race (interleaved, median); cached per card, dtype, geometry, incumbent, size and serving implementation; an out-of-memory
-    probe counts as a loss."""
+    probe is retried once, then counts as a loss for this call only (not cached, not persisted)."""
     import torch
 
     from . import diffusion_int8_attention as I8
@@ -619,27 +630,34 @@ def _race_wins(
     if isinstance(stored, bool):
         _LONG_VERDICTS[key] = stored
         return stored
-    q = k = v = None
-    timed = False
-    try:
-        # The timing events record on the current device's stream, so a secondary card must be current here.
-        with torch.no_grad(), torch.cuda.device(device):
-            q, k, v = I8.probe_inputs(device, dtype, tokens, heads, head_dim, seed = tokens)
-            ms = I8._median_ms(
-                {
-                    "incumbent": lambda: incumbent(q, k, v),
-                    "int8": lambda: I8.int8_attention(q, k, v),
-                }
-            )
-        won = ms["int8"] < I8.RACE_MARGIN * ms["incumbent"]
-        timed = True
-    except torch.OutOfMemoryError:
-        won = False
-    finally:
+    won = timed = False
+    # an out-of-memory probe is retried once (after freeing the cache); a second one counts as a loss for this call
+    # only: neither cached for the process nor persisted, so a later load races again
+    for _ in range(2):
         q = k = v = None
-        torch.cuda.empty_cache()
+        try:
+            # The timing events record on the current device's stream, so a secondary card must be current here.
+            with torch.no_grad(), torch.cuda.device(device):
+                q, k, v = I8.probe_inputs(device, dtype, tokens, heads, head_dim, seed = tokens)
+                ms = I8._median_ms(
+                    {
+                        "incumbent": lambda: incumbent(q, k, v),
+                        "int8": lambda: I8.int8_attention(q, k, v),
+                    }
+                )
+            won = ms["int8"] < I8.RACE_MARGIN * ms["incumbent"]
+            timed = True
+        except torch.OutOfMemoryError:
+            won = False
+        finally:
+            q = k = v = None
+            torch.cuda.empty_cache()
+        if timed:
+            break
+    if not timed:
+        return won
     _LONG_VERDICTS[key] = won
-    if timed and impl is not None:  # an out-of-memory loss is this moment's, not the card's
+    if impl is not None:
         try:
             I8.persisted().put(card, stored_key, won)
         except Exception:  # noqa: BLE001
@@ -708,6 +726,12 @@ def _denoiser_cards(dits: Any) -> tuple:
             and secondary.index is not None
         ):
             cards[int(secondary.index)] = None
+        # a tensor-parallel denoiser's shards sit outside its module tree: its record names their cards
+        tp = getattr(dit, "__dict__", {}).get("_unsloth_tp2")
+        for name in (tp or {}).get("devices", ()) if isinstance(tp, dict) else ():
+            kind, _, index = str(name).partition(":")
+            if kind == "cuda" and index.isdigit():
+                cards[int(index)] = None
         tensors = getattr(dit, "parameters", None), getattr(dit, "buffers", None)
         for fn in tensors:
             if not callable(fn):

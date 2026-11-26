@@ -459,7 +459,7 @@ class TestRevisionAwareVisionDetection:
         side_effect = [False, True],
     )
     def test_different_revisions_do_not_share_cache(self, mock_uncached, monkeypatch):
-        monkeypatch.setattr("utils.models.model_config._env_offline", lambda: False)
+        monkeypatch.setattr("utils.models.model_config.hf_env_offline", lambda: False)
         assert is_vision_model("org/model", revision = "commit-a") is False
         assert is_vision_model("org/model", revision = "commit-b") is True
         assert is_vision_model("org/model", revision = "commit-a") is False
@@ -580,7 +580,7 @@ class TestVisionCacheLocalOnly:
         monkeypatch.setattr(mc, "is_local_path", lambda *_a, **_k: False)
         monkeypatch.setattr(mc, "resolve_cached_repo_id_case", lambda n, *_a, **_k: n)
         # Pin env-offline off so the key tracks the kwarg.
-        monkeypatch.setattr(mc, "_env_offline", lambda: False)
+        monkeypatch.setattr(mc, "hf_env_offline", lambda: False)
 
         seen = []
 
@@ -758,7 +758,7 @@ class TestAudioDetectionCacheTokenAware:
         monkeypatch.setattr(mc, "_detect_audio_from_tokenizer", _fake)
         monkeypatch.setattr(mc, "is_local_path", lambda *_a, **_k: False)
         monkeypatch.setattr(mc, "resolve_cached_repo_id_case", lambda n, *_a, **_k: n)
-        monkeypatch.setattr(mc, "_env_offline", lambda: False)
+        monkeypatch.setattr(mc, "hf_env_offline", lambda: False)
 
         assert mc.detect_audio_type("private/spark") is None
         assert mc.detect_audio_type("private/spark", hf_token = "hf_x") == "bicodec"
@@ -786,7 +786,7 @@ class TestAudioDetectionCacheTokenAware:
         monkeypatch.setattr(mc, "_detect_audio_from_tokenizer", _fake)
         monkeypatch.setattr(mc, "is_local_path", lambda *_a, **_k: False)
         monkeypatch.setattr(mc, "resolve_cached_repo_id_case", lambda n, *_a, **_k: n)
-        monkeypatch.setattr(mc, "_env_offline", lambda: False)
+        monkeypatch.setattr(mc, "hf_env_offline", lambda: False)
 
         assert mc.detect_audio_type("org/model", revision = "commit-a") == "csm"
         assert mc.detect_audio_type("org/model", revision = "commit-b") is None
@@ -835,7 +835,7 @@ class TestAudioDetectionCacheTokenAware:
         """An offline negative must not poison a later online probe, or audio is sent to text."""
         mc = _shared_setup_1(monkeypatch)
         # Pin env-offline off so the key tracks the kwarg.
-        monkeypatch.setattr(mc, "_env_offline", lambda: False)
+        monkeypatch.setattr(mc, "hf_env_offline", lambda: False)
 
         seen = []
 
@@ -862,7 +862,7 @@ class TestAudioDetectionCacheTokenAware:
         mc = _shared_setup_1(monkeypatch)
 
         env_offline = {"v": True}
-        monkeypatch.setattr(mc, "_env_offline", lambda: env_offline["v"])
+        monkeypatch.setattr(mc, "hf_env_offline", lambda: env_offline["v"])
 
         seen = []
 
@@ -910,7 +910,7 @@ class TestRevisionAwareAudioReads:
 
         monkeypatch.setattr(mc, "is_local_path", lambda *_a, **_k: False)
         monkeypatch.setattr(mc, "get_cache_path", lambda *_a, **_k: repo_dir)
-        monkeypatch.setattr(mc, "_env_offline", lambda: True)
+        monkeypatch.setattr(mc, "hf_env_offline", lambda: True)
 
         assert _detect_audio_from_tokenizer(
             "org/model",
@@ -935,7 +935,7 @@ class TestRevisionAwareAudioReads:
         get = MagicMock(return_value = response)
         monkeypatch.setattr(mc, "is_local_path", lambda *_a, **_k: False)
         monkeypatch.setattr(mc, "get_cache_path", lambda *_a, **_k: None)
-        monkeypatch.setattr(mc, "_env_offline", lambda: False)
+        monkeypatch.setattr(mc, "hf_env_offline", lambda: False)
         monkeypatch.setattr(requests, "get", get)
 
         assert _detect_audio_from_tokenizer("org/model", revision = "refs/pr/7") == ("csm", True)
@@ -952,7 +952,7 @@ class TestRevisionAwareAudioReads:
         get = MagicMock(return_value = response)
         monkeypatch.setattr(mc, "is_local_path", lambda *_a, **_k: False)
         monkeypatch.setattr(mc, "get_cache_path", lambda *_a, **_k: None)
-        monkeypatch.setattr(mc, "_env_offline", lambda: False)
+        monkeypatch.setattr(mc, "hf_env_offline", lambda: False)
         monkeypatch.setattr(requests, "get", get)
 
         assert _detect_audio_from_tokenizer("org/model") == ("whisper", True)
@@ -962,8 +962,7 @@ class TestRevisionAwareAudioReads:
 
 
 class TestEnvOfflineParsing:
-    """_env_offline accepts the canonical truthy set (strip+lower, on/true/yes/1); it gates
-    the requests.get fallback and the cache keys, so 'on' or ' 1 ' must still count as offline."""
+    """'on' and ' 1 ' count as offline: they gate the requests.get fallback and the cache keys."""
 
     def test_truthy_values_recognized(self, monkeypatch):
         import utils.models.model_config as mc
@@ -972,17 +971,17 @@ class TestEnvOfflineParsing:
                 monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
                 monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
                 monkeypatch.setenv(var, val)
-                assert mc._env_offline() is True, f"{var}={val!r} should be offline"
+                assert mc.hf_env_offline() is True, f"{var}={val!r} should be offline"
 
     def test_falsy_values_not_offline(self, monkeypatch):
         import utils.models.model_config as mc
 
         monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
         monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
-        assert mc._env_offline() is False
+        assert mc.hf_env_offline() is False
         for val in ("", "0", "false", "no", "off", "2", "onn"):
             monkeypatch.setenv("HF_HUB_OFFLINE", val)
-            assert mc._env_offline() is False, f"HF_HUB_OFFLINE={val!r} should not be offline"
+            assert mc.hf_env_offline() is False, f"HF_HUB_OFFLINE={val!r} should not be offline"
 
 
 def _hub_cached_repo(

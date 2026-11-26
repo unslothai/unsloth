@@ -438,7 +438,11 @@ def test_autotune_skips_the_flush_buffer_benchmarker():
 
 
 def test_self_check_oom_falls_back_to_sdpa(monkeypatch):
+    # SDPA serves the call, but the OOM is transient: caching it kept SDPA for the whole run.
+    calls = []
+
     def oom(*args, **kwargs):
+        calls.append(1)
         raise torch.cuda.OutOfMemoryError("CUDA out of memory.")
 
     monkeypatch.setattr(LH, "large_head_attention", oom)
@@ -446,6 +450,15 @@ def test_self_check_oom_falls_back_to_sdpa(monkeypatch):
     key = (str(torch.device("cpu")), torch.float32)
     monkeypatch.setitem(LH._SELF_CHECK, key, None)
     LH._SELF_CHECK.pop(key)
+    assert LH._self_check(torch.device("cpu"), torch.float32) is False
+    assert key not in LH._SELF_CHECK
+    assert LH._self_check(torch.device("cpu"), torch.float32) is False
+    assert len(calls) == 2 and key not in LH._SELF_CHECK
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("a real kernel failure")
+
+    monkeypatch.setattr(LH, "large_head_attention", broken)
     assert LH._self_check(torch.device("cpu"), torch.float32) is False
     assert LH._SELF_CHECK[key] is False
 

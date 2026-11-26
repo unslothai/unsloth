@@ -159,9 +159,13 @@ def _pin_video_fetch_to_the_named_repo(monkeypatch):
 @pytest.fixture(autouse = True)
 def _roomy_host_ram(monkeypatch):
     """Native H3 loads fit against the host's available RAM, which a CI runner may not have (macos-15: about 3 GiB).
-    Tests that need a tight host stub usable_host_ram_mib themselves, after this."""
+    Tests that need a tight host stub usable_host_ram_mib themselves, after this. CPU-only loads (no GPU here) are
+    also sized against host RAM before downloading (video_cpu_host), so a 16 GB runner refused cosmos3-nano / Wan."""
+    from core.inference import diffusion_small_host
     from utils import host_memory
+
     monkeypatch.setattr(host_memory, "usable_host_ram_mib", lambda *a, **k: 1 << 30)
+    monkeypatch.setattr(diffusion_small_host, "host_ram_mib", lambda: (1 << 30, 1 << 30))
 
 
 @pytest.fixture(autouse = True)
@@ -2639,6 +2643,8 @@ def test_the_video_refusal_also_names_a_broken_torchao_rather_than_the_gpu(
 
 def test_begin_load_refuses_dense_quant_on_a_non_pipeline_video_kind(fake_runtime, monkeypatch):
     # The DiT quant exists only on the pipeline path, so refuse it on a GGUF pick.
+    # Not a host RAM test: a CPU-only runner (16 GB on CI) would refuse the float32 load before the quant check.
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_HOST_RAM_CHECK", "0")
     backend = VideoBackend()
     with pytest.raises(RuntimeError) as excinfo:
         backend.begin_load(
@@ -3974,6 +3980,8 @@ def test_begin_load_claims_no_companion_repos_for_a_non_h3_family(fake_runtime, 
     from types import SimpleNamespace
 
     H3_COMPONENT_REPO, H3_GGUF_REPO, _ = _shared_setup_3()
+    # Not a host RAM test: a CPU-only runner (16 GB on CI) would refuse the float32 load before the claim.
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_HOST_RAM_CHECK", "0")
 
     backend = VideoBackend()
     monkeypatch.setattr(
@@ -13494,6 +13502,7 @@ def test_the_ltx23_fp8_load_prefetches_the_hosted_dit_under_its_cancel_event(tmp
         cancel_event = None,
         local_files_only = False,
         scheme = None,
+        on_fallback = None,
     ):
         fetched.append(([src.location for src in sources], cancel_event, local_files_only))
 

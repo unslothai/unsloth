@@ -24,6 +24,14 @@ _HUB_API = (
 )
 
 
+@pytest.fixture(autouse = True)
+def _roomy_host_ram(monkeypatch):
+    """The CPU-only video branch sizes the load against host RAM before downloading (video_cpu_host); a 16 GB
+    runner would refuse Wan2.2 TI2V 5B there before the offline load this file checks is reached."""
+    from core.inference import diffusion_small_host
+    monkeypatch.setattr(diffusion_small_host, "host_ram_mib", lambda: (1 << 30, 1 << 30))
+
+
 @pytest.fixture
 def hub_calls(monkeypatch):
     from huggingface_hub import HfApi, file_download
@@ -65,6 +73,8 @@ def _run(monkeypatch, media, repo):
         raise _Built("stub build")
 
     monkeypatch.setattr(cls, "load_pipeline", _load_pipeline)
+    # Not a host RAM test: a CPU-only runner (16 GB on CI) would refuse the float32 load before the load reaches the Hub.
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_HOST_RAM_CHECK", "0")
     backend = cls()
     backend.begin_load(repo)
     deadline = time.monotonic() + 60

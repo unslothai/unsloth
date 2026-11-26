@@ -265,7 +265,6 @@ const TABS: TabDef[] = [
     id: "appearance",
     labelKey: "settings.tabs.appearance",
     icon: BrushCleaningIcon,
-    badgeKey: "shell.navigation.newBadge",
   },
   {
     id: "resources",
@@ -321,7 +320,6 @@ const TABS: TabDef[] = [
     id: "computer-use",
     labelKey: "computerUse.settings.title",
     icon: Cursor02Icon,
-    badgeKey: "shell.navigation.newBadge",
   },
   {
     id: "keyboard-shortcuts",

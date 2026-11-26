@@ -38,6 +38,7 @@ CORE_WORKFLOW = REPO / ".github" / "workflows" / "consolidated-tests-ci.yml"
 CORE_JOB = "consolidated"
 RUN_BY_CORE = {
     "tests/version_compat/test_sft_assistant_mask_fallback_trainer.py",
+    "tests/version_compat/test_sft_end_of_turn_eos_trainer.py",
 }
 
 

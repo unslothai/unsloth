@@ -52,7 +52,7 @@ def load_krea2_tokenizer(
         check_cancelled()
     from transformers import AutoTokenizer
 
-    from .diffusion_offline_source import offline_snapshot_source
+    from .diffusion_offline_source import tokenizer_snapshot_source
 
     cache_dir = _live_cache_dir()
     kwargs: dict[str, Any] = {
@@ -62,9 +62,13 @@ def load_krea2_tokenizer(
     }
     if hf_token:
         kwargs["token"] = hf_token
-    # Offline by repo id, transformers 5.x fails both attempts below (see diffusion_offline_source).
-    source = offline_snapshot_source(
-        repo_id, "tokenizer", local_files_only = local_files_only, cache_dir = cache_dir
+    # By repo id, transformers 5.x breaks offline and drops the token on gated repos.
+    source = tokenizer_snapshot_source(
+        repo_id,
+        "tokenizer",
+        local_files_only = local_files_only,
+        token = hf_token,
+        cache_dir = cache_dir,
     )
     try:
         return AutoTokenizer.from_pretrained(source, **kwargs)
@@ -250,5 +254,9 @@ def load_krea2_pipeline(
     if transformer is not None:
         # before the attention backend / INT8 route, which read the block processors
         from .diffusion_krea2_prefix_kv import install as install_prefix_kv
+
         install_prefix_kv(transformer, logger)
+        from .diffusion_krea2_text_cache import install as install_text_cache
+
+        install_text_cache(transformer, logger)
     return pipe

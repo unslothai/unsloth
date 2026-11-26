@@ -6950,12 +6950,16 @@ class TestHipSdkInstalledButDeviceInaccessible:
         assert "HipSdkInstalled" in source
 
     def test_install_ps1_sets_flag_when_hipinfo_binary_found(self):
-        """install.ps1 must set HipSdkInstalled=true inside the 'if ($hipinfoExe)' block."""
+        """install.ps1 must set HipSdkInstalled=true as the first statement of the hipinfo block.
+
+        The gate may carry more conditions than the binary (the notice-only probe on a mixed
+        NVIDIA + AMD host runs no HIP tool), but it must still test $hipinfoExe itself.
+        """
         source = _INSTALL_PS1_PATH.read_text(encoding = "utf-8")
-        hipinfo_block_idx = source.find("if ($hipinfoExe)")
-        sdk_flag_idx = source.find("$HipSdkInstalled = $true", hipinfo_block_idx)
-        assert hipinfo_block_idx != -1 and sdk_flag_idx != -1
-        assert sdk_flag_idx > hipinfo_block_idx
+        gate = re.search(r"^(\s*)if \(\$hipinfoExe\b[^\n]*\) \{\n", source, re.MULTILINE)
+        assert gate, "install.ps1: no 'if ($hipinfoExe ...)' block"
+        body = [line.strip() for line in source[gate.end() :].splitlines() if line.strip()]
+        assert body[0].startswith("$HipSdkInstalled = $true"), body[:2]
 
     def test_setup_ps1_sets_flag_when_hipinfo_binary_found(self):
         """setup.ps1 must set HipSdkInstalled=true inside the 'if ($hipinfoExe)' block."""
