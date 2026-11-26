@@ -1,0 +1,39 @@
+{
+  "version": "0.1.914-beta",
+  "title": "Glass themes and faster generation",
+  "date": "2026-11-03",
+  "features": [
+    {
+      "image": "glass.webp",
+      "alt": "A translucent Studio chat over an illustrated landscape",
+      "title": "Glass themes",
+      "summary": "Five glass styles with adjustable transparency.",
+      "open": "settings:appearance",
+      "action": "Try glass themes"
+    },
+    {
+      "image": "background-controls.webp",
+      "alt": "A custom illustrated background behind a Studio chat",
+      "title": "Background controls",
+      "summary": "Adjust the size, position, and placement of your chat background.",
+      "open": "settings:appearance",
+      "action": "Adjust background"
+    }
+  ],
+  "changes": {
+    "new": [
+      ["Chat navigation", "Preview, bookmark and jump between earlier turns."],
+      ["Training", "CPU text training directly from the Train page."]
+    ],
+    "improved": [
+      [
+        "DeepSeek-V4.1",
+        "Unsloth's 512K context GGUFs rank strongest across Terminal Bench, DeepSWE and AutomationBench."
+      ]
+    ]
+  },
+  "more": 313,
+  "guides": {
+    "DeepSeek-V4.1": "https://unsloth.ai/docs/models/deepseek-v4.1-flash"
+  }
+}

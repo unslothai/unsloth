@@ -1,0 +1,58 @@
+{
+  "version": "0.1.918-beta",
+  "title": "Computer use and a new model picker",
+  "date": "2026-11-16",
+  "features": [
+    {
+      "image": "model-picker.webp",
+      "imageDark": "model-picker-dark.webp",
+      "alt": "The model picker open above the chat box",
+      "title": "New model picker",
+      "summary": "Switch models from the chat box, with Favorites, On Device, Discover, and Connected tabs.",
+      "open": "/chat",
+      "action": "Pick a model"
+    },
+    {
+      "image": "computer-use.webp",
+      "imageDark": "computer-use-dark.webp",
+      "alt": "Computer use settings",
+      "title": "Computer use (beta)",
+      "summary": "Vision models can see your screen and use apps. Off by default, with approvals.",
+      "link": "https://unsloth.ai/docs/basics/computer-use",
+      "open": "settings:computer-use",
+      "action": "Turn on computer use"
+    }
+  ],
+  "changes": {
+    "new": [
+      ["Engram", "Change and swap engrams for Qwen Flash and DeepSeek."],
+      [
+        "Creative apps",
+        "Connect Unreal Engine, Unity, Godot and Roblox through MCP, alongside Blender."
+      ],
+      [
+        "MiniMax-H3-Image",
+        "GGUF for CPU, Mac and AMD, FP8 and INT8 on NVIDIA, plus LoRA training."
+      ],
+      [
+        "Projects",
+        "Browse project files, search folders and view Git changes in the new Files tab."
+      ]
+    ],
+    "improved": [
+      [
+        "Connections",
+        "Live connection status, a redesigned provider gallery and 9 new providers."
+      ],
+      [
+        "Compaction",
+        "Long chats are summarized automatically, with limits per connection."
+      ]
+    ]
+  },
+  "more": 15,
+  "guides": {
+    "Creative apps": "https://unsloth.ai/docs/basics/mcp/mcp-engines",
+    "MiniMax-H3-Image": "https://unsloth.ai/docs/models/minimax-h3-image"
+  }
+}

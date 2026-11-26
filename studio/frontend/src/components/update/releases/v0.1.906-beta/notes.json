@@ -1,0 +1,44 @@
+{
+  "version": "0.1.906-beta",
+  "title": "Browser use and Qwen-Image-2.1-Turbo",
+  "date": "2026-10-12",
+  "features": [
+    {
+      "image": "browser-use.webp",
+      "imageDark": "browser-use-dark.webp",
+      "alt": "The chat box + menu with Browser use and Computer use",
+      "title": "Browser use",
+      "summary": "Let a local model take control of the Unsloth browser from the + menu in the chat box.",
+      "link": "https://unsloth.ai/docs/basics/browser-use",
+      "open": "settings:browser",
+      "action": "Browser settings"
+    },
+    {
+      "image": "qwen-image.webp",
+      "imageDark": "qwen-image-dark.webp",
+      "alt": "Qwen-Image-2.1-Turbo",
+      "title": "Qwen-Image-2.1-Turbo",
+      "summary": "Images in 8 steps, 2.5x faster.",
+      "link": "https://unsloth.ai/docs/models/qwen-image-2.1/qwen-image-2.1-turbo",
+      "open": "/images",
+      "action": "Generate an image"
+    }
+  ],
+  "changes": {
+    "new": [
+      [
+        "Training",
+        "Train text-diffusion LLMs like DiffusionGemma, LLaDA and Dream."
+      ]
+    ],
+    "improved": [
+      ["MoE", "Up to 3x faster MoE GGUFs that are bigger than your VRAM."],
+      ["Mac", "Speculative decoding for up to 2.8x faster MLX replies."]
+    ]
+  },
+  "more": 291,
+  "guides": {
+    "Training": "https://unsloth.ai/docs/models/diffusiongemma",
+    "Mac": "https://unsloth.ai/docs/basics/inference-and-deployment/saving-to-gguf/speculative-decoding"
+  }
+}

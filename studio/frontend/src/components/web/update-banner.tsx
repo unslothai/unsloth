@@ -2,7 +2,12 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
-import { ReleaseNotesPanel } from "@/components/update/release-notes-panel";
+import {
+  usePillHosted,
+  usePublishUpdateOffer,
+} from "@/components/update/update-offer-store";
+import { useWhatsNew } from "@/components/update/whats-new-store";
+import { useT } from "@/i18n";
 import { type DeviceType, usePlatformStore } from "@/config/env";
 import { useNotificationGate } from "@/hooks/use-notification-frequency";
 import { useWebUpdateCheck } from "@/hooks/use-web-update-check";
@@ -11,7 +16,7 @@ import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { cn } from "@/lib/utils";
 import { AnimatePresence, motion } from "motion/react";
 import { type ReactElement, useEffect, useRef, useState } from "react";
-import { Download01Icon } from "@hugeicons/core-free-icons";
+import { Download01Icon, SparklesIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 
 // Only native Windows needs the PowerShell one-liner; WSL uses the POSIX installer.
@@ -41,8 +46,30 @@ export function WebUpdateBanner({
   const deviceType = usePlatformStore((s) => s.deviceType);
   const installCmd = installCommandForDevice(deviceType);
   const [copiedVersion, setCopiedVersion] = useState<string | null>(null);
-  const [notesVersion, setNotesVersion] = useState<string | null>(null);
   const dismissTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const t = useT();
+  const pillHosted = usePillHosted();
+  // Hidden, not unmounted, so the open dialog is not covered.
+  const notesOpen = useWhatsNew((state) => state.open);
+  const copied = status != null && copiedVersion === status.latestVersion;
+
+  usePublishUpdateOffer(
+    status && open && !isTauri
+      ? {
+          source: "web",
+          currentVersion: status.currentVersion,
+          latestVersion: status.latestVersion,
+          notesUrl: RELEASE_NOTES_URL,
+          actionLabel: copied
+            ? t("updateNotes.copied")
+            : t("updateNotes.copyCommand"),
+          actionDisabled: false,
+          note: null,
+          runAction: () => void handleCopyCommand(),
+          later: snooze,
+        }
+      : null,
+  );
 
   useEffect(() => {
     return () => {
@@ -68,13 +95,9 @@ export function WebUpdateBanner({
     dismissTimerRef.current = setTimeout(() => snooze(), 1200);
   }
 
-  const copied = status != null && copiedVersion === status.latestVersion;
-  // Keyed by version so a new offer collapses the panel.
-  const notesOpen = status != null && notesVersion === status.latestVersion;
-
   return (
     <AnimatePresence>
-      {status && open ? (
+      {status && open && !pillHosted ? (
         <motion.div
           initial={{ opacity: 0, y: 12, scale: 0.96 }}
           animate={{ opacity: 1, y: 0, scale: 1 }}
@@ -85,23 +108,13 @@ export function WebUpdateBanner({
               ? "fixed bottom-4 right-4 z-[9999] w-[calc(100vw-2rem)] max-w-[calc(448px*var(--ui-space-scale,1))]"
               : cn(
                   "pointer-events-auto flex w-[calc(100vw-2rem)] max-w-[calc(448px*var(--ui-space-scale,1))] shrink-0 flex-col",
-                  // Only rendered notes may shrink; the floor is the surface's own content, not a constant.
-                  "has-[[data-slot=update-release-notes]]:shrink",
                 ),
+            notesOpen && "invisible",
           )}
           data-testid="web-update-banner"
         >
-          {/* Paint the full floor even when the notes content is short.
-              No min-h-0 and no overflow-hidden here on purpose: both of them
-              set this box's automatic minimum size to zero, which is what made
-              the card need a hand-written floor at all. Left alone it floors
-              itself at header + notes + actions, and the notes panel carries
-              its own min-h-0 and clipping, so it stays the one part that
-              yields. That is the floor the constant was approximating, except
-              it is measured rather than guessed and it holds at every type
-              size. */}
+          {/* No min-h-0 or overflow-hidden: either one zeroes this box's minimum size. */}
           <div className="toast-surface relative flex max-h-[calc(100dvh_-_2rem)] grow flex-col rounded-2xl bg-white px-5 pb-4 pt-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_var(--background)]">
-
             <button
               type="button"
               onClick={dismiss}
@@ -126,7 +139,8 @@ export function WebUpdateBanner({
             </button>
 
             <div className="flex min-w-0 shrink-0 items-start gap-4 pr-6">
-              <HugeiconsIcon icon={Download01Icon}
+              <HugeiconsIcon
+                icon={Download01Icon}
                 aria-hidden="true"
                 className="mt-1 size-5 shrink-0 text-foreground"
                 strokeWidth={1.75}
@@ -144,24 +158,27 @@ export function WebUpdateBanner({
               </div>
             </div>
 
-            <ReleaseNotesPanel
-              version={status.latestVersion}
-              open={notesOpen}
-              releaseNotesUrl={RELEASE_NOTES_URL}
-            />
-
             <div className="mt-4 flex shrink-0 flex-wrap items-center justify-between gap-y-2">
               <Button
                 size="sm"
-                variant="ghost"
-                className="-ml-2 h-auto whitespace-nowrap rounded-full px-2.5 py-2 text-ui-13 font-medium text-foreground"
+                variant="primary"
+                className="h-auto gap-1.5 whitespace-nowrap rounded-full px-3 py-2 text-ui-13"
                 onClick={() =>
-                  setNotesVersion(notesOpen ? null : status.latestVersion)
+                  useWhatsNew.getState().show({
+                    version: status.latestVersion,
+                    url: RELEASE_NOTES_URL,
+                  })
                 }
-                aria-expanded={notesOpen}
-                data-testid="web-update-release-notes-toggle"
+                aria-haspopup="dialog"
+                data-testid="web-update-whats-new"
               >
-                {notesOpen ? "Hide release notes" : "Show release notes"}
+                <HugeiconsIcon
+                  icon={SparklesIcon}
+                  className="size-3.5"
+                  strokeWidth={2}
+                  aria-hidden="true"
+                />
+                {t("updateNotes.whatsNew")}
               </Button>
               {/* wrap + right-align so buttons stack instead of clipping on very narrow banners */}
               <div className="flex flex-wrap items-center justify-end gap-x-1 gap-y-2">
@@ -176,8 +193,8 @@ export function WebUpdateBanner({
                 </Button>
                 <Button
                   size="sm"
-                  variant="primary"
-                  className="-mr-1 h-auto whitespace-nowrap rounded-full px-3 py-2 text-ui-13"
+                  variant="secondary"
+                  className="-mr-1 h-auto whitespace-nowrap rounded-full px-3 py-2 text-ui-13 font-medium"
                   onClick={handleCopyCommand}
                   data-testid="web-update-copy-button"
                 >

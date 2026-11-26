@@ -1,0 +1,48 @@
+{
+  "version": "0.1.921-beta",
+  "title": "Inkling 2 Mini and leaner models",
+  "date": "2026-11-20",
+  "features": [
+    {
+      "image": "inkling.webp",
+      "imageDark": "inkling-dark.webp",
+      "alt": "Inkling 2 Mini",
+      "title": "Inkling 2 Mini",
+      "summary": "A 26B model with 5.4B active and a 1M context, the strongest for its size.",
+      "link": "https://unsloth.ai/docs/models/inkling-2-mini",
+      "open": "/hub?model=unsloth/Inkling-2-Mini-GGUF",
+      "action": "Get Inkling 2 Mini"
+    },
+    {
+      "image": "leaner.webp",
+      "imageDark": "leaner-dark.webp",
+      "alt": "66% less RAM, 87% fewer prompt tokens, 2.2x faster MiniMax-H3-Image",
+      "title": "Leaner and faster",
+      "summary": "GGUF image models load with up to 66% less RAM, and MCP chats send up to 87% fewer prompt tokens."
+    }
+  ],
+  "changes": {
+    "improved": [
+      [
+        "MiniMax-H3-Image",
+        "Renders a new prompt in 36.7 s on 8 GB GPUs, down from 82.7 s."
+      ],
+      [
+        "Images",
+        "GGUF image models load with 52 to 66% less RAM on Linux and macOS."
+      ],
+      ["MCP", "MCP chats process 83 to 87% fewer prompt tokens."],
+      [
+        "FLUX.1",
+        "FLUX.1 takes 16 to 28% less time per step when streaming from RAM."
+      ]
+    ],
+    "fixed": [
+      ["Images", "GTX 16xx cards no longer fail renders with a NaN error."]
+    ]
+  },
+  "more": 20,
+  "guides": {
+    "MiniMax-H3-Image": "https://unsloth.ai/docs/models/minimax-h3-image"
+  }
+}

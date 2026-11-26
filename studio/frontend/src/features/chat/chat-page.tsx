@@ -359,6 +359,7 @@ import {
   saveChatItemAsProjectSource,
 } from "./prompt-storage/prompt-storage-dialog";
 import { ExportFormatItems } from "./components/export-format-items";
+import { UpdatePill } from "@/components/update/update-pill";
 import { providerModelDisplayName, useModelDisplayNamesVersion } from "./model-display-names";
 import { syncThreadScroll, trackThreadScroll } from "./thread-scroll-flag";
 import { lazyWithoutSuspense, preloadWhenIdle } from "@/lib/lazy-without-suspense";
@@ -3677,6 +3678,8 @@ export function ChatPage({
 
   const browserOpen = useBrowserStore((state) => state.open);
   const browserOpenSequence = useBrowserStore((state) => state.openSequence);
+  // Full view hides this header, so the pill must not hold the update offer there.
+  const headerHidden = useBrowserStore((state) => state.fullView) && browserOpen;
   // A project has no side pane: only a browser opened from it (a card, a link) shows over it, not
   // one left open in a chat before.
   const [projectBrowserBaseline, setProjectBrowserBaseline] = useState<number | null>(null);
@@ -5121,6 +5124,7 @@ export function ChatPage({
             ) : null}
           </div>
           <div data-wallpaper-chrome-controls="" data-chat-header-actions="" className="pointer-events-auto ml-auto flex min-w-min max-w-max grow basis-0 items-center gap-1 *:shrink-0">
+            {active && !headerHidden && <UpdatePill slot="header" className="mr-[calc(4px*var(--ui-space-scale,1))]" />}
             {showContextWindowUsage &&
             (view.mode === "single" ||
               (view.mode === "project" && activeThreadId != null)) &&

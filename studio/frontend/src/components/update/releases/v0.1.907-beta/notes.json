@@ -1,0 +1,52 @@
+{
+  "version": "0.1.907-beta",
+  "title": "Large performance gains",
+  "date": "2026-10-13",
+  "features": [
+    {
+      "image": "speed.webp",
+      "imageDark": "speed-dark.webp",
+      "alt": "Up to 10x faster UI, 5x faster inference, and 3x more file types",
+      "title": "Faster everywhere",
+      "summary": "The app is up to 10x faster with several chats open, and inference up to 5x faster."
+    },
+    {
+      "image": "video.webp",
+      "imageDark": "video-dark.webp",
+      "alt": "LTX-2.5 and Wan2.2 video models",
+      "title": "LTX-2.5 and Wan2.2",
+      "summary": "Generate video from text or from an image.",
+      "link": "https://unsloth.ai/docs/models/ltx-2.5",
+      "open": "/video",
+      "action": "Make a video"
+    }
+  ],
+  "changes": {
+    "new": [
+      [
+        "Browser use",
+        "Click, move the mouse, drag, run approved scripts and set per-site rules."
+      ],
+      ["Hardware", "NVIDIA RTX Spark runs with the Windows ARM64 download."]
+    ],
+    "improved": [
+      ["Inference", "Up to 5x faster with a 95% cache hit rate and MoE fixes."],
+      [
+        "Compaction",
+        "Works with every API connection, with better UI handling."
+      ],
+      [
+        "Image training",
+        "Faster image LoRA training with aspect buckets and fused AdamW."
+      ]
+    ],
+    "fixed": [
+      [
+        "Files",
+        "Drag and drop works again on Desktop, with 3x more supported files."
+      ],
+      ["Hardware", "Windows AMD, Intel XPU and CUDA/PyTorch fixes."]
+    ]
+  },
+  "more": 137
+}

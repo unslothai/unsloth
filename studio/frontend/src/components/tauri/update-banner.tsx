@@ -2,7 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
-import { ReleaseNotesPanel } from "@/components/update/release-notes-panel";
+import {
+  usePillHosted,
+  usePublishUpdateOffer,
+} from "@/components/update/update-offer-store";
+import { useWhatsNew } from "@/components/update/whats-new-store";
 import { useNotificationGate } from "@/hooks/use-notification-frequency";
 import type {
   DesktopUpdatePolicyMode,
@@ -13,7 +17,11 @@ import type {
 import type { CopySupportDiagnosticsResult } from "@/lib/tauri-diagnostics";
 import { cn } from "@/lib/utils";
 import { useT } from "@/i18n";
-import { Alert02Icon, Download01Icon } from "@hugeicons/core-free-icons";
+import {
+  Alert02Icon,
+  Download01Icon,
+  SparklesIcon,
+} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { AnimatePresence, motion } from "motion/react";
 import { useState } from "react";
@@ -62,8 +70,7 @@ export function UpdateBanner({
   const [copying, setCopying] = useState(false);
   const [manualReport, setManualReport] = useState<string | null>(null);
   const [manualMessage, setManualMessage] = useState<string | null>(null);
-  // Version whose notes are expanded; a new offer collapses the panel.
-  const [notesVersion, setNotesVersion] = useState<string | null>(null);
+  const notesOpen = useWhatsNew((s) => s.open);
   const showFailure = Boolean(lastFailure) && !dismissed;
   const showAvailable = status === "available" && !dismissed && !showFailure;
   // Failures always show; only the offer follows the notification frequency.
@@ -71,19 +78,40 @@ export function UpdateBanner({
     "unsloth",
     showAvailable && Boolean(info),
   );
-  const show = showFailure || offerOpen;
+  const pillHosted = usePillHosted();
+  const show = showFailure || (offerOpen && !pillHosted);
   const isManualLinuxPackage = updatePolicyMode === "manual_linux_package";
   const isExternalServer = externalServerPort !== null;
   const installDisabled = isManualLinuxPackage
     ? manualReleaseUrl === null
     : isExternalServer;
+  usePublishUpdateOffer(
+    offerOpen && info
+      ? {
+          source: "desktop",
+          currentVersion: info.currentVersion,
+          latestVersion: info.version,
+          notesUrl: releasePageUrl ?? manualReleaseUrl,
+          actionLabel: isManualLinuxPackage
+            ? t("desktopUpdate.banner.openReleasePage")
+            : t("desktopUpdate.banner.update"),
+          actionDisabled: installDisabled,
+          note: isManualLinuxPackage
+            ? t("desktopUpdate.banner.linuxManual")
+            : isExternalServer
+              ? t("settings.about.update.desktopExternalServer", {
+                  port: externalServerPort,
+                })
+              : null,
+          runAction: onInstall,
+          later: onDismiss,
+        }
+      : null,
+  );
   const currentVersion = formatVersion(info?.currentVersion);
   const latestVersion = formatVersion(info?.version);
   const icon = showFailure ? Alert02Icon : Download01Icon;
   const notesTargetVersion = info?.version?.replace(LEADING_V, "") ?? null;
-  const notesOpen =
-    notesTargetVersion !== null && notesVersion === notesTargetVersion;
-
   async function handleCopyDiagnostics() {
     setCopying(true);
     try {
@@ -116,11 +144,8 @@ export function UpdateBanner({
           className={cn(
             positioned
               ? "fixed bottom-4 right-4 z-[9999] w-[calc(100vw-2rem)] max-w-[calc(448px*var(--ui-space-scale,1))]"
-              : cn(
-                  "pointer-events-auto flex w-[calc(100vw-2rem)] max-w-[calc(448px*var(--ui-space-scale,1))] shrink-0 flex-col",
-                  // Only rendered notes may shrink in the capped rail.
-                  "has-[[data-slot=update-release-notes]]:min-h-[calc(117px+93px*var(--ui-font-scale,1))] has-[[data-slot=update-release-notes]]:shrink max-[383px]:has-[[data-slot=update-release-notes]]:min-h-[calc(24px+224px*var(--ui-font-scale,1))]",
-                ),
+              : "pointer-events-auto flex w-[calc(100vw-2rem)] max-w-[calc(448px*var(--ui-space-scale,1))] shrink-0 flex-col",
+            notesOpen && "invisible",
           )}
           data-testid="tauri-update-banner"
         >
@@ -188,14 +213,6 @@ export function UpdateBanner({
               </p>
             )}
 
-            {!showFailure && notesTargetVersion ? (
-              <ReleaseNotesPanel
-                version={notesTargetVersion}
-                open={notesOpen}
-                releaseNotesUrl={releasePageUrl ?? manualReleaseUrl}
-              />
-            ) : null}
-
             <div
               className={cn(
                 "mt-4 flex shrink-0 flex-wrap items-center gap-x-1 gap-y-2",
@@ -207,15 +224,21 @@ export function UpdateBanner({
               {!showFailure && notesTargetVersion ? (
                 <Button
                   size="sm"
-                  variant="ghost"
-                  className="-ml-2 h-auto whitespace-nowrap rounded-full px-2.5 py-2 text-ui-13 font-medium text-foreground"
+                  variant="primary"
+                  className="h-auto gap-1.5 whitespace-nowrap rounded-full px-3 py-2 text-ui-13"
                   onClick={() =>
-                    setNotesVersion(notesOpen ? null : notesTargetVersion)
+                    useWhatsNew.getState().show({version: notesTargetVersion, url: releasePageUrl ?? manualReleaseUrl})
                   }
-                  aria-expanded={notesOpen}
+                  aria-haspopup="dialog"
                   data-testid="tauri-update-release-notes-toggle"
                 >
-                  {notesOpen ? t("desktopUpdate.banner.hideNotes") : t("desktopUpdate.banner.showNotes")}
+                  <HugeiconsIcon
+                    icon={SparklesIcon}
+                    className="size-3.5"
+                    strokeWidth={2}
+                    aria-hidden="true"
+                  />
+                  {t("updateNotes.whatsNew")}
                 </Button>
               ) : null}
               {showFailure ? (
@@ -262,8 +285,8 @@ export function UpdateBanner({
                   </Button>
                   <Button
                     size="sm"
-                    variant="primary"
-                    className="-mr-1 h-auto whitespace-nowrap rounded-full px-3 py-2 text-ui-13"
+                    variant="secondary"
+                    className="-mr-1 h-auto whitespace-nowrap rounded-full px-3 py-2 text-ui-13 font-medium"
                     onClick={onInstall}
                     disabled={installDisabled}
                     data-testid="tauri-update-install"

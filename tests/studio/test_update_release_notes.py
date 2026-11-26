@@ -37,6 +37,28 @@ WEB_BANNER = FRONTEND / "components/web/update-banner.tsx"
 TAURI_BANNER = FRONTEND / "components/tauri/update-banner.tsx"
 
 
+@pytest.mark.parametrize(
+    "notes_path",
+    sorted((FRONTEND / "components/update/releases").glob("v*/notes.json")),
+    ids = lambda p: p.parent.name,
+)
+def test_curated_release_sections_and_webp_files(notes_path):
+    notes = json.loads(notes_path.read_text(encoding = "utf-8"))
+    tag = notes_path.parent.name
+    assert tag == f"v{notes['version']}"
+    assert set(notes["changes"]) <= {"new", "improved", "fixed"}
+    for rows in notes["changes"].values():
+        for label, description in rows:
+            assert label and description
+    for feature in notes["features"]:
+        for name in filter(None, (feature["image"], feature.get("imageDark"))):
+            filename = Path(name)
+            assert filename.name == name and filename.suffix == ".webp"
+            with (REPO / "images" / "releases" / tag / filename).open("rb") as image:
+                header = image.read(12)
+            assert header[:4] == b"RIFF" and header[8:] == b"WEBP"
+
+
 CARD_CAP = {
     WEB_BANNER: "max-h-[calc(100dvh_-_2rem)]",
     TAURI_BANNER: "max-h-[calc(100dvh_-_2rem_-_var(--studio-window-chrome-top,0px))]",
@@ -857,7 +879,7 @@ def test_desktop_notes_link_to_the_release_page_on_every_platform():
     hook = (FRONTEND / "hooks/use-tauri-update.ts").read_text(encoding = "utf-8")
     assert "const releasePageUrl = info ?" in hook
     banner = TAURI_BANNER.read_text(encoding = "utf-8")
-    assert "releaseNotesUrl={releasePageUrl ?? manualReleaseUrl}" in banner
+    assert "url: releasePageUrl ?? manualReleaseUrl" in banner
     provider = (FRONTEND / "app/provider.tsx").read_text(encoding = "utf-8")
     assert "releasePageUrl={update.releasePageUrl}" in provider
 
@@ -1008,19 +1030,24 @@ def test_a_label_is_found_literally_or_through_the_catalog():
         _shown_at('{t("desktopUpdate.banner.later")}', "Remind me later")
 
 
-@pytest.mark.parametrize("banner", [WEB_BANNER, TAURI_BANNER])
-def test_banners_toggle_inline_release_notes(banner):
-    src = banner.read_text(encoding = "utf-8")
-    assert "ReleaseNotesPanel" in src
-    _shown_at(src, "Show release notes")
-    _shown_at(src, "Hide release notes")
-    assert "notesVersion" in src
+def test_web_banner_opens_release_dialog_for_the_offered_version():
+    src = WEB_BANNER.read_text(encoding = "utf-8")
+    assert 'aria-haspopup="dialog"' in src
+    assert "version: status.latestVersion" in src
+    assert 't("updateNotes.whatsNew")' in src
+
+
+def test_desktop_banner_opens_release_dialog_for_the_offered_version():
+    src = TAURI_BANNER.read_text(encoding = "utf-8")
+    assert 'aria-haspopup="dialog"' in src
+    assert "version: notesTargetVersion" in src
+    assert 't("updateNotes.whatsNew")' in src
 
 
 @pytest.mark.parametrize(
     "banner,toggle,action",
     [
-        (WEB_BANNER, "web-update-release-notes-toggle", "web-update-snooze-button"),
+        (WEB_BANNER, "web-update-whats-new", "web-update-snooze-button"),
         (TAURI_BANNER, "tauri-update-release-notes-toggle", "Remind me later"),
     ],
 )
@@ -1527,11 +1554,6 @@ def test_code_span_closers_ignore_backslashes():
     assert '!== "`" || escaped(' in calls[0]
 
 
-# The desktop card's incompressible height: a fixed part plus a part scaled by the font
-# setting, since at 20px the action row wraps at every card width.
-_SCALED_FLOOR_TAURI = "min-h-[calc(117px+93px*var(--ui-font-scale,1))]"
-_NARROW_FLOOR_TAURI = "min-h-[calc(24px+224px*var(--ui-font-scale,1))]"
-_NARROW = "max-[383px]"
 # Floored while the notes panel is present, unsqueezable while it is not (#10229).
 _NOTES_GATE = "has-[[data-slot=update-release-notes]]"
 
@@ -1590,27 +1612,6 @@ def _card_surface(source: str) -> str:
     return _class_value(clean[start:child_end], "the painted surface")
 
 
-def _assert_floored(source: str, scaled: str, narrow: str, card: str) -> None:
-    """The card keeps room for its header and buttons, in both of its states."""
-    # Read off the rail-facing root, so a floor on an inner box does not count.
-    root = _card_slot(source)
-    # `_only_under`: a gated floor stops applying over part of its range, an ungated twin
-    # reserves the empty height the gate was added to stop.
-    assert _only_under(
-        root, scaled, _NOTES_GATE
-    ), f"the {card} card's floor is fixed, ungated, or gated more than its notes"
-    assert _only_under(
-        root, narrow, _NOTES_GATE, _NARROW
-    ), f"the {card} card's floor misses the narrow card's extra button row"
-    assert _only_under(root, "shrink-0"), f"the rail can squeeze the {card} card with no notes open"
-    assert _only_under(
-        root, "shrink", _NOTES_GATE
-    ), f"the {card} card cannot give up its notes' height, so the rail clips its buttons"
-    assert not _applies(
-        root, "min-h-0"
-    ), f"min-h-0 lets the rail squeeze the {card} card past its floor"
-
-
 def _assert_floors_itself(source: str, card: str) -> None:
     """The floor is measured, not written, but only holds while min-h-0 and overflow-hidden are absent."""
     root = _card_slot(source)
@@ -1622,10 +1623,10 @@ def _assert_floors_itself(source: str, card: str) -> None:
     assert not re.search(
         r"(?<![\w-])min-h-\[", surface + root
     ), f"the {card} card names a height again, which goes stale at the next type size"
-    assert _only_under(root, "shrink-0"), f"the rail can squeeze the {card} card with no notes open"
-    assert _only_under(
-        root, "shrink", _NOTES_GATE
-    ), f"the {card} card cannot give up its notes' height, so the rail clips its buttons"
+    assert _only_under(root, "shrink-0"), f"the rail can squeeze the {card} card"
+    assert (
+        _NOTES_GATE not in root
+    ), f"the {card} card reserves room for a notes panel it no longer shows"
     assert not _applies(
         root, "min-h-0"
     ), f"min-h-0 lets the rail squeeze the {card} card past its floor"
@@ -1839,7 +1840,8 @@ def test_the_desktop_stack_is_capped_like_the_browser_one():
     assert len(_corner_rails(provider)) == 2, "both rails sit in the bottom-right corner"
     assert _capped_rails(provider) == 2, "both stacks are capped"
     tauri = TAURI_BANNER.read_text(encoding = "utf-8")
-    _assert_floored(tauri, _SCALED_FLOOR_TAURI, _NARROW_FLOOR_TAURI, "desktop")
+    assert "shrink-0 flex-col" in tauri
+    assert "has-[[data-slot=update-release-notes]]" not in tauri
 
 
 def test_the_rail_offset_is_not_computed():

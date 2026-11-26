@@ -1,0 +1,43 @@
+{
+  "version": "0.1.913-beta",
+  "title": "Custom backgrounds and faster updates",
+  "date": "2026-10-30",
+  "features": [
+    {
+      "image": "backgrounds.webp",
+      "alt": "Two Studio chats with custom backgrounds",
+      "title": "Your own chat background",
+      "summary": "Use your own image and move the composer to the bottom of a new chat.",
+      "open": "settings:appearance",
+      "action": "Set a background"
+    },
+    {
+      "image": "languages.webp",
+      "alt": "14 new languages",
+      "title": "14 new languages",
+      "summary": "Use Studio in 14 more languages, picked in Settings.",
+      "open": "settings:general",
+      "action": "Change language",
+      "imageDark": "languages-dark.webp"
+    }
+  ],
+  "changes": {
+    "new": [
+      [
+        "Models",
+        "DeepSeek-V4.1-Flash-1017 Dynamic v3.1 GGUFs (preview), the most accurate for their size."
+      ],
+      ["Fine-tuning", "MoE fine-tuning runs compatible API jobs together."]
+    ],
+    "improved": [
+      ["Updates", "App updates finish twice as fast."],
+      ["Linux", "Much less lag and better performance."],
+      ["Qwen-Image", "Renders up to 2x faster under a 16 GB VRAM limit."],
+      ["Interface", "A cleaner, more consistent UI."]
+    ]
+  },
+  "more": 238,
+  "guides": {
+    "Models": "https://unsloth.ai/docs/basics/dynamic-3.0-ggufs/dynamic-3.1-ggufs"
+  }
+}

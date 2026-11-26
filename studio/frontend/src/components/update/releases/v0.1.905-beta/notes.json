@@ -1,0 +1,36 @@
+{
+  "version": "0.1.905-beta",
+  "title": "Sandboxing and decision models",
+  "date": "2026-10-08",
+  "features": [
+    {
+      "image": "sandbox.webp",
+      "imageDark": "sandbox-dark.webp",
+      "alt": "Sandbox level set to High in Security settings",
+      "title": "Sandboxed tools",
+      "summary": "Python and terminal tools run in the OS sandbox: Bubblewrap on Linux, Seatbelt on macOS, and MXC on Windows.",
+      "link": "https://unsloth.ai/docs/new/studio/sandboxing-in-unsloth",
+      "open": "settings:sandbox",
+      "action": "Set sandbox level"
+    },
+    {
+      "image": "decision.webp",
+      "imageDark": "decision-dark.webp",
+      "alt": "Decision accuracy rising from 30% to 80%",
+      "title": "Decision models",
+      "summary": "Turn any text or vision model into a decision model, then test, export, and serve it.",
+      "link": "https://unsloth.ai/docs/basics/train-your-own-decision-model-with-unsloth"
+    }
+  ],
+  "changes": {
+    "new": [["ComfyUI", "Load ComfyUI diffusion models natively in Unsloth."]],
+    "improved": [
+      ["Diffusion", "Faster and more accurate generation with INT8 ConvRot."],
+      [
+        "Browser",
+        "A better Browser in Desktop, plus 100+ bug and performance fixes."
+      ]
+    ]
+  },
+  "more": 148
+}

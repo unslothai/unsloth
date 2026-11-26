@@ -56,6 +56,8 @@ import {
   SETTINGS_TABS,
   useSettingsDialogStore,
 } from "@/features/settings/stores/settings-dialog-store";
+import { UpdatedNotice } from "@/components/update/updated-notice";
+import { WhatsNewDialog } from "@/components/update/whats-new-dialog";
 import { SettingsDialogMount } from "@/features/settings/settings-dialog-mount";
 import { settingsTabVisible } from "@/features/settings/settings-tab-visibility";
 import {
@@ -357,6 +359,8 @@ function CredentialBootstrapGate({
   return (
     <>
       <SettingsDialogMount active={active && ready} />
+      {active && ready && <WhatsNewDialog />}
+      {active && ready && <UpdatedNotice />}
       {active && !ready ? <RouteFallback /> : children}
     </>
   );

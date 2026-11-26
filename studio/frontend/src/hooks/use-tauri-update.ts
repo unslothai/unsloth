@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useEffect, useRef, useState } from "react";
+import { rememberUpdateTarget } from "@/components/update/updated-notice";
 import { isTauri } from "@/lib/api-base";
 import {
   copySupportDiagnostics,
@@ -411,6 +412,8 @@ export function useTauriUpdate(externalServerPort: number | null = null) {
 
       const { invoke } = await import("@tauri-apps/api/core");
       if (!(await invoke<boolean>("confirm_backend_update"))) return;
+      // Only a confirmed update is expected to change the version on the next launch.
+      rememberUpdateTarget(update.version);
       setUpdatePhase("backend");
       updateStatus("updating-backend");
       replaceLogs([]);

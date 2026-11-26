@@ -8,6 +8,7 @@ import {
 import { settingsTabVisible } from "@/features/settings/settings-tab-visibility";
 import type { TranslationKey } from "@/i18n";
 import { ChipIcon } from "@/lib/hugeicons-derived";
+import { useWhatsNew } from "@/components/update/whats-new-store";
 import { openLink } from "@/lib/open-link";
 import {
   Book03Icon,
@@ -64,7 +65,7 @@ export function runHelpAction(action: HelpAction): void {
       openLink("https://unsloth.ai/docs");
       return;
     case "help-whats-new":
-      openLink("https://unsloth.ai/docs/new/changelog");
+      useWhatsNew.getState().show();
       return;
     case "help-send-feedback":
       openLink("https://github.com/unslothai/unsloth/issues");
