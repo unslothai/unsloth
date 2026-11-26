@@ -333,6 +333,21 @@ def test_download_plan_still_lists_one_quant_beside_a_companion_gguf(monkeypatch
     assert plan["required_bytes"] == 25
 
 
+@pytest.mark.parametrize(
+    "files",
+    [
+        ["Q4_K_M/Big-00001-of-00002.gguf", "Q8_0/Big-00001-of-00002.gguf"],
+        ["Q4_K_M.gguf", "Q8_0.gguf"],
+        ["Big-Q4_K_M-imat.gguf", "Big-Q8_0-imat.gguf"],
+        ["Big-fp16.gguf", "Big-Q8_0.gguf"],
+    ],
+)
+def test_download_plan_refuses_quants_named_by_folder_or_bare_label(monkeypatch, files):
+    _hub_repo(monkeypatch, [SimpleNamespace(rfilename = f, size = 10) for f in files])
+    with pytest.raises(ValueError, match = "is a GGUF repository"):
+        native_audio_download_plan("someone/Big-GGUF")
+
+
 def test_download_plan_still_lists_a_gguf_repo_with_one_quant(monkeypatch):
     # One quant (here split in two parts, plus its projector) is the whole model, not every quant.
     _hub_repo(

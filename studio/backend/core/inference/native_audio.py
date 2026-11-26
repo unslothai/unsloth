@@ -714,23 +714,29 @@ def _native_audio_repo_files(
 _GGUF_SPLIT_PART = re.compile(r"-\d{5}-of-\d{5}(?=\.gguf$)", re.IGNORECASE)
 
 
-_GGUF_QUANT_LABEL = re.compile(
-    r"[-_.]((?:ud-)?(?:i?q\d(?:_[a-z0-9]+)*|bf16|f16|f32|mxfp4(?:_moe)?|tq\d_\d))$"
-)
+_GGUF_QUANT = r"((?:ud-)?(?:i?q\d(?:_[a-z0-9]+)*|bf16|fp?16|fp?32|fp8|mxfp4(?:_moe)?|tq\d_\d))"
+_GGUF_QUANT_LABEL = re.compile(r"(?:^|[-_.])" + _GGUF_QUANT + r"(?:[-_.]imat(?:rix)?)?$")
+_GGUF_QUANT_FOLDER = re.compile(_GGUF_QUANT + r"$")
 
 
 def _gguf_quants(siblings: list[Any]) -> dict[str, set[str]]:
     """Quant labels per GGUF model: split parts count once, projectors not at all, and a
-    companion model (a codec, a VAE) is its own model rather than another quant."""
+    companion model (a codec, a VAE) is its own model rather than another quant. A file
+    whose name carries no label takes it from its folder (`Q4_K_M/Model-00001-of-00002`)."""
     models: dict[str, set[str]] = {}
     for sibling in siblings:
-        name = str(getattr(sibling, "rfilename", "")).strip().lower().rsplit("/", 1)[-1]
+        path = str(getattr(sibling, "rfilename", "")).strip().lower()
+        folder, _, name = path.rpartition("/")
         if not name.endswith(".gguf") or "mmproj" in name:
             continue
         stem = _GGUF_SPLIT_PART.sub("", name)[: -len(".gguf")]
         label = _GGUF_QUANT_LABEL.search(stem)
-        model = stem[: label.start()] if label else stem
-        models.setdefault(model, set()).add(label.group(1) if label else "")
+        if label:
+            model, quant = stem[: label.start()], label.group(1)
+        else:
+            in_folder = _GGUF_QUANT_FOLDER.fullmatch(folder.rpartition("/")[2])
+            model, quant = stem, in_folder.group(1) if in_folder else ""
+        models.setdefault(model, set()).add(quant)
     return models
 
 
