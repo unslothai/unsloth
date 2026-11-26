@@ -311,12 +311,6 @@ def test_the_4096_row_race_keeps_short_timings_on_a_steady_clock(monkeypatch):
     sustained one dropped a tile that is faster in the denoiser)."""
     w, ws, sustained = _burst_vs_sustained(monkeypatch, today_sustained = 102.0)
     monkeypatch.delenv(cut.SUSTAINED_ENV, raising = False)
-    # A100: the tile also wins paired with today's path (the clock does not move with the kernel there)
-    monkeypatch.setattr(
-        cut,
-        "paired_cost_us",
-        lambda fns, base: {n: {0: 90.0, 1: 97.0, "today": 100.0}[n] for n in fns},
-    )
     r = cut.race(0, w, ws, None, torch.bfloat16, lambda *a: None, max(cut._RACE_M))
     assert r["tile"] == 0 and r["sustained"] is False and sustained
 
@@ -765,22 +759,29 @@ def test_no_sustained_winner_runs_no_paired_timing(monkeypatch):
     assert r["tile"] is None and not seen["paired"] and "paired_us" not in r
 
 
-def test_a_race_decided_on_short_timings_is_paired_too(monkeypatch):
-    """RTX 6000 Ada, MiniMax-H3-Image 2048^2 (about 4100 rows): with the clock steady enough for the short timings to
-    decide (#18149), CUTLASS still cost the image 5% (R8, no CUTLASS: 5.13 s; R6 / R7 / R9: 5.37 to 5.43 s). The pair
-    check runs on the short-timing winners as well."""
+def test_a_race_decided_on_short_timings_is_not_paired(monkeypatch):
+    """A steady clock (today's path back to back within 5% of its short timing) keeps the 4096-row race on short
+    timings (#18149) and its winners: on A100 a pair check there dropped or swapped real 4096-row wins."""
     w, ws, seen, today = _paired_race_env(
         monkeypatch,
         sustained = {0: 90.0, 1: 99.0, "today": 101.0},
-        pairs = {0: 230.0, 1: 204.0, "today": 200.0},
+        pairs = {0: 230.0, 1: 240.0, "today": 200.0},
     )
     r = cut.race(0, w, ws, None, torch.bfloat16, today, max(cut._RACE_M))
-    assert r["sustained"] is False and seen["paired"] == [["0", "1", "today"]]
+    assert r["tile"] == 0 and r["sustained"] is False and not seen["paired"]
+
+
+def test_a_4096_row_race_on_a_moving_clock_is_paired(monkeypatch):
+    """RTX 6000 Ada, MiniMax-H3-Image 2048^2 (about 4100 rows) lost 5% with CUTLASS (R8 without it: 5.13 s; R6 / R7 /
+    R9 with it: 5.37 to 5.43 s): where the clock moves the 4096-row race is decided sustained, and paired."""
+    w, ws, seen, today = _paired_race_env(
+        monkeypatch,
+        sustained = {0: 80.0, 1: 85.0, "today": 88.0},
+        pairs = {0: 190.0, 1: 186.0, "today": 176.0},
+    )
+    r = cut.race(0, w, ws, None, torch.bfloat16, today, max(cut._RACE_M))
+    assert r["sustained"] is True and seen["paired"] == [["0", "1", "today"]]
     assert r["tile"] is None and r["paired_veto"] == 0
-    # below the sustained row counts (512 rows): short timings alone, as before
-    seen["paired"].clear()
-    r = cut.race(0, w, ws, None, torch.bfloat16, today, min(cut._RACE_M))
-    assert r["tile"] == 0 and not seen["paired"]
 
 
 def test_paired_kill_switch_keeps_the_sustained_winner(monkeypatch):

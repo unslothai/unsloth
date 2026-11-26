@@ -672,8 +672,8 @@ def paired_enabled() -> bool:
 
 
 def paired_for(m: int) -> bool:
-    """Check the winners of an ``m``-row race that is also timed sustained (``sustained_for``) with each call followed
-    by one of today's (``paired_cost_us``). ``UNSLOTH_DIFFUSION_INT8_CUTLASS_PAIRED=0`` keeps the winners as they are."""
+    """Whether an ``m``-row race decided on sustained timings re-times its winners with each call followed by one of
+    today's (``paired_cost_us``). ``UNSLOTH_DIFFUSION_INT8_CUTLASS_PAIRED=0`` keeps the sustained winners as they are."""
     return paired_enabled() and sustained_for(m)
 
 
@@ -787,8 +787,9 @@ def race(
     dims = tiles(fam)
     rows = {t: int(dims[t][0]) for t in top if 0 <= t < len(dims)}
     best, fastest = pick(timing, top, base_name, m, rows)
-    if best is not None and paired_for(m):
-        # the winners must also win where the clock is shared with today's path (``paired_cost_us``)
+    if best is not None and info.get("sustained") and paired_for(m):
+        # sustained winners must also win where the clock is shared with today's path (``paired_cost_us``); a race
+        # the short timings decide (a steady clock) keeps its winners: on A100 the pair check there dropped real wins
         wins = [t for t in top if timing[t] < timing[base_name] * (1.0 - _MARGIN)]
         with torch.cuda.device(dev):
             paired = paired_cost_us(
