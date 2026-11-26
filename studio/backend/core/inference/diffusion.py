@@ -4918,6 +4918,8 @@ def _converted_shards_pread(dtype: Any, small_host: Any) -> Any:
 _RESERVED_SLOT_TURN: contextvars.ContextVar[Optional[object]] = contextvars.ContextVar(
     "unsloth_reserved_slot_turn", default = None
 )
+# How long a reserved, unclaimed turn may idle first in line with the slot free before a waiter steps past it.
+_RESERVED_TURN_GRACE_S = 0.5
 _SLOT_FOLLOW_UP: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "unsloth_slot_follow_up", default = False
 )
@@ -5006,6 +5008,8 @@ class DiffusionBackend:
         self._slot_turn_changed = threading.Condition(threading.Lock())
         # Called (from any thread) when the line moves or the slot frees: a waiting batch wakes on it, not a poll.
         self._slot_listeners: list[Callable[[], None]] = []
+        # Reserved turns no generation has claimed yet: a waiter may step past one that idles at the front.
+        self._unclaimed_turns: set = set()
         self._state: Optional[_LoadState] = None
         self._loading: Optional[_LoadingState] = None
         # Bumped on begin_load/unload so a superseded worker neither commits nor stamps progress
@@ -5148,6 +5152,7 @@ class DiffusionBackend:
         turn = object()
         with self._slot_turn_changed:
             self._slot_turns.append(turn)
+            self._unclaimed_turns.add(turn)
         return turn
 
     def release_slot_turn(self, turn: object) -> None:
@@ -5174,6 +5179,7 @@ class DiffusionBackend:
 
     def _leave_slot_turn(self, turn: object) -> None:
         with self._slot_turn_changed:
+            getattr(self, "_unclaimed_turns", set()).discard(turn)
             try:
                 self._slot_turns.remove(turn)
             except ValueError:
@@ -5183,10 +5189,25 @@ class DiffusionBackend:
 
     def _await_slot_turn(self, turn: object, cancel: threading.Event) -> None:
         """Blocks until ``turn`` is the oldest waiting generation; a cancel still ends the wait within 0.1 s."""
+        idle_since = None
         with self._slot_turn_changed:
             while self._slot_turns[0] is not turn:
                 if cancel.is_set():
                     raise RuntimeError(DIFFUSION_CANCELLED_MSG)
+                head = self._slot_turns[0]
+                if head in self._unclaimed_turns and not self._generate_lock.locked():
+                    # A reserved turn first in line with the slot free and no generation claiming it: its owner
+                    # may have no worker (every one waits here). After a grace it steps back one place.
+                    now = time.monotonic()
+                    idle_since = idle_since if idle_since is not None else now
+                    if now - idle_since >= _RESERVED_TURN_GRACE_S:
+                        self._slot_turns.popleft()
+                        self._slot_turns.insert(1, head)
+                        self._slot_turn_changed.notify_all()
+                        idle_since = None
+                        continue
+                else:
+                    idle_since = None
                 self._slot_turn_changed.wait(timeout = 0.1)
 
     @contextmanager
@@ -5200,6 +5221,7 @@ class DiffusionBackend:
             if reserved is not None and reserved in self._slot_turns:
                 # A coalesced batch keeps the place it took when it opened.
                 turn = reserved
+                self._unclaimed_turns.discard(turn)
             else:
                 turn = object()
                 if reserved is not None or _SLOT_FOLLOW_UP.get():

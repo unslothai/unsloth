@@ -824,3 +824,81 @@ def test_a_reserved_batch_runs_even_when_queued_requests_hold_every_generate_wor
     assert calls[0] == ["a fox", "a cat"]
     assert sorted(calls[1:]) == ["a hen", "an owl"]
     assert len(saved) == 4
+
+
+def test_an_unclaimed_reservation_cannot_stall_waiters_that_hold_every_worker():
+    """The recheck's schedule: one pool runs everything, and both of its workers wait behind a reservation whose
+    owner then has no worker. The waiters step past the idle reservation and the queue drains."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from core.inference.diffusion import DiffusionBackend, reserved_slot_turn
+
+    engine = DiffusionBackend()
+    started, release = threading.Event(), threading.Event()
+    entered = []
+
+    def active():
+        with engine._generation_slot(threading.Event()):
+            started.set()
+            release.wait(5)
+
+    def later(name):
+        with engine._generation_slot(threading.Event()):
+            entered.append(name)
+
+    def earlier(turn):
+        with reserved_slot_turn(turn), engine._generation_slot(threading.Event()):
+            entered.append("reserved")
+
+    with ThreadPoolExecutor(max_workers = 2) as pool:
+        holder = pool.submit(active)
+        assert started.wait(5)
+        turn = engine.reserve_slot_turn()
+        first = pool.submit(later, "later 1")
+        _wait_until(lambda: len(engine._slot_turns) == 2)
+        release.set()
+        holder.result(timeout = 5)
+        second = pool.submit(later, "later 2")
+        _wait_until(lambda: len(engine._slot_turns) == 3)
+        reserved = pool.submit(earlier, turn)
+        for future in (first, second, reserved):
+            future.result(timeout = 10)
+    assert sorted(entered) == ["later 1", "later 2", "reserved"]
+    assert not engine._slot_turns and not engine._unclaimed_turns
+
+
+def test_sdxl_keys_break_prompts_apart_in_both_tokenizers():
+    from core.inference.diffusion import coalesce_prompt_key
+
+    family = types.SimpleNamespace(name = "sdxl", textual_inversion = "sdxl")
+    pipe = _clip_pipe(tokenizer_2 = _ClipWords(), text_encoder_2 = object())
+    assert coalesce_prompt_key(family, pipe, "(red) BREAK blue") != coalesce_prompt_key(
+        family, pipe, "(red) blue"
+    )
+    # A pipe with a tokenizer but no encoder to count for never batches.
+    tokenizer_only = types.SimpleNamespace(tokenizer = _ClipWords())
+    assert coalesce_prompt_key(family, tokenizer_only, "(red) blue") is None
+
+
+def test_failure_recovery_renders_only_admitted_sizes():
+    attempts = []
+
+    async def run_batch(
+        prompts,
+        seeds,
+        owners = None,
+    ):
+        attempts.append(len(seeds))
+        if len(seeds) == 4:
+            raise ValueError("controlled batch failure")
+        return _echo(prompts, seeds)
+
+    results = _queue_members(
+        [("0", 1), ("1", 1), ("2", 1), ("3", 1)],
+        run_batch,
+        fits = lambda size: size == 4,
+        splittable = lambda exc: isinstance(exc, ValueError),
+    )
+    # The halves (size 2) are not admitted: every member falls back to rendering alone.
+    assert attempts == [4]
+    assert results == [None, None, None, None]

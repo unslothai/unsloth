@@ -145,11 +145,15 @@ async def _render_group(
     shared_outcome: Callable[[BaseException], bool],
     splittable: Optional[Callable[[BaseException], bool]],
     salvage: Optional[Callable[[BaseException], Optional[dict[str, Any]]]],
+    fits: Optional[Callable[[int], bool]] = None,
 ) -> dict[int, dict[str, Any]]:
     """Renders ``group`` as one call; ``{id(member): part}`` for every member it rendered. A failure keeps the
     images that finished; a refusal, a ValueError or an OOM splits the rest by member, so one member's error never
-    fails the others. Members left out render alone; only a shared outcome raises."""
+    fails the others. Members left out render alone; only a shared outcome raises. Every call, a recovery split
+    included, uses a size ``fits`` admits."""
     group = [member for member in group if not member.future.done()]
+    if fits is not None:
+        group = _fitting_prefix(group, fits)
     if len(group) < 2:
         return {}
     prompts = [member.prompt for member in group for _ in member.seeds]
@@ -179,7 +183,7 @@ async def _render_group(
             middle = (len(rest) + 1) // 2
             for half in (rest[:middle], rest[middle:]):
                 done.update(
-                    await _render_group(half, run_batch, shared_outcome, splittable, salvage)
+                    await _render_group(half, run_batch, shared_outcome, splittable, salvage, fits)
                 )
         return done
 
@@ -295,7 +299,9 @@ async def generate(
             sum(len(member.seeds) for member in members),
         )
         try:
-            done = await _render_group(members, run_batch, shared_outcome, splittable, salvage)
+            done = await _render_group(
+                members, run_batch, shared_outcome, splittable, salvage, fits
+            )
         except Exception as exc:
             _share(exc, members[1:], owner)
             raise
