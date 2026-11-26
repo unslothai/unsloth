@@ -356,3 +356,101 @@ def test_a_family_whose_guidance_split_is_off_refuses_the_replica(monkeypatch, c
     assert mg.replica_layout_refusal(denoiser) is None
     monkeypatch.setenv(env, value)
     assert env in (mg.replica_layout_refusal(denoiser) or "")
+
+
+def _encoder_card_host(monkeypatch, *, used_by_encoder, util):
+    """2 same-model cards; cuda:1 holds this load's text encoder (placed by the companion split) and just ran it."""
+
+    class Dit(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.w = torch.nn.Parameter(torch.zeros(4))
+
+    te = torch.nn.Linear(2, 2)
+
+    class Pipe:
+        transformer = Dit()
+        components = {"transformer": transformer, "text_encoder": te}
+
+    probes = {
+        0: mg.DeviceProbe(0, "RTX PRO 4000", 24564, 12000, util_pct = 90.0),
+        1: mg.DeviceProbe(1, "RTX PRO 4000", 24564, 24564 - 300 - used_by_encoder, util_pct = util),
+    }
+    monkeypatch.delenv(mg.CFG_PARALLEL_ENV, raising = False)
+    monkeypatch.setattr(mg, "cfg_parallel_decline", lambda pipe, **kw: None)
+    monkeypatch.setattr(
+        mg, "probe_devices", lambda ordinals, **kw: {o: probes[o] for o in ordinals}
+    )
+    monkeypatch.setattr(mg, "_module_device", lambda m: torch.device("cuda", 1 if m is te else 0))
+    monkeypatch.setattr(mg, "_module_mib", lambda m: used_by_encoder if m is te else 1)
+    monkeypatch.setattr(mg, "replica_need_mib", lambda *a, **k: 9400)
+    pipe = Pipe()
+    mg._PLACEMENTS[pipe] = {
+        "placement": {"transformer": "cuda:0", "vae": "cuda:0", "text_encoder": "cuda:1"}
+    }
+    return pipe
+
+
+@pytest.mark.parametrize("automatic", [True, False])
+def test_the_card_holding_this_loads_own_encoder_takes_the_replica(monkeypatch, automatic):
+    pipe = _encoder_card_host(monkeypatch, used_by_encoder = 10000, util = 35.0)
+    try:
+        with mg.selection_scope(mg.MultiGpuSelection(0, (1,), automatic = automatic)):
+            assert mg.install_cfg_parallel(pipe, offload_policy = "none") is None
+        router = mg._CFG_ROUTERS[pipe]
+        assert str(router.secondary) == "cuda:1"
+        assert router.own_mib == 10000
+    finally:
+        mg.uninstall_cfg_parallel(pipe)
+        mg._PLACEMENTS.pop(pipe, None)
+
+
+def test_the_encoder_card_still_needs_room_for_the_replica_beside_the_encoder(monkeypatch):
+    pipe = _encoder_card_host(monkeypatch, used_by_encoder = 14500, util = 0.0)
+    try:
+        with mg.selection_scope(mg.MultiGpuSelection(0, (1,), automatic = True)):
+            reason = mg.install_cfg_parallel(pipe, offload_policy = "none")
+        assert reason is not None and "replica needs 9400 MiB" in reason, reason
+    finally:
+        mg.uninstall_cfg_parallel(pipe)
+        mg._PLACEMENTS.pop(pipe, None)
+
+
+def test_automatic_partner_does_not_count_this_loads_own_components():
+    primary = mg.DeviceProbe(0, "T4", 15360, 3000, util_pct = 100.0)
+    card = mg.DeviceProbe(1, "T4", 15360, 15360 - 300 - 4000, util_pct = 40.0)
+    pick, why = mg.automatic_partner(primary, [card], 6000)
+    assert pick is None and "busy" in why
+    pick, why = mg.automatic_partner(primary, [card], 6000, own_mib = {1: 4000})
+    assert pick == 1, why
+    # another process beyond this load's own memory is still busy
+    pick, why = mg.automatic_partner(primary, [card], 6000, own_mib = {1: 2000})
+    assert pick is None and "busy" in why
+    # planned but not yet placed: the replica must fit beside it
+    idle = mg.DeviceProbe(1, "T4", 15360, 15060, util_pct = 0.0)
+    pick, why = mg.automatic_partner(primary, [idle], 6000, pending_mib = {1: 9000})
+    assert pick is None and "beside this load's 9000 MiB" in why
+    pick, why = mg.automatic_partner(primary, [idle], 6000, pending_mib = {1: 7000})
+    assert pick == 1, why
+
+
+def test_the_replica_build_does_not_count_this_loads_encoder_as_busy(monkeypatch):
+    model = torch.nn.Linear(4, 4)
+    router = mg.CfgParallelRouter(model, primary = "cpu", secondary = "cpu")
+    router.secondary = torch.device("cuda", 1)
+    router.automatic_idle_only = True
+    router.own_mib = 10000
+    monkeypatch.setattr(router, "_secondary_free_total_mib", lambda: (24564 - 300 - 10000, 24564))
+    monkeypatch.setattr(mg, "_smi_util_pct", lambda o: 60.0)
+    monkeypatch.setattr(mg, "replica_need_mib", lambda *a, **k: 9400)
+
+    def past_the_idle_gate(module):
+        raise RuntimeError("past the idle gate")
+
+    monkeypatch.setattr(mg, "weights_fingerprint", past_the_idle_gate)
+    router._build_replica(None)
+    assert "past the idle gate" in (router.disabled_reason or ""), router.disabled_reason
+    router.disabled_reason = None
+    router.own_mib = 0
+    router._build_replica(None)
+    assert "no longer idle" in (router.disabled_reason or ""), router.disabled_reason
