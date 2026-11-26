@@ -799,11 +799,9 @@ class TestExpertOffloadIsPlaced:
         base = estimate()
         resp = estimate(**placement)
         assert resp.moe_offload_unmodelled is False
-        # Two blocks of experts leave the card; op offload copies one block's back per micro-batch.
         assert self._gpu_weights(resp) == self._gpu_weights(base) - 2 * _EXPS_BYTES
         assert resp.compute_bytes == base.compute_bytes + _EXPS_BYTES
         assert resp.gpu_bytes == base.gpu_bytes - _EXPS_BYTES
-        # The weights move, they do not disappear.
         assert resp.total_bytes == base.total_bytes + _EXPS_BYTES
 
     @pytest.mark.parametrize(
@@ -832,8 +830,6 @@ class TestExpertOffloadIsPlaced:
         ids = ["auto", "off", "32_slots", "no_op_offload", "micro_batch_below_32"],
     )
     def test_a_head_on_the_host_is_staged_whenever_ops_offload(self, estimate, kw, staged):
-        # The output rows it multiplies depend on how the launch resolves speculation, so the
-        # estimate charges the head as an upper bound.
         kw = {"n_batch": 64, "n_ubatch": 64, **kw}
         extra = kw.pop("llama_extra_args", [])
         base = estimate(llama_extra_args = extra, **kw)
@@ -842,8 +838,7 @@ class TestExpertOffloadIsPlaced:
 
     def test_partial_offload_prices_the_layers_from_the_back(self, estimate):
         resp = estimate(gpu_layers = 2)
-        # Two of five layers: the output layer and block 3. Blocks 0-2 run their ops on the GPU
-        # from host weights, one block's worth at a time.
+        # Two of five layers (output, block 3); blocks 0-2 stage one block at a time.
         kv_share = int((resp.kv_bytes - resp.kv_checkpoint_bytes) * 2 / (_MOE_BLOCKS + 1))
         weights = resp.gpu_bytes - kv_share - resp.compute_bytes
         assert weights == _EMBD_BYTES + _ATTN_BYTES + _EXPS_BYTES
@@ -853,7 +848,6 @@ class TestExpertOffloadIsPlaced:
         resp = estimate(llama_extra_args = ["-ot", "blk(=CPU"])
         assert resp.moe_offload_unmodelled is True
         assert resp.gpu_bytes == base.gpu_bytes
-        # Placed, so no note: a POSIX class reads as std::regex reads it.
         posix = estimate(llama_extra_args = ["-ot", r"blk\.[[:digit:]]\.ffn_.*_exps=CPU"])
         assert posix.moe_offload_unmodelled is False
         assert posix.gpu_bytes < base.gpu_bytes
@@ -861,7 +855,6 @@ class TestExpertOffloadIsPlaced:
     def test_a_device_override_counts_with_no_gpu_layers_while_a_gpu_stays_visible(self, estimate):
         ot = ["-ot", r"token_embd\.weight=CUDA0"]
         assert estimate(gpu_layers = 0).gpu_bytes == 0
-        # Manual zero layers launches a CPU child unless a --device pin keeps the GPU.
         assert estimate(gpu_layers = 0, llama_extra_args = ot).gpu_bytes == 0
         resp = estimate(gpu_layers = 0, llama_extra_args = ["--device", "CUDA0", *ot])
         assert resp.gpu_bytes == _EMBD_BYTES
@@ -874,13 +867,11 @@ class TestExpertOffloadIsPlaced:
         resp = estimate(llama_extra_args = [*ot, "--moe-cache-mib", "64"])
         assert resp.gpu_bytes == base.gpu_bytes + cached
         assert resp.total_bytes == base.total_bytes + cached
-        # "auto" is the fitter's to size; a pinned Manual launch runs no fitter.
         auto = estimate(llama_extra_args = [*ot, "--moe-cache-mib", "auto"])
         assert auto.gpu_bytes == base.gpu_bytes
 
     @pytest.mark.parametrize("scales", [True], ids = ["scaled"], indirect = True)
     def test_expert_scales_left_on_the_gpu_keep_the_layer_cached(self, estimate):
-        # llama.cpp's MoE cache checks the expert matrices only, not their .scale tensors.
         ot = ["-ot", r"blk\.[0-1]\.ffn_.*_exps\.weight=CPU"]
         base = estimate(llama_extra_args = ot)
         resp = estimate(llama_extra_args = [*ot, "--moe-cache-mib", "64"])
@@ -1749,7 +1740,6 @@ class TestEstimateMemoryRoute:
         assert param.kind is inspect.Parameter.KEYWORD_ONLY
 
     def test_an_override_without_a_tensor_table_is_declared_unmodelled(self, monkeypatch, tmp_path):
-        # Metadata only: nothing to place the override against, so the GPU share reads high.
         moe = _write_gguf(tmp_path, "qwen3moe", {**_GQA_FIELDS, "expert_count": 8})
         config = SimpleNamespace(identifier = "local/model", gguf_file = moe, is_gguf = True)
         monkeypatch.setattr(ri, "_cached_estimate_config", lambda *a, **kw: config)
@@ -1832,7 +1822,6 @@ class TestEstimateMemoryRoute:
         assert resp.cache_type_kv == "q8_0"
         assert resp.layer_count == _GQA_FIELDS["block_count"]
         assert resp.gpu_layers == 6
-        # A dense model gets no --n-cpu-moe, so there is nothing left unpriced.
         assert resp.moe_offload_unmodelled is False
 
     def test_cached_repo_is_priced_from_disk_not_from_a_listing(self, monkeypatch, gqa_gguf):

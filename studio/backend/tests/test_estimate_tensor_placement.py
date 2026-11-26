@@ -49,7 +49,6 @@ def _moe(
 
 
 def test_the_llama_cpp_regexes_are_copied_verbatim():
-    # common/common.h LLM_FFN_EXPS_REGEX, LLM_FFN_DENSE_REGEX and llm_ffn_block_regex.
     assert FFN_EXPS_OVERRIDE == "\\.ffn_(up|down|gate|gate_up)_(ch|)exps"
     assert FFN_DENSE_OVERRIDE == "\\.ffn_(up|down|gate)\\."
     assert block_ffn_overrides(2, FFN_EXPS_OVERRIDE) == [
@@ -62,7 +61,6 @@ def test_every_layer_offloaded_keeps_only_the_input_layer_on_the_host():
     p = place_weights(_moe(), None)
     assert p.host_bytes == EMBD
     assert p.device_bytes == sum(_moe().values()) - EMBD
-    # token_embd is read by GET_ROWS, which no backend offloads.
     assert p.host_staging_bytes == 0
     assert p.resolved
 
@@ -79,7 +77,6 @@ def test_a_head_held_on_the_host_is_reported_apart_from_the_blocks():
     assert (p.host_head_bytes, p.host_staging_bytes) == (EMBD, 0)
     tied = place_weights(_moe(tied = True), None, [("token_embd\\.weight", True)])
     assert tied.host_head_bytes == EMBD
-    # With the output layer on the CPU nothing runs it on a GPU.
     assert place_weights(_moe(), 0, [("output\\.weight", True)]).host_head_bytes == 0
 
 
@@ -94,14 +91,11 @@ def test_n_cpu_moe_places_what_the_equivalent_override_places():
 def test_layers_are_offloaded_from_the_back_with_the_output_layer_first():
     blocks = 4
     per_block = ATTN + 3 * EXPS
-    # One layer on the GPU is the output layer.
     p = place_weights(_moe(blocks), 1)
     assert p.device_bytes == EMBD + 1
-    # Two: the output layer and the last block.
     p = place_weights(_moe(blocks), 2)
     assert p.device_bytes == EMBD + 1 + per_block
     assert p.host_staging_bytes == per_block
-    # blocks + 1 offloads everything, as None does.
     assert place_weights(_moe(blocks), blocks + 1) == place_weights(_moe(blocks), None)
     assert place_weights(_moe(blocks), 0).device_bytes == 0
 
@@ -118,18 +112,15 @@ def test_an_override_reaches_a_layer_already_on_the_cpu():
     base = place_weights(_moe(), 2)
     moved = place_weights(_moe(), 2, [("blk\\.0\\.attn_", False)])
     assert moved.device_bytes == base.device_bytes + ATTN
-    # A CPU override of a CPU layer changes nothing.
     assert place_weights(_moe(), 2, [("blk\\.0\\.", True)]) == base
 
 
 def test_a_tied_head_loads_token_embd_again_on_the_output_device():
     tied = _moe(tied = True)
     p = place_weights(tied, None)
-    # The input copy stays on the host; the head copy counts on the device, a second resident copy.
     assert p.host_bytes == EMBD
     assert p.device_bytes == sum(tied.values())
     assert p.duplicate_bytes == EMBD
-    # No layer on the GPU: both copies share one host allocation.
     shared = place_weights(tied, 0)
     assert (shared.device_bytes, shared.host_bytes, shared.duplicate_bytes) == (
         0,
@@ -154,7 +145,6 @@ def test_an_encoder_has_no_head_to_tie():
 
 
 def test_ranks_follow_the_blocks_present_not_their_indices():
-    # A looped GGUF names only its weight-owning blocks; -ngl counts those.
     table = {"blk.0.attn_q.weight": 1, "blk.7.attn_q.weight": 10, "output.weight": 100}
     assert place_weights(table, 2).device_bytes == 110
     assert place_weights(table, 1).device_bytes == 100
@@ -176,7 +166,6 @@ def test_posix_classes_read_as_std_regex_reads_them():
 
 @pytest.mark.parametrize("cls", ["alnum", "d", "digit", "graph", "print", "w", "xdigit"])
 def test_every_class_std_regex_knows_is_read(cls):
-    # Each of these classes matches a block index digit.
     p = place_weights(_moe(), 0, [(f"blk\\.[[:{cls}:]]\\.attn_", False)])
     assert p.resolved
     assert p.device_bytes == 4 * ATTN
@@ -191,15 +180,12 @@ def test_an_unreadable_pattern_leaves_the_placement_unresolved_either_way(on_hos
 
 def test_the_moe_cache_can_hold_the_host_experts_of_gpu_layers_only():
     p = place_weights(_moe(), 3, [("blk\\.[0-2]\\.ffn_.*_exps", True)])
-    # Blocks 2 and 3 run on the GPU; only block 2's experts are on the host.
     assert p.host_expert_bytes == 3 * EXPS
     partly = place_weights(_moe(), None, [("blk\\.0\\.ffn_gate_up_exps", True)])
-    # A layer with any expert left on the device is not cached.
     assert partly.host_expert_bytes == 0
 
 
 def test_expert_scales_left_on_the_device_do_not_stop_the_cache():
-    # llama_moe_cache_layer_experts reads the expert matrices only.
     weights_only = place_weights(
         _moe(scales = True), None, [("blk\\.0\\.ffn_.*_exps\\.weight", True)]
     )
@@ -246,7 +232,6 @@ class TestOverrides:
 
     def test_counts_and_flags_that_place_nothing(self):
         assert _main_tensor_overrides(["-ncmoe", "0", "--n-cpu-ffn=0", "--top-k", "40"], {}) == []
-        # Draft placement is the drafter's.
         assert _main_tensor_overrides(["-otd", "exps=CPU", "-cmoed", "-ncmoed", "3"], {}) == []
         assert _main_tensor_overrides(["--n-cpu-moe=2"], {}) == [
             (p, True) for p in block_ffn_overrides(2, FFN_EXPS_OVERRIDE)

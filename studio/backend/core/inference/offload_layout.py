@@ -441,7 +441,6 @@ FFN_EXPS_OVERRIDE = r"\.ffn_(up|down|gate|gate_up)_(ch|)exps"
 FFN_DENSE_OVERRIDE = r"\.ffn_(up|down|gate)\."
 # The expert matrices llama_moe_cache_layer_experts reads; their scales do not decide caching.
 _CACHED_EXPERT_RE = re.compile(r"^blk\.\d+\.ffn_(gate_up|gate|up|down)_exps\.weight$")
-# Every class std::regex_traits<char>::lookup_classname knows, in the ASCII Python spells them.
 _POSIX_CLASSES = {
     "alnum": "a-zA-Z0-9",
     "alpha": "a-zA-Z",
@@ -492,18 +491,12 @@ class WeightPlacement:
 
     device_bytes: int
     host_bytes: int
-    # Largest group of host weights one block's ops read; CUDA/Vulkan/Metal copy them to the device
-    # to run a micro-batch of >= 32 tokens, into the compute buffer.
+    # Largest block's host weights: op offload copies them into the compute buffer.
     host_staging_bytes: int
-    # False when an override is a pattern Python cannot read like std::regex; it is skipped, so the
-    # device figure may be off in either direction.
+    # False when an override is a pattern Python cannot read; it is skipped.
     resolved: bool
-    # A tied head on another device than token_embd: a second resident copy the file size misses.
     duplicate_bytes: int = 0
-    # Routed experts held on the host for layers that run on a GPU: what --moe-cache-mib can cache.
     host_expert_bytes: int = 0
-    # Output-layer weights held on the host while the output layer runs on a GPU. The head multiplies
-    # only the reserved output rows, so it is staged only when those reach the offload threshold.
     host_head_bytes: int = 0
 
 
@@ -514,12 +507,9 @@ def place_weights(
     architecture: Optional[str] = None,
 ) -> Optional[WeightPlacement]:
     """llama.cpp's placement of every main-model tensor: the first matching ``(pattern, on_host)``
-    override wins, else the layer it belongs to decides. ``gpu_layers`` None offloads every layer.
-
-    Layers are offloaded from the back: with N weight-owning blocks, block rank r is on the GPU when
-    r >= N + 1 - gpu_layers, and the output layer (rank N) whenever gpu_layers >= 1. A looped GGUF
-    names only its owning blocks, so ranks follow the block indices present. Per-layer embedding
-    tables are left out: the lookup-table pricing owns them. None when no block tensor is listed."""
+    override wins, else its layer. Layers offload from the back over the block indices present (a
+    looped GGUF names only its owners), the output layer at ``gpu_layers >= 1``; None offloads all.
+    Per-layer embedding tables are left to the lookup-table pricing. None without block tensors."""
     blocks: dict[str, int] = {}
     for name in tensor_bytes:
         match = _BLOCK_RE.match(name)
@@ -550,7 +540,6 @@ def place_weights(
     device = host = duplicate = 0
     staged: dict[int, int] = {}
     head = 0
-    # Per GPU layer: host expert bytes, and whether any expert stays on the device.
     experts: dict[int, list] = {}
     tied_head = "output.weight" not in tensor_bytes and architecture not in _HEADLESS_ARCHS
     for name, size in tensor_bytes.items():
@@ -560,7 +549,7 @@ def place_weights(
         stem = name.split(".", 1)[0]
         override = on_host_by_override(name)
         if stem in _INPUT_LAYER_TENSORS:
-            # Read by GET_ROWS, which no backend offloads, so never staged.
+            # GET_ROWS is never offloaded, so never staged.
             input_on_host = override is not False
             if input_on_host:
                 host += size

@@ -8062,11 +8062,9 @@ def _main_tensor_overrides(
     *,
     n_cpu_moe: Optional[int] = None,
 ) -> list[tuple[str, bool]]:
-    """The main model's ``(pattern, on_host)`` tensor overrides, in the order llama.cpp tries them.
-
-    common_params_parse handles inherited env before argv, in option order (-ot, -cmoe, -ncmoe,
-    -ncffn); ``n_cpu_moe`` is the ``--n-cpu-moe`` Studio emits ahead of the extras. Draft flags
-    (-otd, -cmoed, -ncmoed) place the drafter and are not read."""
+    """The main model's ``(pattern, on_host)`` tensor overrides in llama.cpp's order: inherited env
+    by option (-ot, -cmoe, -ncmoe, -ncffn), Studio's ``--n-cpu-moe``, then argv. Draft flags place
+    the drafter and are not read."""
     from core.inference.offload_layout import (
         FFN_DENSE_OVERRIDE,
         FFN_EXPS_OVERRIDE,

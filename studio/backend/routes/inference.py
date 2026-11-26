@@ -15126,7 +15126,6 @@ class _GgufMemoryBreakdown(NamedTuple):
     kv_checkpoint_bytes: int = 0
     lookup_table_bytes: int = 0
     lookup_table_on_disk: bool = False
-    # A weight override this cannot place (unreadable tensor table, or a pattern Python cannot read).
     placement_unmodelled: bool = False
 
 
@@ -15745,7 +15744,6 @@ def _gguf_memory_breakdown(
     # A GPU pin owns placement: load_model strips device flags and env before launch.
     device_pin_governs: bool = False,
     selected_gpu_ids: Optional[list[int]] = None,
-    # The MoE Layers on CPU field; Manual with a fixed layer count emits it as --n-cpu-moe.
     n_cpu_moe: Optional[int] = None,
 ) -> Optional[_GgufMemoryBreakdown]:
     """None if nothing sizes. Files are cached; the KV and compute buffers are re-derived per call."""
@@ -16192,10 +16190,8 @@ def _gguf_memory_breakdown(
         projector_runtime_bytes = int(mmproj_bytes * (LlamaCppBackend._MMPROJ_VRAM_SAFETY - 1.0))
         if _resolved_mmproj_offload(llama_extra_args) is False:
             host_companion_bytes = min(companion_bytes, mmproj_bytes)
-    # Each tensor where llama.cpp puts it: --n-cpu-moe and -ot keep weights of GPU layers on the host,
-    # and an -ot naming a device puts weights there even with --gpu-layers 0, while the child sees a
-    # GPU: Manual zero layers hides CUDA/ROCm cards unless a --device pin, tensor mode or a GPU
-    # projector keeps them (_zero_offload_keeps_gpu_visible); a Vulkan launch never hides them.
+    # A device -ot places weights even at 0 layers if the child sees a GPU: Manual zero layers hides
+    # CUDA/ROCm cards unless a --device pin, tensor mode or GPU projector keeps them; Vulkan never.
     placement = None
     placement_unmodelled = False
     _pl_gpu_visible = device_pin_governs or not (
@@ -16225,8 +16221,7 @@ def _gguf_memory_breakdown(
             _pl_table = _lt_backend._gguf_tensor_table(gguf_path)
         except Exception:  # noqa: BLE001 -- unread header: the layer share below
             _pl_table = None
-        # The file is its header (a few MiB of vocabulary) plus these tensors; a table further off
-        # the priced bytes than that does not describe this load, so the layer share prices it.
+        # A table further off the priced bytes than the header is not this load: use the layer share.
         if _pl_table and abs(main_bytes - sum(_pl_table.values())) > _TENSOR_TABLE_HEADER_SLACK:
             _pl_table = None
         placement = place_weights(
@@ -16239,7 +16234,6 @@ def _gguf_memory_breakdown(
         placement_unmodelled = (
             not placement.resolved if placement is not None else bool(_pl_overrides)
         )
-    # --moe-cache-mib N: a GPU copy of up to N MiB of the host experts of GPU layers.
     moe_cache_bytes = 0
     if placement is not None and placement.host_expert_bytes and gpu_fraction > 0.0:
         from core.inference.llama_server_args import _last_flag_value
@@ -16258,7 +16252,6 @@ def _gguf_memory_breakdown(
         if _mc_mib > 0:
             moe_cache_bytes = min(_mc_mib * 1024 * 1024, placement.host_expert_bytes)
     if placement is not None:
-        # Per-layer tables are left to the lookup-table terms above.
         main_gpu_bytes = placement.device_bytes + moe_cache_bytes
         weights_bytes += placement.duplicate_bytes + moe_cache_bytes
     else:
@@ -16270,8 +16263,7 @@ def _gguf_memory_breakdown(
         + companion_bytes
         - host_companion_bytes
     )
-    # Ops on host weights run on the GPU for a micro-batch of >= 32 tokens (op offload), each
-    # copying its weights into the compute buffer, which reuses the space split by split.
+    # Op offload copies host weights into the compute buffer, reused split by split.
     host_staging_bytes = 0
     if placement is not None and gpu_fraction > 0.0:
         from core.inference.llama_server_args import _flag_name
@@ -16288,9 +16280,8 @@ def _gguf_memory_breakdown(
         _ubatch = runtime.n_ubatch or 512
         if _op_offload and _ubatch >= _op_min_batch:
             host_staging_bytes = placement.host_staging_bytes
-        # A CPU-held head is staged once its reserved output rows (slots times draft tokens plus one)
-        # reach the threshold; the draft depth depends on how the launch resolves speculation, so it
-        # is counted whenever ops offload: an upper bound. Pooled embeddings never run the head.
+        # A CPU-held head stages once slots x (draft + 1) output rows reach the threshold; the draft
+        # depth is unknown here, so charge it as an upper bound. Pooled embeddings never run it.
         if _op_offload and _ubatch >= _op_min_batch and not probe.is_embedding_gguf:
             host_staging_bytes = max(host_staging_bytes, placement.host_head_bytes)
     # --spec-draft-hf drafter: cache unsized without a local header, so the total is a floor.

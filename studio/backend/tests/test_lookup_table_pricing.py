@@ -258,9 +258,7 @@ def test_a_posix_class_pattern_is_read_as_std_regex_reads_it():
     assert on_device(PLE, ["-ot", "per_[[:alpha:]_]+=CUDA0"], {})
     assert not on_device(PLE, ["-ot", "per_[[:alpha:]_]+=CPU,per_layer=CUDA0"], {})
     assert not on_device(PLE, ["-ot", "per_[[:alpha:]_]+=CPU"], {})
-    # A class that does not match leaves the table to a later override.
     assert on_device(PLE, ["-ot", "per_[[:digit:]]=CPU,per_layer=CUDA0"], {})
-    # A device pattern Python cannot read may still be the match.
     assert on_device(PLE, ["-ot", "per(=CUDA0"], {})
 
 
