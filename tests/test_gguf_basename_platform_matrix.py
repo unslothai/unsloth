@@ -55,8 +55,6 @@ except Exception as exc:  # noqa: BLE001 -- torch absent is a legitimate cell
     _GPU_STATE = {"cell": _GPU_CELL, "error": str(exc)}
 
 
-
-
 def _load_helper():
     src = _SAVE_PY.read_text(encoding = "utf-8")
     for node in ast.parse(src).body:
