@@ -13,7 +13,7 @@ from contextvars import ContextVar
 import os
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Awaitable, Callable, Optional
 
 from loggers import get_logger
@@ -139,6 +139,7 @@ def _transformers_identity():
 
 def remember_transformers_load(request, response, user_initiated: bool) -> None:
     global _transformers_load
+    previous = _transformers_load
     _transformers_load = None
     if (
         response.is_gguf
@@ -151,21 +152,29 @@ def remember_transformers_load(request, response, user_initiated: bool) -> None:
     ):
         return
     identity = _transformers_identity()
-    if identity:
-        _transformers_load = ChatSnapshot(
-            identity = identity,
-            model = response.model,
-            launch = request.model_copy(
-                update = {
-                    "hf_token": None,
-                    "force_cancel_active": False,
-                    "force_reload": False,
-                    "alongside": False,
-                    "load_request_id": None,
-                }
-            ),
-            extra = {"transformers": True, "user_loaded": user_initiated},
-        )
+    if identity is None:
+        return
+    if response.status == "already_loaded":
+        if previous is not None and previous.identity == identity:
+            _transformers_load = replace(
+                previous, extra = {**previous.extra, "user_loaded": user_initiated}
+            )
+        return
+
+    _transformers_load = ChatSnapshot(
+        identity = identity,
+        model = response.model,
+        launch = request.model_copy(
+            update = {
+                "hf_token": None,
+                "force_cancel_active": False,
+                "force_reload": False,
+                "alongside": False,
+                "load_request_id": None,
+            }
+        ),
+        extra = {"transformers": True, "user_loaded": user_initiated},
+    )
 
 
 @dataclass

@@ -848,6 +848,31 @@ def test_beside_load_kept_only_after_a_finished_render(stopped):
     assert result == (swap.ERR_STOPPED if stopped else result) and chat.resident
 
 
+def test_noop_transformers_load_preserves_restore_recipe(monkeypatch):
+    from types import SimpleNamespace
+    from models.inference import LoadRequest, LoadResponse
+    from routes import inference
+
+    backend = SimpleNamespace(active_model_name = "text", models = {"text": {}}, _proc = object())
+    monkeypatch.setattr(inference, "_peek_inference_backend", lambda: backend)
+    monkeypatch.setattr(swap, "_transformers_load", None)
+    original = LoadRequest(model_path = "text", max_seq_length = 8192, gpu_ids = [1])
+    sparse = LoadRequest(model_path = "text")
+    loaded = LoadResponse(status = "loaded", model = "text", display_name = "Text", inference = {})
+    already_loaded = loaded.model_copy(update = {"status": "already_loaded"})
+
+    swap.remember_transformers_load(original, loaded, False)
+    swap.remember_transformers_load(sparse, already_loaded, True)
+
+    assert swap._transformers_load.launch.max_seq_length == 8192
+    assert swap._transformers_load.launch.gpu_ids == [1]
+    assert swap._transformers_load.extra["user_loaded"] is True
+
+    backend._proc = object()
+    swap.remember_transformers_load(sparse, already_loaded, True)
+    assert swap._transformers_load is None
+
+
 @pytest.mark.parametrize("scenario", ["normal", "kept_video", "retry", "queued_media"])
 def test_transformers_mixed_tools_then_image_only(monkeypatch, server_loop, scenario):
     from types import SimpleNamespace
