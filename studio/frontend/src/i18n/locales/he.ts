@@ -4209,8 +4209,8 @@ export const he = {
       summary: {
         single: "אימון על GPU אחד",
         layerSplit: "המודל מפוצל שכבה אחר שכבה על {count} GPU",
-        ddp: "המודל נכנס ב-GPU אחד: מקביליות נתונים על {count} GPU",
-        fsdp2: "המודל גדול מדי ל-GPU אחד: מפוצל על {count} GPU",
+        ddp: "כל GPU מאמן עותק מלא: מקביליות נתונים על {count} GPU",
+        fsdp2: "המשקלים ומצב האופטימייזר מפוצלים על {count} GPU",
         tp: "כל שכבה מפוצלת על {count} GPU",
         pp: "השכבות רצות כ-{count} שלבי צנרת, אחד לכל GPU",
         cp: "כל רצף מפוצל על {count} GPU",
@@ -4221,7 +4221,7 @@ export const he = {
         noGpu: "בחרו לפחות GPU אחד.",
         singleNeedsOne: "GPU יחיד משתמש ב-GPU אחד בדיוק. בטלו את סימון האחרים.",
         needsTwo: "המצב הזה דורש לפחות שני מעבדי GPU.",
-        customSpec: "הזינו פריסה, למשל dp=2,tp=2.",
+        customSpec: "הזינו פריסה, למשל {example}.",
       },
     },
     preview: {
@@ -5157,6 +5157,7 @@ export const he = {
       showPromptDescription: "הצגת ההוראות המדויקות שנשלחות למודל.",
     },
     history: {
+      notSaved: "לא נשמר בהיסטוריה: האחסון של הדפדפן מלא.",
       title: "היסטוריה",
       search: "חיפוש בהיסטוריה",
       empty: "התרגומים שלך יופיעו כאן.",
@@ -6139,6 +6140,12 @@ export const he = {
     maximize: "הגדל חלון",
     restore: "שחזר גודל חלון",
     close: "סגור חלון",
+    mediaCodecs: {
+      title: "ייתכן שסרטונים שנוצרו לא יופעלו",
+      // {command}: an apt command line, never translated.
+      description: "חסרים במערכת זו מפענחי הווידאו של GStreamer. התקינו אותם באמצעות: {command}",
+      copy: "העתקת הפקודה",
+    },
   },
   runtimeUpdate: {
     installAudio: "התקן את סביבת זמן הריצה לשמע",

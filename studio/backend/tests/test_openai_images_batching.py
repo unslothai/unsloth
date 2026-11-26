@@ -424,12 +424,16 @@ def test_request_seeds_derive_like_a_lone_request():
     assert drawn[1] == (drawn[0] + 1) & SEED_MASK
 
 
-def test_a_batch_stops_collecting_at_the_cap_and_the_rest_render_alone(monkeypatch):
+def test_a_full_batch_stops_collecting_and_the_next_request_opens_another(monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_IMAGE_BATCH_MAX", "4")
     rendering = {"on": True}
     batches: list[list[str]] = []
 
-    async def run_batch(prompts, seeds):
+    async def run_batch(
+        prompts,
+        seeds,
+        owners = None,
+    ):
         batches.append(prompts)
         return {"images": list(prompts), "seeds": list(seeds), "seed": seeds[0]}
 
@@ -441,20 +445,19 @@ def test_a_batch_stops_collecting_at_the_cap_and_the_rest_render_alone(monkeypat
                 )
             )
 
-        lead, joined, overflow, too_big = (
-            request("a", 2),
-            request("b", 2),
-            request("c", 1),
-            request("d", 4),
-        )
-        await _until(lambda: overflow.done() and too_big.done())
-        assert overflow.result() is None and too_big.result() is None
+        lead, joined = request("a", 2), request("b", 2)
+        await _until(lambda: "key" not in batching._OPEN)
+        second, joined_second = request("c", 3), request("d", 1)
+        too_big = request("e", 4)
+        await _until(lambda: too_big.done())
+        assert too_big.result() is None
         rendering["on"] = False
-        return await lead, await joined
+        return await lead, await joined, await second, await joined_second
 
-    lead, joined = asyncio.run(run())
-    assert batches == [["a", "a", "b", "b"]]
+    lead, joined, second, joined_second = asyncio.run(run())
+    assert sorted(batches) == [["a", "a", "b", "b"], ["c", "c", "c", "d"]]
     assert lead["images"] == ["a", "a"] and joined["images"] == ["b", "b"]
+    assert second["images"] == ["c", "c", "c"] and joined_second["images"] == ["d"]
 
 
 def test_a_cap_of_one_turns_batching_off(monkeypatch):

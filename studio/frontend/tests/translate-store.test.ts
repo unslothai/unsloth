@@ -76,6 +76,7 @@ beforeEach(() => {
     error: null,
     phase: null,
     history: [],
+    historyUnsaved: false,
     readyModels: [],
   });
   state().setPrefs({ from: "en", target: "fr", saveHistory: true });
@@ -156,6 +157,27 @@ test("translating as you type keeps one history entry per draft", async () => {
   );
 });
 
+test("a typed draft that could not be saved still replaces its saved draft later", async () => {
+  state().setSource("The quick");
+  await state().translate({ auto: true });
+  const setItem = globalThis.window.localStorage.setItem;
+  globalThis.window.localStorage.setItem = () => {
+    throw new Error("QuotaExceededError");
+  };
+  try {
+    state().setSource("The quick brown");
+    await state().translate({ auto: true });
+  } finally {
+    globalThis.window.localStorage.setItem = setItem;
+  }
+  state().setSource("The quick brown fox");
+  await state().translate({ auto: true });
+  assert.deepEqual(
+    state().history.map((entry: { source: string }) => entry.source),
+    ["The quick brown fox"],
+  );
+});
+
 test("a new draft typed after another keeps both in the history", async () => {
   state().setSource("Good morning everyone");
   await state().translate({ auto: true });
@@ -183,18 +205,64 @@ test("a full browser storage never wipes the saved history", async () => {
   state().setSource("First");
   await state().translate();
   const saved = storage.get("unsloth_translate_history");
+  const translateWithFullStorage = async (source: string) => {
+    const setItem = globalThis.window.localStorage.setItem;
+    globalThis.window.localStorage.setItem = () => {
+      throw new Error("QuotaExceededError");
+    };
+    try {
+      state().setSource(source);
+      await state().translate();
+    } finally {
+      globalThis.window.localStorage.setItem = setItem;
+    }
+  };
+  await translateWithFullStorage("Where is the station?");
+  assert.equal(storage.get("unsloth_translate_history"), saved);
+  assert.deepEqual(
+    state().history.map((entry: { source: string }) => entry.source),
+    ["First"],
+    "the list shown is the one stored",
+  );
+  assert.equal(state().historyUnsaved, true);
+  await state().translate();
+  assert.equal(state().historyUnsaved, false, "a later save clears it");
+  await translateWithFullStorage("Good night");
+  state().restore(state().history[0]);
+  assert.equal(state().historyUnsaved, false, "a restored entry is saved");
+  for (const entry of state().history) state().removeHistory(entry.id);
+  assert.equal(storage.get("unsloth_translate_history"), "[]");
+  await translateWithFullStorage("Good night");
+  state().clearHistory();
+  assert.equal(state().historyUnsaved, true, "clearing History saves nothing");
+});
+
+test("a storage with room for part of the history shows only what it kept", async () => {
+  for (const word of ["One", "Two", "Three", "Four"]) {
+    state().setSource(word.repeat(100));
+    await state().translate();
+  }
   const setItem = globalThis.window.localStorage.setItem;
-  globalThis.window.localStorage.setItem = () => {
-    throw new Error("QuotaExceededError");
+  globalThis.window.localStorage.setItem = (key: string, value: string) => {
+    if (key === "unsloth_translate_history" && value.length > 4_000) {
+      throw new Error("QuotaExceededError");
+    }
+    setItem(key, value);
   };
   try {
-    state().setSource("Second");
-    state().setSource("Where is the station?");
+    state().setSource("Five".repeat(100));
     await state().translate();
   } finally {
     globalThis.window.localStorage.setItem = setItem;
   }
-  assert.equal(storage.get("unsloth_translate_history"), saved);
+  const stored = JSON.parse(storage.get("unsloth_translate_history") ?? "[]");
+  assert.deepEqual(
+    stored.map((entry: { source: string }) => entry.source.slice(0, 5)),
+    ["FiveF", "FourF", "Three", "TwoTw"],
+    "only the oldest entry makes room",
+  );
+  assert.deepEqual(state().history, stored);
+  assert.equal(state().historyUnsaved, false);
 });
 
 test("long text is cut into passages a small model translates whole", () => {
@@ -249,16 +317,21 @@ test("restoring a history entry during a run shows that entry, not the stopped t
   assert.equal(state().output, "Vieux");
 });
 
-test("a typed draft too long for the history keeps the entry it would have replaced", async () => {
+test("a long typed draft replaces its shorter draft in the history", async () => {
   const first = `${"word ".repeat(1500)}end`;
   state().setSource(first);
   await state().translate({ auto: true });
   assert.equal(state().history.length, 1);
-  state().setSource(`${first} ${"more ".repeat(1500)}`);
+  const longer = `${first} ${"more ".repeat(1500)}`;
+  state().setSource(longer);
   await state().translate({ auto: true });
   assert.deepEqual(
     state().history.map((entry: { source: string }) => entry.source),
-    [first],
+    [longer],
+  );
+  assert.equal(
+    JSON.parse(storage.get("unsloth_translate_history") ?? "[]")[0].source,
+    longer,
   );
 });
 

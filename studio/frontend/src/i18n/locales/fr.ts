@@ -4180,8 +4180,8 @@ export const fr = {
       summary: {
         single: "Entraînement sur un seul GPU",
         layerSplit: "Le modèle est réparti couche par couche sur {count} GPU",
-        ddp: "Le modèle tient sur un GPU : parallélisme de données sur {count} GPU",
-        fsdp2: "Le modèle est trop grand pour un GPU : partitionné sur {count} GPU",
+        ddp: "Chaque GPU entraîne une copie complète : parallélisme de données sur {count} GPU",
+        fsdp2: "Poids et état de l'optimiseur partitionnés sur {count} GPU",
         tp: "Chaque couche est répartie sur {count} GPU",
         pp: "Les couches forment {count} étages de pipeline, un par GPU",
         cp: "Chaque séquence est répartie sur {count} GPU",
@@ -4192,7 +4192,7 @@ export const fr = {
         noGpu: "Sélectionnez au moins un GPU.",
         singleNeedsOne: "Un seul GPU utilise exactement un GPU. Décochez les autres.",
         needsTwo: "Ce mode nécessite au moins deux GPU.",
-        customSpec: "Saisissez une disposition, par exemple dp=2,tp=2.",
+        customSpec: "Saisissez une disposition, par exemple {example}.",
       },
     },
     preview: {
@@ -5159,6 +5159,7 @@ export const fr = {
       showPromptDescription: "Voir les instructions exactes envoyées au modèle.",
     },
     history: {
+      notSaved: "Non enregistrée dans l'historique : le stockage du navigateur est plein.",
       title: "Historique",
       search: "Rechercher dans l'historique",
       empty: "Vos traductions s'affichent ici.",
@@ -6124,6 +6125,12 @@ export const fr = {
     maximize: "Agrandir la fenêtre",
     restore: "Restaurer la fenêtre",
     close: "Fermer la fenêtre",
+    mediaCodecs: {
+      title: "Les vidéos générées risquent de ne pas être lues",
+      // {command}: an apt command line, never translated.
+      description: "Il manque à ce système les décodeurs vidéo GStreamer. Installez-les avec : {command}",
+      copy: "Copier la commande",
+    },
   },
   runtimeUpdate: {
     installAudio: "Installer le runtime audio",

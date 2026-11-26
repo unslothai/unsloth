@@ -175,6 +175,33 @@ def warm_engage_imports(logger: Any = None) -> int:
     return done
 
 
+def warm_fx_interpreter_shim(logger: Any = None, *, import_missing: bool = True) -> bool:
+    """Fill inductor's cached ``InterpreterShim._dummy_gm()`` on the calling thread, before a compile thread exists.
+
+    Its first call runs ``torch.fx.symbolic_trace``, which patches ``nn.Module.__call__`` process-wide while it
+    traces, so a module called on another thread at that moment goes through the tracer and fails. Paying it
+    here (about 1 ms) leaves only the cached result for the compile thread. ``import_missing=False`` skips the
+    work when inductor's loop_body is not imported yet (its import costs about 1 s). Torch without the
+    attribute: no-op.
+    """
+    if not import_missing and "torch._inductor.loop_body" not in sys.modules:
+        return False
+    try:
+        from torch._inductor import loop_body
+    except Exception:  # noqa: BLE001 - another torch layout
+        return False
+    fn = getattr(getattr(loop_body, "InterpreterShim", None), "_dummy_gm", None)
+    if not callable(fn):
+        return False
+    try:
+        fn()
+    except Exception as exc:  # noqa: BLE001 - the compile thread builds it on first use as before
+        if logger is not None:
+            logger.debug("diffusion.bg_compile: fx shim warm-up skipped: %s", exc)
+        return False
+    return True
+
+
 def start_deferred_prewarm(logger: Any = None) -> bool:
     """Run the warm-ups on a side thread so none of it lands inside a render; ``PREWARM_ENV=0`` warms the pool inline."""
     global _PREWARM_THREAD
@@ -187,6 +214,11 @@ def start_deferred_prewarm(logger: Any = None) -> bool:
         def run() -> None:
             t0 = time.perf_counter()
             warm_compile_pool(logger)
+            try:
+                # Import only (off the caller's thread): kick() then fills the fx shim cache without the import.
+                import torch._inductor.loop_body  # noqa: F401
+            except Exception:  # noqa: BLE001 - another torch layout
+                pass
             warm_triton_key(logger)
             warm_inductor_key(logger)
             n = warm_engage_imports(logger)
@@ -197,6 +229,7 @@ def start_deferred_prewarm(logger: Any = None) -> bool:
                     n,
                 )
 
+        warm_fx_interpreter_shim(logger, import_missing = False)
         _PREWARM_THREAD = threading.Thread(target = run, name = "unsloth-deferred-prewarm", daemon = True)
         _PREWARM_THREAD.start()
     return True
@@ -1660,6 +1693,8 @@ class BackgroundCompile:
                 self._lock_proxy = (
                     self.yields() and freeze_enabled() and _install_compile_lock_proxy()
                 )
+            # Before the thread starts: its first fx trace would patch nn.Module under a concurrent render.
+            warm_fx_interpreter_shim(self.logger)
             self._thread = threading.Thread(
                 target = self._run, name = "unsloth-diffusion-bg-compile", daemon = True
             )

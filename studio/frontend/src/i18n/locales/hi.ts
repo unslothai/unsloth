@@ -4138,8 +4138,8 @@ export const hi = {
       summary: {
         single: "एक GPU पर ट्रेनिंग",
         layerSplit: "मॉडल को लेयर दर लेयर {count} GPU पर बांटा गया है",
-        ddp: "मॉडल एक GPU में फिट होता है: {count} GPU पर डेटा पैरेलल",
-        fsdp2: "मॉडल एक GPU के लिए बहुत बड़ा है: {count} GPU पर शार्ड किया गया",
+        ddp: "हर GPU पूरी कॉपी ट्रेन करता है: {count} GPU पर डेटा पैरेलल",
+        fsdp2: "वेट और ऑप्टिमाइज़र स्टेट {count} GPU पर शार्ड किए गए",
         tp: "हर लेयर को {count} GPU पर बांटा गया है",
         pp: "लेयर {count} पाइपलाइन चरणों के रूप में चलती हैं, हर GPU पर एक",
         cp: "हर सीक्वेंस को {count} GPU पर बांटा गया है",
@@ -4150,7 +4150,7 @@ export const hi = {
         noGpu: "कम से कम एक GPU चुनें।",
         singleNeedsOne: "एक GPU मोड ठीक एक GPU का उपयोग करता है। बाकी का चिह्न हटाएं।",
         needsTwo: "इस मोड के लिए कम से कम दो GPU चाहिए।",
-        customSpec: "लेआउट दर्ज करें, उदाहरण के लिए dp=2,tp=2।",
+        customSpec: "लेआउट दर्ज करें, उदाहरण के लिए {example}।",
       },
     },
     preview: {
@@ -5086,6 +5086,7 @@ export const hi = {
       showPromptDescription: "मॉडल को भेजे गए सटीक निर्देश देखें।",
     },
     history: {
+      notSaved: "इतिहास में सहेजा नहीं गया: ब्राउज़र का स्टोरेज भर गया है।",
       title: "हिस्ट्री",
       search: "हिस्ट्री खोजें",
       empty: "आपके अनुवाद यहाँ दिखेंगे।",
@@ -6051,6 +6052,12 @@ export const hi = {
     maximize: "विंडो बड़ी करें",
     restore: "विंडो पहले जैसी करें",
     close: "विंडो बंद करें",
+    mediaCodecs: {
+      title: "जनरेट किए गए वीडियो शायद न चलें",
+      // {command}: an apt command line, never translated.
+      description: "इस सिस्टम में GStreamer वीडियो डिकोडर नहीं हैं। इन्हें इस कमांड से इंस्टॉल करें: {command}",
+      copy: "कमांड कॉपी करें",
+    },
   },
   runtimeUpdate: {
     installAudio: "ऑडियो रनटाइम इंस्टॉल करें",

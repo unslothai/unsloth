@@ -52,6 +52,7 @@ activate_happy_eyeballs()
 install_openblas_runtime_cap()
 
 from utils.hardware import apply_gpu_ids
+from utils.keep_awake import keeps_system_awake
 from utils.hf_dataset_options import hf_dataset_split_instruction_names
 
 # Light module: the MLX branch runs on torch-less hosts.
@@ -108,7 +109,12 @@ def _studio_main_rank() -> bool:
 
 
 def _data_parallel_world_size() -> int:
-    """Larger of env world size and CUDA device count, never the sum: distributed runs force n_gpu to 1."""
+    """Larger of env world size and CUDA device count, never the sum: distributed runs force n_gpu to 1.
+    A Studio multi-process run counts dp replicas only: tp / pp / cp ranks read the same rows."""
+    from core.training import parallel_launch
+
+    if parallel_launch.is_multi_process():
+        return parallel_launch.data_parallel_size()
     sizes = [world_size_from_env()]
     torch_module = sys.modules.get("torch")
     if torch_module is not None:
@@ -4447,6 +4453,7 @@ def _download_decision_checkpoint(event_queue: Any, config: dict) -> None:
         event_queue.put({"type": "model_load_completed", "ts": time.time()})
 
 
+@keeps_system_awake
 def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> None:
     """Fresh subprocess entrypoint: events out on event_queue, stop commands in on stop_queue."""
     # Off on Linux: forked map() workers deadlock.

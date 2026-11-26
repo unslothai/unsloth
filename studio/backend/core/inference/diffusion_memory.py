@@ -3248,6 +3248,7 @@ def plan_diffusion_memory(
     if split is not None:
         estimates["multigpu_primary_required_mib"] = split.primary_required_mib
         estimates["multigpu_secondary_required_mib"] = split.secondary_required_mib
+        estimates["multigpu_secondary_headroom_mib"] = split.secondary_headroom_mib
         return MemoryPlan(
             requested_mode = mode,
             offload_policy = OFFLOAD_NONE,

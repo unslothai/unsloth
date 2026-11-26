@@ -190,6 +190,37 @@ def test_child_process_inherits_the_decision(clean):
         env.apply_parallel_env({**environ, "UNSLOTH_PARALLEL_AUTO_RESOLVED": "fsdp2"})
 
 
+@pytest.mark.parametrize(
+    "axis", ["UNSLOTH_TP_SIZE", "UNSLOTH_PP_SIZE", "UNSLOTH_CP_SIZE", "UNSLOTH_EP_SIZE"]
+)
+def test_inherited_decision_still_refuses_another_axis(clean, axis, monkeypatch):
+    _, _, auto = clean
+    monkeypatch.delenv(axis, raising = False)
+    environ = {
+        "UNSLOTH_PARALLEL": "auto",
+        "UNSLOTH_FSDP2": "0",
+        "UNSLOTH_PARALLEL_AUTO_RESOLVED": "ddp",
+        "WORLD_SIZE": "2",
+        axis: "2",
+    }
+    with pytest.raises(ValueError, match = axis):
+        auto.check_auto_env(environ)
+
+
+def test_inherited_fsdp2_keeps_the_accelerate_env_its_parent_exported(clean):
+    _, _, auto = clean
+    environ = {
+        "UNSLOTH_PARALLEL": "auto",
+        "UNSLOTH_FSDP2": "1",
+        "UNSLOTH_PARALLEL_AUTO_RESOLVED": "fsdp2",
+        "ACCELERATE_USE_FSDP": "true",
+        "FSDP_VERSION": "2",
+        "WORLD_SIZE": "2",
+    }
+    auto.check_auto_env(environ)
+    assert auto.resolved_choice() == "fsdp2"
+
+
 def test_decision_and_state_arithmetic(clean):
     _, _, auto = clean
     gib = 1024**3
