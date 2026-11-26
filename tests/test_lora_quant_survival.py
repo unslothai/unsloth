@@ -178,3 +178,22 @@ def test_residual_initialised_adapters_are_not_sampled():
         module._unsloth_initial_lora = {"default": (None, None, 1.0)}
     ratios = M.lora_quant_survival(model, "NVFP4")
     assert ratios is not None and len(ratios) == 1
+
+
+def test_float16_merge_is_measured_after_the_bfloat16_reload():
+    # 1.0615234375 + 0.001953125 crosses an fp8 boundary in float16, but both reload as bf16 1.0625.
+    M = _load()
+    net = torch.nn.Sequential(torch.nn.Linear(1, 1, bias = False))
+    with torch.no_grad():
+        net[0].weight.fill_(1.0615234375)
+    net = peft.get_peft_model(
+        net.to(torch.float16), peft.LoraConfig(r = 1, lora_alpha = 1, target_modules = ["0"])
+    )
+    layer = next(
+        m for m in net.modules() if hasattr(m, "lora_A") and "default" in getattr(m, "lora_A", {})
+    )
+    with torch.no_grad():
+        layer.lora_A["default"].weight.fill_(1.0)
+        layer.lora_B["default"].weight.fill_(0.001953125)
+    ((_, cosine, norm_ratio),) = M.lora_quant_survival(net, "FP8")
+    assert cosine == 0.0 and norm_ratio == 0.0

@@ -172,13 +172,17 @@ def lora_quant_survival(
         )
         if A.dim() != 2 or B.dim() != 2 or B.shape[0] != W.shape[0] or A.shape[1] != W.shape[1]:
             continue
-        # The export writes the merge in the model's 16-bit dtype before it quantizes.
+        # The export writes the merge in the model's 16-bit dtype, then reloads it as bfloat16 to quantize.
         merge_dtype = W.dtype if W.dtype in (torch.float16, torch.bfloat16) else torch.bfloat16
+
+        def staged(x):
+            return x.to(merge_dtype).to(torch.bfloat16).float()
+
         A = A.to(device = W.device, dtype = torch.float32)
         B = B.to(device = W.device, dtype = torch.float32)
 
         def merged_rows(start, stop):
-            return (W[start:stop].float() + (B[start:stop] @ A) * scaling).to(merge_dtype).float()
+            return staged(W[start:stop].float() + (B[start:stop] @ A) * scaling)
 
         rows = min(W.shape[0], max_rows)
         w = W[:rows].to(torch.float32)
@@ -187,12 +191,12 @@ def lora_quant_survival(
         if not math.isfinite(dW_norm) or dW_norm == 0.0:
             continue
         merged = merged_rows(0, rows)
-        before = w.to(merge_dtype).to(torch.float32)
+        before = staged(w)
         global_amax = before.abs().amax()
         merged_amax = merged.abs().amax()
         if fmt in ("fp8_tensor", "nvfp4"):
             # Per-tensor scales come from the whole tensor, before and after the merge.
-            global_amax = W.abs().amax().to(merge_dtype).float()
+            global_amax = staged(W.abs().amax())
             merged_amax = max(
                 merged_rows(i, i + 1024).abs().amax() for i in range(0, W.shape[0], 1024)
             )
