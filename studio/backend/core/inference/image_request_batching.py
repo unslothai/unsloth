@@ -182,15 +182,28 @@ async def _render_group(
             len(done),
             len(group),
         )
-        if len(rest) > 1 and splittable is not None and splittable(exc):
-            middle = (len(rest) + 1) // 2
-            for half in (rest[:middle], rest[middle:]):
-                done.update(
-                    await _render_group(
-                        half, run_batch, shared_outcome, splittable, salvage, fits, adapter
-                    )
-                )
+        split = len(rest) > 1 and splittable is not None and splittable(exc)
+        # The traceback pins the failed call's frames and every tensor they hold (an OOM's activations): drop it
+        # before the halves run, or they start with that memory still allocated.
+        _drop_tracebacks(exc)
+        del exc
+    if not split:
         return done
+    middle = (len(rest) + 1) // 2
+    for half in (rest[:middle], rest[middle:]):
+        done.update(
+            await _render_group(half, run_batch, shared_outcome, splittable, salvage, fits, adapter)
+        )
+    return done
+
+
+def _drop_tracebacks(exc: BaseException) -> None:
+    seen: set = set()
+    cur: Optional[BaseException] = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        cur.__traceback__ = None
+        cur = cur.__cause__ or cur.__context__
 
 
 def _close(batch: _Batch) -> None:

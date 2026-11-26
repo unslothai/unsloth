@@ -5225,13 +5225,17 @@ def _step_cache_couples_rows(state: Any, steps: Optional[int]) -> bool:
 
 
 def _measured_sizes(
-    state: Any, width: Any, height: Any, guidance: Optional[float]
+    state: Any,
+    width: Any,
+    height: Any,
+    guidance: Optional[float],
+    steps: Optional[int] = None,
 ) -> dict[int, dict]:
     from . import diffusion_batch_race
     from .image_request_batching import batch_max
     try:
         return diffusion_batch_race.lookup(
-            state, width, height, guidance, range(2, batch_max() + 1)
+            state, width, height, guidance, range(2, batch_max() + 1), steps = steps
         )
     except Exception:  # noqa: BLE001 - no verdict: today's rules
         return {}
@@ -18425,7 +18429,7 @@ class DiffusionBackend:
         if _step_cache_couples_rows(state, steps):
             # An AUTO cache engages FBCache at this step count: its skip decision would couple the rows.
             return frozenset()
-        measured = _measured_sizes(state, width, height, guidance)
+        measured = _measured_sizes(state, width, height, guidance, steps)
         winners = frozenset(k for k, v in measured.items() if v.get("promoted"))
         losers = frozenset(k for k, v in measured.items() if not v.get("promoted"))
         if policy["mode"] == "measured":
@@ -18441,7 +18445,12 @@ class DiffusionBackend:
         return compiled - losers
 
     def coalesce_seeded_ok(
-        self, width: Any, height: Any, guidance: Optional[float], images: int
+        self,
+        width: Any,
+        height: Any,
+        guidance: Optional[float],
+        images: int,
+        steps: Optional[int] = None,
     ) -> bool:
         """Whether an explicitly seeded request may share a call: the measured path at this shape is neighbour-exact
         and replays a member bit for bit (diffusion_batch_race.seeded_join_ok) at every size it could join."""
@@ -18450,7 +18459,7 @@ class DiffusionBackend:
             return False
         from . import diffusion_batch_race
 
-        measured = _measured_sizes(state, width, height, guidance)
+        measured = _measured_sizes(state, width, height, guidance, steps)
         winners = [v for v in measured.values() if v.get("promoted")]
         return bool(winners) and all(diffusion_batch_race.seeded_join_ok(v) for v in winners)
 

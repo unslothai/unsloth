@@ -222,12 +222,24 @@ def load_key(state: Any) -> str:
     return "|".join(parts)
 
 
-def shape_key(width: Any, height: Any, guidance: Any) -> str:
+def shape_key(
+    width: Any,
+    height: Any,
+    guidance: Any,
+    steps: Any = None,
+) -> str:
+    """Canvas, guidance and step count: the fixed per-call cost (encode, decode) weighs more at few steps, so a win at
+    one step count says little about another (one engine's own FLUX.3 batching: 2.00x at 512 / 8 steps, 1.03x at
+    1024 / 50)."""
     try:
         g = "" if guidance is None else f"{float(guidance):.3g}"
     except (TypeError, ValueError):
         g = str(guidance)
-    return f"{int(width or 0)}x{int(height or 0)}|g{g}|default"
+    try:
+        n = "" if steps is None else str(int(steps))
+    except (TypeError, ValueError):
+        n = str(steps)
+    return f"{int(width or 0)}x{int(height or 0)}|g{g}|s{n}|default"
 
 
 def card_of(state: Any) -> Optional[str]:
@@ -253,12 +265,24 @@ def _slot(card: str) -> Optional[tuple]:
     return slot
 
 
-def verdict_key(state: Any, width: Any, height: Any, guidance: Any, size: int) -> str:
-    return f"{load_key(state)}#{shape_key(width, height, guidance)}#k{int(size)}"
+def verdict_key(
+    state: Any,
+    width: Any,
+    height: Any,
+    guidance: Any,
+    size: int,
+    steps: Any = None,
+) -> str:
+    return f"{load_key(state)}#{shape_key(width, height, guidance, steps)}#k{int(size)}"
 
 
 def lookup(
-    state: Any, width: Any, height: Any, guidance: Any, sizes: Sequence[int]
+    state: Any,
+    width: Any,
+    height: Any,
+    guidance: Any,
+    sizes: Sequence[int],
+    steps: Any = None,
 ) -> dict[int, dict]:
     """Persisted verdicts for this load and shape by batch size; {} when there are none or no card identity."""
     card = card_of(state)
@@ -268,7 +292,7 @@ def lookup(
         slot = _slot(card)
         if slot is None:
             return {}
-        base = f"{load_key(state)}#{shape_key(width, height, guidance)}#k"
+        base = f"{load_key(state)}#{shape_key(width, height, guidance, steps)}#k"
         out = {}
         for size in sizes:
             found = slot[2].get(f"{base}{int(size)}")
@@ -297,13 +321,23 @@ def any_promoted(state: Any) -> bool:
         return False
 
 
-def record(state: Any, width: Any, height: Any, guidance: Any, size: int, verdict: dict) -> bool:
+def record(
+    state: Any,
+    width: Any,
+    height: Any,
+    guidance: Any,
+    size: int,
+    verdict: dict,
+    steps: Any = None,
+) -> bool:
     card = card_of(state)
     if card is None:
         return False
     try:
         return bool(
-            _store().put(card, verdict_key(state, width, height, guidance, size), dict(verdict))
+            _store().put(
+                card, verdict_key(state, width, height, guidance, size, steps), dict(verdict)
+            )
         )
     except Exception:  # noqa: BLE001 - a cache write never fails the race
         return False
@@ -484,7 +518,7 @@ def run_race(
                         pass
             verdict["batched_graphs_dropped"] = dropped
         if persist:
-            verdict["persisted"] = record(state, width, height, guidance, size, verdict)
+            verdict["persisted"] = record(state, width, height, guidance, size, verdict, steps)
     return report
 
 

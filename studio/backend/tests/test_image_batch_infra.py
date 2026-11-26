@@ -209,7 +209,9 @@ def _engine(**state):
 
 def _verdicts(monkeypatch, table):
     monkeypatch.setattr(
-        race, "lookup", lambda state, w, h, g, sizes: {k: v for k, v in table.items() if k in sizes}
+        race,
+        "lookup",
+        lambda state, w, h, g, sizes, steps = None: {k: v for k, v in table.items() if k in sizes},
     )
     monkeypatch.setattr(
         race, "any_promoted", lambda state: any(v.get("promoted") for v in table.values())
@@ -362,6 +364,12 @@ def test_verdicts_round_trip_through_the_probe_cache_losers_included(monkeypatch
     }
     assert race.any_promoted(state) is True
     assert race.lookup(state, 768, 1024, 1.0, (2, 4)) == {}
+    assert (
+        race.lookup(state, 1024, 1024, 1.0, (2, 4), steps = 28) == {}
+    ), "another step count is another verdict"
+    assert race.record(state, 1024, 1024, 1.0, 2, {"promoted": False}, steps = 28)
+    assert race.lookup(state, 1024, 1024, 1.0, (2,), steps = 28) == {2: {"promoted": False}}
+    assert race.lookup(state, 1024, 1024, 1.0, (2,))[2]["promoted"] is True
     other = types.SimpleNamespace(**{**vars(state), "transformer_quant": "int8"})
     assert race.lookup(other, 1024, 1024, 1.0, (2, 4)) == {}, "another precision is another load"
     race._STORE.clear()
@@ -420,7 +428,9 @@ def _fake_generate(cost, *, leak = False):
 
 def test_the_race_promotes_a_real_win_and_reports_an_exact_path(monkeypatch):
     stored = {}
-    monkeypatch.setattr(race, "record", lambda state, w, h, g, k, v: stored.setdefault(k, v) is v)
+    monkeypatch.setattr(
+        race, "record", lambda state, w, h, g, k, v, steps = None: stored.setdefault(k, v) is v
+    )
     generate, clock, calls = _fake_generate(lambda rows: 1.0 + 0.5 * (rows - 1))
     report = race.run_race(
         generate,
@@ -440,7 +450,9 @@ def test_the_race_promotes_a_real_win_and_reports_an_exact_path(monkeypatch):
 
 def test_the_race_catches_a_neighbour_leak_and_persists_a_loss(monkeypatch):
     stored = {}
-    monkeypatch.setattr(race, "record", lambda state, w, h, g, k, v: stored.setdefault(k, v) is v)
+    monkeypatch.setattr(
+        race, "record", lambda state, w, h, g, k, v, steps = None: stored.setdefault(k, v) is v
+    )
     generate, clock, _ = _fake_generate(lambda rows: float(rows), leak = True)
     report = race.run_race(
         generate,
@@ -461,7 +473,9 @@ def test_the_race_catches_a_neighbour_leak_and_persists_a_loss(monkeypatch):
 
 def test_the_race_never_runs_on_a_busy_engine_and_stops_when_a_request_waits(monkeypatch):
     stored = {}
-    monkeypatch.setattr(race, "record", lambda state, w, h, g, k, v: stored.setdefault(k, v) is v)
+    monkeypatch.setattr(
+        race, "record", lambda state, w, h, g, k, v, steps = None: stored.setdefault(k, v) is v
+    )
     generate, clock, calls = _fake_generate(lambda rows: 1.0)
     with pytest.raises(race.RaceRefused):
         race.run_race(generate, types.SimpleNamespace(), idle = lambda: False, width = 512, height = 512)
@@ -794,3 +808,63 @@ def test_an_auto_cache_batches_only_below_the_fbcache_step_count():
     assert engine.coalesce_batch_sizes(1024, 1024, None, FBCACHE_MIN_STEPS - 1) is None
     assert engine.coalesce_batch_sizes(1024, 1024, None, FBCACHE_MIN_STEPS) == frozenset()
     assert engine.coalesce_batch_sizes(1024, 1024) == frozenset(), "unknown steps count as engaged"
+
+
+def test_the_halved_retry_runs_after_the_failed_call_released_its_frames():
+    """G5: an out-of-memory batch is split into halves only once the failed call's traceback (and every tensor its
+    frames hold) is gone; on a GPU the halves would otherwise start with the dead call's activations still allocated."""
+    import gc
+    import weakref
+
+    class Activations:
+        pass
+
+    held: list = []
+    alive_at_half: list = []
+
+    async def run_batch(
+        prompts,
+        seeds,
+        owners = None,
+    ):
+        if len(seeds) == 4:
+            big = Activations()  # what the failed call's frame pins (latents, activations)
+            held.append(weakref.ref(big))
+            raise RuntimeError("CUDA out of memory. Tried to allocate 8.00 GiB")
+        gc.collect()
+        alive_at_half.append(held[0]() is not None)
+        return {"images": list(prompts), "seeds": list(seeds), "seed": seeds[0]}
+
+    results = _queue_four(run_batch)
+    assert all(r is not None for r in results)
+    assert alive_at_half == [
+        False,
+        False,
+    ], "the failed call's frame was still alive during the halved retry"
+
+
+def _queue_four(run_batch):
+    state = {"blocker": True}
+
+    async def run():
+        tasks = []
+        for prompt in ("a", "b", "c", "d"):
+            tasks.append(
+                asyncio.ensure_future(
+                    batching.generate(
+                        "k",
+                        prompt,
+                        1,
+                        None,
+                        busy = lambda: state["blocker"],
+                        run_batch = run_batch,
+                        splittable = lambda exc: "out of memory" in str(exc),
+                    )
+                )
+            )
+            await asyncio.sleep(0.02)
+        await asyncio.sleep(0.1)
+        state["blocker"] = False
+        return await asyncio.gather(*tasks)
+
+    return asyncio.run(run())
