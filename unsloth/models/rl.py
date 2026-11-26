@@ -1129,6 +1129,29 @@ def _restore_optimizer_from_host(record):
         param.grad = restored[id(host)]
 
 
+def _wrap_grpo_vllm_lora_rounding(trainer_cls):
+    """train / evaluate of a GRPO trainer with use_vllm run under vllm_lora_rounding, so the trainer rounds the
+    LoRA term as the rollout does; the previous order comes back afterwards (a later SFT keeps the fused one)."""
+    from ..kernels.utils import vllm_lora_rounding
+    for name in ("train", "evaluate"):
+        original = getattr(trainer_cls, name, None)
+        if original is None or getattr(original, "_unsloth_vllm_lora_rounding", False):
+            continue
+
+        def wrapped(
+            self,
+            *args,
+            _original = original,
+            **kwargs,
+        ):
+            with vllm_lora_rounding(bool(getattr(self, "use_vllm", False))):
+                return _original(self, *args, **kwargs)
+
+        functools.update_wrapper(wrapped, original)
+        wrapped._unsloth_vllm_lora_rounding = True
+        setattr(trainer_cls, name, wrapped)
+
+
 def _wrap_grpo_generate_and_score(trainer_cls):
     if not hasattr(trainer_cls, "_generate_and_score_completions"):
         return
@@ -4511,6 +4534,10 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             wrap_grpo_partial_rollout(getattr(created_module, f"Unsloth{RLTrainer_name}"))
         except Exception as e:
             logger.info(f"Unsloth: Could not wrap GRPO partial rollout for {RLTrainer_name}: {e}")
+        try:
+            _wrap_grpo_vllm_lora_rounding(getattr(created_module, f"Unsloth{RLTrainer_name}"))
+        except Exception as e:
+            logger.info(f"Unsloth: Could not wrap the vLLM LoRA rounding for {RLTrainer_name}: {e}")
         try:
             _wrap_grpo_generate_and_score(getattr(created_module, f"Unsloth{RLTrainer_name}"))
         except Exception as e:

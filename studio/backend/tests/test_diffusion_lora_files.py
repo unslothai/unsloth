@@ -670,3 +670,119 @@ def test_dora_metadata_scale_folded_into_b_matches_peft_scaling():
     got_layer.lora_magnitude_vector["default"].weight.data.copy_(magnitude)
     with torch.no_grad():
         assert torch.allclose(ref(x), got(x), atol = 1e-6)
+
+
+def test_qwen21_fused_gate_up_splits_rows_gate_first_and_shares_a():
+    a, b = torch.randn(2, 8), torch.randn(12, 2)
+    out = lf._qwen21_split_gate_up(
+        {
+            "diffusion_model.transformer_blocks.0.img_mlp.gate_up.lora_A.weight": a,
+            "diffusion_model.transformer_blocks.0.img_mlp.gate_up.lora_B.weight": b,
+            "diffusion_model.transformer_blocks.0.img_mlp.out.lora_A.weight": a,
+        }
+    )
+    stem = "diffusion_model.transformer_blocks.0.img_mlp."
+    assert sorted(out) == sorted(
+        [
+            stem + p
+            for p in (
+                "gate_layer.lora_A.weight",
+                "gate_layer.lora_B.weight",
+                "proj.lora_A.weight",
+                "proj.lora_B.weight",
+                "out.lora_A.weight",
+            )
+        ]
+    )
+    assert out[stem + "gate_layer.lora_A.weight"] is a and out[stem + "proj.lora_A.weight"] is a
+    assert torch.equal(out[stem + "gate_layer.lora_B.weight"], b[:6])
+    assert torch.equal(out[stem + "proj.lora_B.weight"], b[6:])
+    with pytest.raises(ValueError, match = "odd row count"):
+        lf._qwen21_split_gate_up({stem + "gate_up.lora_B.weight": torch.randn(5, 2)})
+
+
+def test_a_qwen21_file_without_fused_gate_up_still_loads_by_path(tmp_path):
+    from safetensors.torch import save_file
+
+    path = tmp_path / "split.safetensors"
+    save_file(
+        {
+            "transformer.transformer_blocks.0.img_mlp.proj.lora_A.weight": torch.randn(2, 8),
+            "transformer.transformer_blocks.0.img_mlp.proj.lora_B.weight": torch.randn(12, 2),
+        },
+        path,
+    )
+    pipe = _RecordingPipe()
+    received = []
+    pipe.load_lora_weights = lambda source, adapter_name = None: received.append(source)
+    lf.load_adapter(pipe, str(path), "q", "qwen-image-2.1")
+    assert received == [str(path)]
+
+
+def _tiny_qwen21_pipe():
+    diffusers = pytest.importorskip("diffusers")
+    pytest.importorskip("peft")
+    if not hasattr(diffusers, "QwenImage21Transformer2DModel"):
+        pytest.skip("this diffusers has no Qwen-Image-2.1")
+
+    class _Pipe(diffusers.QwenImage21Pipeline):
+        def __init__(self, transformer):
+            diffusers.DiffusionPipeline.__init__(self)
+            self.register_modules(transformer = transformer)
+
+    torch.manual_seed(0)
+    transformer = diffusers.QwenImage21Transformer2DModel(
+        attention_head_dim = 16,
+        axes_dims_rope = [4, 6, 6],
+        context_in_dim = 32,
+        in_channels = 16,
+        num_attention_heads = 2,
+        num_layers = 2,
+        out_channels = 16,
+        mlp_ratio = 3,
+    )
+    return _Pipe(transformer), transformer
+
+
+def test_a_packed_qwen21_gate_up_lora_lands_like_the_pre_split_file(tmp_path):
+    """ai-toolkit's fused ``img_mlp.gate_up`` used to load every other module while PEFT dropped both MLP halves."""
+    from safetensors.torch import save_file
+
+    _pipe, probe = _tiny_qwen21_pipe()
+    torch.manual_seed(1)
+    packed, split = {}, {}
+    for name, module in probe.named_modules():
+        if not isinstance(module, torch.nn.Linear) or not name.startswith("transformer_blocks."):
+            continue
+        if name.endswith("img_mlp.gate_layer"):
+            stem = name[: -len("gate_layer")]
+            a = torch.randn(2, module.in_features)
+            b = torch.randn(2 * module.out_features, 2)
+            packed[f"diffusion_model.{stem}gate_up.lora_A.weight"] = a
+            packed[f"diffusion_model.{stem}gate_up.lora_B.weight"] = b
+            half = module.out_features
+            for part, rows in (("gate_layer", b[:half]), ("proj", b[half:])):
+                split[f"transformer.{stem}{part}.lora_A.weight"] = a.clone()
+                split[f"transformer.{stem}{part}.lora_B.weight"] = rows.contiguous()
+        elif name.endswith(("attn.to_q", "img_mlp.out")):
+            a, b = torch.randn(2, module.in_features), torch.randn(module.out_features, 2)
+            packed[f"diffusion_model.{name}.lora_A.weight"] = a
+            packed[f"diffusion_model.{name}.lora_B.weight"] = b
+            split[f"transformer.{name}.lora_A.weight"] = a.clone()
+            split[f"transformer.{name}.lora_B.weight"] = b.clone()
+    save_file(packed, tmp_path / "packed.safetensors")
+    save_file(split, tmp_path / "split.safetensors")
+
+    def lora_modules(fname):
+        pipe, transformer = _tiny_qwen21_pipe()
+        lf.load_adapter(pipe, str(tmp_path / fname), "x", "qwen-image-2.1")
+        return {n: m for n, m in transformer.named_modules() if "x" in getattr(m, "lora_A", {})}
+
+    got, want = lora_modules("packed.safetensors"), lora_modules("split.safetensors")
+    assert sorted(got) == sorted(want)
+    assert sum(n.endswith(("img_mlp.gate_layer", "img_mlp.proj")) for n in got) == 4
+    torch.manual_seed(2)
+    for name, module in want.items():
+        x = torch.randn(3, module.in_features)
+        with torch.no_grad():
+            assert torch.equal(got[name](x), module(x)), name

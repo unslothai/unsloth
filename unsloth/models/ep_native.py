@@ -440,7 +440,9 @@ def _localize(shard, ep):
         owner._parameters[name] = local
     shard.swaps = []  # nothing left to swap: the parameters are local
     for p in shard.leaf._parameters.values():
-        if tpn._is_params4bit(p):
+        # Frozen quantized stacks (bitsandbytes 4-bit, zoo's packed NVFP4 / MXFP8 / MXFP4): already this rank's
+        # experts, never in an adapter, never gathered.
+        if tpn._is_params4bit(p) or tpn._is_packed_expert(p):
             p.__dict__.pop("_unsloth_tp_layout", None)
             setattr(p, _EP, ("4bit", shard.experts, ep))
 
@@ -714,7 +716,7 @@ def _ep_save_entrypoints(level):
             ):
                 raise NotImplementedError(
                     "Unsloth: save_pretrained of the whole model under expert parallel would write only this "
-                    "rank's 4-bit expert stacks. Save the adapter (the PEFT model's save_pretrained or "
+                    "rank's quantized (4-bit or packed) expert stacks. Save the adapter (the PEFT model's save_pretrained or "
                     "trainer.save_model), or save from one process."
                 )
             # Only global rank 0 writes: only it receives the gathered tensors (the adapter's alone for a PEFT

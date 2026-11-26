@@ -126,12 +126,21 @@ jobs:
           # (1510 of 2573 s measured), and gloo hit the cap at 287 tests on 2026-11-25. They get a
           # shard of their own; test_c[!p]* keeps test_context_parallel_*, and a test_cp[!_]* gloo
           # file matches neither and is reported dropped.
+          # Ten expert parallel files and test_layout_portable_resume_gloo.py (2026-11-24 to 26) then
+          # took gloo to its cap again on main (ddfe1bcd97, 70% at 2100 s); its passing runs were up
+          # to 1588 s. They are 959 of the shard's 1889 s measured one file at a time, so they get
+          # gloo-ep. test_lo* stays in gloo; a test_l[!ao]* gloo file matches neither and is reported dropped.
           - shard: gloo
             selection: >-
-              tests/test_[!cdfimpstu]*gloo*.py
+              tests/test_[!cdefilmpstu]*gloo*.py
               tests/test_c[!p]*gloo*.py
               tests/test_f[!s]*gloo*.py
+              tests/test_lo*gloo*.py
               tests/test_parallel_[!c]*gloo*.py
+          - shard: gloo-ep
+            selection: >-
+              tests/test_e*gloo*.py
+              tests/test_la*gloo*.py
           - shard: gloo-cp-files
             selection: >-
               tests/test_cp_*gloo*.py
