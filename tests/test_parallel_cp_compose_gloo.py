@@ -53,6 +53,61 @@ SEQ = 16
 N_LAYERS = 4
 
 
+_LINEAR_HYBRID = dict(
+    layer_types = ["linear_attention", "full_attention"],
+    linear_num_key_heads = 2,
+    linear_num_value_heads = 4,
+    linear_key_head_dim = 8,
+    linear_value_head_dim = 8,
+    linear_conv_kernel_dim = 4,
+)
+# arch -> (transformers config / model class prefix, config kwargs beside the shared tiny shape in _checkpoint)
+_MOE_CONFIGS = {
+    "mixtral": ("Mixtral", dict(intermediate_size = 32, num_local_experts = 4)),
+    "qwen2_moe": (
+        "Qwen2Moe",
+        dict(
+            intermediate_size = 32,
+            moe_intermediate_size = 16,
+            shared_expert_intermediate_size = 16,
+            num_experts = 4,
+            decoder_sparse_step = 1,
+        ),
+    ),
+    "olmoe": ("Olmoe", dict(intermediate_size = 16, num_experts = 4)),
+    "qwen3_5_moe": (
+        "Qwen3_5MoeText:Qwen3_5Moe",
+        dict(
+            moe_intermediate_size = 16,
+            shared_expert_intermediate_size = 16,
+            num_experts = 4,
+            **_LINEAR_HYBRID,
+        ),
+    ),
+    "qwen3_next": (
+        "Qwen3Next",
+        dict(
+            intermediate_size = 32,
+            moe_intermediate_size = 16,
+            shared_expert_intermediate_size = 16,
+            num_experts = 4,
+            decoder_sparse_step = 1,
+            **_LINEAR_HYBRID,
+        ),
+    ),
+    "phimoe": ("Phimoe", dict(intermediate_size = 16, num_local_experts = 4)),
+    "gpt_oss": (
+        "GptOss",
+        dict(
+            intermediate_size = 16,
+            num_local_experts = 4,
+            layer_types = ["sliding_attention", "full_attention"],
+            sliding_window = 8,
+        ),
+    ),
+}
+
+
 def _checkpoint(tmp, arch = "llama"):
     from transformers import AutoTokenizer
 
@@ -83,6 +138,41 @@ def _checkpoint(tmp, arch = "llama"):
         )
         torch.manual_seed(0)
         model = transformers.Qwen3_5ForCausalLM(config)
+        model.generation_config.pad_token_id = None
+        path = os.path.join(tmp, "ckpt")
+        model.save_pretrained(path, safe_serialization = True)
+        tok.save_pretrained(path)
+        return path
+    if arch in _MOE_CONFIGS:
+        # Router aux families beside qwen3_moe: 4 heads / 2 kv heads, 4 experts (2 per token), 2 layers (the
+        # hybrids: one linear attention layer, one full), random init. No hub weights.
+        import transformers
+
+        tok = AutoTokenizer.from_pretrained(QWEN3)
+        name, kwargs = _MOE_CONFIGS[arch]
+        config_name, _, model_name = name.partition(":")
+        if not hasattr(transformers, config_name + "Config"):
+            pytest.skip(f"transformers {transformers.__version__} has no {config_name}Config")
+        config = getattr(transformers, config_name + "Config")(
+            vocab_size = len(tok),
+            hidden_size = 32,
+            num_hidden_layers = 2,
+            num_attention_heads = 4,
+            num_key_value_heads = 2,
+            head_dim = 8,
+            num_experts_per_tok = 2,
+            attention_dropout = 0.0,
+            tie_word_embeddings = False,
+            router_aux_loss_coef = 0.001,
+            **kwargs,
+        )
+        config._attn_implementation = "eager"
+        torch.manual_seed(0)
+        model = getattr(transformers, (model_name or config_name) + "ForCausalLM")(config)
+        with torch.no_grad():
+            for pname, p in model.named_parameters():
+                if pname.endswith("bias"):
+                    p.normal_(0, 0.1)
         model.generation_config.pad_token_id = None
         path = os.path.join(tmp, "ckpt")
         model.save_pretrained(path, safe_serialization = True)
@@ -491,7 +581,7 @@ def _case_train(
         from unsloth_zoo.cpu.ops import patch_chunked_causal_lm_loss
         cpu_chunked_ce = patch_chunked_causal_lm_loss(model)
     gdn_calls = []
-    if arch == "qwen3_5":
+    if arch in ("qwen3_5", "qwen3_5_moe", "qwen3_next"):
         # The torch Gated DeltaNet kernels (fla / Triton need CUDA), and a counter on Unsloth's GDN exchange.
         from test_ulysses_hybrid import _force_torch_kernels
 

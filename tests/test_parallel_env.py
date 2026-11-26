@@ -1020,8 +1020,25 @@ def test_moe_rows_cover_family_precision_aux_and_mode():
         NotImplementedError, match = r"^Unsloth: MoE x pp / cp: .*router_aux_loss_coef = 0.0"
     ):
         caps.check(
-            _q(cp = 2, cp_backend = "ulysses", router_aux_loss = True, **{**moe_q, "family": "mixtral"})
+            _q(cp = 2, cp_backend = "ulysses", router_aux_loss = True, **{**moe_q, "family": "phimoe"})
         )
+    # The other cp router aux families (tests/test_cp_router_aux_gloo.py::test_family_*): lora (on the experts where
+    # PEFT's all-linear adapts them) and full finetuning.
+    for family in caps.CP_ROUTER_AUX_FAMILIES[1:]:
+        expert_lora = family not in ("gpt_oss", "qwen3_5_moe")
+        for mode in ("lora", "full"):
+            q = _q(
+                cp = 2,
+                cp_backend = "ulysses",
+                router_aux_loss = True,
+                family = family,
+                moe = True,
+                mode = mode,
+                expert_lora = expert_lora and mode == "lora",
+                attention = "eager" if family == "gpt_oss" else "sdpa",
+            )
+            assert caps.cell_status(q)[0] == "supported", (family, mode, caps.cell_status(q))
+            caps.check(q)
     with pytest.raises(
         NotImplementedError, match = r"^Unsloth: MoE x pp / cp: .*router_aux_loss_coef = 0.0"
     ):

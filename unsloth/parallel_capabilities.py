@@ -114,8 +114,18 @@ def _rl(q):
     return q.trainer in ("dpo", "grpo", "other_rl")
 
 
-# UNSLOTH_CP_ROUTER_AUX=0 turns cp router aux off (refused again).
-CP_ROUTER_AUX_FAMILIES = ("qwen3_moe",)
+# UNSLOTH_CP_ROUTER_AUX=0 turns cp router aux off (refused again). Each family matched one process under Ulysses
+# cp 2 (tests/test_cp_router_aux_gloo.py). PhiMoE stays refused: its training-mode SparseMixer samples the routes
+# from the torch RNG, so a cp shard routes its tokens differently from one process.
+CP_ROUTER_AUX_FAMILIES = (
+    "qwen3_moe",
+    "mixtral",
+    "qwen2_moe",
+    "olmoe",
+    "qwen3_5_moe",
+    "qwen3_next",
+    "gpt_oss",
+)
 
 
 def _cp_router_aux_formed(q) -> bool:
@@ -1035,6 +1045,9 @@ _MOE_CP_GC = "test_moe_under_cp_with_unsloth_checkpointing_matches_one_process"
 _MOE_CP_GC_COMPILE = "test_moe_block_compile_under_cp_with_unsloth_checkpointing_is_compile_clean"
 _MOE_PP = "tests/test_pp_moe_aux_gloo.py::test_pp2_moe_aux_matches_gradient_accumulation"
 _MOE_CP_AUX = "tests/test_cp_router_aux_gloo.py::test_router_aux_loss_under_cp_matches_one_process"
+_MOE_CP_AUX_FAMILY = (
+    "tests/test_cp_router_aux_gloo.py::test_family_router_aux_loss_under_cp_matches_one_process"
+)
 _EP_CP = "tests/test_ep_x_cp_gloo.py::test_ep_x_cp_qwen3_moe_lora_matches_one_process"
 _MOE_CP_AUX_GC = (
     "lora+experts",
@@ -1163,6 +1176,20 @@ _MOE_EVIDENCE = {
     + ("eager: no compiled region",),
     ("qwen3_moe", "full", True, "cp"): (_MOE_CP_AUX + "[full-cp2-right_pad]",) * 2
     + ("eager: no compiled region",),
+    # The other cp router aux families: lora cp 2 plain, right padded and cp padded, full cp 2, vs one process.
+    # PEFT's all-linear also adapts the fused experts of all but gpt_oss and qwen3_5_moe (lora+experts).
+    **{
+        (family, precision, True, "cp"): (f"{_MOE_CP_AUX_FAMILY}[{family}-{cases}]",) * 2
+        + ("eager: no compiled region",)
+        for family in CP_ROUTER_AUX_FAMILIES[1:]
+        for precision, cases in (
+            (
+                "lora" if family in ("gpt_oss", "qwen3_5_moe") else "lora+experts",
+                "lora-plain|lora-right_pad|lora-cp_pad",
+            ),
+            ("full", "full-plain"),
+        )
+    },
     ("qwen3_moe", "lora+experts", False, "ep_cp"): (
         _EP_CP + "[ep2_cp2|dp2_cp2-ep2_replicas|dp2_cp2-ep4]",
     )
