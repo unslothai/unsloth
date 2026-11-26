@@ -5485,10 +5485,21 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       const paramsPatch: Record<string, unknown> = {};
       // When leaving a chat, recover the selected model's own sampling beneath its pins.
       // Keep the installation defaults available for any other model or thread setting.
-      const modelMemory = state.paramsByModel[state.params.checkpoint];
+      const checkpoint = state.params.checkpoint;
+      const modelMemory = state.paramsByModel[checkpoint];
       const modelDefaults =
-        threadId === null && paramsUnderChatValues?.checkpoint === state.params.checkpoint
-          ? paramsUnderChatValues
+        threadId === null &&
+        state.rememberParamsPerModel &&
+        paramsUnderChatValues?.checkpoint === checkpoint
+          ? getReplayedParams(
+              true,
+              state.paramsByModel,
+              paramsUnderChatValues,
+              checkpoint,
+              true,
+              loadedContextFor(checkpoint) ??
+                (isExternalModelId(checkpoint) ? undefined : state.loadedContextLength ?? undefined),
+            )
           : null;
       for (const key of THREAD_SCOPED_SETTING_KEYS) {
         if (heldFields.has(key)) {

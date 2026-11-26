@@ -533,3 +533,19 @@ test("explicit model sampling saved from a paired chat reaches New chat", () => 
   assert.equal(store().params.temperature, 0.23);
   assert.equal(store().params.topP, 0.62);
 });
+
+test("New chat restores ordinary sampling edits made since the model loaded", () => {
+  loadOrPoll(GEMMA);
+  const store = useChatRuntimeStore.getState;
+  store().setActivePresetSource("modified", "temperature");
+  store().setParams({ ...store().params, temperature: 0.23 });
+  assert.equal(store().paramsByModel[GEMMA]?.temperature, 0.23);
+
+  store().setActiveThreadId("existing-thread");
+  store().applyThreadScopedSettings("existing-thread", { temperature: 0.75 });
+  assert.equal(store().params.temperature, 0.75);
+
+  store().setActiveThreadId("new-thread");
+  store().applyThreadScopedSettings(null, null);
+  assert.equal(store().params.temperature, 0.23);
+});
