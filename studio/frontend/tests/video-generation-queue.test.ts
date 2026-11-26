@@ -1,0 +1,134 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+// A busy engine queues a video submit server-side instead of answering 409; the page shows the
+// wait, lets the user cancel it, and resumes it after a reload.
+
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import type { VideoQueueJob } from "../src/features/video/api.ts";
+import {
+  oldestQueuedVideo,
+  progressIsForVideo,
+  queuedVideoLabel,
+  queuedVideoNext,
+} from "../src/features/video/video-queue.ts";
+import { readSrc } from "./helpers/kit.ts";
+import { loadWithStubs } from "./helpers/module-stubs.ts";
+
+function job(id: string, status: VideoQueueJob["status"], extra: Partial<VideoQueueJob> = {}): VideoQueueJob {
+  return {
+    video_id: id,
+    status,
+    queue_position: 1,
+    eta_seconds: null,
+    prompt: `prompt ${id}`,
+    created_at: 0,
+    source: "page",
+    error: null,
+    ...extra,
+  };
+}
+
+test("the queued label shows the place and the ETA rounded up to minutes", () => {
+  assert.equal(queuedVideoLabel(2, 125), "Queued #2, about 3 min");
+  assert.equal(queuedVideoLabel(1, 60), "Queued #1, about 1 min");
+  assert.equal(queuedVideoLabel(1, 61), "Queued #1, about 2 min");
+  assert.equal(queuedVideoLabel(3, 59), "Queued #3, less than a minute");
+  assert.equal(queuedVideoLabel(3, 0), "Queued #3, less than a minute");
+  // Unknown ETA drops the ETA part; unknown place drops the number.
+  assert.equal(queuedVideoLabel(4, null), "Queued #4");
+  assert.equal(queuedVideoLabel(null, null), "Queued");
+  assert.equal(queuedVideoLabel(null, 300), "Queued, about 5 min");
+});
+
+test("a queue poll keeps waiting, starts, fails or clears", () => {
+  const queued = queuedVideoNext([job("other", "queued"), job("v1", "queued", { queue_position: 2, eta_seconds: 90 })], "v1");
+  assert.deepEqual(queued, { kind: "queued", job: { videoId: "v1", position: 2, etaSeconds: 90 } });
+  // Gone from the list, or "starting", means it renders now: switch to generate-progress.
+  assert.deepEqual(queuedVideoNext([job("other", "queued")], "v1"), { kind: "started" });
+  assert.deepEqual(queuedVideoNext([], "v1"), { kind: "started" });
+  assert.deepEqual(queuedVideoNext([job("v1", "starting")], "v1"), { kind: "started" });
+  assert.deepEqual(
+    queuedVideoNext([job("v1", "failed", { error: "Video generation failed: OOM" })], "v1"),
+    { kind: "failed", error: "Video generation failed: OOM" },
+  );
+  assert.deepEqual(queuedVideoNext([job("v1", "cancelled")], "v1"), { kind: "cancelled" });
+});
+
+test("after a reload the oldest queued job is resumed, whatever its source", () => {
+  const jobs = [
+    job("newer", "queued", { created_at: 300, source: "page" }),
+    job("failed", "failed", { created_at: 50 }),
+    job("oldest", "queued", { created_at: 100, source: "api", queue_position: 3, eta_seconds: 400 }),
+    job("chat", "queued", { created_at: 200, source: "chat" }),
+    job("starting", "starting", { created_at: 10 }),
+  ];
+  assert.deepEqual(oldestQueuedVideo(jobs), { videoId: "oldest", position: 3, etaSeconds: 400 });
+  assert.equal(oldestQueuedVideo([job("a", "cancelled"), job("b", "starting")]), null);
+  assert.equal(oldestQueuedVideo([]), null);
+});
+
+test("a progress record tagged with another job is not ours", () => {
+  const base = { active: false, phase: "completed", step: 0, total: 0 };
+  assert.equal(progressIsForVideo({ ...base, video_id: "old" }, "v1"), false);
+  assert.equal(progressIsForVideo({ ...base, video_id: "v1" }, "v1"), true);
+  // Older backends send no id; a submit with no id follows whatever runs.
+  assert.equal(progressIsForVideo(base, "v1"), true);
+  assert.equal(progressIsForVideo({ ...base, video_id: "old" }, null), true);
+});
+
+type VideoApi = {
+  cancelVideoGeneration: (videoId?: string) => Promise<{ cancelled: boolean }>;
+  getVideoQueue: () => Promise<VideoQueueJob[]>;
+};
+
+function loadApi(calls: { path: string; init?: RequestInit }[], reply: () => unknown): VideoApi {
+  return loadWithStubs<VideoApi>(
+    new URL("../src/features/video/api.ts", import.meta.url),
+    {
+      "@/lib/model-lifecycle-events": { withBackgroundLoadNotice: (f: unknown) => f },
+      "@/features/auth": {
+        authFetch: async (path: string, init?: RequestInit) => {
+          calls.push({ path, init });
+          return new Response(JSON.stringify(reply()), { status: 200 });
+        },
+      },
+      "@/lib/api-base": { apiUrl: (path: string) => path },
+      "@/lib/format-fastapi-error": { readFastApiError: async () => "" },
+      "@/lib/multi-model-refusal": { parseLoadJson: async () => ({}) },
+      "@/lib/unified-memory-load-refusal": { withAllowOversizedLoad: (body: unknown) => body },
+    },
+    { relativePassthrough: true },
+  );
+}
+
+test("cancel sends the queued job's video_id; a bare cancel stops the render", async () => {
+  const calls: { path: string; init?: RequestInit }[] = [];
+  const api = loadApi(calls, () => ({ cancelled: true }));
+  assert.deepEqual(await api.cancelVideoGeneration("v1"), { cancelled: true });
+  assert.equal(calls[0].path, "/api/inference/video/generate/cancel");
+  assert.equal(calls[0].init?.method, "POST");
+  assert.deepEqual(JSON.parse(String(calls[0].init?.body)), { video_id: "v1" });
+  await api.cancelVideoGeneration();
+  assert.equal(calls[1].init?.body, undefined);
+});
+
+test("the queue route returns the account's jobs", async () => {
+  const calls: { path: string; init?: RequestInit }[] = [];
+  const api = loadApi(calls, () => ({ jobs: [job("v1", "queued")] }));
+  const jobs = await api.getVideoQueue();
+  assert.equal(calls[0].path, "/api/inference/video/queue");
+  assert.deepEqual(jobs.map((j) => j.video_id), ["v1"]);
+});
+
+test("the page queues on submit, cancels by id and resumes the queue on mount", () => {
+  const page = readSrc("features/video/video-page.tsx");
+  assert.match(page, /if \(accepted\.status === "queued" && accepted\.video_id\) \{\s*startQueuePoll\(/);
+  assert.match(page, /startGenPoll\(accepted\.video_id \?\? null\);/);
+  assert.match(page, /cancelVideoGeneration\(queuedVideoId \?\? undefined\)/);
+  assert.match(page, /const queued = oldestQueuedVideo\(await getVideoQueue\(\)\);/);
+  assert.match(page, /if \(next\.kind === "started"\) \{\s*startGenPoll\(job\.videoId\);/);
+  assert.match(page, /queuedVideoLabel\(queuedVideo\.position, queuedVideo\.etaSeconds\)/);
+});
