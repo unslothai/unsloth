@@ -52,6 +52,8 @@ export const AUDIO_CPP_STT_FOLDER_IDS: readonly string[] =
       audioCppWorkflowsFor(model).includes("transcribe") &&
       !KEYED_FOLDERS.has(model.id.toLowerCase()),
   ).map((model) => model.id);
+/** What the Voice picker lists: the curated models, then every other ASR model
+ * Transcribe offers. */
 export const STT_PICKER_MODELS: readonly SttModel[] = [
   ...STT_MODELS,
   ...AUDIO_CPP_STT_FOLDER_IDS,
