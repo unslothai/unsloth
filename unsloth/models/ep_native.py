@@ -264,12 +264,13 @@ def _ep_experts(shard, prior, hidden, index, weights):
     x = hidden.reshape(-1, shape[-1])
     tokens = x.shape[0]
     index = index.reshape(tokens, _route_width(index, tokens))
-    if (
+    dense = (
         weights.dim() == 2
         and weights.shape[-1] == shard.experts
         and index.shape[-1] != shard.experts
-    ):
-        weights = weights.gather(1, index)  # dense [tokens, E] routing weights
+    )
+    if dense:
+        weights = weights.gather(1, index)
     weights = weights.reshape(tokens, _route_width(weights, tokens))
     # Each token goes once to every rank owning one of its experts.
     owner = torch.div(index, shard.per_rank, rounding_mode = "floor").clamp_(0, ep - 1)
@@ -295,8 +296,12 @@ def _ep_experts(shard, prior, hidden, index, weights):
         xc = got_x.index_select(0, row)
         ic = (got_index[row, slot] - lo).unsqueeze(1)
         wc = got_w[row, slot].unsqueeze(1)
+    if dense:
+        # 4.x gpt-oss experts take E from routing_weights' width: rebuild it dense over the local experts.
+        wc = wc.new_zeros((wc.shape[0], shard.per_rank)).scatter(1, ic, wc)
     with tpn._expert_locals(shard):
         yc = prior(xc, ic, wc)
+    yc = yc.reshape(-1, yc.shape[-1])  # transformers 4.x gpt-oss returns [rows, 1, hidden]
     y_got = yc.new_zeros((got_x.shape[0], yc.shape[-1]))
     if row.numel():
         y_got = y_got.index_add(0, row, yc)
