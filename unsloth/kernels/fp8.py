@@ -2242,11 +2242,12 @@ def _fp8_dequant_max_rows(device, weight_numel):
 
 
 # Tensorwise backend gate, measured on L4 (bf16, 128-8192 rows): it beats dequant from 4096 x 8192 weights at
-# every row count past the dequant gate (0.38-0.86x) and from 4096 x 4096 at 512+ rows (0.70-0.82x). Smaller
-# weights are host bound there (1024 x 1024: 1.2-1.8x slower), so they keep dequant.
+# every row count past the dequant gate (inference 0.38-0.86x, training forward + backward 0.72-0.91x) and from
+# 4096 x 4096 at 2048+ rows (0.70-0.82x; training 1.03x at 512 rows, so the bar sits at 1024). Smaller weights are
+# host bound there (1024 x 1024: 1.2-1.8x slower), so they keep dequant.
 _FP8_TENSORWISE_MIN_NUMEL = 4096 * 4096
 _FP8_TENSORWISE_ANY_ROWS_NUMEL = 4096 * 8192
-_FP8_TENSORWISE_MIN_ROWS = 512
+_FP8_TENSORWISE_MIN_ROWS = 1024
 
 
 def _fp8_tensorwise_wins(rows, weight_numel):

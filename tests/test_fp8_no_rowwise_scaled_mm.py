@@ -293,7 +293,7 @@ def test_load_in_fp8_row_switches_to_block_without_rowwise(monkeypatch):
 def test_tensorwise_size_gate():
     big, mid, small = 4096 * 12288, 4096 * 4096, 1024 * 3072
     assert F8._fp8_tensorwise_wins(65, big)
-    assert not F8._fp8_tensorwise_wins(128, mid) and F8._fp8_tensorwise_wins(512, mid)
+    assert not F8._fp8_tensorwise_wins(512, mid) and F8._fp8_tensorwise_wins(1024, mid)
     assert not F8._fp8_tensorwise_wins(8192, small)
 
 
@@ -301,7 +301,7 @@ def test_tensorwise_size_gate():
     "rows, N, K, route",
     [
         (128, 4096, 4096, "dequant"),
-        (512, 4096, 4096, "tensorwise"),
+        (1024, 4096, 4096, "tensorwise"),
         (128, 12288, 4096, "tensorwise"),
         (2048, 1024, 1024, "dequant"),
     ],
