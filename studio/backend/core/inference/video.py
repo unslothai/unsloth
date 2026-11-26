@@ -15436,8 +15436,10 @@ class VideoBackend:
                     total_steps = total,
                     video_id = (video or {}).get("id"),
                 )
+            # Under the lock, so a successor's start cannot be paired with this clip's time.
+            _note_clip_finished(error is None, total)
         # Outside the lock: the queue starts the next video as soon as this one ends.
-        _note_clip_finished(error is None, total)
+        _wake_video_queue()
 
     @holds_inference
     @vram_budget_scope("video")
@@ -17872,8 +17874,16 @@ def _note_clip_started(fam, width, height, num_frames, steps) -> None:
 def _note_clip_finished(ok: bool, steps: Optional[int]) -> None:
     try:
         from core.inference import video_queue
-        video_queue.clip_finished(ok, steps or None)
-    except Exception:  # noqa: BLE001 -- ETA bookkeeping only; the queue still has its poll
+        video_queue.clock.finished(ok, steps or None)
+    except Exception:  # noqa: BLE001 -- ETA bookkeeping only
+        pass
+
+
+def _wake_video_queue() -> None:
+    try:
+        from core.inference import video_queue
+        video_queue.notify()
+    except Exception:  # noqa: BLE001 -- the queue still has its poll
         pass
 
 

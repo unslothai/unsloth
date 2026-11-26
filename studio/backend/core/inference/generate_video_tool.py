@@ -200,12 +200,24 @@ def _stop_job(acct, video_id: str, loop) -> None:
     from routes.video import _cancel_queued_or_running
     from utils.account_context import arun_as
 
-    try:
-        asyncio.run_coroutine_threadsafe(
-            arun_as(acct, _cancel_queued_or_running(video_id)), loop
-        ).result(_STOP_WAIT_S)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("generate_video: stopping job %s failed: %s", video_id, exc)
+    from fastapi import HTTPException
+
+    deadline = time.monotonic() + _STOP_WAIT_S
+    while True:
+        try:
+            asyncio.run_coroutine_threadsafe(
+                arun_as(acct, _cancel_queued_or_running(video_id)), loop
+            ).result(_STOP_WAIT_S)
+            return
+        except HTTPException as exc:
+            # 409 while its start is still in flight: stop it once the start lands.
+            if exc.status_code != 409 or time.monotonic() >= deadline:
+                logger.warning("generate_video: stopping job %s failed: %s", video_id, exc)
+                return
+            time.sleep(0.25)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("generate_video: stopping job %s failed: %s", video_id, exc)
+            return
 
 
 def _cancel_created_job(

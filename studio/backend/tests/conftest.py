@@ -475,6 +475,7 @@ def _forget_queued_media_requests():
         if video_routes is not None:
             video_routes._VIDEO_QUEUE.clear()
             video_routes._page_outcomes.clear()
+            video_routes._admitting.clear()
         video_queue = sys.modules.get("core.inference.video_queue")
         if video_queue is not None:
             video_queue.reset()

@@ -309,7 +309,9 @@ def test_another_account_never_sees_or_cancels_a_queued_page_clip(client, backen
         refused = other.post(CANCEL, json = {"video_id": mine["video_id"]})
         assert refused.status_code == 409
     assert [e.id for e in video_routes._VIDEO_QUEUE] == [mine["video_id"]]
-    assert client.get(f"/v1/videos/{mine['video_id']}").json()["status"] == "queued"
+    assert [j["video_id"] for j in client.get(QUEUE).json()["jobs"]] == [mine["video_id"]]
+    # A Video page clip is not a /v1/videos job, for its owner either.
+    assert client.get(f"/v1/videos/{mine['video_id']}").status_code == 404
     backend.gate.set()
 
 
@@ -481,3 +483,30 @@ def test_restyle_says_how_many_videos_are_queued(client, backend, monkeypatch):
         "A video is generating. 2 more are queued behind it. Try again when they finish."
     )
     backend.gate.set()
+
+
+def test_a_request_on_its_way_into_the_queue_is_never_passed_by_a_later_one(
+    client, backend, prompts, monkeypatch
+):
+    running = _busy(client, backend)
+    real_display = video_routes._page_queue_display
+    later = {}
+
+    def _display_while_the_engine_frees(request):
+        # The running clip ends while this request builds its queue entry; a later request
+        # arriving now finds an idle engine and an empty queue.
+        _finish_running(client, backend, running)
+        later["response"] = client.post("/v1/videos", json = {"prompt": "second-in"})
+        return real_display(request)
+
+    monkeypatch.setattr(video_routes, "_page_queue_display", _display_while_the_engine_frees)
+    first = client.post(PAGE, json = {"prompt": "first-in"}).json()
+    assert first["status"] == "queued"
+    assert later["response"].json()["status"] == "queued"
+    assert [row["prompt"] for row in prompts] == ["running"]
+    assert [e.shown_prompt for e in video_routes._ordered_queue()] == ["first-in", "second-in"]
+    assert video_routes._admitting == set()
+    for _ in range(2):
+        _drain()
+        _wait_idle(backend)
+    assert [row["prompt"] for row in prompts] == ["running", "first-in", "second-in"]

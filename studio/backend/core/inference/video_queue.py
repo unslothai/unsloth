@@ -45,6 +45,10 @@ class FairOrder:
             return
         with self._lock:
             self._turn[account_id] = next(self._tick)
+            # Bounded by accounts that ever queued; keep only recent ones.
+            if len(self._turn) > 4096:
+                for stale in sorted(self._turn, key = self._turn.get)[:1024]:
+                    self._turn.pop(stale, None)
 
     def order(self, entries: Sequence[Any], account_of: Callable[[Any], str]) -> list[Any]:
         rounds: dict[str, int] = {}
@@ -58,9 +62,8 @@ class FairOrder:
                 r = rounds.get(account_id, 0)
                 rounds[account_id] = r + 1
                 keyed.append(((r, turn, index), entry))
-            # Accounts with nothing waiting have no turn to keep.
-            for account_id in set(self._turn) - set(rounds):
-                self._turn.pop(account_id, None)
+        # No pruning here: readers on other threads order a snapshot, and must not drop the turn
+        # an account just took; joined() renews a returning account's turn anyway.
         keyed.sort(key = lambda item: item[0])
         return [entry for _, entry in keyed]
 

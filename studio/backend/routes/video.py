@@ -18,6 +18,7 @@ import asyncio
 import base64
 import hashlib as _hashlib
 import inspect
+import itertools
 import json
 import hmac as _hmac
 import re as _re
@@ -844,11 +845,25 @@ async def generate_video(
     With media auto-switch on, ``model`` names the video model to generate on and is loaded
     when it is not the resident one."""
     video_id = uuid.uuid4().hex
+    arrival = next(_arrivals)
     started, _ = await _start_now(
-        lambda: _start_page_video(request, current_subject, hf_token, video_id)
+        lambda: _start_page_video(request, current_subject, hf_token, video_id), arrival
     )
     if started:
         return VideoGenerateResponse(video_id = video_id)
+    try:
+        return await _queue_page_video(request, current_subject, hf_token, video_id, arrival)
+    finally:
+        _end_admission(arrival)
+
+
+async def _queue_page_video(
+    request: VideoGenerateRequest,
+    current_subject: str,
+    hf_token: Optional[str],
+    video_id: str,
+    arrival: int,
+) -> VideoGenerateResponse:
     display = await asyncio.to_thread(_page_queue_display, request)
     entry = _QueuedVideo(
         id = video_id,
@@ -868,6 +883,7 @@ async def generate_video(
         prompt = request.prompt,
         clip_key = display.clip_key,
         steps = display.steps,
+        arrival = arrival,
     )
     try:
         _enqueue_video(entry)
@@ -1920,7 +1936,7 @@ def _lookup_video(video_id: str) -> Optional[VideoJob]:
     from core.inference import video_gallery
 
     queued = _own_queued_video(video_id)
-    if queued is not None:
+    if queued is not None and queued.kind != "page":
         return _queued_video_job(queued)
     _hydrate_job(video_id)
     _sync_jobs()
@@ -2622,6 +2638,9 @@ class _QueuedVideo:
     steps: Optional[int] = None
     # (position, eta, monotonic time) last reported, so a shown ETA only counts down.
     shown: Optional[tuple] = _dc_field(default = None, compare = False, repr = False)
+    # When its request arrived: the queue keeps arrival order even when a later request was
+    # admitted first.
+    arrival: int = 0
 
     @property
     def shown_prompt(self) -> Optional[str]:
@@ -2775,12 +2794,13 @@ def _own_queued_video(video_id: str) -> Optional[_QueuedVideo]:
 
 
 def _own_queued_videos() -> list[VideoJob]:
+    """The caller's waiting /v1/videos and chat jobs; Video page clips are on /video/queue."""
     account_id = current_account_id()
     view = _queue_view_now()
     return [
         _queued_video_job(entry, view)
         for entry in list(_VIDEO_QUEUE)
-        if entry.account.account_id == account_id
+        if entry.account.account_id == account_id and entry.kind != "page"
     ]
 
 
@@ -2803,28 +2823,52 @@ def _enqueue_video(entry: _QueuedVideo) -> None:
         )
         raise _VideoQueueFull(f"{full} in Unsloth Studio; create this one once some have started.")
     video_queue.order.joined(account_id, _VIDEO_QUEUE, _entry_account_id)
-    _VIDEO_QUEUE.append(entry)
+    later = next(
+        (i for i, queued in enumerate(_VIDEO_QUEUE) if queued.arrival > entry.arrival), None
+    )
+    if later is None or _VIDEO_QUEUE[later].starting:
+        _VIDEO_QUEUE.append(entry)
+    else:
+        _VIDEO_QUEUE.insert(later, entry)
     video_queue.wake_event().set()
     _ensure_video_drainer()
 
 
-async def _start_now(start) -> tuple[bool, Any]:
+_arrivals = itertools.count(1)
+# Arrivals refused a direct start that are on their way into the queue (validating, building their
+# display): nothing that arrived later may start before they are queued.
+_admitting: set[int] = set()
+
+
+def _end_admission(arrival: int) -> None:
+    from core.inference import video_queue
+    if arrival in _admitting:
+        _admitting.discard(arrival)
+        video_queue.wake_event().set()
+
+
+async def _start_now(start, arrival: int) -> tuple[bool, Any]:
     """Run ``start()`` now if nothing waits and the engine is free, under the start lock the queue
-    uses, so no request passes a waiting video. (False, None) when it must queue instead; any
-    refusal other than busy is raised."""
+    uses, so no request passes a waiting video. (False, None) when it must queue instead, holding
+    an admission the caller ends with _end_admission once queued or refused; any refusal other than
+    busy is raised."""
     from core.inference import video_queue
 
     lock = _video_start_lock()
-    if _VIDEO_QUEUE or lock.locked():
+    if _VIDEO_QUEUE or _admitting or lock.locked():
+        _admitting.add(arrival)
         return False, None
     async with lock:
-        if _VIDEO_QUEUE or await asyncio.to_thread(_video_engine_busy):
+        if _VIDEO_QUEUE or _admitting or await asyncio.to_thread(_video_engine_busy):
+            _admitting.add(arrival)
             return False, None
         try:
             result = await start()
         except Exception as exc:
             if _video_wait(exc) != "busy":
                 raise
+            # Taken before the lock is released, so no one passes it on its way into the queue.
+            _admitting.add(arrival)
             return False, None
     video_queue.order.started(current_account_id())
     return True, result
@@ -3095,6 +3139,7 @@ async def _create_or_queue_openai_video(
 ) -> VideoJob:
     video_id = _new_video_id()
     seed = _video_seed(body)
+    arrival = next(_arrivals)
     started, job = await _start_now(
         lambda: _start_openai_video(
             body,
@@ -3104,10 +3149,30 @@ async def _create_or_queue_openai_video(
             hf_token,
             video_id = video_id,
             seed = seed,
-        )
+        ),
+        arrival,
     )
     if started:
         return job
+    try:
+        return await _queue_openai_video(
+            body, reference, inputs, current_subject, hf_token, kind, video_id, seed, arrival
+        )
+    finally:
+        _end_admission(arrival)
+
+
+async def _queue_openai_video(
+    body: VideoJobCreateRequest,
+    reference: Optional[str],
+    inputs: _VideoCreateInputs,
+    current_subject: str,
+    hf_token: Optional[str],
+    kind: str,
+    video_id: str,
+    seed: int,
+    arrival: int,
+) -> VideoJob:
     inputs.decoded_images = None
     await asyncio.to_thread(_refuse_unreadable_audio, inputs.reference_audios)
     model, size, seconds, clip = await asyncio.to_thread(
@@ -3130,6 +3195,7 @@ async def _create_or_queue_openai_video(
         kind = kind,
         clip_key = clip[0],
         steps = clip[1],
+        arrival = arrival,
     )
     try:
         _enqueue_video(entry)
@@ -3285,6 +3351,9 @@ async def _start_queued_video(entry: _QueuedVideo) -> str:
             if entered:
                 media_keepwarm.end_request(VIDEO, counted = started)
             activity.finish()
+            if not started:
+                # Also on a cancelled task, which no except above sees.
+                entry.starting = False
         _drop_queued_video(entry)
         video_queue.order.started(entry.account.account_id)
         entry.starting = False
@@ -3295,6 +3364,9 @@ async def _drain_video_queue_once() -> bool:
     """Start the next video in fair order; True when the queue moved. A head whose model changed
     under it is moved aside for this pass (it keeps its place), so it never holds up the rest."""
     for entry in _ordered_queue():
+        if _admitting and entry.arrival > min(_admitting):
+            # An earlier request is still on its way in; its _end_admission wakes this.
+            return False
         try:
             outcome = await _start_queued_video(entry)
         except Exception as exc:  # noqa: BLE001 -- the next video must still start
