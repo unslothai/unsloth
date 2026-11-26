@@ -30695,6 +30695,7 @@ def _fit_external_context(
     queries the user's turn, not a controller re-prompt, and still filters on the loop's turns.
     ``can_reset`` lets the fit start a checkpoint epoch, which /compact needs; ``replays_manual``
     replays a /compact epoch on a request that may not start one."""
+    from core.inference import cloud_compaction
     from core.inference.context_window import (
         estimate_message_tokens_without_unpriced_media,
         prompt_budget,
@@ -30759,6 +30760,7 @@ def _fit_external_context(
             else set()
         )
         | (keep_ids or set())
+        | cloud_compaction.request_reference_ids(messages)
         or None,
         context_length = context_length,
         max_tokens = max_tokens,
