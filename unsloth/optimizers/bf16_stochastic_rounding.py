@@ -8,8 +8,10 @@ bfloat16 keeps 8 mantissa bits, so round-to-nearest drops updates far smaller th
 On CUDA with Triton, torch AdamW weights take one kernel per weight: read the bfloat16 weight, gradient and
 moments, do AdamW's float32 arithmetic in registers, write all three back with stochastic rounding (Philox
 seeded by (param index, step), so resumes and DDP replicas draw alike). bitsandbytes keeps its own 8-bit
-state, so its weights still step a float32 copy, rounded back in one pass. UNSLOTH_BF16_SR_FUSED=0 keeps
-the float32-copy route with torch.randint draws everywhere.
+state: its 8-bit blockwise Adam / AdamW runs as one kernel too (bitsandbytes' update in float32 registers on
+the bfloat16 weight and gradient, the weight rounded stochastically), other bitsandbytes optimizers step a
+float32 copy, rounded back in one pass. UNSLOTH_BF16_SR_FUSED_BNB=0 keeps bitsandbytes on the float32-copy
+route; UNSLOTH_BF16_SR_FUSED=0 keeps the float32-copy route with torch.randint draws everywhere.
 """
 
 import contextlib
@@ -108,8 +110,93 @@ if triton is not None:
         tl.store(M + i, _round_bf16(m, r1), valid)
         tl.store(V + i, _round_bf16(v, r2), valid)
 
+    @triton.jit
+    def _bnb_quantize(Q, x, SIGNED: tl.constexpr):
+        # bitsandbytes' quantize_2D: binary search of the 256-entry code, then the nearer side by midpoint.
+        pivot = tl.full(x.shape, 127, tl.int32)
+        upper_pivot = tl.full(x.shape, 255, tl.int32)
+        lower_pivot = tl.zeros(x.shape, tl.int32)
+        lower = tl.full(x.shape, -1.0 if SIGNED else 0.0, tl.float32)
+        upper = tl.full(x.shape, 1.0, tl.float32)
+        val = tl.load(Q + pivot)
+        for k in tl.static_range(7):
+            up = x > val
+            lower_pivot = tl.where(up, pivot, lower_pivot)
+            lower = tl.where(up, val, lower)
+            upper_pivot = tl.where(up, upper_pivot, pivot)
+            upper = tl.where(up, upper, val)
+            pivot = tl.where(up, pivot + (64 >> k), pivot - (64 >> k))
+            val = tl.load(Q + pivot)
+        up = x > val
+        code = tl.where(
+            up,
+            tl.where(x > (upper + val) * 0.5, upper_pivot, pivot),
+            tl.where(x < (lower + val) * 0.5, lower_pivot, pivot),
+        )
+        return code
+
+    @triton.jit(do_not_specialize = ["N", "SEED"])
+    def _bnb_adam8bit_kernel(
+        P,
+        G,
+        S1,
+        S2,
+        Q1,
+        Q2,
+        A1,
+        A2,
+        N,
+        SEED,
+        BETA1,
+        BETA2,
+        EPS_C2,  # correction2 * eps
+        STEP_SIZE,  # -lr * correction2 / correction1
+        DECAY,  # 1 - lr * weight_decay
+        HAS_DECAY: tl.constexpr,
+        BLOCK: tl.constexpr,  # bitsandbytes' 2-state blockwise block, 256: one absmax per program
+    ):
+        # bitsandbytes' kOptimizerStatic8bit2StateBlockwise (Adam / AdamW) with float32 weights in registers:
+        # the bfloat16 weight and gradient are read directly and the weight is written back with stochastic
+        # rounding, so no float32 copy of either exists outside registers.
+        b = tl.program_id(0).to(tl.int64)
+        i = b * BLOCK + tl.arange(0, BLOCK)
+        valid = i < N
+        # Padding lanes load what bitsandbytes' block loads pad with (gradient 0, codes 128 / 0): they join
+        # the block's absmax exactly as in its kernel.
+        g = tl.load(G + i, valid, 0).to(tl.float32)
+        c1 = tl.load(S1 + i, valid, 128).to(tl.int32)
+        c2 = tl.load(S2 + i, valid, 0).to(tl.int32)
+        finite = (g == g) & (tl.abs(g) != float("inf"))
+        s2 = tl.load(Q2 + c2) * tl.load(A2 + b)
+        s2 = (s2 * BETA2) + ((1.0 - BETA2) * g * g)
+        s1 = tl.load(Q1 + c1) * tl.load(A1 + b)
+        s1 = (s1 * BETA1) + ((1.0 - BETA1) * g)
+        s1 = tl.where(finite, s1, 0.0)
+        s2 = tl.where(finite, s2, 0.0)
+        new1 = tl.max(tl.abs(s1), axis = 0)
+        new2 = tl.max(tl.abs(s2), axis = 0)
+        tl.store(A1 + b, new1)
+        tl.store(A2 + b, new2)
+        p = tl.load(P + i, valid, 0).to(tl.float32)
+        stepped = p + STEP_SIZE * (s1 / (tl.sqrt(s2) + EPS_C2))
+        if HAS_DECAY:
+            stepped = stepped * DECAY
+        p = tl.where(finite, stepped, p)
+        # Lane 0 of Philox(SEED, element index), as the float32-copy route's round kernel draws.
+        r0, _, _, _ = tl.randint4x(SEED, i)
+        tl.store(P + i, _round_bf16(p, r0), valid)
+        q1 = _bnb_quantize(Q1, s1 / new1, True)
+        # keep the first moment's sign through quantization
+        code_neg = tl.load(Q1 + q1).to(tl.int32, bitcast = True) < 0
+        s1_neg = s1.to(tl.int32, bitcast = True) < 0
+        q1 = tl.where(code_neg != s1_neg, tl.where(s1 > 0.0, q1 + 1, q1 - 1), q1)
+        q2 = _bnb_quantize(Q2, s2 / new2, False)
+        tl.store(S1 + i, q1.to(tl.uint8), valid)
+        tl.store(S2 + i, q2.to(tl.uint8), valid)
+
 
 _BLOCK = 1024
+_BNB_BLOCK = 256
 
 
 def _grid(n):
@@ -152,6 +239,161 @@ def _round_cuda_(dst, src, seed):
         with torch.cuda.device(dst.device):
             _round_kernel[_grid(n)](dst, src, n, seed, BLOCK = _BLOCK, enable_fp_fusion = False)
     return dst
+
+
+def _bnb_fused_enabled():
+    """UNSLOTH_BF16_SR_FUSED_BNB=0 keeps bitsandbytes 8-bit AdamW on the float32-copy route."""
+    value = os.environ.get("UNSLOTH_BF16_SR_FUSED_BNB", "1").strip().lower()
+    return _fused_enabled() and value not in ("0", "false", "no", "off")
+
+
+_BNB_OK = {}
+
+
+def _f32(x):
+    return torch.tensor(x, dtype = torch.float32)
+
+
+def _bnb_launch(p, g, state, step, config, seed):
+    beta1, beta2 = (float(b) for b in config["betas"][:2])
+    lr, eps, weight_decay = float(config["lr"]), float(config["eps"]), float(config["weight_decay"])
+    # bitsandbytes' per-step scalars, in float32 as its kernel forms them
+    correction1 = 1.0 - _f32(beta1) ** step
+    correction2 = torch.sqrt(1.0 - _f32(beta2) ** step)
+    step_size = (-_f32(lr) * correction2) / correction1
+    decay = 1.0 - _f32(lr) * _f32(weight_decay)
+    n = p.numel()
+    with torch.cuda.device(p.device):
+        _bnb_adam8bit_kernel[((n + _BNB_BLOCK - 1) // _BNB_BLOCK,)](
+            p,
+            g,
+            state["state1"],
+            state["state2"],
+            state["qmap1"],
+            state["qmap2"],
+            state["absmax1"],
+            state["absmax2"],
+            n,
+            seed,
+            beta1,
+            beta2,
+            float(correction2 * _f32(eps)),
+            float(step_size),
+            float(decay),
+            HAS_DECAY = weight_decay > 0.0,
+            BLOCK = _BNB_BLOCK,
+        )
+
+
+def _bnb_triton_ok(device):
+    """Compile and run the fused 8-bit kernel once per device; a failure keeps the float32-copy route there."""
+    key = str(device)
+    if key not in _BNB_OK:
+        try:
+            p = torch.zeros(300, dtype = torch.bfloat16, device = device)
+            g = torch.full((300,), 1e-3, dtype = torch.bfloat16, device = device)
+            code = torch.linspace(-1, 1, 256, device = device)
+            state = dict(
+                state1 = torch.full((300,), 128, dtype = torch.uint8, device = device),
+                state2 = torch.zeros(300, dtype = torch.uint8, device = device),
+                qmap1 = code,
+                qmap2 = code.abs().sort().values,
+                absmax1 = torch.zeros(2, device = device),
+                absmax2 = torch.zeros(2, device = device),
+            )
+            config = dict(betas = (0.9, 0.999), lr = 1.0, eps = 1e-8, weight_decay = 0.0)
+            _bnb_launch(p, g, state, 1, config, 1 << 40)
+            torch.cuda.synchronize(device)
+            # Adam's first step moves every weight by -lr * sign(g) (less eps): -1 within one bfloat16 step
+            _BNB_OK[key] = bool((p.float() + 1).abs().le(2**-8).all().item())
+        except torch.cuda.OutOfMemoryError:
+            return False
+        except Exception as exc:
+            print(
+                f"Unsloth: one-pass bfloat16 stochastic rounding for 8-bit AdamW is unavailable on {device} ({exc})."
+            )
+            _BNB_OK[key] = False
+    return _BNB_OK[key]
+
+
+def _bnb_fused_step(optimizer, group, p, gindex, pindex, seed):
+    """bitsandbytes 8-bit blockwise Adam / AdamW on a bfloat16 weight in one kernel: bitsandbytes' update in
+    float32 registers, the weight stochastically rounded, states and absmax written as its kernel does.
+    Returns False (nothing changed) when the weight or optimizer is not one it reproduces."""
+    if not _bnb_fused_enabled() or p.device.type != "cuda" or not p.is_contiguous():
+        return False
+    if getattr(optimizer, "optimizer_name", None) != "adam":
+        return False
+    g = p.grad
+    if (
+        g is None
+        or g.is_sparse
+        or g.layout != torch.strided
+        or g.dtype not in (torch.bfloat16, torch.float16, torch.float32)
+        or g.shape != p.shape
+        or g.device != p.device
+    ):
+        return False
+    state = optimizer.state.get(p)
+    if not state:
+        return False
+    n = p.numel()
+    blocks = (n + _BNB_BLOCK - 1) // _BNB_BLOCK
+    for key, dtype, size in (
+        ("state1", torch.uint8, n),
+        ("state2", torch.uint8, n),
+        ("absmax1", torch.float32, blocks),
+        ("absmax2", torch.float32, blocks),
+        ("qmap1", torch.float32, 256),
+        ("qmap2", torch.float32, 256),
+    ):
+        value = state.get(key)
+        if (
+            not torch.is_tensor(value)
+            or value.dtype != dtype
+            or value.numel() != size
+            or value.device != p.device
+            or not value.is_contiguous()
+        ):
+            return False
+    config = optimizer.get_config(gindex, pindex, group)
+    if (
+        len(config["betas"]) != 2
+        or config.get("skip_zeros")
+        or float(config.get("max_unorm", 0.0) or 0.0) > 0.0
+        or float(config.get("percentile_clipping", 100) or 100) < 100
+    ):
+        return False
+    if not (_triton_ok(p.device) and _bnb_triton_ok(p.device)):
+        return False
+    if (
+        not g.is_contiguous()
+    ):  # as bitsandbytes' own update_step does (e.g. grouped expert weight gradients)
+        p.grad = g = g.contiguous()
+    state["step"] += 1
+    step = state["step"]
+    try:
+        _bnb_launch(
+            p.detach(), g, state, int(step), config, _seed_for(optimizer, p, seed, int(step))
+        )
+    except torch.cuda.OutOfMemoryError:
+        state["step"] -= 1
+        raise
+    except (
+        Exception
+    ) as error:  # a launch failing after the device probe passed: nothing was written
+        state["step"] -= 1
+        _BNB_OK[str(p.device)] = False
+        print(
+            f"Unsloth: one-pass bfloat16 stochastic rounding for 8-bit AdamW failed on {p.device} ({error}); "
+            "using the float32 route there."
+        )
+        return False
+    increment = getattr(torch.autograd.graph, "increment_version", None)
+    if increment is not None:
+        increment(p)
+    _count(optimizer, "_unsloth_sr_bnb_fused_steps")
+    return True
 
 
 def stochastic_round_to_bf16_(
@@ -315,8 +557,11 @@ def _wrap_bitsandbytes(optimizer, tracked, seed):
     def update_step(self, group, p, gindex, pindex):
         if id(p) not in tracked or p.grad is None or p.dtype != torch.bfloat16:
             return original(group, p, gindex, pindex)
-        # bitsandbytes keeps its own 8-bit state and needs p and its gradient in one dtype: step a float32
-        # copy under p's state, round it back into p in one pass.
+        # 8-bit blockwise Adam / AdamW: one kernel reads the bfloat16 weight and gradient, no float32 copies.
+        if _bnb_fused_step(self, group, p, gindex, pindex, seed):
+            return None
+        # Otherwise bitsandbytes needs p and its gradient in one dtype: step a float32 copy under p's state,
+        # round it back into p in one pass.
         with _Float32Step(self, p, seed, triton_round = True) as copy:
             return original(group, copy, gindex, pindex)
 
