@@ -894,7 +894,9 @@ export function DiffusionTrainPanel({
       lrScheduleDirty.current = owned;
       precisionDirty.current = owned;
       if (owned) {
-        // Neither a loaded model nor the family re-seed may replace the preset's base.
+        // Neither a loaded model, the family re-seed nor a finished run's status may replace the preset's base:
+        // the preset's hyperparameters were chosen for its own model.
+        modelPickedByUser.current = true;
         seededFromLoaded.current = true;
         seededBaseFamily.current = params.familyName;
         baseDirty.current = true;

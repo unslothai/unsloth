@@ -102,3 +102,12 @@ test("the train panel seeds from finished runs and from the resumed run's detail
     "onResume sets family and base from detail before starting",
   );
 });
+
+test("a restored named preset keeps its model when a finished run's status arrives", () => {
+  const src = readFileSync(
+    new URL("../src/features/images/train/diffusion-train-panel.tsx", import.meta.url),
+    "utf8",
+  );
+  const apply = src.slice(src.indexOf("const applyPresetParams"), src.indexOf("setFamilyName(params.familyName)"));
+  assert.match(apply, /if \(owned\) \{[^}]*modelPickedByUser\.current = true/);
+});
