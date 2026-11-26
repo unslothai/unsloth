@@ -204,15 +204,26 @@ def load_krea2_pipeline(
         name: getattr(torch, str(dt).replace("torch.", ""))
         for name, dt in (storage_dtypes or {}).items()
     }
+    from .diffusion_te_vision import (
+        drop_vision_tower,
+        family_drops_vision_tower,
+        vision_tower_skipped,
+    )
+
+    # Krea-2 conditions on text only: the encoder's vision tower is never read, so it is never loaded.
+    drop_vision = family_drops_vision_tower(KREA2_FAMILY_NAME)
     if text_encoder is None:
-        text_encoder = load_krea2_text_encoder(
-            repo_id,
-            stored.get("text_encoder", dtype),
-            hf_token = token,
-            local_files_only = local_files_only,
-            check_cancelled = check_cancelled,
-        )
+        with vision_tower_skipped(drop_vision):
+            text_encoder = load_krea2_text_encoder(
+                repo_id,
+                stored.get("text_encoder", dtype),
+                hf_token = token,
+                local_files_only = local_files_only,
+                check_cancelled = check_cancelled,
+            )
         check_cancelled()
+    if drop_vision and drop_vision_tower(text_encoder):
+        logger.info("diffusion.krea2: the text encoder's unused vision tower is not loaded")
     scheduler = diffusers.FlowMatchEulerDiscreteScheduler.from_pretrained(
         repo_id,
         subfolder = "scheduler",

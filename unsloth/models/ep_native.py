@@ -440,7 +440,9 @@ def _localize(shard, ep):
         owner._parameters[name] = local
     shard.swaps = []  # nothing left to swap: the parameters are local
     for p in shard.leaf._parameters.values():
-        if tpn._is_params4bit(p):
+        # Frozen quantized stacks (bitsandbytes 4-bit, zoo's packed NVFP4 / MXFP8 / MXFP4): already this rank's
+        # experts, never in an adapter, never gathered.
+        if tpn._is_params4bit(p) or tpn._is_packed_expert(p):
             p.__dict__.pop("_unsloth_tp_layout", None)
             setattr(p, _EP, ("4bit", shard.experts, ep))
 
@@ -498,6 +500,7 @@ def apply_expert_parallel(model, mesh = None):
         raise NotImplementedError(
             "Unsloth: expert parallel cannot be combined with tensor parallel / FSDP2."
         )
+    _lists().check_remote_layout(model, ep, rank, ep_mesh.mesh.tolist())
     blocks = tpn.moe_blocks_with_experts(model)
     sharded, kept, listed, fused_lists = [], [], [], []
     for block in blocks:
@@ -521,10 +524,13 @@ def apply_expert_parallel(model, mesh = None):
             kept.append((block, problem))
     for block, problem in kept:
         chain = tpn._experts_chain(block)
-        if chain and any(
-            getattr(p, tpn._EXPERT_PRELOAD, None) is not None
-            for p in chain[-1]._parameters.values()
-        ):
+        if (
+            chain
+            and any(
+                getattr(p, tpn._EXPERT_PRELOAD, None) is not None
+                for p in chain[-1]._parameters.values()
+            )
+        ) or any(_lists().is_remote(p) for p in block.parameters()):
             raise ValueError(
                 f"Unsloth: expert_parallel_loading kept only this rank's experts of "
                 f"{type(block).__name__}, but they cannot be sharded now ({problem}); load in full."
@@ -561,6 +567,7 @@ def apply_expert_parallel(model, mesh = None):
             # DDP averages the other gradients over the world; an expert's is the sum over its ep group's losses
             # (then over the replicas, ep_sync_expert_grads): / world is DDP's average.
             p.register_hook(lambda g, world = world: g / world)
+    tpn._drop_remote_device_map(model, ep, rank)
     for level in _levels(model):
         level.__dict__[_EP] = ep_mesh
         level.__dict__[_EP_REP] = rep_mesh
@@ -714,7 +721,7 @@ def _ep_save_entrypoints(level):
             ):
                 raise NotImplementedError(
                     "Unsloth: save_pretrained of the whole model under expert parallel would write only this "
-                    "rank's 4-bit expert stacks. Save the adapter (the PEFT model's save_pretrained or "
+                    "rank's quantized (4-bit or packed) expert stacks. Save the adapter (the PEFT model's save_pretrained or "
                     "trainer.save_model), or save from one process."
                 )
             # Only global rank 0 writes: only it receives the gathered tensors (the adapter's alone for a PEFT
