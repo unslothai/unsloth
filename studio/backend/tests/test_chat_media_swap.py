@@ -918,6 +918,44 @@ def test_image_swap_gate_is_not_a_chat_load_for_its_own_admission():
     asyncio.run(check())
 
 
+def test_transformers_swap_reuses_only_the_loading_accounts_token(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from core.inference import gpu_arbiter
+    from models.inference import LoadRequest, LoadResponse
+    from routes import inference
+    from utils.account_context import AccountContext, arun_as
+
+    backend = SimpleNamespace(active_model_name = "text", models = {"text": {}}, _proc = object())
+    monkeypatch.setattr(inference, "_peek_inference_backend", lambda: backend)
+    monkeypatch.setattr(
+        inference, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
+    )
+    monkeypatch.setattr(swap, "_transformers_load", None)
+    monkeypatch.setattr(gpu_arbiter, "owner_account", lambda owner: None)
+    reload = AsyncMock()
+    monkeypatch.setattr(inference, "load_model_gated", reload)
+    token = "one-off-test-token"
+    request = LoadRequest(model_path = "text", hf_token = token)
+    response = LoadResponse(status = "loaded", model = "text", display_name = "Text", inference = {})
+    swap.remember_transformers_load(request, response, True)
+    chat = swap.StudioChat(OWNER.username)
+    other = AccountContext("other", "other")
+
+    async def check():
+        snap = await chat.snapshot()
+        assert snap.launch.hf_token is None
+        assert token not in repr(snap)
+        await chat.reload(snap, None)
+        assert reload.await_args.args[0].hf_token == token
+        assert await arun_as(other, chat.snapshot()) is None
+        with pytest.raises(swap.SwapUnavailable):
+            await arun_as(other, chat.reload(snap, None))
+        assert reload.await_count == 1
+
+    asyncio.run(check())
+
+
 @pytest.mark.parametrize("scenario", ["normal", "kept_video", "retry", "queued_media"])
 def test_transformers_mixed_tools_then_image_only(monkeypatch, server_loop, scenario):
     from types import SimpleNamespace

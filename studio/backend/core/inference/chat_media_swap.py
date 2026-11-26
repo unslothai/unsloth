@@ -17,6 +17,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any, Awaitable, Callable, Optional
 
 from loggers import get_logger
+from pydantic import SecretStr
 
 logger = get_logger(__name__)
 
@@ -122,6 +123,7 @@ class ChatSnapshot:
     model: Optional[str] = None
     context_length: Optional[int] = None
     extra: dict = field(default_factory = dict)
+    credential: Optional[tuple[str, SecretStr]] = field(default = None, repr = False)
 
 
 _transformers_load: Optional[ChatSnapshot] = None
@@ -141,6 +143,15 @@ def _transformers_resident():
 def _transformers_identity():
     resident = _transformers_resident()
     return resident[0] if resident else None
+
+
+def _transformers_snapshot_for_account() -> Optional[ChatSnapshot]:
+    snap = _transformers_load
+    if snap is None or snap.identity != _transformers_identity():
+        return None
+    if snap.credential is not None and snap.credential[0] != _account_key():
+        return None
+    return snap
 
 
 def remember_transformers_load(request, response, user_initiated: bool) -> None:
@@ -171,6 +182,7 @@ def remember_transformers_load(request, response, user_initiated: bool) -> None:
     _transformers_load = ChatSnapshot(
         identity = identity,
         model = response.model,
+        credential = (_account_key(), SecretStr(request.hf_token)) if request.hf_token else None,
         launch = request.model_copy(
             update = {
                 # The loader may have inherited precision on its private request copy.
@@ -397,9 +409,7 @@ class StudioChat:
                 "for the image model."
             )
         if not llama.is_loaded:
-            if _transformers_load and _transformers_load.identity == _transformers_identity():
-                return _transformers_load
-            return None
+            return _transformers_snapshot_for_account()
         identity = loaded_identity()
         launch = launch_to_replay(llama)
         if identity is None or launch is None:
@@ -469,6 +479,12 @@ class StudioChat:
         if snap.extra.get("transformers"):
             from routes import inference
 
+            launch = snap.launch
+            if snap.credential is not None:
+                account_id, token = snap.credential
+                if account_id != _account_key():
+                    raise SwapUnavailable("Only the account that loaded chat can restore it.")
+                launch = launch.model_copy(update = {"hf_token": token.get_secret_value()})
             request = _in_process_request()
 
             def require_empty_chat_slot():
@@ -480,7 +496,7 @@ class StudioChat:
 
             inference.require_for_model_switch(request.scope, require_empty_chat_slot)
             await inference.load_model_gated(
-                snap.launch,
+                launch,
                 request,
                 self.subject,
                 user_initiated = snap.extra["user_loaded"],
@@ -653,10 +669,7 @@ def chat_can_swap() -> bool:
         llama = get_llama_cpp_backend()
         if llama.is_loaded:
             return not getattr(llama, "_native_grant_backed", False)
-        return (
-            _transformers_load is not None
-            and _transformers_load.identity == _transformers_identity()
-        )
+        return _transformers_snapshot_for_account() is not None
     except Exception:  # noqa: BLE001
         return False
 
