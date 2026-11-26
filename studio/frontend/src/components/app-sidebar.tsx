@@ -223,6 +223,7 @@ import {
   useSidebarOrganizationStore,
   applyManualOrder,
   showsInRecents,
+  insertIdAt,
   moveIdBy,
   placeIdAt,
   projectOrderScope,
@@ -2755,13 +2756,21 @@ export function AppSidebar() {
     selectRenderedChats();
   }, [selectAllPending, selectRenderedChats]);
 
-  const manualOrderWritesRef = useRef(new Map<string, SidebarDropPlace[]>());
+  const manualOrderWritesRef = useRef(new Map<string, {
+    placements: SidebarDropPlace[];
+    baseOrder: string[];
+  }>());
   const writeManualOrder = useCallback(
     (scope: string, ids: string[], place?: SidebarDropPlace) => {
       const writes = manualOrderWritesRef.current;
-      const placements = [...(writes.get(scope) ?? [])];
+      const previous = writes.get(scope);
+      const placements = [...(previous?.placements ?? [])];
       if (place) placements.push(place);
-      writes.set(scope, placements);
+      const write = {
+        placements,
+        baseOrder: previous?.baseOrder ?? useSidebarOrganizationStore.getState().manualOrder[scope] ?? [],
+      };
+      writes.set(scope, write);
       const slot =
         scope === RECENTS_ORDER_SCOPE
           ? "recents"
@@ -2774,8 +2783,8 @@ export function AppSidebar() {
                 : null;
       const query = slot ? chatRowSlots[slot]?.query : undefined;
       if (!slot || !query || !chatRowLists[slot]?.hasMore) {
-        writes.delete(scope);
         setManualOrder(scope, ids, placements);
+        writes.delete(scope);
         setPendingManualOrder(({ [scope]: _superseded, ...rest }) => rest);
         return;
       }
@@ -2783,9 +2792,9 @@ export function AppSidebar() {
       const shown = mergeManualOrderTail(ids, saved);
       setPendingManualOrder((pending) => ({ ...pending, [scope]: shown }));
       const settle = (order: string[]) => {
-        if (writes.get(scope) !== placements) return;
-        writes.delete(scope);
+        if (writes.get(scope) !== write) return;
         setManualOrder(scope, order, placements);
+        writes.delete(scope);
         setPendingManualOrder(({ [scope]: _settled, ...rest }) => rest);
       };
       // a partial order would rank every unloaded row ahead of the ones just arranged, so it is never
@@ -2803,10 +2812,19 @@ export function AppSidebar() {
       void readAll()
         .then((all) => {
           const current = useSidebarOrganizationStore.getState().manualOrder[scope] ?? [];
-          settle(settledManualOrder(ids, all, current));
+          const changed = current.length !== write.baseOrder.length ||
+            current.some((id, index) => id !== write.baseOrder[index]);
+          let order = ids;
+          if (changed && placements.length && customSectionIdOf(scope) !== null) {
+            order = applyManualOrder(ids, current, (id) => id);
+            for (const { id, targetId, edge } of placements) {
+              order = insertIdAt(order, id, targetId, edge);
+            }
+          }
+          settle(settledManualOrder(order, all, current));
         })
         .catch(() => {
-          if (writes.get(scope) !== placements) return;
+          if (writes.get(scope) !== write) return;
           writes.delete(scope);
           setPendingManualOrder(({ [scope]: _dropped, ...rest }) => rest);
           toast.error("Couldn't save the new order");

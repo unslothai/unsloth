@@ -13,6 +13,7 @@ import * as jsxRuntime from "react/jsx-runtime";
 import type * as ProgressiveRowsModule from "../src/components/progressive-rows.tsx";
 import type * as RowPagesModule from "../src/features/chat/hooks/use-sidebar-row-pages.ts";
 import type { SidebarDropPlace } from "../src/features/chat/lib/sidebar-drag.ts";
+import { applyManualOrder, insertIdAt } from "../src/features/chat/stores/sidebar-organization-store.ts";
 import {
   type RowPageResult,
   RowPager,
@@ -608,7 +609,7 @@ test("a drag in a partly loaded list shows its order at once and saves it once e
   assert.match(src, /applyManualOrder\(items, displayManualOrder\[scope\]/);
 });
 
-test("a superseding paged drag saves both placements with the full row order", async () => {
+test("superseding paged drags preserve the other browser's order", async () => {
   const src = readSrc("components/app-sidebar.tsx");
   const declaration = src.slice(
     src.indexOf("const writeManualOrder = useCallback("),
@@ -618,7 +619,8 @@ test("a superseding paged drag saves both placements with the full row order", a
     compilerOptions: { target: ts.ScriptTarget.ES2022 },
   });
   const scope = "section:research";
-  const all = ["a", "b", "c", "d", "e"];
+  const all = ["a", "b", "c", "d", "e", "f", "g"];
+  let current = all;
   const reads: ((ids: string[]) => void)[] = [];
   const saved: { ids: string[]; placements: SidebarDropPlace[] }[] = [];
   const deps = {
@@ -631,7 +633,9 @@ test("a superseding paged drag saves both placements with the full row order", a
     chatRowLists: { [scope]: { hasMore: true } },
     mergeManualOrderTail: rowQuery.mergeManualOrderTail,
     settledManualOrder: rowQuery.settledManualOrder,
-    useSidebarOrganizationStore: { getState: () => ({ manualOrder: { [scope]: all } }) },
+    useSidebarOrganizationStore: { getState: () => ({ manualOrder: { [scope]: current } }) },
+    applyManualOrder,
+    insertIdAt,
     readAllSidebarRowIds: () => new Promise<string[]>((resolve) => reads.push(resolve)),
     setPendingManualOrder: () => {},
     setManualOrder: (_scope: string, ids: string[], placements: SidebarDropPlace[]) =>
@@ -643,13 +647,17 @@ test("a superseding paged drag saves both placements with the full row order", a
     );
   const first = { id: "b", targetId: "a", edge: "top" } as const;
   const second = { id: "d", targetId: "c", edge: "top" } as const;
-  write(scope, ["b", "a", "c", "d"], first);
-  write(scope, ["b", "a", "d", "c"], second);
+  write(scope, ["b", "a", "c", "d", "e", "f"], first);
+  current = ["a", "b", "c", "d", "f", "e", "g"];
+  write(scope, ["b", "a", "d", "c", "e", "f"], second);
   reads[1](all);
   await setImmediate();
   reads[0](all);
   await setImmediate();
-  assert.deepEqual(saved, [{ ids: ["b", "a", "d", "c", "e"], placements: [first, second] }]);
+  assert.deepEqual(saved, [{
+    ids: ["b", "a", "d", "c", "f", "e", "g"],
+    placements: [first, second],
+  }]);
 });
 
 test("the full-list fallback finds a compare row through one of its pane threads", () => {
@@ -692,7 +700,7 @@ test("follow-ups that main got from the full list still happen with paged lists"
   assert.match(src, /if \(list\.rows\[list\.rows\.length - 1\]\?\.id === activeThreadId\) void list\.loadMore\(\);/);
   assert.match(src, /window\.addEventListener\(CHAT_HISTORY_UPDATED_EVENT, probe\);/);
   const write = src.slice(src.indexOf("const writeManualOrder = useCallback("));
-  assert.ok(write.indexOf("writes.set(scope, placements);") < write.indexOf("const slot ="));
+  assert.ok(write.indexOf("writes.set(scope, write);") < write.indexOf("const slot ="));
   // project activity follows chat activity, not only project edits
   const projects = readSrc("features/chat/hooks/use-chat-projects.ts");
   assert.match(projects, /const onActivity = \(\) => onChatActivity\(\);/);
@@ -831,7 +839,7 @@ test("Pinned and manual sections hold rows past their last loaded chat, and a dr
   const src = readSrc("components/app-sidebar.tsx");
   assert.match(src, /holdRowsPastLoadedChats\(\n\s*applyManualOrder\(rows, order, \(row\) => row\.id\),\n\s*order,\n\s*Boolean\(pinnedHasMore\),/);
   assert.match(src, /holdRowsPastLoadedChats\(\n\s*applyManualOrder\(list, order, \(row\) => row\.id\),\n\s*order,\n\s*sectionHasMore\.has\(section\.id\),/);
-  assert.match(src, /settle\(settledManualOrder\(ids, all, current\)\);/);
+  assert.match(src, /settle\(settledManualOrder\(order, all, current\)\);/);
 });
 
 test("a page asked for just before a history refresh is read by that refresh instead of dropped", async () => {
