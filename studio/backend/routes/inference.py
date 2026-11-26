@@ -41359,6 +41359,11 @@ def _names_studio_embedder(requested: str) -> Optional[str]:
         current = rag_embeddings.embedding_identity(model)
         if wanted in (current, _public_embedding_identity(current, model, label)):
             return model
+        # A client may echo a tag issued before tags carried the server; it names the current one.
+        if rag_config.is_connection_model(model):
+            legacy = rag_config.embedding_identity("connection", model)
+            if wanted in (legacy, _public_embedding_identity(legacy, model, label)):
+                return model
         return None
     for name in (model, repo, label, _public_embedding_name(repo)):
         if not name:
