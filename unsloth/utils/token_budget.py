@@ -550,7 +550,10 @@ def _router_aux_loss_active(trainer):
     return False
 
 
-def _exactness_blocker(trainer):
+def _exactness_blocker(trainer, step_loss = True):
+    """Why regrouping / splitting this trainer's rows would change the objective, or None. Shared with
+    pipeline parallel GA folding (models/pp_env.py), which passes step_loss = False: its loss always
+    divides by the window's num_items_in_batch."""
     args = getattr(trainer, "args", None)
     optim = str(getattr(args, "optim", "")).lower()
     # LOMO / AdaLomo and the *_layerwise optimizers update weights inside every backward.
@@ -559,7 +562,7 @@ def _exactness_blocker(trainer):
     # NEFTune scales its noise by the forward's sequence length, which a split shortens.
     if getattr(args, "neftune_noise_alpha", None):
         return "NEFTune noise depends on the sequence length of each forward"
-    if not _loss_uses_step_count(trainer):
+    if step_loss and not _loss_uses_step_count(trainer):
         return (
             "the loss is a per-micro-batch mean (no shared num_items_in_batch, or label smoothing)"
         )
