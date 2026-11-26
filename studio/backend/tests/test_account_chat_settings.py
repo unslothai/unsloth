@@ -980,6 +980,46 @@ def test_sidebar_sections_accept_ids_already_valid_in_chat_history(client):
     assert saved["rowOrder"]["research"] == [thread_id, "existing"]
 
 
+def test_sidebar_sections_return_and_accept_a_large_order_merged_from_two_edits(client):
+    path = "/chat/sidebar-sections"
+    rows = [f"row-{i}" for i in range(49_999)]
+    initial = client.post(
+        path,
+        json = {
+            "operationId": "initial-order",
+            "base": None,
+            "layout": {
+                "sections": {"research": {"name": "Research", "sort": "manual"}},
+                "rowOrder": {"research": rows},
+            },
+        },
+    )
+    assert initial.is_success
+    common = initial.json()
+
+    for row in ("first", "second"):
+        response = client.post(
+            path,
+            json = {
+                "operationId": row,
+                "base": common,
+                "layout": {**common, "rowOrder": {"research": [*rows, row]}},
+            },
+        )
+        assert response.is_success
+    saved = client.get(path).json()
+    assert saved["rowOrder"]["research"] == [*rows, "first", "second"]
+
+    # A client must be able to use the combined order as the base for its next edit.
+    edited = {**saved, "sections": {"research": {"name": "Notes", "sort": "manual"}}}
+    response = client.post(
+        path,
+        json = {"operationId": "rename", "base": saved, "layout": edited},
+    )
+    assert response.is_success
+    assert response.json() == edited
+
+
 @pytest.mark.parametrize("delete_section", [True, False], ids = ["delete-section", "unfile-row"])
 def test_sidebar_sections_concurrent_clients_keep_unrelated_edits(client, delete_section):
     from concurrent.futures import ThreadPoolExecutor

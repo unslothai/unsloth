@@ -15,8 +15,6 @@ router = APIRouter(dependencies = [Depends(get_current_subject)])
 SectionId = Annotated[str, Field(min_length = 1, max_length = 1024)]
 # Existing chat and project IDs can be longer than the IDs generated for sections.
 RowId = Annotated[str, Field(min_length = 1)]
-RowOrder = Annotated[list[RowId], Field(max_length = 50_000)]
-SectionOrder = Annotated[list[SectionId], Field(max_length = 50_000)]
 
 
 class Section(BaseModel):
@@ -32,8 +30,9 @@ class Layout(BaseModel):
     sectionByChatId: dict[RowId, SectionId] = Field(default_factory = dict)
     sectionByProjectId: dict[RowId, SectionId] = Field(default_factory = dict)
     sectionByPageId: dict[RowId, SectionId] = Field(default_factory = dict)
-    rowOrder: dict[SectionId, RowOrder] = Field(default_factory = dict)
-    sectionOrder: SectionOrder = Field(default_factory = list)
+    # Merging two edits can make a saved order larger than either edited snapshot.
+    rowOrder: dict[SectionId, list[RowId]] = Field(default_factory = dict)
+    sectionOrder: list[SectionId] = Field(default_factory = list)
 
 
 class OrderMove(BaseModel):

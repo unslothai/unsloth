@@ -148,8 +148,8 @@ test("a validation-rejected sidebar edit does not block the corrected layout", a
       : Response.json(edit.layout);
   });
   await setImmediate();
-  const rejected = store.getState().createCustomSection("Too many rows")!;
-  const rows = Array.from({ length: 50_001 }, (_, index) => `row-${index}`);
+  const rejected = store.getState().createCustomSection("Rejected section")!;
+  const rows = ["row-a", "row-b"];
   store.getState().setChatsSection(rows, rejected);
   store.getState().setManualOrder(stores.customSectionScope(rejected), rows, [
     { id: rows[0], targetId: rows[1], edge: "top" },
@@ -157,7 +157,7 @@ test("a validation-rejected sidebar edit does not block the corrected layout", a
   store.getState().moveSection("projects", "pinned", "top");
   await setImmediate();
   assert.equal(posts.length, 1);
-  assert.equal(posts[0].layout.rowOrder[rejected].length, 50_001);
+  assert.deepEqual(posts[0].layout.rowOrder[rejected], rows);
 
   store.getState().deleteCustomSection(rejected);
   const corrected = store.getState().createCustomSection("Research")!;
