@@ -210,15 +210,6 @@ def test_fast_inference_is_refused_at_load_under_ep(clean_env):
     assert "fast_inference = False" in message and not calls, message
 
 
-def _transformers_4():
-    import transformers
-    from packaging.version import Version
-    return Version(transformers.__version__).major < 5
-
-
-_TRANSFORMERS_4 = _transformers_4()
-
-
 def _hunyuan_meta():
     """Hunyuan-A13B's layout shrunk: 64 experts, a top-k per layer, a shared expert."""
     from transformers import AutoConfig, AutoModelForCausalLM
@@ -247,11 +238,9 @@ def test_hunyuan_v1_moe_is_not_blocked_by_its_default_config():
     assert caps._ep_blocker("hunyuan_v1_moe", 2) == ""
     assert "hunyuan_v1_moe" not in caps._EP_BLOCKED_FAMILIES
     model = _hunyuan_meta()
-    if _TRANSFORMERS_4:  # unfused per-expert modules there: every family is refused alike
-        assert "transformers 4.x" in caps._ep_blocker(model, 2)
-    else:
-        assert caps._ep_blocker(model, 2) == ""
-        caps.check_layout(_ep_layout(), None, model, types.SimpleNamespace(packing = False))
+    # transformers 4.x keeps per-expert modules: they shard as a per-expert list (models/ep_expert_lists.py).
+    assert caps._ep_blocker(model, 2) == ""
+    caps.check_layout(_ep_layout(), None, model, types.SimpleNamespace(packing = False))
     assert "refused" not in caps._moe_note("hunyuan_v1_moe", "lora", False, "ep")
     assert "per-expert Linear lists" in caps._moe_note("gpt_oss", "qlora", False, "ep")
     assert "refused" not in caps._moe_note("gpt_oss", "lora", False, "ep")

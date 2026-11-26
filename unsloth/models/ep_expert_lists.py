@@ -1,0 +1,457 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+"""Expert parallel over per-expert `nn.ModuleList` experts: the transformers 4.x MoE layout (Mixtral, Qwen2-MoE,
+Qwen3-MoE, OLMoE, DeepSeek-V3, GLM4-MoE, ...) and remote DeepSeek-style ports, where the block itself loops over
+`self.experts[e](rows)` instead of making one fused experts call.
+
+Each rank keeps only experts [lo, hi) under their global indices (state dict names unchanged). The block forward runs
+twice: the first pass replaces every expert call with a recorder (its rows kept, autograd attached, zeros returned),
+the recorded rows go to their experts' ranks in one all-to-all, the owners run their real expert modules (LoRA and
+4-bit layers included), the outputs come back in a second all-to-all, and the second pass replays them in call order
+so the block's own weighting and combine run unchanged. The RNG state is restored between the passes (router jitter,
+dropout), and every rank enters both exchanges and their backward even when it routes or receives nothing."""
+
+import collections
+import contextlib
+import copy
+import functools
+import itertools
+import operator
+
+import torch
+import torch.nn as nn
+
+LIST = "list"  # first item of the _EP tag on a per-expert parameter: (LIST, experts, ep)
+_SHARD = "_unsloth_ep_expert_list"
+_UNFUSED = "unfused per-expert modules (transformers 4.x layout)"
+
+
+def _ep():
+    from . import ep_native
+    return ep_native
+
+
+def _tpn():
+    from . import tp_native
+    return tp_native
+
+
+def is_listed(block):
+    return isinstance(block.__dict__.get(_SHARD), _ListShard)
+
+
+def list_shard_problem(block, ep = None):
+    """Why expert parallel cannot shard `block`'s per-expert ModuleList by index, None when it can."""
+    experts = block._modules.get("experts")
+    if type(experts) is not nn.ModuleList:
+        return "no per-expert ModuleList experts"
+    E = len(experts)
+    if E < 2:
+        return f"{E} experts"
+    if isinstance(ep, int) and ep > E:
+        return f"{E} experts over {ep} ranks"
+    kinds = {type(m) for m in experts}
+    if len(kinds) != 1 or not any(True for _ in experts[0].parameters()):
+        return "experts of different types, or without parameters"
+    shapes = {tuple((n, tuple(p.shape)) for n, p in m.named_parameters()) for m in experts}
+    if len(shapes) != 1:
+        return "experts with different parameter shapes"
+    if any(type(b) is not torch.Tensor and b is not None for m in experts for b in m.buffers()):
+        return "expert buffers"
+    if getattr(block, "ep_size", 1) not in (1, None):
+        return f"the block runs its own expert parallel (ep_size = {block.ep_size})"
+    return None
+
+
+class _ListShard:
+    """This rank owns global experts [lo, hi) of one block."""
+
+    def __init__(self, block, lo, hi, per_rank, experts, group, ep):
+        self.block, self.lo, self.hi, self.per_rank = block, lo, hi, per_rank
+        self.experts, self.group, self.ep = experts, group, ep
+        self.calls = 0  # block forwards that went through the exchange (engagement count)
+
+
+class _Proxy:
+    """experts[e] inside the block forward: records (pass 1) or replays (pass 2) one expert call."""
+
+    __slots__ = ("_owner", "_e")
+
+    def __init__(self, owner, e):
+        self._owner, self._e = owner, e
+
+    def __call__(self, x, *args, **kwargs):
+        if args or kwargs:
+            raise RuntimeError(
+                f"Unsloth: expert parallel calls each expert with its rows only, but "
+                f"{self._owner._block_name} passed {len(args)} more arguments / {sorted(kwargs)}."
+            )
+        return self._owner._call(self._e, x)
+
+    def __getattr__(self, name):
+        raise RuntimeError(
+            f"Unsloth: under expert parallel this rank holds only some experts, but {self._owner._block_name}.forward "
+            f"read `{name}` of expert {self._e} directly (a fused or stacked path) instead of calling it. Train "
+            "without expert parallel, or with a layout whose block calls each expert."
+        )
+
+
+class ExpertList(nn.Module):
+    """A block's routed experts under expert parallel: this rank's experts only, kept under their global indices.
+    len() and indexing cover all E experts; inside the block forward an index returns a call recorder / replayer,
+    outside it only this rank's experts can be indexed."""
+
+    def __init__(self, local, experts, block_name):
+        super().__init__()
+        for e, module in local.items():
+            self.add_module(str(e), module)
+        self.num_experts = experts
+        self._block_name = block_name
+        self._mode = None  # None, ("record", calls) or ("replay", outputs, cursor)
+
+    def __len__(self):
+        return self.num_experts
+
+    def _index(self, i):
+        e = operator.index(i)
+        if e < 0:
+            e += self.num_experts
+        if not 0 <= e < self.num_experts:
+            raise IndexError(f"expert index {e} out of range ({self.num_experts} experts)")
+        return e
+
+    def __getitem__(self, i):
+        if isinstance(i, slice):
+            raise TypeError("Unsloth: expert parallel experts cannot be sliced")
+        e = self._index(i)
+        if self._mode is not None:
+            return _Proxy(self, e)
+        module = self._modules.get(str(e))
+        if module is None:
+            raise IndexError(f"Unsloth: expert {e} is held by another expert parallel rank")
+        return module
+
+    def __iter__(self):
+        if self._mode is not None:
+            return iter([_Proxy(self, e) for e in range(self.num_experts)])
+        return iter(self._modules.values())
+
+    def forward(self, *args, **kwargs):
+        raise RuntimeError(
+            "Unsloth: expert parallel experts are called one by one (experts[e](rows))."
+        )
+
+    def _call(self, e, x):
+        mode = self._mode
+        if mode[0] == "record":
+            mode[1].append((e, x))
+            return torch.zeros_like(x)
+        outputs, cursor = mode[1], mode[2]
+        if cursor[0] >= len(outputs):
+            raise RuntimeError(_replay_message(self, e, x, None))
+        want, y = outputs[cursor[0]]
+        if want != e or y.shape[0] != x.reshape(-1, x.shape[-1]).shape[0]:
+            raise RuntimeError(_replay_message(self, e, x, (want, y.shape[0])))
+        cursor[0] += 1
+        return y.reshape(*x.shape[:-1], y.shape[-1])
+
+
+def _replay_message(lst, e, x, recorded):
+    return (
+        f"Unsloth: expert parallel replays {lst._block_name}'s expert calls in the order the first pass made them, "
+        f"but the second pass called expert {e} with {x.shape[0]} rows where the first called "
+        f"{recorded}. Its routing is not deterministic for one input (a sampling router?): train it without "
+        "expert parallel."
+    )
+
+
+def _rng_devices(args, kwargs):
+    for value in (*args, *kwargs.values()):
+        if isinstance(value, torch.Tensor) and value.device.type == "cuda":
+            return [value.device]
+    return []
+
+
+def _detach_inplace(value):
+    # The first pass must not edit the caller's tensors (Mixtral's router jitter multiplies hidden_states in place).
+    if isinstance(value, torch.Tensor) and value.is_floating_point():
+        return value.clone()
+    return value
+
+
+def _exchange(shard, calls, like):
+    """Rows of every recorded call to its expert's rank, the experts run there, the outputs back: one output per
+    call, in call order. Collective over the ep group."""
+    import torch.distributed as dist
+
+    epn = _ep()
+    group, ep, per_rank = shard.group, shard.ep, shard.per_rank
+    width = calls[0][1].shape[-1] if calls else like.shape[-1]
+    rows = [x.reshape(-1, x.shape[-1]) for _, x in calls]
+    owners = [min(e // per_rank, ep - 1) for e, _ in calls]
+    order = sorted(
+        range(len(calls)), key = lambda i: owners[i]
+    )  # stable: call order within a destination
+    send = [0] * ep
+    for i in order:
+        send[owners[i]] += rows[i].shape[0]
+    # counts and a "the block reached its experts" flag per destination, in one exchange
+    flag = int(not calls and like.reshape(-1, like.shape[-1]).shape[0] > 0)
+    info = torch.tensor([[n, flag] for n in send], dtype = torch.int64, device = like.device).reshape(
+        -1
+    )
+    got = torch.empty_like(info)
+    dist.all_to_all_single(got, info, group = group)
+    got = got.view(ep, 2).tolist()
+    recv = [n for n, _ in got]
+    if any(f for _, f in got) or flag:
+        raise RuntimeError(
+            f"Unsloth: {shard.block.__class__.__name__}.forward computed its experts without calling them one by "
+            "one (a fused or decode-only path), which under expert parallel holds only this rank's experts. "
+            "Disable that path or train without expert parallel."
+        )
+    if calls:
+        x_send = torch.cat([rows[i] for i in order])
+        e_send = torch.cat(
+            [
+                torch.full((rows[i].shape[0],), calls[i][0], dtype = torch.int64, device = like.device)
+                for i in order
+            ]
+        )
+    else:
+        x_send = like.reshape(-1, width)[:0]
+        e_send = torch.zeros(0, dtype = torch.int64, device = like.device)
+    got_e = epn._a2a(e_send, send, recv, group)
+    (got_x,) = epn._Exchange.apply(send, recv, group, x_send)
+    lst = shard.block._modules["experts"]
+    lo, hi = shard.lo, shard.hi
+    local = got_e - lo
+    perm = torch.argsort(local, stable = True)
+    counts = torch.bincount(local, minlength = hi - lo).tolist() if local.numel() else [0] * (hi - lo)
+    tie = got_x[
+        :0
+    ].sum()  # keeps this rank's backward exchanges in the graph when it receives nothing
+    pieces, start = [], 0
+    for j, count in enumerate(counts):
+        if count == 0:
+            continue  # no rank routed to it: its gradients stay None, as in one process
+        expert = lst._modules[str(lo + j)]
+        pieces.append(
+            (
+                perm[start : start + count],
+                expert(got_x.index_select(0, perm[start : start + count])),
+            )
+        )
+        start += count
+    if pieces:
+        out_width = pieces[0][1].shape[-1]
+        y_got = pieces[0][1].new_zeros((got_x.shape[0], out_width))
+        for index, y in pieces:
+            y_got = y_got.index_add(0, index, y)
+    else:
+        y_got = got_x.new_zeros((got_x.shape[0], width))
+    y_got = y_got + tie.to(y_got.dtype)
+    (y_back,) = epn._Exchange.apply(recv, send, group, y_got)
+    outputs = [None] * len(calls)
+    start = 0
+    for i in order:
+        n = rows[i].shape[0]
+        outputs[i] = (calls[i][0], y_back[start : start + n])
+        start += n
+    return outputs, y_back
+
+
+def _list_forward(shard, prior):
+    @functools.wraps(prior)
+    def forward(*args, **kwargs):
+        lst = shard.block._modules["experts"]
+        like = next(
+            (
+                v
+                for v in (*args, *kwargs.values())
+                if isinstance(v, torch.Tensor) and v.is_floating_point()
+            ),
+            None,
+        )
+        if like is None:
+            raise RuntimeError(
+                "Unsloth: expert parallel found no hidden states in the MoE block call."
+            )
+        calls = []
+        with torch.random.fork_rng(devices = _rng_devices(args, kwargs)):
+            lst._mode = ("record", calls)
+            try:
+                prior(
+                    *(_detach_inplace(a) for a in args),
+                    **{k: _detach_inplace(v) for k, v in kwargs.items()},
+                )
+            finally:
+                lst._mode = None
+        outputs, y_back = _exchange(shard, calls, like)
+        shard.calls += 1
+        cursor = [0]
+        lst._mode = ("replay", outputs, cursor)
+        try:
+            result = prior(*args, **kwargs)
+        finally:
+            lst._mode = None
+        if cursor[0] != len(outputs):
+            raise RuntimeError(
+                f"Unsloth: expert parallel recorded {len(outputs)} expert calls of {type(shard.block).__name__} but "
+                f"the second pass made {cursor[0]}; its routing is not deterministic for one input."
+            )
+        if not outputs and torch.is_grad_enabled() and y_back.requires_grad:
+            # Nothing routed from this rank: tie the (empty) return exchange in, so its backward runs here too.
+            if isinstance(result, tuple):
+                result = (result[0] + y_back[:0].sum().to(result[0].dtype), *result[1:])
+            else:
+                result = result + y_back[:0].sum().to(result.dtype)
+        return result
+
+    forward._unsloth_ep_expert_list = True
+    return _ep()._compiler_disable(forward)
+
+
+def shard_expert_list(block, mesh, rank, ep):
+    """Keep experts [lo, hi) of `block` on this rank (global names), tag their parameters, and route the block
+    forward through the record / exchange / replay passes."""
+    epn = _ep()
+    experts = block._modules["experts"]
+    E = len(experts)
+    per_rank = -(-E // ep)
+    lo = min(rank * per_rank, E)
+    hi = min(lo + per_rank, E)
+    local = {e: experts[e] for e in range(lo, hi)}
+    lst = ExpertList(local, E, type(block).__name__)
+    # One expert's structure on meta (every rank, also one holding none): gathers and saves lay out by it.
+    lst.__dict__["_template"] = _meta_copy(experts[0])
+    block._modules["experts"] = lst
+    shard = _ListShard(block, lo, hi, per_rank, E, mesh.get_group(), ep)
+    for p in lst.parameters():
+        setattr(p, epn._EP, (LIST, E, ep))
+    prior = block.__dict__.get("forward", block.forward)
+    block.forward = _list_forward(shard, prior)
+    block.__dict__[_SHARD] = shard
+    return shard
+
+
+def gather_list_state(
+    model,
+    group,
+    dst = None,
+    adapter = False,
+):
+    """{name: tensor} of every expert's parameters of every listed block (the adapter's only when `adapter`), from
+    all ep ranks: one gather per block and dtype (each rank sends its expert slots in the same layout, a missing
+    expert as zeros). Only `dst` (a global rank) receives when given; None elsewhere. Collective over the group."""
+    import torch.distributed as dist
+
+    epn = _ep()
+    names = {id(m): n for n, m in model.named_modules()}
+    receives = dst is None or dist.get_rank() == dst
+    merged = {} if receives else None
+    for block in list_blocks(model):
+        shard, lst = block.__dict__[_SHARD], block._modules["experts"]
+        prefix = names[id(lst)]
+        template = lst.__dict__["_template"]
+        entries = [
+            (j, suffix, meta)
+            for j in range(shard.per_rank)
+            for suffix, meta in template.named_parameters()
+            if not adapter or meta.requires_grad or "lora_" in suffix
+        ]
+        if not adapter and any(_tpn()._is_params4bit(p) for p in lst.parameters()):
+            raise NotImplementedError(
+                "Unsloth: save_pretrained of the whole model under expert parallel would gather 4-bit expert "
+                "weights; save the adapter (the PEFT model's save_pretrained or trainer.save_model)."
+            )
+        device = next((p.device for p in lst.parameters()), None) or epn._group_device(group)
+        for dtype in sorted({m.dtype for _, _, m in entries}, key = str):
+            items = [x for x in entries if x[2].dtype == dtype]
+            local = []
+            for j, suffix, meta in items:
+                e = shard.lo + j
+                if e < shard.hi:
+                    local.append(
+                        lst._modules[str(e)].get_parameter(suffix).detach().reshape(-1).to(device)
+                    )
+                else:
+                    local.append(torch.zeros(meta.numel(), dtype = dtype, device = device))
+            flat = torch.cat(local) if local else torch.zeros(0, dtype = dtype, device = device)
+            if dst is None:
+                parts = [torch.empty_like(flat) for _ in range(shard.ep)]
+                dist.all_gather(parts, flat, group = group)
+            else:
+                parts = [torch.empty_like(flat) for _ in range(shard.ep)] if receives else None
+                dist.gather(flat, parts, dst = dst, group = group)
+            if not receives:
+                continue
+            for s, part in enumerate(parts):
+                offset = 0
+                for j, suffix, meta in items:
+                    e, n = s * shard.per_rank + j, meta.numel()
+                    if e < shard.experts:
+                        value = part[offset : offset + n].view(meta.shape)
+                        merged[f"{prefix}.{e}.{suffix}"] = (
+                            value.cpu() if dst is not None else value.clone()
+                        )
+                    offset += n
+    return merged
+
+
+def list_blocks(model):
+    return [m for m in model.modules() if is_listed(m)]
+
+
+_HOOK_DICTS = (
+    "_forward_hooks",
+    "_forward_hooks_with_kwargs",
+    "_forward_hooks_always_called",
+    "_forward_pre_hooks",
+    "_forward_pre_hooks_with_kwargs",
+    "_backward_hooks",
+    "_backward_pre_hooks",
+    "_state_dict_hooks",
+    "_state_dict_pre_hooks",
+    "_load_state_dict_pre_hooks",
+    "_load_state_dict_post_hooks",
+)
+
+
+def _meta_copy(module):
+    """The structure of `module` (an expert of this rank) with meta tensors and no hooks: a stand-in for an expert
+    another rank holds, so a save that selects tensors by module (PEFT >= 0.21) keeps that expert's keys."""
+    memo = {}
+    for t in itertools.chain(module.parameters(), module.buffers()):
+        meta = torch.empty(t.shape, dtype = t.dtype, device = "meta")
+        memo[id(t)] = (
+            nn.Parameter(meta, requires_grad = t.requires_grad)
+            if isinstance(t, nn.Parameter)
+            else meta
+        )
+    for m in module.modules():
+        for name in _HOOK_DICTS:
+            hooks = m.__dict__.get(name)
+            if hooks is not None:
+                memo[id(hooks)] = collections.OrderedDict()
+    return copy.deepcopy(module, memo)
+
+
+@contextlib.contextmanager
+def remote_experts_for_save(model):
+    """On the writing rank, during save_pretrained with the gathered state dict: every other rank's experts present
+    as meta stand-ins under their global indices, removed again after."""
+    added = []
+    try:
+        for block in list_blocks(model):
+            lst = block._modules["experts"]
+            template = lst.__dict__["_template"]
+            for e in range(lst.num_experts):
+                if str(e) not in lst._modules:
+                    lst._modules[str(e)] = _meta_copy(template)
+                    added.append((lst, str(e)))
+        yield
+    finally:
+        for lst, key in added:
+            lst._modules.pop(key, None)

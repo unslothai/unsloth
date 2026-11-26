@@ -1917,10 +1917,15 @@ def _ep_blocker(
         return _family_ep_blocker(family, load_in_4bit)
     try:
         from .models import ep_native, tp_native
+
         if ep_native.is_expert_parallel(model):
             return ""
+        from .models import ep_expert_lists
+
         problems = [
-            tp_native.expert_shard_problem(block, ep)
+            None
+            if ep_expert_lists.list_shard_problem(block, ep) is None
+            else tp_native.expert_shard_problem(block, ep)
             for block in tp_native.moe_blocks_with_experts(model)
         ]
     except Exception:
