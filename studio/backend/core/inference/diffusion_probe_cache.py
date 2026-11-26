@@ -26,6 +26,7 @@ _PROBE_SOURCES = (
     "diffusion_transformer_quant.py",
     "diffusion_torchao_patches.py",
     "diffusion_native_quant.py",
+    "diffusion_fp8_unit_scale.py",
 )
 
 _LOCK = threading.Lock()

@@ -669,6 +669,7 @@ def test_an_oom_is_recognised_however_it_is_spelled():
 def test_an_unusable_scheme_names_the_fault_the_user_can_actually_fix(monkeypatch):
     # The selector folds three faults into one None, and explicit schemes fail CLOSED, so 409 must say which.
     monkeypatch.setattr(tq, "_TORCHAO_UNAVAILABLE", (None,))
+    monkeypatch.setattr(tq, "_fp8_rowwise_gap", lambda: None)
     assert tq.explain_unusable_scheme("z-image-turbo", "fp8") == (
         "'fp8' is not usable for family 'z-image-turbo' on this GPU"
     )
@@ -684,6 +685,30 @@ def test_an_unusable_scheme_names_the_fault_the_user_can_actually_fix(monkeypatc
     assert "cannot import name 'ScalingType'" in broken
     assert "not a limit of the GPU" in broken
     assert "measured accuracy gate" in tq.explain_unusable_scheme("qwen-image", "mxfp8")
+
+
+def test_fp8_refusal_names_the_missing_rowwise_kernel_not_the_gpu(monkeypatch):
+    from core.inference import diffusion_fp8_unit_scale as us
+
+    monkeypatch.setattr(tq, "_TORCHAO_UNAVAILABLE", (None,))
+    monkeypatch.setattr(us, "_FALLBACK_CHECKED", {0: True})
+    monkeypatch.delenv(us.UNIT_SCALE_ENV, raising = False)
+    failed = tq.explain_unusable_scheme("flux.2-klein", "fp8")
+    assert "no row-wise fp8 matmul" in failed and "failed its smoke test" in failed
+    assert "not a limit of the GPU" in failed and "on this GPU" not in failed
+    monkeypatch.setenv(us.UNIT_SCALE_ENV, "0")
+    off = tq.explain_unusable_scheme("flux.2-klein", "fp8")
+    assert f"{us.UNIT_SCALE_ENV}=0" in off and "not a limit of the GPU" in off
+    # Unprobed in this process (the child probed): the kill switch on Windows still names the gap.
+    monkeypatch.setattr(us, "_FALLBACK_CHECKED", {})
+    monkeypatch.setattr(tq._sys, "platform", "win32")
+    assert "Windows PyTorch builds have no row-wise fp8 matmul" in tq.explain_unusable_scheme(
+        "wan2.2-ti2v-5b", "fp8"
+    )
+    monkeypatch.setattr(tq._sys, "platform", "linux")
+    assert "row-wise" not in tq.explain_unusable_scheme("wan2.2-ti2v-5b", "fp8")
+    # Other schemes keep the generic text.
+    assert "row-wise" not in tq.explain_unusable_scheme("flux.2-klein", "int8")
 
 
 def test_torchao_unavailable_reason_is_resolved_once_and_covers_the_stub(monkeypatch):
