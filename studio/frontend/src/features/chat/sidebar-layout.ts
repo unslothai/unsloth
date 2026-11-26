@@ -29,6 +29,29 @@ export function sidebarLayout(state: SidebarOrganizationState): SidebarLayout {
   };
 }
 
+export function compactSidebarEdit(base: SidebarLayout, layout: SidebarLayout) {
+  const changes = { ...layout };
+  const previous = {
+    ...base,
+    rowOrder: Object.fromEntries(
+      Object.entries(base.rowOrder).filter(([section]) => Object.hasOwn(layout.rowOrder, section)),
+    ),
+  };
+  for (const field of ["sectionByChatId", "sectionByProjectId", "sectionByPageId"] as const) {
+    const before = base[field];
+    const after = layout[field];
+    changes[field] = Object.fromEntries(Object.entries(after).filter(([row, section]) => before[row] !== section));
+    previous[field] = Object.fromEntries(Object.entries(before).filter(([row, section]) => {
+      // Deleting a section already clears its assignments, including rows unseen by this browser.
+      if (Object.hasOwn(base.sections, section) && !Object.hasOwn(layout.sections, section) && !Object.hasOwn(after, row)) {
+        return false;
+      }
+      return after[row] !== section;
+    }));
+  }
+  return { base: previous, layout: changes };
+}
+
 export function applySidebarLayout(state: SidebarOrganizationState, layout: SidebarLayout) {
   const sections = Object.entries(layout.sections).map(([id, section]) => ({ ...section, id }));
   const sectionOrder = resolveSectionOrder(layout.sectionOrder, sections);

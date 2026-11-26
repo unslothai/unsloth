@@ -180,6 +180,56 @@ for (const status of [413, 422]) {
     (t) => checkRejectedSidebarEdit(t, status));
 }
 
+test("a merged layout can be reduced when its saved baseline exceeds the request limit", async (t) => {
+  const gone = "research-section-with-a-uuid";
+  const retained = "retained-section-with-a-uuid";
+  const rowIds = Array.from({ length: 10_000 }, (_, index) =>
+    `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`,
+  );
+  const initial = {
+    ...layouts.sidebarLayout(store.getInitialState()),
+    sections: {
+      [gone]: { name: "Research", sort: "manual" as const },
+      [retained]: { name: "Inbox", sort: "manual" as const },
+    },
+    sectionByChatId: { ...Object.fromEntries(rowIds.map((id) => [id, gone])), inbox: retained },
+    sectionByProjectId: { project: gone },
+    sectionByPageId: { page: gone },
+    rowOrder: { [gone]: rowIds, [retained]: ["inbox"] },
+    sectionOrder: ["pinned", gone, retained, "projects"],
+  };
+  const corrected = {
+    ...initial,
+    sections: { [retained]: initial.sections[retained] },
+    sectionByChatId: { inbox: retained },
+    sectionByProjectId: {},
+    sectionByPageId: {},
+    rowOrder: { [retained]: ["inbox"] },
+    sectionOrder: ["pinned", retained, "projects"],
+  };
+  const posts: Edit[] = [];
+  mount(t, async (_url, init) => {
+    if (init.method !== "POST") return Response.json(initial);
+    const body = String(init.body);
+    posts.push(JSON.parse(body));
+    return Buffer.byteLength(body) > 1024 * 1024
+      ? new Response(null, { status: 413 })
+      : Response.json(corrected);
+  });
+  await setImmediate();
+
+  store.getState().deleteCustomSection(gone);
+  await setImmediate();
+  assert.equal(posts.length, 2);
+  assert.equal(posts[1].operationId, posts[0].operationId);
+  assert.deepEqual(posts[1].base?.sectionByChatId, {});
+  assert.deepEqual(posts[1].base?.sectionByProjectId, {});
+  assert.deepEqual(posts[1].base?.sectionByPageId, {});
+  assert.deepEqual(posts[1].base?.rowOrder, { [retained]: ["inbox"] });
+  assert.deepEqual(JSON.parse(JSON.stringify(layouts.sidebarLayout(store.getState()))), corrected);
+  assert.equal(store.getState().pendingLayoutEdit, undefined);
+});
+
 test("explicit unpin placements sync even if they reuse the saved ranks", async (t) => {
   const section = "research";
   const scope = stores.customSectionScope(section);
@@ -198,7 +248,9 @@ test("explicit unpin placements sync even if they reuse the saved ranks", async 
     if (init.method !== "POST") return Response.json(initial);
     const post: Edit = JSON.parse(String(init.body));
     posts.push(post);
-    if (posts.length === 3) return new Response(null, { status: 413 });
+    if (posts.length === 3 || post.operationId === posts[2]?.operationId) {
+      return new Response(null, { status: 413 });
+    }
     return posts.length === 1 ? first : Response.json(post.layout);
   });
   await setImmediate();
@@ -218,7 +270,8 @@ test("explicit unpin placements sync even if they reuse the saved ranks", async 
 
   store.getState().setManualOrder(scope, rows, [firstMove]);
   await setImmediate();
-  assert.equal(posts.length, 3);
+  assert.equal(posts.length, 4);
+  assert.equal(posts[2].operationId, posts[3].operationId);
   assert.equal(store.getState().pendingLayoutEdit, undefined);
   assert.deepEqual(store.getState().orderMoves, [{ ...firstMove, sectionId: section }]);
 });

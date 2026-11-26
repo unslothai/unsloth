@@ -18,7 +18,7 @@ import {
 } from "@/lib/account-transition";
 import { isBackendDownForDesktopUpdate } from "@/lib/desktop-update-activity";
 import { createNavigationNonce } from "@/lib/navigation-nonce";
-import { applySidebarLayout, observeSidebarLayout, sidebarLayout, type SidebarLayout } from "../sidebar-layout";
+import { applySidebarLayout, compactSidebarEdit, observeSidebarLayout, sidebarLayout, type SidebarLayout } from "../sidebar-layout";
 import {
   reconcilePersistedSidebarOrganization,
   useSidebarOrganizationStore as store,
@@ -82,21 +82,28 @@ export function useSidebarSectionsSync(): void {
         if (edit !== state.pendingLayoutEdit || (!edit && state.orderMoves?.length)) {
           store.setState({ pendingLayoutEdit: edit, orderMoves: undefined });
         }
-        const response = await authFetch("/api/chat/sidebar-sections", {
+        const fetchLayout = (body?: string) => authFetch("/api/chat/sidebar-sections", {
           signal: controller.signal,
-          ...(edit && {
+          ...(body && {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              operationId: edit.id,
-              base: base ? JSON.parse(base) : null,
-              layout: JSON.parse(sent),
-              orderMoves: edit.orderMoves,
-            }),
+            body,
           }),
         }, { beforeRetry: () => {
           if (!current()) throw new Error("Sidebar session changed");
         } });
+        const payload = edit && {
+          operationId: edit.id,
+          base: base ? (JSON.parse(base) as SidebarLayout) : null,
+          layout: JSON.parse(sent) as SidebarLayout,
+          orderMoves: edit.orderMoves,
+        };
+        const body = payload && JSON.stringify(payload);
+        let response = await fetchLayout(body);
+        if (response.status === 413 && body && payload?.base && current()) {
+          const smaller = JSON.stringify({ ...payload, ...compactSidebarEdit(payload.base, payload.layout) });
+          if (smaller.length < body.length) response = await fetchLayout(smaller);
+        }
         if (!response.ok) {
           if ((response.status === 413 || response.status === 422) && edit && current()) {
             reconcilePersistedSidebarOrganization();
