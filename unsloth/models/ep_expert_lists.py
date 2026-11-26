@@ -336,14 +336,19 @@ def _exchange(shard, calls, like):
         send[owners[i]] += rows[i].shape[0]
     # counts and a "the block reached its experts" flag per destination, in one exchange
     flag = int(not calls and like.reshape(-1, like.shape[-1]).shape[0] > 0)
-    info = torch.tensor([[n, flag] for n in send], dtype = torch.int64, device = like.device).reshape(
-        -1
-    )
+    # and whether this rank's experts train: then every rank's return exchange must be in autograd, also on a rank
+    # whose own outputs need no gradient (it holds or receives no trainable expert, the hidden states are frozen).
+    lst = shard.block._modules["experts"]
+    trains = int(torch.is_grad_enabled() and any(p.requires_grad for p in lst.parameters()))
+    info = torch.tensor(
+        [[n, flag, trains] for n in send], dtype = torch.int64, device = like.device
+    ).reshape(-1)
     got = torch.empty_like(info)
     dist.all_to_all_single(got, info, group = group)
-    got = got.view(ep, 2).tolist()
-    recv = [n for n, _ in got]
-    if any(f for _, f in got) or flag:
+    got = got.view(ep, 3).tolist()
+    recv = [n for n, _, _ in got]
+    trains = trains or any(t for _, _, t in got)
+    if any(f for _, f, _ in got) or flag:
         raise RuntimeError(
             f"Unsloth: {shard.block.__class__.__name__}.forward computed its experts without calling them one by "
             "one (a fused or decode-only path), which under expert parallel holds only this rank's experts. "
@@ -362,7 +367,6 @@ def _exchange(shard, calls, like):
         e_send = torch.zeros(0, dtype = torch.int64, device = like.device)
     got_e = epn._a2a(e_send, send, recv, group)
     (got_x,) = epn._Exchange.apply(send, recv, group, x_send)
-    lst = shard.block._modules["experts"]
     lo, hi = shard.lo, shard.hi
     local = got_e - lo
     perm = torch.argsort(local, stable = True)
@@ -390,6 +394,8 @@ def _exchange(shard, calls, like):
     else:
         y_got = got_x.new_zeros((got_x.shape[0], width))
     y_got = y_got + tie.to(y_got.dtype)
+    if trains and not y_got.requires_grad:
+        y_got = y_got.detach().requires_grad_()
     (y_back,) = epn._Exchange.apply(recv, send, group, y_got)
     outputs = [None] * len(calls)
     start = 0

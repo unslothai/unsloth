@@ -49,8 +49,18 @@ def _spec(family):
     return dict(spec) if isinstance(spec, dict) else dict(repo = spec)
 
 
-def _build(build, repo, overrides, gc):
+def _build(
+    build,
+    repo,
+    overrides,
+    gc,
+    experts_and_router_only = False,
+):
     model = build(repo, overrides = overrides).train()  # LoRA on all Linear layers
+    if experts_and_router_only:
+        # The hidden states reaching the experts then need no gradient: only the experts' and routers' LoRA train.
+        for name, p in model.named_parameters():
+            p.requires_grad_("lora_" in name and (".experts." in name or ".gate." in name))
     g = torch.Generator().manual_seed(1234)
     with torch.no_grad():  # lora_B = 0 would leave every lora_A gradient of the first step at 0
         for name, p in model.named_parameters():
@@ -71,6 +81,7 @@ def _case_list_family(
     config = None,
     experts = None,
     gc = False,
+    experts_and_router_only = False,
 ):
     import torch.distributed as dist
     from peft import get_peft_model_state_dict
@@ -82,7 +93,7 @@ def _case_list_family(
     if config is not None:
         repo = _local_config(tmp, rank, config)
     mesh = init_device_mesh("cpu", (world,), mesh_dim_names = ("ep",))["ep"]
-    ref = _build(build, repo, overrides, gc)
+    ref = _build(build, repo, overrides, gc, experts_and_router_only)
     blocks = tpn.moe_blocks_with_experts(ref)
     if not blocks or any(lists.list_shard_problem(b, world) is not None for b in blocks):
         return {
@@ -100,7 +111,7 @@ def _case_list_family(
     )
     want_adapter = {k: v.detach().clone() for k, v in get_peft_model_state_dict(ref).items()}
 
-    model = _build(build, repo, overrides, gc)
+    model = _build(build, repo, overrides, gc, experts_and_router_only)
     epn.apply_expert_parallel(model, mesh)
     listed = lists.list_blocks(model)
     group = epn._mesh(model).get_group()
@@ -584,6 +595,11 @@ def test_ep_expert_lists_with_checkpointing_match_one_process(family):
 def test_ep_expert_lists_three_ranks_one_without_experts():
     # olmoe's tiny config: 4 experts over 3 ranks, 2 per rank, rank 2 holds none (receives nothing, still exchanges).
     _check(_spawn("_case_list_family", world = 3, **_spec("olmoe")), 3)
+
+
+def test_ep_expert_lists_three_ranks_only_experts_and_routers_train():
+    # Frozen hidden states: rank 2 (no experts, receives nothing) still runs the return exchange's backward.
+    _check(_spawn("_case_list_family", world = 3, experts_and_router_only = True, **_spec("olmoe")), 3)
 
 
 def test_ep_expert_lists_refuse_a_block_reading_expert_weights():
