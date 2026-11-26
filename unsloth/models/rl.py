@@ -3653,6 +3653,16 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "pass\n"
         )
 
+    # fast_inference sizes vLLM max_num_seqs before the trainer exists: warn when one generate call exceeds it.
+    if trainer_file in ("grpo_trainer", "rloo_trainer"):
+        RLTrainer_post += (
+            "try:\n"
+            "    from unsloth.models._vllm_batch_cap import grpo_check_max_num_seqs as _unsloth_check_max_num_seqs\n"
+            "    _unsloth_check_max_num_seqs(self)\n"
+            "except ImportError:\n"
+            "    pass\n"
+        )
+
     # unsloth_distillation_coef / unsloth_sampler_kl_coef: validate once and resolve the teacher (adapter-off base by default).
     if trainer_file == "grpo_trainer":
         RLTrainer_post += (
