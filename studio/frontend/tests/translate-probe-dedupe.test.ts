@@ -129,3 +129,14 @@ test("the page shares one listing across the rows of each probe pass", () => {
     /const cachedModels = sharedCachedModelsListing\(abort\.signal\);\s*(?:\/\/[^\n]*\n\s*)*for \(const model of offeredModels\) \{[\s\S]*?translateModelDownloaded\(model, abort\.signal, \{\s*remote: downloadedRef\.current\[model\.id\] !== false,\s*cachedModels,/,
   );
 });
+
+test("the page re-probes the disk when the model cache changes elsewhere", () => {
+  // RAM-only system snapshots no longer re-run the pass, so a download finished on the Hub page
+  // (or in another tab) must still turn a "not downloaded" row into "downloaded".
+  const page = readText("../src/features/translate/translate-page.tsx");
+  assert.match(page, /const inventoryVersion = useInventoryVersion\(\);/);
+  assert.match(
+    page,
+    /for \(const model of offeredModels\) \{[\s\S]*?return \(\) => abort\.abort\(\);\s*\}, \[busy, offeredModels, inventoryVersion\]\);/,
+  );
+});

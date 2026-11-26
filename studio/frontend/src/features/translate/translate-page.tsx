@@ -69,7 +69,7 @@ import {
   isExternalModelId,
   parseExternalModelId,
 } from "@/features/chat/external-providers";
-import { useDeviceInventorySources } from "@/features/hub";
+import { useDeviceInventorySources, useInventoryVersion } from "@/features/hub";
 import { modelIdsMatch } from "@/features/hub/lib/model-identity";
 import type {
   LoraModelOption,
@@ -1407,6 +1407,9 @@ export function TranslatePage() {
   useEffect(() => {
     downloadedRef.current = downloaded;
   }, [downloaded]);
+  // A download finished or a model deleted elsewhere (Hub page, another tab) changes the disk.
+  const inventoryVersion = useInventoryVersion();
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `inventoryVersion` is the trigger, not an input.
   useEffect(() => {
     if (busy) return;
     const abort = new AbortController();
@@ -1423,7 +1426,7 @@ export function TranslatePage() {
       });
     }
     return () => abort.abort();
-  }, [busy, offeredModels]);
+  }, [busy, offeredModels, inventoryVersion]);
 
   useEffect(() => {
     if (!prefs.autoTranslate || busy || !canTranslate) return;
