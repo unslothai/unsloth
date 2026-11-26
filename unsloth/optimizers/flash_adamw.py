@@ -252,7 +252,9 @@ def _on_param_device(p):
 
 def _variance_update(var, grad, beta2):
     """fp32 `var * beta2 + grad**2 * (1 - beta2)`, as flashoptim's fused kernel computes it."""
-    global _VARIANCE_UPDATE_KERNEL
+    # `tl` is a module global: Triton < 3.4 (torch 2.6 / 2.7) resolves kernel names from the module
+    # globals only, so a function-local `tl` fails to compile with NameError('tl is not defined').
+    global _VARIANCE_UPDATE_KERNEL, tl
     import triton
 
     if _VARIANCE_UPDATE_KERNEL is None:
@@ -276,7 +278,9 @@ def _variance_update(var, grad, beta2):
         _VARIANCE_UPDATE_KERNEL = kernel
     out = torch.empty_like(var)
     n = var.numel()
-    _VARIANCE_UPDATE_KERNEL[(triton.cdiv(n, 1024),)](var, grad, out, n, beta2, BLOCK = 1024)
+    _VARIANCE_UPDATE_KERNEL[(triton.cdiv(n, 1024),)](
+        var, grad, out, n, beta2, BLOCK = 1024, enable_fp_fusion = True
+    )
     return out
 
 

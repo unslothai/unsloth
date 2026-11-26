@@ -231,16 +231,34 @@ def _take_the_gpu(mode: Optional[str] = None) -> None:
     video = get_video_backend()
 
     def admit() -> None:
+        from routes.video import queued_video_count
+
+        # Restyle unloads Create video, so it waits out the video queue too, not only its running clip.
+        waiting = queued_video_count()
+        behind = (
+            f" {waiting} more {'is' if waiting == 1 else 'are'} queued behind it."
+            if waiting
+            else ""
+        )
         if video.loading_repo_ids():
             raise HTTPException(
-                status_code = 409, detail = "A video model is loading. Try again when it finishes."
+                status_code = 409,
+                detail = f"A video model is loading.{behind} Try again when it finishes.",
+            )
+        if generation_account_in_flight() is not None:
+            raise HTTPException(
+                status_code = 409,
+                detail = f"A video is generating.{behind} Try again when "
+                + ("they finish." if waiting else "it finishes."),
+            )
+        if waiting:
+            raise HTTPException(
+                status_code = 409,
+                detail = f"{waiting} video{'' if waiting == 1 else 's'} {'is' if waiting == 1 else 'are'} "
+                "queued for Create video. Try again when they finish.",
             )
         if not video.status().get("loaded"):
             return
-        if generation_account_in_flight() is not None:
-            raise HTTPException(
-                status_code = 409, detail = "A video is generating. Try again when it finishes."
-            )
         if mode == "always":
             raise HTTPException(
                 status_code = 409,

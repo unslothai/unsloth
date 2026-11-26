@@ -108,6 +108,9 @@ export function normalizeParallelPlan(raw: unknown): ParallelPlan | null {
     warnings: Array.isArray(raw.warnings)
       ? raw.warnings.filter((w): w is string => str(w) !== null)
       : [],
+    notes: Array.isArray(raw.notes)
+      ? raw.notes.filter((n): n is string => str(n) !== null)
+      : [],
     modes: availabilityList(raw.modes),
     error: planError(raw.error),
   };
@@ -212,7 +215,12 @@ export function overrideIssue(
   if (!override.enabled) return null;
   const count = (override.gpuIds ?? allGpuIds).length;
   if (count === 0) return "studio.gpus.error.noGpu";
-  if (override.mode === "single" && count > 1) {
+  // With every GPU ticked the backend trains on the freest one; only an explicit set of several is refused.
+  if (
+    override.mode === "single" &&
+    override.gpuIds !== null &&
+    override.gpuIds.length > 1
+  ) {
     return "studio.gpus.error.singleNeedsOne";
   }
   if (override.mode !== "auto" && override.mode !== "single" && count < 2) {
@@ -222,6 +230,11 @@ export function overrideIssue(
     return "studio.gpus.error.customSpec";
   }
   return null;
+}
+
+/** Mirrors parallel_plan._spec_example. */
+export function layoutExample(gpuCount: number): string {
+  return `dp=${Math.max(gpuCount, 1)}`;
 }
 
 /** null when the selection becomes every GPU again, so "all" survives a card being added later. */

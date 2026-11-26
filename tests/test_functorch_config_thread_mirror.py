@@ -14,8 +14,8 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-"""torch >= 2.12 keeps config writes per thread. pp_schedules.allow_split_backward turns AOTAutograd's
-donated_buffer off for the zero bubble schedule's retain_graph backward, so that write must reach every
+"""torch >= 2.12 keeps config writes per thread. pp_schedules.split_backward_scope turns AOTAutograd's
+donated_buffer off during the zero bubble schedule's retain_graph backward, so that write must reach every
 thread (autograd's device threads compile there), like the dynamo / inductor writes already do."""
 
 import threading

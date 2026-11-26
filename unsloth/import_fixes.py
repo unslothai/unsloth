@@ -6130,10 +6130,6 @@ def patch_enable_input_require_grads():
         PreTrainedModel.disable_input_require_grads = _patched_single_disable_input_require_grads
         return
 
-    import os
-
-    keep_frozen_towers = os.environ.get("UNSLOTH_FROZEN_TOWER_INPUT_GRAD", "0") == "1"
-
     def _sub_model_hook(owner):
         # transformers >= 5 hooks every sub-model; a frozen tower's backward is wasted, downstream still gets grad.
         def make_inputs_require_grads(module, input, output):
@@ -6149,6 +6145,8 @@ def patch_enable_input_require_grads():
     def _patched_enable_input_require_grads(self):
         hooks = []
         seen_modules = set()
+        # Read per call, so setting the env after `import unsloth` still applies.
+        keep_frozen_towers = os.environ.get("UNSLOTH_FROZEN_TOWER_INPUT_GRAD", "0") == "1"
 
         for module in self.modules():
             if not (
@@ -8540,7 +8538,7 @@ def fix_dynamo_config_thread_visibility():
     except Exception:
         return
 
-    # functorch too: pp_schedules.allow_split_backward turns donated_buffer off for every thread.
+    # functorch too: pp_schedules.split_backward_scope turns donated_buffer off for every thread during a step.
     mirrored_modules = ("torch._dynamo.config", "torch._inductor.config", "torch._functorch.config")
 
     # config.patch()/load_config() writes are thread-local by design; a per-thread depth counter

@@ -18,6 +18,7 @@ from core.training.account_jobs import (
     worker_alive,
 )
 from utils.account_context import account_thread
+from utils.keep_awake import keeps_system_awake
 from utils.gpu_memory_events import invalidates_gpu_memory as _invalidates_gpu_memory
 import contextlib
 import json
@@ -78,6 +79,7 @@ class _DownloadPhaseQueue:
         self.queue.put(event)
 
 
+@keeps_system_awake
 def _run_diffusion_child(
     *,
     event_queue: Any,

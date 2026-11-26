@@ -33,6 +33,7 @@ TRAINING_DATA_EXTS = (".parquet", ".json", ".jsonl", ".csv")
 
 _RESERVED_SPLIT_TOKENS = frozenset({"train", "test", "validation", "valid", "val", "eval"})
 _BARE_SPLIT_RE = re.compile(r"^\w+(?:\.\w+)*$")
+_COMMIT_RE = re.compile(r"[0-9a-f]{40}")
 _UNKNOWN_SPLIT_ERROR_RE = re.compile(
     r'^Unknown split "[^"\r\n]+"\. Should be one of \[[^\]\r\n]*\]\.$'
 )
@@ -167,6 +168,19 @@ def processed_dataset_cache_path(local_path: Optional[str], repo_id: str) -> Opt
         return resolved
     except (OSError, RuntimeError, ValueError):
         return None
+
+
+def processed_dataset_commit(dataset: Any, repo_id: Optional[str]) -> Optional[str]:
+    """Hub commit of rows loaded from this repo's processed cache, named by their build dir."""
+    for entry in getattr(dataset, "cache_files", None) or []:
+        build_dir = Path(entry.get("filename") or "").parent
+        if (
+            _COMMIT_RE.fullmatch(build_dir.name)
+            and len(build_dir.parents) > 2
+            and processed_dataset_cache_path(str(build_dir.parents[2]), repo_id or "")
+        ):
+            return build_dir.name
+    return None
 
 
 def processed_dataset_cache_has_artifacts(path: Path) -> bool:

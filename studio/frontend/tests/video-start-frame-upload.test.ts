@@ -100,5 +100,6 @@ test("the 1:4 to 4:1 warning shows only where a keyframe would pick the canvas",
 test("a keyframe selects Match source only where it does not keep the canvas", () => {
   assert.match(page, /const autoMatchSource = keyframeSelectsMatchSource\(status\?\.defaults\);/);
   assert.match(page, /setMatchSource\(has && autoMatchSource\);/);
-  assert.match(page, /\.\.\.requestCanvas\(sourceSized, matchedResolution, videoSize, !autoMatchSource\),/);
+  assert.match(page, /\(\) => requestCanvas\(sourceSized, matchedResolution, videoSize, !autoMatchSource\),/);
+  assert.match(page, /\.\.\.generateCanvas,/);
 });
