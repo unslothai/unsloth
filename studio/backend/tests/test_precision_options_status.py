@@ -185,6 +185,10 @@ def test_the_response_models_carry_the_field():
     assert VideoStatusResponse(loaded = True, precision_options = payload).precision_options == payload
     assert DiffusionDownloadPlanResponse(precision_options = payload).precision_options == payload
     assert DiffusionStatusResponse(loaded = False).precision_options is None
+    assert (
+        DiffusionStatusResponse(loaded = True, precision_options_card = 1).precision_options_card == 1
+    )
+    assert VideoStatusResponse(loaded = True, precision_options_card = 0).precision_options_card == 0
 
 
 def test_status_and_plan_routes_fill_it():
@@ -203,6 +207,11 @@ def test_status_and_plan_routes_fill_it():
         )
         assert "target = precision_target( state.device, state.dtype," in flat
         assert "model_kind = state.kind," in flat
+        assert '"precision_options_card": None,' in flat
+        assert (
+            '"precision_options_card": ( state.placed_ordinal if state.placed_ordinal is not None else state.gpu_ordinal )'
+            in flat
+        )
     for route in ("routes/inference.py", "routes/video.py"):
         text = (root / route).read_text()
         assert '"precision_options": plan_precision_options(' in text

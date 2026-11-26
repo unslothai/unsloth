@@ -11,6 +11,7 @@ import { NVFP4_DISABLED_HINT, withNvfp4Option, type SelectOption } from "../src/
 import {
   activePrecisionDenials,
   deniedSelectionFallback,
+  gpuSelectionKey,
   withPrecisionDenials,
 } from "../src/lib/precision-denials.ts";
 import { readSrc } from "./helpers/kit.ts";
@@ -50,12 +51,27 @@ test("a held denied pick falls back to Auto", () => {
   assert.equal(deniedSelectionFallback("nvfp4", null), "nvfp4");
 });
 
-test("the loaded build's denials win; with nothing loaded the last planned pick's apply", () => {
-  const planned = { fp8: "x" };
-  assert.equal(activePrecisionDenials({ loaded: true, precision_options: WAN }, planned), WAN);
-  assert.equal(activePrecisionDenials({ loaded: false, precision_options: null }, planned), planned);
-  assert.equal(activePrecisionDenials({ loaded: true }, planned), planned);
-  assert.equal(activePrecisionDenials(null, undefined), null);
+test("the loaded build's denials apply to a load on its card; with nothing loaded the matching plan's apply", () => {
+  const planned = { gpu: "auto", options: { fp8: "x" } };
+  assert.equal(activePrecisionDenials({ loaded: true, precision_options: WAN }, planned, "auto"), WAN);
+  assert.equal(activePrecisionDenials({ loaded: false, precision_options: null }, planned, "auto"), planned.options);
+  assert.equal(activePrecisionDenials({ loaded: true }, planned, "auto"), planned.options);
+  assert.equal(activePrecisionDenials(null, null), null);
+});
+
+test("picking another GPU drops the resident card's probe verdicts", () => {
+  // Loaded on card 0, whose FP8 probe failed; card 1 can run FP8.
+  const resident = { loaded: true, precision_options: { fp8: "FP8 failed this GPU's kernel probe" }, precision_options_card: 0 };
+  assert.equal(activePrecisionDenials(resident, null, "0"), resident.precision_options);
+  assert.equal(activePrecisionDenials(resident, null, "1"), null);
+  // A plan made for card 1 describes it; one made for another selection does not.
+  const forCard1 = { gpu: "1", options: { fp8: null } };
+  assert.equal(activePrecisionDenials(resident, forCard1, "1"), forCard1.options);
+  assert.equal(activePrecisionDenials(resident, { gpu: "0", options: { fp8: "y" } }, "1"), null);
+  // An unknown resident card never matches an explicit pick.
+  assert.equal(activePrecisionDenials({ ...resident, precision_options_card: null }, null, "0"), null);
+  assert.equal(gpuSelectionKey([1]), "1");
+  assert.equal(gpuSelectionKey(undefined), "auto");
 });
 
 for (const path of ["features/images/images-page.tsx", "features/video/video-page.tsx"]) {
@@ -63,8 +79,14 @@ for (const path of ["features/images/images-page.tsx", "features/video/video-pag
   test(`${path}: Precision applies the denials, falls back, and reads the pick's plan`, () => {
     const select = src.slice(src.indexOf('label="Precision"'));
     assert.match(select.slice(0, select.indexOf(") : (")), /withPrecisionDenials\(\s*withNvfp4Option\(/);
-    assert.match(src, /const precisionDenials = activePrecisionDenials\(status, plannedPrecisionOptions\);/);
+    assert.match(
+      src,
+      /const precisionDenials = activePrecisionDenials\(\s*status,\s*plannedPrecisionOptions,\s*selectedGpu !== "auto" && gpuChoices\.some/,
+    );
     assert.match(src, /setTransformerQuant\(\(v\) => deniedSelectionFallback\(v, precisionDenials\)\);/);
-    assert.match(src, /setPlannedPrecisionOptions\(plan\.precision_options \?\? null\);/);
+    assert.match(
+      src,
+      /setPlannedPrecisionOptions\(\{ gpu: gpuSelectionKey\(advanced\.gpu_ids\), options: plan\.precision_options \?\? null \}\);/,
+    );
   });
 }

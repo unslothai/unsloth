@@ -6508,6 +6508,11 @@ class DiffusionStatusResponse(BaseModel):
         "the card), or null when nothing known rules it out. Null as a whole when nothing is loaded. The global NVFP4 switch is "
         "reported separately.",
     )
+    precision_options_card: Optional[int] = Field(
+        None,
+        description = "The GPU index precision_options was judged on (a kernel-probe verdict is per card), so a "
+        "pick for another card does not inherit it; null when unknown or not on a GPU.",
+    )
     multi_gpu: Optional[Dict[str, Any]] = Field(
         None,
         description = "Multi-GPU placement (component -> card, primary, secondary) and CFG-parallel state (armed, "
@@ -8384,6 +8389,11 @@ class VideoStatusResponse(BaseModel):
         "refused for the loaded family on its card (the family deny list, a measured NVFP4 gate failure, or a recorded kernel-probe failure on "
         "the card), or null when nothing known rules it out. Null as a whole when nothing is loaded. The global NVFP4 switch is "
         "reported separately.",
+    )
+    precision_options_card: Optional[int] = Field(
+        None,
+        description = "The GPU index precision_options was judged on (a kernel-probe verdict is per card), so a "
+        "pick for another card does not inherit it; null when unknown or not on a GPU.",
     )
     multi_gpu: Optional[Dict[str, Any]] = Field(
         None,

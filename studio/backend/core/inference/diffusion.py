@@ -18137,6 +18137,7 @@ class DiffusionBackend:
                 "resolved": None,
                 "generation_defaults": None,
                 "precision_options": None,
+                "precision_options_card": None,
                 "lora_fusion": None,
             }
         from core.inference import diffusion_controlnet, diffusion_lora
@@ -18230,6 +18231,10 @@ class DiffusionBackend:
                 ),
                 model_kind = state.kind,
                 offload = state.offload_policy != OFFLOAD_NONE,
+            ),
+            # The card those verdicts were judged on, so a pick for another card does not inherit its probe failures.
+            "precision_options_card": (
+                state.placed_ordinal if state.placed_ordinal is not None else state.gpu_ordinal
             ),
             "packed_weights": _grouped_form_status(state.pipe),
             "graph_engagement": cuda_graph.engagement(

@@ -31,11 +31,30 @@ export function deniedSelectionFallback<T extends string>(value: T, denials: Pre
   return deniedReason(value, denials) ? "auto" : value;
 }
 
-/** The denials that describe the next load: the loaded build's, else the last planned pick's. */
+/** A download plan's denials, with the GPU selection ("auto" or a card index) the plan was made for. */
+export type PlannedPrecision = { gpu: string; options: PrecisionOptions } | null;
+
+/** The GPU selection a request carries: its first explicit card, else "auto". */
+export function gpuSelectionKey(gpuIds: readonly number[] | null | undefined): string {
+  return gpuIds && gpuIds.length > 0 ? String(gpuIds[0]) : "auto";
+}
+
+/**
+ * The denials that describe the next load on `targetGpu`: the loaded build's when that load targets the resident's
+ * card (Auto, or the card the status judged them on), else the last plan's for that same selection, else none. A
+ * kernel-probe failure is per card, so picking another GPU must not inherit the resident card's verdicts.
+ */
 export function activePrecisionDenials(
-  status: { loaded?: boolean | null; precision_options?: PrecisionOptions } | null | undefined,
-  planned: PrecisionOptions,
+  status:
+    | { loaded?: boolean | null; precision_options?: PrecisionOptions; precision_options_card?: number | null }
+    | null
+    | undefined,
+  planned: PlannedPrecision,
+  targetGpu = "auto",
 ): PrecisionOptions {
-  if (status?.loaded && status.precision_options) return status.precision_options;
-  return planned ?? null;
+  const card = status?.precision_options_card;
+  const residentTarget = targetGpu === "auto" || (card != null && String(card) === targetGpu);
+  if (status?.loaded && status.precision_options && residentTarget) return status.precision_options;
+  if (planned && planned.gpu === targetGpu) return planned.options ?? null;
+  return null;
 }

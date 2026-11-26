@@ -123,7 +123,8 @@ import { reseedAction } from "@/lib/failed-load-reseed";
 import {
   activePrecisionDenials,
   deniedSelectionFallback,
-  type PrecisionOptions,
+  gpuSelectionKey,
+  type PlannedPrecision,
   withPrecisionDenials,
 } from "@/lib/precision-denials";
 import { nvfp4SelectionFallback, type SelectOption, withNvfp4Option } from "@/lib/nvfp4-options";
@@ -2105,7 +2106,7 @@ export function ImagesPage({
   const [failedLoadReseed, setFailedLoadReseed] = useState(0);
   const handledFailedLoadReseed = useRef(0);
   // The last picked model's per-scheme refusals from its download plan, for the Precision select before it loads.
-  const [plannedPrecisionOptions, setPlannedPrecisionOptions] = useState<PrecisionOptions>(null);
+  const [plannedPrecisionOptions, setPlannedPrecisionOptions] = useState<PlannedPrecision>(null);
   const [transformerQuant, setTransformerQuant] = useState<
     "none" | "auto" | "int8" | "fp8" | "nvfp4" | "mxfp8"
   >("auto");
@@ -4033,7 +4034,11 @@ export function ImagesPage({
   // GENERATION time, and the whole record threw away a Precision picked but not yet loaded.
   // Schemes the loaded (else last planned) family or card refuses: disabled in Precision with the reason, and a held
   // one falls back to Auto rather than being refused at load.
-  const precisionDenials = activePrecisionDenials(status, plannedPrecisionOptions);
+  const precisionDenials = activePrecisionDenials(
+    status,
+    plannedPrecisionOptions,
+    selectedGpu !== "auto" && gpuChoices.some((d) => String(d.index) === selectedGpu) ? selectedGpu : "auto",
+  );
   useEffect(() => {
     setTransformerQuant((v) => deniedSelectionFallback(v, precisionDenials));
   }, [precisionDenials, transformerQuant]);
@@ -4647,7 +4652,9 @@ export function ImagesPage({
           dropReleasedPick(ownRevert);
           return true;
         }
-        if (!downloadOnly) setPlannedPrecisionOptions(plan.precision_options ?? null);
+        if (!downloadOnly) {
+          setPlannedPrecisionOptions({ gpu: gpuSelectionKey(advanced.gpu_ids), options: plan.precision_options ?? null });
+        }
         if (downloadOnly && plan.plan_failed) {
           throw new Error("Required asset metadata is incomplete. Retry when it is available.");
         }

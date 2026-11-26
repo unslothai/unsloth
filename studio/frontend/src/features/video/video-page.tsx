@@ -199,7 +199,8 @@ import { reseedAction } from "@/lib/failed-load-reseed";
 import {
   activePrecisionDenials,
   deniedSelectionFallback,
-  type PrecisionOptions,
+  gpuSelectionKey,
+  type PlannedPrecision,
   withPrecisionDenials,
 } from "@/lib/precision-denials";
 import { nvfp4SelectionFallback, type SelectOption, withNvfp4Option } from "@/lib/nvfp4-options";
@@ -2067,10 +2068,14 @@ function VideoGenerator({
   const [failedLoadReseed, setFailedLoadReseed] = useState(0);
   const handledFailedLoadReseed = useRef(0);
   // The last picked model's per-scheme refusals from its download plan, for the Precision select before it loads.
-  const [plannedPrecisionOptions, setPlannedPrecisionOptions] = useState<PrecisionOptions>(null);
+  const [plannedPrecisionOptions, setPlannedPrecisionOptions] = useState<PlannedPrecision>(null);
   // Schemes the loaded (else last planned) family or card refuses (Wan NVFP4's failed accuracy gate): disabled in
   // Precision with the reason, and a held one falls back to Auto rather than being refused at load.
-  const precisionDenials = activePrecisionDenials(status, plannedPrecisionOptions);
+  const precisionDenials = activePrecisionDenials(
+    status,
+    plannedPrecisionOptions,
+    selectedGpu !== "auto" && gpuChoices.some((d) => String(d.index) === selectedGpu) ? selectedGpu : "auto",
+  );
   useEffect(() => {
     setTransformerQuant((v) => deniedSelectionFallback(v, precisionDenials));
   }, [precisionDenials, transformerQuant]);
@@ -3355,7 +3360,7 @@ function VideoGenerator({
           pickToast.dismiss(pickToastId);
           return true;
         }
-        setPlannedPrecisionOptions(plan.precision_options ?? null);
+        setPlannedPrecisionOptions({ gpu: gpuSelectionKey(advanced.gpu_ids), options: plan.precision_options ?? null });
         // The shared envelope's half of the incompatible-pairing check; video has no live path here.
         incompatible = plan.incompatible_reason ?? null;
         incompatibleCode = plan.incompatible_code ?? null;
