@@ -215,6 +215,8 @@ class LocalModelInfo(BaseModel):
     """Discovered local model candidate."""
 
     _scan_root: Optional[str] = PrivateAttr(None)
+    # A custom folder row's publisher/model id from before promotion: /v1/models and the resolver keep it.
+    _scan_model_id: Optional[str] = PrivateAttr(None)
 
     id: str = Field(..., description = "Identifier to use for loading/training")
     inventory_id: Optional[str] = Field(

@@ -391,12 +391,22 @@ def collect_local_models(
         custom_folders,
         materialize_ollama_links = materialize_ollama_links,
     )
-    rows = _without_format_labels(local_inventory._filter_hidden_models(rows))
+    rows = _without_format_labels(
+        [_with_scan_model_id(row) for row in local_inventory._filter_hidden_models(rows)]
+    )
     listed = local_inventory._dedupe_local_models(rows)
     if folded is not None:
         kept = {id(row) for row in listed}
         folded.extend(row for row in rows if id(row) not in kept)
     return listed
+
+
+def _with_scan_model_id(model):
+    """The Hub drops a custom folder row's publisher/model id; requests and /v1/models still name it so."""
+    scan_model_id = getattr(model, "_scan_model_id", None)
+    if model.model_id or not scan_model_id:
+        return model
+    return model.model_copy(update = {"model_id": scan_model_id})
 
 
 def _without_format_labels(models: list) -> list:

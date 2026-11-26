@@ -1073,6 +1073,26 @@ def test_adapter_base_is_found_in_the_cache_root_holding_the_adapter(tmp_path):
     assert _base_transformers_can_chat("Org/WhisperBase", None, adapter_snapshot) is False
 
 
+def _scan_hub_only(
+    monkeypatch,
+    tmp_path,
+    folders = (),
+):
+    sources = _empty_sources(tmp_path)._replace(hf_cache_dir = tmp_path / "hub")
+    monkeypatch.setattr(local_inventory, "_local_inventory_sources", lambda: sources)
+    monkeypatch.setattr(
+        "storage.studio_db.list_scan_folders", lambda: [{"path": str(f)} for f in folders]
+    )
+    monkeypatch.chdir(tmp_path)
+    return models_route.collect_local_models(Path("models").resolve())
+
+
+def _hf_snapshot(tmp_path: Path, repo_id: str) -> Path:
+    repo = tmp_path / "hub" / f"models--{repo_id.replace('/', '--')}"
+    _write(repo / "refs" / "main", "b" * 40)
+    return repo / "snapshots" / ("b" * 40)
+
+
 def test_a_copied_single_file_hf_checkpoint_is_whole_and_media_resolvable(monkeypatch, tmp_path):
     """Windows without symlinks copies files into snapshots/; a lone flux1-dev.safetensors loads as single_file."""
     import struct
@@ -1088,17 +1108,71 @@ def test_a_copied_single_file_hf_checkpoint_is_whole_and_media_resolvable(monkey
             }
         }
     ).encode()
-    repo = tmp_path / "hub" / "models--Comfy-Org--flux1-dev"
-    _write(repo / "refs" / "main", "b" * 40)
-    checkpoint = repo / "snapshots" / ("b" * 40) / "flux1-dev.safetensors"
+    checkpoint = _hf_snapshot(tmp_path, "Comfy-Org/flux1-dev") / "flux1-dev.safetensors"
     checkpoint.parent.mkdir(parents = True)
     checkpoint.write_bytes(struct.pack("<Q", len(header)) + header + b"\0" * 16)
-    sources = _empty_sources(tmp_path)._replace(hf_cache_dir = tmp_path / "hub")
-    monkeypatch.setattr(local_inventory, "_local_inventory_sources", lambda: sources)
-    monkeypatch.setattr("storage.studio_db.list_scan_folders", lambda: [])
-    monkeypatch.chdir(tmp_path)
 
-    (row,) = models_route.collect_local_models(Path("models").resolve())
+    (row,) = _scan_hub_only(monkeypatch, tmp_path)
     assert (row.model_id, row.partial) == ("Comfy-Org/flux1-dev", False)
     pick = media_model_index._build_index("text-to-image")["comfy-org/flux1-dev"]
     assert Path(pick.model_path) == checkpoint.parent
+
+
+@pytest.mark.parametrize(
+    "text_encoder, weight_suffix",
+    [("pytorch_model.bin", ".safetensors"), ("model.fp16.safetensors", ".fp16.safetensors")],
+)
+def test_a_whole_cached_pipeline_without_safetensors_defaults_is_media_resolvable(
+    monkeypatch, tmp_path, text_encoder, weight_suffix
+):
+    """.bin text encoders, or the .fp16 twins an fp16 load stages instead of the defaults, are whole weights."""
+    from core.inference import media_model_index
+
+    snapshot = _hf_snapshot(tmp_path, "stabilityai/stable-diffusion-xl-base-1.0")
+    components = {
+        "unet": ["diffusers", "UNet2DConditionModel"],
+        "vae": ["diffusers", "AutoencoderKL"],
+        "text_encoder": ["transformers", "CLIPTextModel"],
+        "tokenizer": ["transformers", "CLIPTokenizer"],
+        "scheduler": ["diffusers", "EulerDiscreteScheduler"],
+    }
+    _index(snapshot, _class_name = "StableDiffusionXLPipeline", **components)
+    for name in ("unet", "vae"):
+        _write(snapshot / name / "config.json")
+        _touch(snapshot / name / f"diffusion_pytorch_model{weight_suffix}")
+    _write(snapshot / "text_encoder" / "config.json")
+    _touch(snapshot / "text_encoder" / text_encoder)
+    for name in ("tokenizer_config.json", "vocab.json", "merges.txt"):
+        _write(snapshot / "tokenizer" / name)
+    _write(snapshot / "scheduler" / "scheduler_config.json")
+
+    (row,) = _scan_hub_only(monkeypatch, tmp_path)
+    assert row.partial is False
+    pick = media_model_index._build_index("text-to-image")[
+        "stabilityai/stable-diffusion-xl-base-1.0"
+    ]
+    assert Path(pick.model_path) == snapshot
+
+    # Without its denoiser weights the same pipeline is a torn download.
+    (snapshot / "unet" / f"diffusion_pytorch_model{weight_suffix}").unlink()
+    (row,) = _scan_hub_only(monkeypatch, tmp_path)
+    assert row.partial is True
+
+
+def test_a_custom_folder_keeps_publisher_qualified_ids(monkeypatch, tmp_path):
+    """Two publishers' same-named models stay apart in /v1/models and the resolver, as on main."""
+    from core.inference import local_model_resolver as resolver
+
+    folder = tmp_path / "custom"
+    for publisher in ("alice", "bob"):
+        _touch(folder / publisher / "model" / "model-Q4_K_M.gguf")
+
+    rows = _scan_hub_only(monkeypatch, tmp_path, folders = [folder])
+    assert sorted(resolver._advertised_loader_id(row) for row in rows) == [
+        "alice/model",
+        "bob/model",
+    ]
+    monkeypatch.setattr(resolver, "_scan", (0.0, {}))
+    index = resolver._build_index()
+    assert {"alice/model", "bob/model"} <= set(index)
+    assert index["alice/model"] is not index["bob/model"]

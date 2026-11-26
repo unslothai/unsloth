@@ -689,7 +689,10 @@ def _scan_hf_cache(
         # Denoiser-less pipeline (a GGUF's borrowed VAE / encoder): partial so no picker loads it, flagged so the Hub offers no Continue.
         latest_snapshot = hf_cache_scan.latest_snapshot_dir(repo_dir)
         if not snapshot_partial and (
-            hf_cache_scan.snapshot_pipeline_missing_denoiser(latest_snapshot)
+            (
+                hf_cache_scan.snapshot_pipeline_missing_denoiser(latest_snapshot)
+                and not model_common.snapshot_holds_a_whole_model(latest_snapshot)
+            )
             or hf_cache_scan.snapshot_is_encoder_companion(model_id, repo_dir, latest_snapshot)
         ):
             # Some denoiser shards on disk is a torn download, not a prefetch: partial, but not flagged.
@@ -1349,6 +1352,7 @@ def _collect_models_from_default_sources(
         for model in custom_models:
             row = _promote_to_custom_source(model)
             row._scan_root = str(folder_path)
+            row._scan_model_id = model.model_id
             local_models.append(row)
 
     return local_models

@@ -778,15 +778,21 @@ def _quant_folder_gguf_files(snapshot: Path, files: list[Path]) -> list[Path]:
     return found
 
 
-def _is_single_file_checkpoint_snapshot(snapshot: Path) -> bool:
-    """A sole loose checkpoint (flux1-dev.safetensors) loads as single_file, unless a ref names a missing
+def snapshot_holds_a_whole_model(snapshot: Optional[Path]) -> bool:
+    """A sole loose checkpoint (flux1-dev.safetensors), or a pipeline whose every component the loader reads has
+    its weights (.bin text encoders and the .fp16 twins an fp16 load stages count), unless a ref names a missing
     snapshot, which an interrupted download leaves."""
+    from core.inference.diffusion_families import local_pipeline_components_are_complete
     from core.inference.diffusion_local_files import resolve_local_single_file
     from hub.utils.inventory_scan import _repo_has_a_dangling_ref
 
-    return resolve_local_single_file(str(snapshot)) is not None and not _repo_has_a_dangling_ref(
-        snapshot.parent.parent
+    if snapshot is None or not snapshot.is_dir():
+        return False
+    whole = resolve_local_single_file(str(snapshot)) is not None or any(
+        (snapshot / name).is_file() and local_pipeline_components_are_complete(snapshot, name)
+        for name in ("model_index.json", "modular_model_index.json")
     )
+    return whole and not _repo_has_a_dangling_ref(snapshot.parent.parent)
 
 
 def _format_label(model_format: ModelFormat) -> str:
@@ -1061,7 +1067,7 @@ def _classify_local_path(
                 model_id = model_id,
                 updated_at = updated_at,
                 partial = partial
-                or (trusted_hf_cache_repo and not _is_single_file_checkpoint_snapshot(scan_path)),
+                or (trusted_hf_cache_repo and not snapshot_holds_a_whole_model(scan_path)),
                 size_bytes = size_bytes,
                 active_cache = active_cache,
             )
