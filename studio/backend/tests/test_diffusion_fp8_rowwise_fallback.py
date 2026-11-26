@@ -439,3 +439,30 @@ def test_status_reports_the_card_of_the_fp8_component(monkeypatch):
     assert status["component"] == "text_encoder"
     state = SimpleNamespace(transformer_quant = "fp8", text_encoder_quant = "fp8", pipe = pipe)
     assert _fp8_gemm_status(state)["device_index"] == 0
+
+
+def test_accumulator_check_waits_for_an_idle_fallback_card_to_be_used(monkeypatch):
+    # cuda:1 (another arch) is a fallback card only through a persisted verdict and has no CUDA context: no fp32
+    # GEMM may run there (it would open a context on a card the load never uses) until it is used.
+    _fake_card(monkeypatch, (12, 0), rowwise_ok = False, cards = (0, 1))
+    monkeypatch.setattr(us, "_device_caps", lambda: {0: (12, 0), 1: (10, 0)})
+    monkeypatch.setattr(us, "_persisted_rowwise", lambda index: False)
+    monkeypatch.setattr(us, "_has_context", lambda index: index == 0)
+    checked = []
+    real = us._fp32_out_runs
+
+    def recording(index):
+        if index not in us._FP32_OUT:  # a GEMM actually runs, not a cached answer
+            checked.append(index)
+        return real(index)
+
+    monkeypatch.setattr(us, "_fp32_out_runs", recording)
+    tq._make_quant_config(tq.TQ_FP8)
+    assert us.fallback_cards() == frozenset({0, 1})
+    assert checked == [0]
+    assert us.gemm_path(0)["accumulator"] == "fp32" and us.gemm_path(1)["accumulator"] == "bf16"
+    # cuda:1 is used now: the next install rebuilds the dispatcher with its own accumulator check.
+    monkeypatch.setattr(us, "_has_context", lambda index: True)
+    tq._make_quant_config(tq.TQ_FP8)
+    assert checked == [0, 1]
+    assert us.gemm_path(1)["accumulator"] == "fp32"

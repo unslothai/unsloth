@@ -35,6 +35,7 @@ _STATE: dict = {
     "qualifying": frozenset(),
     "fallback": frozenset(),
     "fp32_acc": frozenset(),
+    "acc_deferred": frozenset(),
     "forced_fallback": False,
 }
 # device index -> True (row-wise kernel runs), False (only tensorwise runs), None (neither / unknown); per process.
@@ -383,12 +384,16 @@ def _device_caps() -> dict:
 def install(logger: Any = None, *, fast_accum: Optional[bool] = None) -> bool:
     """Patch torchao addmm; idempotent, False when off, no qualifying GPU, or layout moved."""
     if _STATE["installed"]:
-        # A card that started being used after install, and lacks the row-wise kernel, needs the dispatcher too.
-        if _mode() == "auto" and not _STATE["forced_fallback"] and _STATE["orig"] is not None:
-            caps_now = _device_caps()
-            missing = {i for i, ok in rowwise_verdicts(caps_now).items() if ok is False}
-            if missing - set(_STATE["fallback"]):
+        # A card that started being used after install needs the dispatcher rebuilt: it lacks the row-wise kernel,
+        # or it is a fallback card whose accumulator check was deferred while it was idle.
+        if _STATE["orig"] is not None:
+            if any(_has_context(i) for i in _STATE["acc_deferred"]):
                 uninstall()
+            elif _mode() == "auto" and not _STATE["forced_fallback"]:
+                caps_now = _device_caps()
+                missing = {i for i, ok in rowwise_verdicts(caps_now).items() if ok is False}
+                if missing - set(_STATE["fallback"]):
+                    uninstall()
         if _STATE["installed"]:
             from .diffusion_compile_config import apply
             apply()
@@ -427,13 +432,14 @@ def install(logger: Any = None, *, fast_accum: Optional[bool] = None) -> bool:
     unit_out_dtypes = (torch.bfloat16, torch.float16, torch.float32)
     # Fallback cards take the tensorwise GEMM's fp32 output: no bf16 rounding before the scales, so eager output is
     # bitwise the row-wise kernel's (FLUX.2 Klein on G4). sm_89 keeps its faster bf16 accumulator.
-    # One probe per capability, like the row-wise one (a card with a CUDA context first).
-    by_cap: dict = {}
-    for i in sorted(fallback, key = lambda i: (not _has_context(i), i)):
-        cap = tuple(caps.get(i) or ())
-        if cap not in by_cap:
-            by_cap[cap] = _fp32_out_runs(i)
-    fp32_acc = frozenset(i for i in fallback if by_cap.get(tuple(caps.get(i) or ())))
+    # Probed only on fallback cards in use, like the row-wise probe: a card known only from a persisted verdict has no
+    # CUDA context here, so it keeps the bf16 accumulator (its tensorwise bf16 GEMM is what the probe proved) until it
+    # is used, when the next install rebuilds the dispatcher with its own check.
+    in_use = frozenset(i for i in fallback if _has_context(i))
+    if not in_use and not any(_has_context(i) for i in caps):
+        in_use = fallback & {_current_device()}
+    fp32_acc = frozenset(i for i in sorted(in_use) if _fp32_out_runs(i))
+    acc_deferred = fallback - in_use
 
     def addmm_float8_unwrapped_inference(
         a_data: Any,
@@ -500,6 +506,7 @@ def install(logger: Any = None, *, fast_accum: Optional[bool] = None) -> bool:
         qualifying = qualifying,
         fallback = fallback,
         fp32_acc = fp32_acc,
+        acc_deferred = acc_deferred,
         forced_fallback = forced_fallback,
     )
     # Only a fallback install changes the tag: an sm_89 / force install keys exactly as before.
@@ -547,6 +554,7 @@ def uninstall() -> None:
             qualifying = frozenset(),
             fallback = frozenset(),
             fp32_acc = frozenset(),
+            acc_deferred = frozenset(),
             forced_fallback = False,
         )
         _set_compile_cache_tag(None)
