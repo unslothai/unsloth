@@ -18267,23 +18267,27 @@ def _reported_transformer_quant(state: Any) -> Optional[str]:
 
 def _fp8_gemm_status(state: Any) -> Optional[dict]:
     """Which fp8 GEMM the loaded fp8 transformer / text encoder runs (torchao row-wise, or the unit-scale fallback
-    where the torch build has no row-wise kernel), or None for a load without fp8. Never raises."""
+    where the torch build has no row-wise kernel), or None for a load without fp8. The card is the fp8 component's
+    own (the dispatcher routes by operand device): the denoiser when it is fp8, else the text encoder. Never raises."""
     try:
-        if "fp8" not in (
-            str(getattr(state, "transformer_quant", None) or "").lower(),
-            str(getattr(state, "text_encoder_quant", None) or "").lower(),
-        ):
+        pipe = getattr(state, "pipe", None)
+        component = None
+        if str(getattr(state, "transformer_quant", None) or "").lower() == "fp8":
+            component = "transformer"
+        elif str(getattr(state, "text_encoder_quant", None) or "").lower() == "fp8":
+            component = "text_encoder"
+        if component is None:
             return None
         from .diffusion_fp8_unit_scale import gemm_path
 
         index = None
-        denoiser = getattr(getattr(state, "pipe", None), "transformer", None)
-        for param in denoiser.parameters() if denoiser is not None else ():
+        module = getattr(pipe, component, None)
+        for param in module.parameters() if module is not None else ():
             device = getattr(param, "device", None)
             if getattr(device, "type", None) == "cuda":
                 index = device.index
                 break
-        return gemm_path(index)
+        return {**gemm_path(index), "component": component}
     except Exception:  # noqa: BLE001 -- status must never fail
         return None
 

@@ -35,6 +35,7 @@ def _clean(monkeypatch):
         ("_persisted_rowwise", lambda index: None),
         ("_persist_rowwise", lambda index, verdict: None),
         ("_has_context", lambda index: False),
+        ("_current_device", lambda: 0),
     ):
         if hasattr(us, name):
             monkeypatch.setattr(us, name, stub)
@@ -184,31 +185,115 @@ def test_status_names_the_fallback_path(monkeypatch):
     )
 
 
-def test_probe_runs_once_per_capability_and_is_persisted(monkeypatch):
+def test_only_cards_in_use_are_probed_and_each_keeps_its_own_verdict(monkeypatch):
+    # No card has a CUDA context: only the current device is probed, and its verdict is not copied to its siblings.
     calls = _fake_card(monkeypatch, (12, 0), rowwise_ok = False, cards = (0, 1, 2))
     stored = {}
     monkeypatch.setattr(
         us, "_persist_rowwise", lambda index, verdict: stored.__setitem__(index, verdict)
     )
     tq._make_quant_config(tq.TQ_FP8)
-    # One card probed (one tensorwise + one row-wise GEMM) stands for its two siblings.
     assert calls == ["tensorwise", "rowwise", "tensorwise32"]
-    assert us.fallback_cards() == frozenset({0, 1, 2})
-    assert stored == {0: False, 1: False, 2: False}
+    assert us.fallback_cards() == frozenset({0})
+    assert stored == {0: False} and set(us._ROWWISE) == {0}
     import torch.compiler.config as ccfg
 
-    assert ccfg.cache_key_tag.endswith(
-        "unsloth_fp8_unit_scale=256:rowwise-missing=0+1+2:acc32=0+1+2"
-    )
+    assert ccfg.cache_key_tag.endswith("unsloth_fp8_unit_scale=256:rowwise-missing=0:acc32=0")
     us.uninstall()
     assert "unsloth_fp8_unit_scale" not in ccfg.cache_key_tag
     # A later process reads the verdict back instead of probing.
-    us.uninstall()
     us._ROWWISE.clear()
     calls.clear()
     monkeypatch.setattr(us, "_persisted_rowwise", lambda index: stored.get(index))
     tq._make_quant_config(tq.TQ_FP8)
-    assert "rowwise" not in calls and us.fallback_cards() == frozenset({0, 1, 2})
+    assert "rowwise" not in calls and us.fallback_cards() == frozenset({0})
+
+
+def test_cards_with_a_context_are_probed_one_by_one(monkeypatch):
+    calls = _fake_card(monkeypatch, (12, 0), rowwise_ok = False, cards = (0, 1, 2))
+    stored = {}
+    monkeypatch.setattr(
+        us, "_persist_rowwise", lambda index, verdict: stored.__setitem__(index, verdict)
+    )
+    monkeypatch.setattr(us, "_has_context", lambda index: index in (1, 2))
+    tq._make_quant_config(tq.TQ_FP8)
+    assert calls.count("rowwise") == 2
+    assert stored == {1: False, 2: False} and 0 not in us._ROWWISE
+    assert us.fallback_cards() == frozenset({1, 2})
+
+
+def test_a_card_used_after_install_joins_the_fallback(monkeypatch):
+    _fake_card(monkeypatch, (12, 0), rowwise_ok = False, cards = (0, 1))
+    tq._make_quant_config(tq.TQ_FP8)
+    assert us.fallback_cards() == frozenset({0})
+    monkeypatch.setattr(us, "_has_context", lambda index: True)
+    tq._make_quant_config(tq.TQ_FP8)
+    assert us.fallback_cards() == frozenset({0, 1})
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        "oom",
+        "CUDA error: an illegal memory access was encountered",
+        "CUBLAS_STATUS_EXECUTION_FAILED when calling cublasLtMatmul",
+    ],
+)
+def test_a_transient_rowwise_failure_is_no_verdict(monkeypatch, error):
+    # Only torch's "not supported" means the kernel is missing; an OOM or any other error is neither cached nor
+    # persisted, and the card keeps torchao's own path until a later probe settles it.
+    calls = _fake_card(monkeypatch, (12, 0), rowwise_ok = True)
+    stored = {}
+    monkeypatch.setattr(
+        us, "_persist_rowwise", lambda index, verdict: stored.__setitem__(index, verdict)
+    )
+    inner = torch._scaled_mm
+    exc = (
+        torch.OutOfMemoryError("CUDA out of memory. Tried to allocate 2.00 MiB")
+        if error == "oom"
+        else RuntimeError(error)
+    )
+
+    def flaky(a, b, scale_a, scale_b, **kw):
+        if scale_a.numel() > 1:
+            raise exc
+        return inner(a, b, scale_a, scale_b, **kw)
+
+    monkeypatch.setattr(torch, "_scaled_mm", flaky)
+    before = f8t.addmm_float8_unwrapped_inference
+    tq._make_quant_config(tq.TQ_FP8)
+    assert stored == {} and 0 not in us._ROWWISE
+    assert us.stats()["installed"] is False and f8t.addmm_float8_unwrapped_inference is before
+    # Memory freed: the next load probes again and finds the kernel.
+    monkeypatch.setattr(torch, "_scaled_mm", inner)
+    tq._make_quant_config(tq.TQ_FP8)
+    assert stored == {0: True} and us._ROWWISE[0] is True
+
+
+def test_legacy_tuple_returning_scaled_mm_still_detects_a_missing_rowwise_kernel(monkeypatch):
+    # torch < 2.5 returns (out, amax) from _scaled_mm.
+    _fake_card(monkeypatch, (12, 0), rowwise_ok = False)
+    inner = torch._scaled_mm
+    monkeypatch.setattr(torch, "_scaled_mm", lambda *a, **k: (inner(*a, **k), torch.tensor(0.0)))
+    assert us._probe_rowwise(0) is False
+
+
+def test_traced_epilogue_does_not_specialize_on_the_row_count():
+    # AOTAutograd traces torchao's subclass at dispatch level, where is_compiling() is False: the eager chunk loop
+    # would bake the traced row count into the graph (a recompile per M, a ConstraintViolation under mark_dynamic).
+    from torch.fx.experimental.proxy_tensor import make_fx
+
+    def fn(acc, sa, sb):
+        return us._scale_epilogue(acc, sa, sb, None, torch.bfloat16)
+
+    gm = make_fx(fn, tracing_mode = "symbolic")(
+        torch.randn(64, 48), torch.rand(64, 1), torch.rand(1, 48)
+    )
+    acc, sa, sb = torch.randn(130, 48), torch.rand(130, 1), torch.rand(1, 48)
+    assert torch.equal(gm(acc, sa, sb), fn(acc, sa, sb))
+    assert not any(
+        n.target is torch.ops.aten.copy_.default for n in gm.graph.nodes if n.op == "call_function"
+    )
 
 
 def test_smoke_probe_verdicts_are_rekeyed_on_the_dispatcher_source():
@@ -326,3 +411,31 @@ def test_rocm_and_stubbed_torchao_are_never_probed(monkeypatch, refusal):
     tq._make_quant_config(tq.TQ_FP8)
     assert calls == [] and us.stats()["installed"] is False
     assert f8t.addmm_float8_unwrapped_inference is before
+
+
+def test_status_reports_the_card_of_the_fp8_component(monkeypatch):
+    # FP8 text encoder on fallback card 1, INT8 denoiser on card 0: the status is the encoder's card, not the
+    # denoiser's, since the dispatcher routes by operand device.
+    from types import SimpleNamespace
+
+    from core.inference.diffusion import _fp8_gemm_status
+
+    _fake_card(monkeypatch, (12, 0), rowwise_ok = False, cards = (0, 1))
+    monkeypatch.setattr(us, "_has_context", lambda index: index == 1)
+    tq._make_quant_config(tq.TQ_FP8)
+    assert us.fallback_cards() == frozenset({1})
+
+    class _Mod:
+        def __init__(self, index):
+            self.p = SimpleNamespace(device = SimpleNamespace(type = "cuda", index = index))
+
+        def parameters(self):
+            return iter([self.p])
+
+    pipe = SimpleNamespace(transformer = _Mod(0), text_encoder = _Mod(1))
+    state = SimpleNamespace(transformer_quant = "int8", text_encoder_quant = "fp8", pipe = pipe)
+    status = _fp8_gemm_status(state)
+    assert status["device_index"] == 1 and status["path"] == "unit_scale_fallback"
+    assert status["component"] == "text_encoder"
+    state = SimpleNamespace(transformer_quant = "fp8", text_encoder_quant = "fp8", pipe = pipe)
+    assert _fp8_gemm_status(state)["device_index"] == 0

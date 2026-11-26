@@ -68,6 +68,19 @@ def _compiling() -> bool:
         return False
 
 
+def _traced(t: Any) -> bool:
+    """Dynamo, or the dispatch-level trace AOTAutograd runs through torchao's tensor subclass, where
+    ``is_compiling()`` reads False: a fake (or functional-over-fake) operand. The eager chunk loop must never be traced,
+    it specializes the graph on the row count."""
+    if _compiling():
+        return True
+    try:
+        from torch._subclasses.fake_tensor import is_fake
+        return bool(is_fake(t))
+    except Exception:  # noqa: BLE001 - no fake-tensor API: nothing traces at dispatch level
+        return False
+
+
 def _scale_epilogue(
     acc: Any, a_scale: Any, b_scale: Any, bias: Optional[Any], output_dtype: Any
 ) -> Any:
@@ -75,7 +88,7 @@ def _scale_epilogue(
     in place (bitwise identical) to bound peak memory."""
     import torch
 
-    if _compiling():
+    if _traced(acc):
         out = acc * a_scale.float()
         out.mul_(b_scale.float())
         if bias is not None:
@@ -108,19 +121,70 @@ def stats() -> dict:
     return {**_COUNTS, "installed": bool(_STATE["installed"])}
 
 
+# What torch raises for a scaled_mm layout this build or card does not have ("Rowwise scaling is not currently
+# supported on your device" on the Windows wheels). Anything else (OOM, a busy or lost device) is no verdict.
+_UNSUPPORTED_WORDS = (
+    "not currently supported",
+    "not supported",
+    "unsupported",
+    "is only supported",
+)
+
+
+def _is_unsupported(exc: BaseException) -> bool:
+    if _is_oom(exc):
+        return False
+    return isinstance(exc, (RuntimeError, NotImplementedError)) and any(
+        w in str(exc).lower() for w in _UNSUPPORTED_WORDS
+    )
+
+
+def _is_oom(exc: BaseException) -> bool:
+    try:
+        import torch
+        named = tuple(
+            t
+            for t in (
+                getattr(torch, "OutOfMemoryError", None),
+                getattr(torch.cuda, "OutOfMemoryError", None),
+            )
+            if isinstance(t, type)
+        )
+        if named and isinstance(exc, named):
+            return True
+    except Exception:  # noqa: BLE001
+        pass
+    return isinstance(exc, MemoryError) or "out of memory" in str(exc).lower()
+
+
 def _probe_rowwise(index: int) -> Optional[bool]:
-    """True when the row-wise fp8 _scaled_mm runs on ``index``, False when only the tensorwise one does, None when
-    neither (no fp8 GEMM at all: nothing to fall back to). One tiny GEMM pair, run once per card per process."""
+    """True when the row-wise fp8 _scaled_mm runs on ``index``; False only when the tensorwise one runs and the
+    row-wise one raises torch's "not supported"; None for anything else (no fp8 GEMM at all, an OOM, a transient
+    error, a wrong answer), which is never cached or persisted. One tiny GEMM pair per card."""
     import torch
 
-    if not torch.cuda.is_available():
+    if not torch.cuda.is_available() or not hasattr(torch, "_scaled_mm"):
         return None
-    from .diffusion_modelopt_fp8 import ACT_DYNAMIC, ACT_STATIC, _probe_gemms
 
-    found = _probe_gemms(index)
-    if found.get(ACT_DYNAMIC):
-        return True
-    return False if found.get(ACT_STATIC) else None
+    def gemm(scale_a: Any, scale_b: Any) -> bool:
+        out = torch._scaled_mm(a, a.t(), scale_a = scale_a, scale_b = scale_b, out_dtype = torch.bfloat16)
+        out = out[0] if isinstance(out, tuple) else out  # torch < 2.5 returns (out, amax)
+        return bool(torch.isfinite(out).all().item()) and float(out[0, 0]) == 32.0
+
+    dev = f"cuda:{index}"
+    try:
+        a = torch.ones((16, 32), device = dev).to(torch.float8_e4m3fn)
+        one = torch.ones((), device = dev, dtype = torch.float32)
+        if not gemm(one, one):
+            return None
+    except Exception:  # noqa: BLE001 - no tensorwise fp8 GEMM, or no memory for it: nothing proven
+        return None
+    try:
+        rows = torch.ones((16, 1), device = dev, dtype = torch.float32)
+        cols = torch.ones((1, 16), device = dev, dtype = torch.float32)
+        return True if gemm(rows, cols) else None
+    except Exception as exc:  # noqa: BLE001
+        return False if _is_unsupported(exc) else None
 
 
 _PERSIST: list = []  # [Namespace or None], built once
@@ -176,15 +240,23 @@ def _probe_refused() -> bool:
         return True
 
 
+def _current_device() -> Optional[int]:
+    try:
+        import torch
+        return int(torch.cuda.current_device())
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def rowwise_verdicts(caps: dict) -> dict:
-    """Per-card row-wise verdicts for the fp8-capable cards in ``caps``: in-process, then the persisted probe table
-    (keyed like the quant probe verdicts: torch, driver, card, env), then a probe. The row-wise kernel is a property
-    of the torch build and the arch, so one card is probed per capability (one that already has a CUDA context when
-    there is one) and stands for the others: no context is opened on a card this process may never use."""
+    """Row-wise verdicts for the fp8-capable cards in ``caps``: in-process, then the persisted probe table (keyed like
+    the quant probe verdicts: torch, driver, card, env), then a probe. Only cards this process already uses (a CUDA
+    context; the current device when none has one) are probed, so no context opens on a card it never touches, and
+    each verdict belongs to the card that was probed. A card with no verdict keeps torchao's own path."""
     out: dict = {}
-    pending: dict = {}
     if _probe_refused():
         return out
+    unknown = []
     for index, cap in caps.items():
         if tuple(cap) < _FP8_MIN_CAP:
             continue
@@ -195,21 +267,21 @@ def rowwise_verdicts(caps: dict) -> dict:
         if persisted is not None:
             out[index] = _ROWWISE[index] = persisted
             continue
-        pending.setdefault(tuple(cap), []).append(index)
-    for cap, indices in pending.items():
-        known = [out[i] for i, c in caps.items() if tuple(c) == cap and out.get(i) is not None]
-        if known:
-            verdict = known[0]
-        else:
-            probe = next((i for i in indices if _has_context(i)), indices[0])
-            try:
-                verdict = _probe_rowwise(probe)
-            except Exception:  # noqa: BLE001 - an unprobeable card keeps torchao's own path
-                verdict = None
-        for index in indices:
-            out[index] = _ROWWISE[index] = verdict
-            if verdict is not None:
-                _persist_rowwise(index, verdict)
+        unknown.append(index)
+    probe = [i for i in unknown if _has_context(i)]
+    if not probe and not any(_has_context(i) for i in caps):
+        current = _current_device()
+        probe = [current] if current in unknown else []
+    for index in probe:
+        try:
+            verdict = _probe_rowwise(index)
+        except Exception:  # noqa: BLE001 - an unprobeable card keeps torchao's own path
+            verdict = None
+        out[index] = verdict
+        if verdict is not None:
+            # None (OOM, transient) is neither cached nor persisted: the next install probes again.
+            _ROWWISE[index] = verdict
+            _persist_rowwise(index, verdict)
     return out
 
 
@@ -311,9 +383,16 @@ def _device_caps() -> dict:
 def install(logger: Any = None, *, fast_accum: Optional[bool] = None) -> bool:
     """Patch torchao addmm; idempotent, False when off, no qualifying GPU, or layout moved."""
     if _STATE["installed"]:
-        from .diffusion_compile_config import apply
-        apply()
-        return True
+        # A card that started being used after install, and lacks the row-wise kernel, needs the dispatcher too.
+        if _mode() == "auto" and not _STATE["forced_fallback"] and _STATE["orig"] is not None:
+            caps_now = _device_caps()
+            missing = {i for i, ok in rowwise_verdicts(caps_now).items() if ok is False}
+            if missing - set(_STATE["fallback"]):
+                uninstall()
+        if _STATE["installed"]:
+            from .diffusion_compile_config import apply
+            apply()
+            return True
     mode = _mode()
     if mode == "off":
         return False
