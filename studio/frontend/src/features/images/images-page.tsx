@@ -120,7 +120,7 @@ import {
   useNvfp4DiffusionKnown,
 } from "@/hooks/use-host-class";
 import { reseedAction } from "@/lib/failed-load-reseed";
-import { nvfp4SelectionFallback, withNvfp4Option } from "@/lib/nvfp4-options";
+import { nvfp4SelectionFallback, type SelectOption, withNvfp4Option } from "@/lib/nvfp4-options";
 import type {
   ExternalModelOption,
   ModelOption,
@@ -1065,7 +1065,7 @@ function AdvancedSelect({
   desc?: string;
   value: string;
   onValueChange: (v: string) => void;
-  options: Array<[string, string]>;
+  options: ReadonlyArray<SelectOption>;
 }) {
   return (
     <div className="flex flex-col gap-1">
@@ -1080,9 +1080,19 @@ function AdvancedSelect({
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            {options.map(([v, l]) => (
-              <SelectItem key={v} value={v} className="text-xs">
-                {l}
+            {options.map(([v, l, disabledReason]) => (
+              <SelectItem key={v} value={v} className="text-xs" disabled={!!disabledReason}>
+                {disabledReason ? (
+                  // Disabled items take no pointer events, so the reason is shown inline rather than as a tooltip.
+                  <span className="flex flex-col items-start gap-0.5">
+                    <span>{l}</span>
+                    <span className="max-w-[calc(16rem*var(--ui-space-scale,1))] whitespace-normal text-ui-10 leading-snug text-muted-foreground">
+                      {disabledReason}
+                    </span>
+                  </span>
+                ) : (
+                  l
+                )}
               </SelectItem>
             ))}
           </SelectContent>
@@ -6405,7 +6415,7 @@ export function ImagesPage({
                     ["int8", "INT8"],
                     ["nvfp4", "NVFP4 (Blackwell)"],
                     ["mxfp8", "MXFP8 (Blackwell)"],
-                  ] as [string, string][],
+                  ] as SelectOption[],
                   nvfp4Diffusion,
                 )
               : []),
@@ -6436,7 +6446,7 @@ export function ImagesPage({
             ["fp8_dynamic", "FP8 (compute)"],
             ["int8", "INT8"],
             ["nvfp4", "NVFP4"],
-          ] as [string, string][],
+          ] as SelectOption[],
           nvfp4Diffusion,
         )}
       />
