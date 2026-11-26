@@ -139,3 +139,82 @@ def test_text_before_a_tool_call_or_tool_event_is_sent_before_it():
         )
         assert _text_before_first(out, marker) == "Let me look that up."
         assert _text(out) == "Let me look that up."
+
+
+def test_framed_sse_streams_get_the_same_cut_and_close_the_provider_stream():
+    from routes.inference import _sse_frames_with_stops
+
+    closed = []
+
+    async def frames():
+        try:
+            for frame in [
+                ": keepalive\n\n",
+                _chunk("Hello.\nAl") + "\n\n",
+                _chunk("ex: hi") + "\n\n",
+                _chunk(" more") + "\n\n",
+            ]:
+                yield frame
+        finally:
+            closed.append(True)
+
+    async def collect():
+        return [frame async for frame in _sse_frames_with_stops(frames(), ["\nAlex:"], "m")]
+
+    out = asyncio.run(collect())
+    assert all(frame.endswith("\n\n") for frame in out)
+    assert out[0] == ": keepalive\n\n"
+    assert _text([frame.rstrip("\n") for frame in out]) == "Hello."
+    assert out[-1] == "data: [DONE]\n\n"
+    assert closed == [True]
+
+
+def test_a_codex_connection_reply_is_cut_at_a_stop(monkeypatch):
+    from types import SimpleNamespace
+
+    import routes.inference as inf
+    from core.inference import openai_codex_client as codex_client
+    from models.inference import ChatCompletionRequest
+
+    from .test_external_disconnect_watcher_teardown import _codex_provider
+
+    model = _codex_provider(monkeypatch)
+
+    class FakeCodexClient:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def stream(self, **_kwargs):
+            async def _stream():
+                for content in ("Hello there.\nAl", "ex: hi", " more"):
+                    yield _chunk(content)
+
+            return _stream()
+
+        async def close(self):
+            pass
+
+    monkeypatch.setattr(codex_client, "OpenAICodexClient", FakeCodexClient)
+
+    async def _run():
+        async def is_disconnected():
+            return False
+
+        request = SimpleNamespace(
+            headers = {},
+            state = SimpleNamespace(skip_api_monitor = True),
+            is_disconnected = is_disconnected,
+        )
+        payload = ChatCompletionRequest(
+            messages = [{"role": "user", "content": "hello"}],
+            provider_id = "codex-1",
+            external_model = model,
+            stream = True,
+            stop = ["\nAlex:"],
+        )
+        response = await inf._proxy_to_external_provider(payload, request, current_subject = "t")
+        return [chunk async for chunk in response.body_iterator]
+
+    out = [str(chunk).rstrip("\n") for chunk in asyncio.run(_run())]
+    assert _text(out) == "Hello there."
+    assert out[-1] == "data: [DONE]"
