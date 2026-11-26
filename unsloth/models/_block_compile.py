@@ -2854,7 +2854,8 @@ def _wrap(
             except Exception as e:
                 # Non-reentrant checkpoint ends a recompute by raising through the forward: control
                 # flow, not a compile failure (demoting on it left the stock forward in every block).
-                if type(e).__name__ == "_StopRecomputationError":
+                # CheckpointError (forward / recompute mismatch) too: demoting would hide it.
+                if type(e).__name__ in ("_StopRecomputationError", "CheckpointError"):
                     raise
                 if os.environ.get("UNSLOTH_BLOCK_COMPILE_DEBUG") == "1":
                     import traceback
