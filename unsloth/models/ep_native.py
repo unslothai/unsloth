@@ -498,6 +498,7 @@ def apply_expert_parallel(model, mesh = None):
         raise NotImplementedError(
             "Unsloth: expert parallel cannot be combined with tensor parallel / FSDP2."
         )
+    _lists().check_remote_layout(model, ep, rank, ep_mesh.mesh.tolist())
     blocks = tpn.moe_blocks_with_experts(model)
     sharded, kept, listed, fused_lists = [], [], [], []
     for block in blocks:

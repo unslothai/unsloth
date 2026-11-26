@@ -271,3 +271,46 @@ def test_ep_list_load_device_map_listing_remote_experts_collapses_to_one_device(
     split.hf_device_map = {"layers.0": 0, "layers.1": 1}
     tp_native._drop_remote_device_map(split, 2, 0)
     assert split.hf_device_map == {"layers.0": 0, "layers.1": 1}
+
+
+def test_ep_list_load_helpers_scope_devices_threads_and_quant_state():
+    import contextvars
+    from concurrent.futures import ThreadPoolExecutor
+
+    from unsloth.models import ep_expert_lists as lists, tp_native
+
+    # CPU / disk offload keeps the full load: accelerate's hooks place tensors directly.
+    assert (
+        tp_native._one_device({"": 0})
+        and tp_native._one_device({"": "cpu"})
+        and tp_native._one_device(None)
+    )
+    assert not tp_native._one_device({"a": "cpu", "b": "disk"}) and not tp_native._one_device(
+        "auto"
+    )
+    # Pool threads run in the submitting context: a nested ordinary load keeps its own owner token.
+    var = contextvars.ContextVar("owner", default = None)
+    pool = type("_ContextPool", (ThreadPoolExecutor,), {"submit": tp_native._submit_in_context})
+    token = var.set("load")
+    try:
+        with pool(max_workers = 1) as executor:
+            assert executor.submit(var.get).result() == "load"
+    finally:
+        var.reset(token)
+    # A Linear4bit's own quant_state reference follows the stand-in, so remote buffers are freed.
+    bnb = pytest.importorskip("bitsandbytes")
+    linear = bnb.nn.Linear4bit(64, 32, compute_dtype = torch.float16)
+    state = object()
+    linear.weight.quant_state = state
+    linear.quant_state = state
+    lists.replace_remote(linear, "weight", (4, 2, 1, (0, 1)))
+    assert linear.weight.is_meta and lists.is_remote(linear.weight)
+    assert linear.quant_state is linear.weight.quant_state and linear.quant_state is not state
+    # Stand-ins loaded for one ep layout refuse another before apply_expert_parallel changes anything.
+    holder = torch.nn.Module()
+    holder.linear = linear
+    lists.check_remote_layout(holder, 2, 1, [0, 1])
+    with pytest.raises(ValueError, match = "same ep mesh"):
+        lists.check_remote_layout(holder, 2, 0, [0, 1])
+    with pytest.raises(ValueError, match = "same ep mesh"):
+        lists.check_remote_layout(holder, 4, 1, [0, 1, 2, 3])

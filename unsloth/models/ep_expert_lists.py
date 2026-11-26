@@ -204,6 +204,7 @@ def shard_fused_lists(block, mesh, rank, ep):
     block.__dict__["_unsloth_tp_expert_shard"] = exchange
     block.__dict__[_SHARD] = shard
     shard.exchange = exchange
+    _drop_load_guard(block)
     return exchange
 
 
@@ -312,15 +313,39 @@ def is_remote(p):
     return getattr(p, _REMOTE, None) is not None
 
 
+def replace_remote(module, pname, tag):
+    """module.<pname> becomes another rank's meta stand-in; a Linear4bit's own quant_state reference goes too."""
+    old = module._parameters[pname]
+    module._parameters[pname] = new = remote_stand_in(old, tag)
+    state = getattr(old, "quant_state", None)
+    if state is not None and module.__dict__.get("quant_state") is state:
+        module.__dict__["quant_state"] = new.quant_state
+
+
+def check_remote_layout(model, ep, rank, ranks):
+    """Before apply_expert_parallel changes anything: every stand-in was loaded for this ep mesh and rank."""
+    for name, p in model.named_parameters():
+        tag = getattr(p, _REMOTE, None)
+        if tag is not None and tuple(tag[1][1:]) != (ep, rank, tuple(ranks)):
+            raise ValueError(
+                f"Unsloth: expert_parallel_loading kept only some experts ({name}) for ep {tag[1][1]} rank "
+                f"{tag[1][2]} of ranks {tag[1][3]}, but apply_expert_parallel shards over ep {ep} rank {rank} of "
+                f"ranks {tuple(ranks)}; load and shard with the same ep mesh."
+            )
+
+
 def _refuse_remote_local(lst_items, block):
-    guard = block.__dict__.pop("_unsloth_tp_load_guard", None)
-    if guard is not None:
-        guard.remove()
     if any(is_remote(p) for m in lst_items for p in m.parameters()):
         raise ValueError(
             f"Unsloth: expert_parallel_loading kept other experts of {type(block).__name__} on this rank than "
             "apply_expert_parallel shards to it; load and shard with the same ep mesh."
         )
+
+
+def _drop_load_guard(block):
+    guard = block.__dict__.pop("_unsloth_tp_load_guard", None)  # set by expert_parallel_loading
+    if guard is not None:
+        guard.remove()
 
 
 class _ListShard:
@@ -614,6 +639,7 @@ def shard_expert_list(block, mesh, rank, ep):
     prior = block.__dict__.get("forward", block.forward)
     block.forward = _list_forward(shard, prior)
     block.__dict__[_SHARD] = shard
+    _drop_load_guard(block)
     return shard
 
 
