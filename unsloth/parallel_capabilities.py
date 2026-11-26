@@ -1279,8 +1279,20 @@ _TP_BLOCKED_FAMILIES = {
 _EP_BLOCKED_FAMILIES = {
     "jetmoe": "its experts forward takes (layer_input,), not (hidden_states, top_k_index, top_k_weights)",
     "longcat_flash": "zero / identity experts: the experts module has no integer num_experts",
-    "hunyuan_v1_moe": "the experts module has no integer num_experts",
 }
+# Families whose load_in_4bit layout expert parallel cannot shard, though their 16-bit layout shards.
+_EP_BLOCKED_4BIT_FAMILIES = {
+    "gpt_oss": (
+        "per-expert Linear lists (down_projs / gate_up_projs): one Linear4bit per expert, not a fused expert "
+        "stack (unsloth_zoo's GptOssExpertsBnb4bit, the load_in_4bit gpt-oss layout)"
+    ),
+}
+
+
+def _family_ep_blocker(family, load_in_4bit = False) -> str:
+    if load_in_4bit and family in _EP_BLOCKED_4BIT_FAMILIES:
+        return _EP_BLOCKED_4BIT_FAMILIES[family]
+    return _EP_BLOCKED_FAMILIES.get(family, "")
 
 
 def _moe_note(family, precision, aux, mode):
@@ -1289,8 +1301,9 @@ def _moe_note(family, precision, aux, mode):
             return f"refused by the ep x model rule (models/tp_native.py: {_EP_BLOCKED_FAMILIES[family]})"
         return "expert parallel x Ulysses context parallel runs; no gloo parity run covers this cell yet"
     if mode == "ep":
-        if family in _EP_BLOCKED_FAMILIES:
-            return f"refused by the ep x model rule (models/tp_native.py: {_EP_BLOCKED_FAMILIES[family]})"
+        blocker = _family_ep_blocker(family, precision == "qlora")
+        if blocker:
+            return f"refused by the ep x model rule (models/tp_native.py: {blocker})"
         return "expert parallel runs (models/ep_native.py); no gloo parity run covers this cell yet"
     if mode == "tp":
         if family in _DIRECT_PARAM_FAMILIES:
@@ -1853,14 +1866,19 @@ def _tp_blocker(model, tp) -> str:
     return ""
 
 
-def _ep_blocker(model, ep) -> str:
+def _ep_blocker(
+    model,
+    ep,
+    load_in_4bit = False,
+) -> str:
     """Why apply_expert_parallel would refuse `model` at `ep` ranks, "" if it shards. Strings and
-    structureless models fall back to _EP_BLOCKED_FAMILIES."""
+    structureless models fall back to _EP_BLOCKED_FAMILIES (and, for a load_in_4bit load,
+    _EP_BLOCKED_4BIT_FAMILIES); a loaded model is read by structure, its experts' num_experts included."""
     if not isinstance(ep, int) or ep <= 1 or model is None:
         return ""
     family = model if isinstance(model, str) else _model_traits(model)[0]
     if not callable(getattr(model, "named_modules", None)):
-        return _EP_BLOCKED_FAMILIES.get(family, "")
+        return _family_ep_blocker(family, load_in_4bit)
     try:
         from .models import ep_native, tp_native
         if ep_native.is_expert_parallel(model):
@@ -1870,7 +1888,7 @@ def _ep_blocker(model, ep) -> str:
             for block in tp_native.moe_blocks_with_experts(model)
         ]
     except Exception:
-        return _EP_BLOCKED_FAMILIES.get(family, "")
+        return _family_ep_blocker(family, load_in_4bit)
     if any(problem is None for problem in problems):
         return ""
     reasons = (

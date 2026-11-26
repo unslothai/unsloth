@@ -4,8 +4,8 @@
 
 Each rank trains its own rows (rank 1 a shorter sequence: uneven all-to-all splits) through torch DDP with the
 routed experts sharded by index; LoRA on every Linear (the routers included) and on the fused expert stacks.
-Families whose experts the tensor parallel expert shard cannot cut (gpt-oss: another experts call signature) or
-models without routed experts are refused before anything changes."""
+Models without routed experts, and experts kept as per-expert Linear lists (the load_in_4bit gpt-oss layout), are
+refused before anything changes."""
 
 import multiprocessing
 import os
@@ -87,6 +87,25 @@ FAMILIES = {
             moe_intermediate_size = 16,
         ),
         experts = "experts",
+    ),
+    # Hunyuan-A13B layout (E from config, a top-k per layer, a shared expert), shrunk. Its default config has
+    # num_experts = 1, which once put the family in the ep blocked-family table.
+    "hunyuan_v1_moe": dict(
+        config = dict(
+            model_type = "hunyuan_v1_moe",
+            vocab_size = 128,
+            hidden_size = 32,
+            intermediate_size = 16,
+            num_hidden_layers = 3,
+            num_attention_heads = 2,
+            num_key_value_heads = 1,
+            head_dim = 16,
+            num_experts = 64,
+            moe_topk = [8, 8, 8],
+            num_shared_expert = [1, 1, 1],
+            pad_token_id = 0,
+            use_qk_norm = True,
+        )
     ),
 }
 REFUSED = {
@@ -392,6 +411,65 @@ def _case_refused(rank, world, tmp, repo):
     }
 
 
+class _PerExpertListExperts(torch.nn.Module):
+    """unsloth_zoo's GptOssExpertsBnb4bit layout (every load_in_4bit gpt-oss): one Linear per expert in
+    gate_up_projs / down_projs, empty stack buffers, the gpt-oss experts call. bitsandbytes needs a GPU for real
+    Linear4bit, and the layout alone is what expert parallel reads."""
+
+    def __init__(self, config):
+        super().__init__()
+        self.num_experts = config.num_local_experts
+        hidden, inter = config.hidden_size, config.intermediate_size
+        self.gate_up_projs = torch.nn.ModuleList(
+            [torch.nn.Linear(hidden, 2 * inter) for _ in range(self.num_experts)]
+        )
+        self.down_projs = torch.nn.ModuleList(
+            [torch.nn.Linear(inter, hidden) for _ in range(self.num_experts)]
+        )
+        for name in ("gate_up_proj", "gate_up_proj_bias", "down_proj", "down_proj_bias"):
+            self.register_buffer(name, torch.empty(0), persistent = False)
+
+    def forward(
+        self,
+        hidden_states,
+        router_indices = None,
+        routing_weights = None,
+    ):
+        raise AssertionError("never reached: refused before any forward")
+
+
+def _case_refused_per_expert_lists(rank, world, tmp, repo):
+    from torch.distributed.device_mesh import init_device_mesh
+    import transformers.models.gpt_oss.modeling_gpt_oss as gpt_oss
+
+    build, tpn, epn = _modules()
+    mesh = init_device_mesh("cpu", (world,), mesh_dim_names = ("ep",))["ep"]
+    stock = gpt_oss.GptOssExperts
+    gpt_oss.GptOssExperts = _PerExpertListExperts
+    try:
+        model = build(repo, lora = False)
+    finally:
+        gpt_oss.GptOssExperts = stock
+    assert isinstance(model.model.layers[0].mlp.experts, _PerExpertListExperts)
+    before = {k: (id(p), tuple(p.shape)) for k, p in model.named_parameters()}
+    messages = []
+    for call in (
+        lambda: epn.ep_refuse_per_expert_lists(model),
+        lambda: epn.apply_expert_parallel(model, mesh),
+    ):
+        try:
+            call()
+            messages.append(None)
+        except NotImplementedError as exc:
+            messages.append(str(exc))
+    after = {k: (id(p), tuple(p.shape)) for k, p in model.named_parameters()}
+    return {
+        "messages": messages,
+        "unchanged": before == after,
+        "is_ep": epn.is_expert_parallel(model),
+    }
+
+
 _EXPORTS = (
     "save_pretrained_merged",
     "save_pretrained_gguf",
@@ -660,6 +738,18 @@ def test_ep_refuses_models_it_cannot_shard(family):
     assert all(r is not None and "error" not in r for r in results), results
     for r in results:
         assert r["message"] is not None and "no shardable MoE block" in r["message"], r["message"]
+        assert r["unchanged"] and not r["is_ep"], r
+
+
+def test_ep_refuses_per_expert_linear_lists_with_a_clear_message():
+    """The load_in_4bit gpt-oss experts layout: refused before anything changes, naming the way out."""
+    results = _spawn("_case_refused_per_expert_lists", repo = FAMILIES["gpt_oss"])
+    assert all(r is not None and "error" not in r for r in results), results
+    for r in results:
+        for message in r["messages"]:
+            assert message is not None and "per-expert Linear lists" in message, r
+            assert "gate_up_projs" in message and "load_in_4bit = False" in message, message
+            assert "UNSLOTH_FSDP2=1" in message, message
         assert r["unchanged"] and not r["is_ep"], r
 
 

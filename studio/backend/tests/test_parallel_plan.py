@@ -402,3 +402,54 @@ def test_config_traits_match_core():
         "multimodal": False,
         "windowed": False,
     }
+
+
+def test_auto_picks_ep_for_hunyuan_v1_moe():
+    # Its default config has num_experts = 1; real Hunyuan-A13B (64 experts) shards under ep.
+    plan = pp.plan(
+        {"parallel_mode": "auto"},
+        _host(2, ep = True),
+        _model(need = 6.0, moe = True, family = "hunyuan_v1_moe"),
+    )
+    assert plan["mode"] == "ep" and plan["spec"] == "ep=2", plan
+
+
+def test_gpt_oss_qlora_falls_back_from_ep_and_16bit_keeps_it():
+    ep_host = _host(2, ep = True)
+    lora = pp.plan(
+        {"parallel_mode": "auto", "load_in_4bit": False},
+        ep_host,
+        _model(need = 6.0, moe = True, family = "gpt_oss"),
+    )
+    assert lora["mode"] == "ep" and lora["spec"] == "ep=2", lora
+    # load_in_4bit gpt-oss experts are per-expert Linear4bit lists, which ep cannot shard.
+    fits = pp.plan(
+        {"parallel_mode": "auto"},
+        ep_host,
+        _model(need = 6.0, moe = True, family = "gpt_oss", mode = "qlora"),
+    )
+    assert fits["mode"] == "ddp" and fits["spec"] == "dp=2", fits
+    sharded = pp.plan(
+        {"parallel_mode": "auto"},
+        ep_host,
+        _model(need = 20.0, shard = 11.0, moe = True, family = "gpt_oss", mode = "qlora"),
+    )
+    assert sharded["mode"] == "fsdp2" and sharded["spec"] == "dp=2,fsdp=1", sharded
+    rows = {r["mode"]: r for r in sharded["modes"]}
+    assert not rows["ep"]["available"] and "per-expert Linear lists" in rows["ep"]["reason"], rows[
+        "ep"
+    ]
+    # A pre-quantized repo name is 4-bit even when the request leaves load_in_4bit off.
+    prequant = pp.plan(
+        {"parallel_mode": "auto", "model_name": "unsloth/gpt-oss-20b-unsloth-bnb-4bit"},
+        ep_host,
+        _model(need = 6.0, moe = True, family = "gpt_oss"),
+    )
+    assert prequant["mode"] == "ddp", prequant
+    with pytest.raises(pp.ParallelPlanError) as err:
+        pp.plan(
+            {"parallel_mode": "ep"},
+            ep_host,
+            _model(moe = True, family = "gpt_oss", mode = "qlora"),
+        )
+    assert "per-expert Linear lists" in err.value.payload["message"], err.value.payload

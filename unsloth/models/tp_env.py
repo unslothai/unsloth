@@ -163,7 +163,11 @@ def tensor_parallel_env_load(fn):
         if layout is None and not _DEPTH["load"]:
             from .ep_native import ep_env_size
             if ep_env_size() > 1:  # expert parallel (UNSLOTH_EP_SIZE): the experts load per rank
-                from .ep_native import ep_env_load, ep_refuse_fast_inference
+                from .ep_native import (
+                    ep_env_load,
+                    ep_refuse_fast_inference,
+                    ep_refuse_per_expert_lists,
+                )
 
                 from .tp_native import refuse_hf_distributed_kwargs
 
@@ -174,9 +178,12 @@ def tensor_parallel_env_load(fn):
                 sharded = not _is_adapter(values) and values.get("qat_scheme") is None
                 _DEPTH["load"] += 1
                 try:
-                    return ep_env_load(fn, args, kwargs, sharded)
+                    loaded = ep_env_load(fn, args, kwargs, sharded)
                 finally:
                     _DEPTH["load"] -= 1
+                # Refuse now, not at get_peft_model: a load_in_4bit gpt-oss has per-expert Linear4bit lists.
+                ep_refuse_per_expert_lists(loaded[0] if isinstance(loaded, tuple) else loaded)
+                return loaded
         if layout is None or _DEPTH["load"]:
             return fn(*args, **kwargs)
         values = _bound(fn, args, kwargs)
