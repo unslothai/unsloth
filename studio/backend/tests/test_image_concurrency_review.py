@@ -34,8 +34,16 @@ def _real_plan(backend, family):
     """Bind the real engine's coalesce_plan onto the fake, over a stand-in load state."""
     from core.inference.diffusion import DiffusionBackend
 
-    backend._state = types.SimpleNamespace(family = family, pipe = _clip_pipe())
+    # A load streaming its denoiser from host: only those coalesce across requests.
+    backend._state = types.SimpleNamespace(
+        family = family,
+        pipe = _clip_pipe(),
+        offload_policy = "sequential",
+        cuda_graphs = (),
+        speed_optims = (),
+    )
     backend.coalesce_plan = types.MethodType(DiffusionBackend.coalesce_plan, backend)
+    backend.request_batching = types.MethodType(DiffusionBackend.request_batching, backend)
 
 
 def test_requests_with_loras_batch_only_with_their_own_account(studio):
@@ -81,12 +89,20 @@ def test_the_engine_plan_marks_loras_and_owned_embeddings_private(monkeypatch):
 
     engine = DiffusionBackend()
     assert engine.coalesce_plan("a fox", False) is None  # nothing loaded
-    engine._state = types.SimpleNamespace(family = types.SimpleNamespace(name = "z-image"), pipe = None)
+    engine._state = types.SimpleNamespace(
+        family = types.SimpleNamespace(name = "z-image"), pipe = None, speed_optims = ()
+    )
+    assert (
+        engine.coalesce_plan("a fox", False) is None
+    )  # resident weights serve one request at a time
+    engine._state.offload_policy = "sequential"
     assert engine.coalesce_plan("a fox", False) == ((), False)
     assert engine.coalesce_plan("a fox", True) == ((), True)
     engine._state = types.SimpleNamespace(
         family = types.SimpleNamespace(name = "sdxl", textual_inversion = "sdxl"),
         pipe = _clip_pipe(),
+        offload_policy = "sequential",
+        speed_optims = (),
     )
     monkeypatch.setattr(embeddings, "list_embeddings", lambda kind = None: [])
     assert engine.coalesce_plan("a fox", False)[1] is False
@@ -314,6 +330,7 @@ def test_the_engine_offers_only_compiled_batch_sizes_on_a_static_load(monkeypatc
         speed_mode = "default",
         pipe = None,
         cuda_graphs = (),
+        offload_policy = "sequential",
         compile_cache_ctx = types.SimpleNamespace(
             shapes = {(512, 512, 1), (512, 512, 4), (768, 768, 2)}
         ),
@@ -894,6 +911,10 @@ def test_status_tells_how_concurrent_requests_are_served(monkeypatch):
     engine._state = types.SimpleNamespace(
         speed_optims = (), speed_mode = "off", pipe = None, cuda_graphs = (), compile_cache_ctx = None
     )
+    policy = engine.request_batching()
+    assert policy["mode"] == "serial" and policy["reason"].startswith("resident weights")
+    assert engine.coalesce_batch_sizes(512, 512) == frozenset()
+    engine._state.offload_policy = "sequential"
     assert engine.request_batching()["mode"] == "any"
     assert engine.coalesce_batch_sizes(512, 512) is None
     engine._state.speed_optims = ("compiled",)

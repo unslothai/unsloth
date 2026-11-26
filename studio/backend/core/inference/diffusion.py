@@ -5108,6 +5108,20 @@ def _coalesce_prompt_key(family: Any, name: Any, pipe: Any, prompt: str) -> Opti
     return ()
 
 
+def _denoiser_streams_from_host(state: Any) -> bool:
+    """The loaded placement copies denoiser weights from host memory on every render: model, sequential or
+    streaming offload, or group offload with any group left unpinned. Resident (no offload, or every group pinned)
+    is False; an unreadable group placement counts as streamed, as its policy plans."""
+    policy = getattr(state, "offload_policy", OFFLOAD_NONE) or OFFLOAD_NONE
+    if policy == OFFLOAD_NONE:
+        return False
+    if policy != OFFLOAD_GROUP:
+        return True
+    from .diffusion_memory import DENOISER_RESIDENT
+
+    return denoiser_offload(getattr(state, "pipe", None), policy) != DENOISER_RESIDENT
+
+
 class DiffusionBackend:
     """Holds at most one loaded diffusers pipeline. All mutations are serialised."""
 
@@ -18225,6 +18239,10 @@ class DiffusionBackend:
         state = self._state
         if state is None:
             return None
+        # A load that serves one request at a time never waits to coalesce.
+        policy = self.request_batching()
+        if policy is None or policy["mode"] == "serial":
+            return None
         prompt_key = coalesce_prompt_key(state.family, state.pipe, prompt)
         if prompt_key is None:
             return None
@@ -18239,11 +18257,20 @@ class DiffusionBackend:
 
     def request_batching(self) -> Optional[dict[str, str]]:
         """How concurrent requests share calls on this load, for status: ``mode`` is ``any`` (any batch size),
-        ``compiled_sizes`` (static compile: only batch sizes this load already compiled) or ``serial`` (CUDA graphs:
-        every request renders alone), with the reason. None when nothing is loaded."""
+        ``compiled_sizes`` (static compile: only batch sizes this load already compiled) or ``serial`` (resident
+        weights or CUDA graphs: every request renders alone), with the reason. None when nothing is loaded."""
         state = self._state
         if state is None:
             return None
+        if not _denoiser_streams_from_host(state):
+            # Measured per family (A100 / RTX PRO 6000, batch of 4): resident loads ran 0.81x to 1.19x of serial
+            # while each member drifted from its solo render; only loads streaming the denoiser from host gained
+            # (1.47x to 3.35x), since one batch pays for one pass of weight copies.
+            return {
+                "mode": "serial",
+                "reason": "resident weights: a shared call is no faster than one request at a time, so "
+                "concurrent requests render one at a time",
+            }
         if getattr(state, "cuda_graphs", ()):
             # A graph replays one batch size: a new size captures (seconds, and its own memory pool) inside the slot
             # while everyone waits, and an OOM split drops every graph. Graph replay already keeps the card busy,

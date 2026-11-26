@@ -42,12 +42,20 @@ class _ClipWords:
         return {"input_ids": [10 + len(word) for word in text.split()]}
 
 
-def _plan(backend, family, pipe):
-    """The real engine's coalesce_plan over a stand-in load state."""
+def _plan(
+    backend,
+    family,
+    pipe,
+    offload_policy = "sequential",
+):
+    """The real engine's coalesce_plan over a stand-in load state; streamed from host unless told otherwise."""
     from core.inference.diffusion import DiffusionBackend
 
-    backend._state = types.SimpleNamespace(family = family, pipe = pipe)
+    backend._state = types.SimpleNamespace(
+        family = family, pipe = pipe, offload_policy = offload_policy, cuda_graphs = (), speed_optims = ()
+    )
     backend.coalesce_plan = types.MethodType(DiffusionBackend.coalesce_plan, backend)
+    backend.request_batching = types.MethodType(DiffusionBackend.request_batching, backend)
 
 
 def _qwen21_pipe():
@@ -218,3 +226,82 @@ def test_loads_whose_keys_never_tokenize_make_no_copy():
     pipe = types.SimpleNamespace(tokenizer = tok)
     diffusion.prime_coalesce_tokenizers(types.SimpleNamespace(name = "z-image"), pipe)
     assert tok not in diffusion._KEY_TOKENIZERS
+
+
+def _serves_at_once(app, backend, prompts):
+    """Posts while another render holds the slot; each must finish without waiting to coalesce."""
+    opened: list[int] = []
+
+    async def run():
+        transport = httpx.ASGITransport(app = app)
+        async with httpx.AsyncClient(transport = transport, base_url = "http://studio") as client:
+            backend.rendering = True
+            out = []
+            for path, account, body in _interleaved(*prompts):
+                response = await asyncio.wait_for(
+                    client.post(path, json = body, headers = {"x-test-account": account}),
+                    timeout = 5,
+                )
+                opened.append(len(batching._OPEN))
+                out.append(response)
+            backend.rendering = False
+            return out
+
+    return asyncio.run(run()), opened
+
+
+def test_a_resident_load_never_batches_and_never_waits(studio):
+    """Resident weights: a shared call measured 0.81x to 1.19x of serial while members drifted from their solos."""
+    app, backend, _saved = studio
+    _plan(backend, types.SimpleNamespace(name = "z-image"), None, offload_policy = "none")
+    responses, opened = _serves_at_once(app, backend, ("a fox", "a cat", "an owl"))
+    assert [r.status_code for r in responses] == [200, 200, 200]
+    assert opened == [0, 0, 0]
+    assert _batched_calls(backend) == []
+
+
+def test_a_streamed_load_still_batches_across_accounts(studio):
+    app, backend, _saved = studio
+    _plan(backend, types.SimpleNamespace(name = "z-image"), None, offload_policy = "group")
+    responses = _post_while_rendering(
+        app, backend, _interleaved("a fox", "a cat", "an owl"), waiting = 3
+    )
+    assert all(r.status_code == 200 for r in responses)
+    assert _groups(backend) == [sorted(["a fox", "a cat", "an owl"])]
+
+
+def test_group_offload_with_every_group_pinned_counts_as_resident(monkeypatch):
+    import core.inference.diffusion as diffusion_module
+    from core.inference.diffusion import DiffusionBackend
+    from core.inference.diffusion_memory import (
+        DENOISER_PARTIAL,
+        DENOISER_RESIDENT,
+        DENOISER_STREAMED,
+    )
+
+    engine = DiffusionBackend()
+    engine._state = types.SimpleNamespace(
+        family = types.SimpleNamespace(name = "z-image"),
+        pipe = object(),
+        offload_policy = "group",
+        cuda_graphs = (),
+        speed_optims = (),
+    )
+    placement = [DENOISER_RESIDENT]
+    monkeypatch.setattr(diffusion_module, "denoiser_offload", lambda pipe, policy: placement[0])
+    policy = engine.request_batching()
+    assert policy == {
+        "mode": "serial",
+        "reason": "resident weights: a shared call is no faster than one request at a time, so concurrent "
+        "requests render one at a time",
+    }
+    assert engine.coalesce_plan("a fox", False) is None
+    for streamed in (DENOISER_PARTIAL, DENOISER_STREAMED):
+        placement[0] = streamed
+        assert engine.request_batching()["mode"] == "any"
+        assert engine.coalesce_plan("a fox", False) == ((), False)
+    for name in ("model", "sequential", "streaming"):
+        engine._state.offload_policy = name
+        assert engine.request_batching()["mode"] == "any"
+    engine._state.offload_policy = "none"
+    assert engine.request_batching()["mode"] == "serial"
