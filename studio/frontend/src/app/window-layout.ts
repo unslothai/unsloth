@@ -134,14 +134,42 @@ export function constrainWindowSize(
 // Windows' invisible resize borders (scaled by DPI) put a snapped window's outer rect off screen.
 const OFF_SCREEN_TOLERANCE_PX = 16;
 
-function overlapArea(a: PhysicalWindowRect, b: PhysicalWindowRect): number {
-  const width =
-    Math.min(a.position.x + a.size.width, b.position.x + b.size.width) -
-    Math.max(a.position.x, b.position.x);
-  const height =
-    Math.min(a.position.y + a.size.height, b.position.y + b.size.height) -
-    Math.max(a.position.y, b.position.y);
-  return width > 0 && height > 0 ? width * height : 0;
+// Overlapping monitors (mirrored outputs) must not count the same pixels twice, so test the union.
+function isCoveredBy(
+  rect: PhysicalWindowRect,
+  screens: PhysicalWindowRect[],
+): boolean {
+  const right = rect.position.x + rect.size.width;
+  const bottom = rect.position.y + rect.size.height;
+  const edges = (start: number, end: number, cuts: number[]) =>
+    [
+      ...new Set([start, end, ...cuts.filter((c) => c > start && c < end)]),
+    ].sort((a, b) => a - b);
+  const xs = edges(
+    rect.position.x,
+    right,
+    screens.flatMap((s) => [s.position.x, s.position.x + s.size.width]),
+  );
+  const ys = edges(
+    rect.position.y,
+    bottom,
+    screens.flatMap((s) => [s.position.y, s.position.y + s.size.height]),
+  );
+  for (let i = 0; i + 1 < xs.length; i++) {
+    for (let j = 0; j + 1 < ys.length; j++) {
+      const x = (xs[i] + xs[i + 1]) / 2;
+      const y = (ys[j] + ys[j + 1]) / 2;
+      const covered = screens.some(
+        (s) =>
+          x > s.position.x &&
+          x < s.position.x + s.size.width &&
+          y > s.position.y &&
+          y < s.position.y + s.size.height,
+      );
+      if (!covered) return false;
+    }
+  }
+  return true;
 }
 
 /** Outer rect shrunk and moved into the work area if part is off every screen (#19590), else null. */
@@ -163,11 +191,7 @@ export function calculateOnScreenRect(
       height: Math.max(1, window.size.height - 2 * inset),
     },
   };
-  const visible = screens.reduce(
-    (total, screen) => total + overlapArea(core, screen),
-    0,
-  );
-  if (visible >= core.size.width * core.size.height) return null;
+  if (isCoveredBy(core, screens)) return null;
 
   const width = Math.max(1, Math.min(window.size.width, workArea.size.width));
   const height = Math.max(

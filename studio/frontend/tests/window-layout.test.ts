@@ -404,6 +404,15 @@ test("leaves on-screen and multi-monitor windows where they are", () => {
     ),
     rect(2000, 128, 1000, 600),
   );
+  // Mirrored monitors overlap; the title bar above both is still off screen.
+  assert.deepEqual(
+    calculateOnScreenRect(
+      rect(200, -200, 1000, 600),
+      [primary, rect(0, 0, 1920, 1080)],
+      rect(0, 0, 1920, 1040),
+    ),
+    rect(200, 0, 1000, 600),
+  );
 });
 
 test("a restored window is kept on screen only after it is shown and remeasured", async () => {
