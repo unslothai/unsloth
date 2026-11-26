@@ -282,10 +282,12 @@ export function resolveMemoryFit(
   const hostPressured =
     usableHostFit === "exceeds" || usableHostFit === "tight";
   const gpuFit = rawGpuFit === "fits" && gpuPressured ? "tight" : rawGpuFit;
-  // The host share must fit host RAM on its own; unused VRAM cannot hold it. Skipped for one pool.
-  const hostShareFit: MemoryFitVerdict = singleMemoryPool
-    ? "unknown"
-    : classifyMemoryFit(hostShareBytes, capacity.systemRamCapacityGb);
+  // The host share must fit host RAM on its own; unused VRAM cannot hold it. Skipped for one pool,
+  // and while an override is unplaced, since the split between the pools is then unknown.
+  const hostShareFit: MemoryFitVerdict =
+    singleMemoryPool || estimate.moeOffloadUnmodelled
+      ? "unknown"
+      : classifyMemoryFit(hostShareBytes, capacity.systemRamCapacityGb);
   const combinedFit = classifyMemoryFit(
     totalBytes,
     capacity.totalCapacityGb,

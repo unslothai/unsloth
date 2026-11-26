@@ -230,6 +230,17 @@ test("a zero GPU figure with an unplaced override is not read as a CPU-only load
   assert.equal(placed.cpuOnly, true);
 });
 
+test("an unplaced override leaves the host share unjudged, not the combined capacity", () => {
+  const ram8 = { systemRamCapacityGb: 8, usableSystemRamGb: 8, totalCapacityGb: 32 };
+  const unknown = fit({ moeOffloadUnmodelled: true, gpuBytes: 0, totalBytes: 9 * GB }, ram8);
+  assert.equal(unknown.hostShareFit, "unknown");
+  assert.notEqual(unknown.totalFit, "exceeds");
+  const known = fit({ gpuBytes: 0.5 * GB, totalBytes: 9 * GB }, ram8);
+  assert.equal(known.hostShareFit, "exceeds");
+  const beyond = fit({ moeOffloadUnmodelled: true, gpuBytes: 0, totalBytes: 40 * GB }, ram8);
+  assert.equal(beyond.totalFit, "exceeds");
+});
+
 test("the floor marker follows either unsizable case", () => {
   assert.equal(fit({ kvEstimable: false }, {}).prefix, "≥ ");
   assert.equal(fit({ drafterKvUnsized: true }, {}).prefix, "≥ ");

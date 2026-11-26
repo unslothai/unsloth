@@ -820,13 +820,28 @@ class TestExpertOffloadIsPlaced:
         assert resp.compute_bytes == base.compute_bytes
         assert resp.gpu_bytes == base.gpu_bytes - 2 * _EXPS_BYTES
 
-    def test_a_head_on_the_host_is_staged_once_the_output_rows_reach_32(self, estimate):
+    @pytest.mark.parametrize(
+        "slots, spec, extra, staged",
+        [
+            (1, "off", [], False),
+            (32, "off", [], True),
+            # ngram-mod and --spec-default draft 64 tokens, so one slot reserves 65 output rows.
+            (1, "ngram", [], True),
+            (1, "auto", [], True),
+            (1, "off", ["--spec-default"], True),
+            (1, "ngram", ["--spec-type", "none"], False),
+        ],
+        ids = ["one_slot", "32_slots", "ngram", "auto", "extras_spec", "extras_none"],
+    )
+    def test_a_head_on_the_host_is_staged_once_the_output_rows_reach_32(
+        self, estimate, slots, spec, extra, staged
+    ):
         ot = ["-ot", r"output\.weight=CPU"]
-        for slots, staged in ((1, 0), (32, _EMBD_BYTES)):
-            base = estimate(n_parallel = slots, n_batch = 64, n_ubatch = 64)
-            resp = estimate(n_parallel = slots, n_batch = 64, n_ubatch = 64, llama_extra_args = ot)
-            assert resp.n_parallel == slots
-            assert resp.compute_bytes == base.compute_bytes + staged
+        kw = dict(n_parallel = slots, n_batch = 64, n_ubatch = 64, speculative_type = spec)
+        base = estimate(llama_extra_args = extra, **kw)
+        resp = estimate(llama_extra_args = [*extra, *ot], **kw)
+        assert resp.n_parallel == slots
+        assert resp.compute_bytes == base.compute_bytes + (_EMBD_BYTES if staged else 0)
 
     def test_partial_offload_prices_the_layers_from_the_back(self, estimate):
         resp = estimate(gpu_layers = 2)
