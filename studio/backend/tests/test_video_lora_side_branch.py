@@ -137,6 +137,7 @@ def test_switch_is_h3_only_and_on_by_default(monkeypatch):
     assert video_lora.dense_transformer_quant(H3Fam, None, loras) is None
     assert video_lora.load_refusal(H3Fam, "pipeline", "int8", loras) is None
     monkeypatch.setenv(video_lora.SIDE_BRANCH_ENV, "0")
+    assert "bfloat16" in video_lora.load_refusal(H3Fam, "pipeline", "fp8", loras)
     assert not video_lora.side_branch_enabled(H3Fam)
     assert video_lora.dense_transformer_quant(H3Fam, None, loras) == "none"
     assert video_lora.load_refusal(H3Fam, "pipeline", "int8", loras) is not None
@@ -151,3 +152,32 @@ def test_side_branch_reaches_through_the_small_m_pad_wrapper(tmp_path):
     attn.to_k = PadToMinM(attn.to_k)
     assert video_lora.attach_side_branch_(net, [(path, 1.0)], family = H3) == 3
     assert type(attn.to_k) is PadToMinM and hasattr(attn.to_k.inner, "lora_A")
+
+
+def test_hosted_fp8_is_refused_before_the_load(monkeypatch):
+    # On Ampere the hosted fp8 denoiser becomes stored-fp8 native layers (not nn.Linear), which the side branch
+    # cannot wrap, so the pick is refused up front instead of failing on every projection after the load.
+    class H3Fam:
+        name, label, modular_workflow = "minimax-h3", "MiniMax-H3", "fl2va"
+
+    monkeypatch.delenv(video_lora.SIDE_BRANCH_ENV, raising = False)
+    loras = [("x", 1.0)]
+    why = video_lora.load_refusal(H3Fam, "pipeline", "fp8", loras)
+    assert why is not None and "'fp8'" in why and "int8" in why
+    assert video_lora.load_refusal(H3Fam, "pipeline", "int8", loras) is None
+    assert video_lora.load_refusal(H3Fam, "pipeline", "none", loras) is None
+    assert video_lora.load_refusal(H3Fam, "pipeline", None, loras) is None
+
+
+def test_side_branch_refuses_a_non_linear_layer(tmp_path):
+    from core.inference.diffusion_native_quant import NATIVE_FP8, native_linear_class
+
+    path, _ = _community(tmp_path)
+    net = _net()
+    attn = net.transformer_blocks[0].attn
+    stand_in = torch.nn.Linear(D, 48, bias = False, device = "meta", dtype = torch.bfloat16)
+    codes = torch.zeros(48, D).to(torch.float8_e4m3fn)
+    attn.to_k = native_linear_class()(stand_in, NATIVE_FP8, codes = codes, scale = torch.ones(48, 1))
+    with pytest.raises(ValueError, match = "not a Linear"):
+        video_lora.attach_side_branch_(net, [(path, 1.0)], family = H3)
+    assert type(attn.to_q) is torch.nn.Linear

@@ -178,12 +178,23 @@ def load_refusal(
         single = next((i for (i, _w) in active_specs(loras) if not _is_pair(i)), None)
         if single is not None:
             return _pair_mismatch(single, True)
+    precision = str(transformer_quant or "").strip().lower()
     if (
         getattr(fam, "modular_workflow", None)
+        and side_branch_enabled(fam)
         and not (_precision_unset(transformer_quant) or _precision_dense(transformer_quant))
-        and not (
-            side_branch_enabled(fam) and str(transformer_quant).strip().lower() in ("int8", "fp8")
+        and precision != "int8"
+    ):
+        # The side branch wraps nn.Linear layers only; the hosted fp8 denoiser becomes stored-fp8 native layers on
+        # cards without an fp8 GEMM (Ampere), which it cannot adapt.
+        return (
+            f"{label} LoRAs run beside the released bfloat16 or the hosted int8 denoiser, not the hosted "
+            f"'{transformer_quant}' one. Load with transformer_quant unset, 'int8' or 'none' to use the LoRA."
         )
+    if (
+        getattr(fam, "modular_workflow", None)
+        and not side_branch_enabled(fam)
+        and not (_precision_unset(transformer_quant) or _precision_dense(transformer_quant))
     ):
         return (
             f"{label} LoRAs merge into the released bfloat16 denoiser, so they cannot ride on the hosted "
