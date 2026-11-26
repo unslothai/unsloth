@@ -4,6 +4,7 @@
 """Atomic sidebar edits in the current account's SQLite database."""
 
 import json
+from collections import Counter
 from contextlib import closing
 from datetime import datetime, timezone
 from itertools import groupby
@@ -51,6 +52,12 @@ def _apply_placement(order, move):
         order.insert(order.index(target) + (move["edge"] == "bottom"), row)
 
 
+def _replay_placements(order, moves):
+    for move in moves:
+        _apply_placement(order, move)
+    return order
+
+
 def _discard_undone_runs(base, layout, moves, common):
     runs = [list(group) for _, group in groupby(moves, key = lambda move: move["id"])]
     if all(len(run) == 1 for run in runs):
@@ -93,13 +100,31 @@ def _edited_order(
         if moves:
             moves = _discard_undone_runs(base, layout, moves, common)
             unchanged = _unchanged_rows(common_base, common_layout)
-            moves = [
-                move
-                for move in moves
-                if move.get("afterUnpin")
-                or move["id"] not in unchanged
-                or move["targetId"] not in common
-            ]
+
+            def essential(move):
+                return (
+                    move.get("afterUnpin")
+                    or move["id"] not in unchanged
+                    or move["targetId"] not in common
+                )
+
+            candidates = [move for move in moves if essential(move)]
+            if len(candidates) < len(moves):
+                # Another placement can depend on a row that kept its final rank.
+                initial = _merge_order(base, layout)
+                expected = _replay_placements(initial.copy(), moves)
+                if _replay_placements(initial.copy(), candidates) == expected:
+                    moves = candidates
+                else:
+                    counts = Counter(move["id"] for move in moves)
+                    with_single_moves = [
+                        move for move in moves if essential(move) or counts[move["id"]] == 1
+                    ]
+                    if (
+                        len(with_single_moves) < len(moves)
+                        and _replay_placements(initial, with_single_moves) == expected
+                    ):
+                        moves = with_single_moves
         elif common_base != common_layout:
             return _merge_order(layout, saved)
     if moves:
@@ -111,9 +136,7 @@ def _edited_order(
             # Manual sections display unranked rows before their saved order.
             unranked = [row for row in layout if row not in ranked]
             primary = unranked + saved
-        order = _merge_order(primary, layout)
-        for move in moves:
-            _apply_placement(order, move)
+        order = _replay_placements(_merge_order(primary, layout), moves)
         if saved == base:
             ranked = set(saved)
             return _merge_order(layout, [row for row in order if row in ranked])

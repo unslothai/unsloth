@@ -1314,6 +1314,50 @@ def test_sidebar_sections_keeps_unranked_chats_during_concurrent_manual_reorders
 
 
 @pytest.mark.parametrize(
+    ("target", "edge", "interleaved_undo"),
+    [("a", "bottom", False), ("d", "top", False), ("a", "bottom", True)],
+)
+def test_sidebar_sections_keeps_a_placement_dependent_on_a_previous_drag(
+    client, target, edge, interleaved_undo
+):
+    path = "/chat/sidebar-sections"
+
+    def send(
+        operation_id,
+        order,
+        base = None,
+        placements = (),
+    ):
+        response = client.post(
+            path,
+            json = {
+                "operationId": operation_id,
+                "base": base,
+                "layout": {
+                    "sections": {"work": {"name": "Work", "sort": "manual"}},
+                    "sectionByChatId": dict.fromkeys(order, "work"),
+                    "rowOrder": {"work": list(order)},
+                },
+                "orderMoves": [
+                    {"sectionId": "work", "id": row, "targetId": anchor, "edge": side}
+                    for row, anchor, side in placements
+                ],
+            },
+        )
+        assert response.is_success, response.text
+        return response.json()
+
+    base = send("initial", "abcdefghi")
+    peer = send("peer", "abcdefgih", base, [("h", "i", "bottom")])
+    assert peer["rowOrder"]["work"] == list("abcdefgih")
+    placements = [("a", "c", "bottom"), ("c", target, edge)]
+    if interleaved_undo:
+        placements[0:1] = [("h", "g", "top"), placements[0], ("h", "g", "bottom")]
+    saved = send("local", "bacdefghi", base, placements)
+    assert saved["rowOrder"]["work"] == list("bacdefgih")
+
+
+@pytest.mark.parametrize(
     ("initial", "first", "second", "expected", "sort"),
     [
         ("abcd", ("bacd", "b", "a", "top"), ("abdc", "d", "c", "top"), "badc", "manual"),

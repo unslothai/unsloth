@@ -217,8 +217,10 @@ export function discardUndoneSidebarPlacements(
     expected++;
   }
 
-  let order = applyManualOrder(edited, base, (id) => id);
+  const initial = applyManualOrder(edited, base, (id) => id);
+  let order = initial;
   const kept: SidebarOrderPlacement[] = [];
+  const mustKeep = (move: SidebarOrderPlacement) => move.afterUnpin || !ranked.has(move.targetId);
   for (let start = 0; start < placements.length;) {
     const row = placements[start].id;
     const previous = order;
@@ -228,16 +230,24 @@ export function discardUndoneSidebarPlacements(
       order = insertIdAt(order, id, targetId, edge);
     }
     const run = placements.slice(start, end);
-    const mustKeep = (move: SidebarOrderPlacement) => move.afterUnpin || !ranked.has(move.targetId);
     if (run.length === 1 || !ranked.has(row) || run.some(mustKeep) ||
       previous.indexOf(row) !== order.indexOf(row)) {
-      for (const move of run) {
-        if (!unchanged.has(row) || mustKeep(move)) kept.push(move);
-      }
+      for (const move of run) kept.push(move);
     }
     start = end;
   }
-  return kept;
+  const essential = (move: SidebarOrderPlacement) => !unchanged.has(move.id) || mustKeep(move);
+  const candidates = kept.filter(essential);
+  if (candidates.length === kept.length) return kept;
+  const matches = (subset: SidebarOrderPlacement[]) => subset.reduce(
+    (rows, { id, targetId, edge }) => insertIdAt(rows, id, targetId, edge), initial,
+  ).every((id, index) => id === order[index]);
+  if (matches(candidates)) return candidates;
+
+  const counts = new Map<string, number>();
+  for (const { id } of kept) counts.set(id, (counts.get(id) ?? 0) + 1);
+  const withSingleMoves = kept.filter((move) => essential(move) || counts.get(move.id) === 1);
+  return withSingleMoves.length < kept.length && matches(withSingleMoves) ? withSingleMoves : kept;
 }
 
 export function placeIdAt(

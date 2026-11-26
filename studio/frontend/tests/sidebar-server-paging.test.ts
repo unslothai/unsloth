@@ -670,6 +670,23 @@ for (const [fullyLoaded, undo] of [[false, false], [true, false], [false, true]]
   });
 }
 
+test("pending placements retain a position that depends on another drag", () => {
+  const base = [..."abcdefghi"];
+  const edited = [..."bacdefghi"];
+  for (const [targetId, edge] of [["a", "bottom"], ["d", "top"]] as const) {
+    const placements = [
+      { id: "a", targetId: "c", edge: "bottom" },
+      { id: "c", targetId, edge },
+    ] satisfies SidebarDropPlace[];
+    assert.deepEqual(discardUndoneSidebarPlacements(base, edited, placements), placements);
+    const withUndo = [
+      { id: "h", targetId: "g", edge: "top" }, placements[0],
+      { id: "h", targetId: "g", edge: "bottom" }, placements[1],
+    ] satisfies SidebarDropPlace[];
+    assert.deepEqual(discardUndoneSidebarPlacements(base, edited, withUndo), placements);
+  }
+});
+
 test("the full-list fallback finds a compare row through one of its pane threads", () => {
   const rows = [
     { id: "pair", threadIds: ["pane-a", "pane-b"], updatedAt: 2 },
