@@ -464,9 +464,7 @@ def test_inference_load_samples_at_the_reference_shift_and_training_keeps_its_ow
 
     pipe = _load(tiny_pipe_dir)
     assert pipe.scheduler.config.shift == FLUX3_REFERENCE_SHIFT
-    # The block graph runs on the facade's scheduler, not the 6.93 one it builds for itself.
     assert pipe.modular_pipeline().scheduler is pipe.scheduler
-    # Training stays on the recipe's 6.93 (a separate decision from BFL's inference change).
     assert dit._flux3_training_scheduler(None).config.shift == pytest.approx(6.93)
 
 

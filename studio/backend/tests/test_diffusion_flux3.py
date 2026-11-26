@@ -2233,8 +2233,7 @@ def test_the_pipeline_estimate_probes_the_flux3_index_for_a_cached_upstream(monk
 
 
 def test_inference_scheduler_samples_at_the_bfl_reference_shift():
-    # BFL 62e90b9278 moved the reference sampler's alpha from 6.93 to 16; diffusers 0.42.1's block graph still builds
-    # its scheduler at 6.93. The schedule must be BFL's timesteps(steps, 16) exactly as the block graph sets it.
+    # Must match BFL's timesteps(steps, 16) as the block graph sets it.
     import numpy as np
     from diffusers import FlowMatchEulerDiscreteScheduler
 
@@ -2251,17 +2250,14 @@ def test_inference_scheduler_samples_at_the_bfl_reference_shift():
         sched = flux3_reference_scheduler(shipped)
         assert sched is not shipped and type(sched) is type(shipped)
         assert sched.config.shift == FLUX3_REFERENCE_SHIFT and not sched.config.use_dynamic_shifting
-        # Everything else in the block graph's config is kept.
         assert {k: v for k, v in sched.config.items() if k != "shift"} == {
             k: v for k, v in shipped.config.items() if k != "shift"
         }
         for steps in (16, 50):
-            # What Flux3SetTimestepsStep does: linspace(1, 1/N, N) through set_timesteps (static shift).
             sched.set_timesteps(sigmas = np.linspace(1.0, 1.0 / steps, steps).tolist())
             u = np.linspace(1.0, 0.0, steps + 1)
             assert np.allclose(sched.sigmas.numpy(), 16.0 * u / (1.0 + 15.0 * u), atol = 1e-6)
         assert flux3_reference_scheduler(sched) is sched
-    # Nothing it does not know how to set: a resolution-dependent or shift-less scheduler is returned unchanged.
     dynamic = FlowMatchEulerDiscreteScheduler(use_dynamic_shifting = True)
     assert flux3_reference_scheduler(dynamic) is dynamic
     other = SimpleNamespace(config = {"beta_start": 0.1})

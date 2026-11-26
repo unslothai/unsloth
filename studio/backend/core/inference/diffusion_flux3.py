@@ -130,18 +130,13 @@ def flux3_blocks(blocks_class_name: str) -> Any:
     return blocks
 
 
-# BFL's reference timestep shift (``alpha`` in src/flux3/pipeline.py). black-forest-labs/flux-3-image-klein
-# 62e90b9278 (2026-10-17, "minor inference param change") raised it from 6.93 to 16.0 for both checkpoints; the
-# diffusers 0.42.1 block graph (Flux3SetTimestepsStep) still builds its scheduler at 6.93. Same static curve
-# ``t' = a t / (1 + (a - 1) t)``, no resolution dependence. Against BFL's own pipeline at 62e90b9278 (L4, 1024x1024,
-# bf16, same seed and noise), mean LPIPS fell from 0.095 to 0.007 on the distilled checkpoint (12 images) and from
-# 0.079 to 0.026 on the base with CFG 4.0 (6 images).
+# BFL's reference shift (``alpha`` in src/flux3/pipeline.py), raised 6.93 -> 16 in flux-3-image-klein 62e90b9278;
+# diffusers 0.42.1's block graph still uses 6.93. LPIPS vs BFL fell 0.095 -> 0.007 (distilled), 0.079 -> 0.026 (base).
 FLUX3_REFERENCE_SHIFT = 16.0
 
 
 def flux3_reference_scheduler(scheduler: Any) -> Any:
-    """``scheduler`` at BFL's reference shift; returned unchanged when it already samples there or has no static
-    ``shift`` to set (a scheduler this module does not know)."""
+    """``scheduler`` at BFL's reference shift; unchanged if already there or it has no static ``shift``."""
     config = getattr(scheduler, "config", None)
     try:
         current = config.get("shift") if config is not None else None
@@ -1076,7 +1071,7 @@ def load_flux3_pipeline(
     # Before the speed layer: a whole-step CUDA graph binds the class forward when it is built.
     if transformer is not None:
         cond_blocks.prepare(transformer)
-    # The scheduler is the block graph's own (the repos ship none), moved to BFL's reference shift.
+    # The repos ship no scheduler; use the block graph's at BFL's reference shift.
     scheduler = flux3_reference_scheduler(flux3_blocks(blocks).init_pipeline().scheduler)
     return flux3_pipeline_class()(
         transformer = transformer,
