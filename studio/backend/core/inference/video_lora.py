@@ -218,6 +218,65 @@ def dense_transformer_quant(
     return transformer_quant
 
 
+# Layers the hosted pruned-modulation (curve form) MiniMax-H3 denoiser rebuilds with other shapes: every block's
+# adaln_proj.linear and norm_out.linear take the 8-wide curve basis instead of the 2688-wide time embedding, and the
+# time embedder / time_proj are replaced (video_minimax_h3_adaln.apply_h3_adaln_curve). Community names included.
+_H3_CURVE_REPLACED = re.compile(
+    r"(?:^|\.)(?:adaln_proj|norm_out|time_embedder|time_proj|time_embed)(?:\.|$)"
+)
+
+
+def h3_curve_replaced_target(files: Iterable[str]) -> Optional[str]:
+    """The first module an H3 LoRA in ``files`` adapts that the hosted curve-form denoiser replaces, else None.
+    Reads tensor names from the safetensors header only; an unreadable file is left for the load to report."""
+    known = _A_SUFFIXES + _B_SUFFIXES
+    for path in filter(None, files):
+        try:
+            from safetensors import safe_open
+            with safe_open(str(path), framework = "pt", device = "cpu") as f:
+                keys = list(f.keys())
+        except Exception:  # noqa: BLE001
+            continue
+        for key in keys:
+            hit = next((s for s in known if key.endswith(s)), None)
+            if hit is None:
+                continue
+            name = key[: -len(hit)]
+            for prefix in _PREFIXES:
+                if name.startswith(prefix):
+                    name = name[len(prefix) :]
+                    break
+            if _H3_CURVE_REPLACED.search(name):
+                return name
+    return None
+
+
+def side_branch_transformer_quant(
+    fam: Any, transformer_quant: Optional[str], resolved: Iterable[tuple]
+) -> Optional[str]:
+    """The side branch keeps an unset precision on the hosted int8 denoiser, whose pruned modulation and time embedder
+    do not have the released shapes. A LoRA adapting those layers pins the released bf16 denoiser when the precision
+    is unset, and is refused under an explicit 'int8'; attention / MLP LoRAs keep the hosted pick."""
+    if not (side_branch_enabled(fam) and getattr(fam, "modular_workflow", None)):
+        return transformer_quant
+    if not (
+        _precision_unset(transformer_quant) or str(transformer_quant).strip().lower() == "int8"
+    ):
+        return transformer_quant
+    hit = h3_curve_replaced_target(
+        p for e in resolved for p in (e[1], e[3] if len(e) > 3 else None)
+    )
+    if hit is None:
+        return transformer_quant
+    if _precision_unset(transformer_quant):
+        return "none"
+    label = getattr(fam, "label", None) or getattr(fam, "name", None) or "this model"
+    raise ValueError(
+        f"This LoRA adapts {hit}, which the hosted int8 {label} denoiser replaces with a pruned modulation of "
+        "another shape. Load with transformer_quant unset or 'none' to use the LoRA on the released denoiser."
+    )
+
+
 def check_families(specs: Iterable[tuple[str, float]], family: Optional[str]) -> None:
     """Network-free family gate for catalog ids, so a mismatched pick is a 400 before anything is evicted.
     Ids the catalog does not know (public HF repo ids) are resolved, and gated, by the load itself."""

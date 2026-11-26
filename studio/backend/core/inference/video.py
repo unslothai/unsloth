@@ -11030,6 +11030,9 @@ class VideoBackend:
                 local_files_only = local_files_only,
                 expert_pair = bool(getattr(fam, "is_moe", False)),
             )
+            transformer_quant = video_lora.side_branch_transformer_quant(
+                fam, transformer_quant, baked_loras
+            )
         from .video_minimax_h3 import is_h3_native
 
         if is_h3_native(fam, kind):

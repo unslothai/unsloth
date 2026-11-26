@@ -181,3 +181,56 @@ def test_side_branch_refuses_a_non_linear_layer(tmp_path):
     with pytest.raises(ValueError, match = "not a Linear"):
         video_lora.attach_side_branch_(net, [(path, 1.0)], family = H3)
     assert type(attn.to_q) is torch.nn.Linear
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "diffusion_model.blocks.0.adaln_proj.linear",
+        "transformer.transformer_blocks.0.adaln_proj.linear",
+        "transformer.norm_out.linear",
+        "transformer.time_embedder.linear_1",
+    ],
+)
+def test_modulation_lora_pins_the_released_denoiser(tmp_path, monkeypatch, key):
+    # The hosted int8 H3 denoiser is the pruned-modulation (curve) form: adaln_proj / norm_out take 8 inputs, not
+    # 2688, and the time embedder is replaced, so an adapter on those layers cannot ride on it.
+    class H3Fam:
+        name, label, modular_workflow = "minimax-h3", "MiniMax-H3", "fl2va"
+
+    monkeypatch.delenv(video_lora.SIDE_BRANCH_ENV, raising = False)
+    path = tmp_path / "mod.safetensors"
+    save_file(
+        {f"{key}.lora_A.weight": torch.zeros(4, D), f"{key}.lora_B.weight": torch.zeros(8, 4)},
+        str(path),
+    )
+    resolved = (("mod", str(path), 1.0, None),)
+    assert video_lora.side_branch_transformer_quant(H3Fam, None, resolved) == "none"
+    assert video_lora.side_branch_transformer_quant(H3Fam, "auto", resolved) == "none"
+    assert video_lora.side_branch_transformer_quant(H3Fam, "none", resolved) == "none"
+    with pytest.raises(ValueError, match = "pruned modulation"):
+        video_lora.side_branch_transformer_quant(H3Fam, "int8", resolved)
+    monkeypatch.setenv(video_lora.SIDE_BRANCH_ENV, "0")
+    assert video_lora.side_branch_transformer_quant(H3Fam, None, resolved) is None
+
+
+def test_attention_lora_keeps_the_hosted_int8_pick(tmp_path, monkeypatch):
+    class H3Fam:
+        name, label, modular_workflow = "minimax-h3", "MiniMax-H3", "fl2va"
+
+    monkeypatch.delenv(video_lora.SIDE_BRANCH_ENV, raising = False)
+    path, _ = _community(tmp_path)
+    resolved = (("c", str(path), 1.0, None),)
+    assert video_lora.side_branch_transformer_quant(H3Fam, None, resolved) is None
+    assert video_lora.side_branch_transformer_quant(H3Fam, "int8", resolved) == "int8"
+
+
+def test_load_repins_after_resolving_the_loras():
+    import inspect
+
+    from core.inference import video
+
+    src = inspect.getsource(video.VideoBackend)
+    resolve_at = src.index("baked_loras = video_lora.resolve(")
+    pin_at = src.index("video_lora.side_branch_transformer_quant(", resolve_at)
+    assert pin_at < src.index("is_h3_native(fam, kind)", resolve_at)
