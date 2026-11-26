@@ -245,6 +245,20 @@ def _sdpa_or_tree(module, query, key, value, attention_mask, **kwargs):
     return sdpa_attention_forward(module, query, key, value, attention_mask, **kwargs)
 
 
+@pytest.fixture(autouse = True)
+def _cpu_answer_for_cuda(monkeypatch):
+    # Collecting a module that applies tests/_zoo_aggressive_cuda_spoof.py at import makes torch.cuda.is_available()
+    # say True on a CPU box for the whole session. TRL >= 1.19's tree kernels then query the Triton driver at import,
+    # and the hybrid layers take CUDA-only paths. These are CPU reference tests, so give them the real answer.
+    if getattr(torch.cuda, "_unsloth_consolidated_spoof", False):
+        count = getattr(torch._C, "_cuda_getDeviceCount", None)
+        try:
+            real = bool(count is not None and count() > 0)
+        except Exception:
+            real = False
+        monkeypatch.setattr(torch.cuda, "is_available", lambda: real)
+
+
 @pytest.fixture(scope = "module")
 def tree_cpu():
     from transformers import AttentionInterface
