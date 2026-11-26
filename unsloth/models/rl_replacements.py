@@ -265,6 +265,28 @@ def gkd_trainer_text_tokenizer(call_args, extra_args):
 RL_EXTRA_ARGS["gkd_trainer"].append(gkd_trainer_text_tokenizer)
 
 
+def distillation_trainer_adapter_off_teacher(call_args, extra_args):
+    # teacher_model = "base": the LoRA student's base weights with the adapter disabled, no second copy loaded.
+    if "teacher_model" not in call_args or "model" not in call_args:
+        return ""
+    return (
+        "from unsloth.models._on_policy_distillation import resolve_teacher_model as _unsloth_resolve_teacher\n"
+        "teacher_model = _unsloth_resolve_teacher(teacher_model, model, args, type(self).__name__)\n"
+    )
+
+
+RL_EXTRA_ARGS["gkd_trainer"].append(distillation_trainer_adapter_off_teacher)
+RL_EXTRA_ARGS["distillation_trainer"].append(distillation_trainer_adapter_off_teacher)
+
+
+def grpo_trainer_distillation_teacher(call_args, extra_args):
+    # GRPOTrainer(..., teacher_model = model) for unsloth_distillation_coef; TRL's GRPOTrainer has no such argument.
+    return "_unsloth_grpo_teacher_model = kwargs.pop('teacher_model', None)\n"
+
+
+RL_EXTRA_ARGS["grpo_trainer"].append(grpo_trainer_distillation_teacher)
+
+
 def gkd_trainer_generate_before_counting(function_name, function):
     if function_name != "training_step":
         return function
@@ -7245,6 +7267,14 @@ def grpo_trainer_compute_loss(function_name, function):
         ref_logps = inputs.get("ref_per_token_logps", None)
         # x - x.detach() preserves gradients from x.
         advantages = inputs["advantages"]
+        # On-policy distillation (unsloth_distillation_coef): the teacher's per-token advantages join the rewards'.
+        _distill_advantages = inputs.get("unsloth_distillation_advantages", None)
+        if _distill_advantages is not None:
+            if advantages.dim() == 1:
+                advantages = advantages.unsqueeze(1)
+            advantages = advantages + _distill_advantages.to(
+                device = advantages.device, dtype = advantages.dtype
+            )
         old_logps = inputs.get("old_per_token_logps", None)
 
         input_ids = input_ids[:, -logits_to_keep:]
@@ -7318,6 +7348,18 @@ def grpo_trainer_compute_loss(function_name, function):
                 num_items_in_batch = num_items_in_batch,
                 current_gradient_accumulation_steps = current_gradient_accumulation_steps,
                 num_processes = num_processes,
+                # Only when on: grpo_check_sampler_kl has then verified the zoo takes them.
+                **(
+                    {
+                        "sampler_kl_coef": float(self.args.unsloth_sampler_kl_coef),
+                        "sampler_kl_estimator": getattr(
+                            self.args, "unsloth_sampler_kl_estimator", None
+                        )
+                        or "k1",
+                    }
+                    if float(getattr(self.args, "unsloth_sampler_kl_coef", 0.0) or 0.0) != 0.0
+                    else {}
+                ),
             )
         else:
             # With beta = 0 and num_iterations = 1 the no-grad path (and its zoo gate) never runs, and an older
@@ -7572,6 +7614,22 @@ def grpo_trainer_compute_loss(function_name, function):
 
         if advantages.dim() == 1:
             advantages = advantages.unsqueeze(1)
+        if (
+            advantages.shape[1] != 1
+            and coef_1.dim() == 2
+            and advantages.shape[1] != coef_1.shape[1]
+        ):
+            # Distillation's per-token advantages are in the completion layout; coef_1 is in the zoo's left-packed
+            # one. Move them over for the clip metrics, as the zoo did for the loss.
+            if completion_mask.shape == coef_1.shape:
+                from unsloth_zoo.rl_replacements import (
+                    align_logprobs_with_mask as _unsloth_align_logprobs_with_mask,
+                )
+                advantages = _unsloth_align_logprobs_with_mask(
+                    advantages.to(completion_mask.device), completion_mask.to(torch.int32)
+                )
+            else:
+                advantages = inputs["advantages"].reshape(-1, 1)
 
         if self.loss_type in ["grpo", "bnpo", "dr_grpo", "dapo", "luspo"]:
             is_low_clipped = (coef_1 < 1 - self.epsilon_low) & (advantages < 0)
@@ -8678,6 +8736,9 @@ def _unsloth_prepare_frozen_teacher(accelerator, teacher):
     """Like accelerate's prepare_model, but keeps a frozen teacher off the training card when another GPU fits it
     (accelerate would move it there, or refuse it if quantized). UNSLOTH_KD_TEACHER_PLACEMENT=0 disables."""
     default = lambda: accelerator.prepare_model(teacher, evaluation_mode = True)
+    if getattr(teacher, "_unsloth_adapter_off_teacher", False):
+        # teacher_model = "base" is the student itself with the adapter off: nothing to place or wrap.
+        return teacher
     try:
         from accelerate.utils import DistributedType
 
