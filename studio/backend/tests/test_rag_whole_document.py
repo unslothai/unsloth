@@ -1362,7 +1362,10 @@ def test_an_opening_that_does_not_fit_preserves_existing_citation_ids(rag_conn, 
     assert "Bravo opening" not in text
 
 
-def test_budgeted_attachment_overview_keeps_the_ranked_lead(rag_conn, monkeypatch):
+@pytest.mark.parametrize("ranked_in_opening", [False, True])
+def test_budgeted_attachment_overview_keeps_the_ranked_lead(
+    rag_conn, monkeypatch, ranked_in_opening
+):
     scope = store.thread_scope("t1")
     _add_doc(rag_conn, scope, "a", "alpha.txt", "h1", ["Alpha opening"], tokens = [8000])
     _add_doc(rag_conn, scope, "b", "bravo.txt", "h2", ["Bravo opening"], tokens = [8000])
@@ -1370,6 +1373,19 @@ def test_budgeted_attachment_overview_keeps_the_ranked_lead(rag_conn, monkeypatc
         {"chunkId": "a:1", "documentId": "a", "text": "Controlling terms"},
         {"chunkId": "a:2", "documentId": "a", "text": "Secondary terms"},
     ]
+    if ranked_in_opening:
+        hits.pop()
+        original_opening = tool.document_opening
+
+        def overlapping_opening(*, scope_thread_id, document_id):
+            opening = original_opening(scope_thread_id = scope_thread_id, document_id = document_id)
+            if document_id == "a":
+                opening.append(
+                    {"chunkId": "a:1", "documentId": "a", "text": "Terms after the trimmed overlap"}
+                )
+            return opening
+
+        monkeypatch.setattr(tool, "document_opening", overlapping_opening)
     monkeypatch.setattr(
         tool,
         "search_for_autoinject",
@@ -1391,7 +1407,16 @@ def test_budgeted_attachment_overview_keeps_the_ranked_lead(rag_conn, monkeypatc
     assert "Alpha opening" not in text
 
 
-def test_named_subset_does_not_force_every_attachment_into_the_overview(rag_conn, monkeypatch):
+@pytest.mark.parametrize(
+    "query",
+    [
+        "Compare the attached documents alpha.txt and bravo.txt. Ignore charlie.txt.",
+        "Compare the attached documents on their terms. Ignore charlie.txt.",
+    ],
+)
+def test_named_subset_does_not_force_every_attachment_into_the_overview(
+    rag_conn, monkeypatch, query
+):
     scope = store.thread_scope("t1")
     for doc in ("alpha", "bravo", "charlie"):
         _add_doc(rag_conn, scope, doc, doc + ".txt", doc, [doc + " opening"], tokens = [8000])
@@ -1405,7 +1430,7 @@ def test_named_subset_does_not_force_every_attachment_into_the_overview(rag_conn
     )
 
     result = inf_tools.build_rag_autoinject(
-        _convo("Compare the attached documents alpha.txt and bravo.txt. Ignore charlie.txt."),
+        _convo(query),
         {"thread_id": "t1", "default_top_k": 3},
     )
     text = _injected_text(result)

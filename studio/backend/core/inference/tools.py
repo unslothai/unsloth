@@ -16287,6 +16287,12 @@ _ATTACHMENT_OVERVIEW = re.compile(
     r"(?:files|docs|documents|attachments|pdfs|reports)\s+about\s*\??\s*$",
     re.IGNORECASE,
 )
+_ATTACHMENT_OVERVIEW_EXCLUSION = re.compile(
+    r"(?:[.!?;\n]\s*|\band\s+)(?:please\s+)?"
+    r"(?:ignore|exclude|omit|skip|leave out|do not (?:include|cover))\b"
+    r"|\b(?:except|excluding|other than)\b",
+    re.IGNORECASE,
+)
 
 
 def _cover_thread_attachments(
@@ -16301,6 +16307,8 @@ def _cover_thread_attachments(
     """Keep one hit per attachment and preserve any project hits."""
     if not thread_docs or not 1 < len(thread_docs) <= top_k:
         return None
+    if _ATTACHMENT_OVERVIEW_EXCLUSION.search(query):
+        return None
     request = _ATTACHMENT_OVERVIEW.search(query)
     if not request or (
         len(thread_docs) != 2
@@ -16308,7 +16316,13 @@ def _cover_thread_attachments(
     ):
         return None
     if ranked_thread_lead is not None:
-        hits = sorted(hits, key = lambda hit: hit.get("chunkId") != ranked_thread_lead)
+        lead_id = ranked_thread_lead.get("chunkId")
+        if lead_id is not None:
+            for i, hit in enumerate(hits):
+                if hit.get("chunkId") == lead_id:
+                    # Opening chunks can have overlap stripped against preceding chunks.
+                    hits = [ranked_thread_lead, *hits[:i], *hits[i + 1 :]]
+                    break
     covered = set()
     required, extra = [], []
     for hit in hits:
@@ -16463,7 +16477,7 @@ def _build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> d
             # render_sources renumbered these hits in place for the merged list.
             return render_sources(found[1]), found[1]
         opening_ids.update(seen)
-        ranked_thread_lead = found[1][0].get("chunkId")
+        ranked_thread_lead = dict(found[1][0])
         return kept
 
     def _strong_thread_match() -> bool:
