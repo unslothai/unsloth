@@ -196,6 +196,7 @@ import {
   useNvfp4DiffusionKnown,
 } from "@/hooks/use-host-class";
 import { clipPrecisionSelection, clipTextEncoderPrecisionSelection } from "@/lib/clip-precision";
+import { multiGpuPlacementRow } from "@/lib/multi-gpu-placement";
 import { loraFuseLabel } from "@/features/images/lib/lora-fuse";
 import { reseedAction } from "@/lib/failed-load-reseed";
 import {
@@ -791,6 +792,7 @@ function LoadedBuildSummary({ status }: { status: VideoStatus | null }) {
   if (!status?.loaded) return null;
   const offload = status.offload_policy ?? "none";
   const loraFuse = loraFuseLabel(status.lora_fuse);
+  const multiGpu = multiGpuPlacementRow(status.multi_gpu);
   return (
     <div className="flex flex-col gap-1 rounded-lg border border-border/60 px-2.5 py-2 text-ui-11">
       <div className="flex items-center gap-1 pb-0.5 text-xs font-medium text-muted-foreground">
@@ -827,6 +829,13 @@ function LoadedBuildSummary({ status }: { status: VideoStatus | null }) {
             : `${status.memory_mode ?? "auto"} · ${offload} offload`
         }
       />
+      {multiGpu ? (
+        <BuildRow
+          label="Multi-GPU"
+          value={multiGpu.label}
+          badge={<InfoHint>{multiGpu.detail}</InfoHint>}
+        />
+      ) : null}
       {loraFuse ? (
         <BuildRow
           label="LoRA"

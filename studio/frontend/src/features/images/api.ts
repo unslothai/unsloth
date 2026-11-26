@@ -34,6 +34,8 @@ export interface DiffusionResolvedControl {
   modules?: number;
 }
 
+import type { MultiGpuStatus } from "@/lib/multi-gpu-placement";
+
 export interface DiffusionStatus {
   loaded: boolean;
   /** Per transformer scheme, why the loaded family or card refuses it (null = nothing known); absent on older backends. */
@@ -76,6 +78,8 @@ export interface DiffusionStatus {
   baked_lora_specs?: LoraSpecInput[] | null;
   // Whether the attached LoRA set is folded into the weights, and why not; null without LoRAs or on older backends.
   lora_fuse?: string | null;
+  // Multi-card placement (component split, layer split, guidance replica) and why; null for a one-card load.
+  multi_gpu?: MultiGpuStatus | null;
   vae_tiling?: boolean;
   workflows?: string[];
   // Absent on older backends: callers keep the historical limits (4 images, RGB, 16 px, 2048).
