@@ -4417,6 +4417,22 @@ def _unsloth_vllm_engine_quantization(llm):
     return None
 
 
+def _unsloth_trl_vllm_init_error(error):
+    """TRL's own colocated engine (use_vllm = True, fast_inference = False) for a bitsandbytes checkpoint on vLLM
+    >= 0.28 (#43529 moved bitsandbytes out of tree): vLLM only says "Unknown quantization method: bitsandbytes".
+    Return the error to raise instead, or None to re-raise vLLM's own."""
+    text = str(error)
+    if "bitsandbytes" not in text or "nknown quantization" not in text:
+        return None
+    return RuntimeError(
+        "Unsloth: this vLLM has no bitsandbytes support (vLLM >= 0.28 moved it out of tree), so TRL cannot "
+        "build its own vLLM engine for this 4-bit model (use_vllm = True, fast_inference = False). Load the "
+        "model with fast_inference = True: Unsloth then builds the vLLM engine itself, sharing the 4-bit "
+        "weights, and a current unsloth_zoo ships bitsandbytes for vLLM >= 0.28 (pip install -U unsloth_zoo). "
+        "Or install vllm-bnb-plugin, or load a 16-bit base (load_in_4bit = False)."
+    )
+
+
 def _unsloth_trl_vllm_engine_check(generation, model):
     """Called right after TRL >= 0.28 builds its own colocated vLLM (use_vllm = True, fast_inference = False).
 
@@ -7636,8 +7652,14 @@ def vllm_generation_init_patch():
                 f"{indent}    if getattr(self, 'return_sampling_mask', False) and not _unsloth_engine_returns_sampling_mask(self.llm):\n"
                 f"{indent}        self.return_sampling_mask = False\n"
                 f"{indent}else:\n"
-                + textwrap.indent(llm_block, indent + "    ")
+                f"{indent}    try:\n"
+                + textwrap.indent(llm_block, indent + "        ")
                 + "\n"
+                + f"{indent}    except Exception as _unsloth_init_error:\n"
+                f"{indent}        _unsloth_replacement = _unsloth_trl_vllm_init_error(_unsloth_init_error)\n"
+                f"{indent}        if _unsloth_replacement is None:\n"
+                f"{indent}            raise\n"
+                f"{indent}        raise _unsloth_replacement from _unsloth_init_error\n"
                 + f"{indent}    _unsloth_trl_vllm_engine_check(self, model)"
             )
 
@@ -7650,6 +7672,7 @@ def vllm_generation_init_patch():
             _unsloth_engine_returns_sampling_mask
         )
         vllm_generation._unsloth_trl_vllm_engine_check = _unsloth_trl_vllm_engine_check
+        vllm_generation._unsloth_trl_vllm_init_error = _unsloth_trl_vllm_init_error
         return patched_src
 
     # Newer versions have sync_weights or reload rpc calls; earlier ones are stripped in the patched grpo_trainer above.
