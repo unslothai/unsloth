@@ -2537,16 +2537,14 @@ def gather_sequence(x, manager):
     return _GatherSequence.apply(x, manager.group, manager.mesh.get_local_rank(), manager.size)
 
 
-# GRPO log-prob scoring under context parallel (cp_local_row_scorer). UNSLOTH_CP_LOCAL_LOGPS=0 scores every row on
-# every peer, as before.
+# UNSLOTH_CP_LOCAL_LOGPS=0: every peer scores every row (cp_local_row_scorer off).
 _LOCAL_ROWS_ENV = "UNSLOTH_CP_LOCAL_LOGPS"
 CP_LOCAL_ROWS_STATS = {"local": 0, "full": 0}
 
 
 class _GatherRows(torch.autograd.Function):
-    """Per-row results of this peer's rows [lo, lo + n) of `total`, gathered over the CP group. Backward: this peer's
-    slice times the group size. Every peer back-propagates the same loss, so its upstream gradient is the one every
-    peer holds, and N x the slice is what _GatherSequence's reduce-scatter makes of the full-sequence scoring."""
+    """All-gather of each peer's per-row results. Backward: this peer's slice x N. Every peer back-propagates the
+    same loss, so that equals what _GatherSequence's reduce-scatter gives full-sequence scoring."""
 
     @staticmethod
     def forward(ctx, x, group, rank, size, per, total):
@@ -2569,11 +2567,9 @@ class _GatherRows(torch.autograd.Function):
 
 
 def cp_local_row_scorer(fn):
-    """`fn(hidden_states [B, T, H], lm_head, index [B, T], ...)` -> per-row results ([B, T] log-probs, or a tuple with
-    entropies), scored on this peer's share of the B x T rows while a DPO / GRPO context parallel scope is live: the
-    CP RL hook has gathered the hidden states, so every peer holds the same rows, and each one scores 1 / N of them
-    and gathers the rest. `fn` itself when no scope is live, when the group is 1 rank, or under
-    UNSLOTH_CP_LOCAL_LOGPS=0."""
+    """Wrap a GRPO row scorer `fn(hidden [B, T, H], lm_head, index [B, T], ...)` -> [B, T] (or a tuple with
+    entropies). Inside a CP scope every peer holds the same gathered rows, so each scores 1 / N of them and gathers
+    the rest. Returns `fn` itself outside a scope, for one rank, or under UNSLOTH_CP_LOCAL_LOGPS=0."""
     manager = get_cp_manager()
     if manager is None or manager.size < 2 or os.environ.get(_LOCAL_ROWS_ENV, "1") == "0":
         return fn
