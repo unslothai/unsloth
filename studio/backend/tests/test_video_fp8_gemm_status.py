@@ -63,6 +63,39 @@ def test_an_fp8_text_encoder_reports_its_own_card(fallback_card):
     assert status["component"] == "text_encoder" and status["path"] == "torchao_rowwise"
 
 
+def test_a_modelopt_denoiser_reports_its_w8a8_route(fallback_card, monkeypatch):
+    monkeypatch.setattr(
+        mo,
+        "_GEMM_PROBE",
+        {
+            1: {
+                "static": True,
+                "dynamic": False,
+                "dynamic_unit_scale": True,
+                "unit_scale_fp32": True,
+            }
+        },
+    )
+    transformer = _Mod(1, {"runtime": "dynamic"})
+    transformer.gemm_calls, transformer.unit_scale_calls, transformer.a16_calls = 7, 7, 2
+    transformer.input_scale = transformer.weight_q = object()
+    pipe = SimpleNamespace(transformer = transformer)
+    # a hosted ModelOpt checkpoint does not set transformer_quant
+    state = SimpleNamespace(transformer_quant = None, text_encoder_quant = None, pipe = pipe)
+    status = video._video_fp8_gemm_status(state)
+    assert status["component"] == "transformer"
+    assert status["modelopt"]["runtime"] == "dynamic"
+    assert status["modelopt"]["route"]["dynamic"] == "unit_scale_fallback"
+    assert status["modelopt"]["calls"] == {"gemm": 7, "unit_scale": 7, "a16": 2}
+
+
+def test_a_weight_only_modelopt_denoiser_runs_no_fp8_gemm(fallback_card):
+    for runtime in ("stored", "dequant"):
+        pipe = SimpleNamespace(transformer = _Mod(1, {"runtime": runtime}))
+        state = SimpleNamespace(transformer_quant = None, text_encoder_quant = None, pipe = pipe)
+        assert video._video_fp8_gemm_status(state) is None, runtime
+
+
 def test_no_fp8_no_field_and_status_never_raises():
     state = SimpleNamespace(transformer_quant = "int8", text_encoder_quant = None, pipe = None)
     assert video._video_fp8_gemm_status(state) is None

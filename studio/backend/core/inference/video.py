@@ -394,12 +394,17 @@ def _grouped_form_status(pipe: Any) -> Optional[dict]:
 
 def _video_fp8_gemm_status(state: Any) -> Optional[dict]:
     """Which fp8 GEMM the loaded fp8 denoiser(s) / text encoder run, as the images status reports it: torchao
-    row-wise, or the unit-scale fallback on a torch build without the row-wise kernel (Windows wheels).
-    None for a load without fp8. Never raises."""
+    row-wise, or the unit-scale fallback on a torch build without the row-wise kernel (Windows wheels). A ModelOpt FP8
+    denoiser also reports its own W8A8 route (``modelopt``). None for a load without fp8. Never raises."""
     try:
         pipe = getattr(state, "pipe", None)
+        transformer = getattr(pipe, "transformer", None)
+        modelopt = _modelopt_info(transformer)
+        # only the W8A8 runtimes run an fp8 GEMM; stored / dequant ModelOpt layers widen to bf16
+        if modelopt.get("runtime") not in ("static", "dynamic"):
+            modelopt = {}
         component = None
-        if str(getattr(state, "transformer_quant", None) or "").lower() == "fp8":
+        if modelopt or str(getattr(state, "transformer_quant", None) or "").lower() == "fp8":
             component = "transformer"
         elif str(getattr(state, "text_encoder_quant", None) or "").lower().startswith("fp8"):
             component = "text_encoder"
@@ -414,7 +419,15 @@ def _video_fp8_gemm_status(state: Any) -> Optional[dict]:
             if getattr(device, "type", None) == "cuda":
                 index = device.index
                 break
-        return {**gemm_path(index), "component": component}
+        out = {**gemm_path(index), "component": component}
+        if modelopt:
+            from .diffusion_modelopt_fp8 import fp8_gemm_calls, gemm_route
+            out["modelopt"] = {
+                "runtime": modelopt.get("runtime"),
+                "route": gemm_route(index),
+                "calls": fp8_gemm_calls(transformer),
+            }
+        return out
     except Exception:  # noqa: BLE001 -- status must never fail
         return None
 
