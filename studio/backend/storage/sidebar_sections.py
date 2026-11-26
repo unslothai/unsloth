@@ -6,6 +6,7 @@
 import json
 from contextlib import closing
 from datetime import datetime, timezone
+from itertools import groupby
 
 from storage.studio_db import get_app_setting, get_connection
 
@@ -43,6 +44,36 @@ def _unchanged_rows(base, layout):
     return unchanged
 
 
+def _apply_placement(order, move):
+    row, target = move["id"], move["targetId"]
+    if row != target and row in order and target in order:
+        order.remove(row)
+        order.insert(order.index(target) + (move["edge"] == "bottom"), row)
+
+
+def _discard_undone_runs(base, layout, moves, common):
+    runs = [list(group) for _, group in groupby(moves, key = lambda move: move["id"])]
+    if all(len(run) == 1 for run in runs):
+        return moves
+
+    order = _merge_order(base, layout)
+    kept = []
+    for run in runs:
+        row = run[0]["id"]
+        can_undo = (
+            len(run) > 1
+            and row in common
+            and all(move["targetId"] in common and not move.get("afterUnpin") for move in run)
+        )
+        original_position = order.index(row) if can_undo else None
+        for move in run:
+            _apply_placement(order, move)
+        # No other row could have observed a temporary placement inside this run.
+        if not can_undo or order.index(row) != original_position:
+            kept.extend(run)
+    return kept
+
+
 def _edited_order(
     saved,
     base,
@@ -59,6 +90,7 @@ def _edited_order(
         common_base = [key for key in base if key in common]
         common_layout = [key for key in layout if key in common]
         if moves:
+            moves = _discard_undone_runs(base, layout, moves, common)
             unchanged = _unchanged_rows(common_base, common_layout)
             moves = [
                 move
@@ -74,10 +106,7 @@ def _edited_order(
             return _merge_order(layout, saved)
         order = _merge_order(saved, layout)
         for move in moves:
-            row, target = move["id"], move["targetId"]
-            if row != target and row in order and target in order:
-                order.remove(row)
-                order.insert(order.index(target) + (move["edge"] == "bottom"), row)
+            _apply_placement(order, move)
         return order
     return _merge_order(saved, layout)
 

@@ -1202,7 +1202,14 @@ def test_sidebar_sections_cancelled_placements_keep_the_concurrent_order(client)
     assert result.json()["sections"]["research"]["name"] == "Research"
 
 
-def test_sidebar_sections_only_replays_drag_intent_that_survives_the_batch(client):
+@pytest.mark.parametrize(
+    ("local_order", "anchor", "merged_order"),
+    [("abdc", "c", "adcb"), ("adbc", "b", "acdb")],
+    ids = ["independent", "crosses-restored-row"],
+)
+def test_sidebar_sections_only_replays_drag_intent_that_survives_the_batch(
+    client, local_order, anchor, merged_order
+):
     path = "/chat/sidebar-sections"
 
     def save(
@@ -1231,9 +1238,9 @@ def test_sidebar_sections_only_replays_drag_intent_that_survives_the_batch(clien
     peer = save("peer", "acbd", base, [("b", "c", "bottom")])
     assert peer["rowOrder"]["work"] == list("acbd")
     saved = save(
-        "batch", "abdc", base, [("b", "a", "top"), ("b", "a", "bottom"), ("d", "c", "top")]
+        "batch", local_order, base, [("b", "a", "top"), ("b", "a", "bottom"), ("d", anchor, "top")]
     )
-    assert saved["rowOrder"]["work"] == list("adcb")
+    assert saved["rowOrder"]["work"] == list(merged_order)
 
 
 @pytest.mark.parametrize(
