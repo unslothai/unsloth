@@ -108,6 +108,24 @@ def test_drop_frees_the_tower_of_either_qwen3_vl_class(cls_name):
     assert tv.drop_vision_tower(enc) is False
 
 
+def test_a_stub_torch_in_sys_modules_keeps_the_stand_in_a_module_and_the_drop_working(monkeypatch):
+    # Backend tests stub ``torch`` / ``torch.nn`` in sys.modules; a scope or a drop that runs then must still see the
+    # real nn.Module, or the stand-in is set as a plain attribute and the drop reports no tower.
+    import sys
+
+    from transformers.models.qwen3_vl.modeling_qwen3_vl import Qwen3VLVisionModel
+
+    real_module = torch.nn.Module
+    enc = _encoder("Qwen3VLModel")
+    stub = types.ModuleType("torch.nn")
+    stub.Module = type("Module", (), {})
+    monkeypatch.setitem(sys.modules, "torch.nn", stub)
+    monkeypatch.setattr(torch, "nn", stub)
+    assert issubclass(tv._stand_in_class(Qwen3VLVisionModel), real_module)
+    assert tv.has_vision_tower(enc) and tv.drop_vision_tower(enc) is True
+    assert enc.visual is None
+
+
 def test_only_text_only_families_drop_and_the_kill_switch_keeps_it(monkeypatch):
     for family in ("flux.3-klein", "flux.3-klein-base", "krea-2"):
         assert tv.family_drops_vision_tower(family)

@@ -51,17 +51,20 @@ def is_vision_tower_key(name: str) -> bool:
     return str(name).startswith(VISION_TOWER_PREFIXES)
 
 
+def _holds_visual(module: Any) -> bool:
+    """``module`` registers a ``visual`` child. Read off ``_modules`` rather than an ``isinstance`` on a fresh
+    ``import torch.nn``, which a stubbed ``torch`` in ``sys.modules`` would answer wrongly."""
+    children = getattr(module, "_modules", None)
+    return isinstance(children, dict) and children.get("visual") is not None
+
+
 def _tower_owner(text_encoder: Any) -> Any:
     """The module that holds ``visual``: the encoder itself (Qwen3VLModel, Qwen3_5Model) or its ``model``
     (the conditional-generation classes)."""
-    import torch.nn as nn
-
-    if isinstance(getattr(text_encoder, "visual", None), nn.Module) and "visual" in getattr(
-        text_encoder, "_modules", {}
-    ):
+    if _holds_visual(text_encoder):
         return text_encoder
     inner = getattr(text_encoder, "model", None)
-    if isinstance(inner, nn.Module) and isinstance(getattr(inner, "visual", None), nn.Module):
+    if _holds_visual(inner):
         return inner
     return None
 
@@ -87,9 +90,17 @@ def _skipping() -> bool:
     return bool(getattr(_local, "depth", 0))
 
 
-def _stand_in_class() -> Any:
-    import torch.nn as nn
-    class SkippedVisionTower(nn.Module):
+def _stand_in_class(tower_class: type) -> Any:
+    """An empty module built in place of ``tower_class``. Its base is the ``nn.Module`` in the tower class's own MRO,
+    the one transformers was imported with, so the stand-in registers as a child even when the first scope opens while
+    a test has a stub ``torch`` in ``sys.modules``."""
+    module_base = next(
+        c
+        for c in tower_class.__mro__
+        if c.__name__ == "Module" and c.__module__ == "torch.nn.modules.module"
+    )
+
+    class SkippedVisionTower(module_base):
         """Empty stand-in built in place of the vision tower; transformers 5.x collects its ignore pattern, so the
         tower's checkpoint tensors are skipped without an unexpected-key report."""
 
@@ -126,7 +137,7 @@ def _install() -> bool:
             if cls in _PATCHED:
                 continue
             original = cls._from_config
-            stand_in = _stand_in_class()
+            stand_in = _stand_in_class(cls)
 
             def _from_config(
                 klass,
