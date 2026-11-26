@@ -33,7 +33,7 @@ _NUM_LAYERS = 2
 
 
 def _tiny_wan(i2v: bool) -> torch.nn.Module:
-    from diffusers import WanTransformer3DModel
+    WanTransformer3DModel = pytest.importorskip("diffusers").WanTransformer3DModel
 
     torch.manual_seed(0)
     extra = {"image_dim": 16, "added_kv_proj_dim": 16} if i2v else {}
