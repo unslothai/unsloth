@@ -377,6 +377,20 @@ test("a pinned chat dropped on a section loses its pin", () => {
   assert.deepEqual(plan.effects.fileInSection, { kind: "chat", id: "p1", sectionId: S });
   assert.deepEqual(plan.effects.orders[0].ids, ["lab", "s1", "p1"]);
   assert.equal(plan.effects.orders[0].place?.afterUnpin, true);
+  assert.equal(plan.effects.orders[0].place?.unpinKind, "chat");
+});
+
+test("a pinned project dropped into its empty section retains its filing intent", () => {
+  const empty = context({ sectionByProjectId: { lab: S }, pinnedProjectIds: new Set(["lab"]) });
+  const plan = plannedDrop(planSidebarDrop(
+    { kind: "project", id: "lab", section: "pinned", scope: PINNED_ORDER_SCOPE, projectId: null },
+    { section: SCOPE }, "bottom", { ...empty, orders: { ...empty.orders, sections: () => [] } },
+  ));
+  assert.deepEqual(plan.effects.orders, [{
+    scope: SCOPE, ids: ["lab"],
+    place: { id: "lab", targetId: null, edge: "bottom", afterUnpin: true, unpinKind: "project" },
+  }]);
+  assert.deepEqual(plan.effects.fileInSection, { kind: "project", id: "lab", sectionId: S });
 });
 
 test("an empty section takes a drop anywhere in it, and rings itself", () => {

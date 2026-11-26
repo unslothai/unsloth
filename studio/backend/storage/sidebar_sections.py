@@ -178,12 +178,25 @@ def _merge(
     live = {key for key, value in sections.items() if value is not None}
     result = {"sections": sections}
     assigned_rows: dict[str, set[str]] = {}
-    for field in ("sectionByChatId", "sectionByProjectId", "sectionByPageId"):
+    unpin_filings = {
+        (move.get("unpinKind"), move["id"], move["sectionId"])
+        for move in order_moves
+        if move.get("afterUnpin") and not importing
+    }
+    for kind in ("chat", "project", "page"):
+        field = f"sectionBy{kind.capitalize()}Id"
         assignments = dict(stored.get(field, {}))
         for key in base[field].keys() | layout[field].keys():
             previous = base[field].get(key)
             target = layout[field].get(key)
-            if target == previous or (importing and key in assignments):
+            returned_after_unpin = (
+                target is not None
+                and (kind, key, target) in unpin_filings
+                and assignments.get(key) != target
+            )
+            if (target == previous and not returned_after_unpin) or (
+                importing and key in assignments
+            ):
                 continue
             # Deleting a section must preserve rows another client moved elsewhere.
             if (

@@ -1398,6 +1398,50 @@ def test_sidebar_sections_preserves_manual_intent_of_a_surviving_drag(client, ca
     assert saved["rowOrder"]["work"] == rows
 
 
+@pytest.mark.parametrize("anchor", ["chat", None])
+def test_sidebar_sections_honors_an_unpin_drop_into_the_old_section(client, anchor):
+    path = "/chat/sidebar-sections"
+
+    def save(
+        operation_id,
+        layout,
+        base = None,
+        moves = (),
+    ):
+        response = client.post(
+            path,
+            json = {"operationId": operation_id, "base": base, "layout": layout, "orderMoves": moves},
+        )
+        assert response.is_success, response.text
+        return response.json()
+
+    initial = save(
+        "initial",
+        {
+            "sections": {
+                "a": {"name": "Research", "sort": "manual"},
+                "b": {"name": "Inbox", "sort": "manual"},
+            },
+            "sectionByProjectId": {"project": "a"},
+            "sectionByChatId": {anchor: "a"} if anchor is not None else {},
+            "rowOrder": {"a": ["project", anchor] if anchor is not None else ["project"]},
+        },
+    )
+    peer = save("peer", {**initial, "sectionByProjectId": {"project": "b"}}, initial)
+    assert peer["sectionByProjectId"]["project"] == "b"
+    moved = {
+        "sectionId": "a",
+        "id": "project",
+        "targetId": anchor,
+        "edge": "top",
+        "afterUnpin": True,
+        "unpinKind": "project",
+    }
+    saved = save("local", initial, initial, [moved])
+    assert saved["sectionByProjectId"]["project"] == "a"
+    assert saved["rowOrder"]["a"] == initial["rowOrder"]["a"]
+
+
 @pytest.mark.parametrize(
     ("initial", "first", "second", "expected", "sort"),
     [

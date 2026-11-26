@@ -269,15 +269,16 @@ function planSectionDrop(
   const next = placeIdAt(ids, drag.id, target?.id ?? null, target?.edge ?? "bottom");
   const unpinProject = drag.kind === "project" && ctx.pinnedProjectIds.has(drag.id);
   const unpinChat = drag.kind === "chat" && ctx.pinnedChatIds.has(drag.id);
+  const unpinKind = unpinProject ? "project" : unpinChat ? "chat" : undefined;
   const effects: SidebarDropEffects = {
     orders: [{
       scope,
       ids: next,
-      ...(target && { place: {
+      ...((target || unpinKind) && { place: {
         id: drag.id,
-        targetId: target.id,
-        edge: target.edge,
-        ...((unpinProject || unpinChat) && { afterUnpin: true as const }),
+        targetId: target?.id ?? null,
+        edge: target?.edge ?? "bottom",
+        ...(unpinKind && { afterUnpin: true as const, unpinKind }),
       } }),
     }],
     fileInSection: { kind: drag.kind, id: drag.id, sectionId },

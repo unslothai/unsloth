@@ -113,9 +113,10 @@ function withoutSection(
 
 export interface SidebarOrderPlacement {
   id: string;
-  targetId: string;
+  targetId: string | null;
   edge: "top" | "bottom";
   afterUnpin?: true;
+  unpinKind?: "chat" | "project";
 }
 
 interface SidebarOrderMove extends SidebarOrderPlacement {
@@ -126,9 +127,10 @@ function readOrderMoves(value: unknown): SidebarOrderMove[] | undefined {
   if (!Array.isArray(value)) return undefined;
   return value.filter((move): move is SidebarOrderMove =>
     move !== null && typeof move === "object" &&
-    typeof move.id === "string" && typeof move.targetId === "string" &&
+    typeof move.id === "string" && (move.targetId === null || typeof move.targetId === "string") &&
     (move.sectionId === null || typeof move.sectionId === "string") &&
     (move.afterUnpin === undefined || move.afterUnpin === true) &&
+    (move.unpinKind === undefined || move.unpinKind === "chat" || move.unpinKind === "project") &&
     (move.edge === "top" || move.edge === "bottom"),
   );
 }
@@ -191,10 +193,10 @@ export function normalizeSectionName(name: string): string {
 export function insertIdAt(
   ids: string[],
   draggedId: string,
-  targetId: string,
+  targetId: string | null,
   edge: "top" | "bottom",
 ): string[] {
-  if (draggedId === targetId) return ids;
+  if (targetId === null || draggedId === targetId) return ids;
   if (!ids.includes(draggedId) || !ids.includes(targetId)) return ids;
   const next = placeIdAt(ids, draggedId, targetId, edge);
   return next.every((id, index) => id === ids[index]) ? ids : next;
@@ -221,7 +223,8 @@ export function discardUndoneSidebarPlacements(
   const initial = applyManualOrder(edited, base, (id) => id);
   let order = initial;
   const kept: SidebarOrderPlacement[] = [];
-  const mustKeep = (move: SidebarOrderPlacement) => move.afterUnpin || !ranked.has(move.targetId);
+  const mustKeep = (move: SidebarOrderPlacement) => move.afterUnpin ||
+    move.targetId === null || !ranked.has(move.targetId);
   for (let start = 0; start < placements.length;) {
     const row = placements[start].id;
     const previous = order;

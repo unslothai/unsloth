@@ -376,6 +376,21 @@ test("explicit unpin placements sync even if they reuse the saved ranks", async 
   assert.deepEqual(store.getState().orderMoves, [{ ...firstMove, sectionId: section }]);
 });
 
+test("the compact retry preserves the unchanged assignment for an explicit unpin drop", () => {
+  const base = {
+    ...layouts.sidebarLayout(store.getInitialState()),
+    sections: { research: { name: "Research", sort: "manual" as const } },
+    sectionByProjectId: { project: "research" },
+    rowOrder: { research: ["project"] },
+  };
+  const result = layouts.compactSidebarEdit(base, base, [{
+    sectionId: "research", id: "project", targetId: null, edge: "bottom",
+    afterUnpin: true, unpinKind: "project",
+  }]);
+  assert.deepEqual(result.base.sectionByProjectId, { project: "research" });
+  assert.deepEqual(result.layout.sectionByProjectId, { project: "research" });
+});
+
 test("a peer can upload a later edit after retrying the closed tab's pending operation", async (t) => {
   const posts: Edit[] = [];
   const initial = layouts.sidebarLayout(store.getInitialState());

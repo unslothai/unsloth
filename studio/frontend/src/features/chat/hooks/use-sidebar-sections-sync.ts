@@ -114,9 +114,13 @@ export function useSidebarSectionsSync(): void {
               // The server refused the body before applying it. Keep the visible edits retryable.
               const latest = sidebarLayout(now);
               const orderMoves = [...(edit.orderMoves ?? []), ...(now.orderMoves ?? [])].filter(
-                ({ id, targetId, sectionId }) => {
+                ({ id, targetId, sectionId, unpinKind }) => {
+                  if (unpinKind && sectionId !== null) {
+                    const assignments = unpinKind === "project" ? latest.sectionByProjectId : latest.sectionByChatId;
+                    if (assignments[id] === sectionId) return true;
+                  }
                   const order = sectionId === null ? latest.sectionOrder : latest.rowOrder[sectionId];
-                  return order?.includes(id) && order.includes(targetId);
+                  return order?.includes(id) && (targetId === null || order.includes(targetId));
                 },
               );
               store.setState({

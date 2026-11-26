@@ -38,9 +38,10 @@ class Layout(BaseModel):
 class OrderMove(BaseModel):
     sectionId: Optional[SectionId]
     id: RowId
-    targetId: RowId
+    targetId: Optional[RowId]
     edge: Literal["top", "bottom"]
     afterUnpin: bool = False
+    unpinKind: Optional[Literal["chat", "project"]] = None
 
 
 class LayoutEdit(BaseModel):

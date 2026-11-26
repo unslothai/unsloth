@@ -49,16 +49,23 @@ export function compactSidebarEdit(
       Object.entries(base.rowOrder).filter(([section]) => Object.hasOwn(changes.rowOrder, section)),
     ),
   };
-  for (const field of ["sectionByChatId", "sectionByProjectId", "sectionByPageId"] as const) {
+  for (const [kind, field] of [
+    ["chat", "sectionByChatId"], ["project", "sectionByProjectId"], ["page", "sectionByPageId"],
+  ] as const) {
     const before = base[field];
     const after = layout[field];
-    changes[field] = Object.fromEntries(Object.entries(after).filter(([row, section]) => before[row] !== section));
+    const unpinFilings = new Set(orderMoves?.filter((move) =>
+      move.afterUnpin && move.unpinKind === kind && move.sectionId === after[move.id],
+    ).map((move) => move.id));
+    changes[field] = Object.fromEntries(Object.entries(after).filter(([row, section]) =>
+      before[row] !== section || unpinFilings.has(row),
+    ));
     previous[field] = Object.fromEntries(Object.entries(before).filter(([row, section]) => {
       // Deleting a section already clears its assignments, including rows unseen by this browser.
       if (Object.hasOwn(base.sections, section) && !Object.hasOwn(layout.sections, section) && !Object.hasOwn(after, row)) {
         return false;
       }
-      return after[row] !== section;
+      return after[row] !== section || unpinFilings.has(row);
     }));
   }
   return { base: previous, layout: changes };
