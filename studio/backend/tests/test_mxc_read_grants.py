@@ -811,3 +811,10 @@ def test_pending_recovery_retains_uncertain_or_partial_grants(host, monkeypatch,
         monkeypatch.setattr(mxc_read_grants, "_identity", lambda _path: {"fileId": -1})
     assert not mxc_read_grants._pending_grant_has_no_explicit_aces(root, identity)
     assert _states() == {key: "pending"}
+
+
+@pytest.fixture(autouse = True)
+def _dacl_capable_pin(monkeypatch):
+    # The AppContainer + DACL tier exists only in the MXC 1.0.1 pin; 1.1.0 turns all of it off.
+    from core.inference import mxc_runtime
+    monkeypatch.setenv(mxc_runtime.PIN_ENV, mxc_runtime.LEGACY_PIN.version)

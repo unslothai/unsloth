@@ -104,8 +104,11 @@ try { $script:StudioStdoutRedirected = [Console]::IsOutputRedirected } catch { }
 
 # 5.1's Write-Host uses the OEM code page even when redirected, so use one sink:
 # the console handle when redirected, Write-Host (colorized) when interactive.
+# Only install.ps1 mutes; set here for Set-StrictMode callers.
+$script:StudioMuteLines = $false
 function Write-StudioLine {
     param([string]$Message = "", [string]$ForegroundColor)
+    if ($script:StudioMuteLines) { return }
     if ($script:StudioStdoutRedirected) {
         try { [Console]::Out.WriteLine($Message); [Console]::Out.Flush() } catch {}
         return
@@ -4022,11 +4025,25 @@ $HasNvidiaDriverEvidence = $HasNvidiaSmi -and -not $script:NvidiaPresenceOnly
 $NvidiaGpuName = $null
 $NvidiaSmArch = $null
 $NvidiaDriverVersion = $null
-$nvMaskHidesAll = $false
-if ($null -ne $env:CUDA_VISIBLE_DEVICES) {
-    $nvMask = ($env:CUDA_VISIBLE_DEVICES -replace '\s', '')
-    $nvMaskHidesAll = ($nvMask -eq '' -or $nvMask -eq '-1')
+function Test-CudaMaskHidesNvidia {
+    if ($null -eq $env:CUDA_VISIBLE_DEVICES) { return $false }
+    $mask = $env:CUDA_VISIBLE_DEVICES -replace '\s', ''
+    return ($mask -eq '' -or $mask -eq '-1')
 }
+function Test-RocmTorchExplicitlyRequested {
+    return ("$env:UNSLOTH_FORCE_ROCM_TORCH".Trim() -match '^(?i)(1|true|yes|on)$')
+}
+# install.sh _warn_if_cuda_mask_hides_amd: HIP reads the mask too.
+function Write-CudaMaskHidesAmdWarning {
+    Write-StudioLine ""
+    Write-StudioLine "[WARN] CUDA_VISIBLE_DEVICES=`"$env:CUDA_VISIBLE_DEVICES`" hid the NVIDIA GPU, so ROCm torch was selected." -ForegroundColor Yellow
+    Write-StudioLine "[WARN] ROCm reads CUDA_VISIBLE_DEVICES too: left set, it also hides the AMD GPU and" -ForegroundColor Yellow
+    Write-StudioLine "[WARN] Unsloth Studio / Desktop will run CPU-only. Unset it before launching" -ForegroundColor Yellow
+    Write-StudioLine "[WARN] (HIP_VISIBLE_DEVICES=0 picks the AMD card), and reinstall with" -ForegroundColor Yellow
+    Write-StudioLine "[WARN] UNSLOTH_FORCE_ROCM_TORCH=1 rather than the mask to ask for ROCm torch." -ForegroundColor Yellow
+    Write-StudioLine ""
+}
+$nvMaskHidesAll = Test-CudaMaskHidesNvidia
 if ($HasNvidiaSmi -and $NvidiaSmiExe -and -not $script:NvidiaSmiWedged -and -not $nvMaskHidesAll) {
     try {
         # -StdoutOnly: driver warnings on stderr would corrupt the CSV.
@@ -4246,7 +4263,10 @@ function Resolve-ShadowingGfxPick {
     substep "Run 'setx HIP_VISIBLE_DEVICES $discreteIdx' and reopen your terminal so Unsloth uses $discreteArch at runtime too, not just at install time" "Cyan"
     return $discreteArch
 }
-if (-not $HasNvidiaSmi) {
+# Only the flag or a hiding mask probes AMD beside NVIDIA, so a plain update keeps CUDA.
+$script:ProbeAmdBesideNvidia = $HasNvidiaSmi -and -not (Get-PinnedTorchIndexUrl) -and
+    ((Test-RocmTorchExplicitlyRequested) -or $nvMaskHidesAll)
+if (-not $HasNvidiaSmi -or $script:ProbeAmdBesideNvidia) {
     # The venv hipInfo.exe comes from an AMD wheel, not a HIP SDK.
     function Test-HipinfoIsVenvInternal {
         param([AllowNull()][string]$HipinfoPath)
@@ -4601,6 +4621,27 @@ $_rocmWheelArches = @(
 )
 # "AMD gets GPU wheels", not "AMD GPU present": unmapped arches install CPU torch.
 $AmdHasGpuWheels = [bool]($script:ROCmGfxArch -and ($_rocmWheelArches -contains $script:ROCmGfxArch))
+if ($script:ProbeAmdBesideNvidia) {
+    # UNSLOTH_ROCM_GFX_ARCH names an arch, not a card: hipinfo, amd-smi or WMI must see one.
+    if ($AmdHasGpuWheels -and ($HasROCm -or @($script:ROCmGpuLabels).Count -gt 0)) {
+        # An AMD host from here on, so the stale check keeps ROCm torch rather than restoring CUDA.
+        $HasNvidiaSmi = $false
+        $_rocmWhy = if (Test-RocmTorchExplicitlyRequested) { "UNSLOTH_FORCE_ROCM_TORCH is set" } else { "CUDA_VISIBLE_DEVICES hides the NVIDIA GPU" }
+        substep "$_rocmWhy -- ROCm PyTorch for the AMD GPU ($script:ROCmGfxArch), not CUDA" "Cyan"
+        # install.ps1 (SKIP_STUDIO_BASE=1) already warned.
+        if ($nvMaskHidesAll -and $null -eq $env:HIP_VISIBLE_DEVICES -and $env:SKIP_STUDIO_BASE -ne "1") {
+            Write-CudaMaskHidesAmdWarning
+        }
+    } else {
+        if ((Test-RocmTorchExplicitlyRequested) -and $env:SKIP_STUDIO_BASE -ne "1") {
+            substep "[WARN] UNSLOTH_FORCE_ROCM_TORCH is set, but no ROCm wheel index could be selected for this host; keeping CUDA." "Yellow"
+        }
+        # NVIDIA keeps torch: forget the AMD probe.
+        $HasROCm = $false; $HipSdkInstalled = $false; $ROCmGpuLabel = $null; $ROCmGpuName = $null
+        $script:ROCmGpuLabels = @(); $script:ROCmPeerLabels = @(); $script:ROCmGfxArch = $null
+        $script:ROCmUnsupportedGfxArch = $null; $script:ROCmVersion = $null; $script:ROCmVersionFull = $null
+    }
+}
 
 # Mirrors install.ps1's Intel scan; self-contained since `studio update` runs setup.ps1 standalone.
 $script:IsIntelXpu = $false
@@ -7632,6 +7673,80 @@ function Get-TritonWindowsRocmSpec {
     return $null
 }
 
+# Defined before the fast path, which reads it too.
+function Get-TritonWindowsSpec {
+    param([string]$TorchVersion, [bool]$WinArm64 = $false)
+    if ($WinArm64) { return "triton-windows>=3.8.0.post28" }
+    if ($TorchVersion -match '^2\.(\d+)\.(\d+)') {
+        switch ([int]$Matches[1]) {
+            12 { if ([int]$Matches[2] -eq 0) { return "triton-windows>=3.7,<3.7.1" } return "triton-windows>=3.7,<3.8" }
+            13 { return "triton-windows>=3.7,<3.8" }
+            14 { return "triton-windows>=3.8,<3.9" }
+            15 { return "triton-windows>=3.9,<3.10" }
+        }
+    }
+    return "triton-windows<3.7"
+}
+
+# 4 release parts + post number (-1 = none); dev/rc forms are $null.
+function Get-TritonWindowsVersionKey {
+    param([string]$Version)
+    if ("$Version".Trim() -notmatch '^(\d+(?:\.\d+){0,3})(?:\.post(\d+))?(?:\+[\w.]+)?$') { return $null }
+    $key = [System.Collections.Generic.List[long]]::new()
+    foreach ($part in $Matches[1].Split('.')) { $key.Add([long]$part) }
+    while ($key.Count -lt 4) { $key.Add(0) }
+    $key.Add($(if ($Matches[2]) { [long]$Matches[2] } else { -1 }))
+    return ,$key.ToArray()
+}
+
+function Test-TritonWindowsVersionInSpec {
+    param([string]$Version, [string]$Spec)
+    $have = Get-TritonWindowsVersionKey $Version
+    if ($null -eq $have) { return $null }
+    $clauses = @("$Spec" -replace '^\s*triton-windows\s*', '' -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    if ($clauses.Count -eq 0) { return $null }
+    foreach ($clause in $clauses) {
+        if ($clause -notmatch '^(>=|<=|==|<|>)\s*(\S+)$') { return $null }
+        $op = $Matches[1]
+        $want = Get-TritonWindowsVersionKey $Matches[2]
+        if ($null -eq $want) { return $null }
+        $cmp = 0
+        for ($i = 0; $i -lt $have.Count -and $cmp -eq 0; $i++) { $cmp = $have[$i].CompareTo($want[$i]) }
+        $ok = switch ($op) { '>=' { $cmp -ge 0 } '<=' { $cmp -le 0 } '==' { $cmp -eq 0 } '<' { $cmp -lt 0 } '>' { $cmp -gt 0 } }
+        if (-not $ok) { return $false }
+    }
+    return $true
+}
+
+function Get-TritonWindowsPairing {
+    # No double quotes: Invoke-BoundedPythonProbe wraps $Code in them. Only CUDA torch is judged (the pass repairs only
+    # that branch); zero or several triton-windows records are unknown, else a wheel-less install forces every run.
+    $code = "import importlib.metadata as m; print('TORCH=' + m.version('torch')); " +
+        "vs = [d.version for d in m.distributions(name='triton-windows') if d.version]; " +
+        "print('TRITONWIN=' + (vs[0] if len(vs) == 1 else ''))"
+    $probe = Invoke-BoundedPythonProbe -PythonExe "python" -Code $code
+    $torch = if ($probe.Ok -and $probe.Output -match '(?m)^TORCH=(\S+)\s*$') { $Matches[1] } else { "" }
+    $triton = if ($probe.Ok -and $probe.Output -match '(?m)^TRITONWIN=(\S+)\s*$') { $Matches[1] } else { "" }
+    $spec = $null
+    $inSpec = $null
+    if ($torch -match '\+cu\d+' -and $triton) {
+        $spec = Get-TritonWindowsSpec -TorchVersion $torch -WinArm64 ([bool](Test-WinArm64Venv))
+        $inSpec = Test-TritonWindowsVersionInSpec -Version $triton -Spec $spec
+    }
+    return @{ Torch = $torch; Triton = $triton; Spec = $spec; Stale = [bool]($null -ne $inSpec -and -not $inSpec) }
+}
+
+function Test-TritonWindowsPairingNeedsPass {
+    $pair = Get-TritonWindowsPairing
+    if (-not $pair.Stale) { return $false }
+    if ($script:OfflineFastPath -or (Test-UvOfflineRequested)) {
+        substep "triton-windows $($pair.Triton) does not pair with torch $($pair.Torch) but UV_OFFLINE is set -- left for the next online update" "Yellow"
+        return $false
+    }
+    substep "triton-windows $($pair.Triton) does not pair with torch $($pair.Torch) ($($pair.Spec)) -- forcing dependency pass to repair..." "Cyan"
+    return $true
+}
+
 function Get-TritonRuntimeState {
     # Judged by the imported runtime, not metadata: a dist-info can say 3.8 while the files are 3.9 or half removed.
     # Healthy = triton and a real (non-namespace) triton.language import with their core API, whatever the version.
@@ -7817,6 +7932,9 @@ sys.exit(2 if conflict else (0 if version else 1))
         # A verified install skips the post-stack pairing. Outside the gfx checks: a pinned ROCm index or a hybrid host
         # can hold a ROCm torch with no detected gfx.
         if ($SkipPythonDeps -and -not $NoTorchMode -and (Test-RocmTritonPairingNeedsPass)) {
+            $SkipPythonDeps = $false
+        }
+        if ($SkipPythonDeps -and -not $NoTorchMode -and (Test-TritonWindowsPairingNeedsPass)) {
             $SkipPythonDeps = $false
         }
     }
@@ -8167,19 +8285,6 @@ if ($WinArm64Venv -and $WinArm64EffectiveTorchIndexUrl) {
 }
 # win_arm64's first triton-windows wheel is 3.8.0.post28.
 $_tritonSpec = if ($WinArm64Venv) { "triton-windows>=3.8.0.post28" } else { "triton-windows<3.7" }
-# triton-windows follows the Triton each torch pins: 2.12 and 2.13 -> 3.7 (2.12.0 -> 3.7.0), 2.14 -> 3.8, older keeps <3.7.
-function Get-TritonWindowsSpec {
-    param([string]$TorchVersion, [bool]$WinArm64 = $false)
-    if ($WinArm64) { return "triton-windows>=3.8.0.post28" }
-    if ($TorchVersion -match '^2\.(\d+)\.(\d+)') {
-        switch ([int]$Matches[1]) {
-            12 { if ([int]$Matches[2] -eq 0) { return "triton-windows>=3.7,<3.7.1" } return "triton-windows>=3.7,<3.8" }
-            13 { return "triton-windows>=3.7,<3.8" }
-            14 { return "triton-windows>=3.8,<3.9" }
-        }
-    }
-    return "triton-windows<3.7"
-}
 # The win_arm64 index publishes only the trio, so a dependency index rides beside it (the caller's configured one, public PyPI by default). Not gated on $UseUv: pip needs the extra index too.
 $WinArm64IndexArgs = if ($WinArm64Venv) {
     $_woaResolver = if ($UseUv) { "uv" } else { "pip" }

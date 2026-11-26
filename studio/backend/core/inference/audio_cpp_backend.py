@@ -238,6 +238,13 @@ def model_info_fields(model: AudioCppModel) -> dict[str, Any]:
         "audio_clone": clone_rules(model),
         "audio_edit": edit_rules(model),
         "audio_music": music_rules(model),
+        "audio_separation": model.separation
+        and {
+            "goal": model.separation.goal,
+            "output": model.separation.output,
+            "rate": model.separation.rate,
+            "input_rates": list(model.separation.input_rates),
+        },
         "audio_options_by_workflow": options_by_workflow(model, primary),
         # Null when the spec takes any option; else the request fields it declares.
         "audio_request_inputs": None
@@ -543,10 +550,11 @@ class AudioCppBackend:
         only its new header. False means download it as usual; never raises."""
         try:
             from hub.utils import gguf_header_delta as delta
-            from core.inference.audio_cpp_models import hub_offline, snapshot_dirs
+            from core.inference.audio_cpp_models import snapshot_dirs
+            from utils.utils import hf_env_offline
 
             if (
-                hub_offline()
+                hf_env_offline()
                 or not path.lower().endswith(".gguf")
                 or not delta.delta_enabled()
                 or (cancel_event is not None and cancel_event.is_set())
@@ -922,7 +930,9 @@ class AudioCppBackend:
         options: Optional[dict] = None,
         cancel_event = None,
     ) -> list[dict[str, Any]]:
-        """Split a 44.1 kHz WAV into stems under ``output_dir``; [] when none decodes."""
+        """Split a prepared WAV into stems under ``output_dir``, or filter it into one file (s2s);
+        [] when none decodes."""
+        from core.inference.audio_cpp_models import validate_options, workflow_options
         from core.inference.audio_cpp_outputs import SeparationOutputError, extract_named_outputs
 
         if not self.active_model_name or self.active_model_name not in self.models:
@@ -949,17 +959,22 @@ class AudioCppBackend:
                 )
             server = self._server
         response_path = Path(output_dir) / ".response.json"
+        body: dict[str, Any] = {"model": server.model_id, "audio": str(source_path)}
+        # The separation families refuse any other key; an s2s family takes its spec's options.
+        if model.server_task == "s2s":
+            chosen = validate_options(workflow_options(model, "separate"), options)
+            if chosen:
+                body["options"] = chosen
         try:
-            # The separation families refuse any other key.
             server.post_json_to_file(
                 "/v1/tasks/run",
-                {"model": server.model_id, "audio": str(source_path)},
+                body,
                 response_path,
                 timeout = _GENERATE_TIMEOUT_SECONDS,
                 cancel_event = cancel_event,
             )
             _raise_if_cancelled(cancel_event)
-            outputs = extract_named_outputs(response_path, output_dir)
+            outputs = extract_named_outputs(response_path, output_dir, single_id = spec.output)
         except AudioCppRequestCancelledError:
             self._restart_after_cancel()
             _raise_if_cancelled(cancel_event)

@@ -61,7 +61,7 @@ def hub(monkeypatch):
 
     monkeypatch.setattr(huggingface_hub, "list_repo_files", state.list_repo_files)
     monkeypatch.setattr(llama_cpp, "_hub_download_in_flight", lambda repo: False)
-    monkeypatch.setattr(llama_cpp, "_hf_env_offline", lambda: False)
+    monkeypatch.setattr(llama_cpp, "hf_env_offline", lambda: False)
     monkeypatch.setattr(llama_cpp, "hf_hub_download_with_xet_fallback", state.download)
     return state
 

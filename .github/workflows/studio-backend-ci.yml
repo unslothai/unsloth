@@ -284,11 +284,14 @@ jobs:
         # Wall-clock-bound files run isolated; the isolation guard catches new tight bounds.
         #
         # Outer `timeout` catches a wedged xdist controller that per-test --timeout cannot; SIGINT dumps the stuck frame.
+        # --timeout-method=thread: the default SIGALRM handler never runs while a test is blocked in C code (a lock,
+        # a collective, a native wait), so the shard sat at 99% until the outer timeout and named nothing. The thread
+        # method dumps every stack and ends the worker, and xdist reports the test it was running.
         #
         # Shared selection lives here so every shard inherits one list; shards differ only in matrix.selection.
         run: |
           timeout --signal=INT --kill-after=60 1500 \
-          python -m pytest ${{ matrix.selection }} -q -rs --tb=short -n 4 --dist loadgroup --timeout=330 \
+          python -m pytest ${{ matrix.selection }} -q -rs --tb=short -n 4 --dist loadgroup --timeout=330 --timeout-method=thread \
             --ignore=tests/test_studio_api.py \
             --ignore=tests/test_streaming_stripper.py \
             --ignore=tests/test_llama_cpp_wait_for_vram_settle.py \
@@ -510,10 +513,10 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}/studio
           UNSLOTH_COMPILE_DISABLE: '1'
         # Spoofing and load_freeze files run isolated below: hardware-spoof files mutate module
-        # globals. The outer timeout must fire before the job cap.
+        # globals. The outer timeout must fire before the job cap. --timeout-method=thread: see the backend shards.
         run: |
           timeout --signal=INT --kill-after=60 2100 \
-          python -m pytest ${{ matrix.selection }} -q -rs --tb=short -n ${{ matrix.workers || 4 }} --dist loadgroup --timeout=330 \
+          python -m pytest ${{ matrix.selection }} -q -rs --tb=short -n ${{ matrix.workers || 4 }} --dist loadgroup --timeout=330 --timeout-method=thread \
             -m 'not server and not e2e'
 
       - name: Hardware-spoof tests (state-sensitive, run in isolation)

@@ -29,6 +29,7 @@ const {
 const { DEFAULT_INFERENCE_PARAMS } = await import(
   "../src/features/chat/types/runtime.ts"
 );
+const { REMEMBERED_MAX_TOKENS_MAX } = await import("../src/features/chat/lib/per-model-params.ts");
 
 type Preset = (typeof BUILTIN_PRESETS)[number];
 
@@ -71,7 +72,8 @@ function pickPreset(preset: Preset): void {
   store.setParams(applyPresetForProvider(store.params, preset, null), {
     minPChoiceEdited: true,
     fromPreset: true,
-  } as never);
+    pinsSampling: getPresetSource(preset.name) === "custom",
+  });
   store.setActivePreset(preset.name);
   store.setActivePresetSource(getPresetSource(preset.name));
 }
@@ -255,6 +257,117 @@ test("an edit after a preset pick does not file the preset for the model", () =>
   assert.equal(useChatRuntimeStore.getState().params.fastMode, true);
 });
 
+const SWITCHES = {
+  cloud: ["external::demo::model-a", "external::demo::model-b", (id: string) =>
+    useChatRuntimeStore.getState().setCheckpoint(id, null)],
+  local: [GEMMA, QWEN, loadOrPoll],
+} as const;
+
+for (const [path, [a, b, switchTo]] of Object.entries(SWITCHES)) {
+  test(`a ${path} switch replays the destination's edits over the selected preset`, () => {
+    const live = useChatRuntimeStore.getState;
+    const bEdits = {
+      temperature: 0.8, topP: 0.5, topK: 5, minP: 0.2, minPMode: "custom" as const,
+      repetitionPenalty: 1.3, presencePenalty: 0.7, maxTokens: 777, systemPrompt: "Be brief.",
+      systemVariables: "{\"tone\": \"dry\"}", seed: 42,
+    };
+    const keys = Object.keys(bEdits) as (keyof typeof bEdits)[];
+    const shown = () => Object.fromEntries(keys.map((key) => [key, live().params[key]]));
+    useChatRuntimeStore.setState({ paramsByModel: { [a]: { temperature: 0.2 }, [b]: bEdits } });
+    live().setCustomPresets([CUSTOM]);
+    switchTo(a);
+    assert.equal(live().params.temperature, 0.2);
+    pickPreset(CUSTOM);
+    const onA = shown();
+    assert.equal(onA.temperature, CUSTOM.params.temperature);
+
+    switchTo(b);
+    assert.deepEqual(shown(), bEdits);
+    switchTo(a);
+    assert.equal(live().activePreset, CUSTOM.name);
+    assert.deepEqual(shown(), onA);
+    assert.deepEqual(presetOwnedKeys(live().paramsByModel[a]), []);
+
+    live().setActiveThreadId("pinned-chat");
+    try {
+      live().applyThreadScopedSettings("pinned-chat", { temperature: 0.4 });
+      switchTo(b);
+      assert.equal(live().params.temperature, 0.4);
+      switchTo(a);
+      assert.equal(live().params.temperature, 0.4);
+    } finally {
+      live().setActiveThreadId(null);
+      live().applyThreadScopedSettings(null, null);
+    }
+    switchTo(b);
+    assert.deepEqual(shown(), bEdits);
+    switchTo(a);
+    assert.deepEqual(shown(), onA);
+
+    // An edit filed since the pick replays over the preset; the other keys still come from it.
+    useChatRuntimeStore.setState({ paramsByModel: { ...live().paramsByModel, [a]: { topK: 3 } } });
+    switchTo(b);
+    switchTo(a);
+    assert.deepEqual(shown(), { ...onA, topK: 3 });
+  });
+
+  test(`a preset picked in a chat stays out of a ${path} switch outside it`, async () => {
+    const live = useChatRuntimeStore.getState;
+    live().setCustomPresets([CUSTOM]);
+    switchTo(a);
+    const outside = sampling();
+    live().setActiveThreadId("pinned-chat");
+    live().applyThreadScopedSettings("pinned-chat", {});
+    pickPreset(CUSTOM);
+    live().setActiveThreadId(null);
+    live().applyThreadScopedSettings(null, null);
+    await settled();
+    settingsHttp.puts.length = 0;
+    switchTo(b);
+    switchTo(a);
+    assert.deepEqual(sampling(), outside);
+    await settled();
+    const defaults = Object.assign({}, ...settingsHttp.puts.map((put) => put.inferenceParams));
+    assert.deepEqual([defaults.temperature, defaults.systemPrompt], [undefined, undefined]);
+  });
+}
+
+test("a model remembered at Max keeps the on-screen budget under a custom preset", () => {
+  const live = useChatRuntimeStore.getState;
+  const [a, b] = ["external::demo::model-a", "external::demo::model-b"];
+  live().setCustomPresets([CUSTOM]);
+  live().setCheckpoint(a, null);
+  pickPreset(CUSTOM);
+  useChatRuntimeStore.setState({
+    params: { ...live().params, maxTokens: 32768 },
+    paramsByModel: { [b]: { maxTokens: REMEMBERED_MAX_TOKENS_MAX } },
+  });
+  live().setCheckpoint(b, null);
+  assert.equal(live().params.maxTokens, 32768);
+});
+
+// chat-adapter's background autoload, which puts the visible model's params back afterwards.
+test("a background load under a custom preset leaves the installation defaults alone", async () => {
+  const live = useChatRuntimeStore.getState;
+  const visible = "external::demo::model-x";
+  live().setCustomPresets([CUSTOM]);
+  live().setCheckpoint("external::demo::model-y", null);
+  pickPreset(CUSTOM);
+  useChatRuntimeStore.setState({ paramsByModel: { [visible]: { temperature: 0.8, topK: 5 } } });
+  live().setCheckpoint(visible, null);
+  await settled();
+  const shown = { ...live().params };
+  settingsHttp.puts.length = 0;
+  live().setCheckpoint(GEMMA, undefined, { trackQueuedSettings: false });
+  live().setParams(live().params, {
+    persist: false, trackQueuedSettings: false, fromModelDefaults: true, maxTokensCap: CONTEXT,
+  });
+  live().setCheckpoint(visible, undefined, { trackQueuedSettings: false, persist: false });
+  useChatRuntimeStore.setState({ params: shown });
+  await settled();
+  assert.deepEqual(settingsHttp.puts.filter((put) => put.inferenceParams), []);
+});
+
 // The memory itself still works: a slider moved on a model is that model's and outlasts a switch.
 test("a slider edit is still remembered per model over its recommendation", () => {
   loadOrPoll(GEMMA);
@@ -377,7 +490,7 @@ test("saving a preset hands the loaded model's sampling to it, as a pick does", 
   assert.ok(save, "savePresetWithName");
   assert.match(save, /const live = useChatRuntimeStore\.getState\(\)\.params;/);
   assert.match(save, /params: toPresetParams\(saved\),/);
-  assert.match(save, /setParams\(saved, \{ fromPreset: true \}\);/);
+  assert.match(save, /setParams\(saved, \{ fromPreset: true, pinsSampling: true \}\);/);
   assert.doesNotMatch(save, /paramsWithCommittedSeed/);
 });
 

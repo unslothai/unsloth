@@ -516,6 +516,13 @@ def add_lexical_chunks(conn: sqlite3.Connection, scope: str, document_id: str, c
         _insert_chunk(conn, scope, document_id, chunk, None)
 
 
+def _connection_moved(model_name: str, identity: str) -> bool:
+    if not config.is_connection_model(model_name):
+        return False
+    from .embed_connection import connection_identity
+    return connection_identity(model_name) != identity
+
+
 def replace_document_vectors(
     conn: sqlite3.Connection,
     document_id: str,
@@ -528,8 +535,9 @@ def replace_document_vectors(
     """Swap a document's vectors in place and stamp ``identity``, keeping its id and chunk ids.
 
     Writes only while the row is still the one that was encoded: present, still under
-    ``stale_model``, with the same chunks, and ``model_name`` still the configured model. A delete,
-    a re-upload, another re-embed or a model switch in between wins, and False is returned."""
+    ``stale_model``, with the same chunks, and ``model_name`` still the configured model on the same
+    connection server. A delete, a re-upload, another re-embed, a model switch or a connection moved
+    to another server in between wins, and False is returned."""
     conn.execute("BEGIN IMMEDIATE")
     try:
         row = conn.execute(
@@ -549,6 +557,7 @@ def replace_document_vectors(
             or not current
             # Uncached, under the write lock: old-width vectors would drop every row the new model wrote.
             or config.effective_embedding_model(fresh = True) != model_name
+            or _connection_moved(model_name, identity)
         ):
             conn.rollback()
             return False
@@ -1101,6 +1110,36 @@ def all_chunks_for_scope(conn: sqlite3.Connection, scope) -> list[dict]:
         list(scopes),
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+def opening_chunks(
+    conn: sqlite3.Connection,
+    scope: str,
+    min_tokens: int,
+    document_id: str,
+    max_chunks: int = 3,
+) -> list[dict]:
+    doc = conn.execute(
+        "SELECT id, filename FROM documents d WHERE scope=? AND id=? AND status='completed' "
+        "AND num_chunks > 0 AND NOT EXISTS "
+        "(SELECT 1 FROM linked_folder_retired_scopes r WHERE r.scope=d.scope)",
+        (scope, document_id),
+    ).fetchone()
+    if doc is None:
+        return []
+    rows, total = [], 0
+    for r in conn.execute(
+        "SELECT id, text, document_id, chunk_index, page_number, source_page_index, "
+        "page_char_start, page_char_end, token_count "
+        # Chunks never span pages, so a sparse deck would otherwise pull in a chunk per page.
+        "FROM chunks WHERE document_id=? ORDER BY chunk_index LIMIT ?",
+        (doc["id"], max_chunks),
+    ):
+        rows.append({**dict(r), "filename": doc["filename"]})
+        total += r["token_count"] or max(1, len(r["text"] or "") // 4)
+        if total >= min_tokens:
+            break
+    return rows
 
 
 def scope_token_estimate(conn: sqlite3.Connection, scope) -> int:
