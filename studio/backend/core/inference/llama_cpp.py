@@ -16960,6 +16960,30 @@ class LlamaCppBackend:
             "smaller or more quantized GGUF, or a shorter context, and load again."
         )
 
+    def _windows_cpu_expert_bytes(
+        self,
+        model_path: Optional[str],
+        argv: Sequence[str],
+        env: Mapping[str, str],
+        n_layers: Optional[int],
+    ) -> int:
+        """Expert bytes --cpu-moe / --n-cpu-moe (or their LLAMA_ARG_* twins) keep on the CPU; 0 when
+        unknown. -ot patterns are not guessed at."""
+        everything = _extra_args_set_any_flag(argv, {"--cpu-moe", "-cmoe"}) or (
+            env.get("LLAMA_ARG_CPU_MOE") in _LLAMA_ARG_TRUE_VALUES
+        )
+        count = 0
+        if not everything:
+            raw = _extra_args_device(argv, frozenset({"--n-cpu-moe", "-ncmoe"}))
+            if raw is None:
+                raw = env.get("LLAMA_ARG_N_CPU_MOE")
+            if not (_is_positive_int(raw) and n_layers):
+                return 0
+            count = min(int(str(raw).strip()), n_layers)
+        scan = self._gguf_tensor_scan(model_path)
+        experts = int(scan[2]) if scan else 0
+        return experts if everything else experts * count // n_layers
+
     def _windows_host_commit_refusal(
         self,
         cmd: Iterable[str],
@@ -17018,6 +17042,9 @@ class LlamaCppBackend:
                 raw = str(_env.get("LLAMA_ARG_N_GPU_LAYERS", "")).strip().lower()
                 requested = int(raw) if raw.lstrip("-").isdigit() else None
             n_layers = getattr(self, "_n_layers", None)
+            # Experts pinned to the CPU never take VRAM, however much is free.
+            cpu_experts = self._windows_cpu_expert_bytes(model_path, argv, _env, n_layers)
+            free_vram_bytes = min(free_vram_bytes, max(0, resident - cpu_experts))
             # Layers a hand-set count leaves on the CPU, attention and KV included.
             cpu_layer_share = 0.0
             if requested is not None and requested >= 0 and n_layers:
@@ -17064,7 +17091,16 @@ class LlamaCppBackend:
                 kv = self._estimate_kv_cache_bytes(n_ctx, k_type, **shape)
                 # A refusal must not over-price: K and V each take their width's share of the
                 # cache at their own type (half each when the widths are unknown); MLA caches K only.
-                if v_type != k_type and getattr(self, "_kv_lora_rank", None) is None:
+                # With flash attention off the estimator already floors V at f16, so a V at or
+                # under f16 is priced inside the K-type estimate.
+                v_inside = shape["flash_attn"] is False and _kv_bytes_per_elem(
+                    v_type
+                ) <= _kv_bytes_per_elem("f16")
+                if (
+                    v_type != k_type
+                    and not v_inside
+                    and getattr(self, "_kv_lora_rank", None) is None
+                ):
                     k_len = getattr(self, "_kv_key_length", None)
                     v_len = getattr(self, "_kv_value_length", None)
                     k_frac = k_len / (k_len + v_len) if k_len and v_len else 0.5

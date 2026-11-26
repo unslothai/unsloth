@@ -48,6 +48,7 @@ def _backend(
 
     backend._estimate_kv_cache_bytes = kv
     backend._context_length = context_length
+    backend._gguf_tensor_scan = lambda _path: ("qwen3moe", {}, 0)
     return backend
 
 
@@ -281,6 +282,31 @@ class TestPreLaunch:
         backend._windows_host_commit_refusal(_cmd("--no-kv-offload"), _CARD, env, **kwargs)
         assert backend._seen_shape["n_ubatch"] == 128
         assert backend._seen_shape["flash_attn"] is False
+
+    @pytest.mark.parametrize(
+        "extra, env",
+        [(("--cpu-moe",), {}), ((), {"LLAMA_ARG_CPU_MOE": "1"}), (("--n-cpu-moe", "40"), {})],
+    )
+    def test_cpu_pinned_experts_take_no_vram_credit(self, windows, extra, env):
+        # 20 GB with 16 GB of experts fits 30 GB free, but --cpu-moe keeps the experts in host RAM.
+        backend = _backend(model_gb = 20, kv_gb = 0)
+        backend._n_layers = 40
+        backend._gguf_tensor_scan = lambda _path: ("qwen3moe", {}, 16 * _GB)
+        kwargs = dict(avail_mib = 96 * _MIB, commit_headroom_mib = 8 * _MIB)
+        assert backend._windows_host_commit_refusal(_cmd("--no-mmap", *extra), _CARD, env, **kwargs)
+        # Mapped, the same experts are file-backed and charge no commit.
+        assert backend._windows_host_commit_refusal(_cmd(*extra), _CARD, env, **kwargs) is None
+
+    def test_flash_attention_off_does_not_price_v_twice(self, windows):
+        # The estimator floors V at f16 with flash attention off: the q4_0-K figure is the cache.
+        backend = _backend()
+        backend._kv_lora_rank = None
+        per_axis = {"f16": 32 * _GB, "q4_0": int(20.5 * _GB)}
+        backend._estimate_kv_cache_bytes = lambda n_ctx, cache_type = None, **k: per_axis[cache_type]
+        cmd = ["llama-server", "-m", "m.gguf", "--no-kv-offload", "-c", "8", "-fa", "off"]
+        cmd += ["-ctk", "q4_0", "-ctv", "f16"]
+        kwargs = dict(avail_mib = 96 * _MIB, commit_headroom_mib = 24 * _MIB)
+        assert backend._windows_host_commit_refusal(cmd, _CARD, {}, **kwargs) is None
 
     def test_model_that_fits_the_card_is_never_refused(self, windows):
         assert (
