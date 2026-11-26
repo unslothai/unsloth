@@ -323,6 +323,24 @@ def _refuse_unreconstructable_sampler(trainer):
         )
 
 
+def _refuse_untruncated_filtered_logps(trainer):
+    # Colocated vLLM with the IS correction returns pre-truncation logprobs (zoo #2794); under top_k / top_p / min_p
+    # those are not the sampler's, so they cannot stand in for q.
+    try:
+        from unsloth_zoo.rl_replacements import (
+            grpo_rollout_logprobs_untruncated,
+            grpo_sampling_support,
+        )
+    except Exception:
+        return
+    if grpo_rollout_logprobs_untruncated(trainer) and grpo_sampling_support(trainer) is not None:
+        raise ValueError(
+            "Unsloth: unsloth_distillation_coef needs the sampler's own logprobs, but this vLLM engine returns them "
+            "from before top_k / top_p / min_p. Set UNSLOTH_VLLM_UNTRUNCATED_LOGPROBS=0 (vLLM's processed logprobs "
+            "over the kept tokens) or sample without those filters."
+        )
+
+
 def _require_zoo(flag, option):
     try:
         import unsloth_zoo.rl_replacements as _zoo_rl
@@ -401,6 +419,8 @@ def grpo_add_distillation_advantages(trainer, output):
     completion_ids, completion_mask = output["completion_ids"], output["completion_mask"]
     dtype = _autocast_dtype(trainer)
     student_logps = output.get("sampling_per_token_logps", None)
+    if student_logps is not None:
+        _refuse_untruncated_filtered_logps(trainer)
     if student_logps is None or student_logps.shape != completion_ids.shape:
         # No vLLM logprobs: the policy sampled the tokens itself, at the trainer's temperature.
         student = _unwrap(trainer.accelerator.unwrap_model(trainer.model))

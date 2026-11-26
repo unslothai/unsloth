@@ -387,6 +387,39 @@ def test_grpo_setup_refuses_filters_it_cannot_reproduce(monkeypatch):
     assert opd.grpo_setup_distillation(defaults) == 1.0
 
 
+def test_distillation_refuses_untruncated_filtered_vllm_logps(monkeypatch):
+    import unsloth_zoo.rl_replacements as zoo_rl
+
+    monkeypatch.setattr(opd, "_require_zoo", lambda flag, option: None)
+    trainer = _grpo_trainer(unsloth_distillation_coef = 1.0, temperature = 1.0)
+    opd.grpo_setup_distillation(trainer)
+    batch = _left_padded_batch()
+    output = dict(
+        prompt_ids = batch[0],
+        prompt_mask = batch[1],
+        completion_ids = batch[2],
+        completion_mask = batch[3],
+        advantages = torch.zeros(3),
+        sampling_per_token_logps = -torch.rand(batch[2].shape),
+    )
+    for untruncated, support, refused in (
+        (True, (1, 1.0, 0.0), True),
+        (True, None, False),
+        (False, (0, 0.9, 0.0), False),
+    ):
+        monkeypatch.setattr(
+            zoo_rl, "grpo_rollout_logprobs_untruncated", lambda t, v = untruncated: v, raising = False
+        )
+        monkeypatch.setattr(zoo_rl, "grpo_sampling_support", lambda t, v = support: v, raising = False)
+        if refused:
+            with pytest.raises(ValueError, match = "UNSLOTH_VLLM_UNTRUNCATED_LOGPROBS=0"):
+                opd.grpo_add_distillation_advantages(trainer, dict(output))
+        else:
+            assert "unsloth_distillation_advantages" in opd.grpo_add_distillation_advantages(
+                trainer, dict(output)
+            )
+
+
 def test_grpo_setup_refuses_a_subclass_objective(monkeypatch):
     monkeypatch.setattr(opd, "_require_zoo", lambda flag, option: None)
     import sys
