@@ -16926,11 +16926,6 @@ class LlamaCppBackend:
             "or more quantized GGUF, or more free memory, would run faster."
         )
 
-    # Tensor overrides that keep the attention layers (and so the KV cache) on the GPU.
-    _ARGV_EXPERTS_ON_CPU = frozenset(
-        {"--n-cpu-moe", "-ncmoe", "--cpu-moe", "-cmoe", "-ot", "--override-tensor"}
-    )
-
     @staticmethod
     def _windows_host_commit_refusal_message(
         private_host_bytes: int,
@@ -17047,7 +17042,7 @@ class LlamaCppBackend:
                 kv_on_host = 1.0
             elif (
                 spill
-                and not _extra_args_set_any_flag(argv, self._ARGV_EXPERTS_ON_CPU)
+                and not _args_place_tensors_on_cpu(argv)
                 and not _env_places_tensors_on_cpu(_env)
             ):
                 # A layer split keeps the KV of the layers left on the CPU in host RAM.

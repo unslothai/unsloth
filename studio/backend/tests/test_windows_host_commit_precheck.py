@@ -222,6 +222,13 @@ class TestPreLaunch:
         assert backend._windows_host_commit_refusal(cmd, _CARD, {}, **kwargs) is None
         assert backend._windows_host_commit_refusal(_cmd("--no-mmap"), _CARD, {}, **kwargs) is None
 
+    def test_a_zero_expert_count_places_nothing_on_the_cpu(self, windows):
+        kwargs = dict(avail_mib = 96 * _MIB, commit_headroom_mib = 16 * _MIB)
+        backend = _backend(kv_gb = 32)
+        assert backend._windows_host_commit_refusal(_cmd("--n-cpu-moe", "0"), _CARD, {}, **kwargs)
+        cmd = _cmd("--n-cpu-moe", "40")
+        assert backend._windows_host_commit_refusal(cmd, _CARD, {}, **kwargs) is None
+
     def test_a_layer_count_keeps_host_kv_beside_experts_on_the_cpu(self, windows):
         # --cpu-moe keeps attention on the GPU only for the layers -ngl puts there.
         backend = _backend(model_gb = 20, kv_gb = 32)
