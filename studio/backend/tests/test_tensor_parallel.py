@@ -1921,7 +1921,9 @@ class TestTensorSplitUnsupportedArchitecture:
         assert [self._mode(c) for c in spawns] == ["tensor"]
         assert isinstance(error, RuntimeError)
         assert "nemotron_h_moe" in str(error) and "layer split" in str(error)
-        assert LlamaCppBackend._tensor_split_arch_unsupported("/fake/llama-server", "nemotron_h_moe")
+        assert LlamaCppBackend._tensor_split_arch_unsupported(
+            "/fake/llama-server", "nemotron_h_moe"
+        )
 
     def test_the_next_tensor_request_launches_layer_split_and_says_why(self, tmp_path):
         backend, gguf = self._harness(tmp_path, "nemotron_h_moe")
@@ -1974,7 +1976,9 @@ class TestTensorSplitUnsupportedArchitecture:
         assert backend._arch_gate_dropped_tensor_parallel is False
 
     def test_another_architecture_still_gets_tensor_mode(self, tmp_path):
-        LlamaCppBackend._record_tensor_split_unsupported_arch("/fake/llama-server", "nemotron_h_moe")
+        LlamaCppBackend._record_tensor_split_unsupported_arch(
+            "/fake/llama-server", "nemotron_h_moe"
+        )
         backend, gguf = self._harness(tmp_path, "qwen3")
 
         spawns, error = self._load(backend, gguf, tensor_parallel = True)
