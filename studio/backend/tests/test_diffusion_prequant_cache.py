@@ -1103,7 +1103,9 @@ def test_a_shared_blob_store_snapshot_is_judged_by_its_repo_blob_etag(
     _quantize(model, scheme)
     link, blob = _hub_snapshot(tmp_path, base)
     if relative:  # the hub's own snapshot links are relative
-        target = os.readlink(link)  # Windows readlink adds \\?\, which relpath rejects
+        target = C._plain_link_target(
+            os.readlink(link)
+        )  # Windows readlink adds \\?\, which relpath rejects
         os.unlink(link)
         os.symlink(os.path.relpath(target, os.path.dirname(link)), link)
     xet_hash = _share_blob(tmp_path, link)
@@ -1137,7 +1139,9 @@ def test_an_extended_length_link_target_is_followed_like_a_plain_one(
 
     def windows_readlink(path, *args, **kwargs):
         target = real_readlink(path, *args, **kwargs)
-        return "\\\\?\\" + target if os.path.isabs(target) else target
+        if not os.path.isabs(target) or target.startswith("\\\\?\\"):
+            return target  # already the Windows form on Windows itself
+        return "\\\\?\\" + target
 
     # Only the module's own readlink calls see the Windows form; os.path.realpath keeps the real one.
     windows_os = types.SimpleNamespace(
