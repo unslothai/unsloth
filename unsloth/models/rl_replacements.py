@@ -1953,6 +1953,47 @@ def _unsloth_seq_packing_moe_noise(model, result, ref, cmask):
     return True
 
 
+def _unsloth_seq_packing_shape_noise(model, result, ref, cmask):
+    """True when a failed packing self-verify is bf16 GEMM shape noise, not a packing bug.
+
+    cuBLAS picks its kernel from M, so a row scored inside a packed [1, T] stream rounds differently from the same
+    row alone: Qwen3-0.6B on an L4 reaches 0.79 nats on single tokens, past the 0.7 max-diff gate, while every
+    document's mean stays near 0.02. A real bug moves whole documents: a boundary-ignoring leak gives per-document
+    means of 1.5 to 8.9 and puts 94% of tokens past 0.7. So: every document with 8+ scored tokens has a mean |d| of
+    at most 0.1 and at most 1% of scored tokens reach 0.7. UNSLOTH_GRPO_PACKING_SHAPE_NOISE=0 disables."""
+    import os
+
+    if os.environ.get("UNSLOTH_GRPO_PACKING_SHAPE_NOISE", "1").strip().lower() in (
+        "0",
+        "false",
+        "no",
+        "off",
+    ):
+        return False
+    try:
+        live = cmask > 0
+        n = int(live.sum())
+        if n < 64:
+            return False
+        d = (result.detach().float() - ref.detach().float()).abs().masked_fill(~live, 0.0)
+        if not bool(d.isfinite().all()):
+            return False
+        if int((d >= 0.7).sum()) * 100 > n:
+            return False
+        row_n = live.sum(dim = -1)
+        rows = row_n >= 8
+        if not bool(rows.any()):
+            return False
+        if float((d.sum(dim = -1)[rows] / row_n[rows]).max()) > 0.1:
+            return False
+    except Exception:
+        return False
+    model._unsloth_seq_packing_shape_noise_passes = (
+        int(getattr(model, "_unsloth_seq_packing_shape_noise_passes", 0) or 0) + 1
+    )
+    return True
+
+
 def _unsloth_grpo_packing_leaks(self, unwrapped):
     """True when a packed document's output depends on an earlier document in its row (e.g. OPT's plain causal mask).
 
@@ -5503,8 +5544,15 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                     flush = True,
                                 )
                             # Kernel-noise floor is ~0.25; cross-sample contamination is >= 2.4.
-                            if _pk_diff < 7e-1 or _unsloth_seq_packing_moe_noise(
-                                unwrapped_model, _pk_result, _pk_ref, _pk_cm
+                            # Shape noise: bf16 GEMMs round a row differently at another M (L4 tops 0.7).
+                            if (
+                                _pk_diff < 7e-1
+                                or _unsloth_seq_packing_moe_noise(
+                                    unwrapped_model, _pk_result, _pk_ref, _pk_cm
+                                )
+                                or _unsloth_seq_packing_shape_noise(
+                                    unwrapped_model, _pk_result, _pk_ref, _pk_cm
+                                )
                             ):
                                 unwrapped_model._unsloth_seq_packing_nograd_ok = True
                                 unwrapped_model._unsloth_seq_packing_nograd_strikes = 0
@@ -6264,6 +6312,7 @@ def _patch_grpo_accumulated_loss_moe_noise(source):
     if "_pack_ref" in source and "_pack_cm" in source:
         source = _GRPO_SEQ_PACKING_GRAD_TOL.sub(
             "if _pack_diff < 7e-1 or _unsloth_seq_packing_moe_noise("
+            "unwrapped_model, _pack_result, _pack_ref, _pack_cm) or _unsloth_seq_packing_shape_noise("
             "unwrapped_model, _pack_result, _pack_ref, _pack_cm):",
             source,
             count = 1,
@@ -7097,6 +7146,7 @@ RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(grpo_compute_loss))
 RL_PRE_ITEMS["grpo_trainer"].append(_class_source(UnslothEfficientGRPO))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_seq_packing_verify_verdict))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_seq_packing_moe_noise))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_seq_packing_shape_noise))
 RL_PRE_ITEMS["grpo_trainer"].append(
     _patch_grpo_accumulated_loss_moe_noise(
         _patch_grpo_accumulated_loss_seq_packing_kill(
