@@ -6394,9 +6394,59 @@ def _unsloth_grpo_npr_settings():
     return pass_reward, pass_rate
 
 
-def _unsloth_grpo_npr_key(prompt):
+def _unsloth_grpo_npr_key(row):
+    """Stable identity of a dataset row for No-Positive-Resampling: the prompt, the other scalar columns
+    (an answer tells apart tasks sharing a prompt) and a content hash of every image / array in the row.
+    Media are a set, so TRL's singular `image` -> `images` normalisation keeps the key."""
     import hashlib
-    return hashlib.sha1(repr(prompt).encode("utf-8", "surrogatepass")).hexdigest()
+
+    if not isinstance(row, dict):
+        return hashlib.sha1(repr(row).encode("utf-8", "surrogatepass")).hexdigest()
+    media = set()
+
+    def visit(value):
+        if isinstance(value, (list, tuple)):
+            for item in value:
+                visit(item)
+        elif isinstance(value, dict):
+            for item in value.values():
+                visit(item)
+        elif hasattr(value, "tobytes") and (hasattr(value, "size") or hasattr(value, "shape")):
+            # PIL images, numpy arrays, tensors: hash the content, never the repr (it holds an address).
+            if hasattr(value, "detach"):
+                value = value.detach().cpu().contiguous().numpy()
+            digest = hashlib.sha1(value.tobytes())
+            digest.update(
+                repr(
+                    (
+                        getattr(value, "mode", None),
+                        getattr(value, "size", None),
+                        getattr(value, "shape", None),
+                    )
+                ).encode()
+            )
+            media.add(digest.hexdigest())
+
+    scalars = []
+    for name in sorted(row):
+        value = row[name]
+        if name != "prompt" and isinstance(value, (str, int, float, bool)):
+            scalars.append((name, value))
+        visit(value)
+    prompt = row.get("prompt", None)
+    text = repr((_unsloth_grpo_npr_text(prompt), scalars, sorted(media)))
+    return hashlib.sha1(text.encode("utf-8", "surrogatepass")).hexdigest()
+
+
+def _unsloth_grpo_npr_text(value):
+    # The prompt without its media (hashed separately): conversational content parts may hold images.
+    if isinstance(value, (list, tuple)):
+        return [_unsloth_grpo_npr_text(item) for item in value]
+    if isinstance(value, dict):
+        return {name: _unsloth_grpo_npr_text(item) for name, item in sorted(value.items())}
+    if hasattr(value, "tobytes") and (hasattr(value, "size") or hasattr(value, "shape")):
+        return "<media>"
+    return value
 
 
 def _unsloth_grpo_npr_record(trainer, mode, inputs, rewards_per_func):
@@ -6407,7 +6457,7 @@ def _unsloth_grpo_npr_record(trainer, mode, inputs, rewards_per_func):
         return
     pass_reward, pass_rate = settings
     num_generations = int(trainer.num_generations)
-    keys = [_unsloth_grpo_npr_key(x.get("prompt") if isinstance(x, dict) else x) for x in inputs]
+    keys = [_unsloth_grpo_npr_key(x) for x in inputs]
     if getattr(trainer.accelerator, "num_processes", 1) > 1:
         from accelerate.utils import gather_object
         keys = gather_object(keys)
@@ -6446,10 +6496,12 @@ def _unsloth_grpo_npr_sampler(trainer, sampler):
         "batch_size",
         "repeat_count",
         "shuffle",
-        "generator",
         "num_samples",
     )
-    if not all(hasattr(sampler, name) for name in needed):
+    # TRL creates the generator only when it shuffles.
+    if not all(hasattr(sampler, name) for name in needed) or (
+        getattr(sampler, "shuffle", False) and not hasattr(sampler, "generator")
+    ):
         import warnings
         warnings.warn(
             "Unsloth: UNSLOTH_GRPO_NO_POSITIVE_RESAMPLING needs TRL's RepeatSampler; it is ignored here.",
@@ -6474,10 +6526,7 @@ def _unsloth_grpo_npr_sampler(trainer, sampler):
                 for index in order:
                     key = keys.get(index, None)
                     if key is None:
-                        row = self.data_source[index]
-                        key = _unsloth_grpo_npr_key(
-                            row.get("prompt") if isinstance(row, dict) else row
-                        )
+                        key = _unsloth_grpo_npr_key(self.data_source[index])
                         keys[index] = key
                     if key not in solved:
                         kept.append(index)
@@ -6765,6 +6814,7 @@ RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_trl_masks_unscora
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_sample_weight))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_npr_settings))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_npr_key))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_npr_text))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_npr_record))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_npr_sampler))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_truncation_warn))

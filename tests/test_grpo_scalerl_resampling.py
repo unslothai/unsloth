@@ -132,7 +132,7 @@ def test_solved_prompts_dropped_next_epoch(monkeypatch):
             else:
                 rows.append([0.0, 1.0])
     R._unsloth_grpo_npr_record(t, "train", inputs, torch.tensor(rows))
-    solved_keys = {R._unsloth_grpo_npr_key(data[i]["prompt"]) for i in (1, 3, 4)}
+    solved_keys = {R._unsloth_grpo_npr_key(data[i]) for i in (1, 3, 4)}
     assert t._unsloth_npr_solved == solved_keys
     assert t._metrics["train"]["npr/solved_prompts"] == [3.0]
     epoch2 = list(s)
@@ -156,10 +156,41 @@ def test_every_prompt_solved_falls_back_to_all(monkeypatch):
     data, s = _repeat_sampler(6, 2, 2, 1, seed = 3)
     t = _trainer(2)
     s = R._unsloth_grpo_npr_sampler(t, s)
-    t._unsloth_npr_solved = {R._unsloth_grpo_npr_key(x["prompt"]) for x in data}
+    t._unsloth_npr_solved = {R._unsloth_grpo_npr_key(x) for x in data}
     with pytest.warns(UserWarning, match = "every prompt solved"):
         epoch = list(s)
     assert set(epoch) == set(range(6)) and len(epoch) == len(s)
+
+
+def test_key_tells_apart_rows_sharing_a_prompt():
+    PIL = pytest.importorskip("PIL.Image")
+    red, blue = PIL.new("RGB", (4, 4), (255, 0, 0)), PIL.new("RGB", (4, 4), (0, 0, 255))
+    prompt = [{"role": "user", "content": [{"type": "image"}, {"type": "text", "text": "Colour?"}]}]
+    k = R._unsloth_grpo_npr_key
+    assert k({"prompt": prompt, "image": red}) != k({"prompt": prompt, "image": blue})
+    assert k({"prompt": "q", "answer": "1"}) != k({"prompt": "q", "answer": "2"})
+    # A fresh decode of the same image and TRL's singular -> list normalisation keep the key.
+    same = PIL.new("RGB", (4, 4), (255, 0, 0))
+    assert k({"prompt": prompt, "image": red}) == k({"prompt": prompt, "image": same})
+    assert k({"prompt": prompt, "image": red}) == k(
+        {"prompt": prompt, "image": red, "images": [red]}
+    )
+    assert k({"prompt": "q", "answer": "1"}) == k({"answer": "1", "prompt": "q"})
+
+
+def test_unshuffled_sampler_is_filtered(monkeypatch):
+    monkeypatch.setenv("UNSLOTH_GRPO_NO_POSITIVE_RESAMPLING", "1")
+    from trl.trainer.utils import RepeatSampler
+
+    data = [{"prompt": f"q{i}"} for i in range(6)]
+    s = RepeatSampler(data, mini_repeat_count = 2, batch_size = 2, repeat_count = 1, shuffle = False)
+    t = _trainer(2)
+    s = R._unsloth_grpo_npr_sampler(t, s)
+    assert type(s).__name__ == "_UnslothNPRSampler"
+    t._unsloth_npr_solved = {R._unsloth_grpo_npr_key(data[0])}
+    epoch = list(s)
+    assert 0 not in epoch and len(epoch) == len(s) == 12
+    assert epoch[:4] == [1, 1, 2, 2]
 
 
 def test_pass_rate_accumulates_across_batches(monkeypatch):
@@ -170,11 +201,11 @@ def test_pass_rate_accumulates_across_batches(monkeypatch):
     R._unsloth_grpo_npr_record(t, "train", [x, x], torch.tensor([[1.0, 0.0], [0.0, 0.0]]))  # 1 / 2
     assert not t._unsloth_npr_solved
     R._unsloth_grpo_npr_record(t, "train", [x, x], torch.tensor([[1.0, 0.0], [1.0, 0.0]]))  # 3 / 4
-    assert t._unsloth_npr_solved == {R._unsloth_grpo_npr_key("p")}
+    assert t._unsloth_npr_solved == {R._unsloth_grpo_npr_key(x)}
     R._unsloth_grpo_npr_record(
         t, "eval", [x, x], torch.tensor([[0.0, 0.0], [0.0, 0.0]])
     )  # eval ignored
-    assert t._unsloth_npr_stats[R._unsloth_grpo_npr_key("p")] == (3.0, 4.0)
+    assert t._unsloth_npr_stats[R._unsloth_grpo_npr_key(x)] == (3.0, 4.0)
 
 
 def _trunc_trainer(rate, step = 0):
