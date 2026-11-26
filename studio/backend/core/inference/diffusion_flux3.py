@@ -130,6 +130,30 @@ def flux3_blocks(blocks_class_name: str) -> Any:
     return blocks
 
 
+# BFL's reference timestep shift (``alpha`` in src/flux3/pipeline.py). black-forest-labs/flux-3-image-klein
+# 62e90b9278 (2026-10-17, "minor inference param change") raised it from 6.93 to 16.0 for both checkpoints; the
+# diffusers 0.42.1 block graph (Flux3SetTimestepsStep) still builds its scheduler at 6.93. Same static curve
+# ``t' = a t / (1 + (a - 1) t)``, no resolution dependence. Against BFL's own pipeline at 62e90b9278 (L4, 1024x1024,
+# bf16, same seed and noise), mean LPIPS fell from 0.095 to 0.007 on the distilled checkpoint (12 images) and from
+# 0.079 to 0.026 on the base with CFG 4.0 (6 images).
+FLUX3_REFERENCE_SHIFT = 16.0
+
+
+def flux3_reference_scheduler(scheduler: Any) -> Any:
+    """``scheduler`` at BFL's reference shift; returned unchanged when it already samples there or has no static
+    ``shift`` to set (a scheduler this module does not know)."""
+    config = getattr(scheduler, "config", None)
+    try:
+        current = config.get("shift") if config is not None else None
+        if current is None or float(current) == FLUX3_REFERENCE_SHIFT:
+            return scheduler
+        if config.get("use_dynamic_shifting", False):
+            return scheduler
+    except (AttributeError, TypeError, ValueError):
+        return scheduler
+    return type(scheduler).from_config(config, shift = FLUX3_REFERENCE_SHIFT)
+
+
 def is_flux3_family(fam: Any) -> bool:
     return getattr(fam, "name", None) in FLUX3_FAMILY_NAMES
 
@@ -1052,8 +1076,8 @@ def load_flux3_pipeline(
     # Before the speed layer: a whole-step CUDA graph binds the class forward when it is built.
     if transformer is not None:
         cond_blocks.prepare(transformer)
-    # The scheduler is the block graph's own (shift 6.93, the reference timestep shift); the repos ship none.
-    scheduler = flux3_blocks(blocks).init_pipeline().scheduler
+    # The scheduler is the block graph's own (the repos ship none), moved to BFL's reference shift.
+    scheduler = flux3_reference_scheduler(flux3_blocks(blocks).init_pipeline().scheduler)
     return flux3_pipeline_class()(
         transformer = transformer,
         vae = vae,

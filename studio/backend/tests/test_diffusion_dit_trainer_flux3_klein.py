@@ -459,6 +459,18 @@ def test_encode_and_forward_reproduce_the_pipelines_transformer_call(tiny_pipe_d
 
 
 @pytest.mark.allow_network
+def test_inference_load_samples_at_the_reference_shift_and_training_keeps_its_own(tiny_pipe_dir):
+    from core.inference.diffusion_flux3 import FLUX3_REFERENCE_SHIFT
+
+    pipe = _load(tiny_pipe_dir)
+    assert pipe.scheduler.config.shift == FLUX3_REFERENCE_SHIFT
+    # The block graph runs on the facade's scheduler, not the 6.93 one it builds for itself.
+    assert pipe.modular_pipeline().scheduler is pipe.scheduler
+    # Training stays on the recipe's 6.93 (a separate decision from BFL's inference change).
+    assert dit._flux3_training_scheduler(None).config.shift == pytest.approx(6.93)
+
+
+@pytest.mark.allow_network
 def test_conditioning_load_skips_the_transformer_and_encodes_the_same(tiny_pipe_dir):
     from core.inference.diffusion_flux3 import load_flux3_pipeline
 

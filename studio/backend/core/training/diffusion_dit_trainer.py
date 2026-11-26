@@ -2349,8 +2349,10 @@ def _flux3_save(
 
 
 def _flux3_training_scheduler(cfg):
-    """The block graph's own FlowMatchEuler (Flux3SetTimestepsStep: constant shift 6.93, no dynamic shifting); the
-    repos ship no scheduler/, and load_flux3_pipeline builds the inference one the same way."""
+    """The block graph's own FlowMatchEuler (Flux3SetTimestepsStep: constant shift 6.93, no dynamic shifting), the
+    recipe of diffusers' train_dreambooth_lora_flux3_klein.py; the repos ship no scheduler/. Inference samples at BFL's
+    newer reference shift instead (diffusion_flux3.FLUX3_REFERENCE_SHIFT); training keeps 6.93 until that is measured
+    for training on its own."""
     from diffusers import FlowMatchEulerDiscreteScheduler
 
     from core.inference.diffusion_flux3 import FLUX3_BASE_BLOCKS, flux3_blocks
