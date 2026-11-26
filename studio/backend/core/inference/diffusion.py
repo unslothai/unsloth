@@ -18463,6 +18463,12 @@ class DiffusionBackend:
                 and not collecting()
             )
 
+        from .diffusion_batch_adapters import batched_forward
+
+        if not batched_forward(getattr(state, "family", None), getattr(state, "pipe", None)):
+            raise diffusion_batch_race.RaceRefused(
+                "this family's pipeline renders one image per forward"
+            )
         policy = _default_request_batching(state)
         if policy["mode"] == "serial" and not policy.get("measurable"):
             raise diffusion_batch_race.RaceRefused(policy["reason"])

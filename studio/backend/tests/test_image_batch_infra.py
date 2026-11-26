@@ -508,6 +508,12 @@ def test_the_engine_refuses_a_race_while_a_request_waits():
         engine.batch_race(width = 512, height = 512)
 
 
+def test_the_engine_refuses_to_race_a_family_that_loops_one_image_per_forward():
+    engine = _engine(family = types.SimpleNamespace(name = "moss-image"))
+    with pytest.raises(race.RaceRefused):
+        engine.batch_race(width = 512, height = 512)
+
+
 def test_the_engine_race_records_its_batched_graphs_under_batch_rows(monkeypatch):
     from core.inference import diffusion_cuda_graph as cg
 
