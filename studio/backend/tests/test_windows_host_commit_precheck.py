@@ -43,6 +43,7 @@ def _backend(
         if seen is not None:
             seen.append((n_ctx, cache_type, kwargs.get("n_parallel")))
         swa.append(kwargs.get("swa_full"))
+        backend._seen_shape = kwargs
         return int(kv_gb * _GB) if n_ctx else 0
 
     backend._estimate_kv_cache_bytes = kv
@@ -267,6 +268,19 @@ class TestPreLaunch:
         cmd = _cmd("--no-kv-offload", *extra)
         backend._windows_host_commit_refusal(cmd, _CARD, env, **kwargs)
         assert backend._seen_swa_full[-1] is want
+
+    def test_cache_shape_reaches_the_kv_estimate(self, windows):
+        kwargs = dict(avail_mib = 96 * _MIB, commit_headroom_mib = 96 * _MIB)
+        backend = _backend()
+        extra = ("--no-kv-offload", "-ub", "256", "-b", "256", "--kv-unified", "-fa", "off")
+        backend._windows_host_commit_refusal(_cmd(*extra), _CARD, {}, **kwargs)
+        shape = backend._seen_shape
+        assert shape["n_ubatch"] == 256
+        assert shape["kv_unified"] is True and shape["flash_attn"] is False
+        env = {"LLAMA_ARG_UBATCH": "128", "LLAMA_ARG_FLASH_ATTN": "off"}
+        backend._windows_host_commit_refusal(_cmd("--no-kv-offload"), _CARD, env, **kwargs)
+        assert backend._seen_shape["n_ubatch"] == 128
+        assert backend._seen_shape["flash_attn"] is False
 
     def test_model_that_fits_the_card_is_never_refused(self, windows):
         assert (

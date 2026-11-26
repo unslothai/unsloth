@@ -17053,19 +17053,22 @@ class LlamaCppBackend:
                 if parallel_raw is None:
                     parallel_raw = str(_env.get("LLAMA_ARG_N_PARALLEL") or "")
                 n_parallel = max(1, int(parallel_raw) if parallel_raw.strip().isdigit() else 1)
-                swa_full = _swa_full_from_args_or_env(argv, _env)
-                kv = self._estimate_kv_cache_bytes(
-                    n_ctx, k_type, n_parallel = n_parallel, swa_full = swa_full
+                # Every cache knob the child resolves from argv and the environment.
+                shape = dict(
+                    n_parallel = n_parallel,
+                    swa_full = _swa_full_from_args_or_env(argv, _env),
+                    kv_unified = _kv_unified_from_args(argv, env = _env),
+                    n_ubatch = _extra_args_n_ubatch(argv, _env, n_ctx),
+                    flash_attn = _flash_attn_enabled_from_args(argv, env = _env),
                 )
+                kv = self._estimate_kv_cache_bytes(n_ctx, k_type, **shape)
                 # A refusal must not over-price: K and V each take their width's share of the
                 # cache at their own type (half each when the widths are unknown); MLA caches K only.
                 if v_type != k_type and getattr(self, "_kv_lora_rank", None) is None:
                     k_len = getattr(self, "_kv_key_length", None)
                     v_len = getattr(self, "_kv_value_length", None)
                     k_frac = k_len / (k_len + v_len) if k_len and v_len else 0.5
-                    kv_v = self._estimate_kv_cache_bytes(
-                        n_ctx, v_type, n_parallel = n_parallel, swa_full = swa_full
-                    )
+                    kv_v = self._estimate_kv_cache_bytes(n_ctx, v_type, **shape)
                     kv = int(kv * k_frac + kv_v * (1 - k_frac))
                 private += int(kv * kv_on_host)
             if private <= 0:
