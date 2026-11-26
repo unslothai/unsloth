@@ -454,7 +454,7 @@ class TestBuildShRocm:
             "github.event.repository.default_branch": "'main'",
             "github.ref": repr(ref),
             "needs.prepare.outputs.stable": repr(stable),
-            "needs.prepare.outputs.newest_release": repr(newest),
+            "steps.newest_release.outputs.newest": repr(newest),
         }
         moved = set()
         for job in ("tag", "tag-studio"):
@@ -1012,7 +1012,15 @@ class TestRocmEntrypoint:
         import yaml
 
         wf = yaml.safe_load(open(_WORKFLOW, encoding = "utf-8"))
-        step = next(s for s in wf["jobs"]["prepare"]["steps"] if s.get("id") == "newest_release")
+        # Checked in each publishing job, right before its tags resolve.
+        steps = {}
+        for job in ("tag", "tag-studio"):
+            ids = [s.get("id") for s in wf["jobs"][job]["steps"]]
+            assert ids.index("newest_release") == ids.index("meta") - 1, (job, ids)
+            steps[job] = wf["jobs"][job]["steps"][ids.index("newest_release")]
+        assert steps["tag"] == steps["tag-studio"]
+        assert all(s.get("id") != "newest_release" for s in wf["jobs"]["prepare"]["steps"])
+        step = steps["tag"]
         fake = tmp_path / "bin"
         fake.mkdir()
         (fake / "git").write_text(
@@ -1114,7 +1122,7 @@ class TestRocmEntrypoint:
             lines = meta["with"]["tags"].splitlines()
             alias = [ln for ln in lines if re.search(r"value=(latest|studio),", ln)]
             assert len(alias) == 1, (job, alias)
-            assert "needs.prepare.outputs.newest_release == 'true'" in alias[0], alias[0]
+            assert "steps.newest_release.outputs.newest == 'true'" in alias[0], alias[0]
 
     def test_a_notebooks_override_gets_sha_tags_only(self, tmp_path):
         """A dispatch that bakes another notebooks ref is an experiment like any
