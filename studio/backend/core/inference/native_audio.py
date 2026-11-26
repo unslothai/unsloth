@@ -742,7 +742,7 @@ _NATIVE_WEIGHTS = re.compile(
 
 
 def _has_native_weights(siblings: list[Any]) -> bool:
-    """A Transformers checkpoint, whose GGUF quants are a side format; a stray .pt or a PEFT adapter is not one."""
+    """A Transformers checkpoint; a stray .pt or a PEFT adapter is not one."""
     return any(_NATIVE_WEIGHTS.search(str(getattr(s, "rfilename", "")).strip()) for s in siblings)
 
 
