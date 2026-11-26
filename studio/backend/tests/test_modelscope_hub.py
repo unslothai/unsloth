@@ -230,17 +230,16 @@ def test_an_aliased_repo_is_served_under_its_hugging_face_id(hub, monkeypatch):
     )
 
 
-def test_an_org_alias_maps_its_repos_except_aliased_and_kept_ones(hub, monkeypatch):
+def test_an_org_alias_maps_its_models_except_aliased_and_kept_ones(hub, monkeypatch):
     assert upstream.upstream_id("model", "ZAI-ORG/New-Model") == "ZhipuAI/New-Model"
-    assert upstream.upstream_id("dataset", "nvidia/New-Set") == "nv-community/New-Set"
-    assert upstream.upstream_id("dataset", "01-ai/New-Set") == "01-ai/New-Set"
+    assert upstream.upstream_id("dataset", "nvidia/New-Set") == "nvidia/New-Set"
     assert upstream.upstream_id("model", "zai-org/cogvlm-chat-hf") == "zai-org/cogvlm-chat-hf"
     assert upstream.upstream_id("model", "tencent/Hy3-preview") == "Tencent-Hunyuan/Hy3-preview"
     assert upstream.upstream_id("model", "zai-org") == "zai-org"
     links = upstream.page_links()
-    assert links["orgs"]["model"]["zai-org"] == "ZhipuAI"
+    assert links["orgs"]["zai-org"] == "ZhipuAI"
     assert links["aliases"]["model"]["zai-org/cogvlm-chat-hf"] == "zai-org/cogvlm-chat-hf"
-    monkeypatch.setattr(upstream, "_ORG_INDEX", {"model": {"hf": "Qwen"}, "dataset": {}})
+    monkeypatch.setattr(upstream, "_ORG_INDEX", {"hf": "Qwen"})
     body = hub.get("/api/models/HF/Tiny").json()
     assert (body["id"], body["sha"]) == ("HF/Tiny", SHA)
     assert hub.get("/HF/Tiny").headers["location"] == "https://www.modelscope.cn/models/Qwen/Tiny"

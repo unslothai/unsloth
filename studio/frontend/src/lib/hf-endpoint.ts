@@ -18,8 +18,8 @@ type ModelScopePages = {
   base: string;
   /** Lowercased Hugging Face id -> ModelScope id; wins over `orgs`. */
   aliases: Record<RepoKind, Record<string, string>>;
-  /** Lowercased Hugging Face org -> the ModelScope org holding its repos under the same names. */
-  orgs: Record<RepoKind, Record<string, string>>;
+  /** Lowercased Hugging Face org -> the ModelScope org holding its models under the same names. */
+  orgs: Record<string, string>;
 };
 
 const store = createStore<{
@@ -117,7 +117,7 @@ export function setHubPageLinks(pageBase?: string | null, modelScope?: unknown):
   const ms = modelScope as {
     base?: unknown;
     aliases?: Record<string, unknown>;
-    orgs?: Record<string, unknown>;
+    orgs?: unknown;
   } | null;
   const msBase = usableEndpoint(typeof ms?.base === "string" ? ms.base : null);
   store.setState((prev) => ({
@@ -128,7 +128,7 @@ export function setHubPageLinks(pageBase?: string | null, modelScope?: unknown):
             model: aliasTable(ms?.aliases?.model),
             dataset: aliasTable(ms?.aliases?.dataset),
           },
-          orgs: { model: aliasTable(ms?.orgs?.model), dataset: aliasTable(ms?.orgs?.dataset) },
+          orgs: aliasTable(ms?.orgs),
         }
       : prev.modelScopePages,
   }));
@@ -167,7 +167,7 @@ export function hubWebUrl(url: string): string {
     if (!modelScopePages || !match) return url;
     const kind: RepoKind = match[1] ? "dataset" : "model";
     const [org, name] = match[2].split("/");
-    const renamed = modelScopePages.orgs[kind][org.toLowerCase()];
+    const renamed = kind === "model" ? modelScopePages.orgs[org.toLowerCase()] : undefined;
     const repo =
       modelScopePages.aliases[kind][match[2].toLowerCase()] ??
       (renamed ? `${renamed}/${name}` : match[2]);

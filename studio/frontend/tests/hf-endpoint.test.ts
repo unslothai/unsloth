@@ -262,7 +262,7 @@ test("hub page links open ModelScope directly, aliased ids included", async () =
       model: { "zai-org/cogvlm-chat-hf": "zai-org/cogvlm-chat-hf", "zai-org/x": "AI-ModelScope/x" },
       dataset: {},
     },
-    orgs: { model: { "zai-org": "ZhipuAI" }, dataset: { "OpenAI": "openai-mirror" } },
+    orgs: { "zai-org": "ZhipuAI" },
   });
   assert.equal(
     hubWebUrl(`${adapter}/ZAI-ORG/GLM-5.3/resolve/main/README.md`),
@@ -274,14 +274,10 @@ test("hub page links open ModelScope directly, aliased ids included", async () =
   );
   assert.equal(hubWebUrl(`${adapter}/zai-org/x`), "https://www.modelscope.cn/models/AI-ModelScope/x");
   assert.equal(
-    hubWebUrl(`${adapter}/datasets/openai/gsm8k`),
-    "https://www.modelscope.cn/datasets/openai-mirror/gsm8k",
-  );
-  assert.equal(
     hubWebUrl(`${adapter}/constructor/chinese-roberta-wwm-ext-large`),
     "https://www.modelscope.cn/models/constructor/chinese-roberta-wwm-ext-large",
   );
-  // Org rules are per kind.
+  // Org rules are for models only.
   assert.equal(
     hubWebUrl(`${adapter}/datasets/zai-org/d`),
     "https://www.modelscope.cn/datasets/zai-org/d",
