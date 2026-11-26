@@ -113,6 +113,17 @@ def test_releases_replaced_storage_once(gfx, monkeypatch):
     assert calls == [1]  # nothing re-stored, nothing to release
 
 
+def test_first_forward_under_inference_mode_keeps_normal_weights(gfx):
+    dit = Dit()
+    assert wp.install(dit, family = "wan2.2-ti2v-5b") == 1
+    with torch.inference_mode():
+        dit(torch.randn(2, 3072, dtype = torch.bfloat16))
+    assert _padded(dit.attn) and not dit.attn.weight.is_inference()
+    x = torch.randn(2, 3072, dtype = torch.bfloat16, requires_grad = True)
+    dit(x).float().sum().backward()  # weights usable for autograd afterwards
+    assert x.grad is not None
+
+
 def test_off_arches_and_env_zero(gfx, monkeypatch):
     for arch in (None, "gfx1100"):
         gfx["arch"] = arch

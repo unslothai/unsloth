@@ -186,7 +186,9 @@ def pad_weights(
     n = skipped_table = skipped_other = 0
     arch_by_dev: dict = {}
     p = 0
-    with torch.no_grad():
+    # inference_mode(False): the first forward may run under inference_mode; weights made there would be inference
+    # tensors, which a later LoRA / training use cannot save for backward.
+    with torch.inference_mode(False), torch.no_grad():
         for m in module.modules():
             if type(m) is not torch.nn.Linear:
                 continue
