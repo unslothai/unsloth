@@ -2461,8 +2461,26 @@ def _plan_fetch(
     return _PlannedFetch(repo, revision, files)
 
 
+def _plan_first_listed(repo: str, info: Any, candidates: Any) -> Optional["_PlannedFetch"]:
+    """The plan for a fetch that takes the first of ``candidates`` the listing holds, from ``repo`` exactly (the hosted
+    pre-cast DiT / encoder fetches try their names in order and never swap in a mirror), else None. Unpinned: the
+    fetch resolves its own ref, and progress reads the blob by key."""
+    meta = {s.rfilename: s for s in (getattr(info, "siblings", None) or [])}
+    name = next((n for n in candidates if n in meta), None)
+    if name is None:
+        return None
+    sibling = meta[name]
+    return _PlannedFetch(
+        repo, None, ((name, _sibling_etag(sibling), int(getattr(sibling, "size", 0) or 0)),)
+    )
+
+
 _FETCH_CHECKPOINT = "checkpoint"
 _FETCH_BASE = "base"
+# Hosted pre-cast checkpoints fetched ahead of the base pull; one role per fetched file.
+_FETCH_TE_PREQUANT = "te_prequant"
+_FETCH_DENOISER_PREQUANT = "denoiser_prequant"
+_FETCH_H3_TE_QUANT = "h3_te_quant"
 
 
 def _physical_card_name(ordinal: Optional[int]) -> "tuple[Optional[str], Optional[int]]":
@@ -7507,6 +7525,20 @@ class VideoBackend:
                 kwargs.get("hf_token"),
                 local_files_only = local_files_only,
             )
+            # The hosted DiT this load fetches ahead of the base: resolved once, so the plan (progress) and the fetch
+            # name the same files.
+            denoiser_sources = (
+                self._denoiser_prequant_source_list(
+                    fam,
+                    planned_denoiser,
+                    base,
+                    kwargs.get("h3_task"),
+                    hf_token = kwargs.get("hf_token"),
+                )
+                if skip_transformer_weights
+                else []
+            )
+            denoiser_plan = [(src, planned_denoiser) for src in denoiser_sources]
             expected = self._estimate_download_bytes(
                 kwargs["repo_id"],
                 kwargs.get("gguf_filename"),
@@ -7521,6 +7553,7 @@ class VideoBackend:
                 local_files_only = local_files_only,
                 ltx25_dev = ltx25_dev,
                 planned_files = (planned_files := {}),
+                denoiser_sources = denoiser_plan,
             )
             with self._lock:
                 if self._load_token == token and self._loading is not None:
@@ -7649,6 +7682,7 @@ class VideoBackend:
                         ltx25_dev = ltx25_dev,
                         planned_files = (replanned := {}),
                         pin_revisions = _fetched_pins(planned_files),
+                        denoiser_sources = denoiser_plan,
                     )
                     previous_plan, planned_files = (
                         planned_files,
@@ -7699,6 +7733,18 @@ class VideoBackend:
                 ltx23_sources = self._denoiser_prequant_source_list(
                     fam, TQ_FP8, LTX23_PREQUANT_BASE, hf_token = kwargs.get("hf_token")
                 )
+                denoiser_plan = denoiser_plan + [(src, TQ_FP8) for src in ltx23_sources]
+                ltx23_planned: dict[str, _PlannedFetch] = {}
+                if not local_files_only:
+                    from huggingface_hub import HfApi
+                    ltx23_planned = self._plan_prequant_fetches(
+                        _OneCommitListings(
+                            hub_reachability.guarded(HfApi(token = kwargs.get("hf_token") or None))
+                        ),
+                        denoiser_sources = [(src, TQ_FP8) for src in ltx23_sources],
+                    )
+                previous_plan, planned_files = planned_files, {**planned_files, **ltx23_planned}
+                added = self._plan_partials(planned_files, known = previous_plan)
                 with self._lock:
                     if self._load_token == token and self._loading is not None:
                         self._loading.asset_repos = tuple(
@@ -7707,6 +7753,15 @@ class VideoBackend:
                                 + tuple(src.location for src in ltx23_sources)
                             )
                         )
+                        if ltx23_planned and expected:
+                            expected = _plan_total(planned_files)
+                            self._loading.expected_bytes = expected
+                            if hasattr(self._loading, "fetch_plan"):
+                                self._loading.incomplete_baseline = {
+                                    **added,
+                                    **self._loading.incomplete_baseline,
+                                }
+                                self._loading.fetch_plan = planned_files
                 self._fetch_denoiser_prequant(
                     ltx23_sources,
                     kwargs.get("hf_token"),
@@ -7717,13 +7772,7 @@ class VideoBackend:
             # The denoiser artifact too: the injection that would fetch it has no cancel event.
             if skip_transformer_weights:
                 self._fetch_denoiser_prequant(
-                    self._denoiser_prequant_source_list(
-                        fam,
-                        planned_denoiser,
-                        base,
-                        kwargs.get("h3_task"),
-                        hf_token = kwargs.get("hf_token"),
-                    ),
+                    denoiser_sources,
                     kwargs.get("hf_token"),
                     cancel_event = cancel_event,
                     local_files_only = local_files_only,
@@ -7751,6 +7800,7 @@ class VideoBackend:
                     planned_files = (replanned := {}),
                     skip_te_override = actual_te_skip,
                     pin_revisions = _fetched_pins(planned_files),
+                    denoiser_sources = denoiser_plan,
                 )
                 previous_plan, planned_files = (
                     planned_files,
@@ -9643,8 +9693,12 @@ class VideoBackend:
         planned_files: Optional[dict[str, "_PlannedFetch"]] = None,
         skip_te_override: Optional[tuple[str, ...]] = None,
         pin_revisions: Optional[dict[str, str]] = None,
+        denoiser_sources: Optional[Sequence[tuple[Any, Optional[str]]]] = None,
     ) -> Optional[int]:
-        """Bytes this load pulls, minus replaced dense shards; None offline, where no download happens."""
+        """Bytes this load pulls, minus replaced dense shards; None offline, where no download happens.
+
+        ``denoiser_sources``: ``(PrequantSource, scheme)`` per hosted denoiser checkpoint the load fetches before the
+        base pull. They and the pre-cast encoders are planned too, so progress counts those transfers."""
         if local_files_only:
             return None
         try:
@@ -9691,12 +9745,98 @@ class VideoBackend:
                 planned[_FETCH_BASE] = _plan_fetch(
                     base, listing, info, [name for name, _ in base_files], hf_token
                 )._replace(skip_te = tuple(skip_te_components))
+            prequant = self._plan_prequant_fetches(
+                listings,
+                te_sources = te_sources,
+                skip_te_components = skip_te_components,
+                h3_te_scheme = h3_te_scheme,
+                denoiser_sources = denoiser_sources,
+            )
+            total += sum(int(size or 0) for e in prequant.values() for _n, _k, size in e.files)
+            planned.update(prequant)
             if planned_files is not None:
                 planned_files.update(planned)
             # The plan's own total (one count per blob, as progress reads it); the raw sum only without a plan.
             return _plan_total(planned) if planned else (total or None)
         except Exception:  # noqa: BLE001 -- progress totals are best-effort only
             return None
+
+    @staticmethod
+    def _plan_prequant_fetches(
+        listings: "_OneCommitListings",
+        *,
+        te_sources: Optional[dict[str, Any]] = None,
+        skip_te_components: tuple[str, ...] = (),
+        h3_te_scheme: Optional[str] = None,
+        denoiser_sources: Optional[Sequence[tuple[Any, Optional[str]]]] = None,
+    ) -> dict[str, "_PlannedFetch"]:
+        """Plan entries for the hosted pre-cast checkpoints ``_run_load`` fetches before the base: each names the file
+        the fetch takes (same candidate order, same repo) so progress counts it while it downloads. Best effort per
+        file: an unlisted repo just leaves that fetch uncounted."""
+        planned: dict[str, _PlannedFetch] = {}
+
+        def _add(role: str, repo: str, names: list) -> None:
+            try:
+                entry = _plan_first_listed(repo, listings.info(repo), names)
+            except Exception as exc:  # noqa: BLE001 -- progress totals are best-effort only
+                logger.debug("video.plan_prequant_unlisted: %s: %s", repo, exc)
+                return
+            if entry is not None:
+                planned[f"{role}:{repo}:{entry.files[0][0]}"] = entry
+
+        try:
+            from .diffusion_prequant import (
+                candidate_filenames_of,
+                prefer_cached_pickle_twins,
+                restricted_prequant_load_supported,
+            )
+            from .diffusion_te_prequant import (
+                te_candidate_filenames,
+                te_candidate_is_readable,
+                te_prequant_mirror_path,
+            )
+
+            for component, source in (te_sources or {}).items():
+                # Only an encoder the plan expects pre-cast is fetched instead of its dense shards.
+                if component not in skip_te_components:
+                    continue
+                if getattr(source, "kind", None) != "repo" or not getattr(source, "filename", None):
+                    continue
+                names = prefer_cached_pickle_twins(
+                    source.location,
+                    [n for n in te_candidate_filenames(source) if te_candidate_is_readable(n)],
+                    readable = te_candidate_is_readable,
+                )
+                # _fetch_te_prequant stops at the first mirrored name: read in place, nothing downloads.
+                mirrored = next(
+                    (i for i, n in enumerate(names) if te_prequant_mirror_path(source.location, n)),
+                    None,
+                )
+                if mirrored is not None:
+                    names = names[:mirrored]
+                if names:
+                    _add(_FETCH_TE_PREQUANT, source.location, names)
+            if h3_te_scheme and "text_encoder" in skip_te_components:
+                from .video_minimax_h3_te import h3_te_quant_filename, h3_te_quant_source
+                filename = h3_te_quant_filename(h3_te_scheme)
+                if filename:
+                    _add(_FETCH_H3_TE_QUANT, h3_te_quant_source(h3_te_scheme), [filename])
+            for source, scheme in denoiser_sources or ():
+                if getattr(source, "kind", None) != "repo":
+                    continue
+                # _fetch_denoiser_prequant's order: readable names, unless that leaves none.
+                names = list(dict.fromkeys(candidate_filenames_of(source)))
+                names = [n for n in names if restricted_prequant_load_supported(scheme, n)] or names
+                names = prefer_cached_pickle_twins(
+                    source.location,
+                    names,
+                    readable = lambda n, scheme = scheme: restricted_prequant_load_supported(scheme, n),
+                    cache_dir = hub_cache_dir(),
+                )
+                _add(_FETCH_DENOISER_PREQUANT, source.location, names)
+        except Exception as exc:  # noqa: BLE001 -- progress totals are best-effort only
+            logger.debug("video.plan_prequant_failed: %s", exc)
+        return planned
 
     @vram_budget_scope("video", load = True)
     def download_plan(
