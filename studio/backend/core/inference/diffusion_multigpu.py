@@ -1371,6 +1371,12 @@ def _sequence_split_layout_refusal(denoiser: Any, request: Any, selection: Any) 
         return f"{sp.SP_ENV}=0"
     if sp.read_plan(type(denoiser)) is None:
         return f"{type(denoiser).__name__} has no checked sequence-parallel plan"
+    # Speed optims run before placement: a compiled denoiser is already visible here, and every call refuses the split.
+    from .diffusion_cfg_batch import compiled_denoiser
+
+    compiled = compiled_denoiser(denoiser)
+    if compiled is not None:
+        return f"compiled submodules ({compiled}) never split by tokens"
     from .diffusion_memory import _COST_CANVAS_PX, _DIT_PIXELS_PER_TOKEN
 
     tokens = int(request.tokens or (_COST_CANVAS_PX // _DIT_PIXELS_PER_TOKEN) ** 2)

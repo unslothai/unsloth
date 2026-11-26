@@ -884,6 +884,24 @@ def test_unguided_flux2_keeps_the_layer_split_with_sequence_parallel_off(monkeyp
     )
 
 
+def test_unguided_flux2_with_compiled_blocks_keeps_the_layer_split(monkeypatch):
+    # speed default / max compile the blocks before placement; a compiled call never splits by tokens, so a replica
+    # placed for the split would only cost a second copy of the model
+    _flux2_plan(monkeypatch)
+
+    def compiled_init(self):
+        Flux2Transformer2DModel.__init__(self)
+        self.proj._compiled_call_impl = object()
+
+    compiled = type(
+        "Flux2Transformer2DModel", (Flux2Transformer2DModel,), {"__init__": compiled_init}
+    )
+    d = _wan5b(monkeypatch, guided = False, cls = compiled)
+    assert d.plan.layer_split is not None
+    reasons = {c.kind: c.reason for c in _recorded(d).rejected}
+    assert "compiled submodules" in reasons["cfg_replica"], reasons
+
+
 def test_sequence_split_pricing_takes_a_share_of_the_step():
     replica, alternative = mg.price_replica_layout(
         guided = False, compute_s = 1.0, primary_stream_s = 0.0, steps = 4, sequence_split = True
