@@ -343,6 +343,14 @@ def _write_backend_fixture(home: Path, request_log: Path) -> None:
                         return self.send_json({{"current_checkpoint": None, "is_vision": False, "is_peft": False, "is_export_active": False}})
                     if path in ("/api/chat/threads", "/api/chat/projects"):
                         return self.send_json({{"threads": []}} if path.endswith("threads") else {{"projects": []}})
+                    # As the real routes answer an account with no character chats: `{{}}` reads as a broken index and scene.
+                    if path == "/api/characters/chat-index":
+                        return self.send_json({{"chats": {{}}}})
+                    if path.startswith("/api/characters/chats/"):
+                        self.send_response(204)
+                        self.send_header("Access-Control-Allow-Origin", "tauri://localhost")
+                        self.end_headers()
+                        return
                     return self.send_json({{}})
 
                 def do_POST(self):
