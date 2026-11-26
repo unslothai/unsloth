@@ -47,6 +47,9 @@ def _windows_scaled_mm(calls):
 @pytest.fixture
 def windows(monkeypatch):
     calls = []
+    # Small test weights: lift the L4 size gate (tested on its own below).
+    monkeypatch.setattr(F8, "_FP8_TENSORWISE_MIN_NUMEL", 0, raising = False)
+    monkeypatch.setattr(F8, "_FP8_TENSORWISE_ANY_ROWS_NUMEL", 0, raising = False)
     monkeypatch.setattr(torch, "_scaled_mm", _windows_scaled_mm(calls))
     monkeypatch.setattr(FL, "_ROWWISE_UNSUPPORTED", set(), raising = False)
     monkeypatch.setattr(FL, "_ROWWISE_PROBED", {}, raising = False)
@@ -240,6 +243,7 @@ def test_direct_route_takes_tensorwise(monkeypatch, rows, dtype, route):
     monkeypatch.setattr(torch.version, "hip", None, raising = False)
     monkeypatch.setattr(F8, "_fp8_rowwise_backend", lambda device: "tensorwise")
     monkeypatch.setattr(F8, "_FP8_ROWWISE_DIRECT", True)
+    monkeypatch.setattr(F8, "_FP8_TENSORWISE_ANY_ROWS_NUMEL", 0, raising = False)
     # Even where fp16 row-wise _scaled_mm must dequantize, the tensorwise backend writes float32 first.
     monkeypatch.setattr(F8, "_SCALED_MM_FP16_DEQUANT_ONLY", True)
     with FakeTensorMode(), torch.no_grad():
@@ -270,3 +274,30 @@ def test_load_in_fp8_row_switches_to_block_without_rowwise(monkeypatch):
     assert LU._get_fp8_mode_and_check_settings("block", False) == "block"
     monkeypatch.setattr(FL, "rowwise_supported", lambda device: True)
     assert LU._get_fp8_mode_and_check_settings(True, False) == "row"
+
+
+def test_tensorwise_size_gate():
+    big, mid, small = 4096 * 12288, 4096 * 4096, 1024 * 3072
+    assert F8._fp8_tensorwise_wins(65, big)
+    assert not F8._fp8_tensorwise_wins(128, mid) and F8._fp8_tensorwise_wins(512, mid)
+    assert not F8._fp8_tensorwise_wins(8192, small)
+
+
+@pytest.mark.parametrize(
+    "rows, N, K, route",
+    [
+        (128, 4096, 4096, "dequant"),
+        (512, 4096, 4096, "tensorwise"),
+        (128, 12288, 4096, "tensorwise"),
+        (2048, 1024, 1024, "dequant"),
+    ],
+)
+def test_direct_route_size_gate(monkeypatch, rows, N, K, route):
+    monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    monkeypatch.setattr(F8, "_fp8_rowwise_backend", lambda device: "tensorwise")
+    monkeypatch.setattr(F8, "_FP8_ROWWISE_DIRECT", True)
+    with FakeTensorMode(), torch.no_grad():
+        X = torch.empty(1, rows, K, device = "cuda", dtype = torch.bfloat16)
+        w = torch.empty(N, K, device = "cuda", dtype = E4M3)
+        s = torch.empty(N, 1, device = "cuda", dtype = torch.float32)
+        assert F8._fp8_rowwise_direct_route(X, w, s) == route

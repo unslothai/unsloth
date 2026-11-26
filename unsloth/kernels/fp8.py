@@ -2234,6 +2234,20 @@ def _fp8_dequant_max_rows(device, weight_numel):
     return _FP8_DEQUANT_MAX_ROWS
 
 
+# Tensorwise backend gate, measured on L4 (bf16, 128-8192 rows): it beats dequant from 4096 x 8192 weights at
+# every row count past the dequant gate (0.38-0.86x) and from 4096 x 4096 at 512+ rows (0.70-0.82x). Smaller
+# weights are host bound there (1024 x 1024: 1.2-1.8x slower), so they keep dequant.
+_FP8_TENSORWISE_MIN_NUMEL = 4096 * 4096
+_FP8_TENSORWISE_ANY_ROWS_NUMEL = 4096 * 8192
+_FP8_TENSORWISE_MIN_ROWS = 512
+
+
+def _fp8_tensorwise_wins(rows, weight_numel):
+    if weight_numel >= _FP8_TENSORWISE_ANY_ROWS_NUMEL:
+        return True
+    return weight_numel >= _FP8_TENSORWISE_MIN_NUMEL and rows >= _FP8_TENSORWISE_MIN_ROWS
+
+
 class FbgemmFp8Linear_matmul(torch.autograd.Function):
     @staticmethod
     def forward(
@@ -2322,6 +2336,7 @@ class FbgemmFp8Linear_matmul(torch.autograd.Function):
             and (weight.shape[0] % 16 == 0 and weight.shape[1] % 16 == 0)
             and x.shape[-1] == weight.shape[1]
             and x.numel() > _fp8_dequant_max_rows(x.device, weight.numel()) * x.shape[-1]
+            and _fp8_tensorwise_wins(x.numel() // x.shape[-1], weight.numel())
         ):
             output_shape = (*x.shape[:-1], -1)
             x_quantized, x_scale = _quantize_fp8_per_row(
@@ -2501,7 +2516,7 @@ def _fp8_rowwise_direct_route(X, weight, weight_scale):
         return None
     if (
         (
-            backend == "tensorwise"
+            (backend == "tensorwise" and _fp8_tensorwise_wins(X.numel() // K, N * K))
             or (backend == "scaled_mm" and not _scaled_mm_fp16_dequant_only(X.dtype))
         )
         and N % 16 == 0
