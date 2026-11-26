@@ -35,23 +35,21 @@ interface RecipeBuild {
   text_encoder_quant?: string | null;
 }
 
-/** The Precision a recipe ran with: its engaged scheme, or Off for a dense pipeline that ran none. Null (leave the
- * select alone) for a GGUF or connection run and for records older than the field. */
+/** The Precision a recipe ran with, or null to leave the select alone. Only a recorded scheme counts: the gallery
+ * API sends a missing field as null too, so a null cannot tell a dense run from a record older than the field. */
 export function recipeTransformerQuant(recipe: RecipeBuild): TransformerQuantChoice | null {
   const engaged = recipe.transformer_quant;
   if (typeof engaged === "string" && engaged.trim()) {
     const picked = choice(TRANSFORMER_QUANT_CHOICES, engaged);
     return picked === "auto" ? null : picked;
   }
-  return engaged === null && recipe.model_kind === "pipeline" ? "none" : null;
+  return null;
 }
 
-/** The Text encoder precision a recipe ran with: its engaged scheme, or Dense for a dense pipeline that ran none.
- * Null leaves the select alone (GGUF / connection runs, records older than the field). */
+/** The Text encoder precision a recipe ran with, or null to leave the select alone (null on record is ambiguous, as
+ * for Precision). */
 export function recipeTextEncoderQuant(recipe: RecipeBuild): TextEncoderQuantChoice | null {
   const engaged = recipe.text_encoder_quant;
-  // A dense pipeline records a dense encoder as null: that is Dense, not unknown.
-  if (engaged === null && recipe.model_kind === "pipeline") return "none";
   if (typeof engaged !== "string" || !engaged.trim()) return null;
   const picked = choice(TEXT_ENCODER_QUANT_CHOICES, engaged);
   return picked === "auto" ? null : picked;

@@ -84,15 +84,14 @@ test("seeding from a loaded record maps off to Off / Dense", () => {
 test("a recipe restores the precision it ran with, and leaves the select alone when it cannot know", () => {
   assert.equal(recipeTransformerQuant({ transformer_quant: "fp8", model_kind: "pipeline" }), "fp8");
   assert.equal(recipeTransformerQuant({ transformer_quant: "NVFP4", model_kind: "pipeline" }), "nvfp4");
-  // A dense pipeline that engaged nothing ran bf16: Off.
-  assert.equal(recipeTransformerQuant({ transformer_quant: null, model_kind: "pipeline" }), "none");
+  // The gallery API sends a missing field as null too: a null is not known to be a dense run.
+  assert.equal(recipeTransformerQuant({ transformer_quant: null, model_kind: "pipeline" }), null);
   assert.equal(recipeTransformerQuant({ transformer_quant: null, model_kind: "gguf" }), null);
   assert.equal(recipeTransformerQuant({ model_kind: "pipeline" }), null);
   assert.equal(recipeTextEncoderQuant({ text_encoder_quant: "fp8_dynamic" }), "fp8_dynamic");
   assert.equal(recipeTextEncoderQuant({ text_encoder_quant: "off" }), "none");
   assert.equal(recipeTextEncoderQuant({ text_encoder_quant: null }), null);
-  // A dense pipeline records a dense encoder as null: restore Dense, or a quantized pick would stay.
-  assert.equal(recipeTextEncoderQuant({ text_encoder_quant: null, model_kind: "pipeline" }), "none");
+  assert.equal(recipeTextEncoderQuant({ text_encoder_quant: null, model_kind: "pipeline" }), null);
   assert.equal(recipeTextEncoderQuant({ text_encoder_quant: null, model_kind: "gguf" }), null);
   assert.equal(recipeTextEncoderQuant({ model_kind: "pipeline" }), null);
 });
@@ -221,8 +220,8 @@ test("Video Restore brings an FP8 clip back as FP8 and names its model, never lo
   assert.equal(toasts[0].options.action, undefined, "a prompt, not a load");
 
   const same = videoRestoreClipBuild(resident);
-  same.restore({ model: "Lightricks/LTX-2", model_kind: "pipeline", transformer_quant: null });
-  assert.equal(same.state.transformerQuant, "none");
+  same.restore({ model: "Lightricks/LTX-2", model_kind: "pipeline", transformer_quant: "int8" });
+  assert.equal(same.state.transformerQuant, "int8");
   assert.equal(same.toasts.length, 0);
 
   // Another GGUF file of the resident repo (video status names only the quant) is named, file included.
