@@ -357,11 +357,11 @@ def score_completion_logps(
         rows_per_chunk = _rows_per_chunk(L, vocab or 1 << 17)
     pass_keep = True
     autocast = _autocast(ids.device, autocast_dtype)
+    n_chunks = -(-B // rows_per_chunk)
+    total_chunks = _max_over_ranks(n_chunks, device) if sync_chunks else n_chunks
     # Real logits, with the model's own scaling and softcapping: no hidden-state shortcut while scoring.
     prior_hidden_states = os.environ.get("UNSLOTH_RETURN_HIDDEN_STATES")
     os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "0"
-    n_chunks = -(-B // rows_per_chunk)
-    total_chunks = _max_over_ranks(n_chunks, device) if sync_chunks else n_chunks
     try:
         for chunk in range(total_chunks):
             if chunk >= n_chunks:
