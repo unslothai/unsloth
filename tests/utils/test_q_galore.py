@@ -248,7 +248,7 @@ def _projected_optimizer(weight, quant, weight_decay):
 @pytest.mark.skipif(not _adamw_mod._HAS_BNB, reason = "bitsandbytes is required")
 @pytest.mark.parametrize("quant", [True, False])
 def test_projected_step_keeps_the_weight_storage_instead_of_a_copy(quant):
-    """The low-rank swap rebinds p.data, so it holds the original weight by reference, not a full-weight clone."""
+    """The low-rank swap holds the original weight by reference, not a clone."""
     device = "cuda" if torch.cuda.is_available() else "cpu"
     requires_bnb_optimizer(device)
     torch.manual_seed(0)
@@ -269,14 +269,12 @@ def test_projected_step_keeps_the_weight_storage_instead_of_a_copy(quant):
         optimizer.step()
         saved_ptr, zeros_ptr = seen[-1]
         assert saved_ptr == before != zeros_ptr
-        # The updated weight lands back in the same storage.
         assert weight.data.data_ptr() == before
 
 
 @pytest.mark.skipif(not _adamw_mod._HAS_BNB, reason = "bitsandbytes is required")
 def test_failed_projected_step_restores_the_untouched_weight_then_retries_exactly():
-    """An OOM inside the 8-bit update (auto_find_batch_size retries) leaves the weight, grad and weight decay as
-    they were, and the retried step matches a step that never failed, bitwise."""
+    """An OOM in the 8-bit update (auto_find_batch_size) leaves state intact; the retry matches bitwise."""
     device = "cuda" if torch.cuda.is_available() else "cpu"
     requires_bnb_optimizer(device)
     torch.manual_seed(0)
