@@ -3247,9 +3247,13 @@ class TestOpenAICompatibilityHelpers:
                 tokens = 8750,
                 budget = 35000,
             )
-            assert reservation._waiter is not None, "free slots alone do not satisfy the shared KV budget"
+            assert (
+                reservation._waiter is not None
+            ), "free slots alone do not satisfy the shared KV budget"
+
             async def connected():
                 return False
+
             request = SimpleNamespace(
                 headers = {"X-Unsloth-Events": "1"},
                 state = SimpleNamespace(),
@@ -3263,7 +3267,10 @@ class TestOpenAICompatibilityHelpers:
                 cancel_event = None,
             )
             try:
-                assert await asyncio.wait_for(chunks.__anext__(), timeout = 0.1) == ": admission-wait\n\n"
+                assert (
+                    await asyncio.wait_for(chunks.__anext__(), timeout = 0.1)
+                    == ": admission-wait\n\n"
+                )
                 line = await asyncio.wait_for(chunks.__anext__(), timeout = 0.1)
                 assert line.startswith("data: ")
                 payload = json.loads(line.removeprefix("data: ").strip())
@@ -3286,6 +3293,7 @@ class TestOpenAICompatibilityHelpers:
         async def _run():
             async def connected():
                 return False
+
             queue = get_llama_admission_queue("http://llama.admission.clean-stream.test")
             config = LlamaAdmissionConfig()
             blocker = queue.reserve(capacity = 1, config = config).lease_nowait()
@@ -3302,9 +3310,15 @@ class TestOpenAICompatibilityHelpers:
                 cancel_event = None,
             )
             try:
-                assert await asyncio.wait_for(chunks.__anext__(), timeout = 0.1) == ": admission-wait\n\n"
+                assert (
+                    await asyncio.wait_for(chunks.__anext__(), timeout = 0.1)
+                    == ": admission-wait\n\n"
+                )
                 blocker.release()
-                assert await asyncio.wait_for(chunks.__anext__(), timeout = 0.1) == ": admission-done\n\n"
+                assert (
+                    await asyncio.wait_for(chunks.__anext__(), timeout = 0.1)
+                    == ": admission-done\n\n"
+                )
                 lease = await asyncio.wait_for(chunks.__anext__(), timeout = 0.1)
                 assert lease is not None
                 lease.release()

@@ -1962,7 +1962,9 @@ _OPENAI_ADMISSION_SSE_WAIT = ": admission-wait\n\n"
 _OPENAI_ADMISSION_SSE_DONE = ": admission-done\n\n"
 
 
-def _openai_admission_status_sse(reservation, state: str, request: Optional[Request]) -> Optional[str]:
+def _openai_admission_status_sse(
+    reservation, state: str, request: Optional[Request]
+) -> Optional[str]:
     """Admission state for clients that opt into Unsloth control frames; OpenAI callers keep only comments."""
     if not _ui_stream_events_enabled(request):
         return None
