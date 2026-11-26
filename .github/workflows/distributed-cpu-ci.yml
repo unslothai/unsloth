@@ -93,8 +93,10 @@ jobs:
       # environment or imports differ from the zygote's starts again as a plain spawn
       # (tests/_shared/rank_zygote.py; tests/test_rank_zygote_gloo.py compares the two). Job-level,
       # so the pytest step stays the one studio-backend-ci.yml runs. A shard with `rank_zygote: '0'`
-      # keeps plain spawns: fsdp2's ranks never run the conftest, so a fork saves only the torch import,
-      # and on staging the shard was no faster for it.
+      # keeps plain spawns. fsdp2's ranks never run the conftest, so a fork saves only the torch import,
+      # and on staging the shard was no faster for it. gloo-tp-env's test_tp_resume_expert_lora_b_layout_gloo
+      # lost a rank at init_process_group in 2 of 8 staging runs with forked ranks (and
+      # test_tp_save_expert_factor_swap_gloo overran its 330 s in a third), and in none without.
       UNSLOTH_TEST_RANK_ZYGOTE: ${{ matrix.rank_zygote || '1' }}
       # A shard listed as name-1 .. name-n with `split: k/n` runs part k of its selection
       # (tests/_shared/shard_split.py, weighted by tests/_shared/shard_durations.json): the slow
@@ -163,35 +165,42 @@ jobs:
           # shard of their own; test_c[!p]* keeps test_context_parallel_*, and a test_cp[!_]* gloo
           # file matches neither and is reported dropped.
           - shard: gloo-1
-            split: 1/5
+            split: 1/6
             selection: >-
               tests/test_[!cdfimpstu]*gloo*.py
               tests/test_c[!p]*gloo*.py
               tests/test_f[!s]*gloo*.py
               tests/test_parallel_[!c]*gloo*.py
           - shard: gloo-2
-            split: 2/5
+            split: 2/6
             selection: >-
               tests/test_[!cdfimpstu]*gloo*.py
               tests/test_c[!p]*gloo*.py
               tests/test_f[!s]*gloo*.py
               tests/test_parallel_[!c]*gloo*.py
           - shard: gloo-3
-            split: 3/5
+            split: 3/6
             selection: >-
               tests/test_[!cdfimpstu]*gloo*.py
               tests/test_c[!p]*gloo*.py
               tests/test_f[!s]*gloo*.py
               tests/test_parallel_[!c]*gloo*.py
           - shard: gloo-4
-            split: 4/5
+            split: 4/6
             selection: >-
               tests/test_[!cdfimpstu]*gloo*.py
               tests/test_c[!p]*gloo*.py
               tests/test_f[!s]*gloo*.py
               tests/test_parallel_[!c]*gloo*.py
           - shard: gloo-5
-            split: 5/5
+            split: 5/6
+            selection: >-
+              tests/test_[!cdfimpstu]*gloo*.py
+              tests/test_c[!p]*gloo*.py
+              tests/test_f[!s]*gloo*.py
+              tests/test_parallel_[!c]*gloo*.py
+          - shard: gloo-6
+            split: 6/6
             selection: >-
               tests/test_[!cdfimpstu]*gloo*.py
               tests/test_c[!p]*gloo*.py
@@ -208,15 +217,23 @@ jobs:
           # Gloo hit its 2100 s cap after 17886, 17930, DeepSeek-V4.1 tests; non-native TP files
           # split off.
           - shard: gloo-tp-env-1
-            split: 1/3
+            split: 1/4
+            rank_zygote: '0'
             selection: >-
               tests/test_tp_[!n]*gloo*.py
           - shard: gloo-tp-env-2
-            split: 2/3
+            split: 2/4
+            rank_zygote: '0'
             selection: >-
               tests/test_tp_[!n]*gloo*.py
           - shard: gloo-tp-env-3
-            split: 3/3
+            split: 3/4
+            rank_zygote: '0'
+            selection: >-
+              tests/test_tp_[!n]*gloo*.py
+          - shard: gloo-tp-env-4
+            split: 4/4
+            rank_zygote: '0'
             selection: >-
               tests/test_tp_[!n]*gloo*.py
           # Issue 16407 grew the cp gloo file to a third of the shard; each gloo test spawns 2 to 8

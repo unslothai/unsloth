@@ -1064,7 +1064,28 @@ def _rank_main(fd, parent_sentinel):
         # now, before any of that code runs.
         _respawn("the test module does not import torch itself")
     _rank["frozen"] = None
-    return self._bootstrap(parent_sentinel)
+    code = self._bootstrap(parent_sentinel)
+    _exit_like_a_spawned_rank()
+    return code
+
+
+def _exit_like_a_spawned_rank():
+    """A spawned rank leaves through sys.exit: interpreter shutdown waits for its non-daemon threads, then runs
+    its atexit handlers. The forkserver ends a forked rank with os._exit as soon as this returns, so both happen
+    here first. (Finalizing modules and objects is the one step a forked rank still skips.)"""
+    import atexit
+    import threading
+
+    try:
+        threading._shutdown()
+    except Exception:
+        pass
+    atexit._run_exitfuncs()
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except Exception:
+            pass
 
 
 def _guard_env():
