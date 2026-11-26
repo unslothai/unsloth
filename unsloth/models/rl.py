@@ -4505,6 +4505,12 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         logger.info(f"Unsloth: Could not wrap the full-eval cast for {RLTrainer_name}: {e}")
 
     if trainer_file == "grpo_trainer":
+        # Inside the optimizer-parking wrapper below, so a parked optimizer also covers the partial rollout.
+        try:
+            from ._partial_rollout import wrap_grpo_partial_rollout
+            wrap_grpo_partial_rollout(getattr(created_module, f"Unsloth{RLTrainer_name}"))
+        except Exception as e:
+            logger.info(f"Unsloth: Could not wrap GRPO partial rollout for {RLTrainer_name}: {e}")
         try:
             _wrap_grpo_generate_and_score(getattr(created_module, f"Unsloth{RLTrainer_name}"))
         except Exception as e:
