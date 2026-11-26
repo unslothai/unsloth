@@ -1827,10 +1827,12 @@ def _deterministic_cudnn(mel_spec: Any) -> Iterator[None]:
     global _deterministic_depth, _deterministic_saved
     import torch
 
+    from .rocm_bf16 import is_rocm_torch
+
     cudnn = torch.backends.cudnn
     if (
         getattr(getattr(mel_spec, "device", None), "type", None) != "cuda"
-        or getattr(torch.version, "hip", None)
+        or is_rocm_torch(torch)  # AMD SDK / Radeon wheels leave torch.version.hip unset
         or _is_compiling()
         or not vocoder_deterministic_enabled()
     ):
