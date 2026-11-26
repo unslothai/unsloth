@@ -41,10 +41,17 @@ def _is_request(stmt):
 
 
 def _scorer_section():
-    """The real statements from the hidden-states request to the return, as a function body."""
-    text = _SOURCE.read_text(encoding = "utf-8")
-    factory = _named_function(ast.parse(text), "grpo_trainer__get_per_token_logps_and_entropies")
-    inner = _named_function(factory, "_get_per_token_logps_and_entropies")
+    """The statements from the hidden-states request to the return, as a function body, taken from the
+    source Unsloth generates for the trainer (what actually runs), not the template."""
+    from unsloth.models import rl_replacements
+
+    assert Path(rl_replacements.__file__).resolve() == _SOURCE.resolve(), rl_replacements.__file__
+    text = textwrap.dedent(
+        rl_replacements.grpo_trainer__get_per_token_logps_and_entropies(
+            "_get_per_token_logps_and_entropies", ""
+        )
+    )
+    inner = _named_function(ast.parse(text), "_get_per_token_logps_and_entropies")
     found = []
     for node in ast.walk(inner):
         for field in ("body", "orelse", "finalbody"):

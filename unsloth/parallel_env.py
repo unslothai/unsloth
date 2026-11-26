@@ -541,6 +541,9 @@ def parallelize(
         else:
             environ[name] = value
     resolved = translate(spec, environ)
+    # An inherited UNSLOTH_EP_SIZE beside the axes this call sets: refused before anything is written, as
+    # `import unsloth` refuses it for UNSLOTH_PARALLEL.
+    refuse_ep_composition({**environ, **resolved}, f"unsloth.parallelize({raw})")
     _refuse_after_layout_read(resolved)
     for name, value in prior.items():
         if value is None:

@@ -512,6 +512,7 @@ def test_tensor_parallel_alone_keeps_what_tp_native_supports():
         (dict(cp = 2, torch = (2, 6)), "cp x torch", "upgrade torch"),
         (dict(pp = 2, trainer = "grpo"), "pp x trainer", "drop pp"),
         (dict(pp = 2, packing = True), "pp x packing", "packing = False"),
+        (dict(tp = 2, packing = True), "tp x packing", "packing = False"),
         (dict(pp = 2, mode = "full"), "pp x mode", "use LoRA, or UNSLOTH_FSDP2=1"),
         (dict(tp = 2, vllm = True), "pp / tp x vLLM", "fast_inference = False"),
     ],

@@ -233,6 +233,14 @@ RULES = (
         "packing = False, or drop pp",
     ),
     Rule(
+        "tp x packing",
+        "tensor parallel with packed / padding-free rows",
+        lambda q: q.tp > 1 and q.packing,
+        "packed rows under tensor parallel do not match one GPU (2-GPU Qwen3-0.6B LoRA: a different loss and "
+        "gradient on the same first batch, while unpacked rows match)",
+        "packing = False, or drop tp",
+    ),
+    Rule(
         "pp x mode",
         "pipeline parallel full finetuning",
         lambda q: q.pp > 1 and q.mode == "full",

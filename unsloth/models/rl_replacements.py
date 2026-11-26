@@ -4324,18 +4324,62 @@ def _unsloth_vllm_trl_dequantizes(original):
         return Version(trl_version_raw) >= Version("1.19.0")
 
 
+def _unsloth_vllm_engine_quantization(llm):
+    """The quantization method a vLLM LLM was built with ("bitsandbytes", "fp8", ...), or None."""
+    for owner in (llm, getattr(llm, "llm_engine", None)):
+        model_config = getattr(owner, "model_config", None)
+        if model_config is None:
+            model_config = getattr(getattr(owner, "vllm_config", None), "model_config", None)
+        if model_config is not None:
+            return getattr(model_config, "quantization", None) or None
+    return None
+
+
+def _unsloth_trl_vllm_engine_check(generation, model):
+    """Called right after TRL >= 0.28 builds its own colocated vLLM (use_vllm = True, fast_inference = False).
+
+    TRL >= 1.19 (#8269) no longer passes quantization = "bitsandbytes" and sends 4-bit weights dequantized.
+    So a QLoRA model quantized on the fly gets a 16-bit vLLM copy next to the 4-bit trainer, about 4x the
+    weight memory: say so once. A pre-quantized bitsandbytes checkpoint (the unsloth/*-bnb-4bit repos) still
+    builds a bitsandbytes engine from its config, and that engine cannot load the dequantized weights:
+    record it, so the first sync raises Unsloth's clear error instead of vLLM's shape assert."""
+    llm = getattr(generation, "llm", None)
+    generation._unsloth_vllm_engine_quantization = _unsloth_vllm_engine_quantization(llm)
+    if model is None or not getattr(model, "is_loaded_in_4bit", False):
+        return
+    if getattr(model, "is_loaded_in_8bit", False):
+        return
+    original = getattr(type(generation), "_iter_named_params", None)
+    original = getattr(original, "__wrapped__", original)
+    if original is None or not _unsloth_vllm_trl_dequantizes(original):
+        return
+    if generation._unsloth_vllm_engine_quantization is not None:
+        return
+    print(
+        f"Unsloth: TRL {trl_version_raw} builds its own vLLM engine unquantized for this 4-bit model "
+        "(use_vllm = True, fast_inference = False). vLLM holds a 16-bit copy of the weights, about 4x "
+        "the 4-bit model's weight memory, on top of the training model. Load the model with "
+        "fast_inference = True so vLLM shares the 4-bit weights instead, or lower "
+        "vllm_gpu_memory_utilization if this runs out of memory."
+    )
+
+
 def _unsloth_vllm_generation_refuses_quantized(generation, original):
     """TRL 0.28 to 1.18 VLLMGeneration merges the adapters into a quantized base in place and sends
     param.data, which is the packed storage (bitsandbytes 4-bit: uint8 bytes), not weights. A colocated
     engine then fails a shape assert inside vLLM on the first sync, and a vLLM server is sent bytes as
-    weights. Raise the error the TRL < 0.28 sync raises instead; True = skip the sync (explicit opt-in)."""
+    weights. Raise the error the TRL < 0.28 sync raises instead; True = skip the sync (explicit opt-in).
+    TRL >= 1.19 sends bitsandbytes 4-bit weights dequantized: fine for an unquantized engine, still
+    refused for a colocated engine built quantized from a pre-quantized checkpoint."""
     model = getattr(generation, "model", None)
     if model is None or not _unsloth_vllm_quantized(model):
         return False
+    engine_quantization = generation.__dict__.get("_unsloth_vllm_engine_quantization")
     if (
         getattr(model, "is_loaded_in_4bit", False)
         and not getattr(model, "is_loaded_in_8bit", False)
         and _unsloth_vllm_trl_dequantizes(original)
+        and engine_quantization is None
     ):
         return False
     if os.environ.get("UNSLOTH_VLLM_ALLOW_STALE_ROLLOUTS", "0") == "1":
@@ -4346,10 +4390,21 @@ def _unsloth_vllm_generation_refuses_quantized(generation, original):
                 "quantized model and every rollout uses the initial weights."
             )
         return True
+    if engine_quantization is not None and _unsloth_vllm_trl_dequantizes(original):
+        reason = (
+            f"TRL {trl_version_raw} sends dequantized 16-bit weights, but its vLLM engine was built "
+            f"{engine_quantization}-quantized from the checkpoint's own quantization config, so vLLM "
+            "cannot load them."
+        )
+    else:
+        reason = (
+            f"TRL {trl_version_raw} sends the packed quantized storage, not weights, so vLLM cannot "
+            "load it."
+        )
     raise RuntimeError(
         "Unsloth: GRPO with use_vllm = True but fast_inference = False cannot sync a quantized "
-        "(bitsandbytes, GPTQ, AWQ, HQQ, torchao, FP8, ...) model into TRL's vLLM engine: TRL "
-        f"{trl_version_raw} sends the packed quantized storage, not weights, so vLLM cannot load it.\n"
+        "(bitsandbytes, GPTQ, AWQ, HQQ, torchao, FP8, ...) model into TRL's vLLM engine: "
+        f"{reason}\n"
         "Load the model with fast_inference = True, or load a 16-bit base (load_in_4bit = False, "
         "load_in_8bit = False). Set UNSLOTH_VLLM_ALLOW_STALE_ROLLOUTS=1 to train anyway with every "
         "rollout from the initial weights."
@@ -4944,658 +4999,626 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 attention_mask_chunks,
                 vision_chunks,
             )
-            # Undone however the section exits: after a caught error (an OOM retry, auto_find_batch_size),
-            # generate / evaluate would otherwise get hidden states where they expect logits.
-            _unsloth_prior_hidden_states = os.environ.get("UNSLOTH_RETURN_HIDDEN_STATES")
             os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "0" if _unsloth_head_hooked else "1"
-            try:
-                # Sequence packing (default on; UNSLOTH_GRPO_SEQ_PACKING=0 disables): one varlen [1, sum L] forward replaces the padded [B, Lmax] loop and fixes the left-pad RoPE error. Self-verified against the per-row forward, re-checked as T grows, and falls back if a backend ignores packed_seq_lengths.
-                logprobs = None
 
-                # PrefixGrouper (GRPO shared-prompt dedup, default ON): G completions share the prompt, so storing it once behind a FlexAttention shared-prefix mask cuts the trunk forward from G*(P+R) to P+G*R tokens. Gated by UNSLOTH_GRPO_PREFIX_GROUPER, a tok_r auto-gate and a first-use self-verify, so a mask/isolation regression cannot ship silently.
-                _pg_result = None
-                _pg_use = False
-                _pg_skip_pk = False  # once a shape is PG-verified, skip the full-row forward
-                _pg_forward_fn = None  # deferred PG forward (runs at the verify site below)
-                _pg_num_gen = getattr(self, "num_generations", None)
-                # Env gates hoisted to module level (mirrored via RL_PRE_ITEMS). vLLM still runs the old-policy logprob forward, so PG helps.
-                _pg_engage = (
-                    UNSLOTH_GRPO_PREFIX_GROUPER_ON
-                    and (
-                        UNSLOTH_GRPO_PREFIX_GROUPER_VLLM_ON or not getattr(self, "use_vllm", False)
-                    )
-                    # Its extract_logps always projects with lm_head.weight.
-                    and not _unsloth_head_hooked
-                    and not getattr(
-                        unwrapped_model, "_unsloth_prefix_grouper_nograd_disabled", False
-                    )
-                    # Its layout finds tokens by pad id, so it would drop a kept EOS that shares it.
-                    and _eos_rows is None
-                    and _real is None
-                )
-                if _pg_engage:
-                    try:
-                        # Skip softcap models (the flex kernel never applies attn_logit_softcapping) and hybrid SSM / MoE models: only the threaded attention forwards get shared-prefix isolation, so a decoder that does not forward prefix_seg_info leaks suffixes across completions. PG also rides on sequence packing, so it needs the same zoo masked-column guard.
-                        _pg_cfg = getattr(unwrapped_model, "config", None)
-                        _pg_engage = (
-                            # Given the model, also requires prefix_seg_info_applied(model).
-                            _pg_enabled_fn(unwrapped_model)
-                            and UNSLOTH_ZOO_HAS_MASKED_COL_GUARD
-                            and pixel_values is None
-                            and token_type_ids is None
-                            and mm_token_type_ids is None
-                            and _pg_num_gen is not None
-                            and _pg_num_gen >= 2
-                            and not getattr(_pg_cfg, "attn_logit_softcapping", None)
-                            # Normal backends apply config.attention_dropout in training; the flex path is deterministic, so skip PG when it is set.
-                            and not getattr(_pg_cfg, "attention_dropout", 0)
-                            and not any(
+            # Sequence packing (default on; UNSLOTH_GRPO_SEQ_PACKING=0 disables): one varlen [1, sum L] forward replaces the padded [B, Lmax] loop and fixes the left-pad RoPE error. Self-verified against the per-row forward, re-checked as T grows, and falls back if a backend ignores packed_seq_lengths.
+            logprobs = None
+
+            # PrefixGrouper (GRPO shared-prompt dedup, default ON): G completions share the prompt, so storing it once behind a FlexAttention shared-prefix mask cuts the trunk forward from G*(P+R) to P+G*R tokens. Gated by UNSLOTH_GRPO_PREFIX_GROUPER, a tok_r auto-gate and a first-use self-verify, so a mask/isolation regression cannot ship silently.
+            _pg_result = None
+            _pg_use = False
+            _pg_skip_pk = False  # once a shape is PG-verified, skip the full-row forward
+            _pg_forward_fn = None  # deferred PG forward (runs at the verify site below)
+            _pg_num_gen = getattr(self, "num_generations", None)
+            # Env gates hoisted to module level (mirrored via RL_PRE_ITEMS). vLLM still runs the old-policy logprob forward, so PG helps.
+            _pg_engage = (
+                UNSLOTH_GRPO_PREFIX_GROUPER_ON
+                and (UNSLOTH_GRPO_PREFIX_GROUPER_VLLM_ON or not getattr(self, "use_vllm", False))
+                # Its extract_logps always projects with lm_head.weight.
+                and not _unsloth_head_hooked
+                and not getattr(unwrapped_model, "_unsloth_prefix_grouper_nograd_disabled", False)
+                # Its layout finds tokens by pad id, so it would drop a kept EOS that shares it.
+                and _eos_rows is None
+                and _real is None
+            )
+            if _pg_engage:
+                try:
+                    # Skip softcap models (the flex kernel never applies attn_logit_softcapping) and hybrid SSM / MoE models: only the threaded attention forwards get shared-prefix isolation, so a decoder that does not forward prefix_seg_info leaks suffixes across completions. PG also rides on sequence packing, so it needs the same zoo masked-column guard.
+                    _pg_cfg = getattr(unwrapped_model, "config", None)
+                    _pg_engage = (
+                        # Given the model, also requires prefix_seg_info_applied(model).
+                        _pg_enabled_fn(unwrapped_model)
+                        and UNSLOTH_ZOO_HAS_MASKED_COL_GUARD
+                        and pixel_values is None
+                        and token_type_ids is None
+                        and mm_token_type_ids is None
+                        and _pg_num_gen is not None
+                        and _pg_num_gen >= 2
+                        and not getattr(_pg_cfg, "attn_logit_softcapping", None)
+                        # Normal backends apply config.attention_dropout in training; the flex path is deterministic, so skip PG when it is set.
+                        and not getattr(_pg_cfg, "attention_dropout", 0)
+                        and not any(
+                            getattr(_pg_cfg, _pg_a, None) is not None
+                            for _pg_a in ("mamba_d_ssm", "mamba_d_state", "mamba_expand")
+                        )
+                        # MoE only where prefix_grouper_hf verified every layer (opt-in, set by the check above).
+                        and (
+                            getattr(unwrapped_model, "_unsloth_prefix_grouper_moe_ok", False)
+                            or not any(
                                 getattr(_pg_cfg, _pg_a, None) is not None
-                                for _pg_a in ("mamba_d_ssm", "mamba_d_state", "mamba_expand")
-                            )
-                            # MoE only where prefix_grouper_hf verified every layer (opt-in, set by the check above).
-                            and (
-                                getattr(unwrapped_model, "_unsloth_prefix_grouper_moe_ok", False)
-                                or not any(
-                                    getattr(_pg_cfg, _pg_a, None) is not None
-                                    for _pg_a in (
-                                        "num_experts",
-                                        "num_local_experts",
-                                        "n_routed_experts",
-                                        "moe_intermediate_size",
-                                    )
+                                for _pg_a in (
+                                    "num_experts",
+                                    "num_local_experts",
+                                    "n_routed_experts",
+                                    "moe_intermediate_size",
                                 )
                             )
                         )
-                    except Exception:
-                        _pg_engage = False
-                if _pg_engage:
-                    try:
-                        _pg_pad = self.processing_class.pad_token_id
-                        # Cap the PG span (P+max(R)) at the sliding window, like the packed _pk_sw guard.
-                        _pg_sw = getattr(
-                            getattr(unwrapped_model, "config", None), "sliding_window", None
+                    )
+                except Exception:
+                    _pg_engage = False
+            if _pg_engage:
+                try:
+                    _pg_pad = self.processing_class.pad_token_id
+                    # Cap the PG span (P+max(R)) at the sliding window, like the packed _pk_sw guard.
+                    _pg_sw = getattr(
+                        getattr(unwrapped_model, "config", None), "sliding_window", None
+                    )
+                    if not (isinstance(_pg_sw, int) and _pg_sw > 0):
+                        _pg_sw = None
+                    _pg_layout = _pg_build_layout(
+                        input_ids,
+                        logits_to_keep,
+                        _pg_pad,
+                        _pg_num_gen,
+                        left_pad_tokens_per_prompt,
+                        max_segment_cap = _pg_sw,
+                    )
+                    _pg_unsafe = getattr(
+                        unwrapped_model, "_unsloth_prefix_grouper_nograd_unsafe", None
+                    )
+                    if _pg_unsafe is None:
+                        _pg_unsafe = set()
+                    if (
+                        _pg_layout is not None
+                        and _pg_layout.flat_ids.shape[1] > batch_size * seq_len
+                    ):
+                        # Over one padded mini-batch's tokens: the chunked loop keeps the mini-batch cap.
+                        _pg_layout = None
+                    if _pg_layout is not None and _pg_layout.signature not in _pg_unsafe:
+                        _pg_sig = _pg_layout.signature
+                        _pg_verified = getattr(
+                            unwrapped_model, "_unsloth_prefix_grouper_nograd_verified", None
                         )
-                        if not (isinstance(_pg_sw, int) and _pg_sw > 0):
-                            _pg_sw = None
-                        _pg_layout = _pg_build_layout(
-                            input_ids,
-                            logits_to_keep,
-                            _pg_pad,
-                            _pg_num_gen,
-                            left_pad_tokens_per_prompt,
-                            max_segment_cap = _pg_sw,
-                        )
-                        _pg_unsafe = getattr(
-                            unwrapped_model, "_unsloth_prefix_grouper_nograd_unsafe", None
-                        )
-                        if _pg_unsafe is None:
-                            _pg_unsafe = set()
-                        if (
-                            _pg_layout is not None
-                            and _pg_layout.flat_ids.shape[1] > batch_size * seq_len
-                        ):
-                            # Over one padded mini-batch's tokens: the chunked loop keeps the mini-batch cap.
-                            _pg_layout = None
-                        if _pg_layout is not None and _pg_layout.signature not in _pg_unsafe:
-                            _pg_sig = _pg_layout.signature
-                            _pg_verified = getattr(
-                                unwrapped_model, "_unsloth_prefix_grouper_nograd_verified", None
-                            )
-                            if _pg_verified is None:
-                                _pg_verified = set()
-                            _pg_chunks = max(1, total_rows * multiplier)
+                        if _pg_verified is None:
+                            _pg_verified = set()
+                        _pg_chunks = max(1, total_rows * multiplier)
 
-                            def _pg_run_forward(_pg_layout = _pg_layout, _pg_chunks = _pg_chunks):
-                                with torch.no_grad():
-                                    with torch.amp.autocast(
-                                        device_type = DEVICE_TYPE_TORCH,
-                                        dtype = self._autocast_dtype,
-                                        enabled = getattr(self, "_autocast_enabled", True),
-                                    ):
-                                        _pg_hidden = unwrapped_model(
-                                            input_ids = _pg_layout.flat_ids,
-                                            position_ids = _pg_layout.position_ids,
-                                            prefix_seg_info = _pg_layout.prefix_seg_info,
-                                            use_cache = False,
-                                        ).logits
-                                        _pg_r = _pg_layout.extract_logps(
-                                            _pg_hidden,
-                                            lm_head,
-                                            chunked_hidden_states_selective_log_softmax,
-                                            _pg_chunks,
-                                            logit_scale_multiply,
-                                            logit_scale_divide,
-                                            logit_softcapping,
-                                            temperature,
-                                        )
-                                        _pg_hidden = None  # release before any verify forward
-                                device_synchronize()
-                                # Clip to the loss window [B, logits_to_keep+max_left_pad].
-                                _pg_w = logits_to_keep + max_left_pad
-                                if _pg_r.shape[1] > _pg_w:
-                                    _pg_r = _pg_r[:, -_pg_w:]
-                                return _pg_r
-
-                            # Trust only within the verified envelope: re-verify when T or the longest segment grows, like the packed path.
-                            _pg_T = int(_pg_layout.flat_ids.shape[1])
-                            _pg_maxseg = int(_pg_layout.position_ids.max()) + 1
-                            _pg_env = (
-                                _pg_verified.get(_pg_sig)
-                                if isinstance(_pg_verified, dict)
-                                else None
-                            )
-                            if (not _pg_verify_on()) or (
-                                _pg_env is not None
-                                and _pg_T <= _pg_env[0]
-                                and _pg_maxseg <= _pg_env[1]
-                            ):
-                                # Trusted shape: run PG now and skip the full-row forward below.
-                                _pg_result = _pg_run_forward()
-                                _pg_use = True
-                                _pg_skip_pk = True
-                            else:
-                                # Unverified shape: defer the forward until the packed reference exists, so a declined packed path never wastes a whole-batch PG forward.
-                                _pg_forward_fn = _pg_run_forward
-                    except Exception as _pg_err:
-                        _pg_result = None
-                        _pg_use = False
-                        _pg_skip_pk = False
-                        _pg_forward_fn = None
-                        # A FlexAttention/Triton compile failure or OOM here is GPU-wide, not layout-specific, so retrying every step just re-pays it. Disable PG persistently; the packed/padded path below still gives the exact result.
-                        unwrapped_model._unsloth_prefix_grouper_nograd_disabled = True
-                        if isinstance(_pg_err, torch.cuda.OutOfMemoryError):
-                            torch.cuda.empty_cache()
-                        os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = (
-                            "0" if _unsloth_head_hooked else "1"
-                        )
-                        if UNSLOTH_ENABLE_LOGGING:
-                            print(
-                                f"[Unsloth] GRPO PrefixGrouper (no-grad) disabled (fell back to packed): {_pg_err!r}",
-                                flush = True,
-                            )
-
-                # Sequence packing (default on; UNSLOTH_GRPO_SEQ_PACKING=0 disables): one varlen block-diagonal forward replaces the padded loop exactly and fixes its left-pad RoPE error. Self-verified, re-checked as T grows, falls back if a backend ignores packed_seq_lengths, and lm_head runs on completion positions only.
-                _pk_result = None
-                _pk_use = False
-                _pk_T = None
-                # True only while the packed forward and its scatter run, so an OOM elsewhere (setup, per-row verifier) is not read as a length limit.
-                _pk_in_packed = False
-                _pk_enabled = UNSLOTH_GRPO_SEQ_PACKING_ON
-                # Without zoo#840's masked-column guard, zeroed prompt/pad columns turn NaN in exp().
-                _pk_enabled = _pk_enabled and UNSLOTH_ZOO_HAS_MASKED_COL_GUARD
-                _pk_ok = getattr(unwrapped_model, "_unsloth_seq_packing_nograd_ok", None)
-                if (
-                    _pk_enabled
-                    and not _pg_skip_pk
-                    and pixel_values is None
-                    and token_type_ids is None
-                    and mm_token_type_ids is None
-                    and _pk_ok is not False
-                ):
-                    try:
-                        _pk_pad = self.processing_class.pad_token_id
-                        _pk_keep = input_ids != _pk_pad
-                        if _eos_rows is not None or _real is not None:
-                            # Same tokens as attention_mask: keep the real tokens that share the pad id.
-                            _pk_keep = attention_mask.to(torch.bool)
-                        _pk_len = _pk_keep.sum(dim = 1)
-                        _pk_len_cpu = _pk_len.tolist()  # single GPU->CPU sync, reused below
-                        _pk_nz_cpu = [_n for _n in _pk_len_cpu if _n > 0]
-                        _pk_T = sum(_pk_nz_cpu)
-                        _pk_L = input_ids.shape[1]
-                        _pk_W = logits_to_keep + max_left_pad
-                        _pk_maxseg = max(_pk_nz_cpu) if _pk_nz_cpu else 0
-                        # Sliding-window models lose the per-sequence local window in a packed stream.
-                        _pk_sw = getattr(
-                            getattr(unwrapped_model, "config", None), "sliding_window", None
-                        )
-                        _pk_sw_ok = not (
-                            isinstance(_pk_sw, int) and _pk_sw > 0 and _pk_maxseg > _pk_sw
-                        )
-                        # Skip the packed forward entirely at known-unsafe lengths, avoiding a wasted pass or OOM.
-                        _pk_unsafe = getattr(
-                            unwrapped_model, "_unsloth_seq_packing_nograd_unsafe_T", None
-                        )
-                        # Cap the flattened forward at one padded [batch_size, seq_len] mini-batch's token budget; anything larger uses the chunked padded loop.
-                        _pk_cap = batch_size * seq_len
-                        # Decided from the host lengths alone, so a capped batch skips the flatten and the active-row sync below.
-                        _pk_fits = (
-                            _pk_T >= 2
-                            and _pk_T <= _pk_cap
-                            and len(_pk_nz_cpu) > 0
-                            and _pk_sw_ok
-                            and not (_pk_unsafe is not None and _pk_T >= _pk_unsafe)
-                        )
-                        if _pk_fits:
-                            _pk_flat = input_ids[_pk_keep].unsqueeze(0)
-                            # Per-row completion mask (same as the loss); prompt-only rows count as inactive.
-                            if _real is not None:
-                                _pk_cmask = _real_cmask(
-                                    input_ids[:, -_pk_W:],
-                                    left_pad_tokens_per_prompt,
-                                    max_left_pad,
-                                    _pk_pad,
-                                    real_mask = _pk_keep[:, -_pk_W:],
-                                )
-                            else:
-                                _pk_cmask = (
-                                    create_completion_attention_mask
-                                    if _eos_rows is None
-                                    else _eos_cmask
-                                )(
-                                    input_ids[:, -_pk_W:],
-                                    left_pad_tokens_per_prompt,
-                                    max_left_pad,
-                                    _pk_pad,
-                                    **({} if _eos_rows is None else {"eos_rows": _eos_rows}),
-                                )
-                            _pk_active = int(_pk_cmask.any(dim = 1).sum())
-                        if _pk_fits and (_pk_ok is True or _pk_active >= 2):
-                            _pk_pos = (_pk_keep.cumsum(dim = 1) - 1)[_pk_keep].unsqueeze(0)
-                            _pk_chunks = max(1, total_rows * multiplier)
-                            _pk_nz_idx = _pk_keep.nonzero(
-                                as_tuple = False
-                            )  # [T, 2] = (row, col), row-major
-                            _pk_within = _pk_nz_idx[1:, 0] == _pk_nz_idx[:-1, 0]  # [T-1]
-                            # Per-row completion start after left-packing, matching create_completion_attention_mask.
-                            _pk_cstart = (
-                                _pk_L - logits_to_keep
-                            ) - left_pad_tokens_per_prompt  # [rows]
-                            _pk_ctgt = (
-                                _pk_nz_idx[1:, 1] >= _pk_cstart[_pk_nz_idx[1:, 0]]
-                            ) & _pk_within
-                            _pk_in_packed = True
+                        def _pg_run_forward(_pg_layout = _pg_layout, _pg_chunks = _pg_chunks):
                             with torch.no_grad():
                                 with torch.amp.autocast(
                                     device_type = DEVICE_TYPE_TORCH,
                                     dtype = self._autocast_dtype,
                                     enabled = getattr(self, "_autocast_enabled", True),
                                 ):
-                                    # use_cache=False: a KV cache silently disables varlen packing.
-                                    _pk_hidden = unwrapped_model(
-                                        input_ids = _pk_flat,
-                                        position_ids = _pk_pos,
-                                        packed_seq_lengths = torch.tensor(
-                                            _pk_nz_cpu, dtype = torch.int32, device = input_ids.device
-                                        ),
+                                    _pg_hidden = unwrapped_model(
+                                        input_ids = _pg_layout.flat_ids,
+                                        position_ids = _pg_layout.position_ids,
+                                        prefix_seg_info = _pg_layout.prefix_seg_info,
                                         use_cache = False,
                                     ).logits
-                                    _pk_out = _pk_hidden[0, :-1, :][_pk_ctgt].unsqueeze(0)
-                                    _pk_ids = _pk_flat[0, 1:][_pk_ctgt].unsqueeze(0)
-                                    # Hidden states or logits? Logits mean the forward already applied scaling/softcapping.
-                                    if _unsloth_grpo_returns_hidden_states(
-                                        unwrapped_model, _pk_out, lm_head
-                                    ):
-                                        _pk_sel = chunked_hidden_states_selective_log_softmax(
-                                            _pk_out,
-                                            lm_head,
-                                            _pk_ids,
-                                            _pk_chunks,
-                                            logit_scale_multiply,
-                                            logit_scale_divide,
-                                            logit_softcapping,
-                                            temperature,
-                                        )[0]
-                                    else:
-                                        # Model returned logits directly: scaling/softcapping already applied by the model forward.
-                                        _pk_sel = chunked_selective_log_softmax(
-                                            _pk_out,
-                                            _pk_ids,
-                                            temperature,
-                                            _pk_chunks,
-                                        )[0]
-                            # GPT-OSS offload race guard, matching the padded loop.
+                                    _pg_r = _pg_layout.extract_logps(
+                                        _pg_hidden,
+                                        lm_head,
+                                        chunked_hidden_states_selective_log_softmax,
+                                        _pg_chunks,
+                                        logit_scale_multiply,
+                                        logit_scale_divide,
+                                        logit_softcapping,
+                                        temperature,
+                                    )
+                                    _pg_hidden = None  # release before any verify forward
                             device_synchronize()
-                            # Scatter each logprob back to its (row, col) so [:, -_pk_W:] matches the padded path.
-                            _pk_tgt = (_pk_nz_idx[1:, 0] * _pk_L + _pk_nz_idx[1:, 1])[_pk_ctgt]
-                            _pk_result = (
-                                torch.zeros(
-                                    total_rows * _pk_L,
-                                    dtype = torch.float32,
-                                    device = input_ids.device,
-                                )
-                                .index_put((_pk_tgt,), _pk_sel.to(torch.float32))
-                                .view(total_rows, _pk_L)[:, -_pk_W:]
-                            )
-                            _pk_in_packed = False
-                            # Re-verify when T or the longest segment grows past the verified envelope; a LongRoPE cache switch can change the result.
-                            _pk_vT = int(
-                                getattr(
-                                    unwrapped_model, "_unsloth_seq_packing_nograd_verified_T", 0
-                                )
-                            )
-                            _pk_vS = int(
-                                getattr(
-                                    unwrapped_model, "_unsloth_seq_packing_nograd_verified_seg", 0
-                                )
-                            )
-                            # Debug: hand-edit this condition to force re-verify every step.
-                            if _pk_ok is True and _pk_T <= _pk_vT and _pk_maxseg <= _pk_vS:
-                                _pk_use = True  # already verified for this shape
-                            else:
-                                # verify against the per-row forward (ground truth)
-                                _pk_ref = torch.zeros_like(_pk_result)
-                                with torch.no_grad():
-                                    with torch.amp.autocast(
-                                        device_type = DEVICE_TYPE_TORCH,
-                                        dtype = self._autocast_dtype,
-                                        enabled = getattr(self, "_autocast_enabled", True),
-                                    ):
-                                        for _pk_i in range(total_rows):
-                                            _pk_ni = _pk_len_cpu[_pk_i]
-                                            if _pk_ni < 2:
-                                                continue
-                                            _pk_rmask = _pk_keep[_pk_i]
-                                            _pk_real = input_ids[_pk_i][_pk_rmask].unsqueeze(0)
-                                            _pk_rpos = torch.arange(
-                                                _pk_ni, device = input_ids.device
-                                            ).unsqueeze(0)
-                                            _pk_rh = unwrapped_model(
-                                                input_ids = _pk_real,
-                                                position_ids = _pk_rpos,
-                                                use_cache = False,
-                                            ).logits
-                                            _pk_rout = _pk_rh[:, :-1, :]
-                                            # Hidden states or logits? Logits mean the forward already applied scaling/softcapping.
-                                            if _unsloth_grpo_returns_hidden_states(
-                                                unwrapped_model, _pk_rout, lm_head
-                                            ):
-                                                _pk_rsel = (
-                                                    chunked_hidden_states_selective_log_softmax(
-                                                        _pk_rout,
-                                                        lm_head,
-                                                        _pk_real[:, 1:],
-                                                        1,
-                                                        logit_scale_multiply,
-                                                        logit_scale_divide,
-                                                        logit_softcapping,
-                                                        temperature,
-                                                    )[0]
-                                                )
-                                            else:
-                                                # Model returned logits directly: scaling/softcapping already applied by the model forward.
-                                                _pk_rsel = chunked_selective_log_softmax(
-                                                    _pk_rout,
-                                                    _pk_real[:, 1:],
-                                                    temperature,
-                                                    1,
-                                                )[0]
-                                            _pk_rcols = _pk_rmask.nonzero(as_tuple = False).squeeze(
-                                                1
-                                            )[1:] - (_pk_L - _pk_W)
-                                            _pk_rkeep = _pk_rcols >= 0
-                                            _pk_ref[_pk_i, _pk_rcols[_pk_rkeep]] = _pk_rsel[
-                                                _pk_rkeep
-                                            ].to(torch.float32)
-                                device_synchronize()
-                                # Compare over the loss-mask region only.
-                                _pk_cm = _pk_cmask.float()
-                                _pk_diff = float(((_pk_result - _pk_ref).abs() * _pk_cm).max())
-                                if UNSLOTH_ENABLE_LOGGING:
-                                    print(
-                                        f"[Unsloth] GRPO seq-packing (no-grad) verify: T={_pk_T} maxseg={_pk_maxseg} packed-vs-perrow max|d|={_pk_diff:.4f}",
-                                        flush = True,
-                                    )
-                                # Kernel-noise floor is ~0.25; cross-sample contamination is >= 2.4.
-                                if _pk_diff < 7e-1 or _unsloth_seq_packing_moe_noise(
-                                    unwrapped_model, _pk_result, _pk_ref, _pk_cm
-                                ):
-                                    unwrapped_model._unsloth_seq_packing_nograd_ok = True
-                                    unwrapped_model._unsloth_seq_packing_nograd_strikes = 0
-                                    # Widen the trusted shape only when at least 2 completion rows exercised cross-sample packing; a single row proves nothing.
-                                    if _pk_active >= 2:
-                                        unwrapped_model._unsloth_seq_packing_nograd_verified_T = (
-                                            max(_pk_vT, _pk_T)
-                                        )
-                                        unwrapped_model._unsloth_seq_packing_nograd_verified_seg = (
-                                            max(_pk_vS, _pk_maxseg)
-                                        )
-                                    _pk_ok = True
-                                    _pk_use = True
-                                else:
-                                    _pk_use = False
-                                    # A verified layout survives one narrow bf16 outlier (this batch falls back); broad or repeated mismatches keep the old rule.
-                                    _pk_vd = _unsloth_seq_packing_verify_verdict(
-                                        unwrapped_model,
-                                        "nograd",
-                                        _pk_diff,
-                                        _pk_result,
-                                        _pk_ref,
-                                        _pk_cm,
-                                    )
-                                    if _pk_vd == "skip":
-                                        pass
-                                    elif _pk_vd == "kill":
-                                        # Contamination (attention ignores the packed mask): disable packing.
-                                        unwrapped_model._unsloth_seq_packing_nograd_ok = False
-                                    else:
-                                        # Likely a length boundary (LongRoPE): mark unsafe, keep smaller shapes.
-                                        unwrapped_model._unsloth_seq_packing_nograd_unsafe_T = (
-                                            _pk_T if _pk_unsafe is None else min(_pk_unsafe, _pk_T)
-                                        )
-                                    if UNSLOTH_ENABLE_LOGGING:
-                                        print(
-                                            f"[Unsloth] GRPO seq-packing (no-grad) fell back at T={_pk_T} (diff={_pk_diff:.3f})",
-                                            flush = True,
-                                        )
-                    except Exception as _pk_err:
-                        # Any failure: drop intermediates and use the padded loop for this batch.
-                        _pk_hidden = None
-                        _pk_sel = None
-                        _pk_result = None
-                        _pk_use = False
-                        if isinstance(_pk_err, torch.cuda.OutOfMemoryError):
-                            torch.cuda.empty_cache()
-                        if (
-                            isinstance(_pk_err, torch.cuda.OutOfMemoryError)
-                            and _pk_in_packed
-                            and _pk_T is not None
+                            # Clip to the loss window [B, logits_to_keep+max_left_pad].
+                            _pg_w = logits_to_keep + max_left_pad
+                            if _pg_r.shape[1] > _pg_w:
+                                _pg_r = _pg_r[:, -_pg_w:]
+                            return _pg_r
+
+                        # Trust only within the verified envelope: re-verify when T or the longest segment grows, like the packed path.
+                        _pg_T = int(_pg_layout.flat_ids.shape[1])
+                        _pg_maxseg = int(_pg_layout.position_ids.max()) + 1
+                        _pg_env = (
+                            _pg_verified.get(_pg_sig) if isinstance(_pg_verified, dict) else None
+                        )
+                        if (not _pg_verify_on()) or (
+                            _pg_env is not None and _pg_T <= _pg_env[0] and _pg_maxseg <= _pg_env[1]
                         ):
-                            # An OOM in the packed forward says this flattened length does not fit, not that packing is wrong: keep packing smaller batches.
-                            _pk_unsafe = getattr(
-                                unwrapped_model, "_unsloth_seq_packing_nograd_unsafe_T", None
-                            )
-                            _pk_unsafe = _pk_T if _pk_unsafe is None else min(_pk_unsafe, _pk_T)
-                            unwrapped_model._unsloth_seq_packing_nograd_unsafe_T = _pk_unsafe
-                            if UNSLOTH_ENABLE_LOGGING:
-                                print(
-                                    f"[Unsloth] GRPO sequence-packing (no-grad) OOM at T={_pk_T}: packing capped below T={_pk_unsafe}, this batch uses the padded loop: {_pk_err!r}",
-                                    flush = True,
-                                )
+                            # Trusted shape: run PG now and skip the full-row forward below.
+                            _pg_result = _pg_run_forward()
+                            _pg_use = True
+                            _pg_skip_pk = True
                         else:
-                            unwrapped_model._unsloth_seq_packing_nograd_ok = False
-                            if UNSLOTH_ENABLE_LOGGING:
-                                print(
-                                    f"[Unsloth] GRPO sequence-packing (no-grad) disabled (fell back to padded): {_pk_err!r}",
-                                    flush = True,
-                                )
-                # PrefixGrouper first-use self-verify (no-grad): compare the untrusted PG result to the packed result over the completion mask. Below tol_ok trust the structure, at or above TOL_KILL mark it unsafe forever, borderline falls back for this shape.
-                if _pg_forward_fn is not None and not _pg_use:
-                    if _pk_use and _pk_result is not None:
-                        try:
-                            # Deferred PG forward, run only now that the packed reference exists.
-                            _pg_result = _pg_forward_fn()
-                            _pg_W2 = logits_to_keep + max_left_pad
-                            _pg_cm = create_completion_attention_mask(
-                                input_ids[:, -_pg_W2:],
+                            # Unverified shape: defer the forward until the packed reference exists, so a declined packed path never wastes a whole-batch PG forward.
+                            _pg_forward_fn = _pg_run_forward
+                except Exception as _pg_err:
+                    _pg_result = None
+                    _pg_use = False
+                    _pg_skip_pk = False
+                    _pg_forward_fn = None
+                    # A FlexAttention/Triton compile failure here is GPU-wide, not layout-specific, so retrying every step just re-pays it: disable PG persistently. An OOM (bare or raised while compiling) is transient and only skips PG for this batch. The packed/padded path below still gives the exact result.
+                    if isinstance(_pg_err, torch.cuda.OutOfMemoryError) or isinstance(
+                        getattr(_pg_err, "inner_exception", None), torch.cuda.OutOfMemoryError
+                    ):
+                        torch.cuda.empty_cache()
+                    else:
+                        unwrapped_model._unsloth_prefix_grouper_nograd_disabled = True
+                    os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = (
+                        "0" if _unsloth_head_hooked else "1"
+                    )
+                    if UNSLOTH_ENABLE_LOGGING:
+                        print(
+                            f"[Unsloth] GRPO PrefixGrouper (no-grad) disabled (fell back to packed): {_pg_err!r}",
+                            flush = True,
+                        )
+
+            # Sequence packing (default on; UNSLOTH_GRPO_SEQ_PACKING=0 disables): one varlen block-diagonal forward replaces the padded loop exactly and fixes its left-pad RoPE error. Self-verified, re-checked as T grows, falls back if a backend ignores packed_seq_lengths, and lm_head runs on completion positions only.
+            _pk_result = None
+            _pk_use = False
+            _pk_T = None
+            # True only while the packed forward and its scatter run, so an OOM elsewhere (setup, per-row verifier) is not read as a length limit.
+            _pk_in_packed = False
+            _pk_enabled = UNSLOTH_GRPO_SEQ_PACKING_ON
+            # Without zoo#840's masked-column guard, zeroed prompt/pad columns turn NaN in exp().
+            _pk_enabled = _pk_enabled and UNSLOTH_ZOO_HAS_MASKED_COL_GUARD
+            _pk_ok = getattr(unwrapped_model, "_unsloth_seq_packing_nograd_ok", None)
+            if (
+                _pk_enabled
+                and not _pg_skip_pk
+                and pixel_values is None
+                and token_type_ids is None
+                and mm_token_type_ids is None
+                and _pk_ok is not False
+            ):
+                try:
+                    _pk_pad = self.processing_class.pad_token_id
+                    _pk_keep = input_ids != _pk_pad
+                    if _eos_rows is not None or _real is not None:
+                        # Same tokens as attention_mask: keep the real tokens that share the pad id.
+                        _pk_keep = attention_mask.to(torch.bool)
+                    _pk_len = _pk_keep.sum(dim = 1)
+                    _pk_len_cpu = _pk_len.tolist()  # single GPU->CPU sync, reused below
+                    _pk_nz_cpu = [_n for _n in _pk_len_cpu if _n > 0]
+                    _pk_T = sum(_pk_nz_cpu)
+                    _pk_L = input_ids.shape[1]
+                    _pk_W = logits_to_keep + max_left_pad
+                    _pk_maxseg = max(_pk_nz_cpu) if _pk_nz_cpu else 0
+                    # Sliding-window models lose the per-sequence local window in a packed stream.
+                    _pk_sw = getattr(
+                        getattr(unwrapped_model, "config", None), "sliding_window", None
+                    )
+                    _pk_sw_ok = not (isinstance(_pk_sw, int) and _pk_sw > 0 and _pk_maxseg > _pk_sw)
+                    # Skip the packed forward entirely at known-unsafe lengths, avoiding a wasted pass or OOM.
+                    _pk_unsafe = getattr(
+                        unwrapped_model, "_unsloth_seq_packing_nograd_unsafe_T", None
+                    )
+                    # Cap the flattened forward at one padded [batch_size, seq_len] mini-batch's token budget; anything larger uses the chunked padded loop.
+                    _pk_cap = batch_size * seq_len
+                    # Decided from the host lengths alone, so a capped batch skips the flatten and the active-row sync below.
+                    _pk_fits = (
+                        _pk_T >= 2
+                        and _pk_T <= _pk_cap
+                        and len(_pk_nz_cpu) > 0
+                        and _pk_sw_ok
+                        and not (_pk_unsafe is not None and _pk_T >= _pk_unsafe)
+                    )
+                    if _pk_fits:
+                        _pk_flat = input_ids[_pk_keep].unsqueeze(0)
+                        # Per-row completion mask (same as the loss); prompt-only rows count as inactive.
+                        if _real is not None:
+                            _pk_cmask = _real_cmask(
+                                input_ids[:, -_pk_W:],
                                 left_pad_tokens_per_prompt,
                                 max_left_pad,
-                                self.processing_class.pad_token_id,
-                            ).float()
-                            _pg_a = _pg_result[:, -_pg_W2:].float()
-                            _pg_b = _pk_result[:, -_pg_W2:].float()
-                            _pg_diff = float(((_pg_a - _pg_b).abs() * _pg_cm).max())
-                            if UNSLOTH_ENABLE_LOGGING:
-                                print(
-                                    f"[Unsloth] GRPO PrefixGrouper (no-grad) verify: sig={_pg_layout.signature} "
-                                    f"shared-prefix vs full-row-packed max|d|={_pg_diff:.4f}",
-                                    flush = True,
-                                )
-                            if _pg_diff < _pg_tol_ok() or _unsloth_seq_packing_moe_noise(
-                                unwrapped_model, _pg_a, _pg_b, _pg_cm
-                            ):
-                                _pg_v = getattr(
-                                    unwrapped_model, "_unsloth_prefix_grouper_nograd_verified", None
-                                )
-                                if not isinstance(_pg_v, dict):
-                                    _pg_v = {}
-                                # Power-of-two envelope (as unsloth_zoo's grad path): an exact max of
-                                # sampled lengths re-verified nearly every step.
-                                _pg_vT = 1 << (int(_pg_layout.flat_ids.shape[1]) - 1).bit_length()
-                                _pg_vS = 1 << int(_pg_layout.position_ids.max()).bit_length()
-                                _pg_old = _pg_v.get(_pg_layout.signature, (0, 0))
-                                _pg_v[_pg_layout.signature] = (
-                                    max(_pg_vT, _pg_old[0]),
-                                    max(_pg_vS, _pg_old[1]),
-                                )
-                                unwrapped_model._unsloth_prefix_grouper_nograd_verified = _pg_v
-                                _pg_use = True
-                            else:
-                                _pg_u = getattr(
-                                    unwrapped_model, "_unsloth_prefix_grouper_nograd_unsafe", None
-                                )
-                                if _pg_u is None:
-                                    _pg_u = set()
-                                # Kill only never-verified signatures; later mismatches are bf16 tail (1-4 nats at T ~ 20k), so fall back per batch.
-                                _pg_v = getattr(
-                                    unwrapped_model, "_unsloth_prefix_grouper_nograd_verified", None
-                                )
-                                if _pg_diff >= _PG_TOL_KILL and _pg_layout.signature not in (
-                                    _pg_v if isinstance(_pg_v, dict) else {}
-                                ):
-                                    _pg_u.add(_pg_layout.signature)
-                                    unwrapped_model._unsloth_prefix_grouper_nograd_unsafe = _pg_u
-                                _pg_use = False
-                        except Exception as _pg_err3:
-                            _pg_result = None
-                            _pg_use = False
-                            if isinstance(_pg_err3, torch.cuda.OutOfMemoryError):
-                                torch.cuda.empty_cache()
-                            os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = (
-                                "0" if _unsloth_head_hooked else "1"
+                                _pk_pad,
+                                real_mask = _pk_keep[:, -_pk_W:],
                             )
-                            if UNSLOTH_ENABLE_LOGGING:
-                                print(
-                                    f"[Unsloth] GRPO PrefixGrouper (no-grad) verify failed (fell back to packed): {_pg_err3!r}",
-                                    flush = True,
-                                )
-                    # No packed reference (packing off or failed) means this cannot be verified, so fall back.
-
-                if _pg_use and _pg_result is not None:
-                    logprobs = _pg_result  # PrefixGrouper verified/trusted -> skip the loop
-                    zipped_inputs = []
-                elif _pk_use and _pk_result is not None:
-                    logprobs = _pk_result  # verified -> skip the loop
-                    zipped_inputs = []
-                else:
-                    _pk_hidden = _pk_sel = _pk_result = _pk_ref = None
-                    # A declined PrefixGrouper layout (and the deferred forward bound to it) too.
-                    _pg_layout = _pg_forward_fn = None
-                    # Index buffers of a declined packed batch would otherwise live through the padded loop.
-                    _pk_keep = _pk_len = _pk_flat = _pk_pos = _pk_cmask = None
-                    _pk_nz_idx = _pk_within = _pk_cstart = _pk_ctgt = _pk_tgt = _pk_ids = _pk_cm = (
-                        None
-                    )
-
-                with torch.no_grad():
-                    for (
-                        input_ids_chunk,
-                        attention_mask_chunk,
-                        vision_chunk,
-                    ) in zipped_inputs:
-                        with torch.amp.autocast(
-                            device_type = DEVICE_TYPE_TORCH,
-                            dtype = self._autocast_dtype,
-                            enabled = getattr(self, "_autocast_enabled", True),
-                        ):
-                            if pixel_values is None:
-                                outputs = unwrapped_model(
-                                    input_ids = input_ids_chunk,
-                                    attention_mask = attention_mask_chunk,
-                                    **vision_chunk,
-                                )
-
-                                logits_chunk = outputs.logits
-                                del outputs
-
-                                completion_input_ids_chunk = input_ids_chunk[
-                                    :, -(logits_to_keep + max_left_pad) :
-                                ]
-                                logits_chunk = logits_chunk[
-                                    :, -(logits_to_keep + max_left_pad + 1) :, :
-                                ]
-                                logits_chunk = logits_chunk[:, :-1, :]
+                        else:
+                            _pk_cmask = (
+                                create_completion_attention_mask
+                                if _eos_rows is None
+                                else _eos_cmask
+                            )(
+                                input_ids[:, -_pk_W:],
+                                left_pad_tokens_per_prompt,
+                                max_left_pad,
+                                _pk_pad,
+                                **({} if _eos_rows is None else {"eos_rows": _eos_rows}),
+                            )
+                        _pk_active = int(_pk_cmask.any(dim = 1).sum())
+                    if _pk_fits and (_pk_ok is True or _pk_active >= 2):
+                        _pk_pos = (_pk_keep.cumsum(dim = 1) - 1)[_pk_keep].unsqueeze(0)
+                        _pk_chunks = max(1, total_rows * multiplier)
+                        _pk_nz_idx = _pk_keep.nonzero(
+                            as_tuple = False
+                        )  # [T, 2] = (row, col), row-major
+                        _pk_within = _pk_nz_idx[1:, 0] == _pk_nz_idx[:-1, 0]  # [T-1]
+                        # Per-row completion start after left-packing, matching create_completion_attention_mask.
+                        _pk_cstart = (_pk_L - logits_to_keep) - left_pad_tokens_per_prompt  # [rows]
+                        _pk_ctgt = (_pk_nz_idx[1:, 1] >= _pk_cstart[_pk_nz_idx[1:, 0]]) & _pk_within
+                        _pk_in_packed = True
+                        with torch.no_grad():
+                            with torch.amp.autocast(
+                                device_type = DEVICE_TYPE_TORCH,
+                                dtype = self._autocast_dtype,
+                                enabled = getattr(self, "_autocast_enabled", True),
+                            ):
+                                # use_cache=False: a KV cache silently disables varlen packing.
+                                _pk_hidden = unwrapped_model(
+                                    input_ids = _pk_flat,
+                                    position_ids = _pk_pos,
+                                    packed_seq_lengths = torch.tensor(
+                                        _pk_nz_cpu, dtype = torch.int32, device = input_ids.device
+                                    ),
+                                    use_cache = False,
+                                ).logits
+                                _pk_out = _pk_hidden[0, :-1, :][_pk_ctgt].unsqueeze(0)
+                                _pk_ids = _pk_flat[0, 1:][_pk_ctgt].unsqueeze(0)
                                 # Hidden states or logits? Logits mean the forward already applied scaling/softcapping.
                                 if _unsloth_grpo_returns_hidden_states(
-                                    unwrapped_model, logits_chunk, lm_head
+                                    unwrapped_model, _pk_out, lm_head
                                 ):
-                                    logprobs_chunk = chunked_hidden_states_selective_log_softmax(
-                                        logits_chunk,
+                                    _pk_sel = chunked_hidden_states_selective_log_softmax(
+                                        _pk_out,
                                         lm_head,
-                                        completion_input_ids_chunk,
-                                        chunks = input_ids_chunk.shape[0] * multiplier,
-                                        logit_scale_multiply = logit_scale_multiply,
-                                        logit_scale_divide = logit_scale_divide,
-                                        logit_softcapping = logit_softcapping,
-                                        temperature = temperature,
-                                    )
+                                        _pk_ids,
+                                        _pk_chunks,
+                                        logit_scale_multiply,
+                                        logit_scale_divide,
+                                        logit_softcapping,
+                                        temperature,
+                                    )[0]
                                 else:
                                     # Model returned logits directly: scaling/softcapping already applied by the model forward.
-                                    logprobs_chunk = chunked_selective_log_softmax(
-                                        logits_chunk,
-                                        completion_input_ids_chunk,
+                                    _pk_sel = chunked_selective_log_softmax(
+                                        _pk_out,
+                                        _pk_ids,
                                         temperature,
-                                        input_ids_chunk.shape[0] * multiplier,
-                                    )
-                            else:
-                                # VLMs do not take the optimized path in models/, so they never hit the Flash Attn left-padding issue.
-                                outputs = unwrapped_model(
-                                    input_ids = input_ids_chunk,
-                                    attention_mask = attention_mask_chunk,
-                                    logits_to_keep = logits_to_keep + 1,
-                                    **vision_chunk,
-                                )
-
-                                logits_chunk = outputs.logits
-                                del outputs
-
-                                logits_chunk = logits_chunk[:, :-1, :]
-                                completion_input_ids_chunk = input_ids_chunk[:, -logits_to_keep:]
-                                # Hidden states or logits? Logits mean the forward already applied scaling/softcapping.
-                                if _unsloth_grpo_returns_hidden_states(
-                                    unwrapped_model, logits_chunk, lm_head
-                                ):
-                                    logprobs_chunk = chunked_hidden_states_selective_log_softmax(
-                                        logits_chunk,
-                                        lm_head,
-                                        completion_input_ids_chunk,
-                                        chunks = input_ids_chunk.shape[0] * multiplier,
-                                        logit_scale_multiply = logit_scale_multiply,
-                                        logit_scale_divide = logit_scale_divide,
-                                        logit_softcapping = logit_softcapping,
-                                        temperature = temperature,
-                                    )
-                                else:
-                                    logprobs_chunk = chunked_selective_log_softmax(
-                                        logits_chunk,
-                                        completion_input_ids_chunk,
-                                        temperature,
-                                    )
-                        # The [B, L, V] logits (or hidden states) of this chunk must not live through the next chunk's forward.
-                        del logits_chunk, completion_input_ids_chunk
-                        # Avoids a race with GPT OSS offload_embbed=True; it does not appear to slow models down.
+                                        _pk_chunks,
+                                    )[0]
+                        # GPT-OSS offload race guard, matching the padded loop.
                         device_synchronize()
-                        all_logprobs_list.append(logprobs_chunk)
-                    if logprobs is None:  # padded fallback when packing was not used
-                        logprobs = torch.cat(all_logprobs_list, dim = 0)
+                        # Scatter each logprob back to its (row, col) so [:, -_pk_W:] matches the padded path.
+                        _pk_tgt = (_pk_nz_idx[1:, 0] * _pk_L + _pk_nz_idx[1:, 1])[_pk_ctgt]
+                        _pk_result = (
+                            torch.zeros(
+                                total_rows * _pk_L,
+                                dtype = torch.float32,
+                                device = input_ids.device,
+                            )
+                            .index_put((_pk_tgt,), _pk_sel.to(torch.float32))
+                            .view(total_rows, _pk_L)[:, -_pk_W:]
+                        )
+                        _pk_in_packed = False
+                        # Re-verify when T or the longest segment grows past the verified envelope; a LongRoPE cache switch can change the result.
+                        _pk_vT = int(
+                            getattr(unwrapped_model, "_unsloth_seq_packing_nograd_verified_T", 0)
+                        )
+                        _pk_vS = int(
+                            getattr(unwrapped_model, "_unsloth_seq_packing_nograd_verified_seg", 0)
+                        )
+                        # Debug: hand-edit this condition to force re-verify every step.
+                        if _pk_ok is True and _pk_T <= _pk_vT and _pk_maxseg <= _pk_vS:
+                            _pk_use = True  # already verified for this shape
+                        else:
+                            # verify against the per-row forward (ground truth)
+                            _pk_ref = torch.zeros_like(_pk_result)
+                            with torch.no_grad():
+                                with torch.amp.autocast(
+                                    device_type = DEVICE_TYPE_TORCH,
+                                    dtype = self._autocast_dtype,
+                                    enabled = getattr(self, "_autocast_enabled", True),
+                                ):
+                                    for _pk_i in range(total_rows):
+                                        _pk_ni = _pk_len_cpu[_pk_i]
+                                        if _pk_ni < 2:
+                                            continue
+                                        _pk_rmask = _pk_keep[_pk_i]
+                                        _pk_real = input_ids[_pk_i][_pk_rmask].unsqueeze(0)
+                                        _pk_rpos = torch.arange(
+                                            _pk_ni, device = input_ids.device
+                                        ).unsqueeze(0)
+                                        _pk_rh = unwrapped_model(
+                                            input_ids = _pk_real,
+                                            position_ids = _pk_rpos,
+                                            use_cache = False,
+                                        ).logits
+                                        _pk_rout = _pk_rh[:, :-1, :]
+                                        # Hidden states or logits? Logits mean the forward already applied scaling/softcapping.
+                                        if _unsloth_grpo_returns_hidden_states(
+                                            unwrapped_model, _pk_rout, lm_head
+                                        ):
+                                            _pk_rsel = chunked_hidden_states_selective_log_softmax(
+                                                _pk_rout,
+                                                lm_head,
+                                                _pk_real[:, 1:],
+                                                1,
+                                                logit_scale_multiply,
+                                                logit_scale_divide,
+                                                logit_softcapping,
+                                                temperature,
+                                            )[0]
+                                        else:
+                                            # Model returned logits directly: scaling/softcapping already applied by the model forward.
+                                            _pk_rsel = chunked_selective_log_softmax(
+                                                _pk_rout,
+                                                _pk_real[:, 1:],
+                                                temperature,
+                                                1,
+                                            )[0]
+                                        _pk_rcols = _pk_rmask.nonzero(as_tuple = False).squeeze(1)[
+                                            1:
+                                        ] - (_pk_L - _pk_W)
+                                        _pk_rkeep = _pk_rcols >= 0
+                                        _pk_ref[_pk_i, _pk_rcols[_pk_rkeep]] = _pk_rsel[
+                                            _pk_rkeep
+                                        ].to(torch.float32)
+                            device_synchronize()
+                            # Compare over the loss-mask region only.
+                            _pk_cm = _pk_cmask.float()
+                            _pk_diff = float(((_pk_result - _pk_ref).abs() * _pk_cm).max())
+                            if UNSLOTH_ENABLE_LOGGING:
+                                print(
+                                    f"[Unsloth] GRPO seq-packing (no-grad) verify: T={_pk_T} maxseg={_pk_maxseg} packed-vs-perrow max|d|={_pk_diff:.4f}",
+                                    flush = True,
+                                )
+                            # Kernel-noise floor is ~0.25; cross-sample contamination is >= 2.4.
+                            if _pk_diff < 7e-1 or _unsloth_seq_packing_moe_noise(
+                                unwrapped_model, _pk_result, _pk_ref, _pk_cm
+                            ):
+                                unwrapped_model._unsloth_seq_packing_nograd_ok = True
+                                unwrapped_model._unsloth_seq_packing_nograd_strikes = 0
+                                # Widen the trusted shape only when at least 2 completion rows exercised cross-sample packing; a single row proves nothing.
+                                if _pk_active >= 2:
+                                    unwrapped_model._unsloth_seq_packing_nograd_verified_T = max(
+                                        _pk_vT, _pk_T
+                                    )
+                                    unwrapped_model._unsloth_seq_packing_nograd_verified_seg = max(
+                                        _pk_vS, _pk_maxseg
+                                    )
+                                _pk_ok = True
+                                _pk_use = True
+                            else:
+                                _pk_use = False
+                                # A verified layout survives one narrow bf16 outlier (this batch falls back); broad or repeated mismatches keep the old rule.
+                                _pk_vd = _unsloth_seq_packing_verify_verdict(
+                                    unwrapped_model, "nograd", _pk_diff, _pk_result, _pk_ref, _pk_cm
+                                )
+                                if _pk_vd == "skip":
+                                    pass
+                                elif _pk_vd == "kill":
+                                    # Contamination (attention ignores the packed mask): disable packing.
+                                    unwrapped_model._unsloth_seq_packing_nograd_ok = False
+                                else:
+                                    # Likely a length boundary (LongRoPE): mark unsafe, keep smaller shapes.
+                                    unwrapped_model._unsloth_seq_packing_nograd_unsafe_T = (
+                                        _pk_T if _pk_unsafe is None else min(_pk_unsafe, _pk_T)
+                                    )
+                                if UNSLOTH_ENABLE_LOGGING:
+                                    print(
+                                        f"[Unsloth] GRPO seq-packing (no-grad) fell back at T={_pk_T} (diff={_pk_diff:.3f})",
+                                        flush = True,
+                                    )
+                except Exception as _pk_err:
+                    # Any failure: drop intermediates and use the padded loop for this batch.
+                    _pk_hidden = None
+                    _pk_sel = None
+                    _pk_result = None
+                    _pk_use = False
+                    if isinstance(_pk_err, torch.cuda.OutOfMemoryError):
+                        torch.cuda.empty_cache()
+                    if (
+                        isinstance(_pk_err, torch.cuda.OutOfMemoryError)
+                        and _pk_in_packed
+                        and _pk_T is not None
+                    ):
+                        # An OOM in the packed forward says this flattened length does not fit, not that packing is wrong: keep packing smaller batches.
+                        _pk_unsafe = getattr(
+                            unwrapped_model, "_unsloth_seq_packing_nograd_unsafe_T", None
+                        )
+                        _pk_unsafe = _pk_T if _pk_unsafe is None else min(_pk_unsafe, _pk_T)
+                        unwrapped_model._unsloth_seq_packing_nograd_unsafe_T = _pk_unsafe
+                        if UNSLOTH_ENABLE_LOGGING:
+                            print(
+                                f"[Unsloth] GRPO sequence-packing (no-grad) OOM at T={_pk_T}: packing capped below T={_pk_unsafe}, this batch uses the padded loop: {_pk_err!r}",
+                                flush = True,
+                            )
+                    else:
+                        unwrapped_model._unsloth_seq_packing_nograd_ok = False
+                        if UNSLOTH_ENABLE_LOGGING:
+                            print(
+                                f"[Unsloth] GRPO sequence-packing (no-grad) disabled (fell back to padded): {_pk_err!r}",
+                                flush = True,
+                            )
+            # PrefixGrouper first-use self-verify (no-grad): compare the untrusted PG result to the packed result over the completion mask. Below tol_ok trust the structure, at or above TOL_KILL mark it unsafe forever, borderline falls back for this shape.
+            if _pg_forward_fn is not None and not _pg_use:
+                if _pk_use and _pk_result is not None:
+                    try:
+                        # Deferred PG forward, run only now that the packed reference exists.
+                        _pg_result = _pg_forward_fn()
+                        _pg_W2 = logits_to_keep + max_left_pad
+                        _pg_cm = create_completion_attention_mask(
+                            input_ids[:, -_pg_W2:],
+                            left_pad_tokens_per_prompt,
+                            max_left_pad,
+                            self.processing_class.pad_token_id,
+                        ).float()
+                        _pg_a = _pg_result[:, -_pg_W2:].float()
+                        _pg_b = _pk_result[:, -_pg_W2:].float()
+                        _pg_diff = float(((_pg_a - _pg_b).abs() * _pg_cm).max())
+                        if UNSLOTH_ENABLE_LOGGING:
+                            print(
+                                f"[Unsloth] GRPO PrefixGrouper (no-grad) verify: sig={_pg_layout.signature} "
+                                f"shared-prefix vs full-row-packed max|d|={_pg_diff:.4f}",
+                                flush = True,
+                            )
+                        if _pg_diff < _pg_tol_ok() or _unsloth_seq_packing_moe_noise(
+                            unwrapped_model, _pg_a, _pg_b, _pg_cm
+                        ):
+                            _pg_v = getattr(
+                                unwrapped_model, "_unsloth_prefix_grouper_nograd_verified", None
+                            )
+                            if not isinstance(_pg_v, dict):
+                                _pg_v = {}
+                            # Power-of-two envelope (as unsloth_zoo's grad path): an exact max of
+                            # sampled lengths re-verified nearly every step.
+                            _pg_vT = 1 << (int(_pg_layout.flat_ids.shape[1]) - 1).bit_length()
+                            _pg_vS = 1 << int(_pg_layout.position_ids.max()).bit_length()
+                            _pg_old = _pg_v.get(_pg_layout.signature, (0, 0))
+                            _pg_v[_pg_layout.signature] = (
+                                max(_pg_vT, _pg_old[0]),
+                                max(_pg_vS, _pg_old[1]),
+                            )
+                            unwrapped_model._unsloth_prefix_grouper_nograd_verified = _pg_v
+                            _pg_use = True
+                        else:
+                            _pg_u = getattr(
+                                unwrapped_model, "_unsloth_prefix_grouper_nograd_unsafe", None
+                            )
+                            if _pg_u is None:
+                                _pg_u = set()
+                            # Kill only never-verified signatures; later mismatches are bf16 tail (1-4 nats at T ~ 20k), so fall back per batch.
+                            _pg_v = getattr(
+                                unwrapped_model, "_unsloth_prefix_grouper_nograd_verified", None
+                            )
+                            if _pg_diff >= _PG_TOL_KILL and _pg_layout.signature not in (
+                                _pg_v if isinstance(_pg_v, dict) else {}
+                            ):
+                                _pg_u.add(_pg_layout.signature)
+                                unwrapped_model._unsloth_prefix_grouper_nograd_unsafe = _pg_u
+                            _pg_use = False
+                    except Exception as _pg_err3:
+                        _pg_result = None
+                        _pg_use = False
+                        if isinstance(_pg_err3, torch.cuda.OutOfMemoryError):
+                            torch.cuda.empty_cache()
+                        os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = (
+                            "0" if _unsloth_head_hooked else "1"
+                        )
+                        if UNSLOTH_ENABLE_LOGGING:
+                            print(
+                                f"[Unsloth] GRPO PrefixGrouper (no-grad) verify failed (fell back to packed): {_pg_err3!r}",
+                                flush = True,
+                            )
+                # No packed reference (packing off or failed) means this cannot be verified, so fall back.
 
-                    entropies = None
-            finally:
-                if _unsloth_prior_hidden_states is None:
-                    os.environ.pop("UNSLOTH_RETURN_HIDDEN_STATES", None)
-                else:
-                    os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = _unsloth_prior_hidden_states
+            if _pg_use and _pg_result is not None:
+                logprobs = _pg_result  # PrefixGrouper verified/trusted -> skip the loop
+                zipped_inputs = []
+            elif _pk_use and _pk_result is not None:
+                logprobs = _pk_result  # verified -> skip the loop
+                zipped_inputs = []
+            else:
+                _pk_hidden = _pk_sel = _pk_result = _pk_ref = None
+                # A declined PrefixGrouper layout (and the deferred forward bound to it) too.
+                _pg_layout = _pg_forward_fn = None
+                # Index buffers of a declined packed batch would otherwise live through the padded loop.
+                _pk_keep = _pk_len = _pk_flat = _pk_pos = _pk_cmask = None
+                _pk_nz_idx = _pk_within = _pk_cstart = _pk_ctgt = _pk_tgt = _pk_ids = _pk_cm = None
+
+            with torch.no_grad():
+                for (
+                    input_ids_chunk,
+                    attention_mask_chunk,
+                    vision_chunk,
+                ) in zipped_inputs:
+                    with torch.amp.autocast(
+                        device_type = DEVICE_TYPE_TORCH,
+                        dtype = self._autocast_dtype,
+                        enabled = getattr(self, "_autocast_enabled", True),
+                    ):
+                        if pixel_values is None:
+                            outputs = unwrapped_model(
+                                input_ids = input_ids_chunk,
+                                attention_mask = attention_mask_chunk,
+                                **vision_chunk,
+                            )
+
+                            logits_chunk = outputs.logits
+                            del outputs
+
+                            completion_input_ids_chunk = input_ids_chunk[
+                                :, -(logits_to_keep + max_left_pad) :
+                            ]
+                            logits_chunk = logits_chunk[
+                                :, -(logits_to_keep + max_left_pad + 1) :, :
+                            ]
+                            logits_chunk = logits_chunk[:, :-1, :]
+                            # Hidden states or logits? Logits mean the forward already applied scaling/softcapping.
+                            if _unsloth_grpo_returns_hidden_states(
+                                unwrapped_model, logits_chunk, lm_head
+                            ):
+                                logprobs_chunk = chunked_hidden_states_selective_log_softmax(
+                                    logits_chunk,
+                                    lm_head,
+                                    completion_input_ids_chunk,
+                                    chunks = input_ids_chunk.shape[0] * multiplier,
+                                    logit_scale_multiply = logit_scale_multiply,
+                                    logit_scale_divide = logit_scale_divide,
+                                    logit_softcapping = logit_softcapping,
+                                    temperature = temperature,
+                                )
+                            else:
+                                # Model returned logits directly: scaling/softcapping already applied by the model forward.
+                                logprobs_chunk = chunked_selective_log_softmax(
+                                    logits_chunk,
+                                    completion_input_ids_chunk,
+                                    temperature,
+                                    input_ids_chunk.shape[0] * multiplier,
+                                )
+                        else:
+                            # VLMs do not take the optimized path in models/, so they never hit the Flash Attn left-padding issue.
+                            outputs = unwrapped_model(
+                                input_ids = input_ids_chunk,
+                                attention_mask = attention_mask_chunk,
+                                logits_to_keep = logits_to_keep + 1,
+                                **vision_chunk,
+                            )
+
+                            logits_chunk = outputs.logits
+                            del outputs
+
+                            logits_chunk = logits_chunk[:, :-1, :]
+                            completion_input_ids_chunk = input_ids_chunk[:, -logits_to_keep:]
+                            # Hidden states or logits? Logits mean the forward already applied scaling/softcapping.
+                            if _unsloth_grpo_returns_hidden_states(
+                                unwrapped_model, logits_chunk, lm_head
+                            ):
+                                logprobs_chunk = chunked_hidden_states_selective_log_softmax(
+                                    logits_chunk,
+                                    lm_head,
+                                    completion_input_ids_chunk,
+                                    chunks = input_ids_chunk.shape[0] * multiplier,
+                                    logit_scale_multiply = logit_scale_multiply,
+                                    logit_scale_divide = logit_scale_divide,
+                                    logit_softcapping = logit_softcapping,
+                                    temperature = temperature,
+                                )
+                            else:
+                                logprobs_chunk = chunked_selective_log_softmax(
+                                    logits_chunk,
+                                    completion_input_ids_chunk,
+                                    temperature,
+                                )
+                    # The [B, L, V] logits (or hidden states) of this chunk must not live through the next chunk's forward.
+                    del logits_chunk, completion_input_ids_chunk
+                    # Avoids a race with GPT OSS offload_embbed=True; it does not appear to slow models down.
+                    device_synchronize()
+                    all_logprobs_list.append(logprobs_chunk)
+                if logprobs is None:  # padded fallback when packing was not used
+                    logprobs = torch.cat(all_logprobs_list, dim = 0)
+
+                entropies = None
 
             os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "0"
             # aux loss is unused: off by default (router_aux_loss_coef = 0 in models/rl.py) and explicit opt-in is rejected at trainer init, so it is always None. Kept for TRL >= 1.7.0's 3-tuple.
@@ -5603,7 +5626,9 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             return logprobs.detach(), entropies, aux_loss  # logps, entropies, aux_loss
             # transformers <= 4.48 does not support logits_to_keep, so drop the logits here; see huggingface/trl#2770.
 
-    function = inspect.getsource(_get_per_token_logps_and_entropies)
+    function = _unsloth_wrap_hidden_states_section(
+        inspect.getsource(_get_per_token_logps_and_entropies)
+    )
     if trl_version < Version("1.7.0"):
         # TRL < 1.7.0 unpacks (logps, entropies) while TRL >= 1.7.0 unpacks (logps, entropies, aux_loss), so drop the third element to match. The regex tolerates comment/whitespace drift and fails loud rather than ship a 3-tuple to older TRL.
         new_function, n = re.subn(
@@ -5619,6 +5644,55 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             )
         function = new_function
     return function
+
+
+_SCORER_HIDDEN_STATES_REQUEST = (
+    'os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "0" if _unsloth_head_hooked else "1"'
+)
+_SCORER_HIDDEN_STATES_RESET = 'os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "0"'
+
+
+def _unsloth_wrap_hidden_states_section(source):
+    """Put the scorer's hidden-states section in try / finally in the generated source, so a caught error
+    (an OOM retry, auto_find_batch_size) cannot leave UNSLOTH_RETURN_HIDDEN_STATES at "1" for later
+    generate / evaluate forwards. Done on the text so the template body keeps its indentation."""
+    lines = source.split("\n")
+    starts = [i for i, line in enumerate(lines) if line.strip() == _SCORER_HIDDEN_STATES_REQUEST]
+    if len(starts) != 1:
+        raise RuntimeError(
+            "Unsloth GRPO: expected one hidden-states request in _get_per_token_logps_and_entropies, "
+            f"found {len(starts)}; update _unsloth_wrap_hidden_states_section."
+        )
+    start = starts[0]
+    indent = lines[start][: len(lines[start]) - len(lines[start].lstrip())]
+    end = next(
+        (
+            i
+            for i in range(start + 1, len(lines))
+            if lines[i] == indent + _SCORER_HIDDEN_STATES_RESET
+        ),
+        None,
+    )
+    if end is None:
+        raise RuntimeError(
+            "Unsloth GRPO: the hidden-states reset after the scorer section moved; "
+            "update _unsloth_wrap_hidden_states_section."
+        )
+    body = [("    " + line) if line.strip() else line for line in lines[start + 1 : end]]
+    wrapped = (
+        [indent + "_unsloth_prior_hidden_states = os.environ.get('UNSLOTH_RETURN_HIDDEN_STATES')"]
+        + [lines[start], indent + "try:"]
+        + (body if any(line.strip() for line in body) else [indent + "    pass"])
+        + [
+            indent + "finally:",
+            indent + "    if _unsloth_prior_hidden_states is None:",
+            indent + "        os.environ.pop('UNSLOTH_RETURN_HIDDEN_STATES', None)",
+            indent + "    else:",
+            indent
+            + "        os.environ['UNSLOTH_RETURN_HIDDEN_STATES'] = _unsloth_prior_hidden_states",
+        ]
+    )
+    return "\n".join(lines[:start] + wrapped + lines[end:])
 
 
 RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__get_per_token_logps_and_entropies)
@@ -7460,7 +7534,10 @@ def vllm_generation_init_patch():
                 f"{indent}    # before the trainer existed, so only keep the request if the engine returns masks.\n"
                 f"{indent}    if getattr(self, 'return_sampling_mask', False) and not _unsloth_engine_returns_sampling_mask(self.llm):\n"
                 f"{indent}        self.return_sampling_mask = False\n"
-                f"{indent}else:\n" + textwrap.indent(llm_block, indent + "    ")
+                f"{indent}else:\n"
+                + textwrap.indent(llm_block, indent + "    ")
+                + "\n"
+                + f"{indent}    _unsloth_trl_vllm_engine_check(self, model)"
             )
 
         patched_src, num_replacements = pattern.subn(replace_llm_block, src, count = 1)
@@ -7471,6 +7548,7 @@ def vllm_generation_init_patch():
         vllm_generation._unsloth_engine_returns_sampling_mask = (
             _unsloth_engine_returns_sampling_mask
         )
+        vllm_generation._unsloth_trl_vllm_engine_check = _unsloth_trl_vllm_engine_check
         return patched_src
 
     # Newer versions have sync_weights or reload rpc calls; earlier ones are stripped in the patched grpo_trainer above.

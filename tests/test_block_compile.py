@@ -706,6 +706,30 @@ def test_stop_recomputation_does_not_demote(monkeypatch):
     assert layer.__dict__.get("_unsloth_block_checked", 0) == 0
 
 
+def test_checkpoint_error_does_not_demote(monkeypatch):
+    """A forward / recompute mismatch must surface, not rerun the block in a lower mode."""
+    from torch.utils.checkpoint import CheckpointError
+
+    M = _load()
+
+    def fake_compile(fn, **kwargs):
+        def compiled(*args, **kw):
+            raise CheckpointError(
+                "A different number of tensors was saved during the original forward and recomputation."
+            )
+
+        return compiled
+
+    monkeypatch.setattr(torch, "compile", fake_compile)
+    cls = _toy_class()
+    M._wrap(cls, {})
+    layer = cls()
+    with pytest.raises(CheckpointError):
+        layer(torch.randn(2, 4, 8, requires_grad = True))
+    assert layer._unsloth_block_mode == M._FIRST_MODE
+    assert layer.__dict__.get("_unsloth_block_checked", 0) == 0
+
+
 def test_cache_calls_keep_the_stock_forward(monkeypatch):
     from transformers.cache_utils import DynamicCache
 
