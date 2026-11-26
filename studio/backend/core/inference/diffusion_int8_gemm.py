@@ -2831,13 +2831,21 @@ def _swiglu_ff_eligible(module: Any) -> bool:
     if type(module).__name__ not in _SWIGLU_FF_CLASSES or "forward" in module.__dict__:
         return False
     parts = [getattr(module, n, None) for n in ("gate_layer", "proj", "out")]
-    if any(p is None or _REC not in p.__dict__ for p in parts):
+    if any(p is None for p in parts):
+        return False
+    # a baked LoRA's PEFT layers by their swapped base Linears: the forward adds the adapters (shared_rotq_linears) and
+    # an active adapter on the down projection takes the wrapper (_swiglu_down declines it)
+    splits = [lora_split(p) for p in parts]
+    if any(sp is None for sp in splits):
+        return False
+    bases = [sp[0] for sp in splits]
+    if any(_REC not in b.__dict__ for b in bases):
         return False
     act = getattr(module, "activation_fn", None)
     if type(act) is not nn.SiLU or "forward" in act.__dict__:
         return False
     # only a rotated down projection on the fused rotation kernel gains (its input is the product)
-    return bool(parts[2].__dict__[_REC][2])
+    return bool(bases[2].__dict__[_REC][2])
 
 
 def _install_swiglu_ff(
