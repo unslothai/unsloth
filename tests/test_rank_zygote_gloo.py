@@ -1,12 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""tests/_shared/rank_zygote.py: a rank forked from the zygote ends up as a spawned rank would.
+"""tests/_shared/rank_zygote.py: a forked rank ends up as a spawned rank would.
 
-Each case runs a small driver process twice, with UNSLOTH_TEST_RANK_ZYGOTE=0 (plain spawn) and =1, and
-compares what the ranks report: the import-time state the gloo harnesses depend on (environment written by
-the conftest and unsloth, the trainer hooks an env layout installs, patched torch / transformers entry
-points, warning filters). The zygote run must also show that the zygote path was the one taken."""
+Each case runs a driver with UNSLOTH_TEST_RANK_ZYGOTE=0 and =1 and compares the ranks' import-time state."""
 
 import json
 import multiprocessing
@@ -23,11 +20,9 @@ CONFTEST = os.path.join(REPO, "tests", "conftest.py")
 
 pytestmark = [
     pytest.mark.skipif(not sys.platform.startswith("linux"), reason = "fd passing / memfd: Linux"),
-    # One worker runs the module-scoped `runs` (two driver processes, each with its ranks and zygotes),
-    # not every worker that draws one of its tests: three at once ran a 16 GB runner out of memory.
+    # One worker runs `runs`: three at once ran a 16 GB runner out of memory.
     pytest.mark.xdist_group("rank_zygote"),
-    # The module fixture starts two driver processes, each importing unsloth in its ranks and zygotes: on a busy
-    # 4 vCPU runner that is several minutes, more than the shard's per-test 330 s.
+    # Two drivers importing unsloth take minutes on a busy runner, over the shard's 330 s.
     pytest.mark.timeout(900),
 ]
 
@@ -182,7 +177,6 @@ def _run(tmp_path, zygote):
         env = env,
         cwd = REPO,
         stdin = subprocess.DEVNULL,
-        # Its own session: nothing the driver or its ranks signal or inherit reaches this xdist worker.
         start_new_session = True,
         capture_output = True,
         text = True,
@@ -239,10 +233,7 @@ def test_the_env_layout_reaches_the_import(runs):
 def test_the_zygote_path_is_taken(runs):
     _, _, summary = runs
     counts, reasons = summary["counts"], summary["reasons"]
-    # plain: observed plain spawns. tp_layout + plain_again: 4 ranks reuse the zygote's conftest run.
-    # imports_first: a new case of the same function imports transformers before the conftest, so its 2
-    # ranks start again from scratch (and are observed). imports_first_again: forked from a zygote that
-    # stops before the conftest.
+    # imports_first's 2 ranks import transformers before the conftest, so they respawn.
     assert counts["hit"] >= 4, summary
     assert counts["start"] >= 8, summary
     assert counts["respawn"] <= 2, summary

@@ -87,21 +87,11 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
-      # Each gloo test spawns 2 to 8 ranks, and a spawned rank spent about 9 of its 11 CPU seconds
-      # importing torch and unsloth again. With this set, tests/conftest.py forks the ranks from a
-      # per-worker zygote that already ran the conftest and `import unsloth`, and a rank whose
-      # environment or imports differ from the zygote's starts again as a plain spawn
-      # (tests/_shared/rank_zygote.py; tests/test_rank_zygote_gloo.py compares the two). Job-level,
-      # so the pytest step stays the one studio-backend-ci.yml runs. A shard with `rank_zygote: '0'`
-      # keeps plain spawns. fsdp2's ranks never run the conftest, so a fork saves only the torch import,
-      # and on staging the shard was no faster for it. gloo-tp-env's test_tp_resume_expert_lora_b_layout_gloo
-      # lost a rank at init_process_group in 2 of 8 staging runs with forked ranks (and
-      # test_tp_save_expert_factor_swap_gloo overran its 330 s in a third), and in none without.
+      # Fork gloo ranks from a per-worker zygote that already imported unsloth (tests/_shared/rank_zygote.py).
+      # rank_zygote: '0' opts out: fsdp2's ranks skip the conftest so forking gained nothing, and
+      # gloo-tp-env lost a rank at init_process_group in 2 of 8 staging runs with forked ranks.
       UNSLOTH_TEST_RANK_ZYGOTE: ${{ matrix.rank_zygote || '1' }}
-      # A shard listed as name-1 .. name-n with `split: k/n` runs part k of its selection
-      # (tests/_shared/shard_split.py, weighted by tests/_shared/shard_durations.json): the slow
-      # shards grow by runners instead of past the cap. n is each shard's measured test time over
-      # about 400 s of a 4 vCPU runner, so a part stays near 8 to 9 minutes with install.
+      # `split: k/n` runs part k of the selection, weighted by tests/_shared/shard_durations.json.
       UNSLOTH_TEST_SPLIT: ${{ matrix.split || '' }}
       UNSLOTH_TEST_RANK_ZYGOTE_STATS: /tmp/unsloth_rank_zygote_stats
       PYTEST_ADDOPTS: --durations=40
@@ -413,7 +403,6 @@ jobs:
         run: python tests/_shared/rank_zygote.py --summary /tmp/unsloth_rank_zygote_stats
 
       - name: Processes the kernel killed for memory
-        # "node down: Not properly terminated" from xdist is a worker that died; this says if it was the OOM killer.
         if: failure()
         run: sudo dmesg -T | grep -iE "out of memory|oom-kill|killed process" | tail -20 || true
 

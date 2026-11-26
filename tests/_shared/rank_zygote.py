@@ -1,37 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Forks spawned test ranks from a process that has already done the imports a spawned rank would do.
+"""Forks spawned gloo test ranks from a zygote (a forkserver that already imported unsloth), under
+``UNSLOTH_TEST_RANK_ZYGOTE=1`` (distributed-cpu-ci.yml only): a spawned rank spends ~9 of 11 CPU s importing.
 
-Every gloo test spawns 2 to 8 ranks, and each spawned rank re-imports torch and unsloth: about 9 CPU seconds
-of a rank's 11 on a CI runner. With ``UNSLOTH_TEST_RANK_ZYGOTE=1`` (set by distributed-cpu-ci.yml only) a
-``multiprocessing`` spawn start in a test process is served instead by a zygote: a stdlib forkserver whose
-preload is this module, one per kind of rank, kept per pytest process.
-
-Learning a kind (a rank function plus the short string arguments that pick its case). Its first ranks run as
-plain spawns under an observer, which notes the modules unpickling the function imported (the test module's
-own imports, which a spawned rank runs before any of its code), what the rank's code imported before the
-conftest, and whether it ran ``tests/conftest.py`` at all. Its zygote then imports torch, numpy and pytest,
-then those test-module imports, all under the environment a rank starts with. Only when the rank runs the
-conftest before importing anything else of its own does the zygote also set the rank's layout variables
-(``UNSLOTH_TP_SIZE``, ``UNSLOTH_PARALLEL``, ... from the function's ``env`` argument), run the conftest the
-way the harnesses do (``spec_from_file_location`` + ``exec_module``) and import unsloth, recording every
-``os.environ`` access.
-
-A forked rank must end up as a spawned rank would have. It starts with the parent's environment and stdio,
-the modules the conftest run imported hidden, and the base attributes they changed put back. A variable the
-imports ahead read, set while the rank unpickles its function, re-executes it. Nothing more is reused until
-the rank executes ``tests/conftest.py``, and there the zygote's result replaces the run only when it cannot
-differ:
-
-- the rank has imported none of the hidden modules (unsloth, transformers, ...) on its own,
-- every environment variable the conftest run read has the same value in the rank, and every environment
-  scan it did would see the same names,
-- the base attributes the run changes are still as the zygote found them.
-
-Anything else re-executes the rank as a fresh spawned interpreter (same pid, same pipes), so it runs exactly
-as without this module, only later, and is observed again. Consecutive ranks alternate between two zygotes
-with different string hash seeds, as spawned ranks each draw their own.
+A forked rank must end up as a spawned rank would. It starts with the parent environment, the conftest run's
+modules hidden and the base attributes they changed restored; the zygote's conftest run is reused only if the rank
+imported none of the hidden modules itself, every env variable and scan the run did matches, and the base
+attributes are untouched. Anything else re-executes the rank as a fresh spawn (same pid, same pipes). Ranks
+alternate between two zygotes with different hash seeds, as spawned ranks each draw their own.
 ``python tests/_shared/rank_zygote.py --summary DIR`` prints how many ranks took which path.
 """
 
@@ -52,17 +29,10 @@ _REPO = os.path.dirname(os.path.dirname(_HERE))
 CONFTEST = os.path.realpath(os.path.join(_REPO, "tests", "conftest.py"))
 _MISSING = object()
 
-# Base: what every gloo test module imports first. A zygote that runs the conftest also imports bitsandbytes
-# (the conftest's first import, before its CUDA spoof) and the standard library modules the conftest run pulls
-# in (found by a throwaway run in a fork of the zygote) ahead of it, so a rank importing one of those itself
-# is no reason to start again.
+# Base: what every gloo test module imports first; a rank importing one itself is no reason to restart.
 _BASE_MODULES = ("torch", "torch.distributed", "torch.multiprocessing", "pytest", "numpy")
 
-# Reads of WORLD_SIZE / LOCAL_RANK during the import that cannot change it on a host with no CUDA device
-# (the zygote checks torch.cuda.device_count() == 0): (variable, reading function, its caller).
-# - bind_local_cuda_device returns before touching anything when CUDA is unavailable.
-# - distributed_launch picks the weakest visible card over the current one; with no device both answers
-#   are the current-device probe, and _utils' per-card loop runs over zero cards.
+# WORLD_SIZE / LOCAL_RANK reads that cannot change the import with no CUDA device: (variable, reader, caller).
 _RANK_NEUTRAL_READS = {
     (
         "WORLD_SIZE",
@@ -93,7 +63,6 @@ _PREFIX_SCANS = {
     "tqdm/utils.py:__init__": "TQDM_",
     "networkx/utils/backends.py:_set_configs_from_environment": "NETWORKX_",
     "fsspec/config.py:set_conf_env": "FSSPEC_",
-    # {**environ, **out}: a copy handed to refuse_ep_composition, which reads UNSLOTH_* layout names from it.
     "unsloth/parallel_env.py:apply_parallel_env": "UNSLOTH_",
 }
 
@@ -128,9 +97,7 @@ def _record(kind: str, **fields) -> None:
         pass
 
 
-# --------------------------------------------------------------------------------------------------
-# Parent side: the spawn Popen that asks the zygote instead
-# --------------------------------------------------------------------------------------------------
+# Parent side
 
 _IN_ZYGOTE = False
 _original_popen = None
@@ -181,8 +148,7 @@ _ObservingPopen = None
 
 
 class _Observed:
-    """Pickles as "start an _Observer, then unpickle the real process object": the observer sees the imports
-    the unpickling does, which is where a spawned rank's test module is imported."""
+    """Unpickles as an _Observer, then the real process object, so the observer sees the test module import."""
 
     def __init__(self, process_obj, key):
         self.process_obj, self.key, self._name = process_obj, key, process_obj._name
@@ -203,12 +169,8 @@ def _observed_rebuild(ranks_file, key, data):
     return process_obj
 
 
-# Per rank function (and the short string arguments that pick its case), learned from a rank that ran as a
-# plain spawn under an observer (the first of its kind, or one that had to start again):
-# "first": the modules unpickling the function imports (its test module's own imports), which a spawned rank
-#   runs before any of its code; the zygote imports them ahead, in the same order.
-# "pure": the rank never runs the conftest, loads unsloth files itself, or imports more than the zygote's
-#   base before the conftest; the zygote then stops before the conftest and serves only those imports.
+# Per rank function + case: "first" = its test module's imports (the zygote imports them ahead, in order);
+# "pure" = never runs the conftest first, so the zygote stops before the conftest.
 _plans = {}
 _closures = {}  # rank function -> its test module's imports, from any observed case of it
 _cases = {}  # rank function -> {case key: (ran the conftest, unsloth first, imports before the conftest)}
@@ -251,7 +213,6 @@ def _learn():
                     target = json.loads(event.get("target"))[0]
                 except (TypeError, ValueError, IndexError):
                     target = None
-                # The test module's imports are the same for every case of its function.
                 _closures[target] = list(event.get("first") or ())
                 _cases.setdefault(target, {})[event.get("target")] = (
                     bool(event.get("conftest")),
@@ -270,9 +231,7 @@ def _learn():
 
 
 def _pure(target) -> bool:
-    """Whether a function's zygote stops before the conftest: unless every case of it seen so far ran the
-    conftest before importing anything of its own (the zygote's base aside) or loading unsloth itself."""
-    # Known from a running zygote; before the first one, what every zygote imports ahead whatever else.
+    """Whether a function's zygote stops before the conftest: unless every case ran the conftest first."""
     base = _base_tops() or {"torch", "numpy", "pytest", "_pytest", "pluggy", "bitsandbytes"}
     cases = _cases.get(target) or {}
     return not cases or any(
@@ -310,7 +269,6 @@ def _popen_locked(process_obj):
     plan = _plan(key)
     closure = _closures.get(_target_name(process_obj))
     if closure is None:
-        # Not seen yet: a plain spawn, watched, says what its ranks import.
         _record("spawn", target = key, why = "observed")
         return _ObservingPopen(process_obj, key)
     if "torch" not in closure:
@@ -319,9 +277,7 @@ def _popen_locked(process_obj):
     if plan["restarts"] >= _GIVE_UP and plan["hits"] == 0:
         _record("spawn", target = key, why = "its forks kept starting again")
         return _original_popen(process_obj)
-    # A function whose cases all ran the conftest first reuses a zygote's conftest run (a case that does
-    # otherwise starts again at the conftest, before its own code goes further); any other function forks
-    # from a zygote that stops before the conftest and serves only its test module's imports.
+    # Functions whose cases all ran the conftest first reuse its run; others fork from a pre-conftest zygote.
     mode = {"first": closure, "pure": _pure(_target_name(process_obj))}
     if mode["pure"] and len(closure) < _WORTH:
         _record("spawn", target = key, why = "too little to import ahead")
@@ -333,8 +289,7 @@ def _popen_locked(process_obj):
         return _original_popen(process_obj)
     differs = _early_differs(zygote)
     if differs:
-        # The zygote imported ahead under another value (a test sets it per test): a fork would only start
-        # again at once.
+        # The zygote imported ahead under another value: a fork would only restart.
         _record("spawn", target = key, why = f"env {differs} differs from the zygote's")
         return _original_popen(process_obj)
     return _ZygotePopen(process_obj, zygote, key)
@@ -363,8 +318,7 @@ def _plan_key(process_obj) -> str:
 
 
 def _env_args(process_obj) -> dict:
-    """Environment the rank will apply before importing, as far as its arguments tell: every str -> str dict of
-    upper-case names (the harnesses' ``env`` argument). Only a guess; the rank checks the real one."""
+    """The rank's expected env: every str -> str dict of upper-case names in its arguments (only a guess)."""
     found = {}
     values = list(getattr(process_obj, "_args", ()) or ()) + list(
         (getattr(process_obj, "_kwargs", {}) or {}).values()
@@ -418,7 +372,6 @@ def _zygote_for(process_obj, mode):
         if inputs is not None:
             break
     if inputs is not None:
-        # Only variables the import reads tell zygotes apart; the rest cannot change what it builds.
         guess = {k: v for k, v in guess.items() if k in inputs}
     layout = [list(kv) for kv in sorted(guess.items())]
     known = next(
@@ -426,7 +379,6 @@ def _zygote_for(process_obj, mode):
     )
     world = _world_arg(process_obj)
     if known is not None and world is not None and known.status().get("rank_inputs"):
-        # This layout's import reads WORLD_SIZE where it matters (UNSLOTH_PARALLEL translates by it).
         guess["WORLD_SIZE"] = str(world)
         layout = [list(kv) for kv in sorted(guess.items())]
     if mode["pure"]:
@@ -434,9 +386,7 @@ def _zygote_for(process_obj, mode):
         layout = []
     elif any(os.sep in v for v in guess.values()):
         return None  # a path the import reads (a per-test cache directory): no other rank would share it
-    # Spawned ranks each draw their own string hash seed, so a set iterated in a different order on two
-    # ranks shows. A fork keeps its zygote's seed: consecutive ranks alternate between two zygotes with
-    # different seeds, unless PYTHONHASHSEED fixes one seed for every process anyway.
+    # Spawned ranks each draw their own hash seed, so set order differs; forks alternate two seeded zygotes.
     fixed = os.environ.get("PYTHONHASHSEED", "random") != "random"
     turns = json.dumps([layout, mode])
     turn = _turns[turns] = _turns.get(turns, -1) + 1
@@ -446,8 +396,7 @@ def _zygote_for(process_obj, mode):
     zygote = _servers.pop(key, None)
     if zygote is None:
         if len(tests) <= _HOT:
-            # A zygote costs one import of its own: only for a kind of rank that a second test asks for.
-            # Counted in tests, so the ranks of one test all start the same way and meet at the same time.
+            # A zygote only for a kind a second test asks for; counted in tests so one test's ranks start alike.
             return None
         limit = _limit()
         if _mem_available_gb() < _MEM_FLOOR_GB:
@@ -465,7 +414,6 @@ def _zygote_for(process_obj, mode):
         zygote = _Zygote(env, mode, guess)
         twin = json.dumps([layout, mode, 1 - json.loads(key)[2]])
         if not fixed and twin not in _servers and len(_servers) + 1 < limit:
-            # Its other-seed twin starts now too, so the next rank of this test does not wait for an import.
             _servers[twin] = _Zygote(env, mode, guess)
     _servers[key] = zygote
     return zygote
@@ -515,9 +463,7 @@ class _Zygote:
             "sys_path": list(sys.path),
             "cwd": os.getcwd(),
             "status": os.path.join(self.dir, "status.json"),
-            # No device the parent can see: a missing and an empty device mask then mean the same.
             "no_gpu_host": _no_gpu_host(),
-            # Another zygote's throwaway import already listed them: the same process, the same list.
             "stdlib": next(
                 (
                     z.status()["stdlib"]
@@ -537,14 +483,12 @@ class _Zygote:
         self.server.set_forkserver_preload(["rank_zygote"])
         saved = {k: os.environ.get(k) for k in (_SPEC_ENV, "PYTHONPATH", "PYTHONHASHSEED")}
         if saved["PYTHONHASHSEED"] in (None, "random"):
-            # Read once at interpreter start (spec["env"] is applied after): this zygote's own random seed.
             os.environ["PYTHONHASHSEED"] = str(
                 int.from_bytes(os.urandom(4), "little") % 4294967295 + 1
             )
         os.environ[_SPEC_ENV] = spec_path
         os.environ["PYTHONPATH"] = os.pathsep.join(p for p in (_HERE, saved["PYTHONPATH"]) if p)
         try:
-            # The server inherits this environment when it starts (its preload sets spec["env"]); restored after.
             self.server.ensure_running()
         finally:
             for k, v in saved.items():
@@ -564,7 +508,6 @@ class _Zygote:
         return self._status
 
     def idle(self) -> bool:
-        # A rank's exit code comes back through its zygote, so one with a live rank must keep running.
         return all(p.poll() is not None for p in list(self.ranks))
 
     def stop(self):
@@ -646,9 +589,7 @@ def _target_name(process_obj) -> str:
     return f"{getattr(target, '__module__', '?')}.{getattr(target, '__qualname__', repr(target))}"
 
 
-# --------------------------------------------------------------------------------------------------
-# Zygote side: preload (runs in the forkserver process when it imports this module)
-# --------------------------------------------------------------------------------------------------
+# Zygote side (forkserver preload)
 
 _Z = None  # the zygote's record, inherited by every forked rank
 
@@ -862,9 +803,7 @@ def _preload(spec_path: str) -> None:
             base_recorder.stop()
         stdlib = spec.get("stdlib")
         if stdlib is None:
-            # Only a zygote that runs the conftest imports these ahead.
             stdlib = [] if spec.get("pure") else _stdlib_imported_by_the_conftest()
-        # The test module's own imports, under the environment a rank has when it unpickles its function.
         closure_recorder = _EnvRecorder()
         closure_recorder.start()
         try:
@@ -875,8 +814,7 @@ def _preload(spec_path: str) -> None:
                     pass
         finally:
             closure_recorder.stop()
-        # The rank's layout variables, set by its function before the conftest; then what the conftest
-        # imports first, unless this zygote stops before the conftest.
+        # The rank's layout variables, then the conftest, unless this zygote stops before it.
         os.environ.update(spec.get("layout") or {})
         late_recorder = _EnvRecorder()
         late_recorder.start()
@@ -926,8 +864,7 @@ def _preload(spec_path: str) -> None:
             **{k: v for k, (kind, v) in closure_recorder.first.items() if kind == "read"},
             **{k: v for k, (kind, v) in base_recorder.first.items() if kind == "read"},
         }
-        # torch, numpy and pytest come first in a rank too (its test module imports them before running the
-        # conftest); the late ones a rank imports during the conftest, after the variables it sets.
+        # torch, numpy, pytest first, as in a rank; the late ones after the variables it sets.
         written = sorted(
             set(late_inputs) & {k for k, (kind, _) in recorder.first.items() if kind == "write"}
         )
@@ -966,7 +903,6 @@ def _preload(spec_path: str) -> None:
             pure = bool(spec.get("pure")),
             stdlib = stdlib,
             env_input_names = sorted(_Z["env_inputs"]),
-            # WORLD_SIZE / LOCAL_RANK read where the value can change the import: zygotes then differ by it.
             rank_inputs = sorted(
                 key
                 for key in ("WORLD_SIZE", "LOCAL_RANK")
@@ -983,8 +919,7 @@ def _preload(spec_path: str) -> None:
         )
         import threading
 
-        # Native pools (OpenBLAS, jemalloc) are rebuilt after a fork, as for a DataLoader worker; a Python
-        # thread could hold a lock the forked rank then waits on forever, so one means no zygote.
+        # A live Python thread could hold a lock the forked rank waits on forever: no zygote.
         status["native_threads"] = len(os.listdir("/proc/self/task"))
         if threading.active_count() != 1:
             status["broken"] = (
@@ -1004,9 +939,7 @@ def _preload(spec_path: str) -> None:
     spawn._main = _rank_main
 
 
-# --------------------------------------------------------------------------------------------------
-# Rank side: runs in each forked rank
-# --------------------------------------------------------------------------------------------------
+# Rank side
 
 _rank = None  # {"data": bytes, "env": dict, "sentinel": fd, "decided": None | "hit" | reason}
 
@@ -1040,9 +973,7 @@ def _rank_main(fd, parent_sentinel):
     for key, value in frozen.items():
         if os.environ.get(key) != value:
             _respawn(f"env {key}, which the imports ahead read")
-    # torch / numpy / pytest and the test module's own imports already ran, under these values. A spawned rank
-    # runs them while it unpickles its function, so a variable the test module sets before them restarts the
-    # rank; once it is loaded they are done either way. What the conftest imports is checked at the conftest.
+    # Imports ahead ran under these values: a variable the test module sets before them restarts the rank.
     _rank["frozen"] = frozen
     _guard_env()
     _hide()
@@ -1060,8 +991,7 @@ def _rank_main(fd, parent_sentinel):
         target = self._args[0]  # torch.multiprocessing.spawn's wrapper
     target_module = sys.modules.get(getattr(target, "__module__", None))
     if target_module is None or not isinstance(vars(target_module).get("torch"), type(sys)):
-        # torch comes later in this rank (its code imports it, after whatever it set first): start again
-        # now, before any of that code runs.
+        # torch comes later in this rank (after what it set first): restart now.
         _respawn("the test module does not import torch itself")
     _rank["frozen"] = None
     code = self._bootstrap(parent_sentinel)
@@ -1312,7 +1242,6 @@ def _respawned(args_json: str):
     resource_tracker._resource_tracker._fd = args["tracker"]
     if not args.get("ranks"):
         sys.exit(spawn._main(args["data"], args["sentinel"]))
-    # spawn._main, with the modules the payload's own import pulls in noted for the parent.
     seen = _Observer(args["ranks"], args["target"])
     with os.fdopen(args["data"], "rb", closefd = True) as from_parent:
         process.current_process()._inheriting = True
@@ -1327,10 +1256,7 @@ def _respawned(args_json: str):
 
 
 class _Observer:
-    """In a plain-spawned or re-executed rank, only watching: which modules unpickling its function imported (its
-    test module's own imports, which a spawned rank runs before any of its code), what its code imported before
-    the conftest, whether it ran the conftest, and whether it loaded unsloth modules itself first. Reported once,
-    when the conftest starts or at exit, for the parent's next zygote for this function."""
+    """In a plain or re-executed rank: records its imports and conftest use for the next zygote of its function."""
 
     def __init__(self, ranks_file, key):
         self.ranks_file, self.key = ranks_file, key
@@ -1383,8 +1309,7 @@ class _Observer:
             ):
                 continue
             self.first.append(name)
-        # Now, not only at the conftest or exit: some harnesses end their ranks with os._exit. Until a
-        # conftest run is seen this says "no conftest", which only makes the next zygote stop short of it.
+        # Now, not only at exit: some harnesses end their ranks with os._exit.
         self.report(final = False)
 
     def report(self, final = True):
@@ -1395,7 +1320,6 @@ class _Observer:
             "target": self.key,
             "event": "observed",
             "first": self.first,
-            # test modules and conftest-like helpers the rank's code imports are its own, never ahead
             "before_conftest": [
                 n
                 for n in self.before_conftest
@@ -1450,7 +1374,6 @@ def summary(root: str) -> dict:
 
 
 if os.environ.get(_SPEC_ENV) and __name__ == "rank_zygote":
-    # Imported as the forkserver's preload.
     _spec = os.environ.pop(_SPEC_ENV)
     _preload(_spec)
 

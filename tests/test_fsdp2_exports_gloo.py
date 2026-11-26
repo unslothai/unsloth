@@ -30,7 +30,6 @@ import sys  # noqa: E402
 import pytest  # noqa: E402
 import torch  # noqa: E402
 
-# Every test reads one module-scoped run: one worker computes it, not each worker that draws a test.
 pytestmark = pytest.mark.xdist_group("test_fsdp2_exports_gloo")
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

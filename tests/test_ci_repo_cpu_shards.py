@@ -47,8 +47,7 @@ def _shard_entries() -> list:
 
 
 def _shards() -> dict:
-    """{shard name: (roots, ignores)} parsed out of both jobs' matrices. The parts of a split shard (entries
-    with `split: k/n` and one selection) collect the same files, so they count as one shard here."""
+    """{shard name: (roots, ignores)} parsed out of both jobs' matrices; a split shard's parts count as one."""
     shards, names = {}, set()
     for entry in _shard_entries():
         assert entry["shard"] not in names, f"shard {entry['shard']} is defined twice"
@@ -233,15 +232,13 @@ class TestTheSplitKeepsTheSelectionItInherited:
 
 
 class TestTheDistributedShardsForkTheirRanks:
-    """distributed-cpu-ci.yml turns on tests/_shared/rank_zygote.py for its own job only: at job level, so the
-    shared pytest step stays byte-identical, and never for Backend CI's shards."""
+    """Job-level env, so the shared pytest step stays byte-identical."""
 
     def _env(self, path, job):
         return _workflow(path)["jobs"][job].get("env") or {}
 
     def test_the_distributed_job_turns_the_zygote_on(self):
         env = self._env(*_SHARD_JOBS[1])
-        # On unless a shard opts out with rank_zygote: '0'.
         assert env.get("UNSLOTH_TEST_RANK_ZYGOTE") == "${{ matrix.rank_zygote || '1' }}"
         entries = _workflow(_DISTRIBUTED_CI)["jobs"]["distributed-cpu-tests"]["strategy"]["matrix"][
             "include"
@@ -378,9 +375,6 @@ def _shard_pytest_step() -> dict:
 
 
 class TestASplitShardRunsEveryPartOnce:
-    """A slow shard grows by runners: entries sharing one selection with `split: 1/n` .. `split: n/n` each run one
-    part of it (tests/_shared/shard_split.py, under UNSLOTH_TEST_SPLIT set from the matrix at job level)."""
-
     def _groups(self):
         groups = {}
         for entry in _workflow(_DISTRIBUTED_CI)["jobs"]["distributed-cpu-tests"]["strategy"][

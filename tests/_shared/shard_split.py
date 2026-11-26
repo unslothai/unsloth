@@ -1,21 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Runs one part of a shard's tests: ``UNSLOTH_TEST_SPLIT=k/n`` keeps part k of n and deselects the rest.
+"""``UNSLOTH_TEST_SPLIT=k/n`` keeps part k of n of the collected tests and deselects the rest.
 
-distributed-cpu-ci.yml gives a slow shard several matrix entries with the same selection and ``split: 1/n`` ..
-``split: n/n``, so a shard grows by runners rather than past its time cap. Every process (each xdist worker
-collects on its own) computes the same parts from the collected ids alone:
-
-- an ``xdist_group`` stays whole, because its tests share a module-scoped run or must meet on one worker;
-- every other test is its own unit;
-- each unit weighs its measured seconds from shard_durations.json. A test missing there weighs its file's
-  ``"*"`` (the median of that file's fast tests), or 2 s in a file with no entry;
-- units go heaviest first, ties by id, each to the part with the least weight so far.
-
-The parts are disjoint and together are every collected test (tests/test_shard_split.py checks both). The weights
-only balance the parts: a stale or missing entry makes one part longer, never drops or repeats a test.
-Refresh them from junit XML of a full run: ``python tests/_shared/shard_split.py --update a.xml b.xml ...``."""
+Every xdist worker must compute the same parts from the collected ids alone. An ``xdist_group`` stays whole
+(its tests share a module-scoped run or must meet on one worker); units are weighted by shard_durations.json and
+assigned heaviest first to the lightest part. Stale weights only unbalance parts, never drop a test.
+Refresh: ``python tests/_shared/shard_split.py --update a.xml b.xml ...``."""
 
 from __future__ import annotations
 
@@ -28,7 +19,7 @@ from typing import Any
 ENV = "UNSLOTH_TEST_SPLIT"
 DURATIONS = Path(__file__).with_name("shard_durations.json")
 DEFAULT_SECONDS = 2
-LISTED_FROM_SECONDS = 5  # faster tests are covered by their file's "*"
+LISTED_FROM_SECONDS = 5
 
 
 def parse(spec: str | None) -> tuple[int, int] | None:
@@ -70,7 +61,6 @@ def parts(
     n: int,
     durations: dict | None = None,
 ) -> list[int]:
-    """The part (1..n) of each item, in the items' order."""
     durations = _durations() if durations is None else durations
     units: dict[str, list[int]] = {}
     weights: dict[str, float] = {}
@@ -122,7 +112,6 @@ def update(junit_files: list[str]) -> dict:
 
 
 def write(durations: dict, path: Path = DURATIONS) -> None:
-    """One line per test file, so a refresh diffs per file."""
     files = sorted(durations)
     lines = ["{"]
     for index, name in enumerate(files):

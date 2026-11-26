@@ -105,8 +105,7 @@ def _fresh_new_mapper_cache():
 
 @pytest.hookimpl(trylast = True)
 def pytest_collection_modifyitems(config, items):
-    """After xdist tags grouped tests; see tests/_shared/xdist_group_check.py. Under UNSLOTH_TEST_SPLIT=k/n only
-    part k of the collected tests runs (tests/_shared/shard_split.py)."""
+    """After xdist tags grouped tests; see tests/_shared/xdist_group_check.py; then UNSLOTH_TEST_SPLIT."""
     from shard_split import select
     from xdist_group_check import check
 
@@ -269,8 +268,7 @@ def _isolated_kernel_install_locks(monkeypatch, _kernel_lock_dir):
     monkeypatch.setenv("UNSLOTH_KERNEL_LOCK_DIR", _kernel_lock_dir)
 
 
-# Distributed CPU CI sets UNSLOTH_TEST_RANK_ZYGOTE=1: spawned gloo ranks fork from a process that already ran this
-# file and `import unsloth`, instead of importing both again (tests/_shared/rank_zygote.py says when they may).
+# Gloo ranks fork from a zygote that already ran this file and imported unsloth.
 if os.environ.get("UNSLOTH_TEST_RANK_ZYGOTE") == "1":
     import rank_zygote
     rank_zygote.install()
