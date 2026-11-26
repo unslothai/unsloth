@@ -4116,8 +4116,8 @@ export const ko = {
       summary: {
         single: "GPU 1개로 학습",
         layerSplit: "모델을 레이어 단위로 GPU {count}개에 분할",
-        ddp: "모델이 GPU 1개에 들어갑니다: GPU {count}개에서 데이터 병렬",
-        fsdp2: "모델이 GPU 1개에 비해 너무 큽니다: GPU {count}개에 샤딩",
+        ddp: "각 GPU가 전체 복사본을 학습합니다: GPU {count}개에서 데이터 병렬",
+        fsdp2: "가중치와 옵티마이저 상태를 GPU {count}개에 샤딩",
         tp: "각 레이어를 GPU {count}개에 분할",
         pp: "레이어를 GPU마다 하나씩 {count}단계 파이프라인으로 실행",
         cp: "각 시퀀스를 GPU {count}개에 분할",
@@ -4128,7 +4128,7 @@ export const ko = {
         noGpu: "GPU를 하나 이상 선택하세요.",
         singleNeedsOne: "단일 GPU는 GPU 하나만 사용합니다. 나머지는 선택 해제하세요.",
         needsTwo: "이 모드에는 GPU가 2개 이상 필요합니다.",
-        customSpec: "구성을 입력하세요. 예: dp=2,tp=2",
+        customSpec: "구성을 입력하세요. 예: {example}",
       },
     },
     preview: {
