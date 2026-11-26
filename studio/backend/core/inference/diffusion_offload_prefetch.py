@@ -781,6 +781,12 @@ class GroupPrefetcher:
             size = max(size, need)
         if not members:
             return 0
+        # a ring built after a memory-tight request (set_request_prefetch_depth) is sized for the built depth, which
+        # it runs from now on: requests never resize a ring, so a depth-1 ring would pin every later request at 1
+        base_depth = int(getattr(self, "_unsloth_base_depth", self.depth))
+        if base_depth != self.depth:
+            self.depth = base_depth
+            self.window = int(getattr(self, "_unsloth_base_window", self.window))
         count = min(self.depth + 1, len(members))
         # pinned groups never fill their slot unless a release streams them again; the ring is allocated on first use
         self.slot_streamed = sum(1 for g in members if not getattr(g, "_unsloth_resident", False))

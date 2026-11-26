@@ -6487,6 +6487,7 @@ def apply_request_prefetch_depth(
     try:
         from .diffusion_offload_prefetch import (
             module_prefetchers,
+            prefetch_depth_override,
             set_request_prefetch_depth,
             streamed_group_mib,
             tight_prefetch_depth,
@@ -6498,12 +6499,14 @@ def apply_request_prefetch_depth(
         if not pfs:
             return None
         planned = max(int(getattr(pf, "_unsloth_base_depth", pf.depth)) for pf in pfs)
+        required = video_denoise_required_mib(
+            floor_mib = floor_mib, denoise_mib = denoise_mib, measured_extra_mib = measured_extra_mib
+        )
+        largest = streamed_group_mib(pfs)
         depth = tight_prefetch_depth(
             available_mib = int(available_mib),
-            required_mib = video_denoise_required_mib(
-                floor_mib = floor_mib, denoise_mib = denoise_mib, measured_extra_mib = measured_extra_mib
-            ),
-            largest_group_mib = streamed_group_mib(pfs),
+            required_mib = required,
+            largest_group_mib = largest,
             planned_depth = planned,
         )
         if set_request_prefetch_depth(pfs, depth) and logger is not None:
@@ -6512,9 +6515,32 @@ def apply_request_prefetch_depth(
                 depth,
                 int(available_mib),
             )
+        if prefetch_depth_override() is not None:
+            source = "env"
+        else:
+            source = "tight" if depth < planned else "built"
+        try:
+            pipe._unsloth_request_prefetch = {
+                "depth": int(depth),
+                "built_depth": int(planned),
+                # what each prefetcher runs now: a CUDA-graph slot ring keeps its built depth
+                "running_depths": sorted(int(pf.depth) for pf in pfs),
+                "source": source,
+                "available_mib": int(available_mib),
+                "required_mib": int(required),
+                "largest_group_mib": int(largest),
+            }
+        except Exception:  # noqa: BLE001 - a pipe that takes no attributes reports nothing
+            pass
         return depth
     except Exception:  # noqa: BLE001 - the prefetchers keep their depth
         return None
+
+
+def request_prefetch_status(pipe: Any) -> Optional[dict]:
+    """The prefetch depth the last request picked (``apply_request_prefetch_depth``), or None when nothing streams."""
+    info = getattr(pipe, "_unsloth_request_prefetch", None) if pipe is not None else None
+    return dict(info) if isinstance(info, dict) else None
 
 
 def video_offload_shortfall_message(
@@ -18170,6 +18196,7 @@ class VideoBackend:
             "cfg_batch": cfg_batch_status(getattr(state, "pipe", None)),
             "graph_engagement": _graph_engagement(getattr(state, "pipe", None)),
             "render_engagement": _render_engagement(getattr(state, "pipe", None)),
+            "request_prefetch": request_prefetch_status(getattr(state, "pipe", None)),
             "resolved": resolved,
         }
 
