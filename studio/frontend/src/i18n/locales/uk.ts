@@ -6483,6 +6483,12 @@ export const uk = {
     maximize: "Розгорнути вікно",
     restore: "Відновити вікно",
     close: "Закрити вікно",
+    mediaCodecs: {
+      title: "Створені відео можуть не відтворюватися",
+      // {command}: an apt command line, never translated.
+      description: "У системі бракує відеодекодерів GStreamer. Установіть їх командою: {command}",
+      copy: "Копіювати команду",
+    },
   },
   runtimeUpdate: {
     installAudio: "Інсталювати аудіосередовище виконання",

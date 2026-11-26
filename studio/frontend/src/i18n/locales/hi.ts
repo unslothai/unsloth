@@ -6044,6 +6044,12 @@ export const hi = {
     maximize: "विंडो बड़ी करें",
     restore: "विंडो पहले जैसी करें",
     close: "विंडो बंद करें",
+    mediaCodecs: {
+      title: "जनरेट किए गए वीडियो शायद न चलें",
+      // {command}: an apt command line, never translated.
+      description: "इस सिस्टम में GStreamer वीडियो डिकोडर नहीं हैं। इन्हें इस कमांड से इंस्टॉल करें: {command}",
+      copy: "कमांड कॉपी करें",
+    },
   },
   runtimeUpdate: {
     installAudio: "ऑडियो रनटाइम इंस्टॉल करें",

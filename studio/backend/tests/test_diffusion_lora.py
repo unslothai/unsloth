@@ -403,6 +403,16 @@ def _backend():
     return DiffusionBackend()
 
 
+def _inductor_builds_cpu_kernels() -> bool:
+    """Inductor compiles CPU kernels with the host C++ compiler; a Windows runner without MSVC on PATH has none."""
+    try:
+        from torch._inductor.cpp_builder import get_cpp_compiler
+        get_cpp_compiler()
+    except Exception:  # noqa: BLE001 -- InvalidCxxCompiler, or a torch without cpp_builder
+        return False
+    return True
+
+
 def test_diffusers_apply_loads_and_sets_adapters(monkeypatch):
     import threading
 
@@ -802,6 +812,8 @@ def test_baked_lora_at_weight_zero_compiles_to_the_plain_load(monkeypatch):
 
     from core.inference import diffusion as diff
 
+    if not _inductor_builds_cpu_kernels():
+        pytest.skip("inductor needs a host C++ compiler to build CPU kernels")
     monkeypatch.setattr(
         dl,
         "resolve_specs",

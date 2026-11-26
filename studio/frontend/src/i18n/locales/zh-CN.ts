@@ -5933,6 +5933,12 @@ export const zhCN = {
     maximize: "最大化窗口",
     restore: "还原窗口",
     close: "关闭窗口",
+    mediaCodecs: {
+      title: "生成的视频可能无法播放",
+      // {command}: an apt command line, never translated.
+      description: "此系统缺少 GStreamer 视频解码器。请使用以下命令安装：{command}",
+      copy: "复制命令",
+    },
   },
   runtimeUpdate: {
     installAudio: "安装音频运行时",

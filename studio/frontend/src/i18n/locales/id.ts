@@ -6440,6 +6440,12 @@ export const id = {
     maximize: "Maksimalkan jendela",
     restore: "Pulihkan jendela",
     close: "Tutup jendela",
+    mediaCodecs: {
+      title: "Video yang dibuat mungkin tidak dapat diputar",
+      // {command}: an apt command line, never translated.
+      description: "Sistem ini tidak memiliki dekoder video GStreamer. Instal dengan: {command}",
+      copy: "Salin perintah",
+    },
   },
   runtimeUpdate: {
     installAudio: "Instal runtime audio",

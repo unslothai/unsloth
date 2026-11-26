@@ -686,7 +686,8 @@ export const en = {
   },
   managedEngines: {
     gpu: "GPUs",
-    gpuHelp: "Choose which GPUs to use.",
+    gpuHelp:
+      "Choose which GPUs in this machine to use. Serving one model across machines (for example two DGX Sparks) is not part of this release.",
     parallelism: "Multi-GPU mode",
     tensor: "Tensor parallel",
     pipeline: "Pipeline parallel",
@@ -4125,7 +4126,7 @@ export const en = {
       alternative: "Try instead: {alternative}",
       override: "Choose mode and GPUs",
       overrideHint:
-        "Automatic picks the fastest mode that fits. Untick a GPU to leave it free for chat or another run.",
+        "Automatic picks the fastest mode that fits. Untick a GPU to leave it free for chat or another run. Training uses the GPUs in this machine only: multi-node training (for example two DGX Sparks) is not part of this release.",
       modeLabel: "Mode",
       specLabel: "Layout",
       unavailable: "Not available here",
@@ -6161,6 +6162,12 @@ export const en = {
     maximize: "Maximize window",
     restore: "Restore window",
     close: "Close window",
+    mediaCodecs: {
+      title: "Generated videos may not play",
+      // {command}: an apt command line, never translated.
+      description: "This system is missing the GStreamer video decoders. Install them with: {command}",
+      copy: "Copy command",
+    },
   },
   runtimeUpdate: {
     // {component}: llama.cpp, whisper.cpp or audio.cpp; {components}: a list of them.

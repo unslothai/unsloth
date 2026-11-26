@@ -6132,6 +6132,12 @@ export const he = {
     maximize: "הגדל חלון",
     restore: "שחזר גודל חלון",
     close: "סגור חלון",
+    mediaCodecs: {
+      title: "ייתכן שסרטונים שנוצרו לא יופעלו",
+      // {command}: an apt command line, never translated.
+      description: "חסרים במערכת זו מפענחי הווידאו של GStreamer. התקינו אותם באמצעות: {command}",
+      copy: "העתקת הפקודה",
+    },
   },
   runtimeUpdate: {
     installAudio: "התקן את סביבת זמן הריצה לשמע",

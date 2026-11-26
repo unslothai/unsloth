@@ -70,6 +70,8 @@ export interface DiffusionStatus {
   baked_loras?: string[] | null;
   // The {id, weight} pairs the load baked in (int8 / fp8 builds); absent on older backends.
   baked_lora_specs?: LoraSpecInput[] | null;
+  // Whether the attached LoRA set is folded into the weights, and why not; null without LoRAs or on older backends.
+  lora_fuse?: string | null;
   vae_tiling?: boolean;
   workflows?: string[];
   // Absent on older backends: callers keep the historical limits (4 images, RGB, 16 px, 2048).

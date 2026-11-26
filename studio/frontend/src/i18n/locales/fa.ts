@@ -6413,6 +6413,12 @@ export const fa = {
     maximize: "بزرگ کردن پنجره",
     restore: "بازگرداندن اندازهٔ پنجره",
     close: "بستن پنجره",
+    mediaCodecs: {
+      title: "ممکن است ویدیوهای تولیدشده پخش نشوند",
+      // {command}: an apt command line, never translated.
+      description: "رمزگشاهای ویدیوی GStreamer روی این سیستم نصب نیستند. آن‌ها را با این دستور نصب کنید: {command}",
+      copy: "کپی دستور",
+    },
   },
   runtimeUpdate: {
     installAudio: "نصب محیط اجرای صدا",

@@ -464,7 +464,16 @@ def _core_check(
     ep_blocker = model.get("ep_blocker")
     if ep_blocker is None and ep > 1 and callable(getattr(caps, "_ep_blocker", None)):
         # Only the model_type is known here: Core's table of families expert parallel cannot shard.
-        ep_blocker = caps._ep_blocker(str(model.get("family") or ""), ep)
+        # A 4-bit load can change the experts layout (gpt-oss: per-expert Linear4bit lists).
+        family = str(model.get("family") or "")
+        four_bit = model.get("mode") == "qlora" or (
+            model.get("mode") != "full"
+            and "bnb-4bit" in str(request.get("model_name") or "").lower()
+        )
+        try:
+            ep_blocker = caps._ep_blocker(family, ep, load_in_4bit = four_bit)
+        except TypeError:  # a Core before the load_in_4bit argument
+            ep_blocker = caps._ep_blocker(family, ep)
     values = {
         "trainer": model.get("trainer", "sft"),
         "family": model.get("family", ""),
@@ -500,6 +509,8 @@ def _core_check(
             # Core names the model's own reason only in its layout tail ("...; models/tp_native.py: <why>)").
             tail = layout[:-1] if layout.endswith(")") else layout
             detail = tail.rsplit("; ", 1)[-1].partition(": ")[2].strip()
+            if not detail and ep > 1 and ep_blocker and message.startswith("Unsloth: ep x model:"):
+                detail = str(ep_blocker).strip().rstrip(".")
             message = message.split(": models/", 1)[0] + (f": {detail}." if detail else ".")
         raise ParallelPlanError(
             "parallel_unsupported",

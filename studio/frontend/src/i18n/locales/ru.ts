@@ -6061,6 +6061,12 @@ export const ru = {
     maximize: "Развернуть окно",
     restore: "Восстановить окно",
     close: "Закрыть окно",
+    mediaCodecs: {
+      title: "Созданные видео могут не воспроизводиться",
+      // {command}: an apt command line, never translated.
+      description: "В системе отсутствуют видеодекодеры GStreamer. Установите их командой: {command}",
+      copy: "Скопировать команду",
+    },
   },
   runtimeUpdate: {
     installAudio: "Установить среду выполнения для аудио",
