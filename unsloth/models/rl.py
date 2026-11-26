@@ -144,7 +144,8 @@ _ONLINE_DPO_VLLM_SYNC_FUNCTIONS = frozenset(
 def _strip_vllm_weight_loads(function, source, trainer_file):
     # GRPO's _move_model_to_vllm returns early under fast_inference (grpo_trainer__move_model_to_vllm),
     # and TRL's own vLLM (colocate or server) needs these lines to receive the trainer weights.
-    if trainer_file == "grpo_trainer" and function in _GRPO_VLLM_SYNC_FUNCTIONS:
+    # RLOO on TRL 0.22 to 0.27 carries the same methods (rloo_trainer__move_model_to_vllm).
+    if trainer_file in ("grpo_trainer", "rloo_trainer") and function in _GRPO_VLLM_SYNC_FUNCTIONS:
         return source
     if trainer_file == "online_dpo_trainer" and function in _ONLINE_DPO_VLLM_SYNC_FUNCTIONS:
         return source
@@ -4159,7 +4160,8 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "epilogue_fusion"   : True,
             "max_autotune"      : False,
             "shape_padding"     : True,
-            "trace.enabled"     : False,"""
+            "trace.enabled"     : False,
+            "triton.cudagraphs" : False,"""
 
         if DEVICE_TYPE == "cuda":
             # TMA only if every visible card is sm90+ (compile options are process-wide); an
@@ -4179,9 +4181,8 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                 cuda_options += f"""
             "cuda.cutlass_epilogue_fusion_enabled": {all_sm90},
             "cuda.cutlass_tma_only": {all_sm90},"""
+            # No cuda.* build knobs: CUTLASS only, and deprecated aliases that warn on torch 2.16.
             cuda_options += """
-            "cuda.compile_opt_level"              : "-O2",
-            "cuda.enable_cuda_lto"                : True,
         }"""
             new_options = base_options + cuda_options
         else:

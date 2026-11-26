@@ -1288,6 +1288,7 @@ export function TranslatePage() {
       })),
     );
   const attempt = useTranslateStore((state) => state.attempt);
+  const historyUnsaved = useTranslateStore((state) => state.historyUnsaved);
   const {
     setSource,
     setPrefs,
@@ -2070,6 +2071,11 @@ export function TranslatePage() {
             ) : output !== "" && stale ? (
               <p className="text-muted-foreground">{t("translate.stale")}</p>
             ) : null}
+            <p role="status" className="text-muted-foreground">
+              {result !== null && output !== "" && historyUnsaved
+                ? t("translate.history.notSaved")
+                : null}
+            </p>
           </div>
         </div>
       </div>

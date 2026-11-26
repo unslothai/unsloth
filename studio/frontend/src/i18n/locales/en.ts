@@ -686,7 +686,8 @@ export const en = {
   },
   managedEngines: {
     gpu: "GPUs",
-    gpuHelp: "Choose which GPUs to use.",
+    gpuHelp:
+      "Choose which GPUs in this machine to use. Serving one model across machines (for example two DGX Sparks) is not part of this release.",
     parallelism: "Multi-GPU mode",
     tensor: "Tensor parallel",
     pipeline: "Pipeline parallel",
@@ -4125,7 +4126,7 @@ export const en = {
       alternative: "Try instead: {alternative}",
       override: "Choose mode and GPUs",
       overrideHint:
-        "Automatic picks the fastest mode that fits. Untick a GPU to leave it free for chat or another run.",
+        "Automatic picks the fastest mode that fits. Untick a GPU to leave it free for chat or another run. Training uses the GPUs in this machine only: multi-node training (for example two DGX Sparks) is not part of this release.",
       modeLabel: "Mode",
       specLabel: "Layout",
       unavailable: "Not available here",
@@ -4146,8 +4147,8 @@ export const en = {
       summary: {
         single: "Training on one GPU",
         layerSplit: "Model is split layer by layer across {count} GPUs",
-        ddp: "Model fits one GPU: data parallel on {count} GPUs",
-        fsdp2: "Model is too big for one GPU: sharded across {count} GPUs",
+        ddp: "Each GPU trains a full copy: data parallel on {count} GPUs",
+        fsdp2: "Weights and optimizer state sharded across {count} GPUs",
         tp: "Each layer is split across {count} GPUs",
         pp: "Layers run as {count} pipeline stages, one per GPU",
         cp: "Each sequence is split across {count} GPUs",
@@ -4158,7 +4159,7 @@ export const en = {
         noGpu: "Select at least one GPU.",
         singleNeedsOne: "Single GPU uses exactly one GPU. Untick the others.",
         needsTwo: "This mode needs at least two GPUs.",
-        customSpec: "Enter a layout, for example dp=2,tp=2.",
+        customSpec: "Enter a layout, for example {example}.",
       },
     },
     preview: {
@@ -5092,6 +5093,7 @@ export const en = {
       showPromptDescription: "See exact instructions sent to the model.",
     },
     history: {
+      notSaved: "Not saved to History: the browser's storage is full.",
       title: "History",
       search: "Search history",
       empty: "Your translations appear here.",
@@ -6161,6 +6163,12 @@ export const en = {
     maximize: "Maximize window",
     restore: "Restore window",
     close: "Close window",
+    mediaCodecs: {
+      title: "Generated videos may not play",
+      // {command}: an apt command line, never translated.
+      description: "This system is missing the GStreamer video decoders. Install them with: {command}",
+      copy: "Copy command",
+    },
   },
   runtimeUpdate: {
     // {component}: llama.cpp, whisper.cpp or audio.cpp; {components}: a list of them.

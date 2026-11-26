@@ -30,13 +30,13 @@ import {
 } from "../src/features/translate/models.ts";
 import {
   TRANSLATE_HISTORY_FILE_NAME,
-  TRANSLATE_HISTORY_MAX_CHARS,
   TRANSLATE_HISTORY_MAX_ENTRIES,
   TRANSLATE_HISTORY_TOTAL_CHARS,
   addHistoryEntry,
   buildChatHandoff,
   capHistory,
   exportHistory,
+  recentForChat,
   parseHistory,
   searchHistory,
 } from "../src/features/translate/translate-history.ts";
@@ -335,11 +335,6 @@ test("history is newest first, replaces a repeat and stays bounded", () => {
     ["Salut", "Au revoir"],
   );
   assert.equal(addHistoryEntry(history, { ...entry, output: "  " }).length, 2);
-  assert.equal(
-    addHistoryEntry(history, { ...entry, source: "x".repeat(30_000) }).length,
-    2,
-    "a translation too long for localStorage is not kept",
-  );
   for (let i = 0; i < TRANSLATE_HISTORY_MAX_ENTRIES + 5; i += 1) {
     history = addHistoryEntry(
       history,
@@ -354,6 +349,54 @@ test("history is newest first, replaces a repeat and stays bounded", () => {
   );
 });
 
+test("a translated document of several pages is kept in the history", () => {
+  const source = "Page after page of a long document. ".repeat(300);
+  const output = "Page après page d'un long document. ".repeat(320);
+  assert.deepEqual(
+    addHistoryEntry([], {
+      source,
+      output,
+      target: "fr",
+      from: "en",
+      model: "Hy-MT2 1.8B",
+    }).map((item) => item.output),
+    [output],
+  );
+});
+
+test("chat with recent translations stays within a budget, newest first", () => {
+  const entry = (id: string, chars: number) => ({
+    id,
+    at: 0,
+    source: "s".repeat(Math.ceil(chars / 2)),
+    output: "o".repeat(Math.floor(chars / 2)),
+    target: "fr",
+    from: null,
+    model: null,
+  });
+  const ids = (history: ReturnType<typeof entry>[]) =>
+    recentForChat(history).map((item) => item.id);
+  assert.deepEqual(
+    ids(["a", "b", "c", "d", "e", "f"].map((id) => entry(id, 10))),
+    ["a", "b", "c", "d", "e"],
+  );
+  assert.deepEqual(
+    ids([
+      entry("a", 25_000),
+      entry("b", 50_000),
+      entry("c", 30_000),
+      entry("d", 1),
+    ]),
+    ["a", "b"],
+  );
+  assert.deepEqual(
+    ids(["a", "b", "c", "d", "e"].map((id) => entry(id, 20_000))),
+    ["a", "b", "c", "d", "e"],
+    "five entries at the former cap still go together",
+  );
+  assert.deepEqual(ids([entry("a", 250_000), entry("b", 10)]), ["a"]);
+});
+
 test("a damaged saved history is read as far as it is valid", () => {
   assert.deepEqual(parseHistory("nope"), []);
   const good = { id: "a", at: 1, source: "s", output: "o", target: "fr" };
@@ -364,7 +407,7 @@ test("a damaged saved history is read as far as it is valid", () => {
 });
 
 test("history stays under a total size, newest first", () => {
-  const big = "x".repeat(TRANSLATE_HISTORY_MAX_CHARS / 2 - 1);
+  const big = "x".repeat(9_999);
   const entries = Array.from({ length: 80 }, (_, i) => ({
     id: String(i),
     at: 1000 - i,

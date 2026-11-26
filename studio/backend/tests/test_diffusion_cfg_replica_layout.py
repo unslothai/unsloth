@@ -356,3 +356,237 @@ def test_a_family_whose_guidance_split_is_off_refuses_the_replica(monkeypatch, c
     assert mg.replica_layout_refusal(denoiser) is None
     monkeypatch.setenv(env, value)
     assert env in (mg.replica_layout_refusal(denoiser) or "")
+
+
+def _fake_cuda(mib, ordinal):
+    """A tensor that reports ``cuda:<ordinal>`` and ``mib`` MiB of storage, without a CUDA context (FakeTensor)."""
+    from torch._subclasses.fake_tensor import FakeTensorMode
+    with FakeTensorMode(allow_non_fake_inputs = True):
+        return torch.empty(mib << 18, dtype = torch.float32, device = f"cuda:{ordinal}")
+
+
+def _encoder_card_host(
+    monkeypatch,
+    *,
+    used_by_encoder,
+    util,
+    reread = 0.0,
+):
+    """2 same-model cards; cuda:1 holds this load's text encoder (placed by the companion split). ``util`` = the
+    card's utilisation at the first read; ``reread`` = what a read after the encoder finished returns."""
+
+    class Dit(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.w = torch.nn.Parameter(torch.zeros(4))
+
+    te = torch.nn.Module()
+    te.register_buffer("w", _fake_cuda(used_by_encoder, 1))
+
+    class Pipe:
+        transformer = Dit()
+        components = {"transformer": transformer, "text_encoder": te}
+
+    probes = {
+        0: mg.DeviceProbe(0, "RTX PRO 4000", 24564, 12000, util_pct = 90.0),
+        1: mg.DeviceProbe(1, "RTX PRO 4000", 24564, 24564 - 300 - used_by_encoder, util_pct = util),
+    }
+    rereads = []
+    monkeypatch.delenv(mg.CFG_PARALLEL_ENV, raising = False)
+    monkeypatch.setattr(mg, "cfg_parallel_decline", lambda pipe, **kw: None)
+    monkeypatch.setattr(
+        mg, "probe_devices", lambda ordinals, **kw: {o: probes[o] for o in ordinals}
+    )
+    monkeypatch.setattr(mg, "_module_device", lambda m: torch.device("cuda", 1 if m is te else 0))
+    monkeypatch.setattr(mg, "replica_need_mib", lambda *a, **k: 9400)
+    monkeypatch.setattr(mg, "_UTIL_SETTLE_S", 0.0)
+    monkeypatch.setattr(mg, "_smi_util_pct", lambda o: rereads.append(o) or reread)
+    pipe = Pipe()
+    pipe.rereads = rereads
+    mg._PLACEMENTS[pipe] = {
+        "placement": {"transformer": "cuda:0", "vae": "cuda:0", "text_encoder": "cuda:1"}
+    }
+    return pipe
+
+
+@pytest.mark.parametrize("automatic", [True, False])
+def test_the_card_holding_this_loads_own_encoder_takes_the_replica(monkeypatch, automatic):
+    # busy at the first read (the encoder just ran there), idle once it finished
+    pipe = _encoder_card_host(monkeypatch, used_by_encoder = 10000, util = 35.0, reread = 0.0)
+    try:
+        with mg.selection_scope(mg.MultiGpuSelection(0, (1,), automatic = automatic)):
+            assert mg.install_cfg_parallel(pipe, offload_policy = "none") is None
+        router = mg._CFG_ROUTERS[pipe]
+        assert str(router.secondary) == "cuda:1"
+        assert router.own_mib == 10000
+        assert pipe.rereads == ([1] if automatic else [])
+    finally:
+        mg.uninstall_cfg_parallel(pipe)
+        mg._PLACEMENTS.pop(pipe, None)
+
+
+def test_an_encoder_card_another_process_keeps_busy_is_not_borrowed(monkeypatch):
+    # recheck r9 P1: 92% busy with only this load's encoder and 400 MiB of other use; still busy after the encoder ran
+    pipe = _encoder_card_host(monkeypatch, used_by_encoder = 6000, util = 92.0, reread = 92.0)
+    try:
+        with mg.selection_scope(mg.MultiGpuSelection(0, (1,), automatic = True)):
+            reason = mg.install_cfg_parallel(pipe, offload_policy = "none")
+        assert reason is not None and "no idle card" in reason and "busy" in reason, reason
+        assert pipe not in mg._CFG_ROUTERS
+    finally:
+        mg.uninstall_cfg_parallel(pipe)
+        mg._PLACEMENTS.pop(pipe, None)
+
+
+def test_the_encoder_card_still_needs_room_for_the_replica_beside_the_encoder(monkeypatch):
+    pipe = _encoder_card_host(monkeypatch, used_by_encoder = 14500, util = 0.0)
+    try:
+        with mg.selection_scope(mg.MultiGpuSelection(0, (1,), automatic = True)):
+            reason = mg.install_cfg_parallel(pipe, offload_policy = "none")
+        assert reason is not None and "replica needs 9400 MiB" in reason, reason
+    finally:
+        mg.uninstall_cfg_parallel(pipe)
+        mg._PLACEMENTS.pop(pipe, None)
+
+
+def test_automatic_partner_does_not_count_this_loads_own_components():
+    primary = mg.DeviceProbe(0, "T4", 15360, 3000, util_pct = 100.0)
+    card = mg.DeviceProbe(1, "T4", 15360, 15360 - 300 - 4000, util_pct = 0.0)
+    pick, why = mg.automatic_partner(primary, [card], 6000)
+    assert pick is None and "busy" in why
+    pick, why = mg.automatic_partner(primary, [card], 6000, own_mib = {1: 4000})
+    assert pick == 1, why
+    # another process beyond this load's own memory is still busy
+    pick, why = mg.automatic_partner(primary, [card], 6000, own_mib = {1: 2000})
+    assert pick is None and "busy" in why
+    # planned but not yet placed: the replica must fit beside it
+    idle = mg.DeviceProbe(1, "T4", 15360, 15060, util_pct = 0.0)
+    pick, why = mg.automatic_partner(primary, [idle], 6000, pending_mib = {1: 9000})
+    assert pick is None and "beside this load's 9000 MiB" in why
+    pick, why = mg.automatic_partner(primary, [idle], 6000, pending_mib = {1: 7000})
+    assert pick == 1, why
+
+
+@pytest.mark.parametrize("util", [92.0, 100.0])
+def test_own_encoder_memory_never_waives_the_utilisation_check(util):
+    # recheck r9 P1 (both reviewers): this load's encoder on the card must not hide another process's compute
+    primary = mg.DeviceProbe(0, "RTX PRO 4500", 32768, 8000, util_pct = 100.0)
+    card = mg.DeviceProbe(1, "RTX PRO 4500", 32768, 32768 - 4096 - 512, util_pct = util)
+    pick, why = mg.automatic_partner(primary, [card], 8000, own_mib = {1: 4096})
+    assert pick is None and "busy" in why, why
+
+
+@pytest.mark.parametrize("reread, idle", [(0.0, True), (60.0, False)])
+def test_the_replica_build_rereads_a_busy_encoder_card_once_the_encoder_ran(
+    monkeypatch, reread, idle
+):
+    model = torch.nn.Linear(4, 4)
+    router = mg.CfgParallelRouter(model, primary = "cpu", secondary = "cpu")
+    router.secondary = torch.device("cuda", 1)
+    router.automatic_idle_only = True
+    router.own_mib = 10000
+    reads = iter([60.0, reread])
+    monkeypatch.setattr(router, "_secondary_free_total_mib", lambda: (24564 - 300 - 10000, 24564))
+    monkeypatch.setattr(mg, "_smi_util_pct", lambda o: next(reads))
+    monkeypatch.setattr(mg, "_UTIL_SETTLE_S", 0.0)
+    monkeypatch.setattr(mg, "replica_need_mib", lambda *a, **k: 9400)
+
+    def past_the_idle_gate(module):
+        raise RuntimeError("past the idle gate")
+
+    monkeypatch.setattr(mg, "weights_fingerprint", past_the_idle_gate)
+    router._build_replica(None)
+    reason = router.disabled_reason or ""
+    assert ("past the idle gate" in reason) is idle and ("no longer idle" in reason) is (
+        not idle
+    ), reason
+
+
+def test_the_replica_build_counts_a_card_without_this_loads_encoder_as_busy(monkeypatch):
+    model = torch.nn.Linear(4, 4)
+    router = mg.CfgParallelRouter(model, primary = "cpu", secondary = "cpu")
+    router.secondary = torch.device("cuda", 1)
+    router.automatic_idle_only = True
+    router.own_mib = 0
+    monkeypatch.setattr(router, "_secondary_free_total_mib", lambda: (24000, 24564))
+    monkeypatch.setattr(mg, "_smi_util_pct", lambda o: 60.0)
+    monkeypatch.setattr(mg, "replica_need_mib", lambda *a, **k: 9400)
+    router._build_replica(None)
+    assert "no longer idle" in (router.disabled_reason or ""), router.disabled_reason
+
+
+def test_own_encoder_bytes_are_credited_to_the_card_that_holds_them():
+    # recheck r9 P2: a 1 MiB buffer on cuda:1 and 2048 MiB on the host credit 1 MiB to cuda:1, not 2049
+    te = torch.nn.Module()
+    te.register_buffer("on_card", _fake_cuda(1, 1))
+    te.register_buffer("on_host", torch.empty(2048 << 18, dtype = torch.float32, device = "meta"))
+    te.register_buffer("other_card", _fake_cuda(3, 2))
+
+    class Pipe:
+        components = {"text_encoder": te}
+
+    assert mg._own_mib_on_cards(Pipe(), ["text_encoder"]) == {1: 1, 2: 3}
+
+
+@pytest.mark.parametrize("encode_mib, armed", [(None, True), (6000, False)])
+def test_a_replica_beside_the_encoder_leaves_room_for_its_next_encode(
+    monkeypatch, encode_mib, armed
+):
+    # Codex P2 on #19671: the replica's weights stay between renders, so the next uncached prompt encodes beside them;
+    # 9000 MiB of weights + 400 working + 1024 reserve fit 14264 free, but not with a 6000 MiB encode peak
+    pipe = _encoder_card_host(monkeypatch, used_by_encoder = 10000, util = 0.0)
+    monkeypatch.setattr(mg, "_module_mib", lambda m: 9000 if m is pipe.transformer else 0)
+    mg.note_encoder_working_mib(pipe, encode_mib)
+    try:
+        with mg.selection_scope(mg.MultiGpuSelection(0, (1,), automatic = False)):
+            reason = mg.install_cfg_parallel(pipe, offload_policy = "none")
+        if armed:
+            assert reason is None and str(mg._CFG_ROUTERS[pipe].secondary) == "cuda:1"
+        else:
+            assert (
+                reason is not None and "for the next encode of the text encoder" in reason
+            ), reason
+    finally:
+        mg.uninstall_cfg_parallel(pipe)
+        mg._PLACEMENTS.pop(pipe, None)
+
+
+def test_the_replica_build_beside_the_encoder_keeps_room_for_its_next_encode(monkeypatch):
+    model = torch.nn.Linear(4, 4)
+
+    class Pipe:
+        pass
+
+    pipe = Pipe()
+    mg.note_encoder_working_mib(pipe, 6000)
+    router = mg.CfgParallelRouter(model, primary = "cpu", secondary = "cpu")
+    router.secondary = torch.device("cuda", 1)
+    router.encoder_card = True
+    router.pipe_ref = mg.weakref.ref(pipe)
+    monkeypatch.setattr(router, "_secondary_free_total_mib", lambda: (14264, 24564))
+    monkeypatch.setattr(mg, "replica_need_mib", lambda *a, **k: 9400)
+    monkeypatch.setattr(mg, "_module_mib", lambda m: 9000)
+    router._build_replica(None)
+    assert "MiB more for the next encode beside it" in (
+        router.disabled_reason or ""
+    ), router.disabled_reason
+
+
+def test_encode_extra_is_what_the_peak_exceeds_the_idle_working_set_and_reserve_by():
+    dit = torch.nn.Linear(2, 2)
+
+    class Pipe:
+        pass
+
+    pipe = Pipe()
+    import unittest.mock as um
+
+    with um.patch.object(mg, "_module_mib", lambda m: 9000):
+        assert (
+            mg.beside_encoder_extra_mib(pipe, dit, 9400) == 0
+        )  # default encoder headroom fits the reserve
+        mg.note_encoder_working_mib(pipe, 6000)
+        assert mg.beside_encoder_extra_mib(pipe, dit, 9400) == 6000 - 400 - 1024
+        assert (
+            mg.beside_encoder_extra_mib(pipe, dit, 15000) == 0
+        )  # a working set larger than the encode
