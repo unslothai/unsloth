@@ -844,3 +844,61 @@ def test_auto_resize_waits_for_an_unrelated_forward(monkeypatch):
     model(torch.zeros(1, 16, 4))
     assert len(planner.kept) == 2 and planner.forwards == 0
     monkeypatch.undo()
+
+
+def test_default_declines_a_decoder_layout_it_cannot_find(monkeypatch):
+    # The unset default never breaks get_peft_model: no decoder layers found means fully checkpointed, while an
+    # explicit "auto" still raises.
+    ns, found = _load()
+    gib = 1 << 30
+    memory = _fake_cuda(monkeypatch, ns, usable = 4 * gib)
+
+    def missing(model):
+        raise RuntimeError("could not locate decoder layers")
+
+    ns["find_decoder_layers"] = missing
+    model = _FakeModel([gib // 16] * 2, memory)
+    assert ns["_AutoCheckpointSkip"].install(model, quiet = True) is None
+    with pytest.raises(RuntimeError):
+        ns["_AutoCheckpointSkip"].install(model, quiet = False)
+    monkeypatch.undo()
+
+
+def test_auto_replacing_auto_clears_the_old_marks(monkeypatch):
+    ns, found = _load()
+    gib = 1 << 30
+    memory = _fake_cuda(monkeypatch, ns, usable = 4 * gib + (1 << 20))
+    model = _FakeModel([gib // 16] * 8, memory, trainable = True)
+    ns["skip_checkpointing"](model, "auto")
+    _fake_step(model, rows = 16)
+    model(torch.zeros(1, 16, 4))
+    assert [bool(layer.gradient_checkpointing) for layer in model.model.layers] == [False] * 8
+    ns["skip_checkpointing"](model, "auto")
+    assert [bool(layer.gradient_checkpointing) for layer in model.model.layers] == [True] * 8
+    monkeypatch.undo()
+
+
+def test_a_step_without_an_eager_resize_falls_back_to_the_plan(monkeypatch):
+    # A forward compiled as a whole never runs the re-size hook eagerly: after one such optimizer step the
+    # planned count (sized for the trainer's whole batch) replaces the last eager batch's marks.
+    ns, found = _load()
+    gib = 1 << 30
+    memory = _fake_cuda(monkeypatch, ns, usable = 4 * gib + (1 << 20))
+    ns["_foreign_cuda_bytes"] = lambda device: 0
+    model = _FakeModel([gib // 16] * 8, memory, trainable = True)
+    ns["skip_checkpointing"](model, "auto")
+    planner = model._unsloth_auto_skip
+    planner.target_batch = 4
+    _fake_step(model, rows = 16)
+    model(torch.zeros(1, 16, 4))
+    optimizer = torch.optim.SGD([layer.adapter for layer in model.model.layers], lr = 0.0)
+    _backward(model)
+    optimizer.step()  # the planning step
+    model(torch.zeros(1, 16, 4))
+    _backward(model)
+    optimizer.step()  # an eager re-size ran in this step
+    assert len(planner.kept) == 8 and planner.sizing is not None
+    _backward(model)
+    optimizer.step()  # no training forward reached the hook
+    assert len(planner.kept) == 2 and planner.sizing is None
+    monkeypatch.undo()

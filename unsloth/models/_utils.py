@@ -11886,6 +11886,7 @@ class _AutoCheckpointSkip:
         self.planned = 0
         self.backward_seen = False
         self.foreign = None
+        self.forwards_seen = -1
         self.layers = layers
         self.probe = probe
         self.handles = []
@@ -11926,7 +11927,16 @@ class _AutoCheckpointSkip:
         previous = getattr(model, "_unsloth_auto_skip", None)
         if previous is not None:
             previous.remove()
-        layers = find_decoder_layers(model) if find_decoder_layers is not None else []
+            if previous.sizing is not None:
+                previous.unmark()
+        try:
+            layers = find_decoder_layers(model) if find_decoder_layers is not None else []
+        except Exception:
+            if not quiet:
+                raise
+            return (
+                None  # the unset default: a decoder layout it cannot find stays fully checkpointed
+            )
         swapper = getattr(model, "_unsloth_block_swap", None)
         swapped = set(getattr(swapper, "indices", None) or ())
         eligible = [
@@ -12318,6 +12328,12 @@ class _AutoCheckpointSkip:
             planner = planner_ref()
             if planner is None or planner.sizing is None:
                 return
+            if planner.forwards == planner.forwards_seen:
+                # A whole step without an eager re-size (the forward runs compiled as a whole, or bypasses
+                # the hooked module): the marks of the last eager batch must not stand for other shapes.
+                planner._stop_resizing(planner.planned)
+                return
+            planner.forwards_seen = planner.forwards
             margin = max(planner.MARGIN, planner.sizing["usable"] // 20)
             if _foreign_cuda_bytes(device) - planner.foreign > margin:
                 planner._stop_resizing(0)
