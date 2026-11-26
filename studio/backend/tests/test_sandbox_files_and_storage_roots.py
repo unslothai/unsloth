@@ -370,6 +370,7 @@ def test_sandbox_listing_route_exists():
     sandbox_routes = sorted(r.path for r in router.routes if "sandbox" in r.path)
     print(f"\nsandbox routes = {sandbox_routes}")
     assert sandbox_routes == [
+        "/sandbox-download-link",
         "/sandbox/{session_id}",
         "/sandbox/{session_id}/open",
         "/sandbox/{session_id}/reveal",
@@ -2936,11 +2937,9 @@ def test_a_large_file_is_streamed_rather_than_buffered():
     """Streaming avoids a Blob and an IPC copy of a multi-gigabyte artifact in the renderer."""
     view, save = _sandbox_file_save_sources()
 
-    assert "downloadUrlStreaming(" in save
+    assert "downloadShortLivedUrl(saveAs," in save
     assert "response.blob()" not in save
     assert "response.blob()" not in view
-    # The streaming path sends no headers, so the bearer travels as a query parameter.
-    assert "token=" in save
 
 
 def test_a_same_size_overwrite_is_still_reported(tmp_path, monkeypatch):
@@ -3364,9 +3363,9 @@ def test_a_native_download_gets_an_absolute_url():
     """Native download rejects relative URLs, so a bare /api path failed before the request."""
     _, save = _sandbox_file_save_sources()
 
-    url = save[save.index("const url = ") + len("const url = ") :]
-    assert url.startswith("apiUrl(")
-    assert url.index("apiUrl(") < url.index("downloadUrlStreaming(url")
+    assert (
+        "return apiUrl(`${path}${separator}download_token=${encodeURIComponent(token)}`);" in save
+    )
 
 
 def _forget_sandbox_state(tools):
@@ -5658,16 +5657,17 @@ def test_a_file_outside_the_hash_budget_is_not_reported_as_written(tmp_path, mon
     assert "z-report.csv" not in sentinels, sentinels
 
 
-def test_the_file_download_button_refreshes_the_session_first():
-    """The URL carries the bearer, so an expired token would save a 401 body as the file."""
+def test_the_file_download_button_requests_an_authenticated_scoped_link():
     _, save = _sandbox_file_save_sources()
-    assert 'authFetch(apiUrl(path), { method: "HEAD" })' in save
-    assert save.index("authFetch(apiUrl(path)") < save.index("const token = getAuthToken()")
-    # A refused probe stops the save, rather than streaming the error body to disk.
-    assert save.index("if (!probe.ok) throw") < save.index("downloadUrlStreaming(")
+    assert "new URLSearchParams({ session_id: sessionId, filename: name })" in save
+    request = "authFetch(apiUrl(`/api/inference/sandbox-download-link?${query}`),"
+    assert save.index("downloadShortLivedUrl(saveAs,") < save.index(request)
+    assert 'method: "POST"' in save
+    assert save.index("if (!response.ok) throw") < save.index("await response.json()")
+    assert "getAuthToken()" not in save
 
 
-def test_the_download_route_answers_the_probe_the_button_sends(tmp_path, monkeypatch):
+def test_the_download_route_still_answers_legacy_head_requests(tmp_path, monkeypatch):
     """The download route must answer HEAD: FastAPI does not add it to a GET route."""
     asyncio, inference = _shared_setup_15(monkeypatch, tmp_path)
 

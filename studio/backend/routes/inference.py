@@ -39049,14 +39049,19 @@ def _sandbox_regular_file(session_id: str, filename: str) -> tuple[str, str]:
     """(sandbox_dir, contained path) of a regular (not linked) file in the sandbox, or a 404."""
     import stat as _stat
 
-    sandbox_dir, path = _contained_sandbox_path(session_id, filename)
-    try:
-        entry = os.lstat(path)
-    except OSError:
-        raise HTTPException(status_code = 404, detail = "Not found") from None
-    if not _stat.S_ISREG(entry.st_mode):
-        raise HTTPException(status_code = 404, detail = "Not found")
-    return sandbox_dir, path
+    for _attempt in range(2):
+        sandbox_dir, path = _contained_sandbox_path(session_id, filename)
+        try:
+            entry = os.lstat(path)
+        except FileNotFoundError:
+            # The legacy sandbox move can finish between resolution and lstat.
+            continue
+        except OSError:
+            break
+        if _stat.S_ISREG(entry.st_mode):
+            return sandbox_dir, path
+        break
+    raise HTTPException(status_code = 404, detail = "Not found")
 
 
 def _unmoved_sandbox_file(root: str, path: str) -> str:

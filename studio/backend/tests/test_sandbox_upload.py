@@ -210,6 +210,25 @@ def test_sandbox_download_link_is_bound_to_the_session_file_and_expiry(tools, mo
     assert inference._sandbox_download_account(token, session, name) is None
 
 
+def test_sandbox_download_link_follows_a_concurrent_legacy_move(monkeypatch, tmp_path):
+    from routes import inference
+
+    legacy = tmp_path / "legacy"
+    legacy.mkdir()
+    (legacy / "report.txt").write_text("report", encoding = "utf-8")
+    migrated = tmp_path / "migrated"
+
+    def resolve(_session, filename):
+        if legacy.exists():
+            legacy.rename(migrated)
+            return str(legacy), str(legacy / filename)
+        return str(migrated), str(migrated / filename)
+
+    monkeypatch.setattr(inference, "_contained_sandbox_path", resolve)
+    link = asyncio.run(inference.create_sandbox_download_link("thread", "report.txt", "u"))
+    assert link.status_code == 200
+
+
 @pytest.mark.parametrize("token", [None, "older-client-token"])
 def test_sandbox_download_keeps_existing_authentication(tools, monkeypatch, token):
     from types import SimpleNamespace
