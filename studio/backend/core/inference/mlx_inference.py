@@ -5037,6 +5037,37 @@ def _vlm_generate_kwargs(inputs):
     }
 
 
+@contextmanager
+def _spliced_columns(model):
+    """Yields ``[n]``: the columns the widest prompt embedding filled past its ids. A model that
+    splices an image's features in place of its one placeholder id (FastVLM) fills more positions
+    than mlx-vlm's id-counted ``prompt_tokens`` names."""
+    spliced, widest = [0], [-1]
+    embed = getattr(model, "get_input_embeddings", None)
+    if embed is None:
+        yield spliced
+        return
+    own = vars(model).get("get_input_embeddings")
+
+    def counted(*args, **kwargs):
+        out = embed(*args, **kwargs)
+        ids = kwargs.get("input_ids", args[0] if args else None)
+        shape = getattr(ids, "shape", None)
+        columns = getattr(getattr(out, "inputs_embeds", None), "shape", None)
+        if shape and columns and len(columns) > 1 and shape[-1] > widest[0]:
+            widest[0], spliced[0] = shape[-1], int(columns[1]) - int(shape[-1])
+        return out
+
+    model.get_input_embeddings = counted
+    try:
+        yield spliced
+    finally:
+        if own is None:
+            del model.get_input_embeddings
+        else:
+            model.get_input_embeddings = own
+
+
 class _VLMMediaBlock:
     """A prompt's rows through its last vision token, prefilled by Studio: models whose vision
     tokens attend to each other prefill in one forward that lands off the grid, and this is that
@@ -9272,6 +9303,7 @@ class MLXInferenceBackend:
                 generation_scope.enter_context(
                     self._generation_scopes("vision", *(() if draft is None else ("speculative",)))
                 )
+                spliced = generation_scope.enter_context(_spliced_columns(self._model))
                 final_response = None
                 clip_paths = []
                 try:
@@ -9416,10 +9448,12 @@ class MLXInferenceBackend:
                         stop_ids = _mlx_stop_token_ids(tokenizer, self._model)
                         # mlx-vlm rates the full prompt against its prefill, which omits rows the session produced first.
                         prompt_n = int(getattr(final_response, "prompt_tokens", 0) or 0)
-                        prefilled_n = max(prompt_n - cached_n, 0)
                         prompt_tps = float(getattr(final_response, "prompt_tps", 0.0) or 0.0)
-                        if prompt_tps and (cached_n or produced_s):
-                            prompt_tps = prefilled_n / (prompt_n / prompt_tps + produced_s)
+                        prompt_s = prompt_n / prompt_tps if prompt_tps else 0.0
+                        prompt_n += spliced[0]
+                        prefilled_n = max(prompt_n - cached_n, 0)
+                        if prompt_tps and (cached_n or produced_s or spliced[0]):
+                            prompt_tps = prefilled_n / (prompt_s + produced_s)
                         self.last_generation_stats = _build_generation_stats(
                             prefilled_n,
                             prompt_tps,
