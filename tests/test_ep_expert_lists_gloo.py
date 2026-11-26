@@ -26,7 +26,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "_sh
 
 from test_ep_moe_families_gloo import FAMILIES, _local_config, _rows, _sum_loss  # noqa: E402
 
-# A shared expert: runs on every token beside the routed experts (H to H).
 _SHARED = ("shared_expert", "shared_experts", "shared_mlp")
 SHARED_FAMILIES = ("qwen2_moe", "glm4_moe", "deepseek_v3", "qwen3_next", "hunyuan_v1_moe")
 
@@ -97,8 +96,7 @@ def _case_list_family(
     shared_calls = {"ref": 0, "ep": 0}
 
     def count_shared(model, key):
-        # `warm`: one forward without gradients first (pass 1 learns which children it may skip), then count the
-        # shared expert calls of the measured forward / backward.
+        # `warm`: one no-grad forward first so pass 1 learns which children it may skip.
         if not warm:
             return
         with torch.no_grad():
@@ -190,7 +188,6 @@ def _case_list_family(
         "held": held,
         "range": (shard.lo, shard.hi, shard.experts),
         "calls": shard.calls,
-        # shared expert calls of one measured forward / backward: this rank's vs one process' per row batch
         "shared_calls": (ep_calls, ref_calls / world),
         "pass1_skips": {k: [n for n, _ in v] for k, v in getattr(shard, "skip", {}).items()},
     }
@@ -626,8 +623,7 @@ def test_ep_expert_lists_with_checkpointing_match_one_process(family):
 @pytest.mark.parametrize("family", SHARED_FAMILIES)
 @pytest.mark.parametrize("gc", (False, True))
 def test_ep_expert_lists_run_the_shared_expert_once(family, gc):
-    """Pass 1 only records the expert calls: after the first forward it skips the shared expert, so one step calls
-    it as often as one process does (pass 1 used to run it too, discarding the result), with the same results."""
+    """After the first forward, pass 1 skips the shared expert: calls and results match one process."""
     if gc and family not in ("qwen2_moe", "deepseek_v3"):
         pytest.skip("checkpointing: two families are enough")
     results = _spawn("_case_list_family", gc = gc, warm = True, **_spec(family))

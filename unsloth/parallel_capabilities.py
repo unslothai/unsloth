@@ -1311,7 +1311,6 @@ _MOE_EVIDENCE = {
         + ("eager: no compiled region",)
         for family in ("qwen3_moe", "olmoe", "glm4_moe", "gpt_oss")
     },
-    # load_in_4bit gpt-oss: zoo's per-expert Linear4bit lists, cut by expert (models/ep_expert_lists.py).
     ("gpt_oss", "qlora", False, "ep"): (
         "tests/test_ep_expert_lists_gloo.py::test_ep_gpt_oss_linear_lists_match_one_process"
         " + 2x T4 gpt-oss-20b bnb-4bit ep2 vs one T4",
@@ -1334,9 +1333,7 @@ _EP_BLOCKED_FAMILIES = {
     "jetmoe": "its experts forward takes (layer_input,), not (hidden_states, top_k_index, top_k_weights)",
     "longcat_flash": "zero / identity experts: the experts module has no integer num_experts",
 }
-# load_in_4bit layouts that shard only when every rank gets the same number of experts: zoo's GptOssExpertsBnb4bit
-# keeps one Linear4bit per expert (models/ep_expert_lists.py, shard_fused_lists). Expert counts of the released
-# checkpoints (gpt-oss-20b, gpt-oss-120b); a loaded model is read by structure instead.
+# load_in_4bit per-expert lists shard only with equal experts per rank; released checkpoint expert counts.
 _EP_EVEN_4BIT_FAMILIES = {"gpt_oss": (32, 128)}
 
 

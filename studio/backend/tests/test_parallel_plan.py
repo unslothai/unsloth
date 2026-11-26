@@ -511,7 +511,6 @@ def test_gpt_oss_qlora_plans_ep_like_16bit():
         _model(need = 6.0, moe = True, family = "gpt_oss"),
     )
     assert lora["mode"] == "ep" and lora["spec"] == "ep=2", lora
-    # load_in_4bit gpt-oss experts are per-expert Linear4bit lists, which ep shards by expert (32 / 128 experts).
     qlora = pp.plan(
         {"parallel_mode": "ep"},
         ep_host,
@@ -525,7 +524,6 @@ def test_gpt_oss_qlora_plans_ep_like_16bit():
         _model(need = 6.0, moe = True, family = "gpt_oss"),
     )
     assert named["mode"] == "ep" and named["spec"] == "ep=2", named
-    # Automatic still never picks expert parallel, but lists it as available.
     fits = pp.plan(
         {"parallel_mode": "auto"},
         ep_host,

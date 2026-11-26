@@ -247,8 +247,7 @@ def test_hunyuan_v1_moe_is_not_blocked_by_its_default_config():
 
 
 def test_gpt_oss_4bit_is_planned_when_the_experts_split_evenly():
-    """load_in_4bit gpt-oss (zoo's per-expert Linear4bit lists) shards by expert: before a model loads, only an ep
-    that does not divide the released checkpoints' expert counts (32, 128) is refused."""
+    """load_in_4bit gpt-oss is refused only for an ep not dividing the released expert counts (32, 128)."""
     assert caps._ep_blocker("gpt_oss", 2) == ""
     assert caps._ep_blocker("gpt_oss", 2, load_in_4bit = False) == ""
     for ep in (2, 4, 8):

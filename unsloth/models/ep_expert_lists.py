@@ -217,8 +217,7 @@ class _ListShard:
         self.experts, self.group, self.ep = experts, group, ep
         self.calls = 0  # block forwards that went through the exchange (engagement count)
         self.containers = []  # modules holding this rank's experts under their global indices
-        # Pass 1 only records the expert calls; children it may skip (shared experts), per block.training:
-        # learned on the first forward in that mode (_learn_skips), () when none.
+        # Children pass 1 may skip, per block.training; learned by _learn_skips.
         self.skip = {}
 
 
@@ -428,8 +427,6 @@ def _exchange(shard, calls, like):
 
 
 class _Zeros(nn.Module):
-    """Stands in for a skipped child during pass 1: zeros shaped like its input (pass 1's output is discarded)."""
-
     def __init__(self, dtype):
         super().__init__()
         self.dtype = dtype
@@ -451,8 +448,7 @@ def _skipping(block, skip):
 
 @contextlib.contextmanager
 def _watch_shapes(block):
-    """Direct children other than the experts whose every call maps a tensor to one of the same shape (H to H, a
-    shared expert): {name: output dtype}, filled once the block forward ran."""
+    """Non-expert children mapping H to H (shared experts): {name: output dtype}."""
     seen, handles = {}, []
 
     def hook(name):
@@ -491,9 +487,7 @@ def _same_rng(a, b):
 
 
 def _learn_skips(shard, prior, args, kwargs, calls, before, devices, candidates):
-    """Pass 1 again from the same RNG state with `candidates` replaced by zeros, without autograd: they may be
-    skipped in this mode only if the recorded expert calls (experts, rows bitwise) and the RNG draws are unchanged.
-    Leaves the RNG where the real pass 1 left it."""
+    """Re-run pass 1 with `candidates` zeroed: skippable only if expert calls and RNG draws are bitwise unchanged."""
     lst = shard.block._modules["experts"]
     skip = tuple(sorted(candidates.items()))
     if not skip:
@@ -541,8 +535,7 @@ def _list_forward(shard, prior):
         skip = shard.skip.get(mode)
         lst._mode = ("record", calls)
         try:
-            # Pass 1's output is discarded: children that cannot change the expert calls (shared experts) are not
-            # run. The first forward in each mode runs them all and learns which ones those are.
+            # Pass 1 output is discarded, so skip children that cannot change the expert calls.
             with (
                 _skipping(shard.block, skip or ()),
                 (
