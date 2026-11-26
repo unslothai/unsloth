@@ -127,7 +127,8 @@ def test_studio_external_adapter_disables_the_nudge_on_the_external_loop():
     assert "nudge_tool_calls: runtime.nudgeToolCalls" not in external_body
 
     local_src = src.replace(external_body, "")
-    assert "nudge_tool_calls: runtime.nudgeToolCalls" in local_src
+    # Character chats keep it off: an in-character "I'll" is not an announced tool call.
+    assert "nudge_tool_calls: characterRun ? false : runtime.nudgeToolCalls" in local_src
     assert "run_tools_locally: true" not in local_src
 
 
