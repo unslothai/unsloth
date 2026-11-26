@@ -614,7 +614,7 @@ def divisible_for_scheme(scheme: str) -> int:
 
 
 # int8 leads: full-rate on consumer cards (which halve fp8 FP32 accumulate).
-# nvfp4 reaches auto only via ``_FAMILY_AUTO_PREFER``.
+# nvfp4 reaches auto only via ``_FAMILY_AUTO_PREFER``. sm_103 reorders its rung: ``_sm103_order``.
 _AUTO_LADDER: tuple[tuple[tuple[int, int], tuple[str, ...]], ...] = (
     (
         (10, 0),
@@ -623,6 +623,54 @@ _AUTO_LADDER: tuple[tuple[tuple[int, int], tuple[str, ...]], ...] = (
     ((8, 9), (TQ_INT8, TQ_FP8)),  # Ada sm_89 / Hopper sm_90
     ((8, 0), (TQ_INT8,)),  # Ampere sm_80 / sm_86
 )
+# Blackwell Ultra (B300 / GB300) only, matched exactly: its tensor cores drop nearly all dense INT8 throughput
+# (datasheet 307 TOPS INT8 vs 9 PFLOPS FP8, sparse). Other caps (sm_101 / sm_107 / sm_110 / sm_12x) keep the ladder.
+_SM103_CAP = (10, 3)
+# FP8 first changes the output, so it applies only where fp8 passed the accuracy gate against bf16 (B200, LPIPS mean
+# <= 0.25 with the SSIM / CLIP bars; outputs/prequant_gate): flux.1 schnell / dev / krea-dev, both FLUX.2s, Z-Image,
+# Krea 2, Lumina 2, Qwen-Image with the activation floor (28/28), FLUX.3 Klein 0.033 (keep-list, 11 cases),
+# Wan2.2-TI2V-5B 0.17. Every other family (unmeasured, or fp8 over the bar) keeps the sm_100 int8-first order.
+_SM103_FP8_FIRST_FAMILIES = frozenset(
+    {
+        "flux.1",
+        "flux.2-klein",
+        "flux.2-dev",
+        "flux.3-klein",
+        "flux.3-klein-base",
+        "z-image",
+        "krea-2",
+        "lumina-2",
+        "qwen-image",
+        "wan2.2-ti2v-5b",
+    }
+)
+# Of those, the families with an MXFP8 row on record (same gate): flux.1 schnell 0.160, FLUX.2 Klein 0.091,
+# FLUX.2-dev 0.106, Z-Image 0.149, Krea 2 0.170, FLUX.3 Klein 0.024. Only they try mxfp8 before int8 when fp8 fails.
+_SM103_MXFP8_BEFORE_INT8_FAMILIES = frozenset(
+    {
+        "flux.1",
+        "flux.2-klein",
+        "flux.2-dev",
+        "flux.3-klein",
+        "flux.3-klein-base",
+        "z-image",
+        "krea-2",
+    }
+)
+
+
+def _sm103_order(order: list[str], family_key: str) -> list[str]:
+    """``order`` for an FP8-first family on sm_103: fp8, then nvfp4 (a gated head), then int8 and mxfp8, with mxfp8
+    ahead of int8 only for a family whose mxfp8 output is on record. Anything else keeps its place after them."""
+    mxfp8_first = family_key in _SM103_MXFP8_BEFORE_INT8_FAMILIES
+    rank = {
+        TQ_FP8: 0,
+        TQ_NVFP4: 1,
+        TQ_MXFP8: 2 if mxfp8_first else 3,
+        TQ_INT8: 3 if mxfp8_first else 2,
+    }
+    return sorted(order, key = lambda scheme: rank.get(scheme, 4))
+
 
 # Families whose activation ranges break specific schemes at the MODEL level (``FamilyProfile.scheme_deny``; the smoke
 # probe only proves the GEMM runs). The deny also applies to an EXPLICIT request; a passing NVFP4 gate record lifts an
@@ -1528,7 +1576,7 @@ def select_transformer_quant_scheme(
         if not _scheme_supported(requested, device, unproven_ok = unproven_ok):
             return None
         return requested
-    cap = _capability()
+    cap = _target_capability(target)
     if cap is None:
         return None
     for scheme in _auto_scheme_order(family, device, cap, base_repo):
@@ -1610,7 +1658,7 @@ def auto_scheme_candidates(
     if not dense_transformer_supported(target):
         return ()
     device = str(getattr(target, "device", "cuda"))
-    cap = _capability()
+    cap = _target_capability(target)
     if cap is None:
         return ()
     return tuple(
@@ -1635,6 +1683,7 @@ def _auto_scheme_order(
             break
     if not tier:
         return ()
+    key = str(family or "").strip().lower()
     prefer = _FAMILY_AUTO_PREFER.get(str(family or "").strip().lower())
     if prefer is not None and (prefer.gated or prefer.backend) and not nvfp4_diffusion_enabled():
         # Switch off: drop gated/backend rows before their gate record or backend probe (imports flashinfer).
@@ -1654,6 +1703,8 @@ def _auto_scheme_order(
     for scheme in without_nvfp4(head + tier):
         if scheme not in order and scheme not in skip:
             order.append(scheme)
+    if tuple(cap) == _SM103_CAP and key in _SM103_FP8_FIRST_FAMILIES:
+        order = _sm103_order(order, key)
     return tuple(order)
 
 
@@ -1673,6 +1724,12 @@ def auto_scheme_candidates_cached(target: Any, family: Optional[str] = None) -> 
         if _auto_offers_scheme(scheme, family, None, frozenset({TQ_NVFP4}), None)
         and _SMOKE_CACHE.get((scheme, card), True)
     )
+
+
+def _target_capability(target: Any) -> Optional[tuple[int, int]]:
+    """The capability of ``target``'s card (its ordinal), else the current device's, as the cached readers use."""
+    ordinal = getattr(target, "ordinal", None)
+    return _capability() if ordinal is None else _capability(ordinal)
 
 
 def _capability(ordinal: Optional[int] = None) -> Optional[tuple[int, int]]:
