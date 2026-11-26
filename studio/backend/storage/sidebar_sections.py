@@ -92,7 +92,7 @@ def _merge(
 
     live = {key for key, value in sections.items() if value is not None}
     result = {"sections": sections}
-    imported_rows: dict[str, set[str]] = {}
+    assigned_rows: dict[str, set[str]] = {}
     for field in ("sectionByChatId", "sectionByProjectId", "sectionByPageId"):
         assignments = dict(stored.get(field, {}))
         for key in base[field].keys() | layout[field].keys():
@@ -109,8 +109,8 @@ def _merge(
                 continue
             if target is None or target in live:
                 assignments[key] = target
-                if importing and target is not None:
-                    imported_rows.setdefault(target, set()).add(key)
+                if target is not None:
+                    assigned_rows.setdefault(target, set()).add(key)
         result[field] = {
             key: value if value in live else None for key, value in assignments.items()
         }
@@ -136,7 +136,7 @@ def _merge(
             if importing and key in row_order:
                 # Only newly imported rows receive a rank from this browser. Existing rows
                 # may since have been dragged, unranked, unfiled, or filed elsewhere.
-                eligible = set(saved) | imported_rows.get(key, set())
+                eligible = set(saved) | assigned_rows.get(key, set())
                 ids = [row for row in ids if row in eligible]
             if not importing:
                 # Pages and locally pinned projects can be absent from the editing browser's list.
@@ -148,7 +148,9 @@ def _merge(
                     if pages.get(row) != key and projects.get(row) != key
                 }
                 saved = [row for row in saved if row not in removed]
-                previous = [row for row in previous if row not in removed]
+                # A stale rank does not make a newly filed row part of the base order.
+                filed = assigned_rows.get(key, ())
+                previous = [row for row in previous if row not in removed and row not in filed]
             switched_to_manual = (
                 base["sections"].get(key, {}).get("sort") == "updated"
                 and layout["sections"].get(key, {}).get("sort") == "manual"

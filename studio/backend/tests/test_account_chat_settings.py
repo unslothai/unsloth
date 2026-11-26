@@ -980,6 +980,59 @@ def test_sidebar_sections_accept_ids_already_valid_in_chat_history(client):
     assert saved["rowOrder"]["research"] == [thread_id, "existing"]
 
 
+def test_sidebar_sections_replay_placements_for_refiled_rows_with_stale_ranks(client):
+    from copy import deepcopy
+
+    path = "/chat/sidebar-sections"
+
+    def save(
+        operation_id,
+        layout,
+        base = None,
+        moves = (),
+    ):
+        response = client.post(
+            path,
+            json = {"operationId": operation_id, "base": base, "layout": layout, "orderMoves": moves},
+        )
+        assert response.is_success
+        return response.json()
+
+    initial = save(
+        "initial",
+        {
+            "sections": {"research": {"name": "Research", "sort": "manual"}},
+            "sectionByChatId": dict.fromkeys("abc", "research"),
+            "rowOrder": {"research": list("abc")},
+        },
+    )
+    unfiled = deepcopy(initial)
+    del unfiled["sectionByChatId"]["b"]
+    common = save("unfile", unfiled, initial)
+    assert common["rowOrder"]["research"] == list("abc")
+
+    reordered = deepcopy(common)
+    reordered["rowOrder"]["research"] = list("ca")
+    result = save(
+        "reorder",
+        reordered,
+        common,
+        [{"sectionId": "research", "id": "c", "targetId": "a", "edge": "top"}],
+    )
+    assert result["rowOrder"]["research"] == list("ca")
+
+    refiled = deepcopy(common)
+    refiled["sectionByChatId"]["b"] = "research"
+    result = save(
+        "refile",
+        refiled,
+        common,
+        [{"sectionId": "research", "id": "b", "targetId": "a", "edge": "bottom"}],
+    )
+    assert result["rowOrder"]["research"] == list("cab")
+    assert result["sectionByChatId"]["b"] == "research"
+
+
 def test_sidebar_sections_return_and_accept_a_large_order_merged_from_two_edits(client):
     path = "/chat/sidebar-sections"
     rows = [f"row-{i}" for i in range(49_999)]
