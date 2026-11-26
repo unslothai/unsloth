@@ -41,6 +41,7 @@ _ENV_KEYS = (
     "UNSLOTH_PP_SIZE",
     "UNSLOTH_CP_SIZE",
     "UNSLOTH_CP_BACKEND",
+    "UNSLOTH_EP_SIZE",
     "UNSLOTH_PP_MICROBATCHES",
     "UNSLOTH_PP_SCHEDULE",
     "UNSLOTH_FSDP2",
@@ -130,6 +131,22 @@ def _packed_row(batch, kind, row):
         "position_ids": position_ids,
         "packed_seq_lengths": torch.tensor(lengths, dtype = torch.int32),
     }
+
+
+# "right": padded rows; "short": one cp shard without a valid token; "odd": cp appends a token to reach the cp multiple.
+_PAD_LENGTHS = {"right": (16, 11, 7, 13, 9, 16, 12, 5), "short": (6, 8, 5, 3, 7, 2, 8, 4)}
+
+
+def _padded_rows(batch, kind, rows):
+    if kind == "odd":
+        # No attention_mask (eval adds one): only the cp-appended token is padding.
+        return {k: v[:, : SEQ - 1].contiguous() for k, v in batch.items() if k != "attention_mask"}
+    lengths = torch.tensor([_PAD_LENGTHS[kind][r % len(_PAD_LENGTHS[kind])] for r in rows])
+    keep = torch.arange(SEQ)[None] < lengths[:, None]
+    batch["input_ids"] = batch["input_ids"].masked_fill(~keep, 0)
+    batch["labels"] = batch["labels"].masked_fill(~keep, -100)
+    batch["attention_mask"] = keep.long()
+    return batch
 
 
 def _packed_oracle(model, batch):
@@ -374,6 +391,8 @@ def _case_train(
     gc = "none",
     packed = None,
     eval_only = False,
+    padding = None,
+    hf_loss = False,
 ):
     error = _import_checkout_unsloth()
     if error is not None:
@@ -528,11 +547,17 @@ def _case_train(
             batch["attention_mask"] = torch.ones_like(input_ids)
         if packed:
             batch.update(_packed_row(batch, packed, int(rows[0]["row"])))
+        if padding:
+            batch = _padded_rows(batch, padding, [int(r["row"]) for r in rows])
         return batch
 
     class SequentialSFT(trl.SFTTrainer):
         def _get_train_sampler(self, *args, **kwargs):
             return torch.utils.data.SequentialSampler(self.train_dataset)
+
+    if hf_loss:
+        # GPU route: the model forward adds the router aux loss.
+        SequentialSFT.compute_loss = transformers.Trainer.compute_loss
 
     grads, query = {}, None
 
@@ -548,9 +573,18 @@ def _case_train(
             if grads:
                 return
             target = trainer.model
+            from unsloth.models import ep_native
+
+            ep_mesh = ep_native._mesh(target)
             for name, p in target.named_parameters():
                 if p.requires_grad and p.grad is not None:
-                    grads[name] = _full(p.grad)
+                    if ep_mesh is not None and getattr(p, ep_native._EP, None) is not None:
+                        # Expert parallel: this rank's experts only; the 1-GPU tensor is gathered (collective).
+                        grads[name] = _full(
+                            ep_native._gather_expert(p, ep_mesh.get_group(), p.grad)
+                        )
+                    else:
+                        grads[name] = _full(p.grad)
 
     args = trl.SFTConfig(
         output_dir = os.path.join(tmp, "out"),
@@ -658,10 +692,21 @@ def _case_train(
     )
     if eval_only:
         trainer.args.per_device_eval_batch_size = bs
+        eval_aux_calls = []
+        original_eval_stats = pp_native._router_statistics
+
+        def counted_eval_stats(*a, **k):
+            eval_aux_calls.append(1)
+            return original_eval_stats(*a, **k)
+
+        pp_native._router_statistics = counted_eval_stats
         metrics = trainer.evaluate(eval_dataset = data)
         stage = pp_native.pipeline_stage_of(trainer.model)
+        manager = getattr(trainer, "_context_parallel_manager", None)
         return {
             "eval_loss": metrics["eval_loss"],
+            "cp_aux_calls": len(eval_aux_calls),
+            "router_aux_scale": getattr(manager, "router_aux_scale", None),
             "rows_read": rows_read,
             "stage": None if stage is None else int(stage.stage_index),
             "cpu_compute_loss": bool(getattr(type(trainer).compute_loss, "_unsloth_cpu", False)),
@@ -708,6 +753,15 @@ def _case_train(
         if world == 1:
             oracle = _packed_oracle(trainer.model, collate([data[0]]))
             rows_read.clear()  # the oracle's row is not a training micro-batch
+    aux_calls = []
+    if cp > 1:
+        original_stats = pp_native._router_statistics
+
+        def counted_stats(*a, **k):
+            aux_calls.append(1)
+            return original_stats(*a, **k)
+
+        pp_native._router_statistics = counted_stats
     torch._dynamo.reset()
     before = compile_counters.snapshot()
     if packed:
@@ -728,8 +782,13 @@ def _case_train(
         assert autocast_seen == {False}, ("a GPU cell ran under autocast", autocast_seen)
     logs = [h for h in trainer.state.log_history if "loss" in h]
     is_tp = tp_native.is_tensor_parallel(trainer.model)
+    from unsloth.models import ep_native
+
+    is_ep = ep_native.is_expert_parallel(trainer.model)
     if is_tp:
         state = tp_native.tp_full_state_dict(trainer.model, adapters_only = True)
+    elif is_ep:
+        state = ep_native.ep_full_adapter_state_dict(trainer.model, adapter = mode != "full")
     else:
         state = {
             k: _full(v)
@@ -751,6 +810,7 @@ def _case_train(
         if manager is None
         else sorted(int(r) for r in manager.mesh.mesh.flatten().tolist()),
         "is_tp": is_tp,
+        "is_ep": is_ep,
         "stage": None if stage is None else int(stage.stage_index),
         "seen_lengths": sorted(seen_lengths),
         "autocast_seen": sorted(autocast_seen),
@@ -781,6 +841,16 @@ def _case_train(
         "exchanges": exchanges,
         "n_layers": int(trainer.model.config.num_hidden_layers),
         "gdn_calls": len(gdn_calls),
+        "cp_aux_calls": len(aux_calls),
+        "aux_scaler": any(
+            "unsloth_ga_scale_aux_loss" in fn.__code__.co_names
+            for m in trainer.model.modules()
+            if "router_aux_loss_coef" in vars(m)
+            for fn in cpm._forward_functions(m)
+        )
+        if hasattr(cpm, "_forward_functions")
+        else None,
+        "router_aux_scale": getattr(manager, "router_aux_scale", None),
     }
     if dist.is_initialized():
         dist.barrier()
@@ -1426,9 +1496,16 @@ def test_moe_block_compile_under_cp_is_compile_clean(mode):
     "config_flag", [True, False], ids = ["output_router_logits", "trl_default_coef"]
 )
 def test_moe_with_router_aux_loss_under_cp_is_refused(config_flag):
-    """Refused before the split, also when only TRL's default router_aux_loss_coef would turn the loss on."""
+    """UNSLOTH_CP_ROUTER_AUX=0: refused before the split, also via TRL's default router_aux_loss_coef."""
     for res in _spawn(
-        "train", 2, bs = 2, cp = 2, arch = "qwen3_moe", router_aux = config_flag, trl_aux = True
+        "train",
+        2,
+        {"UNSLOTH_CP_ROUTER_AUX": "0"},
+        bs = 2,
+        cp = 2,
+        arch = "qwen3_moe",
+        router_aux = config_flag,
+        trl_aux = True,
     ):
         error = res.get("error") or ""
         assert "MoE x pp / cp" in error and "router_aux_loss_coef = 0.0" in error, (

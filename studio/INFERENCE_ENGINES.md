@@ -55,7 +55,9 @@ exact token counting for tool-enabled prompts is not available.
 Structured output (`response_format`) and continuing a cut-off reply are served by the
 engine; a reply cut off mid-thought cannot be resumed. LoRA adapters, audio/video input
 and reasoning controls are outside this profile. Custom model code uses the
-existing trust-remote-code consent setting. Multi-node serving is not configured by Unsloth.
+existing trust-remote-code consent setting. Multi-node serving (one model across two or
+more machines, for example two DGX Sparks) is not part of this release; every mode above
+runs on one machine.
 Engine servers honor Unsloth's VRAM budget, capped by the most constrained
 selected GPU's measured free-memory fraction, with at least 512 MiB left per GPU for driver allocations.
 GPU memory is not treated as a single pool: each device must fit its own shard

@@ -195,6 +195,8 @@ class TestTheSplitKeepsTheSelectionItInherited:
         run = _shard_pytest_step()["run"]
         assert "--timeout=330" in run
         assert "timeout --signal=INT --kill-after=60" in run
+        # SIGALRM cannot interrupt a test blocked in C code; only the thread method names it.
+        assert "--timeout-method=thread" in run
 
     def test_the_split_out_shards_run_the_same_step_and_install(self):
         """The multi-rank shards moved workflows, not behaviour: same pytest step, same
