@@ -205,6 +205,43 @@ def test_nvfp4_bakes_loras_like_int8_and_fp8_except_on_a_policy_base():
     )
 
 
+def test_generate_on_a_policy_nvfp4_base_gives_the_status_reason_not_a_reload():
+    """A reload with the adapter cannot work on a per-layer NVFP4 policy base, so generate must say what status says."""
+    import threading
+
+    from core.inference import diffusion as D
+
+    backend = D.DiffusionBackend.__new__(D.DiffusionBackend)
+
+    def state(family, base):
+        return types.SimpleNamespace(
+            pipe = types.SimpleNamespace(),
+            family = types.SimpleNamespace(name = family),
+            kind = "pipeline",
+            transformer_quant = "nvfp4",
+            base_repo = base,
+        )
+
+    policy = state("flux.1", "black-forest-labs/FLUX.1-schnell")
+    with pytest.raises(dl.LoraSelectionError) as err:
+        backend._apply_loras(policy, [("adapter", 1.0)], threading.Event())
+    assert not isinstance(err.value, dl.LoraReloadRequiredError)
+    assert str(err.value) == dl.lora_unavailable_reason(
+        engine = "diffusers",
+        family = "flux.1",
+        model_kind = "pipeline",
+        transformer_quant = "nvfp4",
+        base_repo = "black-forest-labs/FLUX.1-schnell",
+    )
+    # A whole-model NVFP4 base still asks for the reload that bakes the adapter.
+    with pytest.raises(dl.LoraReloadRequiredError):
+        backend._apply_loras(
+            state("flux.2-klein", "black-forest-labs/FLUX.2-klein-4B"),
+            [("adapter", 1.0)],
+            threading.Event(),
+        )
+
+
 def test_resolve_specs_maps_cancelled_to_diffusion_sentinel(tmp_path, monkeypatch):
     # A cancelled Hub download raises RuntimeError("Cancelled"); it maps to the sentinel so the route returns 409.
     def _boom(spec_id, weight, **kw):

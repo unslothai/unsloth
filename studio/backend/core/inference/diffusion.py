@@ -15865,6 +15865,20 @@ class DiffusionBackend:
         if not quant_baked:
             if not specs:
                 return  # no adapters baked, none requested
+            if str(getattr(state, "transformer_quant", None) or "").strip().lower() == "nvfp4":
+                from core.inference import diffusion_lora
+
+                # A per-layer NVFP4 policy base cannot take adapters at load either: give the status's reason, not a
+                # reload that would fail the same way.
+                refused = diffusion_lora.lora_unavailable_reason(
+                    engine = "diffusers",
+                    family = getattr(getattr(state, "family", None), "name", None),
+                    model_kind = getattr(state, "kind", None),
+                    transformer_quant = state.transformer_quant,
+                    base_repo = getattr(state, "base_repo", None),
+                )
+                if refused:
+                    raise LoraSelectionError(refused)
             raise LoraReloadRequiredError(
                 f"This {_quant_build_label(state)} build was loaded without LoRA adapters, and a quantized "
                 "transformer takes adapters only when it loads. " + LORA_RELOAD_REMEDY
