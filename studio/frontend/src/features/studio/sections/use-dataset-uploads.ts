@@ -68,6 +68,8 @@ export function useDatasetUploads() {
     (state) => state.setUploadedEvalFile,
   );
   const [isUploading, setIsUploading] = useState(false);
+  const [pandasJson, setPandasJson] = useState(false);
+  const [pandasEvalJson, setPandasEvalJson] = useState(false);
   const uploadLockRef = useRef(false);
   const [isDatasetDragOver, setIsDatasetDragOver] = useState(false);
   const [uploadLimitBytes, setUploadLimitBytes] = useState(
@@ -135,6 +137,7 @@ export function useDatasetUploads() {
     file: File,
     onSuccess: (storedPath: string) => void,
     successMessage: string,
+    jsonColumns: boolean,
   ) => {
     if (!acquireUploadLock()) {
       return;
@@ -151,7 +154,10 @@ export function useDatasetUploads() {
         });
         return;
       }
-      const uploaded = await uploadTrainingDataset(file);
+      const uploaded = await uploadTrainingDataset(
+        file,
+        jsonColumns && getFileExtension(file.name) === ".json",
+      );
       bumpInventoryVersion();
       onSuccess(uploaded.stored_path);
       toast.success(successMessage, { description: uploaded.filename });
@@ -193,7 +199,10 @@ export function useDatasetUploads() {
         intent.path.token,
         "dataset-import",
       );
-      const uploaded = await uploadNativeTrainingDataset(grant.nativePathLease);
+      const uploaded = await uploadNativeTrainingDataset(
+        grant.nativePathLease,
+        pandasJson && getFileExtension(filename) === ".json",
+      );
       bumpInventoryVersion();
       selectLocalDataset(uploaded.stored_path);
       toast.success(t("studio.dataset.datasetUploaded"), {
@@ -232,6 +241,7 @@ export function useDatasetUploads() {
       file,
       selectLocalDataset,
       t("studio.dataset.datasetUploaded"),
+      pandasJson,
     );
   };
 
@@ -425,6 +435,7 @@ export function useDatasetUploads() {
         file,
         setUploadedEvalFile,
         t("studio.dataset.evalDatasetUploaded"),
+        pandasEvalJson,
       );
     }
   };
@@ -449,9 +460,13 @@ export function useDatasetUploads() {
     handleOpenLearningRecipes,
     isDatasetDragOver,
     isUploading,
+    pandasJson,
+    pandasEvalJson,
     redirectFileName,
     setDocumentRedirectOpen,
     setIsDatasetDragOver,
+    setPandasJson,
+    setPandasEvalJson,
     uploadLimitLabel,
   };
 }

@@ -497,7 +497,9 @@ def _upload_destination(filename: str) -> tuple[str, Path, int, str]:
     return filename, DATASET_UPLOAD_DIR / stored_name, max_bytes, max_label
 
 
-def _native_upload_dataset_response(native_path_lease: str) -> UploadDatasetResponse:
+def _native_upload_dataset_response(
+    native_path_lease: str, json_columns: bool = False
+) -> UploadDatasetResponse:
     from core.training.account_jobs import account_path
     from utils.native_path_leases import NativePathLeaseError, verify_native_path_lease
 
@@ -515,6 +517,7 @@ def _native_upload_dataset_response(native_path_lease: str) -> UploadDatasetResp
     # A managed account may only import files inside its own workspace, as the RAG/seed/library drops check.
     account_path(grant.canonical_path)
     filename, stored_path, max_bytes, max_label = _upload_destination(grant.canonical_path.name)
+    _validate_json_columns_upload(stored_path, json_columns)
     if grant.size_bytes is not None and grant.size_bytes > max_bytes:
         raise _upload_too_large(max_label)
 
@@ -543,18 +546,21 @@ def _native_upload_dataset_response(native_path_lease: str) -> UploadDatasetResp
         partial_path.unlink(missing_ok = True)
         raise HTTPException(status_code = 400, detail = "Dropped dataset is empty")
 
-    return UploadDatasetResponse(
-        filename = filename, stored_path = str(_publish_upload(partial_path, stored_path))
-    )
+    published = _finish_upload(partial_path, stored_path, max_bytes, max_label, json_columns)
+    return UploadDatasetResponse(filename = filename, stored_path = str(published))
 
 
 async def upload_dataset_response(
-    file: UploadFile | None, native_path_lease: str | None = None
+    file: UploadFile | None,
+    native_path_lease: str | None = None,
+    *,
+    json_columns: bool = False,
 ) -> UploadDatasetResponse:
     if native_path_lease:
         return await asyncio.to_thread(
             _native_upload_dataset_response,
             native_path_lease,
+            json_columns,
         )
     if file is None:
         raise HTTPException(status_code = 400, detail = "No dataset file was provided")
@@ -562,6 +568,7 @@ async def upload_dataset_response(
     filename, stored_path, max_bytes, max_label = _upload_destination(
         file.filename or "dataset_upload"
     )
+    _validate_json_columns_upload(stored_path, json_columns)
     declared_size = getattr(file, "size", None)
     if isinstance(declared_size, int) and declared_size > max_bytes:
         raise _upload_too_large(max_label)
@@ -586,8 +593,67 @@ async def upload_dataset_response(
         partial_path.unlink(missing_ok = True)
         raise HTTPException(status_code = 400, detail = "Empty upload payload")
 
-    reused_path = await asyncio.to_thread(_publish_upload, partial_path, stored_path)
+    reused_path = await asyncio.to_thread(
+        _finish_upload, partial_path, stored_path, max_bytes, max_label, json_columns
+    )
     return UploadDatasetResponse(filename = filename, stored_path = str(reused_path))
+
+
+def _validate_json_columns_upload(path: Path, json_columns: bool) -> None:
+    if json_columns and path.suffix != ".json":
+        raise HTTPException(status_code = 400, detail = "Pandas column import requires a .json file.")
+
+
+def _unique_json_object(items):
+    result = dict(items)
+    if len(result) != len(items):
+        raise ValueError("JSON objects must have unique keys.")
+    return result
+
+
+def _finish_upload(
+    partial_path: Path, stored_path: Path, max_bytes: int, max_label: str, json_columns: bool
+) -> Path:
+    if not json_columns:
+        return _publish_upload(partial_path, stored_path)
+
+    converted_path = partial_path.with_suffix(".rows.part")
+    try:
+        with partial_path.open(encoding = "utf-8-sig") as source:
+            columns = json.load(source, object_pairs_hook = _unique_json_object)
+        if not isinstance(columns, dict) or not columns:
+            raise ValueError("Expected an object containing named columns.")
+        index = next(iter(columns.values()))
+        if not isinstance(index, dict) or not index:
+            raise ValueError("Expected a non-empty object of row indices in each column.")
+        if any(
+            not isinstance(values, dict) or values.keys() != index.keys()
+            for values in columns.values()
+        ):
+            raise ValueError("Every column must contain the same row indices.")
+
+        # Write regular row-oriented JSON so preview and every trainer share the existing loader.
+        with converted_path.open("wb") as target:
+            target.write(b"[")
+            for position, key in enumerate(index):
+                row = {name: values[key] for name, values in columns.items()}
+                encoded = json.dumps(
+                    row, ensure_ascii = False, allow_nan = False, separators = (",", ":")
+                ).encode("utf-8")
+                if target.tell() + len(encoded) + (1 if position else 0) + 1 > max_bytes:
+                    raise _upload_too_large(max_label)
+                if position:
+                    target.write(b",")
+                target.write(encoded)
+            target.write(b"]")
+        return _publish_upload(converted_path, stored_path)
+    except (ValueError, RecursionError) as exc:
+        raise HTTPException(status_code = 400, detail = f"Invalid pandas column JSON. {exc}") from exc
+    finally:
+        with suppress(OSError):
+            partial_path.unlink(missing_ok = True)
+        with suppress(OSError):
+            converted_path.unlink(missing_ok = True)
 
 
 def _file_digest(path: Path) -> str:
