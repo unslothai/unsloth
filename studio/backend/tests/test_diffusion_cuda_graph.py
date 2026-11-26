@@ -2533,3 +2533,129 @@ def test_dropping_one_batch_size_keeps_the_others_and_size_one(stub_torch):
     assert handle.drop_batched(2) == 1
     assert sorted(handle._batched.values()) == [4] and len(handle.cache) == 2
     assert handle.drop_batched() == 1 and len(handle.cache) == 1
+
+
+class _EditRefDiT(_LenDiT):
+    """A planned (Qwen-Image-2.1-style) step that also takes edit reference states."""
+
+    def forward(
+        self,
+        hidden_states,
+        encoder_hidden_states = None,
+        image_cond_hidden_states = None,
+        return_dict = True,
+    ):
+        self.calls += 1
+        return (_FakeTensor((1, 64), value = ("out", hidden_states.value), tag = "out"),)
+
+
+def _t2i_step(
+    handle,
+    rows = 1,
+    value = 0.0,
+):
+    return handle(
+        _t((rows, 64), value = value), encoder_hidden_states = _t((rows, 3)), return_dict = False
+    )
+
+
+def _edit_step(
+    handle,
+    ref_len,
+    value = 0.0,
+):
+    return handle(
+        _t((1, 64), value = value),
+        encoder_hidden_states = _t((1, 3)),
+        image_cond_hidden_states = _t((1, ref_len)),
+        return_dict = False,
+    )
+
+
+@side_stream
+def test_edits_at_new_reference_sizes_never_evict_the_text_to_image_graphs(stub_torch, monkeypatch):
+    """Warm text-to-image at sizes 1, 2 and 4 (2 and 4 recorded by the race), then edits at three new reference sizes,
+    then text-to-image again: the edits take the batched graphs' slots and then run ungraphed, never the size-1
+    text-to-image graph, so the next plain render replays instead of warming and recording again."""
+    import contextlib
+
+    monkeypatch.delenv(cg.EVERY_LENGTH_ENV, raising = False)
+    module = type("QwenImage21Transformer2DModel", (_EditRefDiT,), {})()
+    handle = _armed(module)
+    orig = handle.orig
+    handle.plan = lambda mod, args, kwargs: (orig, {"hidden_states": args[0], **kwargs})
+    monkeypatch.setattr(_FakeTensor, "is_inference", lambda self: False, raising = False)
+    monkeypatch.setattr(
+        stub_torch, "inference_mode", lambda *a, **k: contextlib.nullcontext(), raising = False
+    )
+    monkeypatch.setattr(cg, "_graph_without_flush", stub_torch.cuda.graph)
+
+    for i in range(3):
+        _t2i_step(handle, 1, value = float(i))
+    for rows in (2, 4):
+        with cg.batch_rows(rows, capture = True):
+            for i in range(3):
+                _t2i_step(handle, rows, value = float(i))
+    assert len(handle.cache) == 3 and sorted(handle._batched.values()) == [2, 4]
+    plain = next(k for k in handle.cache if k not in handle._batched)
+    for ref_len in (16, 24, 32):
+        for i in range(3):
+            _edit_step(handle, ref_len, value = float(i))
+    print("captures", handle.stats["captures"], "evictions", handle.stats["evictions"])
+    assert plain in handle.cache, "an edit evicted the size-1 text-to-image graph"
+    replays = handle.stats["replays"]
+    captures = handle.stats["captures"]
+    _t2i_step(handle, 1, value = 9.0)
+    assert handle.stats["replays"] == replays + 1 and handle.stats["captures"] == captures
+
+
+@side_stream
+def test_true_cfg_edits_at_new_reference_sizes_never_evict_the_text_to_image_graphs(
+    stub_torch, monkeypatch
+):
+    """The same with true CFG (a prompt and a negative key per render): three edit reference sizes are six new keys."""
+    import contextlib
+
+    monkeypatch.delenv(cg.EVERY_LENGTH_ENV, raising = False)
+    module = type("QwenImage21Transformer2DModel", (_EditRefDiT,), {})()
+    handle = _armed(module)
+    orig = handle.orig
+    handle.plan = lambda mod, args, kwargs: (orig, {"hidden_states": args[0], **kwargs})
+    monkeypatch.setattr(_FakeTensor, "is_inference", lambda self: False, raising = False)
+    monkeypatch.setattr(
+        stub_torch, "inference_mode", lambda *a, **k: contextlib.nullcontext(), raising = False
+    )
+    monkeypatch.setattr(cg, "_graph_without_flush", stub_torch.cuda.graph)
+
+    def t2i(value):
+        handle(_t((1, 64), value = value), encoder_hidden_states = _t((1, 3)), return_dict = False)
+        handle(_t((1, 64), value = value), encoder_hidden_states = _t((1, 7)), return_dict = False)
+
+    def edit(ref_len, value):
+        for text in (3, 7):
+            handle(
+                _t((1, 64), value = value),
+                encoder_hidden_states = _t((1, text)),
+                image_cond_hidden_states = _t((1, ref_len)),
+                return_dict = False,
+            )
+
+    for i in range(3):
+        t2i(float(i))
+    plain = set(handle.cache)
+    assert len(plain) == 2
+    for ref_len in (16, 24, 32):
+        for i in range(3):
+            edit(ref_len, float(i))
+    print(
+        "captures",
+        handle.stats["captures"],
+        "evictions",
+        handle.stats["evictions"],
+        "cap_skips",
+        handle.stats["cap_skips"],
+    )
+    assert plain <= set(handle.cache), "an edit evicted a text-to-image graph"
+    replays, captures = handle.stats["replays"], handle.stats["captures"]
+    t2i(9.0)
+    assert handle.stats["replays"] == replays + 2 and handle.stats["captures"] == captures

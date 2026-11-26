@@ -99,6 +99,13 @@ def _free_device_bytes() -> Optional[int]:
         return None
 
 
+def _has_reference(kwargs: Any) -> bool:
+    """A call carrying edit reference states (an edit's image scope), as opposed to plain text-to-image."""
+    return isinstance(kwargs, dict) and any(
+        kwargs.get(name) is not None for name in _REFERENCE_KWARGS
+    )
+
+
 def _is_oom(exc: BaseException) -> bool:
     try:
         from .diffusion_batched import is_oom_error
@@ -1555,6 +1562,18 @@ class GraphedForward:
         # the recordings ran on their own capture stream, whose cuBLAS workspace outlives them
         release_cached_outside_capture(clear_cublas = getattr(self, "placement", None) is not None)
 
+    def _eviction_victim(self, incoming_edit: bool) -> Any:
+        """The least recently replayed graph a full planned cache may drop for a new key, else None."""
+        batched = getattr(self, "_batched", {})
+        edits = getattr(self, "_edit_keys", set())
+        for pick in (batched, edits):
+            victim = next((k for k in self.cache if k in pick), None)
+            if victim is not None:
+                return victim
+        if incoming_edit:
+            return None
+        return next(iter(self.cache), None)
+
     def _batched_refusal(self, rows: tuple) -> Optional[str]:
         """Why a call carrying ``rows`` requests may not record a new graph here, else None."""
         count, capture = rows
@@ -1608,6 +1627,7 @@ class GraphedForward:
         dropped = bool(self.cache)
         self.cache.clear()
         getattr(self, "_batched", {}).clear()
+        getattr(self, "_edit_keys", set()).clear()
         if dropped:
             note_pool_retired()  # counted where it drops; the _release below flushes and acknowledges it
         self._recorded.clear()
@@ -2105,11 +2125,16 @@ class GraphedForward:
                 spec = _flatten((args, kwargs), live)
                 warm_args, warm_kwargs = _rebuild(spec, self._statics(live))
                 return call(*warm_args, **warm_kwargs)
-            if len(self.cache) >= self.max_graphs and self.plan is not None:
-                # A planned call keys on the prompt length, so evict the least recently replayed graph (a batched one
-                # first: the size-1 graphs are what a single user replays).
-                victim = next((k for k in self.cache if k in self._batched), next(iter(self.cache)))
+            victim = (
+                self._eviction_victim(_has_reference(kwargs))
+                if len(self.cache) >= self.max_graphs and self.plan is not None
+                else None
+            )
+            if victim is not None:
+                # A planned call keys on the prompt length, so evict the least recently replayed graph: a batched one
+                # first, then an edit's; an edit never evicts a text-to-image graph (it runs ungraphed instead).
                 self._batched.pop(victim, None)
+                getattr(self, "_edit_keys", set()).discard(victim)
                 gone = getattr(self.cache.pop(victim), "pool_token", None)
                 self.stats["evictions"] += 1
                 _note_dropped_pools([gone])
@@ -2185,6 +2210,8 @@ class GraphedForward:
             if rows is not None:
                 self._batched[key] = rows[0]
                 self.stats["batch_captures"] += 1
+            if _has_reference(kwargs):
+                self.__dict__.setdefault("_edit_keys", set()).add(key)
             if scope is not None:
                 self._scope_captures[scope] = self._scope_captures.get(scope, 0) + 1
             self._unsloth_capture_device = capture_device()
