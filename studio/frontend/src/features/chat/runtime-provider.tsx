@@ -5,6 +5,7 @@ import { readGenerationProgress } from "./lib/generation-progress";
 import { NewChatNonceContext } from "./query-draft";
 import { useAppShellReadySignal } from "@/components/app-readiness";
 import { authFetch, getAuthSessionEpoch } from "@/features/auth";
+import { translate } from "@/i18n";
 import { isMcpToolOnly, mcpImageMappingsEnabled, projectMcpServers } from "./api/mcp-image";
 import { listMcpServers } from "./api/mcp-servers-api";
 import {
@@ -1524,6 +1525,8 @@ function scheduleGenerationRecovery(
     let cursor = Number(metadata.generationSeq ?? 0);
     if (!Number.isSafeInteger(cursor) || cursor < 0) cursor = 0;
     const stored = generationRawContent(storedMessage.content);
+    const restartEmptyReplay = stored.raw.length === 0 && stored.carried.length === 0;
+    if (restartEmptyReplay) cursor = 0;
     const carried = stored.carried;
     // Keyed exactly as the live stream (toolConfirmationScopeId) so cards are the same.
     const toolRecovery = createGenerationToolRecovery(carried, runId, cursor, {
@@ -1783,6 +1786,7 @@ function scheduleGenerationRecovery(
             cursor = update.event.seq;
             if (update.event.type === "chunk") {
               const chunk = update.event.payload as {
+                _admissionStatus?: { state?: unknown; reason?: unknown };
                 _generationProgress?: unknown;
                 _reasoningDurationMs?: unknown;
                 usage?: {
@@ -1808,6 +1812,24 @@ function scheduleGenerationRecovery(
                 (chunk as { _toolEvent?: { type?: unknown } })._toolEvent?.type === "tool_end"
               ) {
                 useChatRuntimeStore.getState().clearLiveGenerationForThread(threadId);
+              }
+              if ("_admissionStatus" in chunk) {
+                if (caughtUp(update.run)) {
+                  const admissionStatus = chunk._admissionStatus ?? {};
+                  const store = useChatRuntimeStore.getState();
+                  if (admissionStatus.state === "waiting") {
+                    store.setToolStatus(
+                      threadId,
+                      admissionStatus.reason === "context_capacity"
+                        ? translate("settings.chat.admissionContextCapacity")
+                        : translate("settings.chat.admissionServingSlot"),
+                      serverCancel,
+                    );
+                  } else {
+                    store.setToolStatus(threadId, null, serverCancel);
+                  }
+                }
+                continue;
               }
               // Live figures only once caught up: a replayed backlog would flash every old sample.
               if ("_generationProgress" in chunk) {
@@ -1986,6 +2008,7 @@ function scheduleGenerationRecovery(
       if (seededApprovals) await seededApprovals.catch(() => {});
       toolRecovery.disarmAll();
       const store = useChatRuntimeStore.getState();
+      store.setToolStatus(threadId, null, serverCancel);
       store.setThreadRunning(threadId, false, { owner: serverCancel });
       store.clearThreadServerCancel(threadId, serverCancel);
     }

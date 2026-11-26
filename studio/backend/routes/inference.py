@@ -2941,6 +2941,7 @@ async def _openai_admission_wait_stream_chunks(
     status_line = _openai_admission_status_sse(reservation, "waiting", request)
     if status_line is not None:
         yield status_line
+    last_waiting_status_line = status_line
     next_keepalive_at = time.monotonic() + keepalive_interval_s
     try:
         while True:
@@ -2982,6 +2983,11 @@ async def _openai_admission_wait_stream_chunks(
                 request = request,
                 cancel_event = cancel_event,
             )
+            status_line = _openai_admission_status_sse(reservation, "waiting", request)
+            if status_line != last_waiting_status_line:
+                last_waiting_status_line = status_line
+                if status_line is not None:
+                    yield status_line
             now = time.monotonic()
             if now >= next_keepalive_at:
                 next_keepalive_at = now + keepalive_interval_s

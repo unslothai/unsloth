@@ -11,6 +11,9 @@ registerBundlerResolver();
 const { normalizeChatGenerationChunkPayload } = await import(
   "../src/features/chat/api/chat-generation-api.ts"
 );
+const { generationChunkCountsTowardTiming } = await import(
+  "../src/features/chat/utils/chat-generation-recovery.ts"
+);
 
 const waiting = {
   type: "admission_status",
@@ -22,9 +25,11 @@ const waiting = {
 };
 
 test("a persisted admission status frame is re-tagged like the live stream", () => {
-  assert.deepEqual(normalizeChatGenerationChunkPayload(waiting), {
+  const normalized = normalizeChatGenerationChunkPayload(waiting);
+  assert.deepEqual(normalized, {
     _admissionStatus: waiting,
   });
+  assert.equal(generationChunkCountsTowardTiming(normalized), false);
 });
 
 test("the live stream routes admission status off the transcript", () => {
@@ -45,4 +50,18 @@ test("the adapter explains a context wait and clears the badge on admission", ()
     src,
     /runtime\.setToolStatus\(threadKey, null, serverCancel\)/,
   );
+});
+
+test("reopening a queued chat replays and applies admission status", () => {
+  const src = readSrc("features/chat/runtime-provider.tsx");
+  assert.match(src, /"_admissionStatus" in chunk/);
+  assert.match(
+    src,
+    /admissionStatus\.state === "waiting"[\s\S]*?setToolStatus\(threadId/,
+  );
+  assert.match(
+    src,
+    /restartEmptyReplay = stored\.raw\.length === 0 && stored\.carried\.length === 0[\s\S]*?cursor = 0[\s\S]*?createGenerationToolRecovery/,
+  );
+  assert.match(src, /replayFrom: toolRecovery\.replayFrom/);
 });
