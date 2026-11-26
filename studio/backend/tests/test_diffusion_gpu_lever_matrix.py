@@ -764,21 +764,17 @@ def probe_h3_video_attention(p: GpuProfile) -> dict:
     # Flash over cuDNN is its own lever (H3_FLASH_FASTER_ARCHS): losing it on a measured arch is a regression.
     out["minimax-h3.flash_sdpa"] = lever(str(getattr(backend, "value", backend)) == "_native_flash")
     out[keys[2]] = lever(strided_install_backend(backend))
-    # Where Auto runs INT8 attention, how many denoise steps stay on 16-bit attention and on which kernel (#19344). A
-    # change to either moves the clip time on every card, so it must show up here as an explicit golden diff.
+    # Exact-start steps + kernel move clip time on every card (#19344): keep them a golden diff.
     out[keys[4]] = _h3_exact_policy_cell(gate, backend)
     return out
 
 
-# H3 video's attention head dim (hidden 7168 / 56 heads): the INT8 kernel serving check the load's race makes
+# hidden 7168 / 56 heads
 _H3_HEAD_DIM = 128
 
 
 def _h3_exact_policy_cell(gate: Any, backend: Any) -> dict:
-    """What the H3 load installs, not what the gate allows: the exact start runs only where Auto engages INT8 attention,
-    which takes (video.py) the strided processor on the picked backend, then (install_family_auto) a CUDA-kernel race,
-    never run on ROCm. Inactive profiles record steps=0, kernel=none with the step that stops it. The race's own timing
-    verdict is runtime, so an active cell means every load-time precondition holds."""
+    """What the load installs, not what the gate allows: needs the strided processor and a CUDA INT8 race (never ROCm)."""
     from core.inference import diffusion_int8_attention as i8
     from core.inference.video_minimax_h3_attn import h3_int8_exact_kernel, strided_install_backend
 
@@ -2406,9 +2402,7 @@ def test_incident_r7_19098_h3_video_auto_int8_on_sm89_and_sm86(key, monkeypatch)
 
 @pytest.mark.parametrize("key", ["rtx3090", "rtx6000_ada", "l4", "a100_40"])
 def test_h3_exact_start_policy_is_a_golden_cell(key, golden, monkeypatch):
-    """R8 (after #19344): the 4-step exact start cost the tester's RTX 3090 11% (each exact step ~1.6x an INT8 step
-    there) and the Ada 5%. The exact start's step count and the 16-bit kernel its calls run are one golden cell per
-    profile, so changing either is an explicit golden diff, never a silent clip-time change."""
+    """R8 (#19344): the 4-step exact start cost the 3090 11% and Ada 5%; step count or kernel changes must diff the golden."""
     from core.inference import video_minimax_h3_attn as h3
 
     p = PROFILES[key]
@@ -2427,13 +2421,11 @@ def test_h3_exact_start_policy_is_a_golden_cell(key, golden, monkeypatch):
             changed = cell()
         diffs = diff_cells({cid: golden["cells"][cid]}, {cid: changed})
         assert diffs and cid in format_diffs(diffs), (steps, changed)
-    # the exact calls run the strided processor's own kernel: moving this arch on or off flash moves the cell
     with monkeypatch.context() as m:
         m.setattr(h3, "H3_FLASH_FASTER_ARCHS", h3.H3_FLASH_FASTER_ARCHS ^ {tuple(p.capability)})
         moved = cell()
     diffs = diff_cells({cid: golden["cells"][cid]}, {cid: moved})
     assert diffs and cid in format_diffs(diffs), (moved, base)
-    # the per-load env override never reaches the golden (the matrix runs with a clean policy env)
     monkeypatch.setenv(h3.H3_INT8_EXACT_STEPS_ENV, "0")
     assert cell() == base
 
@@ -2443,9 +2435,7 @@ def test_h3_exact_start_policy_is_a_golden_cell(key, golden, monkeypatch):
     [("l4", True), ("rtx3090", True), ("t4", False), ("gfx1151", False)],
 )
 def test_h3_exact_policy_cell_records_what_the_load_installs(key, active, golden):
-    """The exact start installs only where Auto engages INT8 attention: T4 has no strided processor on its default
-    backend and ROCm never runs the H3 race, so their cells are the inactive steps=0, kernel=none (the gate alone
-    allows 4 steps on both), while L4 and the 3090 keep their 4 steps."""
+    """T4 (no strided processor) and ROCm (no race) are inactive even though the gate allows 4 steps."""
     from core.inference import video_minimax_h3_attn as h3
 
     p = PROFILES[key]

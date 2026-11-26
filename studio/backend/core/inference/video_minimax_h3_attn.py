@@ -529,8 +529,7 @@ EXACT_START_STATS = {"exact": 0, "int8": 0, "declined": 0}
 
 
 def h3_int8_exact_kernel(backend: Any) -> str:
-    """The 16-bit SDPA kernel an exact step runs for a strided processor on ``backend``: its own pinned kernel
-    (flash / cuDNN / efficient / math), or ``"sdpa_default"`` (SDPA's own pick) for a backend it cannot pin."""
+    """16-bit SDPA kernel an exact step pins on ``backend``, else ``"sdpa_default"``."""
     name = _backend_value(backend)
     return name if name in _EXACT_KERNELS[1:] else "sdpa_default"
 
