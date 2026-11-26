@@ -246,6 +246,7 @@ from ..kernels import (
 from ..kernels.bnb_override import install_bnb_nf4_override as _install_bnb_nf4_override
 from ..kernels.rope_embedding import register_split_model
 from ._cache_kwarg import get_cache_kwarg
+from ._lora_scale_warning import warn_low_rank_lora_alpha
 from ._utils import (
     __version__,
     importlib_version,
@@ -5777,6 +5778,7 @@ class FastBaseModel:
             skip_checkpointing(model, checkpoint_skip_layers)
             return model
         transformers_set_seed(random_state)
+        warn_low_rank_lora_alpha(r, lora_alpha, use_rslora)
 
         # Remember whether the CALLER explicitly opted into audio: "all-linear" turns the flag on implicitly below, but an old unsloth_zoo without audio must not fail a plain all-linear run.
         _audio_explicitly_requested = bool(finetune_audio_layers)
