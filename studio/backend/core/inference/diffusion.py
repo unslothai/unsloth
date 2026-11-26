@@ -461,6 +461,14 @@ from .diffusion_lora_memory import price_attached_loras
 from . import diffusion_lora_quant_merge as lora_quant_merge
 from .diffusion_fast_load import _snapshot_dir as _load_snapshot_dir
 from .diffusion_fast_load import start_load_prefetch, stop_prefetch, te_precast_components
+from .diffusion_fp16_hosted_int8 import (
+    fp16_card_hosted_int8_cached,
+    fp16_card_hosted_int8_plan_source,
+    fp16_card_hosted_int8_planned_scheme,
+    fp16_card_hosted_int8_reason,
+    fp16_card_hosted_int8_transformer,
+    small_host_hosted_int8_reason,
+)
 from .diffusion_hosted_vae import hosted_vae_pipe_kwargs, hosted_vae_plan_files
 from .diffusion_fp16_variant import (
     fp16_variant_enabled,
@@ -6355,11 +6363,11 @@ class DiffusionBackend:
         return bool(bg is not None and bg.compiling())
 
     @contextmanager
-    def _int8_defer_render(self):
+    def _int8_defer_render(self, cancel: Any = None):
         """The deferred CUTLASS race (diffusion_int8_cutlass_defer) runs only between renders: this render waits for a
         race unit in flight (one weight shape), re-records its CUDA graphs once winners landed, and lets the race go
         on once it ends and Studio stays idle."""
-        refresh = int8_defer.render_begin()
+        refresh = int8_defer.render_begin(cancel = cancel)
         try:
             if refresh:
                 with self._lock:
@@ -6630,6 +6638,8 @@ class DiffusionBackend:
                 )
             )
             kwargs["_pipeline_prequant_skipped"] = tuple(skipped_transformer_files)
+            # No seed, yet the DiT shards were swapped for a staged file: the fp16-card hosted int8 ConvRot read.
+            kwargs["_fp16_hosted_planned"] = bool(skip_transformer_weights and not pipeline_planned)
             kwargs["_te_prequant_resolved"] = bool(te_prequant_files)
             if dit_prequant is not None:
                 expected += int(dit_prequant[2])
@@ -7527,6 +7537,57 @@ class DiffusionBackend:
             logger.warning("diffusion.rocm_hosted_int8_plan_failed: %s", exc)
             return None
 
+    def _fp16_hosted_int8_plan_entry(
+        self,
+        fam: Any,
+        hf_token: Optional[str],
+        kwargs: dict[str, Any],
+        failures_out: Optional[list] = None,
+    ) -> Optional[tuple[str, str, int]]:
+        """The hosted int8 ConvRot file an fp16-only card's int8 load reads (``diffusion_fp16_hosted_int8``), as the
+        hub entry that replaces the dense DiT shards in the download plan, else None. Never raises."""
+        try:
+            with diffusion_device_scope(kwargs.get("gpu_ordinal")):
+                target = self._target_for_ordinal(fam, kwargs.get("gpu_ordinal"))
+                native_scheme = fp16_card_hosted_int8_planned_scheme(
+                    fam,
+                    target,
+                    kwargs.get("transformer_quant"),
+                    kind = "pipeline",
+                    speed_mode = kwargs.get("speed_mode"),
+                    forces_offload = _memory_request_forces_offload(
+                        kwargs.get("memory_mode"), bool(kwargs.get("cpu_offload"))
+                    ),
+                    has_lora = _has_active_lora(kwargs.get("loras")),
+                    base = kwargs.get("base_repo"),
+                    cache_dir = hub_cache_dir(),
+                )
+                if native_scheme is None or kwargs.get("transformer_prequant_path"):
+                    return None
+                # The load prices the never-fetched dense DiT from the family table: unsized keeps the shards.
+                if (
+                    estimate_dense_quant(
+                        fam, TQ_INT8, base_repo = kwargs.get("base_repo"), prequant_available = False
+                    )
+                    is None
+                ):
+                    return None
+                source = fp16_card_hosted_int8_plan_source(
+                    fam,
+                    native_scheme,
+                    target,
+                    base = kwargs.get("base_repo"),
+                    hf_token = hf_token,
+                    cache_dir = hub_cache_dir(),
+                    local_files_only = bool(kwargs.get("local_files_only")),
+                )
+            if source is None:
+                return None
+            return self._prequant_source_hub_entry(source, hf_token, failures_out, scheme = TQ_INT8)
+        except Exception as exc:  # noqa: BLE001 - unanswerable keeps the dense shards in the plan
+            logger.warning("diffusion.fp16_hosted_int8_plan_failed: %s", exc)
+            return None
+
     def _dit_prequant_plan_source(
         self,
         fam: Any,
@@ -7540,7 +7601,10 @@ class DiffusionBackend:
             return None
         planned = kwargs.get("_pipeline_prequant_planned") if kind == "pipeline" else None
         if kind == "pipeline":
-            if not planned or planned == PIPELINE_SEED_DECLINED:
+            if not planned:
+                # No seed: an fp16-only card's int8 build may still read the hosted ConvRot file, staged here.
+                return self._fp16_hosted_int8_plan_entry(fam, hf_token, kwargs, failures_out)
+            if planned == PIPELINE_SEED_DECLINED:
                 return None
         elif kind != "gguf":
             return None
@@ -9365,6 +9429,8 @@ class DiffusionBackend:
         # The scheme the plan settled, or PIPELINE_SEED_DECLINED; None for a direct call, which the pull never scoped.
         _pipeline_prequant_planned: Optional[str] = None,
         _pipeline_prequant_skipped: tuple[str, ...] = (),
+        # The plan swapped the dense DiT shards for the fp16-card hosted int8 ConvRot file (no seed scheme).
+        _fp16_hosted_planned: bool = False,
         _prequant_unreachable: tuple[str, ...] = (),
         _te_prequant_resolved: bool = True,
         # _run_load proved room for the bf16 encoder on an unset request (diffusion_precision.te_bf16_auto_fits).
@@ -9609,6 +9675,26 @@ class DiffusionBackend:
                     fetch_base = fetch_base,
                     text_encoder_quant = text_encoder_quant,
                 )
+                if kind == "pipeline" and _fp16_hosted_planned and _pipeline_prequant_skipped:
+                    # The cache holds no dense DiT (the plan staged the hosted int8 file instead): price it as the
+                    # dense build it stands in for, so placement matches the at-load route.
+                    plan = (
+                        self._fp16_hosted_int8_plan(
+                            target,
+                            single_file_path,
+                            base,
+                            fam,
+                            memory_mode,
+                            cpu_offload,
+                            kind = kind,
+                            lora = _has_active_lora(loras),
+                            repo_id = repo_id,
+                            base_local_dir = _base_local_dir,
+                            fetch_base = fetch_base,
+                            text_encoder_quant = text_encoder_quant,
+                        )
+                        or plan
+                    )
                 pipeline_seed_scheme: Optional[str] = None
                 bf16_pipeline_plan = plan
                 if kind == "pipeline" and _pipeline_prequant_planned not in (
@@ -9704,6 +9790,22 @@ class DiffusionBackend:
                     and not _memory_request_forces_offload(memory_mode, cpu_offload)
                     else None
                 )
+                small_host_hosted = (
+                    small_host_hosted_int8_reason(
+                        fam,
+                        target,
+                        base = base,
+                        cache_dir = hub_cache_dir(),
+                        require_cached = True,
+                        has_lora = _has_active_lora(loras),
+                    )
+                    if turing_auto_int8 is None
+                    and transformer_quant == TQ_AUTO
+                    and kind == "pipeline"
+                    and not _memory_request_forces_offload(memory_mode, cpu_offload)
+                    else None
+                )
+                turing_auto_int8 = turing_auto_int8 or small_host_hosted
                 if turing_auto_int8 is not None:
                     logger.info(
                         "diffusion.transformer_quant: auto picks int8 on this Turing GPU (%s; "
@@ -10455,6 +10557,8 @@ class DiffusionBackend:
                 pending_cache_write = None
                 pending_cast_write = None
                 native_streamed = False
+                # Set when an fp16-only card read its int8 DiT from the hosted ConvRot file (no at-load quantise).
+                hosted_native_scheme = None
                 try:
                     self._raise_if_load_cancelled(_load_token)
                     if (
@@ -10634,6 +10738,21 @@ class DiffusionBackend:
                                 self._stop_load_prefetch()
                                 if pipeline_seed_scheme == "int8":
                                     _kick_early_probe_prewarm(fam, target)
+                                # The fp16-card hosted int8 read replaces the dense DiT: do not warm its shards.
+                                _hosted_fp16_dit = (
+                                    ("transformer",)
+                                    if pipeline_seed_scheme is None
+                                    and not _has_active_lora(loras)
+                                    and (not _pipeline_prequant_skipped or _fp16_hosted_planned)
+                                    and fp16_card_hosted_int8_cached(
+                                        fam,
+                                        native_scheme,
+                                        target,
+                                        base = base,
+                                        cache_dir = hub_cache_dir(),
+                                    )
+                                    else ()
+                                )
                                 self._load_prefetch = start_load_prefetch(
                                     fam,
                                     _base_local_dir or fetch_base,
@@ -10641,7 +10760,8 @@ class DiffusionBackend:
                                     prequant_path_override = transformer_prequant_path,
                                     prequant_base_repo = base,
                                     text_encoders_replaced = tuple(_te_replaced or ())
-                                    + tuple(_image_cast_cached(_cast_cands, _fp16_variant)),
+                                    + tuple(_image_cast_cached(_cast_cands, _fp16_variant))
+                                    + _hosted_fp16_dit,
                                     cache_dir = hub_cache_dir(),
                                     logger = logger,
                                     variant = _fp16_variant,
@@ -10821,7 +10941,47 @@ class DiffusionBackend:
                                         pipe_kwargs["transformer"] = native_cached
                                         native_scheme = native_offload_scheme
                                         transformer_quant_engaged = native_offload_scheme
-                                if pipeline_seed_scheme is None and _pipeline_prequant_skipped:
+                                if (
+                                    pipeline_seed_scheme is None
+                                    and not _has_active_lora(loras)
+                                    and (not _pipeline_prequant_skipped or _fp16_hosted_planned)
+                                    and "transformer" not in pipe_kwargs
+                                    and fp16_card_hosted_int8_reason(fam, native_scheme, target)
+                                    is not None
+                                ):
+                                    # An fp16-only card's int8 build is the hosted ConvRot file: read it, not the dense
+                                    # DiT. Cache only: an online load's plan staged it in place of the dense shards.
+                                    hosted_native = fp16_card_hosted_int8_transformer(
+                                        fam,
+                                        target,
+                                        transformer_cls,
+                                        base = base,
+                                        config_source = _base_local_dir or fetch_base,
+                                        hf_token = hf_token,
+                                        cache_dir = hub_cache_dir(),
+                                        logger = logger,
+                                    )
+                                    if hosted_native is not None:
+                                        pipe_kwargs["transformer"] = hosted_native
+                                        hosted_native_scheme = native_scheme
+                                        transformer_quant_artifact = getattr(
+                                            hosted_native, "_unsloth_prequant_artifact", None
+                                        )
+                                if small_host_hosted is not None and hosted_native_scheme is None:
+                                    # Hosted read declined: restore AUTO exactly as without the hosted file.
+                                    logger.info(
+                                        "diffusion.small_host: the hosted int8 ConvRot DiT was not read; AUTO keeps "
+                                        "the small-host per-row int8 build (%s)",
+                                        small_host_hosted,
+                                    )
+                                    transformer_quant = TQ_AUTO
+                                    transformer_quant_pinned = native_scheme = None
+                                    turing_auto_int8 = small_host_hosted = None
+                                if (
+                                    pipeline_seed_scheme is None
+                                    and _pipeline_prequant_skipped
+                                    and hosted_native_scheme is None
+                                ):
                                     # from_pretrained cannot re-fetch these from a local snapshot dir, so top them up here.
                                     _base_local_dir = self._restore_skipped_transformer_shards(
                                         repo_id,
@@ -11112,6 +11272,14 @@ class DiffusionBackend:
                                         fam,
                                         logger,
                                         _load_token,
+                                    )
+                                if (
+                                    small_host_hosted is not None
+                                    and hosted_native_scheme is not None
+                                    and pipe is not None
+                                ):
+                                    plan = self._mark_small_host_hosted(
+                                        pipe, plan, small_host_hosted, fam, logger
                                     )
                         elif kind in ("single_file", "gguf") and fam.single_file_is_pipeline:
                             # A single-file SDXL-style checkpoint is the WHOLE pipeline: load it through the pipeline
@@ -11546,9 +11714,16 @@ class DiffusionBackend:
                             None
                             if native_scheme is not None or native_offload_scheme is not None
                             else pipeline_quant_uncompilable
-                        ) or dense_quant_blocker(
-                            pipe,
-                            allow_float16 = native_scheme is not None and fp16_card_int8_host(target),
+                        ) or (
+                            # The hosted read already is this build: nothing dense is left to quantise.
+                            None
+                            if hosted_native_scheme is not None
+                            and hosted_native_scheme == native_scheme
+                            else dense_quant_blocker(
+                                pipe,
+                                allow_float16 = native_scheme is not None
+                                and fp16_card_int8_host(target),
+                            )
                         )
                         if pipeline_quant_blocker is not None:
                             logger.info(
@@ -11733,7 +11908,12 @@ class DiffusionBackend:
                                             hf_token = hf_token,
                                         )
                                         if native_scheme is None
-                                        else None
+                                        else (
+                                            hosted_native_scheme
+                                            if hosted_native_scheme == native_scheme
+                                            and [attr for attr, _m in denoisers] == ["transformer"]
+                                            else None
+                                        )
                                     )
                                 if cached_scheme is not None:
                                     engaged.append(cached_scheme)
@@ -12249,6 +12429,10 @@ class DiffusionBackend:
                         logger.warning("diffusion.vae_tiling: not installed: %s", exc)
                     install_frame_pad_fix(pipe, target, logger = logger)
                     install_vae_sync(pipe, target, logger = logger)
+                    # Before the speed optims: the fused CUDA decoder replaces the up blocks with its own clone-free one.
+                    from .diffusion_vae_noclone import install_on_pipe as install_vae_noclone
+
+                    install_vae_noclone(pipe, logger)
                     # Before the speed optims so their decode compile lands inside the non-finite check; `off` keeps fp32.
                     vae_fp16 = (
                         str(speed_mode or "").strip().lower() != SPEED_OFF
@@ -12504,6 +12688,9 @@ class DiffusionBackend:
 
                     skip_text_encoder_kv_cache(pipe, logger = logger)
                     select_final_hidden_state(pipe, logger = logger)
+                    from .diffusion_qwen_vl_mm_types import forward_mm_token_type_ids
+
+                    forward_mm_token_type_ids(pipe, logger = logger)
 
                     # After the TE quant, so the cache key reflects the encoders that run.
                     cond_cache.install(
@@ -12533,15 +12720,29 @@ class DiffusionBackend:
                     # a refinement may have re-tiered the plan; routed encoders need group offload
                     plan = self._small_host_plan(pipe, plan, fam, logger)
                     plan = refine_plan_for_multigpu(pipe, plan, logger)
+                    from .diffusion_tp2 import engage_for_plan as _tp2_engage
+                    from .diffusion_tp2 import place_atomically as _tp2_place
+
+                    # opt-in UNSLOTH_DIFFUSION_TP=1: denoiser sharded over two cards, kept resident
+                    plan_without_tp = plan
+                    plan = _tp2_engage(pipe, plan, logger, loras = loras)
                     # streamed text encoders pin after the load returns, before or during the first encode
                     request_background_encoder_pins(pipe)
-                    effective_policy, effective_tiling = apply_memory_plan(
+                    # TP placement is atomic: a placement that cannot keep the shards resident uninstalls TP and
+                    # places the unsplit denoiser with the plan it had before TP
+                    (effective_policy, effective_tiling), plan = _tp2_place(
                         pipe,
                         plan,
-                        device = device,
-                        # Indexed: CPU-offload APIs default to cuda:0 without an index.
-                        placement_device = target.torch_device,
-                        logger = logger,
+                        plan_without_tp,
+                        lambda p: apply_memory_plan(
+                            pipe,
+                            p,
+                            device = device,
+                            # Indexed: CPU-offload APIs default to cuda:0 without an index.
+                            placement_device = target.torch_device,
+                            logger = logger,
+                        ),
+                        logger,
                     )
                     start_background_pins(pipe)
                     # a transient OOM during setup may have re-planned to lower residency
@@ -14069,6 +14270,35 @@ class DiffusionBackend:
         except Exception:  # noqa: BLE001 -- unreadable cache: treat the shards as missing
             return False
 
+    def _fp16_hosted_int8_plan(
+        self,
+        target: Any,
+        single_file_path: Optional[str],
+        base: str,
+        fam: Any,
+        memory_mode: Optional[str],
+        cpu_offload: bool,
+        **kwargs: Any,
+    ):
+        """The memory plan of an fp16-card hosted int8 read whose dense DiT shards were never fetched: the DiT priced
+        at its dense size (the at-load route's plan), companions as the table prices them. None when unsized."""
+        dense = estimate_dense_quant(fam, TQ_INT8, base_repo = base, prequant_available = False)
+        if dense is None:
+            return None
+        return self._plan_memory(
+            target,
+            single_file_path,
+            base,
+            fam,
+            memory_mode,
+            cpu_offload,
+            transformer_resident_override_mib = dense.transient_transformer_mib,
+            **self._candidate_companion_overrides(
+                dense, fam, base, target, kwargs.get("text_encoder_quant")
+            ),
+            **kwargs,
+        )
+
     @staticmethod
     def _candidate_companion_overrides(
         candidate: Any,
@@ -14566,6 +14796,20 @@ class DiffusionBackend:
             self._small_host_encoders_resident(pipe, decision, info, logger, load_token)
         mark(pipe, info)
         logger.info("diffusion.small_host: %s", info["components"])
+        return self._small_host_plan(pipe, plan, fam, logger)
+
+    def _mark_small_host_hosted(
+        self, pipe: Any, plan: Any, reason: str, fam: Any, logger: Any
+    ) -> Any:
+        """Mark and place the hosted int8 DiT exactly as the small-host route's per-row int8 build."""
+        from .diffusion_small_host import mark
+
+        info = dict(small_host_engaged_on(pipe) or {"reason": reason})
+        components = dict(info.get("components") or {})
+        components["transformer"] = SMALL_HOST_HOSTED_INT8_COMPONENT
+        info["components"] = components
+        mark(pipe, info)
+        logger.info("diffusion.small_host: %s", components)
         return self._small_host_plan(pipe, plan, fam, logger)
 
     def _small_host_encoders_resident(
@@ -15980,7 +16224,7 @@ class DiffusionBackend:
             bind_generation_cancel(cancel)
         with (
             nullcontext() if _hires_pass is not None else self._generation_slot(cancel),
-            self._int8_defer_render(),
+            self._int8_defer_render(cancel),
         ):
             # Wait outside the state lock so status polls keep answering.
             pending_bg = getattr(self._state, "bg_compile", None)
@@ -16516,6 +16760,10 @@ class DiffusionBackend:
                 # Chunks: all jobs in one forward unless batch_size caps it; OOM backoff halves a
                 # failed chunk; layered: one input per forward, as its layer stride fits one.
                 chunks = _generation_chunks(state.family, jobs, batch_size, layer_count = layer_count)
+                # Qwen-Image-2.1 lays out a batch from one row: prompts of different text lengths render apart.
+                from .diffusion_qwenimage21 import text_length_runs
+
+                chunks = [run for chunk in chunks for run in text_length_runs(pipe, chunk)]
 
                 # EFFECTIVE steps: img2img at strength < 1 denoises a fraction of `steps`.
                 strength_applied = effective_request_strength(
@@ -17416,6 +17664,9 @@ class DiffusionBackend:
                     restore_vae()
                 end_cfg_render(getattr(state, "pipe", None))
                 end_cfg_batch_render(getattr(state, "pipe", None))
+                from .diffusion_krea2_text_cache import end_render as end_krea2_text_render
+
+                end_krea2_text_render(getattr(state, "pipe", None))
                 if restore_resident is not None:
                     try:
                         if kick_bg or not defer_resident_restore(state.pipe, restore_resident):
@@ -17867,6 +18118,11 @@ def _small_host_int8(pipe: Any) -> bool:
     return any(str(v).startswith("int8") for v in (info.get("components") or {}).values())
 
 
+# Must start with "int8" but not "int8 weights" (that prefix means the per-row build, re-armed for W8A8).
+SMALL_HOST_HOSTED_INT8_COMPONENT = (
+    "int8 ConvRot weights (hosted checkpoint, memory-mapped, native W8A8)"
+)
+
 SMALL_HOST_INT8_REASON = (
     "system RAM is too small for the dense float16 transformer, so the small-host route stores it as per-row int8 "
     "weights"
@@ -17892,6 +18148,11 @@ def _grouped_form_status(pipe: Any) -> Optional[dict]:
 
 def _lora_load_block_reason(pipe: Any) -> Optional[str]:
     """Why this load's transformer cannot carry adapters whatever the family and quant allow, or None."""
+    from .diffusion_tp2 import lora_block_reason as _tp2_lora_block
+
+    tp_block = _tp2_lora_block(pipe)
+    if tp_block:
+        return tp_block
     if _small_host_int8(pipe):
         return (
             "LoRA is not available on this load: system RAM was too small for the dense model, so Unsloth "

@@ -989,7 +989,7 @@ export const nl = {
   chatMenu: {
     more: "Chatopties",
     copy: "Kopiëren",
-    addScheduledTask: "Geplande taak toevoegen…",
+    addScheduledTask: "Geplande taak toevoegen",
     compact: "Gesprek comprimeren",
     compactEmpty: "Nog niets om te comprimeren",
     compactUnsupported:

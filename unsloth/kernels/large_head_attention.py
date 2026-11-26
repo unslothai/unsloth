@@ -1347,8 +1347,10 @@ def _self_check(
             and ((a.float() - b).abs().max() <= 0.05 * b.abs().max() + 0.02).item()
             for a, b in zip((out, *grads), (ref, *ref_grads))
         )
+    except torch.cuda.OutOfMemoryError:
+        # Transient: SDPA serves this call; caching it would keep SDPA for the whole run.
+        return False
     except Exception as exc:
-        # Includes OOM: the load worked before this check existed, so SDPA keeps it working.
         _warn_once(
             f"Unsloth: head_dim 512 attention kernel failed its self check ({exc}); using SDPA."
         )

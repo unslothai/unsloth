@@ -116,11 +116,19 @@ jobs:
           # fsdp2's: an explicit file root cannot be filtered by --ignore, so the split is done in
           # the globs themselves. A *gloo* file starting with d, i, m, s or u is rest-2's
           # (tests/test_[dimsu]*.py), so the first glob leaves those letters out.
+          # #19527's test_cp_router_aux_gloo.py then made the test_cp_* files 59% of gloo's test time
+          # (1510 of 2573 s measured), and gloo hit the cap at 287 tests on 2026-11-25. They get a
+          # shard of their own; test_c[!p]* keeps test_context_parallel_*, and a test_cp[!_]* gloo
+          # file matches neither and is reported dropped.
           - shard: gloo
             selection: >-
-              tests/test_[!dfimpstu]*gloo*.py
+              tests/test_[!cdfimpstu]*gloo*.py
+              tests/test_c[!p]*gloo*.py
               tests/test_f[!s]*gloo*.py
               tests/test_parallel_[!c]*gloo*.py
+          - shard: gloo-cp-files
+            selection: >-
+              tests/test_cp_*gloo*.py
           # Gloo hit its 2100 s cap after 17886, 17930, DeepSeek-V4.1 tests; non-native TP files
           # split off.
           - shard: gloo-tp-env
@@ -139,9 +147,18 @@ jobs:
           - shard: gloo-tp
             selection: >-
               tests/test_tp_n*gloo*.py
+          # gloo-pp then ran 1324 to 1764 s of its 2100 s cap on a 4 vCPU runner (2026-11-25) and was
+          # interrupted at about 2095 s with some 200 of 223 tests done on slower ones; four workers
+          # spawning 2 to 4 ranks each oversubscribe the runner. test_pp_env_gloo.py is 64% of the
+          # shard's test time (1681 of 2640 s measured), so it gets a runner of its own. Any other
+          # test_pp_e* or test_pp[!_]* gloo file matches neither shard and is reported dropped.
           - shard: gloo-pp
             selection: >-
-              tests/test_pp*gloo*.py
+              tests/test_pp_[!e]*gloo*.py
+              tests/test_pp_env_[!g]*gloo*.py
+          - shard: gloo-pp-env
+            selection: >-
+              tests/test_pp_env_gloo.py
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -233,10 +250,10 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}/studio
           UNSLOTH_COMPILE_DISABLE: '1'
         # Spoofing and load_freeze files run isolated below: hardware-spoof files mutate module
-        # globals. The outer timeout must fire before the job cap.
+        # globals. The outer timeout must fire before the job cap. --timeout-method=thread: see the backend shards.
         run: |
           timeout --signal=INT --kill-after=60 2100 \
-          python -m pytest ${{ matrix.selection }} -q -rs --tb=short -n ${{ matrix.workers || 4 }} --dist loadgroup --timeout=330 \
+          python -m pytest ${{ matrix.selection }} -q -rs --tb=short -n ${{ matrix.workers || 4 }} --dist loadgroup --timeout=330 --timeout-method=thread \
             -m 'not server and not e2e'
 
       - name: Why a failure here might already be fixed on the base branch

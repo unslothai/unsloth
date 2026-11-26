@@ -487,7 +487,16 @@ export function createCodePlugin(
     dropCodeIndex(fence);
     fence.code = code;
     fence.result = result;
-    fencesByCode.set(codeKey(fence.key, code), fence);
+    // A fence that already tokenized all of this body keeps the index: a throttled refresh of another
+    // fence reaching the same body later (mid-body, or done) must not replace the exact result callers hold.
+    const indexed = fencesByCode.get(codeKey(fence.key, code));
+    const keepIndexed =
+      indexed !== undefined &&
+      indexed !== fence &&
+      indexed.code === code &&
+      indexed.result !== null &&
+      indexed.committedLength > code.lastIndexOf("\n");
+    if (!keepIndexed) fencesByCode.set(codeKey(fence.key, code), fence);
     evict();
     return result;
   };
