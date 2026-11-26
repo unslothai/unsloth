@@ -13,6 +13,7 @@ from unsloth_cli import _inference
     "settings,loaded,message",
     [
         (404, None, "Update Studio"),
+        ({"enabled": False, "managed_by_env": True}, None, "UNSLOTH_CHAT_IMAGE_SWAP"),
         ({"enabled": False}, {"is_mlx": True}, "GGUF or Transformers"),
         ({"enabled": False}, {"is_gguf": True}, None),
     ],
@@ -45,7 +46,7 @@ def test_image_generator_requires_compatible_studio(monkeypatch, settings, loade
         client = _inference.connect_studio_server("org/chat", **options)
         assert client.image_generator == "local/sdxl"
     assert requests[0] == "/api/settings/chat-image-swap"
-    assert ("/api/inference/load" in requests) is (settings != 404)
+    assert ("/api/inference/load" in requests) is (loaded is not None)
 
 
 @pytest.mark.parametrize("signing_available", [True, False])

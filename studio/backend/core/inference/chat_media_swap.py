@@ -69,11 +69,11 @@ def _env_bool(name: str) -> Optional[bool]:
 
 
 def swap_enabled() -> bool:
-    if request_image_model.get():
-        return True
     env = _env_bool(SWAP_ENV)
     if env is not None:
         return env
+    if request_image_model.get():
+        return True
     try:
         from utils.openai_auto_switch_settings import _cached_setting, _coerce_bool
         return bool(_coerce_bool(_cached_setting(SWAP_SETTING_KEY, None)))
@@ -677,8 +677,11 @@ def chat_can_swap() -> bool:
     if not swap_enabled():
         return False
     try:
+        from core.inference import model_slots
         from routes.inference import get_llama_cpp_backend
 
+        if model_slots.slots:
+            return False
         llama = get_llama_cpp_backend()
         if llama.is_loaded:
             return not (

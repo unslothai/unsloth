@@ -1184,6 +1184,7 @@ class HttpChatBackend:
 
     def _require_image_swap_support(self) -> None:
         from urllib.error import HTTPError
+
         try:
             with self._request("GET", "/api/settings/chat-image-swap", timeout = 10) as response:
                 settings = json.load(response)
@@ -1199,6 +1200,11 @@ class HttpChatBackend:
         if not isinstance(settings, dict) or not isinstance(settings.get("enabled"), bool):
             raise typer.BadParameter(
                 "This Studio server did not report chat image swapping support. Update Studio and try again.",
+                param_hint = "--image-generator",
+            )
+        if settings.get("managed_by_env") is True and not settings["enabled"]:
+            raise typer.BadParameter(
+                "This Studio server has chat image swapping disabled by UNSLOTH_CHAT_IMAGE_SWAP.",
                 param_hint = "--image-generator",
             )
 

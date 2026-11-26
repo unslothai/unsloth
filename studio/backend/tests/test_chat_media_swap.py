@@ -478,6 +478,39 @@ def test_tool_uses_swap_only_when_enabled(monkeypatch, tmp_path):
     assert len(calls) == 1 and callable(calls[0]["render"]) and callable(calls[0]["stop_render"])
 
 
+def test_explicit_generator_overrides_saved_preference_but_respects_server_disable(monkeypatch):
+    from utils import openai_auto_switch_settings
+
+    monkeypatch.delenv(swap.SWAP_ENV, raising = False)
+    monkeypatch.setattr(openai_auto_switch_settings, "_cached_setting", lambda *_: False)
+    assert not swap.swap_enabled()
+
+    token = swap.request_image_model.set("local/sdxl")
+    try:
+        assert swap.swap_enabled()
+        monkeypatch.setenv(swap.SWAP_ENV, "0")
+        assert not swap.swap_enabled()
+    finally:
+        swap.request_image_model.reset(token)
+
+
+def test_tool_is_unavailable_while_another_chat_model_is_kept_loaded(monkeypatch):
+    from types import SimpleNamespace
+    from core.inference import model_slots
+    from routes import inference
+
+    monkeypatch.setenv(swap.SWAP_ENV, "1")
+    monkeypatch.setattr(inference, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = True))
+    monkeypatch.setattr(media_chat_tools, "media_chat_status", lambda task: None)
+    monkeypatch.setattr(model_slots, "slots", [])
+    assert swap.chat_can_swap()
+    assert media_chat_tools.offered_media_chat_tools({"generate_image"})
+
+    model_slots.slots.append(model_slots.ExtraSlot(None, None, "unsloth"))
+    assert not swap.chat_can_swap()
+    assert media_chat_tools.offered_media_chat_tools({"generate_image"}) == []
+
+
 def test_tool_offered_when_swap_can_load_default(monkeypatch):
     monkeypatch.setattr(media_chat_tools, "media_chat_status", lambda task: None)
     monkeypatch.setattr(swap, "chat_can_swap", lambda: False)
