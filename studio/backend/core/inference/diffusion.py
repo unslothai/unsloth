@@ -20,6 +20,7 @@ in the arbiter the routes call, not here.
 from __future__ import annotations
 
 from contextlib import contextmanager
+import collections
 import contextvars
 import functools
 import inspect
@@ -4923,6 +4924,9 @@ class DiffusionBackend:
         self._unload_waiters = 0
         # _generate_lock serialises generations and is the ONLY lock the denoise holds.
         self._generate_lock = threading.Lock()
+        # Generations waiting for the slot, in arrival order: only the head competes for _generate_lock.
+        self._slot_turns: collections.deque = collections.deque()
+        self._slot_turn_changed = threading.Condition(threading.Lock())
         self._state: Optional[_LoadState] = None
         self._loading: Optional[_LoadingState] = None
         # Bumped on begin_load/unload so a superseded worker neither commits nor stamps progress
@@ -5033,14 +5037,36 @@ class DiffusionBackend:
                 self._transition_owns_slot = False
                 self._generate_lock.release()
 
+    def _leave_slot_turn(self, turn: object) -> None:
+        with self._slot_turn_changed:
+            try:
+                self._slot_turns.remove(turn)
+            except ValueError:
+                return
+            self._slot_turn_changed.notify_all()
+
+    def _await_slot_turn(self, turn: object, cancel: threading.Event) -> None:
+        """Blocks until ``turn`` is the oldest waiting generation; a cancel still ends the wait within 0.1 s."""
+        with self._slot_turn_changed:
+            while self._slot_turns[0] is not turn:
+                if cancel.is_set():
+                    raise RuntimeError(DIFFUSION_CANCELLED_MSG)
+                self._slot_turn_changed.wait(timeout = 0.1)
+
     @contextmanager
     def _generation_slot(self, cancel: threading.Event):
-        """Yields to teardown fences after taking the lock (not FIFO); the zero-fence check and cancel registration must share one _lock section."""
+        """First come, first served: a ticket queues each generation, and only the oldest one takes the lock, so a
+        later arrival cannot overtake it. Yields to teardown fences after taking the lock, keeping its place; the
+        zero-fence check and cancel registration must share one _lock section."""
         admitted = False
+        turn = object()
+        with self._slot_turn_changed:
+            self._slot_turns.append(turn)
         with self._generation_cancel_lock:
             self._queued_generate_cancels.add(cancel)
         try:
             while True:
+                self._await_slot_turn(turn, cancel)
                 while True:
                     if cancel.is_set():
                         raise RuntimeError(DIFFUSION_CANCELLED_MSG)
@@ -5059,6 +5085,8 @@ class DiffusionBackend:
                     else:
                         cancelled = cancel.is_set()
                 if admitted:
+                    # The next waiter becomes the head and waits on the lock this generation now holds.
+                    self._leave_slot_turn(turn)
                     break
                 self._generate_lock.release()
                 if cancelled:
@@ -5085,6 +5113,7 @@ class DiffusionBackend:
                     self._generation_owns_slot = False
                     self._generate_lock.release()
         finally:
+            self._leave_slot_turn(turn)
             if not admitted:
                 with self._generation_cancel_lock:
                     self._queued_generate_cancels.discard(cancel)

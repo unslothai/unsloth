@@ -532,3 +532,76 @@ def test_seeded_requests_join_a_batch_only_when_opted_in(studio, monkeypatch, pa
         ("bob", 22, "a cat#22"),
         ("bob", 23, "a cat#23"),
     ]
+
+
+def _queued(engine) -> int:
+    with engine._generation_cancel_lock:
+        return len(engine._queued_generate_cancels)
+
+
+def _wait_for(predicate, timeout = 5.0) -> None:
+    import time
+    deadline = time.monotonic() + timeout
+    while not predicate():
+        if time.monotonic() > deadline:
+            raise AssertionError("condition never held")
+        time.sleep(0.005)
+
+
+def test_the_generation_slot_serves_waiters_in_arrival_order():
+    from core.inference.diffusion import DiffusionBackend
+
+    engine = DiffusionBackend()
+    served: list[int] = []
+    threads = []
+    with engine._generation_slot(threading.Event()):
+        for index in range(8):
+
+            def run(index = index):
+                with engine._generation_slot(threading.Event()):
+                    served.append(index)
+
+            thread = threading.Thread(target = run, daemon = True)
+            thread.start()
+            threads.append(thread)
+            _wait_for(lambda: _queued(engine) == index + 1)
+            # Each waiter has polled the lock a few times before the next one arrives.
+            threading.Event().wait(0.25)
+    for thread in threads:
+        thread.join(timeout = 10)
+    assert served == list(range(8))
+
+
+def test_a_cancelled_waiter_leaves_the_queue_and_the_next_one_is_served():
+    from core.inference.diffusion import DiffusionBackend
+    from core.inference.diffusion_families import DIFFUSION_CANCELLED_MSG
+
+    engine = DiffusionBackend()
+    first_cancel = threading.Event()
+    outcome: dict[str, object] = {}
+
+    def first():
+        try:
+            with engine._generation_slot(first_cancel):
+                outcome["first"] = "served"
+        except RuntimeError as exc:
+            outcome["first"] = str(exc)
+
+    def second():
+        with engine._generation_slot(threading.Event()):
+            outcome["second"] = "served"
+
+    with engine._generation_slot(threading.Event()):
+        a = threading.Thread(target = first, daemon = True)
+        a.start()
+        _wait_for(lambda: _queued(engine) == 1)
+        b = threading.Thread(target = second, daemon = True)
+        b.start()
+        _wait_for(lambda: _queued(engine) == 2)
+        first_cancel.set()
+        a.join(timeout = 2)
+        assert outcome == {"first": DIFFUSION_CANCELLED_MSG}
+        assert "second" not in outcome
+    b.join(timeout = 5)
+    assert outcome["second"] == "served"
+    assert not engine._generate_lock.locked()
