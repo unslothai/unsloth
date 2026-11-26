@@ -89,7 +89,8 @@ def _prepend_zero_frames(module: Any, args: tuple) -> Optional[tuple]:
     return (torch.cat([zeros, x], dim = 2), *args[1:])
 
 
-_CAUSAL_PAD_CLASSES = frozenset({"WanCausalConv3d"})
+# Same causal ``_padding`` + F.pad forward: Wan 2.x and the Qwen-Image VAE.
+_CAUSAL_PAD_CLASSES = frozenset({"WanCausalConv3d", "QwenImageCausalConv3d"})
 
 
 def _zero_buffer_causal_conv(
@@ -126,6 +127,21 @@ def _zero_buffer_causal_conv(
     return torch.nn.Conv3d.forward(module, buffer)
 
 
+def _zero_buffer_qwen_conv(
+    module: Any,
+    x: Any,
+    cache_x: Any = None,
+) -> Any:
+    """Qwen-Image VAE: the zero buffer only on one-frame, no-cache calls (the measured image path); multi-frame
+    and cached calls keep the stock forward, whose MPS numerics against the zero buffer are unmeasured."""
+    if cache_x is not None or x.dim() != 5 or x.shape[2] != 1:
+        return type(module).forward(module, x, cache_x)
+    return _zero_buffer_causal_conv(module, x, cache_x)
+
+
+_CAUSAL_PAD_FORWARDS = {"QwenImageCausalConv3d": _zero_buffer_qwen_conv}
+
+
 def install_frame_pad_fix(
     pipe: Any,
     target: DiffusionDeviceTarget,
@@ -151,7 +167,8 @@ def install_frame_pad_fix(
                 and len(getattr(module, "_padding", ())) == 6
                 and "forward" not in module.__dict__
             ):
-                module.forward = types.MethodType(_zero_buffer_causal_conv, module)
+                forward = _CAUSAL_PAD_FORWARDS.get(name, _zero_buffer_causal_conv)
+                module.forward = types.MethodType(forward, module)
             else:
                 continue
             module._unsloth_frame_pad_fix = True
