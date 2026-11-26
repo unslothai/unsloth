@@ -217,6 +217,8 @@ class _ListShard:
         self.experts, self.group, self.ep = experts, group, ep
         self.calls = 0  # block forwards that went through the exchange (engagement count)
         self.containers = []  # modules holding this rank's experts under their global indices
+        # Children pass 1 may skip, per block.training; learned by _learn_skips.
+        self.skip = {}
 
 
 class _Proxy:
@@ -424,6 +426,116 @@ def _exchange(shard, calls, like):
     return outputs, y_back
 
 
+class _Zeros(nn.Module):
+    def __init__(self, dtype):
+        super().__init__()
+        self.dtype = dtype
+
+    def forward(self, x, *args, **kwargs):
+        return x.new_zeros(x.shape, dtype = self.dtype)
+
+
+@contextlib.contextmanager
+def _skipping(block, skip):
+    held = {name: block._modules[name] for name, _ in skip}
+    try:
+        for name, dtype in skip:
+            block._modules[name] = _Zeros(dtype)
+        yield
+    finally:
+        block._modules.update(held)
+
+
+# The 4.x shared expert children, whose output is only added after routing; a router of width H is never one.
+_SHARED = ("shared_expert", "shared_experts", "shared_mlp")
+
+
+def _draws_rng(block, skip):
+    # A dropout active now (PEFT set_adapter, train mode) must run in pass 1 too: the RNG ends after pass 1.
+    return any(
+        isinstance(m, nn.Dropout) and m.training and m.p > 0
+        for name, _ in skip
+        for m in block._modules[name].modules()
+    )
+
+
+@contextlib.contextmanager
+def _watch_shapes(block):
+    """Shared expert children mapping H to H: {name: output dtype}."""
+    seen, handles = {}, []
+
+    def hook(name):
+        def record(module, args, output):
+            x = next((a for a in args if isinstance(a, torch.Tensor)), None)
+            same = isinstance(output, torch.Tensor) and x is not None and output.shape == x.shape
+            dtype = seen.get(name)
+            if not same or (dtype is not None and dtype != output.dtype):
+                seen[name] = False
+            elif dtype is None:
+                seen[name] = output.dtype
+
+        return record
+
+    for name in _SHARED:
+        child = block._modules.get(name)
+        if child is not None:
+            handles.append(child.register_forward_hook(hook(name)))
+    found = {}
+    try:
+        yield found
+    finally:
+        for h in handles:
+            h.remove()
+        found.update({n: d for n, d in seen.items() if isinstance(d, torch.dtype)})
+
+
+def _same_calls(a, b):
+    return len(a) == len(b) and all(
+        ea == eb and xa.shape == xb.shape and torch.equal(xa, xb)
+        for (ea, xa), (eb, xb) in zip(a, b)
+    )
+
+
+def _same_rng(a, b):
+    return torch.equal(a[0], b[0]) and all(torch.equal(x, y) for x, y in zip(a[1], b[1]))
+
+
+def _pass1(shard, prior, args, kwargs, calls):
+    lst = shard.block._modules["experts"]
+    lst._mode = ("record", calls)
+    try:
+        prior(
+            *(_detach_inplace(a) for a in args),
+            **{k: _detach_inplace(v) for k, v in kwargs.items()},
+        )
+    finally:
+        lst._mode = None
+
+
+def _learn_skips(shard, prior, args, kwargs, before, devices):
+    """No-grad pass 1 trials from `before`: children are skippable only if expert calls and RNG draws stay bitwise
+    equal. Restores the RNG to `before` so later passes (checkpoint recompute too) choose the same."""
+    full, trial = [], []
+    try:
+        with torch.no_grad():
+            _rng_set(before, devices)
+            with _watch_shapes(shard.block) as candidates:
+                _pass1(shard, prior, args, kwargs, full)
+            skip = tuple(sorted(candidates.items()))
+            if not skip:
+                return ()
+            drawn = _rng_get(devices)
+            _rng_set(before, devices)
+            with _skipping(shard.block, skip):
+                _pass1(shard, prior, args, kwargs, trial)
+            same = _same_rng(_rng_get(devices), drawn) and _same_calls(trial, full)
+    except Exception:
+        return ()
+    finally:
+        _rng_set(before, devices)
+    return skip if same else ()
+
+
 def _list_forward(shard, prior):
     @functools.wraps(prior)
     def forward(*args, **kwargs):
@@ -444,14 +556,15 @@ def _list_forward(shard, prior):
         devices = _rng_devices(args, kwargs)
         # Both passes draw the same randomness; the RNG ends where one process would leave it.
         before = _rng_get(devices)
-        lst._mode = ("record", calls)
-        try:
-            prior(
-                *(_detach_inplace(a) for a in args),
-                **{k: _detach_inplace(v) for k, v in kwargs.items()},
-            )
-        finally:
-            lst._mode = None
+        mode = bool(shard.block.training)
+        if mode not in shard.skip:
+            shard.skip[mode] = _learn_skips(shard, prior, args, kwargs, before, devices)
+        skip = shard.skip[mode]
+        if skip and _draws_rng(shard.block, skip):
+            skip = ()
+        # Pass 1 output is discarded, so skip children that cannot change the expert calls.
+        with _skipping(shard.block, skip):
+            _pass1(shard, prior, args, kwargs, calls)
         outputs, y_back = _exchange(shard, calls, like)
         shard.calls += 1
         after = _rng_get(devices)
