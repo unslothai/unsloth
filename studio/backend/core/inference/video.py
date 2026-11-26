@@ -352,7 +352,7 @@ from .video_minimax_h3_te import (
     h3_te_resident_gb,
 )
 from .video_encode import encode_x264
-from .video_nvenc import encode_nvenc, nvenc_gpu
+from .video_nvenc import encode_nvenc, nvenc_gpu, nvenc_requested
 from .video_stream_encode import (
     claim_stream,
     offer_stream,
@@ -6670,6 +6670,83 @@ def _views_for(pipe: Any, fam: VideoFamily) -> tuple[Any, ...]:
     return (pipe,)
 
 
+def _encode_after_return(fn: Callable[..., dict[str, Any]]) -> Callable[..., dict[str, Any]]:
+    """Run a deferred MP4 encode once ``generate``'s own frame has returned, so its locals and closures (pipeline,
+    load state, step callbacks) are freed and an unload during the encode really frees the weights.
+    ``_on_gpu_released`` (begin_generate's worker) runs first with the result; on that path the request's resolved
+    inputs also drop their load state, since the worker's kwargs keep the object alive until the thread ends."""
+
+    @functools.wraps(fn)
+    def wrapper(
+        self,
+        *args: Any,
+        _on_gpu_released: Any = None,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        result = fn(self, *args, **kwargs)
+        finish = result.pop("_finish_encode", None) if isinstance(result, dict) else None
+        if finish is None:
+            return result
+        if _on_gpu_released is not None:
+            resolved = kwargs.get("_resolved_inputs")
+            if resolved is not None:
+                object.__setattr__(resolved, "state", None)
+        kwargs.clear()
+        if _on_gpu_released is not None:
+            _on_gpu_released(result)
+        result["mp4_bytes"] = finish(_on_gpu_released is None)
+        return result
+
+    return wrapper
+
+
+def _host_copy(value: Any) -> Any:
+    """A device tensor as an exact host copy, so an encode after _generate_lock issues no CUDA work."""
+    device = getattr(value, "device", None)
+    if device is not None and getattr(device, "type", "cpu") != "cpu" and hasattr(value, "cpu"):
+        return value.cpu()
+    return value
+
+
+def _encode_outside_lock_enabled() -> bool:
+    """The CPU encode of a finished clip runs after _generate_lock is released, so the next clip's GPU work overlaps
+    it. UNSLOTH_VIDEO_ENCODE_OUTSIDE_LOCK=0 keeps the encode under the lock."""
+    return os.environ.get("UNSLOTH_VIDEO_ENCODE_OUTSIDE_LOCK", "1").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
+
+
+class _DetachedEncodeSource:
+    """What _encode_mp4 reads off a pipeline (its VAE class for H3's reference save settings, the vocoder's sample
+    rate), copied under _generate_lock: the encode outside it holds no pipeline, so an unload still frees VRAM."""
+
+    def __init__(self, pipe: Any) -> None:
+        self.vae = type(type(getattr(pipe, "vae", None)).__name__, (), {})()
+        rate = getattr(
+            getattr(getattr(pipe, "vocoder", None), "config", None), "output_sampling_rate", None
+        )
+        self.vocoder = types.SimpleNamespace(
+            config = types.SimpleNamespace(output_sampling_rate = rate)
+        )
+
+
+@dataclass
+class _EncodeTail:
+    """A begin_generate job past its GPU work, encoding on its worker thread after handing the job slot on."""
+
+    token: object
+    video_id: Optional[str]
+    account: Optional[str]
+    cancel: threading.Event
+    total: int
+    epoch: int
+    # False once its last cancel check passed: a later Stop can no longer discard it, so it is not answered true.
+    stoppable: bool = True
+
+
 def _log_failed_generation(request_shape: Optional[dict[str, Any]], exc: BaseException) -> None:
     """Logs the request shape on failure; cancels are not reported. Must never replace the real error."""
     if request_shape is None:
@@ -6907,6 +6984,12 @@ class VideoBackend:
         # video_id -> (account, terminal record) of recent clips: a page whose clip ended while a
         # successor took the single progress record still reads its own outcome.
         self._gen_outcomes: "collections.OrderedDict[str, tuple]" = collections.OrderedDict()
+        # A queued clip whose GPU work is done but whose CPU encode still runs: it has handed the job slot to the next
+        # clip. One at a time (the semaphore), so finished clips never pile up in host RAM.
+        self._encode_tail: Optional[_EncodeTail] = None
+        self._encode_tail_free = threading.Semaphore(1)
+        # Bumped by every begin_generate, so a tail that ends after a successor started never takes its record.
+        self._slot_epoch = 0
 
     def _device_target(self, ordinal: Optional[int] = None) -> DiffusionDeviceTarget:
         """Pins the device per worker thread: torch.cuda.set_device is thread-local, not set once at
@@ -15480,6 +15563,7 @@ class VideoBackend:
                     before_commit()
                 self._generate_job_active = True
                 self._generate_job_token = job_token
+                self._slot_epoch += 1
                 self._generate_job_account = current_account_id()
                 self._active_generate_cancel = cancel
                 self._gen_video_id = video_id
@@ -15603,8 +15687,23 @@ class VideoBackend:
             except Exception as exc:  # noqa: BLE001 -- job persistence must not strand the backend busy
                 logger.warning("video.persist_job_outcome_failed: %s", exc)
 
+        handed_shape: list = []
+
+        def _hand_off_slot(result: dict[str, Any]) -> None:
+            shape = self._last_request_shape
+            if self._hand_off_encode(job_token, cancel_event, result.get("steps")):
+                handed_shape.append(shape)
+
+        def _request_shape() -> Optional[dict[str, Any]]:
+            # Once handed off, _last_request_shape is the next clip's.
+            return handed_shape[0] if handed_shape else self._last_request_shape
+
         try:
-            result = self.generate(cancel_event = cancel_event, **gen_kwargs)
+            result = self.generate(
+                cancel_event = cancel_event,
+                **({"_on_gpu_released": _hand_off_slot} if job_token is not None else {}),
+                **gen_kwargs,
+            )
         except ValueError as exc:
             _record_outcome(str(exc))
             self._finish_generate_job(
@@ -15615,13 +15714,13 @@ class VideoBackend:
             msg = str(exc)
             if msg not in (VIDEO_NOT_LOADED_MSG, VIDEO_CANCELLED_MSG):
                 logger.error("video.generate_failed: %s", exc, exc_info = True)
-                msg = video_failure_detail(exc, self._last_request_shape)
+                msg = video_failure_detail(exc, _request_shape())
             _record_outcome(msg)
             self._finish_generate_job(job_token = job_token, cancel_event = cancel_event, error = msg)
             return
         except Exception as exc:  # noqa: BLE001 -- worker thread: never propagate
             logger.error("video.generate_failed: %s", exc, exc_info = True)
-            detail = video_failure_detail(exc, self._last_request_shape)
+            detail = video_failure_detail(exc, _request_shape())
             _record_outcome(detail)
             self._finish_generate_job(
                 job_token = job_token,
@@ -15688,6 +15787,88 @@ class VideoBackend:
             total = result["steps"],
         )
 
+    def _hand_off_encode(
+        self, job_token: object, cancel_event: threading.Event, steps: Optional[int]
+    ) -> bool:
+        """The clip's GPU work is done and only its CPU encode is left: free the job slot so the queue starts the next
+        clip now. At most one clip encodes past its slot; a second waits here, slot held, for the first to end."""
+        self._encode_tail_free.acquire()
+        with self._lock:
+            if self._generate_job_token is not job_token:
+                self._encode_tail_free.release()
+                return False
+            total = int(steps or 0)
+            self._encode_tail = _EncodeTail(
+                token = job_token,
+                video_id = self._gen_video_id,
+                account = self._generate_job_account,
+                cancel = cancel_event,
+                total = total,
+                epoch = self._slot_epoch,
+            )
+            self._generate_job_token = None
+            self._generate_job_active = False
+            if self._active_generate_cancel is cancel_event:
+                self._active_generate_cancel = None
+            # The clip answers by id from here (generate_outcome); the record is the next clip's.
+            self._gen = {"active": False}
+            self._gen_video_id = None
+            # The GPU is free: this is when the next clip can start, so the queue's ETA clock ends here.
+            _note_clip_finished(True, total)
+        _wake_video_queue()
+        return True
+
+    def _finish_encode_tail(
+        self, tail: _EncodeTail, video: Optional[dict], error: Optional[str]
+    ) -> None:
+        """Publish a handed-off clip's terminal state; the caller holds _lock. The progress record takes it only
+        while no later clip has started."""
+        self._encode_tail = None
+        self._encode_tail_free.release()
+        if error is not None:
+            terminal = {
+                "active": False,
+                "phase": "failed",
+                "error": error,
+                "step": 0,
+                "total": 0,
+                "eta_seconds": None,
+            }
+            logger.info(
+                "video_generation_progress",
+                phase = "failed",
+                percent = 0,
+                step = 0,
+                total_steps = 0,
+                error = error,
+            )
+        else:
+            terminal = {
+                "active": False,
+                "phase": "completed",
+                "video": video,
+                "step": tail.total,
+                "total": tail.total,
+                "eta_seconds": None,
+            }
+            logger.info(
+                "video_generation_progress",
+                phase = "completed",
+                percent = 100,
+                step = tail.total,
+                total_steps = tail.total,
+                video_id = (video or {}).get("id"),
+            )
+        if self._generate_job_token is None and self._slot_epoch == tail.epoch:
+            self._gen = dict(terminal)
+            self._gen_video_id = tail.video_id
+            self._generate_job_account = tail.account
+        if tail.video_id is not None:
+            self._gen_outcomes[tail.video_id] = (tail.account, dict(terminal))
+            self._gen_outcomes.move_to_end(tail.video_id)
+            while len(self._gen_outcomes) > 64:
+                self._gen_outcomes.popitem(last = False)
+
     def _finish_generate_job(
         self,
         *,
@@ -15700,6 +15881,10 @@ class VideoBackend:
         """Publish a job's terminal state once, keyed on its token, as the busy flag may be a
         successor's."""
         with self._lock:
+            tail = self._encode_tail
+            if tail is not None and job_token is not None and tail.token is job_token:
+                self._finish_encode_tail(tail, video, error)
+                return
             if self._generate_job_token is not job_token:
                 return
             self._generate_job_token = None
@@ -15755,8 +15940,23 @@ class VideoBackend:
         _wake_video_queue()
 
     def generate_outcome(self, video_id: str, expected_account: Optional[str]) -> Optional[dict]:
-        """The terminal progress record of the clip ``video_id``, for the account that ran it."""
+        """The terminal progress record of the clip ``video_id``, for the account that ran it; a clip still encoding
+        after handing the GPU on answers as exporting."""
         with self._lock:
+            tail = self._encode_tail
+            if tail is not None and tail.video_id is not None and tail.video_id == video_id:
+                if tail.account != expected_account:
+                    return None
+                return {
+                    "active": True,
+                    "phase": "export",
+                    "step": tail.total,
+                    "total": tail.total,
+                    "eta_seconds": None,
+                    "video_id": video_id,
+                    "total_steps": tail.total,
+                    "fraction": 1.0 if tail.total else 0.0,
+                }
             kept = self._gen_outcomes.get(video_id)
         if kept is None or kept[0] != expected_account:
             return None
@@ -15773,6 +15973,7 @@ class VideoBackend:
     @keeps_system_awake
     @holds_inference
     @vram_budget_scope("video")
+    @_encode_after_return
     def generate(
         self,
         *,
@@ -15803,6 +16004,9 @@ class VideoBackend:
         # Wan only: decode the final latent with the tiny VAE (fast, lower fidelity). None = UNSLOTH_VIDEO_DRAFT_DECODE.
         draft_decode: Optional[bool] = None,
     ) -> dict[str, Any]:
+        """Render one clip. The GPU part runs under _generate_lock; the CPU MP4 encode of a clip that was not
+        streamed during its decode runs after this frame returns (_encode_after_return), so a queued successor's GPU
+        work overlaps it and no pipeline reference outlives the lock."""
         # begin_generate passes its already-registered event; a direct call makes its own.
         cancel = cancel_event if cancel_event is not None else threading.Event()
         with self._generate_lock:
@@ -15846,6 +16050,8 @@ class VideoBackend:
             i2v_swap = contextlib.ExitStack()
             # Encodes Wan chunks while the VAE decodes; closed in the finally on cancel or failure.
             stream_session = None
+            # Set once this clip's encode is deferred past the lock (see generate()).
+            finish_encode = encode_args = None
             try:
                 # First: on a fresh thread, un-indexed device calls resolve to the default card.
                 self._state_device_target(state)
@@ -16817,20 +17023,41 @@ class VideoBackend:
                     audio = getattr(output, "audio", None)
                     audio_track = audio[0] if fam.has_audio and audio is not None else None
                     audio_sample_rate = None
-                # Encoded during the decode when its frames (and soundtrack) are exactly these (_encode_mp4 claims it).
-                with offer_stream(stream_session):
-                    if audio_sample_rate is None:
-                        mp4_bytes = self._encode_mp4(
-                            video_frames, out_fps, audio_track, pipe if fam.has_audio else None
-                        )
-                    else:
-                        mp4_bytes = self._encode_mp4(
-                            video_frames,
-                            out_fps,
-                            audio_track,
-                            pipe if fam.has_audio else None,
-                            audio_sample_rate = int(audio_sample_rate),
-                        )
+                # A clip not streamed during its decode is encoded on the CPU after the lock is released (NVENC
+                # stays under it: it encodes on the GPU). finish_encode below runs it.
+                deferred_encode = (
+                    stream_session is None
+                    and _encode_outside_lock_enabled()
+                    and not nvenc_requested()
+                )
+                if deferred_encode:
+                    mp4_bytes = None
+                    encode_args = (
+                        video_frames,
+                        out_fps,
+                        audio_track,
+                        _DetachedEncodeSource(pipe) if fam.has_audio else None,
+                    )
+                    encode_kwargs = (
+                        {}
+                        if audio_sample_rate is None
+                        else {"audio_sample_rate": int(audio_sample_rate)}
+                    )
+                else:
+                    # Encoded during the decode when its frames (and soundtrack) are exactly these (_encode_mp4 claims it).
+                    with offer_stream(stream_session):
+                        if audio_sample_rate is None:
+                            mp4_bytes = self._encode_mp4(
+                                video_frames, out_fps, audio_track, pipe if fam.has_audio else None
+                            )
+                        else:
+                            mp4_bytes = self._encode_mp4(
+                                video_frames,
+                                out_fps,
+                                audio_track,
+                                pipe if fam.has_audio else None,
+                                audio_sample_rate = int(audio_sample_rate),
+                            )
                 # A cancel during the blocking export/mux must still discard the clip; re-check before it is persisted.
                 if cancel.is_set():
                     raise RuntimeError(VIDEO_CANCELLED_MSG)
@@ -16842,17 +17069,25 @@ class VideoBackend:
                     # after decode and export: this peak sizes the next request of its size
                     video_stream_residency.record_request_peak(pipe, logger = logger)
                 duration_s = len(video_frames) / float(out_fps) if out_fps else 0.0
-                self._gen = {"active": False}
-                # Deregister under cancel_generate's lock before the trim, or a late Stop is answered true wrongly.
-                with self._lock:
-                    if cancel.is_set():
-                        raise RuntimeError(VIDEO_CANCELLED_MSG)
-                    if self._active_generate_cancel is cancel:
-                        self._active_generate_cancel = None
+                finish_encode = None
+                if deferred_encode:
+                    # The encode outside the lock touches no GPU memory, and Stop keeps reaching this clip meanwhile.
+                    encode_args = tuple(_host_copy(a) for a in encode_args)
+                    finish_encode = self._detached_encoder(
+                        encode_args, encode_kwargs, cancel, request_shape
+                    )
+                else:
+                    self._gen = {"active": False}
+                    # Deregister under cancel_generate's lock before the trim, or a late Stop is answered true wrongly.
+                    with self._lock:
+                        if cancel.is_set():
+                            raise RuntimeError(VIDEO_CANCELLED_MSG)
+                        if self._active_generate_cancel is cancel:
+                            self._active_generate_cancel = None
                 if bg_eager:
                     _settle_bg_compile(bg, i2v = _bg_i2v_render(first_pil, i2v_active))
                 reclaim_offload_host_memory(state.offload_policy, logger = logger)
-                return {
+                result = {
                     "mp4_bytes": mp4_bytes,
                     "seed": int(seed),
                     "repo_id": state.display_repo_id or state.repo_id,
@@ -16880,6 +17115,7 @@ class VideoBackend:
                     "draft_decode": bool(getattr(draft_ctx, "calls", 0)),
                 }
             except Exception as exc:
+                finish_encode = None
                 self._gen = {"active": False}
                 if is_oom_error(exc):
                     # Drop graphs on any CUDA OOM: live graphs pin pool memory empty_cache() cannot reclaim.
@@ -16905,12 +17141,60 @@ class VideoBackend:
                 if bg_token is not None:
                     bg_compile._FORCE_EAGER.reset(bg_token)
                 with self._lock:
-                    if self._active_generate_cancel is cancel:
+                    if self._active_generate_cancel is cancel and finish_encode is None:
                         self._active_generate_cancel = None
                 # The pinned clip and stream chunks (~3x the clip) otherwise stay in torch's host cache until unload.
-                output = video_frames = None
+                output = video_frames = encode_args = None
                 release_pinned_host_memory()
                 _release_held_cache_writes(getattr(state, "pipe", None), "the first render ended")
+        if finish_encode is not None:
+            result["_finish_encode"] = finish_encode
+        return result
+
+    def _detached_encoder(
+        self,
+        encode_args: tuple,
+        encode_kwargs: dict[str, Any],
+        cancel: threading.Event,
+        request_shape: Optional[dict[str, Any]],
+    ) -> Callable[[bool], bytes]:
+        """The encode generate() runs after _generate_lock is released. ``owns_slot`` False: begin_generate's worker
+        has handed the progress record to the next clip, so this clip's end must not write it."""
+        held = [encode_args]
+
+        def finish(owns_slot: bool) -> bytes:
+            try:
+                mp4_bytes = self._encode_mp4(*held[0], **encode_kwargs)
+                if owns_slot:
+                    self._gen = {"active": False}
+                # Deregister under cancel_generate's lock, or a late Stop is answered true wrongly.
+                with self._lock:
+                    if cancel.is_set():
+                        raise RuntimeError(VIDEO_CANCELLED_MSG)
+                    if owns_slot and self._active_generate_cancel is cancel:
+                        self._active_generate_cancel = None
+                    tail = self._encode_tail
+                    if tail is not None and tail.cancel is cancel:
+                        tail.stoppable = False
+                return mp4_bytes
+            except Exception as exc:
+                if owns_slot:
+                    self._gen = {"active": False}
+                _log_failed_generation(request_shape, exc)
+                raise
+            finally:
+                with self._lock:
+                    if owns_slot and self._active_generate_cancel is cancel:
+                        self._active_generate_cancel = None
+                held.clear()
+                # The clip's pinned frames are free now; a render holding the lock trims the cache itself.
+                if self._generate_lock.acquire(blocking = False):
+                    try:
+                        release_pinned_host_memory()
+                    finally:
+                        self._generate_lock.release()
+
+        return finish
 
     @staticmethod
     def _resolve_keyframes(
@@ -17768,15 +18052,26 @@ class VideoBackend:
         """Stop the in-flight generation; expected_* are rechecked under begin_generate's lock,
         so a cancel of a finished job cannot hit its successor."""
         with self._lock:
-            if expected_video_id is not None and self._gen_video_id != expected_video_id:
-                return False
-            if expected_account is not None and self._generate_job_account != expected_account:
-                return False
             cancel = self._active_generate_cancel
-            if cancel is None:
-                return False
-            cancel.set()
-            return True
+            if (
+                cancel is not None
+                and (expected_video_id is None or self._gen_video_id == expected_video_id)
+                and (expected_account is None or self._generate_job_account == expected_account)
+            ):
+                cancel.set()
+                return True
+            # A clip encoding after handing the GPU on is still in progress until its last cancel check: Stop
+            # discards it. Without an id it is reached only when no render of the caller's runs.
+            tail = self._encode_tail
+            if (
+                tail is not None
+                and tail.stoppable
+                and (expected_video_id is None or tail.video_id == expected_video_id)
+                and (expected_account is None or tail.account == expected_account)
+            ):
+                tail.cancel.set()
+                return True
+            return False
 
     # ── teardown + status ────────────────────────────────────────────────────
 
@@ -18258,13 +18553,23 @@ def _wake_video_queue() -> None:
 def generation_in_flight() -> bool:
     """Read the background-job marker without constructing or locking the backend."""
     backend = _backend
-    return backend is not None and bool(backend._generate_job_active)
+    return backend is not None and (
+        bool(backend._generate_job_active) or backend._encode_tail is not None
+    )
 
 
 def retire_load_for_account(account_id: str) -> bool:
     """Tear down an in-flight video load ``account_id`` started, without constructing the backend."""
     from hub.services.models.account_access import retire_media_load
     return retire_media_load("video", account_id, _backend)
+
+
+def encode_account_in_flight() -> Optional[str]:
+    """The account whose finished clip is still encoding after handing the GPU on, read without constructing the
+    backend."""
+    backend = _backend
+    tail = getattr(backend, "_encode_tail", None) if backend is not None else None
+    return tail.account if tail is not None else None
 
 
 def generation_account_in_flight() -> Optional[str]:
