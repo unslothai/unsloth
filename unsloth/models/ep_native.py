@@ -1151,8 +1151,13 @@ def ep_trainer_setup(trainer):
         )
 
     def ep_load_best_model():
-        # The checkpoint's adapter is the gathered 1-GPU one; this rank restores its own (rank-local) tensors.
-        _load_rank_weights(model, trainer.state.best_model_checkpoint)
+        # The checkpoint's adapter is the gathered 1-GPU one; this rank restores its own (rank-local) tensors, or
+        # its slices of the adapter when the best checkpoint was written on another layout (before a resume).
+        best = trainer.state.best_model_checkpoint
+        if mode_of(best) == "portable":
+            portable_resume.portable_load_weights(model, best)
+        else:
+            _load_rank_weights(model, best)
 
     trainer._save_optimizer_and_scheduler = ep_save_optimizer_and_scheduler
     trainer._load_from_checkpoint = ep_load_from_checkpoint

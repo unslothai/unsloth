@@ -560,3 +560,26 @@ def test_named_adapter_checkpoint_resumes_under_tensor_parallel(tmp_path):
     )
     assert got["calls"]["weights"] == 1 and got["calls"]["optimizer"] == 1, got["calls"]
     _close(got, src, "one -> tp2, adapter 'main'", grads = False)
+
+
+def _portable_module():
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "_shared"))
+    from unsloth_models_loader import load_models_module
+    return load_models_module("portable_resume")
+
+
+def test_positional_state_keeps_the_optimizer_parameter_order():
+    """A 1-GPU (int-keyed) optimizer state maps through the optimizer's own order, not module order: a group
+    built as [second, first] keeps each moment on its own parameter."""
+    portable = _portable_module()
+    model = torch.nn.Sequential(
+        torch.nn.Linear(2, 2, bias = False), torch.nn.Linear(2, 2, bias = False)
+    )
+    first, second = model[0].weight, model[1].weight
+    optimizer = torch.optim.AdamW([second, first], lr = 1e-2)
+    first.grad, second.grad = torch.ones(2, 2), torch.full((2, 2), 3.0)
+    optimizer.step()
+    named = portable.as_named_state(model, optimizer, optimizer.state_dict())
+    assert named["param_groups"][0]["params"] == ["1.weight", "0.weight"], named["param_groups"]
+    assert torch.equal(named["state"]["0.weight"]["exp_avg"], optimizer.state[first]["exp_avg"])
+    assert torch.equal(named["state"]["1.weight"]["exp_avg"], optimizer.state[second]["exp_avg"])

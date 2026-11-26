@@ -286,8 +286,11 @@ def _local_state(optimizer):
 
 
 def _group_layout(model, inner, names):
-    """Collective: [(hyperparameters, [names in 1-GPU order])] per optimizer group, over every rank (a pipeline
-    stage holds only its own parameters); None if the ranks' optimizers have different group counts."""
+    """Collective: [(hyperparameters, [names in 1-GPU order], exact)] per optimizer group, over every rank (a
+    pipeline stage holds only its own parameters); None if the ranks' optimizers have different group counts.
+    Ranks holding the same names (tensor / expert / data parallel) keep their optimizer's own order; stages are
+    merged in one GPU's module order. `exact`: that order is the optimizer's own (every rank holds the same list,
+    or every rank's list already follows module order), so a positional 1-GPU state maps onto it."""
     keys = _tree_keys(model)
     mine = []
     for group in inner.param_groups:
@@ -300,11 +303,16 @@ def _group_layout(model, inner, names):
     out = []
     for gi in range(len(every[0])):
         hyper = next((x[gi][0] for x in every if x[gi][1]), every[0][gi][0])
+        lists = [x[gi][1] for x in every]
+        if all(names_ == lists[0] for names_ in lists):
+            out.append((hyper, list(lists[0]), True))
+            continue
         order = {}
         for x in every:
             for n in x[gi][1]:
                 order.setdefault(n, x[gi][2][n])
-        out.append((hyper, sorted(order, key = order.__getitem__)))
+        exact = all(names_ == sorted(names_, key = order.__getitem__) for names_ in lists)
+        out.append((hyper, sorted(order, key = order.__getitem__), exact))
     return out
 
 
@@ -371,7 +379,7 @@ def portable_optimizer_state(model, optimizer):
     for part in parts:
         for n, entry in part.items():
             merged.setdefault(n, entry)
-    param_groups = [{**hyper, "params": group_names} for hyper, group_names in groups]
+    param_groups = [{**hyper, "params": group_names} for hyper, group_names, _ in groups]
     return {"state": merged, "param_groups": param_groups}, None
 
 
@@ -508,9 +516,15 @@ def _named_from_positional(model, inner, state_dict):
             f"{sizes}, this run's optimizer has {None if groups is None else [len(g[1]) for g in groups]}; "
             "resume with the same trainable parameters and optimizer settings."
         )
+    if not all(exact for _, _, exact in groups):
+        raise RuntimeError(
+            "Unsloth: this checkpoint's optimizer.pt was written by one GPU (keyed by position), and this run's "
+            "optimizer orders its parameters other than module order, so the positions cannot be matched to "
+            "parameters; resume it on one GPU, or with an optimizer built over model.named_parameters()."
+        )
     name_of = {}
     param_groups = []
-    for (_, group_names), group in zip(groups, saved):
+    for (_, group_names, _), group in zip(groups, saved):
         name_of.update(zip(group["params"], group_names))
         param_groups.append(
             {**{k: v for k, v in group.items() if k != "params"}, "params": group_names}
