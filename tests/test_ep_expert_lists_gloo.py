@@ -721,12 +721,10 @@ def test_ep_expert_lists_grouped_experts_only_for_standard_expert_mlps():
         rows = torch.randn(3, 16)
         assert lists._grouped_locals(shard, lst, rows, torch.arange(3), [2, 1]) is None
         assert shard.grouped_declined == "cpu torch.float32 rows", shard.grouped_declined
-        # A hook or patched forward added after a cached call still sends the block to the loop.
         lst._modules["3"].register_forward_hook(lambda *a: None)
         assert "hooks" in lists._grouped_spec(shard, lst, [3, 1])
         lst._modules["0"].forward = lambda x: x
         assert "hooks" in lists._grouped_spec(types.SimpleNamespace(lo = 0, hi = 2), lst, [1, 1])
-        # QAT fake quantizers live in the projections: the grouped GEMMs would skip them.
         fresh = torch.nn.Module()
         for e in range(2):
             fresh.add_module(str(e), qwen3_moe.Qwen3MoeMLP(config, intermediate_size = 8))
