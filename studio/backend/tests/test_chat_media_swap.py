@@ -922,7 +922,7 @@ def test_image_swap_gate_is_not_a_chat_load_for_its_own_admission():
     asyncio.run(check())
 
 
-def test_transformers_swap_reuses_only_the_loading_accounts_token(monkeypatch):
+def test_transformers_swap_reuses_only_the_loading_accounts_latest_token(monkeypatch):
     from types import SimpleNamespace
     from unittest.mock import AsyncMock
     from core.inference import gpu_arbiter
@@ -940,9 +940,11 @@ def test_transformers_swap_reuses_only_the_loading_accounts_token(monkeypatch):
     reload = AsyncMock()
     monkeypatch.setattr(inference, "load_model_gated", reload)
     token = "one-off-test-token"
+    replacement = "replacement-test-token"
     request = LoadRequest(model_path = "text", hf_token = token)
     response = LoadResponse(status = "loaded", model = "text", display_name = "Text", inference = {})
     swap.remember_transformers_load(request, response, True)
+    already_loaded = response.model_copy(update = {"status": "already_loaded"})
     chat = swap.StudioChat(OWNER.username)
     other = AccountContext("other", "other")
 
@@ -956,6 +958,22 @@ def test_transformers_swap_reuses_only_the_loading_accounts_token(monkeypatch):
         with pytest.raises(swap.SwapUnavailable):
             await arun_as(other, chat.reload(snap, None))
         assert reload.await_count == 1
+
+        async def use_other_token():
+            other_request = request.model_copy(update = {"hf_token": "other-test-token"})
+            swap.remember_transformers_load(other_request, already_loaded, True)
+
+        await arun_as(other, use_other_token())
+        assert (await chat.snapshot()).credential == snap.credential
+
+        new_request = request.model_copy(update = {"hf_token": replacement})
+        swap.remember_transformers_load(new_request, already_loaded, True)
+        swap.remember_transformers_load(LoadRequest(model_path = "text"), already_loaded, True)
+        updated = await chat.snapshot()
+        assert updated.launch.hf_token is None
+        assert replacement not in repr(updated)
+        await chat.reload(updated, None)
+        assert reload.await_args.args[0].hf_token == replacement
 
     asyncio.run(check())
 

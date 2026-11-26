@@ -180,8 +180,14 @@ def remember_transformers_load(request, response, user_initiated: bool) -> None:
             )
             if request._advertised_id:
                 launch._advertised_id = request._advertised_id
+            credential = previous.credential
+            if request.hf_token and credential is not None and credential[0] == _account_key():
+                credential = (credential[0], SecretStr(request.hf_token))
             _transformers_load = replace(
-                previous, launch = launch, extra = {**previous.extra, "user_loaded": user_initiated}
+                previous,
+                launch = launch,
+                credential = credential,
+                extra = {**previous.extra, "user_loaded": user_initiated},
             )
         return
 
