@@ -608,6 +608,54 @@ def get_checkpoint_quant_formats() -> list[str]:
     return [fmt for fmt, needed in _CHECKPOINT_QUANT_MIN_CAPABILITY if floor >= needed]
 
 
+def _fp8_rowwise_gemm_runs() -> bool:
+    """Whether torch's row-wise fp8 ``_scaled_mm`` runs here. Torch-free: a verdict this process already
+    probed wins (any card without it answers False); else the platform, since the Windows torch wheels ship
+    no row-wise kernel ("Rowwise scaling is not currently supported on your device")."""
+    import sys
+
+    probed = sys.modules.get("core.inference.diffusion_fp8_unit_scale")
+    verdicts = [v for v in getattr(probed, "_ROWWISE", {}).values() if isinstance(v, bool)]
+    if verdicts:
+        return all(verdicts)
+    return sys.platform != "win32"
+
+
+def _fp8_tensorwise_backend_available() -> bool:
+    """Whether the installed core library runs FP8 checkpoints on the tensorwise ``_scaled_mm`` when the
+    row-wise one is missing. Read from its source, so the polled route imports neither unsloth nor torch."""
+    try:
+        import importlib.util
+        import re
+        from pathlib import Path
+
+        spec = importlib.util.find_spec("unsloth")
+        roots = list(spec.submodule_search_locations or ()) if spec else []
+        for root in roots:
+            source = Path(root, "kernels", "fp8.py")
+            if source.is_file():
+                match = re.search(
+                    r"^_FP8_ROWWISE_BACKENDS\s*=\s*\(([^)]*)\)",
+                    source.read_text(encoding = "utf-8", errors = "replace"),
+                    re.M,
+                )
+                return bool(match and "tensorwise" in match.group(1))
+    except Exception:  # noqa: BLE001 -- unknown counts as absent
+        pass
+    return False
+
+
+def get_checkpoint_quant_dequant_only(formats: list[str]) -> list[str]:
+    """Formats from ``get_checkpoint_quant_formats`` that load here but run dequantized to 16-bit: fp8 when
+    torch has no row-wise fp8 GEMM and the core library has no tensorwise fallback. The checkpoints stay listed;
+    this only says the FP8 speedup is not delivered."""
+    if "fp8" not in formats:
+        return []
+    if _fp8_rowwise_gemm_runs() or _fp8_tensorwise_backend_available():
+        return []
+    return ["fp8"]
+
+
 def get_compute_capabilities() -> dict[int, tuple[int, int]]:
     """nvidia-smi row index -> (major, minor), no mask and no torch; {} when unreadable."""
     try:

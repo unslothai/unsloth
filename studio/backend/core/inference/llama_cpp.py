@@ -16926,6 +16926,128 @@ class LlamaCppBackend:
             "or more quantized GGUF, or more free memory, would run faster."
         )
 
+    # Tensor overrides that keep the attention layers (and so the KV cache) on the GPU.
+    _ARGV_EXPERTS_ON_CPU = frozenset(
+        {"--n-cpu-moe", "-ncmoe", "--cpu-moe", "-cmoe", "-ot", "--override-tensor"}
+    )
+
+    @staticmethod
+    def _windows_host_commit_refusal_message(
+        private_host_bytes: int,
+        avail_mib: Optional[int],
+        commit_headroom_mib: Optional[int],
+        headroom_mib: int = _HOST_RAM_HEADROOM_MIB,
+    ) -> Optional[str]:
+        """Refusal text when memory the child holds privately in host RAM (an unmapped weight
+        spill plus the host share of the KV cache) exceeds min(available RAM, commit headroom);
+        None when it fits or neither reading is known. Windows does not overcommit, so running
+        past the commit limit fails the load (or other apps) instead of paging."""
+        if private_host_bytes <= 0:
+            return None
+        limits = [v for v in (avail_mib, commit_headroom_mib) if v is not None]
+        if not limits:
+            return None
+        limit_mib = min(limits)
+        need_mib = private_host_bytes / (1024 * 1024)
+        if need_mib <= limit_mib - headroom_mib:
+            return None
+        need_gb = math.ceil(need_mib / 1024)
+        usable_gb = math.floor(max(0, limit_mib - headroom_mib) / 1024)
+        by_commit = commit_headroom_mib is not None and (
+            avail_mib is None or commit_headroom_mib <= avail_mib
+        )
+        what = "commit (RAM plus page file)" if by_commit else "system RAM"
+        return (
+            f"This model and context need about {need_gb} GB of {what} outside the GPU, "
+            f"and only about {usable_gb} GB is free after keeping "
+            f"{headroom_mib / 1024:.0f} GB for the rest of the system, so Windows would run "
+            "out of memory part way through the load. The load was not started: choose a "
+            "smaller or more quantized GGUF, or a shorter context, and load again."
+        )
+
+    def _windows_host_commit_refusal(
+        self,
+        cmd: Iterable[str],
+        reachable_gpus: Iterable[tuple],
+        env: Optional[Mapping[str, str]] = None,
+        *,
+        child_has_no_gpu: bool = False,
+        avail_mib: Optional[int] = None,
+        auto_unmapped: bool = False,
+        shared_gpu_ids: Iterable[int] = (),
+        integrated_gpu_ids: Iterable[int] = (),
+        commit_headroom_mib = None,
+    ) -> Optional[str]:
+        """Pre-launch check on Windows only: private host bytes (weights that spill past free VRAM
+        when the load mode copies them, plus the KV cache share held in host RAM) against
+        min(available RAM, commit headroom). Memory-mapped weights are file-backed and charge no
+        commit, so a mapped spill stays the advisory's business. Never raises."""
+        if sys.platform != "win32":
+            return None
+        try:
+            argv = [str(a) for a in cmd or ()]
+            _env = os.environ if env is None else env
+            # Unified-memory devices price host and GPU memory as one pool elsewhere.
+            if set(shared_gpu_ids or ()) or set(integrated_gpu_ids or ()):
+                return None
+            if (_extra_args_device(argv, self._ARGV_RPC) or "").strip() or str(
+                _env.get("LLAMA_ARG_RPC", "") or ""
+            ).strip():
+                return None
+            model_path = _extra_args_device(argv, self._ARGV_MODEL)
+            model_bytes = self._gguf_read_bytes(model_path) if model_path else 0
+            if not model_bytes:
+                return None
+            gpus = [] if child_has_no_gpu else list(reachable_gpus or ())
+            if not gpus and not child_has_no_gpu:
+                return None  # an unread GPU probe looks GPU-less; never refuse on it
+            try:
+                lazy = self._lazy_read_host_bytes(
+                    model_path,
+                    caps = self.probe_server_capabilities(argv[0]),
+                    extra_args = argv,
+                    env = _env,
+                )
+            except Exception:  # noqa: BLE001 -- no discount: mapped bytes are not refused anyway
+                lazy = 0
+            free_vram_bytes = sum(max(0, row[1]) for row in gpus) * 1024 * 1024
+            spill = max(0, model_bytes - free_vram_bytes)
+            _, reserves_ram = resolve_effective_memory_state(
+                argv, _env, auto_unmapped = auto_unmapped
+            )
+            private = max(0, spill - lazy) if reserves_ram else 0
+            ctx_raw = _extra_args_device(argv, frozenset({"-c", "--ctx-size"}))
+            n_ctx = int(ctx_raw) if ctx_raw and ctx_raw.strip().lstrip("-").isdigit() else 0
+            if n_ctx <= 0:
+                n_ctx = int(getattr(self, "_context_length", 0) or 0)
+            kv_on_host = 0.0
+            if child_has_no_gpu or not _kv_offload_from_args(argv, _env):
+                kv_on_host = 1.0
+            elif spill and not _extra_args_set_any_flag(argv, self._ARGV_EXPERTS_ON_CPU):
+                # A layer split keeps the KV of the layers left on the CPU in host RAM.
+                kv_on_host = spill / model_bytes
+            if kv_on_host and n_ctx > 0:
+                cache_type = _extra_args_device(argv, frozenset({"-ctk", "--cache-type-k"}))
+                parallel_raw = _extra_args_device(argv, frozenset({"-np", "--parallel"}))
+                n_parallel = (
+                    int(parallel_raw) if parallel_raw and parallel_raw.strip().isdigit() else 1
+                )
+                kv = self._estimate_kv_cache_bytes(n_ctx, cache_type, n_parallel = max(1, n_parallel))
+                private += int(kv * kv_on_host)
+            if private <= 0:
+                return None
+            if avail_mib is None:
+                avail_mib = self._available_system_memory_mib()
+            if commit_headroom_mib is None:
+                from .diffusion_memory import _windows_commit_headroom_mib
+                commit_headroom_mib = _windows_commit_headroom_mib()
+            return self._windows_host_commit_refusal_message(
+                private, avail_mib, commit_headroom_mib
+            )
+        except Exception as e:  # noqa: BLE001 -- an unreadable host never blocks a load
+            logger.debug("Windows host commit pre-check skipped: %s", e)
+            return None
+
     @staticmethod
     def _host_offload_warning_opted_out() -> bool:
         """UNSLOTH_ALLOW_HOST_OFFLOAD (deprecated) may only silence the warning, never change the child."""
@@ -33582,6 +33704,25 @@ class LlamaCppBackend:
                     self._record_memory_state(cmd, env)
                     _mem_policy_for_cmd = _snapshot_policy_for_cmd()
                 self._record_load_warning(_offload_msg)
+
+                # Windows: the host-RAM advisory above loads anyway, but private host memory past
+                # the commit limit fails mid-load with no clean error, so refuse before the spawn.
+                _win_commit_msg = self._windows_host_commit_refusal(
+                    cmd,
+                    _reachable_gpus,
+                    env,
+                    child_has_no_gpu = _child_has_no_gpu,
+                    avail_mib = _preflight_avail_mib,
+                    auto_unmapped = _launch_auto_unmapped,
+                    shared_gpu_ids = _shared_gpu_ids,
+                    integrated_gpu_ids = _vulkan_igpu_ids,
+                )
+                if _win_commit_msg:
+                    logger.warning("Windows host commit pre-check: %s", _win_commit_msg)
+                    if self._other_servers_running():
+                        # The chat load loop frees a loaded model and retries.
+                        raise GpuMemoryShortError(_win_commit_msg, host = True)
+                    raise RuntimeError(_win_commit_msg)
 
                 # Captured before any text-only fallback strips it from cmd.
                 launched_with_mmproj = "--mmproj" in cmd
