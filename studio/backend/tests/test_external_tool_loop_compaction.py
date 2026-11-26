@@ -166,7 +166,8 @@ def test_a_tool_loop_keeps_its_request_and_results_when_the_window_fills(
     assert "C" not in calls.strip("C")
 
 
-def test_a_tool_loop_whose_call_arguments_fill_the_window_still_evicts_older_exchanges():
+@pytest.mark.parametrize("nudged", [False, True])
+def test_a_tool_loop_whose_call_arguments_fill_the_window_still_evicts_older_exchanges(nudged):
     import routes.inference as ri
     from models.inference import ChatCompletionRequest
 
@@ -180,6 +181,8 @@ def test_a_tool_loop_whose_call_arguments_fill_the_window_still_evicts_older_exc
             {"role": "assistant", "content": None, "tool_calls": [call]},
             {"role": "tool", "tool_call_id": f"c{n}", "content": "ok"},
         ]
+    if nudged:
+        messages.append({"role": "user", "content": "You are out of tool calls. Answer now."})
     payload = ChatCompletionRequest(
         messages = [{"role": "user", "content": task}],
         provider_type = "openrouter",

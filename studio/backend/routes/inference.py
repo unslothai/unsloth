@@ -30775,7 +30775,8 @@ def _fit_external_context(
         messages = fit_oversized_attachments(
             messages, context_length = context_length, max_tokens = max_tokens, count_tokens = _count
         )
-        # The reply in progress is never evicted, unless shortening its tool results cannot fit it.
+        # The reply in progress is never evicted, unless shortening its tool results cannot fit it;
+        # its request always stays, as the summary never covers it.
         if _clip_turn_tool_results(
             messages,
             turn,
@@ -30784,6 +30785,7 @@ def _fit_external_context(
             _count,
         ):
             anchors |= {id(m) for m in messages[turn:]}
+        anchors.add(id(messages[turn]))
     # A replay recalls inline only when search_conversation cannot reach the epoch this turn.
     recall_offered = can_reset and "search_conversation" in _catalog_names(tools)
     fitted, truncation = _fit_with_instruction_pins(
