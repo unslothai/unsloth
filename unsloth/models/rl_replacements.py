@@ -4585,6 +4585,15 @@ def online_dpo_trainer__move_model_to_vllm(function_name, function):
 RL_FUNCTIONS["online_dpo_trainer"].append(online_dpo_trainer__move_model_to_vllm)
 
 
+def rloo_trainer__move_model_to_vllm(function_name, function):
+    # TRL 0.22 to 0.27 RLOO has GRPO's _move_model_to_vllm: return early only for the fast_inference
+    # engine, so TRL's own vLLM (colocate) gets the trained weights. TRL 0.28+ syncs via VLLMGeneration.
+    return grpo_trainer__move_model_to_vllm(function_name, function)
+
+
+RL_FUNCTIONS["rloo_trainer"].append(rloo_trainer__move_model_to_vllm)
+
+
 def _unsloth_vllm_load_state_dict(trainer, model):
     deepspeed_plugin = getattr(trainer.accelerator.state, "deepspeed_plugin", None)
     if getattr(trainer, "is_fsdp_enabled", False) or (
@@ -7071,6 +7080,8 @@ RL_PRE_ITEMS["grpo_trainer"].append(
 )
 RL_PRE_ITEMS["grpo_trainer"].append(grpo_compute_loss_slow)
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(grpo_update_SamplingParams))
+# TRL 0.22 to 0.27 RLOO builds its vLLM SamplingParams the same way, which patch_functions rewrites to call it.
+RL_PRE_ITEMS["rloo_trainer"].append(inspect.getsource(grpo_update_SamplingParams))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_get_inference_mode_context_manager))
 # inspect.getsource inlines function bodies but not module imports, so constants the inlined grpo functions use (UNSLOTH_ENABLE_LOGGING) must be redefined in the generated cache.
 RL_PRE_ITEMS["grpo_trainer"].append(

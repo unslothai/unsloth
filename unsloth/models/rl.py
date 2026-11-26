@@ -144,7 +144,8 @@ _ONLINE_DPO_VLLM_SYNC_FUNCTIONS = frozenset(
 def _strip_vllm_weight_loads(function, source, trainer_file):
     # GRPO's _move_model_to_vllm returns early under fast_inference (grpo_trainer__move_model_to_vllm),
     # and TRL's own vLLM (colocate or server) needs these lines to receive the trainer weights.
-    if trainer_file == "grpo_trainer" and function in _GRPO_VLLM_SYNC_FUNCTIONS:
+    # RLOO on TRL 0.22 to 0.27 carries the same methods (rloo_trainer__move_model_to_vllm).
+    if trainer_file in ("grpo_trainer", "rloo_trainer") and function in _GRPO_VLLM_SYNC_FUNCTIONS:
         return source
     if trainer_file == "online_dpo_trainer" and function in _ONLINE_DPO_VLLM_SYNC_FUNCTIONS:
         return source
