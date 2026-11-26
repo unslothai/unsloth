@@ -6479,7 +6479,7 @@ export function ImagesPage({
       {gpuChoices.length > 0 && (
         <AdvancedSelect
           label="GPU"
-          hint="Which card this model loads on. Auto uses whichever device torch is pointing at, which on a mixed box is not necessarily the largest. An image model is never split across cards, so this is one choice, not a pool."
+          hint="Which card this model loads on. Auto uses whichever device torch is pointing at, which on a mixed box is not necessarily the largest. An image model is never split across cards, so this is one choice, not a pool. Only cards in this machine are listed: using two machines (for example two DGX Sparks) for one job is not part of this release."
           value={selectedGpu}
           onValueChange={setSelectedGpu}
           options={[
