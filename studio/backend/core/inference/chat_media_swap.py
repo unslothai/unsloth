@@ -180,7 +180,7 @@ class RoundTrip:
     timings: dict = field(default_factory = dict)
     on_cancel: Optional[Callable[[], None]] = None
     render_started: Optional[float] = None
-    # Held until the image model is gone so new chat requests wait; released before reload (it takes it too).
+    # Keep new requests out through swap cleanup and Transformers restore.
     hold_requests: Optional[Callable[[], Any]] = None
     # True while this turn is the only generation; re-read under the gate, which stops new admissions but does not
     # drain a chat admitted before it.
@@ -313,9 +313,9 @@ class RoundTrip:
                     await self._step("image_unloaded", self.media.unload())
                 except Exception as exc:  # noqa: BLE001 - chat reload evicts it anyway
                     logger.warning("chat image swap: image unload failed: %s", exc)
-            if unloaded:
-                await self.chat.prepare_restore(snap)
-            await gate.aclose()
+            if not unloaded or not snap.extra.get("transformers"):
+                # The GGUF auto-switch path acquires its own lifecycle gates.
+                await gate.aclose()
             if unloaded:
                 await self._restore(snap, kv)
             else:
@@ -349,7 +349,6 @@ class StudioChat:
 
     def __init__(self, subject: str):
         self.subject = subject
-        self._restore_owner: Optional[tuple[Optional[str], int]] = None
 
     @staticmethod
     def _llama():
@@ -436,13 +435,6 @@ class StudioChat:
             and getattr(llama, "_process", None) is snap.extra["process"]
         )
 
-    async def prepare_restore(self, snap: ChatSnapshot) -> None:
-        if snap.extra.get("transformers"):
-            from core.inference.gpu_arbiter import owner_snapshot
-
-            # Existing media can stay on other GPUs. Detect changes after releasing admission.
-            self._restore_owner = await asyncio.to_thread(owner_snapshot)
-
     async def reload(self, snap: ChatSnapshot, kv: Optional[dict]) -> None:
         from core.inference.llama_keepwarm import (
             end_in_process_request,
@@ -461,24 +453,21 @@ class StudioChat:
 
             request = _in_process_request()
 
-            def require_unchanged():
-                from core.inference import gpu_arbiter, model_slots
-                if (
-                    inference._loaded_slot_ident()
-                    or model_slots.busy()
-                    or gpu_arbiter.owner_snapshot() != self._restore_owner
-                ):
+            def require_empty_chat_slot():
+                from core.inference import model_slots
+                if inference._loaded_slot_ident() or model_slots.busy():
                     raise SwapUnavailable(
                         "Another model took the slot before chat could be restored."
                     )
 
-            inference.require_for_model_switch(request.scope, require_unchanged)
+            inference.require_for_model_switch(request.scope, require_empty_chat_slot)
             await inference.load_model_gated(
                 snap.launch,
                 request,
                 self.subject,
                 user_initiated = snap.extra["user_loaded"],
                 current_request_counted = True,
+                swap_gates_held = True,
             )
             return
 
@@ -657,10 +646,15 @@ def chat_can_swap() -> bool:
 @contextlib.asynccontextmanager
 async def _hold_swap_requests():
     from core.inference.gpu_arbiter import DIFFUSION, VIDEO
-    from core.inference.llama_keepwarm import inference_lifecycle_gate
+    from core.inference.llama_keepwarm import inference_lifecycle_gate, model_load_gate
     from core.inference.media_keepwarm import admission_gate
 
-    async with inference_lifecycle_gate(), admission_gate(DIFFUSION), admission_gate(VIDEO):
+    async with (
+        model_load_gate(),
+        inference_lifecycle_gate(),
+        admission_gate(DIFFUSION),
+        admission_gate(VIDEO),
+    ):
         yield
 
 

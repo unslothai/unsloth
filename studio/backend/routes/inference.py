@@ -13124,13 +13124,19 @@ async def _maybe_auto_switch_model(
                             async def _switch_load(load_request: LoadRequest) -> None:
                                 nonlocal target_backend
                                 if not beside:
-                                    await _load_model_impl(
+                                    response = await _load_model_impl(
                                         load_request,
                                         fastapi_request,
                                         current_subject,
                                         current_request_counted = True,
                                         **load_internal_kw,
                                     )
+                                    if isinstance(response, LoadResponse) and not target_is_gguf:
+                                        from core.inference.chat_media_swap import (
+                                            remember_transformers_load,
+                                        )
+                                        load_request._advertised_id = override_id
+                                        remember_transformers_load(load_request, response, False)
                                     model_slots.mark_used(None)
                                     return
                                 await load_model_gated(
@@ -19230,13 +19236,15 @@ async def load_model_gated(
     current_request_counted: bool = False,
     impl_kwargs: Optional[dict] = None,
     background: bool = False,
+    swap_gates_held: bool = False,
 ):
     """Everything ``POST /load`` does except the tunnel-safe padding.
 
     In-process callers (preview) must await THIS, not the route: the route's slow
     path returns a StreamingResponse nobody in-process drains, so awaiting it would
     return mid-load and hide a late failure in an unread body. This blocks until the
-    model is resident and raises the real exception.
+    model is resident and raises the real exception. A chat-image restore already
+    holds the model load, lifecycle and media admission gates.
     """
     if is_decision_api_model(request.model_path):
         raise HTTPException(
@@ -19284,7 +19292,7 @@ async def load_model_gated(
     try:
         _raise_if_sidecar_swap_in_progress()
         # Hold the gate so idle auto-unload can't unload mid-load; auto-switch already holds it.
-        async with model_load_gate():
+        async with nullcontext() if swap_gates_held else model_load_gate():
             sink_token = eviction_sink.set(evicted_slots)
             replaced_token = _replaced_primary_sink.set(replaced_slots)
             # Chosen under the gate, so two loads cannot both claim an empty primary.
@@ -19298,7 +19306,7 @@ async def load_model_gated(
                 extra.llama._llama_update_in_progress = getattr(
                     _llama_cpp_backend, "_llama_update_in_progress", False
                 )
-            async with nullcontext() if new_slot else inference_lifecycle_gate():
+            async with nullcontext() if new_slot or swap_gates_held else inference_lifecycle_gate():
                 _raise_if_sidecar_swap_in_progress()
                 if not new_slot:
                     # An auto-switch beside checked before this gate: this load replaces a loaded model.
@@ -19399,7 +19407,11 @@ async def load_model_gated(
                         if await _free_for_chat(exc, evicted, media_only = True):
                             continue
                         # No chat may start on a victim between its pick and teardown.
-                        async with inference_lifecycle_gate() if new_slot else nullcontext():
+                        async with (
+                            inference_lifecycle_gate()
+                            if new_slot and not swap_gates_held
+                            else nullcontext()
+                        ):
                             _check_switch_precondition(fastapi_request)
                             _require_load_keeps_chat(fastapi_request, request)
                             victims = await asyncio.to_thread(
@@ -19445,7 +19457,11 @@ async def load_model_gated(
                             request = request.model_copy(
                                 update = {"alongside": False, "force_alongside": False}
                             )
-                            async with inference_lifecycle_gate() if new_slot else nullcontext():
+                            async with (
+                                inference_lifecycle_gate()
+                                if new_slot and not swap_gates_held
+                                else nullcontext()
+                            ):
                                 if background:
                                     await _wait_for_model_switch_idle(
                                         current_request_counted = current_request_counted
@@ -19578,6 +19594,7 @@ async def load_model_gated(
             current_request_counted = current_request_counted,
             impl_kwargs = impl_kwargs,
             background = background,
+            swap_gates_held = swap_gates_held,
         )
     finally:
         _replaces_its_repo.reset(token)
