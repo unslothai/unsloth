@@ -1433,8 +1433,9 @@ function dropChatGrants(threadId: string): void {
   });
 }
 
-function restoreSavedChatFullAccess(threadId: string, saved: unknown): void {
-  if (typeof saved !== "boolean" || chatFullAccessDecidedSinceOpen.has(threadId)) return;
+function restoreSavedChatFullAccess(threadId: string, saved: unknown, fromRemote = false): void {
+  if (typeof saved !== "boolean") return;
+  if (chatFullAccessDecidedSinceOpen.has(threadId) && !(fromRemote && !saved)) return;
   savedChatFullAccess.set(threadId, saved);
   if (!saved) {
     dropChatGrants(threadId);
@@ -1472,8 +1473,10 @@ function buildThreadScopedSnapshot(threadId: string): ThreadScopedSettings {
   return settings;
 }
 
-type PendingThreadFields = Map<string, { value: unknown }>;
+type PendingThreadField = { value: unknown };
+type PendingThreadFields = Map<string, PendingThreadField>;
 const pendingThreadFields = new Map<string, PendingThreadFields>();
+const acknowledgedThreadFields = new WeakSet<PendingThreadField>();
 export const THREAD_SETTINGS_REVISION_KEY = "unsloth_chat_thread_settings_revision";
 let threadSettingsEditVersion = 0;
 
@@ -1506,7 +1509,20 @@ function threadFieldsPayload(fields: PendingThreadFields): ThreadScopedSettings 
   return Object.fromEntries(Array.from(fields, ([key, entry]) => [key, entry.value]));
 }
 
+function unacknowledgedThreadFields(fields: PendingThreadFields): PendingThreadFields {
+  return new Map([...fields].filter(([, entry]) => !acknowledgedThreadFields.has(entry)));
+}
+
+function withoutPatchDefaults(
+  settingsDefaults: ThreadScopedSettings | undefined,
+  fields: PendingThreadFields,
+): ThreadScopedSettings | undefined {
+  if (!settingsDefaults) return undefined;
+  return Object.fromEntries(Object.entries(settingsDefaults).filter(([key]) => !fields.has(key)));
+}
+
 function acknowledgeThreadFields(threadId: string, written: PendingThreadFields): void {
+  for (const entry of written.values()) acknowledgedThreadFields.add(entry);
   const pending = pendingThreadFields.get(threadId);
   if (pending) {
     // Keep a newer edit even if the user changed this field to the same value again.
@@ -1627,7 +1643,7 @@ function sendThreadScopedSettingsBeacon(
   if (!fields.size && !settingsDefaults) return;
   const body = {
     settingsPatch: threadFieldsPayload(fields),
-    settingsDefaults,
+    settingsDefaults: withoutPatchDefaults(settingsDefaults, fields),
     settingsSeq: nextThreadSettingsSeq(),
     settingsWriter: threadSettingsWriter,
   };
@@ -1674,7 +1690,6 @@ function writeThreadScopedSettings(
   snapshot: ThreadScopedSettings | null,
 ): Promise<boolean> {
   const { fields, settingsDefaults } = captureThreadWrite(threadId, snapshot);
-  const settingsPatch = threadFieldsPayload(fields);
   // The seq marks when the edit happened, not when the request was sent.
   const settingsSeq = nextThreadSettingsSeq();
   const ticket = takeThreadSettingsWriteTicket(threadId);
@@ -1695,12 +1710,18 @@ function writeThreadScopedSettings(
         const { updateStoredChatThread } = await import(
           "../utils/chat-history-storage"
         );
+        const sending = unacknowledgedThreadFields(fields);
         await updateStoredChatThread(
           threadId,
-          { settingsPatch, settingsDefaults, settingsSeq, settingsWriter: threadSettingsWriter },
+          {
+            settingsPatch: threadFieldsPayload(sending),
+            settingsDefaults: withoutPatchDefaults(settingsDefaults, sending),
+            settingsSeq,
+            settingsWriter: threadSettingsWriter,
+          },
           { signal: controller.signal },
         );
-        acknowledgeThreadFields(threadId, fields);
+        acknowledgeThreadFields(threadId, sending);
         forgetReplayedThreadSettings(threadId);
         return true;
       } catch {
@@ -2005,7 +2026,6 @@ async function mergeThreadScopedSettingsIntoRow(
   supersede = true,
 ): Promise<void> {
   const fields = stageThreadFields(threadId, changes);
-  const settingsPatch = threadFieldsPayload(fields);
   const settingsSeq = nextThreadSettingsSeq();
   const ticket = supersede ? takeThreadSettingsWriteTicket(threadId) : null;
   const previous = threadSettingsWriteChains.get(threadId) ?? Promise.resolve();
@@ -2021,12 +2041,14 @@ async function mergeThreadScopedSettingsIntoRow(
         const { updateStoredChatThread } = await import(
           "../utils/chat-history-storage"
         );
+        const sending = unacknowledgedThreadFields(fields);
+        if (!sending.size) return;
         await updateStoredChatThread(threadId, {
-          settingsPatch,
+          settingsPatch: threadFieldsPayload(sending),
           settingsSeq,
           settingsWriter: threadSettingsWriter,
         });
-        acknowledgeThreadFields(threadId, fields);
+        acknowledgeThreadFields(threadId, sending);
         forgetReplayedThreadSettings(threadId);
       } catch (error) {
         warnSettingsPersistenceFailure();
@@ -2954,6 +2976,7 @@ type ChatRuntimeStore = {
   applyThreadScopedSettings: (
     threadId: string | null,
     settings: ThreadScopedSettings | null,
+    options?: { fromRemote?: boolean },
   ) => void;
   setActiveProjectId: (projectId: string | null) => void;
   setIncognito: (incognito: boolean) => void;
@@ -5461,7 +5484,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           own && own.modelId && own.modelId !== state.params.checkpoint ? null : own,
       };
     }),
-  applyThreadScopedSettings: (threadId, settings) => {
+  applyThreadScopedSettings: (threadId, settings, options) => {
     const savedFullAccess = (settings as { fullAccess?: unknown } | null | undefined)?.fullAccess;
     set((state) => {
       settings = normalizeSavedThreadScopedSettings(settings);
@@ -5644,7 +5667,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
       };
     });
-    if (threadId !== null) restoreSavedChatFullAccess(threadId, savedFullAccess);
+    if (threadId !== null) restoreSavedChatFullAccess(threadId, savedFullAccess, options?.fromRemote);
   },
   setActiveProjectId: (activeProjectId) => set({ activeProjectId }),
   setIncognito: (incognito) => {
