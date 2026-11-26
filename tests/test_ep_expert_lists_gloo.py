@@ -323,10 +323,14 @@ def _case_random_router(rank, world, tmp):
     block = model[0]
     torch.manual_seed(10 + rank)
     same = []
-    for _ in range(3):
+    for step in range(3):
         block.draws.clear()
         model(torch.randn(6, 8)).sum().backward()
-        same.append(len(block.draws) == 2 and torch.equal(block.draws[0], block.draws[1]))
+        # The first forward also runs pass 1 once without autograd (learning what pass 1 may skip).
+        same.append(
+            len(block.draws) == (3 if step == 0 else 2)
+            and all(torch.equal(block.draws[0], d) for d in block.draws)
+        )
     return {"same": same}
 
 

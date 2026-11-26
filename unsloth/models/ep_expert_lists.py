@@ -486,29 +486,41 @@ def _same_rng(a, b):
     return torch.equal(a[0], b[0]) and all(torch.equal(x, y) for x, y in zip(a[1], b[1]))
 
 
-def _learn_skips(shard, prior, args, kwargs, calls, before, devices, candidates):
-    """Re-run pass 1 with `candidates` zeroed: skippable only if expert calls and RNG draws are bitwise unchanged."""
+def _pass1(shard, prior, args, kwargs, calls):
     lst = shard.block._modules["experts"]
-    skip = tuple(sorted(candidates.items()))
-    if not skip:
-        return ()
-    done = _rng_get(devices)
-    trial = []
-    _rng_set(before, devices)
-    lst._mode = ("record", trial)
+    lst._mode = ("record", calls)
     try:
-        with torch.no_grad(), _skipping(shard.block, skip):
-            prior(
-                *(_detach_inplace(a) for a in args),
-                **{k: _detach_inplace(v) for k, v in kwargs.items()},
-            )
-    except Exception:
-        trial = None
+        prior(
+            *(_detach_inplace(a) for a in args),
+            **{k: _detach_inplace(v) for k, v in kwargs.items()},
+        )
     finally:
         lst._mode = None
-        same_rng = _same_rng(_rng_get(devices), done)
-        _rng_set(done, devices)
-    return skip if trial is not None and same_rng and _same_calls(trial, calls) else ()
+
+
+def _learn_skips(shard, prior, args, kwargs, before, devices):
+    """Two pass 1 trials without autograd from `before`: all children (finding the H to H ones), then those zeroed.
+    They are skippable only if the expert calls and the RNG draws are bitwise unchanged. Ends with the RNG at
+    `before`, and every later pass 1 (a checkpoint recompute included) makes the same choice."""
+    full, trial = [], []
+    try:
+        with torch.no_grad():
+            _rng_set(before, devices)
+            with _watch_shapes(shard.block) as candidates:
+                _pass1(shard, prior, args, kwargs, full)
+            skip = tuple(sorted(candidates.items()))
+            if not skip:
+                return ()
+            drawn = _rng_get(devices)
+            _rng_set(before, devices)
+            with _skipping(shard.block, skip):
+                _pass1(shard, prior, args, kwargs, trial)
+            same = _same_rng(_rng_get(devices), drawn) and _same_calls(trial, full)
+    except Exception:
+        return ()
+    finally:
+        _rng_set(before, devices)
+    return skip if same else ()
 
 
 def _list_forward(shard, prior):
@@ -532,26 +544,11 @@ def _list_forward(shard, prior):
         # Both passes draw the same randomness; the RNG ends where one process would leave it.
         before = _rng_get(devices)
         mode = bool(shard.block.training)
-        skip = shard.skip.get(mode)
-        lst._mode = ("record", calls)
-        try:
-            # Pass 1 output is discarded, so skip children that cannot change the expert calls.
-            with (
-                _skipping(shard.block, skip or ()),
-                (
-                    _watch_shapes(shard.block) if skip is None else contextlib.nullcontext()
-                ) as candidates,
-            ):
-                prior(
-                    *(_detach_inplace(a) for a in args),
-                    **{k: _detach_inplace(v) for k, v in kwargs.items()},
-                )
-        finally:
-            lst._mode = None
-        if skip is None:
-            shard.skip[mode] = _learn_skips(
-                shard, prior, args, kwargs, calls, before, devices, candidates
-            )
+        if mode not in shard.skip:
+            shard.skip[mode] = _learn_skips(shard, prior, args, kwargs, before, devices)
+        # Pass 1 output is discarded, so skip children that cannot change the expert calls.
+        with _skipping(shard.block, shard.skip[mode]):
+            _pass1(shard, prior, args, kwargs, calls)
         outputs, y_back = _exchange(shard, calls, like)
         shard.calls += 1
         after = _rng_get(devices)
