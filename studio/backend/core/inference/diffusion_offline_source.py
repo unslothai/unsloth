@@ -75,11 +75,8 @@ def tokenizer_snapshot_source(
     cache_dir: Optional[str] = None,
     revision: Optional[str] = None,
 ) -> Any:
-    """The snapshot folder holding ``subfolder`` for a tokenizer / processor load, so transformers
-    reads local files only. Online, ``subfolder/*`` is fetched first with ``token``: transformers 5.x
-    ``AutoTokenizer`` falls back to ``PreTrainedConfig.from_pretrained`` when the subfolder has no
-    config.json, and that call drops ``token=``, so a gated repo id 401s anonymously. Offline and
-    local paths behave as ``offline_snapshot_source``."""
+    """Snapshot folder for a tokenizer load; online fetches ``subfolder/*`` with ``token`` first, since
+    transformers 5.x drops ``token=`` when the subfolder has no config.json."""
     if (
         not isinstance(repo_id, str)
         or not repo_id
@@ -104,7 +101,6 @@ def tokenizer_snapshot_source(
     kwargs: dict[str, Any] = {"allow_patterns": [f"{sub}/*"], "cache_dir": cache_dir}
     if revision:
         kwargs["revision"] = revision
-    # Falsy (None / blank) keeps huggingface_hub's own ambient resolution, as the loaders did.
     if token:
         kwargs["token"] = token
     return snapshot_download(repo_id, **kwargs)

@@ -1,11 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A gated diffusers repo (krea/Krea-2-Turbo) must send the request token on every Hub read of
-the image load. transformers 5.x ``AutoTokenizer`` on a repo id whose ``tokenizer/`` has no
-config.json falls back to ``PreTrainedConfig.from_pretrained``, which drops ``token=``, so the
-tokenizer step 401'd anonymously although the request carried a valid token. CPU only, no
-network: the Hub entry points are faked and every real HTTP request fails the test."""
+"""A gated repo (krea/Krea-2-Turbo) must send the token on every Hub read: transformers 5.x
+``AutoTokenizer`` with no ``tokenizer/config.json`` falls back to a config load that drops ``token=``."""
 
 from __future__ import annotations
 
@@ -88,7 +85,6 @@ def fake_hub(monkeypatch, tmp_path):
         return str(repo)
 
     def no_network(self, request, *args, **kwargs):
-        # Recorded as a failure (no real Hub read belongs here) and answered 404 so the load proceeds.
         calls.append(("http", str(request.url), request.headers.get("authorization")))
         return httpx.Response(404, request = request)
 
@@ -132,7 +128,6 @@ def test_krea2_image_load_sends_the_token_on_every_hub_read(fake_hub, monkeypatc
             Krea2Transformer2DModel = _Component("transformer"),
         ),
     )
-    # A pre-built (pre-cast) encoder, as the Studio load hands in; its own loader is covered below.
     try:
         diffusion_krea2.load_krea2_pipeline(
             REPO,

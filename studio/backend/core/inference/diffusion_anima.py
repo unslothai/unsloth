@@ -392,8 +392,7 @@ class _AnimaPipelineMixin:
 def _load_tokenizer(auto_tokenizer: Any, repo_id: str, subfolder: str, common: dict) -> Any:
     from .diffusion_offline_source import tokenizer_snapshot_source
 
-    # By repo id, transformers 5.x fails on cached tokenizers offline and drops the token on a gated repo online
-    # (see diffusion_offline_source).
+    # By repo id, transformers 5.x breaks offline and drops the token on gated repos.
     source = tokenizer_snapshot_source(
         repo_id,
         subfolder,

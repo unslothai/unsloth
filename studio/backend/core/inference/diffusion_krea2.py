@@ -62,8 +62,7 @@ def load_krea2_tokenizer(
     }
     if hf_token:
         kwargs["token"] = hf_token
-    # By repo id, transformers 5.x fails both attempts below offline and drops the token on a gated repo
-    # online (see diffusion_offline_source), so both read the snapshot folder.
+    # By repo id, transformers 5.x breaks offline and drops the token on gated repos.
     source = tokenizer_snapshot_source(
         repo_id,
         "tokenizer",
