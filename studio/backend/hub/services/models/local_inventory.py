@@ -465,7 +465,16 @@ def _an_older_snapshot_holds_a_gguf(path: Path) -> bool:
         snapshots = [entry for entry in (repo_dir / "snapshots").iterdir() if entry.is_dir()]
     except OSError:
         return False
-    return any(model_common._main_gguf_files(snapshot) for snapshot in snapshots)
+    return any(
+        model_common._main_gguf_files(snapshot)
+        or any(
+            gguf.is_file()
+            for gguf in model_common._quant_folder_gguf_files(
+                snapshot, model_common._iter_hf_cache_model_files(snapshot)
+            )
+        )
+        for snapshot in snapshots
+    )
 
 
 _NUMBERED_SHARD = re.compile(r"-\d{5}-of-\d{5}\.safetensors$", re.IGNORECASE)

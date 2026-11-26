@@ -1244,14 +1244,18 @@ def test_a_scan_folder_subfolder_with_an_empty_or_numbered_checkpoint_is_not_lis
     assert _scan_hub_only(monkeypatch, tmp_path, folders = [library]) == []
 
 
-def _two_revision_gguf_repo(hub: Path, newer_files = ()) -> None:
+def _two_revision_gguf_repo(
+    hub: Path,
+    newer_files = (),
+    quant = "Model-Q4_K_M.gguf",
+) -> None:
     import os
     import time
 
     repo = hub / "models--org--Model-GGUF"
     _write(repo / "refs" / "main", "b" * 40)
     older = repo / "snapshots" / ("a" * 40)
-    _touch(older / "Model-Q4_K_M.gguf")
+    _touch(older / quant)
     newer = repo / "snapshots" / ("b" * 40)
     newer.mkdir(parents = True)
     for name in newer_files:
@@ -1261,12 +1265,15 @@ def _two_revision_gguf_repo(hub: Path, newer_files = ()) -> None:
     os.utime(newer, (now, now))
 
 
-def test_a_custom_cache_mtp_only_revision_keeps_the_older_quant_resolvable(monkeypatch, tmp_path):
+@pytest.mark.parametrize("quant", ["Model-Q4_K_M.gguf", "UD-Q4_K_XL/Model-UD-Q4_K_XL.gguf"])
+def test_a_custom_cache_mtp_only_revision_keeps_the_older_quant_resolvable(
+    monkeypatch, tmp_path, quant
+):
     """A newer revision holding only an MTP drafter must not hide the older revision's quant from the resolver."""
     from core.inference import local_model_resolver as resolver
 
     folder = tmp_path / "custom"
-    _two_revision_gguf_repo(folder / "hub", ("MTP/mtp-model-Q8_0.gguf",))
+    _two_revision_gguf_repo(folder / "hub", ("MTP/mtp-model-Q8_0.gguf",), quant)
 
     rows = _scan_hub_only(monkeypatch, tmp_path, folders = [folder])
     assert len(rows) == 1
