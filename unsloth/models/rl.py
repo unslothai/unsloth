@@ -140,6 +140,31 @@ _ONLINE_DPO_VLLM_SYNC_FUNCTIONS = frozenset(
     )
 )
 
+# Trainers whose vision forward sees the same images several times: GRPO / RLOO repeat each prompt's images
+# num_generations times, DPO concatenates chosen and rejected (images twice), Online DPO samples 2 completions
+# per prompt. KTO, ORPO and CPO pass each image once per forward, so they are left alone.
+_IMAGE_DEDUP_TRAINERS = ("grpo_trainer", "rloo_trainer", "dpo_trainer", "online_dpo_trainer")
+
+
+def _image_dedup_post(trainer_file):
+    """__init__ tail that encodes each distinct image once (UNSLOTH_GRPO_IMAGE_DEDUP=0 disables)."""
+    if trainer_file not in _IMAGE_DEDUP_TRAINERS:
+        return ""
+    # Preference trainers also wrap a separate ref_model: it runs the same repeated images under no_grad.
+    models = "getattr(self, 'model', None),"
+    if trainer_file != "grpo_trainer":
+        models += " getattr(self, 'ref_model', None),"
+    return (
+        "try:\n"
+        "    from unsloth_zoo.vision_dedup import install_image_dedup as _unsloth_install_image_dedup\n"
+        "except ImportError:\n"
+        "    _unsloth_install_image_dedup = None\n"
+        "if _unsloth_install_image_dedup is not None:\n"
+        f"    for _unsloth_dedup_model in ({models}):\n"
+        "        _unsloth_install_image_dedup(_unsloth_dedup_model)\n"
+        "pass\n"
+    )
+
 
 def _strip_vllm_weight_loads(function, source, trainer_file):
     # GRPO's _move_model_to_vllm returns early under fast_inference (grpo_trainer__move_model_to_vllm),
@@ -3695,17 +3720,8 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "_unsloth_grpo_check_sampler_kl(self)\n"
         )
 
-    # GRPO repeats each prompt's images num_generations times; encode each distinct image once (UNSLOTH_GRPO_IMAGE_DEDUP=0 disables).
-    if trainer_file == "grpo_trainer":
-        RLTrainer_post += (
-            "try:\n"
-            "    from unsloth_zoo.vision_dedup import install_image_dedup as _unsloth_install_image_dedup\n"
-            "except ImportError:\n"
-            "    _unsloth_install_image_dedup = None\n"
-            "if _unsloth_install_image_dedup is not None:\n"
-            "    _unsloth_install_image_dedup(getattr(self, 'model', None))\n"
-            "pass\n"
-        )
+    # Encode each distinct image of a vision forward once where the trainer repeats them (UNSLOTH_GRPO_IMAGE_DEDUP=0 disables).
+    RLTrainer_post += _image_dedup_post(trainer_file)
 
     if trainer_file == "grpo_trainer":
         RLTrainer_post += (
