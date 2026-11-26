@@ -2658,13 +2658,14 @@ function VideoGenerator({
   restoreStatusRef.current = status;
   const handleModelSelectRef = useRef<((id: string, meta: ModelSelectorChangeMeta) => void) | null>(null);
   const restoreSettingsRef = useRef<((video: GalleryVideo, silent?: boolean) => void) | null>(null);
+  const pendingRecipeAfterLoad = useRef<{ video: GalleryVideo; model: string } | null>(null);
   // The build a clip ran with: Precision applies to the next load, and a different model is offered as a reload,
   // never loaded behind the user's back.
   const restoreClipBuild = useCallback((video: GalleryVideo, offerReload = true) => {
     const restoredQuant = recipeTransformerQuant(video);
     if (restoredQuant) setTransformerQuant(restoredQuant);
     const current = restoreStatusRef.current;
-    const reloadModel = offerReload ? recipeModelToReload(video, current) : null;
+    const reloadModel = offerReload ? recipeModelToReload(video, current, ggufQuantLabel) : null;
     if (!reloadModel) return;
     toast.info(`This clip was made with ${reloadModel}`, {
       description: current?.loaded
@@ -2691,6 +2692,8 @@ function VideoGenerator({
                 // the load lands.
                 claimVideoRecipe().commit();
                 restoreSettingsRef.current?.(video, true);
+                // Size, fps and frame window fit the RESIDENT family; apply them again once this model is resident.
+                pendingRecipeAfterLoad.current = { video, model: reloadModel };
               },
             },
           }
@@ -2742,6 +2745,14 @@ function VideoGenerator({
     [sizeLimits, durationOptions, fps, fpsOptions, durationTargets, frameStep, frameOffset, minFrames, maxFrames, setPickedFps, statusKnown],
   );
   restoreSettingsRef.current = restoreSettings;
+  // A recipe whose model was loaded from its Restore toast: re-apply it on the new family's limits once it is resident.
+  useEffect(() => {
+    const pending = pendingRecipeAfterLoad.current;
+    if (!pending || !status?.loaded) return;
+    if (recipeModelToReload(pending.video, status, ggufQuantLabel) !== null) return;
+    pendingRecipeAfterLoad.current = null;
+    restoreSettingsRef.current?.(pending.video, true);
+  }, [status]);
 
   // No periodic poll corrects a stale read, so only the newest ticket may write.
   const statusTicket = useRef(0);

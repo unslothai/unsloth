@@ -50,6 +50,7 @@ test("recalling a quantized model carries the selected adapters into its load", 
     const scope = {
       useCallback: (fn: unknown) => fn,
       lastLoad: { current: null },
+      restoreLoraTarget: { current: null },
       status: { loaded: false, repo_id: null },
       loras: [],
       familyOverride: "auto",

@@ -62,15 +62,51 @@ function sameModel(a: string | null | undefined, b: string | null | undefined): 
   return x !== "" && x === (b ?? "").trim().toLowerCase();
 }
 
-/** The recipe's model when it is not the resident one (or nothing is loaded), else null. Connection runs and
- * records without a model never ask for a reload. */
+interface ResidentBuild {
+  loaded?: boolean;
+  repo_id?: string | null;
+  display_repo_id?: string | null;
+  model_kind?: string | null;
+  gguf_filename?: string | null;
+  gguf_variant?: string | null;
+}
+
+function basename(path: string): string {
+  const norm = path.replace(/\\/g, "/");
+  return norm.slice(norm.lastIndexOf("/") + 1).trim().toLowerCase();
+}
+
+/** Whether the resident build runs the recipe's checkpoint: same repo, and for a GGUF recipe the same file (or,
+ * where the status names only the quant, the same quant). `variantOf` maps a GGUF filename to its quant label. */
+function residentRunsRecipe(
+  model: string,
+  recipe: RecipeBuild & { gguf_filename?: string | null },
+  status: ResidentBuild,
+  variantOf?: (filename: string) => string,
+): boolean {
+  if (!status.loaded || !(sameModel(model, status.repo_id) || sameModel(model, status.display_repo_id))) return false;
+  const kind = (recipe.model_kind ?? "").trim().toLowerCase();
+  const residentKind = (status.model_kind ?? "").trim().toLowerCase();
+  if (kind && residentKind && kind !== residentKind) return false;
+  const file = recipe.gguf_filename?.trim();
+  if (kind !== "gguf" || !file) return true;
+  if (status.gguf_filename?.trim()) return basename(status.gguf_filename) === basename(file);
+  if (status.gguf_variant?.trim() && variantOf) {
+    return variantOf(basename(file)).toLowerCase() === status.gguf_variant.trim().toLowerCase();
+  }
+  return true;
+}
+
+/** The recipe's model when the resident build does not run its checkpoint (another repo, another GGUF file of the
+ * same repo, or nothing loaded), else null. Connection runs and records without a model never ask for a reload. */
 export function recipeModelToReload(
-  recipe: RecipeBuild,
-  status: { loaded?: boolean; repo_id?: string | null; display_repo_id?: string | null } | null | undefined,
+  recipe: RecipeBuild & { gguf_filename?: string | null },
+  status: ResidentBuild | null | undefined,
+  variantOf?: (filename: string) => string,
 ): string | null {
   const model = recipe.model?.trim();
   if (!model || recipe.model_kind === "connection") return null;
-  if (status?.loaded && (sameModel(model, status.repo_id) || sameModel(model, status.display_repo_id))) return null;
+  if (status && residentRunsRecipe(model, recipe, status, variantOf)) return null;
   return model;
 }
 

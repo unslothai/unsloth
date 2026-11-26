@@ -3154,6 +3154,7 @@ export function ImagesPage({
   // The repo a restore's Load model targets: its load carries the restored LoRAs, which a pick of another model
   // would otherwise drop (an int8 / fp8 build takes adapters only at load time).
   const restoreLoraTarget = useRef<string | null>(null);
+  const pendingRecipeAfterLoad = useRef<{ image: GalleryImage; exactCaption: boolean; model: string } | null>(null);
   useEffect(() => {
     if (modelSelectionAction !== "load" || !pendingRestorePick.current) return;
     const run = pendingRestorePick.current;
@@ -3282,7 +3283,7 @@ export function ImagesPage({
       });
     }
     // A different model is offered as a reload, never loaded behind the user's back.
-    const reloadModel = via === "restore" ? recipeModelToReload(image, status) : null;
+    const reloadModel = via === "restore" ? recipeModelToReload(image, status, ggufQuantLabel) : null;
     if (reloadModel) {
       toast.info(`This image was made with ${reloadModel}`, {
         description: status?.loaded
@@ -3311,6 +3312,8 @@ export function ImagesPage({
                     // when the load lands ("vary" re-applies the form silently).
                     claimImageRecipe().commit();
                     restoreSettingsRef.current?.(image, exactCaption, "vary");
+                    // The size fits the RESIDENT family's limits; apply it again once this model is resident.
+                    pendingRecipeAfterLoad.current = { image, exactCaption, model: reloadModel };
                   };
                   if (modelSelectionActionRef.current === "download") {
                     pendingRestorePick.current = run;
@@ -3326,6 +3329,14 @@ export function ImagesPage({
     }
   }, [changeSamplerChoice, claimImageRecipe, samplerOptions.length, sdCaps, setDetailerOptions, setEnhanceOverride, setPromptFor, setShiftValue, setFastCfgOn, setWorkflow, sizeLimits, status, detailerReady, cfgIntervalSupported]);
   restoreSettingsRef.current = restoreSettings;
+  // A recipe whose model was loaded from its Restore toast: re-apply it on the new family's limits once it is resident.
+  useEffect(() => {
+    const pending = pendingRecipeAfterLoad.current;
+    if (!pending || !status?.loaded) return;
+    if (recipeModelToReload(pending.image, status, ggufQuantLabel) !== null) return;
+    pendingRecipeAfterLoad.current = null;
+    restoreSettingsRef.current?.(pending.image, pending.exactCaption, "vary");
+  }, [status]);
 
   // Like dropping an image on ComfyUI: Unsloth's recipe first, else AUTOMATIC1111 / ComfyUI metadata.
   const importFileRef = useRef<HTMLInputElement>(null);

@@ -106,6 +106,31 @@ test("a recipe from another model is offered as a reload, the resident one is no
   assert.equal(isHubRepoId("C:\\models\\wan"), false);
 });
 
+test("a different GGUF file of the resident repo is still offered as a reload", () => {
+  const repo = "QuantStack/Wan2.2-TI2V-5B-GGUF";
+  const q8 = { model: repo, model_kind: "gguf", gguf_filename: "Wan2.2-TI2V-5B-Q8_0.gguf" };
+  const label = (f: string) => f.replace(/\.gguf$/i, "").split("-").pop() ?? "";
+  // Images status names the file.
+  const q4File = { loaded: true, repo_id: repo, model_kind: "gguf", gguf_filename: "Wan2.2-TI2V-5B-Q4_K_M.gguf" };
+  assert.equal(recipeModelToReload(q8, q4File), repo);
+  assert.equal(recipeModelToReload(q8, { ...q4File, gguf_filename: "sub/Wan2.2-TI2V-5B-Q8_0.gguf" }), null);
+  // Video status names only the quant.
+  const q4Variant = { loaded: true, repo_id: repo, model_kind: "gguf", gguf_variant: "Q4_K_M" };
+  assert.equal(recipeModelToReload(q8, q4Variant, label), repo);
+  assert.equal(recipeModelToReload(q8, { ...q4Variant, gguf_variant: "Q8_0" }, label), null);
+  // Same repo, other build kind.
+  assert.equal(recipeModelToReload(q8, { loaded: true, repo_id: repo, model_kind: "pipeline" }), repo);
+});
+
+for (const page of ["features/images/images-page.tsx", "features/video/video-page.tsx"]) {
+  test(`${page}: a recipe loaded from its toast is re-applied once its model is resident`, () => {
+    const src = readSrc(page);
+    assert.match(src, /pendingRecipeAfterLoad\.current = \{ (image, exactCaption|video), model: reloadModel \};/);
+    assert.match(src, /if \(recipeModelToReload\(pending\.(image|video), status, ggufQuantLabel\) !== null\) return;\s*pendingRecipeAfterLoad\.current = null;/);
+    assert.match(src, /recipeModelToReload\((image|video), (status|current), ggufQuantLabel\)/);
+  });
+}
+
 for (const page of ["features/images/images-page.tsx", "features/video/video-page.tsx"]) {
   test(`${page}: a refused or failed load reseeds Precision from the resident build`, () => {
     const src = readSrc(page);
@@ -142,7 +167,7 @@ test("Images Restore puts back the precision and offers a different model as a r
   const body = src.slice(start, src.indexOf("// Like dropping an image on ComfyUI", start));
   assert.match(body, /recipeTransformerQuant\(image\)/);
   assert.match(body, /recipeTextEncoderQuant\(image\)/);
-  assert.match(body, /recipeModelToReload\(image, status\)/);
+  assert.match(body, /recipeModelToReload\(image, status, ggufQuantLabel\)/);
   assert.match(body, /handleModelSelectRef\.current\?\.\(reloadModel/);
   assert.match(src, /handleModelSelectRef\.current = handleModelSelect;/);
   // Load model keeps the restored recipe: the pick's defaults are outranked and the form re-applied silently, and a
@@ -206,6 +231,7 @@ function videoRestoreClipBuild(status: unknown) {
       },
     },
     claimVideoRecipe: () => ({ commit: () => events.push("claim") }),
+    pendingRecipeAfterLoad: { current: null },
     // The page's ggufQuantLabel (model-identity.ts imports through the @ alias), for a plain -QUANT.gguf name.
     ggufQuantLabel: (filename: string) => filename.replace(/\.gguf$/i, "").split("-").pop(),
     recipeTransformerQuant,
