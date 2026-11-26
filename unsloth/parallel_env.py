@@ -311,14 +311,41 @@ def apply_parallel_env(environ = None):
     environ = os.environ if environ is None else environ
     raw = environ.get(FLAG)
     if raw is None or not str(raw).strip():
+        refuse_ep_composition(environ)
         return None
     spec = parse_parallel_spec(raw)
     if spec.get("auto"):
         from .parallel_auto import check_auto_env
         check_auto_env(environ)
         return spec
-    environ.update(translate(spec, environ))
+    out = translate(spec, environ)
+    refuse_ep_composition({**environ, **out}, f'{FLAG}="{spec.describe()}"')
+    environ.update(out)
     return spec
+
+
+def refuse_ep_composition(environ = None, source = None):
+    """ValueError when UNSLOTH_EP_SIZE (set alone, or inherited beside UNSLOTH_PARALLEL) meets tp / pp / cp /
+    UNSLOTH_FSDP2, as translate refuses ep in the spec: before any model loads."""
+    environ = os.environ if environ is None else environ
+    ep = _legacy_value("ep", environ)
+    if not isinstance(ep, int) or ep <= 1:
+        return  # ep_native.ep_env_size refuses a non-integer value
+    others = []
+    for key in ("tp", "pp", "cp", "fsdp"):
+        value = _legacy_value(key, environ)
+        if value is None or value is False or (key in _SIZE_KEYS and value == 1):
+            continue
+        others.append(f"{_LEGACY[key]}={environ.get(_LEGACY[key])}")
+    if others:
+        given = f"UNSLOTH_EP_SIZE={environ.get('UNSLOTH_EP_SIZE')}" + (
+            f" ({source})" if source else ""
+        )
+        raise ValueError(
+            f"Unsloth: {given}: expert parallel (ep) cannot be combined with {', '.join(others)} yet; "
+            "expert parallel v1 shards the experts over data parallel ranks that each hold the rest of the model. "
+            "Unset UNSLOTH_EP_SIZE, or the other variables."
+        )
 
 
 def bind_local_cuda_device(environ = None):
@@ -568,8 +595,10 @@ class ParallelLayout:
         cp = 1,
         cp_backend = None,
         schedule_auto = False,
+        ep = 1,
     ):
         self.tp, self.dp, self.world, self.fsdp2 = tp, dp, world, fsdp2
+        self.ep = ep  # set only by the Trainer pre-check; read_layout keeps 1
         self.pp, self.microbatches, self.schedule = pp, microbatches, schedule
         # UNSLOTH_PP_SCHEDULE unset: 1F1B, run as GPipe on a step with fewer micro-batches than stages (no
         # fully masked filler rows); an explicit schedule is kept as given.

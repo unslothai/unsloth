@@ -306,6 +306,8 @@ def _model_eligible(causal_lm, device):
             pass
     if not cached:
         return False
+    if _forwards_are_collective(causal_lm):
+        return False
     from ..utils.prefix_grouper_kernel import compile_check_failed
 
     if compile_check_failed() is not None:
@@ -334,6 +336,25 @@ def _distributed_world():
     except Exception:
         pass
     return 1
+
+
+def _forwards_are_collective(causal_lm):
+    """ZeRO-3 / FSDP2: every forward all-gathers. A rank whose flex compile check fails reruns its
+    forward unshared, so its collectives no longer line up with the other ranks' (hang or wrong
+    gathers). Read live: the DeepSpeed config can go live after the first call."""
+    if _distributed_world() <= 1:
+        return False
+    try:
+        from unsloth_zoo.rl_replacements import grpo_forwards_are_collective
+    except Exception:
+        grpo_forwards_are_collective = None
+    try:
+        if grpo_forwards_are_collective is not None:
+            return bool(grpo_forwards_are_collective(causal_lm))
+        from unsloth_zoo.temporary_patches.utils import zero3_partitioned_training
+        return bool(zero3_partitioned_training())
+    except Exception:
+        return False
 
 
 def _cp_active():

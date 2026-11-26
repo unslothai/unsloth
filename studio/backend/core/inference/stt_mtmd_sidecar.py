@@ -206,6 +206,25 @@ def ensure_engine_available() -> str:
     return binary
 
 
+def _open_server_log(port: int):
+    """None on any error: logging must never block a load. Epoch first: the log list presorts by name."""
+    try:
+        from core.inference.llama_cpp import _swa_cache_path
+        from utils.log_retention import prune_log_dir
+
+        log_dir = _swa_cache_path().parent / "logs" / "llama-server"
+        log_dir.mkdir(parents = True, exist_ok = True)
+        path = log_dir / f"llama-{int(time.time())}-dictation-port-{port}.log"
+        # Append: a relaunch in the same second on the same port must not erase a crash log.
+        handle = open(path, "a", encoding = "utf-8")
+        prune_log_dir(log_dir, "llama-*.log", protect = path)
+        logger.info("dictation llama-server stdout/stderr -> %s", path)
+        return handle
+    except Exception as exc:  # noqa: BLE001 - best effort
+        logger.warning("Could not open the dictation llama-server log file: %s", exc)
+        return None
+
+
 def _reap(process: Optional[subprocess.Popen]) -> None:
     """Waits for exit, since terminate alone returns before the child's port and VRAM are actually freed."""
     if process is None:
@@ -1124,17 +1143,22 @@ class MtmdSttSidecar:
                 key_argv, key_env, key_file = _llama_server_key_launch(api_key)
                 # Right after the binary: --no-mmproj-offload has to stay last.
                 cmd[1:1] = key_argv
-            process = subprocess.Popen(
-                cmd,
-                # An undrained pipe blocks llama-server once its log output fills the buffer.
-                stdout = subprocess.DEVNULL,
-                stderr = subprocess.DEVNULL,
-                stdin = subprocess.DEVNULL,
-                # Like chat: bundled and pip CUDA libs on the loader path; secrets scrubbed.
-                env = {**_llama_server_child_env(binary), **key_env},
-                # Die with Unsloth, so a crash never orphans a server on the GPU.
-                **child_popen_kwargs(),
-            )
+            # A file, never a pipe: an undrained pipe blocks llama-server once its output fills the buffer.
+            log_handle = _open_server_log(port)
+            try:
+                process = subprocess.Popen(
+                    cmd,
+                    stdout = log_handle if log_handle is not None else subprocess.DEVNULL,
+                    stderr = subprocess.STDOUT if log_handle is not None else subprocess.DEVNULL,
+                    stdin = subprocess.DEVNULL,
+                    # Like chat: bundled and pip CUDA libs on the loader path; secrets scrubbed.
+                    env = {**_llama_server_child_env(binary), **key_env},
+                    # Die with Unsloth, so a crash never orphans a server on the GPU.
+                    **child_popen_kwargs(),
+                )
+            finally:
+                if log_handle is not None:
+                    log_handle.close()
             # Published before the wait so training can preempt a startup that is already allocating.
             with self._lock:
                 self._starting_process = process

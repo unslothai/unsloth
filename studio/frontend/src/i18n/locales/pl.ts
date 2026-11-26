@@ -986,7 +986,7 @@ export const pl = {
   chatMenu: {
     more: "Opcje czatu",
     copy: "Kopiuj",
-    addScheduledTask: "Dodaj zaplanowane zadanie…",
+    addScheduledTask: "Dodaj zaplanowane zadanie",
     compact: "Kompaktuj rozmowę",
     compactEmpty: "Nie ma jeszcze czego kompaktować",
     compactUnsupported:

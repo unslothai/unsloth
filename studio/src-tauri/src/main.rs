@@ -2421,6 +2421,13 @@ fn main() {
             appimage_webkit::mode_label(|name| std::env::var_os(name))
         );
     }
+    #[cfg(target_os = "linux")]
+    if appimage_webkit::host_lacks_audio_sink() {
+        warn!(
+            "GStreamer has no autoaudiosink plugin: WebKitGTK aborts a page on its first audio or \
+             video. Install GStreamer's good plugins (gst-plugins-good, gstreamer1.0-plugins-good)."
+        );
+    }
     #[cfg(target_os = "macos")]
     macos_event_guard::install();
 
