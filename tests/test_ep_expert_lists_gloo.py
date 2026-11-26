@@ -186,6 +186,9 @@ def _case_portable(
     portable = load_models_module("portable_resume")
     mesh = init_device_mesh("cpu", (world,), mesh_dim_names = ("ep",))["ep"]
     ref = _build(build, repo, overrides, False)
+    blocks = tpn.moe_blocks_with_experts(ref)
+    if not blocks or epn._lists().list_shard_problem(blocks[0], world) is not None:
+        return {"skip": "no per-expert ModuleList experts here"}
     vocab = tpn._text_config(ref).vocab_size
     rows = [_rows(vocab, r) for r in range(world)]
     n = sum(int((lab[:, 1:] != -100).sum()) for _, lab in rows)
@@ -339,7 +342,7 @@ def _gpt_oss_linear_lists(gc = False):
     from peft import LoraConfig, get_peft_model
 
     try:
-        from unsloth_zoo.temporary_patches.gpt_oss import GptOssExpertsBnb4bit
+        from unsloth_zoo.temporary_patches.gpt_oss import GptOssExpertsBnb4bit, GptOssTopKRouter
     except Exception as exc:
         return None, f"unsloth_zoo GptOssExpertsBnb4bit unavailable: {type(exc).__name__}: {exc}"[
             :400
@@ -369,6 +372,13 @@ def _gpt_oss_linear_lists(gc = False):
             for p in experts.parameters():
                 p.copy_(torch.randn(p.shape, generator = g) * 0.1)
         layer.mlp.experts = experts
+        # The zoo's router too: its dense [tokens, E] scores are what GptOssExpertsBnb4bit indexes (transformers
+        # 5's own router returns [tokens, top_k]).
+        router = GptOssTopKRouter(config)
+        with torch.no_grad():
+            router.weight.copy_(layer.mlp.router.weight)
+            router.bias.copy_(layer.mlp.router.bias)
+        layer.mlp.router = router
     model = get_peft_model(
         model, LoraConfig(r = 4, lora_alpha = 8, target_modules = "all-linear", init_lora_weights = False)
     )
@@ -620,6 +630,8 @@ def test_ep_gpt_oss_linear_lists_match_one_process(gc):
 def test_ep_expert_lists_portable_resume_matches_one_process():
     results = _spawn("_case_portable", **_spec("mixtral"))
     assert all(r is not None and "error" not in r for r in results), results
+    if any("skip" in r for r in results):
+        pytest.skip(results[0]["skip"])
     assert results[0]["why"] is None and not results[0]["missing"], results[0]
     assert results[0]["worst"] <= 1e-6, results[0]
     for r in results:
@@ -647,6 +659,8 @@ def _case_zoo_fast_paths(rank, world, tmp, repo):
     model = _build(build, repo, None, False)
     block = tpn.moe_blocks_with_experts(model)[0]
     spec = zoo._BLOCK_SPECS.get(type(block).__name__)
+    if type(block._modules.get("experts")) is not torch.nn.ModuleList:
+        return {"skip": "no per-expert ModuleList experts here"}
     if spec is None:
         return {"skip": f"no zoo grouped spec for {type(block).__name__}"}
     before = lists.list_shard_problem(block, world)
