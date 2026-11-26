@@ -14,10 +14,10 @@ from typing import Any, Dict
 
 from utils.transformers_version import (
     _VENV_LLMCOMPRESSOR_DIR,
-    _env_offline,
     _llmcompressor_main_disabled,
     _llmcompressor_shadow_is_valid,
 )
+from utils.utils import hf_env_offline
 
 
 # Keep in sync with unsloth/save.py _LLM_COMPRESSOR_SPEC; not imported to avoid torch.
@@ -38,7 +38,7 @@ def probe_llm_compressor_for_compressed_export() -> Dict[str, Any]:
     spec = _LLM_COMPRESSOR_SPEC
     shadow_valid = _llmcompressor_shadow_is_valid()
     shadow_disabled = _llmcompressor_main_disabled()
-    offline = _env_offline()
+    offline = hf_env_offline()
     autoinstall_disabled = os.environ.get(
         "UNSLOTH_DISABLE_LLM_COMPRESSOR_AUTOINSTALL", "0"
     ).lower() not in ("0", "", "false", "no")

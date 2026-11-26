@@ -61,9 +61,12 @@ from .kernels import fast_dequantize, QUANT_STATE, get_lora_parameters_bias
 import subprocess
 import traceback
 import psutil
+import collections
 import re
 from .models.loader_utils import (
     get_model_name,
+    checkpoint_folder_quant_method,
+    prequantized_snapshot_original,
     sync_load_when_quantizing,
     _resolve_hub_repo_cached_file,
     _tokenizer_cache_dir,
@@ -83,6 +86,7 @@ from .models._utils import (
 )
 from .models.mistral_format import raise_if_merging_mistral_format_view
 from .models.inkling2 import (
+    inkling2_lora_gguf_adapter,
     is_inkling2_config,
     raise_if_merging_inkling2,
     save_inkling2_merged_16bit,
@@ -1579,8 +1583,8 @@ def _refuse_tp_in_place_merge(fn, method, args, kwargs):
 
 
 def _model_parallel_refuses_save(method):
-    """Every whole-model export refuses an apply_pipeline_parallel model before it writes anything (see
-    _refuse_model_parallel_export). A tensor parallel model (tp, or tp x DDP-style dp) is gathered to rank 0,
+    """Every whole-model export refuses an apply_pipeline_parallel or apply_expert_parallel model (each rank holds
+    only its experts) before it writes anything (see _refuse_model_parallel_export). A tensor parallel model (tp, or tp x DDP-style dp) is gathered to rank 0,
     which runs the export; the other ranks wait for it (models/tp_replica.py)."""
 
     def decorate(fn):
@@ -6412,6 +6416,23 @@ def _base_config_dir(repo_id, token = None):
     return directory
 
 
+def _local_base_config_dir(folder):
+    """Temporary dir with only the config.json of the local checkpoint `folder`, its quantization_config dropped: the
+    LoRA applies to the 16-bit weights that checkpoint was quantized from."""
+    import json
+    import tempfile
+
+    with open(os.path.join(folder, "config.json"), encoding = "utf-8") as f:
+        config = json.load(f)
+    config.pop("quantization_config", None)
+    if isinstance(config.get("text_config"), dict):
+        config["text_config"].pop("quantization_config", None)
+    directory = tempfile.mkdtemp(prefix = "unsloth-lora-gguf-base-")
+    with open(os.path.join(directory, "config.json"), "w", encoding = "utf-8") as f:
+        json.dump(config, f, indent = 2, ensure_ascii = False)
+    return directory
+
+
 def _lora_base_model_id(model):
     """Base model id for a PEFT model: prefer the active adapter's recorded `base_model_name_or_path`, the authoritative source, else the model config."""
     base = None
@@ -6518,6 +6539,36 @@ def _resolve_imatrix_file(model, imatrix_file, token, dest_dir):
     )
 
 
+def _lora_target_parameters(model) -> list:
+    names = set()
+    for config in (getattr(model, "peft_config", None) or {}).values():
+        names.update(getattr(config, "target_parameters", None) or ())
+    return sorted(str(name) for name in names)
+
+
+def _converter_error_line(lines) -> str:
+    # The last exception line, else the reasons the converter logs before sys.exit(1) ("ERROR:lora-to-gguf:...").
+    lines = [line.strip() for line in lines]
+    for line in reversed(lines):
+        if re.match(r"^[A-Za-z_][\w.]*(Error|Exception)(: |$)", line):
+            return line
+    logged = [m.group(1) for m in map(re.compile(r"^ERROR:[^:\s]+:\s*(\S.*)$").match, lines) if m]
+    return " ".join(logged[:3])
+
+
+def _lora_gguf_conversion_error(returncode, cause, expert_targets) -> Exception:
+    if expert_targets and "Can not map tensor" in cause and ".experts" in cause:
+        return NotImplementedError(
+            "Unsloth: llama.cpp's LoRA GGUF converter cannot map this adapter's MoE expert weights "
+            f"(target_parameters: {', '.join(expert_targets)}) yet: {cause}. Export the merged model as "
+            "GGUF instead, or save the adapter as safetensors."
+        )
+    return RuntimeError(
+        f"Unsloth: LoRA -> GGUF conversion failed (exit {returncode})"
+        + (f": {cause}" if cause else ". See the output above for details.")
+    )
+
+
 @_model_parallel_refuses_save("save_pretrained_gguf")
 def _unsloth_save_lora_gguf(
     model,
@@ -6552,6 +6603,9 @@ def _unsloth_save_lora_gguf(
     if token is None or token is True:
         token = get_token()
 
+    # Not refused up front: the converter decides, so expert LoRA works as soon as llama.cpp can map it.
+    expert_targets = _lora_target_parameters(model)
+
     # Resolve the dequantized base id, since the adapter usually references a 4bit repo.
     base_model_id = _lora_base_model_id(model)
     if not base_model_id:
@@ -6566,6 +6620,7 @@ def _unsloth_save_lora_gguf(
     model_name = _model_basename(base_model_id)
 
     base_config_dir = None
+    inkling2_dir = None
     # Save the adapter: an isolated temp dir for a hub push, else save_directory itself, wrapped so it is always cleaned up.
     if push_to_hub:
         lora_dir = tempfile.mkdtemp(prefix = "unsloth-lora-gguf-")
@@ -6593,13 +6648,30 @@ def _unsloth_save_lora_gguf(
             )
 
         out_gguf = os.path.join(lora_dir, f"{model_name}-lora-{outtype}.gguf")
-        cmd = [sys.executable, converter, lora_dir, "--outfile", out_gguf, "--outtype", outtype]
+        converter_input = lora_dir
+        if is_inkling2_config(getattr(model, "config", None)):
+            # The converter maps Inkling 2's original checkpoint names, PEFT saves transformers names.
+            converter_input = inkling2_dir = inkling2_lora_gguf_adapter(model, lora_dir)
+        cmd = [
+            sys.executable,
+            converter,
+            converter_input,
+            "--outfile",
+            out_gguf,
+            "--outtype",
+            outtype,
+        ]
         # Pass --trust-remote-code only when the model really came from custom code (the approved load decision), not merely because its config carries an auto_map entry.
         loaded_via_remote_code = _loaded_via_remote_code(model)
         # --base-model-id's strict AutoConfig rejects an older config (Ling-3.0-tiny's int kda_lower_bound, #13948); --base falls back to config.json.
         local_base = None
         if os.path.isdir(base_model_id):
-            local_base = base_model_id
+            # The converter indexes every tensor in --base; a pre-quantized bitsandbytes folder would hand it the
+            # packed 4-bit weights and their quant_state companions. It only needs the config, as for a Hub base.
+            if checkpoint_folder_quant_method(base_model_id) == "bitsandbytes":
+                local_base = base_config_dir = _local_base_config_dir(base_model_id)
+            else:
+                local_base = base_model_id
         elif not loaded_via_remote_code:
             # False stays anonymous; a token we resolved ourselves is left to huggingface_hub, which honors HF_HUB_DISABLE_IMPLICIT_TOKEN.
             local_base = base_config_dir = _base_config_dir(
@@ -6616,6 +6688,7 @@ def _unsloth_save_lora_gguf(
         _apply_token_to_child_env(env, token, explicit = token_is_explicit)
 
         print(f"Unsloth: Converting LoRA adapter at '{lora_dir}' to GGUF -> '{out_gguf}'")
+        output_tail = collections.deque(maxlen = 40)
         # Resolve the cache from the live env like the merge, not huggingface_hub's frozen constants: a runtime cache redirect (read-only default, Unsloth) would else miss (#6890).
         try:
             with subprocess.Popen(
@@ -6630,13 +6703,13 @@ def _unsloth_save_lora_gguf(
             ) as sp:
                 for line in sp.stdout:
                     print(line, end = "", flush = True)
+                    output_tail.append(line.rstrip())
                 sp.wait()
                 if sp.returncode != 0:
                     raise subprocess.CalledProcessError(sp.returncode, sp.args)
         except subprocess.CalledProcessError as e:
-            raise RuntimeError(
-                f"Unsloth: LoRA -> GGUF conversion failed (exit {e.returncode}). "
-                "See the output above for details."
+            raise _lora_gguf_conversion_error(
+                e.returncode, _converter_error_line(output_tail), expert_targets
             )
 
         if not os.path.isfile(out_gguf):
@@ -6692,6 +6765,8 @@ def _unsloth_save_lora_gguf(
             shutil.rmtree(lora_dir, ignore_errors = True)
         if base_config_dir is not None:
             shutil.rmtree(base_config_dir, ignore_errors = True)
+        if inkling2_dir is not None:
+            shutil.rmtree(inkling2_dir, ignore_errors = True)
 
 
 @_model_parallel_refuses_save("push_to_hub_ggml")
@@ -6745,6 +6820,24 @@ from unsloth_zoo.llama_cpp import (
 )
 
 
+def _merge_base_model_name(model_name, load_in_4bit = True):
+    """`get_model_name` for the base a merge re-reads. A hub cache snapshot of a pre-quantized bitsandbytes repo (what a run started from a cached model records) maps to the 16-bit original, as its repo id does: its packed 4-bit tensors cannot take the LoRA deltas."""
+    if not load_in_4bit:
+        original = prequantized_snapshot_original(model_name)
+        if original is not None:
+            return get_model_name(original, load_in_4bit = False)
+    return get_model_name(model_name, load_in_4bit = load_in_4bit)
+
+
+def _merge_base_resolver(in_place):
+    """Base-name resolver for zoo's merge_and_overwrite_lora. An in-place merge (merged_4bit) folds LoRA into the loaded weights and keeps resolving the recorded base as is: zoo calls the resolver with load_in_4bit = False for every method, and remapping a local snapshot there would send an offline 4-bit merge to the Hub."""
+    if in_place:
+        return get_model_name
+    if os.environ.get("UNSLOTH_USE_MODELSCOPE", "0") == "1":
+        return _modelscope_base_model_name
+    return _merge_base_model_name
+
+
 def _modelscope_base_model_name(model_name, load_in_4bit = True):
     """`get_model_name` for a merge under UNSLOTH_USE_MODELSCOPE=1: the 16bit base comes from ModelScope, like the model it was trained on, not the Hugging Face Hub (#3726)."""
     name = get_model_name(model_name, load_in_4bit = load_in_4bit)
@@ -6792,7 +6885,7 @@ def _prewarm_base_model_hub_cache(
         if not name_or_path:
             return
         try:
-            model_name = get_model_name(name_or_path, load_in_4bit = False)
+            model_name = _merge_base_model_name(name_or_path, load_in_4bit = False)
         except Exception:
             model_name = name_or_path
         if not model_name or os.path.isdir(model_name):
@@ -7716,9 +7809,7 @@ def unsloth_generic_save(
         relative = nullcontext() if in_place else lora_relative_to_original_base(model)
         with relative, _unmerge_flags_on_error(streamed):
             merge_and_overwrite_lora(
-                _modelscope_base_model_name
-                if os.environ.get("UNSLOTH_USE_MODELSCOPE", "0") == "1" and not in_place
-                else get_model_name,
+                _merge_base_resolver(in_place),
                 model = model,
                 tokenizer = tokenizer,
                 save_directory = save_directory,
@@ -8941,6 +9032,22 @@ def _restore_model_after_quantize_subprocess(model, restore_token) -> None:
         )
 
 
+def _report_lora_quant_survival(model, scheme, ignore_patterns):
+    """Log how much of a LoRA update the quantized export keeps; a diagnostic that never fails the export.
+    `ignore_patterns` are the modules the export leaves 16-bit."""
+    try:
+        from .utils.lora_quant_survival import report_lora_quant_survival
+        report_lora_quant_survival(
+            model,
+            scheme,
+            log = print,
+            warn = logger.warning,
+            skip = lambda name, module: _matches_ignore_pattern(name, module, ignore_patterns),
+        )
+    except Exception:
+        pass
+
+
 @_model_parallel_refuses_save("save_pretrained_merged")
 def _unsloth_save_compressed_tensors(
     model,
@@ -9034,6 +9141,7 @@ def _unsloth_save_compressed_tensors(
 
         # Merge to 16bit at local_dir via unsloth_generic_save, so adapters are merged and full-finetuned models written in 16bit alike. The subprocess reloads this staging checkpoint with default weight filenames, so never write variant-named shards here; the user's variant goes on the final compressed checkpoint.
         variant = merge_kwargs.pop("variant", None)
+        _report_lora_quant_survival(model, scheme, _compressed_ignore_patterns(model))
         print(f"Unsloth: Merging to 16bit before {scheme} quantization...")
         merge_args = dict(merge_kwargs)
         merge_args.update(
@@ -9295,6 +9403,9 @@ def _unsloth_save_torchao(
 
         # Merge to 16bit at a staging dir, LoRA and base alike. The reload reads default weight filenames, so never write variant-named shards here.
         merge_kwargs.pop("variant", None)
+        if kind == "fp8":
+            # torchao quantizes Linear weights only and keeps lm_head 16-bit.
+            _report_lora_quant_survival(model, "torchao_fp8", ["lm_head"])
         print(f"Unsloth: Merging to 16bit before torchao {kind} quantization...")
         merge_args = dict(merge_kwargs)
         merge_args.update(

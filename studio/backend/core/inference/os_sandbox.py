@@ -876,7 +876,31 @@ def _grantable_read_roots(candidates) -> tuple[str, ...]:
 _CREDENTIAL_BASENAMES = (".env",)  # plus the approval gate's own list, read at call time
 
 
+def _per_launch(name: str, compute, *env_names: str):
+    try:
+        from utils.scan_memo import memoized
+    except ImportError:  # probe child / installer: no memo
+        return compute()
+    return memoized((name, *(os.environ.get(env) for env in env_names)), compute)
+
+
+_HOME_ENV = ("HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH")
+
+
 def _hf_home_roots() -> tuple[str, ...]:
+    return _per_launch(
+        "os_sandbox._hf_home_roots",
+        _hf_home_roots_uncached,
+        "HF_TOKEN_PATH",
+        "HF_HOME",
+        "HF_HUB_CACHE",
+        "HUGGINGFACE_HUB_CACHE",
+        "XDG_CACHE_HOME",
+        *_HOME_ENV,
+    )
+
+
+def _hf_home_roots_uncached() -> tuple[str, ...]:
     homes: list[str] = []
     try:
         from utils.hf_cache_settings import known_hf_cache_homes
@@ -947,6 +971,15 @@ _WINDOWS_SYSTEM_VARS = (
 
 def _never_a_model_library() -> frozenset[str]:
     """Normcased real paths no registered folder may grant, root included."""
+    return _per_launch(
+        "os_sandbox._never_a_model_library",
+        _never_a_model_library_uncached,
+        *_HOME_ENV,
+        *_WINDOWS_SYSTEM_VARS,
+    )
+
+
+def _never_a_model_library_uncached() -> frozenset[str]:
     paths = list(_NEVER_A_MODEL_LIBRARY)
     try:
         home = os.path.realpath(os.path.expanduser("~"))
@@ -972,6 +1005,16 @@ def _paths_overlap(first: str, second: str) -> bool:
 
 def studio_state_roots() -> tuple[str, ...]:
     """Studio's persisted-state home (auth.db); denied because it may sit under a granted root such as Docker's /opt."""
+    return _per_launch(
+        "os_sandbox.studio_state_roots",
+        _studio_state_roots_uncached,
+        "UNSLOTH_STUDIO_HOME",
+        "STUDIO_HOME",
+        *_HOME_ENV,
+    )
+
+
+def _studio_state_roots_uncached() -> tuple[str, ...]:
     roots: list[str] = []
     try:
         from utils.paths.storage_roots import studio_root
@@ -1449,6 +1492,16 @@ def _software_launch(plan: ToolLaunchPlan, record: ToolExecutionRecord) -> Prepa
 
 def prepare_tool_launch(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
     """Unavailable hosts fall back in auto; unsafe workdirs and build failures refuse."""
+    try:
+        from utils.scan_memo import scan_memo
+    except ImportError:  # outside the backend (probe child, installer) there is no memo
+        return _prepare_tool_launch(plan)
+    # One scope per launch: the grant-root checks re-read HF homes and scan folders; nothing carries over.
+    with scan_memo():
+        return _prepare_tool_launch(plan)
+
+
+def _prepare_tool_launch(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
     if plan.cancel_event is not None and plan.cancel_event.is_set():
         raise SandboxBuildError("execution cancelled before sandbox preparation")
     if plan.requested_mode not in TOOL_EXECUTION_MODES:

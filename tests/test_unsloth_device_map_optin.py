@@ -63,11 +63,13 @@ def _load(
         "torch": types.SimpleNamespace(cuda = _FakeCuda(devices, free)),
         "DEVICE_TYPE_TORCH": device_type,
         "is_distributed": lambda: distributed,
+        "unsloth_logging_enabled": lambda: False,
     }
     for node in ast.parse(_SRC).body:
         if isinstance(node, ast.FunctionDef) and node.name in (
             "requested_device_map",
             "resolve_unsloth_device_map",
+            "_placement_report",
             "planner_quantization_kwargs",
             "planner_class_mismatch_reason",
             "_as_bytes",

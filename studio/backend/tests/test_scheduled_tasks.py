@@ -4,7 +4,9 @@
 """Scheduled tasks: schedule math, storage, routes, and the runner that posts answers to chats."""
 
 import asyncio
+import json
 import sqlite3
+import sys
 import threading
 from datetime import datetime
 from pathlib import Path
@@ -402,7 +404,18 @@ def test_web_search_is_off_unless_the_task_turns_it_on(client):
     assert off.json()["webSearch"] is False
 
 
-def test_an_older_database_gains_the_web_search_column_once(tmp_path):
+def test_a_task_defaults_to_no_mcp_servers_and_can_change_its_selection(client):
+    assert create(client).json()["mcpServerIds"] == []
+    task = create(client, mcpServerIds = ["feeds", "feeds", "notes"]).json()
+    assert task["mcpServerIds"] == ["feeds", "notes"]
+    url = f"/api/scheduled-tasks/{task['id']}"
+    renamed = client.patch(url, json = {"title": "Renamed"}).json()
+    assert renamed["mcpServerIds"] == ["feeds", "notes"]
+    cleared = client.patch(url, json = {"mcpServerIds": []}).json()
+    assert cleared["mcpServerIds"] == []
+
+
+def test_an_older_database_gains_tool_columns_once(tmp_path):
     conn = sqlite3.connect(tmp_path / "old.db")
     conn.execute(
         "CREATE TABLE scheduled_tasks (id TEXT NOT NULL PRIMARY KEY, owner_subject TEXT NOT NULL,"
@@ -415,7 +428,9 @@ def test_an_older_database_gains_the_web_search_column_once(tmp_path):
     )
     studio_db._ensure_schema(conn)
     studio_db._ensure_schema(conn)
-    assert conn.execute("SELECT web_search FROM scheduled_tasks").fetchall() == [(0,)]
+    assert conn.execute(
+        "SELECT web_search, mcp_server_ids_json FROM scheduled_tasks"
+    ).fetchall() == [(0, "[]")]
 
 
 def test_create_list_and_read(client, monkeypatch):
@@ -1081,6 +1096,136 @@ def test_a_web_search_task_may_search_and_run_nothing_else(monkeypatch):
     assert payload.run_tools_locally is True
 
 
+@pytest.mark.parametrize("source", ["schedule", "manual"])
+def test_a_run_can_call_only_its_selected_stdio_mcp_server(monkeypatch, source):
+    from core.inference import mcp_client, tools
+    from core.inference.tool_loop_controller import ToolLoopController
+    from models.mcp_servers import McpStdioCommand
+    from routes import mcp_servers as mcp_routes
+    from storage import mcp_servers_db
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_ALLOW_STDIO_MCP", "1")
+    fixture = Path(__file__).parent / "fixtures" / "mcp_argument_echo_server.py"
+    for server_id in ("selected", "unselected"):
+        url = mcp_routes.encode_stdio_command(
+            McpStdioCommand(command = sys.executable, arguments = [str(fixture), server_id]),
+            current_subject = "unsloth",
+        ).url
+        mcp_servers_db.create_server(server_id, server_id, url)
+
+    async def producer(payload, request, current_subject, *, cancel_on_disconnect):
+        assert payload.mcp_enabled and payload.enabled_tools == []
+        assert not inference_routes._confirm_gate_needs_stream(payload)
+        assert payload.thread_id == f"run-{source}"
+        tools.set_mcp_listing_context_tokens(4096, payload.thread_id)
+        catalog = await inference_routes._select_request_tools(
+            payload, tools_on = True, mcp_allowed = True, ui_events = False
+        )
+        name = "mcp__selected__launch_state"
+        assert [tool["function"]["name"] for tool in catalog] == [name]
+        controller = ToolLoopController(tools = catalog)
+        rejected = controller.prepare_call(
+            {"function": {"name": "mcp__unselected__launch_state", "arguments": {}}}
+        )
+        assert rejected.action == "disabled"
+        outside_scope = await asyncio.to_thread(
+            tools.execute_tool, "mcp__unselected__launch_state", {}, thread_id = payload.thread_id
+        )
+        assert "outside this run's selection" in outside_scope
+        result = await asyncio.to_thread(tools.execute_tool, name, {}, thread_id = payload.thread_id)
+        assert run_sessions()
+        return completion(json.loads(result)["arguments"][0])
+
+    def run_sessions():
+        return [k for k in mcp_client._mcp_sessions if k[2].endswith(f":t=run-{source}")]
+
+    monkeypatch.setattr(inference_routes, "produce_openai_chat_completions", producer)
+    try:
+        answer = asyncio.run(
+            generate_answer(
+                SimpleNamespace(state = SimpleNamespace()),
+                make_task(mcpServerIds = ["selected"]),
+                {"id": f"run-{source}", "source": source},
+                threading.Event(),
+            )
+        )
+        assert answer.content == "selected"
+        assert run_sessions() == []
+    finally:
+        mcp_client.close_mcp_sessions()
+        mcp_client.invalidate_tool_cache()
+
+
+def test_a_run_budgets_the_catalog_without_exposing_unselected_mcp_tools(monkeypatch):
+    from core.inference import mcp_client, tools
+    from storage import mcp_servers_db
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_MCP_SEARCH_ONLY", "1")
+    for server_id in ("selected", "unselected"):
+        mcp_servers_db.create_server(server_id, server_id, f"https://{server_id}.example/mcp")
+    selected_tools = [
+        {
+            "name": f"lookup-{index}",
+            "description": "Look up RSS feed entries with optional filters.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    f"filter_{field}": {
+                        "type": "string",
+                        "description": "Filter feed entries by matching this text in the item metadata.",
+                    }
+                    for field in range(8)
+                },
+            },
+        }
+        for index in range(40)
+    ]
+    mcp_client.cache_tools("selected", selected_tools)
+    mcp_client.cache_tools("unselected", [{"name": "lookup-private"}])
+
+    async def producer(payload, request, current_subject, *, cancel_on_disconnect):
+        context_length = 4096
+        tools.set_mcp_listing_context_tokens(context_length, payload.thread_id)
+        catalog = await inference_routes._select_request_tools(
+            payload, tools_on = True, mcp_allowed = True, ui_events = False
+        )
+        assert [tool["function"]["name"] for tool in catalog] == ["mcp_tool_search"]
+        loadable = tools.mcp_loadable_specs(catalog)
+        assert len(loadable) == len(selected_tools)
+        assert tools._text_token_cost(json.dumps(loadable), context_length) > context_length
+        result = tools.mcp_tool_search_specs({"query": "mcp__selected__lookup-0", "limit": 1})
+        assert [tool["function"]["name"] for tool in result] == ["mcp__selected__lookup-0"]
+        assert tools.mcp_tool_specs({"mcp__unselected__lookup-private"}) == {}
+        return completion("Found the requested feed entries.")
+
+    try:
+        generate(monkeypatch, producer, task = make_task(mcpServerIds = ["selected"]))
+    finally:
+        mcp_client.invalidate_tool_cache()
+
+
+def test_a_run_reports_unavailable_mcp_servers(monkeypatch):
+    monkeypatch.setattr(scheduler_module, "_chat_model_loaded", lambda: True)
+
+    async def producer(payload, request, current_subject, *, cancel_on_disconnect):
+        await inference_routes._select_request_tools(
+            payload, tools_on = True, mcp_allowed = True, ui_events = False
+        )
+        pytest.fail("A scheduled run must report when its selected servers provide no tools")
+
+    with pytest.raises(RunFailed, match = "No tools are available from the selected MCP servers"):
+        generate(monkeypatch, producer, task = make_task(mcpServerIds = ["missing"]))
+
+
+def test_a_run_reports_when_selected_mcp_tools_are_disabled(monkeypatch):
+    from state import tool_policy
+
+    monkeypatch.setattr(tool_policy, "get_tool_policy", lambda: False)
+    producer = FakeProducer(completion("Text only."))
+    with pytest.raises(RunFailed, match = "MCP tools are disabled"):
+        generate(monkeypatch, producer, task = make_task(mcpServerIds = ["selected"]))
+
+
 def test_disable_tools_keeps_a_web_search_task_text_only(monkeypatch):
     from state import tool_policy
 
@@ -1528,36 +1673,196 @@ def test_a_refusal_from_a_loaded_model_keeps_its_reason(monkeypatch):
     assert (failure.value.code, failure.value.message) == (None, "Too long.")
 
 
-def test_a_task_can_pin_the_loaded_model_and_its_reasoning(monkeypatch):
-    monkeypatch.setattr(inference_routes, "_loaded_satisfies", lambda model: True)
-    producer = FakeProducer(completion("Dawn light."))
-    generate(
-        monkeypatch, producer, make_task(model = "unsloth/Qwen3-1.7B-GGUF", reasoningEffort = "lowest")
+def reasoning_flags(**reasoning):
+    return {
+        "supports_reasoning": True,
+        "reasoning_style": "enable_thinking",
+        "reasoning_effort_levels": [],
+        "reasoning_always_on": False,
+        **reasoning,
+    }
+
+
+def gguf(
+    is_loaded = True,
+    model_identifier = None,
+    **reasoning,
+):
+    return SimpleNamespace(
+        is_loaded = is_loaded, model_identifier = model_identifier, **reasoning_flags(**reasoning)
     )
-    payload = producer.payload
-    assert payload.model == "unsloth/Qwen3-1.7B-GGUF"
-    assert (payload.enable_thinking, payload.reasoning_effort) == (True, "low")
-    assert payload.provider_id is None
+
+
+class ReachedGeneration(Exception):
+    pass
+
+
+def reasoning_at_generation(
+    monkeypatch,
+    task,
+    serving,
+    state,
+    primary = None,
+    orchestrator = None,
+):
+    from core.inference import model_slots
+    from core.inference.orchestrator import routed_slot
+
+    slot = SimpleNamespace(llama = serving, orchestrator = orchestrator, last_used = 0.0)
+    primary = (
+        primary
+        or {
+            "primary": serving,
+            "cold": gguf(is_loaded = False),
+            "kept": gguf(reasoning_style = "enable_thinking_effort", reasoning_effort_levels = ["low"]),
+        }[state]
+    )
+    monkeypatch.setattr(inference_routes, "_llama_cpp_backend", primary)
+    monkeypatch.setattr(
+        inference_routes,
+        "_loaded_satisfies",
+        lambda model: state == "primary" or routed_slot.get() is slot,
+    )
+    monkeypatch.setattr(inference_routes, "_loaded_identity_satisfies", lambda model: False)
+    monkeypatch.setattr(model_slots, "visible", lambda: [slot] if state == "kept" else [])
+
+    async def switch(*args, **kwargs):
+        if state == "cold":
+            monkeypatch.setattr(inference_routes, "_llama_cpp_backend", serving)
+        elif state == "kept":
+            routed_slot.set(slot)
+
+    seen = {}
+    normalize = inference_routes._normalize_chat_reasoning_controls
+
+    def reached(payload):
+        normalize(payload)
+        seen["fields"] = (payload.enable_thinking, payload.reasoning_effort)
+        seen["model"] = payload.model if "model" in payload.model_fields_set else None
+        seen["provider_id"] = payload.provider_id
+        raise ReachedGeneration
+
+    monkeypatch.setattr(inference_routes, "_maybe_auto_switch_model", switch)
+    monkeypatch.setattr(inference_routes, "_normalize_chat_reasoning_controls", reached)
+    monkeypatch.setattr(inference_routes, "_monitor_context_length", lambda: None)
+    app = SimpleNamespace(state = SimpleNamespace())
+    run = {"id": "run-1", "allowModelLoad": state == "cold"}
+    with pytest.raises(ReachedGeneration):
+        asyncio.run(generate_answer(app, task, run, threading.Event()))
+    assert (seen["model"], seen["provider_id"]) == (task.get("model"), None)
+    return seen["fields"]
+
+
+@pytest.mark.parametrize("state", ["primary", "cold", "kept"])
+@pytest.mark.parametrize(
+    "levels, effort, expected",
+    [
+        (["high", "max"], "highest", (True, "max")),
+        (["low", "medium", "high", "xhigh"], "highest", (True, "xhigh")),
+        (["low", "medium", "high", "xhigh"], "lowest", (True, "low")),
+        (["high", "max"], "off", (False, None)),
+    ],
+)
+def test_thinking_effort_matches_the_model_serving_the_run(
+    monkeypatch, state, levels, effort, expected
+):
+    serving = gguf(reasoning_style = "enable_thinking_effort", reasoning_effort_levels = levels)
+    task = make_task(model = "unsloth/GLM-5.2-GGUF", reasoningEffort = effort)
+    assert reasoning_at_generation(monkeypatch, task, serving, state) == expected
+
+
+def safetensors_model(name, levels):
+    template = (
+        "{% if enable_thinking %}{% if reasoning_effort in " + repr(levels) + " %}deep{% endif %}"
+        "{% endif %}{{ messages[0]['content'] }}"
+    )
+    return SimpleNamespace(
+        active_model_name = name, models = {name: {"chat_template_info": {"template": template}}}
+    )
+
+
+@pytest.mark.parametrize("state", ["primary", "kept"])
+@pytest.mark.parametrize(
+    "effort, expected",
+    [("highest", (True, "max")), ("lowest", (True, "low")), ("off", (False, None))],
+)
+def test_thinking_effort_matches_a_safetensors_model_serving_the_run(
+    monkeypatch, state, effort, expected
+):
+    from core.inference import orchestrator as orchestrator_module
+
+    serving = safetensors_model("unsloth/GLM-5.2", ["low", "high", "max"])
+    beside = safetensors_model("unsloth/Other", ["medium", "high"])
+    monkeypatch.setattr(
+        orchestrator_module, "_inference_backend", serving if state == "primary" else beside
+    )
+    task = make_task(model = "unsloth/GLM-5.2", reasoningEffort = effort)
+    # Kept beside a safetensors primary: no llama.cpp model is loaded.
+    primary = gguf(is_loaded = False) if state == "kept" else None
+    assert (
+        reasoning_at_generation(
+            monkeypatch, task, gguf(is_loaded = False), state, primary, orchestrator = serving
+        )
+        == expected
+    )
+
+
+@pytest.mark.parametrize("state", ["primary", "cold", "kept"])
+@pytest.mark.parametrize(
+    "levels, expected",
+    [(["none", "low", "high"], (False, "none")), (["low", "high"], (True, "low"))],
+)
+def test_reasoning_off_reaches_a_reasoning_effort_model(monkeypatch, state, levels, expected):
+    serving = gguf(reasoning_style = "reasoning_effort", reasoning_effort_levels = levels)
+    task = make_task(model = "unsloth/Inkling-2-Mini-GGUF", reasoningEffort = "off")
+    assert reasoning_at_generation(monkeypatch, task, serving, state) == expected
+
+
+LEVELS_OVERRIDE = (
+    "{% if enable_thinking %}{% if reasoning_effort in ['low', 'high', 'max'] %}deep{% endif %}"
+    "{% endif %}{{ messages[0]['content'] }}"
+)
+
+
+@pytest.mark.parametrize(
+    "override, web_search, expected",
+    [
+        ("{{ messages[0]['content'] }}", True, (True, None)),
+        ("{{ messages[0]['content'] }}", False, (None, None)),
+        (LEVELS_OVERRIDE, True, (True, None)),
+        (LEVELS_OVERRIDE, False, (True, "max")),
+    ],
+)
+def test_a_tool_run_resolves_for_the_template_its_turns_render(
+    monkeypatch, override, web_search, expected
+):
+    from core.inference import orchestrator as orchestrator_module
+
+    shipped = (
+        "{%- if tools %}<tools>{{ tools | tojson }}</tools> Reply as <tool_call>"
+        "<function=name><parameter=key>value</parameter></function></tool_call>{%- endif %}"
+        "{%- if enable_thinking is defined and enable_thinking %}<think>{%- endif %}"
+    )
+    # An override without tool markup: tool turns render the shipped template instead.
+    serving = SimpleNamespace(
+        active_model_name = "unsloth/Qwen3.5-0.8B",
+        models = {
+            "unsloth/Qwen3.5-0.8B": {
+                "chat_template_override_requested": override,
+                "chat_template_info": {"template": shipped},
+            }
+        },
+    )
+    monkeypatch.setattr(orchestrator_module, "_inference_backend", serving)
+    task = make_task(model = "unsloth/Qwen3.5-0.8B", reasoningEffort = "highest", webSearch = web_search)
+    assert reasoning_at_generation(monkeypatch, task, gguf(is_loaded = False), "primary") == expected
 
 
 def test_reasoning_off_turns_thinking_off_on_a_local_model(monkeypatch):
-    producer = FakeProducer(completion("Dawn light."))
-    generate(monkeypatch, producer, make_task(reasoningEffort = "off"))
-    assert (producer.payload.enable_thinking, producer.payload.reasoning_effort) == (False, None)
-    assert "model" not in producer.payload.model_fields_set
-
-
-def loaded_gguf(monkeypatch, **reasoning):
-    backend = SimpleNamespace(
-        is_loaded = True,
-        supports_reasoning = True,
-        reasoning_style = "enable_thinking",
-        reasoning_effort_levels = [],
-        reasoning_always_on = False,
-    )
-    for key, value in reasoning.items():
-        setattr(backend, key, value)
-    monkeypatch.setattr(inference_routes, "get_llama_cpp_backend", lambda: backend)
+    serving = gguf()
+    assert reasoning_at_generation(
+        monkeypatch, make_task(reasoningEffort = "off"), serving, "primary"
+    ) == (False, None)
 
 
 @pytest.mark.parametrize(
@@ -1580,7 +1885,25 @@ def loaded_gguf(monkeypatch, **reasoning):
             {"reasoning_effort": "minimal"},
         ),
         ({"reasoning_style": "reasoning_effort"}, "lowest", {"reasoning_effort": "low"}),
-        ({"reasoning_style": "reasoning_effort"}, "off", {}),
+        ({"reasoning_style": "reasoning_effort"}, "off", {"reasoning_effort": "low"}),
+        (
+            {
+                "reasoning_style": "reasoning_effort",
+                "reasoning_effort_levels": ["low", "medium", "high", "xhigh"],
+            },
+            "off",
+            {"reasoning_effort": "low"},
+        ),
+        (
+            {"reasoning_style": "reasoning_effort", "reasoning_effort_levels": ["none", "high"]},
+            "off",
+            {"reasoning_effort": "none"},
+        ),
+        (
+            {"reasoning_style": "reasoning_effort", "reasoning_effort_levels": ["none", "high"]},
+            "lowest",
+            {"reasoning_effort": "high"},
+        ),
         ({}, "lowest", {"enable_thinking": True}),
         ({}, "off", {"enable_thinking": False}),
         ({"reasoning_always_on": True}, "off", {}),
@@ -1595,32 +1918,28 @@ def loaded_gguf(monkeypatch, **reasoning):
         ({"supports_reasoning": False}, "highest", {}),
     ],
 )
-def test_thinking_effort_resolves_to_the_loaded_model(monkeypatch, reasoning, effort, expected):
-    loaded_gguf(monkeypatch, **reasoning)
-    assert scheduler_module._reasoning_fields(effort, False, on_loaded_model = True) == expected
+def test_thinking_effort_resolves_to_the_loaded_model(reasoning, effort, expected):
+    assert (
+        scheduler_module._reasoning_fields(effort, False, reasoning_flags(**reasoning)) == expected
+    )
 
 
-def test_thinking_effort_for_a_model_not_yet_loaded_or_a_connection(monkeypatch):
-    loaded_gguf(monkeypatch, supports_reasoning = False, model_identifier = "/models/gemma.gguf")
-    assert scheduler_module._reasoning_fields("highest", False, on_loaded_model = False) == {
+def test_thinking_effort_for_a_model_not_yet_loaded_or_a_connection():
+    assert scheduler_module._reasoning_fields("highest", False) == {
         "enable_thinking": True,
         "reasoning_effort": "high",
     }
-    assert scheduler_module._reasoning_fields("off", True, on_loaded_model = True) == {
+    assert scheduler_module._reasoning_fields("off", True, reasoning_flags()) == {
         "reasoning_effort": "none"
     }
-    assert scheduler_module._reasoning_fields(None, False, on_loaded_model = True) == {}
+    assert scheduler_module._reasoning_fields(None, False, reasoning_flags()) == {}
 
 
-def test_a_connection_task_names_its_level_and_a_local_one_resolves_it(monkeypatch):
-    loaded_gguf(monkeypatch, reasoning_style = "reasoning_effort")
-    assert scheduler_module._reasoning_fields("xhigh", True, on_loaded_model = False) == {
-        "reasoning_effort": "xhigh"
-    }
-    assert scheduler_module._reasoning_fields("medium", False, on_loaded_model = True) == {
-        "enable_thinking": True,
-        "reasoning_effort": "medium",
-    }
+def test_a_connection_task_names_its_level_and_a_local_one_resolves_it():
+    assert scheduler_module._reasoning_fields("xhigh", True) == {"reasoning_effort": "xhigh"}
+    assert scheduler_module._reasoning_fields(
+        "medium", False, reasoning_flags(reasoning_style = "reasoning_effort")
+    ) == {"enable_thinking": True, "reasoning_effort": "medium"}
 
 
 def test_a_chosen_model_that_is_not_loaded_fails_rather_than_switching(monkeypatch):
@@ -2696,32 +3015,9 @@ def test_a_task_model_loaded_alongside_the_primary_answers_without_a_swap(monkey
 
 
 def test_thinking_off_reaches_a_model_kept_beside_a_primary_without_reasoning(monkeypatch):
-    from core.inference import model_slots
-
-    world = SwapWorld(monkeypatch)
-    loaded_gguf(monkeypatch, supports_reasoning = False, model_identifier = "/models/gemma.gguf")
-    beside = object()
-    monkeypatch.setattr(model_slots, "visible", lambda: [beside])
-    monkeypatch.setattr(
-        model_slots,
-        "serving_slot",
-        lambda requested, candidates, satisfies: beside
-        if requested == SwapWorld.TASK_MODEL
-        else None,
-    )
-    producer = FakeProducer(completion("Dawn light."))
-    monkeypatch.setattr(inference_routes, "produce_openai_chat_completions", producer)
     task = make_task(model = SwapWorld.TASK_MODEL, reasoningEffort = "off")
-    asyncio.run(
-        generate_answer(
-            SimpleNamespace(state = SimpleNamespace()),
-            task,
-            {"id": "run-1", "source": "schedule"},
-            threading.Event(),
-        )
-    )
-    assert producer.payload.enable_thinking is False
-    assert world.unloaded == [] and world.loaded == SwapWorld.EARLIER
+    primary = gguf(supports_reasoning = False, model_identifier = "/models/gemma.gguf")
+    assert reasoning_at_generation(monkeypatch, task, gguf(), "kept", primary) == (False, None)
 
 
 def test_switching_back_reloads_a_transformers_model_the_run_replaced_by_name(monkeypatch):

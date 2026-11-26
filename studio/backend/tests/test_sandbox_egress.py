@@ -450,3 +450,27 @@ def test_a_global_wgetrc_cannot_turn_a_download_into_an_upload(
         ["wget", "-qO-", "--no-proxy", f"{origin}/"], env = env, capture_output = True, text = True
     )
     assert out.stdout == "hello from the host", out
+
+
+@pytest.mark.parametrize("unix", [False, True])
+def test_closing_an_idle_proxy_does_not_wait_out_the_accept_timeout(tmp_path, monkeypatch, unix):
+    # Relative socket path: a deep tmp_path can pass the AF_UNIX length limit.
+    monkeypatch.chdir(tmp_path)
+    proxy = sandbox_egress.EgressProxy("p.sock" if unix else None)
+    time.sleep(0.05)  # let the accept loop block
+    started = time.perf_counter()
+    proxy.close()
+    elapsed = time.perf_counter() - started
+    assert not proxy._thread.is_alive()
+    # Every proxied curl/wget call paid up to the 0.25 s accept timeout here.
+    assert elapsed < 0.15, elapsed
+
+
+def test_a_second_close_sends_no_second_wake_up(monkeypatch):
+    proxy = sandbox_egress.EgressProxy()
+    wakes = []
+    real = proxy._wake_listener
+    monkeypatch.setattr(proxy, "_wake_listener", lambda: wakes.append(1) or real())
+    proxy.close()
+    proxy.close()
+    assert wakes == [1]

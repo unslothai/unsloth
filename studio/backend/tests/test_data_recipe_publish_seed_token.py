@@ -26,7 +26,7 @@ def _stub_data_designer(monkeypatch, seen):
 
     class _Client:
         def __init__(self, token):
-            pass
+            self._api = SimpleNamespace(upload_folder = lambda **kwargs: None)
 
         def __getattr__(self, name):
             return lambda **kwargs: None

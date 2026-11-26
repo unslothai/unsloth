@@ -59,7 +59,8 @@ function shapeDataBlocks(source: string): { start: number; end: number; body: st
   const hintEnd = new Int32Array(source.length + 1).fill(-1);
   for (let index = source.length - 1; index >= 0; index--) {
     if (source[index] === "\\" || source[index] === "#") hintEnd[index] = index + 1;
-    else if (source.slice(index, index + 3).toLowerCase() === "img") hintEnd[index] = index + 3;
+    // Mermaid deletes %%{...}%% anywhere, so a directive can split the img key.
+    else if (/^img|^%%\{/i.test(source.slice(index, index + 3))) hintEnd[index] = index + 3;
     else hintEnd[index] = hintEnd[index + 1];
   }
   for (let open = source.indexOf("@{"); open >= 0; open = source.indexOf("@{", open + 2)) {
@@ -130,7 +131,7 @@ function parsedShapeData(text: string): unknown {
 
 function withoutRemoteImage(rawBody: string): string | null {
   // Mermaid replaces #code; references before parsing, so they can spell the key.
-  const body = rawBody.replace(CHAR_REF, (_ref, code: string) => {
+  const body = rawBody.replace(DIRECTIVE, "").replace(CHAR_REF, (_ref, code: string) => {
     const point = code[0].toLowerCase() === "x" ? parseInt(code.slice(1), 16) : Number(code);
     return point <= 0x10ffff ? String.fromCodePoint(point) : "";
   });

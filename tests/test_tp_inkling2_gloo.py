@@ -19,43 +19,24 @@ if multiprocessing.parent_process() is not None or getattr(
 ):
     os.environ["CUDA_VISIBLE_DEVICES"] = ""  # spawned gloo ranks: CPU only, also on GPU hosts
 
-import importlib.machinery  # noqa: E402
-import importlib.util  # noqa: E402
 import sys  # noqa: E402
 import tempfile  # noqa: E402
 import time  # noqa: E402
-import types  # noqa: E402
 
 import pytest  # noqa: E402
 import torch  # noqa: E402
 
 pytest.importorskip("transformers.models.inkling2_loop.modeling_inkling2_loop")
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "_shared"))
+from unsloth_models_loader import load_models_module  # noqa: E402
+
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 EXPERTS = ["mlp.experts.gate_up_proj", "mlp.experts.down_proj"]
 ATTENTION = ("q_proj.linear", "k_proj.linear", "v_proj.linear", "o_proj.linear", "o_proj.gate_proj")
 
 
-def _load(name):
-    full = f"unsloth.models.{name}"
-    if full in sys.modules:
-        return sys.modules[full]
-    pkg = types.ModuleType("unsloth")
-    pkg.__path__ = [os.path.join(REPO, "unsloth")]
-    models = types.ModuleType("unsloth.models")
-    models.__path__ = [os.path.join(REPO, "unsloth", "models")]
-    for package in (pkg, models):
-        package.__spec__ = importlib.machinery.ModuleSpec(package.__name__, None, is_package = True)
-        package.__spec__.submodule_search_locations = package.__path__
-    sys.modules.setdefault("unsloth", pkg)
-    sys.modules.setdefault("unsloth.models", models)
-    spec = importlib.util.spec_from_file_location(
-        full, os.path.join(REPO, "unsloth", "models", f"{name}.py")
-    )
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[full] = module
-    spec.loader.exec_module(module)
-    return module
+_load = load_models_module  # tests/_shared/unsloth_models_loader.py
 
 
 def _bnb():

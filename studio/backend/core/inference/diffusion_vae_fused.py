@@ -1574,10 +1574,41 @@ def up_nearest2x(
     return out.permute(0, 3, 1, 2), t_o
 
 
+def _wan_folded_upsample(conv: Any, x: Any) -> Any:
+    """Per-frame ``conv(nearest_2x(x))`` via diffusion_vae_strips' folded ConvTranspose2d. None = use the 2x path; also
+    under torch.compile (the mutable fold cache would add guards) and when autograd needs the detached folded weight."""
+    torch = _torch()
+    if torch.compiler.is_compiling():
+        return None
+    if torch.is_grad_enabled() and (conv.weight.requires_grad or x.requires_grad):
+        return None
+    from . import diffusion_vae_strips as strips
+
+    b, c, t, h, w = x.shape
+    frames = x.permute(0, 2, 1, 3, 4).reshape(b * t, c, h, w)
+    if not (
+        strips._fold_allowed()
+        and strips._fold_on(frames)
+        and strips._fold_ok(conv, frames)
+        and strips.fold_finite(conv)
+    ):
+        return None
+    elems = conv.out_channels * 4 * h * w
+    full_max = strips._fold_full_max(frames)
+    full_max = strips.FOLD_FULL_MAX_ELEMS if full_max is None else full_max
+    if b * t != 1 and b * t * elems > full_max:
+        return None  # the strip fold writes one frame
+    _count("upsample_fold")
+    return strips._fold_upsample(conv, frames, conv.bias, full_max = full_max)
+
+
 def _fast_wan_resample(mod: Any) -> Any:
     import torch.nn.functional as F
 
     conv = mod.resample[1]
+    # Qwen-Image-2.1's Conv2d time_conv: only the first chunk (which never runs it) is fast; later chunks stay stock.
+    time_2d = mod.mode == "upsample3d" and _conv_kind(getattr(mod, "time_conv", None)) == "2d"
+    stock = _stock_forward(mod)
 
     def fast(
         x: Any,
@@ -1586,6 +1617,8 @@ def _fast_wan_resample(mod: Any) -> Any:
     ) -> Any:
         if feat_idx is None:
             feat_idx = [0]
+        if time_2d and feat_cache is not None and feat_cache[feat_idx[0]] is not None:
+            return stock(x, feat_cache = feat_cache, feat_idx = feat_idx)
         b = x.shape[0]
         interleave = False
         t_bias = None
@@ -1604,6 +1637,13 @@ def _fast_wan_resample(mod: Any) -> Any:
                 feat_cache[idx] = new
                 interleave = True
             feat_idx[0] += 1
+        if not interleave:
+            out = _wan_folded_upsample(conv, y)
+            if out is not None:
+                t_o = y.shape[2]
+                return out.view(b, t_o, out.shape[1], out.shape[2], out.shape[3]).permute(
+                    0, 2, 1, 3, 4
+                )
         up, t_o = up_nearest2x(y, interleave, t_bias)
         out = F.conv2d(up, conv.weight, conv.bias, conv.stride, conv.padding)
         return out.view(b, t_o, out.shape[1], out.shape[2], out.shape[3]).permute(0, 2, 1, 3, 4)
@@ -1622,7 +1662,9 @@ def _wan_resample_ok(mod: Any) -> bool:
         and seq[0].mode in ("nearest", "nearest-exact")
         and tuple(float(f) for f in (seq[0].scale_factor or ())) == (2.0, 2.0)
         and isinstance(seq[1], torch.nn.Conv2d)
-        and (mod.mode == "upsample2d" or _conv_kind(getattr(mod, "time_conv", None)) == "3d")
+        and (
+            mod.mode == "upsample2d" or _conv_kind(getattr(mod, "time_conv", None)) in ("3d", "2d")
+        )
     )
 
 
@@ -1684,8 +1726,8 @@ def install_wan_vae(
             act._unsloth_vae_fused = True
             n += 1
         for module in part.modules():
-            if "forward" in module.__dict__:
-                continue  # already patched (by us or another speed path)
+            if "forward" in module.__dict__ and not getattr(module, "_unsloth_vae_noclone", False):
+                continue  # already patched (by us or another speed path); the clone-free block is replaced
             name = type(module).__name__
             if name.endswith("ResidualBlock") and _wan_resblock_fusable(module):
                 _guard(
