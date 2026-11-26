@@ -338,7 +338,7 @@ def _case_random_router(rank, world, tmp):
     for step in range(3):
         block.draws.clear()
         model(torch.randn(6, 8)).sum().backward()
-        # The first forward also runs pass 1 once without autograd (learning what pass 1 may skip).
+        # Step 0 adds one no-grad pass 1 (skip learning).
         same.append(
             len(block.draws) == (3 if step == 0 else 2)
             and all(torch.equal(block.draws[0], d) for d in block.draws)
@@ -651,8 +651,7 @@ def test_ep_expert_lists_run_the_shared_expert_once(family, gc):
 
 
 def test_ep_expert_lists_run_the_shared_expert_in_pass1_while_its_dropout_draws():
-    """An active dropout in the shared expert (switched on after pass 1 learned its skips) draws randomness, so pass
-    1 runs it again: the RNG ends where it would without the skip."""
+    """A shared expert dropout enabled after warmup still runs in pass 1, keeping the RNG in sync."""
     results = _spawn("_case_list_family", warm = True, shared_dropout = True, **_spec("qwen2_moe"))
     _check(results, 2)
     for r in results:

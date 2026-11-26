@@ -513,9 +513,8 @@ def _pass1(shard, prior, args, kwargs, calls):
 
 
 def _learn_skips(shard, prior, args, kwargs, before, devices):
-    """Two pass 1 trials without autograd from `before`: all children (finding the H to H ones), then those zeroed.
-    They are skippable only if the expert calls and the RNG draws are bitwise unchanged. Ends with the RNG at
-    `before`, and every later pass 1 (a checkpoint recompute included) makes the same choice."""
+    """No-grad pass 1 trials from `before`: children are skippable only if expert calls and RNG draws stay bitwise
+    equal. Restores the RNG to `before` so later passes (checkpoint recompute too) choose the same."""
     full, trial = [], []
     try:
         with torch.no_grad():
