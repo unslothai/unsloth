@@ -7300,7 +7300,8 @@ export function createOpenAIStreamAdapter(
                       }
                     : {}),
                   auto_heal_tool_calls: runtime.autoHealToolCalls,
-                  nudge_tool_calls: runtime.nudgeToolCalls,
+                  // In character a reply says "I'll" all the time: the nudge would re-prompt finished replies.
+                  nudge_tool_calls: characterRun ? false : runtime.nudgeToolCalls,
                   deduplicate_tool_calls: runtime.deduplicateToolCalls,
                   max_tool_calls_per_message: runtime.maxToolCallsPerMessage,
                   tool_call_timeout: (() => {
