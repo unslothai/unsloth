@@ -500,6 +500,7 @@ def apply_expert_parallel(model, mesh = None):
         raise NotImplementedError(
             "Unsloth: expert parallel cannot be combined with tensor parallel / FSDP2."
         )
+    _lists().check_remote_layout(model, ep, rank, ep_mesh.mesh.tolist())
     blocks = tpn.moe_blocks_with_experts(model)
     sharded, kept, listed, fused_lists = [], [], [], []
     for block in blocks:
@@ -523,10 +524,13 @@ def apply_expert_parallel(model, mesh = None):
             kept.append((block, problem))
     for block, problem in kept:
         chain = tpn._experts_chain(block)
-        if chain and any(
-            getattr(p, tpn._EXPERT_PRELOAD, None) is not None
-            for p in chain[-1]._parameters.values()
-        ):
+        if (
+            chain
+            and any(
+                getattr(p, tpn._EXPERT_PRELOAD, None) is not None
+                for p in chain[-1]._parameters.values()
+            )
+        ) or any(_lists().is_remote(p) for p in block.parameters()):
             raise ValueError(
                 f"Unsloth: expert_parallel_loading kept only this rank's experts of "
                 f"{type(block).__name__}, but they cannot be sharded now ({problem}); load in full."
@@ -563,6 +567,7 @@ def apply_expert_parallel(model, mesh = None):
             # DDP averages the other gradients over the world; an expert's is the sum over its ep group's losses
             # (then over the replicas, ep_sync_expert_grads): / world is DDP's average.
             p.register_hook(lambda g, world = world: g / world)
+    tpn._drop_remote_device_map(model, ep, rank)
     for level in _levels(model):
         level.__dict__[_EP] = ep_mesh
         level.__dict__[_EP_REP] = rep_mesh
