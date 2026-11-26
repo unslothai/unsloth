@@ -18,7 +18,12 @@ async function loadSavedPageBase(endpoint: string): Promise<void> {
   }
   answers.set(endpoint, null);
   try {
-    const { pageBase } = await loadHubSettings();
+    const { pageBase, pageBaseRelay } = await loadHubSettings();
+    // A save that landed first answers for the new endpoint; leave this one to ask again.
+    if (pageBase && !(pageBaseRelay && endpoint.endsWith(pageBaseRelay))) {
+      answers.delete(endpoint);
+      return;
+    }
     answers.set(endpoint, pageBase);
     if (pageBase) setHubPageBase(endpoint, pageBase);
   } catch {

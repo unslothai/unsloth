@@ -318,8 +318,16 @@ def test_route_saves_and_reports(client, store):
         "source": "huggingface",
         "active_source": "huggingface",
         "page_base": None,
+        "page_base_relay": None,
     }
-    assert client.get("/hub").json() == {**body, "page_base": MIRROR}
+    reported = client.get("/hub").json()
+    assert reported == {**body, "page_base": MIRROR, "page_base_relay": reported["page_base_relay"]}
+    # Built like /api/health's hub_proxy, which keys the browser's relay endpoint.
+    from hub import endpoint_proxy
+
+    assert reported["page_base_relay"] == endpoint_proxy.relay_path(
+        endpoint_proxy.HUB_PREFIX, MIRROR, "https://huggingface.co"
+    )
     assert os.environ["HF_DATASETS_SERVER"] == MIRROR
 
 

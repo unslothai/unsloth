@@ -960,6 +960,8 @@ class HubSettingsResponse(BaseModel):
     active_source: Literal["huggingface", "modelscope"]
     # GET only: the Hub's web origin for links this client opens, None where only the relay reaches it.
     page_base: Optional[str] = None
+    # The relay path (as /api/health's hub_proxy) page_base belongs to, so a stale request can tell.
+    page_base_relay: Optional[str] = None
 
 
 class HubSourceNoticeResponse(BaseModel):
@@ -2230,13 +2232,21 @@ def _hub_settings_response(settings: HubSettings) -> HubSettingsResponse:
 def get_hub(
     request: Request, current_subject: str = Depends(get_current_subject)
 ) -> HubSettingsResponse:
+    from hub import endpoint_proxy
     from utils.client_ip import client_ip
-    from utils.hf_endpoint import browser_hf_endpoint, endpoint_is_reachable_by
+    from utils.hf_endpoint import (
+        DEFAULTS_BY_HEALTH_KEY,
+        browser_hf_endpoint,
+        endpoint_is_reachable_by,
+    )
 
     response = _hub_settings_response(get_hub_settings())
     endpoint = browser_hf_endpoint()
     if active_source() == "huggingface" and endpoint_is_reachable_by(endpoint, client_ip(request)):
         response.page_base = endpoint
+        response.page_base_relay = endpoint_proxy.relay_path(
+            endpoint_proxy.HUB_PREFIX, endpoint, DEFAULTS_BY_HEALTH_KEY["hf_endpoint"]
+        )
     return response
 
 
