@@ -5521,13 +5521,18 @@ function VideoGenerator({
               </div>
             )}
 
-            {/* Live generation progress: a per-step bar with the phase label and ETA, centered when there
-                is nothing else to show. */}
+            {/* Live generation progress (or the queued place): a per-step bar with the phase label and ETA,
+                centered when there is nothing else to show, stacked above the shown clip's action bar
+                (bottom-4, ~40px tall) so it never covers Recipe / Download. */}
             {busy === "generating" && (
               <div
                 className={cn(
                   "pointer-events-none absolute flex justify-center px-4",
-                  selectedSrc || livePreviewSrc ? "inset-x-0 bottom-4" : "inset-0 items-center",
+                  livePreviewSrc
+                    ? "inset-x-0 bottom-4"
+                    : selectedSrc
+                      ? "inset-x-0 bottom-16"
+                      : "inset-0 items-center",
                 )}
               >
                 <div className="w-72 max-w-full rounded-xl bg-background/85 p-3 shadow-lg ring-1 ring-border backdrop-blur">
