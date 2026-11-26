@@ -443,7 +443,9 @@ class TestBuildShRocm:
             ("refs/heads/other", "true", "false", set()),
         ],
     )
-    def test_release_and_nightly_aliases_move_on_their_own_events(self, ref, stable, newest, expected):
+    def test_release_and_nightly_aliases_move_on_their_own_events(
+        self, ref, stable, newest, expected
+    ):
         # unslothai/unsloth#17470: the weekly main build moved :latest and :studio too.
         import yaml
 
@@ -1014,7 +1016,7 @@ class TestRocmEntrypoint:
         fake = tmp_path / "bin"
         fake.mkdir()
         (fake / "git").write_text(
-            "#!/bin/sh\n[ -n \"$GIT_FAIL\" ] && exit 128\n"
+            '#!/bin/sh\n[ -n "$GIT_FAIL" ] && exit 128\n'
             "printf 'a\\trefs/tags/v0.1.99-beta\\nb\\trefs/tags/v0.1.930-beta\\n"
             "c\\trefs/tags/v0.1.916-beta\\n'\n"
         )
@@ -1023,7 +1025,11 @@ class TestRocmEntrypoint:
         def newest(tag, **extra):
             out = tmp_path / f"out{len(os.listdir(tmp_path))}"
             out.write_text("")
-            env = {"PATH": f"{fake}:{os.environ['PATH']}", "GITHUB_OUTPUT": str(out), "TAG_NAME": tag}
+            env = {
+                "PATH": f"{fake}:{os.environ['PATH']}",
+                "GITHUB_OUTPUT": str(out),
+                "TAG_NAME": tag,
+            }
             env.update(extra)
             proc = subprocess.run(
                 ["bash", "-e", "-c", step["run"]], env = env, capture_output = True, text = True
