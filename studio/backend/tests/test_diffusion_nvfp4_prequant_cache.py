@@ -233,3 +233,14 @@ def test_mxfp8_is_still_never_cached(env, tmp_path):
     base, _ = _write_base(tmp_path)
     assert "mxfp8" not in C.CACHEABLE_SCHEMES
     assert C.lookup(_fam(base), "mxfp8", base_repo = str(base)) is None
+
+
+def test_a_build_without_baked_activation_scales_skips_the_flashinfer_preflight(monkeypatch):
+    """Only baked activation scales move to flashinfer; a runtime build (what the cache holds) never probes it."""
+    from core.inference import diffusion_nvfp4_ops as ops
+    from core.inference import diffusion_prequant as P
+
+    calls = []
+    monkeypatch.setattr(ops, "select_nvfp4_backend", lambda device = None: calls.append(device) or "torchao")
+    assert P._engage_nvfp4_backend(Tiny(), {"scheme": "nvfp4"}, "cuda") == 0
+    assert calls == []
