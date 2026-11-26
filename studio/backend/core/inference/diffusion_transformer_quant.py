@@ -826,7 +826,41 @@ def explain_unusable_scheme(
             f"the torchao in this install cannot run any dense quant scheme ({unavailable}); this "
             "is a package/version problem, not a limit of the GPU"
         )
+    if scheme == TQ_FP8:
+        gap = _fp8_rowwise_gap()
+        if gap is not None:
+            return f"'{scheme}' is not usable for family '{family}': {gap}"
     return f"'{scheme}' is not usable for family '{family}' on this GPU"
+
+
+def _fp8_rowwise_gap() -> Optional[str]:
+    """Why fp8 failed when the cause is the missing row-wise fp8 GEMM, else None. Reads the probe cache only."""
+    try:
+        from .diffusion_fp8_unit_scale import (
+            UNIT_SCALE_ENV,
+            fallback_disabled,
+            last_rowwise_verdict,
+        )
+        seen = bool(last_rowwise_verdict())
+        off = fallback_disabled()
+    except Exception:  # noqa: BLE001
+        return None
+    if not seen and not (off and _sys.platform == "win32"):
+        return None
+    lead = (
+        "this PyTorch build has no row-wise fp8 matmul"
+        if seen
+        else "the Windows PyTorch builds have no row-wise fp8 matmul"
+    )
+    if off:
+        return (
+            f"{lead}, and {UNIT_SCALE_ENV}=0 turns off the tensorwise fallback that replaces it; "
+            "this is a PyTorch build limit, not a limit of the GPU"
+        )
+    return (
+        f"{lead}, and the tensorwise fallback that replaces it failed its smoke test; this is a PyTorch build "
+        "limit, not a limit of the GPU"
+    )
 
 
 # The reason torchao cannot be used AT ALL, resolved once. None means it imports.
@@ -2106,6 +2140,9 @@ def _run_smoke_probe(scheme: str, device: str) -> Optional[bool]:
         from torchao.quantization import quantize_
 
         lin = torch.nn.Linear(512, 512, bias = False).to(device = device, dtype = torch.bfloat16)
+        if scheme == TQ_FP8:
+            # The load engages it too, so the verdict covers the GEMM the load will run.
+            engage_fp8_rowwise_fallback(device)
         quantize_(lin, _make_quant_config(scheme), filter_fn = make_filter_fn(0))
         # M stays 32 (scaled_mm wants 16-aligned dims); the zero rows go inside it, not after it.
         x = torch.randn(32, 512, device = device, dtype = torch.bfloat16)
@@ -2179,6 +2216,18 @@ def _install_fp8_unit_scale(fast_accum: Optional[bool] = None) -> None:
         install(logger = logging.getLogger(__name__), fast_accum = fast_accum)
     except Exception:  # noqa: BLE001 - never block a load on a speed path
         pass
+
+
+def engage_fp8_rowwise_fallback(device: Any = None) -> bool:
+    """Route torchao fp8 matmuls on ``device`` through the tensorwise unit-scale GEMM when its PyTorch build has no
+    row-wise fp8 ``_scaled_mm`` (the Windows wheels); a no-op elsewhere. ``device`` may be an ordinal."""
+    try:
+        import logging
+
+        from .diffusion_fp8_unit_scale import engage_rowwise_fallback
+        return engage_rowwise_fallback(device, logger = logging.getLogger(__name__))
+    except Exception:  # noqa: BLE001 - the smoke probe still decides whether fp8 loads
+        return False
 
 
 def _make_quant_config(scheme: str, fast_accum: Optional[bool] = None) -> Any:
@@ -2363,6 +2412,12 @@ def quantize_transformer(
         from torchao.quantization import quantize_
 
         policy = None
+        if scheme in (TQ_FP8, TQ_NVFP4):
+            # NVFP4 policies may keep some layers at fp8.
+            ordinal = getattr(target, "ordinal", None)
+            engage_fp8_rowwise_fallback(
+                ordinal if isinstance(ordinal, int) else getattr(target, "device", None)
+            )
         if scheme == TQ_NVFP4:
             from .diffusion_nvfp4_policy import quantize_with_policy, resolve_policy
             policy = resolve_policy(family, base_repo)

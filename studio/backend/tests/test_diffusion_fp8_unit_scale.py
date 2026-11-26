@@ -23,8 +23,10 @@ def _clean(monkeypatch):
     monkeypatch.delenv(us.MIN_ROWS_ENV, raising = False)
     for k in us._COUNTS:
         us._COUNTS[k] = 0
+    us._FALLBACK_CHECKED.clear()
     original = f8t.addmm_float8_unwrapped_inference
     yield
+    us._FALLBACK_CHECKED.clear()
     us.uninstall()
     compile_config._reset_for_tests()
     f8t.addmm_float8_unwrapped_inference = original
@@ -474,3 +476,133 @@ def test_eager_epilogue_writes_into_the_accumulator_bitwise_as_before(monkeypatc
     if bv is not None:
         want.add_(bv.float())
     assert torch.equal(got, want.to(torch.bfloat16))
+
+
+def _gemms(
+    monkeypatch,
+    tensorwise,
+    rowwise,
+    index = 0,
+):
+    """The card probe as a Windows build answers it: tensorwise fp8 runs, row-wise does not."""
+    monkeypatch.setattr(us, "_device_index", lambda device: index)
+    monkeypatch.setattr(us, "_card_gemms", lambda i: (tensorwise, rowwise))
+    monkeypatch.setattr(us, "_is_rocm", lambda: False)
+
+
+@pytest.mark.parametrize("cap", [(8, 9), (10, 0), (12, 0)])
+def test_card_without_rowwise_gemm_takes_unit_scale_for_every_call(monkeypatch, cap):
+    # Windows wheels lack the row-wise _scaled_mm: fp8 must run tensorwise at any M and either accumulate mode.
+    import torch.compiler.config as ccfg
+
+    monkeypatch.setattr(ccfg, "cache_key_tag", "")
+    _caps(monkeypatch, {0: cap})
+    _gemms(monkeypatch, tensorwise = True, rowwise = False)
+    rowwise_calls = []
+
+    def rowwise(*a, **k):
+        rowwise_calls.append(1)
+        raise RuntimeError("Rowwise scaling is not currently supported on your device")
+
+    monkeypatch.setattr(f8t, "addmm_float8_unwrapped_inference", rowwise)
+    monkeypatch.setattr(torch, "_scaled_mm", _emulated_scaled_mm)
+    monkeypatch.setattr(
+        torch, "ones", lambda *a, device = None, dtype = None: torch.tensor(1.0, dtype = dtype)
+    )
+    # The default config: fast accumulate, auto mode, which never installs on its own off sm_89.
+    assert us.install(fast_accum = True) is False
+    assert us.engage_rowwise_fallback("cuda:0") is True
+    assert us.stats()["installed"] is True and us.stats()["rowwise_fallback_cards"] == [0]
+    assert "rowwise-fallback=0" in ccfg.cache_key_tag
+    fn = f8t.addmm_float8_unwrapped_inference
+    for m in (1, 16, 32, 255, 2048):
+        a, sa, b, sb = _operands(m)
+        for fast in (True, False):
+            got = fn(_Dev(a), sa, b, sb, torch.bfloat16, use_fast_accum = fast)
+            want = (a.float() @ b.float()) * sa * sb
+            assert got.shape == (m, 48) and torch.isfinite(got).all()
+            assert (got.float() - want).abs().max() <= 2**-7 * want.abs().max()
+    assert rowwise_calls == [] and us.stats()["unit_scale"] == 10
+    # Idempotent, and a later precise-accumulate install keeps the fallback card.
+    assert us.engage_rowwise_fallback(0) is True
+    assert us.install(fast_accum = True) is True
+    assert us.stats()["rowwise_fallback_cards"] == [0]
+
+
+def test_card_with_rowwise_gemm_is_left_alone(monkeypatch):
+    # Linux builds have the row-wise kernel: no install, no compile cache key change.
+    import torch.compiler.config as ccfg
+
+    monkeypatch.setattr(ccfg, "cache_key_tag", "")
+    _caps(monkeypatch, {0: (10, 0)})
+    _gemms(monkeypatch, tensorwise = True, rowwise = True)
+    before = f8t.addmm_float8_unwrapped_inference
+    assert us.engage_rowwise_fallback("cuda:0") is False
+    assert f8t.addmm_float8_unwrapped_inference is before and ccfg.cache_key_tag == ""
+    assert us.last_rowwise_verdict() is False
+
+
+def test_card_without_any_fp8_gemm_is_not_a_fallback(monkeypatch):
+    _caps(monkeypatch, {0: (8, 6)})
+    _gemms(monkeypatch, tensorwise = False, rowwise = False)
+    assert us.engage_rowwise_fallback("cuda:0") is False
+    assert us.stats()["installed"] is False
+
+
+def test_kill_switch_also_turns_the_rowwise_fallback_off(monkeypatch):
+    _caps(monkeypatch, {0: (12, 0)})
+    _gemms(monkeypatch, tensorwise = True, rowwise = False)
+    monkeypatch.setenv(us.UNIT_SCALE_ENV, "0")
+    assert us.engage_rowwise_fallback("cuda:0") is False
+    assert us.stats()["installed"] is False
+
+
+def test_fallback_card_only_covers_itself(monkeypatch):
+    # A second card with the row-wise kernel keeps torchao's path.
+    _caps(monkeypatch, {0: (12, 0), 1: (12, 0)})
+    _gemms(monkeypatch, tensorwise = True, rowwise = False, index = 1)
+    seen = []
+    monkeypatch.setattr(
+        f8t, "addmm_float8_unwrapped_inference", lambda *a, **k: seen.append(1) or "orig"
+    )
+    assert us.engage_rowwise_fallback("cuda:1") is True
+    a, sa, b, sb = _operands(64)
+    out = f8t.addmm_float8_unwrapped_inference(
+        _Dev(a), sa, b, sb, torch.bfloat16, use_fast_accum = True
+    )
+    assert out == "orig" and seen == [1]
+
+
+def test_smoke_probe_engages_the_fallback_before_it_quantizes(monkeypatch):
+    # The probe verdict must cover the GEMM the load runs, in the child and in-process alike.
+    from core.inference import diffusion_transformer_quant as tq
+
+    calls = []
+    monkeypatch.setattr(tq, "engage_fp8_rowwise_fallback", lambda device = None: calls.append(device))
+    tq._run_smoke_probe(tq.TQ_INT8, "cpu")
+    assert calls == []
+    tq._run_smoke_probe(tq.TQ_FP8, "cpu")
+    assert calls == ["cpu"]
+
+
+def test_prequant_load_engages_the_fallback_on_its_card(monkeypatch):
+    from core.inference import diffusion_prequant as dp
+    from core.inference import diffusion_transformer_quant as tq
+
+    calls = []
+    monkeypatch.setattr(tq, "engage_fp8_rowwise_fallback", lambda device = None: calls.append(device))
+    # An offloaded load lands the weights on the host; the kernels still run on the CUDA card.
+    for scheme, placement in (("fp8", None), ("int8", None), ("nvfp4", None), ("fp8", "cpu")):
+        try:
+            dp.load_prequantized_transformer(
+                object,
+                "base/repo",
+                dp.PrequantSource(kind = "path", location = "/nonexistent/x.safetensors"),
+                device = "cuda:1",
+                dtype = torch.bfloat16,
+                scheme = scheme,
+                placement_device = placement,
+            )
+        except Exception:  # noqa: BLE001 - only the engage call before the read matters here
+            pass
+    assert calls == ["cuda:1", "cuda:1", "cuda:1"]
