@@ -30,6 +30,7 @@ from ._utils import __version__, importlib_version
 from ._utils import move_to_device
 from ._utils import per_layer_device, refresh_moved_layer_devices
 from ._utils import embedding_applies_scale
+from ._lora_scale_warning import warn_low_rank_lora_alpha
 from ._utils import (
     _get_inference_mode_context_manager,
     _offload_embedding_for_room,
@@ -5285,6 +5286,7 @@ class FastLlamaModel:
             raise TypeError(f"Unsloth: Rank of {str(r)} must be an integer.")
         if r <= 0:
             raise TypeError(f"Unsloth: Rank of {str(r)} must be larger than 0.")
+        warn_low_rank_lora_alpha(r, lora_alpha, use_rslora)
 
         if isinstance(model, PeftModelForCausalLM) or isinstance(
             model, PeftModelForSequenceClassification
