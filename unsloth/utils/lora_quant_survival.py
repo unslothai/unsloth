@@ -136,13 +136,20 @@ def lora_quant_survival(
     scheme,
     max_layers = _MAX_LAYERS,
     max_rows = _MAX_ROWS,
+    skip = None,
 ):
     """[(layer name, cos(D, dW), ||D|| / ||dW||)] for up to `max_layers` evenly spaced LoRA layers, or None
-    when the format is not modelled or no plain 2-D LoRA layer is found."""
+    when the format is not modelled or no plain 2-D LoRA layer is found. `skip(name, module)` drops
+    layers the export leaves unquantized; names are the merged model's."""
     fmt = _SCHEME_FORMATS.get(scheme)
     if fmt is None:
         return None
-    layers = list(_lora_layers(model))
+    layers = [
+        (name.removeprefix("base_model.model."), module, base, adapter)
+        for name, module, base, adapter in _lora_layers(model)
+    ]
+    if skip is not None:
+        layers = [layer for layer in layers if not skip(layer[0], layer[1])]
     if not layers:
         return None
     if len(layers) > max_layers:
@@ -162,23 +169,32 @@ def lora_quant_survival(
             continue
         # The export writes the merge in the model's 16-bit dtype before it quantizes.
         merge_dtype = W.dtype if W.dtype in (torch.float16, torch.bfloat16) else torch.bfloat16
+        A = A.to(device = W.device, dtype = torch.float32)
+        B = B.to(device = W.device, dtype = torch.float32)
+
+        def merged_rows(start, stop):
+            return (W[start:stop].float() + (B[start:stop] @ A) * scaling).to(merge_dtype).float()
+
         rows = min(W.shape[0], max_rows)
         w = W[:rows].to(torch.float32)
-        dW = (
-            B[:rows].to(torch.float32, copy = True) @ A.to(device = B.device, dtype = torch.float32)
-        ) * scaling
-        dW = dW.to(w.device)
+        dW = (B[:rows] @ A) * scaling
         dW_norm = dW.norm().item()
         if not math.isfinite(dW_norm) or dW_norm == 0.0:
             continue
-        merged = (w + dW).to(merge_dtype).to(torch.float32)
+        merged = merged_rows(0, rows)
         before = w.to(merge_dtype).to(torch.float32)
-        global_amax = W.abs().amax().to(torch.float32)
-        merged_amax = torch.maximum(global_amax, merged.abs().amax())
+        global_amax = before.abs().amax()
+        merged_amax = merged.abs().amax()
+        if fmt in ("fp8_tensor", "nvfp4"):
+            # Per-tensor scales come from the whole tensor, before and after the merge.
+            global_amax = W.abs().amax().to(merge_dtype).float()
+            merged_amax = max(
+                merged_rows(i, i + 1024).abs().amax() for i in range(0, W.shape[0], 1024)
+            )
         q_delta = _quantize(merged, fmt, merged_amax) - _quantize(before, fmt, global_amax)
         q_norm = q_delta.norm().item()
         cosine = (q_delta * dW).sum().item() / (q_norm * dW_norm) if q_norm > 0.0 else 0.0
-        out.append((name.removeprefix("base_model.model."), max(cosine, 0.0), q_norm / dW_norm))
+        out.append((name, max(cosine, 0.0), q_norm / dW_norm))
     return out or None
 
 
@@ -193,12 +209,13 @@ def report_lora_quant_survival(
     scheme,
     log = print,
     warn = None,
+    skip = None,
 ):
     """Log the median survival of the sampled layers and warn below SURVIVAL_WARN_BELOW. Never raises;
     returns the median, or None when nothing was measured."""
     warn = warn or log
     try:
-        ratios = lora_quant_survival(model, scheme)
+        ratios = lora_quant_survival(model, scheme, skip = skip)
     except Exception as error:
         log(f"Unsloth: could not estimate how much of the LoRA update survives {scheme}: {error!r}")
         return None

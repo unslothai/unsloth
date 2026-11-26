@@ -125,3 +125,43 @@ def test_compressed_export_keeps_its_decorator():
     fns = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
     assert fns["_unsloth_save_compressed_tensors"].decorator_list
     assert not fns["_report_lora_quant_survival"].decorator_list
+
+
+def _low_rank_lora(shrink):
+    """One LoRA layer whose update is exactly -shrink * W (W has the LoRA's rank)."""
+    torch.manual_seed(0)
+    U, V = torch.randn(64, 4), torch.randn(4, 128)
+    net = torch.nn.Sequential(torch.nn.Linear(128, 64, bias = False))
+    with torch.no_grad():
+        net[0].weight.copy_(U @ V * 0.05)
+    net = peft.get_peft_model(
+        net.to(torch.bfloat16), peft.LoraConfig(r = 4, lora_alpha = 4, target_modules = ["0"])
+    )
+    layer = next(
+        m for m in net.modules() if hasattr(m, "lora_A") and "default" in getattr(m, "lora_A", {})
+    )
+    with torch.no_grad():
+        layer.lora_A["default"].weight.copy_(V)
+        layer.lora_B["default"].weight.copy_(-shrink * 0.05 * U)
+    return net
+
+
+@pytest.mark.parametrize("scheme", ["NVFP4", "FP8"])
+def test_per_tensor_scale_follows_a_shrinking_merge(scheme):
+    # The export rescales from the merged tensor, so a uniform 2% shrink mostly moves values with their
+    # grid (what is left is bf16 merge noise). On the unmerged grid this read 0.48 / 0.22 and warned.
+    M = _load()
+    ((_, cosine, _),) = M.lora_quant_survival(_low_rank_lora(0.02), scheme)
+    assert cosine > 0.6, cosine
+
+
+def test_layers_the_export_leaves_16bit_are_not_sampled():
+    M = _load()
+    model = _tiny_lora(0.005)
+    seen = []
+    ratios = M.lora_quant_survival(
+        model, "NVFP4", skip = lambda name, module: seen.append(name) or "v_proj" in name
+    )
+    assert seen and all(not n.startswith("base_model.") for n in seen)
+    assert ratios and all("v_proj" not in n for n, _, _ in ratios)
+    assert M.lora_quant_survival(model, "NVFP4", skip = lambda name, module: True) is None
