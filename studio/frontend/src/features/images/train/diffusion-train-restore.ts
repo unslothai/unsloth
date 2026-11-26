@@ -10,8 +10,7 @@ const TERMINAL_STATUSES = new Set(["completed", "stopped", "error"]);
 
 // The form a running job was started from, so a reload does not show the page default beside it.
 // family stays null until the model loads, so fall back to the family whose bases list base_model.
-// A finished run (completed, stopped, error) also seeds the form, but only while the user has not picked a model:
-// the backend keeps that status until the next start, and the panel beside the form describes that run.
+// A finished run seeds it only while the form is untouched (the backend keeps that status until the next start).
 export function runningTrainingSelection(
   status: Status | null | undefined,
   families: readonly Family[],
@@ -24,7 +23,6 @@ export function runningTrainingSelection(
   return trainingRunSelection(status, families);
 }
 
-// The family and base a run record names (status or run detail), when the family is one this build can train.
 export function trainingRunSelection(
   run: { family?: string | null; base_model?: string | null } | null | undefined,
   families: readonly Family[],

@@ -852,8 +852,7 @@ export function DiffusionTrainPanel({
     ],
   );
   const presetsReadyRef = useRef(false);
-  // A finished run seeds the form only after the stored preset has had its turn: seeding first would read as a user
-  // edit to applyPresetParams and drop the preset.
+  // Seed from a finished run only after the stored preset applies, else applyPresetParams sees a user edit.
   const [presetsSettled, setPresetsSettled] = useState(!savedPresets);
   const markPresetsSettled = useCallback(() => setPresetsSettled(true), []);
   // Not every control sets a dirty ref (family, toggles), so any edit before presets settle counts.
@@ -901,8 +900,7 @@ export function DiffusionTrainPanel({
       lrScheduleDirty.current = owned;
       precisionDirty.current = owned;
       if (owned) {
-        // Neither a loaded model, the family re-seed nor a finished run's status may replace the preset's base:
-        // the preset's hyperparameters were chosen for its own model.
+        // Nothing may replace the preset's base: its hyperparameters were chosen for that model.
         modelPickedByUser.current = true;
         seededFromLoaded.current = true;
         seededBaseFamily.current = params.familyName;
@@ -955,7 +953,6 @@ export function DiffusionTrainPanel({
     return () => window.clearInterval(id);
   }, [active, poll]);
 
-  // Show a run's family and base in the form (job status or a resumed run's record).
   const applyRunSelection = useCallback(
     (run: { familyName: string; baseModel: string | null }) => {
       seededFromLoaded.current = true;
@@ -972,8 +969,6 @@ export function DiffusionTrainPanel({
   );
 
   // After a reload the page defaults to FLUX.1-dev; show the running job's family and base instead, once per job.
-  // A finished run seeds it too while the user has not picked a model, so a completed Z-Image run does not sit
-  // beside a FLUX.1-dev form.
   const seededRunJob = useRef<string | null>(null);
   useEffect(() => {
     const jobKey = status?.job_id ?? "";
