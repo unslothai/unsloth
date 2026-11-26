@@ -4983,6 +4983,10 @@ class DiffusionBackend:
         self._queued_generate_cancels: set[threading.Event] = set()
         # Requests whose images render in another request's batch, by account: their own Stop leaves the batch.
         self._generate_riders: dict[threading.Event, Optional[str]] = {}
+        # Requests waiting to coalesce, by account.
+        self._coalesce_waiters: dict[threading.Event, Optional[str]] = {}
+        # The account of each queued cancel, so a lifecycle Stop reaches only the caller's requests.
+        self._queued_cancel_owners: dict[threading.Event, Optional[str]] = {}
         self._generation_owns_slot = False
 
         self._transition_owns_slot = False
@@ -5102,6 +5106,7 @@ class DiffusionBackend:
             self._slot_turns.append(turn)
         with self._generation_cancel_lock:
             self._queued_generate_cancels.add(cancel)
+            self._queued_cancel_owners[cancel] = current_account_id()
         try:
             while True:
                 self._await_slot_turn(turn, cancel)
@@ -5116,6 +5121,7 @@ class DiffusionBackend:
                             cancelled = cancel.is_set()
                             if not cancelled and not self._unload_waiters:
                                 self._queued_generate_cancels.discard(cancel)
+                                self._queued_cancel_owners.pop(cancel, None)
                                 self._active_generate_cancel = cancel
                                 self._active_generate_account = current_account_id()
                                 self._generation_owns_slot = True
@@ -5155,6 +5161,7 @@ class DiffusionBackend:
             if not admitted:
                 with self._generation_cancel_lock:
                     self._queued_generate_cancels.discard(cancel)
+                    self._queued_cancel_owners.pop(cancel, None)
 
     # Offload policies fixed by the request; `fast`/`auto` are measurements and cannot be judged network-free.
     def assert_precision_available(
@@ -17886,13 +17893,19 @@ class DiffusionBackend:
 
     @contextmanager
     def generation_waiter(self, cancel: threading.Event):
+        """A request waiting to coalesce: a lifecycle Stop reaches it, and so does a Stop from its own account."""
+        account = current_account_id()
         with self._generation_cancel_lock:
             self._queued_generate_cancels.add(cancel)
+            self._queued_cancel_owners[cancel] = account
+            self._coalesce_waiters[cancel] = account
         try:
             yield
         finally:
             with self._generation_cancel_lock:
                 self._queued_generate_cancels.discard(cancel)
+                self._queued_cancel_owners.pop(cancel, None)
+                self._coalesce_waiters.pop(cancel, None)
 
     def coalesce_plan(self, prompt: str, has_loras: bool) -> Optional[tuple[tuple, bool]]:
         """``(prompt_key, private)`` for joining a batch, or None when this request must render alone. ``private``:
@@ -17926,16 +17939,27 @@ class DiffusionBackend:
             with self._generation_cancel_lock:
                 self._generate_riders.pop(cancel, None)
 
-    def _stop_riders_locked(self, account: Optional[str]) -> bool:
+    def _stop_waiting_locked(self, account: Optional[str]) -> bool:
+        """This account's batched work (None: every account's): requests riding another request's call and requests
+        waiting to coalesce. Call with ``_generation_cancel_lock`` held."""
         # getattr: tests build a bare backend with object.__new__.
-        riders = [
+        events = [
             event
-            for event, owner in getattr(self, "_generate_riders", {}).items()
-            if owner == account
+            for pool in (
+                getattr(self, "_generate_riders", {}),
+                getattr(self, "_coalesce_waiters", {}),
+            )
+            for event, owner in pool.items()
+            if account is None or owner == account
         ]
-        for event in riders:
+        for event in events:
             event.set()
-        return bool(riders)
+        return bool(events)
+
+    def stop_waiting_work(self, account: Optional[str] = None) -> bool:
+        """Stop this account's waiting and riding batched requests; True when there were any."""
+        with self._generation_cancel_lock:
+            return self._stop_waiting_locked(account)
 
     def generation_holder(self) -> Optional[object]:
         with self._generation_cancel_lock:
@@ -17969,20 +17993,21 @@ class DiffusionBackend:
     def cancel_generate(self, expected_account: Optional[str] = None) -> bool:
         """Stops the in-flight generation at the next step callback; returns False when nothing runs; a cancel in VAE decode or encode lands after it."""
         with self._generation_cancel_lock:
-            # Stop targets the denoising generation, not a serialized waiter.
+            # One rule: Stop ends this account's denoising generation and all of its waiting and riding batched
+            # requests; a plain request queued for the slot is not the running one and keeps its place.
             active = self._active_generate_cancel
-            if active is not None:
-                if expected_account is not None and self._active_generate_account not in (
-                    None,
-                    expected_account,
-                ):
-                    # Another account's call may be rendering this account's batched images.
-                    return self._stop_riders_locked(expected_account)
+            hit = False
+            if active is not None and (
+                expected_account is None
+                or self._active_generate_account in (None, expected_account)
+            ):
                 active.set()
+                hit = True
+            if self._stop_waiting_locked(expected_account):
+                hit = True
+            if hit:
                 return True
-            if expected_account is not None and self._stop_riders_locked(expected_account):
-                return True
-            if self._generation_owns_slot:
+            if active is not None or self._generation_owns_slot:
                 return False
             # An accepted eject raises _unload_waiters long before teardown; without this Stop answered False.
             if (
@@ -17991,8 +18016,15 @@ class DiffusionBackend:
                 and not self._unload_waiters
             ):
                 return False
-            # Recheck live state so timed waiters observe a replacement handoff.
-            cancels = set(self._queued_generate_cancels)
+            # Recheck live state so timed waiters observe a replacement handoff. Only the caller's own requests:
+            # an unknown owner (registered by older code) counts as the caller's.
+            owners = getattr(self, "_queued_cancel_owners", {})
+            cancels = {
+                cancel
+                for cancel in self._queued_generate_cancels
+                if expected_account is None
+                or owners.get(cancel, expected_account) == expected_account
+            }
             if not cancels:
                 return False
             for cancel in cancels:

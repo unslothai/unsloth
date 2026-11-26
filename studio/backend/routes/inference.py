@@ -54944,6 +54944,19 @@ async def diffusion_generate_progress(current_subject: str = Depends(get_current
     return DiffusionGenerateProgressResponse(**progress)
 
 
+def _stop_batched_image_work() -> bool:
+    """This account's requests waiting to coalesce or riding another account's batched call."""
+    from core.inference.diffusion_engine_router import get_active_diffusion_engine
+
+    try:
+        stop = getattr(get_active_diffusion_engine(), "stop_waiting_work", None)
+    except Exception:  # noqa: BLE001 -- no engine: nothing batched
+        return False
+    if stop is None:
+        return False
+    return bool(stop(account_access.tracked_generation_account()))
+
+
 @studio_router.post("/images/generate/cancel")
 async def cancel_diffusion_generation(
     target: Optional[str] = None, current_subject: str = Depends(get_current_subject)
@@ -54960,6 +54973,9 @@ async def cancel_diffusion_generation(
     if target == "connection":
         return {"cancelled": _stop_external_image_runs()}
     grids = _stop_xy_grids()
+    # Before the account checks: another account's call may be rendering this account's batched images, which
+    # makes the running generation look foreign although this account has work in it.
+    grids = _stop_batched_image_work() or grids
     if account_access.generation_is_foreign("diffusion"):
         return {"cancelled": grids}
     mine = account_access.generation_is_mine("diffusion")

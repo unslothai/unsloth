@@ -160,3 +160,106 @@ def test_qwen_image_21_members_of_different_lengths_render_apart_through_the_rou
     assert [c["prompt"] for c in backend.calls if c["prompts"] is None] == [
         "a red fox in deep snow"
     ]
+
+
+def _as(name, func):
+    from utils.account_context import ROLE_OWNER, AccountContext, bind_account, reset_account
+    token = bind_account(AccountContext(name, name, ROLE_OWNER))
+    try:
+        return func()
+    finally:
+        reset_account(token)
+
+
+def test_a_member_stop_through_the_route_reaches_its_batched_images_under_managed_accounts(
+    studio, monkeypatch
+):
+    import httpx
+
+    from hub.services.models import account_access
+
+    app, backend, saved = studio
+
+    def stop_waiting_work(account = None):
+        mine = [cancel for cancel, owner in backend.riders if account is None or owner == account]
+        for cancel in mine:
+            cancel.set()
+        return bool(mine)
+
+    backend.stop_waiting_work = stop_waiting_work
+    # Managed accounts: alice's call holds the slot, so the generation is foreign to bob.
+    monkeypatch.setattr(account_access, "tracked_generation_account", current_account_id)
+    monkeypatch.setattr(
+        account_access, "generation_is_foreign", lambda modality: current_account_id() != "alice"
+    )
+    posts = [
+        ("/v1/images/generations", "alice", _openai("a fox")),
+        ("/v1/images/generations", "bob", _openai("a cat")),
+        ("/v1/images/generations", "carol", _openai("an owl")),
+    ]
+    answers = []
+
+    async def bob_stops():
+        await _until(lambda: len(backend.riders) == 2)
+        transport = httpx.ASGITransport(app = app)
+        async with httpx.AsyncClient(transport = transport, base_url = "http://studio") as client:
+            answer = await client.post(
+                "/api/inference/images/generate/cancel", headers = {"x-test-account": "bob"}
+            )
+        answers.append(answer.json())
+        await _until(lambda: _waiting() == 2)
+
+    responses = _post_while_rendering(app, backend, posts, waiting = 3, then = bob_stops)
+    assert answers == [{"cancelled": True}]
+    assert [r.status_code == 200 for r in responses] == [True, False, True]
+    assert sorted(record["account"] for record in saved) == ["alice", "carol"]
+
+
+def test_one_stop_rule_ends_the_accounts_render_and_its_waiting_batched_work():
+    from core.inference.diffusion import DiffusionBackend
+
+    engine = DiffusionBackend()
+    render, waiting, riding, other = (threading.Event() for _ in range(4))
+    import contextlib
+
+    with contextlib.ExitStack() as stack:
+        _as("alice", lambda: stack.enter_context(engine._generation_slot(render)))
+        _as("alice", lambda: stack.enter_context(engine.generation_waiter(waiting)))
+        _as("alice", lambda: stack.enter_context(engine.generation_rider(riding)))
+        _as("bob", lambda: stack.enter_context(engine.generation_waiter(other)))
+        assert engine.cancel_generate(expected_account = "alice") is True
+        assert render.is_set() and waiting.is_set() and riding.is_set()
+        assert not other.is_set()
+
+
+def test_a_stop_during_a_teardown_reaches_only_the_callers_queued_requests():
+    from core.inference.diffusion import DiffusionBackend
+    from core.inference.diffusion_families import DIFFUSION_CANCELLED_MSG
+
+    engine = DiffusionBackend()
+    events = {"alice": threading.Event(), "bob": threading.Event()}
+    outcome: dict = {}
+
+    def queued(name):
+        def run():
+            try:
+                with engine._generation_slot(events[name]):
+                    outcome[name] = "served"
+            except RuntimeError as exc:
+                outcome[name] = str(exc)
+
+        return lambda: _as(name, run)
+
+    with engine._model_transition_slot():
+        threads = [threading.Thread(target = queued(name), daemon = True) for name in events]
+        for thread in threads:
+            thread.start()
+        deadline = __import__("time").monotonic() + 5
+        while len(engine._queued_generate_cancels) < 2:
+            assert __import__("time").monotonic() < deadline
+            threading.Event().wait(0.01)
+        assert engine.cancel_generate(expected_account = "bob") is True
+        assert events["bob"].is_set() and not events["alice"].is_set()
+    for thread in threads:
+        thread.join(timeout = 5)
+    assert outcome == {"alice": "served", "bob": DIFFUSION_CANCELLED_MSG}
