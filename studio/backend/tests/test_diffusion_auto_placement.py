@@ -946,3 +946,139 @@ def test_guided_model_whose_text_encoder_would_move_runs_the_replica_instead(mon
     mg.note_default_request(pipe2, guided = False, steps = 50)
     d2 = decide(monkeypatch, host, _sizes(dit = 2700, te = 10834, vae = 485), headroom = 3500, pipe = pipe2)
     assert d2.plan.secondary_ordinal == 1 and _placement(d2)["chosen"] == "companion_split"
+
+
+# NVIDIA feedback (2x RTX PRO 4000 / 4500, Wan 2.2 TI2V 5B with CFG at 1.01-1.03x): a companion split planned before
+# the load returned early, so a CFG replica was never priced; the encoder card counted as busy; unpriced kept the split.
+_BIG = 24564  # a 24 GB card
+
+
+def _planned_split(
+    monkeypatch,
+    *,
+    dit = 9000,
+    te = 10000,
+    vae = 160,
+    need = 9400,
+    priced = True,
+    guided = True,
+    gpu_ids = None,
+):
+    _priced(monkeypatch, need_mib = need, compute_s = 1.0, tokens = 4096)
+    if not priced:
+        monkeypatch.setattr(dm, "_offload_cost_measurements", lambda: None)
+    host = Host([Card(0, _BIG, 300, name = "RTX PRO 4000"), Card(1, _BIG, 300, name = "RTX PRO 4000")])
+    pipe = _DitPipe(WanTransformer3DModel())
+    mg.note_default_request(pipe, guided = guided, steps = 20, tokens = 4096, why = "default guidance 5")
+    sizes = _sizes(dit = dit, te = te, vae = vae)
+    return decide(monkeypatch, host, sizes, pipe = pipe, gpu_ids = gpu_ids)
+
+
+@pytest.mark.parametrize("gpu_ids", [None, [0, 1]], ids = ["automatic", "explicit"])
+def test_planned_companion_split_gives_way_to_a_faster_cfg_replica(monkeypatch, gpu_ids):
+    d = _planned_split(monkeypatch, gpu_ids = gpu_ids)
+    assert d.one_card.secondary_ordinal == 1  # the split was planned before the load
+    assert d.plan is d.one_card.fallback_plan and d.plan.secondary_ordinal is None
+    recorded = mg.placement_decision(d.pipe)
+    assert recorded.chosen == "cfg_replica", recorded
+    assert "CFG replica on cuda:1" in recorded.summary and "s/step" in recorded.summary
+    assert "predicted faster" in {c.kind: c.reason for c in recorded.rejected}["companion_split"]
+    placement = d.status["cfg_parallel"]["placement"]
+    assert placement["reason"], placement
+
+
+def test_planned_encoder_split_keeps_the_encoders_and_runs_a_replica_beside_them(monkeypatch):
+    # text encoders + VAE do not fit cuda:1, the encoders alone do: the replica fits there beside them
+    d = _planned_split(monkeypatch, dit = 6000, te = 12000, vae = 6000, need = 6400)
+    assert d.plan is d.one_card and d.plan.secondary_ordinal == 1
+    assert d.plan.secondary_components == mg.TEXT_ENCODERS_ONLY
+    recorded = mg.placement_decision(d.pipe)
+    assert recorded.chosen == "cfg_replica", recorded
+    assert (
+        "CFG replica on cuda:1" in recorded.summary
+        and "the replica sits beside text_encoder on cuda:1" in recorded.summary
+    )
+    # the fake denoiser is on the CPU, so the replica declines at install: the placed split is what runs
+    live = _placement(d)
+    assert live["chosen"] == "companion_split", live
+    assert live["rejected"][0]["kind"] == "cfg_replica"
+    placement = d.status["cfg_parallel"]["placement"]
+    assert placement["chosen"] == "companion_split" and "fell back" in placement["reason"]
+
+
+def test_planned_split_without_pricing_takes_the_replica_for_a_guided_request(monkeypatch):
+    d = _planned_split(monkeypatch, priced = False)
+    recorded = mg.placement_decision(d.pipe)
+    assert recorded.chosen == "cfg_replica", recorded
+    assert "unpriced" in recorded.summary and "default request is guided" in recorded.summary
+    assert d.status["mode_estimate"]["priced"] is False
+
+
+def test_planned_split_is_kept_for_an_unguided_request(monkeypatch):
+    d = _planned_split(monkeypatch, guided = False)
+    assert d.plan is d.one_card and d.plan.secondary_ordinal == 1
+    recorded = mg.placement_decision(d.pipe)
+    assert recorded.chosen == "companion_split"
+    assert (
+        "one denoiser branch per step"
+        in {c.kind: c.reason for c in recorded.rejected}["cfg_replica"]
+    )
+    assert d.status["cfg_parallel"]["placement"]["chosen"] == "companion_split"
+
+
+def test_unpriced_guided_request_takes_the_replica_over_a_post_load_companion_split(monkeypatch):
+    _priced(monkeypatch, need_mib = 7600, compute_s = 1.0, tokens = 4096)
+    monkeypatch.setattr(dm, "_offload_cost_measurements", lambda: None)
+    host = Host([Card(0, T4, 300), Card(1, T4, 300)])
+    pipe = _DitPipe(WanTransformer3DModel())
+    mg.note_default_request(pipe, guided = True, steps = 20, tokens = 4096)
+    d = decide(monkeypatch, host, _sizes(dit = 7400, te = 7600), pipe = pipe)
+    assert d.plan is d.one_card and d.plan.secondary_ordinal is None
+    recorded = mg.placement_decision(pipe)
+    assert recorded.chosen == "cfg_replica" and "unpriced" in recorded.summary
+
+
+def test_wan5b_on_two_32gb_cards_runs_the_replica_instead_of_the_planned_split(monkeypatch):
+    # The reported 2x RTX PRO 4500 case at the recorded Wan 2.2 TI2V 5B sizes: the plan before the load moves the
+    # companions to cuda:1, which on main returned before any replica was priced (both branches on cuda:0)
+    _priced(monkeypatch, need_mib = 9558 + 3400, compute_s = 2.0, tokens = 27280)
+    cards = [Card(o, 32607, 600, cap = (12, 0), name = "NVIDIA RTX PRO 4500") for o in (0, 1)]
+    pipe = _DitPipe(WanTransformer3DModel())
+    mg.note_default_request(pipe, guided = True, steps = 50, tokens = 27280, why = "default guidance 5")
+    d = decide(
+        monkeypatch,
+        Host(cards),
+        _sizes(**_WAN5B_T4),
+        headroom = _WAN5B_HEADROOM,
+        blocks = _WAN5B_BLOCKS,
+        pipe = pipe,
+    )
+    assert d.one_card.secondary_ordinal == 1
+    assert d.plan is d.one_card.fallback_plan and d.plan.secondary_ordinal is None
+    recorded = mg.placement_decision(pipe)
+    assert recorded.chosen == "cfg_replica", recorded
+    assert "0.0 GiB streamed per step on cuda:0" in recorded.summary
+    assert d.status["mode_estimate"]["alternative"] == "companion_split"
+
+
+def test_planned_encoder_split_without_room_for_the_next_encode_runs_the_replica_instead(
+    monkeypatch,
+):
+    # Codex P2 on #19671: beside the encoders only when their next encode also fits; else the one-card plan + replica
+    monkeypatch.setattr(mg, "encoder_working_mib", lambda pipe: 16000)
+    d = _planned_split(monkeypatch, dit = 6000, te = 12000, vae = 6000, need = 6400)
+    assert (
+        d.one_card.secondary_ordinal == 1
+        and d.one_card.secondary_components == mg.TEXT_ENCODERS_ONLY
+    )
+    assert d.plan is d.one_card.fallback_plan and d.plan.secondary_ordinal is None
+    recorded = mg.placement_decision(d.pipe)
+    assert recorded.chosen == "cfg_replica", recorded
+    reasons = [c.reason for c in recorded.rejected if c.kind == "cfg_replica"]
+    assert any(r.startswith("beside the encoders on cuda:1") for r in reasons), recorded.rejected
+
+
+def test_planned_encoder_split_records_its_encode_headroom(monkeypatch):
+    d = _planned_split(monkeypatch, dit = 6000, te = 12000, vae = 6000, need = 6400)
+    assert d.one_card.estimates["multigpu_secondary_headroom_mib"] == mg.TEXT_ENCODER_HEADROOM_MIB
+    assert mg.encoder_working_mib(d.pipe) == mg.TEXT_ENCODER_HEADROOM_MIB
