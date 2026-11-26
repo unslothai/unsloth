@@ -841,7 +841,7 @@ def _archive_turns(
     model = config.effective_embedding_model()
     scope = store.conversation_archive_scope(thread_id)
     # Conversation order from the persisted thread, not arrival order (`_transcript_positions`).
-    positions = _transcript_positions(thread_id, branch or live)
+    positions, replace_clipped = _transcript_positions(thread_id, branch or live)
     live_positions = _live_positions(live)
     written = 0
     # Only an embedder failure falls back to keyword copies; a failing store would refuse those too.
@@ -894,7 +894,17 @@ def _archive_turns(
                 # The cap counts what must be encoded now; chunks pre-embedded in an idle gap are free.
                 hits = _cached_vectors(expected_identity, [chunk.text for chunk in chunks])
                 need = sum(v is None for v in hits)
-                pending.append((group, span, digest, chunks, seats, budget, legacy_hash))
+                pending.append(
+                    (
+                        group,
+                        span,
+                        digest,
+                        chunks,
+                        seats,
+                        budget,
+                        legacy_hash if replace_clipped else None,
+                    )
+                )
                 needs.append(need)
                 snapshots.append(hits)
                 collected += need
@@ -1104,7 +1114,13 @@ def _archive_turns(
         # Without any copy there is no archive, so search_conversation is never offered (#16706).
         # degraded() stays set: dense recall is still down.
         written += _archive_turns_lexically(
-            thread_id, scope, groups, positions, live_positions, cancel_check
+            thread_id,
+            scope,
+            groups,
+            positions,
+            live_positions,
+            cancel_check,
+            replace_clipped = replace_clipped,
         )
 
     # Re-check after commit: a concurrent delete sweep could strand deleted content. Delete drops rows first, sweeps archives last, so either order converges.
@@ -1131,6 +1147,8 @@ def _archive_turns_lexically(
     positions: Optional[list[list[str]]],
     live_positions: Optional[list[list[str]]],
     cancel_check: Optional[Callable[[], bool]],
+    *,
+    replace_clipped: bool,
 ) -> int:
     """Keyword-only copies of evicted turns, one per evicted occurrence (``_write_budget``); returns how many were written."""
     written = 0
@@ -1187,7 +1205,8 @@ def _archive_turns_lexically(
                         commit = False,
                     )
                     store.add_lexical_chunks(conn, scope, document_id, chunks)
-                    _retire_clipped_web_read(conn, scope, legacy_hash, ordinal)
+                    if replace_clipped:
+                        _retire_clipped_web_read(conn, scope, legacy_hash, ordinal)
             except Exception:
                 conn.rollback()
                 raise
@@ -1747,19 +1766,25 @@ def _fallback_ordinal(conn, scope: str, positions: Optional[list[list[str]]]) ->
     return max(store.next_archive_ordinal(conn, scope), len(positions or []))
 
 
-def _transcript_positions(thread_id: str, branch = None) -> Optional[list[str]]:
-    """Numbers come from the saved transcript, not archive time (eviction is not oldest-first); read it, not the request, whose indices shift as groups drop out."""
+def _transcript_positions(thread_id: str, branch = None) -> tuple[Optional[list[list[str]]], bool]:
+    """Return turn positions from the saved transcript and whether it has a single explicit chain."""
     try:
         from core.inference.context_window import group_turns
         from storage import studio_db
         messages = studio_db.list_chat_messages(thread_id)
     except Exception:
-        return None
+        return None, False
     if not messages:
-        return None
+        return None, False
     # Grouped like the evictor, so a position is a TURN index, matching what ordinals compare against.
-    wire = _as_wire(_active_chain(messages, branch))
-    return [[_seat_text(message) for message in group] for group in group_turns(wire) if group]
+    chain = _active_chain(messages, branch)
+    # Retry siblings can share a position and a clipped hash while their tails differ.
+    single_chain = len(chain) == len(messages) and all(
+        (message.get("parentId") or message.get("parent_id")) == previous.get("id")
+        for previous, message in zip(chain, chain[1:])
+    )
+    groups = group_turns(_as_wire(chain))
+    return [[_seat_text(message) for message in group] for group in groups if group], single_chain
 
 
 def _occurrences(positions: Optional[list[list[str]]], group: list[dict]) -> list[int]:
@@ -2225,25 +2250,43 @@ def _rendered_message_count(rows) -> int:
     return total
 
 
-def _contiguous_web_read(rows) -> str | None:
-    """Join exact overlaps so repeated webpage text is matched in its original position."""
+def _join_web_read_chunks(rows) -> str | None:
+    """Rejoin web search exchanges so repeated text matches in the original order."""
     if len(rows) < 2:
         return None
-    first = (rows[0]["text"] or "").split("\n", 1)[0]
-    prefix = "assistant called web_search: "
-    if not first.startswith(prefix) or _direct_web_read_limit(first[len(prefix) :]) is None:
+    if rows[0]["page_char_start"] != 0 or not (rows[0]["text"] or "").startswith(
+        "assistant called "
+    ):
         return None
-    joined = ""
+    parts = []
+    previous_start = previous_end = 0
+    previous_text = ""
     for row in rows:
         text = row["text"]
         start, end = row["page_char_start"], row["page_char_end"]
-        if start is None or end is None or not 0 <= start <= len(joined) < end:
+        if (
+            not text
+            or start is None
+            or end is None
+            or not previous_start <= start < end
+            or end <= previous_end
+            or len(text) != end - start
+        ):
             return None
-        overlap = len(joined) - start
-        if len(text) != end - start or joined[start:] != text[:overlap]:
+        overlap = max(0, previous_end - start)
+        if overlap and previous_text[-overlap:] != text[:overlap]:
             return None
-        joined += text[overlap:]
-    return joined
+        if start > previous_end:
+            # The chunker strips separator whitespace at chunk boundaries.
+            parts.append("\n")
+        parts.append(text[overlap:])
+        previous_start, previous_end, previous_text = start, end, text
+    joined = "".join(parts)
+    call_headers = joined.split("\ntool result: ", 1)[0]
+    # Display arguments can be truncated, and a batch can contain several calls.
+    if any(line.startswith("assistant called web_search: ") for line in call_headers.splitlines()):
+        return joined
+    return None
 
 
 def _document_on_live_branch(
@@ -2276,7 +2319,7 @@ def _document_on_live_branch(
         cache[document_id] = True
         return True
     matched = _document_matches_one_run(rows, transcript, message_count, index)
-    if not matched and (full_read := _contiguous_web_read(rows)) is not None:
+    if not matched and (full_read := _join_web_read_chunks(rows)) is not None:
         matched = _document_matches_one_run([{"text": full_read}], transcript, message_count, index)
     cache[document_id] = matched
     return matched
