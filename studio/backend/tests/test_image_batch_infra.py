@@ -681,3 +681,22 @@ def test_a_losing_size_drops_its_batched_graphs(monkeypatch):
     )
     assert report["sizes"]["2"]["promoted"] is False
     assert dropped == [2] and report["sizes"]["2"]["batched_graphs_dropped"] == 1
+
+
+def test_a_resident_load_with_a_measured_win_coalesces_at_the_winning_size_only(
+    studio, monkeypatch
+):
+    """Three waiting requests and a promoted size of 2: one call of two, the third renders alone (2 + 1)."""
+    from core.inference.diffusion import DiffusionBackend
+
+    app, backend, _saved = studio
+    _verdicts(monkeypatch, {2: {"promoted": True}, 4: {"promoted": False}})
+    _plan(backend, types.SimpleNamespace(name = "z-image"), None, offload_policy = "none")
+    backend.coalesce_batch_sizes = types.MethodType(DiffusionBackend.coalesce_batch_sizes, backend)
+    responses = _post_while_rendering(
+        app, backend, _interleaved("a fox", "a cat", "an owl"), waiting = 3
+    )
+    assert all(r.status_code == 200 for r in responses)
+    assert [len(call["prompts"]) for call in _batched_calls(backend)] == [2]
+    assert len(_alone(backend)) == 1
+    assert trace.snapshot()["call_sizes"] == {"2": 1}
