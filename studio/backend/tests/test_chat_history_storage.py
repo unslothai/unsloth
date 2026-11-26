@@ -2218,17 +2218,24 @@ def test_concurrent_chat_settings_patch_seeds_defaults_without_overwriting_anoth
     connection = sqlite3.connect(":memory:")
     connection.row_factory = sqlite3.Row
     try:
-        connection.execute("CREATE TABLE chat_threads (id text, settings_json text, settings_seqs text)")
+        connection.execute(
+            "CREATE TABLE chat_threads (id text, settings_json text, settings_seqs text)"
+        )
         connection.execute("INSERT INTO chat_threads VALUES ('chat', NULL, NULL)")
         assert studio_db._write_chat_thread_settings_in_conn(
             connection, "chat", merge = {"systemPrompt": "new prompt"}, seq = 1, writer = "first"
         )
         assert studio_db._write_chat_thread_settings_in_conn(
-            connection, "chat", merge = {"temperature": 0.7},
+            connection,
+            "chat",
+            merge = {"temperature": 0.7},
             defaults = {"systemPrompt": "stale prompt", "topP": 0.9},
-            seq = 1, writer = "second",
+            seq = 1,
+            writer = "second",
         )
-        settings = json.loads(connection.execute("SELECT settings_json FROM chat_threads").fetchone()[0])
+        settings = json.loads(
+            connection.execute("SELECT settings_json FROM chat_threads").fetchone()[0]
+        )
         assert settings == {"systemPrompt": "new prompt", "temperature": 0.7, "topP": 0.9}
     finally:
         connection.close()
