@@ -858,14 +858,18 @@ def test_noop_transformers_load_preserves_restore_recipe(monkeypatch):
     monkeypatch.setattr(swap, "_transformers_load", None)
     original = LoadRequest(model_path = "text", max_seq_length = 8192, gpu_ids = [1])
     sparse = LoadRequest(model_path = "text")
+    sparse._advertised_id = "org/new-alias"
     loaded = LoadResponse(status = "loaded", model = "text", display_name = "Text", inference = {})
     already_loaded = loaded.model_copy(update = {"status": "already_loaded"})
 
     swap.remember_transformers_load(original, loaded, False)
+    backend.models["text"]["parallel_slots"] = 8
     swap.remember_transformers_load(sparse, already_loaded, True)
 
     assert swap._transformers_load.launch.max_seq_length == 8192
     assert swap._transformers_load.launch.gpu_ids == [1]
+    assert swap._transformers_load.launch.n_parallel == 8
+    assert swap._transformers_load.launch._advertised_id == "org/new-alias"
     assert swap._transformers_load.extra["user_loaded"] is True
 
     backend._proc = object()

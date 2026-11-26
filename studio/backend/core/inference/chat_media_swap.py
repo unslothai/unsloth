@@ -172,10 +172,16 @@ def remember_transformers_load(request, response, user_initiated: bool) -> None:
     if resident is None:
         return
     identity, entry = resident
+    entry = entry or {}
     if response.status == "already_loaded":
         if previous is not None and previous.identity == identity:
+            launch = previous.launch.model_copy(
+                update = {"n_parallel": entry.get("parallel_slots", previous.launch.n_parallel)}
+            )
+            if request._advertised_id:
+                launch._advertised_id = request._advertised_id
             _transformers_load = replace(
-                previous, extra = {**previous.extra, "user_loaded": user_initiated}
+                previous, launch = launch, extra = {**previous.extra, "user_loaded": user_initiated}
             )
         return
 
@@ -186,7 +192,8 @@ def remember_transformers_load(request, response, user_initiated: bool) -> None:
         launch = request.model_copy(
             update = {
                 # The loader may have inherited precision on its private request copy.
-                "load_in_4bit": (entry or {}).get("load_in_4bit_requested", request.load_in_4bit),
+                "load_in_4bit": entry.get("load_in_4bit_requested", request.load_in_4bit),
+                "n_parallel": entry.get("parallel_slots", request.n_parallel),
                 "hf_token": None,
                 "force_cancel_active": False,
                 "force_reload": False,
@@ -668,7 +675,10 @@ def chat_can_swap() -> bool:
 
         llama = get_llama_cpp_backend()
         if llama.is_loaded:
-            return not getattr(llama, "_native_grant_backed", False)
+            return not (
+                getattr(llama, "_native_grant_backed", False)
+                or getattr(llama, "holds_no_vram", False)
+            )
         return _transformers_snapshot_for_account() is not None
     except Exception:  # noqa: BLE001
         return False

@@ -1,11 +1,51 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 import io
 import json
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 
 import pytest
+import typer
 
 from unsloth_cli import _inference
+
+
+@pytest.mark.parametrize(
+    "settings,loaded,message",
+    [
+        (404, None, "Update Studio"),
+        ({"enabled": False}, {"is_mlx": True}, "GGUF or Transformers"),
+        ({"enabled": False}, {"is_gguf": True}, None),
+    ],
+)
+def test_image_generator_requires_compatible_studio(monkeypatch, settings, loaded, message):
+    monkeypatch.setattr(_inference, "find_studio_server", lambda: "http://localhost")
+    monkeypatch.setattr(_inference, "verify_studio_identity", lambda _: True)
+    monkeypatch.setattr(_inference, "_studio_token", lambda: "test")
+    requests = []
+
+    def request(req, timeout):
+        requests.append(req.selector)
+        if req.selector == "/api/settings/chat-image-swap":
+            if settings == 404:
+                raise HTTPError(req.full_url, 404, "Not Found", None, None)
+            return io.BytesIO(json.dumps(settings).encode())
+        return io.BytesIO(json.dumps(loaded if req.get_method() == "POST" else {}).encode())
+
+    monkeypatch.setattr(_inference, "urlopen_no_redirect", request)
+    options = {
+        "image_generator": "local/sdxl",
+        "hf_token": None,
+        "max_seq_length": None,
+        "load_in_4bit": None,
+    }
+    if message:
+        with pytest.raises(typer.BadParameter, match = message):
+            _inference.connect_studio_server("org/chat", **options)
+    else:
+        client = _inference.connect_studio_server("org/chat", **options)
+        assert client.image_generator == "local/sdxl"
+    assert requests[0] == "/api/settings/chat-image-swap"
+    assert ("/api/inference/load" in requests) is (settings != 404)
 
 
 @pytest.mark.parametrize("signing_available", [True, False])
@@ -70,3 +110,31 @@ def test_image_generator_uses_the_regular_stream(monkeypatch, capsys, signing_av
     assert body["parallel_tool_calls"] is False
     assert body["max_tool_calls_per_message"] == 1
     assert body["stream"] and "tools" not in body
+
+
+def test_image_generator_tool_failure_is_visible(monkeypatch, capsys):
+    client = _inference.HttpChatBackend("http://localhost", "test")
+    client.image_generator = "local/sdxl"
+    failure = "Error: a different image model is loaded."
+    event = {"type": "tool_end", "tool_name": "generate_image", "result": failure}
+    monkeypatch.setattr(
+        _inference,
+        "urlopen_no_redirect",
+        lambda req, timeout: io.BytesIO(f"data: {json.dumps(event)}\n\ndata: [DONE]\n".encode()),
+    )
+    assert (
+        list(
+            client.stream(
+                [],
+                system_prompt = "",
+                temperature = None,
+                top_p = None,
+                top_k = None,
+                repetition_penalty = None,
+                max_new_tokens = None,
+                enable_thinking = False,
+            )
+        )
+        == []
+    )
+    assert failure in capsys.readouterr().err

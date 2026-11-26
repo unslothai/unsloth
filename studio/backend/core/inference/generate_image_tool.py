@@ -147,8 +147,10 @@ async def _generate(
     ticket,
     *,
     swap_holds_admission = False,
+    pinned_resident = None,
 ):
     from core.inference import media_keepwarm
+    from core.inference.diffusion_families import pin_checkpoint
     from core.inference.generation_ticket import generation_ticket
     from core.inference.gpu_arbiter import DIFFUSION
     from routes.inference import _generate_diffusion_image_core
@@ -158,7 +160,11 @@ async def _generate(
         await media_keepwarm.begin_request(DIFFUSION)
     try:
         with generation_ticket(ticket):
-            return await _generate_diffusion_image_core(request)
+            if pinned_resident is None:
+                return await _generate_diffusion_image_core(request)
+            identity, filename = pinned_resident
+            with pin_checkpoint(filename):
+                return await _generate_diffusion_image_core(request, pinned_load = identity)
     finally:
         if not swap_holds_admission:
             media_keepwarm.end_request(DIFFUSION)
@@ -231,15 +237,20 @@ def _run(arguments: dict, workdir: str, cancel_event, timeout: Optional[float]) 
         return _run_with_swap(arguments, prompt, workdir, cancel_event, timeout, account, loop)
     from core.inference.chat_media_swap import request_image_model
 
+    pinned_resident = None
     if selected := request_image_model.get():
-        from core.inference.media_auto_switch import _resolve_pick
-        from core.inference.media_model_index import IMAGE_TASK, resident_is_pick
+        from core.inference.media_auto_switch import _resolve_pick, _retired_copy_as_base
+        from core.inference.media_model_index import IMAGE_TASK, resident_is_pick, same_identity
+        from routes.inference import _resident_load
 
         pick = _resolve_pick(DIFFUSION, selected, IMAGE_TASK)
-        if not (
-            resident_is_pick(status, selected, pick) if pick else status.get("repo_id") == selected
-        ):
+        if pick is not None:
+            matches = resident_is_pick(status, selected, _retired_copy_as_base(pick))
+        else:
+            matches = same_identity(selected, status.get("repo_id") or "")
+        if not matches:
             return "Error: a different image model is loaded. Unload it before using the selected generator."
+        pinned_resident = _resident_load(status)
     if not offers_txt2img(status):
         return ERR_EDIT_ONLY
     engine = engine_if_imported(DIFFUSION)
@@ -255,7 +266,9 @@ def _run(arguments: dict, workdir: str, cancel_event, timeout: Optional[float]) 
         return f"Error: invalid generate_image arguments: {message}"
 
     ticket = GenerationTicket()
-    future = asyncio.run_coroutine_threadsafe(arun_as(account, _generate(request, ticket)), loop)
+    future = asyncio.run_coroutine_threadsafe(
+        arun_as(account, _generate(request, ticket, pinned_resident = pinned_resident)), loop
+    )
     limit = _MAX_WAIT_S if timeout is None or timeout >= 9999 else max(1.0, float(timeout))
     deadline = time.monotonic() + limit
     stopped = None
