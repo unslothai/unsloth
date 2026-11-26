@@ -3569,9 +3569,8 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
             "version and is ignored.",
         )
 
-    # Colocated vLLM IS: ask the engine for temperature-scaled logprobs from before min_p / top_k / top_p, so the
-    # ratio compares full-vocabulary distributions and the trainer skips the kept-set rebuild. First in the body:
-    # the flag must describe the rollouts this call generates (zoo decides per trainer).
+    # Colocated vLLM IS: request pre-min_p/top_k/top_p logprobs. Must be first in the body so the flag
+    # describes this call's rollouts (zoo decides per trainer).
     _untruncated_header = re.search(
         r"\n?([ \t]*)def _generate_and_score_completions\([^)]*\)[^:\n]*:[ \t]*\n", function
     )

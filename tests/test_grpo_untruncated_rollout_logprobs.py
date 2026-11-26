@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""GRPO with colocated vLLM and the IS correction asks unsloth_zoo for temperature-scaled rollout logprobs from
-before min_p / top_k / top_p, so the trainer skips the kept-set rebuild. Older zoo or no colocated engine: off."""
+"""Colocated vLLM + IS correction requests untruncated rollout logprobs; otherwise off."""
 
 from __future__ import annotations
 
@@ -53,7 +52,6 @@ def _block(patched):
     )
     assert match is not None
     assert patched.count("set_vllm_untruncated_logprobs") == 1
-    # First statement of the body, so the flag describes the rollouts this call generates.
     header = re.search(r"def _generate_and_score_completions\([^)]*\)[^:\n]*:[ \t]*\n", patched)
     assert match.start() == header.end() - 1
     first_generate = min(
@@ -74,8 +72,8 @@ def _block(patched):
             True,
             True,
         ),  # TRL >= 1.x keeps the colocated engine on vllm_generation
-        (True, False, True, True, False),  # explicit False
-        (False, True, True, True, False),  # no vLLM
+        (True, False, True, True, False),
+        (False, True, True, True, False),
         (
             True,
             True,
