@@ -104,6 +104,8 @@ def _split(
         result = {k: v for k, v in result.items() if k not in _PROMPT_DERIVED_FIELDS}
     parts = []
     start = 0
+    # The forward these images came from, so a recipe can tell its pixels were rendered in a batch.
+    call_size = sum(len(member.seeds) for member in members)
     for member in members:
         end = start + len(member.seeds)
         parts.append(
@@ -112,6 +114,8 @@ def _split(
                 "images": images[start:end],
                 "seeds": seeds[start:end] if seeds else list(member.seeds),
                 "seed": member.seeds[0],
+                "coalesced_batch_size": call_size,
+                "coalesced_index": start,
             }
         )
         start = end

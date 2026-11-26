@@ -53792,6 +53792,7 @@ async def _generate_diffusion_image_run(
                         "batch_index": index,
                         # The batch shares one seed, so reproducing a batch_index>0 image needs the original batch_size.
                         "batch_size": 1 if list_driven else request.batch_size,
+                        **_coalesced_recipe(result, index),
                         "generation_seconds": generation_seconds,
                         "generation_count": len(result["images"]),
                         "model": result.get("repo_id"),
@@ -55941,6 +55942,18 @@ def _frozen_kwarg(value: Any) -> Hashable:
     return value
 
 
+def _coalesced_recipe(result: dict, index: int) -> dict:
+    """Where an image sat in a coalesced call: its pixels come from a forward of that size, so a solo replay of the
+    seed lands close to it, not on it. Nothing for an image rendered alone."""
+    size = result.get("coalesced_batch_size")
+    if not size:
+        return {}
+    return {
+        "coalesced_batch_size": int(size),
+        "coalesced_index": int(result.get("coalesced_index") or 0) + index,
+    }
+
+
 @contextmanager
 def _reserved_turn(turn: Any):
     """Generations started here use the slot turn a coalesced batch reserved (diffusers engine only)."""
@@ -56008,6 +56021,16 @@ async def _coalesced_image_generate(
         return None
     if family and getattr(detect_family("", family), "layer_count", 0):
         return None
+    if generate_kwargs.get("expected_load") is None:
+        # Pin the shared call to the model these settings were read for, so a model swapped in meanwhile is refused
+        # (each member then retries) instead of rendering every member on it.
+        from core.inference.diffusion_families import load_identity
+        generate_kwargs = {
+            **generate_kwargs,
+            "expected_load": load_identity(
+                status.get("repo_id"), status.get("base_repo"), status.get("family")
+            ),
+        }
     # LoRA ids, hosted adapters (with their HF token) and textual-inversion embeddings resolve under the account
     # that runs the call, the leader: a request that could use any of them batches with its own account only.
     plan = getattr(backend, "coalesce_plan", None)
@@ -56426,7 +56449,13 @@ async def _generate_openai_images(
             saves.append(
                 (
                     image,
-                    {**recipe, "batch_index": index, "seed": seed, "batch_seed": result["seed"]},
+                    {
+                        **recipe,
+                        "batch_index": index,
+                        "seed": seed,
+                        "batch_seed": result["seed"],
+                        **_coalesced_recipe(result, index),
+                    },
                 )
             )
         for record in image_gallery.save_many(saves):

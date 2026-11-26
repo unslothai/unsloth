@@ -626,3 +626,48 @@ def test_a_waiting_batch_wakes_from_the_slot_instead_of_polling():
     results = asyncio.run(run())
     assert [r["images"] for r in results] == [["a"], ["b"]]
     assert calls["wait"] == 1
+
+
+def test_recipes_record_the_shared_call_size_and_position(studio):
+    app, backend, saved = studio
+    posts = [
+        ("/api/inference/images/generate", "alice", _create("a fox", batch_size = 2)),
+        ("/api/inference/images/generate", "bob", _create("a cat")),
+        ("/v1/images/generations", "carol", _openai("an owl")),
+    ]
+    responses = _post_while_rendering(app, backend, posts[:2], waiting = 2)
+    assert all(r.status_code == 200 for r in responses)
+    recipes = sorted((r["account"], r["coalesced_batch_size"], r["coalesced_index"]) for r in saved)
+    assert recipes == [("alice", 3, 0), ("alice", 3, 1), ("bob", 3, 2)]
+    assert [image["coalesced_batch_size"] for image in responses[1].json()["images"]] == [3]
+
+    saved.clear()
+    responses = _post_while_rendering(
+        app, backend, [posts[2], ("/v1/images/generations", "dave", _openai("a hen"))], waiting = 2
+    )
+    assert sorted((r["account"], r["coalesced_index"]) for r in saved) == [
+        ("carol", 0),
+        ("dave", 1),
+    ]
+
+
+def test_a_lone_render_records_no_shared_call():
+    import routes.inference as inference_routes
+    assert inference_routes._coalesced_recipe({"images": ["x"]}, 0) == {}
+
+
+def test_a_coalesced_call_is_always_pinned_to_the_model_its_settings_were_read_for(studio):
+    from core.inference.diffusion_families import load_identity
+
+    app, backend, _saved = studio
+    # Every field explicit and no adapters: the route itself pins no load for this request.
+    posts = [
+        ("/api/inference/images/generate", "alice", _create("a fox", loras = [])),
+        ("/api/inference/images/generate", "bob", _create("a cat", loras = [])),
+    ]
+    assert all(r.status_code == 200 for r in _post_while_rendering(app, backend, posts, waiting = 2))
+    [call] = _batched_calls(backend)
+    status = backend.status()
+    assert call["kwargs"]["expected_load"] == load_identity(
+        status["repo_id"], status["base_repo"], status["family"]
+    )

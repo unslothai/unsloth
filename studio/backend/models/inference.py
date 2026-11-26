@@ -5948,6 +5948,13 @@ class GalleryImage(BaseModel):
     batch_size: int = Field(
         1, description = "Batch size used; with batch_index it lets restore replay this image"
     )
+    coalesced_batch_size: Optional[int] = Field(
+        None,
+        description = "Images in the shared call this one rendered in, when concurrent requests were batched",
+    )
+    coalesced_index: Optional[int] = Field(
+        None, description = "This image's position in that shared call (0-based)"
+    )
     generation_seconds: Optional[float] = Field(
         None,
         description = "Elapsed generation seconds until images are ready to save, shared by the request",
