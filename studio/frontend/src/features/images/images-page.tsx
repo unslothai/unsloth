@@ -495,7 +495,7 @@ import {
 } from "./lib/prompt-enhance";
 import { EnhancedPromptRecipeRow, EnhancePromptControls } from "./prompt-enhance-panel";
 import { loraFuseLabel } from "./lib/lora-fuse";
-import { multiGpuPlacementRow } from "@/lib/multi-gpu-placement";
+import { MULTI_GPU_BATCH_NOTE, multiGpuPlacementRow } from "@/lib/multi-gpu-placement";
 import {
   ENGINE_HINT,
   ENGINE_HINT_CPU_ONLY,
@@ -6565,7 +6565,7 @@ export function ImagesPage({
       {gpuChoices.length > 0 && (
         <AdvancedSelect
           label="GPU"
-          hint="Which card this model loads on. Auto starts on whichever device torch is pointing at, which on a mixed box is not necessarily the largest, and on a computer with several GPUs may put the text encoder, or a copy of the model for the guidance pass, on a second card. Picking a card keeps the whole model on that card. Multi-GPU means the cards inside this one computer: using two machines (for example two DGX Sparks) for one image is not part of this release."
+          hint={`Which card this model loads on. Auto starts on whichever device torch is pointing at, which on a mixed box is not necessarily the largest, and on a computer with several GPUs may put the text encoder, or a copy of the model for the guidance pass, on a second card. Picking a card keeps the whole model on that card. Multi-GPU means the cards inside this one computer: using two machines (for example two DGX Sparks) for one image is not part of this release. ${MULTI_GPU_BATCH_NOTE}`}
           value={selectedGpu}
           onValueChange={setSelectedGpu}
           options={[

@@ -52,9 +52,10 @@ test("the batch-split note says only a batch split can differ from one card", ()
 });
 
 for (const page of ["features/images/images-page.tsx", "features/video/video-page.tsx"]) {
-  test(`${page}: Loaded build has the Multi-GPU row`, () => {
+  test(`${page}: Loaded build has the Multi-GPU row and the GPU hint the batch note`, () => {
     const source = readSrc(page);
     assert.match(source, /multiGpuPlacementRow\(status\.multi_gpu\)/);
     assert.match(source, /<BuildRow\s+label="Multi-GPU"/);
+    assert.match(source, /is not part of this release\. \$\{MULTI_GPU_BATCH_NOTE\}/);
   });
 }
