@@ -13878,9 +13878,9 @@ class DiffusionBackend:
             scheme = select_transformer_quant_scheme(
                 target, transformer_quant, family = family, base_repo = base
             )
-            from .diffusion_prequant_cache import CACHEABLE_SCHEMES, lookup, note_hit
+            from .diffusion_prequant_cache import cacheable_scheme, lookup, note_hit
 
-            if scheme not in CACHEABLE_SCHEMES or transformer_is_quantised(transformer):
+            if not cacheable_scheme(scheme, fam) or transformer_is_quantised(transformer):
                 return None
             cached = lookup(fam, scheme, base_repo = base, source_base = source_base, logger = logger)
             if not cached:

@@ -376,7 +376,23 @@ def key_parts(
         else None,
         "fast_accum": _resolve_fast_accum(None) if scheme == TQ_FP8 else None,
         **extra,
+        **_nvfp4_parts(scheme, family, base),
         **_toolchain(),
+    }
+
+
+def _nvfp4_parts(scheme: str, family: Optional[str], base: Optional[str]) -> dict:
+    """nvfp4 only (int8 / fp8 keys stay as they were): the weight quantiser and the per-layer policy the runtime would
+    apply to this family and base, so a quantiser switch or a new policy is a miss, not a stale hit."""
+    if scheme != NVFP4:
+        return {}
+    from .diffusion_nvfp4_policy import resolve_policy
+    from .diffusion_nvfp4_weight_quant import resolve_method
+
+    policy = resolve_policy(family, base)
+    return {
+        "nvfp4_weight_quant": resolve_method(),
+        "nvfp4_policy": [policy.policy_id, int(policy.version)] if policy is not None else None,
     }
 
 
@@ -386,8 +402,37 @@ def cache_key(parts: dict) -> str:
     ).hexdigest()[:32]
 
 
-# Only schemes whose runtime and hosted builds are identical (nvfp4 converts per family at load; mxfp8 has no twin).
+# Cached for every denoiser, image and video: the runtime and hosted builds are identical (mxfp8 has no twin).
 CACHEABLE_SCHEMES = ("int8", "fp8")
+NVFP4 = "nvfp4"
+# Image transformers also cache plain nvfp4 builds (no per-layer policy). The entry bakes no activation scales, so a
+# hit stays on the torchao kernels a fresh quantize uses; policy builds and video denoisers still quantize at load.
+IMAGE_CACHEABLE_SCHEMES = CACHEABLE_SCHEMES + (NVFP4,)
+
+
+def _is_image_family(fam: Any) -> bool:
+    try:
+        from .diffusion_families import DiffusionFamily
+    except Exception:  # noqa: BLE001
+        return False
+    return isinstance(fam, DiffusionFamily)
+
+
+def _nvfp4_policy_build(fam: Any, base: Optional[str]) -> bool:
+    """True when the runtime applies a per-layer policy to this family and base (or cannot tell)."""
+    try:
+        from .diffusion_nvfp4_policy import resolve_policy
+        family = getattr(fam, "name", fam if isinstance(fam, str) else None)
+        return resolve_policy(family, base) is not None
+    except Exception:  # noqa: BLE001 - unknown: treat as a policy build, which is never cached
+        return True
+
+
+def cacheable_scheme(scheme: Optional[str], fam: Any) -> bool:
+    """Whether builds of ``scheme`` for ``fam`` are written to and read from this cache."""
+    if scheme in CACHEABLE_SCHEMES:
+        return True
+    return scheme in IMAGE_CACHEABLE_SCHEMES and _is_image_family(fam)
 
 
 def _key_for(
@@ -400,7 +445,7 @@ def _key_for(
 ) -> Optional[tuple[str, dict]]:
     """``base`` is where the dense shards are found (or ``shards`` themselves); ``base_id`` the base model the artifact
     is recorded and validated against (default ``base``)."""
-    if scheme not in CACHEABLE_SCHEMES:
+    if not cacheable_scheme(scheme, fam):
         return None
     if shards is None:
         shards = source_shards(base, component)
@@ -447,10 +492,12 @@ def lookup(
     source_base: Optional[str] = None,
 ) -> Optional[str]:
     """Path of a cached artifact for this exact source + scheme, or None. Local reads only, never raises."""
-    if not enabled() or scheme not in CACHEABLE_SCHEMES:
+    if not enabled() or not cacheable_scheme(scheme, fam):
         return None
     try:
         source = base_repo or getattr(fam, "base_repo", None)
+        if scheme == NVFP4 and _nvfp4_policy_build(fam, source):
+            return None
         key = shards = None
         # Every shard set: a repo without refs/main may hold several commit-pinned snapshots.
         seen: set = set()
@@ -1152,8 +1199,14 @@ def save_runtime_quant(
     try:
         info = dict(getattr(transformer, "_unsloth_runtime_quant_info", None) or {})
         scheme = info.get("scheme")
-        if not info or scheme not in CACHEABLE_SCHEMES:
+        if not info or not cacheable_scheme(scheme, fam):
             _log(logger, "info", f"skipped (scheme {scheme or 'unknown'} is not cached)")
+            return None
+        if scheme == NVFP4 and (
+            info.get("nvfp4_policy")
+            or _nvfp4_policy_build(fam, base_repo or getattr(fam, "base_repo", None))
+        ):
+            _log(logger, "info", "skipped (per-layer nvfp4 policy builds are not cached)")
             return None
         if info.get("native"):
             _log(logger, "info", "skipped (native weight-only layers have no safetensors layout)")
@@ -1205,6 +1258,14 @@ def save_runtime_quant(
             return None
         if bool(info.get("convrot_fqns")) != bool(parts["convrot"]):
             _log(logger, "info", "skipped (ConvRot state differs from the key)")
+            return None
+        if scheme == NVFP4 and info.get("nvfp4_weight_quant") != parts["nvfp4_weight_quant"]:
+            _log(
+                logger,
+                "info",
+                f"skipped (nvfp4 weights quantized with {info.get('nvfp4_weight_quant')!r}, "
+                f"the key says {parts['nvfp4_weight_quant']!r})",
+            )
             return None
         if not stack.enter_context(_writer_lock(cache_root(), key)):
             _log(logger, "info", "skipped (no cross-process lock available for the build)")
@@ -1280,6 +1341,8 @@ def save_runtime_quant(
         if scheme == "fp8":
             from .diffusion_transformer_quant import FP8_GRANULARITY
             metadata["fp8_granularity"] = FP8_GRANULARITY
+        if scheme == NVFP4:
+            metadata["nvfp4_weight_quant"] = parts["nvfp4_weight_quant"]
         if wanted_wo:
             metadata["weight_only_name_tokens"] = list(wanted_wo["weight_only_name_tokens"])
             metadata["weight_only_outliers"] = int(wanted_wo["weight_only_outliers"])
