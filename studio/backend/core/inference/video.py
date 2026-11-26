@@ -6451,6 +6451,72 @@ def _ltx25_denoise_price_mib(
         return None
 
 
+def video_denoise_required_mib(
+    *,
+    floor_mib: int,
+    denoise_mib: Optional[int] = None,
+    measured_extra_mib: Optional[int] = None,
+) -> int:
+    """MiB the denoise phase needs: the co-resident floor plus its headroom (``denoise_mib`` when priced, else the base
+    overhead), or the recorded peak with margin and slack when that asks for less (as ``video_offload_shortfall_message``)."""
+    required = int(floor_mib) + (
+        DEFAULT_BASE_OVERHEAD_MIB if denoise_mib is None else max(0, int(denoise_mib))
+    )
+    if measured_extra_mib is not None and measured_extra_mib > 0:
+        from .video_stream_residency import MEASURED_PEAK_MARGIN, MEASURED_SLACK_MIB
+        required = min(
+            required,
+            int(floor_mib) + int(measured_extra_mib * MEASURED_PEAK_MARGIN) + MEASURED_SLACK_MIB,
+        )
+    return required
+
+
+def apply_request_prefetch_depth(
+    pipe: Any,
+    *,
+    floor_mib: int,
+    available_mib: int,
+    denoise_mib: Optional[int] = None,
+    measured_extra_mib: Optional[int] = None,
+    logger: Any = None,
+) -> Optional[int]:
+    """Pick this request's prefetch depth for every streamed denoiser and apply it; the depth, or None when nothing
+    streams through the shared prefetcher. The floor prices one group ahead; a memory-tight request (the budget left
+    after the residents cannot hold a second group ahead beside the denoise headroom) runs one ahead, every other
+    request the built depth (2). ``UNSLOTH_DIFFUSION_PREFETCH_DEPTH`` always wins."""
+    try:
+        from .diffusion_offload_prefetch import (
+            module_prefetchers,
+            set_request_prefetch_depth,
+            streamed_group_mib,
+            tight_prefetch_depth,
+        )
+
+        pfs = []
+        for name in _VIDEO_DENOISER_ATTRS:
+            pfs.extend(module_prefetchers(getattr(pipe, name, None)))
+        if not pfs:
+            return None
+        planned = max(int(getattr(pf, "_unsloth_base_depth", pf.depth)) for pf in pfs)
+        depth = tight_prefetch_depth(
+            available_mib = int(available_mib),
+            required_mib = video_denoise_required_mib(
+                floor_mib = floor_mib, denoise_mib = denoise_mib, measured_extra_mib = measured_extra_mib
+            ),
+            largest_group_mib = streamed_group_mib(pfs),
+            planned_depth = planned,
+        )
+        if set_request_prefetch_depth(pfs, depth) and logger is not None:
+            logger.info(
+                "diffusion.memory: prefetching %d group(s) ahead for this request (%d MiB available)",
+                depth,
+                int(available_mib),
+            )
+        return depth
+    except Exception:  # noqa: BLE001 - the prefetchers keep their depth
+        return None
+
+
 def video_offload_shortfall_message(
     *,
     family: str,
@@ -16215,6 +16281,29 @@ class VideoBackend:
                             device = device_obj,
                         )
                     available_bytes = _request_available_bytes(device_obj, torch.cuda)
+                    request_measured_mib = video_stream_residency.measured_extra_mib(
+                        calibration, int(width) * int(height) * int(frames)
+                    )
+                    request_denoise_mib = _ltx25_denoise_price_mib(
+                        state,
+                        family = fam.name,
+                        width = width,
+                        height = height,
+                        frames = frames,
+                        conditioned = first_pil is not None
+                        or last_pil is not None
+                        or bool(references),
+                        cfg = bool(getattr(fam, "supports_cfg", True)) and float(guidance) > 1.0,
+                        fps = out_fps,
+                    )
+                    apply_request_prefetch_depth(
+                        state.pipe,
+                        floor_mib = request_floor_mib,
+                        available_mib = int(available_bytes // (1024 * 1024)),
+                        denoise_mib = request_denoise_mib,
+                        measured_extra_mib = request_measured_mib,
+                        logger = logger,
+                    )
                     shortfall = video_offload_shortfall_message(
                         family = fam.name,
                         floor_mib = request_floor_mib,
@@ -16224,9 +16313,7 @@ class VideoBackend:
                         height = height,
                         frames = frames,
                         decode_floor_mib = request_decode_floor_mib,
-                        measured_extra_mib = video_stream_residency.measured_extra_mib(
-                            calibration, int(width) * int(height) * int(frames)
-                        ),
+                        measured_extra_mib = request_measured_mib,
                         decode_mib = _video_tiled_decode_mib(
                             state,
                             width = width,
@@ -16236,18 +16323,7 @@ class VideoBackend:
                             device = device_obj,
                             decode_floor_mib = request_decode_floor_mib,
                         ),
-                        denoise_mib = _ltx25_denoise_price_mib(
-                            state,
-                            family = fam.name,
-                            width = width,
-                            height = height,
-                            frames = frames,
-                            conditioned = first_pil is not None
-                            or last_pil is not None
-                            or bool(references),
-                            cfg = bool(getattr(fam, "supports_cfg", True)) and float(guidance) > 1.0,
-                            fps = out_fps,
-                        ),
+                        denoise_mib = request_denoise_mib,
                     )
                     if shortfall is not None:
                         raise RuntimeError(shortfall)
