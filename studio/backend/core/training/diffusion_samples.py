@@ -74,7 +74,7 @@ class SampleSettings:
     cfg_mode: str = "uncond"
     # A fixed schedule shift (Krea 2 Turbo pins mu = 1.15, pipeline_krea2.py:615); None derives it.
     mu: Optional[float] = None
-    # Static shift inference samples at when it differs from the training scheduler's (FLUX.3); None keeps it.
+    # Inference static shift when it differs from training's (FLUX.3).
     shift: Optional[float] = None
 
     @property
@@ -95,7 +95,7 @@ def sample_inference_settings(family: str, base_model: str) -> SampleSettings:
     if family == "flux.2-klein":
         return SampleSettings(28, 4.0) if "base" in name else SampleSettings(4, 0.0)
     if family == "flux.3-klein-base":
-        # Inference's own shift and base CFG (BFL's reference recipe), on a shorter schedule than its 50 steps.
+        # Inference's shift and CFG, fewer steps than its 50.
         from core.inference.diffusion_families import named_generation_params
         from core.inference.diffusion_flux3 import FLUX3_REFERENCE_SHIFT
 
@@ -257,8 +257,7 @@ def flow_sigmas(
     mu: Optional[float] = None,
     shift: Optional[float] = None,
 ):
-    """Inference sigmas from a FRESH scheduler: set_timesteps on the training one rewrites its tables. ``shift``
-    replaces the training scheduler's static shift when inference samples at another one."""
+    """Inference sigmas from a FRESH scheduler: set_timesteps on the training one rewrites its tables."""
     import numpy as np
     import torch
     from diffusers import FlowMatchEulerDiscreteScheduler

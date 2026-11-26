@@ -270,7 +270,6 @@ def test_previews_run_the_inference_recipe_with_cfg():
     from core.inference.diffusion_flux3 import FLUX3_REFERENCE_SHIFT
 
     s = sample_inference_settings(FAMILY, BASE)
-    # Inference's base CFG and shift (one source each), on a shorter schedule than inference's 50 steps.
     assert (s.steps, s.guidance, s.uses_cfg, s.shift) == (28, 4.0, True, 16.0)
     assert s.guidance == named_generation_params(BASE)[1] == named_generation_params(FAMILY)[1]
     assert s.shift == FLUX3_REFERENCE_SHIFT
@@ -585,7 +584,6 @@ def test_preview_sigmas_are_the_inference_schedule_not_the_training_one():
     sig, num_train = flow_sigmas(sched.config, FAMILY, s.steps, 64 * 64, s.mu, s.shift)
     assert torch.allclose(sig, _inference_sigmas(s.steps), atol = 1e-6)
     assert num_train == 1000.0
-    # Training keeps its own table; the preview builds a fresh scheduler.
     assert sched.config.shift == pytest.approx(6.93)
     assert not torch.allclose(
         sig, flow_sigmas(sched.config, FAMILY, s.steps, 64 * 64)[0], atol = 1e-3

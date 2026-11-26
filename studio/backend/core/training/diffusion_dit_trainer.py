@@ -2349,9 +2349,7 @@ def _flux3_save(
 
 
 def _flux3_training_scheduler(cfg):
-    """The block graph's FlowMatchEuler (static shift 6.93, diffusers' dreambooth recipe). Inference and the previews
-    (diffusion_samples.sample_inference_settings) use FLUX3_REFERENCE_SHIFT; training keeps 6.93 until 16 is measured
-    for training."""
+    """Static shift 6.93 (diffusers' dreambooth recipe); inference and previews use FLUX3_REFERENCE_SHIFT."""
     from diffusers import FlowMatchEulerDiscreteScheduler
 
     from core.inference.diffusion_flux3 import FLUX3_BASE_BLOCKS, flux3_blocks
