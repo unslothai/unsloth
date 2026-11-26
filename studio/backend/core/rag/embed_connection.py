@@ -8,12 +8,15 @@ so nothing is loaded locally and the connection's own server decides where the m
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
+import ipaddress
 import logging
 import math
 import re
 import threading
 import time
+from urllib.parse import urlsplit
 
 import httpx
 import numpy as np
@@ -88,8 +91,30 @@ def _client_for(model_name: str):
     return client, provider, model
 
 
+_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+
+
+def _server_of(base_url: str) -> str:
+    # Spellings of one server are one server; userinfo and query carry credentials, not a server.
+    try:
+        parts = urlsplit(base_url.strip())
+        host = (parts.hostname or "").rstrip(".")
+        port = parts.port
+    except ValueError:
+        return base_url.strip()
+    scheme = parts.scheme.lower()
+    with contextlib.suppress(ValueError):
+        host = ipaddress.ip_address(host).compressed
+    host = "localhost" if host in _LOOPBACK_HOSTS else f"[{host}]" if ":" in host else host
+    if port is not None and port != _DEFAULT_PORTS.get(scheme):
+        host = f"{host}:{port}"
+    return f"{scheme}://{host}{parts.path.rstrip('/').removesuffix('/v1').rstrip('/')}"
+
+
 def connection_destination(provider: dict) -> str:
-    server = f"{provider.get('provider_type') or ''}\n{provider.get('base_url') or ''}"
+    server = _server_of(provider.get("base_url") or "")
+    server = f"{provider.get('provider_type') or ''}\n{server}"
     return hashlib.sha256(server.encode("utf-8")).hexdigest()[:16]
 
 

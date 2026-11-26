@@ -303,6 +303,28 @@ def test_an_old_name_taken_by_another_server_does_not_inherit_its_vectors(monkey
     assert not config.embedding_identity_matches(before, embeddings.embedding_identity(name))
 
 
+@pytest.mark.parametrize(
+    "before, after, same",
+    [
+        ("http://scheduler.local:9000/v1", "http://Scheduler.LOCAL:9000/", True),
+        ("http://u:old@scheduler.local:9000/v1?k=1", "http://u:new@scheduler.local:9000/v1", True),
+        ("http://localhost:8080/v1", "http://127.0.0.1:8080", True),
+        ("http://[::1]:8080/v1", "http://localhost:8080/v1", True),
+        ("http://[fd00::1]:8080/v1", "http://[FD00:0:0:0:0:0:0:1]:8080/v1", True),
+        ("https://api.example.com/v1", "https://api.example.com:443/v1", True),
+        ("http://localhost:8080/v1", "http://localhost:8081/v1", False),
+        ("http://scheduler.local:9000/v1", "http://scheduler.local:9000/tei/v1", False),
+        ("http://gpu1.local:9000/v1", "http://gpu2.local:9000/v1", False),
+    ],
+)
+def test_only_a_different_server_counts_as_a_move(monkeypatch, before, after, same):
+    name = "connection:Scheduler/bge-m3"
+    _edit(monkeypatch, {**_PROVIDERS[0], "base_url": before})
+    old = embeddings.embedding_identity(name)
+    _edit(monkeypatch, {**_PROVIDERS[0], "base_url": after})
+    assert config.embedding_identity_matches(old, embeddings.embedding_identity(name)) is same
+
+
 def test_an_edit_that_keeps_the_server_keeps_the_vectors_current(monkeypatch):
     name = "connection:Scheduler/bge-m3"
     before = embeddings.embedding_identity(name)
