@@ -3271,7 +3271,6 @@ export function ChatPage({
   const cloudCompactAt =
     isExternalModel && autoCompactEnabled && activeExternalProviderType !== "openai_codex"
       ? cloudCompactionTrigger({
-          providerType: activeExternalProviderType,
           contextLength: cloudContextWindow,
           autoCompactTokens: activeExternalProvider?.autoCompactTokens,
           autoCompactPercent: autoCompactPercentForModel(

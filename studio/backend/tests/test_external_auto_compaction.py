@@ -76,58 +76,6 @@ class _AnthropicCompactingHandler(BaseHTTPRequestHandler):
         self.wfile.write(sse)
 
 
-class _AnthropicQuotingHandler(_AnthropicCompactingHandler):
-    events = [
-        {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}},
-        {
-            "type": "content_block_delta",
-            "index": 0,
-            "delta": {"type": "text_delta", "text": 'The event is called "compaction_block'},
-        },
-        {"type": "content_block_stop", "index": 0},
-        {"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": {}},
-        {"type": "message_stop"},
-    ]
-
-
-class _OpenAICompactionRejectingHandler(BaseHTTPRequestHandler):
-    protocol_version = "HTTP/1.1"
-
-    def log_message(self, *args, **kwargs) -> None:
-        return
-
-    def do_POST(self) -> None:  # noqa: N802
-        length = int(self.headers.get("Content-Length") or 0)
-        body = json.loads(self.rfile.read(length) or b"{}")
-        self.server.recorded.append(body)  # type: ignore[attr-defined]
-        if "context_management" in body:
-            payload = json.dumps(
-                {
-                    "error": {
-                        "message": "context_management is unavailable for this deployment",
-                        "type": "invalid_request_error",
-                    }
-                }
-            ).encode()
-            self.send_response(400)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(payload)))
-            self.end_headers()
-            self.wfile.write(payload)
-            return
-
-        sse = (
-            b"event: response.completed\n"
-            b'data: {"type":"response.completed",'
-            b'"response":{"output":[],"usage":{"input_tokens":0,"output_tokens":0}}}\n\n'
-        )
-        self.send_response(200)
-        self.send_header("Content-Type", "text/event-stream")
-        self.send_header("Content-Length", str(len(sse)))
-        self.end_headers()
-        self.wfile.write(sse)
-
-
 def _is_summary_call(body: dict) -> bool:
     first = (body.get("messages") or [{}])[0]
     return first.get("role") == "system" and str(first.get("content") or "").startswith(
@@ -247,60 +195,6 @@ def test_a_chat_within_the_threshold_is_forwarded_untouched():
         "openrouter", short, context_overflow = "truncate_oldest", compaction_threshold = 6_000
     )
     assert len(sent["messages"]) == len(short)
-    assert _truncations(chunks) == []
-
-
-def test_a_provider_compaction_is_reported_as_a_summarized_compaction():
-    chat = _long_chat(turns = 2)
-    chunks, sent = _proxy(
-        "anthropic",
-        chat,
-        handler = _AnthropicCompactingHandler,
-        model = "claude-sonnet-4-6",
-        context_overflow = "truncate_oldest",
-        compaction_threshold = 150_000,
-    )
-    assert sent["context_management"]["edits"][0]["trigger"]["value"] == 150_000
-    assert len(sent["messages"]) == len(chat) - 1
-    [truncation] = _truncations(chunks)
-    assert truncation == {
-        "dropped_messages": 4,
-        "boundary_messages": 4,
-        "fits": True,
-        "summarized": True,
-    }
-
-
-def test_a_rejected_provider_compaction_falls_back_to_local_fitting(monkeypatch):
-    monkeypatch.setattr(ep_mod, "_is_openai_family_cloud", lambda _base_url: True)
-    monkeypatch.setattr(ri, "compacts_server_side", lambda *_args: True)
-    chat = _long_chat()
-    chunks, sent = _proxy(
-        "openai",
-        chat,
-        handler = _OpenAICompactionRejectingHandler,
-        model = "gpt-5.5",
-        context_overflow = "truncate_oldest",
-        compaction_threshold = 6_000,
-    )
-    serialized = json.dumps(sent["input"])
-    assert "context_management" not in sent
-    assert "question 0" not in serialized
-    assert "latest question" in serialized
-    [truncation] = _truncations(chunks)
-    assert truncation["fits"] is True
-    assert truncation["dropped_messages"] > 0
-
-
-def test_model_text_naming_a_compaction_block_is_not_a_compaction():
-    chunks, _ = _proxy(
-        "anthropic",
-        _long_chat(turns = 2),
-        handler = _AnthropicQuotingHandler,
-        model = "claude-sonnet-4-6",
-        context_overflow = "truncate_oldest",
-        compaction_threshold = 150_000,
-    )
     assert _truncations(chunks) == []
 
 
