@@ -457,6 +457,14 @@ def loose_diffusion_checkpoint_rows(
     return rows
 
 
+def _is_single_checkpoint_dir(path: Path) -> bool:
+    """A folder holding one loose checkpoint (Flux/flux1-dev.safetensors) loads as single_file."""
+    from core.inference.diffusion_local_files import resolve_local_single_file
+
+    sole = resolve_local_single_file(str(path))
+    return sole is not None and not _is_image_lora_file(path / sole)
+
+
 def _is_loose_diffusion_checkpoint_row(model: LocalModelInfo) -> bool:
     return model.artifact_kind == "single_file_checkpoint" and model.path.lower().endswith(
         ".safetensors"
@@ -1410,7 +1418,7 @@ def _scan_custom_folder(
         # A diffusers pipeline keeps its weights in component subdirs, so its root lands as "unknown"; judge it on its shape rather than on a format the layout cannot report.
         if m.model_format in supported_formats or _is_loose_diffusion_checkpoint_row(m):
             return True
-        return _is_diffusers_pipeline_dir(Path(m.path))
+        return _is_diffusers_pipeline_dir(Path(m.path)) or _is_single_checkpoint_dir(Path(m.path))
 
     # A ComfyUI root / models/: its denoiser folders are scanned like nested roots.
     from hub.utils.comfy_models import comfy_dit_scan_roots, comfy_role_dirs

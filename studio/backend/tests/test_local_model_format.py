@@ -1093,11 +1093,8 @@ def _hf_snapshot(tmp_path: Path, repo_id: str) -> Path:
     return repo / "snapshots" / ("b" * 40)
 
 
-def test_a_copied_single_file_hf_checkpoint_is_whole_and_media_resolvable(monkeypatch, tmp_path):
-    """Windows without symlinks copies files into snapshots/; a lone flux1-dev.safetensors loads as single_file."""
+def _flux_checkpoint(path: Path) -> Path:
     import struct
-
-    from core.inference import media_model_index
 
     header = json.dumps(
         {
@@ -1108,9 +1105,18 @@ def test_a_copied_single_file_hf_checkpoint_is_whole_and_media_resolvable(monkey
             }
         }
     ).encode()
-    checkpoint = _hf_snapshot(tmp_path, "Comfy-Org/flux1-dev") / "flux1-dev.safetensors"
-    checkpoint.parent.mkdir(parents = True)
-    checkpoint.write_bytes(struct.pack("<Q", len(header)) + header + b"\0" * 16)
+    path.parent.mkdir(parents = True, exist_ok = True)
+    path.write_bytes(struct.pack("<Q", len(header)) + header + b"\0" * 16)
+    return path
+
+
+def test_a_copied_single_file_hf_checkpoint_is_whole_and_media_resolvable(monkeypatch, tmp_path):
+    """Windows without symlinks copies files into snapshots/; a lone flux1-dev.safetensors loads as single_file."""
+    from core.inference import media_model_index
+
+    checkpoint = _flux_checkpoint(
+        _hf_snapshot(tmp_path, "Comfy-Org/flux1-dev") / "flux1-dev.safetensors"
+    )
 
     (row,) = _scan_hub_only(monkeypatch, tmp_path)
     assert (row.model_id, row.partial) == ("Comfy-Org/flux1-dev", False)
@@ -1176,3 +1182,18 @@ def test_a_custom_folder_keeps_publisher_qualified_ids(monkeypatch, tmp_path):
     index = resolver._build_index()
     assert {"alice/model", "bob/model"} <= set(index)
     assert index["alice/model"] is not index["bob/model"]
+
+
+def test_a_scan_folder_subfolder_holding_one_checkpoint_is_listed(monkeypatch, tmp_path):
+    """library/Flux/flux1-dev.safetensors with no config loads as single_file, as on main."""
+    from core.inference import media_model_index
+
+    library = tmp_path / "library"
+    checkpoint = _flux_checkpoint(library / "Flux" / "flux1-dev.safetensors")
+
+    (row,) = _scan_hub_only(monkeypatch, tmp_path, folders = [library])
+    assert Path(row.path) == checkpoint.parent
+    assert (
+        Path(media_model_index._build_index("text-to-image")["flux"].model_path)
+        == checkpoint.parent
+    )
