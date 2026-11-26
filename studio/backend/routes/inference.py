@@ -8763,6 +8763,7 @@ async def _with_saved_settings(request: LoadRequest) -> LoadRequest:
     )
     from utils.openai_auto_switch_settings import (
         model_override_load_kwargs,
+        resolve_fit_max_seq_length,
         resolve_override_for_load,
         stored_gpu_index_kind,
     )
@@ -8802,6 +8803,24 @@ async def _with_saved_settings(request: LoadRequest) -> LoadRequest:
     if any(name in sent for name in _PLACEMENT_FIELDS):
         for name in _PLACEMENT_FIELDS:
             fill.pop(name, None)
+        if "max_seq_length" not in sent:
+            from core.inference.llama_server_args import parse_gpu_layers_override
+
+            # The saved context depends on placement (--fit sizes it under manual auto layers); a sent -ngl wins, as in the loader.
+            try:
+                parsed = parse_gpu_layers_override(request.llama_extra_args)
+            except ValueError:
+                parsed = None
+            layers = request.gpu_layers if parsed is None else parsed
+            placed = {
+                **override,
+                "gpu_memory_mode": request.gpu_memory_mode,
+                "gpu_layers": layers if layers >= 0 else None,
+            }
+            context = resolve_fit_max_seq_length(placed, is_gguf = is_gguf)
+            fill.pop("max_seq_length", None)
+            if context is not None:
+                fill["max_seq_length"] = context
     # A filled gpu_ids would strip the sent --device / --main-gpu (_gpu_ids_own_placement).
     if _extra_args_set_any_flag(request.llama_extra_args, _DEVICE_FLAGS):
         fill.pop("gpu_ids", None)
