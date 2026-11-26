@@ -615,11 +615,17 @@ def _child(
 
 
 def test_the_shim_imports_neither_json_nor_pathlib_at_startup(tmp_path):
-    code = "import sys; print(' '.join(sorted(sys.modules)))"
-    with_shim = set(_child(code, tmp_path).split())
-    without = set(_child(code, tmp_path, shim = False).split())
-    assert "sitecustomize" in with_shim
-    added = with_shim - without
+    """They pull re, enum, functools and more: most of every sandboxed Python launch. Loaded on first use instead.
+    Run with -S and the shim imported directly, so no .pth file (an editable install's finder) preloads them."""
+    code = (
+        "import sys\n"
+        f"sys.path.insert(0, {str(_SHIM.parent)!r})\n"
+        "before = set(sys.modules)\n"
+        "import sitecustomize\n"
+        "print(' '.join(sorted(set(sys.modules) - before)))\n"
+    )
+    added = set(_child(code, tmp_path, shim = False, flags = ("-S",)).split())
+    assert "sitecustomize" in added
     assert not added & {"json", "pathlib", "re", "enum"}, sorted(added)
 
 
@@ -680,11 +686,41 @@ def test_the_lazy_finder_resolves_from_the_stdlib_and_hands_back_the_real_loader
         "import pathlib, json\n"
         "print(type(pathlib.__loader__).__name__, type(json.__spec__.loader).__name__)\n"
         "print(any(type(f).__name__ == '_StdlibLazyFinder' for f in sys.meta_path))\n"
+        "import helper_mod\n"
+        "print(helper_mod.VALUE)\n"
     )
-    first, loaders, still_there = _child(code, tmp_path).splitlines()
+    (tmp_path / "helper_mod.py").write_text("VALUE = 'cwd-module'\n")
+    first, loaders, still_there, helper = _child(code, tmp_path).splitlines()
     assert first == "_StdlibLazyFinder"
     assert "_StdlibLoader" not in loaders
-    assert still_there == "False"
+    # Never removed (importlib walks the live meta_path), and inert after: cwd modules import as usual.
+    assert still_there == "True"
+    assert helper == "cwd-module"
+
+
+def test_imports_on_other_threads_never_miss_a_module_while_the_lazy_import_runs(tmp_path):
+    """meta_path is not edited after startup, so a thread importing during the first json/pathlib import still
+    finds every finder (an insert/remove there could make importlib skip one)."""
+    for i in range(20):
+        (tmp_path / f"cwd_mod_{i}.py").write_text(f"V = {i}\n")
+    code = (
+        "import sys, threading, importlib\n"
+        "errors = []\n"
+        "go = threading.Event()\n"
+        "def worker(i):\n"
+        "    go.wait()\n"
+        "    try:\n"
+        "        assert importlib.import_module(f'cwd_mod_{i}').V == i\n"
+        "    except Exception as exc:\n"
+        "        errors.append(repr(exc))\n"
+        "threads = [threading.Thread(target = worker, args = (i,)) for i in range(20)]\n"
+        "[t.start() for t in threads]\n"
+        "go.set()\n"
+        "import pathlib, json\n"
+        "[t.join() for t in threads]\n"
+        "print(len(errors), '_path_mkdir' in pathlib.Path.mkdir.__qualname__)\n"
+    )
+    assert _child(code, tmp_path).split() == ["0", "True"]
 
 
 def test_the_sidecar_round_trips_in_a_child_without_json_preloaded(tmp_path):

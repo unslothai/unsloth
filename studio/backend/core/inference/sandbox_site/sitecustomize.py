@@ -4,6 +4,7 @@
 """Remaps invented paths like /mnt/data onto CWD; reads heal only if the target exists; all wrapped
 in try/except so a failure never breaks the interpreter; no redirect onto existing CWD file"""
 
+import _thread
 import builtins
 import io
 import os
@@ -621,39 +622,13 @@ def _is_stdlib_file(path):
 
 class _StdlibLazyFinder:
     """Serves the first import of json / pathlib from the stdlib (as the old eager import did, so a cwd json.py
-    never wins), patching pathlib after load. Removes itself once both are loaded."""
+    never wins), patching pathlib after load. Installed once at startup and never removed: importlib walks the live
+    sys.meta_path, so editing it while another thread imports could make that thread skip a finder."""
 
     def __init__(self, names):
         self._names = set(names)
-
-    def find_spec(
-        self,
-        name,
-        path = None,
-        target = None,
-    ):
-        if name not in self._names:
-            return None
-        spec = _PathFinder.find_spec(name, _stdlib_paths())
-        if spec is None or spec.loader is None:
-            return spec
-        patch = _pending_pathlib_patch if name == "pathlib" else None
-        spec.loader = _StdlibLoader(spec.loader, patch, lambda: self._loaded(name))
-        return spec
-
-    def _loaded(self, name):
-        # Only after exec: a bare find_spec probe must not consume the patch.
-        self._names.discard(name)
-        if not self._names:
-            try:
-                sys.meta_path.remove(self)
-            except ValueError:
-                pass
-
-
-class _StdlibFirst:
-    def __init__(self):
         self._paths = _stdlib_paths()
+        self._loading = _thread._local()  # builtin; importing threading costs ~1 ms per launch
 
     def find_spec(
         self,
@@ -661,35 +636,41 @@ class _StdlibFirst:
         path = None,
         target = None,
     ):
-        if path is not None or "." in name:
-            return None
-        return _PathFinder.find_spec(name, self._paths)
+        if name in self._names:
+            spec = _PathFinder.find_spec(name, self._paths)
+            if spec is None or spec.loader is None:
+                return spec
+            patch = _pending_pathlib_patch if name == "pathlib" else None
+            spec.loader = _StdlibLoader(spec.loader, patch, self, name)
+            return spec
+        # While this thread runs json / pathlib, their own top-level imports (re, enum, ...) resolve stdlib-first.
+        if getattr(self._loading, "depth", 0) and path is None and "." not in name:
+            return _PathFinder.find_spec(name, self._paths)
+        return None
 
 
 class _StdlibLoader:
-    def __init__(self, loader, patch, loaded):
+    def __init__(self, loader, patch, finder, name):
         self._loader = loader
         self._patch = patch
-        self._loaded = loaded
+        self._finder = finder
+        self._name = name
 
     def create_module(self, spec):
         return self._loader.create_module(spec)
 
     def exec_module(self, module):
-        # Its imports resolve stdlib-first; a meta_path hook, not a sys.path swap, so other threads still import.
-        first = _StdlibFirst()
-        sys.meta_path.insert(0, first)
+        loading = self._finder._loading
+        loading.depth = getattr(loading, "depth", 0) + 1
         try:
             self._loader.exec_module(module)
         finally:
-            try:
-                sys.meta_path.remove(first)
-            except ValueError:
-                pass
+            loading.depth -= 1
             module.__loader__ = self._loader
             if getattr(module, "__spec__", None) is not None:
                 module.__spec__.loader = self._loader
-        self._loaded()
+        # Only after exec: a bare find_spec probe must not consume the patch.
+        self._finder._names.discard(self._name)
         if self._patch is None:
             return
         try:
