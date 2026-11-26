@@ -51,8 +51,14 @@ def _items():
     return items
 
 
-def _run(items, spec, monkeypatch):
+def _run(
+    items,
+    spec,
+    monkeypatch,
+    durations = None,
+):
     monkeypatch.setenv(shard_split.ENV, spec)
+    monkeypatch.setattr(shard_split, "_durations", lambda: {} if durations is None else durations)
     config, kept = _Config(), list(items)
     shard_split.select(config, kept)
     return kept, config.hook.deselected
@@ -104,6 +110,24 @@ def test_unset_keeps_everything(monkeypatch):
     kept = list(items)
     shard_split.select(_Config(), kept)
     assert kept == items
+
+
+def test_measured_seconds_balance_the_parts(monkeypatch):
+    """One 100 s test gets a part to itself; the 1 s tests share the other."""
+    items = [_Item("tests/test_a_gloo.py::test_slow")] + [
+        _Item(f"tests/test_a_gloo.py::test_fast[{i}]") for i in range(30)
+    ]
+    durations = {"tests/test_a_gloo.py": {"*": 1, "test_slow": 100}}
+    first = [item.nodeid for item in _run(items, "1/2", monkeypatch, durations)[0]]
+    assert first == ["tests/test_a_gloo.py::test_slow"]
+
+
+def test_the_checked_in_weights_load():
+    durations = shard_split._durations()
+    assert durations, shard_split.DURATIONS
+    for path, seconds in durations.items():
+        assert path.startswith("tests/") and path.endswith(".py"), path
+        assert "*" in seconds and all(isinstance(v, int) and v >= 1 for v in seconds.values()), path
 
 
 @pytest.mark.parametrize("spec", ["0/2", "3/2", "two/3", "1"])

@@ -97,7 +97,9 @@ jobs:
       # and on staging the shard was no faster for it.
       UNSLOTH_TEST_RANK_ZYGOTE: ${{ matrix.rank_zygote || '1' }}
       # A shard listed as name-1 .. name-n with `split: k/n` runs part k of its selection
-      # (tests/_shared/shard_split.py): the slow shards grow by runners instead of past the cap.
+      # (tests/_shared/shard_split.py, weighted by tests/_shared/shard_durations.json): the slow
+      # shards grow by runners instead of past the cap. n is each shard's measured test time over
+      # about 400 s of a 4 vCPU runner, so a part stays near 8 to 9 minutes with install.
       UNSLOTH_TEST_SPLIT: ${{ matrix.split || '' }}
       UNSLOTH_TEST_RANK_ZYGOTE_STATS: /tmp/unsloth_rank_zygote_stats
       PYTEST_ADDOPTS: --durations=40
@@ -141,7 +143,12 @@ jobs:
             split: 2/2
             selection: >-
               tests/test_fsdp2_native_[defghijklmnopqr]*.py
-          - shard: fsdp2-native-sz
+          - shard: fsdp2-native-sz-1
+            split: 1/2
+            selection: >-
+              tests/test_fsdp2_native_[!abcdefghijklmnopqr]*.py
+          - shard: fsdp2-native-sz-2
+            split: 2/2
             selection: >-
               tests/test_fsdp2_native_[!abcdefghijklmnopqr]*.py
           # The other multi-rank gloo suites (tensor, pipeline and context parallel, float8 and
@@ -156,28 +163,35 @@ jobs:
           # shard of their own; test_c[!p]* keeps test_context_parallel_*, and a test_cp[!_]* gloo
           # file matches neither and is reported dropped.
           - shard: gloo-1
-            split: 1/4
+            split: 1/5
             selection: >-
               tests/test_[!cdfimpstu]*gloo*.py
               tests/test_c[!p]*gloo*.py
               tests/test_f[!s]*gloo*.py
               tests/test_parallel_[!c]*gloo*.py
           - shard: gloo-2
-            split: 2/4
+            split: 2/5
             selection: >-
               tests/test_[!cdfimpstu]*gloo*.py
               tests/test_c[!p]*gloo*.py
               tests/test_f[!s]*gloo*.py
               tests/test_parallel_[!c]*gloo*.py
           - shard: gloo-3
-            split: 3/4
+            split: 3/5
             selection: >-
               tests/test_[!cdfimpstu]*gloo*.py
               tests/test_c[!p]*gloo*.py
               tests/test_f[!s]*gloo*.py
               tests/test_parallel_[!c]*gloo*.py
           - shard: gloo-4
-            split: 4/4
+            split: 4/5
+            selection: >-
+              tests/test_[!cdfimpstu]*gloo*.py
+              tests/test_c[!p]*gloo*.py
+              tests/test_f[!s]*gloo*.py
+              tests/test_parallel_[!c]*gloo*.py
+          - shard: gloo-5
+            split: 5/5
             selection: >-
               tests/test_[!cdfimpstu]*gloo*.py
               tests/test_c[!p]*gloo*.py
@@ -234,7 +248,12 @@ jobs:
           # Pipeline parallel growth (15655, 15656, 16167, 16417) hit the 2100 s cap, so TP and PP
           # split; a gloo file named test_t[!p]* or test_tp[!_]* matches no shard and is reported
           # dropped.
-          - shard: gloo-tp
+          - shard: gloo-tp-1
+            split: 1/2
+            selection: >-
+              tests/test_tp_n*gloo*.py
+          - shard: gloo-tp-2
+            split: 2/2
             selection: >-
               tests/test_tp_n*gloo*.py
           # gloo-pp then ran 1324 to 1764 s of its 2100 s cap on a 4 vCPU runner (2026-11-25) and was
@@ -243,21 +262,30 @@ jobs:
           # shard's test time (1681 of 2640 s measured), so it gets a runner of its own. Any other
           # test_pp_e* or test_pp[!_]* gloo file matches neither shard and is reported dropped.
           - shard: gloo-pp-1
-            split: 1/2
+            split: 1/3
             selection: >-
               tests/test_pp_[!e]*gloo*.py
               tests/test_pp_env_[!g]*gloo*.py
           - shard: gloo-pp-2
-            split: 2/2
+            split: 2/3
+            selection: >-
+              tests/test_pp_[!e]*gloo*.py
+              tests/test_pp_env_[!g]*gloo*.py
+          - shard: gloo-pp-3
+            split: 3/3
             selection: >-
               tests/test_pp_[!e]*gloo*.py
               tests/test_pp_env_[!g]*gloo*.py
           - shard: gloo-pp-env-1
-            split: 1/2
+            split: 1/3
             selection: >-
               tests/test_pp_env_gloo.py
           - shard: gloo-pp-env-2
-            split: 2/2
+            split: 2/3
+            selection: >-
+              tests/test_pp_env_gloo.py
+          - shard: gloo-pp-env-3
+            split: 3/3
             selection: >-
               tests/test_pp_env_gloo.py
     steps:
