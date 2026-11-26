@@ -212,6 +212,8 @@ def test_modelscope_dataset_metadata_is_hidden_from_datasets(hub):
 
 def test_an_aliased_repo_is_served_under_its_hugging_face_id(hub, monkeypatch):
     assert upstream.upstream_id("model", "minimaxai/minimax-music3") == "MiniMax/MiniMax-Music3"
+    assert upstream.upstream_id("model", "zai-org/GLM-5.3") == "ZhipuAI/GLM-5.3"
+    assert upstream.upstream_id("dataset", "Rowan/hellaswag") == "evalscope/hellaswag"
     monkeypatch.setattr(
         upstream,
         "_ALIAS_INDEX",
