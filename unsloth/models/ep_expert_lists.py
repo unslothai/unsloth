@@ -16,6 +16,7 @@ import collections
 import contextlib
 import copy
 import functools
+import os
 import itertools
 import operator
 
@@ -54,6 +55,9 @@ def list_shard_problem(block, ep = None):
     kinds = {type(m) for m in experts}
     if len(kinds) != 1 or not any(True for _ in experts[0].parameters()):
         return "experts of different types, or without parameters"
+    zoo = _zoo_fast_path(block, experts)
+    if zoo is not None:
+        return zoo
     # Logical shapes: a bitsandbytes 4-bit weight's packed storage can differ between experts of one checkpoint.
     shapes = {tuple((n, _logical_shape(p)) for n, p in m.named_parameters()) for m in experts}
     if len(shapes) != 1:
@@ -62,6 +66,34 @@ def list_shard_problem(block, ep = None):
         return "expert buffers"
     if getattr(block, "ep_size", 1) not in (1, None):
         return f"the block runs its own expert parallel (ep_size = {block.ep_size})"
+    return None
+
+
+# unsloth_zoo's speedups for per-expert lists, which expert parallel cannot shard by expert index.
+_ZOO_STACKED_LORA, _ZOO_GROUPED = "UNSLOTH_MOE_STACKED_LORA", "UNSLOTH_MOE_GROUPED"
+
+
+def keep_zoo_expert_loops():
+    """Under expert parallel the zoo keeps PEFT's per-expert LoRA and the per-expert loop (an explicit setting
+    wins; list_shard_problem then names it)."""
+    os.environ.setdefault(_ZOO_STACKED_LORA, "0")
+    os.environ.setdefault(_ZOO_GROUPED, "0")
+
+
+def _zoo_fast_path(block, experts):
+    if any(
+        "_unsloth_stack_owner" in m.__dict__ or "weight_stack" in m._parameters
+        for m in experts.modules()
+    ):
+        return (
+            "unsloth_zoo's stacked expert LoRA (one weight_stack Parameter per projection, held by expert 0); "
+            f"set {_ZOO_STACKED_LORA}=0 before get_peft_model"
+        )
+    if "_orig_moe_forward" in block.__dict__:
+        return (
+            "unsloth_zoo's grouped MoE forward (it computes every expert at once, without calling them); "
+            f"set {_ZOO_GROUPED}=0 before from_pretrained"
+        )
     return None
 
 
@@ -351,8 +383,9 @@ def _exchange(shard, calls, like):
     if any(f for _, f, _ in got) or flag:
         raise RuntimeError(
             f"Unsloth: {shard.block.__class__.__name__}.forward computed its experts without calling them one by "
-            "one (a fused or decode-only path), which under expert parallel holds only this rank's experts. "
-            "Disable that path or train without expert parallel."
+            "one (a fused or decode-only path, or unsloth_zoo's grouped MoE forward), which under expert parallel "
+            f"holds only this rank's experts. Disable that path ({_ZOO_GROUPED}=0 for the zoo's) or train without "
+            "expert parallel."
         )
     if calls:
         x_send = torch.cat([rows[i] for i in order])

@@ -108,6 +108,7 @@ def ep_env_mesh():
 
 def ep_env_load(fn, args, kwargs, sharded):
     """from_pretrained under UNSLOTH_EP_SIZE; `sharded` False (adapter or QAT load) loads in full."""
+    _lists().keep_zoo_expert_loops()
     if not sharded:
         return fn(*args, **kwargs)
     try:

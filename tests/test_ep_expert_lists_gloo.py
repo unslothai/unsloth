@@ -644,3 +644,53 @@ def test_ep_expert_lists_both_passes_draw_the_same_router_randomness():
     assert all(r is not None and "error" not in r for r in results), results
     for r in results:
         assert r["same"] == [True, True, True], r
+
+
+def _case_zoo_fast_paths(rank, world, tmp, repo):
+    os.environ.setdefault("UNSLOTH_IS_PRESENT", "1")
+    os.environ.setdefault("UNSLOTH_FORCE_CPU", "1")
+    build, tpn, epn = _modules()
+    lists = epn._lists()
+    try:
+        from unsloth_zoo.temporary_patches import moe_grouped_modulelist as zoo
+    except Exception as exc:
+        return {"skip": f"unsloth_zoo moe_grouped_modulelist unavailable: {type(exc).__name__}"}
+    model = _build(build, repo, None, False)
+    block = tpn.moe_blocks_with_experts(model)[0]
+    spec = zoo._BLOCK_SPECS.get(type(block).__name__)
+    if spec is None:
+        return {"skip": f"no zoo grouped spec for {type(block).__name__}"}
+    before = lists.list_shard_problem(block, world)
+    block._orig_moe_forward = (
+        block.forward
+    )  # what the zoo's grouped forward leaves on a patched block
+    grouped = lists.list_shard_problem(block, world)
+    del block._orig_moe_forward
+    stacked = zoo._stack_block_lora(block, spec)
+    return {
+        "before": before,
+        "grouped": grouped,
+        "stacked": stacked,
+        "after": lists.list_shard_problem(block, world),
+    }
+
+
+def test_ep_expert_lists_refuse_the_zoo_stacked_lora_and_grouped_forward():
+    # The zoo's stacked expert LoRA and grouped MoE forward are refused by name (the EP load turns both off).
+    out = _spawn("_case_zoo_fast_paths", world = 1, repo = FAMILIES["mixtral"])[0]
+    assert out is not None and "error" not in out, out
+    if "skip" in out:
+        pytest.skip(out["skip"])
+    assert out["before"] is None, out
+    assert "UNSLOTH_MOE_GROUPED=0" in out["grouped"], out
+    assert out["stacked"] >= 1, out
+    assert "UNSLOTH_MOE_STACKED_LORA=0" in out["after"], out
+
+
+def test_ep_env_load_keeps_the_zoo_per_expert_paths(monkeypatch):
+    _, _, epn = _modules()
+    monkeypatch.delenv("UNSLOTH_MOE_STACKED_LORA", raising = False)
+    monkeypatch.setenv("UNSLOTH_MOE_GROUPED", "1")  # an explicit setting is kept
+    assert epn.ep_env_load(lambda: "loaded", (), {}, False) == "loaded"
+    assert os.environ["UNSLOTH_MOE_STACKED_LORA"] == "0"
+    assert os.environ["UNSLOTH_MOE_GROUPED"] == "1"
