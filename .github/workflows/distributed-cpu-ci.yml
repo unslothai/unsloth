@@ -92,8 +92,10 @@ jobs:
       # per-worker zygote that already ran the conftest and `import unsloth`, and a rank whose
       # environment or imports differ from the zygote's starts again as a plain spawn
       # (tests/_shared/rank_zygote.py; tests/test_rank_zygote_gloo.py compares the two). Job-level,
-      # so the pytest step stays the one studio-backend-ci.yml runs.
-      UNSLOTH_TEST_RANK_ZYGOTE: '1'
+      # so the pytest step stays the one studio-backend-ci.yml runs. A shard with `rank_zygote: '0'`
+      # keeps plain spawns: gloo and fsdp2 gained nothing from it on staging, and gloo's xdist workers
+      # were killed mid-run with it on (16 GB runner; an idle zygote holds about 0.5 GB).
+      UNSLOTH_TEST_RANK_ZYGOTE: ${{ matrix.rank_zygote || '1' }}
       UNSLOTH_TEST_RANK_ZYGOTE_STATS: /tmp/unsloth_rank_zygote_stats
       PYTEST_ADDOPTS: --durations=40
     strategy:
@@ -112,6 +114,7 @@ jobs:
           # must match a file, or bash hands pytest the literal pattern
           # (tests/test_ci_repo_cpu_shards.py checks both).
           - shard: fsdp2
+            rank_zygote: '0'
             selection: >-
               tests/test_fsdp2_[!n]*.py
               tests/test_fsdp2_n[!a]*.py
@@ -137,6 +140,7 @@ jobs:
           # shard of their own; test_c[!p]* keeps test_context_parallel_*, and a test_cp[!_]* gloo
           # file matches neither and is reported dropped.
           - shard: gloo
+            rank_zygote: '0'
             selection: >-
               tests/test_[!cdfimpstu]*gloo*.py
               tests/test_c[!p]*gloo*.py

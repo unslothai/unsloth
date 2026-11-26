@@ -445,9 +445,7 @@ def _zygote_for(process_obj, mode):
             return None
         limit = _limit()
         if _mem_available_gb() < _MEM_FLOOR_GB:
-            limit = min(
-                limit, len(_servers)
-            )  # no new zygote while memory is short; idle ones may go
+            limit = 0  # memory is short: every idle zygote goes, and no new one starts
         # Least used first, among those with no live rank (a rank's exit code comes back through its zygote).
         for old_key in sorted(_servers, key = lambda k: _turns.get(json.dumps(json.loads(k)[:2]), 0)):
             if len(_servers) < limit:

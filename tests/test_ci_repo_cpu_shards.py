@@ -234,7 +234,13 @@ class TestTheDistributedShardsForkTheirRanks:
 
     def test_the_distributed_job_turns_the_zygote_on(self):
         env = self._env(*_SHARD_JOBS[1])
-        assert env.get("UNSLOTH_TEST_RANK_ZYGOTE") == "1"
+        # On unless a shard opts out with rank_zygote: '0'.
+        assert env.get("UNSLOTH_TEST_RANK_ZYGOTE") == "${{ matrix.rank_zygote || '1' }}"
+        entries = _workflow(_DISTRIBUTED_CI)["jobs"]["distributed-cpu-tests"]["strategy"]["matrix"][
+            "include"
+        ]
+        assert all(entry.get("rank_zygote", "1") in ("0", "1") for entry in entries)
+        assert any("rank_zygote" not in entry for entry in entries)
         assert env.get("UNSLOTH_TEST_RANK_ZYGOTE_STATS"), "the summary step reads this directory"
         steps = _workflow(_DISTRIBUTED_CI)["jobs"]["distributed-cpu-tests"]["steps"]
         summary = [s for s in steps if "rank_zygote.py --summary" in (s.get("run") or "")]
