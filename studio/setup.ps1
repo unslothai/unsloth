@@ -3293,6 +3293,7 @@ function Show-NpmRegistryHint {
 }
 
 # ─────────────────────────────────────────────
+# Banner
 # ─────────────────────────────────────────────
 Write-StudioLine ""
 if ($script:StudioVtOk -and -not $env:NO_COLOR) {

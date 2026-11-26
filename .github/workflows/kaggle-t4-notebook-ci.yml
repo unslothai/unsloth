@@ -26,6 +26,7 @@
 # WEEKLY accelerator quota is exhausted (the gate says so before any kernel is pushed). An UNREADABLE
 # quota and every other infrastructure outcome skips; the in-job recheck uses --soft-fail.
 # ---------------------------------------------------------------------
+#
 # ---------------------------------------------------------------------
 # ---------------------------------------------------------------------
 # Red only for a failed payload on a T4 or an exhausted weekly quota; every other outcome skips.

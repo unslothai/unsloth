@@ -79,6 +79,7 @@ echo "✅ Frontend CSS validated (${MAX_CSS_SIZE} bytes)"
 
 cd ../..
 
+# 2. Clean old artifacts
 rm -rf build dist *.egg-info
 
 # 3. Stamp display-only Unsloth release metadata for packaged builds.
@@ -97,6 +98,7 @@ else
     STUDIO_STAMPED_VERSION="$(python scripts/stamp_studio_release.py)"
 fi
 
+# 4. Build wheel/sdist.
 python -m build
 
 if [ "${1:-}" = "publish" ]; then
@@ -106,7 +108,8 @@ fi
 _restore_studio_build_info
 trap - EXIT
 
-# Wheel only (py3-none-any covers all installers, half PyPI's limit); sdist for --verify-dist.
+# 5. Optionally publish. Wheel only: the sdist is still built for --verify-dist, but the
+# py3-none-any wheel covers every installer and halves the size against PyPI's limit.
 if [ "${1:-}" = "publish" ]; then
     python -m twine upload dist/*.whl
 fi

@@ -63,7 +63,8 @@ env:
 
 jobs:
   # ─────────────────────────────────────────────────────────────────────
-  # Advisory audits on one runner; continue-on-error so one finding does not hide the others.
+  # pip-audit + npm audit + cargo audit on one runner; each step is continue-on-error so
+  # one finding does not suppress the others.
   # ─────────────────────────────────────────────────────────────────────
   advisory-audit:
     name: advisory audit (pip + npm + cargo)
@@ -243,7 +244,8 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       # ─────────────────────────────────────────────────────────────
-      # Scan for non-registry URLs, missing integrity, IOCs; catches pre-advisory attacks.
+      # Structural lockfile scan (non-registry URLs, missing integrity, IOC strings); catches
+      # attacks before an advisory exists.
       # ─────────────────────────────────────────────────────────────
       - name: Lockfile supply-chain audit (pre-install scan)
         run: |

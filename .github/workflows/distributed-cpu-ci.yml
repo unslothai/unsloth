@@ -196,7 +196,8 @@ jobs:
             python-multipart aiofiles sqlalchemy cryptography psutil \
             pyyaml jinja2 mammoth unpdf requests typer \
             'numpy<3' 'pytest<9.2' pytest-asyncio pytest-xdist pytest-timeout httpx
-          # pytest<9.2: pytest-timeout names hung tests; unsloth_zoo imports torchvision.
+          # pytest<9.2: see the first install step. pytest-timeout names a hung test instead of a `cancelled` job.
+          # torchvision: unsloth_zoo.vision_utils imports it at module scope.
           uv pip install --system --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple \
             'torch>=2.4,<2.11' 'torchvision<0.26' 'torchaudio<2.11'
           # sentence-transformers rides the transformers pin so it cannot raise the ceiling, and
@@ -223,7 +224,8 @@ jobs:
             echo "::error::.pre-commit-config.yaml no longer pins ruff-unsloth for ruff-format-with-kwargs"
             exit 1
           fi
-          # GitHub asset 504s are not retried by pip; bursts last minutes, so back off ~5 min.
+          # The wheel is a GitHub release asset; a 504 there is not retried by pip, so retry here.
+          # Those 504s come in bursts lasting minutes, so back off for about five minutes in total.
           for attempt in 1 2 3 4 5 6; do
             if pip install -r "$RUNNER_TEMP/ruff-unsloth.txt"; then
               break

@@ -343,7 +343,8 @@ if [ -f "$STATE" ] && [ "${UNSLOTH_KEEP_DELETED_NOTEBOOKS:-0}" != "1" ]; then
         && echo "[unsloth-nb] restored $restored deleted notebook(s) from the baked set ($downgraded needing a refresh)"
 fi
 
-# Best-effort, detached: ls-remote + clone can take 2x TIMEOUT offline; must not delay startup.
+# 2) Best-effort GitHub refresh, detached because ls-remote + clone can spend 2x
+# TIMEOUT when offline and must not delay container startup.
 [ "${UNSLOTH_SKIP_NOTEBOOK_REFRESH:-0}" = "1" ] && exit 0
 command -v git >/dev/null 2>&1 || exit 0
 command -v sha256sum >/dev/null 2>&1 || exit 0

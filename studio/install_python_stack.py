@@ -12194,6 +12194,7 @@ def install_python_stack() -> int:
                 "https://unsloth.ai/docs/get-started/install/amd"
             )
 
+    # 3. Extra dependencies
     if not _skip_step(REQ_ROOT / "extras.txt", "unsloth extras", no_deps = False):
         pip_install(
             "Installing additional unsloth dependencies",
@@ -12233,6 +12234,7 @@ def install_python_stack() -> int:
         _remove_stale_ssm_kernels()
         _ensure_int8_gemm()
 
+    # 8. Unsloth dependencies
     if not _skip_step(REQ_ROOT / "studio.txt", "Unsloth Studio deps", no_deps = False):
         pip_install(
             "Installing Unsloth Studio dependencies",
@@ -12249,6 +12251,7 @@ def install_python_stack() -> int:
         _progress("accelerate check")
         _repair_bad_accelerate()
 
+    # 9. Data-designer dependencies
     _dd_deps_ran = not _skip_step(
         SINGLE_ENV / "data-designer-deps.txt", "data designer deps", no_deps = False
     )
@@ -12269,6 +12272,7 @@ def install_python_stack() -> int:
             req = SINGLE_ENV / "data-designer.txt",
         )
 
+    # 11. Local Data Designer seed plugins
     local_dd_plugins = [
         ("unstructured", LOCAL_DD_UNSTRUCTURED_PLUGIN),
         ("github", LOCAL_DD_GITHUB_PLUGIN),
@@ -12547,7 +12551,8 @@ def install_python_stack() -> int:
                     "import on a host without the CUDA toolkit, leaving audio disabled"
                 )
 
-    # Silent pip check (conflicts expected) if this pass installed or the last run was unclean.
+    # 14. Final check (silent; third-party conflicts are expected). Only when this pass installed
+    # something or the last run had no clean answer.
     _pip_check_ok = (_PASS_EVIDENCE or {}).get("pip_check_ok")
     if _INSTALL_ACTIONS > 0 or _pip_check_ok is not True:
         _pip_check_ok = (
@@ -12622,7 +12627,8 @@ def install_python_stack() -> int:
         )
         return 1
 
-    # Warns if MLX is unusable (else chat-only silently); runs after manifest; probe can hang.
+    # 16. Apple Silicon: warn when the installed MLX stack is unusable, or the app silently comes up
+    # chat-only. After the manifest: the probe can hang its full timeout.
     if IS_MAC_ARM:
         _report_mlx_stack_health(skipped = _STEP_RESULTS.get("mlx") == "skipped")
 
