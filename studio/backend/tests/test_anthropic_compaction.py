@@ -577,7 +577,11 @@ def test_compaction_delta_summary_reaches_the_tool_event(monkeypatch):
     ]
 
 
-def _replay(monkeypatch, model: str, temperature = 0.7) -> dict:
+def _replay(
+    monkeypatch,
+    model: str,
+    temperature = 0.7,
+) -> dict:
     captured: dict = {}
 
     def http_handler(request: httpx.Request) -> httpx.Response:
