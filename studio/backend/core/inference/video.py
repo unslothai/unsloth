@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import contextlib
 import dataclasses
+import collections
 import functools
 import inspect
 import os
@@ -6862,6 +6863,9 @@ class VideoBackend:
         self._generate_job_account: Optional[str] = None
         # The OpenAI /v1/videos job id this run was started under, or None for a Studio-page run
         self._gen_video_id: Optional[str] = None
+        # video_id -> (account, terminal record) of recent clips: a page whose clip ended while a
+        # successor took the single progress record still reads its own outcome.
+        self._gen_outcomes: "collections.OrderedDict[str, tuple]" = collections.OrderedDict()
 
     def _device_target(self, ordinal: Optional[int] = None) -> DiffusionDeviceTarget:
         """Pins the device per worker thread: torch.cuda.set_device is thread-local, not set once at
@@ -15317,9 +15321,11 @@ class VideoBackend:
         live_preview: Optional[bool] = None,
         draft_decode: Optional[bool] = None,
         before_commit: Optional[Callable[[], None]] = None,
+        record_outcome: bool = True,
     ) -> dict[str, int]:
         """Returns at once (proxy caps ~100 s). VIDEO_NOT_LOADED_MSG and VIDEO_GENERATION_BUSY_MSG map to 409.
-        ``before_commit`` runs under the lock just before the reservation; raising aborts it."""
+        ``before_commit`` runs under the lock just before the reservation; raising aborts it.
+        ``record_outcome`` False keeps a Video page clip's id out of the /v1/videos job store."""
         if input_reference is not None and (first_frame is not None or reference_images):
             raise ValueError(
                 "input_reference cannot be combined with explicit conditioning inputs."
@@ -15438,10 +15444,16 @@ class VideoBackend:
                     "eta_seconds": None,
                 }
                 self._last_request_shape = None
+                _note_clip_started(state.family, canvas_w, canvas_h, run_num_frames, steps)
                 break
         worker = account_thread(
             # Not in kwargs: those are also replayed as a valid generate() call.
-            target = functools.partial(self._run_generate, job_token = job_token, video_id = video_id),
+            target = functools.partial(
+                self._run_generate,
+                job_token = job_token,
+                video_id = video_id,
+                **({} if record_outcome else {"record_outcome": False}),
+            ),
             kwargs = dict(
                 prompt = prompt,
                 negative_prompt = negative_prompt,
@@ -15501,12 +15513,17 @@ class VideoBackend:
         cancel_event: threading.Event,
         job_token: Optional[object] = None,
         video_id: Optional[str] = None,
+        record_outcome: bool = True,
         **gen_kwargs: Any,
     ) -> None:
         """Reservation never outlives its thread after BaseException; begin_generate looks it up by name."""
         try:
             self._run_generate_body(
-                cancel_event = cancel_event, job_token = job_token, video_id = video_id, **gen_kwargs
+                cancel_event = cancel_event,
+                job_token = job_token,
+                video_id = video_id,
+                record_outcome = record_outcome,
+                **gen_kwargs,
             )
         finally:
             if job_token is not None:
@@ -15522,6 +15539,7 @@ class VideoBackend:
         cancel_event: threading.Event,
         job_token: Optional[object] = None,
         video_id: Optional[str] = None,
+        record_outcome: bool = True,
         **gen_kwargs: Any,
     ) -> None:
         """Worker for begin_generate; unexpected errors are logged in full, the client gets
@@ -15529,7 +15547,7 @@ class VideoBackend:
         from . import video_gallery
 
         def _record_outcome(error: Optional[str] = None) -> None:
-            if video_id is None:
+            if video_id is None or not record_outcome:
                 return
             try:
                 video_gallery.record_job_outcome(
@@ -15676,6 +15694,34 @@ class VideoBackend:
                     total_steps = total,
                     video_id = (video or {}).get("id"),
                 )
+            # Under the lock, so a successor's start cannot be paired with this clip's time.
+            _note_clip_finished(error is None, total)
+            if self._gen_video_id is not None:
+                self._gen_outcomes[self._gen_video_id] = (
+                    self._generate_job_account,
+                    dict(self._gen),
+                )
+                self._gen_outcomes.move_to_end(self._gen_video_id)
+                while len(self._gen_outcomes) > 64:
+                    self._gen_outcomes.popitem(last = False)
+        # Outside the lock: the queue starts the next video as soon as this one ends.
+        _wake_video_queue()
+
+    def generate_outcome(self, video_id: str, expected_account: Optional[str]) -> Optional[dict]:
+        """The terminal progress record of the clip ``video_id``, for the account that ran it."""
+        with self._lock:
+            kept = self._gen_outcomes.get(video_id)
+        if kept is None or kept[0] != expected_account:
+            return None
+        gen = dict(kept[1])
+        total = int(gen.get("total") or 0)
+        gen.update(
+            video_id = video_id,
+            active = False,
+            total_steps = total,
+            fraction = 1.0 if gen.get("phase") == "completed" else 0.0,
+        )
+        return gen
 
     @holds_inference
     @vram_budget_scope("video")
@@ -17640,8 +17686,21 @@ class VideoBackend:
 
     def forget_terminal_video(self, video_id: Optional[str] = None) -> bool:
         """Drop a deleted clip's terminal record, else the UI resurrects a ghost card; live jobs are
-        kept."""
+        kept. Its by-id outcome goes too (with no id, as on a clear, every completed one of the
+        caller's account: a clear only deletes the caller's own clips)."""
+        account = current_account_id()
         with self._lock:
+            if video_id is not None:
+                kept = self._gen_outcomes.get(str(video_id))
+                if kept is not None and kept[1].get("phase") == "completed":
+                    self._gen_outcomes.pop(str(video_id), None)
+            else:
+                for vid in [
+                    vid
+                    for vid, kept in self._gen_outcomes.items()
+                    if kept[0] == account and kept[1].get("phase") == "completed"
+                ]:
+                    self._gen_outcomes.pop(vid, None)
             gen = self._gen
             if self._generate_job_active or not isinstance(gen, dict):
                 return False
@@ -18113,6 +18172,37 @@ def _family_shape_defaults(fam) -> dict:
         "frame_offset": fam.frame_offset,
         "resolution_presets": [list(p) for p in fam.resolution_presets],
     }
+
+
+def _note_clip_started(fam, width, height, num_frames, steps) -> None:
+    """Tell the video queue which shape now runs, for its ETAs; never fails a generation."""
+    try:
+        from core.inference import video_queue
+
+        name = getattr(fam, "name", None)
+        frames = num_frames if num_frames is not None else getattr(fam, "default_num_frames", None)
+        video_queue.clip_started(
+            (name, width, height, frames),
+            steps if steps is not None else getattr(fam, "default_steps", None),
+        )
+    except Exception:  # noqa: BLE001 -- ETA bookkeeping only
+        pass
+
+
+def _note_clip_finished(ok: bool, steps: Optional[int]) -> None:
+    try:
+        from core.inference import video_queue
+        video_queue.clock.finished(ok, steps or None)
+    except Exception:  # noqa: BLE001 -- ETA bookkeeping only
+        pass
+
+
+def _wake_video_queue() -> None:
+    try:
+        from core.inference import video_queue
+        video_queue.notify()
+    except Exception:  # noqa: BLE001 -- the queue still has its poll
+        pass
 
 
 def generation_in_flight() -> bool:

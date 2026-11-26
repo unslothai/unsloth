@@ -485,6 +485,11 @@ def _forget_queued_media_requests():
         video_routes = sys.modules.get("routes.video")
         if video_routes is not None:
             video_routes._VIDEO_QUEUE.clear()
+            video_routes._page_outcomes.clear()
+            video_routes._admitting.clear()
+        video_queue = sys.modules.get("core.inference.video_queue")
+        if video_queue is not None:
+            video_queue.reset()
         batching = sys.modules.get("core.inference.image_request_batching")
         if batching is not None:
             batching._OPEN.clear()

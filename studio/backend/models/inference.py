@@ -7701,6 +7701,10 @@ class VideoJob(BaseModel):
     seed: Optional[int] = None
     error: Optional[VideoJobError] = None
     remixed_from_video_id: Optional[str] = None
+    # Unsloth Studio extension, while queued: 1-based place in the queue (1 starts next) and the
+    # estimated seconds until it starts (null when there is nothing yet to estimate from).
+    queue_position: Optional[int] = None
+    eta_seconds: Optional[float] = None
 
 
 class VideoJobListResponse(BaseModel):
@@ -8226,14 +8230,41 @@ class VideoGenerateResponse(BaseModel):
     span it). The saved gallery record arrives via GET /video/generate-progress
     when its phase reaches "completed"."""
 
-    status: Literal["started"] = Field(
-        "started", description = "Discriminator: the generation job was started"
+    status: Literal["started", "queued"] = Field(
+        "started",
+        description = "started: the generation job runs now; queued: it waits its turn behind "
+        "other videos and starts on its own (GET /video/queue)",
     )
     video: Optional[GalleryVideo] = Field(
         None,
         description = "Always null (kept for response-shape compatibility); the saved "
         "record is delivered by generate-progress on completion",
     )
+    video_id: Optional[str] = Field(None, description = "This clip's id, also its gallery id")
+    queue_position: Optional[int] = Field(
+        None, description = "When queued: 1-based place in the queue (1 starts next)"
+    )
+    eta_seconds: Optional[float] = Field(
+        None, description = "When queued: estimated seconds until it starts, null when unknown"
+    )
+
+
+class VideoQueueJob(BaseModel):
+    """One of the caller's videos waiting in the queue, or a queued Video page clip that ended
+    before it started."""
+
+    video_id: str
+    status: Literal["queued", "starting", "failed", "cancelled"]
+    queue_position: Optional[int] = None
+    eta_seconds: Optional[float] = None
+    prompt: Optional[str] = None
+    created_at: int
+    source: Literal["page", "api", "chat"] = "page"
+    error: Optional[str] = None
+
+
+class VideoQueueResponse(BaseModel):
+    jobs: list[VideoQueueJob] = Field(default_factory = list)
 
 
 class VideoGalleryListResponse(BaseModel):
@@ -8269,6 +8300,7 @@ class VideoGenerateProgressResponse(BaseModel):
     error: Optional[str] = Field(
         None, description = "Client-safe failure detail when phase is 'failed'"
     )
+    video_id: Optional[str] = Field(None, description = "The id of the clip this progress is for")
 
 
 class VideoLoadProgressResponse(BaseModel):
