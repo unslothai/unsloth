@@ -1999,12 +1999,14 @@ def _unsloth_seq_packing_verify_rows(
     completion_counts,
     trusted,
     limit = 3,
+    model = None,
 ):
-    """Rows the packing self-verify scores alone as ground truth (host ints, no sync). Until packing is trusted, and
-    under UNSLOTH_GRPO_SEQ_PACKING_VERIFY=1, every row. A re-verify of trusted packing at a larger shape scores at
-    most `limit` rows: the last scored row (it follows every other document in the packed stream, so any
-    cross-document leak reaches it), the longest row (the new position range) and the row with the most
-    completion tokens."""
+    """Rows the packing self-verify scores alone as ground truth (host ints, no sync). Until packing is trusted,
+    under UNSLOTH_GRPO_SEQ_PACKING_VERIFY=1, and for RoPE that switches with length (rows on either side of the
+    switch run different frequencies alone), every row. Otherwise a re-verify of trusted packing at a larger
+    shape scores at most `limit` rows: the last scored row (it follows every other document in the packed
+    stream, so any cross-document leak reaches it), the longest row (the new position range) and the row with
+    the most completion tokens."""
     import os
 
     rows = [i for i, (n, c) in enumerate(zip(lengths, completion_counts)) if n >= 2 and c > 0]
@@ -2014,6 +2016,7 @@ def _unsloth_seq_packing_verify_rows(
         or limit <= 0
         or len(rows) <= limit
         or os.environ.get("UNSLOTH_GRPO_SEQ_PACKING_VERIFY", "0") == "1"
+        or (model is not None and _unsloth_seq_packing_rope_switch(model) is not None)
     ):
         return [i for i, n in enumerate(lengths) if n >= 2]
     pick = [rows[-1]]
@@ -2031,20 +2034,8 @@ def _unsloth_seq_packing_verify_rows(
     return sorted(pick)
 
 
-def _unsloth_seq_packing_trusted_bound(model, value):
-    """Trusted packing bound after a verify passed at `value` tokens: 2x by default, so record lengths that grow a little do
-    not re-run the verify every time. RoPE that switches with length (LongRoPE short / long factors, dynamic NTK)
-    never widens across `original_max_position_embeddings`, and past it stays at `value`."""
-    import os
-
-    value = int(value)
-    # UNSLOTH_GRPO_SEQ_PACKING_VERIFY_GROWTH=1 trusts only the exact verified shape (the old rule).
-    try:
-        growth = float(os.environ.get("UNSLOTH_GRPO_SEQ_PACKING_VERIFY_GROWTH", "2"))
-    except ValueError:
-        growth = 2.0
-    if not growth > 1:
-        return value
+def _unsloth_seq_packing_rope_switch(model):
+    """Length where the model's RoPE changes its frequencies (LongRoPE short / long factors, dynamic NTK), else None."""
     config = getattr(model, "config", None)
     if hasattr(config, "get_text_config"):
         try:
@@ -2060,7 +2051,6 @@ def _unsloth_seq_packing_trusted_bound(model, value):
             # transformers 5 can key rope_parameters by layer type
             scalings.append(scaling)
             scalings.extend(v for v in scaling.values() if isinstance(v, dict))
-    switch = None
     for scaling in scalings:
         if str(scaling.get("rope_type", scaling.get("type", ""))).lower() in (
             "longrope",
@@ -2072,10 +2062,27 @@ def _unsloth_seq_packing_trusted_bound(model, value):
                 or getattr(config, "original_max_position_embeddings", None)
                 or getattr(config, "max_position_embeddings", None)
             )
-            break
+            return int(switch) if switch else None
+    return None
+
+
+def _unsloth_seq_packing_trusted_bound(model, value):
+    """Trusted packing bound after a verify passed at `value` tokens: 2x by default, so record lengths that grow a little do
+    not re-run the verify every time. RoPE that switches with length (LongRoPE short / long factors, dynamic NTK)
+    never widens across `original_max_position_embeddings`, and past it stays at `value`."""
+    import os
+
+    value = int(value)
+    # UNSLOTH_GRPO_SEQ_PACKING_VERIFY_GROWTH=1 trusts only the exact verified shape (the old rule).
+    try:
+        growth = float(os.environ.get("UNSLOTH_GRPO_SEQ_PACKING_VERIFY_GROWTH", "2"))
+    except ValueError:
+        growth = 2.0
+    if not growth > 1:
+        return value
+    switch = _unsloth_seq_packing_rope_switch(model)
     if switch is None:
         return int(growth * value)
-    switch = int(switch)
     return min(int(growth * value), switch) if value <= switch else value
 
 
@@ -5571,7 +5578,10 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                         else:
                             # verify against the per-row forward (ground truth); a re-verify of trusted packing scores at most 3 rows
                             _pk_vrows = _unsloth_seq_packing_verify_rows(
-                                _pk_len_cpu, _pk_ccount_cpu, _pk_ok is True and _pk_vT > 0
+                                _pk_len_cpu,
+                                _pk_ccount_cpu,
+                                _pk_ok is True and _pk_vT > 0,
+                                model = unwrapped_model,
                             )
                             _pk_ref = torch.zeros_like(_pk_result)
                             with torch.no_grad():
@@ -7249,6 +7259,7 @@ RL_PRE_ITEMS["grpo_trainer"].append(_class_source(UnslothEfficientGRPO))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_seq_packing_verify_verdict))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_seq_packing_moe_noise))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_seq_packing_shape_noise))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_seq_packing_rope_switch))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_seq_packing_verify_rows))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_seq_packing_trusted_bound))
 RL_PRE_ITEMS["grpo_trainer"].append(

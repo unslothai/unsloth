@@ -170,3 +170,17 @@ def test_zoo_grad_verify_is_bounded():
     compile(patched, "<patched grpo_accumulated_loss>", "exec")
     assert zoo.grpo_packing_verify_rows([5, 6, 7, 8, 9], [1] * 5, True) == [0, 1, 4]
     assert zoo.grpo_packing_trusted_bound(SimpleNamespace(config = SimpleNamespace()), 10) == 20
+
+
+def test_length_dependent_rope_reverifies_every_row(monkeypatch):
+    """Rows on either side of a LongRoPE switch run different frequencies alone, so a 3-row sample could miss the
+    short side: such models keep scoring every row."""
+    longrope = _model({"rope_type": "longrope", "original_max_position_embeddings": 4096})
+    assert verify_rows([5, 6, 7, 8, 9], [1] * 5, trusted = True, model = longrope) == [0, 1, 2, 3, 4]
+    assert verify_rows([5, 6, 7, 8, 9], [1] * 5, trusted = True, model = _model()) == [0, 1, 4]
+    model = outlier._OutlierModel()
+    model.config = longrope.config
+    ns, per_row = _run(model, 3, None, monkeypatch)
+    assert per_row == 3 and model._unsloth_seq_packing_nograd_verified_T == 2 * ns["_pk_T"]
+    ns, per_row = _run(model, 8, None, monkeypatch)
+    assert per_row == 8 and ns["_pk_use"] is True
