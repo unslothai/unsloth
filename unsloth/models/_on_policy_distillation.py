@@ -227,8 +227,12 @@ def score_completion_logps(
     if callable(get_head):
         head = get_head()
     vocab = getattr(getattr(head, "weight", None), "shape", (None,))[0]
+    # Only the columns from each chunk's earliest predicting position on reach the head (logits_to_keep), so the
+    # teacher's logits memory and head FLOPs scale with the completion, not the prompt. The chunk size stays sized by
+    # the full length: the decoder still runs over every position, and more rows per chunk would raise its peak.
     if rows_per_chunk is None:
         rows_per_chunk = _rows_per_chunk(L, vocab or 1 << 17)
+    pass_keep = True
     device_type = ids.device.type
     autocast = (
         torch.autocast(device_type = device_type, dtype = autocast_dtype)
@@ -241,15 +245,38 @@ def score_completion_logps(
     try:
         for start in range(0, B, rows_per_chunk):
             rows = slice(start, start + rows_per_chunk)
+            keep = L - int(pos[rows].min())
+            kwargs = {"logits_to_keep": keep} if pass_keep and keep < L else {}
             with autocast:
-                outputs = model(input_ids = ids[rows], attention_mask = att[rows], use_cache = False)
+                try:
+                    outputs = model(
+                        input_ids = ids[rows], attention_mask = att[rows], use_cache = False, **kwargs
+                    )
+                except TypeError as error:
+                    # A forward without logits_to_keep (custom or pre-4.50 model): score the full width.
+                    if not kwargs or "logits_to_keep" not in str(error):
+                        raise
+                    pass_keep = False
+                    outputs = model(input_ids = ids[rows], attention_mask = att[rows], use_cache = False)
             logits = outputs.logits if hasattr(outputs, "logits") else outputs[0]
             if vocab is not None and logits.shape[-1] != vocab:
                 raise RuntimeError(
                     f"Unsloth: distillation scoring expected logits over {vocab} tokens, but the forward "
                     f"returned a last dimension of {logits.shape[-1]}."
                 )
-            index = pos[rows].to(logits.device).unsqueeze(-1).expand(-1, -1, logits.shape[-1])
+            # A forward that accepts but ignores logits_to_keep returns all L columns: index from the real width.
+            width = logits.shape[1]
+            if width != L and width != keep:
+                raise RuntimeError(
+                    f"Unsloth: distillation scoring asked for the last {keep} of {L} logit columns, but the forward "
+                    f"returned {width}."
+                )
+            index = (
+                (pos[rows] - (L - width))
+                .to(logits.device)
+                .unsqueeze(-1)
+                .expand(-1, -1, logits.shape[-1])
+            )
             picked = logits.gather(1, index).to(torch.float32)
             del logits, outputs
             if temperature is not None and temperature != 1.0:
