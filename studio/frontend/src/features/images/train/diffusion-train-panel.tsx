@@ -125,7 +125,7 @@ import {
 import { useSystemInfo } from "@/hooks/use-system";
 import { diffusionTrainGuideUrl } from "./diffusion-train-guides";
 import { diffusionTrainingProgress } from "./diffusion-train-progress";
-import { runningTrainingSelection } from "./diffusion-train-restore";
+import { runningTrainingSelection, trainingRunSelection } from "./diffusion-train-restore";
 import { type LrScheduler, lrSchedulePreset } from "./diffusion-train-lr-schedule";
 import {
   MediaGenerationPresetControl,
@@ -583,6 +583,8 @@ export function DiffusionTrainPanel({
   const precisionDirty = useRef(false);
   // `family` is a new object after every refreshInfo(), so track the base pick by name.
   const baseDirty = useRef(false);
+  // Set only by the user choosing a family or base; a finished run's status may seed the form until then.
+  const modelPickedByUser = useRef(false);
   const seededBaseFamily = useRef<string | null>(null);
 
   const [starting, setStarting] = useState(false);
@@ -944,24 +946,36 @@ export function DiffusionTrainPanel({
     return () => window.clearInterval(id);
   }, [active, poll]);
 
+  // Show a run's family and base in the form (job status or a resumed run's record).
+  const applyRunSelection = useCallback(
+    (run: { familyName: string; baseModel: string | null }) => {
+      seededFromLoaded.current = true;
+      seededBaseFamily.current = run.familyName;
+      setFamilyName(run.familyName);
+      if (run.baseModel) {
+        baseDirty.current = true;
+        const known = families.find((f) => f.name === run.familyName)?.base_repos.includes(run.baseModel);
+        setBaseChoice(known ? run.baseModel : CUSTOM_BASE);
+        if (!known) setCustomBase(run.baseModel);
+      }
+    },
+    [families, setFamilyName, setBaseChoice],
+  );
+
   // After a reload the page defaults to FLUX.1-dev; show the running job's family and base instead, once per job.
+  // A finished run seeds it too while the user has not picked a model, so a completed Z-Image run does not sit
+  // beside a FLUX.1-dev form.
   const seededRunJob = useRef<string | null>(null);
   useEffect(() => {
     const jobKey = status?.job_id ?? "";
     if (seededRunJob.current === jobKey) return;
-    const run = runningTrainingSelection(status, families);
+    const run = runningTrainingSelection(status, families, {
+      formUntouched: !modelPickedByUser.current,
+    });
     if (!run) return;
     seededRunJob.current = jobKey;
-    seededFromLoaded.current = true;
-    seededBaseFamily.current = run.familyName;
-    setFamilyName(run.familyName);
-    if (run.baseModel) {
-      baseDirty.current = true;
-      const known = families.find((f) => f.name === run.familyName)?.base_repos.includes(run.baseModel);
-      setBaseChoice(known ? run.baseModel : CUSTOM_BASE);
-      if (!known) setCustomBase(run.baseModel);
-    }
-  }, [status, families, setFamilyName, setBaseChoice]);
+    applyRunSelection(run);
+  }, [status, families, applyRunSelection]);
 
   // The backend keeps the terminal status until the next start, so dismissal is local.
   const [dismissedJobId, setDismissedJobId] = useState<string | null>(null);
@@ -1468,6 +1482,9 @@ export function DiffusionTrainPanel({
       setResumingJobId(jobId);
       try {
         const detail = await getDiffusionTrainingRun(jobId);
+        // The resumed run trains the record's family and base, so the form shows them, not the page default.
+        const resumed = trainingRunSelection(detail, families);
+        if (resumed) applyRunSelection(resumed);
         const payload = buildDiffusionResumePayload(detail, {
           hfToken: hfApiToken(getHfToken()) || undefined,
         });
@@ -1489,7 +1506,7 @@ export function DiffusionTrainPanel({
         setResumingJobId(null);
       }
     },
-    [poll],
+    [poll, families, applyRunSelection],
   );
 
   const onStop = useCallback(
@@ -2017,7 +2034,13 @@ export function DiffusionTrainPanel({
             <FieldLabel hint="The architecture you are training. Each family brings its own bases, starting hyperparameters and VRAM floor.">
               Model family
             </FieldLabel>
-            <Select value={familyName} onValueChange={setFamilyName}>
+            <Select
+              value={familyName}
+              onValueChange={(v) => {
+                modelPickedByUser.current = true;
+                setFamilyName(v);
+              }}
+            >
               <SelectTrigger className={selectClass} aria-label="Model family">
                 <SelectValue />
               </SelectTrigger>
@@ -2040,6 +2063,7 @@ export function DiffusionTrainPanel({
               value={effectiveBase}
               onValueChange={(v) => {
                 baseDirty.current = true;
+                modelPickedByUser.current = true;
                 setBaseChoice(v);
               }}
             >
@@ -2060,7 +2084,10 @@ export function DiffusionTrainPanel({
                 value={customBase}
                 placeholder="Repo id or local folder"
                 spellCheck={false}
-                onChange={(e) => setCustomBase(e.target.value)}
+                onChange={(e) => {
+                  modelPickedByUser.current = true;
+                  setCustomBase(e.target.value);
+                }}
                 className="h-8 text-xs"
               />
             )}
