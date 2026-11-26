@@ -1307,9 +1307,13 @@ def test_project_sources_retry_below_the_automatic_floor(rag_conn, monkeypatch):
 
     def search(**kwargs):
         calls.append(kwargs)
-        return None if kwargs["min_dense_score"] is not None else (
-            "Annual leave is twenty days.",
-            [{"chunkId": "leave", "documentId": "handbook", "filename": "handbook.txt"}],
+        return (
+            None
+            if kwargs["min_dense_score"] is not None
+            else (
+                "Annual leave is twenty days.",
+                [{"chunkId": "leave", "documentId": "handbook", "filename": "handbook.txt"}],
+            )
         )
 
     monkeypatch.setattr(tool, "search_for_autoinject", search)
@@ -1328,10 +1332,14 @@ def test_oversized_attachment_does_not_block_project_fallback(rag_conn, monkeypa
         if kwargs["min_dense_score"] is not None:
             return None
         if kwargs.get("scope_project_id"):
-            return "Annual leave is twenty days.", [{
-                "chunkId": "leave", "documentId": "handbook", "filename": "handbook.txt",
-                "text": "Annual leave is twenty days.",
-            }]
+            return "Annual leave is twenty days.", [
+                {
+                    "chunkId": "leave",
+                    "documentId": "handbook",
+                    "filename": "handbook.txt",
+                    "text": "Annual leave is twenty days.",
+                }
+            ]
         return "Meeting notes", tool.document_opening(scope_thread_id = "t1", document_id = "a")
 
     monkeypatch.setattr(tool, "search_for_autoinject", search)
