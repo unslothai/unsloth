@@ -340,12 +340,26 @@ def test_download_plan_still_lists_one_quant_beside_a_companion_gguf(monkeypatch
         ["Q4_K_M.gguf", "Q8_0.gguf"],
         ["Big-Q4_K_M-imat.gguf", "Big-Q8_0-imat.gguf"],
         ["Big-fp16.gguf", "Big-Q8_0.gguf"],
+        ["Foo-PQ2_0.gguf", "Foo-Q2_0.gguf"],
+        ["Q6_K/model-3.5bpw.gguf", "Q6_K/model-4.0bpw.gguf"],
     ],
 )
 def test_download_plan_refuses_quants_named_by_folder_or_bare_label(monkeypatch, files):
     _hub_repo(monkeypatch, [SimpleNamespace(rfilename = f, size = 10) for f in files])
     with pytest.raises(ValueError, match = "is a GGUF repository"):
         native_audio_download_plan("someone/Big-GGUF")
+
+
+def test_download_plan_skips_a_projector_folder_when_counting_quants(monkeypatch):
+    _hub_repo(
+        monkeypatch,
+        [
+            SimpleNamespace(rfilename = "Q4_K_M/model.gguf", size = 20),
+            SimpleNamespace(rfilename = "mmproj/model.gguf", size = 5),
+        ],
+    )
+    plan = native_audio_download_plan("someone/Vision-GGUF")
+    assert plan["required_bytes"] == 25
 
 
 def test_download_plan_still_lists_a_gguf_repo_with_one_quant(monkeypatch):
