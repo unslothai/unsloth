@@ -1061,6 +1061,8 @@ def test_transformers_mixed_tools_then_image_only(monkeypatch, server_loop, scen
 
         attempts.append(recipe)
         assert recipe.max_seq_length == 4096
+        if scenario == "kept_video":
+            assert kwargs["impl_kwargs"] == {"restoring_chat_swap": True}
         if scenario == "retry" and len(attempts) == 1:
             # The failed restore claimed and released CHAT itself.
             gpu_arbiter._owner_epoch += 2

@@ -514,6 +514,7 @@ class StudioChat:
                 self.subject,
                 user_initiated = snap.extra["user_loaded"],
                 current_request_counted = True,
+                impl_kwargs = {"restoring_chat_swap": True},
                 swap_gates_held = True,
             )
             return

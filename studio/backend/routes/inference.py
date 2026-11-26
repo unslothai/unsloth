@@ -13472,13 +13472,16 @@ def _chat_fit_kwargs(
     credit_gb: Optional[dict] = None,
     mlx_need_mib: Optional[int] = None,
     mlx_credit_mib: int = 0,
+    *,
+    restoring_chat_swap: bool = False,
 ) -> dict:
     """How the CHAT acquire shares the GPU under When they fit / Always.
 
     audio.cpp and native audio are priced from the placement estimate, an MLX load on Apple Silicon from
     ``mlx_need_mib``. A GGUF launch prices itself (it refuses a partial fit and load_model_gated makes room).
     Anything else has no estimate before launch: When they fit evicts first, Always tries the load and turns an
-    out-of-memory failure into its refusal. ``credit_gb`` is what the outgoing primary frees per GPU when this
+    out-of-memory failure into its refusal. A discrete GPU chat restored during an image swap tries its previous
+    placement beside the remaining media first. ``credit_gb`` is what the outgoing primary frees per GPU when this
     load replaces it.
     """
     if policy is None:
@@ -13505,7 +13508,8 @@ def _chat_fit_kwargs(
         from core.inference.gpu_residency import ChatNeed
         kwargs["need_mib"] = ChatNeed({0: int(mlx_need_mib)}, credit_mib = mlx_credit_mib)
     elif not (config.is_gguf and _primary_can_retry_fit.get()) and (
-        policy == "fit" or (not config.is_gguf and _unified_metal_host())
+        (policy == "fit" and not restoring_chat_swap)
+        or (not config.is_gguf and _unified_metal_host())
     ):
         # Unified memory pages past the budget: Always gets no OOM to refuse on.
         kwargs["evict_first"] = True
@@ -19362,6 +19366,16 @@ async def load_model_gated(
                         measured = isinstance(exc, GpuMemoryShortError)
                         if not measured:
                             if extra is None and _ran_out_of_memory(exc):
+                                if (impl_kwargs or {}).get("restoring_chat_swap"):
+                                    from core.inference.gpu_residency import current_policy
+                                    if (
+                                        await asyncio.to_thread(current_policy) == "fit"
+                                        and not _unified_metal_host()
+                                    ):
+                                        # The first restore tries the same layout that already fit.
+                                        # Actual memory pressure can still require a normal Fit load.
+                                        impl_kwargs = {**impl_kwargs, "restoring_chat_swap": False}
+                                        continue
                                 await asyncio.to_thread(_refuse_oom_beside_media_under_always)
                             # A non-GGUF load reports no fit up front: its out-of-memory failure
                             # makes room the same way, one idle kept model at a time.
@@ -20322,6 +20336,7 @@ async def _load_model_impl(
     cache_environment: Optional[dict[str, str]] = None,
     anonymous_hf_access: bool = False,
     speech_codec_path: Optional[str] = None,
+    restoring_chat_swap: bool = False,
 ):
     from core.inference.npu_backend import is_npu_model_path
 
@@ -21108,6 +21123,7 @@ async def _load_model_impl(
                         outgoing_chat_gb,
                         mlx_need_mib = None if mlx_chat_need is None else mlx_chat_need[0],
                         mlx_credit_mib = mlx_credit_mib,
+                        restoring_chat_swap = restoring_chat_swap,
                     )
                 )
                 await asyncio.to_thread(
