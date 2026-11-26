@@ -913,6 +913,24 @@ def test_unguided_flux2_with_compiled_blocks_keeps_the_layer_split(monkeypatch):
     assert "compiled submodules" in reasons["cfg_replica"], reasons
 
 
+def test_unguided_flux2_with_per_call_activation_scaling_keeps_the_layer_split(monkeypatch):
+    # dynamic NVFP4 linears scale by each call's amax, so the router refuses every token split of such a denoiser
+    _flux2_plan(monkeypatch)
+
+    class ComfyNVFP4DynamicLinear(torch.nn.Linear):
+        pass
+
+    def scaled_init(self):
+        Flux2Transformer2DModel.__init__(self)
+        self.proj = ComfyNVFP4DynamicLinear(4, 4)
+
+    scaled = type("Flux2Transformer2DModel", (Flux2Transformer2DModel,), {"__init__": scaled_init})
+    d = _wan5b(monkeypatch, guided = False, cls = scaled, **_KLEIN_1024)
+    assert d.plan.layer_split is not None
+    reasons = {c.kind: c.reason for c in _recorded(d).rejected}
+    assert "per-call activation scaling" in reasons["cfg_replica"], reasons
+
+
 # a default request whose size clears MIN_TOKENS, priced like the Wan 5B fixture (5070 tokens) plus a 512-token prompt
 _KLEIN_1024 = {"tokens": 5070, "text_tokens": 512}
 

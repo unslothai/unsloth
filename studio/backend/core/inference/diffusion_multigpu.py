@@ -1381,11 +1381,15 @@ def _sequence_split_layout_refusal(denoiser: Any, request: Any, selection: Any) 
     if name not in sp.SP_JOINT_PREFIX:
         return f"{name} takes a replica for guided steps only"
     # Speed optims run before placement: a compiled denoiser is already visible here, and every call refuses the split.
-    from .diffusion_cfg_batch import compiled_denoiser
+    from .diffusion_cfg_batch import compiled_denoiser, per_call_scaled
 
     compiled = compiled_denoiser(denoiser)
     if compiled is not None:
         return f"compiled submodules ({compiled}) never split by tokens"
+    # each token half would take its own activation amax (dynamic NVFP4): the router refuses every such call
+    scaled = per_call_scaled(denoiser)
+    if scaled is not None:
+        return f"per-call activation scaling ({scaled}) never splits by tokens"
     if not request.tokens or not request.text_tokens:
         return "the default request's token count is unknown"
     tokens = int(request.tokens) + int(request.text_tokens)
