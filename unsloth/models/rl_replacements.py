@@ -6373,6 +6373,231 @@ def _unsloth_grpo_sample_weight(
     return weight[process_slice].to(completion_mask.device)
 
 
+def _unsloth_grpo_npr_settings():
+    """ScaleRL No-Positive-Resampling (arXiv 2510.13786), opt-in: UNSLOTH_GRPO_NO_POSITIVE_RESAMPLING=1.
+    A completion passes when its weighted total reward is >= UNSLOTH_GRPO_NPR_PASS_REWARD (default 1.0);
+    a prompt whose historical pass rate reaches UNSLOTH_GRPO_NPR_PASS_RATE (default 0.9) is not sampled
+    again from the next epoch on. Returns (pass_reward, pass_rate) or None when off."""
+    import os
+
+    if os.environ.get("UNSLOTH_GRPO_NO_POSITIVE_RESAMPLING", "0").strip().lower() not in (
+        "1",
+        "true",
+        "on",
+        "yes",
+    ):
+        return None
+    pass_reward = float(os.environ.get("UNSLOTH_GRPO_NPR_PASS_REWARD", "1.0"))
+    pass_rate = float(os.environ.get("UNSLOTH_GRPO_NPR_PASS_RATE", "0.9"))
+    if not 0.0 < pass_rate <= 1.0:
+        raise ValueError(f"Unsloth: UNSLOTH_GRPO_NPR_PASS_RATE must be in (0, 1], got {pass_rate}.")
+    return pass_reward, pass_rate
+
+
+def _unsloth_grpo_npr_key(prompt):
+    import hashlib
+    return hashlib.sha1(repr(prompt).encode("utf-8", "surrogatepass")).hexdigest()
+
+
+def _unsloth_grpo_npr_record(trainer, mode, inputs, rewards_per_func):
+    """Accumulate each prompt's (passes, attempts) from this generation batch, gathered over processes so
+    every rank's sampler drops the same prompts."""
+    settings = _unsloth_grpo_npr_settings()
+    if settings is None or mode != "train":
+        return
+    pass_reward, pass_rate = settings
+    num_generations = int(trainer.num_generations)
+    keys = [_unsloth_grpo_npr_key(x.get("prompt") if isinstance(x, dict) else x) for x in inputs]
+    if getattr(trainer.accelerator, "num_processes", 1) > 1:
+        from accelerate.utils import gather_object
+        keys = gather_object(keys)
+    weights = trainer.reward_weights.to(rewards_per_func.device).unsqueeze(0)
+    rewards = (rewards_per_func * weights).nansum(dim = 1)
+    # A completion no reward function scored is not an attempt.
+    scored = ~torch.isnan(rewards_per_func).all(dim = 1)
+    passed = ((rewards >= pass_reward) & scored).float().cpu()
+    scored = scored.float().cpu()
+    if len(keys) != passed.numel() or passed.numel() % num_generations != 0:
+        return
+    stats = trainer.__dict__.setdefault("_unsloth_npr_stats", {})
+    solved = trainer.__dict__.setdefault("_unsloth_npr_solved", set())
+    passed = passed.view(-1, num_generations).sum(dim = 1).tolist()
+    scored = scored.view(-1, num_generations).sum(dim = 1).tolist()
+    for group, (p, n) in enumerate(zip(passed, scored)):
+        key = keys[group * num_generations]
+        passes, attempts = stats.get(key, (0.0, 0.0))
+        passes, attempts = passes + p, attempts + n
+        stats[key] = (passes, attempts)
+        if attempts > 0 and passes / attempts >= pass_rate:
+            solved.add(key)
+    trainer._metrics[mode]["npr/solved_prompts"].append(float(len(solved)))
+    trainer._metrics[mode]["npr/batch_pass_rate"].append(sum(passed) / max(sum(scored), 1.0))
+
+
+def _unsloth_grpo_npr_sampler(trainer, sampler):
+    """Wrap TRL's RepeatSampler so each epoch's permutation skips solved prompts (No-Positive-Resampling).
+    Same random stream and the same chunk / repeat layout as TRL, so groups and ranks stay aligned."""
+    if _unsloth_grpo_npr_settings() is None:
+        return sampler
+    needed = (
+        "data_source",
+        "mini_repeat_count",
+        "batch_size",
+        "repeat_count",
+        "shuffle",
+        "generator",
+        "num_samples",
+    )
+    if not all(hasattr(sampler, name) for name in needed):
+        import warnings
+        warnings.warn(
+            "Unsloth: UNSLOTH_GRPO_NO_POSITIVE_RESAMPLING needs TRL's RepeatSampler; it is ignored here.",
+            stacklevel = 2,
+        )
+        return sampler
+    base = type(sampler)
+
+    class _UnslothNPRSampler(base):
+        def _unsloth_npr_indexes(self):
+            if self.shuffle:
+                indexes = torch.randperm(self.num_samples, generator = self.generator).tolist()
+            else:
+                indexes = list(range(self.num_samples))
+            solved = trainer.__dict__.get("_unsloth_npr_solved", None)
+            if solved:
+                keys = self.__dict__.setdefault("_unsloth_npr_keys", {})
+                kept = []
+                for index in indexes:
+                    key = keys.get(index, None)
+                    if key is None:
+                        row = self.data_source[index]
+                        key = _unsloth_grpo_npr_key(
+                            row.get("prompt") if isinstance(row, dict) else row
+                        )
+                        keys[index] = key
+                    if key not in solved:
+                        kept.append(index)
+                dropped = len(indexes) - len(kept)
+                trainer.__dict__["_unsloth_npr_dropped"] = dropped
+                indexes = kept
+            return indexes
+
+        def __iter__(self):
+            indexes = self._unsloth_npr_indexes()
+            chunks = [
+                indexes[i : i + self.batch_size] for i in range(0, len(indexes), self.batch_size)
+            ]
+            chunks = [chunk for chunk in chunks if len(chunk) == self.batch_size]
+            for chunk in chunks:
+                for _ in range(self.repeat_count):
+                    for index in chunk:
+                        for _ in range(self.mini_repeat_count):
+                            yield index
+
+    sampler.__class__ = _UnslothNPRSampler
+    return sampler
+
+
+def _unsloth_grpo_truncation_warn(trainer, mode):
+    """Warn when more than UNSLOTH_GRPO_TRUNCATION_WARN (default 0.10, 0 = off) of a generation batch hit
+    max_completion_length: ScaleRL (arXiv 2510.13786) finds 10-15% truncation destabilises RL."""
+    import os
+
+    try:
+        threshold = float(os.environ.get("UNSLOTH_GRPO_TRUNCATION_WARN", "0.10"))
+    except ValueError:
+        threshold = 0.10
+    if threshold <= 0 or mode != "train":
+        return
+    values = trainer._metrics[mode].get("completions/clipped_ratio", None)
+    if not values:
+        return
+    rate = float(values[-1])
+    if rate <= threshold:
+        return
+    step = int(getattr(trainer.state, "global_step", 0))
+    last = trainer.__dict__.get("_unsloth_truncation_warned_step", None)
+    if last is not None and step - last < 50:
+        return
+    trainer._unsloth_truncation_warned_step = step
+    from unsloth_zoo.log import logger as _unsloth_logger
+
+    _unsloth_logger.warning(
+        f"Unsloth: {rate:.0%} of completions hit max_completion_length = "
+        f"{getattr(trainer.args, 'max_completion_length', None)} at step {step} "
+        f"(warning above {threshold:.0%}). Truncation rates of 10-15% destabilise RL training (ScaleRL, "
+        "arXiv 2510.13786): raise max_completion_length or set mask_truncated_completions = True. "
+        "UNSLOTH_GRPO_TRUNCATION_WARN=0 turns this warning off."
+    )
+
+
+def grpo_trainer_scalerl_hooks(function_name, function):
+    # No-Positive-Resampling: wrap the train sampler; record pass rates where the group rewards exist.
+    if function_name == "_get_train_sampler":
+        start = function.find("return RepeatSampler(")
+        if start == -1 or function.count("return RepeatSampler(") != 1:
+            _warn_once(
+                "grpo_npr_sampler",
+                "Unsloth: could not install UNSLOTH_GRPO_NO_POSITIVE_RESAMPLING for this TRL version.",
+            )
+            return function
+        open_at = start + len("return RepeatSampler")
+        depth, end = 0, None
+        for i in range(open_at, len(function)):
+            if function[i] == "(":
+                depth += 1
+            elif function[i] == ")":
+                depth -= 1
+                if depth == 0:
+                    end = i
+                    break
+        if end is None:
+            return function
+        return (
+            function[:start]
+            + "return _unsloth_grpo_npr_sampler(self, RepeatSampler"
+            + function[open_at : end + 1]
+            + ")"
+            + function[end + 1 :]
+        )
+    clipped = re.search(
+        r'\n([ \t]*)self\._metrics\[mode\]\["completions/clipped_ratio"\]\.append\([^\n]*\)\n',
+        function,
+    )
+    if clipped is not None:
+        function = (
+            function[: clipped.end()]
+            + f"{clipped.group(1)}_unsloth_grpo_truncation_warn(self, mode)\n"
+            + function[clipped.end() :]
+        )
+    zero_std = re.search(
+        r'\n([ \t]*)self\._metrics\[mode\]\["frac_reward_zero_std"\]\.append\([^\n]*\)\n',
+        function,
+    )
+    if (
+        zero_std is not None
+        and function_name == "_generate_and_score_completions"
+        and "rewards_per_func" in function
+    ):
+        function = (
+            function[: zero_std.end()]
+            + f"{zero_std.group(1)}_unsloth_grpo_npr_record(self, mode, inputs, rewards_per_func)\n"
+            + function[zero_std.end() :]
+        )
+    elif (
+        function_name == "_generate_and_score_completions"
+        and _unsloth_grpo_npr_settings() is not None
+    ):
+        _warn_once(
+            "grpo_npr_record",
+            "Unsloth: could not install UNSLOTH_GRPO_NO_POSITIVE_RESAMPLING for this TRL version.",
+        )
+    return function
+
+
+RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer_scalerl_hooks)
+
+
 def _unsloth_grpo_is_metric_values(delta, flat_is_ratio, mask, sequence_level):
     # Inputs are zero-filled outside the mask; TRL reduces over masked tokens only, else min ratio reads 0.
     if mask is None or delta.shape != mask.shape or flat_is_ratio.shape != mask.shape:
@@ -6515,6 +6740,11 @@ RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_old_logps_fr
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_old_logps_store))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_trl_masks_unscorable))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_sample_weight))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_npr_settings))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_npr_key))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_npr_record))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_npr_sampler))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_truncation_warn))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_vision_inputs))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_split_vision_by_sample))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_unsplit_vision))
