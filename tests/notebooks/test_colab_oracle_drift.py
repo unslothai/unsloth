@@ -156,7 +156,6 @@ def test_workflow_diffs_before_it_refreshes():
     wf = (REPO_ROOT / ".github/workflows/notebooks-ci.yml").read_text(encoding = "utf-8")
     for job in ("static", "static-with-pypi"):
         rest = wf.split(f"\n  {job}:", 1)[1]
-        # Up to the next job key, the next line indented exactly two.
         nxt = re.search(r"^  [A-Za-z0-9_-]+:$", rest, re.M)
         body = rest[: nxt.start()] if nxt else rest
 

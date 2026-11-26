@@ -16,8 +16,7 @@ transformers = pytest.importorskip("transformers")
 
 
 def _trainer_after_trl_init(config):
-    # One namespace: on Python < 3.12 an exec'd comprehension with split globals/locals
-    # cannot see `_text_config`.
+    # Split globals/locals hide _text_config from exec'd comprehensions on Python < 3.12.
     config.get_text_config().output_router_logits = True
     self = types.SimpleNamespace(aux_loss_enabled = True, model = types.SimpleNamespace(config = config))
     exec(_rl_py_constant("_DENSE_ROUTER_AUX_LOSS_OFF"), {"self": self})

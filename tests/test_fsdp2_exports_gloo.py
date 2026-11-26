@@ -506,7 +506,6 @@ def test_gguf_runs_on_rank0_only_from_the_same_merge(runs):
     assert r0["gguf_calls"] == [["q8_0"]] and r1["gguf_calls"] == [], (r0, r1)
     assert not r1["gguf_wrote"]
     assert r0["all_dtensor_after_gguf"] and r1["all_dtensor_after_gguf"]
-    # Every rank returns rank 0's answer.
     assert r0["gguf_return"] == r1["gguf_return"]
     single = runs["single"]["gguf_return"]
     assert [os.path.basename(p) for p in single["gguf_files"]] == [

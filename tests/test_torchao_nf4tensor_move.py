@@ -97,8 +97,7 @@ def test_without_the_fix_that_import_fails(tmp_path):
 
 
 def test_an_older_torchao_still_gets_its_own_module(tmp_path):
-    """Appended, not inserted at 0: on torchao < 0.18 the real module must
-    win, or the fix silently swaps out working code."""
+    """Appended last; on torchao < 0.18 the real module must win or working code gets swapped."""
     _make_torchao(tmp_path, old = True, new = True)
     r = _run(
         tmp_path,
@@ -249,8 +248,7 @@ def test_the_relocated_module_keeps_its_own_specification(tmp_path):
 
 
 def test_the_mlx_branch_installs_the_alias_too():
-    """The MLX branch never reaches _gpu_init.py, so Apple Silicon xcodec2 would still die on the
-    old path; checked at source level since the branch runs only when mlx is importable."""
+    """MLX skips _gpu_init.py: xcodec2 dies on old path; checked from source since mlx-only."""
     import ast
 
     src = (ROOT / "unsloth" / "__init__.py").read_text(encoding = "utf-8")

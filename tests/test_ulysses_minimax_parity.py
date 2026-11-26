@@ -157,7 +157,6 @@ MUTANTS = {
     "slope_rate_slice": ("module.slope_rate[head]", "module.slope_rate[:heads]"),
     "diagonal_decay_slice": ("module.diagonal_decay[:, head]", "module.diagonal_decay[:, :heads]"),
     "query_decay_slice": ("module.query_decay[head]", "module.query_decay[:heads]"),
-    # A partial block read with the tail of the query decay instead of its head.
     "partial_block_query_decay": ("query_decay[:, :n]", "query_decay[:, -n:]"),
     # The carried state is not decayed between blocks.
     "undecayed_state": ("state * torch.exp(-slope * n)", "state"),
@@ -167,7 +166,6 @@ MUTANTS = {
         "qkv.reshape(bsz, local_len, 3, module.num_attention_heads, dim).transpose(2, 3)"
         ".reshape(bsz, local_len, module.num_attention_heads, 3 * dim)",
     ),
-    # Output gate applied before the full-width norm.
     "gate_before_norm": (
         "out = module.norm(out.reshape(bsz, local_len, -1))\n"
         "    out = torch.sigmoid(module.output_gate(hidden_states)) * out",
@@ -231,8 +229,7 @@ LIGHTNING_CASES = {
 
 
 def _spawn(fn, world, *args):
-    # Fork: a spawned child would re-import unsloth without the conftest CUDA spoof. A real GPU host
-    # needs no spoof, and once this process ran a backward there, forked children refuse autograd.
+    # Fork (spawn loses the CUDA spoof) unless a GPU backward ran: forks then refuse autograd.
     if "fork" not in mp.get_all_start_methods():
         pytest.skip("needs the fork start method")
     start_method = "fork" if not has_real_accelerator() or fork_can_backward() else "spawn"
@@ -404,7 +401,6 @@ def _model_worker(rank, world, kind, cp_size, lora, control, model_kwargs):
         assert calls["lightning"] == runs * layer_types.count("linear_attention"), calls
         assert calls["attention"] == runs * layer_types.count("full_attention"), calls
 
-    # Outputs: valid positions of the gathered CP shards against the reference.
     gathered = [torch.empty_like(out.logits) for _ in range(cp_size)]
     dist.all_gather(gathered, out.logits.detach().contiguous(), group = manager.group)
     logits = torch.cat(gathered, dim = 1)[:, :SEQ]

@@ -33,8 +33,7 @@ def _quantize(seed, shape = (512, 256)):
 
 
 def _gathered_param(q, mark):
-    # What FSDP2 hands the forward for a float-packed Params4bit: a frozen parameter whose packed
-    # bytes are stored as bfloat16 (fsdp2_qlora.params4bit_to_float_storage), marked when gathered.
+    # FSDP2 gives a frozen float-packed Params4bit as bfloat16 bytes, marked when gathered.
     p = torch.nn.Parameter(
         q.reshape(-1).view(torch.bfloat16).reshape(-1, 1).clone(), requires_grad = False
     )
@@ -91,7 +90,6 @@ def test_gathered_weight_reuses_its_plan_across_reallocation(monkeypatch):
         old, blocker = _reallocate(p, packed)
         assert p.data_ptr() != old
         got = utils.fast_dequantize(p, s, use_global_buffer = True)
-        # The bytes at the new address, not those the plan was built from.
         assert _equal(got, bnb_functional.dequantize_4bit(packed, s)), step
         del blocker
     assert calls[0] == 1, "the planned launch was rebuilt for a re-allocated FSDP2 weight"

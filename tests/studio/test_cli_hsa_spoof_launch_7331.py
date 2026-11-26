@@ -140,8 +140,7 @@ class TestClearingTheContradictingOverride:
         assert os.environ["HSA_OVERRIDE_GFX_VERSION"] == "11.5.1"
 
     def test_generic_wheels_keep_the_override(self, tmp_path, monkeypatch):
-        """The override is often the only thing making an unsupported card usable on a generic
-        multi-arch index; clearing it there breaks a working machine, which is worse than #7331."""
+        """Clearing it on generic wheels breaks a working machine, which is worse than #7331."""
         monkeypatch.setenv("HSA_OVERRIDE_GFX_VERSION", "10.3.0")
         monkeypatch.setattr(studio_cli.platform, "system", lambda: "Linux")
         venv = _make_venv(tmp_path, None)

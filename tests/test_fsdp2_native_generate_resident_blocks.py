@@ -58,8 +58,7 @@ def _plan(
     prefetch = 0,
     offload = False,
 ):
-    """Fake CUDA world for _generate_gather_plan: root + blocks blocks (+ tail unit); other_free is
-    the other rank's free memory; votes take elementwise MIN, lengths must match."""
+    """Fake CUDA world; other_free = peer's free memory; votes: elementwise MIN, equal lengths"""
     import torch.distributed as dist
 
     net = _Net(blocks)

@@ -164,7 +164,6 @@ def test_derived_stem_keeps_quantized_gguf_inside_gguf_directory(monkeypatch, tm
     for call in harness.quantize_calls:
         assert ntpath.dirname(call["output"]) == expected_dir, call["output"]
         assert not call["output"].startswith("D:"), call["output"]
-    # The intermediate is written on the destination volume, not the process CWD.
     assert ntpath.dirname(ntpath.dirname(harness.initial_names[0])) == expected_dir
 
 

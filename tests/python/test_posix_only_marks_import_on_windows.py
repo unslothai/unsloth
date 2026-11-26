@@ -80,8 +80,7 @@ def _lambda_accepts(lam: ast.Lambda, call: ast.Call) -> bool:
 
 
 def _fallback_takes(fallback: ast.AST, call: ast.Call) -> bool:
-    """Whether getattr's third argument survives this call on Windows: a literal never does, a
-    lambda is checked against the call, and other expressions are taken at face value."""
+    """A literal fallback never survives on Windows; lambdas are checked, others pass."""
     if isinstance(fallback, ast.Lambda):
         return _lambda_accepts(fallback, call)
     return not isinstance(
@@ -553,8 +552,7 @@ def test_a_statement_level_platform_guard_is_honoured():
 
 
 def test_a_getattr_fallback_has_to_be_callable():
-    """getattr(os, 'geteuid', None)() picks None on Windows and raises TypeError there, which Linux
-    never shows since the real function is picked; a literal fallback is no fallback."""
+    """Linux misses a None fallback's TypeError on Windows; a literal fallback is no fallback."""
     assert _flagged('import os\nROOT = getattr(os, "geteuid", None)() == 0\n')
     assert _flagged('import os\nROOT = getattr(os, "geteuid", 1)() == 0\n')
     assert not _flagged('import os\nROOT = getattr(os, "geteuid", lambda: 1)() == 0\n')

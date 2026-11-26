@@ -116,8 +116,7 @@ def test_the_repair_command_cannot_replace_torch():
 
 
 def test_the_repair_command_names_the_companion_release():
-    """The gate passes on a lower bound (torch 2.4 accepts torchvision >= 0.19),
-    so an installed 0.20 reaches the probe; 0.19 is what repairs that box."""
+    """torch 2.4 accepts torchvision >= 0.19, so an installed 0.20 is probed; 0.19 repairs it."""
     assert "torchvision==0.19.*" in import_fixes._torchvision_repair_command((0, 19))
     assert "torchvision" in import_fixes._torchvision_repair_command(None)
 
@@ -306,8 +305,7 @@ def test_a_conda_torch_is_not_sent_to_pypis_torchvision(tmp_path):
     ],
 )
 def test_partially_initialized_torchvision_is_recognised(message):
-    """A torchvision whose extension failed to load can surface as an AttributeError on a
-    half-imported module rather than a loader failure (unsloth#1793)."""
+    """Half-imported torchvision can raise AttributeError, not a loader error (unsloth#1793)."""
     assert import_fixes._is_broken_torchvision_error(AttributeError(message))
 
 

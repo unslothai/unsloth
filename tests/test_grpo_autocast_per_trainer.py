@@ -198,9 +198,8 @@ def _generate(trainer, env, has_bf16):
 
 @pytest.mark.parametrize("has_mixed_precision", [True, False])
 def test_a_later_trainer_cannot_re_enable_this_trainers_autocast(has_mixed_precision):
-    """First trainer: float32 on a card without bfloat16, so rl.py writes 'no'.
-    Second trainer: an ordinary float16 model, so rl.py writes 'fp16' over it.
-    The first trainer has not generated a single batch yet."""
+    """First trainer is float32 on a card without bfloat16 so rl.py writes 'no'; a second trainer
+    (ordinary float16) writes 'fp16' over it, and the first has not generated a batch yet."""
     env = {}
     first = _build_trainer(
         env, torch.float32, bf16_supported = False, has_mixed_precision = has_mixed_precision
@@ -609,7 +608,6 @@ def test_an_outer_autocast_is_inherited_rather_than_overridden():
             x = torch.randn(4, 4, device = "cuda")
             assert (x @ x).dtype is torch.bfloat16
 
-    # Forcing float32 keeps naming float16 even inside an outer autocast.
     trainer._autocast_force_float32 = True
     with torch.amp.autocast(device_type = "cuda", dtype = torch.bfloat16):
         forced = _unsloth_grpo_autocast_kwargs(trainer)

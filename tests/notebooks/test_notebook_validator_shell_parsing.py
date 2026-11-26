@@ -894,8 +894,7 @@ def test_notebook_validator_lands_an_upward_move_on_an_inclusive_cap():
 
 
 def test_notebook_validator_will_not_keep_a_version_through_an_upgrade():
-    """A bare name with `--upgrade` takes the newest release, so the installed version is not
-    what the cell ends on. Without the flag pip leaves a satisfied requirement alone."""
+    """Install-forcing flags resolve from the index; without them a satisfied version is kept."""
     nv = _load_notebook_validator_module()
 
     # Install-forcing flags make pip resolve from the index, not the installed version.
@@ -959,8 +958,7 @@ def test_notebook_validator_keeps_the_flag_of_the_command_in_hand():
 
 
 def test_notebook_validator_reads_a_compound_only_line():
-    """With no standalone pip command on the line, every piece kept a keyword and none
-    parsed, so the git+ ban never looked. The body runs, but only if its test did."""
+    """With no standalone pip command, no piece parsed, so the git+ ban never looked."""
     nv = _load_notebook_validator_module()
 
     for evil in (
@@ -1259,8 +1257,7 @@ def test_no_deps_rules_skip_a_requirement_pip_skips(monkeypatch):
 
 
 def test_notebook_validator_splits_keywords_on_any_whitespace():
-    """A tab after `then` is the same command to the shell. Splitting on a literal space left
-    `then\\tpip` as one word, which parses as nothing and hides the install."""
+    """A tab after then parses like a space; splitting only on spaces hid the install."""
     nv = _load_notebook_validator_module()
 
     tabbed = "!if true; then\tpip install git+https://example.com/pkg.git; fi"
@@ -1569,8 +1566,7 @@ def test_notebook_validator_keeps_redirections_and_quoted_process_forms():
 
 
 def test_notebook_validator_reads_a_range_as_one_window():
-    """A `>=X,<Y` pair is the constraint `~=X`, and the guard's own remedy is spelled that way,
-    so the rule has to read it back. A `<` with nothing under it names no version."""
+    """A >=X,<Y pair is ~=X, the spelling the guard's remedy uses; a bare < names no version."""
     nv = _load_notebook_validator_module()
 
     # Colab is on 0.11, which this window excludes, so pip drops into the 0.10 line.
@@ -1587,8 +1583,7 @@ def test_notebook_validator_reads_a_range_as_one_window():
             '!pip install "torch<2.11"', COLAB_TORCH211, "nb.ipynb", 0
         )
     ] == ["R-INST-004"]
-    # A ceiling on a MAJOR boundary names nothing: which 1.x minor sits below `<2.0` is only
-    # in the index, so no stale baseline is kept either.
+    # A ceiling on a major boundary like <2.0 names no minor, so no stale baseline is kept.
     assert nv._highest_minor_below("2.0") == ""
     assert (
         nv.rule_inst_004_torchcodec_torch('!pip install "torch<2.0"', COLAB_TORCH211, "nb.ipynb", 0)
@@ -2154,8 +2149,7 @@ def test_a_bounded_window_lands_on_its_newest_candidate():
 
 
 def test_an_exclusive_ceiling_names_the_minor_pip_moves_to():
-    """A window wider than one minor still names the MINOR pip lands on. `<0.10.5` admits 0.10.0
-    to 0.10.4, so only a ceiling ON a minor boundary excludes the whole minor."""
+    """<0.10.5 still names minor 0.10; only a ceiling on a minor boundary excludes that minor."""
     from scripts import notebook_validator as nv
 
     assert nv._highest_minor_below("0.10.5") == "0.10"
@@ -2493,8 +2487,7 @@ def test_a_substitution_keeps_its_whitespace_inside_an_assignment():
 
 
 def test_a_nested_backtick_substitution_is_read_through():
-    """Inner backticks are escaped so they do not close the outer, and find stopped at the first
-    escaped one; the body is unescaped on the way out or the inner substitution never opens."""
+    """Inner backticks are escaped; unescape the body or the inner substitution never opens."""
     nv = _load_notebook_validator_module()
 
     nested = "!echo `echo \\`pip install git+https://evil.example/pkg.git\\``"
@@ -4463,8 +4456,7 @@ def test_a_condition_that_fails_whatever_pip_does_stays_known():
         "!if pip install x && false; then :; else pip install torchcodec==0.11; fi",
     ):
         assert ("!pip install torchcodec==0.11", False) in nv._split_chained(cell), cell
-    # The assumption still counts where it really decides the condition: this body runs
-    # exactly when the install fails, and R-INST-001 has to see the source in it.
+    # This body runs only when the install fails, so R-INST-001 must still see its source.
     assert [
         f.rule
         for f in nv.rule_inst_001_git_plus(

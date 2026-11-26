@@ -69,10 +69,9 @@
     return normText(raw);
   };
 
-  // A fence's highlight state is scroll history: code-fence-defer renders unreached fences as a
-  // plain shell and upgrades them once on approach. Each message therefore carries per-fence
-  // latch state and a line-normalised text digest so analysis/parity.fence_latch_residue can
-  // compare a fence latched on one arm only by language and text.
+  // Fence highlight is scroll history: code-fence-defer shows unreached fences as plain shell,
+  // upgraded once on approach; messages carry per-fence latch state and line-normalised digest so
+  // analysis/parity.fence_latch_residue compares one-arm latches by language and text.
   const FENCE_ATTR = "data-streamdown";
   const FENCE_ROOT = "code-block";
   const FENCE_BODY = "code-block-body";
@@ -410,8 +409,7 @@
           const ord = typeof el.__sbOrdinal === "number" ? el.__sbOrdinal : ordinalOf(el, i + 1);
           if (!VIS.ever.has(ord)) continue;
           mounted_ever_visible += 1;
-          // Without aria-posinset/aria-setsize, which readiness.py permits on either the message or a row;
-          // otherwise windowed vs fully mounted arms differ on every message.
+          // aria-posinset/aria-setsize dropped; else windowed and mounted arms differ.
           const sig = signature(el, VIRTUALIZATION_ATTRS);
           if (Object.prototype.hasOwnProperty.call(byOrdinal, String(ord))) {
             ordinal_collisions += 1;

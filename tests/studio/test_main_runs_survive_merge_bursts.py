@@ -45,8 +45,7 @@ QUOTA_BOUND = frozenset({"kaggle-t4-notebook-ci.yml", "kaggle-t4-studio-gpu-ci.y
 # Per-commit main groups need a reason here; empty since codeql.yml stopped running on main.
 PER_COMMIT_ALLOWED = frozenset()
 
-# Phrasings claiming main runs are never cancelled or are grouped per commit; both are false for a
-# shared-group workflow, whose PENDING run the next push replaces.
+# Main-run claims are false for shared-group workflows: the next push replaces a PENDING run.
 CLAIMS_PROTECTION = re.compile(
     r"never on main|never cancelled on main|not cancelled on main|never cancels on main"
     r"|unique per commit on main|grouped per commit on main|one group per commit on main",

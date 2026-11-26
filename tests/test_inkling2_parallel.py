@@ -175,7 +175,6 @@ def test_capability_table_inkling2_rules(monkeypatch, family):
             )
             cap.check(query)
             assert cap.cell_status(query)[0] == "supported", cap.cell_status(query)
-    # data parallel (DDP / FSDP2), tensor parallel and pipeline parallel alone are not refused by the rule
     for layout in (dict(dp = 2), dict(dp = 2, fsdp2 = True), dict(tp = 2), dict(pp = 2)):
         rules = [r for r in cap.RULES if r.applies(cap.Query(family = family, **layout))]
         assert not rules, [r.when for r in rules]

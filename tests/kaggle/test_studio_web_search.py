@@ -105,7 +105,6 @@ def test_the_cpu_fallback_records_the_assertion_rather_than_omitting_it():
 def test_the_search_tool_call_is_FORCED_rather_than_hoped_for():
     """The search call is forced by name, since a bare required let the model answer without searching."""
     body = _body()
-    # By name: a bare "required" still let the model answer without searching.
     assert '"function": {"name": "web_search"}' in body
     assert 'tool_choice = "required"' not in body
 

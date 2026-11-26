@@ -112,8 +112,7 @@ _strix_line=$(grep -n 'Strix Halo / Strix Point:' "$INSTALL_SH" | head -1 | cut 
 assert_eq "pin evaluated after the Strix reroute" "yes" "$([ -n "$_pin_line" ] && [ -n "$_strix_line" ] && [ "$_pin_line" -gt "$_strix_line" ] && echo yes)"
 assert_eq "resolve-failure fallback wired" "yes" "$(grep -q 'TORCH_CONSTRAINT="\$_PREV_FALLBACK_CONSTRAINT"' "$INSTALL_SH" && echo yes)"
 assert_eq "pin gated on SKIP_TORCH"        "yes" "$(grep -q 'if \[ "\$SKIP_TORCH" = false \]; then' "$INSTALL_SH" && echo yes)"
-# Every --default-index torch install must go through the kept-release helper, so a pinned
-# release missing from the index never aborts a rerun.
+# All --default-index torch installs use the kept-release helper; a missing pin never aborts.
 _helper_uses=$(grep -c '_install_torch_default_index' "$INSTALL_SH")
 assert_eq "kept-release helper used by all default-index paths" "yes" "$([ "$_helper_uses" -ge 8 ] && echo yes)"
 _repair_uses=$(grep -c '_install_torch_default_index --force-reinstall' "$INSTALL_SH")

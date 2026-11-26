@@ -81,8 +81,7 @@ def test_only_one_repair_pass_runs_at_a_time():
 
 
 def test_a_rename_is_left_to_the_backend_guard():
-    """Renames are left to the backend guard: the pass runs only where it is enforced, and
-    re-listing all threads per page client side would be redundant and quadratic."""
+    """Renames stay with the backend guard; re-listing all threads per page would be quadratic."""
     repair = _read(REPAIR)
     assert "listChatThreads" not in repair
     assert "repairsStillValid" not in repair

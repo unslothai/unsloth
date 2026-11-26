@@ -110,7 +110,6 @@ def test_every_refuse_row_is_refused_at_both_entry_points(native, monkeypatch):
             if not row.get("args"):  # the launch step sees only the env / installed packages
                 with pytest.raises(RuntimeError, match = re.escape(row["label"])):
                     launch.apply_unsloth_fsdp2_launch_env()
-    # Nothing on: neither entry point refuses.
     assert launch.native_backend_conflicts() == []
     assert launch.apply_unsloth_fsdp2_launch_env() is False
 

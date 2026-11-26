@@ -171,8 +171,7 @@ def test_the_device_delta_is_the_fallback_only_when_processes_are_unreadable():
 
 
 def test_the_before_sample_is_taken_before_the_launch():
-    """An `apps_before` read after the server started would contain the server,
-    so nothing would ever have `appeared` and every run would fail."""
+    """An apps_before read taken after server start contains the server, so every run fails."""
     body = _body()
     # One listing call, so the attributed mapping and the listed pids describe the same moment.
     assert body.index("_listing_before = nvidia_compute_apps_listing()") < body.index(

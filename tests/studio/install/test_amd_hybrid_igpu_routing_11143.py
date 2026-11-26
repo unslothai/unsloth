@@ -234,8 +234,7 @@ def test_the_fast_path_keeps_the_callers_forwarded_rocm_detection():
 
 
 def test_an_explicit_false_flag_is_canonicalised_away_on_reuse():
-    """Absent is the only spelling of satisfied. A marker already carrying an explicit
-    false has to lose the key, or readers get two spellings of one state."""
+    """Absent is the only spelling of satisfied; an explicit false key is dropped on reuse."""
     marker = {
         "backend_request": "vulkan",
         "backend": "vulkan",

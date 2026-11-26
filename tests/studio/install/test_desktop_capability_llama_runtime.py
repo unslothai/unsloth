@@ -345,8 +345,7 @@ def test_the_command_emits_exactly_the_pre_pr_keys_plus_the_two_new_ones():
 
 @NEEDS_VENV
 def test_dropping_the_new_keys_yields_the_pre_pr_payload(tmp_path):
-    """Additive, proven by subtraction: without the two new keys the payload is what the pre-PR
-    desktop accepts; neither version constant may move or the CLI reads as stale."""
+    """Neither version constant may move, or the CLI reads as stale; new keys are additive."""
     root = tmp_path / "llama.cpp"
     _complete_tree(root)
     rc, out = _capabilities(root, tmp_path)

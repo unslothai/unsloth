@@ -115,8 +115,7 @@ Write-Host ("MISMATCH=" + $mismatch)
 def test_the_opt_out_also_protects_an_existing_arm64_environment(
     tmp_path: Path, shell: str, value: str
 ):
-    """The opt-out is read here too, since Resolve-WindowsOnArmX64Python is skipped when x64 is
-    already found; a rebuild carries nothing over from the old venv."""
+    """Opt-out read here too: x64 resolver skipped when x64 is found; a rebuild reuses nothing."""
     venv_python = tmp_path / "python.exe"
     venv_python.write_text("", encoding = "utf-8")
     selected = '@{ Version = "3.13"; Path = "C:\\p\\python.exe"; Arch = "x86_64" }'

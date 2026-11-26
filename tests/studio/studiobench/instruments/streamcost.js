@@ -185,8 +185,7 @@
       // A frame continuation is stream traffic and starts a task chain like any other chunk.
       const continuesFrame = st.pending.length > 0;
       if (looksSse || continuesFrame) noteSse();
-      // looksSse || pending: the second half of a split frame has no marker.
-      // Feed the whole chunk (only the scan is bounded); only now does this decoder become active.
+      // Split frame's tail has no marker; feed the whole chunk, then mark the decoder active.
       if (looksSse || continuesFrame) {
         // A fragment on a different decoder cannot be part of this stream.
         if (markerHold && markerHold !== st) setMarkerTail(markerHold, "");

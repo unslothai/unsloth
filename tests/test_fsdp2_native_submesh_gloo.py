@@ -91,7 +91,6 @@ def _case_media(rank):
     vision.install_vision_dummy(model)
     ids = torch.randint(0, 16, (1, 5), generator = torch.Generator().manual_seed(rank))
     audio = lambda: torch.randn(1, 6, 3)  # noqa: E731
-    # Pair [0, 1]: both ranks user audio only. Pair [2, 3]: rank 2 has both inputs, rank 3 one.
     kwargs = {"user_input_values": audio()}
     if rank == 2:
         kwargs["moshi_input_values"] = audio()

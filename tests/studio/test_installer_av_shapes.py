@@ -380,8 +380,7 @@ def test_a_hidden_window_never_pairs_with_a_bypassed_policy(name: str) -> None:
 
 # Every native import left in the installers; a new entry needs a reason.
 ALLOWED_PINVOKES = {
-    # Linked-ancestor canonicalisation; no 5.1 equivalent. The mutex name is hashed from this
-    # spelling byte for byte, so a GetFullPath shortcut would break exclusion.
+    # Linked ancestors, no 5.1 equivalent; mutex hashes spelling, so GetFullPath breaks it.
     "CreateFileW",
     "GetFinalPathNameByHandleW",
     # ANSI colour on a real console; skipped when stdout is redirected.
@@ -1251,8 +1250,7 @@ def _run_watch_with_failing_watcher(
     compiled: bool = False,
     leftover: bool = False,
 ) -> str:
-    """Runs the real Invoke-WithCompilerWatch, with its watcher reporting an error on the first
-    ``fail_first`` measurements, as a buffer overflow does on a hosted runner."""
+    """Runs real Invoke-WithCompilerWatch; watcher errors on the first fail_first measurements."""
     temp_root = tmp_path / "temp"
     temp_root.mkdir()
     evidence = tmp_path / "evidence"

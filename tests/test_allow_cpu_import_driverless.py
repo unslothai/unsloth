@@ -108,10 +108,8 @@ def _under(path, directory):
 
 
 def test_the_devices_really_are_hidden_and_the_variable_is_what_opens_the_import():
-    """Without the variable the import must still refuse, and refuse with the
-    documented message. If this ever passes, the host has a visible GPU and every
-    other case in this file is vacuous. A driverless host now gets the CPU training backend, so
-    opt out of it to reach the refusal."""
+    """Without the variable, import must refuse with the documented message; a pass means a visible
+    GPU and vacuous cases; driverless hosts need the CPU backend opted out to reach the refusal."""
     _needs_the_cuda_branch()
     out = _run("import unsloth", UNSLOTH_DISABLE_CPU_FALLBACK = "1")
     assert out.returncode != 0, "a device is visible; this file proves nothing here"

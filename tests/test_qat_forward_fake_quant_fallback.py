@@ -101,7 +101,6 @@ def test_plain_and_weight_only_qat_keep_fused_path(scheme, monkeypatch):
 
 
 def test_direct_torchao_quantize_also_falls_back(monkeypatch):
-    # A user calling torchao's quantize_ directly (not through qat_scheme) gets the same fallback.
     from torchao.quantization import quantize_
     from torchao.quantization.qat import QATConfig
 

@@ -149,8 +149,7 @@ def test_a_failed_sentinel_write_does_not_re_admit_the_unchanged_clipboard(page)
 
 
 def test_a_real_copy_is_still_measured_when_the_sentinel_could_not_be_written(page):
-    """Control for the fallback: a missing write permission must not kill the action; a real copy is
-    still measured, and the row names the pre-copy value it was confirmed against."""
+    """Unwritable sentinel must not kill the action; real copy measured vs pre-copy value."""
     page.evaluate("async () => await navigator.clipboard.writeText('stale')")
     _refuse_the_sentinel_write(page)
     got = A.select_all_copy(_ctx(page))

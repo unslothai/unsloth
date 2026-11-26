@@ -578,7 +578,6 @@ def test_the_installed_triton_is_not_flagged():
         ("/*\n#define PY_SSIZE_T_CLEAN\n*/\n", "", True),
         ("/* x */ /*\n#  define PY_SSIZE_T_CLEAN 1\n*/\n", "", True),
         ("//#define PY_SSIZE_T_CLEAN\n", "", True),
-        # Control: a real define with a commented-out undef is still defined.
         ("#define PY_SSIZE_T_CLEAN\n/*\n#undef PY_SSIZE_T_CLEAN\n*/\n", "", False),
         ("#define PY_SSIZE_T_CLEAN\n/* now include it */\n", "", False),
     ],
@@ -904,8 +903,7 @@ def test_the_provider_that_ships_the_offending_file_is_the_one_named(monkeypatch
     ids = ["generic-first", "accelerator-first"],
 )
 def test_a_file_claimed_by_two_providers_is_settled_by_torchs_backend(monkeypatch, tmp_path, order):
-    """Coexisting providers both record the file, so order is noise; the harmful answer installs a
-    CUDA build over an accelerator one, so an XPU torch settles it for the XPU provider."""
+    """Both providers record the file, so order is noise; an XPU torch settles it, never CUDA."""
     driver = tmp_path / "backends" / "intel" / "driver.c"
     driver.parent.mkdir(parents = True)
     driver.write_text("x", encoding = "utf-8")

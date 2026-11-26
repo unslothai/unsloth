@@ -130,7 +130,6 @@ Check "rocm7.0 wheel"        (Invoke-IsRocm "C:\v" "__version__ = '2.9.0+rocm7.0
 Check "rocm7.13.0 wheel (#8335)" (Invoke-IsRocm "C:\v" "__version__ = '2.11.0+rocm7.13.0'")
 Check "gfx1151 wheel"        (Invoke-IsRocm "C:\v" "__version__ = '2.9.0+gfx1151'")
 Check "gfx110X-all wheel"    (Invoke-IsRocm "C:\v" "__version__ = '2.7.1+gfx110X.all'")
-# A dev/nightly segment precedes the local label.
 Check "nightly rocm wheel"   (Invoke-IsRocm "C:\v" "__version__ = '2.12.0.dev20260801+rocm7.2'")
 Check "nightly cuda wheel"   (-not (Invoke-IsRocm "C:\v" "__version__ = '2.12.0.dev20260801+cu130'"))
 Check "source build"         (-not (Invoke-IsRocm "C:\v" "__version__ = '2.9.0a0+git1a2b3c'"))
@@ -263,8 +262,7 @@ Check "the force-reinstall flag is declared outside the venv block" (
     $setupText -match '(?m)^\$script:PinChangedForceReinstall = \$false$')
 
 Write-Host "the surfaced probe error survives a stderr that is only whitespace"
-# Blank-line stderr passes the guard but leaves nothing for [0], fatal under Set-StrictMode
-# (setup.bat runs without -NoProfile). Driven for real with the old form as a control.
+# Blank-line stderr leaves [0] nothing to index, fatal under Set-StrictMode.
 $_strictNewOk = $true
 try {
     & {

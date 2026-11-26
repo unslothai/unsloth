@@ -355,7 +355,6 @@ def test_the_non_peft_branch_marks_the_checkpoint_as_not_disposable(
     checkpoint.mkdir()
     model = _FakeModel(str(checkpoint))
     seen = _run_export(monkeypatch, save_mod, tmp_path, model)
-    # Converted from a staged copy inside the GGUF folder, still never reclaimable.
     assert os.path.dirname(seen["model_directory"]) == str(tmp_path / "export" / "model_gguf")
     assert seen["merge_is_disposable"] is False
 
@@ -631,7 +630,6 @@ def test_each_quant_is_priced_by_its_own_width(save_mod):
     assert 4.5 / 16 < ratio("q4_k_m") < 8.0 / 16
     assert 8.5 / 16 < ratio("q8_0") < 1.0
     assert ratio("iq2_xxs") < ratio("iq4_xs") < ratio("q8_0")
-    # An unrecognised method is still charged a whole copy of the base.
     assert ratio("something_new") == 1.0
 
 

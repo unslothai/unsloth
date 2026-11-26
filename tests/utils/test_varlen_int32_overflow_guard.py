@@ -185,8 +185,7 @@ def test_padded_tail_segment_counts_toward_the_bound(monkeypatch, backend):
     q = torch.zeros((1, 16, total, 128), requires_grad = True)
     config = ad.AttentionConfig(backend = backend, n_kv_heads = 16, n_groups = 1)
     ad.run_attention(config = config, context = context, Q = q, K = q, V = q)
-    # SDPA attends packed rows one segment length at a time (#12740): the 8127 one-token
-    # documents and the padded tail are two calls, and neither may reach the varlen kernel.
+    # Per segment SDPA (#12740): 8127 one-token docs and padded tail, two calls, never varlen.
     assert taken and set(taken) == {ad.SDPA}
 
 

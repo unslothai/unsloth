@@ -61,8 +61,7 @@ def test_the_leg_runs_firefox_on_its_own_engine_with_its_own_switch():
 
 
 def test_the_modal_cover_regression_fails():
-    # Main before the Firefox-only cover rule, composer menu at 150 turns: 349-425 ms open with a
-    # 160-340 ms frame, against about 110 ms and a 40 ms frame at 1 turn.
+    # Before the Firefox-only cover rule, composer menu open and frame at 150 turns must fail.
     res = _result(_cell(110, close_ms = 120, frame = 40), _cell(380, close_ms = 390, frame = 280))
     assert set(_fails(res)) >= {("composer_menu", "open"), ("composer_menu", "open_frame")}
 

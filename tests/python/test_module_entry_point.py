@@ -12,8 +12,7 @@ from pathlib import Path
 
 import pytest
 
-# Byte-identical to WINDOWS_CLI_ENTRYPOINT (process.rs), $script:UnslothCliTrampoline
-# (install.ps1) and _WINDOWS_CLI_ENTRYPOINT (unsloth_cli/commands/studio.py).
+# Byte-identical to WINDOWS_CLI_ENTRYPOINT (process.rs), install.ps1 and studio.py copies.
 TRAMPOLINE = (
     "import sys, os; sys.path[:1] = [x for x in sys.path[:1] if getattr(sys.flags, 'safe_path', False) or x not in ('', os.getcwd())]; "
     "sys.argv[0] = 'unsloth'; from unsloth_cli import app; sys.exit(app())"

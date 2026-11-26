@@ -584,7 +584,6 @@ def test_the_windows_uninstaller_only_removes_a_root_that_is_really_empty(tmp_pa
     ps = UNINSTALL_PS1.read_text(encoding = "utf-8")
     assert "function _RemoveDirIfEmpty" in ps
     helper = _slice(ps, "    function _RemoveDirIfEmpty {", "\n    # The exact shape")
-    # One atomic call: no -Recurse, and no separate emptiness check.
     assert "[System.IO.Directory]::Delete($Path, $false)" in helper
     assert "-Recurse" not in helper, helper
     assert "Get-ChildItem" not in helper, helper

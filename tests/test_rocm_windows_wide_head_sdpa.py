@@ -147,7 +147,6 @@ def test_studio_guard_first_makes_core_a_noop(stock_sdpa, windows_rocm):
     assert fixes.fix_rocm_windows_wide_head_sdpa() is True
     assert F.scaled_dot_product_attention is studio
 
-    # Still a no-op when another wrapper (functools.wraps) sits on top of Studio's guard.
     on_top = functools.wraps(studio)(lambda *a, **kw: studio(*a, **kw))
     F.scaled_dot_product_attention = on_top
     assert fixes.fix_rocm_windows_wide_head_sdpa() is True
@@ -392,8 +391,7 @@ def test_nested_jagged_tensors_under_a_mode(stock_sdpa, windows_rocm, cpu_counts
 def test_a_wide_call_entering_after_another_thread_moved_the_flags_still_runs_math(
     windows_rocm, cpu_counts_as_gpu
 ):
-    """Flags are process-wide: if another thread's sdpa_kernel changes them while a wide call holds the pin, a wide call
-    starting after that is pinned to math again rather than running under the other thread's choice."""
+    """Flags are process-wide: a wide call after another thread moved them is pinned to math."""
     from torch.nn.attention import SDPBackend, _cur_sdpa_kernel_backends, _sdpa_kernel
 
     seen = {}

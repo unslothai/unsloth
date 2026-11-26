@@ -115,7 +115,6 @@ def test_no_bare_test_path_probes_inside_the_llama_install_tree():
         r"|\$LlamaServerBin|\$CmakeCacheFile|\$QuantizeBin|\$altBin"
         r"|Join-Path \$BuildDir)"
     )
-    # A comment naming a probe is not a probe.
     offenders = [
         f"{index}: {line.strip()}"
         for index, line in enumerate(SETUP_PS1.splitlines(), start = 1)
@@ -141,8 +140,7 @@ def test_whisper_phase_stays_non_fatal_on_a_denied_llama_tree():
 
 
 def test_reporting_helpers_tolerate_an_empty_path():
-    """These run while a failure is reported; a mandatory [string] rejects null and empty, so
-    without these attributes (such as [AllowNull()]) the reporter throws a binding exception."""
+    """Mandatory [string] rejects null/empty; [AllowNull()] keeps the reporter from throwing."""
     for name in ("Get-PathDenialDetail", "Exit-PathAccessDenied"):
         body = SETUP_PS1.split(f"function {name}", 1)[1].split("\nfunction ", 1)[0]
         head = body.split("$Path", 1)[0]

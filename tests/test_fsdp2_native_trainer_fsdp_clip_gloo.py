@@ -309,7 +309,6 @@ def test_trainer_fsdp_args_refused_with_native_backend_and_win_without(tmp_path)
         assert native["error"].startswith("RuntimeError"), (rank, r)
         assert "UNSLOTH_FSDP2_BACKEND=accelerate" in native["error"], (rank, r)
         assert native["sharded"] is False, (rank, r)
-        # No explicit backend: the Trainer's FSDP request wins, the model is left to accelerate.
         assert r["none"]["sharded"] is False, (rank, r)
         assert r["none"]["error"] == "" and r["none"]["fsdp_plugin"], (rank, r)
 

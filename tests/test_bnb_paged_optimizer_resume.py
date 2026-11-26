@@ -127,7 +127,6 @@ def test_resumed_paged_optimizer_state_stays_paged(optim_name):
     assert fixed["placed_after_load"]
     assert fixed["load_cuda_bytes"] < fixed["state_bytes"] // 4
     assert not any(fixed["resumed_small_paged"].values())
-    # Resuming continues the same trajectory as never stopping.
     assert fixed["max_abs_diff"] == 0.0
 
 

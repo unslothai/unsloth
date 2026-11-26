@@ -65,8 +65,7 @@ SURFACES = [
     "thread_scroll",
 ]
 
-# WebKit long-chat costs, pinned at today's level; keys engine:mode:surface:metric, open/close =
-# long/short time ratio, frame = long chat's longest frame in ms; lower each when its fix lands.
+# engine:mode:surface:metric; open/close: long/short ratio; frame: longest ms; lower on fix.
 KNOWN_DEFAULT = {
     # Browser pane: opening or closing it narrows / widens the thread and WebKit re-lays out and repaints
     # the rows still inside the #16986 content-visibility window (macos-15 Safari engine, Round 11:

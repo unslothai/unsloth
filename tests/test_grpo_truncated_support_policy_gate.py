@@ -264,7 +264,6 @@ def test_efficient_path_refuses_the_kept_set_for_an_unsynced_sampler(monkeypatch
     trainer = _trainer()
     refuse(trainer)
     assert not getattr(trainer, "_unsloth_truncated_support_refused", False)
-    # Opt-in off (no support kwargs): nothing to refuse.
     refuse = _refuse_helper(monkeypatch, {})
     trainer = _trainer()
     trainer._unsloth_vllm_sync_skip = True

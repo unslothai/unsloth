@@ -48,8 +48,7 @@ def _probe_texts():
 
 
 def test_fast_sentence_transformer_matches_stock_st():
-    """FastSentenceTransformer embeddings and tokens must match a stock SentenceTransformer load of
-    the same checkpoint; opt-in and GPU-only (needs CUDA), so it skips on CPU runners."""
+    """Embeddings and tokens match stock SentenceTransformer; opt-in, GPU-only, skips on CPU."""
     model_id = os.environ.get("UNSLOTH_EMBEDDING_PARITY_MODEL")
     if not model_id:
         pytest.skip(

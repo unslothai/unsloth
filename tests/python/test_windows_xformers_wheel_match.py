@@ -17,8 +17,7 @@ PYPROJECT = REPO_ROOT / "pyproject.toml"
 
 WHEEL_INDEX_BASE = "https://download.pytorch.org/whl"
 
-# (CUDA family, torch release) -> xFormers version published by that index.
-# Keep in step with wheel_utils._XFORMERS_WHEEL_VERSIONS and install.ps1 (enforced below).
+# (CUDA family, torch) -> xFormers version; sync with wheel_utils and install.ps1 (enforced).
 XFORMERS_WHEEL_MATRIX: dict[tuple[str, str], str] = {
     ("cu126", "290"): "0.0.33.post1",
     ("cu128", "290"): "0.0.33.post1",

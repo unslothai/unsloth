@@ -44,8 +44,7 @@ NOT_EXPORTING = ("latest_compile", "gptoss")
 
 
 def test_the_cheap_legs_export_a_gguf_and_run_it():
-    """The flag turns on the GGUF export and the inference against it, so a leg without it claims
-    neither; at least one leg must keep it or the directive's llama.cpp item is uncovered."""
+    """--export-gguf gates export and inference; one leg keeps it or llama.cpp is uncovered."""
     missing = [n for n in EXPORTING if "--export-gguf" not in legs.LEGS[n].args]
     assert missing == [], f"these legs never export a GGUF: {missing}"
 

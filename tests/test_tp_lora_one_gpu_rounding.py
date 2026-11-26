@@ -295,8 +295,7 @@ def test_tp_lora_several_active_adapters_match_one_gpu_forward(dtype, dropout, s
 
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 def test_tp_lora_two_adapters_on_one_layer_match_one_gpu_forward(dtype):
-    """Two adapters on one layer: the generated forward keeps result in the LoRA dtype across the loop and
-    restores the base output's dtype once at the end; the tp loop must not round between adapters."""
+    """Adapters accumulate in LoRA dtype, cast to base once; tp must not round between them."""
     _check("0", dtype, "dense", adapters = ("default", "second"))
 
 

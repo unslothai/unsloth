@@ -52,7 +52,6 @@ def _crash_reason(proc: subprocess.CompletedProcess) -> str | None:
         except ValueError:
             name = f"signal {-proc.returncode}"
         return f"killed by {name}"
-    # Streams may be bytes or str depending on the caller.
     captured = [stream for stream in (proc.stdout, proc.stderr) if stream]
     if any(isinstance(stream, bytes) for stream in captured):
         streams = b"".join(

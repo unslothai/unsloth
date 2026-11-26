@@ -38,8 +38,7 @@ REPOS = {
 
 
 def _built_config(kind):
-    """Configs with no tiny hub repo are written out with random weights. DeepSeek-V2: q/k head dim
-    24 (16 nope + 8 rope) vs value dim 16 with YaRN. MiniMax-M2: 4 heads over 2 kv heads."""
+    """Random weights (no tiny hub repo): DeepSeek-V2 q/k 24 vs v 16, MiniMax-M2 4 heads/2 kv."""
     if kind == "deepseek_v2":
         from transformers import DeepseekV2Config
         return DeepseekV2Config(
@@ -283,8 +282,7 @@ def _parity_worker(
 
 
 def _spawn(fn, world, *args):
-    # Fork keeps the conftest CUDA spoof (CPU-only CI). On a GPU host the parent's autograd threads make fork
-    # unsafe, so spawn CPU-only ranks there.
+    # Fork keeps the CUDA spoof; a GPU parent's autograd threads make fork unsafe, so spawn.
     spawn = torch.cuda.is_available() or os.environ.get("UNSLOTH_TEST_GLOO_START") == "spawn"
     if not spawn and "fork" not in mp.get_all_start_methods():
         pytest.skip("needs the fork start method")

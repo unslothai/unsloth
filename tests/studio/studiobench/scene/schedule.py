@@ -292,8 +292,7 @@ class SceneRunner:
         window_closed_at = time.monotonic()
         over_ms = ((window_closed_at - t0) * 1000) - deadline_ms
 
-        # The visible capture goes first: it closes an accumulating observation, so taking it after
-        # arm-dependent probes kept the two arms' observers open for different intervals.
+        # Visible capture first: it closes an accumulating observation, else arm spans differ.
         visible = self._visible()
         census = self._census()
         parity = self._parity()

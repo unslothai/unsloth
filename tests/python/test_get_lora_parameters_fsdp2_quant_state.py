@@ -121,9 +121,8 @@ def test_dense_weight_never_takes_the_module_getattr_path():
 
 
 def test_fallback_reads_no_process_global():
-    # The fallback is gated per weight on the packed (N, 1) shape, never on a module-global flag: a
-    # global read inside a compiled LoRA forward is a dynamo guard, so preparing one FSDP2 QLoRA model
-    # recompiled every compiled dense LoRA forward (#13880 review).
+    # Gate the fallback per weight on the packed (N, 1) shape, not a module global: a global read in
+    # a compiled forward is a dynamo guard, recompiling dense LoRA forwards (#13880 review).
     for name in ("get_lora_parameters", "get_lora_parameters_bias"):
         fn = _load_function(name)
         assert "_FSDP2_QLORA_PREPARED" not in fn.__code__.co_names, name

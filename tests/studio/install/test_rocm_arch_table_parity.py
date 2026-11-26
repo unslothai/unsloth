@@ -386,8 +386,7 @@ class TestGpuNameArchParity:
 
     @pytest.mark.parametrize("gpu_name", [name for name, _ in _GPU_NAME_LEAF_CASES])
     def test_all_copies_return_the_same_arch(self, gpu_name):
-        """Drift guard with no expected value, only agreement: catches a table edited in one
-        installer but not the others, and stays honest even where the shipped gfx id is wrong."""
+        """Drift guard, agreement only: a wrong gfx id passes; one table edited alone fails."""
         answers = {where: _resolve(where, rows, gpu_name) for where, rows in _name_tables().items()}
         distinct = set(answers.values())
         assert len(distinct) == 1, f"{gpu_name!r} resolves inconsistently: {answers}"
@@ -417,8 +416,7 @@ class TestGpuNameArchParity:
 
     @pytest.mark.parametrize("gpu_name", ["AMD Radeon 680M", "AMD Radeon 660M", "AMD Radeon 610M"])
     def test_rdna2_igpus_stay_unmapped(self, gpu_name):
-        """No copy may route these APUs to ROCm torch by name: RDNA 2 iGPU training is unmeasured
-        and gfx1033 computes wrong answers (studio/ROCM_RDNA2_APU.md)."""
+        """RDNA2 iGPUs unmapped: training unmeasured, gfx1033 wrong (studio/ROCM_RDNA2_APU.md)."""
         for where, rows in _name_tables().items():
             got = _resolve(where, rows, gpu_name)
             assert got is None, f"{where}: {gpu_name!r} matched {got!r}"

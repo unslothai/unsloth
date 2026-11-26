@@ -384,9 +384,7 @@ def test_the_command_scan_sees_the_parallel_run_and_the_serial_steps():
     assert any("--ignore=" in command for command in root)
     assert {command for command in root} == set(root), "a shard selection appears twice"
     assert len(set(backend)) == 5, "a backend shard selection appears twice"
-    # Non-vacuous for the backend side too.
     assert any(_collects(command, "tests/test_account_contract.py") for command in backend)
-    # Non-vacuous for the repo root too.
     assert any(_collects(command, "tests/test_model_registry.py") for command in root)
     assert len(commands) > 1, "no serial pytest steps found; the ignore checks cannot fail"
 

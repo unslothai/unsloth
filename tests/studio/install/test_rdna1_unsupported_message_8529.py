@@ -96,8 +96,7 @@ _NOT_RDNA1_NAMES = [
 class TestUnsupportedNameLookup:
     @pytest.mark.parametrize("name,expected", _RDNA1_NAMES)
     def test_rdna1_names_resolve_in_the_supported_table_on_windows(self, name, expected):
-        """The behavioural half, inverted since #11614: RDNA 1 routes on Windows, so the
-        Windows name table owns it and the messaging table must not claim it."""
+        """Since #11614 RDNA 1 routes on Windows; name table owns it, not the messaging table."""
         assert stack_mod._gfx_arch_from_gpu_name(name) == expected
         assert stack_mod._unsupported_gfx_arch_from_gpu_name(name) is None
 
@@ -175,9 +174,8 @@ class TestExplicitIndexPinIsHonoured:
         ids = ["url-spaces", "family-blank", "both-blank"],
     )
     def test_a_blank_pin_is_not_a_pin(self, env):
-        """get_torch_index_url trims both variables and treats a blank one as unset, so a
-        blank value must not suppress the CPU-only verdict here either. Dropping the
-        .strip() from the read passes every other test in this file."""
+        """get_torch_index_url trims both variables and treats blank as unset, so a blank pin must
+        not suppress the CPU-only verdict; only this test catches a dropped .strip()."""
         with patch.dict(os.environ, env, clear = False):
             for _k in ("UNSLOTH_TORCH_INDEX_URL", "UNSLOTH_TORCH_INDEX_FAMILY"):
                 if _k not in env:
@@ -219,8 +217,7 @@ class TestExplicitIndexPinIsHonoured:
 
 
 class TestPythonStackWindowsArm64:
-    """The Windows WMI path prints the same Vulkan advice as install.ps1. ARM64 gets it
-    too: releases ship a Windows ARM64 Vulkan bundle, and setup.ps1 accepts the variable."""
+    """WMI advice matches install.ps1 on ARM64 too; releases ship an ARM64 Vulkan bundle."""
 
     @pytest.mark.parametrize("arm64", [False, True], ids = ["x64", "arm64"])
     def test_every_arch_gets_the_setter(self, arm64):
@@ -268,8 +265,7 @@ class TestPythonStackWindowsArm64:
 
 class TestWindowsWmiMessage:
     def test_rdna1_adapter_now_yields_its_arch(self):
-        """Since #11614 the reporter's card routes: the WMI path infers gfx1010 and the
-        multi-arch index takes it from there. No "not covered" message for it."""
+        """Since #11614 this card routes: WMI infers gfx1010 and the multi-arch index takes it."""
         arch, out = _wmi_detect(["AMD Radeon RX 5700 XT"])
         assert arch == "gfx1010"
         assert "does not cover" not in out
@@ -443,8 +439,7 @@ class TestUnsupportedTableParity:
 
 
 def _normalised(path: Path) -> str:
-    """CRLF-normalised source text. install.ps1 / setup.ps1 ship CRLF, so a
-    substring spanning a line break never matches without this."""
+    """Text with CRLF turned to LF, since install.ps1 and setup.ps1 ship CRLF line endings."""
     return path.read_text(encoding = "utf-8").replace("\r\n", "\n")
 
 
@@ -998,7 +993,6 @@ class TestVulkanAdvice:
             window = "\n".join(
                 line for line in _arm_window(lines, i) if not line.lstrip().startswith(("#", "//"))
             )
-            # Both halves are required: GGUF chat and the Vulkan backend, with Vulkan matched case-sensitively.
             assert "GGUF chat" in window and "Vulkan" in window, (
                 f"{path.name}:{i + 1}: this arm dead-ends without offering GPU GGUF chat "
                 f"through Vulkan:\n{window}"

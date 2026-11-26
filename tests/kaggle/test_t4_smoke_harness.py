@@ -740,8 +740,7 @@ def test_reference_absent_is_not_a_failure():
     assert verdict["status"] == "absent"
 
 
-# A reference from a different step count must be refused loudly: the fp16 scaler skips the
-# first steps, so runs of different lengths are not comparable.
+# Refuse a different step count: fp16 scaler skips the first steps, so runs are not comparable.
 
 
 def test_a_reference_from_a_different_step_count_is_refused(tmp_path):
@@ -2525,7 +2524,6 @@ def test_a_step_count_that_could_only_report_red_stands_the_run_down():
         stood_down, reason = check_steps.decide(bad, SMOKE_DIR)
         assert stood_down, f"{bad!r} would have been pushed"
         assert reason
-    # The floor is derived from the committed reference and the payload's own verdict.
     from run_t4_smoke import optimisation_failures
 
     metrics = check_steps.reference_metrics(SMOKE_DIR)
@@ -3545,8 +3543,7 @@ def test_the_chat_template_the_payload_installs_actually_renders():
     assert "<|im_start|>user\nU<|im_end|>" in rendered
 
 
-# The canary resolves with unsloth_zoo, whose caps hold transformers and trl back, so only the
-# frontier leg can detect regressions in their newest releases.
+# unsloth_zoo caps hold transformers and trl back; only the frontier leg sees new regressions.
 
 
 def test_the_frontier_leg_resolves_dependencies_rather_than_skipping_them():
@@ -3668,7 +3665,6 @@ def test_a_dispatched_commit_is_proven_to_exist_before_the_quota_is_spent(tmp_pa
         return written, log.read_text(encoding = "utf-8")
 
     sha = "a" * 40
-    # A commit GitHub does not serve stands the run down.
     written, fetched = drive(sha, "", fetch_exit = 128)
     assert written == {"stand_down": "true"}
     assert sha in fetched, "the SHA was accepted without asking GitHub for it"
@@ -3677,7 +3673,6 @@ def test_a_dispatched_commit_is_proven_to_exist_before_the_quota_is_spent(tmp_pa
     assert written == {"ref": sha}
     assert sha in fetched
 
-    # A branch resolved by ls-remote is also checked for fetchability.
     branch_sha = "b" * 40
     written, fetched = drive("main", f"{branch_sha}\trefs/heads/main\n", fetch_exit = 128)
     assert written == {"stand_down": "true"}

@@ -226,8 +226,7 @@ def test_the_text_leg_exports_once_per_leg_and_not_once_per_cycle():
 
 
 def test_skipping_every_cycle_is_still_a_failure():
-    """Skipping the GGUF export per cycle must not become missing coverage: a leg that asked for an
-    export and produced no file must fail, and the excuse must not fire on cycle 0."""
+    """A requested GGUF export with no file must fail; the excuse never fires on cycle 0."""
     src = (PAYLOAD / "run_t4_smoke.py").read_text(encoding = "utf-8")
     assert "every cycle skipped the GGUF export" in src
     assert (

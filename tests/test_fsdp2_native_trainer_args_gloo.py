@@ -161,7 +161,6 @@ def _worker(rank, world, port, out, case, tmp, env):
             optimizer = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad])
             targs = _targs(os.path.join(tmp, "out"))
             try:
-                # Trainer's 11 positional args: model, args, eight Nones, then optimizers.
                 trainer = Trainer(
                     model, targs, None, None, None, None, None, None, None, None, (optimizer, None)
                 )
@@ -191,8 +190,7 @@ def _worker(rank, world, port, out, case, tmp, env):
             except RuntimeError as exc:
                 res["error"] = str(exc)
         elif case == "xpu_install_use_cpu":
-            # An XPU torch build (no CUDA / ROCm): the launch step routes UNSLOTH_FSDP2=1 to
-            # accelerate's FSDP2, then the use_cpu Trainer takes native FSDP2 back.
+            # XPU: UNSLOTH_FSDP2=1 routes to accelerate; use_cpu Trainer reclaims native FSDP2.
             torch.version.cuda = None
             torch.version.hip = None
             torch.version.xpu = "20250101"
@@ -356,7 +354,6 @@ def test_explicit_native_backend_turns_accelerate_fsdp_env_off(clean_env, monkey
     assert launch.apply_unsloth_fsdp2_launch_env() is False
     assert os.environ.get("ACCELERATE_USE_FSDP", "false").lower() != "true"
     assert "FSDP_VERSION" not in os.environ
-    # Still native once the accelerate variables are gone, and the second call is a no-op.
     assert launch.unsloth_fsdp2_native_requested()
     assert launch.apply_unsloth_fsdp2_launch_env() is False
     assert capsys.readouterr().out.count("UNSLOTH_FSDP2_BACKEND") == 1

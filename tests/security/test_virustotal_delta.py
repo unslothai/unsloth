@@ -62,8 +62,7 @@ def test_the_baseline_hash_is_the_file_the_reporter_ran() -> None:
 
 
 def test_the_recorded_baseline_note_matches_the_fixture() -> None:
-    """The prose and the fixture are two statements of the same fact, and they drift apart in
-    exactly the situation where someone is reading one and trusting the other."""
+    """Prose note and fixture must state the same fact, since readers may trust either one."""
     baseline = _baseline()
     assert baseline.sigma_total == 17
     assert baseline.sigma == {"high": 1, "medium": 11, "low": 5}
@@ -156,8 +155,7 @@ def test_a_clear_improvement_passes_and_is_named() -> None:
 
 
 def test_an_unmoved_engine_verdict_is_reported_as_unchanged() -> None:
-    """The cloud verdict is not recomputed on code deletion, so sigma moving with the engine
-    unchanged is the expected win; reporting that as a clean bill of health would overclaim."""
+    """Cloud verdict is not recomputed on deletion; an unchanged verdict is not a clean bill."""
     payload = copy.deepcopy(vtd._BASELINE_FIXTURE)
     payload["data"]["attributes"]["sigma_analysis_stats"] = {"medium": 4}
     delta = vtd.compare(_baseline(), _snap(payload))
@@ -237,8 +235,7 @@ def test_the_yara_parser_survives_a_schema_change(raw) -> None:
 
 
 def test_the_tool_has_no_upload_path_at_all() -> None:
-    """Deliberate: uploading a candidate makes a prevalence-zero sample that strict cloud settings
-    punish, so it can create the detection it measures under a hash no user has."""
+    """Deliberately no upload: a prevalence-zero hash can create the detection it measures."""
     import ast
 
     tree = ast.parse(SCRIPT.read_text(encoding = "utf-8"))

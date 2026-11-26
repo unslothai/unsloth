@@ -233,8 +233,7 @@ def test_thread_weight_records_the_four_actions() -> None:
 
 
 def test_thread_weight_row_shapes_stay_distinct() -> None:
-    """TABLE_ROWS is (label, pick) and GROWTH_AXES is (label, pick, floored); a bulk edit that lands
-    in the wrong one makes print_table die after a forty-minute run, before anything is shown."""
+    """TABLE_ROWS is (label, pick); GROWTH_AXES adds floored; a mix-up breaks print_table late."""
     import importlib
     import sys
 
@@ -312,8 +311,7 @@ def _thread_weight_row(deleted: bool = True, layer: str = "auto") -> dict:
 
 
 def test_thread_weight_rejects_a_dead_delete_at_every_size() -> None:
-    """Delete checks belong in the per-size loop, not under the whole-run modal-layer if, so each
-    measured column proves its own delete."""
+    """Delete checks go in the per-size loop so each measured column proves its own delete."""
     import importlib
     import sys
 

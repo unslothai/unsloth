@@ -191,8 +191,7 @@ def test_the_reroute_is_not_gated_on_the_rocm_version_floor():
 
 
 def test_the_companion_pins_carry_the_211_floor_on_a_grouped_mm_leaf():
-    """gfx110X-all joined the torch 2.11 allowlist (unslothai/unsloth issue 11814; 2.10
-    access-violates in _grouped_mm); companions stay bounded above, against major drift."""
+    """2.11 floor, upper-bounded: 2.10 faults in _grouped_mm (unslothai/unsloth issue 11814)."""
     calls = _run_install(gfx_devices = ("gfx1103",))
     for spec in stack_mod._ROCM_TORCH_PKG_SPECS["rocm7.2"]:
         assert spec in calls, (spec, calls)
@@ -610,8 +609,7 @@ def test_a_query_mirror_reaches_the_arch_index_end_to_end():
 
 
 def test_every_strix_arch_has_a_leaf_in_the_shared_map():
-    """Both reroutes now build their URL through _amd_arch_index_url, which returns None
-    for an arch the map does not name; the Strix set must stay inside it."""
+    """_amd_arch_index_url returns None for unmapped arches; each Strix arch must be mapped."""
     for arch in ("gfx1150", "gfx1151", "gfx1152"):
         assert stack_mod._GFX_TO_AMD_INDEX_ARCH.get(arch) == arch, arch
 
@@ -941,8 +939,7 @@ def test_amd_smi_discovery_order_is_not_indexed_as_hip_order():
 
 
 def test_kfd_order_resolves_a_mask_amd_smi_order_cannot():
-    """KFD nodes are the order the masks index, so the fallback reads them when no userland probe
-    answers; declining that ordering strands a Ryzen APU-plus-dGPU box."""
+    """KFD fallback: nodes share the mask order; declining strands a Ryzen APU-plus-dGPU box."""
     assert (
         _target(
             ["gfx1200", "gfx1103"],
@@ -975,8 +972,7 @@ def test_kfd_order_resolves_a_mask_amd_smi_order_cannot():
 
 
 def test_an_explicit_arch_is_authoritative_for_the_repair_gate_too():
-    """Stacked masks can leave the device list without the override target (ROCr keeps gfx1200, user
-    names gfx1103); the caller reads that list to pick the arch to repair."""
+    """Stacked masks can drop the override arch from the device list the repair gate reads."""
     calls = _run_install(
         gfx_devices = ("gfx1200", "gfx1103"),
         probe_source = "amd-smi",
@@ -1114,8 +1110,7 @@ def test_rdna4_takes_the_amd_index_at_every_generic_tag(gfx, rocm_version):
 
 @pytest.mark.parametrize("rocm_version", [(6, 0), (7, 1)])
 def test_an_arch_with_no_recorded_minimum_is_unaffected_by_the_version(rocm_version):
-    """The measurement covers rocm7.x; only arches known to postdate an older tag are keyed by
-    it, so everything else keeps the union reading and the generic index it always had."""
+    """Version keys only arches known to postdate an older tag; others keep the generic index."""
     calls = _run_install(gfx_devices = ("gfx1100",), rocm_version = rocm_version)
     assert _AMD not in calls and _GENERIC in calls, calls
 
@@ -1279,8 +1274,7 @@ def test_a_version_below_every_index_is_not_read_as_support():
 
 
 def test_a_stale_host_version_does_not_pick_a_generic_tag_without_the_target():
-    """gfx950 (MI350X) lives only on the generic index, so the repair picks a tag; a stale /opt/rocm
-    offering rocm6.3 would predate the part and land on a wheel with no kernels."""
+    """Only the generic index has gfx950; a stale /opt/rocm offering rocm6.3 would predate it."""
     calls = _run_install(
         gfx_devices = ("gfx950",),
         rocm_version = (6, 3),
@@ -1422,8 +1416,7 @@ def test_a_generic_only_target_gets_its_tag_floor_on_a_fresh_install_too():
         torch_probe = _CPU_TORCH,
         torch_owns_rocm = False,
     )
-    # An arch the generic wheel serves at every tag has no architecture floor, but automatic
-    # generic installs still honor the bitsandbytes compatibility floor.
+    # Every-tag arches have no arch floor; auto generic installs honor the bitsandbytes floor.
     assert f"{_GENERIC}6.4" in _run_install(
         gfx_devices = ("gfx1100",),
         rocm_version = (6, 3),
@@ -1511,8 +1504,7 @@ def test_a_generic_only_target_on_a_stale_tag_is_repaired_on_update_too():
 
 
 def test_a_generic_only_target_installs_when_the_rocm_version_is_unreadable():
-    """An unreadable ROCm version is not evidence the tag clears the floor; gfx950 answers False to
-    the reroute question for want of a leaf, leaving CPU torch on every retry."""
+    """Unreadable ROCm version is no floor evidence; gfx950 has no leaf, so CPU torch stays."""
     assert f"{_GENERIC}7.2" in _run_install(
         gfx_devices = ("gfx950",),
         rocm_version = None,

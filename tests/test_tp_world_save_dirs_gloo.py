@@ -67,18 +67,15 @@ def _case(rank, world, tmp):
             if ".unsloth_tp_rank" in d
         )
 
-    # 1. one shared directory, every rank at once: complete files on every rank when it returns
     shared = os.path.join(tmp, "shared")
     out["shared_err"] = _raised(lambda: tok.save_pretrained(shared))
     out["shared_on_return"] = os.path.isfile(os.path.join(shared, "tokenizer_config.json"))
     out["shared_writers"] = list(writers)
     dist.barrier()
-    # 2. every rank its own directory: every directory written
     own = os.path.join(tmp, f"own_{rank}")
     out["own_err"] = _raised(lambda: tok.save_pretrained(own))
     out["own_on_return"] = os.path.isfile(os.path.join(own, "tokenizer_config.json"))
     dist.barrier()
-    # 3. rank 0 saves alone, then every rank saves new state to the SAME directory
     same = os.path.join(tmp, "same")
     tok.model_max_length = 111
     if rank == 0:
@@ -171,7 +168,6 @@ def test_marked_processor_stays_picklable(tmp_path):
     processor = mark_world_save(_PicklableProcessor())
     assert processor.__dict__["save_pretrained"].__name__ == "unsloth_tp_world_save_pretrained"
     clone = pickle.loads(pickle.dumps(processor))
-    # Unpickled in a worker, it is the plain class method again.
     assert clone.save_pretrained.__name__ == "save_pretrained"
     assert clone.save_pretrained(str(tmp_path)) == (str(tmp_path),)
     # Outside torch.distributed the wrapped save still writes through the object's own save.

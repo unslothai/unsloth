@@ -77,7 +77,6 @@ def _case_cpu_mesh(native):
     model = _lora(1)
     # Mesh built before CUDA is faked: new_group would ask for NCCL on a CPU-only torch.
     mesh = init_device_mesh("cpu", (2,))
-    # A CUDA host whose GPU would fit the model, but the Trainer runs on the CPU.
     torch.cuda.is_available = lambda: True
     torch.cuda.current_device = lambda: 0
     torch.cuda.get_device_properties = lambda device = None: types.SimpleNamespace(

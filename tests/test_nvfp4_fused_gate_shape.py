@@ -111,7 +111,6 @@ def test_env_parsing(N, monkeypatch):
 
 
 def test_gate_is_monotone_in_weight_size(N):
-    # At a fixed K the row limit never shrinks as N grows, and tops out at max_rows.
     for cap, gates in N._FUSED_ROW_GATE.items():
         for dx in (False, True):
             for k in (768, 4096, 16384):

@@ -93,7 +93,6 @@ def test_fp32_model_under_bf16_autocast_matches_bf16_model(monkeypatch, device, 
     for name in ref[2]:
         assert got[2][name].dtype == torch.float32
         torch.testing.assert_close(got[2][name], ref[2][name], rtol = 0, atol = 0)
-    # The model itself is untouched: float32 bases stay float32 and frozen.
     for name in TARGETS:
         W = block.get_submodule(name).base_layer.weight
         assert W.dtype == torch.float32 and not W.requires_grad
@@ -207,7 +206,6 @@ def test_other_fp32_mismatches_still_run_peft(monkeypatch, device):
     assert spy.calls == []
     assert fast_lora._autocast_master_dtype(block, (block.o_proj,), X) is None
     block.o_proj.base_layer.weight.requires_grad_(False)
-    # No autocast: nothing to cast.
     assert fast_lora._autocast_master_dtype(block, (block.o_proj,), X) is None
     with torch.autocast(device, dtype = torch.bfloat16):
         assert fast_lora._autocast_master_dtype(block, (block.o_proj,), X) is torch.bfloat16

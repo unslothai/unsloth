@@ -244,8 +244,7 @@ def _snapshot_dir(
 
 
 def test_merge_maps_a_hub_cache_snapshot_of_the_prequantized_repo(tmp_path, monkeypatch):
-    # A run started from the cached repo (Studio's pinned snapshot) records the snapshot folder, not the repo id. Its
-    # files are the repo's at that revision, so it merges into the original exactly as the repo id does.
+    # A cached snapshot run records its folder, not the repo id, and merges like the repo id.
     from unsloth.models.inkling2 import inkling2_merge_source
 
     monkeypatch.setattr(loader_utils, "_get_new_mapper", _no_remote_mapper)
@@ -262,7 +261,6 @@ def test_merge_still_refuses_snapshots_that_are_not_a_mapped_prequantized_repo(t
     with patch.object(loader_utils, "_get_new_mapper", _no_remote_mapper):
         with pytest.raises(NotImplementedError, match = "needs the original weights"):
             inkling2_merge_source(unknown)
-    # A snapshot of the original checkpoint is read in place, at its revision.
     original = _snapshot_dir(tmp_path, MIRROR, MODELOPT)
     assert inkling2_merge_source(original, "r") == (original, "r")
     # A folder that only looks like a snapshot below its root (a subfolder of one) is a plain local folder.
@@ -335,7 +333,6 @@ def test_generic_merge_maps_a_cached_prequantized_snapshot_like_its_repo_id(tmp_
         # A plain local copy of the pre-quantized repo is not provably the repo: unchanged.
         local = _config_dir(tmp_path, "my_llama_bnb", BNB)
         assert resolve(local, load_in_4bit = False) == get_model_name(local, load_in_4bit = False)
-        # 4-bit lookups are untouched.
         assert resolve(snapshot, load_in_4bit = True) == get_model_name(snapshot, load_in_4bit = True)
 
 

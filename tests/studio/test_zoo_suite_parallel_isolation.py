@@ -38,8 +38,7 @@ ISOLATED = [
 
 ZOO_MARKER = "--dist loadfile tests/"
 
-# Was deselected while the zoo fixture did not stub model.trainable_parameters(). The zoo
-# fixed the fixture, and it passes on CPU in the serial mlx group, so it must run there.
+# Zoo fixed its stub for trainable_parameters(); it passes on CPU, so it runs in serial mlx.
 MLX_FORMERLY_DESELECTED = (
     "tests/test_mlx_finetune_last_n_layers.py::"
     "test_get_peft_model_passes_finetune_last_n_layers_through"

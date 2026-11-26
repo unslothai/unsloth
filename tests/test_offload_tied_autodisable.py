@@ -287,8 +287,7 @@ def test_anything_unmeasurable_declines():
 
 
 def test_auto_declines_a_tied_model_without_printing(capsys):
-    """The tied decline explains why something a caller ASKED for is not happening. For a
-    default nobody set it would be an apology in front of every tied-embedding load."""
+    """Auto's tied decline stays silent: a default nobody set would print on every tied load."""
     model = _tied_model()
     with _as_platform("posix"):
         assert resolve(model, "auto") is False

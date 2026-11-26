@@ -63,8 +63,7 @@ LARGE = int(os.environ.get("LONG_THREAD_LARGE", "200"))
 # Healthy: selector matching 1.00x, :has() 0.2 ms; with the #16603 rule, 5.3-6.0x and 74-84 ms.
 MAX_MATCH_RATIO = float(os.environ.get("LONG_THREAD_MAX_MATCH_RATIO", "2.0"))
 MAX_HAS_MS = float(os.environ.get("LONG_THREAD_MAX_HAS_MS", "5.0"))
-# Modal open/close recalc: Radix sets body pointer-events: none, which an inheriting thread restyles
-# per message (healthy 1-5 ms at 200 turns; hundreds of ms in Chromium, seconds in WebKit).
+# Radix sets body pointer-events: none on modal toggle; inheriting threads restyle per message.
 MAX_LOCK_MS = float(os.environ.get("LONG_THREAD_MAX_LOCK_MS", "30.0"))
 LOCK_TOGGLES = 4
 # Ratios in RECHECK_BAND get a second repeat; healthy reads 1.00x, the regression 5.3-6.0x.
@@ -240,8 +239,7 @@ def measure(browser, base: str, turns: int) -> dict:
       tables: document.querySelectorAll('table').length,
       workspace: !!document.querySelector('[data-wallpaper-workspace] .thread-bottom-fade'),
     })""")
-    # Untraced pre-check: selector statistics slow a regressed build ~50x, so a slow page gets a
-    # short traced window; the verdict still comes from the traced numbers.
+    # Untraced pre-check: a slow page gets a short traced window; verdict uses traced numbers.
     pre = style_per_key(cdp, page, PRECHECK_KEYS)
     if pre >= EXTREME_STYLE_MS:
         # A traced key takes minutes and cannot change the verdict; pin-down finds the rule.
@@ -317,9 +315,8 @@ def pin_down(
     base: str,
     budget_s: float = PIN_BUDGET_S,
 ) -> list[str]:
-    """Finds :has() rules whose removal makes a keystroke cheap, one fresh page per probe; costs
-    often not additive, so it bisects removal sets toward rules-off, narrows to single rules,
-    reports each (page without it; rule alone); at most three, time-boxed."""
+    """Finds :has() rules whose removal makes a keystroke cheap; costs often not additive, so it
+    bisects removal sets, reports each (page without it; rule alone), max three, time-boxed."""
     started = time.time()
     sheet = main_stylesheet(DIST)
     if sheet is None:

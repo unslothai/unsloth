@@ -153,7 +153,6 @@ done
 
 _make_rocminfo_host() {  # $1 = gfx arch -> a dir holding rocminfo + hipconfig mocks
     _mk_dir=$(mktemp -d)
-    # Real single-GPU APU shape: a CPU agent with no ISA, then a GPU agent named twice.
     cat > "$_mk_dir/rocminfo" <<ROCMINFO
 #!/bin/sh
 cat <<'OUT'

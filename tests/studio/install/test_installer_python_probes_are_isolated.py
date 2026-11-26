@@ -13,7 +13,6 @@ import pytest
 _ROOT = Path(__file__).resolve().parents[3]
 _INSTALLERS = ("install.sh", "install.ps1", "studio/setup.sh", "studio/setup.ps1")
 
-# `-c` and its quoted program, with the flags written before it on the same logical line.
 _DASH_C = re.compile(r"(?P<flags>(?:[ \t]+-[A-Za-z]+)*)[ \t]+-c[ \t]+(?P<q>['\"])")
 _IMPORTS_STUDIO = re.compile(
     r"\bimport studio\b|\bfrom studio\b|files\(\s*['\"]studio['\"]\s*\)|import [\w ,]*\bstudio\b"

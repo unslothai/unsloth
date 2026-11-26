@@ -79,8 +79,7 @@ def test_zoo_reader_still_parses_what_unsloth_writes():
 
 
 def test_trust_decision_is_on_the_value_we_set(monkeypatch):
-    """Identical layout, different provenance. The two halves use different strings on
-    purpose, since the registry is never cleared."""
+    """The two halves use different strings on purpose, since the registry is never cleared."""
     template = _shipped_values()[0]
     checker, dtype, bnb, custom, execute = template.split(";", 4)
 

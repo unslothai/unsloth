@@ -22,7 +22,6 @@ HELPER=$(awk '
     grab && /^}/ { grab = 0 }
 ' "$SETUP_SH")
 
-# A fake installer that leaves a marker when it runs, served by a stubbed downloader.
 printf 'touch "%s/ran"\n' "$WORK" > "$WORK/installer.sh"
 if command -v sha256sum >/dev/null 2>&1; then
     GOOD_SUM=$(sha256sum "$WORK/installer.sh" | awk '{print $1}')

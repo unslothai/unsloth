@@ -202,11 +202,9 @@ foreach ($file in @("install.ps1", "studio/setup.ps1")) {
             ($winner -eq $unsupIdx)
     }
 
-    # The unsupported lookup must never assign the arch the installers route on.
     $tableSrc = Get-AssignmentSource $path '$unsupportedNameArchTable'
     Check "the table assigns no routable arch" (-not ($tableSrc -match 'gfx1(0[3-9]|1|2)'))
 
-    # The table has to be READ by the message arms, not just declared.
     $consumer = if ($file -eq "install.ps1") {
         'foreach ($row in $unsupportedNameArchTable) {'
     } else {

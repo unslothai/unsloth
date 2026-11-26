@@ -79,7 +79,6 @@ def test_the_progress_total_uses_the_same_gate_as_the_step():
             continue
         # Sliced by line: the trailing comment on the += 1 lies past the node's extent.
         segment = "\n".join(lines[node.lineno - 1 : node.end_lineno])
-        # The += 1 whose comment names the MLX stack, i.e. the accounting twin.
         if "base_total += 1" in segment and "MLX stack" in segment:
             total_guards.add(ast.get_source_segment(source, node.test) or "")
     assert total_guards, "no base_total accounting found for the MLX stack step"

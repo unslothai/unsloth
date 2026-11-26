@@ -103,7 +103,6 @@ _BAT_READ = re.compile(
     re.IGNORECASE,
 )
 
-# A helper filename with or without `scripts/`; names that are not real scripts are ignored.
 _HELPER_REF = re.compile(r"(?<![$\w])((?:[A-Za-z0-9_.-]+[\\/])*[A-Za-z0-9_.-]+\.(?:sh|ps1|py|bat))")
 
 _QUOTED = re.compile(r'"([^"\\]*(?:\\.[^"\\]*)*)"' r"|'([^']*)'")
@@ -133,8 +132,7 @@ def _is_comment(line: str) -> bool:
 
 
 def _blank_strings(line: str, script: str = "") -> str:
-    """Blank quoted text so messages naming input APIs are not prompts; kept if still executed:
-    $(...) in double quotes, f-string fields; single quotes and a missing f prefix are literal."""
+    """Blank quoted text except executed $(...) and f-string fields; messages are not prompts."""
 
     def keep(match: re.Match) -> str:
         text = match.group(0)
@@ -317,8 +315,7 @@ def _looks_like_question(text: str) -> bool:
 
 
 def _nearby_questions(lines: list[str], index: int, *, direction: int) -> list[str]:
-    """Readable questions near lines[index], nearest first: back (-1) to the printf that drew a
-    read, forward (+1) for a bare [Y/n] hint assigned and interpolated below (#7016 shape)."""
+    """Nearest questions first: -1 is the printf before a read, +1 a [Y/n] hint (#7016 shape)."""
     candidates = list(_quoted_strings(lines[index]))
     for step in range(1, 9):
         neighbour = index + direction * step
@@ -498,9 +495,8 @@ def test_helpers_the_installers_invoke_are_scanned():
 
 
 def test_the_workflow_runs_for_every_scanned_script():
-    """A scanned script whose path filter is missing is only checked on the PR that
-    registers it. Read the filters back rather than keeping two lists in step by
-    hand. Parsed with a regex, not yaml: the parity runner installs pytest only."""
+    """Read the path filters back: a scanned script missing one is only checked on the PR that
+    registers it; regex, not yaml, since the parity runner installs pytest only."""
     workflow = (REPO_ROOT / ".github/workflows/cross-platform-parity-ci.yml").read_text(
         encoding = "utf-8"
     )
@@ -510,7 +506,6 @@ def test_the_workflow_runs_for_every_scanned_script():
         if collecting is not None and entry:
             collecting.append(entry.group(1))
             continue
-        # A comment or blank line inside the list does not end it.
         if collecting is not None and (not line.strip() or line.strip().startswith("#")):
             continue
         if collecting:
@@ -598,8 +593,7 @@ def test_detects_read_dash_p():
     ),
 )
 def test_detects_read_dash_p_without_a_marker(read_line: str):
-    """-p carries the prompt with no marker, so only the read pass catches it; bundled flags are the
-    usual bash spelling, so matching must not hinge on a space before -p."""
+    """-p prompts carry no marker: only the read pass catches them, bundled flags included."""
     assert [question for _, _, question in find_prompts("studio/setup.sh", read_line + "\n")] == [
         "build llama.cpp with cuda support?",
     ]
@@ -946,8 +940,7 @@ def test_detects_a_select_loop():
 
 
 def test_interpolation_cannot_rewrite_an_approved_question():
-    """Splicing new wording into an approved prompt is a new question. A substitution
-    at the end is only the marker hint, so that one still normalises away."""
+    """Spliced wording is a new question; a trailing substitution is only the marker hint."""
     assert normalise_question("Start Unsloth Studio %s now? [Y/n]") == (
         "start unsloth studio <var> now?"
     )

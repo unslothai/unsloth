@@ -73,7 +73,6 @@ def test_sharded_openclaw_runs_on_the_latest_node_24_and_the_rest_on_22():
         node22, node24 = nodes
         assert "if" not in node22, f"{name}: Node 22 must be set up for every shard"
 
-        # The Node 24 gate, exactly, and true for exactly the shards that run openclaw.
         assert node24.get("if") == OPENCLAW_GATE, f"{name}: Node 24 gate is {node24.get('if')!r}"
         for row in rows:
             assert _contains(row["agents"], "openclaw") == (
@@ -88,7 +87,6 @@ def test_sharded_openclaw_runs_on_the_latest_node_24_and_the_rest_on_22():
         assert node24.get("continue-on-error") is True, name
         assert node24.get("id") == "node24", name
 
-        # The capture runs exactly when the setup ran and succeeded, and reads that node.
         capture = [s for s in steps if "NODE24_BIN=" in str(s.get("run", ""))]
         assert len(capture) == 1, f"{name}: {len(capture)} steps capture NODE24_BIN"
         assert (

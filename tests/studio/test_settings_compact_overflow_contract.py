@@ -50,7 +50,6 @@ def test_settings_monitor_link_can_shrink():
     assert "flex w-full min-w-0 items-center gap-3" in source
     assert '<span className="truncate text-sm font-semibold text-foreground">' in source
     assert '<span className="min-h-[1lh] truncate text-xs text-muted-foreground">' in source
-    # The monitor has a section of its own, not a card dropped among other sections.
     assert re.search(
         r'<SettingsSection\s+title=\{t\("settings\.resources\.liveMonitor\.apiTitle"\)\}', source
     ), "MonitorLink no longer renders its own titled SettingsSection"
@@ -69,7 +68,6 @@ def test_remote_access_card_can_shrink():
     source = REMOTE_ACCESS.read_text(encoding = "utf-8")
     assert '<div className="flex min-w-0 items-start gap-3">' in source
     assert '<div className="flex min-w-0 flex-col gap-0.5">' in source
-    # The URL box itself is the shared pill, which wraps rather than overflowing.
     assert "<UrlPill url={url} />" in source
     assert "block w-full break-all border" in URL_PILL.read_text(encoding = "utf-8")
     assert "<RemoteUrlPanel url={status?.url ?? null} />" in source

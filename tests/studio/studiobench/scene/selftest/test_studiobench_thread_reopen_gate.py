@@ -264,8 +264,7 @@ def test_the_scripted_rebuild_declares_its_total_before_it_has_built_anything():
 
 
 def test_reopen_waits_for_the_thread_to_be_rebuilt_not_for_it_to_be_declared():
-    """The old condition read frame 0 (three of eighteen rows, no end of conversation, no
-    highlighting); observations come after the wait, so they assert it outlasted the declaration."""
+    """Observations come after the wait, so they assert the rebuild outlasted the declaration."""
     page = _ThreadPage()
     result = A.thread_reopen(_ctx(page))
 

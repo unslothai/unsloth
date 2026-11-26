@@ -543,8 +543,7 @@ def test_non_unix_line_endings(notes_module, newline):
 
 
 def test_closing_fence_must_carry_nothing_after_it(notes_module):
-    """CommonMark: a closer is the delimiter plus whitespace only. A ```` line
-    with trailing text inside a ```` block is content, not the end."""
+    """Closer is the delimiter plus whitespace only; trailing text on a ```` line is content."""
     text = "## 1.0\n\n````md\n```` not a closer\n## 9.9.9\n````\n\n- real\n"
     assert [e.version for e in parse_sections(notes_module, text)] == ["1.0"]
     info = "## 1.0\n\n```python\n## 9.9.9\n```\n\n- real\n"
@@ -1804,8 +1803,7 @@ def test_the_rail_gutters_come_out_of_the_cap_and_not_the_cards():
         assert (
             _rail_padding(tag) == expected
         ), f"a rail's padding is not bound to its own constant: {_rail_padding(tag)}"
-    # No padding utility in any spelling: the inline px style owns padding, and Tailwind padding is
-    # either rem-scaled (#8082) or, with !important, overrides it.
+    # Padding is inline px: Tailwind padding is rem-scaled (#8082) or !important overrides it.
     for tag in _rail_openings(provider):
         for token in _rail_class_tokens(tag):
             utility = _split_variants(token)[1]
@@ -1945,7 +1943,6 @@ def test_link_resolver_reads_comments_before_fences():
     links = LINKS.read_text(encoding = "utf-8")
     # Fence state is read before comments are masked, the order the collapsed preview uses.
     assert "const fenceSource = inComment\n      ? null\n      : FENCE.exec(" in links
-    # Masking happens only after the in-fence early return.
     fence_return = links.index("// Fenced content is literal")
     assert links.index("const [line, stillInComment, stillRunOn] = maskComments(") > fence_return
     assert "const spans = [...codeSpans(masked), ...comments].sort(" in links
@@ -2002,8 +1999,7 @@ def test_the_download_panel_can_shrink_inside_the_capped_stack():
 
 @pytest.fixture(scope = "module")
 def run_scanner(tmp_path_factory):
-    """Runs the frontend markdown scanners under node, since only a real run shows how CommonMark
-    classifies a line; @/lib resolves via Vite, not node, so the copies are rewritten."""
+    """Only real node runs show how CommonMark classifies lines; @/lib is rewritten for node."""
     node = shutil.which("node")
     if node is None:
         pytest.skip("node is needed to run the TypeScript scanners")
@@ -2042,8 +2038,7 @@ def test_a_link_indented_under_a_bullet_still_resolves(run_scanner):
 
 
 def test_an_indented_fence_does_not_swallow_the_bullets_below_it(run_scanner):
-    """A four-space line at top level is indented code, and a top-level bullet does not continue it;
-    promoting it to a list fence left a block open, skipping later bullets."""
+    """A top-level bullet ends indented code; a list fence would swallow the bullets below it."""
     swallowed = "Example:\n\n    ```\n\n- Added the exporter\n- Fixed the crash\n"
     assert preview_leads(run_scanner("preview", swallowed)) == [
         "Added the exporter",
@@ -2082,8 +2077,7 @@ def test_a_fence_inside_a_list_item_ends_with_the_item(notes_module):
 
 
 def test_stripping_comments_stays_linear_in_the_code_spans(notes_module):
-    """The comment scanner restarted its code-span search per opener, so N spans cost N squared;
-    notes are reparsed on every request, so the scan must stay linear."""
+    """Per-opener code-span restarts are quadratic; notes reparse per request, so stay linear."""
     # A quarter of the budget form's size: the big leg is the 16_000 it was checked at.
     spans = 4_000
     assert len("`a` <!--x--> " * (spans * 4)) < notes_module.RELEASES_MAX_BYTES
@@ -2114,8 +2108,7 @@ def test_the_three_scanners_share_one_list_column_rule():
 
 
 def test_a_failed_fetch_keeps_retry_reachable():
-    """A release with no notes is ready and a failed fetch is error; only the
-    error is retryable, and rendering there would replace the Retry button."""
+    """Only the error state is retryable; rendering there would replace the Retry button."""
     src = " ".join(PANEL.read_text(encoding = "utf-8").split())
     assert "const source = notes?.matched ? notes.markdown : null;" in src
     # Only NotesStatus renders retry, in the else of the markdown branch: an error has no markdown.
@@ -2261,8 +2254,7 @@ def test_a_quote_keeps_its_paragraph_to_itself(notes_module, run_scanner):
 
 
 def test_indented_code_before_an_ordered_marker_still_opens_a_list(notes_module):
-    """An indented code block ends at the first line not indented enough; with no paragraph open,
-    `2. item` opens a list whatever its number, so the nested heading stays inside."""
+    """With no paragraph open, `2. item` opens a list at any number; the heading stays inside."""
     joined = "## 1.0\n\n    code\n2. item\n   ## 2.0\n- new\n"
     assert [e.version for e in parse_sections(notes_module, joined)] == ["1.0"]
     apart = "## 1.0\n\n    code\n\n2. item\n   ## 2.0\n- new\n"

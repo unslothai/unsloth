@@ -333,8 +333,7 @@ def _run_compiled(rank, res, bc):
 
 
 def _run_rank_local(rank, res, bc):
-    # Same DDP model and data on both ranks, one rank-local difference each (rank 1 compiles
-    # ddp.module; rank 0 cannot allocate a tensor while building its vote); collectives must match.
+    # Rank 1 compiles ddp.module; rank 0 cannot allocate while voting; collectives must match.
     votes = [0]
 
     def all_reduce_spy(*args, **kwargs):
@@ -564,14 +563,11 @@ def test_uneven_join_window_keeps_the_vote_schedule_aligned():
         _, before, inside, after = s["marks"]  # start, join entered, join left, end
         assert _graphs_from(s) is not None and _graphs_from(s) < 6, s  # on before the window
         assert before["schedule"] is not None and not before["schedule"][2], s
-        # No vote and no count inside the window, on the rank with inputs and the one without.
         assert inside["schedule"] == before["schedule"], s
         assert inside["votes"] == before["votes"], s
-        # Synced training resumes on one schedule: a vote is taken and graphs end off everywhere.
         assert after["votes"] > inside["votes"], s
         assert s["off"] is not None, s
         assert all("graphs" not in step for step in s["steps"][-3:]), s
-    # Rank 0's join forwards ran plain.
     assert all("graphs" not in step for step in s0["steps"][6:9]), s0
     assert s0["marks"][2]["schedule"] == s1["marks"][2]["schedule"], (s0, s1)
     assert s0["marks"][3]["schedule"] == s1["marks"][3]["schedule"], (s0, s1)

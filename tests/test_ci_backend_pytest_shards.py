@@ -236,8 +236,7 @@ class TestEveryTestFileLandsInExactlyOneShard:
 
 class TestTheSplitKeepsTheSelectionItInherited:
     def test_every_shard_keeps_the_marker_filter(self):
-        """The one environment-specific deselection: a real llama.cpp process, which a GPU-less
-        runner lacks; the -k filter sits on the shared step, so it is checked there."""
+        """The shared -k filter drops the live llama.cpp test, which GPU-less runners lack."""
         run = _shared_pytest_step()["run"]
         assert (
             "not llama_cpp_load_progress_live" in run
@@ -268,9 +267,7 @@ class TestTheSplitKeepsTheSelectionItInherited:
         assert "timeout --signal=INT --kill-after=60" in run
 
     def test_the_serial_files_are_ignored_by_every_shard(self):
-        """The twelve cannot share a worker, and sharding does not change that: four
-        runners are still four workers each. They are held out by the shared --ignore list
-        on the step, so this asks the question of the shard AND the step together."""
+        """The twelve cannot share a worker, even sharded; the shared --ignore list holds them out."""
         run = _shared_pytest_step()["run"]
         shards = _shards()
         for path in _serial_paths():
@@ -284,8 +281,7 @@ class TestTheSplitKeepsTheSelectionItInherited:
             ), f"{path} is rerun by the serial step and shard(s) {claiming} collect it too"
 
     def test_the_serial_step_runs_in_one_process_in_one_shard(self):
-        """Splitting it would put its relative timings back on two machines, and running it
-        on every shard would run it four times."""
+        """Its relative timings must stay on one machine; every shard would run it four times."""
         for step in _job()["steps"]:
             if step.get("name") != _SERIAL_STEP:
                 continue
@@ -336,7 +332,6 @@ class TestTheGuardIsNotVacuous:
             "l-r": (["tests/"], [], ["tests/*/*", "tests/test_[a-k]*.py", "tests/test_[s-z]*.py"]),
             _CATCH_ALL: (["tests/"], [], ["tests/test_[a-r]*.py"]),
         }
-        # A name outside a-z falls into the catch-all as well, while a-z still partitions correctly.
         assert _claiming_shards("tests/test_Zebra.py", broken) == ["a-k", "l-r", _CATCH_ALL]
         assert _claiming_shards("tests/test_apple.py", broken) == ["a-k"]
         assert _claiming_shards("tests/test_monkey.py", broken) == ["l-r"]

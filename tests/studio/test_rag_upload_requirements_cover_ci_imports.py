@@ -50,7 +50,6 @@ def _ci_imports_by_test():
 
 
 def test_the_scan_finds_the_hnsw_tier_imports():
-    # Control: the reader sees the CI-only import the ANN tests make today.
     found = _ci_imports_by_test()
     assert "usearch" in found.get("test_rag_vec_ann.py", set())
 

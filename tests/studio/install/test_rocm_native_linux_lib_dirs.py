@@ -248,8 +248,7 @@ class TestNativeLinuxRootResolution:
             ], where
 
     def test_lib64_host_still_finds_llvm_under_lib(self, bundle_dir):
-        """ROCm puts LLVM under <root>/lib/llvm even where HSA lives in lib64; deriving it from the
-        HSA dir alone would miss it and bind libamd_comgr to the bundle's libLLVM."""
+        """LLVM sits in <root>/lib/llvm even with HSA in lib64; deriving it from HSA misses it."""
         present = {
             "/dev/kfd",
             "/opt/rocm/lib64/libhsa-runtime64.so",

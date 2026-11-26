@@ -274,7 +274,6 @@ def test_dead_weight_dropped_on_gc(monkeypatch):
 
 
 def _admit_at_safe_point(monkeypatch, rows):
-    # One step with `rows`-row matmuls, then the safe point that measures it and sets the budget.
     _memory(monkeypatch, usable = 10 * GiB)
     W, absmax = _weight()
     dc._lookup(W, absmax, _decoder([]), torch.bfloat16, rows)
@@ -298,7 +297,6 @@ def test_longer_batch_than_measured_drops_cache(monkeypatch):
     assert (
         calls == [False, False] and dc.cached_count() == 0
     )  # nothing re-admitted before the safe point
-    # The next safe point has measured the 4096-row step: caching resumes, also for 4096 rows.
     dc._on_optimizer_step(None, (), {})
     dc._lookup(W, absmax, _decoder(calls), torch.bfloat16, 4096)
     assert calls == [False, False, True] and dc.cached_count() == 1

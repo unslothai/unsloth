@@ -73,8 +73,7 @@ def test_the_real_operator_still_works_afterwards():
 
 
 def test_it_never_registers_twice(monkeypatch):
-    """A second call must be a no-op even if the op still looks missing:
-    re-defining a schema raises, and the fix must not depend on that."""
+    """A second call is a no-op even if op looks missing; don't rely on re-definition raising."""
     monkeypatch.setattr(IF, "_aten_grouped_mm_library", object())
     assert IF._ensure_aten_grouped_mm("detail") is False
 

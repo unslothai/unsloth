@@ -1376,8 +1376,7 @@ GPU: 2
     def test_explicit_gfx_index_honored_and_skips_strix_reroute(
         self, mock_ver, mock_gpu, mock_nvidia, mock_pip, mock_pip_try, mock_machine
     ):
-        """An explicit gfx wheel-index pin is authoritative: installed verbatim with torch 2.11, not
-        re-picked from host ROCm or rerouted for Strix; gfx probe may run for bnb skip."""
+        """gfx pin kept verbatim (torch 2.11), no Strix reroute; gfx probe may run (bnb skip)."""
         mock_probe = MagicMock()
         mock_probe.returncode = 0
         mock_probe.stdout = "\n"  # cpu torch -> reinstall
@@ -1795,8 +1794,7 @@ class TestGfx906LegacyReroute:
         mock_pip_try.assert_not_called()
 
     def test_mixed_host_gfx906_not_sole_arch_skips_reroute(self, monkeypatch):
-        """Mixed gfx906 plus dGPU host with no explicit override keeps the generic index, since
-        gfx906 is not the sole arch (Codex finding 3: never downgrade an ambiguous mixed host)."""
+        """Unpinned mixed gfx906 host (not sole arch): keep generic index, never downgrade it."""
         monkeypatch.delenv("UNSLOTH_ROCM_GFX_ARCH", raising = False)
         mock_pip, _ = self._reroute(["gfx1100", "gfx906"])
         torch_call = str(mock_pip.call_args_list[0])
@@ -1813,8 +1811,7 @@ class TestGfx906LegacyReroute:
         assert "rocm7.2" not in torch_call
 
     def test_gfx906_bnb_skipped_even_when_index_pinned(self, monkeypatch):
-        """A gfx906 user who pins the ROCm index and sets the arch override still skips the generic
-        bnb wheel; the pin suppresses only the torch reroute, not the bnb skip flag."""
+        """gfx906 with pinned ROCm index and arch override: only torch reroute, not bnb skip."""
         monkeypatch.setenv("UNSLOTH_ROCM_GFX_ARCH", "gfx906")
         monkeypatch.setenv("UNSLOTH_TORCH_INDEX_URL", "https://download.pytorch.org/whl/rocm6.3")
         mock_pip, mock_pip_try = self._reroute(["gfx906"])
@@ -2845,7 +2842,6 @@ class TestInstallShStructure:
             stripped = line.lstrip()
             if stripped.startswith("#"):
                 continue
-            # Strip quoted literals so `<<<` inside them is ignored.
             unquoted = re.sub(r"'[^']*'", "", line)
             unquoted = re.sub(r'"[^"]*"', "", unquoted)
             assert "<<<" not in unquoted, f"install.sh:{i} uses non-POSIX <<< here-string"
@@ -3206,7 +3202,6 @@ class TestInstallShStructure:
             stripped = line.lstrip()
             if stripped.startswith("#"):
                 continue
-            # Strip POSIX char classes [[:foo:]] before checking for [[ ]].
             cleaned = re.sub(r"\[\[:[a-z]+:\]\]", "", line)
             assert "[[" not in cleaned, f"get_torch_index_url line {i} uses non-POSIX [["
 
@@ -3278,8 +3273,7 @@ class TestInstallShStructure:
         )
 
     def test_setup_sh_kfd_awk_matches_install_sh(self):
-        """setup.sh KFD awk must match install.sh's per-line vendor_id check, or ROCm hosts get CPU
-        llama.cpp."""
+        """setup.sh KFD awk must match install.sh, else ROCm hosts fall back to CPU llama.cpp."""
         source = (PACKAGE_ROOT / "studio" / "setup.sh").read_text(encoding = "utf-8")
         assert (
             "$2 == 4098" in source
@@ -4061,7 +4055,6 @@ class TestAmdGpuMonitoring:
         mock_result.returncode = 0
         mock_result.stdout = mock_json
 
-        # The guard which()-checks before spawning.
         with patch.object(amd_mod.shutil, "which", return_value = "/usr/bin/amd-smi"):
             with patch.object(subprocess, "run", return_value = mock_result):
                 result = amd_mod.get_primary_gpu_utilization()
@@ -4898,8 +4891,7 @@ $adapters = @(
 
 
 class TestSetupPs1ShadowingParity:
-    """setup.ps1 builds $ROCmIndexUrl itself before the Python installer runs, so both halves of
-    #7776 must exist in its PowerShell copy or fresh Windows installs pick the iGPU."""
+    """Both halves of #7776 must exist in setup.ps1, which builds $ROCmIndexUrl before Python."""
 
     @staticmethod
     def _setup_ps1() -> str:
@@ -5025,8 +5017,7 @@ foreach ($v in @('$script:ShadowingIntegratedGfx', '$archFamilyMap')) {
         assert self._run(body) == "gfx1151"
 
     def test_all_hiding_spellings_count_as_a_selection(self):
-        # "" / "-1" surface zero devices, so they are a deliberate choice and suppress
-        # the repick rather than invite it.
+        # An empty or "-1" mask surfaces zero devices by design, which suppresses the repick.
         for _val in ("", "-1"):
             assert self._run(self._MIXED, {"HIP_VISIBLE_DEVICES": _val}) == "gfx1036"
 
@@ -5650,8 +5641,7 @@ class TestProgressStepCountMatchesTotal:
             patch.object(stack_mod, "IS_WINDOWS", is_windows),
             patch.object(stack_mod, "IS_MACOS", is_macos),
             patch.object(stack_mod, "IS_MAC_ARM", is_mac_arm),
-            # Mock writes no wheel metadata, so the no-torch pair probe (#16157) needs a stubbed
-            # Unsloth/Zoo pair; one patch keeps this with under Python's 20 nested block limit.
+            # No-torch pair probe (#16157) needs stubs; one patch stays under 20 nested blocks.
             patch.multiple(
                 stack_mod,
                 NO_TORCH = no_torch,
@@ -6279,7 +6269,6 @@ class TestStrixRocm71Override:
             patch.object(m, "_linux_amd_display_device_present", return_value = True),
             patch.dict(os.environ, {"UNSLOTH_ROCM_GFX_ARCH": ""}),
         ):
-            # WSL + no runtime -> inference suppressed (CPU torch stays).
             with (
                 patch.object(m, "_is_wsl", return_value = True),
                 patch.object(m, "_wsl_rocm_runtime_present", return_value = False),
@@ -6295,7 +6284,6 @@ class TestStrixRocm71Override:
                 patch.object(m, "_wsl_rocm_runtime_present", return_value = False),
             ):
                 assert m._infer_linux_amd_gfx_arch() == "gfx1151"
-        # Explicit override wins even on a bare WSL box (no runtime).
         with (
             patch.object(m, "_is_wsl", return_value = True),
             patch.object(m, "_wsl_rocm_runtime_present", return_value = False),
@@ -6312,7 +6300,6 @@ class TestStrixRocm71Override:
             patch.object(m, "_is_wsl", return_value = False),
             patch.dict(os.environ, {"UNSLOTH_ROCM_GFX_ARCH": ""}),
         ):
-            # No AMD display device -> the CPU-model text alone must not infer.
             with patch.object(m, "_linux_amd_display_device_present", return_value = False):
                 assert m._infer_linux_amd_gfx_arch() is None
             with patch.object(m, "_linux_amd_display_device_present", return_value = True):
@@ -7058,7 +7045,6 @@ class TestApplyHostOverrides:
         assert out.rocm_gfx_targets == ["gfx1100", "gfx1010"]
 
     def test_forwarded_gfx_never_drops_a_probed_physical_gpu(self, monkeypatch):
-        # The per-GPU list is the physical inventory; an unseen forwarded arch is ADDED, not replacing.
         monkeypatch.delenv("UNSLOTH_ROCM_GFX_ARCH", raising = False)
         host = rocm_host(rocm_gfx_target = "gfx803", rocm_gfx_targets = ["gfx1100", "gfx803"])
         out = _apply_host_overrides(host, override_rocm_gfx = "gfx900")
@@ -7396,7 +7382,6 @@ class TestWslRerouteNvidiaGuard:
         source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
         start = source.find("_maybe_reroute_strixhalo_to_2404()")
         assert start != -1
-        # Slice the whole function body, not a fixed window.
         end = source.find("\n}", start)
         assert end != -1
         body = source[start:end]
@@ -7404,7 +7389,6 @@ class TestWslRerouteNvidiaGuard:
         wmi = body.find("_wsl_amd_gpu_name")
         assert nv != -1, "reroute must consult _has_usable_nvidia_gpu before deciding to reroute"
         assert wmi != -1
-        # The NVIDIA guard must precede the AMD/WMI signal and return early.
         assert nv < wmi
         assert body.find("return 0", nv) < wmi
 
@@ -7446,8 +7430,7 @@ class TestLlamaCppRuntimeWslOrdering:
 
 
 class TestRocmWslSupplyChainPins:
-    """The ROCm-on-WSL bootstrap runs unattended with sudo, so every fetched piece of code must come
-    from an immutable ref, since a moving branch means root code execution."""
+    """Unattended sudo: fetched code must use an immutable ref; a branch means root execution."""
 
     def test_helper_is_fetched_from_a_pinned_commit_not_a_branch(self):
         source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
@@ -7461,7 +7444,6 @@ class TestRocmWslSupplyChainPins:
         assert ref is not None, "the helper fetch must pin a full commit SHA"
         assert len(ref.group(1)) == 40
         assert "${_ROCM_WSL_HELPER_REF}/scripts/install_rocm_wsl_strixhalo.sh" in body
-        # A helper without the pinned-source check is refused.
         assert 'grep -q "^UNSLOTH_ROCM_WSL_HELPER_CONTRACT=2$" "$_rw_helper"' in body
         assert "predates the pinned-source check" in body
 
@@ -7502,7 +7484,6 @@ class TestRocmWslSupplyChainPins:
         )
 
     def test_helper_contract_matches_what_install_sh_requires(self):
-        # Required and declared contract levels must move together.
         install_sh = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
         helper = _STRIXHALO_WSL_PATH.read_text(encoding = "utf-8")
         required = re.search(r'grep -q "\^UNSLOTH_ROCM_WSL_HELPER_CONTRACT=(\d+)\$"', install_sh)

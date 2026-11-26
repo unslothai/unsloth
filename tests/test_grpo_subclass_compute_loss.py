@@ -573,8 +573,7 @@ def test_scorer_restores_the_callers_forward_mode(monkeypatch, prior):
 
 
 def test_vllm_importance_sampling_correction_stays_live_for_subclass_objectives():
-    """Finding 4: Unsloth disables TRL's vLLM importance-sampling block (its own loss corrects), which left a
-    subclass objective without importance_sampling_ratio (stock GRPO's _compute_loss raised KeyError)."""
+    """Keep vllm_importance_sampling_correction on, or subclass objectives hit KeyError."""
     grpo = _grpo_module()
     source = _class_method_source(grpo.__file__, "GRPOTrainer", "_generate_and_score_completions")
     if source is None or "vllm_importance_sampling_correction" not in source:
@@ -639,8 +638,7 @@ def test_subclass_scoring_methods_and_descriptors_are_honoured():
 
 @pytest.mark.parametrize("honours_flag", [True, False], ids = ["fused_capable", "logits_only"])
 def test_sampling_candidates_are_scored_like_stock_trl(honours_flag):
-    """Finding 6: TRL >= 1.18 passes vLLM's sampling candidates (sampling_mask) to every scoring pass and
-    normalises the log-probs over them. They were refused with NotImplementedError."""
+    """TRL >= 1.18 sends vLLM sampling_mask to all scoring passes, normalises over candidates."""
     model = _Model(honours_flag = honours_flag)
     inputs = _inputs()
     ids, mask, k = _ids_and_mask(inputs)

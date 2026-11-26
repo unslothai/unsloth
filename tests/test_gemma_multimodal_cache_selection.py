@@ -347,8 +347,7 @@ def _force_gate(local_cache_implementation, kwargs, is_media):
 
 
 def test_mixed_precision_still_forces_dynamic_for_media():
-    """UNSLOTH_BFLOAT16_MIXED_PRECISION clears the local default to None. An
-    explicit static kwarg would otherwise survive and bring the bug back."""
+    """UNSLOTH_BFLOAT16_MIXED_PRECISION clears local default; a static kwarg revives the bug."""
     kwargs = {"generation_config": _GenCfg(), "cache_implementation": "static"}
     assert _force_gate(None, kwargs, is_media = True)
     _resolve_cache_choice(True, None, kwargs)

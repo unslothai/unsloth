@@ -551,8 +551,7 @@ def test_our_own_hook_file_is_trusted(tmp_path):
 
 @pytest.mark.parametrize("kind", ["symlink", "group_writable"])
 def test_a_planted_hook_is_replaced_even_when_it_matches(monkeypatch, tmp_path, kind):
-    """A once world-writable directory may hold a hook matching our contents; tightening it does not
-    revoke that file's write access, so keeping it would mean code execution in every subprocess."""
+    """Keeping a matching hook writable after tightening would run code in every subprocess."""
     if not hasattr(os, "getuid"):
         pytest.skip("POSIX ownership/permissions only")
     import torch.nn.functional as F

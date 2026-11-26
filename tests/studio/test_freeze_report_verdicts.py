@@ -605,9 +605,8 @@ def test_sign_in_traffic_from_before_the_stall_does_not_clear_a_freeze():
 
 
 def test_the_session_signal_is_the_webview_talking_not_the_shell():
-    """/api/auth/desktop-login is posted by the native shell itself
-    (src-tauri/src/desktop_auth.rs:194), so counting it would let the shell vouch for a
-    webview that is not running, which is the one thing this signal must never do."""
+    """Do not count /api/auth/desktop-login (posted by the native shell,
+    src-tauri/src/desktop_auth.rs:194); the shell would vouch for a webview that is not running."""
     assert freeze.SESSION.findall('127.0.0.1 "POST /api/auth/logout" 200')
     assert freeze.SESSION.findall('127.0.0.1 "POST /api/auth/refresh" 401')
     assert freeze.SESSION.findall('127.0.0.1 "GET /api/auth/status" 200')

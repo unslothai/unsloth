@@ -96,8 +96,7 @@ def test_the_retry_is_bounded_at_one():
 
 
 def test_the_retry_records_the_browser_process():
-    """Only the retry sets DEBUG=pw:browser, so its TargetClosedError logs the browser's launch,
-    stderr and exit; the first attempt stays quiet."""
+    """Only the retry sets DEBUG=pw:browser; its TargetClosedError logs launch, stderr, exit."""
     step = _step()
     helper = step[step.index("run_driver()") : step.index("for browser in")]
     first, second = [line.strip() for line in helper.splitlines() if '"$@"' in line]

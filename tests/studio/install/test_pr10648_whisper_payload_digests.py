@@ -514,7 +514,6 @@ def test_a_released_older_studio_ignores_the_new_key(tmp_path, monkeypatch):
     assert completed.returncode == 0, completed.stderr
     result = json.loads(completed.stdout.strip().splitlines()[-1])
 
-    # The injection fired: this really is the released module, not the one under test.
     assert result["module_file"].startswith(str(old_dir))
     assert result["core_file"].startswith(str(old_dir))
     assert result["knows_the_key"] is False

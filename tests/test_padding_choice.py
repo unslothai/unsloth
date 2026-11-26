@@ -34,8 +34,7 @@ pc = _load()
 Q06 = (3.26e9, 9.18e5)
 Q4 = (2.34e10, 2.36e6)
 PEAK = {"A100": 312.0, "L4": 121.0, "T4": 65.0}
-# (gpu, model, padded tokens, padded pairs per micro batch, measured padded/padding-free - 1 in %)
-# Alpaca (short) at batch 2 / 8 / 16 and 1-4k token documents at batch 2 / 8.
+# Rows: gpu, model, padded tokens and pairs, measured gain %; Alpaca and 1-4k token docs.
 ALP2, ALP8, ALP16 = (472, 6.4e4), (2883, 6.6e5), (6665, 1.6e6)
 LONG2, LONG8 = (6176, 9.9e6), (30299, 5.8e7)
 MEASURED = [
@@ -152,10 +151,8 @@ def test_effective_max_length_follows_trainer_precedence():
     model = SimpleNamespace(max_seq_length = 4096)
     # SFTConfig's default is replaced by the model length, as the generated SFTTrainer init does.
     assert pc._effective_max_length(model, Cfg()) == 4096
-    # A caller-set cap below the model length wins; above it, the model length wins.
     assert pc._effective_max_length(model, Cfg(max_length = 512)) == 512
     assert pc._effective_max_length(model, Cfg(max_length = 8192)) == 4096
-    # No model length: the config value is used as is.
     assert pc._effective_max_length(SimpleNamespace(), Cfg()) == 1024
     assert pc._effective_max_length(SimpleNamespace(), Cfg(max_length = None)) is None
 
@@ -187,7 +184,6 @@ def test_estimate_microbatch_tokens():
     assert real < padded
     assert pc.estimate_microbatch_tokens([], 2) is None
     assert pc.estimate_microbatch_tokens([5, 6], 0) is None
-    # deterministic
     assert pc.estimate_microbatch_tokens(list(range(1, 300)), 3) == pc.estimate_microbatch_tokens(
         list(range(1, 300)), 3
     )

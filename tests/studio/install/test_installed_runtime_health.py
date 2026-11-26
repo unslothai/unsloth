@@ -305,7 +305,6 @@ def test_a_dangling_library_symlink_does_not_count_as_present(tmp_path):
         real.append(target)
     assert ILP._runtime_payload_has(root, host, groups) is True
 
-    # Quarantine takes the versioned target and leaves both links behind.
     real[0].unlink()
     assert (runtime_dir / groups[0][0].replace("*", "")).is_symlink()
     assert ILP._runtime_payload_has(root, host, groups) is False
@@ -491,9 +490,8 @@ def test_a_complete_macos_payload_is_healthy(tmp_path):
     ["libllama-common", "libllama", "libggml", "libggml-base", "libggml-cpu", "libmtmd"],
 )
 def test_each_essential_macos_dylib_is_required_on_its_own(tmp_path, stem):
-    """Each essential macOS dylib is required on its own: a broad libggml glob stayed satisfied by
-    sibling libraries after the loader's one was quarantined, so llama-server died in dyld while
-    the tree reported healthy; the dot keeps each pattern off its siblings."""
+    """Each essential macOS dylib is required alone: a broad libggml glob stayed satisfied by
+    siblings after the loader's one was quarantined; the dot keeps patterns off siblings."""
     root = _macos_tree(tmp_path)
     runtime_dir = root / "build" / "bin"
     for path in [p for p in runtime_dir.iterdir() if p.name.split(".")[0] == stem]:
@@ -517,8 +515,7 @@ def test_losing_only_the_macos_chain_target_is_caught(tmp_path):
 
 @pytest.mark.skipif(os.name == "nt", reason = "the fixture needs POSIX symlinks")
 def test_the_macos_accelerator_backends_are_not_required(tmp_path):
-    """Over-strictness drives repair loops: metal, blas and rpc are accelerator and transport
-    backends a bundle may lack, as libggml-cuda is on Linux."""
+    """Over-strictness drives repair loops: metal, blas, rpc are backends a bundle may lack."""
     root = _macos_tree(tmp_path)
     runtime_dir = root / "build" / "bin"
     for path in [
@@ -693,8 +690,7 @@ def test_the_selection_rule_matches_the_resolver_the_backend_uses(tmp_path):
 
 @pytest.mark.skipif(os.name == "nt", reason = "the root wrapper is written on POSIX only")
 def test_a_root_entrypoint_that_is_not_there_is_not_a_pin(tmp_path):
-    """An absent root entrypoint, or a link whose target is gone, reads as absent and falls through
-    to build/bin; calling it broken would fail health on every install without one."""
+    """Missing or dangling root entrypoint falls through to build/bin, never failing health."""
     root = _macos_tree(tmp_path)
     assert ILP.installed_runtime_health(root, host = _macos_host()) == (True, "")
 

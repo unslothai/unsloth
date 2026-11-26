@@ -2261,8 +2261,7 @@ def _audited_requirements(root):
 # First-party only: unsloth-zoo ships in lockstep, so digest-pinned but not version-pinned.
 FIRST_PARTY_DIGEST_PINNED = {"unsloth-zoo"}
 
-# The PyPI `pip` branch declares torch; it must stay a range so cuXXX-torchYYY extras can choose.
-# Digest pinning still reopens on byte changes. Applies only to pyproject, not studio files.
+# Torch stays a range for cuXXX-torchYYY extras; digest pins still reopen; pyproject only.
 PYPROJECT_BOUNDED_RANGE_ALLOWED = {"torch"}
 
 

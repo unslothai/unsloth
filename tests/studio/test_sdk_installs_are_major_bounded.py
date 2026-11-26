@@ -71,7 +71,6 @@ def _install_commands_in(text: str) -> list[tuple[int, str]]:
         if not pending:
             start = number
         stripped = line.rstrip()
-        # Backslash for sh, backtick for PowerShell.
         if stripped.endswith("\\") or stripped.endswith("`"):
             pending.append(stripped[:-1])
             continue

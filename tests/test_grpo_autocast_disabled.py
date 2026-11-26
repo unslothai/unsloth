@@ -228,8 +228,7 @@ def test_forced_float32_still_autocasts_in_the_injected_header():
 
 
 def test_chunk_sizing_reads_the_model_dtype_when_autocast_is_off():
-    """With autocast off the forward runs in the model dtype (float32 or bfloat16); the flag alone
-    would double the bfloat16 estimate."""
+    """Autocast off: float32 or bfloat16 forward; flag alone would double bfloat16 estimate."""
     line = next(l for l in SRC.splitlines() if "forward_dtype = (" in l)
     block = SRC[SRC.index(line) : SRC.index(line) + 400]
     assert "_autocast_enabled" in block, block

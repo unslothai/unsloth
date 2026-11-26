@@ -40,7 +40,6 @@ UPSTREAM_TAG = "v1.9.1"
 SOURCE_COMMIT = "0" * 40
 STUDIO_PROTOCOL = "inference/multipart-v1"
 
-# The substrings the setup scripts grep.
 KEEP_TOKEN = "keeping the existing complete install"
 MATCH_TOKEN = "already matches"
 FAIL_TOKEN = "prebuilt install failed"

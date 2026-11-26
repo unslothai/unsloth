@@ -18,9 +18,8 @@ for _up in _iso.parents:
         _spec.loader.exec_module(_mod)  # sets the env vars on import
         break
 
-# One CPU share per xdist worker, set before torch is imported: otherwise each worker starts a
-# torch/OpenMP pool as wide as the machine, slowing CPU training tests; an explicit thread setting
-# is kept; loaded by path because tests/_shared is only put on sys.path below.
+# One CPU share per xdist worker, set before torch import or each worker's OpenMP pool spans the
+# machine; an explicit thread setting wins; loaded by path, as tests/_shared is not on sys.path.
 import os as _os  # noqa: E402
 
 # The suite predates the CPU training backend: a GPU-less runner must keep refusing `import unsloth`
@@ -76,8 +75,7 @@ def _contain_installer_venv_root(tmp_path_factory, monkeypatch):
 
 @pytest.fixture(autouse = True)
 def _no_deleted_torch_config_entries():
-    """A test that leaves a dynamo / inductor config entry deleted errors at its own teardown; see
-    tests/_shared/torch_config_guard.py."""
+    """A test leaving a dynamo/inductor config entry deleted errors at its own teardown."""
     from torch_config_guard import check_after_test, install_delete_recorder
 
     install_delete_recorder()
@@ -117,8 +115,7 @@ def _has_real_accelerator() -> bool:
 
 
 def _preload_device_type(package: str, prereqs: tuple[str, ...] = ()) -> bool:
-    """Pre-load <package>.device_type with is_available() mocked True so @cache captures cuda;
-    prereqs (e.g. utils) load first; returns False if unimportable, so callers use a stub."""
+    """Mocks is_available() True so @cache captures cuda; prereqs first; False if unimportable."""
     target = f"{package}.device_type"
     if target in sys.modules:
         return True

@@ -130,7 +130,6 @@ def _scan(selector: str) -> tuple[bool, bool]:
             i = _matching(s, i + 1) + 1
             continue
         elif bracket == 0 and (c in ">+~" or c.isspace()):
-            # a combinator: the compound before it ends here
             j = i
             while j < len(s) and (s[j].isspace() or s[j] in ">+~"):
                 j += 1

@@ -444,8 +444,7 @@ def _run_installer_scan(
 
 @requires_pwsh
 def test_the_installer_skips_a_disabled_adapter(tmp_path):
-    """Skip disabled adapters as setup does: a dead Radeon listed first would otherwise get the ROCm
-    wheels while the live unsupported card gets none."""
+    """Skip disabled adapters as setup does, else a dead first Radeon gets the ROCm wheels."""
     out = _run_installer_scan(tmp_path, [("AMD Radeon RX 9070 XT", 22), ("AMD Radeon RX 580", 0)])
     assert out["label"] == "AMD Radeon RX 580"
     assert out["arch"] is None, "the active card is unsupported, so this host belongs on CPU"
@@ -730,8 +729,7 @@ def _run_handoff_lifecycle(
 def test_the_caller_environment_survives_the_setup_call(
     tmp_path, arch, inherited, fails, caller_env
 ):
-    """install.ps1 runs in the caller's own shell via irm | iex, so variables set for the child must
-    be restored on success and failure, even if unset before."""
+    """Runs in caller's shell: child-set vars are restored on success/failure, even if unset."""
     out = _run_handoff_lifecycle(
         tmp_path,
         arch = arch,

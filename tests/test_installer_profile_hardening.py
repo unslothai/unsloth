@@ -87,8 +87,7 @@ def test_prologue_neutralizes_profile_state():
 
 
 def test_proxy_defaults_are_carried_across_rather_than_dropped():
-    """Proxy defaults must be carried across: clearing them breaks corporate hosts whose profile
-    proxy is their only route to python.org, since those users never run -NoProfile."""
+    """Dropping proxy defaults strands hosts whose only python.org route is the profile proxy."""
     block = _extract_prologue()
     assert (
         ":Proxy(Credential|UseDefaultCredentials)?$" in block
@@ -499,8 +498,7 @@ def test_uv_probe_finds_the_real_uv_behind_a_profile_alias(tmp_path):
 
 @requires_pwsh
 def test_uv_probe_rejects_a_too_old_uv_and_leaves_the_reset_value(tmp_path):
-    """The version gate must fail closed or a stale uv gets pinned; PATH is replaced, not prepended,
-    so a real uv cannot hide the branch under test."""
+    """Fail closed or a stale uv gets pinned; PATH is replaced so a real uv cannot mask it."""
     fake = _fake_uv(tmp_path / "bin", version = "0.7.0")
     res = _run_with_profile(tmp_path, _uv_probe_body(), path_override = fake.parent)
     assert res.returncode == 0, f"stdout={res.stdout!r} stderr={res.stderr!r}"
@@ -556,9 +554,8 @@ def test_an_alias_to_a_real_uv_is_followed_to_the_executable(tmp_path):
 
 
 def test_no_bare_winget_token_survives_at_a_call_site():
-    """winget installs uv, so an alias on it owns the same ground; winget detection must skip
-    aliases and functions as uv detection does; Python no longer comes from winget, as Studio is
-    always on a uv-managed Python."""
+    """winget installs uv, so an alias on it owns the same ground; detection must skip aliases and
+    functions as uv does; Python no longer comes from winget (Studio is uv-managed)."""
     src = _install_ps1()
     assert (
         "Get-Command winget -CommandType Application -All" in src
@@ -664,8 +661,7 @@ def test_only_serializable_proxy_keys_reach_the_child(tmp_path):
 
 @requires_pwsh
 def test_the_child_restores_the_proxy_and_nothing_else(tmp_path):
-    """Through real pwsh: a set handoff restores the proxy; without it or with a corrupt value the
-    child keeps its -NoProfile state and still launches, since a throw kills setup.ps1."""
+    """Handoff restores the proxy if set; a bad value must not throw, which kills setup.ps1."""
     probe = (
         _proxy_prelude()
         + "Write-Output ('IWR=' + $PSDefaultParameterValues['Invoke-WebRequest:Proxy']); "
@@ -716,8 +712,7 @@ def test_module_autoloading_is_restored_before_the_handoff_needs_it():
 
 @requires_pwsh
 def test_the_filter_takes_lowercase_keys_and_uri_values(tmp_path):
-    """Lowercase keys and [uri] values are ordinary PowerShell: names bind case-insensitively and
-    Proxy takes a [uri]; dropping either leaves a corporate host with no route out."""
+    """Lowercase keys and [uri] are plain PowerShell; dropping either strands corporate hosts."""
     block = tmp_path / "block.ps1"
     block.write_text(_extract_prologue(), encoding = "utf-8", newline = "")
     driver = tmp_path / "drive.ps1"
@@ -868,7 +863,6 @@ def test_the_caller_edition_is_read_from_the_order_not_the_absence(monkeypatch):
     # 5.1 first: the caller is Windows PowerShell.
     monkeypatch.setenv("PSModulePath", f"{windows};{seven}")
     assert studio_cmd._profile_probe_hosts()[0] == "powershell.exe"
-    # 7 first: the caller is pwsh.
     monkeypatch.setenv("PSModulePath", f"{seven};{windows}")
     assert studio_cmd._profile_probe_hosts()[0] == "pwsh.exe"
     monkeypatch.setenv("PSModulePath", windows)
@@ -1120,8 +1114,7 @@ def test_the_probe_host_order_follows_the_console_the_user_typed_into(monkeypatc
 
 
 def test_the_uv_alias_is_resolved_before_the_path_candidates():
-    """PowerShell resolves an alias ahead of PATH, so a uv alias in a profile means that binary;
-    checking PATH first made that branch unreachable on any machine with uv on PATH."""
+    """PowerShell resolves aliases before PATH, so a PATH-first check hides the alias branch."""
     src = INSTALL_PS1.read_text(encoding = "utf-8")
     start = _locate(src, "function Get-UvExecutableCandidates {", "the uv resolver")
     body = src[start : start + 2500]
@@ -1188,8 +1181,7 @@ def test_the_parity_workflow_runs_when_the_studio_command_changes():
 
 
 def test_the_parity_job_installs_what_this_suite_imports():
-    """unsloth_cli.commands.studio pulls in typer, pyyaml, pydantic and click, so the parity CI job
-    must install them, or it fails with ModuleNotFoundError on both matrix legs."""
+    """Install typer, pyyaml, pydantic and click in the parity job, else ModuleNotFoundError."""
     workflow = (
         Path(__file__).resolve().parents[1]
         / ".github"
@@ -1367,7 +1359,6 @@ def test_the_profile_probe_shares_one_timeout_across_hosts(monkeypatch):
     assert studio_cmd._probe_profile_proxy_defaults(["pwsh.exe", "powershell.exe"]) is None
     elapsed = time.monotonic() - started
     assert asked, "the probe must have been attempted"
-    # One budget for the whole probe, however many hosts it tries.
     assert sum(asked) <= budget + 0.05, asked
     assert elapsed < budget * 1.8, elapsed
 

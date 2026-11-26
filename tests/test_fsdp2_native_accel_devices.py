@@ -61,5 +61,4 @@ def test_cpu_mesh_refuses_gpu_resident_quantized_weights(native_env, monkeypatch
     monkeypatch.setenv("ACCELERATE_USE_CPU", "true")
     with pytest.raises(RuntimeError, match = "CPU mesh .*quantized weights are on the GPU"):
         native._shard_device(model)
-    # Unquantized GPU weights on a CPU mesh still move as before.
     assert native._shard_device(_FakeModel([_T("cuda:0")]), "cpu").type == "cpu"

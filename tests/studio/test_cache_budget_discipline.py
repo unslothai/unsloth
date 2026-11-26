@@ -118,9 +118,8 @@ _MAIN_ONLY = re.compile(r"github\.ref\s*==\s*['\"]refs/heads/main['\"]")
 _LEAF_MAIN = re.compile(
     r"github\.ref\s*==\s*['\"]refs/heads/main['\"]|['\"]refs/heads/main['\"]\s*==\s*github\.ref"
 )
-# Staging repos (scripts/pr_review/staging_ci.py) open PRs against upstream-main and never push
-# their own main, so a run on that branch seeds their caches; the equality counts only beside an
-# AND-ed guard that excludes this repository, since upstream-main should save nothing.
+# Staging repos never push their own main, so upstream-main seeds their caches; the equality counts
+# only beside an AND-ed guard excluding this repo, where it should save nothing.
 _LEAF_SEED = re.compile(
     r"github\.ref\s*==\s*['\"]refs/heads/upstream-main['\"]"
     r"|['\"]refs/heads/upstream-main['\"]\s*==\s*github\.ref"
@@ -176,7 +175,6 @@ def _restricted_to_main(expr: str) -> bool:
             "(github.ref == 'refs/heads/main' && failure())",
             True,
         ),
-        # A `||` inside a string is not a split.
         ("github.ref == 'refs/heads/main' && contains(x, 'a||b')", True),
         ("", False),
         # A `||` inside parens is still a `||`.
@@ -194,7 +192,6 @@ def _restricted_to_main(expr: str) -> bool:
         ("contains(github.ref == 'refs/heads/main', 'false')", False),
         ("'refs/heads/main' == github.ref", True),
         ("always() && (github.ref == 'refs/heads/main' && !cancelled())", True),
-        # The staging seed: upstream-main, and only outside this repository.
         (
             "always() && (github.ref == 'refs/heads/main' || (github.ref == 'refs/heads/upstream-main'"
             " && github.repository != 'unslothai/unsloth')) && x != 'true'",

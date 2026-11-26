@@ -223,8 +223,7 @@ def test_fallback_does_not_materialize_a_full_size_scale(monkeypatch):
 
 @pytest.mark.parametrize("weight_dtype", [torch.float8_e4m3fn, torch.float8_e5m2])
 def test_pre_sm89_forward_never_reaches_the_fp8_only_kernels(monkeypatch, weight_dtype):
-    # The forward also calls act_quant and the w8a8 gemm, both fp8e4nv; act_quant emits e4m3fn
-    # even for e5m2 weights, so the forward must reach neither on pre-sm89.
+    # Pre-sm89 forward must avoid act_quant, w8a8 gemm; act_quant emits e4m3fn even for e5m2.
     from unsloth.kernels import fp8
 
     called = []
