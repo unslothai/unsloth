@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""vLLM 0.28+ has no built-in BitsAndBytes: Studio's CUDA vLLM locks from 0.28 on must carry vllm-bnb-plugin,
-or `--quantization bitsandbytes` (int4) fails with "Unknown quantization method"."""
+"""CUDA vLLM locks from 0.28 (no built-in BitsAndBytes) must carry vllm-bnb-plugin for int4."""
 
 import re
 
@@ -30,7 +29,6 @@ def test_every_cuda_vllm_lock_without_builtin_bitsandbytes_pins_the_plugin():
             assert pins.get("vllm-bnb-plugin") == "0.0.3", release
             assert "bitsandbytes" in pins
         else:
-            # vLLM <= 0.27.1 ships bitsandbytes; the plugin would replace it.
             assert "vllm-bnb-plugin" not in pins, release
 
 
