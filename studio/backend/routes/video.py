@@ -1965,23 +1965,24 @@ def _sync_jobs() -> None:
         progress = 0
         completed_at: Optional[int] = None
         error: Optional[dict] = None
-        if gen.get("video_id") != job.id:
-            # A clip past its GPU work encodes after handing the progress record to the next clip.
-            encoding = _encoding_outcome(job.id)
-            if encoding is not None:
-                gen = encoding
-        if gen.get("video_id") == job.id:
-            phase = gen.get("phase")
+        job_gen = gen
+        if job_gen.get("video_id") != job.id:
+            # A clip past its GPU work encodes (and ends) after handing the progress record to the next clip.
+            own = _own_outcome(job.id)
+            if own is not None:
+                job_gen = own
+        if job_gen.get("video_id") == job.id:
+            phase = job_gen.get("phase")
             if phase == "queued":
                 status = "queued"
-            elif phase in ("denoise", "export") or gen.get("active"):
-                fraction = float(gen.get("fraction") or 0.0)
+            elif phase in ("denoise", "export") or job_gen.get("active"):
+                fraction = float(job_gen.get("fraction") or 0.0)
                 status = "in_progress"
                 progress = 99 if phase == "export" else max(0, min(99, int(fraction * 100)))
             elif phase == "completed":
                 status, progress, completed_at = "completed", 100, now
             elif phase == "failed":
-                message = str(gen.get("error") or "Video generation failed.")
+                message = str(job_gen.get("error") or "Video generation failed.")
                 status = "failed"
                 error = {
                     "code": "cancelled" if message == VIDEO_CANCELLED_MSG else _VIDEO_FAILED_CODE,
@@ -2034,14 +2035,20 @@ def _await_generate_settled(video_id: str, timeout: float = _DELETE_SETTLE_TIMEO
     return False
 
 
-def _encoding_outcome(video_id: str) -> Optional[dict]:
-    """The caller's clip ``video_id`` while it encodes after its GPU work (the backend answers it as exporting)."""
+def _own_outcome(video_id: str) -> Optional[dict]:
+    """The backend's record of the caller's clip ``video_id`` by id: exporting while it encodes after its GPU work,
+    then its terminal record."""
     from core.inference.video import get_video_backend
 
     outcome_of = getattr(get_video_backend(), "generate_outcome", None)
     if not callable(outcome_of):
         return None
-    outcome = outcome_of(video_id, current_account_id())
+    return outcome_of(video_id, current_account_id())
+
+
+def _encoding_outcome(video_id: str) -> Optional[dict]:
+    """The caller's clip ``video_id`` while it encodes after its GPU work (the backend answers it as exporting)."""
+    outcome = _own_outcome(video_id)
     if outcome is None or not outcome.get("active"):
         return None
     return outcome
@@ -3161,6 +3168,13 @@ async def _cancel_queued_or_running(video_id: Optional[str]) -> bool:
         _note_page_outcome(queued, "cancelled")
         return True
     backend = get_video_backend()
+    if video_id is not None and _encoding_outcome(video_id) is not None:
+        # The caller's clip is encoding after handing the GPU to the next clip, which may be another account's.
+        return await asyncio.to_thread(
+            backend.cancel_generate,
+            expected_video_id = video_id,
+            expected_account = current_account_id(),
+        )
     # One read: a second could name a successor and hand it back as expected_account.
     reserved = _reserved_generation_account(backend)
     if reserved is not None:

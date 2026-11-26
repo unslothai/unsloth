@@ -242,3 +242,65 @@ def test_an_older_tail_never_takes_a_running_successors_record(ltx):
     assert backend.generate_progress().get("video_id") != "vid-a"
     enc.open(1)
     _wait(lambda: (_outcome(backend, "vid-b") or {}).get("phase") == "completed", what = "B")
+
+
+def test_v1_jobs_keep_an_encoding_clip_and_its_running_successor_in_progress(ltx, monkeypatch):
+    import routes.video as video_routes
+
+    backend, enc = ltx
+    monkeypatch.setattr(video_mod, "get_video_backend", lambda: backend)
+    monkeypatch.setattr(video_routes, "_jobs", {})
+    monkeypatch.setattr(video_routes, "_managed_jobs", {})
+    with video_routes._jobs_lock:
+        for vid in ("vid-a", "vid-b"):
+            video_routes._account_jobs()[vid] = video_routes._VideoJob(
+                id = vid, created_at = 0, prompt = "p", model = "m", size = "768x512", seconds = "5"
+            )
+    backend.begin_generate(prompt = "first", steps = 2, video_id = "vid-a")
+    assert enc.entered.acquire(timeout = 10)
+    backend.begin_generate(prompt = "second", steps = 2, video_id = "vid-b")
+    _wait(lambda: backend._gen.get("phase") == "export", what = "B export")
+    # One sync sees A encoding past its slot and B holding it: neither is failed.
+    video_routes._sync_jobs()
+    jobs = video_routes._account_jobs()
+    assert jobs["vid-a"].status == "in_progress" and jobs["vid-a"].progress == 99
+    assert jobs["vid-b"].status == "in_progress"
+    enc.open(0)
+    enc.open(1)
+    _wait(lambda: (_outcome(backend, "vid-b") or {}).get("phase") == "completed", what = "B")
+    video_routes._sync_jobs()
+    assert jobs["vid-a"].status == "completed" and jobs["vid-b"].status == "completed"
+
+
+def test_stop_without_an_id_stops_the_running_render_not_the_encoding_clip(ltx):
+    backend, enc = ltx
+    backend.begin_generate(prompt = "first", steps = 2, video_id = "vid-a")
+    assert enc.entered.acquire(timeout = 10)
+    backend.begin_generate(prompt = "second", steps = 2, video_id = "vid-b")
+    _wait(lambda: backend._gen.get("phase") == "export", what = "B export")
+    assert backend.cancel_generate(expected_account = video_mod.current_account_id()) is True
+    enc.open(0)
+    _wait(lambda: (_outcome(backend, "vid-a") or {}).get("phase") == "completed", what = "A kept")
+    enc.open(1)
+    _wait(lambda: (_outcome(backend, "vid-b") or {}).get("phase") == "failed", what = "B stopped")
+    assert _outcome(backend, "vid-b")["error"] == VIDEO_CANCELLED_MSG
+
+
+def test_a_stop_after_the_last_cancel_check_is_not_answered_true(ltx, monkeypatch):
+    backend, enc = ltx
+    saving, release = threading.Event(), threading.Event()
+    real_save = gallery_module.save
+
+    def slow_save(*a, **k):
+        saving.set()
+        assert release.wait(10)
+        return real_save(*a, **k)
+
+    monkeypatch.setattr(gallery_module, "save", slow_save)
+    backend.begin_generate(prompt = "first", steps = 2, video_id = "vid-a")
+    enc.open(0)
+    assert saving.wait(10)
+    # The clip is past its last cancel check and will be saved: Stop must not claim it stopped it.
+    assert backend.cancel_generate(expected_video_id = "vid-a") is False
+    release.set()
+    _wait(lambda: (_outcome(backend, "vid-a") or {}).get("phase") == "completed", what = "A saved")

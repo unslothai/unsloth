@@ -6673,6 +6673,8 @@ class _EncodeTail:
     cancel: threading.Event
     total: int
     epoch: int
+    # False once its last cancel check passed: a later Stop can no longer discard it, so it is not answered true.
+    stoppable: bool = True
 
 
 def _log_failed_generation(request_shape: Optional[dict[str, Any]], exc: BaseException) -> None:
@@ -15609,8 +15611,16 @@ class VideoBackend:
             except Exception as exc:  # noqa: BLE001 -- job persistence must not strand the backend busy
                 logger.warning("video.persist_job_outcome_failed: %s", exc)
 
+        handed_shape: list = []
+
         def _hand_off_slot(result: dict[str, Any]) -> None:
-            self._hand_off_encode(job_token, cancel_event, result.get("steps"))
+            shape = self._last_request_shape
+            if self._hand_off_encode(job_token, cancel_event, result.get("steps")):
+                handed_shape.append(shape)
+
+        def _request_shape() -> Optional[dict[str, Any]]:
+            # Once handed off, _last_request_shape is the next clip's.
+            return handed_shape[0] if handed_shape else self._last_request_shape
 
         try:
             result = self.generate(
@@ -15628,13 +15638,13 @@ class VideoBackend:
             msg = str(exc)
             if msg not in (VIDEO_NOT_LOADED_MSG, VIDEO_CANCELLED_MSG):
                 logger.error("video.generate_failed: %s", exc, exc_info = True)
-                msg = video_failure_detail(exc, self._last_request_shape)
+                msg = video_failure_detail(exc, _request_shape())
             _record_outcome(msg)
             self._finish_generate_job(job_token = job_token, cancel_event = cancel_event, error = msg)
             return
         except Exception as exc:  # noqa: BLE001 -- worker thread: never propagate
             logger.error("video.generate_failed: %s", exc, exc_info = True)
-            detail = video_failure_detail(exc, self._last_request_shape)
+            detail = video_failure_detail(exc, _request_shape())
             _record_outcome(detail)
             self._finish_generate_job(
                 job_token = job_token,
@@ -17099,6 +17109,9 @@ class VideoBackend:
                         raise RuntimeError(VIDEO_CANCELLED_MSG)
                     if owns_slot and self._active_generate_cancel is cancel:
                         self._active_generate_cancel = None
+                    tail = self._encode_tail
+                    if tail is not None and tail.cancel is cancel:
+                        tail.stoppable = False
                 return mp4_bytes
             except Exception as exc:
                 if owns_slot:
@@ -17975,25 +17988,26 @@ class VideoBackend:
         """Stop the in-flight generation; expected_* are rechecked under begin_generate's lock,
         so a cancel of a finished job cannot hit its successor."""
         with self._lock:
-            hit = False
-            # A clip encoding after handing the GPU on is still in progress: an unsaved clip is discarded on Stop.
+            cancel = self._active_generate_cancel
+            if (
+                cancel is not None
+                and (expected_video_id is None or self._gen_video_id == expected_video_id)
+                and (expected_account is None or self._generate_job_account == expected_account)
+            ):
+                cancel.set()
+                return True
+            # A clip encoding after handing the GPU on is still in progress until its last cancel check: Stop
+            # discards it. Without an id it is reached only when no render of the caller's runs.
             tail = self._encode_tail
             if (
                 tail is not None
+                and tail.stoppable
                 and (expected_video_id is None or tail.video_id == expected_video_id)
                 and (expected_account is None or tail.account == expected_account)
             ):
                 tail.cancel.set()
-                hit = True
-            if expected_video_id is not None and self._gen_video_id != expected_video_id:
-                return hit
-            if expected_account is not None and self._generate_job_account != expected_account:
-                return hit
-            cancel = self._active_generate_cancel
-            if cancel is None:
-                return hit
-            cancel.set()
-            return True
+                return True
+            return False
 
     # ── teardown + status ────────────────────────────────────────────────────
 
