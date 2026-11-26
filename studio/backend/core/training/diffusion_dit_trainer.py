@@ -2589,6 +2589,8 @@ def _ltx2_drop_audio_stream(transformer) -> int:
             import torch
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
+            elif hasattr(torch, "xpu") and torch.xpu.is_available():
+                torch.xpu.empty_cache()
         except Exception:  # noqa: BLE001 -- freeing is best effort
             pass
         import logging
