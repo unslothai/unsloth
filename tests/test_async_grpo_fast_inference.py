@@ -975,6 +975,80 @@ def test_unloading_the_newest_version_puts_the_previous_one_back_in_the_slot(ser
     assert seen[-1][1].lora_path == "/tmp/v1" and seen[-1][0]["cache_salt"] != v2_salt
 
 
+def test_a_failed_reload_on_unload_keeps_the_registry_on_the_version_the_slot_holds(served):
+    server, llm = served
+    engine = llm.llm_engine
+    _post(server, "/v1/load_lora_adapter", {"lora_name": "trl-policy-v1", "lora_path": "/tmp/v1"})
+    _post(server, "/v1/load_lora_adapter", {"lora_name": "trl-policy-v2", "lora_path": "/tmp/v2"})
+    added = []
+    original = engine.add_lora
+
+    def add_lora(lora):
+        added.append(lora.lora_path)
+        if lora.lora_path == "/tmp/v1":
+            raise RuntimeError("restore failed")
+        return original(lora)
+
+    engine.add_lora = add_lora
+    with pytest.raises(urllib.error.HTTPError) as error:
+        _post(server, "/v1/unload_lora_adapter", {"lora_name": "trl-policy-v2"})
+    assert error.value.code == 400
+    # The reload of v1 failed and v2 went back into the slot, so the registry still names v2 as the newest.
+    assert added == ["/tmp/v1", "/tmp/v2"]
+    assert list(server.engine.loras) == ["trl-policy-v1", "trl-policy-v2"]
+    assert server.engine.newest == "trl-policy-v2"
+    engine.add_lora = original
+    seen = _recording(engine)
+    _complete(server, [1], model = "trl-policy-v2")
+    assert seen[-1][1].lora_path == "/tmp/v2"
+    # A later unload that succeeds still restores v1.
+    _post(server, "/v1/unload_lora_adapter", {"lora_name": "trl-policy-v2"})
+    assert (
+        list(server.engine.loras) == ["trl-policy-v1"] and server.engine.newest == "trl-policy-v1"
+    )
+
+
+def test_a_command_queued_before_stop_fails_instead_of_blocking_its_caller():
+    llm = _FakeLLM()
+    engine = server_module._Engine(llm, lambda path, lora_request_id = None: None, _Sampling)
+    started, release = threading.Event(), threading.Event()
+
+    def blocker():
+        started.set()
+        release.wait(10)
+
+    first = threading.Thread(target = lambda: engine.call(blocker), daemon = True)
+    first.start()
+    assert started.wait(5)
+    outcome = {}
+
+    def queued():
+        try:
+            outcome["result"] = engine.call(lambda: "ran")
+        except BaseException as error:
+            outcome["error"] = error
+
+    caller = threading.Thread(target = queued, daemon = True)
+    caller.start()
+    deadline = time.monotonic() + 5
+    while not engine.commands and time.monotonic() < deadline:
+        time.sleep(0.001)
+    assert engine.commands
+    stopper = threading.Thread(target = engine.stop, daemon = True)
+    stopper.start()
+    deadline = time.monotonic() + 5
+    while not engine.stopping and time.monotonic() < deadline:
+        time.sleep(0.001)
+    assert engine.stopping
+    release.set()
+    caller.join(timeout = 5)
+    stopper.join(timeout = 5)
+    first.join(timeout = 5)
+    assert not caller.is_alive(), "call() is still blocked after the engine thread stopped"
+    assert "stopped" in str(outcome.get("error"))
+    assert not engine.thread.is_alive()
+
+
 def test_decoding_goes_on_between_pause_and_resume(served):
     # TRL brackets the adapter save with /pause and /resume; the reload is an engine-thread command, so the engine
     # keeps decoding through the save on the adapter it already serves.

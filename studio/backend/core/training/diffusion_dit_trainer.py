@@ -2349,8 +2349,7 @@ def _flux3_save(
 
 
 def _flux3_training_scheduler(cfg):
-    """The block graph's own FlowMatchEuler (Flux3SetTimestepsStep: constant shift 6.93, no dynamic shifting); the
-    repos ship no scheduler/, and load_flux3_pipeline builds the inference one the same way."""
+    """Static shift 6.93 (diffusers' dreambooth recipe); inference and previews use FLUX3_REFERENCE_SHIFT."""
     from diffusers import FlowMatchEulerDiscreteScheduler
 
     from core.inference.diffusion_flux3 import FLUX3_BASE_BLOCKS, flux3_blocks
@@ -2521,9 +2520,95 @@ def _ltx2_load_conditioners(cfg, device, weight_dtype):
     return pipe, vae
 
 
+# Per-block audio-side submodules of LTX2VideoTransformerBlock. _ltx2_forward always trains with
+# isolate_modalities=True, which skips the a2v / v2a cross attentions outright and leaves the audio stream feeding
+# nothing but the discarded audio prediction, so on a video-only run these weights never touch the video prediction,
+# the loss or a LoRA gradient (the LoRA targets are video-only: ".attn1.to_q" does not match "audio_attn1.to_q").
+_LTX2_AUDIO_BLOCK_MODULES = ("audio_attn1", "audio_attn2", "audio_ff")
+_LTX2_CROSS_MODAL_BLOCK_MODULES = ("audio_to_video_attn", "video_to_audio_attn")
+LTX2_TRAIN_AUDIO_STREAM_ENV = "UNSLOTH_LTX2_TRAIN_AUDIO_STREAM"
+
+
+def _ltx2_keeps_audio_stream() -> bool:
+    return (os.environ.get(LTX2_TRAIN_AUDIO_STREAM_ENV) or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
+def _ltx2_inert_modules():
+    import torch
+
+    class InertAudioStream(torch.nn.Module):
+        """Stands in for an audio-stream submodule on a video-only run: returns zeros shaped like its input, so the
+        placeholder audio stream passes through unchanged and costs no weights."""
+
+        def forward(self, hidden_states, *args, **kwargs):
+            return torch.zeros_like(hidden_states)
+
+    class RemovedCrossModal(torch.nn.Module):
+        """Stands in for the a2v / v2a cross attention, which isolate_modalities=True never calls."""
+
+        def forward(self, *args, **kwargs):
+            raise RuntimeError(
+                "LTX-2 video-only training removed the audio/video cross attention; it runs only with "
+                "isolate_modalities=True"
+            )
+
+    return InertAudioStream, RemovedCrossModal
+
+
+def _ltx2_drop_audio_stream(transformer) -> int:
+    """Replace every block's audio-stream and cross-modal submodules with weightless stand-ins, before any
+    quantization, LoRA attach or block swap sees them. Returns the parameter count removed (0 = nothing done).
+    The video prediction and every LoRA gradient are bitwise unchanged; UNSLOTH_LTX2_TRAIN_AUDIO_STREAM=1 keeps them."""
+    if _ltx2_keeps_audio_stream():
+        return 0
+    blocks = getattr(transformer, "transformer_blocks", None)
+    if blocks is None:
+        return 0
+    inert, removed = _ltx2_inert_modules()
+    dropped = 0
+    for block in blocks:
+        for names, stub in (
+            (_LTX2_AUDIO_BLOCK_MODULES, inert),
+            (_LTX2_CROSS_MODAL_BLOCK_MODULES, removed),
+        ):
+            for name in names:
+                mod = getattr(block, name, None)
+                if mod is None or not hasattr(mod, "parameters"):
+                    continue
+                dropped += sum(p.numel() for p in mod.parameters())
+                setattr(block, name, stub())
+    if dropped:
+        gc.collect()
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            elif hasattr(torch, "xpu") and torch.xpu.is_available():
+                torch.xpu.empty_cache()
+        except Exception:  # noqa: BLE001 -- freeing is best effort
+            pass
+        import logging
+
+        logging.getLogger(__name__).info(
+            "ltx-2: video-only training, %.2fB audio-stream parameters dropped (%s=1 keeps them)",
+            dropped / 1e9,
+            LTX2_TRAIN_AUDIO_STREAM_ENV,
+        )
+    transformer._unsloth_audio_stream_dropped = dropped
+    return dropped
+
+
 def _ltx2_load_transformer(cfg, device, weight_dtype, base_precision):
     from diffusers import LTX2VideoTransformer3DModel
-    return _load_dit_transformer(LTX2VideoTransformer3DModel, cfg, device, base_precision)
+
+    transformer = _load_dit_transformer(LTX2VideoTransformer3DModel, cfg, device, base_precision)
+    _ltx2_drop_audio_stream(transformer)
+    return transformer
 
 
 def _ltx2_encode_prompts(pipe, captions, device):
@@ -2868,13 +2953,15 @@ def _ltx25_load_transformer(cfg, device, weight_dtype, base_precision):
 
     repo, subfolder = _ltx25_dit_source(cfg)
     logging.getLogger(__name__).info("ltx-2.5: training against the %s DiT of %s", subfolder, repo)
-    return _load_dit_transformer(
+    transformer = _load_dit_transformer(
         LTX2VideoTransformer3DModel,
         _with_base(cfg, repo),
         device,
         base_precision,
         subfolder = subfolder,
     )
+    _ltx2_drop_audio_stream(transformer)
+    return transformer
 
 
 def _ltx25_training_scheduler(cfg):
