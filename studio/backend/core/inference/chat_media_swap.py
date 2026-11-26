@@ -127,14 +127,20 @@ class ChatSnapshot:
 _transformers_load: Optional[ChatSnapshot] = None
 
 
-def _transformers_identity():
+def _transformers_resident():
     from routes.inference import _peek_inference_backend
 
     backend = _peek_inference_backend()
     name = getattr(backend, "active_model_name", None)
     if not name or not getattr(backend, "_proc", None):
         return None
-    return name, backend._proc, id(backend.models.get(name))
+    entry = backend.models.get(name)
+    return (name, backend._proc, id(entry)), entry
+
+
+def _transformers_identity():
+    resident = _transformers_resident()
+    return resident[0] if resident else None
 
 
 def remember_transformers_load(request, response, user_initiated: bool) -> None:
@@ -151,9 +157,10 @@ def remember_transformers_load(request, response, user_initiated: bool) -> None:
         or request.native_path_lease
     ):
         return
-    identity = _transformers_identity()
-    if identity is None:
+    resident = _transformers_resident()
+    if resident is None:
         return
+    identity, entry = resident
     if response.status == "already_loaded":
         if previous is not None and previous.identity == identity:
             _transformers_load = replace(
@@ -166,6 +173,8 @@ def remember_transformers_load(request, response, user_initiated: bool) -> None:
         model = response.model,
         launch = request.model_copy(
             update = {
+                # The loader may have inherited precision on its private request copy.
+                "load_in_4bit": (entry or {}).get("load_in_4bit_requested", request.load_in_4bit),
                 "hf_token": None,
                 "force_cancel_active": False,
                 "force_reload": False,

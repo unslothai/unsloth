@@ -873,6 +873,32 @@ def test_noop_transformers_load_preserves_restore_recipe(monkeypatch):
     assert swap._transformers_load is None
 
 
+def test_transformers_reload_preserves_inherited_precision(monkeypatch):
+    from types import SimpleNamespace
+    from models.inference import LoadRequest, LoadResponse
+    from routes import inference
+
+    entry = {"load_in_4bit_requested": False}
+    backend = SimpleNamespace(active_model_name = "text", models = {"text": entry}, _proc = object())
+    monkeypatch.setattr(inference, "_peek_inference_backend", lambda: backend)
+    monkeypatch.setattr(swap, "_transformers_load", None)
+    request = LoadRequest(model_path = "text", max_seq_length = 8192)
+    response = LoadResponse(status = "loaded", model = "text", display_name = "Text", inference = {})
+
+    # The loader inherits precision on its private copy and stamps the new worker entry.
+    launch = request.model_copy()
+    inference._inherit_resident_load_in_4bit(backend, launch, "text")
+    assert launch.load_in_4bit is False
+    assert request.load_in_4bit is True
+    backend._proc = object()
+    backend.models["text"] = {"load_in_4bit_requested": launch.load_in_4bit}
+
+    swap.remember_transformers_load(request, response, True)
+
+    assert swap._transformers_load.launch.load_in_4bit is False
+    assert swap._transformers_load.launch.max_seq_length == 8192
+
+
 @pytest.mark.parametrize("scenario", ["normal", "kept_video", "retry", "queued_media"])
 def test_transformers_mixed_tools_then_image_only(monkeypatch, server_loop, scenario):
     from types import SimpleNamespace
