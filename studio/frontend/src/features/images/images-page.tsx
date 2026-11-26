@@ -485,6 +485,7 @@ import {
   withEnhanceChoice,
 } from "./lib/prompt-enhance";
 import { EnhancedPromptRecipeRow, EnhancePromptControls } from "./prompt-enhance-panel";
+import { loraFuseLabel } from "./lib/lora-fuse";
 import {
   ENGINE_HINT,
   ENGINE_HINT_CPU_ONLY,
@@ -1570,6 +1571,7 @@ function LoadedBuildSummary({ status }: { status: DiffusionStatus | null }) {
   if (!status?.loaded) return null;
   const offload = status.offload_policy ?? "none";
   const placement = offload === "group" ? denoiserPlacement(status.denoiser_offload) : null;
+  const loraFuse = loraFuseLabel(status.lora_fuse);
   return (
     <div className="flex flex-col gap-1 rounded-lg border border-border/60 px-2.5 py-2 text-ui-11">
       <div className="flex items-center gap-1 pb-0.5 text-xs font-medium text-muted-foreground">
@@ -1619,6 +1621,13 @@ function LoadedBuildSummary({ status }: { status: DiffusionStatus | null }) {
           label="Placement"
           value={placement.label}
           badge={<InfoHint>{placement.detail}</InfoHint>}
+        />
+      ) : null}
+      {loraFuse ? (
+        <BuildRow
+          label="LoRA"
+          value={loraFuse.label}
+          badge={<InfoHint>{loraFuse.detail}</InfoHint>}
         />
       ) : null}
       <BuildRow
