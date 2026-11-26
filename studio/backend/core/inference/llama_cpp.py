@@ -31892,11 +31892,12 @@ class LlamaCppBackend:
                     and not threads_overridden
                 )
 
-                if _drop_full_offload_threads:
-                    # A global cap can lower the Windows tuning, which already uses two threads.
-                    cmd.extend(["--threads", str(min(2, thread_cap or 2))])
-                elif not threads_overridden and n_threads is not None and n_threads > 0:
-                    cmd.extend(["--threads", str(n_threads)])
+                # A global cap can lower the Windows tuning, which already uses two threads.
+                launch_threads = (
+                    min(2, thread_cap or 2) if _drop_full_offload_threads else n_threads
+                )
+                if not threads_overridden and launch_threads is not None and launch_threads > 0:
+                    cmd.extend(["--threads", str(launch_threads)])
 
                 # Enable Jinja chat template rendering
                 if _caps.get("supports_jinja", True):
