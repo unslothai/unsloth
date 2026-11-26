@@ -4179,8 +4179,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                 cuda_options += f"""
             "cuda.cutlass_epilogue_fusion_enabled": {all_sm90},
             "cuda.cutlass_tma_only": {all_sm90},"""
-            # No cuda.compile_opt_level / cuda.enable_cuda_lto: they only reach CUTLASS kernel builds,
-            # and 2.16 makes cuda.* deprecated aliases of cutlass.* that warn when set.
+            # No cuda.* build knobs: CUTLASS only, and deprecated aliases that warn on torch 2.16.
             cuda_options += """
         }"""
             new_options = base_options + cuda_options

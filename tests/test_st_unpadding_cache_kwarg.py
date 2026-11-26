@@ -49,7 +49,7 @@ def test_cache_kwarg_keeps_the_padded_forward(monkeypatch, name):
         training = True,
         _unsloth_min_tokens = 0,
     )
-    # Only the attributes the eligibility check reads; a CPU tensor would bail on is_cuda first.
+    # A CPU tensor would bail on is_cuda first.
     hidden = SimpleNamespace(is_cuda = True, shape = torch.Size([2, 4, 8]), dtype = torch.bfloat16)
     mask = torch.tensor([[1, 1, 1, 0], [1, 1, 0, 0]])
     cache = object()
