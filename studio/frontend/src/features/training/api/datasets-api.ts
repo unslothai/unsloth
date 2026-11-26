@@ -101,18 +101,22 @@ export async function checkDatasetFormat({
 
 export function uploadTrainingDataset(
   file: File,
+  csvDelimiter: "," | ";" = ",",
 ): Promise<UploadDatasetResponse> {
   const form = new FormData();
   form.append("file", file);
+  if (csvDelimiter === ";") form.append("csv_delimiter", csvDelimiter);
 
   return uploadTrainingDatasetForm(form);
 }
 
 export function uploadNativeTrainingDataset(
   nativePathLease: string,
+  csvDelimiter: "," | ";" = ",",
 ): Promise<UploadDatasetResponse> {
   const form = new FormData();
   form.append("nativePathLease", nativePathLease);
+  if (csvDelimiter === ";") form.append("csv_delimiter", csvDelimiter);
 
   return uploadTrainingDatasetForm(form);
 }

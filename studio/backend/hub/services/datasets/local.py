@@ -497,7 +497,9 @@ def _upload_destination(filename: str) -> tuple[str, Path, int, str]:
     return filename, DATASET_UPLOAD_DIR / stored_name, max_bytes, max_label
 
 
-def _native_upload_dataset_response(native_path_lease: str) -> UploadDatasetResponse:
+def _native_upload_dataset_response(
+    native_path_lease: str, csv_delimiter: str = ","
+) -> UploadDatasetResponse:
     from core.training.account_jobs import account_path
     from utils.native_path_leases import NativePathLeaseError, verify_native_path_lease
 
@@ -515,6 +517,7 @@ def _native_upload_dataset_response(native_path_lease: str) -> UploadDatasetResp
     # A managed account may only import files inside its own workspace, as the RAG/seed/library drops check.
     account_path(grant.canonical_path)
     filename, stored_path, max_bytes, max_label = _upload_destination(grant.canonical_path.name)
+    _validate_csv_delimiter(stored_path, csv_delimiter)
     if grant.size_bytes is not None and grant.size_bytes > max_bytes:
         raise _upload_too_large(max_label)
 
@@ -543,18 +546,21 @@ def _native_upload_dataset_response(native_path_lease: str) -> UploadDatasetResp
         partial_path.unlink(missing_ok = True)
         raise HTTPException(status_code = 400, detail = "Dropped dataset is empty")
 
-    return UploadDatasetResponse(
-        filename = filename, stored_path = str(_publish_upload(partial_path, stored_path))
-    )
+    published = _finish_upload(partial_path, stored_path, max_bytes, max_label, csv_delimiter)
+    return UploadDatasetResponse(filename = filename, stored_path = str(published))
 
 
 async def upload_dataset_response(
-    file: UploadFile | None, native_path_lease: str | None = None
+    file: UploadFile | None,
+    native_path_lease: str | None = None,
+    *,
+    csv_delimiter: str = ",",
 ) -> UploadDatasetResponse:
     if native_path_lease:
         return await asyncio.to_thread(
             _native_upload_dataset_response,
             native_path_lease,
+            csv_delimiter,
         )
     if file is None:
         raise HTTPException(status_code = 400, detail = "No dataset file was provided")
@@ -562,6 +568,7 @@ async def upload_dataset_response(
     filename, stored_path, max_bytes, max_label = _upload_destination(
         file.filename or "dataset_upload"
     )
+    _validate_csv_delimiter(stored_path, csv_delimiter)
     declared_size = getattr(file, "size", None)
     if isinstance(declared_size, int) and declared_size > max_bytes:
         raise _upload_too_large(max_label)
@@ -586,8 +593,54 @@ async def upload_dataset_response(
         partial_path.unlink(missing_ok = True)
         raise HTTPException(status_code = 400, detail = "Empty upload payload")
 
-    reused_path = await asyncio.to_thread(_publish_upload, partial_path, stored_path)
+    reused_path = await asyncio.to_thread(
+        _finish_upload, partial_path, stored_path, max_bytes, max_label, csv_delimiter
+    )
     return UploadDatasetResponse(filename = filename, stored_path = str(reused_path))
+
+
+def _validate_csv_delimiter(path: Path, csv_delimiter: str) -> None:
+    if csv_delimiter != "," and (csv_delimiter != ";" or path.suffix != ".csv"):
+        raise HTTPException(status_code = 400, detail = "Semicolon import requires a .csv file.")
+
+
+def _finish_upload(
+    partial_path: Path, stored_path: Path, max_bytes: int, max_label: str, csv_delimiter: str
+) -> Path:
+    if csv_delimiter == ",":
+        return _publish_upload(partial_path, stored_path)
+
+    converted_path = partial_path.with_suffix(".csv.part")
+    try:
+        import pandas as pd
+        with partial_path.open(encoding = "utf-8-sig", newline = "") as source:
+            # Excel also accepts a delimiter directive before the header.
+            if source.readline().rstrip("\r\n").lower() != "sep=;":
+                source.seek(0)
+            with (
+                pd.read_csv(
+                    source,
+                    sep = csv_delimiter,
+                    dtype = str,
+                    keep_default_na = False,
+                    chunksize = 1024,
+                ) as chunks,
+                converted_path.open("w", encoding = "utf-8", newline = "") as target,
+            ):
+                for row_start, rows in enumerate(chunks):
+                    if not isinstance(rows.index, pd.RangeIndex):
+                        raise ValueError("A row has more fields than the header.")
+                    rows.to_csv(target, index = False, header = row_start == 0, lineterminator = "\r\n")
+                    if target.tell() > max_bytes:
+                        raise _upload_too_large(max_label)
+        return _publish_upload(converted_path, stored_path)
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = f"Invalid semicolon CSV. {exc}") from exc
+    finally:
+        with suppress(OSError):
+            partial_path.unlink(missing_ok = True)
+        with suppress(OSError):
+            converted_path.unlink(missing_ok = True)
 
 
 def _file_digest(path: Path) -> str:
