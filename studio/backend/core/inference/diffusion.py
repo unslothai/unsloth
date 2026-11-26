@@ -12874,7 +12874,7 @@ class DiffusionBackend:
                     from .diffusion_tp2 import engage_for_plan as _tp2_engage
                     from .diffusion_tp2 import place_atomically as _tp2_place
 
-                    # opt-in UNSLOTH_DIFFUSION_TP=1: denoiser sharded over two cards, kept resident
+                    # UNSLOTH_DIFFUSION_TP=1 (or Krea 2 streaming its denoiser, env unset): sharded over two cards, resident
                     plan_without_tp = plan
                     plan = _tp2_engage(pipe, plan, logger, loras = loras)
                     # streamed text encoders pin after the load returns, before or during the first encode
@@ -17613,6 +17613,14 @@ class DiffusionBackend:
                                 decode_restores.append(restore)
                                 if peak_probe is not None:
                                     # the decode ran with fewer weights than the probe's baseline: its peak understates
+                                    peak_probe.decode_released = True
+                            from .diffusion_tp2 import lend_for_decode as _tp2_lend
+
+                            # Krea 2 under TP: the first card's shards wait on the idle second card for the decode
+                            tp_restore = _tp2_lend(state.pipe, logger)
+                            if tp_restore is not None:
+                                decode_restores.append(tp_restore)
+                                if peak_probe is not None:
                                     peak_probe.decode_released = True
                             marked = False
                             for _ in range(_BOUNDARY_MARK_ATTEMPTS):
