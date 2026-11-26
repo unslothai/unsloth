@@ -262,7 +262,8 @@ def normalize_lora(
         a = renamed.get(stem + ".lora_A.weight")
         if a is not None:
             scales[stem] = float(alpha) / int(a.shape[0])
-    if metadata is not None and not metadata.get("use_dora"):
+    # DoRA too: its norm reads W + scaling * B @ A, so scaling folded into B at scaling 1 is the same layer.
+    if metadata is not None:
         for key, a in renamed.items():
             if key.endswith(".lora_A.weight") and key[: -len(".lora_A.weight")] not in scales:
                 stem = key[: -len(".lora_A.weight")]
