@@ -625,9 +625,9 @@ class TestRawConfigVlmDetection:
         p = _write_config(tmp_path, {"vision_config": {"hidden_size": 1024}})
         assert _raw_config_has_vision_config(str(p)) is True
 
-    def test_empty_vision_config_key(self, tmp_path):
+    def test_empty_vision_config_is_ignored(self, tmp_path):
         p = _write_config(tmp_path, {"vision_config": {}})
-        assert _raw_config_has_vision_config(str(p)) is True
+        assert _raw_config_has_vision_config(str(p)) is False
 
     def test_arch_suffix_detection(self, tmp_path):
         p = _write_config(
