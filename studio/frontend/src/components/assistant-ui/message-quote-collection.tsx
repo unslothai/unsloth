@@ -325,38 +325,45 @@ const QuotePreviewContent: FC<{
   readonly hasTable: boolean;
 }> = ({ text, source, hasTable }) => (
   <>
-    {parseQuotePreviewBlocks(text, hasTable).map((block, blockIndex) =>
-      block.kind === "table" ? (
-        <table
-          key={`table-${blockIndex}`}
-          className="whitespace-normal w-full border-collapse text-left text-ui-11"
-        >
-          <tbody>
-            {block.rows.map((row, rowIndex) => (
-              <tr key={`table-${blockIndex}-row-${rowIndex}`}>
-                {row.map((cell, cellIndex) => (
-                  <td
-                    key={`table-${blockIndex}-row-${rowIndex}-cell-${cellIndex}`}
-                    className={cn(
-                      "border border-border/50 px-2 py-1 align-top break-words",
-                      rowIndex === 0 && "bg-muted/40 font-medium",
-                    )}
-                  >
-                    {cell}
-                  </td>
-                ))}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      ) : (
-        <span key={`text-${blockIndex}`} className="block">
-          {block.text}
-        </span>
-      ),
-    )}
+    <div className="flex flex-col gap-1.5">
+      {parseQuotePreviewBlocks(text, hasTable).map((block, blockIndex) =>
+        block.kind === "table" ? (
+          <table
+            key={`table-${blockIndex}`}
+            className="whitespace-normal w-full border-collapse text-left text-ui-11"
+          >
+            <tbody>
+              {block.rows.map((row, rowIndex) => (
+                <tr key={`table-${blockIndex}-row-${rowIndex}`}>
+                  {row.map((cell, cellIndex) => (
+                    <td
+                      key={`table-${blockIndex}-row-${rowIndex}-cell-${cellIndex}`}
+                      className={cn(
+                        "border border-border/50 px-2.5 py-1.5 align-top break-words",
+                        rowIndex === 0 && "bg-muted/40 font-medium",
+                      )}
+                    >
+                      {cell}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : (
+          block.text.split("\n").map((line, lineIndex) => (
+            <span
+              key={`text-${blockIndex}-${lineIndex}`}
+              className="block"
+            >
+              {line}
+            </span>
+          ))
+        ),
+      )}
+    </div>
     {source.length > 0 && (
-      <span className="mt-1 block text-ui-10 text-muted-foreground">
+      <span className="mt-2 block text-ui-10 text-muted-foreground">
         {source}
       </span>
     )}

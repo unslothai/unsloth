@@ -279,7 +279,9 @@ test("row previews show the full quote and source in a scrollable surface", () =
     preview,
     /maxHeight: "min\(24rem, calc\(100vh - 1\.5rem\)\)"/,
   );
-  assert.match(preview, /className="block">\s*\{block\.text\}/);
+  assert.match(preview, /className="flex flex-col gap-1\.5"/);
+  assert.match(preview, /\{line\}/);
+  assert.match(preview, /className="block"/);
   assert.match(
     preview,
     /className="whitespace-normal w-full border-collapse text-left text-ui-11"/,
@@ -288,11 +290,11 @@ test("row previews show the full quote and source in a scrollable surface", () =
   assert.match(preview, /rowIndex === 0 && "bg-muted\/40 font-medium"/);
   assert.match(
     preview,
-    /border border-border\/50 px-2 py-1 align-top break-words/,
+    /border border-border\/50 px-2\.5 py-1\.5 align-top break-words/,
   );
   assert.match(
     preview,
-    /<span className="mt-1 block text-ui-10 text-muted-foreground">\s*\{source\}/,
+    /<span className="mt-2 block text-ui-10 text-muted-foreground">\s*\{source\}/,
   );
   assert.doesNotMatch(preview, /line-clamp/);
 
