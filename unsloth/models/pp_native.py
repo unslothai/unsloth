@@ -30,6 +30,7 @@ from .pp_schedules import (
     compiled_blocks,
     non_reentrant_checkpointing_only,
     split_backward_keeps_function_nodes,
+    split_backward_scope,
     single_backward_kernels,
     resolve_stages_per_rank,
     schedule_spec,
@@ -2287,6 +2288,8 @@ class PipelineParallel:
         )  # this rank's pp index (its stage with one stage per rank)
         self.bounds = bounds  # [start, end) decoder layers of every stage (pp x stages_per_rank)
         self.spec = schedule_spec(schedule)
+        # A split (zero bubble) backward: each step runs with donated buffers off (split_backward_scope).
+        self.split_backward = False
         self.stages_per_rank = int(stages_per_rank)
         self.total_stages = self.num_stages * self.stages_per_rank
         if len(bounds) != self.total_stages:
@@ -2684,7 +2687,8 @@ class PipelineParallel:
         # steps' gradients. Keep them aside and add them back.
         kept = self._take_fsdp_grads() if fresh and self.dp_mesh is not None else None
         try:
-            schedule.step(*args, target = target, return_outputs = False, **step_kwargs)
+            with split_backward_scope(getattr(self, "split_backward", False)):
+                schedule.step(*args, target = target, return_outputs = False, **step_kwargs)
         finally:
             self._scaler = None
             self.ctx.num_items_in_batch = None
@@ -3332,6 +3336,7 @@ def apply_pipeline_parallel(
         carry = carry,
         carry_at = carry_at,
     )
+    pp_stage.split_backward = bool(props["split_backward"])
     if pp > 1 and dtype != parts.embed.weight.dtype:
         pp_stage.ctx.wire_dtypes = _WireDtypes(pp_stage._global_ranks)
     stage_fn = getattr(type(parts.decoder), "pipeline_stage_forward", None)
@@ -3480,8 +3485,8 @@ def apply_pipeline_parallel(
                 else ""
             )
             + (
-                "; compiled backward graphs built without donated buffers (zero bubble runs autograd.grad "
-                "with retain_graph)"
+                "; compiled backward graphs built without donated buffers inside each step (zero bubble runs "
+                "autograd.grad with retain_graph)"
                 if donated_off
                 else ""
             )
