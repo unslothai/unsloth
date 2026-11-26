@@ -7073,6 +7073,22 @@ def grpo_trainer_compute_loss(function_name, function):
 
         if advantages.dim() == 1:
             advantages = advantages.unsqueeze(1)
+        if (
+            advantages.shape[1] != 1
+            and coef_1.dim() == 2
+            and advantages.shape[1] != coef_1.shape[1]
+        ):
+            # Distillation's per-token advantages are in the completion layout; coef_1 is in the zoo's left-packed
+            # one. Move them over for the clip metrics, as the zoo did for the loss.
+            if completion_mask.shape == coef_1.shape:
+                from unsloth_zoo.rl_replacements import (
+                    align_logprobs_with_mask as _unsloth_align_logprobs_with_mask,
+                )
+                advantages = _unsloth_align_logprobs_with_mask(
+                    advantages.to(completion_mask.device), completion_mask.to(torch.int32)
+                )
+            else:
+                advantages = inputs["advantages"].reshape(-1, 1)
 
         if self.loss_type in ["grpo", "bnpo", "dr_grpo", "dapo", "luspo"]:
             is_low_clipped = (coef_1 < 1 - self.epsilon_low) & (advantages < 0)
