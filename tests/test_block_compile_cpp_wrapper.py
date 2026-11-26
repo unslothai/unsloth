@@ -69,9 +69,13 @@ def _fake_compile(calls, fail_cpp = False):
     def fake_compile(fn, **kwargs):
         cpp = bool((kwargs.get("options") or {}).get("cpp_wrapper"))
 
+        # fail_cpp: the block's C++ build fails while the toolchain probe passes (an op it cannot wrap).
+        probe = getattr(fn, "__name__", "") == "_cpp_wrapper_probe_fn"
+
         def compiled(*args, **kw):
-            calls.append("cpp" if cpp else "python")
-            if cpp and fail_cpp:
+            if not probe:  # the toolchain probe passes and is not a block call
+                calls.append("cpp" if cpp else "python")
+            if cpp and fail_cpp and not probe:
                 raise BackendCompilerFailed("C++ compile error: g++ not found")
             return fn(*args, **kw)
 
@@ -241,9 +245,9 @@ def _fake_compile_backward_fails(calls):
 
 
 def test_backward_build_failure_never_reaches_training(monkeypatch, capsys):
-    """Flip test: the C++ backward fails to build. The switch-time trial (forward + backward on a
-    detached copy) catches it, every block keeps the Python wrapper, and training steps go on with
-    the same gradients as the Python wrapper alone."""
+    """Flip test: the C++ backward fails to build (AOTAutograd builds it lazily, at loss.backward()).
+    The switch-time probe catches it, every block keeps the Python wrapper, and training steps go on
+    with the same gradients as the Python wrapper alone."""
     monkeypatch.setenv("UNSLOTH_BLOCK_CUDAGRAPHS", "0")
     M = _load()
     monkeypatch.setattr(M, "_CPP_WRAPPER_REASON", None)
@@ -258,9 +262,11 @@ def test_backward_build_failure_never_reaches_training(monkeypatch, capsys):
         layer.zero_grad()
         layer(x).square().sum().backward()  # must not raise, before or after the switch
         assert x.grad is not None and layer.proj.weight.grad is not None
-    assert M.CPP_WRAPPER_STATS == {"regions": 1, "fallbacks": 1}
+    # The switch-time probe (a small forward + backward built with the C++ wrapper) caught it: no block
+    # region was built, every block keeps the Python wrapper.
+    assert M.CPP_WRAPPER_STATS == {"regions": 0, "fallbacks": 1}
     assert M._CPP_WRAPPER_BROKEN
-    assert "every block keeps the Python wrapper" in capsys.readouterr().out
+    assert "failed a forward + backward probe" in capsys.readouterr().out
     # The trial touched no parameter gradient: one more step equals the plain forward's.
     layer.zero_grad()
     x = torch.randn(2, 4, 8)
@@ -276,7 +282,7 @@ def test_backward_build_failure_never_reaches_training(monkeypatch, capsys):
     for _ in range(4):
         other()(torch.randn(2, 4, 8, requires_grad = True)).sum().backward()
         layer(torch.randn(2, 4, 8, requires_grad = True)).sum().backward()
-    assert "cpp" not in calls, calls
+    assert "cpp" not in calls and "probe" not in calls, calls
 
 
 def test_kill_switch_keeps_the_python_wrapper(monkeypatch):

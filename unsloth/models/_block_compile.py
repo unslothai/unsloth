@@ -101,8 +101,58 @@ if os.environ.get("UNSLOTH_BLOCK_CPP_WRAPPER", "").strip() == "1":
     _CPP_WRAPPER_AFTER = 0
 # regions: block classes given a C++ wrapper region; fallbacks: classes whose C++ build failed.
 CPP_WRAPPER_STATS = {"regions": 0, "fallbacks": 0}
-# Non-empty once a C++ trial build failed: no block of the process uses the C++ wrapper after that.
+# Non-empty once the C++ wrapper probe failed: no block of the process uses the C++ wrapper after that.
 _CPP_WRAPPER_BROKEN = []
+_CPP_WRAPPER_PROBED = {}
+
+
+def _cpp_wrapper_probe_fn(x, w):
+    return (torch.nn.functional.silu(x @ w) * x).float().square().sum()
+
+
+def _cpp_wrapper_probe(device):
+    """None if Inductor's C++ wrapper builds and runs a small forward and its backward on `device`
+    (two sizes, the second through the dynamic graph), else why not. Once per device per process:
+    AOTAutograd builds a block's backward lazily, at loss.backward(), where a missing or broken
+    toolchain could not fall back any more. Local tensors only (no RNG, no model state), its own
+    saved-tensor hooks so an outer checkpoint's pack hooks do not apply."""
+    key = (device.type, device.index)
+    if _CPP_WRAPPER_BROKEN:
+        return _CPP_WRAPPER_BROKEN[0]
+    if key not in _CPP_WRAPPER_PROBED:
+        why = None
+        try:
+            fn = torch.compile(
+                _cpp_wrapper_probe_fn, fullgraph = True, dynamic = True, options = {"cpp_wrapper": True}
+            )
+            with (
+                torch.inference_mode(False),
+                torch.enable_grad(),
+                torch.autograd.graph.saved_tensors_hooks(lambda t: t, lambda t: t),
+            ):
+                for rows in (16, 24):
+                    base = torch.arange(rows * 32, device = device, dtype = torch.float32)
+                    x = (base.view(rows, 32).sin() * 0.1).requires_grad_()
+                    w = (
+                        torch.arange(32 * 32, device = device, dtype = torch.float32).view(32, 32).cos()
+                        * 0.1
+                    )
+                    w.requires_grad_()
+                    gx, gw = torch.autograd.grad(fn(x, w), (x, w))
+                    if not (torch.isfinite(gx).all() and torch.isfinite(gw).all()):
+                        why = "non-finite probe gradients"
+                        break
+        except torch.OutOfMemoryError:
+            raise
+        except Exception as e:
+            if isinstance(getattr(e, "inner_exception", None), torch.OutOfMemoryError):
+                return "out of memory while building"  # not a broken toolchain: not cached
+            why = (str(e).strip().splitlines() or [type(e).__name__])[0][:200]
+        _CPP_WRAPPER_PROBED[key] = why
+        if why is not None:
+            _CPP_WRAPPER_BROKEN.append(why)
+            CPP_WRAPPER_STATS["fallbacks"] += 1
+    return _CPP_WRAPPER_PROBED[key]
 
 
 # Per-block CUDA graphs only pay off for static shapes on a launch-bound step.
@@ -2644,59 +2694,6 @@ def _wrap(
             and (not auto or _CUDAGRAPH_STATE["auto"]["phase"] == "off" or _packed_kwargs(kwargs))
         )
 
-    def cpp_trial(self, hidden_states, args, kwargs, mode):
-        """Grad-mode forward + backward of the new C++ region on a detached copy of this call's input
-        (with and without the skipped down projection), so a failed C++ build of either graph falls
-        back here: AOTAutograd lowers the backward lazily, at loss.backward(), outside any retry.
-        Gradients reach only the copy (no parameter .grad is touched). False when it failed."""
-        devices = [hidden_states.device.index] if hidden_states.is_cuda else []
-        variants = [False]
-        if _skip_down_eligible(self, original):
-            variants.append(True)
-        try:
-            for skip_down in variants:
-                x = hidden_states.detach().requires_grad_()
-                with (
-                    torch.random.fork_rng(devices = devices),
-                    torch.enable_grad(),
-                    _no_output_capture(self),
-                    _strict_dynamo(),
-                ):
-                    _IN_TRIAL[0] = True
-                    try:
-                        out = run(self, x, args, kwargs, mode, skip_down, True)
-                    finally:
-                        _IN_TRIAL[0] = False
-                    leaves = [
-                        t
-                        for t in torch.utils._pytree.tree_leaves(out)
-                        if isinstance(t, torch.Tensor) and t.requires_grad
-                    ]
-                    if leaves:
-                        total = sum(t.float().sum() for t in leaves)
-                        torch.autograd.grad(total, [x], allow_unused = True)
-        except torch.OutOfMemoryError:
-            raise
-        except Exception as e:
-            if isinstance(getattr(e, "inner_exception", None), torch.OutOfMemoryError):
-                # Out of memory while building, not a broken toolchain: this class stays on the Python
-                # wrapper, the others may still try.
-                cpp["on"] = False
-                cpp["region"] = None
-                return False
-            # Any failure here (a missing toolchain shows up in every class): every block keeps the
-            # Python wrapper for the rest of the process.
-            _CPP_WRAPPER_BROKEN.append(type(e).__name__)
-            cpp["on"] = False
-            CPP_WRAPPER_STATS["fallbacks"] += 1
-            first = str(e).strip().splitlines()[0][:200] if str(e).strip() else type(e).__name__
-            print(
-                f"Unsloth: {cls.__name__} block compile with Inductor's C++ wrapper failed ({first}); "
-                "every block keeps the Python wrapper."
-            )
-            return False
-        return True
-
     def cpp_in_use(self, hidden_states, args, kwargs, mode):
         """Counts this class's calls per layer and builds the C++ region once past the threshold."""
         if not cpp_wanted(kwargs):
@@ -2706,6 +2703,15 @@ def _wrap(
             cpp["layers"].add(id(self))
             cpp["calls"] += 1
             if cpp["calls"] <= _CPP_WRAPPER_AFTER * len(cpp["layers"]):
+                return False
+            why = _cpp_wrapper_probe(hidden_states.device)
+            if why is not None:
+                cpp["on"] = False
+                _rank0_note(
+                    "cpp_wrapper_probe",
+                    f"Unsloth: Inductor's C++ wrapper failed a forward + backward probe ({why}); "
+                    "every block keeps the Python wrapper.",
+                )
                 return False
             CPP_WRAPPER_STATS["regions"] += 1
             if _CPP_WRAPPER_AFTER > 0:
@@ -2721,8 +2727,6 @@ def _wrap(
                 options = {**compile_options, "cpp_wrapper": True},
                 **isolate,
             )
-            if not cpp_trial(self, hidden_states, args, kwargs, mode):
-                return False
         return True
 
     def fast(kwargs):
