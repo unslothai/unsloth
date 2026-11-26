@@ -820,6 +820,19 @@ def local_load_dir(path: Optional[str]) -> Optional[str]:
         return path
 
 
+def _is_symlink_alias(info) -> bool:
+    """A link at or above the row inside its scan folder (alias-a/, publisher-alias/model), as the inventory's
+    dedupe judges it; a scan folder reached through a link makes nothing an alias."""
+    from pathlib import Path
+
+    from hub.services.models.local_inventory import _is_link_component
+
+    path = Path(info.id)
+    root = getattr(info, "_scan_root", None)
+    below_root = [p for p in (path, *path.parents) if root is None or Path(root) in p.parents]
+    return any(_is_link_component(p) for p in below_root)
+
+
 @in_scan_memo
 def _build_index() -> dict[str, _LocalGgufEntry]:
     """Indexes the rows /v1/models lists; Ollama manifests are read only, since load materializes the .gguf."""
@@ -843,7 +856,7 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
         id(info): info
         for info in folded
         if _is_abs_path_id(info.id)
-        and (info.source == "hf_cache" or (info.source == "custom" and Path(info.id).is_symlink()))
+        and (info.source == "hf_cache" or (info.source == "custom" and _is_symlink_alias(info)))
     }
     for info in (*found, *copies.values()):
         raw_id = getattr(info, "id", None)
