@@ -5228,12 +5228,23 @@ def _resolved_kwargs_think(llama_backend, resolved) -> bool:
     return bool(getattr(llama_backend, "reasoning_default", True))
 
 
+def _llama_inkling_channel(llama_backend) -> bool:
+    # Inkling still reasons at effort none, and llama-server returns that thought as reasoning_content.
+    from core.inference.chat_template_helpers import replays_reasoning_content
+    from core.inference.llama_cpp import _rendered_chat_template
+
+    template = _rendered_chat_template(llama_backend)
+    return isinstance(template, str) and replays_reasoning_content(None, template = template)
+
+
 def _think_parsing_expected(llama_backend, payload) -> bool:
     """Literal think tags in prose stay text unless the model can reason, so the splitter runs only then."""
     if getattr(llama_backend, "reasoning_always_on", False):
         return True
     if not getattr(llama_backend, "supports_reasoning", True):
         return False
+    if _llama_inkling_channel(llama_backend):
+        return True
     # Use the effective template kwargs: effort-dial templates map enable_thinking=False to low.
     args = _anthropic_reasoning_args(payload)
     resolved = (
@@ -35126,19 +35137,21 @@ async def produce_openai_chat_completions(
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
         created = int(time.time())
 
+        _gguf_inkling = _llama_inkling_channel(llama_backend)
         _gguf_think_prov: dict = {"wrapped": 0}
-        if _continue_final_message(payload) and getattr(
-            payload.messages[-1], "reasoning_content", None
+        if _gguf_inkling or (
+            _continue_final_message(payload)
+            and getattr(payload.messages[-1], "reasoning_content", None)
         ):
-            # Resuming the answer of a turn whose reasoning was split out: tags that follow are literal.
+            # The server splits the reasoning out (always, for Inkling): tags that follow are literal.
             _gguf_think_prov["split"] = True
+        _gguf_parse_think = _gguf_inkling or _responses_should_parse_think_markers(
+            payload, llama_backend
+        )
 
         def _new_chat_reasoning_extractor():
             return _ResponsesReasoningExtractor(
-                parse_think_markers = _responses_should_parse_think_markers(
-                    payload,
-                    llama_backend,
-                ),
+                parse_think_markers = _gguf_parse_think,
                 think_provenance = _gguf_think_prov,
             )
 
@@ -36170,9 +36183,7 @@ async def produce_openai_chat_completions(
                     await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
                 reasoning_text, visible_text = _extract_responses_reasoning(
                     full_text,
-                    parse_think_markers = _responses_should_parse_think_markers(
-                        payload, llama_backend
-                    ),
+                    parse_think_markers = _gguf_parse_think,
                     think_provenance = think_provenance,
                 )
                 message_kwargs = {"content": visible_text}
@@ -36831,10 +36842,7 @@ async def produce_openai_chat_completions(
 
                         reasoning_text, visible_text = _extract_responses_reasoning(
                             full_text,
-                            parse_think_markers = _responses_should_parse_think_markers(
-                                payload,
-                                llama_backend,
-                            ),
+                            parse_think_markers = _gguf_parse_think,
                             think_provenance = {**_gguf_think_prov, **_choice_mark},
                         )
                         message_kwargs = {"content": visible_text}
