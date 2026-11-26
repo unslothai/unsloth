@@ -21,9 +21,12 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 CONFTEST = os.path.join(REPO, "tests", "conftest.py")
 
-pytestmark = pytest.mark.skipif(
-    not sys.platform.startswith("linux"), reason = "fd passing / memfd: Linux"
-)
+pytestmark = [
+    pytest.mark.skipif(not sys.platform.startswith("linux"), reason = "fd passing / memfd: Linux"),
+    # One worker runs the module-scoped `runs` (two driver processes, each with its ranks and zygotes),
+    # not every worker that draws one of its tests: three at once ran a 16 GB runner out of memory.
+    pytest.mark.xdist_group("rank_zygote"),
+]
 
 
 def _fingerprint():
@@ -166,7 +169,10 @@ def _run(tmp_path, zygote):
         UNSLOTH_TEST_RANK_ZYGOTE_HOT = "0",  # a zygote from the first rank of a kind on, to keep this short
         CUDA_VISIBLE_DEVICES = "",
         PYTHONPATH = os.pathsep.join(p for p in (HERE, REPO, env.get("PYTHONPATH")) if p),
+        UNSLOTH_TEST_RANK_ZYGOTE_MAX = "4",  # a fixed cap, whatever the shard's worker count
     )
+    for name in ("PYTEST_XDIST_TESTRUNUID", "PYTEST_XDIST_WORKER", "PYTEST_XDIST_WORKER_COUNT"):
+        env.pop(name, None)  # its own learning, not the observations of the shard around it
     code = f"import test_rank_zygote_gloo as t; t._drive({str(tmp)!r}, t.CASES)"
     proc = subprocess.run(
         [sys.executable, "-c", code],
