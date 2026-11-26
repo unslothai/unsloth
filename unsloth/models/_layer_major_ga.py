@@ -117,6 +117,9 @@ def layer_major_ineligible(trainer, model, layers, swapper):
         return "activation_offloading"
     if getattr(args, "torch_compile", False):
         return "torch_compile over the whole model"
+    if trainer.__dict__.get("_unsloth_token_budget_installed"):
+        # Its instance-level training_step splits micro-batches into chunks the window never sees.
+        return "UNSLOTH_TOKEN_BUDGET"
     if not _trainer_ok(trainer):
         return f"{type(trainer).__name__} overrides training_step or compute_loss"
     config = _text_config(model)
@@ -223,6 +226,7 @@ def _micro_step(trainer, model, inputs, num_items_in_batch, args, kwargs):
 def _layer_major_step(trainer, model, inputs, num_items_in_batch, args, kwargs):
     """The loss of micro-batch `inputs` if a layer-major window ran (or runs now) for it, else None."""
     window = trainer.__dict__.get("_unsloth_layer_major_window")
+    batch = trainer.__dict__.get("_unsloth_layer_major_batch")
     if window is not None:
         samples, losses, k = window
         if k < len(samples) and samples[k] is inputs:
@@ -231,7 +235,14 @@ def _layer_major_step(trainer, model, inputs, num_items_in_batch, args, kwargs):
             )
             return losses[k]
         trainer._unsloth_layer_major_window = None
-    batch = trainer.__dict__.get("_unsloth_layer_major_batch")
+        if batch is not None and batch[0] is samples:
+            # Same step, but the trainer passed something other than the micro-batch the window already
+            # accumulated (a wrapper that rewrites inputs): running it would count that data twice.
+            raise RuntimeError(
+                "Unsloth: offload_layers layer-major gradient accumulation already ran micro-batch "
+                f"{k} of this step, but training_step got different inputs for it. "
+                "Set UNSLOTH_OFFLOAD_LAYER_MAJOR=0 to turn it off."
+            )
     if batch is None or trainer.__dict__.get("_unsloth_layer_major_off"):
         return None
     samples, items = batch

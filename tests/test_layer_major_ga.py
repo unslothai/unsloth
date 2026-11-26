@@ -220,6 +220,46 @@ def test_instance_level_training_step_wrappers_see_each_micro_batch_once(ga, tmp
     assert seen == first and len(first) == 6
 
 
+def test_token_budget_is_ineligible(ga, tmp_path, monkeypatch, capsys):
+    """UNSLOTH_TOKEN_BUDGET splits micro-batches in an instance-level training_step: never under a window."""
+    mod, engine = ga
+    real_init = transformers.Trainer.__init__
+
+    def init(self, *args, **kwargs):
+        real_init(self, *args, **kwargs)
+        self._unsloth_token_budget_installed = True
+
+    monkeypatch.setattr(transformers.Trainer, "__init__", init)
+    engine.layer_major_stats(reset = True)
+    _train(mod, tmp_path, monkeypatch, "1")
+    assert _windows(engine) == 0
+    assert "UNSLOTH_TOKEN_BUDGET" in capsys.readouterr().out
+
+
+def test_rewritten_inputs_after_a_window_raise_instead_of_counting_twice(ga, tmp_path, monkeypatch):
+    """An instance-level wrapper that hands training_step new dicts for later micro-batches (after the window
+    accumulated them) is an error, not a second backward."""
+    mod, engine = ga
+    real_init = transformers.Trainer.__init__
+
+    def init(self, *args, **kwargs):
+        real_init(self, *args, **kwargs)
+        inner = self.training_step
+        calls = []
+
+        def rewriting(model, inputs, *a, **k):
+            calls.append(1)
+            if len(calls) % 3 == 2:
+                inputs = dict(inputs)
+            return inner(model, inputs, *a, **k)
+
+        self.training_step = rewriting
+
+    monkeypatch.setattr(transformers.Trainer, "__init__", init)
+    with pytest.raises(RuntimeError, match = "already ran micro-batch 1"):
+        _train(mod, tmp_path, monkeypatch, "1")
+
+
 def test_no_block_swap_means_no_window(ga, tmp_path, monkeypatch):
     mod, engine = ga
     engine.layer_major_stats(reset = True)
