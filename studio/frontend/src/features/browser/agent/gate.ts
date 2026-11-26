@@ -242,8 +242,7 @@ export function gateElement(
   // Links count fewer verbs; Enter in a field counts the form's default button as a click.
   const label = action === "submit" && info.submitter ? info.submitter : info.name;
   const consequential = (info.role === "link" ? CONSEQUENTIAL_LINK : CONSEQUENTIAL).test(label) || LOCALIZED.test(label);
-  // Selecting a checkbox, radio or switch is a click on it; a select is a click too: on a checkbox
-  // its name, on a dropdown the chosen option (passed as the name), since a page can act on change.
+  // Checkbox, radio, switch: click by name; select: by chosen option, as pages act on change.
   const clicks = action === "click" || submits || action === "select";
   if (clicks && consequential) {
     return { kind: "ask", ask: "click", host, name: clip(label), prompt: `Click “${clip(label)}” on ${host}?`, detail: describe(info) };

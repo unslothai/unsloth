@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// While an Images or Video load POST is pending, load-progress says only that the chat context is
-// saving for this load; other phases describe the previous model, so ready or null is not the end.
+// Pending Images/Video load: only the saving phase is current; ready or null is not the end.
 
 export const SAVING_CHAT_CONTEXT = "saving_chat_context";
 

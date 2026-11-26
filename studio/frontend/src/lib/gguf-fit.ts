@@ -91,8 +91,7 @@ export function classifyGgufFit(
   // Raw card size on purpose: this marginal band is over budget yet card-sized, and budget scoring
   // would make it unreachable; a warning tier, not a claim the load will be admitted.
   if (required <= gpuGb) return "marginal";
-  // Once layers spill, the GPU contributes only its budget; the reserve is off-limits
-  // (vram_budget_settings.py).
+  // Spilled layers may use only the GPU budget, never the reserve (vram_budget_settings.py).
   const combined = budget + (systemRamGb ?? 0) * RAM_OFFLOAD_USABLE_RATIO;
   if (required <= combined) return "partial";
   return "oom";

@@ -12,8 +12,7 @@ async function invoke<T>(command: string, args?: Record<string, unknown>): Promi
   return core.invoke<T>(command, args);
 }
 
-/** `marked` is false when the file couldn't be marked as downloaded from the internet (FAT, exFAT, some
- *  network drives), null when nothing marks it. */
+/** marked is false if the web mark failed (FAT, exFAT, some network drives); null if unmarked. */
 export type SavedNativeDownload = { id: string; name: string; marked: boolean | null };
 
 /** Null if cancelled. A website file (`source`) is quarantine-marked so Gatekeeper/SmartScreen check it. */

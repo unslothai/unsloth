@@ -92,7 +92,6 @@ fn channel_from_env() -> (Option<UnixStream>, Option<String>) {
 }
 
 fn fd_is_socket(fd: RawFd) -> bool {
-    // SAFETY: fstat writes into a zeroed, correctly sized buffer.
     let mut stat: libc::stat = unsafe { std::mem::zeroed() };
     if unsafe { libc::fstat(fd, &mut stat) } != 0 {
         return false;
@@ -102,7 +101,6 @@ fn fd_is_socket(fd: RawFd) -> bool {
 
 /// Async-signal-safe (only `fcntl`), so it may run in `pre_exec`.
 fn set_cloexec(fd: RawFd, cloexec: bool) -> bool {
-    // SAFETY: plain fcntl on an fd; failure is reported through the return value.
     unsafe {
         let flags = libc::fcntl(fd, libc::F_GETFD);
         if flags < 0 {
@@ -642,17 +640,13 @@ mod tests {
 
     #[test]
     fn outcome_truth_table() {
-        // E then exit 1 before R.
         assert_eq!(outcome(&exited(1), false, true), Outcome::FallbackToCpu);
         // R then E + exit 1: the GPU path worked, so the crash is just propagated.
         assert_eq!(outcome(&exited(1), true, true), Outcome::Propagate);
-        // Exit 1 without E.
         assert_eq!(outcome(&exited(1), false, false), Outcome::Propagate);
-        // Other codes, even with E.
         assert_eq!(outcome(&exited(0), false, true), Outcome::Propagate);
         assert_eq!(outcome(&exited(0), false, false), Outcome::Propagate);
         assert_eq!(outcome(&exited(2), false, true), Outcome::Propagate);
-        // Killed by a signal.
         assert_eq!(
             outcome(&signaled(libc::SIGKILL), false, true),
             Outcome::Propagate
@@ -729,7 +723,6 @@ mod tests {
         assert!(stream.is_none());
         assert!(fallback.is_none());
         assert!(std::env::var_os(SUPERVISOR_FD_ENV).is_none());
-        // The fd we were wrongly pointed at is left open.
         assert!(unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETFD) } >= 0);
 
         for value in ["", "abc", "-1", "1", "999999"] {
@@ -774,7 +767,6 @@ mod tests {
     fn fake_child_error71_falls_back_once() {
         let (status, spawns, fallbacks, logs) = fake_supervise(&[
             "printf E >&$UNSLOTH_GPU_SUPERVISOR_FD; exit 1",
-            // The CPU child sees the fallback env and a fresh socket.
             "[ \"$UNSLOTH_GPU_FALLBACK\" = error71 ] && printf x >&$UNSLOTH_GPU_SUPERVISOR_FD && exit 7; exit 9",
         ]);
         assert_eq!(spawns, vec![false, true]);
@@ -822,7 +814,6 @@ mod tests {
 
     #[test]
     fn fake_child_gets_inheritable_socket_only() {
-        // The fd is a socket in the child, and the parent's own end is not inherited.
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (status, _, _, _) = fake_supervise(&[
             "fd=$UNSLOTH_GPU_SUPERVISOR_FD; [ -S /proc/$$/fd/$fd ] || exit 4; \
@@ -888,7 +879,6 @@ mod tests {
         let logs = RefCell::new(Vec::new());
         let shared_for_thread = Arc::clone(&shared);
         let killer = std::thread::spawn(move || {
-            // Wait for the child to start, then deliver two "SIGTERM"s to the parent logic.
             loop {
                 if shared_for_thread.current.lock().unwrap().pid.is_some() {
                     break;
@@ -916,7 +906,6 @@ mod tests {
         killer.join().unwrap();
         assert_eq!(status.code(), Some(143));
 
-        // Second SIGTERM: a real signal to the child.
         let shared = Shared::new();
         shared.terminations.store(1, Ordering::SeqCst);
         let shared_for_thread = Arc::clone(&shared);
@@ -1134,7 +1123,6 @@ mod tests {
             start_control_reader(move || on_control(libc::SIGTERM));
             // Reports before the drain: unread data on a killed supervisor resets, not EOFs.
             note_window_will_show();
-            // SAFETY: getpgrp only reads the calling process's group ID.
             let pgid = unsafe { libc::getpgrp() };
             publish(&state.join("ready"), &format!("{} {pgid}", std::process::id()));
             for signal in signals.forever() {

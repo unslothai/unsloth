@@ -13,10 +13,7 @@ export const IGPU_CARVEOUT_NOTICE_DURATION_MS = 12000;
 
 export const IGPU_CARVEOUT_NOTICE_TITLE = "This model could run faster";
 
-/**
- * Neutral right-aligned wash, not sonner's filled default: a solid button reads as the thing to do,
- * and here that is nothing; shared toast CSS floats actions, so override here instead.
- */
+/** Neutral wash, not sonner's filled default; shared toast CSS floats actions, so override here. */
 export const IGPU_CARVEOUT_ACTION_CLASS =
   "!justify-self-end !h-[calc(26px*var(--ui-space-scale,1))] !border-0 !px-3 !font-medium !text-foreground " +
   "!bg-[rgb(0_0_0_/_calc(0.06*var(--contrast-wash-gain,1)))] hover:!bg-[rgb(0_0_0_/_calc(0.09*var(--contrast-wash-gain,1)))] dark:!bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:!bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]";

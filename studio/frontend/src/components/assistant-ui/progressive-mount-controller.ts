@@ -53,8 +53,7 @@ export function watchProgressiveScroll(
 }
 
 /**
- * Largest WebKitGTK step for parked history. 32 restored the pre-windowing load time but made single
- * frames up to ~1.4 s on CPU-painted WebKit; 16 keeps the worst frame at the 2-per-step level.
+ * Largest WebKitGTK step for parked history; 32 made CPU-painted frames too slow, so 16 caps it.
  */
 export const FAR_MOUNT_CHUNK = 16;
 
@@ -83,9 +82,8 @@ export type AnchorSample = {
 };
 
 /**
- * scrollTop delta keeping the reader on the same content, or null. Document space: correct only
- * because native scroll anchoring is off while the window is open (absent or per-frame
- * suppressed on some engines, so it cannot be trusted).
+ * scrollTop delta keeping the reader on the same content, or null; relies on native scroll
+ * anchoring being off while the window is open (absent or per-frame suppressed on some engines).
  */
 export function anchorCorrection(
   captured: AnchorSample,

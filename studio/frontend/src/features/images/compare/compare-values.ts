@@ -2,9 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * A1111 X/Y/Z axis syntax: comma or newline lists with CSV quoting, ranges like 1-5, steps like 1-9
- * (+2), counts like 1-10 [4] (evenly spaced, truncated for ints); a descending range keeps its end
- * (5-1 (-1) is 5..1, A1111 stops at 3) and a decimal step may omit its sign.
+ * A1111 X/Y/Z syntax: comma or newline lists with CSV quoting, ranges 1-5, steps 1-9 (+2), counts
+ * 1-10 [4]; descending range keeps its end (5-1 (-1) is 5..1); decimal step may omit sign.
  */
 
 export type AxisValueType = "int" | "float" | "str";

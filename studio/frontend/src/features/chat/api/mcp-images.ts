@@ -168,10 +168,7 @@ function withReturned(images: readonly McpImage[], keep: McpImage[]): McpImage[]
   return keep.length > 0 ? [{ ...keep[0], returned }, ...keep.slice(1)] : [];
 }
 
-/**
- * Data-URL path: sends exactly what the backend's tool loop last showed, since the backend steps its
- * cut off this count (#18231). A spare rides only where its recount and admission ignore it.
- */
+/** Data-URL sends the count the backend cuts from (#18231); spares skip recount and admission. */
 function planSteppedBound(
   batches: readonly (readonly (readonly McpImage[])[])[],
   exchanges: readonly (readonly (readonly McpImage[])[])[],

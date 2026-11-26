@@ -77,7 +77,6 @@ export function writePasteDraft(key: string, pastes: readonly string[]): void {
       storageFor(key).removeItem(key);
     }
   } catch {
-    // ignore write failures
   }
 }
 
@@ -112,7 +111,6 @@ export function writeComposerDraft(key: string, text: string): void {
     if (text.length > 0) storageFor(key).setItem(key, text);
     else storageFor(key).removeItem(key);
   } catch {
-    // ignore write failures
   }
 }
 
@@ -165,8 +163,7 @@ export function adoptLegacyDraft(threadId: string | null, overwrite = false): bo
   }
 }
 
-// Every composer publishes its text and hears the others; `latestDraft` leads the debounced save.
-// Other open tabs are never heard (#15782): the saved slot only seeds a tab once.
+// Composers hear each other, not other tabs (#15782); the saved slot only seeds a tab once.
 type DraftListener = (text: string, source: symbol) => void;
 const draftListeners = new Set<DraftListener>();
 let latest: string | null = null;

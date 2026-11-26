@@ -28,8 +28,7 @@ export interface ResolvedBadgeInfo {
   tooltip: string;
 }
 
-// The backend refuses an explicit precision it cannot honor (409 or a load-progress error); the
-// detail is shown as a toast description under this title.
+// Toast title for an explicit precision the backend refuses (409 or load-progress error).
 export const PRECISION_REFUSAL_TITLE = "Requested precision is not available";
 
 /** Mirrors the backend constant. */

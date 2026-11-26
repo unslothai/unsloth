@@ -48,10 +48,7 @@ function nextFrame(): Promise<void> {
   });
 }
 
-/**
- * Tells the desktop shell the window has painted, which ends the GPU startup
- * watch. Waits two frames so the first frame after show() has been drawn.
- */
+/** Tells the shell the window painted (ends GPU startup watch); waits two frames after show(). */
 export async function notifyRendererReady(): Promise<void> {
   if (!isTauri) return;
   try {

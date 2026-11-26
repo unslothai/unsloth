@@ -3,9 +3,7 @@
 
 // Separate from the harness entry so it can be tested without mounting React.
 
-/**
- * Unpainted stall time, capped at stream end so a freeze across the end counts in full; idempotent.
- */
+/** Unpainted stall time, capped at stream end (freezes across it count in full); idempotent. */
 export function stallInProgress(
   lastGrowthAt: number,
   now: number,

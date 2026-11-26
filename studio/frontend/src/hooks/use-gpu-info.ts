@@ -66,8 +66,7 @@ export interface GpuInfo {
   dedicatedMemoryTotalGb: number;
   /** Image/video loads live on ONE device, so their fit math must not use the multi-GPU sum. */
   maxDeviceMemoryGb: number;
-  /** Lowest visible ordinal, where a bare "cuda" diffusion load lands; NOT maxDeviceMemoryGb on a
-   * heterogeneous host. */
+  /** Lowest visible ordinal, where bare "cuda" diffusion lands; not maxDeviceMemoryGb if mixed. */
   loadDeviceMemoryGb: number;
   loadDeviceSharedMemory: boolean;
   /** Includes Linux ROCm APUs, which report only unified_memory; offload frees nothing on either. */
@@ -126,8 +125,7 @@ function appleUnifiedLoadBudgetGb(
     finiteNonNegative(data?.memory?.available_gb);
   // The Metal inventory cannot see the resident's share, so a switch keeps the live budget.
   if (afterUnload && !metalInventory) {
-    // The AGX in-use figure holds the resident model's Metal buffers, which the loader frees first;
-    // other apps' memory stays counted. Unknown usage leaves only the working-set ceiling.
+    // Resident Metal buffers free on unload; other apps count; unknown usage: ceiling only.
     const usedGb = finiteNonNegative(device.vram_used_gb);
     freeGb = freeGb !== null && usedGb !== null ? freeGb + usedGb : null;
   }

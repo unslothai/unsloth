@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** Pure, shared by Images and Video. The backend owns order (pinned, then newest or manual key);
- * this only reproduces it so a click lands instantly. */
+/** Mirrors the backend's order (pinned, then newest or manual key) so a click lands instantly. */
 
 export const GALLERY_CHANGED_EVENT = "unsloth:gallery-changed";
 
@@ -208,7 +207,6 @@ export function serializeById<T>(key: string, task: () => Promise<T>): Promise<T
   );
   queues.set(key, settled);
   void settled.then(() => {
-    // Only the last link clears the key.
     if (queues.get(key) === settled) queues.delete(key);
   });
   return run;
@@ -237,9 +235,8 @@ export async function fetchWhileStable<T>(
 }
 
 /**
- * Archiving shortens the server's shelf mid-request, so a page at the old offset skips a record.
- * `count()` catches a drop during the fetch, `token()` a mutation starting during it, and
- * `pending()` the gap between those two.
+ * Archiving shortens the shelf mid-request, so a page at the old offset skips a record; count()
+ * catches a drop, token() a mutation during it, and pending() the gap between those two.
  */
 export async function fetchNextPage<T>(
   count: () => number,

@@ -12,7 +12,6 @@ test("the View menu zooms a native page that holds the keys, wherever activeElem
     actions,
     /const scope = \[\.\.\.scopes\]\.find\(\(candidate\) => candidate\.holdsKeys\?\.\(\)\) \?\? zoomScopeFor\(document\.activeElement\);/,
   );
-  // The browser panel's scope claims the keys while its page view has them.
   assert.match(
     readSrc("features/browser/browser-panel.tsx"),
     /holdsKeys: nativePageHasKeys,/,

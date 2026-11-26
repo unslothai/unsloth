@@ -119,8 +119,7 @@ export function h3PerfSuffix(
   return null;
 }
 
-/** Video pipelines whose fp8 / int8 load runs a quantized DiT (a hosted pre-quantized checkpoint, else quantized at
- *  load). Other video rows stay bare: the dense-quant row rule is image-only. */
+/** Only these video pipelines run a quantized DiT on fp8/int8; dense-quant rule is image-only. */
 const DENSE_QUANT_VIDEO_PIPELINES = new Set(["lightricks/ltx-2.5-diffusers"]);
 
 /** Speed qualifier for those video rows, from the same host scheme list as the image rows. */

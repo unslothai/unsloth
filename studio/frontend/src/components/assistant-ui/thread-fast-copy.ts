@@ -196,10 +196,7 @@ function patchClipboardDeltas(root: Element): Array<() => void> {
   return undo;
 }
 
-/**
- * Only the direction: holders are inserted before images, so element-offset endpoints would
- * shift, while cloned live Ranges already track the DOM.
- */
+/** Captures only direction: holder insertions shift element offsets; live Ranges track the DOM. */
 type SelectionDirection = { readonly backward: boolean };
 
 function captureDirection(selection: Selection): SelectionDirection {

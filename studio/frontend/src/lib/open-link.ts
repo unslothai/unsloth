@@ -53,7 +53,6 @@ export function openLink(url: string): boolean {
     }
   }
 
-  // Anchor links scroll within the page, don't open externally
   if (url.startsWith("#")) {
     window.location.hash = url;
     return true;

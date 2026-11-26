@@ -78,8 +78,7 @@ export function applySentTextGuard(
   if (write.isComposition && !guard.compositionOpen) {
     return { accept: true, guard: null };
   }
-  // Re-typing the whole prompt is only one write when it is one character, so equality alone
-  // would swallow every retry of a "?" or a single emoji.
+  // Equality alone would swallow every retry of a one-character prompt like "?" or an emoji.
   if (guard.texts.includes(write.value)) {
     if (guard.userInputSince) return { accept: true, guard: null };
     return { accept: false, guard };

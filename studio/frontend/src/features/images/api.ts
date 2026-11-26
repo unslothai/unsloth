@@ -115,8 +115,7 @@ export interface DiffusionStatus {
   resolved?: Record<string, DiffusionResolvedControl> | null;
   // Default steps / guidance the backend renders the loaded model with (file header before base repo).
   generation_defaults?: { steps?: number; guidance?: number } | null;
-  // Whether the loaded family can run the prompt upsampler (FLUX.3), and whether it is on by default. Absent on
-  // an older backend: no Enhance prompt toggle.
+  // Prompt upsampler (FLUX.3), default-on flag; absent on older backend: no Enhance toggle.
   supports_prompt_upsampler?: boolean;
   prompt_upsampler_default?: boolean;
   // Hires fix the loaded model takes; null/absent = hidden (no img2img path, or an engine without it).
@@ -347,8 +346,7 @@ export interface GalleryImage {
   generation_seconds?: number | null;
   generation_count?: number | null;
   model: string | null;
-  // The repo id alone does not identify the pipeline (quant, torchao scheme, baked adapters); a
-  // recipe needs these once unloaded, plus the engine (the same seed differs per engine).
+  // Repo id alone is not enough; recipes need quant, torchao, adapters, engine (seed varies).
   engine?: string | null;
   model_kind?: string | null;
   gguf_filename?: string | null;

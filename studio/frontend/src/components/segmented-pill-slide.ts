@@ -3,9 +3,7 @@
 
 import { prefersReducedMotion } from "@/features/settings/stores/appearance-custom-store";
 
-// Transform-only Web Animations so the compositor runs the slide off the main thread (clip-path
-// resize would repaint there); geometry read once in the first ResizeObserver callback, with no
-// per-frame script or forced layout during the click
+// Transform-only Web Animations (clip-path would repaint); geometry read once, no per-frame layout.
 
 /** Spring the design system gives segmented controls (design.md, 2.5 Motion). */
 const SPRING = { stiffness: 500, damping: 35, mass: 0.5 };

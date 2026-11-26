@@ -79,8 +79,7 @@ export function noteRagAvailability(body: unknown): void {
 }
 
 /**
- * A 2xx from a gated endpoint clears a stale unavailable; the list is excluded since it
- * answers 200 either way and its marker is the authority.
+ * A 2xx from a gated endpoint clears a stale unavailable; the list's marker, not its 200, decides.
  */
 export function noteRagResponse(status: number, body: unknown): void {
   if (status === 503) {

@@ -9,8 +9,7 @@ const ROW_SELECTOR = "[data-role][data-message-id]";
 const NUMBERED_EQUATION = ".eqn-num, .mml-eqn-num";
 
 /**
- * Twice window height exceeds content-visibility margins: 150% in Chromium, no root margin in
- * WebKit.
+ * Twice the window height, beyond content-visibility margins (150% in Chromium, none in WebKit).
  */
 export const rowReachPx = (windowHeight: number): number =>
   Math.max(ROW_REACH_PX, Math.ceil(2 * (Number.isFinite(windowHeight) ? windowHeight : 0)));
@@ -40,9 +39,7 @@ function firstVisibleRow(viewport: Element): { anchor: Element; before: number }
   return { anchor: rows[found], before: rows[found].getBoundingClientRect().top };
 }
 
-/** Toggle rows, keeping the first visible row where the reader left it. A released row lays out at
- *  the current width, which may differ from the remembered one (the column changed while it was
- *  skipped); a newly skipped row should not move, but if it does the reader must not see it either. */
+/** Toggles rows, keeping the first visible row in place; a released row may differ in width. */
 function toggleRows(viewport: Element, changes: Array<[Element, boolean]>) {
   const known = changes.length > 0 ? firstVisibleRow(viewport) : null;
   for (const [row, on] of changes) row.toggleAttribute(ROW_DISTANT_ATTRIBUTE, on);

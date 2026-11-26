@@ -27,8 +27,7 @@ export interface TrainingTransformersUpgradeNotice {
   installSwitchesTo16Bit: boolean;
 }
 
-/** With custom code and an installable release, the fallback keeps 4-bit while Install trains
- * 16-bit. `installable && !forces16Bit` is that case, unless the sidecar keeps 4-bit anyway. */
+/** Installable custom code: fallback 4-bit; Install trains 16-bit unless sidecar keeps 4-bit. */
 export function trainingTransformersUpgradeNotice(
   check: TransformersUpgradeCheck,
   loadsIn4Bit: boolean,
@@ -116,8 +115,7 @@ export async function confirmTrainingTransformersUpgrade({
       };
     }
     if (installable) {
-      // Installing activates the latest tier, after which effective_training_load_in_4bit raises
-      // (provenance.py), so consent buys only an irreversible overlay.
+      // Install is irreversible: makes effective_training_load_in_4bit raise (provenance.py).
       return {
         proceed: false,
         error: getTrainingResumeUpgradeWouldStrandMessage(modelName),

@@ -274,7 +274,6 @@ test("the leading spacer takes a height surprise before scrollTop does", () => {
   // React must not own the heights: a re-render would put the pre-correction value back.
   assert.match(effect, /top\.style\.height = `\$\{spacer\}px`;/);
   assert.match(effect, /bottom\.style\.height = `\$\{spacers\.bottom\}px`;/);
-  // React owns only flexShrink and the equation counters on these two, never their heights.
   assert.match(GLUE, /data-thread-spacer="top" aria-hidden="true" style=\{\{ flexShrink: 0, counterIncrement: counterIncrement\(slot\.from, slot\.to\) \}\}/);
   assert.match(GLUE, /data-thread-spacer="bottom" aria-hidden="true" style=\{\{ flexShrink: 0, counterIncrement: counterIncrement\(slot\.from, slot\.to\) \}\}/);
   // What the spacer took on is folded into scrollTop only once input has gone quiet.
@@ -430,7 +429,6 @@ test("a full mount nobody is waiting for is dropped", () => {
 test("a jump asks for its row instead of for the whole thread", () => {
   assert.match(GLUE, /export function revealProgressiveRow\(viewport: HTMLElement, messageId: string\): boolean/);
   const reveal = section(GLUE, "const reveal = useCallback(", "[aui, readMetas, viewportRef],");
-  // Mounted already: in the window, or pinned outside it.
   assert.match(reveal, /\(index >= current\.start && index < current\.end\) \|\|\s*current\.pins\?\.includes\(index\)\s*\) \{\s*return true;/);
   // Synchronous, so the caller finds the row in the DOM when this returns.
   assert.match(reveal, /flushSync\(\(\) => \{\s*setWin\(next\);\s*\}\);/);
@@ -444,8 +442,7 @@ test("a jump asks for its row instead of for the whole thread", () => {
 });
 
 test("the viewport comes from a ref, not a document-wide query", () => {
-  // Compare panes each mount their own Thread, so a document-wide query finds whichever viewport
-  // comes first; only open dialogs, portaled out of every thread, are read that way.
+  // Each Compare pane mounts a Thread, so only OPEN_DIALOG may be queried document-wide.
   assert.doesNotMatch(GLUE, /document\.querySelector\((?!OPEN_DIALOG\))/);
   assert.match(GLUE, /viewportRef\.current/);
 });

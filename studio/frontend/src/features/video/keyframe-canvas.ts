@@ -124,8 +124,7 @@ export function keyframeSelectsMatchSource(
   return defaults?.keyframe_keeps_canvas !== true;
 }
 
-/** The width and height a request sends: the chosen size, or for "Match source" nothing (the backend derives it),
- *  except where an omitted size means the family default canvas, which then needs the matched size itself. */
+/** Chosen size; none for "Match source", unless an omitted size needs the matched one. */
 export function requestCanvas(
   sourceSized: boolean,
   matched: readonly [number, number] | null,

@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Engine choice for GGUF picks (Auto, diffusers, or native sd.cpp), remembered per checkpoint; only
-// a load that landed records it, so refused picks are not replayed.
+// GGUF engine pick per checkpoint; a refused load is not recorded, so it never replays.
 
 export type EngineChoice = "auto" | "diffusers" | "sd_cpp";
 

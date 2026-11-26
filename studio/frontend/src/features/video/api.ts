@@ -103,8 +103,7 @@ export interface VideoStatus {
   has_audio: boolean;
   supports_cfg: boolean;
   supports_keyframes?: boolean;
-  // Per keyframe: every image-to-video family takes a first frame; only MiniMax-H3 a last one.
-  // Absent on older backends, which read supports_keyframes for both.
+  // First frame: all i2v families; last: MiniMax-H3 only; older backends: supports_keyframes.
   supports_first_frame?: boolean;
   supports_last_frame?: boolean;
   supports_references?: boolean;
@@ -223,7 +222,6 @@ export interface VideoGenerateRequest {
   // Omit both dimensions to match the source aspect.
   first_frame?: string;
   last_frame?: string;
-  // Grouped in the model's image, video, then audio order.
   reference_images?: string[];
   reference_videos?: VideoReferenceVideo[];
   reference_audios?: string[];

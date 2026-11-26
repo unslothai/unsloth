@@ -54,7 +54,6 @@ test("a load started while the re-read was in flight is left alone", () => {
 });
 
 test("the images page already corrects itself on every generate exit", () => {
-  // Images re-reads status in its finally on every outcome, so it needs no fix.
   const images = readSrc("features/images/images-page.tsx");
   const finallyBlock = images.slice(images.indexOf("      cancelRequested.current = false;"));
   assert.match(finallyBlock.slice(0, 1200), /if \(isMounted\.current\) await refreshStatus\(\);/);
