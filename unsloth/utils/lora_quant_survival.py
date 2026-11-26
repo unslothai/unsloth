@@ -115,10 +115,15 @@ def _lora_layers(model):
         # DoRA merges through a magnitude rescale this check does not model.
         if adapter in (getattr(module, "lora_magnitude_vector", None) or {}):
             continue
+        # PiSSA / OLoRA style residual init: B @ A also carries the initial factors, not only the update.
+        if adapter in (getattr(module, "_unsloth_initial_lora", None) or {}):
+            continue
         yield name, module, base, adapter
 
 
 def _base_weight(base):
+    # QLoRA exports merge into the original 16-bit weights; the NF4 dequant is a statistical stand-in
+    # (survival moved by at most 0.03 against the original base on random weights).
     weight = base.weight
     quant_state = getattr(weight, "quant_state", None)
     if quant_state is not None:

@@ -165,3 +165,16 @@ def test_layers_the_export_leaves_16bit_are_not_sampled():
     assert seen and all(not n.startswith("base_model.") for n in seen)
     assert ratios and all("v_proj" not in n for n, _, _ in ratios)
     assert M.lora_quant_survival(model, "NVFP4", skip = lambda name, module: True) is None
+
+
+def test_residual_initialised_adapters_are_not_sampled():
+    # PiSSA / OLoRA: B @ A includes the initial factors, so it is not the trained update.
+    M = _load()
+    model = _tiny_lora(2.0)
+    layers = [
+        m for m in model.modules() if hasattr(m, "lora_A") and "default" in getattr(m, "lora_A", {})
+    ]
+    for module in layers[1:]:
+        module._unsloth_initial_lora = {"default": (None, None, 1.0)}
+    ratios = M.lora_quant_survival(model, "NVFP4")
+    assert ratios is not None and len(ratios) == 1
