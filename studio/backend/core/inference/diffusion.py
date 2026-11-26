@@ -467,6 +467,7 @@ from .diffusion_fp16_hosted_int8 import (
     fp16_card_hosted_int8_planned_scheme,
     fp16_card_hosted_int8_reason,
     fp16_card_hosted_int8_transformer,
+    small_host_hosted_int8_reason,
 )
 from .diffusion_hosted_vae import hosted_vae_pipe_kwargs, hosted_vae_plan_files
 from .diffusion_fp16_variant import (
@@ -2105,6 +2106,38 @@ def _release_render_on_unload(method):
                     logger.debug("diffusion.generate: cache release after unload failed: %s", exc)
 
     return wrapped
+
+
+# Why the attached LoRA set is or is not folded into the denoiser weights (Loaded build panel); None without LoRAs.
+LORA_FUSE_FUSED = "fused"
+LORA_FUSE_PENDING = "pending"
+LORA_FUSE_DISABLED = "disabled"
+LORA_FUSE_BIT_EXACT = "bit_exact"
+LORA_FUSE_OFFLOAD = "offload"
+LORA_FUSE_QUANTIZED = "quantized"
+LORA_FUSE_UNSUPPORTED = "unsupported"
+_LORA_FUSE_STATUS_ATTR = "_unsloth_lora_fuse_status"
+
+
+def _set_lora_fuse_status(pipe: Any, value: Optional[str]) -> None:
+    try:
+        setattr(pipe, _LORA_FUSE_STATUS_ATTR, value)
+    except Exception:  # noqa: BLE001 - a status note never fails a render
+        pass
+
+
+def lora_fuse_status(pipe: Any) -> Optional[str]:
+    if not getattr(pipe, "_unsloth_loras", ()):
+        return None
+    return getattr(pipe, _LORA_FUSE_STATUS_ATTR, None)
+
+
+def _speed_off_requested(state: Any) -> bool:
+    """Speed mode "off" chosen by the user (bit-exact), not the unset dense default that also resolves to off."""
+    if getattr(state, "speed_mode", None) != SPEED_OFF:
+        return False
+    entry = (getattr(state, "resolved", None) or {}).get("speed_mode") or {}
+    return entry.get("source") == "explicit"
 
 
 @dataclass
@@ -6423,11 +6456,11 @@ class DiffusionBackend:
         return bool(bg is not None and bg.compiling())
 
     @contextmanager
-    def _int8_defer_render(self):
+    def _int8_defer_render(self, cancel: Any = None):
         """The deferred CUTLASS race (diffusion_int8_cutlass_defer) runs only between renders: this render waits for a
         race unit in flight (one weight shape), re-records its CUDA graphs once winners landed, and lets the race go
         on once it ends and Studio stays idle."""
-        refresh = int8_defer.render_begin()
+        refresh = int8_defer.render_begin(cancel = cancel)
         try:
             if refresh:
                 with self._lock:
@@ -7628,6 +7661,8 @@ class DiffusionBackend:
                         kwargs.get("memory_mode"), bool(kwargs.get("cpu_offload"))
                     ),
                     has_lora = _has_active_lora(kwargs.get("loras")),
+                    base = kwargs.get("base_repo"),
+                    cache_dir = hub_cache_dir(),
                 )
                 if native_scheme is None or kwargs.get("transformer_prequant_path"):
                     return None
@@ -9878,6 +9913,22 @@ class DiffusionBackend:
                     and not _memory_request_forces_offload(memory_mode, cpu_offload)
                     else None
                 )
+                small_host_hosted = (
+                    small_host_hosted_int8_reason(
+                        fam,
+                        target,
+                        base = base,
+                        cache_dir = hub_cache_dir(),
+                        require_cached = True,
+                        has_lora = _has_active_lora(loras),
+                    )
+                    if turing_auto_int8 is None
+                    and transformer_quant == TQ_AUTO
+                    and kind == "pipeline"
+                    and not _memory_request_forces_offload(memory_mode, cpu_offload)
+                    else None
+                )
+                turing_auto_int8 = turing_auto_int8 or small_host_hosted
                 if turing_auto_int8 is not None:
                     logger.info(
                         "diffusion.transformer_quant: auto picks int8 on this Turing GPU (%s; "
@@ -11041,6 +11092,16 @@ class DiffusionBackend:
                                         transformer_quant_artifact = getattr(
                                             hosted_native, "_unsloth_prequant_artifact", None
                                         )
+                                if small_host_hosted is not None and hosted_native_scheme is None:
+                                    # Hosted read declined: restore AUTO exactly as without the hosted file.
+                                    logger.info(
+                                        "diffusion.small_host: the hosted int8 ConvRot DiT was not read; AUTO keeps "
+                                        "the small-host per-row int8 build (%s)",
+                                        small_host_hosted,
+                                    )
+                                    transformer_quant = TQ_AUTO
+                                    transformer_quant_pinned = native_scheme = None
+                                    turing_auto_int8 = small_host_hosted = None
                                 if (
                                     pipeline_seed_scheme is None
                                     and _pipeline_prequant_skipped
@@ -11338,6 +11399,14 @@ class DiffusionBackend:
                                         fam,
                                         logger,
                                         _load_token,
+                                    )
+                                if (
+                                    small_host_hosted is not None
+                                    and hosted_native_scheme is not None
+                                    and pipe is not None
+                                ):
+                                    plan = self._mark_small_host_hosted(
+                                        pipe, plan, small_host_hosted, fam, logger
                                     )
                         elif kind in ("single_file", "gguf") and fam.single_file_is_pipeline:
                             # A single-file SDXL-style checkpoint is the WHOLE pipeline: load it through the pipeline
@@ -12494,6 +12563,10 @@ class DiffusionBackend:
                         logger.warning("diffusion.vae_tiling: not installed: %s", exc)
                     install_frame_pad_fix(pipe, target, logger = logger)
                     install_vae_sync(pipe, target, logger = logger)
+                    # Before the speed optims: the fused CUDA decoder replaces the up blocks with its own clone-free one.
+                    from .diffusion_vae_noclone import install_on_pipe as install_vae_noclone
+
+                    install_vae_noclone(pipe, logger)
                     # Before the speed optims so their decode compile lands inside the non-finite check; `off` keeps fp32.
                     vae_fp16 = (
                         str(speed_mode or "").strip().lower() != SPEED_OFF
@@ -12751,6 +12824,9 @@ class DiffusionBackend:
 
                     skip_text_encoder_kv_cache(pipe, logger = logger)
                     select_final_hidden_state(pipe, logger = logger)
+                    from .diffusion_qwen_vl_mm_types import forward_mm_token_type_ids
+
+                    forward_mm_token_type_ids(pipe, logger = logger)
 
                     # After the TE quant, so the cache key reflects the encoders that run.
                     cond_cache.install(
@@ -12780,15 +12856,29 @@ class DiffusionBackend:
                     # a refinement may have re-tiered the plan; routed encoders need group offload
                     plan = self._small_host_plan(pipe, plan, fam, logger)
                     plan = refine_plan_for_multigpu(pipe, plan, logger)
+                    from .diffusion_tp2 import engage_for_plan as _tp2_engage
+                    from .diffusion_tp2 import place_atomically as _tp2_place
+
+                    # opt-in UNSLOTH_DIFFUSION_TP=1: denoiser sharded over two cards, kept resident
+                    plan_without_tp = plan
+                    plan = _tp2_engage(pipe, plan, logger, loras = loras)
                     # streamed text encoders pin after the load returns, before or during the first encode
                     request_background_encoder_pins(pipe)
-                    effective_policy, effective_tiling = apply_memory_plan(
+                    # TP placement is atomic: a placement that cannot keep the shards resident uninstalls TP and
+                    # places the unsplit denoiser with the plan it had before TP
+                    (effective_policy, effective_tiling), plan = _tp2_place(
                         pipe,
                         plan,
-                        device = device,
-                        # Indexed: CPU-offload APIs default to cuda:0 without an index.
-                        placement_device = target.torch_device,
-                        logger = logger,
+                        plan_without_tp,
+                        lambda p: apply_memory_plan(
+                            pipe,
+                            p,
+                            device = device,
+                            # Indexed: CPU-offload APIs default to cuda:0 without an index.
+                            placement_device = target.torch_device,
+                            logger = logger,
+                        ),
+                        logger,
                     )
                     start_background_pins(pipe)
                     # a transient OOM during setup may have re-planned to lower residency
@@ -14849,6 +14939,20 @@ class DiffusionBackend:
         logger.info("diffusion.small_host: %s", info["components"])
         return self._small_host_plan(pipe, plan, fam, logger)
 
+    def _mark_small_host_hosted(
+        self, pipe: Any, plan: Any, reason: str, fam: Any, logger: Any
+    ) -> Any:
+        """Mark and place the hosted int8 DiT exactly as the small-host route's per-row int8 build."""
+        from .diffusion_small_host import mark
+
+        info = dict(small_host_engaged_on(pipe) or {"reason": reason})
+        components = dict(info.get("components") or {})
+        components["transformer"] = SMALL_HOST_HOSTED_INT8_COMPONENT
+        info["components"] = components
+        mark(pipe, info)
+        logger.info("diffusion.small_host: %s", components)
+        return self._small_host_plan(pipe, plan, fam, logger)
+
     def _small_host_encoders_resident(
         self,
         pipe: Any,
@@ -15637,9 +15741,11 @@ class DiffusionBackend:
             pipe, _QUANT_FILE_LORA_BAKE_ATTR, False
         ):
             self._adjust_baked_loras(state, pipe, specs, current, quant_baked, cancel)
+            _set_lora_fuse_status(pipe, LORA_FUSE_QUANTIZED if specs else None)
             return
 
         if not specs:
+            _set_lora_fuse_status(pipe, None)
             if current:
                 self._unfuse_loras(state, pipe)
                 try:
@@ -15678,6 +15784,8 @@ class DiffusionBackend:
             return
         # a change: put the original weights back first, so the paths below see exactly the unfused model
         self._unfuse_loras(state, pipe)
+        # A new set runs unfused once; the next render with the same set is where it can fold.
+        _set_lora_fuse_status(pipe, LORA_FUSE_PENDING)
         names = [name for name, _p, _w in desired]
         weights = [w for _n, _p, w in desired]
         if _lora_weights_only_change(state, pipe, current, desired):
@@ -15747,12 +15855,22 @@ class DiffusionBackend:
         )
 
     def _fuse_constant_loras(self, state: Any, pipe: Any) -> None:
-        """Fold an unchanged LoRA set into a resident dense denoiser (diffusion_lora_fuse); any failure stays unfused."""
+        """Fold an unchanged LoRA set into a resident dense denoiser (diffusion_lora_fuse); any failure stays unfused.
+        Records why on the pipe (``lora_fuse_status``) for the Loaded build panel."""
         from . import diffusion_lora_fuse as lora_fuse
 
-        if not lora_fuse.enabled() or lora_fuse.fused(pipe):
+        if lora_fuse.fused(pipe):
+            _set_lora_fuse_status(pipe, LORA_FUSE_FUSED)
+            return
+        if not lora_fuse.enabled():
+            _set_lora_fuse_status(pipe, LORA_FUSE_DISABLED)
+            return
+        if _speed_off_requested(state):
+            # Speed "off" promises the unfused forward bit for bit; one bf16 rounding of the merged weight breaks it.
+            _set_lora_fuse_status(pipe, LORA_FUSE_BIT_EXACT)
             return
         if getattr(pipe, "_unsloth_loras_baked", False):
+            _set_lora_fuse_status(pipe, LORA_FUSE_QUANTIZED)
             return  # quantised bakes keep their own path
         denoisers = [
             m for m in (getattr(pipe, "unet", None), *_lora_fuse_dits(pipe)) if m is not None
@@ -15761,11 +15879,15 @@ class DiffusionBackend:
         if not lora_fuse.denoisers_resident(
             getattr(state, "offload_policy", None), getattr(state, "memory_mode", None), denoisers
         ):
+            _set_lora_fuse_status(pipe, LORA_FUSE_OFFLOAD)
             return  # offloaded or streamed denoiser weights move every render
         if denoisers and lora_fuse.fuse(pipe, denoisers, logger):
+            _set_lora_fuse_status(pipe, LORA_FUSE_FUSED)
             # graphs recorded the unfused forward; a CFG replica copied the unfused weights
             cuda_graph.reset_all(getattr(state, "cuda_graphs", ()))
             invalidate_cfg_replica(pipe, "the LoRA set was folded into the weights", logger)
+        else:
+            _set_lora_fuse_status(pipe, LORA_FUSE_UNSUPPORTED)
 
     def _unfuse_loras(self, state: Any, pipe: Any) -> None:
         """Restore the original weights of a folded LoRA set (bit-exact) before any change to it."""
@@ -16268,7 +16390,7 @@ class DiffusionBackend:
             bind_generation_cancel(cancel)
         with (
             nullcontext() if _hires_pass is not None else self._generation_slot(cancel),
-            self._int8_defer_render(),
+            self._int8_defer_render(cancel),
         ):
             # Wait outside the state lock so status polls keep answering.
             pending_bg = getattr(self._state, "bg_compile", None)
@@ -16807,6 +16929,10 @@ class DiffusionBackend:
                 # cap; the OOM backoff below halves a failed chunk. Layered: one input per forward (the pipeline's
                 # per-prompt layer stride is only right for one).
                 chunks = _generation_chunks(state.family, jobs, batch_size, layer_count = layer_count)
+                # Qwen-Image-2.1 lays out a batch from one row: prompts of different text lengths render apart.
+                from .diffusion_qwenimage21 import text_length_runs
+
+                chunks = [run for chunk in chunks for run in text_length_runs(pipe, chunk)]
 
                 # EFFECTIVE steps: img2img at strength < 1 denoises a fraction of `steps`.
                 strength_applied = effective_request_strength(
@@ -17715,6 +17841,9 @@ class DiffusionBackend:
                     restore_vae()
                 end_cfg_render(getattr(state, "pipe", None))
                 end_cfg_batch_render(getattr(state, "pipe", None))
+                from .diffusion_krea2_text_cache import end_render as end_krea2_text_render
+
+                end_krea2_text_render(getattr(state, "pipe", None))
                 if restore_resident is not None:
                     try:
                         if kick_bg or not defer_resident_restore(state.pipe, restore_resident):
@@ -18103,6 +18232,7 @@ class DiffusionBackend:
             "render_engagement": _render_engagement(state.pipe),
             "baked_loras": _baked_lora_names(state.pipe),
             "baked_lora_specs": _baked_lora_specs(state.pipe),
+            "lora_fuse": lora_fuse_status(state.pipe),
             "load_lora_specs": _load_lora_specs(state.pipe),
             "multi_gpu": multigpu_placement_status(state.pipe),
             "packed_weights": _grouped_form_status(state.pipe),
@@ -18166,6 +18296,11 @@ def _small_host_int8(pipe: Any) -> bool:
     return any(str(v).startswith("int8") for v in (info.get("components") or {}).values())
 
 
+# Must start with "int8" but not "int8 weights" (that prefix means the per-row build, re-armed for W8A8).
+SMALL_HOST_HOSTED_INT8_COMPONENT = (
+    "int8 ConvRot weights (hosted checkpoint, memory-mapped, native W8A8)"
+)
+
 SMALL_HOST_INT8_REASON = (
     "system RAM is too small for the dense float16 transformer, so the small-host route stores it as per-row int8 "
     "weights"
@@ -18191,6 +18326,11 @@ def _grouped_form_status(pipe: Any) -> Optional[dict]:
 
 def _lora_load_block_reason(pipe: Any) -> Optional[str]:
     """Why this load's transformer cannot carry adapters whatever the family and quant allow, or None."""
+    from .diffusion_tp2 import lora_block_reason as _tp2_lora_block
+
+    tp_block = _tp2_lora_block(pipe)
+    if tp_block:
+        return tp_block
     if _small_host_int8(pipe):
         return (
             "LoRA is not available on this load: system RAM was too small for the dense model, so Unsloth "

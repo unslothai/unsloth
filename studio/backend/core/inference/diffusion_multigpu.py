@@ -2589,6 +2589,10 @@ def build_replica(module: Any, device: Any) -> Any:
 
     Built outside inference mode: inside it, torchao weights made outside raise "Cannot set version_counter for
     inference tensor" and ones made inside silently stay on the source card."""
+    if getattr(module, "_unsloth_tp2", None) is not None:
+        raise RuntimeError(
+            "a tensor-parallel denoiser already spans both cards; it has no single-card replica"
+        )
     torch = _torch()
     device = torch.device(device)
     with torch.inference_mode(False), torch.no_grad():
@@ -4595,6 +4599,9 @@ def cfg_parallel_decline(
 
     if is_layer_split(denoiser):
         return "denoiser is split across cards (layer split)"
+    if getattr(denoiser, "_unsloth_tp2", None) is not None:
+        # its blocks already span both cards (diffusion_tp2): a replica would copy them a second time
+        return "denoiser is tensor parallel across cards"
     # Whole-module / sequential offload page the denoiser per call; a group / streaming plan is fine only when it left
     # the denoiser itself resident (encoders streamed), which shows as a denoiser without offload hooks.
     if offload_policy in ("model", "sequential"):

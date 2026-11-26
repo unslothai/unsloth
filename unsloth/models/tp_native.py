@@ -1865,11 +1865,22 @@ def _moe_post_hook(module, args, output):
 # Rank r keeps ceil(E / tp) contiguous experts on the same tokens; one sum all-reduce replaces the mean (no all-to-all).
 # Uneven E is padded with zero experts the router never selects; inexact blocks keep the replicated path.
 _MOE_SHARD_ENV = "UNSLOTH_TP_MOE_SHARD"
-_EXPERT_STACKS = ("gate_up_proj", "down_proj")
 _EXPERT_CALL = ("hidden_states", "top_k_index", "top_k_weights")
 # Other names for the same experts call: gpt-oss (hidden_states, router_indices, routing_weights).
 _EXPERT_CALL_ALIASES = {"router_indices": "top_k_index", "routing_weights": "top_k_weights"}
 _EXPERT_DTYPES = (torch.float16, torch.bfloat16, torch.float32, torch.float64)
+# Frozen block-FP8 expert codes (transformers FP8Experts; e8m0 scale grids): sliced by expert, never computed on here.
+_EXPERT_CODE_DTYPES = tuple(
+    getattr(torch, n)
+    for n in (
+        "float8_e4m3fn",
+        "float8_e5m2",
+        "float8_e4m3fnuz",
+        "float8_e5m2fnuz",
+        "float8_e8m0fnu",
+    )
+    if hasattr(torch, n)
+)
 
 
 def moe_shard_enabled():
@@ -1896,6 +1907,13 @@ def _plain_float(t):
     return type(t) in (nn.Parameter, torch.Tensor) and t.dtype in _EXPERT_DTYPES
 
 
+def _plain_expert(t):
+    """A plain expert stack cut by a dim-0 slice: 16 / 32-bit, or block-FP8 codes / their scale grids."""
+    return (
+        type(t) in (nn.Parameter, torch.Tensor) and t.dtype in _EXPERT_DTYPES + _EXPERT_CODE_DTYPES
+    )
+
+
 # A bitsandbytes 4-bit expert stack (zoo moe_utils_bnb4bit: packed [n, 1] bytes, expert-major, logical shape in
 # _original_shape) sharded by expert index: rank r keeps the bytes and absmax blocks of experts [lo, hi).
 EXPERT_STACK = "expert_stack"
@@ -1908,6 +1926,20 @@ def _expert_stack_shape(p):
     if shape is None and state is not None:
         shape = state.shape
     return None if shape is None else tuple(shape)
+
+
+def expert_stacks(leaf):
+    """The routed expert stacks of an experts module: each parameter whose (logical) dim 0 is num_experts."""
+    E = leaf.__dict__.get("num_experts")
+    out = []
+    for name, p in leaf._parameters.items():
+        if p is None:
+            continue
+        shape = _expert_stack_shape(p) if _is_params4bit(p) else tuple(p.shape)
+        preload = getattr(p, _EXPERT_PRELOAD, None)  # cut by expert_parallel_loading: a local stack
+        if preload is not None or (shape and shape[0] == E):
+            out.append(name)
+    return tuple(out)
 
 
 def _expert_params4bit_problem(p, E, tp):
@@ -2093,16 +2125,29 @@ def expert_shard_problem(block, tp = None):
         return f"its experts forward takes {names}, not {_EXPERT_CALL}"
     if getattr(type(leaf), "_unsloth_expert_lora_factors_swapped", False):
         return "swapped expert LoRA factors"
+    lists = sorted(
+        name
+        for name, child in leaf.named_children()
+        if isinstance(child, nn.ModuleList) and len(child) == E and _has_params(child)
+    )
+    if lists:
+        # unsloth_zoo's GptOssExpertsBnb4bit (every load_in_4bit gpt-oss): one Linear4bit per expert, no stack
+        return (
+            f"per-expert Linear lists ({' / '.join(lists)}): one Linear per expert, not a fused expert stack "
+            "(unsloth_zoo's GptOssExpertsBnb4bit, the load_in_4bit gpt-oss layout)"
+        )
     if any(_has_params(child) for child in leaf.children()) or any(
         b is not None for b in leaf._buffers.values()
     ):
         return "expert submodules / buffers"
-    if any(leaf._parameters.get(name) is None for name in _EXPERT_STACKS):
-        return "no fused gate_up_proj / down_proj"
+    stacks = expert_stacks(leaf)
+    if not stacks:
+        return f"no fused expert stack of {E} experts"
+    codes = False
     for name, p in leaf._parameters.items():
         if p is None:
             continue
-        if name in _EXPERT_STACKS and _is_params4bit(p):
+        if _is_params4bit(p):
             preload = getattr(p, _EXPERT_PRELOAD, None)
             if preload is not None:
                 local = (preload[0] // preload[1],) + _expert_stack_shape(p)[1:]
@@ -2117,8 +2162,9 @@ def expert_shard_problem(block, tp = None):
             if problem is not None:
                 return f"{name}: {problem}"
             continue
+        codes = codes or p.dtype in _EXPERT_CODE_DTYPES
         preload = getattr(p, _EXPERT_PRELOAD, None)
-        if preload is not None and _plain_float(p):
+        if preload is not None and _plain_expert(p):
             if (
                 preload[0] != E
                 or (tp is not None and preload[1] != tp)
@@ -2127,10 +2173,12 @@ def expert_shard_problem(block, tp = None):
             ):
                 return f"{name} was sharded by expert_parallel_loading as {preload}, not for {E} experts over {tp}"
             continue
-        if not _plain_float(p) or _preloaded(p) is not None:
+        if not _plain_expert(p) or _preloaded(p) is not None:
             return f"{name} is {type(p).__name__} {p.dtype} (quantized, packed or distributed)"
-        if p.dim() < 2 or p.shape[0] != E:
+        if p.dim() < 2 or name not in stacks:
             return f"{name} {tuple(p.shape)} is not stacked by expert"
+    if codes and tp is not None and (E % tp or E // tp < 2):
+        return f"FP8 experts: {E} experts do not split into at least 2 per rank over {tp}"
     for wrapper in wrappers:
         if type(wrapper).__name__ != "ParamWrapper" or not isinstance(
             getattr(wrapper, "lora_A", None), nn.ModuleDict
@@ -2303,7 +2351,14 @@ def _sharded_experts(shard, prior, hidden, index, weights):
     shape, group = hidden.shape, shard.group
     x = hidden.reshape(-1, shape[-1])
     tokens = x.shape[0]
-    index = index.reshape(tokens, -1)
+    if tokens == 0:
+        # No rows to route: one zero row routed nowhere (dropped below) keeps every grad defined.
+        width = index.shape[-1] if index.dim() > 1 else 1
+        x = torch.cat([x, x.new_zeros((1, x.shape[-1]))])
+        index = index.new_full((1, width), -1)
+        weights = weights.new_zeros((1, weights.shape[-1] if weights.dim() > 1 else width))
+    rows = x.shape[0]
+    index = index.reshape(rows, -1)
     dense = (
         weights.dim() == 2
         and weights.shape[-1] == shard.experts
@@ -2324,13 +2379,13 @@ def _sharded_experts(shard, prior, hidden, index, weights):
         wc = weights.index_select(0, token)[:, lo:hi]
         wc = F.pad(wc, (0, shard.per_rank - wc.shape[1]))
     else:
-        wc = weights.reshape(tokens, -1)[token, slot].unsqueeze(1)
+        wc = weights.reshape(rows, -1)[token, slot].unsqueeze(1)
     if empty:
         wc = wc * 0
     with _expert_locals(shard):
         yc = prior(xc, ic, wc)
-    y = yc.new_zeros((tokens, yc.shape[-1])).index_add(0, token, yc)
-    y = _experts_reduce(y, group)
+    y = yc.new_zeros((rows, yc.shape[-1])).index_add(0, token, yc)
+    y = _experts_reduce(y, group)[:tokens]
     return y.reshape(*shape[:-1], y.shape[-1])
 
 
@@ -3692,6 +3747,11 @@ def apply_tensor_parallel(
     """Shard every decoder attention / MLP of `model` over `tp_mesh` (None = all ranks), in place."""
     if is_tensor_parallel(model):
         return model
+    if any(level.__dict__.get("_unsloth_ep") is not None for level in _tp_chain(model)):
+        raise NotImplementedError(
+            "Unsloth: apply_tensor_parallel cannot shard an expert parallel model (apply_expert_parallel): its "
+            "experts are already split by index over the ranks. ep with tensor parallel is not supported."
+        )
     from .fsdp2_save import install_dcp_frozen_table_state_dict
 
     install_dcp_frozen_table_state_dict()  # Trainer / DCP checkpoints never hold a frozen lookup table
@@ -4259,11 +4319,15 @@ def tp_clip_grad_norm_(
 def _scale_grads_(params, total, max_norm, eps):
     """torch's clip: a tensor coefficient clamped at 1 and applied unconditionally (no host sync, no
     data-dependent branch). DTensor grads are scaled through their local shard."""
+    _scale_tensors_(
+        [p.grad.to_local() if _is_dtensor(p.grad) else p.grad for p in params], total, max_norm, eps
+    )
+
+
+def _scale_tensors_(tensors, total, max_norm, eps):
     with torch.no_grad():
         coef = torch.clamp(max_norm / (total + eps), max = 1.0)
-        for p in params:
-            g = p.grad
-            local = g.to_local() if _is_dtensor(g) else g
+        for local in tensors:
             c = coef.to(device = local.device, dtype = torch.float32)
             if local.dtype in (torch.float16, torch.bfloat16):
                 # A small coefficient rounds to 0 in fp16 (a device tensor is cast to the grad dtype).
@@ -4432,10 +4496,12 @@ def save_tp_adapter(model, save_directory, **kwargs):
     state = _peft_state_dict(model, **kwargs)
     rank = dist.get_rank() if dist.is_initialized() else 0
     kwargs.setdefault("is_main_process", rank == 0)
-    if kwargs["is_main_process"]:
-        model.save_pretrained(save_directory, state_dict = state, **kwargs)
-    if dist.is_initialized():
-        dist.barrier()
+
+    def write():
+        if kwargs["is_main_process"]:
+            model.save_pretrained(save_directory, state_dict = state, **kwargs)
+
+    _agree_write(write)
 
 
 # Sharded loading (v2): each rank reads only its slices of the sharded projections from the checkpoint, so the
@@ -5065,22 +5131,24 @@ def _tp_load_quantizing(original, cls, name, args, kwargs, mesh, state):
         return t.numel() * t.element_size()
 
     def shard_experts(module):
-        # Both stacks of a block or neither: one cut stack would leave the block unshardable.
-        stacks = {n: module._parameters.get(n) for n in _EXPERT_STACKS}
-        if any(
-            p is None or p.is_meta or getattr(p, _EXPERT_PRELOAD, None) is not None
-            for p in stacks.values()
+        # Every stack of a block or none: one cut stack would leave the block unshardable.
+        params = {n: p for n, p in module._parameters.items() if p is not None}
+        if not params or any(
+            p.is_meta or getattr(p, _EXPERT_PRELOAD, None) is not None for p in params.values()
         ):
-            return 0
-        if all(_is_params4bit(p) for p in stacks.values()):
-            cut = _preload_expert_params4bit
-        elif experts_only and all(_plain_float(p) for p in stacks.values()):
-            cut = _preload_expert_plain
-        else:
             return 0
         if expert_shard_problem(plan["experts"][id(module)], tp) is not None:
             return 0
-        shards = {n: cut(module, p, rank, tp, ranks) for n, p in stacks.items()}
+        cuts = {}
+        for n, p in params.items():
+            if _is_params4bit(p):
+                cuts[n] = _preload_expert_params4bit
+            elif experts_only and _plain_expert(p):
+                cuts[n] = _preload_expert_plain
+        if not cuts:
+            return 0
+        stacks = {n: params[n] for n in cuts}
+        shards = {n: cuts[n](module, p, rank, tp, ranks) for n, p in stacks.items()}
         if any(new is None for new in shards.values()):
             return 0
         module._parameters.update(shards)
@@ -5128,11 +5196,7 @@ def _tp_load_quantizing(original, cls, name, args, kwargs, mesh, state):
             setattr(new, _PRELOADED, (proj.style, tuple(proj.parts), tp))
             counts["sharded_weights"] += 1
             counts["kept_bytes"] += nbytes(new) - nbytes(p)
-        elif (
-            pname in _EXPERT_STACKS
-            and id(module) in plan["experts"]
-            and (_is_params4bit(p) or (experts_only and _plain_float(p)))
-        ):
+        elif id(module) in plan["experts"]:
             counts["kept_bytes"] += shard_experts(module)
 
     loading.set_param_for_module = set_and_shard
@@ -5150,7 +5214,7 @@ def _tp_load_quantizing(original, cls, name, args, kwargs, mesh, state):
         if "_unsloth_tp_load_guard" in module.__dict__:
             continue
         if _preloaded(module._parameters.get("weight")) is not None or any(
-            getattr(module._parameters.get(n), _EXPERT_PRELOAD, None) for n in _EXPERT_STACKS
+            getattr(p, _EXPERT_PRELOAD, None) for p in module._parameters.values()
         ):
             module.__dict__["_unsloth_tp_load_guard"] = module.register_forward_pre_hook(
                 _refuse_unapplied_forward
@@ -5185,6 +5249,19 @@ def _text_config_quantized(config):
         getattr(c, "quantization_config", None)
         for c in (config, text() if callable(text) else None)
     )
+
+
+def _block_fp8_quantization(config):
+    """Whether `config` (a model config or a quantization config) is transformers' fine-grained FP8 (e4m3 codes)."""
+    text = getattr(config, "get_text_config", None)
+    for c in (config, text() if callable(text) else None):
+        qc = getattr(c, "quantization_config", c)
+        get = qc.get if isinstance(qc, dict) else lambda k, d = None: getattr(qc, k, d)
+        method = get("quant_method", None)
+        method = getattr(method, "value", method)
+        if method == "fp8" and get("expert_dtype", "fp8") in (None, "fp8"):
+            return True
+    return False
 
 
 def _whole_load_exceeds_device(
@@ -5289,13 +5366,22 @@ def _from_pretrained_sharded(original, cls, name, args, kwargs, state):
                     return original(cls, name, *args, **original_kwargs)
             return chunked(original, cls, name, args, original_kwargs, mesh, state)
     if state.get("experts_only"):
-        # Other quantizations, transformers 4.x and 2-D meshes load in full.
+        # Other quantizations (block FP8 aside), transformers 4.x and 2-D meshes load in full.
         mesh = state["mesh"] if state["mesh"] is not None else _world_mesh()
-        on_load = other or (
-            quantized is None
-            and any(
-                original_kwargs.get(k)
-                for k in ("load_in_4bit", "load_in_8bit", "quantization_config")
+        fp8 = (
+            other
+            and _block_fp8_quantization(config)
+            and (asked is None or _block_fp8_quantization(asked))
+            and not any(original_kwargs.get(k) for k in ("load_in_4bit", "load_in_8bit"))
+        )
+        on_load = not fp8 and (
+            other
+            or (
+                quantized is None
+                and any(
+                    original_kwargs.get(k)
+                    for k in ("load_in_4bit", "load_in_8bit", "quantization_config")
+                )
             )
         )
         if chunked is None or on_load or mesh.ndim != 1:
@@ -5308,7 +5394,7 @@ def _from_pretrained_sharded(original, cls, name, args, kwargs, state):
         stats = (loaded[0] if isinstance(loaded, tuple) else loaded).__dict__.get(
             "_unsloth_tp_load_stats"
         )
-        if quantized is not None and isinstance(stats, dict):
+        if (quantized is not None or fp8) and isinstance(stats, dict):
             stats["prequantized"] = True
         return loaded
     if state.get("prequantized_only") and quantized is None:
@@ -5914,6 +6000,71 @@ def _ckpt_path(directory, rank):
     return os.path.join(directory, _CKPT_DIR, f"rank{rank:05d}.pt")
 
 
+def _atomic_torch_save(obj, path):
+    """torch.save via a same-directory temp file, so a failed write leaves the previous file whole."""
+    import os
+
+    tmp = f"{path}.tmp{os.getpid()}"
+    try:
+        with open(tmp, "wb") as f:
+            torch.save(obj, f)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.remove(tmp)
+        raise
+    try:  # directories cannot be opened on Windows
+        fd = os.open(os.path.dirname(path) or ".", os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
+def _flag_device(group = None):
+    import torch.distributed as dist
+
+    backend = str(dist.get_backend(group)).lower()
+    if "nccl" in backend and torch.cuda.is_available():
+        return torch.device("cuda", torch.cuda.current_device())
+    if "xccl" in backend and hasattr(torch, "xpu") and torch.xpu.is_available():
+        return torch.device("xpu", torch.xpu.current_device())
+    return torch.device("cpu")
+
+
+def _agree_write(fn, group = None):
+    """Collective (also the post-write barrier): raise on every rank of `group` if any rank's write failed."""
+    import torch.distributed as dist
+
+    failed, out = None, None
+    try:
+        out = fn()
+    except Exception as exc:
+        failed = exc
+    if not dist.is_initialized():
+        if failed is not None:
+            raise failed
+        return out
+    flag = torch.tensor([0 if failed is None else 1], dtype = torch.int32, device = _flag_device(group))
+    dist.all_reduce(flag, op = dist.ReduceOp.MAX, group = group)
+    if failed is not None:
+        raise RuntimeError(
+            f"Unsloth: rank {dist.get_rank()} failed to write its checkpoint state: {failed}"
+        ) from failed
+    if flag.item():
+        raise RuntimeError(
+            f"Unsloth: another rank failed to write its checkpoint state (rank {dist.get_rank()} wrote its "
+            "own); the checkpoint is incomplete, see that rank's error."
+        )
+    return out
+
+
 def _cp_width():
     from . import tp_env
     layout = tp_env._LAYOUT if tp_env._LAYOUT is not tp_env._UNSET else None
@@ -6020,7 +6171,6 @@ def _tp_save_optimizer_and_scheduler(self, output_dir):
 
     rank = dist.get_rank() if dist.is_initialized() else 0
     path = _ckpt_path(output_dir, rank)
-    os.makedirs(os.path.dirname(path), exist_ok = True)
     trainables = {
         name: (p._local_tensor if _is_dtensor(p) else p).detach()
         for name, p in self.model.named_parameters()
@@ -6034,13 +6184,16 @@ def _tp_save_optimizer_and_scheduler(self, output_dir):
         if getattr(self, "optimizer", None) is not None
         else None,
     }
-    torch.save(payload, path)
     scheduler = getattr(self, "lr_scheduler", None)
-    if self.args.should_save and scheduler is not None:
-        from transformers.trainer import SCHEDULER_NAME
-        torch.save(scheduler.state_dict(), os.path.join(output_dir, SCHEDULER_NAME))
-    if dist.is_initialized():
-        dist.barrier()  # every rank's file is on disk before the Trainer state marks the checkpoint complete
+
+    def write():
+        os.makedirs(os.path.dirname(path), exist_ok = True)
+        _atomic_torch_save(payload, path)
+        if self.args.should_save and scheduler is not None:
+            from transformers.trainer import SCHEDULER_NAME
+            _atomic_torch_save(scheduler.state_dict(), os.path.join(output_dir, SCHEDULER_NAME))
+
+    _agree_write(write)
 
 
 def _tp_resume_payload(self, checkpoint):

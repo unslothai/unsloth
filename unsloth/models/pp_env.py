@@ -13,9 +13,12 @@
   (default 2 x pp, lowered to a divisor of the batch) under UNSLOTH_PP_SCHEDULE (default 1f1b; a
   step with fewer micro-batches than stages runs as gpipe); every micro-batch loss is its summed token loss over the
   token count of the whole accumulation window over every dp replica, as with gradient accumulation on one
-  GPU. The pp (and tp) ranks of one dp replica read the same batches; the optimizer steps each stage's own
-  parameters; clipping, the fp16 GradScaler skip and the logged loss are global. Evaluation runs the pipeline
-  forward. Trainer checkpoints: the 1-GPU adapter (rank 0) plus per-rank optimizer state.
+  GPU. With gradient_accumulation_steps > 1 the window's batches wait and run together, as micro-batches
+  of the same row count, in as few schedule steps as padding allows (rows grouped by length), so the
+  pipeline fills and drains once per optimizer step instead of once per batch; UNSLOTH_PP_FOLD_GA=0 runs
+  one schedule step per batch. The pp (and tp) ranks of one dp replica read the same batches; the optimizer
+  steps each stage's own parameters; clipping, the fp16 GradScaler skip and the logged loss are global.
+  Evaluation runs the pipeline forward. Trainer checkpoints: the 1-GPU adapter (rank 0) plus per-rank optimizer state.
 - for_inference / generate / merged and GGUF exports: each rank puts the whole model back on its GPU (the CPU
   copies of the other stages plus their trained weights, broadcast from the stage that trained them), then runs
   the one-GPU path; the next training step splits it again. Exports run on rank 0 only; the other ranks wait
@@ -141,7 +144,11 @@ def pipeline_parallel_env_apply(model, layout):
             layout.pp_mesh,
             n_microbatches = default,
             schedule = schedule,
-            config = PPConfig(keep_replica = keep, text_only = text_only),
+            config = PPConfig(
+                keep_replica = keep,
+                text_only = text_only,
+                stages_per_rank = getattr(layout, "stages_per_rank", None),
+            ),
         )
     except (ValueError, RuntimeError, NotImplementedError) as exc:
         from .tp_env import _reraise_with_hint
@@ -935,7 +942,8 @@ def _refuse_split_router_aux_at_init(
 
 
 def _dp_info(stage):
-    mesh = stage.dp_mesh if stage.dp_mesh is not None else stage.ddp_mesh
+    mesh = getattr(stage, "dp_mesh", None)
+    mesh = mesh if mesh is not None else getattr(stage, "ddp_mesh", None)
     return (mesh.size(), mesh.get_local_rank(), mesh) if mesh is not None else (1, 0, None)
 
 
@@ -1155,6 +1163,316 @@ def _restore_trainer_aux_coef(applied):
         config.router_aux_loss_coef = old
 
 
+_FOLD = "_unsloth_pp_fold"
+
+
+def _fold_requested():
+    return os.environ.get("UNSLOTH_PP_FOLD_GA", "1").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
+
+
+def _router_aux_on(trainer, stage):
+    moe = getattr(getattr(stage, "ctx", None), "moe", None)
+    if moe is None:
+        return False
+    from .pp_native import _router_aux_coef
+
+    on = _router_aux_request(trainer)
+    if on is None:
+        on = getattr(stage.ctx, "output_router_logits", None)
+    if on is None:
+        on = getattr(getattr(moe, "config", None), "output_router_logits", False)
+    if not on:
+        return False
+    try:
+        return bool(_router_aux_coef(moe))
+    except AttributeError:
+        return True  # unknown coefficient: keep one schedule step per batch
+
+
+# HF rotary embeddings whose frequencies follow the batch's max(position_ids) + 1 (dynamic_rope_update):
+# regrouping and re-padding rows would change them.
+_LENGTH_DEPENDENT_ROPE = ("dynamic", "longrope")
+
+
+def _rope_types(config, depth = 0):
+    """rope_type / type of every rope_scaling / rope_parameters dict (transformers 5 may hold one per layer
+    type), here and in the nested text configs."""
+    if config is None or depth > 3:
+        return set()
+    get = config.get if isinstance(config, dict) else lambda key: getattr(config, key, None)
+    found = set()
+    for name in ("rope_scaling", "rope_parameters"):
+        value = get(name)
+        if not isinstance(value, dict):
+            continue
+        for entry in (value, *value.values()):
+            kind = entry.get("rope_type", entry.get("type")) if isinstance(entry, dict) else None
+            if isinstance(kind, str):
+                found.add(kind)
+    for sub in ("text_config", "language_config", "llm_config"):
+        found |= _rope_types(get(sub), depth + 1)
+    return found
+
+
+def _length_dependent_rope(stage):
+    """The rotary frequencies depend on the batch's sequence length (dynamic NTK, LongRoPE). Read from the
+    config, which every stage holds alike, so all pp ranks decide the same."""
+    cached = stage.__dict__.get("_unsloth_length_rope")
+    if cached is None:
+        kinds = _rope_types(getattr(getattr(stage, "model", None), "config", None))
+        cached = any(kind in _LENGTH_DEPENDENT_ROPE for kind in kinds)
+        stage.__dict__["_unsloth_length_rope"] = cached
+    return cached
+
+
+def _foldable(trainer, stage, input_ids, extra, n):
+    """This Trainer batch can join one schedule step over the whole accumulation window: the window token
+    count is known (each micro-batch loss is its token sum / that count, however the rows are grouped), a
+    single-stage schedule (multi-stage ones are validated for one micro-batch count), no router aux loss
+    (summed per micro-batch), no sequence-length dependent RoPE, and only [rows, seq] side inputs."""
+    from .pp_native import PipelineParallel
+
+    if not _fold_requested() or n is None or not isinstance(stage, PipelineParallel):
+        return False
+    if int(getattr(trainer.args, "gradient_accumulation_steps", 1) or 1) <= 1:
+        return False
+    if getattr(getattr(stage, "spec", None), "multi", False) or _router_aux_on(trainer, stage):
+        return False
+    if _length_dependent_rope(stage):
+        return False  # regrouped rows change max(position_ids), so the rotary frequencies
+    rows, seq = input_ids.shape
+    for value in extra.values():
+        if not torch.is_tensor(value) or value.dim() != 2 or value.shape[1] != seq:
+            return False
+        if value.shape[0] not in (1, rows):
+            return False
+    return True
+
+
+def _row_lengths(labels, extra):
+    """Per row, the positions up to its last attended or labelled token: later ones are right padding (masked,
+    no label), which reaches no earlier token under causal attention. Without a mask every position counts."""
+    seq = labels.shape[1]
+    mask = extra.get("attention_mask")
+    if mask is None:
+        return [seq] * labels.shape[0]
+    keep = (labels != -100) | (mask.expand_as(labels) != 0)
+    index = torch.arange(1, seq + 1, device = labels.device).expand_as(labels)
+    return (index * keep).amax(dim = 1).clamp_(min = 1).tolist()
+
+
+def _fold_plan(lengths, rows_per_mb, num_stages, floor, cap):
+    """Contiguous groups of `lengths` (descending), each one schedule step of whole micro-batches of
+    rows_per_mb rows padded to its longest row. A step of m micro-batches over p stages costs about
+    (m + p - 1) micro-batch times (the bubble), each proportional to its padded length; the plan minimises the
+    window's sum (ties: fewer steps). floor / cap bound m per step (1F1B's stage count, GPipe's in-flight
+    micro-batches). Returns [(first row, end row, n_microbatches)]."""
+    rows = len(lengths)
+    units = -(-rows // rows_per_mb)
+    best = [(0.0, 0)] + [(float("inf"), 0)] * units
+    cut = [0] * (units + 1)
+    for end in range(1, units + 1):
+        for start in range(end - 1, -1, -1):
+            m = end - start
+            if cap is not None and m > max(cap, floor):
+                break
+            cost = best[start][0] + (max(m, floor) + num_stages - 1) * lengths[start * rows_per_mb]
+            key = (cost, best[start][1] + 1)
+            if key < best[end]:
+                best[end], cut[end] = key, start
+    plan, end = [], units
+    while end:
+        start = cut[end]
+        plan.append((start * rows_per_mb, min(end * rows_per_mb, rows), max(end - start, floor)))
+        end = start
+    return plan[::-1]
+
+
+def _fit(t, length, fill):
+    """[rows, seq] -> [rows, length]: cut, or right-pad with `fill` (a callable gets the pad width)."""
+    have = t.shape[1]
+    if have >= length:
+        return t[:, :length]
+    if callable(fill):
+        tail = fill(t, length - have)
+    else:
+        tail = t.new_full((t.shape[0], length - have), fill)
+    return torch.cat([t, tail], dim = 1)
+
+
+def _next_positions(t, width):
+    return t[:, -1:] + torch.arange(1, width + 1, device = t.device, dtype = t.dtype)
+
+
+_FILL = {"attention_mask": 0, "position_ids": _next_positions}
+
+
+def _window_rows(stage, window):
+    """The window's rows by descending length (each cut to its own length), the rows per micro-batch the
+    unfolded steps used, and the plan (shared by every dp replica, which must run the same schedule steps)."""
+    import torch.distributed as dist
+
+    rows = []
+    for input_ids, labels, extra in window:
+        count = input_ids.shape[0]
+        extra = {k: v.expand(count, -1) if v.shape[0] != count else v for k, v in extra.items()}
+        for i, length in enumerate(_row_lengths(labels, extra)):
+            rows.append(
+                (
+                    length,
+                    input_ids[i : i + 1, :length],
+                    labels[i : i + 1, :length],
+                    {k: v[i : i + 1, :length] for k, v in extra.items()},
+                )
+            )
+    rows.sort(key = lambda r: -r[0])  # stable: equal lengths keep the window's order
+    lengths = [r[0] for r in rows]
+    first = window[0][0].shape[0]
+    m0, pad0 = resolve_microbatches(stage, first)
+    per_mb = (first + pad0) // m0
+    p = stage.num_stages
+    auto = getattr(stage, "schedule_auto", False)
+    floor = p if (stage.schedule == "1f1b" and not auto) or _gpipe_needs_stage_count() else 1
+    # An explicit GPipe holds every micro-batch's activations until its backward: at most as many as
+    # the unfolded step (or 1F1B's first stage) held.
+    cap = max(m0, p) if stage.schedule == "gpipe" else None
+    dp, _, mesh = _dp_info(stage)
+    if dp > 1:
+        device = _comm_device(stage)
+        count = torch.tensor([len(lengths)], dtype = torch.int64, device = device)
+        dist.all_reduce(count, op = dist.ReduceOp.MAX, group = mesh.get_group())
+        shared = torch.zeros(int(count[0]), dtype = torch.int64, device = device)
+        shared[: len(lengths)] = torch.tensor(lengths, dtype = torch.int64)
+        dist.all_reduce(shared, op = dist.ReduceOp.MAX, group = mesh.get_group())
+        plan_lengths = [max(int(x), 1) for x in shared.tolist()]
+    else:
+        plan_lengths = lengths
+    return rows, per_mb, _fold_plan(plan_lengths, per_mb, p, floor, cap)
+
+
+def _stack_group(rows, start, end, m, per_mb):
+    """Rows [start, end) padded to their longest, plus fully masked filler rows to m whole micro-batches."""
+    group = rows[start:end]
+    if group:
+        length = max(r[0] for r in group)
+        input_ids = torch.cat([_fit(r[1], length, 0) for r in group])
+        labels = torch.cat([_fit(r[2], length, -100) for r in group])
+        extra = {
+            k: torch.cat([_fit(r[3][k], length, _FILL.get(k, 0)) for r in group])
+            for k in group[0][3]
+        }
+    else:
+        # This replica ran out of rows (a shorter last batch than another dp replica's): one filler row.
+        input_ids, labels, extra = (
+            rows[0][1][:, :1],
+            torch.full_like(rows[0][2][:, :1], -100),
+            {k: v[:, :1] for k, v in rows[0][3].items()},
+        )
+    pad = m * per_mb - input_ids.shape[0]
+    return _pad_rows(input_ids, labels, extra, pad) if pad > 0 else (input_ids, labels, extra)
+
+
+def _pp_window_step(self, model, stage, window, n, scaler):
+    """One accumulation window as few schedule steps (usually one) over all of its micro-batches."""
+    rows, per_mb, plan = _window_rows(stage, window)
+    stats = stage.__dict__.setdefault(
+        "_unsloth_fold_stats", {"windows": 0, "schedule_steps": 0, "batches": 0, "plans": []}
+    )
+    stats["windows"] += 1
+    stats["schedule_steps"] += len(plan)
+    stats["batches"] += len(window)
+    stats["plans"] = (stats["plans"] + [[m for _, _, m in plan]])[-8:]
+    if not stage.__dict__.get("_unsloth_fold_note"):
+        stage.__dict__["_unsloth_fold_note"] = True
+        _print_rank0(
+            f"Unsloth: pipeline parallel: each gradient accumulation window of {len(window)} batch(es) runs as "
+            f"{len(plan)} schedule step(s) of {[m for _, _, m in plan]} micro-batch(es) of {per_mb} row(s), "
+            "rows grouped by length (UNSLOTH_PP_FOLD_GA=0 runs one schedule step per batch)."
+        )
+    total = None
+    with _pp_step_context(self, model, stage, n) as run:
+        for start, end, m in plan:
+            input_ids, labels, extra = _stack_group(rows, start, end, m, per_mb)
+            loss = run(input_ids, labels, extra, m, scaler, 1.0)
+            total = loss if total is None else total + loss
+    return total
+
+
+class _pp_step_context:
+    """Router aux / CPU chunked CE switches around the schedule steps of one Trainer step."""
+
+    def __init__(self, trainer, model, stage, n):
+        self.trainer, self.model, self.stage, self.n = trainer, model, stage, n
+
+    def __enter__(self):
+        trainer, stage = self.trainer, self.stage
+        self.chunked = None
+        _set_router_aux_request(stage, _router_aux_request(trainer))
+        self.applied = _apply_trainer_aux_coef(trainer, stage)
+        try:
+            self.chunked = _cpu_chunked_ce_model(trainer, self.model)
+            if self.chunked is not None:
+                self.chunked._unsloth_cpu_chunked_ce_active = True
+            _set_trainer_aux(stage, _trainer_router_aux(trainer, stage, self.n, self.chunked))
+        except BaseException:
+            self.__exit__(None, None, None)
+            raise
+        return self.run
+
+    def run(self, input_ids, labels, extra, m, scaler, scale):
+        return self.stage.step(
+            input_ids,
+            labels,
+            num_items_in_batch = self.n,
+            scaler = scaler,
+            n_microbatches = m,
+            loss_scale = scale,
+            **extra,
+        )
+
+    def __exit__(self, *exc):
+        _restore_trainer_aux_coef(self.applied)
+        _set_trainer_aux(self.stage, None)
+        _set_router_aux_request(self.stage, None)
+        if self.chunked is not None:
+            self.chunked._unsloth_cpu_chunked_ce_active = False
+        return False
+
+
+def _dp_agree(stage, flag, shape):
+    """`flag` on every dp replica and the same `shape` (rows of the window's first batch, which sets the rows
+    per micro-batch and GPipe's cap) on all of them: they must run the same schedule steps. Else False."""
+    dp, _, mesh = _dp_info(stage)
+    if dp == 1:
+        return bool(flag)
+    import torch.distributed as dist
+
+    value = torch.tensor(
+        [int(bool(flag)), shape, -shape], dtype = torch.int64, device = _comm_device(stage)
+    )
+    dist.all_reduce(value, op = dist.ReduceOp.MIN, group = mesh.get_group())
+    return bool(value[0]) and int(value[1]) == -int(value[2])
+
+
+def _add_fold_reset(trainer):
+    """A new train() starts a new window: drop rows an interrupted one left buffered."""
+    from transformers import TrainerCallback
+
+    class _UnslothPPFoldReset(TrainerCallback):
+        def on_train_begin(self, args, state, control, **kwargs):
+            trainer.__dict__.pop(_FOLD, None)
+
+    if not any(
+        type(c).__name__ == "_UnslothPPFoldReset" for c in trainer.callback_handler.callbacks
+    ):
+        trainer.add_callback(_UnslothPPFoldReset())
+
+
 def _pp_training_step(
     self,
     model,
@@ -1172,6 +1490,41 @@ def _pp_training_step(
     input_ids, labels, extra = _batch(stage, inputs)
     n = _global_items(self, stage, num_items_in_batch)
     input_ids, labels, extra, n = _first_stage_batch(stage, input_ids, labels, extra, n)
+    del inputs
+    scaler = getattr(self.accelerator, "scaler", None)
+    scaler = scaler if scaler is not None and scaler.is_enabled() else None
+    window = self.__dict__.get(_FOLD)
+    # A window starts on every dp replica or on none: a buffering replica runs no collective until the
+    # window's last batch. (The run's settings alone rule it out without a collective.)
+    ga = int(getattr(self.args, "gradient_accumulation_steps", 1) or 1)
+    start = window is None and ga > 1 and _fold_requested()
+    if window is not None or (
+        start and _dp_agree(stage, _foldable(self, stage, input_ids, extra, n), 0)
+    ):
+        # The Trainer runs no backward of its own here, so the window's batches wait (loss 0) and the
+        # last one runs them all as micro-batches: the pipeline fills and drains once per window.
+        window = self.__dict__.setdefault(_FOLD, [])
+        window.append((input_ids, labels, extra, n))
+        if not self.accelerator.sync_gradients:
+            return torch.zeros((), device = self.args.device)
+        self.__dict__.pop(_FOLD, None)
+        fold = len(window) > 1 and len({entry[3] for entry in window}) == 1
+        # Rows of different batches are stacked, so every batch must carry the same side inputs.
+        fold = fold and len({tuple(sorted(entry[2])) for entry in window}) == 1
+        fold = fold and all(_foldable(self, stage, e[0], e[2], e[3]) for e in window)
+        if _dp_agree(stage, fold, window[0][0].shape[0]):
+            loss = _pp_window_step(self, model, stage, [e[:3] for e in window], n, scaler)
+        else:  # mixed batches: one schedule step per batch, as without folding
+            loss = sum(_pp_batch_step(self, model, stage, *entry, scaler) for entry in window)
+        return loss.detach().to(self.args.device)
+    return (
+        _pp_batch_step(self, model, stage, input_ids, labels, extra, n, scaler)
+        .detach()
+        .to(self.args.device)
+    )
+
+
+def _pp_batch_step(self, model, stage, input_ids, labels, extra, n, scaler):
     scale = 1.0
     if n is None:
         # No window token count: each step averages its own tokens, the window averages the steps.
@@ -1182,36 +1535,11 @@ def _pp_training_step(
             ),
             1,
         )
-    scaler = getattr(self.accelerator, "scaler", None)
-    scaler = scaler if scaler is not None and scaler.is_enabled() else None
     m, pad = resolve_microbatches(stage, input_ids.shape[0])
-    chunked = None
-    _set_router_aux_request(stage, _router_aux_request(self))
-    applied_coef = _apply_trainer_aux_coef(self, stage)
-    try:
+    with _pp_step_context(self, model, stage, n) as run:
         _refuse_split_router_aux(stage, m)
         input_ids, labels, extra = _pad_rows(input_ids, labels, extra, pad)
-        chunked = _cpu_chunked_ce_model(self, model)
-        if chunked is not None:
-            chunked._unsloth_cpu_chunked_ce_active = True
-        _set_trainer_aux(stage, _trainer_router_aux(self, stage, n, chunked))
-        loss = stage.step(
-            input_ids,
-            labels,
-            num_items_in_batch = n,
-            scaler = scaler,
-            n_microbatches = m,
-            loss_scale = scale,
-            **extra,
-        )
-    finally:
-        _restore_trainer_aux_coef(applied_coef)
-        _set_trainer_aux(stage, None)
-        _set_router_aux_request(stage, None)
-        if chunked is not None:
-            chunked._unsloth_cpu_chunked_ce_active = False
-    del inputs
-    return loss.detach().to(self.args.device)
+        return run(input_ids, labels, extra, m, scaler, scale)
 
 
 def _eval_items(trainer, inputs, labels):
@@ -1418,6 +1746,7 @@ def pp_trainer_setup(trainer):
     ):
         trainer.__dict__[name] = types.MethodType(method, trainer)
     trainer.__dict__["_has_mixed_mesh_grads"] = lambda model: False
+    _add_fold_reset(trainer)
     from .fsdp2_native import _scaler_for_native
     from .tp_native import _SCALE_DIVISOR
 

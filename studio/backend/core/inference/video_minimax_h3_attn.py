@@ -528,6 +528,12 @@ _EXACT_KEYS = itertools.count(1)
 EXACT_START_STATS = {"exact": 0, "int8": 0, "declined": 0}
 
 
+def h3_int8_exact_kernel(backend: Any) -> str:
+    """16-bit SDPA kernel an exact step pins on ``backend``, else ``"sdpa_default"``."""
+    name = _backend_value(backend)
+    return name if name in _EXACT_KERNELS[1:] else "sdpa_default"
+
+
 def _exact_attention(q: Any, k: Any, v: Any, kernel: int) -> Any:
     """The strided processor's own 16-bit SDPA on ``[B, S, H, D]`` views, pinned to its kernel."""
     import torch.nn.functional as F
@@ -707,7 +713,7 @@ def install_int8_exact_start(
     _EXACT_REGISTRY[key] = state
     weakref.finalize(transformer, _EXACT_REGISTRY.pop, key, None)
     for proc in procs:
-        name = _backend_value(getattr(proc, "_attention_backend", None))
+        name = h3_int8_exact_kernel(getattr(proc, "_attention_backend", None))
         proc._unsloth_int8_exact_kernel = (
             _EXACT_KERNELS.index(name) if name in _EXACT_KERNELS else 0
         )

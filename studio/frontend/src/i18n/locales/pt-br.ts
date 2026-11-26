@@ -4146,8 +4146,8 @@ export const ptBR = {
       summary: {
         single: "Treinando em uma GPU",
         layerSplit: "O modelo é dividido camada por camada entre {count} GPUs",
-        ddp: "O modelo cabe em uma GPU: paralelismo de dados em {count} GPUs",
-        fsdp2: "O modelo é grande demais para uma GPU: fragmentado entre {count} GPUs",
+        ddp: "Cada GPU treina uma cópia completa: paralelismo de dados em {count} GPUs",
+        fsdp2: "Pesos e estado do otimizador fragmentados entre {count} GPUs",
         tp: "Cada camada é dividida entre {count} GPUs",
         pp: "As camadas rodam como {count} estágios de pipeline, um por GPU",
         cp: "Cada sequência é dividida entre {count} GPUs",
@@ -4158,7 +4158,7 @@ export const ptBR = {
         noGpu: "Selecione pelo menos uma GPU.",
         singleNeedsOne: "GPU única usa exatamente uma GPU. Desmarque as outras.",
         needsTwo: "Este modo precisa de pelo menos duas GPUs.",
-        customSpec: "Digite um layout, por exemplo dp=2,tp=2.",
+        customSpec: "Digite um layout, por exemplo {example}.",
       },
     },
     preview: {
@@ -6062,6 +6062,12 @@ export const ptBR = {
     maximize: "Maximizar janela",
     restore: "Restaurar janela",
     close: "Fechar janela",
+    mediaCodecs: {
+      title: "Os vídeos gerados podem não ser reproduzidos",
+      // {command}: an apt command line, never translated.
+      description: "Faltam neste sistema os decodificadores de vídeo do GStreamer. Instale-os com: {command}",
+      copy: "Copiar comando",
+    },
   },
   runtimeUpdate: {
     installAudio: "Instalar o runtime de áudio",
