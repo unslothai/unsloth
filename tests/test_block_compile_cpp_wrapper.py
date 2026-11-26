@@ -446,7 +446,7 @@ def test_cpp_wrapper_block_matches_the_python_wrapper_on_cuda(monkeypatch):
     from packaging.version import Version
 
     if Version(torch.__version__.split("+")[0]) < Version(M._CPP_WRAPPER_MIN_TORCH):
-        pytest.skip("below the auto mode torch floor (the switch-time trial falls back there)")
+        pytest.skip("below the auto mode torch floor")
     monkeypatch.setenv("UNSLOTH_BLOCK_CUDAGRAPHS", "0")
     M = _load()
     monkeypatch.setattr(M, "_CPP_WRAPPER_REASON", None)
@@ -494,3 +494,56 @@ def test_cpp_wrapper_block_matches_the_python_wrapper_on_cuda(monkeypatch):
     for a, b in zip(outs["python"], outs["cpp"]):
         for x, y in zip(a, b):
             torch.testing.assert_close(x, y, atol = 1e-5, rtol = 1e-5)
+
+
+_SAME_NAME_KERNELS = r"""
+import importlib.util, os, sys
+import torch
+spec = importlib.util.spec_from_file_location("_bc", sys.argv[1])
+m = importlib.util.module_from_spec(spec); sys.modules["_bc"] = m; spec.loader.exec_module(m)
+assert m._install_cpp_wrapper_param_fix()
+opts = {"cpp_wrapper": True}
+def fa(a, b): return a * b + 1          # triton_poi_fused_add_mul_0, 3 pointers
+def fc(a, b, c): return a * b + c       # a different kernel under the same name, 4 pointers
+def fb(a, b, z): return a * b + 1, z.cos()  # fa's kernel again, byte-identical
+cfa, cfc, cfb = (torch.compile(f, options = opts) for f in (fa, fc, fb))
+g = torch.Generator(device = "cuda").manual_seed(0)
+a, b, c = (torch.randn(1024, device = "cuda", generator = g) for _ in range(3))
+z = torch.randn(2048, device = "cuda", generator = g)
+close = lambda x, y: torch.allclose(x, y, atol = 1e-5, rtol = 1e-5)
+assert close(cfa(a, b), fa(a, b)) and close(cfc(a, b, c), fc(a, b, c))
+for _ in range(3):
+    (o1, o2), (r1, r2) = cfb(a, b, z), fb(a, b, z)
+    assert close(o1, r1) and close(o2, r2)
+torch.cuda.synchronize()
+print("SAME_NAME_OK")
+"""
+
+
+@pytest.mark.gpu
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
+@pytest.mark.parametrize("warm", [False, True])
+def test_same_named_kernels_of_two_graphs_launch_their_own_cubin(tmp_path, warm):
+    """pytorch#199612: with one compile thread (or a warm cache) the second call of fb launched fc's
+    same-named kernel and segfaulted. Run in a subprocess: the unfixed failure kills the process."""
+    import subprocess
+
+    if torch.version.hip is not None:
+        pytest.skip("NVIDIA CUDA only")
+    pytest.importorskip("torch._inductor.runtime.triton_lazy_compile")
+    script = tmp_path / "same_name.py"
+    script.write_text(_SAME_NAME_KERNELS)
+    env = {
+        **os.environ,
+        "TORCHINDUCTOR_COMPILE_THREADS": "1",
+        "TORCHINDUCTOR_CACHE_DIR": str(tmp_path / "inductor"),
+    }
+    for _ in range(2 if warm else 1):  # warm: the second process loads the first one's cache
+        run = subprocess.run(
+            [sys.executable, str(script), os.path.join(_DIR, "_block_compile.py")],
+            env = env,
+            capture_output = True,
+            text = True,
+            timeout = 600,
+        )
+        assert run.returncode == 0 and "SAME_NAME_OK" in run.stdout, run.stderr[-2000:]
