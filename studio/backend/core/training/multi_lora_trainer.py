@@ -379,9 +379,12 @@ def _text_tokenizer(tokenizer):
 
 def _member_tokenizer(tokenizer, model_name: str, final_format: str, config: dict):
     from utils.datasets.chat_templates import get_training_chat_template
+
     custom_template = config.get("chat_template")
     if not custom_template and (
-        getattr(tokenizer, "chat_template", None) or final_format not in (
+        getattr(tokenizer, "chat_template", None)
+        or final_format
+        not in (
             "alpaca",
             "chatml_messages",
             "chatml_conversations",

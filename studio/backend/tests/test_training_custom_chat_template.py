@@ -32,9 +32,10 @@ class _Tokenizer:
         if not self.chat_template:
             raise ValueError("chat_template is not set")
         if self.chat_template == CUSTOM_TEMPLATE:
-            return "".join(
-                f"<{message['role']}>{message['content']}" for message in conversation
-            ) + self.eos_token
+            return (
+                "".join(f"<{message['role']}>{message['content']}" for message in conversation)
+                + self.eos_token
+            )
         return "".join(
             f"<|im_start|>{message['role']}\n{message['content']}<|im_end|>\n"
             for message in conversation
