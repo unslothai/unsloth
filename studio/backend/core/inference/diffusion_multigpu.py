@@ -1,8 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Several CUDA/ROCm cards per pipeline without NCCL, split only at component or denoiser-call
-boundaries, never inside a forward; outputs bit-identical; UNSLOTH_DIFFUSION_MULTIGPU=0 disables"""
+"""Several CUDA/ROCm cards in ONE computer per pipeline (single process, single host, no NCCL and no multi-node),
+split only at component or denoiser-call boundaries, never inside a forward. Component placement and the guidance
+(CFG) split keep outputs bit-identical to one card; splitting a batch across cards changes the GEMM shapes each card
+runs, so a batch split can differ slightly from one card. UNSLOTH_DIFFUSION_MULTIGPU=0 disables."""
 
 from __future__ import annotations
 
