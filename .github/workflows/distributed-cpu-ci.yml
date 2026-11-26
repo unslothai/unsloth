@@ -137,10 +137,18 @@ jobs:
           # Issue 16407 grew the cp gloo file to a third of the shard; each gloo test spawns 2 to 8
           # ranks, four at once peaked near 20 GB on a 16 GB runner, so 2 workers; test_p[!ap]*
           # matches no shard.
+          # gloo-cp then ran up to 1937 s of its 2100 s cap (2026-11-26). Its pipeline parallel tests, 37% of the
+          # file's test time (379 of 1015 s measured with 2 workers), moved to test_parallel_cp_pipeline_gloo.py
+          # and run beside it, also on 2 workers. A test_parallel_c[!p]* or test_parallel_cp_[!cp]* gloo file
+          # matches neither shard and is reported dropped.
           - shard: gloo-cp
             workers: 2
             selection: >-
-              tests/test_parallel_c*gloo*.py
+              tests/test_parallel_cp_c*gloo*.py
+          - shard: gloo-cp-pipeline
+            workers: 2
+            selection: >-
+              tests/test_parallel_cp_p*gloo*.py
           # Pipeline parallel growth (15655, 15656, 16167, 16417) hit the 2100 s cap, so TP and PP
           # split; a gloo file named test_t[!p]* or test_tp[!_]* matches no shard and is reported
           # dropped.
