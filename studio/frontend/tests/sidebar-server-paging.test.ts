@@ -602,63 +602,67 @@ test("a drag in a partly loaded list shows its order at once and saves it once e
   assert.ok(
     partial.indexOf("setPendingManualOrder(") < partial.indexOf("readAllSidebarRowIds("),
   );
-  assert.equal(partial.slice(0, partial.indexOf("readAllSidebarRowIds(")).match(/setManualOrder\(scope/g)?.length ?? 0, 1);
+  assert.doesNotMatch(partial, /setManualOrder\(scope/);
   assert.doesNotMatch(partial, /settle\(shown\)/);
   assert.match(partial, /if \(attempt >= 2\) throw error;/);
   assert.match(partial, /setPendingManualOrder\(\(\{ \[scope\]: _dropped, \.\.\.rest \}\) => rest\);\n\s*toast\.error\("Couldn't save the new order"\);/);
   assert.match(src, /applyManualOrder\(items, displayManualOrder\[scope\]/);
 });
 
-test("superseding paged drags preserve the other browser's order", async () => {
-  const src = readSrc("components/app-sidebar.tsx");
-  const declaration = src.slice(
-    src.indexOf("const writeManualOrder = useCallback("),
-    src.indexOf("// Escape leaves a selection"),
-  );
-  const { outputText } = ts.transpileModule(declaration, {
-    compilerOptions: { target: ts.ScriptTarget.ES2022 },
-  });
-  const scope = "section:research";
-  const all = ["a", "b", "c", "d", "e", "f", "g"];
-  let current = all;
-  const reads: ((ids: string[]) => void)[] = [];
-  const saved: { ids: string[]; placements: SidebarDropPlace[] }[] = [];
-  const deps = {
-    useCallback: (callback: unknown) => callback,
-    manualOrderWritesRef: { current: new Map() },
-    RECENTS_ORDER_SCOPE: "recents",
-    PINNED_ORDER_SCOPE: "pinned",
-    customSectionIdOf: () => "research",
-    chatRowSlots: { [scope]: { query: {} } },
-    chatRowLists: { [scope]: { hasMore: true } },
-    mergeManualOrderTail: rowQuery.mergeManualOrderTail,
-    settledManualOrder: rowQuery.settledManualOrder,
-    useSidebarOrganizationStore: { getState: () => ({ manualOrder: { [scope]: current } }) },
-    applyManualOrder,
-    insertIdAt,
-    readAllSidebarRowIds: () => new Promise<string[]>((resolve) => reads.push(resolve)),
-    setPendingManualOrder: () => {},
-    setManualOrder: (_scope: string, ids: string[], placements: SidebarDropPlace[]) =>
-      saved.push({ ids, placements }),
-  };
-  const write: (scope: string, ids: string[], move: SidebarDropPlace) => void =
-    new Function(...Object.keys(deps), outputText + "\nreturn writeManualOrder;")(
-      ...Object.values(deps),
+for (const fullyLoaded of [false, true]) {
+  test(`superseding paged drags preserve the other browser's order (fully loaded: ${fullyLoaded})`, async () => {
+    const src = readSrc("components/app-sidebar.tsx");
+    const declaration = src.slice(
+      src.indexOf("const writeManualOrder = useCallback("),
+      src.indexOf("// Escape leaves a selection"),
     );
-  const first = { id: "b", targetId: "a", edge: "top" } as const;
-  const second = { id: "d", targetId: "c", edge: "top" } as const;
-  write(scope, ["b", "a", "c", "d", "e", "f"], first);
-  current = ["a", "b", "c", "d", "f", "e", "g"];
-  write(scope, ["b", "a", "d", "c", "e", "f"], second);
-  reads[1](all);
-  await setImmediate();
-  reads[0](all);
-  await setImmediate();
-  assert.deepEqual(saved, [{
-    ids: ["b", "a", "d", "c", "f", "e", "g"],
-    placements: [first, second],
-  }]);
-});
+    const { outputText } = ts.transpileModule(declaration, {
+      compilerOptions: { target: ts.ScriptTarget.ES2022 },
+    });
+    const scope = "section:research";
+    const all = ["a", "b", "c", "d", "e", "f", "g"];
+    let current = all;
+    const chatRowLists = { [scope]: { hasMore: true } };
+    const reads: ((ids: string[]) => void)[] = [];
+    const saved: { ids: string[]; placements: SidebarDropPlace[] }[] = [];
+    const deps = {
+      useCallback: (callback: unknown) => callback,
+      manualOrderWritesRef: { current: new Map() },
+      RECENTS_ORDER_SCOPE: "recents",
+      PINNED_ORDER_SCOPE: "pinned",
+      customSectionIdOf: () => "research",
+      chatRowSlots: { [scope]: { query: {} } },
+      chatRowLists,
+      mergeManualOrderTail: rowQuery.mergeManualOrderTail,
+      settledManualOrder: rowQuery.settledManualOrder,
+      useSidebarOrganizationStore: { getState: () => ({ manualOrder: { [scope]: current } }) },
+      applyManualOrder,
+      insertIdAt,
+      readAllSidebarRowIds: () => new Promise<string[]>((resolve) => reads.push(resolve)),
+      setPendingManualOrder: () => {},
+      setManualOrder: (_scope: string, ids: string[], placements: SidebarDropPlace[]) =>
+        saved.push({ ids, placements }),
+    };
+    const write: (scope: string, ids: string[], move: SidebarDropPlace) => void =
+      new Function(...Object.keys(deps), outputText + "\nreturn writeManualOrder;")(
+        ...Object.values(deps),
+      );
+    const first = { id: "b", targetId: "a", edge: "top" } as const;
+    const second = { id: "d", targetId: "c", edge: "top" } as const;
+    write(scope, ["b", "a", "c", "d", "e", "f"], first);
+    current = ["a", "b", "g", "c", "d", "f", "e"];
+    chatRowLists[scope].hasMore = !fullyLoaded;
+    write(scope, ["b", "a", "d", "c", "e", "f", ...(fullyLoaded ? ["g"] : [])], second);
+    if (!fullyLoaded) reads[1](all);
+    await setImmediate();
+    reads[0](all);
+    await setImmediate();
+    assert.deepEqual(saved, [{
+      ids: ["b", "a", "g", "d", "c", "f", "e"],
+      placements: [first, second],
+    }]);
+  });
+}
 
 test("the full-list fallback finds a compare row through one of its pane threads", () => {
   const rows = [
@@ -839,7 +843,7 @@ test("Pinned and manual sections hold rows past their last loaded chat, and a dr
   const src = readSrc("components/app-sidebar.tsx");
   assert.match(src, /holdRowsPastLoadedChats\(\n\s*applyManualOrder\(rows, order, \(row\) => row\.id\),\n\s*order,\n\s*Boolean\(pinnedHasMore\),/);
   assert.match(src, /holdRowsPastLoadedChats\(\n\s*applyManualOrder\(list, order, \(row\) => row\.id\),\n\s*order,\n\s*sectionHasMore\.has\(section\.id\),/);
-  assert.match(src, /settle\(settledManualOrder\(order, all, current\)\);/);
+  assert.match(src, /settle\(settledManualOrder\(ids, all, current\), current\);/);
 });
 
 test("a page asked for just before a history refresh is read by that refresh instead of dropped", async () => {
