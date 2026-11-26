@@ -2813,7 +2813,7 @@ class _PerDeviceRopeCache:
         with self._rope_build_mode():
             self._set_cos_sin_cache(
                 seq_len = self._rope_cache_rows(),
-                device = torch.device(device_index),
+                device = torch.device(DEVICE_TYPE_TORCH, device_index),
                 dtype = self._rope_cache_dtype,
             )
         self.current_rope_size = current_rope_size
@@ -3263,7 +3263,7 @@ class LongRopeRotaryEmbedding(_PerDeviceRopeCache, torch.nn.Module):
             self._short_rope_rebuild_for_grad[device_index] and torch.is_grad_enabled()
         )
         if self.multi_gpu_short_cos_cached[device_index] is None or short_rebuild_for_grad:
-            device = torch.device(device_index)
+            device = torch.device(DEVICE_TYPE_TORCH, device_index)
             with self._rope_build_mode():
                 self.multi_gpu_short_cos_cached[device_index] = self._unsloth_short_cos_cpu.to(
                     device = device, non_blocking = True

@@ -41,6 +41,7 @@ _ENV_KEYS = (
     "UNSLOTH_PP_SIZE",
     "UNSLOTH_CP_SIZE",
     "UNSLOTH_CP_BACKEND",
+    "UNSLOTH_EP_SIZE",
     "UNSLOTH_PP_MICROBATCHES",
     "UNSLOTH_PP_SCHEDULE",
     "UNSLOTH_FSDP2",
@@ -50,6 +51,61 @@ _ENV_KEYS = (
 _ADAM_EPS = 1e-4  # as test_tp_env_gloo
 SEQ = 16
 N_LAYERS = 4
+
+
+_LINEAR_HYBRID = dict(
+    layer_types = ["linear_attention", "full_attention"],
+    linear_num_key_heads = 2,
+    linear_num_value_heads = 4,
+    linear_key_head_dim = 8,
+    linear_value_head_dim = 8,
+    linear_conv_kernel_dim = 4,
+)
+# arch -> (transformers config / model class prefix, config kwargs beside the shared tiny shape in _checkpoint)
+_MOE_CONFIGS = {
+    "mixtral": ("Mixtral", dict(intermediate_size = 32, num_local_experts = 4)),
+    "qwen2_moe": (
+        "Qwen2Moe",
+        dict(
+            intermediate_size = 32,
+            moe_intermediate_size = 16,
+            shared_expert_intermediate_size = 16,
+            num_experts = 4,
+            decoder_sparse_step = 1,
+        ),
+    ),
+    "olmoe": ("Olmoe", dict(intermediate_size = 16, num_experts = 4)),
+    "qwen3_5_moe": (
+        "Qwen3_5MoeText:Qwen3_5Moe",
+        dict(
+            moe_intermediate_size = 16,
+            shared_expert_intermediate_size = 16,
+            num_experts = 4,
+            **_LINEAR_HYBRID,
+        ),
+    ),
+    "qwen3_next": (
+        "Qwen3Next",
+        dict(
+            intermediate_size = 32,
+            moe_intermediate_size = 16,
+            shared_expert_intermediate_size = 16,
+            num_experts = 4,
+            decoder_sparse_step = 1,
+            **_LINEAR_HYBRID,
+        ),
+    ),
+    "phimoe": ("Phimoe", dict(intermediate_size = 16, num_local_experts = 4)),
+    "gpt_oss": (
+        "GptOss",
+        dict(
+            intermediate_size = 16,
+            num_local_experts = 4,
+            layer_types = ["sliding_attention", "full_attention"],
+            sliding_window = 8,
+        ),
+    ),
+}
 
 
 def _checkpoint(tmp, arch = "llama"):
@@ -82,6 +138,41 @@ def _checkpoint(tmp, arch = "llama"):
         )
         torch.manual_seed(0)
         model = transformers.Qwen3_5ForCausalLM(config)
+        model.generation_config.pad_token_id = None
+        path = os.path.join(tmp, "ckpt")
+        model.save_pretrained(path, safe_serialization = True)
+        tok.save_pretrained(path)
+        return path
+    if arch in _MOE_CONFIGS:
+        # Router aux families beside qwen3_moe: 4 heads / 2 kv heads, 4 experts (2 per token), 2 layers (the
+        # hybrids: one linear attention layer, one full), random init. No hub weights.
+        import transformers
+
+        tok = AutoTokenizer.from_pretrained(QWEN3)
+        name, kwargs = _MOE_CONFIGS[arch]
+        config_name, _, model_name = name.partition(":")
+        if not hasattr(transformers, config_name + "Config"):
+            pytest.skip(f"transformers {transformers.__version__} has no {config_name}Config")
+        config = getattr(transformers, config_name + "Config")(
+            vocab_size = len(tok),
+            hidden_size = 32,
+            num_hidden_layers = 2,
+            num_attention_heads = 4,
+            num_key_value_heads = 2,
+            head_dim = 8,
+            num_experts_per_tok = 2,
+            attention_dropout = 0.0,
+            tie_word_embeddings = False,
+            router_aux_loss_coef = 0.001,
+            **kwargs,
+        )
+        config._attn_implementation = "eager"
+        torch.manual_seed(0)
+        model = getattr(transformers, (model_name or config_name) + "ForCausalLM")(config)
+        with torch.no_grad():
+            for pname, p in model.named_parameters():
+                if pname.endswith("bias"):
+                    p.normal_(0, 0.1)
         model.generation_config.pad_token_id = None
         path = os.path.join(tmp, "ckpt")
         model.save_pretrained(path, safe_serialization = True)
@@ -390,6 +481,7 @@ def _case_train(
     gc = "none",
     packed = None,
     eval_only = False,
+    eval_no_grad = False,
     padding = None,
     hf_loss = False,
 ):
@@ -490,7 +582,7 @@ def _case_train(
         from unsloth_zoo.cpu.ops import patch_chunked_causal_lm_loss
         cpu_chunked_ce = patch_chunked_causal_lm_loss(model)
     gdn_calls = []
-    if arch == "qwen3_5":
+    if arch in ("qwen3_5", "qwen3_5_moe", "qwen3_next"):
         # The torch Gated DeltaNet kernels (fla / Triton need CUDA), and a counter on Unsloth's GDN exchange.
         from test_ulysses_hybrid import _force_torch_kernels
 
@@ -572,9 +664,18 @@ def _case_train(
             if grads:
                 return
             target = trainer.model
+            from unsloth.models import ep_native
+
+            ep_mesh = ep_native._mesh(target)
             for name, p in target.named_parameters():
                 if p.requires_grad and p.grad is not None:
-                    grads[name] = _full(p.grad)
+                    if ep_mesh is not None and getattr(p, ep_native._EP, None) is not None:
+                        # Expert parallel: this rank's experts only; the 1-GPU tensor is gathered (collective).
+                        grads[name] = _full(
+                            ep_native._gather_expert(p, ep_mesh.get_group(), p.grad)
+                        )
+                    else:
+                        grads[name] = _full(p.grad)
 
     args = trl.SFTConfig(
         output_dir = os.path.join(tmp, "out"),
@@ -690,7 +791,9 @@ def _case_train(
             return original_eval_stats(*a, **k)
 
         pp_native._router_statistics = counted_eval_stats
-        metrics = trainer.evaluate(eval_dataset = data)
+        # A caller may run evaluate() under no_grad (a callback, a manual eval loop): the cp pads stay excluded.
+        with torch.no_grad() if eval_no_grad else torch.enable_grad():
+            metrics = trainer.evaluate(eval_dataset = data)
         stage = pp_native.pipeline_stage_of(trainer.model)
         manager = getattr(trainer, "_context_parallel_manager", None)
         return {
@@ -772,8 +875,13 @@ def _case_train(
         assert autocast_seen == {False}, ("a GPU cell ran under autocast", autocast_seen)
     logs = [h for h in trainer.state.log_history if "loss" in h]
     is_tp = tp_native.is_tensor_parallel(trainer.model)
+    from unsloth.models import ep_native
+
+    is_ep = ep_native.is_expert_parallel(trainer.model)
     if is_tp:
         state = tp_native.tp_full_state_dict(trainer.model, adapters_only = True)
+    elif is_ep:
+        state = ep_native.ep_full_adapter_state_dict(trainer.model, adapter = mode != "full")
     else:
         state = {
             k: _full(v)
@@ -795,6 +903,7 @@ def _case_train(
         if manager is None
         else sorted(int(r) for r in manager.mesh.mesh.flatten().tolist()),
         "is_tp": is_tp,
+        "is_ep": is_ep,
         "stage": None if stage is None else int(stage.stage_index),
         "seen_lengths": sorted(seen_lengths),
         "autocast_seen": sorted(autocast_seen),
