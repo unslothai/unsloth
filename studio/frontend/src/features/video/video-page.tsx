@@ -196,6 +196,7 @@ import {
 } from "@/hooks/use-host-class";
 import { nvfp4SelectionFallback, withNvfp4Option } from "@/lib/nvfp4-options";
 import { pickFamily, precisionDisabledReasons } from "@/lib/precision-availability";
+import { ggufQuantLabel } from "@/features/model-picker";
 import { isHubRepoId, recipeModelToReload, recipeTransformerQuant, seededTransformerQuant } from "@/lib/recipe-precision";
 import type {
   ModelOption,
@@ -2653,13 +2654,14 @@ function VideoGenerator({
   const restoreStatusRef = useRef<VideoStatus | null>(null);
   restoreStatusRef.current = status;
   const handleModelSelectRef = useRef<((id: string, meta: ModelSelectorChangeMeta) => void) | null>(null);
+  const restoreSettingsRef = useRef<((video: GalleryVideo, silent?: boolean) => void) | null>(null);
   // The build a clip ran with: Precision applies to the next load, and a different model is offered as a reload,
   // never loaded behind the user's back.
-  const restoreClipBuild = useCallback((video: GalleryVideo) => {
+  const restoreClipBuild = useCallback((video: GalleryVideo, offerReload = true) => {
     const restoredQuant = recipeTransformerQuant(video);
     if (restoredQuant) setTransformerQuant(restoredQuant);
     const current = restoreStatusRef.current;
-    const reloadModel = recipeModelToReload(video, current);
+    const reloadModel = offerReload ? recipeModelToReload(video, current) : null;
     if (!reloadModel) return;
     toast.info(`This clip was made with ${reloadModel}`, {
       description: current?.loaded
@@ -2669,22 +2671,31 @@ function VideoGenerator({
         ? {
             action: {
               label: "Load model",
-              onClick: () =>
+              onClick: () => {
                 handleModelSelectRef.current?.(reloadModel, {
                   source: "hub",
                   isLora: false,
                   isDiffusion: true,
                   ...(video.model_kind === "gguf" && video.gguf_filename
-                    ? { isGguf: true, ggufFilename: video.gguf_filename }
+                    ? {
+                        isGguf: true,
+                        ggufFilename: video.gguf_filename,
+                        ggufVariant: ggufQuantLabel(video.gguf_filename),
+                      }
                     : {}),
-                }),
+                });
+                // The pick seeds its model's recommended settings; the clip's recipe outranks them, now and when
+                // the load lands.
+                claimVideoRecipe().commit();
+                restoreSettingsRef.current?.(video, true);
+              },
             },
           }
         : {}),
     });
-  }, []);
+  }, [claimVideoRecipe]);
   const restoreSettings = useCallback(
-    (video: GalleryVideo) => {
+    (video: GalleryVideo, silent = false) => {
       setPrompt(video.prompt);
       const restoredNegative = video.negative_prompt ?? "";
       setNegativePrompt(restoredNegative);
@@ -2694,7 +2705,7 @@ function VideoGenerator({
       if (video.flow_shift != null) setFlowShift(video.flow_shift);
       if (video.audio_flow_shift != null) setAudioFlowShift(video.audio_flow_shift);
       setSeed(String(video.seed));
-      restoreClipBuild(video);
+      restoreClipBuild(video, !silent);
       const size = fitVideoSize(video.width, video.height, sizeLimits);
       resolutionChosen.current = true;
       setResolutionIntent(size);
@@ -2723,10 +2734,11 @@ function VideoGenerator({
         setDurationIntentSeconds(video.num_frames / fps);
         setNumFrames(video.num_frames);
       }
-      toast.success("Settings restored to inputs");
+      if (!silent) toast.success("Settings restored to inputs");
     },
     [sizeLimits, durationOptions, fps, fpsOptions, durationTargets, frameStep, frameOffset, minFrames, maxFrames, setPickedFps, statusKnown],
   );
+  restoreSettingsRef.current = restoreSettings;
 
   // No periodic poll corrects a stale read, so only the newest ticket may write.
   const statusTicket = useRef(0);

@@ -120,6 +120,7 @@ import {
   useNvfp4DiffusionKnown,
 } from "@/hooks/use-host-class";
 import { nvfp4SelectionFallback, withNvfp4Option } from "@/lib/nvfp4-options";
+import { ggufQuantLabel } from "@/features/model-picker";
 import { pickFamily, precisionDisabledReasons } from "@/lib/precision-availability";
 import {
   isHubRepoId,
@@ -3139,6 +3140,9 @@ export function ImagesPage({
   // `via`: "import" names what was not applied in its own toast; "vary" restores silently for the Vary run.
   // handleModelSelect is declared further down; a restore's reload action reaches it through this.
   const handleModelSelectRef = useRef<((id: string, meta: ModelSelectorChangeMeta) => void) | null>(null);
+  const restoreSettingsRef = useRef<
+    ((image: GalleryImage, exactCaption?: boolean, via?: "restore" | "import" | "vary") => void) | null
+  >(null);
   const restoreSettings = useCallback((image: GalleryImage, exactCaption = false, via: "restore" | "import" | "vary" = "restore") => {
     const viaConnection = image.model_kind === "connection";
     // Negative prompt only applies when guidance>0 (the base pass's, or Hires CFG's for the refine pass); do not
@@ -3271,21 +3275,31 @@ export function ImagesPage({
           ? {
               action: {
                 label: "Load model",
-                onClick: () =>
+                onClick: () => {
                   handleModelSelectRef.current?.(reloadModel, {
                     source: "hub",
                     isLora: false,
                     isDiffusion: true,
                     ...(image.model_kind === "gguf" && image.gguf_filename
-                      ? { isGguf: true, ggufFilename: image.gguf_filename }
+                      ? {
+                          isGguf: true,
+                          ggufFilename: image.gguf_filename,
+                          ggufVariant: ggufQuantLabel(image.gguf_filename),
+                        }
                       : {}),
-                  }),
+                  });
+                  // The pick seeds its model's recommended steps / size; the image's recipe outranks them, now and
+                  // when the load lands ("vary" re-applies the form silently).
+                  claimImageRecipe().commit();
+                  restoreSettingsRef.current?.(image, exactCaption, "vary");
+                },
               },
             }
           : {}),
       });
     }
-  }, [changeSamplerChoice, samplerOptions.length, sdCaps, setDetailerOptions, setEnhanceOverride, setPromptFor, setShiftValue, setFastCfgOn, setWorkflow, sizeLimits, status, detailerReady, cfgIntervalSupported]);
+  }, [changeSamplerChoice, claimImageRecipe, samplerOptions.length, sdCaps, setDetailerOptions, setEnhanceOverride, setPromptFor, setShiftValue, setFastCfgOn, setWorkflow, sizeLimits, status, detailerReady, cfgIntervalSupported]);
+  restoreSettingsRef.current = restoreSettings;
 
   // Like dropping an image on ComfyUI: Unsloth's recipe first, else AUTOMATIC1111 / ComfyUI metadata.
   const importFileRef = useRef<HTMLInputElement>(null);

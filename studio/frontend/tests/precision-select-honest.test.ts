@@ -138,6 +138,12 @@ test("Images Restore puts back the precision and offers a different model as a r
   assert.match(body, /recipeModelToReload\(image, status\)/);
   assert.match(body, /handleModelSelectRef\.current\?\.\(reloadModel/);
   assert.match(src, /handleModelSelectRef\.current = handleModelSelect;/);
+  // Load model keeps the restored recipe: the pick's defaults are outranked and the form re-applied silently, and a
+  // GGUF recipe names its variant so the pick loads that file instead of asking for a quantization.
+  const action = body.slice(body.indexOf("handleModelSelectRef.current?.(reloadModel"));
+  assert.match(action, /ggufVariant: ggufQuantLabel\(image\.gguf_filename\)/);
+  assert.match(action, /claimImageRecipe\(\)\.commit\(\);\s*restoreSettingsRef\.current\?\.\(image, exactCaption, "vary"\);/);
+  assert.match(src, /restoreSettingsRef\.current = restoreSettings;/);
 });
 
 // Runs the video page's restoreClipBuild for real, with the page's state setters and toast stubbed.
@@ -158,25 +164,41 @@ function videoRestoreClipBuild(status: unknown) {
   const state: Record<string, unknown> = {};
   const toasts: { message: string; options: { action?: { onClick: () => void } } }[] = [];
   const loads: unknown[][] = [];
+  const events: string[] = [];
+  const reapplied: unknown[][] = [];
   const scope = {
     useCallback: (fn: unknown) => fn,
     setTransformerQuant: (v: unknown) => {
       state.transformerQuant = v;
     },
     restoreStatusRef: { current: status },
-    handleModelSelectRef: { current: (...args: unknown[]) => loads.push(args) },
+    handleModelSelectRef: {
+      current: (...args: unknown[]) => {
+        events.push("pick");
+        loads.push(args);
+      },
+    },
+    restoreSettingsRef: {
+      current: (...args: unknown[]) => {
+        events.push("reapply");
+        reapplied.push(args);
+      },
+    },
+    claimVideoRecipe: () => ({ commit: () => events.push("claim") }),
+    // The page's ggufQuantLabel (model-identity.ts imports through the @ alias), for a plain -QUANT.gguf name.
+    ggufQuantLabel: (filename: string) => filename.replace(/\.gguf$/i, "").split("-").pop(),
     recipeTransformerQuant,
     recipeModelToReload,
     isHubRepoId,
     toast: { info: (message: string, options: never) => toasts.push({ message, options }) },
   };
   const fn = new Function(...Object.keys(scope), outputText)(...Object.values(scope));
-  return { restore: fn as (video: unknown) => void, state, toasts, loads };
+  return { restore: fn as (video: unknown, offerReload?: boolean) => void, state, toasts, loads, events, reapplied };
 }
 
 test("Video Restore brings an FP8 clip back as FP8 and offers its model, never loading it unasked", () => {
   const resident = { loaded: true, repo_id: "Lightricks/LTX-2", display_repo_id: null };
-  const { restore, state, toasts, loads } = videoRestoreClipBuild(resident);
+  const { restore, state, toasts, loads, events, reapplied } = videoRestoreClipBuild(resident);
   restore({ model: "Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind: "pipeline", transformer_quant: "fp8" });
   assert.equal(state.transformerQuant, "fp8");
   assert.equal(toasts.length, 1);
@@ -185,6 +207,32 @@ test("Video Restore brings an FP8 clip back as FP8 and offers its model, never l
   toasts[0].options.action?.onClick();
   assert.equal(loads.length, 1);
   assert.equal(loads[0][0], "Wan-AI/Wan2.2-TI2V-5B-Diffusers");
+  // The pick's recommended steps / guidance must not replace the clip's: claim the form, then re-apply it silently.
+  assert.deepEqual(events, ["pick", "claim", "reapply"]);
+  assert.equal(reapplied[0][1], true);
+
+  const gguf = videoRestoreClipBuild(resident);
+  gguf.restore({
+    model: "QuantStack/Wan2.2-TI2V-5B-GGUF",
+    model_kind: "gguf",
+    gguf_filename: "Wan2.2-TI2V-5B-Q4_K_M.gguf",
+    transformer_quant: null,
+  });
+  gguf.toasts[0].options.action?.onClick();
+  assert.deepEqual(gguf.loads[0][1], {
+    source: "hub",
+    isLora: false,
+    isDiffusion: true,
+    isGguf: true,
+    ggufFilename: "Wan2.2-TI2V-5B-Q4_K_M.gguf",
+    ggufVariant: "Q4_K_M",
+  });
+
+  // The silent re-apply offers nothing again.
+  const silent = videoRestoreClipBuild(resident);
+  silent.restore({ model: "Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind: "pipeline", transformer_quant: "fp8" }, false);
+  assert.equal(silent.state.transformerQuant, "fp8");
+  assert.equal(silent.toasts.length, 0);
 
   const same = videoRestoreClipBuild(resident);
   same.restore({ model: "Lightricks/LTX-2", model_kind: "pipeline", transformer_quant: null });
@@ -195,5 +243,5 @@ test("Video Restore brings an FP8 clip back as FP8 and offers its model, never l
 test("Video restoreSettings runs the build restore", () => {
   const src = readSrc("features/video/video-page.tsx");
   const start = src.indexOf("const restoreSettings = useCallback(");
-  assert.match(src.slice(start, start + 1500), /restoreClipBuild\(video\);/);
+  assert.match(src.slice(start, start + 1500), /restoreClipBuild\(video, !silent\);/);
 });
