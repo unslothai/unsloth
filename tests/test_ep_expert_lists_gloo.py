@@ -726,6 +726,12 @@ def test_ep_expert_lists_grouped_experts_only_for_standard_expert_mlps():
         assert "hooks" in lists._grouped_spec(shard, lst, [3, 1])
         lst._modules["0"].forward = lambda x: x
         assert "hooks" in lists._grouped_spec(types.SimpleNamespace(lo = 0, hi = 2), lst, [1, 1])
+        # QAT fake quantizers live in the projections: the grouped GEMMs would skip them.
+        fresh = torch.nn.Module()
+        for e in range(2):
+            fresh.add_module(str(e), qwen3_moe.Qwen3MoeMLP(config, intermediate_size = 8))
+        fresh._modules["1"].down_proj.weight_fake_quantizer = torch.nn.Identity()
+        assert "QAT" in lists._grouped_spec(types.SimpleNamespace(lo = 0, hi = 2), fresh, [1, 1])
         os.environ[lists._GROUPED_ENV] = "0"
         assert (
             lists._grouped_spec(types.SimpleNamespace(lo = 2, hi = 4), lst, [1, 1])

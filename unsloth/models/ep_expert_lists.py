@@ -463,6 +463,8 @@ def _grouped_spec(shard, lst, counts):
         for m in experts
     ):
         return "experts of different types, or with hooks"
+    if _fake_quantized(experts, names):
+        return "fake-quantized (QAT) expert projections"
     cache = shard.__dict__.setdefault("_grouped", {})
     key = tuple(id(m) for m in experts)
     hit = cache.get(key)
@@ -471,6 +473,20 @@ def _grouped_spec(shard, lst, counts):
             cache.pop(next(iter(cache)))
         cache[key] = hit = nn.ModuleList(experts)  # not attached to the model
     return hit, names
+
+
+def _fake_quantized(experts, names):
+    # QAT: the grouped builders read raw weights and would skip the projections' fake quantizers.
+    from ..kernels.fast_lora import _has_activation_fake_quantizer
+    for expert in experts:
+        for name in names:
+            proj = expert._modules[name]
+            base = proj._modules.get("base_layer", proj)
+            if getattr(
+                base, "weight_fake_quantizer", None
+            ) is not None or _has_activation_fake_quantizer(proj):
+                return True
+    return False
 
 
 def _grouped_locals(shard, lst, got_x, perm, counts):
