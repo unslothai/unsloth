@@ -4179,9 +4179,8 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                 cuda_options += f"""
             "cuda.cutlass_epilogue_fusion_enabled": {all_sm90},
             "cuda.cutlass_tma_only": {all_sm90},"""
+            # No cuda.* build knobs: CUTLASS only, and deprecated aliases that warn on torch 2.16.
             cuda_options += """
-            "cuda.compile_opt_level"              : "-O2",
-            "cuda.enable_cuda_lto"                : True,
         }"""
             new_options = base_options + cuda_options
         else:
