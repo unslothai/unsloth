@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { withBackgroundLoadNotice } from "@/lib/model-lifecycle-events";
+import type { MultiGpuDecision } from "@/lib/resolved-precision";
 import { authFetch } from "@/features/auth";
 // Both /download-plan routes share a response model.
 import type { DiffusionDownloadPlan, LoraSpecInput } from "@/features/images/api";
@@ -67,6 +68,8 @@ export interface VideoGenerationDefaults {
 }
 
 export interface VideoStatus {
+  // Under a multi-card selection: the placement the planner chose and the candidates it rejected.
+  multi_gpu?: { decision?: MultiGpuDecision | null } | null;
   loaded: boolean;
   repo_id: string | null;
   display_repo_id?: string | null;
