@@ -106,6 +106,49 @@ _CPP_WRAPPER_BROKEN = []
 _CPP_WRAPPER_PROBED = {}
 
 
+def _install_cpp_wrapper_param_fix():
+    """Inductor's lazy C++ wrapper launch (torch >= 2.14) runs each kernel once and then reads its cubin
+    and launch params from CudaKernelParamCache, keyed by kernel name only. Names repeat across graphs
+    (triton_poi_fused_..._0), and a kernel object that already ran (shared through Inductor's in-memory
+    kernel source cache) takes run()'s cached-launcher fast path and saves nothing, so the lookup could
+    return another graph's same-named kernel: wrong kernel, "CUDA driver error: invalid argument", a
+    segfault or NaN losses (packed rows, then padded rows, in one process). Each lookup now follows a
+    save by that kernel object. True once installed; False when this torch has no lazy launch."""
+    try:
+        from torch._inductor.runtime import triton_lazy_compile as lazy
+        from torch._inductor.codecache import CudaKernelParamCache
+    except Exception:
+        return False
+    original = getattr(lazy, "run_triton_kernel_with_autotune", None)
+    cache = getattr(CudaKernelParamCache, "cache", None)
+    if original is None or not isinstance(cache, dict):
+        return False
+    if getattr(original, "_unsloth_saves_params", False):
+        return True
+
+    def run_triton_kernel_with_autotune(pending_kernels, kernel_name, stream, args):
+        kernel = pending_kernels.get(kernel_name) if isinstance(pending_kernels, dict) else None
+        if (
+            kernel is not None
+            and not hasattr(kernel, "launchers")
+            and callable(getattr(kernel, "result", None))
+        ):
+            kernel = kernel.result()
+        launchers = getattr(kernel, "launchers", None)
+        # Only when run() will save (every launcher stores its cubin), else the lookup would find nothing.
+        if launchers is not None and all(getattr(l, "store_cubin", False) for l in launchers):
+            if hasattr(kernel, "_cached_launcher"):
+                kernel._cached_launcher = (
+                    None  # run() takes the path that saves this kernel's params
+                )
+            cache.pop(kernel_name, None)
+        return original(pending_kernels, kernel_name, stream, args)
+
+    run_triton_kernel_with_autotune._unsloth_saves_params = True
+    lazy.run_triton_kernel_with_autotune = run_triton_kernel_with_autotune
+    return True
+
+
 def _cpp_wrapper_probe_fn(x, w):
     return (torch.nn.functional.silu(x @ w) * x).float().square().sum()
 
@@ -121,6 +164,12 @@ def _cpp_wrapper_probe(device):
         return _CPP_WRAPPER_BROKEN[0]
     if key not in _CPP_WRAPPER_PROBED:
         why = None
+        if not _install_cpp_wrapper_param_fix():
+            why = "this torch has no lazy C++ wrapper kernel launch"
+            _CPP_WRAPPER_PROBED[key] = why
+            _CPP_WRAPPER_BROKEN.append(why)
+            CPP_WRAPPER_STATS["fallbacks"] += 1
+            return why
         try:
             fn = torch.compile(
                 _cpp_wrapper_probe_fn, fullgraph = True, dynamic = True, options = {"cpp_wrapper": True}

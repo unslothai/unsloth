@@ -33,6 +33,14 @@ def _block_env(monkeypatch):
         "CXX",
     ):
         monkeypatch.delenv(key, raising = False)
+    # The toolchain probe installs a wrapper on torch's lazy C++ launch; restore it after each test.
+    try:
+        from torch._inductor.runtime import triton_lazy_compile as lazy
+    except Exception:
+        return
+    monkeypatch.setattr(
+        lazy, "run_triton_kernel_with_autotune", lazy.run_triton_kernel_with_autotune
+    )
 
 
 def _load():
@@ -42,6 +50,10 @@ def _load():
     mod = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = mod
     spec.loader.exec_module(mod)
+    # The fake-compile tests must not depend on this torch having the lazy C++ launch (torch < 2.14 has
+    # none); test_lazy_cpp_launch_reads_the_params_its_own_kernel_saved runs the real install.
+    mod._real_install_cpp_wrapper_param_fix = mod._install_cpp_wrapper_param_fix
+    mod._install_cpp_wrapper_param_fix = lambda: True
     return mod
 
 
@@ -283,6 +295,56 @@ def test_backward_build_failure_never_reaches_training(monkeypatch, capsys):
         other()(torch.randn(2, 4, 8, requires_grad = True)).sum().backward()
         layer(torch.randn(2, 4, 8, requires_grad = True)).sum().backward()
     assert "cpp" not in calls and "probe" not in calls, calls
+
+
+def test_lazy_cpp_launch_reads_the_params_its_own_kernel_saved(monkeypatch):
+    """Kernel names repeat across graphs and CudaKernelParamCache is keyed by name: a kernel object
+    that already ran (shared through Inductor's source cache) took run()'s fast path, saved nothing,
+    and the lazy C++ launch read another graph's same-named kernel (invalid argument, segfault, NaN)."""
+    lazy = pytest.importorskip("torch._inductor.runtime.triton_lazy_compile")
+    from torch._inductor.codecache import CudaKernelParamCache
+
+    M = _load()
+    seen = []
+
+    class Launcher:
+        def __init__(self, store_cubin):
+            self.store_cubin = store_cubin
+
+    class Kernel:
+        def __init__(self, store_cubin):
+            self.launchers = [Launcher(store_cubin)]
+            self._cached_launcher = object()  # it already ran in another C++ module
+
+    def original(pending, name, stream, args):
+        kernel = pending[name]
+        seen.append((name, kernel._cached_launcher, name in CudaKernelParamCache.cache))
+        return "launched"
+
+    monkeypatch.setattr(lazy, "run_triton_kernel_with_autotune", original)
+    monkeypatch.setattr(
+        CudaKernelParamCache, "cache", {"k_0": {"from": "another graph"}, "k_1": {"x": 1}}
+    )
+    assert M._real_install_cpp_wrapper_param_fix() is True
+    assert M._real_install_cpp_wrapper_param_fix() is True  # idempotent
+    patched = lazy.run_triton_kernel_with_autotune
+    assert patched is not original and patched._unsloth_saves_params
+    # The stale same-named entry is gone and run() cannot take the fast path, so it saves its own.
+    assert patched({"k_0": Kernel(True)}, "k_0", 0, []) == "launched"
+    assert seen[-1] == ("k_0", None, False)
+    # A kernel whose launchers would not save keeps torch's behaviour (nothing to read otherwise).
+    keep = Kernel(False)
+    fast = keep._cached_launcher
+    patched({"k_1": keep}, "k_1", 0, [])
+    assert seen[-1] == ("k_1", fast, True)
+
+
+def test_probe_refuses_a_torch_without_the_lazy_launch(monkeypatch):
+    M = _load()
+    monkeypatch.setattr(M, "_install_cpp_wrapper_param_fix", lambda: False)
+    why = M._cpp_wrapper_probe(torch.device("cpu"))
+    assert why and "lazy" in why
+    assert M._CPP_WRAPPER_BROKEN and M.CPP_WRAPPER_STATS["fallbacks"] == 1
 
 
 def test_kill_switch_keeps_the_python_wrapper(monkeypatch):
