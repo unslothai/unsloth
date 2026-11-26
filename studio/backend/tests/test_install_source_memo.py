@@ -114,6 +114,40 @@ def test_direct_url_rewrite_recomputes(install):
     assert update_status.detect_install_source() == "vcs"
 
 
+def test_direct_url_seen_only_mid_detection_is_not_reused(install, monkeypatch):
+    direct_url = install / "direct_url.json"
+
+    class Racing(PathDistribution):
+        def read_text(self, filename):
+            if filename != "direct_url.json":
+                return super().read_text(filename)
+            # The file appears after a stat of the metadata and is gone again before the next call.
+            _write(direct_url, json.dumps({"url": "file:///x", "dir_info": {"editable": True}}))
+            try:
+                return super().read_text(filename)
+            finally:
+                direct_url.unlink()
+
+    monkeypatch.setattr(update_status, "distribution", lambda name: Racing(install))
+    assert update_status.detect_install_source() == "editable"
+    monkeypatch.setattr(update_status, "distribution", lambda name: PathDistribution(install))
+    assert update_status.detect_install_source() == "pypi"
+
+
+def test_record_rewritten_mid_scan_is_not_memoized(install, monkeypatch, scans):
+    real = update_status._distribution_package_paths
+
+    def rewriting(dist):
+        paths = real(dist)
+        _bump(install / "RECORD", "unsloth/__init__.py,,\nunsloth/extra.py,,\n")
+        return paths
+
+    monkeypatch.setattr(update_status, "_distribution_package_paths", rewriting)
+    assert update_status.detect_install_source() == "pypi"
+    monkeypatch.setattr(update_status, "_distribution_package_paths", real)
+    assert update_status._install_source_memo is None
+
+
 def test_git_checkout_answer_is_not_memoized(tmp_path, monkeypatch, scans):
     dist_info = _make_install(tmp_path / "checkout", package_dir = "src")
     monkeypatch.setattr(update_status, "distribution", lambda name: PathDistribution(dist_info))

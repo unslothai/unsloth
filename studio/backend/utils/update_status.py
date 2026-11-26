@@ -96,12 +96,23 @@ def _install_source_memo_key(dist: Any) -> tuple[Any, ...] | None:
 
 def detect_install_source() -> str:
     """Coarse source, no local paths; PEP 610 local/vcs metadata wins; legacy installs are local only outside site-packages/dist-packages and in a Git checkout."""
-    global _install_source_memo
     try:
         dist = distribution(PACKAGE_NAME)
     except PackageNotFoundError:
         return "local_repo" if _path_has_git_parent(_repo_root_from_this_file()) else "unknown"
 
+    # direct_url.json is one small read, so it is consulted on every call; only the file scan below is memoized.
+    try:
+        direct_url = dist.read_text("direct_url.json")
+    except Exception:
+        return "unknown"
+    if direct_url:
+        return _source_from_direct_url(direct_url)
+    return _source_from_package_paths(dist)
+
+
+def _source_from_package_paths(dist: Any) -> str:
+    global _install_source_memo
     # Resolving every packaged file costs ~0.2 s on Linux per request; the answer only depends on
     # the metadata files keyed here, so reuse it until a reinstall or upgrade rewrites them.
     key = _install_source_memo_key(dist)
@@ -109,29 +120,20 @@ def detect_install_source() -> str:
     if key is not None and memo is not None and memo[0] == key:
         return memo[1]
 
-    source, memoizable = _detect_install_source_from_distribution(dist)
-    if key is not None and memoizable:
-        _install_source_memo = (key, source)
-    return source
-
-
-def _detect_install_source_from_distribution(dist: Any) -> tuple[str, bool]:
-    try:
-        direct_url = dist.read_text("direct_url.json")
-    except Exception:
-        return "unknown", False
-    if direct_url:
-        return _source_from_direct_url(direct_url), True
-
     memoizable = True
+    source = "pypi"
     for package_path in _distribution_package_paths(dist):
         if not _path_is_under_python_package_dir(package_path):
             # Depends on a Git checkout existing on disk, which the memo key does not cover.
             memoizable = False
             if _path_has_git_parent(package_path):
-                return "local_repo", False
+                source = "local_repo"
+                break
 
-    return "pypi", memoizable
+    # Re-stat so metadata rewritten mid-scan is not pinned to the key taken before it.
+    if key is not None and memoizable and _install_source_memo_key(dist) == key:
+        _install_source_memo = (key, source)
+    return source
 
 
 def update_checks_disabled() -> bool:
