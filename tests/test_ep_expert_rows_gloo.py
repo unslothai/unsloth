@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""UNSLOTH_EP_EXPERT_ROWS (gloo CPU, 2 ranks, tiny Qwen3-MoE with expert LoRA): this rank's experts run over the
-received rows a chunk at a time, recomputed in the backward. Same loss, logits and gradients as one experts call,
-and fewer bytes saved for the backward (the chunk's expert activations are not kept)."""
+"""UNSLOTH_EP_EXPERT_ROWS chunks match one experts call (loss, logits, grads) and save fewer bytes."""
 
 import multiprocessing
 import os
@@ -79,7 +77,6 @@ def _run(rank, device):
     out = {}
     for arm in ("one_call", "chunked", "gc_one_call", "gc_chunked"):
         if arm == "gc_one_call":
-            # The chunks' own checkpoint nested inside a reentrant layer checkpoint (the recompute runs in the backward).
             model.gradient_checkpointing_enable(
                 gradient_checkpointing_kwargs = {"use_reentrant": True}
             )

@@ -286,9 +286,7 @@ _EP_ROWS_ENV = "UNSLOTH_EP_EXPERT_ROWS"
 
 
 def _ep_expert_rows():
-    """UNSLOTH_EP_EXPERT_ROWS=N: run this rank's experts over N received (token, expert) rows at a time, each chunk
-    recomputed in the backward, so a long sequence's expert inputs, intermediates and outputs never all live at
-    once. Local to the rank (no collective per chunk), unlike row tiles of the MoE block. Unset or 0: one call."""
+    """N rows per checkpointed experts call on this rank (no per-chunk collective); unset or 0 = one call."""
     value = os.environ.get(_EP_ROWS_ENV, "").strip()
     if not value:
         return None
@@ -319,7 +317,6 @@ def _ep_experts_chunked(shard, prior, dense, got_x, row, ic, wc, rows):
         part = slice(start, start + rows)
         args = (shard, prior, dense, got_x, row[part], ic[part], wc[part])
         if torch.is_grad_enabled():
-            # Only the row indices are saved; the chunk's expert activations are rebuilt in the backward.
             yc = checkpoint(_ep_expert_chunk, *args, use_reentrant = False)
         else:
             yc = _ep_expert_chunk(*args)
