@@ -46,6 +46,7 @@ from core.training.diffusion_block_swap import (
     install_dit_block_swap,
     int8_w8a8_for_run,
     reset_block_swaps,
+    rocm_w8a8_train_opt_in,
 )
 from core.training.diffusion_gc_budget import (
     StepReplay,
@@ -1212,14 +1213,16 @@ def _resolve_base_precision(cfg, spec, device) -> str:
                 f"Use base_precision='nf4' or 'auto'."
             )
         # Mirror the pre-eviction ROCm guard inside the trainer child.
-        if mode in ("int8", "fp8", "mxfp8") and torch_is_rocm():
+        rocm_w8a8 = torch_is_rocm() and rocm_w8a8_train_opt_in(mode, cfg)
+        if mode in ("int8", "fp8", "mxfp8") and torch_is_rocm() and not rocm_w8a8:
             raise ValueError(
                 f"base_precision={mode!r} is a torchao NVIDIA tensor-core path (int8 sm_80+, fp8 "
                 "sm_89+, mxfp8 sm_100+) and this is a ROCm/AMD GPU. Use base_precision='nf4', "
                 "'bf16', or 'auto'."
             )
         # int8 has no runtime fallback, so gate on a FUNCTIONAL torchao, not find_spec, which the Windows-ROCm stub satisfies.
-        if mode == "int8" and not has_functional_torchao():
+        # The ROCm W8A8 opt-in trains torch._int_mm, not torchao.
+        if mode == "int8" and not rocm_w8a8 and not has_functional_torchao():
             raise ValueError(
                 "base_precision='int8' needs a functional torchao install; this host's "
                 "torchao is missing or the non-functional Windows-ROCm stub. Use "

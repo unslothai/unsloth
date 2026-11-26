@@ -1068,7 +1068,10 @@ def training_precision_preflight_error(resolved_family: str, base_precision: str
                 "Use base_precision='nf4' or 'auto'."
             )
         # Reject before eviction; _resolve_base_precision repeats this in the child.
-        if mode in ("int8", "fp8", "mxfp8") and torch_is_rocm():
+        from core.training.diffusion_block_swap import rocm_w8a8_train_opt_in
+
+        rocm_w8a8 = torch_is_rocm() and rocm_w8a8_train_opt_in(mode)
+        if mode in ("int8", "fp8", "mxfp8") and torch_is_rocm() and not rocm_w8a8:
             return (
                 f"base_precision={mode!r} is a torchao NVIDIA tensor-core path (int8 sm_80+, fp8 "
                 "sm_89+, mxfp8 sm_100+) and this is a ROCm/AMD GPU. Use 'nf4', 'bf16', or 'auto'."
@@ -1077,6 +1080,7 @@ def training_precision_preflight_error(resolved_family: str, base_precision: str
         if (
             mode == "int8"
             and not (w8a8 and dit_fp16_fallback(fam))
+            and not rocm_w8a8
             and not has_functional_torchao()
         ):
             return (
