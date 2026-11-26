@@ -22,7 +22,7 @@ H3 = "minimax-h3"
 
 
 def _rows():
-    return json.loads(FIXTURE.read_text())
+    return json.loads(FIXTURE.read_text(encoding = "utf-8"))
 
 
 def _index_lora(
