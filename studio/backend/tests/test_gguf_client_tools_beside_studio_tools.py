@@ -203,6 +203,23 @@ def test_a_batch_with_a_client_call_runs_none_of_its_unsloth_calls(monkeypatch):
     assert len(payloads) == 1
 
 
+def test_a_healed_client_tool_name_goes_back_to_the_caller(monkeypatch):
+    backend, payloads = _backend(
+        monkeypatch,
+        [[_tool_call("mcp_homeassistant__getlivecontext", {}, "call_ha"), _done()]],
+    )
+    executed = _executed(monkeypatch)
+
+    events = _loop(backend)
+
+    assert executed == []
+    [handed_back] = [e for e in events if e["type"] == "client_tool_calls"]
+    assert [call["function"]["name"] for call in handed_back["tool_calls"]] == [
+        "mcp_homeassistant__GetLiveContext"
+    ]
+    assert len(payloads) == 1
+
+
 def test_client_tool_results_continue_the_loop(monkeypatch):
     backend, payloads = _backend(
         monkeypatch, [[_sse({"content": "The living room light is on."}), _done()]]

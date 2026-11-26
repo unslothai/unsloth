@@ -9011,7 +9011,11 @@ _DECISION_ONLY_GGUF_TYPES = frozenset(
 )
 
 
-def client_tool_calls_in(tool_calls, client_tool_names) -> list[dict]:
+def client_tool_calls_in(
+    tool_calls,
+    client_tool_names,
+    resolve_name = None,
+) -> list[dict]:
     """A turn's calls to caller-run tools, as OpenAI tool_calls with string arguments."""
     if not tool_calls or not client_tool_names:
         return []
@@ -9019,6 +9023,9 @@ def client_tool_calls_in(tool_calls, client_tool_names) -> list[dict]:
     for call in tool_calls:
         function = call.get("function") or {}
         name = str(function.get("name") or "").strip()
+        # Heal like the executor would, or a near spelling of a client tool runs server-side.
+        if resolve_name is not None:
+            name = resolve_name(name)
         if name not in client_tool_names:
             continue
         arguments = function.get("arguments")
@@ -43397,7 +43404,9 @@ class LlamaCppBackend:
                     return
 
                 # Unsloth calls in a batch with a client call do not run: the model repeats them.
-                _client_calls = client_tool_calls_in(tool_calls, client_tool_names)
+                _client_calls = client_tool_calls_in(
+                    tool_calls, client_tool_names, tool_controller.resolved_tool_name
+                )
                 if disable_parallel_tool_use:
                     _client_calls = _client_calls[:1]
                 if _client_calls:

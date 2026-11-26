@@ -1370,6 +1370,13 @@ class ToolLoopController:
             active.append(_copy_schema(tool))
         return active
 
+    def resolved_tool_name(self, name: str) -> str:
+        """The enabled tool a sampled name means after Auto-Heal, as prepare_call heals it."""
+        name = str(name or "").strip()
+        if self._auto_heal_tool_calls and name not in self._allowed_tool_names:
+            return _canonical_tool_name(name, self._allowed_tool_names) or name
+        return name
+
     def prepare_call(
         self,
         tool_call: Mapping[str, Any],
