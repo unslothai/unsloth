@@ -5264,6 +5264,14 @@ def _tp_load_quantizing(original, cls, name, args, kwargs, mesh, state):
     return loaded
 
 
+def _set_param_hook():
+    try:
+        from transformers import core_model_loading as loading
+    except Exception:
+        return False
+    return callable(getattr(loading, "set_param_for_module", None))
+
+
 def _lists_module():
     from . import ep_expert_lists
     return ep_expert_lists
@@ -5518,7 +5526,7 @@ def _from_pretrained_sharded(original, cls, name, args, kwargs, state):
             return chunked(original, cls, name, args, original_kwargs, mesh, state)
     if state.get("experts_only"):
         # Other quantizations (block FP8 aside) and 2-D meshes load in full; transformers 4.x keeps only this rank's
-        # per-expert experts (_ep_lists_load_4x).
+        # per-expert experts (_ep_lists_load_4x), bitsandbytes quantize-on-load included.
         mesh = state["mesh"] if state["mesh"] is not None else _world_mesh()
         fp8 = (
             other
@@ -5536,6 +5544,18 @@ def _from_pretrained_sharded(original, cls, name, args, kwargs, state):
                 )
             )
         )
+        if (
+            mesh.ndim == 1
+            and not other
+            and not original_kwargs.get("load_in_8bit")
+            and not _set_param_hook()
+        ):
+            # transformers 4.x: other ranks' per-expert experts are never read, quantized on load or not.
+            state["on_load"] = on_load
+            try:
+                return _ep_lists_load_4x(original, cls, name, args, original_kwargs, mesh, state)
+            finally:
+                state.pop("on_load", None)
         if chunked is None or on_load or mesh.ndim != 1:
             return original(cls, name, *args, **original_kwargs)
         state["on_load"] = False
