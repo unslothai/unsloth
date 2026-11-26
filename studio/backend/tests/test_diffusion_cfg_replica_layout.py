@@ -526,3 +526,67 @@ def test_own_encoder_bytes_are_credited_to_the_card_that_holds_them():
         components = {"text_encoder": te}
 
     assert mg._own_mib_on_cards(Pipe(), ["text_encoder"]) == {1: 1, 2: 3}
+
+
+@pytest.mark.parametrize("encode_mib, armed", [(None, True), (6000, False)])
+def test_a_replica_beside_the_encoder_leaves_room_for_its_next_encode(
+    monkeypatch, encode_mib, armed
+):
+    # Codex P2 on #19671: the replica's weights stay between renders, so the next uncached prompt encodes beside them;
+    # 9000 MiB of weights + 400 working + 1024 reserve fit 14264 free, but not with a 6000 MiB encode peak
+    pipe = _encoder_card_host(monkeypatch, used_by_encoder = 10000, util = 0.0)
+    monkeypatch.setattr(mg, "_module_mib", lambda m: 9000 if m is pipe.transformer else 0)
+    mg.note_encoder_working_mib(pipe, encode_mib)
+    try:
+        with mg.selection_scope(mg.MultiGpuSelection(0, (1,), automatic = False)):
+            reason = mg.install_cfg_parallel(pipe, offload_policy = "none")
+        if armed:
+            assert reason is None and str(mg._CFG_ROUTERS[pipe].secondary) == "cuda:1"
+        else:
+            assert (
+                reason is not None and "for the next encode of the text encoder" in reason
+            ), reason
+    finally:
+        mg.uninstall_cfg_parallel(pipe)
+        mg._PLACEMENTS.pop(pipe, None)
+
+
+def test_the_replica_build_beside_the_encoder_keeps_room_for_its_next_encode(monkeypatch):
+    model = torch.nn.Linear(4, 4)
+
+    class Pipe:
+        pass
+
+    pipe = Pipe()
+    mg.note_encoder_working_mib(pipe, 6000)
+    router = mg.CfgParallelRouter(model, primary = "cpu", secondary = "cpu")
+    router.secondary = torch.device("cuda", 1)
+    router.encoder_card = True
+    router.pipe_ref = mg.weakref.ref(pipe)
+    monkeypatch.setattr(router, "_secondary_free_total_mib", lambda: (14264, 24564))
+    monkeypatch.setattr(mg, "replica_need_mib", lambda *a, **k: 9400)
+    monkeypatch.setattr(mg, "_module_mib", lambda m: 9000)
+    router._build_replica(None)
+    assert "MiB more for the next encode beside it" in (
+        router.disabled_reason or ""
+    ), router.disabled_reason
+
+
+def test_encode_extra_is_what_the_peak_exceeds_the_idle_working_set_and_reserve_by():
+    dit = torch.nn.Linear(2, 2)
+
+    class Pipe:
+        pass
+
+    pipe = Pipe()
+    import unittest.mock as um
+
+    with um.patch.object(mg, "_module_mib", lambda m: 9000):
+        assert (
+            mg.beside_encoder_extra_mib(pipe, dit, 9400) == 0
+        )  # default encoder headroom fits the reserve
+        mg.note_encoder_working_mib(pipe, 6000)
+        assert mg.beside_encoder_extra_mib(pipe, dit, 9400) == 6000 - 400 - 1024
+        assert (
+            mg.beside_encoder_extra_mib(pipe, dit, 15000) == 0
+        )  # a working set larger than the encode

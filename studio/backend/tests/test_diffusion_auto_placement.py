@@ -1055,3 +1055,26 @@ def test_wan5b_on_two_32gb_cards_runs_the_replica_instead_of_the_planned_split(m
     assert recorded.chosen == "cfg_replica", recorded
     assert "0.0 GiB streamed per step on cuda:0" in recorded.summary
     assert d.status["mode_estimate"]["alternative"] == "companion_split"
+
+
+def test_planned_encoder_split_without_room_for_the_next_encode_runs_the_replica_instead(
+    monkeypatch,
+):
+    # Codex P2 on #19671: beside the encoders only when their next encode also fits; else the one-card plan + replica
+    monkeypatch.setattr(mg, "encoder_working_mib", lambda pipe: 16000)
+    d = _planned_split(monkeypatch, dit = 6000, te = 12000, vae = 6000, need = 6400)
+    assert (
+        d.one_card.secondary_ordinal == 1
+        and d.one_card.secondary_components == mg.TEXT_ENCODERS_ONLY
+    )
+    assert d.plan is d.one_card.fallback_plan and d.plan.secondary_ordinal is None
+    recorded = mg.placement_decision(d.pipe)
+    assert recorded.chosen == "cfg_replica", recorded
+    reasons = [c.reason for c in recorded.rejected if c.kind == "cfg_replica"]
+    assert any(r.startswith("beside the encoders on cuda:1") for r in reasons), recorded.rejected
+
+
+def test_planned_encoder_split_records_its_encode_headroom(monkeypatch):
+    d = _planned_split(monkeypatch, dit = 6000, te = 12000, vae = 6000, need = 6400)
+    assert d.one_card.estimates["multigpu_secondary_headroom_mib"] == mg.TEXT_ENCODER_HEADROOM_MIB
+    assert mg.encoder_working_mib(d.pipe) == mg.TEXT_ENCODER_HEADROOM_MIB

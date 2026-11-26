@@ -494,6 +494,8 @@ class CompanionSplit:
     reason: str
     # None = every companion moves; TEXT_ENCODERS_ONLY = only the encoders (the VAE stays with the denoiser)
     components: Optional[tuple[str, ...]] = None
+    # working memory the secondary is priced with above its weights (an encoders-only split: the encode peak)
+    secondary_headroom_mib: int = 0
 
 
 def plan_companion_split(
@@ -563,6 +565,7 @@ def plan_companion_split(
             primary_required_mib = primary_required,
             primary_limit_mib = int(primary_limit_mib),
             secondary_required_mib = secondary_required,
+            secondary_headroom_mib = int(sec_headroom),
             secondary_limit_mib = limits[best],
             components = components,
             reason = (
@@ -1563,6 +1566,14 @@ def replica_layout(
     return None, f"predicted slower or within {REPLICA_MIN_GAIN:.2f}x: {priced}"
 
 
+def _weakrefable(obj: Any) -> bool:
+    try:
+        weakref.ref(obj)
+        return True
+    except TypeError:
+        return False
+
+
 def _split_moved_names(
     pipe: Any,
     plan: Any,
@@ -1617,6 +1628,43 @@ def _own_mib_on_cards(pipe: Any, names: Sequence[str]) -> dict[int, int]:
     return {o: b >> 20 for o, b in nbytes.items()}
 
 
+_ENCODER_WORKING: "weakref.WeakKeyDictionary[Any, int]" = weakref.WeakKeyDictionary()
+
+
+def note_encoder_working_mib(pipe: Any, mib: Optional[int]) -> None:
+    """The encode peak (MiB above the weights) the split priced this load's text encoder card with."""
+    if pipe is None or not mib:
+        return
+    with contextlib.suppress(TypeError):
+        _ENCODER_WORKING[pipe] = int(mib)
+
+
+def encoder_working_mib(pipe: Any) -> int:
+    """This load's text encoder working memory: what its split was priced with, at least the encoder headroom."""
+    try:
+        noted = _ENCODER_WORKING.get(pipe) if pipe is not None else None
+    except TypeError:
+        noted = None
+    return max(TEXT_ENCODER_HEADROOM_MIB, int(noted or 0))
+
+
+def beside_encoder_extra_mib(
+    pipe: Any,
+    denoiser: Any,
+    need_mib: int,
+    reserve_mib: int = _REPLICA_BASE_RESERVE_MIB,
+) -> int:
+    """MiB a replica on the card of this load's text encoders must leave free beyond its own need and reserve. The
+    replica's weights stay between renders, so the next uncached prompt encodes beside them: that encode may reuse the
+    replica's working set and the reserve (both idle while it runs), and needs only what its peak exceeds them by."""
+    try:
+        weights = _module_mib(denoiser)
+    except Exception:  # noqa: BLE001 - unsized: the whole need counts as weights
+        weights = int(need_mib)
+    working = max(0, int(need_mib) - int(weights))
+    return max(0, encoder_working_mib(pipe) - working - int(reserve_mib))
+
+
 def _replica_over_planned_split(
     pipe: Any,
     plan: Any,
@@ -1646,7 +1694,18 @@ def _replica_over_planned_split(
     if moved and all(_replica_shares_component(n) for n in moved):
         own = _own_mib_on_cards(pipe, moved)
         moved_mib = sum(int(sizes[n][0]) for n in moved if n in sizes)
-        pending = {secondary: max(0, moved_mib - int(own.get(secondary, 0)))}
+        note_encoder_working_mib(
+            pipe, (getattr(plan, "estimates", None) or {}).get("multigpu_secondary_headroom_mib")
+        )
+        extra = 0
+        with contextlib.suppress(Exception):  # unsized here: replica_layout reports it
+            denoiser = getattr(pipe, "transformer", None)
+            extra = beside_encoder_extra_mib(
+                pipe,
+                denoiser,
+                replica_need_mib(denoiser, activations = _prices_default_request(selection)),
+            )
+        pending = {secondary: max(0, moved_mib - int(own.get(secondary, 0))) + extra}
         replica, why = replica_layout(
             pipe,
             plan,
@@ -4381,9 +4440,14 @@ class CfgParallelRouter:
                         f"{self.secondary} is no longer idle ({free} of {total} MiB free, {util}% busy)"
                     )
             reserve = _replica_reserve_mib(free, total)
-            if free is not None and need_mib + reserve > free:
+            encode = 0
+            if getattr(self, "encoder_card", False):
+                ref = getattr(self, "pipe_ref", None)
+                encode = beside_encoder_extra_mib(ref() if ref else None, module, need_mib, reserve)
+            if free is not None and need_mib + encode + reserve > free:
+                beside = f" and {encode} MiB more for the next encode beside it" if encode else ""
                 raise RuntimeError(
-                    f"replica needs {need_mib} MiB, {free} MiB free on {self.secondary}"
+                    f"replica needs {need_mib} MiB{beside}, {free} MiB free on {self.secondary}"
                 )
             self.fingerprint = weights_fingerprint(module)
             # Copying the weights to the replica card is CUDA work another pipeline's capture prohibits.
@@ -4962,6 +5026,7 @@ def install_cfg_parallel(
         if automatic:
             # nothing else may live on a card Automatic borrows for a replica (busy: memory in use or computing)
             need = replica_need_mib(denoiser)
+            beside = {o: beside_encoder_extra_mib(pipe, denoiser, need) for o in own}
             pick, auto_reason = automatic_partner(
                 probes.get(primary.index) or DeviceProbe(primary.index, "", None, None),
                 # a card holding the split's decode components cannot take the replica: never the one Automatic lends
@@ -4974,6 +5039,7 @@ def install_cfg_parallel(
                 ],
                 need,
                 own_mib = own,
+                pending_mib = {o: mib for o, mib in beside.items() if mib},
             )
             candidates = [o for o in candidates if _idle_card(probes.get(o), own.get(o, 0))]
             if pick is not None:
@@ -4993,13 +5059,24 @@ def install_cfg_parallel(
         else:
             need_mib = replica_need_mib(denoiser, activations = automatic)
 
+            def extra(o: int) -> int:
+                # beside this load's text encoders: room for their next encode too
+                if o not in own or probes.get(o) is None:
+                    return 0
+                return beside_encoder_extra_mib(
+                    pipe,
+                    denoiser,
+                    need_mib,
+                    _replica_reserve_mib(probes[o].free_mib, probes[o].total_mib),
+                )
+
             def usable(o: int) -> int:
                 if probes.get(o) is None:
                     return -1
                 free_o = probes[o].free_mib
                 if free_o is None:
                     return -1
-                return int(free_o) - _replica_reserve_mib(free_o, probes[o].total_mib)
+                return int(free_o) - _replica_reserve_mib(free_o, probes[o].total_mib) - extra(o)
 
             # a card holding nothing of this load first; one beside its encoders only when no other fits
             fitting = [
@@ -5007,16 +5084,24 @@ def install_cfg_parallel(
                 for o in candidates
                 if probes.get(o) is not None
                 and probes[o].free_mib is not None
-                and need_mib + _replica_reserve_mib(probes[o].free_mib, probes[o].total_mib)
+                and need_mib
+                + extra(o)
+                + _replica_reserve_mib(probes[o].free_mib, probes[o].total_mib)
                 <= probes[o].free_mib
             ]
             best = max(fitting or candidates, key = lambda o: (0 if o in own else 1, usable(o)))
             free = probes[best].free_mib
             if (
                 free is not None
-                and need_mib + _replica_reserve_mib(free, probes[best].total_mib) > free
+                and need_mib + extra(best) + _replica_reserve_mib(free, probes[best].total_mib)
+                > free
             ):
-                reason = f"replica needs {need_mib} MiB, {free} MiB free on cuda:{best}"
+                encode = (
+                    f" and {extra(best)} MiB more for the next encode of the text encoder beside it"
+                    if extra(best)
+                    else ""
+                )
+                reason = f"replica needs {need_mib} MiB{encode}, {free} MiB free on cuda:{best}"
             else:
                 graph = _resident_graph(denoiser)
                 if graph is not None:
@@ -5033,6 +5118,8 @@ def install_cfg_parallel(
                 router.automatic_idle_only = automatic
                 # this load's own encoders on the replica card: not another process's use at the build's idle check
                 router.own_mib = int(own.get(best, 0))
+                router.encoder_card = best in own
+                router.pipe_ref = weakref.ref(pipe) if _weakrefable(pipe) else None
                 try:
                     _CFG_ROUTERS[pipe] = router
                 except TypeError:
