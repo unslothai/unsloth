@@ -587,6 +587,39 @@ test("a card with thousands of plain keys stops scanning at the prompt's literal
   assert.deepEqual(activateLorebook(small, [text]).fired.map((f) => f.id), ["w"]);
 });
 
+test("plain keys fold case the way /iu does", () => {
+  const fires = (key: string, text: string) =>
+    activateLorebook(book([entry({ id: "k", keys: [key], content: "lore" })]), [text]).fired.length > 0;
+  assert.ok(fires("ΟΣ", "μόνο οσ εδώ"), "final and medial sigma fold together");
+  assert.ok(fires("Σοφία", "ΣΟΦΊΑ"));
+  assert.ok(!fires("i", "İstanbul"), "dotted capital I is not i");
+  assert.ok(fires("k", "a K reading"), "the Kelvin sign folds to k");
+  assert.ok(!fires("strasse", "Straße"), "ß does not expand");
+});
+
+test("a key the budget never reached does not clear an exclusion", () => {
+  const exclusion = (logic: "not_any" | "not_all") =>
+    entry({ id: logic, keys: ["dragon"], secondary_keys: ["knight"], selective: true, selective_logic: logic, content: "lore" });
+  const lore = book([exclusion("not_any"), exclusion("not_all")]);
+  const text = "a dragon and a knight";
+  assert.deepEqual(activateLorebook(lore, [text]).fired, [], "checked: the knight excludes both");
+  for (const spent of ["literalChars", "regexSteps"] as const) {
+    const budget = loreBudget([lore]);
+    // Enough for the primary key, none left for the exclusion.
+    budget.literalChars.left = spent === "literalChars" ? text.length : budget.literalChars.left;
+    if (spent === "regexSteps") {
+      const regexLore = book([
+        { ...exclusion("not_any"), secondary_keys: ["/kn+ight/"] },
+        { ...exclusion("not_all"), secondary_keys: ["/kn+ight/"] },
+      ]);
+      budget.regexSteps.left = 0;
+      assert.deepEqual(activateLorebook(regexLore, [text], budget).fired, [], spent);
+      continue;
+    }
+    assert.deepEqual(activateLorebook(lore, [text], budget).fired, [], spent);
+  }
+});
+
 test("keys and names in scripts without spaces fire inside a sentence; a card can turn whole words off", () => {
   assert.equal(activateLorebook(book([entry({ keys: ["東京"], content: "Tokyo" })]), ["私は東京に行く"]).fired.length, 1);
   const loose = entry({ keys: ["elf"], content: "Elves", extensions: { match_whole_words: false } });

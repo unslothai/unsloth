@@ -60,7 +60,8 @@ export function loreBudget(books: readonly (Lorebook | null | undefined)[]): Lor
 }
 
 type KeyOptions = { caseSensitive: boolean; useRegex: boolean; wholeWords: boolean };
-type Matcher = (text: string, budget: LoreBudget) => boolean;
+// null: the prompt's budget ran out before this key was checked.
+type Matcher = (text: string, budget: LoreBudget) => boolean | null;
 // Compiled once per key: keys are matched on every send and every token count.
 const matchers = new Map<string, Matcher | null>();
 
@@ -71,19 +72,39 @@ function buildMatcher(trimmed: string, options: KeyOptions): Matcher | null {
   if (regex) {
     if (trimmed.length > MAX_REGEX_KEY) return null;
     const match = linearRegex(regex[0], regex[1]);
-    return match && ((text, budget) => match(text, budget.regexSteps));
+    return match && ((text, budget) => match(text, budget.regexSteps) || (budget.regexSteps.left >= 0 ? false : null));
   }
   if (trimmed.length > MAX_LITERAL_KEY) return null;
   return literalMatcher(trimmed, options);
 }
 
+const folds = new Map<string, string>();
+// Simple case folding, as /iu matched before: Σ σ ς fold together, İ and ß stay themselves.
+function foldChar(ch: string): string {
+  let out = folds.get(ch);
+  if (out === undefined) {
+    const one = (s: string) => [...s].length === 1;
+    const upper = ch.toUpperCase();
+    const lower = one(upper) ? upper.toLowerCase() : ch.toLowerCase();
+    out = one(lower) ? lower : ch;
+    folds.set(ch, out);
+  }
+  return out;
+}
+
+export function foldCase(text: string): string {
+  let out = "";
+  for (const ch of text) out += foldChar(ch);
+  return out;
+}
+
 let foldedFrom = "";
 let folded = "";
-// The scan text lowercased once per prompt pass, not once per key.
-function lowerOf(text: string): string {
+// The scan text folded once per prompt pass, not once per key.
+function foldedOf(text: string): string {
   if (text !== foldedFrom) {
     foldedFrom = text;
-    folded = text.toLowerCase();
+    folded = foldCase(text);
   }
   return folded;
 }
@@ -97,11 +118,11 @@ function charBefore(text: string, at: number): string {
 
 /** A plain key as a substring search: a RegExp per key costs milliseconds to compile, and a card can hold thousands. */
 function literalMatcher(key: string, options: KeyOptions): Matcher {
-  const needle = options.caseSensitive ? key : key.toLowerCase();
+  const needle = options.caseSensitive ? key : foldCase(key);
   const whole = options.wholeWords && WORDY_KEY.test(key) && !NO_SPACE_SCRIPT.test(key);
   return (text, budget) => {
-    const hay = options.caseSensitive ? text : lowerOf(text);
-    if (budget.literalChars.left <= 0) return false;
+    if (budget.literalChars.left <= 0) return null;
+    const hay = options.caseSensitive ? text : foldedOf(text);
     budget.literalChars.left -= hay.length;
     for (let at = hay.indexOf(needle); at >= 0; at = hay.indexOf(needle, at + 1)) {
       if (!whole || (!WORD_CHAR.test(charBefore(hay, at)) && !WORD_CHAR.test(charAt(hay, at + needle.length)))) {
@@ -142,24 +163,26 @@ function keyOptions(entry: LorebookEntry): KeyOptions {
   };
 }
 
-function keyHits(key: string, text: string, budget: LoreBudget, options: KeyOptions): boolean {
-  return keyMatcher(key, options)?.(text, budget) ?? false;
+function keyHits(key: string, text: string, budget: LoreBudget, options: KeyOptions): boolean | null {
+  const matcher = keyMatcher(key, options);
+  return matcher ? matcher(text, budget) : false;
 }
 
+// A key the budget never reached is unknown: it neither fires an entry nor clears an exclusion.
 function entryHits(entry: LorebookEntry, text: string, budget: LoreBudget): boolean {
   const options = keyOptions(entry);
-  if (!(entry.keys ?? []).some((key) => keyHits(key, text, budget, options))) return false;
+  if (!(entry.keys ?? []).some((key) => keyHits(key, text, budget, options) === true)) return false;
   if (!entry.selective || entry.secondary_keys.length === 0) return true;
   const hits = entry.secondary_keys.map((key) => keyHits(key, text, budget, options));
   switch (entry.selective_logic) {
     case "and_all":
-      return hits.every(Boolean);
+      return hits.every((hit) => hit === true);
     case "not_any":
-      return !hits.some(Boolean);
+      return hits.every((hit) => hit === false);
     case "not_all":
-      return !hits.every(Boolean);
+      return hits.some((hit) => hit === false);
     default:
-      return hits.some(Boolean);
+      return hits.some((hit) => hit === true);
   }
 }
 
