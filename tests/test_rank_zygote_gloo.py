@@ -15,6 +15,7 @@ import subprocess
 import sys
 
 import pytest
+import torch  # noqa: F401  (as every gloo test module: imported before the rank function runs)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
@@ -140,10 +141,17 @@ def _drive(tmp, cases):
         json.dump(report, f, sort_keys = True)
 
 
+# The first ranks of a kind run as plain spawns under an observer; later ones of the same kind fork.
 CASES = {
     "plain": ({}, None),
-    "tp_layout": ({"UNSLOTH_TP_SIZE": "2"}, None),
-    "imports_first": ({}, "transformers"),
+    "tp_layout": (
+        {"UNSLOTH_TP_SIZE": "2"},
+        None,
+    ),  # same function: forked from a zygote keyed by the layout
+    "plain_again": ({}, None),
+    "imports_first": ({}, "transformers"),  # a new kind (its string argument): observed
+    # The rank imports transformers itself before the conftest, so its zygote stops short of the conftest.
+    "imports_first_again": ({}, "transformers"),
 }
 
 
@@ -155,6 +163,7 @@ def _run(tmp_path, zygote):
     env.update(
         UNSLOTH_TEST_RANK_ZYGOTE = str(zygote),
         UNSLOTH_TEST_RANK_ZYGOTE_STATS = str(stats),
+        UNSLOTH_TEST_RANK_ZYGOTE_HOT = "0",  # a zygote from the first rank of a kind on, to keep this short
         CUDA_VISIBLE_DEVICES = "",
         PYTHONPATH = os.pathsep.join(p for p in (HERE, REPO, env.get("PYTHONPATH")) if p),
     )
@@ -215,12 +224,14 @@ def test_the_env_layout_reaches_the_import(runs):
         )
 
 
-def test_the_zygote_path_is_taken_and_a_self_import_starts_again(runs):
+def test_the_zygote_path_is_taken(runs):
     _, _, summary = runs
-    counts, reasons = summary["counts"], summary["respawn_reasons"]
-    # plain + tp_layout: 4 ranks forked and reused; imports_first: 2 ranks that started again.
+    counts = summary["counts"]
+    # tp_layout + plain_again: 4 ranks reuse the zygote's conftest run; imports_first_again: 2 ranks forked
+    # from a zygote that stopped before it. plain and imports_first were the observed plain spawns.
     assert counts["hit"] >= 4, summary
-    assert any(r.startswith("imported transformers") for r in reasons), summary
+    assert counts["start"] >= 6, summary
+    assert counts["respawn"] == 0, summary
 
 
 def test_exit_codes_exceptions_and_queues_come_back(runs):
