@@ -56,7 +56,11 @@ def test_hooks_install_on_trl_sources(which):
         new = R.grpo_trainer_scalerl_hooks(name, body)
         ast.parse(textwrap.dedent(new))
         found_trunc |= "_unsloth_grpo_truncation_warn(self, mode)" in new
-        found_npr |= "_unsloth_grpo_npr_record(self, mode, inputs, rewards_per_func)" in new
+        found_npr |= (
+            "_unsloth_grpo_npr_record(self, mode, _unsloth_npr_keys, rewards_per_func)" in new
+        )
+        if "_unsloth_grpo_npr_record(" in new:
+            assert "_unsloth_npr_keys = _unsloth_grpo_npr_row_keys(inputs)" in new
     assert found_trunc and found_npr
     # Other methods pass through untouched.
     other = _method(src, "_get_eval_sampler")
@@ -97,7 +101,9 @@ def test_off_by_default_identity(monkeypatch):
     cls = type(s)
     assert R._unsloth_grpo_npr_sampler(_trainer(2), s) is s and type(s) is cls
     t = _trainer(2)
-    R._unsloth_grpo_npr_record(t, "train", [{"prompt": "a"}] * 2, torch.ones(2, 2))
+    R._unsloth_grpo_npr_record(
+        t, "train", R._unsloth_grpo_npr_row_keys([{"prompt": "a"}] * 2), torch.ones(2, 2)
+    )
     assert not hasattr(t, "_unsloth_npr_stats")
 
 
@@ -131,7 +137,7 @@ def test_solved_prompts_dropped_next_epoch(monkeypatch):
                 rows.append([float("nan"), float("nan")] if g == 0 else [1.0, 0.2])
             else:
                 rows.append([0.0, 1.0])
-    R._unsloth_grpo_npr_record(t, "train", inputs, torch.tensor(rows))
+    R._unsloth_grpo_npr_record(t, "train", R._unsloth_grpo_npr_row_keys(inputs), torch.tensor(rows))
     solved_keys = {R._unsloth_grpo_npr_key(data[i]) for i in (1, 3, 4)}
     assert t._unsloth_npr_solved == solved_keys
     assert t._metrics["train"]["npr/solved_prompts"] == [3.0]
@@ -193,17 +199,56 @@ def test_unshuffled_sampler_is_filtered(monkeypatch):
     assert epoch[:4] == [1, 1, 2, 2]
 
 
+def test_keys_taken_before_trl_edits_the_prompt(monkeypatch):
+    # TRL rewrites prompts in place before scoring; the keys come from the untouched rows.
+    monkeypatch.setenv("UNSLOTH_GRPO_NO_POSITIVE_RESAMPLING", "1")
+    rows = [
+        {"prompt": [{"role": "user", "content": "q"}, {"role": "assistant", "content": "prefill"}]}
+    ] * 2
+    dataset_key = R._unsloth_grpo_npr_key(
+        {"prompt": [{"role": "user", "content": "q"}, {"role": "assistant", "content": "prefill"}]}
+    )
+    keys = R._unsloth_grpo_npr_row_keys(rows)
+    rows[0]["prompt"].pop()  # assistant prefill handling
+    t = _trainer(2)
+    R._unsloth_grpo_npr_record(t, "train", keys, torch.tensor([[1.0, 0.0], [1.0, 0.0]]))
+    assert t._unsloth_npr_solved == {dataset_key}
+    monkeypatch.delenv("UNSLOTH_GRPO_NO_POSITIVE_RESAMPLING")
+    assert R._unsloth_grpo_npr_row_keys(rows) is None
+
+
+def test_refill_scans_the_dataset_once(monkeypatch):
+    monkeypatch.setenv("UNSLOTH_GRPO_NO_POSITIVE_RESAMPLING", "1")
+    data, s = _repeat_sampler(1000, 2, 10, 1, seed = 4)
+    t = _trainer(2)
+    s = R._unsloth_grpo_npr_sampler(t, s)
+    t._unsloth_npr_solved = {R._unsloth_grpo_npr_key(x) for x in data[1:]}
+    calls = []
+    real = R._unsloth_grpo_npr_key
+    monkeypatch.setattr(R, "_unsloth_grpo_npr_key", lambda row: calls.append(1) or real(row))
+    epoch = list(s)
+    assert set(epoch) == {0} and len(epoch) == len(s) == 2000
+    assert len(calls) <= 1000
+    calls.clear()
+    list(s)
+    assert len(calls) == 0  # keys are cached per index
+
+
 def test_pass_rate_accumulates_across_batches(monkeypatch):
     monkeypatch.setenv("UNSLOTH_GRPO_NO_POSITIVE_RESAMPLING", "1")
     monkeypatch.setenv("UNSLOTH_GRPO_NPR_PASS_RATE", "0.75")
     t = _trainer(2)
     x = {"prompt": "p"}
-    R._unsloth_grpo_npr_record(t, "train", [x, x], torch.tensor([[1.0, 0.0], [0.0, 0.0]]))  # 1 / 2
+    R._unsloth_grpo_npr_record(
+        t, "train", R._unsloth_grpo_npr_row_keys([x, x]), torch.tensor([[1.0, 0.0], [0.0, 0.0]])
+    )  # 1 / 2
     assert not t._unsloth_npr_solved
-    R._unsloth_grpo_npr_record(t, "train", [x, x], torch.tensor([[1.0, 0.0], [1.0, 0.0]]))  # 3 / 4
+    R._unsloth_grpo_npr_record(
+        t, "train", R._unsloth_grpo_npr_row_keys([x, x]), torch.tensor([[1.0, 0.0], [1.0, 0.0]])
+    )  # 3 / 4
     assert t._unsloth_npr_solved == {R._unsloth_grpo_npr_key(x)}
     R._unsloth_grpo_npr_record(
-        t, "eval", [x, x], torch.tensor([[0.0, 0.0], [0.0, 0.0]])
+        t, "eval", R._unsloth_grpo_npr_row_keys([x, x]), torch.tensor([[0.0, 0.0], [0.0, 0.0]])
     )  # eval ignored
     assert t._unsloth_npr_stats[R._unsloth_grpo_npr_key(x)] == (3.0, 4.0)
 

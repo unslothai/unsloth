@@ -6449,15 +6449,22 @@ def _unsloth_grpo_npr_text(value):
     return value
 
 
-def _unsloth_grpo_npr_record(trainer, mode, inputs, rewards_per_func):
+def _unsloth_grpo_npr_row_keys(inputs):
+    """Row keys of a generation batch, taken on entry: TRL edits the prompts in place before scoring
+    (multimodal content parts, assistant prefill), while the sampler hashes the untouched dataset rows."""
+    if _unsloth_grpo_npr_settings() is None:
+        return None
+    return [_unsloth_grpo_npr_key(x) for x in inputs]
+
+
+def _unsloth_grpo_npr_record(trainer, mode, keys, rewards_per_func):
     """Accumulate each prompt's (passes, attempts) from this generation batch, gathered over processes so
-    every rank's sampler drops the same prompts."""
+    every rank's sampler drops the same prompts. keys: `_unsloth_grpo_npr_row_keys` of the batch."""
     settings = _unsloth_grpo_npr_settings()
-    if settings is None or mode != "train":
+    if settings is None or mode != "train" or keys is None:
         return
     pass_reward, pass_rate = settings
     num_generations = int(trainer.num_generations)
-    keys = [_unsloth_grpo_npr_key(x) for x in inputs]
     if getattr(trainer.accelerator, "num_processes", 1) > 1:
         from accelerate.utils import gather_object
         keys = gather_object(keys)
@@ -6546,12 +6553,14 @@ def _unsloth_grpo_npr_sampler(trainer, sampler):
             # Refill to the epoch's length with more passes over the unsolved prompts: the trainer fixed its
             # epoch count from this length, so a shorter epoch would end training before max_steps.
             target = len(indexes)
-            while len(kept) < target:
-                if self.shuffle:
-                    order = torch.randperm(self.num_samples, generator = self.generator).tolist()
-                else:
-                    order = list(range(self.num_samples))
-                kept.extend(unsolved(order))
+            if len(kept) < target:
+                pool = sorted(kept)
+                while len(kept) < target:
+                    if self.shuffle:
+                        order = torch.randperm(len(pool), generator = self.generator).tolist()
+                        kept.extend(pool[j] for j in order)
+                    else:
+                        kept.extend(pool)
             return kept[:target]
 
         def __iter__(self):
@@ -6653,8 +6662,22 @@ def grpo_trainer_scalerl_hooks(function_name, function):
     ):
         function = (
             function[: zero_std.end()]
-            + f"{zero_std.group(1)}_unsloth_grpo_npr_record(self, mode, inputs, rewards_per_func)\n"
+            + f"{zero_std.group(1)}_unsloth_grpo_npr_record(self, mode, _unsloth_npr_keys, rewards_per_func)\n"
             + function[zero_std.end() :]
+        )
+        signature = re.search(
+            r"([ \t]*)def _generate_and_score_completions\((?:[^()]|\([^()]*\))*\)[^\n]*:\n",
+            function,
+        )
+        if signature is None:
+            return function.replace(
+                "_unsloth_grpo_npr_record(self, mode, _unsloth_npr_keys, rewards_per_func)\n",
+                "pass\n",
+            )
+        function = (
+            function[: signature.end()]
+            + f"{signature.group(1)}    _unsloth_npr_keys = _unsloth_grpo_npr_row_keys(inputs)\n"
+            + function[signature.end() :]
         )
     elif (
         function_name == "_generate_and_score_completions"
@@ -6815,6 +6838,7 @@ RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_sample_weigh
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_npr_settings))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_npr_key))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_npr_text))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_npr_row_keys))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_npr_record))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_npr_sampler))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_truncation_warn))
