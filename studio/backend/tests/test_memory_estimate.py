@@ -3,9 +3,11 @@
 
 """Load-Model memory estimate tests (POST /api/inference/estimate-memory) on synthetic GGUF headers."""
 
+import gzip
 import inspect
 import json
 import os
+import struct
 import sys
 import types as _types
 from pathlib import Path
@@ -4318,6 +4320,25 @@ def _caption(
     return mm._cache_width_name(plan, bits, converted, "bf16", n_ctx, mm.MLX_PREFILL_CHUNK)
 
 
+def _snapshot_or_headers(repo, tmp_path):
+    """A snapshot rebuilt from the repo's committed headers (real config, index and shard headers over sparse tensor
+    bytes), else its local snapshot."""
+    fixture = (
+        Path(__file__).parent / "data" / "mlx_headers" / (repo.replace("/", "--") + ".json.gz")
+    )
+    if not fixture.exists():
+        return _local_snapshot(repo)
+    data = json.loads(gzip.decompress(fixture.read_bytes()))
+    for name, text in data["files"].items():
+        (tmp_path / name).write_text(text)
+    for name, shard in data["shards"].items():
+        header = shard["header"].encode()
+        with open(tmp_path / name, "wb") as f:
+            f.write(struct.pack("<Q", len(header)) + header)
+            f.truncate(shard["size"])
+    return str(tmp_path)
+
+
 def _local_snapshot(repo):
     """This repo's snapshot directory, skipping the test when it is not here."""
     hub = os.path.expanduser("~/.cache/huggingface/hub")
@@ -5778,11 +5799,11 @@ _UNFUSED_HEAD_DIM_256_SCORES = {
     ],
 )
 def test_a_real_checkpoint_is_priced_to_the_byte(
-    repo, n_ctx, kv_bits, weights, kv, compute, layers, caption
+    repo, n_ctx, kv_bits, weights, kv, compute, layers, caption, tmp_path
 ):
     _on_bfloat16_chip()
     breakdown = mm.mlx_memory_breakdown(
-        _local_snapshot(repo), n_ctx = n_ctx, load_in_4bit = True, kv_bits = kv_bits
+        _snapshot_or_headers(repo, tmp_path), n_ctx = n_ctx, load_in_4bit = True, kv_bits = kv_bits
     )
     assert breakdown is not None
     assert (breakdown.weights_bytes, breakdown.kv_bytes) == (weights, kv)
