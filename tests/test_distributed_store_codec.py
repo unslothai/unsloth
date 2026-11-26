@@ -105,6 +105,7 @@ def _store_functions(module, monkeypatch, store):
         "_timeout": lambda: None,
         "_save_timeout": lambda: None,
         "_EXPORT_COUNTER": {},
+        "_handshake_done": lambda dist, store: None,
     }
     exec(compile(ast.Module(body = nodes, type_ignores = []), str(MODELS / module), "exec"), namespace)
     return namespace, dist
