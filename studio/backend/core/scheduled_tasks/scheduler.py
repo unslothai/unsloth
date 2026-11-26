@@ -468,12 +468,16 @@ def _model_is_loaded(model: str) -> bool:
     )
 
 
-# Levels the request accepts; a template may list others, which a run never sends.
+# Levels Lowest/Highest may pick; a template may list others, which they never send.
 _EFFORT_LEVELS = ("minimal", "low", "medium", "high", "max", "xhigh")
 
 
-def _reasoning_fields(effort: Optional[str], connection: bool, on_loaded_model: bool) -> dict:
-    """The request fields for a task's thinking effort; None keeps the model's default."""
+def _reasoning_fields(
+    effort: Optional[str],
+    connection: bool,
+    flags: Optional[dict] = None,
+) -> dict:
+    """Request fields for a task's effort (None: the model's default) given the model's ``flags``."""
     if effort is None:
         return {}
     relative = {"off": "none", "lowest": "low", "highest": "high"}
@@ -481,33 +485,31 @@ def _reasoning_fields(effort: Optional[str], connection: bool, on_loaded_model: 
         return {"reasoning_effort": relative.get(effort, effort)}
     if effort not in relative:
         return {"enable_thinking": True, "reasoning_effort": effort}
-    backend = None
-    if on_loaded_model:
-        from routes.inference import get_llama_cpp_backend
-        backend = get_llama_cpp_backend()
-        if not getattr(backend, "is_loaded", False):
-            backend = None
-    if backend is None:
+    if flags is None:
         if effort == "off":
             return {"enable_thinking": False}
         return {
             "enable_thinking": True,
             "reasoning_effort": "low" if effort == "lowest" else "high",
         }
-    if not backend.supports_reasoning:
+    if not flags.get("supports_reasoning"):
         return {}
-    style = backend.reasoning_style
+    style = flags.get("reasoning_style")
+    levels = [
+        level
+        for level in (flags.get("reasoning_effort_levels") or ["low", "medium", "high"])
+        if level in _EFFORT_LEVELS
+    ] or ["low", "high"]
     if effort == "off":
-        if backend.reasoning_always_on or style == "reasoning_effort":
+        if flags.get("reasoning_always_on"):
             return {}
+        if style == "reasoning_effort":
+            # Effort-only templates ignore enable_thinking: name the level, "none" when offered.
+            offers_none = "none" in (flags.get("reasoning_effort_levels") or ())
+            return {"reasoning_effort": "none" if offers_none else levels[0]}
         return {"enable_thinking": False}
     if style == "enable_thinking":
         return {"enable_thinking": True}
-    levels = [
-        level
-        for level in (backend.reasoning_effort_levels or ["low", "medium", "high"])
-        if level in _EFFORT_LEVELS
-    ] or ["low", "high"]
     fields = {"reasoning_effort": levels[0] if effort == "lowest" else levels[-1]}
     if style == "enable_thinking_effort":
         fields["enable_thinking"] = True
@@ -825,17 +827,16 @@ async def generate_answer(
                     ),
                     **tool_fields,
                     **model_fields,
-                    **_reasoning_fields(
-                        task.get("reasoningEffort"),
-                        provider is not None,
-                        # Only the primary's levels are known here: a model kept beside it gets the generic fields.
-                        on_loaded_model = not allow_switch
-                        and (
-                            not model_fields.get("model") or _primary_serves(model_fields["model"])
-                        ),
+                    **(
+                        _reasoning_fields(task.get("reasoningEffort"), True)
+                        if provider is not None
+                        else {}
                     ),
                 }
             )
+            if provider is None:
+                # Resolved by the chat route against the model that serves the run, once loaded or routed.
+                payload._scheduled_reasoning_effort = task.get("reasoningEffort")
 
             if mcp_server_ids:
                 payload._scheduled_mcp_server_ids = mcp_server_ids

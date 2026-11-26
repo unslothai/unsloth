@@ -3040,6 +3040,7 @@ class ChatCompletionRequest(BaseModel):
     _website_policy: Optional[dict] = PrivateAttr(default = None)
     # Scheduled runs restrict the MCP catalog to the servers selected on the task.
     _scheduled_mcp_server_ids: Optional[frozenset[str]] = PrivateAttr(default = None)
+    _scheduled_reasoning_effort: Optional[str] = PrivateAttr(default = None)
 
     model: str = Field(
         "default",
