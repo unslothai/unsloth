@@ -486,12 +486,7 @@ export function ParamsSection({
         </div>
 
         {showAdvanced && <LoraParamsSection />}
-        {showAdvanced && (
-          <TrainingHyperparametersSection
-            useEpochs={useEpochs}
-            epochsSliderMax={epochsSliderMax}
-          />
-        )}
+        {showAdvanced && <TrainingHyperparametersSection />}
         {showAdvanced && <DrafterSection />}
       </div>
     </div>

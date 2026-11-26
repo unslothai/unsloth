@@ -72,18 +72,11 @@ function formatSchedulerLabel(
   }
 }
 
-export function TrainingHyperparametersSection({
-  useEpochs,
-  epochsSliderMax,
-}: {
-  useEpochs: boolean;
-  epochsSliderMax: number;
-}): ReactElement {
+export function TrainingHyperparametersSection(): ReactElement {
   const t = useT();
   const platformDeviceType = usePlatformStore((state) => state.deviceType);
   const store = useTrainingConfigStore(
     useShallow((state) => ({
-      epochs: state.epochs,
       isDecision: state.modelType === "decision",
       isEmbedding: state.isEmbeddingModel || state.modelType === "embeddings",
       optimizerType: state.optimizerType,
@@ -102,7 +95,6 @@ export function TrainingHyperparametersSection({
       setGradientAccumulation: state.setGradientAccumulation,
       setWeightDecay: state.setWeightDecay,
       setWarmupSteps: state.setWarmupSteps,
-      setEpochs: state.setEpochs,
       setSaveSteps: state.setSaveSteps,
       setEvalSteps: state.setEvalSteps,
       setEarlyStoppingPatience: state.setEarlyStoppingPatience,
@@ -315,29 +307,6 @@ export function TrainingHyperparametersSection({
               max={100}
               step={1}
             />
-            {!useEpochs && (
-              <ParamsSliderRow
-                label={t("studio.params.epochs")}
-                tooltip={
-                  <>
-                    {t("studio.params.scheduleEpochsTooltip")}{" "}
-                    <a
-                      href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-primary underline"
-                    >
-                      {t("studio.params.readMore")}
-                    </a>
-                  </>
-                }
-                value={store.epochs}
-                onChange={store.setEpochs}
-                min={0}
-                max={epochsSliderMax}
-                step={1}
-              />
-            )}
             {!store.isDecision && (
               <ParamsRow
                 label={t("studio.params.saveSteps")}
