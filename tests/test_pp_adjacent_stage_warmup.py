@@ -18,11 +18,14 @@ from test_pp_native_gloo import _free_port, ppn  # noqa: E402  (pp_native from t
 
 
 @pytest.fixture
-def gloo_world1():
+def gloo_world1(monkeypatch):
     if dist.is_initialized():
         pytest.skip("a process group is already initialized")
-    os.environ.setdefault("MASTER_ADDR", "127.0.0.1")
-    os.environ["MASTER_PORT"] = str(_free_port())
+    # monkeypatch, not os.environ: a MASTER_ADDR / MASTER_PORT left behind lets a later test's env:// rendezvous
+    # wait for ranks that never come instead of failing fast.
+    if not os.environ.get("MASTER_ADDR"):
+        monkeypatch.setenv("MASTER_ADDR", "127.0.0.1")
+    monkeypatch.setenv("MASTER_PORT", str(_free_port()))
     dist.init_process_group("gloo", rank = 0, world_size = 1, timeout = datetime.timedelta(seconds = 60))
     try:
         yield dist.group.WORLD

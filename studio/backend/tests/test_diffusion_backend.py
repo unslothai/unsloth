@@ -8173,6 +8173,54 @@ def test_qwen21_prompt_list_renders_each_text_length_apart(fake_runtime, tmp_pat
     assert pipe.calls == [(["red fox", "grey owl"], [5, 6])]
 
 
+class _RecordingPipe(_FakePipe):
+    def __init__(self) -> None:
+        super().__init__()
+        self.calls: list = []
+
+    def __call__(
+        self,
+        *,
+        prompt = None,
+        generator = None,
+        **kwargs,
+    ):
+        seeds = [g.manual for g in generator] if isinstance(generator, list) else [generator.manual]
+        self.calls.append((prompt, seeds))
+        return super().__call__(prompt = prompt, generator = generator, **kwargs)
+
+
+def test_sdxl_prompt_list_renders_each_clip_chunk_count_apart(fake_runtime, tmp_path, monkeypatch):
+    # Each CLIP chunk count renders in its own pipe call.
+    import core.inference.diffusion_sd_controls as sd_controls
+
+    backend = _loaded_backend(
+        tmp_path, gguf_filename = "sdxl.safetensors", base_repo = None, family_override = "sdxl"
+    )
+    pipe = _RecordingPipe()
+    object.__setattr__(backend._state, "pipe", pipe)
+    monkeypatch.setattr(sd_controls, "weighting_engaged", lambda *a, **k: True)
+    monkeypatch.setattr(
+        sd_controls,
+        "_clip_chunk_counts",
+        lambda _pipe, texts, **k: [1 + len(t.split()) // 3 for t in texts],
+        raising = False,
+    )
+    monkeypatch.setattr(sd_controls, "apply_prompt_controls", lambda *a, **k: False)
+    out = backend.generate(
+        prompt = "fallback",
+        prompts = ["red fox", "grey owl", "a long prompt here", "blue jay"],
+        seeds = [1, 2, 3, 4],
+    )
+    assert pipe.calls == [
+        (["red fox", "grey owl"], [1, 2]),
+        ("a long prompt here", [3]),
+        ("blue jay", [4]),
+    ]
+    assert out["seeds"] == [1, 2, 3, 4]
+    assert len(out["images"]) == 4
+
+
 def test_text_length_runs_leaves_other_pipelines_alone():
     from core.inference.diffusion_qwenimage21 import text_length_runs
 

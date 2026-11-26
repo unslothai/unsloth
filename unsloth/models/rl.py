@@ -1129,6 +1129,29 @@ def _restore_optimizer_from_host(record):
         param.grad = restored[id(host)]
 
 
+def _wrap_grpo_vllm_lora_rounding(trainer_cls):
+    """train / evaluate of a GRPO trainer with use_vllm run under vllm_lora_rounding, so the trainer rounds the
+    LoRA term as the rollout does; the previous order comes back afterwards (a later SFT keeps the fused one)."""
+    from ..kernels.utils import vllm_lora_rounding
+    for name in ("train", "evaluate"):
+        original = getattr(trainer_cls, name, None)
+        if original is None or getattr(original, "_unsloth_vllm_lora_rounding", False):
+            continue
+
+        def wrapped(
+            self,
+            *args,
+            _original = original,
+            **kwargs,
+        ):
+            with vllm_lora_rounding(bool(getattr(self, "use_vllm", False))):
+                return _original(self, *args, **kwargs)
+
+        functools.update_wrapper(wrapped, original)
+        wrapped._unsloth_vllm_lora_rounding = True
+        setattr(trainer_cls, name, wrapped)
+
+
 def _wrap_grpo_generate_and_score(trainer_cls):
     if not hasattr(trainer_cls, "_generate_and_score_completions"):
         return
@@ -3676,18 +3699,20 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
 
     if trainer_file == "grpo_trainer":
         RLTrainer_post += (
-            "if os.environ.get('UNSLOTH_GRPO_ROUTING_REPLAY', '0') == '1' and hasattr(model, 'vllm_engine'):\n"
+            "# R3 replays vLLM's rollout routes (fast_inference); R2 (UNSLOTH_GRPO_ROUTING_REPLAY_R2=1) replays pi_old's, no vLLM needed.\n"
+            "_unsloth_replay_on = os.environ.get('UNSLOTH_GRPO_ROUTING_REPLAY', '0') == '1' and hasattr(model, 'vllm_engine')\n"
+            "if _unsloth_replay_on or os.environ.get('UNSLOTH_GRPO_ROUTING_REPLAY_R2', '0') == '1':\n"
             "    try:\n"
             "        from unsloth_zoo.routing_replay import install_routing_replay\n"
             "    except ImportError:\n"
-            "        print('Unsloth: UNSLOTH_GRPO_ROUTING_REPLAY=1 needs a newer unsloth_zoo: pip install -U unsloth_zoo')\n"
+            "        print('Unsloth: MoE routing replay needs a newer unsloth_zoo: pip install -U unsloth_zoo')\n"
             "    else:\n"
             "        from unsloth.models._routing_replay import routing_replay_hook_snapshot, prepare_routing_replay\n"
             "        # TRL scores the PEFT reference through self.model.disable_adapter(), so prepare that object.\n"
             "        _unsloth_replay_model = getattr(self, 'model', None)\n"
             "        _unsloth_replay_model = model if _unsloth_replay_model is None else _unsloth_replay_model\n"
             "        _unsloth_replay_hooks_before = routing_replay_hook_snapshot(_unsloth_replay_model)\n"
-            "        install_routing_replay(model, model.vllm_engine, getattr(self, 'processing_class', None))\n"
+            "        install_routing_replay(model, getattr(model, 'vllm_engine', None), getattr(self, 'processing_class', None))\n"
             "        # Pick the router weight formulas outside compilation; PEFT reference scoring routes naturally.\n"
             "        prepare_routing_replay(_unsloth_replay_model, _unsloth_replay_hooks_before)\n"
             "pass\n"
@@ -4503,6 +4528,16 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         logger.info(f"Unsloth: Could not wrap the full-eval cast for {RLTrainer_name}: {e}")
 
     if trainer_file == "grpo_trainer":
+        # Inside the optimizer-parking wrapper below, so a parked optimizer also covers the partial rollout.
+        try:
+            from ._partial_rollout import wrap_grpo_partial_rollout
+            wrap_grpo_partial_rollout(getattr(created_module, f"Unsloth{RLTrainer_name}"))
+        except Exception as e:
+            logger.info(f"Unsloth: Could not wrap GRPO partial rollout for {RLTrainer_name}: {e}")
+        try:
+            _wrap_grpo_vllm_lora_rounding(getattr(created_module, f"Unsloth{RLTrainer_name}"))
+        except Exception as e:
+            logger.info(f"Unsloth: Could not wrap the vLLM LoRA rounding for {RLTrainer_name}: {e}")
         try:
             _wrap_grpo_generate_and_score(getattr(created_module, f"Unsloth{RLTrainer_name}"))
         except Exception as e:
