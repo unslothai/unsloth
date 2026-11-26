@@ -106,8 +106,11 @@ fi
 # a sibling temp dir is on the same filesystem, so the swap is an atomic rename
 parent="$(dirname "$INSTALL_DIR")"
 
+# -L too: a dangling symlink still occupies the path
+present() { [ -e "$1" ] || [ -L "$1" ]; }
+
 # a SIGKILL between the two renames of the swap runs no trap and leaves only the backup
-if [ ! -e "$INSTALL_DIR" ]; then
+if ! present "$INSTALL_DIR"; then
     stranded="$(ls -1dt -- "$INSTALL_DIR".old.* 2>/dev/null | head -n 1 || true)"
     if [ -n "$stranded" ]; then
         echo "[llama-update] restoring the install an interrupted update left at $stranded"
@@ -124,7 +127,7 @@ if [ -z "$IN_PLACE" ]; then
     IN_PLACE=0
     if command -v mountpoint >/dev/null 2>&1 && mountpoint -q "$INSTALL_DIR" 2>/dev/null; then
         IN_PLACE=1
-    elif [ -e "$INSTALL_DIR" ] && [ "$(stat -c %d "$INSTALL_DIR" 2>/dev/null)" != "$(stat -c %d "$parent" 2>/dev/null)" ]; then
+    elif present "$INSTALL_DIR" && [ "$(stat -c %d "$INSTALL_DIR" 2>/dev/null)" != "$(stat -c %d "$parent" 2>/dev/null)" ]; then
         IN_PLACE=1   # filesystem boundary = a volume, on hosts without mountpoint(1)
     fi
 fi
@@ -168,7 +171,7 @@ cleanup() {
                     echo "[llama-update] CRITICAL: restore failed; previous install preserved at $backup" >&2
                 fi
             fi
-        elif [ ! -e "$INSTALL_DIR" ] && [ -e "$backup" ]; then
+        elif ! present "$INSTALL_DIR" && present "$backup"; then
             if ! mv "$backup" "$INSTALL_DIR" 2>/dev/null; then
                 echo "[llama-update] CRITICAL: restore failed; previous install preserved at $backup" >&2
             fi
@@ -206,12 +209,12 @@ if [ "$IN_PLACE" = "1" ]; then
         exit 1
     fi
 else
-    [ ! -e "$INSTALL_DIR" ] || mv "$INSTALL_DIR" "$backup"
+    ! present "$INSTALL_DIR" || mv "$INSTALL_DIR" "$backup"
     if mv "$new" "$INSTALL_DIR"; then
         swap_done=1
     else
         echo "[llama-update] swap failed; restoring previous install" >&2
-        [ ! -e "$backup" ] || mv "$backup" "$INSTALL_DIR"
+        ! present "$backup" || mv "$backup" "$INSTALL_DIR"
         exit 1
     fi
 fi

@@ -1123,6 +1123,16 @@ def test_llama_update_installs_a_missing_bundle(tmp_path: Path):
     assert not list(tmp_path.glob("llama.cpp.old.*"))
 
 
+def test_llama_update_replaces_a_dangling_install_symlink(tmp_path: Path):
+    (tmp_path / "llama.cpp").symlink_to(tmp_path / "gone")
+    res = _run(LLAMA_UPDATE, [], _llama_swap_env(tmp_path))
+    assert res.returncode == 0, res.stderr + res.stdout
+    install = tmp_path / "llama.cpp"
+    assert not install.is_symlink()
+    assert (install / "llama-server").read_text() == "NEW\n"
+    assert not list(tmp_path.glob("llama.cpp.old.*"))
+
+
 def _fetcher_module():
     """Import the build-time fetcher by path; stdlib-only, with a __main__ guard."""
     import importlib.util
