@@ -3209,6 +3209,8 @@ export const ru = {
       },
     },
     chat: {
+      admissionContextCapacity: "Waiting for shared context capacity",
+      admissionServingSlot: "Waiting for a serving slot",
       groups: {
         replies: { title: "Ответы" },
         thinkingTools: { title: "Размышления и инструменты" },

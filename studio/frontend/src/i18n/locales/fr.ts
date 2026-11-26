@@ -3230,6 +3230,8 @@ export const fr = {
       },
     },
     chat: {
+      admissionContextCapacity: "Waiting for shared context capacity",
+      admissionServingSlot: "Waiting for a serving slot",
       groups: {
         replies: { title: "Réponses" },
         thinkingTools: { title: "Réflexion et outils" },

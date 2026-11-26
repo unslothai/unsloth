@@ -25,6 +25,7 @@ import {
   committedServerTuningState,
 } from "../lib/server-tuning-fields";
 import { authFetch, getAuthToken } from "@/features/auth";
+import { translate } from "@/i18n";
 import { isNpuModelId } from "@/features/npu";
 import { withSandboxAttachmentPaths } from "../sandbox-attachments";
 import { prepareHfTokenForUse } from "@/features/hf-auth";
@@ -7483,6 +7484,27 @@ export function createOpenAIStreamAdapter(
               const chunkModel = (chunk as { model?: unknown }).model;
               if (typeof chunkModel === "string" && chunkModel.length > 0) {
                 responseModelId = chunkModel;
+              }
+
+              const admissionStatus = (
+                chunk as unknown as {
+                  _admissionStatus?: { state?: unknown; reason?: unknown };
+                }
+              )._admissionStatus;
+              if (admissionStatus !== undefined) {
+                const threadKey = liveThreadKey(serverCancel);
+                if (admissionStatus.state === "waiting") {
+                  runtime.setToolStatus(
+                    threadKey,
+                    admissionStatus.reason === "context_capacity"
+                      ? translate("settings.chat.admissionContextCapacity")
+                      : translate("settings.chat.admissionServingSlot"),
+                    serverCancel,
+                  );
+                } else {
+                  runtime.setToolStatus(threadKey, null, serverCancel);
+                }
+                continue;
               }
 
               const toolStatusText = (

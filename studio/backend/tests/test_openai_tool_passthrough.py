@@ -3230,6 +3230,94 @@ class TestOpenAICompatibilityHelpers:
 
         asyncio.run(_run())
 
+    def test_openai_admission_stream_explains_a_context_budget_wait(self):
+        async def _run():
+            queue = get_llama_admission_queue("http://llama.admission.context-status.test")
+            config = LlamaAdmissionConfig()
+            blocker = queue.reserve(
+                capacity = 4,
+                config = config,
+                tokens = 29000,
+                budget = 35000,
+            ).lease_nowait()
+            assert blocker is not None
+            reservation = queue.reserve(
+                capacity = 4,
+                config = config,
+                tokens = 8750,
+                budget = 35000,
+            )
+            assert reservation._waiter is not None, "free slots alone do not satisfy the shared KV budget"
+            async def connected():
+                return False
+            request = SimpleNamespace(
+                headers = {"X-Unsloth-Events": "1"},
+                state = SimpleNamespace(),
+                is_disconnected = connected,
+            )
+
+            chunks = _openai_admission_wait_stream_chunks(
+                reservation,
+                config,
+                request = request,
+                cancel_event = None,
+            )
+            try:
+                assert await asyncio.wait_for(chunks.__anext__(), timeout = 0.1) == ": admission-wait\n\n"
+                line = await asyncio.wait_for(chunks.__anext__(), timeout = 0.1)
+                assert line.startswith("data: ")
+                payload = json.loads(line.removeprefix("data: ").strip())
+                assert payload["type"] == "admission_status"
+                assert payload["state"] == "waiting"
+                assert payload["reason"] == "context_capacity"
+                assert payload["free"] == 3
+                assert payload["committed"] == 29000
+                assert payload["budget"] == 35000
+            finally:
+                reservation.cancel()
+                blocker.release()
+                aclose = getattr(chunks, "aclose", None)
+                if aclose is not None:
+                    await aclose()
+
+        asyncio.run(_run())
+
+    def test_openai_admission_stream_stays_openai_clean_without_ui_opt_in(self):
+        async def _run():
+            async def connected():
+                return False
+            queue = get_llama_admission_queue("http://llama.admission.clean-stream.test")
+            config = LlamaAdmissionConfig()
+            blocker = queue.reserve(capacity = 1, config = config).lease_nowait()
+            assert blocker is not None
+            reservation = queue.reserve(capacity = 1, config = config)
+            chunks = _openai_admission_wait_stream_chunks(
+                reservation,
+                config,
+                request = SimpleNamespace(
+                    headers = {},
+                    state = SimpleNamespace(),
+                    is_disconnected = connected,
+                ),
+                cancel_event = None,
+            )
+            try:
+                assert await asyncio.wait_for(chunks.__anext__(), timeout = 0.1) == ": admission-wait\n\n"
+                blocker.release()
+                assert await asyncio.wait_for(chunks.__anext__(), timeout = 0.1) == ": admission-done\n\n"
+                lease = await asyncio.wait_for(chunks.__anext__(), timeout = 0.1)
+                assert lease is not None
+                lease.release()
+            finally:
+                reservation.cancel()
+                if blocker is not None:
+                    blocker.release()
+                aclose = getattr(chunks, "aclose", None)
+                if aclose is not None:
+                    await aclose()
+
+        asyncio.run(_run())
+
     def test_openai_compat_stream_stall_timeout_uses_default(self, monkeypatch):
         monkeypatch.delenv(_OPENAI_COMPAT_STREAM_STALL_TIMEOUT_ENV, raising = False)
         assert _openai_compat_stream_stall_timeout() == 120.0

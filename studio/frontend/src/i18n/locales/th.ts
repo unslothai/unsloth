@@ -3297,6 +3297,8 @@ export const th = {
       },
     },
     chat: {
+      admissionContextCapacity: "Waiting for shared context capacity",
+      admissionServingSlot: "Waiting for a serving slot",
       groups: {
         replies: { title: "คำตอบ" },
         thinkingTools: { title: "การคิดและเครื่องมือ" },

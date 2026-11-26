@@ -1960,6 +1960,32 @@ _LLAMA_STREAM_DISPATCHED = object()
 _OPENAI_ADMISSION_SSE_WAIT = ": admission-wait\n\n"
 # Paired with the above: the slot is ours, so a suspended client clock starts now.
 _OPENAI_ADMISSION_SSE_DONE = ": admission-done\n\n"
+
+
+def _openai_admission_status_sse(reservation, state: str, request: Optional[Request]) -> Optional[str]:
+    """Admission state for clients that opt into Unsloth control frames; OpenAI callers keep only comments."""
+    if not _ui_stream_events_enabled(request):
+        return None
+    snapshot = reservation.snapshot_now()
+    payload = {"type": "admission_status", "state": state}
+    if snapshot is not None:
+        payload.update(
+            {
+                "active": snapshot.active,
+                "capacity": snapshot.capacity,
+                "free": snapshot.free,
+                "queued": snapshot.queued,
+                "committed": snapshot.committed,
+                "budget": snapshot.budget,
+            }
+        )
+        if state == "waiting":
+            # free already discounts slots owed to approved resumes; if one is free but the FIFO still
+            # cannot start, the missing resource is the shared KV/token budget rather than a decode slot.
+            payload["reason"] = "context_capacity" if snapshot.free > 0 else "serving_slot"
+    return f"data: {json.dumps(payload)}\n\n"
+
+
 # A server-side tool still running, unlike a stall keep-alive: durable runs renew their lease on it.
 _OPENAI_TOOL_HEARTBEAT_SSE = ": tool-heartbeat\n\n"
 # Prefill advancing with nothing to stream; renews the lease like the tool heartbeat.
@@ -2910,6 +2936,9 @@ async def _openai_admission_wait_stream_chunks(
     keepalive_interval_s = max(0.001, config.keepalive_interval_s)
     # At once, not after a full interval: a caller must not wait one out to learn it queued.
     yield _OPENAI_ADMISSION_SSE_WAIT
+    status_line = _openai_admission_status_sse(reservation, "waiting", request)
+    if status_line is not None:
+        yield status_line
     next_keepalive_at = time.monotonic() + keepalive_interval_s
     try:
         while True:
@@ -2921,6 +2950,9 @@ async def _openai_admission_wait_stream_chunks(
             lease = reservation.lease_nowait()
             if lease is not None:
                 yield _OPENAI_ADMISSION_SSE_DONE
+                status_line = _openai_admission_status_sse(reservation, "admitted", request)
+                if status_line is not None:
+                    yield status_line
                 yield lease
                 return
 
@@ -2938,6 +2970,9 @@ async def _openai_admission_wait_stream_chunks(
                 lease = None
             if lease is not None:
                 yield _OPENAI_ADMISSION_SSE_DONE
+                status_line = _openai_admission_status_sse(reservation, "admitted", request)
+                if status_line is not None:
+                    yield status_line
                 yield lease
                 return
             await _raise_if_openai_admission_cancelled(

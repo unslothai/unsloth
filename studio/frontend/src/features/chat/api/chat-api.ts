@@ -2276,6 +2276,10 @@ export async function* streamChatCompletions(
           yield { _toolEvent: skillLoadCardEvent(parsed) } as unknown as OpenAIChatChunk;
           continue;
         }
+        if ("type" in parsed && parsed.type === "admission_status") {
+          yield { _admissionStatus: parsed } as unknown as OpenAIChatChunk;
+          continue;
+        }
         if ("type" in parsed && parsed.type === "tool_status") {
           yield {
             _toolStatus: parsed.content ?? "",
