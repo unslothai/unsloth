@@ -4913,6 +4913,36 @@ def _converted_shards_pread(dtype: Any, small_host: Any) -> Any:
     return pread_safetensors(convert_to = dtype, keep = keep, every_shard = every)
 
 
+# A slot turn reserved ahead of time (a coalesced batch takes its place in line when it opens), and whether a call
+# is a follow-up pass of a request already admitted (X/Y cells, Detailer crops), which goes to the front of the line.
+_RESERVED_SLOT_TURN: contextvars.ContextVar[Optional[object]] = contextvars.ContextVar(
+    "unsloth_reserved_slot_turn", default = None
+)
+_SLOT_FOLLOW_UP: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "unsloth_slot_follow_up", default = False
+)
+
+
+@contextmanager
+def reserved_slot_turn(turn: Optional[object]):
+    """Generations started in this context use ``turn``; once it was admitted, later ones are follow-ups."""
+    token = _RESERVED_SLOT_TURN.set(turn)
+    try:
+        yield
+    finally:
+        _RESERVED_SLOT_TURN.reset(token)
+
+
+@contextmanager
+def slot_follow_up():
+    """Generations started in this context continue a request that already held the slot: they go first."""
+    token = _SLOT_FOLLOW_UP.set(True)
+    try:
+        yield
+    finally:
+        _SLOT_FOLLOW_UP.reset(token)
+
+
 def _clip_chunk_count(tokenizer: Any, prompt: str) -> Optional[int]:
     """77-token CLIP windows the prompt fills (75 content tokens each); None when it cannot be counted."""
     if not callable(tokenizer):
@@ -4965,6 +4995,8 @@ class DiffusionBackend:
         # Generations waiting for the slot, in arrival order: only the head competes for _generate_lock.
         self._slot_turns: collections.deque = collections.deque()
         self._slot_turn_changed = threading.Condition(threading.Lock())
+        # Called (from any thread) when the line moves or the slot frees: a waiting batch wakes on it, not a poll.
+        self._slot_listeners: list[Callable[[], None]] = []
         self._state: Optional[_LoadState] = None
         self._loading: Optional[_LoadingState] = None
         # Bumped on begin_load/unload so a superseded worker neither commits nor stamps progress
@@ -5078,6 +5110,58 @@ class DiffusionBackend:
             with self._generation_cancel_lock:
                 self._transition_owns_slot = False
                 self._generate_lock.release()
+            self._notify_slot_listeners()
+
+    def add_slot_listener(self, callback: Callable[[], None]) -> Callable[[], None]:
+        """``callback`` runs whenever the line moves or the slot frees; returns its remover."""
+        with self._slot_turn_changed:
+            self._slot_listeners.append(callback)
+
+        def remove() -> None:
+            with self._slot_turn_changed:
+                if callback in self._slot_listeners:
+                    self._slot_listeners.remove(callback)
+
+        return remove
+
+    def _notify_slot_listeners(self) -> None:
+        with self._slot_turn_changed:
+            listeners = list(getattr(self, "_slot_listeners", ()))
+        for callback in listeners:
+            try:
+                callback()
+            except Exception:  # noqa: BLE001 - a listener never breaks the slot
+                pass
+
+    def reserve_slot_turn(self) -> object:
+        """A place at the back of the line, held before the generation that uses it starts (``reserved_slot_turn``).
+        Release it with ``release_slot_turn`` if no generation takes it."""
+        turn = object()
+        with self._slot_turn_changed:
+            self._slot_turns.append(turn)
+        return turn
+
+    def release_slot_turn(self, turn: object) -> None:
+        self._leave_slot_turn(turn)
+
+    def slot_turn_ready(self, turn: object) -> bool:
+        """The reserved turn is first in line and the slot is free: a generation using it starts at once."""
+        with self._slot_turn_changed:
+            first = (
+                not self._slot_turns or self._slot_turns[0] is turn or turn not in self._slot_turns
+            )
+        return first and not self._generate_lock.locked()
+
+    @contextmanager
+    def jump_slot_queue(self):
+        """A follow-up pass of the request holding the slot (a Detailer crop) takes the lock before anyone waiting."""
+        turn = object()
+        with self._slot_turn_changed:
+            self._slot_turns.appendleft(turn)
+        try:
+            yield
+        finally:
+            self._leave_slot_turn(turn)
 
     def _leave_slot_turn(self, turn: object) -> None:
         with self._slot_turn_changed:
@@ -5086,6 +5170,7 @@ class DiffusionBackend:
             except ValueError:
                 return
             self._slot_turn_changed.notify_all()
+        self._notify_slot_listeners()
 
     def _await_slot_turn(self, turn: object, cancel: threading.Event) -> None:
         """Blocks until ``turn`` is the oldest waiting generation; a cancel still ends the wait within 0.1 s."""
@@ -5101,9 +5186,18 @@ class DiffusionBackend:
         later arrival cannot overtake it. Yields to teardown fences after taking the lock, keeping its place; the
         zero-fence check and cancel registration must share one _lock section."""
         admitted = False
-        turn = object()
+        reserved = _RESERVED_SLOT_TURN.get()
         with self._slot_turn_changed:
-            self._slot_turns.append(turn)
+            if reserved is not None and reserved in self._slot_turns:
+                # A coalesced batch keeps the place it took when it opened.
+                turn = reserved
+            else:
+                turn = object()
+                if reserved is not None or _SLOT_FOLLOW_UP.get():
+                    # A follow-up pass of a request already admitted goes first.
+                    self._slot_turns.appendleft(turn)
+                else:
+                    self._slot_turns.append(turn)
         with self._generation_cancel_lock:
             self._queued_generate_cancels.add(cancel)
             self._queued_cancel_owners[cancel] = current_account_id()
@@ -5114,7 +5208,14 @@ class DiffusionBackend:
                     if cancel.is_set():
                         raise RuntimeError(DIFFUSION_CANCELLED_MSG)
                     if self._generate_lock.acquire(timeout = 0.1):
-                        break
+                        with self._slot_turn_changed:
+                            first = self._slot_turns[0] is turn
+                        if first:
+                            break
+                        # A follow-up pass went to the front while this one waited on the lock.
+                        self._generate_lock.release()
+                        self._notify_slot_listeners()
+                        self._await_slot_turn(turn, cancel)
                 with self._lock:
                     if not self._teardown_waiters:
                         with self._generation_cancel_lock:
@@ -5156,6 +5257,7 @@ class DiffusionBackend:
                         self._active_generate_account = None
                     self._generation_owns_slot = False
                     self._generate_lock.release()
+                self._notify_slot_listeners()
         finally:
             self._leave_slot_turn(turn)
             if not admitted:

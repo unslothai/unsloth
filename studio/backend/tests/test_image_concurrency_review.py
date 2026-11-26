@@ -487,3 +487,142 @@ def test_the_route_keeps_finished_images_from_a_failed_call(studio):
     assert [c["prompts"] for c in backend.calls] == [["a fox", "a cat"], None]
     assert backend.calls[1]["prompt"] == "an owl"
     assert sorted(record["account"] for record in saved) == ["alice", "bob", "carol"]
+
+
+def _wait_until(predicate, timeout = 5.0):
+    import time
+    deadline = time.monotonic() + timeout
+    while not predicate():
+        assert time.monotonic() < deadline, "condition never held"
+        threading.Event().wait(0.005)
+
+
+def _hold_slot(engine):
+    """A render holding the slot in a thread until the returned Event is set."""
+    held, release = threading.Event(), threading.Event()
+
+    def run():
+        with engine._generation_slot(threading.Event()):
+            held.set()
+            release.wait(10)
+
+    threading.Thread(target = run, daemon = True).start()
+    held.wait(5)
+    return release
+
+
+def _queued_render(
+    engine,
+    served,
+    name,
+    context = None,
+):
+    import contextlib
+
+    def run():
+        with context() if context is not None else contextlib.nullcontext():
+            with engine._generation_slot(threading.Event()):
+                served.append(name)
+
+    import contextvars
+
+    # Like the image executor: the thread runs in a copy of the caller's context, reserved turn included.
+    thread = threading.Thread(target = contextvars.copy_context().run, args = (run,), daemon = True)
+    thread.start()
+    return thread
+
+
+def test_a_batch_keeps_the_place_in_line_it_took_when_it_opened():
+    from core.inference.diffusion import DiffusionBackend, reserved_slot_turn
+
+    engine = DiffusionBackend()
+    served: list = []
+    release = _hold_slot(engine)
+    turn = engine.reserve_slot_turn()  # the batch opens behind the running render
+    later = _queued_render(engine, served, "arrived later")
+    _wait_until(lambda: len(engine._slot_turns) == 2)
+    assert not engine.slot_turn_ready(turn)
+    woken = []
+    remove = engine.add_slot_listener(lambda: woken.append(1))
+    release.set()
+    _wait_until(lambda: engine.slot_turn_ready(turn))
+    assert woken, "the slot release woke the batch"
+    remove()
+    with reserved_slot_turn(turn):
+        batch = _queued_render(engine, served, "batch")
+    batch.join(5)
+    later.join(5)
+    assert served == ["batch", "arrived later"]
+
+
+def test_follow_up_passes_go_before_requests_waiting_in_line(monkeypatch):
+    import core.inference.diffusion_engine_router as engine_router
+    from core.inference import diffusion_detailer
+    from core.inference.diffusion import DiffusionBackend, slot_follow_up
+
+    engine = DiffusionBackend()
+    served: list = []
+    release = _hold_slot(engine)
+    waiting = _queued_render(engine, served, "waiting")
+    _wait_until(lambda: len(engine._slot_turns) == 1)
+    follow_up = _queued_render(engine, served, "x/y cell 2", context = slot_follow_up)
+    _wait_until(lambda: len(engine._slot_turns) == 2)
+    release.set()
+    follow_up.join(5)
+    waiting.join(5)
+    assert served == ["x/y cell 2", "waiting"]
+
+    # A Detailer crop takes the lock directly; it too goes before a waiting request.
+    served.clear()
+    monkeypatch.setattr(engine_router, "get_active_diffusion_engine", lambda: engine)
+    release = _hold_slot(engine)
+    waiting = _queued_render(engine, served, "waiting")
+    _wait_until(lambda: len(engine._slot_turns) == 1)
+    got = []
+
+    def detailer():
+        lock = diffusion_detailer._take_generation_slot()
+        served.append("detailer crop")
+        lock.release()
+        engine._notify_slot_listeners()
+        got.append(lock)
+
+    crop = threading.Thread(target = detailer, daemon = True)
+    crop.start()
+    _wait_until(lambda: len(engine._slot_turns) == 2)
+    release.set()
+    crop.join(5)
+    waiting.join(5)
+    assert served == ["detailer crop", "waiting"]
+
+
+def test_a_waiting_batch_wakes_from_the_slot_instead_of_polling():
+    calls = {"wait": 0}
+    rendering = {"on": True}
+
+    async def wait():
+        calls["wait"] += 1
+        await asyncio.sleep(0.05)
+        rendering["on"] = False
+
+    async def run_batch(
+        prompts,
+        seeds,
+        owners = None,
+    ):
+        return _echo(prompts, seeds)
+
+    async def run():
+        tasks = [
+            asyncio.ensure_future(
+                batching.generate(
+                    "key", p, 1, None, busy = lambda: rendering["on"], run_batch = run_batch, wait = wait
+                )
+            )
+            for p in ("a", "b")
+        ]
+        return await asyncio.gather(*tasks)
+
+    results = asyncio.run(run())
+    assert [r["images"] for r in results] == [["a"], ["b"]]
+    assert calls["wait"] == 1

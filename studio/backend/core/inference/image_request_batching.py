@@ -227,6 +227,8 @@ async def generate(
     fits: Optional[Callable[[int], bool]] = None,
     splittable: Optional[Callable[[BaseException], bool]] = None,
     salvage: Optional[Callable[[BaseException], Optional[dict[str, Any]]]] = None,
+    on_lead: Optional[Callable[[], None]] = None,
+    wait: Optional[Callable[[], Awaitable[None]]] = None,
 ) -> Optional[dict[str, Any]]:
     """None = render alone. ``key`` names no account, so any account joins; ``owner`` is the caller's.
     ``check`` raises when a joined member must leave (its own Stop); ``ride`` scopes it as rendering."""
@@ -259,8 +261,14 @@ async def generate(
     batch.images = n
     try:
         try:
+            # The leader takes its place in the slot's line now, so requests arriving later cannot overtake it.
+            if on_lead is not None:
+                on_lead()
             while busy():
-                await asyncio.sleep(POLL_S)
+                if wait is not None:
+                    await wait()
+                else:
+                    await asyncio.sleep(POLL_S)
         except Exception as exc:
             if shared_outcome(exc):
                 _share(exc, batch.members[1:], owner)

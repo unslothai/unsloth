@@ -53367,12 +53367,13 @@ async def _generate_xy_grid(request: DiffusionGenerateRequest) -> DiffusionGener
     try:
         _xy_grid_stops.append(stop)
         with render_fence():
-            for index in plan.order:
+            for position, index in enumerate(plan.order):
                 if ticket.cancelled():
                     raise HTTPException(status_code = 409, detail = DIFFUSION_CANCELLED_MSG)
                 captured: list[Any] = []
-                # The engine binds each cell's cancel to the ticket before it waits for the slot.
-                with generation_ticket(ticket):
+                # The engine binds each cell's cancel to the ticket before it waits for the slot. Cells after the
+                # first continue a grid that already held the slot, so they go first in line.
+                with generation_ticket(ticket), _follow_up_pass() if position else nullcontext():
                     result = await _generate_diffusion_image_run(
                         plan.cells[index].request, captured = captured
                     )
@@ -53735,10 +53736,12 @@ async def _generate_diffusion_image_run(
         _diffusion_persist_active += 1
         try:
             with account_access.media_generation("diffusion"):
-                # Crop inpaints wait on the render slot too, so use the same pool.
-                await _image_generate_in_thread(
-                    _run_detailer, backend, request, result, enhancement, detailer
-                )
+                # Crop inpaints wait on the render slot too, so use the same pool; they continue this render,
+                # so they go first in line.
+                with _follow_up_pass():
+                    await _image_generate_in_thread(
+                        _run_detailer, backend, request, result, enhancement, detailer
+                    )
         except BaseException:
             _diffusion_persist_active -= 1
             raise
@@ -55938,6 +55941,26 @@ def _frozen_kwarg(value: Any) -> Hashable:
     return value
 
 
+@contextmanager
+def _reserved_turn(turn: Any):
+    """Generations started here use the slot turn a coalesced batch reserved (diffusers engine only)."""
+    if turn is None:
+        yield
+        return
+    from core.inference.diffusion import reserved_slot_turn
+
+    with reserved_slot_turn(turn):
+        yield
+
+
+@contextmanager
+def _follow_up_pass():
+    """Generations started here continue a request that already held the slot, so they go first in line."""
+    from core.inference.diffusion import slot_follow_up
+    with slot_follow_up():
+        yield
+
+
 # Not part of the batch key: the shared call shows the leader's preview, and the leader's own image is first.
 _COALESCE_KEY_IGNORED = frozenset({"live_preview"})
 
@@ -56002,10 +56025,31 @@ async def _coalesced_image_generate(
 
     # Wait only for the generation found on arrival, so a later one taking the slot cannot starve the batch.
     arrived_behind: list = []
+    # The leader's place in the slot's line, taken when its batch opens (engines that keep a line only).
+    lead: dict = {}
+    reserve = getattr(backend, "reserve_slot_turn", None)
+    loop = asyncio.get_running_loop()
+    woken = asyncio.Event()
+
+    def on_lead() -> None:
+        if reserve is None:
+            return
+        lead["turn"] = reserve()
+        lead["remove"] = backend.add_slot_listener(lambda: loop.call_soon_threadsafe(woken.set))
+
+    async def wait() -> None:
+        # Woken by the slot itself; the timeout covers lock holders outside the line.
+        try:
+            await asyncio.wait_for(woken.wait(), timeout = 0.25)
+        except asyncio.TimeoutError:
+            pass
+        woken.clear()
 
     def busy() -> bool:
         if stopped.is_set():
             raise RuntimeError(DIFFUSION_CANCELLED_MSG)
+        if "turn" in lead:
+            return not backend.slot_turn_ready(lead["turn"])
         try:
             current = holder()
         except Exception:  # noqa: BLE001 -- no busy signal; render individually
@@ -56030,7 +56074,7 @@ async def _coalesced_image_generate(
             # The preview decodes row 0 of each forward, and an OOM split or an equal-length run can put another
             # account's image there: a batch shared across accounts shows no preview.
             call.update(_live_preview_kwarg(backend.generate, False))
-        with generation_ticket(ticket):
+        with generation_ticket(ticket), _reserved_turn(lead.get("turn")):
             try:
                 return await _image_generate_in_thread(
                     backend.generate,
@@ -56103,7 +56147,8 @@ async def _coalesced_image_generate(
 
     waiter = getattr(backend, "generation_waiter", None)
     rider = getattr(backend, "generation_rider", None)
-    with waiter(stopped) if waiter is not None else nullcontext():
+
+    async def _coalesce_in_line() -> Optional[dict]:
         result = await image_request_batching.generate(
             key,
             prompt,
@@ -56119,11 +56164,29 @@ async def _coalesced_image_generate(
             fits = fits,
             splittable = splittable,
             salvage = salvage,
+            on_lead = on_lead,
+            wait = wait,
         )
         # A Stop recorded while the batch ran is final: never fall back to rendering alone or retry.
         if result is None and stopped.is_set():
             raise RuntimeError(DIFFUSION_CANCELLED_MSG)
         return result
+
+    try:
+        with waiter(stopped) if waiter is not None else nullcontext():
+            result = await _coalesce_in_line()
+            # A leader that ends up alone renders in the place it held, not at the back of the line.
+            if result is None and "turn" in lead and not stopped.is_set():
+                with _reserved_turn(lead["turn"]):
+                    result = await _image_generate_in_thread(
+                        backend.generate, prompt = prompt, seed = seed, batch_size = n, **generate_kwargs
+                    )
+            return result
+    finally:
+        if "remove" in lead:
+            lead["remove"]()
+        if "turn" in lead:
+            backend.release_slot_turn(lead["turn"])
 
 
 async def _batched_openai_images(
