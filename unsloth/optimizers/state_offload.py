@@ -268,6 +268,7 @@ class _StateOffloader:
         self.overlapped_steps = 0
         self.streams = None
         self.sequence = None
+        self.ring_oom_fallbacks = 0
 
     def _host_buffer(self, param, key, src):
         buffer = self.buffers.get((param, key))
@@ -506,6 +507,14 @@ class _StateOffloader:
             self.streams = (torch.cuda.Stream(device), torch.cuda.Stream(device))
         return self.streams
 
+    def _new_ring(self, device, capacity):
+        """The staging ring, or None (serial copies) if its one contiguous block hits OOM (fragmentation)."""
+        try:
+            return _Ring(device, capacity, self._streams(device))
+        except torch.cuda.OutOfMemoryError:
+            self.ring_oom_fallbacks += 1
+            return None
+
     def _ring_plan(self, params, chunks):
         found = self._ring_tensors(params)
         if found is None:
@@ -528,12 +537,11 @@ class _StateOffloader:
             return None
         return device, capacity, [(part, [t for p in part for t in sizes[p]]) for part in parts]
 
-    def _step_ring(self, optimizer, step, args, kwargs, params, grads, plan, devices):
+    def _step_ring(self, optimizer, step, args, kwargs, params, grads, plan, ring, devices):
         """Chunked step with neighbouring parts' copies overlapping each part's step; same updates."""
         device, capacity, parts = plan
         state = self.optimizer.state
         grad_of = dict(zip(params, grads))
-        ring = _Ring(device, capacity, self._streams(device))
         devices.add(device)
         for p in params:
             p.grad = None
@@ -579,7 +587,11 @@ class _StateOffloader:
         if capacity <= 0:
             yield
             return
-        sequence = _Sequence(_Ring(device, capacity, self._streams(device)), parts)
+        ring = self._new_ring(device, capacity)
+        if ring is None:
+            yield
+            return
+        sequence = _Sequence(ring, parts)
         self.sequence = sequence
         try:
             yield
@@ -646,11 +658,12 @@ class _StateOffloader:
             self._sequence_end(self.sequence)
         grads = [p.grad for p in params]
         devices = set()
-        ring = self._ring_plan(params, chunks)
+        plan = self._ring_plan(params, chunks)
+        ring = self._new_ring(plan[0], plan[1]) if plan is not None else None
         self.inside = True
         try:
             if ring is not None:
-                self._step_ring(optimizer, step, args, kwargs, params, grads, ring, devices)
+                self._step_ring(optimizer, step, args, kwargs, params, grads, plan, ring, devices)
             else:
                 for chunk in chunks:
                     members = set(chunk)

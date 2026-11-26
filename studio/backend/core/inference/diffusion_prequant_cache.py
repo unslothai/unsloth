@@ -608,6 +608,16 @@ def _hub_coords(path: Any) -> Optional[tuple[str, str, str, str]]:
     )
 
 
+def _plain_link_target(target: str) -> str:
+    """``os.readlink`` on Windows returns an absolute target as an extended-length path (``\\\\?\\C:\\...``), and
+    ``realpath`` keeps that prefix, so it never equals the plain ``blobs`` directory. Strip it back to the plain form."""
+    if target.startswith("\\\\?\\UNC\\"):
+        return "\\\\" + target[8:]
+    if target.startswith("\\\\?\\"):
+        return target[4:]
+    return target
+
+
 def _repo_blob_name(path: str, blobs_dir: str) -> str:
     """Name of the ``<repo>/blobs`` entry a snapshot file links to, i.e. its etag. huggingface_hub >= 1.32 links that
     entry on to a shared store (``<cache>/blobs/<xx>/<xet hash>``), so only the first hop into ``blobs_dir`` counts."""
@@ -617,7 +627,7 @@ def _repo_blob_name(path: str, blobs_dir: str) -> str:
         if os.path.normcase(os.path.realpath(os.path.dirname(current))) == blobs:
             return os.path.basename(current)
         try:
-            target = os.readlink(current)
+            target = _plain_link_target(os.readlink(current))
         except (OSError, ValueError):
             break  # not a link: a copied file (no symlinks) or the chain's end
         current = os.path.join(os.path.dirname(current), target)

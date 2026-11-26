@@ -6112,6 +6112,12 @@ export const zhTW = {
     maximize: "最大化視窗",
     restore: "還原視窗",
     close: "關閉視窗",
+    mediaCodecs: {
+      title: "產生的影片可能無法播放",
+      // {command}: an apt command line, never translated.
+      description: "此系統缺少 GStreamer 影片解碼器。請使用以下指令安裝：{command}",
+      copy: "複製指令",
+    },
   },
   runtimeUpdate: {
     installAudio: "安裝音訊執行環境",

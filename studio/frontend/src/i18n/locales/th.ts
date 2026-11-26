@@ -6161,6 +6161,12 @@ export const th = {
     maximize: "ขยายหน้าต่างใหญ่สุด",
     restore: "คืนขนาดหน้าต่าง",
     close: "ปิดหน้าต่าง",
+    mediaCodecs: {
+      title: "วิดีโอที่สร้างอาจเล่นไม่ได้",
+      // {command}: an apt command line, never translated.
+      description: "ระบบนี้ไม่มีตัวถอดรหัสวิดีโอของ GStreamer ติดตั้งด้วยคำสั่ง: {command}",
+      copy: "คัดลอกคำสั่ง",
+    },
   },
   runtimeUpdate: {
     installAudio: "ติดตั้งรันไทม์เสียง",

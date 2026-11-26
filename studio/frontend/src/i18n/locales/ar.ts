@@ -6033,6 +6033,12 @@ export const ar = {
     maximize: "تكبير النافذة",
     restore: "استعادة حجم النافذة",
     close: "إغلاق النافذة",
+    mediaCodecs: {
+      title: "قد لا تعمل مقاطع الفيديو المُنشأة",
+      // {command}: an apt command line, never translated.
+      description: "يفتقد هذا النظام إلى أدوات فك ترميز الفيديو من GStreamer. ثبّتها باستخدام: {command}",
+      copy: "نسخ الأمر",
+    },
   },
   runtimeUpdate: {
     installAudio: "تثبيت بيئة تشغيل الصوت",

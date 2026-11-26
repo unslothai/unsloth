@@ -11,8 +11,9 @@
     model = FastModel.get_peft_model(model, ...)
     apply_expert_parallel(model, mesh)               # 1-D ep mesh, or 2-D (replicas, "ep"), ep innermost
 
-Every rank reads its own batches (DDP). Everything but the routed experts stays whole and data parallel: DDP
-averages its gradients. Within an ep group rank r owns the contiguous experts [r E / ep, (r + 1) E / ep) and their
+Every rank reads its own batches (DDP), or with Ulysses context parallel (UNSLOTH_PARALLEL="ep=2,cp=2") its shard
+of each row's sequence: the experts are token-local, so a cp shard's tokens dispatch like a data parallel row's.
+Everything but the routed experts stays whole and data parallel: DDP averages its gradients. Within an ep group rank r owns the contiguous experts [r E / ep, (r + 1) E / ep) and their
 LoRA factors (sliced from the 1-GPU init, so the adapter equals one GPU's). Each experts call sends every token
 once to each rank of its group owning one of its top-k experts (all-to-all), that rank runs its experts on the
 (token, slot) pairs it got and the weighted outputs come back the same way, summed per token; the backward is the
@@ -49,6 +50,7 @@ __all__ = [
     "ep_env_load",
     "ep_refuse_fast_inference",
     "ep_refuse_composition",
+    "ep_refuse_per_expert_lists",
     "ep_refuse_trainer_fsdp",
     "ep_env_apply",
     "ep_trainer_setup",
@@ -154,6 +156,34 @@ def ep_refuse_composition(model):
             "True): each rank would hold only its own experts' LoRA, and the vLLM LoRA sync would send one "
             "rank's slice. Load with fast_inference = False."
         )
+
+
+_PER_EXPERT_LISTS = "per-expert Linear lists"
+
+
+def _per_expert_lists_refusal(problems):
+    lists = sorted({p for p in problems if isinstance(p, str) and p.startswith(_PER_EXPERT_LISTS)})
+    if not lists or any(p is None for p in problems):
+        return None
+    return (
+        f"Unsloth: expert parallel cannot shard this model's experts yet: {lists[0]}. Load with "
+        f"load_in_4bit = False, or unset {_EP_ENV} (or ep in UNSLOTH_PARALLEL) and run DDP or UNSLOTH_FSDP2=1."
+    )
+
+
+def ep_refuse_per_expert_lists(model):
+    """Right after from_pretrained under UNSLOTH_EP_SIZE, before get_peft_model: no MoE block shards because its
+    experts are per-expert Linear lists (zoo's GptOssExpertsBnb4bit for a load_in_4bit gpt-oss)."""
+    if not isinstance(model, nn.Module) or is_expert_parallel(model):
+        return
+    tpn = _tpn()
+    problems = [
+        tpn.expert_shard_problem(block, ep_env_size())
+        for block in tpn.moe_blocks_with_experts(model)
+    ]
+    message = _per_expert_lists_refusal(problems)
+    if message is not None:
+        raise NotImplementedError(message)
 
 
 def ep_refuse_trainer_fsdp(trainer):
@@ -263,12 +293,13 @@ def _ep_experts(shard, prior, hidden, index, weights):
     x = hidden.reshape(-1, shape[-1])
     tokens = x.shape[0]
     index = index.reshape(tokens, _route_width(index, tokens))
-    if (
+    dense = (
         weights.dim() == 2
         and weights.shape[-1] == shard.experts
         and index.shape[-1] != shard.experts
-    ):
-        weights = weights.gather(1, index)  # dense [tokens, E] routing weights
+    )
+    if dense:
+        weights = weights.gather(1, index)
     weights = weights.reshape(tokens, _route_width(weights, tokens))
     # Each token goes once to every rank owning one of its experts.
     owner = torch.div(index, shard.per_rank, rounding_mode = "floor").clamp_(0, ep - 1)
@@ -294,8 +325,12 @@ def _ep_experts(shard, prior, hidden, index, weights):
         xc = got_x.index_select(0, row)
         ic = (got_index[row, slot] - lo).unsqueeze(1)
         wc = got_w[row, slot].unsqueeze(1)
+    if dense:
+        # 4.x gpt-oss experts take E from routing_weights' width: rebuild it dense over the local experts.
+        wc = wc.new_zeros((wc.shape[0], shard.per_rank)).scatter(1, ic, wc)
     with tpn._expert_locals(shard):
         yc = prior(xc, ic, wc)
+    yc = yc.reshape(-1, yc.shape[-1])  # transformers 4.x gpt-oss returns [rows, 1, hidden]
     y_got = yc.new_zeros((got_x.shape[0], yc.shape[-1]))
     if row.numel():
         y_got = y_got.index_add(0, row, yc)
@@ -412,6 +447,9 @@ def apply_expert_parallel(model, mesh = None):
                 f"{type(block).__name__}, but they cannot be sharded now ({problem}); load in full."
             )
     if not sharded:
+        message = _per_expert_lists_refusal([p for _, p in kept]) if ep > 1 else None
+        if message is not None:
+            raise NotImplementedError(message)
         reasons = sorted({str(p) for _, p in kept})[:3]
         raise ValueError(f"Unsloth: expert parallel found no shardable MoE block ({reasons}).")
     for block in sharded:
