@@ -999,6 +999,56 @@ def test_sidebar_sections_concurrent_clients_keep_unrelated_edits(client):
     assert result.json()["sectionByChatId"] == {"comparison-pair": "b"}
 
 
+def test_sidebar_sections_cancelled_placements_keep_the_concurrent_order(client):
+    from copy import deepcopy
+
+    path = "/chat/sidebar-sections"
+    projects_top = {"sectionId": None, "id": "projects", "targetId": "pinned", "edge": "top"}
+    projects_bottom = {**projects_top, "edge": "bottom"}
+    initial = client.post(
+        path,
+        json = {
+            "operationId": "initial-order",
+            "base": None,
+            "layout": {
+                "sections": {"notes": {"name": "Notes", "sort": "manual"}},
+                "sectionOrder": ["pinned", "projects", "notes"],
+            },
+        },
+    )
+    assert initial.is_success
+    base = initial.json()
+
+    first = {**base, "sectionOrder": ["projects", "pinned", "notes"]}
+    result = client.post(
+        path,
+        json = {
+            "operationId": "remote-move",
+            "base": base,
+            "layout": first,
+            "orderMoves": [projects_top],
+        },
+    )
+    assert result.is_success
+    assert result.json()["sectionOrder"] == first["sectionOrder"]
+
+    second = deepcopy(base)
+    second["sections"]["research"] = {"name": "Research", "sort": "manual"}
+    second["sectionOrder"] = ["pinned", "projects", "research", "notes"]
+    result = client.post(
+        path,
+        json = {
+            "operationId": "cancel-and-create",
+            "base": base,
+            "layout": second,
+            "orderMoves": [projects_top, projects_bottom],
+        },
+    )
+    assert result.is_success
+    assert result.json()["sectionOrder"] == ["projects", "pinned", "research", "notes"]
+    assert result.json()["sections"]["research"]["name"] == "Research"
+
+
 @pytest.mark.parametrize(
     ("initial", "first", "second", "expected", "sort"),
     [

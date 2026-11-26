@@ -31,6 +31,18 @@ def _merge_order(primary: list[str], other: list[str]) -> list[str]:
 
 
 def _edited_order(saved, base, layout, importing, moves):
+    if not importing and base != layout:
+        common = set(base).intersection(layout)
+        reordered = [key for key in base if key in common] != [
+            key for key in layout if key in common
+        ]
+        if not reordered:
+            # Membership edits can carry cancelled drags between unchanged rows.
+            moves = [
+                move for move in moves if move["id"] not in common or move["targetId"] not in common
+            ]
+        elif not moves:
+            return _merge_order(layout, saved)
     if moves and base != layout:
         if saved == base and set(saved).issubset(layout):
             return _merge_order(layout, saved)
@@ -41,11 +53,6 @@ def _edited_order(saved, base, layout, importing, moves):
                 order.remove(row)
                 order.insert(order.index(target) + (move["edge"] == "bottom"), row)
         return order
-    if not importing and base != layout:
-        # Insertions and deletions alone leave a concurrent reorder intact.
-        common = set(base).intersection(layout)
-        if [key for key in base if key in common] != [key for key in layout if key in common]:
-            return _merge_order(layout, saved)
     return _merge_order(saved, layout)
 
 
