@@ -76,7 +76,8 @@ def _local(p):
 def _ep_layout(p):
     from .ep_native import _EP
     layout = getattr(p, _EP, None)
-    return None if layout is None or layout[0] == "4bit" else layout
+    # A per-expert module (ep_expert_lists) is whole on the rank holding it, like a pipeline stage's layer.
+    return None if layout is None or layout[0] in ("4bit", "list") else layout
 
 
 def _all_gather_object(obj):
@@ -115,9 +116,11 @@ def _tree_keys(model):
         for j, (name, p) in enumerate(module._parameters.items()):
             if p is not None:
                 keys.setdefault(prefix + name, path + ((0, j),))
+        # Per-expert containers (ep_expert_lists) hold only this rank's experts: order them by global index.
+        experts = getattr(module, "_unsloth_global_expert_keys", False)
         for c, (name, child) in enumerate(module._modules.items()):
             if child is not None:
-                walk(child, f"{prefix}{name}.", path + ((1, c),), seen)
+                walk(child, f"{prefix}{name}.", path + ((1, int(name) if experts else c),), seen)
 
     walk(model, "", (), set())
     return keys

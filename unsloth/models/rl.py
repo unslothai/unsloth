@@ -993,9 +993,13 @@ def _wrap_distillation_padding_mask(trainer_cls):
     def wrapped(self, unwrapped_model, *args, **kwargs):
         # Distillation calls the backbone directly, bypassing CausalLM's _has_no_labels update.
         missing = object()
+        # teacher_model = "base" holds no modules itself: flag the student it scores.
+        modules_owner = getattr(
+            unwrapped_model, "_unsloth_adapter_off_student_model", unwrapped_model
+        )
         states = [
             (module, getattr(module, "_unsloth_keep_padding_mask", missing))
-            for module in unwrapped_model.modules()
+            for module in modules_owner.modules()
             if hasattr(module, "embed_tokens")
         ]
         for module, _ in states:
@@ -1123,6 +1127,29 @@ def _restore_optimizer_from_host(record):
         state[name] = restored[id(host)]
     for param, host in grads:
         param.grad = restored[id(host)]
+
+
+def _wrap_grpo_vllm_lora_rounding(trainer_cls):
+    """train / evaluate of a GRPO trainer with use_vllm run under vllm_lora_rounding, so the trainer rounds the
+    LoRA term as the rollout does; the previous order comes back afterwards (a later SFT keeps the fused one)."""
+    from ..kernels.utils import vllm_lora_rounding
+    for name in ("train", "evaluate"):
+        original = getattr(trainer_cls, name, None)
+        if original is None or getattr(original, "_unsloth_vllm_lora_rounding", False):
+            continue
+
+        def wrapped(
+            self,
+            *args,
+            _original = original,
+            **kwargs,
+        ):
+            with vllm_lora_rounding(bool(getattr(self, "use_vllm", False))):
+                return _original(self, *args, **kwargs)
+
+        functools.update_wrapper(wrapped, original)
+        wrapped._unsloth_vllm_lora_rounding = True
+        setattr(trainer_cls, name, wrapped)
 
 
 def _wrap_grpo_generate_and_score(trainer_cls):
@@ -3649,6 +3676,25 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "pass\n"
         )
 
+    # fast_inference sizes vLLM max_num_seqs before the trainer exists: warn when one generate call exceeds it.
+    if trainer_file in ("grpo_trainer", "rloo_trainer"):
+        RLTrainer_post += (
+            "try:\n"
+            "    from unsloth.models._vllm_batch_cap import grpo_check_max_num_seqs as _unsloth_check_max_num_seqs\n"
+            "    _unsloth_check_max_num_seqs(self)\n"
+            "except ImportError:\n"
+            "    pass\n"
+        )
+
+    # unsloth_distillation_coef / unsloth_sampler_kl_coef: validate once and resolve the teacher (adapter-off base by default).
+    if trainer_file == "grpo_trainer":
+        RLTrainer_post += (
+            "from unsloth.models._on_policy_distillation import grpo_setup_distillation as _unsloth_grpo_setup_distillation\n"
+            "from unsloth.models._on_policy_distillation import grpo_check_sampler_kl as _unsloth_grpo_check_sampler_kl\n"
+            "_unsloth_grpo_setup_distillation(self, locals().get('_unsloth_grpo_teacher_model', None))\n"
+            "_unsloth_grpo_check_sampler_kl(self)\n"
+        )
+
     # GRPO repeats each prompt's images num_generations times; encode each distinct image once (UNSLOTH_GRPO_IMAGE_DEDUP=0 disables).
     if trainer_file == "grpo_trainer":
         RLTrainer_post += (
@@ -3663,18 +3709,20 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
 
     if trainer_file == "grpo_trainer":
         RLTrainer_post += (
-            "if os.environ.get('UNSLOTH_GRPO_ROUTING_REPLAY', '0') == '1' and hasattr(model, 'vllm_engine'):\n"
+            "# R3 replays vLLM's rollout routes (fast_inference); R2 (UNSLOTH_GRPO_ROUTING_REPLAY_R2=1) replays pi_old's, no vLLM needed.\n"
+            "_unsloth_replay_on = os.environ.get('UNSLOTH_GRPO_ROUTING_REPLAY', '0') == '1' and hasattr(model, 'vllm_engine')\n"
+            "if _unsloth_replay_on or os.environ.get('UNSLOTH_GRPO_ROUTING_REPLAY_R2', '0') == '1':\n"
             "    try:\n"
             "        from unsloth_zoo.routing_replay import install_routing_replay\n"
             "    except ImportError:\n"
-            "        print('Unsloth: UNSLOTH_GRPO_ROUTING_REPLAY=1 needs a newer unsloth_zoo: pip install -U unsloth_zoo')\n"
+            "        print('Unsloth: MoE routing replay needs a newer unsloth_zoo: pip install -U unsloth_zoo')\n"
             "    else:\n"
             "        from unsloth.models._routing_replay import routing_replay_hook_snapshot, prepare_routing_replay\n"
             "        # TRL scores the PEFT reference through self.model.disable_adapter(), so prepare that object.\n"
             "        _unsloth_replay_model = getattr(self, 'model', None)\n"
             "        _unsloth_replay_model = model if _unsloth_replay_model is None else _unsloth_replay_model\n"
             "        _unsloth_replay_hooks_before = routing_replay_hook_snapshot(_unsloth_replay_model)\n"
-            "        install_routing_replay(model, model.vllm_engine, getattr(self, 'processing_class', None))\n"
+            "        install_routing_replay(model, getattr(model, 'vllm_engine', None), getattr(self, 'processing_class', None))\n"
             "        # Pick the router weight formulas outside compilation; PEFT reference scoring routes naturally.\n"
             "        prepare_routing_replay(_unsloth_replay_model, _unsloth_replay_hooks_before)\n"
             "pass\n"
@@ -3876,6 +3924,38 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         max_seq_length_post += (
             "\n        self.context_parallel_size = context_parallel_size"
             "\n        self.context_parallel_backend = context_parallel_backend"
+        )
+
+    # On-policy distillation and the StableReinforce sampler KL (unsloth/models/_on_policy_distillation.py).
+    if trainer_file == "grpo_trainer" and "unsloth_distillation_coef" not in call_args:
+        max_seq_length_pre += """
+    unsloth_distillation_coef : Optional[float] = field(
+        default = 0.0,
+        metadata = {'help': 'On-policy distillation: adds -coef * (log q - log p_teacher) per sampled token to the advantages (Tinker uses 1.0). 0 disables it.'},
+    )
+    unsloth_distillation_teacher : Optional[str] = field(
+        default = 'base',
+        metadata = {'help': "Teacher for unsloth_distillation_coef: 'base' is the LoRA student's base model with the adapter disabled. Pass any other teacher as GRPOTrainer(teacher_model = model)."},
+    )
+    unsloth_sampler_kl_coef : Optional[float] = field(
+        default = 0.0,
+        metadata = {'help': 'StableReinforce: adds coef * KL(sampler || policy) per sampled token (Tinker uses 0.01). 0 disables it.'},
+    )
+    unsloth_sampler_kl_estimator : Optional[str] = field(
+        default = 'k1',
+        metadata = {'help': "Estimator for unsloth_sampler_kl_coef: 'k1' (log q - log p) or 'k3' (r - 1 - log r, r = p / q)."},
+    )"""
+        max_seq_length_call += (
+            "unsloth_distillation_coef = 0.0,"
+            "unsloth_distillation_teacher = 'base',"
+            "unsloth_sampler_kl_coef = 0.0,"
+            "unsloth_sampler_kl_estimator = 'k1',"
+        )
+        max_seq_length_post += (
+            "\n        self.unsloth_distillation_coef = unsloth_distillation_coef"
+            "\n        self.unsloth_distillation_teacher = unsloth_distillation_teacher"
+            "\n        self.unsloth_sampler_kl_coef = unsloth_sampler_kl_coef"
+            "\n        self.unsloth_sampler_kl_estimator = unsloth_sampler_kl_estimator"
         )
 
     if "output_dir" in call_args:
@@ -4458,6 +4538,16 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         logger.info(f"Unsloth: Could not wrap the full-eval cast for {RLTrainer_name}: {e}")
 
     if trainer_file == "grpo_trainer":
+        # Inside the optimizer-parking wrapper below, so a parked optimizer also covers the partial rollout.
+        try:
+            from ._partial_rollout import wrap_grpo_partial_rollout
+            wrap_grpo_partial_rollout(getattr(created_module, f"Unsloth{RLTrainer_name}"))
+        except Exception as e:
+            logger.info(f"Unsloth: Could not wrap GRPO partial rollout for {RLTrainer_name}: {e}")
+        try:
+            _wrap_grpo_vllm_lora_rounding(getattr(created_module, f"Unsloth{RLTrainer_name}"))
+        except Exception as e:
+            logger.info(f"Unsloth: Could not wrap the vLLM LoRA rounding for {RLTrainer_name}: {e}")
         try:
             _wrap_grpo_generate_and_score(getattr(created_module, f"Unsloth{RLTrainer_name}"))
         except Exception as e:
@@ -4502,6 +4592,14 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             logger.info(f"Unsloth: Could not wrap PPO rollouts for {RLTrainer_name}: {e}")
     if trainer_file in ("distillation_trainer", "server_distillation_trainer"):
         _wrap_distillation_padding_mask(getattr(created_module, f"Unsloth{RLTrainer_name}"))
+    if trainer_file == "grpo_trainer":
+        try:
+            from ._on_policy_distillation import wrap_grpo_on_policy_distillation
+            wrap_grpo_on_policy_distillation(getattr(created_module, f"Unsloth{RLTrainer_name}"))
+        except Exception as e:
+            logger.info(
+                f"Unsloth: Could not wrap GRPO on-policy distillation for {RLTrainer_name}: {e}"
+            )
     if trainer_file == "gkd_trainer" and "_unsloth_trl_compute_loss" in RLTrainer_source:
         try:
             _wrap_grpo_hidden_states_fallback(
@@ -6347,6 +6445,54 @@ def _async_grpo_masked_compute_loss(compute_loss):
     return functools.wraps(compute_loss)(namespace[compute_loss.__name__])
 
 
+# StableReinforce (Tinker stable_reinforce): coef * KL(sampler || policy) per trained token, k1 = log q - log p or
+# k3 = r - 1 - log r with r = p / q. AsyncGRPO's old_log_probs are the sampler's logprobs. Not IS-weighted or masked:
+# the tokens were drawn from the sampler, and the KL is what keeps a stale or masked token near it.
+_ASYNC_GRPO_SAMPLER_KL = (
+    "{i}_unsloth_kl_log_ratio = torch.clamp(torch.nan_to_num(log_probs - old_log_probs, nan = 0.0), min = -20.0, max = 20.0)\n"
+    "{i}per_token_loss = per_token_loss + self._unsloth_sampler_kl_coef * ("
+    "torch.expm1(_unsloth_kl_log_ratio) - _unsloth_kl_log_ratio "
+    "if self._unsloth_sampler_kl_estimator == 'k3' else -_unsloth_kl_log_ratio)\n"
+)
+
+
+@functools.lru_cache(maxsize = None)
+def _async_grpo_sampler_kl_compute_loss(compute_loss, masked = False):
+    source = textwrap.dedent(inspect.getsource(compute_loss))
+    if masked:
+        if source.count(_ASYNC_GRPO_PPO_LOSS) != 1:
+            raise ValueError(
+                "Unsloth: importance_sampling_mask = True could not find the PPO loss in "
+                f"{compute_loss.__qualname__}, so it cannot be masked. Drop importance_sampling_mask for this trainer."
+            )
+        source = source.replace(_ASYNC_GRPO_PPO_LOSS, _ASYNC_GRPO_MASKED_LOSS)
+        for old, new in _ASYNC_GRPO_MASK_METRICS:
+            source = source.replace(old, new)
+    # The KL joins the per-token loss right before TRL reduces it: `loss = per_token_loss.sum()` (TRL >= 1.16) or
+    # `loss = (per_token_loss * completion_mask).sum()` (1.13 - 1.15).
+    lines = source.splitlines(keepends = True)
+    hits = [
+        n
+        for n, line in enumerate(lines)
+        if line.lstrip().startswith(("loss = per_token_loss", "loss = (per_token_loss"))
+    ]
+    if len(hits) != 1 or "old_log_probs" not in source or "log_probs" not in source:
+        raise ValueError(
+            "Unsloth: unsloth_sampler_kl_coef could not find where "
+            f"{compute_loss.__qualname__} reduces its per-token loss, so the sampler KL cannot be added."
+        )
+    line = lines[hits[0]]
+    indent = line[: len(line) - len(line.lstrip())]
+    lines.insert(hits[0], _ASYNC_GRPO_SAMPLER_KL.format(i = indent))
+    namespace = {}
+    exec(
+        compile("".join(lines), f"<unsloth sampler kl {compute_loss.__qualname__}>", "exec"),
+        compute_loss.__globals__,
+        namespace,
+    )
+    return functools.wraps(compute_loss)(namespace[compute_loss.__name__])
+
+
 def _import_trl_async_grpo_module():
     # TRL >= 1.18: stable module (experimental is a subclassing shim, so both are covered); 1.13-1.17: experimental.
     errors = []
@@ -6429,13 +6575,29 @@ def patch_trl_async_grpo():
         model,
         *args,
         importance_sampling_mask = False,
+        unsloth_sampler_kl_coef = 0.0,
+        unsloth_sampler_kl_estimator = "k1",
         **kwargs,
     ):
-        masked_loss = (
-            _async_grpo_masked_compute_loss(type(self).compute_loss)
-            if importance_sampling_mask
-            else None
-        )
+        sampler_kl_coef = float(unsloth_sampler_kl_coef or 0.0)
+        if not (0.0 <= sampler_kl_coef < float("inf")):
+            raise ValueError(
+                f"Unsloth: unsloth_sampler_kl_coef must be a finite float >= 0, not {unsloth_sampler_kl_coef!r}."
+            )
+        if unsloth_sampler_kl_estimator not in ("k1", "k3"):
+            raise ValueError(
+                f"Unsloth: unsloth_sampler_kl_estimator must be 'k1' or 'k3', not {unsloth_sampler_kl_estimator!r}."
+            )
+        if sampler_kl_coef != 0.0:
+            masked_loss = _async_grpo_sampler_kl_compute_loss(
+                type(self).compute_loss, bool(importance_sampling_mask)
+            )
+        else:
+            masked_loss = (
+                _async_grpo_masked_compute_loss(type(self).compute_loss)
+                if importance_sampling_mask
+                else None
+            )
         config = args[1] if len(args) >= 2 else kwargs.get("args")
         if not isinstance(model, str) and config is None:
             name = getattr(getattr(model, "config", None), "_name_or_path", "") or "model"
@@ -6503,6 +6665,8 @@ def patch_trl_async_grpo():
         if server is not None:
             self._unsloth_vllm_server = server
             weakref.finalize(self, server.stop)
+        self._unsloth_sampler_kl_coef = sampler_kl_coef
+        self._unsloth_sampler_kl_estimator = unsloth_sampler_kl_estimator
         if masked_loss is not None:
             self.compute_loss = types.MethodType(masked_loss, self)
 

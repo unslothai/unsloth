@@ -265,6 +265,28 @@ def gkd_trainer_text_tokenizer(call_args, extra_args):
 RL_EXTRA_ARGS["gkd_trainer"].append(gkd_trainer_text_tokenizer)
 
 
+def distillation_trainer_adapter_off_teacher(call_args, extra_args):
+    # teacher_model = "base": the LoRA student's base weights with the adapter disabled, no second copy loaded.
+    if "teacher_model" not in call_args or "model" not in call_args:
+        return ""
+    return (
+        "from unsloth.models._on_policy_distillation import resolve_teacher_model as _unsloth_resolve_teacher\n"
+        "teacher_model = _unsloth_resolve_teacher(teacher_model, model, args, type(self).__name__)\n"
+    )
+
+
+RL_EXTRA_ARGS["gkd_trainer"].append(distillation_trainer_adapter_off_teacher)
+RL_EXTRA_ARGS["distillation_trainer"].append(distillation_trainer_adapter_off_teacher)
+
+
+def grpo_trainer_distillation_teacher(call_args, extra_args):
+    # GRPOTrainer(..., teacher_model = model) for unsloth_distillation_coef; TRL's GRPOTrainer has no such argument.
+    return "_unsloth_grpo_teacher_model = kwargs.pop('teacher_model', None)\n"
+
+
+RL_EXTRA_ARGS["grpo_trainer"].append(grpo_trainer_distillation_teacher)
+
+
 def gkd_trainer_generate_before_counting(function_name, function):
     if function_name != "training_step":
         return function
@@ -1929,6 +1951,139 @@ def _unsloth_seq_packing_moe_noise(model, result, ref, cmask):
         int(getattr(model, "_unsloth_seq_packing_moe_noise_passes", 0) or 0) + 1
     )
     return True
+
+
+def _unsloth_seq_packing_shape_noise(model, result, ref, cmask):
+    """True when a failed packing self-verify is bf16 GEMM shape noise, not a packing bug.
+
+    cuBLAS picks its kernel from M, so a row scored inside a packed [1, T] stream rounds differently from the same
+    row alone: Qwen3-0.6B on an L4 reaches 0.79 nats on single tokens, past the 0.7 max-diff gate, while every
+    document's mean stays near 0.02. A real bug moves whole documents: a boundary-ignoring leak gives per-document
+    means of 1.5 to 8.9 and puts 94% of tokens past 0.7. So: every document with 8+ scored tokens has a mean |d| of
+    at most 0.1 and at most 1% of scored tokens reach 0.7. UNSLOTH_GRPO_PACKING_SHAPE_NOISE=0 disables."""
+    import os
+
+    if os.environ.get("UNSLOTH_GRPO_PACKING_SHAPE_NOISE", "1").strip().lower() in (
+        "0",
+        "false",
+        "no",
+        "off",
+    ):
+        return False
+    try:
+        live = cmask > 0
+        n = int(live.sum())
+        if n < 64:
+            return False
+        d = (result.detach().float() - ref.detach().float()).abs().masked_fill(~live, 0.0)
+        if not bool(d.isfinite().all()):
+            return False
+        if int((d >= 0.7).sum()) * 100 > n:
+            return False
+        row_n = live.sum(dim = -1)
+        rows = row_n >= 8
+        if not bool(rows.any()):
+            return False
+        if float((d.sum(dim = -1)[rows] / row_n[rows]).max()) > 0.1:
+            return False
+    except Exception:
+        return False
+    model._unsloth_seq_packing_shape_noise_passes = (
+        int(getattr(model, "_unsloth_seq_packing_shape_noise_passes", 0) or 0) + 1
+    )
+    return True
+
+
+def _unsloth_seq_packing_verify_rows(
+    lengths,
+    completion_counts,
+    trusted,
+    limit = 3,
+    model = None,
+):
+    """Rows the packing self-verify scores alone as ground truth (host ints, no sync). Until packing is trusted,
+    under UNSLOTH_GRPO_SEQ_PACKING_VERIFY=1, and for RoPE that switches with length (rows on either side of the
+    switch run different frequencies alone), every row. Otherwise a re-verify of trusted packing at a larger
+    shape scores at most `limit` rows: the last scored row (it follows every other document in the packed
+    stream, so any cross-document leak reaches it), the longest row (the new position range) and the row with
+    the most completion tokens."""
+    import os
+
+    rows = [i for i, (n, c) in enumerate(zip(lengths, completion_counts)) if n >= 2 and c > 0]
+    if (
+        (not trusted)
+        or limit is None
+        or limit <= 0
+        or len(rows) <= limit
+        or os.environ.get("UNSLOTH_GRPO_SEQ_PACKING_VERIFY", "0") == "1"
+        or (model is not None and _unsloth_seq_packing_rope_switch(model) is not None)
+    ):
+        return [i for i, n in enumerate(lengths) if n >= 2]
+    pick = [rows[-1]]
+    for i in (
+        max(rows, key = lambda r: lengths[r]),
+        max(rows, key = lambda r: completion_counts[r]),
+    ):
+        if i not in pick:
+            pick.append(i)
+    for i in sorted(rows, key = lambda r: -completion_counts[r]):
+        if len(pick) >= limit:
+            break
+        if i not in pick:
+            pick.append(i)
+    return sorted(pick)
+
+
+def _unsloth_seq_packing_rope_switch(model):
+    """Length where the model's RoPE changes its frequencies (LongRoPE short / long factors, dynamic NTK), else None."""
+    config = getattr(model, "config", None)
+    if hasattr(config, "get_text_config"):
+        try:
+            config = config.get_text_config()
+        except Exception:
+            pass
+    scalings = []
+    for scaling in (
+        getattr(config, "rope_scaling", None),
+        getattr(config, "rope_parameters", None),
+    ):
+        if isinstance(scaling, dict):
+            # transformers 5 can key rope_parameters by layer type
+            scalings.append(scaling)
+            scalings.extend(v for v in scaling.values() if isinstance(v, dict))
+    for scaling in scalings:
+        if str(scaling.get("rope_type", scaling.get("type", ""))).lower() in (
+            "longrope",
+            "su",
+            "dynamic",
+        ):
+            switch = (
+                scaling.get("original_max_position_embeddings", None)
+                or getattr(config, "original_max_position_embeddings", None)
+                or getattr(config, "max_position_embeddings", None)
+            )
+            return int(switch) if switch else None
+    return None
+
+
+def _unsloth_seq_packing_trusted_bound(model, value):
+    """Trusted packing bound after a verify passed at `value` tokens: 2x by default, so record lengths that grow a little do
+    not re-run the verify every time. RoPE that switches with length (LongRoPE short / long factors, dynamic NTK)
+    never widens across `original_max_position_embeddings`, and past it stays at `value`."""
+    import os
+
+    value = int(value)
+    # UNSLOTH_GRPO_SEQ_PACKING_VERIFY_GROWTH=1 trusts only the exact verified shape (the old rule).
+    try:
+        growth = float(os.environ.get("UNSLOTH_GRPO_SEQ_PACKING_VERIFY_GROWTH", "2"))
+    except ValueError:
+        growth = 2.0
+    if not growth > 1:
+        return value
+    switch = _unsloth_seq_packing_rope_switch(model)
+    if switch is None:
+        return int(growth * value)
+    return min(int(growth * value), switch) if value <= switch else value
 
 
 def _unsloth_grpo_packing_leaks(self, unwrapped):
@@ -4417,6 +4572,20 @@ def _unsloth_vllm_engine_quantization(llm):
     return None
 
 
+def _unsloth_trl_vllm_init_error(error):
+    """vLLM >= 0.28 has no built-in bitsandbytes, so TRL's own engine for a bnb checkpoint fails with only
+    "Unknown quantization method: bitsandbytes". The error to raise instead, or None to re-raise vLLM's."""
+    text = str(error)
+    if "bitsandbytes" not in text or "nknown quantization" not in text:
+        return None
+    return RuntimeError(
+        "Unsloth: this vLLM has no bitsandbytes support (vLLM >= 0.28 moved it into vllm-bnb-plugin), so TRL "
+        "cannot build its own vLLM engine for this 4-bit model (use_vllm = True, fast_inference = False). "
+        "`pip install vllm-bnb-plugin` and load the model with fast_inference = True, so Unsloth builds the "
+        "vLLM engine itself and shares the 4-bit weights. Or load a 16-bit base (load_in_4bit = False)."
+    )
+
+
 def _unsloth_trl_vllm_engine_check(generation, model):
     """Called right after TRL >= 0.28 builds its own colocated vLLM (use_vllm = True, fast_inference = False).
 
@@ -5329,7 +5498,9 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                 _pk_pad,
                                 **({} if _eos_rows is None else {"eos_rows": _eos_rows}),
                             )
-                        _pk_active = int(_pk_cmask.any(dim = 1).sum())
+                        # Completion tokens per row, one read: active rows and the re-verify row pick.
+                        _pk_ccount_cpu = _pk_cmask.sum(dim = 1).tolist()
+                        _pk_active = sum(1 for _pk_c in _pk_ccount_cpu if _pk_c > 0)
                     if _pk_fits and (_pk_ok is True or _pk_active >= 2):
                         _pk_pos = (_pk_keep.cumsum(dim = 1) - 1)[_pk_keep].unsqueeze(0)
                         _pk_chunks = max(1, total_rows * multiplier)
@@ -5405,7 +5576,13 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                         if _pk_ok is True and _pk_T <= _pk_vT and _pk_maxseg <= _pk_vS:
                             _pk_use = True  # already verified for this shape
                         else:
-                            # verify against the per-row forward (ground truth)
+                            # verify against the per-row forward (ground truth); a re-verify of trusted packing scores at most 3 rows
+                            _pk_vrows = _unsloth_seq_packing_verify_rows(
+                                _pk_len_cpu,
+                                _pk_ccount_cpu,
+                                _pk_ok is True and _pk_vT > 0,
+                                model = unwrapped_model,
+                            )
                             _pk_ref = torch.zeros_like(_pk_result)
                             with torch.no_grad():
                                 with torch.amp.autocast(
@@ -5413,7 +5590,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                     dtype = self._autocast_dtype,
                                     enabled = getattr(self, "_autocast_enabled", True),
                                 ):
-                                    for _pk_i in range(total_rows):
+                                    for _pk_i in _pk_vrows:
                                         _pk_ni = _pk_len_cpu[_pk_i]
                                         if _pk_ni < 2:
                                             continue
@@ -5460,25 +5637,44 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                             device_synchronize()
                             # Compare over the loss-mask region only.
                             _pk_cm = _pk_cmask.float()
+                            if len(_pk_vrows) < total_rows:
+                                # Rows not scored alone have no reference: leave them out of the compare.
+                                _pk_vsel = torch.zeros(
+                                    total_rows, 1, dtype = _pk_cm.dtype, device = _pk_cm.device
+                                )
+                                _pk_vsel[_pk_vrows] = 1
+                                _pk_cm = _pk_cm * _pk_vsel
                             _pk_diff = float(((_pk_result - _pk_ref).abs() * _pk_cm).max())
                             if UNSLOTH_ENABLE_LOGGING:
                                 print(
-                                    f"[Unsloth] GRPO seq-packing (no-grad) verify: T={_pk_T} maxseg={_pk_maxseg} packed-vs-perrow max|d|={_pk_diff:.4f}",
+                                    f"[Unsloth] GRPO seq-packing (no-grad) verify: T={_pk_T} maxseg={_pk_maxseg} rows={len(_pk_vrows)}/{total_rows} packed-vs-perrow max|d|={_pk_diff:.4f}",
                                     flush = True,
                                 )
                             # Kernel-noise floor is ~0.25; cross-sample contamination is >= 2.4.
-                            if _pk_diff < 7e-1 or _unsloth_seq_packing_moe_noise(
-                                unwrapped_model, _pk_result, _pk_ref, _pk_cm
+                            # Shape noise: bf16 GEMMs round a row differently at another M (L4 tops 0.7).
+                            if (
+                                _pk_diff < 7e-1
+                                or _unsloth_seq_packing_moe_noise(
+                                    unwrapped_model, _pk_result, _pk_ref, _pk_cm
+                                )
+                                or _unsloth_seq_packing_shape_noise(
+                                    unwrapped_model, _pk_result, _pk_ref, _pk_cm
+                                )
                             ):
                                 unwrapped_model._unsloth_seq_packing_nograd_ok = True
                                 unwrapped_model._unsloth_seq_packing_nograd_strikes = 0
                                 # Widen the trusted shape only when at least 2 completion rows exercised cross-sample packing; a single row proves nothing.
+                                # 2x past this shape, so a slowly growing record length does not re-verify every time.
                                 if _pk_active >= 2:
                                     unwrapped_model._unsloth_seq_packing_nograd_verified_T = max(
-                                        _pk_vT, _pk_T
+                                        _pk_vT,
+                                        _unsloth_seq_packing_trusted_bound(unwrapped_model, _pk_T),
                                     )
                                     unwrapped_model._unsloth_seq_packing_nograd_verified_seg = max(
-                                        _pk_vS, _pk_maxseg
+                                        _pk_vS,
+                                        _unsloth_seq_packing_trusted_bound(
+                                            unwrapped_model, _pk_maxseg
+                                        ),
                                     )
                                 _pk_ok = True
                                 _pk_use = True
@@ -6228,6 +6424,7 @@ def _patch_grpo_accumulated_loss_moe_noise(source):
     if "_pack_ref" in source and "_pack_cm" in source:
         source = _GRPO_SEQ_PACKING_GRAD_TOL.sub(
             "if _pack_diff < 7e-1 or _unsloth_seq_packing_moe_noise("
+            "unwrapped_model, _pack_result, _pack_ref, _pack_cm) or _unsloth_seq_packing_shape_noise("
             "unwrapped_model, _pack_result, _pack_ref, _pack_cm):",
             source,
             count = 1,
@@ -7061,6 +7258,10 @@ RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(grpo_compute_loss))
 RL_PRE_ITEMS["grpo_trainer"].append(_class_source(UnslothEfficientGRPO))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_seq_packing_verify_verdict))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_seq_packing_moe_noise))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_seq_packing_shape_noise))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_seq_packing_rope_switch))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_seq_packing_verify_rows))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_seq_packing_trusted_bound))
 RL_PRE_ITEMS["grpo_trainer"].append(
     _patch_grpo_accumulated_loss_moe_noise(
         _patch_grpo_accumulated_loss_seq_packing_kill(
@@ -7245,6 +7446,14 @@ def grpo_trainer_compute_loss(function_name, function):
         ref_logps = inputs.get("ref_per_token_logps", None)
         # x - x.detach() preserves gradients from x.
         advantages = inputs["advantages"]
+        # On-policy distillation (unsloth_distillation_coef): the teacher's per-token advantages join the rewards'.
+        _distill_advantages = inputs.get("unsloth_distillation_advantages", None)
+        if _distill_advantages is not None:
+            if advantages.dim() == 1:
+                advantages = advantages.unsqueeze(1)
+            advantages = advantages + _distill_advantages.to(
+                device = advantages.device, dtype = advantages.dtype
+            )
         old_logps = inputs.get("old_per_token_logps", None)
 
         input_ids = input_ids[:, -logits_to_keep:]
@@ -7318,6 +7527,18 @@ def grpo_trainer_compute_loss(function_name, function):
                 num_items_in_batch = num_items_in_batch,
                 current_gradient_accumulation_steps = current_gradient_accumulation_steps,
                 num_processes = num_processes,
+                # Only when on: grpo_check_sampler_kl has then verified the zoo takes them.
+                **(
+                    {
+                        "sampler_kl_coef": float(self.args.unsloth_sampler_kl_coef),
+                        "sampler_kl_estimator": getattr(
+                            self.args, "unsloth_sampler_kl_estimator", None
+                        )
+                        or "k1",
+                    }
+                    if float(getattr(self.args, "unsloth_sampler_kl_coef", 0.0) or 0.0) != 0.0
+                    else {}
+                ),
             )
         else:
             # With beta = 0 and num_iterations = 1 the no-grad path (and its zoo gate) never runs, and an older
@@ -7572,6 +7793,22 @@ def grpo_trainer_compute_loss(function_name, function):
 
         if advantages.dim() == 1:
             advantages = advantages.unsqueeze(1)
+        if (
+            advantages.shape[1] != 1
+            and coef_1.dim() == 2
+            and advantages.shape[1] != coef_1.shape[1]
+        ):
+            # Distillation's per-token advantages are in the completion layout; coef_1 is in the zoo's left-packed
+            # one. Move them over for the clip metrics, as the zoo did for the loss.
+            if completion_mask.shape == coef_1.shape:
+                from unsloth_zoo.rl_replacements import (
+                    align_logprobs_with_mask as _unsloth_align_logprobs_with_mask,
+                )
+                advantages = _unsloth_align_logprobs_with_mask(
+                    advantages.to(completion_mask.device), completion_mask.to(torch.int32)
+                )
+            else:
+                advantages = inputs["advantages"].reshape(-1, 1)
 
         if self.loss_type in ["grpo", "bnpo", "dr_grpo", "dapo", "luspo"]:
             is_low_clipped = (coef_1 < 1 - self.epsilon_low) & (advantages < 0)
@@ -7974,8 +8211,14 @@ def vllm_generation_init_patch():
                 f"{indent}    if getattr(self, 'return_sampling_mask', False) and not _unsloth_engine_returns_sampling_mask(self.llm):\n"
                 f"{indent}        self.return_sampling_mask = False\n"
                 f"{indent}else:\n"
-                + textwrap.indent(llm_block, indent + "    ")
+                f"{indent}    try:\n"
+                + textwrap.indent(llm_block, indent + "        ")
                 + "\n"
+                + f"{indent}    except Exception as _unsloth_init_error:\n"
+                f"{indent}        _unsloth_replacement = _unsloth_trl_vllm_init_error(_unsloth_init_error)\n"
+                f"{indent}        if _unsloth_replacement is None:\n"
+                f"{indent}            raise\n"
+                f"{indent}        raise _unsloth_replacement from _unsloth_init_error\n"
                 + f"{indent}    _unsloth_trl_vllm_engine_check(self, model)"
             )
 
@@ -7988,6 +8231,7 @@ def vllm_generation_init_patch():
             _unsloth_engine_returns_sampling_mask
         )
         vllm_generation._unsloth_trl_vllm_engine_check = _unsloth_trl_vllm_engine_check
+        vllm_generation._unsloth_trl_vllm_init_error = _unsloth_trl_vllm_init_error
         return patched_src
 
     # Newer versions have sync_weights or reload rpc calls; earlier ones are stripped in the patched grpo_trainer above.
@@ -8678,6 +8922,9 @@ def _unsloth_prepare_frozen_teacher(accelerator, teacher):
     """Like accelerate's prepare_model, but keeps a frozen teacher off the training card when another GPU fits it
     (accelerate would move it there, or refuse it if quantized). UNSLOTH_KD_TEACHER_PLACEMENT=0 disables."""
     default = lambda: accelerator.prepare_model(teacher, evaluation_mode = True)
+    if getattr(teacher, "_unsloth_adapter_off_teacher", False):
+        # teacher_model = "base" is the student itself with the adapter off: nothing to place or wrap.
+        return teacher
     try:
         from accelerate.utils import DistributedType
 
@@ -9486,6 +9733,17 @@ def _unsloth_dpo_loss_head(
     return _unsloth_dpo_chunked_head(self, model, inputs, "_compute_loss")
 
 
+def _unsloth_top1_half_kwargs(fn, _cache = {}):
+    """TRL <= 1.14 token accuracy is the half-logit argmax; older zoo lacks the kwarg and keeps fp32."""
+    if fn not in _cache:
+        try:
+            import inspect
+            _cache[fn] = "is_top1_half_logits" in inspect.signature(fn).parameters
+        except Exception:
+            _cache[fn] = False
+    return {"is_top1_half_logits": True} if _cache[fn] else {}
+
+
 def _unsloth_dpo_loss_stats(
     self,
     chunked,
@@ -9513,6 +9771,7 @@ def _unsloth_dpo_loss_stats(
             return_mean_logits = not ref,
             return_is_top1 = not ref,
             entropy_requires_grad = False,
+            **({} if ref else _unsloth_top1_half_kwargs(_unsloth_fused_linear_logprobs)),
         )
     if not torch.compiler.is_compiling():
         try:
@@ -9715,6 +9974,7 @@ for _dpo_item in (
     _unsloth_dpo_nll,
     _unsloth_dpo_forward,
     _unsloth_dpo_loss_head,
+    _unsloth_top1_half_kwargs,
     _unsloth_dpo_loss_stats,
 ):
     RL_PRE_ITEMS["dpo_trainer"].append(inspect.getsource(_dpo_item))

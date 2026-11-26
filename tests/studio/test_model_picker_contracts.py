@@ -1822,7 +1822,9 @@ def test_every_pick_route_invalidates_the_staged_intent():
     """Local picks skip loadOrStage, so one helper clears the staged intent at the top of every pick."""
     for rel in ("features/images/images-page.tsx", "features/video/video-page.tsx"):
         src = _read(rel)
-        helper = re.search(r"const beginPick = useCallback\(\(\) => \{(.*?)\}, \[\]\);", src, re.S)
+        helper = re.search(
+            r"const beginPick = useCallback\(\(\) => \{(.*?)\n  \}, \[[^\]]*\]\);", src, re.S
+        )
         assert helper, f"{rel}: no shared pick-invalidation helper"
         body = helper.group(1)
         for cleared in (

@@ -1914,6 +1914,59 @@ def _plain_expert(t):
     )
 
 
+def _is_packed_expert(t):
+    """unsloth_zoo's frozen packed expert stack (NVFP4 / MXFP8 / MXFP4 / block-FP8 codes with their scales)."""
+    packed = _loaded_zoo_module("packed_experts")
+    check = getattr(packed, "is_packed_expert_param", None)
+    return callable(check) and isinstance(t, torch.Tensor) and bool(check(t))
+
+
+def _packed_expert_problem(p, E, tp):
+    """Why the packed stack `p` cannot be cut by expert index over tp, or None. Its codes and every companion
+    tensor (block scales, per-expert global scales) are expert-major; a companion with one leading row is shared."""
+    if p.requires_grad:
+        return "a trainable packed expert stack"
+    if p.dim() < 3 or p.shape[0] != E or not callable(getattr(p, "_init_kwargs", None)):
+        return f"a packed expert stack {tuple(p.shape)} not stacked by expert"
+    if tp is not None and (E % tp or E // tp < 2):
+        return f"packed experts: {E} experts do not split into at least 2 per rank over {tp}"
+    for key, value in p._init_kwargs().items():
+        if isinstance(value, torch.Tensor) and value.dim() and value.shape[0] not in (E, 1):
+            return f"packed experts: {key} {tuple(value.shape)} is not stacked by expert"
+    return None
+
+
+def _packed_expert_slice(p, lo, hi):
+    """Experts [lo, hi) of the packed stack `p` (codes and expert-major companions, bitwise), the same class."""
+    E = p.shape[0]
+    kwargs = dict(p._init_kwargs())
+    for key, value in kwargs.items():
+        if isinstance(value, torch.Tensor) and value.dim() and value.shape[0] == E:
+            kwargs[key] = value[lo:hi].clone()
+    new = type(p)(p.data[lo:hi].clone(), requires_grad = False, **kwargs)
+    if hasattr(p, "_is_hf_initialized"):
+        new._is_hf_initialized = p._is_hf_initialized
+    return new
+
+
+def _shard_expert_packed(owner, name, lo, hi, E, mesh, tp):
+    p = owner._parameters[name]
+    preload = getattr(p, _EXPERT_PRELOAD, None)
+    if preload is not None:
+        if preload != (E, tp, tuple(mesh.mesh.tolist())):
+            raise ValueError(
+                f"Unsloth: the packed experts '{name}' were sharded at load as {preload} (experts, ranks, rank "
+                f"ids), not over this mesh; pass the same ep mesh to both."
+            )
+        new = p
+        new.__dict__.pop(_EXPERT_PRELOAD, None)
+    else:
+        new = _packed_expert_slice(p, lo, hi)
+    new._original_shape = torch.Size((hi - lo,) + tuple(p._original_shape)[1:])
+    owner._parameters[name] = new
+    return new
+
+
 # A bitsandbytes 4-bit expert stack (zoo moe_utils_bnb4bit: packed [n, 1] bytes, expert-major, logical shape in
 # _original_shape) sharded by expert index: rank r keeps the bytes and absmax blocks of experts [lo, hi).
 EXPERT_STACK = "expert_stack"
@@ -2078,7 +2131,12 @@ def _patch_param_wrapper_preloaded_shape():
     def get_param(self):
         param = original(self)
         preload = getattr(param, _EXPERT_PRELOAD, None)
-        if preload is None or _is_params4bit(param) or not isinstance(param, torch.Tensor):
+        if (
+            preload is None
+            or _is_params4bit(param)
+            or not isinstance(param, torch.Tensor)
+            or _is_packed_expert(param)  # its _original_shape already holds the whole stack
+        ):
             return param
         return _WholeStackShape(param, (preload[0],) + tuple(param.shape[1:]))
 
@@ -2105,8 +2163,13 @@ def _shard_expert_params4bit(owner, name, lo, hi, E, mesh, rank, tp):
     return new
 
 
-def expert_shard_problem(block, tp = None):
-    """Why `block`'s routed experts cannot be sharded by index over tp exactly, or None when they can."""
+def expert_shard_problem(
+    block,
+    tp = None,
+    packed = True,
+):
+    """Why `block`'s routed experts cannot be sharded by index over tp exactly, or None when they can. `packed`:
+    accept zoo's frozen packed stacks (expert parallel slices them; tensor parallel cannot regather them)."""
     chain = _experts_chain(block)
     if not chain:
         return "no `experts` child"
@@ -2159,6 +2222,23 @@ def expert_shard_problem(block, tp = None):
                     return f"{name} was sharded by sharded_loading as {preload}, not for {E} experts over tp {tp}"
                 continue
             problem = _expert_params4bit_problem(p, E, tp)
+            if problem is not None:
+                return f"{name}: {problem}"
+            continue
+        if _is_packed_expert(p):
+            if not packed:
+                return f"{name} is {type(p).__name__} (packed experts are sharded under expert parallel only)"
+            preload = getattr(p, _EXPERT_PRELOAD, None)
+            if preload is not None:
+                if (
+                    preload[0] != E
+                    or (tp is not None and preload[1] != tp)
+                    or p.shape[0] * preload[1] != E
+                    or tuple(p._original_shape)[0] != E
+                ):
+                    return f"{name} was sharded at load as {preload}, not for {E} experts over {tp}"
+                continue
+            problem = _packed_expert_problem(p, E, tp)
             if problem is not None:
                 return f"{name}: {problem}"
             continue
@@ -2428,6 +2508,10 @@ def _shard_moe_experts(
         if _is_params4bit(leaf._parameters[name]):
             # Frozen, so a plain local Params4bit (E % tp == 0: no padding experts); tp_replica regathers it.
             _shard_expert_params4bit(leaf, name, lo, hi, E, mesh, rank, tp)
+            continue
+        if _is_packed_expert(leaf._parameters[name]):
+            # Frozen packed codes and scales, cut by expert (E % tp == 0); only expert parallel gets here.
+            _shard_expert_packed(leaf, name, lo, hi, E, mesh, tp)
             continue
         _shard_expert_param(leaf, name, 0, 1, 1, E, E_pad, mesh, rank, tp)
         shard.swaps.append((leaf, name))
@@ -3829,7 +3913,7 @@ def apply_tensor_parallel(
         elif not shard_experts:
             problem = f"{_MOE_SHARD_ENV}=0"
         else:
-            problem = expert_shard_problem(block, tp)
+            problem = expert_shard_problem(block, tp, packed = False)
         preloaded = [p for p in block.parameters() if getattr(p, _EXPERT_PRELOAD, None) is not None]
         if preloaded and problem is not None:
             raise ValueError(

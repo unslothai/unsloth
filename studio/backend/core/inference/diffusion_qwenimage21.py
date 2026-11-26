@@ -129,10 +129,7 @@ def _prompt_tokens(pipe: Any, prompt: str) -> Optional[int]:
 
 
 def text_length_runs(pipe: Any, chunk: list) -> list:
-    """Split ``(prompt, seed)`` jobs into consecutive runs of equal prompt token length.
-
-    Qwen-Image-2.1 builds one layout/RoPE table per batch from row 0, so a shorter padded prompt renders
-    different pixels than alone; equal lengths match exactly."""
+    """Split ``(prompt, seed)`` jobs into runs of equal prompt token length (RoPE layout comes from row 0)."""
     if len(chunk) < 2 or type(getattr(pipe, "transformer", None)).__name__ != _CLASS:
         return [chunk]
     if all(prompt == chunk[0][0] for prompt, _ in chunk):

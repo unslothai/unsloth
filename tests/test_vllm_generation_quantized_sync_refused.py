@@ -178,3 +178,39 @@ def test_installed_trl_init_vllm_runs_the_engine_check():
     src = inspect.getsource(vllm_generation.VLLMGeneration._init_vllm)
     assert "_unsloth_trl_vllm_engine_check(self, model)" in src
     assert callable(getattr(vllm_generation, "_unsloth_trl_vllm_engine_check", None))
+
+
+def test_vllm_without_bitsandbytes_points_to_fast_inference():
+    from unsloth.models.rl_replacements import _unsloth_trl_vllm_init_error
+
+    vllm_error = ValueError(
+        "1 validation error for ModelConfig\n  Value error, Unknown quantization method: bitsandbytes. "
+        "Must be one of ['awq', 'auto_awq', 'fp8', 'mxfp8']."
+    )
+    replacement = _unsloth_trl_vllm_init_error(vllm_error)
+    assert isinstance(replacement, RuntimeError)
+    assert "fast_inference = True" in str(replacement) and "vllm-bnb-plugin" in str(replacement)
+    assert _unsloth_trl_vllm_init_error(ValueError("CUDA out of memory")) is None
+    assert _unsloth_trl_vllm_init_error(ValueError("Unknown quantization method: gguf")) is None
+
+
+def test_installed_trl_init_vllm_maps_the_missing_bitsandbytes_error():
+    import inspect
+
+    from packaging.version import Version
+
+    trl_version = Version(pytest.importorskip("trl").__version__)
+    if trl_version < Version("0.28.0"):
+        pytest.skip("TRL < 0.28 has no VLLMGeneration")
+    vllm_generation = pytest.importorskip("trl.generation.vllm_generation")
+    from unsloth.models.rl_replacements import vllm_generation_init_patch
+
+    vllm_generation_init_patch()
+    src = inspect.getsource(vllm_generation.VLLMGeneration._init_vllm)
+    assert "_unsloth_trl_vllm_init_error(_unsloth_init_error)" in src
+    assert "raise _unsloth_replacement from _unsloth_init_error" in src
+    # The engine check still runs only after TRL's own LLM(...) returned.
+    assert src.index("except Exception as _unsloth_init_error") < src.index(
+        "_unsloth_trl_vllm_engine_check(self, model)"
+    )
+    assert callable(getattr(vllm_generation, "_unsloth_trl_vllm_init_error", None))
