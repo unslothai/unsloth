@@ -93,6 +93,9 @@ def hold_denoiser_between_calls(
             del pipe.maybe_free_model_hooks
 
 
+ENCODE_ONCE_MEMO_ATTR = "_unsloth_encode_once_memo"
+
+
 @contextlib.contextmanager
 def encode_once(runner: Any):
     """Per request, identical keyword-only encode_prompt calls reuse a device copy of the first call
@@ -120,10 +123,16 @@ def encode_once(runner: Any):
         return out
 
     runner.encode_prompt = encode_prompt
+    # Read by LTX-2.5's connector reuse, which releases the memo's prompt rows once their connector outputs are cached.
+    exposed = getattr(runner, "__dict__", None)
+    if isinstance(exposed, dict):
+        exposed[ENCODE_ONCE_MEMO_ATTR] = memo
     try:
         yield
     finally:
         memo.clear()
+        if isinstance(exposed, dict) and exposed.get(ENCODE_ONCE_MEMO_ATTR) is memo:
+            del exposed[ENCODE_ONCE_MEMO_ATTR]
         if had_own:
             runner.encode_prompt = encode
         else:

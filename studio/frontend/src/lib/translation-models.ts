@@ -3,7 +3,14 @@
 
 // Own module so Chat and node tests can import it without the Translate page.
 
+// Hy-MT2 stays listed: a copy still on disk is a translation model, not a chat model.
 export const TRANSLATION_ONLY_REPOS = [
+  "unslothai/Hy-MT3-1.8B-GGUF",
+  "unslothai/Hy-MT3-7B-GGUF",
+  "unslothai/Hy-MT3-30B-A3B-GGUF",
+  "unslothai/Hy-MT3-1.8B-FP8",
+  "unslothai/Hy-MT3-7B-FP8",
+  "unslothai/Hy-MT3-30B-A3B-FP8",
   "unsloth/Hy-MT2-1.8B-GGUF",
   "unsloth/Hy-MT2-7B-GGUF",
 ] as const;

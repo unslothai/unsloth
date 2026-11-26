@@ -4000,6 +4000,7 @@ def test_upstream_rejection_fails_the_stream_with_a_string_code(monkeypatch, sta
         monkeypatch, handler = lambda request: httpx.Response(status, content = body.encode())
     )
     assert error["code"] == code
+    assert error["message"] == "llama-server error: " + json.loads(body)["error"]["message"]
 
 
 @pytest.mark.parametrize(

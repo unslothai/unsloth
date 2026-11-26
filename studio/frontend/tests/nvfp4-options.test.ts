@@ -3,7 +3,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { nvfp4SelectionFallback, withNvfp4Option } from "../src/lib/nvfp4-options.ts";
+import { NVFP4_DISABLED_HINT, nvfp4SelectionFallback, withNvfp4Option } from "../src/lib/nvfp4-options.ts";
 
 const OPTIONS: [string, string][] = [
   ["fp8", "FP8"],
@@ -12,11 +12,28 @@ const OPTIONS: [string, string][] = [
   ["mxfp8", "MXFP8 (Blackwell)"],
 ];
 
-test("NVFP4 is hidden while the backend switch is off", () => {
+test("NVFP4 stays listed while the backend switch is off, disabled with the flag that enables it", () => {
+  // Hiding it left users guessing (NVIDIA feedback p.7, p.21): the option names the switch instead.
+  const options = withNvfp4Option(OPTIONS, false);
   assert.deepEqual(
-    withNvfp4Option(OPTIONS, false).map(([value]) => value),
-    ["fp8", "int8", "mxfp8"],
+    options.map(([value]) => value),
+    ["fp8", "int8", "nvfp4", "mxfp8"],
   );
+  assert.deepEqual(options[2], ["nvfp4", "NVFP4 (Blackwell)", NVFP4_DISABLED_HINT]);
+  assert.match(NVFP4_DISABLED_HINT, /UNSLOTH_NVFP4_DIFFUSION=1/);
+  for (const option of [options[0], options[1], options[3]]) assert.equal(option[2], undefined);
+});
+
+test("both pages render a disabled option with its reason inline", async () => {
+  const { readFile } = await import("node:fs/promises");
+  for (const page of ["images/images-page.tsx", "video/video-page.tsx"]) {
+    const src = await readFile(new URL(`../src/features/${page}`, import.meta.url), "utf8");
+    const select = src.slice(src.indexOf("function AdvancedSelect("));
+    const body = select.slice(0, select.indexOf("\n}\n"));
+    assert.match(body, /options\.map\(\(\[v, l, disabledReason\]\) =>/);
+    assert.match(body, /disabled=\{!!disabledReason\}/);
+    assert.match(body, /\{disabledReason\}/);
+  }
 });
 
 test("NVFP4 is offered, in place, when the backend enables it", () => {

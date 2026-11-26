@@ -595,3 +595,33 @@ def test_evaluation_rows_do_not_mark_growth(monkeypatch):
     dc._on_optimizer_step(None, (), {})
     assert dc._BUDGET[None] == 7 * GiB and dc.STATS["stale_peak_kept"] == 1
     assert dc._ROWS_SEEN.get(None, 0) < 4096
+
+
+def test_waits_for_a_safe_point_with_the_checkpoint_skip_plan_in_place(monkeypatch):
+    _memory(monkeypatch, usable = 10 * GiB)
+    dc._SEEN.add(None)
+    pending = [True]
+    monkeypatch.setattr(dc, "_checkpoint_skip_pending", lambda: pending[0])
+    dc._on_optimizer_step(None, (), {})
+    assert dc._BUDGET[None] == 0 and dc.STATS["gc_skip_wait"] == 1
+    pending[0] = False
+    dc._on_optimizer_step(None, (), {})
+    assert dc._BUDGET[None] == 10 * GiB - 2 * GiB - GiB
+    pending[0] = True
+    for _ in range(dc._GC_SKIP_WAIT_MAX + 2):
+        dc._on_optimizer_step(None, (), {})
+    assert dc._BUDGET[None] == 10 * GiB - 2 * GiB - GiB
+    assert dc.STATS["gc_skip_wait"] == dc._GC_SKIP_WAIT_MAX
+
+
+def test_checkpoint_skip_pending_reads_the_planner_module(monkeypatch):
+    import sys, types
+
+    fake = types.ModuleType("unsloth.models._utils")
+    fake.checkpoint_skip_pending = lambda: True
+    monkeypatch.setitem(sys.modules, "unsloth.models._utils", fake)
+    assert dc._checkpoint_skip_pending() is True
+    fake.checkpoint_skip_pending = lambda: False
+    assert dc._checkpoint_skip_pending() is False
+    monkeypatch.delitem(sys.modules, "unsloth.models._utils")
+    assert dc._checkpoint_skip_pending() is False

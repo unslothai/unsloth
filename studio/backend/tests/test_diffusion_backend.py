@@ -7850,6 +7850,57 @@ def test_generate_batched_seed_matches_solo_replay(fake_runtime, tmp_path):
     assert batched[1] == solo == 9
 
 
+class _StepNoiseScheduler:
+    """Records the generator each ``step`` receives."""
+
+    def __init__(self):
+        self.step_generators = []
+
+    def step(
+        self,
+        model_output,
+        timestep,
+        sample,
+        generator = None,
+        return_dict = True,
+    ):
+        self.step_generators.append(generator)
+        return (sample,)
+
+
+class _UnseededStepPipe(_FakePipe):
+    """Steps without passing its generator, as diffusers HiDreamImagePipeline does."""
+
+    def __init__(self):
+        super().__init__()
+        self.scheduler = _StepNoiseScheduler()
+
+    def __call__(
+        self,
+        *,
+        prompt = None,
+        **kwargs,
+    ):
+        n = kwargs.get("num_images_per_prompt", 1) * (
+            len(prompt) if isinstance(prompt, list) else 1
+        )
+        self.scheduler.step(None, 0, types.SimpleNamespace(shape = (n, 4)), return_dict = False)
+        return super().__call__(prompt = prompt, **kwargs)
+
+
+def test_generate_hands_each_images_generator_to_a_step_that_draws_noise(fake_runtime, tmp_path):
+    backend = _load_zimage_backend(tmp_path)
+    pipe = _UnseededStepPipe()
+    object.__setattr__(backend._state, "pipe", pipe)
+    backend.generate(prompt = "p", seeds = [3, 9])
+    [batched] = pipe.scheduler.step_generators
+    assert [g.manual for g in batched] == [3, 9]
+    backend.generate(prompt = "p", seed = 9)
+    solo = pipe.scheduler.step_generators[-1]
+    assert solo.manual == 9
+    assert "step" not in vars(pipe.scheduler)
+
+
 def test_generate_prompt_list_rejected_off_txt2img(fake_runtime, tmp_path):
     backend = _load_zimage_backend(tmp_path)
     with pytest.raises(ValueError, match = "text-to-image only"):
@@ -8070,6 +8121,117 @@ def test_generate_broadcasts_negative_prompt_across_a_mixed_prompt_batch(fake_ru
     # empty negatives remain omitted instead of expanding to [""] * n.
     backend.generate(prompt = "fallback", prompts = ["a", "b"])
     assert backend._state.pipe.last_kwargs["negative_prompt"] is None
+
+
+class QwenImage21Transformer2DModel:
+    """Named like diffusers' class: text_length_runs keys on the transformer's class name."""
+
+
+class _FakeQwen21Pipe(_FakePipe):
+    prompt_template_t2i = "<sys> {} <end>"
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.transformer = QwenImage21Transformer2DModel()
+        self.calls: list = []
+
+    @staticmethod
+    def tokenizer(text):
+        return {"input_ids": text.split()}
+
+    def __call__(
+        self,
+        *,
+        prompt = None,
+        generator = None,
+        **kwargs,
+    ):
+        seeds = [g.manual for g in generator] if isinstance(generator, list) else [generator.manual]
+        self.calls.append((prompt, seeds))
+        return super().__call__(prompt = prompt, generator = generator, **kwargs)
+
+
+def test_qwen21_prompt_list_renders_each_text_length_apart(fake_runtime, tmp_path):
+    backend = _load_zimage_backend(tmp_path)
+    pipe = _FakeQwen21Pipe()
+    object.__setattr__(backend._state, "pipe", pipe)
+    out = backend.generate(
+        prompt = "fallback",
+        prompts = ["red fox", "grey owl", "a long prompt here", "blue jay"],
+        seeds = [1, 2, 3, 4],
+    )
+    assert pipe.calls == [
+        (["red fox", "grey owl"], [1, 2]),
+        ("a long prompt here", [3]),
+        ("blue jay", [4]),
+    ]
+    assert out["seeds"] == [1, 2, 3, 4]
+    assert len(out["images"]) == 4
+
+    pipe.calls.clear()
+    backend.generate(prompt = "fallback", prompts = ["red fox", "grey owl"], seeds = [5, 6])
+    assert pipe.calls == [(["red fox", "grey owl"], [5, 6])]
+
+
+class _RecordingPipe(_FakePipe):
+    def __init__(self) -> None:
+        super().__init__()
+        self.calls: list = []
+
+    def __call__(
+        self,
+        *,
+        prompt = None,
+        generator = None,
+        **kwargs,
+    ):
+        seeds = [g.manual for g in generator] if isinstance(generator, list) else [generator.manual]
+        self.calls.append((prompt, seeds))
+        return super().__call__(prompt = prompt, generator = generator, **kwargs)
+
+
+def test_sdxl_prompt_list_renders_each_clip_chunk_count_apart(fake_runtime, tmp_path, monkeypatch):
+    # Each CLIP chunk count renders in its own pipe call.
+    import core.inference.diffusion_sd_controls as sd_controls
+
+    backend = _loaded_backend(
+        tmp_path, gguf_filename = "sdxl.safetensors", base_repo = None, family_override = "sdxl"
+    )
+    pipe = _RecordingPipe()
+    object.__setattr__(backend._state, "pipe", pipe)
+    monkeypatch.setattr(sd_controls, "weighting_engaged", lambda *a, **k: True)
+    monkeypatch.setattr(
+        sd_controls,
+        "_clip_chunk_counts",
+        lambda _pipe, texts, **k: [1 + len(t.split()) // 3 for t in texts],
+        raising = False,
+    )
+    monkeypatch.setattr(sd_controls, "apply_prompt_controls", lambda *a, **k: False)
+    out = backend.generate(
+        prompt = "fallback",
+        prompts = ["red fox", "grey owl", "a long prompt here", "blue jay"],
+        seeds = [1, 2, 3, 4],
+    )
+    assert pipe.calls == [
+        (["red fox", "grey owl"], [1, 2]),
+        ("a long prompt here", [3]),
+        ("blue jay", [4]),
+    ]
+    assert out["seeds"] == [1, 2, 3, 4]
+    assert len(out["images"]) == 4
+
+
+def test_text_length_runs_leaves_other_pipelines_alone():
+    from core.inference.diffusion_qwenimage21 import text_length_runs
+
+    jobs = [("a", 1), ("a much longer prompt", 2)]
+    assert text_length_runs(_FakePipe(), jobs) == [jobs]
+    pipe = _FakeQwen21Pipe()
+    assert text_length_runs(pipe, jobs) == [[jobs[0]], [jobs[1]]]
+    assert text_length_runs(pipe, [("same", 1), ("same", 2)]) == [[("same", 1), ("same", 2)]]
+    # No readable length: every prompt renders alone rather than risk a mixed layout.
+    pipe.tokenizer = None
+    assert text_length_runs(pipe, [("x y", 1), ("z w", 2)]) == [[("x y", 1)], [("z w", 2)]]
 
 
 def test_generate_keeps_a_scalar_negative_prompt_off_the_list_paths(fake_runtime, tmp_path):

@@ -236,6 +236,8 @@ def test_non_stream_route_returns_json_or_upstream_error(monkeypatch, upstream_s
     from routes import inference
 
     def handle(request):
+        if request.url.path == "/api/version":
+            return httpx.Response(404)
         assert request.url.path == "/v1/responses"
         assert json.loads(request.content)["stream"] is False
         if upstream_status != 200:

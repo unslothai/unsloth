@@ -1590,6 +1590,19 @@ def close_mcp_sessions(
         worker.join(_SESSION_CLOSE_TIMEOUT + 5.0)
 
 
+def close_mcp_scopes(matches) -> None:
+    """Close every session whose scope ``matches``; one still mid-call closes on its release."""
+    idle = []
+    with _mcp_sessions_lock:
+        for key in [k for k in _mcp_sessions if k[2] and matches(k[2])]:
+            session = _mcp_sessions.pop(key)
+            _discard_key_lock(key)
+            session.defunct = True
+            if session.in_flight == 0:
+                idle.append(session)
+    _close_detached(idle)
+
+
 def _close_all(sessions: list) -> None:
     """Closes at most _MAX_CLOSE_THREADS at once; serial closes could stall a request for minutes."""
     if not sessions:

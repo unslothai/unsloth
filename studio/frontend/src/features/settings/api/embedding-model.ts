@@ -138,7 +138,7 @@ export async function updateEmbeddingDevice(
 /** What saving a model would need fetched, and whether it is already on disk. */
 export type EmbeddingModelResolution = {
   embeddingModel: string;
-  backend: "llama" | "sentence-transformers";
+  backend: "llama" | "sentence-transformers" | "connection";
   downloadRepo: string | null;
   files: string[] | null;
   cached: boolean;
@@ -149,7 +149,7 @@ export type EmbeddingModelResolution = {
 type ApiEmbeddingModelResolution = {
   // biome-ignore lint/style/useNamingConvention: API schema
   embedding_model: string;
-  backend: "llama" | "sentence-transformers";
+  backend: "llama" | "sentence-transformers" | "connection";
   // biome-ignore lint/style/useNamingConvention: API schema
   download_repo: string | null;
   files: string[] | null;

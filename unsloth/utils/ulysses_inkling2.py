@@ -206,12 +206,34 @@ def ulysses_inkling2_conv_forward(
 
 
 def _whole_sequence_bias(rel_logits, total, rel_extent):
-    """[B, H, T, R] query-side relative logits -> [B, H, T, T] bias, as Inkling2RelativePositionBias over T."""
-    idx = torch.arange(total, device = rel_logits.device)
-    distance = idx[:, None] - idx[None, :]
-    gather_index = distance.clamp(0, rel_extent - 1).expand(*rel_logits.shape[:2], -1, -1)
-    bias = rel_logits.gather(-1, gather_index)
-    return bias.masked_fill((distance < 0) | (distance >= rel_extent), 0.0)
+    """[B, H, T, R] query-side relative logits -> [B, H, T, T] bias, as Inkling2RelativePositionBias over T:
+    bias[..., q, k] = rel_logits[..., q, q - k] for 0 <= q - k < rel_extent, else 0.
+
+    No [T, T] index or mask is built (an int64 [T, T] distance is 8 GB at T = 32K). Row q's band is
+    the R values ending at its diagonal, and consecutive rows' bands sit T + 1 apart in the flat
+    [T, T] layout, so one strided [T - 1, R] view of the zero bias takes every row from q = 1 at once.
+    Its entries left of column 0 (q - d < 0) land in the previous row's upper triangle and receive the
+    0 they must hold there. Row 0 is only its diagonal. Plain copies, so the values equal a gather."""
+    batch, heads = rel_logits.shape[:2]
+    extent = min(int(rel_extent), int(total))
+    bias = rel_logits.new_zeros(batch, heads, total, total)
+    if extent <= 0:
+        return bias
+    band = rel_logits[..., :extent]
+    bias[..., 0, 0] = band[..., 0, 0]
+    if total > 1:
+        # band[q, d] with d > q has no key (q - d < 0): it writes the 0 of the upper triangle.
+        rows = torch.arange(1, total, device = rel_logits.device)
+        cols = torch.arange(extent, device = rel_logits.device)
+        keyless = cols[None, :] > rows[:, None]  # [T - 1, R]
+        values = band[..., 1:, :].masked_fill(keyless, 0.0).flip(-1)  # [..., q, R - 1 - d]
+        diagonals = bias.as_strided(
+            (batch, heads, total - 1, extent),
+            (heads * total * total, total * total, total + 1, 1),
+            bias.storage_offset() + total + 1 - (extent - 1),
+        )
+        diagonals.copy_(values)
+    return bias
 
 
 def _flex_wanted(module, total, device) -> bool:

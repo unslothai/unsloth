@@ -51,6 +51,9 @@ class FakeExternalClient:
     async def served_chat_template(self, model):
         return FakeExternalClient.served_template
 
+    async def serves_ollama(self):
+        return False
+
     async def served_model_reads_images(self, model):
         return None
 

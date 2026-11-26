@@ -33,6 +33,12 @@ from .import_fixes import fix_transformers_quantizer_unquantized_converters
 fix_transformers_quantizer_unquantized_converters()
 del fix_transformers_quantizer_unquantized_converters
 
+# Tokenizer files naming host paths (vocab_file, vocab, merges, ...); the GPU route installs it in _gpu_init.
+from .import_fixes import fix_transformers_tokenizer_config_vocab_file_override
+
+fix_transformers_tokenizer_config_vocab_file_override()
+del fix_transformers_tokenizer_config_vocab_file_override
+
 print(
     f"Unsloth {__version__}: no GPU found, training on CPU ({__import__('platform').machine()}, "
     f"{torch.get_num_threads()} threads, bfloat16 = {cpu_bf16_supported()}). CPU training is much "
