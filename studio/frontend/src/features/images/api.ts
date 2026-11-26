@@ -995,6 +995,8 @@ export interface DiffusionTrainableFamily {
     lr_scheduler?: string;
     lr_warmup_steps?: number;
   } | null;
+  // The step count a sweep measured for this family and the set size it ran on; null where no sweep exists.
+  step_guidance?: { steps: number; items: number; batch_size?: number } | null;
   vram_note?: string | null;
   gated?: boolean | null;
   params?: string | null;
