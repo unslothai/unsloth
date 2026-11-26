@@ -100,11 +100,12 @@ class _Group:
 class PartialRolloutState:
     """The carried groups of one trainer plus counters."""
 
-    def __init__(self):
+    def __init__(self, run = None):
         self.carry = []
         self.serial = 0
         self.steps = 0
         self.aborted_rows = 0
+        self.run = run  # id of the TrainerState this carry belongs to
 
 
 class PartialRolloutEngine:
@@ -162,20 +163,37 @@ class PartialRolloutEngine:
         ):
             if getattr(params, name, None):
                 return name
-        for name in ("seed", "truncate_prompt_tokens", "thinking_token_budget"):
+        for name in (
+            "seed",
+            "truncate_prompt_tokens",
+            "thinking_token_budget",
+            "trace_decode_token_ids",
+            "prompt_logprobs",
+            "prompt_logprob_token_ids",
+        ):
             if getattr(params, name, None) is not None:
                 return name
+        if getattr(params, "watermarking", False):
+            return "watermarking"
+        config = getattr(getattr(self.engine, "vllm_config", None), "watermark_config", None)
+        if config is not None and float(getattr(params, "temperature", 1.0) or 0.0) > 0.0:
+            return "watermarking"
         return None
 
     def add_request(self, original, *args, **kwargs):
         args = list(args)
         params = args[2] if len(args) > 2 else kwargs.get("params", None)
+        prompt = args[1] if len(args) > 1 else kwargs.get("prompt", None)
+        # Older vLLM hands add_request a prepared EngineCoreRequest that carries its own sampling params.
+        prepared = getattr(prompt, "sampling_params", None)
         row = self.num_added
         if row >= len(self.row_group):
             self.can_cut = False
             self.cut_error = "more requests than rows"
         elif self.can_cut:
             reason = self._params_supported(params)
+            if reason is None and prepared is not None:
+                reason = self._params_supported(prepared)
             if reason is not None:
                 self.can_cut = False
                 self.cut_error = reason
@@ -186,13 +204,11 @@ class PartialRolloutEngine:
                     f"Unsloth: GRPO partial rollout cannot resume a carried row ({self.cut_error})."
                 )
             done = self.resume_len[row]
-            prompt = args[1] if len(args) > 1 else kwargs.get("prompt", None)
-            # Older vLLM hands add_request a prepared EngineCoreRequest that carries its own sampling params.
-            prepared = getattr(prompt, "sampling_params", None)
             new = (prepared if prepared is not None else params).clone()
-            if new.max_tokens is not None:
-                # None: vLLM derives the budget from the (now longer) prompt and max_model_len.
-                new.max_tokens = int(new.max_tokens) - done
+            requested = getattr(params, "max_tokens", None)
+            if requested is not None:
+                new.max_tokens = int(requested) - done
+            # requested None: vLLM derives the budget from the (now longer) prompt, a prepared request already has.
             if getattr(new, "min_tokens", 0):
                 new.min_tokens = max(0, int(new.min_tokens) - done)
             if prepared is not None:
@@ -428,6 +444,11 @@ def _generate_rows(trainer, state, groups, target, max_age):
     """Stage 1: one real generate call over every unfinished row. Returns the rows that were aborted."""
     pending = [(group, row) for group in groups for row in group.rows if not row.done]
     prompts = [row.input["prompt"] for _, row in pending]
+    try:  # the same cleanup the generated scorer applies before it tokenizes
+        from .rl_replacements import _unsloth_grpo_clean_video_prompts
+        prompts = _unsloth_grpo_clean_video_prompts(prompts, trainer)
+    except ImportError:
+        pass
     prompt_ids, images, multimodal_fields = trainer._tokenize_prompts(prompts)
     if images is not None:
         raise RuntimeError("Unsloth: GRPO partial rollout got images from a text-only batch.")
@@ -521,7 +542,7 @@ def _replay(rows, tail):
 
 def _working_copy(state):
     """Generation extends carried rows in place; work on copies so a failed scoring call can be retried."""
-    work = PartialRolloutState()
+    work = PartialRolloutState(state.run)
     work.serial, work.steps, work.aborted_rows = state.serial, state.steps, state.aborted_rows
     for group in state.carry:
         rows = []
@@ -553,6 +574,12 @@ def partial_rollout_generate_and_score(trainer, original, inputs, *args, **kwarg
     settings = partial_rollout_settings()
     model = getattr(trainer, "model", None)
     state = getattr(trainer, "_unsloth_partial_rollout", None)
+    run = id(getattr(trainer, "state", None))
+    if state is not None and state.run != run:
+        # A new train() call or a checkpoint resume replaced TrainerState: never feed the old run's rows into it.
+        state = None
+        for name in ("_unsloth_partial_rollout", "_unsloth_partial_rollout_last"):
+            trainer.__dict__.pop(name, None)
     if settings is None or (model is not None and not getattr(model, "training", True)):
         return original(trainer, inputs, *args, **kwargs)
     if state is not None and getattr(trainer, "_unsloth_partial_rollout_refused", None):
@@ -577,7 +604,7 @@ def partial_rollout_generate_and_score(trainer, original, inputs, *args, **kwarg
             trainer._unsloth_partial_rollout_refused = reason
             _warn_once(reason, reason)
             return original(trainer, inputs, *args, **kwargs)
-        state = PartialRolloutState()
+        state = PartialRolloutState(run)
     fraction, max_age = settings
     group_size = int(trainer.num_generations)
     fresh = _groups_of(inputs, group_size)

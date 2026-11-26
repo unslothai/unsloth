@@ -598,3 +598,28 @@ def test_logprob_convention_is_set_before_generating(on, monkeypatch):
     trainer = FakeTrainer(engine)
     pr.partial_rollout_generate_and_score(trainer, original_gas, batch(0))
     assert calls and calls[0] == ("set", 0) and trainer._unsloth_vllm_untruncated_logprobs is True
+
+
+def test_new_training_run_drops_the_carry(on):
+    engine = FakeEngine(slots = 6)
+    trainer = FakeTrainer(engine)
+    run_steps(trainer, 2)
+    assert trainer._unsloth_partial_rollout.carry
+    trainer.state = types.SimpleNamespace(global_step = 0)  # train() / resume_from_checkpoint
+    out = pr.partial_rollout_generate_and_score(trainer, original_gas, batch(9))
+    assert {r["prompt"] for r in out["inputs"]} <= {
+        9 * 4 + g for g in range(4)
+    }  # nothing from the old run
+    assert len(out["inputs"]) == 12  # a fresh pool: B - E
+
+
+@pytest.mark.parametrize(
+    "field, value",
+    [("trace_decode_token_ids", [1, 2]), ("prompt_logprobs", 0), ("watermarking", True)],
+)
+def test_more_history_dependent_params_never_cut(on, field, value):
+    engine = FakeEngine()
+    trainer = FakeTrainer(engine)
+    trainer.params_kw = {field: value}
+    out = pr.partial_rollout_generate_and_score(trainer, original_gas, batch(0))
+    assert len(out["inputs"]) == 16 and not engine.aborted
