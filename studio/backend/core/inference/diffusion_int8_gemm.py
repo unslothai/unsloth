@@ -907,6 +907,10 @@ _RACE_SOURCES = {
         "time_sustained_us",
         "time_us",
         "race",
+        # sustained winners re-timed in pairs with today's path (the clock a denoise step shares)
+        "paired_enabled",
+        "paired_for",
+        "paired_cost_us",
         # how a race picks among its near-tied winners
         "_FILL_TIE",
         "last_tile_fill",
@@ -1035,6 +1039,8 @@ def _cut_cache_key(index: int) -> Optional[str]:
                 os.environ.get(INT8_GEMM_UNLISTED_ENV, ""),
                 # the timing mode decides the huge-race winners: a plan raced the other way is re-raced
                 f"sustained={cut.sustained_mode()}",
+                # paired timings veto sustained winners: a plan raced without them is re-raced
+                f"paired={cut.paired_enabled()}",
                 # force keeps the fastest tile even when it loses to today's path
                 f"cutlass={cut.mode()}",
                 # near-ties broken by the last row tile's fill (FILL_TIE_ENV=0: the fastest winner)

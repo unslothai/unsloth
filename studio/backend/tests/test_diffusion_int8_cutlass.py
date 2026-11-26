@@ -311,6 +311,12 @@ def test_the_4096_row_race_keeps_short_timings_on_a_steady_clock(monkeypatch):
     sustained one dropped a tile that is faster in the denoiser)."""
     w, ws, sustained = _burst_vs_sustained(monkeypatch, today_sustained = 102.0)
     monkeypatch.delenv(cut.SUSTAINED_ENV, raising = False)
+    # A100: the tile also wins paired with today's path (the clock does not move with the kernel there)
+    monkeypatch.setattr(
+        cut,
+        "paired_cost_us",
+        lambda fns, base: {n: {0: 90.0, 1: 97.0, "today": 100.0}[n] for n in fns},
+    )
     r = cut.race(0, w, ws, None, torch.bfloat16, lambda *a: None, max(cut._RACE_M))
     assert r["tile"] == 0 and r["sustained"] is False and sustained
 
@@ -670,3 +676,134 @@ def test_race_cache_key_tracks_the_sustained_timing_mode(monkeypatch):
     monkeypatch.setenv(cut.SUSTAINED_ENV, "huge")
     huge = g8._cut_cache_key(0)
     assert huge and huge not in (default, off)
+
+
+def _paired_race_env(
+    monkeypatch,
+    sustained: dict,
+    pairs: dict,
+    short: dict | None = None,
+):
+    """Short and sustained timings as given; ``pairs``: each candidate followed by one call of today's path (the
+    (today, today) pair under "today"). Returns the list of name sets each kind of timing saw."""
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda i = None: (8, 9))
+    monkeypatch.setattr(cut, "probed_tiles", lambda i: (0, 1))
+    monkeypatch.setattr(cut, "has_kernel", lambda *a: True)
+    monkeypatch.setattr(cut, "eligible", lambda *a: True)
+    monkeypatch.setattr(torch.cuda, "device", lambda d: __import__("contextlib").nullcontext())
+    short = short or {0: 80.0, 1: 95.0, "today": 100.0}
+    monkeypatch.setattr(cut, "time_us", lambda fns, **k: {n: short[n] for n in fns})
+    seen = {"sustained": [], "paired": []}
+    calls = []
+
+    def fake_sustained(fns, **k):
+        # a pair's lambda calls the candidate then today's path: tell the two kinds apart by what one call runs
+        calls.clear()
+        next(iter(fns.values()))()
+        kind = "paired" if len(calls) == 2 else "sustained"
+        seen[kind].append(sorted(map(str, fns)))
+        return {n: (pairs if kind == "paired" else sustained)[n] for n in fns}
+
+    monkeypatch.setattr(cut, "time_sustained_us", fake_sustained)
+    monkeypatch.setattr(cut, "launch", lambda *a, **k: calls.append("cut"))
+    w = torch.zeros(64, 64, dtype = torch.int8)
+    ws = torch.ones(64, dtype = torch.bfloat16)
+    return w, ws, seen, (lambda *a: calls.append("today"))
+
+
+def test_paired_cost_is_the_pair_minus_one_call_of_todays_path(monkeypatch):
+    monkeypatch.setattr(
+        cut, "time_sustained_us", lambda fns, **k: {"today": 200.0, 0: 230.0, 1: 180.0}
+    )
+    got = cut.paired_cost_us({"today": lambda: None, 0: lambda: None, 1: lambda: None}, "today")
+    assert got == {"today": 100.0, 0: 130.0, 1: 80.0}
+
+
+def test_a_sustained_winner_that_slows_the_shared_clock_keeps_todays_path(monkeypatch):
+    """R9 (RTX 6000 Ada, 300 W): tile 0 is 10% faster than the Triton path timed alone, back to back, but a pair of
+    (tile 0, today's path) takes longer than two calls of today's path: in the step it lowers the clock of what runs
+    around it more than it saves. The video slot must keep today's path."""
+    w, ws, seen, today = _paired_race_env(
+        monkeypatch,
+        sustained = {0: 90.0, 1: 99.0, "today": 100.0},
+        pairs = {0: 215.0, "today": 200.0},
+    )
+    r = cut.race(0, w, ws, None, torch.bfloat16, today, cut._RACE_M_HUGE)
+    assert r["tile"] is None and r["paired_veto"] == 0
+    assert r["paired_us"] == {"today": 100.0, "0": 115.0}
+    assert seen["paired"] == [["0", "today"]]  # only the sustained winners are paired
+
+
+def test_a_winner_that_also_wins_paired_is_kept(monkeypatch):
+    """A100 (400 W, clock about 1290 MHz on every tile): the CUTLASS tile wins alone and in the pair."""
+    w, ws, seen, today = _paired_race_env(
+        monkeypatch,
+        sustained = {0: 92.0, 1: 95.0, "today": 100.0},
+        pairs = {0: 191.0, 1: 197.0, "today": 200.0},
+    )
+    r = cut.race(0, w, ws, None, torch.bfloat16, today, cut._RACE_M_HUGE)
+    assert r["tile"] == 0 and "paired_veto" not in r and seen["paired"] == [["0", "1", "today"]]
+
+
+def test_paired_timing_can_hand_the_slot_to_another_winner(monkeypatch):
+    w, ws, seen, today = _paired_race_env(
+        monkeypatch,
+        sustained = {0: 90.0, 1: 95.0, "today": 100.0},
+        pairs = {0: 205.0, 1: 194.0, "today": 200.0},
+    )
+    r = cut.race(0, w, ws, None, torch.bfloat16, today, cut._RACE_M_HUGE)
+    assert r["tile"] == 1 and r["paired_veto"] == 0
+
+
+def test_no_sustained_winner_runs_no_paired_timing(monkeypatch):
+    w, ws, seen, today = _paired_race_env(
+        monkeypatch,
+        sustained = {0: 125.0, 1: 110.0, "today": 100.0},
+        pairs = {},
+    )
+    r = cut.race(0, w, ws, None, torch.bfloat16, today, cut._RACE_M_HUGE)
+    assert r["tile"] is None and not seen["paired"] and "paired_us" not in r
+
+
+def test_a_race_decided_on_short_timings_is_paired_too(monkeypatch):
+    """RTX 6000 Ada, MiniMax-H3-Image 2048^2 (about 4100 rows): with the clock steady enough for the short timings to
+    decide (#18149), CUTLASS still cost the image 5% (R8, no CUTLASS: 5.13 s; R6 / R7 / R9: 5.37 to 5.43 s). The pair
+    check runs on the short-timing winners as well."""
+    w, ws, seen, today = _paired_race_env(
+        monkeypatch,
+        sustained = {0: 90.0, 1: 99.0, "today": 101.0},
+        pairs = {0: 230.0, 1: 204.0, "today": 200.0},
+    )
+    r = cut.race(0, w, ws, None, torch.bfloat16, today, max(cut._RACE_M))
+    assert r["sustained"] is False and seen["paired"] == [["0", "1", "today"]]
+    assert r["tile"] is None and r["paired_veto"] == 0
+    # below the sustained row counts (512 rows): short timings alone, as before
+    seen["paired"].clear()
+    r = cut.race(0, w, ws, None, torch.bfloat16, today, min(cut._RACE_M))
+    assert r["tile"] == 0 and not seen["paired"]
+
+
+def test_paired_kill_switch_keeps_the_sustained_winner(monkeypatch):
+    w, ws, seen, today = _paired_race_env(
+        monkeypatch,
+        sustained = {0: 90.0, 1: 99.0, "today": 100.0},
+        pairs = {0: 215.0, "today": 200.0},
+    )
+    monkeypatch.setenv(cut.PAIRED_ENV, "0")
+    r = cut.race(0, w, ws, None, torch.bfloat16, today, cut._RACE_M_HUGE)
+    assert r["tile"] == 0 and not seen["paired"]
+
+
+def test_race_cache_key_tracks_the_paired_check(monkeypatch):
+    """Verdicts raced before the pair check (R9's 313 CUTLASS Linears on H3 video) are raced again, and a plan
+    raced with the check off is not reused once it is on."""
+    import torch
+
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda index: (8, 9))
+    monkeypatch.setattr(torch.cuda, "get_device_name", lambda index: "NVIDIA L4")
+    monkeypatch.setattr(cut, "library_path", lambda: None)
+    monkeypatch.delenv(cut.PAIRED_ENV, raising = False)
+    default = g8._cut_cache_key(0)
+    monkeypatch.setenv(cut.PAIRED_ENV, "0")
+    off = g8._cut_cache_key(0)
+    assert default and off and default != off and "paired=True" in default
