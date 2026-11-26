@@ -332,7 +332,13 @@ class TestTheWindowsCarveOutReader:
     _GIB = 1024**3
 
     @staticmethod
-    def _read(monkeypatch, carve_out, used, *, platform = "win32"):
+    def _read(
+        monkeypatch,
+        carve_out,
+        used,
+        *,
+        platform = "win32",
+    ):
         calls = {"carve_out": 0, "used": 0}
 
         def _carve_out(*a, **k):
