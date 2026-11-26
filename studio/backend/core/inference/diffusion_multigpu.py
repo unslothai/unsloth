@@ -12,6 +12,7 @@ import copy
 import dataclasses
 import os
 import queue
+import sys
 import threading
 import time
 import types
@@ -74,6 +75,14 @@ UNET_CFG_PARALLEL_ENV = "UNSLOTH_DIFFUSION_CFG_PARALLEL_UNET"
 AUTO_CFG_PARALLEL_ENV = "UNSLOTH_DIFFUSION_CFG_PARALLEL_AUTO"
 # A card counts as idle when no more than this is in use on it (driver + another process's context).
 AUTO_CFG_PARALLEL_IDLE_USED_MIB = 1024
+# Windows (WDDM) counts the desktop compositor and every window's framebuffer as used memory on a card driving a
+# display, and redraws keep it lightly busy: an otherwise idle display card reads 0.5-2 GiB used and a few percent.
+# Neither reading says which card drives a display, so on Windows both limits carry this allowance. No memory is ever
+# taken: the replica must still fit the card's free memory plus its reserve.
+WINDOWS_DISPLAY_BASELINE_MIB = 2048
+WINDOWS_IDLE_UTIL_PCT = 15.0
+IDLE_USED_MIB_ENV = "UNSLOTH_DIFFUSION_CFG_PARALLEL_IDLE_USED_MIB"
+IDLE_UTIL_PCT_ENV = "UNSLOTH_DIFFUSION_CFG_PARALLEL_IDLE_UTIL_PCT"
 
 
 def automatic_cfg_parallel_off() -> bool:
@@ -89,14 +98,45 @@ def automatic_cfg_parallel_off() -> bool:
 AUTO_CFG_PARALLEL_IDLE_UTIL_PCT = 5.0
 
 
+def _env_float(name: str) -> Optional[float]:
+    raw = (os.environ.get(name) or "").strip()
+    if not raw:
+        return None
+    try:
+        value = float(raw)
+    except ValueError:
+        return None
+    return value if value >= 0 else None
+
+
+def idle_used_limit_mib() -> int:
+    """MiB a card may have in use and still count as idle: the driver floor, plus a display baseline on Windows."""
+    override = _env_float(IDLE_USED_MIB_ENV)
+    if override is not None:
+        return int(override)
+    if sys.platform == "win32":
+        return AUTO_CFG_PARALLEL_IDLE_USED_MIB + WINDOWS_DISPLAY_BASELINE_MIB
+    return AUTO_CFG_PARALLEL_IDLE_USED_MIB
+
+
+def idle_util_limit_pct() -> float:
+    """Utilisation (percent) a card may show and still count as idle; a display's redraws are allowed on Windows."""
+    override = _env_float(IDLE_UTIL_PCT_ENV)
+    if override is not None:
+        return float(override)
+    if sys.platform == "win32":
+        return WINDOWS_IDLE_UTIL_PCT
+    return AUTO_CFG_PARALLEL_IDLE_UTIL_PCT
+
+
 def _idle_card(probe: Any) -> bool:
     free, total = getattr(probe, "free_mib", None), getattr(probe, "total_mib", None)
     if free is None or total is None:
         return False
     util = getattr(probe, "util_pct", None)
-    if util is not None and float(util) > AUTO_CFG_PARALLEL_IDLE_UTIL_PCT:
+    if util is not None and float(util) > idle_util_limit_pct():
         return False
-    return int(total) - int(free) <= AUTO_CFG_PARALLEL_IDLE_USED_MIB
+    return int(total) - int(free) <= idle_used_limit_mib()
 
 
 def automatic_partner(
@@ -117,8 +157,8 @@ def automatic_partner(
       - not the primary;
       - the same card model as the primary (same kernels, so the branches agree and neither card waits on a slower
         one; a mixed pair such as a 4090 with a 3060 is never paired automatically, ``force`` overrides);
-      - idle: at most ``AUTO_CFG_PARALLEL_IDLE_USED_MIB`` in use and at most ``AUTO_CFG_PARALLEL_IDLE_UTIL_PCT``
-        utilisation (another process's work is never slowed and its memory never taken);
+      - idle: at most :func:`idle_used_limit_mib` in use and at most :func:`idle_util_limit_pct` utilisation
+        (another process's work is never slowed and its memory never taken; on Windows both allow a display);
       - able to hold the replica plus its reserve.
     Among candidates: the most usable free memory, then a peer-to-peer link to the primary, then the lowest ordinal.
     A static rule, not a trial: on identical idle cards the measured gains are 1.46x to 1.79x (well beyond A/A)."""
@@ -4690,7 +4730,7 @@ def install_cfg_parallel(
         elif not candidates and automatic and same:
             reason = (
                 f"automatic GPU placement: no idle card for a replica ({auto_reason}; idle = at most "
-                f"{AUTO_CFG_PARALLEL_IDLE_USED_MIB} MiB in use and {AUTO_CFG_PARALLEL_IDLE_UTIL_PCT:g}% busy; "
+                f"{idle_used_limit_mib()} MiB in use and {idle_util_limit_pct():g}% busy; "
                 f"select several cards or set {CFG_PARALLEL_ENV}=force)"
             )
         elif not candidates:

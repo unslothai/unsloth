@@ -77,6 +77,53 @@ def test_idle_card_requires_low_memory_and_low_utilisation():
     assert mg._idle_card(card(1, util = mg.AUTO_CFG_PARALLEL_IDLE_UTIL_PCT))
 
 
+@pytest.fixture
+def no_idle_env(monkeypatch):
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_CFG_PARALLEL_IDLE_USED_MIB", raising = False)
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_CFG_PARALLEL_IDLE_UTIL_PCT", raising = False)
+
+
+# A Windows card driving the desktop: WDDM counts the compositor's framebuffers as used, and redraws read a few percent.
+DISPLAY_CARD = dict(used = 1536, util = 8.0)
+
+
+def test_windows_display_card_counts_as_idle(monkeypatch, no_idle_env):
+    monkeypatch.setattr(mg.sys, "platform", "win32")
+    assert mg._idle_card(card(1, **DISPLAY_CARD))
+    # the second card of a 2-GPU Windows box drives a display: Automatic still lends it for the replica
+    pick, reason = mg.automatic_partner(card(0), [card(0), card(1, **DISPLAY_CARD)], NEED)
+    assert pick == 1 and "idle card" in reason
+    # a card running another job is still not lent, and the replica must still fit its free memory
+    assert not mg._idle_card(card(1, used = 6000))
+    assert not mg._idle_card(card(1, util = 60.0))
+    pick, reason = mg.automatic_partner(card(0), [card(0), card(1, used = 3000, total = 9000)], NEED)
+    assert pick is None and "short of the" in reason
+
+
+def test_linux_idle_rule_unchanged(monkeypatch, no_idle_env):
+    monkeypatch.setattr(mg.sys, "platform", "linux")
+    assert mg.idle_used_limit_mib() == mg.AUTO_CFG_PARALLEL_IDLE_USED_MIB == 1024
+    assert mg.idle_util_limit_pct() == mg.AUTO_CFG_PARALLEL_IDLE_UTIL_PCT == 5.0
+    assert not mg._idle_card(card(1, **DISPLAY_CARD))
+    assert not mg._idle_card(card(1, used = 1536))
+    assert not mg._idle_card(card(1, util = 8.0))
+
+
+def test_idle_limits_env_override(monkeypatch, no_idle_env):
+    monkeypatch.setattr(mg.sys, "platform", "linux")
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_CFG_PARALLEL_IDLE_USED_MIB", "4096")
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_CFG_PARALLEL_IDLE_UTIL_PCT", "20")
+    assert mg._idle_card(card(1, used = 4000, util = 19.0))
+    assert not mg._idle_card(card(1, used = 4200))
+    # an unreadable override keeps the default
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_CFG_PARALLEL_IDLE_USED_MIB", "lots")
+    assert mg.idle_used_limit_mib() == 1024
+    monkeypatch.setattr(mg.sys, "platform", "win32")
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_CFG_PARALLEL_IDLE_UTIL_PCT")
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_CFG_PARALLEL_IDLE_USED_MIB", "512")
+    assert not mg._idle_card(card(1, **DISPLAY_CARD))
+
+
 class FluxTransformer2DModel(torch.nn.Module):
     """Named like diffusers' FLUX.1 class: the batch split keys on the class name."""
 
