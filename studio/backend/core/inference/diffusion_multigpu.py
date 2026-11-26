@@ -989,6 +989,9 @@ CFG_REPLICA_PLACEMENT_ENV = "UNSLOTH_DIFFUSION_CFG_REPLICA_PLACEMENT"
 REPLICA_MIN_GAIN = 1.05
 # The 1 GiB reserve already holds a block working set up to that size.
 _REPLICA_BASE_RESERVE_MIB = 1024
+# A step split by tokens over two cards, as a share of the one-card step (two swaps per attention included). Kaggle
+# 2x T4 PCIe: Wan 2.2 5B 1.70-1.79x (0.56-0.59).
+SEQUENCE_SPLIT_STEP_SHARE = 0.6
 
 
 def cfg_replica_placement_mode() -> str:
@@ -1256,11 +1259,16 @@ def price_replica_layout(
     primary_stream_s: float,
     steps: int,
     encoder_stream_s: float = 0.0,
+    sequence_split: bool = False,
 ) -> tuple[float, float]:
     """(replica layout, alternative) seconds per render: steps x ``compute + primary stream`` vs steps x
     ``branches x compute``; ``encoder_stream_s`` = encoders the alternative keeps resident, streamed once per render."""
     branches = 2 if guided else 1
-    replica = int(steps) * (float(compute_s) + float(primary_stream_s)) + float(encoder_stream_s)
+    # ``sequence_split``: an unguided step runs half its tokens on the replica (diffusion_sequence_parallel)
+    share = SEQUENCE_SPLIT_STEP_SHARE if sequence_split and not guided else 1.0
+    replica = int(steps) * (share * float(compute_s) + float(primary_stream_s)) + float(
+        encoder_stream_s
+    )
     alternative = int(steps) * branches * float(compute_s)
     return replica, alternative
 
@@ -1273,6 +1281,7 @@ def choose_replica_layout(
     steps: int,
     encoder_stream_s: float = 0.0,
     min_gain: float = REPLICA_MIN_GAIN,
+    sequence_split: bool = False,
 ) -> tuple[bool, float, float]:
     replica, alternative = price_replica_layout(
         guided = guided,
@@ -1280,6 +1289,7 @@ def choose_replica_layout(
         primary_stream_s = primary_stream_s,
         steps = steps,
         encoder_stream_s = encoder_stream_s,
+        sequence_split = sequence_split,
     )
     return replica > 0 and alternative >= float(min_gain) * replica, replica, alternative
 
@@ -1353,6 +1363,28 @@ _ALTERNATIVE_LABELS = {
 }
 
 
+def _sequence_split_layout_refusal(denoiser: Any, request: Any, selection: Any) -> Optional[str]:
+    """Why a replica would not split the unguided default request by tokens (diffusion_sequence_parallel), or None."""
+    from . import diffusion_sequence_parallel as sp
+
+    if sp.mode() == "off":
+        return f"{sp.SP_ENV}=0"
+    if sp.read_plan(type(denoiser)) is None:
+        return f"{type(denoiser).__name__} has no checked sequence-parallel plan"
+    from .diffusion_memory import _COST_CANVAS_PX, _DIT_PIXELS_PER_TOKEN
+
+    tokens = int(request.tokens or (_COST_CANVAS_PX // _DIT_PIXELS_PER_TOKEN) ** 2)
+    if type(denoiser).__name__ in sp.SP_JOINT_PREFIX:
+        tokens += SEQUENCE_SPLIT_TEXT_TOKENS
+    if sp.mode() != "force" and tokens < sp.MIN_TOKENS:
+        return f"{tokens} tokens, under {sp.MIN_TOKENS}"
+    return None
+
+
+# Text tokens a joint-sequence default request adds to its image tokens (FLUX.2 pads prompts to 512).
+SEQUENCE_SPLIT_TEXT_TOKENS = 512
+
+
 def replica_layout(
     pipe: Any,
     plan: Any,
@@ -1378,10 +1410,12 @@ def replica_layout(
     if request is None or request.guided is None:
         return None, None
     if not request.guided and mode != "force":
-        return None, (
-            f"the default request runs one denoiser branch per step ({request.why or 'no CFG'}): a copy would only "
-            "split even batches"
-        )
+        why_not = _sequence_split_layout_refusal(denoiser, request, selection)
+        if why_not is not None:
+            return None, (
+                f"the default request runs one denoiser branch per step ({request.why or 'no CFG'}): a copy would "
+                f"only split even batches ({why_not})"
+            )
     if getattr(pipe, "transformer_2", None) is not None:
         return None, "two-expert denoiser"
     refusal = replica_layout_refusal(denoiser)
@@ -1408,9 +1442,13 @@ def replica_layout(
         return None, f"no card for a replica ({why})"
     label = _ALTERNATIVE_LABELS.get(alternative, alternative)
     if alternative == "one_card" or mode == "force":
+        runs = (
+            "the default request is guided, so each step runs its second branch on the replica at the same time"
+            if request.guided
+            else "the default request has one branch per step, so each step runs half its tokens on the replica"
+        )
         return (
-            f"one card plus a CFG replica on cuda:{partner} ({need} MiB fits there; the default request is guided, "
-            "so each step runs its second branch on the replica at the same time)"
+            f"one card plus a CFG replica on cuda:{partner} ({need} MiB fits there; {runs})"
             + (
                 ""
                 if alternative == "one_card"
@@ -1452,6 +1490,7 @@ def replica_layout(
         primary_stream_s = stream_s,
         steps = steps,
         encoder_stream_s = encoders_s,
+        sequence_split = not request.guided,
     )
     with contextlib.suppress(TypeError):
         _MODE_ESTIMATES[pipe] = {
@@ -1476,9 +1515,14 @@ def replica_layout(
         f"tokens ({h2d:.1f} GiB/s, {float(tflops):.0f} TFLOPS measured)"
     )
     if take:
+        runs = (
+            "the default request is guided, so the replica runs the second branch beside the first"
+            if request.guided
+            else "the default request has one branch per step, so the replica runs half of each step's tokens"
+        )
         return (
-            f"one card plus a CFG replica on cuda:{partner}: the default request is guided, so the replica runs the "
-            f"second branch beside the first; predicted {priced}; {CFG_REPLICA_PLACEMENT_ENV}=0 keeps the {label}"
+            f"one card plus a CFG replica on cuda:{partner}: {runs}; predicted {priced}; "
+            f"{CFG_REPLICA_PLACEMENT_ENV}=0 keeps the {label}"
         ), None
     return None, f"predicted slower or within {REPLICA_MIN_GAIN:.2f}x: {priced}"
 
@@ -3775,11 +3819,13 @@ class CfgParallelRouter:
         if self.sequence_split_off is not None:
             self.stats["sequence_split_skip"] = self.sequence_split_off
             return None
-        why = sp.refusal(module, sp.call_tokens(module, latent))
+        why = sp.refusal(module, sp.call_tokens(module, latent, kwargs))
         if why is None and (args or _holds_opaque_tensors((args, kwargs))):
             why = "positional or opaque inputs"
-        if why is None and self.secondary.type != self.primary.type:
-            why = "the replica is on another device type"
+        if why is None:
+            why = sp.call_refusal(module, kwargs)
+        if why is None:
+            why = sp.pair_refusal(self.primary, self.secondary)
         if why is None:
             if self._split_scaled is None:
                 from .diffusion_cfg_batch import per_call_scaled

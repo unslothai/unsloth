@@ -846,6 +846,49 @@ def test_unguided_default_request_keeps_the_layer_split(monkeypatch):
     assert "one denoiser branch per step" in reasons["cfg_replica"]
 
 
+class Flux2Transformer2DModel(WanTransformer3DModel):
+    pass
+
+
+def _flux2_plan(monkeypatch):
+    # stands in for the check of diffusers' context-parallel plan (importing diffusers here would touch CUDA)
+    from core.inference import diffusion_sequence_parallel as sp
+    monkeypatch.setattr(sp, "read_plan", lambda cls: sp.SP_EXEC_PLANS.get(cls.__name__))
+
+
+def test_unguided_flux2_default_request_takes_the_replica_to_split_its_tokens(monkeypatch):
+    # a distilled FLUX.2 klein render has one branch per step: the replica runs half of each step's tokens
+    _flux2_plan(monkeypatch)
+    d = _wan5b(monkeypatch, guided = False, cls = Flux2Transformer2DModel)
+    assert d.plan.layer_split is None and d.plan.secondary_ordinal is None
+    recorded = _recorded(d)
+    assert recorded.chosen == "cfg_replica", recorded
+    assert "half of each step's tokens" in recorded.summary
+    est = d.status["mode_estimate"]
+    assert est["replica_render_s"] < est["alternative_render_s"]
+
+
+def test_unguided_flux2_keeps_the_layer_split_with_sequence_parallel_off(monkeypatch):
+    from core.inference import diffusion_sequence_parallel as sp
+
+    _flux2_plan(monkeypatch)
+    monkeypatch.setenv(sp.SP_ENV, "0")
+    d = _wan5b(monkeypatch, guided = False, cls = Flux2Transformer2DModel)
+    assert d.plan.layer_split is not None
+    reasons = {c.kind: c.reason for c in _recorded(d).rejected}
+    assert (
+        "one denoiser branch per step" in reasons["cfg_replica"]
+        and sp.SP_ENV in reasons["cfg_replica"]
+    )
+
+
+def test_sequence_split_pricing_takes_a_share_of_the_step():
+    replica, alternative = mg.price_replica_layout(
+        guided = False, compute_s = 1.0, primary_stream_s = 0.0, steps = 4, sequence_split = True
+    )
+    assert alternative == 4.0 and abs(replica - 4 * mg.SEQUENCE_SPLIT_STEP_SHARE) < 1e-9
+
+
 def test_replica_that_does_not_fit_the_second_card_keeps_the_layer_split(monkeypatch):
     d = _wan5b(monkeypatch, need = 14500)
     assert d.plan.layer_split is not None
