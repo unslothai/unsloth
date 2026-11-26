@@ -6022,6 +6022,12 @@ export const ko = {
     maximize: "창 최대화",
     restore: "창 복원",
     close: "창 닫기",
+    mediaCodecs: {
+      title: "생성된 동영상이 재생되지 않을 수 있습니다",
+      // {command}: an apt command line, never translated.
+      description: "이 시스템에 GStreamer 동영상 디코더가 없습니다. 다음 명령으로 설치하세요: {command}",
+      copy: "명령 복사",
+    },
   },
   runtimeUpdate: {
     installAudio: "오디오 런타임 설치",
