@@ -205,6 +205,8 @@ def pad_weights(
             m.weight.data = buf[:, :K]
             n += 1
             STATS["bytes"] += N * p * w.element_size()
+    if n:
+        _release_old_storage(torch)
     STATS["padded"] += n
     STATS["skipped_table"] += skipped_table
     STATS["skipped_other"] += skipped_other

@@ -103,6 +103,16 @@ def test_pads_exactly_and_counts(gfx):
     assert wp.STATS["padded"] == 2 and wp.STATS["bytes"] == (3072 + 14336) * 64 * 2
 
 
+def test_releases_replaced_storage_once(gfx, monkeypatch):
+    calls = []
+    monkeypatch.setattr(wp, "_release_old_storage", lambda _t: calls.append(1))
+    wp.pad_weights(Dit())
+    assert calls == [1]
+    gfx["arch"] = None
+    wp.pad_weights(Dit())
+    assert calls == [1]  # nothing re-stored, nothing to release
+
+
 def test_off_arches_and_env_zero(gfx, monkeypatch):
     for arch in (None, "gfx1100"):
         gfx["arch"] = arch
