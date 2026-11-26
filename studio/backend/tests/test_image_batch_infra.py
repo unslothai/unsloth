@@ -901,3 +901,27 @@ def test_the_batched_eager_arm_really_runs_eager(monkeypatch):
         not bypassed for rows, bypassed in seen if rows == 1
     ), "serial renders keep their graphs"
     assert state_flag["bypassed"] is False
+
+
+def test_a_verdict_is_keyed_by_the_card_topology(monkeypatch):
+    """A verdict on one card says nothing about a two-card split of the same load (or a CFG replica)."""
+    import core.inference.diffusion_multigpu as mg
+
+    pipe = types.SimpleNamespace()
+    state = types.SimpleNamespace(pipe = pipe, offload_policy = "none", cuda_graphs = ())
+    one = race.topology(state)
+    monkeypatch.setattr(mg, "_PLACEMENTS", {id(pipe): None})
+    split = {"primary": "cuda:0", "secondary": "cuda:1", "moved": ["text_encoder"]}
+
+    class Box(dict):
+        def get(
+            self,
+            key,
+            default = None,
+        ):
+            return split if key is pipe else default
+
+    monkeypatch.setattr(mg, "_PLACEMENTS", Box())
+    two = race.topology(state)
+    assert one != two and "split:cuda:0>cuda:1:text_encoder" in two
+    assert race.load_key(state).endswith(two)

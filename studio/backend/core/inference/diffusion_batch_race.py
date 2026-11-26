@@ -186,6 +186,34 @@ def _compile_state(state: Any) -> str:
     return "static" if static else "dynamic"
 
 
+def topology(state: Any) -> str:
+    """Cards the host shows and how this load spans them (component split, CFG replica, layer split): a verdict on one
+    topology says nothing about another (Kaggle 2xT4: per-card replicas beat the split only from 2 users up)."""
+    try:
+        import torch
+        count = int(torch.cuda.device_count()) if torch.cuda.is_available() else 0
+    except Exception:  # noqa: BLE001
+        count = 0
+    pipe = getattr(state, "pipe", None)
+    parts = [f"cards{count}"]
+    try:
+        from . import diffusion_multigpu as mg
+
+        info = mg._PLACEMENTS.get(pipe) if pipe is not None else None
+        if info:
+            moved = ",".join(sorted(str(m) for m in info.get("moved") or ()))
+            parts.append(f"split:{info.get('primary')}>{info.get('secondary')}:{moved}")
+        if pipe is not None and mg._CFG_ROUTERS.get(pipe) is not None:
+            parts.append("cfg_replica")
+        from .diffusion_layer_split_plan import layer_split_status
+
+        if pipe is not None and layer_split_status(pipe):
+            parts.append("layer_split")
+    except Exception:  # noqa: BLE001 - unreadable placement: its own key, never another load's verdict
+        parts.append("placement?")
+    return "+".join(parts)
+
+
 def load_key(state: Any) -> str:
     """Everything about the load a verdict depends on (the card side comes from the probe fingerprint)."""
     from .diffusion import _denoiser_streams_from_host
@@ -218,6 +246,7 @@ def load_key(state: Any) -> str:
         "graphs" if getattr(state, "cuda_graphs", ()) else "nographs",
         _compile_state(state),
         str(getattr(state, "transformer_cache", None) or ""),
+        topology(state),
     )
     return "|".join(parts)
 
