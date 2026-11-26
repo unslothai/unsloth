@@ -2648,8 +2648,11 @@ def test_a_native_leased_gguf_is_not_mirrored_to_the_server():
     assert (
         "return display_model_id, (None if native_grant_backed else model_id)" in inference
     ), "why the checkpoint is only a display name"
-    models = _read_backend("routes/models.py")
-    assert "display_name = gguf_file.stem," in models, "why the name is never an index key"
+    common = _read_backend("hub/services/models/common.py")
+    assert (
+        "display_name = display_name or (scan_path.stem if scan_path.is_file() else scan_path.name),"
+        in common
+    ), "why the name is never an index key"
 
 
 def test_evicted_local_configs_drop_their_server_overrides():
