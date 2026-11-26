@@ -1346,3 +1346,24 @@ def test_a_failing_optional_app_root_does_not_empty_the_scan(monkeypatch, tmp_pa
 
     assert local_inventory._local_inventory_sources().omlx_dirs == ()
     assert str(folder / "publisher").lower() in resolver._build_index()
+
+
+def test_a_native_row_folded_into_its_scan_folder_keeps_the_publisher_id(monkeypatch, tmp_path):
+    """An LM Studio model whose folder is also a scan folder lists as the custom row, which has no publisher id."""
+    from core.inference import local_model_resolver as resolver
+
+    lms = tmp_path / "lms"
+    model = lms / "pub" / "model"
+    _write(
+        model / "config.json",
+        json.dumps({"architectures": ["LlamaForCausalLM"], "model_type": "llama"}),
+    )
+    _touch(model / "model.safetensors")
+    sources = _empty_sources(tmp_path)._replace(lm_dirs = (lms,))
+    monkeypatch.setattr(local_inventory, "_local_inventory_sources", lambda: sources)
+    monkeypatch.setattr("storage.studio_db.list_scan_folders", lambda: [{"path": str(model)}])
+    monkeypatch.setattr(resolver, "_host_has_a_non_gguf_backend", lambda: True)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(resolver, "_scan", (0.0, {}))
+
+    assert "pub/model" in resolver._build_index()

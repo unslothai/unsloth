@@ -853,8 +853,8 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
     except Exception as exc:
         logger.debug("auto-switch: local model scan failed: %s", exc)
         return index
-    # Rows the listing folds into a listed one still answer to their own names after the listed rows: a copy in
-    # another HF cache or LM Studio / oMLX root by its path, a scan folder's symlink alias also by its name. A
+    # Rows the listing folds into a listed one still answer to their own names, after the listed rows so none takes
+    # a listed row's key: a copy in another HF cache, LM Studio or oMLX root, or a scan folder's symlink alias. A
     # scan folder's sub-build stays grouped with its parent.
     copies = {
         id(info): info
@@ -888,9 +888,9 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
             (getattr(info, "display_name", None), entry),
             (public_model_id(raw_id), path_alias_entry),
         )
-        # The repo id and display name stay with the listed copy.
-        store_copy = id(info) in copies and info.source in _STORE_SOURCES
-        for key, alias_entry in aliases[:2] if store_copy else aliases:
+        # Only the active cache loads by repo id, so another cache's copy answers to its snapshot path alone.
+        hf_copy = id(info) in copies and info.source == "hf_cache"
+        for key, alias_entry in aliases[:2] if hf_copy else aliases:
             if key and alias_entry is not None:
                 index.setdefault(key.strip().lower(), alias_entry)
         # Sibling revisions keep their own weights, so a pin survives a newer Hugging Face snapshot.
