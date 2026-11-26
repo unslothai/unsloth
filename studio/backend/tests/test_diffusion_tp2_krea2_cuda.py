@@ -13,9 +13,13 @@ import pytest
 
 torch = pytest.importorskip("torch")
 diffusers = pytest.importorskip("diffusers")
-pytestmark = pytest.mark.skipif(
-    not torch.cuda.is_available() or torch.cuda.device_count() < 2, reason = "needs two CUDA cards"
-)
+pytestmark = [
+    pytest.mark.gpu,
+    pytest.mark.skipif(
+        not torch.cuda.is_available() or torch.cuda.device_count() < 2,
+        reason = "needs two CUDA cards",
+    ),
+]
 if not hasattr(diffusers, "Krea2Transformer2DModel"):
     pytest.skip("diffusers without Krea 2", allow_module_level = True)
 
@@ -115,3 +119,35 @@ def test_krea2_tp2_on_two_cards_and_the_decode_lend(monkeypatch, int8):
 
     monkeypatch.setenv(tp2.DECODE_LEND_ENV, "0")
     assert tp2.lend_for_decode(SimpleNamespace(transformer = tp)) is None
+
+
+def test_a_lend_that_fails_twice_is_returned_before_the_next_denoiser_call(monkeypatch):
+    """Fault injection on real cards: the lend OOMs after one tensor reached cuda:1, then the rollback OOMs. The
+    lend stays recorded, and the next call brings every tensor home and matches the pre-lend output bit for bit."""
+    monkeypatch.delenv(tp2.DECODE_LEND_ENV, raising = False)
+    tp = _model()
+    devs = [torch.device("cuda", 0), torch.device("cuda", 1)]
+    tp2.install(tp, devs)
+    before = _run(tp)
+    stack = tp.transformer_blocks[0]
+    first = stack.shards()[0]
+    real = tp2._move_card
+    calls = {"away": 0, "home": 0}
+
+    def flaky(entries, device):
+        if torch.device(device) == devs[1]:
+            calls["away"] += 1
+            real(entries[:1], device)
+            raise torch.OutOfMemoryError("injected lend OOM")
+        calls["home"] += 1
+        if calls["home"] == 1:
+            raise torch.OutOfMemoryError("injected rollback OOM")
+        real(entries, device)
+
+    monkeypatch.setattr(tp2, "_move_card", flaky)
+    assert tp2.lend_for_decode(SimpleNamespace(transformer = tp)) is None
+    assert tp2._LENT_ATTR in stack.__dict__
+    assert {p.device for blk in first for p in blk.parameters()} == set(devs)  # mixed, but recorded
+    assert torch.equal(_run(tp), before)
+    assert all(p.device == devs[0] for blk in first for p in blk.parameters())
+    assert tp2._LENT_ATTR not in stack.__dict__

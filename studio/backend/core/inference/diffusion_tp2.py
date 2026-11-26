@@ -67,23 +67,49 @@ def _paths(block: Any) -> tuple:
     return (_KREA2_COLUMN, _KREA2_ROW) if _is_krea2_block(block) else (_COLUMN, _ROW)
 
 
-def _streams_denoiser(plan: Any) -> bool:
-    """An Automatic plan that streams the denoiser's blocks from host memory (group or leaf streaming)."""
+# A plan whose resident share is within this of the whole denoiser holds it whole (planner estimate vs storage).
+_WHOLE_SLACK_MIB = 64
+
+
+def _streams_denoiser(plan: Any, denoiser_mib: Optional[int] = None) -> bool:
+    """An Automatic plan that streams part of the denoiser's weights from host memory every step (group or leaf
+    streaming with less than the whole denoiser resident). A streaming / group policy that pins the whole denoiser
+    (``resident_transformer_mib`` covering it) does not stream it; an unknown denoiser size with a resident share
+    set counts as resident."""
     if (getattr(plan, "requested_mode", None) or "auto") != "auto":
         return False  # an explicit memory mode is the user's call
     if getattr(plan, "layer_split", None) is not None:
         return False
     policy = getattr(plan, "offload_policy", "none")
-    if policy == "streaming":
-        return True
-    return policy == "group" and getattr(plan, "stream_transformer", True) is not False
+    if policy == "group":
+        if getattr(plan, "stream_transformer", True) is False:
+            return False
+    elif policy != "streaming":
+        return False
+    resident = getattr(plan, "resident_transformer_mib", None)
+    if not resident:
+        return True  # every group streams
+    if not denoiser_mib:
+        return False
+    return int(resident) + _WHOLE_SLACK_MIB < int(denoiser_mib)
+
+
+def _denoiser_mib(transformer: Any) -> Optional[int]:
+    try:
+        return _storage_mib((*transformer.parameters(), *transformer.buffers()))
+    except Exception:  # noqa: BLE001 - unreadable: _streams_denoiser stays conservative
+        return None
 
 
 def auto_wanted(transformer: Any, plan: Any) -> bool:
     """Unset env: TP for a family in ``_AUTO_DITS`` whose Automatic plan streams the denoiser from host memory. Two
     cards then each hold half the blocks resident and run half of every block, instead of one card running all of
     it while the rest streams. A plan that keeps the denoiser on one card (or splits it by layers) is unchanged."""
-    return _env_auto() and type(transformer).__name__ in _AUTO_DITS and _streams_denoiser(plan)
+    return (
+        _env_auto()
+        and type(transformer).__name__ in _AUTO_DITS
+        and _streams_denoiser(plan, _denoiser_mib(transformer))
+    )
 
 
 def _comm_choice() -> str:
@@ -319,7 +345,9 @@ def _row_parallel_class():
             if (x.dtype != torch.float16 and not cast16) or not reduce_fp32():
                 return inner(x)
             if _is_native(inner) or _is_int8w(inner):
-                return inner(x.float())
+                # autocast stays off for the partial: under fp16 autocast its GEMM would return fp16 again
+                with torch.autocast(device_type = x.device.type, enabled = False):
+                    return inner(x.float())
             x2 = x.reshape(-1, x.shape[-1])
             if cast16:
                 # what autocast would feed the unsplit GEMM (fp16 operands), with a float32 partial out
@@ -885,7 +913,9 @@ def _krea2_stack_class():
 
     class TPStack(base):
         """Krea 2's block loop on both cards: ``(hidden_states, temb, image_rotary_emb, attention_mask)`` as the
-        model calls each block. Eager: the opt-in per-card stage compile covers Qwen-Image-2.1 only."""
+        model calls each block. Eager: regional compile (``compile_repeated_blocks``) is a no-op on a TP load (the
+        opt-in per-card stage compile covers Qwen-Image-2.1 only); an outer ``torch.compile`` of the whole model
+        traces it without extra recompiles."""
 
         def compile(self, *args: Any, **kwargs: Any) -> None:  # noqa: A003 - nn.Module.compile's name
             return None
@@ -897,6 +927,8 @@ def _krea2_stack_class():
             image_rotary_emb: Any = None,
             attention_mask: Any = None,
         ) -> Any:
+            import torch
+
             devs, ar = self._devices, self._all_reduce
             # a decode that never reached its restore (an exception between lend and restore) left them lent
             _return_lent(self)
@@ -927,7 +959,9 @@ def _krea2_stack_class():
                 for c, d in enumerate(devs):
                     with _CardContext(d):
                         hs[c] = hs[c] + gates2[c] * mlps[c].to(hs[c].dtype)
-            self.calls += 1
+            if not torch.compiler.is_compiling():
+                # eager only: a module int mutated under an outer Dynamo trace is a guard that fails every call
+                self.calls += 1
             out = hs[0]
             return out if out.device == home else out.to(home)
 
@@ -972,6 +1006,8 @@ def _move_card(entries: list, device: Any) -> None:
 
 
 def _return_lent(stack: Any) -> None:
+    """Bring every lent tensor home; the record is dropped only once all of them are back, so a failure here raises
+    and leaves it for the next call (never a silent mixed placement)."""
     lent = stack.__dict__.get(_LENT_ATTR)
     if lent is None:
         return
@@ -981,6 +1017,41 @@ def _return_lent(stack: Any) -> None:
     with torch.no_grad():
         _move_card(entries, home)
     stack.__dict__.pop(_LENT_ATTR, None)
+
+
+def _lend_card(
+    stack: Any,
+    entries: list,
+    home: Any,
+    dst: Any,
+    logger: Any = None,
+) -> bool:
+    """Move ``entries`` from ``home`` to ``dst``; True when all moved. The lend is recorded BEFORE the first move,
+    so a failure part way is always recoverable: the rollback runs through ``_return_lent``, and if the rollback
+    fails too the record stays and the next denoiser call retries it (raising there if it still cannot)."""
+    import torch
+
+    stack.__dict__[_LENT_ATTR] = (entries, home)
+    try:
+        with torch.no_grad():
+            _move_card(entries, dst)
+        return True
+    except Exception as exc:  # noqa: BLE001 - an OOM or a failed copy: put everything back
+        try:
+            _return_lent(stack)
+        except Exception as back:  # noqa: BLE001 - kept recorded: the next denoiser call retries
+            if logger is not None:
+                logger.warning(
+                    "diffusion.tp2: decode lend failed (%s) and so did returning the shards to %s (%s); the "
+                    "next denoiser call retries the return",
+                    exc,
+                    home,
+                    back,
+                )
+            return False
+        if logger is not None and not isinstance(exc, torch.OutOfMemoryError):
+            logger.warning("diffusion.tp2: decode lend skipped: %s", exc)
+        return False
 
 
 def lend_for_decode(pipe: Any, logger: Any = None) -> Optional[Callable[[], None]]:
@@ -1022,21 +1093,12 @@ def lend_for_decode(pipe: Any, logger: Any = None) -> Optional[Callable[[], None
                     need + _LEND_RESERVE_MIB,
                 )
             return None
-        with torch.no_grad():
-            _move_card(entries, devs[1])
-    except torch.OutOfMemoryError:
-        with contextlib.suppress(Exception):
-            with torch.no_grad():
-                _move_card(entries, devs[0])
-        return None
-    except Exception as exc:  # noqa: BLE001 - the decode runs with the shards where they were
+    except Exception as exc:  # noqa: BLE001 - nothing moved yet: the decode runs with the shards in place
         if logger is not None:
             logger.warning("diffusion.tp2: decode lend skipped: %s", exc)
-        with contextlib.suppress(Exception):
-            with torch.no_grad():
-                _move_card(entries, devs[0])
         return None
-    stack.__dict__[_LENT_ATTR] = (entries, devs[0])
+    if not _lend_card(stack, entries, devs[0], devs[1], logger):
+        return None
     stack.lends = int(getattr(stack, "lends", 0)) + 1
     rec = getattr(tr, TP_ATTR, None)
     if isinstance(rec, dict):

@@ -51,22 +51,23 @@ def _model():
     return m
 
 
-def _positions():
+def _positions(grid = GRID):
     """``Krea2Pipeline.prepare_position_ids``' layout: text rows at the origin, image rows ``(0, h, w)``."""
-    hh, ww = torch.meshgrid(torch.arange(GRID), torch.arange(GRID), indexing = "ij")
+    hh, ww = torch.meshgrid(torch.arange(grid), torch.arange(grid), indexing = "ij")
     img = torch.stack([torch.zeros_like(hh), hh, ww], dim = -1).reshape(-1, 3)
     return torch.cat([torch.zeros(TEXT, 3, dtype = img.dtype), img])
 
 
-def _inputs(valid = 7):
+def _inputs(valid = 7, grid = None):
+    grid = GRID if grid is None else grid
     g = torch.Generator().manual_seed(1)
     mask = torch.zeros(1, TEXT, dtype = torch.bool)
     mask[:, :valid] = True
     return {
-        "hidden_states": torch.randn(1, GRID * GRID, 8, generator = g),
+        "hidden_states": torch.randn(1, grid * grid, 8, generator = g),
         "encoder_hidden_states": torch.randn(1, TEXT, LAYERS, DIM, generator = g),
         "timestep": torch.full((1,), 0.5),
-        "position_ids": _positions(),
+        "position_ids": _positions(grid),
         "encoder_attention_mask": mask,
         "return_dict": False,
     }
@@ -180,8 +181,15 @@ class _Plan:
     reasons: tuple = ("planned",)
 
 
-def _two_cards(monkeypatch, seen):
+def _two_cards(
+    monkeypatch,
+    seen,
+    denoiser_mib = 12245,
+):
     from core.inference import diffusion_multigpu as mg
+
+    # the Kaggle T4 load: 12245 MiB of int8 denoiser, 3262 MiB of it resident, the rest streamed every step
+    monkeypatch.setattr(tp2, "_denoiser_mib", lambda tr: denoiser_mib, raising = False)
 
     monkeypatch.setattr(
         mg, "current_selection", lambda: mg.MultiGpuSelection(primary = 0, secondaries = (1,))
@@ -280,3 +288,141 @@ def test_a_lend_left_open_is_returned_by_the_next_denoiser_call():
     stack.__dict__[tp2._LENT_ATTR] = (entries, torch.device("cpu"))
     torch.testing.assert_close(_run(tp), _run(ref), rtol = 1e-5, atol = 1e-5)
     assert tp2._LENT_ATTR not in stack.__dict__
+
+
+@pytest.mark.parametrize(
+    "plan,denoiser_mib",
+    [
+        (_Plan(resident_transformer_mib = 12245), 12245),  # group policy, whole denoiser pinned
+        (_Plan(resident_transformer_mib = 12200), 12245),  # within the planner-vs-storage slack
+        (_Plan(offload_policy = "streaming", resident_transformer_mib = 12245), 12245),
+        (_Plan(), None),  # a resident share with an unreadable denoiser size: treated as resident
+    ],
+)
+def test_auto_keeps_a_plan_that_holds_the_whole_denoiser_resident(monkeypatch, plan, denoiser_mib):
+    seen = []
+    _two_cards(monkeypatch, seen, denoiser_mib)
+    assert tp2.engage_for_plan(SimpleNamespace(transformer = _model()), plan) is plan
+    assert seen == []
+
+
+def test_auto_engages_when_every_group_streams(monkeypatch):
+    seen = []
+    _two_cards(monkeypatch, seen, None)
+    for plan in (
+        _Plan(resident_transformer_mib = None),
+        _Plan(offload_policy = "streaming", resident_transformer_mib = None),
+    ):
+        assert tp2.engage_for_plan(SimpleNamespace(transformer = _model()), plan) is not plan
+    assert len(seen) == 2
+
+
+def test_int8_row_split_under_fp16_autocast_stays_finite():
+    """Reported repro: int8 row [100, 100, -100, -100], unit scale, inputs of 400 under fp16 autocast. Unsplit the
+    sum is 0; each half alone is +-80000, past fp16's range, so the partials must leave in fp32."""
+    host = small_host
+    layer = host.int8_linear_class()(
+        torch.tensor([[100, 100, -100, -100]], dtype = torch.int8), torch.ones(1, 1), None, 4, 1
+    )
+    parts = [tp2._row_parallel_class()(tp2.shard_linear(layer, 1, i, 2, "cpu")) for i in range(2)]
+    x = torch.full((1, 4), 400.0)
+    with torch.inference_mode(), torch.autocast("cpu", dtype = torch.float16):
+        reference = layer(x)
+        partials = [part(chunk) for part, chunk in zip(parts, x.chunk(2, dim = 1))]
+        result = partials[0] + partials[1]
+    assert all(p.dtype == torch.float32 for p in partials)
+    assert torch.isfinite(result).all() and float(result) == float(reference) == 0.0
+
+
+def _lend_setup():
+    tp = _model()
+    tp2.install(tp, CPU2)
+    stack = tp.transformer_blocks[0]
+    entries = tp2._shard_tensors(stack.shards()[0])
+    return tp, stack, entries
+
+
+HOME, AWAY = "card0", "card1"
+
+
+class _Mover:
+    """Stands in for ``_move_card`` on CPU: records where each tensor would be, failing on chosen calls (the
+    ``fail`` schedule: per destination, the 1-based call numbers that raise after moving ``partial`` tensors)."""
+
+    def __init__(
+        self,
+        fail,
+        partial = 1,
+    ):
+        self.where, self.calls, self.fail, self.partial = {}, {HOME: 0, AWAY: 0}, fail, partial
+
+    def __call__(self, ents, device):
+        self.calls[device] += 1
+        if self.calls[device] in self.fail.get(device, ()):
+            for e in ents[: self.partial if device == AWAY else 0]:
+                self.where[id(e[0]), e[1], e[2]] = device
+            raise torch.OutOfMemoryError(f"injected OOM moving to {device}")
+        for e in ents:
+            self.where[id(e[0]), e[1], e[2]] = device
+
+    def places(self, entries):
+        return {self.where.get((id(m), k, n), HOME) for m, k, n in entries}
+
+
+def test_a_failed_lend_with_a_failed_rollback_is_recovered_by_the_next_call(monkeypatch):
+    """Fault injection: the lend OOMs after moving one tensor, then the first rollback OOMs too. The lend stays
+    recorded (never a silent mixed placement) and the next denoiser call brings every tensor home."""
+    ref = _model()
+    tp, stack, entries = _lend_setup()
+    mover = _Mover({AWAY: (1,), HOME: (1,)})
+    monkeypatch.setattr(tp2, "_move_card", mover)
+    assert tp2._lend_card(stack, entries, HOME, AWAY) is False
+    assert mover.places(entries) == {HOME, AWAY}  # mixed after the failed rollback ...
+    assert stack.__dict__[tp2._LENT_ATTR] == (entries, HOME)  # ... but recorded
+    torch.testing.assert_close(_run(tp), _run(ref), rtol = 1e-5, atol = 1e-5)
+    assert mover.places(entries) == {HOME} and tp2._LENT_ATTR not in stack.__dict__
+
+
+def test_a_lend_whose_return_keeps_failing_raises_instead_of_running_mixed(monkeypatch):
+    tp, stack, entries = _lend_setup()
+    mover = _Mover({AWAY: (1,), HOME: (1, 2)})
+    monkeypatch.setattr(tp2, "_move_card", mover)
+    assert tp2._lend_card(stack, entries, HOME, AWAY) is False
+    with pytest.raises(torch.OutOfMemoryError):
+        _run(
+            tp
+        )  # the second return attempt fails loudly instead of running half the blocks off their card
+    assert tp2._LENT_ATTR in stack.__dict__
+    _run(tp)  # the third attempt works: home again
+    assert mover.places(entries) == {HOME} and tp2._LENT_ATTR not in stack.__dict__
+
+
+def test_a_failed_lend_with_a_working_rollback_leaves_nothing_recorded(monkeypatch):
+    tp, stack, entries = _lend_setup()
+    mover = _Mover({AWAY: (1,)}, partial = 2)
+    monkeypatch.setattr(tp2, "_move_card", mover)
+    assert tp2._lend_card(stack, entries, HOME, AWAY) is False
+    assert mover.places(entries) == {HOME} and tp2._LENT_ATTR not in stack.__dict__
+    assert tp2._lend_card(stack, entries, HOME, AWAY) is True  # a clean lend records it
+    assert mover.places(entries) == {AWAY} and stack.__dict__[tp2._LENT_ATTR] == (entries, HOME)
+
+
+def test_outer_compile_of_a_tp_model_adds_no_recompiles():
+    """Whole-model torch.compile (eager backend), 4 calls at 2 resolutions: TP compiles as many frames as one card."""
+    from torch._dynamo.testing import CompileCounter
+
+    def frames(model):
+        torch._dynamo.reset()
+        cnt = CompileCounter()
+        fn = torch.compile(model, backend = cnt)
+        with torch.no_grad():
+            for grid in (GRID, GRID, GRID + 2, GRID + 2):
+                fn(**_inputs(grid = grid))
+        return cnt.frame_count
+
+    ref = _model()
+    tp = copy.deepcopy(ref)
+    tp2.install(tp, CPU2)
+    base = frames(ref)
+    assert frames(tp) == base
+    torch._dynamo.reset()
