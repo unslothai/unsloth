@@ -2,7 +2,11 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """Several CUDA/ROCm cards per pipeline without NCCL, split only at component or denoiser-call
-boundaries, never inside a forward; outputs bit-identical; UNSLOTH_DIFFUSION_MULTIGPU=0 disables"""
+boundaries, never inside a forward. On cards of the same model, component and layer splits and CFG-branch parallel
+(each guidance branch on its own card, at its own batch) match one card bit for bit. The batch split (an even batch,
+or one call carrying both branches as a batch, cut in two) runs batch-B kernels instead of batch-2B ones, so its bits
+may differ: UNSLOTH_DIFFUSION_BATCH_SPLIT=0 (UNSLOTH_DIFFUSION_CFG_PARALLEL_UNET=0 for U-Nets) keeps those calls whole
+on one card. UNSLOTH_DIFFUSION_MULTIGPU=0 disables"""
 
 from __future__ import annotations
 

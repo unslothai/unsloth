@@ -6488,7 +6488,7 @@ export function ImagesPage({
       {gpuChoices.length > 0 && (
         <AdvancedSelect
           label="GPU"
-          hint="Which card this model loads on. Auto uses whichever device torch is pointing at, which on a mixed box is not necessarily the largest. An image model is never split across cards, so this is one choice, not a pool. Only cards in this machine are listed: using two machines (for example two DGX Sparks) for one job is not part of this release."
+          hint="Which card this model loads on. Auto picks a card and, with several cards, may also use another card: an idle one of the same model for a copy that runs the second guidance branch at the same time (same pixels as one card), for half of an even batch (can differ in the last bits), or for the text encoders or part of a model too big for one card. Picking a GPU keeps the model on that card only. Only cards in this machine are listed: using two machines (for example two DGX Sparks) for one job is not part of this release."
           value={selectedGpu}
           onValueChange={setSelectedGpu}
           options={[
