@@ -364,3 +364,44 @@ def credited_cgroup_headroom_mib() -> Optional[int]:
 def host_ram_capacity_mib() -> Optional[int]:
     """Host RAM this process may ever charge, in MiB: min(system total, cgroup limit)."""
     return usable_mib(system_total_mib(), cgroup_limit_mib())
+
+
+def windows_commit_mib() -> Optional[tuple[int, int]]:
+    """(commit available, commit limit) in MiB from GlobalMemoryStatusEx, or None off Windows or on any failure.
+
+    ullAvailPageFile / ullTotalPageFile are the system commit charge headroom and limit (RAM plus page file), not the
+    page file alone."""
+    import sys
+
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class _MemoryStatusEx(ctypes.Structure):
+            _fields_ = [("dwLength", wintypes.DWORD), ("dwMemoryLoad", wintypes.DWORD)] + [
+                (name, ctypes.c_ulonglong)
+                for name in (
+                    "ullTotalPhys",
+                    "ullAvailPhys",
+                    "ullTotalPageFile",
+                    "ullAvailPageFile",
+                    "ullTotalVirtual",
+                    "ullAvailVirtual",
+                    "ullAvailExtendedVirtual",
+                )
+            ]
+
+        status = _MemoryStatusEx()
+        status.dwLength = ctypes.sizeof(status)
+        if not ctypes.WinDLL("kernel32", use_last_error = True).GlobalMemoryStatusEx(
+            ctypes.byref(status)
+        ):
+            return None
+        avail, limit = int(status.ullAvailPageFile) // _MIB, int(status.ullTotalPageFile) // _MIB
+    except Exception:  # noqa: BLE001 - no reading means the caller keeps its existing answer
+        return None
+    if limit <= 0 or avail < 0:
+        return None
+    return avail, limit

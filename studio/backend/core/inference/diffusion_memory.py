@@ -1195,19 +1195,24 @@ class DeviceMemory:
     total_mib: Optional[int] = None
     # Metal's recommended working set when it bounds free / total (mps); None everywhere else.
     metal_working_set_mib: Optional[int] = None
+    # Which reading bounded free / total when it is not the driver's own (WINDOWS_COMMIT_CREDIT); None elsewhere.
+    credit_basis: Optional[str] = None
 
     @property
     def is_unified(self) -> bool:
         return self.memory_kind in ("unified_memory", "system_memory")
 
     def as_public_dict(self) -> dict[str, Any]:
-        return {
+        out = {
             "backend": self.backend,
             "device": self.device,
             "memory_kind": self.memory_kind,
             "free_mib": self.free_mib,
             "total_mib": self.total_mib,
         }
+        if self.credit_basis is not None:
+            out["credit_basis"] = self.credit_basis
+        return out
 
 
 @dataclass(frozen = True)
@@ -1271,8 +1276,8 @@ def snapshot_device_memory(target: Any) -> DeviceMemory:
     backend = getattr(target, "backend", device)
 
     if device == "cuda":
-        free, total, kind = _cuda_memory(backend)
-        return DeviceMemory(backend, device, kind, free, total)
+        free, total, kind, basis = _cuda_memory_reading(backend)
+        return DeviceMemory(backend, device, kind, free, total, credit_basis = basis)
     if device == "xpu":
         free, total = _xpu_memory()
         return DeviceMemory(backend, device, "discrete_vram", free, total)
@@ -1506,6 +1511,11 @@ def settled_snapshot_device_memory(
 
 
 def _cuda_memory(backend: str) -> tuple[Optional[int], Optional[int], str]:
+    return _cuda_memory_reading(backend)[:3]
+
+
+def _cuda_memory_reading(backend: str) -> tuple[Optional[int], Optional[int], str, Optional[str]]:
+    """(free MiB, total MiB, memory kind, credit basis); the basis is None unless a non-driver reading bounded the pair."""
     try:
         import torch
 
@@ -1524,10 +1534,45 @@ def _cuda_memory(backend: str) -> tuple[Optional[int], Optional[int], str]:
         free_mib, total_mib = int(free // (1024 * 1024)), int(total // (1024 * 1024))
         # ROCm APUs over-report free (free == total on Windows HIP): never credit host memory.
         if kind == "unified_memory" and not _torch_is_rocm(torch):
+            commit = _windows_integrated_commit_credit_mib(free_mib, total_mib)
+            if commit is not None:
+                return commit[0], commit[1], kind, WINDOWS_COMMIT_CREDIT
             free_mib, total_mib = _unified_reclaimable_memory_mib(free_mib, total_mib)
-        return free_mib, total_mib, kind
+        return free_mib, total_mib, kind, None
     except Exception:
-        return None, None, "discrete_vram"
+        return None, None, "discrete_vram", None
+
+
+WINDOWS_COMMIT_CREDIT = "windows_commit"
+_WIN_IGPU_COMMIT_CAP_ENV = "UNSLOTH_DIFFUSION_WIN_IGPU_COMMIT_CAP"
+
+
+def _windows_integrated_commit_credit_mib(
+    free_mib: int, total_mib: int
+) -> Optional[tuple[int, int]]:
+    """Free / capacity of an integrated NVIDIA GPU on Windows, bounded by system commit; None keeps the default rule.
+
+    WDDM gives such a GPU (e.g. RTX Spark) a dedicated carve-out the OS does not see, plus shared OS RAM, and
+    mem_get_info reports both (109.5 GiB free on a 64 GB-visible machine). Every GPU byte, dedicated or shared, is
+    charged to system commit 1:1 while psutil's available RAM does not move, so commit is the binding limit:
+    free = min(cuda_free, commit available), capacity = min(cuda_total, commit limit). No reserve is taken here:
+    the planner already keeps _reserve_mib("unified_memory", capacity) of this free (_planner_reserve_mib), so
+    subtracting it again would reserve twice. Linux (DGX Spark / Jetson) never reaches this; any failed reading,
+    or UNSLOTH_DIFFUSION_WIN_IGPU_COMMIT_CAP=0, falls back to _unified_reclaimable_memory_mib."""
+    if sys.platform != "win32":
+        return None
+    if os.environ.get(_WIN_IGPU_COMMIT_CAP_ENV, "1").strip().lower() in ("0", "false", "no", "off"):
+        return None
+    try:
+        from utils import host_memory
+        reading = host_memory.windows_commit_mib()
+    except Exception:  # noqa: BLE001 - the default rule still answers
+        return None
+    if reading is None:
+        return None
+    available_mib, limit_mib = reading
+    capacity = min(int(total_mib), int(limit_mib))
+    return min(int(free_mib), int(available_mib), capacity), capacity
 
 
 def _torch_is_rocm(torch) -> bool:
