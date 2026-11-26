@@ -81,6 +81,11 @@ def _adapter_off(student):
         student._unsloth_adapter_off_depth = 0
 
 
+def _base_module(module):
+    original = getattr(module, "original_module", None)
+    return original if isinstance(original, torch.nn.Module) else module
+
+
 class AdapterOffTeacher(torch.nn.Module):
     """A LoRA student with its adapter disabled, standing in for a frozen teacher.
 
@@ -112,6 +117,14 @@ class AdapterOffTeacher(torch.nn.Module):
 
     def forward(self, *args, **kwargs):
         return self._unsloth_student(*args, **kwargs)
+
+    def get_output_embeddings(self):
+        # A head trained through modules_to_save is a ModulesToSaveWrapper whose weight is the adapter's copy outside
+        # this context; callers that project hidden states themselves (DistillationTrainer) need the base head.
+        return _base_module(self._unsloth_adapter_off_student_model.get_output_embeddings())
+
+    def get_input_embeddings(self):
+        return _base_module(self._unsloth_adapter_off_student_model.get_input_embeddings())
 
     def generate(self, *args, **kwargs):
         # GKD seq_kd samples targets from the teacher: the base model's, so with the adapter off as well.
@@ -308,33 +321,41 @@ def _refuse_subclass_objective(trainer, option):
 
 
 def _refuse_unreconstructable_sampler(trainer, rescoring = False):
-    # Rescoring the sampled tokens over the full vocabulary at the trainer's temperature is not the sampler under
-    # generation filters or penalties. vLLM's sampling logprobs avoid the rescoring, so setup skips vLLM; the first
-    # rollout that comes without them (an older TRL with the IS correction off) checks again with rescoring = True.
+    # Rescoring the sampled tokens over the full vocabulary at args.temperature is not the sampler under generation
+    # filters, penalties or a temperature override. vLLM's sampling logprobs avoid the rescoring, so setup skips vLLM;
+    # the first rollout that comes without them (an older TRL with the IS correction off) checks with rescoring = True.
     args = getattr(trainer, "args", None)
     if not rescoring and getattr(trainer, "use_vllm", getattr(args, "use_vllm", False)):
         return
-    sources = [args, getattr(args, "vllm_sampling_params", None)]
     defaults = {
         "top_k": (None, 0, -1),
         "top_p": (None, 1, 1.0),
         "min_p": (None, 0, 0.0),
         "repetition_penalty": (None, 1, 1.0),
     }
-    used = sorted(
-        {
-            k
-            for src in sources
-            if src is not None
-            for k, ok in defaults.items()
-            if getattr(src, k, None) not in ok
-        }
-    )
+    temperature = getattr(args, "temperature", 1.0)
+    used = set()
+    for source in (
+        args,
+        getattr(args, "vllm_sampling_params", None),
+        getattr(args, "generation_kwargs", None),
+    ):
+        if source is None:
+            continue
+        read = (
+            source.get
+            if isinstance(source, dict)
+            else (lambda k, d = None, src = source: getattr(src, k, d))
+        )
+        used |= {k for k, ok in defaults.items() if read(k, None) not in ok}
+        if source is not args and read("temperature", None) not in (None, temperature):
+            used.add("a temperature override")
     if used:
         raise ValueError(
-            f"Unsloth: unsloth_distillation_coef rescores the sampled tokens over the full vocabulary when the rollout "
-            f"has no sampling logprobs, which does not reproduce the sampler under {', '.join(used)}. Use vLLM with its "
-            "sampling logprobs (vllm_importance_sampling_correction = True) or leave those at their defaults."
+            f"Unsloth: unsloth_distillation_coef rescores the sampled tokens over the full vocabulary at "
+            f"args.temperature when the rollout has no sampling logprobs, which does not reproduce the sampler under "
+            f"{', '.join(sorted(used))}. Use vLLM with its sampling logprobs (vllm_importance_sampling_correction = "
+            "True) or leave those at their defaults."
         )
 
 

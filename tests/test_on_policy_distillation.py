@@ -266,6 +266,48 @@ def test_adapter_off_teacher_scores_the_base():
     assert teacher._unsloth_adapter_off_student_model is inner
 
 
+def test_adapter_off_teacher_exposes_the_base_head():
+    # lm_head trained through modules_to_save: DistillationTrainer projects with teacher.get_output_embeddings().
+    inner = ToyCausalLM()
+    base_head = inner.lm_head
+
+    class ModulesToSave(torch.nn.Module):
+        def __init__(self, original):
+            super().__init__()
+            self.original_module = original
+            self.trained = torch.nn.Linear(original.in_features, original.out_features, bias = False)
+
+    wrapped = ModulesToSave(base_head)
+    inner.get_output_embeddings = lambda: wrapped
+    teacher = opd.AdapterOffTeacher(FakeLora(inner))
+    assert teacher.get_output_embeddings() is base_head
+    inner.get_output_embeddings = lambda: base_head
+    assert teacher.get_output_embeddings() is base_head
+
+
+def test_distillation_refuses_generation_overrides(monkeypatch):
+    monkeypatch.setattr(opd, "_require_zoo", lambda flag, option: None)
+    for overrides, word in (
+        ({"top_p": 0.5}, "top_p"),
+        ({"temperature": 0.7}, "temperature override"),
+    ):
+        trainer = _grpo_trainer(
+            unsloth_distillation_coef = 1.0,
+            use_vllm = False,
+            temperature = 1.0,
+            generation_kwargs = overrides,
+        )
+        with pytest.raises(ValueError, match = word):
+            opd.grpo_setup_distillation(trainer)
+    same = _grpo_trainer(
+        unsloth_distillation_coef = 1.0,
+        use_vllm = False,
+        temperature = 0.7,
+        generation_kwargs = {"temperature": 0.7, "max_new_tokens": 9},
+    )
+    assert opd.grpo_setup_distillation(same) == 1.0
+
+
 def test_adapter_off_teacher_generates_with_the_adapter_off():
     # GKD seq_kd calls teacher.generate, which must not resolve to the student's own generate with LoRA on.
     student = FakeLora(ToyCausalLM())
