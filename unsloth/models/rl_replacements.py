@@ -5146,10 +5146,13 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     _pg_use = False
                     _pg_skip_pk = False
                     _pg_forward_fn = None
-                    # A FlexAttention/Triton compile failure or OOM here is GPU-wide, not layout-specific, so retrying every step just re-pays it. Disable PG persistently; the packed/padded path below still gives the exact result.
-                    unwrapped_model._unsloth_prefix_grouper_nograd_disabled = True
-                    if isinstance(_pg_err, torch.cuda.OutOfMemoryError):
+                    # A FlexAttention/Triton compile failure here is GPU-wide, not layout-specific, so retrying every step just re-pays it: disable PG persistently. An OOM (bare or raised while compiling) is transient and only skips PG for this batch. The packed/padded path below still gives the exact result.
+                    if isinstance(_pg_err, torch.cuda.OutOfMemoryError) or isinstance(
+                        getattr(_pg_err, "inner_exception", None), torch.cuda.OutOfMemoryError
+                    ):
                         torch.cuda.empty_cache()
+                    else:
+                        unwrapped_model._unsloth_prefix_grouper_nograd_disabled = True
                     os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = (
                         "0" if _unsloth_head_hooked else "1"
                     )

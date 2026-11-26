@@ -2173,6 +2173,8 @@ def _band_kernel_ready(layer, hidden_states):
     if cached is not None and cached[0] == key:
         return cached[1]
     ready = _band_kernel_check(layer, hidden_states.device)
+    if ready is None:
+        return False  # transient (an OOM): not served this call, checked again on the next one
     layer.__dict__["_unsloth_band_kernel_ready"] = (key, ready)
     return ready
 
@@ -2191,7 +2193,15 @@ def _band_kernel_check(layer, device):
         if not lh._enabled() or not lh._measured_faster_on(device):
             return False
         dtypes = [torch.float16] + ([torch.bfloat16] if torch.cuda.is_bf16_supported() else [])
-        return any([bool(lh._self_check(device, dtype, head_dim)) for dtype in dtypes])
+        verdicts = [bool(lh._self_check(device, dtype, head_dim)) for dtype in dtypes]
+        # The self check returns False without caching a verdict after an OOM: no verdict for the layer either.
+        if not any(verdicts) and any(
+            (str(device), dtype, head_dim) not in lh._SELF_CHECK for dtype in dtypes
+        ):
+            return None
+        return any(verdicts)
+    except torch.OutOfMemoryError:
+        return None
     except Exception:
         return False
 
@@ -3151,6 +3161,11 @@ def _wrap(
                 # flow, not a compile failure (demoting on it left the stock forward in every block).
                 # CheckpointError (forward / recompute mismatch) too: demoting would hide it.
                 if type(e).__name__ in ("_StopRecomputationError", "CheckpointError"):
+                    raise
+                # An OOM while Inductor compiles or autotunes is transient, not a compile failure.
+                if _backend_compile_failed(e) and isinstance(
+                    getattr(e, "inner_exception", None), torch.OutOfMemoryError
+                ):
                     raise
                 if os.environ.get("UNSLOTH_BLOCK_COMPILE_DEBUG") == "1":
                     import traceback
