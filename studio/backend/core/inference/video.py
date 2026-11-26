@@ -12968,6 +12968,9 @@ class VideoBackend:
                 if install_untiled_decode(pipe, fam.name, logger = logger):
                     speed_optims += ("vae_untiled_when_fits",)
             install_frame_pad_fix(pipe, target, logger = logger)
+            from .diffusion_vae_noclone import install_on_pipe as install_vae_noclone
+
+            install_vae_noclone(pipe, logger)
             # Windows ROCm: decoder Conv3d calls over 2 GiB run as per-tap Conv2d (stock Conv3d falls off a cliff there).
             try:
                 from .video_vae_rocm_pertap import install_on_pipe as install_vae_rocm_pertap
@@ -14605,6 +14608,8 @@ class VideoBackend:
                     )
         except Exception as exc:  # noqa: BLE001 -- optimisation only, never fail a load
             logger.warning("video.h3_speed_optims failed, continuing unoptimised: %s", exc)
+        # Must precede the first forward and any graph capture.
+        _engage_video_expandable(target)
         # H3 declines graphs; this only acts when a family override forces them.
         graph_applied = arm_graphs_after_placement(
             speed_view, {"cuda_graph": "cuda_graph" in speed_optims}, logger

@@ -110,15 +110,15 @@ def _on_gpu(model) -> bool:
     return next(model.parameters()).device.type == "cuda"
 
 
+def _has_triton() -> bool:
+    return importlib.util.find_spec("triton") is not None
+
+
 def _wants_compile(model, forwards: int) -> bool:
     choice = os.environ.get("UNSLOTH_DECISION_COMPILE", "auto")
     if choice in ("0", "1"):
         return choice == "1"
-    return (
-        _on_gpu(model)
-        and forwards >= COMPILE_MIN_FORWARDS
-        and importlib.util.find_spec("triton") is not None
-    )
+    return _on_gpu(model) and forwards >= COMPILE_MIN_FORWARDS and _has_triton()
 
 
 def _warm_up(model, amp_dtype) -> None:

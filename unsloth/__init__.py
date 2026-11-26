@@ -2367,7 +2367,7 @@ else:
 
     if any(
         os.environ.get(_name, "").strip() not in ("", "1")
-        for _name in ("UNSLOTH_TP_SIZE", "UNSLOTH_PP_SIZE", "UNSLOTH_CP_SIZE")
+        for _name in ("UNSLOTH_TP_SIZE", "UNSLOTH_PP_SIZE", "UNSLOTH_CP_SIZE", "UNSLOTH_EP_SIZE")
     ):
         from .models.tp_env import (
             install_tensor_parallel_env_trainer_init as _install_tp_trainer_init,
@@ -2433,11 +2433,6 @@ try:
 except Exception:
     pass
 
-from ._import_metadata_cache import uninstall as _uninstall_metadata_cache
-
-_uninstall_metadata_cache(_metadata_cache_token)
-del _uninstall_metadata_cache, _metadata_cache_token
-
 # GPU backend only: the CPU backend (and MLX) never loads unsloth.kernels, and sets no compile cache tag.
 if not globals().get("_IS_CPU_BACKEND", True):
     try:
@@ -2462,6 +2457,11 @@ if not globals().get("_IS_CPU_BACKEND", True):
         del _require_marker
     except Exception:
         pass
+
+from ._import_metadata_cache import uninstall as _uninstall_metadata_cache
+
+_uninstall_metadata_cache(_metadata_cache_token)
+del _uninstall_metadata_cache, _metadata_cache_token
 
 from ._import_gc import restore_gc_threshold as _restore_gc_threshold
 

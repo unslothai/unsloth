@@ -527,6 +527,13 @@ def test_fp8_loss_route_preserves_installed_transformers_decorators(monkeypatch,
 
     model = _tiny_qwen3_peft()
     owner = model.get_base_model()
+    # After import unsloth, zoo's fused forward serves only models Unsloth loaded (unsloth-zoo #2768):
+    # mark this one as a real load does, and fail plainly if the marker is not enough.
+    from unsloth.models._utils import _mark_unsloth_model
+
+    _mark_unsloth_model(owner)
+    fuses = getattr(forward_install, "_fuses_model", lambda module: True)
+    assert fuses(owner), "zoo's fused forward would skip this model"
     cls = type(owner)
     original = cls.forward
     monkeypatch.setattr(cls, "forward", original)

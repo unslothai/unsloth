@@ -270,6 +270,9 @@ def _strided_processor_for(base: Any) -> Any:
         # set by install_int8_attention: unmasked calls of at least this many tokens run the INT8 kernel
         _unsloth_int8 = False
         _unsloth_int8_min_tokens = 0
+        # {secondary card: its own race's floor} (diffusion_int8_attention.card_floor); replaced per install, never
+        # mutated in place
+        _unsloth_int8_cards: dict = {}
         _unsloth_int8_sinks = 0
         # set by install_int8_exact_start: INT8 calls go through the step-gated op (16-bit kernel code, _EXACT_KERNELS)
         _unsloth_int8_exact = False
@@ -337,8 +340,9 @@ def _strided_processor_for(base: Any) -> Any:
                     key = _apply_rotary_emb(key, *rotary_emb)
 
             if (
-                self._unsloth_int8
-                and query.shape[1] >= self._unsloth_int8_min_tokens
+                # installed and at least the floor on this call's card (a secondary card that lost its own race keeps
+                # this processor's 16-bit path below, the incumbent it raced against)
+                _i8.takes_int8(self, query)
                 # no backward in the kernel: gradient calls run native here, not inside the op (autograd cannot see in)
                 and not (
                     torch.is_grad_enabled()
@@ -521,7 +525,13 @@ EXACT_GRAPH_REASON = "INT8 attention exact start routes per denoise step (not CU
 _EXACT_REGISTRY: dict = {}
 _EXACT_KEYS = itertools.count(1)
 # calls served per path since import (engagement census; the op body runs eagerly, also under torch.compile)
-EXACT_START_STATS = {"exact": 0, "int8": 0}
+EXACT_START_STATS = {"exact": 0, "int8": 0, "declined": 0}
+
+
+def h3_int8_exact_kernel(backend: Any) -> str:
+    """16-bit SDPA kernel an exact step pins on ``backend``, else ``"sdpa_default"``."""
+    name = _backend_value(backend)
+    return name if name in _EXACT_KERNELS[1:] else "sdpa_default"
 
 
 def _exact_attention(q: Any, k: Any, v: Any, kernel: int) -> Any:
@@ -572,8 +582,16 @@ def int8_attention_exact_start_impl(q: Any, k: Any, v: Any, flag: Any, kernel: i
             EXACT_START_STATS["exact"] += 1
             out = _exact_attention(q, k, v, int(kernel))
         else:
-            EXACT_START_STATS["int8"] += 1
-            out = _i8.int8_attention_impl(q, k, v)
+            # a call the kernel does not take (a secondary card that lost its race, a failed launch) keeps the
+            # processor's pinned 16-bit kernel, as the exact steps run, not torch's unpinned attention
+            declined = []
+
+            def pinned() -> Any:
+                declined.append(True)
+                return _exact_attention(q, k, v, int(kernel))
+
+            out = _i8.int8_attention_impl(q, k, v, fallback = pinned)
+            EXACT_START_STATS["declined" if declined else "int8"] += 1
     return out.to(v.dtype).contiguous()
 
 
@@ -695,7 +713,7 @@ def install_int8_exact_start(
     _EXACT_REGISTRY[key] = state
     weakref.finalize(transformer, _EXACT_REGISTRY.pop, key, None)
     for proc in procs:
-        name = _backend_value(getattr(proc, "_attention_backend", None))
+        name = h3_int8_exact_kernel(getattr(proc, "_attention_backend", None))
         proc._unsloth_int8_exact_kernel = (
             _EXACT_KERNELS.index(name) if name in _EXACT_KERNELS else 0
         )

@@ -893,6 +893,7 @@ def test_adafactor_is_refused_on_native_fsdp2_shards():
 
 
 def test_moe_rows_cover_family_precision_aux_and_mode():
+    import os
     import types
 
     from unsloth import parallel_capabilities as caps
@@ -903,7 +904,7 @@ def test_moe_rows_cover_family_precision_aux_and_mode():
         if c.name.startswith("MoE ")
         and not c.name.endswith((", block compile", ", Unsloth checkpoint", ", multimodal"))
     ]
-    assert len(moe) == len(caps.MOE_FAMILIES) * 4 * 2 * 6
+    assert len(moe) == len(caps.MOE_FAMILIES) * 4 * 2 * 7
     proven = sorted(c.name for c in moe if not c.missing())
     assert "MoE qwen3_moe x lora+experts x aux off x cp" in proven
     assert "MoE qwen3_moe x full x aux off x fsdp2" in proven
@@ -937,10 +938,34 @@ def test_moe_rows_cover_family_precision_aux_and_mode():
     ):
         with pytest.raises(NotImplementedError, match = why):
             caps.check(_q(cp = 2, cp_backend = "ulysses", **{**moe_q, **extra}))
+    # Qwen3-MoE aux under Ulysses cp is supported; other families, HF checkpointing and the kill switch stay refused.
+    aux_cp = _q(cp = 2, cp_backend = "ulysses", router_aux_loss = True, **moe_q)
+    assert caps.cell_status(aux_cp)[0] == "supported"
+    caps.check(aux_cp)
+    caps.check(
+        _q(cp = 2, cp_backend = "ulysses", router_aux_loss = True, memory = "unsloth_offload", **moe_q)
+    )
+    caps.check(_q(dp = 2, cp = 2, fsdp2 = True, cp_backend = "ulysses", router_aux_loss = True, **moe_q))
+    with pytest.raises(NotImplementedError, match = r"no numeric parity"):
+        caps.check(_q(cp = 2, cp_backend = "ulysses", router_aux_loss = True, memory = "gc", **moe_q))
     with pytest.raises(
         NotImplementedError, match = r"^Unsloth: MoE x pp / cp: .*router_aux_loss_coef = 0.0"
     ):
-        caps.check(_q(cp = 2, cp_backend = "ulysses", router_aux_loss = True, **moe_q))
+        caps.check(
+            _q(cp = 2, cp_backend = "ulysses", router_aux_loss = True, **{**moe_q, "family": "mixtral"})
+        )
+    with pytest.raises(
+        NotImplementedError, match = r"^Unsloth: MoE x pp / cp: .*router_aux_loss_coef = 0.0"
+    ):
+        caps.check(_q(cp = 2, cp_backend = "ring", router_aux_loss = True, **moe_q))
+    os.environ["UNSLOTH_CP_ROUTER_AUX"] = "0"
+    try:
+        with pytest.raises(
+            NotImplementedError, match = r"^Unsloth: MoE x pp / cp: .*router_aux_loss_coef = 0.0"
+        ):
+            caps.check(aux_cp)
+    finally:
+        del os.environ["UNSLOTH_CP_ROUTER_AUX"]
     # Pipeline parallel carries the Qwen3-MoE router auxiliary loss (tests/test_pp_moe_aux_gloo.py): gpipe /
     # 1f1b, one stage per rank, aux on or off; other families, full finetuning and checkpointing stay refused.
     for aux in (True, False):
