@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 import os
 from pathlib import Path
 import subprocess
+from threading import Event
 from types import SimpleNamespace
 
 import pytest
@@ -152,16 +154,13 @@ def test_workdir_alias_is_only_the_workload_cwd(monkeypatch, tmp_path, system_cm
 
 
 def _download_plan(tmp_path):
-    from dataclasses import replace
     return replace(_cmd_plan(_workdir(tmp_path), "curl https://example.com"), egress_proxy = True)
 
 
 def _accepts_egress_rules(monkeypatch, accepted):
-    from core.inference import mxc_probe
-
     asked = []
 
-    def probe(executable, *, execution_kind, egress_rules):
+    def probe(executable, *, execution_kind, cancel_event, egress_rules):
         asked.append((execution_kind, egress_rules))
         return accepted, ""
 
@@ -178,6 +177,20 @@ def test_a_sandbox_that_refuses_egress_rules_gets_none(tmp_path, system_cmd, mon
     assert not any(e.startswith("CURL_HOME=") for e in request["config"]["process"]["env"])
 
 
+def test_download_egress_qualification_respects_cancellation(tmp_path, system_cmd, monkeypatch):
+    stop = Event()
+
+    def probe(executable, *, execution_kind, cancel_event, egress_rules):
+        assert cancel_event is stop
+        cancel_event.set()
+        return False, "MXC capability probe was cancelled"
+
+    monkeypatch.setattr(mxc_probe, "probe", probe)
+    plan = replace(_download_plan(tmp_path), cancel_event = stop)
+    with pytest.raises(mxc_policy.MxcPolicyError, match = "cancelled during MXC egress qualification"):
+        mxc_policy.build_launch_request(plan)
+
+
 def test_a_launch_that_is_not_a_download_never_asks(tmp_path, system_cmd, monkeypatch):
     asked = _accepts_egress_rules(monkeypatch, True)
     request = mxc_policy.build_launch_request(_cmd_plan(_workdir(tmp_path), "dir"))
@@ -187,9 +200,6 @@ def test_a_launch_that_is_not_a_download_never_asks(tmp_path, system_cmd, monkey
 
 
 def test_the_egress_probe_does_not_probe_itself(tmp_path, system_cmd, monkeypatch):
-    from dataclasses import replace
-    from types import SimpleNamespace
-
     asked = _accepts_egress_rules(monkeypatch, False)
     plan = replace(_cmd_plan(_workdir(tmp_path), "dir"), egress_proxy = True)
     probing = SimpleNamespace(**vars(plan), egress_rules_probe = True)
@@ -213,8 +223,11 @@ def test_a_download_launch_denies_what_the_egress_proxy_refuses(tmp_path, system
     rc_dir = env["CURL_HOME"]
     assert rc_dir in config["filesystem"]["readonlyPaths"]
     assert os.path.commonpath([rc_dir, plan.workdir]) != plan.workdir
-    assert open(os.path.join(rc_dir, ".curlrc")).read() == ""
+    assert Path(rc_dir, ".curlrc").read_text(encoding = "utf-8") == (
+        'proto = "=http,https"\nproto-redir = "=http,https"\n'
+    )
     assert env["WGETRC"] == env["SYSTEM_WGETRC"] == os.path.join(rc_dir, "wgetrc")
+    assert Path(env["WGETRC"]).read_text(encoding = "utf-8") == "netrc = off\nmax_redirect = 0\n"
     assert env["NoDefaultCurrentDirectoryInExePath"] == "1"
     denied = [ipaddress.ip_network(peer["cidr"]) for peer in egress["deny"][0]["to"]]
 
@@ -254,7 +267,7 @@ def test_the_download_rc_files_are_not_rewritten_once_right(tmp_path, system_cmd
     tampered = os.stat(wgetrc).st_ino
     mxc_policy.build_launch_request(plan)
     assert os.stat(rc).st_ino == before[0]
-    assert open(wgetrc, encoding = "utf-8").read() == "netrc = off\n"
+    assert Path(wgetrc).read_text(encoding = "utf-8") == "netrc = off\nmax_redirect = 0\n"
     assert os.stat(wgetrc).st_ino != tampered
     assert sorted(os.listdir(env["CURL_HOME"])) == [".curlrc", "wgetrc"]
 

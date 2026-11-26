@@ -467,17 +467,29 @@ def _egress_rules(plan) -> dict:
         from . import mxc_probe
 
         # The fallback tiers refuse a policy with egress rules, and wxc-exec does not report the tier.
-        if not mxc_probe.probe(plan.argv[0], execution_kind = "terminal", egress_rules = True)[0]:
+        cancel_event = plan.cancel_event
+        available, _ = mxc_probe.probe(
+            plan.argv[0],
+            execution_kind = "terminal",
+            cancel_event = cancel_event,
+            egress_rules = True,
+        )
+        if cancel_event is not None and cancel_event.is_set():
+            raise MxcPolicyError("execution cancelled during MXC egress qualification")
+        if not available:
             return {}
     return {"deny": [{"to": [{"cidr": cidr} for cidr in _egress_denied_cidrs()]}]}
 
 
 def _download_rc_dir() -> str:
-    from .sandbox_egress import RC_FILES
-
     directory = mxc_runtime._studio_root() / "mxc-runtime" / "download-rc"
     directory.mkdir(parents = True, exist_ok = True)
-    for name, text in RC_FILES:
+    # MXC filters addresses. curl can restrict redirect schemes, and GNU Wget can only cap the count.
+    files = (
+        (".curlrc", 'proto = "=http,https"\nproto-redir = "=http,https"\n'),
+        ("wgetrc", "netrc = off\nmax_redirect = 0\n"),
+    )
+    for name, text in files:
         path = directory / name
         try:
             current = path.read_text(encoding = "utf-8")

@@ -788,7 +788,8 @@ _PLAIN_DOWNLOAD_HINT = (
 _PLAIN_CMD_DOWNLOAD_HINT = (
     "In the isolated Terminal curl and wget run only as a plain download: common options, http(s) "
     "URLs, double quotes only, no %, ^, !, ; or pipe, so a URL containing % cannot be fetched "
-    "here. Run the download as its own command, then unpack or run it in the next one."
+    "here. Use curl -L for HTTP(S) redirects. Run the download as its own command, then unpack "
+    "or run it in the next one."
 )
 _PLAIN_CHMOD_HINT = (
     "In the OS sandbox chmod runs only as a plain `chmod MODE FILE...`: no -R, globs, $ or xargs."
