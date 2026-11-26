@@ -210,3 +210,39 @@ def test_fast_inference_shared_weights_skips_sync():
     assert merges == [], "the shared fast_inference base must not be merged into"
     assert rec.loaded == [] and rec.resets == 0
     assert torch.equal(model.base_model.model.proj.base_layer.weight, base)
+
+
+def test_rloo_generated_trainer_defines_grpo_update_sampling_params():
+    # patch_functions rewrites TRL 0.22 to 0.27 RLOO's `SamplingParams(**generation_kwargs)` into a call
+    # to grpo_update_SamplingParams; the generated RLOO trainer must define it (NameError at the first rollout).
+    import inspect
+
+    from unsloth.models.rl_replacements import RL_PRE_ITEMS, grpo_update_SamplingParams
+
+    namespace = {"inspect": inspect}
+    for item in RL_PRE_ITEMS["rloo_trainer"]:
+        if "def grpo_update_SamplingParams" in item:
+            exec(item, namespace)
+    assert "grpo_update_SamplingParams" in namespace
+
+    class SamplingParams:
+        def __init__(
+            self,
+            n = 1,
+            temperature = 1.0,
+            max_tokens = 16,
+            top_p = 1.0,
+        ):
+            pass
+
+    kwargs = {"n": 1, "temperature": 0.7, "max_tokens": 8, "guided_decoding": None}
+    assert namespace["grpo_update_SamplingParams"](SamplingParams, kwargs) == {
+        "n": 1,
+        "temperature": 0.7,
+        "max_tokens": 8,
+    }
+    assert grpo_update_SamplingParams(SamplingParams, kwargs) == {
+        "n": 1,
+        "temperature": 0.7,
+        "max_tokens": 8,
+    }
