@@ -980,7 +980,8 @@ def test_sidebar_sections_accept_ids_already_valid_in_chat_history(client):
     assert saved["rowOrder"]["research"] == [thread_id, "existing"]
 
 
-def test_sidebar_sections_replay_placements_for_refiled_rows_with_stale_ranks(client):
+@pytest.mark.parametrize("sort", ["manual", "updated"], ids = ["concurrent-manual", "sort-switch"])
+def test_sidebar_sections_replay_placements_for_refiled_rows_with_stale_ranks(client, sort):
     from copy import deepcopy
 
     path = "/chat/sidebar-sections"
@@ -1001,7 +1002,7 @@ def test_sidebar_sections_replay_placements_for_refiled_rows_with_stale_ranks(cl
     initial = save(
         "initial",
         {
-            "sections": {"research": {"name": "Research", "sort": "manual"}},
+            "sections": {"research": {"name": "Research", "sort": sort}},
             "sectionByChatId": dict.fromkeys("abc", "research"),
             "rowOrder": {"research": list("abc")},
         },
@@ -1011,18 +1012,22 @@ def test_sidebar_sections_replay_placements_for_refiled_rows_with_stale_ranks(cl
     common = save("unfile", unfiled, initial)
     assert common["rowOrder"]["research"] == list("abc")
 
-    reordered = deepcopy(common)
-    reordered["rowOrder"]["research"] = list("ca")
-    result = save(
-        "reorder",
-        reordered,
-        common,
-        [{"sectionId": "research", "id": "c", "targetId": "a", "edge": "top"}],
-    )
-    assert result["rowOrder"]["research"] == list("ca")
+    if sort == "manual":
+        reordered = deepcopy(common)
+        reordered["rowOrder"]["research"] = list("ca")
+        result = save(
+            "reorder",
+            reordered,
+            common,
+            [{"sectionId": "research", "id": "c", "targetId": "a", "edge": "top"}],
+        )
+        assert result["rowOrder"]["research"] == list("ca")
 
     refiled = deepcopy(common)
     refiled["sectionByChatId"]["b"] = "research"
+    if sort == "updated":
+        refiled["sections"]["research"]["sort"] = "manual"
+        refiled["rowOrder"]["research"] = list("cab")
     result = save(
         "refile",
         refiled,

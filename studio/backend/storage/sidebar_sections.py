@@ -133,6 +133,10 @@ def _merge(
         moves = moves_by_section.get(key, ())
         if importing or ids != previous or key not in row_order or moves:
             saved = row_order.get(key, [])
+            switched_to_manual = (
+                base["sections"].get(key, {}).get("sort") == "updated"
+                and layout["sections"].get(key, {}).get("sort") == "manual"
+            )
             if importing and key in row_order:
                 # Only newly imported rows receive a rank from this browser. Existing rows
                 # may since have been dragged, unranked, unfiled, or filed elsewhere.
@@ -148,13 +152,9 @@ def _merge(
                     if pages.get(row) != key and projects.get(row) != key
                 }
                 saved = [row for row in saved if row not in removed]
-                # A stale rank does not make a newly filed row part of the base order.
-                filed = assigned_rows.get(key, ())
+                # A sort switch compares saved ranks to decide whether the visible order can win.
+                filed = () if switched_to_manual else assigned_rows.get(key, ())
                 previous = [row for row in previous if row not in removed and row not in filed]
-            switched_to_manual = (
-                base["sections"].get(key, {}).get("sort") == "updated"
-                and layout["sections"].get(key, {}).get("sort") == "manual"
-            )
             row_order[key] = _edited_order(
                 saved, previous, ids, importing, moves, switched_to_manual = switched_to_manual
             )
