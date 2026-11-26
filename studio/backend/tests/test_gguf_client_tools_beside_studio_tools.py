@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""#19593: with enable_tools, the request's own tools sit beside Unsloth's in the GGUF tool loop.
-
-Unsloth runs its own tools; a call to a client tool ends the turn as OpenAI tool_calls.
-"""
+"""#19593: with enable_tools, a GGUF call to a request tool ends the turn as OpenAI tool_calls."""
 
 from __future__ import annotations
 

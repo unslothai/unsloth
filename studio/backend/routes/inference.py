@@ -4959,11 +4959,7 @@ def _passthrough_client_tools(payload):
 
 
 def _client_tools_beside_studio_tools(payload, studio_tools) -> list[dict]:
-    """The request's function tools that run in Unsloth's tool loop beside its own (#19593).
-
-    The loop offers them to the model and hands a call to one back to the caller, so only
-    well-formed function tools count, and an Unsloth tool keeps a name both catalogs share.
-    """
+    """The request's function tools for the GGUF tool loop; Unsloth's win shared names (#19593)."""
     if getattr(payload, "tool_choice", None) == "none":
         return []
     taken = {
@@ -35247,7 +35243,6 @@ async def produce_openai_chat_completions(
                 checkpoint_fitted = _rolling_context_policy(payload) is not None,
                 ui_events = _ui_events,
             )
-            # The request's own tools join the loop; a call to one goes back to the caller.
             _gguf_client_tools = _client_tools_beside_studio_tools(payload, tools_to_use)
             _reject_missing_forced_tool(payload.tool_choice, tools_to_use + _gguf_client_tools)
             # Skip the loop when no tool survived so 'empty = allow all' cannot reach built-ins.
@@ -35339,7 +35334,6 @@ async def produce_openai_chat_completions(
             from core.inference.tools import mcp_match_exchange
 
             _gguf_mcp_exchange = mcp_match_exchange(gguf_messages, tools_to_use)
-            # The loop offers both catalogs; only the caller's names are handed back.
             _gguf_loop_tools = tools_to_use + _gguf_client_tools
             _gguf_client_tool_names = frozenset(
                 tool["function"]["name"] for tool in _gguf_client_tools
@@ -35809,7 +35803,6 @@ async def produce_openai_chat_completions(
                             continue
 
                         if event["type"] == "client_tool_calls":
-                            # The caller runs these: OpenAI tool_call deltas, then finish_reason tool_calls.
                             for chunk in _release_held_mention() + _flush_reasoning_extractor():
                                 yield chunk
                             api_monitor.mark_first_token(monitor_id)

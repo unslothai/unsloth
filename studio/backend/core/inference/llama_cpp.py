@@ -9012,11 +9012,7 @@ _DECISION_ONLY_GGUF_TYPES = frozenset(
 
 
 def client_tool_calls_in(tool_calls, client_tool_names) -> list[dict]:
-    """The calls in one model turn that name a caller-run tool, shaped as OpenAI tool_calls.
-
-    Arguments are always a JSON string and every call has an id, so the caller can execute the
-    call and answer it with a role=tool message.
-    """
+    """A turn's calls to caller-run tools, as OpenAI tool_calls with string arguments."""
     if not tool_calls or not client_tool_names:
         return []
     calls = []
@@ -41205,7 +41201,7 @@ class LlamaCppBackend:
         chat_template_kwargs: Optional[dict] = None,
         mcp_match_exchange: Optional[dict] = None,
         record_cut_thought: bool = True,
-        # Names in ``tools`` the caller runs itself: a call to one ends the loop as a client_tool_calls event.
+        # Names in ``tools`` the caller runs itself.
         client_tool_names: Optional[frozenset] = None,
     ) -> Generator[dict, None, None]:
         """
@@ -43400,8 +43396,7 @@ class LlamaCppBackend:
                     yield _build_metadata_event(_iter_usage, _iter_timings, _iter_finish_reason)
                     return
 
-                # A call to a caller-run tool ends the turn: the caller executes it and sends the
-                # result back. Unsloth calls in the same batch are left for the model to repeat.
+                # Unsloth calls in a batch with a client call do not run: the model repeats them.
                 _client_calls = client_tool_calls_in(tool_calls, client_tool_names)
                 if disable_parallel_tool_use:
                     _client_calls = _client_calls[:1]
