@@ -7,10 +7,10 @@ bfloat16 keeps 8 mantissa bits, so round-to-nearest drops updates far smaller th
 
 On CUDA with Triton, torch AdamW weights take one kernel per weight: read the bfloat16 weight, gradient and
 moments, do AdamW's float32 arithmetic in registers, write all three back with stochastic rounding (Philox
-seeded by (param index, step), so resumes and DDP replicas draw alike). bitsandbytes keeps its own 8-bit
-state: its 8-bit blockwise Adam / AdamW runs as one kernel too (bitsandbytes' update in float32 registers on
-the bfloat16 weight and gradient, the weight rounded stochastically), other bitsandbytes optimizers step a
-float32 copy, rounded back in one pass. UNSLOTH_BF16_SR_FUSED_BNB=0 keeps bitsandbytes on the float32-copy
+seeded by (param index, step), so resumes and DDP replicas draw alike). bitsandbytes Adam / AdamW (8-bit
+blockwise or 32-bit state) takes one kernel too: bitsandbytes' update in float32 registers on the bfloat16
+weight and gradient, its states written as its own kernel does, the weight rounded stochastically. Other
+bitsandbytes optimizers step a float32 copy, rounded back in one pass. UNSLOTH_BF16_SR_FUSED_BNB=0 keeps bitsandbytes on the float32-copy
 route; UNSLOTH_BF16_SR_FUSED=0 keeps the float32-copy route with torch.randint draws everywhere.
 """
 
@@ -614,7 +614,7 @@ def _wrap_bitsandbytes(optimizer, tracked, seed):
     def update_step(self, group, p, gindex, pindex):
         if id(p) not in tracked or p.grad is None or p.dtype != torch.bfloat16:
             return original(group, p, gindex, pindex)
-        # 8-bit blockwise Adam / AdamW: one kernel reads the bfloat16 weight and gradient, no float32 copies.
+        # Adam / AdamW: one kernel on the bfloat16 weight and gradient, no float32 copies.
         if _bnb_fused_step(self, group, p, gindex, pindex, seed):
             return None
         # Otherwise bitsandbytes needs p and its gradient in one dtype: step a float32 copy under p's state,
