@@ -140,6 +140,13 @@ const VLLM_ROCM_REFUSED_QUANT_METHODS: ReadonlySet<string> = new Set([
   "auto-round",
   "fbgemm_fp8",
 ]);
+// vllm-metal loads AWQ only (mlx-lm repack).
+const VLLM_METAL_REFUSED_QUANT_METHODS: ReadonlySet<string> = new Set([
+  "compressed-tensors",
+  "gptq",
+  "auto-round",
+  "fbgemm_fp8",
+]);
 const VLLM_FORMAT_KEYS: ReadonlySet<string> = new Set(["awq", "gptq"]);
 // Chat only: vLLM refuses audio (_reject_unsupported_managed_kind); untagged repos count as chat.
 const VLLM_CHAT_TASKS: ReadonlySet<string> = new Set(["text-generation", "image-text-to-text"]);
@@ -270,7 +277,8 @@ export function classifyUnslothSupport({
       if (
         vllmRuns &&
         VLLM_QUANT_METHODS.has(normalizedQuant) &&
-        !(vllmPlatform === "rocm" && VLLM_ROCM_REFUSED_QUANT_METHODS.has(normalizedQuant))
+        !(vllmPlatform === "rocm" && VLLM_ROCM_REFUSED_QUANT_METHODS.has(normalizedQuant)) &&
+        !(vllmPlatform === "metal" && VLLM_METAL_REFUSED_QUANT_METHODS.has(normalizedQuant))
       ) {
         const rest = classifyUnslothSupport({ modelId, pipelineTag, tags, libraryName, deviceType, vllmAvailable });
         if (rest.status === "supported" || rest.supportedIn === "vllm") {
@@ -317,6 +325,7 @@ export function classifyUnslothSupport({
       vllmRuns &&
       !isGguf &&
       VLLM_FORMAT_KEYS.has(formatKey) &&
+      !(vllmPlatform === "metal" && VLLM_METAL_REFUSED_QUANT_METHODS.has(formatKey)) &&
       !detectUnsupportedFormatKey(
         modelId,
         lowerTags,

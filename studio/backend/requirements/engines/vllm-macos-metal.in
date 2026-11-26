@@ -1,0 +1,9 @@
+# Optional macOS arm64 (Apple Silicon), Python 3.12 serving environment: vLLM's macOS CPU build plus the
+# vllm-metal platform plugin, which runs models on MLX. Neither is on PyPI for this platform, so both are the
+# projects' GitHub release wheels (vllm-metal ships cp312 only). Compile with MACOSX_DEPLOYMENT_TARGET=15.0:
+#    uv pip compile --no-config vllm-macos-metal.in --python-version 3.12 --python-platform aarch64-apple-darwin --generate-hashes --override vllm-macos-metal.overrides -o vllm-macos-metal.txt
+vllm @ https://github.com/vllm-project/vllm/releases/download/v0.33.0rc3/vllm-0.33.0%2Bcpu-cp38-abi3-macosx_11_0_arm64.whl
+vllm-metal @ https://github.com/vllm-project/vllm-metal/releases/download/v0.33.0/vllm_metal-0.33.0-cp312-cp312-macosx_15_0_arm64.whl
+
+# CA trust floor, as in no-torch-runtime.txt: certifi 2026.10.19 drops the distrusted emSign ECC Root CA - G3.
+certifi>=2026.10.19

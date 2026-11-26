@@ -28,7 +28,7 @@ export interface ApiModelOverride {
   engine_parallelism?: "tensor" | "pipeline" | "data";
   engine_precision?: "auto" | "bf16" | "fp16" | "int4" | "int8" | "fp8";
   engine?: "auto" | "vllm" | "sglang";
-  engine_kv_cache_dtype?: "auto" | "fp8";
+  engine_kv_cache_dtype?: "auto" | "fp8" | "turboquant";
   engine_seed?: number | null;
   engine_gpu_memory_utilization?: number | null;
   // biome-ignore lint/style/useNamingConvention: API schema

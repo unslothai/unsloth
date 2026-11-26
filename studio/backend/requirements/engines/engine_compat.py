@@ -27,20 +27,50 @@ TARGETS = {
         "glibc": 39,
         "index": "https://wheels.vllm.ai/rocm/0.30.0/rocm723/",
     },
+    # Apple Silicon; vLLM and vllm-metal are GitHub release wheels pinned by URL.
+    "vllm-macos-metal": {"python": (3, 12), "glibc": None, "macos": (15, 0), "index": None},
 }
 DEFAULT_TARGET = {"python": (3, 13), "glibc": 34, "index": None}
 
 
-def environment(python: tuple[int, int]) -> dict:
+def environment(python: tuple[int, int], macos: bool = False) -> dict:
     return {
         **default_environment(),
         "implementation_name": "cpython",
-        "platform_machine": "x86_64",
-        "platform_system": "Linux",
+        "platform_machine": "arm64" if macos else "x86_64",
+        "platform_system": "Darwin" if macos else "Linux",
         "python_full_version": "{}.{}.0".format(*python),
         "python_version": "{}.{}".format(*python),
-        "sys_platform": "linux",
+        "sys_platform": "darwin" if macos else "linux",
     }
+
+
+def platform_tags(glibc: int | None, macos: tuple[int, int] | None = None) -> list[str]:
+    if macos:
+        from packaging.tags import mac_platforms
+        return list(mac_platforms(macos, "arm64"))
+    platforms = [f"manylinux_2_{minor}_x86_64" for minor in range(glibc, 4, -1)]
+    return platforms + [
+        "manylinux2014_x86_64",
+        "manylinux2010_x86_64",
+        "manylinux1_x86_64",
+        "linux_x86_64",
+    ]
+
+
+def url_pins(lock: Path) -> dict[str, str]:
+    """Wheels the lock pins by URL (name @ https://...), which no index prices."""
+    found = {}
+    for line in lock.read_text(encoding = "utf-8").splitlines():
+        match = re.match(r"([A-Za-z0-9][A-Za-z0-9_.\-]*) @ (https://\S+\.whl)", line)
+        if match:
+            found[normalize(match.group(1))] = match.group(2)
+    return found
+
+
+def url_size(url: str) -> int:
+    with urllib.request.urlopen(urllib.request.Request(url, method = "HEAD"), timeout = 60) as r:
+        return int(r.headers["Content-Length"])
 
 
 def normalize(name: str) -> str:
@@ -95,18 +125,13 @@ def wheel_size(
     files: list[dict],
     allowed: set[str] | None,
     python: tuple[int, int] = (3, 13),
-    glibc: int = 34,
+    glibc: int | None = 34,
+    macos: tuple[int, int] | None = None,
 ) -> int | None:
     from packaging.tags import cpython_tags, compatible_tags
     from packaging.utils import parse_wheel_filename
 
-    platforms = [f"manylinux_2_{minor}_x86_64" for minor in range(glibc, 4, -1)]
-    platforms += [
-        "manylinux2014_x86_64",
-        "manylinux2010_x86_64",
-        "manylinux1_x86_64",
-        "linux_x86_64",
-    ]
+    platforms = platform_tags(glibc, macos)
     order = {
         tag: rank
         for rank, tag in enumerate(
@@ -149,13 +174,18 @@ def build(stem: str) -> dict:
         name: [Requirement(r) for r in data["info"]["requires_dist"] or []]
         for name, data in releases.items()
     }
+    macos = target.get("macos")
     sizes = {
-        name: wheel_size(data["urls"], allowed.get(name, set()), target["python"], target["glibc"])
+        name: wheel_size(
+            data["urls"], allowed.get(name, set()), target["python"], target["glibc"], macos
+        )
         for name, data in releases.items()
     }
     for name, files in extra.items():
-        sizes[name] = wheel_size(files, None, target["python"], target["glibc"])
-    markers = environment(target["python"])
+        sizes[name] = wheel_size(files, None, target["python"], target["glibc"], macos)
+    for name, url in url_pins(lock).items():
+        sizes[name] = url_size(url)
+    markers = environment(target["python"], macos is not None)
     extras: dict[str, set[str]] = {name: {""} for name in pins}
     requires: dict[str, set[str]] = {}
     changed = True
@@ -178,7 +208,7 @@ def build(stem: str) -> dict:
     return {
         "lock_sha256": hashlib.sha256(lock.read_bytes()).hexdigest(),
         "requires": {name: sorted(specs) for name, specs in sorted(requires.items())},
-        # Bytes of the wheel installed on the lock's CPython, manylinux x86_64; null when only an sdist fits.
+        # Bytes of the wheel installed on the lock's CPython and platform; null when only an sdist fits.
         "sizes": dict(sorted(sizes.items())),
     }
 

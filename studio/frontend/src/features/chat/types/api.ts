@@ -63,7 +63,7 @@ export interface ListLorasResponse {
 export interface LoadModelRequest {
   engine_parallelism?: "tensor" | "pipeline" | "data";
   engine_precision?: "auto" | "bf16" | "fp16" | "int4" | "int8" | "fp8";
-  engine_kv_cache_dtype?: "auto" | "fp8";
+  engine_kv_cache_dtype?: "auto" | "fp8" | "turboquant";
   engine_seed?: number | null;
   engine_gpu_memory_utilization?: number | null;
   engine?: "auto" | "vllm" | "sglang";
@@ -230,7 +230,7 @@ export function isMultimodalResponse(
 export interface LoadModelResponse {
   engine_parallelism?: "tensor" | "pipeline" | "data";
   engine_precision?: "auto" | "bf16" | "fp16" | "int4" | "int8" | "fp8";
-  engine_kv_cache_dtype?: "auto" | "fp8";
+  engine_kv_cache_dtype?: "auto" | "fp8" | "turboquant";
   engine_seed?: number | null;
   engine_gpu_memory_utilization?: number | null;
   engine?: "auto" | "vllm" | "sglang";
@@ -358,7 +358,7 @@ export interface InferenceStatusResponse {
   load_in_4bit?: boolean | null;
   engine_parallelism?: "tensor" | "pipeline" | "data";
   engine_precision?: "auto" | "bf16" | "fp16" | "int4" | "int8" | "fp8";
-  engine_kv_cache_dtype?: "auto" | "fp8";
+  engine_kv_cache_dtype?: "auto" | "fp8" | "turboquant";
   engine_seed?: number | null;
   engine_gpu_memory_utilization?: number | null;
   engine?: "auto" | "vllm" | "sglang";

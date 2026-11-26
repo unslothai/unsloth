@@ -87,8 +87,10 @@ export function shouldRequestMemoryEstimate(opts: {
   isGguf: boolean;
   isAppleUnifiedMemory: boolean;
   classifiedIsDiffusion: boolean | undefined;
+  /** vLLM or SGLang picked: the MLX planner would price a load that does not happen. */
+  managedEngine: boolean;
 }): boolean {
-  const { isGguf, isAppleUnifiedMemory, classifiedIsDiffusion } = opts;
+  const { isGguf, isAppleUnifiedMemory, classifiedIsDiffusion, managedEngine } = opts;
   if (isGguf) return classifiedIsDiffusion === false;
-  return isAppleUnifiedMemory && classifiedIsDiffusion !== true;
+  return isAppleUnifiedMemory && !managedEngine && classifiedIsDiffusion !== true;
 }

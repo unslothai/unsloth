@@ -78,6 +78,7 @@ def test_wsl_state_across_a_restart(wsl, monkeypatch):
 
 
 def test_missing_wsl_is_not_unsupported(wsl, monkeypatch):
+    monkeypatch.setattr(install, "gpu_platform", lambda: "cuda")
     monkeypatch.setattr(wsl_host, "native_machine", lambda: "x86_64")
     monkeypatch.setattr(wsl_host, "windows_build", lambda: 26100)
     monkeypatch.setattr(install, "_driver_rows", lambda gpu_id, wait = True: [["580.10", "9.0"]])

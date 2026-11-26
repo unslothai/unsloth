@@ -704,6 +704,8 @@ export const en = {
     precisionHelp: "Model default preserves stored precision. Other options convert unquantized weights when loading.",
     kvCache: "KV cache",
     kvCacheFp8: "FP8 (half the memory)",
+    kvCacheTurboQuant: "TurboQuant (compressed)",
+    kvCacheTurboQuantHelp: "TurboQuant compresses the context cache to about 8-bit keys and 3-bit values, fitting over twice the context in the same memory. Answers can differ slightly from the uncompressed cache.",
     kvCacheHelp: "FP8 stores the context cache in 8 bits, fitting about twice the context in the same memory. Without calibrated scales in the checkpoint, answers can be slightly less accurate.",
     gpuMemory: "GPU memory limit",
     gpuMemoryAuto: "Automatic",
@@ -735,6 +737,7 @@ export const en = {
     lastAttempt: "Last attempt: {time}",
     cancelled: "Installation cancelled. You can retry.",
     scope: "Text and image chat on NVIDIA GPUs. First load may take longer.",
+    scopeMetal: "Text and image chat on Apple Silicon. First load may take longer.",
   },
   sandboxSetup: {
     levelTitle: "OS sandbox is not available",

@@ -6,7 +6,7 @@ export type MinPMode = "server-default" | "custom";
 export interface InferenceParams {
   engineParallelism?: "tensor" | "pipeline" | "data";
   enginePrecision?: "auto" | "bf16" | "fp16" | "int4" | "int8" | "fp8";
-  engineKvCacheDtype?: "auto" | "fp8";
+  engineKvCacheDtype?: "auto" | "fp8" | "turboquant";
   engineSeed?: number | null;
   engineGpuMemoryUtilization?: number | null;
   engine?: "auto" | "vllm" | "sglang";

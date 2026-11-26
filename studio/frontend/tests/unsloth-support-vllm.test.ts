@@ -145,3 +145,12 @@ test("FBGEMM FP8 runs on vLLM only; plain fp8 and ModelOpt stay on the Default e
     "supported",
   );
 });
+
+test("vLLM on Apple Silicon is offered only for AWQ", () => {
+  const metal = { modelId: "o/m", deviceType: "mac", vllmAvailable: true, vllmPlatform: "metal" };
+  assert.equal(classifyUnslothSupport({ ...metal, quantMethod: "awq" }).supportedIn, "vllm");
+  for (const quantMethod of ["gptq", "compressed-tensors", "auto-round", "fbgemm_fp8"]) {
+    assert.equal(classifyUnslothSupport({ ...metal, quantMethod }).supportedIn, undefined, quantMethod);
+  }
+  assert.equal(classifyUnslothSupport({ ...metal, modelId: "o/m-GPTQ-Int4", tags: ["gptq"] }).supportedIn, undefined);
+});

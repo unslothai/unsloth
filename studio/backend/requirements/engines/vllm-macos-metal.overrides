@@ -1,0 +1,4 @@
+# vllm-metal 0.33.0 pins mlx-lm and mlx-vlm to git commits, which have no wheels; these releases serve it
+# (mlx-vlm 0.7.12 contains its commit) and are the versions unsloth-zoo pins for MLX training.
+mlx-lm==0.32.2
+mlx-vlm==0.7.12

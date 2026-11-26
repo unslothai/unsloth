@@ -26,6 +26,7 @@ import {
   changeEngine,
   precisionAfterEngineSwitch,
   isEngineReady,
+  supportsKvCacheDtype,
   supportsPrecision,
   wslNoticeKey,
 } from "../api/engines";
@@ -342,8 +343,8 @@ export function InferenceEnginePicker({
   onPrecisionChange: (
     precision: "auto" | "bf16" | "fp16" | "int4" | "int8" | "fp8",
   ) => void;
-  kvCacheDtype?: "auto" | "fp8";
-  onKvCacheDtypeChange: (dtype: "auto" | "fp8") => void;
+  kvCacheDtype?: "auto" | "fp8" | "turboquant";
+  onKvCacheDtypeChange: (dtype: "auto" | "fp8" | "turboquant") => void;
   gpuMemoryUtilization?: number | null;
   onGpuMemoryUtilizationChange: (fraction: number | null) => void;
   seed?: number | null;
@@ -371,6 +372,12 @@ export function InferenceEnginePicker({
     const kept = precisionAfterEngineSwitch(precision, selected);
     if (kept !== precision) onPrecisionChange(kept);
   }, [selected, precision, onPrecisionChange]);
+  // An FP8 cache saved on NVIDIA cannot load on Apple Silicon, nor TurboQuant elsewhere.
+  useEffect(() => {
+    if (selected && !supportsKvCacheDtype(selected, kvCacheDtype)) {
+      onKvCacheDtypeChange("auto");
+    }
+  }, [selected, kvCacheDtype, onKvCacheDtypeChange]);
   if (
     value === "auto" &&
     engines.length > 0 &&
@@ -425,7 +432,11 @@ export function InferenceEnginePicker({
         <>
           {selected.platform !== "rocm" && (
             <p className="text-ui-12 text-muted-foreground">
-              {t("managedEngines.scope")}
+              {t(
+                selected.platform === "metal"
+                  ? "managedEngines.scopeMetal"
+                  : "managedEngines.scope",
+              )}
             </p>
           )}
           {devices && devices.length > 0 && (
@@ -562,14 +573,25 @@ export function InferenceEnginePicker({
                   <SelectItem value="auto">
                     {t("managedEngines.precisionAuto")}
                   </SelectItem>
-                  <SelectItem value="fp8">
-                    {t("managedEngines.kvCacheFp8")}
-                  </SelectItem>
+                  {supportsKvCacheDtype(selected, "fp8") && (
+                    <SelectItem value="fp8">
+                      {t("managedEngines.kvCacheFp8")}
+                    </SelectItem>
+                  )}
+                  {supportsKvCacheDtype(selected, "turboquant") && (
+                    <SelectItem value="turboquant">
+                      {t("managedEngines.kvCacheTurboQuant")}
+                    </SelectItem>
+                  )}
                 </SelectContent>
               </Select>
             </div>
             <p className="text-ui-12 text-muted-foreground">
-              {t("managedEngines.kvCacheHelp")}
+              {t(
+                supportsKvCacheDtype(selected, "turboquant")
+                  ? "managedEngines.kvCacheTurboQuantHelp"
+                  : "managedEngines.kvCacheHelp",
+              )}
             </p>
           </div>
           <div className="space-y-2">

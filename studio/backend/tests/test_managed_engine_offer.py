@@ -333,3 +333,22 @@ def test_amd_is_not_offered_fbgemm_fp8(tmp_path):
         for method in ("fbgemm_fp8",):
             metadata = {"quantization_config": {"quant_method": method}}
             assert route._managed_engine_offer_for(_config(tmp_path, metadata), None) is None
+
+
+def test_apple_silicon_offers_no_engine(tmp_path):
+    # Default (MLX) loads AWQ; vllm-metal 0.33.0 fails GPTQ, compressed-tensors and auto-round at engine start.
+    mac = {"vllm": None, "sglang": "SGLang requires an NVIDIA GPU."}
+    with (
+        patch("core.inference.engine_install.gpu_platform", return_value = "metal"),
+        patch("core.inference.engine_install.support_reason", side_effect = mac.get),
+        patch.object(
+            route,
+            "_MANAGED_ENGINE_QUANTIZATIONS",
+            {"compressed-tensors": (), "awq": (), "gptq": (), "auto-round": (), "fbgemm_fp8": ()},
+        ),
+    ):
+        for method in ("awq", "gptq", "compressed-tensors", "auto-round", "fbgemm_fp8"):
+            metadata = {"quantization_config": {"quant_method": method}}
+            assert (
+                route._managed_engine_offer_for(_config(tmp_path, metadata), None) is None
+            ), method

@@ -259,7 +259,10 @@ class EngineAdapter:
                 else []
             ),
             *(
-                [
+                # vllm-metal takes its quantized KV cache from the platform config, not --kv-cache-dtype.
+                ["--additional-config", json.dumps({"turboquant": True})]
+                if options.get("kv_cache_dtype") == "turboquant"
+                else [
                     "--kv-cache-dtype",
                     # SGLang names the FP8 format; vLLM's "fp8" is the same E4M3 cache.
                     "fp8_e4m3" if self.name == "sglang" else options["kv_cache_dtype"],
@@ -441,6 +444,15 @@ def gpu_memory_fraction(
         raise RuntimeError(
             "Could not reserve memory on every selected GPU. Free GPU memory or select fewer GPUs and retry."
         ) from exc
+
+
+def metal_memory_rows(gpu_ids: list[int], working_set: int = 0) -> list[tuple[float, float]]:
+    """Apple Silicon's one GPU shares system memory, capped at Metal's recommended working set."""
+    import psutil
+
+    memory = psutil.virtual_memory()
+    total = min(working_set or memory.total, memory.total)
+    return [(total / 2**20, min(memory.available, total) / 2**20)]
 
 
 def _nvidia_memory_rows(gpu_ids: list[int]) -> list[tuple[float, float]]:

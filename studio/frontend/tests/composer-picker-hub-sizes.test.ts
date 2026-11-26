@@ -133,7 +133,7 @@ test("a Chat only host lists cached checkpoints only where it serves MLX", () =>
   );
   assert.match(
     picker,
-    /const servesMlx = usePlatformStore\(\(s\) =>\s*isServedByMlx\(false, s\.deviceType, s\.chatOnlyReason, s\.mlxInference\),/,
+    /const servesMlx = usePlatformStore\(\(s\) =>\s*isServedByMlx\(false, s\.deviceType, s\.chatOnlyReason, s\.mlxInference, "auto"\),/,
   );
   const loop = picker.slice(picker.indexOf("for (const repo of inventory.cachedModels)"));
   assert.match(

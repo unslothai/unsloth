@@ -76,16 +76,19 @@ const gguf = (classifiedIsDiffusion: boolean | undefined) =>
     isGguf: true,
     isAppleUnifiedMemory: true,
     classifiedIsDiffusion,
+    managedEngine: false,
   });
 
 const safetensors = (
   isAppleUnifiedMemory: boolean,
   classifiedIsDiffusion: boolean | undefined,
+  managedEngine = false,
 ) =>
   shouldRequestMemoryEstimate({
     isGguf: false,
     isAppleUnifiedMemory,
     classifiedIsDiffusion,
+    managedEngine,
   });
 
 test("a GGUF is priced only once its probe has cleared it of being diffusion", () => {
@@ -106,6 +109,8 @@ test("a model already known to be diffusion is priced by neither planner", () =>
 test("safetensors is not priced where MLX is not what would load it", () => {
   assert.equal(safetensors(false, false), false);
   assert.equal(safetensors(false, undefined), false);
+  // vLLM on a Mac loads 16-bit weights its own way; the MLX planner would price a 4-bit MLX load.
+  assert.equal(safetensors(true, false, true), false);
 });
 
 register("./helpers/memory-estimate-resolver.mjs", import.meta.url);

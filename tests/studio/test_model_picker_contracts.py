@@ -464,6 +464,16 @@ def test_diffusion_capability_labeled_image_video_gen():
         assert "matchesHubCapability" in on_device
 
 
+def test_run_settings_hides_managed_engines_for_checkpoint_variants():
+    """The variant picker also sends ggufVariant for MLX precision folders."""
+    page = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
+    assert "const hasCheckpointVariant = Boolean(target.ggufVariant);" in page
+    assert re.search(
+        r"\{!target\.isGguf && !hasCheckpointVariant && [^{}]+\( <InferenceEnginePicker\b",
+        page,
+    )
+
+
 def test_active_model_config_round_trips_gpu_fields():
     """The active model's config must carry the GPU Memory knobs (GGUF only) so a
     sidebar reload cannot silently reset manual GPU settings, and "Remember
@@ -1172,7 +1182,7 @@ def test_compare_pane_non_gguf_falls_back_to_app_default():
         "const effectiveMaxSeqLength = savedContextPin(ownConfig) ?? "
         "unpinnedLoadContext( targetIsGguf, "
         "isServedByMlx( targetIsGguf, platform.deviceType, platform.chatOnlyReason, "
-        "platform.mlxInference, ), "
+        "platform.mlxInference, ownConfig.engine, ), "
         "DEFAULT_MAX_SEQ_LENGTH, );" in src
     )
     assert "(isGgufLoad ? 0 : maxSeqLength)" not in src
@@ -1184,13 +1194,13 @@ def test_every_load_path_asks_the_backend_before_it_asks_for_a_window():
     load_paths = ("chat/hooks/use-chat-model-runtime.ts", "chat/api/chat-adapter.ts")
     derived_backend = (
         r"isMlx: isServedByMlx\(\s*[\w.=\" ]+,\s*platform\.deviceType,\s*platform\.chatOnlyReason,"
-        r"\s*platform\.mlxInference,?\s*\)"
+        r"\s*platform\.mlxInference,(?:\s*//[^\n]*)?\s*[\w.\"()?! ]+,\s*\)"
     )
     # A name bound to that same call counts; the binding is checked below.
     hoisted = r"isMlx: (\w+),"
     hoist_source = (
         r"const {name} = isServedByMlx\(\s*\w+,\s*platform\.deviceType,\s*platform\.chatOnlyReason,"
-        r"\s*platform\.mlxInference,?\s*\);"
+        r"\s*platform\.mlxInference,(?:\s*//[^\n]*)?\s*[\w.\"()?! ]+,\s*\);"
     )
     for name in load_paths:
         src = _read(f"features/{name}")
@@ -1258,7 +1268,7 @@ def test_an_mlx_target_is_offered_a_context_length_not_a_sequence_length():
     # "Anything not GGUF" would relabel CUDA; the platform decides.
     assert (
         "isServedByMlx(\n    target.isGguf,\n    platformDeviceType,\n    platformChatOnlyReason,\n"
-        "    platformMlxInference,\n  )" in page
+        "    platformMlxInference,\n    configState.engine,\n  )" in page
     )
     assert "const targetIsMlx = servedByMlx;" in page
     # Both props are optional, so dropping either still typechecks.

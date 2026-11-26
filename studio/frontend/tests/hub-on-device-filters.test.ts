@@ -185,7 +185,7 @@ test("the inspector classifies a local MLX folder as its inventory row does", as
   );
   assert.match(
     inspector,
-    /const mlxRunsHere =\s*runsAsMlx &&\s*isServedByMlx\(false, deviceType, chatOnlyReason, mlxInference\);/,
+    /const mlxRunsHere =\s*runsAsMlx &&\s*isServedByMlx\(false, deviceType, chatOnlyReason, mlxInference, "auto"\);/,
   );
 });
 

@@ -25,7 +25,7 @@ import {
 export interface PerModelConfig {
   engineParallelism?: "tensor" | "pipeline" | "data";
   enginePrecision?: "auto" | "bf16" | "fp16" | "int4" | "int8" | "fp8";
-  engineKvCacheDtype?: "auto" | "fp8";
+  engineKvCacheDtype?: "auto" | "fp8" | "turboquant";
   engineSeed?: number | null;
   engineGpuMemoryUtilization?: number | null;
   engine?: "auto" | "vllm" | "sglang";
@@ -183,16 +183,34 @@ const NO_MLX_REASONS = new Set([
   "detection_failed",
 ]);
 
-/** `!isGguf` alone would show MLX controls to CUDA users. */
+/** `!isGguf` alone would show MLX controls to CUDA users; a picked vLLM or SGLang engine serves instead of MLX. */
 export function isServedByMlx(
   isGguf: boolean,
   deviceType: string | null | undefined,
-  chatOnlyReason?: string | null,
-  mlxInference?: boolean | null,
+  chatOnlyReason: string | null | undefined,
+  mlxInference: boolean | null | undefined,
+  engine: string | null | undefined,
 ): boolean {
-  if (isGguf || deviceType !== "mac") return false;
+  if (isGguf || deviceType !== "mac" || (engine ?? "auto") !== "auto") return false;
   if (typeof mlxInference === "boolean") return mlxInference;
   return !NO_MLX_REASONS.has(chatOnlyReason ?? "");
+}
+
+/** vLLM and SGLang refuse a chat template override, and their template editor is read-only, so picking one drops an MLX template. */
+export function engineSelection(
+  engine: NonNullable<PerModelConfig["engine"]>,
+): Partial<PerModelConfig> {
+  return engine === "auto" ? { engine } : { engine, chatTemplateOverride: null };
+}
+
+/** Managed engines reject gguf_variant, which also carries MLX precision folders. */
+export function withoutManagedEngineForVariant(
+  config: PerModelConfig,
+  hasCheckpointVariant: boolean,
+): PerModelConfig {
+  return hasCheckpointVariant && config.engine && config.engine !== "auto"
+    ? { ...config, engine: "auto" }
+    : config;
 }
 
 /** Native-audio checkpoints load on Apple Silicon without MLX; `loadedIsMlx` null means not loaded. */
@@ -204,7 +222,7 @@ export function residentIsServedByMlx(
   mlxInference?: boolean | null,
 ): boolean {
   return (
-    isServedByMlx(isGguf, deviceType, chatOnlyReason, mlxInference) &&
+    isServedByMlx(isGguf, deviceType, chatOnlyReason, mlxInference, "auto") &&
     loadedIsMlx !== false
   );
 }
@@ -212,13 +230,14 @@ export function residentIsServedByMlx(
 export function presetLoadSettingNames(
   isGguf: boolean,
   deviceType: string | null | undefined,
-  chatOnlyReason?: string | null,
-  mlxInference?: boolean | null,
+  chatOnlyReason: string | null | undefined,
+  mlxInference: boolean | null | undefined,
+  engine: string | null | undefined,
 ): string {
   if (isGguf) {
     return "context window, KV cache dtype, speculative decoding, GPU layers";
   }
-  return isServedByMlx(isGguf, deviceType, chatOnlyReason, mlxInference)
+  return isServedByMlx(isGguf, deviceType, chatOnlyReason, mlxInference, engine)
     ? "max seq length, KV cache dtype"
     : "max seq length";
 }
@@ -1176,7 +1195,10 @@ function normalizeV1(partial: RawConfig): PerModelConfig {
       partial.engine === "vllm" || partial.engine === "sglang"
         ? partial.engine
         : "auto",
-    engineKvCacheDtype: partial.engineKvCacheDtype === "fp8" ? "fp8" : "auto",
+    engineKvCacheDtype:
+      partial.engineKvCacheDtype === "fp8" || partial.engineKvCacheDtype === "turboquant"
+        ? partial.engineKvCacheDtype
+        : "auto",
     engineSeed: normalizeEngineSeed(partial.engineSeed),
     engineGpuMemoryUtilization: normalizeEngineGpuMemoryUtilization(
       partial.engineGpuMemoryUtilization,

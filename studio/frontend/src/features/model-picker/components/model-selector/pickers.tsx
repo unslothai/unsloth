@@ -4480,7 +4480,7 @@ export function HubModelPicker({
     (s) => s.isChatOnly() && !s.capabilitiesUnknown(),
   );
   const servesMlx = usePlatformStore((s) =>
-    isServedByMlx(false, s.deviceType, s.chatOnlyReason, s.mlxInference),
+    isServedByMlx(false, s.deviceType, s.chatOnlyReason, s.mlxInference, "auto"),
   );
   const deviceType = usePlatformStore((s) => s.deviceType);
   const isMac = deviceType === "mac";
