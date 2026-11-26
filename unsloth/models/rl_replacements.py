@@ -4130,6 +4130,79 @@ def _unsloth_vllm_watch_weight_resets(engine):
         engine.collective_rpc = _unsloth_collective_rpc
 
 
+def _unsloth_vllm_moe_relaid_out(module):
+    """True when this vLLM FusedMoE layer keeps its experts in a kernel layout, not the checkpoint's."""
+    quant_method = getattr(module, "quant_method", None)
+    backend = getattr(quant_method, "unquantized_backend", None)
+    if backend is not None:
+        # vLLM >= 0.2x picks one backend per layer; only the Triton ones keep checkpoint layout.
+        return str(getattr(backend, "name", backend)).upper() not in ("TRITON", "BATCHED_TRITON")
+    if type(quant_method).__name__ != "UnquantizedFusedMoEMethod":
+        # Quantized experts are repacked after load.
+        return True
+    # vLLM 0.11: AITER shuffles, VLLM_USE_FLASHINFER_MOE_FP16 swaps w1 / w3.
+    return bool(
+        getattr(quant_method, "rocm_aiter_moe_enabled", False)
+        or getattr(quant_method, "flashinfer_cutlass_moe_enabled", False)
+    )
+
+
+def _unsloth_vllm_reload_takes_iterator(reload, depth = 0):
+    """True when reload_weights accepts weights_iterator and is_checkpoint_format."""
+    try:
+        parameters = inspect.signature(reload).parameters
+    except (TypeError, ValueError):
+        return False
+    if "weights_iterator" in parameters and "is_checkpoint_format" in parameters:
+        return True
+    if depth or not any(p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values()):
+        return False
+    # vLLM 0.29's v2 GPUModelRunner.reload_weights(*args, **kwargs) forwards to the v1 runner's.
+    try:
+        from vllm.v1.worker.gpu_model_runner import GPUModelRunner
+    except Exception:
+        return False
+    return _unsloth_vllm_reload_takes_iterator(getattr(GPUModelRunner, "reload_weights", None), 1)
+
+
+def _unsloth_vllm_reload_runner(llm, vllm_model):
+    """vLLM's model runner when a sync must go through its in-place reload, else None.
+    Unquantized MoE weights are re-laid out after load (FlashInfer TRTLLM / CUTLASS, vLLM's CUDA
+    default on Blackwell; ROCm AITER), so a plain load_weights later writes checkpoint layout into
+    kernel layout and corrupts every expert. Triton experts (Hopper, Ampere, Ada) keep the layout. reload_weights(weights_iterator = ...) re-runs the
+    post-load processing. Dense and MLA layers keep load_weights: MLA's W_UK_T / W_UV are views of
+    kv_b_proj, so they follow it. UNSLOTH_VLLM_SYNC_RELOAD = 0 never reloads, 1 always does."""
+    choice = os.environ.get("UNSLOTH_VLLM_SYNC_RELOAD", "auto").strip().lower()
+    if choice in ("0", "false", "off", "no") or vllm_model is None:
+        return None
+    executor = getattr(getattr(llm, "llm_engine", None), "model_executor", None)
+    runner = getattr(getattr(executor, "driver_worker", None), "model_runner", None)
+    # vLLM 0.11 reloads from disk only; its CUDA MoE default there (Triton) keeps checkpoint layout.
+    if not _unsloth_vllm_reload_takes_iterator(getattr(runner, "reload_weights", None)):
+        return None
+    if getattr(runner, "model", vllm_model) is not vllm_model:
+        return None
+    if choice in ("1", "true", "on", "yes"):
+        return runner
+    relaid_out = getattr(vllm_model, "_unsloth_vllm_relaid_out", None)
+    if relaid_out is None:
+        modules = getattr(vllm_model, "modules", None)
+        relaid_out = callable(modules) and any(
+            hasattr(m, "w13_weight") and _unsloth_vllm_moe_relaid_out(m) for m in modules()
+        )
+        try:
+            vllm_model._unsloth_vllm_relaid_out = relaid_out
+        except Exception:
+            pass
+    return runner if relaid_out else None
+
+
+def _unsloth_vllm_reload(runner, weights):
+    """Every weight through vLLM's in-place reload: load_weights between its start and finish, then
+    the post-load processing (MoE re-layout, MLA W_UK_T / W_UV) on the same storage."""
+    runner.reload_weights(weights_iterator = weights, is_checkpoint_format = True)
+
+
 class _UnslothVllmFrozenSync:
     """Send frozen non-adapter weights once per vLLM name (same param, storage, version); resend
     after a weight drop or receiver change. UNSLOTH_VLLM_SYNC_FROZEN_WEIGHTS = 1 disables."""
@@ -4263,6 +4336,16 @@ def _unsloth_vllm_sync_peft_merged(trainer):
                 adapted_ids.add(id(weight))
     else:
         adapted_ids = set(_unsloth_vllm_tuner_groups(model))
+    fix_name = getattr(trainer, "_fix_param_name_to_vllm", None)
+    runner = _unsloth_vllm_reload_runner(trainer.llm, llm_model) if mode == "colocate" else None
+    if runner is not None:
+        # A reload re-lays out whole modules, so it is sent everything, frozen weights included.
+        _unsloth_vllm_reload(
+            runner,
+            ((name, tensor) for name, tensor, _ in _unsloth_vllm_iter_peft_merged(model, fix_name)),
+        )
+        trainer.llm.reset_prefix_cache()
+        return None
     frozen_sync = _UnslothVllmFrozenSync(
         trainer,
         model,
@@ -4270,7 +4353,6 @@ def _unsloth_vllm_sync_peft_merged(trainer):
         engine = trainer.llm if mode == "colocate" else None,
         adapted_ids = adapted_ids,
     )
-    fix_name = getattr(trainer, "_fix_param_name_to_vllm", None)
     for name, tensor, param in _unsloth_vllm_iter_peft_merged(model, fix_name):
         if not frozen_sync.keep(name, tensor, param):
             continue
@@ -4514,9 +4596,12 @@ def _unsloth_vllm_load_state_dict(trainer, model):
         )
     model = trainer.accelerator.unwrap_model(model)
     model = getattr(model, "_orig_mod", model)
-    trainer.llm.llm_engine.model_executor.driver_worker.model_runner.model.load_weights(
-        model.state_dict().items()
-    )
+    llm_model = trainer.llm.llm_engine.model_executor.driver_worker.model_runner.model
+    runner = _unsloth_vllm_reload_runner(trainer.llm, llm_model)
+    if runner is not None:
+        _unsloth_vllm_reload(runner, iter(model.state_dict().items()))
+    else:
+        llm_model.load_weights(model.state_dict().items())
     trainer.llm.reset_prefix_cache()
 
 
@@ -7378,6 +7463,22 @@ def _unsloth_vllm_sync_colocate(generation, vllm_model):
         getattr(state, "deepspeed_plugin", None) is not None
         or getattr(state, "fsdp_plugin", None) is not None
     )
+    runner = _unsloth_vllm_reload_runner(getattr(generation, "llm", None), vllm_model)
+    if runner is not None:
+        # The reload holds a module's tensors until all of them arrive (padded ones until the
+        # end), past where ZeRO-3 / FSDP gathered tensors stay valid and past PEFT's in-place
+        # unmerge. Only the out-of-place merge yields tensors nothing rewrites: copy the rest.
+        if (
+            state is None
+            or sharded
+            or (
+                getattr(generation.model, "peft_config", None) is not None
+                and not _unsloth_vllm_generation_merges_out_of_place(generation)
+            )
+        ):
+            weights = ((name, param.detach().clone()) for name, param in weights)
+        _unsloth_vllm_reload(runner, weights)
+        return
     if not sharded:
         model = generation.model
         # Adapted base weights arrive merged (fresh copies, or TRL's in-place merge): always sent.
