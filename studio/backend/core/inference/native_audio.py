@@ -724,7 +724,9 @@ def _gguf_quants(siblings: list[Any]) -> set[str]:
     return quants
 
 
-_NATIVE_WEIGHTS = re.compile(r"(^|/)(?!adapter_model)([^/]*\.safetensors|pytorch_model[^/]*\.bin)$", re.IGNORECASE)
+_NATIVE_WEIGHTS = re.compile(
+    r"(^|/)(?!adapter_model)([^/]*\.safetensors|pytorch_model[^/]*\.bin)$", re.IGNORECASE
+)
 
 
 def _has_native_weights(siblings: list[Any]) -> bool:
