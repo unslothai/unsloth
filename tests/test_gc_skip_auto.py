@@ -917,3 +917,21 @@ def test_a_stopped_plan_is_cleared_by_a_later_setting(monkeypatch, then):
         ns["skip_checkpointing"](model, "auto")
         assert flags() == [True] * 8
     monkeypatch.undo()
+
+
+def test_default_plan_without_a_trainable_decoder_weight_and_no_room(monkeypatch):
+    # No trainable decoder weight (a frozen language model) stops the re-sizing at plan time; with no room
+    # either, the quiet default must finish planning (every layer checkpointed) instead of raising.
+    ns, found = _load()
+    gib = 1 << 30
+    memory = _fake_cuda(monkeypatch, ns, usable = gib)
+    ns["_default_checkpoint_skip_allowed"] = lambda: True
+    monkeypatch.delenv("UNSLOTH_GC_KEEP_LAYERS", raising = False)
+    model = _FakeModel([gib // 16] * 8, memory)
+    ns["skip_checkpointing"](model, 0)
+    planner = model._unsloth_auto_skip
+    _fake_step(model, rows = 16)
+    model(torch.zeros(1, 16, 4))
+    assert planner.kept == [] and planner.sizing is None
+    assert [bool(layer.gradient_checkpointing) for layer in model.model.layers] == [True] * 8
+    monkeypatch.undo()

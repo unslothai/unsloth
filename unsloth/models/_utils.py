@@ -12275,9 +12275,9 @@ class _AutoCheckpointSkip:
                 f'Unsloth: checkpoint_skip_layers = "auto" keeps {len(self.kept)} of {len(self.layers)} '
                 f"decoder layers un-checkpointed ({per_layer / 2**30:.2f} GB each, "
                 f"{max(0, headroom) / 2**30:.1f} GB headroom)"
-                + ("; shorter batches keep more." if single else ".")
+                + ("; shorter batches keep more." if self.sizing is not None else ".")
             )
-        elif self.kept or (single and self.count_for(self.layer_batch, rows) > 0):
+        elif self.kept or (self.sizing is not None and self.count_for(self.layer_batch, rows) > 0):
             print(
                 "Unsloth: gradient checkpointing skips the recompute of decoder layers whose activations fit in "
                 "free VRAM (UNSLOTH_GC_KEEP_LAYERS = 0 turns this off)."
