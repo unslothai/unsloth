@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Batches waiting image requests from any account; pixels vary with batch size (diffusion_batched).
-
-Each member gets only its own images through its own future. A shared outcome (a Stop) reaches only members of
-the leader's account; every other member renders alone instead."""
+"""Batches waiting image requests from any account; a shared outcome reaches only the leader's account."""
 
 from __future__ import annotations
 
@@ -23,7 +20,7 @@ logger = get_logger(__name__)
 
 BATCH_MAX_DEFAULT = 8
 POLL_S = 0.05
-# Result fields derived from every prompt in the call: a member must not see them for another account's prompt.
+# Derived from every prompt in the call: never shown across accounts.
 _PROMPT_DERIVED_FIELDS = ("embeddings", "embeddings_skipped")
 
 
@@ -44,7 +41,6 @@ class _Batch:
     key: Hashable
     members: list[_Member] = field(default_factory = list)
     images: int = 0
-    # Set once the leader snapshots its members: a member leaving later only drops its result.
     fired: bool = False
 
 
@@ -59,12 +55,10 @@ def batch_max() -> int:
 
 
 def collecting() -> bool:
-    """Whether any batch is open for a request to join."""
     return bool(_OPEN)
 
 
 def seeded_join_enabled() -> bool:
-    """An explicit seed joins a batch only when opted in: batched pixels can differ slightly from a solo render's."""
     return os.environ.get("UNSLOTH_STUDIO_IMAGE_BATCH_SEEDED", "").strip().lower() in (
         "1",
         "true",
@@ -84,8 +78,7 @@ def _split(
     *,
     prefix: bool = False,
 ) -> list[dict[str, Any]]:
-    """Each member's slice of a batched result, in order. ``prefix``: a failed call's finished images, so only
-    the leading members whose images all finished get a part."""
+    """Each member's slice; ``prefix``: only leading members whose images all finished get a part."""
     images = list(result.get("images") or [])
     seeds = list(result.get("seeds") or [])
     wanted = sum(len(member.seeds) for member in members)
@@ -104,7 +97,6 @@ def _split(
         result = {k: v for k, v in result.items() if k not in _PROMPT_DERIVED_FIELDS}
     parts = []
     start = 0
-    # The forward these images came from, so a recipe can tell its pixels were rendered in a batch.
     call_size = sum(len(member.seeds) for member in members)
     for member in members:
         end = start + len(member.seeds)
@@ -123,14 +115,12 @@ def _split(
 
 
 def _share(exc: BaseException, members: list[_Member], owner: Hashable) -> None:
-    """Ends the leader's own account's members with the outcome; the finally sends the rest to render alone."""
     for member in members:
         if member.owner == owner and not member.future.done():
             member.future.set_exception(type(exc)(*exc.args))
 
 
 def _fitting_prefix(members: list[_Member], fits: Callable[[int], bool]) -> list[_Member]:
-    """The longest run of members, in arrival order, whose image total ``fits``; the rest render alone."""
     best, total = 0, 0
     for index, member in enumerate(members):
         total += len(member.seeds)
@@ -147,10 +137,7 @@ async def _render_group(
     salvage: Optional[Callable[[BaseException], Optional[dict[str, Any]]]],
     fits: Optional[Callable[[int], bool]] = None,
 ) -> dict[int, dict[str, Any]]:
-    """Renders ``group`` as one call; ``{id(member): part}`` for every member it rendered. A failure keeps the
-    images that finished; a refusal, a ValueError or an OOM splits the rest by member, so one member's error never
-    fails the others. Members left out render alone; only a shared outcome raises. Every call, a recovery split
-    included, uses a size ``fits`` admits."""
+    """One call for ``group``; on failure keep finished images and split the rest by member. Sizes respect ``fits``."""
     group = [member for member in group if not member.future.done()]
     if fits is not None:
         group = _fitting_prefix(group, fits)
@@ -194,7 +181,6 @@ def _close(batch: _Batch) -> None:
 
 
 def _leave(batch: _Batch, member: _Member) -> None:
-    """A member stopped or disconnected: drop its prompt if the batch has not fired, never its neighbours'."""
     if not batch.fired and member in batch.members:
         batch.members.remove(member)
         batch.images -= len(member.seeds)
@@ -207,7 +193,7 @@ async def _await_member(
 ) -> dict[str, Any]:
     try:
         while True:
-            # Checked again after the result lands: a Stop never hands back images.
+            # A Stop never hands back images.
             if check is not None:
                 check()
             if member.future.done():
@@ -238,10 +224,8 @@ async def generate(
     on_lead: Optional[Callable[[], None]] = None,
     wait: Optional[Callable[[], Awaitable[None]]] = None,
 ) -> Optional[dict[str, Any]]:
-    """None = render alone. ``key`` names no account, so any account joins; ``owner`` is the caller's.
-    ``check`` raises when a joined member must leave (its own Stop); ``ride`` scopes it as rendering."""
+    """None = render alone. ``check`` raises when a joined member must leave."""
     cap = batch_max()
-    # An explicit seed renders alone unless opted in: a batch's pixels differ slightly from a lone render's.
     if cap <= 1 or n >= cap or (seed is not None and not seeded_join_enabled()):
         return None
     loop = asyncio.get_running_loop()
@@ -251,7 +235,6 @@ async def generate(
             member = _Member(prompt, request_seeds(seed, n), loop.create_future(), owner)
             batch.members.append(member)
             batch.images += n
-            # Full: the next request opens a batch of its own instead of rendering alone.
             if batch.images >= cap:
                 _close(batch)
             try:
@@ -259,7 +242,6 @@ async def generate(
                     return await _await_member(batch, member, check)
             except _RunAlone:
                 return None
-        # It does not fit: that batch keeps its members and stops collecting; this request opens the next one.
         _close(batch)
     if not busy():
         return None
@@ -269,7 +251,7 @@ async def generate(
     batch.images = n
     try:
         try:
-            # The leader takes its place in the slot's line now, so requests arriving later cannot overtake it.
+            # Reserve the slot turn now so later arrivals cannot overtake the leader.
             if on_lead is not None:
                 on_lead()
             while busy():
@@ -284,7 +266,7 @@ async def generate(
         _close(batch)
         batch.fired = True
         leader = batch.members[0]
-        # A blank prompt fails validation for the whole call: it renders alone and gets its own error.
+        # A blank prompt fails the whole call: render it alone.
         if not leader.prompt.strip():
             return None
         members = [member for member in batch.members if member.prompt.strip()]

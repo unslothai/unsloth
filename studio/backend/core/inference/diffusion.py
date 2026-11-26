@@ -4945,12 +4945,10 @@ def _converted_shards_pread(dtype: Any, small_host: Any) -> Any:
     return pread_safetensors(convert_to = dtype, keep = keep, every_shard = every)
 
 
-# A slot turn reserved ahead of time (a coalesced batch takes its place in line when it opens), and whether a call
-# is a follow-up pass of a request already admitted (X/Y cells, Detailer crops), which goes to the front of the line.
+# Reserved slot turn (a coalesced batch keeps its place), and whether a call is a follow-up pass (goes first).
 _RESERVED_SLOT_TURN: contextvars.ContextVar[Optional[object]] = contextvars.ContextVar(
     "unsloth_reserved_slot_turn", default = None
 )
-# How long a reserved, unclaimed turn may idle first in line with the slot free before a waiter steps past it.
 _RESERVED_TURN_GRACE_S = 0.5
 _SLOT_FOLLOW_UP: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "unsloth_slot_follow_up", default = False
@@ -4977,12 +4975,9 @@ def slot_follow_up():
         _SLOT_FOLLOW_UP.reset(token)
 
 
-# coalesce_prompt_key runs while another request renders, and a Rust-backed tokenizer used from two threads at once
-# raises "Already borrowed" in whichever call loses, the render's own prompt encode included. So the key reads a
-# private copy of each fast tokenizer, made from the generation slot where no render uses the original.
+# Rust fast tokenizers raise "Already borrowed" across threads, so coalesce_prompt_key uses private copies.
 _KEY_TOKENIZERS: "weakref.WeakKeyDictionary[Any, Any]" = weakref.WeakKeyDictionary()
 _KEY_TOKENIZERS_LOCK = threading.Lock()
-# Requests reach coalesce_plan on several worker threads; one copy serves them one at a time.
 _KEY_TOKENIZE_LOCK = threading.Lock()
 
 
@@ -4996,7 +4991,6 @@ def _pipe_tokenizers(pipe: Any) -> list:
 
 
 def _key_tokenizes(family: Any, pipe: Any) -> bool:
-    """Whether coalesce_prompt_key tokenizes prompts on this load."""
     from .diffusion_text_length import FLUX_T5_FAMILIES
     return (
         getattr(family, "name", None) in FLUX_T5_FAMILIES
@@ -5005,7 +4999,7 @@ def _key_tokenizes(family: Any, pipe: Any) -> bool:
 
 
 def prime_coalesce_tokenizers(family: Any, pipe: Any) -> None:
-    """Copies this load's fast tokenizers once for coalesce_prompt_key. Call from the generation slot only."""
+    """Call from the generation slot only."""
     import copy
 
     if pipe is None or not _key_tokenizes(family, pipe):
@@ -5026,12 +5020,10 @@ def prime_coalesce_tokenizers(family: Any, pipe: Any) -> None:
 
 
 class _NoKeyTokenizer(Exception):
-    """A fast tokenizer has no private copy yet: the prompt renders alone."""
+    """No private tokenizer copy yet: the prompt renders alone."""
 
 
 class _KeyPipe:
-    """The pipeline as coalesce_prompt_key reads it: each fast tokenizer swapped for its private copy."""
-
     def __init__(self, pipe: Any) -> None:
         self._pipe = pipe
 
@@ -5056,9 +5048,7 @@ class _KeyPipe:
 
 
 def _clip_chunk_counts(pipe: Any, prompt: str) -> Optional[tuple]:
-    """The conditioning chunks the weighted encode builds for ``prompt`` in each of the pipeline's CLIP encoders,
-    weighted and unweighted (BREAK and comma backtracking included): a batch pads every row to its longest, so
-    members must match exactly. None when there is no encoder to ask."""
+    """Per-encoder conditioning chunks for ``prompt``; batch members must match exactly. None = no encoder."""
     from .diffusion_prompt_weighting import _encoders, tokenize_chunks
 
     pairs = _encoders(pipe)
@@ -5073,13 +5063,9 @@ def _clip_chunk_counts(pipe: Any, prompt: str) -> Optional[tuple]:
 
 
 def coalesce_prompt_key(family: Any, pipe: Any, prompt: str) -> Optional[tuple]:
-    """What a prompt must share with its batch neighbours to render as it would alone; None = never batch it.
+    """What a prompt must share with batch neighbours to render as alone; None = never batch it.
 
-    MiniMax-H3-Image loops per image when resident, so a batch gains nothing. MOSS-Image runs every layer once per
-    sample, so a streamed batch of B pays B weight streams. Qwen-Image-2.1 gains about 3% from a batch (A100, INT8)
-    while an equal-length member lands about 35 dB PSNR from its solo render, and Auto serves it serially under CUDA
-    graphs anyway. FLUX.1 / Kontext pad T5 to one bucket (256 or 512) per call. SD / SDXL weight and chunk prompts per
-    call, so weighting and the 77-token chunk count must agree."""
+    MiniMax-H3 / MOSS / Qwen-Image-2.1 gain nothing batched; FLUX.1 pads T5 per call; SD / SDXL chunk per call."""
     from .diffusion_families import MINIMAX_H3_IMAGE_FAMILY_NAME, MOSS_IMAGE_FAMILY_NAME
     from .diffusion_qwenimage21 import _CLASS as QWENIMAGE21_CLASS
 
@@ -5110,9 +5096,7 @@ def _coalesce_prompt_key(family: Any, name: Any, pipe: Any, prompt: str) -> Opti
 
 
 def _per_call_activation_scale(state: Any) -> Optional[str]:
-    """The first denoiser layer whose activation global scale comes from each call's amax (torchao NVFP4 with its
-    dynamic per-tensor scale, the ComfyUI dynamic NVFP4 linear), else None. FP8 / INT8 scale per row, so a batch
-    leaves each member's activations as they are alone. Read once per denoiser module and kept on it."""
+    """First denoiser layer with a per-call amax activation scale (dynamic NVFP4), else None. Cached on the module."""
     pipe = getattr(state, "pipe", None)
     if pipe is None:
         return None
@@ -5135,9 +5119,7 @@ def _per_call_activation_scale(state: Any) -> Optional[str]:
 
 
 def _denoiser_streams_from_host(state: Any) -> bool:
-    """The loaded placement copies denoiser weights from host memory on every render: model, sequential or
-    streaming offload, or group offload with any group left unpinned. Resident (no offload, or every group pinned)
-    is False; an unreadable group placement counts as streamed, as its policy plans."""
+    """Denoiser weights stream from host each render (any offload with an unpinned group; unreadable = streamed)."""
     policy = getattr(state, "offload_policy", OFFLOAD_NONE) or OFFLOAD_NONE
     if policy == OFFLOAD_NONE:
         return False
@@ -5159,12 +5141,10 @@ class DiffusionBackend:
         self._unload_waiters = 0
         # _generate_lock serialises generations and is the ONLY lock the denoise holds.
         self._generate_lock = threading.Lock()
-        # Generations waiting for the slot, in arrival order: only the head competes for _generate_lock.
+        # Waiting generations in arrival order: only the head competes for _generate_lock.
         self._slot_turns: collections.deque = collections.deque()
         self._slot_turn_changed = threading.Condition(threading.Lock())
-        # Called (from any thread) when the line moves or the slot frees: a waiting batch wakes on it, not a poll.
         self._slot_listeners: list[Callable[[], None]] = []
-        # Reserved turns no generation has claimed yet: a waiter may step past one that idles at the front.
         self._unclaimed_turns: set = set()
         self._state: Optional[_LoadState] = None
         self._loading: Optional[_LoadingState] = None
@@ -5182,11 +5162,9 @@ class DiffusionBackend:
         self._active_generate_account: Optional[str] = None
         # Queued requests; cancel_generate() decides which Stop may signal.
         self._queued_generate_cancels: set[threading.Event] = set()
-        # Requests whose images render in another request's batch, by account: their own Stop leaves the batch.
+        # By account: requests riding another request's batch, and requests waiting to coalesce.
         self._generate_riders: dict[threading.Event, Optional[str]] = {}
-        # Requests waiting to coalesce, by account.
         self._coalesce_waiters: dict[threading.Event, Optional[str]] = {}
-        # The account of each queued cancel, so a lifecycle Stop reaches only the caller's requests.
         self._queued_cancel_owners: dict[threading.Event, Optional[str]] = {}
         self._generation_owns_slot = False
 
@@ -5282,7 +5260,6 @@ class DiffusionBackend:
             self._notify_slot_listeners()
 
     def add_slot_listener(self, callback: Callable[[], None]) -> Callable[[], None]:
-        """``callback`` runs whenever the line moves or the slot frees; returns its remover."""
         with self._slot_turn_changed:
             self._slot_listeners.append(callback)
 
@@ -5303,8 +5280,7 @@ class DiffusionBackend:
                 pass
 
     def reserve_slot_turn(self) -> object:
-        """A place at the back of the line, held before the generation that uses it starts (``reserved_slot_turn``).
-        Release it with ``release_slot_turn`` if no generation takes it."""
+        """Reserve a place at the back of the line; ``release_slot_turn`` if no generation takes it."""
         turn = object()
         with self._slot_turn_changed:
             self._slot_turns.append(turn)
@@ -5315,7 +5291,6 @@ class DiffusionBackend:
         self._leave_slot_turn(turn)
 
     def slot_turn_ready(self, turn: object) -> bool:
-        """The reserved turn is first in line and the slot is free: a generation using it starts at once."""
         with self._slot_turn_changed:
             first = (
                 not self._slot_turns or self._slot_turns[0] is turn or turn not in self._slot_turns
@@ -5324,7 +5299,6 @@ class DiffusionBackend:
 
     @contextmanager
     def jump_slot_queue(self):
-        """A follow-up pass of the request holding the slot (a Detailer crop) takes the lock before anyone waiting."""
         turn = object()
         with self._slot_turn_changed:
             self._slot_turns.appendleft(turn)
@@ -5344,7 +5318,7 @@ class DiffusionBackend:
         self._notify_slot_listeners()
 
     def _await_slot_turn(self, turn: object, cancel: threading.Event) -> None:
-        """Blocks until ``turn`` is the oldest waiting generation; a cancel still ends the wait within 0.1 s."""
+        """A cancel still ends the wait within 0.1 s."""
         idle_since = None
         with self._slot_turn_changed:
             while self._slot_turns[0] is not turn:
@@ -5352,8 +5326,7 @@ class DiffusionBackend:
                     raise RuntimeError(DIFFUSION_CANCELLED_MSG)
                 head = self._slot_turns[0]
                 if head in self._unclaimed_turns and not self._generate_lock.locked():
-                    # A reserved turn first in line with the slot free and no generation claiming it: its owner
-                    # may have no worker (every one waits here). After a grace it steps back one place.
+                    # An unclaimed reserved turn may have no worker (all wait here): after a grace it steps back one place.
                     now = time.monotonic()
                     idle_since = idle_since if idle_since is not None else now
                     if now - idle_since >= _RESERVED_TURN_GRACE_S:
@@ -5368,20 +5341,17 @@ class DiffusionBackend:
 
     @contextmanager
     def _generation_slot(self, cancel: threading.Event):
-        """First come, first served: a ticket queues each generation, and only the oldest one takes the lock, so a
-        later arrival cannot overtake it. Yields to teardown fences after taking the lock, keeping its place; the
-        zero-fence check and cancel registration must share one _lock section."""
+        """FIFO slot. Yields to teardown fences after taking the lock; the zero-fence check and cancel registration
+        must share one _lock section."""
         admitted = False
         reserved = _RESERVED_SLOT_TURN.get()
         with self._slot_turn_changed:
             if reserved is not None and reserved in self._slot_turns:
-                # A coalesced batch keeps the place it took when it opened.
                 turn = reserved
                 self._unclaimed_turns.discard(turn)
             else:
                 turn = object()
                 if reserved is not None or _SLOT_FOLLOW_UP.get():
-                    # A follow-up pass of a request already admitted goes first.
                     self._slot_turns.appendleft(turn)
                 else:
                     self._slot_turns.append(turn)
@@ -5399,7 +5369,6 @@ class DiffusionBackend:
                             first = self._slot_turns[0] is turn
                         if first:
                             break
-                        # A follow-up pass went to the front while this one waited on the lock.
                         self._generate_lock.release()
                         self._notify_slot_listeners()
                         self._await_slot_turn(turn, cancel)
@@ -5417,7 +5386,6 @@ class DiffusionBackend:
                     else:
                         cancelled = cancel.is_set()
                 if admitted:
-                    # The next waiter becomes the head and waits on the lock this generation now holds.
                     self._leave_slot_turn(turn)
                     break
                 self._generate_lock.release()
@@ -16777,7 +16745,7 @@ class DiffusionBackend:
                     paused_bg.resume()
                 raise
             render_t0 = time.perf_counter()
-            # Inside the slot, so no render uses the tokenizers while they are copied (once per load).
+            # Inside the slot, so no render uses the tokenizers while they are copied.
             prime_coalesce_tokenizers(state.family, state.pipe)
             # Reset in the finally, so a failed or cancelled generation frees its reused outputs.
             static_skip_pipe = None
@@ -18032,8 +18000,7 @@ class DiffusionBackend:
                     if previewer is not None:
                         previewer.finish()
                     failure = sys.exc_info()[1]
-                    # A failed batched call keeps the images that finished (in job order), so the requests they
-                    # belong to are not rendered again. Never after a Stop.
+                    # Keep finished images of a failed batched call so their requests are not re-rendered; never after a Stop.
                     if (
                         isinstance(failure, Exception)
                         and images
@@ -18244,7 +18211,6 @@ class DiffusionBackend:
 
     @contextmanager
     def generation_waiter(self, cancel: threading.Event):
-        """A request waiting to coalesce: a lifecycle Stop reaches it, and so does a Stop from its own account."""
         account = current_account_id()
         with self._generation_cancel_lock:
             self._queued_generate_cancels.add(cancel)
@@ -18259,13 +18225,10 @@ class DiffusionBackend:
                 self._coalesce_waiters.pop(cancel, None)
 
     def coalesce_plan(self, prompt: str, has_loras: bool) -> Optional[tuple[tuple, bool]]:
-        """``(prompt_key, private)`` for joining a batch, or None when this request must render alone. ``private``:
-        a per-account resource (a LoRA, or an embedding this account owns) could apply, so the request batches only
-        with its own account. Runs in the requesting account's context."""
+        """``(prompt_key, private)`` or None to render alone; ``private`` = batch only with its own account."""
         state = self._state
         if state is None:
             return None
-        # A load that serves one request at a time never waits to coalesce.
         policy = self.request_batching()
         if policy is None or policy["mode"] == "serial":
             return None
@@ -18274,7 +18237,6 @@ class DiffusionBackend:
             return None
         private = bool(has_loras)
         if not private and getattr(state.family, "textual_inversion", None) is not None:
-            # Embeddings come from the leader's folder and match triggers in every member's prompt.
             try:
                 private = bool(diffusion_embeddings.list_embeddings())
             except Exception:  # noqa: BLE001 - an unreadable folder may still hold one
@@ -18282,35 +18244,27 @@ class DiffusionBackend:
         return prompt_key, private
 
     def request_batching(self) -> Optional[dict[str, str]]:
-        """How concurrent requests share calls on this load, for status: ``mode`` is ``any`` (any batch size),
-        ``compiled_sizes`` (static compile: only batch sizes this load already compiled) or ``serial`` (per-call
-        activation scales, resident weights or CUDA graphs: every request renders alone), with the reason. None when
-        nothing is loaded."""
+        """``mode`` (``any`` / ``compiled_sizes`` / ``serial``) and reason for status; None when nothing is loaded."""
         state = self._state
         if state is None:
             return None
         scaled = _per_call_activation_scale(state)
         if scaled is not None:
-            # A per-tensor activation scale comes from the whole call's amax, so one request's prompt would set the
-            # quantization of every other member's activations.
+            # Per-tensor activation scale from the call's amax: one prompt would set every member's quantization.
             return {
                 "mode": "serial",
                 "reason": f"per-tensor dynamic activation scales ({scaled}): one request would set every batch "
                 "member's quantization, so concurrent requests render one at a time",
             }
         if not _denoiser_streams_from_host(state):
-            # Measured per family (A100 / RTX PRO 6000, batch of 4): resident loads ran 0.81x to 1.19x of serial
-            # while each member drifted from its solo render; only loads streaming the denoiser from host gained
-            # (1.47x to 3.35x), since one batch pays for one pass of weight copies.
+            # Measured (A100 / RTX PRO 6000, batch 4): resident 0.81x-1.19x of serial, streamed 1.47x-3.35x.
             return {
                 "mode": "serial",
                 "reason": "resident weights: a shared call is no faster than one request at a time, so "
                 "concurrent requests render one at a time",
             }
         if getattr(state, "cuda_graphs", ()):
-            # A graph replays one batch size: a new size captures (seconds, and its own memory pool) inside the slot
-            # while everyone waits, and an OOM split drops every graph. Graph replay already keeps the card busy,
-            # so a batch measured no faster than serial replay.
+            # A new batch size recaptures graphs inside the slot and an OOM split drops them; batching measured no faster.
             return {
                 "mode": "serial",
                 "reason": "CUDA graphs replay one batch size; concurrent requests render one at a time",
@@ -18328,9 +18282,7 @@ class DiffusionBackend:
         }
 
     def coalesce_batch_sizes(self, width: int, height: int) -> Optional[frozenset]:
-        """Batch sizes a coalesced txt2img call may use at ``width`` x ``height``: None = any, empty = none (CUDA
-        graphs serve serially; ``request_batching``). A static compile keys its artifacts on the batch, so a new
-        size would compile inside the slot: only sizes this load already compiled at this size are offered."""
+        """Allowed batch sizes at this shape: None = any, empty = none; static compile offers only already-compiled sizes."""
         policy = self.request_batching()
         state = self._state
         if policy is None or policy["mode"] == "serial":
@@ -18343,8 +18295,6 @@ class DiffusionBackend:
 
     @contextmanager
     def generation_rider(self, cancel: threading.Event):
-        """A request riding another request's batched call: a Stop from its account sets ``cancel`` even while
-        another account's generation holds the slot."""
         account = current_account_id()
         with self._generation_cancel_lock:
             self._generate_riders[cancel] = account
@@ -18355,8 +18305,7 @@ class DiffusionBackend:
                 self._generate_riders.pop(cancel, None)
 
     def _stop_waiting_locked(self, account: Optional[str]) -> bool:
-        """This account's batched work (None: every account's): requests riding another request's call and requests
-        waiting to coalesce. Call with ``_generation_cancel_lock`` held."""
+        """Call with ``_generation_cancel_lock`` held; owner None = every account."""
         # getattr: tests build a bare backend with object.__new__.
         events = [
             event
@@ -18372,7 +18321,6 @@ class DiffusionBackend:
         return bool(events)
 
     def stop_waiting_work(self, account: Optional[str] = None) -> bool:
-        """Stop this account's waiting and riding batched requests; True when there were any."""
         with self._generation_cancel_lock:
             return self._stop_waiting_locked(account)
 
@@ -18408,8 +18356,7 @@ class DiffusionBackend:
     def cancel_generate(self, expected_account: Optional[str] = None) -> bool:
         """Stops the in-flight generation at the next step callback; returns False when nothing runs; a cancel in VAE decode or encode lands after it."""
         with self._generation_cancel_lock:
-            # One rule: Stop ends this account's denoising generation and all of its waiting and riding batched
-            # requests; a plain request queued for the slot is not the running one and keeps its place.
+            # Stop ends this account's running generation and its batched requests; plain queued requests keep their place.
             active = self._active_generate_cancel
             hit = False
             if active is not None and (
@@ -18431,8 +18378,7 @@ class DiffusionBackend:
                 and not self._unload_waiters
             ):
                 return False
-            # Recheck live state so timed waiters observe a replacement handoff. Only the caller's own requests:
-            # an unknown owner (registered by older code) counts as the caller's.
+            # Recheck live state for replacement handoffs; an unknown owner counts as the caller's.
             owners = getattr(self, "_queued_cancel_owners", {})
             cancels = {
                 cancel

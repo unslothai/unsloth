@@ -294,8 +294,7 @@ _CANCEL_EXECUTOR = ThreadPoolExecutor(max_workers = 2, thread_name_prefix = "inf
 # Queued renders wait for the one-render slot inside their thread; on the default executor they would hold every worker.
 _IMAGE_GENERATE_EXECUTOR_ENV = "UNSLOTH_DIFFUSION_GENERATE_EXECUTOR"
 _IMAGE_GENERATE_EXECUTOR = ThreadPoolExecutor(max_workers = 32, thread_name_prefix = "image-generate")
-# A coalesced batch's own call runs here: its slot turn is first in line, so it starts at once, while requests
-# queued behind that turn may hold every worker of the pool above.
+# Reserved-turn calls run here: queued waiters may hold every worker of the pool above.
 _IMAGE_BATCH_EXECUTOR = ThreadPoolExecutor(max_workers = 4, thread_name_prefix = "image-batch")
 
 
@@ -314,7 +313,6 @@ async def _image_generate_in_thread(func, /, *args, **kwargs):
 
 
 async def _image_generate_on_reserved_turn(func, /, *args, **kwargs):
-    """Runs a call that uses a reserved slot turn on its own pool, never behind the waiters it is ahead of."""
     loop = asyncio.get_running_loop()
     call = functools.partial(contextvars.copy_context().run, func, *args, **kwargs)
     return await loop.run_in_executor(_IMAGE_BATCH_EXECUTOR, call)
@@ -53381,8 +53379,7 @@ async def _generate_xy_grid(request: DiffusionGenerateRequest) -> DiffusionGener
                 if ticket.cancelled():
                     raise HTTPException(status_code = 409, detail = DIFFUSION_CANCELLED_MSG)
                 captured: list[Any] = []
-                # The engine binds each cell's cancel to the ticket before it waits for the slot. Cells after the
-                # first continue a grid that already held the slot, so they go first in line.
+                # Cells after the first continue the grid, so they go first in line.
                 with generation_ticket(ticket), _follow_up_pass() if position else nullcontext():
                     result = await _generate_diffusion_image_run(
                         plan.cells[index].request, captured = captured
@@ -53449,8 +53446,7 @@ async def _generate_diffusion_image_core(
 
 
 def _plain_txt2img(request: DiffusionGenerateRequest, enhancement: Any, detailer: Any) -> bool:
-    """A Create run with no input image, mask, ControlNet, Detailer, hires, variation or prompt / seed lists: the
-    only /images/generate shape that may share a batched call."""
+    """The only /images/generate shape (plain txt2img Create) that may share a batched call."""
     return (
         request.prompts is None
         and request.seeds is None
@@ -53464,7 +53460,6 @@ def _plain_txt2img(request: DiffusionGenerateRequest, enhancement: Any, detailer
         and request.upscale_model is None
         and request.hires is None
         and request.variation_seed is None
-        # A random subseed repeats the base seed across the request's images: explicit per-member seeds would not.
         and not request.variation_strength
         and request.xy is None
         and detailer is None
@@ -53678,7 +53673,6 @@ async def _generate_diffusion_image_run(
                     **_hires_kwargs(backend.generate, request),
                 )
                 result = None
-                # Joins a batch only while a render runs, so a lone request starts exactly as before.
                 if coalesce and captured is None and _plain_txt2img(request, enhancement, detailer):
                     result = await _coalesced_image_generate(
                         backend,
@@ -53748,8 +53742,7 @@ async def _generate_diffusion_image_run(
         _diffusion_persist_active += 1
         try:
             with account_access.media_generation("diffusion"):
-                # Crop inpaints wait on the render slot too, so use the same pool; they continue this render,
-                # so they go first in line.
+                # Crop inpaints continue this render: same pool, first in line.
                 with _follow_up_pass():
                     await _image_generate_in_thread(
                         _run_detailer, backend, request, result, enhancement, detailer
@@ -54961,7 +54954,6 @@ async def diffusion_generate_progress(current_subject: str = Depends(get_current
 
 
 def _stop_batched_image_work() -> bool:
-    """This account's requests waiting to coalesce or riding another account's batched call."""
     from core.inference.diffusion_engine_router import get_active_diffusion_engine
 
     try:
@@ -54989,8 +54981,7 @@ async def cancel_diffusion_generation(
     if target == "connection":
         return {"cancelled": _stop_external_image_runs()}
     grids = _stop_xy_grids()
-    # Before the account checks: another account's call may be rendering this account's batched images, which
-    # makes the running generation look foreign although this account has work in it.
+    # Before the account checks: another account's call may be rendering this account's images.
     grids = _stop_batched_image_work() or grids
     if account_access.generation_is_foreign("diffusion"):
         return {"cancelled": grids}
@@ -55938,7 +55929,6 @@ def _image_generation_defaults(status: dict) -> tuple[int, float]:
 
 
 def _frozen_kwarg(value: Any) -> Hashable:
-    """A hashable stand-in for one generate() argument, so the batch key holds every setting that changes output."""
     if isinstance(value, dict):
         return tuple(sorted((str(k), _frozen_kwarg(v)) for k, v in value.items()))
     if isinstance(value, (list, tuple)):
@@ -55955,8 +55945,7 @@ def _frozen_kwarg(value: Any) -> Hashable:
 
 
 def _coalesced_recipe(result: dict, index: int) -> dict:
-    """Where an image sat in a coalesced call: its pixels come from a forward of that size, so a solo replay of the
-    seed lands close to it, not on it. Nothing for an image rendered alone."""
+    """Position in a coalesced call; a solo replay of the seed lands close, not exact."""
     size = result.get("coalesced_batch_size")
     if not size:
         return {}
@@ -55968,25 +55957,21 @@ def _coalesced_recipe(result: dict, index: int) -> dict:
 
 @contextmanager
 def _reserved_turn(turn: Any):
-    """Generations started here use the slot turn a coalesced batch reserved (diffusers engine only)."""
     if turn is None:
         yield
         return
     from core.inference.diffusion import reserved_slot_turn
-
     with reserved_slot_turn(turn):
         yield
 
 
 @contextmanager
 def _follow_up_pass():
-    """Generations started here continue a request that already held the slot, so they go first in line."""
     from core.inference.diffusion import slot_follow_up
     with slot_follow_up():
         yield
 
 
-# Not part of the batch key: the shared call shows the leader's preview, and the leader's own image is first.
 _COALESCE_KEY_IGNORED = frozenset({"live_preview"})
 
 
@@ -55999,10 +55984,7 @@ async def _coalesced_image_generate(
     seed: Optional[int],
     generate_kwargs: dict,
 ) -> Optional[dict]:
-    """Joins this request to a batch while a render runs, any account included; None = render alone.
-
-    ``generate_kwargs`` is everything but the prompt / seed / count: all of it goes into the key, so only requests
-    whose renders would match share a call, and each member gets only its own images back."""
+    """Join a batch while a render runs; None = render alone. ``generate_kwargs`` all go into the key."""
     from core.inference import image_request_batching
     from core.inference.diffusion_engine_router import ENGINE_DIFFUSERS, active_engine_name
     from core.inference.diffusion_families import DIFFUSION_CANCELLED_MSG
@@ -56018,7 +56000,6 @@ async def _coalesced_image_generate(
     holder = getattr(backend, "generation_holder", None)
     if holder is None or active_engine_name() != ENGINE_DIFFUSERS:
         return None
-    # An idle engine with no batch collecting renders this request at once, with no extra status read.
     if not image_request_batching.collecting():
         try:
             if holder() is None:
@@ -56028,14 +56009,12 @@ async def _coalesced_image_generate(
     if status is None:
         status = await asyncio.to_thread(backend.status)
     family = status.get("family")
-    # FLUX.3 and Anima render one image per call, and a layered model returns several pictures per image.
     if family in FLUX3_FAMILY_NAMES or family == ANIMA_FAMILY_NAME:
         return None
     if family and getattr(detect_family("", family), "layer_count", 0):
         return None
     if generate_kwargs.get("expected_load") is None:
-        # Pin the shared call to the model these settings were read for, so a model swapped in meanwhile is refused
-        # (each member then retries) instead of rendering every member on it.
+        # Pin to the model read here, so a swapped model is refused rather than rendering every member.
         from core.inference.diffusion_families import load_identity
         generate_kwargs = {
             **generate_kwargs,
@@ -56043,8 +56022,7 @@ async def _coalesced_image_generate(
                 status.get("repo_id"), status.get("base_repo"), status.get("family")
             ),
         }
-    # LoRA ids, hosted adapters (with their HF token) and textual-inversion embeddings resolve under the account
-    # that runs the call, the leader: a request that could use any of them batches with its own account only.
+    # Per-account resources (LoRAs, hosted adapters, embeddings) resolve under the leader: batch own account only.
     plan = getattr(backend, "coalesce_plan", None)
     loras = generate_kwargs.get("loras")
     if plan is not None:
@@ -56060,7 +56038,6 @@ async def _coalesced_image_generate(
 
     # Wait only for the generation found on arrival, so a later one taking the slot cannot starve the batch.
     arrived_behind: list = []
-    # The leader's place in the slot's line, taken when its batch opens (engines that keep a line only).
     lead: dict = {}
     reserve = getattr(backend, "reserve_slot_turn", None)
     loop = asyncio.get_running_loop()
@@ -56073,7 +56050,7 @@ async def _coalesced_image_generate(
         lead["remove"] = backend.add_slot_listener(lambda: loop.call_soon_threadsafe(woken.set))
 
     async def wait() -> None:
-        # Woken by the slot itself; the timeout covers lock holders outside the line.
+        # The timeout covers lock holders outside the line.
         try:
             await asyncio.wait_for(woken.wait(), timeout = 0.25)
         except asyncio.TimeoutError:
@@ -56106,8 +56083,7 @@ async def _coalesced_image_generate(
     ) -> dict:
         call = dict(generate_kwargs)
         if len(set(owners or ())) > 1:
-            # The preview decodes row 0 of each forward, and an OOM split or an equal-length run can put another
-            # account's image there: a batch shared across accounts shows no preview.
+            # Row 0 may be another account's image, so a cross-account batch shows no preview.
             call.update(_live_preview_kwarg(backend.generate, False))
         runner = _image_generate_on_reserved_turn if "turn" in lead else _image_generate_in_thread
         with generation_ticket(ticket), _reserved_turn(lead.get("turn")):
@@ -56126,7 +56102,6 @@ async def _coalesced_image_generate(
                     raise RuntimeError(DIFFUSION_CANCELLED_MSG) from exc
                 raise
 
-    # No account unless a per-account resource could apply: then only this account's requests share the call.
     key = (
         current_account_id() if private else None,
         prompt_key,
@@ -56143,10 +56118,8 @@ async def _coalesced_image_generate(
         return isinstance(exc, RuntimeError) and str(exc) == DIFFUSION_CANCELLED_MSG
 
     def splittable(exc: BaseException) -> bool:
-        """One member's input or size can cause these, so the batch splits by member instead of failing all."""
         from core.inference.diffusion_batched import is_oom_error
         from core.inference.diffusion_memory import unified_memory_refusal_code
-
         return (
             isinstance(exc, ValueError)
             or unified_memory_refusal_code(exc) is not None
@@ -56154,7 +56127,6 @@ async def _coalesced_image_generate(
         )
 
     def salvage(exc: BaseException) -> Optional[dict]:
-        """The images a failed call finished, as a result its leading members can keep."""
         finished = getattr(exc, "_unsloth_finished_images", None)
         if not finished or not finished.get("images"):
             return None
@@ -56172,7 +56144,6 @@ async def _coalesced_image_generate(
     sizes_of = getattr(backend, "coalesce_batch_sizes", None)
 
     def fits(total: int) -> bool:
-        """Read at fire time: a static-shape load batches only at sizes it already compiled."""
         if sizes_of is None:
             return True
         try:
@@ -56195,7 +56166,6 @@ async def _coalesced_image_generate(
             shared_outcome = cancelled,
             owner = current_account_id(),
             check = check,
-            # A Stop from this account reaches its images while another account's call renders them.
             ride = (lambda: rider(stopped)) if rider is not None else None,
             fits = fits,
             splittable = splittable,
@@ -56211,14 +56181,12 @@ async def _coalesced_image_generate(
     try:
         with waiter(stopped) if waiter is not None else nullcontext():
             result = await _coalesce_in_line()
-            # A leader that ends up alone renders in the place it held, not at the back of the line.
             if result is None and "turn" in lead and not stopped.is_set():
                 with _reserved_turn(lead["turn"]):
                     result = await _image_generate_on_reserved_turn(
                         backend.generate, prompt = prompt, seed = seed, batch_size = n, **generate_kwargs
                     )
-        # Read once the waiter is deregistered: a Stop that found it was answered as cancelled, so it hands
-        # back no images, like a member's.
+        # Read after deregistering: a Stop that found the waiter hands back no images.
         if stopped.is_set():
             raise RuntimeError(DIFFUSION_CANCELLED_MSG)
         return result

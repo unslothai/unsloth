@@ -530,7 +530,7 @@ def _take_generation_slot(stop: Optional[Callable[[], bool]] = None) -> Any:
         return None
     if lock is None or not hasattr(lock, "acquire"):
         return None
-    # A follow-up of the render that just held the slot: it goes before requests waiting in line.
+    # A follow-up pass: goes before requests waiting in line.
     jump = getattr(engine, "jump_slot_queue", None)
     with jump() if callable(jump) else contextlib.nullcontext():
         while not lock.acquire(timeout = 0.1):
