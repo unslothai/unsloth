@@ -1197,3 +1197,37 @@ def test_a_scan_folder_subfolder_holding_one_checkpoint_is_listed(monkeypatch, t
         Path(media_model_index._build_index("text-to-image")["flux"].model_path)
         == checkpoint.parent
     )
+
+
+def test_an_empty_single_file_hf_checkpoint_stays_partial(monkeypatch, tmp_path):
+    checkpoint = _hf_snapshot(tmp_path, "Comfy-Org/flux1-dev") / "flux1-dev.safetensors"
+    checkpoint.parent.mkdir(parents = True)
+    checkpoint.write_bytes(b"")
+
+    (row,) = _scan_hub_only(monkeypatch, tmp_path)
+    assert row.partial is True
+
+
+def test_a_whole_artifact_mirror_pipeline_loads_but_is_no_hub_pick(monkeypatch, tmp_path):
+    """A Qwen/Qwen-Image-2.1-Turbo pick downloads the pipeline into its unsloth/...-FP8 artifact mirror."""
+    from core.inference import media_model_index
+
+    snapshot = _hf_snapshot(tmp_path, "unsloth/Qwen-Image-2.1-Turbo-FP8")
+    _index(
+        snapshot,
+        _class_name = "QwenImage21Pipeline",
+        transformer = ["diffusers", "QwenImage21Transformer2DModel"],
+        vae = ["diffusers", "AutoencoderKLQwenImage21"],
+        scheduler = ["diffusers", "FlowMatchEulerDiscreteScheduler"],
+    )
+    for name in ("transformer", "vae"):
+        _write(snapshot / name / "config.json")
+        _touch(snapshot / name / "diffusion_pytorch_model.safetensors")
+    _write(snapshot / "scheduler" / "scheduler_config.json")
+
+    (row,) = _scan_hub_only(monkeypatch, tmp_path)
+    assert row.partial is False
+    pick = media_model_index._build_index("text-to-image")["unsloth/qwen-image-2.1-turbo-fp8"]
+    assert Path(pick.model_path) == snapshot
+    (hub_row,) = local_inventory._scan_hf_cache(tmp_path / "hub")
+    assert (hub_row.partial, hub_row.companion_prefetch) == (True, True)

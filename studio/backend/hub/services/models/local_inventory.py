@@ -459,10 +459,8 @@ def loose_diffusion_checkpoint_rows(
 
 def _is_single_checkpoint_dir(path: Path) -> bool:
     """A folder holding one loose checkpoint (Flux/flux1-dev.safetensors) loads as single_file."""
-    from core.inference.diffusion_local_files import resolve_local_single_file
-
-    sole = resolve_local_single_file(str(path))
-    return sole is not None and not _is_image_lora_file(path / sole)
+    sole = model_common.sole_checkpoint(path)
+    return sole is not None and not _is_image_lora_file(sole)
 
 
 def _is_loose_diffusion_checkpoint_row(model: LocalModelInfo) -> bool:
