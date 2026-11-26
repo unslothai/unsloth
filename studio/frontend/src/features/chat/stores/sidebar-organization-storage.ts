@@ -8,6 +8,8 @@ import { BROWSER_ACCOUNT_KEY } from "../../../lib/browser-account-key.ts";
 import { SIDEBAR_SYNC_BASELINE_KEY } from "./sidebar-organization-keys.ts";
 
 const COMPRESSED_PREFIX = "sidebar-zlib-v1:";
+const JSON_STRING = /"(?:[^"\\]|\\.)*"/g;
+const JOURNAL_TOKEN = /"(?:[^"\\]|\\.)*"|@(\d+);/g;
 let lastStoredValue: string | null = null;
 let lastBaseline: { account: string; layout: string } | undefined;
 
@@ -15,14 +17,60 @@ export function sidebarOrganizationStorageChanged(key: string): boolean {
   return window.localStorage.getItem(key) !== lastStoredValue;
 }
 
-export function unpackSidebarOrganization(value: string | null): string | null {
-  if (!value?.startsWith(COMPRESSED_PREFIX)) return value;
+function unpackCompressed(value: string): string {
   const bytes = strToU8(atob(value.slice(COMPRESSED_PREFIX.length)), true);
   return strFromU8(unzlibSync(bytes));
 }
 
+function visibleTokens(state: object): string[] {
+  return [...new Set(JSON.stringify(state).match(JSON_STRING) ?? [])];
+}
+
+export function unpackSidebarOrganization(value: string | null): string | null {
+  if (!value) return value;
+  if (value.startsWith(COMPRESSED_PREFIX)) return unpackCompressed(value);
+  if (!value.includes('"sidebarSyncJournal"')) return value;
+  const saved = JSON.parse(value);
+  if (typeof saved?.state?.sidebarSyncJournal !== "string") return value;
+  const { sidebarSyncJournal, ...state } = saved.state;
+  const tokens = visibleTokens(state);
+  const { syncedLayout, pendingLayoutEdit, orderMoves } =
+    JSON.parse(unpackCompressed(sidebarSyncJournal));
+  const decode = (layout: string) => layout.replace(
+    JOURNAL_TOKEN, (token, index: string | undefined) => index === undefined ? token : tokens[Number(index)] ?? token,
+  );
+  return JSON.stringify({ ...saved, state: {
+    ...state,
+    syncedLayout: typeof syncedLayout === "string" ? decode(syncedLayout) : syncedLayout,
+    pendingLayoutEdit: typeof pendingLayoutEdit?.layout === "string"
+      ? { ...pendingLayoutEdit, layout: decode(pendingLayoutEdit.layout) }
+      : pendingLayoutEdit,
+    orderMoves,
+  } });
+}
+
 function packSidebarOrganization(value: string): string {
   return COMPRESSED_PREFIX + btoa(strFromU8(zlibSync(strToU8(value), { level: 1 }), true));
+}
+
+function packSidebarJournal(value: string): string {
+  const saved = JSON.parse(value);
+  const { syncedLayout, pendingLayoutEdit, orderMoves, ...state } = saved.state;
+  const tokens = new Map(visibleTokens(state).map((token, index) => [token, index]));
+  const encode = (layout: string) => layout.replace(JSON_STRING, (token) => {
+    const index = tokens.get(token);
+    return index === undefined ? token : "@" + index + ";";
+  });
+  const journal = {
+    syncedLayout: typeof syncedLayout === "string" ? encode(syncedLayout) : syncedLayout,
+    pendingLayoutEdit: typeof pendingLayoutEdit?.layout === "string"
+      ? { ...pendingLayoutEdit, layout: encode(pendingLayoutEdit.layout) }
+      : pendingLayoutEdit,
+    orderMoves,
+  };
+  return JSON.stringify({
+    ...saved, state: { ...state, sidebarSyncJournal: packSidebarOrganization(JSON.stringify(journal)) },
+  });
 }
 
 function storageIsFull(error: unknown): boolean {
@@ -85,8 +133,8 @@ export function sidebarOrganizationStorage(): StateStorage {
             if (!storageIsFull(retryError)) throw retryError;
           }
         }
-        // Keep the visible layout and its sync journal in one atomic write for peer tabs.
-        const encoded = packSidebarOrganization(value);
+        // Older tabs read the visible layout from this key. Keep it readable in the atomic write.
+        const encoded = packSidebarJournal(value);
         if (encoded.length >= value.length) throw error;
         write(key, encoded);
       }

@@ -82,7 +82,7 @@ function writeFromPeer(update: Record<string, unknown>, notify = true) {
 test("a large saved sidebar keeps its pending sync operation within browser storage quota", () => {
   const key = stores.SIDEBAR_ORGANIZATION_STORAGE_KEY;
   const section = { id: randomUUID(), name: "Research", sort: "manual" as const };
-  const chatIds = Array.from({ length: 20_000 }, () => randomUUID());
+  const chatIds = Array.from({ length: 25_000 }, () => randomUUID());
   const legacy = {
     customSections: [section],
     sectionByChatId: Object.fromEntries(chatIds.map((id) => [id, section.id])),
@@ -92,7 +92,8 @@ test("a large saved sidebar keeps its pending sync operation within browser stor
   store.persist.rehydrate();
   const syncedLayout = JSON.stringify(layouts.sidebarLayout(store.getState()));
   store.setState({ syncedLayout });
-  store.getState().renameCustomSection(section.id, "Field notes");
+  const renamed = 'Field notes "@42;"';
+  store.getState().renameCustomSection(section.id, renamed);
   const pendingLayoutEdit = {
     id: "large-edit",
     layout: JSON.stringify(layouts.sidebarLayout(store.getState())),
@@ -100,6 +101,10 @@ test("a large saved sidebar keeps its pending sync operation within browser stor
   store.setState({ pendingLayoutEdit });
   const persisted = localStorage.getItem(key)!;
   assert.ok(persisted.length < quota);
+  const legacyView = JSON.parse(persisted).state;
+  assert.equal(legacyView.customSections[0].name, renamed);
+  assert.equal(legacyView.sectionByChatId[chatIds.at(-1)!], section.id);
+  assert.deepEqual(legacyView.manualOrder[stores.customSectionScope(section.id)], chatIds);
 
   store.setState(store.getInitialState(), true);
   localStorage.setItem(key, persisted);
@@ -107,7 +112,7 @@ test("a large saved sidebar keeps its pending sync operation within browser stor
   assert.ok(store.getState().syncedLayout === syncedLayout);
   assert.equal(store.getState().pendingLayoutEdit?.id, pendingLayoutEdit.id);
   assert.ok(store.getState().pendingLayoutEdit?.layout === pendingLayoutEdit.layout);
-  assert.equal(store.getState().customSections[0].name, "Field notes");
+  assert.equal(store.getState().customSections[0].name, renamed);
   assert.equal(store.getState().sectionByChatId[chatIds.at(-1)!], section.id);
 });
 
