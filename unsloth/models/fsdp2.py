@@ -430,6 +430,12 @@ def fsdp2_full_params_for_generate(module):
         yield False
         return
     units = [m for m in root.modules() if isinstance(m, FSDPModule)]
+    # The root's first forward lazily initializes FSDP (which state is the root, the comm streams).
+    # generate() bypasses it, and the first unit whose forward runs would claim the root instead
+    # ("requires running forward through the root module first" at the next training forward).
+    lazy_init = getattr(root._get_fsdp_state(), "_lazy_init", None)
+    if lazy_init is not None:
+        lazy_init()
     saved = []
     try:
         for unit in units:
