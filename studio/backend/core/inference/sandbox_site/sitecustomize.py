@@ -132,13 +132,10 @@ def _sidecar_path(cwd):
 
 
 def _stdlib_json():
-    """The stdlib json, imported on first use (json pulls re and enum: most of the shim's startup), else None.
-
-    A json already in sys.modules that is not the stdlib copy (a chat-planted json.py) is never used: the sidecar is
-    best effort, so it is skipped instead."""
+    """Lazily imported stdlib json, or None if sys.modules holds a non-stdlib (chat-planted) json."""
     module = sys.modules.get("json")
     if module is None:
-        import json as module  # _StdlibLazyFinder answers it with the stdlib copy
+        import json as module  # _StdlibLazyFinder serves the stdlib copy
     origin = getattr(module, "__file__", None) or ""
     return module if origin and _is_stdlib_file(origin) else None
 
@@ -305,8 +302,7 @@ def _install():
         accessor = getattr(pathlib, "_NormalAccessor", None)
         if accessor is not None and hasattr(accessor, "open"):
             accessor.open = staticmethod(_io_open)
-            # Imported after the os patches, it captured them (a plain function binds as a method); give it the
-            # originals it captured when the shim imported pathlib before patching.
+            # Imported after the os patches, it captured the patched ones; restore the originals.
             originals = {
                 _mkdir: original_mkdir,
                 _makedirs: original_makedirs,
@@ -328,7 +324,7 @@ def _install():
     if "pathlib" in sys.modules:
         _patch_pathlib(sys.modules["pathlib"])
     else:
-        # pathlib is 2-8 ms of every launch: patched on its first import instead (_StdlibLazyFinder).
+        # Deferred to pathlib's first import (_StdlibLazyFinder): it costs 2-8 ms per launch.
         global _pending_pathlib_patch
         _pending_pathlib_patch = _patch_pathlib
 
@@ -624,12 +620,8 @@ def _is_stdlib_file(path):
 
 
 class _StdlibLazyFinder:
-    """Answers the first import of json and of pathlib with the stdlib copy (pathlib with Path.mkdir patched).
-
-    The shim used to import both eagerly at startup (json pulls re and enum: most of its startup time), which also
-    meant a later `import json` / `import pathlib` got the stdlib copy even with a json.py in the cwd. Same modules,
-    same place, same patches, only later: their own imports run against the stdlib alone, as they did at startup.
-    Removes itself once both are answered."""
+    """Serves the first import of json / pathlib from the stdlib (as the old eager import did, so a cwd json.py
+    never wins), patching pathlib after load. Removes itself once both are loaded."""
 
     def __init__(self, names):
         self._names = set(names)
@@ -650,7 +642,7 @@ class _StdlibLazyFinder:
         return spec
 
     def _loaded(self, name):
-        # Only once the module ran: a find_spec probe (importlib.util.find_spec) must not use up the patch.
+        # Only after exec: a bare find_spec probe must not consume the patch.
         self._names.discard(name)
         if not self._names:
             try:
@@ -660,8 +652,6 @@ class _StdlibLazyFinder:
 
 
 class _StdlibFirst:
-    """Top-level names answered from the stdlib when it has them; anything else falls through untouched."""
-
     def __init__(self):
         self._paths = _stdlib_paths()
 
@@ -686,8 +676,7 @@ class _StdlibLoader:
         return self._loader.create_module(spec)
 
     def exec_module(self, module):
-        # Its own top-level imports (re, enum, fnmatch, ...) resolve stdlib-first, as at startup. Not a sys.path
-        # swap: another thread importing meanwhile still finds everything, at worst the stdlib copy of a name.
+        # Its imports resolve stdlib-first; a meta_path hook, not a sys.path swap, so other threads still import.
         first = _StdlibFirst()
         sys.meta_path.insert(0, first)
         try:
@@ -697,7 +686,6 @@ class _StdlibLoader:
                 sys.meta_path.remove(first)
             except ValueError:
                 pass
-            # The real loader on the module, as an eager import left it (linecache, inspect, resources).
             module.__loader__ = self._loader
             if getattr(module, "__spec__", None) is not None:
                 module.__spec__.loader = self._loader

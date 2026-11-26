@@ -445,7 +445,7 @@ def _legacy_still_installed() -> bool:
 
 try:
     from utils.scan_memo import memoized as _per_launch
-except ImportError:  # the installer and probe children run without the backend's utils
+except ImportError:  # installer / probe children lack the backend's utils
 
     def _per_launch(_key, compute):
         return compute()
@@ -454,8 +454,7 @@ except ImportError:  # the installer and probe children run without the backend'
 def selected_pin() -> MxcPin:
     """target_pin(), but an installed 1.0.1 (which also uses the built-in container) runs until replaced.
 
-    Read once per tool launch (the scan_memo scope prepare_tool_launch opens), not on each of its ~15-30 asks;
-    acquire_runtime runs outside that scope, so the bytes it launches are checked against a fresh pick."""
+    Memoized per tool launch; acquire_runtime runs outside that scope, so it always checks a fresh pick."""
     key = ("mxc_runtime.selected_pin", os.environ.get(PIN_ENV), str(_studio_root()))
     return _per_launch(key, _selected_pin_uncached)
 

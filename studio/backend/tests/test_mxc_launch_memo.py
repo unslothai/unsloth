@@ -14,7 +14,6 @@ from utils.scan_memo import scan_memo
 
 @pytest.fixture
 def windows_pin_inputs(monkeypatch, tmp_path):
-    """selected_pin on 'Windows' with the demotion marker and the legacy check counted."""
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     monkeypatch.delenv(mxc_runtime.PIN_ENV, raising = False)
     monkeypatch.setattr(mxc_runtime.sys, "platform", "win32")
@@ -112,7 +111,7 @@ def test_grant_deny_lists_are_computed_once_per_launch_and_again_next_launch(mon
     assert len(calls) == 2
     public()
     public()
-    assert len(calls) == 4  # no scope, no memo
+    assert len(calls) == 4
 
 
 def test_a_studio_home_changed_inside_a_launch_is_seen(monkeypatch, tmp_path):
@@ -136,6 +135,6 @@ def test_a_token_planted_between_launches_denies_the_next_launch(monkeypatch, tm
     with scan_memo():
         assert real not in os_sandbox._hf_home_roots()
         (home / "token").write_text("x", encoding = "utf-8")
-        assert real not in os_sandbox._hf_home_roots()  # one launch, one answer
+        assert real not in os_sandbox._hf_home_roots()
     with scan_memo():
         assert real in os_sandbox._hf_home_roots()

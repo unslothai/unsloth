@@ -877,10 +877,9 @@ _CREDENTIAL_BASENAMES = (".env",)  # plus the approval gate's own list, read at 
 
 
 def _per_launch(name: str, compute, *env_names: str):
-    """compute() once per tool launch (prepare_tool_launch's scan_memo scope), else every call."""
     try:
         from utils.scan_memo import memoized
-    except ImportError:  # outside the backend (probe child, installer) there is no memo
+    except ImportError:  # probe child / installer: no memo
         return compute()
     return memoized((name, *(os.environ.get(env) for env in env_names)), compute)
 
@@ -889,7 +888,6 @@ _HOME_ENV = ("HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH")
 
 
 def _hf_home_roots() -> tuple[str, ...]:
-    # Asked by both grant filters of one launch; a token planted between launches is seen by the next one.
     return _per_launch(
         "os_sandbox._hf_home_roots",
         _hf_home_roots_uncached,

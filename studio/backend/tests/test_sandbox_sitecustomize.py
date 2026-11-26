@@ -615,7 +615,6 @@ def _child(
 
 
 def test_the_shim_imports_neither_json_nor_pathlib_at_startup(tmp_path):
-    """They pull re, enum, functools and more: most of every sandboxed Python launch. Loaded on first use instead."""
     code = "import sys; print(' '.join(sorted(sys.modules)))"
     with_shim = set(_child(code, tmp_path).split())
     without = set(_child(code, tmp_path, shim = False).split())
@@ -664,7 +663,6 @@ def test_modules_that_import_pathlib_get_the_patched_one(tmp_path):
 
 @pytest.mark.parametrize("name", ["json", "pathlib"])
 def test_a_planted_copy_in_the_cwd_does_not_replace_the_stdlib_module(tmp_path, name):
-    """As when the shim imported both at startup: `import json` / `import pathlib` still answer with the stdlib."""
     (tmp_path / f"{name}.py").write_text("raise SystemExit('planted copy ran')\n")
     code = (
         f"import {name}, sys, sysconfig, os\n"
@@ -690,7 +688,6 @@ def test_the_lazy_finder_resolves_from_the_stdlib_and_hands_back_the_real_loader
 
 
 def test_the_sidecar_round_trips_in_a_child_without_json_preloaded(tmp_path):
-    """The basename heal persists through the sidecar, which now imports json on first use."""
     code = (
         "with open('/no/such/dir/healed.txt', 'w') as fh: fh.write('x')\n"
         "import json\n"
