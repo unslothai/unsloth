@@ -98,6 +98,8 @@ def test_portrait_i2v_renders_and_exports_a_portrait_clip(tiny_pipe):
     import av
     from core.inference import video as video_module
 
+    if not hasattr(getattr(tiny_pipe, "processor", None), "create_mm_token_type_ids"):
+        pytest.skip("this transformers' Qwen3VLProcessor has no create_mm_token_type_ids")
     backend = VideoBackend()
     backend._state = video_module._VideoLoadState(
         pipe = tiny_pipe,
