@@ -6461,6 +6461,12 @@ export const cs = {
     maximize: "Maximalizovat okno",
     restore: "Obnovit okno",
     close: "Zavřít okno",
+    mediaCodecs: {
+      title: "Vygenerovaná videa se nemusí přehrát",
+      // {command}: an apt command line, never translated.
+      description: "V systému chybí videodekodéry GStreamer. Nainstalujte je příkazem: {command}",
+      copy: "Kopírovat příkaz",
+    },
   },
   runtimeUpdate: {
     installAudio: "Nainstalovat zvukové běhové prostředí",

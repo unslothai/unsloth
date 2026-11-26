@@ -6435,6 +6435,12 @@ export const tr = {
     maximize: "Pencereyi ekranı kaplayacak şekilde büyüt",
     restore: "Pencereyi geri yükle",
     close: "Pencereyi kapat",
+    mediaCodecs: {
+      title: "Oluşturulan videolar oynatılamayabilir",
+      // {command}: an apt command line, never translated.
+      description: "Bu sistemde GStreamer video kod çözücüleri eksik. Şu komutla yükleyin: {command}",
+      copy: "Komutu kopyala",
+    },
   },
   runtimeUpdate: {
     installAudio: "Ses çalışma zamanını kur",

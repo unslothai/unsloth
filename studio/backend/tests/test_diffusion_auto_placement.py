@@ -160,6 +160,10 @@ def _env(monkeypatch):
     for var in (mg.MULTIGPU_ENV, mg.CFG_PARALLEL_ENV, lsp.LAYER_SPLIT_ENV, "CUDA_VISIBLE_DEVICES"):
         monkeypatch.delenv(var, raising = False)
     monkeypatch.setattr(mg, "models_kept_loaded", lambda: False)
+    # The fake cards below are sized against the Linux per-card reserve (1200 MiB). Windows keeps 300 MiB more,
+    # so on a Windows runner the same T4 splits do not fit; that value is pinned in
+    # test_diffusion_layer_split_plan.py::test_reserve_follows_comfyui_minimum_inference_memory.
+    monkeypatch.setattr(lsp, "secondary_reserve_mib", lambda: 1200)
     eng = _Engine()
     monkeypatch.setattr(lsp, "engine_available", lambda: True)
     monkeypatch.setattr(lsp, "place_layer_split", eng.place)

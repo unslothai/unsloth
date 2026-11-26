@@ -6440,6 +6440,12 @@ export const vi = {
     maximize: "Phóng to cửa sổ",
     restore: "Khôi phục cửa sổ",
     close: "Đóng cửa sổ",
+    mediaCodecs: {
+      title: "Video đã tạo có thể không phát được",
+      // {command}: an apt command line, never translated.
+      description: "Hệ thống này thiếu bộ giải mã video GStreamer. Hãy cài đặt bằng lệnh: {command}",
+      copy: "Sao chép lệnh",
+    },
   },
   runtimeUpdate: {
     installAudio: "Cài đặt runtime âm thanh",

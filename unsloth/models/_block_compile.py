@@ -2068,17 +2068,19 @@ def _materialise_mask(layout, causal, batch, seq_len, device):
             return mask
     full = (batch, seq_len) if dim == 2 else (batch, heads, seq_len, seq_len)
     stored = tuple(1 if i in broadcast else size for i, size in enumerate(full))
-    if dim == 4 and causal:
+    if dim == 4 and causal and (2 in broadcast or 3 in broadcast):
         # A causal mask needs both token dims stored; a broadcast one (padding-only layout) keeps None.
-        if 2 in broadcast or 3 in broadcast:
-            return None
-        # A fresh tensor in the stored shape (contiguous() keeps a (1, 1, L, L) expand as a view of the 2D base).
-        mask = torch.empty(stored, dtype = torch.bool, device = device)
-        mask.copy_(torch.ones((seq_len, seq_len), dtype = torch.bool, device = device).tril_())
-    else:
-        mask = torch.ones(stored, dtype = dtype if dim == 2 else torch.bool, device = device)
-    if view:
-        mask = mask.expand(full)
+        return None
+    # Not an inference tensor: training reuses the cache and autograd may save it (hybrid padding multiply).
+    with torch.inference_mode(False), torch.no_grad():
+        if dim == 4 and causal:
+            # A fresh tensor in the stored shape (contiguous() keeps a (1, 1, L, L) expand as a view of the 2D base).
+            mask = torch.empty(stored, dtype = torch.bool, device = device)
+            mask.copy_(torch.ones((seq_len, seq_len), dtype = torch.bool, device = device).tril_())
+        else:
+            mask = torch.ones(stored, dtype = dtype if dim == 2 else torch.bool, device = device)
+        if view:
+            mask = mask.expand(full)
     setattr(mask, _MATERIALISED_ATTR, True)
     keep = mask.untyped_storage().nbytes() <= _MATERIALISED_KEEP_BYTES
     _MATERIALISED[0] = (key, mask if keep else weakref.ref(mask), keep)
@@ -2785,8 +2787,10 @@ def _wrap(
             except torch.OutOfMemoryError:
                 raise
             except Exception as e:
-                # _StopRecomputationError: control flow, not a compile failure; never demote.
-                if type(e).__name__ == "_StopRecomputationError":
+                # Non-reentrant checkpoint ends a recompute by raising through the forward: control
+                # flow, not a compile failure (demoting on it left the stock forward in every block).
+                # CheckpointError (forward / recompute mismatch) too: demoting would hide it.
+                if type(e).__name__ in ("_StopRecomputationError", "CheckpointError"):
                     raise
                 if os.environ.get("UNSLOTH_BLOCK_COMPILE_DEBUG") == "1":
                     import traceback

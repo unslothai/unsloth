@@ -6107,6 +6107,12 @@ export const de = {
     maximize: "Fenster maximieren",
     restore: "Fenster wiederherstellen",
     close: "Fenster schließen",
+    mediaCodecs: {
+      title: "Generierte Videos werden möglicherweise nicht abgespielt",
+      // {command}: an apt command line, never translated.
+      description: "Auf diesem System fehlen die GStreamer-Videodecoder. Installieren Sie sie mit: {command}",
+      copy: "Befehl kopieren",
+    },
   },
   runtimeUpdate: {
     installAudio: "Audio-Laufzeit installieren",

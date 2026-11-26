@@ -6117,6 +6117,12 @@ export const fr = {
     maximize: "Agrandir la fenêtre",
     restore: "Restaurer la fenêtre",
     close: "Fermer la fenêtre",
+    mediaCodecs: {
+      title: "Les vidéos générées risquent de ne pas être lues",
+      // {command}: an apt command line, never translated.
+      description: "Il manque à ce système les décodeurs vidéo GStreamer. Installez-les avec : {command}",
+      copy: "Copier la commande",
+    },
   },
   runtimeUpdate: {
     installAudio: "Installer le runtime audio",

@@ -6492,6 +6492,12 @@ export const pl = {
     maximize: "Maksymalizuj okno",
     restore: "Przywróć okno",
     close: "Zamknij okno",
+    mediaCodecs: {
+      title: "Wygenerowane filmy mogą się nie odtwarzać",
+      // {command}: an apt command line, never translated.
+      description: "W tym systemie brakuje dekoderów wideo GStreamer. Zainstaluj je poleceniem: {command}",
+      copy: "Kopiuj polecenie",
+    },
   },
   runtimeUpdate: {
     installAudio: "Zainstaluj środowisko uruchomieniowe audio",

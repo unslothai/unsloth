@@ -144,7 +144,11 @@ def pipeline_parallel_env_apply(model, layout):
             layout.pp_mesh,
             n_microbatches = default,
             schedule = schedule,
-            config = PPConfig(keep_replica = keep, text_only = text_only),
+            config = PPConfig(
+                keep_replica = keep,
+                text_only = text_only,
+                stages_per_rank = getattr(layout, "stages_per_rank", None),
+            ),
         )
     except (ValueError, RuntimeError, NotImplementedError) as exc:
         from .tp_env import _reraise_with_hint
