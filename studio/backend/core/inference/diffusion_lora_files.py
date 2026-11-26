@@ -37,6 +37,11 @@ _LOKR_SUFFIXES = (
     "lokr_t2",
 )
 NORMALIZED_FAMILIES = ("anima", "krea-2", "moss-image")
+QWEN21_FAMILY = "qwen-image-2.1"
+# ai-toolkit keeps Qwen-Image-2.1's SwiGLU input as one ``img_mlp.gate_up`` ([gate; up] rows); diffusers has
+# ``gate_layer`` and ``proj``, so PEFT would drop both halves with only a log line.
+_QWEN21_GATE_UP_KEY = re.compile(r"\.img_mlp\.gate_up\.(?:lora_(?:A|B|down|up)\.|alpha$)")
+_QWEN21_GATE_UP = re.compile(r"^(.*\.img_mlp\.)gate_up\.(lora_[AB])\.(weight|bias)$")
 IDEOGRAM4_FAMILY = "ideogram-4"
 # Ideogram 4's checkpoint module names, which diffusers' converter reads under ``diffusion_model.`` only. The fused
 # ``attention.qkv`` / ``attention.o`` mark the layout: diffusers' own names share ``feed_forward`` / ``adaln_modulation``.
@@ -317,6 +322,56 @@ def _moss_fused_qkv(state: dict) -> dict:
             for i, name in enumerate(("q", "k", "v")):
                 out[f"{stem}{name}.lora_B.weight"] = value[i * rows : (i + 1) * rows].contiguous()
     return out
+
+
+def _qwen21_split_gate_up(state: dict) -> dict:
+    """The fused ``img_mlp.gate_up`` as ``gate_layer`` / ``proj``: ``A`` is shared, ``B``'s rows split gate first."""
+    out: dict = {}
+    for key, value in state.items():
+        match = _QWEN21_GATE_UP.match(key)
+        if match is None:
+            out[key] = value
+            continue
+        stem, part, kind = match.groups()
+        if part == "lora_A":
+            for name in ("gate_layer", "proj"):
+                out[f"{stem}{name}.lora_A.{kind}"] = value
+            continue
+        rows = int(value.shape[0])
+        if rows % 2:
+            raise ValueError(
+                f"{key}: a fused gate_up LoRA with an odd row count ({rows}) cannot be split into gate_layer and proj"
+            )
+        half = rows // 2
+        out[f"{stem}gate_layer.lora_B.{kind}"] = value[:half].contiguous()
+        out[f"{stem}proj.lora_B.{kind}"] = value[half:].contiguous()
+    return out
+
+
+def _load_qwen21(pipe: Any, path: str, name: str) -> None:
+    """A file with no fused ``gate_up`` loads by path as before; one with it loads rewritten, refused if nothing lands."""
+    raw = read_lora_file(path)
+    if not any(_QWEN21_GATE_UP_KEY.search(k) for k in raw):
+        _load_lora_weights(pipe, path, name)
+        return
+    metadata = None
+    if (os.environ.get(REWRITE_METADATA_ENV) or "").strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    ):
+        metadata = read_lora_metadata(path)
+    normalized = normalize_lora(raw, QWEN21_FAMILY, metadata)
+    fused = sum(1 for k in normalized if k.endswith(".img_mlp.gate_up.lora_A.weight"))
+    _load_lora_weights(pipe, _qwen21_split_gate_up(normalized), name)
+    if not _adapter_loaded(pipe, name):
+        raise ValueError(f"{name}: none of its LoRA keys name a layer of this model")
+    logger.info(
+        "diffusion.lora: %s splits %d fused img_mlp.gate_up module(s) into gate_layer + proj",
+        name,
+        fused,
+    )
 
 
 def _kron_delta(x: Any, w1: Any, w2: Any, rows: Optional[tuple[int, int]]) -> Any:
@@ -735,6 +790,9 @@ def load_adapter(pipe: Any, path: str, name: str, family: Optional[str]) -> None
     _remember_requires_grad(pipe)
     if family == IDEOGRAM4_FAMILY:
         _load_ideogram4(pipe, path, name)
+        return
+    if family == QWEN21_FAMILY:
+        _load_qwen21(pipe, path, name)
         return
     if family not in NORMALIZED_FAMILIES:
         _load_lora_weights(pipe, path, name)
