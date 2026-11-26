@@ -83,7 +83,8 @@ def test_supports_lora_matrix():
         transformer_quant = "int8",
         compiled = True,
     )
-    assert not dl.supports_lora(
+    # nvfp4 bakes like int8 / fp8; mxfp8 has no validated LoRA path.
+    assert dl.supports_lora(
         engine = "diffusers", family = "flux.1", model_kind = "single_file", transformer_quant = "nvfp4"
     )
     assert not dl.supports_lora(
@@ -154,8 +155,8 @@ def test_lora_unavailable_reason_names_the_cause():
     assert dl.lora_unavailable_reason(engine = "diffusers", family = "lumina-2", **gguf) is None
     sdxl = dl.lora_unavailable_reason(engine = "diffusers", family = "sdxl", **gguf)
     assert "whole-pipeline" in sdxl and ".safetensors" in sdxl
-    assert "NVFP4" in dl.lora_unavailable_reason(
-        engine = "diffusers", family = "flux.1", model_kind = "pipeline", transformer_quant = "nvfp4"
+    assert "MXFP8" in dl.lora_unavailable_reason(
+        engine = "diffusers", family = "flux.1", model_kind = "pipeline", transformer_quant = "mxfp8"
     )
     assert (
         dl.lora_unavailable_reason(

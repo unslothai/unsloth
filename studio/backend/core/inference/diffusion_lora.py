@@ -1005,10 +1005,11 @@ _NATIVE_LORA_FAMILY_TOKENS = (
     "stable-diffusion",
 )
 # Adapters bake on the dense transformer BEFORE torchao quantize_ + compile: peft's
-# TorchaoLoraLinear needs quantizer metadata a manual quantize_ lacks.
-_DIFFUSERS_LORA_BAKED_QUANT = ("int8", "fp8")
-# Prototype schemes with no validated LoRA path (and no shipped families needing one).
-_DIFFUSERS_LORA_BLOCKED_QUANT = ("nvfp4", "mxfp8")
+# TorchaoLoraLinear needs quantizer metadata a manual quantize_ lacks. nvfp4 quantizes only the
+# base Linears (adapters stay bf16), per-layer policies included.
+_DIFFUSERS_LORA_BAKED_QUANT = ("int8", "fp8", "nvfp4")
+# Prototype scheme with no validated LoRA path (and no shipped families needing one).
+_DIFFUSERS_LORA_BLOCKED_QUANT = ("mxfp8",)
 # Pipelines with no LoRA loader mixin; an adapter would otherwise fail mid-generate with an AttributeError.
 _DIFFUSERS_LORA_UNSUPPORTED_FAMILIES: tuple[str, ...] = ("hunyuanimage-2.1",)
 

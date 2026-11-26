@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// torchao INT8 / FP8 / NVFP4 / MXFP8 loads (and MiniMax-H3-Image) take LoRAs only at load: unbaked ones need a reload.
+// torchao INT8 / FP8 / NVFP4 loads (and MiniMax-H3-Image) take LoRAs only at load: unbaked ones need a reload.
+// MXFP8 routes the same way but the backend refuses LoRAs on it (supports_lora false), so it never offers one.
 
 /** Backend: diffusion_lora.LORA_RELOAD_REFUSAL, sent in X-Unsloth-Refusal on /images/generate. */
 export const LORA_RELOAD_REFUSAL = "lora-reload";
