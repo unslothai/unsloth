@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""LTX-2.3/2.5 vocoder: cuDNN deterministic algorithms for the call on NVIDIA CUDA, restored after; a kill switch."""
-
 from __future__ import annotations
 
 import types

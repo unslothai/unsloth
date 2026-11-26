@@ -1808,8 +1808,7 @@ def vocoder_fp32_enabled() -> bool:
     return (os.environ.get(VOCODER_FP32_ENV) or "").strip().lower() not in _SWITCH_OFF
 
 
-# cuDNN may pick a nondeterministic (atomic) algorithm for the vocoder's transposed convs, so the same latents give a
-# different waveform per process. NVIDIA CUDA only (ROCm's MIOpen has no such flag). "0" keeps the global setting.
+# cuDNN's atomic transposed-conv algos make the waveform vary per process; CUDA only (MIOpen lacks the flag). "0" = off.
 VOCODER_DETERMINISTIC_ENV = "UNSLOTH_LTX_VOCODER_DETERMINISTIC"
 
 
