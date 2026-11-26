@@ -89,6 +89,109 @@ def read_lora_metadata(path: str) -> Optional[dict]:
     return config if "lora_alpha" in config else None
 
 
+# safetensors' own cap on the JSON header it will parse.
+_MAX_HEADER_BYTES = 100_000_000
+
+
+def _is_unset(value: Any) -> bool:
+    """A newer PEFT's value for a config field left off: dropping the field then changes nothing."""
+    return value is None or value is False or (isinstance(value, (dict, list, str)) and not value)
+
+
+def _lora_config_fields() -> Optional[frozenset]:
+    import dataclasses
+    try:
+        from peft import LoraConfig
+        return frozenset(field.name for field in dataclasses.fields(LoraConfig))
+    except Exception:  # noqa: BLE001 - no PEFT (or not a dataclass): leave the header to diffusers
+        return None
+
+
+def _read_header(path: str) -> Optional[dict]:
+    """The safetensors JSON header, or None when it is unreadable or its declared length is implausible."""
+    import json
+    import struct
+
+    try:
+        size = os.path.getsize(str(path))
+        with open(str(path), "rb") as handle:
+            prefix = handle.read(8)
+            if len(prefix) != 8:
+                return None
+            (length,) = struct.unpack("<Q", prefix)
+            if length > _MAX_HEADER_BYTES or 8 + length > size:
+                return None
+            header = json.loads(handle.read(length))
+    except Exception:  # noqa: BLE001 - unreadable header: the plain load reports it itself
+        return None
+    return header if isinstance(header, dict) else None
+
+
+def compatible_lora_header(path: str) -> Optional[dict]:
+    """Header minus unset metadata fields this PEFT's ``LoraConfig`` lacks (else diffusers' ``LoraConfig(**metadata)``
+    fails on newer-PEFT files, e.g. Qwen-Image-2.1-Lightning); None when nothing to drop. Other keys stay untouched."""
+    import json
+
+    fields = _lora_config_fields()
+    if fields is None:
+        return None
+    header = _read_header(path)
+    if header is None:
+        return None
+    try:
+        metadata = json.loads(header["__metadata__"][_METADATA_KEY])
+    except Exception:  # noqa: BLE001 - no metadata: nothing for LoraConfig to reject
+        return None
+    if not isinstance(metadata, dict):
+        return None
+    dropped = [
+        key
+        for key, value in metadata.items()
+        if "." in key and key.split(".", 1)[1] not in fields and _is_unset(value)
+    ]
+    if not dropped:
+        return None
+    logger.info(
+        "diffusion.lora: %s ignores unset LoRA options this PEFT lacks: %s",
+        os.path.basename(str(path)),
+        ", ".join(sorted(dropped)),
+    )
+    header["__metadata__"][_METADATA_KEY] = json.dumps(
+        {k: v for k, v in metadata.items() if k not in dropped}, indent = 2, sort_keys = True
+    )
+    return header
+
+
+def _write_with_header(path: str, out: str, header: dict) -> None:
+    """``path``'s tensors under ``header``: data offsets count from the header's end, so only the header changes."""
+    import json
+    import shutil
+    import struct
+
+    blob = json.dumps(header, separators = (",", ":")).encode("utf-8")
+    blob += b" " * (-len(blob) % 8)
+    with open(str(path), "rb") as src, open(out, "wb") as dst:
+        (length,) = struct.unpack("<Q", src.read(8))
+        src.seek(8 + length)
+        dst.write(struct.pack("<Q", len(blob)))
+        dst.write(blob)
+        shutil.copyfileobj(src, dst, 16 << 20)
+
+
+def _load_lora_weights(pipe: Any, source: Any, name: str) -> None:
+    """``pipe.load_lora_weights``, through a copy whose adapter metadata this PEFT can instantiate when needed."""
+    header = compatible_lora_header(source) if isinstance(source, (str, os.PathLike)) else None
+    if header is None:
+        pipe.load_lora_weights(source, adapter_name = name)
+        return
+    import tempfile
+
+    with tempfile.TemporaryDirectory(prefix = "unsloth_lora_") as tmp:
+        copy = os.path.join(tmp, os.path.basename(str(source)))
+        _write_with_header(str(source), copy, header)
+        pipe.load_lora_weights(copy, adapter_name = name)
+
+
 def _pattern_value(patterns: Any, stem: str, default: Any) -> Any:
     """PEFT's ``get_pattern_key`` rule: the first key that matches the end of ``stem`` on a dot boundary."""
     for key, value in (patterns or {}).items():
@@ -596,7 +699,7 @@ def _load_ideogram4(pipe: Any, path: str, name: str) -> None:
         ):
             metadata = read_lora_metadata(path)
         source = ideogram4_native_lora(read_lora_file(path), metadata)
-    pipe.load_lora_weights(source, adapter_name = name)
+    _load_lora_weights(pipe, source, name)
     # diffusers drops keys outside the components it loads into without an error.
     if not _adapter_loaded(pipe, name):
         raise ValueError(f"{name}: none of its LoRA keys name a layer of this model")
@@ -634,7 +737,7 @@ def load_adapter(pipe: Any, path: str, name: str, family: Optional[str]) -> None
         _load_ideogram4(pipe, path, name)
         return
     if family not in NORMALIZED_FAMILIES:
-        pipe.load_lora_weights(path, adapter_name = name)
+        _load_lora_weights(pipe, path, name)
         return
     raw = read_lora_file(path)
     lokr, rest = split_lokr(_dotted_kohya_keys(pipe, raw, family))
@@ -656,7 +759,7 @@ def load_adapter(pipe: Any, path: str, name: str, family: Optional[str]) -> None
         # PEFT injects only into bare Linears: unwrap LoKR while it runs, then rewrap whatever sits there now.
         wrappers = _unwrap_kron(pipe)
         try:
-            pipe.load_lora_weights(path if unchanged else plain, adapter_name = name)
+            _load_lora_weights(pipe, path if unchanged else plain, name)
         finally:
             _rewrap_kron(wrappers)
             if wrappers:
