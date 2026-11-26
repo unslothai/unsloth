@@ -358,6 +358,8 @@ def _layout_from_readers(readers, *, complete: bool = False) -> ModelLayout:
             "output_norm.weight",
             "output.bias",
             "output_norm.bias",
+            # llama.cpp keeps one copy per layer device (TENSOR_DUPLICATED); n_rot / 2 floats each, so counting it once is close enough.
+            "rope_freqs.weight",
         }:
             has_unplaced_tensors = True
         # Before the token_embd substring below, which would otherwise swallow the per-layer table.

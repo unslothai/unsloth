@@ -1552,6 +1552,21 @@ def test_unpriced_cache_preserves_known_weights_and_host_cache_is_zero():
     assert [(r.kv_bytes, r.recurrent_bytes) for r in host] == [(0, 0), (0, 0)]
 
 
+def test_fixed_split_prices_llama3_rope_freqs_on_the_output_device():
+    layout = _layout_from_reader(
+        _StubReader(
+            _shard_fields(**{"llama.block_count": 2}),
+            _shard_tensors([0, 1])
+            + [_StubTensor("token_embd.weight", 600), _StubTensor("rope_freqs.weight", 256)],
+        )
+    )
+    first, second = estimate_layer_split(layout, 3, [1, 1], kv_bytes = 0)
+    assert (first.layer_count, first.has_output_layer) == (2, False)
+    assert (second.layer_count, second.has_output_layer) == (0, True)
+    # Tied output: llama.cpp also allocates token_embd on the output device.
+    assert second.weights_bytes == 600 + 256
+
+
 def test_fixed_split_abstains_on_missing_blocks_unknown_globals_and_unusable_split():
     layout = _asymmetric_layers()
     assert not estimate_layer_split(
@@ -1561,7 +1576,7 @@ def test_fixed_split_abstains_on_missing_blocks_unknown_globals_and_unusable_spl
         _StubReader(
             _shard_fields(**{"llama.block_count": 1}),
             _shard_tensors([0])
-            + [_StubTensor("token_embd.weight", 600), _StubTensor("rope_freqs.weight", 400)],
+            + [_StubTensor("token_embd.weight", 600), _StubTensor("cls.weight", 400)],
         )
     )
     assert not estimate_layer_split(globals_unknown, 2, [1, 1], kv_bytes = 0)

@@ -129,6 +129,8 @@ test("per-GPU subtotals follow load order and warn when one card overflows", () 
     { gpuId: 0, layerCount: 4, outputLayer: false, weightsBytes: 16 * GIB, cacheBytes: 1.84 * GIB },
   ] };
   assert.match(placement({ estimate: overloaded }), /GPU 0 is 1\.84 GiB over capacity/);
+  const unmeasured = placement({ estimate: { ...estimate, adaptersUnsized: true } });
+  assert.match(unmeasured, /GPU 0 exceeds free VRAM[\s\S]*An adapter or control vector is unmeasured/);
   assert.match(html, /Compute buffers and other runtime allocations need additional memory/);
   assert.doesNotMatch(html, /can change when a model unloads/);
   assert.match(placement({ estimate: { ...estimate, perGpuBasis: "free_memory" } }), /can change when a model unloads/);
