@@ -4,6 +4,8 @@
 """UNSLOTH_PARALLEL / unsloth.parallelize and the context parallel x tensor / pipeline parallel refusals, without a
 process group (tests/test_parallel_cp_compose_gloo.py trains the composed layouts on gloo ranks)."""
 
+import dataclasses
+
 import pytest
 import torch
 
@@ -1039,6 +1041,11 @@ def test_moe_rows_cover_family_precision_aux_and_mode():
             )
             assert caps.cell_status(q)[0] == "supported", (family, mode, caps.cell_status(q))
             caps.check(q)
+            # Their parity ran without checkpointing: Unsloth's checkpoint stays unadvertised for them.
+            gc = dataclasses.replace(q, memory = "unsloth_offload")
+            assert caps.cell_status(gc)[0] != "supported", (family, mode, caps.cell_status(gc))
+            with pytest.raises(NotImplementedError):
+                caps.check(gc)
     with pytest.raises(
         NotImplementedError, match = r"^Unsloth: MoE x pp / cp: .*router_aux_loss_coef = 0.0"
     ):

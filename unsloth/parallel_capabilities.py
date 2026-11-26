@@ -1419,8 +1419,9 @@ def _moe_cells():
                             match = {**match, "multimodal": (False,)}
                         note = compiled_note = ""
                         if mode in ("cp", "fsdp2_cp") and aux:
-                            # HF checkpointing did not run with the aux loss under cp; Unsloth's did for one row.
-                            gc = (precision, mode) == _MOE_CP_AUX_GC
+                            # HF checkpointing did not run with the aux loss under cp; Unsloth's did for one
+                            # qwen3_moe row only (the other cp router aux families ran without checkpointing).
+                            gc = family == "qwen3_moe" and (precision, mode) == _MOE_CP_AUX_GC
                             match = {
                                 **match,
                                 "memory": ("none", "unsloth_offload") if gc else ("none",),
