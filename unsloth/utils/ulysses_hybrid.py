@@ -858,11 +858,12 @@ def _ulysses_hf_attention(
         # Flash takes the window and the softcap as arguments, and documents as cu_seqlens.
         mask = None
         if cu_seqlens is not None:
-            if int(cu_seqlens[-1]) < total:
-                # Padding to the cp multiple sits after the last document: its own segment.
-                cu_seqlens = torch.cat([cu_seqlens, cu_seqlens.new_tensor([total])])
-            cu = cu_seqlens.to(device = query.device, dtype = torch.int32)
-            longest = int((cu[1:] - cu[:-1]).max())
+            from .packing import cover_padded_cu_seqlens
+
+            # Padding to the cp multiple sits after the last document: its own segment. Host lengths, cached
+            # per batch: no device read per layer.
+            cu, longest = cover_padded_cu_seqlens(seq_info, total)
+            cu = cu.to(device = query.device, dtype = torch.int32)
             kwargs.update(
                 cu_seq_lens_q = cu, cu_seq_lens_k = cu, max_length_q = longest, max_length_k = longest
             )

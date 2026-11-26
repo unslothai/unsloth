@@ -88,13 +88,21 @@ def test_ep_with_vllm_is_refused():
 
 @pytest.mark.parametrize(
     "axis",
-    [dict(tp = 2), dict(pp = 2), dict(cp = 2, cp_backend = "ulysses"), dict(fsdp2 = True)],
-    ids = ["tp", "pp", "cp", "fsdp2"],
+    [dict(tp = 2), dict(pp = 2), dict(fsdp2 = True), dict(cp = 2, cp_backend = "ulysses", fsdp2 = True)],
+    ids = ["tp", "pp", "fsdp2", "cp_fsdp2"],
 )
 def test_ep_with_another_model_axis_or_fsdp2_is_refused(axis):
     message = _refusal(_ep_query(**axis))
-    assert message.startswith("Unsloth: ep x tp / pp / cp / fsdp2: "), message
+    assert message.startswith("Unsloth: ep x tp / pp / fsdp2: "), message
     assert "ep 2" in message, message
+
+
+def test_ep_with_ulysses_cp_has_a_supported_cell_and_ring_is_refused():
+    ulysses = _ep_query(dp = 1, cp = 2, cp_backend = "ulysses", expert_lora = True, mode = "lora")
+    status, cell = caps.cell_status(ulysses)
+    assert status == "supported" and "x ep_cp" in cell.name, (status, cell)
+    message = _refusal(_ep_query(dp = 1, cp = 2, cp_backend = "ring", expert_lora = True, mode = "lora"))
+    assert "no supported cell covers it" in message, message
 
 
 @pytest.mark.parametrize(
@@ -200,3 +208,108 @@ def test_fast_inference_is_refused_at_load_under_ep(clean_env):
         "Unsloth: UNSLOTH_EP_SIZE=2 (expert parallel) does not support vLLM"
     ), message
     assert "fast_inference = False" in message and not calls, message
+
+
+def _transformers_4():
+    import transformers
+    from packaging.version import Version
+    return Version(transformers.__version__).major < 5
+
+
+_TRANSFORMERS_4 = _transformers_4()
+
+
+def _hunyuan_meta():
+    """Hunyuan-A13B's layout shrunk: 64 experts, a top-k per layer, a shared expert."""
+    from transformers import AutoConfig, AutoModelForCausalLM
+
+    config = AutoConfig.for_model(
+        "hunyuan_v1_moe",
+        vocab_size = 128,
+        hidden_size = 32,
+        intermediate_size = 16,
+        num_hidden_layers = 3,
+        num_attention_heads = 2,
+        num_key_value_heads = 1,
+        head_dim = 16,
+        num_experts = 64,
+        moe_topk = [8, 8, 8],
+        num_shared_expert = [1, 1, 1],
+    )
+    with torch.device("meta"):
+        model = AutoModelForCausalLM.from_config(config)
+    return model.requires_grad_(False)
+
+
+def test_hunyuan_v1_moe_is_not_blocked_by_its_default_config():
+    """The family table once held hunyuan_v1_moe because its default config has num_experts = 1; a real
+    (64-expert) model shards, so only the loaded model's own num_experts decides."""
+    assert caps._ep_blocker("hunyuan_v1_moe", 2) == ""
+    assert "hunyuan_v1_moe" not in caps._EP_BLOCKED_FAMILIES
+    model = _hunyuan_meta()
+    if _TRANSFORMERS_4:  # unfused per-expert modules there: every family is refused alike
+        assert "transformers 4.x" in caps._ep_blocker(model, 2)
+    else:
+        assert caps._ep_blocker(model, 2) == ""
+        caps.check_layout(_ep_layout(), None, model, types.SimpleNamespace(packing = False))
+    assert "refused" not in caps._moe_note("hunyuan_v1_moe", "lora", False, "ep")
+    assert "per-expert Linear lists" in caps._moe_note("gpt_oss", "qlora", False, "ep")
+    assert "refused" not in caps._moe_note("gpt_oss", "lora", False, "ep")
+
+
+def test_gpt_oss_4bit_is_blocked_by_family_and_16bit_is_not():
+    assert caps._ep_blocker("gpt_oss", 2) == ""
+    assert caps._ep_blocker("gpt_oss", 2, load_in_4bit = False) == ""
+    reason = caps._ep_blocker("gpt_oss", 2, load_in_4bit = True)
+    assert "per-expert Linear lists" in reason and "GptOssExpertsBnb4bit" in reason, reason
+    assert caps._ep_blocker("gpt_oss", 1, load_in_4bit = True) == ""
+    assert caps._ep_blocker("qwen3_moe", 2, load_in_4bit = True) == ""
+    message = _refusal(_ep_query(family = "gpt_oss", mode = "qlora", ep_blocker = reason))
+    assert (
+        message.startswith("Unsloth: ep x model: ") and "per-expert Linear lists" in message
+    ), message
+
+
+def test_gpt_oss_with_zoo_bnb4bit_experts_is_refused_by_structure():
+    """zoo's GptOssExpertsBnb4bit (what every load_in_4bit gpt-oss load installs), built unquantized on meta."""
+    zoo_gpt_oss = pytest.importorskip("unsloth_zoo.temporary_patches.gpt_oss")
+    bnb_experts = getattr(zoo_gpt_oss, "GptOssExpertsBnb4bit", None)
+    if bnb_experts is None:
+        pytest.skip("this unsloth_zoo has no GptOssExpertsBnb4bit")
+    import transformers.models.gpt_oss.modeling_gpt_oss as gpt_oss
+    from transformers import AutoConfig, AutoModelForCausalLM
+    from unsloth.models import ep_native
+
+    config = AutoConfig.for_model(
+        "gpt_oss",
+        vocab_size = 128,
+        hidden_size = 32,
+        intermediate_size = 16,
+        num_hidden_layers = 2,
+        num_attention_heads = 2,
+        num_key_value_heads = 1,
+        head_dim = 16,
+        num_local_experts = 4,
+        num_experts_per_tok = 2,
+        layer_types = ["full_attention", "full_attention"],
+    )
+    stock = gpt_oss.GptOssExperts
+    try:
+        gpt_oss.GptOssExperts = bnb_experts
+        with torch.device("meta"):
+            model = AutoModelForCausalLM.from_config(config)
+    finally:
+        gpt_oss.GptOssExperts = stock
+    assert type(model.model.layers[0].mlp.experts) is bnb_experts
+    reason = caps._ep_blocker(model, 2)
+    assert "per-expert Linear lists" in reason and "gate_up_projs" in reason, reason
+    with pytest.raises(NotImplementedError) as info:
+        caps.check_layout(_ep_layout(), None, model, types.SimpleNamespace(packing = False))
+    assert "per-expert Linear lists" in str(info.value), info.value
+    with pytest.raises(NotImplementedError) as info:
+        ep_native.ep_refuse_per_expert_lists(model)
+    assert "load_in_4bit = False" in str(info.value), info.value
+    with torch.device("meta"):
+        plain = AutoModelForCausalLM.from_config(config)
+    assert caps._ep_blocker(plain, 2) == ""
+    ep_native.ep_refuse_per_expert_lists(plain)

@@ -100,6 +100,7 @@ def _encoder_forward(
         or (hidden_states.dtype == torch.float32 and not torch.is_autocast_enabled())
         or kwargs.get("encoder_hidden_states") is not None
         or kwargs.get("past_key_values") is not None
+        or kwargs.get("cache") is not None
         or (backend := _unpadding_backend()) is None
     ):
         return original_forward(hidden_states, attention_mask = attention_mask, **kwargs)

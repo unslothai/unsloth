@@ -900,6 +900,8 @@ def _router_statistics(
 
 def _load_balancing_from_statistics(stats, num_experts):
     counts, probs, rows = stats[:num_experts], stats[num_experts : 2 * num_experts], stats[-1]
+    # An all-masked micro-batch has no routed rows (counts and probs are 0 too): 0, not 0 / 0 = NaN.
+    rows = rows.clamp_min(1)
     return torch.sum((counts / rows) * (probs / rows)) * num_experts
 
 
@@ -3033,7 +3035,7 @@ class PipelineParallel:
                     save_embedding_layers = kwargs.get("save_embedding_layers", "auto"),
                 )
                 local[adapter] = {
-                    k: (gather(v) if gather is not None else v).detach().cpu().clone()
+                    k: (gather(v) if gather is not None else v).detach().to("cpu", copy = True)
                     for k, v in selected.items()
                     if not k.startswith(self._foreign_prefixes)
                 }

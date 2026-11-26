@@ -250,5 +250,9 @@ def load_krea2_pipeline(
     if transformer is not None:
         # before the attention backend / INT8 route, which read the block processors
         from .diffusion_krea2_prefix_kv import install as install_prefix_kv
+
         install_prefix_kv(transformer, logger)
+        from .diffusion_krea2_text_cache import install as install_text_cache
+
+        install_text_cache(transformer, logger)
     return pipe

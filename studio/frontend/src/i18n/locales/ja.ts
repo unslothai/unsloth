@@ -4095,8 +4095,8 @@ export const ja = {
       summary: {
         single: "1 台の GPU でトレーニング",
         layerSplit: "モデルをレイヤーごとに GPU {count} 台へ分割",
-        ddp: "モデルは 1 台の GPU に収まります: GPU {count} 台でデータ並列",
-        fsdp2: "モデルが 1 台の GPU に収まりません: GPU {count} 台にシャード化",
+        ddp: "各 GPU が完全なコピーを学習: GPU {count} 台でデータ並列",
+        fsdp2: "重みとオプティマイザー状態を GPU {count} 台にシャード化",
         tp: "各レイヤーを GPU {count} 台に分割",
         pp: "レイヤーを {count} 段のパイプラインで実行（GPU ごとに 1 段）",
         cp: "各シーケンスを GPU {count} 台に分割",
@@ -4107,7 +4107,7 @@ export const ja = {
         noGpu: "GPU を 1 台以上選択してください。",
         singleNeedsOne: "単一 GPU は 1 台だけを使います。ほかのチェックを外してください。",
         needsTwo: "このモードには GPU が 2 台以上必要です。",
-        customSpec: "構成を入力してください（例: dp=2,tp=2）。",
+        customSpec: "構成を入力してください（例: {example}）。",
       },
     },
     preview: {
@@ -5982,6 +5982,12 @@ export const ja = {
     maximize: "ウィンドウを最大化",
     restore: "ウィンドウを元のサイズに戻す",
     close: "ウィンドウを閉じる",
+    mediaCodecs: {
+      title: "生成した動画が再生されない場合があります",
+      // {command}: an apt command line, never translated.
+      description: "このシステムには GStreamer の動画デコーダーがありません。次のコマンドでインストールしてください: {command}",
+      copy: "コマンドをコピー",
+    },
   },
   runtimeUpdate: {
     installAudio: "オーディオランタイムをインストール",
