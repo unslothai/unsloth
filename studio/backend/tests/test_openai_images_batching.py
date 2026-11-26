@@ -429,7 +429,11 @@ def test_a_full_batch_stops_collecting_and_the_next_request_opens_another(monkey
     rendering = {"on": True}
     batches: list[list[str]] = []
 
-    async def run_batch(prompts, seeds):
+    async def run_batch(
+        prompts,
+        seeds,
+        owners = None,
+    ):
         batches.append(prompts)
         return {"images": list(prompts), "seeds": list(seeds), "seed": seeds[0]}
 

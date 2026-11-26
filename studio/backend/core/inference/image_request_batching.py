@@ -205,7 +205,10 @@ async def generate(
             len(seeds),
         )
         try:
-            parts = _split(await run_batch(prompts, seeds), members)
+            parts = _split(
+                await run_batch(prompts, seeds, owners = [member.owner for member in members]),
+                members,
+            )
         except Exception as exc:  # noqa: BLE001 -- fall back unless the outcome applies to every request
             if shared_outcome(exc):
                 _share(exc, members[1:], owner)

@@ -56020,7 +56020,16 @@ async def _coalesced_image_generate(
         if stopped.is_set():
             raise RuntimeError(DIFFUSION_CANCELLED_MSG)
 
-    async def run_batch(prompts: list[str], seeds: list[int]) -> dict:
+    async def run_batch(
+        prompts: list[str],
+        seeds: list[int],
+        owners: Optional[list] = None,
+    ) -> dict:
+        call = dict(generate_kwargs)
+        if len(set(owners or ())) > 1:
+            # The preview decodes row 0 of each forward, and an OOM split or an equal-length run can put another
+            # account's image there: a batch shared across accounts shows no preview.
+            call.update(_live_preview_kwarg(backend.generate, False))
         with generation_ticket(ticket):
             try:
                 return await _image_generate_in_thread(
@@ -56029,7 +56038,7 @@ async def _coalesced_image_generate(
                     prompts = prompts,
                     seeds = seeds,
                     batch_size = len(seeds),
-                    **generate_kwargs,
+                    **call,
                 )
             except Exception as exc:
                 # An engine Stop sets the bound event, not ``stopped``: no member may retry alone.

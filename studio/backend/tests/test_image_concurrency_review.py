@@ -263,3 +263,23 @@ def test_a_stop_during_a_teardown_reaches_only_the_callers_queued_requests():
     for thread in threads:
         thread.join(timeout = 5)
     assert outcome == {"alice": "served", "bob": DIFFUSION_CANCELLED_MSG}
+
+
+def test_a_batch_shared_across_accounts_shows_no_live_preview(studio):
+    app, backend, _saved = studio
+    posts = [
+        ("/api/inference/images/generate", "alice", _create("a fox", live_preview = True)),
+        ("/api/inference/images/generate", "bob", _create("a cat", live_preview = True)),
+    ]
+    assert all(r.status_code == 200 for r in _post_while_rendering(app, backend, posts, waiting = 2))
+    [call] = _batched_calls(backend)
+    assert call["kwargs"]["live_preview"] is False
+
+    backend.calls.clear()
+    posts = [
+        ("/api/inference/images/generate", "alice", _create("a fox", live_preview = True)),
+        ("/api/inference/images/generate", "alice", _create("a cat", live_preview = True)),
+    ]
+    assert all(r.status_code == 200 for r in _post_while_rendering(app, backend, posts, waiting = 2))
+    [call] = _batched_calls(backend)
+    assert call["kwargs"]["live_preview"] is True
