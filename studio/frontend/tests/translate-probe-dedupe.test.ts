@@ -131,8 +131,7 @@ test("the page shares one listing across the rows of each probe pass", () => {
 });
 
 test("the page re-probes the disk when the model cache changes elsewhere", () => {
-  // RAM-only system snapshots no longer re-run the pass, so a download finished on the Hub page
-  // (or in another tab) must still turn a "not downloaded" row into "downloaded".
+  // RAM-only polls skip the pass, so an external download must still flip the row to downloaded.
   const page = readText("../src/features/translate/translate-page.tsx");
   assert.match(page, /const inventoryVersion = useInventoryVersion\(\);/);
   assert.match(

@@ -1413,7 +1413,6 @@ export function TranslatePage() {
   useEffect(() => {
     if (busy) return;
     const abort = new AbortController();
-    // The FP8 rows all read the same cache listing: one request per pass, not one per row.
     const cachedModels = sharedCachedModelsListing(abort.signal);
     for (const model of offeredModels) {
       // After every run: the disk shows a finished download, so the Hub is asked only before it is known missing.

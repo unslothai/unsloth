@@ -322,8 +322,7 @@ function sameSchemes(
   );
 }
 
-/** Keep the previous arrays when unchanged: polls re-probe memory, and consumers memoise picker
- * options and Translate's disk probes on these lists. */
+/** Keep array identity when unchanged: consumers memoise pickers and disk probes on these. */
 export function withStableSchemes(current: GpuInfo, next: GpuInfo): GpuInfo {
   const keepDense =
     current.denseQuantSchemes !== next.denseQuantSchemes &&
